@@ -8,7 +8,7 @@
 import type { ServerEnv } from '../core/adapters.js';
 import type { OwnerContext } from '../context.js';
 import {
-  BackupApplyError, backupArtifact, BackupLineageError, BackupSchemaError, BackupTooLargeError,
+  BackupApplyError, backupArtifact, BackupIntegrityError, BackupLineageError, BackupSchemaError, BackupTooLargeError,
   assertBackupSize, createBackup, listBackups, previewRestore, pruneBackups,
   restoreArtifact, restoreBackup, setBackupPinned,
 } from '../core/backup.js';
@@ -24,6 +24,13 @@ const leafNumber = (raw: string | undefined, fallback: number): number => {
     const parsed = JSON.parse(raw);
     return typeof parsed === 'number' && Number.isInteger(parsed) && parsed >= 0 ? parsed : fallback;
   } catch { return fallback; }
+};
+
+/** The answer for a stored artifact the read path refused: bytes that differ from the evidence its row recorded, or a recorded size past the artifact bound. Neither carries artifact content. */
+const storedArtifactRefusal = (err: unknown): Response | null => {
+  if (err instanceof BackupIntegrityError) return Response.json({ error: 'artifact_integrity', message: err.message }, { status: 409 });
+  if (err instanceof BackupTooLargeError) return badRequest(err.message);
+  return null;
 };
 
 /** Create one backup, then prune per the retention leaves — fail-closed, in `core/backup.ts`. */
@@ -49,9 +56,15 @@ export async function handleListBackups(env: ServerEnv, ctx: OwnerContext): Prom
 
 /** What a restore would touch, from the artifact's header alone. */
 export async function handleRestorePreview(env: ServerEnv, ctx: OwnerContext): Promise<Response> {
-  const preview = await previewRestore(env.db, env.blobs, ctx.params.backupId);
-  if (preview === null) return notFound();
-  return ok(preview);
+  try {
+    const preview = await previewRestore(env.db, env.blobs, ctx.params.backupId);
+    if (preview === null) return notFound();
+    return ok(preview);
+  } catch (err) {
+    const refusal = storedArtifactRefusal(err);
+    if (refusal !== null) return refusal;
+    throw err;
+  }
 }
 
 /** Apply one backup. A foreign-lineage artifact is refused unless the body deliberately adopts it. */
@@ -72,6 +85,8 @@ export async function handleRestoreBackup(env: ServerEnv, ctx: OwnerContext): Pr
     if (err instanceof BackupSchemaError) {
       return Response.json({ error: 'newer_schema', message: err.message }, { status: 409 });
     }
+    const refusal = storedArtifactRefusal(err);
+    if (refusal !== null) return refusal;
     if (err instanceof BackupApplyError || err instanceof SyntaxError) return badRequest(err.message);
     throw err;
   }
@@ -79,7 +94,14 @@ export async function handleRestoreBackup(env: ServerEnv, ctx: OwnerContext): Pr
 
 /** The artifact itself, for an operator taking a copy off the Deployment. */
 export async function handleBackupArtifact(env: ServerEnv, ctx: OwnerContext): Promise<Response> {
-  const artifact = await backupArtifact(env.db, env.blobs, ctx.params.backupId);
+  let artifact;
+  try {
+    artifact = await backupArtifact(env.db, env.blobs, ctx.params.backupId);
+  } catch (err) {
+    const refusal = storedArtifactRefusal(err);
+    if (refusal !== null) return refusal;
+    throw err;
+  }
   if (artifact === null) return notFound();
   return new Response(artifact.text, {
     headers: {

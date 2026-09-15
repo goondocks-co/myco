@@ -4,6 +4,7 @@
  * a caller of the routes actually sees.
  */
 import { describe, expect, it } from 'bun:test';
+import { createHash } from 'node:crypto';
 import worker from '@myco-server-worker/index.js';
 import { sqliteEnv } from './helpers/fixtures.js';
 import { asOwner, asOwnerPost, OWNER_ENV } from './helpers/owner.js';
@@ -86,6 +87,33 @@ describe('the backup routes', () => {
 
     const garbage = await worker.fetch(await asOwnerPost('/api/backups/restore-upload', { artifact: 'not a backup' }), other.env);
     expect(garbage.status).toBe(400);
+  });
+
+  it('answers 409 artifact_integrity on preview, restore and download for a stored artifact changed after creation, and serves its exact bytes once intact', async () => {
+    const { env, bucket, sqlite } = setup();
+    const created = await worker.fetch(await asOwnerPost('/api/backups', {}), env);
+    const backup = ((await created.json()) as { backup: { id: string; key: string; sha256: string } }).backup;
+    const original = bucket.objects.get(backup.key)!;
+    const changed = original.bytes.slice();
+    changed[changed.indexOf(0x7b) + 1] ^= 0x20;
+    bucket.objects.set(backup.key, { ...original, bytes: changed });
+
+    const message = `the stored backup artifact ${backup.id} does not match the SHA-256 digest recorded when it was created; it was not previewed, restored or downloaded`;
+    for (const request of [
+      await asOwnerPost(`/api/backups/${backup.id}/restore-preview`, {}),
+      await asOwnerPost(`/api/backups/${backup.id}/restore`, {}),
+      await asOwner(`/api/backups/${backup.id}/artifact`),
+    ]) {
+      const res = await worker.fetch(request, env);
+      expect({ path: new URL(request.url).pathname, status: res.status, body: await res.json() })
+        .toEqual({ path: new URL(request.url).pathname, status: 409, body: { error: 'artifact_integrity', message } });
+    }
+    expect(sqlite.query('SELECT id, sha256 FROM backups').all()).toEqual([{ id: backup.id, sha256: backup.sha256 }]);
+
+    bucket.objects.set(backup.key, original);
+    const artifact = await worker.fetch(await asOwner(`/api/backups/${backup.id}/artifact`), env);
+    const bytes = new Uint8Array(await artifact.arrayBuffer());
+    expect({ status: artifact.status, sha256: createHash('sha256').update(bytes).digest('hex') }).toEqual({ status: 200, sha256: backup.sha256 });
   });
 
   it('admits an upload past the default owner body bound, refusing it only by what it is', async () => {

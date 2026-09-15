@@ -5,7 +5,7 @@
 import { describe, expect, it } from 'bun:test';
 import { createHash } from 'node:crypto';
 import {
-  BACKUP_TABLES, BackupLineageError, BackupSchemaError, BackupTooLargeError, MAX_BACKUP_BYTES, createBackup, deploymentId,
+  BACKUP_TABLES, backupArtifact, BackupIntegrityError, BackupLineageError, BackupSchemaError, BackupTooLargeError, MAX_BACKUP_BYTES, createBackup, deploymentId,
   EMPTY_ONLY_TABLES, EXCLUDED_TABLES, listBackups, previewRestore, pruneBackups,
   restoreBackup, retentionVictims, setBackupPinned, type BackupIndexRow,
 } from '@myco-server-worker/core/backup.js';
@@ -121,6 +121,81 @@ describe('create, list, preview', () => {
   });
 });
 
+describe('stored artifact integrity', () => {
+  const isWrite = (sql: string): boolean => /^\s*(INSERT|UPDATE|DELETE|REPLACE)\b/i.test(sql);
+  /** The stored bytes with one ASCII field changed, byte length unchanged. */
+  const sameLengthChange = (bytes: Uint8Array): Uint8Array => {
+    const changed = new TextEncoder().encode(new TextDecoder().decode(bytes).replace('"producer":"test"', '"producer":"TEST"'));
+    expect(changed.byteLength).toBe(bytes.byteLength);
+    expect(changed).not.toEqual(bytes);
+    return changed;
+  };
+
+  it('refuses a same-length change to a digest-bearing artifact before preview, restore or download writes anything, and reads it again once intact', async () => {
+    const { db, bucket, sqlite, executed, now } = seeded();
+    const backup = await createBackup(db, bucket, { producer: 'test', now });
+    const original = bucket.objects.get(backup.key)!;
+    sqlite.query(`DELETE FROM sessions WHERE session_id = 'sess_1'`).run();
+    bucket.objects.set(backup.key, { ...original, bytes: sameLengthChange(original.bytes) });
+
+    const mark = executed.length;
+    await expect(previewRestore(db, bucket, backup.id)).rejects.toThrow(BackupIntegrityError);
+    await expect(restoreBackup(db, bucket, { id: backup.id })).rejects.toThrow(`the stored backup artifact ${backup.id} does not match the SHA-256 digest recorded when it was created`);
+    await expect(backupArtifact(db, bucket, backup.id)).rejects.toThrow(BackupIntegrityError);
+    expect(executed.slice(mark).filter(isWrite)).toEqual([]);
+    expect(sqlite.query(`SELECT COUNT(*) AS n FROM sessions`).get()).toEqual({ n: 0 });
+    expect(sqlite.query(`SELECT * FROM backup_restore_progress`).all()).toEqual([]);
+    expect(bucket.deletes).toEqual([]);
+    expect((await listBackups(db, bucket)).map((row) => ({ id: row.id, present: row.present, sha256: row.sha256 })))
+      .toEqual([{ id: backup.id, present: true, sha256: backup.sha256 }]);
+
+    bucket.objects.set(backup.key, original);
+    const read = await backupArtifact(db, bucket, backup.id);
+    expect(createHash('sha256').update(read!.text).digest('hex')).toBe(backup.sha256!);
+    expect((await previewRestore(db, bucket, backup.id))!.foreignLineage).toBe(false);
+    expect((await restoreBackup(db, bucket, { id: backup.id }))!.tables.sessions).toEqual({ rows: 1, inserted: 1 });
+  });
+
+  it('holds every read to the recorded size, counting delivered bytes rather than the declared size, whether or not the row recorded a digest', async () => {
+    const { db, bucket, sqlite, now } = seeded();
+    const backup = await createBackup(db, bucket, { producer: 'test', now });
+    const original = bucket.objects.get(backup.key)!;
+    const sizeRefusal = 'does not match the size recorded when it was created';
+    const truncated = original.bytes.slice(0, original.bytes.byteLength - 1);
+    bucket.objects.set(backup.key, { ...original, bytes: truncated, size: truncated.byteLength });
+    await expect(previewRestore(db, bucket, backup.id)).rejects.toThrow(sizeRefusal);
+
+    const longer = new Uint8Array(original.bytes.byteLength + 4096);
+    longer.set(original.bytes);
+    for (const declared of [original.size, original.bytes.byteLength - 1]) {
+      bucket.objects.set(backup.key, { ...original, bytes: longer.subarray(0, declared === original.size ? longer.byteLength : declared), size: declared });
+      await expect(restoreBackup(db, bucket, { id: backup.id })).rejects.toThrow(sizeRefusal);
+    }
+
+    sqlite.query(`UPDATE backups SET sha256 = NULL WHERE id = ?`).run(backup.id);
+    bucket.objects.set(backup.key, { ...original, bytes: longer, size: original.size });
+    await expect(backupArtifact(db, bucket, backup.id)).rejects.toThrow(sizeRefusal);
+
+    sqlite.query(`UPDATE backups SET size_bytes = ? WHERE id = ?`).run(MAX_BACKUP_BYTES + 1, backup.id);
+    await expect(backupArtifact(db, bucket, backup.id)).rejects.toThrow(BackupTooLargeError);
+    expect(bucket.deletes).toEqual([]);
+  });
+
+  it('reads an artifact whose row recorded no digest after its size check alone, as it did before digests were recorded', async () => {
+    const { db, bucket, sqlite, now } = seeded();
+    const backup = await createBackup(db, bucket, { producer: 'test', now });
+    sqlite.query(`UPDATE backups SET sha256 = NULL WHERE id = ?`).run(backup.id);
+    sqlite.query(`DELETE FROM sessions WHERE session_id = 'sess_1'`).run();
+    const original = bucket.objects.get(backup.key)!;
+    expect((await backupArtifact(db, bucket, backup.id))!.text).toBe(new TextDecoder().decode(original.bytes));
+    expect((await previewRestore(db, bucket, backup.id))!.foreignLineage).toBe(false);
+    expect((await restoreBackup(db, bucket, { id: backup.id }))!.tables.sessions).toEqual({ rows: 1, inserted: 1 });
+    // No digest exists to hold a same-length change to; the size is the only evidence such a row carries.
+    bucket.objects.set(backup.key, { ...original, bytes: sameLengthChange(original.bytes) });
+    expect((await previewRestore(db, bucket, backup.id))!.header.producer).toBe('TEST');
+  });
+});
+
 describe('restore', () => {
   it('round-trips into a foreign store under explicit adoption, is additive with the target winning, and a re-run converges', async () => {
     const source = seeded();
@@ -160,9 +235,10 @@ describe('restore', () => {
     header.schemaVersion = header.schemaVersion + 1;
     const doctored = [JSON.stringify(header), ...lines.slice(1)].join('\n');
     const doctoredKey = 'backups/doctored.jsonl';
-    source.bucket.objects.set(doctoredKey, { ...source.bucket.objects.get(backup.key)!, bytes: new TextEncoder().encode(doctored) });
+    const doctoredBytes = new TextEncoder().encode(doctored);
+    source.bucket.objects.set(doctoredKey, { ...source.bucket.objects.get(backup.key)!, bytes: doctoredBytes, size: doctoredBytes.byteLength });
     source.sqlite.query(`INSERT INTO backups (id, key, created_at, size_bytes, counts_json, schema_version, producer, pinned)
-        VALUES ('bk_doctored', ?, 1, 1, '{}', 999, 'test', 0)`).run(doctoredKey);
+        VALUES ('bk_doctored', ?, 1, ?, '{}', 999, 'test', 0)`).run(doctoredKey, doctoredBytes.byteLength);
     await expect(restoreBackup(source.db, source.bucket, { id: 'bk_doctored' })).rejects.toThrow(BackupSchemaError);
 
     // agent_reports already holds a row, so its restore is a named skip, never a silent drop.
