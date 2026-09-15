@@ -4,6 +4,18 @@ import { shouldRetry } from '../../packages/myco-server/ui/src/lib/query-client'
 import { noProviderYet } from '../../packages/myco-server/ui/src/pages/ProjectHome';
 
 describe('dashboard query retry', () => {
+  it('preserves structured server details and status without exposing unstructured bodies', () => {
+    const body = { error: 'bad_request', reason: 'The backup exceeds the supported size.' };
+    const error = new ApiError(400, body);
+    expect(error.message).toBe(body.reason);
+    expect(error.status).toBe(400);
+    expect(error.body).toBe(body);
+    expect(new ApiError(409, { message: 'Update the Deployment first.' }).message).toBe('Update the Deployment first.');
+    for (const raw of [null, '<html>proxy error</html>', { reason: 123 }, { reason: ' ', message: false }]) {
+      expect(new ApiError(503, raw).message).toBe('server answered 503');
+    }
+  });
+
   it('never asks again after a 4xx — a missing session, a refusal, a signed-out visitor', () => {
     expect(shouldRetry(0, new ApiError(404, { error: 'not_found' }))).toBe(false);
     expect(shouldRetry(0, new ApiError(403, null))).toBe(false);

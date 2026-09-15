@@ -102,6 +102,15 @@ export class BackupTooLargeError extends Error {
     this.name = 'BackupTooLargeError';
   }
 }
+
+const encoder = new TextEncoder();
+
+/** Enforce the artifact limit in the encoding written to the object store. */
+export function assertBackupSize(text: string, previousBytes = 0): number {
+  const bytes = previousBytes + encoder.encode(text).byteLength;
+  if (bytes > MAX_BACKUP_BYTES) throw new BackupTooLargeError(bytes);
+  return bytes;
+}
 export class BackupLineageError extends Error {
   constructor(readonly dumpId: string, readonly liveId: string) {
     super('the backup names another Deployment; restoring it is a deliberate adoption, asked for explicitly');
@@ -139,15 +148,10 @@ export async function createBackup(
   const lineage = await deploymentId(db);
   const stamped = Number(await metaValue(db, 'version'));
   const counts: Record<string, number> = {};
-  for (const table of BACKUP_TABLES) counts[table] = await tableCount(db, table);
-
-  const header: BackupHeader = {
-    format: BACKUP_FORMAT, deploymentId: lineage, schemaVersion: stamped,
-    createdAt: opts.now, producer: opts.producer, counts,
-  };
-  const lines: string[] = [JSON.stringify(header)];
-  let bytes = lines[0]!.length + 1;
+  const lines: string[] = [];
+  let bytes = 0;
   for (const table of BACKUP_TABLES) {
+    counts[table] = 0;
     let cursor = 0;
     for (;;) {
       const { results } = await db
@@ -158,17 +162,24 @@ export async function createBackup(
         cursor = row.__rid as number;
         const { __rid, ...columns } = row;
         const line = JSON.stringify({ t: table, r: columns });
-        bytes += line.length + 1;
-        if (bytes > MAX_BACKUP_BYTES) throw new BackupTooLargeError(bytes);
+        bytes = assertBackupSize(`${line}\n`, bytes);
         lines.push(line);
+        counts[table] = counts[table]! + 1;
       }
       if (results.length < 200) break;
     }
   }
 
+  const header: BackupHeader = {
+    format: BACKUP_FORMAT, deploymentId: lineage, schemaVersion: stamped,
+    createdAt: opts.now, producer: opts.producer, counts,
+  };
+  const headerLine = JSON.stringify(header);
+  assertBackupSize(`${headerLine}\n`, bytes);
+
   const id = `bk_${crypto.randomUUID()}`;
   const key = `${BACKUP_KEY_PREFIX}${lineage}__${opts.now}__${id}.jsonl`;
-  const text = lines.join('\n') + '\n';
+  const text = [headerLine, ...lines].join('\n') + '\n';
   const stored = await blobs.put(key, new Response(text).body, { httpMetadata: { contentType: 'application/jsonl' } });
   const row: BackupIndexRow = {
     id, key, created_at: opts.now, size_bytes: stored.size,

@@ -4,7 +4,7 @@
  */
 import { describe, expect, it } from 'bun:test';
 import {
-  BACKUP_TABLES, BackupLineageError, BackupSchemaError, createBackup, deploymentId,
+  BACKUP_TABLES, BackupLineageError, BackupSchemaError, BackupTooLargeError, MAX_BACKUP_BYTES, createBackup, deploymentId,
   EMPTY_ONLY_TABLES, EXCLUDED_TABLES, listBackups, previewRestore, pruneBackups,
   restoreBackup, retentionVictims, setBackupPinned, type BackupIndexRow,
 } from '@myco-server-worker/core/backup.js';
@@ -51,6 +51,37 @@ describe('artifact keys', () => {
 });
 
 describe('create, list, preview', () => {
+  it('refuses multibyte records past the byte limit without writing an artifact or index', async () => {
+    const { db, bucket, sqlite, now } = seeded();
+    sqlite.query(`UPDATE projects SET name = ? WHERE project_id = 'proj_bk'`)
+      .run('界'.repeat(Math.ceil(MAX_BACKUP_BYTES / 3)));
+    await expect(createBackup(db, bucket, { producer: 'test', now })).rejects.toThrow(BackupTooLargeError);
+    expect(bucket.objects.size).toBe(0);
+    expect(await listBackups(db, bucket)).toEqual([]);
+    sqlite.close();
+  });
+
+  it('counts the serialized rows when a source row disappears before its page is read', async () => {
+    const { db, bucket, sqlite, now } = seeded();
+    const liveDb = {
+      ...db,
+      prepare(sql: string) {
+        if (sql.startsWith('SELECT rowid AS __rid, * FROM sessions ')) {
+          sqlite.query(`DELETE FROM sessions WHERE session_id = 'sess_1'`).run();
+        }
+        return db.prepare(sql);
+      },
+    };
+    const backup = await createBackup(liveDb, bucket, { producer: 'test', now });
+    const text = new TextDecoder().decode(bucket.objects.get(backup.key)!.bytes);
+    const [header, ...rows] = text.trimEnd().split('\n').map((line) => JSON.parse(line));
+    const actual = Object.fromEntries(BACKUP_TABLES.map((table) => [table, rows.filter((row) => row.t === table).length]));
+    expect(header.counts).toEqual(actual);
+    expect(JSON.parse(backup.counts_json)).toEqual(actual);
+    expect(actual.sessions).toBe(0);
+    sqlite.close();
+  });
+
   it('writes the artifact and its index row, lists it verified, and previews from the header without executing', async () => {
     const { db, bucket, now } = seeded();
     const row = await createBackup(db, bucket, { producer: 'test', now });

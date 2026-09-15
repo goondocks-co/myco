@@ -1,5 +1,7 @@
 # Deployment recovery artifacts
 
+Operations > Create backup produces a manual JSONL export for additive restore, limited to 64 MiB of UTF-8 data. Its header counts describe the rows in the artifact. Rows are read in pages while the server continues accepting writes, so this export is not a transactionally consistent snapshot. It excludes object bytes, settings and sealed secrets. An export past the limit is refused before an artifact or index entry is written. Existing pinned artifacts remain intact. Use the operator procedure below for a larger dataset or complete replacement recovery.
+
 `myco server backup --target local|cloudflare --to <directory>` captures the selected Deployment without applying migrations. The local target uses SQLite `VACUUM INTO`, including committed WAL data. The Cloudflare target uses the operator's existing Wrangler login and an explicitly bound D1 database; it exports ordinary tables and `sqlite_sequence`, reconstructs the source's indexes, views, triggers and external-content FTS indexes, and refuses schema drift. Cloudflare temporarily pauses database queries during its export. R2 objects stream through the operator process using an in-memory credential obtained with `wrangler auth token --json`; credential disk logging is disabled, redirects are refused and a rejected credential is refreshed at most once per object.
 
 Both targets use one artifact writer. The directory contains:

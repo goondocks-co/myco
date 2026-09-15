@@ -137,12 +137,7 @@ type DispatchAnswer = { outcome: 'unchanged' } | { runId: string; projectId: str
 
 export function taskRefusalText(error: Error): string {
   if (error instanceof ApiError) {
-    const body = error.body;
-    if (body !== null && typeof body === 'object') {
-      if ('reason' in body && typeof body.reason === 'string') return body.reason;
-      if ('message' in body && typeof body.message === 'string') return body.message;
-    }
-    return `The server refused the task (${error.status}).`;
+    return error.detail ?? `The server refused the task (${error.status}).`;
   }
   return error.message;
 }
