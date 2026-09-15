@@ -21,7 +21,8 @@ import {
   resolveServiceDaemonStatePath,
   resolveServiceDir,
 } from '@myco/grove/paths';
-import { listenEphemeral, closeServer } from '../helpers/net.js';
+import { resolveGlobalDaemonPort } from '@myco/daemon/service-state';
+import { holdUnansweredPort, listenEphemeral, closeServer } from '../helpers/net.js';
 import { FakeServiceManager } from '../helpers/fake-service-manager.js';
 import { testPerUserLockNamespace } from '../helpers/per-user-lock-namespace.js';
 
@@ -107,22 +108,31 @@ describe('DaemonClient capture-critical recovery', () => {
 
   it('restarts the installed service once every probe confirms the daemon is unreachable, coalescing repeats', async () => {
     writePoisonedState();
-    // No lock, nothing on the canonical port: the daemon is genuinely gone.
+    // No lock, and the canonical port is one this test holds with a listener
+    // that answers nothing, named through this home's `daemon.port`: no other
+    // process can answer the canonical-port probe, so the daemon is genuinely gone.
+    const canonical = await holdUnansweredPort();
+    try {
+      fs.writeFileSync(path.join(mycoHome, 'config.yaml'), `daemon:\n  port: ${canonical.port}\n`);
+      expect(resolveGlobalDaemonPort(mycoHome)).toBe(canonical.port);
 
-    const mgr = new FakeServiceManager({ preInstalled: true });
-    const client = new DaemonClient(vaultDir, {
-      serviceManager: mgr,
-      lockNamespace: testPerUserLockNamespace,
-    });
+      const mgr = new FakeServiceManager({ preInstalled: true });
+      const client = new DaemonClient(vaultDir, {
+        serviceManager: mgr,
+        lockNamespace: testPerUserLockNamespace,
+      });
 
-    const first = await client.capturePost('/events', { type: 'user_prompt', session_id: 's' });
-    expect(first.ok).toBe(false);
-    expect(mgr.restartCalls.length).toBe(1);
-    expect(fs.existsSync(markerPath)).toBe(true);
+      const first = await client.capturePost('/events', { type: 'user_prompt', session_id: 's' });
+      expect(first.ok).toBe(false);
+      expect(mgr.restartCalls.length).toBe(1);
+      expect(fs.existsSync(markerPath)).toBe(true);
 
-    // A second failure inside the coalesce window must not restart again.
-    const second = await client.capturePost('/events', { type: 'user_prompt', session_id: 's' });
-    expect(second.ok).toBe(false);
-    expect(mgr.restartCalls.length).toBe(1);
+      // A second failure inside the coalesce window must not restart again.
+      const second = await client.capturePost('/events', { type: 'user_prompt', session_id: 's' });
+      expect(second.ok).toBe(false);
+      expect(mgr.restartCalls.length).toBe(1);
+    } finally {
+      await canonical.release();
+    }
   }, 20_000);
 });
