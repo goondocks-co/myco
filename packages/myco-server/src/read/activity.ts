@@ -1,5 +1,6 @@
 import type { RelationalStore } from '../core/adapters.js';
 import type { ReadScope } from './scope.js';
+import { notTombstonedSql } from '../core/tombstones.js';
 import { FIRST_PROMPT_SQL, sessionLabel } from './sessions.js';
 
 /** One line of a project's recent activity: a session that started, a run that ran, a spore that landed. */
@@ -30,7 +31,7 @@ export async function activityFeed(db: RelationalStore, scope: ReadScope, limit?
         SELECT 'session' AS type, s.session_id AS id, '' AS summary,
                COALESCE(s.started_at, s.first_received_at) AS at_ms, s.session_id AS session_id,
                s.title AS title, ${FIRST_PROMPT_SQL} AS first_prompt, s.agent AS agent
-          FROM sessions s WHERE s.project_id = ? ORDER BY at_ms DESC LIMIT ?)
+          FROM sessions s WHERE s.project_id = ? AND ${notTombstonedSql('s')} ORDER BY at_ms DESC LIMIT ?)
       UNION ALL SELECT * FROM (
         SELECT 'run' AS type, id, COALESCE(task, 'run') || ' — ' || status AS summary,
                COALESCE(resumed_at, started_at, completed_at, queued_at) AS at_ms, NULL AS session_id, NULL AS title, NULL AS first_prompt, NULL AS agent

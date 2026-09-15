@@ -1,24 +1,8 @@
 /**
- * Suppressing a session, and everything the Deployment derived from it.
- *
- * A tombstone is the one record that outlives the deletion. The `sessions` row
- * is kept and every projection of it is removed, so the Deployment can still
- * answer that a session existed and is now deleted — which is what a re-import
- * needs in order to refuse, and what an operator needs in order to tell a
- * deleted session from one that never arrived.
- *
- * Suppression has two halves and both are structural rather than per-caller.
- * Reads go through one predicate this module owns, applied at the read layer's
- * own seams. Writes are refused by a shared check derived from the kind
- * catalogue, so a live hook cannot repopulate a session a person just deleted —
- * without that half, the deletion appears to fail for no visible reason while
- * capture is still running.
- *
- * Blobs are content-addressed and shared between rows, so a freed key is
- * removed from the store only once nothing else references it. Deleting them
- * with the session would take a surviving prompt's body with a segment's. What
- * may reference one is the catalogue in `blob-references.ts`; this module says
- * how each catalogue table is reached from a session.
+ * Session deletion retains its identity and tombstone, clears its title and
+ * summary, and removes captured projections. Saved knowledge and other sessions
+ * remain. Reads exclude tombstones; ingestion refuses subsequent capture and
+ * import for the same session ID. Unreferenced blobs are freed in bounded pages.
  */
 import type { BlobStore, RelationalStore, ServerEnv } from './adapters.js';
 import { BLOB_REFERENCES, kindFilter, unreferencedAmong, type BlobReference } from './blob-references.js';
