@@ -10,6 +10,7 @@
  * spot test and let the next kind through.
  */
 import { describe, expect, it } from 'bun:test';
+import type { Database } from 'bun:sqlite';
 import { KINDS } from '@myco-server-worker/ingest/kinds.js';
 import { ingestEvent } from '@myco-server-worker/ingest/events.js';
 import { isTombstoned, TOMBSTONE_BLOBS_PER_CALL, tombstoneSession } from '@myco-server-worker/core/tombstones.js';
@@ -114,6 +115,42 @@ describe('the blobs a deletion leaves', () => {
     let ticks = 0;
     while ((await freeOrphanedBlobs(env)) > 0 && ticks < 50) ticks += 1;
     expect(count(sqlite, 'blobs')).toBe(0);
+  });
+});
+
+describe('the blobs a deleted session\'s tool calls and raw events name', () => {
+  const readText = async (blobs: { get(key: string): Promise<{ body: ReadableStream } | null> }, key: string): Promise<string | null> => {
+    const object = await blobs.get(`${SCOPE.projectId}/${key}`);
+    return object === null ? null : new Response(object.body).text();
+  };
+  const stored = async (sqlite: Database, blobs: { put(key: string, body: ReadableStream): Promise<unknown> }, key: string, text: string) => {
+    await blobs.put(`${SCOPE.projectId}/${key}`, new Blob([text]).stream());
+    sqlite.run(`INSERT INTO blobs (project_id, key, size, media_type, token_id, received_at) VALUES (?, ?, ?, 'text/plain', 't', ?)`, [SCOPE.projectId, key, text.length, NOW]);
+  };
+  const toolCall = (sqlite: Database, session: string, id: string, input: string | null, output: string | null) =>
+    sqlite.run(`INSERT INTO tool_calls (project_id, tool_call_id, session_id, event_id, tool_name, input_blob_key, output_blob_key, success, created_at, token_id, received_at)
+                VALUES (?, ?, ?, ?, 'Read', ?, ?, 1, ?, 't', ?)`, [SCOPE.projectId, id, session, `e-${id}`, input, output, NOW, NOW]);
+
+  it('frees them with the session, and keeps a key another session\'s tool call shares', async () => {
+    const { sqlite, env, send } = await rig();
+    await populate(send);
+    const [input, output, summary, shared] = ['1'.repeat(64), '2'.repeat(64), '3'.repeat(64), '4'.repeat(64)];
+    for (const [key, text] of [[input, 'in'], [output, 'out'], [summary, 'summary'], [shared, 'shared']] as const) await stored(sqlite, env.blobs, key, text);
+    toolCall(sqlite, SESSION, 'tc-deleted', input, output);
+    toolCall(sqlite, SESSION, 'tc-deleted-shared', shared, null);
+    toolCall(sqlite, 'other', 'tc-kept', null, shared);
+    sqlite.run(`INSERT INTO events (project_id, event_id, session_id, token_id, kind, channel, payload, envelope_hash, created_at, received_at, blob_key)
+                VALUES (?, 'e-cmp', ?, 't', 'compaction.pre', 'cli', '{}', 'h', ?, ?, ?)`, [SCOPE.projectId, SESSION, NOW, NOW, summary]);
+
+    const outcome = await tombstoneSession(env, SCOPE, SESSION, 'mem_machine_1', NOW);
+    expect([outcome.blobsFreed, outcome.blobsLeft]).toEqual([3, 0]);
+    expect(await readText(env.blobs, input)).toBeNull();
+    expect(await readText(env.blobs, output)).toBeNull();
+    expect(await readText(env.blobs, summary)).toBeNull();
+    expect(await readText(env.blobs, shared)).toBe('shared');
+    expect(sqlite.query(`SELECT key FROM blobs`).all()).toEqual([{ key: shared }]);
+    // The sweep that follows a deletion finds nothing further to take from the survivor.
+    expect(await freeOrphanedBlobs(env)).toBe(0);
   });
 });
 

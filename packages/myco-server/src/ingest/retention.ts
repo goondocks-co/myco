@@ -9,13 +9,15 @@
  * Two rules keep the sweep safe. A segment ahead of the parse cursor is kept
  * whatever its age, so bytes no pass has read are never the only copy of rows
  * that were never derived. And a blob is content-addressed and shared, so it
- * leaves the store only once nothing references it.
+ * leaves the store only once no reference in the catalogue
+ * (`core/blob-references.ts`) names it.
  *
  * One orphan this does not reach: a blob uploaded whose event is then refused
  * belongs to no row and follows no deletion, so nothing signals it. That gap
  * predates this module and needs a sweep walking the store rather than the rows.
  */
 import type { ServerEnv } from '../core/adapters.js';
+import { blobHeld, unreferencedAmong, type BlobRef } from '../core/blob-references.js';
 import { leafValues } from '../core/settings.js';
 import { emit } from '../telemetry.js';
 
@@ -79,9 +81,9 @@ export async function transcriptRetention(env: ServerEnv, now: number): Promise<
   // references at all.
   //
   // Gated, though. The steady state is that there are no orphans, and asking
-  // costs a scan of `blobs` against five reference checks — cheap per row and
-  // paid on every tick forever. A deletion is the only thing that makes an
-  // orphan, so the sweep runs only where one has happened recently.
+  // costs a scan of `blobs` against every reference in the catalogue — cheap
+  // per row and paid on every tick forever. A deletion is the only thing that
+  // makes an orphan, so the sweep runs only where one has happened recently.
   const orphans = (await orphansPossible(env.db, now)) ? await freeOrphanedBlobs(env) : 0;
 
   const window = transcriptRetentionDays((await leafValues(env.db, ['retention.transcripts'])).get('retention.transcripts'));
@@ -108,7 +110,7 @@ export async function transcriptRetention(env: ServerEnv, now: number): Promise<
   // Projects is two rows and two objects, and a page keyed by content alone
   // would delete one Project's segment while accounting for another's blob.
   const at = (projectId: string, key: string) => `${projectId}\u0000${key}`;
-  const admitted = new Map<string, { projectId: string; key: string }>();
+  const admitted = new Map<string, BlobRef>();
   for (const c of candidates) {
     const id = at(c.project_id, c.blob_key);
     if (!admitted.has(id) && admitted.size >= TRANSCRIPT_RETENTION_BLOBS_PER_PASS) continue;
@@ -131,8 +133,9 @@ export async function transcriptRetention(env: ServerEnv, now: number): Promise<
  * the blob, so its own record is the signal. Reading it walks a table holding
  * one row per deleted session — small on every Deployment, and unindexed on
  * `created_at`, so this is a scan of that table rather than a seek. The sweep it
- * guards is a scan of every blob in the Deployment against five reference
- * checks. Paying the first on every tick to skip the second is the whole point.
+ * guards is a scan of every blob in the Deployment against every reference in
+ * the catalogue. Paying the first on every tick to skip the second is the whole
+ * point.
  *
  * A sweep runs for every tombstone newer than the window it last swept, and
  * `TOMBSTONE_SWEEP_GRACE_MS` keeps it running for a while afterwards so a
@@ -157,10 +160,8 @@ async function orphansPossible(db: ServerEnv['db'], now: number): Promise<boolea
  * and repeated rather than exhaustive: the next tick selects what this one left.
  */
 export async function freeOrphanedBlobs(env: Pick<ServerEnv, 'db' | 'blobs'>): Promise<number> {
-  const holders = ['transcript_segments', 'prompt_batches', 'responses', 'plans', 'attachments'];
-  const unreferenced = holders.map((table) => `NOT EXISTS (SELECT 1 FROM ${table} WHERE project_id = b.project_id AND blob_key = b.key)`).join(' AND ');
   const { results } = await env.db
-    .prepare(`SELECT project_id, key FROM blobs b WHERE ${unreferenced} LIMIT ?`)
+    .prepare(`SELECT project_id, key FROM blobs b WHERE NOT (${blobHeld('b.project_id', 'b.key')}) LIMIT ?`)
     .bind(TRANSCRIPT_RETENTION_BLOBS_PER_PASS)
     .all<{ project_id: string; key: string }>();
   if (results.length === 0) return 0;
@@ -175,24 +176,11 @@ export async function freeOrphanedBlobs(env: Pick<ServerEnv, 'db' | 'blobs'>): P
  * Remove the blobs the swept segments named, once nothing else holds them.
  *
  * A blob is content-addressed and shared, so an unconditional delete would take
- * a surviving prompt's body with a segment's. The reference check covers every
- * admitted key in one statement rather than one apiece, which is what lets a
- * whole page be accounted for inside the call budget.
+ * a surviving prompt's body with a segment's. The reference check covers the
+ * whole admitted page in one statement, inside the call budget.
  */
-async function freeBlobs(env: Pick<ServerEnv, 'db' | 'blobs'>, admitted: ReadonlyMap<string, { projectId: string; key: string }>): Promise<number> {
-  const page = [...admitted.values()];
-  if (page.length === 0) return 0;
-  const holders = ['transcript_segments', 'prompt_batches', 'responses', 'plans', 'attachments'];
-  // Every reference check carries the Project, so a key held in one Project
-  // cannot keep the same content alive in another.
-  const pairs = page.map(() => '(project_id = ? AND blob_key = ?)').join(' OR ');
-  const { results: held } = await env.db
-    .prepare(holders.map((table) => `SELECT DISTINCT project_id AS p, blob_key AS k FROM ${table} WHERE ${pairs}`).join(' UNION '))
-    .bind(...holders.flatMap(() => page.flatMap((b) => [b.projectId, b.key])))
-    .all<{ p: string; k: string }>();
-
-  const stillHeld = new Set(held.map((r) => `${r.p}\u0000${r.k}`));
-  const orphaned = page.filter((b) => !stillHeld.has(`${b.projectId}\u0000${b.key}`));
+async function freeBlobs(env: Pick<ServerEnv, 'db' | 'blobs'>, admitted: ReadonlyMap<string, BlobRef>): Promise<number> {
+  const orphaned = await unreferencedAmong(env.db, [...admitted.values()]);
   if (orphaned.length === 0) return 0;
   for (const b of orphaned) await env.blobs.delete(`${b.projectId}/${b.key}`);
   await env.db.batch(orphaned.map((b) => env.db

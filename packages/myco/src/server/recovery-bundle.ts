@@ -6,7 +6,8 @@ import { Database } from 'bun:sqlite';
 import { diskBlobStore, sweepPartialObjects } from '@myco-server-worker/platform/bun/blobs.js';
 import { SERVER_SCHEMA_VERSION } from '@myco-server-worker/constants.js';
 import { BACKUP_KEY_PREFIX } from '@myco-server-worker/core/backup.js';
-import { BLOB_KEY_GRAMMAR, PROJECTED_BLOB_REFERENCES, KINDS, blobFields } from '@myco-server-worker/ingest/kinds.js';
+import { BLOB_REFERENCES, kindFilter, referenceLabel } from '@myco-server-worker/core/blob-references.js';
+import { BLOB_KEY_GRAMMAR } from '@myco-server-worker/ingest/kinds.js';
 import { atomicWriteFileSync, syncDirectoryForDurability as syncDirectory } from '@myco/utils/atomic-write.js';
 import { LifecycleLock } from '@myco/utils/lifecycle-lock.js';
 
@@ -108,16 +109,10 @@ function openSnapshot(file: string): Database {
     const integrity = db.query<{ integrity_check: string }, []>('PRAGMA integrity_check').all();
     if (integrity.length !== 1 || integrity[0]?.integrity_check !== 'ok') throw new Error('recovery database failed its integrity check');
     if (db.query('PRAGMA foreign_key_check').get() !== null) throw new Error('recovery database has broken foreign keys');
-    for (const { table, column } of PROJECTED_BLOB_REFERENCES) {
-      if (db.query(`SELECT 1 FROM ${table} r WHERE r.${column} IS NOT NULL
-        AND NOT EXISTS (SELECT 1 FROM blobs b WHERE b.project_id = r.project_id AND b.key = r.${column}) LIMIT 1`).get() !== null) {
-        throw new Error(`recovery database is missing a blob referenced by ${table}.${column}`);
-      }
-    }
-    for (const kind of KINDS.filter((kind) => kind.projection === 'raw' && blobFields(kind).length > 0)) {
-      if (db.query(`SELECT 1 FROM events e WHERE e.kind = ? AND e.blob_key IS NOT NULL
-        AND NOT EXISTS (SELECT 1 FROM blobs b WHERE b.project_id = e.project_id AND b.key = e.blob_key) LIMIT 1`).get(kind.name) !== null) {
-        throw new Error(`recovery database is missing a blob referenced by ${kind.name}`);
+    for (const ref of BLOB_REFERENCES) {
+      if (db.query(`SELECT 1 FROM ${ref.table} r WHERE r.${ref.column} IS NOT NULL${kindFilter(ref)}
+        AND NOT EXISTS (SELECT 1 FROM blobs b WHERE b.project_id = r.project_id AND b.key = r.${ref.column}) LIMIT 1`).get() !== null) {
+        throw new Error(`recovery database is missing a blob referenced by ${referenceLabel(ref)}`);
       }
     }
     return db;

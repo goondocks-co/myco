@@ -21,6 +21,7 @@ import {
   TRANSCRIPT_PARSE_BYTES_PER_READ, TRANSCRIPT_PARSE_SEGMENTS_PER_READ, TRANSCRIPT_PARSE_RECORD_BYTES,
 } from '@myco-server-worker/ingest/parse.js';
 import { freeOrphanedBlobs, TOMBSTONE_SWEEP_GRACE_MS, transcriptRetention, transcriptRetentionDays } from '@myco-server-worker/ingest/retention.js';
+import { blobHeld } from '@myco-server-worker/core/blob-references.js';
 import { listTranscripts } from '@myco-server-worker/read/transcript.js';
 import { listSessions, listSessionSummaries } from '@myco-server-worker/read/sessions.js';
 import { runTick } from '@myco-server-worker/core/tick.js';
@@ -695,12 +696,7 @@ describe('transcript retention', () => {
     await transcriptRetention(serverEnv, NOW);
     // A segment gone is a blob accounted for: what remains in `blobs` is either
     // still referenced or still has its segment.
-    const stranded = sqlite.query(`SELECT COUNT(*) c FROM blobs b
-      WHERE NOT EXISTS (SELECT 1 FROM transcript_segments WHERE project_id = b.project_id AND blob_key = b.key)
-        AND NOT EXISTS (SELECT 1 FROM prompt_batches WHERE project_id = b.project_id AND blob_key = b.key)
-        AND NOT EXISTS (SELECT 1 FROM responses WHERE project_id = b.project_id AND blob_key = b.key)
-        AND NOT EXISTS (SELECT 1 FROM plans WHERE project_id = b.project_id AND blob_key = b.key)
-        AND NOT EXISTS (SELECT 1 FROM attachments WHERE project_id = b.project_id AND blob_key = b.key)`).get() as { c: number };
+    const stranded = sqlite.query(`SELECT COUNT(*) c FROM blobs b WHERE NOT (${blobHeld('b.project_id', 'b.key')})`).get() as { c: number };
     expect(stranded.c).toBe(0);
     expect(count(sqlite, 'transcript_segments')).toBeLessThan(before);
   });
@@ -761,6 +757,67 @@ describe('transcript retention', () => {
     const before = count(sqlite, 'blobs');
     expect(await freeOrphanedBlobs(serverEnv)).toBe(0);
     expect(count(sqlite, 'blobs')).toBe(before);
+  });
+
+  /** A blob's bytes as the reader would get them, or null when the store no longer holds the object. */
+  const readText = async (blobs: { get(key: string): Promise<{ body: ReadableStream } | null> }, projectId: string, key: string): Promise<string | null> => {
+    const object = await blobs.get(`${projectId}/${key}`);
+    return object === null ? null : new Response(object.body).text();
+  };
+  /** A blob row and its object under `projectId`, holding `text`. */
+  const stored = async (sqlite: Database, blobs: { put(key: string, body: ReadableStream): Promise<unknown> }, projectId: string, key: string, text: string) => {
+    await blobs.put(`${projectId}/${key}`, new Blob([text]).stream());
+    sqlite.run(`INSERT INTO blobs (project_id, key, size, media_type, token_id, received_at) VALUES (?, ?, ?, 'text/plain', 't', ?)`, [projectId, key, text.length, NOW]);
+  };
+  const toolCall = (sqlite: Database, projectId: string, id: string, input: string | null, output: string | null) =>
+    sqlite.run(`INSERT INTO tool_calls (project_id, tool_call_id, session_id, event_id, tool_name, input_blob_key, output_blob_key, success, created_at, token_id, received_at)
+                VALUES (?, ?, 's-tools', ?, 'Read', ?, ?, 1, ?, 't', ?)`, [projectId, id, `e-${id}`, input, output, NOW, NOW]);
+
+  it('keeps a tool call\'s spilled input and output, and a compaction summary, through the orphan sweep', async () => {
+    const { sqlite, serverEnv } = await rig(body(1));
+    const [input, output, summary] = ['1'.repeat(64), '2'.repeat(64), '3'.repeat(64)];
+    await stored(sqlite, serverEnv.blobs, PROJECT, input, 'tool input');
+    await stored(sqlite, serverEnv.blobs, PROJECT, output, 'tool output');
+    await stored(sqlite, serverEnv.blobs, PROJECT, summary, 'compaction summary');
+    toolCall(sqlite, PROJECT, 'tc-1', input, output);
+    sqlite.run(`INSERT INTO events (project_id, event_id, session_id, token_id, kind, channel, payload, envelope_hash, created_at, received_at, blob_key)
+                VALUES (?, 'e-cmp', 's-tools', 't', 'compaction.post', 'cli', '{}', 'h', ?, ?, ?)`, [PROJECT, NOW, NOW, summary]);
+    deleted(sqlite);
+
+    expect(await transcriptRetention(serverEnv, NOW)).toBe(0);
+    expect(await freeOrphanedBlobs(serverEnv)).toBe(0);
+    expect(await readText(serverEnv.blobs, PROJECT, input)).toBe('tool input');
+    expect(await readText(serverEnv.blobs, PROJECT, output)).toBe('tool output');
+    expect(await readText(serverEnv.blobs, PROJECT, summary)).toBe('compaction summary');
+    expect(sqlite.query(`SELECT input_blob_key, output_blob_key FROM tool_calls`).get()).toEqual({ input_blob_key: input, output_blob_key: output });
+  });
+
+  it('frees a key in the Project where nothing holds it, and keeps the same key where a tool call does', async () => {
+    const { sqlite, serverEnv } = await rig(body(1));
+    const key = '4'.repeat(64);
+    await stored(sqlite, serverEnv.blobs, PROJECT, key, 'shared content');
+    await stored(sqlite, serverEnv.blobs, 'proj_2', key, 'shared content');
+    toolCall(sqlite, PROJECT, 'tc-2', key, null);
+    deleted(sqlite);
+
+    expect(await transcriptRetention(serverEnv, NOW)).toBe(1);
+    expect(await readText(serverEnv.blobs, PROJECT, key)).toBe('shared content');
+    expect(await readText(serverEnv.blobs, 'proj_2', key)).toBeNull();
+    expect(sqlite.query(`SELECT project_id FROM blobs WHERE key = ?`).all(key)).toEqual([{ project_id: PROJECT }]);
+  });
+
+  it('prunes a segment whose blob a tool call shares, and keeps the bytes', async () => {
+    const { sqlite, serverEnv, env } = await rig(body(1));
+    await drain(env, sqlite);
+    const { blob_key: key } = sqlite.query(`SELECT blob_key FROM transcript_segments`).get() as { blob_key: string };
+    toolCall(sqlite, PROJECT, 'tc-3', null, key);
+    sqlite.run(`INSERT INTO deployment_settings (leaf, value, updated_at, updated_by) VALUES ('retention.transcripts', '1', ?, 'm')`, [NOW]);
+    sqlite.run(`UPDATE transcript_segments SET created_at = ?`, [NOW - 5 * 86_400_000]);
+
+    expect(await transcriptRetention(serverEnv, NOW)).toBe(1);
+    expect(count(sqlite, 'transcript_segments')).toBe(0);
+    expect(await readText(serverEnv.blobs, PROJECT, key)).toBe(body(1));
+    expect(count(sqlite, 'blobs')).toBe(1);
   });
 
   it('is idempotent: a second run finds nothing left to prune', async () => {

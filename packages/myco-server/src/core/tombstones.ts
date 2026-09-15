@@ -16,9 +16,12 @@
  *
  * Blobs are content-addressed and shared between rows, so a freed key is
  * removed from the store only once nothing else references it. Deleting them
- * with the session would take a surviving prompt's body with a segment's.
+ * with the session would take a surviving prompt's body with a segment's. What
+ * may reference one is the catalogue in `blob-references.ts`; this module says
+ * how each catalogue table is reached from a session.
  */
 import type { BlobStore, RelationalStore, ServerEnv } from './adapters.js';
+import { BLOB_REFERENCES, kindFilter, unreferencedAmong, type BlobReference } from './blob-references.js';
 import type { ReadScope } from '../read/scope.js';
 import { emit } from '../telemetry.js';
 
@@ -37,14 +40,19 @@ export const DERIVED_TABLES = [
  */
 const SEGMENTS_OF_SESSION = `SELECT transcript_id FROM transcripts WHERE project_id = ? AND session_id = ?`;
 
-/** Where a blob key may be referenced, and how each table names the session holding it. */
-const BLOB_REFERENCES: readonly { table: string; where: string }[] = [
-  { table: 'prompt_batches', where: 'session_id = ?' },
-  { table: 'responses', where: 'session_id = ?' },
-  { table: 'plans', where: 'session_id = ?' },
-  { table: 'attachments', where: 'session_id = ?' },
-  { table: 'transcript_segments', where: `transcript_id IN (${SEGMENTS_OF_SESSION})` },
-];
+/** The SQL naming a session's rows in a reference table, after `project_id = ?`, with the parameters it binds. */
+interface SessionRoute { where: string; params(projectId: string, sessionId: string): string[] }
+
+/** How a reference table names the session holding a row: by its own `session_id`, or through the transcripts of one. A catalogue table reached neither way has no route from a deletion and is refused at load. */
+function sessionRoute(table: string): SessionRoute {
+  if ((DERIVED_TABLES as readonly string[]).includes(table)) return { where: 'session_id = ?', params: (projectId, sessionId) => [projectId, sessionId] };
+  if (table === 'transcript_segments') return { where: `transcript_id IN (${SEGMENTS_OF_SESSION})`, params: (projectId, sessionId) => [projectId, projectId, sessionId] };
+  throw new Error(`no route from a session to blob references in ${table}`);
+}
+
+/** Every catalogue reference with the route from a session to its rows, resolved once at load. */
+const SESSION_REFERENCES: readonly { ref: BlobReference; route: SessionRoute }[] =
+  BLOB_REFERENCES.map((ref) => ({ ref, route: sessionRoute(ref.table) }));
 
 /** SQL naming a session that carries no tombstone. `alias` is the `sessions` alias in the query it joins. */
 export const notTombstonedSql = (alias: string): string =>
@@ -80,29 +88,18 @@ async function sessionPresent(db: RelationalStore, projectId: string, sessionId:
   return row !== null;
 }
 
-/** Every blob key the session's rows name, before any of them are removed. */
+/** Every blob key the session's rows name, before any of them are removed: one select per catalogue reference, sent as one batch. The hosted store caps a compound select at five terms. */
 async function blobKeysOf(db: RelationalStore, projectId: string, sessionId: string): Promise<string[]> {
-  const union = BLOB_REFERENCES
-    .map(({ table, where }) => `SELECT blob_key AS k FROM ${table} WHERE project_id = ? AND ${where} AND blob_key IS NOT NULL`)
-    .join(' UNION ');
-  const params = BLOB_REFERENCES.flatMap(({ table }) =>
-    table === 'transcript_segments' ? [projectId, projectId, sessionId] : [projectId, sessionId]);
-  const { results } = await db.prepare(union).bind(...params).all<{ k: string }>();
-  return [...new Set(results.map((r) => r.k))];
+  const rows = await db.batch(SESSION_REFERENCES.map(({ ref, route }) => db
+    .prepare(`SELECT DISTINCT ${ref.column} AS k FROM ${ref.table} WHERE project_id = ? AND ${route.where} AND ${ref.column} IS NOT NULL${kindFilter(ref)}`)
+    .bind(...route.params(projectId, sessionId))));
+  return [...new Set(rows.flatMap((r) => (r.results as { k: string }[]).map((row) => row.k)))];
 }
 
 /** The keys among `keys` that no row anywhere in the Project still references. */
 async function unreferenced(db: RelationalStore, projectId: string, keys: readonly string[]): Promise<string[]> {
-  if (keys.length === 0) return [];
-  const held = BLOB_REFERENCES
-    .map(({ table }) => `EXISTS (SELECT 1 FROM ${table} WHERE project_id = ? AND blob_key = b.k)`)
-    .join(' OR ');
-  const values = keys.map(() => `SELECT ? AS k`).join(' UNION ALL ');
-  const { results } = await db
-    .prepare(`SELECT b.k FROM (${values}) b WHERE NOT (${held})`)
-    .bind(...keys, ...BLOB_REFERENCES.map(() => projectId))
-    .all<{ k: string }>();
-  return results.map((r) => r.k);
+  const free = await unreferencedAmong(db, keys.map((key) => ({ projectId, key })));
+  return free.map((b) => b.key);
 }
 
 /**
