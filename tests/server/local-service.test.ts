@@ -39,6 +39,9 @@ describe('the per-user service unit', () => {
       expect(unit).toContain(BINARY);
       expect(unit).toContain('server');
       expect(unit).toContain('run');
+      expect(unit).toMatch(platform === 'darwin'
+        ? /<string>--target<\/string>\s*<string>local<\/string>/
+        : /server run --target local/);
     });
 
     it(`sends both streams somewhere readable on ${platform}`, () => {

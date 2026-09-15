@@ -29,6 +29,7 @@ import { homedir } from 'node:os';
 /** What the service is called wherever the platform records one. */
 export const SERVICE_LABEL = 'co.goondocks.myco-server';
 export const SERVICE_UNIT_NAME = 'myco-server';
+const SERVER_RUN_ARGS = ['server', 'run', '--target', 'local'] as const;
 
 /** The directories a unit is written into, and where it writes its output. */
 export interface ServicePaths {
@@ -133,8 +134,7 @@ export function renderLaunchdPlist(spec: ServiceSpec, paths: ServicePaths): stri
   <key>ProgramArguments</key>
   <array>
     <string>${xmlEscape(spec.binaryPath)}</string>
-    <string>server</string>
-    <string>run</string>
+${SERVER_RUN_ARGS.map((arg) => `    <string>${arg}</string>`).join('\n')}
   </array>
   <key>RunAtLoad</key><true/>
   <key>KeepAlive</key>
@@ -165,7 +165,7 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-ExecStart=${spec.binaryPath} server run
+ExecStart=${spec.binaryPath} ${SERVER_RUN_ARGS.join(' ')}
 Environment=PATH=${spec.pathEnv}
 Environment=HOME=${spec.home}
 Restart=on-failure
@@ -189,7 +189,7 @@ WantedBy=default.target
  */
 export function renderWindowsTask(spec: ServiceSpec, paths: ServicePaths): string {
   assertUnquotablePath(spec.binaryPath);
-  const action = `set "PATH=${spec.pathEnv}" && ${spec.binaryPath} server run >> ${paths.outLog} 2>> ${paths.errLog}`;
+  const action = `set "PATH=${spec.pathEnv}" && ${spec.binaryPath} ${SERVER_RUN_ARGS.join(' ')} >> ${paths.outLog} 2>> ${paths.errLog}`;
   return `<?xml version="1.0" encoding="UTF-16"?>
 <Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
   <RegistrationInfo>
