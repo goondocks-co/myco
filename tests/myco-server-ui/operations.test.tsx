@@ -29,6 +29,22 @@ function mount(path: string) {
 }
 
 describe('housekeeping on the Operations page', () => {
+  it('shows a refused backup reason and the operator recovery path', async () => {
+    const reason = 'The assembled backup is past the supported byte bound.';
+    server({
+      '/auth/me': () => Response.json(ME),
+      '/api/projects': () => Response.json(PROJECTS),
+      '/api/backups': (init) => init?.method === 'POST'
+        ? Response.json({ error: 'bad_request', reason }, { status: 400 })
+        : Response.json({ backups: [] }),
+    });
+    mount('/operations');
+    fireEvent.click(await screen.findByRole('button', { name: 'Create backup' }));
+    expect(await screen.findByText(reason)).toBeTruthy();
+    expect(screen.getByRole('link', { name: 'operator backup and recovery procedure' }).getAttribute('href'))
+      .toBe('https://github.com/goondocks-co/myco/blob/main/docs/architecture/deployment-recovery.md');
+  });
+
   it('runs the tick on the button and says what it did in the reader\'s words', async () => {
     const { requested } = server({
       '/auth/me': () => Response.json(ME),

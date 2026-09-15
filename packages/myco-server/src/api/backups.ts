@@ -9,7 +9,7 @@ import type { ServerEnv } from '../core/adapters.js';
 import type { OwnerContext } from '../context.js';
 import {
   BackupApplyError, backupArtifact, BackupLineageError, BackupSchemaError, BackupTooLargeError,
-  createBackup, listBackups, MAX_BACKUP_BYTES, previewRestore, pruneBackups,
+  assertBackupSize, createBackup, listBackups, previewRestore, pruneBackups,
   restoreArtifact, restoreBackup, setBackupPinned,
 } from '../core/backup.js';
 import { leafValues } from '../core/settings.js';
@@ -95,13 +95,14 @@ export async function handleRestoreUpload(env: ServerEnv, ctx: OwnerContext): Pr
   if (body === null || typeof body.artifact !== 'string' || body.artifact.length === 0) {
     return badRequest('body must carry the artifact text');
   }
-  if (body.artifact.length > MAX_BACKUP_BYTES) return badRequest('the artifact is past the byte bound this path serves');
   try {
+    assertBackupSize(body.artifact);
     const outcome = await restoreArtifact(env.db, { text: body.artifact, allowForeignLineage: body.allowForeignLineage === true });
     return ok({ applied: true, ...outcome });
   } catch (err) {
     if (err instanceof BackupLineageError) return Response.json({ error: 'foreign_lineage', message: err.message }, { status: 409 });
     if (err instanceof BackupSchemaError) return Response.json({ error: 'newer_schema', message: err.message }, { status: 409 });
+    if (err instanceof BackupTooLargeError) return badRequest('the artifact is past the byte bound this path serves');
     if (err instanceof BackupApplyError) return badRequest(err.message);
     if (err instanceof SyntaxError) return badRequest('the artifact is not a backup this server can read');
     throw err;

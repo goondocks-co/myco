@@ -1,7 +1,14 @@
 /** A refusal or failure answered by the server, carrying the status and the parsed body when there was one. */
 export class ApiError extends Error {
+  readonly detail: string | undefined;
+
   constructor(public readonly status: number, public readonly body: unknown) {
-    super(`server answered ${status}`);
+    const detail = typeof body === 'object' && body !== null
+      ? ['reason', 'message'].map((key) => Reflect.get(body, key))
+        .find((value): value is string => typeof value === 'string' && value.trim().length > 0)
+      : undefined;
+    super(detail ?? `server answered ${status}`);
+    this.detail = detail;
     this.name = 'ApiError';
   }
 }
