@@ -566,7 +566,7 @@ Disposition here is about the **data class**, and separately about **migration**
 
 | Table | Disposition | Surface | Blk | Reason | Owner |
 |---|---|---|---|---|---|
-| `backups` | KEEP | Core, W, C | Blk | One row per backup artifact — object key, size, row counts, schema version, producer and pin — written by the backup job and read by restore; the artifact itself lands in R2 on W and on the volume on C | #1079 |
+| `backups` | KEEP | Core, W, C | Blk | One row per backup artifact — object key, size, row counts, schema version, producer, pin and the SHA-256 of the stored bytes (null for a row written before schema 41) — written by the backup job and read by restore; the artifact itself lands in R2 on W and on the volume on C | #1079 |
 | `backup_restore_progress` | KEEP | Core, W, C | Blk | Destination-local ownership and atomic row cursor for one artifact restoring insertion-ordered history; excluded from portable backups | #1204 |
 | `blob_reservations` | KEEP | Core | Blk | Transient upload state: the key, size and expiry an ingest holds against a credential's byte quota until the bytes land or the reservation lapses | #898 |
 | `blobs` | KEEP | Core, W, C | Blk | Every stored blob's key, size, media type and writing credential; the bytes sit in R2 on W and on the volume on C | #898 |

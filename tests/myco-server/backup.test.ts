@@ -3,6 +3,7 @@
  * round trip, the refusal gates, and the retention rule.
  */
 import { describe, expect, it } from 'bun:test';
+import { createHash } from 'node:crypto';
 import {
   BACKUP_TABLES, BackupLineageError, BackupSchemaError, BackupTooLargeError, MAX_BACKUP_BYTES, createBackup, deploymentId,
   EMPTY_ONLY_TABLES, EXCLUDED_TABLES, listBackups, previewRestore, pruneBackups,
@@ -51,6 +52,24 @@ describe('artifact keys', () => {
 });
 
 describe('create, list, preview', () => {
+  it('records the SHA-256 of the exact bytes stored, and catalogues nothing when the store receives other bytes', async () => {
+    const { db, bucket, sqlite, now } = seeded();
+    const backup = await createBackup(db, bucket, { producer: 'test', now });
+    const stored = bucket.objects.get(backup.key)!.bytes;
+    expect(backup.sha256).toBe(createHash('sha256').update(stored).digest('hex'));
+    expect(sqlite.query('SELECT sha256, size_bytes FROM backups WHERE id = ?').get(backup.id))
+      .toEqual({ sha256: backup.sha256, size_bytes: stored.byteLength });
+    expect((await listBackups(db, bucket)).map((row) => row.sha256)).toEqual([backup.sha256]);
+
+    const sameLengthChange = new TransformStream<Uint8Array, Uint8Array>({
+      transform(chunk, controller) { const changed = chunk.slice(); changed[0] ^= 1; controller.enqueue(changed); },
+    });
+    const altering = { ...bucket, put: (key: string, value: ReadableStream | null, options?: { sha256?: string }) =>
+      bucket.put(key, value === null ? null : value.pipeThrough(sameLengthChange), options) };
+    await expect(createBackup(db, altering, { producer: 'test', now })).rejects.toThrow('SHA-256 checksum');
+    expect(sqlite.query('SELECT id FROM backups').all()).toEqual([{ id: backup.id }]);
+  });
+
   it('refuses multibyte records past the byte limit without writing an artifact or index', async () => {
     const { db, bucket, sqlite, now } = seeded();
     sqlite.query(`UPDATE projects SET name = ? WHERE project_id = 'proj_bk'`)
@@ -160,7 +179,7 @@ describe('retention', () => {
   const NOW = 1000 * 7 * DAY + 5 * DAY + DAY / 2;
   const row = (id: string, ageDays: number, pinned = 0): BackupIndexRow => ({
     id, key: `backups/${id}.jsonl`, created_at: NOW - ageDays * DAY, size_bytes: 1,
-    counts_json: '{}', schema_version: 13, producer: 'test', pinned,
+    counts_json: '{}', schema_version: 13, producer: 'test', pinned, sha256: null,
   });
 
   it('keeps the newest keepDaily, one per week for keepWeekly weeks, and pinned rows exempt without consuming a slot', () => {

@@ -24,7 +24,7 @@ it('backs up committed WAL data and exact blob bytes without migrating or replac
       VALUES ('proj_1','s_backup','m_fixture','mt_fixture',1,1,'Initial title')`);
     const backupKey = 'backups/lineage__1__bk_pinned.jsonl';
     const backupBody = '{"format":"myco-backup/1"}\n';
-    fixture.sqlite.run(`INSERT INTO backups VALUES ('pinned',?,1,?,'{}',13,'fixture',1)`, [backupKey, Buffer.byteLength(backupBody)]);
+    fixture.sqlite.run(`INSERT INTO backups (id, key, created_at, size_bytes, counts_json, schema_version, producer, pinned) VALUES ('pinned',?,1,?,'{}',13,'fixture',1)`, [backupKey, Buffer.byteLength(backupBody)]);
     fixture.sqlite.query('VACUUM INTO ?').run(paths.databasePath);
     await diskBlobStore(paths.blobDir).put(`proj_1/${digest}`, new Response(bytes).body, { sha256: digest });
     await diskBlobStore(paths.blobDir).put(backupKey, new Response(backupBody).body);

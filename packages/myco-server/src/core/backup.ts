@@ -10,7 +10,7 @@
  * live in the bucket already and are not duplicated into it.
  */
 import type { BlobStore, RelationalStore } from './adapters.js';
-import { sha256Hex } from '../hash.js';
+import { sha256Hex, sha256HexOf, utf8 } from '../hash.js';
 
 export const BACKUP_FORMAT = 'myco-backup/1';
 export const BACKUP_KEY_PREFIX = 'backups/';
@@ -88,7 +88,12 @@ export interface BackupIndexRow {
   schema_version: number;
   producer: string;
   pinned: number;
+  /** SHA-256 of the stored artifact bytes, recorded with the row by the backup writer; null for a row that carries no recorded digest. */
+  sha256: string | null;
 }
+
+/** The index columns every read of a backup row selects. */
+const INDEX_COLUMNS = 'id, key, created_at, size_bytes, counts_json, schema_version, producer, pinned, sha256';
 
 export class BackupApplyError extends Error {
   constructor(readonly table: string, detail: string) {
@@ -179,15 +184,16 @@ export async function createBackup(
 
   const id = `bk_${crypto.randomUUID()}`;
   const key = `${BACKUP_KEY_PREFIX}${lineage}__${opts.now}__${id}.jsonl`;
-  const text = [headerLine, ...lines].join('\n') + '\n';
-  const stored = await blobs.put(key, new Response(text).body, { httpMetadata: { contentType: 'application/jsonl' } });
+  const artifact = utf8([headerLine, ...lines].join('\n') + '\n');
+  const sha256 = await sha256HexOf(artifact);
+  const stored = await blobs.put(key, new Response(artifact).body, { sha256, httpMetadata: { contentType: 'application/jsonl' } });
   const row: BackupIndexRow = {
     id, key, created_at: opts.now, size_bytes: stored.size,
-    counts_json: JSON.stringify(counts), schema_version: stamped, producer: opts.producer, pinned: 0,
+    counts_json: JSON.stringify(counts), schema_version: stamped, producer: opts.producer, pinned: 0, sha256,
   };
-  await db.prepare(`INSERT INTO backups (id, key, created_at, size_bytes, counts_json, schema_version, producer, pinned)
-      VALUES (?, ?, ?, ?, ?, ?, ?, 0)`)
-    .bind(row.id, row.key, row.created_at, row.size_bytes, row.counts_json, row.schema_version, row.producer).run();
+  await db.prepare(`INSERT INTO backups (id, key, created_at, size_bytes, counts_json, schema_version, producer, pinned, sha256)
+      VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?)`)
+    .bind(row.id, row.key, row.created_at, row.size_bytes, row.counts_json, row.schema_version, row.producer, row.sha256).run();
   return row;
 }
 
@@ -199,7 +205,7 @@ export interface ListedBackup extends BackupIndexRow {
 /** Every index row, newest first, each verified against the object store. */
 export async function listBackups(db: RelationalStore, blobs: BlobStore, limit = 100): Promise<ListedBackup[]> {
   const { results } = await db
-    .prepare(`SELECT id, key, created_at, size_bytes, counts_json, schema_version, producer, pinned
+    .prepare(`SELECT ${INDEX_COLUMNS}
         FROM backups ORDER BY created_at DESC, id DESC LIMIT ?`)
     .bind(limit).all<BackupIndexRow>();
   const listed: ListedBackup[] = [];
@@ -211,7 +217,7 @@ export async function listBackups(db: RelationalStore, blobs: BlobStore, limit =
 }
 
 const readArtifact = async (db: RelationalStore, blobs: BlobStore, id: string): Promise<{ row: BackupIndexRow; text: string } | null> => {
-  const row = await db.prepare(`SELECT id, key, created_at, size_bytes, counts_json, schema_version, producer, pinned FROM backups WHERE id = ?`)
+  const row = await db.prepare(`SELECT ${INDEX_COLUMNS} FROM backups WHERE id = ?`)
     .bind(id).first<BackupIndexRow>();
   if (row === null) return null;
   const body = await blobs.get(row.key);
@@ -411,7 +417,7 @@ export async function pruneBackups(
   let pruned = 0;
   try {
     const { results } = await db
-      .prepare(`SELECT id, key, created_at, size_bytes, counts_json, schema_version, producer, pinned FROM backups ORDER BY created_at DESC`)
+      .prepare(`SELECT ${INDEX_COLUMNS} FROM backups ORDER BY created_at DESC`)
       .all<BackupIndexRow>();
     const victims = retentionVictims(results, keep.keepDaily, keep.keepWeekly);
     for (const victim of victims) {
