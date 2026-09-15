@@ -25,6 +25,7 @@ import { PlanCard } from './PlanCard';
 import { promptPreview } from './TurnCard';
 import { TurnTimeline } from './TurnTimeline';
 import { DeleteSession } from './DeleteSession';
+import { EndSession } from './EndSession';
 
 const TABS = [
   { id: 'conversation', label: 'Conversation' },
@@ -203,6 +204,7 @@ function Header({ projectId, session }: { projectId: string; session: SessionRow
         {session.agent !== null && <Badge variant="outline" className="font-mono text-[10px] px-1.5 py-0">{session.agent}</Badge>}
         {session.branch !== null && <Badge variant="secondary" className="font-mono text-[10px] px-1.5 py-0">{session.branch}</Badge>}
         <GenerateSummary projectId={projectId} sessionId={session.sessionId} session={session} />
+        {open && <EndSession projectId={projectId} session={session} />}
       </div>
       <div className="flex flex-wrap gap-4 font-sans text-sm text-on-surface-variant">
         <span>{memberName(session)}</span>
@@ -210,7 +212,7 @@ function Header({ projectId, session }: { projectId: string; session: SessionRow
         <span title={formatDateTime(session.startedAt)}>Started {formatRelative(session.startedAt)}</span>
         {open
           ? <span>Last received {formatRelative(session.lastReceivedAt)}</span>
-          : <span>Ran {formatDuration(session.startedAt, session.endedAt)}</span>}
+          : <span>Ran {formatDuration(session.startedAt, session.endedAt)}{session.endedBy !== null && ` · ended by ${session.endedByLabel ?? session.endedBy}`}</span>}
       </div>
     </div>
   );
