@@ -1,4 +1,4 @@
-export const SERVER_SCHEMA_VERSION = 39;
+export const SERVER_SCHEMA_VERSION = 40;
 
 /** Titling: how many of a session's earliest user prompts (with their first response) reach the model. */
 export const MAX_MATERIAL_PROMPTS = 12;

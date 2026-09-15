@@ -47,6 +47,7 @@ const SHIPPED_MIGRATION_DIGESTS: Record<string, string> = {
   '0037_v37.sql': 'd88255fecb0df779e0eaacf292dc50e6060673f75fea06b2a043abed7f57fd31',
   '0038_v38.sql': 'cbb499582b68389aa9488edb54920ebc09f68d129a1b03e1448947485f124b06',
   '0039_v39.sql': '8b1636924f5b298585f322bdd45532ce92b28b5b0e910ec1f9224be7527f8301',
+  '0040_v40.sql': '0071ef8a116a057d8330378faad7b55a902ccf60e4d91aee06d9b7331f641022',
 };
 const sha256 = (bytes: Buffer): string => createHash('sha256').update(bytes).digest('hex');
 
@@ -92,10 +93,37 @@ describe('versioned schema steps', () => {
       sqlite.run(`INSERT INTO agent_reports (project_id, run_id, agent_id, action, summary, created_at)
         VALUES ('proj_1', 'run_old', 'agent_old', 'note', 'Existing history', 1)`);
       const before = sqlite.query('SELECT * FROM agent_reports').all();
-      expect(await applySchemaSteps(sqliteD1(sqlite))).toEqual([37, 38, 39]);
+      expect(await applySchemaSteps(sqliteD1(sqlite))).toEqual([37, 38, 39, 40]);
       expect(sqlite.query('SELECT * FROM agent_reports').all()).toEqual(before);
       expect(sqlite.query('SELECT * FROM backup_restore_progress').all()).toEqual([]);
       expect(await applySchemaSteps(sqliteD1(sqlite))).toEqual([]);
+    } finally { sqlite.close(); }
+  });
+
+  it('fills a session\'s missing agent from the one agent its transcripts name, and touches nothing else', async () => {
+    const sqlite = fresh();
+    try {
+      await applySchemaSteps(sqliteD1(sqlite), SCHEMA_STEPS.filter(({ version }) => version <= 39));
+      const session = (id: string, agent: string | null) => sqlite.run(
+        `INSERT INTO sessions (project_id, session_id, machine_id, created_by_token_id, first_received_at, last_received_at, ended_at, title, titled_by, agent)
+         VALUES ('proj_1', ?, 'm1', 't1', 1, 2, 2, 'Kept title', 'mem_1', ?)`, [id, agent]);
+      const transcript = (session: string, id: string, agent: string | null) => sqlite.run(
+        `INSERT INTO transcripts (project_id, transcript_id, session_id, machine_id, agent, size, parsed_offset, first_received_at, last_received_at, token_id)
+         VALUES ('proj_1', ?, ?, 'm1', ?, 10, 10, 1, 2, 't1')`, [id, session, agent]);
+      session('one-agent', null); transcript('one-agent', 'tx1', 'codex');
+      session('two-transcripts-one-agent', null); transcript('two-transcripts-one-agent', 'tx2', 'claude-code'); transcript('two-transcripts-one-agent', 'tx3', 'claude-code');
+      session('two-agents', null); transcript('two-agents', 'tx4', 'codex'); transcript('two-agents', 'tx5', 'claude-code');
+      session('unnamed-transcript', null); transcript('unnamed-transcript', 'tx6', null);
+      session('no-transcript', null);
+      session('already-named', 'cursor'); transcript('already-named', 'tx7', 'codex');
+      const before = sqlite.query<Record<string, unknown>, []>('SELECT * FROM sessions ORDER BY session_id').all();
+      expect(await applySchemaSteps(sqliteD1(sqlite))).toEqual([40]);
+      const after = sqlite.query<Record<string, unknown>, []>('SELECT * FROM sessions ORDER BY session_id').all();
+      const agents = Object.fromEntries(after.map((row) => [row.session_id, row.agent]));
+      expect(agents).toEqual({ 'one-agent': 'codex', 'two-transcripts-one-agent': 'claude-code', 'two-agents': null, 'unnamed-transcript': null, 'no-transcript': null, 'already-named': 'cursor' });
+      expect(after.map((row) => ({ ...row, agent: null }))).toEqual(before.map((row) => ({ ...row, agent: null })));
+      expect(await applySchemaSteps(sqliteD1(sqlite))).toEqual([]);
+      expect(sqlite.query('SELECT * FROM sessions ORDER BY session_id').all()).toEqual(after);
     } finally { sqlite.close(); }
   });
 
@@ -106,7 +134,7 @@ describe('versioned schema steps', () => {
       sqlite.run(`INSERT INTO sessions (project_id, session_id, machine_id, created_by_token_id, first_received_at, last_received_at, ended_at, title, summary, titled_at, titled_by)
         VALUES ('proj_1', 'old', 'm1', 't1', 1, 2, 2, 'Existing title', 'Existing summary', 2, 'mem_1')`);
       const before = sqlite.query<Record<string, unknown>, []>('SELECT * FROM sessions').get();
-      expect(await applySchemaSteps(sqliteD1(sqlite))).toEqual([39]);
+      expect(await applySchemaSteps(sqliteD1(sqlite))).toEqual([39, 40]);
       expect(sqlite.query('SELECT * FROM sessions').get()).toEqual({ ...before, ended_by: null });
       expect(await applySchemaSteps(sqliteD1(sqlite))).toEqual([]);
     } finally { sqlite.close(); }
@@ -119,7 +147,7 @@ describe('versioned schema steps', () => {
       sqlite.run(`INSERT INTO sessions (project_id, session_id, machine_id, created_by_token_id, first_received_at, last_received_at, ended_at, title, summary)
         VALUES ('proj_1', 'old', 'm1', 't1', 1, 2, 2, 'Existing title', 'Existing summary')`);
       const before = sqlite.query<Record<string, unknown>, []>('SELECT * FROM sessions').get();
-      expect(await applySchemaSteps(sqliteD1(sqlite))).toEqual([36, 37, 38, 39]);
+      expect(await applySchemaSteps(sqliteD1(sqlite))).toEqual([36, 37, 38, 39, 40]);
       expect(sqlite.query('SELECT * FROM sessions').get()).toEqual({ ...before, titling_requested_at: null, ended_by: null });
       expect(await applySchemaSteps(sqliteD1(sqlite))).toEqual([]);
     } finally { sqlite.close(); }
@@ -132,7 +160,7 @@ describe('versioned schema steps', () => {
       sqlite.run(`INSERT INTO transcripts (project_id, transcript_id, session_id, machine_id, agent, size, parsed_offset, first_received_at, last_received_at, token_id)
         VALUES ('proj_1', 'tx_1', 's1', 'm1', 'codex', 1000, 500, 1, 2, 't1')`);
       const before = sqlite.query<Record<string, unknown>, []>('SELECT * FROM transcripts').get();
-      expect(await applySchemaSteps(sqliteD1(sqlite))).toEqual([35, 36, 37, 38, 39]);
+      expect(await applySchemaSteps(sqliteD1(sqlite))).toEqual([35, 36, 37, 38, 39, 40]);
       expect(sqlite.query('SELECT * FROM transcripts').get()).toEqual({ ...before, parser_context: null });
       expect(await applySchemaSteps(sqliteD1(sqlite))).toEqual([]);
     } finally {
