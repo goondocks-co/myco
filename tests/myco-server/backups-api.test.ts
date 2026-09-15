@@ -7,6 +7,7 @@ import { describe, expect, it } from 'bun:test';
 import worker from '@myco-server-worker/index.js';
 import { sqliteEnv } from './helpers/fixtures.js';
 import { asOwner, asOwnerPost, OWNER_ENV } from './helpers/owner.js';
+import { MAX_BACKUP_BYTES } from '@myco-server-worker/core/backup.js';
 
 const setup = () => {
   const e = sqliteEnv();
@@ -14,6 +15,16 @@ const setup = () => {
 };
 
 describe('the backup routes', () => {
+  it('refuses an uploaded multibyte artifact past the byte limit before restore', async () => {
+    const { env, sqlite } = setup();
+    const artifact = '界'.repeat(Math.ceil(MAX_BACKUP_BYTES / 3));
+    const res = await worker.fetch(await asOwnerPost('/api/backups/restore-upload', { artifact }), env);
+    expect({ status: res.status, body: await res.json() }).toEqual({
+      status: 400, body: { error: 'bad_request', reason: 'the artifact is past the byte bound this path serves' },
+    });
+    sqlite.close();
+  });
+
   it('refuses an anonymous caller on every route', async () => {
     const { env } = setup();
     for (const [method, path] of [['POST', '/api/backups'], ['GET', '/api/backups'], ['POST', '/api/backups/bk_x/restore']] as const) {

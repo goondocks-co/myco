@@ -51,8 +51,13 @@ export function BackupPanel() {
       )}
     >
       <p className="mb-3 font-sans text-xs text-on-surface-variant">
-        A backup holds this server's records. Attachment and transcript bytes stay in the object store,
-        and settings and secrets are re-entered on Settings after restoring onto a fresh deployment.
+        This manual export holds up to 64 MiB of records for additive restore. It reads records while the
+        server is running, so it is not a consistent snapshot. Attachment and transcript bytes, settings
+        and secrets are outside this artifact. For larger exports or complete replacement recovery, use
+        the{' '}
+        <a className="underline" href="https://github.com/goondocks-co/myco/blob/main/docs/architecture/deployment-recovery.md">
+          operator backup and recovery procedure
+        </a>.
       </p>
       {backups.list.isPending && <p className="font-sans text-sm text-on-surface-variant">Loading…</p>}
       {backups.list.error !== null && <p className="font-sans text-sm text-terra">Backups could not be listed.</p>}
