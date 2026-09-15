@@ -91,5 +91,7 @@ test('every production socket-bind call site sits inside a containment-locked re
     // control-closure pass-through + boot re-bind: both inside the
     // containWhile('reconcile') continuation.
     'packages/myco/src/daemon/main.ts',
+    // Relational statement parameters; no listener bindings.
+    'packages/myco/src/server/local-owner.ts',
   ].sort());
 });

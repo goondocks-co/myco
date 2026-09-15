@@ -47,6 +47,7 @@ import {
   type LocalDeploymentRecord,
 } from '../server/local.js';
 import { carriedNative, runLocalDeployment } from '../server/local-run.js';
+import { setupLocalOwner } from '../server/local-owner.js';
 import { backupLocalDeployment } from '../server/local-backup.js';
 import { backupCloudflareDeployment } from '../server/cloudflare-backup.js';
 import { restoreLocalDeployment } from '../server/local-recovery.js';
@@ -66,6 +67,9 @@ import {
 export const SERVER_HELP = `Usage: myco server <command>
 
 Commands (--target local runs the Deployment from this binary; --target cloudflare selects the Worker):
+  setup-owner --target local             Create the first administrator on a stopped, fresh Deployment.
+                                          Prints a private, expiring GitHub account-link URL.
+                                          Retry replaces a pending link; existing members are preserved.
   create --target local [--port <n>]      Provision a Deployment this machine runs itself: a data
                                           directory, generated secrets, and a migrated volume.
   run --target local                      Serve it in the foreground. This is what the service runs.
@@ -260,6 +264,16 @@ export async function run(args: string[]): Promise<void> {
 
 
   try {
+    if (command === 'setup-owner') {
+      if (target() !== 'local') fail('setup-owner requires --target local');
+      const result = await setupLocalOwner(resolveLocalPaths(), carriedNative());
+      console.log(`First administrator: ${result.memberId}`);
+      console.log('Start the Deployment, then open this private link and connect your GitHub account:');
+      console.log(result.url);
+      console.log(`Expires: ${new Date(result.expiresAt).toISOString()}. Keep this link private.`);
+      console.log('If it expires, stop the Deployment and run setup-owner again. After linking, use Members to invite this machine.');
+      return;
+    }
     if (LOCAL_VERBS.has(command) && target() === 'local') {
       const paths = resolveLocalPaths();
 

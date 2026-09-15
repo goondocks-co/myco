@@ -11,12 +11,17 @@ There is one exception, and it is on your own computer rather than the server: p
 ```bash
 myco server create --target local
 myco server github-app --target local --url http://127.0.0.1:8787 --name "Myco sign-in"
+myco server setup-owner --target local
 myco server install --target local
 ```
 
-The first command prepares your server and generates its storage keys. The second opens GitHub to register an identity-only sign-in app under your account. Confirm the app there, then return to the terminal. The last command starts the server and makes it come back whenever you log in.
+The first command prepares your server and generates its storage keys. The second opens GitHub to register an identity-only sign-in app under your account. Confirm the app there, then return to the terminal. `setup-owner` prints a private link for connecting your GitHub account to the first administrator. The last command starts the server and makes it come back whenever you log in.
 
-Open `http://127.0.0.1:8787` and click **Sign in with GitHub** to check that sign-in works. The setup command installs credentials while the server is stopped; it does not claim sign-in has passed before you start the server.
+Open the private link printed by `setup-owner`. Sign in with GitHub, check the account shown, and click **Connect this account**, then **Open Projects**. The link expires after 15 minutes. Keep it private: whoever uses it can become this server's administrator.
+
+In **Members**, invite another runtime of your administrator account. Use the resulting invitation with `myco login` to connect this machine. The server can then run its built-in worker on its next start.
+
+Owner setup requires a stopped server. If its link expires, stop the server, rerun `setup-owner`, and start it again; the replacement link invalidates the previous one. Once an account is connected, setup refuses. Existing or restored memberships use their existing sign-in and invitation flow; setup does not replace them.
 
 Your server lives at `http://127.0.0.1:8787` and listens only on your own machine. Nothing outside your laptop can reach it until you choose to expose it.
 
@@ -49,7 +54,7 @@ Copy the binary across, then provision it, configure sign-in and install its ser
 
 **Fly.io** is the least work if you would rather not manage a machine. Its builds happen remotely, so you never need a container runtime on your own computer, and a machine with a small volume attached costs a few dollars a month. Give the volume to `~/.myco/server/local/` and the server keeps its data across restarts.
 
-**A plain VPS** works the same way. A basic droplet or equivalent is about the same price. Copy the binary, run the two commands, and put a reverse proxy in front of it for HTTPS.
+**A plain VPS** works the same way. A basic droplet or equivalent is about the same price. Copy the binary, follow the setup commands above, and put a reverse proxy in front of it for HTTPS.
 
 On Linux, a user service stops when you log out unless the machine is told to keep it running:
 
