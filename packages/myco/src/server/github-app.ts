@@ -8,7 +8,7 @@
  * in one click: this module serves the manifest form on a loopback listener,
  * receives the temporary code GitHub redirects back with, converts it into the
  * app's credentials, and hands them to the target — the Worker's secrets on
- * Cloudflare, the bundle's secret file and `.env` on Compose. Nothing here is
+ * Cloudflare, the native volume's secrets, or the Compose bundle's secrets. Nothing here is
  * relayed through a server Myco runs; the app belongs to the operator or the
  * organization they name.
  *
@@ -23,6 +23,7 @@ import { existsSync } from 'node:fs';
 import { putWorkerSecrets, readDeploymentRecord, writeDeploymentRecord, type DeploymentRecord } from './cloudflare.js';
 import { assertComposeReadable, recreateDeployment, resolveDeploymentPaths, writeSignInSecrets, type DeploymentPaths } from './deployment.js';
 import { systemRunner, type CommandRunner } from './runner.js';
+import { configureLocalSignIn, localDeploymentPresent, resolveLocalPaths, type LocalDeploymentPaths } from './local.js';
 
 const LOOPBACK = '127.0.0.1';
 const GITHUB_API = 'https://api.github.com';
@@ -56,6 +57,7 @@ export interface RegisteredApp {
 
 export type SignInTarget =
   | { kind: 'cloudflare'; record: DeploymentRecord; mycoHome?: string }
+  | { kind: 'local'; paths: LocalDeploymentPaths }
   | { kind: 'compose'; paths: DeploymentPaths };
 
 export interface RegisterOptions {
@@ -88,7 +90,7 @@ export class RegistrationRefused extends Error {
   }
 }
 
-/** A URL a callback may be registered for: https, or plain http to a loopback literal for a local Compose smoke. */
+/** A callback URL uses https, or plain http to a loopback literal. */
 export function isDeploymentUrl(value: string): boolean {
   let url: URL;
   try {
@@ -155,6 +157,9 @@ export async function convertManifestCode(code: string, fetchImpl: typeof fetch 
 
 /** The target's own way of holding the two secrets. */
 export async function installSignInSecrets(target: SignInTarget, app: Pick<RegisteredApp, 'clientId' | 'clientSecret'>, runner?: CommandRunner): Promise<void> {
+  if (target.kind === 'local') {
+    return configureLocalSignIn(target.paths, async (install) => { install(app); });
+  }
   if (target.kind === 'cloudflare') {
     await putWorkerSecrets({ accountId: target.record.accountId, workerName: target.record.workerName, runner, mycoHome: target.mycoHome }, { GITHUB_CLIENT_ID: app.clientId, GITHUB_CLIENT_SECRET: app.clientSecret });
     return;
@@ -167,7 +172,7 @@ export async function installSignInSecrets(target: SignInTarget, app: Pick<Regis
   await recreateDeployment({ paths: target.paths, runner });
 }
 
-export type VerifyResult = { ok: true } | { ok: false; reason: string };
+export type VerifyResult = { ok: true } | { ok: false; reason: string; pendingStart?: true };
 
 /**
  * The Deployment now sends a visitor to GitHub for this app and back to its own
@@ -210,11 +215,17 @@ async function probeSignIn(origin: string, clientId: string, fetchImpl: typeof f
   return { ok: true };
 }
 
-/** The target the operator's machine holds: the Cloudflare record, or the Compose bundle. Both present needs `--target`. */
+/** Multiple recorded Deployments require an explicit target. */
 export function resolveSignInTarget(named: string | undefined, mycoHome?: string): SignInTarget {
   const record = readDeploymentRecord(mycoHome);
   const paths = resolveDeploymentPaths(mycoHome);
   const bundle = existsSync(paths.composeFile);
+  const localPaths = resolveLocalPaths(mycoHome);
+  const local = localDeploymentPresent(localPaths);
+  if (named === 'local') {
+    if (!local) throw new RegistrationRefused('no native Deployment on this machine; `myco server create --target local` provisions one');
+    return { kind: 'local', paths: localPaths };
+  }
   if (named === 'cloudflare') {
     if (record === null) throw new RegistrationRefused('no Cloudflare Deployment record on this machine');
     return { kind: 'cloudflare', record, mycoHome };
@@ -223,11 +234,12 @@ export function resolveSignInTarget(named: string | undefined, mycoHome?: string
     if (!bundle) throw new RegistrationRefused('no Compose bundle on this machine; `myco server create` writes one');
     return { kind: 'compose', paths };
   }
-  if (named !== undefined) throw new RegistrationRefused(`--target must be cloudflare or compose, and is ${JSON.stringify(named)}`);
-  if (record !== null && bundle) throw new RegistrationRefused('this machine holds both a Cloudflare record and a Compose bundle; pass --target cloudflare or --target compose');
+  if (named !== undefined) throw new RegistrationRefused(`--target must be local, cloudflare or compose, and is ${JSON.stringify(named)}`);
+  if ([record !== null, bundle, local].filter(Boolean).length > 1) throw new RegistrationRefused('this machine holds multiple Deployments; pass --target local, --target cloudflare or --target compose');
+  if (local) return { kind: 'local', paths: localPaths };
   if (record !== null) return { kind: 'cloudflare', record, mycoHome };
   if (bundle) return { kind: 'compose', paths };
-  throw new RegistrationRefused('no Deployment on this machine: neither a Cloudflare record nor a Compose bundle');
+  throw new RegistrationRefused('no Deployment on this machine: no native record, Cloudflare record or Compose bundle');
 }
 
 /** The whole flow, start to verified. */
@@ -235,6 +247,14 @@ export async function registerGitHubApp(options: RegisterOptions): Promise<Regis
   if (!isDeploymentUrl(options.url)) throw new RegistrationRefused(`${options.url} is not an https Deployment URL`);
   const proposedName = manifestFor({ url: options.url, name: options.name, redirectUrl: 'http://127.0.0.1/callback' }).name;
   if (proposedName.length > APP_NAME_MAX) throw new RegistrationRefused(`GitHub limits an app's name to ${APP_NAME_MAX} characters and ${JSON.stringify(proposedName)} is ${proposedName.length}; pass --name <shorter>`);
+  if (options.target.kind === 'local') {
+    return configureLocalSignIn(options.target.paths,
+      (install) => registerWithInstaller(options, async (app) => { install(app); }), options.url);
+  }
+  return registerWithInstaller(options, (app) => installSignInSecrets(options.target, app, options.runner));
+}
+
+async function registerWithInstaller(options: RegisterOptions, install: (app: RegisteredApp) => Promise<void>): Promise<RegistrationResult> {
   const log = options.log ?? (() => undefined);
   const fetchImpl = options.fetchImpl ?? fetch;
   const state = randomBytes(32).toString('base64url');
@@ -303,10 +323,12 @@ export async function registerGitHubApp(options: RegisterOptions): Promise<Regis
   });
 
   log(`Registered ${app.name}, owned by ${app.ownerLogin ?? 'the signed-in account'} (${app.htmlUrl}). Installing the credentials on the Deployment…`);
-  await installSignInSecrets(options.target, app, options.runner);
+  await install(app);
   if (options.target.kind === 'cloudflare' && options.target.record.url !== new URL(options.url).origin) {
     writeDeploymentRecord({ ...options.target.record, url: new URL(options.url).origin }, options.target.mycoHome);
   }
-  const verified = await verifySignIn(options.url, app.clientId, { fetchImpl });
+  const verified: VerifyResult = options.target.kind === 'local'
+    ? { ok: false, pendingStart: true, reason: 'Start the native Deployment with `myco server run --target local` or `myco server install --target local`, then open its dashboard and sign in. Sign-in has not been verified.' }
+    : await verifySignIn(options.url, app.clientId, { fetchImpl });
   return { app: { slug: app.slug, htmlUrl: app.htmlUrl, name: app.name, clientId: app.clientId, ownerLogin: app.ownerLogin }, callbackUrl: `${new URL(options.url).origin}/auth/callback`, verified };
 }

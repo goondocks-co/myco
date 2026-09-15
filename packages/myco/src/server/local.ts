@@ -159,6 +159,39 @@ export function writeLocalSecrets(values: Partial<Record<LocalSecretName, string
   new LocalVolume(paths).exclusive(() => writeSecrets(values, paths));
 }
 
+export interface LocalSignInCredentials {
+  clientId: string;
+  clientSecret: string;
+}
+
+/** Holds a stopped volume throughout registration and installs only the sign-in pair. */
+export function configureLocalSignIn<T>(
+  paths: LocalDeploymentPaths,
+  configure: (install: (credentials: LocalSignInCredentials) => void) => Promise<T>,
+  origin?: string,
+): Promise<T> {
+  return new LocalVolume(paths).exclusive(async () => {
+    const record = readLocalRecord(paths);
+    assertRecordServable(record);
+    const configuredOrigin = record.origin ?? `http://127.0.0.1:${record.port}`;
+    if (origin !== undefined && new URL(origin).origin !== new URL(configuredOrigin).origin) {
+      throw new Error(`sign-in URL must match the native Deployment origin ${configuredOrigin}`);
+    }
+    const secrets = readLocalSecrets(paths);
+    if (GENERATED.some((name) => !secrets[name])) throw new Error('native Deployment storage and session keys must be configured before sign-in setup');
+    let active = true;
+    try {
+      return await configure(({ clientId, clientSecret }) => {
+        if (!active) throw new Error('native sign-in setup no longer holds the volume');
+        if ([clientId, clientSecret].some((value) => !value || value.trim() !== value || /[\r\n]/.test(value))) {
+          throw new Error('GitHub sign-in credentials must be nonempty single-line values');
+        }
+        writeSecrets({ ...secrets, GITHUB_CLIENT_ID: clientId, GITHUB_CLIENT_SECRET: clientSecret }, paths);
+      });
+    } finally { active = false; }
+  });
+}
+
 function writeSecrets(values: Partial<Record<LocalSecretName, string>>, paths: LocalDeploymentPaths): void {
   mkdirSync(paths.root, { recursive: true, mode: 0o700 });
   const lines = LOCAL_SECRET_NAMES
