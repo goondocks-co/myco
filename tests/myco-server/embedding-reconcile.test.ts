@@ -6,6 +6,7 @@ import { reconcileEmbedding, resetEmbeddingIndex } from '../../packages/myco-ser
 import { EmbeddingUnavailable, type EmbeddingProvider } from '../../packages/myco-server/src/core/embedding/provider.js';
 import { searchProject } from '../../packages/myco-server/src/read/search.js';
 import { hasEmbeddingWork } from '../../packages/myco-server/src/core/embedding/jobs.js';
+import { tombstoneSession } from '../../packages/myco-server/src/core/tombstones.js';
 import { setPlanStatus } from '../../packages/myco-server/src/read/plans.js';
 
 configureSqliteLibrary();
@@ -26,6 +27,21 @@ function fixture() {
   const step = (now = 1000) => reconcileEmbedding(context, 'p', now);
   return { ...f, spore, calls, provider, context, search, step, insert };
 }
+
+test('deleted sessions are hidden by both searches while saved knowledge remains, then their vectors are reclaimed', async () => {
+  const f = fixture();
+  f.sqlite.run("UPDATE sessions SET title='architecture', summary='architecture summary' WHERE project_id='p' AND session_id='s'");
+  f.spore('kept', 'architecture decision');
+  f.sqlite.run("UPDATE spores SET session_id='s' WHERE project_id='p' AND id='kept'");
+  for (let i = 0; i < 4; i++) await f.step();
+  for (const mode of ['semantic', 'fts']) expect((await f.search('architecture', mode)).results.map((r) => r.id).sort()).toEqual(['kept', 's']);
+  f.insert('session_tombstones', { project_id: 'p', session_id: 's', created_at: 2, created_by: 'operator' });
+  for (const mode of ['semantic', 'fts']) expect((await f.search('architecture', mode)).results.map((r) => r.id)).toEqual(['kept']);
+  await tombstoneSession(f.serverEnv, { projectId: 'p' }, 's', 'operator', 3);
+  for (let i = 0; i < 4; i++) await f.step();
+  expect(f.sqlite.query("SELECT metadata_json FROM local_vectors WHERE project_id='p'").all()).toHaveLength(1);
+  expect((await f.search('architecture')).results.map((r) => r.id)).toEqual(['kept']);
+});
 
 test('rebuilds a recovered empty index without changing source knowledge or another project', async () => {
   const f = fixture();

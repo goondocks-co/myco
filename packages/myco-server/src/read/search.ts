@@ -3,6 +3,7 @@ import { pendingSearchBlobs, SEARCH_QUERY_MAX_CHARS } from '../core/search-index
 import type { ReadScope } from './scope.js';
 import { semanticSearch, type SemanticSearch } from './embedding.js';
 import { EmbeddingUnavailable } from '../core/embedding/provider.js';
+import { notTombstonedSql } from '../core/tombstones.js';
 
 import { SEARCH_TYPES, SEARCH_API_LIMIT, SEARCH_MAX_LIMIT, SEARCH_PREVIEW_CHARS, type SearchType, type SearchOptions, type SearchResult, type SearchAnswer } from './search-types.js';
 export * from './search-types.js';
@@ -60,6 +61,7 @@ async function searchType(db: RelationalStore, scope: ReadScope, type: SearchTyp
     WHERE search_blob_chunks_fts MATCH ? AND d.project_id = ?` : '';
   if (s.blob) params.push(terms[0], scope.projectId);
   const where = ['d.project_id = ?'];
+  if (type === 'session') where.push(notTombstonedSql('d'));
   params.push(scope.projectId);
   for (const term of terms.slice(1)) {
     let exists = `EXISTS (SELECT 1 FROM ${fts} WHERE ${fts}.rowid = d.rowid AND ${fts} MATCH ?)`;

@@ -1,24 +1,8 @@
 /**
- * Suppressing a session, and everything the Deployment derived from it.
- *
- * A tombstone is the one record that outlives the deletion. The `sessions` row
- * is kept and every projection of it is removed, so the Deployment can still
- * answer that a session existed and is now deleted — which is what a re-import
- * needs in order to refuse, and what an operator needs in order to tell a
- * deleted session from one that never arrived.
- *
- * Suppression has two halves and both are structural rather than per-caller.
- * Reads go through one predicate this module owns, applied at the read layer's
- * own seams. Writes are refused by a shared check derived from the kind
- * catalogue, so a live hook cannot repopulate a session a person just deleted —
- * without that half, the deletion appears to fail for no visible reason while
- * capture is still running.
- *
- * Blobs are content-addressed and shared between rows, so a freed key is
- * removed from the store only once nothing else references it. Deleting them
- * with the session would take a surviving prompt's body with a segment's. What
- * may reference one is the catalogue in `blob-references.ts`; this module says
- * how each catalogue table is reached from a session.
+ * Session deletion retains its identity and tombstone, clears its title and
+ * summary, and removes captured projections. Saved knowledge and other sessions
+ * remain. Reads exclude tombstones; ingestion refuses subsequent capture and
+ * import for the same session ID. Unreferenced blobs are freed in bounded pages.
  */
 import type { BlobStore, RelationalStore, ServerEnv } from './adapters.js';
 import { BLOB_REFERENCES, kindFilter, unreferencedAmong, type BlobReference } from './blob-references.js';
@@ -143,18 +127,23 @@ export async function tombstoneSession(
 
   const keys = await blobKeysOf(env.db, projectId, sessionId);
 
-  const statements = [
+  const metadata = [
     env.db
       .prepare(`INSERT INTO session_tombstones (project_id, session_id, reason, created_at, created_by)
         VALUES (?, ?, ?, ?, ?) ON CONFLICT (project_id, session_id) DO NOTHING`)
       .bind(projectId, sessionId, reason ?? null, nowMs, by),
+    env.db.prepare(`UPDATE sessions SET title = NULL, summary = NULL, titled_at = NULL, titled_by = NULL
+      WHERE project_id = ? AND session_id = ? AND (title IS NOT NULL OR summary IS NOT NULL OR titled_at IS NOT NULL OR titled_by IS NOT NULL)`).bind(projectId, sessionId),
+  ];
+  const statements = [
+    ...metadata,
     // Segments first: `transcripts` is the only route to them.
     env.db.prepare(`DELETE FROM transcript_segments WHERE project_id = ? AND transcript_id IN (${SEGMENTS_OF_SESSION})`).bind(projectId, projectId, sessionId),
     ...DERIVED_TABLES.map((table) => env.db.prepare(`DELETE FROM ${table} WHERE project_id = ? AND session_id = ?`).bind(projectId, sessionId)),
     env.db.prepare(`DELETE FROM tags WHERE project_id = ? AND entity_kind = 'plan' AND entity_id NOT IN (SELECT plan_key FROM plans WHERE project_id = ?)`).bind(projectId, projectId),
   ];
   const results = await env.db.batch(statements);
-  const removed = results.slice(1).reduce((n, r) => n + r.meta.changes, 0);
+  const removed = results.slice(metadata.length).reduce((n, r) => n + r.meta.changes, 0);
 
   const orphaned = await unreferenced(env.db, projectId, keys);
   const blobsFreed = await dropBlobs(env.db, env.blobs, projectId, orphaned);
