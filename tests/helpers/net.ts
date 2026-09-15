@@ -29,6 +29,7 @@
  *     collision surfaces as a clear error, not a wedge.
  */
 import http from 'node:http';
+import net from 'node:net';
 
 /** Default ceiling for daemon connect/health probes in tests. */
 export const TEST_FETCH_TIMEOUT_MS = 2_000;
@@ -49,6 +50,21 @@ export async function listenEphemeral(
   });
   const port = (server.address() as { port: number }).port;
   return { server, port };
+}
+
+/**
+ * Hold an OS-assigned ephemeral port with a listener that closes every
+ * connection unanswered. While held, no other process can bind the port, and
+ * every request to it fails the way a request to an absent service does.
+ */
+export async function holdUnansweredPort(): Promise<{ port: number; release: () => Promise<void> }> {
+  const server = net.createServer((socket) => socket.destroy());
+  await new Promise<void>((resolve, reject) => {
+    server.once('error', reject);
+    server.listen(0, '127.0.0.1', () => resolve());
+  });
+  const port = (server.address() as net.AddressInfo).port;
+  return { port, release: () => new Promise<void>((resolve) => server.close(() => resolve())) };
 }
 
 /** Close an http server, resolving once the listener has fully released. */
