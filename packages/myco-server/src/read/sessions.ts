@@ -100,14 +100,7 @@ const SESSION_FROM = `FROM sessions s
      LEFT JOIN member_credentials c ON c.id = s.created_by_token_id
      LEFT JOIN members m ON m.id = c.member_id
      LEFT JOIN members e ON e.id = s.ended_by`;
-/**
- * A deleted session is absent from every read.
- *
- * Four reads below issue their own SELECT against `sessions` rather than going
- * through `SESSION_FROM`, so the predicate is named once here and applied at
- * each of them. A suppression that covered three of the five would be a leak
- * rather than a rule.
- */
+/** A deleted session is absent from session reads, project counts, and latest activity. */
 const LIVE_SESSION = notTombstonedSql('s');
 const WEEK_MS = 7 * 24 * 60 * 60 * 1000;
 
@@ -141,14 +134,14 @@ function toSession(row: Record<string, unknown>): SessionRow {
   };
 }
 
-/** Every project with its session count and most recent receipt, most recently active first. Unscoped: the caller decides which projects its credential may see. */
+/** Every project with its live session count and most recent live receipt, most recently active first; a project with no live session still lists with a count of zero. Unscoped: the caller decides which projects its credential may see. */
 export async function listProjects(db: RelationalStore, opts: { includeArchived?: boolean } = {}): Promise<ProjectRow[]> {
   const { results } = await db
     .prepare(
       `SELECT p.project_id, p.name, p.created_at, p.archived_at, p.archived_by,
               COUNT(s.session_id) AS session_count,
               MAX(s.last_received_at) AS last_activity_at
-         FROM projects p LEFT JOIN sessions s ON s.project_id = p.project_id
+         FROM projects p LEFT JOIN sessions s ON s.project_id = p.project_id AND ${LIVE_SESSION}
         ${opts.includeArchived === true ? '' : 'WHERE p.archived_at IS NULL'}
         GROUP BY p.project_id, p.name, p.created_at, p.archived_at, p.archived_by
         ORDER BY last_activity_at DESC NULLS LAST, p.created_at DESC`
