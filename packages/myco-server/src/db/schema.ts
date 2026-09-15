@@ -1331,14 +1331,10 @@ const V37_STATEMENTS: readonly string[] = [
 ];
 
 /**
- * v38: every blob reference the catalogue names is indexed by Project and key.
- *
- * The orphan sweep, retention and a session's deletion each check whether a
- * blob is still held by any reference in `core/blob-references.ts`, and the
- * tool call's spilled input and output and the raw event log's key are
- * references too. Each check is a seek per holder per candidate, on every
- * tick, and these serve the three holders v30 left as scans. Partial: a row
- * without a key is never a holder.
+ * v38: partial `(project_id, key)` indexes on `tool_calls.input_blob_key`,
+ * `tool_calls.output_blob_key` and `events.blob_key`, each over the rows that
+ * hold a key. The held check in `core/blob-references.ts` reads every
+ * catalogue reference through an index of this shape.
  */
 const V38_STATEMENTS: readonly string[] = [
   `CREATE INDEX IF NOT EXISTS idx_tool_calls_input_blob_key ON tool_calls (project_id, input_blob_key) WHERE input_blob_key IS NOT NULL`,

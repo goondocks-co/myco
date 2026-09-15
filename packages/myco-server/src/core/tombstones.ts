@@ -17,8 +17,8 @@
  * Blobs are content-addressed and shared between rows, so a freed key is
  * removed from the store only once nothing else references it. Deleting them
  * with the session would take a surviving prompt's body with a segment's. What
- * may reference one is the catalogue in `blob-references.ts`; this module only
- * says how each of its tables is reached from a session.
+ * may reference one is the catalogue in `blob-references.ts`; this module says
+ * how each catalogue table is reached from a session.
  */
 import type { BlobStore, RelationalStore, ServerEnv } from './adapters.js';
 import { BLOB_REFERENCES, kindFilter, unreferencedAmong, type BlobReference } from './blob-references.js';
@@ -88,7 +88,7 @@ async function sessionPresent(db: RelationalStore, projectId: string, sessionId:
   return row !== null;
 }
 
-/** Every blob key the session's rows name, before any of them are removed: one select per catalogue reference, sent as one batch. The hosted store caps a compound select at five terms, so the references are not unioned. */
+/** Every blob key the session's rows name, before any of them are removed: one select per catalogue reference, sent as one batch. The hosted store caps a compound select at five terms. */
 async function blobKeysOf(db: RelationalStore, projectId: string, sessionId: string): Promise<string[]> {
   const rows = await db.batch(SESSION_REFERENCES.map(({ ref, route }) => db
     .prepare(`SELECT DISTINCT ${ref.column} AS k FROM ${ref.table} WHERE project_id = ? AND ${route.where} AND ${ref.column} IS NOT NULL${kindFilter(ref)}`)

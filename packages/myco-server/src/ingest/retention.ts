@@ -9,9 +9,8 @@
  * Two rules keep the sweep safe. A segment ahead of the parse cursor is kept
  * whatever its age, so bytes no pass has read are never the only copy of rows
  * that were never derived. And a blob is content-addressed and shared, so it
- * leaves the store only once nothing references it — where "nothing" is the
- * reference catalogue (`core/blob-references.ts`), the one list every cleanup
- * reads.
+ * leaves the store only once no reference in the catalogue
+ * (`core/blob-references.ts`) names it.
  *
  * One orphan this does not reach: a blob uploaded whose event is then refused
  * belongs to no row and follows no deletion, so nothing signals it. That gap
@@ -178,8 +177,7 @@ export async function freeOrphanedBlobs(env: Pick<ServerEnv, 'db' | 'blobs'>): P
  *
  * A blob is content-addressed and shared, so an unconditional delete would take
  * a surviving prompt's body with a segment's. The reference check covers the
- * whole admitted page in one statement rather than one apiece, which is what
- * lets a page be accounted for inside the call budget.
+ * whole admitted page in one statement, inside the call budget.
  */
 async function freeBlobs(env: Pick<ServerEnv, 'db' | 'blobs'>, admitted: ReadonlyMap<string, BlobRef>): Promise<number> {
   const orphaned = await unreferencedAmong(env.db, [...admitted.values()]);
