@@ -10,7 +10,7 @@ type Preview = { preview: { member: Member } };
 type Linked = { linked: true; member: Member };
 
 const REFUSALS: Record<string, string> = {
-  link_denied: 'This link has expired or was already used. Run `myco member link-github` again for a fresh one.',
+  link_denied: 'This link has expired or was already used. Repeat the Myco command that issued it for a fresh link.',
   identity_taken: 'This GitHub account is already connected to another member.',
   member_linked: 'That member already has a GitHub account connected. Changing it needs the server operator.',
   member_revoked: 'That member has been removed from this server.',
@@ -75,7 +75,7 @@ export function LinkPage() {
           <p className="max-w-md font-sans text-sm text-on-surface">
             Connect <strong>@{me.data!.login || me.data!.sub}</strong> to the member <strong>{preview.label ?? preview.id}</strong> <span className="font-mono text-xs text-on-surface-variant">({preview.id})</span>?
           </p>
-          <p className="max-w-md font-sans text-xs text-on-surface-variant">Only continue if you ran <code className="font-mono">myco member link-github</code> yourself, moments ago. The account is fixed once connected.</p>
+          <p className="max-w-md font-sans text-xs text-on-surface-variant">Only continue if you requested this link from the Myco CLI yourself, moments ago. The account is fixed once connected.</p>
           <button type="button" onClick={() => void confirm()} className="rounded-md bg-primary px-4 py-2 font-sans text-sm text-on-primary transition-opacity hover:opacity-90">
             Connect this account
           </button>
