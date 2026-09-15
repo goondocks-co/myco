@@ -143,18 +143,23 @@ export async function tombstoneSession(
 
   const keys = await blobKeysOf(env.db, projectId, sessionId);
 
-  const statements = [
+  const metadata = [
     env.db
       .prepare(`INSERT INTO session_tombstones (project_id, session_id, reason, created_at, created_by)
         VALUES (?, ?, ?, ?, ?) ON CONFLICT (project_id, session_id) DO NOTHING`)
       .bind(projectId, sessionId, reason ?? null, nowMs, by),
+    env.db.prepare(`UPDATE sessions SET title = NULL, summary = NULL, titled_at = NULL, titled_by = NULL
+      WHERE project_id = ? AND session_id = ? AND (title IS NOT NULL OR summary IS NOT NULL OR titled_at IS NOT NULL OR titled_by IS NOT NULL)`).bind(projectId, sessionId),
+  ];
+  const statements = [
+    ...metadata,
     // Segments first: `transcripts` is the only route to them.
     env.db.prepare(`DELETE FROM transcript_segments WHERE project_id = ? AND transcript_id IN (${SEGMENTS_OF_SESSION})`).bind(projectId, projectId, sessionId),
     ...DERIVED_TABLES.map((table) => env.db.prepare(`DELETE FROM ${table} WHERE project_id = ? AND session_id = ?`).bind(projectId, sessionId)),
     env.db.prepare(`DELETE FROM tags WHERE project_id = ? AND entity_kind = 'plan' AND entity_id NOT IN (SELECT plan_key FROM plans WHERE project_id = ?)`).bind(projectId, projectId),
   ];
   const results = await env.db.batch(statements);
-  const removed = results.slice(1).reduce((n, r) => n + r.meta.changes, 0);
+  const removed = results.slice(metadata.length).reduce((n, r) => n + r.meta.changes, 0);
 
   const orphaned = await unreferenced(env.db, projectId, keys);
   const blobsFreed = await dropBlobs(env.db, env.blobs, projectId, orphaned);

@@ -330,6 +330,21 @@ export function useTitleSession(projectId: string, sessionId: string) {
   });
 }
 
+export function useDeleteSession() {
+  const client = useQueryClient();
+  return useMutation({
+    mutationFn: ({ projectId, sessionId }: { projectId: string; sessionId: string }) =>
+      postJson<{ applied: boolean; removed: number; blobsFreed: number; blobsLeft: number }>(`${project(projectId)}/sessions/${seg(sessionId)}/tombstone`, {}),
+    onSuccess: async (_, { projectId }) => {
+      await client.invalidateQueries({ predicate: (query) => query.queryKey[1] === projectId, refetchType: 'none' });
+      await Promise.all([
+        ...['sessions', 'activity', 'project-plans', 'search'].map((key) => client.invalidateQueries({ queryKey: [key, projectId] })),
+        ...['projects', 'status'].map((key) => client.invalidateQueries({ queryKey: [key] })),
+      ]);
+    },
+  });
+}
+
 /** Sets a plan's status as the signed-in member; on an answer, the session's plans, the turn that produced it, the session's counts and the project's plan list are read again. */
 export function useSetPlanStatus(projectId: string, sessionId: string) {
   const client = useQueryClient();
