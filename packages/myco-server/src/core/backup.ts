@@ -11,6 +11,7 @@
  */
 import type { BlobStore, RelationalStore } from './adapters.js';
 import { sha256Hex, sha256HexOf, utf8 } from '../hash.js';
+import { readStoredObject } from './stored-object.js';
 
 export const BACKUP_FORMAT = 'myco-backup/1';
 export const BACKUP_KEY_PREFIX = 'backups/';
@@ -116,6 +117,12 @@ export function assertBackupSize(text: string, previousBytes = 0): number {
   if (bytes > MAX_BACKUP_BYTES) throw new BackupTooLargeError(bytes);
   return bytes;
 }
+export class BackupIntegrityError extends Error {
+  constructor(readonly id: string, evidence: 'size' | 'sha256') {
+    super(`the stored backup artifact ${id} does not match the ${evidence === 'sha256' ? 'SHA-256 digest' : 'size'} recorded when it was created; it was not previewed, restored or downloaded`);
+    this.name = 'BackupIntegrityError';
+  }
+}
 export class BackupLineageError extends Error {
   constructor(readonly dumpId: string, readonly liveId: string) {
     super('the backup names another Deployment; restoring it is a deliberate adoption, asked for explicitly');
@@ -216,16 +223,28 @@ export async function listBackups(db: RelationalStore, blobs: BlobStore, limit =
   return listed;
 }
 
+const decoder = new TextDecoder();
+
+/**
+ * One stored artifact, held to the evidence its row recorded before any caller
+ * reads it. A recorded size past the artifact bound is refused unread. The
+ * stored object must hold exactly the recorded size, read no further than it
+ * (`readStoredObject`). A row that recorded a digest must match it; a row with
+ * no recorded digest is held to its size alone.
+ */
 const readArtifact = async (db: RelationalStore, blobs: BlobStore, id: string): Promise<{ row: BackupIndexRow; text: string } | null> => {
   const row = await db.prepare(`SELECT ${INDEX_COLUMNS} FROM backups WHERE id = ?`)
     .bind(id).first<BackupIndexRow>();
   if (row === null) return null;
-  const body = await blobs.get(row.key);
-  if (body === null) return null;
-  return { row, text: await new Response(body.body).text() };
+  if (row.size_bytes > MAX_BACKUP_BYTES) throw new BackupTooLargeError(row.size_bytes);
+  const stored = await readStoredObject(blobs, row.key, row.size_bytes);
+  if (stored.kind === 'absent') return null;
+  if (stored.kind === 'size_mismatch') throw new BackupIntegrityError(row.id, 'size');
+  if (row.sha256 !== null && await sha256HexOf(stored.bytes) !== row.sha256) throw new BackupIntegrityError(row.id, 'sha256');
+  return { row, text: decoder.decode(stored.bytes) };
 };
 
-/** What a restore would touch, answered from the header alone — the artifact's rows are never executed here. */
+/** What a restore would touch, answered from the header of a verified artifact — the artifact's rows are never executed here. */
 export async function previewRestore(
   db: RelationalStore, blobs: BlobStore, id: string,
 ): Promise<{ header: BackupHeader; foreignLineage: boolean } | null> {

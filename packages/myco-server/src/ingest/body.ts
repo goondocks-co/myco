@@ -1,3 +1,5 @@
+import { collectBounded, type ChunkReader } from '../bytes.js';
+
 export const MAX_BODY_BYTES = 327_680;
 
 export type BoundedBody = { ok: true; text: string; bytes: number } | { ok: false; reason: string };
@@ -13,31 +15,16 @@ export async function readBoundedBody(request: Request, max: number): Promise<Bo
   if (!request.body) return { ok: true, text: '', bytes: 0 };
 
   const reader = request.body.getReader();
-  const chunks: Uint8Array[] = [];
-  let total = 0;
-  for (;;) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    total += value.byteLength;
-    if (total > max) {
-      await drain(reader);
-      return { ok: false, reason: `body exceeds ${max} bytes` };
-    }
-    chunks.push(value);
+  const read = await collectBounded(reader, max);
+  if (!read.ok) {
+    await drain(reader);
+    return { ok: false, reason: `body exceeds ${max} bytes` };
   }
-  return { ok: true, text: decoder.decode(concat(chunks, total)), bytes: total };
+  return { ok: true, text: decoder.decode(read.bytes), bytes: read.bytes.byteLength };
 }
 
-function concat(chunks: Uint8Array[], total: number): Uint8Array {
-  if (chunks.length === 1) return chunks[0];
-  const joined = new Uint8Array(total);
-  let offset = 0;
-  for (const c of chunks) { joined.set(c, offset); offset += c.byteLength; }
-  return joined;
-}
-
-/** Discards the rest of a stream to its end. Typed structurally: a runtime may add its own methods to the reader, and this needs only `read`. */
-async function drain(reader: { read(): Promise<{ done: boolean }> }): Promise<void> {
+/** Discards the rest of a stream to its end. */
+async function drain(reader: ChunkReader): Promise<void> {
   for (;;) {
     const { done } = await reader.read();
     if (done) return;
