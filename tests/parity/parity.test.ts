@@ -2,7 +2,7 @@ import { repositories } from './scenarios/repositories.ts';
 import { canopy } from './scenarios/canopy.ts';
 import { skillCandidates } from './scenarios/skill-candidates.ts';
 import { afterAll, beforeAll, describe, it, test } from 'bun:test';
-import type { ParityTarget } from './harness.ts';
+import { runScenario, type ParityTarget } from './harness.ts';
 import { bootSelfhosted } from './targets/selfhosted.ts';
 import { bootCloudflare } from './targets/cloudflare.ts';
 import { backupRestore, restoreContinuation } from './scenarios/backup-restore.ts';
@@ -47,7 +47,7 @@ if (!process.env.MYCO_PARITY) {
       for (const scenario of scenarios) {
         it(scenario.name, async () => {
           if (target === null) throw new Error(`${name} target never booted`);
-          await scenario.run(target);
+          await runScenario(target, scenario);
         }, 180_000);
       }
     });

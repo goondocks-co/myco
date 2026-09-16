@@ -1,0 +1,309 @@
+/**
+ * The producer's stage machine, over a checkpoint and ports a test supplies: what it advances, what it refuses, and
+ * what it never claims. No provider, no workerd; the runtime behaviour of the checkpoint object and the clock's
+ * continuation is proven separately under wrangler dev.
+ */
+import { expect, it } from 'bun:test';
+import {
+  continueAttempt, freshScan, PRODUCER_LIMITS, TransientProducerFailure,
+  type AttemptCheckpoint, type AttemptPart, type AttemptState, type ExportAnswer, type PortFailure,
+  type ProducerPorts, type RangeAnswer, type ScanProgress,
+} from '@myco-server-worker/core/recovery-producer.js';
+
+const digestOf = async (bytes: Uint8Array): Promise<string> => {
+  const digest = await crypto.subtle.digest('SHA-256', bytes as unknown as ArrayBuffer);
+  return [...new Uint8Array(digest)].map((value) => value.toString(16).padStart(2, '0')).join('');
+};
+
+/** A checkpoint in memory, with the same durability rules the hosted object's storage gives the real one. */
+function checkpoint(initial: Partial<AttemptState> = {}): AttemptCheckpoint & { state: AttemptState; held: AttemptPart[]; signed: string | null } {
+  const state: AttemptState = {
+    id: 1, stage: 'export', prefix: 'staging/1', startedAt: 0, error: null, attempts: 0, bookmark: null, polls: 0,
+    exportStartedAt: null, exportCompletedAt: null, reExports: 0, sqlBytes: null, sqlEtag: null, uploadId: null,
+    downloadOffset: 0, reconcileOffset: 0, reconciled: 0, tables: ['sessions'], captured: {}, ...freshScan(), ...initial,
+  };
+  const store = {
+    state,
+    held: [] as AttemptPart[],
+    signed: null as string | null,
+    open: () => (store.state.stage === 'export' || store.state.stage === 'download' ? store.state : null),
+    update: (_id: number, fields: Partial<AttemptState>) => { Object.assign(store.state, fields); },
+    parts: () => [...store.held].sort((left, right) => left.part - right.part),
+    recordPart: (_id: number, part: AttemptPart, downloadOffset: number, progress: ScanProgress) => {
+      store.held = [...store.held.filter((held) => held.part !== part.part), part];
+      Object.assign(store.state, progress, { downloadOffset });
+    },
+    clearParts: () => { store.held = []; },
+    signedUrl: async () => store.signed,
+    setSignedUrl: async (_id: number, url: string | null) => { store.signed = url; },
+  };
+  return store;
+}
+
+interface PortOptions {
+  exports?: ExportAnswer[];
+  ranges?: RangeAnswer[];
+  completeUpload?: () => Promise<{ bytes: number } | null>;
+  storedRange?: (prefix: string, offset: number, length: number) => Promise<{ sha256: string } | null>;
+  storedSize?: () => Promise<number | null>;
+  now?: () => number;
+}
+
+function ports(options: PortOptions = {}) {
+  const calls = { polls: 0, ranges: 0, aborted: 0, completed: 0, parts: [] as number[], staged: [] as string[] };
+  const exports = [...(options.exports ?? [])];
+  const ranges = [...(options.ranges ?? [])];
+  const port: ProducerPorts = {
+    now: options.now ?? (() => 0),
+    async pollExport() {
+      calls.polls += 1;
+      const next = exports.shift();
+      if (next === undefined) throw new Error('the test supplied no further export answer');
+      return next;
+    },
+    async readRange() {
+      calls.ranges += 1;
+      const next = ranges.shift();
+      if (next === undefined) throw new Error('the test supplied no further range answer');
+      return next;
+    },
+    async beginUpload() { return 'upload-1'; },
+    async writePart(_prefix, _uploadId, part, body) {
+      calls.parts.push(part);
+      const bytes = body instanceof Uint8Array ? body : new Uint8Array();
+      return { sha256: await digestOf(bytes), etag: `etag-${part}` };
+    },
+    completeUpload: options.completeUpload ?? (async () => { calls.completed += 1; return { bytes: 8 }; }),
+    async abortUpload() { calls.aborted += 1; },
+    readStoredRange: options.storedRange ?? (async () => null),
+    storedSize: options.storedSize ?? (async () => null),
+    async writeStagingFile(_prefix, name) { calls.staged.push(name); },
+  };
+  return { port, calls };
+}
+
+const body = (value: number, length = 4): Uint8Array => new Uint8Array(length).fill(value);
+const range = (bytes: Uint8Array, total: number, etag = 'w/"one"'): RangeAnswer =>
+  ({ status: 'part', bytes, length: bytes.byteLength, total, etag });
+const failure = (cause: PortFailure['cause'], status: number | null, transient: boolean): PortFailure => ({ cause, status, transient });
+
+it('polls an export to completion, then stages it in parts and stops short of any recoverable claim', async () => {
+  const state = checkpoint();
+  const first = body(1);
+  const second = body(2);
+  const { port, calls } = ports({
+    exports: [{ status: 'running', bookmark: 'b1' }, { status: 'complete', bookmark: 'b2', signedUrl: 'https://signed/one' }],
+    ranges: [range(first, 8), range(second, 8)],
+  });
+  const limits = { ...PRODUCER_LIMITS, partBytes: 4 };
+
+  const exporting = await continueAttempt(state, port, limits);
+  expect([exporting.stage, exporting.sourcePaused, exporting.nextInMs]).toEqual(['download', false, 0]);
+  expect(state.state.bookmark).toBe('b2');
+  expect(state.signed).toBe('https://signed/one');
+
+  const downloaded = await continueAttempt(state, port, limits);
+  expect([downloaded.stage, downloaded.nextInMs, downloaded.sourcePaused]).toEqual(['downloaded', null, false]);
+  expect(calls.parts).toEqual([1, 2]);
+  expect(state.state.sqlBytes).toBe(8);
+  // The signed download is never left behind, and the attempt goes no further than a staged export.
+  expect(state.signed).toBeNull();
+  expect(await continueAttempt(state, port, limits)).toEqual({ attempt: null, stage: 'idle', progressed: false, nextInMs: null, sourcePaused: false });
+});
+
+it('says the source is paused while an export runs, and asks for an immediate continuation', async () => {
+  const state = checkpoint();
+  let now = 0;
+  const { port } = ports({ exports: [{ status: 'running', bookmark: 'b1' }], now: () => now });
+  const report = await continueAttempt(state, port, { ...PRODUCER_LIMITS, exportPollMs: 0, stepMs: 0 });
+  expect([report.stage, report.sourcePaused, report.nextInMs, report.progressed]).toEqual(['export', true, 0, true]);
+  expect(state.state.polls).toBe(1);
+  now += 1;
+});
+
+it('resumes a download from its checkpoint after a reset, keeping the parts it recorded', async () => {
+  const state = checkpoint({ stage: 'download', sqlBytes: 8, sqlEtag: 'w/"one"', uploadId: 'upload-1', downloadOffset: 4 });
+  state.signed = 'https://signed/one';
+  state.held = [{ part: 1, bytes: 4, sha256: await digestOf(body(1)), etag: 'etag-1' }];
+  const { port, calls } = ports({ ranges: [range(body(2), 8)] });
+  const report = await continueAttempt(state, port, { ...PRODUCER_LIMITS, partBytes: 4 });
+  expect(report.stage).toBe('downloaded');
+  // Only the missing part is read; the recorded one is never fetched a second time.
+  expect(calls.parts).toEqual([2]);
+  expect(state.state.downloadOffset).toBe(8);
+});
+
+it('reconciles a completion interrupted after its commit, and refuses a same-size corruption', async () => {
+  const parts = [
+    { part: 1, bytes: 4, sha256: await digestOf(body(1)), etag: 'etag-1' },
+    { part: 2, bytes: 4, sha256: await digestOf(body(2)), etag: 'etag-2' },
+  ];
+  const reconciled = checkpoint({ stage: 'download', sqlBytes: 8, uploadId: 'upload-1', downloadOffset: 8 });
+  reconciled.held = [...parts];
+  const good = ports({
+    completeUpload: async () => null,
+    storedRange: async (_prefix, offset) => ({ sha256: parts[offset === 0 ? 0 : 1]!.sha256 }),
+    storedSize: async () => 8,
+  });
+  const report = await continueAttempt(reconciled, good.port, PRODUCER_LIMITS);
+  expect([report.stage, reconciled.state.reconciled]).toEqual(['downloaded', 1]);
+
+  const corrupted = checkpoint({ stage: 'download', sqlBytes: 8, uploadId: 'upload-1', downloadOffset: 8 });
+  corrupted.held = [...parts];
+  const bad = ports({
+    completeUpload: async () => null,
+    storedRange: async (_prefix, offset) => ({ sha256: offset === 0 ? parts[0]!.sha256 : await digestOf(body(9)) }),
+    storedSize: async () => 8,
+  });
+  const refusal = await continueAttempt(corrupted, bad.port, PRODUCER_LIMITS);
+  expect(refusal.stage).toBe('failed');
+  expect(refusal.error).toBe('staging_unreconciled');
+});
+
+it('re-exports when the signed download is gone, and refuses one that cannot be read by range', async () => {
+  const lost = checkpoint({ stage: 'download', sqlBytes: 8, uploadId: 'upload-1', downloadOffset: 0 });
+  lost.signed = 'https://signed/expired';
+  const gone = ports({ ranges: [{ status: 'gone' }] });
+  const report = await continueAttempt(lost, gone.port, PRODUCER_LIMITS);
+  expect([report.stage, lost.state.reExports, lost.state.sqlBytes, gone.calls.aborted]).toEqual(['export', 1, null, 1]);
+  expect(lost.signed).toBeNull();
+
+  const unranged = checkpoint({ stage: 'download', sqlBytes: null, uploadId: null });
+  unranged.signed = 'https://signed/whole';
+  const whole = ports({ ranges: [{ status: 'unranged' }] });
+  const refused = await continueAttempt(unranged, whole.port, PRODUCER_LIMITS);
+  expect(refused.stage).toBe('failed');
+  expect(refused.error).toBe('download_unranged');
+});
+
+it('spends bounded transient failures, then fails the attempt', async () => {
+  const state = checkpoint({ stage: 'download', sqlBytes: 8, uploadId: 'upload-1' });
+  state.signed = 'https://signed/one';
+  const limits = { ...PRODUCER_LIMITS, partBytes: 4, maxTransient: 2 };
+  const transient: RangeAnswer = { status: 'error', failure: failure('http', 503, true) };
+  const { port } = ports({ ranges: [transient, transient, transient] });
+
+  const first = await continueAttempt(state, port, limits);
+  expect([first.stage, first.nextInMs, first.error, state.state.attempts]).toEqual(['download', 1_000, 'provider_unavailable', 1]);
+  const second = await continueAttempt(state, port, limits);
+  expect(second.stage).toBe('failed');
+  expect(second.error).toBe('provider_unavailable');
+});
+
+it('spends a transient attempt on a request the provider never answered', async () => {
+  const state = checkpoint();
+  const { port } = ports({ exports: [{ status: 'error', bookmark: null, failure: failure('transport', null, true) }] });
+  const report = await continueAttempt(state, port, { ...PRODUCER_LIMITS, maxTransient: 3 });
+  expect([report.stage, report.error, state.state.attempts]).toEqual(['export', 'provider_unavailable', 1]);
+});
+
+it('names the refusal for each kind of provider failure, and keeps no signed download', async () => {
+  for (const [cause, refusal] of [['provider', 'export_failed'], ['http', 'provider_refused'], ['protocol', 'export_not_offered']] as const) {
+    const state = checkpoint();
+    state.signed = 'https://signed/one';
+    const { port } = ports({ exports: [{ status: 'error', bookmark: 'b1', failure: failure(cause, 403, false) }] });
+    const report = await continueAttempt(state, port, PRODUCER_LIMITS);
+    expect([cause, report.stage, report.nextInMs, state.state.error, state.signed]).toEqual([cause, 'failed', null, refusal, null]);
+  }
+});
+
+it('refuses an export whose bytes changed between ranged reads', async () => {
+  const state = checkpoint({ stage: 'download', sqlBytes: 8, sqlEtag: 'w/"one"', uploadId: 'upload-1', downloadOffset: 4 });
+  state.signed = 'https://signed/one';
+  state.held = [{ part: 1, bytes: 4, sha256: await digestOf(body(1)), etag: 'etag-1' }];
+  const { port } = ports({ ranges: [range(body(2), 12, 'w/"two"')] });
+  const report = await continueAttempt(state, port, { ...PRODUCER_LIMITS, partBytes: 4 });
+  expect(report.stage).toBe('failed');
+  expect(report.error).toBe('download_changed');
+});
+
+it('retries a provider outage during an export rather than ending the attempt, then fails within its bound', async () => {
+  const state = checkpoint();
+  const outage: ExportAnswer = { status: 'error', bookmark: 'b1', failure: failure('http', 503, true) };
+  const { port } = ports({ exports: [outage, outage] });
+  const limits = { ...PRODUCER_LIMITS, maxTransient: 2 };
+  const first = await continueAttempt(state, port, limits);
+  expect([first.stage, first.error, state.state.attempts]).toEqual(['export', 'provider_unavailable', 1]);
+  const second = await continueAttempt(state, port, limits);
+  expect([second.stage, second.error]).toEqual(['failed', 'provider_unavailable']);
+});
+
+it('bounds how many times one attempt may ask for a fresh export', async () => {
+  const limits = { ...PRODUCER_LIMITS, partBytes: 4, maxReExports: 2 };
+  const state = checkpoint({ stage: 'download', sqlBytes: 8, uploadId: 'upload-1', reExports: 2 });
+  state.signed = 'https://signed/expired';
+  const { port } = ports({ ranges: [{ status: 'gone' }] });
+  const report = await continueAttempt(state, port, limits);
+  expect([report.stage, report.error, state.state.reExports]).toEqual(['failed', 'download_lost', 2]);
+});
+
+it('carries neither provider text nor an exception message into a status or a log', async () => {
+  const marker = 'private-marker-not-a-real-credential';
+  const logged: string[] = [];
+  const original = console.log;
+  console.log = (line: string) => { logged.push(String(line)); };
+  try {
+    const state = checkpoint({ stage: 'download', sqlBytes: 8, uploadId: 'upload-1' });
+    state.signed = `https://signed/one?token=${marker}`;
+    const { port } = ports({ ranges: [{ status: 'error', failure: failure('http', 403, false) }] });
+    const refused = await continueAttempt(state, port, PRODUCER_LIMITS);
+    expect([refused.stage, refused.error]).toEqual(['failed', 'download_changed']);
+
+    // An exception a port throws is classified, never quoted.
+    const thrown = checkpoint({ stage: 'download', sqlBytes: 8, uploadId: 'upload-1' });
+    thrown.signed = 'https://signed/two';
+    const { port: throwing } = ports();
+    throwing.readRange = async () => { throw new Error(`the provider said ${marker}`); };
+    const internal = await continueAttempt(thrown, throwing, PRODUCER_LIMITS);
+    expect([internal.stage, internal.error]).toEqual(['failed', 'internal']);
+    expect(JSON.stringify([refused, internal, thrown.state, state.state])).not.toContain(marker);
+  } finally { console.log = original; }
+  expect(logged.length).toBeGreaterThan(0);
+  expect(logged.join('\n')).not.toContain(marker);
+  // Every value a log carries is a number, a boolean, or one of the fixed names the producer may report.
+  const fixed = new Set([
+    'recovery_attempt_failed', 'recovery_attempt_transient', 'export', 'download', 'downloaded', 'failed',
+    'provider_unavailable', 'provider_refused', 'export_failed', 'export_not_offered', 'export_unparsable',
+    'download_unranged', 'download_changed', 'download_lost', 'staging_unreconciled', 'schema_disagrees', 'internal',
+    'transport', 'http', 'provider', 'protocol', 'Error', 'TypeError', 'RangeError', 'SyntaxError', 'other',
+  ]);
+  for (const line of logged) {
+    for (const [key, value] of Object.entries(JSON.parse(line) as Record<string, unknown>)) {
+      const allowed = typeof value === 'number' || typeof value === 'boolean' || (typeof value === 'string' && fixed.has(value));
+      expect({ key, value, allowed }).toEqual({ key, value, allowed: true });
+    }
+  }
+});
+
+it('resumes after a staging store failure worth another attempt, and fails once the bound is spent', async () => {
+  const held = [{ part: 1, bytes: 4, sha256: await digestOf(body(1)), etag: 'etag-1' }];
+  const overload = () => new TransientProducerFailure({ cause: 'storage', status: null, transient: true });
+
+  // One overloaded write, then the store takes it: the attempt keeps its recorded part and reaches a staged export.
+  const state = checkpoint({ stage: 'download', sqlBytes: 8, sqlEtag: 'w/"one"', uploadId: 'upload-1', downloadOffset: 4 });
+  state.signed = 'https://signed/one';
+  state.held = [...held];
+  const { port } = ports({ ranges: [range(body(2), 8), range(body(2), 8)] });
+  let refusals = 1;
+  const flaky: ProducerPorts = {
+    ...port,
+    async writePart(prefix, uploadId, part, bytes, length) {
+      if (refusals-- > 0) throw overload();
+      return port.writePart(prefix, uploadId, part, bytes, length);
+    },
+  };
+  const spent = await continueAttempt(state, flaky, { ...PRODUCER_LIMITS, partBytes: 4, maxTransient: 3 });
+  expect([spent.stage, spent.error, spent.nextInMs, state.state.attempts]).toEqual(['download', 'provider_unavailable', 1_000, 1]);
+  expect(state.held.map((part) => part.part)).toEqual([1]);
+  const resumed = await continueAttempt(state, flaky, { ...PRODUCER_LIMITS, partBytes: 4, maxTransient: 3 });
+  expect([resumed.stage, state.state.downloadOffset, state.held.length]).toEqual(['downloaded', 8, 2]);
+
+  // A store that stays overloaded ends the attempt at its bound, with a reason from the closed set.
+  const exhausted = checkpoint({ stage: 'download', sqlBytes: 8, sqlEtag: 'w/"one"', uploadId: 'upload-1', downloadOffset: 4, attempts: 1 });
+  exhausted.signed = 'https://signed/one';
+  exhausted.held = [...held];
+  const { port: base } = ports({ ranges: [range(body(2), 8)] });
+  const refusing: ProducerPorts = { ...base, async writePart() { throw overload(); } };
+  const ended = await continueAttempt(exhausted, refusing, { ...PRODUCER_LIMITS, partBytes: 4, maxTransient: 2 });
+  expect([ended.stage, ended.error, exhausted.state.error]).toEqual(['failed', 'provider_unavailable', 'provider_unavailable']);
+});

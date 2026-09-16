@@ -13,6 +13,8 @@ import type {
 } from '../../core/adapters.js';
 import { cloudflareSourceOf } from './source.js';
 import { CLOCK_MANUAL, CLOCK_NAME, type DeploymentClock } from './deployment-clock.js';
+import { PRODUCER_NAME, type RecoveryProducer } from './recovery-producer-object.js';
+import type { StagingBucket } from './recovery-export.js';
 import { markRecordedLaunch } from '../../core/runs.js';
 import { wrappingKeyFromText } from '../wrapping-key.js';
 import { cloudflareVectorStore, type VectorIndex } from './vectors.js';
@@ -46,6 +48,22 @@ export interface CloudflareBindings extends OwnerBindings {
   MYCO_ORIGIN?: string;
   /** The container fleet's size, rendered into the deploy config beside `max_instances` from the same record. */
   MYCO_FLEET?: string;
+  /** The recovery producer: one Durable Object holding an attempt's checkpoint. Absent where none is declared. */
+  RECOVERY?: DurableObjectNamespace<RecoveryProducer>;
+  /** Where a staging is written. Never the Deployment's own object store. */
+  RECOVERY_BUCKET?: StagingBucket;
+  /**
+   * The account credential the provider's export API requires.
+   *
+   * It is read by the recovery producer's adapter and by nothing else: it is not lifted into `ServerEnv`, so no
+   * route, job, snapshot, manifest or status can carry it, and it is sent to the provider's own API origin only.
+   */
+  RECOVERY_EXPORT_TOKEN?: string;
+  /** The account and database a recovery export may name, rendered from the deployment record. */
+  MYCO_RECOVERY_ACCOUNT_ID?: string;
+  MYCO_RECOVERY_DATABASE_ID?: string;
+  /** Test runtimes only: a loopback stand-in for the provider API. A deployed Worker declares none. */
+  MYCO_RECOVERY_API_ORIGIN?: string;
 }
 
 // Compile-time proof that the platform's own types satisfy the adapter interfaces.
@@ -55,6 +73,7 @@ export type _RateLimitSatisfies = AssertAssignable<RateLimiter, RateLimit>;
 export type _BlobStoreSatisfies = AssertAssignable<BlobStore, R2Bucket>;
 export type _VectorStoreSatisfies = AssertAssignable<VectorIndex, VectorizeIndex>;
 export type _EmbeddingSatisfies = AssertAssignable<EmbeddingBinding, Ai>;
+export type _StagingBucketSatisfies = AssertAssignable<StagingBucket, R2Bucket>;
 
 /** Every binding the Worker requires to serve a request. */
 export const REQUIRED_BINDINGS = ['MYCO_DB', 'BUCKET', 'SOURCE_LIMIT', 'TOKEN_LIMIT'] as const;
@@ -111,6 +130,21 @@ export interface DeferredWork {
   waitUntil(promise: Promise<unknown>): void;
 }
 
+/**
+ * The producer port over this Deployment's own bindings. It hands the core a way to start and read one attempt and
+ * nothing else: the account credential stays in the Durable Object's adapter, out of `ServerEnv` entirely.
+ */
+function recoveryPort(bindings: CloudflareBindings): ServerEnv['recovery'] {
+  const producer = bindings.RECOVERY;
+  if (producer === undefined || bindings.RECOVERY_BUCKET === undefined) return undefined;
+  const object = () => producer.get(producer.idFromName(PRODUCER_NAME));
+  return {
+    admit: (admission) => object().admit(admission),
+    status: () => object().status(),
+    noteSchemaDrift: (attempt) => object().noteSchemaDrift(attempt),
+  };
+}
+
 /** The recording launch: the run row is stamped as launched by a recorder and nothing starts. A test double for the parity Worker, never a Deployment's runtime. */
 function recordingLaunch(bindings: CloudflareBindings): ServerEnv['harnessLaunch'] {
   return async (spec) => { await markRecordedLaunch(bindings.MYCO_DB, spec.runId); };
@@ -133,6 +167,7 @@ export function serverEnvFromBindings(bindings: CloudflareBindings, deferred?: D
   return {
     ...(bindings.VECTORIZE === undefined ? {} : { vectors: cloudflareVectorStore(bindings.VECTORIZE) }),
     embeddingProvider: async () => bindings.AI === undefined ? null : cloudflareEmbeddingProvider(bindings.AI),
+    ...(recoveryPort(bindings) === undefined ? {} : { recovery: recoveryPort(bindings) }),
     ...(bindings.HARNESS_LAUNCH_MODE === 'record' ? { harnessLaunch: recordingLaunch(bindings) }
       : embeddingRuntime ? { harnessLaunch: cloudflareEmbeddingLaunch(bindings.MYCO_ORIGIN!, (work) => deferred!.waitUntil(work), { lifetime: deferred!.lifetime }), harnessTasks: [EMBEDDING_TASK] } : {}),
     ...(bindings.MYCO_ORIGIN === undefined || bindings.MYCO_ORIGIN === '' ? {} : { origin: bindings.MYCO_ORIGIN }),

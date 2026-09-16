@@ -1,20 +1,18 @@
 /**
- * The recovery contract shared by the artifact owner and the staging consumer: content fingerprints, the
- * `myco-recovery/3` staging manifest a hosted producer writes, and the identity that names one staged snapshot.
- * Validation only; no filesystem, SQLite or provider code belongs here.
+ * The operator side of the recovery contract: the shape lives in server core, and this adds the validation that
+ * parses a staging found on disk, plus the identity that binds a materialized artifact to the staging it came from.
  */
 import { createHash } from 'node:crypto';
 import { z } from 'zod';
 import { BLOB_KEY_GRAMMAR } from '@myco-server-worker/ingest/kinds.js';
 
-export const STAGING_FORMAT = 'myco-recovery/3';
-export const STAGING_MANIFEST_FILE = 'recovery.json';
-export const STAGING_SQL_FILE = 'd1.sql';
-export const STAGING_SCHEMA_FILE = 'schema.json';
-export const STAGING_OBJECTS_DIRECTORY = 'objects';
+export {
+  STAGING_FORMAT, STAGING_MANIFEST_FILE, STAGING_OBJECTS_DIRECTORY, STAGING_SCHEMA_FILE, STAGING_SQL_FILE,
+  type RecoveryFingerprint, type RecoveryStagingObject,
+} from '@myco-server-worker/core/recovery-staging.js';
+import { STAGING_FORMAT } from '@myco-server-worker/core/recovery-staging.js';
 
 export const fingerprintSchema = z.object({ sha256: z.string().regex(BLOB_KEY_GRAMMAR), bytes: z.number().int().nonnegative() });
-export type RecoveryFingerprint = z.infer<typeof fingerprintSchema>;
 
 /** A staged object: the key the artifact stores it under, its size, and the digest its bytes must hash to. */
 const stagingObjectSchema = z.object({
@@ -44,7 +42,6 @@ export const stagingManifestSchema = z.object({
 });
 
 export type RecoveryStagingManifest = z.infer<typeof stagingManifestSchema>;
-export type RecoveryStagingObject = z.infer<typeof stagingObjectSchema>;
 
 /**
  * The identity of one staged snapshot: its export and schema fingerprints, the configuration and credentials it

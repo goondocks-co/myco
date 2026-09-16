@@ -26,7 +26,33 @@ export interface ParityTarget {
   /** Headers a request over an External Agent grant carries: the key alone names the Project, so no Project or protocol header rides with it. */
   grantHeaders(key: string): Record<string, string>;
   sql(command: string): Promise<Record<string, unknown>[]>;
+  /** Whether the runtime serving this target is up, its exit status, its last output, and any failure writing that output. */
+  runtime?(): { alive: boolean; exitCode: number | null; tail: string; logFailure?: string };
   stop(): Promise<void>;
+}
+
+/**
+ * Runs one scenario against one target. A failure reports the runtime's exit status and last output when the runtime
+ * is gone, and any failure writing that output, keeping the scenario's own failure as the cause.
+ */
+export async function runScenario(target: ParityTarget, scenario: ParityScenario): Promise<void> {
+  try {
+    await scenario.run(target);
+  } catch (error) {
+    const runtime = target.runtime?.();
+    if (runtime === undefined) throw error;
+    const raised = error instanceof Error ? error.message : String(error);
+    const sink = runtime.logFailure === undefined ? '' : `\nlog sink failed: ${runtime.logFailure}`;
+    if (!runtime.alive) {
+      throw new Error(
+        `the ${target.name} runtime exited (code ${runtime.exitCode}) during "${scenario.name}": ${raised}`
+        + `${sink}\nruntime output:\n${runtime.tail}`,
+        { cause: error },
+      );
+    }
+    if (sink !== '') throw new Error(`${raised}${sink}`, { cause: error });
+    throw error;
+  }
 }
 
 export interface ParityScenario {

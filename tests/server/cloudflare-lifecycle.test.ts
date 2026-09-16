@@ -121,17 +121,22 @@ describe('create', () => {
     await updateCloudflareDeployment({ ...options, runner: selected });
     expect(readDeploymentRecord(home)).toMatchObject(resources);
     const config = Bun.TOML.parse(readFileSync(join(dir, DEPLOY_CONFIG_NAME), 'utf8'));
-    expect(config).toMatchObject({ name: resources.workerName, r2_buckets: [{ binding: 'BUCKET', bucket_name: resources.bucketName }] });
+    expect(config).toMatchObject({ name: resources.workerName, r2_buckets: [
+      { binding: 'BUCKET', bucket_name: resources.bucketName },
+      { binding: 'RECOVERY_BUCKET', bucket_name: `${resources.workerName}-recovery` },
+    ] });
     expect(calls.filter((c) => c.args.includes('migrations')).every((c) => c.args.includes(resources.databaseName))).toBe(true);
     expect(calls.some((c) => c.args.includes('recovery-vectors'))).toBe(true);
-    expect(calls.some((c) => c.args.some((arg) => ['myco-server', 'myco-server-blobs', 'myco-server-memory'].includes(arg)))).toBe(false);
+    expect(calls.some((c) => c.args.some((arg) => ['myco-server', 'myco-server-blobs', 'myco-server-memory', 'myco-server-recovery'].includes(arg)))).toBe(false);
+    // The staging store a recorded Deployment provisions is its own, on create and on update alike.
+    expect(calls.filter((c) => c.args.includes('recovery-worker-recovery')).length).toBe(2);
   });
 
   it('provisions, writes the record before deploying, renders the config, migrates before the deploy, and records the version', async () => {
     const { home, dir, options } = setup();
     const result = await createCloudflareDeployment({ ...options, runner: runner() });
 
-    expect(result.createdResources).toEqual(['d1 myco-server', 'r2 myco-server-blobs', 'secrets store', 'store secret myco-secret-wrap-key', 'worker secret SESSION_SECRET']);
+    expect(result.createdResources).toEqual(['d1 myco-server', 'r2 myco-server-blobs', 'r2 myco-server-recovery', 'secrets store', 'store secret myco-secret-wrap-key', 'worker secret SESSION_SECRET']);
     const record = readDeploymentRecord(home)!;
     expect({ db: record.databaseId, store: record.storeId, version: record.versionId }).toEqual({ db: DB_ID, store: STORE, version: '16a2423e-af96-4310-b61b-4e2b5fd1310b' });
 

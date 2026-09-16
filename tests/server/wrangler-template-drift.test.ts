@@ -67,7 +67,12 @@ describe('renderDeployConfig', () => {
     expect(config).toMatchObject({
       name: 'recovery-worker',
       d1_databases: [{ binding: 'MYCO_DB', database_name: 'recovery-database', database_id: 'recovery-id', migrations_dir: 'migrations' }],
-      r2_buckets: [{ binding: 'BUCKET', bucket_name: 'recovery-blobs' }],
+      // The staging store is named after the Worker, so no two Deployments stage a recovery into one bucket.
+      r2_buckets: [
+        { binding: 'BUCKET', bucket_name: 'recovery-blobs' },
+        { binding: 'RECOVERY_BUCKET', bucket_name: 'recovery-worker-recovery' },
+      ],
+      durable_objects: { bindings: [{ name: 'CLOCK' }, { name: 'RECOVERY', class_name: 'RecoveryProducer' }] },
       vectorize: [{ binding: 'VECTORIZE', index_name: 'recovery-vectors' }],
       secrets_store_secrets: [{ binding: 'SECRET_WRAP_KEY', store_id: 'recovery-store', secret_name: 'recovery-wrap-key' }],
       ratelimits: [{ name: 'SOURCE_LIMIT' }, { name: 'TOKEN_LIMIT' }],
@@ -94,7 +99,11 @@ describe('renderDeployConfig', () => {
     expect(config).toContain('MYCO_ORIGIN = "https://myco.example.com"');
     expect(config).toContain('MYCO_FLEET = "3"');
     expect(config.match(/^\[vars\]$/gm)).toHaveLength(1);
-    expect(renderDeployConfig(record({ databaseId: 'd1-uuid' }))).not.toContain('[vars]');
+    // With no URL and no fleet the Worker is still told the one database a recovery export may name, and nothing else.
+    const bare = renderDeployConfig(record({ databaseId: 'd1-uuid' }));
+    expect(bare).toContain('MYCO_RECOVERY_DATABASE_ID = "d1-uuid"');
+    expect(bare).not.toContain('MYCO_ORIGIN');
+    expect(bare).not.toContain('MYCO_FLEET');
     expect(() => renderDeployConfig(record({ databaseId: 'd1-uuid', fleet: 0 }))).toThrow(/fleet/);
     expect(() => renderDeployConfig(record({ databaseId: 'd1-uuid', fleet: 2.5 }))).toThrow(/fleet/);
   });
@@ -153,8 +162,9 @@ describe('parityWranglerConfig', () => {
     for (const kept of ['[[durable_objects.bindings]]', 'name = "CLOCK"', 'class_name = "DeploymentClock"', '[[migrations]]', 'tag = "v2-clock"', '[triggers]']) {
       expect(config).toContain(kept);
     }
-    // One binding table survives — the clock's; the class it retired has none.
-    expect(config.match(/^\[\[durable_objects\.bindings\]\]$/gm)).toHaveLength(1);
+    // Two binding tables survive — the clock's and the recovery producer's; the class it retired has none.
+    expect(config.match(/^\[\[durable_objects\.bindings\]\]$/gm)).toHaveLength(2);
+    expect(config).toContain('class_name = "RecoveryProducer"');
   });
 
   it('GATE: deletes no class the ledger never created, on either the committed base or a rendered deploy', () => {

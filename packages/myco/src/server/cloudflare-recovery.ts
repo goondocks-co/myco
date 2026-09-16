@@ -8,6 +8,7 @@ import { deploymentSecretStore } from '@myco-server-worker/core/secrets.js';
 import { resetEmbeddingIndex } from '@myco-server-worker/core/embedding/reconcile.js';
 import { atomicWriteFileSync, syncDirectoryForDurability } from '@myco/utils/atomic-write.js';
 import { cloudflareOperation } from './cloudflare-operation.js';
+import { cloudflareResources } from './cloudflare-resources.js';
 import { copyRecoveryBundle, copyRecoveryObjects, verifyRecoveryBundle } from './recovery-bundle.js';
 import { prepareRecoveryCredentials } from './recovery-credentials.js';
 import { restoreCloudflareDatabase } from './cloudflare-recovery-database.js';
@@ -25,6 +26,7 @@ const journalSchema = z.object({
   fingerprint: z.string().regex(/^[a-f0-9]{64}$/),
   name: z.string().regex(/^myco-recovery-[a-f0-9]{24}$/),
   databaseId: z.string().optional(), bucketCreated: z.boolean().default(false),
+  recoveryBucketCreated: z.boolean().default(false),
   vectorCreated: z.boolean().default(false), storeId: z.string().optional(),
   wrapKeyInstalled: z.boolean().default(false), url: z.string().url().optional(),
   pending: z.string().optional(),
@@ -67,7 +69,7 @@ export const restoreCloudflareDeployment = cloudflareOperation(async (options: L
     journal = next;
   };
   if (journal === undefined) write({ format: 'myco-hosted-recovery/1', accountId: options.accountId, fingerprint,
-    name: `myco-recovery-${randomBytes(12).toString('hex')}`, bucketCreated: false, vectorCreated: false, vectorProvisioned: false, wrapKeyInstalled: false, newSignIn: options.newSignIn ?? false });
+    name: `myco-recovery-${randomBytes(12).toString('hex')}`, bucketCreated: false, recoveryBucketCreated: false, vectorCreated: false, vectorProvisioned: false, wrapKeyInstalled: false, newSignIn: options.newSignIn ?? false });
   const held = () => journal!;
   const confirmed = (fields: Partial<Journal>) => {
     const { pending: _pending, ...prior } = held();
@@ -89,7 +91,7 @@ export const restoreCloudflareDeployment = cloudflareOperation(async (options: L
   const fleet = z.object({ fleet: z.number().int().positive().optional() }).parse(manifest.snapshot!.configuration).fleet;
   const makeRecord = (): DeploymentRecord => ({
     accountId: options.accountId, workerName: name, databaseName: name, bucketName: name,
-    vectorIndexName: name, wrapKeySecretName: name,
+    vectorIndexName: name, wrapKeySecretName: name, recoveryBucketName: cloudflareResources({ workerName: name }).recoveryBucketName,
     ...(held().databaseId === undefined ? {} : { databaseId: held().databaseId! }),
     ...(held().storeId === undefined ? {} : { storeId: held().storeId! }),
     ...(held().url === undefined ? {} : { url: held().url! }),
@@ -137,6 +139,10 @@ export const restoreCloudflareDeployment = cloudflareOperation(async (options: L
     ...(options.report === undefined ? {} : { report: options.report }) });
   if (held().databaseId === undefined) await provision(`D1 ${name}`, () => ensureDatabase({ ...bare, databaseName: name }), (result) => ({ databaseId: result.databaseId }));
   if (!held().bucketCreated) await provision(`R2 ${name}`, () => ensureBucket({ ...bare, bucketName: name }), () => ({ bucketCreated: true }));
+  const stagingName = cloudflareResources({ workerName: name }).recoveryBucketName;
+  if (!held().recoveryBucketCreated) {
+    await provision(`R2 ${stagingName}`, () => ensureBucket({ ...bare, bucketName: stagingName }), () => ({ recoveryBucketCreated: true }));
+  }
   if (!held().vectorCreated) {
     if (!held().vectorProvisioned) await provision(`Vectorize ${name}`, () => ensureVectorIndexResource({ ...bare, vectorIndexName: name, requireNew: true }), () => ({ vectorProvisioned: true }));
     await ensureVectorIndexFilters({ ...bare, vectorIndexName: name });

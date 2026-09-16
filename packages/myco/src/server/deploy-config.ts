@@ -36,7 +36,7 @@ const DATABASE_ID_PLACEHOLDER = '<YOUR_D1_DATABASE_ID>';
 const SOURCE_ENTRY_LINE = 'main = "src/index.ts"';
 const RESOURCE_FIELDS = [
   ['name', 'workerName'], ['database_name', 'databaseName'],
-  ['bucket_name', 'bucketName'], ['index_name', 'vectorIndexName'],
+  ['bucket_name', 'bucketName'], ['bucket_name', 'recoveryBucketName'], ['index_name', 'vectorIndexName'],
 ] as const;
 
 /**
@@ -100,7 +100,7 @@ export function renderDeployConfig(record: DeploymentRecord): string {
     .replace(DATABASE_ID_PLACEHOLDER, record.databaseId!) + VECTOR_BINDINGS;
   for (const [key, field] of RESOURCE_FIELDS) {
     const declaration = new RegExp(`^${key} = "${defaults[field]}"$`, 'gm');
-    if ([...body.matchAll(declaration)].length !== 1) throw new Error(`the template must declare exactly one default ${key}`);
+    if ([...body.matchAll(declaration)].length !== 1) throw new Error(`the template must declare exactly one default ${key} for ${field}`);
     body = body.replace(declaration, `${key} = "${resources[field]}"`);
   }
   if (record.storeId !== undefined && record.storeId !== '') {
@@ -116,10 +116,12 @@ export function renderDeployConfig(record: DeploymentRecord): string {
   if (record.fleet !== undefined && (!Number.isInteger(record.fleet) || record.fleet < 1)) {
     throw new Error(`the deployment record's fleet is not a whole number of runtimes: ${JSON.stringify(record.fleet)} (~/.myco/server/cloudflare/record.json)`);
   }
-  // What the Worker is told about itself: the origin the clock's runs call back to, and the fleet the dispatcher counts against. Both are the record's, never a request's.
+  // What the Worker is told about itself: the origin the clock's runs call back to, the fleet the dispatcher counts
+  // against, and the one database a recovery export may name. Each is the record's, never a request's.
   const vars: string[] = [];
   if (record.url !== undefined) vars.push(`MYCO_ORIGIN = "${new URL(record.url).origin}"`);
   if (record.fleet !== undefined) vars.push(`MYCO_FLEET = "${record.fleet}"`);
+  vars.push(`MYCO_RECOVERY_ACCOUNT_ID = "${record.accountId}"`, `MYCO_RECOVERY_DATABASE_ID = "${record.databaseId!}"`);
   if (vars.length > 0) body += ['', '[vars]', ...vars, ''].join('\n');
   return `${header.join('\n')}\n${body}`;
 }

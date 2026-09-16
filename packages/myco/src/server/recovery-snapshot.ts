@@ -4,17 +4,12 @@
  */
 import { Database } from 'bun:sqlite';
 import { identifierAt, importTableDump, runOneStatement, significantStatement } from './sql-dump.js';
-import { quoteIdentifier, recoverableVirtualTables, SCHEMA_QUERY, schemaObjects } from './recovery-schema.js';
+import { exportedTables, quoteIdentifier, recoverableVirtualTables, SCHEMA_QUERY, schemaObjects } from './recovery-schema.js';
+
+export { exportedTables };
 
 export type RecoverySchemaObjects = ReturnType<typeof schemaObjects.parse>;
 type RecoverySchemaObject = RecoverySchemaObjects[number];
-
-/** The ordinary tables an export of `schema` must carry, with `sqlite_sequence` where a table declares AUTOINCREMENT. */
-export function exportedTables(schema: RecoverySchemaObjects): string[] {
-  const tables = schema.filter((row) => row.storage === 'table').map((row) => row.name);
-  if (schema.some((row) => row.storage === 'table' && /\bAUTOINCREMENT\b/i.test(row.sql))) tables.push('sqlite_sequence');
-  return tables;
-}
 
 /** Refuses a schema this recovery path cannot reconstruct, before a source is asked for its contents. */
 export function assertRecoverableSchema(schema: RecoverySchemaObjects): void {
