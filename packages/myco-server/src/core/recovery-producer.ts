@@ -41,6 +41,7 @@ export interface AttemptState {
   attempts: number;
   bookmark: string | null;
   polls: number;
+  /** When this attempt first asked the provider for an export. A restart keeps it: the budget is attempt-wide. */
   exportStartedAt: number | null;
   exportCompletedAt: number | null;
   reExports: number;
@@ -119,8 +120,12 @@ export interface ProducerPorts {
 export interface ProducerLimits {
   /** Bytes per downloaded part. */
   partBytes: number;
-  /** How long one continuation may poll an export before it returns for another. */
+  /** How long one admitted attempt may hold an export open in total, across continuations and restarts. */
   exportPollMs: number;
+  /** How long one call to the provider may take. The total an attempt may spend is `exportPollMs + requestMs`. */
+  requestMs: number;
+  /** How many times one continuation may poll before it returns for another. */
+  maxPollsPerStep: number;
   /** How long one continuation may spend in total. */
   stepMs: number;
   /** Transient failures one attempt may spend before it fails. */
@@ -129,7 +134,10 @@ export interface ProducerLimits {
   maxReExports: number;
 }
 
-export const PRODUCER_LIMITS: ProducerLimits = { partBytes: 32 * 1024 * 1024, exportPollMs: 600_000, stepMs: 20_000, maxTransient: 5, maxReExports: 3 };
+export const PRODUCER_LIMITS: ProducerLimits = {
+  partBytes: 32 * 1024 * 1024, exportPollMs: 600_000, requestMs: 30_000, maxPollsPerStep: 12, stepMs: 20_000,
+  maxTransient: 5, maxReExports: 3,
+};
 
 /** What a continuation did, and when the attempt next needs one. `null` means nothing is open. */
 export interface ContinuationReport {
@@ -156,6 +164,7 @@ export class TransientProducerFailure extends Error {
  */
 export type ProducerRefusal =
   | 'provider_unavailable' | 'provider_refused' | 'export_failed' | 'export_not_offered' | 'export_unparsable'
+  | 'export_stalled'
   | 'download_unranged' | 'download_changed' | 'download_lost' | 'staging_unreconciled'
   | 'schema_disagrees' | 'internal';
 
@@ -210,7 +219,13 @@ export async function continueAttempt(
     if (error instanceof TransientProducerFailure) {
       return fail(open, checkpoint, ports, 'provider_unavailable', { spent: open.attempts, status: error.failure.status ?? 0 });
     }
-    return fail(open, checkpoint, ports, 'internal', {}, thrownShape(error));
+    // An interrupted step spends one bounded attempt and keeps its stage; exhaustion is terminal.
+    if (open.attempts + 1 < limits.maxTransient) {
+      emit({ kind: 'recovery_attempt_interrupted', attempt: open.id, stage: open.stage, spent: open.attempts + 1, thrown: thrownShape(error) });
+      checkpoint.update(open.id, { attempts: open.attempts + 1 });
+      return { attempt: open.id, stage: open.stage, progressed: false, nextInMs: 1_000, sourcePaused: open.stage === 'export' };
+    }
+    return fail(open, checkpoint, ports, 'internal', { spent: open.attempts + 1 }, thrownShape(error));
   }
 }
 
@@ -218,11 +233,45 @@ async function fail(
   attempt: AttemptState, checkpoint: AttemptCheckpoint, ports: ProducerPorts, refusal: ProducerRefusal,
   facts: Record<string, number | boolean> = {}, shape?: ThrownShape,
 ): Promise<ContinuationReport> {
-  const named = refuse(attempt, refusal, facts, shape);
-  if (attempt.uploadId !== null) await ports.abortUpload(attempt.prefix, attempt.uploadId).catch(() => undefined);
-  await checkpoint.setSignedUrl(attempt.id, null);
-  checkpoint.update(attempt.id, { stage: 'failed', error: named, uploadId: null });
-  return { attempt: attempt.id, stage: 'failed', progressed: true, nextInMs: null, sourcePaused: false, error: named };
+  const upload = attempt.uploadId;
+  // The terminal state is durable before it is announced, and the clearing up that follows cannot change it.
+  checkpoint.update(attempt.id, { stage: 'failed', error: refusal, uploadId: null });
+  let aborted = upload === null;
+  let cleared = false;
+  if (upload !== null) {
+    try {
+      await ports.abortUpload(attempt.prefix, upload);
+      aborted = true;
+    } catch { aborted = false; }
+  }
+  try {
+    await checkpoint.setSignedUrl(attempt.id, null);
+    cleared = true;
+  } catch { cleared = false; }
+  refuse(attempt, refusal, { ...facts, uploadAborted: aborted, signedUrlCleared: cleared }, shape);
+  return { attempt: attempt.id, stage: 'failed', progressed: true, nextInMs: null, sourcePaused: false, error: refusal };
+}
+
+/**
+ * Starts this attempt's export again inside its bound: the parts and the signed download go, the cursor returns to
+ * the beginning, and the attempt's export origin stands.
+ */
+async function restartExport(
+  state: AttemptState, checkpoint: AttemptCheckpoint, ports: ProducerPorts, limits: ProducerLimits,
+  exhausted: ProducerRefusal,
+): Promise<ContinuationReport> {
+  if (state.reExports + 1 > limits.maxReExports) {
+    return fail(state, checkpoint, ports, exhausted, { reExports: state.reExports + 1 });
+  }
+  if (state.uploadId !== null) await ports.abortUpload(state.prefix, state.uploadId).catch(() => undefined);
+  checkpoint.clearParts(state.id);
+  await checkpoint.setSignedUrl(state.id, null);
+  checkpoint.update(state.id, {
+    stage: 'export', bookmark: null, exportCompletedAt: null,
+    sqlBytes: null, sqlEtag: null, uploadId: null, downloadOffset: 0, reconcileOffset: 0, reExports: state.reExports + 1,
+    ...freshScan(),
+  });
+  return { attempt: state.id, stage: 'export', progressed: true, nextInMs: 0, sourcePaused: false };
 }
 
 /** Polls the export back to back inside one continuation; the source is unreadable for as long as this runs. */
@@ -232,16 +281,34 @@ async function pollExportStage(
   let bookmark = attempt.bookmark;
   const before = attempt.polls;
   let polls = before;
+  // The attempt's export origin, held in the checkpoint: one budget covers every continuation and restart.
+  const exportStartedAt = attempt.exportStartedAt ?? started;
   if (attempt.exportStartedAt === null) checkpoint.update(attempt.id, { exportStartedAt: started });
-  for (let first = true; first || ports.now() - started < Math.min(limits.exportPollMs, limits.stepMs); first = false) {
+  const stalled = (at: number): boolean => at - exportStartedAt > limits.exportPollMs;
+  for (let step = 0; step < limits.maxPollsPerStep && ports.now() - started < limits.stepMs; step += 1) {
+    if (stalled(ports.now())) {
+      checkpoint.update(attempt.id, { polls });
+      return fail(attempt, checkpoint, ports, 'export_stalled', { elapsedMs: ports.now() - exportStartedAt, polls });
+    }
     const answer = await ports.pollExport(bookmark);
     polls += 1;
     if (answer.status === 'error') {
       if (answer.failure.transient) throw new TransientProducerFailure(answer.failure);
+      checkpoint.update(attempt.id, { polls });
+      // A refused bookmark this attempt holds starts the export again inside its bound; a refused fresh request
+      // ends the attempt.
+      if (answer.failure.cause === 'provider' && bookmark !== null) {
+        return restartExport({ ...attempt, bookmark, polls }, checkpoint, ports, limits, 'export_failed');
+      }
       return fail(attempt, checkpoint, ports, EXPORT_REFUSAL[answer.failure.cause], { status: answer.failure.status ?? 0, polls });
     }
     bookmark = answer.bookmark;
     checkpoint.update(attempt.id, { bookmark, polls });
+    // An export still running past the budget ends the attempt; a completion a poll inside the budget answered
+    // stands.
+    if (answer.status === 'running' && stalled(ports.now())) {
+      return fail({ ...attempt, bookmark }, checkpoint, ports, 'export_stalled', { elapsedMs: ports.now() - exportStartedAt, polls });
+    }
     if (answer.status === 'complete') {
       await checkpoint.setSignedUrl(attempt.id, answer.signedUrl);
       checkpoint.update(attempt.id, { stage: 'download', exportCompletedAt: ports.now() });
@@ -258,30 +325,17 @@ async function downloadStage(
 ): Promise<ContinuationReport> {
   let state = attempt;
   let progressed = false;
-  const restartExport = async (): Promise<ContinuationReport> => {
-    if (state.reExports + 1 > limits.maxReExports) {
-      return fail(state, checkpoint, ports, 'download_lost', { reExports: state.reExports + 1 });
-    }
-    if (state.uploadId !== null) await ports.abortUpload(state.prefix, state.uploadId).catch(() => undefined);
-    checkpoint.clearParts(state.id);
-    await checkpoint.setSignedUrl(state.id, null);
-    checkpoint.update(state.id, {
-      stage: 'export', bookmark: null, exportStartedAt: null, exportCompletedAt: null,
-      sqlBytes: null, sqlEtag: null, uploadId: null, downloadOffset: 0, reconcileOffset: 0, reExports: state.reExports + 1,
-      ...freshScan(),
-    });
-    return { attempt: state.id, stage: 'export', progressed: true, nextInMs: 0, sourcePaused: false };
-  };
+  const restart = (): Promise<ContinuationReport> => restartExport(state, checkpoint, ports, limits, 'download_lost');
 
   while (state.sqlBytes === null || state.downloadOffset < state.sqlBytes) {
     if (ports.now() - started > limits.stepMs) {
       return { attempt: state.id, stage: 'download', progressed, nextInMs: 0, sourcePaused: false };
     }
     const url = await checkpoint.signedUrl(state.id);
-    if (url === null) return restartExport();
+    if (url === null) return restart();
     const length = state.sqlBytes === null ? limits.partBytes : Math.min(limits.partBytes, state.sqlBytes - state.downloadOffset);
     const answer = await ports.readRange(url, state.downloadOffset, length);
-    if (answer.status === 'gone') return restartExport();
+    if (answer.status === 'gone') return restart();
     if (answer.status === 'unranged') return fail(state, checkpoint, ports, 'download_unranged');
     if (answer.status === 'error') {
       if (answer.failure.transient) throw new TransientProducerFailure(answer.failure);

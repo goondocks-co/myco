@@ -7,7 +7,7 @@
 import type {
   AttemptPart, ExportAnswer, PortFailure, ProducerPorts, RangeAnswer,
 } from '../../core/recovery-producer.js';
-import { stagedSqlKey, TransientProducerFailure } from '../../core/recovery-producer.js';
+import { PRODUCER_LIMITS, stagedSqlKey, TransientProducerFailure } from '../../core/recovery-producer.js';
 
 /** The one origin an account credential is sent to. */
 export const CLOUDFLARE_API_ORIGIN = 'https://api.cloudflare.com';
@@ -97,11 +97,15 @@ async function stored<T>(work: () => Promise<T>): Promise<T> {
 
 /** The producer's ports over one Deployment's own bindings. */
 export function cloudflareProducerPorts(
-  target: ExportTarget, bucket: StagingBucket, options: { testRoutes?: boolean; now?: () => number } = {},
+  target: ExportTarget, bucket: StagingBucket,
+  options: { testRoutes?: boolean; now?: () => number; requestMs?: number } = {},
 ): ProducerPorts {
   const origin = exportApiOrigin(target, options.testRoutes === true);
   const endpoint = `${origin}/client/v4/accounts/${target.accountId}/d1/database/${target.databaseId}/export`;
   const now = options.now ?? (() => Date.now());
+  /** Every provider call carries this deadline, so a request that never answers ends as a transient failure. */
+  const requestMs = options.requestMs ?? PRODUCER_LIMITS.requestMs;
+  const deadline = (): AbortSignal => AbortSignal.timeout(requestMs);
   return {
     now,
     async pollExport(bookmark) {
@@ -109,6 +113,7 @@ export function cloudflareProducerPorts(
       try {
         response = await fetch(endpoint, {
           method: 'POST',
+          signal: deadline(),
           headers: { authorization: `Bearer ${target.token}`, 'content-type': 'application/json' },
           body: JSON.stringify({
             output_format: 'polling',
@@ -121,7 +126,7 @@ export function cloudflareProducerPorts(
       }
       type ExportBody = {
         success?: boolean; errors?: unknown[];
-        result?: { status?: string; at_bookmark?: string; error?: string; result?: { signed_url?: string } };
+        result?: { success?: boolean; status?: string; at_bookmark?: string; error?: string; result?: { signed_url?: string } };
       };
       let body: ExportBody | null;
       try {
@@ -137,6 +142,11 @@ export function cloudflareProducerPorts(
       }
       const held = body.result;
       const at = held.at_bookmark ?? bookmark;
+      // A refusal inside a success envelope: the answer is 200 and the provider's own result did not serve the
+      // request. Its wording is never read or carried.
+      if (held.success === false || (held.status === undefined && held.error !== undefined)) {
+        return { status: 'error', bookmark, failure: failure('provider', response.status, false) };
+      }
       if (held.status === 'error') return { status: 'error', bookmark: at, failure: failure('provider', null, false) };
       if (held.status === 'complete') {
         const signed = held.result?.signed_url;
@@ -150,7 +160,7 @@ export function cloudflareProducerPorts(
       // The signed URL is a capability of its own: it is fetched with no Authorization header.
       let response: Response;
       try {
-        response = await fetch(url, { headers: { range: `bytes=${offset}-${offset + length - 1}` } });
+        response = await fetch(url, { signal: deadline(), headers: { range: `bytes=${offset}-${offset + length - 1}` } });
       } catch {
         return { status: 'error', failure: TRANSPORT };
       }
