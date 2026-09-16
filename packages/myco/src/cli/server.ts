@@ -50,6 +50,7 @@ import { carriedNative, runLocalDeployment } from '../server/local-run.js';
 import { setupLocalOwner } from '../server/local-owner.js';
 import { backupLocalDeployment } from '../server/local-backup.js';
 import { backupCloudflareDeployment } from '../server/cloudflare-backup.js';
+import { materializeRecoveryStaging } from '../server/recovery-materialize.js';
 import { restoreLocalDeployment } from '../server/local-recovery.js';
 import { restoreCloudflareDeployment } from '../server/cloudflare-recovery.js';
 import {
@@ -105,6 +106,9 @@ Commands (--target local runs the Deployment from this binary; --target cloudfla
                                           Return the Worker to an earlier version. Defaults to the
                                           record's last recorded one — the version a failed update
                                           left serving.
+  materialize --from <staging> --to <dir>
+                                          Materialize a myco-recovery/3 staging into a verified
+                                          recovery artifact. Local only; reads the staging read-only.
   backup --to <dir> [--target local|cloudflare|compose]
                                           Snapshot the database and blobs. Local/Cloudflare backups
                                           resume an incomplete directory and verify every blob.
@@ -483,6 +487,17 @@ export async function run(args: string[]): Promise<void> {
         noPull: flags.has('no-pull'),
       });
       console.log('Deployment updated. The container applied any migrations its volume was behind.');
+      return;
+    }
+
+    if (command === 'materialize') {
+      const from = flags.get('from');
+      const to = flags.get('to');
+      if (from === undefined || from === '' || from === 'true') fail('materialize needs --from <staging dir>.');
+      if (to === undefined || to === '' || to === 'true') fail('materialize needs --to <dir>.');
+      const done = await materializeRecoveryStaging({ staging: from!, destination: to!, report: (line) => { console.log(line); } });
+      console.log(`Verified data artifact written to ${path.resolve(to!)} (${done.snapshot!.blobCount} blobs)`);
+      console.log(`Keep these credentials separately for recovery: ${done.snapshot!.credentialsRequired.join(', ')}`);
       return;
     }
 

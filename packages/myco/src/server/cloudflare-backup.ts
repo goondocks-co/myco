@@ -1,6 +1,5 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { Database } from 'bun:sqlite';
 import { z } from 'zod';
 import {
   cloudflareBlobReader, ensureCommandDir, exportDatabase, queryCloudflareDatabase,
@@ -10,9 +9,8 @@ import type { LifecycleOptions } from './cloudflare-lifecycle.js';
 import { renderDeployConfig } from './deploy-config.js';
 import { LOCAL_SECRET_NAMES } from './local.js';
 import { createRecoveryBundle, type RecoveryManifest } from './recovery-bundle.js';
-import { importTableDump } from './sql-dump.js';
-
-import { schemaObjects, SCHEMA_QUERY, quoteIdentifier, recoverableVirtualTables } from './recovery-schema.js';
+import { assertRecoverableSchema, buildSnapshotDatabase, exportedTables } from './recovery-snapshot.js';
+import { schemaObjects, SCHEMA_QUERY } from './recovery-schema.js';
 
 function configuration(mycoHome?: string) {
   const held = readDeploymentRecord(mycoHome);
@@ -46,10 +44,9 @@ export async function backupCloudflareDeployment(
     snapshot: async (file, workDir) => {
       const provider = { ...bound(workDir), databaseName };
       const before = schemaObjects.parse(await queryCloudflareDatabase({ ...provider, sql: SCHEMA_QUERY }));
-      const tables = before.filter((row) => row.storage === 'table').map((row) => row.name);
-      if (before.some((row) => row.storage === 'table' && /\bAUTOINCREMENT\b/i.test(row.sql))) tables.push('sqlite_sequence');
+      const tables = exportedTables(before);
       if (tables.length === 0) throw new Error('D1 holds no ordinary tables to recover');
-      const virtual = recoverableVirtualTables(before);
+      assertRecoverableSchema(before);
       options.report?.('Exporting D1; Cloudflare temporarily pauses queries during the snapshot');
       const { sqlPath } = await exportDatabase({ ...provider, destination: workDir, tables });
       const after = schemaObjects.parse(await queryCloudflareDatabase({ ...provider, sql: SCHEMA_QUERY }));
@@ -57,22 +54,7 @@ export async function backupCloudflareDeployment(
         || JSON.stringify(record) !== JSON.stringify(configuration(options.mycoHome))) {
         throw new Error('Deployment schema or configuration changed during its snapshot; retry');
       }
-      const db = new Database(file, { create: true });
-      try {
-        db.exec('BEGIN');
-        await importTableDump(db, sqlPath);
-        for (const row of virtual) db.exec(row.sql);
-        for (const type of ['index', 'view', 'trigger']) {
-          for (const row of before.filter((item) => item.type === type)) db.exec(row.sql);
-        }
-        for (const row of virtual) {
-          const name = quoteIdentifier(row.name);
-          db.exec(`INSERT INTO ${name}(${name}) VALUES('rebuild')`);
-        }
-        const reconstructed = schemaObjects.parse(db.query(SCHEMA_QUERY).all());
-        if (JSON.stringify(before) !== JSON.stringify(reconstructed)) throw new Error('exported database schema does not match its source');
-        db.exec('COMMIT');
-      } finally { db.close(); }
+      await buildSnapshotDatabase(file, sqlPath, before);
       return { configuration: { ...record }, credentialsRequired: [...LOCAL_SECRET_NAMES] };
     },
     blob: async (blob) => readBlob(blob.key),
