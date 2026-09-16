@@ -1,0 +1,198 @@
+/**
+ * Where the producer meets the outside: the one origin an account credential may reach, what a report may carry, and
+ * how a wake keeps a Deployment alive while its own database is unreadable.
+ */
+import { expect, it } from 'bun:test';
+import {
+  armFloor, CONTINUATION_FLOOR_MS, soonestWake,
+} from '@myco-server-worker/platform/cloudflare/deployment-clock.js';
+import {
+  CLOUDFLARE_API_ORIGIN, cloudflareProducerPorts, exportApiOrigin, transientStatus,
+} from '@myco-server-worker/platform/cloudflare/recovery-export.js';
+import { WAKE_CONTINUATIONS } from '@myco-server-worker/core/jobs.js';
+import { TransientProducerFailure } from '@myco-server-worker/core/recovery-producer.js';
+
+const TOKEN = 'account-token-value-not-a-real-credential';
+
+const target = (apiOrigin?: string) => ({
+  accountId: 'account-1', databaseId: 'database-1', tables: ['sessions'], token: TOKEN, ...(apiOrigin === undefined ? {} : { apiOrigin }),
+});
+
+const bucket = () => ({
+  async put() { return { size: 0 }; },
+  async get() { return null; },
+  async head() { return null; },
+  async createMultipartUpload() { return { uploadId: 'u1' }; },
+  resumeMultipartUpload() {
+    return {
+      async uploadPart() { return { etag: 'e1' }; },
+      async complete() { return { size: 0 }; },
+      async abort() {},
+    };
+  },
+});
+
+it('sends the account credential to the provider API and to nothing else', async () => {
+  const seen: Array<{ url: string; authorization: string | null }> = [];
+  const original = globalThis.fetch;
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    seen.push({ url: String(input), authorization: new Headers(init?.headers).get('authorization') });
+    if (String(input).startsWith(CLOUDFLARE_API_ORIGIN)) {
+      return Response.json({ success: true, result: { status: 'complete', at_bookmark: 'b1', result: { signed_url: 'https://signed.example/one' } } });
+    }
+    return new Response(new Uint8Array([1, 2, 3, 4]), {
+      status: 206, headers: { 'content-range': 'bytes 0-3/4', etag: 'w/"one"' },
+    });
+  }) as typeof fetch;
+  try {
+    const ports = cloudflareProducerPorts(target(), bucket());
+    const answer = await ports.pollExport(null);
+    expect(answer.status).toBe('complete');
+    await ports.readRange('https://signed.example/one', 0, 4);
+  } finally { globalThis.fetch = original; }
+
+  expect(seen).toHaveLength(2);
+  expect(seen[0]!.url.startsWith(`${CLOUDFLARE_API_ORIGIN}/client/v4/accounts/account-1/d1/database/database-1/export`)).toBe(true);
+  expect(seen[0]!.authorization).toBe(`Bearer ${TOKEN}`);
+  // The signed download is a capability of its own: it is fetched with no credential attached.
+  expect(seen[1]!.url).toBe('https://signed.example/one');
+  expect(seen[1]!.authorization).toBeNull();
+});
+
+it('refuses any export origin but the provider, unless a test runtime declares a loopback one', () => {
+  expect(exportApiOrigin(target(), false)).toBe(CLOUDFLARE_API_ORIGIN);
+  expect(exportApiOrigin(target('http://127.0.0.1:8123'), true)).toBe('http://127.0.0.1:8123');
+  // A deployed Worker has no test routes, so even a loopback origin is refused there.
+  expect(() => exportApiOrigin(target('http://127.0.0.1:8123'), false)).toThrow('other than the provider API is refused');
+  for (const elsewhere of ['https://example.invalid', 'http://169.254.169.254', 'https://api.cloudflare.com.evil.test']) {
+    expect(() => exportApiOrigin(target(elsewhere), true)).toThrow('other than the provider API is refused');
+  }
+});
+
+it('treats a provider outage as worth another attempt and a refusal as final', () => {
+  expect([408, 429, 500, 503].map(transientStatus)).toEqual([true, true, true, true]);
+  expect([400, 401, 403, 404].map(transientStatus)).toEqual([false, false, false, false]);
+});
+
+it('carries no credential in what a provider failure reports', async () => {
+  const original = globalThis.fetch;
+  globalThis.fetch = (async (_input: RequestInfo | URL, _init?: RequestInit) =>
+    Response.json({ success: false, errors: [{ code: 10000, message: 'Authentication error' }] }, { status: 403 })) as typeof fetch;
+  try {
+    const answer = await cloudflareProducerPorts(target(), bucket()).pollExport(null);
+    // A refusal answers classified facts: a cause, a status, and whether another attempt is worth spending.
+    expect(answer).toEqual({ status: 'error', bookmark: null, failure: { cause: 'http', status: 403, transient: false } });
+    expect(JSON.stringify(answer)).not.toContain(TOKEN);
+  } finally { globalThis.fetch = original; }
+});
+
+it('arms a floor before risky work, and never pushes an alarm that is already sooner', async () => {
+  const arms: Array<number | null> = [];
+  const store = (held: number | null) => ({
+    async getAlarm() { return held; },
+    async setAlarm(at: number) { arms.push(at); },
+    async deleteAlarm() { arms.push(null); },
+  });
+  await armFloor(store(null), {}, 1_000);
+  expect(arms).toEqual([1_000 + CONTINUATION_FLOOR_MS]);
+  arms.length = 0;
+  // An alarm already sooner than the floor stands.
+  await armFloor(store(1_500), {}, 1_000);
+  expect(arms).toEqual([]);
+  // A later one is pulled in, so a wake that dies still returns soon.
+  await armFloor(store(600_000), {}, 1_000);
+  expect(arms).toEqual([1_000 + CONTINUATION_FLOOR_MS]);
+  arms.length = 0;
+  // A clock that keeps no alarm arms none.
+  await armFloor(store(null), { CLOCK_MODE: 'manual' }, 1_000);
+  expect(arms).toEqual([]);
+});
+
+it('takes the soonest deadline, and lets neither the tick nor a continuation cancel the other', () => {
+  expect(soonestWake(60_000, 0)).toBe(0);
+  expect(soonestWake(0, 60_000)).toBe(0);
+  expect(soonestWake(60_000, null)).toBe(60_000);
+  expect(soonestWake(null, 2_000)).toBe(2_000);
+  // Deep sleep with nothing continuing is the only case that arms nothing.
+  expect(soonestWake(null, null)).toBeNull();
+});
+
+it('declares the continuation, and states what it may never do', () => {
+  expect(WAKE_CONTINUATIONS.map((continuation) => continuation.name)).toEqual(['recovery-export-continuation']);
+  const [recovery] = WAKE_CONTINUATIONS;
+  expect(recovery!.advances).toContain('already-admitted');
+  for (const forbidden of ['admit an attempt', 'cadence', 'run the tick', 'dispatch']) {
+    expect(recovery!.never).toContain(forbidden);
+  }
+});
+
+it('treats an answer that stopped mid-body as a request worth another attempt', async () => {
+  const original = globalThis.fetch;
+  const cut = () => new ReadableStream<Uint8Array>({
+    start(controller) { controller.enqueue(new Uint8Array([1, 2])); controller.error(new Error('the connection dropped')); },
+  });
+  try {
+    // A ranged read whose headers arrived and whose body did not leaves the range unread, to be read again.
+    globalThis.fetch = (async () => new Response(cut(), {
+      status: 206, headers: { 'content-range': 'bytes 0-3/4', etag: 'w/"one"' },
+    })) as unknown as typeof fetch;
+    const range = await cloudflareProducerPorts(target(), bucket()).readRange('https://signed.example/one', 0, 4);
+    expect(range).toEqual({ status: 'error', failure: { cause: 'transport', status: null, transient: true } });
+
+    // The same for the export request's own answer.
+    globalThis.fetch = (async () => new Response(cut(), { status: 200, headers: { 'content-type': 'application/json' } })) as unknown as typeof fetch;
+    const poll = await cloudflareProducerPorts(target(), bucket()).pollExport(null);
+    expect(poll).toEqual({ status: 'error', bookmark: null, failure: { cause: 'transport', status: null, transient: true } });
+
+    // A body that arrived whole and is not the provider's protocol is the provider's answer, and ends the attempt.
+    globalThis.fetch = (async () => new Response('<html>not json</html>', { status: 200 })) as unknown as typeof fetch;
+    const malformed = await cloudflareProducerPorts(target(), bucket()).pollExport(null);
+    expect(malformed).toEqual({ status: 'error', bookmark: null, failure: { cause: 'provider', status: 200, transient: false } });
+
+    // A request that never landed at all.
+    globalThis.fetch = (async () => { throw new TypeError('network error'); }) as unknown as typeof fetch;
+    expect(await cloudflareProducerPorts(target(), bucket()).pollExport('b1'))
+      .toEqual({ status: 'error', bookmark: 'b1', failure: { cause: 'transport', status: null, transient: true } });
+  } finally { globalThis.fetch = original; }
+});
+
+it('spends a transient attempt on a staging store that is overloaded, and ends the attempt on one that refuses', async () => {
+  const refusing = (message: string) => ({
+    ...bucket(),
+    async createMultipartUpload(): Promise<{ uploadId: string }> { throw new Error(message); },
+    async put(): Promise<{ size: number }> { throw new Error(message); },
+    async head(): Promise<{ size: number } | null> { throw new Error(message); },
+    resumeMultipartUpload() {
+      return {
+        async uploadPart(): Promise<{ etag: string }> { throw new Error(message); },
+        async complete(): Promise<{ size: number }> { throw new Error(message); },
+        async abort(): Promise<void> { throw new Error(message); },
+      };
+    },
+  });
+  const parts = [{ part: 1, bytes: 4, sha256: 'a'.repeat(64), etag: 'e1' }];
+  for (const worth of ['R2: internal error', 'Service Unavailable', 'GetObject: 503', 'connection reset by peer']) {
+    const ports = cloudflareProducerPorts(target(), refusing(worth));
+    for (const call of [
+      () => ports.beginUpload('staging/1'),
+      () => ports.writePart('staging/1', 'u1', 1, new Uint8Array(4), 4),
+      () => ports.completeUpload('staging/1', 'u1', parts),
+      () => ports.storedSize('staging/1'),
+      () => ports.writeStagingFile('staging/1', 'recovery.json', '{}'),
+    ]) {
+      const raised = await call().then(() => null, (error: unknown) => error);
+      expect({ worth, transient: raised instanceof TransientProducerFailure }).toEqual({ worth, transient: true });
+      expect({ worth, failure: (raised as TransientProducerFailure).failure })
+        .toEqual({ worth, failure: { cause: 'storage', status: null, transient: true } });
+    }
+  }
+  // A refusal the store names for a reason of its own ends the attempt rather than being retried without end.
+  const fatal = cloudflareProducerPorts(target(), refusing('the key is not a valid object name'));
+  expect(await fatal.beginUpload('staging/1').then(() => null, (error: Error) => error.message)).toBe('the key is not a valid object name');
+  // The interrupted completion still reconciles rather than retrying.
+  const gone = cloudflareProducerPorts(target(), refusing('upload NoSuchUpload does not exist'));
+  expect(await gone.completeUpload('staging/1', 'u1', parts)).toBeNull();
+  // And a part that is not the length its range answered is this attempt's own failure.
+  expect(await cloudflareProducerPorts(target(), bucket()).writePart('staging/1', 'u1', 1, new Uint8Array(3), 4).then(() => null, (error: Error) => error.message))
+    .toBe('a staged part is not the length its range answered');
+});

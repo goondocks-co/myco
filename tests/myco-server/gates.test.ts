@@ -50,7 +50,7 @@ const sharedFiles = () =>
     !f.includes(`${join(SRC, 'platform')}/`) && !f.includes(`${join(SRC, 'entry')}/`) && f !== join(SRC, 'index.ts'));
 
 /** Every `emit` call across src; a call removed or added moves the total. */
-const EMIT_CALLS = 105;
+const EMIT_CALLS = 111;
 /** The one migrations directory: the emit script writes it, the rendered-steps gate verifies it, and wrangler.toml applies from it. */
 const MIGRATIONS_DIR = 'migrations';
 const K = SyntaxKind as unknown as Record<string, number>;
@@ -137,7 +137,8 @@ export default { fetch: handleRequest, scheduled };
 `;
 
 const CANONICAL_INDEX = `export { default, handleRequest } from './entry/cloudflare.js';
-export { DeploymentClock } from './platform/cloudflare/deployment-clock.js';`;
+export { DeploymentClock } from './platform/cloudflare/deployment-clock.js';
+export { RecoveryProducer } from './platform/cloudflare/recovery-producer-object.js';`;
 
 const env = () => ({
   MYCO_DB: { prepare: () => ({ bind: () => ({ first: async () => null, run: async () => ({}) }) }) },
@@ -906,12 +907,13 @@ describe('gates', () => {
       ['_BlobStoreSatisfies', 'BlobStore', 'R2Bucket'],
       ['_VectorStoreSatisfies', 'VectorIndex', 'VectorizeIndex'],
       ['_EmbeddingSatisfies', 'EmbeddingBinding', 'Ai'],
+      ['_StagingBucketSatisfies', 'StagingBucket', 'R2Bucket'],
     ]) {
       expect({ proof, args: declared.get(proof) ?? null }).toEqual({ proof, args: [adapter, binding] });
       expect({ proof, imported: new RegExp(`\\b${binding}\\b`).test(platform.slice(0, platform.indexOf('type AssertAssignable'))) })
         .toEqual({ proof, imported: false });
     }
-    expect(declared.size).toBe(5);
+    expect(declared.size).toBe(6);
     expect(platform).toMatch(/type AssertAssignable<A, B extends A> = B;/);
   });
 
@@ -951,8 +953,14 @@ describe('gates', () => {
     const toml = readFileSync(join(WORKER, 'wrangler.toml'), 'utf8');
     // CLOCK is optional in Env — a test env binds no clock — so it sits outside
     // the required-binding equality, like SECRET_WRAP_KEY.
+    // A binding Env declares optional is bound where the Deployment has one and absent where it does not, so the
+    // equality holds over what Env requires, and every binding declared here is still one Env names.
+    const declaration = envSource.slice(envSource.indexOf('export interface CloudflareBindings'), envSource.indexOf('type AssertAssignable'));
+    const optional = [...declaration.matchAll(/^\s*(\w+)\?:/gm)].map((m) => m[1]);
     const bound = [...toml.matchAll(/^(?:binding|name) = "(\w+)"$/gm)].map((m) => m[1]).filter((name) => name !== 'myco-server' && name !== 'CLOCK').sort();
-    expect(bound).toEqual(keys);
+    expect(bound.filter((name) => !optional.includes(name))).toEqual(keys);
+    expect(bound.filter((name) => !optional.includes(name) && !keys.includes(name))).toEqual([]);
+    expect(bound.filter((name) => optional.includes(name))).toEqual(['RECOVERY', 'RECOVERY_BUCKET']);
     expect(/^migrations_dir = "([^"]*)"$/m.exec(toml)?.[1]).toBe(MIGRATIONS_DIR);
   });
 
@@ -1115,6 +1123,7 @@ describe('gates', () => {
       'owner GET /api/projects/{projectId}/skills/{skillId}',
       'owner GET /api/projects/{projectId}/spores',
       'owner GET /api/projects/{projectId}/spores/{sporeId}',
+      'owner GET /api/recovery/exports',
       'owner GET /api/secrets',
       'owner GET /api/settings',
       'owner GET /api/status',
@@ -1142,6 +1151,7 @@ describe('gates', () => {
       'owner POST /api/projects/{projectId}/sessions/{sessionId}/title',
       'owner POST /api/projects/{projectId}/sessions/{sessionId}/tombstone',
       'owner POST /api/projects/{projectId}/unarchive',
+      'owner POST /api/recovery/exports',
       'owner POST /api/wake',
       'owner POST /auth/link',
       'owner POST /auth/logout',

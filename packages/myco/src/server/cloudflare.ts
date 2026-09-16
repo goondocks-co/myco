@@ -480,6 +480,8 @@ export interface DeploymentRecord {
   vectorIndexName?: string;
   /** The wrapping secret in the selected store; omitted records use the default secret. */
   wrapKeySecretName?: string;
+  /** The store a recovery staging is written to; omitted records use the name derived from the Worker's own. */
+  recoveryBucketName?: string;
   /** How many runs the Deployment may have in flight at once, set by `myco server config --fleet`; the dispatcher counts against it. */
   fleet?: number;
 }

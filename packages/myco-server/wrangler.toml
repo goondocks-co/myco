@@ -66,6 +66,17 @@ crons = [ "*/15 * * * *" ]
 name = "CLOCK"
 class_name = "DeploymentClock"
 
+# The recovery producer's checkpoint. It holds no alarm: the clock continues it.
+[[durable_objects.bindings]]
+name = "RECOVERY"
+class_name = "RecoveryProducer"
+
+# Where a recovery staging is written. Never the Deployment's own object store:
+# a recovery that shares the store it recovers from is no recovery.
+[[r2_buckets]]
+binding = "RECOVERY_BUCKET"
+bucket_name = "myco-server-recovery"
+
 # The retired harness class. Its creating entry stays: the list is an ordered
 # ledger applied from the instance's recorded tag, so a delete of a class the
 # history never created is refused, and a fresh instance would never start.
@@ -80,3 +91,7 @@ new_sqlite_classes = [ "DeploymentClock" ]
 [[migrations]]
 tag = "v3-harness-retired"
 deleted_classes = [ "HarnessContainer" ]
+
+[[migrations]]
+tag = "v4-recovery"
+new_sqlite_classes = [ "RecoveryProducer" ]
