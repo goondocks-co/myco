@@ -55,11 +55,11 @@ EXPORT.set(HEAD, 0);
 EXPORT.fill(0x20, HEAD.byteLength);
 
 /** A loopback stand-in for the provider: an export that runs for a set number of polls, then a signed download. */
-function stubProvider(port: number, pollsBeforeComplete: number, options: { completeAfterMs?: number; pollDelayMs?: number } = {}) {
+function stubProvider(port: number, pollsBeforeComplete: number, options: { completeAfterMs?: number; pollDelayMs?: number; refuseInner?: boolean } = {}) {
   const state = {
     polls: 0, ranges: 0, tokens: [] as string[], signedAuth: [] as Array<string | null>, gone: false,
     /** Every bookmark a poll carried, in order; a fresh export carries none. */
-    bookmarks: [] as Array<string | null>, starts: 0, firstPollAt: 0, completedAt: 0,
+    bookmarks: [] as Array<string | null>, starts: 0, firstPollAt: 0, completedAt: 0, refusing: false,
   };
   const server = Bun.serve({
     port, hostname: '127.0.0.1',
@@ -75,6 +75,10 @@ function stubProvider(port: number, pollsBeforeComplete: number, options: { comp
         state.bookmarks.push(carried);
         if (carried === null) state.starts += 1;
         if (options.pollDelayMs !== undefined) await Bun.sleep(options.pollDelayMs);
+        // HTTP 200 with an outer success and an inner refusal.
+        if (options.refuseInner === true || state.refusing) {
+          return Response.json({ success: true, result: { success: false, error: 'provider-controlled text' } });
+        }
         const waiting = options.completeAfterMs !== undefined && Date.now() - state.firstPollAt < options.completeAfterMs;
         if (waiting || state.polls < pollsBeforeComplete) return Response.json({ success: true, result: { status: 'active', at_bookmark: `b${state.polls}` } });
         if (state.completedAt === 0) state.completedAt = Date.now();
@@ -98,10 +102,15 @@ function stubProvider(port: number, pollsBeforeComplete: number, options: { comp
       }
       if (url.pathname === '/state') return Response.json(state, { headers: { 'content-type': 'application/json' } });
       if (url.pathname === '/gone') { state.gone = true; return Response.json({ gone: true }); }
+      if (url.pathname === '/refuse') { state.refusing = true; return Response.json({ refusing: true }); }
       return new Response('not found', { status: 404 });
     },
   });
-  return { server, state: () => fetch(`http://127.0.0.1:${port}/state`).then((r) => r.json() as Promise<typeof state & { tokens: string[] }>) };
+  return {
+    server,
+    state: () => fetch(`http://127.0.0.1:${port}/state`).then((r) => r.json() as Promise<typeof state & { tokens: string[] }>),
+    refuse: () => fetch(`http://127.0.0.1:${port}/refuse`).then((r) => r.json()),
+  };
 }
 
 /** A test entry that re-exports the product's own Durable Object and calls it, so workerd runs the shipped class. */
@@ -223,7 +232,7 @@ const call = async (route: string): Promise<any> => {
   routes.push(route.split('?')[0]!);
   return (await fetch(`http://127.0.0.1:${workerPort}${route}`)).json();
 };
-const STEP = '{"exportPollMs":0,"stepMs":0,"partBytes":5242880,"maxTransient":5,"maxReExports":3}';
+const STEP = '{"exportPollMs":600000,"maxPollsPerStep":1,"stepMs":20000,"partBytes":5242880,"maxTransient":5,"maxReExports":3}';
 
 let failure: unknown = null;
 const apiPort = await freePort();
@@ -237,7 +246,7 @@ try {
   check('the staging it writes is open, with no object and no completion', [manifest.file.status, manifest.file.objects.length, manifest.file.completedAt], ['open', 0, undefined]);
 
   // One continuation that cannot finish the export: the source is paused and another continuation is wanted at once.
-  const paused = await call('/continue?limits={"exportPollMs":0,"stepMs":0,"partBytes":5242880,"maxTransient":5,"maxReExports":3}');
+  const paused = await call(`/continue?limits=${encodeURIComponent(STEP)}`);
   check('while the export runs the source is paused and the next continuation is immediate', [paused.stage, paused.sourcePaused, paused.nextInMs], ['export', true, 0]);
 
   // A restart mid-attempt: the Durable Object's own storage is what the next continuation resumes from.
@@ -248,9 +257,9 @@ try {
   const after = await call('/status');
   check('a restart mid-export keeps the attempt and its polls', [after.attempt, after.stage, after.export.polls === before.export.polls], [before.attempt, 'export', true]);
 
-  const completed = await call('/continue?limits={"exportPollMs":600000,"stepMs":60000,"partBytes":5242880,"maxTransient":5,"maxReExports":3}');
+  const completed = await call('/continue?limits={"exportPollMs":600000,"maxPollsPerStep":12,"stepMs":60000,"partBytes":5242880,"maxTransient":5,"maxReExports":3}');
   check('the export completes after the restart and the download begins', [completed.stage, completed.sourcePaused], ['download', false]);
-  const downloaded = await call('/continue?limits={"exportPollMs":600000,"stepMs":60000,"partBytes":5242880,"maxTransient":5,"maxReExports":3}');
+  const downloaded = await call('/continue?limits={"exportPollMs":600000,"maxPollsPerStep":12,"stepMs":60000,"partBytes":5242880,"maxTransient":5,"maxReExports":3}');
   note('download outcome', downloaded);
   check('the export is staged in parts and the attempt stops there', [downloaded.stage, downloaded.nextInMs, downloaded.error ?? null], ['downloaded', null, null]);
   const staged = await call(`/staged?attempt=${admitted.attempt}`);
@@ -312,6 +321,9 @@ try {
     worker = null;
     await startWorker(clockPort, 'clock', 'clock-state');
     const resumed = await call('/status');
+    // An interrupted step is not announced as terminal: the log the killed version left carries no failure.
+    const killedLog = fs.readFileSync(path.join(RUN, 'wrangler.log'), 'utf8');
+    check('the killed version announced no terminal failure', /recovery_attempt_failed/.test(killedLog), false);
     check('a kill mid-export keeps the attempt, its polls and the bookmark it saved',
       [resumed.attempt, resumed.stage, resumed.export.polls >= midway.export.polls, resumed.export.bookmark],
       [midway.attempt, 'export', true, true]);
@@ -350,6 +362,42 @@ try {
     note('a wake once the attempt is terminal', woke);
     check('the tick raises on the unreadable database it held back from', woke.raised !== undefined, true);
   } finally { clockProvider.server.stop(true); }
+  // A provider that refuses inside a success envelope, on real workerd.
+  await stop(worker!, 'SIGTERM');
+  worker = null;
+  const refusingPort = await freePort();
+  // It answers a running export until `/refuse` flips it to an inner refusal.
+  const refusing = stubProvider(refusingPort, 99);
+  try {
+    await startWorker(refusingPort, 'manual', 'refusal-state');
+    const admittedAgainstRefusal = await call('/admit');
+    check('an attempt is admitted against a provider that will refuse', admittedAgainstRefusal.stage, 'export');
+    // An export that runs and saves a bookmark, then a refusal of that bookmark: the export starts again once,
+    // inside its bound.
+    const polled = await call(`/continue?limits=${encodeURIComponent(STEP)}`);
+    const holding = await call('/status');
+    check('the attempt holds a bookmark before the refusal', [polled.stage, holding.export.bookmark], ['export', true]);
+    await refusing.refuse();
+    const restarted = await call(`/continue?limits=${encodeURIComponent(STEP)}`);
+    const afterRestart = await call('/status');
+    check('a refused bookmark restarts the export within its bound, and holds no signed download',
+      [restarted.stage, afterRestart.export.reExports, afterRestart.export.bookmark], ['export', 1, false]);
+    let refusalStage = admittedAgainstRefusal.stage;
+    let drives = 0;
+    while (refusalStage !== 'failed' && drives < 12) {
+      refusalStage = (await call(`/continue?limits=${encodeURIComponent(STEP)}`)).stage;
+      drives += 1;
+    }
+    const refusedStatus = await call('/status');
+    check('an inner refusal ends the attempt instead of polling it forever',
+      [refusalStage, refusedStatus.error, refusedStatus.stage], ['failed', 'export_failed', 'failed']);
+    const seenByRefusal = await refusing.state();
+    note('refusal provider calls', { polls: seenByRefusal.polls, drives, reExports: refusedStatus.export.reExports });
+    check('the refusal was answered within the re-export bound, not by endless polling',
+      [seenByRefusal.polls <= 8, refusedStatus.export.reExports <= 3], [true, true]);
+    check('the source is not reported paused once the attempt is terminal', (await call('/continue')).sourcePaused, false);
+    check('no provider text and no credential reached the owner status', /provider-controlled|Bearer/.test(JSON.stringify(refusedStatus)), false);
+  } finally { refusing.server.stop(true); }
 } catch (error) {
   failure = error;
   console.error(error);

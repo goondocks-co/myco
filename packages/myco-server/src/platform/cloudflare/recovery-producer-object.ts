@@ -189,7 +189,9 @@ export class RecoveryProducer extends DurableObject<CloudflareBindings> {
     const open = this.row("stage IN ('export', 'download')");
     if (open === null) return { attempt: null, stage: 'idle', progressed: false, nextInMs: null, sourcePaused: false };
     const target = this.target(JSON.parse(open.tables) as string[]);
-    const ports = cloudflareProducerPorts(target, this.bucket(), { testRoutes: this.env.HARNESS_LAUNCH_MODE === 'record' });
+    const ports = cloudflareProducerPorts(target, this.bucket(), {
+      testRoutes: this.env.HARNESS_LAUNCH_MODE === 'record', requestMs: bounded.requestMs,
+    });
     return continueAttempt(this.checkpoint(), ports, bounded);
   }
 

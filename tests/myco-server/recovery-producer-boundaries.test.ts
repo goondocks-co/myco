@@ -196,3 +196,44 @@ it('spends a transient attempt on a staging store that is overloaded, and ends t
   expect(await cloudflareProducerPorts(target(), bucket()).writePart('staging/1', 'u1', 1, new Uint8Array(3), 4).then(() => null, (error: Error) => error.message))
     .toBe('a staged part is not the length its range answered');
 });
+
+it('refuses an answer whose success envelope carries a provider refusal', async () => {
+  // HTTP 200, an outer success, an inner refusal, an error present, no status, no bookmark and no signed URL.
+  const refusal = {
+    success: true,
+    result: { success: false, error: 'provider-controlled text that must not travel', at_bookmark: undefined },
+  };
+  const original = globalThis.fetch;
+  globalThis.fetch = (async (_input: RequestInfo | URL, _init?: RequestInit) => Response.json(refusal)) as typeof fetch;
+  try {
+    const ports = cloudflareProducerPorts(target(), bucket());
+    // Polling an export this attempt already holds a bookmark for.
+    const held = await ports.pollExport('b1');
+    expect(held.status).toBe('error');
+    expect(JSON.stringify(held)).not.toContain('provider-controlled text');
+    // And the first request of a fresh export.
+    const fresh = await ports.pollExport(null);
+    expect(fresh.status).toBe('error');
+  } finally { globalThis.fetch = original; }
+});
+
+it('gives every provider call a deadline, and reports a request that never answers as worth another attempt', async () => {
+  const original = globalThis.fetch;
+  const signals: Array<AbortSignal | null | undefined> = [];
+  globalThis.fetch = (async (_input: RequestInfo | URL, init?: RequestInit) => {
+    signals.push(init?.signal);
+    // An answer that arrives only when the call's own deadline aborts it.
+    return new Promise<Response>((_resolve, reject) => {
+      init?.signal?.addEventListener('abort', () => reject(new DOMException('aborted', 'AbortError')));
+    });
+  }) as unknown as typeof fetch;
+  try {
+    const ports = cloudflareProducerPorts(target(), bucket(), { requestMs: 25 });
+    const poll = await ports.pollExport('b1');
+    expect(poll).toEqual({ status: 'error', bookmark: 'b1', failure: { cause: 'transport', status: null, transient: true } });
+    const range = await ports.readRange('https://signed.example/one', 0, 4);
+    expect(range).toEqual({ status: 'error', failure: { cause: 'transport', status: null, transient: true } });
+  } finally { globalThis.fetch = original; }
+  expect(signals.length).toBe(2);
+  expect(signals.every((signal) => signal instanceof AbortSignal)).toBe(true);
+});
