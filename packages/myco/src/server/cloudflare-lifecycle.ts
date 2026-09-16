@@ -109,6 +109,11 @@ export const createCloudflareDeployment = cloudflareOperation(async (options: Li
   const bucket = await ensureBucket({ ...bare, bucketName: resources.bucketName });
   if (bucket.created) createdResources.push(`r2 ${resources.bucketName}`);
 
+  // The staging store the Deployment's config binds for a recovery export. It is ensured here with every other
+  // resource the config names, and it is never the store the Deployment serves blobs from.
+  const staging = await ensureBucket({ ...bare, bucketName: resources.recoveryBucketName });
+  if (staging.created) createdResources.push(`r2 ${resources.recoveryBucketName}`);
+
   const store = existing?.storeId !== undefined
     ? { storeId: existing.storeId, created: false }
     : await ensureSecretsStore(bare);
@@ -129,6 +134,7 @@ export const createCloudflareDeployment = cloudflareOperation(async (options: Li
     bucketName: resources.bucketName,
     vectorIndexName: resources.vectorIndexName,
     wrapKeySecretName: resources.wrapKeySecretName,
+    recoveryBucketName: resources.recoveryBucketName,
     versionId: existing?.versionId ?? null,
     deployedAt: existing?.deployedAt ?? new Date().toISOString(),
     ...(existing?.fleet === undefined ? {} : { fleet: existing.fleet }),
@@ -167,13 +173,18 @@ export const updateCloudflareDeployment = cloudflareOperation(async (options: Li
   await preflight(options);
   const record = readDeploymentRecord(options.mycoHome);
   if (record === null) throw new Error('no Cloudflare deployment record on this machine; `myco server create --target cloudflare` provisions one');
-  await ensureVectorIndex({ ...bareCommand(options), vectorIndexName: cloudflareResources(record).vectorIndexName });
+  const resources = cloudflareResources(record);
+  await ensureVectorIndex({ ...bareCommand(options), vectorIndexName: resources.vectorIndexName });
+  await ensureBucket({ ...bareCommand(options), bucketName: resources.recoveryBucketName });
 
   const withConfig = staged(record, options);
   await applyMigrations({ ...withConfig, databaseName: record.databaseName });
   const deployed = await deployWorker(withConfig);
 
-  writeDeploymentRecord({ ...record, versionId: deployed.versionId, deployedAt: new Date().toISOString() }, options.mycoHome);
+  writeDeploymentRecord({
+    ...record, recoveryBucketName: resources.recoveryBucketName,
+    versionId: deployed.versionId, deployedAt: new Date().toISOString(),
+  }, options.mycoHome);
   return { versionId: deployed.versionId };
 });
 
@@ -222,5 +233,5 @@ export const destroyCloudflareDeployment = cloudflareOperation(async (options: L
   if (record === null) throw new Error('no Cloudflare deployment record on this machine; nothing to destroy');
   const resources = cloudflareResources(record);
   await deleteWorker({ ...bareCommand(options), workerName: record.workerName });
-  return { kept: [`d1 ${record.databaseName}`, `r2 ${record.bucketName}`, `vectorize ${resources.vectorIndexName}`, 'secrets store', 'the deployment record'] };
+  return { kept: [`d1 ${record.databaseName}`, `r2 ${record.bucketName}`, `r2 ${resources.recoveryBucketName}`, `vectorize ${resources.vectorIndexName}`, 'secrets store', 'the deployment record'] };
 });

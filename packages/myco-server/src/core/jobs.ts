@@ -35,6 +35,31 @@ export interface ServerJob {
   converges: string;
 }
 
+/**
+ * Work a wake continues before it reads storage.
+ *
+ * A continuation is not a second scheduler: it decides nothing about when work starts, and it may only advance
+ * something already admitted. One kind of work makes the Deployment's own database unreadable
+ * while it runs — a recovery export — so the tick's first read would fail and the attempt would stall. The clock
+ * remains the only alarm owner; it calls each continuation declared here, then derives its next wake from the
+ * soonest deadline the continuations and the tick ask for.
+ */
+export interface WakeContinuation {
+  name: string;
+  /** What it may advance. */
+  advances: string;
+  /** What it may never do, stated so the boundary is checkable rather than assumed. */
+  never: string;
+}
+
+export const WAKE_CONTINUATIONS: readonly WakeContinuation[] = [
+  {
+    name: 'recovery-export-continuation',
+    advances: 'one already-admitted hosted recovery attempt, using only the producer\'s own checkpoint, so it keeps polling an export that makes the Deployment unreadable and resumes after a reset',
+    never: 'admit an attempt, choose a backup cadence, run the tick, dispatch a task, or read the Deployment\'s database',
+  },
+] as const;
+
 /** The jobs the tick runs today; each has an implementation in `jobs-run.ts`, which a gate holds. */
 export const SERVER_JOBS: readonly ServerJob[] = [
   {

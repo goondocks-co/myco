@@ -20,6 +20,8 @@ import type { VectorStore } from './embedding/vectors.js';
 // Relational storage
 // ---------------------------------------------------------------------------
 
+import type { RecoveryProducerPort } from './recovery-producer.js';
+
 export interface RunResult {
   results: unknown[];
   meta: { changes: number };
@@ -230,6 +232,12 @@ export interface ServerEnv {
   harnessLaunch?: (spec: { runId: string; timeoutSeconds: number; envVars: Record<string, string> }) => Promise<void>;
   /** Tasks this runtime accepts; omitted means every runtime-served task. */
   harnessTasks?: readonly string[];
+  /**
+   * This Deployment's hosted recovery producer, where the target has one. The account credential the producer's
+   * export needs is held by the target's own adapter and never reaches this env, so no route, job or report can
+   * carry it; only starting an attempt and reading its progress cross this seam.
+   */
+  recovery?: RecoveryProducerPort;
   /**
    * Wake the Deployment soon. Requested work — a dispatch, a queued run — calls
    * this so the tick that sweeps and drains follows without waiting for the

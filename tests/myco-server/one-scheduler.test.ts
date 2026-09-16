@@ -21,10 +21,11 @@ import { readdirSync, readFileSync, statSync } from 'node:fs';
 import { join, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { codeOf } from '../helpers/import-closure.ts';
-import { declaredScheduleFor, SERVER_JOBS, DEFERRED_JOBS, TASK_SCHEDULE } from '@myco-server-worker/core/jobs.js';
+import { declaredScheduleFor, SERVER_JOBS, DEFERRED_JOBS, TASK_SCHEDULE, WAKE_CONTINUATIONS } from '@myco-server-worker/core/jobs.js';
 import { ACCELERATORS, PRE_CONDITIONS, scheduledTasks } from '@myco-server-worker/core/scheduled-tasks.js';
 import { admissionForTask, runTimeoutForTask, taskTools } from '@myco-server-worker/core/task-catalogue.js';
 import { prepareDispatch } from '@myco-server-worker/core/harness.js';
+import { CONTINUATION_IMPLEMENTATIONS } from '@myco-server-worker/platform/cloudflare/deployment-clock.js';
 import { sqliteEnv, withHarness } from './helpers/fixtures.js';
 
 const WORKER = fileURLToPath(new URL('../../packages/myco-server/', import.meta.url));
@@ -117,6 +118,21 @@ describe('the registry of scheduled work', () => {
     for (const { task, schedule } of scheduledTasks(Object.fromEntries(Object.keys(TASK_SCHEDULE).map((t) => [t, { schedule: { enabled: true } }])))) {
       expect({ task, cadence: schedule.intervalSeconds > 0, depth: schedule.runIn.length > 0, ceiling: typeof schedule.maxRunsPerDay })
         .toEqual({ task, cadence: true, depth: true, ceiling: 'number' });
+    }
+  });
+});
+
+describe('the continuations a wake runs before it reads storage', () => {
+  it('declares each one, and implements exactly what it declares', () => {
+    const declared = WAKE_CONTINUATIONS.map((continuation) => continuation.name).sort();
+    expect(declared).toEqual(Object.keys(CONTINUATION_IMPLEMENTATIONS).sort());
+    expect(declared.length).toBeGreaterThan(0);
+  });
+
+  it('states for each what it advances and what it may never do', () => {
+    for (const continuation of WAKE_CONTINUATIONS) {
+      expect(continuation.advances.length).toBeGreaterThan(20);
+      for (const forbidden of ['admit', 'cadence', 'tick', 'dispatch']) expect(continuation.never).toContain(forbidden);
     }
   });
 });

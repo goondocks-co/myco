@@ -87,7 +87,8 @@ it('resumes data transfer on the same fresh resources and publishes only after b
     const result = await f.restore();
     expect(result.record.fleet).toBe(2);
     expect(result.record.workerName).toMatch(/^myco-recovery-/);
-    expect(f.creates()).toBe(3);
+    // Four resources, each created once: the database, the blob store, the recovery staging store, and the index.
+    expect(f.creates()).toBe(4);
     expect(f.deployments).toHaveLength(2);
     expect(f.deployments[0]).not.toContain('d1_databases');
     expect(f.deployments[0]).not.toContain('triggers');
@@ -124,7 +125,10 @@ it('resumes filter preparation on a confirmed index without adopting or recreati
     expect(readDeploymentRecord(f.mycoHome)).toBeNull();
     await expect(f.restore()).rejects.toThrow('Cloudflare recovery import did not finish');
     await f.restore();
-    expect(f.creates()).toBe(3);
+    // Four resources, each created once: the database, the blob store, the recovery staging store, and the index.
+    expect(f.creates()).toBe(4);
+    // The staging store belongs to the replacement Worker, not to a name every Deployment would share.
+    expect(readDeploymentRecord(f.mycoHome)?.recoveryBucketName).toBe(`${journal.name}-recovery`);
     expect(readDeploymentRecord(f.mycoHome)?.workerName).toBe(journal.name);
   } finally { f.cleanup(); }
 });
@@ -137,7 +141,8 @@ it('refuses unconfirmed provisioning instead of creating another resource on ret
     const journal = JSON.parse(fs.readFileSync(file, 'utf8'));
     fs.writeFileSync(file, JSON.stringify({ ...journal, pending: `D1 ${journal.name}` }));
     await expect(f.restore()).rejects.toThrow('unconfirmed D1');
-    expect(f.creates()).toBe(3);
+    // Four resources, each created once: the database, the blob store, the recovery staging store, and the index.
+    expect(f.creates()).toBe(4);
     expect(readDeploymentRecord(f.mycoHome)).toBeNull();
   } finally { f.cleanup(); }
 });

@@ -1,0 +1,221 @@
+/**
+ * The Cloudflare side of the recovery producer: the provider's export API, the signed download, and the staging
+ * store. The account credential reaches exactly one origin, the provider's own API, and is carried by nothing else:
+ * a signed download URL is fetched without it, and no caller can name the account, the database or the host, which
+ * come from the Deployment's own bindings.
+ */
+import type {
+  AttemptPart, ExportAnswer, PortFailure, ProducerPorts, RangeAnswer,
+} from '../../core/recovery-producer.js';
+import { stagedSqlKey, TransientProducerFailure } from '../../core/recovery-producer.js';
+
+/** The one origin an account credential is sent to. */
+export const CLOUDFLARE_API_ORIGIN = 'https://api.cloudflare.com';
+
+/** The name this target writes into a staging manifest; the reader's schema accepts it. */
+export const STAGING_TARGET = 'cloudflare';
+
+/** The provider's floor for every multipart part but the last; a smaller one is refused at completion. */
+export const R2_MINIMUM_PART_BYTES = 5 * 1024 * 1024;
+
+export interface ExportTarget {
+  accountId: string;
+  databaseId: string;
+  tables: readonly string[];
+  /** The credential, held only here and sent only to `CLOUDFLARE_API_ORIGIN`. */
+  token: string;
+  /** Test-only: a stand-in for the provider API, refused outside a test runtime. */
+  apiOrigin?: string;
+}
+
+export interface StagingBucket {
+  put(key: string, body: ReadableStream<Uint8Array> | Uint8Array, options?: { httpMetadata?: { contentType?: string } }): Promise<{ size: number } | null>;
+  get(key: string, options?: { range?: { offset: number; length: number } }): Promise<{ body: ReadableStream<Uint8Array>; size: number } | null>;
+  head(key: string): Promise<{ size: number } | null>;
+  createMultipartUpload(key: string): Promise<{ uploadId: string }>;
+  resumeMultipartUpload(key: string, uploadId: string): {
+    uploadPart(part: number, body: ReadableStream<Uint8Array> | Uint8Array): Promise<{ etag: string }>;
+    complete(parts: Array<{ partNumber: number; etag: string }>): Promise<{ size: number }>;
+    abort(): Promise<void>;
+  };
+}
+
+/**
+ * Only a recording runtime may name an export origin of its own, and only over loopback. An operator's Deployment
+ * records no runtime of that kind, so no configuration, request or caller can send the account credential anywhere
+ * but the provider.
+ */
+export function exportApiOrigin(target: ExportTarget, testRoutesEnabled: boolean): string {
+  if (target.apiOrigin === undefined || target.apiOrigin === '') return CLOUDFLARE_API_ORIGIN;
+  const origin = new URL(target.apiOrigin);
+  const loopback = origin.hostname === '127.0.0.1' || origin.hostname === 'localhost' || origin.hostname === '[::1]';
+  if (!testRoutesEnabled || !loopback) throw new Error('a recovery export origin other than the provider API is refused');
+  return origin.origin;
+}
+
+const digestOf = async (bytes: Uint8Array): Promise<string> => {
+  const digest = await crypto.subtle.digest('SHA-256', bytes as unknown as ArrayBuffer);
+  return [...new Uint8Array(digest)].map((value) => value.toString(16).padStart(2, '0')).join('');
+};
+
+/** Whether a provider failure is worth another attempt rather than ending this one. */
+export const transientStatus = (status: number): boolean => status === 408 || status === 429 || status >= 500;
+
+/**
+ * A failure as facts alone. The producer is told what kind of failure happened and with what status, and never a
+ * message: a provider's text, an exception and a signed URL all reach this boundary and none of them may pass it.
+ */
+const failure = (cause: PortFailure['cause'], status: number | null, transient: boolean): PortFailure => ({ cause, status, transient });
+
+/** A request or an answer that did not arrive whole is worth another attempt. */
+const TRANSPORT = failure('transport', null, true);
+
+/**
+ * How the provider and its stores name a failure that is worth another attempt: a request that did not land, a body
+ * that stopped mid-answer, a store answering its own overload. Their wording is matched here and nowhere else, and a
+ * failure this does not recognise ends the attempt rather than being retried without end.
+ */
+const WORTH_ANOTHER = /\b(408|429|500|502|503|504)\b|internal error|service unavailable|too many requests|slow down|timeout|timed out|connection|reset|disconnect|aborted|network|stream/i;
+
+/** True for a failure reading an answer that had already begun; a malformed body is the provider's answer, not a fault. */
+const interrupted = (error: unknown): boolean => !(error instanceof SyntaxError);
+
+/**
+ * Runs one call to the staging store, spending a transient attempt on a failure worth another rather than ending the
+ * attempt. A refusal this does not recognise, and every deterministic refusal of its own, still ends it.
+ */
+async function stored<T>(work: () => Promise<T>): Promise<T> {
+  try {
+    return await work();
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
+    if (error instanceof TransientProducerFailure) throw error;
+    if (WORTH_ANOTHER.test(detail)) throw new TransientProducerFailure(failure('storage', null, true));
+    throw error;
+  }
+}
+
+/** The producer's ports over one Deployment's own bindings. */
+export function cloudflareProducerPorts(
+  target: ExportTarget, bucket: StagingBucket, options: { testRoutes?: boolean; now?: () => number } = {},
+): ProducerPorts {
+  const origin = exportApiOrigin(target, options.testRoutes === true);
+  const endpoint = `${origin}/client/v4/accounts/${target.accountId}/d1/database/${target.databaseId}/export`;
+  const now = options.now ?? (() => Date.now());
+  return {
+    now,
+    async pollExport(bookmark) {
+      let response: Response;
+      try {
+        response = await fetch(endpoint, {
+          method: 'POST',
+          headers: { authorization: `Bearer ${target.token}`, 'content-type': 'application/json' },
+          body: JSON.stringify({
+            output_format: 'polling',
+            dump_options: { tables: [...target.tables] },
+            ...(bookmark === null ? {} : { current_bookmark: bookmark }),
+          }),
+        });
+      } catch {
+        return { status: 'error', bookmark, failure: TRANSPORT };
+      }
+      type ExportBody = {
+        success?: boolean; errors?: unknown[];
+        result?: { status?: string; at_bookmark?: string; error?: string; result?: { signed_url?: string } };
+      };
+      let body: ExportBody | null;
+      try {
+        body = await response.json() as ExportBody;
+      } catch (error) {
+        // An answer that stopped mid-body never arrived; a body that is not JSON is an answer of the provider's own.
+        if (interrupted(error)) return { status: 'error', bookmark, failure: TRANSPORT };
+        body = null;
+      }
+      if (!response.ok) return { status: 'error', bookmark, failure: failure('http', response.status, transientStatus(response.status)) };
+      if (body?.success !== true || body.result === undefined) {
+        return { status: 'error', bookmark, failure: failure('provider', response.status, false) };
+      }
+      const held = body.result;
+      const at = held.at_bookmark ?? bookmark;
+      if (held.status === 'error') return { status: 'error', bookmark: at, failure: failure('provider', null, false) };
+      if (held.status === 'complete') {
+        const signed = held.result?.signed_url;
+        if (signed === undefined || at === null) return { status: 'error', bookmark: at, failure: failure('protocol', null, false) };
+        return { status: 'complete', bookmark: at, signedUrl: signed };
+      }
+      if (at === null) return { status: 'error', bookmark: null, failure: failure('protocol', null, false) };
+      return { status: 'running', bookmark: at };
+    },
+    async readRange(url, offset, length) {
+      // The signed URL is a capability of its own: it is fetched with no Authorization header.
+      let response: Response;
+      try {
+        response = await fetch(url, { headers: { range: `bytes=${offset}-${offset + length - 1}` } });
+      } catch {
+        return { status: 'error', failure: TRANSPORT };
+      }
+      if ([401, 403, 404, 410].includes(response.status)) return { status: 'gone' };
+      if (response.status === 200) return { status: 'unranged' };
+      if (response.status !== 206) {
+        return { status: 'error', failure: failure('http', response.status, transientStatus(response.status)) };
+      }
+      const range = /^bytes (\d+)-(\d+)\/(\d+)$/.exec(response.headers.get('content-range') ?? '');
+      if (range === null || Number(range[1]) !== offset) {
+        return { status: 'error', failure: failure('protocol', response.status, false) };
+      }
+      let bytes: Uint8Array;
+      try {
+        bytes = new Uint8Array(await response.arrayBuffer());
+      } catch {
+        // The headers arrived and the body did not, leaving the range unread, so the attempt reads it again.
+        return { status: 'error', failure: TRANSPORT };
+      }
+      return {
+        status: 'part',
+        bytes,
+        length: Number(range[2]) - offset + 1,
+        total: Number(range[3]),
+        etag: response.headers.get('etag'),
+      };
+    },
+    async beginUpload(prefix) {
+      return stored(async () => (await bucket.createMultipartUpload(stagedSqlKey(prefix))).uploadId);
+    },
+    async writePart(prefix, uploadId, part, body, length) {
+      const bytes = body instanceof Uint8Array ? body : new Uint8Array(await new Response(body).arrayBuffer());
+      // A part that is not the length the range answered is this attempt's own failure, never a retry.
+      if (bytes.byteLength !== length) throw new Error('a staged part is not the length its range answered');
+      const written = await stored(() => bucket.resumeMultipartUpload(stagedSqlKey(prefix), uploadId).uploadPart(part, bytes));
+      return { sha256: await digestOf(bytes), etag: written.etag };
+    },
+    async completeUpload(prefix, uploadId, parts: AttemptPart[]) {
+      try {
+        const object = await bucket.resumeMultipartUpload(stagedSqlKey(prefix), uploadId)
+          .complete(parts.map((part) => ({ partNumber: part.part, etag: part.etag })));
+        return { bytes: object.size };
+      } catch (error) {
+        // An upload the provider no longer holds is the interrupted-completion case, and the caller reconciles the
+        // stored bytes against the recorded digests. Any other refusal is classified like every other store call.
+        const detail = error instanceof Error ? error.message : String(error);
+        if (/does not exist|NoSuchUpload|10024/i.test(detail)) return null;
+        return stored(() => Promise.reject(error));
+      }
+    },
+    async abortUpload(prefix, uploadId) {
+      await stored(() => bucket.resumeMultipartUpload(stagedSqlKey(prefix), uploadId).abort());
+    },
+    async readStoredRange(prefix, offset, length) {
+      return stored(async () => {
+        const object = await bucket.get(stagedSqlKey(prefix), { range: { offset, length } });
+        if (object === null) return null;
+        return { sha256: await digestOf(new Uint8Array(await new Response(object.body).arrayBuffer())) };
+      });
+    },
+    async storedSize(prefix) {
+      return stored(async () => (await bucket.head(stagedSqlKey(prefix)))?.size ?? null);
+    },
+    async writeStagingFile(prefix, name, body) {
+      await stored(() => bucket.put(`${prefix.replace(/\/$/, '')}/${name}`, new TextEncoder().encode(body), { httpMetadata: { contentType: 'application/json' } }));
+    },
+  };
+}

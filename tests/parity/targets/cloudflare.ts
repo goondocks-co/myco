@@ -92,21 +92,52 @@ export async function bootCloudflare(): Promise<ParityTarget> {
     const port = probe.port;
     probe.stop(true);
     const logPath = path.join(SERVER_DIR, '.wrangler', `parity-dev-${tag}.log`);
+    // The provider's own detailed log, beside the piped one and under the same artifact glob. Only this process
+    // carries the variable; the `d1 execute --json` calls do not.
+    const providerLog = path.join(SERVER_DIR, '.wrangler', `parity-dev-${tag}-provider.log`);
     proc = Bun.spawn([
       'npx', '--no-install', 'wrangler', 'dev', '-c', configName, '--port', String(port), '--inspector-port', '0', '--persist-to', persistDir,
       '--var', `SESSION_SECRET:${SESSION_SECRET}`, '--var', 'GITHUB_CLIENT_ID:parity-client', '--var', 'GITHUB_CLIENT_SECRET:parity-secret', '--var', 'HARNESS_LAUNCH_MODE:record', '--var', 'CLOCK_MODE:manual', '--var', `MYCO_ORIGIN:http://127.0.0.1:${port}`,
-    ], { cwd: SERVER_DIR, stdout: 'pipe', stderr: 'pipe', env: { ...process.env } });
+    ], {
+      cwd: SERVER_DIR, stdout: 'pipe', stderr: 'pipe',
+      env: { ...process.env, WRANGLER_LOG_PATH: providerLog },
+    });
     SPAWNED.add(proc);
-    // Drain both streams continuously: wrangler stalls on backpressure, and the
-    // buffer is the only readable evidence when a CI boot fails.
     let logText = '';
+    /** The first failure writing the log. Draining continues; `runtime()` reports it. */
+    let logFailure: string | null = null;
+    const append = (text: string): void => {
+      if (text === '') return;
+      try {
+        fs.appendFileSync(logPath, text);
+      } catch (error) {
+        logFailure ??= `${logPath}: ${error instanceof Error ? error.message : String(error)}`;
+      }
+    };
+    // Drain both streams continuously: wrangler stalls on backpressure. Each stream decodes once and appends as it
+    // arrives, so a character split across chunks is preserved.
     const drain = async (stream: ReadableStream<Uint8Array>) => {
       const decoder = new TextDecoder();
-      for await (const chunk of stream) logText += decoder.decode(chunk);
+      for await (const chunk of stream) {
+        const text = decoder.decode(chunk, { stream: true });
+        logText += text;
+        append(text);
+      }
+      const rest = decoder.decode();
+      logText += rest;
+      append(rest);
     };
+    try {
+      fs.writeFileSync(logPath, '');
+    } catch (error) {
+      logFailure = `${logPath}: ${error instanceof Error ? error.message : String(error)}`;
+    }
     const drained = Promise.all([drain(proc.stdout as ReadableStream<Uint8Array>), drain(proc.stderr as ReadableStream<Uint8Array>)])
-      .then(() => fs.writeFileSync(logPath, logText))
-      .catch(() => {});
+      .catch((error: unknown) => { logFailure ??= error instanceof Error ? error.message : String(error); });
+    /** The runtime's own exit status; a stop from this harness records none. */
+    let exited: number | null = null;
+    let stopping = false;
+    void proc.exited.then((code) => { if (!stopping) exited = code; });
 
     const url = `http://127.0.0.1:${port}`;
     const deadline = Date.now() + 120_000;
@@ -118,7 +149,12 @@ export async function bootCloudflare(): Promise<ParityTarget> {
       } catch { /* not listening yet */ }
       await Bun.sleep(500);
     }
-    if (!healthy) throw new Error(`wrangler dev never answered /health on ${port}; log tail:\n${logText.slice(-2_000)}`);
+    if (!healthy) {
+      throw new Error(
+        `wrangler dev never answered /health on ${port}; log tail:\n${logText.slice(-2_000)}`
+        + (logFailure === null ? '' : `\nlog sink failed: ${logFailure}`),
+      );
+    }
 
     const cookie = `${SESSION_COOKIE}=${await signSession(SESSION_SECRET, { sub: GITHUB_SUB, login: 'parity', iat: Date.now(), exp: Date.now() + 3_600_000 })}`;
     const devProc = proc;
@@ -135,12 +171,19 @@ export async function bootCloudflare(): Promise<ParityTarget> {
         const parsed = JSON.parse(out) as Array<{ results: Record<string, unknown>[] }>;
         return parsed[0]?.results ?? [];
       },
+      runtime: () => ({
+        alive: exited === null, exitCode: exited, tail: logText.slice(-4_000),
+        ...(logFailure === null ? {} : { logFailure }),
+      }),
       stop: async () => {
+        stopping = true;
         devProc.kill();
         await Promise.race([devProc.exited, Bun.sleep(5_000)]);
         SPAWNED.delete(devProc);
         Bun.spawnSync(['pkill', '-f', `parity-${tag}`]);
         await Promise.race([drained, Bun.sleep(1_000)]);
+        // A log sink that failed while every scenario passed is reported here, once.
+        if (logFailure !== null) console.error(`the cloudflare runtime log sink failed: ${logFailure}`);
         cleanup();
       },
     };
