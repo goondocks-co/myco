@@ -10,6 +10,8 @@ import { BLOB_REFERENCES, kindFilter, referenceLabel } from '@myco-server-worker
 import { BLOB_KEY_GRAMMAR } from '@myco-server-worker/ingest/kinds.js';
 import { atomicWriteFileSync, syncDirectoryForDurability as syncDirectory } from '@myco/utils/atomic-write.js';
 import { LifecycleLock } from '@myco/utils/lifecycle-lock.js';
+import { fingerprintSchema, STAGING_FORMAT } from './recovery-contract.js';
+import { quoteIdentifier } from './recovery-schema.js';
 
 const MANIFEST_FILE = 'recovery.json';
 const DATABASE_FILE = 'myco.sqlite';
@@ -19,8 +21,8 @@ const OWNER_DIRECTORY_MODE = 0o700;
 const OWNER_FILE_MODE = 0o600;
 const DIGEST = BLOB_KEY_GRAMMAR;
 
-const fingerprintSchema = z.object({ sha256: z.string().regex(DIGEST), bytes: z.number().int().nonnegative() });
-const sourceSchema = z.object({ target: z.enum(['local', 'cloudflare']), locator: z.string().min(1) });
+/** `receipt` names the exact source snapshot an artifact came from, where its producer can name one. */
+const sourceSchema = z.object({ target: z.enum(['local', 'cloudflare']), locator: z.string().min(1), receipt: z.string().regex(DIGEST).optional() });
 const blobSchema = z.object({ key: z.string(), sha256: z.string().regex(DIGEST), bytes: z.number().int().nonnegative() });
 const isBackupKey = (key: string): boolean => key.startsWith(BACKUP_KEY_PREFIX)
   && /^[A-Za-z0-9_-]+\.jsonl$/.test(key.slice(BACKUP_KEY_PREFIX.length));
@@ -70,6 +72,17 @@ function registeredObjects(db: Database) {
   return db.query<RecoveryBlob, []>("SELECT project_id || '/' || key AS key, key AS sha256, size AS bytes FROM blobs ORDER BY project_id, key").iterate();
 }
 
+/** The objects a snapshot registers, by artifact key: its blob rows, and its catalogued backups with their digests. */
+export function snapshotObjectFacts(file: string): Map<string, { bytes: number; sha256: string | null }> {
+  const db = openSnapshot(file);
+  try {
+    const facts = new Map<string, { bytes: number; sha256: string | null }>();
+    for (const row of registeredObjects(db)) facts.set(row.key, { bytes: row.bytes, sha256: row.sha256 });
+    for (const backup of cataloguedBackups(db)) facts.set(backup.key, { bytes: backup.bytes, sha256: backup.sha256 });
+    return facts;
+  } finally { db.close(); }
+}
+
 export interface RecoveryAdapter {
   source: RecoverySource;
   /** Write a closed standalone database at databasePath, using workDir for intermediate files. */
@@ -79,7 +92,7 @@ export interface RecoveryAdapter {
 }
 
 /** Size and digest from the same bounded-memory read of a regular file. */
-async function fingerprint(file: string): Promise<z.infer<typeof fingerprintSchema>> {
+export async function fingerprintFile(file: string): Promise<z.infer<typeof fingerprintSchema>> {
   if (!fs.lstatSync(file).isFile()) throw new Error(`recovery content is not a regular file: ${file}`);
   const hash = createHash('sha256');
   let bytes = 0;
@@ -116,7 +129,49 @@ function readManifest(root: string): RecoveryManifest | null {
   const file = path.join(root, MANIFEST_FILE);
   if (!fs.existsSync(file)) return null;
   if (!fs.lstatSync(file).isFile()) throw new Error('recovery manifest must be a regular file');
-  return manifestSchema.parse(JSON.parse(fs.readFileSync(file, 'utf8')));
+  const held: unknown = JSON.parse(fs.readFileSync(file, 'utf8'));
+  if (typeof held === 'object' && held !== null && (held as { format?: unknown }).format === STAGING_FORMAT) {
+    throw new Error(`${STAGING_FORMAT} is a staging, not a recovery artifact; materialize it first with \`myco server materialize --from <staging> --to <dir>\``);
+  }
+  return manifestSchema.parse(held);
+}
+
+/** Conservative snapshot acceptance boundary at the edge of the JSON safe-integer range. */
+const SAFE_INTEGER_LIMIT = 9_007_199_254_740_992;
+
+/**
+ * Refuses a snapshot holding a number outside the contract Myco writes: an integer at or beyond the boundary in any
+ * column, or a REAL in a column the snapshot's own schema declares with INTEGER affinity. Comparisons and counts run
+ * inside SQLite, over schema-derived columns, without an absolute value.
+ */
+function refuseUnsafeNumbers(db: Database): void {
+  const rows = <Row>(sql: string, parameter?: string): Row[] => {
+    const statement = db.prepare(sql);
+    try { return (parameter === undefined ? statement.all() : statement.all(parameter)) as Row[]; } finally { statement.finalize(); }
+  };
+  const tables = rows<{ name: string }>(
+    "SELECT name FROM pragma_table_list WHERE schema = 'main' AND type = 'table' AND name NOT GLOB 'sqlite_stat*' ORDER BY name",
+  );
+  const findings: string[] = [];
+  for (const { name } of tables) {
+    const columns = rows<{ name: string; type: string }>('SELECT name, type FROM pragma_table_info(?)', name);
+    if (columns.length === 0) continue;
+    const counts = columns.map(({ name: column, type }) => {
+      const held = quoteIdentifier(column);
+      const unsafeInteger = `typeof(${held}) = 'integer' AND (${held} >= ${SAFE_INTEGER_LIMIT} OR ${held} <= -${SAFE_INTEGER_LIMIT})`;
+      const storedReal = /INT/i.test(type) ? ` OR typeof(${held}) = 'real'` : '';
+      return `COALESCE(SUM(CASE WHEN (${unsafeInteger})${storedReal} THEN 1 ELSE 0 END), 0) AS ${held}`;
+    });
+    const row = rows<Record<string, number>>(`SELECT ${counts.join(', ')} FROM ${quoteIdentifier(name)}`)[0]!;
+    for (const { name: column } of columns) {
+      const affected = row[column] ?? 0;
+      if (affected > 0) findings.push(`${name}.${column} (${affected} row${affected === 1 ? '' : 's'})`);
+    }
+  }
+  if (findings.length > 0) {
+    throw new Error(`recovery snapshot holds numbers Myco does not write and a provider export cannot carry: ${findings.join(', ')}`
+      + '. Investigate and correct these values at their source deliberately; capturing the snapshot again leaves them unchanged.');
+  }
 }
 
 function openSnapshot(file: string): Database {
@@ -125,6 +180,7 @@ function openSnapshot(file: string): Database {
     const integrity = db.query<{ integrity_check: string }, []>('PRAGMA integrity_check').all();
     if (integrity.length !== 1 || integrity[0]?.integrity_check !== 'ok') throw new Error('recovery database failed its integrity check');
     if (db.query('PRAGMA foreign_key_check').get() !== null) throw new Error('recovery database has broken foreign keys');
+    refuseUnsafeNumbers(db);
     for (const ref of BLOB_REFERENCES) {
       if (db.query(`SELECT 1 FROM ${ref.table} r WHERE r.${ref.column} IS NOT NULL${kindFilter(ref)}
         AND NOT EXISTS (SELECT 1 FROM blobs b WHERE b.project_id = r.project_id AND b.key = r.${ref.column}) LIMIT 1`).get() !== null) {
@@ -182,6 +238,9 @@ async function writeRecoveryBundle(
     if (manifest !== null && (manifest.source.target !== adapter.source.target || manifest.source.locator !== adapter.source.locator)) {
       throw new Error('recovery destination belongs to another Deployment');
     }
+    if (manifest !== null && manifest.source.receipt !== adapter.source.receipt) {
+      throw new Error('recovery destination holds a different snapshot of this Deployment');
+    }
     if (seed !== undefined && manifest?.snapshot !== undefined
       && (JSON.stringify(manifest.snapshot) !== JSON.stringify(seed.snapshot)
         || JSON.stringify(manifest.format === 'myco-recovery/2' ? manifest.backupObjects : [])
@@ -205,7 +264,7 @@ async function writeRecoveryBundle(
       const db = openSnapshot(incoming);
       let facts;
       try { facts = snapshotFacts(db); } finally { db.close(); }
-      const snapshot = snapshotSchema.parse({ ...captured, ...facts, database: await fingerprint(incoming), capturedAt: seed?.snapshot?.capturedAt ?? new Date().toISOString() });
+      const snapshot = snapshotSchema.parse({ ...captured, ...facts, database: await fingerprintFile(incoming), capturedAt: seed?.snapshot?.capturedAt ?? new Date().toISOString() });
       fs.chmodSync(incoming, OWNER_FILE_MODE);
       syncFile(incoming);
       fs.renameSync(incoming, databasePath);
@@ -214,7 +273,7 @@ async function writeRecoveryBundle(
       writeManifest(root, manifest);
     }
     const snapshot = manifest.snapshot!;
-    if (!sameFingerprint(await fingerprint(databasePath), snapshot.database)) throw new Error('recovery database no longer matches its manifest');
+    if (!sameFingerprint(await fingerprintFile(databasePath), snapshot.database)) throw new Error('recovery database no longer matches its manifest');
     const store = diskBlobStore(path.join(root, 'blobs'));
     ensureContentDirectory(workDir);
     ensureContentDirectory(path.join(root, 'blobs'), manifest.status === 'complete');
@@ -228,7 +287,7 @@ async function writeRecoveryBundle(
         const file = blobPath(root, blob);
         ensureContentDirectory(path.dirname(file), complete);
         if (fs.existsSync(file)) {
-          const held = await fingerprint(file);
+          const held = await fingerprintFile(file);
           if ('sha256' in blob && sameFingerprint(held, blob)) return { key: blob.key, ...held };
           if (complete) throw new Error(`completed recovery blob no longer matches its manifest: ${blob.key}`);
           await store.delete(blob.key);
@@ -245,7 +304,7 @@ async function writeRecoveryBundle(
         if (stored.size !== blob.bytes) { await store.delete(blob.key); throw new Error(`recovery blob has an unexpected size: ${blob.key}`); }
         fs.chmodSync(file, OWNER_FILE_MODE);
         syncFile(file);
-        return { key: blob.key, ...('sha256' in blob ? { sha256: blob.sha256, bytes: blob.bytes } : await fingerprint(file)) };
+        return { key: blob.key, ...('sha256' in blob ? { sha256: blob.sha256, bytes: blob.bytes } : await fingerprintFile(file)) };
       };
       const backups = cataloguedBackups(db);
       const expected = new Map(backups.map((backup) => [backup.key, backup]));
@@ -331,7 +390,7 @@ export async function copyRecoveryBundle(source: string, destination: string, re
     source: manifest.source,
     snapshot: async (file) => {
       fs.copyFileSync(database, file, fs.constants.COPYFILE_EXCL);
-      if (!sameFingerprint(await fingerprint(file), manifest.snapshot!.database)) throw new Error('source recovery database changed during copy');
+      if (!sameFingerprint(await fingerprintFile(file), manifest.snapshot!.database)) throw new Error('source recovery database changed during copy');
       return manifest.snapshot!;
     },
     blob: async (object) => {
@@ -378,7 +437,7 @@ export async function copyRecoveryObjects(
       result.reused++;
     } else {
       const file = blobPath(source, object);
-      if (!sameFingerprint(await fingerprint(file), object)) throw new Error('source recovery object changed during transfer');
+      if (!sameFingerprint(await fingerprintFile(file), object)) throw new Error('source recovery object changed during transfer');
       await destination.put(object.key, () => Bun.file(file));
       const persisted = await destination.get(object.key);
       if (persisted === null || !await matches(persisted, object)) throw new Error(`recovery object failed persisted verification: ${object.key}`);
@@ -391,7 +450,7 @@ export async function copyRecoveryObjects(
     for (const row of registeredObjects(db)) await copy(blobSchema.parse(row));
     if (manifest.format === 'myco-recovery/2') for (const object of manifest.backupObjects) await copy(object);
   } finally { db.close(); }
-  if (!sameFingerprint(await fingerprint(path.join(source, DATABASE_FILE)), manifest.snapshot!.database)) {
+  if (!sameFingerprint(await fingerprintFile(path.join(source, DATABASE_FILE)), manifest.snapshot!.database)) {
     throw new Error('source recovery database changed during object transfer');
   }
   return result;
