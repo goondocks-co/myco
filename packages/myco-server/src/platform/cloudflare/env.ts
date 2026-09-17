@@ -14,7 +14,7 @@ import type {
 import { cloudflareSourceOf } from './source.js';
 import { CLOCK_MANUAL, CLOCK_NAME, type DeploymentClock } from './deployment-clock.js';
 import { PRODUCER_NAME, type RecoveryProducer } from './recovery-producer-object.js';
-import { boundRecoveryConfiguration, type StagingBucket } from './recovery-export.js';
+import { boundRecoveryConfiguration, recoveryAdmissionWire, type StagingBucket } from './recovery-export.js';
 import { classifyR2BlobFailure } from './r2-digest.js';
 import { markRecordedLaunch } from '../../core/runs.js';
 import { wrappingKeyFromText } from '../wrapping-key.js';
@@ -139,7 +139,7 @@ function recoveryPort(bindings: CloudflareBindings): ServerEnv['recovery'] {
   const configuration = boundRecoveryConfiguration(bindings);
   return {
     admission: configuration.ok ? { ready: true } : { ready: false, reason: configuration.reason },
-    admit: (admission) => object().admit(admission),
+    admit: async (admission) => object().admit(recoveryAdmissionWire(admission, bindings)),
     settleHold: (token) => object().settleHold(token),
     status: () => object().status(),
     noteSchemaDrift: (attempt) => object().noteSchemaDrift(attempt),

@@ -258,3 +258,37 @@ it.each([
   expect((await refusing.status()).attempt).toBeNull();
   expect((await refusing.settleHold('token-new')).state).toBe('retired');
 });
+
+it('stages an admission from a previous Worker under this object\'s own configuration, keeping who started it', async () => {
+  const sql = new Database(':memory:');
+  const bodies = new Map<string, string>();
+  const producer = producerOver(sql, [], async (key, body) => { bodies.set(key, new TextDecoder().decode(body)); return { size: body.length }; });
+  const { startedBy: _startedBy, ...current } = admission('token-previous');
+  const previous = { ...current, configuration: { startedBy: 'previous-owner' }, credentialsRequired: [] as string[] };
+  expect((await producer.admit(previous)).stage).toBe('export');
+  const manifests = [...bodies.entries()].filter(([key]) => key.endsWith('/recovery.json')).map(([, body]) => JSON.parse(body));
+  expect(manifests.map((manifest) => [manifest.configuration, manifest.credentialsRequired]))
+    .toEqual([[{ ...RECORDED_CONFIGURATION, startedBy: 'previous-owner' }, [...RECOVERY_CREDENTIAL_NAMES]]]);
+});
+
+it('answers a token replayed in the other wire shape with the attempt it first admitted, staging and relabelling nothing', async () => {
+  for (const firstPrevious of [true, false]) {
+    const sql = new Database(':memory:');
+    const puts: Array<[string, string]> = [];
+    const put = async (key: string, body: Uint8Array) => { puts.push([key, new TextDecoder().decode(body)]); return { size: body.length }; };
+    const { startedBy: _startedBy, ...bare } = admission('token-replayed');
+    const previousShape = { ...bare, configuration: { startedBy: 'previous-owner' }, credentialsRequired: [] as string[] };
+    const currentShape = { ...admission('token-replayed'), startedBy: 'current-owner' };
+    const first = await producerOver(sql, [], put).admit(firstPrevious ? previousShape : currentShape);
+    const staged = [...puts];
+    for (const held of [producerOver(sql, [], put), producerOver(sql, [], put)]) {
+      const again = await held.admit(firstPrevious ? currentShape : previousShape);
+      expect([again.attempt, again.stage]).toEqual([first.attempt, 'export']);
+    }
+    expect(puts).toEqual(staged);
+    expect(sql.query('SELECT COUNT(*) AS n FROM attempts').get()).toEqual({ n: 1 });
+    const recorded = JSON.parse((sql.query('SELECT admission FROM attempts').get() as { admission: string }).admission);
+    expect(recorded.configuration.startedBy).toBe(firstPrevious ? 'previous-owner' : 'current-owner');
+    sql.close();
+  }
+});

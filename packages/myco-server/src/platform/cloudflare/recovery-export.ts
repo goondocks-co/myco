@@ -7,8 +7,8 @@
 import type {
   AttemptPart, ExportAnswer, PortFailure, ProducerPorts, RangeAnswer,
 } from '../../core/recovery-producer.js';
-import { PRODUCER_LIMITS, stagedSqlKey, TransientProducerFailure } from '../../core/recovery-producer.js';
-import { readHostedRecoveryConfiguration, STAGING_OBJECTS_DIRECTORY, stagingPath, type HostedRecoveryConfiguration } from '../../core/recovery-staging.js';
+import { PRODUCER_LIMITS, stagedSqlKey, TransientProducerFailure, type RecoveryAdmission } from '../../core/recovery-producer.js';
+import { readHostedRecoveryConfiguration, RECOVERY_CREDENTIAL_NAMES, STAGING_OBJECTS_DIRECTORY, stagingPath, type HostedRecoveryConfiguration } from '../../core/recovery-staging.js';
 import { discardStoredBody, streamStoredObject } from '../../core/stored-object.js';
 import { r2RefusedDigest } from './r2-digest.js';
 
@@ -61,6 +61,37 @@ export function boundRecoveryConfiguration(bindings: RecoveryConfigurationBindin
     return { ok: false, reason: 'this Deployment\'s recovery configuration names another address than the one it runs at' };
   }
   return read;
+}
+
+/** What a hosted recovery records about an attempt: the Deployment's bound configuration with who started it, and every recovery credential name. */
+export function recordedAdmission(configuration: HostedRecoveryConfiguration, startedBy: string): { configuration: Record<string, unknown>; credentialsRequired: string[] } {
+  return { configuration: { ...configuration, startedBy }, credentialsRequired: [...RECOVERY_CREDENTIAL_NAMES] };
+}
+
+/**
+ * An admission as it travels to the producer object. Worker and producer object code do not change together, so the
+ * wire carries both shapes: who started the attempt, which a producer object of this release reads, and the recorded
+ * configuration and credential names, which a producer object of the previous release reads.
+ */
+export type RecoveryAdmissionWire = Omit<RecoveryAdmission, 'startedBy'> & {
+  startedBy?: string;
+  configuration?: Record<string, unknown>;
+  credentialsRequired?: readonly string[];
+};
+
+/** The wire for one admission, from the Worker's own bound configuration. A Worker that cannot read it sends nothing. */
+export function recoveryAdmissionWire(admission: RecoveryAdmission, bindings: RecoveryConfigurationBindings): RecoveryAdmissionWire {
+  const bound = boundRecoveryConfiguration(bindings);
+  if (!bound.ok) throw new Error(bound.reason);
+  return { ...admission, ...recordedAdmission(bound.configuration, admission.startedBy) };
+}
+
+/** Who started an admitted attempt, from either wire shape: its own field, or the recorded configuration a previous Worker sends. */
+export function admittedStarter(wire: RecoveryAdmissionWire): string {
+  if (typeof wire.startedBy === 'string' && wire.startedBy !== '') return wire.startedBy;
+  const recorded = wire.configuration?.startedBy;
+  if (typeof recorded === 'string' && recorded !== '') return recorded;
+  throw new Error('a recovery admission names no member who started it');
 }
 
 export interface ExportTarget {

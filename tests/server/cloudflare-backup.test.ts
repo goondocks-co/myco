@@ -195,7 +195,7 @@ it('records the configuration of the same record capture that rendered and named
     expect(reads).toBe(2);
     if (!('result' in outcome)) throw new Error(outcome.error);
     expect(outcome.result.status).toBe('complete');
-    // The record read in between named fleet 7; neither the rendered export config nor the artifact carries it.
+    // The temporary replacement record named fleet 7; neither the rendered export config nor the artifact carries it.
     expect(renderedFleet).toBeNull();
     expect(outcome.result.snapshot!.configuration).toEqual({ ...recoveryConfigurationOf(f.record), versionId: f.record.versionId, deployedAt: f.record.deployedAt });
     expect('fleet' in outcome.result.snapshot!.configuration).toBe(false);
