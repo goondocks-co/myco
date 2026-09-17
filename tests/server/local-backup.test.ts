@@ -9,6 +9,7 @@ import { resolveLocalPaths, writeLocalRecord } from '@myco/server/local.js';
 import { diskBlobStore } from '@myco-server-worker/platform/bun/blobs.js';
 import { sqliteEnv } from '../myco-server/helpers/fixtures.js';
 import { legacyBlob } from '../myco-server/helpers/d1.js';
+import { RECOVERY_CREDENTIAL_NAMES } from '@myco-server-worker/core/recovery-staging.js';
 
 it('backs up committed WAL data and exact blob bytes, reading each blob from the object its row registered, without migrating or replacing the source', async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-local-backup-'));
@@ -19,7 +20,11 @@ it('backs up committed WAL data and exact blob bytes, reading each blob from the
   const fixture = sqliteEnv({ beforeStep42: (db) => legacyBlob(db, { projectId: 'proj_1', key: digest, size: bytes.length, mediaType: 'application/octet-stream', tokenId: 'mt_fixture' }) });
   let live: Database | undefined;
   try {
-    writeLocalRecord({ port: 8787, sourceFrom: 'socket' }, paths);
+    writeLocalRecord({ port: 8787, sourceFrom: 'socket', fleet: 2 }, paths);
+    // The Deployment's own secrets hold sentinel values: public settings are recorded, secret values never are.
+    const sentinels = { SECRET_WRAP_KEY: Buffer.alloc(32, 7).toString('base64'), SESSION_SECRET: 'sentinel-session-secret',
+      GITHUB_CLIENT_ID: 'sentinel-client-id', GITHUB_CLIENT_SECRET: 'sentinel-client-secret' };
+    fs.writeFileSync(paths.secretsFile, Object.entries(sentinels).map(([name, value]) => `${name}=${value}`).join('\n') + '\n', { mode: 0o600 });
     // A blob uploaded under its own generation is stored under that name, and the artifact keeps its logical key.
     const uploaded = new TextEncoder().encode('uploaded under a generation');
     const uploadedDigest = createHash('sha256').update(uploaded).digest('hex');
@@ -43,8 +48,11 @@ it('backs up committed WAL data and exact blob bytes, reading each blob from the
     const result = await backupLocalDeployment({ destination, paths });
     expect(result.status).toBe('complete');
     expect(result.snapshot?.blobCount).toBe(2);
-    expect(result.snapshot?.configuration).toMatchObject({ port: 8787, sourceFrom: 'socket' });
-    expect(result.snapshot?.credentialsRequired).toContain('SECRET_WRAP_KEY');
+    expect(result.snapshot?.configuration).toMatchObject({ port: 8787, sourceFrom: 'socket', fleet: 2 });
+    expect(result.snapshot?.credentialsRequired).toEqual([...RECOVERY_CREDENTIAL_NAMES]);
+    const manifestText = fs.readFileSync(path.join(destination, 'recovery.json'), 'utf8');
+    for (const value of Object.values(sentinels)) expect(manifestText).not.toContain(value);
+    for (const name of RECOVERY_CREDENTIAL_NAMES) expect(manifestText).toContain(name);
     const restored = new Database(path.join(destination, 'myco.sqlite'), { readonly: true });
     try {
       expect(restored.query("SELECT title FROM sessions WHERE session_id='s_backup'").get()).toEqual({ title: 'Committed WAL title' });

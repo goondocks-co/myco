@@ -31,6 +31,7 @@ function asSchema41(file: string): void {
 }
 
 async function fixture(failVectorRead = false, { legacy = false } = {}) {
+  const reports: string[] = [];
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-hosted-recovery-'));
   const source = path.join(root, 'artifact');
   const mycoHome = path.join(root, 'home');
@@ -116,7 +117,8 @@ async function fixture(failVectorRead = false, { legacy = false } = {}) {
     return stored.has(key) ? new Response(stored.get(key)!) : new Response('absent', { status: 404 });
   };
   return { source, secretsFile, mycoHome, destination, deployments, secretCommands, key, wrapKey, creates: () => creates, bodies, stored,
-    restore: (newSignIn = false) => restoreCloudflareDeployment({ source, secretsFile, mycoHome, accountId: 'fixture-account', runner, newSignIn, fetch: fetchObject }),
+    reports,
+    restore: (newSignIn = false) => restoreCloudflareDeployment({ source, secretsFile, mycoHome, accountId: 'fixture-account', runner, newSignIn, fetch: fetchObject, report: (line: string) => { reports.push(line); } }),
     cleanup: () => { destination.close(); fs.rmSync(root, { recursive: true, force: true }); },
   };
 }
@@ -132,6 +134,11 @@ it('resumes data transfer on the same fresh resources and publishes only after b
     fs.writeFileSync(journalFile, JSON.stringify(legacyJournal));
     const result = await f.restore();
     expect(result.record.fleet).toBe(2);
+    expect(f.reports).toContain('Recorded fleet 2 carried to the restored Deployment.');
+    // The replacement's own producer is rendered the replacement's configuration, not its source's.
+    const published = f.deployments.at(-1)!;
+    expect(published).toContain('MYCO_RECOVERY_CONFIGURATION = ');
+    expect(published).toContain(`\\"workerName\\":\\"${result.record.workerName}\\"`);
     expect(result.record.workerName).toMatch(/^myco-recovery-/);
     // Four resources, each created once: the database, the blob store, the recovery staging store, and the index.
     expect(f.creates()).toBe(4);

@@ -14,12 +14,15 @@ import { DurableObject } from 'cloudflare:workers';
 import {
   ADVANCING_STAGES_SQL, continueAttempt, failAttempt, freshScan, HoldRetired, PRODUCER_LIMITS, PRODUCER_STALL_MS, publishAttempt, reconcileUnconfirmed, settlementOf, stagedSqlKey,
   type AttemptCheckpoint, type AttemptObject, type AttemptPart, type AttemptState, type ContinuationReport, type HoldSettlement,
-  type ProducerLimits, type RecoveryAdmission, type RecoveryProducerStatus, type ScanProgress, type TableDefinitions,
+  type ProducerLimits, type RecoveryProducerStatus, type ScanProgress, type TableDefinitions,
 } from '../../core/recovery-producer.js';
 import { CHECKPOINT_STATEMENT_CHARS, newInventoryProgress, within, type SavedDigest } from '../../core/recovery-inventory.js';
 import type { StatementScan } from '../../core/sql-statements.js';
 import { serialGate } from '../../core/serial-gate.js';
-import { cloudflareProducerPorts, R2_MINIMUM_PART_BYTES, STAGING_TARGET, type StagingBucket } from './recovery-export.js';
+import {
+  admittedStarter, boundRecoveryConfiguration, cloudflareProducerPorts, R2_MINIMUM_PART_BYTES, recordedAdmission, STAGING_TARGET,
+  type RecoveryAdmissionWire, type StagingBucket,
+} from './recovery-export.js';
 import type { CloudflareBindings } from './env.js';
 
 /** Raised inside admission's transaction when another step already admitted an attempt carrying this token. */
@@ -255,7 +258,7 @@ export class RecoveryProducer extends DurableObject<CloudflareBindings> {
   }
 
   /** Opens one attempt from a schema captured before any export ran. Refuses while another attempt is open. */
-  async admit(admission: RecoveryAdmission, limits: Partial<ProducerLimits> = {}): Promise<RecoveryProducerStatus> {
+  async admit(admission: RecoveryAdmissionWire, limits: Partial<ProducerLimits> = {}): Promise<RecoveryProducerStatus> {
     return this.gate.exclusive(() => this.publish(admission, { ...PRODUCER_LIMITS, ...limits }));
   }
 
@@ -263,7 +266,7 @@ export class RecoveryProducer extends DurableObject<CloudflareBindings> {
    * Stages the capture, then records the attempt. The record is the publication: an interrupted or refused staging
    * write leaves nothing for a continuation to advance, and no attempt claims an export it never prepared for.
    */
-  private async publish(admission: RecoveryAdmission, limits: ProducerLimits): Promise<RecoveryProducerStatus> {
+  private async publish(admission: RecoveryAdmissionWire, limits: ProducerLimits): Promise<RecoveryProducerStatus> {
     // A token an attempt already carries is answered with that attempt, whatever its stage: an admission is never
     // staged twice for one hold.
     const carrying = this.row('hold_token = ?', admission.holdToken);
@@ -282,6 +285,13 @@ export class RecoveryProducer extends DurableObject<CloudflareBindings> {
     }
     const locator = this.locator();
     const target = this.target(admission.tables);
+    // What the staging records about this Deployment comes from its own bindings, read once by the one reader, whatever
+    // configuration the wire carries. A new attempt from a Worker that could not record its configuration, or one this
+    // object cannot record, stages nothing.
+    if (admission.unrecordable !== undefined) throw new Error(admission.unrecordable);
+    const bound = boundRecoveryConfiguration(this.env);
+    if (!bound.ok) throw new Error(bound.reason);
+    const { configuration, credentialsRequired } = recordedAdmission(bound.configuration, admittedStarter(admission));
     const now = Date.now();
     const prefix = `staging/${now}`;
     const bytes = new TextEncoder().encode(admission.schema);
@@ -300,12 +310,12 @@ export class RecoveryProducer extends DurableObject<CloudflareBindings> {
     };
     const scan: ScanProgress = freshScan();
     // The admission is recorded in the attempt's own row, so it is held to what a row takes before anything is staged.
-    const recorded = JSON.stringify({ configuration: admission.configuration, credentialsRequired: admission.credentialsRequired });
+    const recorded = JSON.stringify({ configuration, credentialsRequired });
     if (recorded.length > CHECKPOINT_STATEMENT_CHARS) throw new Error('a recovery admission is too large to record');
     try {
       await publishAttempt(ports, {
         prefix, target: STAGING_TARGET, locator, startedAt: now, schema, schemaText: admission.schema,
-        configuration: admission.configuration, credentialsRequired: admission.credentialsRequired,
+        configuration, credentialsRequired,
       }, (published) => {
         this.ctx.storage.transactionSync(() => {
           if (this.row('hold_token = ?', admission.holdToken) !== null) throw new HoldCarried();

@@ -51,6 +51,7 @@ import { setupLocalOwner } from '../server/local-owner.js';
 import { backupLocalDeployment } from '../server/local-backup.js';
 import { backupCloudflareDeployment } from '../server/cloudflare-backup.js';
 import { materializeRecoveryStaging } from '../server/recovery-materialize.js';
+import { credentialsReport } from '../server/recovery-bundle.js';
 import { restoreLocalDeployment } from '../server/local-recovery.js';
 import { restoreCloudflareDeployment } from '../server/cloudflare-recovery.js';
 import {
@@ -497,7 +498,7 @@ export async function run(args: string[]): Promise<void> {
       if (to === undefined || to === '' || to === 'true') fail('materialize needs --to <dir>.');
       const done = await materializeRecoveryStaging({ staging: from!, destination: to!, report: (line) => { console.log(line); } });
       console.log(`Verified data artifact written to ${path.resolve(to!)} (${done.snapshot!.blobCount} blobs)`);
-      console.log(`Keep these credentials separately for recovery: ${done.snapshot!.credentialsRequired.join(', ')}`);
+      console.log(credentialsReport(done.snapshot!.credentialsRequired));
       return;
     }
 
@@ -511,7 +512,7 @@ export async function run(args: string[]): Promise<void> {
           ? await backupLocalDeployment({ destination: to!, report })
           : await backupCloudflareDeployment({ ...cloudflareOptions(), destination: to! });
         console.log(`Verified data artifact written to ${path.resolve(to!)} (${done.snapshot!.blobCount} blobs)`);
-        console.log(`Keep these credentials separately for recovery: ${done.snapshot!.credentialsRequired.join(', ')}`);
+        console.log(credentialsReport(done.snapshot!.credentialsRequired));
         return;
       }
       const done = await backupDeployment({ destination: to! });

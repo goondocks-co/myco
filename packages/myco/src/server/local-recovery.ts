@@ -9,7 +9,7 @@ import { migrateOnly } from '@myco-server-worker/platform/bun/server-main.js';
 import { readSchemaVersion } from '@myco-server-worker/db/migrate.js';
 import type { NativeSqlite } from '@myco-server-worker/platform/bun/native.js';
 import { syncDirectoryForDurability } from '@myco/utils/atomic-write.js';
-import { copyRecoveryBundle, preparedObjectKeys } from './recovery-bundle.js';
+import { copyRecoveryBundle, preparedObjectKeys, restoredFleet } from './recovery-bundle.js';
 import { prepareRecoveryCredentials } from './recovery-credentials.js';
 import { LocalVolume } from './local-volume.js';
 import {
@@ -60,6 +60,10 @@ export async function restoreLocalDeployment(options: {
     try {
       const staging = resolveLocalPaths(stagingHome);
       const manifest = await copyRecoveryBundle(options.source, staging.root, options.report);
+      // The fleet is the one recorded setting a native restore carries; its network settings stay this Deployment's own.
+      const carried = restoredFleet(manifest.snapshot!.configuration);
+      const published = carried.fleet === null ? record : { ...record, fleet: carried.fleet };
+      assertRecordServable(published);
       const db = new Database(staging.databasePath);
       let rebuildEmbeddings: boolean;
       try {
@@ -76,7 +80,8 @@ export async function restoreLocalDeployment(options: {
       } finally { db.close(); }
       const schemaVersion = await prepareRestoredObjects(staging, options.native);
       writeLocalSecrets(secrets, staging);
-      writeLocalRecord(record, staging);
+      writeLocalRecord(published, staging);
+      options.report?.(carried.report);
       fs.renameSync(path.join(staging.root, 'recovery.json'), path.join(staging.root, 'recovered-from.json'));
       fs.rmSync(path.join(staging.root, '.recovery.lock'));
       for (const file of [staging.databasePath, staging.secretsFile, staging.recordFile]) {

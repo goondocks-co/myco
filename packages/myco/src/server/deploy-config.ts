@@ -7,7 +7,7 @@
 import type { DeploymentRecord } from './cloudflare.js';
 import { WRANGLER_TEMPLATE } from './wrangler-template.js';
 import { VECTOR_BINDINGS } from './vector-config.js';
-import { cloudflareResources } from './cloudflare-resources.js';
+import { cloudflareResources, recoveryConfigurationOf } from './cloudflare-resources.js';
 
 /**
  * Every configuration table a rendered deploy config may declare.
@@ -122,6 +122,8 @@ export function renderDeployConfig(record: DeploymentRecord): string {
   if (record.url !== undefined) vars.push(`MYCO_ORIGIN = "${new URL(record.url).origin}"`);
   if (record.fleet !== undefined) vars.push(`MYCO_FLEET = "${record.fleet}"`);
   vars.push(`MYCO_RECOVERY_ACCOUNT_ID = "${record.accountId}"`, `MYCO_RECOVERY_DATABASE_ID = "${record.databaseId!}"`);
+  // The configuration the Deployment's own recovery producer records, as JSON in one TOML basic string.
+  vars.push(`MYCO_RECOVERY_CONFIGURATION = ${JSON.stringify(JSON.stringify(recoveryConfigurationOf(record)))}`);
   if (vars.length > 0) body += ['', '[vars]', ...vars, ''].join('\n');
   return `${header.join('\n')}\n${body}`;
 }

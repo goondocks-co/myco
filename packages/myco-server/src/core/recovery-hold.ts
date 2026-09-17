@@ -49,14 +49,18 @@ export async function settleOpenHold(env: Pick<ServerEnv, 'db' | 'recovery'>, no
 
 /**
  * Opens a fresh hold for a new admission. A hold still open is settled first: while its attempt advances, no new hold
- * opens and the caller answers that attempt's progress instead.
+ * opens and the caller answers that attempt's progress instead. When the producer cannot admit a new attempt
+ * (`mayOpen` false), an open hold is still settled and an advancing attempt still answered, and no hold is opened.
  */
-export async function openHoldForAdmission(env: Pick<ServerEnv, 'db' | 'recovery'>, now: number): Promise<{ token: string } | { held: HoldSettlement | 'unverified' }> {
+export async function openHoldForAdmission(
+  env: Pick<ServerEnv, 'db' | 'recovery'>, now: number, mayOpen = true,
+): Promise<{ token: string } | { held: HoldSettlement | 'unverified' } | { refused: true }> {
   const token = crypto.randomUUID();
-  if (await acquireRecoveryHold(env.db, token, now)) return { token };
+  if (mayOpen && await acquireRecoveryHold(env.db, token, now)) return { token };
   const settled = await settleOpenHold(env, now);
   if (settled !== null && settled !== 'unverified' && settled.state === 'open') return { held: settled };
   if (settled === 'unverified') return { held: settled };
+  if (!mayOpen) return { refused: true };
   if (await acquireRecoveryHold(env.db, token, now)) return { token };
   return { held: 'unverified' };
 }

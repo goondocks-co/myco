@@ -47,7 +47,13 @@ export async function handleStartRecoveryExport(env: ServerEnv, ctx: OwnerContex
   const captured = await capturedSchema(env);
   if (captured instanceof Response) return captured;
   // The hold opens before the export is admitted, so nothing the snapshot names is released while the attempt runs.
-  const hold = await openHoldForAdmission(env, ctx.now);
+  // A producer that cannot record this Deployment's configuration opens none, while an attempt already running is
+  // still answered.
+  const readiness = env.recovery.admission;
+  const hold = await openHoldForAdmission(env, ctx.now, readiness.ready);
+  if ('refused' in hold) {
+    return Response.json({ error: 'recovery_configuration_unavailable', message: readiness.ready ? 'the recovery configuration is unavailable' : readiness.reason }, { status: 503 });
+  }
   if ('held' in hold) {
     if (hold.held === 'unverified') {
       return Response.json({ error: 'recovery_hold_unverified', message: 'a recovery hold is open and its attempt could not be read; try again shortly' }, { status: 503 });
@@ -61,8 +67,7 @@ export async function handleStartRecoveryExport(env: ServerEnv, ctx: OwnerContex
     tables: captured.tables,
     schema: captured.text,
     captured: captured.captured,
-    configuration: { startedBy: ctx.member.id },
-    credentialsRequired: [],
+    startedBy: ctx.member.id,
   }), ADMISSION_MS, Date.now).catch((error: unknown) => {
     // An admission that failed or never answered keeps its hold: the release job settles it against the attempts.
     emit({ kind: 'recovery_admission_unanswered', error_class: classify(error) });

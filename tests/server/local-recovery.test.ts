@@ -97,7 +97,7 @@ function asSchema41(file: string): void {
   } finally { db.close(); }
 }
 
-async function fixture(target: 'local' | 'cloudflare' = 'cloudflare', { legacy = false } = {}) {
+async function fixture(target: 'local' | 'cloudflare' = 'cloudflare', { legacy = false, configuration = {} as Record<string, unknown> } = {}) {
   const source = legacySource();
   const blobs = await storedBlobs(source);
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-native-recovery-'));
@@ -120,7 +120,7 @@ async function fixture(target: 'local' | 'cloudflare' = 'cloudflare', { legacy =
     snapshot: async (file) => {
       source.sqlite.query('VACUUM INTO ?').run(file);
       if (legacy) asSchema41(file);
-      return { configuration: {}, credentialsRequired: [...LOCAL_SECRET_NAMES] };
+      return { configuration, credentialsRequired: [...LOCAL_SECRET_NAMES] };
     },
     blob: async (object) => {
       // A current snapshot names the object its row registered. A schema-41 snapshot names the logical key, and this
@@ -132,7 +132,7 @@ async function fixture(target: 'local' | 'cloudflare' = 'cloudflare', { legacy =
     },
   });
   return { source, root, artifact, secretsFile, paths, secrets, key, provider, backup, blobs,
-    restore: () => restoreLocalDeployment({ source: artifact, secretsFile, paths, port: 18901 }),
+    restore: (report?: (line: string) => void) => restoreLocalDeployment({ source: artifact, secretsFile, paths, port: 18901, ...(report === undefined ? {} : { report }) }),
     cleanup: () => { source.sqlite.close(); fs.rmSync(root, { recursive: true, force: true }); },
   };
 }
@@ -212,5 +212,34 @@ it('refuses an unreadable wrapping key or corrupted artifact without publishing 
     expect(fs.existsSync(f.paths.root)).toBe(false);
     fs.writeFileSync(object, bytes);
     expect(await f.restore()).toMatchObject({ rebuildEmbeddings: true });
+  } finally { f.cleanup(); }
+});
+
+it('carries a recorded fleet into the restored native record, leaves its network settings as they were, and says what it carried', async () => {
+  const f = await fixture('local', { configuration: { port: 8787, origin: 'https://source.example.test', sourceFrom: 'header', trustedHeader: 'x-forwarded-for', trustedHops: 1, fleet: 3 } });
+  try {
+    const lines: string[] = [];
+    await f.restore((line) => lines.push(line));
+    // Only the fleet is carried; the network settings stay this Deployment's own defaults, as native restore published before.
+    expect(readLocalRecord(f.paths)).toEqual({ port: 18901, sourceFrom: 'socket', fleet: 3 });
+    expect(lines).toContain('Recorded fleet 3 carried to the restored Deployment.');
+  } finally { f.cleanup(); }
+});
+
+it('publishes no fleet from an artifact that records none, and says its source fleet is unknown', async () => {
+  const f = await fixture('local', { configuration: { startedBy: 'mem_1' } });
+  try {
+    const lines: string[] = [];
+    await f.restore((line) => lines.push(line));
+    expect(readLocalRecord(f.paths)).toEqual({ port: 18901, sourceFrom: 'socket' });
+    expect(lines).toContain('The artifact records no fleet, so its source fleet is unknown; the restored Deployment is published without one, and dispatch applies no fleet bound.');
+  } finally { f.cleanup(); }
+});
+
+it('refuses a recorded fleet that is not a whole number of runtimes without publishing a destination', async () => {
+  const f = await fixture('local', { configuration: { port: 8787, fleet: 'local' } });
+  try {
+    await expect(f.restore()).rejects.toThrow('not a whole number of runtimes');
+    expect(fs.existsSync(f.paths.root)).toBe(false);
   } finally { f.cleanup(); }
 });
