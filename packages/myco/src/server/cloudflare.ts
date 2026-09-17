@@ -348,9 +348,13 @@ export async function exportDatabase(
 }
 
 /**
- * How long one D1 statement may take. Every caller states a bound, because the window a hold covers is the window a
- * deletion defers in: a command that answers nothing holds its operator, and its child keeps a mutation alive that
- * nothing is waiting on. Past this the child is killed and the caller reads the same token back.
+ * How long one D1 statement may take.
+ *
+ * Every caller states a bound, because the window a hold covers is the window a deletion defers in, and a command
+ * that answers nothing holds its operator there indefinitely. Past this the command and the processes it started are
+ * ended — `npx` runs Wrangler as a child of its own, so ending the command alone would leave the process that sends
+ * statements running. What that cannot do is take back a statement D1 already accepted: the outcome is unknown, and
+ * the caller settles it by reading its own token back.
  */
 export const D1_STATEMENT_TIMEOUT_MS = 60_000;
 

@@ -146,10 +146,11 @@ export interface RecoveryAdapter {
  * by taking a second hold.
  *
  * Every operation answers or throws inside a window of its own, and an owner whose transport can outlive the call
- * stops it rather than abandoning it: the hosted owner gives each D1 statement `D1_STATEMENT_TIMEOUT_MS` and its
- * Wrangler child is killed at that point, and the native owner takes a non-blocking volume lease and a bounded
- * `busy_timeout`. A thrown or timed-out operation is an unknown outcome, never an absent or released hold, and it
- * leaves the same token to ask about.
+ * ends it rather than abandoning it: the hosted owner gives each D1 statement `D1_STATEMENT_TIMEOUT_MS` and ends the
+ * command and every process it started at that point, and the native owner takes a non-blocking volume lease and a
+ * bounded `busy_timeout`. Ending a command does not cancel a statement the provider already accepted, so a thrown or
+ * timed-out operation is an unknown outcome — never an absent or released hold — and it leaves the same token to ask
+ * about.
  */
 export interface RecoveryHoldOwner {
   /** Opens `token`, or answers what the source already holds for it. */
@@ -432,23 +433,25 @@ function assertBoundIdentity(bound: RecoveryHoldBound, reading: RecoveryHoldRead
 }
 
 /**
- * The source's own open operator hold is this destination's token.
+ * The captured database is the Deployment this destination was admitted to hold, and carries this backup's hold.
  *
- * A reading answers for the token it was asked about; this asks the source which hold is open on it. Only that answer
- * attests that the bytes about to be captured, or already captured, are protected by THIS backup's hold.
+ * The bytes are the only thing that can attest what protected them. A live answer describes the source now: it still
+ * names the expected Deployment while the hold row those bytes carry is another backup's, a producer's, released, or
+ * absent altogether. So the snapshot's own row decides — exactly this destination's token, held by the operator, and
+ * open at the instant the bytes were taken — and it keeps deciding for every resume and for the completed artifact,
+ * because the row is frozen in the copy. The live reading still admits the hold before anything is captured; this is
+ * what the capture itself is held to.
  */
-async function assertHoldAttested(owner: RecoveryHoldOwner, token: string): Promise<void> {
-  const open = await owner.open();
-  if (open === null) throw new Error('the source holds no open recovery hold for this backup; capture into a new directory');
-  if (open.token !== token) throw new Error("the source's open recovery hold belongs to another backup; capture into a new directory");
-}
-
-/** The snapshot bytes are of the Deployment this destination was admitted to hold, and of the schema it answered with. */
-function assertSnapshotAdmission(facts: { deploymentId: string; schemaVersion: number }, held: { bound: RecoveryHoldBound } | null): void {
+function assertSnapshotHold(db: Database, facts: { deploymentId: string; schemaVersion: number }, held: { token: string; bound: RecoveryHoldBound } | null): void {
   if (held === null) return;
   if (facts.deploymentId !== held.bound.source.deploymentId || facts.schemaVersion !== held.bound.source.schemaVersion) {
     throw new Error('this snapshot is not of the Deployment its recovery hold was bound to; capture into a new directory');
   }
+  const row = db.query<{ holder: string | null; released_at: number | null }, [string]>(
+    'SELECT holder, released_at FROM recovery_holds WHERE token = ?').get(held.token) ?? null;
+  if (row === null) throw new Error("this snapshot carries no recovery hold of this backup's own token; capture into a new directory");
+  if (row.holder !== 'operator') throw new Error("this snapshot's own recovery hold is not an operator hold; capture into a new directory");
+  if (row.released_at !== null) throw new Error("this snapshot was taken after its own recovery hold was released; capture into a new directory");
 }
 
 /**
@@ -464,8 +467,8 @@ function assertSnapshotAdmission(facts: { deploymentId: string; schemaVersion: n
  *
  * A receipt this destination already wrote decides before anything is opened or captured, and again on the answer the
  * source gives: whatever state the hold is in, a source that does not answer the bound identity is a different
- * Deployment, and the receipt is never rewritten to make one fit. Every hold this returns is also attested by the
- * source's own open hold naming this token.
+ * Deployment, and the receipt is never rewritten to make one fit. What the capture itself is held to is the hold row
+ * the snapshot carries, which is checked where the snapshot is read.
  */
 async function heldForSnapshot(
   root: string, owner: RecoveryHoldOwner, snapshotTaken: boolean, complete: boolean, report: (line: string) => void,
@@ -481,7 +484,6 @@ async function heldForSnapshot(
     durableFile(path.join(root, HOLD_FILE), `${JSON.stringify({ token, locator: owner.locator, createdAt: new Date().toISOString() } satisfies RecoveryHoldIntent, null, 2)}\n`);
     const reading = await openAndReconcile(owner, token, report);
     if (reading.state !== 'open') throw new Error(`recovery hold was not opened on the source (${reading.state}); nothing was captured`);
-    await assertHoldAttested(owner, token);
     report('Holding every object this snapshot names on the source until the artifact completes');
     return { token, bound: bindHold(root, token, reading) };
   }
@@ -489,21 +491,18 @@ async function heldForSnapshot(
   if (bound !== null) assertBoundIdentity(bound, reading);
   if (reading.state === 'open') {
     if (bound !== null) {
-      await assertHoldAttested(owner, recorded.token);
       report('Resuming under the recovery hold this destination already took');
       return { token: recorded.token, bound };
     }
     // The hold exists but its identity was never bound: a write whose answer was lost. Binding is only safe before a
     // snapshot, because a snapshot taken under an unbound hold cannot be held to any identity afterwards.
     if (snapshotTaken) throw new Error('this destination holds a snapshot taken before its recovery hold was bound to a source; capture into a new directory');
-    await assertHoldAttested(owner, recorded.token);
     return { token: recorded.token, bound: bindHold(root, recorded.token, reading) };
   }
   if (snapshotTaken) throw new Error(`the recovery hold protecting this snapshot is ${reading.state}; capture into a new directory`);
   if (reading.state !== 'absent') throw new Error(`this destination's recovery hold is ${reading.state}; capture into a new directory`);
   const reopened = await openAndReconcile(owner, recorded.token, report);
   if (reopened.state !== 'open') throw new Error(`recovery hold was not opened on the source (${reopened.state}); nothing was captured`);
-  await assertHoldAttested(owner, recorded.token);
   if (bound !== null) {
     assertBoundIdentity(bound, reopened);
     return { token: recorded.token, bound };
@@ -624,7 +623,7 @@ async function writeRecoveryBundle(
       let facts;
       try {
         facts = snapshotFacts(db);
-        assertSnapshotAdmission(facts, held);
+        assertSnapshotHold(db, facts, held);
       } finally { db.close(); }
       const snapshot = snapshotSchema.parse({ ...captured, ...facts, database: await fingerprintFile(incoming), capturedAt: seed?.snapshot?.capturedAt ?? new Date().toISOString() });
       fs.chmodSync(incoming, OWNER_FILE_MODE);
@@ -644,7 +643,7 @@ async function writeRecoveryBundle(
       const facts = snapshotFacts(db);
       if (facts.deploymentId !== snapshot.deploymentId || facts.schemaVersion !== snapshot.schemaVersion
         || facts.blobCount !== snapshot.blobCount || facts.blobBytes !== snapshot.blobBytes) throw new Error('recovery manifest does not describe its database');
-      assertSnapshotAdmission(facts, held);
+      assertSnapshotHold(db, facts, held);
       const complete = manifest.status === 'complete';
       const copyObject = async (blob: RecoverySourceObject, progress: string): Promise<RecoveryBlob> => {
         const file = blobPath(root, blob);

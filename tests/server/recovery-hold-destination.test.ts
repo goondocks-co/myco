@@ -253,7 +253,9 @@ function syntheticSource(options: { identity?: () => RecoveryHoldSource | null }
       return open === undefined ? null : { token: open[0], acquiredAt: 1 };
     },
   };
-  return { owner, holds, stats, throwOn, identity };
+  /** The token this source currently holds open, as its own volume would carry it. */
+  const openToken = (): string | null => [...holds.entries()].find(([, held]) => !held.released)?.[0] ?? null;
+  return { owner, holds, stats, throwOn, identity, openToken };
 }
 
 /** One object the synthetic snapshot registers, so every capture has something to copy. */
@@ -265,7 +267,7 @@ const OBJECT_KEY = createHash('sha256').update(OBJECT).digest('hex');
  * it is a snapshot OF. A real source answers its hold with the identity its own volume carries, so a fixture whose
  * stamp and hold answer disagree is a substituted snapshot, which is what one of these tests is.
  */
-const syntheticSnapshot = (file: string, stamp: RecoveryHoldSource | null) => {
+const syntheticSnapshot = (file: string, stamp: RecoveryHoldSource | null, hold: SnapshotHold = null) => {
   const fixture = sqliteEnv();
   fixture.sqlite.run(`INSERT INTO blobs(project_id,key,size,media_type,token_id,received_at,generation)
     VALUES ('proj_1',?,?,'text/plain','mt_fixture',1,?)`, [OBJECT_KEY, OBJECT.length, crypto.randomUUID()]);
@@ -273,23 +275,38 @@ const syntheticSnapshot = (file: string, stamp: RecoveryHoldSource | null) => {
     fixture.sqlite.run("INSERT INTO schema_meta(key,value) VALUES ('deployment_id',?) ON CONFLICT(key) DO UPDATE SET value = excluded.value", [stamp.deploymentId]);
     fixture.sqlite.run("UPDATE schema_meta SET value = ? WHERE key = 'version'", [String(stamp.schemaVersion)]);
   }
+  // The volume a real snapshot copies carries the hold that was opened on it before the copy.
+  if (hold !== null) {
+    fixture.sqlite.run('INSERT INTO recovery_holds(token,acquired_at,holder) VALUES (?,1,?)', [hold.token, hold.holder]);
+    if (hold.released) fixture.sqlite.run("UPDATE recovery_holds SET released_at = 2, release_reason = 'abandoned', released_by = 'operator' WHERE token = ?", [hold.token]);
+  }
   fixture.sqlite.query('VACUUM INTO ?').run(file);
   fixture.sqlite.close();
   return { configuration: { port: 8787 }, credentialsRequired: [] };
 };
 
+/** The hold row a synthetic snapshot carries, or none at all. */
+type SnapshotHold = { token: string; holder: 'operator' | 'producer'; released?: boolean } | null;
+
+/** What a real volume carries at snapshot time: the operator hold the source holds open, unreleased. */
+const carriedHold = (source: { openToken: () => string | null }): SnapshotHold => {
+  const token = source.openToken();
+  return token === null ? null : { token, holder: 'operator' };
+};
+
 /** A capture against a synthetic source, with the copy, and what the snapshot is stamped with, under the test's control. */
 const capture = (
-  source: { owner: RecoveryHoldOwner; identity: () => RecoveryHoldSource | null },
+  source: { owner: RecoveryHoldOwner; identity: () => RecoveryHoldSource | null; openToken: () => string | null },
   destination: string,
   copy: () => Promise<ReadableStream>,
   report: (line: string) => void = () => {},
   stamp: () => RecoveryHoldSource | null = source.identity,
+  hold: () => SnapshotHold = () => carriedHold(source),
 ) =>
   createRecoveryBundle(destination, {
     source: { target: 'local', locator: 'synthetic-locator' },
     hold: source.owner,
-    snapshot: async (file) => syntheticSnapshot(file, stamp()),
+    snapshot: async (file) => syntheticSnapshot(file, stamp(), hold()),
     blob: async () => copy(),
   }, report);
 
@@ -369,7 +386,7 @@ it('reports an unresolved release instead of claiming one, and reconciles the sa
         ...source.owner,
         inspect: async (token) => { if (source.holds.get(token)?.released === true) throw new Error('the source did not answer'); return source.owner.inspect(token); },
       },
-      snapshot: async (file) => syntheticSnapshot(file, source.identity()),
+      snapshot: async (file) => syntheticSnapshot(file, source.identity(), carriedHold(source)),
       blob: () => objectBytes(),
     }, (line) => { lines.push(line); });
     // The artifact is complete either way: an unresolved hold never unmakes what was verified.
@@ -434,18 +451,30 @@ it('refuses a source that answers its hold without naming a Deployment, rather t
   } finally { fs.rmSync(root, { recursive: true, force: true }); }
 });
 
-it('refuses a hold the source does not name as its own open hold', async () => {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-hold-unattested-'));
-  try {
-    const source = syntheticSource();
-    const destination = path.join(root, 'artifact');
-    await expect(createRecoveryBundle(destination, {
-      source: { target: 'local', locator: 'synthetic-locator' },
-      // The reading answers open for whatever token it is asked about, while the source's own open hold is another
-      // backup's. Nothing this destination captured would be protected by the hold it thinks it holds.
-      hold: { ...source.owner, open: async () => ({ token: crypto.randomUUID(), acquiredAt: 1 }) },
-      snapshot: async (file) => syntheticSnapshot(file, source.identity()),
-      blob: () => objectBytes(),
-    }, () => {})).rejects.toThrow('belongs to another backup');
-  } finally { fs.rmSync(root, { recursive: true, force: true }); }
-});
+/**
+ * What the captured bytes themselves say about the hold that protected them.
+ *
+ * In each of these the source answers exactly the identity the destination bound, and would answer `open` for this
+ * token at release time; the only thing that disagrees is the hold row inside the snapshot. A live read is not an
+ * oracle for bytes already taken, so the copy is refused on its own row.
+ */
+const SNAPSHOT_HOLDS: ReadonlyArray<{ what: string; hold: (token: string | null) => SnapshotHold; refusal: string }> = [
+  { what: 'carries no hold at all', hold: () => null, refusal: "carries no recovery hold of this backup's own token" },
+  { what: "carries another backup's token", hold: () => ({ token: crypto.randomUUID(), holder: 'operator' }), refusal: "carries no recovery hold of this backup's own token" },
+  { what: 'carries the token as a producer hold', hold: (token) => ({ token: token!, holder: 'producer' }), refusal: 'is not an operator hold' },
+  { what: 'carries the token already released', hold: (token) => ({ token: token!, holder: 'operator', released: true }), refusal: 'after its own recovery hold was released' },
+];
+
+for (const { what, hold, refusal } of SNAPSHOT_HOLDS) {
+  it(`refuses a snapshot that ${what}, whatever the source answers now`, async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-hold-snapshot-'));
+    try {
+      const source = syntheticSource();
+      const destination = path.join(root, 'artifact');
+      await expect(capture(source, destination, objectBytes, () => {}, source.identity, () => hold(source.openToken())))
+        .rejects.toThrow(refusal);
+      expect(JSON.parse(fs.readFileSync(path.join(destination, 'recovery.json'), 'utf8')).status).toBe('snapshot');
+      expect(fs.existsSync(path.join(destination, 'myco.sqlite'))).toBe(false);
+    } finally { fs.rmSync(root, { recursive: true, force: true }); }
+  });
+}

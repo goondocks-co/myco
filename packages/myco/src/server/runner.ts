@@ -24,7 +24,11 @@ export interface RunOptions {
   cwd?: string;
   env?: NodeJS.ProcessEnv;
   input?: string;
-  /** Past this the child is killed and the call rejects. Absent, the command may take as long as it takes. */
+  /**
+   * Past this the command and the processes it started are ended and the call rejects with `CommandTimedOut`.
+   * A request one of them already sent to a remote service may still land, so the outcome is unknown rather than
+   * undone. Absent, the command may take as long as it takes.
+   */
   timeoutMs?: number;
 }
 
@@ -47,6 +51,34 @@ export class WorkingDirectoryMissing extends Error {
   }
 }
 
+/**
+ * Ends a command that outran its deadline, and everything it started.
+ *
+ * Signalling the command alone leaves the processes it spawned running: `npx`
+ * runs its tool as a child of its own, so the tool survives its launcher. Those
+ * descendants also inherit the pipes, and `close` waits for the last writer to
+ * let go — so waiting for it waits for exactly the processes the deadline was
+ * supposed to end. A command given a deadline is therefore started in a process
+ * group of its own, and the deadline ends the group. Windows has no group to
+ * signal, so the tree is ended by pid.
+ *
+ * What no kill can do is take back a request a remote service already accepted.
+ * This ends the waiting, not the mutation: the caller reads its own token back
+ * to learn what landed.
+ */
+function endProcessTree(child: { pid?: number; kill(signal?: NodeJS.Signals): boolean }): void {
+  if (child.pid === undefined) return;
+  if (process.platform === 'win32') {
+    void import('node:child_process').then(({ spawn }) => {
+      try { spawn('taskkill', ['/pid', String(child.pid), '/T', '/F'], { stdio: 'ignore' }).unref(); } catch { /* the tree is already gone */ }
+    });
+    return;
+  }
+  // The group, by the leader's own pid, which `detached` made it. A descendant that left the group outlives this,
+  // and so does a request already in flight; neither is something a caller may treat as settled.
+  try { process.kill(-child.pid, 'SIGKILL'); } catch { try { child.kill('SIGKILL'); } catch { /* already gone */ } }
+}
+
 /** Spawns for real. */
 export function systemRunner(): CommandRunner {
   return {
@@ -58,6 +90,9 @@ export function systemRunner(): CommandRunner {
           cwd: options?.cwd,
           env: options?.env ?? process.env,
           stdio: [options?.input === undefined ? 'ignore' : 'pipe', 'pipe', 'pipe'],
+          // Only a bounded command leads its own group: an unbounded one keeps sharing this process's group, so it
+          // still goes when the terminal ends this one.
+          detached: options?.timeoutMs !== undefined && process.platform !== 'win32',
         });
         let stdout = '';
         let stderr = '';
@@ -65,20 +100,28 @@ export function systemRunner(): CommandRunner {
         // callers here are operator verbs with a person waiting on them. The
         // kill is SIGKILL: the window has already passed, and a child that
         // ignores SIGTERM would extend it.
-        let timedOut = false;
+        let done = false;
         const timer = options?.timeoutMs === undefined ? null : setTimeout(() => {
-          timedOut = true;
-          child.kill('SIGKILL');
+          if (done) return;
+          done = true;
+          endProcessTree(child);
+          // The answer is the deadline itself, not whatever the tree does next: waiting for `close` here would wait
+          // on the inherited pipes of the processes just killed.
+          child.stdout?.destroy();
+          child.stderr?.destroy();
+          child.unref();
+          reject(new CommandTimedOut(command, args, options.timeoutMs!));
         }, options.timeoutMs);
-        const settled = (): void => { if (timer !== null) clearTimeout(timer); };
+        const settled = (): boolean => {
+          if (done) return false;
+          done = true;
+          if (timer !== null) clearTimeout(timer);
+          return true;
+        };
         child.stdout?.on('data', (chunk: Buffer) => { stdout += chunk.toString(); });
         child.stderr?.on('data', (chunk: Buffer) => { stderr += chunk.toString(); });
-        child.on('error', (err) => { settled(); reject(err); });
-        child.on('close', (code) => {
-          settled();
-          if (timedOut) reject(new CommandTimedOut(command, args, options!.timeoutMs!));
-          else resolve({ code: code ?? -1, stdout, stderr });
-        });
+        child.on('error', (err) => { if (settled()) reject(err); });
+        child.on('close', (code) => { if (settled()) resolve({ code: code ?? -1, stdout, stderr }); });
         if (options?.input !== undefined && child.stdin) {
           child.stdin.on('error', () => undefined);
           child.stdin.end(options.input);
@@ -215,10 +258,13 @@ export function describeFailure(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
 
-/** Raised when a command answered nothing inside the window its caller gave it; the child is killed first. */
+/**
+ * Raised when a command answered nothing inside the window its caller gave it. The command and the processes it
+ * started are ended first; a request one of them already sent may still land, so the outcome is unknown, not undone.
+ */
 export class CommandTimedOut extends Error {
   constructor(readonly command: string, readonly args: readonly string[], readonly timeoutMs: number) {
-    super(`${command} ${args.join(' ')} answered nothing in ${Math.round(timeoutMs / 1000)} s and was killed`);
+    super(`${command} ${args.join(' ')} answered nothing in ${timeoutMs < 1000 ? `${timeoutMs} ms` : `${Math.round(timeoutMs / 1000)} s`}; it and the processes it started were ended`);
     this.name = 'CommandTimedOut';
   }
 }
