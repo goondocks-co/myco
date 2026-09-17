@@ -115,7 +115,7 @@ export const SERVER_JOBS: readonly ServerJob[] = [
     runsThrough: 'sleep',
     converges: 'no run whose worker stopped renewing holds a lease past its expiry: each returns to the claim queue with its dispatch credential retired and the place in the queue it had already waited for; a run inside its lease is never taken from the worker holding it',
   },
-  // #1316 — object lifecycle
+  // Stored object release and recovery holds
   {
     name: 'recovery-hold-release',
     runsThrough: 'sleep',

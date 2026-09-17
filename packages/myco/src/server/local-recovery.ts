@@ -6,6 +6,7 @@ import { deploymentSecretStore } from '@myco-server-worker/core/secrets.js';
 import { resetEmbeddingIndex } from '@myco-server-worker/core/embedding/reconcile.js';
 import { assignRestoreGeneration, resetRecoveryLedger } from '@myco-server-worker/core/object-release.js';
 import { migrateOnly } from '@myco-server-worker/platform/bun/server-main.js';
+import { readSchemaVersion } from '@myco-server-worker/db/migrate.js';
 import type { NativeSqlite } from '@myco-server-worker/platform/bun/native.js';
 import { syncDirectoryForDurability } from '@myco/utils/atomic-write.js';
 import { copyRecoveryBundle, preparedObjectKeys } from './recovery-bundle.js';
@@ -19,15 +20,18 @@ import {
 /**
  * Brings the staged volume to the bundled schema through the one migration applier, clears the source's object
  * lifecycle, and names every registered blob under a fresh restore generation: the staged copy's logical-key objects
- * move to the keys the database now registers, so the volume published is the layout its rows name.
+ * move to the keys the database now registers, so the volume published is the layout its rows name. Answers the schema
+ * version the prepared volume holds.
  */
-async function prepareRestoredObjects(staging: LocalDeploymentPaths, native: NativeSqlite | undefined): Promise<void> {
+async function prepareRestoredObjects(staging: LocalDeploymentPaths, native: NativeSqlite | undefined): Promise<number> {
   migrateOnly(staging.databasePath, native);
   const db = new Database(staging.databasePath);
+  let schemaVersion: number;
   try {
     const store = sqliteRelationalStore(db);
     await resetRecoveryLedger(store);
     await assignRestoreGeneration(store, crypto.randomUUID());
+    schemaVersion = await readSchemaVersion(store);
   } finally { db.close(); }
   const moved = new Set<string>();
   for (const [logical, { objectKey }] of preparedObjectKeys(staging.databasePath)) {
@@ -38,6 +42,7 @@ async function prepareRestoredObjects(staging: LocalDeploymentPaths, native: Nat
     moved.add(path.dirname(to));
   }
   for (const directory of moved) syncDirectoryForDurability(directory);
+  return schemaVersion;
 }
 
 /** Publish a complete native volume only after its data and independently supplied wrapping material verify. */
@@ -69,7 +74,7 @@ export async function restoreLocalDeployment(options: {
           options.report?.('Embedding rebuild required before semantic search is ready');
         }
       } finally { db.close(); }
-      await prepareRestoredObjects(staging, options.native);
+      const schemaVersion = await prepareRestoredObjects(staging, options.native);
       writeLocalSecrets(secrets, staging);
       writeLocalRecord(record, staging);
       fs.renameSync(path.join(staging.root, 'recovery.json'), path.join(staging.root, 'recovered-from.json'));
@@ -81,7 +86,7 @@ export async function restoreLocalDeployment(options: {
       syncDirectoryForDurability(staging.root);
       fs.renameSync(staging.root, paths.root);
       syncDirectoryForDurability(path.dirname(paths.root));
-      return { schemaVersion: manifest.snapshot!.schemaVersion, rebuildEmbeddings };
+      return { schemaVersion, rebuildEmbeddings };
     } finally { fs.rmSync(stagingHome, { recursive: true, force: true }); }
   });
 }

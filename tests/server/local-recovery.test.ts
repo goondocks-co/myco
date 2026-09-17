@@ -188,7 +188,9 @@ it('recovers a schema-41 artifact through the one migration applier, then starts
     const legacy = new Database(path.join(f.artifact, 'myco.sqlite'), { readonly: true });
     try { expect(legacy.query("SELECT 1 FROM pragma_table_info('blobs') WHERE name = 'generation'").get()).toBeNull(); }
     finally { legacy.close(); }
-    expect(await f.restore()).toMatchObject({ schemaVersion: 41 });
+    // The result names the published volume's schema, and the source artifact keeps the schema it was captured at.
+    expect(await f.restore()).toMatchObject({ schemaVersion: SERVER_SCHEMA_VERSION });
+    expect(JSON.parse(fs.readFileSync(path.join(f.paths.root, 'recovered-from.json'), 'utf8')).snapshot.schemaVersion).toBe(41);
     await assertServedAfterStartup(f);
     expect(fs.readFileSync(path.join(f.artifact, 'myco.sqlite'))).toEqual(original);
   } finally { f.cleanup(); }

@@ -154,7 +154,7 @@ export const JOB_IMPLEMENTATIONS: Readonly<Record<string, JobRun>> = {
   'session-titling': titleReadySessions,
   'titling-backfill': backfillImportedTitles,
   'transcript-retention': transcriptRetention,
-  // #1316 — object lifecycle
+  // Stored object release and recovery holds
   'recovery-hold-release': recoveryHoldRelease,
   'object-release-drain': async (env, now) => {
     const drained = await drainObjectReleases(env, now);
