@@ -21,6 +21,7 @@
   "dependencies": {
     "@goondocks/myco-shared": "^0.2.0",
     "@modelcontextprotocol/server": "2.0.0",
+    "@stablelib/sha256": "2.0.1",
     "sqlite-vec": "^0.1.9"
   },
   "devDependencies": {

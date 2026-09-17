@@ -1,7 +1,10 @@
 /**
- * The hosted recovery producer's stage machine: it drives one admitted attempt from an export the provider runs to a
- * downloaded SQL export beside its captured schema, and stops there. This slice produces no inventory, no object
- * copies and no complete staging, so nothing it writes may be read as a recoverable artifact.
+ * The hosted recovery producer's stage machine: it drives one admitted attempt from an export the provider runs, to a
+ * downloaded SQL export beside its captured schema, through the inventory that export's own bytes name, the copy of
+ * every object that inventory registers, and a staging manifest completed only once all of it is verified.
+ *
+ * An attempt resting at `downloaded` is a settled export-only attempt. It is never advanced and its open manifest is
+ * never rewritten; only an attempt admitted through the inventory path reaches `complete`.
  *
  * Every durable fact lives in the checkpoint the caller supplies, which on the hosted target is the platform's own
  * object storage: the source is unavailable to queries while it exports, so no progress may depend on reading it. The
@@ -13,11 +16,30 @@ import {
   STAGING_FORMAT, STAGING_MANIFEST_FILE, STAGING_SCHEMA_FILE, STAGING_SQL_FILE, stagingPath, type RecoveryStagingManifest,
 } from './recovery-staging.js';
 import {
-  endStatements, feedStatements, newStatementScan, tableDefinition, type StatementScan,
+  continueInventory, newInventoryProgress, Stalled, within, type InventoryObject, type InventoryProgress,
+  type InventoryRefusal, type SavedDigest,
+} from './recovery-inventory.js';
+import {
+  endStatements, feedStatements, newStatementScan, tableColumns, tableDefinition, type StatementScan,
 } from './sql-statements.js';
 
-/** How an attempt ends, or that it continues. */
-export type AttemptStage = 'export' | 'download' | 'downloaded' | 'failed';
+/**
+ * How an attempt ends, or that it continues. `downloaded` is where a settled export-only attempt rests; the stages
+ * an attempt advances through are named by `ADVANCING_STAGES`. `unconfirmed` is an attempt that sent its complete
+ * manifest and could not confirm the publication inside its window: a write of it may still land, so the attempt
+ * claims neither a published staging nor a failed one.
+ */
+export type AttemptStage =
+  | 'export' | 'download' | 'inventory' | 'copy' | 'downloaded' | 'complete' | 'unconfirmed' | 'failed';
+
+/**
+ * The stages a continuation may advance. One list, so the checkpoint's own query, the admission refusal and the
+ * dispatch cannot drift apart, and an attempt at `downloaded` or `complete` is picked up by none of them.
+ */
+export const ADVANCING_STAGES = ['export', 'download', 'inventory', 'copy'] as const;
+
+/** The advancing stages as a SQL list, for a store that keeps attempts in its own table. */
+export const ADVANCING_STAGES_SQL = ADVANCING_STAGES.map((stage) => `'${stage}'`).join(', ');
 
 /** The table definitions a schema names, by table, in the comparable form the splitter answers. */
 export type TableDefinitions = Record<string, string>;
@@ -58,9 +80,44 @@ export interface AttemptState {
   defined: TableDefinitions;
   scan: StatementScan;
   scanBytes: string;
+  /** When the inventory pass first ran for this attempt. A restart keeps it: the budget is attempt-wide. */
+  inventoryStartedAt: number | null;
+  /** How far the inventory has read the staged export, and the identity it has accumulated over those parts. */
+  inventoryParts: number;
+  inventoryBytes: number;
+  inventoryScan: StatementScan;
+  inventoryScanBytes: string;
+  inventoryDigest: SavedDigest | null;
+  /** The staged export's own fingerprint, from the pass that verified every recorded part of it. */
+  databaseSha256: string | null;
+  databaseBytes: number | null;
+  copyStartedAt: number | null;
+  /**
+   * When this attempt's staging is complete, recorded before the manifest naming it is written. A rewrite after an
+   * interruption reuses it, so the manifest an attempt publishes is the same manifest every time.
+   */
+  completedAt: number | null;
+  /**
+   * What admission published for this attempt, recorded by the checkpoint owner with the attempt itself. A completed
+   * manifest takes its admission fields from here and only from here, never from a staging it is checking. An attempt
+   * admitted without one settles at `downloaded`, as the producer that admitted it did.
+   */
+  admission: AdmittedManifest | null;
 }
 
 export interface AttemptPart { part: number; bytes: number; sha256: string; etag: string }
+
+/** One object the staged export's own rows name, and what a staged copy of it records. */
+export interface AttemptObject {
+  /** The key an artifact stores the object under, which is the key the source rows name. */
+  key: string;
+  bytes: number;
+  /** The digest the source rows record, or null where a row records none. */
+  sha256: string | null;
+  /** The digest the staged copy's own bytes hashed to, once it is staged. */
+  stagedSha256: string | null;
+  stagedBytes: number | null;
+}
 
 /** The durable store an attempt advances in; the hosted target backs this with its own checkpoint SQL. */
 export interface AttemptCheckpoint {
@@ -70,6 +127,18 @@ export interface AttemptCheckpoint {
   /** Records one staged part with the cursor and the reading of its bytes, as one durable step. */
   recordPart(id: number, part: AttemptPart, downloadOffset: number, progress: ScanProgress): void;
   clearParts(id: number): void;
+  /**
+   * Records the inventory's own progress together with the objects that step found, as one durable step. The objects
+   * are held one to a row: a whole inventory in one value would outgrow what the store takes for a row.
+   */
+  recordInventory(id: number, progress: InventoryProgress, objects: readonly InventoryObject[]): void;
+  /** Objects the inventory registered whose copy is not staged yet, in the order they were registered. */
+  pendingObjects(id: number, limit: number): AttemptObject[];
+  /** Records one staged object copy, by the digest and size its own staged bytes answered. */
+  recordCopied(id: number, key: string, staged: { sha256: string; bytes: number }): void;
+  /** Every object the inventory registered, staged or not. */
+  objects(id: number): AttemptObject[];
+  objectCounts(id: number): { registered: number; staged: number };
   /** The signed download URL never leaves the checkpoint: it is not returned, reported or staged. */
   signedUrl(id: number): Promise<string | null>;
   setSignedUrl(id: number, url: string | null): Promise<void>;
@@ -99,6 +168,12 @@ export type RangeAnswer =
   | { status: 'unranged' }
   | { status: 'error'; failure: PortFailure };
 
+/** One staged object copy, or what stands in the way of it. */
+export type CopyAnswer =
+  | { status: 'copied'; sha256: string; bytes: number }
+  | { status: 'missing' }
+  | { status: 'error'; failure: PortFailure };
+
 export interface ProducerPorts {
   /** POST the export, or poll the one `bookmark` names. Reaches the provider's fixed API origin and nowhere else. */
   pollExport(bookmark: string | null): Promise<ExportAnswer>;
@@ -112,8 +187,27 @@ export interface ProducerPorts {
   /** Read back a stored range of the staged export, for reconciling an interrupted completion. */
   readStoredRange(prefix: string, offset: number, length: number): Promise<{ sha256: string } | null>;
   storedSize(prefix: string): Promise<number | null>;
+  /**
+   * Read one recorded part of the staged export, for the inventory that reads the objects its rows name. The signal
+   * is aborted when the stage stops waiting; a store whose read cannot be cancelled discards the late result.
+   */
+  readStagedPart(prefix: string, offset: number, bytes: number, signal: AbortSignal): Promise<Uint8Array | null>;
+  /** The digest of bytes in hand, as the platform computes it. */
+  digest(bytes: Uint8Array, signal: AbortSignal): Promise<string>;
+  /**
+   * Copy one registered object into this attempt's staging, answering the digest and size the staged bytes hashed
+   * to. A copy repeated after a reset writes the same key again rather than assuming the first one landed. Where
+   * `expected.sha256` is null the port measures a digest over the bytes it streams, so every staged object carries
+   * one; that digest binds the copy, not the write the source row never recorded. The port streams: it holds no
+   * whole object, and refuses a source whose size is not the size the row records before any byte is written. When
+   * the signal aborts, the port stops streaming and releases what it holds; a store write that cannot be cancelled
+   * may still land, and a later copy of the same key replaces it.
+   */
+  copyObject(prefix: string, key: string, expected: { bytes: number; sha256: string | null }, signal: AbortSignal): Promise<CopyAnswer>;
   /** Write the staging manifest and the captured schema. */
-  writeStagingFile(prefix: string, name: string, body: string): Promise<void>;
+  writeStagingFile(prefix: string, name: string, body: string, signal?: AbortSignal): Promise<void>;
+  /** Read back a staging file this attempt published, or null where the staging holds none. */
+  readStagingFile(prefix: string, name: string, signal?: AbortSignal): Promise<string | null>;
   now(): number;
 }
 
@@ -132,11 +226,27 @@ export interface ProducerLimits {
   maxTransient: number;
   /** How many times one attempt may ask the provider for a fresh export before it fails. */
   maxReExports: number;
+  /** Recorded parts the inventory may verify and read in one continuation. */
+  maxPartsPerStep: number;
+  /** Objects the copy may stage in one continuation. */
+  maxObjectsPerStep: number;
+  /** How long one attempt may spend reading its inventory, across continuations and restarts. */
+  inventoryMs: number;
+  /** How long one attempt may spend copying its objects, across continuations and restarts. */
+  copyMs: number;
+  /** How long one object's copy may take; an object that takes longer is spent as a transient failure. */
+  objectMs: number;
+  /**
+   * How long after its completion time is recorded a staging may take to be confirmed published. Inside this window
+   * an unconfirmed publication is retried; past it, the attempt rests `unconfirmed` and holds back no new attempt.
+   */
+  publishMs: number;
 }
 
 export const PRODUCER_LIMITS: ProducerLimits = {
   partBytes: 32 * 1024 * 1024, exportPollMs: 600_000, requestMs: 30_000, maxPollsPerStep: 12, stepMs: 20_000,
-  maxTransient: 5, maxReExports: 3,
+  maxTransient: 5, maxReExports: 3, maxPartsPerStep: 4, maxObjectsPerStep: 32, inventoryMs: 600_000, copyMs: 1_800_000,
+  objectMs: 300_000, publishMs: 1_800_000,
 };
 
 /** What a continuation did, and when the attempt next needs one. `null` means nothing is open. */
@@ -166,7 +276,21 @@ export type ProducerRefusal =
   | 'provider_unavailable' | 'provider_refused' | 'export_failed' | 'export_not_offered' | 'export_unparsable'
   | 'export_stalled'
   | 'download_unranged' | 'download_changed' | 'download_lost' | 'staging_unreconciled'
+  | 'staging_changed' | 'inventory_disagrees' | 'inventory_unreadable' | 'inventory_oversize'
+  | 'object_missing' | 'object_changed' | 'copy_stalled' | 'staging_incomplete'
   | 'schema_disagrees' | 'internal';
+
+/** What the inventory pass's own refusals mean in the producer's closed set. */
+const INVENTORY_REFUSAL: Record<InventoryRefusal, ProducerRefusal> = {
+  object_changed: 'staging_changed', export_unparsable: 'export_unparsable', export_stalled: 'export_stalled',
+  inventory_disagrees: 'inventory_disagrees', inventory_unreadable: 'inventory_unreadable',
+  inventory_oversize: 'inventory_oversize',
+};
+
+const COPY_REFUSAL: Record<PortFailure['cause'], ProducerRefusal> = {
+  transport: 'provider_unavailable', http: 'object_changed', provider: 'object_changed',
+  protocol: 'object_changed', storage: 'provider_unavailable',
+};
 
 const EXPORT_REFUSAL: Record<PortFailure['cause'], ProducerRefusal> = {
   transport: 'provider_unavailable', http: 'provider_refused', provider: 'export_failed',
@@ -208,6 +332,8 @@ export async function continueAttempt(
   try {
     if (open.stage === 'export') return await pollExportStage(open, checkpoint, ports, limits, started);
     if (open.stage === 'download') return await downloadStage(open, checkpoint, ports, limits, started);
+    if (open.stage === 'inventory') return await inventoryStage(open, checkpoint, ports, limits, started);
+    if (open.stage === 'copy') return await copyStage(open, checkpoint, ports, limits, started);
     return { ...IDLE, attempt: open.id, stage: open.stage };
   } catch (error) {
     if (error instanceof TransientProducerFailure && open.attempts + 1 < limits.maxTransient) {
@@ -385,8 +511,322 @@ async function downloadStage(
     return fail(state, checkpoint, ports, 'staging_unreconciled', { staged: completed.bytes, expected: state.sqlBytes ?? 0 });
   }
   await checkpoint.setSignedUrl(state.id, null);
-  checkpoint.update(state.id, { stage: 'downloaded', uploadId: null, error: null });
-  return { attempt: state.id, stage: 'downloaded', progressed: true, nextInMs: null, sourcePaused: false };
+  // The staged export is whole and verified. An attempt whose admission is recorded reads the inventory its rows name
+  // next; one admitted without that record rests where the producer that admitted it left such an attempt.
+  if ((state.admission ?? null) === null) {
+    checkpoint.update(state.id, { stage: 'downloaded', uploadId: null, error: null });
+    return { attempt: state.id, stage: 'downloaded', progressed: true, nextInMs: null, sourcePaused: false };
+  }
+  checkpoint.update(state.id, { stage: 'inventory', uploadId: null, error: null });
+  return { attempt: state.id, stage: 'inventory', progressed: true, nextInMs: 0, sourcePaused: false };
+}
+
+/**
+ * Reads the staged export by its recorded parts: every part held to the digest the download wrote for it, its rows
+ * read for the objects they name, and one resumable digest accumulated over those same verified bytes. The objects
+ * are committed one to a row as they are found, so no checkpoint value grows with the export.
+ */
+async function inventoryStage(
+  attempt: AttemptState, checkpoint: AttemptCheckpoint, ports: ProducerPorts, limits: ProducerLimits, started: number,
+): Promise<ContinuationReport> {
+  let state = attempt;
+  if (state.inventoryStartedAt === null) {
+    checkpoint.update(state.id, { inventoryStartedAt: started });
+    state = { ...state, inventoryStartedAt: started };
+  }
+  if (state.sqlBytes === null) return fail(state, checkpoint, ports, 'inventory_disagrees', { sqlBytes: -1 });
+  if ((state.admission ?? null) === null) return fail(state, checkpoint, ports, 'staging_incomplete', { admitted: false });
+  const columns = tableColumnsOf(state.captured);
+  const progress: InventoryProgress = {
+    parts: state.inventoryParts,
+    bytes: state.inventoryBytes,
+    // Objects already found are rows of their own, so a continuation carries none of them in hand.
+    objects: {},
+    scan: state.inventoryScan,
+    scanBytes: state.inventoryScanBytes,
+    digest: state.inventoryDigest ?? newInventoryProgress().digest,
+  };
+  const step = await continueInventory(
+    {
+      prefix: state.prefix,
+      parts: checkpoint.parts(state.id).map((part) => ({ part: part.part, bytes: part.bytes, sha256: part.sha256 })),
+      sqlBytes: state.sqlBytes,
+      startedAt: state.inventoryStartedAt ?? started,
+      columns,
+      progress,
+    },
+    {
+      readPart: (prefix, offset, bytes, signal) => ports.readStagedPart(prefix, offset, bytes, signal),
+      digest: (bytes, signal) => ports.digest(bytes, signal),
+      now: ports.now,
+    },
+    {
+      maxPartsPerStep: limits.maxPartsPerStep, stepMs: limits.stepMs, inventoryMs: limits.inventoryMs,
+      requestMs: limits.requestMs,
+    },
+  );
+  if ('refusal' in step) return fail(state, checkpoint, ports, INVENTORY_REFUSAL[step.refusal], step.facts);
+  const found = Object.values(step.progress.objects);
+  checkpoint.recordInventory(state.id, step.progress, found);
+  if (!step.done) {
+    return { attempt: state.id, stage: 'inventory', progressed: true, nextInMs: 0, sourcePaused: false };
+  }
+  checkpoint.update(state.id, {
+    stage: 'copy', databaseSha256: step.database.sha256, databaseBytes: step.database.bytes, error: null,
+  });
+  emit({
+    kind: 'recovery_inventory_read', attempt: state.id, bytes: step.database.bytes,
+    objects: checkpoint.objectCounts(state.id).registered,
+  });
+  return { attempt: state.id, stage: 'copy', progressed: true, nextInMs: 0, sourcePaused: false };
+}
+
+/**
+ * Copies every object the inventory registered into this attempt's staging, one bounded batch per continuation, and
+ * completes the staging once every one of them is staged and verified. A copy repeated after a reset writes the same
+ * key again: the staging store holds the object, so a repeated write costs bytes and changes nothing.
+ *
+ * Each copy runs under the reviewed deadline owner, bounded by `objectMs` and by what `copyMs` has left. A copy that
+ * settles past its deadline is never recorded: inside the stage budget it is spent as a transient failure, and past
+ * it the attempt ends before anything is published.
+ */
+async function copyStage(
+  attempt: AttemptState, checkpoint: AttemptCheckpoint, ports: ProducerPorts, limits: ProducerLimits, started: number,
+): Promise<ContinuationReport> {
+  let state = attempt;
+  if (state.copyStartedAt === null) {
+    checkpoint.update(state.id, { copyStartedAt: started });
+    state = { ...state, copyStartedAt: started };
+  }
+  const copyStartedAt = state.copyStartedAt ?? started;
+  const left = (at: number): number => limits.copyMs - (at - copyStartedAt);
+  const stalled = (at: number): Promise<ContinuationReport> =>
+    fail(state, checkpoint, ports, 'copy_stalled', { elapsedMs: at - copyStartedAt, staged: checkpoint.objectCounts(state.id).staged });
+  let progressed = false;
+  for (let staged = 0; staged < limits.maxObjectsPerStep; staged += 1) {
+    const now = ports.now();
+    const pending = checkpoint.pendingObjects(state.id, 1);
+    if (pending.length === 0) break;
+    if (left(now) <= 0) return stalled(now);
+    if (now - started >= limits.stepMs) break;
+    const object = pending[0]!;
+    let answer: CopyAnswer;
+    try {
+      answer = await within(
+        (signal) => ports.copyObject(state.prefix, object.key, { bytes: object.bytes, sha256: object.sha256 }, signal),
+        Math.min(limits.objectMs, left(now)), ports.now,
+      );
+    } catch (error) {
+      if (!(error instanceof Stalled)) throw error;
+      const at = ports.now();
+      if (left(at) <= 0) return stalled(at);
+      throw new TransientProducerFailure({ cause: 'transport', status: null, transient: true });
+    }
+    if (answer.status === 'missing') {
+      return fail(state, checkpoint, ports, 'object_missing', { bytes: object.bytes });
+    }
+    if (answer.status === 'error') {
+      if (answer.failure.transient) throw new TransientProducerFailure(answer.failure);
+      return fail(state, checkpoint, ports, COPY_REFUSAL[answer.failure.cause], { status: answer.failure.status ?? 0 });
+    }
+    // A staged copy answers for itself: its size, and the digest the source recorded wherever it recorded one.
+    if (answer.bytes !== object.bytes || (object.sha256 !== null && answer.sha256 !== object.sha256)) {
+      return fail(state, checkpoint, ports, 'object_changed', { staged: answer.bytes, expected: object.bytes });
+    }
+    checkpoint.recordCopied(state.id, object.key, { sha256: answer.sha256, bytes: answer.bytes });
+    progressed = true;
+  }
+  const counts = checkpoint.objectCounts(state.id);
+  if (counts.staged < counts.registered) {
+    return { attempt: state.id, stage: 'copy', progressed, nextInMs: 0, sourcePaused: false };
+  }
+  return await completeStaging(state, checkpoint, ports, limits);
+}
+
+/** The column order each captured definition declares, for the reader that maps a row by its own schema. */
+function tableColumnsOf(captured: TableDefinitions): Record<string, readonly string[]> {
+  const columns: Record<string, readonly string[]> = {};
+  for (const [table, definition] of Object.entries(captured)) {
+    const declared = tableColumns(definition);
+    if (declared !== null) columns[table] = declared;
+  }
+  return columns;
+}
+
+/** The fields a staging manifest carries from admission, which completion keeps rather than writes again. */
+export interface AdmittedManifest {
+  source: { target: string; locator: string };
+  startedAt: string;
+  schema: { sha256: string; bytes: number };
+  configuration: Record<string, unknown>;
+  credentialsRequired: string[];
+}
+
+/**
+ * The manifest a completed staging carries: what admission published, the fingerprint of the export every recorded
+ * part is held to, and every object the export's own rows name with the digest its staged copy answered.
+ */
+export function completeStagingManifest(input: {
+  admitted: AdmittedManifest;
+  completedAt: number;
+  database: { sha256: string; bytes: number };
+  bookmark: string | null;
+  objects: readonly { key: string; bytes: number; sha256: string }[];
+}): RecoveryStagingManifest {
+  return {
+    format: STAGING_FORMAT,
+    source: input.admitted.source,
+    status: 'complete',
+    startedAt: input.admitted.startedAt,
+    completedAt: new Date(input.completedAt).toISOString(),
+    database: input.database,
+    schema: input.admitted.schema,
+    ...(input.bookmark === null ? {} : { exportBookmark: input.bookmark }),
+    configuration: input.admitted.configuration,
+    credentialsRequired: input.admitted.credentialsRequired,
+    objects: [...input.objects].sort((left, right) => (left.key < right.key ? -1 : left.key > right.key ? 1 : 0)),
+  };
+}
+
+/**
+ * Completes the staging, once every registered object is staged and verified, and confirms that publication.
+ *
+ * The publication contract:
+ * - Before a completion time is recorded nothing is published, so the copy budget still applies and an attempt past
+ *   it ends without writing a manifest.
+ * - The completion time is recorded before the manifest naming it is written, so every write and every read-back
+ *   compares one exact manifest body.
+ * - A manifest that reads back as exactly that body is published, whenever its write settled, and the attempt
+ *   completes. Nothing else confirms a publication: a write that answered in time and a read-back that matches are the
+ *   same evidence, and an answer that never came is no evidence at all.
+ * - A store write cannot be withdrawn once sent, so a staging that reads as unpublished proves nothing about a write
+ *   still on its way. Inside `publishMs` an unconfirmed publication is written again and read again; past it the
+ *   attempt rests `unconfirmed` — no failure is claimed, no success is assumed, and no new attempt is held back.
+ *   `reconcileUnconfirmed` settles such an attempt to `complete` once its exact manifest reads back.
+ * - A staging that reads back as a different completed manifest belongs to no write of this attempt, and ends
+ *   `staging_changed`.
+ */
+async function completeStaging(
+  state: AttemptState, checkpoint: AttemptCheckpoint, ports: ProducerPorts, limits: ProducerLimits,
+): Promise<ContinuationReport> {
+  const objects = checkpoint.objects(state.id);
+  const unstaged = objects.filter((object) => object.stagedSha256 === null);
+  if (unstaged.length > 0) return fail(state, checkpoint, ports, 'staging_incomplete', { unstaged: unstaged.length });
+  if (state.databaseSha256 === null || state.databaseBytes === null) {
+    return fail(state, checkpoint, ports, 'staging_incomplete', { database: false });
+  }
+  const pending = (at: number, completedAt: number): ContinuationReport => {
+    if (at - completedAt > limits.publishMs) return unconfirmed(state, checkpoint, at - completedAt);
+    emit({ kind: 'recovery_publication_unconfirmed', attempt: state.id, elapsedMs: at - completedAt });
+    return { attempt: state.id, stage: 'copy', progressed: false, nextInMs: 1_000, sourcePaused: false, error: 'provider_unavailable' };
+  };
+
+  const read = await readPublished(state, ports, limits);
+  if (read.status === 'unreadable') {
+    if (state.completedAt !== null) return pending(ports.now(), state.completedAt);
+    throw new TransientProducerFailure({ cause: 'storage', status: null, transient: true });
+  }
+  const expected = expectedManifest(state, objects);
+  if (expected === null) return fail(state, checkpoint, ports, 'staging_incomplete', { admitted: false });
+  // A staging holding no manifest at all is not the staging admission published.
+  if (read.body === null) return fail(state, checkpoint, ports, 'staging_incomplete', { published: false });
+
+  let completedAt = state.completedAt;
+  if (completedAt !== null) {
+    if (read.body === expected(completedAt)) return completed(state, checkpoint, objects.length, state.databaseBytes);
+    if (publishedStatus(read.body) === 'complete') return fail(state, checkpoint, ports, 'staging_changed', { published: true });
+    if (ports.now() - completedAt > limits.publishMs) return unconfirmed(state, checkpoint, ports.now() - completedAt);
+  } else {
+    if (publishedStatus(read.body) === 'complete') return fail(state, checkpoint, ports, 'staging_changed', { published: true });
+    const now = ports.now();
+    if (state.copyStartedAt !== null && now - state.copyStartedAt > limits.copyMs) {
+      return fail(state, checkpoint, ports, 'copy_stalled', { elapsedMs: now - state.copyStartedAt, staged: objects.length });
+    }
+    completedAt = now;
+    checkpoint.update(state.id, { completedAt });
+  }
+
+  const body = expected(completedAt);
+  try {
+    await within(
+      (signal) => ports.writeStagingFile(state.prefix, STAGING_MANIFEST_FILE, body, signal),
+      Math.min(limits.requestMs, limits.publishMs - (ports.now() - completedAt)), ports.now,
+    );
+  } catch {
+    return pending(ports.now(), completedAt);
+  }
+  return completed(state, checkpoint, objects.length, state.databaseBytes);
+}
+
+/**
+ * Settles an attempt resting `unconfirmed`: if its staging now reads back as exactly the manifest it wrote, that
+ * publication landed and the attempt completes; any other reading leaves it as it rests. One bounded read, and never
+ * a write: this confirms a publication and never makes one.
+ */
+export async function reconcileUnconfirmed(
+  state: AttemptState, checkpoint: AttemptCheckpoint, ports: ProducerPorts, limits: ProducerLimits = PRODUCER_LIMITS,
+): Promise<AttemptStage> {
+  if (state.stage !== 'unconfirmed' || state.completedAt === null || state.databaseBytes === null) return state.stage;
+  const objects = checkpoint.objects(state.id);
+  if (objects.some((object) => object.stagedSha256 === null)) return state.stage;
+  const expected = expectedManifest(state, objects);
+  if (expected === null) return state.stage;
+  const read = await readPublished(state, ports, limits);
+  if (read.status === 'unreadable' || read.body !== expected(state.completedAt)) return state.stage;
+  completed(state, checkpoint, objects.length, state.databaseBytes);
+  return 'complete';
+}
+
+/** The staging's manifest as the store holds it now, read under the deadline owner. */
+async function readPublished(
+  state: AttemptState, ports: ProducerPorts, limits: ProducerLimits,
+): Promise<{ status: 'read'; body: string | null } | { status: 'unreadable' }> {
+  try {
+    const body = await within((signal) => ports.readStagingFile(state.prefix, STAGING_MANIFEST_FILE, signal), limits.requestMs, ports.now);
+    return { status: 'read', body };
+  } catch {
+    return { status: 'unreadable' };
+  }
+}
+
+/**
+ * The exact manifest body this attempt publishes for a given completion time, built only from what the checkpoint
+ * owner holds: the admission it recorded, the export fingerprint and the staged objects it verified. What a staging
+ * holds is compared with this, and never contributes to it. Null where the checkpoint holds no admission.
+ */
+function expectedManifest(state: AttemptState, objects: readonly AttemptObject[]): ((completedAt: number) => string) | null {
+  const admission = state.admission ?? null;
+  if (admission === null || state.databaseSha256 === null || state.databaseBytes === null) return null;
+  const database = { sha256: state.databaseSha256, bytes: state.databaseBytes };
+  return (completedAt) => JSON.stringify(completeStagingManifest({
+    admitted: admission,
+    completedAt,
+    database,
+    bookmark: state.bookmark,
+    objects: objects.map((object) => ({ key: object.key, bytes: object.stagedBytes ?? object.bytes, sha256: object.stagedSha256! })),
+  }), null, 2);
+}
+
+/** Rests the attempt `unconfirmed`: terminal for the continuation, claiming neither publication nor failure. */
+function unconfirmed(state: AttemptState, checkpoint: AttemptCheckpoint, elapsedMs: number): ContinuationReport {
+  checkpoint.update(state.id, { stage: 'unconfirmed', error: null });
+  emit({ kind: 'recovery_publication_unconfirmed', attempt: state.id, elapsedMs, resting: true });
+  return { attempt: state.id, stage: 'unconfirmed', progressed: true, nextInMs: null, sourcePaused: false };
+}
+
+/** The status a staging manifest's body declares, where it declares one. */
+function publishedStatus(body: string | null): string | null {
+  if (body === null) return null;
+  try {
+    const held = JSON.parse(body) as { status?: unknown };
+    return typeof held.status === 'string' ? held.status : null;
+  } catch { return null; }
+}
+
+function completed(state: AttemptState, checkpoint: AttemptCheckpoint, objects: number, bytes: number): ContinuationReport {
+  checkpoint.update(state.id, { stage: 'complete', error: null });
+  emit({ kind: 'recovery_staging_completed', attempt: state.id, objects, bytes });
+  return { attempt: state.id, stage: 'complete', progressed: true, nextInMs: null, sourcePaused: false };
 }
 
 /** A reading of the export text from its start, for an attempt that begins its download again. */
@@ -507,12 +947,17 @@ export interface AttemptPublication {
  * fails, or an interruption before it, leaves no attempt at all, so no continuation can advance one whose schema and
  * manifest are not both staged.
  */
-export async function publishAttempt(ports: ProducerPorts, input: AttemptPublication, record: () => void): Promise<void> {
+export async function publishAttempt(
+  ports: ProducerPorts, input: AttemptPublication, record: (admission: AdmittedManifest) => void,
+): Promise<void> {
+  const opened = openStagingManifest({ ...input, bookmark: null });
   await ports.writeStagingFile(input.prefix, STAGING_SCHEMA_FILE, input.schemaText);
-  await ports.writeStagingFile(
-    input.prefix, STAGING_MANIFEST_FILE, JSON.stringify(openStagingManifest({ ...input, bookmark: null }), null, 2),
-  );
-  record();
+  await ports.writeStagingFile(input.prefix, STAGING_MANIFEST_FILE, JSON.stringify(opened, null, 2));
+  // The owner records exactly the admission it just published, the one anchor a completed manifest is built from.
+  record({
+    source: opened.source, startedAt: opened.startedAt, schema: opened.schema,
+    configuration: opened.configuration, credentialsRequired: opened.credentialsRequired,
+  });
 }
 
 /** The manifest an open staging carries: enough to describe what is staged, and never a completed artifact. */
@@ -537,9 +982,13 @@ export function openStagingManifest(input: {
 export interface RecoveryProducerStatus {
   attempt: number | null;
   stage: AttemptStage | 'idle';
-  /** This slice stages an export and stops, so no attempt it produces is a recoverable artifact. */
+  /** A staging, complete or not, is not a recoverable artifact until an operator materializes and verifies it. */
   recoverable: false;
-  staged: { prefix: string; sqlBytes: number | null; downloadedBytes: number; parts: number } | null;
+  staged: {
+    prefix: string; sqlBytes: number | null; downloadedBytes: number; parts: number;
+    /** The objects the export's own rows registered, and how many of them have a verified staged copy. */
+    objects: { registered: number; staged: number };
+  } | null;
   export: { polls: number; bookmark: boolean; reExports: number } | null;
   error: ProducerRefusal | null;
   transientSpent: number;

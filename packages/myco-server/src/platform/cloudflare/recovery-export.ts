@@ -8,6 +8,9 @@ import type {
   AttemptPart, ExportAnswer, PortFailure, ProducerPorts, RangeAnswer,
 } from '../../core/recovery-producer.js';
 import { PRODUCER_LIMITS, stagedSqlKey, TransientProducerFailure } from '../../core/recovery-producer.js';
+import { STAGING_OBJECTS_DIRECTORY, stagingPath } from '../../core/recovery-staging.js';
+import { discardStoredBody, streamStoredObject } from '../../core/stored-object.js';
+import { r2RefusedDigest } from './r2-digest.js';
 
 /** The one origin an account credential is sent to. */
 export const CLOUDFLARE_API_ORIGIN = 'https://api.cloudflare.com';
@@ -29,7 +32,7 @@ export interface ExportTarget {
 }
 
 export interface StagingBucket {
-  put(key: string, body: ReadableStream<Uint8Array> | Uint8Array, options?: { httpMetadata?: { contentType?: string } }): Promise<{ size: number } | null>;
+  put(key: string, body: ReadableStream<Uint8Array> | Uint8Array, options?: { httpMetadata?: { contentType?: string }; sha256?: string }): Promise<{ size: number } | null>;
   get(key: string, options?: { range?: { offset: number; length: number } }): Promise<{ body: ReadableStream<Uint8Array>; size: number } | null>;
   head(key: string): Promise<{ size: number } | null>;
   createMultipartUpload(key: string): Promise<{ uploadId: string }>;
@@ -95,9 +98,17 @@ async function stored<T>(work: () => Promise<T>): Promise<T> {
   }
 }
 
+/**
+ * Where a staged object's bytes are read from: the Deployment's own object store, which a recovery copies out of and
+ * never writes to.
+ */
+export interface SourceObjects {
+  get(key: string): Promise<{ body: ReadableStream<Uint8Array>; size: number } | null>;
+}
+
 /** The producer's ports over one Deployment's own bindings. */
 export function cloudflareProducerPorts(
-  target: ExportTarget, bucket: StagingBucket,
+  target: ExportTarget, bucket: StagingBucket, source: SourceObjects,
   options: { testRoutes?: boolean; now?: () => number; requestMs?: number } = {},
 ): ProducerPorts {
   const origin = exportApiOrigin(target, options.testRoutes === true);
@@ -224,8 +235,65 @@ export function cloudflareProducerPorts(
     async storedSize(prefix) {
       return stored(async () => (await bucket.head(stagedSqlKey(prefix)))?.size ?? null);
     },
-    async writeStagingFile(prefix, name, body) {
+    async writeStagingFile(prefix, name, body, _signal) {
       await stored(() => bucket.put(`${prefix.replace(/\/$/, '')}/${name}`, new TextEncoder().encode(body), { httpMetadata: { contentType: 'application/json' } }));
+    },
+    async readStagingFile(prefix, name, signal) {
+      return stored(async () => {
+        const object = await bucket.get(`${prefix.replace(/\/$/, '')}/${name}`);
+        if (object === null) return null;
+        // A read the caller has stopped waiting for is released unread.
+        if (signal?.aborted === true) {
+          await discardStoredBody(object.body);
+          return null;
+        }
+        return await new Response(object.body).text();
+      });
+    },
+    async readStagedPart(prefix, offset, bytes, signal) {
+      return stored(async () => {
+        // A range read cannot be cancelled here, so a read the caller has stopped waiting for is released unread.
+        const object = await bucket.get(stagedSqlKey(prefix), { range: { offset, length: bytes } });
+        if (object === null) return null;
+        if (signal.aborted) {
+          await discardStoredBody(object.body);
+          return null;
+        }
+        return new Uint8Array(await new Response(object.body).arrayBuffer());
+      });
+    },
+    digest: (bytes) => digestOf(bytes),
+    async copyObject(prefix, key, expected, signal) {
+      return stored(async () => {
+        const object = await source.get(key);
+        if (object === null) return { status: 'missing' as const };
+        // A source whose size is not the size its row records is refused before a byte of it is written.
+        if (signal.aborted || object.size !== expected.bytes) {
+          await discardStoredBody(object.body);
+          if (signal.aborted) return { status: 'error' as const, failure: failure('transport', null, true) };
+          return { status: 'error' as const, failure: failure('provider', null, false) };
+        }
+        const metered = streamStoredObject(object.body, expected.bytes, signal, expected.sha256 === null);
+        // R2 takes a stream only of a declared length, so on the Worker runtime the copy is declared at its size.
+        const body = typeof FixedLengthStream === 'function' ? metered.stream.pipeThrough(new FixedLengthStream(expected.bytes)) : metered.stream;
+        try {
+          const options = expected.sha256 === null
+            ? { httpMetadata: { contentType: 'application/octet-stream' } }
+            // The store holds the copy to the digest the source recorded, so a changed byte is refused at the write.
+            : { httpMetadata: { contentType: 'application/octet-stream' }, sha256: expected.sha256 };
+          const written = await bucket.put(stagingPath(prefix, STAGING_OBJECTS_DIRECTORY, key), body, options);
+          const held = metered.result();
+          if (held.overrun || !held.finished || held.bytes !== expected.bytes || written === null || written.size !== expected.bytes) {
+            return { status: 'error' as const, failure: failure('provider', null, false) };
+          }
+          return { status: 'copied' as const, sha256: expected.sha256 ?? held.sha256!, bytes: held.bytes };
+        } catch (error) {
+          if (metered.result().overrun || r2RefusedDigest(error)) return { status: 'error' as const, failure: failure('provider', null, false) };
+          throw error;
+        } finally {
+          await metered.release();
+        }
+      });
     },
   };
 }

@@ -78,10 +78,11 @@ it('says plainly that a Deployment with no producer runs none', async () => {
 it('reads a status without touching the attempt or claiming recoverability', async () => {
   const env = sqliteEnv();
   const held = producer();
-  held.set({ attempt: 2, stage: 'downloaded', staged: { prefix: 'staging/2', sqlBytes: 8, downloadedBytes: 8, parts: 2 }, stagedSchema: { sha256: 'a'.repeat(64), bytes: 10 } });
+  held.set({ attempt: 2, stage: 'complete', staged: { prefix: 'staging/2', sqlBytes: 8, downloadedBytes: 8, parts: 2, objects: { registered: 3, staged: 3 } }, stagedSchema: { sha256: 'a'.repeat(64), bytes: 10 } });
   const response = await handleRecoveryExportStatus({ ...env.serverEnv, recovery: held.port } as never, OWNER);
   const body = await response.json() as Record<string, unknown>;
-  expect([body.stage, body.recoverable]).toEqual(['downloaded', false]);
-  expect(String(body.usable)).toContain('stages the export alone');
+  // A complete staging is still not a recoverable artifact: only a materialized and verified one is.
+  expect([body.stage, body.recoverable]).toEqual(['complete', false]);
+  expect(String(body.usable)).toContain('a complete staging is not yet one');
   env.sqlite.close();
 });

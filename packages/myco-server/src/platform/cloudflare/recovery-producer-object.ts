@@ -12,10 +12,11 @@
  */
 import { DurableObject } from 'cloudflare:workers';
 import {
-  continueAttempt, freshScan, PRODUCER_LIMITS, publishAttempt, stagedSqlKey,
-  type AttemptCheckpoint, type AttemptPart, type AttemptState, type ContinuationReport, type ProducerLimits,
-  type RecoveryAdmission, type RecoveryProducerStatus, type ScanProgress, type TableDefinitions,
+  ADVANCING_STAGES_SQL, continueAttempt, freshScan, PRODUCER_LIMITS, publishAttempt, reconcileUnconfirmed, stagedSqlKey,
+  type AttemptCheckpoint, type AttemptObject, type AttemptPart, type AttemptState, type ContinuationReport,
+  type ProducerLimits, type RecoveryAdmission, type RecoveryProducerStatus, type ScanProgress, type TableDefinitions,
 } from '../../core/recovery-producer.js';
+import { CHECKPOINT_STATEMENT_CHARS, newInventoryProgress, type SavedDigest } from '../../core/recovery-inventory.js';
 import type { StatementScan } from '../../core/sql-statements.js';
 import { serialGate } from '../../core/serial-gate.js';
 import { cloudflareProducerPorts, R2_MINIMUM_PART_BYTES, STAGING_TARGET, type StagingBucket } from './recovery-export.js';
@@ -30,7 +31,18 @@ interface AttemptRow {
   re_exports: number; sql_bytes: number | null; sql_etag: string | null; upload_id: string | null;
   download_offset: number; reconcile_offset: number; reconciled: number; locator: string; tables: string;
   schema_sha256: string; schema_bytes: number; captured: string; defined: string; scan: string; scan_bytes: string;
+  inventory_started_at: number | null; inventory_parts: number; inventory_bytes: number; inventory_scan: string;
+  inventory_scan_bytes: string; inventory_digest: string | null; database_sha256: string | null;
+  database_bytes: number | null; copy_started_at: number | null; completed_at: number | null; admission: string | null;
 }
+
+interface ObjectRow {
+  key: string; bytes: number; sha256: string | null; staged_sha256: string | null; staged_bytes: number | null;
+}
+
+const objectOf = (row: ObjectRow): AttemptObject => ({
+  key: row.key, bytes: row.bytes, sha256: row.sha256, stagedSha256: row.staged_sha256, stagedBytes: row.staged_bytes,
+});
 
 const COLUMN: Record<keyof AttemptState, string> = {
   id: 'id', stage: 'stage', prefix: 'prefix', startedAt: 'started_at', error: 'error', attempts: 'attempts',
@@ -38,10 +50,34 @@ const COLUMN: Record<keyof AttemptState, string> = {
   reExports: 're_exports', sqlBytes: 'sql_bytes', sqlEtag: 'sql_etag', uploadId: 'upload_id',
   downloadOffset: 'download_offset', reconcileOffset: 'reconcile_offset', reconciled: 'reconciled',
   tables: 'tables', captured: 'captured', defined: 'defined', scan: 'scan', scanBytes: 'scan_bytes',
+  inventoryStartedAt: 'inventory_started_at', inventoryParts: 'inventory_parts', inventoryBytes: 'inventory_bytes',
+  inventoryScan: 'inventory_scan', inventoryScanBytes: 'inventory_scan_bytes', inventoryDigest: 'inventory_digest',
+  databaseSha256: 'database_sha256', databaseBytes: 'database_bytes', copyStartedAt: 'copy_started_at',
+  completedAt: 'completed_at', admission: 'admission',
 };
 
+/**
+ * Columns an existing attempts table gains, as one idempotent step. A Deployment whose object already holds attempts
+ * keeps every row: a settled export-only attempt stays exactly as it rests.
+ */
+const ADDED_COLUMNS: readonly [string, string][] = [
+  ['inventory_started_at', 'INTEGER'],
+  ['inventory_parts', 'INTEGER NOT NULL DEFAULT 0'],
+  ['inventory_bytes', 'INTEGER NOT NULL DEFAULT 0'],
+  ['inventory_scan', "TEXT NOT NULL DEFAULT ''"],
+  ['inventory_scan_bytes', "TEXT NOT NULL DEFAULT ''"],
+  ['inventory_digest', 'TEXT'],
+  ['database_sha256', 'TEXT'],
+  ['database_bytes', 'INTEGER'],
+  ['copy_started_at', 'INTEGER'],
+  ['completed_at', 'INTEGER'],
+  ['admission', 'TEXT'],
+];
+
 /** Columns holding a list or a record are written as JSON text, so one update path serves every field. */
-const JSON_COLUMNS = new Set<keyof AttemptState>(['tables', 'captured', 'defined', 'scan']);
+const JSON_COLUMNS = new Set<keyof AttemptState>([
+  'tables', 'captured', 'defined', 'scan', 'inventoryScan', 'inventoryDigest', 'admission',
+]);
 
 const stateOf = (row: AttemptRow): AttemptState => ({
   id: row.id, stage: row.stage as AttemptState['stage'], prefix: row.prefix, startedAt: row.started_at,
@@ -52,6 +88,16 @@ const stateOf = (row: AttemptRow): AttemptState => ({
   tables: JSON.parse(row.tables) as string[], captured: JSON.parse(row.captured) as TableDefinitions,
   defined: JSON.parse(row.defined) as TableDefinitions, scan: JSON.parse(row.scan) as StatementScan,
   scanBytes: row.scan_bytes,
+  inventoryStartedAt: row.inventory_started_at, inventoryParts: row.inventory_parts,
+  inventoryBytes: row.inventory_bytes,
+  // A row an earlier attempts table wrote carries no inventory scan of its own, and reads as one not yet started.
+  inventoryScan: row.inventory_scan === '' ? newInventoryProgress().scan : JSON.parse(row.inventory_scan) as StatementScan,
+  inventoryScanBytes: row.inventory_scan_bytes,
+  inventoryDigest: row.inventory_digest === null ? null : JSON.parse(row.inventory_digest) as SavedDigest,
+  databaseSha256: row.database_sha256, databaseBytes: row.database_bytes, copyStartedAt: row.copy_started_at,
+  completedAt: row.completed_at,
+  // An attempt admitted before admissions were recorded carries none.
+  admission: row.admission === null ? null : JSON.parse(row.admission) as AttemptState['admission'],
 });
 
 export class RecoveryProducer extends DurableObject<CloudflareBindings> {
@@ -73,6 +119,16 @@ export class RecoveryProducer extends DurableObject<CloudflareBindings> {
     ctx.storage.sql.exec(`CREATE TABLE IF NOT EXISTS parts (
       attempt INTEGER NOT NULL, part INTEGER NOT NULL, bytes INTEGER NOT NULL, sha256 TEXT NOT NULL, etag TEXT NOT NULL,
       PRIMARY KEY (attempt, part))`);
+    // One row per object, so no checkpoint value grows with the inventory the export names.
+    ctx.storage.sql.exec(`CREATE TABLE IF NOT EXISTS objects (
+      attempt INTEGER NOT NULL, key TEXT NOT NULL, bytes INTEGER NOT NULL, sha256 TEXT,
+      staged_sha256 TEXT, staged_bytes INTEGER, registered INTEGER NOT NULL,
+      PRIMARY KEY (attempt, key))`);
+    ctx.storage.sql.exec('CREATE INDEX IF NOT EXISTS idx_objects_pending ON objects (attempt, staged_sha256, registered)');
+    const held = new Set((ctx.storage.sql.exec("SELECT name FROM pragma_table_info('attempts')").toArray() as unknown as { name: string }[]).map((column) => column.name));
+    for (const [name, declaration] of ADDED_COLUMNS) {
+      if (!held.has(name)) ctx.storage.sql.exec(`ALTER TABLE attempts ADD COLUMN ${name} ${declaration}`);
+    }
   }
 
   private row(where: string, ...args: (string | number)[]): AttemptRow | null {
@@ -84,7 +140,7 @@ export class RecoveryProducer extends DurableObject<CloudflareBindings> {
     const storage = this.ctx.storage;
     return {
       open: () => {
-        const row = this.row("stage IN ('export', 'download')");
+        const row = this.row(`stage IN (${ADVANCING_STAGES_SQL})`);
         return row === null ? null : stateOf(row);
       },
       update: (id, fields) => {
@@ -92,7 +148,7 @@ export class RecoveryProducer extends DurableObject<CloudflareBindings> {
         if (entries.length === 0) return;
         sql.exec(
           `UPDATE attempts SET ${entries.map(([key]) => `${COLUMN[key]} = ?`).join(', ')} WHERE id = ?`,
-          ...entries.map(([key, value]) => (JSON_COLUMNS.has(key) ? JSON.stringify(value ?? []) : value as string | number | null)), id,
+          ...entries.map(([key, value]) => (JSON_COLUMNS.has(key) ? (value === null || value === undefined ? null : JSON.stringify(value)) : value as string | number | null)), id,
         );
       },
       parts: (id) => sql.exec('SELECT part, bytes, sha256, etag FROM parts WHERE attempt = ? ORDER BY part', id).toArray() as unknown as AttemptPart[],
@@ -106,6 +162,44 @@ export class RecoveryProducer extends DurableObject<CloudflareBindings> {
         });
       },
       clearParts: (id) => { sql.exec('DELETE FROM parts WHERE attempt = ?', id); },
+      recordInventory: (id, progress, objects) => {
+        // The cursor, the reading, the digest over the bytes read and the objects they name commit as one step.
+        storage.transactionSync(() => {
+          for (const object of objects) {
+            sql.exec(
+              `INSERT INTO objects (attempt, key, bytes, sha256, staged_sha256, staged_bytes, registered)
+                 VALUES (?, ?, ?, ?, NULL, NULL, ?)
+                 ON CONFLICT (attempt, key) DO UPDATE SET bytes = excluded.bytes, sha256 = excluded.sha256`,
+              id, object.key, object.bytes, object.sha256, progress.parts,
+            );
+          }
+          sql.exec(
+            `UPDATE attempts SET inventory_parts = ?, inventory_bytes = ?, inventory_scan = ?, inventory_scan_bytes = ?,
+               inventory_digest = ? WHERE id = ?`,
+            progress.parts, progress.bytes, JSON.stringify(progress.scan), progress.scanBytes,
+            JSON.stringify(progress.digest), id,
+          );
+        });
+      },
+      pendingObjects: (id, limit) => (sql.exec(
+        `SELECT key, bytes, sha256, staged_sha256, staged_bytes FROM objects
+           WHERE attempt = ? AND staged_sha256 IS NULL ORDER BY registered, key LIMIT ?`, id, limit,
+      ).toArray() as unknown as ObjectRow[]).map(objectOf),
+      recordCopied: (id, key, staged) => {
+        sql.exec(
+          'UPDATE objects SET staged_sha256 = ?, staged_bytes = ? WHERE attempt = ? AND key = ?',
+          staged.sha256, staged.bytes, id, key,
+        );
+      },
+      objects: (id) => (sql.exec(
+        'SELECT key, bytes, sha256, staged_sha256, staged_bytes FROM objects WHERE attempt = ? ORDER BY key', id,
+      ).toArray() as unknown as ObjectRow[]).map(objectOf),
+      objectCounts: (id) => {
+        const row = sql.exec(
+          `SELECT COUNT(*) AS registered, COUNT(staged_sha256) AS staged FROM objects WHERE attempt = ?`, id,
+        ).one() as unknown as { registered: number; staged: number };
+        return { registered: row.registered, staged: row.staged };
+      },
       signedUrl: (id) => storage.get<string>(`signed:${id}`).then((held) => held ?? null),
       setSignedUrl: async (id, url) => {
         if (url === null) await storage.delete(`signed:${id}`);
@@ -148,7 +242,17 @@ export class RecoveryProducer extends DurableObject<CloudflareBindings> {
    * write leaves nothing for a continuation to advance, and no attempt claims an export it never prepared for.
    */
   private async publish(admission: RecoveryAdmission): Promise<RecoveryProducerStatus> {
-    if (this.row("stage IN ('export', 'download')") !== null) return this.status();
+    if (this.row(`stage IN (${ADVANCING_STAGES_SQL})`) !== null) return this.status();
+    // An earlier attempt resting unconfirmed is read once more before a new attempt supersedes it,
+    // so a manifest that landed late is recorded as the complete staging it is. A read that settles nothing leaves
+    // that attempt resting as it was, and never holds the new admission back.
+    const resting = this.row("stage = 'unconfirmed'");
+    if (resting !== null) {
+      const ports = cloudflareProducerPorts(this.target(JSON.parse(resting.tables) as string[]), this.bucket(), this.env.BUCKET, {
+        testRoutes: this.env.HARNESS_LAUNCH_MODE === 'record',
+      });
+      await reconcileUnconfirmed(stateOf(resting), this.checkpoint(), ports).catch(() => undefined);
+    }
     const locator = this.locator();
     const target = this.target(admission.tables);
     const now = Date.now();
@@ -159,17 +263,21 @@ export class RecoveryProducer extends DurableObject<CloudflareBindings> {
       sha256: [...new Uint8Array(digest)].map((value) => value.toString(16).padStart(2, '0')).join(''),
       bytes: bytes.byteLength,
     };
-    const ports = cloudflareProducerPorts(target, this.bucket(), { testRoutes: this.env.HARNESS_LAUNCH_MODE === 'record' });
+    const ports = cloudflareProducerPorts(target, this.bucket(), this.env.BUCKET, { testRoutes: this.env.HARNESS_LAUNCH_MODE === 'record' });
     const scan: ScanProgress = freshScan();
+    // The admission is recorded in the attempt's own row, so it is held to what a row takes before anything is staged.
+    const recorded = JSON.stringify({ configuration: admission.configuration, credentialsRequired: admission.credentialsRequired });
+    if (recorded.length > CHECKPOINT_STATEMENT_CHARS) throw new Error('a recovery admission is too large to record');
     await publishAttempt(ports, {
       prefix, target: STAGING_TARGET, locator, startedAt: now, schema, schemaText: admission.schema,
       configuration: admission.configuration, credentialsRequired: admission.credentialsRequired,
-    }, () => {
+    }, (published) => {
       this.ctx.storage.sql.exec(
-        `INSERT INTO attempts (stage, prefix, locator, started_at, tables, schema_sha256, schema_bytes, captured, defined, scan, scan_bytes)
-           VALUES ('export', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO attempts (stage, prefix, locator, started_at, tables, schema_sha256, schema_bytes, captured, defined, scan, scan_bytes, admission)
+           VALUES ('export', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         prefix, locator, now, JSON.stringify([...admission.tables]), schema.sha256, schema.bytes,
         JSON.stringify(admission.captured), JSON.stringify(scan.defined), JSON.stringify(scan.scan), scan.scanBytes,
+        JSON.stringify(published),
       );
     });
     return this.status();
@@ -184,12 +292,14 @@ export class RecoveryProducer extends DurableObject<CloudflareBindings> {
   }
 
   private async step(limits: ProducerLimits): Promise<ContinuationReport> {
-    // Every part but the last must clear the provider's floor, or the completion it accepts today is refused.
-    const bounded: ProducerLimits = { ...limits, partBytes: Math.max(R2_MINIMUM_PART_BYTES, limits.partBytes) };
-    const open = this.row("stage IN ('export', 'download')");
+    // A caller's limits stand on the defaults, so a partial set bounds the step it names and nothing else. Every
+    // part but the last must clear the provider's floor, or the completion it accepts today is refused.
+    const asked = { ...PRODUCER_LIMITS, ...limits };
+    const bounded: ProducerLimits = { ...asked, partBytes: Math.max(R2_MINIMUM_PART_BYTES, asked.partBytes) };
+    const open = this.row(`stage IN (${ADVANCING_STAGES_SQL})`);
     if (open === null) return { attempt: null, stage: 'idle', progressed: false, nextInMs: null, sourcePaused: false };
     const target = this.target(JSON.parse(open.tables) as string[]);
-    const ports = cloudflareProducerPorts(target, this.bucket(), {
+    const ports = cloudflareProducerPorts(target, this.bucket(), this.env.BUCKET, {
       testRoutes: this.env.HARNESS_LAUNCH_MODE === 'record', requestMs: bounded.requestMs,
     });
     return continueAttempt(this.checkpoint(), ports, bounded);
@@ -202,11 +312,17 @@ export class RecoveryProducer extends DurableObject<CloudflareBindings> {
       return { attempt: null, stage: 'idle', recoverable: false, staged: null, export: null, error: null, transientSpent: 0, stagedSchema: null };
     }
     const parts = this.ctx.storage.sql.exec('SELECT COUNT(*) AS held FROM parts WHERE attempt = ?', row.id).one().held as number;
+    const objects = this.ctx.storage.sql.exec(
+      'SELECT COUNT(*) AS registered, COUNT(staged_sha256) AS staged FROM objects WHERE attempt = ?', row.id,
+    ).one() as unknown as { registered: number; staged: number };
     return {
       attempt: row.id,
       stage: row.stage as RecoveryProducerStatus['stage'],
       recoverable: false,
-      staged: { prefix: row.prefix, sqlBytes: row.sql_bytes, downloadedBytes: row.download_offset, parts },
+      staged: {
+        prefix: row.prefix, sqlBytes: row.sql_bytes, downloadedBytes: row.download_offset, parts,
+        objects: { registered: objects.registered, staged: objects.staged },
+      },
       export: { polls: row.polls, bookmark: row.bookmark !== null, reExports: row.re_exports },
       error: row.error as RecoveryProducerStatus['error'],
       transientSpent: row.attempts,
@@ -216,12 +332,13 @@ export class RecoveryProducer extends DurableObject<CloudflareBindings> {
 
   /**
    * The Deployment's schema no longer matches the capture this attempt staged, so the staged export describes a
-   * source that has moved: the attempt is failed, and nothing may read its staging as recoverable.
+   * source that has moved: the attempt is failed, and nothing may read its staging as recoverable. A staging whose
+   * completion is recorded is a snapshot whole as taken, and a later schema change leaves it as it is.
    */
   async noteSchemaDrift(attempt: number): Promise<RecoveryProducerStatus> {
     return this.gate.exclusive(async () => {
       const row = this.row('id = ?', attempt);
-      if (row !== null && row.stage !== 'failed') {
+      if (row !== null && row.stage !== 'failed' && row.stage !== 'complete' && row.completed_at === null) {
         await this.ctx.storage.delete(`signed:${attempt}`);
         this.ctx.storage.sql.exec("UPDATE attempts SET stage = 'failed', error = 'schema_disagrees' WHERE id = ?", attempt);
       }

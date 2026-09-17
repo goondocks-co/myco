@@ -50,7 +50,7 @@ const sharedFiles = () =>
     !f.includes(`${join(SRC, 'platform')}/`) && !f.includes(`${join(SRC, 'entry')}/`) && f !== join(SRC, 'index.ts'));
 
 /** Every `emit` call across src; a call removed or added moves the total. */
-const EMIT_CALLS = 112;
+const EMIT_CALLS = 116;
 /** The one migrations directory: the emit script writes it, the rendered-steps gate verifies it, and wrangler.toml applies from it. */
 const MIGRATIONS_DIR = 'migrations';
 const K = SyntaxKind as unknown as Record<string, number>;
@@ -1255,7 +1255,7 @@ describe('gates', () => {
     const shared = new Set(sharedFiles());
     expect(Object.keys(runtime).filter((pkg) => pkg !== 'sqlite-vec' && ![...(imported.get(pkg) ?? [])].some((f) => shared.has(f)))).toEqual([]);
     expect([...(imported.get('sqlite-vec') ?? [])]).toEqual([join(SRC, 'platform', 'bun', 'vectors.ts')]);
-    expect(runtime).toEqual({ '@modelcontextprotocol/server': '2.0.0', '@goondocks/myco-shared': '^0.2.0', 'sqlite-vec': '^0.1.9' });
+    expect(runtime).toEqual({ '@modelcontextprotocol/server': '2.0.0', '@goondocks/myco-shared': '^0.2.0', '@stablelib/sha256': '2.0.1', 'sqlite-vec': '^0.1.9' });
   });
 
   it('leaves owner routes ingest-neutral', async () => {
