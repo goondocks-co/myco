@@ -37,7 +37,9 @@ export function localRecoveryHold(paths: LocalDeploymentPaths, native?: NativeSq
       sourceIdentity,
     }));
   return {
-    locator: fs.realpathSync(paths.databasePath),
+    // The volume this hold belongs to, by the path a destination records: its real path while it exists, and the path
+    // itself for a Deployment this machine no longer holds, so a recorded hold can still be read or given up.
+    locator: fs.existsSync(paths.databasePath) ? fs.realpathSync(paths.databasePath) : paths.databasePath,
     acquire: (token) => held(async (db) => {
       await acquireRecoveryHold(db, token, Date.now(), 'operator');
       return reading(db, token);

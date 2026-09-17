@@ -558,10 +558,15 @@ export async function run(args: string[]): Promise<void> {
     if (command === 'recovery-hold') {
       const selected = target();
       if (selected !== 'local' && selected !== 'cloudflare') fail('recovery-hold needs --target local or --target cloudflare.');
-      const owner = selected === 'local' ? localRecoveryHold(resolveLocalPaths(), carriedNative()) : cloudflareRecoveryHoldOf(cloudflareOptions());
       const to = flags.get('to');
       const token = flags.get('token');
       const abandon = flags.has('abandon');
+      if ((to === undefined || to === '' || to === 'true') && (token === undefined || token === '' || token === 'true')) {
+        fail('recovery-hold needs --to <dir>, or --token <id> --abandon for a lost directory.');
+      }
+      const localPaths = resolveLocalPaths();
+      if (selected === 'local' && !localDeploymentPresent(localPaths)) fail('No Deployment on this machine holds a recovery hold.');
+      const owner = selected === 'local' ? localRecoveryHold(localPaths, carriedNative()) : cloudflareRecoveryHoldOf(cloudflareOptions());
       if (token !== undefined && token !== '' && token !== 'true') {
         if (!abandon) fail('recovery-hold --token reads nothing on its own; add --abandon to give that hold up.');
         const answer = await owner.release(token, 'abandoned');
