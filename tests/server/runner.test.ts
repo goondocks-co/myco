@@ -8,7 +8,10 @@ import { describe, expect, it } from 'bun:test';
 import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { CommandFailed, commandFailureDetail, CommandTimedOut, systemRunner, WorkingDirectoryMissing } from '@myco/server/runner.js';
+import {
+  CommandFailed, commandFailureDetail, CommandTimedOut, processTreeEndOfSignal, processTreeEndOfTaskkill,
+  systemRunner, WorkingDirectoryMissing,
+} from '@myco/server/runner.js';
 
 const failed = (stdout: string, stderr: string, code = 1): CommandFailed =>
   new CommandFailed('npx', ['wrangler', 'd1', 'execute', 'myco-server'], { code, stdout, stderr });
@@ -100,10 +103,13 @@ describe('a command that outran its deadline', () => {
     try {
       const marker = join(root, 'late-write');
       const pidFile = join(root, 'child.pid');
-      // A launcher whose child writes 1 s after a 300 ms deadline, then outlives it.
+      // A launcher whose child writes well after a 300 ms deadline, then outlives it. The write is 2.5 s out
+      // because ending a tree is not instantaneous everywhere: a process group goes at once, `taskkill` is a
+      // process of its own that has to run. The gap has to be larger than the slowest of those, or the test
+      // would be reporting the platform's cleanup latency as a defect.
       const grandchild = `require('fs').writeFileSync(${JSON.stringify(pidFile)},String(process.pid));`
-        + `setTimeout(()=>require('fs').writeFileSync(${JSON.stringify(marker)},'wrote after the deadline'),1000);`
-        + 'setTimeout(()=>process.exit(0),3000);';
+        + `setTimeout(()=>require('fs').writeFileSync(${JSON.stringify(marker)},'wrote after the deadline'),2500);`
+        + 'setTimeout(()=>process.exit(0),4000);';
       const launcher = `require('child_process').spawn(process.execPath,['-e',${JSON.stringify(grandchild)}],{stdio:'inherit'});`
         + 'setTimeout(()=>{},5000);';
       const started = Date.now();
@@ -112,10 +118,14 @@ describe('a command that outran its deadline', () => {
       const elapsed = Date.now() - started;
 
       expect(refused).toBeInstanceOf(CommandTimedOut);
-      // The call answers at its own deadline, not once the tree's pipes close.
-      expect(elapsed).toBeLessThan(900);
-      // Give the write its moment: it must never arrive.
-      await Bun.sleep(1200);
+      // What it says about the tree is what ending it actually answered, and here that is success.
+      expect((refused as CommandTimedOut).treeEnd).toBe('ended');
+      expect((refused as CommandTimedOut).message).toContain('the processes it started were ended');
+      // The call answers at its own deadline, not once the tree's pipes close — which is what made a 300 ms
+      // deadline answer after 1664 ms. Windows spends its own bounded run on `taskkill` before answering.
+      expect(elapsed).toBeLessThan(process.platform === 'win32' ? 2000 : 900);
+      // Past the moment that write was due: it must never arrive.
+      await Bun.sleep(Math.max(0, 3200 - (Date.now() - started)));
       expect(existsSync(marker)).toBe(false);
       const pid = Number(readFileSync(pidFile, 'utf8'));
       const alive = (): boolean => { try { process.kill(pid, 0); return true; } catch { return false; } };
@@ -123,7 +133,9 @@ describe('a command that outran its deadline', () => {
     } finally { rmSync(root, { recursive: true, force: true }); }
   });
 
-  it('GATE: gives only a bounded command a group of its own, so an unbounded one still ends with this process', async () => {
+  // POSIX only: `ps -o pgid=` and process groups are what this asserts, and Windows has neither. The deadline
+  // test above is the portable one, and on Windows it exercises the `taskkill` path instead.
+  it.skipIf(process.platform === 'win32')('GATE: gives only a bounded command a group of its own, so an unbounded one still ends with this process', async () => {
     // `$$` is the shell's own pid, and `ps` answers the group it belongs to.
     const groupOf = async (options: { timeoutMs?: number }): Promise<string> =>
       (await systemRunner().run('/bin/sh', ['-c', 'ps -o pgid= -p $$'], options)).stdout.trim();
@@ -133,5 +145,111 @@ describe('a command that outran its deadline', () => {
     expect(await groupOf({})).toBe(mine);
     // A bounded one leads its own, which is the only thing a deadline can signal without signalling this process.
     expect(await groupOf({ timeoutMs: 30_000 })).not.toBe(mine);
+  });
+});
+
+/**
+ * What a failed cleanup is allowed to claim.
+ *
+ * Ending a tree can be refused — `taskkill` exits non-zero on an access denial, a group signal comes back
+ * `EPERM` — and it can answer nothing at all. A caller that is told "ended" then treats a live process as gone,
+ * which is exactly the shape a fire-and-forget killer produced: the call said the processes were ended at 204 ms
+ * and one of them wrote at 800 ms. These are the classifications the platform branches read, so they are
+ * asserted on every platform rather than only on the one that runs them.
+ */
+describe('what ending a process tree answers', () => {
+  it('GATE: calls a refused tree-killer a failure, and only "not found" settled', () => {
+    expect(processTreeEndOfTaskkill({ code: 0 })).toBe('ended');
+    // taskkill's own "process not found", about the PID it was given: the wrapper may have exited while a
+    // descendant still runs, so nothing here proves the tree gone.
+    expect(processTreeEndOfTaskkill({ code: 128 })).toBe('unknown');
+    // An access denial. The tree is still running, and this must never read as ended or already gone.
+    expect(processTreeEndOfTaskkill({ code: 1 })).toBe('failed');
+    expect(processTreeEndOfTaskkill({ code: null })).toBe('failed');
+    // It could not be started, or it did not answer inside its own window: nothing is known about the tree.
+    expect(processTreeEndOfTaskkill({ error: new Error('spawn taskkill ENOENT') })).toBe('unknown');
+    expect(processTreeEndOfTaskkill({ code: 0, timedOut: true })).toBe('unknown');
+  });
+
+  it('GATE: calls only ESRCH already gone, so a signal this process may not send is not mistaken for one', () => {
+    expect(processTreeEndOfSignal(Object.assign(new Error('kill ESRCH'), { code: 'ESRCH' }))).toBe('absent');
+    expect(processTreeEndOfSignal(Object.assign(new Error('kill EPERM'), { code: 'EPERM' }))).toBe('failed');
+    expect(processTreeEndOfSignal(new Error('something else entirely'))).toBe('failed');
+    expect(processTreeEndOfSignal(null)).toBe('failed');
+  });
+
+  it('says what it could not do, rather than reporting a tree it never ended as ended', () => {
+    const failed = new CommandTimedOut('npx', ['wrangler', 'd1', 'execute'], 60_000, 'failed');
+    expect(failed.message).toContain('could NOT be ended and may still be running');
+    expect(new CommandTimedOut('npx', [], 60_000, 'unknown').message).toContain('is unknown');
+    expect(new CommandTimedOut('npx', [], 60_000, 'absent').message).toContain('already gone');
+    // A caller that names no outcome gets the honest one, not a claim of success.
+    expect(new CommandTimedOut('npx', [], 60_000).treeEnd).toBe('unknown');
+  });
+});
+
+/**
+ * The same refusals, through the runner's own signalling rather than the classifiers alone.
+ *
+ * `process.kill` IS the seam the POSIX branch ends a tree with, so these replace it for the length of one
+ * deadline and read what the caller is told. Each one then ends the real tree itself, so nothing is left behind.
+ */
+describe.skipIf(process.platform === 'win32')('a deadline whose group signal is refused', () => {
+  /** A launcher that records its own pid and its child's, and keeps both alive well past any deadline here. */
+  const launcher = (root: string): { argv: string[]; pids: () => number[] } => {
+    const leaderFile = join(root, 'leader.pid');
+    const childFile = join(root, 'child.pid');
+    const grandchild = `require('fs').writeFileSync(${JSON.stringify(childFile)},String(process.pid));`
+      + 'setTimeout(()=>process.exit(0),4000);';
+    const code = `require('fs').writeFileSync(${JSON.stringify(leaderFile)},String(process.pid));`
+      + `require('child_process').spawn(process.execPath,['-e',${JSON.stringify(grandchild)}],{stdio:'inherit'});`
+      + 'setTimeout(()=>{},4000);';
+    return {
+      argv: ['-e', code],
+      pids: () => [leaderFile, childFile].filter((f) => existsSync(f)).map((f) => Number(readFileSync(f, 'utf8'))),
+    };
+  };
+
+  /** Runs one bounded command with `process.kill` replaced, and ends whatever it left running. */
+  const withSignal = async (
+    kill: (real: typeof process.kill, pid: number, signal?: string | number) => boolean,
+  ): Promise<CommandTimedOut> => {
+    const root = mkdtempSync(join(tmpdir(), 'myco-runner-signal-'));
+    const real = process.kill.bind(process);
+    const spawned = launcher(root);
+    try {
+      process.kill = ((pid: number, signal?: string | number) => kill(real, pid, signal)) as typeof process.kill;
+      const refused = await systemRunner().run(process.execPath, spawned.argv, { timeoutMs: 300 })
+        .catch((err: unknown) => err as Error);
+      if (!(refused instanceof CommandTimedOut)) throw new Error(`the run did not time out: ${String(refused)}`);
+      return refused;
+    } finally {
+      process.kill = real;
+      // The tree really is still running — that is the point of the test — so end it for real.
+      for (const pid of spawned.pids()) { try { real(pid, 'SIGKILL'); } catch { /* already gone */ } }
+      rmSync(root, { recursive: true, force: true });
+    }
+  };
+
+  it('GATE: reports a tree it could not end, and never repairs it by ending the leader', async () => {
+    // The group signal is denied; the leader itself would still take one. Ending the leader would leave every
+    // process it started running, so it cannot make this cleanup a success.
+    const refused = await withSignal((real, pid, signal) => {
+      if (pid < 0) throw Object.assign(new Error('kill EPERM'), { code: 'EPERM' });
+      return real(pid, signal as NodeJS.Signals);
+    });
+
+    expect(refused.treeEnd).toBe('failed');
+    expect(refused.message).toContain('could NOT be ended and may still be running');
+  });
+
+  it('GATE: does not call a tree gone on "no such group" while its leader is still running', async () => {
+    // What an ungrouped process answers: there is no group of that id, and the command is very much alive.
+    const refused = await withSignal((real, pid, signal) => {
+      if (pid < 0) throw Object.assign(new Error('kill ESRCH'), { code: 'ESRCH' });
+      return real(pid, signal as NodeJS.Signals);
+    });
+
+    expect(refused.treeEnd).toBe('failed');
   });
 });
