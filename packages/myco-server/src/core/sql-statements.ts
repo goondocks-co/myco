@@ -55,8 +55,11 @@ export function identifierAt(sql: string, at: number): { name: string; qualified
   return { name, qualified: sql[index] === '.' };
 }
 
-/** How much of a statement a caller keeps: every statement, or only the table definitions among them. */
-export type StatementRetention = 'all' | 'definitions';
+/**
+ * How much of a statement a caller keeps: every statement, the table definitions among them, or the row inserts
+ * into a named set of tables.
+ */
+export type StatementRetention = 'all' | 'definitions' | { rows: readonly string[] };
 
 /** A split in progress. Every field is plain data, so it survives being stored and read back. */
 export interface StatementScan {
@@ -66,21 +69,49 @@ export interface StatementScan {
   literalHasNul: boolean;
   comment: 'line' | 'block' | '';
   pending: string;
-  /** False once the statement in hand can no longer be a table definition, under `definitions` retention. */
+  /** False once the statement in hand can no longer be one the retention keeps. */
   keeping: boolean;
+  /** True once the statement in hand is known to be one the retention keeps, so no ceiling of its own applies. */
+  decided: boolean;
 }
 
 export const newStatementScan = (): StatementScan => ({
-  statement: '', quote: '', literalStart: -1, literalHasNul: false, comment: '', pending: '', keeping: true,
+  statement: '', quote: '', literalStart: -1, literalHasNul: false, comment: '', pending: '', keeping: true, decided: false,
 });
 
+const INSERT_INTO = 'INSERT INTO';
 const CREATE_TABLE = 'CREATE TABLE';
 /** How far a statement is judged for definition retention; the deciding prefix is shorter than this. */
 const JUDGE_CHARS = CREATE_TABLE.length + 1;
 
-const couldDefineTable = (statement: string): boolean => {
-  const head = significantStatement(statement).replace(/\s+/g, ' ').toUpperCase().slice(0, JUDGE_CHARS);
-  return CREATE_TABLE.startsWith(head.slice(0, CREATE_TABLE.length)) || head.startsWith(CREATE_TABLE);
+/** True while the significant text cannot yet decide a form: nothing, or a character that may open a comment. */
+const undecided = (sql: string): boolean => sql === '' || sql === '-' || sql === '/';
+
+const couldDefineTable = (statement: string): { keep: boolean; decided: boolean } => {
+  const sql = significantStatement(statement);
+  if (undecided(sql)) return { keep: true, decided: false };
+  const head = sql.replace(/\s+/g, ' ').toUpperCase().slice(0, JUDGE_CHARS);
+  if (head.startsWith(CREATE_TABLE)) return { keep: true, decided: true };
+  return { keep: CREATE_TABLE.startsWith(head.slice(0, CREATE_TABLE.length)), decided: false };
+};
+
+/** How far a statement is judged for row retention: the form, then the table name it names. */
+const ROW_JUDGE_CHARS = INSERT_INTO.length + 1 + 128;
+
+/** Whether the statement in hand may still be a row insert into one of `tables`. */
+const couldInsertRow = (statement: string, tables: readonly string[]): { keep: boolean; decided: boolean } => {
+  const sql = significantStatement(statement);
+  if (undecided(sql)) return { keep: true, decided: false };
+  const head = sql.replace(/\s+/g, ' ').toUpperCase();
+  const word = INSERT_INTO.slice(0, 'INSERT'.length);
+  if (!(word.startsWith(head.slice(0, word.length)) || head.startsWith(word))) return { keep: false, decided: false };
+  const form = INSERT_FORM.exec(sql);
+  if (form === null) return { keep: true, decided: false };
+  const named = identifierAt(sql, form[0].length);
+  if (named === null) return { keep: true, decided: false };
+  if (named.qualified) return { keep: false, decided: false };
+  if (tables.includes(named.name)) return { keep: true, decided: true };
+  return { keep: tables.some((table) => table.startsWith(named.name)), decided: false };
 };
 
 const hex = (value: string): string => [...new TextEncoder().encode(value)].map((byte) => byte.toString(16).padStart(2, '0')).join('');
@@ -145,19 +176,42 @@ export function endStatements(scan: StatementScan, retain: StatementRetention, e
 }
 
 /**
- * What one retained definition may hold. A reading kept across an interruption is stored, so a statement that cannot
- * be a definition of a table stops being retained rather than growing without a bound; the export then defines fewer
- * tables than the capture named, which the caller refuses.
+ * What one retained statement may hold under a retention that keeps only some of them. A reading kept across an
+ * interruption is stored, so a statement that has not yet proved itself stops being retained rather than growing
+ * without a bound; the export then carries fewer definitions or rows than the caller expects, which it refuses.
  */
-const DEFINITION_CHARACTERS = 256 * 1024;
+const RETAINED_CHARACTERS = 256 * 1024;
+
+/**
+ * How often a statement that is still only whitespace and comments is dropped back to nothing. Leading trivia says
+ * nothing about a statement's form, and an export may carry more of it than a retained statement may hold.
+ */
+const TRIVIA_STRIDE = 4 * 1024;
 
 function append(scan: StatementScan, char: string, retain: StatementRetention): void {
-  if (retain === 'definitions') {
+  if (retain !== 'all') {
     if (!scan.keeping) return;
     // Leading whitespace and comments say nothing about the form, so a run of either is never carried.
     if (scan.statement === '' && /\s/.test(char)) return;
-    if (scan.statement.length > JUDGE_CHARS * 2 && !couldDefineTable(scan.statement)) { scan.keeping = false; scan.statement = ''; return; }
-    if (scan.statement.length >= DEFINITION_CHARACTERS) { scan.keeping = false; scan.statement = ''; return; }
+    if (!scan.decided) {
+      // Dropped only between comments, where nothing partial is left behind.
+      if (scan.comment === '' && scan.statement.length > 0 && scan.statement.length % TRIVIA_STRIDE === 0
+        && significantStatement(scan.statement) === '') {
+        scan.statement = '';
+      }
+      // Judged inside a bounded window: the form and the name it carries both appear within it.
+      const window = retain === 'definitions' ? JUDGE_CHARS * 2 : ROW_JUDGE_CHARS;
+      if (scan.statement.length <= window) {
+        const judged = retain === 'definitions'
+          ? couldDefineTable(scan.statement)
+          : couldInsertRow(scan.statement, retain.rows);
+        if (!judged.keep) { scan.keeping = false; scan.statement = ''; return; }
+        scan.decided = judged.decided;
+      }
+      // A statement still unjudged may not grow without a bound; one the retention keeps is bounded by the
+      // statement ceiling alone, so a large relevant row is read rather than dropped unseen.
+      if (!scan.decided && scan.statement.length >= RETAINED_CHARACTERS) { scan.keeping = false; scan.statement = ''; return; }
+    }
   }
   scan.statement += char;
   if (scan.statement.length > MAX_STATEMENT_CHARACTERS) throw new Error('a recovery export statement exceeds the import limit');
@@ -170,7 +224,8 @@ function end(scan: StatementScan, retain: StatementRetention, emit: (statement: 
   scan.literalHasNul = false;
   const keeping = scan.keeping;
   scan.keeping = true;
-  if (retain === 'definitions' && !keeping) return;
+  scan.decided = false;
+  if (retain !== 'all' && !keeping) return;
   emit(statement);
 }
 
@@ -232,4 +287,167 @@ export function normalizeDefinition(sql: string): string {
     out += char;
   }
   return out.replace(/;$/, '');
+}
+
+/** One value of a row insert, as the export wrote it: text, an integer, a real, a blob, or absent. */
+export type SqlValue =
+  | { kind: 'text'; text: string }
+  | { kind: 'integer'; integer: number }
+  | { kind: 'real'; real: number }
+  | { kind: 'blob'; hex: string }
+  | { kind: 'null' };
+
+/** A row insert the export carries: the table it names, the columns it names where it does, and its values. */
+export interface InsertedRow {
+  table: string;
+  columns: string[] | null;
+  values: SqlValue[];
+}
+
+const INSERT_FORM = /^INSERT\s+(?:OR\s+(?:REPLACE|IGNORE|ABORT|FAIL|ROLLBACK)\s+)?INTO\s+/i;
+
+/** Reads a parenthesised list, answering each member's text and the offset after the closing bracket. */
+function bracketed(sql: string, open: number): { members: string[]; after: number } | null {
+  if (sql[open] !== '(') return null;
+  const members: string[] = [];
+  let member = '';
+  let quote = '';
+  let depth = 0;
+  for (let at = open; at < sql.length; at += 1) {
+    const char = sql[at]!;
+    const next = sql[at + 1] ?? '';
+    if (quote !== '') {
+      member += char;
+      if (char === quote && next === quote && quote !== ']') { member += next; at += 1; }
+      else if (char === quote) quote = '';
+      continue;
+    }
+    if (char === "'" || char === '"' || char === '`' || char === '[') { quote = char === '[' ? ']' : char; member += char; continue; }
+    if (char === '(') {
+      depth += 1;
+      if (depth === 1) continue;
+    }
+    if (char === ')') {
+      depth -= 1;
+      if (depth === 0) { members.push(member); return { members, after: at + 1 }; }
+    }
+    if (char === ',' && depth === 1) { members.push(member); member = ''; continue; }
+    member += char;
+  }
+  return null;
+}
+
+const BLOB_LITERAL = /^[xX]'([0-9a-fA-F]*)'$/;
+const INTEGER_LITERAL = /^[+-]?\d+$/;
+const REAL_LITERAL = /^[+-]?(?:\d+\.\d*|\.\d+|\d+)(?:[eE][+-]?\d+)?$/;
+
+/** One value as the export wrote it, or null when this reader does not accept the form. */
+export function sqlValue(text: string): SqlValue | null {
+  const value = text.trim();
+  if (value === '') return null;
+  if (/^NULL$/i.test(value)) return { kind: 'null' };
+  if (value.startsWith("'")) {
+    if (!value.endsWith("'") || value.length < 2) return null;
+    const body = value.slice(1, -1);
+    // A closing quote inside the body is only legal doubled; an odd run means this is not one literal.
+    for (let at = 0; at < body.length; at += 1) {
+      if (body[at] !== "'") continue;
+      if (body[at + 1] !== "'") return null;
+      at += 1;
+    }
+    return { kind: 'text', text: body.replaceAll("''", "'") };
+  }
+  const blob = BLOB_LITERAL.exec(value);
+  if (blob !== null) return { kind: 'blob', hex: blob[1]!.toLowerCase() };
+  if (INTEGER_LITERAL.test(value)) {
+    const held = Number(value);
+    return Number.isSafeInteger(held) ? { kind: 'integer', integer: held } : null;
+  }
+  if (REAL_LITERAL.test(value)) return { kind: 'real', real: Number(value) };
+  return null;
+}
+
+/**
+ * What one statement is, as the only reader of SQL text in the Worker answers it: a row it read, a row of a table the
+ * caller cares about that it could **not** read, or a statement of no interest. A caller never needs a pattern of
+ * its own to tell the second from the third.
+ */
+export type StatementReading =
+  | { kind: 'row'; row: InsertedRow }
+  | { kind: 'unreadable'; table: string }
+  | { kind: 'other' };
+
+export function readStatement(statement: string, tables: readonly string[] = []): StatementReading {
+  const row = insertedRow(statement);
+  if (row !== null) return { kind: 'row', row };
+  // Comments and whitespace are stripped by the same reader that strips them everywhere else.
+  const sql = significantStatement(statement).replace(/;\s*$/, '');
+  const form = INSERT_FORM.exec(sql);
+  if (form === null) return { kind: 'other' };
+  const named = identifierAt(sql, form[0].length);
+  if (named === null || named.qualified) return { kind: 'other' };
+  return tables.includes(named.name) ? { kind: 'unreadable', table: named.name } : { kind: 'other' };
+}
+
+/**
+ * The row one complete `INSERT` statement carries, or null for any other statement. A statement whose form or whose
+ * values this reader does not accept answers null rather than a guess, so a caller refuses instead of inventing a
+ * row: nothing else in the Worker reads a SQL literal.
+ */
+export function insertedRow(statement: string): InsertedRow | null {
+  const sql = significantStatement(statement).replace(/;\s*$/, '');
+  const form = INSERT_FORM.exec(sql);
+  if (form === null) return null;
+  const named = identifierAt(sql, form[0].length);
+  if (named === null || named.qualified) return null;
+  let at = sql.indexOf(named.name, form[0].length) + named.name.length;
+  while (at < sql.length && /[\s"`\]]/.test(sql[at]!)) at += 1;
+  let columns: string[] | null = null;
+  if (sql[at] === '(') {
+    const list = bracketed(sql, at);
+    if (list === null) return null;
+    const read = list.members.map((member) => identifierAt(member, 0));
+    if (read.some((column) => column === null)) return null;
+    columns = read.map((column) => column!.name);
+    at = list.after;
+    while (at < sql.length && /\s/.test(sql[at]!)) at += 1;
+  }
+  if (!/^VALUES/i.test(sql.slice(at))) return null;
+  at += 'VALUES'.length;
+  while (at < sql.length && /\s/.test(sql[at]!)) at += 1;
+  const list = bracketed(sql, at);
+  if (list === null) return null;
+  const values = list.members.map(sqlValue);
+  if (values.some((value) => value === null)) return null;
+  // One row per statement: a multi-row insert is a form this reader does not accept.
+  let after = list.after;
+  while (after < sql.length && /\s/.test(sql[after]!)) after += 1;
+  if (after !== sql.length) return null;
+  return { table: named.name, columns, values: values as SqlValue[] };
+}
+
+/**
+ * The columns one `CREATE TABLE` declares, in the order it declares them, or null when the definition cannot be
+ * read. A table constraint — a `PRIMARY KEY (…)`, `FOREIGN KEY`, `CHECK`, `UNIQUE` — is not a column.
+ */
+export function tableColumns(definition: string): string[] | null {
+  const sql = significantStatement(definition).replace(/;\s*$/, '');
+  const form = TABLE_DEFINITION.exec(sql);
+  if (form === null) return null;
+  const named = identifierAt(sql, form[0].length);
+  if (named === null || named.qualified) return null;
+  const open = sql.indexOf('(', form[0].length);
+  if (open < 0) return null;
+  const list = bracketed(sql, open);
+  if (list === null) return null;
+  const columns: string[] = [];
+  for (const member of list.members) {
+    const text = significantStatement(member).trim();
+    if (text === '') continue;
+    if (/^(?:CONSTRAINT|PRIMARY|UNIQUE|CHECK|FOREIGN)\b/i.test(text)) continue;
+    const column = identifierAt(text, 0);
+    if (column === null) return null;
+    columns.push(column.name);
+  }
+  return columns.length === 0 ? null : columns;
 }

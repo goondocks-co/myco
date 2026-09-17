@@ -15,6 +15,7 @@ import { cloudflareSourceOf } from './source.js';
 import { CLOCK_MANUAL, CLOCK_NAME, type DeploymentClock } from './deployment-clock.js';
 import { PRODUCER_NAME, type RecoveryProducer } from './recovery-producer-object.js';
 import type { StagingBucket } from './recovery-export.js';
+import { classifyR2BlobFailure } from './r2-digest.js';
 import { markRecordedLaunch } from '../../core/runs.js';
 import { wrappingKeyFromText } from '../wrapping-key.js';
 import { cloudflareVectorStore, type VectorIndex } from './vectors.js';
@@ -81,12 +82,7 @@ export const REQUIRED_BINDINGS = ['MYCO_DB', 'BUCKET', 'SOURCE_LIMIT', 'TOKEN_LI
 /** D1 reports its own failures with a `D1_ERROR` prefix; nothing else does. */
 export const classifyD1Error: ErrorClassifier = (message) => (message.startsWith('D1_ERROR') ? 'db' : null);
 
-/** The R2 error code for a digest that did not match the received bytes. */
-export const R2_BAD_DIGEST_CODE = 10037;
-
-/** R2 reports a digest rejection by its error code, and by its own wording when a code is absent. */
-export const classifyR2BlobFailure: BlobFailureClassifier = (message) =>
-  message.includes(`(${R2_BAD_DIGEST_CODE})`) || /checksum you specified did not match/i.test(message) ? 'digest' : null;
+export { classifyR2BlobFailure, R2_BAD_DIGEST_CODE } from './r2-digest.js';
 
 export function cloudflarePlatform(bindings: CloudflareBindings, embeddingRuntime = false): PlatformDescriptor {
   const absent = (name: string): boolean =>

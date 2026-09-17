@@ -8,6 +8,7 @@ import {
   capturedDefinitions, continueAttempt, definitionsDisagree, freshScan, PRODUCER_LIMITS, publishAttempt,
   type AttemptCheckpoint, type AttemptPart, type AttemptState, type ProducerPorts, type RangeAnswer, type ScanProgress,
 } from '@myco-server-worker/core/recovery-producer.js';
+import { newInventoryProgress } from '@myco-server-worker/core/recovery-inventory.js';
 import { normalizeDefinition, tableDefinition } from '@myco-server-worker/core/sql-statements.js';
 
 const SESSIONS = 'CREATE TABLE sessions (id TEXT PRIMARY KEY, title TEXT)';
@@ -16,7 +17,10 @@ function checkpoint(initial: Partial<AttemptState>): AttemptCheckpoint & { state
   const state: AttemptState = {
     id: 1, stage: 'download', prefix: 'staging/1', startedAt: 0, error: null, attempts: 0, bookmark: 'b1', polls: 1,
     exportStartedAt: 0, exportCompletedAt: 0, reExports: 0, sqlBytes: null, sqlEtag: null, uploadId: 'upload-1',
-    downloadOffset: 0, reconcileOffset: 0, reconciled: 0, tables: ['sessions'], captured: {}, ...freshScan(), ...initial,
+    downloadOffset: 0, reconcileOffset: 0, reconciled: 0, tables: ['sessions'], captured: {},
+    inventoryStartedAt: null, inventoryParts: 0, inventoryBytes: 0, inventoryScan: newInventoryProgress().scan,
+    inventoryScanBytes: '', inventoryDigest: null, databaseSha256: null, databaseBytes: null, copyStartedAt: null,
+    completedAt: null, admission: { source: { target: 'cloudflare', locator: 'account-1/database-1' }, startedAt: '1970-01-01T00:00:00.000Z', schema: { sha256: 'c'.repeat(64), bytes: 1 }, configuration: {}, credentialsRequired: [] }, ...freshScan(), ...initial,
   };
   const store = {
     state,
@@ -30,6 +34,12 @@ function checkpoint(initial: Partial<AttemptState>): AttemptCheckpoint & { state
       Object.assign(store.state, progress, { downloadOffset });
     },
     clearParts: () => { store.held = []; },
+    // These stages end at the inventory hand-off, so the objects an inventory would register are never asked for.
+    recordInventory: () => { throw new Error('the schema stages read no inventory'); },
+    pendingObjects: () => [],
+    recordCopied: () => { throw new Error('the schema stages copy no object'); },
+    objects: () => [],
+    objectCounts: () => ({ registered: 0, staged: 0 }),
     signedUrl: async () => store.signed,
     setSignedUrl: async (_id: number, url: string | null) => { store.signed = url; },
   };
@@ -58,6 +68,10 @@ async function stage(sql: string, captured: Record<string, string>, chunkBytes =
     async readStoredRange() { return null; },
     async storedSize() { return bytes.byteLength; },
     async writeStagingFile() {},
+    async readStagedPart() { throw new Error('this stage reads no staged part'); },
+    async digest() { throw new Error('this stage takes no digest'); },
+    async copyObject() { throw new Error('this stage copies no object'); },
+    async readStagingFile() { return null; },
   };
   const report = await continueAttempt(state, port, { ...PRODUCER_LIMITS, partBytes: chunkBytes });
   return { report, state };
@@ -72,7 +86,7 @@ const captured = (...definitions: string[]): Record<string, string> =>
 
 it('reads a definition the export carries, and agrees with a capture of the same definitions', async () => {
   const { report, state } = await stage(`${SESSIONS};\nINSERT INTO sessions VALUES('s1','one');\n`, captured(SESSIONS));
-  expect([report.stage, report.error]).toEqual(['downloaded', undefined]);
+  expect([report.stage, report.error]).toEqual(['inventory', undefined]);
   expect(Object.keys(state.state.defined)).toEqual(['sessions']);
 });
 
@@ -80,7 +94,7 @@ it('takes a definition inside a row value for the value it is', async () => {
   // A prompt a member stored names a table of its own; the export carries it as text, not as a definition.
   const prompt = "INSERT INTO sessions VALUES('s1','CREATE TABLE phantom (id TEXT)');";
   const { report, state } = await stage(`${SESSIONS};\n${prompt}\n`, captured(SESSIONS));
-  expect([report.stage, Object.keys(state.state.defined)]).toEqual(['downloaded', ['sessions']]);
+  expect([report.stage, Object.keys(state.state.defined)]).toEqual(['inventory', ['sessions']]);
 });
 
 it('reads a definition split across parts once it is whole, naming no partial identifier', async () => {
@@ -88,7 +102,7 @@ it('reads a definition split across parts once it is whole, naming no partial id
   for (const chunkBytes of [7, 13, 21, 32]) {
     const { report, state } = await stage(sql, captured(SESSIONS), chunkBytes);
     expect({ chunkBytes, stage: report.stage, tables: Object.keys(state.state.defined) })
-      .toEqual({ chunkBytes, stage: 'downloaded', tables: ['sessions'] });
+      .toEqual({ chunkBytes, stage: 'inventory', tables: ['sessions'] });
   }
 });
 
@@ -108,7 +122,7 @@ it('refuses an export that leaves a captured table undefined, and one that defin
 it('accepts the sequence table an export creates for itself, which no capture describes', async () => {
   const sql = `${SESSIONS};\nCREATE TABLE sqlite_sequence(name,seq);\nDELETE FROM sqlite_sequence;\n`;
   const { report } = await stage(sql, captured(SESSIONS));
-  expect([report.stage, report.error]).toEqual(['downloaded', undefined]);
+  expect([report.stage, report.error]).toEqual(['inventory', undefined]);
 });
 
 it('agrees across a layout the export chose, and over a character split between parts', async () => {
@@ -116,7 +130,7 @@ it('agrees across a layout the export chose, and over a character split between 
   const sql = `${laid};\nINSERT INTO sessions VALUES('s1','héllo… ☃');\n`;
   for (const chunkBytes of [5, 9, 16]) {
     const { report } = await stage(sql, captured(SESSIONS), chunkBytes);
-    expect({ chunkBytes, stage: report.stage }).toEqual({ chunkBytes, stage: 'downloaded' });
+    expect({ chunkBytes, stage: report.stage }).toEqual({ chunkBytes, stage: 'inventory' });
   }
 });
 
@@ -176,6 +190,10 @@ it('records an attempt only after its schema and manifest are both staged', asyn
     async abortUpload() {},
     async readStoredRange() { return null; },
     async storedSize() { return null; },
+    async readStagedPart() { throw new Error('this stage reads no staged part'); },
+    async digest() { throw new Error('this stage takes no digest'); },
+    async copyObject() { throw new Error('this stage copies no object'); },
+    async readStagingFile() { return null; },
     async writeStagingFile(_prefix, name) {
       written.push(name);
       if (name === fails) throw new Error('the staging store refused a write');
@@ -198,7 +216,7 @@ it('carries a bounded reading across parts, whatever the export pads a statement
   const padding = ' '.repeat(200_000);
   const sql = `${SESSIONS};\n${padding}INSERT INTO sessions VALUES('s1','${'x'.repeat(300_000)}');\n${padding}`;
   const { report, state } = await stage(sql, captured(SESSIONS), 64 * 1024);
-  expect([report.stage, Object.keys(state.state.defined)]).toEqual(['downloaded', ['sessions']]);
+  expect([report.stage, Object.keys(state.state.defined)]).toEqual(['inventory', ['sessions']]);
   // What a checkpoint stores between parts stays small, so a padded or oversized statement cannot fill it.
   expect(JSON.stringify({ scan: state.state.scan, bytes: state.state.scanBytes }).length).toBeLessThan(4_096);
 });
