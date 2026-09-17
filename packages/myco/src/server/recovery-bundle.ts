@@ -9,6 +9,7 @@ import { BACKUP_KEY_PREFIX } from '@myco-server-worker/core/backup.js';
 import { BLOB_REFERENCES, kindFilter, referenceLabel } from '@myco-server-worker/core/blob-references.js';
 import { BLOB_KEY_GRAMMAR } from '@myco-server-worker/ingest/kinds.js';
 import { blobArtifactKey, snapshotBlobObject } from '@myco-server-worker/core/blob-objects.js';
+import { RECOVERY_CREDENTIAL_NAMES, recordedFleet } from '@myco-server-worker/core/recovery-staging.js';
 import { atomicWriteFileSync, syncDirectoryForDurability as syncDirectory } from '@myco/utils/atomic-write.js';
 import { LifecycleLock } from '@myco/utils/lifecycle-lock.js';
 import { fingerprintSchema, STAGING_FORMAT } from './recovery-contract.js';
@@ -58,6 +59,26 @@ export type RecoverySnapshot = Pick<z.infer<typeof snapshotSchema>, 'configurati
 export type RecoveryManifest = z.infer<typeof manifestSchema>;
 
 type CataloguedBackup = z.infer<typeof cataloguedBackupSchema>;
+
+/**
+ * What a restore publishes for the fleet, and what it says about it, from the artifact's recorded configuration. A
+ * recorded fleet is carried. An artifact that records none says nothing about the fleet its source ran with, and the
+ * restored Deployment is published with no fleet, so dispatch applies no fleet bound. A recorded fleet that is not a
+ * whole number of runtimes refuses the restore; verifying or copying the artifact reads it as it is.
+ */
+export function restoredFleet(configuration: Readonly<Record<string, unknown>>): { fleet: number | null; report: string } {
+  const fleet = recordedFleet(configuration);
+  if (fleet !== null) return { fleet, report: `Recorded fleet ${fleet} carried to the restored Deployment.` };
+  return { fleet, report: 'The artifact records no fleet, so its source fleet is unknown; the restored Deployment is published without one, and dispatch applies no fleet bound.' };
+}
+
+/** The credential line an operator reads for an artifact: what it records, and what recovery needs beyond that. */
+export function credentialsReport(recorded: readonly string[]): string {
+  const needed = RECOVERY_CREDENTIAL_NAMES.filter((name) => !recorded.includes(name));
+  if (recorded.length === 0) return `This artifact records no required credentials. Recovery needs these, kept separately: ${RECOVERY_CREDENTIAL_NAMES.join(', ')}`;
+  const line = `Keep these credentials separately for recovery: ${recorded.join(', ')}`;
+  return needed.length === 0 ? line : `${line}. Recovery also needs: ${needed.join(', ')}`;
+}
 
 /** Every catalogued backup in a snapshot, ordered by key. A snapshot whose schema predates the digest column answers null digests. */
 function cataloguedBackups(db: Database): CataloguedBackup[] {

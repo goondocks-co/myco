@@ -11,6 +11,7 @@ import { PRODUCER_STALL_MS, type RecoveryAdmission } from '@myco-server-worker/c
 import { settleOpenHold } from '@myco-server-worker/core/recovery-hold.js';
 import { Stalled } from '@myco-server-worker/core/recovery-inventory.js';
 import { acquireRecoveryHold } from '@myco-server-worker/core/object-release.js';
+import { RECOVERY_CREDENTIAL_NAMES } from '@myco-server-worker/core/recovery-staging.js';
 import { sqliteEnv } from './helpers/fixtures.js';
 
 function storage(sql: Database, signed: { delete?: (key: string) => Promise<boolean> } = {}) {
@@ -34,10 +35,22 @@ interface Doubles {
   deleteSigned?: (key: string) => Promise<boolean>;
 }
 
-function producerOver(sql: Database, writes: string[], put?: (key: string, body: Uint8Array) => Promise<{ size: number }>, doubles: Doubles = {}) {
+/** The configuration a deployment record renders for this producer's own bindings. */
+const RECORDED_CONFIGURATION = {
+  accountId: 'a'.repeat(32), databaseId: '11111111-1111-4111-8111-111111111111', databaseName: 'fixture-db', workerName: 'fixture-worker',
+  bucketName: 'fixture-blobs', recoveryBucketName: 'fixture-worker-recovery', vectorIndexName: 'fixture-vectors', wrapKeySecretName: 'fixture-wrap',
+  storeId: 'b'.repeat(32),
+};
+
+function producerOver(
+  sql: Database, writes: string[], put?: (key: string, body: Uint8Array) => Promise<{ size: number }>, doubles: Doubles = {},
+  bindings: Record<string, string | undefined> = {},
+) {
   const ctx = { storage: storage(sql, { delete: doubles.deleteSigned }) };
   const env = {
     MYCO_RECOVERY_ACCOUNT_ID: 'a'.repeat(32), MYCO_RECOVERY_DATABASE_ID: '11111111-1111-4111-8111-111111111111',
+    MYCO_RECOVERY_CONFIGURATION: JSON.stringify(RECORDED_CONFIGURATION),
+    ...bindings,
     RECOVERY_EXPORT_TOKEN: 'never-sent', BUCKET: { get: async () => null },
     RECOVERY_BUCKET: {
       put: put ?? (async (key: string, body: Uint8Array) => { writes.push(key); return { size: body.length }; }),
@@ -50,7 +63,7 @@ function producerOver(sql: Database, writes: string[], put?: (key: string, body:
 }
 
 const admission = (holdToken: string): RecoveryAdmission => ({
-  holdToken, tables: ['example'], schema: '[]', captured: { example: 'CREATE TABLE example(id INTEGER)' }, configuration: {}, credentialsRequired: [],
+  holdToken, tables: ['example'], schema: '[]', captured: { example: 'CREATE TABLE example(id INTEGER)' }, startedBy: 'mem_owner',
 });
 
 it('answers an admission replayed with a carried token with its own attempt at every stage and across a restart, staging nothing again', async () => {
@@ -202,4 +215,46 @@ it('bounds each clean-up step of a stalled attempt on its own: a hung abort stil
     expect((await producer.settleHold(`token-${hung}`)).state).toBe('closed');
     sql.close();
   }
+});
+
+it('stages this Deployment\'s bound configuration, who started the attempt, and every recovery credential name', async () => {
+  const sql = new Database(':memory:');
+  const bodies = new Map<string, string>();
+  const producer = producerOver(sql, [], async (key, body) => { bodies.set(key, new TextDecoder().decode(body)); return { size: body.length }; });
+  const admitted = await producer.admit(admission('token-staged'));
+  expect(admitted.stage).toBe('export');
+  const [manifestKey] = [...bodies.keys()].filter((key) => key.endsWith('/recovery.json'));
+  const manifest = JSON.parse(bodies.get(manifestKey!)!);
+  expect(manifest.configuration).toEqual({ ...RECORDED_CONFIGURATION, startedBy: 'mem_owner' });
+  expect(manifest.credentialsRequired).toEqual([...RECOVERY_CREDENTIAL_NAMES]);
+  // The bound export credential is a runtime secret: no staged metadata carries it.
+  for (const body of bodies.values()) expect(body).not.toContain('never-sent');
+  // A restarted instance reads the same admission back from its own row.
+  expect((await producerOver(sql, []).admit(admission('token-staged'))).attempt).toBe(admitted.attempt);
+});
+
+it.each([
+  ['no rendered configuration', { MYCO_RECOVERY_CONFIGURATION: undefined }],
+  ['a configuration naming a fleet the runtime does not run with', { MYCO_RECOVERY_CONFIGURATION: JSON.stringify({ ...RECORDED_CONFIGURATION, fleet: 4 }), MYCO_FLEET: '2' }],
+  ['a configuration naming another address', { MYCO_RECOVERY_CONFIGURATION: JSON.stringify({ ...RECORDED_CONFIGURATION, url: 'https://old.example.test' }), MYCO_ORIGIN: 'https://new.example.test' }],
+])('stages nothing for a new attempt with %s, while replay, status and hold settlement still answer', async (_label, bindings) => {
+  const sql = new Database(':memory:');
+  const writes: string[] = [];
+  const configured = producerOver(sql, writes);
+  const first = await configured.admit(admission('token-before'));
+  const staged = writes.length;
+  const unconfigured = producerOver(sql, writes, undefined, {}, bindings);
+  // The attempt admitted before still answers its own token, its status and its hold.
+  expect((await unconfigured.admit(admission('token-before'))).attempt).toBe(first.attempt);
+  expect((await unconfigured.status()).attempt).toBe(first.attempt);
+  expect((await unconfigured.settleHold('token-before')).state).toBe('open');
+  expect(writes.length).toBe(staged);
+
+  const fresh = new Database(':memory:');
+  const freshWrites: string[] = [];
+  const refusing = producerOver(fresh, freshWrites, undefined, {}, bindings);
+  await expect(refusing.admit(admission('token-new'))).rejects.toThrow(/recovery configuration/);
+  expect(freshWrites).toEqual([]);
+  expect((await refusing.status()).attempt).toBeNull();
+  expect((await refusing.settleHold('token-new')).state).toBe('retired');
 });

@@ -7,26 +7,27 @@ import {
 } from './cloudflare.js';
 import type { LifecycleOptions } from './cloudflare-lifecycle.js';
 import { renderDeployConfig } from './deploy-config.js';
-import { LOCAL_SECRET_NAMES } from './local.js';
+import { RECOVERY_CREDENTIAL_NAMES } from '@myco-server-worker/core/recovery-staging.js';
+import { recoveryConfigurationOf } from './cloudflare-resources.js';
 import { createRecoveryBundle, type RecoveryManifest } from './recovery-bundle.js';
 import { assertRecoverableSchema, buildSnapshotDatabase, exportedTables } from './recovery-snapshot.js';
 import { schemaObjects, SCHEMA_QUERY } from './recovery-schema.js';
 
-function configuration(mycoHome?: string) {
+/** What a backup records about the Deployment: the recovery configuration its record resolves to, and the version it runs. */
+function recordedConfiguration(mycoHome?: string) {
   const held = readDeploymentRecord(mycoHome);
-  if (held === null) return null;
-  const { accountId, databaseId, databaseName, bucketName, workerName, versionId, deployedAt, storeId, url, fleet, vectorIndexName, wrapKeySecretName } = held;
-  return { accountId, databaseId, databaseName, bucketName, workerName, versionId, deployedAt, storeId, url, fleet, vectorIndexName, wrapKeySecretName };
+  return held === null ? null : { ...recoveryConfigurationOf(held), versionId: held.versionId, deployedAt: held.deployedAt };
 }
 
 /** Capture provider SQL and all registered R2 bytes without changing the serving Deployment. */
 export async function backupCloudflareDeployment(
   options: LifecycleOptions & { destination: string; fetch?: CloudflareFetch },
 ): Promise<RecoveryManifest> {
-  const record = configuration(options.mycoHome);
+  const record = readDeploymentRecord(options.mycoHome);
   if (record === null) throw new Error('No Cloudflare Deployment record exists on this machine');
   if (record.accountId !== options.accountId) throw new Error('backup account does not match the Cloudflare Deployment record');
   const config = renderDeployConfig(record);
+  const recorded = recordedConfiguration(options.mycoHome)!;
   const bindings = z.object({ d1_databases: z.array(z.object({ binding: z.string(), database_id: z.string() })) })
     .parse(Bun.TOML.parse(config)).d1_databases.filter((binding) => binding.database_id === record.databaseId);
   if (bindings.length !== 1) throw new Error('recovery configuration must bind exactly the recorded D1 database');
@@ -51,11 +52,11 @@ export async function backupCloudflareDeployment(
       const { sqlPath } = await exportDatabase({ ...provider, destination: workDir, tables });
       const after = schemaObjects.parse(await queryCloudflareDatabase({ ...provider, sql: SCHEMA_QUERY }));
       if (JSON.stringify(before) !== JSON.stringify(after)
-        || JSON.stringify(record) !== JSON.stringify(configuration(options.mycoHome))) {
+        || JSON.stringify(recorded) !== JSON.stringify(recordedConfiguration(options.mycoHome))) {
         throw new Error('Deployment schema or configuration changed during its snapshot; retry');
       }
       await buildSnapshotDatabase(file, sqlPath, before);
-      return { configuration: { ...record }, credentialsRequired: [...LOCAL_SECRET_NAMES] };
+      return { configuration: { ...recorded }, credentialsRequired: [...RECOVERY_CREDENTIAL_NAMES] };
     },
     blob: async (blob) => readBlob(blob.source),
   }, options.report);

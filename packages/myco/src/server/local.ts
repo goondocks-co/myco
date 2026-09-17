@@ -22,6 +22,7 @@ import { ensureServerLayout } from './layout.js';
 import { LocalVolume } from './local-volume.js';
 import { migrateOnly } from '@myco-server-worker/platform/bun/server-main.js';
 import type { NativeSqlite } from '@myco-server-worker/platform/bun/native.js';
+import { RECOVERY_CREDENTIAL_NAMES } from '@myco-server-worker/core/recovery-staging.js';
 import { atomicWriteFileSync } from '@myco/utils/atomic-write.js';
 
 /** What a locally-run Deployment is, as its settings file holds it. */
@@ -132,8 +133,8 @@ export function assertRecordServable(record: LocalDeploymentRecord): void {
 // Secrets
 // ---------------------------------------------------------------------------
 
-/** The secret names a locally-run Deployment holds, in the order the file lists them. */
-export const LOCAL_SECRET_NAMES = ['SECRET_WRAP_KEY', 'SESSION_SECRET', 'GITHUB_CLIENT_ID', 'GITHUB_CLIENT_SECRET'] as const;
+/** The secret names a locally-run Deployment holds, in the order the file lists them: the credentials a recovery needs. */
+export const LOCAL_SECRET_NAMES = RECOVERY_CREDENTIAL_NAMES;
 export type LocalSecretName = typeof LOCAL_SECRET_NAMES[number];
 
 /** The two a Deployment generates for itself; the sign-in pair is installed later. */

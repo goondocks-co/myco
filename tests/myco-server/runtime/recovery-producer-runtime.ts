@@ -168,11 +168,14 @@ const SCHEMA = [
   { type: 'table', name: 'blobs', sql: ${'`'}${BLOBS_DDL}${'`'}, storage: 'table' },
   { type: 'table', name: 'backups', sql: ${'`'}${BACKUPS_DDL}${'`'}, storage: 'table' },
 ];
+// The current producer reads who started the attempt and records its own configuration; the previous producer, which
+// an upgrade check boots, still reads the configuration and credentials its admission handed it.
 const admission = (holdToken = crypto.randomUUID()) => ({
   holdToken,
   tables: ['sessions', 'blobs', 'backups'],
   schema: JSON.stringify(SCHEMA),
   captured: capturedDefinitions(SCHEMA),
+  startedBy: 'runtime-test',
   configuration: { startedBy: 'runtime-test' },
   credentialsRequired: [],
 });
@@ -182,6 +185,9 @@ export default {
     const producer = env.RECOVERY.get(env.RECOVERY.idFromName('recovery'));
     if (url.pathname === '/admit') return Response.json(await producer.admit(admission(url.searchParams.get('hold') ?? undefined)));
     if (url.pathname === '/settle') return Response.json(await producer.settleHold(url.searchParams.get('hold')));
+    if (url.pathname === '/admit-raised') {
+      try { return Response.json({ admitted: await producer.admit(admission(url.searchParams.get('hold') ?? undefined)) }); } catch (error) { return Response.json({ raised: String(error).slice(0, 200) }); }
+    }
     if (url.pathname === '/admit-and-continue') {
       const limits = JSON.parse(url.searchParams.get('limits') ?? '{}');
       const [admitted, continued] = await Promise.all([producer.admit(admission()), producer.continue(limits)]);
@@ -240,7 +246,14 @@ export default {
 
 let worker: ReturnType<typeof Bun.spawn> | null = null;
 let workerPort = 0;
-async function startWorker(apiPort: number, mode: 'manual' | 'clock' = 'manual', state = 'state', entry = ENTRY): Promise<void> {
+/** The configuration a deployment record renders for this runtime's own export target. */
+const RUNTIME_CONFIGURATION = {
+  accountId: 'runtime-account', databaseId: 'runtime-database', databaseName: 'myco-producer-runtime', workerName: 'myco-producer-runtime',
+  bucketName: 'myco-producer-runtime-blobs', recoveryBucketName: 'myco-producer-runtime-recovery', vectorIndexName: 'myco-producer-runtime-vectors',
+  wrapKeySecretName: 'myco-producer-runtime-wrap',
+};
+
+async function startWorker(apiPort: number, mode: 'manual' | 'clock' = 'manual', state = 'state', entry = ENTRY, configured = true): Promise<void> {
   const clockLines = mode === 'clock'
     ? [
       '[[durable_objects.bindings]]', 'name = "CLOCK"', 'class_name = "DeploymentClock"', '',
@@ -274,6 +287,7 @@ async function startWorker(apiPort: number, mode: 'manual' | 'clock' = 'manual',
     '[vars]',
     'MYCO_RECOVERY_ACCOUNT_ID = "runtime-account"',
     'MYCO_RECOVERY_DATABASE_ID = "runtime-database"',
+    ...(configured ? [`MYCO_RECOVERY_CONFIGURATION = ${JSON.stringify(JSON.stringify(RUNTIME_CONFIGURATION))}`] : []),
     `MYCO_RECOVERY_API_ORIGIN = "http://127.0.0.1:${apiPort}"`,
     ...(mode === 'manual' ? ['CLOCK_MODE = "manual"'] : []),
     'HARNESS_LAUNCH_MODE = "record"',
@@ -336,6 +350,10 @@ try {
   check('an admitted attempt stages its schema and claims nothing recoverable', [admitted.stage, admitted.recoverable, admitted.stagedSchema !== null], ['export', false, true]);
   const manifest = await call(`/staging-file?key=${encodeURIComponent(`${admitted.staged.prefix}/recovery.json`)}`);
   check('the staging it writes is open, with no object and no completion', [manifest.file.status, manifest.file.objects.length, manifest.file.completedAt], ['open', 0, undefined]);
+  check('the staging records this Deployment\'s bound configuration, who started it, and every recovery credential name',
+    [manifest.file.configuration, manifest.file.credentialsRequired],
+    [{ ...RUNTIME_CONFIGURATION, startedBy: 'runtime-test' }, ['SECRET_WRAP_KEY', 'SESSION_SECRET', 'GITHUB_CLIENT_ID', 'GITHUB_CLIENT_SECRET']]);
+  check('no staged metadata carries the bound export credential', JSON.stringify(manifest.file).includes('runtime-token-not-a-credential'), false);
 
   // One continuation that cannot finish the export: the source is paused and another continuation is wanted at once.
   const paused = await call(`/continue?limits=${encodeURIComponent(STEP)}`);
@@ -470,13 +488,26 @@ try {
       worker = null;
     }
   }
-  const fresh = await call('/admit');
+  const fresh = await call('/admit?hold=runtime-upgrade-fresh');
   check('a new admission on the upgraded storage is a new attempt', [fresh.attempt > settledStatus.attempt, fresh.stage], [true, 'export']);
   let freshStep = await call(`/continue?limits=${encodeURIComponent(wide)}`);
   for (let step = 0; step < 64 && freshStep.nextInMs !== null; step += 1) freshStep = await call(`/continue?limits=${encodeURIComponent(wide)}`);
   check('the new attempt runs the whole integrated path on the upgraded storage', [freshStep.stage, freshStep.error ?? null], ['complete', null]);
   const afterFresh = await call(`/staging-file?key=${encodeURIComponent(settledKey)}`);
   check('the settled attempt\'s manifest is still unchanged after a new attempt completes', JSON.stringify(afterFresh.file), JSON.stringify(settledManifest.file));
+
+  // The same storage on a Worker whose deploy config renders no recovery configuration: an attempt already admitted still answers,
+  // and a new attempt stages nothing.
+  await stop(worker!, 'SIGTERM');
+  worker = null;
+  await startWorker(apiPort, 'manual', 'upgrade-state', ENTRY, false);
+  const unconfiguredStatus = await call('/status');
+  check('without a rendered configuration the completed attempt still reads as it was', [unconfiguredStatus.attempt, unconfiguredStatus.stage], [fresh.attempt, 'complete']);
+  check('without a rendered configuration its token still answers its own attempt', (await call('/admit?hold=runtime-upgrade-fresh')).attempt, fresh.attempt);
+  check('without a rendered configuration its hold still settles', (await call('/settle?hold=runtime-upgrade-fresh')).state, 'closed');
+  const unconfiguredAdmission = await call('/admit-raised?hold=runtime-unconfigured');
+  check('without a rendered configuration a new admission is refused', String(unconfiguredAdmission.raised ?? '').includes('carries no recovery configuration'), true);
+  check('and stages no attempt', (await call('/status')).attempt, fresh.attempt);
 
   // An attempt the previous producer admitted and left in flight: it carries no recorded admission, so the new
   // Worker finishes its export and rests it at `downloaded`, as the producer that admitted it would, never staging

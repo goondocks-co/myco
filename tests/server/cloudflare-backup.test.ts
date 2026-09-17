@@ -8,6 +8,8 @@ import { backupCloudflareDeployment } from '@myco/server/cloudflare-backup.js';
 import { writeDeploymentRecord, type CloudflareFetch } from '@myco/server/cloudflare.js';
 import type { CommandRunner } from '@myco/server/runner.js';
 import { sqliteEnv } from '../myco-server/helpers/fixtures.js';
+import { recoveryConfigurationOf } from '@myco/server/cloudflare-resources.js';
+import { RECOVERY_CREDENTIAL_NAMES } from '@myco-server-worker/core/recovery-staging.js';
 
 const quote = (value: string) => '"' + value.replaceAll('"', '""') + '"';
 const literal = (value: unknown): string => {
@@ -100,6 +102,13 @@ it('reconstructs FTS and triggers, preserves sequence high-water and exact value
     const result = await f.backup();
     expect(result.status).toBe('complete');
     expect(JSON.stringify(result)).not.toContain('fixture-private-value');
+    // The backup records the record's resolved recovery configuration and the version it runs, and every credential name.
+    expect(result.snapshot!.configuration).toEqual({ ...recoveryConfigurationOf(f.record), versionId: f.record.versionId, deployedAt: f.record.deployedAt });
+    expect(result.snapshot!.configuration.recoveryBucketName).toBe('myco-server-recovery');
+    expect(result.snapshot!.credentialsRequired).toEqual([...RECOVERY_CREDENTIAL_NAMES]);
+    // The operator's provider token and the record's unrecognised private field are secret sentinels no manifest carries.
+    const manifestText = fs.readFileSync(path.join(f.destination, 'recovery.json'), 'utf8');
+    for (const sentinel of ['fixture-private-value', 'fixture-operator-token']) expect(manifestText).not.toContain(sentinel);
     expect(f.calls.filter((call) => call.includes('export'))).toHaveLength(1);
     expect(f.calls.find((call) => call.includes('export'))).toContain('sqlite_sequence');
     expect(new Uint8Array(fs.readFileSync(path.join(f.destination, 'blobs', 'proj_1', f.digest)))).toEqual(f.bytes);

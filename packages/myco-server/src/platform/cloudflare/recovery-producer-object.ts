@@ -19,7 +19,8 @@ import {
 import { CHECKPOINT_STATEMENT_CHARS, newInventoryProgress, within, type SavedDigest } from '../../core/recovery-inventory.js';
 import type { StatementScan } from '../../core/sql-statements.js';
 import { serialGate } from '../../core/serial-gate.js';
-import { cloudflareProducerPorts, R2_MINIMUM_PART_BYTES, STAGING_TARGET, type StagingBucket } from './recovery-export.js';
+import { RECOVERY_CREDENTIAL_NAMES } from '../../core/recovery-staging.js';
+import { boundRecoveryConfiguration, cloudflareProducerPorts, R2_MINIMUM_PART_BYTES, STAGING_TARGET, type StagingBucket } from './recovery-export.js';
 import type { CloudflareBindings } from './env.js';
 
 /** Raised inside admission's transaction when another step already admitted an attempt carrying this token. */
@@ -282,6 +283,12 @@ export class RecoveryProducer extends DurableObject<CloudflareBindings> {
     }
     const locator = this.locator();
     const target = this.target(admission.tables);
+    // What the staging records about this Deployment comes from its own bindings, read once by the one reader; an
+    // admission that cannot record it stages nothing.
+    const bound = boundRecoveryConfiguration(this.env);
+    if (!bound.ok) throw new Error(bound.reason);
+    const configuration = { ...bound.configuration, startedBy: admission.startedBy };
+    const credentialsRequired = [...RECOVERY_CREDENTIAL_NAMES];
     const now = Date.now();
     const prefix = `staging/${now}`;
     const bytes = new TextEncoder().encode(admission.schema);
@@ -300,12 +307,12 @@ export class RecoveryProducer extends DurableObject<CloudflareBindings> {
     };
     const scan: ScanProgress = freshScan();
     // The admission is recorded in the attempt's own row, so it is held to what a row takes before anything is staged.
-    const recorded = JSON.stringify({ configuration: admission.configuration, credentialsRequired: admission.credentialsRequired });
+    const recorded = JSON.stringify({ configuration, credentialsRequired });
     if (recorded.length > CHECKPOINT_STATEMENT_CHARS) throw new Error('a recovery admission is too large to record');
     try {
       await publishAttempt(ports, {
         prefix, target: STAGING_TARGET, locator, startedAt: now, schema, schemaText: admission.schema,
-        configuration: admission.configuration, credentialsRequired: admission.credentialsRequired,
+        configuration, credentialsRequired,
       }, (published) => {
         this.ctx.storage.transactionSync(() => {
           if (this.row('hold_token = ?', admission.holdToken) !== null) throw new HoldCarried();

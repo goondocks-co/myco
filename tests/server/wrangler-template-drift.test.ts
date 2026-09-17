@@ -99,9 +99,11 @@ describe('renderDeployConfig', () => {
     expect(config).toContain('MYCO_ORIGIN = "https://myco.example.com"');
     expect(config).toContain('MYCO_FLEET = "3"');
     expect(config.match(/^\[vars\]$/gm)).toHaveLength(1);
-    // With no URL and no fleet the Worker is still told the one database a recovery export may name, and nothing else.
+    // With no URL and no fleet the Worker is still told the one database a recovery export may name, and the
+    // configuration a recovery records, and nothing else.
     const bare = renderDeployConfig(record({ databaseId: 'd1-uuid' }));
     expect(bare).toContain('MYCO_RECOVERY_DATABASE_ID = "d1-uuid"');
+    expect(bare).toContain('MYCO_RECOVERY_CONFIGURATION = ');
     expect(bare).not.toContain('MYCO_ORIGIN');
     expect(bare).not.toContain('MYCO_FLEET');
     expect(() => renderDeployConfig(record({ databaseId: 'd1-uuid', fleet: 0 }))).toThrow(/fleet/);

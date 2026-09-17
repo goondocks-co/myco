@@ -14,7 +14,7 @@ import type {
 import { cloudflareSourceOf } from './source.js';
 import { CLOCK_MANUAL, CLOCK_NAME, type DeploymentClock } from './deployment-clock.js';
 import { PRODUCER_NAME, type RecoveryProducer } from './recovery-producer-object.js';
-import type { StagingBucket } from './recovery-export.js';
+import { boundRecoveryConfiguration, type StagingBucket } from './recovery-export.js';
 import { classifyR2BlobFailure } from './r2-digest.js';
 import { markRecordedLaunch } from '../../core/runs.js';
 import { wrappingKeyFromText } from '../wrapping-key.js';
@@ -63,6 +63,8 @@ export interface CloudflareBindings extends OwnerBindings {
   /** The account and database a recovery export may name, rendered from the deployment record. */
   MYCO_RECOVERY_ACCOUNT_ID?: string;
   MYCO_RECOVERY_DATABASE_ID?: string;
+  /** The Deployment's public configuration a recovery records, rendered from the deployment record as JSON. */
+  MYCO_RECOVERY_CONFIGURATION?: string;
   /** Test runtimes only: a loopback stand-in for the provider API. A deployed Worker declares none. */
   MYCO_RECOVERY_API_ORIGIN?: string;
 }
@@ -134,7 +136,9 @@ function recoveryPort(bindings: CloudflareBindings): ServerEnv['recovery'] {
   const producer = bindings.RECOVERY;
   if (producer === undefined || bindings.RECOVERY_BUCKET === undefined) return undefined;
   const object = () => producer.get(producer.idFromName(PRODUCER_NAME));
+  const configuration = boundRecoveryConfiguration(bindings);
   return {
+    admission: configuration.ok ? { ready: true } : { ready: false, reason: configuration.reason },
     admit: (admission) => object().admit(admission),
     settleHold: (token) => object().settleHold(token),
     status: () => object().status(),
