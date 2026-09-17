@@ -18,6 +18,9 @@ const target = (apiOrigin?: string) => ({
   accountId: 'account-1', databaseId: 'database-1', tables: ['sessions'], token: TOKEN, ...(apiOrigin === undefined ? {} : { apiOrigin }),
 });
 
+/** The Deployment's own object store, which a recovery only ever reads. */
+const source = () => ({ async get() { return null; } });
+
 const bucket = () => ({
   async put() { return { size: 0 }; },
   async get() { return null; },
@@ -45,7 +48,7 @@ it('sends the account credential to the provider API and to nothing else', async
     });
   }) as typeof fetch;
   try {
-    const ports = cloudflareProducerPorts(target(), bucket());
+    const ports = cloudflareProducerPorts(target(), bucket(), source());
     const answer = await ports.pollExport(null);
     expect(answer.status).toBe('complete');
     await ports.readRange('https://signed.example/one', 0, 4);
@@ -79,7 +82,7 @@ it('carries no credential in what a provider failure reports', async () => {
   globalThis.fetch = (async (_input: RequestInfo | URL, _init?: RequestInit) =>
     Response.json({ success: false, errors: [{ code: 10000, message: 'Authentication error' }] }, { status: 403 })) as typeof fetch;
   try {
-    const answer = await cloudflareProducerPorts(target(), bucket()).pollExport(null);
+    const answer = await cloudflareProducerPorts(target(), bucket(), source()).pollExport(null);
     // A refusal answers classified facts: a cause, a status, and whether another attempt is worth spending.
     expect(answer).toEqual({ status: 'error', bookmark: null, failure: { cause: 'http', status: 403, transient: false } });
     expect(JSON.stringify(answer)).not.toContain(TOKEN);
@@ -136,22 +139,22 @@ it('treats an answer that stopped mid-body as a request worth another attempt', 
     globalThis.fetch = (async () => new Response(cut(), {
       status: 206, headers: { 'content-range': 'bytes 0-3/4', etag: 'w/"one"' },
     })) as unknown as typeof fetch;
-    const range = await cloudflareProducerPorts(target(), bucket()).readRange('https://signed.example/one', 0, 4);
+    const range = await cloudflareProducerPorts(target(), bucket(), source()).readRange('https://signed.example/one', 0, 4);
     expect(range).toEqual({ status: 'error', failure: { cause: 'transport', status: null, transient: true } });
 
     // The same for the export request's own answer.
     globalThis.fetch = (async () => new Response(cut(), { status: 200, headers: { 'content-type': 'application/json' } })) as unknown as typeof fetch;
-    const poll = await cloudflareProducerPorts(target(), bucket()).pollExport(null);
+    const poll = await cloudflareProducerPorts(target(), bucket(), source()).pollExport(null);
     expect(poll).toEqual({ status: 'error', bookmark: null, failure: { cause: 'transport', status: null, transient: true } });
 
     // A body that arrived whole and is not the provider's protocol is the provider's answer, and ends the attempt.
     globalThis.fetch = (async () => new Response('<html>not json</html>', { status: 200 })) as unknown as typeof fetch;
-    const malformed = await cloudflareProducerPorts(target(), bucket()).pollExport(null);
+    const malformed = await cloudflareProducerPorts(target(), bucket(), source()).pollExport(null);
     expect(malformed).toEqual({ status: 'error', bookmark: null, failure: { cause: 'provider', status: 200, transient: false } });
 
     // A request that never landed at all.
     globalThis.fetch = (async () => { throw new TypeError('network error'); }) as unknown as typeof fetch;
-    expect(await cloudflareProducerPorts(target(), bucket()).pollExport('b1'))
+    expect(await cloudflareProducerPorts(target(), bucket(), source()).pollExport('b1'))
       .toEqual({ status: 'error', bookmark: 'b1', failure: { cause: 'transport', status: null, transient: true } });
   } finally { globalThis.fetch = original; }
 });
@@ -172,7 +175,7 @@ it('spends a transient attempt on a staging store that is overloaded, and ends t
   });
   const parts = [{ part: 1, bytes: 4, sha256: 'a'.repeat(64), etag: 'e1' }];
   for (const worth of ['R2: internal error', 'Service Unavailable', 'GetObject: 503', 'connection reset by peer']) {
-    const ports = cloudflareProducerPorts(target(), refusing(worth));
+    const ports = cloudflareProducerPorts(target(), refusing(worth), source());
     for (const call of [
       () => ports.beginUpload('staging/1'),
       () => ports.writePart('staging/1', 'u1', 1, new Uint8Array(4), 4),
@@ -187,13 +190,13 @@ it('spends a transient attempt on a staging store that is overloaded, and ends t
     }
   }
   // A refusal the store names for a reason of its own ends the attempt rather than being retried without end.
-  const fatal = cloudflareProducerPorts(target(), refusing('the key is not a valid object name'));
+  const fatal = cloudflareProducerPorts(target(), refusing('the key is not a valid object name'), source());
   expect(await fatal.beginUpload('staging/1').then(() => null, (error: Error) => error.message)).toBe('the key is not a valid object name');
   // The interrupted completion still reconciles rather than retrying.
-  const gone = cloudflareProducerPorts(target(), refusing('upload NoSuchUpload does not exist'));
+  const gone = cloudflareProducerPorts(target(), refusing('upload NoSuchUpload does not exist'), source());
   expect(await gone.completeUpload('staging/1', 'u1', parts)).toBeNull();
   // And a part that is not the length its range answered is this attempt's own failure.
-  expect(await cloudflareProducerPorts(target(), bucket()).writePart('staging/1', 'u1', 1, new Uint8Array(3), 4).then(() => null, (error: Error) => error.message))
+  expect(await cloudflareProducerPorts(target(), bucket(), source()).writePart('staging/1', 'u1', 1, new Uint8Array(3), 4).then(() => null, (error: Error) => error.message))
     .toBe('a staged part is not the length its range answered');
 });
 
@@ -206,7 +209,7 @@ it('refuses an answer whose success envelope carries a provider refusal', async 
   const original = globalThis.fetch;
   globalThis.fetch = (async (_input: RequestInfo | URL, _init?: RequestInit) => Response.json(refusal)) as typeof fetch;
   try {
-    const ports = cloudflareProducerPorts(target(), bucket());
+    const ports = cloudflareProducerPorts(target(), bucket(), source());
     // Polling an export this attempt already holds a bookmark for.
     const held = await ports.pollExport('b1');
     expect(held.status).toBe('error');
@@ -228,7 +231,7 @@ it('gives every provider call a deadline, and reports a request that never answe
     });
   }) as unknown as typeof fetch;
   try {
-    const ports = cloudflareProducerPorts(target(), bucket(), { requestMs: 25 });
+    const ports = cloudflareProducerPorts(target(), bucket(), source(), { requestMs: 25 });
     const poll = await ports.pollExport('b1');
     expect(poll).toEqual({ status: 'error', bookmark: 'b1', failure: { cause: 'transport', status: null, transient: true } });
     const range = await ports.readRange('https://signed.example/one', 0, 4);
@@ -236,4 +239,112 @@ it('gives every provider call a deadline, and reports a request that never answe
   } finally { globalThis.fetch = original; }
   expect(signals.length).toBe(2);
   expect(signals.every((signal) => signal instanceof AbortSignal)).toBe(true);
+});
+
+/** A source body delivered in chunks, which records whether anyone cancelled it. */
+function chunkedBody(total: number, chunk: number, fill = 7) {
+  const held = { cancelled: false, delivered: 0 };
+  const body = new ReadableStream<Uint8Array>({
+    pull(controller) {
+      if (held.delivered >= total) { controller.close(); return; }
+      const size = Math.min(chunk, total - held.delivered);
+      held.delivered += size;
+      controller.enqueue(new Uint8Array(size).fill(fill));
+    },
+    cancel() { held.cancelled = true; },
+  }, { highWaterMark: 0 });
+  return { body, held };
+}
+
+/** A staging store whose write reads the stream it is given, the way a store write consumes a body. */
+function consumingBucket(options: { refuse?: Error; readNothing?: boolean } = {}) {
+  const writes: Array<{ key: string; bytes: number; sha256?: string; stream: boolean }> = [];
+  return {
+    writes,
+    bucket: {
+      ...bucket(),
+      async put(key: string, body: ReadableStream<Uint8Array> | Uint8Array, putOptions?: { sha256?: string }) {
+        const stream = body instanceof ReadableStream;
+        if (options.readNothing === true) return { size: 0 };
+        let bytes = 0;
+        if (stream) {
+          const reader = (body as ReadableStream<Uint8Array>).getReader();
+          for (;;) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            bytes += value.byteLength;
+            if (options.refuse !== undefined && bytes > 0) throw options.refuse;
+          }
+        }
+        writes.push({ key, bytes, sha256: putOptions?.sha256, stream });
+        return { size: bytes };
+      },
+    },
+  };
+}
+
+it('streams a legacy object that records no digest, of any size, and measures the digest of what it wrote', async () => {
+  const total = 64 * 1024 * 1024 + 1;
+  const { body, held } = chunkedBody(total, 1024 * 1024);
+  const store = consumingBucket();
+  const ports = cloudflareProducerPorts(target(), store.bucket, { async get() { return { body, size: total }; } });
+  const answer = await ports.copyObject('staging/1', 'backups/legacy.jsonl', { bytes: total, sha256: null }, new AbortController().signal);
+
+  const { createHash } = await import('node:crypto');
+  const expected = createHash('sha256');
+  for (let at = 0; at < total; at += 1024 * 1024) expected.update(new Uint8Array(Math.min(1024 * 1024, total - at)).fill(7));
+  expect(answer).toEqual({ status: 'copied', sha256: expected.digest('hex'), bytes: total });
+  // The write took a stream under the objects directory, never a body held whole, and no size ceiling applied.
+  expect(store.writes).toEqual([{ key: 'staging/1/objects/backups/legacy.jsonl', bytes: total, sha256: undefined, stream: true }]);
+  expect(held.cancelled).toBe(false);
+});
+
+it('refuses a source that is not the size its row records before writing, and releases its body', async () => {
+  const { body, held } = chunkedBody(10, 4);
+  const store = consumingBucket();
+  const ports = cloudflareProducerPorts(target(), store.bucket, { async get() { return { body, size: 10 }; } });
+  const answer = await ports.copyObject('staging/1', 'backups/one.jsonl', { bytes: 9, sha256: null }, new AbortController().signal);
+  expect(answer).toEqual({ status: 'error', failure: { cause: 'provider', status: null, transient: false } });
+  expect([store.writes.length, held.cancelled, held.delivered]).toEqual([0, true, 0]);
+});
+
+it('refuses a body that carries more bytes than it declared, as the bytes arrive', async () => {
+  // The store answers a size the body then outruns: the meter stops it past the declared length.
+  const { body, held } = chunkedBody(64, 16);
+  const store = consumingBucket();
+  const ports = cloudflareProducerPorts(target(), store.bucket, { async get() { return { body, size: 32 }; } });
+  const answer = await ports.copyObject('staging/1', 'backups/one.jsonl', { bytes: 32, sha256: null }, new AbortController().signal);
+  expect(answer).toEqual({ status: 'error', failure: { cause: 'provider', status: null, transient: false } });
+  expect(held.delivered).toBeLessThanOrEqual(48);
+  expect(held.cancelled).toBe(true);
+});
+
+it('releases the body when a write returns without reading it, or refuses the digest', async () => {
+  const unread = chunkedBody(8, 4);
+  const lazy = consumingBucket({ readNothing: true });
+  const skipped = await cloudflareProducerPorts(target(), lazy.bucket, { async get() { return { body: unread.body, size: 8 }; } })
+    .copyObject('staging/1', `proj_1/${'a'.repeat(64)}`, { bytes: 8, sha256: 'a'.repeat(64) }, new AbortController().signal);
+  expect(skipped).toEqual({ status: 'error', failure: { cause: 'provider', status: null, transient: false } });
+  expect(unread.held.cancelled).toBe(true);
+
+  const refusedBody = chunkedBody(8, 4);
+  const refusing = consumingBucket({ refuse: new Error('put: The SHA-256 checksum you specified did not match what we received. (10037)') });
+  const refused = await cloudflareProducerPorts(target(), refusing.bucket, { async get() { return { body: refusedBody.body, size: 8 }; } })
+    .copyObject('staging/1', `proj_1/${'a'.repeat(64)}`, { bytes: 8, sha256: 'a'.repeat(64) }, new AbortController().signal);
+  expect(refused).toEqual({ status: 'error', failure: { cause: 'provider', status: null, transient: false } });
+  expect(refusedBody.held.cancelled).toBe(true);
+});
+
+it('stops streaming and releases the source when the caller stops waiting', async () => {
+  const { body, held } = chunkedBody(64 * 1024 * 1024, 64 * 1024);
+  const controller = new AbortController();
+  const store = consumingBucket();
+  const slowGet = { async get() { return { body, size: 64 * 1024 * 1024 }; } };
+  const ports = cloudflareProducerPorts(target(), store.bucket, slowGet);
+  const copying = ports.copyObject('staging/1', 'backups/big.jsonl', { bytes: 64 * 1024 * 1024, sha256: null }, controller.signal);
+  controller.abort(new DOMException('the caller stopped waiting', 'AbortError'));
+  await copying.catch(() => undefined);
+  expect(held.cancelled).toBe(true);
+  expect(held.delivered).toBeLessThan(64 * 1024 * 1024);
+  expect(store.writes).toEqual([]);
 });

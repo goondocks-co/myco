@@ -55,7 +55,7 @@ export interface WakeContinuation {
 export const WAKE_CONTINUATIONS: readonly WakeContinuation[] = [
   {
     name: 'recovery-export-continuation',
-    advances: 'one already-admitted hosted recovery attempt, using only the producer\'s own checkpoint, so it keeps polling an export that makes the Deployment unreadable and resumes after a reset',
+    advances: 'one already-admitted hosted recovery attempt, using only the producer\'s own checkpoint and staging store, so it keeps polling an export that makes the Deployment unreadable, stages the objects that export names, completes the staging, and resumes after a reset',
     never: 'admit an attempt, choose a backup cadence, run the tick, dispatch a task, or read the Deployment\'s database',
   },
 ] as const;

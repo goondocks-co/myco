@@ -3,8 +3,9 @@
  *
  * The schema is captured here, before any export runs, while the Deployment's database still answers: it stops
  * answering queries for as long as its export runs. Nothing a caller sends chooses the account, the database or the credential: those come from
- * the Deployment's own bindings behind `env.recovery`. What this answers is a staged export, never a recoverable
- * artifact: an operator materializes a staging into one, and this slice stages no objects at all.
+ * the Deployment's own bindings behind `env.recovery`. What this answers is a staging's progress, never a
+ * recoverable artifact: a complete staging holds the export and every object its rows name, and becomes recoverable
+ * only when an operator materializes it into a verified artifact.
  */
 import type { ServerEnv } from '../core/adapters.js';
 import type { OwnerContext } from '../context.js';
@@ -12,11 +13,11 @@ import { captureSchema, exportedTables, recoverableVirtualTables } from '../core
 import { capturedDefinitions, type RecoveryProducerStatus, type TableDefinitions } from '../core/recovery-producer.js';
 import { badRequest, ok } from './scope.js';
 
-/** What an owner is told: the attempt's progress, and plainly that a staged export is not yet recoverable. */
+/** What an owner is told: the attempt's progress, and plainly that no staging, complete or not, is recoverable yet. */
 const answer = (status: RecoveryProducerStatus): Response => ok({
   ...status,
   recoverable: false,
-  usable: 'a staged export becomes recoverable only when an operator materializes it; this Deployment stages the export alone',
+  usable: 'a staging becomes recoverable only when an operator materializes it into a verified artifact; a complete staging is not yet one',
 });
 
 const unavailable = (): Response => badRequest('this Deployment runs no hosted recovery producer');

@@ -5,10 +5,11 @@
  */
 import { expect, it } from 'bun:test';
 import {
-  continueAttempt, freshScan, PRODUCER_LIMITS, TransientProducerFailure,
-  type AttemptCheckpoint, type AttemptPart, type AttemptState, type ExportAnswer, type PortFailure,
-  type ProducerPorts, type RangeAnswer, type ScanProgress,
+  ADVANCING_STAGES, continueAttempt, freshScan, PRODUCER_LIMITS, TransientProducerFailure,
+  type AttemptCheckpoint, type AttemptObject, type AttemptPart, type AttemptState, type CopyAnswer,
+  type ExportAnswer, type PortFailure, type ProducerPorts, type RangeAnswer, type ScanProgress,
 } from '@myco-server-worker/core/recovery-producer.js';
+import { newInventoryProgress, type InventoryObject, type InventoryProgress } from '@myco-server-worker/core/recovery-inventory.js';
 
 const digestOf = async (bytes: Uint8Array): Promise<string> => {
   const digest = await crypto.subtle.digest('SHA-256', bytes as unknown as ArrayBuffer);
@@ -16,11 +17,18 @@ const digestOf = async (bytes: Uint8Array): Promise<string> => {
 };
 
 /** A checkpoint in memory, with the same durability rules the hosted object's storage gives the real one. */
-function checkpoint(initial: Partial<AttemptState> = {}): AttemptCheckpoint & { state: AttemptState; held: AttemptPart[]; signed: string | null } {
+function checkpoint(initial: Partial<AttemptState> = {}): AttemptCheckpoint & {
+  state: AttemptState; held: AttemptPart[]; signed: string | null; staged: AttemptObject[];
+} {
+  const fresh = newInventoryProgress();
   const state: AttemptState = {
     id: 1, stage: 'export', prefix: 'staging/1', startedAt: 0, error: null, attempts: 0, bookmark: null, polls: 0,
     exportStartedAt: null, exportCompletedAt: null, reExports: 0, sqlBytes: null, sqlEtag: null, uploadId: null,
-    downloadOffset: 0, reconcileOffset: 0, reconciled: 0, tables: ['sessions'], captured: {}, ...freshScan(), ...initial,
+    downloadOffset: 0, reconcileOffset: 0, reconciled: 0, tables: ['sessions'], captured: {},
+    inventoryStartedAt: null, inventoryParts: 0, inventoryBytes: 0, inventoryScan: fresh.scan, inventoryScanBytes: '',
+    inventoryDigest: null, databaseSha256: null, databaseBytes: null, copyStartedAt: null, completedAt: null,
+    admission: { source: { target: 'cloudflare', locator: 'account-1/database-1' }, startedAt: '1970-01-01T00:00:00.000Z', schema: { sha256: 'c'.repeat(64), bytes: 1 }, configuration: {}, credentialsRequired: [] },
+    ...freshScan(), ...initial,
   };
   const store = {
     state,
@@ -28,7 +36,7 @@ function checkpoint(initial: Partial<AttemptState> = {}): AttemptCheckpoint & { 
     signed: null as string | null,
     // A fresh object per read, as the hosted checkpoint's row reader answers: an update never reaches a state a
     // caller already holds.
-    open: () => (store.state.stage === 'export' || store.state.stage === 'download' ? { ...store.state } : null),
+    open: () => ((ADVANCING_STAGES as readonly string[]).includes(store.state.stage) ? { ...store.state } : null),
     update: (_id: number, fields: Partial<AttemptState>) => { Object.assign(store.state, fields); },
     parts: () => [...store.held].sort((left, right) => left.part - right.part),
     recordPart: (_id: number, part: AttemptPart, downloadOffset: number, progress: ScanProgress) => {
@@ -36,6 +44,29 @@ function checkpoint(initial: Partial<AttemptState> = {}): AttemptCheckpoint & { 
       Object.assign(store.state, progress, { downloadOffset });
     },
     clearParts: () => { store.held = []; },
+    // The objects live beside the attempt, one to a row, as the hosted checkpoint keeps them.
+    staged: [] as AttemptObject[],
+    recordInventory: (_id: number, progress: InventoryProgress, objects: readonly InventoryObject[]) => {
+      for (const object of objects) {
+        const already = store.staged.find((held) => held.key === object.key);
+        if (already === undefined) store.staged.push({ ...object, stagedSha256: null, stagedBytes: null });
+        else Object.assign(already, { bytes: object.bytes, sha256: object.sha256 });
+      }
+      Object.assign(store.state, {
+        inventoryParts: progress.parts, inventoryBytes: progress.bytes, inventoryScan: progress.scan,
+        inventoryScanBytes: progress.scanBytes, inventoryDigest: progress.digest,
+      });
+    },
+    pendingObjects: (_id: number, limit: number) => store.staged.filter((held) => held.stagedSha256 === null).slice(0, limit),
+    recordCopied: (_id: number, key: string, staged: { sha256: string; bytes: number }) => {
+      const held = store.staged.find((object) => object.key === key);
+      if (held !== undefined) Object.assign(held, { stagedSha256: staged.sha256, stagedBytes: staged.bytes });
+    },
+    objects: () => [...store.staged].sort((left, right) => (left.key < right.key ? -1 : 1)),
+    objectCounts: () => ({
+      registered: store.staged.length,
+      staged: store.staged.filter((held) => held.stagedSha256 !== null).length,
+    }),
     signedUrl: async () => store.signed,
     setSignedUrl: async (_id: number, url: string | null) => { store.signed = url; },
   };
@@ -49,10 +80,16 @@ interface PortOptions {
   storedRange?: (prefix: string, offset: number, length: number) => Promise<{ sha256: string } | null>;
   storedSize?: () => Promise<number | null>;
   now?: () => number;
+  stagedParts?: (prefix: string, offset: number, bytes: number) => Promise<Uint8Array | null>;
+  copyObject?: (prefix: string, key: string, expected: { bytes: number; sha256: string | null }) => Promise<CopyAnswer>;
+  stagingFiles?: Record<string, string>;
 }
 
 function ports(options: PortOptions = {}) {
-  const calls = { polls: 0, ranges: 0, aborted: 0, completed: 0, parts: [] as number[], staged: [] as string[] };
+  const calls = {
+    polls: 0, ranges: 0, aborted: 0, completed: 0, parts: [] as number[], staged: [] as string[],
+    reads: [] as number[], copies: [] as string[], written: {} as Record<string, string>,
+  };
   const exports = [...(options.exports ?? [])];
   const ranges = [...(options.ranges ?? [])];
   const port: ProducerPorts = {
@@ -79,7 +116,19 @@ function ports(options: PortOptions = {}) {
     async abortUpload() { calls.aborted += 1; },
     readStoredRange: options.storedRange ?? (async () => null),
     storedSize: options.storedSize ?? (async () => null),
-    async writeStagingFile(_prefix, name) { calls.staged.push(name); },
+    async writeStagingFile(_prefix, name, body) { calls.staged.push(name); calls.written[name] = body; },
+    async readStagingFile(_prefix, name) { return calls.written[name] ?? options.stagingFiles?.[name] ?? null; },
+    async readStagedPart(prefix, offset, bytes) {
+      calls.reads.push(offset);
+      if (options.stagedParts === undefined) throw new Error('the test supplied no staged export');
+      return options.stagedParts(prefix, offset, bytes);
+    },
+    digest: (bytes) => digestOf(bytes),
+    async copyObject(prefix, key, expected) {
+      calls.copies.push(key);
+      if (options.copyObject === undefined) return { status: 'copied', sha256: expected.sha256 ?? await digestOf(body(7, expected.bytes)), bytes: expected.bytes };
+      return options.copyObject(prefix, key, expected);
+    },
   };
   return { port, calls };
 }
@@ -105,12 +154,27 @@ it('polls an export to completion, then stages it in parts and stops short of an
   expect(state.signed).toBe('https://signed/one');
 
   const downloaded = await continueAttempt(state, port, limits);
-  expect([downloaded.stage, downloaded.nextInMs, downloaded.sourcePaused]).toEqual(['downloaded', null, false]);
+  // A whole staged export hands the attempt to the inventory its own rows name, and claims nothing recoverable yet.
+  expect([downloaded.stage, downloaded.nextInMs, downloaded.sourcePaused]).toEqual(['inventory', 0, false]);
   expect(calls.parts).toEqual([1, 2]);
   expect(state.state.sqlBytes).toBe(8);
-  // The signed download is never left behind, and the attempt goes no further than a staged export.
+  // The signed download is never left behind, and the staged export is claimed as nothing recoverable.
   expect(state.signed).toBeNull();
-  expect(await continueAttempt(state, port, limits)).toEqual({ attempt: null, stage: 'idle', progressed: false, nextInMs: null, sourcePaused: false });
+  expect(state.state.databaseSha256).toBeNull();
+  expect(state.staged).toEqual([]);
+  expect(calls.staged).toEqual([]);
+
+  // An attempt admitted with no recorded admission rests at `downloaded` once its export is whole, as it always has.
+  const unanchored = checkpoint({ stage: 'download', sqlBytes: 8, sqlEtag: 'w/"one"', uploadId: 'upload-1', downloadOffset: 4, admission: null });
+  unanchored.signed = 'https://signed/one';
+  unanchored.held = [{ part: 1, bytes: 4, sha256: await digestOf(body(1)), etag: 'etag-1' }];
+  const rests = await continueAttempt(unanchored, ports({ ranges: [range(body(2), 8)] }).port, limits);
+  expect([rests.stage, rests.nextInMs, unanchored.state.stage]).toEqual(['downloaded', null, 'downloaded']);
+
+  // An attempt an earlier Worker settled at `downloaded` is picked up by no continuation and rewritten by none.
+  const settled = checkpoint({ stage: 'downloaded', sqlBytes: 8, downloadOffset: 8 });
+  expect(await continueAttempt(settled, ports().port, limits)).toEqual({ attempt: null, stage: 'idle', progressed: false, nextInMs: null, sourcePaused: false });
+  expect([settled.state.stage, settled.state.completedAt]).toEqual(['downloaded', null]);
 });
 
 it('says the source is paused while an export runs, and asks for an immediate continuation', async () => {
@@ -129,7 +193,7 @@ it('resumes a download from its checkpoint after a reset, keeping the parts it r
   state.held = [{ part: 1, bytes: 4, sha256: await digestOf(body(1)), etag: 'etag-1' }];
   const { port, calls } = ports({ ranges: [range(body(2), 8)] });
   const report = await continueAttempt(state, port, { ...PRODUCER_LIMITS, partBytes: 4 });
-  expect(report.stage).toBe('downloaded');
+  expect(report.stage).toBe('inventory');
   // Only the missing part is read; the recorded one is never fetched a second time.
   expect(calls.parts).toEqual([2]);
   expect(state.state.downloadOffset).toBe(8);
@@ -148,7 +212,7 @@ it('reconciles a completion interrupted after its commit, and refuses a same-siz
     storedSize: async () => 8,
   });
   const report = await continueAttempt(reconciled, good.port, PRODUCER_LIMITS);
-  expect([report.stage, reconciled.state.reconciled]).toEqual(['downloaded', 1]);
+  expect([report.stage, reconciled.state.reconciled]).toEqual(['inventory', 1]);
 
   const corrupted = checkpoint({ stage: 'download', sqlBytes: 8, uploadId: 'upload-1', downloadOffset: 8 });
   corrupted.held = [...parts];
@@ -267,10 +331,12 @@ it('carries neither provider text nor an exception message into a status or a lo
   // Every value a log carries is a number, a boolean, or one of the fixed names the producer may report.
   const fixed = new Set([
     'recovery_attempt_failed', 'recovery_attempt_transient', 'recovery_attempt_interrupted',
-    'export', 'download', 'downloaded', 'failed',
+    'recovery_inventory_read', 'recovery_staging_completed',
+    'export', 'download', 'inventory', 'copy', 'downloaded', 'complete', 'failed',
     'provider_unavailable', 'provider_refused', 'export_failed', 'export_not_offered', 'export_unparsable',
     'download_unranged', 'download_changed', 'download_lost', 'staging_unreconciled', 'schema_disagrees', 'internal',
-    'export_stalled',
+    'export_stalled', 'staging_changed', 'inventory_disagrees', 'inventory_unreadable', 'inventory_oversize',
+    'object_missing', 'object_changed', 'staging_incomplete',
     'transport', 'http', 'provider', 'protocol', 'Error', 'TypeError', 'RangeError', 'SyntaxError', 'other',
   ]);
   for (const line of logged) {
@@ -302,7 +368,7 @@ it('resumes after a staging store failure worth another attempt, and fails once 
   expect([spent.stage, spent.error, spent.nextInMs, state.state.attempts]).toEqual(['download', 'provider_unavailable', 1_000, 1]);
   expect(state.held.map((part) => part.part)).toEqual([1]);
   const resumed = await continueAttempt(state, flaky, { ...PRODUCER_LIMITS, partBytes: 4, maxTransient: 3 });
-  expect([resumed.stage, state.state.downloadOffset, state.held.length]).toEqual(['downloaded', 8, 2]);
+  expect([resumed.stage, state.state.downloadOffset, state.held.length]).toEqual(['inventory', 8, 2]);
 
   // A store that stays overloaded ends the attempt at its bound, with a reason from the closed set.
   const exhausted = checkpoint({ stage: 'download', sqlBytes: 8, sqlEtag: 'w/"one"', uploadId: 'upload-1', downloadOffset: 4, attempts: 1 });
@@ -329,6 +395,10 @@ it('ends an export nothing completes, and stops holding the source back', async 
     async readStoredRange() { return null; },
     async storedSize() { return null; },
     async writeStagingFile() {},
+    async readStagedPart() { throw new Error('this stage reads no staged part'); },
+    async digest() { throw new Error('this stage takes no digest'); },
+    async copyObject() { throw new Error('this stage copies no object'); },
+    async readStagingFile() { return null; },
   };
   const limits = { ...PRODUCER_LIMITS, exportPollMs: 60_000 };
   let last = await continueAttempt(state, running, limits);
