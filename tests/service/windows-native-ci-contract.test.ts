@@ -69,6 +69,10 @@ describe('Windows native CI contract', () => {
     const commandText = commands.join('\n');
     expect(commandText).toContain('npm ci');
     expect(commandText).toContain('tests/service/windows-native-ci-contract.test.ts');
+    // A command's deadline ends its process tree by a mechanism that is entirely different here — `taskkill`
+    // rather than a process group — so the portable deadline test has to actually run on Windows. Nothing else
+    // in the suite exercises that branch, and nothing but this list can make Windows run it.
+    expect(commandText).toContain('tests/server/runner.test.ts');
     expect(commandText).toContain('bun build --compile --target=bun-windows-x64');
     expect(commandText).toContain('tests/helpers/windows-native-contract.ts');
 

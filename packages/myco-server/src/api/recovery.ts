@@ -12,19 +12,50 @@ import type { OwnerContext } from '../context.js';
 import { captureSchema, exportedTables, recoverableVirtualTables } from '../core/recovery-schema.js';
 import { capturedDefinitions, type RecoveryProducerStatus, type TableDefinitions } from '../core/recovery-producer.js';
 import { badRequest, ok } from './scope.js';
-import { openHoldForAdmission } from '../core/recovery-hold.js';
+import { openHoldForAdmission, openOperatorHold } from '../core/recovery-hold.js';
 import { within } from '../core/recovery-inventory.js';
 import { classify, emit } from '../telemetry.js';
 
 /** How long an admission may take to answer: its staging writes are bounded inside the producer, well within this. */
 const ADMISSION_MS = 120_000;
 
-/** What an owner is told: the attempt's progress, and plainly that no staging, complete or not, is recoverable yet. */
-const answer = (status: RecoveryProducerStatus): Response => ok({
+/**
+ * What an owner is told: the attempt's progress, plainly that no staging, complete or not, is recoverable yet, and any
+ * operator backup holding this Deployment's objects. That hold defers deletion while it is open, so storage grows by
+ * what deletion would have freed until the operator's artifact completes or it gives the attempt up.
+ */
+const answer = (status: RecoveryProducerStatus, operatorHold: OperatorHoldReport): Response => ok({
   ...status,
   recoverable: false,
   usable: 'a staging becomes recoverable only when an operator materializes it into a verified artifact; a complete staging is not yet one',
+  operatorHold,
 });
+
+/**
+ * An operator backup's hold as an owner reads it: its acquisition instant, and what it means while it is open. It is the one
+ * part of this answer that comes from the Deployment's database rather than the producer, so it is bounded and never
+ * decides the answer: a database that cannot be read while an export has it paused says so, and never says that no
+ * backup holds this Deployment.
+ */
+type OperatorHoldReport =
+  | { open: true; acquiredAt: number; defers: string }
+  | { open: false }
+  | { open: 'unknown'; reason: string };
+
+/** How long the hold read may take before the answer says it is unknown; the producer's answer is already in hand. */
+const OPERATOR_HOLD_MS = 5_000;
+
+const operatorHoldOf = async (env: ServerEnv): Promise<OperatorHoldReport> => {
+  try {
+    const held = await within(() => openOperatorHold(env), OPERATOR_HOLD_MS, Date.now);
+    return held === null
+      ? { open: false }
+      : { open: true, acquiredAt: held.acquiredAt, defers: 'an operator backup holds every object this Deployment registers: deletions are recorded and deferred, and storage grows by what they would have freed, until that backup completes or is given up' };
+  } catch (error) {
+    emit({ kind: 'recovery_operator_hold_unreadable', error_class: classify(error) });
+    return { open: 'unknown', reason: 'whether an operator backup holds this Deployment could not be read; a running export pauses its database' };
+  }
+};
 
 const unavailable = (): Response => badRequest('this Deployment runs no hosted recovery producer');
 
@@ -58,7 +89,7 @@ export async function handleStartRecoveryExport(env: ServerEnv, ctx: OwnerContex
     if (hold.held === 'unverified') {
       return Response.json({ error: 'recovery_hold_unverified', message: 'a recovery hold is open and its attempt could not be read; try again shortly' }, { status: 503 });
     }
-    return answer(await env.recovery.status());
+    return answer(await env.recovery.status(), await operatorHoldOf(env));
   }
   // Bounded: an admission that does not answer keeps its hold, and the release job settles it later against the attempts.
   const recovery = env.recovery;
@@ -82,7 +113,7 @@ export async function handleStartRecoveryExport(env: ServerEnv, ctx: OwnerContex
   // The wake the Deployment already has: an admitted attempt is continued at the next wake, and a sleeping
   // Deployment waits for its cron floor without one. The producer never calls the clock itself.
   await env.wake?.().catch(() => undefined);
-  return answer(status);
+  return answer(status, await operatorHoldOf(env));
 }
 
 /**
@@ -92,5 +123,5 @@ export async function handleStartRecoveryExport(env: ServerEnv, ctx: OwnerContex
  */
 export async function handleRecoveryExportStatus(env: ServerEnv, _ctx: OwnerContext): Promise<Response> {
   if (env.recovery === undefined) return unavailable();
-  return answer(await env.recovery.status());
+  return answer(await env.recovery.status(), await operatorHoldOf(env));
 }

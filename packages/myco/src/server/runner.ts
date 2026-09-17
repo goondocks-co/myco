@@ -24,7 +24,11 @@ export interface RunOptions {
   cwd?: string;
   env?: NodeJS.ProcessEnv;
   input?: string;
-  /** Past this the child is killed and the call rejects. Absent, the command may take as long as it takes. */
+  /**
+   * Past this the command and the processes it started are ended and the call rejects with `CommandTimedOut`,
+   * whose `treeEnd` says what that ended. A request already sent to a remote service may still land, so its
+   * outcome is unknown rather than undone. Absent, the command may take as long as it takes.
+   */
   timeoutMs?: number;
 }
 
@@ -47,6 +51,97 @@ export class WorkingDirectoryMissing extends Error {
   }
 }
 
+/**
+ * What became of the processes a command left behind.
+ *
+ * `ended` and `absent` mean nothing of that tree is running. `failed` and `unknown` mean it may be, and neither
+ * may be read as success or as the other.
+ */
+export type ProcessTreeEnd = 'ended' | 'absent' | 'failed' | 'unknown';
+
+/** How long the platform's own tree-killer may take before its result is unknown. */
+export const TREE_END_TIMEOUT_MS = 10_000;
+
+/** What a signal to a process group says about it: `ESRCH` is the group gone, every other error a failure to end it. */
+export function processTreeEndOfSignal(error: unknown): ProcessTreeEnd {
+  return (error as { code?: string } | null)?.code === 'ESRCH' ? 'absent' : 'failed';
+}
+
+/**
+ * What a `taskkill /T /F` run says about the tree it was pointed at.
+ *
+ * Exit 0 ended it. Exit 1 is an access denial, which leaves it running. Exit 128 is "process not found" for the
+ * pid given and says nothing about descendants that pid started, so it answers `unknown`. A run that could not
+ * start, or that outran its own window, answers `unknown` too.
+ */
+export function processTreeEndOfTaskkill(outcome: { code?: number | null; error?: unknown; timedOut?: boolean }): ProcessTreeEnd {
+  if (outcome.timedOut === true || outcome.error !== undefined) return 'unknown';
+  if (outcome.code === 0) return 'ended';
+  if (outcome.code === 128) return 'unknown';
+  return 'failed';
+}
+
+/** Whether a process is still there: present unless the platform answers "no such process". */
+function processPresent(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return (error as { code?: string } | null)?.code !== 'ESRCH';
+  }
+}
+
+/**
+ * Ends a command that outran its deadline, and everything it started, and answers what it managed.
+ *
+ * A command given a deadline leads a process group of its own, and this signals that group: signalling the
+ * command alone leaves the tool it launched running and holding the inherited pipes. Windows has no group to
+ * signal, so the tree is ended by pid with `taskkill /T /F`, waited for inside `TREE_END_TIMEOUT_MS`.
+ *
+ * A request a remote service already accepted is not taken back here: this ends the waiting, not the mutation,
+ * and the caller reads its own token back for that outcome.
+ */
+async function endProcessTree(child: { pid?: number; kill(signal?: NodeJS.Signals): boolean }): Promise<ProcessTreeEnd> {
+  const pid = child.pid;
+  if (pid === undefined) return 'absent';
+  if (process.platform === 'win32') {
+    const { spawn } = await import('node:child_process');
+    return await new Promise<ProcessTreeEnd>((resolve) => {
+      let settled = false;
+      const answer = (outcome: { code?: number | null; error?: unknown; timedOut?: boolean }): void => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        resolve(processTreeEndOfTaskkill(outcome));
+      };
+      const timer = setTimeout(() => {
+        try { killer.kill('SIGKILL'); } catch { /* it is the thing that would not answer */ }
+        answer({ timedOut: true });
+      }, TREE_END_TIMEOUT_MS);
+      let killer: import('node:child_process').ChildProcess;
+      try {
+        killer = spawn('taskkill', ['/pid', String(pid), '/T', '/F'], { stdio: 'ignore', windowsHide: true });
+      } catch (error) { answer({ error }); return; }
+      // A spawn failure arrives as an event, not as a throw, and an unhandled one would take the process down.
+      killer.on('error', (error) => { answer({ error }); });
+      killer.on('close', (code) => { answer({ code }); });
+    });
+  }
+  // The group, by the leader's own pid, which `detached` made it. The group signal is the whole cleanup: a
+  // refused one stays a failed tree cleanup, and ending the leader alone never upgrades it. A descendant that
+  // left the group survives this, and so does a request already in flight.
+  try {
+    process.kill(-pid, 'SIGKILL');
+    return 'ended';
+  } catch (groupError) {
+    const group = processTreeEndOfSignal(groupError);
+    // "No such group" is the tree gone only if the leader is gone with it: an ungrouped process answers the same
+    // while it runs, so the leader decides.
+    if (group === 'absent') return processPresent(pid) ? 'failed' : 'absent';
+    return group;
+  }
+}
+
 /** Spawns for real. */
 export function systemRunner(): CommandRunner {
   return {
@@ -58,6 +153,8 @@ export function systemRunner(): CommandRunner {
           cwd: options?.cwd,
           env: options?.env ?? process.env,
           stdio: [options?.input === undefined ? 'ignore' : 'pipe', 'pipe', 'pipe'],
+          // Only a bounded command leads its own group; an unbounded one shares this process's group and ends with it.
+          detached: options?.timeoutMs !== undefined && process.platform !== 'win32',
         });
         let stdout = '';
         let stderr = '';
@@ -65,20 +162,29 @@ export function systemRunner(): CommandRunner {
         // callers here are operator verbs with a person waiting on them. The
         // kill is SIGKILL: the window has already passed, and a child that
         // ignores SIGTERM would extend it.
-        let timedOut = false;
+        let done = false;
         const timer = options?.timeoutMs === undefined ? null : setTimeout(() => {
-          timedOut = true;
-          child.kill('SIGKILL');
+          if (done) return;
+          done = true;
+          // The answer is the deadline and what ending the tree managed; `close` would wait on the pipes those
+          // processes hold.
+          child.stdout?.destroy();
+          child.stderr?.destroy();
+          void endProcessTree(child).then((treeEnd) => {
+            child.unref();
+            reject(new CommandTimedOut(command, args, options.timeoutMs!, treeEnd));
+          });
         }, options.timeoutMs);
-        const settled = (): void => { if (timer !== null) clearTimeout(timer); };
+        const settled = (): boolean => {
+          if (done) return false;
+          done = true;
+          if (timer !== null) clearTimeout(timer);
+          return true;
+        };
         child.stdout?.on('data', (chunk: Buffer) => { stdout += chunk.toString(); });
         child.stderr?.on('data', (chunk: Buffer) => { stderr += chunk.toString(); });
-        child.on('error', (err) => { settled(); reject(err); });
-        child.on('close', (code) => {
-          settled();
-          if (timedOut) reject(new CommandTimedOut(command, args, options!.timeoutMs!));
-          else resolve({ code: code ?? -1, stdout, stderr });
-        });
+        child.on('error', (err) => { if (settled()) reject(err); });
+        child.on('close', (code) => { if (settled()) resolve({ code: code ?? -1, stdout, stderr }); });
         if (options?.input !== undefined && child.stdin) {
           child.stdin.on('error', () => undefined);
           child.stdin.end(options.input);
@@ -215,10 +321,29 @@ export function describeFailure(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
 
-/** Raised when a command answered nothing inside the window its caller gave it; the child is killed first. */
+/** What the message says about a tree, by what ending it answered. */
+const TREE_END_SAID: Record<ProcessTreeEnd, string> = {
+  ended: 'it and the processes it started were ended',
+  absent: 'it and the processes it started were already gone',
+  failed: 'the processes it started could NOT be ended and may still be running',
+  unknown: 'whether the processes it started were ended is unknown',
+};
+
+/**
+ * Raised when a command answered nothing inside the window its caller gave it.
+ *
+ * `treeEnd` carries what ending the command and its descendants managed, which is not always success; a caller
+ * that needs to know whether anything is still running reads it rather than the timeout itself. A request one of
+ * those processes already sent may still land, so the remote outcome is unknown, not undone.
+ */
 export class CommandTimedOut extends Error {
-  constructor(readonly command: string, readonly args: readonly string[], readonly timeoutMs: number) {
-    super(`${command} ${args.join(' ')} answered nothing in ${Math.round(timeoutMs / 1000)} s and was killed`);
+  constructor(
+    readonly command: string,
+    readonly args: readonly string[],
+    readonly timeoutMs: number,
+    readonly treeEnd: ProcessTreeEnd = 'unknown',
+  ) {
+    super(`${command} ${args.join(' ')} answered nothing in ${timeoutMs < 1000 ? `${timeoutMs} ms` : `${Math.round(timeoutMs / 1000)} s`}; ${TREE_END_SAID[treeEnd]}`);
     this.name = 'CommandTimedOut';
   }
 }

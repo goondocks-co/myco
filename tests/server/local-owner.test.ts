@@ -5,7 +5,15 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { setupLocalOwner } from '@myco/server/local-owner.js';
 import { createLocalDeployment, DEFAULT_LOCAL_RECORD, readLocalSecrets, resolveLocalPaths, writeLocalSecrets } from '@myco/server/local.js';
-import { LocalVolume } from '@myco/server/local-volume.js';
+import { LocalVolume, volumeIdentity, type VolumeStartup } from '@myco/server/local-volume.js';
+
+/** A start that needs no volume mutation: the shape a serving process takes its lease with. */
+const servingVolume = (paths: { databasePath: string }): VolumeStartup<{ stop(): Promise<void> }> => ({
+  pending: () => false,
+  startup: () => {},
+  identity: () => volumeIdentity(paths.databasePath, () => null),
+  start: async () => ({ stop: async () => {} }),
+});
 import { sqliteRelationalStore } from '@myco-server-worker/platform/bun/sqlite.js';
 import { previewIdentityLinkAuthority, spendIdentityLinkAuthority } from '@myco-server-worker/auth/identity-link.js';
 
@@ -69,7 +77,7 @@ it('rolls back a failed authority write so retry cannot strand an administrator'
 
 it('refuses a serving volume and an incomplete sign-in configuration before making a member', async () => {
   const paths = fixture();
-  const serving = await new LocalVolume(paths).serve(async () => ({ stop: async () => {} }));
+  const serving = await new LocalVolume(paths).serve(servingVolume(paths));
   try { await expect(setupLocalOwner(paths, native)).rejects.toThrow(/volume is in use/); }
   finally { await serving.stop(); }
   writeLocalSecrets({ ...readLocalSecrets(paths), GITHUB_CLIENT_SECRET: '' }, paths);
