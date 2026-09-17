@@ -90,7 +90,11 @@ it('answers the object set the canonical owner reads back, on the pinned schema'
     `INSERT INTO backups VALUES('b1','backups/b1.jsonl',1789590000000,56,'{}',41,'myco',0,'${digest('c')}');`,
     "INSERT INTO backups VALUES('b2','backups/b2.jsonl',1789590000001,78,'{}',41,'myco',0,NULL);",
   ];
+  // A snapshot imports rows before it creates the schema's triggers, so a row registered before step 42 lands as held.
+  const triggers = db.query("SELECT name, sql FROM sqlite_master WHERE type = 'trigger' AND tbl_name = 'blobs'").all() as Array<{ name: string; sql: string }>;
+  for (const trigger of triggers) db.exec(`DROP TRIGGER ${trigger.name}`);
   for (const row of rows) db.exec(row);
+  for (const trigger of triggers) db.exec(trigger.sql);
   db.close();
   const canonical = snapshotObjectFacts(file);
   fs.rmSync(root, { recursive: true, force: true });

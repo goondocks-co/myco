@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { Database } from 'bun:sqlite';
-import { seededSqlite } from '../myco-server/helpers/d1.js';
+import { legacyBlob, seededSqlite } from '../myco-server/helpers/d1.js';
 import { createRecoveryBundle } from '@myco/server/recovery-bundle.js';
 import { restoreCloudflareDeployment } from '@myco/server/cloudflare-recovery.js';
 import { readDeploymentRecord } from '@myco/server/cloudflare.js';
@@ -22,6 +22,7 @@ import { wrappingKeyFromText } from '../../packages/myco-server/src/platform/wra
 function asSchema41(file: string): void {
   const db = new Database(file);
   try {
+    for (const trigger of ['blobs_require_generation', 'blobs_release_through_journal']) db.run(`DROP TRIGGER ${trigger}`);
     for (const table of ['object_releases', 'blob_release_candidates', 'backup_release_candidates', 'recovery_holds', 'restore_reference_guard']) db.run(`DROP TABLE ${table}`);
     db.run('DROP INDEX idx_blob_reservations_expiry');
     db.run('ALTER TABLE blobs DROP COLUMN generation');
@@ -34,7 +35,9 @@ async function fixture(failVectorRead = false, { legacy = false } = {}) {
   const source = path.join(root, 'artifact');
   const mycoHome = path.join(root, 'home');
   const secretsFile = path.join(root, 'independent.env');
-  const data = seededSqlite();
+  const legacyText = 'legacy hosted body';
+  // The source held one blob from before generations existed, seeded before step 42 as its database held it.
+  const data = seededSqlite({ beforeStep42: (db) => legacyBlob(db, { projectId: 'proj_1', key: createHash('sha256').update(legacyText).digest('hex'), size: Buffer.byteLength(legacyText) }) });
   const wrapKey = Buffer.alloc(32, 7).toString('base64');
   const key = wrappingKeyFromText(async () => wrapKey, 'fixture');
   await deploymentSecretStore(sqliteRelationalStore(data), key).put('fixture', 'sealed-fixture-value', 'fixture', 1);
@@ -42,9 +45,9 @@ async function fixture(failVectorRead = false, { legacy = false } = {}) {
   // One blob registered before generations and one under its own generation, each held under its own name at the source.
   const bodies = new Map<string, string>();
   const sourceObjects = new Map<string, string>();
-  for (const [text, generation] of [['legacy hosted body', null], ['generation hosted body', crypto.randomUUID()]] as const) {
+  for (const [text, generation] of [[legacyText, null], ['generation hosted body', crypto.randomUUID()]] as const) {
     const key = createHash('sha256').update(text).digest('hex');
-    data.run(`INSERT INTO blobs (project_id, key, size, media_type, token_id, received_at, generation) VALUES ('proj_1', ?, ?, 'text/plain', 't', 1, ?)`, [key, Buffer.byteLength(text), generation]);
+    if (generation !== null) data.run(`INSERT INTO blobs (project_id, key, size, media_type, token_id, received_at, generation) VALUES ('proj_1', ?, ?, 'text/plain', 't', 1, ?)`, [key, Buffer.byteLength(text), generation]);
     bodies.set(key, text);
     sourceObjects.set(generation === null ? `proj_1/${key}` : `proj_1/${key}~${generation}`, text);
   }

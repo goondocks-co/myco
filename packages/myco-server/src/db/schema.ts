@@ -1,3 +1,4 @@
+import { blobObjectKeySql } from '../core/blob-objects.js';
 import { MEMBER_TOKEN_BYTE_QUOTA } from '../constants.js';
 import { MEMBER_TOKEN_TTL_MS } from '../auth/tokens.js';
 import { V19_STATEMENTS } from './schema-v19.js';
@@ -1383,6 +1384,10 @@ const V41_STATEMENTS: readonly string[] = [
  * - `recovery_holds` records each hold a recovery export takes; at most one is open.
  * - `restore_reference_guard` never holds a row: an additive restore inserts into it to abort a batch whose rows would
  *   name a blob this Deployment does not register.
+ * - Two triggers fence writers that predate this step, from the moment it commits: a `blobs` row cannot be inserted
+ *   without a generation, and a row with a generation cannot be deleted unless its exact stored object is journaled.
+ *   They do not protect objects under a pre-step `<project>/<key>` name from a deleter that predates the step, and they
+ *   establish nothing about when such a writer stops running.
  */
 const V42_STATEMENTS: readonly string[] = [
   `ALTER TABLE blobs ADD COLUMN generation TEXT CHECK (generation IS NULL OR (length(generation) = 36 AND generation NOT GLOB '*[^0-9a-f-]*'))`,
@@ -1407,6 +1412,12 @@ const V42_STATEMENTS: readonly string[] = [
      release_reason TEXT)`,
   `CREATE UNIQUE INDEX IF NOT EXISTS idx_recovery_holds_open ON recovery_holds ((released_at IS NULL)) WHERE released_at IS NULL`,
   `CREATE TABLE IF NOT EXISTS restore_reference_guard (missing TEXT NOT NULL CHECK (missing IS NULL))`,
+  `CREATE TRIGGER IF NOT EXISTS blobs_require_generation BEFORE INSERT ON blobs WHEN NEW.generation IS NULL
+     BEGIN SELECT RAISE(ABORT, 'blob rows register a generation'); END`,
+  `CREATE TRIGGER IF NOT EXISTS blobs_release_through_journal BEFORE DELETE ON blobs
+     WHEN OLD.generation IS NOT NULL
+      AND NOT EXISTS (SELECT 1 FROM object_releases r WHERE r.physical = ${blobObjectKeySql('OLD.project_id', 'OLD.key', 'OLD.generation')})
+     BEGIN SELECT RAISE(ABORT, 'blob rows leave through the release journal'); END`,
 ];
 
 function withStamp(version: number, statements: readonly string[]): SchemaStep {

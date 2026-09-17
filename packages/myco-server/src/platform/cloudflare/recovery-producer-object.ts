@@ -12,7 +12,7 @@
  */
 import { DurableObject } from 'cloudflare:workers';
 import {
-  ADVANCING_STAGES_SQL, continueAttempt, freshScan, HoldRetired, PRODUCER_LIMITS, PRODUCER_STALL_MS, publishAttempt, reconcileUnconfirmed, settlementOf, stagedSqlKey,
+  ADVANCING_STAGES_SQL, continueAttempt, failAttempt, freshScan, HoldRetired, PRODUCER_LIMITS, PRODUCER_STALL_MS, publishAttempt, reconcileUnconfirmed, settlementOf, stagedSqlKey,
   type AttemptCheckpoint, type AttemptObject, type AttemptPart, type AttemptState, type ContinuationReport, type HoldSettlement,
   type ProducerLimits, type RecoveryAdmission, type RecoveryProducerStatus, type ScanProgress, type TableDefinitions,
 } from '../../core/recovery-producer.js';
@@ -340,7 +340,7 @@ export class RecoveryProducer extends DurableObject<CloudflareBindings> {
     // part but the last must clear the provider's floor, or the completion it accepts today is refused.
     const asked = { ...PRODUCER_LIMITS, ...limits };
     const bounded: ProducerLimits = { ...asked, partBytes: Math.max(R2_MINIMUM_PART_BYTES, asked.partBytes) };
-    this.failStalled(Date.now());
+    await this.failStalled(Date.now(), bounded);
     const open = this.row(`stage IN (${ADVANCING_STAGES_SQL})`);
     if (open === null) return { attempt: null, stage: 'idle', progressed: false, nextInMs: null, sourcePaused: false };
     const target = this.target(JSON.parse(open.tables) as string[]);
@@ -351,15 +351,23 @@ export class RecoveryProducer extends DurableObject<CloudflareBindings> {
   }
 
   /**
-   * Fails every advancing attempt that has committed no checkpoint for `PRODUCER_STALL_MS`, durably and in one
-   * statement. Its checkpoint writers refuse a terminal attempt, so a step still in flight cannot revive it.
+   * Fails every advancing attempt that has committed no checkpoint for `PRODUCER_STALL_MS`, through the one failure
+   * path every refusal takes: the terminal state is durable before anything else, then its upload is aborted, its
+   * signed download cleared and the refusal announced, each clean-up step bounded by `requestMs`. Its checkpoint writers
+   * refuse a terminal attempt, so a step still in flight cannot revive it.
    */
-  private failStalled(now: number): void {
-    this.ctx.storage.sql.exec(
-      `UPDATE attempts SET stage = 'failed', error = 'producer_stalled'
-        WHERE stage IN (${ADVANCING_STAGES_SQL}) AND COALESCE(last_progress_at, started_at) < ?`,
+  private async failStalled(now: number, limits: ProducerLimits): Promise<void> {
+    const stalled = this.ctx.storage.sql.exec(
+      `SELECT * FROM attempts WHERE stage IN (${ADVANCING_STAGES_SQL}) AND COALESCE(last_progress_at, started_at) < ? ORDER BY id`,
       now - PRODUCER_STALL_MS,
-    );
+    ).toArray() as unknown as AttemptRow[];
+    for (const row of stalled) {
+      const state = stateOf(row);
+      const ports = cloudflareProducerPorts(this.target(state.tables), this.bucket(), this.env.BUCKET, {
+        testRoutes: this.env.HARNESS_LAUNCH_MODE === 'record', requestMs: limits.requestMs,
+      });
+      await failAttempt(state, this.checkpoint(), ports, 'producer_stalled', { idleMs: now - (row.last_progress_at ?? row.started_at) }, undefined, limits.requestMs);
+    }
   }
 
   private retired(token: string): boolean {
@@ -371,16 +379,20 @@ export class RecoveryProducer extends DurableObject<CloudflareBindings> {
    * whether it still advances, and a token no attempt carries is retired in the same synchronous transaction, so no
    * later admission can carry it. See `HoldSettlement`.
    */
-  async settleHold(token: string): Promise<HoldSettlement> {
-    return this.gate.exclusive(async () => this.ctx.storage.transactionSync(() => {
-      this.failStalled(Date.now());
-      const row = this.row('hold_token = ?', token);
-      const settlement = settlementOf(row === null ? null : { id: row.id, stage: row.stage as AttemptState['stage'] });
-      if (settlement.state === 'retired') {
-        this.ctx.storage.sql.exec('INSERT OR IGNORE INTO retired_hold_tokens (token, retired_at) VALUES (?, ?)', token, Date.now());
-      }
-      return settlement;
-    }));
+  async settleHold(token: string, limits: Partial<ProducerLimits> = {}): Promise<HoldSettlement> {
+    return this.gate.exclusive(async () => {
+      await this.failStalled(Date.now(), { ...PRODUCER_LIMITS, ...limits });
+      return this.ctx.storage.transactionSync(() => this.settle(token));
+    });
+  }
+
+  private settle(token: string): HoldSettlement {
+    const row = this.row('hold_token = ?', token);
+    const settlement = settlementOf(row === null ? null : { id: row.id, stage: row.stage as AttemptState['stage'] });
+    if (settlement.state === 'retired') {
+      this.ctx.storage.sql.exec('INSERT OR IGNORE INTO retired_hold_tokens (token, retired_at) VALUES (?, ?)', token, Date.now());
+    }
+    return settlement;
   }
 
   /** The attempt's progress, with no credential, no signed download and no claim of recoverability. */

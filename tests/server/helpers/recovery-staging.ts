@@ -8,6 +8,7 @@ import { SCHEMA_QUERY, schemaObjects } from '@myco/server/recovery-schema.js';
 import { exportedTables } from '@myco/server/recovery-snapshot.js';
 import { STAGING_FORMAT } from '@myco/server/recovery-contract.js';
 import { sqliteEnv } from '../../myco-server/helpers/fixtures.js';
+import { legacyBlob } from '../../myco-server/helpers/d1.js';
 
 export const quote = (value: string) => '"' + value.replaceAll('"', '""') + '"';
 const literal = (value: unknown): string => {
@@ -24,17 +25,16 @@ const fingerprint = (file: string) => ({ sha256: digestOf(fs.readFileSync(file))
  * provider's statement shape, with the source's own schema objects captured beside it.
  */
 export function stagingFixture(seed: (db: Database) => void = () => {}) {
-  const source = sqliteEnv();
+  const bytes = new Uint8Array([0, 1, 127, 128, 255]);
+  const blobDigest = digestOf(bytes);
+  // A source holding one blob from before generations, seeded before step 42 as its database held it.
+  const source = sqliteEnv({ beforeStep42: (db) => legacyBlob(db, { projectId: 'proj_1', key: blobDigest, size: bytes.length, mediaType: 'application/octet-stream', tokenId: 'mt_fixture' }) });
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-materialize-'));
   const staging = path.join(root, 'staging');
   const destination = path.join(root, 'artifact');
   fs.mkdirSync(path.join(staging, 'objects', 'proj_1'), { recursive: true });
   fs.mkdirSync(path.join(staging, 'objects', 'backups'), { recursive: true });
-  const bytes = new Uint8Array([0, 1, 127, 128, 255]);
-  const blobDigest = digestOf(bytes);
   const body = "line; one\nquoted '🌱' /* text */ -- still text";
-  source.sqlite.run(`INSERT INTO blobs(project_id,key,size,media_type,token_id,received_at)
-    VALUES ('proj_1',?,?,'application/octet-stream','mt_fixture',1)`, [blobDigest, bytes.length]);
   source.sqlite.run(`INSERT INTO sessions(project_id,session_id,machine_id,created_by_token_id,first_received_at,last_received_at,title)
     VALUES ('proj_1','s_materialize','m_fixture','mt_fixture',1,1,'Recovered 🌱 title')`);
   source.sqlite.run(`INSERT INTO tool_calls(project_id,tool_call_id,session_id,event_id,tool_name,success,duration_ms,created_at,token_id,received_at,input_blob_key)

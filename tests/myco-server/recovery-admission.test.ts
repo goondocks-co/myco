@@ -2,6 +2,7 @@
  * The owner surface: what admission captures before an export runs, what it refuses, what it wakes, and what a
  * status answer may claim. The producer itself is a stand-in here; its own behaviour is proven in its own suites.
  */
+import { registerBlob } from './helpers/d1.js';
 import { expect, it } from 'bun:test';
 import { handleRecoveryExportStatus, handleStartRecoveryExport } from '@myco-server-worker/api/recovery.js';
 import { settlementOf, type AttemptStage, type RecoveryAdmission, type RecoveryProducerStatus } from '@myco-server-worker/core/recovery-producer.js';
@@ -157,7 +158,7 @@ it('keeps every release a deletion decides while the hold is open, and releases 
   const env = sqliteEnv();
   const held = producer();
   const key = 'a'.repeat(64);
-  env.sqlite.run(`INSERT INTO blobs (project_id, key, size, media_type, token_id, received_at) VALUES ('proj_1', ?, 1, 'text/plain', 't', 1)`, [key]);
+  registerBlob(env.sqlite, { projectId: 'proj_1', key, size: 1 });
   await handleStartRecoveryExport({ ...env.serverEnv, recovery: held.port } as never, OWNER);
   expect(await releaseBlobs(env.db, [{ projectId: 'proj_1', key }], 2_000)).toEqual({ released: 0, deferred: 1 });
   await drainObjectReleases(env.serverEnv, 3_000);

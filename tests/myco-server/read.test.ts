@@ -1,3 +1,4 @@
+import { legacyBlob } from './helpers/d1.js';
 import { describe, it, expect } from 'bun:test';
 import { sqliteEnv } from './helpers/fixtures.js';
 import { Database } from 'bun:sqlite';
@@ -544,11 +545,10 @@ describe('read/meta', () => {
 
 describe('read/blobs', () => {
   it('reads a blob record inside the scope and refuses one outside it', async () => {
-    const { db, sqlite } = sqliteEnv();
-    const { getBlob } = await import('@myco-server-worker/read/blobs.js');
     const key = 'f'.repeat(64);
-    sqlite.run(`INSERT INTO blobs (project_id, key, size, media_type, token_id, received_at)
-                VALUES ('proj_1','${key}',12,'image/png','t1',1)`);
+    // A row registered before generations existed names its legacy object.
+    const { db, sqlite } = sqliteEnv({ beforeStep42: (seed) => legacyBlob(seed, { projectId: 'proj_1', key, size: 12, mediaType: 'image/png', tokenId: 't1' }) });
+    const { getBlob } = await import('@myco-server-worker/read/blobs.js');
     expect(await getBlob(db, { projectId: 'proj_1' }, key)).toEqual({ size: 12, mediaType: 'image/png', objectKey: `proj_1/${key}` });
     const generation = crypto.randomUUID();
     sqlite.run(`UPDATE blobs SET generation = ? WHERE key = ?`, [generation, key]);

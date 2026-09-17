@@ -7,18 +7,20 @@ import { Database } from 'bun:sqlite';
 import { createBackup } from '@myco-server-worker/core/backup.js';
 import { copyRecoveryBundle, copyRecoveryObjects, createRecoveryBundle, preparedObjectKeys, verifyRecoveryBundle, type RecoveryAdapter, type RecoveryObjectDestination } from '@myco/server/recovery-bundle.js';
 import { sqliteEnv } from '../myco-server/helpers/fixtures.js';
+import { legacyBlob } from '../myco-server/helpers/d1.js';
 
 function fixture() {
-  const source = sqliteEnv();
+  const bodies = new Map<string, string>();
+  // A source holding two blobs from before generations, seeded before step 42 as its database held them.
+  const source = sqliteEnv({ beforeStep42: (db) => {
+    for (const body of ['first content', 'second content']) {
+      const key = createHash('sha256').update(body).digest('hex');
+      bodies.set(`proj_1/${key}`, body);
+      legacyBlob(db, { projectId: 'proj_1', key, size: Buffer.byteLength(body), tokenId: 'mt_fixture' });
+    }
+  } });
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-recovery-'));
   const destination = path.join(root, 'backup');
-  const bodies = new Map<string, string>();
-  for (const body of ['first content', 'second content']) {
-    const key = createHash('sha256').update(body).digest('hex');
-    bodies.set(`proj_1/${key}`, body);
-    source.sqlite.run(`INSERT INTO blobs(project_id,key,size,media_type,token_id,received_at)
-      VALUES ('proj_1',?,?,'text/plain','mt_fixture',1)`, [key, Buffer.byteLength(body)]);
-  }
   let snapshots = 0;
   const reads: string[] = [];
   const adapter: RecoveryAdapter = {
@@ -121,7 +123,7 @@ describe('verified recovery artifacts', () => {
       expect([...objects.keys()].sort()).toEqual([...f.bodies.keys()].map((logical) => `${logical}~${generation}`).sort());
 
       const other = new Database(prepared);
-      try { other.run('DELETE FROM blobs WHERE rowid = (SELECT MIN(rowid) FROM blobs)'); } finally { other.close(); }
+      try { other.run('UPDATE blobs SET size = size + 1 WHERE rowid = (SELECT MIN(rowid) FROM blobs)'); } finally { other.close(); }
       let writes = 0;
       const counting: RecoveryObjectDestination = { get: async () => null, put: async () => { writes += 1; } };
       await expect(copyRecoveryObjects(f.destination, counting, preparedObjectKeys(prepared))).rejects.toThrow('does not register');

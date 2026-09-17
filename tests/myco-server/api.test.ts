@@ -1,3 +1,4 @@
+import { registerBlob } from './helpers/d1.js';
 import { jsonBody } from '../helpers/json-body.js';
 import { describe, it, expect } from 'bun:test';
 import { sqliteEnv } from './helpers/fixtures.js';
@@ -248,8 +249,7 @@ describe('blob bytes', () => {
   it('serves stored bytes in scope and 404s a blob recorded under another project', async () => {
     const e = sqliteEnv();
     const key = 'a'.repeat(64);
-    e.sqlite.run(`INSERT INTO blobs (project_id, key, size, media_type, token_id, received_at) VALUES ('proj_2','${key}',5,'text/plain; charset=utf-8','t1',1)`);
-    e.bucket.seed(`proj_2/${key}`, { size: 5, contentType: 'text/plain; charset=utf-8' });
+    e.bucket.seed(registerBlob(e.sqlite, { projectId: 'proj_2', key, size: 5, mediaType: 'text/plain; charset=utf-8', tokenId: 't1' }), { size: 5, contentType: 'text/plain; charset=utf-8' });
 
     const wrong = await worker.fetch(await asOwner(`/api/projects/proj_1/blobs/${key}`), { ...e.env, ...OWNER_ENV });
     expect(wrong.status).toBe(404);
@@ -314,8 +314,7 @@ describe('project creation', () => {
 
 describe('blob bytes are never executable on the owner origin', () => {
   const store = (e: ReturnType<typeof sqliteEnv>, key: string, mediaType: string) => {
-    e.sqlite.run(`INSERT INTO blobs (project_id, key, size, media_type, token_id, received_at) VALUES ('proj_1','${key}',5,'${mediaType}','t1',1)`);
-    e.bucket.seed(`proj_1/${key}`, { size: 5, contentType: mediaType });
+    e.bucket.seed(registerBlob(e.sqlite, { projectId: 'proj_1', key, size: 5, mediaType, tokenId: 't1' }), { size: 5, contentType: mediaType });
   };
 
   it('refuses to reflect a member-chosen html type', async () => {

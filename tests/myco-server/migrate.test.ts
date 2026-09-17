@@ -49,7 +49,7 @@ const SHIPPED_MIGRATION_DIGESTS: Record<string, string> = {
   '0039_v39.sql': '8b1636924f5b298585f322bdd45532ce92b28b5b0e910ec1f9224be7527f8301',
   '0040_v40.sql': '0071ef8a116a057d8330378faad7b55a902ccf60e4d91aee06d9b7331f641022',
   '0041_v41.sql': 'b66e750cead64ba4385ff685929f80a3d688478c21c0c48c5c72598d11224efb',
-  '0042_v42.sql': '3554e08fa421d2fb927117b14a895a702e50c7e8a0c6143cb9d4ba4f6429b587',
+  '0042_v42.sql': '7c83e400c78aef7599ed3eaac0bf9fe4a8151dc3fe135b994ace8968410e0f54',
 };
 const sha256 = (bytes: Buffer): string => createHash('sha256').update(bytes).digest('hex');
 
@@ -138,6 +138,16 @@ describe('versioned schema steps', () => {
       sqlite.run(`UPDATE recovery_holds SET released_at = 3 WHERE token = 'h1'`);
       sqlite.run(`INSERT INTO recovery_holds (token, acquired_at) VALUES ('h2', 4)`);
       for (const value of [null, 'k']) expect(() => sqlite.run('INSERT INTO restore_reference_guard (missing) VALUES (?)', [value])).toThrow('constraint failed');
+      // The fence: a row without a generation cannot be registered any more, the legacy row stands, and a generation row
+      // leaves only once its exact stored object is journaled. A legacy row is not fenced.
+      expect(() => sqlite.run(`INSERT INTO blobs (project_id, key, size, media_type, token_id, received_at) VALUES ('proj_1', ?, 3, 'text/plain', 't1', 1)`, ['c'.repeat(64)]))
+        .toThrow('blob rows register a generation');
+      const fenced = sqlite.query<{ key: string; generation: string }, []>('SELECT key, generation FROM blobs WHERE generation IS NOT NULL').get()!;
+      expect(() => sqlite.run('DELETE FROM blobs WHERE key = ?', [fenced.key])).toThrow('blob rows leave through the release journal');
+      sqlite.run(`INSERT INTO object_releases (physical, kind, created_at) VALUES (?, 'blob', 1)`, [`proj_1/${fenced.key}~${fenced.generation}`]);
+      sqlite.run('DELETE FROM blobs WHERE key = ?', [fenced.key]);
+      sqlite.run('DELETE FROM blobs WHERE key = ?', ['a'.repeat(64)]);
+      expect(sqlite.query('SELECT COUNT(*) AS n FROM blobs').get()).toEqual({ n: 0 });
     } finally { sqlite.close(); }
   });
 
@@ -428,8 +438,8 @@ describe('versioned schema steps', () => {
       sqlite.exec('SAVEPOINT grammar_probe');
       const insert = (projectId: string) => {
         const names = cols.map((c) => c.name);
-        // A blob's generation is NULL or a UUID, and NULL is its legacy form.
-        const values = cols.map((c) => (c.name === 'project_id' ? `'${projectId}'` : t === 'blobs' && c.name === 'generation' ? 'NULL' : c.type === 'INTEGER' ? '0' : `'x'`));
+        // A blob row registers a generation: a UUID.
+        const values = cols.map((c) => (c.name === 'project_id' ? `'${projectId}'` : t === 'blobs' && c.name === 'generation' ? `'${crypto.randomUUID()}'` : c.type === 'INTEGER' ? '0' : `'x'`));
         sqlite.query(`INSERT INTO ${t} (${names.join(', ')}) VALUES (${values.join(', ')})`).run();
       };
       expect(() => insert('bad/id')).toThrow(/CHECK constraint failed/);

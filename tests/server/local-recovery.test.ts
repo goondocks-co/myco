@@ -7,6 +7,7 @@ import { createRecoveryBundle } from '@myco/server/recovery-bundle.js';
 import { restoreLocalDeployment } from '@myco/server/local-recovery.js';
 import { LOCAL_SECRET_NAMES, readLocalRecord, readLocalSecrets, resolveLocalPaths } from '@myco/server/local.js';
 import { sqliteEnv } from '../myco-server/helpers/fixtures.js';
+import { legacyBlob } from '../myco-server/helpers/d1.js';
 import { configureSqliteLibrary } from '../../packages/myco-server/src/platform/bun/sqlite-library.js';
 import { sqliteRelationalStore } from '../../packages/myco-server/src/platform/bun/sqlite.js';
 import { sqliteVectorStore } from '../../packages/myco-server/src/platform/bun/vectors.js';
@@ -43,6 +44,9 @@ async function assertServedAfterStartup(f: Awaited<ReturnType<typeof fixture>>):
   const db = new Database(f.paths.databasePath, { readonly: true });
   try {
     expect(db.query("SELECT value FROM schema_meta WHERE key = 'version'").get()).toEqual({ value: String(SERVER_SCHEMA_VERSION) });
+    // The restored volume carries the schema fence the migration applier created.
+    expect((db.query("SELECT name FROM sqlite_master WHERE type = 'trigger' AND tbl_name = 'blobs' ORDER BY name").all() as { name: string }[]).map((row) => row.name))
+      .toEqual(expect.arrayContaining(['blobs_release_through_journal', 'blobs_require_generation']));
     for (const table of ['object_releases', 'recovery_holds', 'blob_reservations', 'backup_release_candidates']) expect({ table, rows: db.query(`SELECT COUNT(*) AS n FROM ${table}`).get() }).toEqual({ table, rows: { n: 0 } });
     const generations = db.query('SELECT DISTINCT generation FROM blobs').all() as { generation: string | null }[];
     expect(generations).toHaveLength(1);
@@ -62,13 +66,19 @@ async function assertServedAfterStartup(f: Awaited<ReturnType<typeof fixture>>):
 
 configureSqliteLibrary();
 
-/** Two stored blobs as a source holds them: one registered before generations, one under its own generation. */
+const LEGACY_TEXT = 'legacy blob body';
+const legacyKey = createHash('sha256').update(LEGACY_TEXT).digest('hex');
+
+/** A source whose database held one blob registered before generations: seeded before step 42, as it was. */
+const legacySource = () => sqliteEnv({ beforeStep42: (db) => legacyBlob(db, { projectId: 'proj_1', key: legacyKey, size: Buffer.byteLength(LEGACY_TEXT) }) });
+
+/** Two stored blobs as a source holds them: the one registered before generations, and one under its own generation. */
 async function storedBlobs(source: ReturnType<typeof sqliteEnv>) {
   const held = [];
-  for (const [text, generation] of [['legacy blob body', null], ['generation blob body', crypto.randomUUID()]] as const) {
+  for (const [text, generation] of [[LEGACY_TEXT, null], ['generation blob body', crypto.randomUUID()]] as const) {
     const bytes = new TextEncoder().encode(text);
     const key = createHash('sha256').update(bytes).digest('hex');
-    source.sqlite.run(`INSERT INTO blobs (project_id, key, size, media_type, token_id, received_at, generation) VALUES ('proj_1', ?, ?, 'text/plain', 't', 1, ?)`, [key, bytes.byteLength, generation]);
+    if (generation !== null) source.sqlite.run(`INSERT INTO blobs (project_id, key, size, media_type, token_id, received_at, generation) VALUES ('proj_1', ?, ?, 'text/plain', 't', 1, ?)`, [key, bytes.byteLength, generation]);
     await source.bucket.put(blobObjectKey('proj_1', key, generation), new Response(bytes).body);
     held.push({ key, text });
   }
@@ -79,6 +89,7 @@ async function storedBlobs(source: ReturnType<typeof sqliteEnv>) {
 function asSchema41(file: string): void {
   const db = new Database(file);
   try {
+    for (const trigger of ['blobs_require_generation', 'blobs_release_through_journal']) db.run(`DROP TRIGGER ${trigger}`);
     for (const table of ['object_releases', 'blob_release_candidates', 'backup_release_candidates', 'recovery_holds', 'restore_reference_guard']) db.run(`DROP TABLE ${table}`);
     db.run('DROP INDEX idx_blob_reservations_expiry');
     db.run('ALTER TABLE blobs DROP COLUMN generation');
@@ -87,7 +98,7 @@ function asSchema41(file: string): void {
 }
 
 async function fixture(target: 'local' | 'cloudflare' = 'cloudflare', { legacy = false } = {}) {
-  const source = sqliteEnv();
+  const source = legacySource();
   const blobs = await storedBlobs(source);
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-native-recovery-'));
   const artifact = path.join(root, 'artifact');

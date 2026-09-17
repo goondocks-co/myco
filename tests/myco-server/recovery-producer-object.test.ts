@@ -13,7 +13,7 @@ import { Stalled } from '@myco-server-worker/core/recovery-inventory.js';
 import { acquireRecoveryHold } from '@myco-server-worker/core/object-release.js';
 import { sqliteEnv } from './helpers/fixtures.js';
 
-function storage(sql: Database) {
+function storage(sql: Database, signed: { delete?: (key: string) => Promise<boolean> } = {}) {
   return {
     sql: {
       exec(query: string, ...bindings: unknown[]) {
@@ -24,17 +24,25 @@ function storage(sql: Database) {
     },
     transactionSync: <T>(work: () => T): T => sql.transaction(work)(),
     get: async () => undefined,
-    delete: async () => true,
+    delete: signed.delete ?? (async () => true),
   };
 }
 
 /** A producer over `sql`, as a fresh instance of the object sees its storage after a restart. */
-function producerOver(sql: Database, writes: string[], put?: (key: string, body: Uint8Array) => Promise<{ size: number }>) {
-  const ctx = { storage: storage(sql) };
+interface Doubles {
+  abort?: () => Promise<void>;
+  deleteSigned?: (key: string) => Promise<boolean>;
+}
+
+function producerOver(sql: Database, writes: string[], put?: (key: string, body: Uint8Array) => Promise<{ size: number }>, doubles: Doubles = {}) {
+  const ctx = { storage: storage(sql, { delete: doubles.deleteSigned }) };
   const env = {
     MYCO_RECOVERY_ACCOUNT_ID: 'a'.repeat(32), MYCO_RECOVERY_DATABASE_ID: '11111111-1111-4111-8111-111111111111',
     RECOVERY_EXPORT_TOKEN: 'never-sent', BUCKET: { get: async () => null },
-    RECOVERY_BUCKET: { put: put ?? (async (key: string, body: Uint8Array) => { writes.push(key); return { size: body.length }; }) },
+    RECOVERY_BUCKET: {
+      put: put ?? (async (key: string, body: Uint8Array) => { writes.push(key); return { size: body.length }; }),
+      resumeMultipartUpload: () => ({ abort: doubles.abort ?? (async () => undefined) }),
+    },
   };
   const producer = new RecoveryProducer(ctx as never, env as never);
   Object.assign(producer, { ctx, env });
@@ -114,9 +122,19 @@ it('fails an attempt that commits no checkpoint for the stall bound, durably, an
   const first = await producer.admit(admission('token-stall'));
   sql.run("UPDATE attempts SET stage = 'copy', last_progress_at = ? WHERE id = ?", [Date.now() - PRODUCER_STALL_MS + 60_000, first.attempt]);
   expect((await producer.settleHold('token-stall')).state).toBe('open');
-  sql.run('UPDATE attempts SET last_progress_at = ? WHERE id = ?', [Date.now() - PRODUCER_STALL_MS - 1, first.attempt]);
-  expect(await producer.settleHold('token-stall')).toEqual({ state: 'closed', attempt: first.attempt!, stage: 'failed' });
-  expect(sql.query('SELECT stage, error FROM attempts WHERE id = ?').get(first.attempt!)).toEqual({ stage: 'failed', error: 'producer_stalled' });
+  sql.run("UPDATE attempts SET last_progress_at = ?, upload_id = 'upload-in-flight' WHERE id = ?", [Date.now() - PRODUCER_STALL_MS - 1, first.attempt]);
+  const logged: string[] = [];
+  const log = console.log;
+  console.log = (line: unknown) => { logged.push(String(line)); };
+  try {
+    expect(await producer.settleHold('token-stall')).toEqual({ state: 'closed', attempt: first.attempt!, stage: 'failed' });
+  } finally { console.log = log; }
+  // The stalled attempt is failed through the one failure path: terminal first, its upload and signed download cleared,
+  // and the refusal announced with what its clean-up reached.
+  expect(sql.query('SELECT stage, error, upload_id FROM attempts WHERE id = ?').get(first.attempt!)).toEqual({ stage: 'failed', error: 'producer_stalled', upload_id: null });
+  const announced = logged.map((line) => JSON.parse(line) as Record<string, unknown>).find((event) => event.kind === 'recovery_attempt_failed');
+  expect(announced).toMatchObject({ refusal: 'producer_stalled', attempt: first.attempt, stage: 'copy', signedUrlCleared: true });
+  expect(typeof announced?.uploadAborted).toBe('boolean');
 
   // A continuation step already in flight completes after the terminalization: none of its writes revive the attempt.
   const checkpoint = (producer as unknown as { checkpoint(): import('@myco-server-worker/core/recovery-producer.js').AttemptCheckpoint }).checkpoint();
@@ -143,4 +161,45 @@ it('keeps a hold whose settlement does not answer within its bound, and settles 
   expect(await settleOpenHold({ db: env.db, recovery: answering as never }, 3, 50)).toEqual({ state: 'retired' });
   expect(env.sqlite.query('SELECT released_at, release_reason FROM recovery_holds').get()).toEqual({ released_at: 3, release_reason: 'retired' });
   env.sqlite.close();
+});
+
+/** The refusal events a call emits, read from the one telemetry sink. */
+async function announced(work: () => Promise<unknown>): Promise<Array<Record<string, unknown>>> {
+  const logged: string[] = [];
+  const log = console.log;
+  console.log = (line: unknown) => { logged.push(String(line)); };
+  try { await work(); } finally { console.log = log; }
+  return logged.map((line) => JSON.parse(line) as Record<string, unknown>).filter((event) => event.kind === 'recovery_attempt_failed');
+}
+
+it('bounds each clean-up step of a stalled attempt on its own: a hung abort still clears the signed download and announces the truth, and a late abort changes nothing', async () => {
+  for (const hung of ['abort', 'signed'] as const) {
+    const sql = new Database(':memory:');
+    let lateAbort!: () => void;
+    let lateDelete!: (value: boolean) => void;
+    const deletes: string[] = [];
+    const producer = producerOver(sql, [], undefined, {
+      abort: hung === 'abort' ? () => new Promise<void>((resolve) => { lateAbort = resolve; }) : async () => undefined,
+      deleteSigned: async (key) => {
+        deletes.push(key);
+        return hung === 'signed' ? new Promise<boolean>((resolve) => { lateDelete = resolve; }) : true;
+      },
+    });
+    const first = await producer.admit(admission(`token-${hung}`));
+    sql.run("UPDATE attempts SET stage = 'download', upload_id = 'upload-in-flight', last_progress_at = ? WHERE id = ?", [Date.now() - PRODUCER_STALL_MS - 1, first.attempt]);
+    const started = Date.now();
+    const events = await announced(() => producer.settleHold(`token-${hung}`, { requestMs: 40 }));
+    expect({ hung, elapsedBounded: Date.now() - started < 2_000 }).toEqual({ hung, elapsedBounded: true });
+    expect(sql.query('SELECT stage, error, upload_id FROM attempts').get()).toEqual({ stage: 'failed', error: 'producer_stalled', upload_id: null });
+    expect(events).toEqual([expect.objectContaining({
+      refusal: 'producer_stalled', attempt: first.attempt, uploadAborted: hung !== 'abort', signedUrlCleared: hung !== 'signed',
+    })]);
+    // The signed download is asked to clear even when the abort before it never settled.
+    expect(deletes).toEqual([`signed:${first.attempt}`]);
+    if (hung === 'abort') lateAbort(); else lateDelete(true);
+    await Bun.sleep(10);
+    expect(sql.query('SELECT stage, error, upload_id FROM attempts').get()).toEqual({ stage: 'failed', error: 'producer_stalled', upload_id: null });
+    expect((await producer.settleHold(`token-${hung}`)).state).toBe('closed');
+    sql.close();
+  }
 });

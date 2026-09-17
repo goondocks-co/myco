@@ -255,6 +255,9 @@ export interface ProducerLimits {
  */
 export const PRODUCER_STALL_MS = 30 * 60_000;
 
+/** How long each clean-up step of a failed attempt may take: aborting its upload, clearing its signed download. */
+export const FAILURE_CLEANUP_MS = 30_000;
+
 export const PRODUCER_LIMITS: ProducerLimits = {
   partBytes: 32 * 1024 * 1024, exportPollMs: 600_000, requestMs: 30_000, maxPollsPerStep: 12, stepMs: 20_000,
   maxTransient: 5, maxReExports: 3, maxPartsPerStep: 4, maxObjectsPerStep: 32, inventoryMs: 600_000, copyMs: 1_800_000,
@@ -355,7 +358,7 @@ export async function continueAttempt(
       return { attempt: open.id, stage: open.stage, progressed: false, nextInMs: 1_000, sourcePaused: open.stage === 'export', error: 'provider_unavailable' };
     }
     if (error instanceof TransientProducerFailure) {
-      return fail(open, checkpoint, ports, 'provider_unavailable', { spent: open.attempts, status: error.failure.status ?? 0 });
+      return failAttempt(open, checkpoint, ports, 'provider_unavailable', { spent: open.attempts, status: error.failure.status ?? 0 });
     }
     // An interrupted step spends one bounded attempt and keeps its stage; exhaustion is terminal.
     if (open.attempts + 1 < limits.maxTransient) {
@@ -363,29 +366,22 @@ export async function continueAttempt(
       checkpoint.update(open.id, { attempts: open.attempts + 1 });
       return { attempt: open.id, stage: open.stage, progressed: false, nextInMs: 1_000, sourcePaused: open.stage === 'export' };
     }
-    return fail(open, checkpoint, ports, 'internal', { spent: open.attempts + 1 }, thrownShape(error));
+    return failAttempt(open, checkpoint, ports, 'internal', { spent: open.attempts + 1 }, thrownShape(error));
   }
 }
 
-async function fail(
+/** Fails an attempt: the terminal state is durable first, then its upload is aborted and its signed download cleared, and the refusal is announced. */
+export async function failAttempt(
   attempt: AttemptState, checkpoint: AttemptCheckpoint, ports: ProducerPorts, refusal: ProducerRefusal,
-  facts: Record<string, number | boolean> = {}, shape?: ThrownShape,
+  facts: Record<string, number | boolean> = {}, shape?: ThrownShape, cleanupMs = FAILURE_CLEANUP_MS,
 ): Promise<ContinuationReport> {
   const upload = attempt.uploadId;
   // The terminal state is durable before it is announced, and the clearing up that follows cannot change it.
   checkpoint.update(attempt.id, { stage: 'failed', error: refusal, uploadId: null });
-  let aborted = upload === null;
-  let cleared = false;
-  if (upload !== null) {
-    try {
-      await ports.abortUpload(attempt.prefix, upload);
-      aborted = true;
-    } catch { aborted = false; }
-  }
-  try {
-    await checkpoint.setSignedUrl(attempt.id, null);
-    cleared = true;
-  } catch { cleared = false; }
+  // Each clean-up step has its own deadline, so one that never settles cannot hold back the next or the announcement.
+  const reached = (work: () => Promise<void>): Promise<boolean> => within(work, cleanupMs, ports.now).then(() => true, () => false);
+  const aborted = upload === null ? true : await reached(() => ports.abortUpload(attempt.prefix, upload));
+  const cleared = await reached(() => checkpoint.setSignedUrl(attempt.id, null));
   refuse(attempt, refusal, { ...facts, uploadAborted: aborted, signedUrlCleared: cleared }, shape);
   return { attempt: attempt.id, stage: 'failed', progressed: true, nextInMs: null, sourcePaused: false, error: refusal };
 }
@@ -399,7 +395,7 @@ async function restartExport(
   exhausted: ProducerRefusal,
 ): Promise<ContinuationReport> {
   if (state.reExports + 1 > limits.maxReExports) {
-    return fail(state, checkpoint, ports, exhausted, { reExports: state.reExports + 1 });
+    return failAttempt(state, checkpoint, ports, exhausted, { reExports: state.reExports + 1 });
   }
   if (state.uploadId !== null) await ports.abortUpload(state.prefix, state.uploadId).catch(() => undefined);
   checkpoint.clearParts(state.id);
@@ -426,7 +422,7 @@ async function pollExportStage(
   for (let step = 0; step < limits.maxPollsPerStep && ports.now() - started < limits.stepMs; step += 1) {
     if (stalled(ports.now())) {
       checkpoint.update(attempt.id, { polls });
-      return fail(attempt, checkpoint, ports, 'export_stalled', { elapsedMs: ports.now() - exportStartedAt, polls });
+      return failAttempt(attempt, checkpoint, ports, 'export_stalled', { elapsedMs: ports.now() - exportStartedAt, polls });
     }
     const answer = await ports.pollExport(bookmark);
     polls += 1;
@@ -438,14 +434,14 @@ async function pollExportStage(
       if (answer.failure.cause === 'provider' && bookmark !== null) {
         return restartExport({ ...attempt, bookmark, polls }, checkpoint, ports, limits, 'export_failed');
       }
-      return fail(attempt, checkpoint, ports, EXPORT_REFUSAL[answer.failure.cause], { status: answer.failure.status ?? 0, polls });
+      return failAttempt(attempt, checkpoint, ports, EXPORT_REFUSAL[answer.failure.cause], { status: answer.failure.status ?? 0, polls });
     }
     bookmark = answer.bookmark;
     checkpoint.update(attempt.id, { bookmark, polls });
     // An export still running past the budget ends the attempt; a completion a poll inside the budget answered
     // stands.
     if (answer.status === 'running' && stalled(ports.now())) {
-      return fail({ ...attempt, bookmark }, checkpoint, ports, 'export_stalled', { elapsedMs: ports.now() - exportStartedAt, polls });
+      return failAttempt({ ...attempt, bookmark }, checkpoint, ports, 'export_stalled', { elapsedMs: ports.now() - exportStartedAt, polls });
     }
     if (answer.status === 'complete') {
       await checkpoint.setSignedUrl(attempt.id, answer.signedUrl);
@@ -474,16 +470,16 @@ async function downloadStage(
     const length = state.sqlBytes === null ? limits.partBytes : Math.min(limits.partBytes, state.sqlBytes - state.downloadOffset);
     const answer = await ports.readRange(url, state.downloadOffset, length);
     if (answer.status === 'gone') return restart();
-    if (answer.status === 'unranged') return fail(state, checkpoint, ports, 'download_unranged');
+    if (answer.status === 'unranged') return failAttempt(state, checkpoint, ports, 'download_unranged');
     if (answer.status === 'error') {
       if (answer.failure.transient) throw new TransientProducerFailure(answer.failure);
-      return fail(state, checkpoint, ports, DOWNLOAD_REFUSAL[answer.failure.cause], { status: answer.failure.status ?? 0 });
+      return failAttempt(state, checkpoint, ports, DOWNLOAD_REFUSAL[answer.failure.cause], { status: answer.failure.status ?? 0 });
     }
     if (state.sqlBytes === null) {
       checkpoint.update(state.id, { sqlBytes: answer.total, sqlEtag: answer.etag });
       state = { ...state, sqlBytes: answer.total, sqlEtag: answer.etag };
     } else if (answer.total !== state.sqlBytes || (state.sqlEtag !== null && answer.etag !== null && answer.etag !== state.sqlEtag)) {
-      return fail(state, checkpoint, ports, 'download_changed', { total: answer.total, expected: state.sqlBytes });
+      return failAttempt(state, checkpoint, ports, 'download_changed', { total: answer.total, expected: state.sqlBytes });
     }
     let uploadId = state.uploadId;
     if (uploadId === null) {
@@ -499,7 +495,7 @@ async function downloadStage(
     try {
       progress = readDefinitions(state, answer.bytes, last);
     } catch {
-      return fail(state, checkpoint, ports, 'export_unparsable', { offset });
+      return failAttempt(state, checkpoint, ports, 'export_unparsable', { offset });
     }
     // The cursor and the reading of the bytes it covers commit together, so a resumed attempt reads every byte once.
     checkpoint.recordPart(state.id, { part: number, bytes: answer.length, ...written }, offset, progress);
@@ -510,17 +506,17 @@ async function downloadStage(
   // The capture and the exported bytes must define the same tables the same way: a capture that no longer describes
   // the export is not a snapshot of anything. `sqlite_sequence` carries rows without a definition of its own.
   const disagreement = definitionsDisagree(state.captured, state.defined);
-  if (disagreement !== null) return fail(state, checkpoint, ports, 'schema_disagrees', disagreement);
+  if (disagreement !== null) return failAttempt(state, checkpoint, ports, 'schema_disagrees', disagreement);
   const parts = checkpoint.parts(state.id);
   const completed = state.uploadId === null ? null : await ports.completeUpload(state.prefix, state.uploadId, parts);
   if (completed === null) {
     // An interrupted completion leaves the upload gone and the object present: only the recorded part digests decide.
     const reconciled = await reconcileStored(state, checkpoint, ports, limits, started);
     if (reconciled.pending) return { attempt: state.id, stage: 'download', progressed: true, nextInMs: 0, sourcePaused: false };
-    if (!reconciled.ok) return fail(state, checkpoint, ports, 'staging_unreconciled', reconciled.facts ?? {});
+    if (!reconciled.ok) return failAttempt(state, checkpoint, ports, 'staging_unreconciled', reconciled.facts ?? {});
     checkpoint.update(state.id, { reconciled: 1 });
   } else if (completed.bytes !== state.sqlBytes) {
-    return fail(state, checkpoint, ports, 'staging_unreconciled', { staged: completed.bytes, expected: state.sqlBytes ?? 0 });
+    return failAttempt(state, checkpoint, ports, 'staging_unreconciled', { staged: completed.bytes, expected: state.sqlBytes ?? 0 });
   }
   await checkpoint.setSignedUrl(state.id, null);
   // The staged export is whole and verified. An attempt whose admission is recorded reads the inventory its rows name
@@ -546,8 +542,8 @@ async function inventoryStage(
     checkpoint.update(state.id, { inventoryStartedAt: started });
     state = { ...state, inventoryStartedAt: started };
   }
-  if (state.sqlBytes === null) return fail(state, checkpoint, ports, 'inventory_disagrees', { sqlBytes: -1 });
-  if ((state.admission ?? null) === null) return fail(state, checkpoint, ports, 'staging_incomplete', { admitted: false });
+  if (state.sqlBytes === null) return failAttempt(state, checkpoint, ports, 'inventory_disagrees', { sqlBytes: -1 });
+  if ((state.admission ?? null) === null) return failAttempt(state, checkpoint, ports, 'staging_incomplete', { admitted: false });
   const columns = tableColumnsOf(state.captured);
   const progress: InventoryProgress = {
     parts: state.inventoryParts,
@@ -577,7 +573,7 @@ async function inventoryStage(
       requestMs: limits.requestMs,
     },
   );
-  if ('refusal' in step) return fail(state, checkpoint, ports, INVENTORY_REFUSAL[step.refusal], step.facts);
+  if ('refusal' in step) return failAttempt(state, checkpoint, ports, INVENTORY_REFUSAL[step.refusal], step.facts);
   const found = Object.values(step.progress.objects);
   checkpoint.recordInventory(state.id, step.progress, found);
   if (!step.done) {
@@ -613,7 +609,7 @@ async function copyStage(
   const copyStartedAt = state.copyStartedAt ?? started;
   const left = (at: number): number => limits.copyMs - (at - copyStartedAt);
   const stalled = (at: number): Promise<ContinuationReport> =>
-    fail(state, checkpoint, ports, 'copy_stalled', { elapsedMs: at - copyStartedAt, staged: checkpoint.objectCounts(state.id).staged });
+    failAttempt(state, checkpoint, ports, 'copy_stalled', { elapsedMs: at - copyStartedAt, staged: checkpoint.objectCounts(state.id).staged });
   let progressed = false;
   for (let staged = 0; staged < limits.maxObjectsPerStep; staged += 1) {
     const now = ports.now();
@@ -635,15 +631,15 @@ async function copyStage(
       throw new TransientProducerFailure({ cause: 'transport', status: null, transient: true });
     }
     if (answer.status === 'missing') {
-      return fail(state, checkpoint, ports, 'object_missing', { bytes: object.bytes });
+      return failAttempt(state, checkpoint, ports, 'object_missing', { bytes: object.bytes });
     }
     if (answer.status === 'error') {
       if (answer.failure.transient) throw new TransientProducerFailure(answer.failure);
-      return fail(state, checkpoint, ports, COPY_REFUSAL[answer.failure.cause], { status: answer.failure.status ?? 0 });
+      return failAttempt(state, checkpoint, ports, COPY_REFUSAL[answer.failure.cause], { status: answer.failure.status ?? 0 });
     }
     // A staged copy answers for itself: its size, and the digest the source recorded wherever it recorded one.
     if (answer.bytes !== object.bytes || (object.sha256 !== null && answer.sha256 !== object.sha256)) {
-      return fail(state, checkpoint, ports, 'object_changed', { staged: answer.bytes, expected: object.bytes });
+      return failAttempt(state, checkpoint, ports, 'object_changed', { staged: answer.bytes, expected: object.bytes });
     }
     checkpoint.recordCopied(state.id, object.key, { sha256: answer.sha256, bytes: answer.bytes });
     progressed = true;
@@ -723,9 +719,9 @@ async function completeStaging(
 ): Promise<ContinuationReport> {
   const objects = checkpoint.objects(state.id);
   const unstaged = objects.filter((object) => object.stagedSha256 === null);
-  if (unstaged.length > 0) return fail(state, checkpoint, ports, 'staging_incomplete', { unstaged: unstaged.length });
+  if (unstaged.length > 0) return failAttempt(state, checkpoint, ports, 'staging_incomplete', { unstaged: unstaged.length });
   if (state.databaseSha256 === null || state.databaseBytes === null) {
-    return fail(state, checkpoint, ports, 'staging_incomplete', { database: false });
+    return failAttempt(state, checkpoint, ports, 'staging_incomplete', { database: false });
   }
   const pending = (at: number, completedAt: number): ContinuationReport => {
     if (at - completedAt > limits.publishMs) return unconfirmed(state, checkpoint, at - completedAt);
@@ -739,20 +735,20 @@ async function completeStaging(
     throw new TransientProducerFailure({ cause: 'storage', status: null, transient: true });
   }
   const expected = expectedManifest(state, objects);
-  if (expected === null) return fail(state, checkpoint, ports, 'staging_incomplete', { admitted: false });
+  if (expected === null) return failAttempt(state, checkpoint, ports, 'staging_incomplete', { admitted: false });
   // A staging holding no manifest at all is not the staging admission published.
-  if (read.body === null) return fail(state, checkpoint, ports, 'staging_incomplete', { published: false });
+  if (read.body === null) return failAttempt(state, checkpoint, ports, 'staging_incomplete', { published: false });
 
   let completedAt = state.completedAt;
   if (completedAt !== null) {
     if (read.body === expected(completedAt)) return completed(state, checkpoint, objects.length, state.databaseBytes);
-    if (publishedStatus(read.body) === 'complete') return fail(state, checkpoint, ports, 'staging_changed', { published: true });
+    if (publishedStatus(read.body) === 'complete') return failAttempt(state, checkpoint, ports, 'staging_changed', { published: true });
     if (ports.now() - completedAt > limits.publishMs) return unconfirmed(state, checkpoint, ports.now() - completedAt);
   } else {
-    if (publishedStatus(read.body) === 'complete') return fail(state, checkpoint, ports, 'staging_changed', { published: true });
+    if (publishedStatus(read.body) === 'complete') return failAttempt(state, checkpoint, ports, 'staging_changed', { published: true });
     const now = ports.now();
     if (state.copyStartedAt !== null && now - state.copyStartedAt > limits.copyMs) {
-      return fail(state, checkpoint, ports, 'copy_stalled', { elapsedMs: now - state.copyStartedAt, staged: objects.length });
+      return failAttempt(state, checkpoint, ports, 'copy_stalled', { elapsedMs: now - state.copyStartedAt, staged: objects.length });
     }
     completedAt = now;
     checkpoint.update(state.id, { completedAt });

@@ -11,6 +11,7 @@ import { createBackup, pruneBackups } from '@myco-server-worker/core/backup.js';
 import { backupRetentionPolicy } from '@myco-server-worker/core/backup-retention.js';
 import { freeOrphanedBlobs, TRANSCRIPT_RETENTION_BLOBS_PER_PASS } from '@myco-server-worker/ingest/retention.js';
 import { blobPost, count, journaled, memberHeaders, registeredObject, sqliteEnv } from './helpers/fixtures.js';
+import { legacyBlob, registerBlob } from './helpers/d1.js';
 
 /**
  * The object lifecycle under a store whose operations land late.
@@ -215,7 +216,7 @@ describe('the object lifecycle under late store operations', () => {
     await drainObjectReleases(e.serverEnv, Date.now());
     // The restore owner: the ledger is cleared, the row is back and named under one fresh generation, and the
     // object is copied to the name the row now registers.
-    e.sqlite.run(`INSERT INTO blobs (project_id, key, size, media_type, token_id, received_at) VALUES (?, ?, ?, 'text/plain; charset=utf-8', ?, 0)`, [P, key, bytes.byteLength, t.tokenId]);
+    registerBlob(e.sqlite, { projectId: P, key, size: bytes.byteLength, mediaType: 'text/plain; charset=utf-8', tokenId: t.tokenId, receivedAt: 0 });
     await resetRecoveryLedger(e.db);
     await assignRestoreGeneration(e.db, crypto.randomUUID());
     e.bucket.objects.set(registeredObject(e.sqlite, P, key)!, snapshot);
@@ -308,8 +309,7 @@ describe('upload authority is the only way bytes become registered', () => {
 });
 
 describe('a recovery hold keeps what a release would take, and a decision after it follows the rows and the policy as they stand', () => {
-  const orphan = (e: Env, seed: number) => e.sqlite.run(
-    `INSERT INTO blobs (project_id, key, size, media_type, token_id, received_at) VALUES (?, ?, 1, 'text/plain', 't', 1)`, [P, String(seed).padStart(64, '0')]);
+  const orphan = (e: Env, seed: number) => registerBlob(e.sqlite, { projectId: P, key: String(seed).padStart(64, '0'), size: 1 });
   const drainAll = async (e: Env, now: number) => {
     for (let pass = 0; pass < 64 && (count(e.sqlite, 'blob_release_candidates') + count(e.sqlite, 'backup_release_candidates') + count(e.sqlite, 'object_releases')) > 0; pass += 1) {
       await drainObjectReleases(e.serverEnv, now);
@@ -419,5 +419,32 @@ describe('a recovery hold keeps what a release would take, and a decision after 
     await resetRecoveryLedger(e.db);
     expect(['recovery_holds', 'object_releases', 'blob_reservations', 'backup_release_candidates', 'blob_release_candidates'].map((table) => count(e.sqlite, table)))
       .toEqual([0, 0, 0, 0, 1]);
+  });
+});
+
+describe('the schema fence and rows from before it', () => {
+  it('refuses a registration without a generation and a deletion of a generation row outside the journal, on the real statements', async () => {
+    const e = sqliteEnv();
+    const t = await member(e);
+    await capture(e, t.token);
+    const key = await sha256HexOf(bytes);
+    expect(() => e.sqlite.run(`INSERT INTO blobs (project_id, key, size, media_type, token_id, received_at) VALUES (?, ?, 1, 'text/plain', 't', 1)`, [P, 'b'.repeat(64)]))
+      .toThrow('blob rows register a generation');
+    expect(() => e.sqlite.run('DELETE FROM blobs WHERE project_id = ? AND key = ?', [P, key])).toThrow('blob rows leave through the release journal');
+    expect(registeredObject(e.sqlite, P, key)).not.toBeNull();
+    // The release owner journals the exact object in the same transaction, which the fence admits.
+    expect((await release(e, key)).released).toBe(1);
+    expect(count(e.sqlite, 'blobs')).toBe(0);
+  });
+
+  it('reads, releases and deletes a row registered before step 42 by its legacy name, which the fence leaves unconstrained', async () => {
+    const legacyKey = 'd'.repeat(64);
+    const e = sqliteEnv({ beforeStep42: (db) => legacyBlob(db, { projectId: P, key: legacyKey, size: 6 }) });
+    e.bucket.seed(`${P}/${legacyKey}`, { size: 6, bytes: utf8('legacy') });
+    expect(registeredObject(e.sqlite, P, legacyKey)).toBe(`${P}/${legacyKey}`);
+    expect(await freeOrphanedBlobs(e.serverEnv, Date.now())).toBe(1);
+    expect(journaled(e.sqlite)).toEqual([`${P}/${legacyKey}`]);
+    await drain(e);
+    expect([count(e.sqlite, 'blobs'), e.bucket.objects.has(`${P}/${legacyKey}`)]).toEqual([0, false]);
   });
 });

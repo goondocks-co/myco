@@ -28,8 +28,6 @@ export interface ParityTarget {
   sql(command: string): Promise<Record<string, unknown>[]>;
   /** One wake of the target's own clock: the hosted clock object through the cron floor, the self-hosted wake loop's tick. */
   clockWake(): Promise<void>;
-  /** Stores bytes in the Deployment's blob store under `key`, as a store holding an object written before this build would. */
-  putObject(key: string, bytes: Uint8Array<ArrayBuffer>): Promise<void>;
   /** Whether the runtime serving this target is up, its exit status, its last output, and any failure writing that output. */
   runtime?(): { alive: boolean; exitCode: number | null; tail: string; logFailure?: string };
   stop(): Promise<void>;

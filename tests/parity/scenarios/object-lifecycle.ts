@@ -11,11 +11,10 @@ async function sha256Hex(bytes: Uint8Array<ArrayBuffer>): Promise<string> {
  * - an upload is stored under its own generation, and its row names it;
  * - a deletion journals the exact stored object; an owner's wake never deletes it, and the target's own clock does;
  * - an expired upload authority is consumed by the clock and its generation journaled and deleted;
- * - a row registered before generations reads its bytes by its legacy name, and is released by that name;
  * - an open recovery hold keeps what a deletion released recorded, and the clock releases it once the hold is released.
  */
 export const objectLifecycle: ParityScenario = {
-  name: 'object lifecycle: generation names, clock-owned deletion, expired authority, legacy rows, and a recovery hold',
+  name: 'object lifecycle: generation names, clock-owned deletion, expired authority, and a recovery hold',
   async run(target: ParityTarget) {
     const stamp = Date.now();
     const post = async (sessionId: string, kind: string, payload: Record<string, unknown>) => {
@@ -88,20 +87,6 @@ export const objectLifecycle: ParityScenario = {
     await target.clockWake();
     expect(await target.sql(`SELECT reservation_id FROM blob_reservations WHERE reservation_id = ${lit(abandoned)}`)).toEqual([]);
     expect(await journal(abandoned)).toEqual([]);
-
-    // A row registered before generations reads by its legacy name and is released by it.
-    const legacyText = `legacy body ${stamp}`;
-    const legacyBytes = new TextEncoder().encode(legacyText);
-    const legacy = await sha256Hex(legacyBytes);
-    await target.putObject(`${target.projectId}/${legacy}`, legacyBytes);
-    await target.sql(`INSERT INTO blobs (project_id, key, size, media_type, token_id, received_at)
-      VALUES (${lit(target.projectId)}, ${lit(legacy)}, ${legacyBytes.byteLength}, 'text/plain', ${lit(credential!.id)}, ${stamp})`);
-    expect(await read(legacy)).toEqual({ status: 200, text: legacyText });
-    const legacySession = await attached('legacy', legacy);
-    await tombstone(legacySession);
-    expect(await journal(legacy)).toEqual([`${target.projectId}/${legacy}`]);
-    await target.clockWake();
-    expect(await journal(legacy)).toEqual([]);
 
     // An open hold keeps what a deletion released recorded; the clock releases it once the hold is released.
     const heldKey = await upload(`held body ${stamp}`);

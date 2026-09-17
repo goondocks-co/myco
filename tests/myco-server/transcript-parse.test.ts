@@ -13,6 +13,7 @@
  *     one defect that would lose rows silently and in bulk.
  *   - many passes and one pass produce the same rows.
  */
+import { registerBlob } from './helpers/d1.js';
 import { drainObjectReleases } from '@myco-server-worker/core/object-release.js';
 import { describe, expect, it } from 'bun:test';
 import { Database } from 'bun:sqlite';
@@ -74,9 +75,8 @@ async function rig(text: string, sliceBytes = 1 << 20, opts: { agent?: string } 
   for (let at = 0; at < bytes.length; at += sliceBytes) {
     const slice = bytes.subarray(at, Math.min(at + sliceBytes, bytes.length));
     const key = await sha256HexOf(slice);
-    await serverEnv.blobs.put(`${PROJECT}/${key}`, new Blob([slice]).stream());
-    sqlite.run(`INSERT INTO blobs (project_id, key, size, media_type, token_id, received_at) VALUES (?, ?, ?, ?, ?, ?)
-                ON CONFLICT (project_id, key) DO NOTHING`, [PROJECT, key, slice.length, 'text/plain', issued.tokenId, NOW]);
+    const objectKey = registerBlob(sqlite, { projectId: PROJECT, key, size: slice.length, tokenId: issued.tokenId, receivedAt: NOW });
+    await serverEnv.blobs.put(objectKey, new Blob([slice]).stream());
     sqlite.run(`INSERT INTO transcript_segments (project_id, transcript_id, base_offset, length, blob_key, event_id, created_at, received_at, token_id)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`, [PROJECT, TRANSCRIPT, at, slice.length, key, `e${at}`, NOW, NOW, issued.tokenId]);
   }
@@ -161,9 +161,8 @@ describe('parsing a held transcript', () => {
     for (const text of [context, ending]) {
       const bytes = new TextEncoder().encode(text);
       const key = await sha256HexOf(bytes);
-      await staged.serverEnv.blobs.put(`${PROJECT}/${key}`, new Blob([bytes]).stream());
-      staged.sqlite.run('INSERT INTO blobs (project_id, key, size, media_type, token_id, received_at) VALUES (?, ?, ?, ?, ?, ?)',
-        [PROJECT, key, bytes.length, 'text/plain', staged.tokenId, NOW]);
+      const objectKey = registerBlob(staged.sqlite, { projectId: PROJECT, key, size: bytes.length, tokenId: staged.tokenId, receivedAt: NOW });
+      await staged.serverEnv.blobs.put(objectKey, new Blob([bytes]).stream());
       staged.sqlite.run('INSERT INTO transcript_segments (project_id, transcript_id, base_offset, length, blob_key, event_id, created_at, received_at, token_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
         [PROJECT, TRANSCRIPT, size, bytes.length, key, `e${size}`, NOW, NOW, staged.tokenId]);
       size += bytes.length;
@@ -529,7 +528,7 @@ describe('parsing a held transcript', () => {
   it('stops when the store no longer holds a segment, rather than reading past the hole', async () => {
     const { sqlite, env, serverEnv } = await rig(body(2));
     const key = (sqlite.query(`SELECT blob_key FROM transcript_segments`).get() as { blob_key: string }).blob_key;
-    await serverEnv.blobs.delete(`${PROJECT}/${key}`);
+    await serverEnv.blobs.delete(registeredObject(sqlite, PROJECT, key)!);
     await drain(env, sqlite);
     expect(target(sqlite).parse_error).toBe('blob_absent');
   });
@@ -717,7 +716,7 @@ describe('transcript retention', () => {
   it('collects a blob a deletion left behind, which nothing else can reach', async () => {
     const { sqlite, serverEnv } = await rig(body(1));
     // A blob no row names: what a deletion leaves once its page fills.
-    sqlite.run(`INSERT INTO blobs (project_id, key, size, media_type, token_id, received_at) VALUES (?, ?, 1, 'text/plain', 't', ?)`, [PROJECT, 'f'.repeat(64), NOW]);
+    registerBlob(sqlite, { projectId: PROJECT, key: 'f'.repeat(64), size: 1, receivedAt: NOW });
     expect(await freeOrphanedBlobs(serverEnv, NOW)).toBe(1);
     expect((sqlite.query(`SELECT COUNT(*) c FROM blobs WHERE key = ?`).get('f'.repeat(64)) as { c: number }).c).toBe(0);
   });
@@ -728,7 +727,7 @@ describe('transcript retention', () => {
 
   it('collects orphans whether or not a retention window is set', async () => {
     const { sqlite, serverEnv } = await rig(body(1));
-    sqlite.run(`INSERT INTO blobs (project_id, key, size, media_type, token_id, received_at) VALUES (?, ?, 1, 'text/plain', 't', ?)`, [PROJECT, 'e'.repeat(64), NOW]);
+    registerBlob(sqlite, { projectId: PROJECT, key: 'e'.repeat(64), size: 1, receivedAt: NOW });
     deleted(sqlite);
     // No window: raw segments are kept forever, and bytes nothing references
     // are still not kept.
@@ -738,7 +737,7 @@ describe('transcript retention', () => {
 
   it('does not go looking for orphans on a Deployment where nothing was deleted', async () => {
     const { sqlite, serverEnv } = await rig(body(1));
-    sqlite.run(`INSERT INTO blobs (project_id, key, size, media_type, token_id, received_at) VALUES (?, ?, 1, 'text/plain', 't', ?)`, [PROJECT, 'd'.repeat(64), NOW]);
+    registerBlob(sqlite, { projectId: PROJECT, key: 'd'.repeat(64), size: 1, receivedAt: NOW });
     // The steady state: the scan is the expensive half and nothing could have
     // made an orphan, so it is not run and the row stands until one is.
     expect(await transcriptRetention(serverEnv, NOW)).toBe(0);
@@ -747,7 +746,7 @@ describe('transcript retention', () => {
 
   it('stops looking once a deletion is old enough to have drained', async () => {
     const { sqlite, serverEnv } = await rig(body(1));
-    sqlite.run(`INSERT INTO blobs (project_id, key, size, media_type, token_id, received_at) VALUES (?, ?, 1, 'text/plain', 't', ?)`, [PROJECT, 'c'.repeat(64), NOW]);
+    registerBlob(sqlite, { projectId: PROJECT, key: 'c'.repeat(64), size: 1, receivedAt: NOW });
     deleted(sqlite, NOW - TOMBSTONE_SWEEP_GRACE_MS - 1);
     expect(await transcriptRetention(serverEnv, NOW)).toBe(0);
   });
@@ -760,15 +759,18 @@ describe('transcript retention', () => {
     expect(count(sqlite, 'blobs')).toBe(before);
   });
 
+  /** Where each blob a test stored its bytes, by Project and key; the name outlives the row that registered it. */
+  const placed = new Map<string, string>();
   /** A blob's bytes as the reader would get them, or null when the store no longer holds the object. */
   const readText = async (blobs: { get(key: string): Promise<{ body: ReadableStream } | null> }, projectId: string, key: string): Promise<string | null> => {
-    const object = await blobs.get(`${projectId}/${key}`);
+    const object = await blobs.get(placed.get(`${projectId}/${key}`)!);
     return object === null ? null : new Response(object.body).text();
   };
   /** A blob row and its object under `projectId`, holding `text`. */
   const stored = async (sqlite: Database, blobs: { put(key: string, body: ReadableStream): Promise<unknown> }, projectId: string, key: string, text: string) => {
-    await blobs.put(`${projectId}/${key}`, new Blob([text]).stream());
-    sqlite.run(`INSERT INTO blobs (project_id, key, size, media_type, token_id, received_at) VALUES (?, ?, ?, 'text/plain', 't', ?)`, [projectId, key, text.length, NOW]);
+    const objectKey = registerBlob(sqlite, { projectId, key, size: text.length, receivedAt: NOW });
+    placed.set(`${projectId}/${key}`, objectKey);
+    await blobs.put(objectKey, new Blob([text]).stream());
   };
   const toolCall = (sqlite: Database, projectId: string, id: string, input: string | null, output: string | null) =>
     sqlite.run(`INSERT INTO tool_calls (project_id, tool_call_id, session_id, event_id, tool_name, input_blob_key, output_blob_key, success, created_at, token_id, received_at)

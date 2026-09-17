@@ -31,4 +31,12 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_recovery_holds_open ON recovery_holds ((re
 
 CREATE TABLE IF NOT EXISTS restore_reference_guard (missing TEXT NOT NULL CHECK (missing IS NULL));
 
+CREATE TRIGGER IF NOT EXISTS blobs_require_generation BEFORE INSERT ON blobs WHEN NEW.generation IS NULL
+     BEGIN SELECT RAISE(ABORT, 'blob rows register a generation'); END;
+
+CREATE TRIGGER IF NOT EXISTS blobs_release_through_journal BEFORE DELETE ON blobs
+     WHEN OLD.generation IS NOT NULL
+      AND NOT EXISTS (SELECT 1 FROM object_releases r WHERE r.physical = (OLD.project_id || '/' || OLD.key || COALESCE('~' || OLD.generation, '')))
+     BEGIN SELECT RAISE(ABORT, 'blob rows leave through the release journal'); END;
+
 INSERT OR REPLACE INTO schema_meta (key, value) VALUES ('version', '42');

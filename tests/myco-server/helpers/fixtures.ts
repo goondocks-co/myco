@@ -136,8 +136,8 @@ export function journaled(sqlite: Database): string[] {
 }
 
 /** A SQLite-backed Env with the migrated schema, two projects, recording limiters, an in-memory blob store, and every statement it executes. */
-export function sqliteEnv(opts: { staleBytesWritten?: number; onSql?: (sql: string, sqlite: Database) => void } = {}) {
-  const sqlite: Database = seededSqlite();
+export function sqliteEnv(opts: { staleBytesWritten?: number; onSql?: (sql: string, sqlite: Database) => void; beforeStep42?: (sqlite: Database) => void } = {}) {
+  const sqlite: Database = seededSqlite({ beforeStep42: opts.beforeStep42 });
   const executed: string[] = [];
   const db = sqliteD1(sqlite, {
     onFirst: (sql, row) =>

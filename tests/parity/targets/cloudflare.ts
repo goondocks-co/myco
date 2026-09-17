@@ -177,13 +177,6 @@ export async function bootCloudflare(): Promise<ParityTarget> {
         if (!res.ok) throw new Error(`the scheduled wake answered ${res.status}`);
         await res.body?.cancel();
       },
-      putObject: async (key, bytes) => {
-        const file = path.join(persistDir, `object-${crypto.randomUUID()}`);
-        fs.writeFileSync(file, bytes);
-        try {
-          await wrangler(['r2', 'object', 'put', `myco-server-blobs/${key}`, '--file', file, '--local', '-c', configName, '--persist-to', persistDir]);
-        } finally { fs.rmSync(file, { force: true }); }
-      },
       runtime: () => ({
         alive: exited === null, exitCode: exited, tail: logText.slice(-4_000),
         ...(logFailure === null ? {} : { logFailure }),

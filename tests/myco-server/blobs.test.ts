@@ -1,3 +1,4 @@
+import { registerBlob } from './helpers/d1.js';
 import { describe, it, expect } from 'bun:test';
 import worker from '@myco-server-worker/index.js';
 import { createServer } from '@myco-server-worker/pipeline.js';
@@ -18,7 +19,7 @@ const blobRow = (e: ReturnType<typeof sqliteEnv>, key: string) => e.sqlite.query
 /** Leaves `remaining` bytes of the token's quota unspent by recording a stored blob of the rest, charging the token for it as the store path would. */
 const fillQuota = (e: ReturnType<typeof sqliteEnv>, tokenId: string, remaining: number) => {
   const size = MEMBER_TOKEN_BYTE_QUOTA - remaining;
-  e.sqlite.query(`INSERT INTO blobs (project_id, key, size, media_type, token_id, received_at) VALUES ('proj_1', ?, ?, 'text/plain; charset=utf-8', ?, 0)`).run('f'.repeat(64), size, tokenId);
+  registerBlob(e.sqlite, { projectId: 'proj_1', key: 'f'.repeat(64), size, mediaType: 'text/plain; charset=utf-8', tokenId, receivedAt: 0 });
   e.sqlite.query(`UPDATE member_credentials SET bytes_written = ? WHERE id = ?`).run(size, tokenId);
 };
 const reservations = (e: ReturnType<typeof sqliteEnv>) => count(e.sqlite, 'blob_reservations');
@@ -143,8 +144,7 @@ describe('blob route', () => {
       onSql: (sql, sqlite) => {
         if (!/^INSERT INTO blobs\b/.test(sql) || raced) return;
         raced = true;
-        sqlite.query(`INSERT INTO blobs (project_id, key, size, media_type, token_id, received_at) VALUES (?, ?, ?, ?, ?, ?)`)
-          .run('proj_1', racedKey, bytes.byteLength, 'text/plain; charset=utf-8', 'other', 0);
+        registerBlob(sqlite, { projectId: 'proj_1', key: racedKey, size: bytes.byteLength, mediaType: 'text/plain; charset=utf-8', tokenId: 'other', receivedAt: 0 });
       },
     });
     const t = await issueMemberToken(e.db, { memberId: 'mem_machine_1', machineId: 'machine_1' }, Date.now());
@@ -428,7 +428,7 @@ describe('blob route', () => {
       onSql: (sql, sqlite) => {
         if (!/^UPDATE blob_reservations SET size/.test(sql) || raced) return;
         raced = true;
-        sqlite.query(`INSERT INTO blobs (project_id, key, size, media_type, token_id, received_at) VALUES ('proj_1', ?, ?, 'text/plain; charset=utf-8', 'other', 0)`).run(racedKey, bytes.byteLength);
+        registerBlob(sqlite, { projectId: 'proj_1', key: racedKey, size: bytes.byteLength, mediaType: 'text/plain; charset=utf-8', tokenId: 'other', receivedAt: 0 });
         sqlite.query(`UPDATE member_credentials SET bytes_written = ? WHERE id = ?`).run(MEMBER_TOKEN_BYTE_QUOTA, tokenId);
       },
     });

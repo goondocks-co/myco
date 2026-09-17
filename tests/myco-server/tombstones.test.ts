@@ -9,6 +9,7 @@
  * EVERY kind in the catalogue — a check that lives in a handler would pass a
  * spot test and let the next kind through.
  */
+import { registerBlob } from './helpers/d1.js';
 import { acquireRecoveryHold, drainObjectReleases, releaseRecoveryHold, RELEASE_PAGE } from '@myco-server-worker/core/object-release.js';
 import { describe, expect, it } from 'bun:test';
 import type { Database } from 'bun:sqlite';
@@ -107,7 +108,7 @@ describe('the blobs a deletion leaves', () => {
   const attach = (sqlite: Database, count: number, seed: string) => {
     for (let i = 0; i < count; i += 1) {
       const key = String(i).padStart(64, seed);
-      sqlite.run(`INSERT INTO blobs (project_id, key, size, media_type, token_id, received_at) VALUES (?, ?, 1, 'image/png', 't', ?)`, [SCOPE.projectId, key, NOW]);
+      registerBlob(sqlite, { projectId: SCOPE.projectId, key, size: 1, mediaType: 'image/png', receivedAt: NOW });
       sqlite.run(`INSERT INTO attachments (project_id, attachment_id, session_id, event_id, blob_key, media_type, byte_size, created_at, token_id, received_at)
                   VALUES (?, ?, ?, 'e', ?, 'image/png', 1, ?, 't', ?)`, [SCOPE.projectId, `att-${i}`, SESSION, key, NOW, NOW]);
     }
@@ -157,13 +158,16 @@ describe('the blobs a deletion leaves', () => {
 });
 
 describe('the blobs a deleted session\'s tool calls and raw events name', () => {
+  /** Where each blob a test stored its bytes; the name outlives the row that registered it. */
+  const placed = new Map<string, string>();
   const readText = async (blobs: { get(key: string): Promise<{ body: ReadableStream } | null> }, key: string): Promise<string | null> => {
-    const object = await blobs.get(`${SCOPE.projectId}/${key}`);
+    const object = await blobs.get(placed.get(key)!);
     return object === null ? null : new Response(object.body).text();
   };
   const stored = async (sqlite: Database, blobs: { put(key: string, body: ReadableStream): Promise<unknown> }, key: string, text: string) => {
-    await blobs.put(`${SCOPE.projectId}/${key}`, new Blob([text]).stream());
-    sqlite.run(`INSERT INTO blobs (project_id, key, size, media_type, token_id, received_at) VALUES (?, ?, ?, 'text/plain', 't', ?)`, [SCOPE.projectId, key, text.length, NOW]);
+    const objectKey = registerBlob(sqlite, { projectId: SCOPE.projectId, key, size: text.length, receivedAt: NOW });
+    placed.set(key, objectKey);
+    await blobs.put(objectKey, new Blob([text]).stream());
   };
   const toolCall = (sqlite: Database, session: string, id: string, input: string | null, output: string | null) =>
     sqlite.run(`INSERT INTO tool_calls (project_id, tool_call_id, session_id, event_id, tool_name, input_blob_key, output_blob_key, success, created_at, token_id, received_at)
