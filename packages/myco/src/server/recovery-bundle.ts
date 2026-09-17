@@ -8,6 +8,7 @@ import { SERVER_SCHEMA_VERSION } from '@myco-server-worker/constants.js';
 import { BACKUP_KEY_PREFIX } from '@myco-server-worker/core/backup.js';
 import { BLOB_REFERENCES, kindFilter, referenceLabel } from '@myco-server-worker/core/blob-references.js';
 import { BLOB_KEY_GRAMMAR } from '@myco-server-worker/ingest/kinds.js';
+import { blobArtifactKey, snapshotBlobObject } from '@myco-server-worker/core/blob-objects.js';
 import { atomicWriteFileSync, syncDirectoryForDurability as syncDirectory } from '@myco/utils/atomic-write.js';
 import { LifecycleLock } from '@myco/utils/lifecycle-lock.js';
 import { fingerprintSchema, STAGING_FORMAT } from './recovery-contract.js';
@@ -51,6 +52,8 @@ const manifestSchema = z.discriminatedUnion('format', [
 export type RecoverySource = z.infer<typeof sourceSchema>;
 export type RecoveryBlob = z.infer<typeof blobSchema>;
 type RecoveryObject = RecoveryBlob | z.infer<typeof backupSchema>;
+/** An object as a source adapter reads it: its artifact key, and the key its source store holds its bytes under. */
+export type RecoverySourceObject = RecoveryObject & { source: string };
 export type RecoverySnapshot = Pick<z.infer<typeof snapshotSchema>, 'configuration' | 'credentialsRequired'>;
 export type RecoveryManifest = z.infer<typeof manifestSchema>;
 
@@ -68,8 +71,22 @@ function expectedBackupObject({ key, bytes, sha256 }: CataloguedBackup): Recover
   return sha256 === null ? { key, bytes } : { key, bytes, sha256 };
 }
 
-function registeredObjects(db: Database) {
-  return db.query<RecoveryBlob, []>("SELECT project_id || '/' || key AS key, key AS sha256, size AS bytes FROM blobs ORDER BY project_id, key").iterate();
+/**
+ * Every blob a snapshot registers, by its logical artifact key, with the key its source store holds the bytes under.
+ * The source key comes from the snapshot's own row and generation (`core/blob-objects.ts`); a snapshot whose schema
+ * predates generations names the key without one. A row outside the stored grammar refuses the snapshot.
+ */
+function* registeredObjects(db: Database): Generator<RecoveryBlob & { source: string }> {
+  const generation = db.query("SELECT 1 FROM pragma_table_info('blobs') WHERE name = 'generation'").get() !== null ? 'generation' : 'NULL AS generation';
+  const rows = db.query<{ project_id: unknown; key: unknown; generation: unknown; bytes: unknown }, []>(
+    `SELECT project_id, key, ${generation}, size AS bytes FROM blobs ORDER BY project_id, key`).iterate();
+  for (const row of rows) {
+    let object;
+    try { object = snapshotBlobObject(row); } catch (error) {
+      throw new Error(`recovery database holds an unreadable blob row: ${error instanceof Error ? error.message : String(error)}`);
+    }
+    yield { ...blobSchema.parse({ key: blobArtifactKey(object.projectId, object.key), sha256: object.key, bytes: row.bytes }), source: object.objectKey };
+  }
 }
 
 /** The objects a snapshot registers, by artifact key: its blob rows, and its catalogued backups with their digests. */
@@ -87,8 +104,8 @@ export interface RecoveryAdapter {
   source: RecoverySource;
   /** Write a closed standalone database at databasePath, using workDir for intermediate files. */
   snapshot(databasePath: string, workDir: string): Promise<RecoverySnapshot>;
-  /** Stream a registered blob or catalogued backup from this source, or throw on absence. */
-  blob(object: RecoveryObject, workDir: string): Promise<ReadableStream>;
+  /** Stream a registered blob or catalogued backup from this source, read at its `source` key, or throw on absence. */
+  blob(object: RecoverySourceObject, workDir: string): Promise<ReadableStream>;
 }
 
 /** Size and digest from the same bounded-memory read of a regular file. */
@@ -283,7 +300,7 @@ async function writeRecoveryBundle(
       if (facts.deploymentId !== snapshot.deploymentId || facts.schemaVersion !== snapshot.schemaVersion
         || facts.blobCount !== snapshot.blobCount || facts.blobBytes !== snapshot.blobBytes) throw new Error('recovery manifest does not describe its database');
       const complete = manifest.status === 'complete';
-      const copyObject = async (blob: RecoveryObject, progress: string): Promise<RecoveryBlob> => {
+      const copyObject = async (blob: RecoverySourceObject, progress: string): Promise<RecoveryBlob> => {
         const file = blobPath(root, blob);
         ensureContentDirectory(path.dirname(file), complete);
         if (fs.existsSync(file)) {
@@ -330,12 +347,13 @@ async function writeRecoveryBundle(
       }
       let index = 0;
       for (const row of registeredObjects(db)) {
-        await copyObject(blobSchema.parse(row), `Copying blob ${++index} of ${snapshot.blobCount}`);
+        await copyObject(row, `Copying blob ${++index} of ${snapshot.blobCount}`);
       }
       if (manifest.format === 'myco-recovery/2') {
         for (const [index, backup] of backups.entries()) {
           const receipt = manifest.backupObjects.find((held) => held.key === backup.key);
-          const copied = await copyObject(receipt ?? expectedBackupObject(backup), `Copying catalogued backup ${index + 1} of ${backups.length}`);
+          const object = receipt ?? expectedBackupObject(backup);
+          const copied = await copyObject({ ...object, source: object.key }, `Copying catalogued backup ${index + 1} of ${backups.length}`);
           if (receipt === undefined) {
             manifest.backupObjects.push(copied);
             writeManifest(root, manifest);
@@ -406,9 +424,27 @@ export interface RecoveryObjectDestination {
   put(key: string, body: () => Blob): Promise<void>;
 }
 
-/** Copy missing objects and verify persisted bytes; existing different content is never overwritten. */
+/**
+ * The stored-object key each blob of a prepared restore database registers, by logical artifact key. The prepared
+ * copy decides where the destination holds each blob; a row outside the stored grammar refuses.
+ */
+export function preparedObjectKeys(file: string): Map<string, { objectKey: string; bytes: number }> {
+  const db = new Database(file, { readonly: true, create: false });
+  try {
+    const keys = new Map<string, { objectKey: string; bytes: number }>();
+    for (const row of registeredObjects(db)) keys.set(row.key, { objectKey: row.source, bytes: row.bytes });
+    return keys;
+  } finally { db.close(); }
+}
+
+/**
+ * Copy missing objects and verify persisted bytes; existing different content is never overwritten. Each registered
+ * blob is written under the key `objectKeys` names for it, which the prepared destination database registers; an
+ * artifact blob the prepared database does not register identically refuses before any byte is written.
+ */
 export async function copyRecoveryObjects(
-  source: string, destination: RecoveryObjectDestination, report: (line: string) => void = () => {},
+  source: string, destination: RecoveryObjectDestination, objectKeys: ReadonlyMap<string, { objectKey: string; bytes: number }>,
+  report: (line: string) => void = () => {},
 ): Promise<{ copied: number; reused: number }> {
   const manifest = await completeRecoverySource(source, report);
   const result = { copied: 0, reused: 0 };
@@ -430,16 +466,16 @@ export async function copyRecoveryObjects(
       throw error;
     } finally { reader.releaseLock(); }
   };
-  const copy = async (object: RecoveryBlob) => {
-    const existing = await destination.get(object.key);
+  const copy = async (object: RecoveryBlob, target: string) => {
+    const existing = await destination.get(target);
     if (existing !== null) {
       if (!await matches(existing, object)) throw new Error(`recovery destination holds different bytes for ${object.key}`);
       result.reused++;
     } else {
       const file = blobPath(source, object);
       if (!sameFingerprint(await fingerprintFile(file), object)) throw new Error('source recovery object changed during transfer');
-      await destination.put(object.key, () => Bun.file(file));
-      const persisted = await destination.get(object.key);
+      await destination.put(target, () => Bun.file(file));
+      const persisted = await destination.get(target);
       if (persisted === null || !await matches(persisted, object)) throw new Error(`recovery object failed persisted verification: ${object.key}`);
       result.copied++;
     }
@@ -447,8 +483,13 @@ export async function copyRecoveryObjects(
   };
   const db = openSnapshot(path.join(source, DATABASE_FILE));
   try {
-    for (const row of registeredObjects(db)) await copy(blobSchema.parse(row));
-    if (manifest.format === 'myco-recovery/2') for (const object of manifest.backupObjects) await copy(object);
+    const registered = [...registeredObjects(db)];
+    const unmatched = registered.filter((row) => objectKeys.get(row.key)?.bytes !== row.bytes).length;
+    if (unmatched > 0 || objectKeys.size !== registered.length) {
+      throw new Error('prepared recovery database does not register the artifact\'s blobs; no object was written');
+    }
+    for (const { source: _source, ...row } of registered) await copy(row, objectKeys.get(row.key)!.objectKey);
+    if (manifest.format === 'myco-recovery/2') for (const object of manifest.backupObjects) await copy(object, object.key);
   } finally { db.close(); }
   if (!sameFingerprint(await fingerprintFile(path.join(source, DATABASE_FILE)), manifest.snapshot!.database)) {
     throw new Error('source recovery database changed during object transfer');

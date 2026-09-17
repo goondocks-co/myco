@@ -136,6 +136,7 @@ function recoveryPort(bindings: CloudflareBindings): ServerEnv['recovery'] {
   const object = () => producer.get(producer.idFromName(PRODUCER_NAME));
   return {
     admit: (admission) => object().admit(admission),
+    settleHold: (token) => object().settleHold(token),
     status: () => object().status(),
     noteSchemaDrift: (attempt) => object().noteSchemaDrift(attempt),
   };

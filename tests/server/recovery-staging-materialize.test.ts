@@ -124,7 +124,7 @@ it('completes a staging the materialize command accepts, over a real migrated so
         return new Uint8Array(staged.subarray(offset, offset + bytes));
       },
       digest: async (bytes) => digestOf(bytes),
-      async copyObject(_prefix, key, expected) {
+      async copyObject(_prefix, { key }, expected) {
         const body = sources[key];
         if (body === undefined) return { status: 'missing' };
         const measured = digestOf(body);

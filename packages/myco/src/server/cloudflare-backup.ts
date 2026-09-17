@@ -57,6 +57,6 @@ export async function backupCloudflareDeployment(
       await buildSnapshotDatabase(file, sqlPath, before);
       return { configuration: { ...record }, credentialsRequired: [...LOCAL_SECRET_NAMES] };
     },
-    blob: async (blob) => readBlob(blob.key),
+    blob: async (blob) => readBlob(blob.source),
   }, options.report);
 }

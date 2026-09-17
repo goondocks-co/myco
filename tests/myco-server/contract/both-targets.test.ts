@@ -41,6 +41,7 @@ import { externalDefinitions } from '@myco-server-worker/mcp/external.js';
 
 import { blobPost, envelope, memberPost, sqliteEnv, TEXT_MEDIA_TYPE, uuid } from '../helpers/fixtures.js';
 import { sha256HexOf, utf8 } from '@myco-server-worker/hash.js';
+import { getBlob } from '@myco-server-worker/read/blobs.js';
 
 const temporaryRoots: string[] = [];
 afterAll(() => { for (const root of temporaryRoots) rmSync(root, { recursive: true, force: true }); });
@@ -164,13 +165,15 @@ describe('one server product, two deployment targets', () => {
     agreeing(out, { status: 200, body: { persisted: false, code: 'unknown_field', reason: 'unknown field extra' } });
   });
 
-  it('stores a blob under its digest identically on both, and holds the bytes', async () => {
+  it('stores a blob under its digest identically on both, and holds the bytes under the object its row registers', async () => {
     const bytes = utf8('contract bytes');
     const key = await sha256HexOf(bytes);
     const out = await onBoth(async (t) => t.fetch(blobPost(await t.token(), key, bytes)));
     agreeing(out, { status: 200, body: { stored: true, duplicate: false, key, mediaType: TEXT_MEDIA_TYPE, size: bytes.byteLength } });
     for (const t of TARGETS) {
-      expect({ target: t.name, size: (await t.env.blobs.head(`proj_1/${key}`))?.size ?? null })
+      const row = await getBlob(t.env.db, { projectId: 'proj_1' }, key);
+      expect(row?.objectKey).toStartWith(`proj_1/${key}~`);
+      expect({ target: t.name, size: (await t.env.blobs.head(row!.objectKey))?.size ?? null })
         .toEqual({ target: t.name, size: bytes.byteLength });
     }
   });

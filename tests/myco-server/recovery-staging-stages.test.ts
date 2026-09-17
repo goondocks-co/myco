@@ -144,7 +144,7 @@ async function staged(options: StoreOptions = {}, partBytes = 128) {
       return bytes.subarray(offset, offset + count);
     },
     digest: (value) => digestOf(value),
-    async copyObject(_prefix, key, expected, signal) {
+    async copyObject(_prefix, { key }, expected, signal) {
       calls.copies.push(key);
       if (options.copyObject !== undefined) return options.copyObject(key, expected, signal);
       const held = new Uint8Array(expected.bytes).fill(7);

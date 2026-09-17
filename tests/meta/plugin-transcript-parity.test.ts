@@ -16,6 +16,7 @@
  * Cross-package: the member's hook config and the server's parsers both load
  * here, which is why this lives in `tests/meta/`.
  */
+import { registerBlob } from '../myco-server/helpers/d1.js';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -62,9 +63,8 @@ async function rig() {
 async function parseArm(sqlite: Database, env: { db: unknown; blobs: { put: (k: string, v: ReadableStream) => Promise<unknown> } }, tokenId: string, agent: string, text: string): Promise<void> {
   const bytes = utf8(text);
   const key = await sha256HexOf(bytes);
-  await env.blobs.put(`${PROJECT}/${key}`, new Blob([bytes]).stream());
-  sqlite.run(`INSERT INTO blobs (project_id, key, size, media_type, token_id, received_at) VALUES (?, ?, ?, ?, ?, ?)`,
-             [PROJECT, key, bytes.length, 'text/plain', tokenId, NOW]);
+  const objectKey = registerBlob(sqlite, { projectId: PROJECT, key, size: bytes.length, tokenId, receivedAt: NOW });
+  await env.blobs.put(objectKey, new Blob([bytes]).stream());
   sqlite.run(`INSERT INTO transcripts (project_id, transcript_id, session_id, machine_id, agent, size, segment_count, first_received_at, last_received_at, token_id)
               VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, ?)`,
              [PROJECT, TRANSCRIPT, SESSION, MACHINE, agent, bytes.length, NOW, NOW, tokenId]);

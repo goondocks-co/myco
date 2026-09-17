@@ -12,9 +12,9 @@ import { lit, type ParityScenario, type ParityTarget } from '../harness.ts';
  * once, which says nothing about parity and everything about the list.
  */
 
-/** The report a wake owes at a depth where every job runs: the registry in order, changed where a job did work and zero everywhere else. */
+/** The report an owner's wake owes at a depth where every job runs: the registry in order, less the jobs only the target's own clock runs, changed where a job did work and zero everywhere else. */
 const jobReport = (changed: Record<string, number> = {}) =>
-  SERVER_JOBS.map((job) => ({ name: job.name, changed: changed[job.name] ?? 0, failed: null }));
+  SERVER_JOBS.filter((job) => job.wake === undefined).map((job) => ({ name: job.name, changed: changed[job.name] ?? 0, failed: null }));
 
 export const tick: ParityScenario = {
   name: 'the wake: retention and the stale-run sweep, identical on both targets, idempotent',

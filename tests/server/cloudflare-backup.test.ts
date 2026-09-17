@@ -29,8 +29,10 @@ function fixture() {
   writeDeploymentRecord({ ...record, ...{ unexpectedCredential: 'fixture-private-value' } }, mycoHome);
   const bytes = new Uint8Array([0, 1, 127, 128, 255]);
   const digest = createHash('sha256').update(bytes).digest('hex');
-  source.sqlite.run(`INSERT INTO blobs(project_id,key,size,media_type,token_id,received_at)
-    VALUES ('proj_1',?,?,'application/octet-stream','mt_fixture',1)`, [digest, bytes.length]);
+  // The blob was uploaded under its own generation: R2 holds it under that name, and the artifact keeps the logical key.
+  const generation = crypto.randomUUID();
+  source.sqlite.run(`INSERT INTO blobs(project_id,key,size,media_type,token_id,received_at,generation)
+    VALUES ('proj_1',?,?,'application/octet-stream','mt_fixture',1,?)`, [digest, bytes.length, generation]);
   source.sqlite.run(`INSERT INTO sessions(project_id,session_id,machine_id,created_by_token_id,first_received_at,last_received_at,title)
     VALUES ('proj_1','s_backup','m_fixture','mt_fixture',1,1,'Recovered 🌱 title')`);
   const backupKey = 'backups/lineage__1__bk_pinned.jsonl';
@@ -77,7 +79,7 @@ function fixture() {
     const prefix = `https://api.cloudflare.com/client/v4/accounts/${record.accountId}/r2/buckets/${record.bucketName}/objects/`;
     expect(String(input).startsWith(prefix)).toBe(true);
     const key = String(input).slice(prefix.length);
-    expect([`proj_1/${digest}`, backupKey]).toContain(key);
+    expect([`proj_1/${digest}~${generation}`, backupKey]).toContain(key);
     expect(new Headers(init?.headers).get('Authorization')).toBe('Bearer fixture-operator-token');
     return downloadFails ? new Response('object unavailable', { status: 503 }) : new Response(key === backupKey ? backupBody : bytes);
   };

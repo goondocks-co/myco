@@ -96,7 +96,7 @@ export async function bootCloudflare(): Promise<ParityTarget> {
     // carries the variable; the `d1 execute --json` calls do not.
     const providerLog = path.join(SERVER_DIR, '.wrangler', `parity-dev-${tag}-provider.log`);
     proc = Bun.spawn([
-      'npx', '--no-install', 'wrangler', 'dev', '-c', configName, '--port', String(port), '--inspector-port', '0', '--persist-to', persistDir,
+      'npx', '--no-install', 'wrangler', 'dev', '-c', configName, '--port', String(port), '--inspector-port', '0', '--persist-to', persistDir, '--test-scheduled',
       '--var', `SESSION_SECRET:${SESSION_SECRET}`, '--var', 'GITHUB_CLIENT_ID:parity-client', '--var', 'GITHUB_CLIENT_SECRET:parity-secret', '--var', 'HARNESS_LAUNCH_MODE:record', '--var', 'CLOCK_MODE:manual', '--var', `MYCO_ORIGIN:http://127.0.0.1:${port}`,
     ], {
       cwd: SERVER_DIR, stdout: 'pipe', stderr: 'pipe',
@@ -170,6 +170,12 @@ export async function bootCloudflare(): Promise<ParityTarget> {
         const out = await d1(command);
         const parsed = JSON.parse(out) as Array<{ results: Record<string, unknown>[] }>;
         return parsed[0]?.results ?? [];
+      },
+      clockWake: async () => {
+        // The cron floor's scheduled handler wakes the clock object, which runs its tick as the clock.
+        const res = await fetch(`${url}/__scheduled?cron=${encodeURIComponent('*/15 * * * *')}`);
+        if (!res.ok) throw new Error(`the scheduled wake answered ${res.status}`);
+        await res.body?.cancel();
       },
       runtime: () => ({
         alive: exited === null, exitCode: exited, tail: logText.slice(-4_000),

@@ -1,3 +1,4 @@
+import { registeredObjectKeySql } from './blob-objects.js';
 import type { BlobStore, RelationalStore } from './adapters.js';
 
 /** Text chunks stay below the hosted store's row bound, including four-byte UTF-8 characters. */
@@ -59,13 +60,14 @@ async function* chunks(body: ReadableStream, start: number): AsyncGenerator<Text
 
 /** The single writer of derived blob text. A committed chunk and its resume cursor advance in one transaction. */
 export async function reconcileSearchIndex(db: RelationalStore, blobs: BlobStore, now: number): Promise<number> {
-  const row = await db.prepare(`SELECT q.project_id, q.blob_key, q.next_offset FROM search_blob_queue q
+  const row = await db.prepare(`SELECT q.project_id, q.blob_key, q.next_offset, ${registeredObjectKeySql('q.project_id', 'q.blob_key')} AS object_key
+    FROM search_blob_queue q
     WHERE q.complete = 0 AND (${REFERENCED}) ORDER BY q.attempted_at, q.project_id, q.blob_key LIMIT 1`)
-    .first<{ project_id: string; blob_key: string; next_offset: number }>();
+    .first<{ project_id: string; blob_key: string; next_offset: number; object_key: string | null }>();
   if (row === null) return 0;
   await db.prepare(`UPDATE search_blob_queue SET attempted_at = ? WHERE project_id = ? AND blob_key = ?`)
     .bind(now, row.project_id, row.blob_key).run();
-  const held = await blobs.get(`${row.project_id}/${row.blob_key}`);
+  const held = row.object_key === null ? null : await blobs.get(row.object_key);
   if (held === null) throw new Error('a captured text blob is missing from object storage');
   const page: TextChunk[] = [];
   for await (const chunk of chunks(held.body, row.next_offset)) {

@@ -1,9 +1,10 @@
 import { afterEach, describe, expect, it } from 'bun:test';
-import { sqliteEnv } from './helpers/fixtures.js';
+import { registeredObject, sqliteEnv } from './helpers/fixtures.js';
+import { registerBlob } from './helpers/d1.js';
 import { searchProject, sanitizeFtsQuery, SEARCH_TYPES } from '@myco-server-worker/read/search.js';
 import { pendingSearchBlobs, reconcileSearchIndex, SEARCH_CHUNK_CHARS, SEARCH_CHUNKS_PER_PASS } from '@myco-server-worker/core/search-index.js';
 import { sanitizeFtsQuery as localSanitize } from '@myco/db/queries/search.js';
-import { createBackup, restoreArtifact } from '@myco-server-worker/core/backup.js';
+import { BackupObjectsMissingError, createBackup, restoreArtifact } from '@myco-server-worker/core/backup.js';
 import { runTick, POWER_THRESHOLDS } from '@myco-server-worker/core/tick.js';
 
 const opened: ReturnType<typeof sqliteEnv>[] = [];
@@ -21,8 +22,8 @@ function fixture() {
   const plan = (id: string, content: string | null, blobKey: string | null = null) => insert('plans', { ...base, plan_key: id, machine_id: 'm', status: 'active', title: 'cobalt plan', updated_at: 1000, content, blob_key: blobKey });
   const blob = async (key: string, text: string) => {
     const bytes = new TextEncoder().encode(text);
-    insert('blobs', { project_id: 'search-a', key, size: bytes.length, media_type: 'text/plain', token_id: 't', received_at: 1000 });
-    await f.bucket.put(`search-a/${key}`, new Response(bytes).body);
+    const objectKey = registerBlob(f.sqlite, { projectId: 'search-a', key, size: bytes.length, tokenId: 't', receivedAt: 1000 });
+    await f.bucket.put(objectKey, new Response(bytes).body);
   };
   const search = (query: string, options = {}) => searchProject(f.db, { projectId: 'search-a' }, { query, ...options });
   return { ...f, insert, base, prompt, plan, blob, search };
@@ -59,9 +60,14 @@ describe('full-text search', () => {
     const backup = await createBackup(source.db, source.bucket, { producer: 'test', now: 2000 });
     const artifact = new TextDecoder().decode(source.bucket.objects.get(backup.key)!.bytes);
     expect(artifact).not.toContain('"t":"search_blob');
+    // A backup carries no blob bytes: a target without the body registered refuses the whole artifact before writing.
+    const bare = fixture();
+    await expect(restoreArtifact(bare.db, { text: artifact, allowForeignLineage: true })).rejects.toBeInstanceOf(BackupObjectsMissingError);
+    expect(bare.sqlite.query('SELECT COUNT(*) AS n FROM prompt_batches').get()).toEqual({ n: 0 });
     const target = fixture();
-    target.bucket.objects.set('search-a/restore-body', source.bucket.objects.get('search-a/restore-body')!);
+    await target.blob('restore-body', 'restoredneedle deepbody');
     const result = await restoreArtifact(target.db, { text: artifact, allowForeignLineage: true });
+    expect(result.tables.blobs).toEqual({ rows: 1, inserted: 0, reused: 1 });
     expect(result.tables.prompt_batches.inserted).toBe(1);
     expect((await target.search('restoredneedle')).results.map((r) => r.id)).toEqual(['restored-plan']);
     expect(await pendingSearchBlobs(target.db)).toBe(1);
@@ -141,7 +147,7 @@ describe('full-text search', () => {
 
   it('surfaces missing blobs without falsely completing the index', async () => {
     const f = fixture(); await f.blob('missing', 'secret'); f.prompt('p', null, 'missing');
-    f.bucket.objects.delete('search-a/missing');
+    f.bucket.objects.delete(registeredObject(f.sqlite, 'search-a', 'missing')!);
     await expect(reconcileSearchIndex(f.db, f.bucket, 1)).rejects.toThrow('missing');
     expect((await f.search('secret')).coverage.pending_blobs).toBe(1);
   });

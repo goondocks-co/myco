@@ -8,23 +8,13 @@
 import type { ServerEnv } from '../core/adapters.js';
 import type { OwnerContext } from '../context.js';
 import {
-  BackupApplyError, backupArtifact, BackupIntegrityError, BackupLineageError, BackupSchemaError, BackupTooLargeError,
+  BackupApplyError, backupArtifact, BackupIntegrityError, BackupObjectsMissingError, BackupLineageError, BackupSchemaError, BackupTooLargeError,
   assertBackupSize, createBackup, listBackups, previewRestore, pruneBackups,
   restoreArtifact, restoreBackup, setBackupPinned,
 } from '../core/backup.js';
-import { leafValues } from '../core/settings.js';
+import { backupRetentionPolicy } from '../core/backup-retention.js';
 import { badRequest, notFound, ok, readJsonObject } from './scope.js';
 
-const KEEP_DAILY_DEFAULT = 14;
-const KEEP_WEEKLY_DEFAULT = 8;
-
-const leafNumber = (raw: string | undefined, fallback: number): number => {
-  if (raw === undefined) return fallback;
-  try {
-    const parsed = JSON.parse(raw);
-    return typeof parsed === 'number' && Number.isInteger(parsed) && parsed >= 0 ? parsed : fallback;
-  } catch { return fallback; }
-};
 
 /** The answer for a stored artifact the read path refused: bytes that differ from the evidence its row recorded, or a recorded size past the artifact bound. Neither carries artifact content. */
 const storedArtifactRefusal = (err: unknown): Response | null => {
@@ -35,13 +25,10 @@ const storedArtifactRefusal = (err: unknown): Response | null => {
 
 /** Create one backup, then prune per the retention leaves — fail-closed, in `core/backup.ts`. */
 export async function handleCreateBackup(env: ServerEnv, ctx: OwnerContext): Promise<Response> {
-  const leaves = await leafValues(env.db, ['backup.retention.keep_daily', 'backup.retention.keep_weekly']);
+  const policy = await backupRetentionPolicy(env.db);
   try {
     const backup = await createBackup(env.db, env.blobs, { producer: ctx.member.id, now: ctx.now });
-    const pruned = await pruneBackups(env.db, env.blobs, {
-      keepDaily: leafNumber(leaves.get('backup.retention.keep_daily'), KEEP_DAILY_DEFAULT),
-      keepWeekly: leafNumber(leaves.get('backup.retention.keep_weekly'), KEEP_WEEKLY_DEFAULT),
-    });
+    const pruned = await pruneBackups(env.db, policy, ctx.now);
     return ok({ backup, pruned: pruned.pruned });
   } catch (err) {
     if (err instanceof BackupTooLargeError) return badRequest(err.message);
@@ -85,6 +72,9 @@ export async function handleRestoreBackup(env: ServerEnv, ctx: OwnerContext): Pr
     if (err instanceof BackupSchemaError) {
       return Response.json({ error: 'newer_schema', message: err.message }, { status: 409 });
     }
+    if (err instanceof BackupObjectsMissingError) {
+      return Response.json({ error: 'objects_missing', message: err.message }, { status: 409 });
+    }
     const refusal = storedArtifactRefusal(err);
     if (refusal !== null) return refusal;
     if (err instanceof BackupApplyError || err instanceof SyntaxError) return badRequest(err.message);
@@ -124,6 +114,7 @@ export async function handleRestoreUpload(env: ServerEnv, ctx: OwnerContext): Pr
   } catch (err) {
     if (err instanceof BackupLineageError) return Response.json({ error: 'foreign_lineage', message: err.message }, { status: 409 });
     if (err instanceof BackupSchemaError) return Response.json({ error: 'newer_schema', message: err.message }, { status: 409 });
+    if (err instanceof BackupObjectsMissingError) return Response.json({ error: 'objects_missing', message: err.message }, { status: 409 });
     if (err instanceof BackupTooLargeError) return badRequest('the artifact is past the byte bound this path serves');
     if (err instanceof BackupApplyError) return badRequest(err.message);
     if (err instanceof SyntaxError) return badRequest('the artifact is not a backup this server can read');
