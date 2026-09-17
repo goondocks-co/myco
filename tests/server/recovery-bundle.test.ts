@@ -5,7 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { Database } from 'bun:sqlite';
 import { createBackup } from '@myco-server-worker/core/backup.js';
-import { copyRecoveryBundle, copyRecoveryObjects, createRecoveryBundle, verifyRecoveryBundle, type RecoveryAdapter, type RecoveryObjectDestination } from '@myco/server/recovery-bundle.js';
+import { copyRecoveryBundle, copyRecoveryObjects, createRecoveryBundle, preparedObjectKeys, verifyRecoveryBundle, type RecoveryAdapter, type RecoveryObjectDestination } from '@myco/server/recovery-bundle.js';
 import { sqliteEnv } from '../myco-server/helpers/fixtures.js';
 
 function fixture() {
@@ -72,13 +72,60 @@ describe('verified recovery artifacts', () => {
           objects.set(key, await body().text());
         },
       };
-      await expect(copyRecoveryObjects(f.destination, target)).rejects.toThrow('upload interrupted');
+      await expect(copyRecoveryObjects(f.destination, target, preparedObjectKeys(path.join(f.destination, 'myco.sqlite')))).rejects.toThrow('upload interrupted');
       expect(objects.size).toBe(1);
       fail = false;
-      expect(await copyRecoveryObjects(f.destination, target)).toEqual({ copied: 2, reused: 1 });
-      expect(await copyRecoveryObjects(f.destination, target)).toEqual({ copied: 0, reused: 3 });
+      expect(await copyRecoveryObjects(f.destination, target, preparedObjectKeys(path.join(f.destination, 'myco.sqlite')))).toEqual({ copied: 2, reused: 1 });
+      expect(await copyRecoveryObjects(f.destination, target, preparedObjectKeys(path.join(f.destination, 'myco.sqlite')))).toEqual({ copied: 0, reused: 3 });
       expect(objects).toEqual(f.bodies);
       expect(fs.readFileSync(path.join(f.destination, 'myco.sqlite'))).toEqual(original);
+    } finally { f.cleanup(); }
+  });
+
+  it('reads each blob from the object its snapshot row registered, keeps artifact paths logical, and refuses a row outside the stored grammar', async () => {
+    const f = fixture();
+    try {
+      const [legacy, current] = [...f.bodies.keys()].map((logical) => logical.split('/')[1]!);
+      const generation = crypto.randomUUID();
+      f.source.sqlite.run('UPDATE blobs SET generation = ? WHERE key = ?', [generation, current]);
+      const sources: string[] = [];
+      const adapter: RecoveryAdapter = { ...f.adapter, blob: async (object) => { sources.push(object.source); return f.adapter.blob(object, ''); } };
+      await createRecoveryBundle(f.destination, adapter);
+      expect(sources.sort()).toEqual([`proj_1/${legacy}`, `proj_1/${current}~${generation}`].sort());
+      for (const [logical, body] of f.bodies) expect(fs.readFileSync(path.join(f.destination, 'blobs', ...logical.split('/')), 'utf8')).toBe(body);
+
+      const malformed = path.join(f.root, 'malformed');
+      // A substituted mapping no writer produces: the stored CHECK is set aside to plant it in the snapshot's source.
+      f.source.sqlite.run('PRAGMA ignore_check_constraints = ON');
+      f.source.sqlite.run(`UPDATE blobs SET generation = '../${generation.slice(3)}' WHERE key = ?`, [current]);
+      await expect(createRecoveryBundle(malformed, adapter)).rejects.toThrow();
+      expect(fs.existsSync(path.join(malformed, 'recovery.json')) && JSON.parse(fs.readFileSync(path.join(malformed, 'recovery.json'), 'utf8')).status === 'complete').toBe(false);
+    } finally { f.cleanup(); }
+  });
+
+  it('writes restored objects under the generation the prepared database registers, and refuses a prepared database that registers other blobs before writing', async () => {
+    const f = fixture();
+    try {
+      await createRecoveryBundle(f.destination, f.adapter);
+      const prepared = path.join(f.root, 'prepared.sqlite');
+      fs.copyFileSync(path.join(f.destination, 'myco.sqlite'), prepared);
+      const generation = crypto.randomUUID();
+      const db = new Database(prepared);
+      try { db.run('UPDATE blobs SET generation = ?', [generation]); } finally { db.close(); }
+      const objects = new Map<string, string>();
+      const target: RecoveryObjectDestination = {
+        get: async (key) => objects.has(key) ? new Response(objects.get(key)!).body : null,
+        put: async (key, body) => { objects.set(key, await body().text()); },
+      };
+      expect(await copyRecoveryObjects(f.destination, target, preparedObjectKeys(prepared))).toEqual({ copied: 2, reused: 0 });
+      expect([...objects.keys()].sort()).toEqual([...f.bodies.keys()].map((logical) => `${logical}~${generation}`).sort());
+
+      const other = new Database(prepared);
+      try { other.run('DELETE FROM blobs WHERE rowid = (SELECT MIN(rowid) FROM blobs)'); } finally { other.close(); }
+      let writes = 0;
+      const counting: RecoveryObjectDestination = { get: async () => null, put: async () => { writes += 1; } };
+      await expect(copyRecoveryObjects(f.destination, counting, preparedObjectKeys(prepared))).rejects.toThrow('does not register');
+      expect(writes).toBe(0);
     } finally { f.cleanup(); }
   });
 
@@ -91,13 +138,13 @@ describe('verified recovery artifacts', () => {
         get: async () => new Response('unrelated bytes').body,
         put: async () => { writes++; },
       };
-      await expect(copyRecoveryObjects(f.destination, occupied)).rejects.toThrow('different bytes');
+      await expect(copyRecoveryObjects(f.destination, occupied, preparedObjectKeys(path.join(f.destination, 'myco.sqlite')))).rejects.toThrow('different bytes');
       expect(writes).toBe(0);
       const corrupt: RecoveryObjectDestination = {
         get: async () => writes === 0 ? null : new Response('wrong').body,
         put: async () => { writes++; },
       };
-      await expect(copyRecoveryObjects(f.destination, corrupt)).rejects.toThrow('persisted verification');
+      await expect(copyRecoveryObjects(f.destination, corrupt, preparedObjectKeys(path.join(f.destination, 'myco.sqlite')))).rejects.toThrow('persisted verification');
       expect(writes).toBe(1);
     } finally { f.cleanup(); }
   });

@@ -19,6 +19,8 @@ import { dispatchEmbeddingWork } from './embedding/jobs.js';
 import { reclaimEnrollmentAuthorities } from '../auth/enrollment.js';
 import { parseTranscripts } from '../ingest/parse.js';
 import { transcriptRetention } from '../ingest/retention.js';
+import { drainObjectReleases } from './object-release.js';
+import { recoveryHoldRelease } from './recovery-hold.js';
 import { backfillImportedTitles, titleReadySessions } from './titling.js';
 
 /** The retention window when the leaf is unset, and the bounds the leaf itself declares. */
@@ -152,6 +154,12 @@ export const JOB_IMPLEMENTATIONS: Readonly<Record<string, JobRun>> = {
   'session-titling': titleReadySessions,
   'titling-backfill': backfillImportedTitles,
   'transcript-retention': transcriptRetention,
+  // #1316 — object lifecycle
+  'recovery-hold-release': recoveryHoldRelease,
+  'object-release-drain': async (env, now) => {
+    const drained = await drainObjectReleases(env, now);
+    return drained.expired + drained.deleted + drained.decided;
+  },
   // #1151 — worker mode
   'worker-lease-sweep': (env, now) => expireLeases(env, now),
 };

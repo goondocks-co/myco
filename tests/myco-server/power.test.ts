@@ -93,7 +93,8 @@ describe('the next wake', () => {
 
 describe('what runs at each depth', () => {
   it('runs nothing at all in deep sleep', () => {
-    expect(jobsDueAt('deep_sleep')).toEqual([]);
+    expect(jobsDueAt('deep_sleep', 'clock')).toEqual([]);
+    expect(jobsDueAt('deep_sleep', 'request')).toEqual([]);
   });
 
   /**
@@ -113,9 +114,18 @@ describe('what runs at each depth', () => {
   });
 
   it('still runs query-only housekeeping while sleeping: every job declared to run through sleep, and no other', () => {
-    const due = jobsDueAt('sleep').map((j) => j.name);
+    const due = jobsDueAt('sleep', 'clock').map((j) => j.name);
     expect(due).toEqual(SERVER_JOBS.filter((j) => j.runsThrough === 'sleep').map((j) => j.name));
-    expect(due).toEqual(expect.arrayContaining(['agent-run-retention', 'run-stale-sweep']));
+    expect(due).toEqual(expect.arrayContaining(['agent-run-retention', 'run-stale-sweep', 'object-release-drain']));
+  });
+
+  it('runs a clock-owned job on the target\'s own clock alone: a tick an owner requests never drains stored objects', () => {
+    const owned = SERVER_JOBS.filter((j) => j.wake === 'clock').map((j) => j.name);
+    expect(owned).toEqual(['object-release-drain']);
+    for (const state of ['active', 'idle', 'sleep'] as const) {
+      expect(jobsDueAt(state, 'request').map((j) => j.name).filter((name) => owned.includes(name))).toEqual([]);
+      expect(jobsDueAt(state, 'clock').map((j) => j.name)).toEqual(expect.arrayContaining(owned));
+    }
   });
 
   it('gives every job the tick runs an implementation, and names no deferred job twice', () => {

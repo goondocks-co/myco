@@ -13,6 +13,7 @@
  *     one defect that would lose rows silently and in bulk.
  *   - many passes and one pass produce the same rows.
  */
+import { drainObjectReleases } from '@myco-server-worker/core/object-release.js';
 import { describe, expect, it } from 'bun:test';
 import { Database } from 'bun:sqlite';
 import {
@@ -30,7 +31,7 @@ import { listUnprocessedPrompts } from '@myco-server-worker/read/prompts.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { sqliteEnv, count, uuid } from './helpers/fixtures.js';
+import { sqliteEnv, count, registeredObject, uuid } from './helpers/fixtures.js';
 
 const FIXTURES = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'fixtures');
 import { issueMemberToken } from '@myco-server-worker/auth/tokens.js';
@@ -717,7 +718,7 @@ describe('transcript retention', () => {
     const { sqlite, serverEnv } = await rig(body(1));
     // A blob no row names: what a deletion leaves once its page fills.
     sqlite.run(`INSERT INTO blobs (project_id, key, size, media_type, token_id, received_at) VALUES (?, ?, 1, 'text/plain', 't', ?)`, [PROJECT, 'f'.repeat(64), NOW]);
-    expect(await freeOrphanedBlobs(serverEnv)).toBe(1);
+    expect(await freeOrphanedBlobs(serverEnv, NOW)).toBe(1);
     expect((sqlite.query(`SELECT COUNT(*) c FROM blobs WHERE key = ?`).get('f'.repeat(64)) as { c: number }).c).toBe(0);
   });
 
@@ -755,7 +756,7 @@ describe('transcript retention', () => {
     const { sqlite, serverEnv, env } = await rig(body(1));
     await drain(env, sqlite);
     const before = count(sqlite, 'blobs');
-    expect(await freeOrphanedBlobs(serverEnv)).toBe(0);
+    expect(await freeOrphanedBlobs(serverEnv, NOW)).toBe(0);
     expect(count(sqlite, 'blobs')).toBe(before);
   });
 
@@ -785,7 +786,7 @@ describe('transcript retention', () => {
     deleted(sqlite);
 
     expect(await transcriptRetention(serverEnv, NOW)).toBe(0);
-    expect(await freeOrphanedBlobs(serverEnv)).toBe(0);
+    expect(await freeOrphanedBlobs(serverEnv, NOW)).toBe(0);
     expect(await readText(serverEnv.blobs, PROJECT, input)).toBe('tool input');
     expect(await readText(serverEnv.blobs, PROJECT, output)).toBe('tool output');
     expect(await readText(serverEnv.blobs, PROJECT, summary)).toBe('compaction summary');
@@ -801,6 +802,7 @@ describe('transcript retention', () => {
     deleted(sqlite);
 
     expect(await transcriptRetention(serverEnv, NOW)).toBe(1);
+    await drainObjectReleases(serverEnv, NOW);
     expect(await readText(serverEnv.blobs, PROJECT, key)).toBe('shared content');
     expect(await readText(serverEnv.blobs, 'proj_2', key)).toBeNull();
     expect(sqlite.query(`SELECT project_id FROM blobs WHERE key = ?`).all(key)).toEqual([{ project_id: PROJECT }]);
@@ -815,8 +817,10 @@ describe('transcript retention', () => {
     sqlite.run(`UPDATE transcript_segments SET created_at = ?`, [NOW - 5 * 86_400_000]);
 
     expect(await transcriptRetention(serverEnv, NOW)).toBe(1);
+    await drainObjectReleases(serverEnv, NOW);
     expect(count(sqlite, 'transcript_segments')).toBe(0);
-    expect(await readText(serverEnv.blobs, PROJECT, key)).toBe(body(1));
+    const object = await serverEnv.blobs.get(registeredObject(sqlite, PROJECT, key)!);
+    expect(object === null ? null : await new Response(object.body).text()).toBe(body(1));
     expect(count(sqlite, 'blobs')).toBe(1);
   });
 

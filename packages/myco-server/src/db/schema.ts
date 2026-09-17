@@ -1370,13 +1370,52 @@ const V41_STATEMENTS: readonly string[] = [
   `ALTER TABLE backups ADD COLUMN sha256 TEXT CHECK (sha256 IS NULL OR (length(sha256) = 64 AND sha256 NOT GLOB '*[^0-9a-f]*'))`,
 ];
 
+/**
+ * v42: the object lifecycle.
+ *
+ * - `blobs.generation` names the stored object a row registered: `<project>/<key>~<generation>`, a lowercase UUID the
+ *   upload's own reservation minted. NULL names the object at `<project>/<key>`, which only rows registered before this
+ *   step carry.
+ * - `object_releases` journals stored objects nothing registers, each by its physical key, until a store delete of it is
+ *   acknowledged.
+ * - `blob_release_candidates` and `backup_release_candidates` hold what a deletion may have freed, recorded in the
+ *   transaction that removed the rows naming it, until a decision with no recovery hold open judges it.
+ * - `recovery_holds` records each hold a recovery export takes; at most one is open.
+ * - `restore_reference_guard` never holds a row: an additive restore inserts into it to abort a batch whose rows would
+ *   name a blob this Deployment does not register.
+ */
+const V42_STATEMENTS: readonly string[] = [
+  `ALTER TABLE blobs ADD COLUMN generation TEXT CHECK (generation IS NULL OR (length(generation) = 36 AND generation NOT GLOB '*[^0-9a-f-]*'))`,
+  `CREATE TABLE IF NOT EXISTS object_releases (
+     physical   TEXT PRIMARY KEY,
+     kind       TEXT NOT NULL CHECK (kind IN ('blob', 'upload', 'backup')),
+     created_at INTEGER NOT NULL)`,
+  `CREATE INDEX IF NOT EXISTS idx_object_releases_created ON object_releases (created_at)`,
+  `CREATE INDEX IF NOT EXISTS idx_blob_reservations_expiry ON blob_reservations (expires_at)`,
+  `CREATE TABLE IF NOT EXISTS blob_release_candidates (
+     project_id TEXT NOT NULL CHECK (${PROJECT_ID_GRAMMAR}),
+     key        TEXT NOT NULL,
+     created_at INTEGER NOT NULL,
+     PRIMARY KEY (project_id, key))`,
+  `CREATE TABLE IF NOT EXISTS backup_release_candidates (
+     id         TEXT PRIMARY KEY,
+     created_at INTEGER NOT NULL)`,
+  `CREATE TABLE IF NOT EXISTS recovery_holds (
+     token          TEXT PRIMARY KEY,
+     acquired_at    INTEGER NOT NULL,
+     released_at    INTEGER,
+     release_reason TEXT)`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS idx_recovery_holds_open ON recovery_holds ((released_at IS NULL)) WHERE released_at IS NULL`,
+  `CREATE TABLE IF NOT EXISTS restore_reference_guard (missing TEXT NOT NULL CHECK (missing IS NULL))`,
+];
+
 function withStamp(version: number, statements: readonly string[]): SchemaStep {
   return { version, statements: [...statements, `INSERT OR REPLACE INTO schema_meta (key, value) VALUES ('version', '${version}')`] };
 }
 
 /** Ordered schema steps; each step's last statement stamps its version. A database at version n receives steps n+1 and later. Step 2 opens with two guard tables, ahead of every ADD COLUMN so a repaired database re-applies the step whole: one CHECK fails when an existing project id is out of grammar, the other when a session has no machine identity and the token that minted it has none to backfill from. The step aborts on the guard's insert and the applier records nothing. Identity binding reads `machine_id`, so a session that kept a NULL refuses every later write to itself; BREAK-GLASS.md carries the repair. */
 
-export const SCHEMA_STEPS: readonly SchemaStep[] = [withStamp(1, V1_STATEMENTS), withStamp(2, V2_STATEMENTS), withStamp(3, V3_STATEMENTS), withStamp(4, V4_STATEMENTS), withStamp(5, V5_STATEMENTS), withStamp(6, V6_STATEMENTS), withStamp(7, V7_STATEMENTS), withStamp(8, V8_STATEMENTS), withStamp(9, V9_STATEMENTS), withStamp(10, V10_STATEMENTS), withStamp(11, V11_STATEMENTS), withStamp(12, V12_STATEMENTS), withStamp(13, V13_STATEMENTS), withStamp(14, V14_STATEMENTS), withStamp(15, V15_STATEMENTS), withStamp(16, V16_STATEMENTS), withStamp(17, V17_STATEMENTS), withStamp(18, V18_STATEMENTS), withStamp(19, V19_STATEMENTS), withStamp(20, V20_STATEMENTS), withStamp(21, V21_STATEMENTS), withStamp(22, V22_STATEMENTS), withStamp(23, V23_STATEMENTS), withStamp(24, V24_STATEMENTS), withStamp(25, V25_STATEMENTS), withStamp(26, V26_STATEMENTS), withStamp(27, V27_STATEMENTS), withStamp(28, V28_STATEMENTS), withStamp(29, V29_STATEMENTS), withStamp(30, V30_STATEMENTS), withStamp(31, V31_STATEMENTS), withStamp(32, V32_STATEMENTS), withStamp(33, V33_STATEMENTS), withStamp(34, V34_STATEMENTS), withStamp(35, V35_STATEMENTS), withStamp(36, V36_STATEMENTS), withStamp(37, V37_STATEMENTS), withStamp(38, V38_STATEMENTS), withStamp(39, V39_STATEMENTS), withStamp(40, V40_STATEMENTS), withStamp(41, V41_STATEMENTS)];
+export const SCHEMA_STEPS: readonly SchemaStep[] = [withStamp(1, V1_STATEMENTS), withStamp(2, V2_STATEMENTS), withStamp(3, V3_STATEMENTS), withStamp(4, V4_STATEMENTS), withStamp(5, V5_STATEMENTS), withStamp(6, V6_STATEMENTS), withStamp(7, V7_STATEMENTS), withStamp(8, V8_STATEMENTS), withStamp(9, V9_STATEMENTS), withStamp(10, V10_STATEMENTS), withStamp(11, V11_STATEMENTS), withStamp(12, V12_STATEMENTS), withStamp(13, V13_STATEMENTS), withStamp(14, V14_STATEMENTS), withStamp(15, V15_STATEMENTS), withStamp(16, V16_STATEMENTS), withStamp(17, V17_STATEMENTS), withStamp(18, V18_STATEMENTS), withStamp(19, V19_STATEMENTS), withStamp(20, V20_STATEMENTS), withStamp(21, V21_STATEMENTS), withStamp(22, V22_STATEMENTS), withStamp(23, V23_STATEMENTS), withStamp(24, V24_STATEMENTS), withStamp(25, V25_STATEMENTS), withStamp(26, V26_STATEMENTS), withStamp(27, V27_STATEMENTS), withStamp(28, V28_STATEMENTS), withStamp(29, V29_STATEMENTS), withStamp(30, V30_STATEMENTS), withStamp(31, V31_STATEMENTS), withStamp(32, V32_STATEMENTS), withStamp(33, V33_STATEMENTS), withStamp(34, V34_STATEMENTS), withStamp(35, V35_STATEMENTS), withStamp(36, V36_STATEMENTS), withStamp(37, V37_STATEMENTS), withStamp(38, V38_STATEMENTS), withStamp(39, V39_STATEMENTS), withStamp(40, V40_STATEMENTS), withStamp(41, V41_STATEMENTS), withStamp(42, V42_STATEMENTS)];
 
 /** Every statement of every step, in application order. */
 export const SCHEMA_DDL: readonly string[] = SCHEMA_STEPS.flatMap((s) => s.statements);

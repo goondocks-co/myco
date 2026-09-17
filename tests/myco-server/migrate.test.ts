@@ -49,6 +49,7 @@ const SHIPPED_MIGRATION_DIGESTS: Record<string, string> = {
   '0039_v39.sql': '8b1636924f5b298585f322bdd45532ce92b28b5b0e910ec1f9224be7527f8301',
   '0040_v40.sql': '0071ef8a116a057d8330378faad7b55a902ccf60e4d91aee06d9b7331f641022',
   '0041_v41.sql': 'b66e750cead64ba4385ff685929f80a3d688478c21c0c48c5c72598d11224efb',
+  '0042_v42.sql': '3554e08fa421d2fb927117b14a895a702e50c7e8a0c6143cb9d4ba4f6429b587',
 };
 const sha256 = (bytes: Buffer): string => createHash('sha256').update(bytes).digest('hex');
 
@@ -94,7 +95,7 @@ describe('versioned schema steps', () => {
       sqlite.run(`INSERT INTO agent_reports (project_id, run_id, agent_id, action, summary, created_at)
         VALUES ('proj_1', 'run_old', 'agent_old', 'note', 'Existing history', 1)`);
       const before = sqlite.query('SELECT * FROM agent_reports').all();
-      expect(await applySchemaSteps(sqliteD1(sqlite))).toEqual([37, 38, 39, 40, 41]);
+      expect(await applySchemaSteps(sqliteD1(sqlite))).toEqual([37, 38, 39, 40, 41, 42]);
       expect(sqlite.query('SELECT * FROM agent_reports').all()).toEqual(before);
       expect(sqlite.query('SELECT * FROM backup_restore_progress').all()).toEqual([]);
       expect(await applySchemaSteps(sqliteD1(sqlite))).toEqual([]);
@@ -108,13 +109,35 @@ describe('versioned schema steps', () => {
       sqlite.run(`INSERT INTO backups (id, key, created_at, size_bytes, counts_json, schema_version, producer, pinned)
         VALUES ('bk_old', 'backups/lineage__1__bk_old.jsonl', 1, 40, '{}', 13, 'mem_1', 1)`);
       const before = sqlite.query<Record<string, unknown>, []>('SELECT * FROM backups').get();
-      expect(await applySchemaSteps(sqliteD1(sqlite))).toEqual([41]);
+      expect(await applySchemaSteps(sqliteD1(sqlite))).toEqual([41, 42]);
       expect(sqlite.query('SELECT * FROM backups').get()).toEqual({ ...before, sha256: null });
       expect(await applySchemaSteps(sqliteD1(sqlite))).toEqual([]);
       const insert = (sha256: string) => sqlite.run(`INSERT INTO backups (id, key, created_at, size_bytes, counts_json, schema_version, producer, pinned, sha256)
         VALUES (?, 'backups/lineage__2__bk_new.jsonl', 2, 40, '{}', 41, 'mem_1', 0, ?)`, [`bk_${sha256.length}`, sha256]);
       for (const invalid of ['A'.repeat(64), 'a'.repeat(63), 'g'.repeat(64)]) expect(() => insert(invalid)).toThrow('CHECK constraint failed');
       insert('a'.repeat(64));
+    } finally { sqlite.close(); }
+  });
+
+  it('adds the object lifecycle to v41: an existing blob keeps its legacy object name, and every new table and guard admits only its grammar', async () => {
+    const sqlite = fresh();
+    try {
+      await applySchemaSteps(sqliteD1(sqlite), SCHEMA_STEPS.filter(({ version }) => version <= 41));
+      sqlite.run(`INSERT INTO blobs (project_id, key, size, media_type, token_id, received_at) VALUES ('proj_1', ?, 3, 'text/plain', 't1', 1)`, ['a'.repeat(64)]);
+      const before = sqlite.query<Record<string, unknown>, []>('SELECT * FROM blobs').get();
+      expect(await applySchemaSteps(sqliteD1(sqlite))).toEqual([42]);
+      expect(sqlite.query('SELECT * FROM blobs').get()).toEqual({ ...before, generation: null });
+      expect(await applySchemaSteps(sqliteD1(sqlite))).toEqual([]);
+      const generation = (value: string) => sqlite.run(`INSERT INTO blobs (project_id, key, size, media_type, token_id, received_at, generation)
+        VALUES ('proj_1', ?, 3, 'text/plain', 't1', 1, ?)`, [`${value.length}`.padStart(64, 'b'), value]);
+      for (const invalid of ['A1b2c3d4-0000-4000-8000-000000000000', 'short', `${'0'.repeat(35)}/`]) expect(() => generation(invalid)).toThrow('CHECK constraint failed');
+      generation(crypto.randomUUID());
+      expect(() => sqlite.run(`INSERT INTO object_releases (physical, kind, created_at) VALUES ('p/k', 'other', 1)`)).toThrow('CHECK constraint failed');
+      sqlite.run(`INSERT INTO recovery_holds (token, acquired_at) VALUES ('h1', 1)`);
+      expect(() => sqlite.run(`INSERT INTO recovery_holds (token, acquired_at) VALUES ('h2', 2)`)).toThrow('UNIQUE constraint failed');
+      sqlite.run(`UPDATE recovery_holds SET released_at = 3 WHERE token = 'h1'`);
+      sqlite.run(`INSERT INTO recovery_holds (token, acquired_at) VALUES ('h2', 4)`);
+      for (const value of [null, 'k']) expect(() => sqlite.run('INSERT INTO restore_reference_guard (missing) VALUES (?)', [value])).toThrow('constraint failed');
     } finally { sqlite.close(); }
   });
 
@@ -135,7 +158,7 @@ describe('versioned schema steps', () => {
       session('no-transcript', null);
       session('already-named', 'cursor'); transcript('already-named', 'tx7', 'codex');
       const before = sqlite.query<Record<string, unknown>, []>('SELECT * FROM sessions ORDER BY session_id').all();
-      expect(await applySchemaSteps(sqliteD1(sqlite))).toEqual([40, 41]);
+      expect(await applySchemaSteps(sqliteD1(sqlite))).toEqual([40, 41, 42]);
       const after = sqlite.query<Record<string, unknown>, []>('SELECT * FROM sessions ORDER BY session_id').all();
       const agents = Object.fromEntries(after.map((row) => [row.session_id, row.agent]));
       expect(agents).toEqual({ 'one-agent': 'codex', 'two-transcripts-one-agent': 'claude-code', 'two-agents': null, 'unnamed-transcript': null, 'no-transcript': null, 'already-named': 'cursor' });
@@ -152,7 +175,7 @@ describe('versioned schema steps', () => {
       sqlite.run(`INSERT INTO sessions (project_id, session_id, machine_id, created_by_token_id, first_received_at, last_received_at, ended_at, title, summary, titled_at, titled_by)
         VALUES ('proj_1', 'old', 'm1', 't1', 1, 2, 2, 'Existing title', 'Existing summary', 2, 'mem_1')`);
       const before = sqlite.query<Record<string, unknown>, []>('SELECT * FROM sessions').get();
-      expect(await applySchemaSteps(sqliteD1(sqlite))).toEqual([39, 40, 41]);
+      expect(await applySchemaSteps(sqliteD1(sqlite))).toEqual([39, 40, 41, 42]);
       expect(sqlite.query('SELECT * FROM sessions').get()).toEqual({ ...before, ended_by: null });
       expect(await applySchemaSteps(sqliteD1(sqlite))).toEqual([]);
     } finally { sqlite.close(); }
@@ -165,7 +188,7 @@ describe('versioned schema steps', () => {
       sqlite.run(`INSERT INTO sessions (project_id, session_id, machine_id, created_by_token_id, first_received_at, last_received_at, ended_at, title, summary)
         VALUES ('proj_1', 'old', 'm1', 't1', 1, 2, 2, 'Existing title', 'Existing summary')`);
       const before = sqlite.query<Record<string, unknown>, []>('SELECT * FROM sessions').get();
-      expect(await applySchemaSteps(sqliteD1(sqlite))).toEqual([36, 37, 38, 39, 40, 41]);
+      expect(await applySchemaSteps(sqliteD1(sqlite))).toEqual([36, 37, 38, 39, 40, 41, 42]);
       expect(sqlite.query('SELECT * FROM sessions').get()).toEqual({ ...before, titling_requested_at: null, ended_by: null });
       expect(await applySchemaSteps(sqliteD1(sqlite))).toEqual([]);
     } finally { sqlite.close(); }
@@ -178,7 +201,7 @@ describe('versioned schema steps', () => {
       sqlite.run(`INSERT INTO transcripts (project_id, transcript_id, session_id, machine_id, agent, size, parsed_offset, first_received_at, last_received_at, token_id)
         VALUES ('proj_1', 'tx_1', 's1', 'm1', 'codex', 1000, 500, 1, 2, 't1')`);
       const before = sqlite.query<Record<string, unknown>, []>('SELECT * FROM transcripts').get();
-      expect(await applySchemaSteps(sqliteD1(sqlite))).toEqual([35, 36, 37, 38, 39, 40, 41]);
+      expect(await applySchemaSteps(sqliteD1(sqlite))).toEqual([35, 36, 37, 38, 39, 40, 41, 42]);
       expect(sqlite.query('SELECT * FROM transcripts').get()).toEqual({ ...before, parser_context: null });
       expect(await applySchemaSteps(sqliteD1(sqlite))).toEqual([]);
     } finally {
@@ -405,7 +428,8 @@ describe('versioned schema steps', () => {
       sqlite.exec('SAVEPOINT grammar_probe');
       const insert = (projectId: string) => {
         const names = cols.map((c) => c.name);
-        const values = cols.map((c) => (c.name === 'project_id' ? `'${projectId}'` : c.type === 'INTEGER' ? '0' : `'x'`));
+        // A blob's generation is NULL or a UUID, and NULL is its legacy form.
+        const values = cols.map((c) => (c.name === 'project_id' ? `'${projectId}'` : t === 'blobs' && c.name === 'generation' ? 'NULL' : c.type === 'INTEGER' ? '0' : `'x'`));
         sqlite.query(`INSERT INTO ${t} (${names.join(', ')}) VALUES (${values.join(', ')})`).run();
       };
       expect(() => insert('bad/id')).toThrow(/CHECK constraint failed/);
@@ -419,7 +443,7 @@ describe('versioned schema steps', () => {
     }
     expect(checked.sort()).toEqual([
       'agent_reports', 'agent_run_events', 'agent_run_write_intents', 'agent_runs', 'agent_state', 'agent_turns',
-      'attachments', 'blob_reservations', 'blobs', 'canopy_maps', 'cortex_instructions', 'digest_extract_revisions', 'digest_extracts', 'embedding_cursors', 'embedding_hubness_work', 'embedding_receipts', 'embedding_versions', 'enrollment_authorities', 'external_grants',
+      'attachments', 'blob_release_candidates', 'blob_reservations', 'blobs', 'canopy_maps', 'cortex_instructions', 'digest_extract_revisions', 'digest_extracts', 'embedding_cursors', 'embedding_hubness_work', 'embedding_receipts', 'embedding_versions', 'enrollment_authorities', 'external_grants',
       'knowledge_git_provenance', 'knowledge_release_state', 'plans', 'project_capabilities', 'project_remotes', 'project_repositories', 'projects',
       'prompt_batches', 'resolution_events', 'responses', 'search_blob_chunks', 'search_blob_queue', 'session_injections', 'session_tombstones', 'skill_candidates', 'skill_lineage', 'skill_records',
       'skill_usage', 'spore_injections', 'spores', 'tags', 'tool_calls', 'transcript_segments', 'transcripts',

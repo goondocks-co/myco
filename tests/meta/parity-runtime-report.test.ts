@@ -10,6 +10,8 @@ const target = (runtime?: ParityTarget['runtime']): ParityTarget => ({
   ownerHeaders: () => ({}),
   memberHeaders: () => ({}),
   grantHeaders: () => ({}),
+  clockWake: async () => {},
+  putObject: async () => {},
   sql: async () => [],
   ...(runtime === undefined ? {} : { runtime }),
   stop: async () => {},

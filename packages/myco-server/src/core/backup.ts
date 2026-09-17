@@ -12,6 +12,10 @@
 import type { BlobStore, RelationalStore } from './adapters.js';
 import { sha256Hex, sha256HexOf, utf8 } from '../hash.js';
 import { readStoredObject } from './stored-object.js';
+import { referencedBlobsOf, registeredBlobsGuard, releaseBackups, unregisteredAmong } from './object-release.js';
+import { currentRetentionVictims, type BackupRetentionPolicy } from './backup-retention.js';
+export { retentionVictims } from './backup-retention.js';
+import type { BlobRef } from './blob-references.js';
 
 export const BACKUP_FORMAT = 'myco-backup/1';
 export const BACKUP_KEY_PREFIX = 'backups/';
@@ -67,6 +71,7 @@ export const EXCLUDED_TABLES: ReadonlySet<string> = new Set([
   'schema_meta', 'member_tokens', 'blob_reservations', 'step_up_authorities',
   'deployment_settings', 'project_capabilities', 'project_repositories', 'deployment_secrets', 'backups',
   'backup_restore_progress',
+  'object_releases', 'blob_release_candidates', 'backup_release_candidates', 'recovery_holds', 'restore_reference_guard',
   '_v2_guard_project_id_grammar', '_v2_guard_session_machine_id',
   '_v5_guard_credential_backfillable', '_v5_guard_backfill_complete',
 ]);
@@ -100,6 +105,16 @@ export class BackupApplyError extends Error {
   constructor(readonly table: string, detail: string) {
     super(`the artifact could not be applied at ${table}: ${detail}; committed chunks are preserved; retry the same artifact after resolving the error`);
     this.name = 'BackupApplyError';
+  }
+}
+/**
+ * An additive restore whose rows need blobs this Deployment does not register. The artifact carries rows alone, never
+ * object bytes, so a row naming an absent blob would register or reference bytes that do not exist.
+ */
+export class BackupObjectsMissingError extends Error {
+  constructor(readonly missing: number) {
+    super(`the backup needs ${missing} stored blob${missing === 1 ? '' : 's'} this Deployment does not hold; a backup carries no blob bytes, so nothing was restored from it. Recover the Deployment from a complete recovery artifact with \`myco server restore\` instead`);
+    this.name = 'BackupObjectsMissingError';
   }
 }
 export class BackupTooLargeError extends Error {
@@ -257,7 +272,8 @@ export async function previewRestore(
 }
 
 export interface RestoreOutcome {
-  tables: Record<string, { rows: number; inserted: number; skipped?: string }>;
+  /** `reused` counts `blobs` rows this Deployment already registers, kept as they stand. */
+  tables: Record<string, { rows: number; inserted: number; skipped?: string; reused?: number }>;
 }
 
 interface RestoreProgress {
@@ -332,11 +348,24 @@ export async function restoreArtifact(
     byTable.set(parsed.t, rows);
   }
 
+  // Blob rows are never inserted: each must already be registered here, with the bytes its own row names. Checked
+  // before any table is written, so a refused artifact changes nothing.
+  const artifactBlobs = byTable.get('blobs') ?? [];
+  const named = artifactBlobs.map((row) => ({ projectId: row.project_id, key: row.key }))
+    .filter((pair): pair is BlobRef => typeof pair.projectId === 'string' && typeof pair.key === 'string');
+  if (named.length !== artifactBlobs.length) throw new BackupApplyError('blobs', 'a row carries no project and key');
+  const absent = await unregisteredAmong(db, named);
+  if (absent.length > 0) throw new BackupObjectsMissingError(absent.length);
+
   const outcome: RestoreOutcome = { tables: {} };
   const hash = await sha256Hex(opts.text);
   for (const table of BACKUP_TABLES) {
     const rows = byTable.get(table) ?? [];
     if (rows.length === 0) continue;
+    if (table === 'blobs') {
+      outcome.tables[table] = { rows: rows.length, inserted: 0, reused: rows.length };
+      continue;
+    }
     for (const row of rows) {
       if (!Object.keys(row).every((c) => IDENTIFIER.test(c))) throw new BackupApplyError(table, 'a row carries a column name outside the store grammar');
     }
@@ -365,11 +394,14 @@ export async function restoreArtifact(
       const guard = ordered
         ? ` WHERE EXISTS (SELECT 1 FROM backup_restore_progress WHERE ${RESTORE_OWNER})`
         : '';
-      const statements = chunk.map((row) => {
+      const references = chunk.flatMap((row) => referencedBlobsOf(table, row));
+      const statements = references.length === 0 ? [] : [registeredBlobsGuard(db, references)];
+      statements.push(...chunk.map((row) => {
         const columns = Object.keys(row);
         return db.prepare(`INSERT OR IGNORE INTO ${table} (${columns.join(', ')}) SELECT ${columns.map(() => '?').join(', ')}${guard} RETURNING rowid`)
           .bind(...columns.map((c) => row[c] ?? null), ...(ordered ? [table, hash, at] : []));
-      });
+      }));
+      const inserts = references.length === 0 ? 0 : 1;
       if (ordered) {
         statements.push(db.prepare(`UPDATE backup_restore_progress SET next_row = ?, verified = ${restoredRowsMatch(table, chunk)}
           WHERE ${RESTORE_OWNER} RETURNING next_row`)
@@ -379,10 +411,12 @@ export async function restoreArtifact(
       try {
         applied = await db.batch(statements);
       } catch (err) {
+        const missing = await unregisteredAmong(db, references);
+        if (missing.length > 0) throw new BackupObjectsMissingError(missing.length);
         throw new BackupApplyError(table, err instanceof Error ? err.message : String(err));
       }
-      for (const result of applied.slice(0, chunk.length)) inserted += result.results.length;
-      if (ordered && applied[chunk.length]!.results.length === 0) {
+      for (const result of applied.slice(inserts, inserts + chunk.length)) inserted += result.results.length;
+      if (ordered && applied[inserts + chunk.length]!.results.length === 0) {
         const current = await readRestoreProgress(db, table);
         if (current?.artifact_hash !== hash || current.next_row <= at) {
           throw new BackupApplyError(table, 'the restore no longer owns this table');
@@ -403,50 +437,18 @@ export async function backupArtifact(db: RelationalStore, blobs: BlobStore, id: 
 }
 
 /**
- * Which unpinned index rows retention lets go of: keep the newest `keepDaily`
- * rows, plus the newest row of each of the `keepWeekly` most recent week
- * windows. Pinned rows are exempt and consume no slot. Pure, so the rule is
- * testable without a store.
+ * Prune per the policy in force, FAIL-CLOSED: any error reading the index or the policy skips the prune whole — a backup
+ * that spans a schema gap is worth more than a tidy list. The retention owner names the victims, and the release owner
+ * journals each victim's object and removes its row in one transaction, or keeps it recorded while a recovery hold is
+ * open.
  */
-export function retentionVictims(rows: readonly BackupIndexRow[], keepDaily: number, keepWeekly: number): BackupIndexRow[] {
-  const WEEK_MS = 7 * 24 * 60 * 60 * 1000;
-  const unpinned = rows.filter((r) => r.pinned === 0).sort((a, b) => b.created_at - a.created_at);
-  const keep = new Set<string>(unpinned.slice(0, Math.max(0, keepDaily)).map((r) => r.id));
-  const weeksKept = new Set<number>();
-  for (const row of unpinned) {
-    const week = Math.floor(row.created_at / WEEK_MS);
-    if (weeksKept.has(week)) continue;
-    if (weeksKept.size >= Math.max(0, keepWeekly)) continue;
-    weeksKept.add(week);
-    keep.add(row.id);
-  }
-  return unpinned.filter((r) => !keep.has(r.id));
-}
-
-/**
- * Prune per the retention rule, FAIL-CLOSED: any error reading the index or
- * the store skips the prune whole — a backup that spans a schema gap is worth
- * more than a tidy list. Deletion order is object first, row second, so an
- * index row never outlives losing its object silently.
- */
-export async function pruneBackups(
-  db: RelationalStore, blobs: BlobStore, keep: { keepDaily: number; keepWeekly: number },
-): Promise<{ pruned: number }> {
-  if (keep.keepDaily < 1) return { pruned: 0 };
-  let pruned = 0;
+export async function pruneBackups(db: RelationalStore, policy: BackupRetentionPolicy, now: number): Promise<{ pruned: number }> {
   try {
-    const { results } = await db
-      .prepare(`SELECT ${INDEX_COLUMNS} FROM backups ORDER BY created_at DESC`)
-      .all<BackupIndexRow>();
-    const victims = retentionVictims(results, keep.keepDaily, keep.keepWeekly);
-    for (const victim of victims) {
-      await blobs.delete(victim.key);
-      await db.prepare(`DELETE FROM backups WHERE id = ?`).bind(victim.id).run();
-      pruned += 1;
-    }
-    return { pruned };
+    const victims = await currentRetentionVictims(db, policy);
+    const outcome = await releaseBackups(db, [...victims], victims, now);
+    return { pruned: outcome.released };
   } catch {
-    return { pruned };
+    return { pruned: 0 };
   }
 }
 

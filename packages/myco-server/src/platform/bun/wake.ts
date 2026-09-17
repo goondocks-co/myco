@@ -9,7 +9,7 @@ import { startWakeLoop, WAKE_FLOOR_MS, type WakeLoop } from './wake-loop.js';
 
 /** Start the loop for this env and hand it the wake port; `stop` ends it. */
 export function startBunWake(env: ServerEnv): WakeLoop {
-  const loop = startWakeLoop(() => runTick(env, Date.now()), { floorMs: WAKE_FLOOR_MS });
+  const loop = startWakeLoop(() => runTick(env, Date.now(), { wake: 'clock' }), { floorMs: WAKE_FLOOR_MS });
   env.wake = loop.ensure;
   return loop;
 }

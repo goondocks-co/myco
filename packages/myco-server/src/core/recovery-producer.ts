@@ -111,6 +111,8 @@ export interface AttemptPart { part: number; bytes: number; sha256: string; etag
 export interface AttemptObject {
   /** The key an artifact stores the object under, which is the key the source rows name. */
   key: string;
+  /** The key the source store holds the object's bytes under, as the source rows name it (`core/blob-objects.ts`). */
+  source: string;
   bytes: number;
   /** The digest the source rows record, or null where a row records none. */
   sha256: string | null;
@@ -195,7 +197,7 @@ export interface ProducerPorts {
   /** The digest of bytes in hand, as the platform computes it. */
   digest(bytes: Uint8Array, signal: AbortSignal): Promise<string>;
   /**
-   * Copy one registered object into this attempt's staging, answering the digest and size the staged bytes hashed
+   * Copy one registered object from its `source` key into this attempt's staging under its `key`, answering the digest and size the staged bytes hashed
    * to. A copy repeated after a reset writes the same key again rather than assuming the first one landed. Where
    * `expected.sha256` is null the port measures a digest over the bytes it streams, so every staged object carries
    * one; that digest binds the copy, not the write the source row never recorded. The port streams: it holds no
@@ -203,7 +205,7 @@ export interface ProducerPorts {
    * the signal aborts, the port stops streaming and releases what it holds; a store write that cannot be cancelled
    * may still land, and a later copy of the same key replaces it.
    */
-  copyObject(prefix: string, key: string, expected: { bytes: number; sha256: string | null }, signal: AbortSignal): Promise<CopyAnswer>;
+  copyObject(prefix: string, object: { key: string; source: string }, expected: { bytes: number; sha256: string | null }, signal: AbortSignal): Promise<CopyAnswer>;
   /** Write the staging manifest and the captured schema. */
   writeStagingFile(prefix: string, name: string, body: string, signal?: AbortSignal): Promise<void>;
   /** Read back a staging file this attempt published, or null where the staging holds none. */
@@ -243,6 +245,16 @@ export interface ProducerLimits {
   publishMs: number;
 }
 
+/**
+ * How long an advancing attempt may go without committing any checkpoint before it is failed as `producer_stalled`.
+ *
+ * Distinct from the stage deadlines (`exportPollMs`, `inventoryMs`, `copyMs`, `publishMs`), which a continuation
+ * checks against a stage's own start while it runs. This fence covers the attempt no continuation advances at all:
+ * every continuation commits a checkpoint at least once per step, well inside it, so only an attempt whose steps no
+ * longer complete reaches it. It is checked when a hold is settled and when a continuation begins.
+ */
+export const PRODUCER_STALL_MS = 30 * 60_000;
+
 export const PRODUCER_LIMITS: ProducerLimits = {
   partBytes: 32 * 1024 * 1024, exportPollMs: 600_000, requestMs: 30_000, maxPollsPerStep: 12, stepMs: 20_000,
   maxTransient: 5, maxReExports: 3, maxPartsPerStep: 4, maxObjectsPerStep: 32, inventoryMs: 600_000, copyMs: 1_800_000,
@@ -278,7 +290,7 @@ export type ProducerRefusal =
   | 'download_unranged' | 'download_changed' | 'download_lost' | 'staging_unreconciled'
   | 'staging_changed' | 'inventory_disagrees' | 'inventory_unreadable' | 'inventory_oversize'
   | 'object_missing' | 'object_changed' | 'copy_stalled' | 'staging_incomplete'
-  | 'schema_disagrees' | 'internal';
+  | 'schema_disagrees' | 'producer_stalled' | 'internal';
 
 /** What the inventory pass's own refusals mean in the producer's closed set. */
 const INVENTORY_REFUSAL: Record<InventoryRefusal, ProducerRefusal> = {
@@ -613,7 +625,7 @@ async function copyStage(
     let answer: CopyAnswer;
     try {
       answer = await within(
-        (signal) => ports.copyObject(state.prefix, object.key, { bytes: object.bytes, sha256: object.sha256 }, signal),
+        (signal) => ports.copyObject(state.prefix, { key: object.key, source: object.source }, { bytes: object.bytes, sha256: object.sha256 }, signal),
         Math.min(limits.objectMs, left(now)), ports.now,
       );
     } catch (error) {
@@ -996,10 +1008,14 @@ export interface RecoveryProducerStatus {
   stagedSchema: { sha256: string; bytes: number } | null;
   /** Set once the Deployment's schema no longer matches that capture. */
   schemaDrifted?: boolean;
+  /** Set on an admission that named a retired hold token: it admits nothing. */
+  holdRetired?: true;
 }
 
 /** What admission hands the producer: the tables to export, the schema captured before any export, and its context. */
 export interface RecoveryAdmission {
+  /** The recovery hold this Deployment opened for the attempt, before any export ran; the attempt carries it for life. */
+  holdToken: string;
   tables: readonly string[];
   schema: string;
   /** The definitions that schema holds, which the exported bytes are later held to. */
@@ -1008,9 +1024,40 @@ export interface RecoveryAdmission {
   credentialsRequired: readonly string[];
 }
 
+/**
+ * What a recovery hold's attempt says about it, read and decided in one step of the producer that owns attempts:
+ * - `open`: an attempt carrying the hold is still advancing, and its objects may not be released yet;
+ * - `closed`: the attempt carrying it rests in a stage that advances no further, so its snapshot and staged objects are
+ *   whatever they will be;
+ * - `retired`: no attempt carries it, and none ever will: the token is recorded as retired in the same step, and
+ *   admission refuses a retired token.
+ */
+export type HoldSettlement =
+  | { state: 'open'; attempt: number; stage: AttemptStage }
+  | { state: 'closed'; attempt: number; stage: AttemptStage }
+  | { state: 'retired' };
+
+/** The settlement an attempt row carrying a hold decides, or `retired` where none carries it. */
+export function settlementOf(attempt: { id: number; stage: AttemptStage } | null): HoldSettlement {
+  if (attempt === null) return { state: 'retired' };
+  return (ADVANCING_STAGES as readonly string[]).includes(attempt.stage)
+    ? { state: 'open', attempt: attempt.id, stage: attempt.stage }
+    : { state: 'closed', attempt: attempt.id, stage: attempt.stage };
+}
+
+/** Raised inside the producer's admission for a hold token already retired; admission answers `holdRetired` instead. */
+export class HoldRetired extends Error {
+  constructor() {
+    super('the recovery hold this admission named is already retired; start the export again');
+    this.name = 'HoldRetired';
+  }
+}
+
 /** Starting and inspecting this Deployment's producer, as a target supplies it. The credential stays in the target. */
 export interface RecoveryProducerPort {
   admit(admission: RecoveryAdmission): Promise<RecoveryProducerStatus>;
+  /** Decide a hold against the attempts, retiring a token no attempt carries; see `HoldSettlement`. */
+  settleHold(token: string): Promise<HoldSettlement>;
   status(): Promise<RecoveryProducerStatus>;
   /** Record that the Deployment's schema drifted from the staged capture, failing the attempt. */
   noteSchemaDrift(attempt: number): Promise<RecoveryProducerStatus>;

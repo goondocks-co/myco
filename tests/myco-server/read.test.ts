@@ -549,7 +549,10 @@ describe('read/blobs', () => {
     const key = 'f'.repeat(64);
     sqlite.run(`INSERT INTO blobs (project_id, key, size, media_type, token_id, received_at)
                 VALUES ('proj_1','${key}',12,'image/png','t1',1)`);
-    expect(await getBlob(db, { projectId: 'proj_1' }, key)).toEqual({ size: 12, mediaType: 'image/png' });
+    expect(await getBlob(db, { projectId: 'proj_1' }, key)).toEqual({ size: 12, mediaType: 'image/png', objectKey: `proj_1/${key}` });
+    const generation = crypto.randomUUID();
+    sqlite.run(`UPDATE blobs SET generation = ? WHERE key = ?`, [generation, key]);
+    expect(await getBlob(db, { projectId: 'proj_1' }, key)).toEqual({ size: 12, mediaType: 'image/png', objectKey: `proj_1/${key}~${generation}` });
     expect(await getBlob(db, { projectId: 'proj_2' }, key)).toBeNull();
   });
 });

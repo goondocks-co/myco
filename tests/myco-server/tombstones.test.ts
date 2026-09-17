@@ -9,11 +9,12 @@
  * EVERY kind in the catalogue — a check that lives in a handler would pass a
  * spot test and let the next kind through.
  */
+import { acquireRecoveryHold, drainObjectReleases, releaseRecoveryHold, RELEASE_PAGE } from '@myco-server-worker/core/object-release.js';
 import { describe, expect, it } from 'bun:test';
 import type { Database } from 'bun:sqlite';
 import { KINDS } from '@myco-server-worker/ingest/kinds.js';
 import { ingestEvent } from '@myco-server-worker/ingest/events.js';
-import { isTombstoned, TOMBSTONE_BLOBS_PER_CALL, tombstoneSession } from '@myco-server-worker/core/tombstones.js';
+import { isTombstoned, tombstoneSession } from '@myco-server-worker/core/tombstones.js';
 import { freeOrphanedBlobs } from '@myco-server-worker/ingest/retention.js';
 import {
   writeTitle, overwriteTitle, getSession, listSessions, listSessionSummaries, projectHoldsSession, projectStats,
@@ -103,33 +104,54 @@ describe('tombstoning a session', () => {
 });
 
 describe('the blobs a deletion leaves', () => {
-  it('reports what it deferred rather than swallowing it, so nothing is silently orphaned', async () => {
-    const { sqlite, env, send } = await rig();
-    await populate(send);
-    // More attachments than one call frees, each its own blob.
-    for (let i = 0; i < TOMBSTONE_BLOBS_PER_CALL + 4; i += 1) {
-      const key = String(i).padStart(64, 'a');
+  const attach = (sqlite: Database, count: number, seed: string) => {
+    for (let i = 0; i < count; i += 1) {
+      const key = String(i).padStart(64, seed);
       sqlite.run(`INSERT INTO blobs (project_id, key, size, media_type, token_id, received_at) VALUES (?, ?, 1, 'image/png', 't', ?)`, [SCOPE.projectId, key, NOW]);
       sqlite.run(`INSERT INTO attachments (project_id, attachment_id, session_id, event_id, blob_key, media_type, byte_size, created_at, token_id, received_at)
                   VALUES (?, ?, ?, 'e', ?, 'image/png', 1, ?, 't', ?)`, [SCOPE.projectId, `att-${i}`, SESSION, key, NOW, NOW]);
     }
+  };
+
+  it('releases every blob a large deletion frees in the deletion itself, however many pages it spans', async () => {
+    const { sqlite, env, send } = await rig();
+    await populate(send);
+    attach(sqlite, RELEASE_PAGE * 2 + 5, 'a');
     const outcome = await tombstoneSession(env, SCOPE, SESSION, 'mem_machine_1', NOW);
-    expect(outcome.blobsFreed).toBe(TOMBSTONE_BLOBS_PER_CALL);
-    expect(outcome.blobsLeft).toBeGreaterThan(0);
+    expect([outcome.blobsFreed, outcome.blobsLeft]).toEqual([RELEASE_PAGE * 2 + 5, 0]);
+    expect([count(sqlite, 'blobs'), count(sqlite, 'blob_release_candidates'), count(sqlite, 'object_releases')]).toEqual([0, 0, RELEASE_PAGE * 2 + 5]);
   });
 
-  it('leaves the remainder where the orphan sweep can reach it', async () => {
+  it('records every blob in the transaction that removes its rows, so an interruption before the release leaves them for the drain', async () => {
     const { sqlite, env, send } = await rig();
     await populate(send);
-    for (let i = 0; i < TOMBSTONE_BLOBS_PER_CALL + 4; i += 1) {
-      const key = String(i).padStart(64, 'b');
-      sqlite.run(`INSERT INTO blobs (project_id, key, size, media_type, token_id, received_at) VALUES (?, ?, 1, 'image/png', 't', ?)`, [SCOPE.projectId, key, NOW]);
-      sqlite.run(`INSERT INTO attachments (project_id, attachment_id, session_id, event_id, blob_key, media_type, byte_size, created_at, token_id, received_at)
-                  VALUES (?, ?, ?, 'e', ?, 'image/png', 1, ?, 't', ?)`, [SCOPE.projectId, `att-${i}`, SESSION, key, NOW, NOW]);
-    }
-    await tombstoneSession(env, SCOPE, SESSION, 'mem_machine_1', NOW);
-    let ticks = 0;
-    while ((await freeOrphanedBlobs(env)) > 0 && ticks < 50) ticks += 1;
+    attach(sqlite, RELEASE_PAGE + 3, 'b');
+    let batches = 0;
+    const interrupted = { ...env, db: { ...env.db, batch: async (statements: Parameters<typeof env.db.batch>[0]) => {
+      batches += 1;
+      // The key read and the deletion commit; the instance goes away before any release decision.
+      if (batches > 2) throw new Error('the instance went away');
+      return env.db.batch(statements);
+    } } };
+    await expect(tombstoneSession(interrupted as never, SCOPE, SESSION, 'mem_machine_1', NOW)).rejects.toThrow('went away');
+    expect(count(sqlite, 'attachments')).toBe(0);
+    expect(count(sqlite, 'blob_release_candidates')).toBe(RELEASE_PAGE + 3);
+    // The tombstone window has closed, so the orphan sweep never runs again: the recorded candidates are what remains.
+    while (count(sqlite, 'blob_release_candidates') > 0 || count(sqlite, 'object_releases') > 0) await drainObjectReleases(env, NOW + 7 * 86_400_000);
+    expect([count(sqlite, 'blobs'), count(sqlite, 'object_releases')]).toEqual([0, 0]);
+  });
+
+  it('keeps every candidate recorded through a recovery hold that outlasts the tombstone window, and releases them all after it', async () => {
+    const { sqlite, env, send } = await rig();
+    await populate(send);
+    attach(sqlite, RELEASE_PAGE + 3, 'c');
+    expect(await acquireRecoveryHold(env.db, 'hold-1', NOW)).toBe(true);
+    const outcome = await tombstoneSession(env, SCOPE, SESSION, 'mem_machine_1', NOW);
+    expect([outcome.blobsFreed, outcome.blobsLeft]).toEqual([0, RELEASE_PAGE + 3]);
+    await drainObjectReleases(env, NOW + 7 * 86_400_000);
+    expect([count(sqlite, 'blobs'), count(sqlite, 'blob_release_candidates')]).toEqual([RELEASE_PAGE + 3, RELEASE_PAGE + 3]);
+    expect(await releaseRecoveryHold(env.db, 'hold-1', NOW + 7 * 86_400_000, 'closed')).toBe(true);
+    while (count(sqlite, 'blob_release_candidates') > 0 || count(sqlite, 'object_releases') > 0) await drainObjectReleases(env, NOW + 7 * 86_400_000);
     expect(count(sqlite, 'blobs')).toBe(0);
   });
 });
@@ -160,13 +182,16 @@ describe('the blobs a deleted session\'s tool calls and raw events name', () => 
 
     const outcome = await tombstoneSession(env, SCOPE, SESSION, 'mem_machine_1', NOW);
     expect([outcome.blobsFreed, outcome.blobsLeft]).toEqual([3, 0]);
+    // The deletion journals the freed objects; the drain is what deletes them from the store.
+    expect(await readText(env.blobs, input)).toBe('in');
+    expect((await drainObjectReleases(env, NOW)).deleted).toBe(3);
     expect(await readText(env.blobs, input)).toBeNull();
     expect(await readText(env.blobs, output)).toBeNull();
     expect(await readText(env.blobs, summary)).toBeNull();
     expect(await readText(env.blobs, shared)).toBe('shared');
     expect(sqlite.query(`SELECT key FROM blobs`).all()).toEqual([{ key: shared }]);
     // The sweep that follows a deletion finds nothing further to take from the survivor.
-    expect(await freeOrphanedBlobs(env)).toBe(0);
+    expect(await freeOrphanedBlobs(env, NOW)).toBe(0);
   });
 });
 

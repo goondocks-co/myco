@@ -50,7 +50,7 @@ const sharedFiles = () =>
     !f.includes(`${join(SRC, 'platform')}/`) && !f.includes(`${join(SRC, 'entry')}/`) && f !== join(SRC, 'index.ts'));
 
 /** Every `emit` call across src; a call removed or added moves the total. */
-const EMIT_CALLS = 116;
+const EMIT_CALLS = 121;
 /** The one migrations directory: the emit script writes it, the rendered-steps gate verifies it, and wrangler.toml applies from it. */
 const MIGRATIONS_DIR = 'migrations';
 const K = SyntaxKind as unknown as Record<string, number>;
@@ -476,6 +476,21 @@ describe('gates', () => {
       const t = readFileSync(f, 'utf8');
       for (const p of banned) expect({ file: f, pattern: String(p), matched: p.test(t) }).toEqual({ file: f, pattern: String(p), matched: false });
     }
+  });
+
+  it('keeps the object store\'s deleter and the stored-object name each to one owner', () => {
+    // The drain is the only code that asks the store to delete, and `core/blob-objects.ts` the only code that spells
+    // where a blob's bytes are stored. Every other reach of the store takes a name one of them produced.
+    const deleters: string[] = [];
+    const spellers: string[] = [];
+    for (const f of files(SRC)) {
+      if (f.includes(`${join('platform', '')}`)) continue;
+      const t = readFileSync(f, 'utf8');
+      if (/\bblobs\.delete\(/.test(t)) deleters.push(f);
+      if (/`\$\{[^}]*(?:project|projectId|project_id)[^}]*\}\/\$\{[^}]*(?:key|Key)[^}]*\}/.test(t) || /\|\| '\/' \|\|/.test(t)) spellers.push(f);
+    }
+    expect(deleters).toEqual([join(SRC, 'core', 'object-release.ts')]);
+    expect(spellers).toEqual([join(SRC, 'core', 'blob-objects.ts')]);
   });
 
   it('carries no rationale, counterfactual, or deferral comments', () => {

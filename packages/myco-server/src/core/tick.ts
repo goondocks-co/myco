@@ -12,7 +12,7 @@
  * applies, and a second tick on the same clock changes nothing.
  */
 import type { ServerEnv } from './adapters.js';
-import { jobsDueAt } from './jobs.js';
+import { jobsDueAt, type TickWake } from './jobs.js';
 import { JOB_IMPLEMENTATIONS } from './jobs-run.js';
 import { DEFAULT_DISPATCH_TIMEOUT_SECONDS, RUN_OVERRUN_MARGIN_MS } from './harness.js';
 import { nextWakeDelayMs, resolvePowerState, type PowerAssertion, type PowerState, type PowerThresholds, type WakeIntervals } from './power.js';
@@ -67,14 +67,15 @@ export async function engineAssertions(env: ServerEnv, now: number): Promise<Pow
   return assertions;
 }
 
-export async function runTick(env: ServerEnv, now: number, options: { serverUrl?: string } = {}): Promise<TickReport> {
+/** `wake` names which wake this tick is: a target's own clock passes `'clock'`; a tick an owner requests is `'request'`. */
+export async function runTick(env: ServerEnv, now: number, options: { serverUrl?: string; wake?: TickWake } = {}): Promise<TickReport> {
   const last = await lastActivityAt(env.db);
   const idleMs = last === null ? null : Math.max(0, now - last);
   const assertions = await engineAssertions(env, now);
   const resolved = resolvePowerState(idleMs ?? Number.POSITIVE_INFINITY, POWER_THRESHOLDS, assertions);
 
   const jobs: JobReport[] = [];
-  for (const job of jobsDueAt(resolved.state)) {
+  for (const job of jobsDueAt(resolved.state, options.wake ?? 'request')) {
     const run = JOB_IMPLEMENTATIONS[job.name];
     if (run === undefined) {
       jobs.push({ name: job.name, changed: 0, failed: 'unimplemented' });

@@ -4,7 +4,9 @@
  */
 import { expect, it } from 'bun:test';
 import { handleRecoveryExportStatus, handleStartRecoveryExport } from '@myco-server-worker/api/recovery.js';
-import type { RecoveryAdmission, RecoveryProducerStatus } from '@myco-server-worker/core/recovery-producer.js';
+import { settlementOf, type AttemptStage, type RecoveryAdmission, type RecoveryProducerStatus } from '@myco-server-worker/core/recovery-producer.js';
+import { drainObjectReleases, releaseBlobs } from '@myco-server-worker/core/object-release.js';
+import { recoveryHoldRelease } from '@myco-server-worker/core/recovery-hold.js';
 import { sqliteEnv } from './helpers/fixtures.js';
 
 const OWNER = { member: { id: 'owner-1' }, now: 1_000 } as never;
@@ -16,11 +18,24 @@ const idle: RecoveryProducerStatus = {
 function producer() {
   const seen: RecoveryAdmission[] = [];
   let status: RecoveryProducerStatus = idle;
+  const carried = new Map<string, { id: number; stage: AttemptStage }>();
+  const retired = new Set<string>();
   return {
-    seen,
+    seen, carried, retired,
     set: (next: Partial<RecoveryProducerStatus>) => { status = { ...idle, ...next }; },
     port: {
-      admit: async (admission: RecoveryAdmission) => { seen.push(admission); status = { ...idle, attempt: 1, stage: 'export' as const }; return status; },
+      admit: async (admission: RecoveryAdmission) => {
+        if (retired.has(admission.holdToken)) return { ...status, holdRetired: true as const };
+        seen.push(admission);
+        status = { ...idle, attempt: seen.length, stage: 'export' as const };
+        carried.set(admission.holdToken, { id: seen.length, stage: 'export' });
+        return status;
+      },
+      settleHold: async (token: string) => {
+        const settlement = settlementOf(carried.get(token) ?? null);
+        if (settlement.state === 'retired') retired.add(token);
+        return settlement;
+      },
       status: async () => status,
       noteSchemaDrift: async () => { throw new Error('a status read must not mutate an attempt'); },
     },
@@ -85,4 +100,77 @@ it('reads a status without touching the attempt or claiming recoverability', asy
   expect([body.stage, body.recoverable]).toEqual(['complete', false]);
   expect(String(body.usable)).toContain('a complete staging is not yet one');
   env.sqlite.close();
+});
+
+const holds = (env: ReturnType<typeof sqliteEnv>) => env.sqlite.query('SELECT token, released_at, release_reason FROM recovery_holds ORDER BY acquired_at, token').all() as Array<{ token: string; released_at: number | null; release_reason: string | null }>;
+
+it('opens a recovery hold before the export is admitted, and the attempt carries it', async () => {
+  const env = sqliteEnv();
+  const held = producer();
+  const response = await handleStartRecoveryExport({ ...env.serverEnv, recovery: held.port } as never, OWNER);
+  expect(response.status).toBe(200);
+  const [open] = holds(env);
+  expect(open).toMatchObject({ released_at: null });
+  expect(held.seen.map((admission) => admission.holdToken)).toEqual([open!.token]);
+  // A second admission while that attempt advances opens no second hold and admits nothing.
+  const again = await handleStartRecoveryExport({ ...env.serverEnv, recovery: held.port } as never, OWNER);
+  expect(((await again.json()) as { stage: string }).stage).toBe('export');
+  expect([holds(env).length, held.seen.length]).toEqual([1, 1]);
+  env.sqlite.close();
+});
+
+it('releases a hold only on an authoritative answer: kept while its attempt advances or the producer cannot answer, released once it rests', async () => {
+  const env = sqliteEnv();
+  const held = producer();
+  await handleStartRecoveryExport({ ...env.serverEnv, recovery: held.port } as never, OWNER);
+  const token = holds(env)[0]!.token;
+  const serverEnv = (recovery: unknown) => ({ ...env.serverEnv, recovery }) as never;
+
+  expect(await recoveryHoldRelease(serverEnv(held.port), 2_000)).toBe(0);
+  expect(await recoveryHoldRelease(serverEnv({ ...held.port, settleHold: async () => { throw new Error('unreachable'); } }), 3_000)).toBe(0);
+  expect(await recoveryHoldRelease(serverEnv(undefined), 4_000)).toBe(0);
+  expect(holds(env)).toEqual([{ token, released_at: null, release_reason: null }]);
+
+  held.carried.set(token, { id: 1, stage: 'complete' });
+  expect(await recoveryHoldRelease(serverEnv(held.port), 5_000)).toBe(1);
+  expect(holds(env)).toEqual([{ token, released_at: 5_000, release_reason: 'attempt 1 complete' }]);
+  expect(await recoveryHoldRelease(serverEnv(held.port), 6_000)).toBe(0);
+  env.sqlite.close();
+});
+
+it('retires a hold whose admission never landed, and refuses that token if the admission arrives after', async () => {
+  const env = sqliteEnv();
+  const held = producer();
+  const lost = { ...held.port, admit: async () => { throw new Error('the admission answer was lost'); } };
+  const unanswered = await handleStartRecoveryExport({ ...env.serverEnv, recovery: lost } as never, OWNER);
+  expect([unanswered.status, ((await unanswered.json()) as { error: string }).error]).toEqual([503, 'recovery_admission_unanswered']);
+  const token = holds(env)[0]!.token;
+  expect(await recoveryHoldRelease({ ...env.serverEnv, recovery: held.port } as never, 2_000)).toBe(1);
+  expect(holds(env)).toEqual([{ token, released_at: 2_000, release_reason: 'retired' }]);
+  const late = await held.port.admit({ holdToken: token } as RecoveryAdmission);
+  expect(late.holdRetired).toBe(true);
+  expect(held.seen).toEqual([]);
+  env.sqlite.close();
+});
+
+it('keeps every release a deletion decides while the hold is open, and releases them once the hold settles', async () => {
+  const env = sqliteEnv();
+  const held = producer();
+  const key = 'a'.repeat(64);
+  env.sqlite.run(`INSERT INTO blobs (project_id, key, size, media_type, token_id, received_at) VALUES ('proj_1', ?, 1, 'text/plain', 't', 1)`, [key]);
+  await handleStartRecoveryExport({ ...env.serverEnv, recovery: held.port } as never, OWNER);
+  expect(await releaseBlobs(env.db, [{ projectId: 'proj_1', key }], 2_000)).toEqual({ released: 0, deferred: 1 });
+  await drainObjectReleases(env.serverEnv, 3_000);
+  expect(env.sqlite.query('SELECT COUNT(*) AS n FROM blobs').get()).toEqual({ n: 1 });
+  held.carried.set(holds(env)[0]!.token, { id: 1, stage: 'downloaded' });
+  await recoveryHoldRelease({ ...env.serverEnv, recovery: held.port } as never, 4_000);
+  await drainObjectReleases(env.serverEnv, 5_000);
+  expect(env.sqlite.query('SELECT COUNT(*) AS n FROM blobs').get()).toEqual({ n: 0 });
+  env.sqlite.close();
+});
+
+it('answers settlement from the attempt stage: advancing is open, resting is closed, none is retired', () => {
+  for (const stage of ['export', 'download', 'inventory', 'copy'] as const) expect(settlementOf({ id: 1, stage }).state).toBe('open');
+  for (const stage of ['downloaded', 'complete', 'unconfirmed', 'failed'] as const) expect(settlementOf({ id: 1, stage }).state).toBe('closed');
+  expect(settlementOf(null)).toEqual({ state: 'retired' });
 });

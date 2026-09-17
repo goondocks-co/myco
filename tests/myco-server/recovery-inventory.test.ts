@@ -23,9 +23,10 @@ const digestOf = async (bytes: Uint8Array): Promise<string> => {
 };
 
 /** The tables the fixtures declare, as schema 41 declares them. */
-const BLOBS_DDL = 'CREATE TABLE blobs (project_id TEXT NOT NULL, key TEXT NOT NULL, size INTEGER NOT NULL, PRIMARY KEY (project_id, key))';
+const BLOBS_DDL = 'CREATE TABLE blobs (project_id TEXT NOT NULL, key TEXT NOT NULL, size INTEGER NOT NULL, media_type TEXT, PRIMARY KEY (project_id, key))';
 const BACKUPS_DDL = 'CREATE TABLE backups (id TEXT PRIMARY KEY, key TEXT NOT NULL, created_at INTEGER NOT NULL, size_bytes INTEGER NOT NULL, counts_json TEXT NOT NULL, schema_version INTEGER NOT NULL, producer TEXT, pinned INTEGER NOT NULL DEFAULT 0, sha256 TEXT)';
 const COLUMNS = { blobs: tableColumns(BLOBS_DDL)!, backups: tableColumns(BACKUPS_DDL)! };
+const GENERATION = '0b2c6a8e-5d1f-4e3a-9c7b-1a2b3c4d5e6f';
 
 /** Where a part sits in the staged export. */
 const offsetOf = (parts: readonly RecordedPart[], upTo: number): number =>
@@ -59,9 +60,9 @@ const EXPORT = [
   `${BLOBS_DDL};`,
   `${BACKUPS_DDL};`,
   'CREATE TABLE events (project_id TEXT NOT NULL, event_id TEXT NOT NULL, payload TEXT NOT NULL);',
-  "INSERT INTO blobs VALUES('proj_1','aaaa',12);",
+  `INSERT INTO blobs VALUES('proj_1','${'a'.repeat(64)}',12,'text/plain');`,
   "INSERT INTO events VALUES('proj_1','ev_1','a prompt holding INSERT INTO blobs VALUES(0)');",
-  "INSERT INTO blobs VALUES('proj_1','bbbb',34);",
+  `INSERT INTO blobs VALUES('proj_1','${'b'.repeat(64)}',34,'text/plain');`,
   "INSERT INTO backups VALUES('b1','backups/b1',1789590000000,56,'{}',41,'myco',0,'cccc');",
   "INSERT INTO backups VALUES('b2','backups/b2',1789590000001,78,'{}',41,'myco',0,NULL);",
   '',
@@ -84,8 +85,8 @@ it('answers the object set the canonical owner reads back, on the pinned schema'
   const digest = (seed: string) => seed.repeat(64).slice(0, 64);
   const rows = [
     "INSERT INTO projects VALUES('proj_1','Oracle',1789590000000,NULL,NULL);",
-    `INSERT INTO blobs VALUES('proj_1','${digest('a')}',12,'text/plain','mt_1',1789590000000);`,
-    `INSERT INTO blobs VALUES('proj_1','${digest('b')}',34,'text/plain','mt_1',1789590000001);`,
+    `INSERT INTO blobs VALUES('proj_1','${digest('a')}',12,'text/plain','mt_1',1789590000000,NULL);`,
+    `INSERT INTO blobs VALUES('proj_1','${digest('b')}',34,'text/plain','mt_1',1789590000001,'${GENERATION}');`,
     `INSERT INTO backups VALUES('b1','backups/b1.jsonl',1789590000000,56,'{}',41,'myco',0,'${digest('c')}');`,
     "INSERT INTO backups VALUES('b2','backups/b2.jsonl',1789590000001,78,'{}',41,'myco',0,NULL);",
   ];
@@ -103,13 +104,30 @@ it('answers the object set the canonical owner reads back, on the pinned schema'
   expect(step.done).toBe(true);
   if (!step.done) return;
   const mine = Object.fromEntries(Object.values(step.progress.objects).map((object) => [object.key, { bytes: object.bytes, sha256: object.sha256 }]));
+  // Each blob is copied from the object its own row registered; the artifact keeps the logical key.
+  expect(Object.values(step.progress.objects).map((object) => object.source).sort())
+    .toEqual([`proj_1/${digest('a')}`, `proj_1/${digest('b')}~${GENERATION}`, 'backups/b1.jsonl', 'backups/b2.jsonl'].sort());
   expect(mine).toEqual(Object.fromEntries([...canonical].map(([key, facts]) => [key, { bytes: facts.bytes, sha256: facts.sha256 }])));
   expect(step.database).toEqual({ sha256: held.sha256, bytes: held.bytes.byteLength });
 });
 
+it('reads the stored object a blobs row registers, and refuses a row whose mapping is outside the stored grammar', () => {
+  const columns = { ...COLUMNS, blobs: [...COLUMNS.blobs, 'generation'] };
+  const key = 'f'.repeat(64);
+  expect(inventoryObjectOf(`INSERT INTO blobs VALUES('proj_1','${key}',9,'text/plain','${GENERATION}');`, columns))
+    .toEqual({ key: `proj_1/${key}`, source: `proj_1/${key}~${GENERATION}`, bytes: 9, sha256: key });
+  expect(inventoryObjectOf(`INSERT INTO blobs VALUES('proj_1','${key}',9,'text/plain',NULL);`, columns))
+    .toEqual({ key: `proj_1/${key}`, source: `proj_1/${key}`, bytes: 9, sha256: key });
+  for (const row of [
+    `INSERT INTO blobs VALUES('proj_1','${key}',9,'text/plain','../${GENERATION}');`,
+    `INSERT INTO blobs VALUES('proj_1','${key}',9,'text/plain',7);`,
+    `INSERT INTO blobs VALUES('proj_1','${key.slice(1)}~x',9,'text/plain',NULL);`,
+  ]) expect(() => inventoryObjectOf(row, columns)).toThrow();
+});
+
 it('reads a schema-41 backups row by the columns the schema declares', () => {
   const row = "INSERT INTO backups VALUES('b1','backups/b1',1789590000000,56,'{}',41,'myco',0,'cccc');";
-  expect(inventoryObjectOf(row, COLUMNS)).toEqual({ key: 'backups/b1', bytes: 56, sha256: 'cccc' });
+  expect(inventoryObjectOf(row, COLUMNS)).toEqual({ key: 'backups/b1', source: 'backups/b1', bytes: 56, sha256: 'cccc' });
   // Without the schema's column order there is nothing to read the row by, and it is refused rather than guessed.
   expect(() => inventoryObjectOf(row, { blobs: COLUMNS.blobs })).toThrow();
 });
@@ -143,28 +161,28 @@ it('refuses a relevant row it cannot read rather than losing the object', async 
 });
 
 it('reads a relevant row larger than the selective ceiling', async () => {
-  const long = `INSERT INTO blobs VALUES('proj_1','${'c'.repeat(270_000)}',9);`;
+  const long = `INSERT INTO blobs VALUES('proj_1','${'c'.repeat(64)}',9,'${'c'.repeat(270_000)}');`;
   const held = await staged(`${EXPORT}${long}\n`, 64 * 1024);
   const step = await run(held);
   expect(step.done).toBe(true);
   if (!step.done) return;
-  expect(Object.keys(step.progress.objects)).toContain(`proj_1/${'c'.repeat(270_000)}`);
+  expect(Object.keys(step.progress.objects)).toContain(`proj_1/${'c'.repeat(64)}`);
 });
 
 it('refuses a statement too large to carry in a checkpoint row, and keeps reading one that fits', async () => {
   // A relevant row this long spans parts, so the scan holding it has to travel in the checkpoint.
-  const huge = `INSERT INTO blobs VALUES('proj_1','${'d'.repeat(CHECKPOINT_STATEMENT_CHARS * 2)}',9);`;
+  const huge = `INSERT INTO blobs VALUES('proj_1','${'d'.repeat(64)}',9,'${'d'.repeat(CHECKPOINT_STATEMENT_CHARS * 2)}');`;
   const held = await staged(`${EXPORT}${huge}\n`, 64 * 1024);
   const step = await run(held);
   expect('refusal' in step && step.refusal).toBe('inventory_oversize');
 
   // Just inside the bound the same row is read, so the refusal is the row limit and not the row's relevance.
-  const fitting = `INSERT INTO blobs VALUES('proj_1','${'d'.repeat(CHECKPOINT_STATEMENT_CHARS - 1_000)}',9);`;
+  const fitting = `INSERT INTO blobs VALUES('proj_1','${'e'.repeat(64)}',9,'${'e'.repeat(CHECKPOINT_STATEMENT_CHARS - 1_000)}');`;
   const inside = await staged(`${EXPORT}${fitting}\n`, 64 * 1024);
   const done = await run(inside);
   expect(done.done).toBe(true);
   if (!done.done) return;
-  expect(Object.keys(done.progress.objects)).toContain(`proj_1/${'d'.repeat(CHECKPOINT_STATEMENT_CHARS - 1_000)}`);
+  expect(Object.keys(done.progress.objects)).toContain(`proj_1/${'e'.repeat(64)}`);
 });
 
 it('resumes at the part it reached, reading each part once for the whole pass', async () => {

@@ -288,7 +288,7 @@ it('streams a legacy object that records no digest, of any size, and measures th
   const { body, held } = chunkedBody(total, 1024 * 1024);
   const store = consumingBucket();
   const ports = cloudflareProducerPorts(target(), store.bucket, { async get() { return { body, size: total }; } });
-  const answer = await ports.copyObject('staging/1', 'backups/legacy.jsonl', { bytes: total, sha256: null }, new AbortController().signal);
+  const answer = await ports.copyObject('staging/1', { key: 'backups/legacy.jsonl', source: 'backups/legacy.jsonl' }, { bytes: total, sha256: null }, new AbortController().signal);
 
   const { createHash } = await import('node:crypto');
   const expected = createHash('sha256');
@@ -303,7 +303,7 @@ it('refuses a source that is not the size its row records before writing, and re
   const { body, held } = chunkedBody(10, 4);
   const store = consumingBucket();
   const ports = cloudflareProducerPorts(target(), store.bucket, { async get() { return { body, size: 10 }; } });
-  const answer = await ports.copyObject('staging/1', 'backups/one.jsonl', { bytes: 9, sha256: null }, new AbortController().signal);
+  const answer = await ports.copyObject('staging/1', { key: 'backups/one.jsonl', source: 'backups/one.jsonl' }, { bytes: 9, sha256: null }, new AbortController().signal);
   expect(answer).toEqual({ status: 'error', failure: { cause: 'provider', status: null, transient: false } });
   expect([store.writes.length, held.cancelled, held.delivered]).toEqual([0, true, 0]);
 });
@@ -313,7 +313,7 @@ it('refuses a body that carries more bytes than it declared, as the bytes arrive
   const { body, held } = chunkedBody(64, 16);
   const store = consumingBucket();
   const ports = cloudflareProducerPorts(target(), store.bucket, { async get() { return { body, size: 32 }; } });
-  const answer = await ports.copyObject('staging/1', 'backups/one.jsonl', { bytes: 32, sha256: null }, new AbortController().signal);
+  const answer = await ports.copyObject('staging/1', { key: 'backups/one.jsonl', source: 'backups/one.jsonl' }, { bytes: 32, sha256: null }, new AbortController().signal);
   expect(answer).toEqual({ status: 'error', failure: { cause: 'provider', status: null, transient: false } });
   expect(held.delivered).toBeLessThanOrEqual(48);
   expect(held.cancelled).toBe(true);
@@ -323,14 +323,14 @@ it('releases the body when a write returns without reading it, or refuses the di
   const unread = chunkedBody(8, 4);
   const lazy = consumingBucket({ readNothing: true });
   const skipped = await cloudflareProducerPorts(target(), lazy.bucket, { async get() { return { body: unread.body, size: 8 }; } })
-    .copyObject('staging/1', `proj_1/${'a'.repeat(64)}`, { bytes: 8, sha256: 'a'.repeat(64) }, new AbortController().signal);
+    .copyObject('staging/1', { key: `proj_1/${'a'.repeat(64)}`, source: `proj_1/${'a'.repeat(64)}` }, { bytes: 8, sha256: 'a'.repeat(64) }, new AbortController().signal);
   expect(skipped).toEqual({ status: 'error', failure: { cause: 'provider', status: null, transient: false } });
   expect(unread.held.cancelled).toBe(true);
 
   const refusedBody = chunkedBody(8, 4);
   const refusing = consumingBucket({ refuse: new Error('put: The SHA-256 checksum you specified did not match what we received. (10037)') });
   const refused = await cloudflareProducerPorts(target(), refusing.bucket, { async get() { return { body: refusedBody.body, size: 8 }; } })
-    .copyObject('staging/1', `proj_1/${'a'.repeat(64)}`, { bytes: 8, sha256: 'a'.repeat(64) }, new AbortController().signal);
+    .copyObject('staging/1', { key: `proj_1/${'a'.repeat(64)}`, source: `proj_1/${'a'.repeat(64)}` }, { bytes: 8, sha256: 'a'.repeat(64) }, new AbortController().signal);
   expect(refused).toEqual({ status: 'error', failure: { cause: 'provider', status: null, transient: false } });
   expect(refusedBody.held.cancelled).toBe(true);
 });
@@ -341,7 +341,7 @@ it('stops streaming and releases the source when the caller stops waiting', asyn
   const store = consumingBucket();
   const slowGet = { async get() { return { body, size: 64 * 1024 * 1024 }; } };
   const ports = cloudflareProducerPorts(target(), store.bucket, slowGet);
-  const copying = ports.copyObject('staging/1', 'backups/big.jsonl', { bytes: 64 * 1024 * 1024, sha256: null }, controller.signal);
+  const copying = ports.copyObject('staging/1', { key: 'backups/big.jsonl', source: 'backups/big.jsonl' }, { bytes: 64 * 1024 * 1024, sha256: null }, controller.signal);
   controller.abort(new DOMException('the caller stopped waiting', 'AbortError'));
   await copying.catch(() => undefined);
   expect(held.cancelled).toBe(true);

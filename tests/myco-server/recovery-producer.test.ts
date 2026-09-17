@@ -124,7 +124,7 @@ function ports(options: PortOptions = {}) {
       return options.stagedParts(prefix, offset, bytes);
     },
     digest: (bytes) => digestOf(bytes),
-    async copyObject(prefix, key, expected) {
+    async copyObject(prefix, { key }, expected) {
       calls.copies.push(key);
       if (options.copyObject === undefined) return { status: 'copied', sha256: expected.sha256 ?? await digestOf(body(7, expected.bytes)), bytes: expected.bytes };
       return options.copyObject(prefix, key, expected);

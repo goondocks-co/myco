@@ -10,7 +10,8 @@ import {
   restoreBackup, retentionVictims, setBackupPinned, type BackupIndexRow,
 } from '@myco-server-worker/core/backup.js';
 import { SCHEMA_DDL } from '@myco-server-worker/db/schema.js';
-import { sqliteEnv } from './helpers/fixtures.js';
+import { journaled, sqliteEnv } from './helpers/fixtures.js';
+import { drainObjectReleases } from '@myco-server-worker/core/object-release.js';
 import { sqliteVectorStore } from '@myco-server-worker/platform/bun/vectors.js';
 
 const seeded = () => {
@@ -266,18 +267,21 @@ describe('retention', () => {
     expect(retentionVictims(rows, 0, 0).map((v) => v.id)).not.toContain('p');
   });
 
-  it('prunes object-first through the store and FAILS CLOSED when the store errors', async () => {
-    const { db, bucket, now } = seeded();
+  it('prunes through the release owner: the victim\'s object is journaled with its row removed, and the drain deletes it only once the store acknowledges', async () => {
+    const { db, bucket, sqlite, now } = seeded();
     const old = await createBackup(db, bucket, { producer: 'test', now: now - 40 * DAY });
     const fresh = await createBackup(db, bucket, { producer: 'test', now });
-    const pruned = await pruneBackups(db, bucket, { keepDaily: 1, keepWeekly: 1 });
-    expect({ pruned: pruned.pruned, deleted: bucket.deletes }).toEqual({ pruned: 1, deleted: [old.key] });
+    const pruned = await pruneBackups(db, { keepDaily: 1, keepWeekly: 1 }, now);
+    expect({ pruned: pruned.pruned, journal: journaled(sqlite), deleted: bucket.deletes }).toEqual({ pruned: 1, journal: [old.key], deleted: [] });
     expect((await listBackups(db, bucket)).map((l) => l.id)).toEqual([fresh.id]);
+    expect((await drainObjectReleases({ db, blobs: bucket }, now)).deleted).toBe(1);
+    expect({ journal: journaled(sqlite), deleted: bucket.deletes }).toEqual({ journal: [], deleted: [old.key] });
 
-    await createBackup(db, bucket, { producer: 'test', now: now - 40 * DAY });
+    const again = await createBackup(db, bucket, { producer: 'test', now: now - 40 * DAY });
+    expect((await pruneBackups(db, { keepDaily: 1, keepWeekly: 1 }, now)).pruned).toBe(1);
     const failing = { ...bucket, delete: async () => { throw new Error('store outage'); } };
-    const held = await pruneBackups(db, failing, { keepDaily: 1, keepWeekly: 1 });
-    expect({ pruned: held.pruned, rows: (await listBackups(db, bucket)).length }).toEqual({ pruned: 0, rows: 2 });
+    expect(await drainObjectReleases({ db, blobs: failing }, now)).toEqual({ expired: 0, deleted: 0, decided: 0, unacknowledged: 1 });
+    expect({ journal: journaled(sqlite), stored: bucket.objects.has(again.key) }).toEqual({ journal: [again.key], stored: true });
   });
 
   it('pin exempts a row from retention until unpinned', async () => {
@@ -285,9 +289,9 @@ describe('retention', () => {
     const old = await createBackup(db, bucket, { producer: 'test', now: now - 40 * DAY });
     await createBackup(db, bucket, { producer: 'test', now });
     expect(await setBackupPinned(db, old.id, true)).toBe(true);
-    expect((await pruneBackups(db, bucket, { keepDaily: 1, keepWeekly: 1 })).pruned).toBe(0);
+    expect((await pruneBackups(db, { keepDaily: 1, keepWeekly: 1 }, now)).pruned).toBe(0);
     expect(await setBackupPinned(db, old.id, false)).toBe(true);
-    expect((await pruneBackups(db, bucket, { keepDaily: 1, keepWeekly: 1 })).pruned).toBe(1);
+    expect((await pruneBackups(db, { keepDaily: 1, keepWeekly: 1 }, now)).pruned).toBe(1);
   });
 });
 

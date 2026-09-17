@@ -31,6 +31,7 @@ import { idFields, kindSpec } from './kinds.js';
 import { parserFor } from './parsers/registry.js';
 import { isBlock, type DerivedEvent } from './parsers/index.js';
 import { segmentsToRead, splitCompleteLines } from './segments.js';
+import { registeredObjectKeySql } from '../core/blob-objects.js';
 import { MAX_BLOB_BYTES, SERVER_PROTOCOL } from '../constants.js';
 
 /** Derived events collapsed into one database call. */
@@ -170,9 +171,10 @@ async function stop(db: RelationalStore, target: ParseTarget, classifier: ParseF
   emit({ kind: 'transcript_parse_failed', projectId: target.projectId, transcriptId: target.transcriptId, reason: classifier });
 }
 
-/** The bytes of one segment, or null when the store no longer holds them. */
-async function segmentBytes(env: Pick<ServerEnv, 'blobs'>, projectId: string, blobKey: string): Promise<Uint8Array | null> {
-  const held = await env.blobs.get(`${projectId}/${blobKey}`);
+/** The bytes of one segment, by the stored object its registered blob names, or null when nothing registers or stores them. */
+async function segmentBytes(env: Pick<ServerEnv, 'blobs'>, objectKey: string | null): Promise<Uint8Array | null> {
+  if (objectKey === null) return null;
+  const held = await env.blobs.get(objectKey);
   if (held === null) return null;
   return new Uint8Array(await new Response(held.body).arrayBuffer());
 }
@@ -279,15 +281,16 @@ export async function parseOnce(env: Pick<ServerEnv, 'db' | 'blobs'>, target: Pa
   const recoveringHeader = needsHeader && target.parsedOffset > 0;
   const readOffset = recoveringHeader ? 0 : target.parsedOffset;
   const { results: segments } = await env.db
-    .prepare(`SELECT base_offset, length, blob_key FROM transcript_segments
-               WHERE project_id = ? AND transcript_id = ? AND base_offset + length > ?
-               ORDER BY base_offset`)
+    .prepare(`SELECT s.base_offset, s.length, s.blob_key, ${registeredObjectKeySql('s.project_id', 's.blob_key')} AS object_key
+                FROM transcript_segments s
+               WHERE s.project_id = ? AND s.transcript_id = ? AND s.base_offset + s.length > ?
+               ORDER BY s.base_offset`)
     .bind(target.projectId, target.transcriptId, readOffset)
-    .all<{ base_offset: number; length: number; blob_key: string }>();
+    .all<{ base_offset: number; length: number; blob_key: string; object_key: string | null }>();
   calls += 1;
 
   const taken = segmentsToRead(
-    segments.map((s) => ({ baseOffset: s.base_offset, length: s.length, blobKey: s.blob_key })),
+    segments.map((s) => ({ baseOffset: s.base_offset, length: s.length, blobKey: s.blob_key, objectKey: s.object_key })),
     readOffset, Number.POSITIVE_INFINITY, TRANSCRIPT_PARSE_SEGMENTS_PER_READ,
   );
   if (taken.length === 0) return { derived: 0, calls, nextOffset: null, failure: null };
@@ -297,7 +300,7 @@ export async function parseOnce(env: Pick<ServerEnv, 'db' | 'blobs'>, target: Pa
   let hasCompleteLine = false;
   let readEnd = readOffset;
   for (const segment of taken) {
-    const bytes = await segmentBytes(env, target.projectId, segment.blobKey);
+    const bytes = await segmentBytes(env, segment.objectKey);
     calls += 1;
     if (bytes === null) {
       await stop(env.db, target, 'blob_absent', now);
