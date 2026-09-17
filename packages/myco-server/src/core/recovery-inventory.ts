@@ -16,12 +16,14 @@
  */
 import { SHA256 } from '@stablelib/sha256';
 import { endStatements, feedStatements, newStatementScan, readStatement, type StatementScan } from './sql-statements.js';
+import { blobArtifactKey, snapshotBlobObject } from './blob-objects.js';
 
 /** The tables whose rows name an object an artifact must carry. */
 export const INVENTORY_TABLES = ['blobs', 'backups'] as const;
 
 /** One object the export names, in the shape a staging manifest lists. */
-export interface InventoryObject { key: string; bytes: number; sha256: string | null }
+/** An object a snapshot row names: `key` is where an artifact holds it, `source` where the source store holds its bytes. */
+export interface InventoryObject { key: string; source: string; bytes: number; sha256: string | null }
 
 /** How far the inventory has read, and what it has found. Plain data, so a checkpoint carries it. */
 export interface InventoryProgress {
@@ -214,18 +216,26 @@ export function inventoryObjectOf(
     const project = at('project_id');
     const key = at('key');
     const size = at('size');
+    const generation = at('generation');
     if (project?.kind !== 'text' || key?.kind !== 'text' || size?.kind !== 'integer') {
       throw new Unreadable('a blobs row does not carry a project, a key and a size');
     }
+    if (generation !== null && generation.kind !== 'text' && generation.kind !== 'null') throw new Unreadable('a blobs row carries a generation this reader cannot read');
+    let object;
+    try {
+      object = snapshotBlobObject({ project_id: project.text, key: key.text, generation: generation?.kind === 'text' ? generation.text : null });
+    } catch {
+      throw new Unreadable('a blobs row names an object outside the stored grammar');
+    }
     // A blob is content-addressed: its key is the digest its bytes must hash to.
-    return { key: `${project.text}/${key.text}`, bytes: size.integer, sha256: key.text };
+    return { key: blobArtifactKey(object.projectId, object.key), source: object.objectKey, bytes: size.integer, sha256: object.key };
   }
   const key = at('key');
   const size = at('size_bytes');
   const digest = at('sha256');
   if (key?.kind !== 'text' || size?.kind !== 'integer') throw new Unreadable('a backups row does not carry a key and a size');
   if (digest !== null && digest.kind !== 'text' && digest.kind !== 'null') throw new Unreadable('a backups row carries a digest this reader cannot read');
-  return { key: key.text, bytes: size.integer, sha256: digest?.kind === 'text' ? digest.text : null };
+  return { key: key.text, source: key.text, bytes: size.integer, sha256: digest?.kind === 'text' ? digest.text : null };
 }
 
 const ordered = (parts: readonly RecordedPart[]): RecordedPart[] => [...parts].sort((left, right) => left.part - right.part);

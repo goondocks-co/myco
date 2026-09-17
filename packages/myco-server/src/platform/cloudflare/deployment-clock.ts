@@ -10,6 +10,7 @@
  */
 import { DurableObject } from 'cloudflare:workers';
 import { runTick, type TickReport } from '../../core/tick.js';
+import { serialGate } from '../../core/serial-gate.js';
 import { WAKE_CONTINUATIONS } from '../../core/jobs.js';
 import { classify, emit } from '../../telemetry.js';
 import { serverEnvFromBindings, type CloudflareBindings } from './env.js';
@@ -134,8 +135,15 @@ export async function wakeClock(bindings: CloudflareBindings): Promise<void> {
 }
 
 export class DeploymentClock extends DurableObject<CloudflareBindings> {
+  /** One wake at a time in this object: an alarm and a cron floor arriving together run back to back rather than doubling store calls. */
+  private readonly gate = serialGate();
+
   /** Run the tick now and arm the next alarm from its answer; deep sleep arms none. */
   async wake(): Promise<WakeOutcome> {
+    return this.gate.exclusive(() => this.wakeOnce());
+  }
+
+  private async wakeOnce(): Promise<WakeOutcome> {
     const now = Date.now();
     const work: Promise<unknown>[] = [];
     try {
@@ -149,7 +157,7 @@ export class DeploymentClock extends DurableObject<CloudflareBindings> {
         return { ticked: false, heldBy: 'recovery_export', attempt: continuation.attempt, stage: continuation.stage };
       }
       try {
-        const report = await runTick(serverEnvFromBindings(this.env, { lifetime: 'clock', waitUntil: (promise) => { work.push(promise); } }), now);
+        const report = await runTick(serverEnvFromBindings(this.env, { lifetime: 'clock', waitUntil: (promise) => { work.push(promise); } }), now, { wake: 'clock' });
         await armNextWake(this.ctx.storage, this.env, Date.now(), soonestWake(report.nextWakeMs, continuation.nextInMs));
         return { ticked: true, report };
       } catch (error) {

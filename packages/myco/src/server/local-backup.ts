@@ -25,7 +25,7 @@ export async function backupLocalDeployment(options: {
       return { configuration: before, credentialsRequired: [...LOCAL_SECRET_NAMES] };
     },
     blob: async (blob) => {
-      const held = await source.get(blob.key);
+      const held = await source.get(blob.source);
       if (held === null) throw new Error(`source Deployment is missing blob ${blob.key}`);
       return held.body;
     },

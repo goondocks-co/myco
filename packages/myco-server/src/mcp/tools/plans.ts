@@ -34,7 +34,8 @@ function summary(row: ProjectPlanRow): PlanSummary {
 /** The plan's text: the row's, or the spilled blob's. */
 async function contentOf(ctx: ToolContext, scope: ReadScope, row: ProjectPlanRow): Promise<string | null> {
   if (row.content !== null || row.blobKey === null) return row.content;
-  const object = await ctx.env.blobs.get(`${scope.projectId}/${row.blobKey}`);
+  if (row.objectKey === null) return null;
+  const object = await ctx.env.blobs.get(row.objectKey);
   return object === null ? null : new Response(object.body).text();
 }
 

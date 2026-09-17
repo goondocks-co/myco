@@ -263,9 +263,9 @@ export function cloudflareProducerPorts(
       });
     },
     digest: (bytes) => digestOf(bytes),
-    async copyObject(prefix, key, expected, signal) {
+    async copyObject(prefix, { key, source: sourceKey }, expected, signal) {
       return stored(async () => {
-        const object = await source.get(key);
+        const object = await source.get(sourceKey);
         if (object === null) return { status: 'missing' as const };
         // A source whose size is not the size its row records is refused before a byte of it is written.
         if (signal.aborted || object.size !== expected.bytes) {

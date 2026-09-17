@@ -1,7 +1,9 @@
 import type { ServerEnv } from '../core/adapters.js';
 import type { StreamContext } from '../context.js';
-import { BLOB_RESERVATION_TTL_MS, MAX_BLOB_BYTES } from '../constants.js';
-import { classifyBlobStore, emit, type Classifier } from '../telemetry.js';
+import { BLOB_RESERVATION_TTL_MS, MAX_BLOB_BYTES, RETRY_AFTER_SECONDS } from '../constants.js';
+import { blobObjectKey } from '../core/blob-objects.js';
+import { consumeExpiredAuthorities, consumeUploadAuthority } from '../core/object-release.js';
+import { classifyBlobStore, emit, UNAVAILABLE, type Classifier } from '../telemetry.js';
 import { withinQuota } from './quota.js';
 
 export const MAX_MEDIA_TYPE_CHARS = 128;
@@ -32,15 +34,32 @@ export function canonicalMediaType(header: string | null): string | null {
   return canonical === TEXT_PLAIN ? TEXT_PLAIN_UTF8 : canonical;
 }
 
-const objectKey = (projectId: string, key: string) => `${projectId}/${key}`;
-
 /** A terminal refusal on the stream route. An unread request body needs no handling: the platform rejects a body that never completes before the Worker is invoked, and absorbs one that did. */
 function refuse(ctx: StreamContext, reason: string, classifier: Classifier): Response {
   emit({ kind: 'blob_refused', projectId: ctx.projectId, tokenId: ctx.tokenId, reason: classifier });
   return Response.json({ stored: false, code: classifier, reason } satisfies BlobResult);
 }
 
-/** Content-addressed upload: hold a reservation row against the token's quota, decide duplicate from the blobs row, stream the bytes into the store under the digest, reconcile the reservation to the size the store recorded, then record the row, charge the token and release the reservation in one batch. A digest mismatch is a terminal refusal. Admission is `withinQuota` — the one expression every writer of the counter admits through — so a token already at the ceiling from event traffic is refused before any byte reaches the store. Nothing a request does before its row lands can leave a permanent charge: a reservation that outlives its request stops counting when it expires, every upload re-admits at reconcile with the reservation held for a fresh TTL, and a terminal refusal after the store holds the bytes deletes an object this request put when no row claims it — an adopted object stays for the next uploader with room. */
+/**
+ * Content-addressed upload under its own authority.
+ *
+ * - **Authority first.** One statement admits the body against `withinQuota` and writes the reservation row, whose id
+ *   is this upload's generation. Nothing touches the store before it commits. The same batch consumes the credential's
+ *   expired authorities, journaling their bytes (`core/object-release.ts`).
+ * - **Bytes under the generation.** A registered row decides a duplicate before any byte moves. With none, the body is
+ *   stored at `<project>/<key>~<generation>` (`core/blob-objects.ts`), a name no other write uses. Bytes already in the
+ *   store under another name are never taken as this upload's.
+ * - **Reconcile.** The reservation moves to the size the store recorded, and the quota is re-admitted.
+ * - **Registration consumes the authority.** One batch registers the row only while the reservation is live, charges
+ *   the credential, and removes the reservation; the same batch journals this upload's bytes when a row already
+ *   registers the content or the authority expired.
+ * - **Every other exit consumes it too.** A refusal, a failed or unknown store write, or an error journals the
+ *   generation's bytes and removes the reservation in one batch. A write still in flight can only land under a name the
+ *   journal already holds or no row will ever register.
+ *
+ * An upload whose authority expired, or another consumer took first, is answered as retryable: a retry stores under a fresh
+ * generation.
+ */
 export async function handleBlob(env: ServerEnv, request: Request, ctx: StreamContext): Promise<Response> {
   const key = ctx.params.key;
   const mediaType = canonicalMediaType(request.headers.get('content-type'));
@@ -51,25 +70,31 @@ export async function handleBlob(env: ServerEnv, request: Request, ctx: StreamCo
 
   const reservationId = crypto.randomUUID();
   const expiresAt = ctx.now + BLOB_RESERVATION_TTL_MS;
+  const physical = blobObjectKey(ctx.projectId, key, reservationId);
 
-  /** Admission and the reservation are one statement: the row is written only when `withinQuota` holds for this body. An expired reservation stopped counting the moment it expired; it is deleted here, in the same transaction, so a credential whose requests keep dying accumulates rows no faster than it makes them. The sweep is keyed on the credential alone, matching what `heldBytes` counts: a credential spans every Project, so a sweep scoped to one Project would strand the reservations it left in Projects it never uploads to again. */
+  /** Admission and the reservation are one statement: the row is written only when `withinQuota` holds for this body. The credential's expired authorities are consumed in the same transaction, so a credential whose requests keep dying accumulates rows no faster than it makes them; the sweep is keyed on the credential alone, matching what `heldBytes` counts, and the drain consumes what a credential that never uploads again leaves. */
   const admission = withinQuota(ctx, size);
-  const [, reserved] = await db.batch([
-    db.prepare(`DELETE FROM blob_reservations WHERE token_id = ? AND expires_at <= ?`).bind(ctx.tokenId, ctx.now),
+  const admitted = await db.batch([
+    ...consumeExpiredAuthorities(db, 'token_id = ? AND expires_at <= ?', [ctx.tokenId, ctx.now], ctx.now),
     db.prepare(`INSERT INTO blob_reservations (reservation_id, project_id, key, token_id, size, expires_at)
                   SELECT ?, ?, ?, ?, ?, ? WHERE ${admission.sql}`)
       .bind(reservationId, ctx.projectId, key, ctx.tokenId, size, expiresAt, ...admission.params),
   ]);
-  if (reserved.meta.changes !== 1) return refuse(ctx, 'token write quota exceeded', 'quota');
-  const release = () => db.prepare(`DELETE FROM blob_reservations WHERE reservation_id = ?`).bind(reservationId).run();
-  /** Every upload reconciles before its row: the reservation moves to the size the store recorded and is held for a fresh TTL, and the quota is re-admitted in the same statement — counting every live reservation but this one — so a request whose room event traffic took while the body streamed is refused here, ahead of the charge, and a second upload in flight is admitted against the size this one will charge. */
-  const reconcile = async (storedSize: number): Promise<boolean> => {
+  if (admitted[admitted.length - 1]!.meta.changes !== 1) return refuse(ctx, 'token write quota exceeded', 'quota');
+  /** Every upload reconciles before its row: the reservation moves to the size the store recorded and is held for a fresh TTL, and the quota is re-admitted in the same statement — counting every live reservation but this one — so a request whose room event traffic took while the body streamed is refused here, ahead of the charge, and a second upload in flight is admitted against the size this one will charge. An authority another consumer already took changes nothing: its bytes are journaled, and the upload is answered as retryable rather than as over quota. */
+  const reconcile = async (storedSize: number): Promise<'held' | 'quota' | 'consumed'> => {
     const resized = withinQuota(ctx, storedSize, reservationId);
     const moved = await db
       .prepare(`UPDATE blob_reservations SET size = ?, expires_at = ? WHERE reservation_id = ? AND ${resized.sql}`)
       .bind(storedSize, ctx.clock() + BLOB_RESERVATION_TTL_MS, reservationId, ...resized.params)
       .run();
-    return moved.meta.changes === 1;
+    if (moved.meta.changes === 1) return 'held';
+    const held = await db.prepare(`SELECT 1 AS held FROM blob_reservations WHERE reservation_id = ?`).bind(reservationId).first();
+    return held === null ? 'consumed' : 'quota';
+  };
+  const expired = (): Response => {
+    emit({ kind: 'blob_upload_expired', projectId: ctx.projectId, tokenId: ctx.tokenId });
+    return Response.json({ stored: false, code: UNAVAILABLE, reason: UNAVAILABLE }, { status: 503, headers: { 'retry-after': String(RETRY_AFTER_SECONDS) } });
   };
 
   const duplicate = (row: { size: number; media_type: string }): Response => {
@@ -77,51 +102,58 @@ export async function handleBlob(env: ServerEnv, request: Request, ctx: StreamCo
     return Response.json({ stored: true, duplicate: true, key, size: row.size, mediaType: row.media_type } satisfies BlobResult);
   };
 
-  let landed = false;
-  let put = false;
-  /** A terminal refusal after the bytes reached the store: an object this request put and no row claims is deleted with it, so a refused upload leaves no orphan; an adopted object stays, held for the next uploader with room to charge it. */
-  const refuseStored = async (reason: string, classifier: Classifier): Promise<Response> => {
-    if (put && (await db.prepare(`SELECT 1 FROM blobs WHERE project_id = ? AND key = ?`).bind(ctx.projectId, key).first()) === null) {
-      await env.blobs.delete(objectKey(ctx.projectId, key));
-    }
-    return refuse(ctx, reason, classifier);
-  };
+  let consumed = false;
+  let putIssued = false;
   try {
     const existing = await db.prepare(`SELECT size, media_type FROM blobs WHERE project_id = ? AND key = ?`).bind(ctx.projectId, key).first<{ size: number; media_type: string }>();
     if (existing) return duplicate(existing);
 
     let storedSize: number;
-    const held = await env.blobs.head(objectKey(ctx.projectId, key));
-    if (held) {
-      storedSize = held.size;
-    } else {
-      try {
-        const object = await env.blobs.put(objectKey(ctx.projectId, key), request.body, { sha256: key, httpMetadata: { contentType: mediaType } });
-        put = true;
-        storedSize = object.size;
-      } catch (err) {
-        if (classifyBlobStore(err, env.platform?.classifyBlobFailure) === 'digest') return refuse(ctx, 'digest mismatch', 'digest_mismatch');
-        throw err;
-      }
+    try {
+      putIssued = true;
+      const object = await env.blobs.put(physical, request.body, { sha256: key, httpMetadata: { contentType: mediaType } });
+      storedSize = object.size;
+    } catch (err) {
+      if (classifyBlobStore(err, env.platform?.classifyBlobFailure) === 'digest') return refuse(ctx, 'digest mismatch', 'digest_mismatch');
+      throw err;
     }
     // The ceiling holds against the size the store recorded, not only against the length the caller declared.
-    if (storedSize > MAX_BLOB_BYTES) return refuseStored(`blob exceeds ${MAX_BLOB_BYTES} bytes`, 'blob_cap');
-    if (!(await reconcile(storedSize))) return refuseStored('token write quota exceeded', 'quota');
+    if (storedSize > MAX_BLOB_BYTES) return refuse(ctx, `blob exceeds ${MAX_BLOB_BYTES} bytes`, 'blob_cap');
+    const reconciled = await reconcile(storedSize);
+    if (reconciled === 'consumed') {
+      consumed = true;
+      return expired();
+    }
+    if (reconciled === 'quota') return refuse(ctx, 'token write quota exceeded', 'quota');
 
+    const at = ctx.clock();
+    const live = `EXISTS (SELECT 1 FROM blob_reservations WHERE reservation_id = ? AND expires_at > ?)`;
     const batch = await db.batch([
-      db.prepare(`INSERT INTO blobs (project_id, key, size, media_type, token_id, received_at) VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT (project_id, key) DO NOTHING`)
-        .bind(ctx.projectId, key, storedSize, mediaType, ctx.tokenId, ctx.now),
+      db.prepare(`INSERT INTO object_releases (physical, kind, created_at)
+                    SELECT ?, 'upload', ? WHERE EXISTS (SELECT 1 FROM blob_reservations WHERE reservation_id = ?)
+                      AND (NOT ${live} OR EXISTS (SELECT 1 FROM blobs WHERE project_id = ? AND key = ?))
+                    ON CONFLICT (physical) DO NOTHING`)
+        .bind(physical, at, reservationId, reservationId, at, ctx.projectId, key),
+      db.prepare(`INSERT INTO blobs (project_id, key, size, media_type, token_id, received_at, generation)
+                    SELECT ?, ?, ?, ?, ?, ?, ? WHERE ${live}
+                    ON CONFLICT (project_id, key) DO NOTHING`)
+        .bind(ctx.projectId, key, storedSize, mediaType, ctx.tokenId, ctx.now, reservationId, reservationId, at),
       db.prepare(`UPDATE member_credentials SET bytes_written = bytes_written + (? * changes()) WHERE id = ?`).bind(storedSize, ctx.tokenId),
       db.prepare(`DELETE FROM blob_reservations WHERE reservation_id = ?`).bind(reservationId),
     ]);
-    if (batch[0].meta.changes === 0) {
-      const row = await db.prepare(`SELECT size, media_type FROM blobs WHERE project_id = ? AND key = ?`).bind(ctx.projectId, key).first<{ size: number; media_type: string }>();
-      return duplicate(row ?? { size: storedSize, media_type: mediaType });
+    consumed = true;
+    if (batch[1]!.meta.changes === 1) {
+      emit({ kind: 'blob_stored', projectId: ctx.projectId, tokenId: ctx.tokenId });
+      return Response.json({ stored: true, duplicate: false, key, size: storedSize, mediaType } satisfies BlobResult);
     }
-    landed = true;
-    emit({ kind: 'blob_stored', projectId: ctx.projectId, tokenId: ctx.tokenId, healed: held !== null });
-    return Response.json({ stored: true, duplicate: false, key, size: storedSize, mediaType } satisfies BlobResult);
+    const row = await db.prepare(`SELECT size, media_type FROM blobs WHERE project_id = ? AND key = ?`).bind(ctx.projectId, key).first<{ size: number; media_type: string }>();
+    if (row !== null) return duplicate(row);
+    return expired();
   } finally {
-    if (!landed) await release();
+    if (!consumed) {
+      await db.batch(putIssued
+        ? consumeUploadAuthority(db, reservationId, ctx.clock())
+        : [db.prepare(`DELETE FROM blob_reservations WHERE reservation_id = ?`).bind(reservationId)]);
+    }
   }
 }

@@ -17,7 +17,8 @@
  * predates this module and needs a sweep walking the store rather than the rows.
  */
 import type { ServerEnv } from '../core/adapters.js';
-import { blobHeld, unreferencedAmong, type BlobRef } from '../core/blob-references.js';
+import { blobHeld, type BlobRef } from '../core/blob-references.js';
+import { recordBlobCandidates, releaseBlobs } from '../core/object-release.js';
 import { leafValues } from '../core/settings.js';
 import { emit } from '../telemetry.js';
 
@@ -84,7 +85,7 @@ export async function transcriptRetention(env: ServerEnv, now: number): Promise<
   // costs a scan of `blobs` against every reference in the catalogue — cheap
   // per row and paid on every tick forever. A deletion is the only thing that
   // makes an orphan, so the sweep runs only where one has happened recently.
-  const orphans = (await orphansPossible(env.db, now)) ? await freeOrphanedBlobs(env) : 0;
+  const orphans = (await orphansPossible(env.db, now)) ? await freeOrphanedBlobs(env, now) : 0;
 
   const window = transcriptRetentionDays((await leafValues(env.db, ['retention.transcripts'])).get('retention.transcripts'));
   if (window === 'unreadable') {
@@ -118,11 +119,16 @@ export async function transcriptRetention(env: ServerEnv, now: number): Promise<
   }
   const doomed = candidates.filter((c) => admitted.has(at(c.project_id, c.blob_key)));
 
-  await env.db.batch(doomed.map((d) => env.db
-    .prepare(`DELETE FROM transcript_segments WHERE project_id = ? AND transcript_id = ? AND base_offset = ?`)
-    .bind(d.project_id, d.transcript_id, d.base_offset)));
+  // The segments go in the transaction that records their blobs as release candidates, so no interruption strands a
+  // blob whose only route back is a segment row.
+  await env.db.batch([
+    ...doomed.map((d) => env.db
+      .prepare(`DELETE FROM transcript_segments WHERE project_id = ? AND transcript_id = ? AND base_offset = ?`)
+      .bind(d.project_id, d.transcript_id, d.base_offset)),
+    ...recordBlobCandidates(env.db, [...admitted.values()], now),
+  ]);
 
-  emit({ kind: 'transcript_retention_pruned', segments: doomed.length, blobs: await freeBlobs(env, admitted) });
+  emit({ kind: 'transcript_retention_pruned', segments: doomed.length, blobs: await freeBlobs(env, admitted, now) });
   return doomed.length + orphans;
 }
 
@@ -153,37 +159,32 @@ async function orphansPossible(db: ServerEnv['db'], now: number): Promise<boolea
 }
 
 /**
- * Blobs no row anywhere references, removed a bounded page at a time.
+ * Blobs no row anywhere references, released a bounded page at a time through the release owner.
  *
- * A session's deletion frees what it can and leaves the rest, and the rows that
- * named those blobs are gone with it — so nothing but this walks them. Bounded
- * and repeated rather than exhaustive: the next tick selects what this one left.
+ * A session's deletion releases what it can and leaves the rest, and the rows that named those blobs are gone with it
+ * — so nothing but this walks them. Bounded and repeated rather than exhaustive: the next tick selects what this one
+ * left. A blob already recorded as a candidate is passed over: while a recovery hold is open it stays recorded for the
+ * drain, and the next page is a page not yet recorded.
  */
-export async function freeOrphanedBlobs(env: Pick<ServerEnv, 'db' | 'blobs'>): Promise<number> {
+export async function freeOrphanedBlobs(env: Pick<ServerEnv, 'db'>, now: number): Promise<number> {
   const { results } = await env.db
-    .prepare(`SELECT project_id, key FROM blobs b WHERE NOT (${blobHeld('b.project_id', 'b.key')}) LIMIT ?`)
+    .prepare(`SELECT project_id, key FROM blobs b
+               WHERE NOT (${blobHeld('b.project_id', 'b.key')})
+                 AND NOT EXISTS (SELECT 1 FROM blob_release_candidates rc WHERE rc.project_id = b.project_id AND rc.key = b.key)
+               LIMIT ?`)
     .bind(TRANSCRIPT_RETENTION_BLOBS_PER_PASS)
     .all<{ project_id: string; key: string }>();
   if (results.length === 0) return 0;
-  for (const row of results) await env.blobs.delete(`${row.project_id}/${row.key}`);
-  await env.db.batch(results.map((row) => env.db
-    .prepare(`DELETE FROM blobs WHERE project_id = ? AND key = ?`).bind(row.project_id, row.key)));
-  emit({ kind: 'orphaned_blobs_freed', blobs: results.length });
-  return results.length;
+  const outcome = await releaseBlobs(env.db, results.map((row) => ({ projectId: row.project_id, key: row.key })), now);
+  emit({ kind: 'orphaned_blobs_freed', blobs: outcome.released, deferred: outcome.deferred });
+  return outcome.released;
 }
 
 /**
- * Remove the blobs the swept segments named, once nothing else holds them.
- *
- * A blob is content-addressed and shared, so an unconditional delete would take
- * a surviving prompt's body with a segment's. The reference check covers the
- * whole admitted page in one statement, inside the call budget.
+ * Release the blobs the swept segments named, once nothing else holds them. A blob is content-addressed and shared, so
+ * the release statement judges the whole admitted page against every reference in one transaction.
  */
-async function freeBlobs(env: Pick<ServerEnv, 'db' | 'blobs'>, admitted: ReadonlyMap<string, BlobRef>): Promise<number> {
-  const orphaned = await unreferencedAmong(env.db, [...admitted.values()]);
-  if (orphaned.length === 0) return 0;
-  for (const b of orphaned) await env.blobs.delete(`${b.projectId}/${b.key}`);
-  await env.db.batch(orphaned.map((b) => env.db
-    .prepare(`DELETE FROM blobs WHERE project_id = ? AND key = ?`).bind(b.projectId, b.key)));
-  return orphaned.length;
+async function freeBlobs(env: Pick<ServerEnv, 'db'>, admitted: ReadonlyMap<string, BlobRef>, now: number): Promise<number> {
+  const outcome = await releaseBlobs(env.db, [...admitted.values()], now);
+  return outcome.released;
 }

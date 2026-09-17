@@ -531,7 +531,7 @@ export async function run(args: string[]): Promise<void> {
         const secretsFile = flags.get('secrets-from');
         if (secretsFile === undefined || secretsFile === '' || secretsFile === 'true') fail('hosted recovery needs --secrets-from <file> with independently held recovery credentials.');
         if (!flags.has('yes')) fail('hosted recovery provisions a new Deployment; re-run with --yes to confirm.');
-        const restored = await restoreCloudflareDeployment({ ...cloudflareOptions(), source: from!, secretsFile: secretsFile!, newSignIn: flags.has('new-signin') });
+        const restored = await restoreCloudflareDeployment({ ...cloudflareOptions(), source: from!, secretsFile: secretsFile!, newSignIn: flags.has('new-signin'), native: carriedNative() });
         console.log(`Replacement deployed at ${restored.record.url}, schema ${restored.schemaVersion}, Worker ${restored.record.versionId}.`);
         console.log('Source data was preserved. Sign-in, attached workers and embedding readiness still require verification before cutover.');
         if (flags.has('new-signin')) console.log(`Using the same MYCO_HOME (${resolveMycoHome()}), configure destination sign-in with: myco server github-app --target cloudflare --url ${restored.record.url} --name "Myco Recovery"`);
@@ -543,7 +543,7 @@ export async function run(args: string[]): Promise<void> {
         if (secretsFile === undefined || secretsFile === '' || secretsFile === 'true') fail('native recovery needs --secrets-from <file> with independently held recovery credentials.');
         if (!flags.has('yes')) fail('native recovery publishes a new Deployment from the artifact; re-run with --yes to confirm.');
         const port = flags.get('port');
-        const restored = await restoreLocalDeployment({ source: from!, secretsFile: secretsFile!,
+        const restored = await restoreLocalDeployment({ source: from!, secretsFile: secretsFile!, native: carriedNative(),
           ...(port === undefined ? {} : { port: Number(port) }), report: (line) => console.log(line) });
         console.log(`Native recovery volume ready at schema ${restored.schemaVersion}. Source data was preserved.`);
         console.log(`Keep MYCO_HOME set to ${resolveMycoHome()} for this recovered Deployment.`);

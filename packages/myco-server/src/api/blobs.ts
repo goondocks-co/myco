@@ -39,7 +39,7 @@ export async function handleBlobRead(env: ServerEnv, ctx: OwnerContext): Promise
   if (scope === null) return notFound();
   const row = await getBlob(env.db, scope, ctx.params.key);
   if (row === null) return notFound();
-  const object = await env.blobs.get(`${scope.projectId}/${ctx.params.key}`);
+  const object = await env.blobs.get(row.objectKey);
   if (object === null) return notFound();
   const renderable = RENDERABLE.has(row.mediaType);
   return new Response(object.body, {

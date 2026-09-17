@@ -1,3 +1,4 @@
+import { registeredObjectKeySql } from '../core/blob-objects.js';
 import type { RelationalStore } from '../core/adapters.js';
 import { PLAN_STATUSES } from '../ingest/kinds.js';
 import { clampLimit, type ReadScope } from './scope.js';
@@ -11,6 +12,8 @@ export interface ProjectPlanRow {
   status: string;
   content: string | null;
   blobKey: string | null;
+  /** The stored object the plan's registered blob names, or null when it has none. */
+  objectKey: string | null;
   originPath: string | null;
   /** `checked/total` over the plan's task list, or `N/A` when it has none. */
   progress: string;
@@ -33,7 +36,7 @@ export function progressOf(content: string | null): string {
   return total === 0 ? 'N/A' : `${checked}/${total}`;
 }
 
-const COLUMNS = `plan_key, session_id, prompt_id, title, status, content, blob_key, origin_path, updated_by, created_at, updated_at`;
+const COLUMNS = `plan_key, session_id, prompt_id, title, status, content, blob_key, ${registeredObjectKeySql('plans.project_id', 'plans.blob_key')} AS object_key, origin_path, updated_by, created_at, updated_at`;
 
 function toPlan(row: Record<string, unknown>, tags: string[]): ProjectPlanRow {
   return {
@@ -44,6 +47,7 @@ function toPlan(row: Record<string, unknown>, tags: string[]): ProjectPlanRow {
     status: row.status as string,
     content: (row.content as string | null) ?? null,
     blobKey: (row.blob_key as string | null) ?? null,
+    objectKey: (row.object_key as string | null) ?? null,
     originPath: (row.origin_path as string | null) ?? null,
     progress: progressOf((row.content as string | null) ?? null),
     updatedBy: (row.updated_by as string | null) ?? null,

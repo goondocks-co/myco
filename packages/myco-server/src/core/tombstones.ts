@@ -4,8 +4,9 @@
  * remain. Reads exclude tombstones; ingestion refuses subsequent capture and
  * import for the same session ID. Unreferenced blobs are freed in bounded pages.
  */
-import type { BlobStore, RelationalStore, ServerEnv } from './adapters.js';
-import { BLOB_REFERENCES, kindFilter, unreferencedAmong, type BlobReference } from './blob-references.js';
+import type { RelationalStore, ServerEnv } from './adapters.js';
+import { recordBlobCandidates, releaseBlobs } from './object-release.js';
+import { BLOB_REFERENCES, kindFilter, type BlobReference } from './blob-references.js';
 import type { ReadScope } from '../read/scope.js';
 import { emit } from '../telemetry.js';
 
@@ -60,9 +61,9 @@ export interface TombstoneOutcome {
   applied: boolean;
   /** Rows removed across every derived table. */
   removed: number;
-  /** Blobs no surviving row referenced, removed from the store. */
+  /** Blobs no surviving row referenced, journaled for deletion with their rows removed. */
   blobsFreed: number;
-  /** Blobs this call left for a later sweep, its bound reached. */
+  /** Blobs this call left recorded as release candidates while a recovery hold is open; the drain decides them after it. */
   blobsLeft: number;
 }
 
@@ -80,37 +81,10 @@ async function blobKeysOf(db: RelationalStore, projectId: string, sessionId: str
   return [...new Set(rows.flatMap((r) => (r.results as { k: string }[]).map((row) => row.k)))];
 }
 
-/** The keys among `keys` that no row anywhere in the Project still references. */
-async function unreferenced(db: RelationalStore, projectId: string, keys: readonly string[]): Promise<string[]> {
-  const free = await unreferencedAmong(db, keys.map((key) => ({ projectId, key })));
-  return free.map((b) => b.key);
-}
-
-/**
- * How many blobs one deletion frees before leaving the rest for a later call.
- *
- * A session holding thousands of attachments would spend thousands of calls
- * here, past what one invocation may make on a hosted runtime. The remainder is
- * not stranded: the rows naming those blobs are gone, so the retention job's
- * orphan sweep collects them, and `blobsLeft` reports what this call deferred
- * rather than swallowing it.
- */
-export const TOMBSTONE_BLOBS_PER_CALL = 16;
-
-/** Remove a blob's row and its stored bytes, as far as the bound reaches. A store that no longer holds the object is the state this converges on, so a repeat is a no-op. */
-async function dropBlobs(db: RelationalStore, blobs: BlobStore, projectId: string, keys: readonly string[]): Promise<number> {
-  const taken = keys.slice(0, TOMBSTONE_BLOBS_PER_CALL);
-  for (const key of taken) await blobs.delete(`${projectId}/${key}`);
-  if (taken.length > 0) {
-    await db.batch(taken.map((key) => db.prepare(`DELETE FROM blobs WHERE project_id = ? AND key = ?`).bind(projectId, key)));
-  }
-  return taken.length;
-}
-
 
 /**
  * Suppress a session: record the tombstone, drop every derived row, and free
- * the blobs nothing else holds.
+ * the blobs nothing else holds through the release owner, which journals their stored objects for deletion.
  *
  * The tombstone is written FIRST and in the same batch as the deletions. A
  * capture event arriving mid-delete is then refused by the shared check rather
@@ -120,7 +94,7 @@ async function dropBlobs(db: RelationalStore, blobs: BlobStore, projectId: strin
  * under `ON CONFLICT DO NOTHING`, and frees nothing.
  */
 export async function tombstoneSession(
-  env: Pick<ServerEnv, 'db' | 'blobs'>, scope: ReadScope, sessionId: string, by: string, nowMs: number, reason?: string,
+  env: Pick<ServerEnv, 'db'>, scope: ReadScope, sessionId: string, by: string, nowMs: number, reason?: string,
 ): Promise<TombstoneOutcome> {
   const { projectId } = scope;
   if (!(await sessionPresent(env.db, projectId, sessionId))) return { applied: false, removed: 0, blobsFreed: 0, blobsLeft: 0 };
@@ -142,13 +116,17 @@ export async function tombstoneSession(
     ...DERIVED_TABLES.map((table) => env.db.prepare(`DELETE FROM ${table} WHERE project_id = ? AND session_id = ?`).bind(projectId, sessionId)),
     env.db.prepare(`DELETE FROM tags WHERE project_id = ? AND entity_kind = 'plan' AND entity_id NOT IN (SELECT plan_key FROM plans WHERE project_id = ?)`).bind(projectId, projectId),
   ];
-  const results = await env.db.batch(statements);
-  const removed = results.slice(metadata.length).reduce((n, r) => n + r.meta.changes, 0);
+  // Every blob the session's rows named is recorded as a release candidate in the transaction that removes the rows,
+  // so an interruption before the decision below leaves the candidates for the drain rather than for no one.
+  const pairs = keys.map((key) => ({ projectId, key }));
+  const candidates = recordBlobCandidates(env.db, pairs, nowMs);
+  const results = await env.db.batch([...statements, ...candidates]);
+  const removed = results.slice(metadata.length, statements.length).reduce((n, r) => n + r.meta.changes, 0);
 
-  const orphaned = await unreferenced(env.db, projectId, keys);
-  const blobsFreed = await dropBlobs(env.db, env.blobs, projectId, orphaned);
-  emit({ kind: 'session_tombstoned', projectId, sessionId, removed, blobsFreed, blobsLeft: orphaned.length - blobsFreed });
-  return { applied: true, removed, blobsFreed, blobsLeft: orphaned.length - blobsFreed };
+  const released = await releaseBlobs(env.db, pairs, nowMs);
+  const blobsFreed = released.released;
+  emit({ kind: 'session_tombstoned', projectId, sessionId, removed, blobsFreed, blobsLeft: released.deferred });
+  return { applied: true, removed, blobsFreed, blobsLeft: released.deferred };
 }
 
 /** Whether this session carries a tombstone. */

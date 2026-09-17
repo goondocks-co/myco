@@ -3,6 +3,7 @@ import { EMBEDDING_TEXT_CHARS, VECTOR_DELETE_RETRY_MS, type EmbeddingProvider } 
 import { VECTOR_TYPES, vectorId, type VectorMetadata, type VectorStore, type VectorType } from './vectors.js';
 import type { EmbeddingSource } from '../../read/embedding.js';
 import { reconcileHubness } from './hubness.js';
+import { registeredObjectKeySql } from '../blob-objects.js';
 
 export interface EmbeddingContext { db: RelationalStore; blobs: BlobStore; vectors: VectorStore; provider: EmbeddingProvider }
 export interface EmbeddingStep { phase: 'missing' | 'stale' | 'orphans' | 'hubness' | 'visibility' | 'settled'; processed: number }
@@ -18,9 +19,9 @@ export async function resetEmbeddingIndex(db: RelationalStore, projectId: string
 }
 
 /** Blob-backed plans use a bounded text prefix for their embedding. Full text remains in the search index. */
-async function sourceText(blobs: BlobStore, source: EmbeddingSource): Promise<string> {
+async function sourceText(blobs: BlobStore, source: EmbeddingSource & { object_key: string | null }): Promise<string> {
   if (source.blob_key === null) return source.text;
-  const blob = await blobs.get(`${source.project_id}/${source.blob_key}`);
+  const blob = source.object_key === null ? null : await blobs.get(source.object_key);
   if (blob === null) throw new Error('embedding source blob is missing');
   const reader = blob.body.getReader();
   const decoder = new TextDecoder('utf-8', { fatal: true });
@@ -47,11 +48,11 @@ export async function reconcileEmbedding(context: EmbeddingContext, projectId: s
   for (let offset = 0; offset < VECTOR_TYPES.length; offset++) {
     const index = ((cursor?.next_type ?? 0) + offset) % VECTOR_TYPES.length;
     const type = VECTOR_TYPES[index];
-    const source = await db.prepare(`SELECT s.*, EXISTS(SELECT 1 FROM embedding_receipts r WHERE r.project_id = s.project_id AND r.type = s.type AND r.record_id = s.record_id) AS stale
+    const source = await db.prepare(`SELECT s.*, ${registeredObjectKeySql('s.project_id', 's.blob_key')} AS object_key, EXISTS(SELECT 1 FROM embedding_receipts r WHERE r.project_id = s.project_id AND r.type = s.type AND r.record_id = s.record_id) AS stale
       FROM embedding_sources s JOIN embedding_versions v ON v.project_id = s.project_id AND v.type = s.type AND v.record_id = s.record_id
       WHERE s.project_id = ? AND s.type = ? AND NOT EXISTS (SELECT 1 FROM embedding_receipts r WHERE r.project_id = s.project_id
         AND r.type = s.type AND r.record_id = s.record_id AND r.revision = s.revision AND r.model_key = ? AND r.ready = 1)
-      ORDER BY stale, v.attempted_at, s.record_id LIMIT 1`).bind(projectId, type, provider.modelKey).first<EmbeddingSource & { stale: number }>();
+      ORDER BY stale, v.attempted_at, s.record_id LIMIT 1`).bind(projectId, type, provider.modelKey).first<EmbeddingSource & { object_key: string | null; stale: number }>();
     if (source === null) continue;
     const id = await vectorId(scope, source.type, source.record_id, source.revision);
     await db.batch([

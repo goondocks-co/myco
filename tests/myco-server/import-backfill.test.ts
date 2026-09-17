@@ -17,6 +17,7 @@
  * session imported and then continued live is live work again. Asserting only
  * that an import sets the lane would pin the opposite.
  */
+import { registerBlob } from './helpers/d1.js';
 import { refused } from './helpers/outcomes.js';
 import { describe, expect, it } from 'bun:test';
 import { parseTranscripts, pendingImportedTranscripts, pendingTranscriptBytes, TRANSCRIPT_PARSE_CALLS_PER_PASS } from '@myco-server-worker/ingest/parse.js';
@@ -61,9 +62,8 @@ async function rig() {
   const ship = async (sessionId: string, transcriptId: string, text: string, channel: 'cli' | 'import', at: number, baseOffset = 0) => {
     const bytes = new TextEncoder().encode(text);
     const key = await sha256HexOf(bytes);
-    await serverEnv.blobs.put(`${PROJECT}/${key}`, new Blob([bytes]).stream());
-    sqlite.run(`INSERT INTO blobs (project_id, key, size, media_type, token_id, received_at) VALUES (?, ?, ?, ?, ?, ?)
-                ON CONFLICT (project_id, key) DO NOTHING`, [PROJECT, key, bytes.length, 'text/plain', issued.tokenId, NOW]);
+    const objectKey = registerBlob(sqlite, { projectId: PROJECT, key, size: bytes.length, tokenId: issued.tokenId, receivedAt: NOW });
+    await serverEnv.blobs.put(objectKey, new Blob([bytes]).stream());
     return ingestEvent(serverEnv.db, { projectId: PROJECT, machineId: MACHINE, tokenId: issued.tokenId, bodyBytes: 200, now: at }, {
       eventId: nextId(),
       sessionId, kind: 'transcript.segment', createdAt: at, channel,
@@ -75,9 +75,8 @@ async function rig() {
   const shipSegment = async (rig: { serverEnv: typeof serverEnv; sqlite: typeof sqlite }, sessionId: string, transcriptId: string, text: string, channel: 'cli' | 'import', at: number, baseOffset: number, headHash: string) => {
     const bytes = new TextEncoder().encode(text);
     const key = await sha256HexOf(bytes);
-    await rig.serverEnv.blobs.put(`${PROJECT}/${key}`, new Blob([bytes]).stream());
-    rig.sqlite.run(`INSERT INTO blobs (project_id, key, size, media_type, token_id, received_at) VALUES (?, ?, ?, ?, ?, ?)
-                    ON CONFLICT (project_id, key) DO NOTHING`, [PROJECT, key, bytes.length, 'text/plain', issued.tokenId, NOW]);
+    const objectKey = registerBlob(rig.sqlite, { projectId: PROJECT, key, size: bytes.length, tokenId: issued.tokenId, receivedAt: NOW });
+    await rig.serverEnv.blobs.put(objectKey, new Blob([bytes]).stream());
     return ingestEvent(rig.serverEnv.db, { projectId: PROJECT, machineId: MACHINE, tokenId: issued.tokenId, bodyBytes: 200, now: at }, {
       eventId: nextId(), sessionId, kind: 'transcript.segment', createdAt: at, channel,
       producer: { adapter: 'claude-code', version: '1' },

@@ -12,6 +12,12 @@ import type { OwnerContext } from '../context.js';
 import { captureSchema, exportedTables, recoverableVirtualTables } from '../core/recovery-schema.js';
 import { capturedDefinitions, type RecoveryProducerStatus, type TableDefinitions } from '../core/recovery-producer.js';
 import { badRequest, ok } from './scope.js';
+import { openHoldForAdmission } from '../core/recovery-hold.js';
+import { within } from '../core/recovery-inventory.js';
+import { classify, emit } from '../telemetry.js';
+
+/** How long an admission may take to answer: its staging writes are bounded inside the producer, well within this. */
+const ADMISSION_MS = 120_000;
 
 /** What an owner is told: the attempt's progress, and plainly that no staging, complete or not, is recoverable yet. */
 const answer = (status: RecoveryProducerStatus): Response => ok({
@@ -40,13 +46,34 @@ export async function handleStartRecoveryExport(env: ServerEnv, ctx: OwnerContex
   if (env.recovery === undefined) return unavailable();
   const captured = await capturedSchema(env);
   if (captured instanceof Response) return captured;
-  const status = await env.recovery.admit({
+  // The hold opens before the export is admitted, so nothing the snapshot names is released while the attempt runs.
+  const hold = await openHoldForAdmission(env, ctx.now);
+  if ('held' in hold) {
+    if (hold.held === 'unverified') {
+      return Response.json({ error: 'recovery_hold_unverified', message: 'a recovery hold is open and its attempt could not be read; try again shortly' }, { status: 503 });
+    }
+    return answer(await env.recovery.status());
+  }
+  // Bounded: an admission that does not answer keeps its hold, and the release job settles it later against the attempts.
+  const recovery = env.recovery;
+  const status = await within(() => recovery.admit({
+    holdToken: hold.token,
     tables: captured.tables,
     schema: captured.text,
     captured: captured.captured,
     configuration: { startedBy: ctx.member.id },
     credentialsRequired: [],
+  }), ADMISSION_MS, Date.now).catch((error: unknown) => {
+    // An admission that failed or never answered keeps its hold: the release job settles it against the attempts.
+    emit({ kind: 'recovery_admission_unanswered', error_class: classify(error) });
+    return null;
   });
+  if (status === null) {
+    return Response.json({ error: 'recovery_admission_unanswered', message: 'the export admission failed or did not answer in time; its hold is settled by a later wake, and a status read shows whether it was admitted' }, { status: 503 });
+  }
+  if (status.holdRetired === true) {
+    return Response.json({ error: 'recovery_hold_retired', message: 'the recovery hold for this admission was already settled; start the export again' }, { status: 409 });
+  }
   // The wake the Deployment already has: an admitted attempt is continued at the next wake, and a sleeping
   // Deployment waits for its cron floor without one. The producer never calls the clock itself.
   await env.wake?.().catch(() => undefined);

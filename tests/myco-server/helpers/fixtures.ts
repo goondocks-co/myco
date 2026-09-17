@@ -1,3 +1,4 @@
+import { registeredObjectKeySql } from '@myco-server-worker/core/blob-objects.js';
 import type { Database } from 'bun:sqlite';
 import type { BlobStore, OutboundFetch, ServerEnv, StoredObject } from '@myco-server-worker/core/adapters.js';
 import { serverEnvFromBindings } from '@myco-server-worker/platform/cloudflare/env.js';
@@ -124,9 +125,19 @@ export function memoryBlobStore(): MemoryBlobStore {
   return store;
 }
 
+/** The stored object the registered row of blob `key` in `projectId` names, through the one resolver's SQL; null when no row registers it. */
+export function registeredObject(sqlite: Database, projectId: string, key: string): string | null {
+  return (sqlite.query(`SELECT ${registeredObjectKeySql('?', '?')} AS object_key`).get(projectId, key) as { object_key: string | null }).object_key;
+}
+
+/** Every stored object the release journal holds, by physical key, sorted. */
+export function journaled(sqlite: Database): string[] {
+  return (sqlite.query('SELECT physical FROM object_releases ORDER BY physical').all() as { physical: string }[]).map((row) => row.physical);
+}
+
 /** A SQLite-backed Env with the migrated schema, two projects, recording limiters, an in-memory blob store, and every statement it executes. */
-export function sqliteEnv(opts: { staleBytesWritten?: number; onSql?: (sql: string, sqlite: Database) => void } = {}) {
-  const sqlite: Database = seededSqlite();
+export function sqliteEnv(opts: { staleBytesWritten?: number; onSql?: (sql: string, sqlite: Database) => void; beforeStep42?: (sqlite: Database) => void } = {}) {
+  const sqlite: Database = seededSqlite({ beforeStep42: opts.beforeStep42 });
   const executed: string[] = [];
   const db = sqliteD1(sqlite, {
     onFirst: (sql, row) =>

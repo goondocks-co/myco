@@ -6,10 +6,13 @@ import { Database } from 'bun:sqlite';
 import { sqliteRelationalStore } from '@myco-server-worker/platform/bun/sqlite.js';
 import { deploymentSecretStore } from '@myco-server-worker/core/secrets.js';
 import { resetEmbeddingIndex } from '@myco-server-worker/core/embedding/reconcile.js';
+import { assignRestoreGeneration, resetRecoveryLedger } from '@myco-server-worker/core/object-release.js';
+import { migrateOnly } from '@myco-server-worker/platform/bun/server-main.js';
+import type { NativeSqlite } from '@myco-server-worker/platform/bun/native.js';
 import { atomicWriteFileSync, syncDirectoryForDurability } from '@myco/utils/atomic-write.js';
 import { cloudflareOperation } from './cloudflare-operation.js';
 import { cloudflareResources } from './cloudflare-resources.js';
-import { copyRecoveryBundle, copyRecoveryObjects, verifyRecoveryBundle } from './recovery-bundle.js';
+import { copyRecoveryBundle, copyRecoveryObjects, preparedObjectKeys, verifyRecoveryBundle } from './recovery-bundle.js';
 import { prepareRecoveryCredentials } from './recovery-credentials.js';
 import { restoreCloudflareDatabase } from './cloudflare-recovery-database.js';
 import { stageCloudflareDeploy, stageCloudflareRecoveryBootstrap } from './cloudflare-stage.js';
@@ -17,7 +20,7 @@ import {
   assertWranglerReady, ensureCommandDir, readDeploymentRecord, writeDeploymentRecord,
   ensureDatabase, ensureBucket, ensureVectorIndexResource, ensureVectorIndexFilters, ensureSecretsStore,
   cloudflareObjectStore, assertCloudflareWorkerAbsent, putStoreSecret, putWorkerSecretValue, putWorkerSecrets, deployWorker,
-  type DeploymentRecord,
+  type CloudflareFetch, type DeploymentRecord,
 } from './cloudflare.js';
 import type { LifecycleOptions } from './cloudflare-lifecycle.js';
 
@@ -46,7 +49,7 @@ async function databaseFingerprint(file: string): Promise<string> {
 
 /** Restore a fresh hosted Deployment; resource receipts survive interruption and no source resources are adopted. */
 export const restoreCloudflareDeployment = cloudflareOperation(async (options: LifecycleOptions & {
-  source: string; secretsFile: string; newSignIn?: boolean;
+  source: string; secretsFile: string; newSignIn?: boolean; native?: NativeSqlite; fetch?: CloudflareFetch;
 }): Promise<{ record: DeploymentRecord; schemaVersion: number; rebuildEmbeddings: true }> => {
   if (readDeploymentRecord(options.mycoHome) !== null) throw new Error('hosted recovery requires a fresh MYCO_HOME without a Cloudflare Deployment record');
   const root = ensureCommandDir(options.mycoHome);
@@ -126,6 +129,16 @@ export const restoreCloudflareDeployment = cloudflareOperation(async (options: L
           await resetEmbeddingIndex(store, project.project_id);
         }
       } finally { data.close(); }
+      // The one migration applier brings the copy to the bundled schema, so the import stamps every step it holds and
+      // the destination applies none twice. The source's object lifecycle is cleared, and every registered blob is
+      // named under one fresh restore generation the objects are copied to.
+      migrateOnly(prepared, options.native);
+      const lifecycle = new Database(prepared);
+      try {
+        const store = sqliteRelationalStore(lifecycle);
+        await resetRecoveryLedger(store);
+        await assignRestoreGeneration(store, crypto.randomUUID());
+      } finally { lifecycle.close(); }
       const fd = fs.openSync(prepared, 'r+');
       try { fs.fsyncSync(fd); } finally { fs.closeSync(fd); }
       fs.renameSync(prepared, databasePath);
@@ -156,7 +169,7 @@ export const restoreCloudflareDeployment = cloudflareOperation(async (options: L
   const staged = stageCloudflareDeploy(record, options.mycoHome);
   const restored = await restoreCloudflareDatabase({ ...bare, configDir: staged.dir, configFile: staged.configFile,
     databaseName: name, databasePath, sourceFingerprint: fingerprint });
-  await copyRecoveryObjects(artifact, cloudflareObjectStore({ ...bare, bucketName: name }), options.report);
+  await copyRecoveryObjects(artifact, cloudflareObjectStore({ ...bare, bucketName: name }), preparedObjectKeys(databasePath), options.report);
   if (held().url === undefined) {
     await assertCloudflareWorkerAbsent({ ...bare, workerName: name });
     const bootstrap = stageCloudflareRecoveryBootstrap(record, options.mycoHome);

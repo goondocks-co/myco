@@ -9,7 +9,8 @@ import {
 } from '@myco-server-worker/auth/tokens.js';
 import { BLOB_RESERVATION_TTL_MS, MEMBER_TOKEN_BYTE_QUOTA, PROTOCOL_HEADER, RETRY_AFTER_SECONDS, SERVER_PROTOCOL } from '@myco-server-worker/constants.js';
 import { sha256HexOf } from '@myco-server-worker/hash.js';
-import { blobPost, bytesWritten, count, envelope, memberHeaders, memberPost, noOutboundFetch, sqliteEnv, uuid } from './helpers/fixtures.js';
+import { blobPost, bytesWritten, count, envelope, journaled, memberHeaders, memberPost, noOutboundFetch, sqliteEnv, uuid } from './helpers/fixtures.js';
+import { drainObjectReleases } from '@myco-server-worker/core/object-release.js';
 
 const json = async (res: Response) => res.json() as Promise<Record<string, unknown>>;
 const T0 = 1_700_000_000_000;
@@ -178,7 +179,7 @@ describe('token refresh', () => {
     expect(bytesWritten(r.e.sqlite, successor.tokenId)).toBe(own * 2);
   });
 
-  it('refuses a predecessor\'s stalled upload that completes after activation: the reconcile admits nothing for a revoked token, the object it put is deleted, no row lands and no counter moves', async () => {
+  it('refuses a predecessor\'s stalled upload that completes after activation: the reconcile admits nothing for a revoked token, the object it put is journaled and deleted, no row lands and no counter moves', async () => {
     const r = await rig();
     const payload = new Uint8Array(4096).fill(7);
     const key = await sha256HexOf(payload);
@@ -201,7 +202,11 @@ describe('token refresh', () => {
     expect(bytesWritten(r.e.sqlite, successor.tokenId)).toBe(carried);
     expect(count(r.e.sqlite, 'blobs')).toBe(0);
     expect(count(r.e.sqlite, 'blob_reservations')).toBe(0);
-    expect(r.e.bucket.deletes).toEqual([`proj_1/${key}`]);
+    const [put] = r.e.bucket.puts;
+    expect(put).toStartWith(`proj_1/${key}~`);
+    expect(journaled(r.e.sqlite)).toEqual([put!]);
+    await drainObjectReleases(r.e.serverEnv, r.clock.now);
+    expect(r.e.bucket.deletes).toEqual([put!]);
     expect(r.e.bucket.objects.size).toBe(0);
     r.clock.now += 1;
     expect((await json(await r.fetch(blobPost(successor.token, key, payload)))).stored).toBe(true);

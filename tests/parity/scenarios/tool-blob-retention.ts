@@ -55,8 +55,8 @@ export const toolBlobRetention: ParityScenario = {
     await post(deleted, 'attachment', { attachmentId: crypto.randomUUID(), blob: doomed, description: 'goes with its session' });
     // A row no object and no row names: what a deletion that hit its bound leaves for the sweep.
     const orphan = '5'.repeat(64);
-    await target.sql(`INSERT INTO blobs (project_id, key, size, media_type, token_id, received_at)
-      SELECT ${lit(target.projectId)}, ${lit(orphan)}, 1, 'text/plain', id, ${stamp} FROM member_credentials ORDER BY issued_at LIMIT 1`);
+    await target.sql(`INSERT INTO blobs (project_id, key, size, media_type, token_id, received_at, generation)
+      SELECT ${lit(target.projectId)}, ${lit(orphan)}, 1, 'text/plain', id, ${stamp}, ${lit(crypto.randomUUID())} FROM member_credentials ORDER BY issued_at LIMIT 1`);
 
     const tombstone = await fetch(`${target.url}/api/projects/${target.projectId}/sessions/${deleted}/tombstone`, {
       method: 'POST', headers: { ...target.ownerHeaders(), origin: target.url, 'content-type': 'application/json' }, body: '{}',

@@ -33,7 +33,15 @@ export interface ServerJob {
   runsThrough: PowerState;
   /** What the job converges toward, stated so the idempotence is checkable rather than asserted. */
   converges: string;
+  /**
+   * The one wake that runs this job, when only one may: `'clock'` is the target's own timer — the hosted clock object's
+   * wake, the self-hosted wake loop — and never a tick an owner requests. `jobsDueAt` applies it for every tick.
+   */
+  wake?: 'clock';
 }
+
+/** Which wake a tick is: the target's own clock, or one an owner asked for. */
+export type TickWake = 'clock' | 'request';
 
 /**
  * Work a wake continues before it reads storage.
@@ -107,6 +115,18 @@ export const SERVER_JOBS: readonly ServerJob[] = [
     runsThrough: 'sleep',
     converges: 'no run whose worker stopped renewing holds a lease past its expiry: each returns to the claim queue with its dispatch credential retired and the place in the queue it had already waited for; a run inside its lease is never taken from the worker holding it',
   },
+  // Stored object release and recovery holds
+  {
+    name: 'recovery-hold-release',
+    runsThrough: 'sleep',
+    converges: 'no recovery hold stays open once the producer answers that the attempt carrying it advances no further, or that no attempt carries it and its token is retired; a hold whose attempt still advances, or whose producer cannot answer, stays open',
+  },
+  {
+    name: 'object-release-drain',
+    runsThrough: 'sleep',
+    wake: 'clock',
+    converges: 'every journaled stored object is deleted by a store delete the store acknowledged, and only then is its journal row removed; no expired upload authority survives unjournaled; with no recovery hold open, every candidate a hold deferred is decided again against the rows; a registered object is never journaled',
+  },
   {
     name: 'transcript-retention',
     runsThrough: 'idle',
@@ -140,9 +160,9 @@ export function jobRunsAt(jobName: string, state: PowerState): boolean {
   return POWER_STATE_DEPTH[state] <= POWER_STATE_DEPTH[job.runsThrough];
 }
 
-/** Every job due at this state, in declaration order. */
-export function jobsDueAt(state: PowerState): readonly ServerJob[] {
-  return SERVER_JOBS.filter((j) => jobRunsAt(j.name, state));
+/** Every job due at this state on this wake, in declaration order. A job that names its wake runs on that wake alone. */
+export function jobsDueAt(state: PowerState, wake: TickWake): readonly ServerJob[] {
+  return SERVER_JOBS.filter((j) => jobRunsAt(j.name, state) && (j.wake === undefined || j.wake === wake));
 }
 
 /** The states a scheduled task may run in, in the words the 1.4 task files use. */

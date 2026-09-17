@@ -89,10 +89,16 @@ export const backupRestore: ParityScenario = {
       const refused = await ownerPost<{ error: string }>(sibling, '/api/backups/restore-upload', { artifact: text });
       expect({ status: refused.status, error: refused.body.error }).toEqual({ status: 409, error: 'foreign_lineage' });
 
-      const adopted = await ownerPost<{ applied: boolean }>(sibling, '/api/backups/restore-upload', { artifact: text, allowForeignLineage: true });
-      expect({ status: adopted.status, applied: adopted.body.applied }).toEqual({ status: 200, applied: true });
+      // A backup carries no blob bytes. An artifact registering blobs the sibling does not hold is refused whole before any
+      // row is written; one registering none is adopted.
+      const registersBlobs = text.split('\n').some((line) => line.startsWith('{"t":"blobs"'));
+      const adopted = await ownerPost<{ applied?: boolean; error?: string }>(sibling, '/api/backups/restore-upload', { artifact: text, allowForeignLineage: true });
       const rows = await sibling.sql(`SELECT COUNT(*) AS c FROM sessions WHERE session_id = 'sess_backup'`);
-      expect(Number((rows[0] as { c: unknown }).c)).toBe(1);
+      if (registersBlobs) {
+        expect({ status: adopted.status, error: adopted.body.error, sessions: Number((rows[0] as { c: unknown }).c) }).toEqual({ status: 409, error: 'objects_missing', sessions: 0 });
+      } else {
+        expect({ status: adopted.status, applied: adopted.body.applied, sessions: Number((rows[0] as { c: unknown }).c) }).toEqual({ status: 200, applied: true, sessions: 1 });
+      }
 
       // The reverse direction: the sibling's own backup lands here under the same adoption rule.
       const siblingBackup = await ownerPost<{ backup: { id: string } }>(sibling, '/api/backups', {});

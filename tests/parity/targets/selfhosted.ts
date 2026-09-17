@@ -8,6 +8,7 @@ import { sqliteRelationalStore } from '@myco-server-worker/platform/bun/sqlite.j
 import { linkStatement } from '@myco-server-worker/auth/identity-link.js';
 import { signSession, SESSION_COOKIE } from '@myco-server-worker/auth/owner/cookie.js';
 import { serve } from '@myco-server-worker/entry/bun.js';
+import { runTick } from '@myco-server-worker/core/tick.js';
 import { GITHUB_SUB, MACHINE_ID, MEMBER_ID, PROJECT_ID, SESSION_SECRET, grantHeadersFor, lit, memberHeadersFor, volumeSql, type ParityTarget } from '../harness.ts';
 
 /** The shipped self-hosted server, in-process: real entry, real migrations, a temp volume. */
@@ -54,6 +55,7 @@ export async function bootSelfhosted(): Promise<ParityTarget> {
     memberHeaders: (extra = {}) => memberHeadersFor(token, PROJECT_ID, extra),
     grantHeaders: (key) => grantHeadersFor(key),
     sql,
+    clockWake: async () => { await runTick(started.env, Date.now(), { wake: 'clock' }); },
     stop: async () => {
       await started.stop();
       fs.rmSync(root, { recursive: true, force: true });

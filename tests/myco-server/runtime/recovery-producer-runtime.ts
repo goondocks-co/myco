@@ -51,9 +51,14 @@ const BACKUP_BODY = new TextEncoder().encode('{"format":"myco-backup/1"}\n');
 // A blob is content-addressed: its key is the digest of its own bytes, which the staged copy is held to.
 const BLOB_DIGEST = new Bun.CryptoHasher('sha256').update(BLOB_BODY).digest('hex');
 const BACKUP_KEY = 'backups/lineage__1__bk_runtime.jsonl';
-const SOURCE_OBJECTS: Record<string, Uint8Array> = { [`proj_1/${BLOB_DIGEST}`]: BLOB_BODY, [BACKUP_KEY]: BACKUP_BODY };
+/** The generation the blob's upload minted: the Deployment's store holds it under that name alone. */
+const BLOB_GENERATION = '5f1e2d3c-4b5a-4968-8776-655443322110';
+/** Where the Deployment's store holds each object, which is what the copy reads. */
+const SOURCE_OBJECTS: Record<string, Uint8Array> = { [`proj_1/${BLOB_DIGEST}~${BLOB_GENERATION}`]: BLOB_BODY, [BACKUP_KEY]: BACKUP_BODY };
+/** Where a staging holds each object, which is what its manifest lists: the logical key. */
+const STAGED_OBJECTS: Record<string, Uint8Array> = { [`proj_1/${BLOB_DIGEST}`]: BLOB_BODY, [BACKUP_KEY]: BACKUP_BODY };
 
-const BLOBS_DDL = 'CREATE TABLE blobs (project_id TEXT NOT NULL, key TEXT NOT NULL, size INTEGER NOT NULL, PRIMARY KEY (project_id, key))';
+const BLOBS_DDL = 'CREATE TABLE blobs (project_id TEXT NOT NULL, key TEXT NOT NULL, size INTEGER NOT NULL, generation TEXT, PRIMARY KEY (project_id, key))';
 const BACKUPS_DDL = 'CREATE TABLE backups (id TEXT PRIMARY KEY, key TEXT NOT NULL, created_at INTEGER NOT NULL, size_bytes INTEGER NOT NULL, counts_json TEXT NOT NULL, schema_version INTEGER NOT NULL, producer TEXT NOT NULL, pinned INTEGER NOT NULL DEFAULT 0, sha256 TEXT)';
 
 /**
@@ -65,7 +70,7 @@ const HEAD = new TextEncoder().encode([
   'CREATE TABLE sessions (id TEXT);',
   `${BLOBS_DDL};`,
   `${BACKUPS_DDL};`,
-  `INSERT INTO blobs VALUES('proj_1','${BLOB_DIGEST}',${BLOB_BODY.byteLength});`,
+  `INSERT INTO blobs VALUES('proj_1','${BLOB_DIGEST}',${BLOB_BODY.byteLength},'${BLOB_GENERATION}');`,
   `INSERT INTO backups VALUES('bk_1','${BACKUP_KEY}',1789590000000,${BACKUP_BODY.byteLength},'{}',41,'myco',0,NULL);`,
   '',
 ].join('\n'));
@@ -163,7 +168,8 @@ const SCHEMA = [
   { type: 'table', name: 'blobs', sql: ${'`'}${BLOBS_DDL}${'`'}, storage: 'table' },
   { type: 'table', name: 'backups', sql: ${'`'}${BACKUPS_DDL}${'`'}, storage: 'table' },
 ];
-const admission = () => ({
+const admission = (holdToken = crypto.randomUUID()) => ({
+  holdToken,
   tables: ['sessions', 'blobs', 'backups'],
   schema: JSON.stringify(SCHEMA),
   captured: capturedDefinitions(SCHEMA),
@@ -174,7 +180,8 @@ export default {
   async fetch(request, env) {
     const url = new URL(request.url);
     const producer = env.RECOVERY.get(env.RECOVERY.idFromName('recovery'));
-    if (url.pathname === '/admit') return Response.json(await producer.admit(admission()));
+    if (url.pathname === '/admit') return Response.json(await producer.admit(admission(url.searchParams.get('hold') ?? undefined)));
+    if (url.pathname === '/settle') return Response.json(await producer.settleHold(url.searchParams.get('hold')));
     if (url.pathname === '/admit-and-continue') {
       const limits = JSON.parse(url.searchParams.get('limits') ?? '{}');
       const [admitted, continued] = await Promise.all([producer.admit(admission()), producer.continue(limits)]);
@@ -324,7 +331,8 @@ try {
   };
   await seed();
   check('nothing is open before an attempt is admitted', (await call('/continue')).stage, 'idle');
-  const admitted = await call('/admit');
+  const firstHold = crypto.randomUUID();
+  const admitted = await call(`/admit?hold=${firstHold}`);
   check('an admitted attempt stages its schema and claims nothing recoverable', [admitted.stage, admitted.recoverable, admitted.stagedSchema !== null], ['export', false, true]);
   const manifest = await call(`/staging-file?key=${encodeURIComponent(`${admitted.staged.prefix}/recovery.json`)}`);
   check('the staging it writes is open, with no object and no completion', [manifest.file.status, manifest.file.objects.length, manifest.file.completedAt], ['open', 0, undefined]);
@@ -333,6 +341,11 @@ try {
   const paused = await call(`/continue?limits=${encodeURIComponent(STEP)}`);
   check('while the export runs the source is paused and the next continuation is immediate', [paused.stage, paused.sourcePaused, paused.nextInMs], ['export', true, 0]);
 
+  check('the hold the attempt carries is open while it advances', await call(`/settle?hold=${firstHold}`), { state: 'open', attempt: admitted.attempt, stage: 'export' });
+  // A hold no attempt carries is retired in the settling step, and admission refuses that token from then on.
+  const strayHold = crypto.randomUUID();
+  check('a hold no attempt carries is retired', await call(`/settle?hold=${strayHold}`), { state: 'retired' });
+
   // A restart mid-attempt: the Durable Object's own storage is what the next continuation resumes from.
   const before = await call('/status');
   await stop(worker!, 'SIGKILL');
@@ -340,6 +353,8 @@ try {
   await startWorker(apiPort);
   const after = await call('/status');
   check('a restart mid-export keeps the attempt and its polls', [after.attempt, after.stage, after.export.polls === before.export.polls], [before.attempt, 'export', true]);
+  check('a retired hold stays retired across the restart: its admission is refused and admits nothing',
+    [(await call(`/admit?hold=${strayHold}`)).holdRetired, (await call('/status')).attempt], [true, before.attempt]);
 
   const completed = await call('/continue?limits={"exportPollMs":600000,"maxPollsPerStep":12,"stepMs":60000,"partBytes":5242880,"maxTransient":5,"maxReExports":3}');
   check('the export completes after the restart and the download begins', [completed.stage, completed.sourcePaused], ['download', false]);
@@ -361,9 +376,20 @@ try {
     published.file.status, published.file.database.bytes, published.file.database.sha256,
     published.file.objects.map((object: { key: string }) => object.key).sort(),
     typeof published.file.completedAt, published.file.exportBookmark !== undefined,
-  ], ['complete', EXPORT.byteLength, await digestOf(EXPORT), Object.keys(SOURCE_OBJECTS).sort(), 'string', true]);
+  ], ['complete', EXPORT.byteLength, await digestOf(EXPORT), Object.keys(STAGED_OBJECTS).sort(), 'string', true]);
+  check('the hold the completed attempt carries is closed', await call(`/settle?hold=${firstHold}`), { state: 'closed', attempt: admitted.attempt, stage: 'complete' });
+  // The hold may now be released, so its token must never admit another export: a replay answers the attempt it named.
+  const startsBeforeReplay = (await provider.state()).starts;
+  const replayed = await call(`/admit?hold=${firstHold}`);
+  check('replaying a settled admission answers its own complete attempt', [replayed.attempt, replayed.stage], [admitted.attempt, 'complete']);
+  await stop(worker!, 'SIGKILL');
+  worker = null;
+  await startWorker(apiPort);
+  const replayedAfterRestart = await call(`/admit?hold=${firstHold}`);
+  check('after a restart the replay still answers that attempt, and nothing advances', [replayedAfterRestart.attempt, replayedAfterRestart.stage, (await call('/continue')).stage], [admitted.attempt, 'complete', 'idle']);
+  check('no replay started another export', (await provider.state()).starts, startsBeforeReplay);
 
-  for (const [key, body] of Object.entries(SOURCE_OBJECTS)) {
+  for (const [key, body] of Object.entries(STAGED_OBJECTS)) {
     const staged = await call(`/staged-object?key=${encodeURIComponent(`${admitted.staged.prefix}/objects/${key}`)}`);
     const listed = published.file.objects.find((object: { key: string }) => object.key === key);
     check(`the staged copy of ${key} is the Deployment's own bytes, under the digest the manifest lists`,
@@ -536,7 +562,7 @@ try {
     check('the clock-driven staging is complete, with the export fingerprint and every object it names', [
       clockManifest.file.status, clockManifest.file.database.sha256,
       clockManifest.file.objects.map((object: { key: string }) => object.key).sort(),
-    ], ['complete', await digestOf(EXPORT), Object.keys(SOURCE_OBJECTS).sort()]);
+    ], ['complete', await digestOf(EXPORT), Object.keys(STAGED_OBJECTS).sort()]);
 
     const terminal = await call('/status');
     await Bun.sleep(3_000);
