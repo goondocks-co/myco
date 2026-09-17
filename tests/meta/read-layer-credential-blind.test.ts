@@ -163,8 +163,16 @@ describe('read layer', () => {
     //                     snapshot check share
     //   core/recovery-schema.ts the schema recovery captures before an export — it
     //                     OWNS the catalogue read both targets hold an export to
+    //   core/object-release.ts the stored-object lifecycle — it OWNS object_releases,
+    //                     the release candidates and recovery_holds, and holds the
+    //                     transactions that journal an exact stored object while
+    //                     removing the row that registered it
+    //   core/recovery-hold.ts the recovery hold around the hosted producer — it
+    //                     reads the open hold it settles
+    //   core/backup-retention.ts the backup retention policy — it reads the policy
+    //                     leaves and the catalogue it decides victims from
     //   pipeline.ts   one quota re-read on the ingest admission path
-    const ALLOWED = [/^read\//, /^ingest\//, /^db\//, /^auth\/tokens\.ts$/, /^auth\/refresh\.ts$/, /^auth\/enrollment\.ts$/, /^auth\/identity-link\.ts$/, /^auth\/grants\.ts$/, /^auth\/members-admin\.ts$/, /^core\/secrets\.ts$/, /^core\/settings\.ts$/, /^core\/repositories\.ts$/, /^core\/canopy\.ts$/, /^core\/runs\.ts$/, /^core\/activity\.ts$/, /^core\/backup\.ts$/, /^core\/digests\.ts$/, /^core\/injection\.ts$/, /^core\/provenance\.ts$/, /^core\/recall\.ts$/, /^core\/remotes\.ts$/, /^core\/resume\.ts$/, /^core\/skills\.ts$/, /^core\/search-index\.ts$/, /^core\/embedding\/(reconcile|hubness|jobs)\.ts$/, /^core\/spores\.ts$/, /^core\/tombstones\.ts$/, /^core\/blob-references\.ts$/, /^core\/recovery-schema\.ts$/, /^pipeline\.ts$/];
+    const ALLOWED = [/^read\//, /^ingest\//, /^db\//, /^auth\/tokens\.ts$/, /^auth\/refresh\.ts$/, /^auth\/enrollment\.ts$/, /^auth\/identity-link\.ts$/, /^auth\/grants\.ts$/, /^auth\/members-admin\.ts$/, /^core\/secrets\.ts$/, /^core\/settings\.ts$/, /^core\/repositories\.ts$/, /^core\/canopy\.ts$/, /^core\/runs\.ts$/, /^core\/activity\.ts$/, /^core\/backup\.ts$/, /^core\/digests\.ts$/, /^core\/injection\.ts$/, /^core\/provenance\.ts$/, /^core\/recall\.ts$/, /^core\/remotes\.ts$/, /^core\/resume\.ts$/, /^core\/skills\.ts$/, /^core\/search-index\.ts$/, /^core\/embedding\/(reconcile|hubness|jobs)\.ts$/, /^core\/spores\.ts$/, /^core\/tombstones\.ts$/, /^core\/blob-references\.ts$/, /^core\/recovery-schema\.ts$/, /^core\/object-release\.ts$/, /^core\/recovery-hold\.ts$/, /^core\/backup-retention\.ts$/, /^pipeline\.ts$/];
     const offenders: string[] = [];
     for (const file of tsFiles(SRC)) {
       const rel = file.slice(SRC.length);
