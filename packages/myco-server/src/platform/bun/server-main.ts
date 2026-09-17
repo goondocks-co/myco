@@ -23,7 +23,7 @@
  * process. A `*_FILE` variable names the file; the plain variable remains for
  * a non-Compose operator.
  */
-import { readFileSync, statSync } from 'node:fs';
+import { existsSync, readFileSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { Database } from 'bun:sqlite';
 import { serve } from '../../entry/bun.js';
@@ -200,6 +200,32 @@ export function liveRuns(databasePath: string): unknown[] {
   } finally {
     sqlite.close();
   }
+}
+
+/**
+ * A `schema_meta` value of the volume `databasePath` holds, read without changing it: the ledger a start reads before it
+ * decides whether the volume needs migrating, and the values a volume's identity is made of. A volume that does not
+ * exist yet, or holds no meta table, answers null rather than being created or migrated by the read.
+ */
+export function schemaMetaValue(databasePath: string, key: string, native?: NativeSqlite): string | null {
+  if (!existsSync(databasePath)) return null;
+  configureSqliteLibrary(native);
+  const sqlite = new Database(databasePath, { readonly: true });
+  try {
+    sqlite.exec('PRAGMA busy_timeout = 5000');
+    return (sqlite.query('SELECT value FROM schema_meta WHERE key = ?').get(key) as { value: string } | null)?.value ?? null;
+  } catch (err) {
+    // An absent meta table is a volume at version 0, not a failure; anything else is the caller's to see.
+    if (/no such table/i.test((err as Error).message)) return null;
+    throw err;
+  } finally {
+    sqlite.close();
+  }
+}
+
+/** The schema step this volume is stamped at: 0 for a volume with no ledger yet. */
+export function stampedSchemaVersion(databasePath: string, native?: NativeSqlite): number {
+  return Number(schemaMetaValue(databasePath, 'version', native) ?? 0);
 }
 
 /** What a process that died before it served says on its way out: a read command names the read, a start names the start. */

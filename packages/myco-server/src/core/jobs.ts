@@ -119,7 +119,7 @@ export const SERVER_JOBS: readonly ServerJob[] = [
   {
     name: 'recovery-hold-release',
     runsThrough: 'sleep',
-    converges: 'no recovery hold stays open once the producer answers that the attempt carrying it advances no further, or that no attempt carries it and its token is retired; a hold whose attempt still advances, or whose producer cannot answer, stays open',
+    converges: "no producer recovery hold stays open once the producer answers that the attempt carrying it advances no further, or that no attempt carries it and its token is retired; a hold whose attempt still advances, or whose producer cannot answer, stays open. An operator backup's hold is never settled here: its own operator releases it, and no age does",
   },
   {
     name: 'object-release-drain',

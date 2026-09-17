@@ -4,7 +4,15 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { configureLocalSignIn, ensureLocalSecrets, readLocalSecrets, resolveLocalPaths, writeLocalRecord } from '@myco/server/local.js';
 import { materializeBundle, resolveDeploymentPaths } from '@myco/server/deployment.js';
-import { LocalVolume } from '@myco/server/local-volume.js';
+import { LocalVolume, volumeIdentity, type VolumeStartup } from '@myco/server/local-volume.js';
+
+/** A start that needs no volume mutation: the shape a serving process takes its lease with. */
+const servingVolume = (paths: { databasePath: string }): VolumeStartup<{ stop(): Promise<void> }> => ({
+  pending: () => false,
+  startup: () => {},
+  identity: () => volumeIdentity(paths.databasePath, () => null),
+  start: async () => ({ stop: async () => {} }),
+});
 import { registerGitHubApp, resolveSignInTarget } from '@myco/server/github-app.js';
 
 function fixture() {
@@ -28,7 +36,7 @@ describe('native sign-in registration', () => {
   it('refuses a serving volume before opening GitHub or changing secrets', async () => {
     const f = fixture();
     const before = readFileSync(f.paths.secretsFile, 'utf8');
-    const serving = await new LocalVolume(f.paths).serve(async () => ({ stop: async () => {} }));
+    const serving = await new LocalVolume(f.paths).serve(servingVolume(f.paths));
     let opened = false;
     try {
       await expect(registerGitHubApp({ url: f.url, target: { kind: 'local', paths: f.paths },

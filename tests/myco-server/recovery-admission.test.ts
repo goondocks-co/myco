@@ -7,7 +7,7 @@ import { expect, it } from 'bun:test';
 import { handleRecoveryExportStatus, handleStartRecoveryExport } from '@myco-server-worker/api/recovery.js';
 import { settlementOf, type AttemptStage, type RecoveryAdmission, type RecoveryAdmissionReadiness, type RecoveryProducerStatus } from '@myco-server-worker/core/recovery-producer.js';
 import { drainObjectReleases, releaseBlobs } from '@myco-server-worker/core/object-release.js';
-import { recoveryHoldRelease } from '@myco-server-worker/core/recovery-hold.js';
+import { acquireOperatorHold, recoveryHoldRelease, settleOperatorHold } from '@myco-server-worker/core/recovery-hold.js';
 import { sqliteEnv } from './helpers/fixtures.js';
 
 const OWNER = { member: { id: 'owner-1' }, now: 1_000 } as never;
@@ -221,4 +221,64 @@ it('answers settlement from the attempt stage: advancing is open, resting is clo
   for (const stage of ['export', 'download', 'inventory', 'copy'] as const) expect(settlementOf({ id: 1, stage }).state).toBe('open');
   for (const stage of ['downloaded', 'complete', 'unconfirmed', 'failed'] as const) expect(settlementOf({ id: 1, stage }).state).toBe('closed');
   expect(settlementOf(null)).toEqual({ state: 'retired' });
+});
+
+/**
+ * The operator-backup hold an owner is told about comes from this Deployment's own database, while the attempt's
+ * progress comes from the producer. A running export pauses that database, so the hold read must never decide the
+ * answer: the producer's answer stands, and the hold is reported as unknown instead of as absent.
+ */
+const pausedDatabase = () => { throw new Error('D1_ERROR: Network connection lost (7500)'); };
+/** A Deployment whose database refuses the hold read an answer reports, as it does while an export pauses it. */
+const paused = (env: ReturnType<typeof sqliteEnv>) => ({
+  ...env.serverEnv,
+  db: {
+    ...env.db,
+    prepare: (sql: string) => (/SELECT token, acquired_at FROM recovery_holds WHERE released_at IS NULL AND holder = 'operator'/.test(sql)
+      ? { bind: () => ({ first: pausedDatabase, all: pausedDatabase, run: pausedDatabase }), first: pausedDatabase, all: pausedDatabase, run: pausedDatabase }
+      : env.db.prepare(sql)),
+  },
+});
+
+it('keeps a status answer the producer gave when its database cannot say whether a backup holds it', async () => {
+  const env = sqliteEnv();
+  const held = producer();
+  held.set({ attempt: 4, stage: 'complete' });
+  const response = await handleRecoveryExportStatus({ ...paused(env), recovery: held.port } as never, OWNER);
+  expect(response.status).toBe(200);
+  const body = await response.json() as Record<string, any>;
+  // The attempt is the producer's answer, unchanged; the hold is explicitly unknown, never a claim of no hold.
+  expect([body.attempt, body.stage, body.recoverable]).toEqual([4, 'complete', false]);
+  expect(body.operatorHold.open).toBe('unknown');
+  expect(String(body.operatorHold.reason)).toContain('could not be read');
+});
+
+it('keeps an admission it made when its database cannot say whether a backup holds it, after the wake', async () => {
+  const env = sqliteEnv();
+  const held = producer();
+  const wakes: number[] = [];
+  // The hold this admission opens is written before the export starts; the read that follows the wake is the paused one.
+  const opened = await handleStartRecoveryExport({ ...env.serverEnv, recovery: held.port, wake: async () => { wakes.push(1); } } as never, OWNER);
+  expect(opened.status).toBe(200);
+  const answer = await handleStartRecoveryExport(
+    { ...paused(env), recovery: held.port, wake: async () => { wakes.push(1); } } as never, OWNER,
+  );
+  // An admission already running is answered from the producer, and the hold read cannot take that answer away.
+  expect(answer.status).toBe(200);
+  const body = await answer.json() as Record<string, any>;
+  expect([body.attempt, body.stage]).toEqual([1, 'export']);
+  expect(body.operatorHold.open).toBe('unknown');
+});
+
+it('reports an operator backup holding this Deployment, and what it defers', async () => {
+  const env = sqliteEnv();
+  const held = producer();
+  held.set({ attempt: 2, stage: 'complete' });
+  expect(await acquireOperatorHold(env.serverEnv, 'op-status', 5_000)).toBe(true);
+  const body = await (await handleRecoveryExportStatus({ ...env.serverEnv, recovery: held.port } as never, OWNER)).json() as Record<string, any>;
+  expect([body.attempt, body.operatorHold.open, body.operatorHold.acquiredAt]).toEqual([2, true, 5_000]);
+  expect(String(body.operatorHold.defers)).toContain('deferred');
+  expect(await settleOperatorHold(env.serverEnv, 'op-status', 6_000, 'complete')).toBe(true);
+  const after = await (await handleRecoveryExportStatus({ ...env.serverEnv, recovery: held.port } as never, OWNER)).json() as Record<string, any>;
+  expect(after.operatorHold).toEqual({ open: false });
 });

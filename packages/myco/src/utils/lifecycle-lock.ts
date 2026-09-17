@@ -18,6 +18,10 @@
  * needs to design for that — a stale silent acquisition would defeat
  * the single-instance guarantee.
  *
+ * Two modes: an exclusive lease, which is the single-owner primitive above, and a shared lease, which coexists with
+ * other shared leases and excludes every exclusive one. A shared holder owns nothing in the file: it writes no holder
+ * record, never truncates, and refuses `update`. Only an exclusive holder writes the record readers see.
+ *
  * Windows: `LockFileEx`/`UnlockFileEx` via Bun FFI (kernel32) are the
  * equivalent primitive. The lock is held on a high-offset sentinel byte
  * (LockFileEx is mandatory, not advisory like flock, so the metadata at
@@ -30,6 +34,7 @@ import path from 'node:path';
 import { dlopen, FFIType, suffix, ptr } from 'bun:ffi';
 
 // `flock(2)` operation flags. Linux and macOS agree on these values.
+const LOCK_SH = 1;
 const LOCK_EX = 2;
 const LOCK_NB = 4;
 const LOCK_UN = 8;
@@ -173,11 +178,16 @@ function winAcquire(lockPath: string, opts: AcquireOptions): AcquireResult {
   fs.mkdirSync(path.dirname(lockPath), { recursive: true });
   const handle = winOpenLockHandle(k, lockPath);
   const ov = winOverlapped();
-  const rc = k.LockFileEx(handle, WIN_LOCKFILE_EXCLUSIVE_LOCK | WIN_LOCKFILE_FAIL_IMMEDIATELY, 0, 1, 0, ptr(ov));
+  const shared = opts.mode === 'shared';
+  const rc = k.LockFileEx(handle, (shared ? 0 : WIN_LOCKFILE_EXCLUSIVE_LOCK) | WIN_LOCKFILE_FAIL_IMMEDIATELY, 0, 1, 0, ptr(ov));
   if (rc === 0) {
     const holder = readLockHolder(lockPath);
     k.CloseHandle(handle);
     return { acquired: false, holder, holderPid: holder?.pid ?? null };
+  }
+  if (shared) {
+    const lease = winRelease(k, handle, () => {});
+    return { acquired: true, lock: { release: lease.release, update: refuseSharedUpdate, path: lockPath, pid: process.pid } };
   }
 
   const command = opts.command ?? process.argv.join(' ');
@@ -192,20 +202,12 @@ function winAcquire(lockPath: string, opts: AcquireOptions): AcquireResult {
   // flock path relies on.
   writeHolderFile(lockPath, current);
 
-  let released = false;
-  const release = (): void => {
-    if (released) return;
-    released = true;
-    process.off('exit', release);
-    // Truncate so a fresh hook process doesn't read a dead holder's record.
-    try { fs.writeFileSync(lockPath, ''); } catch { /* best-effort */ }
-    try { const ov = winOverlapped(); k.UnlockFileEx(handle, 0, 1, 0, ptr(ov)); } catch { /* idem */ }
-    try { k.CloseHandle(handle); } catch { /* idem */ }
-  };
-  process.on('exit', release);
+  // Truncate so a fresh hook process doesn't read a dead holder's record.
+  const lease = winRelease(k, handle, () => { try { fs.writeFileSync(lockPath, ''); } catch { /* best-effort */ } });
+  const release = lease.release;
 
   const update = (metadata: Partial<LockHolder>): void => {
-    if (released) return;
+    if (!lease.held()) return;
     Object.assign(current, metadata);
     writeHolderFile(lockPath, current);
   };
@@ -214,6 +216,48 @@ function winAcquire(lockPath: string, opts: AcquireOptions): AcquireResult {
     acquired: true,
     lock: { release, update, path: lockPath, pid: process.pid },
   };
+}
+
+/** A `LockFileEx` lease's release, run once, on `release()` and on process exit. `held()` answers whether it still holds. */
+function winRelease(k: Kernel32, handle: bigint, before: () => void): { release: () => void; held: () => boolean } {
+  let released = false;
+  const release = (): void => {
+    if (released) return;
+    released = true;
+    process.off('exit', release);
+    before();
+    try { const ov = winOverlapped(); k.UnlockFileEx(handle, 0, 1, 0, ptr(ov)); } catch { /* idem */ }
+    try { k.CloseHandle(handle); } catch { /* idem */ }
+  };
+  process.on('exit', release);
+  return { release, held: () => !released };
+}
+
+/** A shared lease owns nothing in the lock file, so it has no record to update. */
+function refuseSharedUpdate(): never {
+  throw new Error('LifecycleLock: a shared lease writes no holder record');
+}
+
+/**
+ * A `flock` shared lease: it coexists with other shared leases, excludes every exclusive one, writes and truncates
+ * nothing, and is released by the kernel when this process ends.
+ */
+function sharedLease(flockApi: { flock: (fd: number, op: number) => number }, fd: number, lockPath: string): AcquireResult {
+  if (flockApi.flock(fd, LOCK_SH | LOCK_NB) !== 0) {
+    const holder = readHolderMetadata(fd);
+    fs.closeSync(fd);
+    return { acquired: false, holder, holderPid: holder?.pid ?? null };
+  }
+  let released = false;
+  const release = (): void => {
+    if (released) return;
+    released = true;
+    process.off('exit', release);
+    try { flockApi.flock(fd, LOCK_UN); } catch { /* fd may already be closed */ }
+    try { fs.closeSync(fd); } catch { /* idem */ }
+  };
+  process.on('exit', release);
+  return { acquired: true, lock: { release, update: refuseSharedUpdate, path: lockPath, pid: process.pid } };
 }
 
 function winWithFileLockSync<T>(lockPath: string, fn: () => T): T {
@@ -278,6 +322,9 @@ export interface AcquireOptions {
   /** Override the command string written to the lock file. Defaults to
    *  `process.argv.join(' ')`. Informational only. */
   command?: string;
+  /** `shared` coexists with other shared leases and excludes every exclusive
+   *  one; it writes, truncates and updates nothing. Defaults to `exclusive`. */
+  mode?: 'exclusive' | 'shared';
 }
 
 export const LifecycleLock = {
@@ -287,6 +334,7 @@ export const LifecycleLock = {
     fs.mkdirSync(path.dirname(lockPath), { recursive: true });
 
     const fd = fs.openSync(lockPath, fs.constants.O_RDWR | fs.constants.O_CREAT, 0o644);
+    if (opts.mode === 'shared') return sharedLease(flockApi, fd, lockPath);
     const rc = flockApi.flock(fd, LOCK_EX | LOCK_NB);
     if (rc !== 0) {
       const holder = readHolderMetadata(fd);

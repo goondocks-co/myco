@@ -12,9 +12,12 @@
  * generated module. A Deployment started this way locates nothing on the host.
  */
 import { mkdirSync } from 'node:fs';
+import { SERVER_SCHEMA_VERSION } from '@myco-server-worker/constants.js';
 import {
   DEFAULT_PORT,
   migrateOnly,
+  schemaMetaValue,
+  stampedSchemaVersion,
   startDeployment,
   type DeploymentOptions,
   type StartedDeployment,
@@ -23,7 +26,7 @@ import type { NativeSqlite } from '@myco-server-worker/platform/bun/native.js';
 import type { StaticAssets } from '@myco-server-worker/platform/bun/static.js';
 import { getLibsqlitePath, getVec0Path } from '../runtime/native-deps.js';
 import { BUNDLED_SERVER_UI } from '../server-ui-assets.generated.js';
-import { LocalVolume } from './local-volume.js';
+import { LocalVolume, volumeIdentity, type VolumeIdentity } from './local-volume.js';
 import { LocalEmbeddingRuntime } from './local-embedding.js';
 import {
   assertRecordServable,
@@ -89,22 +92,42 @@ export interface LocalStart extends StartedDeployment {
   record: LocalDeploymentRecord;
 }
 
+/** What this volume holds, without changing it: the meta values the lease compares a volume by. */
+function identityOf(paths: LocalDeploymentPaths, native: NativeSqlite | undefined): VolumeIdentity {
+  return volumeIdentity(paths.databasePath, (key) => schemaMetaValue(paths.databasePath, key, native));
+}
+
 /**
  * Bring this machine's Deployment up.
  *
- * The volume is brought current first. A start against a volume the binary is
- * ahead of is refused by the server rather than migrated on the request path,
- * and a binary that replaced itself is exactly the case that leaves one behind.
+ * The volume is brought current first, under the lease that owns volume
+ * mutation: a start whose volume is behind this binary migrates it while
+ * nothing else holds the volume, and is refused while an operator backup or
+ * another operation does. A start against a volume the binary is ahead of is
+ * refused by the server rather than migrated on the request path, and a binary
+ * that replaced itself is exactly the case that leaves one behind.
+ *
+ * Configuration and secrets are read from the volume the lease accepted, so a
+ * value read before a lease exchange is never carried into a volume that was
+ * replaced in it.
  */
 export async function runLocalDeployment(paths = resolveLocalPaths()): Promise<LocalStart> {
-  return new LocalVolume(paths).serve(async () => {
-    const record = readLocalRecord(paths);
-    const options = optionsFromRecord(record, paths, readLocalSecrets(paths));
-    mkdirSync(paths.blobDir, { recursive: true, mode: 0o700 });
-    migrateOnly(paths.databasePath, options.native);
-    const runtime = new LocalEmbeddingRuntime();
-    const started = await startDeployment({ ...options, harnessTasks: runtime.tasks,
-      harnessLaunchFor: (callbackOrigin) => runtime.launchFor(callbackOrigin), beforeStop: () => runtime.stop() });
-    return { ...started, record };
+  const native = carriedNative();
+  return new LocalVolume(paths).serve<LocalStart>({
+    pending: () => stampedSchemaVersion(paths.databasePath, native) < SERVER_SCHEMA_VERSION,
+    startup: () => {
+      mkdirSync(paths.blobDir, { recursive: true, mode: 0o700 });
+      migrateOnly(paths.databasePath, native);
+    },
+    identity: () => identityOf(paths, native),
+    start: async () => {
+      const record = readLocalRecord(paths);
+      const options = optionsFromRecord(record, paths, readLocalSecrets(paths));
+      mkdirSync(paths.blobDir, { recursive: true, mode: 0o700 });
+      const runtime = new LocalEmbeddingRuntime();
+      const started = await startDeployment({ ...options, harnessTasks: runtime.tasks,
+        harnessLaunchFor: (callbackOrigin) => runtime.launchFor(callbackOrigin), beforeStop: () => runtime.stop() });
+      return { ...started, record };
+    },
   });
 }
