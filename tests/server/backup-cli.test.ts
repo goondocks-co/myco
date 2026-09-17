@@ -3,8 +3,25 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { Database } from 'bun:sqlite';
 import { resolveLocalPaths, writeLocalRecord } from '@myco/server/local.js';
 import { sqliteEnv } from '../myco-server/helpers/fixtures.js';
+
+/**
+ * Everything the source volume holds except its recovery-hold ledger, which a backup writes to by design: it holds
+ * every object its snapshot names until the artifact completes.
+ */
+const sourceBesideItsHolds = (databasePath: string) => {
+  const sqlite = new Database(databasePath, { readonly: true });
+  try {
+    const tables = (sqlite.query("SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' AND name <> 'recovery_holds' ORDER BY name").all() as Array<{ name: string }>);
+    return tables.map(({ name }) => [name, sqlite.query(`SELECT * FROM "${name}"`).all()] as const);
+  } finally { sqlite.close(); }
+};
+const holdRows = (databasePath: string) => {
+  const sqlite = new Database(databasePath, { readonly: true });
+  try { return sqlite.query('SELECT holder, release_reason, released_by FROM recovery_holds').all(); } finally { sqlite.close(); }
+};
 
 it('routes backup and restore flags to the selected retained target without invoking Compose', async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-backup-cli-'));
@@ -13,7 +30,7 @@ it('routes backup and restore flags to the selected retained target without invo
   const repo = fileURLToPath(new URL('../../', import.meta.url));
   writeLocalRecord({ port: 8787, sourceFrom: 'socket' }, paths);
   fixture.sqlite.query('VACUUM INTO ?').run(paths.databasePath);
-  const original = fs.readFileSync(paths.databasePath);
+  const original = sourceBesideItsHolds(paths.databasePath);
   const invoke = async (args: string[]) => {
     const child = Bun.spawn([process.execPath, '--no-env-file', '--tsconfig-override', path.join(repo, 'tsconfig.json'), '-e',
       `import {run} from ${JSON.stringify(path.join(repo, 'packages/myco/src/cli/server.ts'))}; await run(${JSON.stringify(args)});`], {
@@ -45,6 +62,8 @@ it('routes backup and restore flags to the selected retained target without invo
     expect(bare.code).toBe(1);
     expect(bare.text).toContain('backup needs --to <dir>');
     expect(fs.existsSync(path.join(root, 'true'))).toBe(false);
-    expect(fs.readFileSync(paths.databasePath)).toEqual(original);
+    expect(sourceBesideItsHolds(paths.databasePath)).toEqual(original);
+    // The one thing a backup writes to its source: the hold it took, released once its artifact completed.
+    expect(holdRows(paths.databasePath)).toEqual([{ holder: 'operator', release_reason: 'complete', released_by: 'operator' }]);
   } finally { fixture.sqlite.close(); fs.rmSync(root, { recursive: true, force: true }); }
 });

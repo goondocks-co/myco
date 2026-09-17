@@ -48,10 +48,10 @@ import {
 } from '../server/local.js';
 import { carriedNative, runLocalDeployment } from '../server/local-run.js';
 import { setupLocalOwner } from '../server/local-owner.js';
-import { backupLocalDeployment } from '../server/local-backup.js';
-import { backupCloudflareDeployment } from '../server/cloudflare-backup.js';
+import { backupLocalDeployment, localRecoveryHold } from '../server/local-backup.js';
+import { backupCloudflareDeployment, cloudflareRecoveryHoldOf } from '../server/cloudflare-backup.js';
 import { materializeRecoveryStaging } from '../server/recovery-materialize.js';
-import { credentialsReport } from '../server/recovery-bundle.js';
+import { abandonRecoveryHold, credentialsReport, recoveryHoldOfDestination, type RecoveryHoldOwner } from '../server/recovery-bundle.js';
 import { restoreLocalDeployment } from '../server/local-recovery.js';
 import { restoreCloudflareDeployment } from '../server/cloudflare-recovery.js';
 import {
@@ -114,6 +114,19 @@ Commands (--target local runs the Deployment from this binary; --target cloudfla
                                           Snapshot the database and blobs. Local/Cloudflare backups
                                           resume an incomplete directory and verify every blob.
                                           Credentials require separate secure recovery storage.
+                                          Local/Cloudflare backups hold every object the snapshot
+                                          names against deletion until the artifact completes, so
+                                          storage grows by what deletion would have freed until then.
+                                          Run the same command again to resume an interrupted copy.
+  recovery-hold --to <dir> [--target local|cloudflare]
+                                          What the backup in <dir> holds on its source. --abandon
+                                          gives that hold up, so deferred deletions are decided
+                                          again; the incomplete directory can then only be replaced
+                                          by a new capture. A hold never expires on its own.
+  recovery-hold --token <id> --abandon [--target local|cloudflare]
+                                          Give up a hold whose destination directory is gone. It
+                                          releases only that operator hold, never an automatic
+                                          export's.
   restore --target compose --from <dir> [--no-drain]
                                           Replace the Deployment's data with a backup. Waits for the
                                           tasks this Deployment is running or about to start before
@@ -183,6 +196,24 @@ async function openInBrowser(url: string): Promise<void> {
     child.on('error', () => resolve());
     child.on('spawn', () => { child.unref(); resolve(); });
   });
+}
+
+/**
+ * What an operator backup is holding on this Deployment, when one is. Deletions are recorded and deferred while it is
+ * open, so storage grows by what they would have freed; only the backup completing, or being given up, releases it.
+ */
+async function reportOperatorHold(owner: RecoveryHoldOwner): Promise<void> {
+  let held: Awaited<ReturnType<RecoveryHoldOwner['open']>>;
+  try {
+    held = await owner.open();
+  } catch (error) {
+    // Silence here would read as "no backup holds this Deployment", which is the one thing this must never say.
+    console.log(`  Backup hold: unreadable — ${error instanceof Error ? error.message : String(error)}`);
+    return;
+  }
+  if (held === null) return;
+  console.log(`  Backup hold: ${held.token} since ${new Date(held.acquiredAt).toISOString()}`);
+  console.log('               deletions are deferred while an operator backup holds this Deployment\'s objects');
 }
 
 function fail(message: string): never {
@@ -335,6 +366,7 @@ export async function run(args: string[]): Promise<void> {
         console.log(`  Directory:  ${paths.root}`);
         console.log(`  Address:    ${record.origin ?? `http://127.0.0.1:${record.port}`}`);
         console.log(`  Service:    ${service.loaded ? 'running at login' : service.detail ?? 'not installed'}`);
+        await reportOperatorHold(localRecoveryHold(paths, carriedNative()));
         console.log(`  Serving:    ${(await reachable(record)) ? 'answering on its address' : 'not answering — see ~/.myco/logs/server.log'}`);
         return;
       }
@@ -402,6 +434,7 @@ export async function run(args: string[]): Promise<void> {
       console.log(`  Deployed:   ${status.deployed ? status.versionId ?? 'yes' : 'no'}`);
       console.log(`  Recorded:   ${status.record.versionId ?? 'never'} at ${status.record.deployedAt}`);
       if (status.record.url !== undefined) console.log(`  URL:        ${status.record.url}`);
+      await reportOperatorHold(cloudflareRecoveryHoldOf(cloudflareOptions()));
       return;
     }
 
@@ -509,8 +542,8 @@ export async function run(args: string[]): Promise<void> {
       if (selected !== 'compose') {
         const report = (line: string) => { console.log(line); };
         const done = selected === 'local'
-          ? await backupLocalDeployment({ destination: to!, report })
-          : await backupCloudflareDeployment({ ...cloudflareOptions(), destination: to! });
+          ? await backupLocalDeployment({ destination: to!, report, native: carriedNative() })
+          : await backupCloudflareDeployment({ ...cloudflareOptions(), destination: to!, report });
         console.log(`Verified data artifact written to ${path.resolve(to!)} (${done.snapshot!.blobCount} blobs)`);
         console.log(credentialsReport(done.snapshot!.credentialsRequired));
         return;
@@ -519,6 +552,38 @@ export async function run(args: string[]): Promise<void> {
       console.log(`Backup written to ${done.destination}`);
       console.log('  myco.sqlite   consistent snapshot, taken with VACUUM INTO');
       console.log('  blobs/        content-addressed objects');
+      return;
+    }
+
+    if (command === 'recovery-hold') {
+      const selected = target();
+      if (selected !== 'local' && selected !== 'cloudflare') fail('recovery-hold needs --target local or --target cloudflare.');
+      const owner = selected === 'local' ? localRecoveryHold(resolveLocalPaths(), carriedNative()) : cloudflareRecoveryHoldOf(cloudflareOptions());
+      const to = flags.get('to');
+      const token = flags.get('token');
+      const abandon = flags.has('abandon');
+      if (token !== undefined && token !== '' && token !== 'true') {
+        if (!abandon) fail('recovery-hold --token reads nothing on its own; add --abandon to give that hold up.');
+        const answer = await owner.release(token, 'abandoned');
+        if (answer.state === 'other-holder') fail('that hold belongs to this Deployment\'s own export, not an operator backup.');
+        console.log(`Recovery hold ${token} is ${answer.state}. Deferred deletions are decided again at the next pass.`);
+        return;
+      }
+      if (to === undefined || to === '' || to === 'true') fail('recovery-hold needs --to <dir>, or --token <id> --abandon for a lost directory.');
+      if (!abandon) {
+        const held = await recoveryHoldOfDestination(to!, owner);
+        console.log(`Recovery hold ${held.token} recorded by ${path.resolve(to!)} is ${held.state}.`);
+        if (held.state === 'open') console.log('Every object its snapshot names is held: deletions are recorded and deferred until this backup completes or is given up.');
+        if (held.state === 'open' && !held.sourceMatchesBinding) {
+          console.log(held.bound
+            ? 'The source no longer answers the Deployment this backup was bound to: it can only be replaced by a new capture.'
+            : 'This hold is not yet bound to a source identity, so no snapshot may be captured under it.');
+        }
+        return;
+      }
+      const given = await abandonRecoveryHold(to!, owner, (line) => { console.log(line); });
+      console.log(`Recovery hold ${given.token} is ${given.state}. Deferred deletions are decided again at the next pass.`);
+      console.log('This destination can no longer be resumed; capture into a new directory.');
       return;
     }
 

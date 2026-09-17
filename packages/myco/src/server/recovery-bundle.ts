@@ -18,6 +18,8 @@ import { quoteIdentifier } from './recovery-schema.js';
 const MANIFEST_FILE = 'recovery.json';
 const DATABASE_FILE = 'myco.sqlite';
 const LOCK_FILE = '.recovery.lock';
+const HOLD_FILE = '.recovery-hold.json';
+const HOLD_BOUND_FILE = '.recovery-hold-bound.json';
 const SNAPSHOT_DIRECTORY = '.snapshot';
 const OWNER_DIRECTORY_MODE = 0o700;
 const OWNER_FILE_MODE = 0o600;
@@ -127,6 +129,40 @@ export interface RecoveryAdapter {
   snapshot(databasePath: string, workDir: string): Promise<RecoverySnapshot>;
   /** Stream a registered blob or catalogued backup from this source, read at its `source` key, or throw on absence. */
   blob(object: RecoverySourceObject, workDir: string): Promise<ReadableStream>;
+  /**
+   * This source's recovery hold, where the source keeps one. A backup protects every object its snapshot names by
+   * opening a hold before the snapshot and releasing it when the artifact completes: while it is open, the source
+   * records the deletions it decides and journals none of them, so nothing this artifact still has to copy is removed.
+   * A source with no hold (an artifact copied from another artifact) leaves it out, and its objects are already fixed.
+   */
+  hold?: RecoveryHoldOwner;
+}
+
+/**
+ * The hold one backup takes on its source, by a token this destination records before the hold exists.
+ *
+ * Both answers are idempotent by token: acquiring a token already open answers `open`, and releasing a token already
+ * released answers `released`. So a write whose answer was lost is settled by asking again with the same token, never
+ * by taking a second hold.
+ */
+export interface RecoveryHoldOwner {
+  /** Opens `token`, or answers what the source already holds for it. */
+  acquire(token: string): Promise<RecoveryHoldReading>;
+  /** What the source holds for `token`, without changing it. */
+  inspect(token: string): Promise<RecoveryHoldReading>;
+  /** Releases `token`: `complete` when the artifact is whole, `abandoned` when the operator gives the attempt up. */
+  release(token: string, reason: 'complete' | 'abandoned'): Promise<RecoveryHoldReading>;
+  /** The operator hold open on this source, whichever destination took it, or null. */
+  open(): Promise<{ token: string; acquiredAt: number } | null>;
+  /** The source this hold belongs to, as the destination records it, so another Deployment's hold is never adopted. */
+  locator: string;
+}
+
+/** What a source says about one hold token. */
+export interface RecoveryHoldReading {
+  state: 'open' | 'released' | 'absent' | 'other-holder';
+  /** Whatever identifies the source's own state beside the hold, recorded with the intent and compared on resume. */
+  sourceIdentity?: string;
 }
 
 /** Size and digest from the same bounded-memory read of a regular file. */
@@ -247,7 +283,12 @@ function assertOwnedDirectory(root: string): void {
   if (!fs.lstatSync(root).isDirectory()) throw new Error('recovery destination must be a directory, not a symlink');
   const lock = path.join(root, LOCK_FILE);
   if (fs.existsSync(lock) && !fs.lstatSync(lock).isFile()) throw new Error('recovery lock must be a regular file');
-  if (!fs.existsSync(path.join(root, MANIFEST_FILE)) && fs.readdirSync(root).some((name) => name !== LOCK_FILE)) {
+  const holdRecords = [HOLD_FILE, HOLD_BOUND_FILE, `${HOLD_BOUND_FILE}.staging`];
+  for (const name of holdRecords) {
+    const record = path.join(root, name);
+    if (fs.existsSync(record) && !fs.lstatSync(record).isFile()) throw new Error('recovery hold record must be a regular file');
+  }
+  if (!fs.existsSync(path.join(root, MANIFEST_FILE)) && fs.readdirSync(root).some((name) => name !== LOCK_FILE && !holdRecords.includes(name))) {
     throw new Error('recovery destination holds unrelated files; choose an empty directory');
   }
 }
@@ -259,6 +300,209 @@ function ensureContentDirectory(directory: string, complete = false): void {
     syncDirectory(path.dirname(directory));
   }
   if (!fs.lstatSync(directory).isDirectory()) throw new Error(`recovery content directory must not be a symlink: ${directory}`);
+}
+
+/**
+ * What a destination records about the hold it took on its source.
+ *
+ * Two files, and neither is ever unlinked while it is the only record of a live hold:
+ * - the intent, written once before the hold exists, carrying the token this destination will ever use. A crash right
+ *   after it leaves a token that can be asked about; a crash right before it leaves no hold to lose.
+ * - the bound receipt, written atomically once the source answered that this token is open, carrying the identity the
+ *   source answered with. No snapshot is taken before it exists, so a resume always has something to compare.
+ */
+const holdIntentSchema = z.object({ token: z.string().uuid(), locator: z.string().min(1), createdAt: z.string().datetime() });
+const holdBoundSchema = z.object({ token: z.string().uuid(), sourceIdentity: z.string(), boundAt: z.string().datetime() });
+type RecoveryHoldIntent = z.infer<typeof holdIntentSchema>;
+type RecoveryHoldBound = z.infer<typeof holdBoundSchema>;
+
+/** Writes one new file so it survives a crash: exclusive, its bytes fsynced, then its directory. */
+function durableFile(file: string, text: string): void {
+  const fd = fs.openSync(file, 'wx', OWNER_FILE_MODE);
+  try {
+    fs.writeSync(fd, text);
+    fs.fsyncSync(fd);
+  } finally { fs.closeSync(fd); }
+  syncDirectory(path.dirname(file));
+}
+
+/** Replaces a file in one step: a crash leaves either the old bytes or the new ones, never none. */
+function durableReplace(file: string, text: string): void {
+  const staged = `${file}.staging`;
+  fs.rmSync(staged, { force: true });
+  const fd = fs.openSync(staged, 'wx', OWNER_FILE_MODE);
+  try {
+    fs.writeSync(fd, text);
+    fs.fsyncSync(fd);
+  } finally { fs.closeSync(fd); }
+  fs.renameSync(staged, file);
+  syncDirectory(path.dirname(file));
+}
+
+function readHoldFile<T>(root: string, name: string, schema: { parse(value: unknown): T }): T | null {
+  const file = path.join(root, name);
+  if (!fs.existsSync(file)) return null;
+  if (!fs.lstatSync(file).isFile()) throw new Error(`recovery hold record must be a regular file: ${name}`);
+  return schema.parse(JSON.parse(fs.readFileSync(file, 'utf8')));
+}
+const readHoldIntent = (root: string): RecoveryHoldIntent | null => readHoldFile(root, HOLD_FILE, holdIntentSchema);
+const readHoldBound = (root: string): RecoveryHoldBound | null => readHoldFile(root, HOLD_BOUND_FILE, holdBoundSchema);
+
+/** How many times a lost answer is reconciled by asking about the same token before the attempt refuses. */
+const HOLD_RECONCILE_ATTEMPTS = 3;
+
+/**
+ * Asks the source about `token` until it answers, and answers what it says. A write whose answer was lost is exactly
+ * this case: the statement may well have landed, so the token is asked about rather than replaced.
+ */
+async function reconcile(owner: RecoveryHoldOwner, token: string, report: (line: string) => void): Promise<RecoveryHoldReading> {
+  let last: unknown = null;
+  for (let attempt = 1; attempt <= HOLD_RECONCILE_ATTEMPTS; attempt += 1) {
+    try {
+      return await owner.inspect(token);
+    } catch (error) {
+      last = error;
+      report(`The source did not answer about this backup's recovery hold (attempt ${attempt} of ${HOLD_RECONCILE_ATTEMPTS})`);
+    }
+  }
+  throw new Error(`the source did not answer about this backup's recovery hold: ${last instanceof Error ? last.message : String(last)}`, { cause: last });
+}
+
+/** Opens `token` and answers what the source holds for it, whether or not the write itself answered. */
+async function openAndReconcile(owner: RecoveryHoldOwner, token: string, report: (line: string) => void): Promise<RecoveryHoldReading> {
+  let answered: RecoveryHoldReading | null = null;
+  try {
+    answered = await owner.acquire(token);
+  } catch {
+    report('The recovery hold write did not answer; reading the same token back rather than taking another hold');
+  }
+  return answered !== null && answered.state === 'open' ? answered : reconcile(owner, token, report);
+}
+
+/** Binds this destination to the identity the source answered with, once, before anything is captured under it. */
+function bindHold(root: string, token: string, reading: RecoveryHoldReading): RecoveryHoldBound {
+  const bound: RecoveryHoldBound = { token, sourceIdentity: reading.sourceIdentity ?? 'unidentified', boundAt: new Date().toISOString() };
+  durableReplace(path.join(root, HOLD_BOUND_FILE), `${JSON.stringify(bound, null, 2)}\n`);
+  return bound;
+}
+
+/** The identity a source answers with now, held to the one this destination bound. */
+function assertBoundIdentity(bound: RecoveryHoldBound, reading: RecoveryHoldReading): void {
+  if ((reading.sourceIdentity ?? 'unidentified') !== bound.sourceIdentity) {
+    throw new Error('the source is no longer the Deployment this backup was bound to; capture into a new directory');
+  }
+}
+
+/**
+ * The hold that protects this destination's snapshot, in whatever state the destination is in:
+ * - no record and no snapshot: record the intent, open the hold, read it back, and bind the identity it answered with;
+ * - a record and an open hold: adopt it, once the source still answers the identity this destination bound. A hold
+ *   adopted with no bound identity yet binds one now, and only while no snapshot exists;
+ * - a record whose hold is absent and no snapshot yet: open the same token again, which is why the record comes first;
+ * - a record whose hold is gone, released, or another holder's, with a snapshot already taken: refuse. Deletions may
+ *   have run, so this snapshot cannot be completed, and a new directory is the answer. A hold is never reopened over a
+ *   saved snapshot, and an identity is never bound after one;
+ * - a completed artifact: nothing is captured, and the hold is only read, so the artifact can be verified as it stands.
+ */
+async function heldForSnapshot(
+  root: string, owner: RecoveryHoldOwner, snapshotTaken: boolean, complete: boolean, report: (line: string) => void,
+): Promise<{ token: string; bound: RecoveryHoldBound } | null> {
+  const recorded = readHoldIntent(root);
+  if (recorded !== null && recorded.locator !== owner.locator) throw new Error('recovery destination holds a recovery hold of another Deployment');
+  const bound = readHoldBound(root);
+  if (bound !== null && recorded !== null && bound.token !== recorded.token) throw new Error("recovery destination's recovery hold records disagree; capture into a new directory");
+  if (complete) return recorded === null || bound === null ? null : { token: recorded.token, bound };
+  if (recorded === null) {
+    if (snapshotTaken) throw new Error('recovery destination holds a snapshot taken with no recovery hold; capture into a new directory');
+    const token = crypto.randomUUID();
+    durableFile(path.join(root, HOLD_FILE), `${JSON.stringify({ token, locator: owner.locator, createdAt: new Date().toISOString() } satisfies RecoveryHoldIntent, null, 2)}\n`);
+    const reading = await openAndReconcile(owner, token, report);
+    if (reading.state !== 'open') throw new Error(`recovery hold was not opened on the source (${reading.state}); nothing was captured`);
+    report('Holding every object this snapshot names on the source until the artifact completes');
+    return { token, bound: bindHold(root, token, reading) };
+  }
+  const reading = await reconcile(owner, recorded.token, report);
+  if (reading.state === 'open') {
+    if (bound !== null) {
+      assertBoundIdentity(bound, reading);
+      report('Resuming under the recovery hold this destination already took');
+      return { token: recorded.token, bound };
+    }
+    // The hold exists but its identity was never bound: a write whose answer was lost. Binding is only safe before a
+    // snapshot, because a snapshot taken under an unbound hold cannot be held to any identity afterwards.
+    if (snapshotTaken) throw new Error('this destination holds a snapshot taken before its recovery hold was bound to a source; capture into a new directory');
+    return { token: recorded.token, bound: bindHold(root, recorded.token, reading) };
+  }
+  if (snapshotTaken) throw new Error(`the recovery hold protecting this snapshot is ${reading.state}; capture into a new directory`);
+  if (reading.state !== 'absent') throw new Error(`this destination's recovery hold is ${reading.state}; capture into a new directory`);
+  const reopened = await openAndReconcile(owner, recorded.token, report);
+  if (reopened.state !== 'open') throw new Error(`recovery hold was not opened on the source (${reopened.state}); nothing was captured`);
+  return { token: recorded.token, bound: bound ?? bindHold(root, recorded.token, reopened) };
+}
+
+/** What became of the hold a completed artifact no longer needs. */
+export type RecoveryHoldOutcome = { released: true } | { released: false; state: RecoveryHoldReading['state'] | 'unanswered'; reason: string };
+
+/**
+ * Releases the hold a completed artifact no longer needs. The artifact is already whole and verified by the time this
+ * runs, so an unresolved release never unmakes it: it is reported as unresolved, and running the same command again, or
+ * `myco server recovery-hold`, reconciles the same token.
+ */
+async function releaseHeld(owner: RecoveryHoldOwner, held: { token: string; bound: RecoveryHoldBound }, report: (line: string) => void): Promise<RecoveryHoldOutcome> {
+  const before = await reconcile(owner, held.token, report).catch((error: unknown) => error as Error);
+  if (before instanceof Error) return { released: false, state: 'unanswered', reason: before.message };
+  if (before.state === 'released') return { released: true };
+  if (before.state !== 'open') return { released: false, state: before.state, reason: `the source answered ${before.state} for this backup's recovery hold` };
+  try {
+    assertBoundIdentity(held.bound, before);
+  } catch (error) {
+    return { released: false, state: before.state, reason: (error as Error).message };
+  }
+  let answered: RecoveryHoldReading | null = null;
+  try {
+    answered = await owner.release(held.token, 'complete');
+  } catch {
+    report('The recovery hold release did not answer; reading the same token back');
+  }
+  const after = answered !== null && answered.state === 'released' ? answered : await reconcile(owner, held.token, report).catch((error: unknown) => error as Error);
+  if (after instanceof Error) return { released: false, state: 'unanswered', reason: after.message };
+  if (after.state === 'released') return { released: true };
+  return { released: false, state: after.state, reason: `the source still answers ${after.state} for this backup's recovery hold` };
+}
+
+/** What the backup in `destination` holds on its source, read without changing either. */
+export async function recoveryHoldOfDestination(destination: string, owner: RecoveryHoldOwner): Promise<{ token: string; state: RecoveryHoldReading['state']; bound: boolean; sourceMatchesBinding: boolean }> {
+  const root = path.resolve(destination);
+  const recorded = readHoldIntent(root);
+  if (recorded === null) throw new Error('this recovery destination recorded no recovery hold');
+  if (recorded.locator !== owner.locator) throw new Error('this recovery destination recorded a recovery hold of another Deployment');
+  const bound = readHoldBound(root);
+  const reading = await owner.inspect(recorded.token);
+  return {
+    token: recorded.token,
+    state: reading.state,
+    bound: bound !== null,
+    sourceMatchesBinding: bound === null ? false : (reading.sourceIdentity ?? 'unidentified') === bound.sourceIdentity,
+  };
+}
+
+/**
+ * Gives up the hold a destination took, releasing exactly the token it recorded. A producer's hold is never released
+ * here: the source refuses it, and so does this. An unanswered release is reconciled by reading the same token back.
+ */
+export async function abandonRecoveryHold(destination: string, owner: RecoveryHoldOwner, report: (line: string) => void = () => {}): Promise<{ token: string; state: RecoveryHoldReading['state'] }> {
+  const root = path.resolve(destination);
+  const recorded = readHoldIntent(root);
+  if (recorded === null) throw new Error('this recovery destination recorded no recovery hold');
+  if (recorded.locator !== owner.locator) throw new Error('this recovery destination recorded a recovery hold of another Deployment');
+  let answered: RecoveryHoldReading | null = null;
+  try {
+    answered = await owner.release(recorded.token, 'abandoned');
+  } catch {
+    report('The recovery hold release did not answer; reading the same token back');
+  }
+  const after = answered !== null && answered.state === 'released' ? answered : await reconcile(owner, recorded.token, report);
+  return { token: recorded.token, state: after.state };
 }
 
 /** One writer owns snapshot publication, content verification and the final completion manifest on both targets. */
@@ -293,6 +537,11 @@ async function writeRecoveryBundle(
     }
     const databasePath = path.join(root, DATABASE_FILE);
     const workDir = path.join(root, SNAPSHOT_DIRECTORY);
+    // The source's hold comes before the snapshot: every object the snapshot names is protected from deletion until
+    // this artifact holds its own copy. A destination whose hold is gone with a snapshot already taken refuses here.
+    const held = adapter.hold === undefined
+      ? null
+      : await heldForSnapshot(root, adapter.hold, manifest.status !== 'snapshot', manifest.status === 'complete', report);
     if (manifest.status === 'snapshot') {
       report('Capturing the database snapshot');
       fs.rmSync(workDir, { recursive: true, force: true });
@@ -387,6 +636,16 @@ async function writeRecoveryBundle(
     if (manifest.status !== 'complete') {
       manifest = { ...manifest, status: 'complete', completedAt: new Date().toISOString() };
       writeManifest(root, manifest);
+    }
+    // The artifact is whole, so the source's objects are no longer this copy's concern. A release whose answer is lost
+    // is settled by running this command again on the completed directory, or by the abandon command.
+    if (adapter.hold !== undefined && held !== null) {
+      const outcome = await releaseHeld(adapter.hold, held, report);
+      if (outcome.released) report('Released the recovery hold: every object this artifact holds is now its own copy');
+      else {
+        report(`This artifact is complete and verified, but its recovery hold is unresolved: ${outcome.reason}.`);
+        report('Deletions on the source stay deferred until it is released; run this command again, or `myco server recovery-hold`, to reconcile it.');
+      }
     }
     return manifest;
   } finally { held.lock.release(); }

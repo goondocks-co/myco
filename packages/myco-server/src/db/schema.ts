@@ -1424,9 +1424,52 @@ function withStamp(version: number, statements: readonly string[]): SchemaStep {
   return { version, statements: [...statements, `INSERT OR REPLACE INTO schema_meta (key, value) VALUES ('version', '${version}')`] };
 }
 
+/**
+ * Schema step 43 — operator recovery holds.
+ *
+ * A hold now names the holder that opened it. A producer hold is the hosted export's, as step 42 wrote it; an operator
+ * hold is a full operator backup's, which protects every object its snapshot names for as long as the copy runs. At
+ * most one hold of each holder is open, so an operator backup never blocks an automatic export; deletion defers while
+ * any hold is open.
+ *
+ * `released_by` names the holder that released a hold, and the triggers make an operator hold's transitions total:
+ * - an operator hold is inserted open;
+ * - the one change it accepts is its own operator release, to a completion or an abandonment, leaving its token,
+ *   acquisition and holder alone;
+ * - a released operator hold accepts no further change;
+ * - a producer hold never becomes an operator hold and never carries an operator release.
+ *
+ * Every comparison is `IS`, so a missing or null reason is refused rather than passing through an untested predicate.
+ * A writer that predates this step releases a hold with one statement that sets `released_at` and `release_reason`; on
+ * an operator hold that statement changes nothing the trigger accepts, so it aborts, and the hold stays open. What that
+ * writer still does is defer its own deletions, which is what an open hold asks of it.
+ */
+const V43_STATEMENTS: readonly string[] = [
+  `ALTER TABLE recovery_holds ADD COLUMN holder TEXT NOT NULL DEFAULT 'producer' CHECK (holder IN ('producer', 'operator'))`,
+  `ALTER TABLE recovery_holds ADD COLUMN released_by TEXT CHECK (released_by IS NULL OR released_by IN ('producer', 'operator'))`,
+  `DROP INDEX IF EXISTS idx_recovery_holds_open`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS idx_recovery_holds_open_holder ON recovery_holds (holder) WHERE released_at IS NULL`,
+  `CREATE TRIGGER IF NOT EXISTS recovery_holds_operator_inserted_open BEFORE INSERT ON recovery_holds
+     WHEN NEW.holder IS 'operator' AND (NEW.released_at IS NOT NULL OR NEW.released_by IS NOT NULL OR NEW.release_reason IS NOT NULL)
+     BEGIN SELECT RAISE(ABORT, 'an operator recovery hold is inserted open'); END`,
+  `CREATE TRIGGER IF NOT EXISTS recovery_holds_released_by_holder BEFORE INSERT ON recovery_holds
+     WHEN NEW.released_by IS NOT NULL AND NEW.released_by IS NOT NEW.holder
+     BEGIN SELECT RAISE(ABORT, 'a recovery hold is released by its own holder'); END`,
+  `CREATE TRIGGER IF NOT EXISTS recovery_holds_operator_transition BEFORE UPDATE ON recovery_holds
+     WHEN OLD.holder IS 'operator' AND NOT (
+       OLD.released_at IS NULL AND OLD.released_by IS NULL AND OLD.release_reason IS NULL
+       AND NEW.released_at IS NOT NULL AND NEW.released_by IS 'operator'
+       AND (NEW.release_reason IS 'complete' OR NEW.release_reason IS 'abandoned')
+       AND NEW.token IS OLD.token AND NEW.acquired_at IS OLD.acquired_at AND NEW.holder IS OLD.holder)
+     BEGIN SELECT RAISE(ABORT, 'an operator recovery hold changes only through its own release'); END`,
+  `CREATE TRIGGER IF NOT EXISTS recovery_holds_producer_transition BEFORE UPDATE ON recovery_holds
+     WHEN OLD.holder IS 'producer' AND (NEW.holder IS NOT 'producer' OR NEW.released_by IS 'operator')
+     BEGIN SELECT RAISE(ABORT, 'a producer recovery hold is never an operator hold'); END`,
+];
+
 /** Ordered schema steps; each step's last statement stamps its version. A database at version n receives steps n+1 and later. Step 2 opens with two guard tables, ahead of every ADD COLUMN so a repaired database re-applies the step whole: one CHECK fails when an existing project id is out of grammar, the other when a session has no machine identity and the token that minted it has none to backfill from. The step aborts on the guard's insert and the applier records nothing. Identity binding reads `machine_id`, so a session that kept a NULL refuses every later write to itself; BREAK-GLASS.md carries the repair. */
 
-export const SCHEMA_STEPS: readonly SchemaStep[] = [withStamp(1, V1_STATEMENTS), withStamp(2, V2_STATEMENTS), withStamp(3, V3_STATEMENTS), withStamp(4, V4_STATEMENTS), withStamp(5, V5_STATEMENTS), withStamp(6, V6_STATEMENTS), withStamp(7, V7_STATEMENTS), withStamp(8, V8_STATEMENTS), withStamp(9, V9_STATEMENTS), withStamp(10, V10_STATEMENTS), withStamp(11, V11_STATEMENTS), withStamp(12, V12_STATEMENTS), withStamp(13, V13_STATEMENTS), withStamp(14, V14_STATEMENTS), withStamp(15, V15_STATEMENTS), withStamp(16, V16_STATEMENTS), withStamp(17, V17_STATEMENTS), withStamp(18, V18_STATEMENTS), withStamp(19, V19_STATEMENTS), withStamp(20, V20_STATEMENTS), withStamp(21, V21_STATEMENTS), withStamp(22, V22_STATEMENTS), withStamp(23, V23_STATEMENTS), withStamp(24, V24_STATEMENTS), withStamp(25, V25_STATEMENTS), withStamp(26, V26_STATEMENTS), withStamp(27, V27_STATEMENTS), withStamp(28, V28_STATEMENTS), withStamp(29, V29_STATEMENTS), withStamp(30, V30_STATEMENTS), withStamp(31, V31_STATEMENTS), withStamp(32, V32_STATEMENTS), withStamp(33, V33_STATEMENTS), withStamp(34, V34_STATEMENTS), withStamp(35, V35_STATEMENTS), withStamp(36, V36_STATEMENTS), withStamp(37, V37_STATEMENTS), withStamp(38, V38_STATEMENTS), withStamp(39, V39_STATEMENTS), withStamp(40, V40_STATEMENTS), withStamp(41, V41_STATEMENTS), withStamp(42, V42_STATEMENTS)];
+export const SCHEMA_STEPS: readonly SchemaStep[] = [withStamp(1, V1_STATEMENTS), withStamp(2, V2_STATEMENTS), withStamp(3, V3_STATEMENTS), withStamp(4, V4_STATEMENTS), withStamp(5, V5_STATEMENTS), withStamp(6, V6_STATEMENTS), withStamp(7, V7_STATEMENTS), withStamp(8, V8_STATEMENTS), withStamp(9, V9_STATEMENTS), withStamp(10, V10_STATEMENTS), withStamp(11, V11_STATEMENTS), withStamp(12, V12_STATEMENTS), withStamp(13, V13_STATEMENTS), withStamp(14, V14_STATEMENTS), withStamp(15, V15_STATEMENTS), withStamp(16, V16_STATEMENTS), withStamp(17, V17_STATEMENTS), withStamp(18, V18_STATEMENTS), withStamp(19, V19_STATEMENTS), withStamp(20, V20_STATEMENTS), withStamp(21, V21_STATEMENTS), withStamp(22, V22_STATEMENTS), withStamp(23, V23_STATEMENTS), withStamp(24, V24_STATEMENTS), withStamp(25, V25_STATEMENTS), withStamp(26, V26_STATEMENTS), withStamp(27, V27_STATEMENTS), withStamp(28, V28_STATEMENTS), withStamp(29, V29_STATEMENTS), withStamp(30, V30_STATEMENTS), withStamp(31, V31_STATEMENTS), withStamp(32, V32_STATEMENTS), withStamp(33, V33_STATEMENTS), withStamp(34, V34_STATEMENTS), withStamp(35, V35_STATEMENTS), withStamp(36, V36_STATEMENTS), withStamp(37, V37_STATEMENTS), withStamp(38, V38_STATEMENTS), withStamp(39, V39_STATEMENTS), withStamp(40, V40_STATEMENTS), withStamp(41, V41_STATEMENTS), withStamp(42, V42_STATEMENTS), withStamp(43, V43_STATEMENTS)];
 
 /** Every statement of every step, in application order. */
 export const SCHEMA_DDL: readonly string[] = SCHEMA_STEPS.flatMap((s) => s.statements);

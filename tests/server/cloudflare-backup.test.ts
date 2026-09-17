@@ -59,8 +59,10 @@ function fixture() {
     if (args.includes('auth')) return { code: 0, stdout: JSON.stringify({ type: 'oauth', token: 'fixture-operator-token' }), stderr: '' };
     expect(fs.readFileSync(args[args.indexOf('-c') + 1]!, 'utf8')).toContain(record.databaseId);
     if (args.includes('execute')) {
-      if (drift && ++metadataReads === 2) source.sqlite.exec('CREATE TABLE changed_schema(id TEXT)');
-      const rows = source.sqlite.query(args[args.indexOf('--command') + 1]!).all();
+      const statement = args[args.indexOf('--command') + 1]!;
+      // The drift lands between the snapshot's two schema reads; the hold's own statements are not those reads.
+      if (drift && statement.includes('sqlite_master') && ++metadataReads === 2) source.sqlite.exec('CREATE TABLE changed_schema(id TEXT)');
+      const rows = source.sqlite.query(statement).all();
       return { code: 0, stdout: JSON.stringify([{ success: true, results: rows }]), stderr: '' };
     }
     if (args.includes('export')) {

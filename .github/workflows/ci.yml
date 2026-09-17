@@ -223,6 +223,7 @@ jobs:
           tests/service/sandbox-runner-gate.test.ts
           tests/utils/windows-atomic-replace.test.ts
           tests/utils/user-lock-root.test.ts
+          tests/utils/lifecycle-lock-shared.test.ts
       - name: Compile Windows native contract executable
         shell: pwsh
         run: |
