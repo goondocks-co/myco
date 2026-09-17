@@ -5,7 +5,7 @@ import { Database } from 'bun:sqlite';
 import { SERVER_SCHEMA_VERSION } from '@myco-server-worker/constants.js';
 import { SCHEMA_STEPS } from '@myco-server-worker/db/schema.js';
 import { migrationFileName } from '@myco-server-worker/db/migrate.js';
-import { applyMigrations, importCloudflareDatabase, queryCloudflareDatabase, type CloudflareOptions } from './cloudflare.js';
+import { applyMigrations, D1_STATEMENT_TIMEOUT_MS, importCloudflareDatabase, queryCloudflareDatabase, type CloudflareOptions } from './cloudflare.js';
 import { RECOVERY_FINGERPRINT_KEY, writeRecoverySql } from './recovery-sql.js';
 
 const rows = z.array(z.object({ key: z.string(), value: z.string() }));
@@ -24,7 +24,7 @@ export async function restoreCloudflareDatabase(options: CloudflareOptions & {
   if (!Number.isSafeInteger(sourceVersion) || sourceVersion < 1 || sourceVersion > SERVER_SCHEMA_VERSION) {
     throw new Error('recovery database has no supported schema version');
   }
-  const query = (sql: string) => queryCloudflareDatabase({ ...options, sql });
+  const query = (sql: string) => queryCloudflareDatabase({ ...options, sql, timeoutMs: D1_STATEMENT_TIMEOUT_MS });
   const names = tables.parse(await query("SELECT name FROM sqlite_master WHERE type='table' AND name NOT GLOB 'sqlite_*' AND name NOT GLOB '_cf_*'"));
   const readIdentity = async () => {
     const metadata = rows.parse(await query(`SELECT key,value FROM schema_meta WHERE key IN ('version','${RECOVERY_FINGERPRINT_KEY}')`));

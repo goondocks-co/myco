@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { z } from 'zod';
 import {
-  cloudflareBlobReader, ensureCommandDir, exportDatabase, queryCloudflareDatabase, runCloudflareStatement,
+  cloudflareBlobReader, D1_STATEMENT_TIMEOUT_MS, ensureCommandDir, exportDatabase, queryCloudflareDatabase, runCloudflareStatement,
   readDeploymentRecord, type CloudflareOptions, type CloudflareFetch, type DeploymentRecord,
 } from './cloudflare.js';
 import type { LifecycleOptions } from './cloudflare-lifecycle.js';
@@ -33,27 +33,27 @@ function cloudflareRecoveryHold(provider: CloudflareOptions & { databaseName: st
     const rows = z.array(z.object({
       holder: z.string().nullable(), acquired_at: z.number().nullable(), released_at: z.number().nullable(),
       release_reason: z.string().nullable(), deployment_id: z.string().nullable(), schema_version: z.string().nullable(),
-    })).parse(await queryCloudflareDatabase({ ...provider, sql: recoveryHoldSql.reading(token) }));
-    const { hold, sourceIdentity } = recoveryHoldOf(token, rows[0] ?? null);
+    })).parse(await queryCloudflareDatabase({ ...provider, sql: recoveryHoldSql.reading(token), timeoutMs: D1_STATEMENT_TIMEOUT_MS }));
+    const { hold, source } = recoveryHoldOf(token, rows[0] ?? null);
     return {
       state: hold === null ? 'absent' : hold.holder !== 'operator' ? 'other-holder' : hold.releasedAt === null ? 'open' : 'released',
-      sourceIdentity,
+      source,
     };
   };
   return {
     locator: `${record.accountId}/${record.databaseId}`,
     acquire: async (token) => {
-      await runCloudflareStatement({ ...provider, sql: recoveryHoldSql.acquire(token, Date.now(), 'operator') });
+      await runCloudflareStatement({ ...provider, sql: recoveryHoldSql.acquire(token, Date.now(), 'operator'), timeoutMs: D1_STATEMENT_TIMEOUT_MS });
       return reading(token);
     },
     inspect: reading,
     open: async () => {
       const rows = z.array(z.object({ token: z.string(), acquired_at: z.number() }))
-        .parse(await queryCloudflareDatabase({ ...provider, sql: recoveryHoldSql.open('operator') }));
+        .parse(await queryCloudflareDatabase({ ...provider, sql: recoveryHoldSql.open('operator'), timeoutMs: D1_STATEMENT_TIMEOUT_MS }));
       return rows.length === 0 ? null : { token: rows[0]!.token, acquiredAt: rows[0]!.acquired_at };
     },
     release: async (token, reason) => {
-      await runCloudflareStatement({ ...provider, sql: recoveryHoldSql.releaseOperator(token, Date.now(), reason) });
+      await runCloudflareStatement({ ...provider, sql: recoveryHoldSql.releaseOperator(token, Date.now(), reason), timeoutMs: D1_STATEMENT_TIMEOUT_MS });
       return reading(token);
     },
   };
@@ -108,13 +108,13 @@ export async function backupCloudflareDeployment(
     hold: cloudflareRecoveryHold({ ...options, configDir, configFile: holdConfigFile, databaseName }, record),
     snapshot: async (file, workDir) => {
       const provider = { ...bound(workDir), databaseName };
-      const before = schemaObjects.parse(await queryCloudflareDatabase({ ...provider, sql: SCHEMA_QUERY }));
+      const before = schemaObjects.parse(await queryCloudflareDatabase({ ...provider, sql: SCHEMA_QUERY, timeoutMs: D1_STATEMENT_TIMEOUT_MS }));
       const tables = exportedTables(before);
       if (tables.length === 0) throw new Error('D1 holds no ordinary tables to recover');
       assertRecoverableSchema(before);
       options.report?.('Exporting D1; Cloudflare temporarily pauses queries during the snapshot');
       const { sqlPath } = await exportDatabase({ ...provider, destination: workDir, tables });
-      const after = schemaObjects.parse(await queryCloudflareDatabase({ ...provider, sql: SCHEMA_QUERY }));
+      const after = schemaObjects.parse(await queryCloudflareDatabase({ ...provider, sql: SCHEMA_QUERY, timeoutMs: D1_STATEMENT_TIMEOUT_MS }));
       if (JSON.stringify(before) !== JSON.stringify(after)
         || JSON.stringify(record) !== JSON.stringify(readDeploymentRecord(options.mycoHome))) {
         throw new Error('Deployment schema or configuration changed during its snapshot; retry');

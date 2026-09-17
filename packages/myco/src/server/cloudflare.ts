@@ -347,31 +347,38 @@ export async function exportDatabase(
   return { sqlPath };
 }
 
-/** Read operator metadata from the explicitly bound remote database. */
+/**
+ * How long one D1 statement may take. Every caller states a bound, because the window a hold covers is the window a
+ * deletion defers in: a command that answers nothing holds its operator, and its child keeps a mutation alive that
+ * nothing is waiting on. Past this the child is killed and the caller reads the same token back.
+ */
+export const D1_STATEMENT_TIMEOUT_MS = 60_000;
+
 /**
  * One statement against the recorded D1 database, through the operator's own Wrangler sign-in, answering how many rows
  * it changed. Used for the recovery hold a hosted backup takes: an INSERT or UPDATE the provider may answer for late or
  * not at all, which is why the caller reads the hold back by its token rather than trusting this count.
  */
 export async function runCloudflareStatement(
-  options: CloudflareOptions & { databaseName: string; sql: string },
+  options: CloudflareOptions & { databaseName: string; sql: string; timeoutMs: number },
 ): Promise<{ changes: number }> {
   const { runner, env } = resolved(options);
   const result = await runOrThrow(runner, 'npx',
     wrangler('d1', 'execute', options.databaseName, '--remote', '--json', '--command', options.sql, ...configArgs(options)),
-    { cwd: options.configDir, env });
+    { cwd: options.configDir, env, timeoutMs: options.timeoutMs });
   const answer = wranglerJson<Array<{ success: boolean; meta?: { changes?: number } }>>(result.stdout);
   if (answer?.length !== 1 || answer[0]?.success !== true) throw new Error('D1 did not answer one successful statement');
   return { changes: Number(answer[0].meta?.changes ?? 0) };
 }
 
+/** Read operator metadata from the explicitly bound remote database, inside the window the caller gives it. */
 export async function queryCloudflareDatabase(
-  options: CloudflareOptions & { databaseName: string; sql: string },
+  options: CloudflareOptions & { databaseName: string; sql: string; timeoutMs: number },
 ): Promise<unknown> {
   const { runner, env } = resolved(options);
   const result = await runOrThrow(runner, 'npx',
     wrangler('d1', 'execute', options.databaseName, '--remote', '--json', '--command', options.sql, ...configArgs(options)),
-    { cwd: options.configDir, env });
+    { cwd: options.configDir, env, timeoutMs: options.timeoutMs });
   const answer = wranglerJson<Array<{ success: boolean; results: unknown }>>(result.stdout);
   if (answer?.length !== 1 || answer[0]?.success !== true || !Array.isArray(answer[0].results)) {
     throw new Error('D1 returned no successful recovery metadata result');

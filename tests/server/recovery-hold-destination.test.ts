@@ -15,8 +15,9 @@ import { backupLocalDeployment, localRecoveryHold } from '@myco/server/local-bac
 import { resolveLocalPaths, writeLocalRecord } from '@myco/server/local.js';
 import {
   abandonRecoveryHold, createRecoveryBundle, recoveryHoldOfDestination, verifyRecoveryBundle,
-  type RecoveryHoldOwner, type RecoveryHoldReading,
+  type RecoveryHoldOwner, type RecoveryHoldReading, type RecoveryHoldSource,
 } from '@myco/server/recovery-bundle.js';
+import { SERVER_SCHEMA_VERSION } from '@myco-server-worker/constants.js';
 import { diskBlobStore } from '@myco-server-worker/platform/bun/blobs.js';
 import { releaseBlobs, drainObjectReleases } from '@myco-server-worker/core/object-release.js';
 import { sqliteRelationalStore } from '@myco-server-worker/platform/bun/sqlite.js';
@@ -55,7 +56,7 @@ function deployment() {
   };
 }
 
-const recorded = (destination: string) => JSON.parse(fs.readFileSync(path.join(destination, HOLD_FILE), 'utf8')) as { token: string; locator: string; sourceIdentity: string | null };
+const recorded = (destination: string) => JSON.parse(fs.readFileSync(path.join(destination, HOLD_FILE), 'utf8')) as { token: string; locator: string };
 
 it('holds every object its snapshot names against a deletion, and releases the hold when the artifact completes', async () => {
   const source = deployment();
@@ -161,7 +162,7 @@ it('refuses an incomplete destination whose hold was released or lost, rather th
 
     // A destination whose hold row is gone entirely is refused the same way.
     fs.rmSync(path.join(source.destination, HOLD_FILE));
-    fs.writeFileSync(path.join(source.destination, HOLD_FILE), JSON.stringify({ token: crypto.randomUUID(), locator: owner.locator, createdAt: new Date().toISOString(), sourceIdentity: null }));
+    fs.writeFileSync(path.join(source.destination, HOLD_FILE), JSON.stringify({ token: crypto.randomUUID(), locator: owner.locator, createdAt: new Date().toISOString() }));
     await expect(backupLocalDeployment({ destination: source.destination, paths: source.paths, report: () => {}, native: { library: null, vec0: null } }))
       .rejects.toThrow('capture into a new directory');
   } finally { source.cleanup(); }
@@ -208,7 +209,7 @@ it('refuses a destination that recorded the hold of another Deployment', async (
     await source.put();
     const owner = localRecoveryHold(source.paths, { library: null, vec0: null });
     fs.mkdirSync(source.destination, { recursive: true });
-    fs.writeFileSync(path.join(source.destination, HOLD_FILE), JSON.stringify({ token: crypto.randomUUID(), locator: '/somewhere/else.sqlite', createdAt: new Date().toISOString(), sourceIdentity: null }));
+    fs.writeFileSync(path.join(source.destination, HOLD_FILE), JSON.stringify({ token: crypto.randomUUID(), locator: '/somewhere/else.sqlite', createdAt: new Date().toISOString() }));
     await expect(backupLocalDeployment({ destination: source.destination, paths: source.paths, report: () => {}, native: { library: null, vec0: null } }))
       .rejects.toThrow('recovery hold of another Deployment');
     await expect(recoveryHoldOfDestination(source.destination, owner)).rejects.toThrow('another Deployment');
@@ -217,14 +218,14 @@ it('refuses a destination that recorded the hold of another Deployment', async (
 });
 
 /** A source whose hold statements land, whose answers can be lost, and whose identity a test can change. */
-function syntheticSource(options: { identity?: () => string } = {}) {
+function syntheticSource(options: { identity?: () => RecoveryHoldSource | null } = {}) {
   const holds = new Map<string, { released: boolean }>();
   const stats = { acquires: 0, inspects: 0, releases: 0 };
   const throwOn = { acquire: false, release: false, inspect: 0 };
-  const identity = options.identity ?? (() => 'source-A');
+  const identity = options.identity ?? ((): RecoveryHoldSource => ({ deploymentId: 'source-A', schemaVersion: SERVER_SCHEMA_VERSION }));
   const reading = (token: string): RecoveryHoldReading => {
     const held = holds.get(token);
-    return { state: held === undefined ? 'absent' : held.released ? 'released' : 'open', sourceIdentity: identity() };
+    return { state: held === undefined ? 'absent' : held.released ? 'released' : 'open', source: identity() };
   };
   const owner: RecoveryHoldOwner = {
     locator: 'synthetic-locator',
@@ -252,29 +253,43 @@ function syntheticSource(options: { identity?: () => string } = {}) {
       return open === undefined ? null : { token: open[0], acquiredAt: 1 };
     },
   };
-  return { owner, holds, stats, throwOn };
+  return { owner, holds, stats, throwOn, identity };
 }
 
 /** One object the synthetic snapshot registers, so every capture has something to copy. */
 const OBJECT = new TextEncoder().encode('one object the snapshot registers');
 const OBJECT_KEY = createHash('sha256').update(OBJECT).digest('hex');
 
-/** A snapshot that registers that object, written by the same builder a real capture uses. */
-const syntheticSnapshot = (file: string) => {
+/**
+ * A snapshot that registers that object, written by the same builder a real capture uses, stamped with the Deployment
+ * it is a snapshot OF. A real source answers its hold with the identity its own volume carries, so a fixture whose
+ * stamp and hold answer disagree is a substituted snapshot, which is what one of these tests is.
+ */
+const syntheticSnapshot = (file: string, stamp: RecoveryHoldSource | null) => {
   const fixture = sqliteEnv();
   fixture.sqlite.run(`INSERT INTO blobs(project_id,key,size,media_type,token_id,received_at,generation)
     VALUES ('proj_1',?,?,'text/plain','mt_fixture',1,?)`, [OBJECT_KEY, OBJECT.length, crypto.randomUUID()]);
+  if (stamp !== null) {
+    fixture.sqlite.run("INSERT INTO schema_meta(key,value) VALUES ('deployment_id',?) ON CONFLICT(key) DO UPDATE SET value = excluded.value", [stamp.deploymentId]);
+    fixture.sqlite.run("UPDATE schema_meta SET value = ? WHERE key = 'version'", [String(stamp.schemaVersion)]);
+  }
   fixture.sqlite.query('VACUUM INTO ?').run(file);
   fixture.sqlite.close();
   return { configuration: { port: 8787 }, credentialsRequired: [] };
 };
 
-/** A capture against a synthetic source, with the copy under the test's control. */
-const capture = (source: { owner: RecoveryHoldOwner }, destination: string, copy: () => Promise<ReadableStream>, report: (line: string) => void = () => {}) =>
+/** A capture against a synthetic source, with the copy, and what the snapshot is stamped with, under the test's control. */
+const capture = (
+  source: { owner: RecoveryHoldOwner; identity: () => RecoveryHoldSource | null },
+  destination: string,
+  copy: () => Promise<ReadableStream>,
+  report: (line: string) => void = () => {},
+  stamp: () => RecoveryHoldSource | null = source.identity,
+) =>
   createRecoveryBundle(destination, {
     source: { target: 'local', locator: 'synthetic-locator' },
     hold: source.owner,
-    snapshot: async (file) => syntheticSnapshot(file),
+    snapshot: async (file) => syntheticSnapshot(file, stamp()),
     blob: async () => copy(),
   }, report);
 
@@ -285,7 +300,7 @@ it('binds the identity its hold answered with before any snapshot, and refuses a
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-hold-bound-'));
   try {
     let which = 'source-A';
-    const source = syntheticSource({ identity: () => which });
+    const source = syntheticSource({ identity: () => ({ deploymentId: which, schemaVersion: SERVER_SCHEMA_VERSION }) });
     const destination = path.join(root, 'artifact');
     // The acquire lands and its answer is lost: the hold is reconciled by reading the same token back, and bound.
     source.throwOn.acquire = true;
@@ -293,7 +308,7 @@ it('binds the identity its hold answered with before any snapshot, and refuses a
     expect(source.stats.inspects).toBeGreaterThan(0);
     source.throwOn.acquire = false;
     const bound = JSON.parse(fs.readFileSync(path.join(destination, '.recovery-hold-bound.json'), 'utf8'));
-    expect(bound.sourceIdentity).toBe('source-A');
+    expect(bound.source).toEqual({ deploymentId: 'source-A', schemaVersion: SERVER_SCHEMA_VERSION });
     expect([...source.holds.values()]).toEqual([{ released: false }]);
 
     // The source is replaced under the saved snapshot: the resume refuses rather than completing against it.
@@ -354,7 +369,7 @@ it('reports an unresolved release instead of claiming one, and reconciles the sa
         ...source.owner,
         inspect: async (token) => { if (source.holds.get(token)?.released === true) throw new Error('the source did not answer'); return source.owner.inspect(token); },
       },
-      snapshot: async (file) => syntheticSnapshot(file),
+      snapshot: async (file) => syntheticSnapshot(file, source.identity()),
       blob: () => objectBytes(),
     }, (line) => { lines.push(line); });
     // The artifact is complete either way: an unresolved hold never unmakes what was verified.
@@ -364,5 +379,73 @@ it('reports an unresolved release instead of claiming one, and reconciles the sa
     // The statement did land, so reconciling it later answers released.
     source.throwOn.release = false;
     expect(await recoveryHoldOfDestination(destination, source.owner)).toMatchObject({ state: 'released' });
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
+
+it('refuses a replacement source against the receipt it already wrote, without opening a second hold', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-hold-absent-bound-'));
+  try {
+    let which = 'source-A';
+    const source = syntheticSource({ identity: () => ({ deploymentId: which, schemaVersion: SERVER_SCHEMA_VERSION }) });
+    const destination = path.join(root, 'artifact');
+    // The hold is opened and bound, and the attempt dies before it captures anything.
+    await expect(capture(source, destination, objectBytes, () => {}, () => { throw new Error('crash before snapshot'); }))
+      .rejects.toThrow('crash before snapshot');
+    expect(JSON.parse(fs.readFileSync(path.join(destination, '.recovery-hold-bound.json'), 'utf8')).source)
+      .toEqual({ deploymentId: 'source-A', schemaVersion: SERVER_SCHEMA_VERSION });
+
+    // The volume is replaced and its hold is gone with it. Nothing about the destination says so, so the receipt is
+    // the only thing that can: the retry refuses before it opens anything on the replacement.
+    source.holds.clear();
+    which = 'source-B';
+    await expect(capture(source, destination, objectBytes)).rejects.toThrow('no longer the Deployment this backup was bound to');
+    expect(source.stats.acquires).toBe(1);
+    expect([...source.holds.keys()]).toEqual([]);
+    expect(JSON.parse(fs.readFileSync(path.join(destination, '.recovery-hold-bound.json'), 'utf8')).source)
+      .toEqual({ deploymentId: 'source-A', schemaVersion: SERVER_SCHEMA_VERSION });
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
+
+it('refuses a snapshot of a Deployment other than the one its hold admitted it to', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-hold-substituted-'));
+  try {
+    const source = syntheticSource();
+    const destination = path.join(root, 'artifact');
+    // The hold is open on source-A, and the bytes handed back are of another Deployment: a live release-time reading
+    // would still answer source-A, so only the snapshot itself can be held to what was admitted.
+    await expect(capture(source, destination, objectBytes, () => {},
+      () => ({ deploymentId: 'substituted-source', schemaVersion: SERVER_SCHEMA_VERSION })))
+      .rejects.toThrow('not of the Deployment its recovery hold was bound to');
+    // Nothing was published under the substituted identity: the artifact is still waiting for its snapshot.
+    expect(JSON.parse(fs.readFileSync(path.join(destination, 'recovery.json'), 'utf8')).status).toBe('snapshot');
+    expect(fs.existsSync(path.join(destination, 'myco.sqlite'))).toBe(false);
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
+
+it('refuses a source that answers its hold without naming a Deployment, rather than binding a placeholder', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-hold-unidentified-'));
+  try {
+    const source = syntheticSource({ identity: () => null });
+    const destination = path.join(root, 'artifact');
+    await expect(capture(source, destination, objectBytes)).rejects.toThrow('did not identify the Deployment');
+    expect(fs.existsSync(path.join(destination, '.recovery-hold-bound.json'))).toBe(false);
+    // The token it recorded is still the one live token, so the hold it opened can be given up by name.
+    expect([...source.holds.keys()]).toEqual([recorded(destination).token]);
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
+
+it('refuses a hold the source does not name as its own open hold', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-hold-unattested-'));
+  try {
+    const source = syntheticSource();
+    const destination = path.join(root, 'artifact');
+    await expect(createRecoveryBundle(destination, {
+      source: { target: 'local', locator: 'synthetic-locator' },
+      // The reading answers open for whatever token it is asked about, while the source's own open hold is another
+      // backup's. Nothing this destination captured would be protected by the hold it thinks it holds.
+      hold: { ...source.owner, open: async () => ({ token: crypto.randomUUID(), acquiredAt: 1 }) },
+      snapshot: async (file) => syntheticSnapshot(file, source.identity()),
+      blob: () => objectBytes(),
+    }, () => {})).rejects.toThrow('belongs to another backup');
   } finally { fs.rmSync(root, { recursive: true, force: true }); }
 });

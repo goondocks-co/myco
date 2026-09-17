@@ -50,6 +50,7 @@ function fixture() {
   let downloadFails = false;
   let metadataReads = 0;
   const calls: string[][] = [];
+  const statements: Array<{ sql: string; timeoutMs?: number }> = [];
   const runner: CommandRunner = { async run(command, args, options) {
     calls.push([...args]);
     expect(command).toBe('npx');
@@ -60,6 +61,10 @@ function fixture() {
     expect(fs.readFileSync(args[args.indexOf('-c') + 1]!, 'utf8')).toContain(record.databaseId);
     if (args.includes('execute')) {
       const statement = args[args.indexOf('--command') + 1]!;
+      // Every statement carries its own window. A recovery hold is opened and released by these commands, so one that
+      // answers nothing would hold an operator, and its child would keep a mutation alive that nothing waits on.
+      expect(options?.timeoutMs).toBeGreaterThan(0);
+      statements.push({ sql: statement, timeoutMs: options?.timeoutMs });
       // The drift lands between the snapshot's two schema reads; the hold's own statements are not those reads.
       if (drift && statement.includes('sqlite_master') && ++metadataReads === 2) source.sqlite.exec('CREATE TABLE changed_schema(id TEXT)');
       const rows = source.sqlite.query(statement).all();
@@ -88,7 +93,7 @@ function fixture() {
     expect(new Headers(init?.headers).get('Authorization')).toBe('Bearer fixture-operator-token');
     return downloadFails ? new Response('object unavailable', { status: 503 }) : new Response(key === backupKey ? backupBody : bytes);
   };
-  return { source, root, mycoHome, destination, record, runner, calls, body, bytes, digest, backupKey, backupBody,
+  return { source, root, mycoHome, destination, record, runner, calls, statements, body, bytes, digest, backupKey, backupBody,
     drift: () => { drift = true; }, downloadFails: (value: boolean) => { downloadFails = value; },
     backup: () => backupCloudflareDeployment({ accountId: record.accountId, mycoHome, destination, runner, fetch: fetchObject }),
     cleanup: () => { source.sqlite.close(); fs.rmSync(root, { recursive: true, force: true }); },
@@ -201,5 +206,16 @@ it('records the configuration of the same record capture that rendered and named
     expect(renderedFleet).toBeNull();
     expect(outcome.result.snapshot!.configuration).toEqual({ ...recoveryConfigurationOf(f.record), versionId: f.record.versionId, deployedAt: f.record.deployedAt });
     expect('fleet' in outcome.result.snapshot!.configuration).toBe(false);
+  } finally { f.cleanup(); }
+});
+
+it('bounds every hold statement it sends, so no hold waits on a provider command nothing can stop', async () => {
+  const f = fixture();
+  try {
+    expect((await f.backup()).status).toBe('complete');
+    const holdStatements = f.statements.filter((sent) => sent.sql.includes('recovery_holds'));
+    // Acquire, the read back, the source's own open hold, the release, and its read back.
+    expect(holdStatements.length).toBeGreaterThanOrEqual(5);
+    expect(holdStatements.every((sent) => typeof sent.timeoutMs === 'number' && sent.timeoutMs > 0)).toBe(true);
   } finally { f.cleanup(); }
 });

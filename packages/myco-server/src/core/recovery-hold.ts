@@ -8,7 +8,7 @@
  * answer that never comes keeps the hold, and says so.
  */
 import type { ServerEnv } from './adapters.js';
-import { acquireRecoveryHold, openRecoveryHold, readRecoveryHold, releaseOperatorHold, releaseRecoveryHold, type OperatorHoldRelease } from './object-release.js';
+import { acquireRecoveryHold, openRecoveryHold, readRecoveryHold, releaseOperatorHold, releaseRecoveryHold, type OperatorHoldRelease, type RecoveryHoldSource } from './object-release.js';
 import type { HoldSettlement } from './recovery-producer.js';
 import { classify, emit } from '../telemetry.js';
 import { within } from './recovery-inventory.js';
@@ -84,8 +84,8 @@ export interface OperatorHold {
   acquiredAt: number | null;
   releasedAt: number | null;
   releaseReason: string | null;
-  /** The Deployment that answered for this hold, read in the same statement: what a destination binds its hold to. */
-  sourceIdentity: string;
+  /** The Deployment that answered for this hold, read in the same statement, or null when it named none. */
+  source: RecoveryHoldSource | null;
 }
 
 /** Opens the operator hold `token`, answering whether this call opened it. Retrying the same token never opens a second. */
@@ -98,9 +98,9 @@ export async function acquireOperatorHold(env: Pick<ServerEnv, 'db'>, token: str
  * producer hold, which an operator never releases.
  */
 export async function inspectOperatorHold(env: Pick<ServerEnv, 'db'>, token: string): Promise<OperatorHold> {
-  const { hold, sourceIdentity } = await readRecoveryHold(env.db, token);
-  if (hold === null) return { state: 'absent', acquiredAt: null, releasedAt: null, releaseReason: null, sourceIdentity };
-  const held = { acquiredAt: hold.acquiredAt, releasedAt: hold.releasedAt, releaseReason: hold.releaseReason, sourceIdentity };
+  const { hold, source } = await readRecoveryHold(env.db, token);
+  if (hold === null) return { state: 'absent', acquiredAt: null, releasedAt: null, releaseReason: null, source };
+  const held = { acquiredAt: hold.acquiredAt, releasedAt: hold.releasedAt, releaseReason: hold.releaseReason, source };
   if (hold.holder !== 'operator') return { state: 'producer', ...held };
   return { state: hold.releasedAt === null ? 'open' : 'released', ...held };
 }

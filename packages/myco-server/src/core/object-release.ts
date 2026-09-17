@@ -315,20 +315,39 @@ export async function releaseOperatorHold(db: RelationalStore, token: string, no
   return released.meta.changes === 1;
 }
 
+/**
+ * The Deployment a hold reading answers for: what a destination binds its backup to.
+ *
+ * Both fields come from the same statement as the hold. A reading that cannot name both is `null` rather than a partly
+ * filled identity, so a destination refuses instead of binding a placeholder that a later reading could match.
+ */
+export interface RecoveryHoldSource {
+  deploymentId: string;
+  schemaVersion: number;
+}
+
 /** The hold `token` names and the Deployment answering for it, as one row. */
-export async function readRecoveryHold(db: RelationalStore, token: string): Promise<{ hold: RecoveryHoldRow | null; sourceIdentity: string }> {
+export async function readRecoveryHold(db: RelationalStore, token: string): Promise<{ hold: RecoveryHoldRow | null; source: RecoveryHoldSource | null }> {
   const row = await db.prepare(recoveryHoldSql.reading(token)).first<RecoveryHoldReadingRow>();
   return recoveryHoldOf(token, row);
 }
 
 /** One reading row as a hold and the identity it came with; the identity is what a destination binds its hold to. */
-export function recoveryHoldOf(token: string, row: RecoveryHoldReadingRow | null): { hold: RecoveryHoldRow | null; sourceIdentity: string } {
-  const sourceIdentity = JSON.stringify({ deploymentId: row?.deployment_id ?? null, schemaVersion: row?.schema_version ?? null });
-  if (row === null || row.holder === null) return { hold: null, sourceIdentity };
+export function recoveryHoldOf(token: string, row: RecoveryHoldReadingRow | null): { hold: RecoveryHoldRow | null; source: RecoveryHoldSource | null } {
+  const source = recoveryHoldSourceOf(row);
+  if (row === null || row.holder === null) return { hold: null, source };
   return {
     hold: { token, holder: row.holder as RecoveryHoldHolder, acquiredAt: Number(row.acquired_at), releasedAt: row.released_at, releaseReason: row.release_reason },
-    sourceIdentity,
+    source,
   };
+}
+
+/** The identity a reading row carries, or null when it names no Deployment or no schema version this code can read. */
+export function recoveryHoldSourceOf(row: Pick<RecoveryHoldReadingRow, 'deployment_id' | 'schema_version'> | null): RecoveryHoldSource | null {
+  const deploymentId = row?.deployment_id ?? null;
+  const schemaVersion = Number(row?.schema_version ?? Number.NaN);
+  if (deploymentId === null || deploymentId === '' || !Number.isSafeInteger(schemaVersion) || schemaVersion < 1) return null;
+  return { deploymentId, schemaVersion };
 }
 
 /** The open hold of `holder`, or null. */

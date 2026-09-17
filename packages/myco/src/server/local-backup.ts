@@ -32,9 +32,9 @@ export function localRecoveryHold(paths: LocalDeploymentPaths, native?: NativeSq
     });
   /** The hold and the Deployment answering for it, as one statement: never a hold paired with an identity read apart. */
   const reading = (db: ReturnType<typeof sqliteRelationalStore>, token: string): Promise<RecoveryHoldReading> =>
-    readRecoveryHold(db, token).then(({ hold, sourceIdentity }) => ({
+    readRecoveryHold(db, token).then(({ hold, source }) => ({
       state: hold === null ? 'absent' : hold.holder !== 'operator' ? 'other-holder' : hold.releasedAt === null ? 'open' : 'released',
-      sourceIdentity,
+      source,
     }));
   return {
     // The volume this hold belongs to, by the path a destination records: its real path while it exists, and the path
