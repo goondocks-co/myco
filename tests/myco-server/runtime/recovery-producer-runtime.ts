@@ -508,10 +508,13 @@ try {
   await startWorker(apiPort, 'manual', 'upgrade-state', ENTRY, false);
   const unconfiguredStatus = await call('/status');
   check('without a rendered configuration the completed attempt still reads as it was', [unconfiguredStatus.attempt, unconfiguredStatus.stage], [fresh.attempt, 'complete']);
-  check('without a rendered configuration its token still answers its own attempt', (await call('/admit?hold=runtime-upgrade-fresh&shape=current')).attempt, fresh.attempt);
+  // Every admission here is the port's own wire, built from bindings that carry no configuration.
+  check('without a rendered configuration its token still answers its own attempt through the port wire', (await call('/admit?hold=runtime-upgrade-fresh')).attempt, fresh.attempt);
   check('without a rendered configuration its hold still settles', (await call('/settle?hold=runtime-upgrade-fresh')).state, 'closed');
-  const unconfiguredAdmission = await call('/admit-raised?hold=runtime-unconfigured&shape=current');
-  check('without a rendered configuration a new admission is refused', String(unconfiguredAdmission.raised ?? '').includes('carries no recovery configuration'), true);
+  check('without a rendered configuration a token never admitted is retired', (await call('/settle?hold=runtime-never-admitted')).state, 'retired');
+  check('and a retired token is answered as retired through the port wire', (await call('/admit?hold=runtime-never-admitted')).holdRetired, true);
+  const unconfiguredAdmission = await call('/admit-raised?hold=runtime-unconfigured');
+  check('without a rendered configuration a new admission through the port wire is refused', String(unconfiguredAdmission.raised ?? '').includes('carries no recovery configuration'), true);
   check('and stages no attempt', (await call('/status')).attempt, fresh.attempt);
 
   // A rolling update mixes this release's Worker with the previous release's producer object, and the reverse. Each
@@ -544,6 +547,25 @@ try {
     const replayedManifest = await call(`/staging-file?key=${encodeURIComponent(`${first.staged.prefix}/recovery.json`)}`);
     check(`${label}: the replay stages and relabels nothing`, JSON.stringify(replayedManifest.file), JSON.stringify(firstManifest.file));
   }
+
+  // The previous producer object behind this Worker's port wire when the Worker carries no configuration: a carried or
+  // retired token is answered, and a fresh admission fails before its staging writes.
+  await stop(worker!, 'SIGTERM');
+  worker = null;
+  await startWorker(apiPort, 'manual', 'rolling-wire-state', rollingEntry, false);
+  const carriedOnPrevious = await call('/admit?hold=rolling-wire');
+  check('the previous object answers its carried token from an unconfigured Worker\'s wire', [carriedOnPrevious.stage, carriedOnPrevious.recoverable], ['export', false]);
+  await stop(worker!, 'SIGTERM');
+  worker = null;
+  await startWorker(apiPort, 'manual', 'rolling-unconfigured-state', rollingEntry, false);
+  await seed();
+  check('the previous object retires a token never admitted', (await call('/settle?hold=rolling-never-admitted')).state, 'retired');
+  check('and answers it as retired from an unconfigured Worker\'s wire', (await call('/admit?hold=rolling-never-admitted')).holdRetired, true);
+  const freshOnPrevious = await call('/admit-raised?hold=rolling-fresh-unconfigured');
+  note('previous object refusal of a fresh wire without recorded fields', freshOnPrevious);
+  // Its own staging builder refuses an admission without the recorded fields before either staging write.
+  check('the previous object admits no fresh attempt from an unconfigured Worker\'s wire', String(freshOnPrevious.raised ?? '').startsWith('TypeError'), true);
+  check('and records no attempt for it', (await call('/status')).attempt, null);
 
   // An attempt the previous producer admitted and left in flight: it carries no recorded admission, so the new
   // Worker finishes its export and rests it at `downloaded`, as the producer that admitted it would, never staging

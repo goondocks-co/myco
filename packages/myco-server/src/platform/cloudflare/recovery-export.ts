@@ -77,12 +77,18 @@ export type RecoveryAdmissionWire = Omit<RecoveryAdmission, 'startedBy'> & {
   startedBy?: string;
   configuration?: Record<string, unknown>;
   credentialsRequired?: readonly string[];
+  /** Why the sending Worker could not record its configuration; a producer object admits no new attempt from such a wire. */
+  unrecordable?: string;
 };
 
-/** The wire for one admission, from the Worker's own bound configuration. A Worker that cannot read it sends nothing. */
+/**
+ * The wire for one admission, from the Worker's own bound configuration. A Worker that cannot read it still sends the
+ * admission, carrying no recorded fields and why, so a token an attempt already carries or one already retired
+ * is answered by the producer object, and a fresh one is refused there before anything is staged.
+ */
 export function recoveryAdmissionWire(admission: RecoveryAdmission, bindings: RecoveryConfigurationBindings): RecoveryAdmissionWire {
   const bound = boundRecoveryConfiguration(bindings);
-  if (!bound.ok) throw new Error(bound.reason);
+  if (!bound.ok) return { ...admission, unrecordable: bound.reason };
   return { ...admission, ...recordedAdmission(bound.configuration, admission.startedBy) };
 }
 

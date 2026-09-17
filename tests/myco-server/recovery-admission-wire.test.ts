@@ -59,12 +59,14 @@ describe('the Cloudflare port', () => {
     expect([manifest.configuration, manifest.credentialsRequired]).toEqual([{ ...CONFIGURATION, startedBy: 'mem_owner' }, [...RECOVERY_CREDENTIAL_NAMES]]);
   });
 
-  it('sends nothing, and says why, when the Worker cannot read its own configuration', async () => {
+  it('still sends an admission when the Worker cannot read its own configuration, recording nothing and saying why', async () => {
     const { e, recovery, sent } = portOver({ ...BOUND, MYCO_RECOVERY_CONFIGURATION: undefined });
     try {
       expect(recovery.admission.ready).toBe(false);
-      await expect(recovery.admit(ADMISSION)).rejects.toThrow('carries no recovery configuration');
-      expect(sent).toEqual([]);
+      await recovery.admit(ADMISSION);
+      expect(sent).toHaveLength(1);
+      expect(sent[0]).toEqual({ ...ADMISSION, unrecordable: expect.stringContaining('carries no recovery configuration') });
+      expect('configuration' in sent[0]! || 'credentialsRequired' in sent[0]!).toBe(false);
     } finally { e.sqlite.close(); }
   });
 });

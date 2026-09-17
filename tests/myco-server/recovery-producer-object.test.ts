@@ -12,6 +12,7 @@ import { settleOpenHold } from '@myco-server-worker/core/recovery-hold.js';
 import { Stalled } from '@myco-server-worker/core/recovery-inventory.js';
 import { acquireRecoveryHold } from '@myco-server-worker/core/object-release.js';
 import { RECOVERY_CREDENTIAL_NAMES } from '@myco-server-worker/core/recovery-staging.js';
+import { serverEnvFromBindings } from '@myco-server-worker/platform/cloudflare/env.js';
 import { sqliteEnv } from './helpers/fixtures.js';
 
 function storage(sql: Database, signed: { delete?: (key: string) => Promise<boolean> } = {}) {
@@ -291,4 +292,37 @@ it('answers a token replayed in the other wire shape with the attempt it first a
     expect(recorded.configuration.startedBy).toBe(firstPrevious ? 'previous-owner' : 'current-owner');
     sql.close();
   }
+});
+
+it.each([
+  ['no rendered configuration', { MYCO_RECOVERY_CONFIGURATION: undefined }],
+  ['a stale rendered configuration', { MYCO_FLEET: '9' }],
+])('through the actual Cloudflare port with %s, answers a carried or retired token and refuses a fresh one before staging', async (_label, bindings) => {
+  const sql = new Database(':memory:');
+  const writes: string[] = [];
+  const configured = producerOver(sql, writes);
+  const first = await configured.admit(admission('token-carried'));
+  expect(await configured.settleHold('token-retired')).toEqual({ state: 'retired' });
+  const staged = writes.length;
+  for (const object of [configured, producerOver(sql, writes, undefined, {}, bindings)]) {
+    const e = sqliteEnv();
+    try {
+      const port = serverEnvFromBindings({
+        ...e.env, MYCO_RECOVERY_ACCOUNT_ID: 'a'.repeat(32), MYCO_RECOVERY_DATABASE_ID: '11111111-1111-4111-8111-111111111111',
+        MYCO_RECOVERY_CONFIGURATION: JSON.stringify(RECORDED_CONFIGURATION), ...bindings,
+        RECOVERY: { idFromName: (name: string) => name, get: () => object }, RECOVERY_BUCKET: {},
+      } as never).recovery!;
+      expect(port.admission.ready).toBe(false);
+      const replayed = await port.admit(admission('token-carried'));
+      expect([replayed.attempt, replayed.stage]).toEqual([first.attempt, 'export']);
+      expect((await port.admit(admission('token-retired'))).holdRetired).toBe(true);
+      // With an attempt advancing, a fresh token is answered with that attempt's progress; once it rests, it is refused.
+      sql.run("UPDATE attempts SET stage = 'downloaded' WHERE id = ?", [first.attempt]);
+      await expect(port.admit(admission(`token-fresh-${writes.length}`))).rejects.toThrow(/recovery configuration/);
+      sql.run("UPDATE attempts SET stage = 'export' WHERE id = ?", [first.attempt]);
+      expect(writes.length).toBe(staged);
+      expect(sql.query('SELECT COUNT(*) AS n FROM attempts').get()).toEqual({ n: 1 });
+    } finally { e.sqlite.close(); }
+  }
+  sql.close();
 });

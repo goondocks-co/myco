@@ -286,7 +286,9 @@ export class RecoveryProducer extends DurableObject<CloudflareBindings> {
     const locator = this.locator();
     const target = this.target(admission.tables);
     // What the staging records about this Deployment comes from its own bindings, read once by the one reader, whatever
-    // configuration the wire carries; an admission that cannot record it stages nothing.
+    // configuration the wire carries. A new attempt from a Worker that could not record its configuration, or one this
+    // object cannot record, stages nothing.
+    if (admission.unrecordable !== undefined) throw new Error(admission.unrecordable);
     const bound = boundRecoveryConfiguration(this.env);
     if (!bound.ok) throw new Error(bound.reason);
     const { configuration, credentialsRequired } = recordedAdmission(bound.configuration, admittedStarter(admission));
