@@ -1427,10 +1427,9 @@ function withStamp(version: number, statements: readonly string[]): SchemaStep {
 /**
  * Schema step 43 — operator recovery holds.
  *
- * A hold now names the holder that opened it. A producer hold is the hosted export's, as step 42 wrote it; an operator
- * hold is a full operator backup's, which protects every object its snapshot names for as long as the copy runs. At
- * most one hold of each holder is open, so an operator backup never blocks an automatic export; deletion defers while
- * any hold is open.
+ * A hold names the holder that opened it: `producer` for a hosted export's, `operator` for a full operator backup's,
+ * which protects every object its snapshot names for as long as the copy runs. At most one hold of each holder is
+ * open, so an operator backup never blocks an automatic export; deletion defers while any hold is open.
  *
  * `released_by` names the holder that released a hold, and the triggers make an operator hold's transitions total:
  * - an operator hold is inserted open;
@@ -1440,9 +1439,9 @@ function withStamp(version: number, statements: readonly string[]): SchemaStep {
  * - a producer hold never becomes an operator hold and never carries an operator release.
  *
  * Every comparison is `IS`, so a missing or null reason is refused rather than passing through an untested predicate.
- * A writer that predates this step releases a hold with one statement that sets `released_at` and `release_reason`; on
- * an operator hold that statement changes nothing the trigger accepts, so it aborts, and the hold stays open. What that
- * writer still does is defer its own deletions, which is what an open hold asks of it.
+ * A release statement that sets `released_at` and `release_reason` without `released_by` — what a writer from before
+ * this step sends — changes nothing the trigger accepts on an operator hold, so it aborts and the hold stays open.
+ * Such a writer still defers its own deletions, which is what an open hold asks of it.
  */
 const V43_STATEMENTS: readonly string[] = [
   `ALTER TABLE recovery_holds ADD COLUMN holder TEXT NOT NULL DEFAULT 'producer' CHECK (holder IN ('producer', 'operator'))`,

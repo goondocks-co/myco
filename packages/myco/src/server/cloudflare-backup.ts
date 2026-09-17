@@ -22,11 +22,11 @@ function recordedConfiguration(record: DeploymentRecord) {
 /**
  * The recovery hold a hosted backup takes on the Deployment it is copying.
  *
- * The statements are the server's own hold owner, rendered by `recoveryHoldSql` and sent through the operator's
- * existing Wrangler D1 path; this adapter is transport, not a second lifecycle. Each is idempotent by token, so an
- * answer the provider loses is settled by reading the hold back. One read answers the hold and the Deployment that
- * holds it together, so a hold is never paired with an identity read separately. The hold is the Deployment's own row,
- * so it outlives this process: an interrupted backup resumes under it, and an abandoned one is released explicitly.
+ * Every statement is `recoveryHoldSql`, the server's own hold owner, sent through the operator's Wrangler D1 path
+ * inside `D1_STATEMENT_TIMEOUT_MS`. Each is idempotent by token, so an answer the provider loses is settled by reading
+ * the hold back. One read answers the hold and the Deployment holding it together, never an identity read apart. The
+ * hold is the Deployment's own row and outlives this process: an interrupted backup resumes under it, an abandoned one
+ * is released explicitly.
  */
 function cloudflareRecoveryHold(provider: CloudflareOptions & { databaseName: string }, record: DeploymentRecord): RecoveryHoldOwner {
   const reading = async (token: string): Promise<RecoveryHoldReading> => {

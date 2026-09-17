@@ -318,8 +318,8 @@ export async function releaseOperatorHold(db: RelationalStore, token: string, no
 /**
  * The Deployment a hold reading answers for: what a destination binds its backup to.
  *
- * Both fields come from the same statement as the hold. A reading that cannot name both is `null` rather than a partly
- * filled identity, so a destination refuses instead of binding a placeholder that a later reading could match.
+ * Both fields come from the same statement as the hold. A reading that cannot name both is `null`, never a partly
+ * filled identity.
  */
 export interface RecoveryHoldSource {
   deploymentId: string;

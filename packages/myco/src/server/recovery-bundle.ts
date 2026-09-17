@@ -169,8 +169,7 @@ export interface RecoveryHoldOwner {
  * What a source says about one hold token.
  *
  * `source` is the Deployment that answered, read in the same statement as the hold, and `null` when the source named
- * none. A destination never captures or releases under a reading that cannot identify its source: a placeholder
- * identity would match itself on a resume, which is exactly the check the identity exists to make.
+ * none. A destination captures and releases only under a reading that identifies its source; a `null` one refuses.
  */
 export interface RecoveryHoldReading {
   state: 'open' | 'released' | 'absent' | 'other-holder';
@@ -408,8 +407,8 @@ async function openAndReconcile(owner: RecoveryHoldOwner, token: string, report:
 /**
  * The Deployment a reading names, or a refusal.
  *
- * One validator for every identity this file acts on, so a source that answers nothing, or answers something this
- * code cannot read, is refused in every branch rather than binding or matching a stand-in.
+ * The one validator for every identity this file acts on: a source that answers nothing, or answers a shape this code
+ * cannot read, is refused in every branch.
  */
 function answeredSource(reading: RecoveryHoldReading): RecoveryHoldSource {
   const named = holdSourceSchema.safeParse(reading.source);
@@ -435,12 +434,10 @@ function assertBoundIdentity(bound: RecoveryHoldBound, reading: RecoveryHoldRead
 /**
  * The captured database is the Deployment this destination was admitted to hold, and carries this backup's hold.
  *
- * The bytes are the only thing that can attest what protected them. A live answer describes the source now: it still
- * names the expected Deployment while the hold row those bytes carry is another backup's, a producer's, released, or
- * absent altogether. So the snapshot's own row decides — exactly this destination's token, held by the operator, and
- * open at the instant the bytes were taken — and it keeps deciding for every resume and for the completed artifact,
- * because the row is frozen in the copy. The live reading still admits the hold before anything is captured; this is
- * what the capture itself is held to.
+ * The snapshot's own hold row decides: exactly this destination's token, `holder = 'operator'`, `released_at IS NULL`,
+ * alongside the Deployment and schema version the receipt bound. The row is frozen in the copy, so the same check
+ * holds for the initial capture, every resume and the completed artifact. A live reading admits the hold before
+ * anything is captured; it says nothing about bytes already taken.
  */
 function assertSnapshotHold(db: Database, facts: { deploymentId: string; schemaVersion: number }, held: { token: string; bound: RecoveryHoldBound } | null): void {
   if (held === null) return;
