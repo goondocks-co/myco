@@ -22,7 +22,13 @@ const RUN = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-operator-hold-runtime-')
 const EVIDENCE = process.env.MYCO_OPERATOR_HOLD_EVIDENCE ?? path.join(RUN, 'result.json');
 const HOME = path.join(RUN, 'home');
 const checks: Array<Record<string, unknown>> = [];
-const owned: Array<{ what: string; pid: number }> = [];
+/**
+ * Every process this run starts, with the handle that says when it is gone.
+ *
+ * A SIGKILLed child of this process stays visible to `kill(pid, 0)` until it is reaped, so a leftover check that
+ * only signals would report the run's own tidy shutdown as a process left behind.
+ */
+const owned: Array<{ what: string; pid: number; exited?: Promise<unknown> }> = [];
 
 function check(label: string, actual: unknown, expected: unknown): void {
   const ok = JSON.stringify(actual) === JSON.stringify(expected);
@@ -45,8 +51,14 @@ function cli(name: string, args: string[]) {
 
 const local = (...parts: string[]) => path.join(HOME, 'server', 'local', ...parts);
 const database = () => local('myco.sqlite');
+/**
+ * Reads the volume the way its own Deployment does: read-write.
+ *
+ * A read-ONLY connection to a WAL database has to create the `-shm` it shares, so it only succeeds while some other
+ * process already holds one. Every read here would work while the Deployment serves and fail the moment it stopped.
+ */
 const read = <T>(sql: string, params: unknown[] = []): T[] => {
-  const sqlite = new Database(database(), { readonly: true });
+  const sqlite = new Database(database(), { readwrite: true, create: false });
   try { sqlite.exec('PRAGMA busy_timeout = 5000'); return sqlite.query(sql).all(...(params as never[])) as T[]; } finally { sqlite.close(); }
 };
 const write = (sql: string, params: unknown[] = []) => {
@@ -64,7 +76,7 @@ async function serve(name: string): Promise<{ pid: number; port: number; stop: (
   const proc = Bun.spawn([BINARY, 'server', 'run', '--target', 'local', '--no-worker'], {
     cwd: RUN, stdin: 'ignore', stdout: log, stderr: log, env: { ...process.env, MYCO_HOME: HOME, NO_COLOR: '1' },
   });
-  owned.push({ what: `server run ${name}`, pid: proc.pid });
+  owned.push({ what: `server run ${name}`, pid: proc.pid, exited: proc.exited });
   const port = Number(JSON.parse(fs.readFileSync(local('server.json'), 'utf8')).port);
   const deadline = Date.now() + 180_000;
   while (Date.now() < deadline) {
@@ -95,7 +107,7 @@ async function backupUntilHeld(name: string, destination: string): Promise<{ pro
     cwd: RUN, stdin: 'ignore', stdout: fs.openSync(path.join(RUN, `${name}.log`), 'a'), stderr: 'ignore',
     env: { ...process.env, MYCO_HOME: HOME, NO_COLOR: '1' },
   });
-  owned.push({ what: `server backup ${name}`, pid: proc.pid });
+  owned.push({ what: `server backup ${name}`, pid: proc.pid, exited: proc.exited });
   const deadline = Date.now() + 120_000;
   while (Date.now() < deadline) {
     const open = openHolds();
@@ -120,6 +132,25 @@ try {
   fs.mkdirSync(local('blobs', 'proj_1'), { recursive: true });
   fs.writeFileSync(local('blobs', 'proj_1', `${key}~${generation}`), bytes);
   write("INSERT INTO blobs (project_id, key, size, media_type, token_id, received_at, generation) VALUES ('proj_1', ?, ?, 'text/plain', 'mt_runtime', 1, ?)", [key, bytes.length, generation]);
+
+  /*
+   * Enough objects that a copy takes long enough to be interrupted.
+   *
+   * The proofs below need a backup that is RUNNING: one that has taken and bound its hold and is still copying. A
+   * volume holding a single small object is copied faster than anything can observe, so the interruption those
+   * proofs depend on would be a race decided by disk speed. This is also what a real volume looks like.
+   */
+  const FILLER_OBJECTS = 600;
+  const filler = new Uint8Array(16 * 1024);
+  for (let made = 0; made < FILLER_OBJECTS; made += 1) {
+    crypto.getRandomValues(filler.subarray(0, 32));
+    const fillerKey = new Bun.CryptoHasher('sha256').update(filler).digest('hex');
+    const fillerGeneration = crypto.randomUUID();
+    fs.writeFileSync(local('blobs', 'proj_1', `${fillerKey}~${fillerGeneration}`), filler);
+    write("INSERT INTO blobs (project_id, key, size, media_type, token_id, received_at, generation) VALUES ('proj_1', ?, ?, 'application/octet-stream', 'mt_runtime', 1, ?)",
+      [fillerKey, filler.length, fillerGeneration]);
+  }
+  note('objects this volume holds', read<{ n: number }>('SELECT COUNT(*) AS n FROM blobs')[0]!.n);
 
   // A backup while the Deployment serves.
   const serving = await serve('02-serve');
@@ -150,7 +181,7 @@ try {
   check('the held object is still registered and still stored', [
     read<{ n: number }>('SELECT COUNT(*) AS n FROM blobs')[0]!.n,
     fs.existsSync(local('blobs', 'proj_1', `${key}~${generation}`)),
-  ], [1, true]);
+  ], [FILLER_OBJECTS + 1, true]);
 
   // Resuming completes the artifact under the same hold, and releases exactly it.
   const resumed = cli('08-resume', ['server', 'backup', '--target', 'local', '--to', interrupted]);
@@ -171,7 +202,7 @@ try {
       while (!(await Bun.file(${JSON.stringify(releaseFile)}).exists())) await Bun.sleep(25);
     });
   `], { cwd: ROOT, stdin: 'ignore', stdout: 'ignore', stderr: fs.openSync(path.join(RUN, '09-volume-holder.log'), 'a') });
-  owned.push({ what: 'an operator backup holding the volume', pid: volumeHolder.pid });
+  owned.push({ what: 'an operator backup holding the volume', pid: volumeHolder.pid, exited: volumeHolder.exited });
   for (let attempt = 0; attempt < 400 && !fs.existsSync(holding); attempt += 1) await Bun.sleep(50);
   check('an operator backup holds the volume', fs.existsSync(holding), true);
   const refusedUpdate = cli('10-update-refused', ['server', 'update', '--target', 'local']);
@@ -212,6 +243,8 @@ try {
   console.log(`FAILED: ${String(error).slice(0, 600)}`);
 } finally {
   for (const { pid } of owned) kill(pid);
+  // Reaped, not just signalled, so what is counted below is what is still running.
+  await Promise.all(owned.map(({ exited }) => exited === undefined ? Promise.resolve() : Promise.race([exited, Bun.sleep(10_000)])));
 }
 const leftovers = owned.filter(({ pid }) => alive(pid));
 const passed = checks.filter((entry) => entry.ok === true).length;
