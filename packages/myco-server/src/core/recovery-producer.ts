@@ -1008,7 +1008,11 @@ export interface RecoveryProducerStatus {
   holdRetired?: true;
 }
 
-/** What admission hands the producer: the tables to export, the schema captured before any export, and its context. */
+/**
+ * What admission hands the producer: the tables to export, the schema captured before any export, and who started it.
+ * The Deployment's recorded configuration and the credentials a recovery needs are the producer's own to record; no
+ * caller supplies them.
+ */
 export interface RecoveryAdmission {
   /** The recovery hold this Deployment opened for the attempt, before any export ran; the attempt carries it for life. */
   holdToken: string;
@@ -1016,9 +1020,12 @@ export interface RecoveryAdmission {
   schema: string;
   /** The definitions that schema holds, which the exported bytes are later held to. */
   captured: TableDefinitions;
-  configuration: Record<string, unknown>;
-  credentialsRequired: readonly string[];
+  /** The member who admitted the attempt, recorded in the staging's configuration. */
+  startedBy: string;
 }
+
+/** Whether the producer can record a complete configuration for a new attempt, and why not when it cannot. */
+export type RecoveryAdmissionReadiness = { ready: true } | { ready: false; reason: string };
 
 /**
  * What a recovery hold's attempt says about it, read and decided in one step of the producer that owns attempts:
@@ -1051,6 +1058,8 @@ export class HoldRetired extends Error {
 
 /** Starting and inspecting this Deployment's producer, as a target supplies it. The credential stays in the target. */
 export interface RecoveryProducerPort {
+  /** Whether a new attempt may be admitted. Status, hold settlement and an attempt already admitted do not depend on it. */
+  admission: RecoveryAdmissionReadiness;
   admit(admission: RecoveryAdmission): Promise<RecoveryProducerStatus>;
   /** Decide a hold against the attempts, retiring a token no attempt carries; see `HoldSettlement`. */
   settleHold(token: string): Promise<HoldSettlement>;

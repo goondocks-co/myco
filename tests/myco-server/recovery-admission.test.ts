@@ -5,7 +5,7 @@
 import { registerBlob } from './helpers/d1.js';
 import { expect, it } from 'bun:test';
 import { handleRecoveryExportStatus, handleStartRecoveryExport } from '@myco-server-worker/api/recovery.js';
-import { settlementOf, type AttemptStage, type RecoveryAdmission, type RecoveryProducerStatus } from '@myco-server-worker/core/recovery-producer.js';
+import { settlementOf, type AttemptStage, type RecoveryAdmission, type RecoveryAdmissionReadiness, type RecoveryProducerStatus } from '@myco-server-worker/core/recovery-producer.js';
 import { drainObjectReleases, releaseBlobs } from '@myco-server-worker/core/object-release.js';
 import { recoveryHoldRelease } from '@myco-server-worker/core/recovery-hold.js';
 import { sqliteEnv } from './helpers/fixtures.js';
@@ -25,6 +25,7 @@ function producer() {
     seen, carried, retired,
     set: (next: Partial<RecoveryProducerStatus>) => { status = { ...idle, ...next }; },
     port: {
+      admission: { ready: true } as RecoveryAdmissionReadiness,
       admit: async (admission: RecoveryAdmission) => {
         if (retired.has(admission.holdToken)) return { ...status, holdRetired: true as const };
         seen.push(admission);
@@ -168,6 +169,52 @@ it('keeps every release a deletion decides while the hold is open, and releases 
   await drainObjectReleases(env.serverEnv, 5_000);
   expect(env.sqlite.query('SELECT COUNT(*) AS n FROM blobs').get()).toEqual({ n: 0 });
   env.sqlite.close();
+});
+
+it('records who started the attempt, and hands the producer nothing else about the Deployment', async () => {
+  const env = sqliteEnv();
+  const held = producer();
+  expect((await handleStartRecoveryExport({ ...env.serverEnv, recovery: held.port } as never, OWNER)).status).toBe(200);
+  expect(held.seen[0]!.startedBy).toBe('owner-1');
+  expect(Object.keys(held.seen[0]!).sort()).toEqual(['captured', 'holdToken', 'schema', 'startedBy', 'tables']);
+  env.sqlite.close();
+});
+
+it('opens no hold and admits nothing when the producer cannot record the configuration', async () => {
+  const env = sqliteEnv();
+  const held = producer();
+  const unready = { ...held.port, admission: { ready: false, reason: 'this Deployment carries no recovery configuration' } as RecoveryAdmissionReadiness };
+  const refused = await handleStartRecoveryExport({ ...env.serverEnv, recovery: unready } as never, OWNER);
+  expect(refused.status).toBe(503);
+  expect(await refused.json() as Record<string, unknown>).toEqual({ error: 'recovery_configuration_unavailable', message: 'this Deployment carries no recovery configuration' });
+  expect([holds(env), held.seen]).toEqual([[], []]);
+  // A status read still answers.
+  expect((await handleRecoveryExportStatus({ ...env.serverEnv, recovery: unready } as never, OWNER)).status).toBe(200);
+  env.sqlite.close();
+});
+
+it('still answers an attempt already running and still settles its hold when the configuration is unavailable', async () => {
+  const env = sqliteEnv();
+  const held = producer();
+  await handleStartRecoveryExport({ ...env.serverEnv, recovery: held.port } as never, OWNER);
+  const token = holds(env)[0]!.token;
+  const unready = { ...held.port, admission: { ready: false, reason: 'stale configuration' } as RecoveryAdmissionReadiness };
+  // While the attempt advances, an admission answers its progress and opens no second hold.
+  const running = await handleStartRecoveryExport({ ...env.serverEnv, recovery: unready } as never, OWNER);
+  expect([running.status, ((await running.json()) as { stage: string }).stage]).toEqual([200, 'export']);
+  expect([holds(env).length, held.seen.length]).toEqual([1, 1]);
+  // Once it rests, the admission settles and releases that hold, then refuses without opening another.
+  held.carried.set(token, { id: 1, stage: 'complete' });
+  const after = await handleStartRecoveryExport({ ...env.serverEnv, recovery: unready } as never, { ...OWNER as object, now: 7_000 } as never);
+  expect(after.status).toBe(503);
+  expect(holds(env)).toEqual([{ token, released_at: 7_000, release_reason: 'attempt 1 complete' }]);
+  expect(await recoveryHoldRelease({ ...env.serverEnv, recovery: unready } as never, 8_000)).toBe(0);
+  env.sqlite.close();
+});
+
+it('reads no Cloudflare binding in the owner route: the platform adapter decides readiness', () => {
+  const source = require('node:fs').readFileSync(require.resolve('@myco-server-worker/api/recovery.js'), 'utf8') as string;
+  expect(source).not.toMatch(/MYCO_[A-Z_]+|RECOVERY_EXPORT_TOKEN|bindings\.|CloudflareBindings/);
 });
 
 it('answers settlement from the attempt stage: advancing is open, resting is closed, none is retired', () => {

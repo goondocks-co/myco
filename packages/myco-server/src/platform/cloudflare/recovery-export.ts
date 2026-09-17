@@ -7,8 +7,8 @@
 import type {
   AttemptPart, ExportAnswer, PortFailure, ProducerPorts, RangeAnswer,
 } from '../../core/recovery-producer.js';
-import { PRODUCER_LIMITS, stagedSqlKey, TransientProducerFailure } from '../../core/recovery-producer.js';
-import { STAGING_OBJECTS_DIRECTORY, stagingPath } from '../../core/recovery-staging.js';
+import { PRODUCER_LIMITS, stagedSqlKey, TransientProducerFailure, type RecoveryAdmission } from '../../core/recovery-producer.js';
+import { readHostedRecoveryConfiguration, RECOVERY_CREDENTIAL_NAMES, STAGING_OBJECTS_DIRECTORY, stagingPath, type HostedRecoveryConfiguration } from '../../core/recovery-staging.js';
 import { discardStoredBody, streamStoredObject } from '../../core/stored-object.js';
 import { r2RefusedDigest } from './r2-digest.js';
 
@@ -20,6 +20,85 @@ export const STAGING_TARGET = 'cloudflare';
 
 /** The provider's floor for every multipart part but the last; a smaller one is refused at completion. */
 export const R2_MINIMUM_PART_BYTES = 5 * 1024 * 1024;
+
+/** The bindings that name what a hosted recovery records about this Deployment, all rendered from its deployment record. */
+export interface RecoveryConfigurationBindings {
+  MYCO_RECOVERY_CONFIGURATION?: string;
+  MYCO_RECOVERY_ACCOUNT_ID?: string;
+  MYCO_RECOVERY_DATABASE_ID?: string;
+  MYCO_FLEET?: string;
+  MYCO_ORIGIN?: string;
+}
+
+/**
+ * This Deployment's recorded configuration, from its own bindings: the rendered configuration, read by the one
+ * recovery configuration reader and held to every setting the runtime binds on its own. Those are the account and
+ * database the export names, the fleet dispatch counts against (`MYCO_FLEET`), and the origin runs call back to
+ * (`MYCO_ORIGIN`, the recorded URL's origin). All are rendered from one deployment record, so a configuration that
+ * disagrees with any of them is stale and records nothing.
+ */
+export function boundRecoveryConfiguration(bindings: RecoveryConfigurationBindings): { ok: true; configuration: HostedRecoveryConfiguration } | { ok: false; reason: string } {
+  const rendered = bindings.MYCO_RECOVERY_CONFIGURATION;
+  if (rendered === undefined || rendered === '') {
+    return { ok: false, reason: 'this Deployment carries no recovery configuration; update it so its deploy config renders one' };
+  }
+  let parsed: unknown;
+  try { parsed = JSON.parse(rendered); } catch { return { ok: false, reason: 'this Deployment\'s recovery configuration is not readable; update it so its deploy config renders one' }; }
+  const read = readHostedRecoveryConfiguration(parsed);
+  if (!read.ok) return read;
+  if (read.configuration.accountId !== bindings.MYCO_RECOVERY_ACCOUNT_ID || read.configuration.databaseId !== bindings.MYCO_RECOVERY_DATABASE_ID) {
+    return { ok: false, reason: 'this Deployment\'s recovery configuration names another account or database than its export target' };
+  }
+  const recordedFleet = read.configuration.fleet === undefined ? undefined : String(read.configuration.fleet);
+  if (recordedFleet !== bindings.MYCO_FLEET) {
+    return { ok: false, reason: 'this Deployment\'s recovery configuration names another fleet than the one it runs with' };
+  }
+  let recordedOrigin: string | undefined;
+  try { recordedOrigin = read.configuration.url === undefined ? undefined : new URL(read.configuration.url).origin; } catch {
+    return { ok: false, reason: 'this Deployment\'s recovery configuration names an address that is not a URL' };
+  }
+  if (recordedOrigin !== bindings.MYCO_ORIGIN) {
+    return { ok: false, reason: 'this Deployment\'s recovery configuration names another address than the one it runs at' };
+  }
+  return read;
+}
+
+/** What a hosted recovery records about an attempt: the Deployment's bound configuration with who started it, and every recovery credential name. */
+export function recordedAdmission(configuration: HostedRecoveryConfiguration, startedBy: string): { configuration: Record<string, unknown>; credentialsRequired: string[] } {
+  return { configuration: { ...configuration, startedBy }, credentialsRequired: [...RECOVERY_CREDENTIAL_NAMES] };
+}
+
+/**
+ * An admission as it travels to the producer object. Worker and producer object code do not change together, so the
+ * wire carries both shapes: who started the attempt, which a producer object of this release reads, and the recorded
+ * configuration and credential names, which a producer object of the previous release reads.
+ */
+export type RecoveryAdmissionWire = Omit<RecoveryAdmission, 'startedBy'> & {
+  startedBy?: string;
+  configuration?: Record<string, unknown>;
+  credentialsRequired?: readonly string[];
+  /** Why the sending Worker could not record its configuration; a producer object admits no new attempt from such a wire. */
+  unrecordable?: string;
+};
+
+/**
+ * The wire for one admission, from the Worker's own bound configuration. A Worker that cannot read it still sends the
+ * admission, carrying no recorded fields and why, so a token an attempt already carries or one already retired
+ * is answered by the producer object, and a fresh one is refused there before anything is staged.
+ */
+export function recoveryAdmissionWire(admission: RecoveryAdmission, bindings: RecoveryConfigurationBindings): RecoveryAdmissionWire {
+  const bound = boundRecoveryConfiguration(bindings);
+  if (!bound.ok) return { ...admission, unrecordable: bound.reason };
+  return { ...admission, ...recordedAdmission(bound.configuration, admission.startedBy) };
+}
+
+/** Who started an admitted attempt, from either wire shape: its own field, or the recorded configuration a previous Worker sends. */
+export function admittedStarter(wire: RecoveryAdmissionWire): string {
+  if (typeof wire.startedBy === 'string' && wire.startedBy !== '') return wire.startedBy;
+  const recorded = wire.configuration?.startedBy;
+  if (typeof recorded === 'string' && recorded !== '') return recorded;
+  throw new Error('a recovery admission names no member who started it');
+}
 
 export interface ExportTarget {
   accountId: string;

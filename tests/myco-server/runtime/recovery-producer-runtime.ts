@@ -143,13 +143,16 @@ function stubProvider(port: number, pollsBeforeComplete: number, options: { comp
  * worktree's installed packages.
  */
 const PREVIOUS_COMMIT = 'b27bf94d';
-function previousSource(): string {
-  const root = path.join(RUN, 'previous');
+/** The release whose Worker and producer object a rolling update mixes with this one's. */
+const ROLLING_COMMIT = 'db4c408b';
+function previousSource(commit = PREVIOUS_COMMIT): string {
+  const root = path.join(RUN, `previous-${commit}`);
   fs.mkdirSync(root, { recursive: true });
   // The server's own tsconfig and the shared package's source come too, so its aliases resolve as the current tree's do.
-  const archive = Bun.spawnSync(['git', '-C', ROOT, 'archive', PREVIOUS_COMMIT,
+  if (fs.existsSync(path.join(root, 'packages/myco-server/src'))) return path.join(root, 'packages/myco-server/src');
+  const archive = Bun.spawnSync(['git', '-C', ROOT, 'archive', commit,
     'packages/myco-server/src', 'packages/myco-server/tsconfig.json', 'packages/myco-shared/src'], { stdin: 'ignore' });
-  if (archive.exitCode !== 0) throw new Error(`git archive ${PREVIOUS_COMMIT} failed`);
+  if (archive.exitCode !== 0) throw new Error(`git archive ${commit} failed`);
   const unpack = Bun.spawnSync(['tar', '-x', '-C', root], { stdin: archive.stdout });
   if (unpack.exitCode !== 0) throw new Error('unpacking the previous producer failed');
   fs.symlinkSync(path.join(ROOT, 'node_modules'), path.join(root, 'node_modules'));
@@ -161,6 +164,7 @@ const ENTRY = `
 import { RecoveryProducer } from '${path.join(ROOT, 'packages/myco-server/src/platform/cloudflare/recovery-producer-object.ts')}';
 import { DeploymentClock } from '${path.join(ROOT, 'packages/myco-server/src/platform/cloudflare/deployment-clock.ts')}';
 import { capturedDefinitions } from '${path.join(ROOT, 'packages/myco-server/src/core/recovery-producer.ts')}';
+import { recoveryAdmissionWire } from './wire.ts';
 export { RecoveryProducer, DeploymentClock };
 
 const SCHEMA = [
@@ -168,23 +172,28 @@ const SCHEMA = [
   { type: 'table', name: 'blobs', sql: ${'`'}${BLOBS_DDL}${'`'}, storage: 'table' },
   { type: 'table', name: 'backups', sql: ${'`'}${BACKUPS_DDL}${'`'}, storage: 'table' },
 ];
-const admission = (holdToken = crypto.randomUUID()) => ({
-  holdToken,
-  tables: ['sessions', 'blobs', 'backups'],
-  schema: JSON.stringify(SCHEMA),
-  captured: capturedDefinitions(SCHEMA),
-  configuration: { startedBy: 'runtime-test' },
-  credentialsRequired: [],
-});
+// Three admission shapes, whichever producer object this Worker runs:
+// - wire (the default): what this release's Cloudflare port sends, built by its own wire builder from the bindings;
+// - current: who started the attempt only, as this release's core hands the port;
+// - previous: what the previous release's owner route sent.
+const admission = (holdToken = crypto.randomUUID(), shape = 'wire', env = {}) => {
+  const core = { holdToken, tables: ['sessions', 'blobs', 'backups'], schema: JSON.stringify(SCHEMA), captured: capturedDefinitions(SCHEMA) };
+  if (shape === 'previous') return { ...core, configuration: { startedBy: 'previous-owner' }, credentialsRequired: [] };
+  if (shape === 'current') return { ...core, startedBy: 'runtime-test' };
+  return recoveryAdmissionWire({ ...core, startedBy: 'runtime-test' }, env);
+};
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
     const producer = env.RECOVERY.get(env.RECOVERY.idFromName('recovery'));
-    if (url.pathname === '/admit') return Response.json(await producer.admit(admission(url.searchParams.get('hold') ?? undefined)));
+    if (url.pathname === '/admit') return Response.json(await producer.admit(admission(url.searchParams.get('hold') ?? undefined, url.searchParams.get('shape') ?? 'wire', env)));
     if (url.pathname === '/settle') return Response.json(await producer.settleHold(url.searchParams.get('hold')));
+    if (url.pathname === '/admit-raised') {
+      try { return Response.json({ admitted: await producer.admit(admission(url.searchParams.get('hold') ?? undefined, url.searchParams.get('shape') ?? 'wire', env)) }); } catch (error) { return Response.json({ raised: String(error).slice(0, 200) }); }
+    }
     if (url.pathname === '/admit-and-continue') {
       const limits = JSON.parse(url.searchParams.get('limits') ?? '{}');
-      const [admitted, continued] = await Promise.all([producer.admit(admission()), producer.continue(limits)]);
+      const [admitted, continued] = await Promise.all([producer.admit(admission(undefined, 'wire', env)), producer.continue(limits)]);
       return Response.json({ admitted, continued });
     }
     if (url.pathname === '/continue') return Response.json(await producer.continue(JSON.parse(url.searchParams.get('limits') ?? '{}')));
@@ -240,7 +249,14 @@ export default {
 
 let worker: ReturnType<typeof Bun.spawn> | null = null;
 let workerPort = 0;
-async function startWorker(apiPort: number, mode: 'manual' | 'clock' = 'manual', state = 'state', entry = ENTRY): Promise<void> {
+/** The configuration a deployment record renders for this runtime's own export target. */
+const RUNTIME_CONFIGURATION = {
+  accountId: 'runtime-account', databaseId: 'runtime-database', databaseName: 'myco-producer-runtime', workerName: 'myco-producer-runtime',
+  bucketName: 'myco-producer-runtime-blobs', recoveryBucketName: 'myco-producer-runtime-recovery', vectorIndexName: 'myco-producer-runtime-vectors',
+  wrapKeySecretName: 'myco-producer-runtime-wrap',
+};
+
+async function startWorker(apiPort: number, mode: 'manual' | 'clock' = 'manual', state = 'state', entry = ENTRY, configured = true): Promise<void> {
   const clockLines = mode === 'clock'
     ? [
       '[[durable_objects.bindings]]', 'name = "CLOCK"', 'class_name = "DeploymentClock"', '',
@@ -274,6 +290,7 @@ async function startWorker(apiPort: number, mode: 'manual' | 'clock' = 'manual',
     '[vars]',
     'MYCO_RECOVERY_ACCOUNT_ID = "runtime-account"',
     'MYCO_RECOVERY_DATABASE_ID = "runtime-database"',
+    ...(configured ? [`MYCO_RECOVERY_CONFIGURATION = ${JSON.stringify(JSON.stringify(RUNTIME_CONFIGURATION))}`] : []),
     `MYCO_RECOVERY_API_ORIGIN = "http://127.0.0.1:${apiPort}"`,
     ...(mode === 'manual' ? ['CLOCK_MODE = "manual"'] : []),
     'HARNESS_LAUNCH_MODE = "record"',
@@ -281,6 +298,8 @@ async function startWorker(apiPort: number, mode: 'manual' | 'clock' = 'manual',
   ].join('\n');
   fs.writeFileSync(path.join(RUN, 'wrangler.toml'), config);
   fs.writeFileSync(path.join(RUN, 'entry.ts'), entry);
+  // The wire builder always comes from this release, whichever producer object the entry runs.
+  fs.writeFileSync(path.join(RUN, 'wire.ts'), `export { recoveryAdmissionWire } from '${path.join(ROOT, 'packages/myco-server/src/platform/cloudflare/recovery-export.ts')}';\n`);
   fs.writeFileSync(path.join(RUN, '.dev.vars'), 'RECOVERY_EXPORT_TOKEN=runtime-token-not-a-credential\n');
   workerPort = await freePort();
   const inspector = await freePort();
@@ -336,6 +355,10 @@ try {
   check('an admitted attempt stages its schema and claims nothing recoverable', [admitted.stage, admitted.recoverable, admitted.stagedSchema !== null], ['export', false, true]);
   const manifest = await call(`/staging-file?key=${encodeURIComponent(`${admitted.staged.prefix}/recovery.json`)}`);
   check('the staging it writes is open, with no object and no completion', [manifest.file.status, manifest.file.objects.length, manifest.file.completedAt], ['open', 0, undefined]);
+  check('the staging records this Deployment\'s bound configuration, who started it, and every recovery credential name',
+    [manifest.file.configuration, manifest.file.credentialsRequired],
+    [{ ...RUNTIME_CONFIGURATION, startedBy: 'runtime-test' }, ['SECRET_WRAP_KEY', 'SESSION_SECRET', 'GITHUB_CLIENT_ID', 'GITHUB_CLIENT_SECRET']]);
+  check('no staged metadata carries the bound export credential', JSON.stringify(manifest.file).includes('runtime-token-not-a-credential'), false);
 
   // One continuation that cannot finish the export: the source is paused and another continuation is wanted at once.
   const paused = await call(`/continue?limits=${encodeURIComponent(STEP)}`);
@@ -470,13 +493,79 @@ try {
       worker = null;
     }
   }
-  const fresh = await call('/admit');
+  const fresh = await call('/admit?hold=runtime-upgrade-fresh');
   check('a new admission on the upgraded storage is a new attempt', [fresh.attempt > settledStatus.attempt, fresh.stage], [true, 'export']);
   let freshStep = await call(`/continue?limits=${encodeURIComponent(wide)}`);
   for (let step = 0; step < 64 && freshStep.nextInMs !== null; step += 1) freshStep = await call(`/continue?limits=${encodeURIComponent(wide)}`);
   check('the new attempt runs the whole integrated path on the upgraded storage', [freshStep.stage, freshStep.error ?? null], ['complete', null]);
   const afterFresh = await call(`/staging-file?key=${encodeURIComponent(settledKey)}`);
   check('the settled attempt\'s manifest is still unchanged after a new attempt completes', JSON.stringify(afterFresh.file), JSON.stringify(settledManifest.file));
+
+  // The same storage on a Worker whose deploy config renders no recovery configuration: an attempt already admitted still answers,
+  // and a new attempt stages nothing.
+  await stop(worker!, 'SIGTERM');
+  worker = null;
+  await startWorker(apiPort, 'manual', 'upgrade-state', ENTRY, false);
+  const unconfiguredStatus = await call('/status');
+  check('without a rendered configuration the completed attempt still reads as it was', [unconfiguredStatus.attempt, unconfiguredStatus.stage], [fresh.attempt, 'complete']);
+  // Every admission here is the port's own wire, built from bindings that carry no configuration.
+  check('without a rendered configuration its token still answers its own attempt through the port wire', (await call('/admit?hold=runtime-upgrade-fresh')).attempt, fresh.attempt);
+  check('without a rendered configuration its hold still settles', (await call('/settle?hold=runtime-upgrade-fresh')).state, 'closed');
+  check('without a rendered configuration a token never admitted is retired', (await call('/settle?hold=runtime-never-admitted')).state, 'retired');
+  check('and a retired token is answered as retired through the port wire', (await call('/admit?hold=runtime-never-admitted')).holdRetired, true);
+  const unconfiguredAdmission = await call('/admit-raised?hold=runtime-unconfigured');
+  check('without a rendered configuration a new admission through the port wire is refused', String(unconfiguredAdmission.raised ?? '').includes('carries no recovery configuration'), true);
+  check('and stages no attempt', (await call('/status')).attempt, fresh.attempt);
+
+  // A rolling update mixes this release's Worker with the previous release's producer object, and the reverse. Each
+  // admits what the other sends, records who started the attempt and the configuration, and a token replayed in the
+  // other shape answers the attempt it first admitted, staging and relabelling nothing.
+  const rollingPrevious = previousSource(ROLLING_COMMIT);
+  const rollingEntry = ENTRY.replaceAll(path.join(ROOT, 'packages/myco-server/src'), rollingPrevious);
+  const expectedConfiguration = (startedBy: string) => ({ ...RUNTIME_CONFIGURATION, startedBy });
+  const credentialNames = ['SECRET_WRAP_KEY', 'SESSION_SECRET', 'GITHUB_CLIENT_ID', 'GITHUB_CLIENT_SECRET'];
+  for (const [label, firstEntry, firstShape, replayEntry, replayShape, startedBy] of [
+    ['this Worker to the previous producer object', rollingEntry, 'wire', ENTRY, 'previous', 'runtime-test'],
+    ['the previous Worker to this producer object', ENTRY, 'previous', rollingEntry, 'wire', 'previous-owner'],
+  ] as const) {
+    const state = `rolling-${firstShape}-state`;
+    const hold = `rolling-${firstShape}`;
+    await stop(worker!, 'SIGTERM');
+    worker = null;
+    await startWorker(apiPort, 'manual', state, firstEntry);
+    await seed();
+    const first = await call(`/admit?hold=${hold}&shape=${firstShape}`);
+    check(`${label}: the admission is staged`, [first.stage, first.recoverable], ['export', false]);
+    const firstManifest = await call(`/staging-file?key=${encodeURIComponent(`${first.staged.prefix}/recovery.json`)}`);
+    check(`${label}: the staging records the configuration, who started it and every credential name`,
+      [firstManifest.file.configuration, firstManifest.file.credentialsRequired], [expectedConfiguration(startedBy), credentialNames]);
+    await stop(worker!, 'SIGTERM');
+    worker = null;
+    await startWorker(apiPort, 'manual', state, replayEntry);
+    const replayed = await call(`/admit?hold=${hold}&shape=${replayShape}`);
+    check(`${label}: the token replayed in the other shape answers the same attempt`, [replayed.attempt, replayed.stage], [first.attempt, 'export']);
+    const replayedManifest = await call(`/staging-file?key=${encodeURIComponent(`${first.staged.prefix}/recovery.json`)}`);
+    check(`${label}: the replay stages and relabels nothing`, JSON.stringify(replayedManifest.file), JSON.stringify(firstManifest.file));
+  }
+
+  // The previous producer object behind this Worker's port wire when the Worker carries no configuration: a carried or
+  // retired token is answered, and a fresh admission fails before its staging writes.
+  await stop(worker!, 'SIGTERM');
+  worker = null;
+  await startWorker(apiPort, 'manual', 'rolling-wire-state', rollingEntry, false);
+  const carriedOnPrevious = await call('/admit?hold=rolling-wire');
+  check('the previous object answers its carried token from an unconfigured Worker\'s wire', [carriedOnPrevious.stage, carriedOnPrevious.recoverable], ['export', false]);
+  await stop(worker!, 'SIGTERM');
+  worker = null;
+  await startWorker(apiPort, 'manual', 'rolling-unconfigured-state', rollingEntry, false);
+  await seed();
+  check('the previous object retires a token never admitted', (await call('/settle?hold=rolling-never-admitted')).state, 'retired');
+  check('and answers it as retired from an unconfigured Worker\'s wire', (await call('/admit?hold=rolling-never-admitted')).holdRetired, true);
+  const freshOnPrevious = await call('/admit-raised?hold=rolling-fresh-unconfigured');
+  note('previous object refusal of a fresh wire without recorded fields', freshOnPrevious);
+  // Its own staging builder refuses an admission without the recorded fields before either staging write.
+  check('the previous object admits no fresh attempt from an unconfigured Worker\'s wire', String(freshOnPrevious.raised ?? '').startsWith('TypeError'), true);
+  check('and records no attempt for it', (await call('/status')).attempt, null);
 
   // An attempt the previous producer admitted and left in flight: it carries no recorded admission, so the new
   // Worker finishes its export and rests it at `downloaded`, as the producer that admitted it would, never staging

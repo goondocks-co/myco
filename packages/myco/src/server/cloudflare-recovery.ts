@@ -12,7 +12,7 @@ import type { NativeSqlite } from '@myco-server-worker/platform/bun/native.js';
 import { atomicWriteFileSync, syncDirectoryForDurability } from '@myco/utils/atomic-write.js';
 import { cloudflareOperation } from './cloudflare-operation.js';
 import { cloudflareResources } from './cloudflare-resources.js';
-import { copyRecoveryBundle, copyRecoveryObjects, preparedObjectKeys, verifyRecoveryBundle } from './recovery-bundle.js';
+import { copyRecoveryBundle, copyRecoveryObjects, preparedObjectKeys, restoredFleet, verifyRecoveryBundle } from './recovery-bundle.js';
 import { prepareRecoveryCredentials } from './recovery-credentials.js';
 import { restoreCloudflareDatabase } from './cloudflare-recovery-database.js';
 import { stageCloudflareDeploy, stageCloudflareRecoveryBootstrap } from './cloudflare-stage.js';
@@ -91,7 +91,8 @@ export const restoreCloudflareDeployment = cloudflareOperation(async (options: L
     }, receipt);
 
   const name = held().name;
-  const fleet = z.object({ fleet: z.number().int().positive().optional() }).parse(manifest.snapshot!.configuration).fleet;
+  const carried = restoredFleet(manifest.snapshot!.configuration);
+  const fleet = carried.fleet ?? undefined;
   const makeRecord = (): DeploymentRecord => ({
     accountId: options.accountId, workerName: name, databaseName: name, bucketName: name,
     vectorIndexName: name, wrapKeySecretName: name, recoveryBucketName: cloudflareResources({ workerName: name }).recoveryBucketName,
@@ -110,6 +111,7 @@ export const restoreCloudflareDeployment = cloudflareOperation(async (options: L
   }
 
   await copyRecoveryBundle(options.source, artifact, options.report);
+  options.report?.(carried.report);
 
   const databasePath = path.join(root, 'recovery.sqlite');
   const db = new Database(path.join(artifact, 'myco.sqlite'), { readonly: true, create: false });

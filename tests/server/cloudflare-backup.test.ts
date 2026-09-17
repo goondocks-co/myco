@@ -1,13 +1,16 @@
-import { expect, it } from 'bun:test';
+import { expect, it, spyOn } from 'bun:test';
 import { Database } from 'bun:sqlite';
 import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { backupCloudflareDeployment } from '@myco/server/cloudflare-backup.js';
+import * as cloudflare from '@myco/server/cloudflare.js';
 import { writeDeploymentRecord, type CloudflareFetch } from '@myco/server/cloudflare.js';
 import type { CommandRunner } from '@myco/server/runner.js';
 import { sqliteEnv } from '../myco-server/helpers/fixtures.js';
+import { recoveryConfigurationOf } from '@myco/server/cloudflare-resources.js';
+import { RECOVERY_CREDENTIAL_NAMES } from '@myco-server-worker/core/recovery-staging.js';
 
 const quote = (value: string) => '"' + value.replaceAll('"', '""') + '"';
 const literal = (value: unknown): string => {
@@ -100,6 +103,13 @@ it('reconstructs FTS and triggers, preserves sequence high-water and exact value
     const result = await f.backup();
     expect(result.status).toBe('complete');
     expect(JSON.stringify(result)).not.toContain('fixture-private-value');
+    // The backup records the record's resolved recovery configuration and the version it runs, and every credential name.
+    expect(result.snapshot!.configuration).toEqual({ ...recoveryConfigurationOf(f.record), versionId: f.record.versionId, deployedAt: f.record.deployedAt });
+    expect(result.snapshot!.configuration.recoveryBucketName).toBe('myco-server-recovery');
+    expect(result.snapshot!.credentialsRequired).toEqual([...RECOVERY_CREDENTIAL_NAMES]);
+    // The operator's provider token and the record's unrecognised private field are secret sentinels no manifest carries.
+    const manifestText = fs.readFileSync(path.join(f.destination, 'recovery.json'), 'utf8');
+    for (const sentinel of ['fixture-private-value', 'fixture-operator-token']) expect(manifestText).not.toContain(sentinel);
     expect(f.calls.filter((call) => call.includes('export'))).toHaveLength(1);
     expect(f.calls.find((call) => call.includes('export'))).toContain('sqlite_sequence');
     expect(new Uint8Array(fs.readFileSync(path.join(f.destination, 'blobs', 'proj_1', f.digest)))).toEqual(f.bytes);
@@ -133,5 +143,61 @@ it('refuses a conflicting account before provider commands or destination writes
     await expect(backupCloudflareDeployment({ accountId: 'other', mycoHome: f.mycoHome, destination: f.destination, runner: f.runner })).rejects.toThrow('account does not match');
     expect(f.calls).toHaveLength(0);
     expect(fs.existsSync(f.destination)).toBe(false);
+  } finally { f.cleanup(); }
+});
+
+/**
+ * A backup whose deployment record is replaced after its capture: `replace` rewrites the record once the first read
+ * returns, and `restore`, when set, puts the captured record back before the next read. The rendered export config and
+ * the recorded configuration are read back from what the backup actually used.
+ */
+async function backupWhileRecordChanges(restore: boolean) {
+  const f = fixture();
+  const file = path.join(f.mycoHome, 'server', 'cloudflare', 'record.json');
+  const captured = fs.readFileSync(file, 'utf8');
+  const read = cloudflare.readDeploymentRecord;
+  let reads = 0;
+  const spy = spyOn(cloudflare, 'readDeploymentRecord').mockImplementation((home) => {
+    reads += 1;
+    if (reads === 2 && restore) fs.writeFileSync(file, captured);
+    const value = read(home);
+    if (reads === 1) fs.writeFileSync(file, JSON.stringify({ ...JSON.parse(captured), fleet: 7 }));
+    return value;
+  });
+  let renderedFleet: string | null = null;
+  const runner: CommandRunner = { run: async (command, args, options) => {
+    if (args.includes('export')) {
+      const vars = (Bun.TOML.parse(fs.readFileSync(args[args.indexOf('-c') + 1]!, 'utf8')) as { vars: Record<string, string> }).vars;
+      renderedFleet = vars.MYCO_FLEET ?? null;
+    }
+    return f.runner.run(command, args, options);
+  } };
+  const fetch: CloudflareFetch = async (input) => new Response(String(input).endsWith(f.backupKey) ? f.backupBody : f.bytes);
+  const outcome = await backupCloudflareDeployment({ accountId: f.record.accountId, mycoHome: f.mycoHome, destination: f.destination, runner, fetch })
+    .then((result) => ({ result }), (error: unknown) => ({ error: String(error) }));
+  spy.mockRestore();
+  return { f, reads, renderedFleet, outcome };
+}
+
+it('refuses a backup whose deployment record changed after the capture that named its export', async () => {
+  const { f, reads, renderedFleet, outcome } = await backupWhileRecordChanges(false);
+  try {
+    expect(reads).toBe(2);
+    expect(renderedFleet).toBeNull();
+    expect('error' in outcome ? outcome.error : 'completed').toContain('schema or configuration changed');
+    expect(fs.existsSync(path.join(f.destination, 'myco.sqlite'))).toBe(false);
+  } finally { f.cleanup(); }
+});
+
+it('records the configuration of the same record capture that rendered and named the export', async () => {
+  const { f, reads, renderedFleet, outcome } = await backupWhileRecordChanges(true);
+  try {
+    expect(reads).toBe(2);
+    if (!('result' in outcome)) throw new Error(outcome.error);
+    expect(outcome.result.status).toBe('complete');
+    // The temporary replacement record named fleet 7; neither the rendered export config nor the artifact carries it.
+    expect(renderedFleet).toBeNull();
+    expect(outcome.result.snapshot!.configuration).toEqual({ ...recoveryConfigurationOf(f.record), versionId: f.record.versionId, deployedAt: f.record.deployedAt });
+    expect('fleet' in outcome.result.snapshot!.configuration).toBe(false);
   } finally { f.cleanup(); }
 });
