@@ -58,8 +58,8 @@ export type HostedRecoveryConfiguration = Record<typeof HOSTED_CONFIGURATION_NAM
 
 /**
  * The fleet a recorded configuration names, or null when it names none. A present value that is not a whole number of
- * runtimes, 1 or more, refuses the configuration. An absent value says only that this configuration records no fleet:
- * a staging admitted before the producer recorded configuration never captured one, whatever its source ran with.
+ * runtimes, 1 or more, refuses the configuration. An absent value records no fleet and says nothing about the fleet its
+ * source ran with.
  */
 export function recordedFleet(configuration: Readonly<Record<string, unknown>>): number | null {
   if (!Object.hasOwn(configuration, 'fleet') || configuration.fleet === undefined) return null;
