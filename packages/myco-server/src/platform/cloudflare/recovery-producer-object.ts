@@ -14,8 +14,20 @@ import { DurableObject } from 'cloudflare:workers';
 import {
   ADVANCING_STAGES_SQL, continueAttempt, failAttempt, freshScan, HoldRetired, PRODUCER_LIMITS, PRODUCER_STALL_MS, publishAttempt, reconcileUnconfirmed, settlementOf, stagedSqlKey,
   type AttemptCheckpoint, type AttemptObject, type AttemptPart, type AttemptState, type ContinuationReport, type HoldSettlement,
-  type ProducerLimits, type RecoveryProducerStatus, type ScanProgress, type TableDefinitions,
+  type ProducerLimits, type RecoveryProducerStatus, type ScanProgress, type StagingPrunePolicy, type StagingPruneReport,
+  type StagingPruneRequest, type TableDefinitions,
 } from '../../core/recovery-producer.js';
+import { prunableStagings, type RetainedStaging } from '../../core/staging-retention.js';
+import {
+  STAGING_MANIFEST_FILE, STAGING_OBJECTS_DIRECTORY, STAGING_SCHEMA_FILE, STAGING_SQL_FILE, stagingPath,
+} from '../../core/recovery-staging.js';
+
+/**
+ * The files every staging holds, in the order retention releases them, counted by the attempt's own cursor.
+ *
+ * The manifest goes first: a staging whose manifest has gone reads as nothing for an operator to recover from.
+ */
+const FIXED_STAGING_FILES = [STAGING_MANIFEST_FILE, STAGING_SQL_FILE, STAGING_SCHEMA_FILE] as const;
 import { CHECKPOINT_STATEMENT_CHARS, newInventoryProgress, within, type SavedDigest } from '../../core/recovery-inventory.js';
 import type { StatementScan } from '../../core/sql-statements.js';
 import { serialGate } from '../../core/serial-gate.js';
@@ -24,6 +36,8 @@ import {
   type RecoveryAdmissionWire, type StagingBucket,
 } from './recovery-export.js';
 import type { CloudflareBindings } from './env.js';
+import { classify } from '../../telemetry.js';
+import type { ErrorClass } from '../../core/adapters.js';
 
 /** Raised inside admission's transaction when another step already admitted an attempt carrying this token. */
 class HoldCarried extends Error {}
@@ -41,6 +55,7 @@ interface AttemptRow {
   inventory_scan_bytes: string; inventory_digest: string | null; database_sha256: string | null;
   database_bytes: number | null; copy_started_at: number | null; completed_at: number | null; admission: string | null;
   hold_token: string | null; last_progress_at: number | null;
+  prune_started_at: number | null; prune_cursor: number; payload_pruned_at: number | null;
 }
 
 interface ObjectRow {
@@ -82,6 +97,9 @@ const ADDED_COLUMNS: readonly [string, string][] = [
   ['admission', 'TEXT'],
   ['hold_token', 'TEXT'],
   ['last_progress_at', 'INTEGER'],
+  ['prune_started_at', 'INTEGER'],
+  ['prune_cursor', 'INTEGER NOT NULL DEFAULT 0'],
+  ['payload_pruned_at', 'INTEGER'],
 ];
 
 /** Columns holding a list or a record are written as JSON text, so one update path serves every field. */
@@ -419,12 +437,15 @@ export class RecoveryProducer extends DurableObject<CloudflareBindings> {
     const objects = this.ctx.storage.sql.exec(
       'SELECT COUNT(*) AS registered, COUNT(staged_sha256) AS staged FROM objects WHERE attempt = ?', row.id,
     ).one() as unknown as { registered: number; staged: number };
+    // An attempt whose release began holds no staging to report, whether or not its last file has gone yet.
+    const pruned = row.prune_started_at !== null;
     return {
       attempt: row.id,
       stage: row.stage as RecoveryProducerStatus['stage'],
       startedAt: row.started_at,
       recoverable: false,
-      staged: {
+      ...(pruned ? { stagingPruned: true as const } : {}),
+      staged: pruned ? null : {
         prefix: row.prefix, sqlBytes: row.sql_bytes, downloadedBytes: row.download_offset, parts,
         objects: { registered: objects.registered, staged: objects.staged },
       },
@@ -449,6 +470,98 @@ export class RecoveryProducer extends DurableObject<CloudflareBindings> {
       }
       return this.status();
     });
+  }
+
+  /** Every attempt as retention reads it. */
+  private retained(): RetainedStaging[] {
+    return (this.ctx.storage.sql.exec(
+      'SELECT id, stage, hold_token, prune_started_at FROM attempts ORDER BY id',
+    ).toArray() as unknown as { id: number; stage: string; hold_token: string | null; prune_started_at: number | null }[])
+      .map((row) => ({ id: row.id, stage: row.stage, holdToken: row.hold_token, pruneStartedAt: row.prune_started_at }));
+  }
+
+  /** The attempts whose release began and has not finished. Each resumes from its own rows, ahead of any new one. */
+  private begun(): number[] {
+    return (this.ctx.storage.sql.exec(
+      'SELECT id FROM attempts WHERE prune_started_at IS NOT NULL AND payload_pruned_at IS NULL ORDER BY id',
+    ).toArray() as unknown as { id: number }[]).map((row) => row.id);
+  }
+
+  /** How many staged payloads this policy lets go of and retention has not finished releasing. */
+  async pendingStagingPrunes(policy: StagingPrunePolicy): Promise<number> {
+    return this.begun().length + prunableStagings(this.retained(), policy.keep, policy.protect).length;
+  }
+
+  /**
+   * Releases the staged payloads the policy lets go of, one pass at a time with admission and continuation.
+   *
+   * Within one staging: the manifest first, so no operator reads a staging under release as one whole to recover
+   * from, then the export and its schema, then one file per registered object. Each file's cursor — the count of
+   * fixed files released, or the object's own row — commits only once the store acknowledged its delete, so no
+   * file is ever asked for twice and a pass of any budget moves the staging forward.
+   *
+   * The attempt row stays as a tombstone carrying its hold token, its start, its stage and its refusal, so a
+   * settled token still answers admission and the cadence still reads its own history.
+   *
+   * A pass releases no more files than its budget and reports what it left. A store that refuses a delete ends the
+   * pass with every cursor in place, and the next one resumes at the file it refused.
+   */
+  async pruneStagings(request: StagingPruneRequest): Promise<StagingPruneReport> {
+    return this.gate.exclusive(() => this.prune(request));
+  }
+
+  private async prune(request: StagingPruneRequest): Promise<StagingPruneReport> {
+    const sql = this.ctx.storage.sql;
+    const budget = Math.max(0, Math.floor(request.budget));
+    const bucket = this.bucket();
+    let releasedFiles = 0;
+    let releasedStagings = 0;
+    let refused: ErrorClass | null = null;
+    /** Answers false where the budget is spent, so a staging left part-released keeps every cursor it needs. */
+    const release = async (name: string): Promise<boolean> => {
+      if (releasedFiles >= budget) return false;
+      await within(() => bucket.delete(name), PRODUCER_LIMITS.requestMs, Date.now);
+      releasedFiles += 1;
+      return true;
+    };
+    for (const id of [...this.begun(), ...prunableStagings(this.retained(), request.keep, request.protect)]) {
+      if (releasedFiles >= budget || refused !== null) break;
+      const row = this.row('id = ?', id);
+      if (row === null) continue;
+      try {
+        let spent = false;
+        let cursor = row.prune_cursor;
+        while (cursor < FIXED_STAGING_FILES.length) {
+          if (!await release(stagingPath(row.prefix, FIXED_STAGING_FILES[cursor]!))) { spent = true; break; }
+          cursor += 1;
+          sql.exec(
+            'UPDATE attempts SET prune_cursor = ?, prune_started_at = COALESCE(prune_started_at, ?) WHERE id = ?',
+            cursor, Date.now(), id,
+          );
+        }
+        if (spent) break;
+        for (;;) {
+          const next = (sql.exec('SELECT key FROM objects WHERE attempt = ? ORDER BY key LIMIT 1', id).toArray() as unknown as { key: string }[])[0];
+          if (next === undefined) break;
+          if (!await release(stagingPath(row.prefix, STAGING_OBJECTS_DIRECTORY, next.key))) { spent = true; break; }
+          sql.exec('DELETE FROM objects WHERE attempt = ? AND key = ?', id, next.key);
+        }
+        if (spent) break;
+        sql.exec('DELETE FROM parts WHERE attempt = ?', id);
+        await this.ctx.storage.delete(`signed:${id}`);
+        // What the tombstone stops holding: the download's cursor, the capture, and the readings over bytes now gone.
+        sql.exec(
+          `UPDATE attempts SET payload_pruned_at = ?, bookmark = NULL, upload_id = NULL, sql_etag = NULL,
+             captured = '{}', defined = '{}', scan = ?, scan_bytes = '',
+             inventory_scan = '', inventory_scan_bytes = '', inventory_digest = NULL WHERE id = ?`,
+          Date.now(), JSON.stringify(freshScan().scan), id,
+        );
+        releasedStagings += 1;
+      } catch (error) {
+        refused = classify(error);
+      }
+    }
+    return { releasedFiles, releasedStagings, refused, pending: await this.pendingStagingPrunes(request) };
   }
 
   /** Where the staged export of one attempt lives, for an operator fetching it. */

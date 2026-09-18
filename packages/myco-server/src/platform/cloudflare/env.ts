@@ -143,6 +143,8 @@ function recoveryPort(bindings: CloudflareBindings): ServerEnv['recovery'] {
     settleHold: (token) => object().settleHold(token),
     status: () => object().status(),
     noteSchemaDrift: (attempt) => object().noteSchemaDrift(attempt),
+    pendingStagingPrunes: (policy) => object().pendingStagingPrunes({ ...policy, protect: [...policy.protect] }),
+    pruneStagings: (request) => object().pruneStagings({ ...request, protect: [...request.protect] }),
   };
 }
 

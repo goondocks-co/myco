@@ -80,6 +80,7 @@ export const DEPLOYMENT_LEAF_SPECS: Readonly<Record<string, LeafSpec>> = {
   'agent.summary_batch_interval': {},
   'agent.tasks': {},
   'backup.auto_interval_hours': {},
+  'backup.recovery.keep_stagings': {},
   'backup.retention.keep_daily': {},
   'backup.retention.keep_weekly': {},
   'cortex.canopy.exclude.default_patterns': {},
