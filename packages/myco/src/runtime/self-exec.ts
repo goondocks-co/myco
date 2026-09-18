@@ -1,12 +1,9 @@
 /**
- * How the running code re-execs itself.
+ * The running code as a command it can re-exec itself with.
  *
- * A compiled binary is its own executable and takes no entry script; a checkout run is the runtime plus the entry
- * it was started with, whose path a compiled binary reports from its own virtual filesystem and which is not a
- * file anything can run. Answering both is what keeps a re-exec on the same code as its caller.
- *
- * Its own module, so a caller that only re-execs itself takes none of the install-time resolution — a pin, a
- * managed copy or the machine's own layout — that the other policies consult.
+ * A compiled binary is its own executable and takes no entry script. A checkout run is the runtime it is under
+ * plus the entry it was started with; a compiled binary reports that entry from its own virtual filesystem, where
+ * it names no file anything can run, and it is answered as no entry.
  */
 
 /** The argv a compiled binary reports for an entry inside itself, which names no file on disk. */

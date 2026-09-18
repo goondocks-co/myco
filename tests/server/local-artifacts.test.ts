@@ -572,5 +572,23 @@ it('names the complete artifacts kept on this machine, and nothing else', () => 
     // One complete artifact: an attempt still running is not one, and a released tombstone holds nothing.
     expect(keptArtifacts(d.paths, DEPLOYMENT)).toEqual({ root: d.root, complete: 1 });
     expect(keptArtifacts(d.paths, null)).toBe(null);
+
+    // Nor is a copy whose release began: its manifest is already gone, so it is not one to restore from.
+    record(d.root, 4_000, { holdToken: 'hold-d', pruning: true, terminal: 'complete' });
+    fs.mkdirSync(path.join(d.root, '4000'), { recursive: true });
+    fs.writeFileSync(path.join(d.root, '4000', 'myco.sqlite'), 'part of a copy being released');
+    expect(keptArtifacts(d.paths, DEPLOYMENT)).toEqual({ root: d.root, complete: 1 });
+
+    // Nor one this owner cannot describe.
+    fs.writeFileSync(path.join(d.root, '5000.attempt.json'), '{"startedAt":5000,"holdTok');
+    manifest(path.join(d.root, '5000'), 'complete');
+    expect(keptArtifacts(d.paths, DEPLOYMENT)).toEqual({ root: d.root, complete: 1 });
+
+    // With the only complete copy released, an operator is told of none rather than of one that is not there.
+    fs.rmSync(path.join(d.root, '1000'), { recursive: true, force: true });
+    fs.writeFileSync(path.join(d.root, '1000.attempt.json'), JSON.stringify({
+      startedAt: 1_000, holdToken: 'hold-a', startedBy: 'schedule', continuations: 1, released: true, terminal: 'complete',
+    }));
+    expect(keptArtifacts(d.paths, DEPLOYMENT)).toBe(null);
   } finally { d.remove(); }
 });

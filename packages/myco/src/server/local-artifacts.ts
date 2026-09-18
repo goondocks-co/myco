@@ -111,7 +111,12 @@ export function keptArtifacts(paths: LocalDeploymentPaths, deploymentId: string 
   if (deploymentId === null) return null;
   const root = artifactsRoot(paths, deploymentId);
   if (!fs.existsSync(root)) return null;
-  const complete = attempts(root).filter((attempt) => stageOf(attempt) === 'complete' && attempt.record.released !== true).length;
+  const complete = attempts(root).filter((attempt) => stageOf(attempt) === 'complete'
+    && attempt.record.released !== true
+    // One whose release began holds no files to restore from, and one this owner cannot describe is not counted
+    // among the copies it tells an operator are there.
+    && attempt.record.pruning !== true
+    && !attempt.uncertain).length;
   return complete === 0 ? null : { root, complete };
 }
 
@@ -150,8 +155,9 @@ const readRecord = (file: string): AttemptRecord | null => {
 /**
  * Every attempt under this root, oldest first.
  *
- * An attempt is a record, a directory, or both: a record whose write was interrupted reads as an uncertain
- * attempt rather than as nothing, and a directory whose record is gone is the tombstone of a released one.
+ * An attempt is a record, a directory, or both. A record that cannot be read leaves an uncertain attempt, whether
+ * it was torn or has gone while its directory stands; a released one is the opposite, a record whose directory
+ * has gone.
  */
 export function attempts(root: string): Attempt[] {
   const held: Attempt[] = [];
