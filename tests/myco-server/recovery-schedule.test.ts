@@ -372,3 +372,14 @@ it('holds an inactive Deployment at sleep while a producer hold is unsettled, an
     expect((await runTick(d.env as never, d.now + 120_000, { wake: 'clock' })).state).toBe('deep_sleep');
   } finally { d.close(); }
 });
+
+it('asserts nothing for an operator hold, which only its own operator settles', async () => {
+  const d = await deployment({ intervalHours: 24 });
+  try {
+    const db = (d.env as unknown as { db: Parameters<typeof acquireRecoveryHold>[0] }).db;
+    await acquireRecoveryHold(db, 'an-operator-backup', d.now, 'operator');
+    // An operator's backup holds this Deployment's objects until that operator's artifact completes. No job here
+    // settles it, so it is not work this engine may claim to owe.
+    expect(await holdSettlementDue(d.env as never)).toBe(false);
+  } finally { d.close(); }
+});

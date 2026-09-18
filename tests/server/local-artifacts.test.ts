@@ -258,10 +258,11 @@ it('releases older complete artifacts, keeping the newest, the active one, the u
     manifest(path.join(d.root, '800'), 'complete');
     fs.writeFileSync(path.join(d.root, '800', '.recovery-hold.json'), JSON.stringify({ token: 'hold-open' }));
 
+    // What retention owes: the two releasable artifacts, and the held one whose hold is still open.
     const policy = { keep: 2, protect: ['hold-open'] };
-    expect(await owner.pendingStagingPrunes(policy)).toBe(2);
+    expect(await owner.pendingStagingPrunes(policy)).toBe(3);
     const report = await owner.pruneStagings({ ...policy, budget: 50 });
-    expect([report.releasedStagings, report.pending, report.refused]).toEqual([2, 0, null]);
+    expect([report.releasedStagings, report.refused]).toEqual([2, null]);
     // The two oldest complete artifacts went; everything the policy protects stands.
     expect(fs.existsSync(path.join(d.root, '1000'))).toBe(false);
     expect(fs.existsSync(path.join(d.root, '2000'))).toBe(false);
@@ -476,5 +477,81 @@ it('GATE: stops calling an artifact available before it deletes anything of it, 
     expect([second.releasedStagings, second.pending]).toEqual([1, 0]);
     expect(fs.existsSync(path.join(d.root, '1000'))).toBe(false);
     expect(attempts(d.root).find((one) => one.startedAt === 1_000)!.record.released).toBe(true);
+  } finally { d.remove(); }
+});
+
+/**
+ * An attempt this owner knows of but cannot describe is uncertain however its record went missing: torn, foreign,
+ * or gone while its directory still stands. Its fence is not released on its behalf, and no record is invented
+ * for it.
+ */
+it('GATE: treats an attempt whose record is gone, but whose directory stands, as uncertain', async () => {
+  const d = deployment();
+  const spawned = runner(completes);
+  try {
+    const owner = artifacts({ paths: d.paths, runner: spawned.runner, command: { path: 'myco', args: [] }, now: () => 5_000 });
+    record(d.root, 1_000, { holdToken: 'hold-a' });
+    manifest(path.join(d.root, '1000'), 'content');
+    fs.rmSync(path.join(d.root, '1000.attempt.json'));
+
+    const held = attempts(d.root);
+    expect([held.length, held[0]!.uncertain, held[0]!.startedAt]).toEqual([1, true, 1_000]);
+    // The token that attempt was admitted under is not retired: nothing here established what became of it.
+    expect(await owner.settleHold('hold-a')).toEqual({ state: 'open', attempt: 1_000, stage: 'copy' });
+    // Nothing is written in its place, and nothing new is admitted over it.
+    await owner.resumeAttempt();
+    expect(fs.existsSync(path.join(d.root, '1000.attempt.json'))).toBe(false);
+    expect((await owner.admit({ holdToken: 'hold-new', startedBy: 'schedule' })).attempt).toBe(1_000);
+    expect(spawned.asked).toEqual([]);
+    // And retention leaves it alone, whatever the policy says.
+    expect(await owner.pruneStagings({ keep: 1, protect: [], budget: 50 })).toMatchObject({ releasedStagings: 0 });
+  } finally { d.remove(); }
+});
+
+/**
+ * A complete artifact whose own hold was never released is work this Deployment owes, and it must be able to wake
+ * for it once the admission's own hold is settled — the registry settles that one, and only asking the writer
+ * again settles this one.
+ */
+it('GATE: counts a complete artifact with an open hold as work owed, bounded, and reconciles it', async () => {
+  const d = deployment();
+  const spawned = runner(completes);
+  try {
+    const owner = artifacts({ paths: d.paths, runner: spawned.runner, command: { path: 'myco', args: [] }, now: () => 9_000 });
+    record(d.root, 1_000, { holdToken: 'hold-a', continuations: 1 });
+    manifest(path.join(d.root, '1000'), 'complete');
+    fs.writeFileSync(path.join(d.root, '1000', '.recovery-hold.json'), JSON.stringify({ token: 'hold-a' }));
+
+    // Nothing is releasable — one complete artifact, kept — and yet there is work owed, so the Deployment stays
+    // eligible to wake for it.
+    const policy = { keep: 2, protect: ['hold-a'] };
+    expect(await owner.pendingStagingPrunes(policy)).toBe(1);
+    await owner.pruneStagings({ ...policy, budget: 50 });
+    expect(spawned.asked.map((one) => one.args.at(-1))).toEqual([path.join(d.root, '1000')]);
+
+    // Bounded: past the same count a production attempt gets, it stops holding the Deployment awake and stays
+    // visible for an operator to settle.
+    fs.writeFileSync(path.join(d.root, '1000.attempt.json'), JSON.stringify({
+      startedAt: 1_000, holdToken: 'hold-a', startedBy: 'schedule', continuations: CONTINUATION_LIMIT,
+    }));
+    expect(await owner.pendingStagingPrunes(policy)).toBe(0);
+    // The hold is still open on the Deployment, and the artifact is still there: nothing was concluded about it.
+    expect(fs.existsSync(path.join(d.root, '1000', 'recovery.json'))).toBe(true);
+  } finally { d.remove(); }
+});
+
+it('owes nothing for an operator hold that belongs to no artifact of its own', async () => {
+  const d = deployment();
+  const spawned = runner(completes);
+  try {
+    const owner = artifacts({ paths: d.paths, runner: spawned.runner, command: { path: 'myco', args: [] } });
+    record(d.root, 1_000, { holdToken: 'hold-a' });
+    manifest(path.join(d.root, '1000'), 'complete');
+    // An operator's own backup, taken to a destination of their choosing: this Deployment's artifacts name none
+    // of it, and nothing here reconciles or releases it.
+    const policy = { keep: 2, protect: ['an-operator-backup-elsewhere'] };
+    expect(await owner.pendingStagingPrunes(policy)).toBe(0);
+    await owner.pruneStagings({ ...policy, budget: 50 });
+    expect(spawned.asked).toEqual([]);
   } finally { d.remove(); }
 });

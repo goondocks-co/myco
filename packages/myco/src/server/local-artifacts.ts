@@ -149,8 +149,10 @@ export function attempts(root: string): Attempt[] {
     if (Number.isInteger(instant) && String(instant) === name) instants.add(instant);
   }
   for (const startedAt of instants) {
+    // Every attempt here is one this owner knows of: it has a record file, a directory, or both. One whose
+    // record cannot be read — torn, foreign or gone while its directory stands — is uncertain, never absent.
     const record = readRecord(path.join(root, `${startedAt}${RECORD_SUFFIX}`));
-    const uncertain = record === null && fs.existsSync(path.join(root, `${startedAt}${RECORD_SUFFIX}`));
+    const uncertain = record === null;
     const directory = path.join(root, String(startedAt));
     const manifestFile = path.join(directory, 'recovery.json');
     const manifest = fs.existsSync(manifestFile) ? readJson<{ status?: string }>(manifestFile) : undefined;
@@ -467,9 +469,27 @@ export class LocalArtifacts implements RecoveryProducerPort {
     return this.status();
   }
 
-  /** Artifacts this policy lets go of and retention has not finished releasing. */
+  /**
+   * What retention owes: the artifacts this policy lets go of, and any complete artifact whose hold is still
+   * open.
+   *
+   * The second is what keeps a Deployment eligible to wake for a hold its own child never released — the
+   * producer's hold is settled by the registry, this one only by asking the writer again. It is bounded by the
+   * same count as a production attempt, so an artifact whose hold cannot be settled stops holding a Deployment
+   * awake and stays visible for an operator instead.
+   */
   async pendingStagingPrunes(policy: StagingPrunePolicy): Promise<number> {
-    return this.releasable(this.held(), policy).length;
+    const held = this.held();
+    return this.releasable(held, policy).length + (this.reconcilable(held, policy.protect) === undefined ? 0 : 1);
+  }
+
+  /** The complete artifact whose hold this Deployment still holds open, while asking the writer again is worth it. */
+  private reconcilable(held: readonly Attempt[], protect: readonly string[]): Attempt | undefined {
+    return held.find((attempt) => attempt.status === 'complete'
+      && !attempt.uncertain
+      && attempt.record.released !== true
+      && attempt.heldBy !== null && protect.includes(attempt.heldBy)
+      && attempt.record.continuations < CONTINUATION_LIMIT);
   }
 
   /**
@@ -514,8 +534,7 @@ export class LocalArtifacts implements RecoveryProducerPort {
     let refused: StagingPruneReport['refused'] = null;
 
     const held = this.held();
-    const unsettled = held.find((attempt) => attempt.status === 'complete'
-      && attempt.heldBy !== null && request.protect.includes(attempt.heldBy));
+    const unsettled = this.reconcilable(held, request.protect);
     if (unsettled !== undefined && this.child === null) {
       this.report(`Reconciling the recovery hold of the artifact in ${unsettled.directory}`);
       this.produce(unsettled.directory, root, unsettled.startedAt, unsettled.record);
@@ -552,7 +571,7 @@ export class LocalArtifacts implements RecoveryProducerPort {
         break;
       }
     }
-    return { releasedFiles, releasedStagings, pending: this.releasable(this.held(), request).length, refused };
+    return { releasedFiles, releasedStagings, pending: await this.pendingStagingPrunes(request), refused };
   }
 
   /**

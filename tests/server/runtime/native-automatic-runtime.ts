@@ -121,7 +121,9 @@ try {
   const root = artifactsRoot(HOME, deploymentId);
   note('the Deployment and its volume', { deploymentId, volumeBytes: fs.statSync(volume).size, artifacts: root });
 
-  // Nothing asks for a backup: the Deployment is started, and its own clock admits one because an interval is set.
+  // The first cycle is unforced: nothing asks for a backup and no clock is moved. The Deployment is started, and
+  // its own clock admits one because an interval is set.
+  note('what this cycle is', 'unforced: the interval is the owner\'s setting and the clock is the Deployment\'s own');
   const first = await serve(HOME, port, 'server-1');
   running.push(first);
   const admitted = Date.now() + 120_000;
@@ -177,9 +179,11 @@ try {
   check('a restart with nothing due admits no second attempt', attemptDirs(root), [attempt!]);
 
   // Mid-attempt: a stop withdraws the child, and the next start carries on the same attempt rather than a new one.
+  // The second cycle is NOT unforced: this run shifts the recorded attempt back so the interval reads as elapsed.
+  // That is a clock the harness moved, and what follows proves resume, not cadence.
+  note('what the next cycle is', 'synthetic: the recorded attempt is shifted back so the interval reads as due');
   {
     const db = new Database(volume, { readwrite: true, create: false });
-    // The interval has passed, as far as the schedule can tell: the attempt it reads is the one it recorded.
     try {
       const record = path.join(root, `${attempt}.attempt.json`);
       const held = JSON.parse(fs.readFileSync(record, 'utf8')) as { startedAt: number };
@@ -204,20 +208,33 @@ try {
   // Stop while that attempt is still being produced: the child is withdrawn and its directory is left resumable.
   await end(third, 'SIGTERM');
   running.pop();
-  const interrupted = manifestOf(path.join(root, second_attempt));
-  note('what the interrupted attempt had reached', { attempt: second_attempt, status: interrupted?.status ?? null });
+  const reached = manifestOf(path.join(root, second_attempt))?.status ?? null;
+  const interrupted = reached === null || reached === 'snapshot' || reached === 'content';
+  note('what the stopped attempt had reached', { attempt: second_attempt, status: reached, interrupted });
+  if (interrupted) {
+    // Only an attempt that is actually part-written proves a resume.
+    check('the stopped attempt is incomplete, with no complete manifest of its own',
+      [reached, manifestOf(path.join(root, second_attempt))?.status === 'complete'], [reached, false]);
+  } else {
+    note('no interruption to prove in this run', 'the attempt completed before the stop landed; what follows shows only that no second attempt began');
+  }
 
   const fourth = await serve(HOME, port, 'server-4');
   running.push(fourth);
   const resumed = Date.now() + 600_000;
   while (Date.now() < resumed && manifestOf(path.join(root, second_attempt))?.status !== 'complete') await Bun.sleep(200);
-  check('the next start carried on that same attempt to completion, and began no other',
+  check(interrupted
+    ? 'the next start carried that same incomplete attempt to completion, and began no other'
+    : 'the next start began no other attempt, and that one is complete',
     [attemptDirs(root).length, manifestOf(path.join(root, second_attempt))?.status], [2, 'complete']);
   note('the attempts this Deployment holds', attemptDirs(root).map((entry) => ({ attempt: entry, status: manifestOf(path.join(root, entry))?.status ?? null })));
   await end(fourth, 'SIGTERM');
   running.pop();
 
-  // The artifact restores into a fresh disposable home, and that Deployment serves the restored data.
+  // The artifact restores into a fresh disposable home, and that Deployment serves the restored data. This is
+  // this slice's own proof — rows, identity and a served address — and not the dashboard, MCP and derived-index
+  // readiness #1316's acceptance asks for.
+  note('what the restore below proves', 'rows, Deployment identity and a served address; not UI, MCP or index readiness');
   const artifact = path.join(root, second_attempt);
   const restorePort = await freePort();
   fs.mkdirSync(RESTORED, { recursive: true });
@@ -244,6 +261,7 @@ try {
   running.push(serving);
   const health = await fetch(`http://127.0.0.1:${restorePort}/health`, { signal: AbortSignal.timeout(30_000) });
   check('the restored Deployment serves', health.ok, true);
+  note('what this run does not establish', 'an unattended second cadence cycle, dashboard/MCP/derived-index readiness, and any target but this one');
   await end(serving, 'SIGTERM');
   running.pop();
 } catch (error) {
