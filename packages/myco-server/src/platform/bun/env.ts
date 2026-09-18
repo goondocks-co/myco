@@ -38,6 +38,13 @@ export interface BunServerConfig extends OwnerBindings {
   fleet?: number;
   /** The native artifacts this deployment carries, or absent to locate them on the host. */
   native?: NativeSqlite;
+  /**
+   * This Deployment's own recovery producer, where the host process gives it one.
+   *
+   * The self-hosted producer's work runs in a process this server does not host, so the host hands the capability
+   * in rather than this file building it: naming a filesystem path or spawning is the host's business.
+   */
+  recovery?: ServerEnv['recovery'];
 }
 
 /** This store reports a digest rejection in its own words; nothing else does. */
@@ -106,6 +113,7 @@ export function serverEnvFromBunConfig(config: BunServerConfig): BunServerEnv {
     },
     platform: bunPlatform(config),
     ...(config.harnessLaunch === undefined ? {} : { harnessLaunch: config.harnessLaunch }),
+    ...(config.recovery === undefined ? {} : { recovery: config.recovery }),
     ...(config.harnessTasks === undefined ? {} : { harnessTasks: config.harnessTasks }),
     ...(config.origin === undefined || config.origin === '' ? {} : { origin: config.origin }),
     ...(config.fleet === undefined || !Number.isInteger(config.fleet) || config.fleet < 1 ? {} : { fleet: config.fleet }),

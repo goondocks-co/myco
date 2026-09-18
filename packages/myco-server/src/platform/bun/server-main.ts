@@ -31,6 +31,7 @@ import { SCHEMA_STEPS } from '../../db/schema.js';
 import { LIVE_RUN_STATUSES } from '../../core/runs.js';
 import { httpHarnessLaunch } from './harness-runner.js';
 import { RuntimeDraining } from '../../core/harness.js';
+import type { ServerEnv } from '../../core/adapters.js';
 import { configureSqliteLibrary } from './sqlite-library.js';
 import type { StaticAssets } from './static.js';
 import type { NativeSqlite } from './native.js';
@@ -252,6 +253,8 @@ export interface DeploymentOptions extends TrustedProxyConfig {
   uiAssets?: StaticAssets;
   /** The native artifacts the deployment carries, or absent to locate them on the host. */
   native?: NativeSqlite;
+  /** This Deployment's own recovery producer, where the host process gives it one. */
+  recovery?: ServerEnv['recovery'];
   origin?: string;
   fleet?: number;
   SECRET_WRAP_KEY?: string;
@@ -346,6 +349,7 @@ export async function startDeployment(options: DeploymentOptions): Promise<Start
     uiDir: options.uiDir,
     ...(options.uiAssets === undefined ? {} : { uiAssets: options.uiAssets }),
     ...(options.native === undefined ? {} : { native: options.native }),
+    ...(options.recovery === undefined ? {} : { recovery: options.recovery }),
     ...(harnessLaunch === undefined ? {} : { harnessLaunch }),
     ...(options.harnessTasks === undefined ? {} : { harnessTasks: options.harnessTasks }),
     origin: options.origin,

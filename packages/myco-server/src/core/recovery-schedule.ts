@@ -26,17 +26,22 @@ const INTERVAL_MAX_HOURS = 720;
 /** The stages an attempt rests in: it advances no further, whatever it reached. */
 const RESTING = ['complete', 'failed'] as const;
 
-/** What recovery data this Deployment has, in the only terms that are true of a staging. */
+/** What recovery data this Deployment has, in the only terms that are true of what its own producer wrote. */
 export type RecoveryAvailability =
-  /** No attempt has staged anything. */
+  /** No attempt has produced anything. */
   | { state: 'none' }
-  /** An attempt is staging now, or stopped part-way: nothing here is recoverable. */
+  /** An attempt is running now, or stopped part-way: nothing here is recoverable. */
   | { state: 'incomplete'; attempt: number; stage: string }
   /**
    * A staging holds the export and every object its rows name. It is still not a recovery artifact: an operator
    * materializes and verifies it into one.
    */
-  | { state: 'staged'; attempt: number; prefix: string; needs: string };
+  | { state: 'staged'; attempt: number; prefix: string; needs: string }
+  /**
+   * A verified artifact, of the form a restore consumes, at `at`. It is data only: the wrapping key that opens
+   * the credentials inside it is kept outside it, and `needs` says so.
+   */
+  | { state: 'artifact'; attempt: number; at: string; needs: string };
 
 /** What the last attempt did, as an owner reads it. */
 export interface LatestAttempt {
@@ -83,6 +88,10 @@ export async function scheduledIntervalHours(env: Pick<ServerEnv, 'db'>): Promis
   return Math.min(INTERVAL_MAX_HOURS, Math.floor(parsed));
 }
 
+/** Whether the last attempt is still going: it has settled in none of the stages an attempt rests in. */
+export const attemptAdvancing = (schedule: RecoverySchedule): boolean =>
+  schedule.latest !== null && !(RESTING as readonly string[]).includes(schedule.latest.stage);
+
 /**
  * Whether a due configured attempt is waiting, for the engine's own depth assertion.
  *
@@ -93,7 +102,10 @@ export async function scheduledIntervalHours(env: Pick<ServerEnv, 'db'>): Promis
 export async function recoveryAttemptDue(env: ServerEnv, now: number): Promise<boolean> {
   if (env.recovery === undefined) return false;
   if (await scheduledIntervalHours(env) === null) return false;
-  return (await recoveryScheduleOf(env, now)).due;
+  const schedule = await recoveryScheduleOf(env, now);
+  // A producer whose work runs outside this process has to be asked to carry on, so an attempt in flight keeps
+  // the Deployment where the job that asks it runs. A producer driven by its own clock needs no such help.
+  return schedule.due || (env.recovery.resumeAttempt !== undefined && attemptAdvancing(schedule));
 }
 
 /** What the producer's status says the latest attempt did. */
@@ -107,10 +119,23 @@ export function latestOf(status: RecoveryProducerStatus): LatestAttempt | null {
   };
 }
 
-/** What recovery data exists, from the attempt the producer holds. */
+/**
+ * What recovery data exists, from the attempt the producer holds.
+ *
+ * The producer's own `form` decides what a complete attempt may be called: a hosted staging is not a recovery
+ * artifact and says so, and a native artifact is one and says where it is and what else a restore needs.
+ */
 export function availabilityOf(status: RecoveryProducerStatus): RecoveryAvailability {
   if (status.attempt === null || status.staged === null) return { state: 'none' };
   if (status.stage !== 'complete') return { state: 'incomplete', attempt: status.attempt, stage: status.stage };
+  if (status.form === 'artifact') {
+    return {
+      state: 'artifact',
+      attempt: status.attempt,
+      at: status.staged.prefix,
+      needs: 'restoring it also needs the wrapping key for its stored credentials, which is kept outside the artifact',
+    };
+  }
   return {
     state: 'staged',
     attempt: status.attempt,
@@ -152,7 +177,7 @@ export async function recoveryScheduleOf(env: ServerEnv, now: number, held?: Rec
     return { ...idle, configured: true, idleBecause: `automatic recovery cannot run: ${readiness.ready ? '' : readiness.reason}` };
   }
 
-  const advancing = latest !== null && !(RESTING as readonly string[]).includes(latest.stage);
+  const advancing = attemptAdvancing({ ...idle, configured: true, idleBecause: null });
   if (advancing) {
     return { ...idle, configured: true, idleBecause: `attempt ${latest!.attempt} is still ${latest!.stage}; the next one is due an interval after it starts` };
   }

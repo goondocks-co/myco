@@ -30,6 +30,12 @@ export interface RunOptions {
    * outcome is unknown rather than undone. Absent, the command may take as long as it takes.
    */
   timeoutMs?: number;
+  /**
+   * Ends the command and the processes it started when this aborts, rejecting with `CommandCancelled`, whose
+   * `treeEnd` says what that ended. What a cancelled command had already done is its own: a snapshot part-written
+   * or a request already sent is not undone by ending the process that started it.
+   */
+  signal?: AbortSignal;
 }
 
 export interface CommandRunner {
@@ -147,14 +153,20 @@ export function systemRunner(): CommandRunner {
   return {
     async run(command, args, options) {
       if (options?.cwd !== undefined && !existsSync(options.cwd)) throw new WorkingDirectoryMissing(options.cwd, command);
+      // A caller who has withdrawn starts nothing, whether it withdrew before this call or while the spawn was
+      // being prepared: there is no tree, so nothing of one is running.
+      const gone = (): boolean => options?.signal?.aborted === true;
+      if (gone()) throw new CommandCancelled(command, args, 'absent');
       const { spawn } = await import('node:child_process');
+      if (gone()) throw new CommandCancelled(command, args, 'absent');
       return new Promise<CommandResult>((resolve, reject) => {
         const child = spawn(command, [...args], {
           cwd: options?.cwd,
           env: options?.env ?? process.env,
           stdio: [options?.input === undefined ? 'ignore' : 'pipe', 'pipe', 'pipe'],
-          // Only a bounded command leads its own group; an unbounded one shares this process's group and ends with it.
-          detached: options?.timeoutMs !== undefined && process.platform !== 'win32',
+          // A command that can be ended — by its deadline or by its caller — leads its own group, so ending it
+          // ends what it started. One that can be ended by neither shares this process's group and ends with it.
+          detached: (options?.timeoutMs !== undefined || options?.signal !== undefined) && process.platform !== 'win32',
         });
         let stdout = '';
         let stderr = '';
@@ -163,6 +175,19 @@ export function systemRunner(): CommandRunner {
         // kill is SIGKILL: the window has already passed, and a child that
         // ignores SIGTERM would extend it.
         let done = false;
+        // Withdrawal ends the tree and answers what that managed, exactly as the deadline does: `close` would wait
+        // on pipes the processes being ended still hold.
+        function withdrawn(): void {
+          if (done) return;
+          done = true;
+          if (timer !== null) clearTimeout(timer);
+          child.stdout?.destroy();
+          child.stderr?.destroy();
+          void endProcessTree(child).then((treeEnd) => {
+            child.unref();
+            reject(new CommandCancelled(command, args, treeEnd));
+          });
+        }
         const timer = options?.timeoutMs === undefined ? null : setTimeout(() => {
           if (done) return;
           done = true;
@@ -179,8 +204,12 @@ export function systemRunner(): CommandRunner {
           if (done) return false;
           done = true;
           if (timer !== null) clearTimeout(timer);
+          options?.signal?.removeEventListener('abort', withdrawn);
           return true;
         };
+        options?.signal?.addEventListener('abort', withdrawn, { once: true });
+        // Between the spawn and that listener, a withdrawal would be missed; this is where it is caught.
+        if (gone()) withdrawn();
         child.stdout?.on('data', (chunk: Buffer) => { stdout += chunk.toString(); });
         child.stderr?.on('data', (chunk: Buffer) => { stderr += chunk.toString(); });
         child.on('error', (err) => { if (settled()) reject(err); });
@@ -348,6 +377,24 @@ export class CommandTimedOut extends Error {
   }
 }
 
+/**
+ * Raised when a command's caller withdrew it.
+ *
+ * `treeEnd` carries what ending the command and its descendants managed, in the same vocabulary the deadline
+ * reports: `failed` and `unknown` mean something of that tree may still be running, and neither may be read as a
+ * clean stop.
+ */
+export class CommandCancelled extends Error {
+  constructor(
+    readonly command: string,
+    readonly args: readonly string[],
+    readonly treeEnd: ProcessTreeEnd = 'unknown',
+  ) {
+    super(`${command} ${args.join(' ')} was withdrawn by its caller; ${TREE_END_SAID[treeEnd]}`);
+    this.name = 'CommandCancelled';
+  }
+}
+
 /** Raised with what the command itself said, which is what an operator needs to see. */
 export class CommandFailed extends Error {
   constructor(readonly command: string, readonly args: readonly string[], readonly result: CommandResult) {
@@ -362,7 +409,7 @@ export class CommandFailed extends Error {
 
 /** Whether an error is the command's own answer — a refusal or a silence — rather than a fault in the caller. */
 export function isCommandFailure(err: unknown): err is CommandFailed | CommandTimedOut {
-  return err instanceof CommandFailed || err instanceof CommandTimedOut;
+  return err instanceof CommandFailed || err instanceof CommandTimedOut || err instanceof CommandCancelled;
 }
 
 export async function runOrThrow(

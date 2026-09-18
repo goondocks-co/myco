@@ -19,7 +19,9 @@ export interface LatestAttempt {
 export type RecoveryAvailability =
   | { state: 'none' }
   | { state: 'incomplete'; attempt: number; stage: string }
-  | { state: 'staged'; attempt: number; prefix: string; needs: string };
+  | { state: 'staged'; attempt: number; prefix: string; needs: string }
+  /** A verified artifact, which is what a Deployment producing artifacts rather than stagings has. */
+  | { state: 'artifact'; attempt: number; at: string; needs: string };
 
 export interface RecoverySchedule {
   supported: boolean;
@@ -37,6 +39,8 @@ export interface RecoverySchedule {
 export interface RecoveryStatus {
   attempt: number | null;
   stage: string;
+  /** What this Deployment's producer produces, which decides what a complete attempt may be called. */
+  form: 'staging' | 'artifact';
   /** The schedule, or that this Deployment's settings could not be read while an export pauses its database. */
   schedule: RecoverySchedule | { unreadable: string };
 }

@@ -291,6 +291,8 @@ export class TransientProducerFailure extends Error {
 export type ProducerRefusal =
   | 'provider_unavailable' | 'provider_refused' | 'export_failed' | 'export_not_offered' | 'export_unparsable'
   | 'export_stalled'
+  /** A native producer's own child refused the artifact, or its caller withdrew it. */
+  | 'artifact_refused' | 'artifact_cancelled'
   | 'download_unranged' | 'download_changed' | 'download_lost' | 'staging_unreconciled'
   | 'staging_changed' | 'inventory_disagrees' | 'inventory_unreadable' | 'inventory_oversize'
   | 'object_missing' | 'object_changed' | 'copy_stalled' | 'staging_incomplete'
@@ -987,10 +989,23 @@ export function openStagingManifest(input: {
   };
 }
 
+/**
+ * What a producer produces. The hosted producer stages a capture in its object store; a native Deployment's
+ * producer writes the verified artifact directly.
+ */
+export type RecoveryForm = 'staging' | 'artifact';
+
 /** What an owner may see of an attempt: its progress, never a credential and never a claim of recoverability. */
 export interface RecoveryProducerStatus {
   attempt: number | null;
   stage: AttemptStage | 'idle';
+  /**
+   * What this Deployment's producer produces, which decides what a complete attempt may be called.
+   *
+   * A `staging` is a capture an operator must still materialize and verify; an `artifact` is already the verified
+   * form a restore consumes. Nothing may describe one in the other's words.
+   */
+  form: RecoveryForm;
   /** The instant of this attempt's admission, which a schedule reads its cadence from. Null where there is none. */
   startedAt: number | null;
   /** A staging, complete or not, is not a recoverable artifact until an operator materializes and verifies it. */
@@ -1101,6 +1116,13 @@ export interface RecoveryProducerPort {
   pendingStagingPrunes(policy: StagingPrunePolicy): Promise<number>;
   /** Release the staged payloads the policy lets go of, bounded by the request's budget. */
   pruneStagings(request: StagingPruneRequest): Promise<StagingPruneReport>;
+  /**
+   * Make progress on the attempt already in flight, for a producer that has to be asked.
+   *
+   * A producer whose work runs outside this process needs a caller to notice that it stopped; one driven by its
+   * own clock's continuations implements none of this.
+   */
+  resumeAttempt?(): Promise<void>;
 }
 
 /** Where an attempt's staged export lives. */

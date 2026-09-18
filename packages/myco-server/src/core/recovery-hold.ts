@@ -65,6 +65,18 @@ export async function openHoldForAdmission(
   return { held: 'unverified' };
 }
 
+/**
+ * Whether a producer hold is waiting to be settled, for the engine's own depth assertion.
+ *
+ * A hold opens before an attempt and is released once the producer answers for it. Nothing else releases one, so
+ * a Deployment with an open producer hold has work whatever its traffic says, and is held no deeper than sleep,
+ * where the job that settles it runs. One read of its own table decides it, and the assertion drops with the
+ * hold.
+ */
+export async function holdSettlementDue(env: Pick<ServerEnv, 'db'>): Promise<boolean> {
+  return await openHold(env) !== null;
+}
+
 /** The tick job: settle the open hold, if any. Answers 1 when this pass released a hold. */
 export async function recoveryHoldRelease(env: ServerEnv, now: number): Promise<number> {
   const settled = await settleOpenHold(env, now);
