@@ -22,6 +22,7 @@ import { runScheduledTasks, type ScheduleReport } from './scheduled-tasks.js';
 import { lastActivityAt } from './activity.js';
 import { classify, emit } from '../telemetry.js';
 import { pendingSearchBlobs } from './search-index.js';
+import { recoveryAttemptDue } from './recovery-schedule.js';
 import { pendingImportedTranscripts, pendingTranscriptBytes } from '../ingest/parse.js';
 import { embeddingKeepsAwake } from './embedding/jobs.js';
 
@@ -64,6 +65,9 @@ export async function engineAssertions(env: ServerEnv, now: number): Promise<Pow
   // Requested work that waits keeps the Deployment awake until it runs.
   if (queued) assertions.push({ name: 'queue:pending', maxDepth: 'active' });
   if (inside) assertions.push({ name: 'run:live', maxDepth: 'idle' });
+  // A configured backup that is due keeps the Deployment no deeper than sleep, where the job that admits it
+  // runs. An inactive Deployment therefore still takes its due attempt, and deep sleep still runs nothing.
+  if (await recoveryAttemptDue(env, now)) assertions.push({ name: 'recovery:due', maxDepth: 'sleep' });
   return assertions;
 }
 

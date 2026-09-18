@@ -413,7 +413,7 @@ export class RecoveryProducer extends DurableObject<CloudflareBindings> {
   /** One attempt's progress, or idle where there is none. */
   private statusOf(row: AttemptRow | null): RecoveryProducerStatus {
     if (row === null) {
-      return { attempt: null, stage: 'idle', recoverable: false, staged: null, export: null, error: null, transientSpent: 0, stagedSchema: null };
+      return { attempt: null, stage: 'idle', startedAt: null, recoverable: false, staged: null, export: null, error: null, transientSpent: 0, stagedSchema: null };
     }
     const parts = this.ctx.storage.sql.exec('SELECT COUNT(*) AS held FROM parts WHERE attempt = ?', row.id).one().held as number;
     const objects = this.ctx.storage.sql.exec(
@@ -422,6 +422,7 @@ export class RecoveryProducer extends DurableObject<CloudflareBindings> {
     return {
       attempt: row.id,
       stage: row.stage as RecoveryProducerStatus['stage'],
+      startedAt: row.started_at,
       recoverable: false,
       staged: {
         prefix: row.prefix, sqlBytes: row.sql_bytes, downloadedBytes: row.download_offset, parts,

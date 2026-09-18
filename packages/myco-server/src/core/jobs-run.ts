@@ -21,6 +21,8 @@ import { parseTranscripts } from '../ingest/parse.js';
 import { transcriptRetention } from '../ingest/retention.js';
 import { drainObjectReleases } from './object-release.js';
 import { recoveryHoldRelease } from './recovery-hold.js';
+import { admitRecoveryExport } from './recovery-admission.js';
+import { recoveryScheduleOf, SCHEDULE_JOB } from './recovery-schedule.js';
 import { backfillImportedTitles, titleReadySessions } from './titling.js';
 
 /** The retention window when the leaf is unset, and the bounds the leaf itself declares. */
@@ -34,6 +36,27 @@ export const JOB_BATCH = 500;
 
 /** A job answers how many rows it changed; the tick reports that per job. It is told the power state the wake resolved, for a job whose block names the states it dispatches in. */
 export type JobRun = (env: ServerEnv, now: number, state: PowerState) => Promise<number>;
+
+/**
+ * Admits one recovery attempt once the owner's interval has passed, and admits none at any other time.
+ *
+ * The last attempt's own start is the cadence, so a duplicate wake in the same window admits nothing and a
+ * restart keeps it. Admission opens the producer hold, one open hold per holder, so two wakes racing the same
+ * due interval cannot both admit: the second finds the first one's attempt and reports it.
+ *
+ * A refusal is recorded rather than retried: the next admission waits the same interval whether the last attempt
+ * completed or failed, and the owner's status carries what happened.
+ */
+async function scheduledRecoveryExport(env: ServerEnv, now: number): Promise<number> {
+  const schedule = await recoveryScheduleOf(env, now);
+  if (!schedule.supported || !schedule.configured || !schedule.due) return 0;
+  const admitted = await admitRecoveryExport(env, now, { kind: 'schedule' });
+  emit({ kind: 'recovery_schedule_admission', outcome: admitted.outcome, interval_hours: schedule.intervalHours ?? 0 });
+  if (admitted.outcome !== 'admitted') return 0;
+  // The wake an admitted attempt needs to be continued, exactly as an owner's admission gets one.
+  await env.wake?.().catch(() => undefined);
+  return 1;
+}
 
 /** The retention window in days from the Deployment's leaf, clamped to the leaf's bounds; unset means the default. */
 export async function runRetentionDays(env: ServerEnv): Promise<number> {
@@ -154,6 +177,7 @@ export const JOB_IMPLEMENTATIONS: Readonly<Record<string, JobRun>> = {
   'session-titling': titleReadySessions,
   'titling-backfill': backfillImportedTitles,
   'transcript-retention': transcriptRetention,
+  [SCHEDULE_JOB]: scheduledRecoveryExport,
   // Stored object release and recovery holds
   'recovery-hold-release': recoveryHoldRelease,
   'object-release-drain': async (env, now) => {
