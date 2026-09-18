@@ -238,9 +238,11 @@ try {
   const artifact = path.join(root, second_attempt);
   const restorePort = await freePort();
   fs.mkdirSync(RESTORED, { recursive: true });
+  // This Deployment holds no sign-in credentials, as a self-hosted one that never configured GitHub sign-in does,
+  // so the restore is asked for a fresh sign-in and only the wrapping key it was sealed under.
   const restored = Bun.spawnSync([
     BINARY, 'server', 'restore', '--target', 'local', '--from', artifact,
-    '--secrets-from', path.join(HOME, 'server', 'local', 'secrets.env'), '--yes', '--port', String(restorePort),
+    '--secrets-from', path.join(HOME, 'server', 'local', 'secrets.env'), '--new-signin', '--yes', '--port', String(restorePort),
   ], { cwd: RUN, stdin: 'ignore', env: env(RESTORED), timeout: 900_000 });
   note('what the restore said', `${restored.stdout.toString()}${restored.stderr.toString()}`.trim().split('\n').slice(-3));
   check('the artifact restores into a fresh home', restored.exitCode, 0);
