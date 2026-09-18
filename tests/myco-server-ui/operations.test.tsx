@@ -212,7 +212,7 @@ describe('automatic recovery on the Operations page', () => {
     mount('/operations');
     expect((await screen.findByTestId('recovery-latest')).textContent).toContain('failed: provider refused');
     expect(screen.getByTestId('recovery-cadence').textContent).toContain('Due now');
-    expect(screen.getByTestId('recovery-available').textContent).toContain('No recovery data has been staged yet');
+    expect(screen.getByTestId('recovery-available').textContent).toContain('No recovery data exists yet');
   });
 
   it('tells an owner a read failed, rather than calling the Deployment unsupported', async () => {
@@ -276,5 +276,60 @@ describe('automatic recovery on the Operations page', () => {
     }
     expect(cadenceWords({ ...base, supported: false, configured: false } as never, Date.now())).toContain('cannot run here');
     expect(latestWords({ ...base, latest: null } as never)).toContain('No attempt has run yet');
+  });
+
+  it('shows a self-hosted Deployment its own artifact, and the operator step that target actually has', async () => {
+    const startedAt = Date.parse('2026-09-18T12:00:00.000Z');
+    const at = '/home/.myco/server/local-recovery/dep_1/1789750654766';
+    server({
+      '/auth/me': () => Response.json(ME),
+      '/api/projects': () => Response.json(PROJECTS),
+      '/api/backups': () => Response.json({ backups: [] }),
+      '/api/recovery/exports': () => Response.json({
+        attempt: 1789750654766, stage: 'complete', form: 'artifact', recoverable: false,
+        schedule: {
+          ...base, intervalHours: 24, dueAt: startedAt + 86_400_000,
+          latest: { attempt: 1789750654766, stage: 'complete', startedAt, failure: null },
+          available: { state: 'artifact', attempt: 1789750654766, at, needs: 'restoring it also needs the wrapping key for its stored credentials, which is kept outside the artifact' },
+        },
+      }),
+    });
+    mount('/operations');
+    const available = (await screen.findByTestId('recovery-available')).textContent ?? '';
+    expect(available).toContain('verified recovery artifact');
+    expect(available).toContain(at);
+    expect(available).toContain('wrapping key');
+    expect(available).not.toContain('materializ');
+    const latest = (await screen.findByTestId('recovery-latest')).textContent ?? '';
+    expect(latest).toContain('The last attempt');
+    expect(latest).not.toContain('1789750654766');
+  });
+
+  /**
+   * A Deployment that writes verified artifacts rather than stagings is described in its own words. The staging
+   * sentence would be untrue of it, and its own sentence would be untrue of a staging.
+   */
+  it('calls a complete artifact what it is, names where it is, and says what a restore still needs', () => {
+    const words = availableWords({
+      state: 'artifact', attempt: 1789750654766, at: '/home/.myco/server/local-recovery/dep_1/1789750654766',
+      needs: 'restoring it also needs the wrapping key for its stored credentials, which is kept outside the artifact',
+    });
+    expect(words).toContain('verified recovery artifact');
+    expect(words).toContain('/home/.myco/server/local-recovery/dep_1/1789750654766');
+    expect(words).toContain('wrapping key');
+    // Not a staging, and never described as one.
+    expect(words).not.toContain('materializ');
+    expect(words).not.toContain('staging');
+  });
+
+  it('names an artifact attempt by when it started, not by an instant read as a number', () => {
+    const latest = { attempt: 1789750654766, stage: 'complete', startedAt: 1789750654766, failure: null };
+    const artifact = latestWords({ ...base, latest } as never, 'artifact');
+    expect(artifact).toContain('The last attempt');
+    expect(artifact).toContain('wrote a complete artifact');
+    expect(artifact).not.toContain('1789750654766');
+    // A producer whose attempts are numbered still names the number.
+    expect(latestWords({ ...base, latest: { ...latest, attempt: 7 } } as never)).toContain('Attempt 7');
+    expect(latestWords({ ...base, latest: { ...latest, attempt: 7 } } as never)).toContain('staged everything it named');
   });
 });

@@ -25,7 +25,9 @@ import { classify, emit } from '../telemetry.js';
 const answer = (status: RecoveryProducerStatus, operatorHold: OperatorHoldReport, schedule: ScheduleReport): Response => ok({
   ...status,
   recoverable: false,
-  usable: 'a staging becomes recoverable only when an operator materializes it into a verified artifact; a complete staging is not yet one',
+  usable: status.form === 'artifact'
+    ? 'a complete attempt is the verified artifact a restore consumes; restoring it also needs the wrapping key for its stored credentials, which is kept outside it'
+    : 'a staging becomes recoverable only when an operator materializes it into a verified artifact; a complete staging is not yet one',
   operatorHold,
   schedule,
 });

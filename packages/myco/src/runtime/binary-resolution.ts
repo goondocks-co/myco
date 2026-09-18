@@ -24,6 +24,7 @@ import path from 'node:path';
 import { managedBinDir, managedBinaryPath } from '../install/managed-binary.js';
 import { isDefaultMycoHome, resolveMycoHome } from '../grove/paths.js';
 import { MACHINE_RUNTIME_COMMAND_FILENAME } from '../constants/update.js';
+import { selfExecOf } from './self-exec.js';
 import { checkPinTrust as checkPinTrustShared, readTrustedPin as readTrustedPinShared, PIN_MISSING_REASON } from '../paths/pin-trust.js';
 
 /**
@@ -197,9 +198,8 @@ export function resolveBinary(
       return done(execPath, 'last-resort');
     }
     case 'self-exec-entry': {
-      const argv1 = 'argv1' in env ? env.argv1 : process.argv[1];
-      const entry = !argv1 || argv1.startsWith('/$bunfs/') || argv1.startsWith('B:\\~BUN\\') ? null : argv1;
-      return done(execPath, 'last-resort', entry === null ? [] : [entry]);
+      const self = selfExecOf(execPath, 'argv1' in env ? env.argv1 : process.argv[1]);
+      return done(self.path, 'last-resort', self.args);
     }
     case 'home-scoped-managed': {
       const home = env.mycoHome ?? resolveMycoHome();

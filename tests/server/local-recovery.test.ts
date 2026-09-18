@@ -243,3 +243,30 @@ it('refuses a recorded fleet that is not a whole number of runtimes without publ
     expect(fs.existsSync(f.paths.root)).toBe(false);
   } finally { f.cleanup(); }
 });
+
+/**
+ * A Deployment that holds no sign-in credentials is still recoverable.
+ *
+ * `--new-signin` asks for a fresh session secret and only the wrapping key the artifact was sealed under, which is
+ * what a self-hosted Deployment that never configured GitHub sign-in has to supply. Without it, such a Deployment
+ * could take automatic backups it could never restore.
+ */
+it('recovers with a fresh sign-in from the wrapping key alone, for a Deployment holding no sign-in credentials', async () => {
+  const f = await fixture();
+  try {
+    // Only the wrapping key, as an owner who configured no GitHub sign-in holds.
+    fs.writeFileSync(f.secretsFile, `SECRET_WRAP_KEY=${f.secrets.SECRET_WRAP_KEY}\n`, { mode: 0o600 });
+    await expect(restoreLocalDeployment({ source: f.artifact, secretsFile: f.secretsFile, paths: f.paths, port: 18902 }))
+      .rejects.toThrow('recovery requires independently supplied SESSION_SECRET');
+
+    const restored = await restoreLocalDeployment({
+      source: f.artifact, secretsFile: f.secretsFile, paths: f.paths, port: 18902, newSignIn: true,
+    });
+    expect(restored.schemaVersion).toBeGreaterThan(0);
+    // The volume is published with a session secret of its own and no sign-in credentials carried over.
+    const published = fs.readFileSync(f.paths.secretsFile, 'utf8');
+    expect(published).toContain('SECRET_WRAP_KEY=');
+    expect(published).toContain('SESSION_SECRET=');
+    expect(published).not.toContain('GITHUB_CLIENT_ID=');
+  } finally { f.cleanup(); }
+});

@@ -24,6 +24,7 @@ import { classify, emit } from '../telemetry.js';
 import { pendingSearchBlobs } from './search-index.js';
 import { recoveryAttemptDue } from './recovery-schedule.js';
 import { stagingPruneDue } from './staging-retention.js';
+import { holdSettlementDue } from './recovery-hold.js';
 import { pendingImportedTranscripts, pendingTranscriptBytes } from '../ingest/parse.js';
 import { embeddingKeepsAwake } from './embedding/jobs.js';
 
@@ -71,6 +72,8 @@ export async function engineAssertions(env: ServerEnv, now: number): Promise<Pow
   if (await recoveryAttemptDue(env, now)) assertions.push({ name: 'recovery:due', maxDepth: 'sleep' });
   // Staged payloads waiting to be released keep it there too, until the last of them has gone.
   if (await stagingPruneDue(env)) assertions.push({ name: 'recovery:prune', maxDepth: 'sleep' });
+  // So does a producer hold nothing has settled: it defers deletion until the job that settles it runs.
+  if (await holdSettlementDue(env)) assertions.push({ name: 'recovery:hold', maxDepth: 'sleep' });
   return assertions;
 }
 
