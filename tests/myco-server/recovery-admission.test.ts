@@ -13,7 +13,7 @@ import { sqliteEnv } from './helpers/fixtures.js';
 const OWNER = { member: { id: 'owner-1' }, now: 1_000 } as never;
 
 const idle: RecoveryProducerStatus = {
-  attempt: null, stage: 'idle', recoverable: false, staged: null, export: null, error: null, transientSpent: 0, stagedSchema: null,
+  attempt: null, stage: 'idle', startedAt: null, recoverable: false, staged: null, export: null, error: null, transientSpent: 0, stagedSchema: null,
 };
 
 function producer() {

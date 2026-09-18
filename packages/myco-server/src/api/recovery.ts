@@ -9,27 +9,46 @@
  */
 import type { ServerEnv } from '../core/adapters.js';
 import type { OwnerContext } from '../context.js';
-import { captureSchema, exportedTables, recoverableVirtualTables } from '../core/recovery-schema.js';
-import { capturedDefinitions, type RecoveryProducerStatus, type TableDefinitions } from '../core/recovery-producer.js';
+import type { RecoveryProducerStatus } from '../core/recovery-producer.js';
+import { admitRecoveryExport, type AdmissionOutcome } from '../core/recovery-admission.js';
+import { recoveryScheduleOf, type RecoverySchedule } from '../core/recovery-schedule.js';
 import { badRequest, ok } from './scope.js';
-import { openHoldForAdmission, openOperatorHold } from '../core/recovery-hold.js';
+import { openOperatorHold } from '../core/recovery-hold.js';
 import { within } from '../core/recovery-inventory.js';
 import { classify, emit } from '../telemetry.js';
-
-/** How long an admission may take to answer: its staging writes are bounded inside the producer, well within this. */
-const ADMISSION_MS = 120_000;
 
 /**
  * What an owner is told: the attempt's progress, plainly that no staging, complete or not, is recoverable yet, and any
  * operator backup holding this Deployment's objects. That hold defers deletion while it is open, so storage grows by
  * what deletion would have freed until the operator's artifact completes or it gives the attempt up.
  */
-const answer = (status: RecoveryProducerStatus, operatorHold: OperatorHoldReport): Response => ok({
+const answer = (status: RecoveryProducerStatus, operatorHold: OperatorHoldReport, schedule: ScheduleReport): Response => ok({
   ...status,
   recoverable: false,
   usable: 'a staging becomes recoverable only when an operator materializes it into a verified artifact; a complete staging is not yet one',
   operatorHold,
+  schedule,
 });
+
+/**
+ * What automatic recovery is doing, or that it could not be read.
+ *
+ * The schedule is read from this Deployment's own settings, and a running export pauses that database. The
+ * producer's answer is already in hand by then, so an unreadable schedule says so and never decides the response.
+ */
+type ScheduleReport = RecoverySchedule | { unreadable: string };
+
+/** How long the schedule read may take before the answer says it is unreadable. */
+const SCHEDULE_MS = 5_000;
+
+const scheduleOf = async (env: ServerEnv, now: number, status: RecoveryProducerStatus): Promise<ScheduleReport> => {
+  try {
+    return await within(() => recoveryScheduleOf(env, now, status), SCHEDULE_MS, Date.now);
+  } catch (error) {
+    emit({ kind: 'recovery_schedule_unreadable', error_class: classify(error) });
+    return { unreadable: 'whether automatic recovery is configured could not be read; a running export pauses its database' };
+  }
+};
 
 /**
  * An operator backup's hold as an owner reads it: its acquisition instant, and what it means while it is open. It is the one
@@ -59,69 +78,49 @@ const operatorHoldOf = async (env: ServerEnv): Promise<OperatorHoldReport> => {
 
 const unavailable = (): Response => badRequest('this Deployment runs no hosted recovery producer');
 
-async function capturedSchema(env: ServerEnv): Promise<{ text: string; tables: string[]; captured: TableDefinitions } | Response> {
-  const schema = await captureSchema(env.db);
-  try {
-    recoverableVirtualTables(schema);
-  } catch (error) {
-    // Refused before an export pauses the source, as the operator's own backup refuses it.
-    return badRequest(error instanceof Error ? error.message : String(error));
+/**
+ * What each admission outcome is, as an owner's request: the same statuses and envelopes this route has always
+ * answered. The sequence itself belongs to `admitRecoveryExport`, which the schedule uses too.
+ */
+function responseFor(outcome: AdmissionOutcome): Response | null {
+  switch (outcome.outcome) {
+    case 'unavailable': return unavailable();
+    case 'refused': return badRequest(outcome.message);
+    case 'configuration-unavailable':
+      return Response.json({ error: 'recovery_configuration_unavailable', message: outcome.message }, { status: 503 });
+    case 'hold-unverified':
+      return Response.json({ error: 'recovery_hold_unverified', message: 'a recovery hold is open and its attempt could not be read; try again shortly' }, { status: 503 });
+    case 'unanswered':
+      return Response.json({ error: 'recovery_admission_unanswered', message: 'the export admission failed or did not answer in time; its hold is settled by a later wake, and a status read shows whether it was admitted' }, { status: 503 });
+    case 'hold-retired':
+      return Response.json({ error: 'recovery_hold_retired', message: 'the recovery hold for this admission was already settled; start the export again' }, { status: 409 });
+    // An attempt already running, or one just admitted, is answered with its own status.
+    default: return null;
   }
-  const tables = exportedTables(schema);
-  if (tables.length === 0) return badRequest('this Deployment holds no ordinary tables to recover');
-  return { text: JSON.stringify(schema), tables, captured: capturedDefinitions(schema) };
 }
 
-/** Admit one attempt: capture the schema first, then hand the producer the tables that schema names. */
+/** Admit one attempt, through the owner both this route and the schedule use. */
 export async function handleStartRecoveryExport(env: ServerEnv, ctx: OwnerContext): Promise<Response> {
   if (env.recovery === undefined) return unavailable();
-  const captured = await capturedSchema(env);
-  if (captured instanceof Response) return captured;
-  // The hold opens before the export is admitted, so nothing the snapshot names is released while the attempt runs.
-  // A producer that cannot record this Deployment's configuration opens none, while an attempt already running is
-  // still answered.
-  const readiness = env.recovery.admission;
-  const hold = await openHoldForAdmission(env, ctx.now, readiness.ready);
-  if ('refused' in hold) {
-    return Response.json({ error: 'recovery_configuration_unavailable', message: readiness.ready ? 'the recovery configuration is unavailable' : readiness.reason }, { status: 503 });
+  const admitted = await admitRecoveryExport(env, ctx.now, { kind: 'member', id: ctx.member.id });
+  const refusal = responseFor(admitted);
+  if (refusal !== null) return refusal;
+  if (admitted.outcome === 'admitted') {
+    // The wake the Deployment already has: an admitted attempt is continued at the next wake, and a sleeping
+    // Deployment waits for its cron floor without one. The producer never calls the clock itself.
+    await env.wake?.().catch(() => undefined);
   }
-  if ('held' in hold) {
-    if (hold.held === 'unverified') {
-      return Response.json({ error: 'recovery_hold_unverified', message: 'a recovery hold is open and its attempt could not be read; try again shortly' }, { status: 503 });
-    }
-    return answer(await env.recovery.status(), await operatorHoldOf(env));
-  }
-  // Bounded: an admission that does not answer keeps its hold, and the release job settles it later against the attempts.
-  const recovery = env.recovery;
-  const status = await within(() => recovery.admit({
-    holdToken: hold.token,
-    tables: captured.tables,
-    schema: captured.text,
-    captured: captured.captured,
-    startedBy: ctx.member.id,
-  }), ADMISSION_MS, Date.now).catch((error: unknown) => {
-    // An admission that failed or never answered keeps its hold: the release job settles it against the attempts.
-    emit({ kind: 'recovery_admission_unanswered', error_class: classify(error) });
-    return null;
-  });
-  if (status === null) {
-    return Response.json({ error: 'recovery_admission_unanswered', message: 'the export admission failed or did not answer in time; its hold is settled by a later wake, and a status read shows whether it was admitted' }, { status: 503 });
-  }
-  if (status.holdRetired === true) {
-    return Response.json({ error: 'recovery_hold_retired', message: 'the recovery hold for this admission was already settled; start the export again' }, { status: 409 });
-  }
-  // The wake the Deployment already has: an admitted attempt is continued at the next wake, and a sleeping
-  // Deployment waits for its cron floor without one. The producer never calls the clock itself.
-  await env.wake?.().catch(() => undefined);
-  return answer(status, await operatorHoldOf(env));
+  const status = (admitted as { status: RecoveryProducerStatus }).status;
+  return answer(status, await operatorHoldOf(env), await scheduleOf(env, ctx.now, status));
 }
 
 /**
- * The attempt's progress. Nothing is re-read from the Deployment here: whether the exported bytes match the schema
- * the attempt captured is decided in the producer's own work, against those bytes, and a later legitimate migration
- * must never invalidate a snapshot that is whole as taken.
+ * The attempt's progress, and what automatic recovery is doing. Nothing is re-read from the Deployment here:
+ * whether the exported bytes match the schema the attempt captured is decided in the producer's own work, against
+ * those bytes, and a later legitimate migration must never invalidate a snapshot that is whole as taken.
  */
-export async function handleRecoveryExportStatus(env: ServerEnv, _ctx: OwnerContext): Promise<Response> {
+export async function handleRecoveryExportStatus(env: ServerEnv, ctx: OwnerContext): Promise<Response> {
   if (env.recovery === undefined) return unavailable();
-  return answer(await env.recovery.status(), await operatorHoldOf(env));
+  const status = await env.recovery.status();
+  return answer(status, await operatorHoldOf(env), await scheduleOf(env, ctx.now, status));
 }

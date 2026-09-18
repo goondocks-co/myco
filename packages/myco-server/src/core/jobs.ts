@@ -60,6 +60,9 @@ export interface WakeContinuation {
   never: string;
 }
 
+/** The job "Back up every" drives. This registry owns job names, so the name lives here. */
+export const SCHEDULE_JOB = 'recovery-export-schedule';
+
 export const WAKE_CONTINUATIONS: readonly WakeContinuation[] = [
   {
     name: 'recovery-export-continuation',
@@ -115,6 +118,14 @@ export const SERVER_JOBS: readonly ServerJob[] = [
     runsThrough: 'sleep',
     converges: 'no run whose worker stopped renewing holds a lease past its expiry: each returns to the claim queue with its dispatch credential retired and the place in the queue it had already waited for; a run inside its lease is never taken from the worker holding it',
   },
+  {
+    name: SCHEDULE_JOB,
+    // The one job that runs at every depth: a Deployment nobody has touched for days is exactly the one whose
+    // owner set a daily backup, and the cron floor is the wake it still gets.
+    runsThrough: 'deep_sleep',
+    wake: 'clock',
+    converges: 'a Deployment whose owner set "Back up every" admits one recovery attempt once that interval has passed since the last attempt started, and admits none otherwise: none while an attempt still advances, none while the setting is unset, and none on a Deployment that runs no producer. At most one attempt is ever admitted for one due interval, because admission opens the producer hold and a second admission finds the first attempt instead',
+  },
   // Stored object release and recovery holds
   {
     name: 'recovery-hold-release',
@@ -149,10 +160,10 @@ const JOB_BY_NAME = new Map(SERVER_JOBS.map((j) => [j.name, j]));
 /**
  * Whether a job runs at this state.
  *
- * Deep sleep runs nothing, and that follows from the declarations rather than
- * from a guard here: no job declares it runs that deep, so the depth comparison
- * excludes every one. A separate deep-sleep branch would read as the protection
- * while contributing none — a gate proved that removing it changed no answer.
+ * The declarations decide it, not a guard here: each job names the depth it
+ * runs through, and the comparison admits every state no deeper than that.
+ * Only work an untouched Deployment still owes its owner declares deep sleep,
+ * where a recovery attempt due on the interval is the one such job.
  */
 export function jobRunsAt(jobName: string, state: PowerState): boolean {
   const job = JOB_BY_NAME.get(jobName);
