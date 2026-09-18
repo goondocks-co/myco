@@ -120,9 +120,7 @@ export const SERVER_JOBS: readonly ServerJob[] = [
   },
   {
     name: SCHEDULE_JOB,
-    // The one job that runs at every depth: a Deployment nobody has touched for days is exactly the one whose
-    // owner set a daily backup, and the cron floor is the wake it still gets.
-    runsThrough: 'deep_sleep',
+    runsThrough: 'sleep',
     wake: 'clock',
     converges: 'a Deployment whose owner set "Back up every" admits one recovery attempt once that interval has passed since the last attempt started, and admits none otherwise: none while an attempt still advances, none while the setting is unset, and none on a Deployment that runs no producer. At most one attempt is ever admitted for one due interval, because admission opens the producer hold and a second admission finds the first attempt instead',
   },
@@ -160,10 +158,10 @@ const JOB_BY_NAME = new Map(SERVER_JOBS.map((j) => [j.name, j]));
 /**
  * Whether a job runs at this state.
  *
- * The declarations decide it, not a guard here: each job names the depth it
- * runs through, and the comparison admits every state no deeper than that.
- * Only work an untouched Deployment still owes its owner declares deep sleep,
- * where a recovery attempt due on the interval is the one such job.
+ * Deep sleep runs nothing, and that follows from the declarations rather than
+ * from a guard here: no job declares it runs that deep, so the depth comparison
+ * excludes every one. A separate deep-sleep branch would read as the protection
+ * while contributing none — a gate proved that removing it changed no answer.
  */
 export function jobRunsAt(jobName: string, state: PowerState): boolean {
   const job = JOB_BY_NAME.get(jobName);

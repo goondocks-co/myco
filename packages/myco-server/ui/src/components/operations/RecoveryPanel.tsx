@@ -35,11 +35,17 @@ export function latestWords(schedule: RecoverySchedule): string {
   return `Attempt ${latest.attempt}${when} is ${latest.stage}.`;
 }
 
+/** The attempt the producer answered, for a reading whose schedule is unavailable. */
+export function attemptWords(attempt: number | null, stage: string | null): string {
+  if (attempt === null || stage === null) return 'No attempt has run yet.';
+  return `Attempt ${attempt} is ${stage}.`;
+}
+
 /**
  * What recovery data exists — and, for a complete staging, what it is still not.
  *
- * A staging is not a recovery artifact. The words here never call one a finished backup: an operator materializes
- * and verifies a staging into an artifact, and until then there is nothing to restore from.
+ * A staging is not a recovery artifact: an operator materializes and verifies one into an artifact, and until
+ * then there is nothing to restore from.
  */
 export function availableWords(available: RecoveryAvailability): string {
   if (available.state === 'none') return 'No recovery data has been staged yet.';
@@ -51,7 +57,7 @@ export function availableWords(available: RecoveryAvailability): string {
  * Automatic recovery, as the Deployment's owner reads it: whether it is configured, when the next attempt is due,
  * what the last one did, and what data exists. Read only; the schedule runs on the Deployment's own clock.
  *
- * This is the complete-recovery surface, deliberately separate from the small additive Backup export above it.
+ * The complete-recovery surface, separate from the small additive Backup export above it.
  */
 export function RecoveryPanel() {
   const recovery = useRecovery();
@@ -59,6 +65,9 @@ export function RecoveryPanel() {
   const held = recovery.data?.schedule ?? null;
   const schedule = held !== null && 'unreadable' in held ? null : held;
   const unreadable = held !== null && 'unreadable' in held ? held.unreadable : null;
+  // The producer's answer stands on its own: an unreadable schedule hides the cadence, not the attempt.
+  const attempt = recovery.data?.attempt ?? null;
+  const stage = recovery.data?.stage ?? null;
 
   return (
     <Panel title="Automatic recovery" eyebrow="Server">
@@ -74,7 +83,10 @@ export function RecoveryPanel() {
         </p>
       )}
       {unreadable !== null && (
-        <p className="font-sans text-sm text-ochre" data-testid="recovery-unreadable">{unreadable}</p>
+        <div className="flex flex-col gap-2">
+          <p className="font-sans text-sm text-ochre" data-testid="recovery-unreadable">{unreadable}</p>
+          <p className="font-sans text-sm text-on-surface-variant" data-testid="recovery-latest">{attemptWords(attempt, stage)}</p>
+        </div>
       )}
       {schedule !== null && (
         <div className="flex flex-col gap-2">

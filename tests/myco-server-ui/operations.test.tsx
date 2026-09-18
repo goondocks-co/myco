@@ -242,6 +242,8 @@ describe('automatic recovery on the Operations page', () => {
     });
     mount('/operations');
     expect((await screen.findByTestId('recovery-unreadable')).textContent).toContain('could not be read');
+    // The producer answered; only the cadence is unavailable.
+    expect(screen.getByTestId('recovery-latest').textContent).toContain('Attempt 7 is export');
     expect(screen.queryByTestId('recovery-cadence')).toBeNull();
   });
 

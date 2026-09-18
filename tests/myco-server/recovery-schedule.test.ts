@@ -11,6 +11,7 @@
 import { expect, it } from 'bun:test';
 import { runTick } from '@myco-server-worker/core/tick.js';
 import { jobRunsAt, SERVER_JOBS } from '@myco-server-worker/core/jobs.js';
+import { recoveryAttemptDue } from '@myco-server-worker/core/recovery-schedule.js';
 import { handleRecoveryExportStatus } from '@myco-server-worker/api/recovery.js';
 import { recoveryScheduleOf, scheduledIntervalHours, SCHEDULE_JOB } from '@myco-server-worker/core/recovery-schedule.js';
 import { SCHEDULED_BY } from '@myco-server-worker/core/recovery-admission.js';
@@ -30,8 +31,9 @@ function producer(now: number) {
   const seen: RecoveryAdmission[] = [];
   let status: RecoveryProducerStatus = idle;
   const carried = new Map<string, { id: number; stage: AttemptStage }>();
+  const reads = { status: 0 };
   return {
-    seen,
+    seen, reads,
     set: (next: Partial<RecoveryProducerStatus>) => { status = { ...idle, ...next }; },
     port: {
       admission: { ready: true } as RecoveryAdmissionReadiness,
@@ -43,7 +45,7 @@ function producer(now: number) {
         return status;
       },
       settleHold: async (token: string) => settlementOf(carried.get(token) ?? null),
-      status: async () => status,
+      status: async () => { reads.status += 1; return status; },
       noteSchemaDrift: async () => status,
     },
   };
@@ -220,17 +222,34 @@ it('never calls a staging recoverable, at any stage', async () => {
   } finally { d.close(); }
 });
 
-it('runs at every depth, so a Deployment nobody has touched still gets its due backup', async () => {
+it('admits a due backup on a Deployment nobody has touched, and deep sleep still runs nothing', async () => {
   // An owner who sets a daily backup does not visit the dashboard to make it happen. This is the ordinary case:
-  // no activity stamped at all, so the clock resolves the deepest state it has.
+  // no activity stamped at all, so inactivity alone would put the Deployment in deep sleep.
   const d = await deployment({ intervalHours: 24 });
   try {
+    expect(jobRunsAt(SCHEDULE_JOB, 'deep_sleep')).toBe(false);
+    expect(await recoveryAttemptDue(d.env as never, d.now)).toBe(true);
+
     const report = await runTick(d.env as never, d.now, { wake: 'clock' });
-    expect(report.state).toBe('deep_sleep');
+    // Held at sleep by the due attempt itself, which is where the job that admits it runs.
+    expect([report.state, report.heldBy]).toEqual(['sleep', 'recovery:due']);
     const job = report.jobs.find((entry) => entry.name === SCHEDULE_JOB);
     expect([job?.changed ?? null, job?.failed ?? null]).toEqual([1, null]);
     expect(d.held.seen.length).toBe(1);
-    expect(jobRunsAt(SCHEDULE_JOB, 'deep_sleep')).toBe(true);
+
+    // Once it is admitted, nothing holds the Deployment awake: the attempt is no longer due.
+    expect(await recoveryAttemptDue(d.env as never, d.now + 1_000)).toBe(false);
+  } finally { d.close(); }
+});
+
+it('asserts nothing, and reads only its interval, while automatic recovery is off', async () => {
+  const d = await deployment();
+  try {
+    expect(await recoveryAttemptDue(d.env as never, d.now)).toBe(false);
+    // The producer is never asked while the interval is unset: one settings read decides it.
+    expect(d.held.reads.status).toBe(0);
+    const report = await runTick(d.env as never, d.now, { wake: 'clock' });
+    expect([report.state, report.heldBy]).toEqual(['deep_sleep', null]);
   } finally { d.close(); }
 });
 

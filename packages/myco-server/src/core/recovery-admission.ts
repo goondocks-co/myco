@@ -2,9 +2,8 @@
  * The one way a hosted recovery attempt is admitted, for the owner who asks and the clock that is due.
  *
  * Admission is a sequence with a hold in the middle of it: the schema is captured while the Deployment still
- * answers, a hold is opened before any export runs, and only then does the producer take the attempt. Both
- * callers need every step and every refusal, so both use this; neither drives the other's surface. The HTTP
- * handler turns these outcomes into responses, and the scheduled job turns them into counts and telemetry.
+ * answers, a hold is opened before any export runs, and only then does the producer take the attempt. It answers
+ * a typed outcome: the HTTP handler turns those into responses, and the scheduled job into counts and telemetry.
  *
  * Nothing here chooses an account, a database or a credential: those are the Deployment's own bindings behind
  * `env.recovery`. Nothing here calls the clock either — a caller wakes the Deployment if it has a wake.
@@ -33,9 +32,8 @@ export const SCHEDULED_BY = 'schedule';
 export const actorLabel = (actor: AdmissionActor): string => (actor.kind === 'member' ? actor.id : SCHEDULED_BY);
 
 /**
- * Every way admission ends. A caller that adds a case here is a caller that has to decide what it means, which is
- * the point: `refused` and `unavailable` are this Deployment's answer, `running` is an attempt already advancing,
- * and `unanswered` leaves a hold the release job settles later against the attempts.
+ * Every way admission ends: `refused` and `unavailable` are this Deployment's own answer, `running` is an attempt
+ * already advancing, and `unanswered` leaves a hold the release job settles later against the attempts.
  */
 export type AdmissionOutcome =
   | { outcome: 'unavailable' }

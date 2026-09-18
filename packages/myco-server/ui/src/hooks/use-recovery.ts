@@ -44,9 +44,8 @@ export interface RecoveryStatus {
 /**
  * Whether a failed read means this Deployment runs no producer at all.
  *
- * Only the route's own refusal says that. A 401, a 503, a 7500 while an export pauses the database, or a network
- * failure say nothing about whether a producer exists, and a panel that called them all unsupported would tell an
- * owner their backups are impossible whenever the server was busy.
+ * Only the route's own refusal says that. A 401, a 503, a 7500 while an export pauses the database, and a network
+ * failure each say nothing about whether a producer exists.
  */
 export function unsupported(error: unknown): boolean {
   return error instanceof ApiError && error.status === 400 && (error.detail ?? '').includes('no hosted recovery producer');

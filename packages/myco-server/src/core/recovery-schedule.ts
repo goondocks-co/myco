@@ -1,14 +1,13 @@
 /**
  * What "Back up every" means, and what an owner is told about it.
  *
- * The setting already existed and drove nothing. This is the owner that reads it, decides whether an attempt is
- * due, and describes the state in the words a Deployment's owner needs: whether automatic recovery is configured
- * at all, when the next attempt is due, what the last one did, and what recovery data exists today.
+ * Reads the interval, decides whether an attempt is due, and describes the state: whether automatic recovery is
+ * configured, when the next attempt is due, what the last one did, and what recovery data exists.
  *
- * Two things this deliberately does not do. It never calls a staging a recovery: a complete staging becomes
- * recoverable only when an operator materializes and verifies it, and `available` says so. And it keeps no
- * schedule state of its own — the attempt the producer already records is the schedule's own history, so a
- * duplicate wake cannot double-admit and a restart cannot lose the cadence.
+ * A staging is never described as a recovery: a complete staging becomes recoverable only when an operator
+ * materializes and verifies it, and `available` says so. The schedule holds no state of its own — the attempt
+ * the producer records is its whole history — so a duplicate wake admits nothing twice and a restart keeps the
+ * cadence.
  */
 import type { ServerEnv } from './adapters.js';
 import { leafValues } from './settings.js';
@@ -82,6 +81,19 @@ export async function scheduledIntervalHours(env: Pick<ServerEnv, 'db'>): Promis
   try { parsed = JSON.parse(held); } catch { return null; }
   if (typeof parsed !== 'number' || !Number.isFinite(parsed) || parsed < INTERVAL_MIN_HOURS) return null;
   return Math.min(INTERVAL_MAX_HOURS, Math.floor(parsed));
+}
+
+/**
+ * Whether a due configured attempt is waiting, for the engine's own depth assertion.
+ *
+ * Reads the interval first and stops there when automatic recovery is off, so a Deployment that schedules
+ * nothing pays one query for its deepest state. A Deployment that does schedule one is held no deeper than
+ * sleep while an attempt is due, which is where the job that admits it runs.
+ */
+export async function recoveryAttemptDue(env: ServerEnv, now: number): Promise<boolean> {
+  if (env.recovery === undefined) return false;
+  if (await scheduledIntervalHours(env) === null) return false;
+  return (await recoveryScheduleOf(env, now)).due;
 }
 
 /** What the producer's status says the latest attempt did. */

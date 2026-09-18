@@ -40,13 +40,12 @@ export type JobRun = (env: ServerEnv, now: number, state: PowerState) => Promise
 /**
  * Admits one recovery attempt once the owner's interval has passed, and admits none at any other time.
  *
- * The schedule keeps no state of its own: the last attempt's own start is the cadence, so a duplicate wake in the
- * same window finds the same answer, and a restart loses nothing. Admission itself opens the producer hold, and
- * at most one of that holder's holds is open, so two wakes racing the same due interval cannot both admit — the
- * second finds the first one's attempt and reports it.
+ * The last attempt's own start is the cadence, so a duplicate wake in the same window admits nothing and a
+ * restart keeps it. Admission opens the producer hold, one open hold per holder, so two wakes racing the same
+ * due interval cannot both admit: the second finds the first one's attempt and reports it.
  *
- * A refusal is visible rather than retried here: the attempt (or its absence) is what the owner's status reads,
- * and the next admission waits the same interval whether the last one completed or failed.
+ * A refusal is recorded rather than retried: the next admission waits the same interval whether the last attempt
+ * completed or failed, and the owner's status carries what happened.
  */
 async function scheduledRecoveryExport(env: ServerEnv, now: number): Promise<number> {
   const schedule = await recoveryScheduleOf(env, now);
