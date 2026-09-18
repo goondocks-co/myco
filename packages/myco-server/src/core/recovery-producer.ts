@@ -990,6 +990,8 @@ export function openStagingManifest(input: {
 export interface RecoveryProducerStatus {
   attempt: number | null;
   stage: AttemptStage | 'idle';
+  /** The instant of this attempt's admission, which a schedule reads its cadence from. Null where there is none. */
+  startedAt: number | null;
   /** A staging, complete or not, is not a recoverable artifact until an operator materializes and verifies it. */
   recoverable: false;
   staged: {

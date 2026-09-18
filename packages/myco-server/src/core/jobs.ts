@@ -60,6 +60,9 @@ export interface WakeContinuation {
   never: string;
 }
 
+/** The job "Back up every" drives. This registry owns job names, so the name lives here. */
+export const SCHEDULE_JOB = 'recovery-export-schedule';
+
 export const WAKE_CONTINUATIONS: readonly WakeContinuation[] = [
   {
     name: 'recovery-export-continuation',
@@ -114,6 +117,12 @@ export const SERVER_JOBS: readonly ServerJob[] = [
     name: 'worker-lease-sweep',
     runsThrough: 'sleep',
     converges: 'no run whose worker stopped renewing holds a lease past its expiry: each returns to the claim queue with its dispatch credential retired and the place in the queue it had already waited for; a run inside its lease is never taken from the worker holding it',
+  },
+  {
+    name: SCHEDULE_JOB,
+    runsThrough: 'sleep',
+    wake: 'clock',
+    converges: 'a Deployment whose owner set "Back up every" admits one recovery attempt once that interval has passed since the last attempt started, and admits none otherwise: none while an attempt still advances, none while the setting is unset, and none on a Deployment that runs no producer. At most one attempt is ever admitted for one due interval, because admission opens the producer hold and a second admission finds the first attempt instead',
   },
   // Stored object release and recovery holds
   {

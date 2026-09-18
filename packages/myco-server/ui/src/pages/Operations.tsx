@@ -3,6 +3,7 @@ import { PageContainer } from '../components/ui/page-container';
 import { PageHeader } from '../components/ui/page-header';
 import { Panel } from '../components/ui/panel';
 import { BackupPanel } from '../components/operations/BackupPanel';
+import { RecoveryPanel } from '../components/operations/RecoveryPanel';
 import { WakePanel } from '../components/operations/WakePanel';
 import { TitlingBackfillPanel } from '../components/operations/TitlingBackfillPanel';
 
@@ -20,6 +21,7 @@ export function Operations() {
         <WakePanel />
         <TitlingBackfillPanel />
         <BackupPanel />
+        <RecoveryPanel />
         <Panel title="Diagnostics" eyebrow="Pending" tone="ochre" data-testid="pending-diagnostics">
           <p className="font-sans text-sm text-on-surface-variant">
             A diagnostics export arrives with the observability work. Today the facts on Status are what this server reports.
