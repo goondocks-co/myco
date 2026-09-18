@@ -87,6 +87,28 @@ async function end(served: Served, signal: 'SIGTERM' | 'SIGKILL'): Promise<void>
 
 const artifactsRoot = (home: string, deploymentId: string): string => path.join(home, 'server', 'local-recovery', deploymentId);
 const attemptDirs = (root: string): string[] => (fs.existsSync(root) ? fs.readdirSync(root) : []).filter((entry) => /^\d+$/.test(entry)).sort();
+/**
+ * Opens a volume nobody is serving, waiting briefly for one just published.
+ *
+ * These volumes are in WAL mode, and a read-only open of one whose shared-memory file is absent cannot create it,
+ * so this reads them read-write: nothing serves them, and this run owns every one. A restore publishes by
+ * renaming its staging into place, so a read taken at that instant waits for it.
+ */
+function openWhenReady(file: string, label: string): Database {
+  const started = Bun.nanoseconds();
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      const db = new Database(file, { readwrite: true, create: false });
+      const waitedMs = Math.round((Bun.nanoseconds() - started) / 1e6);
+      if (waitedMs > 0) note(`how long ${label} took to open`, { waitedMs, attempts: attempt + 1 });
+      return db;
+    } catch (error) {
+      if (attempt >= 50) throw error;
+      Bun.sleepSync(100);
+    }
+  }
+}
+
 const manifestOf = (directory: string): { format?: string; status?: string; snapshot?: { database?: { bytes?: number; sha256?: string }; deploymentId?: string } } | null => {
   try { return JSON.parse(fs.readFileSync(path.join(directory, 'recovery.json'), 'utf8')); } catch { return null; }
 };
@@ -157,13 +179,13 @@ try {
   // hour on the clock.
   {
     const openHolds = (): number => {
-      const db = new Database(volume, { readonly: true, create: false });
+      const db = openWhenReady(volume, 'the source volume');
       try { return (db.query('SELECT COUNT(*) AS open FROM recovery_holds WHERE released_at IS NULL').get() as { open: number }).open; } finally { db.close(); }
     };
     const settledBy = Date.now() + 120_000;
     while (Date.now() < settledBy && openHolds() > 0) await Bun.sleep(250);
     check('no recovery hold is left open on the source', openHolds(), 0);
-    const holds = new Database(volume, { readonly: true, create: false });
+    const holds = openWhenReady(volume, 'the source volume');
     try {
       note('what the source records of this attempt\'s holds', holds.query('SELECT holder, release_reason FROM recovery_holds ORDER BY acquired_at').all());
     } finally { holds.close(); }
@@ -249,8 +271,8 @@ try {
 
   const restoredVolume = path.join(RESTORED, 'server', 'local', 'myco.sqlite');
   {
-    const source = new Database(volume, { readonly: true, create: false });
-    const copy = new Database(restoredVolume, { readonly: true, create: false });
+    const source = openWhenReady(volume, 'the source volume');
+    const copy = openWhenReady(restoredVolume, 'the restored volume');
     try {
       const rows = (db: Database): { rows: number } => db.query('SELECT COUNT(*) AS rows FROM fixture_bulk').get() as { rows: number };
       const id = (db: Database): string => (db.query('SELECT value FROM schema_meta WHERE key = ?').get('deployment_id') as { value: string }).value;
