@@ -22,7 +22,7 @@ import path from 'node:path';
 import { z } from 'zod';
 import { atomicWriteFileSync } from '@myco/utils/atomic-write.js';
 import { LifecycleLock } from '@myco/utils/lifecycle-lock.js';
-import { resolveBinary } from '../runtime/binary-resolution.js';
+import { selfExec } from '../runtime/self-exec.js';
 import { CommandCancelled, isCommandFailure, runOrThrow, systemRunner, type CommandRunner } from './runner.js';
 import { resolveLocalPaths, type LocalDeploymentPaths } from './local.js';
 import { schemaMetaValue } from '@myco-server-worker/platform/bun/server-main.js';
@@ -385,10 +385,7 @@ export class LocalArtifacts implements RecoveryProducerPort {
    * serving the Deployment.
    */
   private produce(directory: string, root: string, startedAt: number, record: AttemptRecord): void {
-    const resolved = this.options.command ?? (() => {
-      const binary = resolveBinary('self-exec-entry');
-      return { path: binary.path, args: binary.args };
-    })();
+    const resolved = this.options.command ?? selfExec();
     const args = [...resolved.args, 'server', 'backup', '--target', 'local', '--to', directory];
     this.write(root, startedAt, { ...record, continuations: record.continuations + 1 });
     this.report(`Producing a recovery artifact in ${directory}`);
