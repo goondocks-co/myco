@@ -28,6 +28,7 @@ import { getLibsqlitePath, getVec0Path } from '../runtime/native-deps.js';
 import { BUNDLED_SERVER_UI } from '../server-ui-assets.generated.js';
 import { LocalVolume, volumeIdentity, type VolumeIdentity } from './local-volume.js';
 import { LocalEmbeddingRuntime } from './local-embedding.js';
+import { LocalArtifacts } from './local-artifacts.js';
 import {
   assertRecordServable,
   readLocalRecord,
@@ -125,8 +126,12 @@ export async function runLocalDeployment(paths = resolveLocalPaths()): Promise<L
       const options = optionsFromRecord(record, paths, readLocalSecrets(paths));
       mkdirSync(paths.blobDir, { recursive: true, mode: 0o700 });
       const runtime = new LocalEmbeddingRuntime();
-      const started = await startDeployment({ ...options, harnessTasks: runtime.tasks,
-        harnessLaunchFor: (callbackOrigin) => runtime.launchFor(callbackOrigin), beforeStop: () => runtime.stop() });
+      // This Deployment produces its own recovery artifacts, in child processes it owns: the capability is handed
+      // in from here, where paths and processes are this package's business, and stopped with the Deployment.
+      const artifacts = new LocalArtifacts({ paths, native, report: (line) => console.error(line) });
+      const started = await startDeployment({ ...options, harnessTasks: runtime.tasks, recovery: artifacts,
+        harnessLaunchFor: (callbackOrigin) => runtime.launchFor(callbackOrigin),
+        beforeStop: async () => { await artifacts.stop(); await runtime.stop(); } });
       return { ...started, record };
     },
   });

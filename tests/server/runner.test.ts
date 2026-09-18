@@ -9,8 +9,8 @@ import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import {
-  CommandFailed, commandFailureDetail, CommandTimedOut, processTreeEndOfSignal, processTreeEndOfTaskkill,
-  systemRunner, WorkingDirectoryMissing,
+  CommandCancelled, CommandFailed, commandFailureDetail, CommandTimedOut, isCommandFailure, processTreeEndOfSignal,
+  processTreeEndOfTaskkill, systemRunner, WorkingDirectoryMissing,
 } from '@myco/server/runner.js';
 
 const failed = (stdout: string, stderr: string, code = 1): CommandFailed =>
@@ -251,5 +251,66 @@ describe.skipIf(process.platform === 'win32')('a deadline whose group signal is 
     });
 
     expect(refused.treeEnd).toBe('failed');
+  });
+});
+
+/**
+ * Withdrawal: a caller that owns a long command needs to be able to stop owning it.
+ *
+ * What the deadline already does, a caller may now ask for, and it answers the same way: the command and the
+ * processes it started are ended, and what that managed is reported rather than assumed.
+ */
+describe('a withdrawn command', () => {
+  /** A command that ignores SIGTERM and starts a child of its own, so ending it has to end a tree. */
+  const stubborn = (marker: string): readonly string[] => ['-c',
+    `trap '' TERM; (while true; do echo alive >> ${marker}; sleep 0.05; done) & while true; do sleep 0.05; done`];
+
+  it('ends the command and what it started, and says what that ended', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'myco-runner-withdraw-'));
+    const marker = join(root, 'alive');
+    const withdrawing = new AbortController();
+    try {
+      const running = systemRunner().run('/bin/sh', stubborn(marker), { signal: withdrawing.signal });
+      // Wait for the child of the command to be writing, so there is a tree to end rather than one process.
+      for (let waited = 0; waited < 100 && !existsSync(marker); waited += 1) await Bun.sleep(20);
+      expect(existsSync(marker)).toBe(true);
+      withdrawing.abort();
+      const refusal = await running.then(() => null).catch((error: unknown) => error);
+      expect(refusal).toBeInstanceOf(CommandCancelled);
+      expect((refusal as CommandCancelled).treeEnd).toBe('ended');
+      expect((refusal as CommandCancelled).message).toContain('withdrawn by its caller');
+      // Nothing of that tree is writing any more, which is what `ended` claims.
+      const settled = readFileSync(marker, 'utf8').length;
+      await Bun.sleep(300);
+      expect(readFileSync(marker, 'utf8').length).toBe(settled);
+      expect(isCommandFailure(refusal)).toBe(true);
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
+  it('answers a command that finished before it was withdrawn, and withdrawal changes nothing after', async () => {
+    const withdrawing = new AbortController();
+    const result = await systemRunner().run('/bin/sh', ['-c', 'echo done'], { signal: withdrawing.signal });
+    expect([result.code, result.stdout.trim()]).toEqual([0, 'done']);
+    withdrawing.abort();
+    expect(result.code).toBe(0);
+  });
+
+  it('GATE: starts nothing for a caller that has already withdrawn', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'myco-runner-prewithdrawn-'));
+    const marker = join(root, 'ran');
+    const withdrawn = new AbortController();
+    withdrawn.abort();
+    try {
+      const refusal = await systemRunner()
+        .run('/bin/sh', ['-c', `touch ${marker}`], { signal: withdrawn.signal })
+        .then(() => null)
+        .catch((error: unknown) => error);
+      expect(refusal).toBeInstanceOf(CommandCancelled);
+      // Nothing was started, so nothing of a tree is running — which is what `absent` says, not `ended`.
+      expect((refusal as CommandCancelled).treeEnd).toBe('absent');
+      expect(isCommandFailure(refusal)).toBe(true);
+      await Bun.sleep(200);
+      expect(existsSync(marker)).toBe(false);
+    } finally { rmSync(root, { recursive: true, force: true }); }
   });
 });

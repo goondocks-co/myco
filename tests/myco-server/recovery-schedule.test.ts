@@ -13,7 +13,7 @@ import { runTick } from '@myco-server-worker/core/tick.js';
 import { jobRunsAt, SERVER_JOBS } from '@myco-server-worker/core/jobs.js';
 import { recoveryAttemptDue } from '@myco-server-worker/core/recovery-schedule.js';
 import { handleRecoveryExportStatus } from '@myco-server-worker/api/recovery.js';
-import { recoveryScheduleOf, scheduledIntervalHours, SCHEDULE_JOB } from '@myco-server-worker/core/recovery-schedule.js';
+import { availabilityOf, recoveryScheduleOf, scheduledIntervalHours, SCHEDULE_JOB } from '@myco-server-worker/core/recovery-schedule.js';
 import { SCHEDULED_BY } from '@myco-server-worker/core/recovery-admission.js';
 import { settlementOf, type AttemptStage, type RecoveryAdmission, type RecoveryAdmissionReadiness, type RecoveryProducerStatus } from '@myco-server-worker/core/recovery-producer.js';
 import { stampRequest } from '@myco-server-worker/core/activity.js';
@@ -22,7 +22,7 @@ import { sqliteEnv } from './helpers/fixtures.js';
 const HOUR = 60 * 60 * 1000;
 
 const idle: RecoveryProducerStatus = {
-  attempt: null, stage: 'idle', startedAt: null, recoverable: false, staged: null, export: null, error: null,
+  attempt: null, stage: 'idle', form: 'staging', startedAt: null, recoverable: false, staged: null, export: null, error: null,
   transientSpent: 0, stagedSchema: null,
 };
 
@@ -32,8 +32,9 @@ function producer(now: number) {
   let status: RecoveryProducerStatus = idle;
   const carried = new Map<string, { id: number; stage: AttemptStage }>();
   const reads = { status: 0 };
+  const asked = { resume: 0 };
   return {
-    seen, reads,
+    seen, reads, asked,
     set: (next: Partial<RecoveryProducerStatus>) => { status = { ...idle, ...next }; },
     port: {
       admission: { ready: true } as RecoveryAdmissionReadiness,
@@ -284,5 +285,58 @@ it('answers the producer status even when the settings read fails under it', asy
     // The authoritative answer survives; the schedule says it could not be read.
     expect([body.attempt, body.stage]).toEqual([7, 'export']);
     expect(body.schedule.unreadable).toContain('could not be read');
+  } finally { d.close(); }
+});
+
+/**
+ * A producer whose work runs in a process this one does not host has to be asked to carry on, and the schedule
+ * job is where it is asked. A producer driven by its own clock implements none of this and is never asked.
+ */
+it('carries on an attempt in flight for a producer that must be asked, and admits nothing while it is going', async () => {
+  const d = await deployment({ intervalHours: 6 });
+  const asked = { resume: 0 };
+  try {
+    // The same fixture, plus the hook a producer whose child runs elsewhere implements.
+    const env = { ...(d.env as unknown as Record<string, unknown>) } as Record<string, unknown>;
+    env.recovery = { ...d.held.port, resumeAttempt: async () => { asked.resume += 1; } };
+    d.held.set({ attempt: 4, stage: 'copy', startedAt: d.now });
+
+    // An attempt in flight keeps the Deployment where the job that asks runs, even with nothing due.
+    expect(await recoveryAttemptDue(env as never, d.now + 60_000)).toBe(true);
+    const report = await runTick(env as never, d.now + 60_000, { wake: 'clock' });
+    expect([report.state, report.heldBy]).toEqual(['sleep', 'recovery:due']);
+    const job = report.jobs.find((entry) => entry.name === SCHEDULE_JOB);
+    expect([job?.changed ?? null, job?.failed ?? null]).toEqual([0, null]);
+    // The producer is asked to carry on, and nothing new is admitted.
+    expect([asked.resume, d.held.seen.length]).toEqual([1, 0]);
+  } finally { d.close(); }
+});
+
+it('asks nothing of a producer driven by its own clock, and holds the Deployment for nothing', async () => {
+  const d = await deployment({ intervalHours: 6 });
+  try {
+    d.held.set({ attempt: 4, stage: 'copy', startedAt: d.now });
+    // No `resumeAttempt`: the hosted producer's own clock continues its attempt.
+    expect(await recoveryAttemptDue(d.env as never, d.now + 60_000)).toBe(false);
+    expect(await runSchedule(d.env as never, d.now + 60_000)).toBe(0);
+    expect(d.held.seen).toEqual([]);
+  } finally { d.close(); }
+});
+
+it('reports a complete artifact as a verified artifact, and a complete staging as not one', async () => {
+  const d = await deployment({ intervalHours: 6 });
+  try {
+    const staged = { attempt: 2, stage: 'complete' as const, startedAt: d.now, staged: { prefix: 'staging/1789', sqlBytes: 10, downloadedBytes: 10, parts: 1, objects: { registered: 0, staged: 0 } } };
+    d.held.set(staged);
+    const hosted = availabilityOf({ ...idle, ...staged });
+    expect(hosted.state).toBe('staged');
+    if (hosted.state === 'staged') expect(hosted.needs).toContain('materializes');
+
+    // The same attempt from a producer that writes artifacts: the verified form, its location, and what a
+    // restore needs beside it. It never borrows the staging sentence.
+    const native = availabilityOf({ ...idle, ...staged, form: 'artifact', staged: { ...staged.staged, prefix: '/home/server/local-recovery/dep/1789' } });
+    expect(native.state).toBe('artifact');
+    if (native.state !== 'artifact') throw new Error('unreachable');
+    expect([native.at, native.needs.includes('wrapping key'), native.needs.includes('materializ')]).toEqual(['/home/server/local-recovery/dep/1789', true, false]);
   } finally { d.close(); }
 });

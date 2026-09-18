@@ -150,8 +150,8 @@ export const LEAF_GROUPS: readonly LeafGroup[] = [
     label: 'Backup',
     note: 'How often this server backs itself up and what it keeps.',
     leaves: [
-      { leaf: 'backup.auto_interval_hours', label: 'Back up every', kind: 'number', min: 1, max: 720, unit: 'hours' },
-      { leaf: 'backup.recovery.keep_stagings', label: 'Recovery stagings to keep', kind: 'number', min: 1, max: 30, note: 'Older complete stagings are released, and so are failed ones past the newest. Unset keeps 2.' },
+      { leaf: 'backup.auto_interval_hours', label: 'Back up every', kind: 'number', min: 1, max: 720, unit: 'hours', note: 'A self-hosted server writes a verified recovery artifact on this interval; a Cloudflare one stages a capture an operator then materializes.' },
+      { leaf: 'backup.recovery.keep_stagings', label: 'Recovery copies to keep', kind: 'number', min: 1, max: 30, note: 'Complete copies kept, newest first; older ones are released, and so are failed ones past the newest. Unset keeps 2.' },
       { leaf: 'backup.retention.keep_daily', label: 'Daily backups to keep', kind: 'number', min: 1, max: 365 },
       { leaf: 'backup.retention.keep_weekly', label: 'Weekly backups to keep', kind: 'number', min: 0, max: 52 },
     ],

@@ -10,7 +10,7 @@ import type { ServerEnv } from './adapters.js';
 import type { PowerState } from './power.js';
 import { expireGrants } from '../auth/grants.js';
 import { DEFAULT_DISPATCH_TIMEOUT_SECONDS, endQueuedRun, expireLeases, HARNESS_MEMBER_ID, RUN_OVERRUN_MARGIN_MS } from './harness.js';
-import { emit } from '../telemetry.js';
+import { classify, emit } from '../telemetry.js';
 import { failStaleRun, listLiveRunsAcrossProjects, listQueuedAcrossProjects, pruneRevokedCredentials, pruneTerminalRuns } from './runs.js';
 import { leafValues } from './settings.js';
 import { releaseRun } from './release.js';
@@ -22,7 +22,7 @@ import { transcriptRetention } from '../ingest/retention.js';
 import { drainObjectReleases } from './object-release.js';
 import { recoveryHoldRelease } from './recovery-hold.js';
 import { admitRecoveryExport } from './recovery-admission.js';
-import { recoveryScheduleOf, SCHEDULE_JOB } from './recovery-schedule.js';
+import { attemptAdvancing, recoveryScheduleOf, SCHEDULE_JOB } from './recovery-schedule.js';
 import { PRUNE_FILE_BUDGET, stagingPrunePolicy, STAGING_RETENTION_JOB } from './staging-retention.js';
 import { backfillImportedTitles, titleReadySessions } from './titling.js';
 
@@ -50,7 +50,17 @@ export type JobRun = (env: ServerEnv, now: number, state: PowerState) => Promise
  */
 async function scheduledRecoveryExport(env: ServerEnv, now: number): Promise<number> {
   const schedule = await recoveryScheduleOf(env, now);
-  if (!schedule.supported || !schedule.configured || !schedule.due) return 0;
+  if (!schedule.supported || !schedule.configured) return 0;
+  // An attempt already in flight is carried on rather than replaced: a producer whose work runs in a process this
+  // one does not host is asked here, which is where a child that stopped without finishing is noticed. Nothing
+  // new is admitted while one is going, and a producer driven by its own clock implements none of this.
+  if (attemptAdvancing(schedule)) {
+    await env.recovery?.resumeAttempt?.().catch((error: unknown) => {
+      emit({ kind: 'recovery_resume_refused', error_class: classify(error) });
+    });
+    return 0;
+  }
+  if (!schedule.due) return 0;
   const admitted = await admitRecoveryExport(env, now, { kind: 'schedule' });
   emit({ kind: 'recovery_schedule_admission', outcome: admitted.outcome, interval_hours: schedule.intervalHours ?? 0 });
   if (admitted.outcome !== 'admitted') return 0;
