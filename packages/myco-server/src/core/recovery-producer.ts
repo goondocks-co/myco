@@ -12,6 +12,7 @@
  * answers classified facts and never text, so no provider message, URL or exception can reach a status or a log.
  */
 import { emit } from '../telemetry.js';
+import type { ErrorClass } from './adapters.js';
 import {
   STAGING_FORMAT, STAGING_MANIFEST_FILE, STAGING_SCHEMA_FILE, STAGING_SQL_FILE, stagingPath, type RecoveryStagingManifest,
 } from './recovery-staging.js';
@@ -1008,6 +1009,34 @@ export interface RecoveryProducerStatus {
   schemaDrifted?: boolean;
   /** Set on an admission that named a retired hold token: it admits nothing. */
   holdRetired?: true;
+  /** Set once retention began releasing this attempt's staged payload: `staged` answers none from then on. */
+  stagingPruned?: true;
+}
+
+/** Which staged payloads a Deployment keeps. The producer holds the attempts; the policy comes from the Deployment. */
+export interface StagingPrunePolicy {
+  /** Complete stagings to keep; the newest counts toward it. */
+  keep: number;
+  /** Hold tokens the Deployment still holds open, or could not read: their attempts are never touched. */
+  protect: readonly string[];
+}
+
+/** What one retention pass is asked to do, and what it may spend doing it. */
+export interface StagingPruneRequest extends StagingPrunePolicy {
+  /** Files this pass may release. One wake releases no more than this, so no pass is unbounded. */
+  budget: number;
+}
+
+/** What one retention pass did. `pending` is what it left for the next wake, whether begun or not yet begun. */
+export interface StagingPruneReport {
+  releasedFiles: number;
+  releasedStagings: number;
+  pending: number;
+  /**
+   * How a store refusal that ended the pass classifies, where one did. The attempt keeps its identity and its
+   * cursor, and no provider or exception text travels with it.
+   */
+  refused: ErrorClass | null;
 }
 
 /**
@@ -1068,6 +1097,10 @@ export interface RecoveryProducerPort {
   status(): Promise<RecoveryProducerStatus>;
   /** Record that the Deployment's schema drifted from the staged capture, failing the attempt. */
   noteSchemaDrift(attempt: number): Promise<RecoveryProducerStatus>;
+  /** How many staged payloads this policy lets go of and retention has not finished releasing. */
+  pendingStagingPrunes(policy: StagingPrunePolicy): Promise<number>;
+  /** Release the staged payloads the policy lets go of, bounded by the request's budget. */
+  pruneStagings(request: StagingPruneRequest): Promise<StagingPruneReport>;
 }
 
 /** Where an attempt's staged export lives. */

@@ -28,6 +28,8 @@ const producer = (carried: readonly string[]): RecoveryProducerPort => ({
   admit: async () => { throw new Error('this test admits nothing'); },
   status: async () => { throw new Error('this test reads no status'); },
   noteSchemaDrift: async () => { throw new Error('this test notes no drift'); },
+  pendingStagingPrunes: async () => 0,
+  pruneStagings: async () => { throw new Error('this test prunes nothing'); },
   settleHold: async (token: string) => (carried.includes(token)
     ? { state: 'closed' as const, attempt: 1, stage: 'complete' as const }
     : { state: 'retired' as const }),

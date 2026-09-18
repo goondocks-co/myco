@@ -5,7 +5,7 @@ import { describe, expect, it } from 'bun:test';
 import {
   naturalState, nextWakeDelayMs, resolvePowerState, type PowerAssertion,
 } from '@myco-server-worker/core/power.js';
-import { jobRunsAt, jobsDueAt, SCHEDULE_JOB, SERVER_JOBS, DEFERRED_JOBS } from '@myco-server-worker/core/jobs.js';
+import { jobRunsAt, jobsDueAt, SCHEDULE_JOB, SERVER_JOBS, STAGING_RETENTION_JOB, DEFERRED_JOBS } from '@myco-server-worker/core/jobs.js';
 import { JOB_IMPLEMENTATIONS } from '@myco-server-worker/core/jobs-run.js';
 
 const THRESHOLDS = { idleMs: 60_000, sleepMs: 300_000, deepSleepMs: 3_600_000 };
@@ -124,7 +124,7 @@ describe('what runs at each depth', () => {
 
   it('runs a clock-owned job on the target\'s own clock alone: a tick an owner requests never drains stored objects or starts a backup', () => {
     const owned = SERVER_JOBS.filter((j) => j.wake === 'clock').map((j) => j.name);
-    expect(owned).toEqual([SCHEDULE_JOB, 'object-release-drain']);
+    expect(owned).toEqual([SCHEDULE_JOB, STAGING_RETENTION_JOB, 'object-release-drain']);
     for (const state of ['active', 'idle', 'sleep'] as const) {
       expect(jobsDueAt(state, 'request').map((j) => j.name).filter((name) => owned.includes(name))).toEqual([]);
       expect(jobsDueAt(state, 'clock').map((j) => j.name)).toEqual(expect.arrayContaining(owned));
