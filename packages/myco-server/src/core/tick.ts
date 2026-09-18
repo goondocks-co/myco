@@ -23,6 +23,7 @@ import { lastActivityAt } from './activity.js';
 import { classify, emit } from '../telemetry.js';
 import { pendingSearchBlobs } from './search-index.js';
 import { recoveryAttemptDue } from './recovery-schedule.js';
+import { stagingPruneDue } from './staging-retention.js';
 import { pendingImportedTranscripts, pendingTranscriptBytes } from '../ingest/parse.js';
 import { embeddingKeepsAwake } from './embedding/jobs.js';
 
@@ -68,6 +69,8 @@ export async function engineAssertions(env: ServerEnv, now: number): Promise<Pow
   // A configured backup that is due keeps the Deployment no deeper than sleep, where the job that admits it
   // runs. An inactive Deployment therefore still takes its due attempt, and deep sleep still runs nothing.
   if (await recoveryAttemptDue(env, now)) assertions.push({ name: 'recovery:due', maxDepth: 'sleep' });
+  // Staged payloads waiting to be released keep it there too, until the last of them has gone.
+  if (await stagingPruneDue(env)) assertions.push({ name: 'recovery:prune', maxDepth: 'sleep' });
   return assertions;
 }
 

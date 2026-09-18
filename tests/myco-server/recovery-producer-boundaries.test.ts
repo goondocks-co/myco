@@ -25,6 +25,7 @@ const bucket = () => ({
   async put() { return { size: 0 }; },
   async get() { return null; },
   async head() { return null; },
+  async delete() {},
   async createMultipartUpload() { return { uploadId: 'u1' }; },
   resumeMultipartUpload() {
     return {

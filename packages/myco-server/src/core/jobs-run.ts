@@ -23,6 +23,7 @@ import { drainObjectReleases } from './object-release.js';
 import { recoveryHoldRelease } from './recovery-hold.js';
 import { admitRecoveryExport } from './recovery-admission.js';
 import { recoveryScheduleOf, SCHEDULE_JOB } from './recovery-schedule.js';
+import { PRUNE_FILE_BUDGET, stagingPrunePolicy, STAGING_RETENTION_JOB } from './staging-retention.js';
 import { backfillImportedTitles, titleReadySessions } from './titling.js';
 
 /** The retention window when the leaf is unset, and the bounds the leaf itself declares. */
@@ -56,6 +57,27 @@ async function scheduledRecoveryExport(env: ServerEnv, now: number): Promise<num
   // The wake an admitted attempt needs to be continued, exactly as an owner's admission gets one.
   await env.wake?.().catch(() => undefined);
   return 1;
+}
+
+/**
+ * Releases the staged payloads this Deployment's policy lets go of, so a scheduled backup does not grow its
+ * recovery store without bound. Answers the stagings this pass finished releasing.
+ *
+ * The policy and the holds it protects are read here; the producer holds the attempts and does the releasing, one
+ * pass at a time with admission. The pass is bounded by a file budget, so a staging holding many objects is
+ * released over several wakes rather than one unbounded invocation.
+ */
+async function pruneRecoveryStagings(env: ServerEnv, _now: number): Promise<number> {
+  if (env.recovery === undefined) return 0;
+  const policy = await stagingPrunePolicy(env);
+  const report = await env.recovery.pruneStagings({ ...policy, budget: PRUNE_FILE_BUDGET });
+  if (report.releasedFiles > 0 || report.refused !== null) {
+    emit({
+      kind: 'recovery_staging_prune', keep: policy.keep, released_files: report.releasedFiles,
+      released_stagings: report.releasedStagings, pending: report.pending, refused: report.refused ?? 'none',
+    });
+  }
+  return report.releasedStagings;
 }
 
 /** The retention window in days from the Deployment's leaf, clamped to the leaf's bounds; unset means the default. */
@@ -178,6 +200,7 @@ export const JOB_IMPLEMENTATIONS: Readonly<Record<string, JobRun>> = {
   'titling-backfill': backfillImportedTitles,
   'transcript-retention': transcriptRetention,
   [SCHEDULE_JOB]: scheduledRecoveryExport,
+  [STAGING_RETENTION_JOB]: pruneRecoveryStagings,
   // Stored object release and recovery holds
   'recovery-hold-release': recoveryHoldRelease,
   'object-release-drain': async (env, now) => {

@@ -752,6 +752,7 @@ Four blocks hold dynamic children the schema cannot enumerate — `agent.tasks`,
 | `backup.retention.keep_daily` | REPLACE | Deployment | Core | Deployment backup policy; the per-target mechanism belongs with the backup work, not here | #923 |
 | `backup.retention.keep_weekly` | REPLACE | Deployment | Core | Deployment backup policy; the per-target mechanism belongs with the backup work, not here | #923 |
 | `backup.auto_interval_hours` | REPLACE | Deployment | Core | Deployment backup policy; the per-target mechanism belongs with the backup work, not here | #923 |
+| `backup.recovery.keep_stagings` | NEW | Deployment | Core | Complete hosted recovery stagings a Deployment keeps; the newest counts toward it, and the newest failed one is kept beside them | #1316 |
 | `maintenance.auto_optimize` | REPLACE | Deployment | C | PRAGMA optimize has no D1 equivalent; needs a per-target mechanism or an explicit drop | #913 |
 | `maintenance.auto_optimize_interval_hours` | REPLACE | Deployment | C | Schedule for the above | #913 |
 | `maintenance.auto_integrity_check` | REPLACE | Deployment | C | SQLite integrity/FK check has no D1 equivalent | #913 |

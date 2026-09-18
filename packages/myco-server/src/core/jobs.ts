@@ -63,6 +63,9 @@ export interface WakeContinuation {
 /** The job "Back up every" drives. This registry owns job names, so the name lives here. */
 export const SCHEDULE_JOB = 'recovery-export-schedule';
 
+/** The job that keeps the recovery store from growing without bound. */
+export const STAGING_RETENTION_JOB = 'recovery-staging-retention';
+
 export const WAKE_CONTINUATIONS: readonly WakeContinuation[] = [
   {
     name: 'recovery-export-continuation',
@@ -123,6 +126,12 @@ export const SERVER_JOBS: readonly ServerJob[] = [
     runsThrough: 'sleep',
     wake: 'clock',
     converges: 'a Deployment whose owner set "Back up every" admits one recovery attempt once that interval has passed since the last attempt started, and admits none otherwise: none while an attempt still advances, none while the setting is unset, and none on a Deployment that runs no producer. At most one attempt is ever admitted for one due interval, because admission opens the producer hold and a second admission finds the first attempt instead',
+  },
+  {
+    name: STAGING_RETENTION_JOB,
+    runsThrough: 'sleep',
+    wake: 'clock',
+    converges: 'a Deployment keeps the newest complete stagings its "Recovery stagings to keep" setting names and the newest failed one, and holds the staged payload of no other settled attempt: every file of each released staging is gone from the staging store, and each attempt keeps a tombstone carrying its hold token, its start and its refusal so a settled token still admits nothing and the cadence still reads its own history. Nothing advancing, nothing resting unconfirmed, nothing downloaded-only and nothing carrying a hold this Deployment holds open is ever released, and a store that refuses a delete leaves the staging and its cursors for the next pass',
   },
   // Stored object release and recovery holds
   {
