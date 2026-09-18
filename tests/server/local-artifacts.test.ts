@@ -404,6 +404,8 @@ it('GATE: reads a corrupt attempt record as uncertain, and never as no attempt a
     expect(await owner.pendingStagingPrunes({ keep: 1, protect: [] })).toBe(0);
     expect(await owner.pruneStagings({ keep: 1, protect: [], budget: 50 })).toMatchObject({ releasedStagings: 0 });
     expect(fs.existsSync(path.join(d.root, '1000', 'recovery.json'))).toBe(true);
+    // Nor is the fence over it released: a token this owner cannot place is never retired while one is uncertain.
+    expect(await owner.settleHold('hold-a')).toEqual({ state: 'open', attempt: 1_000, stage: 'copy' });
   } finally { d.remove(); }
 });
 
@@ -417,5 +419,62 @@ it('writes an attempt record atomically, so an interrupted write leaves the prev
     expect(stray).toEqual(['6000.attempt.json']);
     expect(JSON.parse(fs.readFileSync(path.join(d.root, '6000.attempt.json'), 'utf8')).holdToken).toBe('hold-a');
     await owner.stop();
+  } finally { d.remove(); }
+});
+
+/**
+ * A released artifact leaves a tombstone, and a tombstone is settled: it holds no files, it is not an attempt in
+ * flight, and it must never stand between this Deployment and its next backup.
+ */
+it('GATE: admits the next attempt over a released artifact, and answers the tombstone for its own token', async () => {
+  const d = deployment();
+  const spawned = runner(hangs);
+  try {
+    const owner = artifacts({ paths: d.paths, runner: spawned.runner, command: { path: 'myco', args: [] }, now: () => 9_000 });
+    record(d.root, 1_000, { holdToken: 'hold-1000' });
+    manifest(path.join(d.root, '1000'), 'complete');
+    record(d.root, 2_000, { holdToken: 'hold-2000' });
+    manifest(path.join(d.root, '2000'), 'complete');
+    await owner.pruneStagings({ keep: 1, protect: [], budget: 50 });
+    const tombstone = attempts(d.root).find((one) => one.startedAt === 1_000)!;
+    expect([tombstone.record.released, tombstone.record.terminal]).toEqual([true, 'complete']);
+    // The stage its record kept, with no manifest left to read it from, and nothing to recover from.
+    expect([statusOf(tombstone).stage, statusOf(tombstone).staged]).toEqual(['complete', null]);
+
+    // A fresh admission is a fresh attempt: a tombstone is not an attempt in flight.
+    const admitted = await owner.admit({ holdToken: 'hold-new', startedBy: 'schedule' });
+    expect([admitted.attempt, admitted.stage]).toEqual([9_000, 'copy']);
+    expect(spawned.asked.length).toBe(1);
+    // And the released attempt's own token still answers that attempt, so it admits nothing twice.
+    expect((await owner.admit({ holdToken: 'hold-1000', startedBy: 'schedule' })).attempt).toBe(1_000);
+    expect(await owner.settleHold('hold-1000')).toEqual({ state: 'closed', attempt: 1_000, stage: 'complete' });
+    await owner.stop();
+  } finally { d.remove(); }
+});
+
+it('GATE: stops calling an artifact available before it deletes anything of it, and finishes without its manifest', async () => {
+  const d = deployment();
+  try {
+    const owner = artifacts({ paths: d.paths, runner: runner(completes).runner, command: { path: 'myco', args: [] } });
+    record(d.root, 1_000, { holdToken: 'hold-1000' });
+    manifest(path.join(d.root, '1000'), 'complete');
+    record(d.root, 2_000, { holdToken: 'hold-2000' });
+    manifest(path.join(d.root, '2000'), 'complete');
+
+    // A budget that runs out part-way through the oldest artifact.
+    const first = await owner.pruneStagings({ keep: 1, protect: [], budget: 2 });
+    expect([first.releasedFiles, first.releasedStagings]).toEqual([2, 0]);
+    const partial = attempts(d.root).find((one) => one.startedAt === 1_000)!;
+    // Its release is recorded, its manifest is the first file to go, and it offers nothing to recover from.
+    expect(partial.record.pruning).toBe(true);
+    expect(fs.existsSync(path.join(d.root, '1000', 'recovery.json'))).toBe(false);
+    expect(statusOf(partial).staged).toBe(null);
+    expect(availabilityOf(statusOf(partial)).state).toBe('none');
+
+    // The next pass carries on from the record alone, with no manifest left to read.
+    const second = await owner.pruneStagings({ keep: 1, protect: [], budget: 50 });
+    expect([second.releasedStagings, second.pending]).toEqual([1, 0]);
+    expect(fs.existsSync(path.join(d.root, '1000'))).toBe(false);
+    expect(attempts(d.root).find((one) => one.startedAt === 1_000)!.record.released).toBe(true);
   } finally { d.remove(); }
 });

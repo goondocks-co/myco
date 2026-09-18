@@ -17,6 +17,8 @@ import { availabilityOf, recoveryScheduleOf, scheduledIntervalHours, SCHEDULE_JO
 import { SCHEDULED_BY } from '@myco-server-worker/core/recovery-admission.js';
 import { settlementOf, type AttemptStage, type RecoveryAdmission, type RecoveryAdmissionReadiness, type RecoveryProducerStatus } from '@myco-server-worker/core/recovery-producer.js';
 import { stampRequest } from '@myco-server-worker/core/activity.js';
+import { acquireRecoveryHold } from '@myco-server-worker/core/object-release.js';
+import { holdSettlementDue } from '@myco-server-worker/core/recovery-hold.js';
 import { sqliteEnv } from './helpers/fixtures.js';
 
 const HOUR = 60 * 60 * 1000;
@@ -35,6 +37,8 @@ function producer(now: number) {
   const asked = { resume: 0 };
   return {
     seen, reads, asked,
+    /** Put an attempt behind a hold token, as an admission that opened it would have. */
+    carry: (token: string, attempt: { id: number; stage: AttemptStage }) => { carried.set(token, attempt); },
     set: (next: Partial<RecoveryProducerStatus>) => { status = { ...idle, ...next }; },
     port: {
       admission: { ready: true } as RecoveryAdmissionReadiness,
@@ -338,5 +342,33 @@ it('reports a complete artifact as a verified artifact, and a complete staging a
     expect(native.state).toBe('artifact');
     if (native.state !== 'artifact') throw new Error('unreachable');
     expect([native.at, native.needs.includes('wrapping key'), native.needs.includes('materializ')]).toEqual(['/home/server/local-recovery/dep/1789', true, false]);
+  } finally { d.close(); }
+});
+
+/**
+ * A producer hold defers deletion until something settles it, and only the Deployment's own job does.
+ *
+ * An inactive Deployment whose attempt has settled is held at sleep by that hold alone, where the job that
+ * settles it runs, so its deletion fence is released on the Deployment's own clock rather than on its traffic.
+ */
+it('holds an inactive Deployment at sleep while a producer hold is unsettled, and settles it there', async () => {
+  const d = await deployment({ intervalHours: 24 });
+  try {
+    const db = (d.env as unknown as { db: Parameters<typeof acquireRecoveryHold>[0] }).db;
+    await acquireRecoveryHold(db, 'hold-settled', d.now);
+    // The attempt carrying that hold has finished, so the producer answers that it advances no further.
+    d.held.set({ attempt: 4, stage: 'complete', startedAt: d.now });
+    d.held.carry('hold-settled', { id: 4, stage: 'complete' });
+    expect(await holdSettlementDue(d.env as never)).toBe(true);
+
+    // No activity is stamped: inactivity alone would put this Deployment in deep sleep, where nothing runs.
+    const report = await runTick(d.env as never, d.now + 60_000, { wake: 'clock' });
+    expect(report.state).toBe('sleep');
+    const settling = report.jobs.find((entry) => entry.name === 'recovery-hold-release');
+    expect([settling?.changed ?? null, settling?.failed ?? null]).toEqual([1, null]);
+    expect(await holdSettlementDue(d.env as never)).toBe(false);
+
+    // With it settled and nothing else owing, the Deployment is free to sleep as deeply as it likes.
+    expect((await runTick(d.env as never, d.now + 120_000, { wake: 'clock' })).state).toBe('deep_sleep');
   } finally { d.close(); }
 });

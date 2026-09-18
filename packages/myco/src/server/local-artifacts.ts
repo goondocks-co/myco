@@ -19,6 +19,7 @@
  */
 import fs from 'node:fs';
 import path from 'node:path';
+import { z } from 'zod';
 import { atomicWriteFileSync } from '@myco/utils/atomic-write.js';
 import { LifecycleLock } from '@myco/utils/lifecycle-lock.js';
 import { resolveBinary } from '../runtime/binary-resolution.js';
@@ -53,9 +54,31 @@ export interface AttemptRecord {
   lastRefusal?: { refusal: ProducerRefusal; detail: string; at: number };
   /** Set once this attempt will not be carried on again: it is failed, and the interval decides the next one. */
   givenUp?: true;
+  /** Set before the first file of this artifact is released: from then on it holds nothing to recover from. */
+  pruning?: true;
   /** Set on the tombstone of a released artifact: its files are gone, and its identity is all that is kept. */
   released?: true;
+  /**
+   * What this attempt reached, kept on its own record.
+   *
+   * A released artifact's manifest is gone with its files, so the stage its tombstone answers — and the cadence
+   * and settlement that read it — come from here rather than from a file that no longer exists.
+   */
+  terminal?: 'complete' | 'failed';
 }
+
+/** An attempt record as it is read back: shape-checked, because a torn or foreign file is not one. */
+const recordSchema = z.object({
+  startedAt: z.number().int(),
+  holdToken: z.string(),
+  startedBy: z.string(),
+  continuations: z.number().int().min(0),
+  lastRefusal: z.object({ refusal: z.string(), detail: z.string(), at: z.number() }).optional(),
+  givenUp: z.literal(true).optional(),
+  pruning: z.literal(true).optional(),
+  released: z.literal(true).optional(),
+  terminal: z.union([z.literal('complete'), z.literal('failed')]).optional(),
+});
 
 /**
  * How many times one attempt may be asked to carry on before it is left failed.
@@ -102,6 +125,14 @@ const readJson = <T>(file: string): T | null => {
   try { return JSON.parse(fs.readFileSync(file, 'utf8')) as T; } catch { return null; }
 };
 
+/** One attempt's record, or null where the file is absent, torn, or not one of these. */
+const readRecord = (file: string): AttemptRecord | null => {
+  const held = readJson<unknown>(file);
+  if (held === null) return null;
+  const parsed = recordSchema.safeParse(held);
+  return parsed.success ? parsed.data as AttemptRecord : null;
+};
+
 /**
  * Every attempt under this root, oldest first.
  *
@@ -118,8 +149,8 @@ export function attempts(root: string): Attempt[] {
     if (Number.isInteger(instant) && String(instant) === name) instants.add(instant);
   }
   for (const startedAt of instants) {
-    const record = readJson<AttemptRecord>(path.join(root, `${startedAt}${RECORD_SUFFIX}`));
-    const uncertain = record === null;
+    const record = readRecord(path.join(root, `${startedAt}${RECORD_SUFFIX}`));
+    const uncertain = record === null && fs.existsSync(path.join(root, `${startedAt}${RECORD_SUFFIX}`));
     const directory = path.join(root, String(startedAt));
     const manifestFile = path.join(directory, 'recovery.json');
     const manifest = fs.existsSync(manifestFile) ? readJson<{ status?: string }>(manifestFile) : undefined;
@@ -154,12 +185,17 @@ export function destinationOwned(directory: string): boolean {
   return false;
 }
 
-/** Whether this attempt is still going somewhere: it has not completed and has not been given up on. */
-const running = (attempt: Attempt): boolean =>
-  attempt.status !== 'complete' && (attempt.record.givenUp !== true || attempt.uncertain);
+/** Whether this attempt is still going somewhere: not settled, not released, and not being released. */
+const running = (attempt: Attempt): boolean => attempt.record.released !== true
+  && attempt.record.pruning !== true
+  && attempt.record.terminal === undefined
+  && attempt.status !== 'complete'
+  && (attempt.record.givenUp !== true || attempt.uncertain);
 
 /** What an attempt's state says in the shared stage vocabulary; a native attempt copies, completes or fails. */
 function stageOf(attempt: Attempt): AttemptStage {
+  // A released artifact's manifest went with its files; what it reached is on its own record.
+  if (attempt.record.terminal !== undefined) return attempt.record.terminal;
   if (attempt.status === 'complete') return 'complete';
   if (attempt.record.givenUp === true) return 'failed';
   return 'copy';
@@ -167,7 +203,7 @@ function stageOf(attempt: Attempt): AttemptStage {
 
 /** How much of the artifact is on disk, without walking it: the snapshot's own bytes as its manifest records them. */
 function staged(attempt: Attempt): RecoveryProducerStatus['staged'] {
-  if (attempt.record.released === true) return null;
+  if (attempt.record.released === true || attempt.record.pruning === true) return null;
   const manifest = readJson<{ snapshot?: { database?: { bytes?: number }; blobCount?: number } }>(path.join(attempt.directory, 'recovery.json'));
   const bytes = manifest?.snapshot?.database?.bytes ?? null;
   const objects = manifest?.snapshot?.blobCount ?? 0;
@@ -196,7 +232,7 @@ export function statusOf(attempt: Attempt | undefined): RecoveryProducerStatus {
     attempt: attempt.startedAt,
     stage: stageOf(attempt),
     startedAt: attempt.record.startedAt,
-    staged: attempt.status === null ? null : staged(attempt),
+    staged: attempt.status === null && attempt.record.terminal === undefined ? null : staged(attempt),
     // A classifier is the verdict of a settled attempt. One still being carried on reports its stage, not a
     // refusal an orphaned child's lock may have caused.
     error: attempt.record.givenUp === true ? attempt.record.lastRefusal?.refusal ?? null : null,
@@ -321,7 +357,7 @@ export class LocalArtifacts implements RecoveryProducerPort {
   }
 
   private write(root: string, startedAt: number, record: AttemptRecord): void {
-    atomicWriteFileSync(path.join(root, `${startedAt}${RECORD_SUFFIX}`), `${JSON.stringify(record, null, 2)}\n`, { mode: 0o600 });
+    atomicWriteFileSync(path.join(root, `${startedAt}${RECORD_SUFFIX}`), `${JSON.stringify(record, null, 2)}\n`, { mode: 0o600, durable: true });
   }
 
   /**
@@ -410,8 +446,15 @@ export class LocalArtifacts implements RecoveryProducerPort {
    * is retired.
    */
   async settleHold(token: string): Promise<HoldSettlement> {
-    const carried = this.held().find((attempt) => attempt.record.holdToken === token && token !== '');
-    if (carried === undefined) return { state: 'retired' };
+    const held = this.held();
+    const carried = held.find((attempt) => attempt.record.holdToken === token && token !== '');
+    if (carried === undefined) {
+      // A token is retired only when every attempt could be read. While one is uncertain, this token may be its
+      // own, and retiring it would release a fence over an attempt whose state nothing here established.
+      const uncertain = held.find((attempt) => attempt.uncertain);
+      if (uncertain !== undefined) return { state: 'open', attempt: uncertain.startedAt, stage: 'copy' };
+      return { state: 'retired' };
+    }
     // A hold is closed on the attempt's own evidence: a complete artifact, or a settled one whose destination
     // nothing owns any more. While something owns it, the hold stays open however this attempt reads.
     const settled = carried.status === 'complete'
@@ -437,14 +480,21 @@ export class LocalArtifacts implements RecoveryProducerPort {
    * never selects.
    */
   private releasable(held: readonly Attempt[], policy: StagingPrunePolicy): Attempt[] {
-    const rows: RetainedStaging[] = held.map((attempt) => ({
-      id: attempt.startedAt,
-      stage: attempt.uncertain || attempt.unreadable ? 'unconfirmed' : stageOf(attempt),
-      holdToken: attempt.heldBy,
-      pruneStartedAt: null,
-    }));
+    const rows: RetainedStaging[] = held
+      // A released tombstone holds nothing, so it is neither selectable nor one of the artifacts kept.
+      .filter((attempt) => attempt.record.released !== true)
+      .map((attempt) => ({
+        id: attempt.startedAt,
+        stage: attempt.uncertain || attempt.unreadable ? 'unconfirmed' : stageOf(attempt),
+        holdToken: attempt.heldBy,
+        // An artifact whose release began is carried on by its own record, whatever its manifest still says.
+        pruneStartedAt: null,
+      }));
     const selected = new Set(prunableStagings(rows, policy.keep, policy.protect));
-    return held.filter((attempt) => selected.has(attempt.startedAt));
+    // An artifact whose release began is finished whether or not the policy would select it again.
+    const begun = held.filter((attempt) => attempt.record.pruning === true && attempt.record.released !== true);
+    return [...begun, ...held.filter((attempt) => selected.has(attempt.startedAt) && attempt.record.pruning !== true)]
+      .sort((left, right) => left.startedAt - right.startedAt);
   }
 
   /**
@@ -474,10 +524,16 @@ export class LocalArtifacts implements RecoveryProducerPort {
     for (const attempt of this.releasable(held, request)) {
       if (releasedFiles >= budget) break;
       try {
+        // Recorded before a single file goes: from here this artifact holds nothing to recover from, and the
+        // release is carried on from its own record rather than from a manifest that is about to disappear.
+        const terminal = attempt.record.terminal ?? (attempt.status === 'complete' ? 'complete' as const : 'failed' as const);
+        if (attempt.record.pruning !== true) this.write(root, attempt.startedAt, { ...attempt.record, pruning: true, terminal });
+        const manifest = path.join(attempt.directory, 'recovery.json');
         const files = fs.existsSync(attempt.directory)
           ? fs.readdirSync(attempt.directory, { recursive: true })
             .map((entry) => path.join(attempt.directory, String(entry)))
             .filter((entry) => fs.statSync(entry, { throwIfNoEntry: false })?.isFile() === true)
+            .sort((left, right) => Number(right === manifest) - Number(left === manifest))
           : [];
         // One file at a time, so a budget bounds what this pass deletes rather than what it starts.
         let spent = false;
@@ -488,7 +544,7 @@ export class LocalArtifacts implements RecoveryProducerPort {
         }
         if (spent) break;
         await fs.promises.rm(attempt.directory, { recursive: true, force: true });
-        this.write(root, attempt.startedAt, { ...attempt.record, released: true });
+        this.write(root, attempt.startedAt, { ...attempt.record, pruning: true, terminal, released: true });
         releasedStagings += 1;
       } catch (error) {
         refused = 'unknown';

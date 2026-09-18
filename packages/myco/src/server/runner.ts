@@ -153,9 +153,12 @@ export function systemRunner(): CommandRunner {
   return {
     async run(command, args, options) {
       if (options?.cwd !== undefined && !existsSync(options.cwd)) throw new WorkingDirectoryMissing(options.cwd, command);
-      // A caller that has already withdrawn starts nothing: there is no tree, so nothing of one is running.
-      if (options?.signal?.aborted === true) throw new CommandCancelled(command, args, 'absent');
+      // A caller who has withdrawn starts nothing, whether it withdrew before this call or while the spawn was
+      // being prepared: there is no tree, so nothing of one is running.
+      const gone = (): boolean => options?.signal?.aborted === true;
+      if (gone()) throw new CommandCancelled(command, args, 'absent');
       const { spawn } = await import('node:child_process');
+      if (gone()) throw new CommandCancelled(command, args, 'absent');
       return new Promise<CommandResult>((resolve, reject) => {
         const child = spawn(command, [...args], {
           cwd: options?.cwd,
@@ -205,6 +208,8 @@ export function systemRunner(): CommandRunner {
           return true;
         };
         options?.signal?.addEventListener('abort', withdrawn, { once: true });
+        // Between the spawn and that listener, a withdrawal would be missed; this is where it is caught.
+        if (gone()) withdrawn();
         child.stdout?.on('data', (chunk: Buffer) => { stdout += chunk.toString(); });
         child.stderr?.on('data', (chunk: Buffer) => { stderr += chunk.toString(); });
         child.on('error', (err) => { if (settled()) reject(err); });

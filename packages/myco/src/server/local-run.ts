@@ -132,6 +132,9 @@ export async function runLocalDeployment(paths = resolveLocalPaths()): Promise<L
       const started = await startDeployment({ ...options, harnessTasks: runtime.tasks, recovery: artifacts,
         harnessLaunchFor: (callbackOrigin) => runtime.launchFor(callbackOrigin),
         beforeStop: async () => { await artifacts.stop(); await runtime.stop(); } });
+      // A settled attempt asks for a wake, so the hold deferring deletion on this volume is settled at the next
+      // tick rather than the next hour. The wake is the Deployment's own and exists only once it is up.
+      if (started.env.wake !== undefined) artifacts.wakeWith(started.env.wake);
       return { ...started, record };
     },
   });
