@@ -46,6 +46,8 @@ import {
   updateLocalDeployment,
   type LocalDeploymentRecord,
 } from '../server/local.js';
+import { keptArtifacts } from '../server/local-artifacts.js';
+import { schemaMetaValue } from '@myco-server-worker/platform/bun/server-main.js';
 import { carriedNative, runLocalDeployment } from '../server/local-run.js';
 import { setupLocalOwner } from '../server/local-owner.js';
 import { backupLocalDeployment, localRecoveryHold } from '../server/local-backup.js';
@@ -397,6 +399,10 @@ export async function run(args: string[]): Promise<void> {
           fail('--data removes the Deployment directory and everything in it. Re-run with --yes to confirm.');
         }
         const removed = uninstallService(localSpec());
+        // Read while the volume is still there: what names these artifacts is the Deployment they were taken from.
+        const kept = removeData
+          ? keptArtifacts(paths, schemaMetaValue(paths.databasePath, 'deployment_id', carriedNative()))
+          : null;
         if (removeData) removeLocalDeployment(paths);
         // The service is what this stops. A Deployment someone started in a
         // terminal with `server run` is that terminal's to end, and saying it
@@ -406,6 +412,10 @@ export async function run(args: string[]): Promise<void> {
           : removed.removed
             ? 'Deployment service removed. Its data is kept.'
             : 'No service was installed. Its data is kept.');
+        if (kept !== null) {
+          console.log(`Its recovery artifacts are kept, and are what is left to restore from: ${kept.root} (${kept.complete} complete).`);
+          console.log('Restore one with `myco server restore --target local --from <artifact> --secrets-from <secrets>`, or remove that directory to let them go.');
+        }
         return;
       }
 

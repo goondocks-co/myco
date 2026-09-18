@@ -14,7 +14,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import {
-  artifactsRoot, attempts, CONTINUATION_LIMIT, destinationOwned, LocalArtifacts, statusOf,
+  artifactsRoot, attempts, CONTINUATION_LIMIT, destinationOwned, keptArtifacts, LocalArtifacts, statusOf,
   type AttemptRecord, type LocalArtifactsOptions,
 } from '@myco/server/local-artifacts.js';
 import { LifecycleLock } from '@myco/utils/lifecycle-lock.js';
@@ -553,5 +553,24 @@ it('owes nothing for an operator hold that belongs to no artifact of its own', a
     expect(await owner.pendingStagingPrunes(policy)).toBe(0);
     await owner.pruneStagings({ ...policy, budget: 50 });
     expect(spawned.asked).toEqual([]);
+  } finally { d.remove(); }
+});
+
+/**
+ * What a destroyed Deployment leaves behind, which its own removal names: the artifacts live outside the volume
+ * and outlive it, so they are what is left to restore it from.
+ */
+it('names the complete artifacts kept on this machine, and nothing else', () => {
+  const d = deployment();
+  try {
+    expect(keptArtifacts(d.paths, DEPLOYMENT)).toBe(null);
+    record(d.root, 1_000, { holdToken: 'hold-a' });
+    manifest(path.join(d.root, '1000'), 'complete');
+    record(d.root, 2_000, { holdToken: 'hold-b' });
+    manifest(path.join(d.root, '2000'), 'content');
+    record(d.root, 3_000, { holdToken: 'hold-c', released: true, terminal: 'complete' });
+    // One complete artifact: an attempt still running is not one, and a released tombstone holds nothing.
+    expect(keptArtifacts(d.paths, DEPLOYMENT)).toEqual({ root: d.root, complete: 1 });
+    expect(keptArtifacts(d.paths, null)).toBe(null);
   } finally { d.remove(); }
 });

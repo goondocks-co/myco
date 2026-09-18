@@ -51,9 +51,8 @@ export type JobRun = (env: ServerEnv, now: number, state: PowerState) => Promise
 async function scheduledRecoveryExport(env: ServerEnv, now: number): Promise<number> {
   const schedule = await recoveryScheduleOf(env, now);
   if (!schedule.supported || !schedule.configured) return 0;
-  // An attempt already in flight is carried on rather than replaced: a producer whose work runs in a process this
-  // one does not host is asked here, which is where a child that stopped without finishing is noticed. Nothing
-  // new is admitted while one is going, and a producer driven by its own clock implements none of this.
+  // An attempt in flight is carried on, never replaced: a producer whose work runs elsewhere is asked here, and
+  // one driven by its own clock implements none of this.
   if (attemptAdvancing(schedule)) {
     await env.recovery?.resumeAttempt?.().catch((error: unknown) => {
       emit({ kind: 'recovery_resume_refused', error_class: classify(error) });

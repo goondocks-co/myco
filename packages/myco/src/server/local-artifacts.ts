@@ -101,6 +101,20 @@ export function artifactsRoot(paths: LocalDeploymentPaths, deploymentId: string)
   return path.join(path.dirname(paths.root), ARTIFACTS_DIRECTORY, deploymentId);
 }
 
+/**
+ * The artifacts kept on this machine, read before the volume goes.
+ *
+ * They live outside the volume and outlive it, so removing a Deployment leaves them: they are what is left to
+ * recover it from. Answers the directory and how many complete artifacts are in it, or null where there are none.
+ */
+export function keptArtifacts(paths: LocalDeploymentPaths, deploymentId: string | null): { root: string; complete: number } | null {
+  if (deploymentId === null) return null;
+  const root = artifactsRoot(paths, deploymentId);
+  if (!fs.existsSync(root)) return null;
+  const complete = attempts(root).filter((attempt) => stageOf(attempt) === 'complete' && attempt.record.released !== true).length;
+  return complete === 0 ? null : { root, complete };
+}
+
 /** One attempt as this owner reads it: its directory, its record, and what its own manifest says it reached. */
 export interface Attempt {
   startedAt: number;

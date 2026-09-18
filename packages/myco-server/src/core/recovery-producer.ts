@@ -1119,8 +1119,8 @@ export interface RecoveryProducerPort {
   /**
    * Make progress on the attempt already in flight, for a producer that has to be asked.
    *
-   * The hosted producer is driven by its own clock's continuations and implements none of this. A producer whose
-   * work runs outside this process needs a caller to notice that it stopped, and this is where that caller asks.
+   * A producer whose work runs outside this process needs a caller to notice that it stopped; one driven by its
+   * own clock's continuations implements none of this.
    */
   resumeAttempt?(): Promise<void>;
 }

@@ -28,8 +28,8 @@ export function cadenceWords(schedule: RecoverySchedule, now: number): string {
 /**
  * What the last attempt did, or that none has run.
  *
- * A producer whose attempts are numbered is named by the number; one whose attempt is a whole artifact is named
- * by when it started, which is what identifies it to whoever goes looking for it.
+ * Numbered attempts are named by their number; an attempt that is a whole artifact is named by when it started,
+ * which is what identifies it on disk.
  */
 export function latestWords(schedule: RecoverySchedule, form: RecoveryForm = 'staging'): string {
   const latest = schedule.latest;
