@@ -261,35 +261,48 @@ describe.skipIf(process.platform === 'win32')('a deadline whose group signal is 
  * processes it started are ended, and what that managed is reported rather than assumed.
  */
 describe('a withdrawn command', () => {
-  /** A command that ignores SIGTERM and starts a child of its own, so ending it has to end a tree. */
-  const stubborn = (marker: string): readonly string[] => ['-c',
-    `trap '' TERM; (while true; do echo alive >> ${marker}; sleep 0.05; done) & while true; do sleep 0.05; done`];
+  /**
+   * A launcher whose child keeps writing, so ending the command has to end a tree rather than one process.
+   *
+   * Both are this runtime, started the way the deadline fixtures above start theirs: every platform in this
+   * project runs the same executable, and a shell is not one of them.
+   */
+  const writing = (root: string): { argv: string[]; marker: string } => {
+    const marker = join(root, 'alive');
+    const grandchild = `const fs=require('fs');setInterval(()=>fs.appendFileSync(${JSON.stringify(marker)},'.'),50);`
+      + 'setTimeout(()=>process.exit(0),8000);';
+    const code = `require('child_process').spawn(process.execPath,['-e',${JSON.stringify(grandchild)}],{stdio:'inherit'});`
+      + 'setTimeout(()=>{},8000);';
+    return { argv: ['-e', code], marker };
+  };
 
   it('ends the command and what it started, and says what that ended', async () => {
     const root = mkdtempSync(join(tmpdir(), 'myco-runner-withdraw-'));
-    const marker = join(root, 'alive');
     const withdrawing = new AbortController();
     try {
-      const running = systemRunner().run('/bin/sh', stubborn(marker), { signal: withdrawing.signal });
-      // Wait for the child of the command to be writing, so there is a tree to end rather than one process.
-      for (let waited = 0; waited < 100 && !existsSync(marker); waited += 1) await Bun.sleep(20);
-      expect(existsSync(marker)).toBe(true);
+      const child = writing(root);
+      const running = systemRunner().run(process.execPath, child.argv, { signal: withdrawing.signal });
+      // Wait for the command's own child to be writing, so there is a tree to end.
+      for (let waited = 0; waited < 200 && !existsSync(child.marker); waited += 1) await Bun.sleep(25);
+      expect(existsSync(child.marker)).toBe(true);
       withdrawing.abort();
       const refusal = await running.then(() => null).catch((error: unknown) => error);
       expect(refusal).toBeInstanceOf(CommandCancelled);
       expect((refusal as CommandCancelled).treeEnd).toBe('ended');
       expect((refusal as CommandCancelled).message).toContain('withdrawn by its caller');
-      // Nothing of that tree is writing any more, which is what `ended` claims.
-      const settled = readFileSync(marker, 'utf8').length;
-      await Bun.sleep(300);
-      expect(readFileSync(marker, 'utf8').length).toBe(settled);
       expect(isCommandFailure(refusal)).toBe(true);
+      // Nothing of that tree is writing any more, which is what `ended` claims. The pause is longer than the
+      // child's own interval, and than the bounded run `taskkill` takes to end a tree on Windows.
+      await Bun.sleep(1_000);
+      const settled = readFileSync(child.marker, 'utf8').length;
+      await Bun.sleep(1_000);
+      expect(readFileSync(child.marker, 'utf8').length).toBe(settled);
     } finally { rmSync(root, { recursive: true, force: true }); }
   });
 
   it('answers a command that finished before it was withdrawn, and withdrawal changes nothing after', async () => {
     const withdrawing = new AbortController();
-    const result = await systemRunner().run('/bin/sh', ['-c', 'echo done'], { signal: withdrawing.signal });
+    const result = await systemRunner().run(process.execPath, ['-e', "process.stdout.write('done')"], { signal: withdrawing.signal });
     expect([result.code, result.stdout.trim()]).toEqual([0, 'done']);
     withdrawing.abort();
     expect(result.code).toBe(0);
@@ -302,14 +315,15 @@ describe('a withdrawn command', () => {
     withdrawn.abort();
     try {
       const refusal = await systemRunner()
-        .run('/bin/sh', ['-c', `touch ${marker}`], { signal: withdrawn.signal })
+        .run(process.execPath, ['-e', `require('fs').writeFileSync(${JSON.stringify(marker)},'ran')`], { signal: withdrawn.signal })
         .then(() => null)
         .catch((error: unknown) => error);
       expect(refusal).toBeInstanceOf(CommandCancelled);
       // Nothing was started, so nothing of a tree is running — which is what `absent` says, not `ended`.
       expect((refusal as CommandCancelled).treeEnd).toBe('absent');
       expect(isCommandFailure(refusal)).toBe(true);
-      await Bun.sleep(200);
+      // A command that had run would have written this before now.
+      await Bun.sleep(500);
       expect(existsSync(marker)).toBe(false);
     } finally { rmSync(root, { recursive: true, force: true }); }
   });
