@@ -13,7 +13,9 @@ import { parse as parseToml } from 'smol-toml';
 import { run as runMemberCli } from '@myco/cli/member.js';
 import { CREDENTIAL_FLAG } from '@myco/member/constants.js';
 import { readRegistryEntry, REGISTRY_VERSION, writeRegistryEntry } from '@myco/member/registry.js';
-import { resolvePackageRoot } from '@myco/symbionts/detect.js';
+import { loadManifests, resolvePackageRoot } from '@myco/symbionts/detect.js';
+import { SymbiontInstaller } from '@myco/symbionts/installer.js';
+import { hookCommands } from '@myco/symbionts/member-hooks.js';
 import { tempMycoHome } from './helpers/server.js';
 
 const TOKEN = 'A'.repeat(43);
@@ -107,6 +109,56 @@ describe('myco member provision', () => {
       expect(process.exitCode ?? 0).toBe(0);
     } finally {
       fs.rmSync(path.dirname(globalConfig), { recursive: true, force: true });
+    }
+  });
+
+  it('names the binary of the project\'s own home in every hook command and MCP helper it writes, whether that home is passed or pinned', async () => {
+    const savedMycoHome = process.env.MYCO_HOME;
+    delete process.env.MYCO_HOME;
+    const defaultHome = path.join(os.homedir(), '.myco');
+    const binary = (home: string): string => {
+      const file = path.join(home, 'bin', 'myco');
+      fs.mkdirSync(path.dirname(file), { recursive: true });
+      fs.writeFileSync(file, '#!/bin/sh\n', { mode: 0o755 });
+      return file;
+    };
+    const defaultBinary = binary(defaultHome);
+    const memberBinary = binary(mycoHome);
+    const emitted = (): string[] => {
+      const codexHooks = JSON.parse(fs.readFileSync(path.join(root, '.codex', 'hooks.json'), 'utf8')) as { hooks: unknown };
+      const claudeHooks = JSON.parse(fs.readFileSync(path.join(root, '.claude', 'settings.local.json'), 'utf8')) as { hooks: unknown };
+      const codex = parseToml(fs.readFileSync(path.join(root, '.codex', 'config.toml'), 'utf8')) as { mcp_servers: { myco: { http_headers_helper: string } } };
+      const claude = JSON.parse(fs.readFileSync(path.join(root, '.mcp.json'), 'utf8')) as { mcpServers: { myco: { headersHelper: string } } };
+      return [...hookCommands(codexHooks.hooks), ...hookCommands(claudeHooks.hooks), codex.mcp_servers.myco.http_headers_helper, claude.mcpServers.myco.headersHelper];
+    };
+    try {
+      join();
+      // Passed: `member provision` hands the installer the home it resolved.
+      await provision(['codex']);
+      await provision(['claude-code']);
+      const passed = emitted();
+      expect(passed.length).toBeGreaterThan(2);
+      for (const command of passed) expect({ command, binary: command.split(' ')[0] }).toEqual({ command, binary: memberBinary });
+
+      // Pinned: an installer given no home reads the project's pin, not the machine's default.
+      fs.rmSync(path.join(root, '.codex'), { recursive: true, force: true });
+      fs.rmSync(path.join(root, '.claude'), { recursive: true, force: true });
+      fs.rmSync(path.join(root, '.mcp.json'), { force: true });
+      fs.mkdirSync(path.join(root, '.myco'), { recursive: true });
+      fs.writeFileSync(path.join(root, '.myco', 'runtime.home'), `${mycoHome}\n`, { mode: 0o644 });
+      for (const name of ['codex', 'claude-code']) {
+        const manifest = loadManifests().find((m) => m.name === name)!;
+        new SymbiontInstaller(manifest, root, resolvePackageRoot(), false, undefined, null, 'member-project').install();
+      }
+      for (const command of emitted()) expect({ command, binary: command.split(' ')[0] }).toEqual({ command, binary: memberBinary });
+
+      // Every other scope keeps the machine's binary.
+      const codex = loadManifests().find((m) => m.name === 'codex')!;
+      const globalMcp = new SymbiontInstaller(codex, '/', resolvePackageRoot(), false, undefined, null, 'global').loadMcpTemplate() as { myco: { command: string } };
+      expect(globalMcp.myco.command).toBe(defaultBinary);
+    } finally {
+      if (savedMycoHome === undefined) delete process.env.MYCO_HOME; else process.env.MYCO_HOME = savedMycoHome;
+      fs.rmSync(path.join(defaultHome, 'bin'), { recursive: true, force: true });
     }
   });
 });

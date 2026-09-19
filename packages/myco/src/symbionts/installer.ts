@@ -731,7 +731,7 @@ export class SymbiontInstaller {
   loadMcpTemplate(): Record<string, unknown> | null {
     const template = this.loadTemplate('mcp');
     if (!template) return null;
-    const binaryPath = resolveManagedBinaryPath();
+    const binaryPath = this.binaryPath();
     const substitute = (value: unknown): unknown => {
       if (typeof value === 'string') {
         return value.split(MYCO_BINARY_PLACEHOLDER).join(binaryPath);
@@ -1748,7 +1748,7 @@ export class SymbiontInstaller {
     if (reg.memberMcpHeadersHelperKey) {
       const entry = readRegistryEntry(this.projectRoot, this.memberHomeDir());
       if (entry === null) return null;
-      const binaryPath = resolveManagedBinaryPath();
+      const binaryPath = this.binaryPath();
       assertSafeBinaryPathForUnquoted(binaryPath);
       // A JSON host reads `type` and the levers; a TOML host drops them (`tomlMemberServers`).
       const remote = memberRemoteMcp(entry.serverUrl, reg.memberMcpHeadersHelperKey, binaryPath, source);
@@ -1760,6 +1760,11 @@ export class SymbiontInstaller {
 
   private memberHomeDir(): string {
     return this.memberHome ?? resolveMycoHome({ cwd: this.projectRoot });
+  }
+
+  /** The binary every command this install writes names: a member project's own home's, else the machine's. */
+  private binaryPath(): string {
+    return this.installScope === 'member-project' ? resolveManagedBinaryPath(this.memberHomeDir()) : resolveManagedBinaryPath();
   }
 
   /**
@@ -1926,7 +1931,7 @@ export class SymbiontInstaller {
    */
   private substituteMycoLauncher(content: string): string {
     if (!content.includes(MYCO_LAUNCHER_PLACEHOLDER)) return content;
-    const binaryPath = resolveManagedBinaryPath();
+    const binaryPath = this.binaryPath();
     const launcherCmd = resolveLauncherCmd(this.installScope, binaryPath);
     const substituted = content.split(MYCO_LAUNCHER_PLACEHOLDER).join(launcherCmd);
     if (substituted.includes(MYCO_MANAGED_MARKER)) return substituted;
