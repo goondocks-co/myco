@@ -14,12 +14,12 @@ import { getMachineId } from '../machine-id.js';
 import { isSafeProjectRoot } from '../project-root.js';
 import { RUNTIME_HOME_FILENAME, defaultMycoHome, readHomePin, resolveMycoHome } from '../paths/home.js';
 import { unboundedBudget } from '../member/budget.js';
-import { CREDENTIAL_FLAG, CREDENTIAL_SOURCES, isProjectId, memberHeaders, MEMBER_TOKEN_REFRESH_WINDOW_MS } from '../member/constants.js';
+import { CREDENTIAL_FLAG, CREDENTIAL_SOURCES, isProjectId, memberHeaders, MEMBER_TOKEN_REFRESH_WINDOW_MS, SERVER_FLAG } from '../member/constants.js';
 import { isHttpsUrl, isMemberTokenShape, parseCredentialFlag, resolveCredential, resolveMemberProjectRoot } from '../member/credential.js';
 import { refreshMemberCredential, type RefreshReport } from '../member/refresh.js';
 import { runImport } from '../member/import.js';
 import { clearMissingMembership, listMissingMemberships, pruneMissingMemberships, readMissingMembership } from '../member/no-membership.js';
-import { listRegistryEntries, readRegistryEntry, removeRegistryEntry, writeRegistryEntry, REGISTRY_VERSION, type RegistryEntry } from '../member/registry.js';
+import { deploymentUrl, listRegistryEntries, readRegistryEntry, removeRegistryEntry, writeRegistryEntry, REGISTRY_VERSION, type RegistryEntry } from '../member/registry.js';
 import { applySpoolRetention, lastAckAt } from '../member/retention.js';
 import { MemberSpool, type DrainResult } from '../member/spool.js';
 import { ServerClient, type FetchLike } from '../member/transport.js';
@@ -47,9 +47,10 @@ Ops:
   link-github [--root <dir>] [--open]
                      Connect your GitHub account to this membership for the dashboard: prints a one-time
                      link to open in a browser within ten minutes. --open hands it to the browser as well.
-  mcp-headers --credential registry|env
+  mcp-headers --credential registry|env --server <server-url>
                      Print this project's MCP request headers as JSON, for an agent that reaches the
-                     server's MCP over HTTP and asks a command for its headers. Written by --provision.
+                     server's MCP over HTTP and asks a command for its headers. Prints nothing unless
+                     the membership is on <server-url>. Written by --provision.
 `;
 
 export interface MemberCliDeps {
@@ -544,22 +545,28 @@ export async function runLinkGithub(args: readonly string[], deps: MemberCliDeps
 /**
  * Print the member headers for this directory's membership as one JSON object:
  * the headers helper a remote MCP entry names (Codex `http_headers_helper`).
- * The host runs it when it connects and after a 401, so it reads the registry
- * each time and never rotates — the hooks' refresh path is the one writer.
+ * The entry's URL was fixed when it was provisioned, so the helper names that
+ * Deployment and prints nothing when the membership resolved now is on any
+ * other — a rejoin elsewhere never hands the new Deployment's bearer to the
+ * old URL. The host runs it when it connects and after a 401, so it reads the
+ * registry each time and never rotates — the hooks' refresh path is the one writer.
  */
 export function runMcpHeaders(args: readonly string[], deps: MemberCliDeps = {}): void {
   const out = deps.stdout ?? ((l) => process.stdout.write(`${l}\n`));
   const err = deps.stderr ?? ((l) => process.stderr.write(`${l}\n`));
+  const fail = (line: string, code: number): void => { err(`myco member mcp-headers: ${line}`); process.exitCode = code; };
   const source = parseCredentialFlag(args);
-  if (source === null) {
-    err(`myco member mcp-headers: pass ${CREDENTIAL_FLAG} ${CREDENTIAL_SOURCES.join('|')}`);
-    process.exitCode = 2;
-    return;
-  }
+  if (source === null) return fail(`pass ${CREDENTIAL_FLAG} ${CREDENTIAL_SOURCES.join('|')}`, 2);
+  const serverIdx = args.indexOf(SERVER_FLAG);
+  const expected = serverIdx >= 0 ? args[serverIdx + 1] : undefined;
+  if (!expected || expected.startsWith('--')) return fail(`pass ${SERVER_FLAG} <server-url>, the Deployment this entry's URL names`, 2);
   const record = resolveCredential(source, { cwd: deps.cwd, env: deps.env, mycoHome: deps.mycoHome, invokedBy: 'mcp-headers' });
   if (record === null) {
     process.exitCode = 1;
     return;
+  }
+  if (deploymentUrl(record.serverUrl) !== deploymentUrl(expected)) {
+    return fail(`this membership is on ${deploymentUrl(record.serverUrl)}, not ${deploymentUrl(expected)} — re-provision the agent's MCP entry`, 1);
   }
   out(JSON.stringify(memberHeaders(record)));
 }

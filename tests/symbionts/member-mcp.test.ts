@@ -74,7 +74,7 @@ describe('the member MCP server', () => {
     expect(installer.installMemberMcp()).toBe(false);
     joinRoot(root);
     expect(installer.renderMemberMcp('registry')).toEqual({
-      myco: { url: `${SERVER_URL}/mcp`, http_headers_helper: `${resolveManagedBinaryPath()} member mcp-headers ${CREDENTIAL_FLAG} registry` },
+      myco: { url: `${SERVER_URL}/mcp`, http_headers_helper: `${resolveManagedBinaryPath()} member mcp-headers ${CREDENTIAL_FLAG} registry --server ${SERVER_URL}` },
     });
   });
 
@@ -91,7 +91,7 @@ describe('the member MCP server', () => {
     // Codex refuses its whole config when a streamable HTTP server declares a
     // cwd, and reads no launcher from a URL entry: the entry is url + helper alone.
     expect(written.mcp_servers.myco).toEqual({
-      url: `${SERVER_URL}/mcp`, http_headers_helper: `${resolveManagedBinaryPath()} member mcp-headers ${CREDENTIAL_FLAG} registry`,
+      url: `${SERVER_URL}/mcp`, http_headers_helper: `${resolveManagedBinaryPath()} member mcp-headers ${CREDENTIAL_FLAG} registry --server ${SERVER_URL}`,
     });
     expect(installer.installMemberMcp()).toBe(false);
     expect(installer.uninstallMemberMcp()).toBe(true);
