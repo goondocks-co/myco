@@ -15,6 +15,7 @@
  * definition of a tool and a drifted copy cannot exist.
  */
 // myco:plugin-marker — Myco owns this file; `myco remove` deletes it while it carries this line.
+// myco:member-plugin — a global Myco plugin steps aside for a project that carries this line.
 import { execFileSync } from "node:child_process";
 import { accessSync, appendFileSync, closeSync, constants as fsConstants, lstatSync, mkdirSync, openSync, readFileSync, statSync, unlinkSync, writeSync } from "node:fs";
 import { homedir } from "node:os";
@@ -654,4 +655,11 @@ export default function (pi: any) {
       );
     }
   });
+
+  // Last: tell a global Myco extension, loaded after this one, that this
+  // project's capture is handled here. A binary that cannot run leaves the
+  // global extension capturing rather than both silent.
+  if (isRunnableBinary(resolveMycoBinary(directory))) {
+    (globalThis as Record<symbol, unknown>)[Symbol.for("myco.member-extension")] = directory;
+  }
 }

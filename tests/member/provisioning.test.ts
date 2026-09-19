@@ -139,11 +139,13 @@ describe('the member-project install scope', () => {
     expect(fs.readFileSync(path.join(projectRoot, '.git', 'info', 'exclude'), 'utf-8')).toBe(exclude);
   });
 
-  it('installs nothing for a symbiont whose hooks are a plugin file, and none declares a member target', () => {
+  it('declares a member plugin target only for OpenCode and Pi, and installs nothing for any other plugin-file symbiont', () => {
+    // OpenCode and Pi load a project plugin that the global Myco plugin steps aside for (tests/member/member-plugins.test.ts).
     const pluginFile = loadManifests().filter((m) => m.registration?.hooksFormat === 'plugin-file');
-    expect(pluginFile.length).toBeGreaterThan(0);
-    for (const manifest of pluginFile) {
-      expect({ agent: manifest.name, memberTarget: manifest.registration?.memberHooksTarget }).toEqual({ agent: manifest.name, memberTarget: undefined });
+    expect(pluginFile.filter((m) => m.registration?.memberHooksTarget).map((m) => m.name).sort()).toEqual(['opencode', 'pi']);
+    const others = pluginFile.filter((m) => !m.registration?.memberHooksTarget);
+    expect(others.length).toBeGreaterThan(0);
+    for (const manifest of others) {
       const installer = new SymbiontInstaller(manifest, projectRoot, PKG_ROOT, false, undefined, null, 'member-project');
       expect({ agent: manifest.name, hooks: installer.install().hooks }).toEqual({ agent: manifest.name, hooks: false });
     }

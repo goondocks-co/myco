@@ -16,6 +16,7 @@
  * imported so the file loads in a clone with nothing installed.
  */
 // myco:plugin-marker — Myco owns this file; `myco remove` deletes it while it carries this line.
+// myco:member-plugin — a global Myco plugin steps aside for a project that carries this line.
 import { execFileSync } from "node:child_process";
 import { accessSync, appendFileSync, closeSync, constants as fsConstants, lstatSync, mkdirSync, openSync, readFileSync, statSync, unlinkSync, writeSync } from "node:fs";
 import { homedir } from "node:os";

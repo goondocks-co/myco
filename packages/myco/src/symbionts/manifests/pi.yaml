@@ -37,6 +37,10 @@ registration:
   # Pi's user-global agent extensions live under ~/.pi/agent/extensions/
   globalHooksTarget: ~/.pi/agent/extensions/myco/index.ts
   hooksFormat: plugin-file
+  # A member's extension is project-scoped; Pi loads it only in a trusted
+  # project, before the global extension, which then steps aside.
+  memberHooksTarget: .pi/extensions/myco/index.ts
+  memberProvisionNote: "Pi loads this project's extension once you trust the project in Pi (/trust). Until then your global Myco extension keeps capturing."
   # package.json for the extension's deps
   pluginPackageTarget: .pi/extensions/myco/package.json
   # Pi has no native MCP — Myco tools are registered via pi.registerTool()
