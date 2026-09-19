@@ -35,9 +35,10 @@ Ops:
                      Record this machine's membership of a project on a Myco server. The token is read
                      from stdin or from the named environment variable — never from the command line.
                      --provision writes the agent's hooks for this project.
-  leave [--purge]    Forget this project's membership and remove any member plugin (OpenCode, Pi), so
-                     those agents fall back to their global plugin. The spool is kept unless --purge is
-                     given, which also removes the hooks this project was provisioned with.
+  leave [--purge]    Forget this project's membership, and remove the surfaces that answer over it: any
+                     member plugin (OpenCode, Pi) and the project's own Myco MCP entry, so those agents
+                     fall back to what is installed for all your projects. The spool is kept unless
+                     --purge is given, which also removes the hooks this project was provisioned with.
   drain [--all]      Deliver every spooled event for this project (or every joined project with --all);
                      no harness budget, the offline latch is ignored, retention is applied first.
   status [--all]     The registry entry (token redacted), expiry, spool depth per session,
@@ -232,8 +233,9 @@ function provisionAgent(
     fail(error.message);
     return false;
   }
+  const surface = installer.isMemberPluginFile() ? 'plugin' : 'hooks';
   out(installed.hooks || installed.mcp
-    ? `provisioned ${manifest.displayName} for ${root}${installed.mcp ? ' (hooks and MCP)' : ''}`
+    ? `provisioned ${manifest.displayName} for ${root}${installed.mcp ? ` (${surface} and MCP)` : ''}`
     : `no registration changes for ${manifest.displayName} at ${root}`);
   const note = manifest.registration?.memberProvisionNote;
   if (note) out(note);
@@ -264,6 +266,22 @@ export function runProvision(args: readonly string[], deps: MemberCliDeps = {}):
   return provisionAgent(agent, root, mycoHome, deps, out, fail);
 }
 
+/**
+ * Remove one member surface, reporting the removal or, when the agent's
+ * config cannot be read, the refusal that left the file alone. The membership
+ * is already forgotten by then, so a file Myco cannot parse ends the leave
+ * with a non-zero status and a named file rather than a silent survivor.
+ */
+function relinquish(remove: () => boolean, removed: string, out: (line: string) => void, err: (line: string) => void): void {
+  try {
+    if (remove()) out(removed);
+  } catch (error) {
+    if (!(error instanceof MemberProvisionConflictError)) throw error;
+    err(`myco member leave: ${error.message}`);
+    process.exitCode = 2;
+  }
+}
+
 /** Forget this project's membership. The spool survives unless `--purge` is given, which also strips the hooks provisioning wrote. */
 export function runLeave(args: readonly string[], deps: MemberCliDeps = {}): boolean {
   const out = deps.stdout ?? ((l) => process.stdout.write(`${l}\n`));
@@ -283,11 +301,14 @@ export function runLeave(args: readonly string[], deps: MemberCliDeps = {}): boo
   // would send every hook here to look for a membership that is gone, and each
   // one would count another miss.
   if (unpinProjectHome(root, mycoHome)) out(`removed this project's ${RUNTIME_HOME_FILENAME} pin`);
-  // A member plugin makes the agent's global Myco plugin step aside, so it goes
-  // with the membership: the agent falls back to its global plugin.
+  // A member plugin makes the agent's global Myco plugin step aside, and a
+  // member MCP server answers over a credential this project no longer holds.
+  // Both go with the membership, so the agent falls back to its global plugin
+  // and its global server rather than to a surface that cannot work.
   for (const manifest of loadManifests()) {
     const installer = new SymbiontInstaller(manifest, root, deps.packageRoot ?? resolvePackageRoot(), false, undefined, null, 'member-project');
     if (installer.isMemberPluginFile() && installer.uninstallMemberHooks()) out(`removed ${manifest.displayName} member plugin from ${root}`);
+    relinquish(() => installer.uninstallMemberMcp(), `removed ${manifest.displayName} MCP server from ${root}`, out, err);
   }
   if (!args.includes('--purge')) {
     const depth = new MemberSpool(entry.projectId, { mycoHome }).sessionIds().length;
@@ -299,7 +320,7 @@ export function runLeave(args: readonly string[], deps: MemberCliDeps = {}): boo
   for (const manifest of loadManifests()) {
     const installer = new SymbiontInstaller(manifest, root, deps.packageRoot ?? resolvePackageRoot(), false, undefined, null, 'member-project');
     if (installer.uninstallMemberHooks()) out(`removed ${manifest.displayName} hooks from ${root}`);
-    if (installer.uninstallMemberMcp()) out(`removed ${manifest.displayName} MCP server from ${root}`);
+    relinquish(() => installer.uninstallMemberMcp(), `removed ${manifest.displayName} MCP server from ${root}`, out, err);
   }
   return true;
 }
