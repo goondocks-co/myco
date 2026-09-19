@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
+import { parse as parseToml } from 'smol-toml';
 import { expandHome, resolveMycoHome } from '../grove/paths.js';
 import { shouldDeferSubsystem, SYMBIONT_CONFIG_SUBSYSTEM } from '../grove/subsystem-claim.js';
 import { atomicWriteFileSync } from '../utils/atomic-write.js';
@@ -19,7 +20,8 @@ import { readJsonFile, writeJsonFile, writeOrDeleteJsonFile } from './json-helpe
 import { ensureAgentsMd, ensureSymlink, isMycoHookGroup, containsMycoLauncherReference, hasMycoManagedMarker, MYCO_MANAGED_MARKER } from './install-helpers.js';
 import { hookCommands, memberHookTemplate } from './member-hooks.js';
 import { CREDENTIAL_FLAG, type CredentialSource } from '../member/constants.js';
-import { MEMBER_MCP_LEVERS, memberMcpTemplate } from './member-hooks.js';
+import { MEMBER_MCP_LEVERS, memberMcpTemplate, memberRemoteMcp } from './member-hooks.js';
+import { readRegistryEntry } from '../member/registry.js';
 import { runGit } from '../utils/git.js';
 import { resolveRuntimeCommand, resolveRuntimeHome } from '../daemon/update-checker.js';
 import { managedBinaryPath, managedSkillsDir } from '../install/managed-binary.js';
@@ -78,6 +80,22 @@ const SKILLS_SUBDIR = 'skills';
 
 /** MCP server name used by Myco in all symbiont configurations. */
 export const MYCO_MCP_SERVER_NAME = 'myco';
+
+/** The `type` a JSON host takes for a remote HTTP MCP server. */
+const REMOTE_MCP_TYPE = 'http';
+
+/** A member MCP entry the host would merge with a global one it cannot use, or a global config that cannot be read. */
+export class MemberMcpConflictError extends Error {}
+
+/**
+ * Keys of a global `myco` server that conflict with a member's remote entry
+ * when a TOML host merges the two: a stdio transport (Codex refuses `command`
+ * or `cwd` beside `url`) or a credential other than the headers helper.
+ */
+const GLOBAL_MCP_CONFLICT_KEYS: readonly string[] = [
+  'command', 'args', 'env', 'env_vars', 'cwd',
+  'bearer_token', 'bearer_token_env_var', 'http_headers', 'env_http_headers', 'oauth',
+];
 
 /**
  * All top-level JSON keys agents are known to use to hold their MCP
@@ -366,13 +384,17 @@ const SCOPE_CAPABILITIES: Record<InstallScope, ScopeCapabilities> = {
 /** Keys a JSON MCP host reads and a TOML one (Codex) does not; a TOML entry carries the child's working directory instead. */
 const JSON_ONLY_MCP_KEYS: readonly string[] = ['type', ...Object.keys(MEMBER_MCP_LEVERS)];
 
-/** The member's server block as a TOML host takes it: the JSON-only keys dropped, the project as the child's working directory. */
+/**
+ * The member's server block as a TOML host takes it: the JSON-only keys
+ * dropped, and a stdio launcher started in the project. A URL entry carries no
+ * `cwd` — Codex refuses a config whose streamable HTTP server declares one.
+ */
 export function tomlMemberServers(block: Record<string, unknown>, projectRoot: string): Record<string, unknown> {
   const out: Record<string, unknown> = {};
   for (const [name, def] of Object.entries(block)) {
     if (!def || typeof def !== 'object') continue;
     const server = Object.fromEntries(Object.entries(def as Record<string, unknown>).filter(([key]) => !JSON_ONLY_MCP_KEYS.includes(key)));
-    out[name] = { ...server, cwd: projectRoot };
+    out[name] = 'url' in server ? server : { ...server, cwd: projectRoot };
   }
   return out;
 }
@@ -413,6 +435,9 @@ export class SymbiontInstaller {
     vaultDir?: string,
     groveId?: string | null,
     installScope: InstallScope = 'project',
+    // The home a member-project install reads the project's membership from.
+    // Defaults to the home the project resolves; `myco member` passes its own.
+    private memberHome?: string,
   ) {
     this.vaultDir = vaultDir ?? path.join(projectRoot, '.myco');
     this.groveId = groveId;
@@ -706,7 +731,7 @@ export class SymbiontInstaller {
   loadMcpTemplate(): Record<string, unknown> | null {
     const template = this.loadTemplate('mcp');
     if (!template) return null;
-    const binaryPath = resolveManagedBinaryPath();
+    const binaryPath = this.binaryPath();
     const substitute = (value: unknown): unknown => {
       if (typeof value === 'string') {
         return value.split(MYCO_BINARY_PLACEHOLDER).join(binaryPath);
@@ -789,6 +814,7 @@ export class SymbiontInstaller {
   install(): InstallResult {
     if (this.installScope === 'member-project') {
       if (this.renderMemberHooks('registry') === null) return emptyInstallResult();
+      this.assertNoMemberMcpConflict();
       const hooks = this.installMemberHooks();
       return { ...emptyInstallResult(), hooks, mcp: this.installMemberMcp() };
     }
@@ -1708,16 +1734,67 @@ export class SymbiontInstaller {
   }
 
   /**
-   * The member's MCP server block for `source`: the symbiont's own stdio
-   * launcher carrying the credential flag. Null for a symbiont without an MCP
-   * template; every Myco tool is reached over MCP, with the Project named as a
-   * tool parameter.
+   * The member's MCP server block for `source`. A host that takes a headers
+   * helper (`memberMcpHeadersHelperKey`) gets the Deployment's remote `/mcp`,
+   * named by this project's registry entry, with the helper printing the
+   * member headers; null when the project has no membership to name one.
+   * Every other host gets its own stdio launcher carrying the credential flag.
+   * Null for a symbiont without an MCP template; every Myco tool is reached
+   * over MCP, with the Project named as a tool parameter.
    */
   renderMemberMcp(source: CredentialSource): Record<string, unknown> | null {
     const reg = this.manifest.registration;
     if (!reg?.mcpTarget) return null;
+    if (reg.memberMcpHeadersHelperKey) {
+      const entry = readRegistryEntry(this.projectRoot, this.memberHomeDir());
+      if (entry === null) return null;
+      const binaryPath = this.binaryPath();
+      assertSafeBinaryPathForUnquoted(binaryPath);
+      // A JSON host reads `type` and the levers; a TOML host drops them (`tomlMemberServers`).
+      const remote = memberRemoteMcp(entry.serverUrl, reg.memberMcpHeadersHelperKey, binaryPath, source);
+      return { [MYCO_MCP_SERVER_NAME]: { type: REMOTE_MCP_TYPE, ...remote, ...MEMBER_MCP_LEVERS } };
+    }
     const template = this.loadMcpTemplate();
     return template === null ? null : memberMcpTemplate(template, source);
+  }
+
+  private memberHomeDir(): string {
+    return this.memberHome ?? resolveMycoHome({ cwd: this.projectRoot });
+  }
+
+  /** The binary every command this install writes names: a member project's own home's, else the machine's. */
+  private binaryPath(): string {
+    return this.installScope === 'member-project' ? resolveManagedBinaryPath(this.memberHomeDir()) : resolveManagedBinaryPath();
+  }
+
+  /**
+   * Refuse, before any member write, a global `myco` server a TOML host would
+   * merge into the project's remote entry with a stdio transport or a
+   * credential of its own, or a global file it cannot read. Only a missing
+   * file is no global config.
+   */
+  private assertNoMemberMcpConflict(): void {
+    const reg = this.manifest.registration;
+    if (reg?.mcpFormat !== 'toml' || !reg.memberMcpHeadersHelperKey) return;
+    for (const target of reg.globalMcpTarget ?? []) {
+      const globalPath = expandHome(target.path);
+      let parsed: Record<string, unknown>;
+      try {
+        parsed = parseToml(fs.readFileSync(globalPath, 'utf-8')) as Record<string, unknown>;
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === 'ENOENT') continue;
+        throw new MemberMcpConflictError(
+          `could not read ${globalPath} (${error instanceof Error ? error.message.split('\n')[0] : String(error)}), so nothing was written. Fix the file, then run \`myco member provision ${this.manifest.name}\`.`,
+        );
+      }
+      const server = (parsed.mcp_servers as Record<string, unknown> | undefined)?.[MYCO_MCP_SERVER_NAME];
+      if (!server || typeof server !== 'object') continue;
+      const conflicting = Object.keys(server).filter((key) => GLOBAL_MCP_CONFLICT_KEYS.includes(key));
+      if (conflicting.length === 0) continue;
+      throw new MemberMcpConflictError(
+        `${globalPath} declares a \`${MYCO_MCP_SERVER_NAME}\` MCP server with ${conflicting.join(', ')}. These are incompatible transport or competing credential settings for this project's remote \`${MYCO_MCP_SERVER_NAME}\` entry, which ${this.manifest.displayName} merges with the global one and then rejects, so nothing was written. Remove those keys from [mcp_servers.${MYCO_MCP_SERVER_NAME}] in ${globalPath} if no other project needs them, then run \`myco member provision ${this.manifest.name}\`.`,
+      );
+    }
   }
 
   /** The member's MCP server list file: the manifest's mcpTarget under the project root, or null. */
@@ -1734,15 +1811,15 @@ export class SymbiontInstaller {
    * server list, and an exclude entry on a tracked file hides its changes.
    */
   installMemberMcp(): boolean {
+    this.assertNoMemberMcpConflict();
     const block = this.renderMemberMcp('registry');
     const targetPath = this.memberMcpTargetPath();
     if (block === null || targetPath === null) return false;
     const reg = this.manifest.registration!;
     // A TOML server list (Codex) is edited section by section; the JSON sweep
-    // below is for the JSON targets. Codex reads `command`, `args`, `env` and
-    // `cwd` and ignores the JSON hosts' levers, so those are not written; `cwd`
-    // starts the stdio child in this project, where its membership resolves
-    // from the directory the way every hook's does.
+    // below is for the JSON targets. The JSON hosts' levers are not written.
+    // Codex's remote entry needs no `cwd`: it runs the headers helper in the
+    // session's directory, where the membership resolves the way every hook's does.
     if (reg.mcpFormat === 'toml') return this.installMcpToml(targetPath, tomlMemberServers(block, this.projectRoot));
     const serversKey = reg.mcpServersKey ?? 'mcpServers';
     const data = readJsonFile(targetPath);
@@ -1854,7 +1931,7 @@ export class SymbiontInstaller {
    */
   private substituteMycoLauncher(content: string): string {
     if (!content.includes(MYCO_LAUNCHER_PLACEHOLDER)) return content;
-    const binaryPath = resolveManagedBinaryPath();
+    const binaryPath = this.binaryPath();
     const launcherCmd = resolveLauncherCmd(this.installScope, binaryPath);
     const substituted = content.split(MYCO_LAUNCHER_PLACEHOLDER).join(launcherCmd);
     if (substituted.includes(MYCO_MANAGED_MARKER)) return substituted;

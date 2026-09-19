@@ -5,7 +5,8 @@
  * drain implementation without a harness budget and ignoring the offline
  * latch; `status` shows the registry entry (token redacted), expiry, spool
  * depth, last acknowledgement and refusal, the latch, and how many capture
- * attempts found no membership at all.
+ * attempts found no membership at all; `mcp-headers` prints the member
+ * headers a remote MCP entry asks for.
  */
 import fs from 'node:fs';
 import path from 'node:path';
@@ -13,18 +14,18 @@ import { getMachineId } from '../machine-id.js';
 import { isSafeProjectRoot } from '../project-root.js';
 import { RUNTIME_HOME_FILENAME, defaultMycoHome, readHomePin, resolveMycoHome } from '../paths/home.js';
 import { unboundedBudget } from '../member/budget.js';
-import { isProjectId, MEMBER_TOKEN_REFRESH_WINDOW_MS } from '../member/constants.js';
-import { isHttpsUrl, isMemberTokenShape, resolveMemberProjectRoot } from '../member/credential.js';
+import { CREDENTIAL_FLAG, CREDENTIAL_SOURCES, isProjectId, memberHeaders, MEMBER_TOKEN_REFRESH_WINDOW_MS, SERVER_FLAG } from '../member/constants.js';
+import { isHttpsUrl, isMemberTokenShape, parseCredentialFlag, resolveCredential, resolveMemberProjectRoot } from '../member/credential.js';
 import { refreshMemberCredential, type RefreshReport } from '../member/refresh.js';
 import { runImport } from '../member/import.js';
 import { clearMissingMembership, listMissingMemberships, pruneMissingMemberships, readMissingMembership } from '../member/no-membership.js';
-import { listRegistryEntries, readRegistryEntry, removeRegistryEntry, writeRegistryEntry, REGISTRY_VERSION, type RegistryEntry } from '../member/registry.js';
+import { deploymentUrl, listRegistryEntries, readRegistryEntry, removeRegistryEntry, writeRegistryEntry, REGISTRY_VERSION, type RegistryEntry } from '../member/registry.js';
 import { applySpoolRetention, lastAckAt } from '../member/retention.js';
 import { MemberSpool, type DrainResult } from '../member/spool.js';
 import { ServerClient, type FetchLike } from '../member/transport.js';
 import { openBrowser } from './open-browser.js';
 import { loadManifests, resolvePackageRoot } from '../symbionts/detect.js';
-import { SymbiontInstaller } from '../symbionts/installer.js';
+import { MemberMcpConflictError, SymbiontInstaller } from '../symbionts/installer.js';
 import { ensureVaultGitignoreCurrent } from '../vault/gitignore.js';
 
 export const MEMBER_HELP = `Usage: myco member <op> [options]
@@ -43,9 +44,16 @@ Ops:
                      attempts that found no membership.
   refresh [--all]    Rotate the member token when its refresh window is open. The predecessor keeps
                      working until the successor is first used; an env-sourced token is never rotated.
+  provision <agent> [--root <dir>]
+                     Write the agent's hooks and MCP entry for a project this machine has already joined,
+                     from the recorded membership. No token needs to be supplied or changed.
   link-github [--root <dir>] [--open]
                      Connect your GitHub account to this membership for the dashboard: prints a one-time
                      link to open in a browser within ten minutes. --open hands it to the browser as well.
+  mcp-headers --credential registry|env --server <server-url>
+                     Print this project's MCP request headers as JSON, for an agent that reaches the
+                     server's MCP over HTTP and asks a command for its headers. Prints nothing unless
+                     the membership is on <server-url>. Written by --provision.
 `;
 
 export interface MemberCliDeps {
@@ -182,15 +190,7 @@ export async function runJoin(args: readonly string[], deps: MemberCliDeps = {})
   if (missed) out(`${missed.count} earlier capture attempt(s) here found no membership; new sessions are captured from now on`);
   out('connect your GitHub account for the dashboard: myco member link-github');
 
-  if (parsed.provision) {
-    const manifest = loadManifests().find((m) => m.name === parsed.provision);
-    if (!manifest) return fail(`unknown agent "${parsed.provision}" — the membership is recorded; provision it with \`myco member join --provision <agent>\``);
-    const installer = new SymbiontInstaller(manifest, root, deps.packageRoot ?? resolvePackageRoot(), false, undefined, null, 'member-project');
-    const installed = installer.install();
-    out(installed.hooks || installed.mcp
-      ? `provisioned ${manifest.displayName} for ${root}${installed.mcp ? ' (hooks and MCP)' : ''}`
-      : `no registration changes for ${manifest.displayName} at ${root}`);
-  }
+  if (parsed.provision && !provisionAgent(parsed.provision, root, mycoHome, deps, out, fail)) return null;
 
   // #1148: the machine's existing history for this project, once, bounded by
   // what the Deployment allows. A failure never fails the join — the membership
@@ -201,6 +201,64 @@ export async function runJoin(args: readonly string[], deps: MemberCliDeps = {})
   const imported = report?.projects.reduce((n, project) => n + project.agents.reduce((m, a) => m + a.imported, 0), 0) ?? 0;
   if (imported > 0) out(`imported ${imported} past sessions; run \`myco import\` to reach further back`);
   return entry;
+}
+
+/**
+ * Write `agent`'s member hooks and MCP entry for `root` from the membership
+ * already recorded in `mycoHome` — the one provisioning step `join --provision`
+ * and `provision` share. False (after `fail`) for an unknown agent or an MCP
+ * entry the agent would merge into a configuration it refuses.
+ */
+function provisionAgent(
+  agent: string,
+  root: string,
+  mycoHome: string,
+  deps: MemberCliDeps,
+  out: (line: string) => void,
+  fail: (line: string) => unknown,
+): boolean {
+  const manifest = loadManifests().find((m) => m.name === agent);
+  if (!manifest) {
+    fail(`unknown agent "${agent}" — the membership is recorded; provision it with \`myco member provision <agent>\``);
+    return false;
+  }
+  const installer = new SymbiontInstaller(manifest, root, deps.packageRoot ?? resolvePackageRoot(), false, undefined, null, 'member-project', mycoHome);
+  let installed;
+  try {
+    installed = installer.install();
+  } catch (error) {
+    if (!(error instanceof MemberMcpConflictError)) throw error;
+    fail(error.message);
+    return false;
+  }
+  out(installed.hooks || installed.mcp
+    ? `provisioned ${manifest.displayName} for ${root}${installed.mcp ? ' (hooks and MCP)' : ''}`
+    : `no registration changes for ${manifest.displayName} at ${root}`);
+  return true;
+}
+
+/** `myco member provision <agent> [--root <dir>]`: provision an agent for a project already joined; no token is supplied or changed. */
+export function runProvision(args: readonly string[], deps: MemberCliDeps = {}): boolean {
+  const out = deps.stdout ?? ((l) => process.stdout.write(`${l}\n`));
+  const err = deps.stderr ?? ((l) => process.stderr.write(`${l}\n`));
+  const fail = (line: string): false => { err(`myco member provision: ${line}`); process.exitCode = 2; return false; };
+  let agent: string | undefined;
+  let rootArg: string | undefined;
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i];
+    if (arg === '--root') {
+      rootArg = args[++i];
+      if (rootArg === undefined || rootArg.startsWith('--')) return fail('--root needs a value');
+    } else if (arg.startsWith('-')) return fail(`unknown option ${arg.split('=')[0]}`);
+    else if (agent === undefined) agent = arg;
+    else return fail('provision takes one agent');
+  }
+  if (!agent) return fail('name the agent to provision, e.g. `myco member provision codex`');
+  const root = path.resolve(rootArg ?? resolveMemberProjectRoot(deps.cwd));
+  if (!isSafeProjectRoot(root)) return fail(`${root} is not a project directory`);
+  const mycoHome = homeFor(deps, root);
+  if (!readRegistryEntry(root, mycoHome)) return fail(`no membership recorded for ${root} — run \`myco member join\` first`);
+  return provisionAgent(agent, root, mycoHome, deps, out, fail);
 }
 
 /** Forget this project's membership. The spool survives unless `--purge` is given, which also strips the hooks provisioning wrote. */
@@ -537,6 +595,35 @@ export async function runLinkGithub(args: readonly string[], deps: MemberCliDeps
   }
 }
 
+/**
+ * Print the member headers for this directory's membership as one JSON object:
+ * the headers helper a remote MCP entry names (Codex `http_headers_helper`).
+ * The entry's URL was fixed when it was provisioned, so the helper names that
+ * Deployment and prints nothing when the membership resolved now is on any
+ * other — a rejoin elsewhere never hands the new Deployment's bearer to the
+ * old URL. The host runs it when it connects and after a 401, so it reads the
+ * registry each time and never rotates — the hooks' refresh path is the one writer.
+ */
+export function runMcpHeaders(args: readonly string[], deps: MemberCliDeps = {}): void {
+  const out = deps.stdout ?? ((l) => process.stdout.write(`${l}\n`));
+  const err = deps.stderr ?? ((l) => process.stderr.write(`${l}\n`));
+  const fail = (line: string, code: number): void => { err(`myco member mcp-headers: ${line}`); process.exitCode = code; };
+  const source = parseCredentialFlag(args);
+  if (source === null) return fail(`pass ${CREDENTIAL_FLAG} ${CREDENTIAL_SOURCES.join('|')}`, 2);
+  const serverIdx = args.indexOf(SERVER_FLAG);
+  const expected = serverIdx >= 0 ? args[serverIdx + 1] : undefined;
+  if (!expected || expected.startsWith('--')) return fail(`pass ${SERVER_FLAG} <server-url>, the Deployment this entry's URL names`, 2);
+  const record = resolveCredential(source, { cwd: deps.cwd, env: deps.env, mycoHome: deps.mycoHome, invokedBy: 'mcp-headers' });
+  if (record === null) {
+    process.exitCode = 1;
+    return;
+  }
+  if (deploymentUrl(record.serverUrl) !== deploymentUrl(expected)) {
+    return fail(`this membership is on ${deploymentUrl(record.serverUrl)}, not ${deploymentUrl(expected)} — re-provision the agent's MCP entry`, 1);
+  }
+  out(JSON.stringify(memberHeaders(record)));
+}
+
 export async function run(args: readonly string[], deps: MemberCliDeps = {}): Promise<void> {
   const [op, ...rest] = args;
   switch (op) {
@@ -546,6 +633,8 @@ export async function run(args: readonly string[], deps: MemberCliDeps = {}): Pr
     case 'status': runStatus(rest, deps); return;
     case 'refresh': await runRefresh(rest, deps); return;
     case 'link-github': await runLinkGithub(rest, deps); return;
+    case 'provision': runProvision(rest, deps); return;
+    case 'mcp-headers': runMcpHeaders(rest, deps); return;
     default:
       (deps.stderr ?? ((l) => process.stderr.write(`${l}\n`)))(MEMBER_HELP.trimEnd());
       process.exitCode = 2;

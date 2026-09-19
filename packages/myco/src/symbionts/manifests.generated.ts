@@ -409,6 +409,7 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
       "mcpTarget": ".mcp.json",
       "mcpFormat": "json",
       "mcpServersKey": "mcpServers",
+      "memberMcpHeadersHelperKey": "headersHelper",
       "skillsTarget": ".claude/skills",
       "settingsTarget": ".claude/settings.json",
       "settingsFormat": "json",
@@ -857,6 +858,7 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
       "mcpTarget": ".codex/config.toml",
       "mcpFormat": "toml",
       "mcpServersKey": "mcpServers",
+      "memberMcpHeadersHelperKey": "http_headers_helper",
       "skillsTarget": ".agents/skills",
       "settingsTarget": ".codex/config.toml",
       "settingsFormat": "toml"

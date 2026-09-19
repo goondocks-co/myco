@@ -113,6 +113,8 @@ export type CredentialSource = 'registry' | 'env';
 export const CREDENTIAL_SOURCES: readonly CredentialSource[] = ['registry', 'env'];
 /** The flag every emitted member hook command carries. */
 export const CREDENTIAL_FLAG = '--credential';
+/** The flag a headers helper names its expected Deployment with; it prints nothing for a membership on any other. */
+export const SERVER_FLAG = '--server';
 /** The hook name in a rendered hook command (`… hook session-start --symbiont x`). */
 export const HOOK_COMMAND_PATTERN = /\bhook\s+([a-z][a-z-]*)/;
 /** The myco hook a rendered command runs, or null when it runs none. */
