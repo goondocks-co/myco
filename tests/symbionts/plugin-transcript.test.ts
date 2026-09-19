@@ -214,7 +214,7 @@ function snippetModule(
   return new Function(
     'readFileSync', 'appendFileSync', 'mkdirSync', 'statSync', 'lstatSync', 'accessSync', 'openSync', 'closeSync',
     'writeSync', 'unlinkSync', 'fsConstants', 'join', 'dirname', 'resolve', 'homedir', 'execFileSync', 'process',
-    `${js}; return { transcriptPathFor, appendTranscriptLine, holdsSessionClaim, runMycoHook };`,
+    `${js}; return { transcriptPathFor, appendTranscriptLine, holdsSessionClaim, releaseSessionClaim, runMycoHook };`,
   )(
     fs.readFileSync, fs.appendFileSync, fs.mkdirSync, fs.statSync, fs.lstatSync, fs.accessSync, fs.openSync, fs.closeSync,
     fs.writeSync, fs.unlinkSync, fs.constants, path.join, path.dirname, path.resolve, () => env.HOME,
@@ -224,6 +224,7 @@ function snippetModule(
     transcriptPathFor: (d: string, a: string, s: string) => string;
     appendTranscriptLine: (d: string, a: string, s: string, r: Record<string, unknown>) => void;
     holdsSessionClaim: (d: string, a: string, s: string) => boolean;
+    releaseSessionClaim: (d: string, a: string, s: string) => void;
     runMycoHook: (d: string, a: string, s: string, v: string, p: Record<string, unknown>) => unknown;
     CLAIM_STALE_MS: number;
   };
@@ -269,6 +270,40 @@ describe('one instance speaks for a session', () => {
     const written = fs.readFileSync(first.transcriptPathFor('/repo', 'opencode', 'ses_2'), 'utf-8')
       .split('\n').filter(Boolean).length;
     expect(written).toBe(2);
+  });
+
+  it('lets a new instance take a session at once after the instance that held it ends it', () => {
+    // A session resumed in a new process right after the last one quit: the
+    // claim must not outlive the writer that ended the session.
+    const env = sandboxEnv();
+    const first = snippetModule(env);
+    expect(first.holdsSessionClaim('/repo', 'opencode', 'ses_ended')).toBe(true);
+    first.appendTranscriptLine('/repo', 'opencode', 'ses_ended', { type: 'prompt', text: 'one' });
+    first.releaseSessionClaim('/repo', 'opencode', 'ses_ended');
+    expect(fs.existsSync(path.join(env.MYCO_HOME!, 'member', 'claims', 'opencode-ses_ended.lock'))).toBe(false);
+
+    const resumed = snippetModule(env);
+    expect(resumed.holdsSessionClaim('/repo', 'opencode', 'ses_ended')).toBe(true);
+    resumed.appendTranscriptLine('/repo', 'opencode', 'ses_ended', { type: 'prompt', text: 'two' });
+    expect(fs.readFileSync(first.transcriptPathFor('/repo', 'opencode', 'ses_ended'), 'utf-8').split('\n').filter(Boolean)).toHaveLength(2);
+  });
+
+  it('leaves a claim that names another instance when an instance ends a session it did not hold', () => {
+    const env = sandboxEnv();
+    const holder = snippetModule(env);
+    const other = snippetModule(env);
+    expect(holder.holdsSessionClaim('/repo', 'opencode', 'ses_owned')).toBe(true);
+    expect(other.holdsSessionClaim('/repo', 'opencode', 'ses_owned')).toBe(false);
+    const claim = path.join(env.MYCO_HOME!, 'member', 'claims', 'opencode-ses_owned.lock');
+    const before = fs.readFileSync(claim, 'utf-8');
+
+    other.releaseSessionClaim('/repo', 'opencode', 'ses_owned');
+    expect(fs.readFileSync(claim, 'utf-8')).toBe(before);
+    // The holder keeps the session; the other is still refused when it looks again.
+    holder.appendTranscriptLine('/repo', 'opencode', 'ses_owned', { type: 'prompt', text: 'x' });
+    expect(other.holdsSessionClaim('/repo', 'opencode', 'ses_owned')).toBe(false);
+    other.appendTranscriptLine('/repo', 'opencode', 'ses_owned', { type: 'prompt', text: 'y' });
+    expect(fs.readFileSync(holder.transcriptPathFor('/repo', 'opencode', 'ses_owned'), 'utf-8').split('\n').filter(Boolean)).toHaveLength(1);
   });
 
   it('takes over a session whose claim went stale, whatever pid it names', () => {

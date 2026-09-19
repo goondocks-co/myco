@@ -41,13 +41,13 @@ afterEach(() => {
   fs.rmSync(dir, { recursive: true, force: true });
 });
 
-async function loadPlugin() {
+async function loadPlugin(instance = '') {
   const manifest = loadManifests().find((m) => m.name === 'opencode')!;
   const rendered = new SymbiontInstaller(manifest, root, resolvePackageRoot(), false, undefined, null, 'member-project', home).renderMemberPlugin('registry')!;
   const file = path.join(root, '.opencode', 'plugins', 'myco.ts');
   fs.mkdirSync(path.dirname(file), { recursive: true });
   fs.writeFileSync(file, rendered);
-  return (await import(pathToFileURL(file).href)).MycoPlugin;
+  return (await import(`${pathToFileURL(file).href}${instance}`)).MycoPlugin;
 }
 
 describe('the OpenCode member plugin under opencode\'s plugin contract', () => {
@@ -89,5 +89,22 @@ describe('the OpenCode member plugin under opencode\'s plugin contract', () => {
       { kind: 'prompt', text: 'question 2', promptId: 'prompt-2' },
       { kind: 'response', text: 'answer 2', promptId: 'prompt-2' },
     ]);
+  });
+
+  it('ends every session it opened when its instance is disposed, so a new instance takes the session at once', async () => {
+    const first = await (await loadPlugin('?instance=1'))({ client: { session: { prompt: async () => ({}) } }, directory: root, worktree: root });
+    await first.event({ event: { type: 'session.created', properties: { info: { id: 'ses_disposed' } } } });
+    const claim = path.join(home, 'member', 'claims', 'opencode-ses_disposed.lock');
+    expect(fs.existsSync(claim)).toBe(true);
+    await first.event({ event: { type: 'server.instance.disposed', properties: { directory: root } } });
+    expect(fs.existsSync(claim)).toBe(false);
+
+    const second = await (await loadPlugin('?instance=2'))({ client: { session: { prompt: async () => ({}) } }, directory: root, worktree: root });
+    await second['chat.message'](
+      { sessionID: 'ses_disposed', messageID: 'msg_again' },
+      { message: { id: 'msg_again', sessionID: 'ses_disposed', role: 'user' }, parts: [{ id: 'prt_again', messageID: 'msg_again', sessionID: 'ses_disposed', type: 'text', text: 'again' }] },
+    );
+    const lines = fs.readFileSync(path.join(home, 'member', 'transcripts', 'opencode', 'ses_disposed.jsonl'), 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l));
+    expect(lines.filter((l) => l.type === 'prompt').map((l) => l.text)).toEqual(['again']);
   });
 });

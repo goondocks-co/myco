@@ -53,7 +53,7 @@ afterEach(() => {
 });
 
 /** The member extension as provisioned, importable beside a stub of the one package Pi supplies. */
-async function loadExtension(): Promise<(pi: unknown) => void> {
+async function loadExtension(instance = ''): Promise<(pi: unknown) => void> {
   const manifest = loadManifests().find((m) => m.name === 'pi')!;
   const rendered = new SymbiontInstaller(manifest, root, resolvePackageRoot(), false, undefined, null, 'member-project', home).renderMemberPlugin('registry')!;
   const extensionDir = path.join(root, '.pi', 'extensions', 'myco');
@@ -63,7 +63,7 @@ async function loadExtension(): Promise<(pi: unknown) => void> {
   fs.writeFileSync(path.join(typebox, 'index.js'), 'export const Type = { Object: (p) => ({ type: "object", properties: p }), Optional: (s) => s, Any: (o) => ({ ...o }) };\n');
   const file = path.join(extensionDir, 'index.ts');
   fs.writeFileSync(file, rendered);
-  return (await import(pathToFileURL(file).href)).default;
+  return (await import(`${pathToFileURL(file).href}${instance}`)).default;
 }
 
 function fakePi() {
@@ -106,6 +106,23 @@ describe('the Pi member extension under Pi\'s callback contract', () => {
       expect(payload).toMatchObject({ transcript_path: transcript, session_id: '0192f1a2-3b4c-7d8e-9f00-112233445566', cwd: root });
     }
     expect(JSON.parse(hooks[1]!.split(' stdin=')[1]!).prompt).toBe('hello pi');
+  });
+
+  it('lets the next Pi process resuming the session run its hooks at once after this one shuts the session down', async () => {
+    const transcript = path.join(dir, 'sessions', '2026-09-19T10-00-00-000Z_0192f1a2-3b4c-7d8e-9f00-aabbccddeeff.jsonl');
+    const ctx = { cwd: root, sessionManager: { getSessionFile: () => transcript } };
+    const first = fakePi();
+    (await loadExtension('?process=1'))(first.pi);
+    await first.handlers.get('session_start')!({ type: 'session_start', reason: 'startup' }, ctx);
+    await first.handlers.get('session_shutdown')!({ type: 'session_shutdown', reason: 'quit' }, ctx);
+    expect(fs.existsSync(path.join(home, 'member', 'claims', 'pi-0192f1a2-3b4c-7d8e-9f00-aabbccddeeff.lock'))).toBe(false);
+
+    const second = fakePi();
+    (await loadExtension('?process=2'))(second.pi);
+    fs.rmSync(log, { force: true });
+    await second.handlers.get('session_start')!({ type: 'session_start', reason: 'resume' }, ctx);
+    await second.handlers.get('before_agent_start')!({ type: 'before_agent_start', prompt: 'again', systemPrompt: '' }, ctx);
+    expect(calls().filter((line) => line.startsWith('hook ')).map((line) => line.split(' ')[1])).toEqual(['session-start', 'user-prompt-submit']);
   });
 
   it('calls a tool with its params, not the call id, answers Pi\'s content shape, and throws when the tool refuses', async () => {

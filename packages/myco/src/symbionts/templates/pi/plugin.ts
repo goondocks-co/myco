@@ -365,6 +365,28 @@ function keepsSessionClaim(directory: string, agent: string, sessionId: string):
 }
 
 /**
+ * Give up a session this instance has ended, so the next instance to open it
+ * (a resumed session in a new process) takes it at once rather than finding a
+ * fresh claim that names a writer that has gone. The claim is removed only
+ * while it still names this instance; one that names another is theirs and is
+ * left as it is. This instance forgets the session either way, so opening it
+ * again later decides afresh.
+ */
+function releaseSessionClaim(directory: string, agent: string, sessionId: string): void {
+  const key = `${agent}-${sessionId}`;
+  claimedSessions.delete(key);
+  claimTouchedAt.delete(key);
+  const claimPath = claimPathFor(directory, agent, sessionId);
+  if (claimHolder(claimPath)?.instance !== MYCO_INSTANCE_ID) return;
+  try {
+    unlinkSync(claimPath);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException)?.code === "ENOENT") return;
+    noteOnce(`release-${key}`, `${agent} session ${sessionId}: could not give up its claim (${(error as Error)?.message ?? "unknown"}) — a new instance resuming it waits for the claim to go stale`);
+  }
+}
+
+/**
  * One line on stderr per session per subject.
  *
  * Capture that stops has to say so somewhere a person can find it. Repeating
@@ -661,6 +683,8 @@ export default function (pi: any) {
       transcript_path: session.transcriptPath,
       cwd: session.cwd,
     });
+    // A session resumed in a new Pi process takes the session at once.
+    releaseSessionClaim(session.cwd, AGENT, session.sessionId);
   });
 
   pi.on("session_before_compact", async (_event: unknown, ctx: PiContext) => {

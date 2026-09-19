@@ -365,6 +365,28 @@ function keepsSessionClaim(directory: string, agent: string, sessionId: string):
 }
 
 /**
+ * Give up a session this instance has ended, so the next instance to open it
+ * (a resumed session in a new process) takes it at once rather than finding a
+ * fresh claim that names a writer that has gone. The claim is removed only
+ * while it still names this instance; one that names another is theirs and is
+ * left as it is. This instance forgets the session either way, so opening it
+ * again later decides afresh.
+ */
+function releaseSessionClaim(directory: string, agent: string, sessionId: string): void {
+  const key = `${agent}-${sessionId}`;
+  claimedSessions.delete(key);
+  claimTouchedAt.delete(key);
+  const claimPath = claimPathFor(directory, agent, sessionId);
+  if (claimHolder(claimPath)?.instance !== MYCO_INSTANCE_ID) return;
+  try {
+    unlinkSync(claimPath);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException)?.code === "ENOENT") return;
+    noteOnce(`release-${key}`, `${agent} session ${sessionId}: could not give up its claim (${(error as Error)?.message ?? "unknown"}) — a new instance resuming it waits for the claim to go stale`);
+  }
+}
+
+/**
  * One line on stderr per session per subject.
  *
  * Capture that stops has to say so somewhere a person can find it. Repeating
@@ -522,6 +544,21 @@ function openSession(directory: string, sessionId: string): string | undefined {
   return answer?.additionalContext;
 }
 
+/**
+ * End a session this instance opened and give up its claim, so a new instance
+ * resuming the session takes it at once.
+ */
+function endSession(directory: string, sessionId: string): void {
+  started.delete(sessionId);
+  promptIds.delete(sessionId);
+  runMycoHook(directory, AGENT, sessionId, "session-end", {
+    session_id: sessionId,
+    transcript_path: transcriptPathFor(directory, AGENT, sessionId),
+    cwd: directory,
+  });
+  releaseSessionClaim(directory, AGENT, sessionId);
+}
+
 export const MycoPlugin = async ({
   client,
   directory,
@@ -574,16 +611,15 @@ export const MycoPlugin = async ({
         return;
       }
 
-      if (type === "session.deleted" || type === "server.instance.disposed") {
-        const sessionId = event?.properties?.info?.id ?? event?.properties?.sessionID;
-        if (!sessionId) return;
-        started.delete(sessionId);
-        promptIds.delete(sessionId);
-        runMycoHook(root, AGENT, sessionId, "session-end", {
-          session_id: sessionId,
-          transcript_path: transcriptPathFor(root, AGENT, sessionId),
-          cwd: root,
-        });
+      if (type === "session.deleted") {
+        const sessionId = event?.properties?.info?.id;
+        if (sessionId) endSession(root, sessionId);
+        return;
+      }
+
+      // The instance is going away and names no session: end every session it opened.
+      if (type === "server.instance.disposed") {
+        for (const sessionId of [...started]) endSession(root, sessionId);
       }
     },
 
