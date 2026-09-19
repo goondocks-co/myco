@@ -2,6 +2,12 @@
 
 All notable changes to Myco are documented here. Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); the project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.4.9] - 2026-09-19
+
+### Fixed
+
+- **OpenCode and Pi capture a Myco 2.0 member project once, not twice.** When a project is set up for Myco 2.0 with `myco member provision opencode` or `myco member provision pi`, it gets an OpenCode plugin or Pi extension of its own, and both agents load it alongside the Myco plugin installed for all your projects. That plugin now steps aside in a project that has its own, so each session there is captured once. Every other project is captured exactly as before.
+
 ## [1.4.8] - 2026-08-15
 
 ### Fixed

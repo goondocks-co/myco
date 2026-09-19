@@ -1,5 +1,6 @@
 // Managed by Myco. Regenerated on `myco update`. Edit src/symbionts/templates/opencode/plugin.ts in the Myco repo instead.
 // myco:plugin-marker:opencode
+// myco:defers-to-member-plugin — steps aside for a project that carries a Myco 2.0 member plugin.
 //
 // Myco Codebase Intelligence Plugin for OpenCode.
 //
@@ -24,7 +25,7 @@
 
 import { readFileSync, appendFileSync, mkdirSync, statSync } from "node:fs";
 import { homedir } from "node:os";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { execFileSync } from "node:child_process";
 
 // ---------------------------------------------------------------------------
@@ -870,6 +871,31 @@ function summarizeToolOutput(output: unknown): string {
 // ---------------------------------------------------------------------------
 
 /**
+ * The comment line a Myco 2.0 member plugin carries. Built in two parts so this
+ * file, which may itself be installed as a project plugin, never matches it.
+ */
+const MEMBER_PLUGIN_LINE = "// myco:" + "member-plugin";
+
+/**
+ * True when a Myco 2.0 member plugin sits in any `.opencode/plugins/` OpenCode
+ * loads for this session: every directory from the launch directory up to the
+ * worktree root. That plugin captures the project, so this one steps aside
+ * rather than capture every session twice.
+ */
+function projectHasMemberPlugin(directory: string, worktree: string): boolean {
+  let dir = resolve(directory);
+  const stop = worktree ? resolve(worktree) : dir;
+  while (true) {
+    try {
+      if (readFileSync(join(dir, ".opencode", "plugins", "myco.ts"), "utf-8").includes(MEMBER_PLUGIN_LINE)) return true;
+    } catch { /* no plugin here */ }
+    const parent = dirname(dir);
+    if (dir === stop || parent === dir) return false;
+    dir = parent;
+  }
+}
+
+/**
  * Opencode plugin entry. The function signature matches opencode's Plugin type
  * via duck typing — we deliberately do NOT import the Plugin type from
  * @opencode-ai/plugin so this file has zero external runtime dependencies.
@@ -880,6 +906,8 @@ function summarizeToolOutput(output: unknown): string {
  */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export const MycoPlugin = async ({ client, directory, worktree }: { client: any; directory: string; worktree: string }) => {
+  // A project with a Myco 2.0 member plugin captures through that plugin.
+  if (projectHasMemberPlugin(directory, worktree)) return {};
 
   // Best-effort init log. Wrapped in try-catch so a future SDK shape change in
   // opencode (e.g. client.app.log moving) cannot prevent the plugin from

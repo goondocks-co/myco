@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { saveMachineConfig, invalidateMergedConfigCache } from '../../packages/myco/src/config/loader';
+import { loadManifests } from '../../packages/myco/src/symbionts/detect';
 import { reconcileManagedProjectFiles } from '../../packages/myco/src/symbionts/reconcile';
 import { useIsolatedHome } from '../support/isolated-home';
 
@@ -20,6 +21,28 @@ describe('managed-files reconcile picks up machine-scoped capture', () => {
     fs.writeFileSync(path.join(projectRoot, '.gitignore'), 'node_modules\n', 'utf-8');
     fs.writeFileSync(path.join(projectRoot, 'AGENTS.md'), '# AGENTS.md\n', 'utf-8');
     invalidateMergedConfigCache();
+  });
+
+  it('writes them whatever order the manifests arrive in', () => {
+    // The managed-file writers gate on `registration.skillsTarget`, which
+    // `antigravity` deliberately omits. Leading with it is the order a
+    // hash-ordered filesystem can hand `loadManifests()`.
+    const manifests = loadManifests();
+    expect(manifests.find((m) => m.name === 'antigravity')?.registration?.skillsTarget)
+      .toBeUndefined();
+    const antigravityFirst = [
+      ...manifests.filter((m) => m.name === 'antigravity'),
+      ...manifests.filter((m) => m.name !== 'antigravity'),
+    ];
+
+    const r1 = reconcileManagedProjectFiles(projectRoot, vault, GROVE, { manifests: antigravityFirst });
+    expect(r1?.gitignore).toBe(true);
+    expect(fs.readFileSync(path.join(projectRoot, '.gitignore'), 'utf-8')).toContain('docs/plans/');
+  });
+
+  it('enumerates manifests in one order on every filesystem', () => {
+    const names = loadManifests().map((m) => m.name);
+    expect(names).toEqual([...names].sort());
   });
 
   it('writes machine-configured plan dirs into the project .gitignore, idempotently', () => {

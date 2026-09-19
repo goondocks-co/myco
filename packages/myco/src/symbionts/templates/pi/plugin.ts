@@ -1,5 +1,6 @@
 // Managed by Myco. Regenerated on `myco update`. Edit src/symbionts/templates/pi/plugin.ts in the Myco repo instead.
 // myco:plugin-marker:pi
+// myco:defers-to-member-plugin — steps aside for a project that carries a Myco 2.0 member extension.
 //
 // Myco Codebase Intelligence Extension for Pi.
 //
@@ -898,6 +899,10 @@ function extractErrorMessage(data: unknown, fallback: string): string {
 // ---------------------------------------------------------------------------
 
 export default function (pi: ExtensionAPI) {
+  // A trusted project's Myco 2.0 member extension loads before this one and
+  // marks itself active once it is registered; it captures the project, and
+  // registering this extension's tools beside it would stop Pi from starting.
+  if ((globalThis as Record<symbol, unknown>)[Symbol.for("myco.member-extension")]) return;
   let currentSessionId: string | null = null;
   let currentCwd: string = process.cwd();
   let lastAssistantMessage: string = "";

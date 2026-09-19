@@ -22,7 +22,7 @@ import path from 'node:path';
 import { resolveProjectVaultDir, resolveMycoHome } from './paths.js';
 import { listGroves, listRegisteredProjects } from './registry.js';
 import type { SymbiontManifest } from '../symbionts/manifest-schema.js';
-import { loadManifests, resolvePackageRoot } from '../symbionts/detect.js';
+import { loadManifests, manifestForManagedProjectFiles, resolvePackageRoot } from '../symbionts/detect.js';
 import { SymbiontInstaller, removeProjectLaunchers, MYCO_MCP_SERVER_NAME } from '../symbionts/installer.js';
 import { isMycoHookGroup } from '../symbionts/install-helpers.js';
 import { readJsonFile, writeOrDeleteJsonFile } from '../symbionts/json-helpers.js';
@@ -314,10 +314,11 @@ export function migrateProjectToGlobalInstall(
   // here covers the first-event / hot-path entry, while `myco update` has a
   // dedicated variant-scoped managed-file pass for already-migrated projects.
   // /code-review finding C10.
-  if (manifests.length > 0) {
+  const managedFilesManifest = manifestForManagedProjectFiles(manifests);
+  if (managedFilesManifest) {
     try {
       const installer = new SymbiontInstaller(
-        manifests[0], projectRoot, packageRoot, false, undefined, null, 'project',
+        managedFilesManifest, projectRoot, packageRoot, false, undefined, null, 'project',
       );
       installer.reconcileManagedProjectFiles();
     } catch {
