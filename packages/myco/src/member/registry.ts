@@ -92,9 +92,14 @@ export function deploymentsDir(mycoHome: string = resolveMycoHome()): string {
   return path.join(memberRoot(mycoHome), DEPLOYMENTS_DIRNAME);
 }
 
-/** The key a Deployment is filed under: its server URL without a trailing slash. */
+/** A Deployment's identity: its server URL without a trailing slash. Two URLs name one Deployment exactly when these are equal. */
+export function deploymentUrl(serverUrl: string): string {
+  return serverUrl.replace(/\/+$/, '');
+}
+
+/** The key a Deployment is filed under: the hash of its {@link deploymentUrl}. */
 export function deploymentKeyFor(serverUrl: string): string {
-  return crypto.createHash('sha256').update(serverUrl.replace(/\/+$/, '')).digest('hex').slice(0, KEY_HEX_CHARS);
+  return crypto.createHash('sha256').update(deploymentUrl(serverUrl)).digest('hex').slice(0, KEY_HEX_CHARS);
 }
 
 export function deploymentPath(serverUrl: string, mycoHome: string = resolveMycoHome()): string {

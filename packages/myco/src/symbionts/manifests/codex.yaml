@@ -256,6 +256,10 @@ registration:
   globalHooksTarget: ~/.codex/hooks.json
   mcpTarget: .codex/config.toml
   mcpFormat: toml
+  # A member's entry is the Deployment's remote `/mcp`. Codex runs this helper
+  # for the request headers when it connects and again after a 401, so a
+  # rotated member token reaches it without a restart.
+  memberMcpHeadersHelperKey: http_headers_helper
   globalMcpTarget: ~/.codex/config.toml
   skillsTarget: .agents/skills
   globalSkillsTarget: ~/.agents/skills

@@ -9,7 +9,9 @@
  * member injects nothing before a tool call, so registering it would spend a
  * process per tool use to do nothing.
  */
-import { CREDENTIAL_FLAG, NEVER_DRAINS_HOOK, hookNameInCommand, type CredentialSource } from '../member/constants.js';
+import { CREDENTIAL_FLAG, NEVER_DRAINS_HOOK, SERVER_FLAG, hookNameInCommand, type CredentialSource } from '../member/constants.js';
+import { deploymentUrl } from '../member/registry.js';
+import { MCP_PATH } from '../plugins/spec.js';
 
 /** Every hook command in a rendered or unrendered template, in document order. */
 export function hookCommands(node: unknown): string[] {
@@ -71,6 +73,33 @@ export function memberMcpTemplate(template: Record<string, unknown>, source: Cre
     else throw new Error(`Refusing to emit a member MCP server: ${name} declares no argument list to carry ${CREDENTIAL_FLAG} ${source}`);
   }
   return out;
+}
+
+/** The `myco` arguments that print a member's MCP request headers as a JSON object. */
+export const MCP_HEADERS_ARGS: readonly string[] = ['member', 'mcp-headers'];
+
+/** What a server URL may contain to ride unquoted in a headers-helper command line. */
+const SHELL_SAFE_URL = /^[A-Za-z0-9:/._~%-]+$/;
+
+/**
+ * The member's remote MCP server entry: the Deployment's `/mcp` URL and, under
+ * the host's headers-helper key, the command that prints the member headers
+ * for `source`. The command names the same Deployment the URL does, and prints
+ * nothing for a membership on any other, so a stale entry never sends one
+ * Deployment's bearer to another. The token is never written — the host runs
+ * the command when it connects and after a 401, so a rotated token reaches it
+ * without a restart.
+ */
+export function memberRemoteMcp(
+  serverUrl: string,
+  helperKey: string,
+  binaryPath: string,
+  source: CredentialSource,
+): Record<string, unknown> {
+  const server = deploymentUrl(serverUrl);
+  if (!SHELL_SAFE_URL.test(server)) throw new Error(`Refusing to emit a member MCP server: ${server} cannot ride unquoted in a headers-helper command`);
+  const helper = [binaryPath, ...MCP_HEADERS_ARGS, CREDENTIAL_FLAG, source, SERVER_FLAG, server].join(' ');
+  return { url: `${server}${MCP_PATH}`, [helperKey]: helper };
 }
 
 /**

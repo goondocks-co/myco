@@ -16,7 +16,7 @@ import { resetMachineIdCache } from '@myco/machine-id.js';
 import { runJoin, runLeave } from '@myco/cli/member.js';
 import { run as runSettings } from '@myco/cli/settings.js';
 import { CREDENTIAL_FLAG, NEVER_DRAINS_HOOK, hookNameInCommand } from '@myco/member/constants.js';
-import { readRegistryEntry } from '@myco/member/registry.js';
+import { readRegistryEntry, REGISTRY_VERSION, writeRegistryEntry } from '@myco/member/registry.js';
 import { MemberSpool } from '@myco/member/spool.js';
 import { loadManifests } from '@myco/symbionts/detect.js';
 import { SymbiontInstaller } from '@myco/symbionts/installer.js';
@@ -68,6 +68,9 @@ afterEach(() => {
 
 describe('the member-project install scope', () => {
   it('writes the member hooks to the manifest\'s member target and touches no other settings file', () => {
+    writeRegistryEntry({
+      version: REGISTRY_VERSION, projectId: PROJECT, serverUrl: 'https://srv.example', token: 'A'.repeat(43), root: projectRoot, machineId: 'm1', joinedAt: 1, updatedAt: 1,
+    }, { mycoHome });
     expect(memberInstaller().install().hooks).toBe(true);
 
     const commands = hookCommands(readTarget().hooks);
@@ -92,12 +95,15 @@ describe('the member-project install scope', () => {
     // The member scope writes two files for an mcp-transport symbiont: the hooks target and the MCP server list.
     expect(fs.readdirSync(projectRoot).sort()).toEqual(['.claude', '.mcp.json']);
     expect(fs.readdirSync(path.join(projectRoot, '.claude'))).toEqual(['settings.local.json']);
-    const mcp = JSON.parse(fs.readFileSync(path.join(projectRoot, '.mcp.json'), 'utf8')) as { mcpServers: Record<string, { command: string; args: string[]; env?: Record<string, string> }> };
+    const mcp = JSON.parse(fs.readFileSync(path.join(projectRoot, '.mcp.json'), 'utf8')) as { mcpServers: Record<string, { type: string; url: string; headersHelper: string; env?: Record<string, string> }> };
     expect(Object.keys(mcp.mcpServers)).toEqual(['myco']);
-    expect(mcp.mcpServers.myco.args).toEqual(['mcp', CREDENTIAL_FLAG, 'registry']);
-    expect(path.isAbsolute(mcp.mcpServers.myco.command)).toBe(true);
-    // Nor does the MCP entry name a home: `myco mcp` resolves the project's pin itself.
-    expect(mcp.mcpServers.myco.env?.MYCO_HOME).toBeUndefined();
+    expect(mcp.mcpServers.myco.type).toBe('http');
+    expect(mcp.mcpServers.myco.url).toBe('https://srv.example/mcp');
+    expect(mcp.mcpServers.myco.headersHelper).toContain(`member mcp-headers ${CREDENTIAL_FLAG} registry --server https://srv.example`);
+    expect(path.isAbsolute(mcp.mcpServers.myco.headersHelper.split(' ')[0])).toBe(true);
+    // Nor does the MCP entry name a home or carry a token: the helper resolves the project's pin and reads the registry itself.
+    expect(mcp.mcpServers.myco.env).toBeUndefined();
+    expect(JSON.stringify(mcp)).not.toContain('A'.repeat(43));
   });
 
   it('preserves the file\'s other keys and every hook it does not own', () => {
