@@ -524,8 +524,9 @@ function listMycoTools(directory: string): ListedTool[] {
 
 /** Dispatch one Myco tool through the binary, degrading to an error result. */
 function callMycoTool(directory: string, toolName: string, input: unknown): unknown {
+  let stdout: string;
   try {
-    const stdout = execFileSync(
+    stdout = execFileSync(
       resolveMycoBinary(directory),
       ["tool", "call", toolName, "--json", "--input", JSON.stringify(input ?? {}), "--credential", MYCO_CREDENTIAL_SOURCE],
       {
@@ -536,12 +537,17 @@ function callMycoTool(directory: string, toolName: string, input: unknown): unkn
         stdio: ["ignore", "pipe", "ignore"],
       },
     );
-    const envelope = JSON.parse(typeof stdout === "string" ? stdout : "") as ToolCliEnvelope;
-    if (!envelope.ok) return { error: envelope.error?.message ?? "tool call failed" };
-    return envelope.result;
   } catch {
-    return { error: "Myco is not available on this machine." };
+    throw new Error("Myco is not available on this machine.");
   }
+  let envelope: ToolCliEnvelope;
+  try {
+    envelope = JSON.parse(stdout) as ToolCliEnvelope;
+  } catch {
+    throw new Error("Myco returned an unreadable answer.");
+  }
+  if (!envelope.ok) throw new Error(envelope.error?.message ?? "tool call failed");
+  return envelope.result;
 }
 
 /**
@@ -558,10 +564,23 @@ function schemaFor(tool: ListedTool) {
   return Type.Object(shape);
 }
 
+/** The part of Pi's handler context this extension reads: the project and the session's own transcript. */
+interface PiContext {
+  cwd?: string;
+  sessionManager?: { getSessionFile?: () => string | undefined };
+}
+
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export default function (pi: any) {
-  const directory = typeof pi?.cwd === "string" && pi.cwd ? pi.cwd : process.cwd();
+  const directory = process.cwd();
   let registered = false;
+
+  /** Pi hands every handler `(event, ctx)`; the transcript and the project come from the context. */
+  const sessionOf = (ctx: PiContext | undefined): { transcriptPath: string; sessionId: string; cwd: string } | null => {
+    const transcriptPath = ctx?.sessionManager?.getSessionFile?.();
+    if (!transcriptPath) return null;
+    return { transcriptPath, sessionId: deriveSessionId(transcriptPath), cwd: ctx?.cwd || directory };
+  };
 
   const registerTools = (): void => {
     if (registered) return;
@@ -575,22 +594,26 @@ export default function (pi: any) {
       if (!tool?.name) continue;
       pi.registerTool({
         name: tool.name,
+        label: tool.name,
         description: tool.description ?? "",
         parameters: schemaFor(tool),
-        execute: async (args: unknown) => callMycoTool(directory, tool.name, args),
+        // Pi calls execute(toolCallId, params, signal, onUpdate, ctx) and reads `content`; a throw marks the call failed.
+        execute: async (_toolCallId: string, params: unknown) => {
+          const result = callMycoTool(directory, tool.name, params);
+          return { content: [{ type: "text", text: typeof result === "string" ? result : JSON.stringify(result ?? null) }], details: result };
+        },
       });
     }
   };
 
-  pi.on("session_start", async (ctx: { sessionFile?: string }) => {
+  pi.on("session_start", async (_event: unknown, ctx: PiContext) => {
     registerTools();
-    const transcriptPath = ctx?.sessionFile;
-    if (!transcriptPath) return;
-    const sessionId = deriveSessionId(transcriptPath);
-    const answer = runMycoHook(directory, AGENT, sessionId, "session-start", {
-      session_id: sessionId,
-      transcript_path: transcriptPath,
-      cwd: directory,
+    const session = sessionOf(ctx);
+    if (!session) return;
+    const answer = runMycoHook(session.cwd, AGENT, session.sessionId, "session-start", {
+      session_id: session.sessionId,
+      transcript_path: session.transcriptPath,
+      cwd: session.cwd,
     });
     if (answer?.additionalContext) {
       pi.sendMessage(
@@ -605,48 +628,48 @@ export default function (pi: any) {
    * as a custom message. Pi writes the prompt into its own transcript, so
    * nothing is written here.
    */
-  pi.on("before_agent_start", async (ctx: { sessionFile?: string; message?: { content?: string } }) => {
-    const transcriptPath = ctx?.sessionFile;
-    const text = ctx?.message?.content;
-    if (!transcriptPath || typeof text !== "string" || !text.trim()) return undefined;
-    const answer = runMycoHook(directory, AGENT, deriveSessionId(transcriptPath), "user-prompt-submit", {
-      session_id: deriveSessionId(transcriptPath),
-      transcript_path: transcriptPath,
+  pi.on("before_agent_start", async (event: { prompt?: string }, ctx: PiContext) => {
+    const session = sessionOf(ctx);
+    const text = event?.prompt;
+    if (!session || typeof text !== "string" || !text.trim()) return undefined;
+    const answer = runMycoHook(session.cwd, AGENT, session.sessionId, "user-prompt-submit", {
+      session_id: session.sessionId,
+      transcript_path: session.transcriptPath,
       prompt: text,
-      cwd: directory,
+      cwd: session.cwd,
     });
     if (!answer?.additionalContext) return undefined;
     return { message: { customType: "myco-prompt-context", content: answer.additionalContext, display: false } };
   });
 
   /** Turn end: ship whatever Pi has appended to its transcript since the last pass. */
-  pi.on("agent_end", async (ctx: { sessionFile?: string }) => {
-    const transcriptPath = ctx?.sessionFile;
-    if (!transcriptPath) return;
-    runMycoHook(directory, AGENT, deriveSessionId(transcriptPath), "stop", {
-      session_id: deriveSessionId(transcriptPath),
-      transcript_path: transcriptPath,
-      cwd: directory,
+  pi.on("agent_end", async (_event: unknown, ctx: PiContext) => {
+    const session = sessionOf(ctx);
+    if (!session) return;
+    runMycoHook(session.cwd, AGENT, session.sessionId, "stop", {
+      session_id: session.sessionId,
+      transcript_path: session.transcriptPath,
+      cwd: session.cwd,
     });
   });
 
-  pi.on("session_shutdown", async (ctx: { sessionFile?: string }) => {
-    const transcriptPath = ctx?.sessionFile;
-    if (!transcriptPath) return;
-    runMycoHook(directory, AGENT, deriveSessionId(transcriptPath), "session-end", {
-      session_id: deriveSessionId(transcriptPath),
-      transcript_path: transcriptPath,
-      cwd: directory,
+  pi.on("session_shutdown", async (_event: unknown, ctx: PiContext) => {
+    const session = sessionOf(ctx);
+    if (!session) return;
+    runMycoHook(session.cwd, AGENT, session.sessionId, "session-end", {
+      session_id: session.sessionId,
+      transcript_path: session.transcriptPath,
+      cwd: session.cwd,
     });
   });
 
-  pi.on("session_before_compact", async (ctx: { sessionFile?: string }) => {
-    const transcriptPath = ctx?.sessionFile;
-    if (!transcriptPath) return;
-    const answer = runMycoHook(directory, AGENT, deriveSessionId(transcriptPath), "post-compact", {
-      session_id: deriveSessionId(transcriptPath),
-      transcript_path: transcriptPath,
-      cwd: directory,
+  pi.on("session_before_compact", async (_event: unknown, ctx: PiContext) => {
+    const session = sessionOf(ctx);
+    if (!session) return;
+    const answer = runMycoHook(session.cwd, AGENT, session.sessionId, "post-compact", {
+      session_id: session.sessionId,
+      transcript_path: session.transcriptPath,
+      cwd: session.cwd,
     });
     if (answer?.additionalContext) {
       pi.sendMessage(

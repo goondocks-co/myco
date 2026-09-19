@@ -588,6 +588,26 @@ export const MycoPlugin = async ({
     },
 
     /**
+     * An assistant text part, once opencode has finished it: the turn's
+     * response line. `chat.message` carries only the user's message, so this is
+     * the one place the assistant's words reach the plugin whole. The text is
+     * read and left as it is.
+     */
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    "experimental.text.complete": async (input: any, output: any) => {
+      const sessionId = input?.sessionID;
+      const text = typeof output?.text === "string" ? output.text.trim() : "";
+      if (!sessionId || !text) return;
+      appendTranscriptLine(root, AGENT, sessionId, {
+        type: "response",
+        sessionId,
+        promptId: promptIds.get(sessionId),
+        text,
+        at: nowIso(),
+      });
+    },
+
+    /**
      * A turn's user message: register the session if this is the first thing
      * seen, mint the prompt id through the hook, write the prompt line, and
      * push the served context onto this message's parts.
@@ -606,20 +626,6 @@ export const MycoPlugin = async ({
         synthetic?: boolean;
         metadata?: Record<string, unknown>;
       }>;
-
-      if (output?.message?.role === "assistant") {
-        const text = textOfParts(parts);
-        if (text) {
-          appendTranscriptLine(root, AGENT, sessionId, {
-            type: "response",
-            sessionId,
-            promptId: promptIds.get(sessionId),
-            text,
-            at: nowIso(),
-          });
-        }
-        return;
-      }
 
       const text = textOfParts(parts);
       if (!text) return;

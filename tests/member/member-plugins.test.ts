@@ -109,6 +109,23 @@ describe('member plugins for plugin-file agents', () => {
     });
   }
 
+  it('refuses before any write to replace a project plugin file Myco does not own, and leaves it as it is', async () => {
+    join();
+    for (const agent of ['opencode', 'pi'] as const) {
+      const target = path.join(root, TARGETS[agent]);
+      fs.mkdirSync(path.dirname(target), { recursive: true });
+      const own = '// the user\'s own plugin\nexport default {};\n';
+      fs.writeFileSync(target, own);
+      process.exitCode = 0;
+      const refused = await member(['provision', agent]);
+      expect(refused.out).toEqual([]);
+      expect(refused.err.join('\n')).toContain(`${target} is not a Myco plugin`);
+      expect(process.exitCode).toBe(2);
+      expect(fs.readFileSync(target, 'utf8')).toBe(own);
+      expect(fs.existsSync(path.join(root, '.git', 'info', 'exclude')) && fs.readFileSync(path.join(root, '.git', 'info', 'exclude'), 'utf8').includes(TARGETS[agent])).toBe(false);
+    }
+  });
+
   it('leave, with or without --purge, removes the member plugins and never a 1.4 project plugin', async () => {
     join();
     await member(['provision', 'opencode']);

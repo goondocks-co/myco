@@ -830,10 +830,7 @@ export class SymbiontInstaller {
   /** Run all registration steps. */
   install(): InstallResult {
     if (this.installScope === 'member-project') {
-      if (this.isMemberPluginFile()) {
-        this.assertNoMemberPluginConflict();
-        return { ...emptyInstallResult(), hooks: this.installMemberPlugin() };
-      }
+      if (this.isMemberPluginFile()) return { ...emptyInstallResult(), hooks: this.writeMemberPlugin() };
       if (this.renderMemberHooks('registry') === null) return emptyInstallResult();
       this.assertNoMemberMcpConflict();
       const hooks = this.installMemberHooks();
@@ -1890,19 +1887,38 @@ export class SymbiontInstaller {
   }
 
   /**
-   * Write the member plugin into the project's `memberHooksTarget`. The agent
-   * loads it beside any global plugin, so it is written only once
-   * `assertNoMemberPluginConflict` has found no global Myco plugin that would
-   * keep capturing too. The file names this machine's binary, so it is kept
+   * The one writer of a member plugin: refuses before any write when the
+   * agent's global Myco plugin would keep capturing beside it, or when the
+   * project's target file is not Myco's, then writes the rendered plugin into
+   * `memberHooksTarget`. The file names this machine's binary, so it is kept
    * out of git.
    */
-  installMemberPlugin(): boolean {
+  private writeMemberPlugin(): boolean {
     const rendered = this.renderMemberPlugin('registry');
     const targetPath = this.resolveAbsoluteTarget('hooks');
     if (rendered === null || targetPath === null) return false;
+    this.assertNoMemberPluginConflict();
+    this.assertMemberPluginTargetIsMyco(targetPath);
     const written = this.writeManagedFile(targetPath, rendered);
     this.ensureGitIgnored(targetPath);
     return written;
+  }
+
+  /** Refuse to replace a file at the project's plugin path that Myco does not own; it is left as it is. */
+  private assertMemberPluginTargetIsMyco(targetPath: string): void {
+    let content: string;
+    try {
+      content = fs.readFileSync(targetPath, 'utf-8');
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return;
+      throw new MemberPluginConflictError(
+        `could not read ${targetPath} (${error instanceof Error ? error.message : String(error)}), so nothing was written.`,
+      );
+    }
+    if (content.includes(MYCO_PLUGIN_FILE_MARKER) || rawHasMycoOwnershipSignal(content)) return;
+    throw new MemberPluginConflictError(
+      `${targetPath} is not a Myco plugin, so nothing was written and it was left as it is. Move it elsewhere if ${this.manifest.displayName} should load Myco's plugin here, then run \`myco member provision ${this.manifest.name}\`.`,
+    );
   }
 
   /**
