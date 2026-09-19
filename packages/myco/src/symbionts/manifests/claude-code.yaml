@@ -329,6 +329,10 @@ registration:
   memberHooksTarget: .claude/settings.local.json
   globalHooksTarget: ~/.claude/settings.json
   mcpTarget: .mcp.json
+  # A member's entry is the Deployment's remote `/mcp`. Claude Code runs this
+  # helper in the project directory on each connection and again after a 401
+  # or 403, once the folder is trusted.
+  memberMcpHeadersHelperKey: headersHelper
   globalMcpTarget: ~/.claude/settings.json
   skillsTarget: .claude/skills
   globalSkillsTarget: ~/.claude/skills

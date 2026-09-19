@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
+import { parse as parseToml } from 'smol-toml';
 import { expandHome, resolveMycoHome } from '../grove/paths.js';
 import { shouldDeferSubsystem, SYMBIONT_CONFIG_SUBSYSTEM } from '../grove/subsystem-claim.js';
 import { atomicWriteFileSync } from '../utils/atomic-write.js';
@@ -79,6 +80,12 @@ const SKILLS_SUBDIR = 'skills';
 
 /** MCP server name used by Myco in all symbiont configurations. */
 export const MYCO_MCP_SERVER_NAME = 'myco';
+
+/** The `type` a JSON host takes for a remote HTTP MCP server. */
+const REMOTE_MCP_TYPE = 'http';
+
+/** A member MCP entry the host would merge with a global one into a configuration it refuses. */
+export class MemberMcpConflictError extends Error {}
 
 /**
  * All top-level JSON keys agents are known to use to hold their MCP
@@ -418,6 +425,9 @@ export class SymbiontInstaller {
     vaultDir?: string,
     groveId?: string | null,
     installScope: InstallScope = 'project',
+    // The home a member-project install reads the project's membership from.
+    // Defaults to the home the project resolves; `myco member` passes its own.
+    private memberHome?: string,
   ) {
     this.vaultDir = vaultDir ?? path.join(projectRoot, '.myco');
     this.groveId = groveId;
@@ -794,6 +804,7 @@ export class SymbiontInstaller {
   install(): InstallResult {
     if (this.installScope === 'member-project') {
       if (this.renderMemberHooks('registry') === null) return emptyInstallResult();
+      this.assertNoMemberMcpConflict();
       const hooks = this.installMemberHooks();
       return { ...emptyInstallResult(), hooks, mcp: this.installMemberMcp() };
     }
@@ -1725,14 +1736,50 @@ export class SymbiontInstaller {
     const reg = this.manifest.registration;
     if (!reg?.mcpTarget) return null;
     if (reg.memberMcpHeadersHelperKey) {
-      const entry = readRegistryEntry(this.projectRoot, resolveMycoHome({ cwd: this.projectRoot }));
+      const entry = readRegistryEntry(this.projectRoot, this.memberHomeDir());
       if (entry === null) return null;
       const binaryPath = resolveManagedBinaryPath();
       assertSafeBinaryPathForUnquoted(binaryPath);
-      return { [MYCO_MCP_SERVER_NAME]: memberRemoteMcp(entry.serverUrl, reg.memberMcpHeadersHelperKey, binaryPath, source) };
+      // A JSON host reads `type` and the levers; a TOML host drops them (`tomlMemberServers`).
+      const remote = memberRemoteMcp(entry.serverUrl, reg.memberMcpHeadersHelperKey, binaryPath, source);
+      return { [MYCO_MCP_SERVER_NAME]: { type: REMOTE_MCP_TYPE, ...remote, ...MEMBER_MCP_LEVERS } };
     }
     const template = this.loadMcpTemplate();
     return template === null ? null : memberMcpTemplate(template, source);
+  }
+
+  private memberHomeDir(): string {
+    return this.memberHome ?? resolveMycoHome({ cwd: this.projectRoot });
+  }
+
+  /**
+   * Refuse, before any member write, a remote entry the host would merge into
+   * a broken one. Codex deep-merges a same-named server from its global config
+   * into the project's, so a global stdio `myco` (command, args, env, cwd)
+   * beside the project's URL entry fails the WHOLE config ("url is not
+   * supported for stdio"). The global file may serve other projects, so it is
+   * named and left as it is.
+   */
+  private assertNoMemberMcpConflict(): void {
+    const reg = this.manifest.registration;
+    if (reg?.mcpFormat !== 'toml' || !reg.memberMcpHeadersHelperKey) return;
+    const own = ['url', reg.memberMcpHeadersHelperKey];
+    for (const target of reg.globalMcpTarget ?? []) {
+      const globalPath = expandHome(target.path);
+      let parsed: Record<string, unknown>;
+      try {
+        parsed = parseToml(fs.readFileSync(globalPath, 'utf-8')) as Record<string, unknown>;
+      } catch {
+        continue;
+      }
+      const server = (parsed.mcp_servers as Record<string, unknown> | undefined)?.[MYCO_MCP_SERVER_NAME];
+      if (!server || typeof server !== 'object') continue;
+      const foreign = Object.keys(server).filter((key) => !own.includes(key));
+      if (foreign.length === 0) continue;
+      throw new MemberMcpConflictError(
+        `${globalPath} declares a \`${MYCO_MCP_SERVER_NAME}\` MCP server with ${foreign.join(', ')}. ${this.manifest.displayName} merges it into this project's remote \`${MYCO_MCP_SERVER_NAME}\` entry and then refuses its whole configuration, so nothing was written. Remove [mcp_servers.${MYCO_MCP_SERVER_NAME}] from ${globalPath} if no other project needs it, then run \`myco member provision ${this.manifest.name}\`.`,
+      );
+    }
   }
 
   /** The member's MCP server list file: the manifest's mcpTarget under the project root, or null. */
@@ -1749,6 +1796,7 @@ export class SymbiontInstaller {
    * server list, and an exclude entry on a tracked file hides its changes.
    */
   installMemberMcp(): boolean {
+    this.assertNoMemberMcpConflict();
     const block = this.renderMemberMcp('registry');
     const targetPath = this.memberMcpTargetPath();
     if (block === null || targetPath === null) return false;

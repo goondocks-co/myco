@@ -1610,6 +1610,17 @@ export async function checkRuntimePin(): Promise<DoctorCheck | null> {
   }
 }
 
+/** Whether the `myco` server in an MCP list file carries the host's headers-helper key. */
+function memberMcpHasHelper(raw: string, format: string | undefined, serversKey: string | undefined, helperKey: string): boolean {
+  if (format === 'toml') return readTomlSectionKey(raw, `mcp_servers.${MYCO_MCP_SERVER_NAME}`, helperKey) !== undefined;
+  try {
+    const servers = (JSON.parse(raw) as Record<string, Record<string, Record<string, unknown>> | undefined>)[serversKey ?? 'mcpServers'];
+    return typeof servers?.[MYCO_MCP_SERVER_NAME]?.[helperKey] === 'string';
+  } catch {
+    return false;
+  }
+}
+
 /**
  * Whether the member MCP servers provisioned for this project resolve a
  * membership from wherever the harness starts them.
@@ -1649,11 +1660,12 @@ export async function checkMemberMcpResolution(vaultDir: string, env: NodeJS.Pro
     let raw: string;
     try { raw = fs.readFileSync(file, 'utf-8'); } catch { continue; }
     if (!raw.includes(MYCO_MCP_SERVER_NAME)) continue;
+    // A remote entry resolves its membership through the headers helper, which
+    // the host runs in the project or session directory and which names its
+    // Deployment — neither a cwd nor a single membership is needed.
+    const helperKey = manifest.registration?.memberMcpHeadersHelperKey;
+    if (helperKey && memberMcpHasHelper(raw, manifest.registration?.mcpFormat, manifest.registration?.mcpServersKey, helperKey)) continue;
     if (manifest.registration?.mcpFormat === 'toml') {
-      // A remote entry resolves its membership through the headers helper,
-      // which the host runs in the session's directory.
-      const helperKey = manifest.registration.memberMcpHeadersHelperKey;
-      if (helperKey && readTomlSectionKey(raw, `mcp_servers.${MYCO_MCP_SERVER_NAME}`, helperKey) !== undefined) continue;
       if (/\bcwd\s*=/.test(raw)) continue;
       checks.push({
         name: 'Member MCP resolution',

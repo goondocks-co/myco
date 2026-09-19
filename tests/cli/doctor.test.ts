@@ -872,4 +872,18 @@ describe('checkMemberMcpResolution', () => {
     fs.writeFileSync(path.join(root, '.codex', 'config.toml'), '[mcp_servers.myco]\nurl = "https://srv.example/mcp"\nhttp_headers_helper = "/opt/myco member mcp-headers --credential registry"\n');
     expect(await checkMemberMcpResolution(path.join(root, '.myco'), process.env)).toEqual([]);
   });
+
+  it('says nothing for a remote Claude Code entry on a machine with several memberships: its helper runs in the project and names its Deployment', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-doctor-mcp-proj-'));
+    fs.mkdirSync(path.join(root, '.myco'));
+    member(root, path.join(homeDir, '.myco'), 'proj_1');
+    member(fs.mkdtempSync(path.join(os.tmpdir(), 'myco-doctor-mcp-proj2-')), path.join(homeDir, '.myco'), 'proj_2');
+    fs.writeFileSync(path.join(root, '.mcp.json'), JSON.stringify({ mcpServers: { myco: {
+      type: 'http', url: 'https://srv.example/mcp', headersHelper: '/opt/myco member mcp-headers --credential registry --server https://srv.example',
+    } } }));
+    expect(await checkMemberMcpResolution(path.join(root, '.myco'), process.env)).toEqual([]);
+    // The stdio entry on the same machine is still named.
+    fs.writeFileSync(path.join(root, '.mcp.json'), JSON.stringify({ mcpServers: { myco: { command: '/opt/myco', args: ['mcp'] } } }));
+    expect((await checkMemberMcpResolution(path.join(root, '.myco'), process.env)).map((c) => c.detail).join('\n')).toContain('holds 2 memberships');
+  });
 });

@@ -55,6 +55,9 @@ registration:
       userMessage: user_message
       followupMessage: followup_message
       systemMessage: system_message
+  # No memberMcpHeadersHelperKey: Cursor's remote entries take static headers
+  # or OAuth, and neither carries a member token that rotates, so a member keeps
+  # the stdio entry.
   mcpTarget: .cursor/mcp.json
   globalMcpTarget: ~/.cursor/mcp.json
   skillsTarget: .agents/skills
