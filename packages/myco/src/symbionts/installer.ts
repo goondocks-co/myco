@@ -1787,7 +1787,7 @@ export class SymbiontInstaller {
       const conflicting = Object.keys(server).filter((key) => GLOBAL_MCP_CONFLICT_KEYS.includes(key));
       if (conflicting.length === 0) continue;
       throw new MemberMcpConflictError(
-        `${globalPath} declares a \`${MYCO_MCP_SERVER_NAME}\` MCP server with ${conflicting.join(', ')}. ${this.manifest.displayName} merges it into this project's remote \`${MYCO_MCP_SERVER_NAME}\` entry, which then starts a local process or signs in with another credential, so nothing was written. Remove those keys from [mcp_servers.${MYCO_MCP_SERVER_NAME}] in ${globalPath} if no other project needs them, then run \`myco member provision ${this.manifest.name}\`.`,
+        `${globalPath} declares a \`${MYCO_MCP_SERVER_NAME}\` MCP server with ${conflicting.join(', ')}. These are incompatible transport or competing credential settings for this project's remote \`${MYCO_MCP_SERVER_NAME}\` entry, which ${this.manifest.displayName} merges with the global one and then rejects, so nothing was written. Remove those keys from [mcp_servers.${MYCO_MCP_SERVER_NAME}] in ${globalPath} if no other project needs them, then run \`myco member provision ${this.manifest.name}\`.`,
       );
     }
   }
