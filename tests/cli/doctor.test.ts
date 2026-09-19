@@ -863,4 +863,13 @@ describe('checkMemberMcpResolution', () => {
     expect(after).not.toContain('machine pin');
     expect(after).toContain('carries no cwd');
   });
+
+  it('says nothing for a remote Codex entry: its headers helper resolves the membership from the session directory', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-doctor-mcp-proj-'));
+    fs.mkdirSync(path.join(root, '.myco'));
+    member(root, path.join(homeDir, '.myco'), 'proj_1');
+    fs.mkdirSync(path.join(root, '.codex'));
+    fs.writeFileSync(path.join(root, '.codex', 'config.toml'), '[mcp_servers.myco]\nurl = "https://srv.example/mcp"\nhttp_headers_helper = "/opt/myco member mcp-headers --credential registry"\n');
+    expect(await checkMemberMcpResolution(path.join(root, '.myco'), process.env)).toEqual([]);
+  });
 });

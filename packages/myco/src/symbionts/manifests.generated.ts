@@ -857,6 +857,7 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
       "mcpTarget": ".codex/config.toml",
       "mcpFormat": "toml",
       "mcpServersKey": "mcpServers",
+      "memberMcpHeadersHelperKey": "http_headers_helper",
       "skillsTarget": ".agents/skills",
       "settingsTarget": ".codex/config.toml",
       "settingsFormat": "toml"

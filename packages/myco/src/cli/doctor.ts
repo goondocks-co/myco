@@ -24,6 +24,7 @@ import { resolveTeamHostHintState, teamHostHintMessage } from '../host/hint.js';
 import { isProcessAlive } from './shared.js';
 import { parseStrictFlags } from './args.js';
 import { MYCO_MCP_SERVER_NAME } from '../symbionts/installer.js';
+import { readTomlSectionKey } from '../symbionts/toml-helpers.js';
 import { isMycoHookGroup } from '../symbionts/install-helpers.js';
 import { expandHome, resolveHomeDir, resolveMycoHome } from '../grove/paths.js';
 import type { ServiceStatus } from '../service/types.js';
@@ -1649,6 +1650,10 @@ export async function checkMemberMcpResolution(vaultDir: string, env: NodeJS.Pro
     try { raw = fs.readFileSync(file, 'utf-8'); } catch { continue; }
     if (!raw.includes(MYCO_MCP_SERVER_NAME)) continue;
     if (manifest.registration?.mcpFormat === 'toml') {
+      // A remote entry resolves its membership through the headers helper,
+      // which the host runs in the session's directory.
+      const helperKey = manifest.registration.memberMcpHeadersHelperKey;
+      if (helperKey && readTomlSectionKey(raw, `mcp_servers.${MYCO_MCP_SERVER_NAME}`, helperKey) !== undefined) continue;
       if (/\bcwd\s*=/.test(raw)) continue;
       checks.push({
         name: 'Member MCP resolution',

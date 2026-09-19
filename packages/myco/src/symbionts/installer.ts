@@ -19,7 +19,8 @@ import { readJsonFile, writeJsonFile, writeOrDeleteJsonFile } from './json-helpe
 import { ensureAgentsMd, ensureSymlink, isMycoHookGroup, containsMycoLauncherReference, hasMycoManagedMarker, MYCO_MANAGED_MARKER } from './install-helpers.js';
 import { hookCommands, memberHookTemplate } from './member-hooks.js';
 import { CREDENTIAL_FLAG, type CredentialSource } from '../member/constants.js';
-import { MEMBER_MCP_LEVERS, memberMcpTemplate } from './member-hooks.js';
+import { MEMBER_MCP_LEVERS, memberMcpTemplate, memberRemoteMcp } from './member-hooks.js';
+import { readRegistryEntry } from '../member/registry.js';
 import { runGit } from '../utils/git.js';
 import { resolveRuntimeCommand, resolveRuntimeHome } from '../daemon/update-checker.js';
 import { managedBinaryPath, managedSkillsDir } from '../install/managed-binary.js';
@@ -366,13 +367,17 @@ const SCOPE_CAPABILITIES: Record<InstallScope, ScopeCapabilities> = {
 /** Keys a JSON MCP host reads and a TOML one (Codex) does not; a TOML entry carries the child's working directory instead. */
 const JSON_ONLY_MCP_KEYS: readonly string[] = ['type', ...Object.keys(MEMBER_MCP_LEVERS)];
 
-/** The member's server block as a TOML host takes it: the JSON-only keys dropped, the project as the child's working directory. */
+/**
+ * The member's server block as a TOML host takes it: the JSON-only keys
+ * dropped, and a stdio launcher started in the project. A URL entry carries no
+ * `cwd` — Codex refuses a config whose streamable HTTP server declares one.
+ */
 export function tomlMemberServers(block: Record<string, unknown>, projectRoot: string): Record<string, unknown> {
   const out: Record<string, unknown> = {};
   for (const [name, def] of Object.entries(block)) {
     if (!def || typeof def !== 'object') continue;
     const server = Object.fromEntries(Object.entries(def as Record<string, unknown>).filter(([key]) => !JSON_ONLY_MCP_KEYS.includes(key)));
-    out[name] = { ...server, cwd: projectRoot };
+    out[name] = 'url' in server ? server : { ...server, cwd: projectRoot };
   }
   return out;
 }
@@ -1708,14 +1713,24 @@ export class SymbiontInstaller {
   }
 
   /**
-   * The member's MCP server block for `source`: the symbiont's own stdio
-   * launcher carrying the credential flag. Null for a symbiont without an MCP
-   * template; every Myco tool is reached over MCP, with the Project named as a
-   * tool parameter.
+   * The member's MCP server block for `source`. A host that takes a headers
+   * helper (`memberMcpHeadersHelperKey`) gets the Deployment's remote `/mcp`,
+   * named by this project's registry entry, with the helper printing the
+   * member headers; null when the project has no membership to name one.
+   * Every other host gets its own stdio launcher carrying the credential flag.
+   * Null for a symbiont without an MCP template; every Myco tool is reached
+   * over MCP, with the Project named as a tool parameter.
    */
   renderMemberMcp(source: CredentialSource): Record<string, unknown> | null {
     const reg = this.manifest.registration;
     if (!reg?.mcpTarget) return null;
+    if (reg.memberMcpHeadersHelperKey) {
+      const entry = readRegistryEntry(this.projectRoot, resolveMycoHome({ cwd: this.projectRoot }));
+      if (entry === null) return null;
+      const binaryPath = resolveManagedBinaryPath();
+      assertSafeBinaryPathForUnquoted(binaryPath);
+      return { [MYCO_MCP_SERVER_NAME]: memberRemoteMcp(entry.serverUrl, reg.memberMcpHeadersHelperKey, binaryPath, source) };
+    }
     const template = this.loadMcpTemplate();
     return template === null ? null : memberMcpTemplate(template, source);
   }
@@ -1739,10 +1754,9 @@ export class SymbiontInstaller {
     if (block === null || targetPath === null) return false;
     const reg = this.manifest.registration!;
     // A TOML server list (Codex) is edited section by section; the JSON sweep
-    // below is for the JSON targets. Codex reads `command`, `args`, `env` and
-    // `cwd` and ignores the JSON hosts' levers, so those are not written; `cwd`
-    // starts the stdio child in this project, where its membership resolves
-    // from the directory the way every hook's does.
+    // below is for the JSON targets. The JSON hosts' levers are not written.
+    // Codex's remote entry needs no `cwd`: it runs the headers helper in the
+    // session's directory, where the membership resolves the way every hook's does.
     if (reg.mcpFormat === 'toml') return this.installMcpToml(targetPath, tomlMemberServers(block, this.projectRoot));
     const serversKey = reg.mcpServersKey ?? 'mcpServers';
     const data = readJsonFile(targetPath);

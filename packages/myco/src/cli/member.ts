@@ -5,7 +5,8 @@
  * drain implementation without a harness budget and ignoring the offline
  * latch; `status` shows the registry entry (token redacted), expiry, spool
  * depth, last acknowledgement and refusal, the latch, and how many capture
- * attempts found no membership at all.
+ * attempts found no membership at all; `mcp-headers` prints the member
+ * headers a remote MCP entry asks for.
  */
 import fs from 'node:fs';
 import path from 'node:path';
@@ -13,8 +14,8 @@ import { getMachineId } from '../machine-id.js';
 import { isSafeProjectRoot } from '../project-root.js';
 import { RUNTIME_HOME_FILENAME, defaultMycoHome, readHomePin, resolveMycoHome } from '../paths/home.js';
 import { unboundedBudget } from '../member/budget.js';
-import { isProjectId, MEMBER_TOKEN_REFRESH_WINDOW_MS } from '../member/constants.js';
-import { isHttpsUrl, isMemberTokenShape, resolveMemberProjectRoot } from '../member/credential.js';
+import { CREDENTIAL_FLAG, CREDENTIAL_SOURCES, isProjectId, memberHeaders, MEMBER_TOKEN_REFRESH_WINDOW_MS } from '../member/constants.js';
+import { isHttpsUrl, isMemberTokenShape, parseCredentialFlag, resolveCredential, resolveMemberProjectRoot } from '../member/credential.js';
 import { refreshMemberCredential, type RefreshReport } from '../member/refresh.js';
 import { runImport } from '../member/import.js';
 import { clearMissingMembership, listMissingMemberships, pruneMissingMemberships, readMissingMembership } from '../member/no-membership.js';
@@ -46,6 +47,9 @@ Ops:
   link-github [--root <dir>] [--open]
                      Connect your GitHub account to this membership for the dashboard: prints a one-time
                      link to open in a browser within ten minutes. --open hands it to the browser as well.
+  mcp-headers --credential registry|env
+                     Print this project's MCP request headers as JSON, for an agent that reaches the
+                     server's MCP over HTTP and asks a command for its headers. Written by --provision.
 `;
 
 export interface MemberCliDeps {
@@ -537,6 +541,29 @@ export async function runLinkGithub(args: readonly string[], deps: MemberCliDeps
   }
 }
 
+/**
+ * Print the member headers for this directory's membership as one JSON object:
+ * the headers helper a remote MCP entry names (Codex `http_headers_helper`).
+ * The host runs it when it connects and after a 401, so it reads the registry
+ * each time and never rotates — the hooks' refresh path is the one writer.
+ */
+export function runMcpHeaders(args: readonly string[], deps: MemberCliDeps = {}): void {
+  const out = deps.stdout ?? ((l) => process.stdout.write(`${l}\n`));
+  const err = deps.stderr ?? ((l) => process.stderr.write(`${l}\n`));
+  const source = parseCredentialFlag(args);
+  if (source === null) {
+    err(`myco member mcp-headers: pass ${CREDENTIAL_FLAG} ${CREDENTIAL_SOURCES.join('|')}`);
+    process.exitCode = 2;
+    return;
+  }
+  const record = resolveCredential(source, { cwd: deps.cwd, env: deps.env, mycoHome: deps.mycoHome, invokedBy: 'mcp-headers' });
+  if (record === null) {
+    process.exitCode = 1;
+    return;
+  }
+  out(JSON.stringify(memberHeaders(record)));
+}
+
 export async function run(args: readonly string[], deps: MemberCliDeps = {}): Promise<void> {
   const [op, ...rest] = args;
   switch (op) {
@@ -546,6 +573,7 @@ export async function run(args: readonly string[], deps: MemberCliDeps = {}): Pr
     case 'status': runStatus(rest, deps); return;
     case 'refresh': await runRefresh(rest, deps); return;
     case 'link-github': await runLinkGithub(rest, deps); return;
+    case 'mcp-headers': runMcpHeaders(rest, deps); return;
     default:
       (deps.stderr ?? ((l) => process.stderr.write(`${l}\n`)))(MEMBER_HELP.trimEnd());
       process.exitCode = 2;

@@ -425,6 +425,13 @@ const RegistrationSchema = z.object({
    * Defaults to 'mcpServers' (used by Claude Code, Cursor, etc.). opencode uses 'mcp'.
    */
   mcpServersKey: z.string().default('mcpServers'),
+  /**
+   * Key under which this host takes a command that prints an HTTP MCP
+   * server's request headers (Codex `http_headers_helper`). When set, the
+   * member MCP entry is the Deployment's remote HTTP `/mcp` with that command
+   * supplying the member credential's headers, rather than a stdio launcher.
+   */
+  memberMcpHeadersHelperKey: z.string().optional(),
   skillsTarget: z.string().optional(),
   /**
    * Legacy project-local skill dirs for this agent — locations from before its
