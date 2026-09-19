@@ -46,7 +46,7 @@ Ops:
                      working until the successor is first used; an env-sourced token is never rotated.
   provision <agent> [--root <dir>]
                      Write the agent's hooks and MCP entry for a project this machine has already joined,
-                     from the recorded membership. No token is read or written.
+                     from the recorded membership. No token needs to be supplied or changed.
   link-github [--root <dir>] [--open]
                      Connect your GitHub account to this membership for the dashboard: prints a one-time
                      link to open in a browser within ten minutes. --open hands it to the browser as well.
@@ -237,7 +237,7 @@ function provisionAgent(
   return true;
 }
 
-/** `myco member provision <agent> [--root <dir>]`: provision an agent for a project already joined, reading no token. */
+/** `myco member provision <agent> [--root <dir>]`: provision an agent for a project already joined; no token is supplied or changed. */
 export function runProvision(args: readonly string[], deps: MemberCliDeps = {}): boolean {
   const out = deps.stdout ?? ((l) => process.stdout.write(`${l}\n`));
   const err = deps.stderr ?? ((l) => process.stderr.write(`${l}\n`));

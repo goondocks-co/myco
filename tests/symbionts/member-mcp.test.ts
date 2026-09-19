@@ -102,8 +102,19 @@ describe('the member MCP server', () => {
       expect(fs.existsSync(path.join(root, '.codex'))).toBe(false);
       expect(fs.readFileSync(globalConfig, 'utf8')).toBe(stdio);
 
-      // A global entry with the remote entry's own keys merges cleanly, and so does one for another server.
-      fs.writeFileSync(globalConfig, `[mcp_servers.myco]\nurl = "${SERVER_URL}/mcp"\n\n[mcp_servers.other]\ncommand = "x"\n`);
+      // A credential of the global entry's own would replace the helper's.
+      fs.writeFileSync(globalConfig, '[mcp_servers.myco]\nurl = "https://elsewhere.example/mcp"\nbearer_token_env_var = "OTHER_TOKEN"\n');
+      expect(() => installer.install()).toThrow(/bearer_token_env_var/);
+      expect(fs.existsSync(path.join(root, '.codex'))).toBe(false);
+
+      // A global file that cannot be parsed is not "no global config".
+      fs.writeFileSync(globalConfig, '[mcp_servers.myco\ncommand = "old"\n');
+      expect(() => installer.install()).toThrow(/could not read/);
+      expect(fs.existsSync(path.join(root, '.codex'))).toBe(false);
+
+      // A remote global entry with its own options merges cleanly (Codex accepts
+      // url + startup_timeout_sec), and so does another server.
+      fs.writeFileSync(globalConfig, `[mcp_servers.myco]\nurl = "${SERVER_URL}/mcp"\nstartup_timeout_sec = 45\ntool_timeout_sec = 90\n\n[mcp_servers.other]\ncommand = "x"\n`);
       expect(installer.install().mcp).toBe(true);
     } finally {
       fs.rmSync(path.dirname(globalConfig), { recursive: true, force: true });

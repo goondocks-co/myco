@@ -12,6 +12,28 @@ Myco installs in two independent halves, and either works on its own.
 
 The access key the plugin uses reaches one project, is minted by a deployment administrator, and expires after ninety days by default. The `/myco-setup` skill walks through installing the second half, and ships with the plugin so it is there before the binary is.
 
+## Connecting a project to your deployment
+
+Join a project once per machine, and name the agent you use there:
+
+```sh
+myco member join https://your-deployment.example.com --project <project-id> --token-stdin --provision codex
+```
+
+To connect another agent to a project you have already joined, or to repair one, run `myco member provision` from the project. It uses the membership you already have, so no token needs to be supplied or changed:
+
+```sh
+myco member provision claude-code
+```
+
+Both commands write the agent's capture hooks and its Myco MCP entry into the project's own agent config. For Codex (`.codex/config.toml`) and Claude Code (`.mcp.json`) the entry points the agent straight at your deployment's MCP address. When the agent connects, it asks `myco` for the sign-in details, so no token is written to the file, and a renewed token is picked up without restarting the agent. That sign-in only works on the deployment the entry names: after you rejoin the project to a different deployment, run `myco member provision` again.
+
+Both agents ask before they trust a project's config. Codex loads a project's `.codex/config.toml` only for a project it trusts. Claude Code asks you to trust the folder and approve the project's MCP server the first time you open it.
+
+Codex combines a `myco` server in your user-level `~/.codex/config.toml` with the project's, and a mismatched pair stops Codex from loading its configuration at all. If your user-level file has a `myco` server that starts a local command or signs in some other way, or the file cannot be read, provisioning stops before changing anything and names the file. Fix the file, or remove that entry if no other project needs it, then run `myco member provision codex` again.
+
+Cursor connects to Myco through a local `myco` process, not directly to your deployment. Cursor's remote MCP entries accept fixed headers or OAuth sign-in, and Myco does not offer OAuth sign-in for MCP, so there is no way for a remote Cursor entry to pick up a renewed member token.
+
 ## Install once, every project works
 
 Symbionts connect once per user, not once per project. A single install means:

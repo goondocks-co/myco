@@ -84,8 +84,18 @@ export const MYCO_MCP_SERVER_NAME = 'myco';
 /** The `type` a JSON host takes for a remote HTTP MCP server. */
 const REMOTE_MCP_TYPE = 'http';
 
-/** A member MCP entry the host would merge with a global one into a configuration it refuses. */
+/** A member MCP entry the host would merge with a global one it cannot use, or a global config that cannot be read. */
 export class MemberMcpConflictError extends Error {}
+
+/**
+ * Keys of a global `myco` server that conflict with a member's remote entry
+ * when a TOML host merges the two: a stdio transport (Codex refuses `command`
+ * or `cwd` beside `url`) or a credential other than the headers helper.
+ */
+const GLOBAL_MCP_CONFLICT_KEYS: readonly string[] = [
+  'command', 'args', 'env', 'env_vars', 'cwd',
+  'bearer_token', 'bearer_token_env_var', 'http_headers', 'env_http_headers', 'oauth',
+];
 
 /**
  * All top-level JSON keys agents are known to use to hold their MCP
@@ -1753,31 +1763,31 @@ export class SymbiontInstaller {
   }
 
   /**
-   * Refuse, before any member write, a remote entry the host would merge into
-   * a broken one. Codex deep-merges a same-named server from its global config
-   * into the project's, so a global stdio `myco` (command, args, env, cwd)
-   * beside the project's URL entry fails the WHOLE config ("url is not
-   * supported for stdio"). The global file may serve other projects, so it is
-   * named and left as it is.
+   * Refuse, before any member write, a global `myco` server a TOML host would
+   * merge into the project's remote entry with a stdio transport or a
+   * credential of its own, or a global file it cannot read. Only a missing
+   * file is no global config.
    */
   private assertNoMemberMcpConflict(): void {
     const reg = this.manifest.registration;
     if (reg?.mcpFormat !== 'toml' || !reg.memberMcpHeadersHelperKey) return;
-    const own = ['url', reg.memberMcpHeadersHelperKey];
     for (const target of reg.globalMcpTarget ?? []) {
       const globalPath = expandHome(target.path);
       let parsed: Record<string, unknown>;
       try {
         parsed = parseToml(fs.readFileSync(globalPath, 'utf-8')) as Record<string, unknown>;
-      } catch {
-        continue;
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === 'ENOENT') continue;
+        throw new MemberMcpConflictError(
+          `could not read ${globalPath} (${error instanceof Error ? error.message.split('\n')[0] : String(error)}), so nothing was written. Fix the file, then run \`myco member provision ${this.manifest.name}\`.`,
+        );
       }
       const server = (parsed.mcp_servers as Record<string, unknown> | undefined)?.[MYCO_MCP_SERVER_NAME];
       if (!server || typeof server !== 'object') continue;
-      const foreign = Object.keys(server).filter((key) => !own.includes(key));
-      if (foreign.length === 0) continue;
+      const conflicting = Object.keys(server).filter((key) => GLOBAL_MCP_CONFLICT_KEYS.includes(key));
+      if (conflicting.length === 0) continue;
       throw new MemberMcpConflictError(
-        `${globalPath} declares a \`${MYCO_MCP_SERVER_NAME}\` MCP server with ${foreign.join(', ')}. ${this.manifest.displayName} merges it into this project's remote \`${MYCO_MCP_SERVER_NAME}\` entry and then refuses its whole configuration, so nothing was written. Remove [mcp_servers.${MYCO_MCP_SERVER_NAME}] from ${globalPath} if no other project needs it, then run \`myco member provision ${this.manifest.name}\`.`,
+        `${globalPath} declares a \`${MYCO_MCP_SERVER_NAME}\` MCP server with ${conflicting.join(', ')}. ${this.manifest.displayName} merges it into this project's remote \`${MYCO_MCP_SERVER_NAME}\` entry, which then starts a local process or signs in with another credential, so nothing was written. Remove those keys from [mcp_servers.${MYCO_MCP_SERVER_NAME}] in ${globalPath} if no other project needs them, then run \`myco member provision ${this.manifest.name}\`.`,
       );
     }
   }

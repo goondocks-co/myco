@@ -80,7 +80,7 @@ describe('myco member provision', () => {
     expect(process.exitCode).toBe(2);
   });
 
-  it('refuses before any write when the global Codex config declares a stdio myco server, and names the file', async () => {
+  it('refuses before any write when the global Codex config declares a stdio myco server or cannot be parsed, and accepts a remote one with its own options', async () => {
     join();
     const globalConfig = path.join(os.homedir(), '.codex', 'config.toml');
     fs.mkdirSync(path.dirname(globalConfig), { recursive: true });
@@ -92,6 +92,19 @@ describe('myco member provision', () => {
       expect(refused.err.join('\n')).toContain('command, args');
       expect(process.exitCode).toBe(2);
       expect(fs.existsSync(path.join(root, '.codex'))).toBe(false);
+
+      process.exitCode = 0;
+      fs.writeFileSync(globalConfig, '[mcp_servers.myco\ncommand = "old"\n');
+      const unreadable = await provision(['codex']);
+      expect(unreadable.out).toEqual([]);
+      expect(unreadable.err.join('\n')).toContain(`could not read ${globalConfig}`);
+      expect(process.exitCode).toBe(2);
+      expect(fs.existsSync(path.join(root, '.codex'))).toBe(false);
+
+      process.exitCode = 0;
+      fs.writeFileSync(globalConfig, '[mcp_servers.myco]\nurl = "https://myco.example/mcp"\nstartup_timeout_sec = 45\n');
+      expect((await provision(['codex'])).out).toEqual([`provisioned Codex for ${root} (hooks and MCP)`]);
+      expect(process.exitCode ?? 0).toBe(0);
     } finally {
       fs.rmSync(path.dirname(globalConfig), { recursive: true, force: true });
     }
