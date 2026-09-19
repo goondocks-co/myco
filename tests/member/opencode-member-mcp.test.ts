@@ -123,6 +123,32 @@ describe('OpenCode member MCP', () => {
     expect(process.exitCode ?? 0).toBe(0);
   });
 
+  // A project `opencode.json` Myco cannot parse: the user's bytes are theirs,
+  // and neither surface may be written over a file that was never read.
+  it('refuses provision and leave on a project config it cannot parse, preserving the bytes', async () => {
+    const truncated = '{"mcp":{"myco":{"type":"local","command":["/synthetic/myco","mcp","--credential","registry"]}},"user_owned":';
+    const target = path.join(root, 'opencode.json');
+
+    join();
+    fs.writeFileSync(target, truncated);
+    const refused = await member(['provision', 'opencode']);
+    expect(refused.out).toEqual([]);
+    expect(refused.err.join('\n')).toContain(`could not read ${target}`);
+    expect(process.exitCode).toBe(2);
+    expect(fs.readFileSync(target, 'utf8')).toBe(truncated);
+    expect(fs.existsSync(path.join(root, '.opencode', 'plugins', 'myco.ts'))).toBe(false);
+
+    process.exitCode = 0;
+    const left = await member(['leave']);
+    expect(left.out.join('\n')).not.toContain('removed OpenCode MCP server');
+    // The membership is gone by now, so the leave never offers re-provisioning.
+    expect(left.err.join('\n')).toContain(`could not read ${target}`);
+    expect(left.err.join('\n')).toContain("OpenCode's MCP server was left in place");
+    expect(left.err.join('\n')).not.toContain('member provision');
+    expect(process.exitCode).toBe(2);
+    expect(fs.readFileSync(target, 'utf8')).toBe(truncated);
+  });
+
   it('leave reports a project config it cannot parse rather than leaving a member entry behind', async () => {
     join();
     await member(['provision', 'codex']);

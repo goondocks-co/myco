@@ -25,7 +25,7 @@ import { MemberSpool, type DrainResult } from '../member/spool.js';
 import { ServerClient, type FetchLike } from '../member/transport.js';
 import { openBrowser } from './open-browser.js';
 import { loadManifests, resolvePackageRoot } from '../symbionts/detect.js';
-import { MemberProvisionConflictError, SymbiontInstaller } from '../symbionts/installer.js';
+import { MemberMcpConflictError, MemberProvisionConflictError, SymbiontInstaller } from '../symbionts/installer.js';
 import { ensureVaultGitignoreCurrent } from '../vault/gitignore.js';
 
 export const MEMBER_HELP = `Usage: myco member <op> [options]
@@ -267,17 +267,19 @@ export function runProvision(args: readonly string[], deps: MemberCliDeps = {}):
 }
 
 /**
- * Remove one member surface, reporting the removal or, when the agent's
- * config cannot be read, the refusal that left the file alone. The membership
- * is already forgotten by then, so a file Myco cannot parse ends the leave
- * with a non-zero status and a named file rather than a silent survivor.
+ * Remove one member surface, reporting the removal or, when the agent's config
+ * cannot be read, naming the file that was left as it is. The membership is
+ * already forgotten by then, so the leave ends non-zero with a surface the
+ * user can still find, rather than a silent survivor. Re-provisioning is not
+ * offered here: there is no membership left to provision from.
  */
-function relinquish(remove: () => boolean, removed: string, out: (line: string) => void, err: (line: string) => void): void {
+function relinquish(remove: () => boolean, removed: string, subject: string, out: (line: string) => void, err: (line: string) => void): void {
   try {
     if (remove()) out(removed);
   } catch (error) {
     if (!(error instanceof MemberProvisionConflictError)) throw error;
-    err(`myco member leave: ${error.message}`);
+    const problem = error instanceof MemberMcpConflictError ? error.problem : error.message;
+    err(`myco member leave: ${problem}, so ${subject} was left in place. Fix the file, then remove its \`myco\` entry.`);
     process.exitCode = 2;
   }
 }
@@ -308,7 +310,7 @@ export function runLeave(args: readonly string[], deps: MemberCliDeps = {}): boo
   for (const manifest of loadManifests()) {
     const installer = new SymbiontInstaller(manifest, root, deps.packageRoot ?? resolvePackageRoot(), false, undefined, null, 'member-project');
     if (installer.isMemberPluginFile() && installer.uninstallMemberHooks()) out(`removed ${manifest.displayName} member plugin from ${root}`);
-    relinquish(() => installer.uninstallMemberMcp(), `removed ${manifest.displayName} MCP server from ${root}`, out, err);
+    relinquish(() => installer.uninstallMemberMcp(), `removed ${manifest.displayName} MCP server from ${root}`, `${manifest.displayName}'s MCP server`, out, err);
   }
   if (!args.includes('--purge')) {
     const depth = new MemberSpool(entry.projectId, { mycoHome }).sessionIds().length;
@@ -320,7 +322,7 @@ export function runLeave(args: readonly string[], deps: MemberCliDeps = {}): boo
   for (const manifest of loadManifests()) {
     const installer = new SymbiontInstaller(manifest, root, deps.packageRoot ?? resolvePackageRoot(), false, undefined, null, 'member-project');
     if (installer.uninstallMemberHooks()) out(`removed ${manifest.displayName} hooks from ${root}`);
-    relinquish(() => installer.uninstallMemberMcp(), `removed ${manifest.displayName} MCP server from ${root}`, out, err);
+    relinquish(() => installer.uninstallMemberMcp(), `removed ${manifest.displayName} MCP server from ${root}`, `${manifest.displayName}'s MCP server`, out, err);
   }
   return true;
 }

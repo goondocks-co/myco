@@ -87,8 +87,16 @@ const REMOTE_MCP_TYPE = 'http';
 /** Member provisioning refused before any write: an agent-global file would make the member surface unusable, or cannot be read. */
 export class MemberProvisionConflictError extends Error {}
 
-/** A member MCP entry the host would merge with a global one it cannot use, or a global config that cannot be read. */
-export class MemberMcpConflictError extends MemberProvisionConflictError {}
+/**
+ * A member MCP entry the host would merge with a global one it cannot use, or
+ * a config that cannot be read. `problem` is the finding alone, for a caller
+ * whose own remedy differs from the one the message carries.
+ */
+export class MemberMcpConflictError extends MemberProvisionConflictError {
+  constructor(message: string, readonly problem: string = message) {
+    super(message);
+  }
+}
 
 /** A global Myco plugin that would load beside the project's member plugin instead of stepping aside for it. */
 export class MemberPluginConflictError extends MemberProvisionConflictError {}
@@ -854,12 +862,12 @@ export class SymbiontInstaller {
       // with both surfaces or with neither, never with a plugin whose tools
       // the host would then refuse to serve.
       if (this.isMemberPluginFile()) {
-        this.assertNoMemberMcpConflict();
+        this.assertMemberMcpWritable();
         const hooks = this.writeMemberPlugin();
         return { ...emptyInstallResult(), hooks, mcp: this.installMemberMcp() };
       }
       if (this.renderMemberHooks('registry') === null) return emptyInstallResult();
-      this.assertNoMemberMcpConflict();
+      this.assertMemberMcpWritable();
       const hooks = this.installMemberHooks();
       return { ...emptyInstallResult(), hooks, mcp: this.installMemberMcp() };
     }
@@ -1813,9 +1821,11 @@ export class SymbiontInstaller {
   }
 
   /**
-   * Refuse, before any member write, a global `myco` server a TOML host would
-   * merge into the project's remote entry with a stdio transport or a
-   * credential of its own, or a global file it cannot read. Only a missing
+   * Refuse, before any member write, a global `myco` server this host merges
+   * into the project's entry carrying keys that leave it unusable: an
+   * incompatible transport or a competing credential on a TOML host, a remote
+   * transport, an inherited environment or a disabled server on a JSON one.
+   * A global file that cannot be read or parsed refuses too; only a missing
    * file is no global config.
    */
   private assertNoMemberMcpConflict(): void {
@@ -1844,6 +1854,7 @@ export class SymbiontInstaller {
   private memberMcpConflict(problem: string, remedy: string): MemberMcpConflictError {
     return new MemberMcpConflictError(
       `${problem}, so nothing was written. ${remedy}, then run \`myco member provision ${this.manifest.name}\`.`,
+      problem,
     );
   }
 
@@ -1861,7 +1872,7 @@ export class SymbiontInstaller {
    * server list, and an exclude entry on a tracked file hides its changes.
    */
   installMemberMcp(): boolean {
-    this.assertNoMemberMcpConflict();
+    this.assertMemberMcpWritable();
     const block = this.renderMemberMcp('registry');
     const targetPath = this.memberMcpTargetPath();
     if (block === null || targetPath === null) return false;
@@ -1872,7 +1883,7 @@ export class SymbiontInstaller {
     // session's directory, where the membership resolves the way every hook's does.
     if (reg.mcpFormat === 'toml') return this.installMcpToml(targetPath, tomlMemberServers(block, this.projectRoot));
     const serversKey = reg.mcpServersKey ?? 'mcpServers';
-    const data = readJsonFile(targetPath);
+    const data = this.readMemberMcpTarget() ?? {};
     for (const candidateKey of KNOWN_MCP_SERVERS_KEYS) {
       if (candidateKey === serversKey) continue;
       const candidate = data[candidateKey];
@@ -1901,7 +1912,7 @@ export class SymbiontInstaller {
     if (this.manifest.registration?.mcpFormat === 'toml') {
       return this.isMemberMcpServer(this.mycoServerIn(targetPath, true, TOML_MCP_SERVERS_KEY)) && this.uninstallMcpToml(targetPath);
     }
-    const data = readJsonFile(targetPath);
+    const data = this.readMemberMcpTarget() ?? {};
     let removed = false;
     for (const key of KNOWN_MCP_SERVERS_KEYS) {
       const candidate = data[key];
@@ -1935,12 +1946,12 @@ export class SymbiontInstaller {
   }
 
   /**
-   * The `myco` server declared in `filePath`, or null when the file or the
-   * server is absent. A file that cannot be read or parsed raises the member
-   * MCP refusal rather than reading as "no server": both callers act on the
-   * absence, one by writing and one by deleting.
+   * The parsed contents of `filePath`, or null when the file is absent. A file
+   * that cannot be read or parsed raises the member MCP refusal rather than
+   * reading as an empty one: every caller would otherwise act on bytes it
+   * never saw, one by overwriting them and one by leaving an entry behind.
    */
-  private mycoServerIn(filePath: string, toml: boolean, serversKey: string): Record<string, unknown> | null {
+  private readMcpFile(filePath: string, toml: boolean): Record<string, unknown> | null {
     let raw: string;
     try {
       raw = fs.readFileSync(filePath, 'utf-8');
@@ -1948,14 +1959,38 @@ export class SymbiontInstaller {
       if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null;
       throw this.memberMcpConflict(`could not read ${filePath} (${firstLine(error)})`, 'Fix the file');
     }
-    let parsed: Record<string, unknown>;
     try {
-      parsed = (toml ? parseToml(raw) : JSON.parse(raw)) as Record<string, unknown>;
+      return (toml ? parseToml(raw) : JSON.parse(raw)) as Record<string, unknown>;
     } catch (error) {
       throw this.memberMcpConflict(`could not read ${filePath} (${firstLine(error)})`, 'Fix the file');
     }
-    const server = (parsed[serversKey] as Record<string, unknown> | undefined)?.[MYCO_MCP_SERVER_NAME];
+  }
+
+  /** The `myco` server `filePath` declares under `serversKey`, or null when the file or the server is absent. */
+  private mycoServerIn(filePath: string, toml: boolean, serversKey: string): Record<string, unknown> | null {
+    const server = (this.readMcpFile(filePath, toml)?.[serversKey] as Record<string, unknown> | undefined)?.[MYCO_MCP_SERVER_NAME];
     return server && typeof server === 'object' && !Array.isArray(server) ? server as Record<string, unknown> : null;
+  }
+
+  /**
+   * The member's own MCP target, parsed, or null when it has none or the file
+   * is absent. The one reader `installMemberMcp` and `uninstallMemberMcp`
+   * share, so neither writes over a file it could not read.
+   */
+  private readMemberMcpTarget(): Record<string, unknown> | null {
+    const targetPath = this.memberMcpTargetPath();
+    if (targetPath === null) return null;
+    return this.readMcpFile(targetPath, this.manifest.registration?.mcpFormat === 'toml');
+  }
+
+  /**
+   * Every member MCP refusal, before the first write of either surface: the
+   * project's own target must be readable, and the global server this host
+   * merges into it must carry no key that leaves the member's entry unusable.
+   */
+  private assertMemberMcpWritable(): void {
+    this.readMemberMcpTarget();
+    this.assertNoMemberMcpConflict();
   }
 
   /** A symbiont whose member surface is a plugin file the agent loads from the project. */

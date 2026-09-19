@@ -340,12 +340,11 @@ function holdsSessionClaim(directory: string, agent: string, sessionId: string):
 }
 
 /**
- * Give up every claim this instance still holds when its process ends: a
- * one-shot run exits with the session still open, and the next process to
- * resume it would otherwise wait out `CLAIM_STALE_MS` behind a claim naming a
- * writer that is gone. Registered once, on the first claim taken, and only for
- * `exit` — a signal handler would keep the host alive past what the signal
- * asked for. A claim that survives this ages out instead.
+ * Remove every claim this instance still holds when the process exits, so a
+ * session resumed in a new process is captured at once instead of waiting out
+ * `CLAIM_STALE_MS`. Registered once, on the first claim taken, and only for
+ * `exit`: a signal handler would hold the host open past the signal. A process
+ * killed outright leaves its claim to age out.
  */
 let claimExitHookInstalled = false;
 function releaseClaimsWhenProcessEnds(): void {
