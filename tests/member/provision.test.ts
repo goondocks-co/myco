@@ -112,7 +112,9 @@ describe('myco member provision', () => {
     }
   });
 
-  it('names the binary of the project\'s own home in every hook command and MCP helper it writes, whether that home is passed or pinned', async () => {
+  // POSIX only: a managed binary lives at `<home>/bin/myco` there, while Windows
+  // keeps one `%LOCALAPPDATA%\Myco\bin\myco.exe` whatever the home is.
+  it.skipIf(process.platform === 'win32')('names the binary of the project\'s own home in every hook command and MCP helper it writes, whether that home is passed or pinned', async () => {
     const savedMycoHome = process.env.MYCO_HOME;
     delete process.env.MYCO_HOME;
     const defaultHome = path.join(os.homedir(), '.myco');
