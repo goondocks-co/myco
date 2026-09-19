@@ -37,6 +37,10 @@ registration:
   # User-global opencode plugin lives under ~/.config/opencode/plugins/
   globalHooksTarget: ~/.config/opencode/plugins/myco.ts
   hooksFormat: plugin-file
+  # A member's plugin is project-scoped; OpenCode loads every `.opencode/` from
+  # the launch directory up to the git root, and the global Myco plugin steps
+  # aside for a project that carries this file.
+  memberHooksTarget: .opencode/plugins/myco.ts
   # .opencode/package.json declares the plugin SDK dep so opencode's Bun installs it at startup
   pluginPackageTarget: .opencode/package.json
   # opencode.json hosts MCP + permissions under non-standard keys

@@ -273,6 +273,12 @@ const RegistrationSchema = z.object({
    */
   memberHooksTarget: z.string().optional(),
   /**
+   * A line `myco member provision` prints after writing this symbiont's member
+   * surface, for a step only the user can take in the agent (e.g. trusting
+   * the project so the agent loads it).
+   */
+  memberProvisionNote: z.string().optional(),
+  /**
    * Absolute path (with `~` expansion) where Myco writes hook config when
    * installing under global scope. May point at a file the agent shares with
    * user content (e.g. `~/.claude/settings.json`) — settings-merge.ts owns

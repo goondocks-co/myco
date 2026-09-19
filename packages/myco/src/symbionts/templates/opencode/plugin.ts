@@ -16,6 +16,7 @@
  * imported so the file loads in a clone with nothing installed.
  */
 // myco:plugin-marker — Myco owns this file; `myco remove` deletes it while it carries this line.
+// myco:member-plugin — a global Myco plugin steps aside for a project that carries this line.
 import { execFileSync } from "node:child_process";
 import { accessSync, appendFileSync, closeSync, constants as fsConstants, lstatSync, mkdirSync, openSync, readFileSync, statSync, unlinkSync, writeSync } from "node:fs";
 import { homedir } from "node:os";
@@ -364,6 +365,28 @@ function keepsSessionClaim(directory: string, agent: string, sessionId: string):
 }
 
 /**
+ * Give up a session this instance has ended, so the next instance to open it
+ * (a resumed session in a new process) takes it at once rather than finding a
+ * fresh claim that names a writer that has gone. The claim is removed only
+ * while it still names this instance; one that names another is theirs and is
+ * left as it is. This instance forgets the session either way, so opening it
+ * again later decides afresh.
+ */
+function releaseSessionClaim(directory: string, agent: string, sessionId: string): void {
+  const key = `${agent}-${sessionId}`;
+  claimedSessions.delete(key);
+  claimTouchedAt.delete(key);
+  const claimPath = claimPathFor(directory, agent, sessionId);
+  if (claimHolder(claimPath)?.instance !== MYCO_INSTANCE_ID) return;
+  try {
+    unlinkSync(claimPath);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException)?.code === "ENOENT") return;
+    noteOnce(`release-${key}`, `${agent} session ${sessionId}: could not give up its claim (${(error as Error)?.message ?? "unknown"}) — a new instance resuming it waits for the claim to go stale`);
+  }
+}
+
+/**
  * One line on stderr per session per subject.
  *
  * Capture that stops has to say so somewhere a person can find it. Repeating
@@ -521,6 +544,21 @@ function openSession(directory: string, sessionId: string): string | undefined {
   return answer?.additionalContext;
 }
 
+/**
+ * End a session this instance opened and give up its claim, so a new instance
+ * resuming the session takes it at once.
+ */
+function endSession(directory: string, sessionId: string): void {
+  started.delete(sessionId);
+  promptIds.delete(sessionId);
+  runMycoHook(directory, AGENT, sessionId, "session-end", {
+    session_id: sessionId,
+    transcript_path: transcriptPathFor(directory, AGENT, sessionId),
+    cwd: directory,
+  });
+  releaseSessionClaim(directory, AGENT, sessionId);
+}
+
 export const MycoPlugin = async ({
   client,
   directory,
@@ -573,17 +611,36 @@ export const MycoPlugin = async ({
         return;
       }
 
-      if (type === "session.deleted" || type === "server.instance.disposed") {
-        const sessionId = event?.properties?.info?.id ?? event?.properties?.sessionID;
-        if (!sessionId) return;
-        started.delete(sessionId);
-        promptIds.delete(sessionId);
-        runMycoHook(root, AGENT, sessionId, "session-end", {
-          session_id: sessionId,
-          transcript_path: transcriptPathFor(root, AGENT, sessionId),
-          cwd: root,
-        });
+      if (type === "session.deleted") {
+        const sessionId = event?.properties?.info?.id;
+        if (sessionId) endSession(root, sessionId);
+        return;
       }
+
+      // The instance is going away and names no session: end every session it opened.
+      if (type === "server.instance.disposed") {
+        for (const sessionId of [...started]) endSession(root, sessionId);
+      }
+    },
+
+    /**
+     * An assistant text part, once opencode has finished it: the turn's
+     * response line. `chat.message` carries only the user's message, so this is
+     * the one place the assistant's words reach the plugin whole. The text is
+     * read and left as it is.
+     */
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    "experimental.text.complete": async (input: any, output: any) => {
+      const sessionId = input?.sessionID;
+      const text = typeof output?.text === "string" ? output.text.trim() : "";
+      if (!sessionId || !text) return;
+      appendTranscriptLine(root, AGENT, sessionId, {
+        type: "response",
+        sessionId,
+        promptId: promptIds.get(sessionId),
+        text,
+        at: nowIso(),
+      });
     },
 
     /**
@@ -605,20 +662,6 @@ export const MycoPlugin = async ({
         synthetic?: boolean;
         metadata?: Record<string, unknown>;
       }>;
-
-      if (output?.message?.role === "assistant") {
-        const text = textOfParts(parts);
-        if (text) {
-          appendTranscriptLine(root, AGENT, sessionId, {
-            type: "response",
-            sessionId,
-            promptId: promptIds.get(sessionId),
-            text,
-            at: nowIso(),
-          });
-        }
-        return;
-      }
 
       const text = textOfParts(parts);
       if (!text) return;

@@ -25,7 +25,7 @@ import { MemberSpool, type DrainResult } from '../member/spool.js';
 import { ServerClient, type FetchLike } from '../member/transport.js';
 import { openBrowser } from './open-browser.js';
 import { loadManifests, resolvePackageRoot } from '../symbionts/detect.js';
-import { MemberMcpConflictError, SymbiontInstaller } from '../symbionts/installer.js';
+import { MemberProvisionConflictError, SymbiontInstaller } from '../symbionts/installer.js';
 import { ensureVaultGitignoreCurrent } from '../vault/gitignore.js';
 
 export const MEMBER_HELP = `Usage: myco member <op> [options]
@@ -35,8 +35,9 @@ Ops:
                      Record this machine's membership of a project on a Myco server. The token is read
                      from stdin or from the named environment variable — never from the command line.
                      --provision writes the agent's hooks for this project.
-  leave [--purge]    Forget this project's membership. The spool is kept unless --purge is given,
-                     which also removes the hooks this project was provisioned with.
+  leave [--purge]    Forget this project's membership and remove any member plugin (OpenCode, Pi), so
+                     those agents fall back to their global plugin. The spool is kept unless --purge is
+                     given, which also removes the hooks this project was provisioned with.
   drain [--all]      Deliver every spooled event for this project (or every joined project with --all);
                      no harness budget, the offline latch is ignored, retention is applied first.
   status [--all]     The registry entry (token redacted), expiry, spool depth per session,
@@ -227,13 +228,15 @@ function provisionAgent(
   try {
     installed = installer.install();
   } catch (error) {
-    if (!(error instanceof MemberMcpConflictError)) throw error;
+    if (!(error instanceof MemberProvisionConflictError)) throw error;
     fail(error.message);
     return false;
   }
   out(installed.hooks || installed.mcp
     ? `provisioned ${manifest.displayName} for ${root}${installed.mcp ? ' (hooks and MCP)' : ''}`
     : `no registration changes for ${manifest.displayName} at ${root}`);
+  const note = manifest.registration?.memberProvisionNote;
+  if (note) out(note);
   return true;
 }
 
@@ -280,6 +283,12 @@ export function runLeave(args: readonly string[], deps: MemberCliDeps = {}): boo
   // would send every hook here to look for a membership that is gone, and each
   // one would count another miss.
   if (unpinProjectHome(root, mycoHome)) out(`removed this project's ${RUNTIME_HOME_FILENAME} pin`);
+  // A member plugin makes the agent's global Myco plugin step aside, so it goes
+  // with the membership: the agent falls back to its global plugin.
+  for (const manifest of loadManifests()) {
+    const installer = new SymbiontInstaller(manifest, root, deps.packageRoot ?? resolvePackageRoot(), false, undefined, null, 'member-project');
+    if (installer.isMemberPluginFile() && installer.uninstallMemberHooks()) out(`removed ${manifest.displayName} member plugin from ${root}`);
+  }
   if (!args.includes('--purge')) {
     const depth = new MemberSpool(entry.projectId, { mycoHome }).sessionIds().length;
     out(`spool kept: ${depth} session file(s) — \`myco member drain\` after re-joining, or \`myco member leave --purge\` to discard`);
