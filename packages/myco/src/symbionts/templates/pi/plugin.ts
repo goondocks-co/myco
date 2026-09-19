@@ -15,6 +15,7 @@
  * definition of a tool and a drifted copy cannot exist.
  */
 // myco:plugin-marker — Myco owns this file; `myco remove` deletes it while it carries this line.
+// myco:member-plugin — a global Myco plugin steps aside for a project that carries this line.
 import { execFileSync } from "node:child_process";
 import { accessSync, appendFileSync, closeSync, constants as fsConstants, lstatSync, mkdirSync, openSync, readFileSync, statSync, unlinkSync, writeSync } from "node:fs";
 import { homedir } from "node:os";
@@ -364,6 +365,28 @@ function keepsSessionClaim(directory: string, agent: string, sessionId: string):
 }
 
 /**
+ * Give up a session this instance has ended, so the next instance to open it
+ * (a resumed session in a new process) takes it at once rather than finding a
+ * fresh claim that names a writer that has gone. The claim is removed only
+ * while it still names this instance; one that names another is theirs and is
+ * left as it is. This instance forgets the session either way, so opening it
+ * again later decides afresh.
+ */
+function releaseSessionClaim(directory: string, agent: string, sessionId: string): void {
+  const key = `${agent}-${sessionId}`;
+  claimedSessions.delete(key);
+  claimTouchedAt.delete(key);
+  const claimPath = claimPathFor(directory, agent, sessionId);
+  if (claimHolder(claimPath)?.instance !== MYCO_INSTANCE_ID) return;
+  try {
+    unlinkSync(claimPath);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException)?.code === "ENOENT") return;
+    noteOnce(`release-${key}`, `${agent} session ${sessionId}: could not give up its claim (${(error as Error)?.message ?? "unknown"}) — a new instance resuming it waits for the claim to go stale`);
+  }
+}
+
+/**
  * One line on stderr per session per subject.
  *
  * Capture that stops has to say so somewhere a person can find it. Repeating
@@ -523,8 +546,9 @@ function listMycoTools(directory: string): ListedTool[] {
 
 /** Dispatch one Myco tool through the binary, degrading to an error result. */
 function callMycoTool(directory: string, toolName: string, input: unknown): unknown {
+  let stdout: string;
   try {
-    const stdout = execFileSync(
+    stdout = execFileSync(
       resolveMycoBinary(directory),
       ["tool", "call", toolName, "--json", "--input", JSON.stringify(input ?? {}), "--credential", MYCO_CREDENTIAL_SOURCE],
       {
@@ -535,12 +559,17 @@ function callMycoTool(directory: string, toolName: string, input: unknown): unkn
         stdio: ["ignore", "pipe", "ignore"],
       },
     );
-    const envelope = JSON.parse(typeof stdout === "string" ? stdout : "") as ToolCliEnvelope;
-    if (!envelope.ok) return { error: envelope.error?.message ?? "tool call failed" };
-    return envelope.result;
   } catch {
-    return { error: "Myco is not available on this machine." };
+    throw new Error("Myco is not available on this machine.");
   }
+  let envelope: ToolCliEnvelope;
+  try {
+    envelope = JSON.parse(stdout) as ToolCliEnvelope;
+  } catch {
+    throw new Error("Myco returned an unreadable answer.");
+  }
+  if (!envelope.ok) throw new Error(envelope.error?.message ?? "tool call failed");
+  return envelope.result;
 }
 
 /**
@@ -557,10 +586,23 @@ function schemaFor(tool: ListedTool) {
   return Type.Object(shape);
 }
 
+/** The part of Pi's handler context this extension reads: the project and the session's own transcript. */
+interface PiContext {
+  cwd?: string;
+  sessionManager?: { getSessionFile?: () => string | undefined };
+}
+
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export default function (pi: any) {
-  const directory = typeof pi?.cwd === "string" && pi.cwd ? pi.cwd : process.cwd();
+  const directory = process.cwd();
   let registered = false;
+
+  /** Pi hands every handler `(event, ctx)`; the transcript and the project come from the context. */
+  const sessionOf = (ctx: PiContext | undefined): { transcriptPath: string; sessionId: string; cwd: string } | null => {
+    const transcriptPath = ctx?.sessionManager?.getSessionFile?.();
+    if (!transcriptPath) return null;
+    return { transcriptPath, sessionId: deriveSessionId(transcriptPath), cwd: ctx?.cwd || directory };
+  };
 
   const registerTools = (): void => {
     if (registered) return;
@@ -574,22 +616,26 @@ export default function (pi: any) {
       if (!tool?.name) continue;
       pi.registerTool({
         name: tool.name,
+        label: tool.name,
         description: tool.description ?? "",
         parameters: schemaFor(tool),
-        execute: async (args: unknown) => callMycoTool(directory, tool.name, args),
+        // Pi calls execute(toolCallId, params, signal, onUpdate, ctx) and reads `content`; a throw marks the call failed.
+        execute: async (_toolCallId: string, params: unknown) => {
+          const result = callMycoTool(directory, tool.name, params);
+          return { content: [{ type: "text", text: typeof result === "string" ? result : JSON.stringify(result ?? null) }], details: result };
+        },
       });
     }
   };
 
-  pi.on("session_start", async (ctx: { sessionFile?: string }) => {
+  pi.on("session_start", async (_event: unknown, ctx: PiContext) => {
     registerTools();
-    const transcriptPath = ctx?.sessionFile;
-    if (!transcriptPath) return;
-    const sessionId = deriveSessionId(transcriptPath);
-    const answer = runMycoHook(directory, AGENT, sessionId, "session-start", {
-      session_id: sessionId,
-      transcript_path: transcriptPath,
-      cwd: directory,
+    const session = sessionOf(ctx);
+    if (!session) return;
+    const answer = runMycoHook(session.cwd, AGENT, session.sessionId, "session-start", {
+      session_id: session.sessionId,
+      transcript_path: session.transcriptPath,
+      cwd: session.cwd,
     });
     if (answer?.additionalContext) {
       pi.sendMessage(
@@ -604,48 +650,50 @@ export default function (pi: any) {
    * as a custom message. Pi writes the prompt into its own transcript, so
    * nothing is written here.
    */
-  pi.on("before_agent_start", async (ctx: { sessionFile?: string; message?: { content?: string } }) => {
-    const transcriptPath = ctx?.sessionFile;
-    const text = ctx?.message?.content;
-    if (!transcriptPath || typeof text !== "string" || !text.trim()) return undefined;
-    const answer = runMycoHook(directory, AGENT, deriveSessionId(transcriptPath), "user-prompt-submit", {
-      session_id: deriveSessionId(transcriptPath),
-      transcript_path: transcriptPath,
+  pi.on("before_agent_start", async (event: { prompt?: string }, ctx: PiContext) => {
+    const session = sessionOf(ctx);
+    const text = event?.prompt;
+    if (!session || typeof text !== "string" || !text.trim()) return undefined;
+    const answer = runMycoHook(session.cwd, AGENT, session.sessionId, "user-prompt-submit", {
+      session_id: session.sessionId,
+      transcript_path: session.transcriptPath,
       prompt: text,
-      cwd: directory,
+      cwd: session.cwd,
     });
     if (!answer?.additionalContext) return undefined;
     return { message: { customType: "myco-prompt-context", content: answer.additionalContext, display: false } };
   });
 
   /** Turn end: ship whatever Pi has appended to its transcript since the last pass. */
-  pi.on("agent_end", async (ctx: { sessionFile?: string }) => {
-    const transcriptPath = ctx?.sessionFile;
-    if (!transcriptPath) return;
-    runMycoHook(directory, AGENT, deriveSessionId(transcriptPath), "stop", {
-      session_id: deriveSessionId(transcriptPath),
-      transcript_path: transcriptPath,
-      cwd: directory,
+  pi.on("agent_end", async (_event: unknown, ctx: PiContext) => {
+    const session = sessionOf(ctx);
+    if (!session) return;
+    runMycoHook(session.cwd, AGENT, session.sessionId, "stop", {
+      session_id: session.sessionId,
+      transcript_path: session.transcriptPath,
+      cwd: session.cwd,
     });
   });
 
-  pi.on("session_shutdown", async (ctx: { sessionFile?: string }) => {
-    const transcriptPath = ctx?.sessionFile;
-    if (!transcriptPath) return;
-    runMycoHook(directory, AGENT, deriveSessionId(transcriptPath), "session-end", {
-      session_id: deriveSessionId(transcriptPath),
-      transcript_path: transcriptPath,
-      cwd: directory,
+  pi.on("session_shutdown", async (_event: unknown, ctx: PiContext) => {
+    const session = sessionOf(ctx);
+    if (!session) return;
+    runMycoHook(session.cwd, AGENT, session.sessionId, "session-end", {
+      session_id: session.sessionId,
+      transcript_path: session.transcriptPath,
+      cwd: session.cwd,
     });
+    // A session resumed in a new Pi process takes the session at once.
+    releaseSessionClaim(session.cwd, AGENT, session.sessionId);
   });
 
-  pi.on("session_before_compact", async (ctx: { sessionFile?: string }) => {
-    const transcriptPath = ctx?.sessionFile;
-    if (!transcriptPath) return;
-    const answer = runMycoHook(directory, AGENT, deriveSessionId(transcriptPath), "post-compact", {
-      session_id: deriveSessionId(transcriptPath),
-      transcript_path: transcriptPath,
-      cwd: directory,
+  pi.on("session_before_compact", async (_event: unknown, ctx: PiContext) => {
+    const session = sessionOf(ctx);
+    if (!session) return;
+    const answer = runMycoHook(session.cwd, AGENT, session.sessionId, "post-compact", {
+      session_id: session.sessionId,
+      transcript_path: session.transcriptPath,
+      cwd: session.cwd,
     });
     if (answer?.additionalContext) {
       pi.sendMessage(
@@ -654,4 +702,11 @@ export default function (pi: any) {
       );
     }
   });
+
+  // Last: tell a global Myco extension, loaded after this one, that this
+  // project's capture is handled here. A binary that cannot run leaves the
+  // global extension capturing rather than both silent.
+  if (isRunnableBinary(resolveMycoBinary(directory))) {
+    (globalThis as Record<symbol, unknown>)[Symbol.for("myco.member-extension")] = directory;
+  }
 }

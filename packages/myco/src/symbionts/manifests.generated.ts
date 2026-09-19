@@ -1417,6 +1417,7 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
     },
     "registration": {
       "hooksTarget": ".opencode/plugins/myco.ts",
+      "memberHooksTarget": ".opencode/plugins/myco.ts",
       "globalHooksTarget": "~/.config/opencode/plugins/myco.ts",
       "globalMcpTarget": [
         {
@@ -1541,6 +1542,8 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
     },
     "registration": {
       "hooksTarget": ".pi/extensions/myco/index.ts",
+      "memberHooksTarget": ".pi/extensions/myco/index.ts",
+      "memberProvisionNote": "Pi loads this project's Myco extension only after you trust the project in Pi (/trust).",
       "globalHooksTarget": "~/.pi/agent/extensions/myco/index.ts",
       "globalMcpTarget": null,
       "globalSkillsTarget": "~/.agents/skills",

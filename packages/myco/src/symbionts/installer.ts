@@ -84,8 +84,14 @@ export const MYCO_MCP_SERVER_NAME = 'myco';
 /** The `type` a JSON host takes for a remote HTTP MCP server. */
 const REMOTE_MCP_TYPE = 'http';
 
+/** Member provisioning refused before any write: an agent-global file would make the member surface unusable, or cannot be read. */
+export class MemberProvisionConflictError extends Error {}
+
 /** A member MCP entry the host would merge with a global one it cannot use, or a global config that cannot be read. */
-export class MemberMcpConflictError extends Error {}
+export class MemberMcpConflictError extends MemberProvisionConflictError {}
+
+/** A global Myco plugin that would load beside the project's member plugin instead of stepping aside for it. */
+export class MemberPluginConflictError extends MemberProvisionConflictError {}
 
 /**
  * Keys of a global `myco` server that conflict with a member's remote entry
@@ -117,6 +123,17 @@ const KNOWN_MCP_SERVERS_KEYS = ['mcpServers', 'servers', 'mcp'] as const;
  * contributors who hand-edit a plugin file without removing the marker are protected.
  */
 const MYCO_PLUGIN_FILE_MARKER = 'myco:plugin-marker';
+
+/**
+ * The comment line only a member plugin carries: the one `member leave` may
+ * delete, and the one a global plugin steps aside for. Matched as the whole
+ * comment prefix, never the bare word, so a plugin that names it in its own
+ * code does not match itself.
+ */
+const MEMBER_PLUGIN_MARKER = '// myco:member-plugin';
+
+/** The comment line a global Myco plugin carries when it steps aside for a project's member plugin. */
+const MEMBER_PLUGIN_COMPAT_MARKER = '// myco:defers-to-member-plugin';
 
 /** Where a plugin template names the credential source the binary is to read. */
 const CREDENTIAL_SOURCE_PLACEHOLDER = '{{mycoCredentialSource}}';
@@ -813,6 +830,7 @@ export class SymbiontInstaller {
   /** Run all registration steps. */
   install(): InstallResult {
     if (this.installScope === 'member-project') {
+      if (this.isMemberPluginFile()) return { ...emptyInstallResult(), hooks: this.writeMemberPlugin() };
       if (this.renderMemberHooks('registry') === null) return emptyInstallResult();
       this.assertNoMemberMcpConflict();
       const hooks = this.installMemberHooks();
@@ -1862,6 +1880,73 @@ export class SymbiontInstaller {
     return writeJsonFile(targetPath, data);
   }
 
+  /** A symbiont whose member surface is a plugin file the agent loads from the project. */
+  isMemberPluginFile(): boolean {
+    const reg = this.manifest.registration;
+    return reg?.hooksFormat === HOOKS_FORMAT_PLUGIN_FILE && Boolean(reg.memberHooksTarget);
+  }
+
+  /**
+   * The one writer of a member plugin: refuses before any write when the
+   * agent's global Myco plugin would keep capturing beside it, or when the
+   * project's target file is not Myco's, then writes the rendered plugin into
+   * `memberHooksTarget`. The file names this machine's binary, so it is kept
+   * out of git.
+   */
+  private writeMemberPlugin(): boolean {
+    const rendered = this.renderMemberPlugin('registry');
+    const targetPath = this.resolveAbsoluteTarget('hooks');
+    if (rendered === null || targetPath === null) return false;
+    this.assertNoMemberPluginConflict();
+    this.assertMemberPluginTargetIsMyco(targetPath);
+    const written = this.writeManagedFile(targetPath, rendered);
+    this.ensureGitIgnored(targetPath);
+    return written;
+  }
+
+  /** Refuse to replace a file at the project's plugin path that Myco does not own; it is left as it is. */
+  private assertMemberPluginTargetIsMyco(targetPath: string): void {
+    let content: string;
+    try {
+      content = fs.readFileSync(targetPath, 'utf-8');
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return;
+      throw new MemberPluginConflictError(
+        `could not read ${targetPath} (${error instanceof Error ? error.message : String(error)}), so nothing was written.`,
+      );
+    }
+    if (content.includes(MYCO_PLUGIN_FILE_MARKER) || rawHasMycoOwnershipSignal(content)) return;
+    throw new MemberPluginConflictError(
+      `${targetPath} is not a Myco plugin, so nothing was written and it was left as it is. Move it elsewhere if ${this.manifest.displayName} should load Myco's plugin here, then run \`myco member provision ${this.manifest.name}\`.`,
+    );
+  }
+
+  /**
+   * Refuse, before any member write, when the agent's global Myco plugin does
+   * not step aside for a project's member plugin: both would load and capture
+   * the session twice. Only a missing file, or one Myco does not own, is no
+   * global plugin.
+   */
+  private assertNoMemberPluginConflict(): void {
+    const target = this.manifest.registration?.globalHooksTarget;
+    if (!target) return;
+    const globalPath = expandHome(target);
+    let content: string;
+    try {
+      content = fs.readFileSync(globalPath, 'utf-8');
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return;
+      throw new MemberPluginConflictError(
+        `could not read ${globalPath} (${error instanceof Error ? error.message : String(error)}), so nothing was written. Fix the file, then run \`myco member provision ${this.manifest.name}\`.`,
+      );
+    }
+    if (!content.includes(MYCO_PLUGIN_FILE_MARKER) && !rawHasMycoOwnershipSignal(content)) return;
+    if (content.includes(MEMBER_PLUGIN_COMPAT_MARKER)) return;
+    throw new MemberPluginConflictError(
+      `${globalPath} is a Myco plugin that does not step aside for a project's member plugin, so ${this.manifest.displayName} would load both and capture every session twice; nothing was written. Update the Myco install that owns ${globalPath}, then run \`myco member provision ${this.manifest.name}\`.`,
+    );
+  }
+
   /**
    * Strip Myco's hook groups from the member target, deleting the file when
    * nothing but an empty hooks map is left. The inverse of
@@ -1871,6 +1956,12 @@ export class SymbiontInstaller {
   uninstallMemberHooks(): boolean {
     const targetPath = this.resolveAbsoluteTarget('hooks');
     if (targetPath === null || !fs.existsSync(targetPath)) return false;
+    if (this.isMemberPluginFile()) {
+      // Only the member plugin: a 1.4 project plugin at the same path carries the generic marker alone.
+      if (!fs.readFileSync(targetPath, 'utf-8').includes(MEMBER_PLUGIN_MARKER)) return false;
+      fs.rmSync(targetPath, { force: true });
+      return true;
+    }
     const settings = readJsonFile(targetPath);
     const existingHooks = (settings.hooks ?? {}) as Record<string, unknown[]>;
     const kept: Record<string, unknown[]> = {};
