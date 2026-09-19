@@ -6,6 +6,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import YAML from 'yaml';
 import { expandHome } from '../grove/paths.js';
+import { CANONICAL_PROJECT_SKILLS_DIR } from '../skills/names.js';
 
 export interface DetectedSymbiont {
   manifest: SymbiontManifest;
@@ -50,18 +51,36 @@ export function loadManifests(): SymbiontManifest[] {
       files = fs.readdirSync(dir).filter((f) => f.endsWith('.yaml'));
     } catch { /* bundled FS can throw — fall through */ }
     if (files.length === 0) continue;
-    manifestCache = files.map((f) => {
+    manifestCache = byName(files.map((f) => {
       const raw = YAML.parse(fs.readFileSync(path.join(dir, f), 'utf-8'));
       return SymbiontManifestSchema.parse(raw);
-    });
+    }));
     return manifestCache;
   }
 
   // Fallback: codegen-emitted bundled manifests. Always works in compiled
   // binaries and is fast enough to use as the primary source if dev-mode FS
   // reads stop working for some reason.
-  manifestCache = BUNDLED_MANIFESTS.map((m) => SymbiontManifestSchema.parse(m));
+  manifestCache = byName(BUNDLED_MANIFESTS.map((m) => SymbiontManifestSchema.parse(m)));
   return manifestCache;
+}
+
+/** Manifests in name order, so indexing into the array names the same manifest on every host. */
+function byName(manifests: SymbiontManifest[]): SymbiontManifest[] {
+  return [...manifests].sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
+}
+
+/**
+ * The manifest a symbiont-agnostic project-file reconcile is driven with: one
+ * registered against the canonical skills dir, else any that declares a skills
+ * target. `updateGitignore()` writes nothing for a manifest without one, and
+ * `antigravity` declares none.
+ */
+export function manifestForManagedProjectFiles(
+  manifests: SymbiontManifest[] = loadManifests(),
+): SymbiontManifest | undefined {
+  return manifests.find((m) => m.registration?.skillsTarget === CANONICAL_PROJECT_SKILLS_DIR)
+    ?? manifests.find((m) => m.registration?.skillsTarget);
 }
 
 /** Find a loaded manifest by symbiont name, or undefined. */
