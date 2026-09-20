@@ -300,15 +300,12 @@ describe('a refused join leaves no trace', () => {
     const r = await rig();
     const key = await r.key();
     const before = counts(r.e);
-    // The fault is injected at the store the admission writes through: a request
-    // resolves its own binding, so the handler is driven directly here.
-    const faulting = { ...r.e.env, db: { ...r.e.db, batch: () => Promise.reject(new Error('storage fault')) } } as unknown as Parameters<typeof handleJoin>[0];
-    const outcome = await handleJoin(faulting, joinRequest({ key: key.key, machineId: 'fresh_machine' }), r.now)
-      .then(() => 'returned' as const, (err: unknown) => (err as Error).message);
-    expect(outcome).toBe('storage fault');
+    r.e.sqlite.exec(`CREATE TRIGGER fail_join_credential BEFORE INSERT ON member_credentials
+      WHEN NEW.machine_id = 'fresh_machine' BEGIN SELECT RAISE(ABORT, 'storage fault'); END`);
+    await expect(handleJoin({ ...r.e.env, db: r.e.db }, joinRequest({ key: key.key, machineId: 'fresh_machine' }), r.now)).rejects.toThrow('storage fault');
     expect(counts(r.e)).toEqual(before);
     expect(unspent(r.e)).toBe(1);
-    // The invitation still works afterwards.
+    r.e.sqlite.exec('DROP TRIGGER fail_join_credential');
     expect((await json(await r.join({ key: key.key, machineId: 'fresh_machine' }))).joined).toBe(true);
   });
 
@@ -366,7 +363,6 @@ describe('a refused join leaves no trace', () => {
     const [a, b] = [await r.key(), await r.key()];
     const before = r.members();
 
-    // Both read a free identity, so the claim is what settles it.
     const [first, second] = await Promise.all([
       json(await r.join({ key: a.key, machineId: 'shared_machine' })),
       json(await r.join({ key: b.key, machineId: 'shared_machine' })),
@@ -378,7 +374,7 @@ describe('a refused join leaves no trace', () => {
     // Exactly one credential exists for the contested identity.
     const credentials = (r.e.sqlite.query(`SELECT COUNT(*) c FROM member_credentials WHERE machine_id = ?`).get('shared_machine') as { c: number }).c;
     expect(credentials).toBe(1);
-    // The loser's member row is the residual #954 cost, and it is recorded as one member, not two credentials.
-    expect(r.members()).toBeLessThanOrEqual(before + 2);
+    expect(r.members()).toBe(before + 1);
+    expect(unspent(r.e)).toBe(1);
   });
 });

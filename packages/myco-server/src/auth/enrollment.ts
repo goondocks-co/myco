@@ -104,17 +104,7 @@ export interface Fragment {
   params: unknown[];
 }
 
-/**
- * Every condition a key must meet to be spent, as one fragment.
- *
- * The standalone spend and the atomic join both apply this, so an admission
- * added here reaches both.
- *
- * `memberId` binds the invitation to the member the caller resolved: a key naming
- * a member admits only that member, and a key naming none admits only the id the
- * caller minted. A caller that names no member omits the term and admits the key
- * on its own terms.
- */
+/** Admission predicates for spending an invitation, optionally bound to its resolved member. */
 export function enrollmentAdmission(
   keyHash: string, nowMs: number, opts: { forProject?: boolean; memberId?: string } = {},
 ): Fragment {
@@ -161,58 +151,36 @@ export function spendStatement(db: RelationalStore, admission: Fragment, nowMs: 
 }
 
 /** The member row a join records, gated. An existing member keeps its role. */
-export function ensureMemberStatement(db: RelationalStore, id: string, nowMs: number, role: MemberRole, gate: Fragment): PreparedStatement {
+export function ensureMemberStatement(db: RelationalStore, id: string, nowMs: number, role: MemberRole, gate?: Fragment, label = id): PreparedStatement {
   return db
-    .prepare(`INSERT INTO members (id, label, created_at, revoked_at, role)
+    .prepare(`INSERT OR IGNORE INTO members (id, label, created_at, revoked_at, role)
                 SELECT ?, ?, ?, NULL, ?
-                 WHERE ${gate.sql} AND NOT EXISTS (SELECT 1 FROM members WHERE id = ?)`)
-    .bind(id, id, nowMs, role, ...gate.params, id);
+                 ${gate === undefined ? '' : `WHERE ${gate.sql}`}`)
+    .bind(id, label, nowMs, role, ...(gate?.params ?? []));
 }
 
 /** The identity claim a join records, gated. */
-export function claimMachineIdentityStatement(db: RelationalStore, machineId: string, memberId: string, nowMs: number, gate: Fragment): PreparedStatement {
+export function claimMachineIdentityStatement(db: RelationalStore, machineId: string, memberId: string, nowMs: number, gate?: Fragment): PreparedStatement {
   return db
-    .prepare(`INSERT INTO machine_claims (machine_id, member_id, claimed_at)
+    .prepare(`INSERT OR IGNORE INTO machine_claims (machine_id, member_id, claimed_at)
                 SELECT ?, ?, ?
-                 WHERE ${gate.sql} AND NOT EXISTS (SELECT 1 FROM machine_claims WHERE machine_id = ?)`)
-    .bind(machineId, memberId, nowMs, ...gate.params, machineId);
+                 ${gate === undefined ? '' : `WHERE ${gate.sql}`}`)
+    .bind(machineId, memberId, nowMs, ...(gate?.params ?? []));
 }
 
-/**
- * The member an invitation names and the role it grants, or null for a key this
- * Deployment holds no row for. Both are fixed when the key is minted; the
- * admission revalidates the role, so this read decides nothing.
- */
-export async function enrollmentTarget(db: RelationalStore, keyHash: string): Promise<{ id: string; memberId: string | null; role: MemberRole } | null> {
-  const row = await db.prepare(`SELECT id, member_id, role FROM enrollment_authorities WHERE key_hash = ?`).bind(keyHash)
-    .first<{ id: string; member_id: string | null; role: string }>();
+/** The invitation's immutable target and granted role, or null for an absent or invalid invitation. */
+export async function enrollmentTarget(db: RelationalStore, keyHash: string): Promise<{ id: string; memberId: string | null; role: MemberRole; projectId: string | null } | null> {
+  const row = await db.prepare(`SELECT id, member_id, role, project_id FROM enrollment_authorities WHERE key_hash = ?`).bind(keyHash)
+    .first<{ id: string; member_id: string | null; role: string; project_id: string | null }>();
   if (row === null) return null;
   const role = asMemberRole(row.role);
-  return role === null ? null : { id: row.id, memberId: row.member_id, role };
-}
-
-/** The Project a spent key bound, read back after the join that spent it. */
-export async function enrollmentProject(db: RelationalStore, keyHash: string): Promise<string | null> {
-  const row = await db.prepare(`SELECT project_id FROM enrollment_authorities WHERE key_hash = ?`).bind(keyHash).first<{ project_id: string | null }>();
-  return row?.project_id ?? null;
-}
-
-/** Who holds `machineId`, or null. Read to name a refusal; the claim statement is what binds one. */
-export async function machineIdentityHolder(db: RelationalStore, machineId: string): Promise<string | null> {
-  const row = await db.prepare(`SELECT member_id FROM machine_claims WHERE machine_id = ?`).bind(machineId).first<{ member_id: string }>();
-  return row === null ? null : row.member_id;
+  return role === null ? null : { id: row.id, memberId: row.member_id, role, projectId: row.project_id };
 }
 
 /** Why a key could not be spent, or that nothing about the key refuses it. */
 export type SpendRefusal = { admissible: false; reason: EnrollmentRefusal } | { admissible: true };
 
-/**
- * What a key's own row says about it, in the order a refusal is reported.
- *
- * It decides nothing: the spend is what admits, and this only names why one did
- * not. `admissible` is a key every enrollment condition accepts, so the refusal
- * belongs to something outside the key.
- */
+/** Describes enrollment refusals in wire precedence order after a transaction admits no credential. */
 export async function explainEnrollment(
   db: RelationalStore, presentedKey: string, nowMs: number, opts: { forProject?: boolean; memberId?: string } = {},
 ): Promise<SpendRefusal> {
@@ -349,10 +317,7 @@ export async function listInvitations(db: RelationalStore, nowMs: number): Promi
  * INSERT is the shape the read-layer gate refuses.
  */
 export async function ensureMember(db: RelationalStore, id: string, nowMs: number, role: MemberRole, label = id): Promise<void> {
-  await db
-    .prepare(`INSERT OR IGNORE INTO members (id, label, created_at, revoked_at, role) VALUES (?, ?, ?, NULL, ?)`)
-    .bind(id, label, nowMs, role)
-    .run();
+  await ensureMemberStatement(db, id, nowMs, role, undefined, label).run();
 }
 
 /**
@@ -395,10 +360,7 @@ export async function reclaimEnrollmentAuthorities(db: RelationalStore, nowMs: n
 export async function claimMachineIdentity(
   db: RelationalStore, machineId: string, memberId: string, nowMs: number,
 ): Promise<{ claimed: boolean; heldBy: string }> {
-  await db
-    .prepare(`INSERT OR IGNORE INTO machine_claims (machine_id, member_id, claimed_at) VALUES (?, ?, ?)`)
-    .bind(machineId, memberId, nowMs)
-    .run();
+  await claimMachineIdentityStatement(db, machineId, memberId, nowMs).run();
   const row = await db
     .prepare(`SELECT member_id FROM machine_claims WHERE machine_id = ?`)
     .bind(machineId)
