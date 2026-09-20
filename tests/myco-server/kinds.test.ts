@@ -6,7 +6,7 @@ import { KINDS, kindSpec, parsePayload, blobFields, promptReferenceFields, order
 import { basenameOf, planKind, RAW_ROW_GATE, type WriteContext } from '@myco-server-worker/ingest/projections.js';
 import { MAX_PAYLOAD_BYTES, PAYLOAD_CAP_REASON } from '@myco-server-worker/ingest/envelope.js';
 import { MAX_BODY_BYTES } from '@myco-server-worker/ingest/body.js';
-import { MAX_BLOB_BYTES, MAX_CLOCK_SKEW_MS, MEMBER_TOKEN_BYTE_QUOTA } from '@myco-server-worker/constants.js';
+import { MAX_BLOB_BYTES, MAX_CLOCK_SKEW_MS, MEMBER_TOKEN_BYTE_QUOTA, TRANSCRIPT_PARSE_ADAPTER } from '@myco-server-worker/constants.js';
 import { sha256Hex, sha256HexOf, utf8 } from '@myco-server-worker/hash.js';
 import { blobPost, bytesWritten, count, envelope, memberHeaders, memberPost, sqliteEnv, PRODUCER, TEXT_MEDIA_TYPE, uuid } from './helpers/fixtures.js';
 
@@ -167,6 +167,18 @@ describe('kind catalogue', () => {
     const tool = e.sqlite.query(`SELECT success, error_message, canopy_injection_tokens FROM tool_calls ORDER BY tool_call_id`).all();
     expect(tool).toEqual([{ success: 1, error_message: null, canopy_injection_tokens: 12 }, { success: 0, error_message: 'boom', canopy_injection_tokens: null }]);
     expect((e.sqlite.query(`SELECT COUNT(*) c FROM events WHERE producer_adapter = '' OR producer_version = ''`).get() as any).c).toBe(0);
+  });
+
+  it('refuses a member claiming the parser\'s producer over the public capture route, storing nothing', async () => {
+    const e = sqliteEnv();
+    const t = await member(e);
+    const forged = envelope({ eventId: uuid(9), producer: { adapter: TRANSCRIPT_PARSE_ADAPTER, version: '1' } });
+
+    expect(await json(await worker.fetch(memberPost(t.token, forged), e.env))).toEqual({
+      persisted: false, code: 'refused',
+      reason: `producer.adapter ${TRANSCRIPT_PARSE_ADAPTER} is reserved for the Deployment's transcript parser`,
+    });
+    expect((e.sqlite.query(`SELECT COUNT(*) c FROM events WHERE producer_adapter = ?`).get(TRANSCRIPT_PARSE_ADAPTER) as any).c).toBe(0);
   });
 
   it('refuses an unknown kind and an unknown payload field by name, storing nothing and charging nothing', async () => {

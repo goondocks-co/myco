@@ -6,6 +6,7 @@ import { parseEnvelope, type CaptureEnvelope, type Refused } from './envelope.js
 import { kindSpec, parsePayload, type KindSpec, type Payload } from './kinds.js';
 import { titleSession } from '../core/titling.js';
 import { pendingSearchBlobs } from '../core/search-index.js';
+import { TRANSCRIPT_PARSE_ADAPTER } from '../constants.js';
 import { planKind, projectLive, sharedChecks, type Fragment, type KindPlan, type ReadRows, type WriteContext } from './projections.js';
 import { ALWAYS, withinQuota } from './quota.js';
 
@@ -89,6 +90,13 @@ export async function planEventWrite(db: RelationalStore, ctx: IngestContext, bo
   const parsed = parseEnvelope(body, ctx.now);
   if (!parsed.ok) return parsed;
   const e = parsed.value;
+  // `transcript-parse` names the Deployment's own parser, and provenance is
+  // decided from it: a member writing under that adapter would read as a row
+  // the parser derived. It is the server's to claim, and a member's write
+  // carrying it is refused here, where every entry point plans its event.
+  if (e.producer.adapter === TRANSCRIPT_PARSE_ADAPTER && (ctx.writeOrigin ?? 'member') === 'member') {
+    return { ok: false, ...refusal(`producer.adapter ${TRANSCRIPT_PARSE_ADAPTER} is reserved for the Deployment's transcript parser`) };
+  }
   const spec = kindSpec(e.kind);
   if (!spec) return { ok: false, ...refusal(`unknown kind ${e.kind}`, 'unknown_kind') };
   const payload = parsePayload(spec, e.payload, ctx.now);

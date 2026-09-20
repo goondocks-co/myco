@@ -3,6 +3,7 @@ import { ingestEvent } from '@myco-server-worker/ingest/events.js';
 import { sqliteD1, seededSqlite, seedCredential } from './helpers/d1.js';
 import { ENVELOPE_FIELDS, PRODUCER_FIELDS } from '@myco-server-worker/ingest/envelope.js';
 import { envelope, uuid, PRODUCER } from './helpers/fixtures.js';
+import { TRANSCRIPT_PARSE_ADAPTER } from '@myco-server-worker/constants.js';
 
 function realDb() {
   const sqlite = seededSqlite();
@@ -20,6 +21,22 @@ const bytes = (s: any, id: string) => (s.query(`SELECT bytes_written b FROM memb
 const sessions = (s: any) => s.query('SELECT project_id, session_id, machine_id, created_by_token_id, first_received_at, last_received_at FROM sessions ORDER BY project_id, session_id').all();
 
 describe('ingest', () => {
+  it('reserves the parser\'s adapter for the Deployment: a member claiming it is refused, the parser writing it is stored', async () => {
+    const { db, sqlite } = realDb();
+    const forged = envelope({ eventId: uuid(7), producer: { adapter: TRANSCRIPT_PARSE_ADAPTER, version: '1' } });
+
+    // A member's own capture, which is every write that names no origin.
+    expect(await ingestEvent(db, ctx, forged)).toEqual({
+      persisted: false, code: 'refused',
+      reason: `producer.adapter ${TRANSCRIPT_PARSE_ADAPTER} is reserved for the Deployment's transcript parser`,
+    });
+    expect(count(sqlite, 'events')).toBe(0);
+
+    // The parser derives its rows under the same adapter, and the server says so.
+    expect(await ingestEvent(db, { ...ctx, writeOrigin: 'server' }, forged)).toEqual({ persisted: true, projected: true });
+    expect((sqlite.query('SELECT producer_adapter FROM events').get() as any).producer_adapter).toBe(TRANSCRIPT_PARSE_ADAPTER);
+  });
+
   it('persists, attributes the write, stamps receipt time, and records the producer and payload bytes', async () => {
     const { db, sqlite } = realDb();
     expect(await ingestEvent(db, ctx, good)).toEqual({ persisted: true, projected: true });
