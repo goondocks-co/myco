@@ -325,7 +325,7 @@ function readEntryAt(root: string, mycoHome: string, mayUpgrade = false): Regist
   // touch — malformed, or missing a field it needs — would otherwise be re-read and
   // re-upgraded forever, and this runs inside a hook: the loop would not end until the
   // harness killed the hook, on every hook, with nothing captured and no error said.
-  if (readLegacy && readableVersion(read.value) === 1) {
+  if (readableVersion(read.value) === 1) {
     if (!mayUpgrade) {
       reportSkippedPrivateFile('registry entry', file, { reason: 'malformed', detail: 'not upgradable from v1' });
       return null;
