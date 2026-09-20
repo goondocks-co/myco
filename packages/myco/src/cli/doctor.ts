@@ -1630,8 +1630,9 @@ export async function checkRuntimePin(): Promise<DoctorCheck | null> {
  * targets under the member scope, its project target under an override — and
  * the check reports which scope carries it, over what transport, and whether
  * it is the entry provisioning writes — the one carrying this member's
- * credential — or that a target could not be read. It reports presence on disk, never that a server
- * answers.
+ * credential — or that a target could not be read. It reports what the
+ * configuration declares, never that a server answers or that a credential
+ * authenticates.
  */
 export async function checkMemberMcpResolution(vaultDir: string, env: NodeJS.ProcessEnv = process.env): Promise<DoctorCheck[]> {
   const { resolveProjectRoot } = await import('../project-root.js');
@@ -1682,10 +1683,15 @@ export async function checkMemberMcpResolution(vaultDir: string, env: NodeJS.Pro
         });
         continue;
       }
+      // A member entry is on disk; whether the server answers is not read here.
+      // One that names no transport cannot be dialed, so it is a warning that
+      // keeps its own reason.
       checks.push({
         name: 'Member MCP resolution',
-        status: 'ok',
-        detail: `${manifest.displayName} declares the Myco MCP server in its ${target.scope} configuration over ${target.transport ?? 'an unrecognized'} transport.`,
+        status: target.transport === null ? 'warn' : 'ok',
+        detail: target.transport === null
+          ? `${manifest.displayName}'s ${target.scope} configuration declares a member entry that names neither a URL nor a launcher, so nothing can reach it.`
+          : `${manifest.displayName} declares a member entry in its ${target.scope} configuration over ${target.transport} transport.`,
         reason: target.transport === null ? 'mcp_entry_unknown_transport' : TRANSPORT_REASON[target.transport],
         scope: target.scope,
         symbiont: manifest.name,

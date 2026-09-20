@@ -243,6 +243,16 @@ describe('what a report reads from the member MCP targets', () => {
     expect(seen.every((t) => t.present && t.transport === 'stdio' && !t.carriesCredential)).toBe(true);
   });
 
+  it('reads a member entry that names no transport as the member\'s, and as naming none', () => {
+    const { installer } = globalInstaller('claude-code');
+    // The headers its credential travels in, and neither a URL to send them to
+    // nor a launcher to start.
+    writeEntries(installer, { headersHelper: helperFor('registry') });
+
+    const seen = installer.inspectMemberMcp();
+    expect(seen.every((t) => t.present && t.carriesCredential && t.transport === null && t.readable)).toBe(true);
+  });
+
   it('says a target it could not read is unread, rather than reading it as no entry', () => {
     const { installer } = globalInstaller('claude-code');
     writeEntries(installer, claudeRemote());
