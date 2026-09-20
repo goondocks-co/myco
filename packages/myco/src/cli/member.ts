@@ -10,6 +10,7 @@
  */
 import fs from 'node:fs';
 import path from 'node:path';
+import type { DoctorCheck } from './doctor.js';
 import { getMachineId } from '../machine-id.js';
 import { isSafeProjectRoot } from '../project-root.js';
 import { RUNTIME_HOME_FILENAME, defaultMycoHome, readHomePin, resolveMycoHome } from '../paths/home.js';
@@ -379,25 +380,17 @@ export function runStatus(args: readonly string[], deps: MemberCliDeps = {}): vo
     out(`refresh:    ${membership.refreshTerminal ? 'unavailable — re-provision with `myco member join`' : membership.refreshAfter === null ? 'not yet announced' : `after ${when(membership.refreshAfter)}`}`);
     out(`machine:    ${membership.machineId}`);
     out(`joined:     ${when(membership.joinedAt)}`);
-    for (const session of spool.sessions) out(`spool:      ${session.sessionId} — ${session.unacknowledged} un-acknowledged`);
-    out(`spool:      ${spool.sessionFiles} session file(s), ${spool.unacknowledgedTotal} un-acknowledged event(s)`);
-    out(`last ack:   ${spool.lastAckAt === null ? '—' : when(spool.lastAckAt)}`);
+    for (const session of spool.sessions) out(`spool:      ${session.sessionId} — ${session.unacknowledged ?? 'unknown'} un-acknowledged`);
+    out(`spool:      ${spool.readable ? spool.sessionFiles : 'unknown'} session file(s), ${spool.unacknowledgedTotal ?? 'unknown'} un-acknowledged event(s)`);
+    out(`last ack:   ${!spool.stateReadable ? 'unknown — state could not be read' : spool.lastAckAt === null ? '—' : when(spool.lastAckAt)}`);
     const last = refusals.entries[refusals.entries.length - 1];
-    out(`refused:    ${refusals.logReadable ? `${refusals.loggedSinceLastReset} logged${last ? `; last ${last.kind} ${last.eventId} (${last.code ?? 'code not recognised'}) at ${when(last.at)}` : ''}` : 'the log could not be read'}`);
-    out(`latch:      ${latch ? `offline since ${when(latch.since)}, next probe ${when(latch.nextProbeAt)} (backoff ${latch.backoffMs} ms)` : 'online'}`);
+    out(`refused:    ${refusals.logReadable ? `${refusals.loggedSinceLastReset} logged${last ? `; last ${last.kind ?? 'unknown kind'} ${last.eventId ?? 'unknown event'} (${last.code ?? 'code not recognised'}) at ${when(last.at)}` : ''}` : 'the log could not be read'}`);
+    out(`latch:      ${!facts.latchReadable ? 'unknown — latch could not be read' : latch ? `offline since ${when(latch.since)}, next probe ${when(latch.nextProbeAt)} (backoff ${latch.backoffMs} ms)` : 'online'}`);
   }
   reportMissedCapture(out, args, deps);
 }
 
-/**
- * This machine's membership diagnostics, as one JSON document.
- *
- * The facts `status` prints, plus the binary's version skew, the project's
- * runtime pin, and whether an agent's MCP entry resolves this project's
- * membership. Without `--all` the document names the asked project's root and no
- * other root on this machine.
- */
-/** The project root a directory belongs to, or null where it belongs to none. Resolution falls back to the working directory outside a repository, so the answer is a root only where it is one a project may live at. */
+/** A safe Git project root, or null outside one. */
 function projectRootOrNull(cwd?: string): string | null {
   try {
     const root = resolveMemberProjectRoot(cwd);
@@ -407,16 +400,11 @@ function projectRootOrNull(cwd?: string): string | null {
   }
 }
 
+/** Export selected memberships and routing checks as one JSON document. */
 export async function runExport(args: readonly string[], deps: MemberCliDeps = {}): Promise<void> {
   const out = deps.stdout ?? ((l) => process.stdout.write(`${l}\n`));
   const mycoHome = homeFor(deps);
   const all = args.includes('--all');
-  // The registry is read here rather than through `entriesFor`, which reports an
-  // absent membership in words: stdout carries the document and nothing else, and
-  // a root with no membership is the case this report exists to name.
-  // `--all` names every membership; anything else names one project's root, which
-  // is null in a directory belonging to none. A report for a root the registry
-  // holds nothing for carries no membership rather than every membership.
   const root = all ? null : projectRootOrNull(deps.cwd);
   const entries = all
     ? listRegistryEntries(mycoHome)
@@ -425,19 +413,17 @@ export async function runExport(args: readonly string[], deps: MemberCliDeps = {
     ? listMissingMemberships(mycoHome)
     : root === null ? [] : [readMissingMembership(root, mycoHome)].filter((record) => record !== null);
   const { checkBinaryVersionSkew, checkRuntimePin, checkMemberMcpResolution } = await import('./doctor.js');
-  // The MCP-resolution check reads one project's own files, so it runs only where
-  // this report names a root. With `--all` outside any project there is none, and
-  // the report carries the checks that describe the machine alone.
-  const checkRoot = root ?? entries[0]?.root ?? null;
-  const gathered = [
-    checkBinaryVersionSkew(),
-    await checkRuntimePin(),
-    ...(checkRoot === null ? [] : await checkMemberMcpResolution(path.join(checkRoot, '.myco'), { ...(deps.env ?? process.env), MYCO_HOME: mycoHome })),
-  ];
-  const checks = gathered
-    .filter((check): check is NonNullable<typeof check> => check !== null)
-    // Names, statuses and closed reasons; a check's detail is prose about this machine and stays out of the document.
-    .map((check) => ({ name: check.name, status: check.status, reason: check.reason ?? null, symbiont: check.symbiont ?? null, scope: check.scope ?? null, fixable: check.fixable, fixId: check.fixId ?? null }));
+  const checkRoots = [...new Set(all ? entries.map((entry) => entry.root) : root === null ? [] : [root])];
+  const toFacts = (check: DoctorCheck, checkRoot: string | null = null) => ({
+    name: check.name, status: check.status, reason: check.reason ?? null, symbiont: check.symbiont ?? null,
+    scope: check.scope ?? null, root: check.scope === 'global' ? null : checkRoot, fixable: check.fixable, fixId: check.fixId ?? null,
+  });
+  const machineChecks = [checkBinaryVersionSkew(), await checkRuntimePin()]
+    .filter((check): check is DoctorCheck => check !== null).map((check) => toFacts(check));
+  const projectChecks = await Promise.all(checkRoots.map(async (checkRoot) =>
+    (await checkMemberMcpResolution(path.join(checkRoot, '.myco'), { ...(deps.env ?? process.env), MYCO_HOME: mycoHome }))
+      .map((check) => toFacts(check, checkRoot))));
+  const checks = [...new Map([...machineChecks, ...projectChecks.flat()].map((check) => [JSON.stringify(check), check])).values()];
   out(JSON.stringify(memberDiagnostics({
     mycoHome, now: (deps.now ?? Date.now)(), entries, missedCapture,
     selection: { root, scope: all ? 'all' : 'root' }, checks,

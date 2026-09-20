@@ -59,7 +59,7 @@ describe('the Deployment names what it is configured to do', () => {
     await recordWorkerContact(r.db, { credentialId: credential.tokenId, machineId: 'build-box', offers: [], capabilities: [], reason: 'no_work', now: NOW });
     const document = await deploymentDiagnostics(r.serverEnv, NOW);
     expect(Object.keys(document.workers!.fleet[0]!).sort())
-      .toEqual(['busy', 'capabilities', 'credentialId', 'eligible', 'lastReason', 'lastSeenAt', 'machineId', 'offers', 'recent', 'unknownCapabilities']);
+      .toEqual(['busy', 'capabilities', 'credentialId', 'eligible', 'lastReason', 'lastSeenAt', 'machineId', 'offers', 'recent', 'unknownCapabilities', 'unknownOffers']);
   });
 
   it('carries no capability name it does not know, so a worker cannot place its own text in the document', async () => {
@@ -87,6 +87,19 @@ describe('the Deployment names what it is configured to do', () => {
     expect(document.declaredWork.some((w) => w.kind === 'job')).toBe(true);
     expect(document.refusalVocabulary.length).toBeGreaterThan(0);
     expect(document.omissions.join(' ')).toContain('credentials');
+  });
+
+  it('counts unknown worker offers without exporting their supplied identifiers', async () => {
+    const r = await rig();
+    await ensureMember(r.db, 'mem_w1', NOW, 'admin', 'a worker');
+    const credential = await issueMemberToken(r.db, { memberId: 'mem_w1', machineId: 'build-box' }, NOW);
+    await recordWorkerContact(r.db, {
+      credentialId: credential.tokenId, machineId: 'build-box', capabilities: [], reason: 'no_work', now: NOW,
+      offers: [{ id: 'codex', authenticated: true }, { id: 'sk_synthetic_private_value', authenticated: false }],
+    });
+    const document = await deploymentDiagnostics(r.serverEnv, NOW);
+    expect(document.workers?.fleet[0]).toMatchObject({ offers: [{ id: 'codex', authenticated: true }], unknownOffers: 1 });
+    expect(JSON.stringify(document)).not.toContain('sk_synthetic_private_value');
   });
 });
 
