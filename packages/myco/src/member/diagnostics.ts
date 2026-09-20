@@ -38,7 +38,8 @@ export const MEMBER_OMISSIONS: readonly string[] = [
 /** The membership behind one project root. */
 export interface MembershipFacts {
   registryVersion: number;
-  serverUrl: string;
+  /** The Deployment's origin and path, with any userinfo, query and fragment dropped; null where the stored value is not a URL. */
+  serverUrl: string | null;
   projectId: string;
   root: string;
   tokenId: string | null;
@@ -104,7 +105,6 @@ export interface MissedCaptureFacts {
   count: number;
   firstAt: number;
   lastAt: number;
-  lastInvokedBy: string | null;
 }
 
 export interface ProjectDiagnostics {
@@ -149,8 +149,16 @@ export interface SelectionFacts {
   /** The project root asked about; null when the caller asked for every membership. */
   root: string | null;
   scope: 'root' | 'all';
-  /** Whether the registry holds a membership for what was asked. */
-  membershipPresent: boolean;
+  /** Whether the registry holds a membership for what was asked, and null where it held none and could not be read. */
+  membershipPresent: boolean | null;
+}
+
+/** What the registry could answer for. */
+export interface RegistryFacts {
+  /** False where the registry, or the entry asked for, could not be read. */
+  readable: boolean;
+  /** Entry files that are there and unusable. */
+  unavailableEntries: number;
 }
 
 export interface MemberDiagnostics {
@@ -163,6 +171,8 @@ export interface MemberDiagnostics {
   selection: SelectionFacts;
   /** One entry per membership the caller asked about; empty when the registry holds none. */
   projects: ProjectDiagnostics[];
+  /** What the registry could answer for the selection above. */
+  registry: RegistryFacts;
   /** The roots the caller asked about, and no others. */
   missedCapture: MissedCaptureFacts[];
   /** Null when the caller gathered none; a report says it holds none rather than that none failed. */
@@ -170,10 +180,34 @@ export interface MemberDiagnostics {
   omissions: readonly string[];
 }
 
+/**
+ * The Deployment a report names: origin and path, with the userinfo, query and
+ * fragment a credential rides in dropped.
+ *
+ * Only `http` and `https` are named. A scheme whose body is its path — `data:`
+ * is the plain case — carries whatever it holds through every field cleared
+ * here, so a stored value outside the two a Deployment is reached over reports
+ * as unknown rather than as itself.
+ */
+function exportedServerUrl(raw: string): string | null {
+  let url: URL;
+  try {
+    url = new URL(raw);
+  } catch {
+    return null;
+  }
+  if (url.protocol !== 'http:' && url.protocol !== 'https:') return null;
+  url.username = '';
+  url.password = '';
+  url.search = '';
+  url.hash = '';
+  return url.toString();
+}
+
 function membershipOf(entry: RegistryEntry, now: number): MembershipFacts {
   return {
     registryVersion: entry.version ?? REGISTRY_VERSION,
-    serverUrl: entry.serverUrl,
+    serverUrl: exportedServerUrl(entry.serverUrl),
     projectId: entry.projectId,
     root: entry.root,
     tokenId: entry.tokenId ?? null,
@@ -199,8 +233,9 @@ function refusalOf(entry: RefusedEntry): RefusalFacts {
   };
 }
 
+/** What a record says, without the free text: the invoker it names is a runtime field and is not a closed vocabulary. */
 export const missedCaptureOf = (record: MissingMembershipRecord): MissedCaptureFacts =>
-  ({ root: record.root, count: record.count, firstAt: record.firstAt, lastAt: record.lastAt, lastInvokedBy: record.lastInvokedBy ?? null });
+  ({ root: record.root, count: record.count, firstAt: record.firstAt, lastAt: record.lastAt });
 
 /** One project's spool, latch and refusal log. */
 export function projectDiagnostics(entry: RegistryEntry, mycoHome: string, now: number): ProjectDiagnostics {
@@ -261,21 +296,31 @@ export function projectDiagnostics(entry: RegistryEntry, mycoHome: string, now: 
  * other root on the machine. An empty `entries` is a report about a root the
  * registry holds no membership for, which `selection` states.
  */
+/** True for a membership held, false for one the registry says is not there, and null where it holds none and could not be read. */
+function membershipPresent(held: number, registry: RegistryFacts): boolean | null {
+  if (held > 0) return true;
+  return registry.readable && registry.unavailableEntries === 0 ? false : null;
+}
+
 export function memberDiagnostics(opts: {
   mycoHome: string;
   now: number;
   entries: readonly RegistryEntry[];
   missedCapture: readonly MissingMembershipRecord[];
   selection: { root: string | null; scope: 'root' | 'all' };
+  /** What the caller's registry read could answer; a direct caller that omits it reports a registry it read whole. */
+  registry?: RegistryFacts;
   checks?: readonly CheckFacts[];
 }): MemberDiagnostics {
+  const registry: RegistryFacts = opts.registry ?? { readable: true, unavailableEntries: 0 };
   return {
     bundle: 'myco.member.diagnostics',
     bundleVersion: MEMBER_BUNDLE_VERSION,
     generatedAt: opts.now,
     buildVersion: getPluginVersion(),
     memberProtocol: MEMBER_PROTOCOL,
-    selection: { root: opts.selection.root, scope: opts.selection.scope, membershipPresent: opts.entries.length > 0 },
+    selection: { root: opts.selection.root, scope: opts.selection.scope, membershipPresent: membershipPresent(opts.entries.length, registry) },
+    registry,
     projects: opts.entries.map((entry) => projectDiagnostics(entry, opts.mycoHome, opts.now)),
     missedCapture: opts.missedCapture.map(missedCaptureOf),
     checks: opts.checks === undefined ? null : [...opts.checks],

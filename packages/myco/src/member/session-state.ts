@@ -97,12 +97,12 @@ function readStateFile(spoolDir: string, sessionId: string): SessionStateRead {
 const rendersAsInstant = (value: unknown): boolean =>
   typeof value === 'number' && Number.isFinite(value) && !Number.isNaN(new Date(value).getTime());
 
-/** The state, or why a report cannot use it: beyond the schema, a `highWater` it can subtract and a `lastAckAt` it can date. Narrows nothing the runtime accepts, so a state unusable here keeps its mark. */
+/** The state, or why a report cannot use it: beyond the schema, a `highWater` it can subtract from a record count — a non-negative whole number — and a `lastAckAt` it can date. Narrows nothing the runtime accepts, so a state unusable here keeps its mark. */
 export function readSessionStateResultUnlocked(spoolDir: string, sessionId: string): SessionStateRead {
   const read = readStateFile(spoolDir, sessionId);
   if (!read.ok) return read;
   const { highWater, lastAckAt } = read.state;
-  const reportable = Number.isFinite(highWater) && (lastAckAt === undefined || rendersAsInstant(lastAckAt));
+  const reportable = Number.isSafeInteger(highWater) && highWater >= 0 && (lastAckAt === undefined || rendersAsInstant(lastAckAt));
   return reportable ? read : { ok: false, reason: 'invalid', detail: 'a reported field is not a number a report can use' };
 }
 

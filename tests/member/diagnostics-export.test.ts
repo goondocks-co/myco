@@ -16,7 +16,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { MemberSpool, spoolDirFor } from '@myco/member/spool.js';
 import { updateSessionState } from '@myco/member/session-state.js';
-import { writeRegistryEntry, type RegistryEntry } from '@myco/member/registry.js';
+import { listRegistryEntriesResult, readRegistryEntryResult, registryEntryPath, writeRegistryEntry, type RegistryEntry } from '@myco/member/registry.js';
 import { recordMissingMembership } from '@myco/member/no-membership.js';
 import { mintId, promptEvent, type EnvelopeContext } from '@myco/member/envelope.js';
 import { memberDiagnostics, projectDiagnostics, MAX_REFUSALS_REPORTED } from '@myco/member/diagnostics.js';
@@ -24,6 +24,12 @@ import { runExport } from '@myco/cli/member.js';
 import { tempMycoHome } from './helpers/server.js';
 
 const NOW = 1_800_000_000_000;
+/** The shape a report's callers assert against. */
+type Report = {
+  selection: { root: string | null; scope: string; membershipPresent: boolean | null };
+  registry: { readable: boolean; unavailableEntries: number };
+  projects: unknown[];
+};
 const SECRET = 'mt_thisisaverysecrettokenvalue';
 
 let mycoHome: string;
@@ -209,7 +215,8 @@ it('exports the MCP configuration of the selected project', async () => {
   const project = tempProjectRoot();
   writeRegistryEntry(entry({ root: project }), { mycoHome });
   fs.mkdirSync(path.join(project, '.codex'));
-  fs.writeFileSync(path.join(project, '.codex', 'config.toml'), '[mcp_servers.myco]\nurl = "https://myco.example.com/mcp"\n');
+  fs.writeFileSync(path.join(project, '.codex', 'config.toml'),
+    '[mcp_servers.myco]\nurl = "https://myco.example.com/mcp"\nhttp_headers_helper = "myco member mcp-headers --credential registry"\n');
   const lines: string[] = [];
   await runExport([], { mycoHome, cwd: project, stdout: (line) => lines.push(line) });
   const report = JSON.parse(lines.join('\n'));
@@ -250,8 +257,9 @@ describe('a directory in no project still produces a report', () => {
     writeRegistryEntry(e, { mycoHome });
     const lines: string[] = [];
     await runExport(['--all'], { mycoHome, now: () => NOW, cwd: '/', stdout: (l) => lines.push(l), stderr: () => {} });
-    const report = JSON.parse(lines.join('\n')) as { selection: { root: string | null; scope: string; membershipPresent: boolean }; projects: unknown[] };
+    const report = JSON.parse(lines.join('\n')) as Report;
     expect(report.selection).toEqual({ root: null, scope: 'all', membershipPresent: true });
+    expect(report.registry).toEqual({ readable: true, unavailableEntries: 0 });
     expect(report.projects).toHaveLength(1);
   });
 
@@ -499,6 +507,127 @@ describe('a private file that is there and cannot be opened', () => {
     const facts = projectDiagnostics(e, mycoHome, NOW);
     expect(facts.spool.stateReadable).toBe(false);
     expect(facts.spool.sessions[0]!.stateReadable).toBe(false);
+  });
+});
+
+describe('a Deployment URL carrying credentials', () => {
+  it('exports the origin and the path, and neither the userinfo nor the query a token can ride in', () => {
+    const e = { ...entry(), serverUrl: 'https://joiner:sQuirrel@deployment.example/base?token=zEbra#fRagment' };
+    writeRegistryEntry(e, { mycoHome });
+
+    const facts = projectDiagnostics(e, mycoHome, NOW);
+    expect(facts.membership.serverUrl).toBe('https://deployment.example/base');
+    expect(JSON.stringify(facts)).not.toMatch(/sQuirrel|joiner|zEbra|fRagment/);
+  });
+
+  it('reports a stored value that is not a URL as unknown rather than passing it through', () => {
+    const e = { ...entry(), serverUrl: 'not a url' };
+    writeRegistryEntry(e, { mycoHome });
+
+    expect(projectDiagnostics(e, mycoHome, NOW).membership.serverUrl).toBeNull();
+  });
+
+  it('names no scheme a Deployment is not reached over, whose body would survive every field cleared', () => {
+    const e = { ...entry(), serverUrl: 'data:text/plain,sQuirrel' };
+    writeRegistryEntry(e, { mycoHome });
+
+    const facts = projectDiagnostics(e, mycoHome, NOW);
+    expect(facts.membership.serverUrl).toBeNull();
+    expect(JSON.stringify(facts)).not.toMatch(/sQuirrel/);
+  });
+
+  it('keeps a plain http Deployment, which a local one is reached over', () => {
+    const e = { ...entry(), serverUrl: 'http://127.0.0.1:8787/' };
+    writeRegistryEntry(e, { mycoHome });
+
+    expect(projectDiagnostics(e, mycoHome, NOW).membership.serverUrl).toBe('http://127.0.0.1:8787/');
+  });
+});
+
+describe('a registry the report could not read', () => {
+  it('answers unavailable for an entry file it cannot use, rather than that no membership is held', () => {
+    const root = tempProjectRoot();
+    const e = entry({ root });
+    writeRegistryEntry(e, { mycoHome });
+    // The entry is there and says nothing the read can use.
+    fs.writeFileSync(registryEntryPath(root, mycoHome), '{"nope":1}', { mode: 0o600 });
+
+    expect(readRegistryEntryResult(root, mycoHome)).toEqual({ status: 'unavailable' });
+    const listed = listRegistryEntriesResult(mycoHome);
+    expect(listed).toMatchObject({ readable: true, unavailableEntries: 1 });
+    expect(listed.entries).toEqual([]);
+  });
+
+  it('reads an entry never written as missing, and one it holds as present', () => {
+    const root = tempProjectRoot();
+    expect(readRegistryEntryResult(root, mycoHome)).toEqual({ status: 'missing' });
+    const e = entry({ root });
+    writeRegistryEntry(e, { mycoHome });
+    expect(readRegistryEntryResult(root, mycoHome).status).toBe('present');
+  });
+
+  it('says a membership is unknown where the registry held none and could not be read', () => {
+    const facts = memberDiagnostics({
+      mycoHome, now: NOW, entries: [], missedCapture: [],
+      selection: { root: null, scope: 'all' }, registry: { readable: false, unavailableEntries: 0 },
+    });
+    expect(facts.selection.membershipPresent).toBeNull();
+    expect(facts.registry).toEqual({ readable: false, unavailableEntries: 0 });
+  });
+
+  it('says a membership is absent where the registry answered and held none', () => {
+    const facts = memberDiagnostics({ mycoHome, now: NOW, entries: [], missedCapture: [], selection: { root: null, scope: 'all' } });
+    expect(facts.selection.membershipPresent).toBe(false);
+    expect(facts.registry).toEqual({ readable: true, unavailableEntries: 0 });
+  });
+});
+
+describe('a registry the export could not read', () => {
+  /** An entry file that is there and holds nothing a read can use. */
+  const damage = (root: string) => fs.writeFileSync(registryEntryPath(root, mycoHome), '{"nope":1}', { mode: 0o600 });
+
+  it('reports the asked project as unknown rather than as never joined', async () => {
+    const root = tempProjectRoot();
+    writeRegistryEntry(entry({ root }), { mycoHome });
+    damage(root);
+
+    const lines: string[] = [];
+    await runExport([], { mycoHome, now: () => NOW, cwd: root, stdout: (l) => lines.push(l), stderr: () => {} });
+    const report = JSON.parse(lines.join('\n')) as Report;
+    expect(report.selection.membershipPresent).toBeNull();
+    expect(report.registry).toEqual({ readable: false, unavailableEntries: 1 });
+    expect(report.projects).toHaveLength(0);
+  });
+
+  it('counts an entry it could not use with --all, and still names the memberships it could', async () => {
+    const good = tempProjectRoot();
+    const bad = tempProjectRoot();
+    writeRegistryEntry(entry({ root: good }), { mycoHome });
+    writeRegistryEntry(entry({ root: bad, projectId: 'proj_2' }), { mycoHome });
+    damage(bad);
+
+    const lines: string[] = [];
+    await runExport(['--all'], { mycoHome, now: () => NOW, cwd: '/', stdout: (l) => lines.push(l), stderr: () => {} });
+    const report = JSON.parse(lines.join('\n')) as Report;
+    // One membership held is a membership held, however much else the registry could not answer for.
+    expect(report.selection.membershipPresent).toBe(true);
+    expect(report.registry).toEqual({ readable: true, unavailableEntries: 1 });
+    expect(report.projects).toHaveLength(1);
+  });
+
+  it('reads the registry without repairing it, so a layout it cannot migrate still answers', () => {
+    const root = tempProjectRoot();
+    writeRegistryEntry(entry({ root }), { mycoHome });
+    // A v1 entry beside a lock path nothing can take: a read that migrated would write here.
+    const v1 = { version: 1, projectId: 'proj_v1', serverUrl: 'https://deployment.example', token: SECRET, tokenId: 'mt_v1', memberId: 'mem_v1', root: '/home/dev/v1', machineId: 'dev-laptop', joinedAt: NOW, updatedAt: NOW };
+    fs.writeFileSync(registryEntryPath('/home/dev/v1', mycoHome), JSON.stringify(v1), { mode: 0o600 });
+
+    const listed = listRegistryEntriesResult(mycoHome);
+    expect(listed.readable).toBe(true);
+    expect(listed.unavailableEntries).toBe(0);
+    expect(listed.entries.map((held) => held.projectId).sort()).toEqual(['proj_1', 'proj_v1']);
+    // Nothing was rewritten: the file on disk is still the v1 it was.
+    expect(JSON.parse(fs.readFileSync(registryEntryPath('/home/dev/v1', mycoHome), 'utf-8')).version).toBe(1);
   });
 });
 
