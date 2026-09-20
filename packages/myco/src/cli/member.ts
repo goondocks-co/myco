@@ -102,6 +102,27 @@ function entriesFor(args: readonly string[], deps: MemberCliDeps): RegistryEntry
   return [entry];
 }
 
+/**
+ * The memberships a diagnostic surface reads, and what the registry could not
+ * answer for. Reads only: no migration and no write lock, so a damaged entry is
+ * reported rather than repaired.
+ */
+function registrySelection(args: readonly string[], deps: MemberCliDeps): {
+  root: string | null; all: boolean; entries: RegistryEntry[]; readable: boolean; unavailableEntries: number;
+} {
+  const mycoHome = homeFor(deps);
+  const all = args.includes('--all');
+  if (all) return { root: null, all, ...listRegistryEntriesResult(mycoHome) };
+  const root = projectRootOrNull(deps.cwd);
+  const selected = root === null ? null : readRegistryEntryResult(root, mycoHome);
+  return {
+    root, all,
+    entries: selected?.status === 'present' ? [selected.entry] : [],
+    readable: selected?.status !== 'unavailable',
+    unavailableEntries: selected?.status === 'unavailable' ? 1 : 0,
+  };
+}
+
 /** The flags `join` understands. An unknown flag is refused: a token must never reach argv, and a typo must never look like a success. */
 interface JoinArgs {
   serverUrl?: string;
@@ -368,16 +389,21 @@ export async function runDrain(args: readonly string[], deps: MemberCliDeps = {}
 export function runStatus(args: readonly string[], deps: MemberCliDeps = {}): void {
   const out = deps.stdout ?? ((l) => process.stdout.write(`${l}\n`));
   const now = deps.now ?? Date.now;
+  const err = deps.stderr ?? ((l: string) => process.stderr.write(`${l}\n`));
   const mycoHome = homeFor(deps);
-  for (const entry of entriesFor(args, deps)) {
+  const selection = registrySelection(args, deps);
+  for (const entry of selection.entries) {
     const facts = projectDiagnostics(entry, mycoHome, now());
     const { membership, spool, latch, refusals } = facts;
     out(`project:    ${membership.projectId}`);
     out(`root:       ${membership.root}`);
     out(`server:     ${membership.serverUrl ?? 'unknown'}`);
     out(`token:      ${redact(entry.token)}${membership.tokenId ? ` (${membership.tokenId})` : ''}`);
-    out(`expires:    ${when(membership.expiresAt ?? undefined)}${membership.expired ? ' (EXPIRED)' : ''}`);
-    out(`refresh:    ${membership.refreshTerminal ? 'unavailable — re-provision with `myco member join`' : membership.refreshAfter === null ? 'not yet announced' : `after ${when(membership.refreshAfter)}`}`);
+    out(`expires:    ${membership.unavailableFields.includes('expiresAt') ? 'unknown' : `${when(membership.expiresAt ?? undefined)}${membership.expired === true ? ' (EXPIRED)' : ''}`}`);
+    out(`refresh:    ${membership.refreshTerminal === null ? 'unknown'
+      : membership.refreshTerminal ? 'unavailable — re-provision with `myco member join`'
+      : membership.unavailableFields.includes('refreshAfter') ? 'unknown'
+      : membership.refreshAfter === null ? 'not yet announced' : `after ${when(membership.refreshAfter)}`}`);
     out(`machine:    ${membership.machineId}`);
     out(`joined:     ${membership.joinedAt === null ? 'unknown' : when(membership.joinedAt)}`);
     if (membership.unavailableFields.length > 0) out(`membership: unknown ${membership.unavailableFields.join(', ')}`);
@@ -388,6 +414,16 @@ export function runStatus(args: readonly string[], deps: MemberCliDeps = {}): vo
     const damaged = refusals.unreadableLines > 0 ? `, ${refusals.unreadableLines} unreadable` : '';
     out(`refused:    ${refusals.logReadable ? `${refusals.loggedSinceLastReset} logged${damaged}${last ? `; last ${last.kind ?? 'unknown kind'} ${last.eventId ?? 'unknown event'} (${last.code ?? 'code not recognised'}) at ${when(last.at)}` : ''}` : 'the log could not be read'}`);
     out(`latch:      ${!facts.latchReadable ? 'unknown — latch could not be read' : latch ? `offline since ${when(latch.since)}, next probe ${when(latch.nextProbeAt)} (backoff ${latch.backoffMs} ms)` : 'online'}`);
+  }
+  if (selection.all) {
+    if (!selection.readable) err('myco member: the registry directory could not be read');
+    else if (selection.unavailableEntries > 0) {
+      out(`registry:   ${selection.unavailableEntries} ${selection.unavailableEntries === 1 ? 'entry' : 'entries'} could not be read`);
+    }
+  } else if (selection.root === null) err('myco member: this directory belongs to no project');
+  else if (!selection.readable) err(`myco member: the registry entry for ${selection.root} could not be read`);
+  else if (selection.entries.length === 0) {
+    err(`myco member: no registry entry for ${selection.root} — run \`myco member join <server-url> --project <id>\``);
   }
   reportMissedCapture(out, args, deps);
 }
@@ -406,14 +442,7 @@ function projectRootOrNull(cwd?: string): string | null {
 export async function runExport(args: readonly string[], deps: MemberCliDeps = {}): Promise<void> {
   const out = deps.stdout ?? ((l) => process.stdout.write(`${l}\n`));
   const mycoHome = homeFor(deps);
-  const all = args.includes('--all');
-  const root = all ? null : projectRootOrNull(deps.cwd);
-  const selected = root === null ? null : readRegistryEntryResult(root, mycoHome);
-  const { entries, ...registry } = all ? listRegistryEntriesResult(mycoHome) : {
-    entries: selected?.status === 'present' ? [selected.entry] : [],
-    readable: selected?.status !== 'unavailable',
-    unavailableEntries: selected?.status === 'unavailable' ? 1 : 0,
-  };
+  const { root, all, entries, ...registry } = registrySelection(args, deps);
   const missedRead = all || root === null ? null : readMissingMembershipResult(root, mycoHome);
   const { records: missedCapture, ...missedCaptureStore } = all ? listMissingMembershipsResult(mycoHome) : {
     records: missedRead?.status === 'present' ? [missedRead.record] : [],
