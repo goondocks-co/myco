@@ -101,6 +101,9 @@ function readRecordFile(file: string): MissingMembershipResult {
 const rendersAsInstant = (value: unknown): boolean =>
   typeof value === 'number' && Number.isFinite(value) && !Number.isNaN(new Date(value).getTime());
 
+/** Whether `name` is the file this record's own root is keyed to. */
+const keyed = (record: MissingMembershipRecord, name: string): boolean => name === `${registryKeyFor(record.root)}.json`;
+
 /** Diagnostic count and timestamp validation. */
 function reportable(record: MissingMembershipRecord): boolean {
   return Number.isSafeInteger(record.count) && record.count >= 0
@@ -114,10 +117,14 @@ export function readMissingMembership(root: string, mycoHome: string = resolveMy
   return read.status === 'present' ? read.record : null;
 }
 
-/** This root's record as a report reads it: held, never written, or there and unusable. */
+/** This root's record as a report reads it: held, never written, or there and unusable. A record naming another root is not this root's. */
 export function readMissingMembershipResult(root: string, mycoHome: string = resolveMycoHome()): MissingMembershipResult {
-  const read = readRecordFile(missingMembershipPath(path.resolve(root), mycoHome));
-  return read.status === 'present' && !reportable(read.record) ? { status: 'unavailable' } : read;
+  const resolved = path.resolve(root);
+  const file = missingMembershipPath(resolved, mycoHome);
+  const read = readRecordFile(file);
+  if (read.status !== 'present') return read;
+  const usable = keyed(read.record, path.basename(file)) && reportable(read.record);
+  return usable ? read : { status: 'unavailable' };
 }
 
 /** Every root that has missed under this home, newest miss first, each with the file it was read from. */
@@ -152,7 +159,7 @@ export function listMissingMembershipsResult(mycoHome: string = resolveMycoHome(
   let unavailableRecords = 0;
   for (const name of names) {
     const read = readRecordFile(path.join(unmemberedDir(mycoHome), name));
-    if (read.status === 'present' && reportable(read.record)) records.push(read.record);
+    if (read.status === 'present' && keyed(read.record, name) && reportable(read.record)) records.push(read.record);
     else if (read.status !== 'missing') unavailableRecords += 1;
   }
   return { records: records.sort((a, b) => b.lastAt - a.lastAt), readable: true, unavailableRecords };
