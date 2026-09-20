@@ -325,7 +325,7 @@ function readEntryAt(root: string, mycoHome: string, mayUpgrade = false): Regist
   // touch — malformed, or missing a field it needs — would otherwise be re-read and
   // re-upgraded forever, and this runs inside a hook: the loop would not end until the
   // harness killed the hook, on every hook, with nothing captured and no error said.
-  if (readableVersion(read.value) === 1) {
+  if (readLegacy && readableVersion(read.value) === 1) {
     if (!mayUpgrade) {
       reportSkippedPrivateFile('registry entry', file, { reason: 'malformed', detail: 'not upgradable from v1' });
       return null;
@@ -496,15 +496,15 @@ export type RegistryRefusal = 'missing' | 'unreadable' | 'loose-mode' | 'malform
  * membership a v2 binding composes with. A v1 file is already a whole entry and
  * is read as one, so nothing here migrates or writes.
  */
-function readEntryFile(file: string, name: string, mycoHome: string):
-  { ok: true; entry: RegistryEntry } | { ok: false; reason: RegistryRefusal; stderrReason: 'unreadable' | 'loose-mode' | 'malformed'; detail?: string } {
+function readEntryFile(file: string, name: string, mycoHome: string, readLegacy = false):
+  { ok: true; entry: RegistryEntry } | { ok: false; reason: RegistryRefusal; stderrReason: RegistryRefusal; detail?: string } {
   const read = readPrivateJson<ProjectBinding>(file);
   if (!read.ok) {
-    const stderrReason = read.reason === 'missing' ? 'malformed' : read.reason;
+    const stderrReason = read.reason;
     return { ok: false, reason: read.reason, stderrReason, detail: read.detail };
   }
   const keyed = (root: string): boolean => name === `${registryKeyFor(root)}.json`;
-  if (readableVersion(read.value) === 1) {
+  if (readLegacy && readableVersion(read.value) === 1) {
     const v1 = read.value as unknown;
     if (!isEntry(v1)) return { ok: false, reason: 'malformed', stderrReason: 'malformed', detail: 'not a registry entry' };
     if (!keyed(v1.root)) return { ok: false, reason: 'malformed', stderrReason: 'malformed', detail: 'root mismatch' };
@@ -537,7 +537,7 @@ export function listRegistryEntriesResult(mycoHome: string = resolveMycoHome()):
   let unavailableEntries = 0;
   for (const name of names) {
     if (!name.endsWith('.json')) continue;
-    const read = readEntryFile(path.join(dir, name), name, mycoHome);
+    const read = readEntryFile(path.join(dir, name), name, mycoHome, true);
     if (read.ok) entries.push(read.entry);
     else if (read.reason !== 'missing') unavailableEntries += 1;
   }
@@ -547,7 +547,7 @@ export function listRegistryEntriesResult(mycoHome: string = resolveMycoHome()):
 /** The entry for `root` as a report reads it, in one parse and without repairing anything. */
 export function readRegistryEntryResult(root: string, mycoHome: string = resolveMycoHome()): RegistryEntryResult {
   const file = registryEntryPath(root, mycoHome);
-  const read = readEntryFile(file, path.basename(file), mycoHome);
+  const read = readEntryFile(file, path.basename(file), mycoHome, true);
   if (read.ok) return { status: 'present', entry: read.entry };
   return read.reason === 'missing' ? { status: 'missing' } : { status: 'unavailable' };
 }
