@@ -80,6 +80,23 @@ function prStates() {
   return byBranch;
 }
 
+/**
+ * Retire a merged branch on both sides. Every caller has already proven the
+ * branch is finished, so the two sides are one operation — a branch deleted
+ * locally but left on the remote is the accumulation this sweep exists to
+ * prevent, just moved somewhere less visible.
+ */
+function deleteBranch(branch) {
+  execFileSync('git', ['branch', '-D', branch], { stdio: 'ignore' });
+  try {
+    execFileSync('git', ['push', 'origin', '--delete', branch], { stdio: 'ignore' });
+  } catch {
+    // The remote branch is usually already gone: `gh pr merge --delete-branch`
+    // removes it at merge time. Its absence is the desired end state, not a
+    // failure, and the local side is retired either way.
+  }
+}
+
 /** Untracked build output is not work; tracked edits and stashes are. */
 function isClean(path) {
   const status = execFileSync('git', ['-C', path, 'status', '--porcelain'], { encoding: 'utf8' })
@@ -132,14 +149,7 @@ for (const wt of retire) {
     continue;
   }
   execFileSync('git', ['worktree', 'remove', '--force', wt.path], { stdio: 'ignore' });
-  execFileSync('git', ['branch', '-D', wt.branch], { stdio: 'ignore' });
-  try {
-    execFileSync('git', ['push', 'origin', '--delete', wt.branch], { stdio: 'ignore' });
-  } catch {
-    // The remote branch is usually already gone: `gh pr merge --delete-branch`
-    // removes it at merge time. Its absence is the desired end state, not a
-    // failure, and the worktree and local branch are retired either way.
-  }
+  deleteBranch(wt.branch);
   console.log(`  retired ${wt.branch} (#${wt.pr})`);
 }
 
@@ -158,7 +168,7 @@ for (const b of staleBranches) {
     console.log(`  would delete branch ${b} (#${prs.get(b).number})`);
     continue;
   }
-  execFileSync('git', ['branch', '-D', b], { stdio: 'ignore' });
+  deleteBranch(b);
   console.log(`  deleted branch ${b} (#${prs.get(b).number})`);
 }
 
