@@ -20,7 +20,7 @@ import { isHttpsUrl, isMemberTokenShape, parseCredentialFlag, resolveCredential,
 import { refreshMemberCredential, type RefreshReport } from '../member/refresh.js';
 import { runImport } from '../member/import.js';
 import { clearMissingMembership, listMissingMemberships, pruneMissingMemberships, readMissingMembership } from '../member/no-membership.js';
-import { deploymentUrl, listRegistryEntries, readDeploymentMembership, readRegistryEntry, removeRegistryEntry, writeRegistryEntry, REGISTRY_VERSION, type RegistryEntry } from '../member/registry.js';
+import { deploymentUrl, listRegistryEntries, listRegistryEntriesResult, readDeploymentMembership, readRegistryEntry, readRegistryEntryResult, removeRegistryEntry, writeRegistryEntry, REGISTRY_VERSION, type RegistryEntry } from '../member/registry.js';
 import { applySpoolRetention } from '../member/retention.js';
 import { memberDiagnostics, projectDiagnostics } from '../member/diagnostics.js';
 import { MemberSpool, type DrainResult } from '../member/spool.js';
@@ -374,7 +374,7 @@ export function runStatus(args: readonly string[], deps: MemberCliDeps = {}): vo
     const { membership, spool, latch, refusals } = facts;
     out(`project:    ${membership.projectId}`);
     out(`root:       ${membership.root}`);
-    out(`server:     ${membership.serverUrl}`);
+    out(`server:     ${membership.serverUrl ?? 'unknown'}`);
     out(`token:      ${redact(entry.token)}${membership.tokenId ? ` (${membership.tokenId})` : ''}`);
     out(`expires:    ${when(membership.expiresAt ?? undefined)}${membership.expired ? ' (EXPIRED)' : ''}`);
     out(`refresh:    ${membership.refreshTerminal ? 'unavailable — re-provision with `myco member join`' : membership.refreshAfter === null ? 'not yet announced' : `after ${when(membership.refreshAfter)}`}`);
@@ -406,9 +406,12 @@ export async function runExport(args: readonly string[], deps: MemberCliDeps = {
   const mycoHome = homeFor(deps);
   const all = args.includes('--all');
   const root = all ? null : projectRootOrNull(deps.cwd);
-  const entries = all
-    ? listRegistryEntries(mycoHome)
-    : root === null ? [] : [readRegistryEntry(root, mycoHome)].filter((entry) => entry !== null);
+  const selected = root === null ? null : readRegistryEntryResult(root, mycoHome);
+  const { entries, ...registry } = all ? listRegistryEntriesResult(mycoHome) : {
+    entries: selected?.status === 'present' ? [selected.entry] : [],
+    readable: selected?.status !== 'unavailable',
+    unavailableEntries: selected?.status === 'unavailable' ? 1 : 0,
+  };
   const missedCapture = all
     ? listMissingMemberships(mycoHome)
     : root === null ? [] : [readMissingMembership(root, mycoHome)].filter((record) => record !== null);
@@ -426,7 +429,7 @@ export async function runExport(args: readonly string[], deps: MemberCliDeps = {
   const checks = [...new Map([...machineChecks, ...projectChecks.flat()].map((check) => [JSON.stringify(check), check])).values()];
   out(JSON.stringify(memberDiagnostics({
     mycoHome, now: (deps.now ?? Date.now)(), entries, missedCapture,
-    selection: { root, scope: all ? 'all' : 'root' }, checks,
+    selection: { root, scope: all ? 'all' : 'root' }, registry, checks,
   }), null, 2));
 }
 
