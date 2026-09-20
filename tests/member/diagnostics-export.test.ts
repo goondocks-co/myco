@@ -11,6 +11,8 @@
  */
 import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
 import fs from 'node:fs';
+import { execFileSync } from 'node:child_process';
+import os from 'node:os';
 import path from 'node:path';
 import { MemberSpool } from '@myco/member/spool.js';
 import { writeRegistryEntry, type RegistryEntry } from '@myco/member/registry.js';
@@ -169,10 +171,14 @@ describe('the report names the roots the caller asked about, and no others', () 
 
 describe('an unjoined project still produces a report', () => {
   it('writes a document naming the root it looked for, with the membership absent', async () => {
-    recordMissingMembership('/home/dev/acme-web', { mycoHome, now: () => NOW, invokedBy: 'hook stop' });
+    // A real project directory: the export names a root only where one could
+    // hold a project, so a path that is only a string is no root at all.
+    const project = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'myco-unjoined-')));
+    execFileSync('git', ['init', '-q'], { cwd: project });
+    recordMissingMembership(project, { mycoHome, now: () => NOW, invokedBy: 'hook stop' });
     const lines: string[] = [];
     const stderr: string[] = [];
-    await runExport([], { mycoHome, now: () => NOW, cwd: '/home/dev/acme-web', stdout: (l) => lines.push(l), stderr: (l) => stderr.push(l) });
+    await runExport([], { mycoHome, now: () => NOW, cwd: project, stdout: (l) => lines.push(l), stderr: (l) => stderr.push(l) });
     const raw = lines.join('\n');
     // Stdout is the document and nothing else: a reader pipes it straight into a file.
     const report = JSON.parse(raw) as {
@@ -182,7 +188,7 @@ describe('an unjoined project still produces a report', () => {
     expect(report.bundle).toBe('myco.member.diagnostics');
     expect(report.selection).toMatchObject({ membershipPresent: false, scope: 'root' });
     expect(report.projects).toEqual([]);
-    expect(report.missedCapture[0]).toMatchObject({ root: '/home/dev/acme-web', count: 1 });
+    expect(report.missedCapture[0]).toMatchObject({ root: project, count: 1 });
     expect(report.buildVersion.length).toBeGreaterThan(0);
   });
 });

@@ -54,13 +54,17 @@ export interface MembershipFacts {
 
 export interface SpoolSessionFacts {
   sessionId: string;
-  unacknowledged: number;
+  /** Null where the session's own spool file could not be read. */
+  unacknowledged: number | null;
   lastAckAt: number | null;
 }
 
 export interface SpoolFacts {
+  /** False where the spool directory could not be read; its sessions are then unknown, not none. */
+  readable: boolean;
   sessionFiles: number;
-  unacknowledgedTotal: number;
+  /** Null where any session file could not be read. */
+  unacknowledgedTotal: number | null;
   lastAckAt: number | null;
   /** One entry per spool file this project holds. */
   sessions: SpoolSessionFacts[];
@@ -120,6 +124,10 @@ export interface ProjectDiagnostics {
 export interface CheckFacts {
   name: string;
   status: 'ok' | 'fail' | 'warn';
+  /** What it failed on, from a closed vocabulary; null where its name is the whole answer. */
+  reason: string | null;
+  /** The symbiont it names, where it names one. */
+  symbiont: string | null;
   fixable: boolean;
   fixId: string | null;
 }
@@ -189,9 +197,10 @@ export function projectDiagnostics(entry: RegistryEntry, mycoHome: string, now: 
   // Acknowledgement is held in session state, which outlives the spool file a
   // session's records were written to.
   const acked = new Map(spool.stateSessionIds().map((sessionId) => [sessionId, lastAckAt(spool, sessionId)]));
-  const sessions = spool.sessionIds().map((sessionId) => {
+  const spooled = spool.readSpool();
+  const sessions = spooled.sessions.map(({ sessionId, unacknowledged }) => {
     const at = acked.get(sessionId) ?? 0;
-    return { sessionId, unacknowledged: spool.depth(sessionId), lastAckAt: at > 0 ? at : null };
+    return { sessionId, unacknowledged, lastAckAt: at > 0 ? at : null };
   });
   let lastAck = 0;
   for (const at of acked.values()) lastAck = Math.max(lastAck, at);
@@ -201,8 +210,13 @@ export function projectDiagnostics(entry: RegistryEntry, mycoHome: string, now: 
   return {
     membership: membershipOf(entry, now),
     spool: {
+      // A spool nothing could read reports no sessions and says so, rather than reporting none pending.
+      readable: spooled.readable,
       sessionFiles: sessions.length,
-      unacknowledgedTotal: sessions.reduce((total, session) => total + session.unacknowledged, 0),
+      // Null where any session's own file could not be read: a total over the rest would read as the whole.
+      unacknowledgedTotal: sessions.some((session) => session.unacknowledged === null)
+        ? null
+        : sessions.reduce((total, session) => total + (session.unacknowledged ?? 0), 0),
       lastAckAt: lastAck > 0 ? lastAck : null,
       sessions,
     },

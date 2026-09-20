@@ -57,6 +57,16 @@ export interface RefusedEntry {
   at: number;
 }
 
+/** Whether a line of the refusal log carries every field a record is read by. A record short of one is a line nothing can report, counted unreadable rather than reported blank. */
+function isRefusedEntry(value: unknown): value is RefusedEntry {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) return false;
+  const row = value as Record<string, unknown>;
+  for (const field of ['eventId', 'sessionId', 'kind', 'code', 'reason'] as const) {
+    if (typeof row[field] !== 'string' || row[field] === '') return false;
+  }
+  return typeof row.at === 'number' && Number.isFinite(row.at);
+}
+
 export type DrainEnd = Outcome['class'] | 'budget' | 'protocol_mismatch' | 'drained';
 
 export interface DrainResult {
@@ -241,6 +251,42 @@ export class MemberSpool {
     });
   }
 
+  /**
+   * The spool as a report reads it.
+   *
+   * `sessionIds` and `depth` answer an unreadable directory or file the same
+   * way they answer an empty one, which a caller draining capture wants and a
+   * report must not repeat: a spool nothing can read is not a spool with
+   * nothing in it. A session whose own file could not be read carries a null
+   * depth, and a directory that could not be read carries `readable: false`.
+   */
+  readSpool(): { readable: boolean; sessions: Array<{ sessionId: string; unacknowledged: number | null }> } {
+    let names: string[];
+    try {
+      names = fs.readdirSync(this.dir).filter((name) => name.endsWith('.jsonl'));
+    } catch (err) {
+      // A spool a member has not written yet is empty, not unreadable.
+      if ((err as NodeJS.ErrnoException).code === 'ENOENT') return { readable: true, sessions: [] };
+      return { readable: false, sessions: [] };
+    }
+    const refusedLog = path.basename(REFUSED_LOG_FILE, '.jsonl');
+    const sessions = names
+      .map((name) => name.replace('.jsonl', ''))
+      .filter((sessionId) => sessionId !== refusedLog)
+      .map((sessionId) => ({ sessionId, unacknowledged: this.depthOrNull(sessionId) }));
+    return { readable: true, sessions };
+  }
+
+  /** Un-acknowledged records, or null where the session's own spool file could not be read. */
+  private depthOrNull(sessionId: string): number | null {
+    try {
+      fs.accessSync(this.spoolFile(sessionId), fs.constants.R_OK);
+    } catch {
+      return null;
+    }
+    return this.depth(sessionId);
+  }
+
   /** Un-acknowledged records in the session's spool. */
   depth(sessionId: string): number {
     const records = this.readRecords(sessionId);
@@ -335,11 +381,11 @@ export class MemberSpool {
         unreadableLines += 1;
         continue;
       }
-      if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      if (!isRefusedEntry(parsed)) {
         unreadableLines += 1;
         continue;
       }
-      entries.push(parsed as RefusedEntry);
+      entries.push(parsed);
     }
     return { entries, unreadableLines, readable: true };
   }

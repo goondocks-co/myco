@@ -397,10 +397,11 @@ export function runStatus(args: readonly string[], deps: MemberCliDeps = {}): vo
  * membership. Without `--all` the document names the asked project's root and no
  * other root on this machine.
  */
-/** The project root a directory belongs to, or null where it belongs to none. */
+/** The project root a directory belongs to, or null where it belongs to none. Resolution falls back to the working directory outside a repository, so the answer is a root only where it is one a project may live at. */
 function projectRootOrNull(cwd?: string): string | null {
   try {
-    return resolveMemberProjectRoot(cwd);
+    const root = resolveMemberProjectRoot(cwd);
+    return isSafeProjectRoot(root) ? root : null;
   } catch {
     return null;
   }
@@ -435,7 +436,8 @@ export async function runExport(args: readonly string[], deps: MemberCliDeps = {
   ];
   const checks = gathered
     .filter((check): check is NonNullable<typeof check> => check !== null)
-    .map((check) => ({ name: check.name, status: check.status, fixable: check.fixable, fixId: check.fixId ?? null }));
+    // Names, statuses and closed reasons; a check's detail is prose about this machine and stays out of the document.
+    .map((check) => ({ name: check.name, status: check.status, reason: check.reason ?? null, symbiont: check.symbiont ?? null, fixable: check.fixable, fixId: check.fixId ?? null }));
   out(JSON.stringify(memberDiagnostics({
     mycoHome, now: (deps.now ?? Date.now)(), entries, missedCapture,
     selection: { root, scope: all ? 'all' : 'root' }, checks,

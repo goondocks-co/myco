@@ -54,10 +54,17 @@ const MYCO_PLUGIN_FILE_MARKER = 'myco:plugin-marker';
 
 // --- Types ---
 
+/** What a check failed on, in a closed vocabulary a report carries where its detail text cannot go. */
+export type DoctorReason = 'home_pin_missing' | 'mcp_cwd_missing' | 'memberships_ambiguous';
+
 export interface DoctorCheck {
   name: string;
   status: 'ok' | 'fail' | 'warn';
   detail: string;
+  /** Absent where a check has only one way to fail, which its name already says. */
+  reason?: DoctorReason;
+  /** The symbiont a check names, where it names one. */
+  symbiont?: string;
   fixable: boolean;
   fixId?: import('./doctor-fixes.js').DoctorFixerId;
   fixData?: Record<string, unknown>;
@@ -1650,6 +1657,7 @@ export async function checkMemberMcpResolution(vaultDir: string, env: NodeJS.Pro
       name: 'Member MCP resolution',
       status: 'warn',
       detail: `this project's membership lives in ${home}, but the machine pin (${path.join(defaultMycoHome(homeDir), 'runtime.home')}) does not name it; an MCP server started outside ${root} resolves the default home and finds no membership. Run \`MYCO_HOME=${home} myco member join\` again to pin the machine.`,
+      reason: 'home_pin_missing',
       fixable: false,
     });
   }
@@ -1671,6 +1679,8 @@ export async function checkMemberMcpResolution(vaultDir: string, env: NodeJS.Pro
         name: 'Member MCP resolution',
         status: 'warn',
         detail: `${manifest.displayName}'s MCP server entry in ${target} carries no cwd, so the server starts wherever ${manifest.displayName} starts it and resolves no membership from there. Re-run \`myco member join --provision ${manifest.name}\`.`,
+        reason: 'mcp_cwd_missing',
+        symbiont: manifest.name,
         fixable: false,
       });
       continue;
@@ -1680,6 +1690,8 @@ export async function checkMemberMcpResolution(vaultDir: string, env: NodeJS.Pro
         name: 'Member MCP resolution',
         status: 'warn',
         detail: `${manifest.displayName} starts its MCP server in a directory of its own choosing, and this machine holds ${memberships} memberships, so the server resolves none of them unless ${manifest.displayName} is opened from ${root}.`,
+        reason: 'memberships_ambiguous',
+        symbiont: manifest.name,
         fixable: false,
       });
     }

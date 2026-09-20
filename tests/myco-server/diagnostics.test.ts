@@ -59,7 +59,7 @@ describe('the Deployment names what it is configured to do', () => {
     await recordWorkerContact(r.db, { credentialId: credential.tokenId, machineId: 'build-box', offers: [], capabilities: [], reason: 'no_work', now: NOW });
     const document = await deploymentDiagnostics(r.serverEnv, NOW);
     expect(Object.keys(document.workers!.fleet[0]!).sort())
-      .toEqual(['busy', 'capabilities', 'credentialId', 'eligible', 'lastReason', 'lastSeenAt', 'machineId', 'offers', 'recent']);
+      .toEqual(['busy', 'capabilities', 'credentialId', 'eligible', 'lastReason', 'lastSeenAt', 'machineId', 'offers', 'recent', 'unknownCapabilities']);
   });
 
   it('answers what it is configured to run, and the work it declares, from the registry', async () => {

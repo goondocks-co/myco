@@ -13,6 +13,7 @@
  * sentence. A message is a place a path, a key or a captured body can appear.
  */
 import type { ServerEnv } from './adapters.js';
+import { isKnownWorkerCapability } from '@goondocks/myco-shared/repository';
 import { SERVER_SCHEMA_VERSION } from '../constants.js';
 import { schemaVersion } from '../read/meta.js';
 import { listProjects } from '../read/sessions.js';
@@ -55,6 +56,8 @@ export interface WorkerFacts {
   /** Null when the stored report could not be read; empty is a worker reporting none. */
   offers: ReportedHarnessFacts[] | null;
   capabilities: string[] | null;
+  /** Capability names this Deployment does not know, counted rather than carried. */
+  unknownCapabilities: number | null;
   lastReason: ContactOutcome | null;
   /** 0 for a lease holder with no recorded contact. */
   lastSeenAt: number;
@@ -142,7 +145,9 @@ const workerFacts = (row: WorkerFleetRow): WorkerFacts => ({
   credentialId: row.credentialId,
   machineId: row.machineId,
   offers: row.offers === null ? null : row.offers.map((offer) => ({ id: offer.id, authenticated: offer.authenticated })),
-  capabilities: row.capabilities === null ? null : [...row.capabilities],
+  capabilities: row.capabilities === null ? null : row.capabilities.filter(isKnownWorkerCapability),
+  // A worker reports its own strings; only the ones this Deployment knows are carried, and the rest are counted so an absence is not read as none reported.
+  unknownCapabilities: row.capabilities === null ? null : row.capabilities.filter((value) => !isKnownWorkerCapability(value)).length,
   lastReason: row.lastReason,
   lastSeenAt: row.lastSeenAt,
   busy: row.busy === null ? null : { runId: row.busy.runId, projectId: row.busy.projectId, task: row.busy.task, leaseExpiresAt: row.busy.leaseExpiresAt },

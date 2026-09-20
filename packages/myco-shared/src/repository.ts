@@ -31,6 +31,10 @@ export interface RepositoryAccess extends RepositoryIdentity {
 
 /** Worker support for preparing source before starting a harness. */
 export const REPOSITORY_CHECKOUT_CAPABILITY = 'repository-checkout';
+/** Every capability a worker may report that this Deployment knows. A worker reports what it has, so a name outside this set is a worker's own text. */
+export const KNOWN_WORKER_CAPABILITIES: readonly string[] = [REPOSITORY_CHECKOUT_CAPABILITY];
+/** Whether a reported capability is one this Deployment knows. */
+export const isKnownWorkerCapability = (value: string): boolean => KNOWN_WORKER_CAPABILITIES.includes(value);
 /** Source lives beside the run's own instructions and MCP configuration. */
 export const RUN_REPOSITORY_DIR = 'repo';
 /** Git inspection commands available to unattended source-reading runs. */
