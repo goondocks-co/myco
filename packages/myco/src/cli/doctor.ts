@@ -56,7 +56,10 @@ const MYCO_PLUGIN_FILE_MARKER = 'myco:plugin-marker';
 // --- Types ---
 
 /** What a check failed on, in a closed vocabulary a report carries where its detail text cannot go. */
-export type DoctorReason = 'home_pin_missing' | 'mcp_entry_absent' | 'mcp_target_unreadable' | 'mcp_entry_http' | 'mcp_entry_stdio' | 'mcp_entry_unknown_transport' | 'mcp_entry_no_credential';
+export type DoctorReason = 'home_pin_missing' | 'mcp_entry_absent' | 'mcp_target_unreadable' | 'mcp_entry_http' | 'mcp_entry_stdio' | 'mcp_entry_unknown_transport' | 'mcp_entry_no_credential'
+  | 'binary_manifest_missing' | 'binary_manifest_unreadable' | 'binary_manifest_unversioned'
+  | 'binary_version_skew' | 'binary_version_current'
+  | 'runtime_pin_refused' | 'runtime_pin_redundant' | 'runtime_pin_target_absent' | 'runtime_pin_override';
 
 export interface DoctorCheck {
   name: string;
@@ -906,26 +909,27 @@ export function checkBinaryVersionSkew(): DoctorCheck {
   const argv0 = process.argv[0];
   const installedRoot = argv0 ? findCorePackageRoot(path.dirname(argv0)) : null;
   if (!installedRoot) {
-    return { name: 'Binary version', status: 'warn', detail: `binary baked at ${baked}; could not find installed package.json to compare`, fixable: false };
+    return { name: 'Binary version', status: 'warn', detail: `binary baked at ${baked}; could not find installed package.json to compare`, reason: 'binary_manifest_missing', fixable: false };
   }
   let installedVersion = '';
   try {
     installedVersion = (JSON.parse(fs.readFileSync(path.join(installedRoot, 'package.json'), 'utf-8')) as { version?: string }).version ?? '';
   } catch (err) {
-    return { name: 'Binary version', status: 'warn', detail: `binary baked at ${baked}; could not read installed package.json: ${(err as Error).message}`, fixable: false };
+    return { name: 'Binary version', status: 'warn', detail: `binary baked at ${baked}; could not read installed package.json: ${(err as Error).message}`, reason: 'binary_manifest_unreadable', fixable: false };
   }
   if (!installedVersion) {
-    return { name: 'Binary version', status: 'warn', detail: `binary baked at ${baked}; installed package.json has no version`, fixable: false };
+    return { name: 'Binary version', status: 'warn', detail: `binary baked at ${baked}; installed package.json has no version`, reason: 'binary_manifest_unversioned', fixable: false };
   }
   if (installedVersion !== baked) {
     return {
       name: 'Binary version',
       status: 'fail',
       detail: `installed package.json says ${installedVersion} but binary --version reports ${baked} (npm upgrade refreshed JS but not the compiled binary; reinstall with \`npm install -g @goondocks/myco@${installedVersion}\` to fix)`,
+      reason: 'binary_version_skew',
       fixable: false,
     };
   }
-  return { name: 'Binary version', status: 'ok', detail: baked, fixable: false };
+  return { name: 'Binary version', status: 'ok', detail: baked, reason: 'binary_version_current', fixable: false };
 }
 
 /**
@@ -1574,6 +1578,7 @@ export function classifyRuntimePin(args: {
         status: 'fail',
         detail: `${facts.pinRefusal.pinPath} exists but is refused (${facts.pinRefusal.reason}) — `
           + 'every consumer ignores it. Fix its ownership/permissions (0644) or remove it.',
+        reason: 'runtime_pin_refused',
         fixable: false,
       };
     }
@@ -1587,6 +1592,7 @@ export function classifyRuntimePin(args: {
         status: 'warn',
         detail: `${facts.pinPath} names the managed binary — redundant (resolution reaches it `
           + 'without the pin) and it suppresses PATH diagnostics. Remove it.',
+        reason: 'runtime_pin_redundant',
       },
       'runtime-pin-redundant',
       { pinPath: facts.pinPath, managedBinary: facts.managedBinary },
@@ -1599,11 +1605,12 @@ export function classifyRuntimePin(args: {
       status: 'fail',
       detail: `points at ${facts.pin}, which does not exist — the pin wins over every fallback, `
         + 'so repoint it or remove it.',
+      reason: 'runtime_pin_target_absent',
       fixable: false,
     };
   }
 
-  return { name: 'Runtime pin', status: 'ok', detail: `${facts.pin} (override)`, fixable: false };
+  return { name: 'Runtime pin', status: 'ok', detail: `${facts.pin} (override)`, reason: 'runtime_pin_override', fixable: false };
 }
 
 /** {@link classifyRuntimePin} bound to the live install layout. */
