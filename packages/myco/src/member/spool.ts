@@ -67,6 +67,20 @@ function isRefusedEntry(value: unknown): value is RefusedEntry {
   return typeof row.at === 'number' && Number.isFinite(row.at);
 }
 
+/** The records a spool's bytes hold; a torn line reads as null. */
+function parseSpoolLines(raw: string): Array<SpoolRecord | null> {
+  const records: Array<SpoolRecord | null> = [];
+  for (const line of raw.split('\n')) {
+    if (!line.trim()) continue;
+    try {
+      records.push(JSON.parse(line) as SpoolRecord);
+    } catch {
+      records.push(null);
+    }
+  }
+  return records;
+}
+
 export type DrainEnd = Outcome['class'] | 'budget' | 'protocol_mismatch' | 'drained';
 
 export interface DrainResult {
@@ -233,20 +247,8 @@ export class MemberSpool {
     }
   }
 
-  /** Every record of the session's spool, read under the append lock; a torn line reads as null. A spool nothing could read is empty here. */
+  /** Every record of the session's spool, read under the append lock; a torn line reads as null. A spool that is not there is empty; a lock this process cannot take still throws, as every writer here does. */
   readRecords(sessionId: string): Array<SpoolRecord | null> {
-    const read = this.readRecordsOrNull(sessionId);
-    return read.readable ? read.records : [];
-  }
-
-  /**
-   * Every record of the session's spool, or the fact that it could not be read.
-   *
-   * The read itself answers: a path that is a directory, or a file that goes
-   * away between the listing and the read, fails at `readFileSync` and is
-   * reported, where a missing spool is an empty one.
-   */
-  readRecordsOrNull(sessionId: string): { readable: true; records: Array<SpoolRecord | null> } | { readable: false } {
     const file = this.spoolFile(sessionId);
     const lock = bufferLockPath(this.dir, sessionId);
     ensurePrivateFile(lock);
@@ -254,21 +256,39 @@ export class MemberSpool {
       let raw: string;
       try {
         raw = fs.readFileSync(file, 'utf-8');
-      } catch (err) {
-        if ((err as NodeJS.ErrnoException).code === 'ENOENT') return { readable: true as const, records: [] };
-        return { readable: false as const };
+      } catch {
+        return [];
       }
-      const records: Array<SpoolRecord | null> = [];
-      for (const line of raw.split('\n')) {
-        if (!line.trim()) continue;
-        try {
-          records.push(JSON.parse(line) as SpoolRecord);
-        } catch {
-          records.push(null);
-        }
-      }
-      return { readable: true as const, records };
+      return parseSpoolLines(raw);
     });
+  }
+
+  /**
+   * Every record of the session's spool, or the fact that it could not be read.
+   *
+   * The whole read answers, the lock it is taken under included: a lock path
+   * that is a directory, a spool that is one, or a file that goes away between
+   * the listing and the read all report rather than throw. A spool that is not
+   * there is an empty one.
+   */
+  readRecordsOrNull(sessionId: string): { readable: true; records: Array<SpoolRecord | null> } | { readable: false } {
+    try {
+      const file = this.spoolFile(sessionId);
+      const lock = bufferLockPath(this.dir, sessionId);
+      ensurePrivateFile(lock);
+      return withFileLockSync(lock, () => {
+        let raw: string;
+        try {
+          raw = fs.readFileSync(file, 'utf-8');
+        } catch (err) {
+          if ((err as NodeJS.ErrnoException).code === 'ENOENT') return { readable: true as const, records: [] };
+          return { readable: false as const };
+        }
+        return { readable: true as const, records: parseSpoolLines(raw) };
+      });
+    } catch {
+      return { readable: false };
+    }
   }
 
   /** The spool as a report reads it: a directory nothing could read carries `readable: false`, and a session whose own file could not be read carries a null depth. */

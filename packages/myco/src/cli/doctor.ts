@@ -56,7 +56,7 @@ const MYCO_PLUGIN_FILE_MARKER = 'myco:plugin-marker';
 // --- Types ---
 
 /** What a check failed on, in a closed vocabulary a report carries where its detail text cannot go. */
-export type DoctorReason = 'home_pin_missing' | 'mcp_entry_absent' | 'mcp_target_unreadable' | 'mcp_entry_http' | 'mcp_entry_stdio';
+export type DoctorReason = 'home_pin_missing' | 'mcp_entry_absent' | 'mcp_target_unreadable' | 'mcp_entry_http' | 'mcp_entry_stdio' | 'mcp_entry_unknown_transport';
 
 export interface DoctorCheck {
   name: string;
@@ -66,6 +66,8 @@ export interface DoctorCheck {
   reason?: DoctorReason;
   /** The symbiont a check names, where it names one. */
   symbiont?: string;
+  /** The configuration scope a check read, where it read one. */
+  scope?: 'global' | 'project';
   fixable: boolean;
   fixId?: import('./doctor-fixes.js').DoctorFixerId;
   fixData?: Record<string, unknown>;
@@ -1652,47 +1654,49 @@ export async function checkMemberMcpResolution(vaultDir: string, env: NodeJS.Pro
   }
   // The member's MCP entry lives where the installer writes it: the symbiont's
   // global targets under the member scope, its project target under an
-  // override. Both are read, and an override in place is what the host uses.
+  // override. Every scope a target was read at is reported on its own; which
+  // one a given host prefers is not decided here.
   const { SymbiontInstaller } = await import('../symbionts/installer.js');
   const packageRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
+  const TRANSPORT_REASON = { http: 'mcp_entry_http', stdio: 'mcp_entry_stdio' } as const;
   for (const manifest of loadManifests()) {
     if (!manifest.registration) continue;
-    const at = (scope: 'member-global' | 'member-project') =>
-      new SymbiontInstaller(manifest, root, packageRoot, false, undefined, null, scope, home).inspectMemberMcp();
-    const seen = [...at('member-global'), ...at('member-project')];
+    const at = (scope: 'member-global' | 'member-project') => new SymbiontInstaller(manifest, root, packageRoot, false, undefined, null, scope, home);
+    const global = at('member-global');
+    const seen = [...global.inspectMemberMcp(), ...at('member-project').inspectMemberMcp()];
     if (seen.length === 0) continue;
-    const unread = seen.filter((target) => !target.readable);
-    const declared = seen.filter((target) => target.present);
-    // A project override is what the host reads where one is in place.
-    const effective = declared.find((target) => target.scope === 'project') ?? declared[0];
 
-    if (effective !== undefined) {
+    for (const target of seen.filter((t) => t.present)) {
       checks.push({
         name: 'Member MCP resolution',
         status: 'ok',
-        detail: `${manifest.displayName} declares the Myco MCP server in its ${effective.scope} configuration over ${effective.transport ?? 'an unrecognized'} transport.`,
-        reason: effective.transport === 'http' ? 'mcp_entry_http' : 'mcp_entry_stdio',
+        detail: `${manifest.displayName} declares the Myco MCP server in its ${target.scope} configuration over ${target.transport ?? 'an unrecognized'} transport.`,
+        reason: target.transport === null ? 'mcp_entry_unknown_transport' : TRANSPORT_REASON[target.transport],
+        scope: target.scope,
         symbiont: manifest.name,
         fixable: false,
       });
     }
-    // An unreadable target is reported whether or not another one carried an
-    // entry: what it holds is unknown, and a report says so.
-    for (const _ of unread) {
+    for (const target of seen.filter((t) => !t.readable)) {
       checks.push({
         name: 'Member MCP resolution',
         status: 'warn',
-        detail: `${manifest.displayName}'s MCP configuration could not be read, so whether the member's server is declared there is unknown.`,
+        detail: `${manifest.displayName}'s ${target.scope} MCP configuration could not be read, so whether the member's server is declared there is unknown.`,
         reason: 'mcp_target_unreadable',
+        scope: target.scope,
         symbiont: manifest.name,
         fixable: false,
       });
     }
-    if (effective === undefined && unread.length === 0) {
+    // A symbiont this machine never installed resolves targets all the same, so
+    // an absent entry is a finding only where the hooks say it was installed.
+    // That gate decides nothing about a target already reported above.
+    const quiet = seen.every((target) => !target.present && target.readable);
+    if (quiet && global.isConfigured()) {
       checks.push({
         name: 'Member MCP resolution',
         status: 'warn',
-        detail: `${manifest.displayName} declares no Myco MCP server, so it reads no project intelligence. Run \`myco member join --provision ${manifest.name}\`.`,
+        detail: `${manifest.displayName} is set up for capture but declares no Myco MCP server, so it reads no project intelligence. Run \`myco member join --provision ${manifest.name}\`.`,
         reason: 'mcp_entry_absent',
         symbiont: manifest.name,
         fixable: false,

@@ -288,6 +288,22 @@ describe('a spool a report could not read', () => {
     expect(facts.spool.unacknowledgedTotal).toBeNull();
   });
 
+  it('reports a session whose lock path it could not take as unknown, not as nothing pending', () => {
+    const e = entry();
+    writeRegistryEntry(e, { mycoHome });
+    const spool = new MemberSpool('proj_1', { mycoHome });
+    fs.mkdirSync(spool.dir, { recursive: true });
+    fs.writeFileSync(path.join(spool.dir, 'sess-a.jsonl'), '', 'utf-8');
+    // A directory where the session's lock file belongs: the lock is taken
+    // before the records are read, and it fails there.
+    fs.mkdirSync(path.join(spool.dir, '.sess-a.lock'));
+
+    const facts = projectDiagnostics(e, mycoHome, NOW);
+    expect(facts.spool.readable).toBe(true);
+    expect(facts.spool.sessions).toEqual([{ sessionId: 'sess-a', unacknowledged: null, lastAckAt: null }]);
+    expect(facts.spool.unacknowledgedTotal).toBeNull();
+  });
+
   it('reports a spool directory it could not read as unknown, leaving the layout as it found it', () => {
     const e = entry();
     writeRegistryEntry(e, { mycoHome });
@@ -349,21 +365,25 @@ describe('a directory belonging to no project', () => {
 });
 
 describe('a check the report cannot tell apart from another', () => {
-  it('carries the reason it failed on and the symbiont it names, and none of its sentence', () => {
+  it('carries the reason, the symbiont and the scope it read, and none of its sentence', () => {
     const facts = memberDiagnostics({
       mycoHome, now: NOW, entries: [], missedCapture: [],
       selection: { root: null, scope: 'root' },
       checks: [
-        { name: 'Member MCP resolution', status: 'warn', reason: 'home_pin_missing', symbiont: null, fixable: false, fixId: null },
-        { name: 'Member MCP resolution', status: 'warn', reason: 'mcp_cwd_missing', symbiont: 'claude-code', fixable: false, fixId: null },
-        { name: 'Member MCP resolution', status: 'warn', reason: 'memberships_ambiguous', symbiont: 'cursor', fixable: false, fixId: null },
+        { name: 'Member MCP resolution', status: 'warn', reason: 'home_pin_missing', symbiont: null, scope: null, fixable: false, fixId: null },
+        { name: 'Member MCP resolution', status: 'ok', reason: 'mcp_entry_http', symbiont: 'claude-code', scope: 'global', fixable: false, fixId: null },
+        { name: 'Member MCP resolution', status: 'ok', reason: 'mcp_entry_http', symbiont: 'claude-code', scope: 'project', fixable: false, fixId: null },
+        { name: 'Member MCP resolution', status: 'warn', reason: 'mcp_target_unreadable', symbiont: 'cursor', scope: 'global', fixable: false, fixId: null },
       ],
     });
 
+    // Each scope stays its own line: a reader sees where the entry was found,
+    // and the export decides no precedence between them.
     expect(facts.checks).toEqual([
-      { name: 'Member MCP resolution', status: 'warn', reason: 'home_pin_missing', symbiont: null, fixable: false, fixId: null },
-      { name: 'Member MCP resolution', status: 'warn', reason: 'mcp_cwd_missing', symbiont: 'claude-code', fixable: false, fixId: null },
-      { name: 'Member MCP resolution', status: 'warn', reason: 'memberships_ambiguous', symbiont: 'cursor', fixable: false, fixId: null },
+      { name: 'Member MCP resolution', status: 'warn', reason: 'home_pin_missing', symbiont: null, scope: null, fixable: false, fixId: null },
+      { name: 'Member MCP resolution', status: 'ok', reason: 'mcp_entry_http', symbiont: 'claude-code', scope: 'global', fixable: false, fixId: null },
+      { name: 'Member MCP resolution', status: 'ok', reason: 'mcp_entry_http', symbiont: 'claude-code', scope: 'project', fixable: false, fixId: null },
+      { name: 'Member MCP resolution', status: 'warn', reason: 'mcp_target_unreadable', symbiont: 'cursor', scope: 'global', fixable: false, fixId: null },
     ]);
   });
 });

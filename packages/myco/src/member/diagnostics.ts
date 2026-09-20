@@ -128,6 +128,8 @@ export interface CheckFacts {
   reason: string | null;
   /** The symbiont it names, where it names one. */
   symbiont: string | null;
+  /** The configuration scope it read, where it read one. */
+  scope: 'global' | 'project' | null;
   fixable: boolean;
   fixId: string | null;
 }

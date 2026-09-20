@@ -437,7 +437,7 @@ export async function runExport(args: readonly string[], deps: MemberCliDeps = {
   const checks = gathered
     .filter((check): check is NonNullable<typeof check> => check !== null)
     // Names, statuses and closed reasons; a check's detail is prose about this machine and stays out of the document.
-    .map((check) => ({ name: check.name, status: check.status, reason: check.reason ?? null, symbiont: check.symbiont ?? null, fixable: check.fixable, fixId: check.fixId ?? null }));
+    .map((check) => ({ name: check.name, status: check.status, reason: check.reason ?? null, symbiont: check.symbiont ?? null, scope: check.scope ?? null, fixable: check.fixable, fixId: check.fixId ?? null }));
   out(JSON.stringify(memberDiagnostics({
     mycoHome, now: (deps.now ?? Date.now)(), entries, missedCapture,
     selection: { root, scope: all ? 'all' : 'root' }, checks,

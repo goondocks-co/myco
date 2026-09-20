@@ -827,7 +827,8 @@ describe('checkMemberMcpResolution', () => {
   }, { mycoHome });
 
   const reasons = (checks: Awaited<ReturnType<typeof checkMemberMcpResolution>>) =>
-    checks.filter((c) => c.name === 'Member MCP resolution').map((c) => ({ reason: c.reason ?? null, symbiont: c.symbiont ?? null, status: c.status }));
+    checks.filter((c) => c.name === 'Member MCP resolution')
+      .map((c) => ({ reason: c.reason ?? null, symbiont: c.symbiont ?? null, scope: c.scope ?? null, status: c.status }));
 
   it('says nothing for a project that is not a member', async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-doctor-mcp-proj-'));
@@ -843,7 +844,7 @@ describe('checkMemberMcpResolution', () => {
     fs.writeFileSync(path.join(root, '.cursor', 'mcp.json'), JSON.stringify({ mcpServers: { myco: { type: 'http', url: 'https://srv.example/mcp' } } }));
 
     expect(reasons(await checkMemberMcpResolution(path.join(root, '.myco'), process.env)))
-      .toContainEqual({ reason: 'mcp_entry_http', symbiont: 'cursor', status: 'ok' });
+      .toContainEqual({ reason: 'mcp_entry_http', symbiont: 'cursor', scope: 'project', status: 'ok' });
   });
 
   it('names a Codex TOML entry under its own servers section, which a JSON key would miss', async () => {
@@ -854,7 +855,7 @@ describe('checkMemberMcpResolution', () => {
     fs.writeFileSync(path.join(root, '.codex', 'config.toml'), '[mcp_servers.myco]\nurl = "https://srv.example/mcp"\n');
 
     expect(reasons(await checkMemberMcpResolution(path.join(root, '.myco'), process.env)))
-      .toContainEqual({ reason: 'mcp_entry_http', symbiont: 'codex', status: 'ok' });
+      .toContainEqual({ reason: 'mcp_entry_http', symbiont: 'codex', scope: 'project', status: 'ok' });
   });
 
   it('names a target it could not read, rather than reading it as no entry', async () => {
@@ -865,7 +866,28 @@ describe('checkMemberMcpResolution', () => {
     fs.writeFileSync(path.join(root, '.cursor', 'mcp.json'), 'not configuration at all');
 
     expect(reasons(await checkMemberMcpResolution(path.join(root, '.myco'), process.env)))
-      .toContainEqual({ reason: 'mcp_target_unreadable', symbiont: 'cursor', status: 'warn' });
+      .toContainEqual({ reason: 'mcp_target_unreadable', symbiont: 'cursor', scope: 'project', status: 'warn' });
+  });
+
+  it('names an entry whose transport it does not recognize as unknown, not as a launcher', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-doctor-mcp-proj-'));
+    fs.mkdirSync(path.join(root, '.myco'));
+    member(root, path.join(homeDir, '.myco'), 'proj_1');
+    fs.mkdirSync(path.join(root, '.cursor'), { recursive: true });
+    // Neither a url nor a command: the entry is there and what carries it is not known.
+    fs.writeFileSync(path.join(root, '.cursor', 'mcp.json'), JSON.stringify({ mcpServers: { myco: { note: 'something else' } } }));
+
+    expect(reasons(await checkMemberMcpResolution(path.join(root, '.myco'), process.env)))
+      .toContainEqual({ reason: 'mcp_entry_unknown_transport', symbiont: 'cursor', scope: 'project', status: 'ok' });
+  });
+
+  it('does not warn that a symbiont this machine never installed declares no server', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-doctor-mcp-proj-'));
+    fs.mkdirSync(path.join(root, '.myco'));
+    member(root, path.join(homeDir, '.myco'), 'proj_1');
+
+    expect(reasons(await checkMemberMcpResolution(path.join(root, '.myco'), process.env))
+      .filter((r) => r.reason === 'mcp_entry_absent')).toEqual([]);
   });
 
   it('names a symbiont that declares no Myco server, and still names the machine pin a non-default home lacks', async () => {
