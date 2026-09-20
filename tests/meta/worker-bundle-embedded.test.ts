@@ -21,12 +21,8 @@ import { BUNDLED_WORKER, BUNDLED_WORKER_WRANGLER } from '@myco/worker-bundle.gen
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 
-/**
- * A regression tripwire for modules the bundler carries that the Worker does not import on purpose. The ceiling sits
- * narrowly above the bundle's measured size, so an unintended import of a few dozen kilobytes trips it while ordinary
- * growth does not. The platform's own script size limit is a separate concern, far above this ceiling.
- */
-const SIZE_CEILING_BYTES = 1_467_000;
+/** Detects unexpected bundle growth; the platform script-size limit is separate. */
+const SIZE_CEILING_BYTES = 1_458_000;
 
 const decoded = (): string => Buffer.from(BUNDLED_WORKER, 'base64').toString('utf-8');
 
