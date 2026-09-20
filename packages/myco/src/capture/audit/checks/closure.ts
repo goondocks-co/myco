@@ -118,7 +118,7 @@ export function checkClosure(
         title: `${row.agent}: sessions past the stale threshold that close via an exit hook`,
         detail:
           `${row.agent} registers a SessionEnd hook, so these should have been closed at exit rather than left for the sweep. ` +
-          'Check whether the exit hook fired at all — see the stop-hook-fragility skill.',
+          'Check whether the exit hook fired at all.',
         count: row.n,
         symbiont: row.agent,
         firstSeen: row.first_seen ?? undefined,

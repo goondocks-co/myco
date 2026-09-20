@@ -1,17 +1,12 @@
 ---
 name: building-myco-discipline
 description: >-
-  Use this skill when building any non-trivial change in Myco — new features,
-  refactors, capability work, anything touching shared state, or anything
-  that crosses module boundaries. It codifies how Myco is built and why:
-  capability-first architecture for shared state, structural invariants
-  rather than procedural ones, live smoke-testing rigor, detailed code
-  review as a normal step, and the "what was this defending against?"
-  audit that refactors must pass. Activate this skill even when the user
-  just asks for "a small change" — the discipline is what keeps small
-  changes from compounding into the bug classes that this codebase has
-  fought through three migrations.
-version: 1
+  This skill should be used before building any non-trivial change in Myco — a new feature, a
+  refactor, capability work, anything touching shared state, or anything crossing module
+  boundaries. Triggers on "add a feature", "refactor this", "this touches shared state", and
+  on requests framed as "just a small change". Covers capability-first architecture for
+  shared state, structural over procedural invariants, live smoke-test rigor, code review as
+  a normal step, and the "what was this defending against?" audit every refactor must pass.
 user-invocable: true
 ---
 
@@ -35,7 +30,7 @@ These are the lessons paid for in production bugs, code reviews, and review cycl
 
 ### 1. Capability-first for shared state
 
-If your change writes to a path or resource that *anything else* writes to, the first question is: **is there a capability that owns this?** Check [AGENTS.md's Capabilities table](../../../AGENTS.md#capabilities-single-writers-for-shared-state).
+If the change writes to a path or resource that *anything else* writes to, the first question is: **is there a capability that owns this?** Check [AGENTS.md's Capabilities table](../../../AGENTS.md#capabilities-single-writers-for-shared-state).
 
 - **If yes:** route through it. Do not call the lower-level primitives.
 - **If no but the resource is shared:** stop and design a capability before writing the second writer. *"I'll add a capability later when there's more than one caller"* is the bug pattern; the second writer is when the drift begins.
@@ -56,13 +51,13 @@ Test the invariants with **property-style tests**, not example-based ones. See `
 
 ### 3. Refactors preserve externally observable contracts
 
-When you refactor a function, you are claiming the externally observable behavior is unchanged. Verify the claim:
+Refactoring a function claims the externally observable behavior is unchanged. Verify the claim:
 
 - For HTTP handlers: every (input → status code, error envelope code, response shape) tuple the old code honored MUST survive. Lock with contract-diff regression tests (see `tests/daemon/api/projects-symbiont-overrides.test.ts` — the block labeled "Contract-diff regression suite").
 - For library functions: every (input → return shape, thrown exception type) tuple must survive.
 - Happy-path tests catch zero of these regressions. Write the contract-diff tests BEFORE the refactor; they double as the migration checklist.
 
-If you can't preserve a contract (rare — usually because the old code was wrong), surface it explicitly in the PR description. Do not change error codes, status codes, response shapes, or thrown exception types silently.
+If a contract cannot be preserved (rare — usually because the old code was wrong), surface it explicitly in the PR description. Do not change error codes, status codes, response shapes, or thrown exception types silently.
 
 ### 4. "What was this defending against?" — the refactor audit
 
@@ -96,7 +91,7 @@ sleep 4
 # Exercise the new code path here.
 ```
 
-The smoke check that caught the binding_id regression in the global-install work was a daemon-restart cycle — something no unit test could express. If your change touches state the daemon binds to on startup, the smoke is non-negotiable.
+The smoke check that caught the binding_id regression in the global-install work was a daemon-restart cycle — something no unit test could express. If the change touches state the daemon binds to on startup, the smoke is non-negotiable.
 
 ### 6. Detailed code review is a normal step, not exceptional
 
@@ -121,7 +116,7 @@ Happy-path tests catch the first row. They catch zero of the rest. Plan test cov
 
 ### 8. Worktrees for non-trivial work
 
-For any change spanning more than ~3 commits or touching critical paths (capture, daemon, vault, install), work in a git worktree. See [`myco:feature-branch-worktree-squash-merge-delivery`](../feature-branch-worktree-squash-merge-delivery/SKILL.md). Worktrees keep main clean while you iterate and force a deliberate squash-merge step that produces a reviewable PR history.
+For any change spanning more than ~3 commits or touching critical paths (capture, daemon, vault, install), work in a git worktree. Worktrees keep main clean during iteration and force a deliberate squash-merge step that produces a reviewable PR history.
 
 ## Golden paths
 
@@ -164,7 +159,6 @@ For any change spanning more than ~3 commits or touching critical paths (capture
 ## References
 
 - [`AGENTS.md`](../../../AGENTS.md) — durable invariants and the Capabilities table.
-- [`myco:feature-branch-worktree-squash-merge-delivery`](../feature-branch-worktree-squash-merge-delivery/SKILL.md) — delivery mechanism for non-trivial work.
 - [`myco:safe-config-updates`](../safe-config-updates/SKILL.md) — applying the capability pattern to a specific resource (myco.yaml).
 - [`myco:debug-capture`](../debug-capture/SKILL.md) — the cross-layer lifecycle walk that smoke testing complements.
 - `tests/vault/project-vault-invariants.test.ts` — exemplar property-style invariant suite.
