@@ -119,7 +119,7 @@ export const SERVER_JOBS: readonly ServerJob[] = [
   {
     name: 'worker-lease-sweep',
     runsThrough: 'sleep',
-    converges: 'no run whose worker stopped renewing holds a lease past its expiry: each returns to the claim queue with its dispatch credential retired and the place in the queue it had already waited for; a run inside its lease is never taken from the worker holding it',
+    converges: 'no run whose worker stopped renewing holds a lease past its expiry: each returns to the claim queue with its dispatch credential retired and the place in the queue it had already waited for; a run inside its lease is never taken from the worker holding it, and no observation of a worker unheard from for thirty days is kept, while a worker holding a live lease keeps its own',
   },
   {
     name: SCHEDULE_JOB,

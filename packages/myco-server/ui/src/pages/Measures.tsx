@@ -7,6 +7,7 @@ import { Panel } from '../components/ui/panel';
 import { SubtabPill } from '../components/ui/subtab-pill';
 import { DEFAULT_MEASURE_WINDOW, MEASURE_WINDOWS, useKpis, type MeasureWindow } from '../hooks/use-kpis';
 import { formatElapsed } from '../lib/format';
+import { harnessLabel } from '../lib/harness';
 
 const isWindow = (value: string | null): value is MeasureWindow =>
   value !== null && MEASURE_WINDOWS.some((w) => w.id === value);
@@ -16,17 +17,6 @@ const percent = (share: number): string => `${(share * 100).toFixed(share >= 0.1
 const countOf = (n: number, unit: string): string => `${n.toLocaleString()} ${n === 1 ? unit : `${unit}s`}`;
 const perUnit = (n: number): string => n.toFixed(n >= 10 ? 0 : 2);
 
-/** The harness name a person reads, from the name its transcript carries. */
-const HARNESS_LABEL: Record<string, string> = {
-  'claude-code': 'Claude Code',
-  codex: 'Codex',
-  cursor: 'Cursor',
-  opencode: 'OpenCode',
-  antigravity: 'Antigravity',
-  copilot: 'Copilot',
-  windsurf: 'Windsurf',
-  unrecorded: 'Agent not recorded',
-};
 
 /**
  * `/measures`: whether Myco is actually reaching the work, measured from what this
@@ -128,7 +118,7 @@ export function Measures() {
                   <tbody aria-label="Calls per prompt by agent">
                     {report.callsPerPromptByHarness.map((row) => (
                       <tr key={row.harness} className="border-t border-[var(--ghost-border)]">
-                        <td className="py-1.5 text-on-surface">{HARNESS_LABEL[row.harness] ?? row.harness}</td>
+                        <td className="py-1.5 text-on-surface">{harnessLabel(row.harness)}</td>
                         <td className="py-1.5 tabular-nums text-on-surface">{row.calls.toLocaleString()}</td>
                         <td className="py-1.5 tabular-nums text-on-surface">{row.value === null ? '—' : perUnit(row.value)}</td>
                         <td className="py-1.5 font-mono text-[11px] text-on-surface-variant">n = {countOf(row.sampleSize, 'prompt')}</td>
