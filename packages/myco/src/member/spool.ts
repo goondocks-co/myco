@@ -391,10 +391,7 @@ export class MemberSpool {
     if (!read.ok) {
       return read.reason === 'missing' ? { readable: true, latch: null } : { readable: false, reason: read.reason, detail: read.detail };
     }
-    // `null` and a bare array parse as JSON, so the shape is checked before any
-    // field is read. The three fields are numbers and no more than that: a
-    // latch this shape refuses is one the member stops holding off on, so the
-    // value a report cannot render is rejected where the report reads it.
+    // Runtime latches accept numeric fields; reports check renderability separately.
     const l = read.value as unknown;
     const shaped = l !== null && typeof l === 'object' && !Array.isArray(l)
       && ['since', 'nextProbeAt', 'backoffMs'].every((field) => typeof (l as Record<string, unknown>)[field] === 'number');
