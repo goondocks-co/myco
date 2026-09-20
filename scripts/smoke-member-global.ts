@@ -38,6 +38,15 @@ try {
   const headers = JSON.parse(run(installedBinary, ['member', 'mcp-headers', '--credential', 'registry', '--server', serverUrl], agentHome));
   assert.equal(headers.authorization, `Bearer ${token}`);
   assert.equal(headers['x-myco-project'], undefined);
+  const hooks = JSON.parse(fs.readFileSync(path.join(agentHome, '.codex/hooks.json'), 'utf8')) as {
+    hooks: Record<string, { hooks: { command: string }[] }[]>;
+  };
+  for (const groups of Object.values(hooks.hooks)) {
+    for (const hook of groups.flatMap(group => group.hooks)) {
+      execFileSync('/bin/sh', ['-c', hook.command], { cwd: project, env, input: '{}', timeout: 10_000 });
+    }
+  }
+  console.log('PASS: every generated Codex hook launches and accepts empty input.');
   console.log('PASS: compiled CLI provisions four agents globally, is idempotent, leaves the project untouched, and resolves MCP headers outside the project.');
   if (process.env.MYCO_SMOKE_CLAUDE) {
     assert.match(run(process.env.MYCO_SMOKE_CLAUDE, ['mcp', 'get', 'myco']), /User config/);

@@ -57,11 +57,11 @@ const WRANGLER_CACHE_DIR = '.wrangler/';
 const AGENTS_MANAGED_START = '<!-- myco:managed:start -->';
 const AGENTS_MANAGED_END = '<!-- myco:managed:end -->';
 
-/** The always-present managed guidance lines — byte-identical to the historical static block. */
+/** The always-present managed guidance lines. */
 const AGENTS_MANAGED_BASE_LINES = [
   '- When `capture.ignore_plan_dirs_in_git` is enabled, custom directories in `capture.plan_dirs` may be intentionally gitignored after capture into Myco.',
   '- Do not force-add files from intentionally gitignored custom plan directories unless the user explicitly asks.',
-  '- When orienting in this codebase — finding a feature, locating files relevant to a change, or understanding an unfamiliar subsystem — use Myco first: call `myco tool call myco_cortex --json --input \'{"op":"canopy_map"}\'` as the CLI path, or `myco_cortex({"op":"canopy_map"})` via MCP when the host exposes Myco tools cleanly, before falling back to Glob/Grep.',
+  '- Myco tools take a `project` argument; pass this repo\'s git remote or the project id from session-start context. Writes without it are refused.',
 ] as const;
 
 /** Managed AGENTS.md block. */

@@ -62,14 +62,33 @@ async function setup() {
 }
 
 describe('POST /mcp', () => {
-  it('refuses a request without a credential with 401, and one without a Project header as a JSON-RPC error at 400', async () => {
-    const { env, t1 } = await setup();
+  it('authenticates projectless discovery without creating a project', async () => {
+    const { env, t1, sqlite } = await setup();
+    const before = sqlite.query('SELECT COUNT(*) AS count FROM projects').get();
     const anonymous = await worker.fetch(new Request('https://s/mcp', { method: 'POST', headers: { 'cf-connecting-ip': '1.2.3.4' }, body: rpc('tools/list') }), env);
     expect(anonymous.status).toBe(401);
     const noProject = await worker.fetch(post(t1.token, rpc('tools/list'), { [PROJECT_HEADER]: '' }), env);
-    expect(noProject.status).toBe(400);
+    expect(noProject.status).toBe(200);
     const body = await noProject.json() as any;
-    expect({ jsonrpc: body.jsonrpc, id: body.id, code: body.error.data.code }).toEqual({ jsonrpc: '2.0', id: null, code: 'no_project' });
+    expect(body.result.tools.map((t: any) => t.name)).toEqual(TOOL_DEFINITIONS.map(d => d.name));
+    const initialized = await worker.fetch(post(t1.token, rpc('initialize', { protocolVersion: '2025-03-26', capabilities: {}, clientInfo: { name: 'global-test', version: '1' } }), { [PROJECT_HEADER]: '' }), env);
+    expect((await initialized.json() as any).result.serverInfo.name).toBe('myco');
+    expect(sqlite.query('SELECT COUNT(*) AS count FROM projects').get()).toEqual(before);
+  });
+
+  it('requires an explicit existing project for projectless calls', async () => {
+    const { env, t1, call, sqlite } = await setup();
+    const before = sqlite.query('SELECT COUNT(*) AS count FROM projects').get();
+    await call(t1.token, 'myco_spores', { op: 'list' });
+    for (const args of [{ op: 'list' }, { op: 'list', project: 'unknown_project' }]) {
+      const response = await worker.fetch(post(t1.token, rpc('tools/call', { name: 'myco_spores', arguments: args }), { [PROJECT_HEADER]: '' }), env);
+      expect((await response.json() as any).error.data.code).toBe('invalid_input');
+    }
+    const response = await worker.fetch(post(t1.token, rpc('tools/call', { name: 'myco_spores', arguments: { op: 'list', project: FIXTURE_PROJECT } }), { [PROJECT_HEADER]: '' }), env);
+    expect((await response.json() as any).result.structuredContent.result.total).toBe(0);
+    expect(sqlite.query('SELECT COUNT(*) AS count FROM projects').get()).toEqual(before);
+    const malformed = await worker.fetch(post(t1.token, rpc('tools/list'), { [PROJECT_HEADER]: 'invalid project' }), env);
+    expect((await malformed.json() as any).error.data.code).toBe('no_project');
   });
 
   it('refuses a body that is not JSON-RPC as a parse error at 400, in the same envelope', async () => {
@@ -377,7 +396,8 @@ describe('POST /mcp', () => {
     const body = await init.json() as any;
     expect(body.result.instructions).toBe(SERVER_INSTRUCTIONS);
     // The rule an agent cannot discover from a schema: a read falls back, a write does not.
-    expect(body.result.instructions).toContain('A write without it is refused.');
+    expect(body.result.instructions).toContain('Writes always name a project.');
+    expect(body.result.instructions).toContain('Without a default, every call must name a project.');
   });
 
   it('answers a storage failure inside a call as a retryable JSON-RPC error at 503', async () => {
