@@ -296,7 +296,7 @@ describe('a spool a report could not read', () => {
 
     const facts = projectDiagnostics(e, mycoHome, NOW);
     expect(facts.spool.readable).toBe(true);
-    expect(facts.spool.sessions).toEqual([{ sessionId: 'sess-a', unacknowledged: null, lastAckAt: null }]);
+    expect(facts.spool.sessions).toEqual([{ sessionId: 'sess-a', unacknowledged: null, stateReadable: true, lastAckAt: null }]);
     expect(facts.spool.unacknowledgedTotal).toBeNull();
   });
 
@@ -319,7 +319,7 @@ describe('a spool a report could not read', () => {
     const facts = projectDiagnostics(e, mycoHome, NOW);
     expect(facts.spool.readable).toBe(true);
     expect(facts.spool.stateReadable).toBe(false);
-    expect(facts.spool.sessions).toEqual([{ sessionId: 'sess-a', unacknowledged: null, lastAckAt: null }]);
+    expect(facts.spool.sessions).toEqual([{ sessionId: 'sess-a', unacknowledged: null, stateReadable: false, lastAckAt: null }]);
     expect(facts.spool.unacknowledgedTotal).toBeNull();
 
     // And the export a person runs answers rather than crashing.
@@ -368,13 +368,71 @@ describe('a refusal record short of a field it is read by', () => {
       JSON.stringify(whole),
       '{}',
       JSON.stringify({ ...whole, at: 'bad' }),
-      JSON.stringify({ ...whole, eventId: '' }),
+      JSON.stringify({ ...whole, sessionId: '' }),
     ].join('\n'), 'utf-8');
 
     const facts = projectDiagnostics(e, mycoHome, NOW);
     expect(facts.refusals.logReadable).toBe(true);
     expect(facts.refusals.loggedSinceLastReset).toBe(1);
     expect(facts.refusals.unreadableLines).toBe(3);
+  });
+});
+
+describe('a refusal the drain raised against an unparsable spool line', () => {
+  it('reaches the report naming no event and no kind, rather than counting as a damaged line', async () => {
+    const e = entry();
+    writeRegistryEntry(e, { mycoHome });
+    const spool = new MemberSpool('proj_1', { mycoHome });
+    fs.writeFileSync(path.join(spool.dir, 'sess-a.jsonl'), 'not json\n', 'utf-8');
+    // The record never parses, so the drain refuses it without reaching a server.
+    const client = { send: () => { throw new Error('a line that cannot be parsed reaches no server'); } };
+    const budget = { deadline: NOW + 60_000, connectTimeoutMs: 1_000, drains: true } as never;
+    const result = await spool.drainSession('sess-a', client as never, budget, { now: () => NOW });
+    expect(result.refused).toBe(1);
+
+    const facts = projectDiagnostics(e, mycoHome, NOW);
+    expect(facts.refusals.unreadableLines).toBe(0);
+    expect(facts.refusals.entries).toEqual([{ eventId: null, sessionId: 'sess-a', kind: null, code: 'refused', at: NOW }]);
+  });
+});
+
+describe('a session state the report could not use', () => {
+  it('reports the acknowledgement unknown, and withholds a spool total that would read as the whole', () => {
+    const e = entry();
+    writeRegistryEntry(e, { mycoHome });
+    const spool = new MemberSpool('proj_1', { mycoHome });
+    fs.writeFileSync(path.join(spool.dir, 'sess-a.jsonl'), '', 'utf-8');
+    // Parsable JSON that is not a state: the file is there and holds nothing the report can read.
+    fs.writeFileSync(path.join(spool.dir, 'sess-a.state.json'), JSON.stringify({ version: 'wrong' }), { mode: 0o600 });
+
+    const facts = projectDiagnostics(e, mycoHome, NOW);
+    expect(facts.spool.readable).toBe(true);
+    expect(facts.spool.stateReadable).toBe(false);
+    expect(facts.spool.lastAckAt).toBeNull();
+    expect(facts.spool.sessions).toEqual([{ sessionId: 'sess-a', unacknowledged: 0, stateReadable: false, lastAckAt: null }]);
+  });
+});
+
+describe('an offline latch the report could not use', () => {
+  it('says whether this member is holding off is unknown, rather than reporting it online', () => {
+    const e = entry();
+    writeRegistryEntry(e, { mycoHome });
+    const spool = new MemberSpool('proj_1', { mycoHome });
+    fs.writeFileSync(path.join(spool.dir, 'offline.json'), JSON.stringify({ since: 'soon' }), { mode: 0o600 });
+
+    const facts = projectDiagnostics(e, mycoHome, NOW);
+    expect(facts.latchReadable).toBe(false);
+    expect(facts.latch).toBeNull();
+  });
+
+  it('reads an absent latch as the member being online, which it is', () => {
+    const e = entry();
+    writeRegistryEntry(e, { mycoHome });
+    new MemberSpool('proj_1', { mycoHome });
+
+    const facts = projectDiagnostics(e, mycoHome, NOW);
+    expect(facts.latchReadable).toBe(true);
+    expect(facts.latch).toBeNull();
   });
 });
 

@@ -55,17 +55,20 @@ export interface SpoolSessionFacts {
   sessionId: string;
   /** Null where the session's own spool file could not be read. */
   unacknowledged: number | null;
+  /** False where this session's state could not be read; its acknowledgement is then unknown, not absent. */
+  stateReadable: boolean;
   lastAckAt: number | null;
 }
 
 export interface SpoolFacts {
   /** False where the spool directory could not be read; its sessions are then unknown, not none. */
   readable: boolean;
-  /** False where a session's state could not be read; its acknowledgement is then unknown. */
+  /** False where the directory listing, or any session's state, could not be read; acknowledgements are then unknown. */
   stateReadable: boolean;
   sessionFiles: number;
   /** Null where any session file could not be read. */
   unacknowledgedTotal: number | null;
+  /** The newest acknowledgement across the spool, and null while any state is unreadable: a maximum over part of it is not the whole. */
   lastAckAt: number | null;
   /** One entry per spool file this project holds. */
   sessions: SpoolSessionFacts[];
@@ -86,9 +89,11 @@ export interface LatchFacts {
  * would put arbitrary text in a report.
  */
 export interface RefusalFacts {
-  eventId: string;
+  /** Null for a refusal that names no event, which a drain raises against an unparsable spool line. */
+  eventId: string | null;
   sessionId: string;
-  kind: string;
+  /** Null for a refusal that names no kind, on the same line. */
+  kind: string | null;
   code: MemberCode | null;
   at: number;
 }
@@ -106,6 +111,8 @@ export interface ProjectDiagnostics {
   membership: MembershipFacts;
   spool: SpoolFacts;
   latch: LatchFacts | null;
+  /** False where the latch file could not be used; whether this member is holding off is then unknown, not answered. */
+  latchReadable: boolean;
   refusals: {
     /** Whether the log could be read. False leaves every count below at zero without meaning there are none. */
     logReadable: boolean;
@@ -131,6 +138,8 @@ export interface CheckFacts {
   symbiont: string | null;
   /** The configuration scope it read, where it read one. */
   scope: 'global' | 'project' | null;
+  /** The project root it read, and null for a check that read no project. */
+  root: string | null;
   fixable: boolean;
   fixId: string | null;
 }
@@ -178,16 +187,15 @@ function membershipOf(entry: RegistryEntry, now: number): MembershipFacts {
   };
 }
 
-/** A logged entry's fields, each read as the type the report declares rather than as the cast the log was parsed with. */
+/** A logged entry as the report carries it: the identifiers the writer left empty read as null, and the free-text reason is dropped. */
 function refusalOf(entry: RefusedEntry): RefusalFacts {
-  const raw = entry as unknown as Record<string, unknown>;
-  const text = (value: unknown): string => (typeof value === 'string' ? value : '');
+  const named = (value: string): string | null => (value === '' ? null : value);
   return {
-    eventId: text(raw.eventId),
-    sessionId: text(raw.sessionId),
-    kind: text(raw.kind),
-    code: isMemberCode(raw.code) ? raw.code : null,
-    at: typeof raw.at === 'number' && Number.isFinite(raw.at) ? raw.at : 0,
+    eventId: named(entry.eventId),
+    sessionId: entry.sessionId,
+    kind: named(entry.kind),
+    code: isMemberCode(entry.code) ? entry.code : null,
+    at: entry.at,
   };
 }
 
@@ -202,37 +210,37 @@ export function projectDiagnostics(entry: RegistryEntry, mycoHome: string, now: 
   // session's records were written to.
   // State is read under the records' own lock, so a layout that blocks it is
   // reported here rather than read as a session never acknowledged.
-  let stateReadable = true;
-  const acked = new Map(spool.stateSessionIds().map((sessionId) => {
-    const read = spool.readAck(sessionId);
-    if (!read.readable) stateReadable = false;
-    return [sessionId, read.readable ? read.lastAckAt : null] as const;
-  }));
+  const acked = new Map(spool.stateSessionIds().map((sessionId) => [sessionId, spool.readAck(sessionId)] as const));
   const spooled = spool.readSpool();
+  // A session the listing named but whose state was never written is readable with nothing acknowledged.
+  const ackOf = (sessionId: string) => acked.get(sessionId) ?? { readable: true as const, lastAckAt: null };
   const sessions = spooled.sessions.map(({ sessionId, unacknowledged }) => {
-    const at = acked.get(sessionId) ?? null;
-    return { sessionId, unacknowledged, lastAckAt: at !== null && at > 0 ? at : null };
+    const read = ackOf(sessionId);
+    const at = read.readable ? read.lastAckAt : null;
+    return { sessionId, unacknowledged, stateReadable: read.readable, lastAckAt: at !== null && at > 0 ? at : null };
   });
+  const stateReadable = spooled.readable && [...acked.values()].every((read) => read.readable);
   let lastAck = 0;
-  for (const at of acked.values()) if (at !== null) lastAck = Math.max(lastAck, at);
+  for (const read of acked.values()) if (read.readable && read.lastAckAt !== null) lastAck = Math.max(lastAck, read.lastAckAt);
   const refused = spool.readRefused();
   const reported = refused.entries.slice(-MAX_REFUSALS_REPORTED).map(refusalOf);
-  const latch = spool.readLatch();
+  const latchRead = spool.readLatchResult();
+  const latch = latchRead.readable ? latchRead.latch : null;
   return {
     membership: membershipOf(entry, now),
     spool: {
       readable: spooled.readable,
-      // False where a session's state could not be read: its acknowledgement is unknown, not absent.
       stateReadable,
       sessionFiles: sessions.length,
       // Null where the directory, or any session file in it, could not be read: a total over what was readable would read as the whole.
       unacknowledgedTotal: !spooled.readable || sessions.some((session) => session.unacknowledged === null)
         ? null
         : sessions.reduce((total, session) => total + (session.unacknowledged ?? 0), 0),
-      lastAckAt: lastAck > 0 ? lastAck : null,
+      lastAckAt: stateReadable && lastAck > 0 ? lastAck : null,
       sessions,
     },
     latch: latch === null ? null : { since: latch.since, nextProbeAt: latch.nextProbeAt, backoffMs: latch.backoffMs },
+    latchReadable: latchRead.readable,
     refusals: {
       logReadable: refused.readable,
       loggedSinceLastReset: refused.entries.length,

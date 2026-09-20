@@ -21,7 +21,7 @@ import {
   MEMBER_FILE_MODE, MEMBER_PROTOCOL, OFFLINE_BACKOFF_INITIAL_MS, OFFLINE_BACKOFF_MAX_MS, REFUSED_LOG_MAX_BYTES, type MemberCode,
 } from './constants.js';
 import type { BlobSource, BlobStager, MemberEnvelope, OutboundEvent } from './envelope.js';
-import { bufferLockPath, readSessionState, readSessionStateUnlocked, updateSessionState, writeSessionStateUnlocked, type SessionState } from './session-state.js';
+import { bufferLockPath, readSessionState, readSessionStateResult, readSessionStateUnlocked, updateSessionState, writeSessionStateUnlocked, type SessionState, type SessionStateRead } from './session-state.js';
 import { ensureMemberDir, ensurePrivateFile, memberRoot, readPrivateJson, reportSkippedPrivateFile, writePrivateFileAtomic } from './store.js';
 import type { ClientRecord, Outcome, ServerClient } from './transport.js';
 
@@ -57,12 +57,21 @@ export interface RefusedEntry {
   at: number;
 }
 
-/** Whether a line of the refusal log carries every field a record is read by. A record short of one is a line nothing can report, counted unreadable rather than reported blank. */
+/**
+ * Whether a line of the refusal log is one `appendRefused` wrote.
+ *
+ * `eventId` and `kind` are empty for a refusal the drain raises against an
+ * unparsable spool line, which names no event; a report carries those as null.
+ * Every other field must be there for the line to say anything at all.
+ */
 function isRefusedEntry(value: unknown): value is RefusedEntry {
   if (value === null || typeof value !== 'object' || Array.isArray(value)) return false;
   const row = value as Record<string, unknown>;
-  for (const field of ['eventId', 'sessionId', 'kind', 'code', 'reason'] as const) {
+  for (const field of ['sessionId', 'code'] as const) {
     if (typeof row[field] !== 'string' || row[field] === '') return false;
+  }
+  for (const field of ['eventId', 'kind', 'reason'] as const) {
+    if (typeof row[field] !== 'string') return false;
   }
   return typeof row.at === 'number' && Number.isFinite(row.at);
 }
@@ -299,12 +308,15 @@ export class MemberSpool {
    * file that is not there is a session with no acknowledgement yet.
    */
   readAck(sessionId: string): { readable: true; lastAckAt: number | null } | { readable: false } {
+    let read: SessionStateRead;
     try {
-      const state = readSessionState(this.dir, sessionId);
-      return { readable: true, lastAckAt: state.lastAckAt ?? null };
+      read = readSessionStateResult(this.dir, sessionId);
     } catch {
       return { readable: false };
     }
+    if (read.ok) return { readable: true, lastAckAt: read.state.lastAckAt ?? null };
+    // A state a session has not written yet is one with no acknowledgement.
+    return read.reason === 'missing' ? { readable: true, lastAckAt: null } : { readable: false };
   }
 
   /** The spool as a report reads it: a directory nothing could read carries `readable: false`, and a session whose own file could not be read carries a null depth. */
@@ -345,14 +357,29 @@ export class MemberSpool {
     return path.join(this.dir, OFFLINE_LATCH_FILE);
   }
 
-  readLatch(): OfflineLatch | null {
+  /**
+   * The latch, or the fact that its file could not be used.
+   *
+   * A latch that is not there is no latch: readable, with none held. A mode
+   * refusal, an unparsable file or one that is not a latch is unreadable. The
+   * one parse and shape check; `readLatch` derives from it.
+   */
+  readLatchResult(): { readable: true; latch: OfflineLatch | null } | { readable: false; reason: 'loose-mode' | 'malformed' | 'invalid'; detail?: string } {
     const read = readPrivateJson<OfflineLatch>(this.latchPath());
     if (!read.ok) {
-      if (read.reason !== 'missing') reportSkippedPrivateFile('offline latch', this.latchPath(), read);
-      return null;
+      return read.reason === 'missing' ? { readable: true, latch: null } : { readable: false, reason: read.reason, detail: read.detail };
     }
     const l = read.value;
-    return typeof l.since === 'number' && typeof l.nextProbeAt === 'number' && typeof l.backoffMs === 'number' ? l : null;
+    const shaped = typeof l.since === 'number' && typeof l.nextProbeAt === 'number' && typeof l.backoffMs === 'number';
+    return shaped ? { readable: true, latch: l } : { readable: false, reason: 'invalid', detail: 'not an offline latch' };
+  }
+
+  /** The latch held, or null where none is: a file that could not be used reads as none, a mode or parse refusal with one stderr line. */
+  readLatch(): OfflineLatch | null {
+    const read = this.readLatchResult();
+    if (read.readable) return read.latch;
+    if (read.reason !== 'invalid') reportSkippedPrivateFile('offline latch', this.latchPath(), read);
+    return null;
   }
 
   /** True when a hook may dial: no latch, the probe time has come, or the caller forces a probe. */
