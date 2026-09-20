@@ -1701,12 +1701,10 @@ export async function checkMemberMcpResolution(
         });
         continue;
       }
-      // A launcher starts where its entry says, not where the project is. Naming
-      // no directory it resolves whatever membership the machine holds, which is
-      // this project only where the machine holds exactly one readable one;
-      // naming a directory it must be this project's own root.
+      // A launcher resolves this project only from an absolute directory that is
+      // its root, or from any directory where the machine holds one membership.
       if (target.transport === 'stdio') {
-        const cwd = target.declaredCwd;
+        const cwd = target.declaredCwd !== null && path.isAbsolute(target.declaredCwd) ? target.declaredCwd : null;
         const resolves = cwd === null
           ? readable.readable && readable.unavailableEntries === 0 && readable.entries.length === 1
           : path.resolve(cwd) === path.resolve(root);
@@ -1715,7 +1713,7 @@ export async function checkMemberMcpResolution(
             name: 'Member MCP resolution',
             status: 'warn',
             detail: cwd === null
-              ? `${manifest.displayName} starts its MCP server in a directory of its own choosing and its ${target.scope} entry names none, so it resolves this project's membership only where this machine holds exactly one readable one.`
+              ? `${manifest.displayName} starts its MCP server in a directory of its own choosing and its ${target.scope} entry names no absolute one, so it resolves this project's membership only where this machine holds exactly one readable one.`
               : `${manifest.displayName}'s ${target.scope} entry starts its MCP server in a directory that is not ${root}, so it resolves another project's membership or none.`,
             reason: cwd === null ? 'mcp_cwd_ambiguous' : 'mcp_cwd_elsewhere',
             scope: target.scope,

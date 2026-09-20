@@ -905,6 +905,19 @@ describe('checkMemberMcpResolution', () => {
       .toContainEqual({ reason: 'mcp_cwd_elsewhere', symbiont: 'cursor', scope: 'project', status: 'warn' });
   });
 
+  it('warns on a relative directory, which names no launch location the report can check', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-doctor-mcp-proj-'));
+    fs.mkdirSync(path.join(root, '.myco'));
+    member(root, path.join(homeDir, '.myco'), 'proj_1');
+    member(fs.mkdtempSync(path.join(os.tmpdir(), 'myco-doctor-mcp-proj2-')), path.join(homeDir, '.myco'), 'proj_2');
+    fs.mkdirSync(path.join(root, '.cursor'), { recursive: true });
+    // A relative directory resolves against whoever reads it, not against the harness.
+    fs.writeFileSync(path.join(root, '.cursor', 'mcp.json'), launcher('.'));
+
+    expect(reasons(await checkMemberMcpResolution(path.join(root, '.myco'), process.env)))
+      .toContainEqual({ reason: 'mcp_cwd_ambiguous', symbiont: 'cursor', scope: 'project', status: 'warn' });
+  });
+
   it('leaves a remote entry alone: its headers helper resolves the membership without a directory', async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-doctor-mcp-proj-'));
     fs.mkdirSync(path.join(root, '.myco'));
