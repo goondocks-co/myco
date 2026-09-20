@@ -2056,7 +2056,9 @@ export class SymbiontInstaller {
         return { scope, present: false, transport: null, carriesCredential: false, declaredCwd: null, readable: false };
       }
       const entry = server as Record<string, unknown>;
-      const transport = typeof entry.url === 'string' ? 'http' as const : typeof entry.command === 'string' ? 'stdio' as const : null;
+      // A launcher names its command as a word or as an argument list; opencode writes the list.
+      const launcher = typeof entry.command === 'string' || (Array.isArray(entry.command) && entry.command.length > 0);
+      const transport = typeof entry.url === 'string' ? 'http' as const : launcher ? 'stdio' as const : null;
       // A launcher started outside the project finds its membership through the
       // directory the entry names, so the directory is a fact about it.
       const declaredCwd = typeof entry.cwd === 'string' && entry.cwd !== '' ? entry.cwd : null;

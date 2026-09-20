@@ -319,6 +319,24 @@ describe('what a report reads from the member MCP targets', () => {
     expect(installer.inspectMemberMcp().every((t) => t.present && t.carriesCredential)).toBe(true);
   });
 
+  it('reads a launcher written as an argument list, which opencode writes, as the member\'s', () => {
+    const { installer } = globalInstaller('claude-code');
+    // The template as a member's entry carries it: the flag and its source
+    // appended to the command list, with no separate argument list.
+    const written = memberMcpTemplate({ myco: { type: 'local', command: ['/opt/myco', 'mcp'] } }, 'registry').myco;
+    expect(written).toMatchObject({ command: ['/opt/myco', 'mcp', CREDENTIAL_FLAG, 'registry'] });
+    writeEntries(installer, written as Record<string, unknown>);
+
+    expect(installer.inspectMemberMcp().every((t) => t.present && t.transport === 'stdio' && t.carriesCredential)).toBe(true);
+  });
+
+  it('reads a command list carrying no source as a launcher that is not the member\'s', () => {
+    const { installer } = globalInstaller('claude-code');
+    writeEntries(installer, { type: 'local', command: ['/opt/myco', 'mcp'] });
+
+    expect(installer.inspectMemberMcp().every((t) => t.present && t.transport === 'stdio' && !t.carriesCredential)).toBe(true);
+  });
+
   it('says a target it could not read is unread, rather than reading it as no entry', () => {
     const { installer } = globalInstaller('claude-code');
     writeEntries(installer, claudeRemote());
