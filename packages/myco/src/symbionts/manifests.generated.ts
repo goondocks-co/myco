@@ -400,7 +400,7 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
       "globalHooksTarget": "~/.claude/settings.json",
       "globalMcpTarget": [
         {
-          "path": "~/.claude/settings.json"
+          "path": "~/.claude.json"
         }
       ],
       "globalSkillsTarget": "~/.claude/skills",

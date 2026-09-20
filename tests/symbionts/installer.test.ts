@@ -2352,9 +2352,9 @@ describe('AGENTS.md managed guidance', () => {
     const content = fs.readFileSync(path.join(projectRoot, 'AGENTS.md'), 'utf-8');
     expect(content).toContain('myco:managed:start');
     expect(content).toContain('capture.ignore_plan_dirs_in_git');
-    expect(content).toContain('myco tool call myco_cortex --json --input');
-    expect(content).toContain('"op":"canopy_map"');
-    expect(content).toContain('`myco_cortex({"op":"canopy_map"})` via MCP');
+    expect(content).toContain('Myco tools take a `project` argument');
+    expect(content).not.toContain('canopy_map');
+    expect(content).not.toContain('myco tool call');
     expect(content).toContain('Keep tests current.');
   });
 

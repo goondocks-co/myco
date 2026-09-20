@@ -89,10 +89,10 @@ describe('runGlobalBootstrap', () => {
     }
     expect(claudeResult?.status).toBe('installed');
 
-    // ~/.claude/settings.json now carries Myco's hook + MCP block.
+    // Claude reads hooks and MCP from separate user-wide files.
     const settings = JSON.parse(fs.readFileSync(path.join(tmpHome, '.claude', 'settings.json'), 'utf-8'));
     expect(settings.hooks).toBeDefined();
-    expect(settings.mcpServers?.myco).toBeDefined();
+    expect(JSON.parse(fs.readFileSync(path.join(tmpHome, '.claude.json'), 'utf8')).mcpServers?.myco).toBeDefined();
 
     // Other symbionts (no detectionDir present) are 'not-detected'.
     const codexResult = result.symbionts.find((r) => r.symbiont === 'codex');

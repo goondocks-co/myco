@@ -220,7 +220,7 @@ describe('myco member join / leave', () => {
     expect(readRegistryEntry(projectRoot, mycoHome)!.projectId).toBe(PROJECT);
     expect(out.join('\n')).toContain(`joined ${PROJECT} at https://server.example`);
     expect(out.join('\n')).toContain('provisioned Claude Code');
-    expect(hookCommands(readTarget().hooks).length).toBeGreaterThan(0);
+    expect(hookCommands(JSON.parse(fs.readFileSync(path.join(home, '.claude', 'settings.json'), 'utf8')).hooks).length).toBeGreaterThan(0);
     // Nothing the join printed carries the token.
     expect(out.join('\n')).not.toContain(rig.token);
   });
@@ -257,7 +257,7 @@ describe('myco member join / leave', () => {
     process.exitCode = 0;
   });
 
-  it('leave forgets the membership, keeps the spool, and --purge removes the spool and the hooks', async () => {
+  it('leave forgets the membership and purge removes its spool while preserving global hooks for other projects', async () => {
     await join(['https://server.example', '--project', PROJECT, '--token-env', 'JOIN_TOKEN', '--root', projectRoot, '--provision', 'claude-code'], { env: { JOIN_TOKEN: rig.token } });
     const spool = new MemberSpool(PROJECT, { mycoHome });
     fs.writeFileSync(path.join(spool.dir, 'sess-keep.jsonl'), '{}\n');
@@ -275,6 +275,6 @@ describe('myco member join / leave', () => {
     expect(runLeave(['--purge'], deps)).toBe(true);
     expect(fs.existsSync(spool.dir)).toBe(false);
     expect(fs.existsSync(path.join(projectRoot, MEMBER_TARGET))).toBe(false);
-    expect(out.join('\n')).toContain('removed Claude Code hooks');
+    expect(fs.existsSync(path.join(home, '.claude', 'settings.json'))).toBe(true);
   });
 });

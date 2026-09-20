@@ -452,9 +452,13 @@ export function createServer(deps: ServerDeps) {
     // for the harness, so a fourth route added later cannot forget the check.
     if (deploymentScoped(route)) return await asDeployment(request, env, auth, auth.machineId, route, now);
 
-    // The Project is resolved once, ahead of both body modes, so a request that
-    // names none is refused before anything reads its body.
+    // Only a declared protocol handler can receive a request without a default Project.
     const projectId = requestedProject(request);
+    if (!request.headers.has(PROJECT_HEADER) && route.bodyMode === 'json' && route.unbound !== undefined) {
+      const body = await readBoundedBody(request, MAX_BODY_BYTES);
+      if (!body.ok) return refuse(auth, shapeOf(route), body.reason, 'body_cap');
+      return route.unbound(env, { memberId: auth.memberId, machineId: auth.machineId, tokenId: auth.tokenId, body: body.text, now });
+    }
     if (projectId === null) return refuse(auth, shapeOf(route), NO_PROJECT, 'no_project');
 
     /**

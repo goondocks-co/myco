@@ -22,14 +22,21 @@ const TOKEN = 'A'.repeat(43);
 const SERVER = 'https://myco.example';
 let mycoHome: string;
 let root: string;
+let agentHome: string;
+let previousHome: string | undefined;
 beforeEach(() => {
   mycoHome = tempMycoHome();
   root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'myco-member-provision-')));
   execFileSync('git', ['init', '-q', root]);
+  agentHome = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-provision-agent-home-'));
+  previousHome = process.env.HOME;
+  process.env.HOME = agentHome;
 });
 afterEach(() => {
   fs.rmSync(root, { recursive: true, force: true });
   process.exitCode = 0;
+  if (previousHome === undefined) delete process.env.HOME; else process.env.HOME = previousHome;
+  fs.rmSync(agentHome, { recursive: true, force: true });
 });
 
 const join = (): void => writeRegistryEntry({
@@ -53,16 +60,17 @@ describe('myco member provision', () => {
     const before = readRegistryEntry(root, mycoHome);
     const first = await provision(['codex']);
     expect(first.err).toEqual([]);
-    expect(first.out).toEqual([`provisioned Codex for ${root} (hooks and MCP)`]);
-    const config = parseToml(fs.readFileSync(path.join(root, '.codex', 'config.toml'), 'utf8')) as { mcp_servers: { myco: { url: string; http_headers_helper: string } } };
+    expect(first.out).toEqual(['provisioned Codex globally (hooks and MCP)']);
+    const config = parseToml(fs.readFileSync(path.join(agentHome, '.codex', 'config.toml'), 'utf8')) as { mcp_servers: { myco: { url: string; http_headers_helper: string } } };
     expect(config.mcp_servers.myco.url).toBe(`${SERVER}/mcp`);
     expect(config.mcp_servers.myco.http_headers_helper).toContain(`member mcp-headers ${CREDENTIAL_FLAG} registry --server ${SERVER}`);
-    expect(fs.existsSync(path.join(root, '.codex', 'hooks.json'))).toBe(true);
-    expect(fs.readFileSync(path.join(root, '.codex', 'config.toml'), 'utf8')).not.toContain(TOKEN);
+    expect(fs.existsSync(path.join(agentHome, '.codex', 'hooks.json'))).toBe(true);
+    expect(fs.existsSync(path.join(root, '.codex'))).toBe(false);
+    expect(fs.readFileSync(path.join(agentHome, '.codex', 'config.toml'), 'utf8')).not.toContain(TOKEN);
     expect(readRegistryEntry(root, mycoHome)).toEqual(before);
 
     const second = await provision(['codex', '--root', root]);
-    expect(second.out).toEqual([`no registration changes for Codex at ${root}`]);
+    expect(second.out).toEqual(['no global registration changes for Codex']);
     expect(process.exitCode ?? 0).toBe(0);
   });
 
@@ -84,14 +92,14 @@ describe('myco member provision', () => {
 
   it('refuses before any write when the global Codex config declares a stdio myco server or cannot be parsed, and accepts a remote one with its own options', async () => {
     join();
-    const globalConfig = path.join(os.homedir(), '.codex', 'config.toml');
+    const globalConfig = path.join(agentHome, '.codex', 'config.toml');
     fs.mkdirSync(path.dirname(globalConfig), { recursive: true });
     try {
       fs.writeFileSync(globalConfig, '[mcp_servers.myco]\ncommand = "/opt/myco"\nargs = ["mcp"]\n');
       const refused = await provision(['codex']);
       expect(refused.out).toEqual([]);
       expect(refused.err.join('\n')).toContain(globalConfig);
-      expect(refused.err.join('\n')).toContain('command, args');
+      expect(refused.err.join('\n')).toContain('capture cutover');
       expect(process.exitCode).toBe(2);
       expect(fs.existsSync(path.join(root, '.codex'))).toBe(false);
 
@@ -104,8 +112,8 @@ describe('myco member provision', () => {
       expect(fs.existsSync(path.join(root, '.codex'))).toBe(false);
 
       process.exitCode = 0;
-      fs.writeFileSync(globalConfig, '[mcp_servers.myco]\nurl = "https://myco.example/mcp"\nstartup_timeout_sec = 45\n');
-      expect((await provision(['codex'])).out).toEqual([`provisioned Codex for ${root} (hooks and MCP)`]);
+      fs.writeFileSync(globalConfig, '[mcp_servers.other]\ncommand = "other"\n');
+      expect((await provision(['codex'])).out).toEqual(['provisioned Codex globally (hooks and MCP)']);
       expect(process.exitCode ?? 0).toBe(0);
     } finally {
       fs.rmSync(path.dirname(globalConfig), { recursive: true, force: true });
@@ -117,7 +125,7 @@ describe('myco member provision', () => {
   it.skipIf(process.platform === 'win32')('names the binary of the project\'s own home in every hook command and MCP helper it writes, whether that home is passed or pinned', async () => {
     const savedMycoHome = process.env.MYCO_HOME;
     delete process.env.MYCO_HOME;
-    const defaultHome = path.join(os.homedir(), '.myco');
+    const defaultHome = path.join(agentHome, '.myco');
     const binary = (home: string): string => {
       const file = path.join(home, 'bin', 'myco');
       fs.mkdirSync(path.dirname(file), { recursive: true });
@@ -126,11 +134,12 @@ describe('myco member provision', () => {
     };
     const defaultBinary = binary(defaultHome);
     const memberBinary = binary(mycoHome);
-    const emitted = (): string[] => {
-      const codexHooks = JSON.parse(fs.readFileSync(path.join(root, '.codex', 'hooks.json'), 'utf8')) as { hooks: unknown };
-      const claudeHooks = JSON.parse(fs.readFileSync(path.join(root, '.claude', 'settings.local.json'), 'utf8')) as { hooks: unknown };
-      const codex = parseToml(fs.readFileSync(path.join(root, '.codex', 'config.toml'), 'utf8')) as { mcp_servers: { myco: { http_headers_helper: string } } };
-      const claude = JSON.parse(fs.readFileSync(path.join(root, '.mcp.json'), 'utf8')) as { mcpServers: { myco: { headersHelper: string } } };
+    const emitted = (global = true): string[] => {
+      const targetRoot = global ? agentHome : root;
+      const codexHooks = JSON.parse(fs.readFileSync(path.join(targetRoot, '.codex', 'hooks.json'), 'utf8')) as { hooks: unknown };
+      const claudeHooks = JSON.parse(fs.readFileSync(path.join(targetRoot, '.claude', global ? 'settings.json' : 'settings.local.json'), 'utf8')) as { hooks: unknown };
+      const codex = parseToml(fs.readFileSync(path.join(targetRoot, '.codex', 'config.toml'), 'utf8')) as { mcp_servers: { myco: { http_headers_helper: string } } };
+      const claude = JSON.parse(fs.readFileSync(path.join(targetRoot, global ? '.claude.json' : '.mcp.json'), 'utf8')) as { mcpServers: { myco: { headersHelper: string } } };
       return [...hookCommands(codexHooks.hooks), ...hookCommands(claudeHooks.hooks), codex.mcp_servers.myco.http_headers_helper, claude.mcpServers.myco.headersHelper];
     };
     try {
@@ -152,7 +161,7 @@ describe('myco member provision', () => {
         const manifest = loadManifests().find((m) => m.name === name)!;
         new SymbiontInstaller(manifest, root, resolvePackageRoot(), false, undefined, null, 'member-project').install();
       }
-      for (const command of emitted()) expect({ command, binary: command.split(' ')[0] }).toEqual({ command, binary: memberBinary });
+      for (const command of emitted(false)) expect({ command, binary: command.split(' ')[0] }).toEqual({ command, binary: memberBinary });
 
       // Every other scope keeps the machine's binary.
       const codex = loadManifests().find((m) => m.name === 'codex')!;

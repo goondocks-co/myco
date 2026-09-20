@@ -232,7 +232,7 @@ describe('the handshake is the principal\'s', () => {
     }
     // The unnamed-write refusal is a property of the chokepoint, not a tool
     // name: it applies to an unbound principal alone.
-    const REFUSAL = 'A write without it is refused.';
+    const REFUSAL = 'Writes always name a project.';
     const unbound = { member: true, run: false, grant: false };
     for (const [who, text] of [['member', SERVER_INSTRUCTIONS], ['run', RUN_INSTRUCTIONS], ['grant', GRANT_INSTRUCTIONS]] as const) {
       expect({ who, states: text.includes(REFUSAL) }).toEqual({ who, states: unbound[who] });

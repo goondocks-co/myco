@@ -1,8 +1,8 @@
 /**
  * `POST /mcp`: Streamable HTTP MCP for an authenticated principal.
  *
- * The pipeline has authenticated the credential, admitted the Project, and read
- * the body. This builds the request the transport expects — the body as
+ * The pipeline has authenticated the credential and read the body. A member
+ * without a default Project names one at tool dispatch. This builds the request the transport expects — the body as
  * JSON-RPC, with the content and accept headers the transport requires — and
  * answers through a transport that keeps no session and streams nothing: one
  * POST, one JSON response, per request. A body that is not JSON-RPC is refused
@@ -13,9 +13,9 @@
  */
 import { WebStandardStreamableHTTPServerTransport } from '@modelcontextprotocol/server';
 import type { ServerEnv } from '../core/adapters.js';
-import type { GrantContext, RouteContext, RunContext } from '../context.js';
+import type { GrantContext, RouteContext, RunContext, UnboundMemberContext } from '../context.js';
 import { SERVER_PROTOCOL } from '../constants.js';
-import { grantToolContext, runToolContext, toolContext, type ToolContext } from './context.js';
+import { grantToolContext, runToolContext, toolContext, type ProtocolContext } from './context.js';
 import { createProtocolServer } from './server.js';
 
 /** The refusal an `answered` route gives a body that is not JSON-RPC: the pipeline's shape, the `parse` classifier. */
@@ -33,6 +33,10 @@ export async function handleMcp(env: ServerEnv, ctx: RouteContext): Promise<Resp
   return answerMcp(toolContext(env, ctx), ctx.body);
 }
 
+export async function handleUnboundMcp(env: ServerEnv, ctx: UnboundMemberContext): Promise<Response> {
+  return answerMcp({ env, projectId: null, now: ctx.now, principal: { kind: 'member', memberId: ctx.memberId, machineId: ctx.machineId, tokenId: ctx.tokenId } }, ctx.body);
+}
+
 export async function handleGrantMcp(env: ServerEnv, ctx: GrantContext): Promise<Response> {
   return answerMcp(grantToolContext(env, ctx), ctx.body);
 }
@@ -42,7 +46,7 @@ export async function handleRunMcp(env: ServerEnv, ctx: RunContext): Promise<Res
 }
 
 /** One JSON-RPC body answered for one principal. */
-export async function answerMcp(ctx: ToolContext, body: string): Promise<Response> {
+export async function answerMcp(ctx: ProtocolContext, body: string): Promise<Response> {
   let parsed: unknown;
   try {
     parsed = JSON.parse(body);

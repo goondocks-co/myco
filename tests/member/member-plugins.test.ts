@@ -1,9 +1,4 @@
-/**
- * Member plugins for the plugin-file agents (OpenCode, Pi): `myco member
- * provision` writes the member plugin into the project's own plugin directory,
- * only when the agent's global Myco plugin steps aside for it, and `member
- * leave` takes it away again so the agent falls back to its global plugin.
- */
+/** Global member plugin provisioning and cleanup of retained project overrides. */
 import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
@@ -22,14 +17,20 @@ type Agent = keyof typeof TARGETS;
 
 let mycoHome: string;
 let root: string;
+let agentHome: string;
+let previousHome: string | undefined;
 beforeEach(() => {
   mycoHome = tempMycoHome();
   root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'myco-member-plugins-')));
   execFileSync('git', ['init', '-q', root]);
+  agentHome = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-plugin-agent-home-'));
+  previousHome = process.env.HOME;
+  process.env.HOME = agentHome;
 });
 afterEach(() => {
   fs.rmSync(root, { recursive: true, force: true });
-  for (const global of Object.values(GLOBALS)) fs.rmSync(path.join(os.homedir(), global), { recursive: true, force: true });
+  if (previousHome === undefined) delete process.env.HOME; else process.env.HOME = previousHome;
+  fs.rmSync(agentHome, { recursive: true, force: true });
   process.exitCode = 0;
 });
 
@@ -38,7 +39,7 @@ const join = (): void => writeRegistryEntry({
 }, { mycoHome });
 
 const writeGlobal = (agent: Agent, content: string): string => {
-  const file = path.join(os.homedir(), GLOBALS[agent]);
+  const file = path.join(agentHome, GLOBALS[agent]);
   fs.mkdirSync(path.dirname(file), { recursive: true });
   fs.writeFileSync(file, content);
   return file;
@@ -57,36 +58,36 @@ async function member(args: string[]): Promise<{ out: string[]; err: string[] }>
 
 describe('member plugins for plugin-file agents', () => {
   for (const agent of ['opencode', 'pi'] as const) {
-    it(`${agent}: provision writes the member plugin with no global plugin installed, keeps it out of git, and a repeat changes nothing`, async () => {
+    it(`${agent}: provision writes the global member plugin without project files, and a repeat changes nothing`, async () => {
       join();
       const before = readRegistryEntry(root, mycoHome);
       const first = await member(['provision', agent]);
       expect(first.err).toEqual([]);
       // OpenCode's tools come from an MCP server, Pi's from the extension itself.
-      expect(first.out[0]).toMatch(new RegExp(`^provisioned .+ for ${root}${agent === 'opencode' ? ' \\(plugin and MCP\\)' : ''}$`));
-      const written = fs.readFileSync(path.join(root, TARGETS[agent]), 'utf8');
+      expect(first.out[0]).toMatch(/^provisioned .+ globally/);
+      const written = fs.readFileSync(path.join(agentHome, GLOBALS[agent]), 'utf8');
       expect(written).toContain('myco:plugin-marker');
       expect(written).toContain('// myco:member-plugin');
       expect(written).toContain('const MYCO_CREDENTIAL_SOURCE = "registry";');
       expect(written).not.toMatch(/\{\{[A-Za-z0-9_.-]+\}\}/);
       expect(written).not.toContain(TOKEN);
-      expect(fs.readFileSync(path.join(root, '.git', 'info', 'exclude'), 'utf8')).toContain(TARGETS[agent]);
-      expect(fs.existsSync(path.join(root, 'opencode.json'))).toBe(agent === 'opencode');
+      expect(fs.readFileSync(path.join(root, '.git', 'info', 'exclude'), 'utf8')).not.toContain(TARGETS[agent]);
+      expect(fs.existsSync(path.join(root, 'opencode.json'))).toBe(false);
       expect(readRegistryEntry(root, mycoHome)).toEqual(before);
       if (agent === 'pi') {
         expect(written).toContain('Symbol.for("myco.member-extension")');
-        expect(first.out[1]).toContain('trust the project in Pi');
+        expect(first.out).toHaveLength(1);
       }
-      expect((await member(['provision', agent])).out[0]).toMatch(/^no registration changes for /);
+      expect((await member(['provision', agent])).out[0]).toMatch(/^no global registration changes for /);
     });
 
-    it(`${agent}: provision refuses before any write while the global Myco plugin does not step aside, and accepts one that does or a file Myco does not own`, async () => {
+    it(`${agent}: global provisioning preserves legacy and foreign plugins until cutover`, async () => {
       join();
       const legacy = '// myco:plugin-marker — Myco owns this file\nexport default {};\n';
       const global = writeGlobal(agent, legacy);
       const refused = await member(['provision', agent]);
       expect(refused.out).toEqual([]);
-      expect(refused.err.join('\n')).toContain(`${global} is a Myco plugin that does not step aside`);
+      expect(refused.err.join('\n')).toContain('capture cutover');
       expect(process.exitCode).toBe(2);
       expect(fs.existsSync(path.join(root, TARGETS[agent]))).toBe(false);
       expect(fs.readFileSync(global, 'utf8')).toBe(legacy);
@@ -101,12 +102,11 @@ describe('member plugins for plugin-file agents', () => {
 
       process.exitCode = 0;
       writeGlobal(agent, `${legacy}// myco:defers-to-member-plugin\n`);
-      expect((await member(['provision', agent])).out[0]).toMatch(/^provisioned /);
-      fs.rmSync(path.join(root, TARGETS[agent]));
+      expect((await member(['provision', agent])).err.join('\n')).toContain('capture cutover');
 
       writeGlobal(agent, 'export default {};\n');
-      expect((await member(['provision', agent])).out[0]).toMatch(/^provisioned /);
-      expect(process.exitCode ?? 0).toBe(0);
+      expect((await member(['provision', agent])).err.join('\n')).toContain('capture cutover');
+      expect(fs.readFileSync(global, 'utf8')).toBe('export default {};\n');
     });
   }
 
@@ -129,8 +129,9 @@ describe('member plugins for plugin-file agents', () => {
 
   it('leave, with or without --purge, removes the member plugins and never a 1.4 project plugin', async () => {
     join();
-    await member(['provision', 'opencode']);
-    await member(['provision', 'pi']);
+    for (const name of ['opencode', 'pi']) {
+      new SymbiontInstaller(loadManifests().find((m) => m.name === name)!, root, resolvePackageRoot(), false, undefined, null, 'member-project', mycoHome).install();
+    }
     const left = await member(['leave']);
     expect(left.out.filter((l) => l.includes('member plugin'))).toHaveLength(2);
     for (const agent of ['opencode', 'pi'] as const) expect(fs.existsSync(path.join(root, TARGETS[agent]))).toBe(false);

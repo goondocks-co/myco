@@ -2,6 +2,7 @@ import { handleRepository, handleSaveRepository, handleRemoveRepository, handleR
 import { handleProjectMap, handleRunMap } from './api/canopy.js';
 import { handleSkillCandidates, handleReviewSkillCandidate } from './api/skill-candidates.js';
 import type { ServerEnv } from './core/adapters.js';
+import type { UnboundMemberContext } from './context.js';
 import type { AuthContext, DeploymentContext, GrantContext, OwnerContext, RouteContext, RunContext, SessionContext, StreamContext } from './context.js';
 import { handleLink, handleMe } from './api/identity.js';
 import { handleLinkGithub } from './auth/members.js';
@@ -51,13 +52,15 @@ import { handleBlob } from './ingest/blobs.js';
 import { handleHarnessDispatch } from './api/harness.js';
 import { handleEvents } from './ingest/events.js';
 import { handleImportPlan } from './api/import.js';
-import { handleGrantMcp, handleMcp, handleRunMcp } from './mcp/http.js';
+import { handleGrantMcp, handleMcp, handleRunMcp, handleUnboundMcp } from './mcp/http.js';
 import { handleWorkerClaim, handleWorkerEnd, handleWorkerLease, handleWorkerRepository } from './api/worker.js';
 
 /** Public handlers receive the request only; they cannot reach storage or bindings. */
 export type PublicHandler = (request: Request) => Promise<Response>;
 /** Member handlers on json routes receive the bindings and the consumed request as context; the request stream is spent by the pipeline. */
 export type MemberHandler = (env: ServerEnv, ctx: RouteContext) => Promise<Response>;
+/** Protocol handlers without a default Project; tool dispatch must resolve one before any project operation. */
+export type UnboundMemberHandler = (env: ServerEnv, ctx: UnboundMemberContext) => Promise<Response>;
 /** Grant handlers answer a json route reached over an External Agent grant: the grant's Project and the consumed body, nothing of a member. A route declares one to admit grants at all. */
 export type GrantHandler = (env: ServerEnv, ctx: GrantContext) => Promise<Response>;
 /** Run handlers answer a json route reached over a run's credential: the run, its Project and the consumed body. A route declares one to serve the run principal at all; a run credential is refused on every member route that declares neither this nor `legacyRunRoute`. */
@@ -81,7 +84,8 @@ export type Shape = 'persisted' | 'stored' | 'refreshed' | 'answered';
 /** `quotaPrecheck: false` marks a member route the pipeline does not pre-check against the byte quota and never reads a constraint failure as a quota refusal; what such a route stores through the ingest path is still charged there. Absent, the route is pre-checked. */
 export type Route =
   | { method: string; path: string; auth: 'public'; bodyMode: 'none'; handler: PublicHandler }
-  | { method: string; path: string; auth: 'member'; bodyMode: 'json'; shape: Exclude<Shape, 'stored'>; quotaPrecheck?: boolean; handler: MemberHandler; grant?: GrantHandler; run?: RunHandler; legacyRunRoute?: true }
+  | ({ method: string; path: string; auth: 'member'; bodyMode: 'json'; shape: Exclude<Shape, 'stored'>; quotaPrecheck?: boolean; handler: MemberHandler; grant?: GrantHandler; run?: RunHandler; legacyRunRoute?: true }
+    & ({ unbound?: never } | { shape: 'answered'; quotaPrecheck: false; unbound: UnboundMemberHandler }))
   | { method: string; path: string; auth: 'member'; bodyMode: 'json'; shape: 'persisted'; quotaPrecheck: false; scope: 'deployment'; deployment: DeploymentHandler; handler?: never; grant?: never; run?: never; legacyRunRoute?: never }
   | { method: string; path: string; pattern: RegExp; auth: 'member'; bodyMode: 'stream'; shape: 'stored'; quotaPrecheck?: boolean; maxBodyBytes: number; handler: StreamHandler; legacyRunRoute?: true }
   | { method: string; path: string; auth: 'auth'; handler: AuthHandler }
@@ -148,7 +152,7 @@ export const ROUTES: readonly Route[] = [
   { method: 'POST', path: '/worker/lease', auth: 'member', bodyMode: 'json', shape: 'persisted', quotaPrecheck: false, scope: 'deployment', deployment: handleWorkerLease },
   { method: 'POST', path: '/worker/end', auth: 'member', bodyMode: 'json', shape: 'persisted', quotaPrecheck: false, scope: 'deployment', deployment: handleWorkerEnd },
   { method: 'POST', path: '/worker/repository', auth: 'member', bodyMode: 'json', shape: 'persisted', quotaPrecheck: false, scope: 'deployment', deployment: handleWorkerRepository },
-  { method: 'POST', path: '/mcp', auth: 'member', bodyMode: 'json', shape: 'answered', quotaPrecheck: false, handler: handleMcp, grant: handleGrantMcp, run: handleRunMcp },
+  { method: 'POST', path: '/mcp', auth: 'member', bodyMode: 'json', shape: 'answered', quotaPrecheck: false, handler: handleMcp, grant: handleGrantMcp, run: handleRunMcp, unbound: handleUnboundMcp },
   { method: 'POST', path: '/members/join', auth: 'enroll', handler: handleJoin },
   { method: 'POST', path: '/members/link-github', auth: 'member', bodyMode: 'json', shape: 'persisted', quotaPrecheck: false, handler: handleLinkGithub },
   { method: 'GET', path: '/auth/me', auth: 'owner', membership: 'optional', handler: handleMe },

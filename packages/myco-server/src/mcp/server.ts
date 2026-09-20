@@ -29,7 +29,8 @@ import { acceptedActions } from '../core/run-postconditions.js';
 import { isServedTool, isWriteOp, NO_OP, PROJECT_PIVOT, type AnyTool } from '../core/tool-catalogue.js';
 import { emit } from '../telemetry.js';
 import { normalizeRemote, projectForRemote } from '../core/remotes.js';
-import { boundProject, namedProject, principalFields, recordRunToolCall, type ToolContext } from './context.js';
+import { boundProject, namedProject, principalFields, recordRunToolCall, type ToolContext, type ProtocolContext } from './context.js';
+import { resolveTenancyArgument } from '../api/scope.js';
 import { TOOL_DEFINITIONS, definitionOf, type ToolDefinition } from './definitions.js';
 import { externalDefinitions, isExternalCall } from './external.js';
 import { entryFor, opOf, TOOL_REGISTRY, type RegistryEntry } from './registry.js';
@@ -52,7 +53,7 @@ export const SERVER_NAME = 'myco';
 export const SERVER_INSTRUCTIONS = [
   'Myco is this project\'s memory: sessions that happened, spores (durable observations), and plans.',
   '',
-  'Tenancy: every tool takes `project` — a project id, or the repository\'s git remote. A read without it uses the project this credential is bound to. A write without it is refused. An argument a tool\'s schema does not declare is refused by name.',
+  'Tenancy: every tool takes `project`, a project id or the repository\'s git remote. Reads may use the connection\'s default project, when present. Without a default, every call must name a project. Writes always name a project. Undeclared arguments are refused by name.',
   '',
   'Reach for it when you need why rather than what: a prior decision, a gotcha, how a subsystem came to be this way. Search with `myco_search`, then fetch a hit in full by its id with `myco_spores`, `myco_plans` or `myco_sessions`. Record a durable finding with `myco_spores` op "save"; keep plans current with `myco_plans` op "save".',
   '',
@@ -146,7 +147,7 @@ const missingProject = (tool: string): ToolError =>
  * tool that does not exist. One primary-key lookup, and only for a bound
  * principal that named something other than its own id.
  */
-async function namesBoundProject(ctx: ToolContext, named: unknown, bound: string): Promise<boolean> {
+async function namesBoundProject(ctx: Pick<ToolContext, 'env'>, named: unknown, bound: string): Promise<boolean> {
   if (typeof named !== 'string') return false;
   const remote = normalizeRemote(named);
   return remote !== null && (await projectForRemote(ctx.env.db, remote)) === bound;
@@ -173,7 +174,7 @@ export interface Surface {
 const servedOnly = (name: string): ToolDefinition | undefined => definitionOf(name);
 
 /** The surface this principal calls through. */
-export function surfaceFor(ctx: ToolContext): Surface {
+export function surfaceFor(ctx: Pick<ToolContext, 'principal'>): Surface {
   const p = ctx.principal;
   if (p.kind === 'grant') {
     return {
@@ -220,12 +221,12 @@ function runEntryFor(name: string, op: string): RegistryEntry | undefined {
 }
 
 /** The definitions this principal is served. */
-export function definitionsFor(ctx: ToolContext): readonly ToolDefinition[] {
+export function definitionsFor(ctx: Pick<ToolContext, 'principal'>): readonly ToolDefinition[] {
   return surfaceFor(ctx).definitions;
 }
 
 /** Run one tool call for this context: the principal's surface, validation, op resolution, the handler. Every failure leaves as a `ToolError`. */
-export async function callTool(ctx: ToolContext, name: string, args: unknown): Promise<{ tool: AnyTool; op: string; result: unknown }> {
+export async function callTool(ctx: ProtocolContext, name: string, args: unknown): Promise<{ tool: AnyTool; op: string; result: unknown }> {
   const surface = surfaceFor(ctx);
   const definition = surface.definitionOf(name);
   if (definition === undefined) throw unknownTool(name);
@@ -244,7 +245,15 @@ export async function callTool(ctx: ToolContext, name: string, args: unknown): P
       ? `${name} op '${op}' is not offered by a Deployment`
       : `${name} op '${op}' is not yet served by this Deployment (${entry.notServed})`);
   }
-  try { return { tool: name as AnyTool, op, result: await entry.handler(input, ctx) }; }
+  let scoped: ToolContext;
+  if (ctx.projectId === null) {
+    const project = namedProject(input);
+    if (project === undefined) throw new ToolError('invalid_input', `Missing required argument '${PROJECT_PIVOT}' for tool ${name}: this connection has no default project`);
+    const scope = await resolveTenancyArgument(ctx.env.db, { id: ctx.principal.memberId }, project);
+    if (scope === null) throw new ToolError('invalid_input', 'Project not found');
+    scoped = { ...ctx, projectId: scope.projectId };
+  } else scoped = ctx;
+  try { return { tool: name as AnyTool, op, result: await entry.handler(input, scoped) }; }
   catch (error) {
     if (error instanceof SessionMaterialPendingError) throw new ToolError('tool_call_failed', error.message);
     throw error;
@@ -256,7 +265,7 @@ export async function callTool(ctx: ToolContext, name: string, args: unknown): P
  * storage fault — is handed to `onFailure` for the pipeline to answer as
  * retryable, with the JSON-RPC error that leaves the transport standing in.
  */
-export function createProtocolServer(ctx: ToolContext, version: string, onFailure: (err: unknown) => void): Server {
+export function createProtocolServer(ctx: ProtocolContext, version: string, onFailure: (err: unknown) => void): Server {
   const server = new Server(
     { name: SERVER_NAME, version },
     { capabilities: { tools: {} }, instructions: surfaceFor(ctx).instructions, supportedProtocolVersions: [...SERVED_PROTOCOL_VERSIONS] },
@@ -273,7 +282,7 @@ export function createProtocolServer(ctx: ToolContext, version: string, onFailur
     try {
       const { tool, op, result } = await callTool(ctx, name, args);
       emit({ kind: 'mcp_tool', tool, op, status: 'ok', ...principalFields(ctx) });
-      await recordRunToolCall(ctx, { tool, op, durationMs: Date.now() - began });
+      if (ctx.projectId !== null) await recordRunToolCall(ctx, { tool, op, durationMs: Date.now() - began });
       return { content: [{ type: 'text' as const, text: serializeResult(tool, result) }], structuredContent: { result } };
     } catch (err) {
       if (!(err instanceof ToolError)) onFailure(err);
