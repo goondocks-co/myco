@@ -8,6 +8,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { parseShard, selectShard } from './test-shards.mjs';
 
 // ---------------------------------------------------------------------------
 // Hermetic MYCO_HOME
@@ -700,15 +701,6 @@ function groupHasFiles(group, files) {
   return group.targets.some((target) => targetHasFiles(target, files));
 }
 
-function noIsolateArgsForTarget(target, options) {
-  return [
-    ...options,
-    target,
-    "--path-ignore-patterns=**/*.test.tsx",
-    ...(profile === 'fast' ? fastIgnoreArgs() : []),
-  ];
-}
-
 function noIsolateArgsForFiles(files, options) {
   return [
     ...options,
@@ -718,10 +710,10 @@ function noIsolateArgsForFiles(files, options) {
   ];
 }
 
-function noIsolatePhaseForTarget(target, options) {
+function noIsolatePhaseForTarget(target, files, options) {
   return {
     label: `node env shared ${bundleSlug(target)}`,
-    args: noIsolateArgsForTarget(target, options),
+    args: noIsolateArgsForFiles(sharedTargetFiles(target, files), options),
     isolate: false,
   };
 }
@@ -776,7 +768,7 @@ function findSharedGroups(files) {
 
 function buildNoIsolatePhases(targets, groups, sharedFiles, options) {
   return [
-    ...targets.map((target) => noIsolatePhaseForTarget(target, options)),
+    ...targets.map((target) => noIsolatePhaseForTarget(target, sharedFiles, options)),
     ...groups.map((group) => noIsolatePhaseForGroup(group, sharedFiles, options)),
   ];
 }
@@ -1388,7 +1380,34 @@ function stripDuplicateReact() {
   }
 }
 
-const { nonDomPhases, dom } = buildArgs();
+const testKind = process.env.MYCO_TEST_KIND ?? 'all';
+if (!['all', 'node', 'dom'].includes(testKind)) throw new Error(`Unknown test kind: ${testKind}`);
+const shard = parseShard(process.env.MYCO_TEST_SHARD);
+const durations = JSON.parse(fs.readFileSync(path.join(REPO, 'scripts/test-durations.json'), 'utf8'));
+const built = buildArgs();
+const testFiles = (args) => args.filter((arg) => !arg.startsWith('-') && /\.test\.tsx?$/.test(arg));
+const sourceFiles = (args) => testFiles(args).flatMap((file) => file.startsWith('target/test-bundles/')
+  ? [...fs.readFileSync(path.join(REPO, file), 'utf8').matchAll(/import '\.\.\/\.\.\/\.\.\/(.*?)';/g)].map((match) => match[1])
+  : [file]);
+const DEFAULT_FILE_DURATION_MS = 100;
+const estimate = (files) => Math.max(1, files.reduce((sum, file) => sum + (durations.files[file] ?? DEFAULT_FILE_DURATION_MS), 0));
+const candidates = [
+  ...(testKind === 'dom' ? [] : built.nonDomPhases.map((phase) => ({ ...phase, kind: 'node' }))),
+  ...(testKind === 'node' || built.dom === null ? [] : testFiles(built.dom).map((file) => ({
+    label: file, args: [file], isolate: true, kind: 'dom',
+  }))),
+];
+const selected = selectShard(candidates, shard, (phase) => estimate(sourceFiles(phase.args)));
+const nonDomPhases = selected.filter((phase) => phase.kind === 'node');
+const selectedDomFiles = selected.filter((phase) => phase.kind === 'dom').flatMap((phase) => phase.args);
+const dom = selectedDomFiles.length > 0
+  ? [...built.dom.filter((arg) => !testFiles([arg]).length), ...selectedDomFiles]
+  : null;
+const manifest = selected.map((phase) => ({ label: phase.label, files: sourceFiles(phase.args), estimatedMs: estimate(sourceFiles(phase.args)) }));
+console.log(`[run-bun-tests] ${testKind} shard ${shard.index}/${shard.count}: ${selected.length} groups, estimated ${Math.round(manifest.reduce((sum, phase) => sum + phase.estimatedMs, 0) / 1000)}s`);
+if (process.env.MYCO_RUNNER_PLAN_FILE) {
+  fs.writeFileSync(process.env.MYCO_RUNNER_PLAN_FILE, JSON.stringify(manifest, null, 2) + '\n');
+}
 
 // Audit the computed phase plan without executing. Lets a reviewer (or a CI
 // guard) confirm every test file lands in exactly one phase — catching a file
@@ -1398,9 +1417,7 @@ const { nonDomPhases, dom } = buildArgs();
 if (process.env.MYCO_RUNNER_DRY_RUN === '1') {
   const seen = new Map();
   for (const phase of [...nonDomPhases, ...(dom ? [{ label: 'jsdom', args: dom, isolate: true }] : [])]) {
-    const files = phase.args.filter(
-      (arg) => !arg.startsWith('-') && (arg.endsWith('.test.ts') || arg.endsWith('.test.tsx')),
-    );
+    const files = sourceFiles(phase.args);
     console.log(`[dry-run] ${phase.isolate ? 'isolate' : 'shared '} ${phase.label}: ${files.length} file(s)`);
     for (const file of files) {
       console.log(`           ${file}`);

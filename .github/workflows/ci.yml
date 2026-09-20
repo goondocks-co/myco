@@ -6,67 +6,101 @@ on:
   pull_request:
     branches: [main]
 
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
-  check:
+  lint:
     runs-on: ubuntu-latest
-    # GitHub Actions defaults to a 6-hour job timeout. We've hit
-    # bun-test-doesn't-exit hangs (a test leaks a handle and the runner
-    # waits indefinitely for the event loop to drain). 40 minutes is
-    # generous for the suite — locally it runs in under 3, and a slow runner has
-    # spent 16 on the install and native build steps alone — and forces
-    # a fast failure so we can grab logs and diagnose, rather than
-    # waiting hours on a wedged runner.
-    timeout-minutes: 40
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v7
-      - uses: actions/setup-node@v7
-        with:
-          node-version: 22
-      - uses: oven-sh/setup-bun@v2
-        with:
-          bun-version-file: .bun-version
-      - run: npm ci
-      # packages/myco-team/worker is not npm workspaces (the root workspaces
-      # glob only matches packages/*, one level up), so `npm run lint` below
-      # cannot type-check it via check:workers without its own node_modules
-      # installed first. packages/myco-server sits at packages/* and the root
-      # `npm ci` above covers it.
+      - uses: ./.github/actions/ci-setup
       - run: npm ci --prefix packages/myco-team/worker
       - run: npm run lint
-      # Build the host-target libsqlite3 so the compiled binary can embed it.
+      - run: node scripts/check-test-shards.mjs
+
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      - uses: ./.github/actions/ci-setup
       - run: bash packages/myco/scripts/build-libsqlite3-target.sh linux-x64
-      # Both dashboards before codegen: the binary embeds each one's build, and
-      # codegen refuses an absent build rather than emitting an empty map.
       - run: npm run build:ui -w @goondocks/myco
-      # Codegen runs here so its refusal of an absent dashboard build is a
-      # failed build rather than an empty asset map nobody notices.
       - run: npm run codegen -w @goondocks/myco
-      # The Deployment dashboard is committed and regenerates byte-identically,
-      # so a change to it that skipped codegen fails here. The member dashboard
-      # does not currently regenerate byte-identically from its committed
-      # state, so holding it to the same check would fail every build for a
-      # difference no pull request introduced.
       - name: Deployment dashboard matches its committed assets
         run: git diff --exit-code -- packages/myco/src/server-ui-assets.generated.ts
-      # Host-target only in CI — full cross-compile is reserved for release.
       - run: TARGET=linux-x64 npm run build:binary -w @goondocks/myco
-      # Full test suite under `bun test` (Phase 5 of the bun migration).
-      # `npm test` runs both the Node-env and jsdom passes via the
-      # run-bun-tests.mjs driver, handling tsx UI tests in their own pass.
+
+  tests:
+    name: tests (${{ matrix.kind }}, ${{ matrix.shard }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { kind: node, shard: '1/4' }
+          - { kind: node, shard: '2/4' }
+          - { kind: node, shard: '3/4' }
+          - { kind: node, shard: '4/4' }
+          - { kind: dom, shard: '1/2' }
+          - { kind: dom, shard: '2/2' }
+    env:
+      MYCO_TEST_KIND: ${{ matrix.kind }}
+      MYCO_TEST_SHARD: ${{ matrix.shard }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: ./.github/actions/ci-setup
       - run: npm test
-      # Per-feature both-target parity scenarios (#1042): the Bun server
-      # in-process and the Worker under wrangler dev with local D1.
+      - name: Test timing summary
+        if: always()
+        shell: bash
+        run: |
+          echo '### Test phase timings' >> "$GITHUB_STEP_SUMMARY"
+          rg '\[run-bun-tests\] (FINISHED|KILLED)' target/test-reports/*.log >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: test-reports-${{ matrix.kind }}-${{ strategy.job-index }}
+          path: target/test-reports/
+          if-no-files-found: error
+
+  parity:
+    name: parity (${{ matrix.shard }}/3)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3]
+    env:
+      MYCO_PARITY_SHARD: ${{ matrix.shard }}/3
+    steps:
+      - uses: actions/checkout@v7
+      - uses: ./.github/actions/ci-setup
       - run: npm run test:parity
-      # The Worker's own log from the parity run, kept when a scenario fails:
-      # a 500 or a dead dev server has its cause on the workerd side, not in
-      # the scenario's assertion.
       - if: failure()
         uses: actions/upload-artifact@v7
         with:
-          name: parity-wrangler-logs
+          name: parity-wrangler-logs-${{ matrix.shard }}
           path: packages/myco-server/.wrangler/parity-dev-*.log
           include-hidden-files: true
           if-no-files-found: ignore
+
+  check:
+    if: always()
+    needs: [lint, build, tests, parity, self-hosted-container, windows-native]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Require every job to succeed
+        env:
+          RESULTS: ${{ toJSON(needs) }}
+        run: |
+          echo "$RESULTS" | jq -e 'all(.[]; .result == "success")'
 
   # The self-hosted Deployment, on the platform it actually ships to.
   #

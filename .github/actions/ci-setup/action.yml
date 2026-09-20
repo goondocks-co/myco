@@ -1,0 +1,17 @@
+name: CI setup
+description: Install the pinned runtimes and root workspace dependencies
+runs:
+  using: composite
+  steps:
+    - uses: actions/setup-node@v7
+      with:
+        node-version: 22
+        cache: npm
+        cache-dependency-path: |
+          package-lock.json
+          packages/myco-team/worker/package-lock.json
+    - uses: oven-sh/setup-bun@v2
+      with:
+        bun-version-file: .bun-version
+    - run: npm ci
+      shell: bash
