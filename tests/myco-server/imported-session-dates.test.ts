@@ -440,7 +440,7 @@ describe('a presented date does not decide the lifecycle', () => {
     const outcome = await endSession(r.serverEnv.db, { projectId: PROJECT }, SESSION, endedAt, 'mem_machine_1');
     expect(outcome).toEqual({ outcome: 'ended', endedAt });
 
-    // The lifecycle write landed, and titling was requested off the end it wrote.
+    // The lifecycle end requests titling.
     const after = r.sqlite.query(`SELECT ended_at, ended_by, titling_requested_at FROM sessions`).get() as { ended_at: number | null; ended_by: string | null; titling_requested_at: number | null };
     expect(after.ended_at).toBe(endedAt);
     expect(after.ended_by).toBe('mem_machine_1');
