@@ -3,7 +3,7 @@ import { HARNESS_MEMBER_ID } from '../constants.js';
 import { credentialLive } from '../db/liveness.js';
 import { keyset, page, type Page } from './scope.js';
 
-/** What a credential was minted for: one agent run, or a member's own runtime. */
+/** Whether the credential belongs to an agent run or a member runtime. */
 export type CredentialPurpose = 'run' | 'member';
 
 /** True for a credential minted under the identity every dispatched runtime authenticates as. Binds `HARNESS_MEMBER_ID`. */
@@ -24,7 +24,7 @@ export interface CredentialRow {
   firstUsedAt: number | null;
   /** Whether this credential authenticates now: unrevoked, unexpired, and its member live. */
   live: boolean;
-  /** What this credential was minted for: one agent run, or a member's own runtime. */
+  /** Whether the credential belongs to an agent run or a member runtime. */
   purpose: CredentialPurpose;
 }
 

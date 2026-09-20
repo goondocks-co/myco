@@ -1,14 +1,4 @@
-/**
- * What a run says about the worker that holds it.
- *
- * The claim writes the harness it chose, the worker credential and the lease in
- * one statement; a terminal close and a requeue both stop the row naming a
- * holder. A reader must be able to tell a run held right now from one whose
- * holder the row no longer names, and must never read the second as "no worker
- * ran it". These gates hold that distinction across the read layer and the
- * product surface, and hold the credential a run was dispatched under apart
- * from the worker that drove it.
- */
+/** Current worker leases and credential purpose through canonical reads. */
 import { describe, expect, it } from 'bun:test';
 import worker from '@myco-server-worker/index.js';
 import { applyRunUpdate, claimQueuedRun, lapsedLeases, NO_LIMITS, requeueLapsedLease } from '@myco-server-worker/core/runs.js';
@@ -57,7 +47,7 @@ describe('a run names the worker holding it', () => {
 
     const detail = await getRunDetail(r.db, SCOPE, 'run_1');
     expect(detail?.run).toMatchObject({ harness: 'codex', leasedBy: r.workerCredential.tokenId, leaseExpiresAt: LEASE_UNTIL });
-    // The credential the run was dispatched under is the harness child's, not the worker's.
+    // The run authenticates with the harness credential.
     expect(detail?.run.dispatchedBy).toBe(r.runCredential.tokenId);
     expect(detail?.run.dispatchedBy).not.toBe(r.workerCredential.tokenId);
   });
