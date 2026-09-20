@@ -6,7 +6,7 @@ import { SCHEMA_DDL, SCHEMA_STEPS } from '@myco-server-worker/db/schema.js';
 import { SERVER_SCHEMA_VERSION } from '@myco-server-worker/constants.js';
 import { clampLimit, decodeCursor, encodeCursor, page, DEFAULT_PAGE, MAX_PAGE } from '@myco-server-worker/read/scope.js';
 
-import { archiveProject, getSession, listProjects, listSessions, projectStats, renameProject, sessionLabel, unarchiveProject, LABEL_MAX_CHARS } from '@myco-server-worker/read/sessions.js';
+import { archiveProject, getSession, listProjects, listSessions, projectStats, renameProject, sessionLabel, unarchiveProject, LABEL_MAX_CHARS, SESSION_OCCURRED_AT } from '@myco-server-worker/read/sessions.js';
 import { activityFeed } from '@myco-server-worker/read/activity.js';
 
 function seedSessions(sqlite: import('bun:sqlite').Database) {
@@ -477,7 +477,9 @@ function sessionPlan(sqlite: Database, sql: string): { index: string | null; sca
  * here, so the test below holds the same plan against a statement the module
  * itself executes.
  */
-const OCCURRED_AT = 'COALESCE(s.started_at, s.first_received_at)';
+// The expression the read layer orders by, never a copy of it: a copy drifts
+// from the index and the plan then proves the copy fast.
+const OCCURRED_AT = SESSION_OCCURRED_AT;
 const A4_SESSION_LIST = (keyset: boolean): string =>
   `SELECT s.session_id, s.machine_id, s.created_by_token_id, s.first_received_at, s.last_received_at,
      s.agent, s.branch, s.started_at, s.ended_at, s.origin_path, s.parent_session_id, s.parent_reason,

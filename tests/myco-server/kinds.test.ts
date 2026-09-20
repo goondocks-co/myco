@@ -65,8 +65,8 @@ async function upload(env: ReturnType<typeof sqliteEnv>, token: string, bytes: U
 }
 
 /** Exact projection-statement totals, pinned per payload shape: a projection that vanishes fails the gate. */
-const FULL_PROJECTION_STATEMENTS = 16;
-const REQUIRED_ONLY_PROJECTION_STATEMENTS = 14;
+const FULL_PROJECTION_STATEMENTS = 20;
+const REQUIRED_ONLY_PROJECTION_STATEMENTS = 18;
 /** Every field carrying the prompt-reference marker across the catalogue. */
 const PROMPT_REFERENCE_MARKERS = 9;
 /** Every blob-key field of the catalogue as `kind.field`, pinned by name; the absent-key admission gate drives each one. */
@@ -76,7 +76,7 @@ const BLOB_KEY_FIELDS = [
   'transcript.segment.blob',
 ];
 /** Cost-gate pins: the exact count of distinct statements it drives, and a floor on the index steps it inspects on project-scoped tables. */
-const PLANNED_STATEMENTS = 52;
+const PLANNED_STATEMENTS = 54;
 const MIN_INDEX_STEPS = 60;
 /** Every id-bounded field across the catalogue, by the role it declares. */
 const ID_ROLES = { key: 7, prompt: 9, group: 1 };
@@ -576,11 +576,13 @@ describe('kind catalogue', () => {
           ? full
           : Object.fromEntries(Object.entries(full).filter(([field]) => spec.fields[field]?.required === true));
         const e = { eventId: uuid(1), sessionId: 'sess_1', kind: spec.name, createdAt: 1_000, channel: 'cli', producer: { adapter: 'a', version: '1' }, payload, payloadJson: '{}', payloadBytes: new Uint8Array(0) } as any;
-        for (const statement of planKind(spec, { db: recorder, ctx, e, p: payload, contentHash: null }).projections) {
+        const plan = planKind(spec, { db: recorder, ctx, e, p: payload, contentHash: null });
+        for (const statement of [...plan.projections, ...(plan.incidental ?? [])]) {
           statements += 1;
           const { sql, params } = statement as unknown as { sql: string; params: unknown[] };
           const conjoined = sql.includes(`AND ${RAW_ROW_GATE}`) || sql.includes(`WHERE ${RAW_ROW_GATE}`);
-          const weakened = sql.includes(`OR ${RAW_ROW_GATE}`) || sql.includes(`NOT ${RAW_ROW_GATE}`) || / (?:OR|NOT) \(*EXISTS \(SELECT 1 FROM events/.test(sql);
+          // A reworded gate is caught by its own column: only the raw-row gate reads `ingest_nonce`, so a negated or alternative one is still a weakening, and a subquery over other events is not.
+          const weakened = sql.includes(`OR ${RAW_ROW_GATE}`) || sql.includes(`NOT ${RAW_ROW_GATE}`) || / (?:OR|NOT) \(*EXISTS \(SELECT 1 FROM events[^)]*ingest_nonce/.test(sql);
           expect({ shape, kind: spec.name, conjoined, weakened, bound: params.includes(ctx.nonce) })
             .toEqual({ shape, kind: spec.name, conjoined: true, weakened: false, bound: true });
         }

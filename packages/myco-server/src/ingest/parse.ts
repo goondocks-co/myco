@@ -30,9 +30,10 @@ import { planEventWrite, type EventWrite, type IngestResult } from './events.js'
 import { idFields, kindSpec } from './kinds.js';
 import { parserFor } from './parsers/registry.js';
 import { isBlock, type DerivedEvent } from './parsers/index.js';
+import { resolvePresentedDates } from './projections.js';
 import { segmentsToRead, splitCompleteLines } from './segments.js';
 import { registeredObjectKeySql } from '../core/blob-objects.js';
-import { MAX_BLOB_BYTES, SERVER_PROTOCOL } from '../constants.js';
+import { MAX_BLOB_BYTES, SERVER_PROTOCOL, TRANSCRIPT_PARSE_ADAPTER } from '../constants.js';
 
 /** Derived events collapsed into one database call. */
 export const TRANSCRIPT_PARSE_EVENTS_PER_BATCH = 20;
@@ -72,7 +73,7 @@ export const PARSER_VERSION = 2;
 export const TRANSCRIPT_PARSE_MALFORMED_LIMIT = 8;
 
 /** What a derived event says produced it. The one field that separates a parsed row from a hook-shipped one, and what the parity gate partitions on. */
-export const TRANSCRIPT_PRODUCER = { adapter: 'transcript-parse', version: String(SERVER_PROTOCOL) } as const;
+export const TRANSCRIPT_PRODUCER = { adapter: TRANSCRIPT_PARSE_ADAPTER, version: String(SERVER_PROTOCOL) } as const;
 
 /**
  * Which transcripts still owe a pass: bytes unread, and either no failure or a
@@ -105,6 +106,8 @@ interface ParseTarget {
   /** The turn open where the cursor stands, recorded by the pass that stopped there. */
   openPromptId: string | null;
   parserContext?: Record<string, unknown> | null;
+  /** True for a transcript a backfill shipped, whose session an import dated by the file's mtime. */
+  imported: boolean;
 }
 
 function contextFromStored(raw: unknown): Record<string, unknown> | null {
@@ -121,7 +124,7 @@ export type ParseFailure = Extract<Classifier, 'parse'> | 'blob_absent';
 /** The next transcript with unread bytes and no failure holding it, oldest receipt first. */
 async function nextTarget(db: RelationalStore, now: number): Promise<ParseTarget | null> {
   const row = await db
-    .prepare(`SELECT project_id, transcript_id, session_id, machine_id, token_id, agent, size, parsed_offset, fidelity, open_prompt_id, parser_context
+    .prepare(`SELECT project_id, transcript_id, session_id, machine_id, token_id, agent, size, parsed_offset, fidelity, open_prompt_id, parser_context, imported_at
                 FROM transcripts
                WHERE ${PENDING_TRANSCRIPTS}
                  AND NOT EXISTS (SELECT 1 FROM session_tombstones t WHERE t.project_id = transcripts.project_id AND t.session_id = transcripts.session_id)
@@ -141,6 +144,7 @@ async function nextTarget(db: RelationalStore, now: number): Promise<ParseTarget
     fidelity: (row.fidelity as string | null) ?? null,
     openPromptId: (row.open_prompt_id as string | null) ?? null,
     parserContext: contextFromStored(row.parser_context),
+    imported: row.imported_at !== null && row.imported_at !== undefined,
   };
 }
 
@@ -414,12 +418,17 @@ export async function parseOnce(env: Pick<ServerEnv, 'db' | 'blobs'>, target: Pa
   // Uploaded bytes may end mid-turn; later segments continue the same prompt.
   const openPrompt = lastTurn;
 
-  await env.db
+  const advance = env.db
     .prepare(`UPDATE transcripts SET parsed_offset = MAX(parsed_offset, ?), parsed_at = ?, parser_version = ?, fidelity = COALESCE(fidelity, ?), open_prompt_id = ?,
                  parser_context = COALESCE(parser_context, ?), parse_error = NULL, parse_failed_at = NULL
                WHERE project_id = ? AND transcript_id = ?`)
-    .bind(cursor, now, PARSER_VERSION, parser.fidelity, openPrompt, transcriptMeta === undefined ? null : JSON.stringify(transcriptMeta), target.projectId, target.transcriptId)
-    .run();
+    .bind(cursor, now, PARSER_VERSION, parser.fidelity, openPrompt, transcriptMeta === undefined ? null : JSON.stringify(transcriptMeta), target.projectId, target.transcriptId);
+  // An imported session is presented at its transcript file's mtime until the
+  // derived rows say when the conversation happened. Every pass carries the
+  // recompute, batched with the cursor so the pass spends no extra call: a
+  // session an import no longer accounts for resolves to no overlay at all, so
+  // a transcript that stops being an import's leaves none behind.
+  await env.db.batch([advance, resolvePresentedDates(env.db, target.projectId, target.sessionId)]);
   calls += 1;
 
   emit({ kind: 'transcript_parsed', projectId: target.projectId, transcriptId: target.transcriptId, derived, offset: cursor });

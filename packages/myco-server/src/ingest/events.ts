@@ -157,7 +157,9 @@ export async function planEventWrite(db: RelationalStore, ctx: IngestContext, bo
   const admitted = db.prepare(`SELECT ${quotaAdmission.sql} AS within_quota`).bind(...quotaAdmission.params);
   const shared = checks.map((c) => db.prepare(c.read.sql).bind(...c.read.params));
   const priors = plan.priors ?? [];
-  const statements: PreparedStatement[] = [raw, quota, receipt, ...priors, ...plan.projections, stored, admitted, ...shared, ...plan.reads];
+  // Beside the projections in the batch, outside the evidence a conflict is read from.
+  const incidental = plan.incidental ?? [];
+  const statements: PreparedStatement[] = [raw, quota, receipt, ...priors, ...plan.projections, ...incidental, stored, admitted, ...shared, ...plan.reads];
 
   const interpret = (results: BatchResult[]): IngestResult => {
   if (results.length !== statements.length) throw new StorageContractError(`batch answered ${results.length} results for ${statements.length} statements`);
@@ -165,9 +167,10 @@ export async function planEventWrite(db: RelationalStore, ctx: IngestContext, bo
   const base = 3 + priors.length;
   const priorRows: ReadRows = results.slice(3, base).map((r) => r.results as Record<string, unknown>[]);
   const projectionResults = results.slice(base, base + plan.projections.length);
-  const storedRow = results[base + plan.projections.length].results[0] as { envelope_hash?: string; ingest_nonce?: string } | undefined;
-  const withinQuotaRow = results[base + 1 + plan.projections.length].results[0] as { within_quota: number } | undefined;
-  const allReads: ReadRows = results.slice(base + 2 + plan.projections.length).map((r) => r.results as Record<string, unknown>[]);
+  const afterWrites = base + plan.projections.length + incidental.length;
+  const storedRow = results[afterWrites].results[0] as { envelope_hash?: string; ingest_nonce?: string } | undefined;
+  const withinQuotaRow = results[afterWrites + 1].results[0] as { within_quota: number } | undefined;
+  const allReads: ReadRows = results.slice(afterWrites + 2).map((r) => r.results as Record<string, unknown>[]);
   const sharedRows = allReads.slice(0, checks.length);
   const reads = allReads.slice(checks.length);
   const extra = plan.extra ? plan.extra(reads) : {};
