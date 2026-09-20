@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { type DoctorCheck, checkCaptureFlow, checkMemberMcpResolution, checkMigrationStatus, checkSymbiontEdgeCases, fix, isSymbiontRegistered, isSymbiontRegisteredGlobally, run, runChecks } from '@myco/cli/doctor';
-import { writeRegistryEntry, REGISTRY_VERSION } from '@myco/member/registry.js';
+import { writeRegistryEntry, REGISTRY_VERSION, projectsDir, registryKeyFor } from '@myco/member/registry.js';
 import { loadManifests } from '@myco/symbionts/detect';
 import { expandHome } from '@myco/grove/paths';
 import { openDatabase, withDatabase, initDatabase, closeDatabase } from '@myco/db/client.js';
@@ -904,4 +904,61 @@ describe('checkMemberMcpResolution', () => {
     expect(reasons(checks).every((r) => r.reason !== 'mcp_entry_http')).toBe(true);
   });
 
+});
+
+describe('checkMemberMcpResolution reading the registry for a report', () => {
+  let savedHome: string | undefined;
+  let homeDir: string;
+  beforeEach(() => {
+    savedHome = process.env.HOME;
+    homeDir = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-strict-home-'));
+    process.env.HOME = homeDir;
+  });
+  afterEach(() => {
+    if (savedHome === undefined) delete process.env.HOME; else process.env.HOME = savedHome;
+    fs.rmSync(homeDir, { recursive: true, force: true });
+  });
+
+  /** A project whose membership is a v1 entry, written where the registry keeps it. */
+  function legacyMember(): { root: string; mycoHome: string } {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-strict-proj-'));
+    fs.mkdirSync(path.join(root, '.myco'));
+    const mycoHome = path.join(homeDir, '.myco');
+    const projects = projectsDir(mycoHome);
+    fs.mkdirSync(projects, { recursive: true });
+    fs.writeFileSync(path.join(projects, `${registryKeyFor(root)}.json`), JSON.stringify({
+      version: 1, projectId: 'proj_1', serverUrl: 'https://srv.example/', token: 'A'.repeat(43),
+      root, machineId: 'm1', joinedAt: 1, updatedAt: 1,
+    }), { mode: 0o600 });
+    fs.mkdirSync(path.join(root, '.cursor'), { recursive: true });
+    fs.writeFileSync(path.join(root, '.cursor', 'mcp.json'), JSON.stringify({
+      mcpServers: { myco: { type: 'stdio', command: '/opt/myco', args: ['mcp', '--credential', 'registry'] } },
+    }));
+    return { root, mycoHome };
+  }
+
+  const version = (mycoHome: string, root: string) =>
+    (JSON.parse(fs.readFileSync(path.join(projectsDir(mycoHome), `${registryKeyFor(root)}.json`), 'utf-8')) as { version: number }).version;
+
+  it('reads a v1 membership where it stands, leaving the entry at the version it was written at', async () => {
+    const { root, mycoHome } = legacyMember();
+    const env = { ...process.env, MYCO_HOME: mycoHome };
+
+    const checks = await checkMemberMcpResolution(path.join(root, '.myco'), env, { registryRead: 'strict' });
+    expect(checks.some((c) => c.reason === 'mcp_entry_stdio' && c.symbiont === 'cursor')).toBe(true);
+    expect(version(mycoHome, root)).toBe(1);
+  });
+
+  it('answers from a registry whose lock cannot be taken, which an upgrading read would wait on', async () => {
+    const { root, mycoHome } = legacyMember();
+    const env = { ...process.env, MYCO_HOME: mycoHome };
+    // A directory where the registry's lock file belongs: nothing can take it.
+    const lock = path.join(projectsDir(mycoHome), '.lock');
+    fs.rmSync(lock, { force: true });
+    fs.mkdirSync(lock);
+
+    const checks = await checkMemberMcpResolution(path.join(root, '.myco'), env, { registryRead: 'strict' });
+    expect(checks.some((c) => c.reason === 'mcp_entry_stdio' && c.symbiont === 'cursor')).toBe(true);
+    expect(version(mycoHome, root)).toBe(1);
+  });
 });

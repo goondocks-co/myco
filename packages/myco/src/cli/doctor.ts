@@ -1634,14 +1634,22 @@ export async function checkRuntimePin(): Promise<DoctorCheck | null> {
  * configuration declares, never that a server answers or that a credential
  * authenticates.
  */
-export async function checkMemberMcpResolution(vaultDir: string, env: NodeJS.ProcessEnv = process.env): Promise<DoctorCheck[]> {
+export async function checkMemberMcpResolution(
+  vaultDir: string,
+  env: NodeJS.ProcessEnv = process.env,
+  opts: { registryRead?: 'migrate' | 'strict' } = {},
+): Promise<DoctorCheck[]> {
   const { resolveProjectRoot } = await import('../project-root.js');
   const { resolveMycoHome, defaultMycoHome, readMachineHomePin } = await import('../paths/home.js');
-  const { readRegistryEntry } = await import('../member/registry.js');
+  const { readRegistryEntry, readRegistryEntryResult } = await import('../member/registry.js');
   const { loadManifests } = await import('../symbionts/detect.js');
   const root = resolveProjectRoot(vaultDir);
   const home = resolveMycoHome({ cwd: root, env });
-  if (readRegistryEntry(root, home) === null) return [];
+  // Strict reads leave legacy entries unchanged and acquire no write lock.
+  const member = opts.registryRead === 'strict'
+    ? readRegistryEntryResult(root, home).status === 'present'
+    : readRegistryEntry(root, home) !== null;
+  if (!member) return [];
   const checks: DoctorCheck[] = [];
   const homeDir = env.HOME && env.HOME.length > 0 ? env.HOME : undefined;
   const nonDefaultHome = path.resolve(home) !== path.resolve(defaultMycoHome(homeDir));
