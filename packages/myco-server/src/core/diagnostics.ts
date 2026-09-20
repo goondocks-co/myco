@@ -23,7 +23,7 @@ import { RETAINED_TASKS } from './task-catalogue.js';
 import { HELD_BY_WORDS } from '@goondocks/myco-shared/run-holds';
 import { declared } from './declared.js';
 import { CONTACT_RECENT_MS, isContactOutcome, readWorkerFleet, type ContactOutcome, type WorkerFleetRow } from './worker-contacts.js';
-import { pendingImportedTranscripts, pendingTranscriptBytes } from '../ingest/parse.js';
+import { pendingImportedTranscripts, pendingTranscriptBytes as pendingTranscripts } from '../ingest/parse.js';
 import { DEFERRED_JOBS, SERVER_JOBS, WAKE_CONTINUATIONS } from './jobs.js';
 import { CLASSIFIERS } from '../telemetry.js';
 
@@ -146,7 +146,7 @@ export interface DeploymentDiagnostics {
   /** Null when the store could not be questioned. */
   projects: ProjectFacts[] | null;
   /** Null when the store could not be questioned. */
-  ingestBacklog: { pendingTranscriptBytes: number; pendingImportedTranscripts: number } | null;
+  ingestBacklog: { pendingTranscripts: number; pendingImportedTranscripts: number } | null;
   /** Declared from the registry, so it is answered whether or not the store can be read. */
   declaredWork: DeclaredWorkFacts[];
   /** The closed vocabulary a refusal's code is drawn from, which is what joins this document to a member's refusal log. */
@@ -200,9 +200,8 @@ function queuedFacts(row: { id: string; projectId: string; task: string | null; 
  * The capability list and the job registry are this server's configuration and
  * are answered before anything is read, so a Deployment whose store is unusable
  * still says what it is configured to do. Everything the store answers is read
- * inside one attempt: a failure leaves each of those fields null beside
- * `store: 'unavailable'`, which a reader distinguishes from a Deployment that
- * genuinely holds nothing.
+ * inside one attempt. A failure preserves a schema version already read and
+ * leaves downstream facts null beside `store: 'unavailable'`.
  */
 export async function deploymentDiagnostics(env: ServerEnv, now: number): Promise<DeploymentDiagnostics> {
   const capabilities: CapabilityFacts[] = (env.platform?.capabilities() ?? [])
@@ -217,8 +216,9 @@ export async function deploymentDiagnostics(env: ServerEnv, now: number): Promis
     refusalVocabulary: CLASSIFIERS,
     omissions: DEPLOYMENT_OMISSIONS,
   };
+  let found: number | null = null;
   try {
-    const found = await schemaVersion(env.db);
+    found = await schemaVersion(env.db);
     const counts = await workerLiveness(env.db, now);
     const fleet = await readWorkerFleet(env.db, now);
     const queued = await listQueuedAcrossProjects(env.db, MAX_QUEUED_REPORTED);
@@ -231,7 +231,7 @@ export async function deploymentDiagnostics(env: ServerEnv, now: number): Promis
       queuedRuns: queued.map(queuedFacts),
       projects: projects.map((p) => ({ projectId: p.projectId, sessionCount: p.sessionCount, lastActivityAt: p.lastActivityAt, archivedAt: p.archivedAt })),
       ingestBacklog: {
-        pendingTranscriptBytes: await pendingTranscriptBytes(env.db),
+        pendingTranscripts: await pendingTranscripts(env.db),
         pendingImportedTranscripts: await pendingImportedTranscripts(env.db),
       },
     };
@@ -239,7 +239,7 @@ export async function deploymentDiagnostics(env: ServerEnv, now: number): Promis
     return {
       ...base,
       store: 'unavailable',
-      schema: { expected: SERVER_SCHEMA_VERSION, found: null, matches: false },
+      schema: { expected: SERVER_SCHEMA_VERSION, found, matches: found === SERVER_SCHEMA_VERSION },
       workers: null,
       queuedRuns: null,
       projects: null,

@@ -49,7 +49,17 @@ describe('the Deployment names what it is configured to do', () => {
     expect(document.workers?.fleet[0]).toMatchObject({ machineId: 'build-box', lastReason: 'no_harness', recent: true });
     expect(document.queuedRuns?.[0]).toMatchObject({ runId: 'run_q', task: 'title-summary', heldBy: 'worker', launched: false });
     expect(document.projects?.some((p) => p.projectId === 'proj_1')).toBe(true);
-    expect(document.ingestBacklog).toMatchObject({ pendingTranscriptBytes: 0, pendingImportedTranscripts: 0 });
+    expect(document.ingestBacklog).toMatchObject({ pendingTranscripts: 0, pendingImportedTranscripts: 0 });
+  });
+
+  it('labels a nonempty backlog as a transcript count', async () => {
+    const r = await rig();
+    await ensureMember(r.db, 'mem_backlog', NOW, 'member', 'backlog member');
+    const credential = await issueMemberToken(r.db, { memberId: 'mem_backlog', machineId: 'machine' }, NOW);
+    r.sqlite.run(`INSERT INTO transcripts(project_id,transcript_id,session_id,machine_id,size,first_received_at,last_received_at,token_id)
+      VALUES ('proj_1','tx_pending','session_pending','machine',2048,?,?,?)`, [NOW, NOW, credential.tokenId]);
+    const document = await deploymentDiagnostics(r.serverEnv, NOW);
+    expect(document.ingestBacklog).toEqual({ pendingTranscripts: 1, pendingImportedTranscripts: 0 });
   });
 
   it('counts a stored claim reason outside the vocabulary rather than carrying its text', async () => {
@@ -194,6 +204,17 @@ describe('the Deployment names what it is configured to do', () => {
 });
 
 describe('a store the handler could not question is not an empty Deployment', () => {
+  it('preserves the schema version when a later diagnostic query fails', async () => {
+    const r = await rig();
+    r.sqlite.run("UPDATE schema_meta SET value = '43' WHERE key = 'version'");
+    r.sqlite.run('DROP TABLE worker_contacts');
+    const document = await deploymentDiagnostics(r.serverEnv, NOW);
+    expect(document.store).toBe('unavailable');
+    expect(document.schema).toMatchObject({ found: 43, matches: false });
+    expect(document.workers).toBeNull();
+    expect(document.ingestBacklog).toBeNull();
+  });
+
   it('answers a named state with nulls, never zero workers and no projects', async () => {
     const r = await rig();
     const broken = {
