@@ -72,16 +72,10 @@ export function bufferLockPath(spoolDir: string, sessionId: string): string {
   return path.join(spoolDir, `.${sessionId}.lock`);
 }
 
-/** An optional instant: absent, or a finite number. A field carrying anything else makes the file no state, so nothing downstream renders or compares it. */
-const optionalInstant = (value: unknown): boolean => value === undefined || (typeof value === 'number' && Number.isFinite(value));
-
 function isState(value: unknown): value is SessionState {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  if (!value || typeof value !== 'object') return false;
   const s = value as Record<string, unknown>;
-  if (s.version !== SESSION_STATE_VERSION) return false;
-  if (typeof s.highWater !== 'number' || !Number.isFinite(s.highWater)) return false;
-  if (typeof s.prompts !== 'object' || s.prompts === null) return false;
-  return optionalInstant(s.startedAt) && optionalInstant(s.lastAckAt);
+  return s.version === SESSION_STATE_VERSION && typeof s.highWater === 'number' && typeof s.prompts === 'object' && s.prompts !== null;
 }
 
 /** Why a state file yielded no state: absent, refused by its mode, unparsable, or parsed but not a state. */
@@ -91,17 +85,30 @@ export type SessionStateRead =
   | { ok: true; state: SessionState }
   | { ok: false; reason: SessionStateRefusal; detail?: string };
 
-/** The state as last written, or why it could not be used. The one parse and the one schema check; every other reader derives from this. */
-export function readSessionStateResultUnlocked(spoolDir: string, sessionId: string): SessionStateRead {
+/** The one parse, schema check and default merge over a state file; both readers below derive from it. */
+function readStateFile(spoolDir: string, sessionId: string): SessionStateRead {
   const read = readPrivateJson<SessionState>(sessionStatePath(spoolDir, sessionId));
   if (!read.ok) return { ok: false, reason: read.reason, detail: read.detail };
   if (!isState(read.value)) return { ok: false, reason: 'invalid', detail: 'not a session state' };
   return { ok: true, state: { ...emptySessionState(), ...read.value } };
 }
 
+/** An instant a surface can render: finite, and a date. */
+const rendersAsInstant = (value: unknown): boolean =>
+  typeof value === 'number' && Number.isFinite(value) && !Number.isNaN(new Date(value).getTime());
+
+/** The state, or why a report cannot use it: beyond the schema, a `highWater` it can subtract and a `lastAckAt` it can date. Narrows nothing the runtime accepts, so a state unusable here keeps its mark. */
+export function readSessionStateResultUnlocked(spoolDir: string, sessionId: string): SessionStateRead {
+  const read = readStateFile(spoolDir, sessionId);
+  if (!read.ok) return read;
+  const { highWater, lastAckAt } = read.state;
+  const reportable = Number.isFinite(highWater) && (lastAckAt === undefined || rendersAsInstant(lastAckAt));
+  return reportable ? read : { ok: false, reason: 'invalid', detail: 'a reported field is not a number a report can use' };
+}
+
 /** The state as last written; a missing, loose-moded, malformed or invalid file reads as empty (all but missing with one stderr line). */
 export function readSessionStateUnlocked(spoolDir: string, sessionId: string): SessionState {
-  const read = readSessionStateResultUnlocked(spoolDir, sessionId);
+  const read = readStateFile(spoolDir, sessionId);
   if (read.ok) return read.state;
   if (read.reason !== 'missing') {
     reportSkippedPrivateFile('session state', sessionStatePath(spoolDir, sessionId),

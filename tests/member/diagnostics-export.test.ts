@@ -15,6 +15,7 @@ import { execFileSync } from 'node:child_process';
 import os from 'node:os';
 import path from 'node:path';
 import { MemberSpool, spoolDirFor } from '@myco/member/spool.js';
+import { updateSessionState } from '@myco/member/session-state.js';
 import { writeRegistryEntry, type RegistryEntry } from '@myco/member/registry.js';
 import { recordMissingMembership } from '@myco/member/no-membership.js';
 import { mintId, promptEvent, type EnvelopeContext } from '@myco/member/envelope.js';
@@ -463,17 +464,26 @@ describe('a state file the report can reach but cannot trust', () => {
     expect(facts.spool.stateReadable).toBe(false);
   });
 
-  it('refuses a state whose acknowledgement is not an instant, so no surface renders it', () => {
+  it('refuses a state whose acknowledgement is not an instant, and leaves the mark the runtime keeps', () => {
     const e = entry();
     writeRegistryEntry(e, { mycoHome });
     const spool = new MemberSpool('proj_1', { mycoHome });
-    fs.writeFileSync(path.join(spool.dir, 'sess-a.jsonl'), '', 'utf-8');
-    fs.writeFileSync(path.join(spool.dir, 'sess-a.state.json'), JSON.stringify({ version: 1, highWater: 0, prompts: {}, lastAckAt: 'yesterday' }), { mode: 0o600 });
+    fs.writeFileSync(path.join(spool.dir, 'sess-a.jsonl'), ['{"a":1}', '{"a":2}'].join('\n') + '\n', 'utf-8');
+    // A real mark, then one field beside it corrupted as the raw JSON it would arrive as.
+    updateSessionState(spool.dir, 'sess-a', (state) => { state.highWater = 2; });
+    const file = path.join(spool.dir, 'sess-a.state.json');
+    const saved = JSON.parse(fs.readFileSync(file, 'utf-8')) as Record<string, unknown>;
+    fs.writeFileSync(file, JSON.stringify({ ...saved, lastAckAt: 'yesterday' }), { mode: 0o600 });
 
+    // The report will not count or date it.
     const facts = projectDiagnostics(e, mycoHome, NOW);
     expect(facts.spool.stateReadable).toBe(false);
     expect(facts.spool.lastAckAt).toBeNull();
-    expect(facts.spool.sessions[0]!.lastAckAt).toBeNull();
+    expect(facts.spool.sessions).toEqual([{ sessionId: 'sess-a', unacknowledged: null, stateReadable: false, lastAckAt: null }]);
+
+    // The runtime still holds the mark, so nothing acknowledged is drained again.
+    const after = updateSessionState(spool.dir, 'sess-a', () => {});
+    expect(after.highWater).toBe(2);
   });
 });
 
