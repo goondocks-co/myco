@@ -71,8 +71,11 @@ function writeRefusedLog(projectId: string, lines: readonly string[]): void {
   fs.writeFileSync(path.join(spool.dir, 'refused.jsonl'), lines.join('\n') + '\n', { mode: 0o600 });
 }
 
+/** An event id as a member mints one; the report carries only ids of this shape. */
+const evId = (n: number) => `3f2504e0-4f89-41d3-9a0c-${String(n).padStart(12, '0')}`;
+
 const refusal = (over: Record<string, unknown> = {}) => JSON.stringify({
-  eventId: 'ev_1', sessionId: 'sess_1', kind: 'prompt', code: 'clock_skew', reason: 'the server said /Users/dev/secret.env was ahead', at: NOW, ...over,
+  eventId: evId(1), sessionId: 'sess_1', kind: 'prompt', code: 'clock_skew', reason: 'the server said /Users/dev/secret.env was ahead', at: NOW, ...over,
 });
 
 describe('a member report carries no credential and no captured content', () => {
@@ -115,7 +118,7 @@ describe('a member report carries no credential and no captured content', () => 
     writeRegistryEntry(e, { mycoHome });
     writeRefusedLog('proj_1', [refusal()]);
     const facts = projectDiagnostics(e, mycoHome, NOW);
-    expect(facts.refusals.entries[0]).toEqual({ eventId: 'ev_1', sessionId: 'sess_1', kind: 'prompt', code: 'clock_skew', at: NOW });
+    expect(facts.refusals.entries[0]).toEqual({ eventId: evId(1), sessionId: 'sess_1', kind: 'prompt', code: 'clock_skew', at: NOW });
     expect(JSON.stringify(facts)).not.toContain('secret.env');
   });
 
@@ -134,7 +137,7 @@ describe('a code read back from disk is checked against the closed set', () => {
     writeRegistryEntry(e, { mycoHome });
     writeRefusedLog('proj_1', [
       refusal({ code: 'clock_skew' }),
-      refusal({ eventId: 'ev_2', code: 'something the server made up' }),
+      refusal({ eventId: evId(2), code: 'something the server made up' }),
     ]);
     const facts = projectDiagnostics(e, mycoHome, NOW);
     expect(facts.refusals.entries.map((r) => r.code)).toEqual(['clock_skew', null]);
@@ -164,7 +167,7 @@ describe('a damaged record is not a healthy zero', () => {
   it('says when the log holds more than the report lists', () => {
     const e = entry();
     writeRegistryEntry(e, { mycoHome });
-    writeRefusedLog('proj_1', Array.from({ length: MAX_REFUSALS_REPORTED + 5 }, (_, i) => refusal({ eventId: `ev_${i}` })));
+    writeRefusedLog('proj_1', Array.from({ length: MAX_REFUSALS_REPORTED + 5 }, (_, i) => refusal({ eventId: evId(i) })));
     const facts = projectDiagnostics(e, mycoHome, NOW);
     expect(facts.refusals.entries).toHaveLength(MAX_REFUSALS_REPORTED);
     expect(facts.refusals.truncated).toBe(true);

@@ -21,6 +21,11 @@ import { getPluginVersion } from '../version.js';
 import type { MissingMembershipRecord } from './no-membership.js';
 import { MemberSpool, type RefusedEntry } from './spool.js';
 import { MEMBER_PROTOCOL, isMemberCode, type MemberCode } from './constants.js';
+import { ID_GRAMMAR, MAX_ID_CHARS, isMemberKind } from '@goondocks/myco-shared/member-protocol';
+
+/** An instant a surface can render: finite, and a date. */
+const rendersAsInstant = (value: unknown): value is number =>
+  typeof value === 'number' && Number.isFinite(value) && !Number.isNaN(new Date(value).getTime());
 
 /** How many refusals one report carries, newest last. */
 export const MAX_REFUSALS_REPORTED = 50;
@@ -91,13 +96,15 @@ export interface LatchFacts {
  * would put arbitrary text in a report.
  */
 export interface RefusalFacts {
-  /** Null for a refusal that names no event, which a drain raises against an unparsable spool line. */
+  /** The event this refusal names, or null where the log holds no id the grammar admits. */
   eventId: string | null;
-  sessionId: string;
-  /** Null for a refusal that names no kind, on the same line. */
+  /** The session it names — an opaque identifier — or null where the log holds none a member could have shipped. */
+  sessionId: string | null;
+  /** Null where the log names no kind a member ships. */
   kind: string | null;
   code: MemberCode | null;
-  at: number;
+  /** Null where the log holds no instant a reader can date. */
+  at: number | null;
 }
 
 /** Capture an invocation could not attribute, for one project root. */
@@ -215,7 +222,7 @@ function membershipOf(entry: RegistryEntry, now: number): MembershipFacts {
     unavailableFields.push(name);
     return null;
   };
-  const instant = (value: unknown): value is number => typeof value === 'number' && Number.isFinite(value) && !Number.isNaN(new Date(value).getTime());
+  const instant = rendersAsInstant;
   const identifier = (value: unknown): value is string => typeof value === 'string' && value.length > 0 && value !== entry.token;
   const tokenId = readField('tokenId', entry.tokenId, identifier, true);
   const memberId = readField('memberId', entry.memberId, identifier, true);
@@ -240,17 +247,28 @@ function membershipOf(entry: RegistryEntry, now: number): MembershipFacts {
   };
 }
 
-/** A logged entry as the report carries it: the identifiers the writer left empty read as null, and the free-text reason is dropped. */
+/**
+ * A logged entry as the report carries it.
+ *
+ * The log is a file on the member's disk, so every field is read against what a
+ * member could have shipped and nulled where it is not: an event id matching the
+ * id grammar, a session id within the opaque bound ingest accepts, a kind from
+ * the shipped vocabulary, a code from the member's own, and an instant a reader
+ * can date. The free-text reason is dropped.
+ */
 function refusalOf(entry: RefusedEntry): RefusalFacts {
-  const named = (value: string): string | null => (value === '' ? null : value);
+  const opaqueId = (value: unknown): string | null =>
+    typeof value === 'string' && value !== '' && value.length <= MAX_ID_CHARS ? value : null;
   return {
-    eventId: named(entry.eventId),
-    sessionId: entry.sessionId,
-    kind: named(entry.kind),
+    eventId: typeof entry.eventId === 'string' && ID_GRAMMAR.test(entry.eventId) ? entry.eventId : null,
+    sessionId: opaqueId(entry.sessionId),
+    kind: isMemberKind(entry.kind) ? entry.kind : null,
     code: isMemberCode(entry.code) ? entry.code : null,
-    at: entry.at,
+    at: rendersAsInstant(entry.at) ? entry.at : null,
   };
 }
+
+
 
 /** Missed-capture counts and times, without the free-text invoker. */
 export const missedCaptureOf = (record: MissingMembershipRecord): MissedCaptureFacts =>
@@ -279,7 +297,11 @@ export function projectDiagnostics(entry: RegistryEntry, mycoHome: string, now: 
   const refused = spool.readRefused();
   const reported = refused.entries.slice(-MAX_REFUSALS_REPORTED).map(refusalOf);
   const latchRead = spool.readLatchResult();
-  const latch = latchRead.readable ? latchRead.latch : null;
+  // A latch whose instants no reader can date is one the report cannot use, and
+  // it is no more readable than a file it could not parse.
+  const latchUsable = latchRead.readable
+    && (latchRead.latch === null || (rendersAsInstant(latchRead.latch.since) && rendersAsInstant(latchRead.latch.nextProbeAt)));
+  const latch = latchUsable ? latchRead.latch : null;
   return {
     membership: membershipOf(entry, now),
     spool: {
@@ -294,7 +316,7 @@ export function projectDiagnostics(entry: RegistryEntry, mycoHome: string, now: 
       sessions,
     },
     latch: latch === null ? null : { since: latch.since, nextProbeAt: latch.nextProbeAt, backoffMs: latch.backoffMs },
-    latchReadable: latchRead.readable,
+    latchReadable: latchUsable,
     refusals: {
       logReadable: refused.readable,
       loggedSinceLastReset: refused.entries.length,

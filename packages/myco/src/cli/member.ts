@@ -19,7 +19,7 @@ import { CREDENTIAL_FLAG, CREDENTIAL_SOURCES, deploymentScopedHeaders, isProject
 import { isHttpsUrl, isMemberTokenShape, parseCredentialFlag, resolveCredential, resolveMemberProjectRoot } from '../member/credential.js';
 import { refreshMemberCredential, type RefreshReport } from '../member/refresh.js';
 import { runImport } from '../member/import.js';
-import { clearMissingMembership, listMissingMemberships, listMissingMembershipsResult, pruneMissingMemberships, readMissingMembership, readMissingMembershipResult } from '../member/no-membership.js';
+import { clearMissingMembership, listMissingMembershipsResult, pruneMissingMemberships, readMissingMembership, readMissingMembershipResult, type MissingMembershipRecord } from '../member/no-membership.js';
 import { deploymentUrl, listRegistryEntries, listRegistryEntriesResult, readDeploymentMembership, readRegistryEntry, readRegistryEntryResult, removeRegistryEntry, writeRegistryEntry, REGISTRY_VERSION, type RegistryEntry } from '../member/registry.js';
 import { applySpoolRetention } from '../member/retention.js';
 import { memberDiagnostics, projectDiagnostics } from '../member/diagnostics.js';
@@ -120,6 +120,35 @@ function registrySelection(args: readonly string[], deps: MemberCliDeps): {
     entries: selected?.status === 'present' ? [selected.entry] : [],
     readable: selected?.status !== 'unavailable',
     unavailableEntries: selected?.status === 'unavailable' ? 1 : 0,
+  };
+}
+
+/**
+ * The missed-capture records a diagnostic surface reads, and what the store
+ * could not answer for. A record naming another root, or one nothing can count
+ * or date, is unavailable rather than a number.
+ *
+ * `missedCaptureRoot` is the root a hook keys its misses under, which carries no
+ * project-root gate: a record exists for directories a registry entry cannot.
+ */
+function missedCaptureRoot(deps: MemberCliDeps): string | null {
+  try {
+    return resolveMemberProjectRoot(deps.cwd);
+  } catch {
+    return null;
+  }
+}
+
+function missedCaptureSelection(root: string | null, all: boolean, deps: MemberCliDeps): {
+  records: MissingMembershipRecord[]; readable: boolean; unavailableRecords: number;
+} {
+  const mycoHome = homeFor(deps);
+  if (all) return listMissingMembershipsResult(mycoHome);
+  const read = root === null ? null : readMissingMembershipResult(root, mycoHome);
+  return {
+    records: read?.status === 'present' ? [read.record] : [],
+    readable: read?.status !== 'unavailable',
+    unavailableRecords: read?.status === 'unavailable' ? 1 : 0,
   };
 }
 
@@ -412,7 +441,7 @@ export function runStatus(args: readonly string[], deps: MemberCliDeps = {}): vo
     out(`last ack:   ${!spool.stateReadable ? 'unknown — state could not be read' : spool.lastAckAt === null ? '—' : when(spool.lastAckAt)}`);
     const last = refusals.entries[refusals.entries.length - 1];
     const damaged = refusals.unreadableLines > 0 ? `, ${refusals.unreadableLines} unreadable` : '';
-    out(`refused:    ${refusals.logReadable ? `${refusals.loggedSinceLastReset} logged${damaged}${last ? `; last ${last.kind ?? 'unknown kind'} ${last.eventId ?? 'unknown event'} (${last.code ?? 'code not recognised'}) at ${when(last.at)}` : ''}` : 'the log could not be read'}`);
+    out(`refused:    ${refusals.logReadable ? `${refusals.loggedSinceLastReset} logged${damaged}${last ? `; last ${last.kind ?? 'unknown kind'} ${last.eventId ?? 'unknown event'} (${last.code ?? 'code not recognised'}) at ${last.at === null ? 'unknown' : when(last.at)}` : ''}` : 'the log could not be read'}`);
     out(`latch:      ${!facts.latchReadable ? 'unknown — latch could not be read' : latch ? `offline since ${when(latch.since)}, next probe ${when(latch.nextProbeAt)} (backoff ${latch.backoffMs} ms)` : 'online'}`);
   }
   if (selection.all) {
@@ -425,7 +454,7 @@ export function runStatus(args: readonly string[], deps: MemberCliDeps = {}): vo
   else if (selection.entries.length === 0) {
     err(`myco member: no registry entry for ${selection.root} — run \`myco member join <server-url> --project <id>\``);
   }
-  reportMissedCapture(out, args, deps);
+  reportMissedCapture(out, selection, deps);
 }
 
 /** A safe Git project root, or null outside one. */
@@ -443,12 +472,7 @@ export async function runExport(args: readonly string[], deps: MemberCliDeps = {
   const out = deps.stdout ?? ((l) => process.stdout.write(`${l}\n`));
   const mycoHome = homeFor(deps);
   const { root, all, entries, ...registry } = registrySelection(args, deps);
-  const missedRead = all || root === null ? null : readMissingMembershipResult(root, mycoHome);
-  const { records: missedCapture, ...missedCaptureStore } = all ? listMissingMembershipsResult(mycoHome) : {
-    records: missedRead?.status === 'present' ? [missedRead.record] : [],
-    readable: missedRead?.status !== 'unavailable',
-    unavailableRecords: missedRead?.status === 'unavailable' ? 1 : 0,
-  };
+  const { records: missedCapture, ...missedCaptureStore } = missedCaptureSelection(root, all, deps);
   const { checkBinaryVersionSkew, checkRuntimePin, checkMemberMcpResolution } = await import('./doctor.js');
   const checkRoots = [...new Set(all ? entries.map((entry) => entry.root) : root === null ? [] : [root])];
   const toFacts = (check: DoctorCheck, checkRoot: string | null = null) => ({
@@ -476,17 +500,20 @@ export async function runExport(args: readonly string[], deps: MemberCliDeps = {
  * project whose pin, home or join is wrong reads "N hook invocations found no
  * registry entry for <root>" instead of an empty report.
  */
-function reportMissedCapture(out: (line: string) => void, args: readonly string[], deps: MemberCliDeps): void {
+function reportMissedCapture(out: (line: string) => void, selection: { root: string | null; all: boolean }, deps: MemberCliDeps): void {
   const mycoHome = homeFor(deps);
   // Status is one of the two moments that sweep the store (the other is `join`);
   // a hook counts its miss and gets out of the way.
   pruneMissingMemberships(mycoHome, (deps.now ?? Date.now)());
-  const records = args.includes('--all')
-    ? listMissingMemberships(mycoHome)
-    : [readMissingMembership(resolveMemberProjectRoot(deps.cwd), mycoHome)].filter((r) => r !== null);
+  const { records, readable, unavailableRecords } = missedCaptureSelection(selection.all ? null : missedCaptureRoot(deps), selection.all, deps);
   for (const record of records) {
     out(`unmembered: ${record.count} hook invocation(s) found no registry entry for ${record.root}`);
     out(`            first ${when(record.firstAt)}, last ${when(record.lastAt)}${record.lastInvokedBy ? ` (${record.lastInvokedBy})` : ''}`);
+  }
+  if (!readable) {
+    out(`unmembered: unknown — ${selection.all ? 'the missed-capture store' : 'the record for this project'} could not be read`);
+  } else if (unavailableRecords > 0) {
+    out(`unmembered: ${unavailableRecords} record(s) could not be read`);
   }
 }
 

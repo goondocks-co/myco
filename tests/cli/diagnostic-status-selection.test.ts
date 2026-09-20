@@ -13,6 +13,7 @@ import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { runStatus } from '@myco/cli/member.js';
 import { registryEntryPath, writeRegistryEntry, type RegistryEntry } from '@myco/member/registry.js';
+import { missingMembershipPath, recordMissingMembership } from '@myco/member/no-membership.js';
 import { tempMycoHome } from '../member/helpers/server.js';
 
 const NOW = 1_800_000_000_000;
@@ -112,5 +113,72 @@ describe('a registry entry status could not read', () => {
     status([], root);
 
     expect(fs.statSync(file).mtimeMs).toBe(before);
+  });
+});
+
+describe('a missed-capture record status could not use', () => {
+  /** A record file for `at`, holding whatever is given. */
+  function writeRecordAt(at: string, value: unknown): void {
+    recordMissingMembership(at, { mycoHome, now: () => NOW, invokedBy: 'hook stop' });
+    fs.writeFileSync(missingMembershipPath(at, mycoHome), JSON.stringify(value), { mode: 0o600 });
+  }
+
+  it('says unknown rather than printing a count nothing can stand behind', () => {
+    const root = tempProjectRoot();
+    writeRegistryEntry(entry(root), { mycoHome });
+    writeRecordAt(root, { version: 1, root, count: -3, firstAt: NOW, lastAt: NOW });
+
+    const { out } = status([], root);
+    expect(out.join('\n')).toContain('unmembered: unknown');
+    expect(out.join('\n')).not.toContain('-3 hook invocation');
+  });
+
+  it('says unknown rather than dating a record from an instant it cannot render', () => {
+    const root = tempProjectRoot();
+    writeRegistryEntry(entry(root), { mycoHome });
+    writeRecordAt(root, { version: 1, root, count: 2, firstAt: NOW, lastAt: 8.65e15 });
+
+    const { out } = status([], root);
+    expect(out.join('\n')).toContain('unmembered: unknown');
+    expect(out.join('\n')).not.toContain('Invalid Date');
+  });
+
+  it('never names another project, reporting a record keyed to one root and naming another', () => {
+    const mine = tempProjectRoot();
+    writeRegistryEntry(entry(mine), { mycoHome });
+    writeRecordAt(mine, { version: 1, root: '/home/dev/theirs', count: 4, firstAt: NOW, lastAt: NOW });
+
+    const { out } = status([], mine);
+    expect(out.join('\n')).toContain('unmembered: unknown');
+    expect(out.join('\n')).not.toContain('/home/dev/theirs');
+  });
+
+  it('counts what it could not read with --all, and still reports the misses it could', () => {
+    const good = tempProjectRoot();
+    const bad = tempProjectRoot();
+    writeRegistryEntry(entry(good), { mycoHome });
+    writeRecordAt(good, { version: 1, root: good, count: 2, firstAt: NOW, lastAt: NOW });
+    writeRecordAt(bad, { version: 1, root: bad, count: -1, firstAt: NOW, lastAt: NOW });
+
+    const { out } = status(['--all'], good);
+    expect(out.join('\n')).toContain(`2 hook invocation(s) found no registry entry for ${good}`);
+    expect(out.join('\n')).toContain('unmembered: 1 record(s) could not be read');
+  });
+
+  it('keeps the guidance a whole record carries', () => {
+    const root = tempProjectRoot();
+    writeRegistryEntry(entry(root), { mycoHome });
+    writeRecordAt(root, { version: 1, root, count: 5, firstAt: NOW, lastAt: NOW });
+
+    const { out } = status([], root);
+    expect(out.join('\n')).toContain(`5 hook invocation(s) found no registry entry for ${root}`);
+    expect(out.join('\n')).not.toContain('unmembered: unknown');
+  });
+
+  it('answers for a directory belonging to no project without reading a record', () => {
+    const outside = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'myco-bare-')));
+    temps.push(outside);
+
+    expect(() => status([], outside)).not.toThrow();
   });
 });
