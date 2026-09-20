@@ -3,7 +3,7 @@ import type { ServerEnv } from '../core/adapters.js';
 import { MEMBER_ID_PREFIX } from '../constants.js';
 import { emit, StorageContractError, type Classifier } from '../telemetry.js';
 import {
-  allOf, authorityAdmitted, claimMachineIdentityStatement, enrollmentAdmission, ensureMemberStatement,
+  allOf, authorityAdmitted, claimMachineIdentityStatement, enrollmentAdmission, ensureMemberStatement, ENROLLMENT_KEY_PATTERN,
   enrollmentTarget, explainEnrollment, machineClaimable, spendStatement,
   type EnrollmentRefusal, type Fragment,
 } from './enrollment.js';
@@ -59,6 +59,11 @@ export async function handleJoin(env: ServerEnv, request: Request, now: number):
   }
   if (forProject !== undefined && forProject !== true) return refuse('unknown_field', 'forProject may only be true');
 
+  const refuseJoin = (classifier: Classifier, reason: string): Response => {
+    emit({ kind: 'join_refused', machineId, reason: classifier });
+    return refuse(classifier, reason);
+  };
+  if (!ENROLLMENT_KEY_PATTERN.test(key)) return refuseJoin('enrollment_unknown', 'enrollment key unknown');
   const forProjectAsked = forProject === true;
   const keyHash = await sha256Hex(key);
   const invitation = await enrollmentTarget(env.db, keyHash);
@@ -92,8 +97,7 @@ export async function handleJoin(env: ServerEnv, request: Request, now: number):
     // Enrollment refusals precede identity refusals.
     const explained = await explainEnrollment(env.db, key, now, { forProject: forProjectAsked, memberId });
     const classifier: Classifier = explained.admissible ? 'identity_claimed' : REFUSALS[explained.reason];
-    emit({ kind: 'join_refused', machineId, reason: classifier });
-    return refuse(classifier, explained.admissible
+    return refuseJoin(classifier, explained.admissible
       ? 'machine identity belongs to another member'
       : `enrollment key ${explained.reason.replace('_', ' ')}`);
   }

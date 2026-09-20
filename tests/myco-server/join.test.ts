@@ -368,6 +368,13 @@ describe('a refused join leaves no trace', () => {
     expect(committed).toBe(true);
   });
 
+  it('refuses a malformed key without depending on storage', async () => {
+    const r = await rig();
+    const db = { ...r.e.db, prepare: () => { throw new Error('storage unavailable'); } };
+    const response = await handleJoin({ ...r.e.env, db }, joinRequest({ key: 'malformed', machineId: 'fresh_machine' }), r.now);
+    expect(await json(response)).toMatchObject({ joined: false, code: 'enrollment_unknown' });
+  });
+
   it('refuses a root credential whose admission fails, rather than issuing one unconditionally', async () => {
     const r = await rig();
     const holder = await r.key();
@@ -387,8 +394,8 @@ describe('a refused join leaves no trace', () => {
     const before = r.members();
 
     const [first, second] = await Promise.all([
-      json(await r.join({ key: a.key, machineId: 'shared_machine' })),
-      json(await r.join({ key: b.key, machineId: 'shared_machine' })),
+      r.join({ key: a.key, machineId: 'shared_machine' }).then(json),
+      r.join({ key: b.key, machineId: 'shared_machine' }).then(json),
     ]);
     const joinedCount = [first, second].filter((answer) => answer.joined === true).length;
     const refusedCount = [first, second].filter((answer) => answer.code === 'identity_claimed').length;
