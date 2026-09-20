@@ -371,6 +371,7 @@ export async function parseOnce(env: Pick<ServerEnv, 'db' | 'blobs'>, target: Pa
   }
   // An imported transcript's undated lines take the date the import gave the session, not this pass's clock.
   const undatedAt = target.imported ? await importedSessionDate(env.db, target) : undefined;
+  if (target.imported) calls += 1;
   const events = await parser.parse({ lines: split.lines, sessionId: target.sessionId, now, openPromptId: target.openPromptId ?? undefined, transcriptMeta, ...(undatedAt === undefined ? {} : { undatedAt }) });
   const ctx = { projectId: target.projectId, machineId: target.machineId, tokenId: target.tokenId, bodyBytes: 0, now, writeOrigin: 'server' as const };
 
