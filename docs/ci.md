@@ -1,6 +1,6 @@
 # Pull request checks
 
-The CI workflow runs lint, the native build, six Node test shards, two DOM test
+The CI workflow runs lint, the native build, eight Node test shards, two DOM test
 shards, three parity shards, container checks, and Windows contracts independently.
 The `check` job requires every job to succeed, including every matrix entry.
 Superseded pull request runs are cancelled; pushes to main are not cancelled.
@@ -13,7 +13,7 @@ and Cloudflare targets and runs its selected scenarios against both.
 Run a shard locally:
 
 ```sh
-MYCO_TEST_KIND=node MYCO_TEST_SHARD=1/6 npm test
+MYCO_TEST_KIND=node MYCO_TEST_SHARD=1/8 npm test
 MYCO_TEST_KIND=dom MYCO_TEST_SHARD=1/2 npm test
 MYCO_PARITY_SHARD=1/3 npm run test:parity
 ```

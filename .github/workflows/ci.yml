@@ -42,12 +42,14 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { kind: node, shard: '1/6' }
-          - { kind: node, shard: '2/6' }
-          - { kind: node, shard: '3/6' }
-          - { kind: node, shard: '4/6' }
-          - { kind: node, shard: '5/6' }
-          - { kind: node, shard: '6/6' }
+          - { kind: node, shard: '1/8' }
+          - { kind: node, shard: '2/8' }
+          - { kind: node, shard: '3/8' }
+          - { kind: node, shard: '4/8' }
+          - { kind: node, shard: '5/8' }
+          - { kind: node, shard: '6/8' }
+          - { kind: node, shard: '7/8' }
+          - { kind: node, shard: '8/8' }
           - { kind: dom, shard: '1/2' }
           - { kind: dom, shard: '2/2' }
     env:
