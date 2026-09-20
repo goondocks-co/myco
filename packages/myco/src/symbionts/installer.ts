@@ -22,6 +22,8 @@ import { ensureAgentsMd, ensureSymlink, isMycoHookGroup, withoutMycoHooks, conta
 import { hookCommands, memberHookTemplate } from './member-hooks.js';
 import { CREDENTIAL_FLAG, SERVER_FLAG, type CredentialSource } from '../member/constants.js';
 import { parseCredentialFlag } from '../member/credential.js';
+import { deploymentUrl } from '../member/registry.js';
+import { MCP_PATH } from '../plugins/spec.js';
 import { MEMBER_MCP_LEVERS, memberMcpTemplate, memberRemoteMcp } from './member-hooks.js';
 import { readRegistryEntry } from '../member/registry.js';
 import { runGit } from '../utils/git.js';
@@ -2007,10 +2009,8 @@ export class SymbiontInstaller {
     if (typeof helper === 'string') {
       // The helper is the command provisioning writes: its arguments ride
       // unquoted after the binary path, so its words are its arguments.
-      const words = helper.split(/\s+/).filter((word) => word !== '');
-      if (parseCredentialFlag(words) === null) return false;
-      const named = words[words.indexOf(SERVER_FLAG) + 1];
-      return words.includes(SERVER_FLAG) && named !== undefined && !named.startsWith('--');
+      const words = this.helperWords(entry) ?? [];
+      return parseCredentialFlag(words) !== null && this.helperDeployment(entry) !== null;
     }
     const args: string[] = [];
     for (const list of [entry.command, entry.args]) {
@@ -2021,16 +2021,39 @@ export class SymbiontInstaller {
     return parseCredentialFlag(args) !== null;
   }
 
+  /** The words of the headers helper this entry declares, or null where it declares none. */
+  private helperWords(entry: Record<string, unknown>): string[] | null {
+    const helperKey = this.manifest.registration?.memberMcpHeadersHelperKey;
+    const helper = helperKey === undefined ? undefined : entry[helperKey];
+    return typeof helper === 'string' ? helper.split(/\s+/).filter((word) => word !== '') : null;
+  }
+
+  /** The Deployment a headers helper names, or null where it names none a member could use. */
+  private helperDeployment(entry: Record<string, unknown>): string | null {
+    const words = this.helperWords(entry);
+    if (words === null) return null;
+    const named = words[words.indexOf(SERVER_FLAG) + 1];
+    return words.includes(SERVER_FLAG) && named !== undefined && !named.startsWith('--') ? deploymentUrl(named) : null;
+  }
+
+  /** The Deployment this entry's URL names, or null where the URL is not one a member's entry carries. */
+  private entryDeployment(entry: Record<string, unknown>): string | null {
+    const url = entry.url;
+    if (typeof url !== 'string' || !url.endsWith(MCP_PATH)) return null;
+    return deploymentUrl(url.slice(0, -MCP_PATH.length));
+  }
+
   /**
    * What this symbiont's MCP targets say about the member's entry, for a report.
    *
-   * Presence, transport, scope, the directory a launcher declares, and whether
-   * the entry carries this member's credential: the entry itself holds a URL and the headers a credential
+   * Presence, transport, scope, the directory a launcher declares, whether the
+   * entry carries this member's credential, and whether the Deployments it
+   * names agree with each other and with `expectedDeployment`: the entry itself holds a URL and the headers a credential
    * travels in, and none of that leaves this class. Reading
    * goes through the same parser the writes use, so a file that cannot be read
    * is named as such rather than read as an empty one.
    */
-  inspectMemberMcp(): Array<{ scope: 'global' | 'project'; present: boolean; transport: 'http' | 'stdio' | null; carriesCredential: boolean; declaredCwd: string | null; readable: boolean }> {
+  inspectMemberMcp(expectedDeployment?: string): Array<{ scope: 'global' | 'project'; present: boolean; transport: 'http' | 'stdio' | null; carriesCredential: boolean; declaredCwd: string | null; deploymentsAgree: boolean | null; namesExpectedDeployment: boolean | null; readable: boolean }> {
     const toml = this.manifest.registration?.mcpFormat === 'toml';
     const scope = this.isGlobalScope ? 'global' as const : 'project' as const;
     return this.resolveAbsoluteMcpTargets().map(({ path: filePath, serversKey }) => {
@@ -2040,20 +2063,20 @@ export class SymbiontInstaller {
       try {
         file = this.readMcpFile(filePath, toml);
       } catch {
-        return { scope, present: false, transport: null, carriesCredential: false, declaredCwd: null, readable: false };
+        return { scope, present: false, transport: null, carriesCredential: false, declaredCwd: null, deploymentsAgree: null, namesExpectedDeployment: null, readable: false };
       }
       // A key that is not there is a file declaring no server; a key that is
       // there and is not a server block is a file nothing can read an entry
       // from, and each target answers for itself.
       const servers = file?.[key];
-      if (file === null || servers === undefined) return { scope, present: false, transport: null, carriesCredential: false, declaredCwd: null, readable: true };
+      if (file === null || servers === undefined) return { scope, present: false, transport: null, carriesCredential: false, declaredCwd: null, deploymentsAgree: null, namesExpectedDeployment: null, readable: true };
       if (servers === null || typeof servers !== 'object' || Array.isArray(servers)) {
-        return { scope, present: false, transport: null, carriesCredential: false, declaredCwd: null, readable: false };
+        return { scope, present: false, transport: null, carriesCredential: false, declaredCwd: null, deploymentsAgree: null, namesExpectedDeployment: null, readable: false };
       }
       const server = (servers as Record<string, unknown>)[MYCO_MCP_SERVER_NAME];
-      if (server === undefined) return { scope, present: false, transport: null, carriesCredential: false, declaredCwd: null, readable: true };
+      if (server === undefined) return { scope, present: false, transport: null, carriesCredential: false, declaredCwd: null, deploymentsAgree: null, namesExpectedDeployment: null, readable: true };
       if (server === null || typeof server !== 'object' || Array.isArray(server)) {
-        return { scope, present: false, transport: null, carriesCredential: false, declaredCwd: null, readable: false };
+        return { scope, present: false, transport: null, carriesCredential: false, declaredCwd: null, deploymentsAgree: null, namesExpectedDeployment: null, readable: false };
       }
       const entry = server as Record<string, unknown>;
       // A launcher names its command as a word or as an argument list; opencode writes the list.
@@ -2065,7 +2088,15 @@ export class SymbiontInstaller {
       // What the entry declares is one fact; whether it is the entry member
       // provisioning writes — the one carrying this member's credential — is
       // another, and a server that is not cannot resolve the membership.
-      return { scope, present: true, transport, carriesCredential: this.declaresUsableCredential(entry), declaredCwd, readable: true };
+      // The Deployments the entry names, as answers rather than as URLs: whether
+      // its own two agree, and whether they name the one the caller expects.
+      const named = [this.entryDeployment(entry), this.helperDeployment(entry)].filter((url): url is string => url !== null);
+      const deploymentsAgree = named.length === 0 ? null : named.every((url) => url === named[0]);
+      const namesExpectedDeployment = named.length === 0 || expectedDeployment === undefined
+        ? null
+        : named.every((url) => url === deploymentUrl(expectedDeployment));
+      return { scope, present: true, transport, carriesCredential: this.declaresUsableCredential(entry), declaredCwd,
+        deploymentsAgree, namesExpectedDeployment, readable: true };
     });
   }
 

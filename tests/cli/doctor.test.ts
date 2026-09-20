@@ -830,6 +830,14 @@ describe('checkMemberMcpResolution', () => {
     checks.filter((c) => c.name === 'Member MCP resolution')
       .map((c) => ({ reason: c.reason ?? null, symbiont: c.symbiont ?? null, scope: c.scope ?? null, status: c.status }));
 
+  /** Claude Code's remote entry: the URL a host dials, and the helper that mints its headers. */
+  const remote = (url: string, helperServer: string) => JSON.stringify({
+    mcpServers: { myco: { type: 'http', url: `${url}/mcp`, headersHelper: `/opt/myco member mcp-headers --credential registry --server ${helperServer}` } },
+  });
+  /** Writes that entry where Claude Code reads a project's servers. */
+  const writeRemote = (root: string, url: string, helperServer: string) =>
+    fs.writeFileSync(path.join(root, '.mcp.json'), remote(url, helperServer));
+
   it('says nothing for a project that is not a member', async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-doctor-mcp-proj-'));
     fs.mkdirSync(path.join(root, '.myco'));
@@ -932,6 +940,42 @@ describe('checkMemberMcpResolution', () => {
     expect(found.every((r) => r.reason !== 'mcp_cwd_ambiguous')).toBe(true);
   });
 
+  it('warns when the headers a helper mints are sent to another Deployment', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-doctor-mcp-proj-'));
+    fs.mkdirSync(path.join(root, '.myco'));
+    member(root, path.join(homeDir, '.myco'), 'proj_1');
+    // The URL names A; the helper mints for B.
+    writeRemote(root, 'https://srv.example', 'https://other.example');
+
+    const found = await checkMemberMcpResolution(path.join(root, '.myco'), process.env);
+    expect(reasons(found)).toContainEqual({ reason: 'mcp_server_mismatch', symbiont: 'claude-code', scope: 'project', status: 'warn' });
+    // The entry is wrong wherever it is read from, so it names no root.
+    expect(found.find((c) => c.reason === 'mcp_server_mismatch')?.root).toBeUndefined();
+  });
+
+  it('warns when an entry agrees with itself but names a Deployment this project is not a member of', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-doctor-mcp-proj-'));
+    fs.mkdirSync(path.join(root, '.myco'));
+    // The membership is on A; the entry pairs B with B.
+    member(root, path.join(homeDir, '.myco'), 'proj_1');
+    writeRemote(root, 'https://other.example', 'https://other.example');
+
+    const found = await checkMemberMcpResolution(path.join(root, '.myco'), process.env);
+    expect(reasons(found)).toContainEqual({ reason: 'mcp_server_stale', symbiont: 'claude-code', scope: 'project', status: 'warn' });
+    // True of this project alone, so it carries the root it was asked about.
+    expect(found.find((c) => c.reason === 'mcp_server_stale')?.root).toBe(root);
+  });
+
+  it('accepts an entry whose URL, helper and membership all name one Deployment', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-doctor-mcp-proj-'));
+    fs.mkdirSync(path.join(root, '.myco'));
+    member(root, path.join(homeDir, '.myco'), 'proj_1');
+    writeRemote(root, 'https://srv.example', 'https://srv.example');
+
+    expect(reasons(await checkMemberMcpResolution(path.join(root, '.myco'), process.env)))
+      .toContainEqual({ reason: 'mcp_entry_http', symbiont: 'claude-code', scope: 'project', status: 'ok' });
+  });
+
   it('names a target it could not read, rather than reading it as no entry', async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-doctor-mcp-proj-'));
     fs.mkdirSync(path.join(root, '.myco'));
@@ -985,7 +1029,10 @@ describe('checkMemberMcpResolution', () => {
     member(root, mycoHome, 'proj_1');
 
     const checks = await checkMemberMcpResolution(path.join(root, '.myco'), process.env);
-    expect(checks.some((c) => c.reason === 'home_pin_missing')).toBe(true);
+    const pin = checks.find((c) => c.reason === 'home_pin_missing');
+    // The machine pin is one fact about the machine, named once however many roots ask.
+    expect(pin).toMatchObject({ scope: 'global' });
+    expect(pin?.root).toBeUndefined();
     expect(reasons(checks).every((r) => r.reason !== 'mcp_entry_http')).toBe(true);
   });
 

@@ -59,7 +59,7 @@ const MYCO_PLUGIN_FILE_MARKER = 'myco:plugin-marker';
 export type DoctorReason = 'home_pin_missing' | 'mcp_entry_absent' | 'mcp_target_unreadable' | 'mcp_entry_http' | 'mcp_entry_stdio' | 'mcp_entry_unknown_transport' | 'mcp_entry_no_credential'
   | 'binary_manifest_missing' | 'binary_manifest_unreadable' | 'binary_manifest_unversioned'
   | 'binary_version_skew' | 'binary_version_current'
-  | 'mcp_cwd_ambiguous' | 'mcp_cwd_elsewhere'
+  | 'mcp_cwd_ambiguous' | 'mcp_cwd_elsewhere' | 'mcp_server_mismatch' | 'mcp_server_stale'
   | 'runtime_pin_refused' | 'runtime_pin_redundant' | 'runtime_pin_target_absent' | 'runtime_pin_override';
 
 export interface DoctorCheck {
@@ -72,6 +72,8 @@ export interface DoctorCheck {
   symbiont?: string;
   /** The configuration scope a check read, where it read one. */
   scope?: 'global' | 'project';
+  /** The project root a check is about, where its answer holds for that root alone. */
+  root?: string;
   fixable: boolean;
   fixId?: import('./doctor-fixes.js').DoctorFixerId;
   fixData?: Record<string, unknown>;
@@ -1649,15 +1651,18 @@ export async function checkMemberMcpResolution(
 ): Promise<DoctorCheck[]> {
   const { resolveProjectRoot } = await import('../project-root.js');
   const { resolveMycoHome, defaultMycoHome, readMachineHomePin } = await import('../paths/home.js');
-  const { readRegistryEntry, readRegistryEntryResult, listRegistryEntriesResult } = await import('../member/registry.js');
+  const { readRegistryEntry, readRegistryEntryResult, listRegistryEntriesResult, deploymentUrl } = await import('../member/registry.js');
   const { loadManifests } = await import('../symbionts/detect.js');
   const root = resolveProjectRoot(vaultDir);
   const home = resolveMycoHome({ cwd: root, env });
   // Strict reads leave legacy entries unchanged and acquire no write lock.
-  const member = opts.registryRead === 'strict'
-    ? readRegistryEntryResult(root, home).status === 'present'
-    : readRegistryEntry(root, home) !== null;
-  if (!member) return [];
+  const strict = opts.registryRead === 'strict' ? readRegistryEntryResult(root, home) : null;
+  const membership = strict !== null
+    ? (strict.status === 'present' ? strict.entry : null)
+    : readRegistryEntry(root, home);
+  if (membership === null) return [];
+  // The Deployment this project is a member of; every entry must name it.
+  const selectedDeployment = deploymentUrl(membership.serverUrl);
   const checks: DoctorCheck[] = [];
   const homeDir = env.HOME && env.HOME.length > 0 ? env.HOME : undefined;
   const nonDefaultHome = path.resolve(home) !== path.resolve(defaultMycoHome(homeDir));
@@ -1667,6 +1672,7 @@ export async function checkMemberMcpResolution(
       status: 'warn',
       detail: `this project's membership lives in ${home}, but the machine pin (${path.join(defaultMycoHome(homeDir), 'runtime.home')}) does not name it; an MCP server started outside ${root} resolves the default home and finds no membership. Run \`MYCO_HOME=${home} myco member join\` again to pin the machine.`,
       reason: 'home_pin_missing',
+      scope: 'global',
       fixable: false,
     });
   }
@@ -1683,7 +1689,7 @@ export async function checkMemberMcpResolution(
     if (!manifest.registration) continue;
     const at = (scope: 'member-global' | 'member-project') => new SymbiontInstaller(manifest, root, packageRoot, false, undefined, null, scope, home);
     const global = at('member-global');
-    const seen = [...global.inspectMemberMcp(), ...at('member-project').inspectMemberMcp()];
+    const seen = [...global.inspectMemberMcp(selectedDeployment), ...at('member-project').inspectMemberMcp(selectedDeployment)];
     if (seen.length === 0) continue;
 
     for (const target of seen.filter((t) => t.present)) {
@@ -1722,6 +1728,34 @@ export async function checkMemberMcpResolution(
           });
           continue;
         }
+      }
+      // Headers are minted for the Deployment the helper names and sent to the
+      // one the URL names. Whether those two agree is true of the entry itself;
+      // whether they name this project's Deployment is true of this project.
+      if (target.deploymentsAgree === false) {
+        checks.push({
+          name: 'Member MCP resolution',
+          status: 'warn',
+          detail: `${manifest.displayName}'s ${target.scope} entry sends its headers to a Deployment its helper does not mint them for.`,
+          reason: 'mcp_server_mismatch',
+          scope: target.scope,
+          symbiont: manifest.name,
+          fixable: false,
+        });
+        continue;
+      }
+      if (target.namesExpectedDeployment === false) {
+        checks.push({
+          name: 'Member MCP resolution',
+          status: 'warn',
+          detail: `${manifest.displayName}'s ${target.scope} entry names a Deployment this project is not a member of, so it resolves no membership for it.`,
+          reason: 'mcp_server_stale',
+          scope: target.scope,
+          root,
+          symbiont: manifest.name,
+          fixable: false,
+        });
+        continue;
       }
       // A member entry is on disk; whether the server answers is not read here.
       // One that names no transport cannot be dialed, so it is a warning that
