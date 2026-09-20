@@ -4,7 +4,8 @@
  * A member holds its own half and this holds the Deployment's; laid side by side
  * they explain an ordinary failure. The document is served to an owner and
  * nowhere else, and it is built by `core/diagnostics.ts` from the producers the
- * Status page already reads.
+ * Status page already reads. Live membership admission requires a readable
+ * database; only failures after admission can produce a partial document.
  */
 import type { ServerEnv } from '../core/adapters.js';
 import type { OwnerContext } from '../context.js';
