@@ -78,8 +78,8 @@ export const claudeCodeParser: TranscriptParser = {
       });
     };
 
-    for (const { value, offset } of lines) {
-      const createdAt = lineTime(value, now);
+    for (const { value, offset, undatedAt } of lines) {
+      const createdAt = lineTime(value, now, undatedAt);
       const type = str(value.type);
       const message = isBlock(value.message) ? value.message : undefined;
 

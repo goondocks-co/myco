@@ -6,6 +6,7 @@ import { parseEnvelope, type CaptureEnvelope, type Refused } from './envelope.js
 import { kindSpec, parsePayload, type KindSpec, type Payload } from './kinds.js';
 import { titleSession } from '../core/titling.js';
 import { pendingSearchBlobs } from '../core/search-index.js';
+import { TRANSCRIPT_PARSE_ADAPTER } from '../constants.js';
 import { planKind, projectLive, sharedChecks, type Fragment, type KindPlan, type ReadRows, type WriteContext } from './projections.js';
 import { ALWAYS, withinQuota } from './quota.js';
 
@@ -89,6 +90,10 @@ export async function planEventWrite(db: RelationalStore, ctx: IngestContext, bo
   const parsed = parseEnvelope(body, ctx.now);
   if (!parsed.ok) return parsed;
   const e = parsed.value;
+  // The transcript parser adapter is reserved for server-origin writes.
+  if (e.producer.adapter === TRANSCRIPT_PARSE_ADAPTER && (ctx.writeOrigin ?? 'member') === 'member') {
+    return { ok: false, ...refusal(`producer.adapter ${TRANSCRIPT_PARSE_ADAPTER} is reserved for the Deployment's transcript parser`) };
+  }
   const spec = kindSpec(e.kind);
   if (!spec) return { ok: false, ...refusal(`unknown kind ${e.kind}`, 'unknown_kind') };
   const payload = parsePayload(spec, e.payload, ctx.now);
@@ -157,7 +162,9 @@ export async function planEventWrite(db: RelationalStore, ctx: IngestContext, bo
   const admitted = db.prepare(`SELECT ${quotaAdmission.sql} AS within_quota`).bind(...quotaAdmission.params);
   const shared = checks.map((c) => db.prepare(c.read.sql).bind(...c.read.params));
   const priors = plan.priors ?? [];
-  const statements: PreparedStatement[] = [raw, quota, receipt, ...priors, ...plan.projections, stored, admitted, ...shared, ...plan.reads];
+  // Beside the projections in the batch, outside the evidence a conflict is read from.
+  const incidental = plan.incidental ?? [];
+  const statements: PreparedStatement[] = [raw, quota, receipt, ...priors, ...plan.projections, ...incidental, stored, admitted, ...shared, ...plan.reads];
 
   const interpret = (results: BatchResult[]): IngestResult => {
   if (results.length !== statements.length) throw new StorageContractError(`batch answered ${results.length} results for ${statements.length} statements`);
@@ -165,9 +172,10 @@ export async function planEventWrite(db: RelationalStore, ctx: IngestContext, bo
   const base = 3 + priors.length;
   const priorRows: ReadRows = results.slice(3, base).map((r) => r.results as Record<string, unknown>[]);
   const projectionResults = results.slice(base, base + plan.projections.length);
-  const storedRow = results[base + plan.projections.length].results[0] as { envelope_hash?: string; ingest_nonce?: string } | undefined;
-  const withinQuotaRow = results[base + 1 + plan.projections.length].results[0] as { within_quota: number } | undefined;
-  const allReads: ReadRows = results.slice(base + 2 + plan.projections.length).map((r) => r.results as Record<string, unknown>[]);
+  const afterWrites = base + plan.projections.length + incidental.length;
+  const storedRow = results[afterWrites].results[0] as { envelope_hash?: string; ingest_nonce?: string } | undefined;
+  const withinQuotaRow = results[afterWrites + 1].results[0] as { within_quota: number } | undefined;
+  const allReads: ReadRows = results.slice(afterWrites + 2).map((r) => r.results as Record<string, unknown>[]);
   const sharedRows = allReads.slice(0, checks.length);
   const reads = allReads.slice(checks.length);
   const extra = plan.extra ? plan.extra(reads) : {};

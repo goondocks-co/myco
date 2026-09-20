@@ -32,12 +32,14 @@ export type Fidelity = (typeof FIDELITIES)[number];
 export interface ParsedLine {
   value: Record<string, unknown>;
   offset: number;
+  /** Fallback time for an undated line whose first byte belongs to an imported segment. */
+  undatedAt?: number;
 }
 
 export interface ParserInput {
   lines: readonly ParsedLine[];
   sessionId: string;
-  /** The instant a line with no readable timestamp is dated to, and the ceiling every line time is clamped to. */
+  /** The ceiling for line timestamps and the fallback for undated live lines. */
   now: number;
   /**
    * The turn open where this window begins, when it began before it.
@@ -117,12 +119,13 @@ export const attachmentIdFor = (sessionId: string, sha256: string): Promise<stri
 /** An id for a record the member has no derivation for: the transcript and the byte that produced it. */
 export const offsetIdFor = (kind: string, transcriptId: string, offset: number): Promise<string> => uuidv5(kind, transcriptId, String(offset));
 
-/** A line's own instant, never ahead of the server's clock: a transcript written by a fast clock cannot pin a projected column into the future. */
-export function lineTime(value: Record<string, unknown>, now: number): number {
+/** A line's own instant, never ahead of the server's clock. An undated line takes `undatedAt`, else `now`, clamped the same way. */
+export function lineTime(value: Record<string, unknown>, now: number, undatedAt?: number): number {
+  const undated = Math.min(undatedAt ?? now, now);
   const raw = value.timestamp;
-  if (typeof raw !== 'string') return now;
+  if (typeof raw !== 'string') return undated;
   const parsed = Date.parse(raw);
-  return Number.isNaN(parsed) || parsed < 0 ? now : Math.min(parsed, now);
+  return Number.isNaN(parsed) || parsed < 0 ? undated : Math.min(parsed, now);
 }
 
 /** The text of a content field that is either a plain string or an array of typed blocks. */

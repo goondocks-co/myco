@@ -86,10 +86,10 @@ export const codexParser: TranscriptParser = {
       });
     };
 
-    for (const { value, offset } of lines) {
+    for (const { value, offset, undatedAt } of lines) {
       if (str(value.type) !== 'response_item' || !isBlock(value.payload)) continue;
       const payload = value.payload;
-      const createdAt = lineTime(value, now);
+      const createdAt = lineTime(value, now, undatedAt);
       const kind = str(payload.type);
 
       if (kind === 'message') {
