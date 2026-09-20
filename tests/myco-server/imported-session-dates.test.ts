@@ -490,8 +490,8 @@ describe('a presented date does not decide the lifecycle', () => {
 
 describe('two import ends at one instant', () => {
   /** An import ships a second `session.end` at the same instant, declaring a different end. */
-  const sendEnd = (r: { serverEnv: { db: unknown }; tokenId: string }, eventId: number, endedAt: number) =>
-    ingestEvent(r.serverEnv.db as never, ctxFor(r.tokenId),
+  const sendEnd = (r: Awaited<ReturnType<typeof rig>>, eventId: number, endedAt: number) =>
+    ingestEvent(r.serverEnv.db, ctxFor(r.tokenId),
       envelope({ eventId: uuid(eventId), sessionId: SESSION, kind: 'session.end', createdAt: IMPORT_AT, channel: 'import', payload: { endedAt } }));
 
   /** The two ends in the given arrival order, with a member's own turn between them. */

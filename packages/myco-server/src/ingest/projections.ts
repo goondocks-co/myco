@@ -251,7 +251,7 @@ const reopensSession = (db: RelationalStore, ctx: WriteContext, e: CaptureEnvelo
 export const eventOrderingTimeSql = (alias: string, field: string): string =>
   `COALESCE(CASE WHEN json_valid(${alias}.payload) THEN json_extract(${alias}.payload, '$.${field}') END, ${alias}.created_at)`;
 
-/** The import's `session.end` for this session: the evidence that its source is closed. An import ships it before any segment, so it stands from the first pass. Two ends at one instant are ordered by the smaller event id, as a start's facts are, so any delivery order names the same one. */
+/** The first import end, ordered by creation time and event id. */
 const IMPORT_END_SQL = `(SELECT ${eventOrderingTimeSql('ie', 'endedAt')} FROM events ie
    WHERE ie.project_id = sessions.project_id AND ie.session_id = sessions.session_id
      AND ie.kind = 'session.end' AND ie.channel = 'import'
