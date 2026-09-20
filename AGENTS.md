@@ -19,6 +19,7 @@ Myco captures project memory and serves it back through context injection, MCP t
 - Use `make dev-link` only from the main checkout; it rewrites shared `~/.local/bin/myco-*` symlinks.
 - In git worktrees, use `make dev-link-worktree`; it builds the worktree binary and writes a worktree-local `.myco/runtime.command` pointing at it, without changing shared symlinks. Hooks, MCP, and CLI then route to the worktree build; capture still attaches to the main project vault via `git-common-dir`. See the `dogfood-worktree` skill for caveats (shared-vault schema hazard, vendor-asset build gotcha).
 - `make dev-unlink` removes shared dev symlinks and `.myco/runtime.command`; `make dev-unlink-worktree` removes only the worktree runtime pin.
+- `make worktree-sweep` retires worktrees and branches whose PR has merged. Run it whenever; it holds anything it cannot prove is finished. To preserve a worktree whose PR merged but whose build output is still evidence, put a `.worktree-keep` file in it.
 
 ## Core Invariants
 
