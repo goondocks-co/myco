@@ -292,6 +292,33 @@ describe('what a report reads from the member MCP targets', () => {
     expect(seen.slice(1).every((t) => !t.readable && !t.present)).toBe(true);
   });
 
+  it('reads a launcher whose credential flag names no source as not the member\'s', () => {
+    const { installer } = globalInstaller('claude-code');
+    // The flag alone, a source the member does not know, and a list holding a
+    // value that is not a word: none of them names a source.
+    for (const args of [['mcp', CREDENTIAL_FLAG], ['mcp', CREDENTIAL_FLAG, 'somewhere-else'], ['mcp', CREDENTIAL_FLAG, 42, 'registry']]) {
+      writeEntries(installer, { type: 'stdio', command: '/opt/myco', args });
+      expect(installer.inspectMemberMcp().every((t) => t.present && !t.carriesCredential)).toBe(true);
+    }
+  });
+
+  it('reads a headers helper naming no Deployment as not the member\'s', () => {
+    const { installer } = globalInstaller('claude-code');
+    // `mcp-headers` refuses without the server its entry's URL names.
+    writeEntries(installer, { type: 'http', url: `${SERVER_URL}/mcp`, headersHelper: `/opt/myco member mcp-headers ${CREDENTIAL_FLAG} registry` });
+    expect(installer.inspectMemberMcp().every((t) => t.present && !t.carriesCredential)).toBe(true);
+
+    // And with a server flag carrying no value.
+    writeEntries(installer, { type: 'http', url: `${SERVER_URL}/mcp`, headersHelper: `/opt/myco member mcp-headers ${CREDENTIAL_FLAG} registry --server --verbose` });
+    expect(installer.inspectMemberMcp().every((t) => t.present && !t.carriesCredential)).toBe(true);
+  });
+
+  it('reads the helper provisioning writes as the member\'s', () => {
+    const { installer } = globalInstaller('claude-code');
+    writeEntries(installer, claudeRemote());
+    expect(installer.inspectMemberMcp().every((t) => t.present && t.carriesCredential)).toBe(true);
+  });
+
   it('says a target it could not read is unread, rather than reading it as no entry', () => {
     const { installer } = globalInstaller('claude-code');
     writeEntries(installer, claudeRemote());

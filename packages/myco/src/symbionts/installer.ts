@@ -20,7 +20,8 @@ import {
 import { readJsonFile, writeJsonFile, writeOrDeleteJsonFile } from './json-helpers.js';
 import { ensureAgentsMd, ensureSymlink, isMycoHookGroup, withoutMycoHooks, containsMycoLauncherReference, hasMycoManagedMarker, MYCO_MANAGED_MARKER } from './install-helpers.js';
 import { hookCommands, memberHookTemplate } from './member-hooks.js';
-import { CREDENTIAL_FLAG, type CredentialSource } from '../member/constants.js';
+import { CREDENTIAL_FLAG, SERVER_FLAG, type CredentialSource } from '../member/constants.js';
+import { parseCredentialFlag } from '../member/credential.js';
 import { MEMBER_MCP_LEVERS, memberMcpTemplate, memberRemoteMcp } from './member-hooks.js';
 import { readRegistryEntry } from '../member/registry.js';
 import { runGit } from '../utils/git.js';
@@ -1996,6 +1997,31 @@ export class SymbiontInstaller {
   }
 
   /**
+   * Whether an entry names a credential source a member could resolve from, and
+   * a Deployment where a headers helper needs one. An argument list holding a
+   * value that is not a word names nothing.
+   */
+  private declaresUsableCredential(entry: Record<string, unknown>): boolean {
+    const helperKey = this.manifest.registration?.memberMcpHeadersHelperKey;
+    const helper = helperKey === undefined ? undefined : entry[helperKey];
+    if (typeof helper === 'string') {
+      // The helper is the command provisioning writes: its arguments ride
+      // unquoted after the binary path, so its words are its arguments.
+      const words = helper.split(/\s+/).filter((word) => word !== '');
+      if (parseCredentialFlag(words) === null) return false;
+      const named = words[words.indexOf(SERVER_FLAG) + 1];
+      return words.includes(SERVER_FLAG) && named !== undefined && !named.startsWith('--');
+    }
+    const args: string[] = [];
+    for (const list of [entry.command, entry.args]) {
+      if (!Array.isArray(list)) continue;
+      if (!list.every((word): word is string => typeof word === 'string')) return false;
+      args.push(...list);
+    }
+    return parseCredentialFlag(args) !== null;
+  }
+
+  /**
    * What this symbiont's MCP targets say about the member's entry, for a report.
    *
    * Presence, transport, scope, the directory a launcher declares, and whether
@@ -2037,7 +2063,7 @@ export class SymbiontInstaller {
       // What the entry declares is one fact; whether it is the entry member
       // provisioning writes — the one carrying this member's credential — is
       // another, and a server that is not cannot resolve the membership.
-      return { scope, present: true, transport, carriesCredential: this.isMemberMcpServer(entry), declaredCwd, readable: true };
+      return { scope, present: true, transport, carriesCredential: this.declaresUsableCredential(entry), declaredCwd, readable: true };
     });
   }
 

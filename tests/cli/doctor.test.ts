@@ -854,7 +854,7 @@ describe('checkMemberMcpResolution', () => {
     member(root, path.join(homeDir, '.myco'), 'proj_1');
     fs.mkdirSync(path.join(root, '.codex'), { recursive: true });
     fs.writeFileSync(path.join(root, '.codex', 'config.toml'),
-      '[mcp_servers.myco]\nurl = "https://srv.example/mcp"\nhttp_headers_helper = "/opt/myco member mcp-headers --credential registry"\n');
+      '[mcp_servers.myco]\nurl = "https://srv.example/mcp"\nhttp_headers_helper = "/opt/myco member mcp-headers --credential registry --server https://srv.example"\n');
 
     expect(reasons(await checkMemberMcpResolution(path.join(root, '.myco'), process.env)))
       .toContainEqual({ reason: 'mcp_entry_http', symbiont: 'codex', scope: 'project', status: 'ok' });
@@ -925,7 +925,7 @@ describe('checkMemberMcpResolution', () => {
     member(fs.mkdtempSync(path.join(os.tmpdir(), 'myco-doctor-mcp-proj2-')), path.join(homeDir, '.myco'), 'proj_2');
     fs.mkdirSync(path.join(root, '.codex'), { recursive: true });
     fs.writeFileSync(path.join(root, '.codex', 'config.toml'),
-      '[mcp_servers.myco]\nurl = "https://srv.example/mcp"\nhttp_headers_helper = "/opt/myco member mcp-headers --credential registry"\n');
+      '[mcp_servers.myco]\nurl = "https://srv.example/mcp"\nhttp_headers_helper = "/opt/myco member mcp-headers --credential registry --server https://srv.example"\n');
 
     const found = reasons(await checkMemberMcpResolution(path.join(root, '.myco'), process.env)).filter((r) => r.symbiont === 'codex');
     expect(found).toContainEqual({ reason: 'mcp_entry_http', symbiont: 'codex', scope: 'project', status: 'ok' });
