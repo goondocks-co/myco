@@ -4,6 +4,7 @@ import worker from '@myco-server-worker/index.js';
 import { applyRunUpdate, claimQueuedRun, lapsedLeases, NO_LIMITS, requeueLapsedLease } from '@myco-server-worker/core/runs.js';
 import { getRunDetail, listRuns } from '@myco-server-worker/read/runs.js';
 import { listCredentials } from '@myco-server-worker/read/credentials.js';
+import { listMembers } from '@myco-server-worker/auth/members-admin.js';
 import { issueMemberToken } from '@myco-server-worker/auth/tokens.js';
 import { ensureMember } from '@myco-server-worker/auth/enrollment.js';
 import { sqliteEnv } from './helpers/fixtures.js';
@@ -135,6 +136,18 @@ describe('a credential says what it was minted for', () => {
     );
     const page = await listCredentials(r.db, NOW);
     expect(page.rows.find((row) => row.id === r.workerCredential.tokenId)?.purpose).toBe('member');
+  });
+
+  it('counts a member\'s own runtimes and leaves run credentials to their own purpose', async () => {
+    const r = await rig();
+    await r.claim();
+    // Runs mint under the harness identity while they are driven, and a member's
+    // runtime count must not move when they do.
+    for (let i = 0; i < 3; i++) await issueMemberToken(r.db, { memberId: 'mem_harness', machineId: 'harness' }, NOW + 1_000 + i);
+
+    const byId = new Map((await listMembers(r.db, NOW)).map((m) => [m.id, m.liveCredentials]));
+    expect(byId.get('mem_worker')).toBe(1);
+    expect(byId.get('mem_harness')).toBe(0);
   });
 
   it('keeps a run credential a run credential once the run stops naming it', async () => {

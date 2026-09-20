@@ -15,6 +15,9 @@ export const MEMBER_REVOKED_BY = 'EXISTS (SELECT 1 FROM members WHERE id = ? AND
 export const memberRevokedByParams = (memberId: string, nowMs: number, revokedBy: string): readonly [string, number, string] =>
   [memberId, nowMs, revokedBy];
 
+/** True for a credential minted under the identity every dispatched runtime authenticates as: the run purpose. `alias` qualifies the credential's columns; binds `HARNESS_MEMBER_ID`. */
+export const runCredential = (alias = ''): string => `${alias === '' ? '' : `${alias}.`}member_id = ?`;
+
 /** True for a credential that authenticates: unrevoked, unexpired (binds the clock), and its member live. `alias` qualifies the credential's columns. */
 export const credentialLive = (alias = ''): string => {
   const q = alias === '' ? '' : `${alias}.`;

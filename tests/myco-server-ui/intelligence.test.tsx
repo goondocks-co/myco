@@ -344,6 +344,36 @@ describe('the worker behind a run', () => {
     expect(screen.queryByText(/expires in now/)).toBeNull();
   });
 
+  it('names a lapsed holder as the one that last held the run, not as the one holding it', async () => {
+    const lapsed = { status: 'running', completedAt: null, harness: 'codex', leasedBy: 'mt_worker', leaseExpiresAt: NOW - 5_000 };
+    server(base({
+      '/api/status': statusWith(),
+      '/api/projects/x/runs': () => Response.json({ rows: [run(lapsed)], cursor: null }),
+      '/api/projects/x/runs/r1': () => Response.json(detail(lapsed)),
+    }));
+    mount('/p/x/runs/r1');
+    // The row still records the worker, so it stays visible — under the wording
+    // its expired lease supports.
+    expect(await screen.findByText('The worker that last held this run')).toBeTruthy();
+    expect(screen.queryByText('The worker holding this run')).toBeNull();
+    expect(screen.getByText('Last worker')).toBeTruthy();
+    expect(screen.queryByText('Worker')).toBeNull();
+    expect(screen.getByText('sirkirby-mbp')).toBeTruthy();
+  });
+
+  it('names a standing lease holder as the worker holding the run', async () => {
+    const held = { status: 'running', completedAt: null, harness: 'codex', leasedBy: 'mt_worker', leaseExpiresAt: NOW + 62_000 };
+    server(base({
+      '/api/status': statusWith(),
+      '/api/projects/x/runs': () => Response.json({ rows: [run(held)], cursor: null }),
+      '/api/projects/x/runs/r1': () => Response.json(detail(held)),
+    }));
+    mount('/p/x/runs/r1');
+    expect(await screen.findByText('The worker holding this run')).toBeTruthy();
+    expect(screen.getByText('Worker')).toBeTruthy();
+    expect(screen.queryByText('Last worker')).toBeNull();
+  });
+
   it('falls back to the credential when the worker record holds no observation of it', async () => {
     const held = { status: 'running', completedAt: null, harness: 'codex', leasedBy: 'mt_forgotten', leaseExpiresAt: NOW + 30_000 };
     server(base({

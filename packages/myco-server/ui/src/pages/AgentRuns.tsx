@@ -15,7 +15,7 @@ import { useWorkerFleet } from '../hooks/use-status';
 import { ApiError, type WorkerStatus } from '../lib/api';
 import { formatCost, formatDateTime, formatDuration, formatRelative, formatTokens } from '../lib/format';
 import { harnessLabel } from '../lib/harness';
-import { FLEET_UNKNOWN_WORDS, offersWords, sinceWords, untilWords, workerFor, workerName } from '../lib/worker-state';
+import { FLEET_UNKNOWN_WORDS, leaseStanding, offersWords, sinceWords, untilWords, workerFor, workerName, type LeaseStanding } from '../lib/worker-state';
 import { NotFound } from './NotFound';
 
 /** The statuses a run is written with; anything else renders neutral rather than assuming the set is closed. */
@@ -44,12 +44,7 @@ export function queuedWords(run: { position: number | null; heldBy: string | nul
   return `waiting — ${turn} · held by ${holder}`;
 }
 
-/**
- * Which worker holds this run. A row names a holder only while it holds one, so a
- * run naming none reads as not recorded. The name is the machine's where the
- * worker record holds an observation of that credential, and the credential's
- * otherwise.
- */
+/** Which worker a run names: the machine where the worker record holds an observation of that credential, else the credential. Whether it still holds the run is `leaseStanding`. */
 export function workerWords(leasedBy: string | null, fleet: WorkerStatus | undefined): string {
   if (leasedBy === null) return 'not recorded';
   const lookup = workerFor(fleet, leasedBy);
@@ -214,6 +209,9 @@ function RunDetail({ projectId, runId }: { projectId: string; runId: string }) {
 function RunBody({ run, phases, reports, toolCalls, agentName, fleet }: { run: RunDetailRow; phases: PhaseRow[] | null; reports: ReportRow[]; toolCalls: RunToolCallRow[]; agentName: string | null; fleet: WorkerStatus | undefined }) {
   const failed = run.status === 'failed' || run.error !== null;
   const deploy = deployWords(run);
+  // One instant for every lease word on the page: the holder and the expiry read the same clock.
+  const now = Date.now();
+  const standing = leaseStanding(run.leasedBy, run.leaseExpiresAt, now);
   return (
     <div className="flex flex-col gap-4">
       <div>
@@ -257,9 +255,9 @@ function RunBody({ run, phases, reports, toolCalls, agentName, fleet }: { run: R
         <dl className="grid gap-x-6 gap-y-1 font-sans text-sm sm:grid-cols-2">
           <Fact label="Agent" value={agentName ?? run.agentId} />
           <Fact label="Model" value={run.provider === null && run.model === null ? null : `${run.provider ?? ''}${run.provider && run.model ? ' · ' : ''}${run.model ?? ''}`} />
-          <Fact label="Worker" value={workerWords(run.leasedBy, fleet)} />
+          <Fact label={standing === 'lapsed' ? 'Last worker' : 'Worker'} value={workerWords(run.leasedBy, fleet)} />
           <Fact label="Harness" value={run.harness === null ? null : harnessLabel(run.harness)} />
-          {run.leaseExpiresAt !== null && <Fact label="Lease" value={leaseWords(run.leaseExpiresAt, Date.now())} />}
+          {run.leaseExpiresAt !== null && <Fact label="Lease" value={leaseWords(run.leaseExpiresAt, now)} />}
           <Fact label="Run credential" value={run.dispatchedBy} />
           <Fact label="Reasoning" value={run.reasoningLevel} />
           <Fact label="Dry run" value={run.dryRun ? 'yes' : 'no'} />
@@ -270,7 +268,7 @@ function RunBody({ run, phases, reports, toolCalls, agentName, fleet }: { run: R
         </dl>
       </Panel>
 
-      {run.leasedBy !== null && <HolderRecord credentialId={run.leasedBy} fleet={fleet} />}
+      {run.leasedBy !== null && <HolderRecord credentialId={run.leasedBy} fleet={fleet} standing={standing} />}
 
       <Panel title="Phases" padded={phases !== null && phases.length > 0 ? false : true}>
         {phases === null ? (
@@ -350,17 +348,11 @@ function RunBody({ run, phases, reports, toolCalls, agentName, fleet }: { run: R
   );
 }
 
-/**
- * What this server has heard from the worker holding this run, as it stands now.
- *
- * Shown only while the row names a holder, and read as that worker's current
- * report rather than as a record of this run. Nothing here says which run the
- * worker is driving: only the lease on this row does.
- */
-function HolderRecord({ credentialId, fleet }: { credentialId: string; fleet: WorkerStatus | undefined }) {
+/** What this server has heard from the worker a run names, as it stands now, not as a record of this run. The title follows `LeaseStanding`; only a standing lease says which run a worker drives. */
+function HolderRecord({ credentialId, fleet, standing }: { credentialId: string; fleet: WorkerStatus | undefined; standing: LeaseStanding }) {
   const lookup = workerFor(fleet, credentialId);
   return (
-    <Panel padded title="The worker holding this run">
+    <Panel padded title={standing === 'lapsed' ? 'The worker that last held this run' : 'The worker holding this run'}>
       {lookup.known ? (
         <>
           <p className="font-sans text-sm text-on-surface">

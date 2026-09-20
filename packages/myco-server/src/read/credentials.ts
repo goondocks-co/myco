@@ -1,13 +1,10 @@
 import type { RelationalStore } from '../core/adapters.js';
 import { HARNESS_MEMBER_ID } from '../constants.js';
-import { credentialLive } from '../db/liveness.js';
+import { credentialLive, runCredential } from '../db/liveness.js';
 import { keyset, page, type Page } from './scope.js';
 
 /** Whether the credential belongs to an agent run or a member runtime. */
 export type CredentialPurpose = 'run' | 'member';
-
-/** True for a credential minted under the identity every dispatched runtime authenticates as. Binds `HARNESS_MEMBER_ID`. */
-const RUN_CREDENTIAL = `member_id = ?`;
 
 export interface CredentialRow {
   id: string;
@@ -50,13 +47,13 @@ export async function listCredentials(
   const conditions: string[] = [];
   const params: (string | number)[] = [];
   if (opts.purpose !== undefined) {
-    conditions.push(opts.purpose === 'run' ? RUN_CREDENTIAL : `NOT (${RUN_CREDENTIAL})`);
+    conditions.push(opts.purpose === 'run' ? runCredential() : `NOT (${runCredential()})`);
     params.push(HARNESS_MEMBER_ID);
   }
   if (k.where !== '') conditions.push(k.where);
   const { results } = await db
     .prepare(`SELECT id, member_id, machine_id, expires_at, revoked_at, revoked_by, bytes_written, predecessor_id, lineage_root, lineage_started_at, first_used_at,
-                     (${credentialLive()}) AS live, (${RUN_CREDENTIAL}) AS run_credential
+                     (${credentialLive()}) AS live, (${runCredential()}) AS run_credential
                 FROM member_credentials ${conditions.length === 0 ? '' : `WHERE ${conditions.join(' AND ')}`} ORDER BY lineage_started_at DESC, id DESC LIMIT ?`)
     .bind(nowMs, HARNESS_MEMBER_ID, ...params, ...k.params, limit + 1)
     .all<Record<string, unknown>>();

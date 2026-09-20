@@ -19,6 +19,14 @@ export function sinceWords(at: number, now: number): string {
   return `${Math.floor(delta / 86_400_000)}d ago`;
 }
 
+/** Whether the credential a run names still holds it: `lapsed` is a recorded holder whose lease has expired, which a row keeps naming until the sweep. */
+export type LeaseStanding = 'held' | 'lapsed' | 'none';
+
+export function leaseStanding(leasedBy: string | null, expiresAt: number | null, now: number): LeaseStanding {
+  if (leasedBy === null) return 'none';
+  return expiresAt !== null && expiresAt > now ? 'held' : 'lapsed';
+}
+
 /** A lease runs in seconds and renews on a 30s heartbeat, so it is counted in seconds until a couple of minutes out. */
 export function untilWords(at: number, now: number): string {
   const delta = at - now;
