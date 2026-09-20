@@ -92,9 +92,10 @@ export interface RuntimeClaims {
 
 export const NO_RUNTIME_CLAIMS: RuntimeClaims = { runtimeLabel: null, runtimeKind: null };
 
-/** The one INSERT into member_credentials, prepared and unrun: a fresh token and id, the digest stored, `bytes_written` at 0, the runtime claims as given, and the lineage columns — its own id and `nowMs` for a root, the inherited chain for a successor. The row expires one TTL from now or at the lineage ceiling, whichever is sooner. A successor's row is written only while its predecessor is still live at the instant of the insert (the statement's change count says whether it was); a root has no predecessor and always lands. */
+/** The one INSERT into member_credentials, prepared and unrun: a fresh token and id, the digest stored, `bytes_written` at 0, the runtime claims as given, and the lineage columns — its own id and `nowMs` for a root, the inherited chain for a successor. The row expires one TTL from now or at the lineage ceiling, whichever is sooner. A successor's row is written only while its predecessor is still live at the instant of the insert (the statement's change count says whether it was); a root has no predecessor. Both obey the optional admission gate. */
 function memberTokenInsert(
   db: RelationalStore, member: { memberId: string; machineId: string | null }, nowMs: number, lineage: TokenLineage | null, tokenId: string, digest: string, runtime: RuntimeClaims,
+  gate?: { sql: string; params: unknown[] },
 ): { statement: PreparedStatement; expiresAt: number } {
   const predecessorId = lineage === null ? null : lineage.predecessorId;
   const lineageRoot = lineage === null ? tokenId : lineage.lineageRoot;
@@ -103,16 +104,19 @@ function memberTokenInsert(
   const statement = db
     .prepare(`INSERT INTO member_credentials (id, member_id, machine_id, token_hash, issued_at, expires_at, revoked_at, bytes_written, predecessor_id, lineage_root, lineage_started_at, first_used_at, runtime_label, runtime_kind)
               SELECT ?, ?, ?, ?, ?, ?, NULL, 0, ?, ?, ?, NULL, ?, ?
-               WHERE ? IS NULL OR ${TOKEN_LIVE}`)
-    .bind(tokenId, member.memberId, member.machineId, digest, nowMs, expiresAt, predecessorId, lineageRoot, lineageStartedAt, runtime.runtimeLabel, runtime.runtimeKind, predecessorId, predecessorId);
+               WHERE (? IS NULL OR ${TOKEN_LIVE})${gate === undefined ? '' : ` AND (${gate.sql})`}`)
+    .bind(tokenId, member.memberId, member.machineId, digest, nowMs, expiresAt, predecessorId, lineageRoot, lineageStartedAt, runtime.runtimeLabel, runtime.runtimeKind, predecessorId, predecessorId, ...(gate?.params ?? []));
   return { statement, expiresAt };
 }
 
-/** A fresh raw token and its id, with the insert that stores the digest. */
-async function mintInsert(db: RelationalStore, member: { memberId: string; machineId: string | null }, nowMs: number, lineage: TokenLineage | null, runtime: RuntimeClaims): Promise<{ statement: PreparedStatement; issued: IssuedMemberToken }> {
+/** A fresh raw token and its id, with the insert that stores the digest. `gate` conjoins a condition the insert must meet; a caller batching it decides the outcome from the statement's change count. */
+export async function mintInsert(
+  db: RelationalStore, member: { memberId: string; machineId: string | null }, nowMs: number, lineage: TokenLineage | null, runtime: RuntimeClaims,
+  gate?: { sql: string; params: unknown[] },
+): Promise<{ statement: PreparedStatement; issued: IssuedMemberToken }> {
   const token = mintMemberToken();
   const tokenId = `${TOKEN_ID_PREFIX}${toBase64Url(crypto.getRandomValues(new Uint8Array(TOKEN_ID_BYTES)))}`;
-  const { statement, expiresAt } = memberTokenInsert(db, member, nowMs, lineage, tokenId, await sha256Hex(token), runtime);
+  const { statement, expiresAt } = memberTokenInsert(db, member, nowMs, lineage, tokenId, await sha256Hex(token), runtime, gate);
   return { statement, issued: { token, tokenId, expiresAt } };
 }
 

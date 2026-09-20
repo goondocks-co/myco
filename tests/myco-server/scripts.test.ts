@@ -20,13 +20,15 @@ describe('operator scripts', () => {
     const { code, out, err } = run('mint-local.ts', ['mem_s', 'machine_s']);
     expect(code).toBe(0);
     const statements = out.split('\n').filter((l) => l && !l.startsWith('--')).join('\n').split(';').map((s) => s.trim()).filter(Boolean);
-    expect(statements[0]).toMatch(/^INSERT OR IGNORE INTO members \(id, label, created_at, revoked_at, role\) VALUES \('mem_s', 'mem_s', \d+, NULL, 'admin'\)$/);
+    expect(statements[0]).toMatch(/^INSERT OR IGNORE INTO members/);
     expect(statements[1]).toMatch(/^INSERT INTO member_credentials/);
     expect(out).not.toMatch(/\?/);
     expect(err).not.toMatch(/MYCO_MEMBER_TOKEN=/);
     const sqlite = new Database(':memory:');
     for (const f of renderMigrationFiles()) sqlite.exec(f.sql);
     for (const s of statements) sqlite.exec(s);
+    expect(sqlite.query(`SELECT id, label, role, revoked_at FROM members WHERE id = 'mem_s'`).get())
+      .toEqual({ id: 'mem_s', label: 'mem_s', role: 'admin', revoked_at: null });
     expect((sqlite.query(`SELECT member_id, machine_id, bytes_written FROM member_credentials`).get() as any)).toEqual({ member_id: 'mem_s', machine_id: 'machine_s', bytes_written: 0 });
     const row = sqlite.query(`SELECT id, predecessor_id, lineage_root, lineage_started_at, first_used_at, expires_at FROM member_credentials`).get() as any;
     expect(row).toEqual({ id: row.id, predecessor_id: null, lineage_root: row.id, lineage_started_at: row.expires_at - MEMBER_TOKEN_TTL_MS, first_used_at: null, expires_at: row.expires_at });
