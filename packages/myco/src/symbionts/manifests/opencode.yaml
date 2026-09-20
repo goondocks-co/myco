@@ -45,6 +45,12 @@ registration:
   pluginPackageTarget: .opencode/package.json
   # opencode.json hosts MCP + permissions under non-standard keys
   mcpTarget: opencode.json
+  # OpenCode has no header-helper field, so a member keeps the stdio bridge,
+  # which carries the member credential and follows a rotated token. It merges
+  # this project's `myco` server into the global one: the project's `command`
+  # wins, while the global entry's `environment`, `enabled`, `url` and
+  # `headers` survive into it (opencode 1.18.21, `opencode debug config`).
+  memberMcpGlobalMerge: true
   globalMcpTarget: ~/.config/opencode/opencode.json
   mcpServersKey: mcp
   settingsTarget: opencode.json
