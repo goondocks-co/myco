@@ -291,6 +291,22 @@ export class MemberSpool {
     }
   }
 
+  /**
+   * A session's acknowledgement, or the fact that its state could not be read.
+   *
+   * State is read under the same append lock the records are, so a lock path
+   * that is a directory fails here too — before any record is counted. A state
+   * file that is not there is a session with no acknowledgement yet.
+   */
+  readAck(sessionId: string): { readable: true; lastAckAt: number | null } | { readable: false } {
+    try {
+      const state = readSessionState(this.dir, sessionId);
+      return { readable: true, lastAckAt: state.lastAckAt ?? null };
+    } catch {
+      return { readable: false };
+    }
+  }
+
   /** The spool as a report reads it: a directory nothing could read carries `readable: false`, and a session whose own file could not be read carries a null depth. */
   readSpool(): { readable: boolean; sessions: Array<{ sessionId: string; unacknowledged: number | null }> } {
     let names: string[];

@@ -17,6 +17,7 @@ import path from 'node:path';
 import { MemberSpool, spoolDirFor } from '@myco/member/spool.js';
 import { writeRegistryEntry, type RegistryEntry } from '@myco/member/registry.js';
 import { recordMissingMembership } from '@myco/member/no-membership.js';
+import { mintId, promptEvent, type EnvelopeContext } from '@myco/member/envelope.js';
 import { memberDiagnostics, projectDiagnostics, MAX_REFUSALS_REPORTED } from '@myco/member/diagnostics.js';
 import { runExport } from '@myco/cli/member.js';
 import { tempMycoHome } from './helpers/server.js';
@@ -299,20 +300,33 @@ describe('a spool a report could not read', () => {
     expect(facts.spool.unacknowledgedTotal).toBeNull();
   });
 
-  it('reports a session whose lock path it could not take as unknown, not as nothing pending', () => {
-    const e = entry();
+  it('reports a session whose lock path it could not take as unknown, through the export a caller runs', async () => {
+    const root = tempProjectRoot();
+    const e = entry({ root });
     writeRegistryEntry(e, { mycoHome });
+    // A real append: it writes the records AND the session state the report
+    // reads the acknowledgement from, both under the same lock.
     const spool = new MemberSpool('proj_1', { mycoHome });
-    fs.mkdirSync(spool.dir, { recursive: true });
-    fs.writeFileSync(path.join(spool.dir, 'sess-a.jsonl'), '', 'utf-8');
-    // A directory where the session's lock file belongs: the lock is taken
-    // before the records are read, and it fails there.
-    fs.mkdirSync(path.join(spool.dir, '.sess-a.lock'));
+    const ctx: EnvelopeContext = { agent: 'claude-code', sessionId: 'sess-a', stage: spool.stagerFor('sess-a'), version: '2.0.0-test' };
+    spool.append('sess-a', promptEvent(ctx, { promptId: mintId(), text: 'a turn' }));
+    expect(fs.existsSync(path.join(spool.dir, 'sess-a.state.json'))).toBe(true);
+
+    // A directory where that lock belongs: every read under it fails.
+    const lock = path.join(spool.dir, '.sess-a.lock');
+    fs.rmSync(lock, { force: true });
+    fs.mkdirSync(lock);
 
     const facts = projectDiagnostics(e, mycoHome, NOW);
     expect(facts.spool.readable).toBe(true);
+    expect(facts.spool.stateReadable).toBe(false);
     expect(facts.spool.sessions).toEqual([{ sessionId: 'sess-a', unacknowledged: null, lastAckAt: null }]);
     expect(facts.spool.unacknowledgedTotal).toBeNull();
+
+    // And the export a person runs answers rather than crashing.
+    const lines: string[] = [];
+    await runExport([], { mycoHome, now: () => NOW, cwd: root, stdout: (l) => lines.push(l), stderr: () => {} });
+    const report = JSON.parse(lines.join('\n')) as { projects: Array<{ spool: { readable: boolean; stateReadable: boolean; unacknowledgedTotal: number | null } }> };
+    expect(report.projects[0]!.spool).toMatchObject({ readable: true, stateReadable: false, unacknowledgedTotal: null });
   });
 
   it('reports a spool directory it could not read as unknown, leaving the layout as it found it', () => {

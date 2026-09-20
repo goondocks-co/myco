@@ -20,7 +20,6 @@ import { REGISTRY_VERSION, type RegistryEntry } from './registry.js';
 import { getPluginVersion } from '../version.js';
 import type { MissingMembershipRecord } from './no-membership.js';
 import { MemberSpool, type RefusedEntry } from './spool.js';
-import { lastAckAt } from './retention.js';
 import { MEMBER_PROTOCOL, isMemberCode, type MemberCode } from './constants.js';
 
 /** How many refusals one report carries, newest last. */
@@ -62,6 +61,8 @@ export interface SpoolSessionFacts {
 export interface SpoolFacts {
   /** False where the spool directory could not be read; its sessions are then unknown, not none. */
   readable: boolean;
+  /** False where a session's state could not be read; its acknowledgement is then unknown. */
+  stateReadable: boolean;
   sessionFiles: number;
   /** Null where any session file could not be read. */
   unacknowledgedTotal: number | null;
@@ -199,14 +200,21 @@ export function projectDiagnostics(entry: RegistryEntry, mycoHome: string, now: 
   const spool = new MemberSpool(entry.projectId, { mycoHome, initialize: false });
   // Acknowledgement is held in session state, which outlives the spool file a
   // session's records were written to.
-  const acked = new Map(spool.stateSessionIds().map((sessionId) => [sessionId, lastAckAt(spool, sessionId)]));
+  // State is read under the records' own lock, so a layout that blocks it is
+  // reported here rather than read as a session never acknowledged.
+  let stateReadable = true;
+  const acked = new Map(spool.stateSessionIds().map((sessionId) => {
+    const read = spool.readAck(sessionId);
+    if (!read.readable) stateReadable = false;
+    return [sessionId, read.readable ? read.lastAckAt : null] as const;
+  }));
   const spooled = spool.readSpool();
   const sessions = spooled.sessions.map(({ sessionId, unacknowledged }) => {
-    const at = acked.get(sessionId) ?? 0;
-    return { sessionId, unacknowledged, lastAckAt: at > 0 ? at : null };
+    const at = acked.get(sessionId) ?? null;
+    return { sessionId, unacknowledged, lastAckAt: at !== null && at > 0 ? at : null };
   });
   let lastAck = 0;
-  for (const at of acked.values()) lastAck = Math.max(lastAck, at);
+  for (const at of acked.values()) if (at !== null) lastAck = Math.max(lastAck, at);
   const refused = spool.readRefused();
   const reported = refused.entries.slice(-MAX_REFUSALS_REPORTED).map(refusalOf);
   const latch = spool.readLatch();
@@ -214,6 +222,8 @@ export function projectDiagnostics(entry: RegistryEntry, mycoHome: string, now: 
     membership: membershipOf(entry, now),
     spool: {
       readable: spooled.readable,
+      // False where a session's state could not be read: its acknowledgement is unknown, not absent.
+      stateReadable,
       sessionFiles: sessions.length,
       // Null where the directory, or any session file in it, could not be read: a total over what was readable would read as the whole.
       unacknowledgedTotal: !spooled.readable || sessions.some((session) => session.unacknowledged === null)
