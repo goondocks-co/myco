@@ -56,7 +56,7 @@ const MYCO_PLUGIN_FILE_MARKER = 'myco:plugin-marker';
 // --- Types ---
 
 /** What a check failed on, in a closed vocabulary a report carries where its detail text cannot go. */
-export type DoctorReason = 'home_pin_missing' | 'mcp_entry_absent' | 'mcp_target_unreadable' | 'mcp_entry_http' | 'mcp_entry_stdio' | 'mcp_entry_unknown_transport';
+export type DoctorReason = 'home_pin_missing' | 'mcp_entry_absent' | 'mcp_target_unreadable' | 'mcp_entry_http' | 'mcp_entry_stdio' | 'mcp_entry_unknown_transport' | 'mcp_entry_no_credential';
 
 export interface DoctorCheck {
   name: string;
@@ -1628,8 +1628,9 @@ export async function checkRuntimePin(): Promise<DoctorCheck | null> {
  *
  * The entry is read where the installer writes it — the symbiont's global
  * targets under the member scope, its project target under an override — and
- * the check reports which scope carries it and over what transport, or that a
- * target could not be read. It reports presence on disk, never that a server
+ * the check reports which scope carries it, over what transport, and whether
+ * it is the entry provisioning writes — the one carrying this member's
+ * credential — or that a target could not be read. It reports presence on disk, never that a server
  * answers.
  */
 export async function checkMemberMcpResolution(vaultDir: string, env: NodeJS.ProcessEnv = process.env): Promise<DoctorCheck[]> {
@@ -1667,6 +1668,20 @@ export async function checkMemberMcpResolution(vaultDir: string, env: NodeJS.Pro
     if (seen.length === 0) continue;
 
     for (const target of seen.filter((t) => t.present)) {
+      // An entry that does not carry this member's credential cannot
+      // authenticate or resolve the membership, whatever it routes over.
+      if (!target.carriesCredential) {
+        checks.push({
+          name: 'Member MCP resolution',
+          status: 'warn',
+          detail: `${manifest.displayName}'s ${target.scope} configuration declares a Myco MCP server that carries no member credential, so it resolves no membership. Run \`myco member join --provision ${manifest.name}\`.`,
+          reason: 'mcp_entry_no_credential',
+          scope: target.scope,
+          symbiont: manifest.name,
+          fixable: false,
+        });
+        continue;
+      }
       checks.push({
         name: 'Member MCP resolution',
         status: 'ok',

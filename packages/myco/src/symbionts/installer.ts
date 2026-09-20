@@ -1998,12 +1998,13 @@ export class SymbiontInstaller {
   /**
    * What this symbiont's MCP targets say about the member's entry, for a report.
    *
-   * Presence, transport and scope only: the entry itself carries a URL and the
-   * headers a credential travels in, and none of it leaves this class. Reading
+   * Presence, transport, scope and whether the entry carries this member's
+   * credential: the entry itself holds a URL and the headers a credential
+   * travels in, and none of that leaves this class. Reading
    * goes through the same parser the writes use, so a file that cannot be read
    * is named as such rather than read as an empty one.
    */
-  inspectMemberMcp(): Array<{ scope: 'global' | 'project'; present: boolean; transport: 'http' | 'stdio' | null; readable: boolean }> {
+  inspectMemberMcp(): Array<{ scope: 'global' | 'project'; present: boolean; transport: 'http' | 'stdio' | null; carriesCredential: boolean; readable: boolean }> {
     const toml = this.manifest.registration?.mcpFormat === 'toml';
     const scope = this.isGlobalScope ? 'global' as const : 'project' as const;
     return this.resolveAbsoluteMcpTargets().map(({ path: filePath, serversKey }) => {
@@ -2013,11 +2014,14 @@ export class SymbiontInstaller {
       try {
         server = this.mycoServerIn(filePath, toml, key);
       } catch {
-        return { scope, present: false, transport: null, readable: false };
+        return { scope, present: false, transport: null, carriesCredential: false, readable: false };
       }
-      if (server === null) return { scope, present: false, transport: null, readable: true };
+      if (server === null) return { scope, present: false, transport: null, carriesCredential: false, readable: true };
       const transport = typeof server.url === 'string' ? 'http' as const : typeof server.command === 'string' ? 'stdio' as const : null;
-      return { scope, present: true, transport, readable: true };
+      // What the entry declares is one fact; whether it is the entry member
+      // provisioning writes — the one carrying this member's credential — is
+      // another, and a server that is not cannot resolve the membership.
+      return { scope, present: true, transport, carriesCredential: this.isMemberMcpServer(server), readable: true };
     });
   }
 

@@ -836,15 +836,16 @@ describe('checkMemberMcpResolution', () => {
     expect(await checkMemberMcpResolution(path.join(root, '.myco'), process.env)).toEqual([]);
   });
 
-  it('names the scope and transport of a remote entry a project override carries', async () => {
+  it('names the scope and transport of a member entry a project override carries', async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-doctor-mcp-proj-'));
     fs.mkdirSync(path.join(root, '.myco'));
     member(root, path.join(homeDir, '.myco'), 'proj_1');
     fs.mkdirSync(path.join(root, '.cursor'), { recursive: true });
-    fs.writeFileSync(path.join(root, '.cursor', 'mcp.json'), JSON.stringify({ mcpServers: { myco: { type: 'http', url: 'https://srv.example/mcp' } } }));
+    // Cursor takes no headers helper, so its member entry is the stdio bridge carrying the credential flag.
+    fs.writeFileSync(path.join(root, '.cursor', 'mcp.json'), JSON.stringify({ mcpServers: { myco: { type: 'stdio', command: '/opt/myco', args: ['mcp', '--credential', 'registry'] } } }));
 
     expect(reasons(await checkMemberMcpResolution(path.join(root, '.myco'), process.env)))
-      .toContainEqual({ reason: 'mcp_entry_http', symbiont: 'cursor', scope: 'project', status: 'ok' });
+      .toContainEqual({ reason: 'mcp_entry_stdio', symbiont: 'cursor', scope: 'project', status: 'ok' });
   });
 
   it('names a Codex TOML entry under its own servers section, which a JSON key would miss', async () => {
@@ -852,7 +853,8 @@ describe('checkMemberMcpResolution', () => {
     fs.mkdirSync(path.join(root, '.myco'));
     member(root, path.join(homeDir, '.myco'), 'proj_1');
     fs.mkdirSync(path.join(root, '.codex'), { recursive: true });
-    fs.writeFileSync(path.join(root, '.codex', 'config.toml'), '[mcp_servers.myco]\nurl = "https://srv.example/mcp"\n');
+    fs.writeFileSync(path.join(root, '.codex', 'config.toml'),
+      '[mcp_servers.myco]\nurl = "https://srv.example/mcp"\nhttp_headers_helper = "/opt/myco member mcp-headers --credential registry"\n');
 
     expect(reasons(await checkMemberMcpResolution(path.join(root, '.myco'), process.env)))
       .toContainEqual({ reason: 'mcp_entry_http', symbiont: 'codex', scope: 'project', status: 'ok' });
@@ -874,8 +876,8 @@ describe('checkMemberMcpResolution', () => {
     fs.mkdirSync(path.join(root, '.myco'));
     member(root, path.join(homeDir, '.myco'), 'proj_1');
     fs.mkdirSync(path.join(root, '.cursor'), { recursive: true });
-    // Neither a url nor a command: the entry is there and what carries it is not known.
-    fs.writeFileSync(path.join(root, '.cursor', 'mcp.json'), JSON.stringify({ mcpServers: { myco: { note: 'something else' } } }));
+    // The credential is there; neither a url nor a command is, so what carries it is not known.
+    fs.writeFileSync(path.join(root, '.cursor', 'mcp.json'), JSON.stringify({ mcpServers: { myco: { args: ['mcp', '--credential', 'registry'] } } }));
 
     expect(reasons(await checkMemberMcpResolution(path.join(root, '.myco'), process.env)))
       .toContainEqual({ reason: 'mcp_entry_unknown_transport', symbiont: 'cursor', scope: 'project', status: 'ok' });

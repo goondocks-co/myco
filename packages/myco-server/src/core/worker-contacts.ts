@@ -26,7 +26,11 @@ export interface ReportedHarness {
 }
 
 /** Why the worker's last claim took no run, in the claim's own vocabulary; null when it took one. */
-export type ContactOutcome = 'claimed' | 'no_work' | 'no_harness' | 'at_limit' | 'lost_race';
+export const CONTACT_OUTCOMES = ['claimed', 'no_work', 'no_harness', 'at_limit', 'lost_race'] as const;
+export type ContactOutcome = (typeof CONTACT_OUTCOMES)[number];
+
+/** Whether a value is one of them. The column carries no constraint, so a stored reason is a string until this says otherwise. */
+export const isContactOutcome = (value: string): value is ContactOutcome => (CONTACT_OUTCOMES as readonly string[]).includes(value);
 
 /** How much of a worker's report is kept, so one poll can never grow the row without bound. */
 const MAX_OFFERS = 16;

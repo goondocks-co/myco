@@ -14,6 +14,7 @@ import { REGISTRY_VERSION, writeRegistryEntry } from '@myco/member/registry.js';
 import { MemberSpool, OFFLINE_LATCH_FILE } from '@myco/member/spool.js';
 import { mintId, promptEvent, type EnvelopeContext } from '@myco/member/envelope.js';
 import { runExport, runStatus } from '@myco/cli/member.js';
+import { CREDENTIAL_FLAG } from '@myco/member/constants.js';
 
 const NOW = 1_800_000_000_000;
 const SERVER = 'https://srv.example';
@@ -56,7 +57,10 @@ const writeJson = (file: string, body: unknown): void => {
   fs.writeFileSync(file, JSON.stringify(body), 'utf-8');
 };
 
-const mycoServer = (url: string) => ({ mcpServers: { myco: { type: 'http', url } } });
+/** Cursor takes no headers helper, so its member entry is the stdio bridge carrying the credential flag. */
+const cursorMember = () => ({ mcpServers: { myco: { type: 'stdio', command: '/opt/myco', args: ['mcp', CREDENTIAL_FLAG, 'registry'] } } });
+/** A server entry that is not the member's: a URL and none of the headers its credential travels in. */
+const notMember = (url: string) => ({ mcpServers: { myco: { type: 'http', url } } });
 
 interface CheckFact { name: string; reason: string | null; symbiont: string | null; scope: string | null; root: string | null; status: string }
 
@@ -74,17 +78,18 @@ describe('member export --all across two projects', () => {
     const beta = project('beta', 'proj_beta');
     // One global entry, reached from either project.
     fs.mkdirSync(path.join(home, '.codex'), { recursive: true });
-    fs.writeFileSync(path.join(home, '.codex', 'config.toml'), `[mcp_servers.myco]\nurl = "${SERVER}/mcp"\n`, 'utf-8');
+    fs.writeFileSync(path.join(home, '.codex', 'config.toml'),
+      `[mcp_servers.myco]\nurl = "${SERVER}/mcp"\nhttp_headers_helper = "/opt/myco member mcp-headers ${CREDENTIAL_FLAG} registry"\n`, 'utf-8');
     // A project override apiece, each in its own checkout.
-    writeJson(path.join(alpha, '.cursor', 'mcp.json'), mycoServer(`${SERVER}/mcp`));
-    writeJson(path.join(beta, '.cursor', 'mcp.json'), mycoServer(`${SERVER}/mcp`));
+    writeJson(path.join(alpha, '.cursor', 'mcp.json'), cursorMember());
+    writeJson(path.join(beta, '.cursor', 'mcp.json'), cursorMember());
 
     const report = await exportAll();
     expect(report.selection).toMatchObject({ root: null, scope: 'all', membershipPresent: true });
 
     const overrides = mcpChecks(report.checks).filter((c) => c.scope === 'project' && c.symbiont === 'cursor');
     expect(overrides.map((c) => c.root).sort()).toEqual([alpha, beta].sort());
-    expect(overrides.every((c) => c.reason === 'mcp_entry_http' && c.status === 'ok')).toBe(true);
+    expect(overrides.every((c) => c.reason === 'mcp_entry_stdio' && c.status === 'ok')).toBe(true);
 
     // The global entry is the same fact from both roots, so it is named once
     // and carries no root of its own.
@@ -96,13 +101,24 @@ describe('member export --all across two projects', () => {
   it('names a project whose override could not be read without hiding the other project\'s', async () => {
     const alpha = project('alpha', 'proj_alpha');
     const beta = project('beta', 'proj_beta');
-    writeJson(path.join(alpha, '.cursor', 'mcp.json'), mycoServer(`${SERVER}/mcp`));
+    writeJson(path.join(alpha, '.cursor', 'mcp.json'), cursorMember());
     fs.mkdirSync(path.join(beta, '.cursor'), { recursive: true });
     fs.writeFileSync(path.join(beta, '.cursor', 'mcp.json'), 'not configuration at all', 'utf-8');
 
     const found = mcpChecks((await exportAll()).checks).filter((c) => c.symbiont === 'cursor');
-    expect(found).toContainEqual(expect.objectContaining({ reason: 'mcp_entry_http', root: alpha, status: 'ok' }));
+    expect(found).toContainEqual(expect.objectContaining({ reason: 'mcp_entry_stdio', root: alpha, status: 'ok' }));
     expect(found).toContainEqual(expect.objectContaining({ reason: 'mcp_target_unreadable', root: beta, status: 'warn' }));
+  });
+});
+
+describe('a server entry that is not the member\'s', () => {
+  it('warns that it carries no credential rather than reporting the membership resolved', async () => {
+    const alpha = project('alpha', 'proj_alpha');
+    writeJson(path.join(alpha, '.cursor', 'mcp.json'), notMember(`${SERVER}/mcp`));
+
+    const found = mcpChecks((await exportAll()).checks).filter((c) => c.symbiont === 'cursor');
+    expect(found).toContainEqual(expect.objectContaining({ reason: 'mcp_entry_no_credential', root: alpha, status: 'warn' }));
+    expect(found.some((c) => c.status === 'ok')).toBe(false);
   });
 });
 

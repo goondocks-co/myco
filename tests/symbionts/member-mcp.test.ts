@@ -210,7 +210,7 @@ describe('what a report reads from the member MCP targets', () => {
     expect(files.length).toBeGreaterThan(0);
 
     const seen = installer.inspectMemberMcp();
-    expect(seen).toEqual(files.map(() => ({ scope: 'global', present: true, transport: 'http', readable: true })));
+    expect(seen).toEqual(files.map(() => ({ scope: 'global', present: true, transport: 'http', carriesCredential: true, readable: true })));
     // Presence, transport and scope only: the URL and the headers helper stay inside.
     expect(JSON.stringify(seen)).not.toContain(SERVER_URL);
   });
@@ -222,7 +222,25 @@ describe('what a report reads from the member MCP targets', () => {
       fs.writeFileSync(file, JSON.stringify({ mcpServers: { somethingElse: { url: 'https://elsewhere' } } }), 'utf-8');
     }
 
-    expect(installer.inspectMemberMcp().every((t) => t.readable && !t.present && t.transport === null)).toBe(true);
+    expect(installer.inspectMemberMcp().every((t) => t.readable && !t.present && t.transport === null && !t.carriesCredential)).toBe(true);
+  });
+
+  it('reads a server that carries no member credential as present and not the member\'s', () => {
+    const { installer } = globalInstaller('claude-code');
+    // A 1.4 project install's shape: a URL, and none of the headers the
+    // member's credential travels in.
+    writeEntries(installer, { type: 'http', url: `${SERVER_URL}/mcp` });
+
+    const seen = installer.inspectMemberMcp();
+    expect(seen.every((t) => t.present && t.transport === 'http' && !t.carriesCredential)).toBe(true);
+  });
+
+  it('reads a launcher without the credential argument as not the member\'s either', () => {
+    const { installer } = globalInstaller('claude-code');
+    writeEntries(installer, { type: 'stdio', command: '/opt/myco', args: ['mcp'] });
+
+    const seen = installer.inspectMemberMcp();
+    expect(seen.every((t) => t.present && t.transport === 'stdio' && !t.carriesCredential)).toBe(true);
   });
 
   it('says a target it could not read is unread, rather than reading it as no entry', () => {
@@ -243,7 +261,7 @@ describe('what a report reads from the member MCP targets', () => {
 
     const seen = override.inspectMemberMcp();
     // One target, the project's own: the member scope's global paths are not consulted.
-    expect(seen).toEqual([{ scope: 'project', present: true, transport: 'http', readable: true }]);
+    expect(seen).toEqual([{ scope: 'project', present: true, transport: 'http', carriesCredential: true, readable: true }]);
     expect(globalTargetPaths(override)).toEqual([projectTarget]);
   });
 });
