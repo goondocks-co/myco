@@ -17,7 +17,7 @@ import { isKnownWorkerCapability } from '@goondocks/myco-shared/repository';
 import { HARNESS_CREDENTIALS } from '@goondocks/myco-shared/harness-providers';
 import { SERVER_SCHEMA_VERSION } from '../constants.js';
 import { schemaVersion } from '../read/meta.js';
-import { listProjects } from '../read/sessions.js';
+import { listProjects, type ProjectRow } from '../read/sessions.js';
 import { listQueuedAcrossProjects, workerLiveness } from './runs.js';
 import { RETAINED_TASKS } from './task-catalogue.js';
 import { HELD_BY_WORDS } from '@goondocks/myco-shared/run-holds';
@@ -68,11 +68,11 @@ export interface WorkerFacts {
   lastReason: ContactOutcome | null;
   /** Whether the stored reason is outside the vocabulary: null when none is recorded, else 0 or 1. */
   unknownReason: number | null;
-  /** 0 for a lease holder with no recorded contact. */
-  lastSeenAt: number;
-  busy: { runId: string; projectId: string; task: string | null; unknownTask: number | null; leaseExpiresAt: number } | null;
+  /** 0 for no recorded contact; null for an unusable stored timestamp. */
+  lastSeenAt: number | null;
+  busy: { runId: string; projectId: string; task: string | null; unknownTask: number | null; leaseExpiresAt: number | null } | null;
   eligible: boolean;
-  recent: boolean;
+  recent: boolean | null;
 }
 
 /** A task the catalogue retains, or null for one it does not name. */
@@ -90,7 +90,7 @@ export interface QueuedRunFacts {
   task: string | null;
   /** Whether the stored task is outside the catalogue: null when the row names none. */
   unknownTask: number | null;
-  queuedAt: number;
+  queuedAt: number | null;
   /** Null for a holder the shared vocabulary does not name. */
   heldBy: string | null;
   /** Whether the stored holder is outside the vocabulary: null when the row names none. */
@@ -105,6 +105,7 @@ export interface ProjectFacts {
   sessionCount: number;
   lastActivityAt: number | null;
   archivedAt: number | null;
+  unavailableFields: Array<'lastActivityAt' | 'archivedAt'>;
 }
 
 /** One declared unit of recurring work, and whether this Deployment runs it. */
@@ -163,30 +164,46 @@ export function declaredWork(): DeclaredWorkFacts[] {
   ];
 }
 
-const workerFacts = (row: WorkerFleetRow): WorkerFacts => ({
-  credentialId: row.credentialId,
-  machineId: row.machineId,
-  offers: row.offers === null ? null : row.offers.filter((offer) => Object.hasOwn(HARNESS_CREDENTIALS, offer.id)).map((offer) => ({ id: offer.id, authenticated: offer.authenticated })),
-  unknownOffers: row.offers === null ? null : row.offers.filter((offer) => !Object.hasOwn(HARNESS_CREDENTIALS, offer.id)).length,
-  capabilities: row.capabilities === null ? null : row.capabilities.filter(isKnownWorkerCapability),
-  // A worker reports its own strings; only the ones this Deployment knows are carried, and the rest are counted so an absence is not read as none reported.
-  unknownCapabilities: row.capabilities === null ? null : row.capabilities.filter((value) => !isKnownWorkerCapability(value)).length,
-  lastReason: row.lastReason !== null && isContactOutcome(row.lastReason) ? row.lastReason : null,
-  // A stored reason outside the vocabulary is counted, never carried.
-  unknownReason: row.lastReason === null ? null : isContactOutcome(row.lastReason) ? 0 : 1,
-  lastSeenAt: row.lastSeenAt,
-  busy: row.busy === null ? null : {
-    runId: row.busy.runId, projectId: row.busy.projectId, leaseExpiresAt: row.busy.leaseExpiresAt,
-    task: knownTask(row.busy.task),
-    unknownTask: row.busy.task === null ? null : knownTask(row.busy.task) === null ? 1 : 0,
-  },
-  eligible: row.eligible,
-  recent: row.recent,
+/** A stored timestamp the document can render, or null when absent or unusable. */
+const diagnosticInstant = (value: unknown): number | null =>
+  typeof value === 'number' && Number.isFinite(value) && !Number.isNaN(new Date(value).getTime()) ? value : null;
+
+const projectFacts = (row: ProjectRow): ProjectFacts => ({
+  projectId: row.projectId,
+  sessionCount: row.sessionCount,
+  lastActivityAt: diagnosticInstant(row.lastActivityAt),
+  archivedAt: diagnosticInstant(row.archivedAt),
+  unavailableFields: (['lastActivityAt', 'archivedAt'] as const)
+    .filter((field) => row[field] !== null && diagnosticInstant(row[field]) === null),
 });
+
+const workerFacts = (row: WorkerFleetRow): WorkerFacts => {
+  const lastSeenAt = diagnosticInstant(row.lastSeenAt);
+  return {
+    credentialId: row.credentialId,
+    machineId: row.machineId,
+    offers: row.offers === null ? null : row.offers.filter((offer) => Object.hasOwn(HARNESS_CREDENTIALS, offer.id)).map((offer) => ({ id: offer.id, authenticated: offer.authenticated })),
+    unknownOffers: row.offers === null ? null : row.offers.filter((offer) => !Object.hasOwn(HARNESS_CREDENTIALS, offer.id)).length,
+    capabilities: row.capabilities === null ? null : row.capabilities.filter(isKnownWorkerCapability),
+    // A worker reports its own strings; only the ones this Deployment knows are carried, and the rest are counted so an absence is not read as none reported.
+    unknownCapabilities: row.capabilities === null ? null : row.capabilities.filter((value) => !isKnownWorkerCapability(value)).length,
+    lastReason: row.lastReason !== null && isContactOutcome(row.lastReason) ? row.lastReason : null,
+    // A stored reason outside the vocabulary is counted, never carried.
+    unknownReason: row.lastReason === null ? null : isContactOutcome(row.lastReason) ? 0 : 1,
+    lastSeenAt,
+    busy: row.busy === null ? null : {
+      runId: row.busy.runId, projectId: row.busy.projectId, leaseExpiresAt: diagnosticInstant(row.busy.leaseExpiresAt),
+      task: knownTask(row.busy.task),
+      unknownTask: row.busy.task === null ? null : knownTask(row.busy.task) === null ? 1 : 0,
+    },
+    eligible: row.eligible,
+    recent: lastSeenAt === null ? null : row.recent,
+  };
+};
 
 function queuedFacts(row: { id: string; projectId: string; task: string | null; queuedAt: number; heldBy: string | null; dispatchedBy: string | null }): QueuedRunFacts {
   return {
-    runId: row.id, projectId: row.projectId, queuedAt: row.queuedAt, launched: row.dispatchedBy !== null,
+    runId: row.id, projectId: row.projectId, queuedAt: diagnosticInstant(row.queuedAt), launched: row.dispatchedBy !== null,
     task: knownTask(row.task),
     unknownTask: row.task === null ? null : knownTask(row.task) === null ? 1 : 0,
     heldBy: knownHolder(row.heldBy),
@@ -229,7 +246,7 @@ export async function deploymentDiagnostics(env: ServerEnv, now: number): Promis
       schema: { expected: SERVER_SCHEMA_VERSION, found, matches: found === SERVER_SCHEMA_VERSION },
       workers: { workersBusy: counts.workersBusy, runsQueued: counts.runsQueued, recentWithinMs: CONTACT_RECENT_MS, fleet: fleet.map(workerFacts) },
       queuedRuns: queued.map(queuedFacts),
-      projects: projects.map((p) => ({ projectId: p.projectId, sessionCount: p.sessionCount, lastActivityAt: p.lastActivityAt, archivedAt: p.archivedAt })),
+      projects: projects.map(projectFacts),
       ingestBacklog: {
         pendingTranscripts: await pendingTranscripts(env.db),
         pendingImportedTranscripts: await pendingImportedTranscripts(env.db),

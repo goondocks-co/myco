@@ -28,6 +28,39 @@ async function rig() {
 }
 
 describe('the Deployment names what it is configured to do', () => {
+  it('omits text stored in timestamp columns and identifies unknown project dates', async () => {
+    const r = await rig();
+    const privateText = 'PRIVATE_TIMESTAMP_CONTENT';
+    await ensureMember(r.db, 'mem_dates', NOW, 'admin', 'worker');
+    const credential = await issueMemberToken(r.db, { memberId: 'mem_dates', machineId: 'build-box' }, NOW);
+    r.sqlite.run(`INSERT INTO agent_runs (id, project_id, agent_id, task, status, queued_at)
+      VALUES ('run_bad_date', 'proj_1', 'myco-agent', 'title-summary', 'queued', ?)`, [privateText]);
+    r.sqlite.run(`INSERT INTO sessions(project_id,session_id,machine_id,created_by_token_id,first_received_at,last_received_at)
+      VALUES ('proj_1','session_bad_date','build-box',?,?,?)`, [credential.tokenId, NOW, privateText]);
+    r.sqlite.run('UPDATE projects SET archived_at = ? WHERE project_id = ?', [privateText, 'proj_1']);
+
+    const document = await deploymentDiagnostics(r.serverEnv, NOW);
+    expect(document.store).toBe('readable');
+    expect(document.queuedRuns?.find((row) => row.runId === 'run_bad_date')?.queuedAt).toBeNull();
+    expect(document.projects?.find((row) => row.projectId === 'proj_1')).toMatchObject({
+      lastActivityAt: null, archivedAt: null, unavailableFields: ['lastActivityAt', 'archivedAt'],
+    });
+    expect(JSON.stringify(document)).not.toContain(privateText);
+  });
+
+  it('keeps invalid worker timestamps and their derived recency unknown', async () => {
+    const r = await rig();
+    await ensureMember(r.db, 'mem_dates', NOW, 'admin', 'worker');
+    const credential = await issueMemberToken(r.db, { memberId: 'mem_dates', machineId: 'build-box' }, NOW);
+    await recordWorkerContact(r.db, { credentialId: credential.tokenId, machineId: 'build-box', offers: [], capabilities: [], reason: 'no_work', now: NOW });
+    r.sqlite.run('UPDATE worker_contacts SET last_seen_at = ? WHERE credential_id = ?', ['invalid timestamp', credential.tokenId]);
+    r.sqlite.run(`INSERT INTO agent_runs (id, project_id, agent_id, task, status, queued_at, started_at, leased_by, lease_expires_at)
+      VALUES ('run_bad_lease', 'proj_1', 'myco-agent', 'title-summary', 'running', ?, ?, ?, ?)`, [NOW, NOW, credential.tokenId, 1e20]);
+
+    const worker = (await deploymentDiagnostics(r.serverEnv, NOW)).workers?.fleet[0];
+    expect(worker).toMatchObject({ lastSeenAt: null, recent: null, busy: { runId: 'run_bad_lease', leaseExpiresAt: null } });
+  });
+
   it('serves its schema, capabilities, workers, queue and projects to an owner', async () => {
     const r = await rig();
     await ensureMember(r.db, 'mem_w1', NOW, 'admin', 'a worker');
@@ -49,6 +82,9 @@ describe('the Deployment names what it is configured to do', () => {
     expect(document.workers?.fleet[0]).toMatchObject({ machineId: 'build-box', lastReason: 'no_harness', recent: true });
     expect(document.queuedRuns?.[0]).toMatchObject({ runId: 'run_q', task: 'title-summary', heldBy: 'worker', launched: false });
     expect(document.projects?.some((p) => p.projectId === 'proj_1')).toBe(true);
+    expect(document.projects?.find((p) => p.projectId === 'proj_1')).toMatchObject({
+      lastActivityAt: null, archivedAt: null, unavailableFields: [],
+    });
     expect(document.ingestBacklog).toMatchObject({ pendingTranscripts: 0, pendingImportedTranscripts: 0 });
   });
 
