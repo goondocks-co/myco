@@ -136,7 +136,7 @@ export class MemberSpool {
    * `initialize` false skips creating the spool's directories, so a caller that
    * only reads can be built against a layout that is broken — a file where the
    * directory belongs — and report it. It is not a read-only spool: the writing
-   * methods still write, and create what they need as they always did.
+   * methods write and create their required directories.
    */
   constructor(readonly projectId: string, opts: { mycoHome?: string; initialize?: boolean } = {}) {
     this.mycoHome = opts.mycoHome ?? resolveMycoHome();

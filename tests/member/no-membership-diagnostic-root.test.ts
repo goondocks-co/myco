@@ -5,7 +5,7 @@
  * record names another one is a record for somebody else's project. A report
  * that carried it would attribute one project's lost capture to another, and a
  * report that read it as absent would say a root had never missed. Both readers
- * answer unavailable instead. The runtime readers are unchanged: they are what a
+ * answer unavailable instead. Runtime readers provide the records a
  * hook counts into and what retention removes from, and neither derives a path
  * from a record's own root.
  */
@@ -67,6 +67,16 @@ describe('a record whose root is not the file it sits in', () => {
 });
 
 describe('a record that names the root its file is keyed to', () => {
+  it('reports a zero count as unavailable through scoped and list reads', () => {
+    const file = writeRecordAt(MINE, MINE);
+    const record = JSON.parse(fs.readFileSync(file, 'utf8'));
+    fs.writeFileSync(file, JSON.stringify({ ...record, count: 0 }));
+
+    expect(readMissingMembershipResult(MINE, mycoHome)).toEqual({ status: 'unavailable' });
+    expect(listMissingMembershipsResult(mycoHome)).toMatchObject({ records: [], unavailableRecords: 1 });
+    expect(readMissingMembership(MINE, mycoHome)?.count).toBe(0);
+  });
+
   it('is held, and listed', () => {
     writeRecordAt(MINE, MINE);
 

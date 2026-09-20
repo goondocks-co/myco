@@ -297,10 +297,11 @@ export function projectDiagnostics(entry: RegistryEntry, mycoHome: string, now: 
   const refused = spool.readRefused();
   const reported = refused.entries.slice(-MAX_REFUSALS_REPORTED).map(refusalOf);
   const latchRead = spool.readLatchResult();
-  // A latch whose instants no reader can date is one the report cannot use, and
-  // it is no more readable than a file it could not parse.
+  // Reportable latches have renderable timestamps and a non-negative integer backoff.
   const latchUsable = latchRead.readable
-    && (latchRead.latch === null || (rendersAsInstant(latchRead.latch.since) && rendersAsInstant(latchRead.latch.nextProbeAt)));
+    && (latchRead.latch === null || (rendersAsInstant(latchRead.latch.since)
+      && rendersAsInstant(latchRead.latch.nextProbeAt)
+      && Number.isSafeInteger(latchRead.latch.backoffMs) && latchRead.latch.backoffMs >= 0));
   const latch = latchUsable ? latchRead.latch : null;
   return {
     membership: membershipOf(entry, now),

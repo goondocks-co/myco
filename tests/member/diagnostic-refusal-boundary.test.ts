@@ -88,6 +88,19 @@ describe('a refusal the log holds', () => {
 });
 
 describe('an offline latch the report cannot date', () => {
+  it.each([-1, 0.5, Number.MAX_SAFE_INTEGER + 1])('reports an invalid backoff %s as unreadable', (backoffMs) => {
+    const e = entry();
+    writeRegistryEntry(e, { mycoHome });
+    const spool = new MemberSpool('proj_1', { mycoHome });
+    fs.writeFileSync(path.join(spool.dir, OFFLINE_LATCH_FILE),
+      JSON.stringify({ since: NOW, nextProbeAt: NOW + 1000, backoffMs }), { mode: 0o600 });
+
+    const facts = projectDiagnostics(e, mycoHome, NOW);
+    expect(facts.latch).toBeNull();
+    expect(facts.latchReadable).toBe(false);
+    expect(spool.readLatch()?.backoffMs).toBe(backoffMs);
+  });
+
   it('reads as no latch rather than as one holding an instant nothing renders', () => {
     const e = entry();
     writeRegistryEntry(e, { mycoHome });

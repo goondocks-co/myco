@@ -106,7 +106,7 @@ const keyed = (record: MissingMembershipRecord, name: string): boolean => name =
 
 /** Diagnostic count and timestamp validation. */
 function reportable(record: MissingMembershipRecord): boolean {
-  return Number.isSafeInteger(record.count) && record.count >= 0
+  return Number.isSafeInteger(record.count) && record.count > 0
     && record.version === MISSING_MEMBERSHIP_VERSION
     && rendersAsInstant(record.firstAt) && rendersAsInstant(record.lastAt);
 }
