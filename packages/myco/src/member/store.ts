@@ -72,7 +72,15 @@ export function readPrivateJson<T>(file: string): PrivateRead<T> {
     stat = fs.statSync(file);
   } catch (err) {
     const code = (err as NodeJS.ErrnoException).code;
-    return code === 'ENOENT' ? { ok: false, reason: 'missing' } : { ok: false, reason: 'unreadable', detail: code };
+    if (code !== 'ENOENT') return { ok: false, reason: 'unreadable', detail: code };
+    // `stat` follows a link, so its ENOENT is the target's. `lstat` answers for
+    // the entry itself: one that is there is a link to nothing, not an absence.
+    try {
+      fs.lstatSync(file);
+    } catch {
+      return { ok: false, reason: 'missing' };
+    }
+    return { ok: false, reason: 'unreadable', detail: code };
   }
   if (!isPrivateMode(stat.mode)) return { ok: false, reason: 'loose-mode', detail: (stat.mode & 0o777).toString(8) };
   let raw: string;
