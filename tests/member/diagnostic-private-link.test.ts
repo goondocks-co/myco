@@ -50,6 +50,15 @@ describe('readPrivateJson tells an entry that leads nowhere from one that is not
     expect(readPrivateJson(file)).toEqual({ ok: true, value: { a: 1 } });
   });
 
+  it('reads a link that cannot be resolved at all as unreadable, carrying its errno', () => {
+    const a = path.join(mycoHome, 'loopA.json');
+    const b = path.join(mycoHome, 'loopB.json');
+    fs.symlinkSync(b, a);
+    fs.symlinkSync(a, b);
+
+    expect(readPrivateJson(a)).toEqual({ ok: false, reason: 'unreadable', detail: 'ELOOP' });
+  });
+
   it('reads a link to nothing as unreadable, not as missing', () => {
     const file = path.join(mycoHome, 'linked.json');
     danglingLink(file);

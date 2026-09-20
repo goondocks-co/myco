@@ -77,8 +77,11 @@ export function readPrivateJson<T>(file: string): PrivateRead<T> {
     // the entry itself: one that is there is a link to nothing, not an absence.
     try {
       fs.lstatSync(file);
-    } catch {
-      return { ok: false, reason: 'missing' };
+    } catch (entryErr) {
+      const entryCode = (entryErr as NodeJS.ErrnoException).code;
+      return entryCode === 'ENOENT'
+        ? { ok: false, reason: 'missing' }
+        : { ok: false, reason: 'unreadable', detail: entryCode };
     }
     return { ok: false, reason: 'unreadable', detail: code };
   }
