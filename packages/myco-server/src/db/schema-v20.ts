@@ -31,8 +31,6 @@ export const SOURCES_WITH_PRESENTED_SESSION_DATE: readonly Source[] = sources.ma
   ? { ...s, created: 'COALESCE(occurred_started_at, started_at, first_received_at)' }
   : s);
 
-const sourceUnion = unionOf(sources);
-
 /** Source mutations invalidate vectors atomically; provider calls occur only during reconciliation. */
 export const V20_STATEMENTS: readonly string[] = [
   `CREATE TABLE IF NOT EXISTS embedding_versions (

@@ -243,14 +243,16 @@ describe('a conflicting turn on a session that carries an overlay', () => {
     await drain(r.env, r.sqlite);
     expect(state(r.sqlite)).toMatchObject({ occurred_started_at: DERIVED_FIRST });
 
-    const promptId = uuid(500);
-    const first = await send(r.serverEnv, r.tokenId, 'prompt', LIVE_END, { promptId, text: 'the stored text', origin: 'user' }, 'cli');
-    expect(first).toMatchObject({ persisted: true, projected: true });
-
-    // The same prompt id under different text: the stored row wins and the
-    // caller is told, whatever else the batch touched.
-    const second = await send(r.serverEnv, r.tokenId, 'prompt', LIVE_END + 1, { promptId, text: 'a different text', origin: 'user' }, 'cli');
-    expect(second).toMatchObject({ persisted: true, projected: false, code: 'projection_conflict' });
+    const derivedPrompt = r.sqlite.query('SELECT prompt_id FROM prompt_batches WHERE project_id = ? AND session_id = ?').get(PROJECT, SESSION) as { prompt_id: string } | null;
+    expect(derivedPrompt).not.toBeNull();
+    const promptId = derivedPrompt!.prompt_id;
+    const stored = () => r.sqlite.query('SELECT text FROM prompt_batches WHERE project_id = ? AND prompt_id = ?').get(PROJECT, promptId);
+    const before = stored();
+    expect(before).not.toBeNull();
+    const conflicting = await send(r.serverEnv, r.tokenId, 'prompt', LIVE_END, { promptId, text: 'a different text', origin: 'user' }, 'cli');
+    expect(conflicting).toMatchObject({ persisted: true, projected: false, code: 'projection_conflict' });
+    expect(stored()).toEqual(before);
+    expect(state(r.sqlite)).toMatchObject({ occurred_started_at: null });
   });
 });
 

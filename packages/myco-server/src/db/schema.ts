@@ -1511,16 +1511,10 @@ const V45_STATEMENTS: readonly string[] = [
   `ALTER TABLE sessions ADD COLUMN occurred_ended_at INTEGER`,
   `DROP INDEX IF EXISTS idx_sessions_occurred`,
   `CREATE INDEX IF NOT EXISTS idx_sessions_occurred ON sessions (project_id, COALESCE(occurred_started_at, started_at, first_received_at), session_id)`,
-  // A record's date in search metadata is the one it is presented at. The view
-  // alone is replaced: the embedding triggers watch the columns that carry a
-  // record's content, and a date is not content.
+  // Search sources expose the presented session date.
   `DROP VIEW IF EXISTS embedding_sources`,
   embeddingSourcesView(SOURCES_WITH_PRESENTED_SESSION_DATE),
-  // A session's date reaches the vector store as metadata a search filters on,
-  // so a presented start that moves invalidates the vector that carries the old
-  // one. Only a changed value does: the bound settles on the first pass that
-  // reads the transcript's earliest turn, and a pass that resolves the same
-  // instant writes the same row.
+  // A changed presented start invalidates vector date-filter metadata.
   `CREATE TRIGGER IF NOT EXISTS sessions_embedding_occurred AFTER UPDATE OF occurred_started_at ON sessions
      WHEN new.occurred_started_at IS NOT old.occurred_started_at BEGIN
     INSERT INTO embedding_versions(project_id, type, record_id, revision) VALUES(new.project_id, 'session', new.session_id, lower(hex(randomblob(16))))
