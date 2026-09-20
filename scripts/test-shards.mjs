@@ -1,9 +1,11 @@
+const MAX_SHARDS = 256;
+
 export function parseShard(value) {
   if (value === undefined) return { index: 1, count: 1 };
   if (!/^[1-9]\d*\/[1-9]\d*$/.test(value)) throw new Error(`Invalid shard: ${value}; expected index/count`);
   const [index, count] = value.split('/').map(Number);
-  if (!Number.isSafeInteger(index) || !Number.isSafeInteger(count) || index > count || count > 256) {
-    throw new Error(`Invalid shard: ${value}; require 1 <= index <= count <= 256`);
+  if (!Number.isSafeInteger(index) || !Number.isSafeInteger(count) || index > count || count > MAX_SHARDS) {
+    throw new Error(`Invalid shard: ${value}; require 1 <= index <= count <= ${MAX_SHARDS}`);
   }
   return { index, count };
 }

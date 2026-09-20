@@ -49,6 +49,7 @@ export const dispatchQueue: ParityScenario = {
     // A run already running holds the limit, so the first ask waits behind it
     // by name; with the limit clear the next still waits, held by the worker
     // that has yet to claim it. Both are the same queue in the same order.
+    await target.sql(`INSERT OR IGNORE INTO agents (id, name, source, enabled, created_at) VALUES ('myco-agent', 'myco-agent', 'built-in', 1, ${now})`);
     await target.sql(`INSERT INTO agent_runs (project_id, id, agent_id, task, status, dry_run, started_at) VALUES (${lit(target.projectId)}, ${lit(`blocker-${now}`)}, 'myco-agent', 'extract-curate', 'running', 0, ${now})`);
     const a = await dispatch('extract-curate');
     expect(a).toMatchObject({ queued: true, heldBy: 'concurrent_runs' });

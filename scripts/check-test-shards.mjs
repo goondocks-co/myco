@@ -55,7 +55,9 @@ try {
   const shardPhases = sharded.filter((phase) => !phase.label.endsWith('.tsx'));
   assert.deepEqual(shardPhases.sort((a, b) => a.label.localeCompare(b.label)), fullPhases.sort((a, b) => a.label.localeCompare(b.label)), 'Node phase isolation changed');
   const parityShards = workflow.jobs.parity.strategy.matrix.shard;
-  exactlyOnce(parityShards.flatMap((index) => parityPlan({ MYCO_PARITY_SHARD: `${index}/${parityShards.length}` })), parityPlan(), 'CI parity shards');
+  exactlyOnce(parityShards.flatMap((index) => parityPlan({
+    MYCO_PARITY_SHARD: workflow.jobs.parity.env.MYCO_PARITY_SHARD.replace('${{ matrix.shard }}', String(index)),
+  })), parityPlan(), 'CI parity shards');
   exactlyOnce(workflow.jobs.check.needs, Object.keys(workflow.jobs).filter((job) => job !== 'check'), 'Required jobs');
 } finally {
   fs.rmSync(scratch, { recursive: true, force: true });

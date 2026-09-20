@@ -31,12 +31,13 @@ import durations from '../../scripts/test-durations.json';
 import { writeFileSync } from 'node:fs';
 
 const scenarios = [restoreContinuation, repositories, canopy, skillCandidates, sessionsTitling, sessionTurns, plans, spores, recall, backupRestore, tick, dispatchQueue, scheduledTasks, cortex, replacedRun, search, grants, importParity, workerWire, codexRecording, toolBlobRetention, titlingBackfill, sessionEnd, projectCounts, objectLifecycle];
+const DEFAULT_SCENARIO_DURATION_MS = 15_000;
 
 if (!process.env.MYCO_PARITY) {
   test.skip('parity scenarios (run via npm run test:parity)', () => {});
 } else {
   const weights: Record<string, number> = durations.parity;
-  const selected = selectShard(scenarios, parseShard(process.env.MYCO_PARITY_SHARD), (scenario) => weights[scenario.name] ?? 15_000);
+  const selected = selectShard(scenarios, parseShard(process.env.MYCO_PARITY_SHARD), (scenario) => weights[scenario.name] ?? DEFAULT_SCENARIO_DURATION_MS);
   if (process.env.MYCO_PARITY_PLAN_FILE) {
     writeFileSync(process.env.MYCO_PARITY_PLAN_FILE, JSON.stringify(selected.map((scenario) => scenario.name)));
     test.skip('parity shard manifest', () => {});
