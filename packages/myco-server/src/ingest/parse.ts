@@ -31,7 +31,6 @@ import { idFields, kindSpec } from './kinds.js';
 import { parserFor } from './parsers/registry.js';
 import { isBlock, type DerivedEvent } from './parsers/index.js';
 import { resolvePresentedDates } from './projections.js';
-import { sessionLifecycle } from '../read/sessions.js';
 import { segmentsToRead, splitCompleteLines } from './segments.js';
 import { registeredObjectKeySql } from '../core/blob-objects.js';
 import { MAX_BLOB_BYTES, SERVER_PROTOCOL, TRANSCRIPT_PARSE_ADAPTER } from '../constants.js';
@@ -147,12 +146,6 @@ async function nextTarget(db: RelationalStore, now: number): Promise<ParseTarget
     parserContext: contextFromStored(row.parser_context),
     imported: row.imported_at !== null && row.imported_at !== undefined,
   };
-}
-
-/** The date an import gave this session, as the lifecycle holds it. */
-async function importedSessionDate(db: RelationalStore, target: ParseTarget): Promise<number | undefined> {
-  const lifecycle = await sessionLifecycle(db, { projectId: target.projectId }, target.sessionId);
-  return lifecycle === null ? undefined : lifecycle.startedAt ?? lifecycle.firstReceivedAt;
 }
 
 /**
@@ -297,13 +290,13 @@ export async function parseOnce(env: Pick<ServerEnv, 'db' | 'blobs'>, target: Pa
   const recoveringHeader = needsHeader && target.parsedOffset > 0;
   const readOffset = recoveringHeader ? 0 : target.parsedOffset;
   const { results: segments } = await env.db
-    .prepare(`SELECT s.base_offset, s.length, s.blob_key, e.channel, ${registeredObjectKeySql('s.project_id', 's.blob_key')} AS object_key
+    .prepare(`SELECT s.base_offset, s.length, s.blob_key, e.channel, e.created_at, ${registeredObjectKeySql('s.project_id', 's.blob_key')} AS object_key
                 FROM transcript_segments s
                 LEFT JOIN events e ON e.project_id = s.project_id AND e.event_id = s.event_id
                WHERE s.project_id = ? AND s.transcript_id = ? AND s.base_offset + s.length > ?
                ORDER BY s.base_offset`)
     .bind(target.projectId, target.transcriptId, readOffset)
-    .all<{ base_offset: number; length: number; blob_key: string; object_key: string | null; channel: string | null }>();
+    .all<{ base_offset: number; length: number; blob_key: string; object_key: string | null; channel: string | null; created_at: number | null }>();
   calls += 1;
 
   const taken = segmentsToRead(
@@ -370,13 +363,13 @@ export async function parseOnce(env: Pick<ServerEnv, 'db' | 'blobs'>, target: Pa
       .bind(JSON.stringify(transcriptMeta), target.projectId, target.transcriptId).run();
     return { derived: 0, calls: calls + 1, nextOffset: null, failure: null };
   }
+  // Undated imported lines use the timestamp of the segment containing their first byte.
   const imported = segments.filter((segment) => segment.channel === 'import'
     && segment.base_offset < readEnd && segment.base_offset + segment.length > readOffset);
-  const undatedAt = imported.length > 0 ? await importedSessionDate(env.db, target) : undefined;
-  if (imported.length > 0) calls += 1;
-  const lines = split.lines.map((line) => imported.some((segment) =>
-    line.offset >= segment.base_offset && line.offset < segment.base_offset + segment.length)
-    ? { ...line, undatedAt } : line);
+  const lines = split.lines.map((line) => {
+    const segment = imported.find((s) => line.offset >= s.base_offset && line.offset < s.base_offset + s.length);
+    return segment?.created_at == null ? line : { ...line, undatedAt: segment.created_at };
+  });
   const events = await parser.parse({ lines, sessionId: target.sessionId, now, openPromptId: target.openPromptId ?? undefined, transcriptMeta });
   const ctx = { projectId: target.projectId, machineId: target.machineId, tokenId: target.tokenId, bodyBytes: 0, now, writeOrigin: 'server' as const };
 

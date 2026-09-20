@@ -61,8 +61,13 @@ async function rig(text: string, sliceBytes = 1 << 20, channel: 'import' | 'cli'
   return { sqlite, serverEnv, env: { db: serverEnv.db, blobs: serverEnv.blobs }, tokenId: issued.tokenId };
 }
 
-/** Stores `bytes` as segments from `baseOffset`, growing the transcript's size as a later upload does. */
-async function appendSegments(sqlite: Database, serverEnv: { blobs: { put(key: string, body: ReadableStream): Promise<unknown> } }, tokenId: string, bytes: Uint8Array<ArrayBuffer>, baseOffset: number, sliceBytes: number, channel: 'import' | 'cli' = 'import') {
+/**
+ * Stores `bytes` as segments from `baseOffset`, growing the transcript's size as
+ * a later upload does. An import dates every event it ships at the transcript
+ * file's modification time, its segments included; a live segment carries its
+ * own shipping instant.
+ */
+async function appendSegments(sqlite: Database, serverEnv: { blobs: { put(key: string, body: ReadableStream): Promise<unknown> } }, tokenId: string, bytes: Uint8Array<ArrayBuffer>, baseOffset: number, sliceBytes: number, channel: 'import' | 'cli' = 'import', shippedAt = channel === 'import' ? IMPORT_AT : NOW) {
   for (let at = 0; at < bytes.length; at += sliceBytes) {
     const slice = bytes.subarray(at, Math.min(at + sliceBytes, bytes.length));
     const key = await sha256HexOf(slice);
@@ -70,7 +75,7 @@ async function appendSegments(sqlite: Database, serverEnv: { blobs: { put(key: s
     await serverEnv.blobs.put(objectKey, new Blob([slice]).stream() as ReadableStream);
     sqlite.run(`INSERT INTO events(project_id, event_id, session_id, token_id, kind, channel, payload, envelope_hash, created_at, received_at)
                 VALUES (?, ?, ?, ?, 'transcript.segment', ?, '{}', 'fixture', ?, ?)`,
-               [PROJECT, `e${baseOffset + at}`, SESSION, tokenId, channel, NOW, NOW]);
+               [PROJECT, `e${baseOffset + at}`, SESSION, tokenId, channel, shippedAt, NOW]);
     sqlite.run(`INSERT INTO transcript_segments (project_id, transcript_id, base_offset, length, blob_key, event_id, created_at, received_at, token_id)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`, [PROJECT, TRANSCRIPT, baseOffset + at, slice.length, key, `e${baseOffset + at}`, NOW, NOW, tokenId]);
   }
@@ -480,9 +485,8 @@ describe('a presented date does not decide the lifecycle', () => {
 
   it('dates a live undated line to now, which is when it arrived', async () => {
     const undated = line({ type: 'user', promptId: uuid(51), message: { content: 'a live undated question' } });
-    const r = await rig(undated);
-    // A hook-shipped transcript owes no import date.
-    r.sqlite.run(`UPDATE transcripts SET imported_at = NULL WHERE project_id = ?`, [PROJECT]);
+    // A hook ships its own segment, and its date is the instant it arrived.
+    const r = await rig(undated, 1 << 20, 'cli');
     await drain(r.env, r.sqlite);
 
     const prompts = r.sqlite.query(`SELECT created_at FROM prompt_batches WHERE project_id = ?`).all(PROJECT) as { created_at: number }[];
@@ -530,7 +534,7 @@ describe('undated lines in mixed imported and live segments', () => {
       const key = await sha256HexOf(more);
       const objectKey = registerBlob(r.sqlite, { projectId: PROJECT, key, size: more.length, tokenId: r.tokenId, receivedAt: NOW });
       await r.serverEnv.blobs.put(objectKey, new Blob([more]).stream());
-      const result = await send(r.serverEnv, r.tokenId, 'transcript.segment', NOW,
+      const result = await send(r.serverEnv, r.tokenId, 'transcript.segment', lastLane === 'import' ? IMPORT_AT : NOW,
         { transcriptId: TRANSCRIPT, baseOffset: new TextEncoder().encode(first).length, length: more.length, blob: key, agent: 'claude-code' }, lastLane);
       expect(result.persisted).toBe(true);
       await drain(r.env, r.sqlite);
@@ -541,4 +545,32 @@ describe('undated lines in mixed imported and live segments', () => {
       expect(state(r.sqlite)).toMatchObject({ occurred_started_at: null, occurred_ended_at: null });
     });
   }
+});
+
+describe('an undated imported line and a live start', () => {
+  /** The instants an undated imported prompt is given when a hook's start arrives on either side of the parse. */
+  async function datedWith(order: 'before' | 'after'): Promise<number[]> {
+    nextEvent = 100;
+    const undated = line({ type: 'user', promptId: uuid(61), message: { content: 'an undated question' } });
+    const r = await rig(undated);
+    await importFacts(r.serverEnv, r.tokenId);
+    // A hook's start, earlier than the file's mtime, so it takes the session's
+    // facts and moves `started_at` under either ordering.
+    const liveStart = () => send(r.serverEnv, r.tokenId, 'session.start', IMPORT_AT - 50_000,
+      { agent: 'claude-code', startedAt: IMPORT_AT - 50_000 }, 'cli');
+
+    if (order === 'before') await liveStart();
+    await drain(r.env, r.sqlite);
+    if (order === 'after') await liveStart();
+
+    return (r.sqlite.query('SELECT created_at FROM prompt_batches ORDER BY prompt_id').all() as { created_at: number }[])
+      .map((row) => row.created_at);
+  }
+
+  it('dates it from the segment that carried it, whichever side of the parse the start arrives on', async () => {
+    const [before, after] = [await datedWith('before'), await datedWith('after')];
+    expect(before).toEqual(after);
+    // The segment an import shipped holds the file's own instant.
+    expect(before).toEqual([IMPORT_AT]);
+  });
 });
