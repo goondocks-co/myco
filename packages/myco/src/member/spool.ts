@@ -21,8 +21,8 @@ import {
   isProjectId, MEMBER_FILE_MODE, MEMBER_PROTOCOL, OFFLINE_BACKOFF_INITIAL_MS, OFFLINE_BACKOFF_MAX_MS, REFUSED_LOG_MAX_BYTES, type MemberCode,
 } from './constants.js';
 import type { BlobSource, BlobStager, MemberEnvelope, OutboundEvent } from './envelope.js';
-import { bufferLockPath, readSessionState, readSessionStateResult, readSessionStateUnlocked, updateSessionState, writeSessionStateUnlocked, type SessionState, type SessionStateRead } from './session-state.js';
-import { ensureMemberDir, ensurePrivateFile, memberRoot, readPrivateJson, reportSkippedPrivateFile, writePrivateFileAtomic } from './store.js';
+import { bufferLockPath, readSessionState, readSessionStateResult, readSessionStateUnlocked, sessionStatePath, updateSessionState, writeSessionStateUnlocked, type SessionState, type SessionStateRead } from './session-state.js';
+import { assertMemberPathContained, ensureMemberDir, ensurePrivateFile, memberRoot, pathIsAbsent, readPrivateJson, reportSkippedPrivateFile, writePrivateFileAtomic } from './store.js';
 import type { ClientRecord, Outcome, ServerClient } from './transport.js';
 
 export const SPOOL_DIRNAME = 'spool';
@@ -138,6 +138,9 @@ export function toWire(record: SpoolRecord): MemberEnvelope {
   return out as unknown as MemberEnvelope;
 }
 
+/** What a report says of a path it could not hold to the member root: the check refuses a link out, a component it could not read, and one that is not a directory alike. */
+const UNAVAILABLE_PATH = 'path unavailable';
+
 const stderr = (line: string): void => { process.stderr.write(`[myco] member: ${line}\n`); };
 
 export class MemberSpool {
@@ -164,6 +167,22 @@ export class MemberSpool {
   /** The blob staging dir of one session: staged bytes belong to the session that staged them. */
   blobsDirFor(sessionId: string): string {
     return path.join(this.blobsDir, sessionId);
+  }
+
+  /**
+   * Whether a report may touch `target`: it must resolve under the member
+   * root with its links read, so neither the read nor the lock the read takes
+   * reaches a file outside it. A link out, a component that could not be read
+   * and one that is not a directory all answer false here, before anything is
+   * opened or created.
+   */
+  private reachable(target: string): boolean {
+    try {
+      assertMemberPathContained(target, this.mycoHome);
+      return true;
+    } catch {
+      return false;
+    }
   }
 
   /**
@@ -261,6 +280,7 @@ export class MemberSpool {
    * is only reachable through this set.
    */
   stateSessionIds(): string[] {
+    if (!this.reachable(this.dir)) return [];
     try {
       return fs.readdirSync(this.dir)
         .filter((file) => file.endsWith(STATE_FILE_SUFFIX))
@@ -290,21 +310,23 @@ export class MemberSpool {
    * Every record of the session's spool, or the fact that it could not be read.
    *
    * The whole read answers, the lock it is taken under included: a lock path
-   * that is a directory, a spool that is one, or a file that goes away between
-   * the listing and the read all report rather than throw. A spool that is not
-   * there is an empty one.
+   * that is a directory, a spool that is one, a file or lock that leads outside
+   * the member root, and a file that goes away between the listing and the read
+   * all report rather than throw. The caller names a session the listing just
+   * held a file for, so a file that is no longer there is one the read lost,
+   * not an empty spool.
    */
   readRecordsOrNull(sessionId: string): { readable: true; records: Array<SpoolRecord | null> } | { readable: false } {
     try {
       const file = this.spoolFile(sessionId);
       const lock = bufferLockPath(this.dir, sessionId);
+      if (!this.reachable(file) || !this.reachable(lock)) return { readable: false };
       ensurePrivateFile(lock);
       return withFileLockSync(lock, () => {
         let raw: string;
         try {
           raw = fs.readFileSync(file, 'utf-8');
-        } catch (err) {
-          if ((err as NodeJS.ErrnoException).code === 'ENOENT') return { readable: true as const, records: [] };
+        } catch {
           return { readable: false as const };
         }
         return { readable: true as const, records: parseSpoolLines(raw) };
@@ -322,6 +344,7 @@ export class MemberSpool {
    * file that is not there is a session with no acknowledgement yet.
    */
   readAck(sessionId: string): { readable: true; lastAckAt: number | null } | { readable: false } {
+    if (!this.reachable(sessionStatePath(this.dir, sessionId)) || !this.reachable(bufferLockPath(this.dir, sessionId))) return { readable: false };
     let read: SessionStateRead;
     try {
       read = readSessionStateResult(this.dir, sessionId);
@@ -335,12 +358,15 @@ export class MemberSpool {
 
   /** The spool as a report reads it: a directory nothing could read carries `readable: false`, and a session whose own file could not be read carries a null depth. */
   readSpool(): { readable: boolean; sessions: Array<{ sessionId: string; unacknowledged: number | null }> } {
+    if (!this.reachable(this.dir)) return { readable: false, sessions: [] };
     let names: string[];
     try {
       names = fs.readdirSync(this.dir).filter((name) => name.endsWith('.jsonl'));
     } catch (err) {
-      // A spool a member has not written yet is empty, not unreadable.
-      if ((err as NodeJS.ErrnoException).code === 'ENOENT') return { readable: true, sessions: [] };
+      // A spool a member has not written yet is empty, not unreadable — and
+      // absence is the directory's own, so a link to nothing, or a directory
+      // the listing lost, is a spool that could not be read.
+      if ((err as NodeJS.ErrnoException).code === 'ENOENT' && pathIsAbsent(this.dir)) return { readable: true, sessions: [] };
       return { readable: false, sessions: [] };
     }
     const refusedLog = path.basename(REFUSED_LOG_FILE, '.jsonl');
@@ -387,6 +413,7 @@ export class MemberSpool {
    * one parse and shape check; `readLatch` derives from it.
    */
   readLatchResult(): { readable: true; latch: OfflineLatch | null } | { readable: false; reason: 'unreadable' | 'loose-mode' | 'malformed' | 'invalid'; detail?: string } {
+    if (!this.reachable(this.latchPath())) return { readable: false, reason: 'unreadable', detail: UNAVAILABLE_PATH };
     const read = readPrivateJson<OfflineLatch>(this.latchPath());
     if (!read.ok) {
       return read.reason === 'missing' ? { readable: true, latch: null } : { readable: false, reason: read.reason, detail: read.detail };
@@ -449,19 +476,27 @@ export class MemberSpool {
    * The refusal log: what it holds, what it could not hold, and whether it could
    * be read at all.
    *
-   * An absent file is `readable` with no refusals — no log is no refusals. Any
-   * other read failure is `readable: false`, so a log behind a permission or an
-   * I/O error never reads as an empty one. Per line, a line that is not JSON or
+   * An absent file is `readable` with no refusals — no log is no refusals, and
+   * absence is the entry's own, so a link to nothing is a log that could not be
+   * read. Any other read failure is `readable: false`, so a log behind a
+   * permission or an I/O error never reads as an empty one. Per line, a line that is not JSON or
    * not a JSON object is counted rather than carried: one such line costs that
    * line, and the count says the log is damaged.
    */
   readRefused(): { entries: RefusedEntry[]; unreadableLines: number; readable: boolean } {
+    const file = this.refusedPath();
+    if (!this.reachable(file)) {
+      reportSkippedPrivateFile('refusal log', file, { reason: 'unreadable', detail: UNAVAILABLE_PATH });
+      return { entries: [], unreadableLines: 0, readable: false };
+    }
     let raw: string;
     try {
-      raw = fs.readFileSync(this.refusedPath(), 'utf-8');
+      raw = fs.readFileSync(file, 'utf-8');
     } catch (err) {
-      if ((err as NodeJS.ErrnoException).code === 'ENOENT') return { entries: [], unreadableLines: 0, readable: true };
-      reportSkippedPrivateFile('refusal log', this.refusedPath(), { reason: 'unreadable', detail: (err as Error).message });
+      // Absence is the entry's own and the read's errno together: a removal a
+      // read lost to, or any other failure, is a log that could not be read.
+      if ((err as NodeJS.ErrnoException).code === 'ENOENT' && pathIsAbsent(file)) return { entries: [], unreadableLines: 0, readable: true };
+      reportSkippedPrivateFile('refusal log', file, { reason: 'unreadable', detail: (err as Error).message });
       return { entries: [], unreadableLines: 0, readable: false };
     }
     const entries: RefusedEntry[] = [];
