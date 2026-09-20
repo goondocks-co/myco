@@ -18,7 +18,7 @@ import { resolvePresentedDates } from '@myco-server-worker/ingest/projections.js
 import { issueMemberToken } from '@myco-server-worker/auth/tokens.js';
 import { sha256HexOf } from '@myco-server-worker/hash.js';
 import { listSessions } from '@myco-server-worker/read/sessions.js';
-import { occurredAt, presentedStatus } from '@myco-server-worker/db/session-dates.js';
+import { searchProject } from '@myco-server-worker/read/search.js';
 import { registerBlob } from './helpers/d1.js';
 import { envelope, sqliteEnv, uuid } from './helpers/fixtures.js';
 
@@ -334,26 +334,44 @@ describe('the dates and state a search filters on', () => {
     + line({ type: 'assistant', message: { content: [{ type: 'text', text: 'an answer' }] }, timestamp: new Date(DERIVED_LAST).toISOString() })
     + line({ type: 'user', promptId: uuid(2), message: { content: 'one more' }, timestamp: new Date(IMPORT_AT + 30_000).toISOString() });
 
-  it('reads the same date and state whichever search path serves the project', async () => {
+  const seconds = (ms: number) => Math.floor(ms / 1000);
+
+  async function searchable() {
     nextEvent = 100;
     const r = await rig(pastMtime());
     await importFacts(r.serverEnv, r.tokenId);
     await drain(r.env, r.sqlite);
-    r.sqlite.run("UPDATE sessions SET summary = 'a summary' WHERE project_id = ? AND session_id = ?", [PROJECT, SESSION]);
+    r.sqlite.run("UPDATE sessions SET title = 'cobalt session', summary = 'a summary' WHERE project_id = ? AND session_id = ?", [PROJECT, SESSION]);
+    return r;
+  }
 
-    // The semantic path reads the view; the full-text path builds its own
-    // SELECT. One date bound admits a session on both paths or neither, and one
-    // state filter reads it the same way on both.
+  const ids = (answer: { results: readonly { id: string }[] }) => answer.results.map((x) => x.id);
+
+  it('admits an imported session by the date it is presented at, on the path a project with no provider gets', async () => {
+    const r = await searchable();
+    const found = await searchProject(r.serverEnv.db, { projectId: PROJECT }, { query: 'cobalt', type: 'session', mode: 'fts', since: seconds(DERIVED_FIRST) });
+    expect(ids(found)).toContain(SESSION);
+
+    // The mtime is later than the conversation: a bound past the presented date
+    // admits nothing, and a bound at the raw start would still admit it.
+    const after = await searchProject(r.serverEnv.db, { projectId: PROJECT }, { query: 'cobalt', type: 'session', mode: 'fts', since: seconds(DERIVED_FIRST) + 1 });
+    expect(ids(after)).not.toContain(SESSION);
+  });
+
+  it('reads the session as finished on that path, though the raw lifecycle reopened it', async () => {
+    const r = await searchable();
+    expect(state(r.sqlite)).toMatchObject({ ended_at: null });
+
+    const completed = await searchProject(r.serverEnv.db, { projectId: PROJECT }, { query: 'cobalt', type: 'session', mode: 'fts', status: 'completed' });
+    const active = await searchProject(r.serverEnv.db, { projectId: PROJECT }, { query: 'cobalt', type: 'session', mode: 'fts', status: 'active' });
+    expect({ completed: ids(completed), active: ids(active) }).toEqual({ completed: [SESSION], active: [] });
+  });
+
+  it('gives the semantic source the same date and state the full-text path filtered on', async () => {
+    const r = await searchable();
     const semantic = r.sqlite.query(
       "SELECT created_at AS created, status FROM embedding_sources WHERE project_id = ? AND type = 'session' AND record_id = ?")
       .get(PROJECT, SESSION) as { created: number; status: string };
-    const fullText = r.sqlite.query(
-      `SELECT ${occurredAt('d.')} AS created, ${presentedStatus('d.')} AS status FROM sessions d WHERE d.project_id = ? AND d.session_id = ?`)
-      .get(PROJECT, SESSION) as { created: number; status: string };
-
-    expect(semantic).toEqual(fullText);
-    // The raw lifecycle reopened; the presented state is what both report.
-    expect(state(r.sqlite)).toMatchObject({ ended_at: null });
     expect(semantic).toEqual({ created: DERIVED_FIRST, status: 'completed' });
   });
 });

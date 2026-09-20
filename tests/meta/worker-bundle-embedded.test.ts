@@ -25,10 +25,6 @@ const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..
  * A regression tripwire for modules the bundler carries that the Worker does not import on purpose. The ceiling sits
  * narrowly above the bundle's measured size, so an unintended import of a few dozen kilobytes trips it while ordinary
  * growth does not. The platform's own script size limit is a separate concern, far above this ceiling.
- *
- * Measured at 1_449_531 bytes with the staging retention owner, the worker-contact owner and the presented-date
- * resolver, the modules this bundle carries beyond the schedule and admission owners; the headroom here is smaller
- * than any module an unintended import would add.
  */
 const SIZE_CEILING_BYTES = 1_458_000;
 

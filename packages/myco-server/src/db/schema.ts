@@ -1512,10 +1512,10 @@ const V45_STATEMENTS: readonly string[] = [
   `ALTER TABLE sessions ADD COLUMN occurred_ended_at INTEGER`,
   `DROP INDEX IF EXISTS idx_sessions_occurred`,
   `CREATE INDEX IF NOT EXISTS idx_sessions_occurred ON sessions (project_id, ${occurredAt()}, session_id)`,
-  // Search sources expose the presented session date.
+  // Search sources expose the presented session date and state.
   `DROP VIEW IF EXISTS embedding_sources`,
   embeddingSourcesView(SOURCES_WITH_PRESENTED_SESSION_DATE),
-  // A changed presented start invalidates vector date-filter metadata.
+  // A changed presented date or state invalidates that vector's filter metadata.
   `CREATE TRIGGER IF NOT EXISTS sessions_embedding_occurred AFTER UPDATE OF occurred_started_at, occurred_ended_at ON sessions
      WHEN new.occurred_started_at IS NOT old.occurred_started_at OR new.occurred_ended_at IS NOT old.occurred_ended_at BEGIN
     INSERT INTO embedding_versions(project_id, type, record_id, revision) VALUES(new.project_id, 'session', new.session_id, lower(hex(randomblob(16))))
