@@ -63,7 +63,7 @@ export const LEAF_GROUPS: readonly LeafGroup[] = [
       { leaf: 'agent.provider.local_backend', label: 'Local backend', kind: 'select', options: ['ollama', 'lmstudio'] },
       { leaf: 'agent.reasoningLevel', label: 'Reasoning profile', kind: 'select', options: ['low', 'default', 'high'] },
       { leaf: 'agent.model', label: 'Default model (advanced)', kind: 'text' },
-      { leaf: 'agent.harness', label: 'Runtime (retired)', kind: 'text', readOnly: true, note: 'Named the in-binary runtime this server no longer uses. Shown so a value an older deployment stored is visible; it changes nothing. A task a worker drives runs on that worker\'s harness, set under Workers.' },
+      { leaf: 'agent.harness', label: 'Runtime (retired)', kind: 'text', readOnly: true, note: 'This server runs no runtime of its own for agent tasks. Shown so a stored value stays visible; it changes nothing. A task a worker drives runs on that worker\'s harness, set under Workers.' },
       { leaf: 'agent.run_retention_days', label: 'Keep run records for', kind: 'number', min: 1, max: 365, unit: 'days' },
       { leaf: 'agent.semantic_write_check_enabled', label: 'Check writes before they land', kind: 'toggle' },
     ],

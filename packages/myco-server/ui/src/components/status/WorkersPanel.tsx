@@ -39,13 +39,19 @@ const REASON_WORDS: Record<NonNullable<WorkerRow['lastReason']>, string> = {
   lost_race: 'another worker took it first',
 };
 
-function offersWords(offers: WorkerRow['offers']): string {
-  const authenticated = offers.filter((o) => o.authenticated).map((o) => harnessLabel(o.id));
-  const rest = offers.filter((o) => !o.authenticated).map((o) => harnessLabel(o.id));
-  if (offers.length === 0) return 'Reported no harnesses.';
+/**
+ * What the worker said about its harnesses, and nothing more. A harness it did
+ * not report authenticated is listed as exactly that: the claim carries no
+ * statement about whether the tool is installed.
+ */
+function offersWords(worker: WorkerRow): string {
+  if (worker.offers === null) return worker.lastSeenAt === 0 ? 'Offers unknown: this worker has reported none.' : 'Offers unknown: the stored report could not be read.';
+  if (worker.offers.length === 0) return 'Reported no harnesses.';
+  const authenticated = worker.offers.filter((o) => o.authenticated).map((o) => harnessLabel(o.id));
+  const rest = worker.offers.filter((o) => !o.authenticated).map((o) => harnessLabel(o.id));
   const reported = authenticated.length === 0
-    ? `Reported none logged in${rest.length === 0 ? '' : `; reported present: ${rest.join(', ')}`}.`
-    : `Reported authenticated: ${authenticated.join(', ')}.${rest.length === 0 ? '' : ` Reported not logged in: ${rest.join(', ')}.`}`;
+    ? `Reported not authenticated: ${rest.join(', ')}.`
+    : `Reported authenticated: ${authenticated.join(', ')}.${rest.length === 0 ? '' : ` Reported not authenticated: ${rest.join(', ')}.`}`;
   return `${reported} Provider access has not been tested by this check.`;
 }
 
@@ -58,11 +64,15 @@ function stateOf(worker: WorkerRow, now: number): { tone: StatusTone; line: stri
   }
   if (worker.lastSeenAt === 0) return { tone: 'outline', line: `${name} · No contact recorded` };
   if (!worker.recent) return { tone: 'outline', line: `${name} · Not seen recently · Last contact ${sinceWords(worker.lastSeenAt, now)}` };
-  if (!worker.eligible) return { tone: 'terracotta', line: `${name} · Credential is no longer valid for new work · Last contact ${sinceWords(worker.lastSeenAt, now)}` };
-  const ready = worker.offers.some((o) => o.authenticated);
+  if (!worker.eligible) return { tone: 'terracotta', line: `${name} · A claim from it would be refused now · Last contact ${sinceWords(worker.lastSeenAt, now)}` };
+  // An unreadable report is not a report of nothing: it cannot make a worker read as ready.
+  const ready = worker.offers?.some((o) => o.authenticated) === true;
+  const polling = worker.offers === null
+    ? 'Polling, with no readable report of its harnesses'
+    : ready ? 'Polling for work' : 'Polling, but reported no harness authenticated';
   return {
     tone: ready ? 'sage' : 'terracotta',
-    line: `${name} · ${ready ? 'Polling for work' : 'Polling, but reported no harness logged in'} · Last contact ${sinceWords(worker.lastSeenAt, now)}`,
+    line: `${name} · ${polling} · Last contact ${sinceWords(worker.lastSeenAt, now)}`,
   };
 }
 
@@ -100,10 +110,10 @@ export function WorkersPanel({ workers, now = Date.now() }: { workers: WorkerSta
                   <StatusDot tone={state.tone} />
                   <span>{state.line}</span>
                 </div>
-                <p className="pl-5 font-sans text-xs text-on-surface-variant">{offersWords(worker.offers)}</p>
+                <p className="pl-5 font-sans text-xs text-on-surface-variant">{offersWords(worker)}</p>
                 {worker.busy === null && worker.lastReason !== null && worker.lastSeenAt > 0 && (
                   <p className="pl-5 font-sans text-xs text-on-surface-variant">
-                    Last claim: {REASON_WORDS[worker.lastReason]} ({sinceWords(worker.lastSeenAt, now)}). That is what this worker's last poll found, not what every worker can run.
+                    Last claim: {REASON_WORDS[worker.lastReason]}. That is what this worker's last poll found, not what every worker can run.
                   </p>
                 )}
               </li>

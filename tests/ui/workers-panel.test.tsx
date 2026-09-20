@@ -66,16 +66,43 @@ describe('WorkersPanel', () => {
   it('reports the latest claim mismatch beside the queue, as this worker\'s poll and not the queue\'s verdict', () => {
     render(<WorkersPanel workers={status({ runsQueued: 2, fleet: [worker({ lastReason: 'no_harness' })] })} now={NOW} />);
     expect(screen.getByText(/2 queued runs\./)).toBeDefined();
-    expect(screen.getByText(/Last claim: no matching harness \(3s ago\)\./)).toBeDefined();
+    expect(screen.getByText(/Last claim: no matching harness\./)).toBeDefined();
+    // The claim's own time is not recorded, so no age is attached to it.
+    expect(screen.queryByText(/Last claim: no matching harness \(/)).toBeNull();
     expect(screen.getByText(/not what every worker can run/)).toBeDefined();
   });
 
-  it('does not call a worker ready when it reported nothing logged in', () => {
+  it('does not call a worker ready, or claim it holds a harness, when it reported none authenticated', () => {
     render(<WorkersPanel workers={status({
       fleet: [worker({ offers: [{ id: 'codex', authenticated: false }] })],
     })} now={NOW} />);
-    expect(screen.getByText(/Polling, but reported no harness logged in/)).toBeDefined();
-    expect(screen.getByText(/Reported none logged in; reported present: Codex\./)).toBeDefined();
+    expect(screen.getByText(/Polling, but reported no harness authenticated/)).toBeDefined();
+    // `authenticated: false` says nothing about whether the tool is installed.
+    expect(screen.getByText(/Reported not authenticated: Codex\./)).toBeDefined();
+    expect(screen.queryByText(/present/i)).toBeNull();
+    expect(screen.queryByText(/installed/i)).toBeNull();
+  });
+
+  it('says offers are unknown rather than none when there is no readable report', () => {
+    render(<WorkersPanel workers={status({
+      workersBusy: 1,
+      fleet: [worker({ offers: null, capabilities: null, lastSeenAt: 0, lastReason: null, recent: false, busy: { runId: 'run_7', projectId: 'myco', task: 'title-summary', leaseExpiresAt: NOW + 30_000 } })],
+    })} now={NOW} />);
+    expect(screen.getByText(/Offers unknown: this worker has reported none\./)).toBeDefined();
+    expect(screen.queryByText(/Reported no harnesses/)).toBeNull();
+  });
+
+  it('says a stored report it could not read is unknown, and never treats it as ready', () => {
+    render(<WorkersPanel workers={status({ fleet: [worker({ offers: null, capabilities: null })] })} now={NOW} />);
+    expect(screen.getByText(/Offers unknown: the stored report could not be read\./)).toBeDefined();
+    expect(screen.getByText(/Polling, with no readable report of its harnesses/)).toBeDefined();
+    expect(screen.getByTestId('status-dot').dataset.tone).toBe('terracotta');
+  });
+
+  it('says a credential the claim route would refuse is not polling for work', () => {
+    render(<WorkersPanel workers={status({ fleet: [worker({ eligible: false })] })} now={NOW} />);
+    expect(screen.getByText(/A claim from it would be refused now · Last contact 3s ago/)).toBeDefined();
+    expect(screen.queryByText(/Polling/)).toBeNull();
   });
 
   it('says worker status is unavailable rather than showing zero workers when the server could not answer', () => {

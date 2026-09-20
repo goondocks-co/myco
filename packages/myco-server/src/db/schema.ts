@@ -1421,23 +1421,17 @@ const V42_STATEMENTS: readonly string[] = [
 ];
 
 /**
- * Schema step 44 — what a worker last said about itself (#1273).
+ * Schema step 44 — what a worker last reported about itself.
  *
- * A lease is a fact about a BUSY worker, so an attached idle worker left no
- * trace at all: nothing a claim wrote survived an answer of "no work", and an
- * idle worker read exactly like no worker. This table is that missing trace,
- * one row per claiming credential, written by the claim and the lease renewal
- * through one recorder.
+ * One row per claiming credential, written by the claim and by the lease
+ * renewal through one owner: the harnesses the worker reports, whether it
+ * reports each logged in, the capabilities it names, the outcome its last claim
+ * answered, and the time of that contact. No token, no credential environment
+ * and no request body beyond those parsed fields.
  *
- * It records only what the worker already sends on the existing claim contract:
- * the harnesses it reports offering, whether it reports each as logged in, the
- * capabilities it names, and the outcome its last claim answered. No token, no
- * credential environment and no request body beyond those parsed fields.
- *
- * `credential_id` is the claiming credential, which is also what a lease names,
- * so a busy worker joins its runs directly. A credential is not a machine: a
- * rotation makes a new row, and nothing here merges two credentials into one
- * worker.
+ * `credential_id` is what a lease names, so a busy worker joins its runs
+ * directly. A credential is not a machine: a rotation takes a new row, and no
+ * two credentials are merged into one worker.
  */
 const V44_STATEMENTS: readonly string[] = [
   `CREATE TABLE IF NOT EXISTS worker_contacts (

@@ -1055,10 +1055,9 @@ export async function expireLeases(env: ServerEnv, now: number): Promise<number>
     requeued += 1;
     emit({ kind: 'worker_lease_expired', runId: lapsed.id, projectId: lapsed.projectId, tokenId: lapsed.leasedBy });
   }
-  // The same sweep forgets a worker nothing has heard from for the contact
-  // horizon: this is where a worker's lifecycle already ends, so its last
-  // observation goes with it rather than through a schedule of its own. A
-  // worker still holding a live lease keeps its row whatever its age.
-  await pruneWorkerContacts(env.db, now, WORKER_CONTACT_RETENTION_MS);
+  // The same sweep forgets a worker unheard from past the contact horizon,
+  // bounded like the lease batch above. A worker holding a live lease keeps its
+  // row whatever its age.
+  await pruneWorkerContacts(env.db, now, WORKER_CONTACT_RETENTION_MS, DRAIN_BATCH);
   return requeued;
 }

@@ -1,26 +1,23 @@
 /**
- * What each worker last said about itself, and what the Deployment makes of it.
+ * What each worker last reported about itself, and what the Deployment makes of it.
  *
- * A lease is a fact about a busy worker. An attached idle worker left no trace
- * at all, so an idle worker and no worker read alike (`workerLiveness`). This
- * module is the one writer and the one reader of that missing trace: the claim
- * records contact even when it answers `no_work`, a lease renewal refreshes it
- * for a worker driving a run, which stops polling while it does, and the
- * fleet read joins both against the leases that are the authority on busy.
+ * The one writer and the one reader of `worker_contacts`. The claim records
+ * contact whatever it answers, a lease renewal refreshes the liveness of the
+ * report already held, and the fleet read joins both against the leases that
+ * decide busy.
  *
- * What it records is only what the existing claim contract already carries: the
- * harnesses a worker reports offering, whether it reports each as logged in,
- * the capabilities it names, and the outcome of its last claim. Those are the
- * worker's own report of its local probes — never a test that a provider would
- * accept a request — and every surface built on them says so.
+ * It holds only what the claim already carries: the harnesses a worker reports,
+ * whether it reports each logged in, the capabilities it names, and the outcome
+ * its last claim answered. A reported login is the worker's own probe of its
+ * machine and is never evidence that a provider accepts a request.
  *
- * What it does not do: it decides nothing about scheduling or selection, it
- * merges no two credentials into one worker, and it stores no token, no
- * credential environment and no part of a request body beyond the fields the
- * claim route already parses.
+ * It decides nothing about scheduling or selection, merges no two credentials
+ * into one worker, and stores no token, no credential environment and no part
+ * of a request body beyond those parsed fields.
  */
 import type { RelationalStore } from './adapters.js';
 import { WORKER_HEARTBEAT_MS, WORKER_LEASE_MS } from '../constants.js';
+import { asMemberRole, isAdmin } from '../auth/roles.js';
 
 /** A harness a worker reports, as it reports it. `authenticated` is the worker's own probe, not a provider check. */
 export interface ReportedHarness {
@@ -64,17 +61,18 @@ export const WORKER_CONTACT_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
 export interface WorkerContact {
   credentialId: string;
   machineId: string | null;
-  offers: ReportedHarness[];
-  capabilities: string[];
+  /** Null when the stored report cannot be read; an empty list is a worker reporting none. */
+  offers: ReportedHarness[] | null;
+  capabilities: string[] | null;
   lastReason: ContactOutcome | null;
   lastSeenAt: number;
 }
 
 /** One attached-or-remembered worker, as the status surface reports it. */
 export interface WorkerFleetRow extends WorkerContact {
-  /** Held from a live lease, which is the authority on busy — never inferred from the last claim reason. */
+  /** Held from a live lease, which decides busy; a stored claim reason never does. */
   busy: { runId: string; projectId: string; task: string | null; leaseExpiresAt: number } | null;
-  /** Whether the credential may still take new work; a revoked or expired one may not. */
+  /** Whether a claim from this credential would be admitted now: the worker route's own rule, credential and role together. */
   eligible: boolean;
   /** Whether the last contact is inside `CONTACT_RECENT_MS`. */
   recent: boolean;
@@ -88,32 +86,37 @@ function boundedCapabilities(capabilities: readonly string[]): string[] {
   return capabilities.slice(0, MAX_CAPABILITIES).map((capability) => capability.slice(0, MAX_ID));
 }
 
-function parseOffers(raw: unknown): ReportedHarness[] {
-  if (typeof raw !== 'string') return [];
+/** Stored evidence that cannot be read answers null: a reader states that it does not know, and never an empty report. */
+function parseOffers(raw: unknown): ReportedHarness[] | null {
+  if (typeof raw !== 'string') return null;
   try {
     const parsed: unknown = JSON.parse(raw);
-    return Array.isArray(parsed)
-      ? parsed.filter((entry): entry is ReportedHarness => entry !== null && typeof entry === 'object'
-        && typeof (entry as ReportedHarness).id === 'string').map((entry) => ({ id: entry.id, authenticated: entry.authenticated === true }))
-      : [];
+    if (!Array.isArray(parsed)) return null;
+    const offers: ReportedHarness[] = [];
+    for (const entry of parsed) {
+      if (entry === null || typeof entry !== 'object' || typeof (entry as ReportedHarness).id !== 'string') return null;
+      offers.push({ id: (entry as ReportedHarness).id, authenticated: (entry as ReportedHarness).authenticated === true });
+    }
+    return offers;
   } catch {
-    return [];
+    return null;
   }
 }
 
-function parseCapabilities(raw: unknown): string[] {
-  if (typeof raw !== 'string') return [];
+function parseCapabilities(raw: unknown): string[] | null {
+  if (typeof raw !== 'string') return null;
   try {
     const parsed: unknown = JSON.parse(raw);
-    return Array.isArray(parsed) ? parsed.filter((entry): entry is string => typeof entry === 'string') : [];
+    if (!Array.isArray(parsed)) return null;
+    return parsed.every((entry) => typeof entry === 'string') ? parsed as string[] : null;
   } catch {
-    return [];
+    return null;
   }
 }
 
 /** Whether two observations say the same thing, so an unchanged one can wait for the throttle. */
 function unchanged(stored: WorkerContact | null, offers: readonly ReportedHarness[], capabilities: readonly string[], reason: ContactOutcome | null): boolean {
-  if (stored === null) return false;
+  if (stored === null || stored.offers === null || stored.capabilities === null) return false;
   if (stored.lastReason !== reason) return false;
   if (stored.offers.length !== offers.length || stored.capabilities.length !== capabilities.length) return false;
   return stored.offers.every((offer, i) => offer.id === offers[i]?.id && offer.authenticated === offers[i]?.authenticated)
@@ -182,9 +185,11 @@ export async function recordWorkerContact(
 export async function readWorkerFleet(db: RelationalStore, now: number): Promise<WorkerFleetRow[]> {
   const { results } = await db.prepare(
     `SELECT c.id AS credential_id, c.machine_id AS credential_machine_id, c.revoked_at, c.expires_at,
+            m.role AS member_role, m.revoked_at AS member_revoked_at,
             w.machine_id AS contact_machine_id, w.offers, w.capabilities, w.last_reason, w.last_seen_at,
             r.id AS run_id, r.project_id, r.task, r.lease_expires_at
        FROM member_credentials c
+       LEFT JOIN members m ON m.id = c.member_id
        LEFT JOIN worker_contacts w ON w.credential_id = c.id
        LEFT JOIN agent_runs r ON r.leased_by = c.id AND r.status = 'running' AND r.lease_expires_at > ?
       WHERE w.credential_id IS NOT NULL OR r.id IS NOT NULL
@@ -194,6 +199,10 @@ export async function readWorkerFleet(db: RelationalStore, now: number): Promise
     const lastSeenAt = row.last_seen_at == null ? 0 : Number(row.last_seen_at);
     const revoked = row.revoked_at != null;
     const expired = row.expires_at != null && Number(row.expires_at) <= now;
+    // The claim route admits an administrator whose member row the Deployment
+    // still holds. Eligibility answers the same question with the same rule.
+    const role = asMemberRole(row.member_role);
+    const admits = row.member_revoked_at == null && role !== null && isAdmin(role);
     return {
       credentialId: String(row.credential_id),
       machineId: (row.contact_machine_id ?? row.credential_machine_id) == null ? null : String(row.contact_machine_id ?? row.credential_machine_id),
@@ -207,23 +216,26 @@ export async function readWorkerFleet(db: RelationalStore, now: number): Promise
         task: row.task == null ? null : String(row.task),
         leaseExpiresAt: Number(row.lease_expires_at ?? 0),
       },
-      eligible: !revoked && !expired,
+      eligible: !revoked && !expired && admits,
       recent: lastSeenAt > 0 && now - lastSeenAt <= CONTACT_RECENT_MS,
     };
   });
 }
 
 /**
- * Forget workers not heard from for `olderThanMs`, keeping any that still hold
- * a live lease. One row per credential and a fixed horizon: there is no
- * retention framework here and no scheduler of its own — the maintenance pass
- * that already sweeps expired credentials calls this.
+ * Forget workers not heard from for `olderThanMs`, keeping any that hold a live
+ * lease. Bounded to `batch` rows per call, taken by the sweep that already ends
+ * a worker's lease.
  */
-export async function pruneWorkerContacts(db: RelationalStore, now: number, olderThanMs: number): Promise<number> {
+export async function pruneWorkerContacts(db: RelationalStore, now: number, olderThanMs: number, batch: number): Promise<number> {
   const result = await db.prepare(
     `DELETE FROM worker_contacts
-      WHERE last_seen_at < ?
-        AND credential_id NOT IN (SELECT leased_by FROM agent_runs WHERE leased_by IS NOT NULL AND status = 'running' AND lease_expires_at > ?)`,
-  ).bind(now - olderThanMs, now).run();
+      WHERE credential_id IN (
+        SELECT credential_id FROM worker_contacts
+         WHERE last_seen_at < ?
+           AND credential_id NOT IN (SELECT leased_by FROM agent_runs WHERE leased_by IS NOT NULL AND status = 'running' AND lease_expires_at > ?)
+         ORDER BY last_seen_at
+         LIMIT ?)`,
+  ).bind(now - olderThanMs, now, batch).run();
   return result.meta.changes ?? 0;
 }

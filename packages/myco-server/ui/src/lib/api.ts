@@ -83,8 +83,9 @@ export interface ReportedHarness {
 export interface WorkerRow {
   credentialId: string;
   machineId: string | null;
-  offers: ReportedHarness[];
-  capabilities: string[];
+  /** Null when the stored report could not be read; an empty list is a worker reporting none. */
+  offers: ReportedHarness[] | null;
+  capabilities: string[] | null;
   lastReason: 'claimed' | 'no_work' | 'no_harness' | 'at_limit' | 'lost_race' | null;
   /** 0 when this worker has never been recorded — a lease holder from before contacts were kept. */
   lastSeenAt: number;

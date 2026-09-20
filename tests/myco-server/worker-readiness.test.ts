@@ -139,6 +139,49 @@ describe('what a worker last said about itself', () => {
     expect(fleet[0]).toMatchObject({ lastReason: 'no_harness', busy: null, offers: OFFER });
   });
 
+  it('bounds one sweep to its batch, taking the oldest observations first', async () => {
+    const r = await rig();
+    const long = NOW - WORKER_CONTACT_RETENTION_MS - 10_000;
+    const ids: string[] = [];
+    for (let i = 0; i < 3; i++) {
+      const w = await r.admin(`mem_b${i}`, `box-${i}`);
+      ids.push(w.tokenId);
+      await recordWorkerContact(r.e.db, { credentialId: w.tokenId, machineId: `box-${i}`, offers: OFFER, capabilities: [], reason: 'no_work', now: long + i });
+    }
+    expect(await pruneWorkerContacts(r.e.db, NOW, WORKER_CONTACT_RETENTION_MS, 2)).toBe(2);
+    expect((await readWorkerFleet(r.e.db, NOW)).map((w) => w.credentialId)).toEqual([ids[2]!]);
+  });
+
+  it('answers unknown for a stored report it cannot read, rather than an empty one', async () => {
+    const r = await rig();
+    const worker1 = await r.admin('mem_w1', 'mba');
+    await recordWorkerContact(r.e.db, { credentialId: worker1.tokenId, machineId: 'mba', offers: OFFER, capabilities: ['repository-checkout'], reason: 'no_work', now: NOW });
+    r.e.sqlite.run(`UPDATE worker_contacts SET offers = '[{"id":', capabilities = 'not json' WHERE credential_id = ?`, [worker1.tokenId]);
+
+    const fleet = await readWorkerFleet(r.e.db, NOW);
+    expect(fleet[0]).toMatchObject({ offers: null, capabilities: null, lastReason: 'no_work' });
+
+    // An unreadable report is replaced by the next one the worker makes.
+    expect(await recordWorkerContact(r.e.db, { credentialId: worker1.tokenId, machineId: 'mba', offers: OFFER, capabilities: ['repository-checkout'], reason: 'no_work', now: NOW + 1_000 })).toBe(true);
+    expect((await readWorkerFleet(r.e.db, NOW + 1_000))[0]).toMatchObject({ offers: OFFER });
+  });
+
+  it('stops calling a worker eligible once its member no longer administers the Deployment, as the claim route does', async () => {
+    const r = await rig();
+    const worker1 = await r.admin('mem_w1', 'mba');
+    await r.json(post(worker1.token, '/worker/claim', { harnesses: OFFER, capabilities: [] }));
+    expect((await readWorkerFleet(r.e.db, Date.now()))[0]).toMatchObject({ eligible: true });
+
+    r.e.sqlite.run(`UPDATE members SET role = 'member' WHERE id = 'mem_w1'`);
+    const refused = await r.json(post(worker1.token, '/worker/claim', { harnesses: OFFER, capabilities: [] }));
+    expect(refused.body).toMatchObject({ persisted: false, code: 'not_admin' });
+    expect((await readWorkerFleet(r.e.db, Date.now()))[0]).toMatchObject({ eligible: false });
+
+    // A member the Deployment no longer holds is refused on the same line.
+    r.e.sqlite.run(`UPDATE members SET role = 'admin', revoked_at = ? WHERE id = 'mem_w1'`, [NOW]);
+    expect((await readWorkerFleet(r.e.db, Date.now()))[0]).toMatchObject({ eligible: false });
+  });
+
   it('never lets a revoked credential read as eligible for new work', async () => {
     const r = await rig();
     const worker1 = await r.admin('mem_w1', 'mba');
@@ -164,7 +207,7 @@ describe('what a worker last said about itself', () => {
       [long, long, holding.tokenId, NOW + 90_000],
     );
 
-    expect(await pruneWorkerContacts(r.e.db, NOW, WORKER_CONTACT_RETENTION_MS)).toBe(1);
+    expect(await pruneWorkerContacts(r.e.db, NOW, WORKER_CONTACT_RETENTION_MS, 200)).toBe(1);
     const left = await readWorkerFleet(r.e.db, NOW);
     expect(left.map((w) => w.credentialId)).toEqual([holding.tokenId]);
   });
