@@ -55,6 +55,15 @@ export async function listMembers(db: RelationalStore, nowMs: number): Promise<M
   }));
 }
 
+/** The role of the member a credential belongs to, or null when the Deployment holds no such credential. */
+export async function roleBehindCredential(db: RelationalStore, tokenId: string): Promise<MemberRole | null> {
+  const row = await db
+    .prepare(`SELECT m.role AS role FROM member_credentials c JOIN members m ON m.id = c.member_id WHERE c.id = ?`)
+    .bind(tokenId)
+    .first<{ role: string }>();
+  return row === null ? null : asMemberRole(row.role);
+}
+
 /** The role a member holds, or null when the Deployment holds no such member. */
 export async function memberRole(db: RelationalStore, memberId: string): Promise<MemberRole | null> {
   const row = await db.prepare(`SELECT role FROM members WHERE id = ?`).bind(memberId).first<{ role: string }>();

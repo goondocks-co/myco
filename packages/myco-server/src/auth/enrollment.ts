@@ -98,6 +98,141 @@ export async function issueEnrollmentAuthority(
 /** Why a presented key cannot be spent. */
 export type EnrollmentRefusal = 'unknown' | 'already_used' | 'expired' | 'revoked' | 'no_project';
 
+/** A SQL condition and the values it binds, conjoined into a statement's WHERE. */
+export interface Fragment {
+  sql: string;
+  params: unknown[];
+}
+
+/**
+ * Every condition a key must meet to be spent, as one fragment.
+ *
+ * The standalone spend and the atomic join both apply this, so an admission
+ * added here reaches both.
+ *
+ * `memberId` binds the invitation to the member the caller resolved: a key naming
+ * a member admits only that member, and a key naming none admits only the id the
+ * caller minted. A caller that names no member omits the term and admits the key
+ * on its own terms.
+ */
+export function enrollmentAdmission(
+  keyHash: string, nowMs: number, opts: { forProject?: boolean; memberId?: string } = {},
+): Fragment {
+  const target = opts.memberId === undefined ? null : opts.memberId;
+  return {
+    sql: `key_hash = ? AND used_at IS NULL AND revoked_at IS NULL AND expires_at > ?
+            AND role IN (${MEMBER_ROLES_SQL})
+            ${opts.forProject === true ? 'AND project_id IS NOT NULL' : ''}
+            ${target === null ? '' : 'AND COALESCE(member_id, ?) = ?'}
+            AND (member_id IS NULL OR ${memberLive('enrollment_authorities.member_id')})
+            AND (created_by_member IS NULL OR ${memberLive('enrollment_authorities.created_by_member')})`,
+    params: target === null ? [keyHash, nowMs] : [keyHash, nowMs, target, target],
+  };
+}
+
+/** True while `machineId` is unheld or held by `memberId`. Holds across an insert of that member's own claim. */
+export function machineClaimable(machineId: string, memberId: string): Fragment {
+  return {
+    sql: `NOT EXISTS (SELECT 1 FROM machine_claims WHERE machine_id = ? AND member_id <> ?)`,
+    params: [machineId, memberId],
+  };
+}
+
+/** True while the authority this key names meets every admission. */
+export function authorityAdmitted(admission: Fragment): Fragment {
+  return {
+    sql: `EXISTS (SELECT 1 FROM enrollment_authorities WHERE ${admission.sql})`,
+    params: [...admission.params],
+  };
+}
+
+/** Conjoin fragments into one WHERE body. */
+export const allOf = (...fragments: readonly Fragment[]): Fragment => ({
+  sql: fragments.map((f) => `(${f.sql})`).join(' AND '),
+  params: fragments.flatMap((f) => f.params),
+});
+
+/** The one statement that spends a key: a conditional update carrying its whole admission. */
+export function spendStatement(db: RelationalStore, admission: Fragment, nowMs: number, runtime: string, gate?: Fragment): PreparedStatement {
+  const where = gate === undefined ? admission : allOf(admission, gate);
+  return db
+    .prepare(`UPDATE enrollment_authorities SET used_at = ?, used_by_runtime = ? WHERE ${where.sql}`)
+    .bind(nowMs, runtime, ...where.params);
+}
+
+/** The member row a join records, gated. An existing member keeps its role. */
+export function ensureMemberStatement(db: RelationalStore, id: string, nowMs: number, role: MemberRole, gate: Fragment): PreparedStatement {
+  return db
+    .prepare(`INSERT INTO members (id, label, created_at, revoked_at, role)
+                SELECT ?, ?, ?, NULL, ?
+                 WHERE ${gate.sql} AND NOT EXISTS (SELECT 1 FROM members WHERE id = ?)`)
+    .bind(id, id, nowMs, role, ...gate.params, id);
+}
+
+/** The identity claim a join records, gated. */
+export function claimMachineIdentityStatement(db: RelationalStore, machineId: string, memberId: string, nowMs: number, gate: Fragment): PreparedStatement {
+  return db
+    .prepare(`INSERT INTO machine_claims (machine_id, member_id, claimed_at)
+                SELECT ?, ?, ?
+                 WHERE ${gate.sql} AND NOT EXISTS (SELECT 1 FROM machine_claims WHERE machine_id = ?)`)
+    .bind(machineId, memberId, nowMs, ...gate.params, machineId);
+}
+
+/**
+ * The member an invitation names and the role it grants, or null for a key this
+ * Deployment holds no row for. Both are fixed when the key is minted; the
+ * admission revalidates the role, so this read decides nothing.
+ */
+export async function enrollmentTarget(db: RelationalStore, keyHash: string): Promise<{ id: string; memberId: string | null; role: MemberRole } | null> {
+  const row = await db.prepare(`SELECT id, member_id, role FROM enrollment_authorities WHERE key_hash = ?`).bind(keyHash)
+    .first<{ id: string; member_id: string | null; role: string }>();
+  if (row === null) return null;
+  const role = asMemberRole(row.role);
+  return role === null ? null : { id: row.id, memberId: row.member_id, role };
+}
+
+/** The Project a spent key bound, read back after the join that spent it. */
+export async function enrollmentProject(db: RelationalStore, keyHash: string): Promise<string | null> {
+  const row = await db.prepare(`SELECT project_id FROM enrollment_authorities WHERE key_hash = ?`).bind(keyHash).first<{ project_id: string | null }>();
+  return row?.project_id ?? null;
+}
+
+/** Who holds `machineId`, or null. Read to name a refusal; the claim statement is what binds one. */
+export async function machineIdentityHolder(db: RelationalStore, machineId: string): Promise<string | null> {
+  const row = await db.prepare(`SELECT member_id FROM machine_claims WHERE machine_id = ?`).bind(machineId).first<{ member_id: string }>();
+  return row === null ? null : row.member_id;
+}
+
+/** Why a key could not be spent, or that nothing about the key refuses it. */
+export type SpendRefusal = { admissible: false; reason: EnrollmentRefusal } | { admissible: true };
+
+/**
+ * What a key's own row says about it, in the order a refusal is reported.
+ *
+ * It decides nothing: the spend is what admits, and this only names why one did
+ * not. `admissible` is a key every enrollment condition accepts, so the refusal
+ * belongs to something outside the key.
+ */
+export async function explainEnrollment(
+  db: RelationalStore, presentedKey: string, nowMs: number, opts: { forProject?: boolean; memberId?: string } = {},
+): Promise<SpendRefusal> {
+  if (!ENROLLMENT_KEY_PATTERN.test(presentedKey)) return { admissible: false, reason: 'unknown' };
+  const row = await db
+    .prepare(`SELECT a.used_at, a.revoked_at, a.expires_at, a.member_id, a.role, a.project_id,
+                     ((a.member_id IS NOT NULL AND NOT ${memberLive('a.member_id')}) OR (a.created_by_member IS NOT NULL AND NOT ${memberLive('a.created_by_member')})) AS voided
+                FROM enrollment_authorities a WHERE a.key_hash = ?`)
+    .bind(await sha256Hex(presentedKey))
+    .first<{ used_at: number | null; revoked_at: number | null; expires_at: number; member_id: string | null; role: string; project_id: string | null; voided: number }>();
+  if (row === null) return { admissible: false, reason: 'unknown' };
+  if (row.revoked_at !== null || Number(row.voided) === 1) return { admissible: false, reason: 'revoked' };
+  if (row.used_at !== null) return { admissible: false, reason: 'already_used' };
+  if (row.expires_at <= nowMs) return { admissible: false, reason: 'expired' };
+  if (opts.forProject === true && row.project_id === null) return { admissible: false, reason: 'no_project' };
+  if (asMemberRole(row.role) === null) return { admissible: false, reason: 'revoked' };
+  if (opts.memberId !== undefined && row.member_id !== null && row.member_id !== opts.memberId) return { admissible: false, reason: 'revoked' };
+  return { admissible: true };
+}
+
 export type SpendResult =
   | { ok: true; id: string; memberId: string | null; role: MemberRole; projectId: string | null }
   | { ok: false; reason: EnrollmentRefusal };
@@ -125,17 +260,8 @@ export async function spendEnrollmentAuthority(
 ): Promise<SpendResult> {
   if (!ENROLLMENT_KEY_PATTERN.test(presentedKey)) return { ok: false, reason: 'unknown' };
   const keyHash = await sha256Hex(presentedKey);
-  const projectBound = opts.forProject === true ? 'AND project_id IS NOT NULL' : '';
 
-  const spend = await db
-    .prepare(`UPDATE enrollment_authorities SET used_at = ?, used_by_runtime = ?
-               WHERE key_hash = ? AND used_at IS NULL AND revoked_at IS NULL AND expires_at > ?
-                 AND role IN (${MEMBER_ROLES_SQL})
-                 ${projectBound}
-                 AND (member_id IS NULL OR ${memberLive('enrollment_authorities.member_id')})
-                 AND (created_by_member IS NULL OR ${memberLive('enrollment_authorities.created_by_member')})`)
-    .bind(nowMs, runtime, keyHash, nowMs)
-    .run();
+  const spend = await spendStatement(db, enrollmentAdmission(keyHash, nowMs, { forProject: opts.forProject === true }), nowMs, runtime).run();
 
   // The read only explains a refusal. An invitation whose member, or whose minter, is revoked is void: it answers as revoked.
   const row = await db

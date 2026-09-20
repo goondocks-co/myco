@@ -47,7 +47,9 @@ describe('member tokens', () => {
     expect(issued.tokenId.startsWith(TOKEN_ID_PREFIX)).toBe(true);
     expect(calls).toHaveLength(1);
     expect(calls[0].sql).toMatch(/INSERT INTO member_credentials \(id, member_id, machine_id, token_hash, issued_at, expires_at, revoked_at, bytes_written, predecessor_id, lineage_root, lineage_started_at, first_used_at, runtime_label, runtime_kind\)/);
-    expect(calls[0].sql).toMatch(/SELECT \?, \?, \?, \?, \?, \?, NULL, 0, \?, \?, \?, NULL, \?, \?\s+WHERE \? IS NULL OR EXISTS \(SELECT 1 FROM member_credentials WHERE id = \? AND revoked_at IS NULL\)/);
+    // The live-token predicate is bracketed: unbracketed, a root credential's NULL
+    // predecessor would satisfy the OR and skip any gate a caller conjoins.
+    expect(calls[0].sql).toMatch(/SELECT \?, \?, \?, \?, \?, \?, NULL, 0, \?, \?, \?, NULL, \?, \?\s+WHERE \(\? IS NULL OR EXISTS \(SELECT 1 FROM member_credentials WHERE id = \? AND revoked_at IS NULL\)\)/);
     expect(calls[0].params).toEqual([issued.tokenId, 'mem_machine_1', 'machine_1', await sha256Hex(issued.token), 5_000, issued.expiresAt, null, issued.tokenId, 5_000, null, null, null, null]);
     expect(calls[0].params).not.toContain(issued.token);
   });

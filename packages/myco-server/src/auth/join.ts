@@ -1,11 +1,16 @@
 import { toBase64Url } from '../base64.js';
 import type { ServerEnv } from '../core/adapters.js';
 import { MEMBER_ID_PREFIX } from '../constants.js';
-import { emit, type Classifier } from '../telemetry.js';
-import { claimMachineIdentity, ensureMember, spendEnrollmentAuthority, type EnrollmentRefusal } from './enrollment.js';
-import { issueMemberToken } from './tokens.js';
-import { memberRole } from './members-admin.js';
-import { stampRequest } from '../core/activity.js';
+import { emit, StorageContractError, type Classifier } from '../telemetry.js';
+import {
+  allOf, authorityAdmitted, claimMachineIdentityStatement, enrollmentAdmission, ensureMemberStatement,
+  enrollmentProject, enrollmentTarget, explainEnrollment, machineClaimable, spendStatement,
+  type EnrollmentRefusal, type Fragment,
+} from './enrollment.js';
+import { roleBehindCredential } from './members-admin.js';
+import { mintInsert } from './tokens.js';
+import { stampRequestStatement } from '../core/activity.js';
+import { sha256Hex } from '../hash.js';
 
 /** The identity grammar a join may record: machine id, runtime label and runtime kind all answer to it. */
 const IDENTITY = /^[A-Za-z0-9._-]{1,64}$/;
@@ -46,9 +51,15 @@ const refuse = (code: Classifier, reason: string): Response =>
  * `runtimeKind` are claims kept for an operator to read; nothing downstream
  * admits or refuses anything on their basis.
  *
- * The spend runs ahead of the credential and is a single conditional update, so
- * two runtimes racing one key produce one credential and one `enrollment_used`.
- * Never two credentials.
+ * The whole admission is one transaction. Every write carries the same
+ * conditions — the key unspent and live, the invitation naming this member, the
+ * machine identity free or already theirs — and the spend carries the credential
+ * row those conditions produced. A write whose conditions fail selects no row, so
+ * a refused join leaves no member, no claim, no credential and an unspent key.
+ *
+ * Write transactions serialize, so a second attempt on one key begins after the
+ * first commits and finds it spent: its every statement fails, and one key yields
+ * one credential.
  *
  * `forProject: true` is a joiner declaring it can only work bound to a Project —
  * a sandbox, which has no local configuration to fall back on. A key carrying no
@@ -56,11 +67,6 @@ const refuse = (code: Classifier, reason: string): Response =>
  * operator can bind one and hand the same key over rather than mint another.
  * The answer carries the role the key granted and the Project it bound, both
  * fixed at the moment of minting.
- *
- * The spend, the member, the identity claim and the credential are four separate
- * statements, NOT one transaction: a fault between them leaves the key spent with
- * no credential issued, and the spend has no inverse, so that invitation is gone
- * and the joiner needs a freshly minted one. Making the sequence atomic is #954.
  */
 export async function handleJoin(env: ServerEnv, request: Request, now: number): Promise<Response> {
   let body: JoinBody;
@@ -81,43 +87,61 @@ export async function handleJoin(env: ServerEnv, request: Request, now: number):
   }
   if (forProject !== undefined && forProject !== true) return refuse('unknown_field', 'forProject may only be true');
 
-  const spend = await spendEnrollmentAuthority(env.db, key, now, machineId, { forProject: forProject === true });
-  if (!spend.ok) {
-    const classifier = REFUSALS[spend.reason];
-    emit({ kind: 'join_refused', machineId, reason: classifier });
-    return refuse(classifier, `enrollment key ${spend.reason.replace('_', ' ')}`);
-  }
+  const forProjectAsked = forProject === true;
+  const keyHash = await sha256Hex(key);
+  // The member a new key joins is minted here so every write in the batch can
+  // name it; the invitation binds it, so a caller cannot substitute a recipient.
+  const invitation = await enrollmentTarget(env.db, keyHash);
+  const memberId = invitation?.memberId ?? `${MEMBER_ID_PREFIX}${toBase64Url(crypto.getRandomValues(new Uint8Array(MEMBER_ID_BYTES)))}`;
 
-  // A join leaves no session and no run, so the clock the tick reads sees it only
-  // here — and only once a key is actually spent: an unauthenticated guesser posting
-  // keys must not be able to hold a Deployment awake at the operator's expense.
-  await stampRequest(env.db, now);
-
-  const memberId = spend.memberId ?? `${MEMBER_ID_PREFIX}${toBase64Url(crypto.getRandomValues(new Uint8Array(MEMBER_ID_BYTES)))}`;
-  await ensureMember(env.db, memberId, now, spend.role);
-  // The role the CREDENTIAL carries is the member's, not the invitation's. A member
-  // already recorded keeps the role it holds, so an invitation naming another one
-  // adds a runtime without changing what that person may do.
-  const role = await memberRole(env.db, memberId) ?? spend.role;
-
-  // A machine identity belongs to one member. Every ownership predicate the ingest
-  // path applies keys on it, so a joiner free to present any identity it liked could
-  // write into another member's sessions across the whole Deployment — and a machine
-  // id is a label, not a secret. The key says WHO joins; this says the identity they
-  // present is not already somebody else's.
-  const claim = await claimMachineIdentity(env.db, machineId, memberId, now);
-  if (!claim.claimed) {
-    emit({ kind: 'join_refused', machineId, reason: 'identity_claimed' });
-    return refuse('identity_claimed', 'machine identity belongs to another member');
-  }
-
-  const issued = await issueMemberToken(env.db, { memberId, machineId }, now, null, {
+  const admission = enrollmentAdmission(keyHash, now, { forProject: forProjectAsked, memberId });
+  const admitted: Fragment = allOf(authorityAdmitted(admission), machineClaimable(machineId, memberId));
+  const runtime = {
     runtimeLabel: typeof runtimeLabel === 'string' ? runtimeLabel : null,
     runtimeKind: typeof runtimeKind === 'string' ? runtimeKind : null,
-  });
-  emit({ kind: 'member_joined', memberId, tokenId: issued.tokenId, machineId, enrollmentId: spend.id });
+  };
+  const { statement: credential, issued } = await mintInsert(env.db, { memberId, machineId }, now, null, runtime, admitted);
+  const minted: Fragment = { sql: `EXISTS (SELECT 1 FROM member_credentials WHERE id = ?)`, params: [issued.tokenId] };
+
+  // The role a new member is recorded at is the invitation's. An authority's role
+  // is fixed at minting, and the admission revalidates it, so a key carrying one
+  // outside the grammar refuses rather than lands.
+  const statements = [
+    ensureMemberStatement(env.db, memberId, now, invitation?.role ?? 'member', admitted),
+    claimMachineIdentityStatement(env.db, machineId, memberId, now, admitted),
+    credential,
+    spendStatement(env.db, admission, now, machineId, minted),
+    // A join leaves no session and no run, so the clock the tick reads sees it
+    // only here, and only for a join that issued a credential: an unauthenticated
+    // guesser posting keys cannot hold a Deployment awake at the operator's expense.
+    stampRequestStatement(env.db, now, minted),
+  ];
+  const credentialAt = statements.indexOf(credential);
+  const results = await env.db.batch(statements);
+  if (results.length !== statements.length) throw new StorageContractError(`batch answered ${results.length} results for ${statements.length} statements`);
+  const issuedCredential = results[credentialAt]!.meta.changes === 1;
+
+  if (!issuedCredential) {
+    // No credential means no write in the batch landed, so the refusal is the
+    // key's own, or the machine identity when the key admits nothing against it.
+    const explained = await explainEnrollment(env.db, key, now, { forProject: forProjectAsked, memberId });
+    // A key nothing refuses, with no credential issued, is the identity: the one
+    // condition outside the key that every write in the batch also carried.
+    const classifier: Classifier = explained.admissible ? 'identity_claimed' : REFUSALS[explained.reason];
+    emit({ kind: 'join_refused', machineId, reason: classifier });
+    return refuse(classifier, explained.admissible
+      ? 'machine identity belongs to another member'
+      : `enrollment key ${explained.reason.replace('_', ' ')}`);
+  }
+
+  // The credential landed and the key is spent, so the committed member must be
+  // readable: nothing about the key explains its absence.
+  const committedRole = await roleBehindCredential(env.db, issued.tokenId);
+  if (committedRole === null) throw new StorageContractError(`credential ${issued.tokenId} inserted but names no member`);
+
+  emit({ kind: 'member_joined', memberId, tokenId: issued.tokenId, machineId, enrollmentId: invitation?.id });
   return Response.json({
     joined: true, memberId, token: issued.token, tokenId: issued.tokenId, expiresAt: issued.expiresAt,
-    role, projectId: spend.projectId,
+    role: committedRole, projectId: await enrollmentProject(env.db, keyHash),
   });
 }
