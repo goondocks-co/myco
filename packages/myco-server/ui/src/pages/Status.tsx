@@ -3,6 +3,7 @@ import { PageHeader } from '../components/ui/page-header';
 import { PageLoading } from '../components/ui/page-loading';
 import { Panel } from '../components/ui/panel';
 import { StatusDot } from '../components/ui/status-dot';
+import { WorkersPanel } from '../components/status/WorkersPanel';
 import { useStatus } from '../hooks/use-status';
 import { formatCount, formatRelative } from '../lib/format';
 
@@ -27,7 +28,12 @@ export function Status() {
               </div>
             </Panel>
 
+            <WorkersPanel workers={data.workers} />
+
             <Panel padded title="Capabilities">
+              <p className="mb-2 font-sans text-xs text-on-surface-variant">
+                What this server itself is configured to run. A worker attaches separately and is listed under Workers.
+              </p>
               <ul className="flex flex-col gap-2" aria-label="Capabilities">
                 {data.capabilities.map((c) => (
                   <li key={c.capability} className="flex items-center gap-2 font-sans text-sm">

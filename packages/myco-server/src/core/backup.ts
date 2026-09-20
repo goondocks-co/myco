@@ -58,8 +58,9 @@ export const EMPTY_ONLY_TABLES: ReadonlySet<string> = new Set([
 /**
  * Tables an artifact never carries, each for a stated reason: migration-owned
  * state, transient quota state, the credential-store table nothing else may
- * touch, the backup index itself, the migration guard tables, and operator
- * configuration. Settings, capability admissions, repository connections and
+ * touch, the backup index itself, the migration guard tables, operator
+ * configuration, and what a worker last said about itself, which the workers
+ * attached to the restored Deployment state again on their next claim. Settings, capability admissions, repository connections and
  * sealed secrets require their validated writers and a recorded actor.
  * Operators re-enter configuration on the dashboard after a restore.
  */
@@ -72,6 +73,7 @@ export const EXCLUDED_TABLES: ReadonlySet<string> = new Set([
   'deployment_settings', 'project_capabilities', 'project_repositories', 'deployment_secrets', 'backups',
   'backup_restore_progress',
   'object_releases', 'blob_release_candidates', 'backup_release_candidates', 'recovery_holds', 'restore_reference_guard',
+  'worker_contacts',
   '_v2_guard_project_id_grammar', '_v2_guard_session_machine_id',
   '_v5_guard_credential_backfillable', '_v5_guard_backfill_complete',
 ]);

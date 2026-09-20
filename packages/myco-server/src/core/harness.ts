@@ -26,6 +26,7 @@ import { ensureMember } from '../auth/enrollment.js';
 import { issueMemberToken, revokeCredentialOfMember } from '../auth/tokens.js';
 import { projectExists } from '../read/sessions.js';
 import { WORKER_LEASE_MS, MAX_RUN_ERROR_CHARS } from '../constants.js';
+import { pruneWorkerContacts, WORKER_CONTACT_RETENTION_MS } from './worker-contacts.js';
 import { emit } from '../telemetry.js';
 import { claimQueuedRun, deploymentTaskEntriesSince, lapsedLeases, nextClaimable, recordClaimedInput, recordQueueHolder, renewRunLease, requeueLapsedLease, UNATTRIBUTED_DISPATCH_ACTOR, type ActorCeiling, type ClaimedRunRow } from './runs.js';
 export type { ActorCeiling } from './runs.js';
@@ -1054,5 +1055,9 @@ export async function expireLeases(env: ServerEnv, now: number): Promise<number>
     requeued += 1;
     emit({ kind: 'worker_lease_expired', runId: lapsed.id, projectId: lapsed.projectId, tokenId: lapsed.leasedBy });
   }
+  // The same sweep forgets a worker unheard from past the contact horizon,
+  // bounded like the lease batch above. A worker holding a live lease keeps its
+  // row whatever its age.
+  await pruneWorkerContacts(env.db, now, WORKER_CONTACT_RETENTION_MS, DRAIN_BATCH);
   return requeued;
 }

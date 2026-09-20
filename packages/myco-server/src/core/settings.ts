@@ -50,6 +50,8 @@ export type LeafSpec =
 export const DEPLOYMENT_LEAF_SPECS: Readonly<Record<string, LeafSpec>> = {
   'agent.cold_project_threshold_days': {},
   'agent.event_tasks_enabled': {},
+  // Accepted and stored; no server code reads it. A worker-driven task runs on
+  // the harness `worker.harness` and its fallback name.
   'agent.harness': {},
   'agent.limits.concurrent_runs': {},
   'agent.limits.task_concurrent_runs': {},

@@ -21,6 +21,7 @@ import { claimNextRun, endLeasedRun, renewLease, type OfferedHarness } from '../
 import { WORKER_HEARTBEAT_MS, WORKER_POLL_IDLE_MS } from '../constants.js';
 import { ok } from './scope.js';
 import { prepareWorkerRepository } from '../core/worker-repository.js';
+import { recordWorkerContact } from '../core/worker-contacts.js';
 import { RepositoryInputError } from '@goondocks/myco-shared/repository';
 
 const PROJECT_ID_SHAPE = /^[A-Za-z0-9._-]{1,64}$/;
@@ -69,12 +70,20 @@ function named(value: Record<string, unknown>): { projectId: string; runId: stri
 export async function handleWorkerClaim(env: ServerEnv, ctx: DeploymentContext): Promise<Response> {
   const asked = body(ctx);
   if (asked === null) return unreadable();
+  const harnesses = offered(asked.harnesses);
+  const capabilities = Array.isArray(asked.capabilities) ? asked.capabilities.filter((value): value is string => typeof value === 'string') : [];
   const outcome = await claimNextRun(env, {
     tokenId: ctx.tokenId,
     machineId: ctx.machineId,
-    harnesses: offered(asked.harnesses),
-    capabilities: Array.isArray(asked.capabilities) ? asked.capabilities.filter((value): value is string => typeof value === 'string') : [],
+    harnesses,
+    capabilities,
     now: ctx.now,
+  });
+  // An authenticated claim is contact whatever it answers: a worker told
+  // `no_work` is attached and idle, which nothing else in the schema records.
+  await recordWorkerContact(env.db, {
+    credentialId: ctx.tokenId, machineId: ctx.machineId, offers: harnesses, capabilities,
+    reason: outcome.claimed ? 'claimed' : outcome.reason, now: ctx.now,
   });
   // The Deployment decides the cadence and says it on every answer: a worker
   // carries none of its own, so a lease changed here changes what every
@@ -90,6 +99,10 @@ export async function handleWorkerLease(env: ServerEnv, ctx: DeploymentContext):
   const run = named(asked);
   if (run === null) return ok({ persisted: true, held: false, reason: 'lease names a projectId and a runId' });
   const outcome = await renewLease(env, { tokenId: ctx.tokenId, now: ctx.now }, run);
+  // A worker driving a run stops polling the claim, so the renewal is the only
+  // contact it makes. It names no offer and no outcome of its own: the stored
+  // report keeps its liveness refreshed.
+  if (outcome.held) await recordWorkerContact(env.db, { credentialId: ctx.tokenId, machineId: ctx.machineId, now: ctx.now });
   return ok(outcome.held
     ? { persisted: true, held: true, expiresAt: outcome.expiresAt }
     : { persisted: true, held: false, reason: 'the lease is no longer held' });
