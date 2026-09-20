@@ -66,7 +66,7 @@ export interface WorkerFacts {
   unknownCapabilities: number | null;
   /** Null for a row that records no reason, and for one whose stored reason is outside the vocabulary. */
   lastReason: ContactOutcome | null;
-  /** Whether the stored reason was outside the vocabulary: null when none is recorded, else 0 or 1. */
+  /** Whether the stored reason is outside the vocabulary: null when none is recorded, else 0 or 1. */
   unknownReason: number | null;
   /** 0 for a lease holder with no recorded contact. */
   lastSeenAt: number;
@@ -88,12 +88,12 @@ export interface QueuedRunFacts {
   projectId: string;
   /** Null for a task the catalogue does not retain; the run id still names the row. */
   task: string | null;
-  /** Whether the stored task was outside the catalogue: null when the row names none. */
+  /** Whether the stored task is outside the catalogue: null when the row names none. */
   unknownTask: number | null;
   queuedAt: number;
   /** Null for a holder the shared vocabulary does not name. */
   heldBy: string | null;
-  /** Whether the stored holder was outside the vocabulary: null when the row names none. */
+  /** Whether the stored holder is outside the vocabulary: null when the row names none. */
   unknownHeldBy: number | null;
   /** Whether the row still names the credential of a launch, which is what keeps it out of the claim queue. */
   launched: boolean;
