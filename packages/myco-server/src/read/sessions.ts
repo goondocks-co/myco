@@ -1,4 +1,5 @@
 import type { RelationalStore } from '../core/adapters.js';
+import { occurredAt, presentedEndedAt, presentedStartedAt } from '../db/session-dates.js';
 import { inListChunks, keyset, page, type Page, type ReadScope } from './scope.js';
 import { notTombstonedSql, NOT_TOMBSTONED_PARAMS } from '../core/tombstones.js';
 import { sessionMaterialReadySql, titlingClaimAvailableSql } from './material-readiness.js';
@@ -92,8 +93,8 @@ export function sessionLabel(title: string | null, firstPrompt: string | null, a
 }
 
 /** Presented conversation dates fall back to raw lifecycle dates. */
-export const PRESENTED_STARTED_AT = 'COALESCE(s.occurred_started_at, s.started_at)';
-export const PRESENTED_ENDED_AT = 'COALESCE(s.occurred_ended_at, s.ended_at)';
+export const PRESENTED_STARTED_AT = presentedStartedAt('s.');
+export const PRESENTED_ENDED_AT = presentedEndedAt('s.');
 
 /** All joins land on primary keys, preserving the session row count. */
 const SESSION_COLUMNS = `s.session_id, s.machine_id, s.created_by_token_id, s.first_received_at, s.last_received_at,
@@ -238,7 +239,7 @@ export function containsPattern(text: string): string {
  * across pages rather than failing.
  */
 /** The instant a session is ordered by: `PRESENTED_STARTED_AT` falling through to the first receipt, spelled flat. `idx_sessions_occurred` indexes this exact expression; a nested form plans as a sort instead, so the two are written the same way and move together. */
-export const SESSION_OCCURRED_AT = 'COALESCE(s.occurred_started_at, s.started_at, s.first_received_at)';
+export const SESSION_OCCURRED_AT = occurredAt('s.');
 
 export async function listSessions(db: RelationalStore, scope: ReadScope, opts: { limit?: number; cursor?: string } & SessionFilters = {}): Promise<Page<SessionRow>> {
   const k = keyset(opts, { order: SESSION_OCCURRED_AT, id: 's.session_id', direction: 'DESC' });

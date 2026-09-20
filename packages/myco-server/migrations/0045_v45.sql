@@ -14,7 +14,7 @@ CREATE VIEW IF NOT EXISTS embedding_sources AS SELECT s.*, v.revision,
     COALESCE((SELECT k.state FROM knowledge_release_state k WHERE k.project_id = s.project_id AND k.namespace = s.namespace AND k.record_id = s.record_id ORDER BY k.checked_at DESC, k.id LIMIT 1), '') AS release_state,
     COALESCE((SELECT k.confidence FROM knowledge_release_state k WHERE k.project_id = s.project_id AND k.namespace = s.namespace AND k.record_id = s.record_id ORDER BY k.checked_at DESC, k.id LIMIT 1), '') AS release_confidence
     FROM (SELECT project_id, 'session' AS type, 'sessions' AS namespace, session_id AS record_id,
-  COALESCE(title, 'Session') AS title, COALESCE(title, '') || char(10) || summary AS text, NULL AS blob_key, CASE WHEN ended_at IS NULL THEN 'active' ELSE 'completed' END AS status,
+  COALESCE(title, 'Session') AS title, COALESCE(title, '') || char(10) || summary AS text, NULL AS blob_key, CASE WHEN COALESCE(occurred_ended_at, ended_at) IS NULL THEN 'active' ELSE 'completed' END AS status,
   COALESCE(session_id, '') AS session_id, NULL AS prompt_id, COALESCE(occurred_started_at, started_at, first_received_at) AS created_at, '' AS observation_type
   FROM sessions WHERE summary IS NOT NULL AND trim(summary) <> '' UNION ALL SELECT project_id, 'spore' AS type, 'spores' AS namespace, id AS record_id,
   observation_type AS title, content || char(10) || COALESCE(context, '') AS text, NULL AS blob_key, status AS status,
@@ -27,8 +27,8 @@ CREATE VIEW IF NOT EXISTS embedding_sources AS SELECT s.*, v.revision,
   COALESCE(NULL, '') AS session_id, NULL AS prompt_id, created_at AS created_at, '' AS observation_type
   FROM skill_records WHERE status = 'active') s JOIN embedding_versions v ON v.project_id = s.project_id AND v.type = s.type AND v.record_id = s.record_id;
 
-CREATE TRIGGER IF NOT EXISTS sessions_embedding_occurred AFTER UPDATE OF occurred_started_at ON sessions
-     WHEN new.occurred_started_at IS NOT old.occurred_started_at BEGIN
+CREATE TRIGGER IF NOT EXISTS sessions_embedding_occurred AFTER UPDATE OF occurred_started_at, occurred_ended_at ON sessions
+     WHEN new.occurred_started_at IS NOT old.occurred_started_at OR new.occurred_ended_at IS NOT old.occurred_ended_at BEGIN
     INSERT INTO embedding_versions(project_id, type, record_id, revision) VALUES(new.project_id, 'session', new.session_id, lower(hex(randomblob(16))))
     ON CONFLICT(project_id, type, record_id) DO UPDATE SET revision = excluded.revision; END;
 

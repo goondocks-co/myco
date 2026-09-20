@@ -424,11 +424,12 @@ export async function parseOnce(env: Pick<ServerEnv, 'db' | 'blobs'>, target: Pa
                WHERE project_id = ? AND transcript_id = ?`)
     .bind(cursor, now, PARSER_VERSION, parser.fidelity, openPrompt, transcriptMeta === undefined ? null : JSON.stringify(transcriptMeta), target.projectId, target.transcriptId);
   // An imported session is presented at its transcript file's mtime until the
-  // derived rows say when the conversation happened. Every pass carries the
-  // recompute, batched with the cursor so the pass spends no extra call: a
-  // session an import no longer accounts for resolves to no overlay at all, so
-  // a transcript that stops being an import's leaves none behind.
-  await env.db.batch([advance, resolvePresentedDates(env.db, target.projectId, target.sessionId)]);
+  // derived rows say when the conversation happened; a live transcript can
+  // establish no overlay, and an accepted live segment clears one with its own
+  // write. The recompute rides with the cursor, so an imported pass spends no
+  // extra call for it.
+  const present = target.imported ? [resolvePresentedDates(env.db, target.projectId, target.sessionId)] : [];
+  await env.db.batch([advance, ...present]);
   calls += 1;
 
   emit({ kind: 'transcript_parsed', projectId: target.projectId, transcriptId: target.transcriptId, derived, offset: cursor });

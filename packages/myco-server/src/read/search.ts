@@ -1,4 +1,5 @@
 import type { RelationalStore } from '../core/adapters.js';
+import { occurredAt, presentedStatus } from '../db/session-dates.js';
 import { pendingSearchBlobs, SEARCH_QUERY_MAX_CHARS } from '../core/search-index.js';
 import type { ReadScope } from './scope.js';
 import { semanticSearch, type SemanticSearch } from './embedding.js';
@@ -22,7 +23,7 @@ interface Source {
   status?: string; blob?: boolean; namespace: string;
 }
 const SOURCES: Record<SearchType, Source> = {
-  session: { table: 'sessions', id: 'session_id', title: "COALESCE(NULLIF(d.title, ''), 'Session ' || substr(d.session_id, -6))", created: 'COALESCE(d.started_at, d.first_received_at)', session: 'd.session_id', prompt: 'NULL', status: "CASE WHEN d.ended_at IS NULL THEN 'active' ELSE 'completed' END", namespace: 'sessions' },
+  session: { table: 'sessions', id: 'session_id', title: "COALESCE(NULLIF(d.title, ''), 'Session ' || substr(d.session_id, -6))", created: occurredAt('d.'), session: 'd.session_id', prompt: 'NULL', status: presentedStatus('d.'), namespace: 'sessions' },
   spore: { table: 'spores', id: 'id', title: 'd.observation_type', created: 'd.created_at', session: 'd.session_id', prompt: 'd.prompt_id', status: 'd.status', namespace: 'spores' },
   plan: { table: 'plans', id: 'plan_key', title: "COALESCE(NULLIF(d.title, ''), 'Plan')", created: 'd.created_at', session: 'd.session_id', prompt: 'd.prompt_id', status: 'd.status', blob: true, namespace: 'plans' },
   skill: { table: 'skill_records', id: 'id', title: "COALESCE(NULLIF(d.display_name, ''), d.name)", created: 'd.created_at', session: 'NULL', prompt: 'NULL', status: 'd.status', namespace: 'skill_records' },

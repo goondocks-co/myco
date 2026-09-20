@@ -18,6 +18,7 @@ import { resolvePresentedDates } from '@myco-server-worker/ingest/projections.js
 import { issueMemberToken } from '@myco-server-worker/auth/tokens.js';
 import { sha256HexOf } from '@myco-server-worker/hash.js';
 import { listSessions } from '@myco-server-worker/read/sessions.js';
+import { occurredAt, presentedStatus } from '@myco-server-worker/db/session-dates.js';
 import { registerBlob } from './helpers/d1.js';
 import { envelope, sqliteEnv, uuid } from './helpers/fixtures.js';
 
@@ -323,5 +324,36 @@ describe('the vector a presented date is filtered by', () => {
 
     const row = r.sqlite.query("SELECT created_at FROM embedding_sources WHERE project_id = ? AND type = 'session' AND record_id = ?").get(PROJECT, SESSION) as { created_at: number } | null;
     expect(row?.created_at).toBe(DERIVED_FIRST);
+  });
+});
+
+describe('the dates and state a search filters on', () => {
+  /** A conversation whose last human turn runs past the import's mtime. */
+  const pastMtime = (): string =>
+    line({ type: 'user', promptId: uuid(1), message: { content: 'a question' }, timestamp: new Date(DERIVED_FIRST).toISOString() })
+    + line({ type: 'assistant', message: { content: [{ type: 'text', text: 'an answer' }] }, timestamp: new Date(DERIVED_LAST).toISOString() })
+    + line({ type: 'user', promptId: uuid(2), message: { content: 'one more' }, timestamp: new Date(IMPORT_AT + 30_000).toISOString() });
+
+  it('reads the same date and state whichever search path serves the project', async () => {
+    nextEvent = 100;
+    const r = await rig(pastMtime());
+    await importFacts(r.serverEnv, r.tokenId);
+    await drain(r.env, r.sqlite);
+    r.sqlite.run("UPDATE sessions SET summary = 'a summary' WHERE project_id = ? AND session_id = ?", [PROJECT, SESSION]);
+
+    // The semantic path reads the view; the full-text path builds its own
+    // SELECT. One date bound admits a session on both paths or neither, and one
+    // state filter reads it the same way on both.
+    const semantic = r.sqlite.query(
+      "SELECT created_at AS created, status FROM embedding_sources WHERE project_id = ? AND type = 'session' AND record_id = ?")
+      .get(PROJECT, SESSION) as { created: number; status: string };
+    const fullText = r.sqlite.query(
+      `SELECT ${occurredAt('d.')} AS created, ${presentedStatus('d.')} AS status FROM sessions d WHERE d.project_id = ? AND d.session_id = ?`)
+      .get(PROJECT, SESSION) as { created: number; status: string };
+
+    expect(semantic).toEqual(fullText);
+    // The raw lifecycle reopened; the presented state is what both report.
+    expect(state(r.sqlite)).toMatchObject({ ended_at: null });
+    expect(semantic).toEqual({ created: DERIVED_FIRST, status: 'completed' });
   });
 });

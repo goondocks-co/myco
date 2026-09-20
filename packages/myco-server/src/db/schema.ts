@@ -3,6 +3,7 @@ import { MEMBER_TOKEN_BYTE_QUOTA } from '../constants.js';
 import { MEMBER_TOKEN_TTL_MS } from '../auth/tokens.js';
 import { V19_STATEMENTS } from './schema-v19.js';
 import { embeddingSourcesView, SOURCES_WITH_PRESENTED_SESSION_DATE, V20_STATEMENTS } from './schema-v20.js';
+import { occurredAt } from './session-dates.js';
 import { V21_STATEMENTS } from './schema-v21.js';
 import { V22_STATEMENTS } from './schema-v22.js';
 
@@ -1510,13 +1511,13 @@ const V45_STATEMENTS: readonly string[] = [
   `ALTER TABLE sessions ADD COLUMN occurred_started_at INTEGER`,
   `ALTER TABLE sessions ADD COLUMN occurred_ended_at INTEGER`,
   `DROP INDEX IF EXISTS idx_sessions_occurred`,
-  `CREATE INDEX IF NOT EXISTS idx_sessions_occurred ON sessions (project_id, COALESCE(occurred_started_at, started_at, first_received_at), session_id)`,
+  `CREATE INDEX IF NOT EXISTS idx_sessions_occurred ON sessions (project_id, ${occurredAt()}, session_id)`,
   // Search sources expose the presented session date.
   `DROP VIEW IF EXISTS embedding_sources`,
   embeddingSourcesView(SOURCES_WITH_PRESENTED_SESSION_DATE),
   // A changed presented start invalidates vector date-filter metadata.
-  `CREATE TRIGGER IF NOT EXISTS sessions_embedding_occurred AFTER UPDATE OF occurred_started_at ON sessions
-     WHEN new.occurred_started_at IS NOT old.occurred_started_at BEGIN
+  `CREATE TRIGGER IF NOT EXISTS sessions_embedding_occurred AFTER UPDATE OF occurred_started_at, occurred_ended_at ON sessions
+     WHEN new.occurred_started_at IS NOT old.occurred_started_at OR new.occurred_ended_at IS NOT old.occurred_ended_at BEGIN
     INSERT INTO embedding_versions(project_id, type, record_id, revision) VALUES(new.project_id, 'session', new.session_id, lower(hex(randomblob(16))))
     ON CONFLICT(project_id, type, record_id) DO UPDATE SET revision = excluded.revision; END`,
 ];

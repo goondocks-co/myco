@@ -1,4 +1,5 @@
 import { PROJECT_ID_GRAMMAR } from './project-id.js';
+import { occurredAt, presentedStatus } from './session-dates.js';
 
 const sources = [
   { table: 'sessions', type: 'session', id: 'session_id', columns: 'title, summary, started_at, ended_at',
@@ -26,9 +27,9 @@ export const embeddingSourcesView = (list: readonly Source[]): string => `CREATE
     COALESCE((SELECT k.confidence FROM knowledge_release_state k WHERE k.project_id = s.project_id AND k.namespace = s.namespace AND k.record_id = s.record_id ORDER BY k.checked_at DESC, k.id LIMIT 1), '') AS release_confidence
     FROM (${unionOf(list)}) s JOIN embedding_versions v ON v.project_id = s.project_id AND v.type = s.type AND v.record_id = s.record_id`;
 
-/** The sources as v45 reads them: a session's date is the one it is presented at. */
+/** The sources as v45 reads them: a session's date and its running-or-finished state are the ones it is presented with, which is what a search filters on. */
 export const SOURCES_WITH_PRESENTED_SESSION_DATE: readonly Source[] = sources.map((s) => s.table === 'sessions'
-  ? { ...s, created: 'COALESCE(occurred_started_at, started_at, first_received_at)' }
+  ? { ...s, created: occurredAt(), status: presentedStatus() }
   : s);
 
 /** Source mutations invalidate vectors atomically; provider calls occur only during reconciliation. */
