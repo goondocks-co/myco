@@ -116,7 +116,7 @@ Happy-path tests catch the first row. They catch zero of the rest. Plan test cov
 
 ### 8. Worktrees for non-trivial work
 
-For any change spanning more than ~3 commits or touching critical paths (capture, daemon, vault, install), work in a git worktree. See [`myco:feature-branch-worktree-squash-merge-delivery`](../feature-branch-worktree-squash-merge-delivery/SKILL.md). Worktrees keep main clean during iteration and force a deliberate squash-merge step that produces a reviewable PR history.
+For any change spanning more than ~3 commits or touching critical paths (capture, daemon, vault, install), work in a git worktree. Worktrees keep main clean during iteration and force a deliberate squash-merge step that produces a reviewable PR history.
 
 ## Golden paths
 
@@ -159,7 +159,6 @@ For any change spanning more than ~3 commits or touching critical paths (capture
 ## References
 
 - [`AGENTS.md`](../../../AGENTS.md) — durable invariants and the Capabilities table.
-- [`myco:feature-branch-worktree-squash-merge-delivery`](../feature-branch-worktree-squash-merge-delivery/SKILL.md) — delivery mechanism for non-trivial work.
 - [`myco:safe-config-updates`](../safe-config-updates/SKILL.md) — applying the capability pattern to a specific resource (myco.yaml).
 - [`myco:debug-capture`](../debug-capture/SKILL.md) — the cross-layer lifecycle walk that smoke testing complements.
 - `tests/vault/project-vault-invariants.test.ts` — exemplar property-style invariant suite.
