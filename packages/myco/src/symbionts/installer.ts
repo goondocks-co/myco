@@ -1996,6 +1996,32 @@ export class SymbiontInstaller {
   }
 
   /**
+   * What this symbiont's MCP targets say about the member's entry, for a report.
+   *
+   * Presence, transport and scope only: the entry itself carries a URL and the
+   * headers a credential travels in, and none of it leaves this class. Reading
+   * goes through the same parser the writes use, so a file that cannot be read
+   * is named as such rather than read as an empty one.
+   */
+  inspectMemberMcp(): Array<{ scope: 'global' | 'project'; present: boolean; transport: 'http' | 'stdio' | null; readable: boolean }> {
+    const toml = this.manifest.registration?.mcpFormat === 'toml';
+    const scope = this.isGlobalScope ? 'global' as const : 'project' as const;
+    return this.resolveAbsoluteMcpTargets().map(({ path: filePath, serversKey }) => {
+      // A TOML host keeps its servers under one section whatever the manifest names.
+      const key = toml ? TOML_MCP_SERVERS_KEY : serversKey;
+      let server: Record<string, unknown> | null;
+      try {
+        server = this.mycoServerIn(filePath, toml, key);
+      } catch {
+        return { scope, present: false, transport: null, readable: false };
+      }
+      if (server === null) return { scope, present: false, transport: null, readable: true };
+      const transport = typeof server.url === 'string' ? 'http' as const : typeof server.command === 'string' ? 'stdio' as const : null;
+      return { scope, present: true, transport, readable: true };
+    });
+  }
+
+  /**
    * Every member MCP refusal, before the first write of either surface: the
    * project's own target must be readable, and the global server this host
    * merges into it must carry no key that leaves the member's entry unusable.

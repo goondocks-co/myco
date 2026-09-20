@@ -9,6 +9,7 @@ import fs from 'node:fs';
 import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { findCorePackageRoot } from '../utils/find-package-root.js';
 import { getPluginVersion } from '../version.js';
 import { readDaemonState, resolveDaemonServiceState } from '../daemon/service-state.js';
@@ -55,7 +56,7 @@ const MYCO_PLUGIN_FILE_MARKER = 'myco:plugin-marker';
 // --- Types ---
 
 /** What a check failed on, in a closed vocabulary a report carries where its detail text cannot go. */
-export type DoctorReason = 'home_pin_missing' | 'mcp_cwd_missing' | 'memberships_ambiguous';
+export type DoctorReason = 'home_pin_missing' | 'mcp_entry_absent' | 'mcp_target_unreadable' | 'mcp_entry_http' | 'mcp_entry_stdio';
 
 export interface DoctorCheck {
   name: string;
@@ -1617,39 +1618,27 @@ export async function checkRuntimePin(): Promise<DoctorCheck | null> {
   }
 }
 
-/** Whether the `myco` server in an MCP list file carries the host's headers-helper key. */
-function memberMcpHasHelper(raw: string, format: string | undefined, serversKey: string | undefined, helperKey: string): boolean {
-  if (format === 'toml') return readTomlSectionKey(raw, `mcp_servers.${MYCO_MCP_SERVER_NAME}`, helperKey) !== undefined;
-  try {
-    const servers = (JSON.parse(raw) as Record<string, Record<string, Record<string, unknown>> | undefined>)[serversKey ?? 'mcpServers'];
-    return typeof servers?.[MYCO_MCP_SERVER_NAME]?.[helperKey] === 'string';
-  } catch {
-    return false;
-  }
-}
 
 /**
- * Whether the member MCP servers provisioned for this project resolve a
- * membership from wherever the harness starts them.
+ * Whether this project's membership resolves for the symbionts set up on this
+ * machine: the machine pin for a non-default home, and the Myco MCP server each
+ * symbiont declares.
  *
- * A hook runs in the project, so its membership resolves from its directory.
- * A stdio MCP child is started where the harness chooses — Codex's and
- * Cursor's at `/` or the user's home — so it finds the project only through a
- * `cwd` the entry carries (the TOML entry does), through the machine pin for
- * a non-default home, and through the one membership a machine holds. Each
- * of those is checked here as a fact on disk, and the check says which one is
- * missing rather than reporting the install healthy.
+ * The entry is read where the installer writes it — the symbiont's global
+ * targets under the member scope, its project target under an override — and
+ * the check reports which scope carries it and over what transport, or that a
+ * target could not be read. It reports presence on disk, never that a server
+ * answers.
  */
 export async function checkMemberMcpResolution(vaultDir: string, env: NodeJS.ProcessEnv = process.env): Promise<DoctorCheck[]> {
   const { resolveProjectRoot } = await import('../project-root.js');
   const { resolveMycoHome, defaultMycoHome, readMachineHomePin } = await import('../paths/home.js');
-  const { readRegistryEntry, listRegistryEntries } = await import('../member/registry.js');
+  const { readRegistryEntry } = await import('../member/registry.js');
   const { loadManifests } = await import('../symbionts/detect.js');
   const root = resolveProjectRoot(vaultDir);
   const home = resolveMycoHome({ cwd: root, env });
   if (readRegistryEntry(root, home) === null) return [];
   const checks: DoctorCheck[] = [];
-  const memberships = listRegistryEntries(home).length;
   const homeDir = env.HOME && env.HOME.length > 0 ? env.HOME : undefined;
   const nonDefaultHome = path.resolve(home) !== path.resolve(defaultMycoHome(homeDir));
   if (nonDefaultHome && readMachineHomePin({ env: {}, homeDir })?.home !== path.resolve(home)) {
@@ -1661,36 +1650,50 @@ export async function checkMemberMcpResolution(vaultDir: string, env: NodeJS.Pro
       fixable: false,
     });
   }
+  // The member's MCP entry lives where the installer writes it: the symbiont's
+  // global targets under the member scope, its project target under an
+  // override. Both are read, and an override in place is what the host uses.
+  const { SymbiontInstaller } = await import('../symbionts/installer.js');
+  const packageRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
   for (const manifest of loadManifests()) {
-    const target = manifest.registration?.mcpTarget;
-    if (!target) continue;
-    const file = path.join(root, target);
-    let raw: string;
-    try { raw = fs.readFileSync(file, 'utf-8'); } catch { continue; }
-    if (!raw.includes(MYCO_MCP_SERVER_NAME)) continue;
-    // A remote entry resolves its membership through the headers helper, which
-    // the host runs in the project or session directory and which names its
-    // Deployment — neither a cwd nor a single membership is needed.
-    const helperKey = manifest.registration?.memberMcpHeadersHelperKey;
-    if (helperKey && memberMcpHasHelper(raw, manifest.registration?.mcpFormat, manifest.registration?.mcpServersKey, helperKey)) continue;
-    if (manifest.registration?.mcpFormat === 'toml') {
-      if (/\bcwd\s*=/.test(raw)) continue;
+    if (!manifest.registration) continue;
+    const at = (scope: 'member-global' | 'member-project') =>
+      new SymbiontInstaller(manifest, root, packageRoot, false, undefined, null, scope, home).inspectMemberMcp();
+    const seen = [...at('member-global'), ...at('member-project')];
+    if (seen.length === 0) continue;
+    const unread = seen.filter((target) => !target.readable);
+    const declared = seen.filter((target) => target.present);
+    // A project override is what the host reads where one is in place.
+    const effective = declared.find((target) => target.scope === 'project') ?? declared[0];
+
+    if (effective !== undefined) {
       checks.push({
         name: 'Member MCP resolution',
-        status: 'warn',
-        detail: `${manifest.displayName}'s MCP server entry in ${target} carries no cwd, so the server starts wherever ${manifest.displayName} starts it and resolves no membership from there. Re-run \`myco member join --provision ${manifest.name}\`.`,
-        reason: 'mcp_cwd_missing',
+        status: 'ok',
+        detail: `${manifest.displayName} declares the Myco MCP server in its ${effective.scope} configuration over ${effective.transport ?? 'an unrecognized'} transport.`,
+        reason: effective.transport === 'http' ? 'mcp_entry_http' : 'mcp_entry_stdio',
         symbiont: manifest.name,
         fixable: false,
       });
-      continue;
     }
-    if (memberships > 1) {
+    // An unreadable target is reported whether or not another one carried an
+    // entry: what it holds is unknown, and a report says so.
+    for (const _ of unread) {
       checks.push({
         name: 'Member MCP resolution',
         status: 'warn',
-        detail: `${manifest.displayName} starts its MCP server in a directory of its own choosing, and this machine holds ${memberships} memberships, so the server resolves none of them unless ${manifest.displayName} is opened from ${root}.`,
-        reason: 'memberships_ambiguous',
+        detail: `${manifest.displayName}'s MCP configuration could not be read, so whether the member's server is declared there is unknown.`,
+        reason: 'mcp_target_unreadable',
+        symbiont: manifest.name,
+        fixable: false,
+      });
+    }
+    if (effective === undefined && unread.length === 0) {
+      checks.push({
+        name: 'Member MCP resolution',
+        status: 'warn',
+        detail: `${manifest.displayName} declares no Myco MCP server, so it reads no project intelligence. Run \`myco member join --provision ${manifest.name}\`.`,
+        reason: 'mcp_entry_absent',
         symbiont: manifest.name,
         fixable: false,
       });

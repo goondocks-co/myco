@@ -168,3 +168,87 @@ describe('the member MCP server', () => {
     expect(fs.existsSync(target)).toBe(false);
   });
 });
+
+describe('what a report reads from the member MCP targets', () => {
+  /** A member installer at the scope the 2.0 join uses, with its global target under a home of its own. */
+  const savedEnv: Array<[string, string | undefined]> = [];
+  afterEach(() => { for (const [key, value] of savedEnv.splice(0)) { if (value === undefined) delete process.env[key]; else process.env[key] = value; } });
+
+  /**
+   * A member installer at the scope the 2.0 join uses. The symbiont's global
+   * target is a `~` path, so HOME moves into the sandbox and the sandbox
+   * sentinel refuses any expansion that leaves it.
+   */
+  function globalInstaller(name: string): { installer: SymbiontInstaller; root: string; home: string } {
+    const sandbox = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-inspect-sandbox-'));
+    const root = path.join(sandbox, 'project');
+    const home = path.join(sandbox, 'home');
+    fs.mkdirSync(root, { recursive: true });
+    fs.mkdirSync(home, { recursive: true });
+    roots.push(sandbox);
+    for (const key of ['HOME', 'MYCO_SANDBOX_ROOT']) savedEnv.push([key, process.env[key]]);
+    process.env.HOME = home;
+    process.env.MYCO_SANDBOX_ROOT = sandbox;
+    const manifest = loadManifests().find((m) => m.name === name);
+    if (!manifest) throw new Error(`no manifest ${name}`);
+    return { installer: new SymbiontInstaller(manifest, root, resolvePackageRoot(), false, undefined, null, 'member-global', path.join(home, '.myco')), root, home };
+  }
+
+  /** Writes the member's server into every target the installer resolves, as the install does. */
+  function writeEntries(installer: SymbiontInstaller, server: Record<string, unknown>): string[] {
+    const files = globalTargetPaths(installer);
+    for (const file of files) {
+      fs.mkdirSync(path.dirname(file), { recursive: true });
+      fs.writeFileSync(file, JSON.stringify({ mcpServers: { myco: server } }), 'utf-8');
+    }
+    return files;
+  }
+
+  it('reads the global targets under the member scope, and names the transport without the entry', () => {
+    const { installer } = globalInstaller('claude-code');
+    const files = writeEntries(installer, claudeRemote());
+    expect(files.length).toBeGreaterThan(0);
+
+    const seen = installer.inspectMemberMcp();
+    expect(seen).toEqual(files.map(() => ({ scope: 'global', present: true, transport: 'http', readable: true })));
+    // Presence, transport and scope only: the URL and the headers helper stay inside.
+    expect(JSON.stringify(seen)).not.toContain(SERVER_URL);
+  });
+
+  it('reads a global target with no Myco server as absent, not as unreadable', () => {
+    const { installer } = globalInstaller('claude-code');
+    for (const file of globalTargetPaths(installer)) {
+      fs.mkdirSync(path.dirname(file), { recursive: true });
+      fs.writeFileSync(file, JSON.stringify({ mcpServers: { somethingElse: { url: 'https://elsewhere' } } }), 'utf-8');
+    }
+
+    expect(installer.inspectMemberMcp().every((t) => t.readable && !t.present && t.transport === null)).toBe(true);
+  });
+
+  it('says a target it could not read is unread, rather than reading it as no entry', () => {
+    const { installer } = globalInstaller('claude-code');
+    writeEntries(installer, claudeRemote());
+    for (const file of globalTargetPaths(installer)) fs.writeFileSync(file, 'not configuration at all', 'utf-8');
+
+    expect(installer.inspectMemberMcp().every((t) => !t.readable && !t.present)).toBe(true);
+  });
+
+  it('reads the project target under an override, never the global one', () => {
+    const { root } = globalInstaller('claude-code');
+    const manifest = loadManifests().find((m) => m.name === 'claude-code')!;
+    const override = new SymbiontInstaller(manifest, root, resolvePackageRoot(), false, undefined, null, 'member-project');
+    const projectTarget = path.join(root, manifest.registration!.mcpTarget!);
+    fs.mkdirSync(path.dirname(projectTarget), { recursive: true });
+    fs.writeFileSync(projectTarget, JSON.stringify({ mcpServers: { myco: claudeRemote() } }), 'utf-8');
+
+    const seen = override.inspectMemberMcp();
+    // One target, the project's own: the member scope's global paths are not consulted.
+    expect(seen).toEqual([{ scope: 'project', present: true, transport: 'http', readable: true }]);
+    expect(globalTargetPaths(override)).toEqual([projectTarget]);
+  });
+});
+
+/** The absolute MCP targets an installer resolves at its own scope. */
+function globalTargetPaths(installer: SymbiontInstaller): string[] {
+  return (installer as unknown as { resolveAbsoluteMcpTargets(): Array<{ path: string }> }).resolveAbsoluteMcpTargets().map((t) => t.path);
+}
