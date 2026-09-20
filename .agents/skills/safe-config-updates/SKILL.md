@@ -1,7 +1,12 @@
 ---
-name: myco:safe-config-updates
-description: "Apply this skill whenever you need to write, update, or modify Myco configuration — whether from a React settings form, a CLI command, a task, or any other code path. This covers the two linked invariants that prevent silent data loss: (1) all YAML writes must flow through updateConfig() in packages/myco/src/config/loader.ts, and (2) all React settings forms must spread the original config before overlaying form values in their formToConfig() function. Also covers the complete procedure for adding new configurable settings to Myco's three-tier scoped config system (machine/grove/project/personal) including scope assignment decisions, Zod schema extension, API endpoint integration, useScopedConfig hook wiring, and ScopedField component wrapping. Use this skill even if the user hasn't explicitly asked about config safety — any time you touch myco.yaml, add a settings field, modify a settings page, or add new configurable fields, these patterns apply."
-managed_by: myco
+name: safe-config-updates
+description: >-
+  This skill should be used when the user asks to "add a setting", "add a field to the
+  settings page", "change myco.yaml", or when any code path writes configuration — a React
+  settings form, a CLI command, a task, or a daemon reaction. Covers the two invariants that
+  prevent silent config loss (every YAML write flows through `updateConfig()`; every
+  `formToConfig()` spreads the original config before overlaying form values) and the full
+  procedure for adding a scoped setting across the machine/grove/project/personal tiers.
 user-invocable: true
 allowed-tools: Read, Edit, Write, Bash, Grep, Glob
 ---
@@ -13,7 +18,7 @@ allowed-tools: Read, Edit, Write, Bash, Grep, Glob
 ## Prerequisites
 
 - Understand that `myco.yaml` has independent sections (`vault`, `backup`, `embedding`, `tasks`, etc.) and no single UI page owns the whole file
-- Know which section(s) your change targets
+- Know which section(s) the change targets
 - For React form changes: locate the relevant settings page and its `formToConfig()` function
 - For programmatic writes: locate `packages/myco/src/config/loader.ts` and `packages/myco/src/config/updates.ts`
 - Understand the three-tier config hierarchy: machine (`~/.myco/config.yaml`) → grove (`~/.myco/groves/<id>/grove.yaml`) → project (`myco.yaml`) → personal (`.myco/local.yaml`)
@@ -30,7 +35,7 @@ allowed-tools: Read, Edit, Write, Bash, Grep, Glob
 
 If two code paths independently serialize and write `myco.yaml`, they race and one will clobber the other's sections. Even without a race, any path that reconstructs the config from a partial view will lose keys it never read.
 
-The solution: `updateConfig(vaultDir, fn)` in `packages/myco/src/config/loader.ts` is the **only** function that may write `myco.yaml`. It reads the current file, calls your mutation function `fn(config) => config`, and writes the result. This guarantees every write starts from the full current state.
+The solution: `updateConfig(vaultDir, fn)` in `packages/myco/src/config/loader.ts` is the **only** function that may write `myco.yaml`. It reads the current file, calls the supplied mutation function `fn(config) => config`, and writes the result. This guarantees every write starts from the full current state.
 
 ### Steps
 
@@ -85,7 +90,7 @@ updateTierConfigRaw({ kind: 'grove', groveId }, (raw) => {
 });
 ```
 
-`updateTierConfigRaw` reads the raw on-disk YAML, calls your mutation function, validates tolerantly (unknown keys preserved on disk; value violations throw `ZodError`), and persists atomically. Unlike `updateConfig`, it throws `TierConfigUnreadableError` when the target file has corrupt YAML or a non-mapping root — preventing silent file wipes.
+`updateTierConfigRaw` reads the raw on-disk YAML, calls the supplied mutation function, validates tolerantly (unknown keys preserved on disk; value violations throw `ZodError`), and persists atomically. Unlike `updateConfig`, it throws `TierConfigUnreadableError` when the target file has corrupt YAML or a non-mapping root — preventing silent file wipes.
 
 ### Grove-specific considerations
 
@@ -99,7 +104,7 @@ updateTierConfigRaw({ kind: 'grove', groveId }, (raw) => {
 
 The secrets file (`SECRETS_FILE` constant in `packages/myco/src/config/secrets.ts`) is a separate write surface from `myco.yaml` but carries the same silent-corruption risk. `decodeSecrets()` builds the parsed record with `Object.create(null)` instead of a plain object literal, and rejects any key in the `PROTOTYPE_LIKE_ENV_KEYS` set (`__proto__`, `prototype`, `constructor`) before assignment, preventing prototype-pollution via a crafted secrets file. `decodeSecretBuffer()` also decodes with `new TextDecoder('utf-8', { fatal: true })`, throwing on malformed byte sequences rather than silently substituting replacement characters.
 
-Encode-time validation of a value you're about to write is not sufficient on its own — any code path that reads or mutates secrets must go through `readSecretsFile()`/`decodeSecrets()` so the prototype-safe decode and strict UTF-8 check apply consistently. Don't add ad-hoc parsing of the secrets file elsewhere.
+Encode-time validation of a value about to be written is not sufficient on its own — any code path that reads or mutates secrets must go through `readSecretsFile()`/`decodeSecrets()` so the prototype-safe decode and strict UTF-8 check apply consistently. Don't add ad-hoc parsing of the secrets file elsewhere.
 
 ### Pitfall: append-only gitignore staleness
 
@@ -151,11 +156,11 @@ The fix is structural: always start from the original config and overlay only wh
 
 3. **Remove sections a page doesn't own.** If a settings page previously included fields for a section now owned by a different page, remove those fields entirely — don't leave them as pass-through hidden inputs. Ownership should be exclusive and clear.
 
-4. **`auto_run` requires a hot-reload signal.** If your form touches `vault.auto_run` or any field that controls daemon behavior, the daemon won't pick it up until it restarts or receives a reload event. The config write alone is not sufficient — ensure the save handler also sends the appropriate IPC signal.
+4. **`auto_run` requires a hot-reload signal.** If the form touches `vault.auto_run` or any field that controls daemon behavior, the daemon won't pick it up until it restarts or receives a reload event. The config write alone is not sufficient — ensure the save handler also sends the appropriate IPC signal.
 
 ### Pitfall: silent key dropping is invisible
 
-Config data loss from the `formToConfig()` bug is silent at the UI layer — the save appears to succeed, but keys vanish from `myco.yaml`. The only way to notice is to inspect the YAML after saving. When adding a new settings field, always open `myco.yaml` after your first test save and verify unrelated sections are intact.
+Config data loss from the `formToConfig()` bug is silent at the UI layer — the save appears to succeed, but keys vanish from `myco.yaml`. The only way to notice is to inspect the YAML after saving. When adding a new settings field, always open `myco.yaml` after the first test save and verify unrelated sections are intact.
 
 ---
 
@@ -207,215 +212,24 @@ The Settings UI uses dedicated PATCH handling via `handlePutScopedConfig` in `pa
 
 ---
 
-## Scoped Config Architecture — Three-Tier System
+## Additional Resources
 
-### Understanding the three-tier scoped config model
-
-Myco's three-tier scoped configuration enables machine-global defaults, grove-level coordination, project team settings, and per-machine personalization:
-
-- **Machine tier** (`~/.myco/config.yaml`) — global daemon configuration across all groves and projects
-- **Grove tier** (`~/.myco/groves/<id>/grove.yaml`) — grove-level settings that coordinate across multiple projects within a grove
-- **Project tier** (`myco.yaml`) — committed team-shared settings that affect how the team collaborates
-- **Personal tier** (`.myco/local.yaml`) — gitignored per-machine overrides for individual developer preferences
-
-The daemon uses `loadMergedConfig()` which calls `pruneToTier(raw, tier)` for each tier before merging. `pruneToTier` is the **primary enforcement mechanism** — it uses `SCOPE_REGISTRY` from `packages/myco/src/config/scope.ts` to keep only leaf paths whose `home` or `overridableBy` tiers allow them. Deep-merge follows with `arrayStrategy: 'replace'` where higher-tier (personal) values win.
-
-### Grove architecture coordination patterns
-
-**Multi-project coordination**: Grove's global daemon architecture introduces additional configuration layers for coordinating settings across multiple project vaults within a grove. The global daemon maintains grove-level configuration that provides defaults for project-level settings.
-
-**Migration compatibility**: Grove migration procedures can update existing project configurations to reference grove-global settings where appropriate, maintaining backward compatibility while enabling grove-wide coordination.
-
-**Initialization patterns**: Grove-aware init procedures detect and integrate with existing project configurations, ensuring smooth onboarding without disrupting established project settings.
-
-**Config tier migration patterns**: When migrating configurations to grove coordination, preserve existing project config semantics while adding grove-level defaults. Ensure that migrated configurations maintain the same effective behavior for teams that don't use grove features.
-
-### Classify New Config Settings by Tier
-
-When adding any new user-configurable behavior, follow these steps to determine which tier it belongs in:
-
-**Step 1: Apply the tier decision rule**
-- **Machine tier**: Global daemon behavior across all groves (port, logging, global auth, capture policy)
-- **Grove tier**: Multi-project coordination within a grove (shared resources, grove-wide policies, agent provider and model selection, agent harness configuration, task configuration overlays, embedding configuration)
-- **Project tier**: Team collaboration settings specific to this project (task configs, team sync)
-- **Personal tier**: Individual developer experience preferences (UI themes, notification settings, daemon operational settings)
-
-**Step 2: Consult the scope registry**
-The canonical tier assignment for every config field lives in `SCOPE_REGISTRY` in `packages/myco/src/config/scope.ts`. This registry is the single source of truth — it drives `pruneToTier()` enforcement during config loading and the UI scope indicators. Look up the closest parent path in the registry to find precedent for similar fields.
-
-Use these established patterns as representative examples (verify against the live registry for current state):
-
-*Personal Settings:* Per-machine preferences that do not affect team collaboration
-- Daemon operational settings (`daemon.port`, `daemon.log_level`)
-- UI personalization (`appearance.theme`, `appearance.font_size`, `appearance.dark_mode`, `appearance.density`)
-- Notification preferences (`notifications.*`)
-- Maintenance automation (`maintenance.auto_optimize`)
-
-*Project Settings:* Shared team configuration affecting workflow behavior
-- Symbiont manifest (`symbionts.*`)
-- Agent operational limits (`agent.timeout`, `agent.context_window`)
-- Vault data policies (`vault.retention_days`, `vault.max_sessions`)
-- Team sync enablement (`sync.enabled`)
-
-*Grove Settings:* Multi-project coordination within a grove
-- Agent provider and model selection (`agent.provider`, `agent.model`)
-- Agent harness configuration (`agent.harness`)
-- Task configuration overlays (`agent.tasks.*`)
-- Embedding provider configuration (`embedding.provider`)
-
-*Machine Settings:* Global daemon configuration
-- Global daemon port and networking
-- Machine-level authentication
-- Global logging and diagnostics
-- Capture policy (`capture.*`) — strictly machine-scoped, no overrides allowed
-
-**Step 3: Add the field to SCOPE_REGISTRY and the Zod schema**
-New fields must be registered in `SCOPE_REGISTRY` in `packages/myco/src/config/scope.ts` with the correct `home` tier and `overridableBy` array. The scope-registry sync test will fail if a schema leaf is not covered, so ratify against the Zod tier schemas in `packages/myco/src/config/schema.ts`.
-
-**Step 4: Document your decision**
-Add the new field to the appropriate tier in comments and update any scope defaults matrices in the UI layer.
-
-### Handle Legacy Config Fields During Tier Migration
-
-When architectural changes move fields between tiers, two mechanisms cooperate:
-
-**Primary enforcement — `pruneToTier()`**: The loader calls `pruneToTier(raw, tier)` for every tier in `loadMergedConfig`. This uses `SCOPE_REGISTRY` to silently drop any fields that don't belong to the given tier — so once a field's `home` tier is updated in the registry, misplaced values in other tiers are automatically ignored at load time.
-
-**Legacy strip — `PROJECT_TIER_LEGACY_FIELDS`**: For fields that historically lived in the wrong tier and need to be actively removed from committed `myco.yaml` files (not just ignored), add them to `PROJECT_TIER_LEGACY_FIELDS` in `packages/myco/src/config/schema.ts`. The loader's `stripLegacyProjectFields()` function iterates this list and calls `unsetAtPath()` to physically remove them from the YAML document, preventing stale fields from cluttering project configs.
-
-**`GROVE_PROMOTED_FIELDS` — Grove-tier conditional stripping**: `GROVE_PROMOTED_FIELDS` (also exported from `packages/myco/src/config/schema.ts`) is a companion array listing the subset of fields that belong specifically to Grove tier — embedding settings, agent provider, agent harness, agent model, and agent scheduling fields. See the array definition in schema.ts for the current list. This array is spread into `PROJECT_TIER_LEGACY_FIELDS`, but with a critical conditional: `stripLegacyProjectFields()` only strips these fields when the project is Grove-bound (`hasGrove: true`). If no Grove exists yet, the values are retained in `myco.yaml` so they aren't lost. Once the project binds to a Grove, `myco update` lifts the values to Grove tier and then strips them from the project YAML.
-
-**When to use each:**
-- New field at correct tier from day one → just add to `SCOPE_REGISTRY`; `pruneToTier` enforces it automatically
-- Field moved from project → grove tier → add to `SCOPE_REGISTRY` with new home; also add to `GROVE_PROMOTED_FIELDS` (and by extension `PROJECT_TIER_LEGACY_FIELDS`) so the old project-tier value gets stripped from `myco.yaml` once Grove is bound
-- Field removed entirely → add to `PROJECT_TIER_LEGACY_FIELDS` directly to clean up existing configs; no registry entry needed
-
-This silent-strip pattern ensures that when developers pull code with a tier reorganization, old fields in `myco.yaml` do not interfere with new grove-tier values, preventing silent shadowing of grove defaults.
-
-### Two-Layer Config Migration Procedures
-
-When migrating existing projects to a new config architecture, use a two-layer approach:
-
-**Layer 1: Client-side silent strip**
-The client removes legacy fields during `loadConfig()` before merging via `stripLegacyProjectFields()`. This protects against old project-tier fields shadowing new grove-tier defaults.
-
-**Layer 2: Daemon-side reconciliation**
-On next daemon startup after the migration-aware code is deployed, the daemon detects legacy fields in `myco.yaml` and offers a migration guide. This allows teams to understand what changed without breaking existing setups.
-
-Use `loadMergedConfig(vaultDir, { groveId })` to automatically resolve grove-tier settings via the specified grove ID, integrating grove defaults into the final merged config.
-
-### Add New Scoped Config Fields
-
-**Step 1: Update the config schema**
-Add the new field to the appropriate section in `packages/myco/src/config/schema.ts`.
-
-**Step 2: Register the field in SCOPE_REGISTRY**
-Add the new field to `SCOPE_REGISTRY` in `packages/myco/src/config/scope.ts` with correct `home` and `overridableBy`. The scope-registry sync test will fail if this entry is missing.
-
-**Step 3: Verify the scoped config endpoint handles your field**
-The endpoint at `packages/myco/src/daemon/api/config.ts` handles partial patch merging with validation via `handlePutScopedConfig`:
-```typescript
-// Endpoint contract: { scope: 'project' | 'local', patch: {...}, clear?: [...] }
-// patch_clear_overlap validation prevents same key in both patch and clear arrays
-```
-
-**Step 4: Add field to scope defaults matrix (for UI)**
-If your field will appear in the daemon UI, update the scope defaults in the appropriate Settings component.
-
-**Step 5: Handle restart-required fields (if applicable)**
-If the field requires daemon restart rather than live-reload, document it in the settings UI and ensure the save handler sends the appropriate IPC restart signal alongside the config write.
-
----
-
-## Config-Change Reactions — Live Reload System
-
-Use `reactions.on(pathPrefixes, handler)` on the `ConfigReactionRegistry` (created via `createConfigReactionRegistry(logger)` from `packages/myco/src/daemon/config-reactions/registry.ts`) to subscribe daemon subsystems to config changes for live-reload.
-
-### Set Up Config-Change Reactions
-
-**Step 1: Create the registry during daemon startup**
-`packages/myco/src/daemon/main.ts` creates one registry instance and wires all reactions against it:
-```typescript
-import { createConfigReactionRegistry } from './config-reactions/index.js';
-
-const reactions = createConfigReactionRegistry(logger);
-```
-
-**Step 2: Register reactions with path-prefix semantics**
-```typescript
-// Path-prefix semantics: array of strings, prefix match triggers
-// Empty array [] fires on every config write
-reactions.on([], () => { configHash = computeConfigHash(bootstrapVaultDir); });
-reactions.on(['okf'], createOkfReconcileReaction());
-reactions.on(['agent.tasks'], async () => { /* re-schedule tasks */ });
-```
-
-**Step 3: Implement closure factory pattern**
-`createOkfReconcileReaction` in `packages/myco/src/daemon/okf-reconcile-reaction.ts` shows the factory pattern — a function that takes dependencies and returns a `ConfigReaction` closure:
-```typescript
-export function createOkfReconcileReaction(deps: OkfReconcileReactionDeps = {}): ConfigReaction {
-  return (config) => {
-    // reconcile OKF state against the new config
-  };
-}
-```
-
-**Step 4: Follow idempotency constraints**
-Reactions must be idempotent and cannot trigger self-writes that would create feedback loops.
-
----
-
-## Config Toggle Side-Effects — File Mutation Patterns
-
-For `myco.yaml` boolean toggles requiring file mutations (like symbiont installation), use the established pattern:
-
-### Implement Config Toggle Side-Effects
-
-**Step 1: Single opt-in flag in schema**
-```typescript
-const ConfigSchema = z.object({
-  enable_new_feature: z.boolean().default(false),
-});
-```
-
-**Step 2: Static managed block**
-Insert managed blocks on `myco init` and reconcile on `myco update`:
-```bash
-# Generated by myco - do not edit directly
-# myco:feature-block:start
-generated content here
-# myco:feature-block:end
-```
-
-**Step 3: In-process reconciliation**
-Trigger reconciliation via the symbiont reconciler after config save — NOT a CLI subprocess:
-
-```typescript
-import { reconcileConfiguredSymbionts } from '../symbionts/reconcile.js';
-
-// In config write handler
-if (newConfig.enable_new_feature !== oldConfig.enable_new_feature) {
-  reconcileConfiguredSymbionts(projectRoot, vaultDir);
-}
-```
-
-This pattern keeps side-effects deterministic and avoids the complexity of subprocess coordination.
-
----
+- **`references/reactions-and-side-effects.md`** — Config-Change Reactions and Toggle Side-Effects
+- **`references/scoped-config-tiers.md`** — Scoped Config Architecture — Three-Tier System
 
 ## Cross-Cutting Gotchas
 
-**Silent key dropping is invisible:** Config data loss from the `formToConfig()` bug is silent at the UI layer — the save appears to succeed, but keys vanish from `myco.yaml`. The only way to notice is to inspect the YAML after saving. When adding a new settings field, always open `myco.yaml` after your first test save and verify unrelated sections are intact.
+**Silent key dropping is invisible:** Config data loss from the `formToConfig()` bug is silent at the UI layer — the save appears to succeed, but keys vanish from `myco.yaml`. The only way to notice is to inspect the YAML after saving. When adding a new settings field, always open `myco.yaml` after the first test save and verify unrelated sections are intact.
 
-**Local config path construction:** In `localConfigPath()`, `vaultDir` already includes `.myco`, so use `path.join(vaultDir, LOCAL_CONFIG_FILENAME)` directly. Don't prepend `.myco/` again or you'll get `.myco/.myco/local.yaml` double-nesting.
+**Local config path construction:** In `localConfigPath()`, `vaultDir` already includes `.myco`, so use `path.join(vaultDir, LOCAL_CONFIG_FILENAME)` directly. Don't prepend `.myco/` again or the result is `.myco/.myco/local.yaml` double-nesting.
 
-**Path-prefix subscription semantics:** `registry.on(['agent'])` triggers for `agent.model`, `agent.provider`, `agent.timeout`, etc. Use specific paths like `['agent.model']` if you only care about model changes.
+**Path-prefix subscription semantics:** `registry.on(['agent'])` triggers for `agent.model`, `agent.provider`, `agent.timeout`, etc. Use specific paths like `['agent.model']` to match only model changes.
 
 **Merge strategy implications:** `arrayStrategy: 'replace'` in `deepMergeConfig()` means local arrays completely replace project arrays. For additive behavior, use object merging instead of arrays.
 
 **Scope pill UX pattern:** The UI uses per-field scope indicators (Personal/Project pills) rather than section-level grouping. This supports mixed-scope forms and field-level override visibility.
 
-**Registry vs. direct config reads:** Use the `config` parameter passed to reactions for performance. The registry has already paid the YAML + schema parse cost once. Only call `loadConfig()` separately if you need to detect concurrent changes during reaction processing, which is rare.
+**Registry vs. direct config reads:** Use the `config` parameter passed to reactions for performance. The registry has already paid the YAML + schema parse cost once. Only call `loadConfig()` separately to detect concurrent changes during reaction processing, which is rare.
 
 **Grove migration config compatibility:** When working with grove-aware configurations, ensure backward compatibility with pre-grove project configs. Grove migration procedures should preserve existing project settings while enabling grove coordination.
 
@@ -423,7 +237,7 @@ This pattern keeps side-effects deterministic and avoids the complexity of subpr
 
 **Three-tier merge precedence:** Remember that personal overrides win over project settings, which win over grove settings, which win over machine defaults. When debugging config issues, check all four tiers in the merge chain.
 
-**Binding a reused settings component to a new config target — context, not prop-threading.** When adapting an existing scoped-config component (e.g., `useScopedConfigForSelection` in `packages/myco/ui/src/hooks/use-scoped-config.ts`) to serve a different target — such as a Team-scoped settings surface — prefer a React context that the shared hook reads internally over threading a target prop through every consumer. This keeps the component reusable without forking it as new scoped surfaces (e.g., team settings) are added.
+**Binding a reused settings component to a new config target — context, not prop-threading.** When adapting an existing scoped-config component (e.g., `useScopedConfigForSelection` in `packages/myco/ui/src/hooks/use-scoped-config.tsx`) to serve a different target — such as a Team-scoped settings surface — prefer a React context that the shared hook reads internally over threading a target prop through every consumer. This keeps the component reusable without forking it as new scoped surfaces (e.g., team settings) are added.
 
 **Grove-tier scope selection:** When adding grove-level settings, ensure they truly coordinate across projects rather than duplicating project-level functionality. Grove settings should enable multi-project workflows, not replace project autonomy.
 

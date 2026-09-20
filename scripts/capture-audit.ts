@@ -4,7 +4,7 @@
  *
  * Read-only. Answers "is what we captured correct and complete?", which is a
  * different question from `debug-capture`'s "why did capture stop?". Drive it
- * through the `audit-capture-fidelity` skill, which explains how to read the
+ * against the capture-lifecycle layering, which explains how to read the
  * findings and which fixes apply.
  *
  *   tsx scripts/capture-audit.ts --grove <path-to-myco.db> [--project proj_…]

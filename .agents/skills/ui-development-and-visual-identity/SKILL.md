@@ -1,8 +1,13 @@
 ---
-name: myco:ui-development-and-visual-identity
-description: |
-  Procedures for building, maintaining, and extending Myco's React daemon UI: the v7 component-composition system (AccentSurface/Panel primitives, page-wide selection state, master-detail and slideout layouts), the Grove-owned appearance system (6 themes, light/dark/system mode, three-role fonts, density), project-scoped request context, auth-gated attachments, and the Team Host degraded-presentation family for attached (hosted) projects. Use when building or troubleshooting UI components, extending the theme/appearance system, wiring project-scoped data, or presenting attached-project degradation, even if the user doesn't explicitly ask for UI development guidance.
-managed_by: myco
+name: ui-development-and-visual-identity
+description: >-
+  This skill should be used when the user asks to "add a page to the dashboard", "fix this
+  component", "add a theme", "wire this to project data", or when work touches
+  `packages/myco/ui/src/`. Covers the v7 component-composition system (AccentSurface/Panel
+  primitives, page-wide selection state, master-detail and slideout layouts), the Grove-owned
+  appearance system (themes, light/dark/system mode, three-role fonts, density),
+  project-scoped request context, auth-gated attachments, and the Team Host degraded
+  presentation family for attached projects.
 user-invocable: true
 allowed-tools: Read, Edit, Write, Bash, Grep, Glob
 ---

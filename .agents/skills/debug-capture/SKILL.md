@@ -1,8 +1,12 @@
 ---
-name: myco:debug-capture
-description: >
-  Use this skill when a Myco session, prompt, tool use, or attachment appears to have gone missing — the agent says "I sent that" but it isn't in the dashboard, a session shows zero batches, MCP tool calls hang or silently no-op, hooks aren't firing in a worktree, the buffer file isn't growing, FK constraint errors appear in the daemon log, or the symptom is "capture went silent." Also use when investigating any reported capture regression in the Myco repo. Walks the capture lifecycle top-down — agent → hook → daemon HTTP → buffer → registry → SQLite → transcript miner — and tells you which layer to look at, in what order, with the exact command to run. Replaces the "investigate capture loss from scratch" antipattern that produced repeated one-off patches.
-managed_by: myco
+name: debug-capture
+description: >-
+  This skill should be used when the user reports that capture went silent: "that session
+  isn’t in the dashboard", "I sent that but it didn’t save", "the session shows zero
+  batches", "MCP tool calls hang", "hooks aren’t firing in this worktree", "the buffer file
+  isn’t growing", or FK constraint errors in the daemon log. Walks the capture lifecycle
+  top-down — agent → hook → daemon HTTP → buffer → registry → SQLite → transcript miner —
+  naming which layer to inspect, in what order, with the command to run at each step.
 user-invocable: true
 allowed-tools: Read, Bash, Grep, Glob
 ---
@@ -24,7 +28,7 @@ Skim once before first use; refer back as needed:
 
 ## Inputs
 
-You need:
+Required:
 
 - A **session_id** that's suspected to be under-captured.
 - The **vault dir** the agent is using. Typically `<repo-root>/.myco`. In a worktree it walks up to the main repo's `.myco`.
@@ -88,13 +92,13 @@ If the daemon log shows the hook hit but no buffer file appeared, see Step 3.
 # Every hook event should leave at least one hooks.* log entry.
 grep '"session_id":"<sid>"' ~/.myco/service*/logs/daemon.log | grep -E 'hooks\.|capture\.' | tail -20
 
-# If you see "Event suppressed as duplicate within dedup window" — that's
+# If the log shows "Event suppressed as duplicate within dedup window" — that's
 # the dedup guard. Two identical events arrived within the dedup window
 # (10s). Real bug, or a legitimate retry? Check the buffer file.
 
-# If you see "Failed to open batch" with an FK error — the session row
+# If the log shows "Failed to open batch" with an FK error — the session row
 # wasn't created before the batch insert tried to FK to it. This is the
-# #284 shape. The fix landed but if you see it again, the regression is
+# #284 shape. The fix landed but if it recurs, the regression is
 # in event-dispatch.ts or session-lifecycle.ts.
 ```
 
@@ -112,7 +116,7 @@ GROVE_DB=~/.myco/groves/<grove-id>/myco.db
 # Session row exists?
 sqlite3 "$GROVE_DB" "SELECT id, project_id, agent, status, started_at, ended_at FROM sessions WHERE id = '<sid>'"
 
-# Row missing AND you expected an "empty" session? Check for a phantom-reap
+# Row missing AND an "empty" session was expected an "empty" session? Check for a phantom-reap
 # tombstone first — injection-only phantom sessions (SessionStart fired, agent
 # exited before any prompt, no transcript on disk; the only activity is
 # myco:inject_*) are DELETED BY DESIGN at unregister and by the maintenance
@@ -129,7 +133,7 @@ sqlite3 "$GROVE_DB" "SELECT id, prompt_batch_id, tool_name, file_path FROM activ
 
 If the session row exists but batches don't (or vice versa) — that's a FK or transaction-boundary bug. Cross-reference with the daemon log for the event window.
 
-If the rows exist but you can't see them via a scoped query (e.g., from the UI for project A) — that's the multi-tenancy shape. The row's `project_id` must match the request context's project scope.
+If the rows exist but a scoped query returns nothing (e.g., from the UI for project A) — that's the multi-tenancy shape. The row's `project_id` must match the request context's project scope.
 
 ### Step 4b — Is the prompt captured but hidden? (classification)
 
@@ -144,7 +148,7 @@ sqlite3 "$GROVE_DB" "SELECT id, origin, thread_id, substr(user_prompt,1,60) FROM
 The capture rules act in three lanes; know which one handled the prompt:
 
 - **`drop`** — the event is removed entirely. Reserved for *proven-valueless* content only: duplicate slash-command dispatch envelopes (`<command-message>` / `<command-name>` / `<local-command-stdout>`), ephemeral phantoms with no transcript, non-interactive `exec` transcripts. If a real prompt was dropped, a `drop` rule matched too broadly.
-- **`classify` + `set_origin`** — preserve-and-hide: the prompt is stored but tagged `system` or `agent_dispatch`. This is the origin you see in Step 4b.
+- **`classify` + `set_origin`** — preserve-and-hide: the prompt is stored but tagged `system` or `agent_dispatch`. This is the origin surfaced in Step 4b.
 - **`rewrite_prompt`** (`strip_envelope` / `extract_after`) — unwrap a human wrapper so the stored prompt holds only the user's text (e.g. Codex's `## My request for Codex:` preamble).
 
 To find which rule fired, grep the daemon log for the rule's `reason` audit string:
@@ -221,13 +225,13 @@ If the agent says a Myco tool "didn't respond" and `grep mcp.call` returns nothi
 
 ## Anti-patterns
 
-- **Don't restart the daemon as a diagnostic step.** Restarting masks the symptom and destroys the evidence that would point at the root cause. If you must restart, capture `daemon.log` and the buffer file first.
+- **Don't restart the daemon as a diagnostic step.** Restarting masks the symptom and destroys the evidence that would point at the root cause. If a restart is unavoidable, capture `daemon.log` and the buffer file first.
 - **Don't assume the registry is the source of truth.** It's a cache. If the daemon log shows a session is "registered" but the DB says nothing, the DB wins.
 - **Don't jump to step 4 without doing steps 1–3.** Most capture-loss reports turn out to be step 1 (hook misconfigured) or step 2 (daemon-side routing). The DB queries in step 4 are useless if the data never made it that far.
 
-## When you're done
+## After the fix
 
-If you fixed a regression while debugging, the right follow-up is:
+After fixing a regression while debugging, the right follow-up is:
 
 1. Add the test that would have caught it (probably in `tests/integration/`). Reuse the existing audit templates where possible.
 2. If the failure was at a layer this skill didn't cover well, update the skill — it's meant to evolve.
@@ -238,4 +242,3 @@ If you fixed a regression while debugging, the right follow-up is:
 - `references/symbiont-capture-contract.md` — per-agent capture differences
 - `packages/myco/src/hooks/capture-rules.ts` — the rule evaluator, structural predicates, and `resolveSubagentThread`
 - `packages/myco/src/daemon/session-lifecycle.ts` — the `ensureSession*` contract (in code)
-- `.agents/skills/debug-daemon-errors/SKILL.md` — broader daemon debugging

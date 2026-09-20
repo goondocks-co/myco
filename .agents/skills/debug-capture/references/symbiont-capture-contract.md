@@ -2,7 +2,7 @@
 
 What each supported agent emits and how Myco captures it. Companion to `capture-lifecycle.md` in this directory.
 
-Every new symbiont (or new symbiont version) reproduces the same shape of integration bug if this matrix isn't kept current. When you debug a capture issue, find the symbiont's row before forming a hypothesis — most "weird capture behavior" is really "this agent does X differently and Myco's adapter doesn't handle that case."
+Every new symbiont (or new symbiont version) reproduces the same shape of integration bug if this matrix isn't kept current. When debugging a capture issue, find the symbiont's row before forming a hypothesis — most "weird capture behavior" is really "this agent does X differently and Myco's adapter doesn't handle that case."
 
 The values below are derived from the symbiont manifests in `packages/myco/src/symbionts/manifests/*.yaml` and the installed hook templates in `packages/myco/src/symbionts/templates/*/`. If those drift from this table, the manifest wins — please update the doc.
 
@@ -56,4 +56,4 @@ The source of truth for everything in the matrix lives under `packages/myco/src/
 - `templates/<agent>/hooks.json` (or `plugin.ts` for plugin-file format) — the actual hook command list installed into the user's project.
 - `manifest-schema.ts` — the Zod schema for the manifest.
 
-If you're adding a new symbiont, see the `.agents/skills/add-symbiont/SKILL.md` skill. If you're debugging an existing one, walk the capture-lifecycle stack top-down and find the layer where the symbiont's behavior diverges from this matrix.
+When adding a new symbiont, start from the manifests in `packages/myco/src/symbionts/`. When debugging an existing one, walk the capture-lifecycle stack top-down and find the layer where the symbiont's behavior diverges from this matrix.

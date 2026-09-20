@@ -1,8 +1,11 @@
 ---
-name: myco:cloudflare-worker-infrastructure-lifecycle
-description: |
-  Deploy, maintain, and operate Myco's multi-worker Cloudflare infrastructure including team sync D1/Vectorize deployment, cloud MCP server operations, collective worker configuration, Wrangler upgrade hardening, Workers KV auth token lifecycle, and D1 schema migration ordering. Use this for any Cloudflare Worker deployment, D1 database operations, MCP server management, multi-worker coordination, Wrangler CLI troubleshooting, or cross-worker infrastructure tasks, even if the user doesn't explicitly mention the full infrastructure scope.
-managed_by: myco
+name: cloudflare-worker-infrastructure-lifecycle
+description: >-
+  This skill should be used when the user asks to "deploy the worker", "run a D1 migration",
+  "check the worker logs", "rotate the worker auth token", "upgrade Wrangler", or when work
+  touches `wrangler.toml`, a D1 database, a Vectorize index, or Workers KV. Covers deploy
+  ordering for D1 schema changes, Wrangler CLI troubleshooting, KV auth-token lifecycle, and
+  coordinating changes across Myco’s multiple Cloudflare Workers.
 user-invocable: true
 allowed-tools: Read, Edit, Write, Bash, Grep, Glob
 ---
@@ -45,9 +48,9 @@ Team sync is **only supported in Grove environments**. Legacy standalone install
 
 ### Team Sync Tenancy Enforcement
 
-Schema table `team_sync_membership` (project_id PK, team_id) is the reconciled per-project projection of team membership, maintained by `packages/myco/src/db/queries/team-sync-state.ts`. `packages/myco/src/grove/project-tenancy.ts` is the single authority for tenancy — `isProjectSyncable(projectId)` gates whether a project's spores/outbox rows are eligible for team sync, and other modules (`packages/myco/src/daemon/api/team-selection.ts`, `packages/myco/src/daemon/api/groves.ts`) must route through this module rather than re-deriving tenancy ad-hoc (enforced by `tests/grove/tenancy-no-ad-hoc-derivation.test.ts`).
+Schema table `team_sync_membership` (project_id PK, team_id) is the reconciled per-project projection of team membership, maintained by `packages/myco/src/db/queries/team-sync-state.ts`. `packages/myco/src/grove/project-tenancy.ts` is the single authority for tenancy — `isProjectSyncable(projectId)` gates whether a project's spores/outbox rows are eligible for team sync, and every caller must route through this module rather than re-deriving tenancy ad-hoc (enforced by `tests/grove/tenancy-no-ad-hoc-derivation.test.ts`).
 
-**Outbox flood self-heal**: `purgeNonMemberOutbox(memberProjectIds, validTeamIds)` in `packages/myco/src/db/queries/team-outbox.ts` removes outbox rows for projects that are no longer team members, called from `packages/myco/src/daemon/team-sync-init.ts` on team registry changes. This closes a failure mode where projects removed from a team kept generating outbox rows indefinitely — the purge is a self-heal invoked automatically, not a manual operator step.
+**Outbox flood self-heal**: `purgeNonMemberOutbox(memberProjectIds, validTeamIds)` in `packages/myco/src/db/queries/team-outbox.ts` removes outbox rows for projects that are no longer team members, closing a failure mode where projects removed from a team kept generating outbox rows indefinitely. **The daemon-side reconcile that invoked this was removed in 2.0** — the helper remains exported with no caller. Verify a call site exists before relying on the purge as an automatic self-heal.
 
 ### Initial Deployment
 
@@ -484,7 +487,7 @@ The team sync worker is a standalone npm package in `packages/myco-team/` with g
 
 ```
 packages/myco-team/
-├── src/cli.ts          # myco-team CLI (grove-aware)
+├── packages/myco/src/cli.ts          # myco-team CLI (grove-aware)
 ├── worker/
 │   ├── src/            # Worker source code (grove routing)
 │   ├── wrangler.toml   # Cloudflare configuration (grove envs)
@@ -492,14 +495,14 @@ packages/myco-team/
 └── package.json        # CLI package
 ```
 
-### New `myco-server` Worker Package (merged-unreleased)
+### The `myco-server` Worker Package
 
-A second, separate Worker package exists at `packages/myco-server/worker/` (see `packages/myco-server/worker/wrangler.toml`, worker name `myco-server`) — a server-foundation/ingest worker, distinct from the `packages/myco-team/` team-sync worker. It binds its own D1 database (`MYCO_DB` → `myco-server`) and two rate limiters (`SOURCE_LIMIT`, `TOKEN_LIMIT`, 600/60s and 300/60s respectively). As of this writing it is merged into the integration branch but not yet on a production ref — treat its deploy/ops steps as unverified until it ships; do not assume the D1/Vectorize or Wrangler-upgrade procedures above transfer 1:1 without checking this package's own `packages/myco-server/worker/wrangler.toml` and migrations.
+A second, separate Worker package exists at `packages/myco-server/` (see `packages/myco-server/wrangler.toml`, worker name `myco-server`) — a server-foundation/ingest worker, distinct from the `packages/myco-team/` team-sync worker. It binds its own D1 database (`MYCO_DB` → `myco-server`) and two rate limiters (`SOURCE_LIMIT`, `TOKEN_LIMIT`, 600/60s and 300/60s respectively). It is the 2.0 Deployment target and ships on its own release line. Do not assume the D1/Vectorize or Wrangler-upgrade procedures above transfer 1:1 — check this package's own `packages/myco-server/wrangler.toml` and `packages/myco-server/migrations/` first.
 
 ### `myco-team-dev` vs `myco-team` Binary Naming
 
-The `myco-team-dev` symlink (installed to `~/.local/bin/myco-team-dev` by `make dev-link-team`) points to the local build at `packages/myco-team/dist/main.js` and is the correct binary for local development IaC and deploy commands. The globally-installed `myco-team` package binary is separate and targets the production release path. Using the wrong binary for IaC commands results in silent version mismatches — e.g., running schema migrations or Wrangler deploys against the wrong build. Rule: use `myco-team-dev` for all local development operations against a dev-linked setup; use `myco-team` only when operating against a production deployment from a globally-installed release.
+The `myco-team-dev` symlink (installed to `~/.local/bin/myco-team-dev` by `make dev-link-team`) points to the local build at `packages/myco-team/worker/src/index.ts` and is the correct binary for local development IaC and deploy commands. The globally-installed `myco-team` package binary is separate and targets the production release path. Using the wrong binary for IaC commands results in silent version mismatches — e.g., running schema migrations or Wrangler deploys against the wrong build. Rule: use `myco-team-dev` for all local development operations against a dev-linked setup; use `myco-team` only when operating against a production deployment from a globally-installed release.
 
 ### Worker-Protocol Reconcile Gate
 
-Team-sync reconcile previously lacked a drain-path worker-protocol gate: every `SYNC_PROTOCOL_VERSION` bump (`packages/myco/src/constants.ts`) spammed reconcile errors until the deployed worker was updated, because reconcile attempted to sync tables the older worker didn't understand yet, with no signal surfaced to the UI. The fix is a shared helper, `tablesGatedByWorkerProtocol(tables, workerProtocol)` in `packages/myco/src/db/schema-ddl.ts`, used by both `packages/myco/src/daemon/team-sync-init.ts` (skips gated tables during reconcile) and `packages/myco/src/daemon/api/team-connect.ts` (exposes `reconcile_gated_tables` to the UI) — enforcement and UI disclosure share one source of truth instead of drifting independently. When bumping `SYNC_PROTOCOL_VERSION`, verify new tables/columns are covered by this gate before deploying the worker.
+Team-sync reconcile previously lacked a drain-path worker-protocol gate: every `SYNC_PROTOCOL_VERSION` bump (`packages/myco/src/constants.ts`) spammed reconcile errors until the deployed worker was updated, because reconcile attempted to sync tables the older worker didn't understand yet, with no signal surfaced to the UI. The fix was a shared helper, `tablesGatedByWorkerProtocol(tables, workerProtocol)` in `packages/myco/src/db/schema-ddl.ts`, so that gate enforcement and UI disclosure shared one source of truth. **Both daemon call sites were removed in 2.0** — the helper is exported with no caller. When bumping `SYNC_PROTOCOL_VERSION`, re-establish a gate on whatever path performs reconcile before deploying the worker; do not assume the old gate still runs.

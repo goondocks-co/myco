@@ -1,16 +1,13 @@
 ---
-name: myco:feature-branch-worktree-squash-merge-delivery
+name: feature-branch-worktree-squash-merge-delivery
 description: >-
-  Use this skill when delivering a non-trivial Myco feature that spans
-  multiple files and needs clean PR history. It applies whenever you need
-  git worktrees for isolated implementation, the `code-review high` quality
-  pass (multi-agent fan-out; `/simplify` is deprecated), `make build` as
-  the full quality gate, or a single clean squash-merge commit for the
-  final PR.
-managed_by: myco
-version: 1
+  This skill should be used when the user asks to "ship this feature", "open a PR for this",
+  "start a worktree for this", or "get this merged" for a change spanning multiple files.
+  Covers isolating work in a git worktree branched from local main, the `code-review high`
+  quality pass, `make build` as the full gate, and landing a single squash-merge commit on
+  main with the branch and worktree cleaned up afterward.
 user-invocable: true
-allowed-tools: [Bash]
+allowed-tools: Bash
 ---
 
 # Feature Branch Worktree Squash-Merge Delivery
@@ -22,21 +19,15 @@ Use this skill when delivering a non-trivial Myco feature that spans multiple fi
 - Delivering a new feature that spans multiple files
 - Implementing any non-trivial change that requires a clean PR commit
 - Working on a named feature branch (`feature/branch-name` convention)
-- Whenever you need to isolate implementation from the main branch during development
+- Whenever implementation must be isolated from the main branch during development
 
 ## Procedure
 
-### Step 1: Design on `main`
+### Step 1: Design before branching
 
-Write the design spec in `docs/superpowers/specs/` while on the main branch. Commit only the spec, not implementation.
-
-```bash
-docs/superpowers/specs/2026-04-13-my-feature-design.md
-git add docs/superpowers/specs/
-git commit -m "docs: add design spec for my-feature"
-```
-
-Note: `docs/superpowers/specs/` is gitignored for external contributors but tracked locally.
+Record the design on a Myco plan (`myco_plans` op `save`) and the tracking issue before
+any code is written. The plan carries state across sessions; the issue stays tactical.
+Do not commit design prose to the repo — plan state lives in the plan, not in `docs/`.
 
 ### Step 2: Create a git worktree
 
@@ -53,16 +44,16 @@ cd ../myco-branch-name
 make dev-link-worktree
 ```
 
-This writes a `.myco/runtime.command` file that pins this worktree to the freshly-built in-repo binary (not via the shared `~/.local/bin/myco-dev` wrapper script). All hooks, MCP calls, and CLI invocations in this worktree then dispatch to the worktree build. The file is gitignored, so it's never committed. When you're done (Step 6), run `make dev-unlink-worktree` to remove the pin.
+This writes a `.myco/runtime.command` file that pins this worktree to the freshly-built in-repo binary (not via the shared `~/.local/bin/myco-dev` wrapper script). All hooks, MCP calls, and CLI invocations in this worktree then dispatch to the worktree build. The file is gitignored, so it's never committed. After the fix (Step 6), run `make dev-unlink-worktree` to remove the pin.
 
-Skip this step ONLY when you deliberately want the worktree to fall back to the global binary.
+Skip this step ONLY when the worktree should deliberately fall back to the global binary.
 
 **Isolation caveat — schema migrations**: Do NOT use `make dev-link-worktree` when the feature branch carries a schema migration that the shared `~/.myco` vault hasn't seen yet. Running the worktree binary against the shared vault will migrate it in place, breaking the main branch. For isolated programmatic testing in schema-migration scenarios, use a temp git repo with a separate `MYCO_HOME`:
 
 ```bash
 export MYCO_HOME=$(mktemp -d)   # scratch vault — migrated fresh, main vault untouched
 ./dist/myco-daemon &
-# run your tests here
+# run the tests here
 unset MYCO_HOME
 ```
 
@@ -150,7 +141,7 @@ Check React components in the UI package after any feature that adds new data to
 
 #### 4e. Verify Zero Regressions
 
-Run TypeScript **before** tests — TypeScript catches renamed/refactored signature mismatches before you waste time debugging misleading test failures:
+Run TypeScript **before** tests — TypeScript catches renamed/refactored signature mismatches before time is wasted debugging misleading test failures:
 
 ```bash
 npx tsc --noEmit
@@ -243,7 +234,7 @@ The single squashed commit becomes the PR commit.
 - **Sibling directory, not subdirectory** — always use `../myco-branch-name`; nested worktrees cause CWD detection misattribution
 - **`code-review high` before squash, not after** — review changes belong in the final squashed commit, not a follow-up cleanup PR (`/simplify` is deprecated)
 - **Delete the worktree before pushing** — `git worktree remove` must precede `git push`; lingering worktrees confuse subsequent Claude Code sessions
-- **Design spec on `main` first** — commit the spec in `docs/superpowers/specs/` before switching to the worktree
+- **Design recorded on a plan first** — save the plan and open the issue before switching to the worktree
 - **Run `npm rebuild` after branch switches involving native modules** — if the dependency tree includes native Node addons (e.g., `better-sqlite3`), switching between branches requires `npm rebuild` before running tests or the daemon; failures manifest as cryptic runtime errors, not build errors
 - **Stage untracked files before `code-review high`** — Claude Code's review tools only see git-tracked files; new files that haven't been `git add`-ed are invisible; run `git add -N .` (intent-to-add) before any review pass
 - **Check existing utility modules before extracting helpers** — re-extracting an existing helper creates a naming conflict during the simplify pass

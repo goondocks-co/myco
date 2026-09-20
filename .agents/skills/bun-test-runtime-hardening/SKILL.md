@@ -1,20 +1,12 @@
 ---
-name: myco:bun-test-runtime-hardening
-description: |
-  Apply this skill when hardening Bun test environments in Myco's test suite,
-  diagnosing CI-only test failures, investigating hung test processes after all
-  assertions pass, or adding new test files that import external SDK modules,
-  use mock.module(), or declare module-level timers — even if the user doesn't
-  explicitly ask about Bun runtime behavior. Covers three procedures: (1) isolating
-  process-scoped mock.module() registrations that leak across test files and cause
-  non-deterministic CI failures; (2) scoping module-level side effects (timers,
-  stubs) to individual tests with explicit afterEach cleanup to prevent suite-exit
-  hangs; and (3) lazily initializing external SDK clients (e.g., Anthropic) that
-  eagerly construct at module load time under Bun's browser-like test environment.
-  The shared root cause: Bun runs tests in a process-shared environment where
-  module-scope state — mock registrations, timers, SDK clients — persists beyond
-  the originating file.
-managed_by: myco
+name: bun-test-runtime-hardening
+description: >-
+  This skill should be used when the user reports "tests pass locally but fail in CI", "the
+  test process hangs after all assertions pass", "flaky test", or when adding a test file
+  that calls `mock.module()`, declares a module-level timer, or imports an external SDK
+  client. Covers isolating process-scoped `mock.module()` registrations that leak across
+  files, scoping module-level timers and stubs with explicit `afterEach` cleanup, and lazily
+  constructing SDK clients that eagerly initialize at module load under Bun.
 user-invocable: true
 allowed-tools: Read, Edit, Write, Bash, Grep, Glob
 ---
@@ -30,7 +22,7 @@ non-deterministic file execution order — or after extended test runs.
 
 ## Prerequisites
 
-- You are working within Myco's monorepo test suite, executed via `npm test`
+- The work is inside Myco's monorepo test suite, executed via `npm test`
   or direct `bun test` invocations
 - Understand that `npm test` delegates to `node scripts/run-bun-tests.mjs`,
   which orchestrates multiple Bun process invocations. Files in the same
@@ -236,7 +228,7 @@ first assertion.
 2. **Apply the lazy initialization pattern.** Two variants depending on module
    structure:
 
-   *Module-level (standalone functions) — illustrative names, adapt to your module:*
+   *Module-level (standalone functions) — illustrative names, adapt to the module under test:*
    ```ts
    // BEFORE: eager — fails at module load in Bun test env
    const client = new Anthropic({

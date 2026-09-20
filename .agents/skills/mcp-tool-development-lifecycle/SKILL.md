@@ -1,7 +1,12 @@
 ---
-name: myco:mcp-tool-development-lifecycle
-description: "Comprehensive lifecycle for authoring, registering, documenting, and maintaining MCP tools in packages/myco/src/tools/ — covering schema definition in TOOL_DEFINITIONS arrays, handler implementation with DaemonClient patterns, shared tool-runtime registration, documentation bundling, anti-drift testing patterns, and per-symbiont transport (mcp vs cli) decisions. Essential for maintaining the schema ↔ handler ↔ documentation triad that agents depend on for correct tool invocations, even when the user doesn't explicitly ask for MCP tool development."
-managed_by: myco
+name: mcp-tool-development-lifecycle
+description: >-
+  This skill should be used when the user asks to "add an MCP tool", "add a parameter to a
+  tool", "why is the agent calling this tool wrong", or when work touches a
+  `TOOL_DEFINITIONS` array, a tool handler under `packages/myco/src/tools/`, or the bundled
+  tool documentation. Covers schema definition, handler implementation with `DaemonClient`,
+  shared tool-runtime registration, documentation bundling, the anti-drift parity tests, and
+  choosing the per-symbiont transport (mcp vs cli).
 user-invocable: true
 allowed-tools: Read, Edit, Write, Bash, Grep, Glob
 ---
@@ -72,7 +77,7 @@ Define the tool interface in `packages/myco/src/tools/definitions.ts` (shared to
 
 ## Procedure B: Handler Implementation
 
-Create the handler in `packages/myco/src/tools/my-new-tool.ts`:
+Create the handler at `packages/myco/src/tools/<tool-name>.ts` (see the existing handlers in that directory for the shape):
 
 1. **Import required types and client**:
    ```typescript
@@ -112,7 +117,7 @@ Each tool carries inline SKILL.md documentation bundled at compile time across a
 
 Implement systematic checks to catch schema-handler-documentation drift across the shared tool-runtime:
 
-1. **Create test file** (`tests/tools/definitions.test.ts`) with schema-handler parameter alignment tests. Test files live under `tests/` — the runner discovers nothing outside it, and `tests/meta/test-suite-integrity.test.ts` fails CI on a test authored anywhere else.
+1. **Create test file** (`tests/myco-server/tool-parity.test.ts`) with schema-handler parameter alignment tests. Test files live under `tests/` — the runner discovers nothing outside it, and `tests/meta/test-suite-integrity.test.ts` fails CI on a test authored anywhere else.
 
 2. **Schema-handler parameter alignment test** — verify all schema parameters are referenced in handler source.
 
@@ -171,7 +176,7 @@ What still varies per-symbiont is **transport**, not placement:
 
 ## Procedure H: Skill Lifecycle Belongs Inside the Harness, Not on MCP
 
-Skill candidates, skill records, and skill file writes are managed by the **Myco agent** — not exposed as MCP tools for Symbionts. If you need a new affordance for the skill lifecycle, add it under `packages/myco/src/agent/tools/`, not `packages/myco/src/tools/`.
+Skill candidates, skill records, and skill file writes are managed by the **Myco agent** — not exposed as MCP tools for Symbionts. For a new affordance for the skill lifecycle, add it under `packages/myco/src/agent/tools/`, not `packages/myco/src/tools/`.
 
 ## Procedure I: Shared Tool-Runtime Integration
 
@@ -221,4 +226,4 @@ Handle project context changes with Grove migration architecture:
 
 **Grove context injection failures**: Tools accessing project context must handle Grove migration gracefully to avoid environment-specific bugs.
 
-**Copilot CLI deferred-tool model**: The copilot CLI uses a deferred/searchable-tool model — one-shot tool probes ("do you have myco tools?") return a false-negative `NO_MYCO_MCP` or `NONE` even when the stdio bridge is connected and tools are available. The fix is to explicitly trigger tool search using the tool search regex pattern rather than relying on a single passive probe. Never treat a one-shot copilot tool absence as evidence that MCP is misconfigured; always verify with an explicit tool search invocation.
+**Copilot CLI deferred-tool model**: The copilot CLI uses a deferred/searchable-tool model — one-shot tool probes ("are myco tools available?") return a false-negative `NO_MYCO_MCP` or `NONE` even when the stdio bridge is connected and tools are available. The fix is to explicitly trigger tool search using the tool search regex pattern rather than relying on a single passive probe. Never treat a one-shot copilot tool absence as evidence that MCP is misconfigured; always verify with an explicit tool search invocation.

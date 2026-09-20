@@ -1,7 +1,12 @@
 ---
-name: myco:write-myco-user-documentation
-description: "Use this skill when writing, reviewing, or editing user-facing Myco documentation — README sections, feature docs, onboarding guides, CLI reference pages, docs site SEO/crawler files, or any content intended for people who use Myco (not people who build it). Activate this skill even if the user doesn't explicitly ask for a documentation review — if you're finishing a feature implementation and documentation is the next step, invoke this skill before writing or committing any docs. This skill enforces the Myco doc-voice contract: user guides rather than user manuals, capability-first language, zero internal mechanics leakage, crawler-friendly public docs, and user-vocabulary only."
-managed_by: myco
+name: write-myco-user-documentation
+description: >-
+  This skill should be used when the user asks to "write the docs for this", "update the
+  README", "document this feature", or when documentation is the remaining step after
+  finishing an implementation. Applies to README sections, feature docs, onboarding guides,
+  CLI reference pages, and docs-site crawler files — anything written for people who use Myco
+  rather than people who build it. Enforces the doc-voice contract: guides not manuals,
+  capability-first language, no internal mechanics, user vocabulary only.
 user-invocable: true
 allowed-tools: Read, Edit, Write, Bash, Grep, Glob
 ---
@@ -13,7 +18,7 @@ Myco documentation has a strict voice contract: every sentence answers "what can
 ## Prerequisites
 
 - Implementation is complete (or nearly complete). Documentation written mid-implementation often describes what was built rather than what the user needs to know.
-- You know the intended audience: Myco users (people running `myco` commands and working with the vault and agent pipeline), not Myco contributors (people modifying the source).
+- The intended audience is known: Myco users (people running `myco` commands and working with the vault and agent pipeline), not Myco contributors (people modifying the source).
 
 ## Steps
 
@@ -80,7 +85,7 @@ Describe the rule once with one canonical example. Enumerations go stale and blo
 
 User docs describe the *current state* of the tool. They do not describe what changed in this release, why a design decision was made, or what the previous behavior was.
 
-If you catch yourself writing "now supports," "we've added," or "previously," rewrite in present tense describing the capability as it exists today.
+When a draft contains "now supports," "we've added," or "previously," rewrite in present tense describing the capability as it exists today.
 
 > **Gotcha — commit message creep**: It's easy to write docs that read like a commit message, especially immediately after implementing a feature. Step back and describe the tool as if the user is encountering it for the first time.
 
@@ -198,7 +203,7 @@ After drafting, read each paragraph through this gate:
 
 Documentation is a merge gate, not a mid-implementation artifact. Write docs after implementation is complete and review them with fresh eyes — ideally after stepping away from the implementation context.
 
-> **Gotcha — implementation drift**: Documentation written during implementation tends to describe what was built rather than what the user needs to know. Internal details feel relevant when the code is fresh in your mind — they aren't to the user. Always do a final doc-voice pass after the code is done.
+> **Gotcha — implementation drift**: Documentation written during implementation tends to describe what was built rather than what the user needs to know. Internal details feel relevant when the code is fresh in mind — they aren't to the user. Always do a final doc-voice pass after the code is done.
 
 ## Before / After Example
 
@@ -217,6 +222,6 @@ this once per machine."
 
 ## What This Skill Does Not Cover
 
-- **Writing SKILL.md files** — use the `myco:write-myco-skill` skill instead
+- **Writing SKILL.md files** — follow the skill-authoring conventions, not this doc-voice contract
 - **Design specs and internal architecture docs** — those live in `docs/superpowers/specs/` and follow different norms
 - **CHANGELOG and release notes** — those are intentionally change-voice, not capability-voice

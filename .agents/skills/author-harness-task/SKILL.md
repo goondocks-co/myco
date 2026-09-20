@@ -1,9 +1,15 @@
 ---
-name: myco:author-harness-task
-description: "Use this skill when designing, writing, configuring, or debugging a new phased executor task for the Myco agent harness — even if the user doesn't explicitly ask for a \"task authoring\" guide. Applies when adding a new intelligence task, modifying phase structure, tuning turn budgets or model routing, adjusting scheduling triggers or session-gating, designing a tool surface, or debugging silent phase failures or budget exhaustion. Covers: YAML task anatomy and registration; phase decomposition and the judgment/recipe gradient; model selection via the advisor pattern; turn budget calibration including local-model multipliers; scheduling triggers and session-gating; tool surface design and readOnly enforcement; Grove scope iteration patterns; per-project lifecycle management; session lifecycle orchestration and agent runtime coordination; and observability via the agent_runs audit table."
-managed_by: myco
+name: author-harness-task
+description: >-
+  This skill should be used when the user asks to "add a harness task", "write a new agent
+  task", "add a phase", "tune the turn budget", "why did the phase fail silently", "which
+  model should this task use", or when work touches a task YAML under
+  `packages/myco/src/agent/definitions/tasks/`. Covers task YAML anatomy and registration,
+  phase decomposition, model routing, turn-budget calibration, scheduling triggers and
+  session-gating, tool-surface design with readOnly enforcement, and reading the `agent_runs`
+  audit table when a run ends early.
 user-invocable: true
-allowed-tools: [Read, Edit, Write, Bash, Grep, Glob]
+allowed-tools: Read, Edit, Write, Bash, Grep, Glob
 ---
 
 # Myco Agent Harness Task Authoring
@@ -13,8 +19,8 @@ The Myco agent harness is a phased executor running inside the daemon. Each task
 ## Prerequisites
 
 - Daemon is running and `agent.enabled: true` in `.myco/myco.yaml`.
-- You have read at least one existing task YAML (`packages/myco/src/agent/definitions/tasks/vault-evolve.yaml`) to understand the config shape.
-- You can describe the new task's purpose in one sentence and identify which vault state it reads and writes.
+- At least one existing task YAML has been read — at least one existing task YAML (`packages/myco/src/agent/definitions/tasks/vault-evolve.yaml`) to understand the config shape.
+- The new task’s purpose can be described in one sentence — the new task's purpose in one sentence and identify which vault state it reads and writes.
 - Familiarity with session lifecycle states (CAPTURING, PROCESSING, COMPLETE) and agent runtime coordination.
 
 ## Procedure 1: Design the Phase Sequence
@@ -36,48 +42,11 @@ The canonical pattern is **read-only discovery → write**:
 1. **Phase 1 (`discover`)**: reads vault, assembles context, writes nothing. Emits a structured summary.
 2. **Phase 2 (`write`)**: receives that summary as injected context; writes to vault based on it.
 
-This keeps Phase 2 idempotent — if it fails you can replay it with the same context without re-running discovery.
+This keeps Phase 2 idempotent — a failure can be replayed with the same context without re-running discovery.
 
 ### Multi-tier workflows
 
 Complex tasks may need tiered verification phases, such as the skill lifecycle pattern: `inventory → verify → assess → act`. The verify phase specifically validates skills against current codebase state and sets watermarks for rotation.
-
-## Procedure 1.1: Map-Phase Architecture
-
-Use `mode: map` for bulk operations with identical per-item logic. The harness owns batch fetch and iteration; the model invokes once per item with constrained tools.
-
-### When to use map mode
-
-**Ideal for:** Bulk operations with identical per-item processing, cost-sensitive batch work.
-**Not suitable for:** Cross-item reasoning, operations requiring dynamic tool selection, phases needing full batch context.
-
-### Map-phase configuration
-
-```ts
-{
-  name: 'process_items',
-  mode: 'map',
-  systemPrompt: ITEM_PROCESSING_PROMPT,
-  turnBudget: 3,
-  tools: ITEM_TOOLS,
-  fetchConfig: {
-    tool: 'canopy_get_entries',
-    params: { limit: 20, types: ['file'] },
-    itemField: 'entries',
-    emptySkip: true,
-  },
-}
-```
-
-### Advanced debugging and optimization
-
-**Contract violations**: Map-phase harness strips sink_schema and injects argMap. Phase handlers checking `args.sink_schema` will fail.
-
-**Accelerator configuration** and **Cost optimization** patterns implemented for long-running operations.
-
-**Runtime optimization**: Agent instance pooling, tool surface templates, resource monitoring.
-
-**Fault tolerance**: Retry mechanisms with exponential backoff and error classification.
 
 ## Procedure 2: Write the Task Config
 
@@ -240,7 +209,7 @@ const CONSOLIDATE_TOOLS = {
 
 Every phase execution writes to `agent_runs`:
 
-| Column | What it tells you |
+| Column | What it indicates |
 |--------|-------------------|
 | `exit_reason` | `budget_exhausted` / `short_circuit` / `complete` / `error` |
 | `turn_count` | LLM turns used — for tool-heavy phases this counts API requests, not SDK turns; `actions_taken.phases[].turnsUsed` can legitimately show 21 for a 10-turn-cap phase |
@@ -270,105 +239,10 @@ When a phase's postCondition asserts a specific write happened, that write must 
 
 PostCondition kind names are centralized in `packages/myco/src/agent/phase-postcondition-kinds.ts` (`PHASE_POSTCONDITION_KINDS`), the single source of truth consumed by both the Zod enum in schemas.ts and the runtime dispatch table in `packages/myco/src/agent/phase-postconditions.ts`. Adding a new postCondition means appending the kind literal there AND adding its matching check function in `packages/myco/src/agent/phase-postconditions.ts` — TypeScript's `Record<PhasePostConditionKind, Fn>` enforces the pairing.
 
-## Procedure 8: Advanced Harness Integration
+## Additional Resources
 
-### Pi integration patterns
-
-- Design agent implementations for central harness registry
-- Use durable state contracts for reliable lifecycle management
-- Implement proper agent scoping and resource cleanup
-- Follow Pi conceptual framework for architecture consistency
-
-### Harness-ready architecture
-
-- Register in central harness for discoverability
-- Use registry-based agent resolution for dynamic assignment
-- Implement config caching patterns
-- Design for minimal resource consumption during idle periods
-
-## Procedure 9: Cost Models and Performance Optimization
-
-### Cost-aware strategies
-
-- Monitor token consumption patterns across iterations
-- Implement circuit breakers for expensive operations
-- Use consolidated provider metadata for model selection optimization
-- Design adaptive pricing strategies with cost efficiency feedback
-
-### Performance patterns
-
-- **Agent instance pooling**: Reuse instances across iterations when safe
-- **Tool surface optimization**: Strip unnecessary tools, implement lazy loading
-- **Batch sizing strategies**: Balance memory, cost, and latency constraints
-- **Resource monitoring**: Track memory/CPU usage, alert on exhaustion
-
-## Procedure 10: Fault Tolerance and State Management
-
-### Robust operation patterns
-
-- Implement checkpoint/resume for large operations
-- Design idempotent operations where possible
-- Use failure isolation to contain iteration failures
-- Preserve partial results for manual recovery
-
-### State management
-
-- Persist intermediate state at logical boundaries
-- Enable resumption from last successful checkpoint
-- Design state contracts that survive restarts
-- Implement state validation and migration patterns
-
-## Procedure 11: Session Lifecycle Orchestration for Tasks
-
-### Cortex Instructions Requirement
-
-The lead (top-level agent orchestrator) must establish Cortex instructions context before delegating work to sub-agents:
-
-1. **Instructions acquisition**: Lead agent calls `myco_cortex({op:"instructions"})` BEFORE delegating to sub-agents
-2. **Context propagation**: Pass acquired instructions through delegation chain via unified path
-3. **Consistency validation**: Verify all delegates operating under same instruction set
-4. **Sub-agent enforcement**: Sub-agents must fail if delegation proceeds without cortex-injection-context
-5. **Unified injection path**: All task phases receive cortex context injected uniformly — lead establishes context once, all child phases inherit it
-
-This prevents inconsistent or divergent behavior across the delegation hierarchy.
-
-### Session initialization and validation
-
-1. **Generate session ID**: Use deterministic UUID generation based on timestamp and project context
-2. **Validate project binding**: Ensure session is created within valid project scope
-3. **Initialize session record**: Create database entry with proper status (`active`)
-4. **Set initial metadata**: Project ID, machine ID, agent context, creation timestamp
-5. **Verify project root**: Session must be created within valid Myco project using `resolveVaultDir()`
-6. **Check vault permissions**: Ensure write access to `.myco/` directory
-7. **Validate agent identity**: Confirm agent has permission to create sessions in this project
-
-### Hook transport and capture coordination
-
-1. **Scan for installed agents**: Check agent-specific hook configurations in `.myco/`
-2. **Validate hook implementations**: Check that hook files exist and are executable
-3. **Cross-platform deployment**: Use `join(resolveMycoHome(), 'launcher.cjs')` for the cross-platform hook guard (`.agents/myco-run.cjs` was retired by the global-install migration)
-4. **Transport protocol setup**: Configure capture channels based on agent type
-5. **Scope validation**: Ensure captured content belongs to current project
-6. **Permission checks**: Verify agent has capture rights for target files/directories
-7. **Content filtering**: Apply exclusion rules for sensitive or irrelevant content
-8. **Size limits**: Enforce capture size boundaries to prevent resource exhaustion
-
-### Runtime boundary validation
-
-1. **Error boundary enforcement**: Prevent task errors from affecting other sessions
-2. **Resource protection**: Guard against resource exhaustion attacks
-3. **Data validation**: Ensure captured content meets quality standards
-4. **Permission enforcement**: Block unauthorized operations consistently
-5. **Failure classification**: Categorize failures as transient, configuration, system, or agent-level for proper recovery
-6. **Recovery procedures**: Implement session recovery, task restart, and data repair workflows
-
-### Multi-agent coordination within sessions
-
-1. **Concurrent execution management**: Manage multiple agents operating on same project
-2. **Task serialization**: Sequence dependent operations to avoid conflicts
-3. **Resource sharing**: Coordinate shared vault and database access
-4. **Result synchronization**: Merge results from parallel agent operations
-5. **Isolation setup**: Configure runtime boundaries between concurrent agents
+- **`references/advanced-harness-integration.md`** — Advanced Harness Integration, Cost Models, Fault Tolerance and Session Lifecycle
+- **`references/map-phase.md`** — Map-Phase Architecture
 
 ## Cross-Cutting Gotchas
 
