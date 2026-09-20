@@ -253,6 +253,45 @@ describe('what a report reads from the member MCP targets', () => {
     expect(seen.every((t) => t.present && t.carriesCredential && t.transport === null && t.readable)).toBe(true);
   });
 
+  it('reads a servers block that is not one as unread, not as a file declaring nothing', () => {
+    const { installer } = globalInstaller('claude-code');
+    for (const file of globalTargetPaths(installer)) {
+      fs.mkdirSync(path.dirname(file), { recursive: true });
+      fs.writeFileSync(file, JSON.stringify({ mcpServers: 'not a block' }), 'utf-8');
+    }
+
+    expect(installer.inspectMemberMcp().every((t) => !t.readable && !t.present)).toBe(true);
+  });
+
+  it('reads a myco entry that is not an object as unread', () => {
+    const { installer } = globalInstaller('claude-code');
+    for (const file of globalTargetPaths(installer)) {
+      fs.mkdirSync(path.dirname(file), { recursive: true });
+      fs.writeFileSync(file, JSON.stringify({ mcpServers: { myco: 'not an entry' } }), 'utf-8');
+    }
+
+    expect(installer.inspectMemberMcp().every((t) => !t.readable && !t.present)).toBe(true);
+  });
+
+  it('answers for each target on its own, so a malformed one is not hidden by a valid one', () => {
+    // Copilot declares more than one global target and takes no headers helper,
+    // so its member entry is the launcher carrying the credential flag.
+    const { installer } = globalInstaller('copilot');
+    const targets = globalTargets(installer);
+    expect(targets.length).toBeGreaterThan(1);
+    for (const { path: file } of targets) fs.mkdirSync(path.dirname(file), { recursive: true });
+    // Each host reads its servers under its own key.
+    const write = (target: { path: string; serversKey: string }, myco: unknown) =>
+      fs.writeFileSync(target.path, JSON.stringify({ [target.serversKey]: { myco } }), 'utf-8');
+    write(targets[0]!, { type: 'stdio', command: '/opt/myco', args: ['mcp', CREDENTIAL_FLAG, 'registry'] });
+    // A myco key that is not a server block: unreadable, and read on its own.
+    for (const target of targets.slice(1)) write(target, ['not an entry']);
+
+    const seen = installer.inspectMemberMcp();
+    expect(seen[0]).toEqual({ scope: 'global', present: true, transport: 'stdio', carriesCredential: true, readable: true });
+    expect(seen.slice(1).every((t) => !t.readable && !t.present)).toBe(true);
+  });
+
   it('says a target it could not read is unread, rather than reading it as no entry', () => {
     const { installer } = globalInstaller('claude-code');
     writeEntries(installer, claudeRemote());
@@ -276,7 +315,12 @@ describe('what a report reads from the member MCP targets', () => {
   });
 });
 
-/** The absolute MCP targets an installer resolves at its own scope. */
+/** The absolute MCP targets an installer resolves at its own scope, each with the key its host reads servers under. */
+function globalTargets(installer: SymbiontInstaller): Array<{ path: string; serversKey: string }> {
+  return (installer as unknown as { resolveAbsoluteMcpTargets(): Array<{ path: string; serversKey: string }> }).resolveAbsoluteMcpTargets();
+}
+
+/** Those targets' paths alone. */
 function globalTargetPaths(installer: SymbiontInstaller): string[] {
-  return (installer as unknown as { resolveAbsoluteMcpTargets(): Array<{ path: string }> }).resolveAbsoluteMcpTargets().map((t) => t.path);
+  return globalTargets(installer).map((t) => t.path);
 }

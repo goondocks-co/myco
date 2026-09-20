@@ -2010,18 +2010,31 @@ export class SymbiontInstaller {
     return this.resolveAbsoluteMcpTargets().map(({ path: filePath, serversKey }) => {
       // A TOML host keeps its servers under one section whatever the manifest names.
       const key = toml ? TOML_MCP_SERVERS_KEY : serversKey;
-      let server: Record<string, unknown> | null;
+      let file: Record<string, unknown> | null;
       try {
-        server = this.mycoServerIn(filePath, toml, key);
+        file = this.readMcpFile(filePath, toml);
       } catch {
         return { scope, present: false, transport: null, carriesCredential: false, readable: false };
       }
-      if (server === null) return { scope, present: false, transport: null, carriesCredential: false, readable: true };
-      const transport = typeof server.url === 'string' ? 'http' as const : typeof server.command === 'string' ? 'stdio' as const : null;
+      // A key that is not there is a file declaring no server; a key that is
+      // there and is not a server block is a file nothing can read an entry
+      // from, and each target answers for itself.
+      const servers = file?.[key];
+      if (file === null || servers === undefined) return { scope, present: false, transport: null, carriesCredential: false, readable: true };
+      if (servers === null || typeof servers !== 'object' || Array.isArray(servers)) {
+        return { scope, present: false, transport: null, carriesCredential: false, readable: false };
+      }
+      const server = (servers as Record<string, unknown>)[MYCO_MCP_SERVER_NAME];
+      if (server === undefined) return { scope, present: false, transport: null, carriesCredential: false, readable: true };
+      if (server === null || typeof server !== 'object' || Array.isArray(server)) {
+        return { scope, present: false, transport: null, carriesCredential: false, readable: false };
+      }
+      const entry = server as Record<string, unknown>;
+      const transport = typeof entry.url === 'string' ? 'http' as const : typeof entry.command === 'string' ? 'stdio' as const : null;
       // What the entry declares is one fact; whether it is the entry member
       // provisioning writes — the one carrying this member's credential — is
       // another, and a server that is not cannot resolve the membership.
-      return { scope, present: true, transport, carriesCredential: this.isMemberMcpServer(server), readable: true };
+      return { scope, present: true, transport, carriesCredential: this.isMemberMcpServer(entry), readable: true };
     });
   }
 
