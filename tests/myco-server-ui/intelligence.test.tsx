@@ -43,8 +43,9 @@ const base = (extra: Record<string, Endpoint> = {}) => ({
   ...extra,
 });
 
-function mount(path: string) {
+function mount(path: string, seed?: (client: QueryClient) => void) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  seed?.(client);
   return render(<AppearanceProvider><QueryClientProvider client={client}><MemoryRouter initialEntries={[path]}><App /></MemoryRouter></QueryClientProvider></AppearanceProvider>);
 }
 
@@ -224,5 +225,174 @@ describe('Agent runs', () => {
     await screen.findByRole('heading', { name: 'Project X' });
     const nav = screen.getByRole('navigation', { name: 'Project' });
     expect([...nav.querySelectorAll('a[aria-current="page"]')].map((a) => a.textContent)).toEqual(['Overview']);
+  });
+});
+
+/**
+ * Who ran a run, on the run.
+ *
+ * A row names a worker only while it holds one, so a run that names none reads
+ * as not recorded rather than as a run no worker drove. A name comes from the
+ * worker record when it still holds an observation of that credential, and the
+ * credential itself otherwise. A queued run says what is known about the
+ * workers it waits on, and never says why this run in particular waits.
+ */
+const WORKER = {
+  credentialId: 'mt_worker', machineId: 'sirkirby-mbp', offers: [{ id: 'codex', authenticated: true }], capabilities: [],
+  lastReason: 'claimed', lastSeenAt: NOW - 3_000, busy: null, eligible: true, recent: true,
+};
+const statusWith = (over: Record<string, unknown> = {}) => () => Response.json({
+  schema: { expected: 44, found: 44, matches: true },
+  capabilities: [],
+  workers: { available: true, workersBusy: 0, runsQueued: 0, recentWithinMs: 90_000, fleet: [WORKER], ...over },
+  projects: [],
+});
+
+describe('the worker behind a run', () => {
+  it('names the machine holding a running run, its harness and its lease', async () => {
+    const held = { status: 'running', completedAt: null, harness: 'codex', leasedBy: 'mt_worker', leaseExpiresAt: NOW + 62_000 };
+    server(base({
+      '/api/status': statusWith(),
+      '/api/projects/x/runs': () => Response.json({ rows: [run(held)], cursor: null }),
+      '/api/projects/x/runs/r1': () => Response.json(detail(held)),
+    }));
+    mount('/p/x/runs/r1');
+    expect(await screen.findByText('sirkirby-mbp')).toBeTruthy();
+    expect(screen.getByText('Codex')).toBeTruthy();
+    expect(screen.getByText(/^expires in \d+s$/)).toBeTruthy();
+    // The dispatch credential is the harness child's, and is labelled as that.
+    expect(screen.getByText('Run credential')).toBeTruthy();
+    expect(screen.queryByText('Credential')).toBeNull();
+  });
+
+  it('says a finished run records no worker, without claiming none ran it, and keeps the harness', async () => {
+    const closed = { status: 'completed', harness: 'codex', leasedBy: null, leaseExpiresAt: null };
+    server(base({
+      '/api/status': statusWith(),
+      '/api/projects/x/runs': () => Response.json({ rows: [run(closed)], cursor: null }),
+      '/api/projects/x/runs/r1': () => Response.json(detail(closed)),
+    }));
+    mount('/p/x/runs/r1');
+    expect(await screen.findByText('not recorded')).toBeTruthy();
+    expect(screen.getByText('Codex')).toBeTruthy();
+    expect(screen.queryByText('Lease')).toBeNull();
+    expect(screen.queryByText(/no worker ran/i)).toBeNull();
+  });
+
+  it('names the holder\'s last contact and what it reports now, without reading it as this run\'s record', async () => {
+    const held = { status: 'running', completedAt: null, harness: 'codex', leasedBy: 'mt_worker', leaseExpiresAt: NOW + 62_000 };
+    server(base({
+      '/api/status': statusWith(),
+      '/api/projects/x/runs': () => Response.json({ rows: [run(held)], cursor: null }),
+      '/api/projects/x/runs/r1': () => Response.json(detail(held)),
+    }));
+    mount('/p/x/runs/r1');
+    expect(await screen.findByText(/^Last contact \d+s ago\.$/)).toBeTruthy();
+    expect(screen.getByText(/Reported authenticated: Codex\./)).toBeTruthy();
+    expect(screen.getByText(/what the worker reports now, not what it reported for this run/)).toBeTruthy();
+  });
+
+  it('says the holder\'s contact is absent for a worker the record no longer holds', async () => {
+    const held = { status: 'running', completedAt: null, harness: 'codex', leasedBy: 'mt_forgotten', leaseExpiresAt: NOW + 30_000 };
+    server(base({
+      '/api/status': statusWith(),
+      '/api/projects/x/runs': () => Response.json({ rows: [run(held)], cursor: null }),
+      '/api/projects/x/runs/r1': () => Response.json(detail(held)),
+    }));
+    mount('/p/x/runs/r1');
+    expect(await screen.findByText('No worker contact recorded.')).toBeTruthy();
+    expect(screen.queryByText(/Last contact/)).toBeNull();
+  });
+
+  it('shows no holder record for a run whose row names none', async () => {
+    const closed = { status: 'completed', harness: 'codex', leasedBy: null, leaseExpiresAt: null };
+    server(base({
+      '/api/status': statusWith(),
+      '/api/projects/x/runs': () => Response.json({ rows: [run(closed)], cursor: null }),
+      '/api/projects/x/runs/r1': () => Response.json(detail(closed)),
+    }));
+    mount('/p/x/runs/r1');
+    expect(await screen.findByText('not recorded')).toBeTruthy();
+    expect(screen.queryByText('The worker holding this run')).toBeNull();
+    expect(screen.queryByText(/Reported authenticated/)).toBeNull();
+  });
+
+  it('does not show a cached worker record as current after the refresh fails', async () => {
+    const held = { status: 'running', completedAt: null, harness: 'codex', leasedBy: 'mt_worker', leaseExpiresAt: NOW + 62_000 };
+    const cached = { schema: { expected: 44, found: 44, matches: true }, capabilities: [], workers: { available: true, workersBusy: 0, runsQueued: 0, recentWithinMs: 90_000, fleet: [WORKER] }, projects: [] };
+    server(base({
+      '/api/status': () => new Response(null, { status: 500 }),
+      '/api/projects/x/runs': () => Response.json({ rows: [run(held)], cursor: null }),
+      '/api/projects/x/runs/r1': () => Response.json(detail(held)),
+    }));
+    mount('/p/x/runs/r1', (client) => client.setQueryData(['status'], cached));
+    expect(await screen.findByText(/Worker contact unavailable/)).toBeTruthy();
+    // The machine name came from the record, so it is not asserted from a stale one.
+    expect(screen.queryByText('sirkirby-mbp')).toBeNull();
+    expect(screen.getByText('mt_worker')).toBeTruthy();
+  });
+
+  it('says a lease already past has not been swept, rather than counting down to nothing', async () => {
+    const lapsed = { status: 'running', completedAt: null, harness: 'codex', leasedBy: 'mt_worker', leaseExpiresAt: NOW - 5_000 };
+    server(base({
+      '/api/status': statusWith(),
+      '/api/projects/x/runs': () => Response.json({ rows: [run(lapsed)], cursor: null }),
+      '/api/projects/x/runs/r1': () => Response.json(detail(lapsed)),
+    }));
+    mount('/p/x/runs/r1');
+    expect(await screen.findByText('expired, not yet swept')).toBeTruthy();
+    expect(screen.queryByText(/expires in now/)).toBeNull();
+  });
+
+  it('falls back to the credential when the worker record holds no observation of it', async () => {
+    const held = { status: 'running', completedAt: null, harness: 'codex', leasedBy: 'mt_forgotten', leaseExpiresAt: NOW + 30_000 };
+    server(base({
+      '/api/status': statusWith(),
+      '/api/projects/x/runs': () => Response.json({ rows: [run(held)], cursor: null }),
+      '/api/projects/x/runs/r1': () => Response.json(detail(held)),
+    }));
+    mount('/p/x/runs/r1');
+    expect(await screen.findByText('mt_forgotten')).toBeTruthy();
+    expect(screen.queryByText('not recorded')).toBeNull();
+  });
+
+  it('tells a queued run what workers are attached, and does not blame this run\'s wait on one poll', async () => {
+    const queued = { status: 'queued', startedAt: null, completedAt: null, queuedAt: NOW, heldBy: 'worker', position: 0, harness: null, leasedBy: null, leaseExpiresAt: null };
+    server(base({
+      '/api/status': statusWith({ runsQueued: 1, fleet: [{ ...WORKER, lastReason: 'no_harness' }] }),
+      '/api/projects/x/runs': () => Response.json({ rows: [run(queued)], cursor: null }),
+      '/api/projects/x/runs/r1': () => Response.json(detail(queued)),
+    }));
+    mount('/p/x/runs/r1');
+    expect(await screen.findByText(/waiting for a worker to claim it/)).toBeTruthy();
+    expect(screen.getByText(/1 of 1 worker heard from recently, 0 driving a run/)).toBeTruthy();
+    // One worker's last poll is not this run's reason for waiting.
+    expect(screen.queryByText(/no matching harness/)).toBeNull();
+  });
+
+  it('says the worker record is unknown rather than reading an unanswerable server as an empty fleet', async () => {
+    const queued = { status: 'queued', startedAt: null, completedAt: null, queuedAt: NOW, heldBy: 'worker', position: 0, harness: null, leasedBy: null, leaseExpiresAt: null };
+    server(base({
+      '/api/status': () => Response.json({
+        schema: { expected: 44, found: null, matches: false }, capabilities: [],
+        workers: { available: false, workersBusy: 0, runsQueued: 0, recentWithinMs: 90_000, fleet: [] }, projects: [],
+      }),
+      '/api/projects/x/runs': () => Response.json({ rows: [run(queued)], cursor: null }),
+      '/api/projects/x/runs/r1': () => Response.json(detail(queued)),
+    }));
+    mount('/p/x/runs/r1');
+    expect(await screen.findByText(/Worker contact unavailable/)).toBeTruthy();
+    expect(screen.queryByText(/No worker contact is recorded/)).toBeNull();
+  });
+
+  it('says a queued run with an empty record has no contact recorded, never that no worker was heard from', async () => {
+    const queued = { status: 'queued', startedAt: null, completedAt: null, queuedAt: NOW, heldBy: 'worker', position: 0, harness: null, leasedBy: null, leaseExpiresAt: null };
+    server(base({
+      '/api/status': statusWith({ runsQueued: 1, fleet: [] }),
+      '/api/projects/x/runs': () => Response.json({ rows: [run(queued)], cursor: null }),
+      '/api/projects/x/runs/r1': () => Response.json(detail(queued)),
+    }));
+    mount('/p/x/runs/r1');
+    expect(await screen.findByText('No worker contact is recorded. A queued run waits until one claims it.')).toBeTruthy();
   });
 });

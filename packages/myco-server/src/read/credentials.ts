@@ -1,6 +1,13 @@
 import type { RelationalStore } from '../core/adapters.js';
+import { HARNESS_MEMBER_ID } from '../constants.js';
 import { credentialLive } from '../db/liveness.js';
 import { keyset, page, type Page } from './scope.js';
+
+/** What a credential was minted for: one agent run, or a member's own runtime. */
+export type CredentialPurpose = 'run' | 'member';
+
+/** True for a credential minted under the identity every dispatched runtime authenticates as. Binds `HARNESS_MEMBER_ID`. */
+const RUN_CREDENTIAL = `member_id = ?`;
 
 export interface CredentialRow {
   id: string;
@@ -17,6 +24,8 @@ export interface CredentialRow {
   firstUsedAt: number | null;
   /** Whether this credential authenticates now: unrevoked, unexpired, and its member live. */
   live: boolean;
+  /** What this credential was minted for: one agent run, or a member's own runtime. */
+  purpose: CredentialPurpose;
 }
 
 export interface ActivityRow {
@@ -29,17 +38,29 @@ export interface ActivityRow {
 }
 
 /** The Deployment's credentials, newest lineage first, one page at a time over `idx_member_credentials_started`. The token hash is never selected — nothing outside authentication reads it. */
-export async function listCredentials(db: RelationalStore, nowMs: number, opts: { limit?: number; cursor?: string } = {}): Promise<Page<CredentialRow>> {
+export async function listCredentials(
+  db: RelationalStore,
+  nowMs: number,
+  opts: { limit?: number; cursor?: string; purpose?: CredentialPurpose } = {},
+): Promise<Page<CredentialRow>> {
   const k = keyset(opts, { order: 'lineage_started_at', id: 'id', direction: 'DESC' });
   if (k === null) return { rows: [], cursor: null };
   const limit = k.limit;
+  // Each purpose is paged on its own.
+  const conditions: string[] = [];
+  const params: (string | number)[] = [];
+  if (opts.purpose !== undefined) {
+    conditions.push(opts.purpose === 'run' ? RUN_CREDENTIAL : `NOT (${RUN_CREDENTIAL})`);
+    params.push(HARNESS_MEMBER_ID);
+  }
+  if (k.where !== '') conditions.push(k.where);
   const { results } = await db
     .prepare(`SELECT id, member_id, machine_id, expires_at, revoked_at, revoked_by, bytes_written, predecessor_id, lineage_root, lineage_started_at, first_used_at,
-                     (${credentialLive()}) AS live
-                FROM member_credentials ${k.where === '' ? '' : `WHERE ${k.where}`} ORDER BY lineage_started_at DESC, id DESC LIMIT ?`)
-    .bind(nowMs, ...k.params, limit + 1)
+                     (${credentialLive()}) AS live, (${RUN_CREDENTIAL}) AS run_credential
+                FROM member_credentials ${conditions.length === 0 ? '' : `WHERE ${conditions.join(' AND ')}`} ORDER BY lineage_started_at DESC, id DESC LIMIT ?`)
+    .bind(nowMs, HARNESS_MEMBER_ID, ...params, ...k.params, limit + 1)
     .all<Record<string, unknown>>();
-  const rows = results.map((r) => ({
+  const rows = results.map((r): CredentialRow => ({
     id: r.id as string,
     memberId: r.member_id as string,
     machineId: (r.machine_id as string | null) ?? null,
@@ -52,6 +73,7 @@ export async function listCredentials(db: RelationalStore, nowMs: number, opts: 
     lineageStartedAt: r.lineage_started_at as number,
     firstUsedAt: (r.first_used_at as number | null) ?? null,
     live: Number(r.live) === 1,
+    purpose: Number(r.run_credential) === 1 ? 'run' : 'member',
   }));
   return page(rows, limit, (r) => ({ createdAt: r.lineageStartedAt, id: r.id }));
 }

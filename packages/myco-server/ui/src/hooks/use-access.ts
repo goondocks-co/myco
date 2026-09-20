@@ -5,6 +5,8 @@ export { usePaged } from './use-paged';
 export interface MemberRow {
   id: string;
   label: string | null;
+  /** What this member may do. A worker's credential must belong to an admin, which is what makes a claim from it admissible. */
+  role: 'admin' | 'member';
   linked: boolean;
   createdAt: number;
   revokedAt: number | null;
@@ -30,7 +32,10 @@ export interface CredentialRow {
   bytesWritten: number;
   lineageStartedAt: number;
   firstUsedAt: number | null;
+  /** Whether this credential authenticates now: unrevoked, unexpired, and its member live. Not a statement that it has written or claimed anything. */
   live: boolean;
+  /** What the server minted this credential for: one agent run, or a member's own runtime. */
+  purpose: 'run' | 'member';
 }
 
 export interface ActivityRow {
