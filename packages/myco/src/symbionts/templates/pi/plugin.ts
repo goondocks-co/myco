@@ -266,6 +266,8 @@ function claimPathFor(directory: string, agent: string, sessionId: string): stri
  */
 const claimedSessions = new Map<string, boolean>();
 const claimTouchedAt = new Map<string, number>();
+/** Claim files this instance holds, by session key, for the exit hook to give up. */
+const heldClaimPaths = new Map<string, string>();
 
 /**
  * This module instance's identity.
@@ -331,8 +333,40 @@ function holdsSessionClaim(directory: string, agent: string, sessionId: string):
     claimed = false;
   }
   claimedSessions.set(key, claimed);
-  if (claimed) claimTouchedAt.set(key, Date.now());
+  if (claimed) {
+    claimTouchedAt.set(key, Date.now());
+    heldClaimPaths.set(key, claimPath);
+    releaseClaimsWhenProcessEnds();
+  }
   return claimed;
+}
+
+/**
+ * Remove every claim this instance still holds when the process exits, so a
+ * session resumed in a new process is captured at once instead of waiting out
+ * `CLAIM_STALE_MS`. Registered once, on the first claim taken, and only for
+ * `exit`: a signal handler would hold the host open past the signal. A process
+ * killed outright leaves its claim to age out.
+ */
+let claimExitHookInstalled = false;
+function releaseClaimsWhenProcessEnds(): void {
+  if (claimExitHookInstalled) return;
+  claimExitHookInstalled = true;
+  try {
+    process.once("exit", () => {
+      for (const [key, claimPath] of heldClaimPaths) {
+        if (claimHolder(claimPath)?.instance !== MYCO_INSTANCE_ID) continue;
+        try {
+          unlinkSync(claimPath);
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException)?.code === "ENOENT") continue;
+          noteOnce(`exit-${key}`, `could not give up the claim on ${key} at exit (${(error as Error)?.message ?? "unknown"}) — a new instance resuming it waits for the claim to go stale`);
+        }
+      }
+    });
+  } catch (error) {
+    noteOnce("exit-hook", `could not register the exit hook (${(error as Error)?.message ?? "unknown"}) — a claim this process holds waits to go stale instead`);
+  }
 }
 
 /**
@@ -376,6 +410,7 @@ function releaseSessionClaim(directory: string, agent: string, sessionId: string
   const key = `${agent}-${sessionId}`;
   claimedSessions.delete(key);
   claimTouchedAt.delete(key);
+  heldClaimPaths.delete(key);
   const claimPath = claimPathFor(directory, agent, sessionId);
   if (claimHolder(claimPath)?.instance !== MYCO_INSTANCE_ID) return;
   try {

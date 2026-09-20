@@ -260,6 +260,9 @@ registration:
   # for the request headers when it connects and again after a 401, so a
   # rotated member token reaches it without a restart.
   memberMcpHeadersHelperKey: http_headers_helper
+  # Codex merges two same-named servers, so the global entry's transport and
+  # credential keys reach this project's remote entry and it then refuses them.
+  memberMcpGlobalMerge: true
   globalMcpTarget: ~/.codex/config.toml
   skillsTarget: .agents/skills
   globalSkillsTarget: ~/.agents/skills

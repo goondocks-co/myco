@@ -57,12 +57,13 @@ async function member(args: string[]): Promise<{ out: string[]; err: string[] }>
 
 describe('member plugins for plugin-file agents', () => {
   for (const agent of ['opencode', 'pi'] as const) {
-    it(`${agent}: provision writes the member plugin with no global plugin installed, keeps it out of git, writes no MCP entry, and a repeat changes nothing`, async () => {
+    it(`${agent}: provision writes the member plugin with no global plugin installed, keeps it out of git, and a repeat changes nothing`, async () => {
       join();
       const before = readRegistryEntry(root, mycoHome);
       const first = await member(['provision', agent]);
       expect(first.err).toEqual([]);
-      expect(first.out[0]).toMatch(new RegExp(`^provisioned .+ for ${root}$`));
+      // OpenCode's tools come from an MCP server, Pi's from the extension itself.
+      expect(first.out[0]).toMatch(new RegExp(`^provisioned .+ for ${root}${agent === 'opencode' ? ' \\(plugin and MCP\\)' : ''}$`));
       const written = fs.readFileSync(path.join(root, TARGETS[agent]), 'utf8');
       expect(written).toContain('myco:plugin-marker');
       expect(written).toContain('// myco:member-plugin');
@@ -70,7 +71,7 @@ describe('member plugins for plugin-file agents', () => {
       expect(written).not.toMatch(/\{\{[A-Za-z0-9_.-]+\}\}/);
       expect(written).not.toContain(TOKEN);
       expect(fs.readFileSync(path.join(root, '.git', 'info', 'exclude'), 'utf8')).toContain(TARGETS[agent]);
-      expect(fs.existsSync(path.join(root, 'opencode.json'))).toBe(false);
+      expect(fs.existsSync(path.join(root, 'opencode.json'))).toBe(agent === 'opencode');
       expect(readRegistryEntry(root, mycoHome)).toEqual(before);
       if (agent === 'pi') {
         expect(written).toContain('Symbol.for("myco.member-extension")');

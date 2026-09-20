@@ -438,6 +438,14 @@ const RegistrationSchema = z.object({
    * supplying the member credential's headers, rather than a stdio launcher.
    */
   memberMcpHeadersHelperKey: z.string().optional(),
+  /**
+   * True when this host merges a project's `myco` MCP server into the global
+   * one of the same name instead of replacing it, so keys only the global
+   * entry declares still reach the project's server. Member provisioning
+   * refuses, before any write, a global entry whose surviving keys would
+   * leave the member's server unusable.
+   */
+  memberMcpGlobalMerge: z.boolean().optional(),
   skillsTarget: z.string().optional(),
   /**
    * Legacy project-local skill dirs for this agent — locations from before its

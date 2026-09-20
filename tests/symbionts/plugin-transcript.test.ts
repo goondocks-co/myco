@@ -1,3 +1,4 @@
+import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -286,6 +287,43 @@ describe('one instance speaks for a session', () => {
     expect(resumed.holdsSessionClaim('/repo', 'opencode', 'ses_ended')).toBe(true);
     resumed.appendTranscriptLine('/repo', 'opencode', 'ses_ended', { type: 'prompt', text: 'two' });
     expect(fs.readFileSync(first.transcriptPathFor('/repo', 'opencode', 'ses_ended'), 'utf-8').split('\n').filter(Boolean)).toHaveLength(2);
+  });
+
+  // The in-process gates above drive the helper directly; this one runs it in
+  // real processes, because the claim's last chance to go is the process's own
+  // exit and a stub `process` cannot register that.
+  it('gives up its claim when the host process ends without announcing the session, so the next process captures at once', () => {
+    const env = sandboxEnv();
+    const script = path.join(env.HOME!, 'holder.ts');
+    const snippet = fs.readFileSync(path.join(TEMPLATES, '_shared', 'plugin-helpers.ts.snippet'), 'utf-8')
+      .split('{{mycoCredentialSource}}').join('registry');
+    fs.writeFileSync(script, [
+      'import { execFileSync } from "node:child_process";',
+      'import { accessSync, appendFileSync, closeSync, constants as fsConstants, lstatSync, mkdirSync, openSync, readFileSync, statSync, unlinkSync, writeSync } from "node:fs";',
+      'import { homedir } from "node:os";',
+      'import { dirname, join, resolve } from "node:path";',
+      snippet,
+      // An ordinary one-shot run: the session is opened and written, and the
+      // process ends with no session-end event, exactly as `opencode run` does.
+      'const sessionId = process.argv[2];',
+      'if (!holdsSessionClaim("/repo", "opencode", sessionId)) process.exit(3);',
+      'appendTranscriptLine("/repo", "opencode", sessionId, { type: "prompt", text: process.argv[3] });',
+    ].join('\n'));
+
+    const run = (turn: string): number => spawnSync(process.execPath, [script, 'ses_exit', turn], {
+      env: { ...env, PATH: process.env.PATH } as NodeJS.ProcessEnv,
+    }).status ?? -1;
+
+    expect(run('one')).toBe(0);
+    const claim = path.join(env.MYCO_HOME!, 'member', 'claims', 'opencode-ses_exit.lock');
+    expect(fs.existsSync(claim)).toBe(false);
+
+    // A second process resuming the session writes at once, rather than waiting
+    // out a claim left by a writer that has gone.
+    expect(run('two')).toBe(0);
+    const transcript = path.join(env.MYCO_HOME!, 'member', 'transcripts', 'opencode', 'ses_exit.jsonl');
+    expect(fs.readFileSync(transcript, 'utf-8').split('\n').filter(Boolean)).toHaveLength(2);
+    expect(fs.existsSync(claim)).toBe(false);
   });
 
   it('leaves a claim that names another instance when an instance ends a session it did not hold', () => {
