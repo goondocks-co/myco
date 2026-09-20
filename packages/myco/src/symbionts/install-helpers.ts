@@ -158,13 +158,14 @@ export function isMycoHookGroup(group: Record<string, unknown>): boolean {
 }
 
 /** Remove Myco commands while preserving other commands in shared matcher groups. */
-export function withoutMycoHooks(groups: Array<Record<string, unknown>>): Array<Record<string, unknown>> {
+export function withoutMycoHooks(groups: Array<Record<string, unknown>>, matches: (command: string) => boolean = () => true): Array<Record<string, unknown>> {
+  const owned = (command: string) => isMycoHookCommand(command) && matches(command);
   return groups.flatMap((group) => {
     if (Array.isArray(group.hooks)) {
-      const hooks = group.hooks.filter((hook: { command?: string }) => !hook.command || !isMycoHookCommand(hook.command));
+      const hooks = group.hooks.filter((hook: { command?: string }) => !hook.command || !owned(hook.command));
       return hooks.length > 0 ? [{ ...group, hooks }] : [];
     }
-    return isMycoHookGroup(group) ? [] : [group];
+    return typeof group.command === 'string' && owned(group.command) ? [] : [group];
   });
 }
 
