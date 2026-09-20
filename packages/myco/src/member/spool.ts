@@ -336,8 +336,16 @@ export class MemberSpool {
       .map((sessionId) => {
         const read = this.readRecordsOrNull(sessionId);
         if (!read.readable) return { sessionId, unacknowledged: null };
-        const state = readSessionState(this.dir, sessionId);
-        return { sessionId, unacknowledged: Math.max(0, read.records.length - state.highWater) };
+        // The count is records against the acknowledged mark, so a state the
+        // report cannot use leaves it unknown rather than counting from zero.
+        let state: SessionStateRead;
+        try {
+          state = readSessionStateResult(this.dir, sessionId);
+        } catch {
+          return { sessionId, unacknowledged: null };
+        }
+        if (!state.ok) return { sessionId, unacknowledged: state.reason === 'missing' ? read.records.length : null };
+        return { sessionId, unacknowledged: Math.max(0, read.records.length - state.state.highWater) };
       });
     return { readable: true, sessions };
   }
@@ -364,14 +372,19 @@ export class MemberSpool {
    * refusal, an unparsable file or one that is not a latch is unreadable. The
    * one parse and shape check; `readLatch` derives from it.
    */
-  readLatchResult(): { readable: true; latch: OfflineLatch | null } | { readable: false; reason: 'loose-mode' | 'malformed' | 'invalid'; detail?: string } {
+  readLatchResult(): { readable: true; latch: OfflineLatch | null } | { readable: false; reason: 'unreadable' | 'loose-mode' | 'malformed' | 'invalid'; detail?: string } {
     const read = readPrivateJson<OfflineLatch>(this.latchPath());
     if (!read.ok) {
       return read.reason === 'missing' ? { readable: true, latch: null } : { readable: false, reason: read.reason, detail: read.detail };
     }
-    const l = read.value;
-    const shaped = typeof l.since === 'number' && typeof l.nextProbeAt === 'number' && typeof l.backoffMs === 'number';
-    return shaped ? { readable: true, latch: l } : { readable: false, reason: 'invalid', detail: 'not an offline latch' };
+    // `null` and a bare array parse as JSON, so the shape is checked before any field is read.
+    const l = read.value as unknown;
+    const shaped = l !== null && typeof l === 'object' && !Array.isArray(l)
+      && ['since', 'nextProbeAt', 'backoffMs'].every((field) => {
+        const at = (l as Record<string, unknown>)[field];
+        return typeof at === 'number' && Number.isFinite(at);
+      });
+    return shaped ? { readable: true, latch: l as OfflineLatch } : { readable: false, reason: 'invalid', detail: 'not an offline latch' };
   }
 
   /** The latch held, or null where none is: a file that could not be used reads as none, a mode or parse refusal with one stderr line. */

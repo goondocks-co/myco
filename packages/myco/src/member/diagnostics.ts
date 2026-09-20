@@ -139,7 +139,7 @@ export interface CheckFacts {
   /** The configuration scope it read, where it read one. */
   scope: 'global' | 'project' | null;
   /** The project root it read, and null for a check that read no project. */
-  root: string | null;
+  root?: string | null;
   fixable: boolean;
   fixId: string | null;
 }

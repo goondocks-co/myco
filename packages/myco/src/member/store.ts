@@ -63,19 +63,26 @@ export function writePrivateFileAtomic(file: string, content: string): void {
 
 export type PrivateRead<T> =
   | { ok: true; value: T }
-  | { ok: false; reason: 'missing' | 'loose-mode' | 'malformed'; detail?: string };
+  | { ok: false; reason: 'missing' | 'unreadable' | 'loose-mode' | 'malformed'; detail?: string };
 
-/** Read and parse a private JSON file; a loose mode or a parse failure reads as refused, never as data. */
+/** Read and parse a private JSON file; a loose mode, an unreachable file or a parse failure reads as refused, never as data. `missing` is absence alone: every other errno is `unreadable`, so a file that is there and cannot be opened never reads as one that is not. */
 export function readPrivateJson<T>(file: string): PrivateRead<T> {
   let stat: fs.Stats;
   try {
     stat = fs.statSync(file);
-  } catch {
-    return { ok: false, reason: 'missing' };
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException).code;
+    return code === 'ENOENT' ? { ok: false, reason: 'missing' } : { ok: false, reason: 'unreadable', detail: code };
   }
   if (!isPrivateMode(stat.mode)) return { ok: false, reason: 'loose-mode', detail: (stat.mode & 0o777).toString(8) };
+  let raw: string;
   try {
-    return { ok: true, value: JSON.parse(fs.readFileSync(file, 'utf-8')) as T };
+    raw = fs.readFileSync(file, 'utf-8');
+  } catch (err) {
+    return { ok: false, reason: 'unreadable', detail: (err as NodeJS.ErrnoException).code };
+  }
+  try {
+    return { ok: true, value: JSON.parse(raw) as T };
   } catch (err) {
     return { ok: false, reason: 'malformed', detail: (err as Error).message };
   }

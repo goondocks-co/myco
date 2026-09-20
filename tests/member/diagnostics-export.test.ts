@@ -409,7 +409,7 @@ describe('a session state the report could not use', () => {
     expect(facts.spool.readable).toBe(true);
     expect(facts.spool.stateReadable).toBe(false);
     expect(facts.spool.lastAckAt).toBeNull();
-    expect(facts.spool.sessions).toEqual([{ sessionId: 'sess-a', unacknowledged: 0, stateReadable: false, lastAckAt: null }]);
+    expect(facts.spool.sessions).toEqual([{ sessionId: 'sess-a', unacknowledged: null, stateReadable: false, lastAckAt: null }]);
   });
 });
 
@@ -425,6 +425,17 @@ describe('an offline latch the report could not use', () => {
     expect(facts.latch).toBeNull();
   });
 
+  it('says unknown for a latch file holding null, rather than throwing on its fields', () => {
+    const e = entry();
+    writeRegistryEntry(e, { mycoHome });
+    const spool = new MemberSpool('proj_1', { mycoHome });
+    fs.writeFileSync(path.join(spool.dir, 'offline.json'), 'null', { mode: 0o600 });
+
+    const facts = projectDiagnostics(e, mycoHome, NOW);
+    expect(facts.latchReadable).toBe(false);
+    expect(facts.latch).toBeNull();
+  });
+
   it('reads an absent latch as the member being online, which it is', () => {
     const e = entry();
     writeRegistryEntry(e, { mycoHome });
@@ -433,6 +444,51 @@ describe('an offline latch the report could not use', () => {
     const facts = projectDiagnostics(e, mycoHome, NOW);
     expect(facts.latchReadable).toBe(true);
     expect(facts.latch).toBeNull();
+  });
+});
+
+describe('a state file the report can reach but cannot trust', () => {
+  it('leaves the pending count unknown rather than counting every record as un-acknowledged', () => {
+    const e = entry();
+    writeRegistryEntry(e, { mycoHome });
+    const spool = new MemberSpool('proj_1', { mycoHome });
+    fs.writeFileSync(path.join(spool.dir, 'sess-a.jsonl'), ['{"a":1}', '{"a":2}'].join('\n') + '\n', 'utf-8');
+    // A state whose acknowledged mark is unusable: counting from zero here would
+    // report two records pending on a session that may have shipped both.
+    fs.writeFileSync(path.join(spool.dir, 'sess-a.state.json'), JSON.stringify({ version: 1, highWater: 'two', prompts: {} }), { mode: 0o600 });
+
+    const facts = projectDiagnostics(e, mycoHome, NOW);
+    expect(facts.spool.sessions).toEqual([{ sessionId: 'sess-a', unacknowledged: null, stateReadable: false, lastAckAt: null }]);
+    expect(facts.spool.unacknowledgedTotal).toBeNull();
+    expect(facts.spool.stateReadable).toBe(false);
+  });
+
+  it('refuses a state whose acknowledgement is not an instant, so no surface renders it', () => {
+    const e = entry();
+    writeRegistryEntry(e, { mycoHome });
+    const spool = new MemberSpool('proj_1', { mycoHome });
+    fs.writeFileSync(path.join(spool.dir, 'sess-a.jsonl'), '', 'utf-8');
+    fs.writeFileSync(path.join(spool.dir, 'sess-a.state.json'), JSON.stringify({ version: 1, highWater: 0, prompts: {}, lastAckAt: 'yesterday' }), { mode: 0o600 });
+
+    const facts = projectDiagnostics(e, mycoHome, NOW);
+    expect(facts.spool.stateReadable).toBe(false);
+    expect(facts.spool.lastAckAt).toBeNull();
+    expect(facts.spool.sessions[0]!.lastAckAt).toBeNull();
+  });
+});
+
+describe('a private file that is there and cannot be opened', () => {
+  it('reads as unreadable rather than as absent', () => {
+    const e = entry();
+    writeRegistryEntry(e, { mycoHome });
+    const spool = new MemberSpool('proj_1', { mycoHome });
+    fs.writeFileSync(path.join(spool.dir, 'sess-a.jsonl'), '', 'utf-8');
+    // A directory where the state file belongs: stat succeeds, the open does not.
+    fs.mkdirSync(path.join(spool.dir, 'sess-a.state.json'));
+
+    const facts = projectDiagnostics(e, mycoHome, NOW);
+    expect(facts.spool.stateReadable).toBe(false);
+    expect(facts.spool.sessions[0]!.stateReadable).toBe(false);
   });
 });
 

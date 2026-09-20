@@ -72,14 +72,20 @@ export function bufferLockPath(spoolDir: string, sessionId: string): string {
   return path.join(spoolDir, `.${sessionId}.lock`);
 }
 
+/** An optional instant: absent, or a finite number. A field carrying anything else makes the file no state, so nothing downstream renders or compares it. */
+const optionalInstant = (value: unknown): boolean => value === undefined || (typeof value === 'number' && Number.isFinite(value));
+
 function isState(value: unknown): value is SessionState {
-  if (!value || typeof value !== 'object') return false;
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
   const s = value as Record<string, unknown>;
-  return s.version === SESSION_STATE_VERSION && typeof s.highWater === 'number' && typeof s.prompts === 'object' && s.prompts !== null;
+  if (s.version !== SESSION_STATE_VERSION) return false;
+  if (typeof s.highWater !== 'number' || !Number.isFinite(s.highWater)) return false;
+  if (typeof s.prompts !== 'object' || s.prompts === null) return false;
+  return optionalInstant(s.startedAt) && optionalInstant(s.lastAckAt);
 }
 
 /** Why a state file yielded no state: absent, refused by its mode, unparsable, or parsed but not a state. */
-export type SessionStateRefusal = 'missing' | 'loose-mode' | 'malformed' | 'invalid';
+export type SessionStateRefusal = 'missing' | 'unreadable' | 'loose-mode' | 'malformed' | 'invalid';
 
 export type SessionStateRead =
   | { ok: true; state: SessionState }
