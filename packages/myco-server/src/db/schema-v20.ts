@@ -1,4 +1,5 @@
 import { PROJECT_ID_GRAMMAR } from './project-id.js';
+import { occurredAt, presentedStatus } from './session-dates.js';
 
 const sources = [
   { table: 'sessions', type: 'session', id: 'session_id', columns: 'title, summary, started_at, ended_at',
@@ -12,10 +13,24 @@ const sources = [
     title: "COALESCE(NULLIF(display_name, ''), name)", text: "name || char(10) || description", blob: 'NULL', status: 'status', session: 'NULL', prompt: 'NULL', created: 'created_at', observation: "''", eligible: "status = 'active'" },
 ] as const;
 
-const sourceUnion = sources.map((s) => `SELECT project_id, '${s.type}' AS type, '${s.table}' AS namespace, ${s.id} AS record_id,
+/** One embedding source, with every clause of its SELECT as text. */
+type Source = { readonly [K in keyof (typeof sources)[number]]: string };
+
+const unionOf = (list: readonly Source[]): string => list.map((s) => `SELECT project_id, '${s.type}' AS type, '${s.table}' AS namespace, ${s.id} AS record_id,
   ${s.title} AS title, ${s.text} AS text, ${s.blob} AS blob_key, ${s.status} AS status,
   COALESCE(${s.session}, '') AS session_id, ${s.prompt} AS prompt_id, ${s.created} AS created_at, ${s.observation} AS observation_type
   FROM ${s.table} WHERE ${s.eligible}`).join(' UNION ALL ');
+
+/** The `embedding_sources` view over a set of sources. */
+export const embeddingSourcesView = (list: readonly Source[]): string => `CREATE VIEW IF NOT EXISTS embedding_sources AS SELECT s.*, v.revision,
+    COALESCE((SELECT k.state FROM knowledge_release_state k WHERE k.project_id = s.project_id AND k.namespace = s.namespace AND k.record_id = s.record_id ORDER BY k.checked_at DESC, k.id LIMIT 1), '') AS release_state,
+    COALESCE((SELECT k.confidence FROM knowledge_release_state k WHERE k.project_id = s.project_id AND k.namespace = s.namespace AND k.record_id = s.record_id ORDER BY k.checked_at DESC, k.id LIMIT 1), '') AS release_confidence
+    FROM (${unionOf(list)}) s JOIN embedding_versions v ON v.project_id = s.project_id AND v.type = s.type AND v.record_id = s.record_id`;
+
+/** The sources with a session dated and stated by what it is presented with; what a search filters on. */
+export const SOURCES_WITH_PRESENTED_SESSION_DATE: readonly Source[] = sources.map((s) => s.table === 'sessions'
+  ? { ...s, created: occurredAt(), status: presentedStatus() }
+  : s);
 
 /** Source mutations invalidate vectors atomically; provider calls occur only during reconciliation. */
 export const V20_STATEMENTS: readonly string[] = [
@@ -53,8 +68,5 @@ export const V20_STATEMENTS: readonly string[] = [
       ${rows.map((row) => `UPDATE embedding_versions SET revision = lower(hex(randomblob(16))) WHERE project_id = ${row}.project_id AND record_id = ${row}.record_id
       AND (${sources.map((s) => `(${row}.namespace = '${s.table}' AND type = '${s.type}')`).join(' OR ')});`).join('\n')} END`;
   }),
-  `CREATE VIEW IF NOT EXISTS embedding_sources AS SELECT s.*, v.revision,
-    COALESCE((SELECT k.state FROM knowledge_release_state k WHERE k.project_id = s.project_id AND k.namespace = s.namespace AND k.record_id = s.record_id ORDER BY k.checked_at DESC, k.id LIMIT 1), '') AS release_state,
-    COALESCE((SELECT k.confidence FROM knowledge_release_state k WHERE k.project_id = s.project_id AND k.namespace = s.namespace AND k.record_id = s.record_id ORDER BY k.checked_at DESC, k.id LIMIT 1), '') AS release_confidence
-    FROM (${sourceUnion}) s JOIN embedding_versions v ON v.project_id = s.project_id AND v.type = s.type AND v.record_id = s.record_id`,
+  embeddingSourcesView(sources),
 ];

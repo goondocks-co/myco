@@ -2,7 +2,8 @@ import { blobObjectKeySql } from '../core/blob-objects.js';
 import { MEMBER_TOKEN_BYTE_QUOTA } from '../constants.js';
 import { MEMBER_TOKEN_TTL_MS } from '../auth/tokens.js';
 import { V19_STATEMENTS } from './schema-v19.js';
-import { V20_STATEMENTS } from './schema-v20.js';
+import { embeddingSourcesView, SOURCES_WITH_PRESENTED_SESSION_DATE, V20_STATEMENTS } from './schema-v20.js';
+import { occurredAt } from './session-dates.js';
 import { V21_STATEMENTS } from './schema-v21.js';
 import { V22_STATEMENTS } from './schema-v22.js';
 
@@ -1494,9 +1495,36 @@ const V43_STATEMENTS: readonly string[] = [
      BEGIN SELECT RAISE(ABORT, 'a producer recovery hold is never an operator hold'); END`,
 ];
 
+/**
+ * Schema v45: the instants a session is presented and ordered by, apart from
+ * the instants its lifecycle is decided by.
+ *
+ * An imported session's `started_at`/`ended_at` carry its transcript file's
+ * modification time, and admission, reopen and titling decide against them.
+ * The instants the parse derives from the conversation are presentation, and
+ * live in these two columns, which no projection reads. A session is ordered by
+ * `occurred_started_at`, falling through to the raw start and then to the first
+ * receipt; `idx_sessions_occurred` indexes that expression, and the reads that
+ * order by it spell it the same way.
+ */
+const V45_STATEMENTS: readonly string[] = [
+  `ALTER TABLE sessions ADD COLUMN occurred_started_at INTEGER`,
+  `ALTER TABLE sessions ADD COLUMN occurred_ended_at INTEGER`,
+  `DROP INDEX IF EXISTS idx_sessions_occurred`,
+  `CREATE INDEX IF NOT EXISTS idx_sessions_occurred ON sessions (project_id, ${occurredAt()}, session_id)`,
+  // Search sources expose the presented session date and state.
+  `DROP VIEW IF EXISTS embedding_sources`,
+  embeddingSourcesView(SOURCES_WITH_PRESENTED_SESSION_DATE),
+  // A changed presented date or state invalidates that vector's filter metadata.
+  `CREATE TRIGGER IF NOT EXISTS sessions_embedding_occurred AFTER UPDATE OF occurred_started_at, occurred_ended_at ON sessions
+     WHEN new.occurred_started_at IS NOT old.occurred_started_at OR new.occurred_ended_at IS NOT old.occurred_ended_at BEGIN
+    INSERT INTO embedding_versions(project_id, type, record_id, revision) VALUES(new.project_id, 'session', new.session_id, lower(hex(randomblob(16))))
+    ON CONFLICT(project_id, type, record_id) DO UPDATE SET revision = excluded.revision; END`,
+];
+
 /** Ordered schema steps; each step's last statement stamps its version. A database at version n receives steps n+1 and later. Step 2 opens with two guard tables, ahead of every ADD COLUMN so a repaired database re-applies the step whole: one CHECK fails when an existing project id is out of grammar, the other when a session has no machine identity and the token that minted it has none to backfill from. The step aborts on the guard's insert and the applier records nothing. Identity binding reads `machine_id`, so a session that kept a NULL refuses every later write to itself; BREAK-GLASS.md carries the repair. */
 
-export const SCHEMA_STEPS: readonly SchemaStep[] = [withStamp(1, V1_STATEMENTS), withStamp(2, V2_STATEMENTS), withStamp(3, V3_STATEMENTS), withStamp(4, V4_STATEMENTS), withStamp(5, V5_STATEMENTS), withStamp(6, V6_STATEMENTS), withStamp(7, V7_STATEMENTS), withStamp(8, V8_STATEMENTS), withStamp(9, V9_STATEMENTS), withStamp(10, V10_STATEMENTS), withStamp(11, V11_STATEMENTS), withStamp(12, V12_STATEMENTS), withStamp(13, V13_STATEMENTS), withStamp(14, V14_STATEMENTS), withStamp(15, V15_STATEMENTS), withStamp(16, V16_STATEMENTS), withStamp(17, V17_STATEMENTS), withStamp(18, V18_STATEMENTS), withStamp(19, V19_STATEMENTS), withStamp(20, V20_STATEMENTS), withStamp(21, V21_STATEMENTS), withStamp(22, V22_STATEMENTS), withStamp(23, V23_STATEMENTS), withStamp(24, V24_STATEMENTS), withStamp(25, V25_STATEMENTS), withStamp(26, V26_STATEMENTS), withStamp(27, V27_STATEMENTS), withStamp(28, V28_STATEMENTS), withStamp(29, V29_STATEMENTS), withStamp(30, V30_STATEMENTS), withStamp(31, V31_STATEMENTS), withStamp(32, V32_STATEMENTS), withStamp(33, V33_STATEMENTS), withStamp(34, V34_STATEMENTS), withStamp(35, V35_STATEMENTS), withStamp(36, V36_STATEMENTS), withStamp(37, V37_STATEMENTS), withStamp(38, V38_STATEMENTS), withStamp(39, V39_STATEMENTS), withStamp(40, V40_STATEMENTS), withStamp(41, V41_STATEMENTS), withStamp(42, V42_STATEMENTS), withStamp(43, V43_STATEMENTS), withStamp(44, V44_STATEMENTS)];
+export const SCHEMA_STEPS: readonly SchemaStep[] = [withStamp(1, V1_STATEMENTS), withStamp(2, V2_STATEMENTS), withStamp(3, V3_STATEMENTS), withStamp(4, V4_STATEMENTS), withStamp(5, V5_STATEMENTS), withStamp(6, V6_STATEMENTS), withStamp(7, V7_STATEMENTS), withStamp(8, V8_STATEMENTS), withStamp(9, V9_STATEMENTS), withStamp(10, V10_STATEMENTS), withStamp(11, V11_STATEMENTS), withStamp(12, V12_STATEMENTS), withStamp(13, V13_STATEMENTS), withStamp(14, V14_STATEMENTS), withStamp(15, V15_STATEMENTS), withStamp(16, V16_STATEMENTS), withStamp(17, V17_STATEMENTS), withStamp(18, V18_STATEMENTS), withStamp(19, V19_STATEMENTS), withStamp(20, V20_STATEMENTS), withStamp(21, V21_STATEMENTS), withStamp(22, V22_STATEMENTS), withStamp(23, V23_STATEMENTS), withStamp(24, V24_STATEMENTS), withStamp(25, V25_STATEMENTS), withStamp(26, V26_STATEMENTS), withStamp(27, V27_STATEMENTS), withStamp(28, V28_STATEMENTS), withStamp(29, V29_STATEMENTS), withStamp(30, V30_STATEMENTS), withStamp(31, V31_STATEMENTS), withStamp(32, V32_STATEMENTS), withStamp(33, V33_STATEMENTS), withStamp(34, V34_STATEMENTS), withStamp(35, V35_STATEMENTS), withStamp(36, V36_STATEMENTS), withStamp(37, V37_STATEMENTS), withStamp(38, V38_STATEMENTS), withStamp(39, V39_STATEMENTS), withStamp(40, V40_STATEMENTS), withStamp(41, V41_STATEMENTS), withStamp(42, V42_STATEMENTS), withStamp(43, V43_STATEMENTS), withStamp(44, V44_STATEMENTS), withStamp(45, V45_STATEMENTS)];
 
 /** Every statement of every step, in application order. */
 export const SCHEMA_DDL: readonly string[] = SCHEMA_STEPS.flatMap((s) => s.statements);

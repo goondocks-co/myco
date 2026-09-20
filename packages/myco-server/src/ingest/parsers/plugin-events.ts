@@ -87,12 +87,12 @@ export function pluginEventsParser(options: {
       let promptId = input.openPromptId;
       let planPosition = 0;
 
-      for (const { value, offset } of input.lines as readonly ParsedLine[]) {
+      for (const { value, offset, undatedAt } of input.lines as readonly ParsedLine[]) {
         const line = value as PluginLine;
         if (line.v !== undefined && line.v !== PLUGIN_TRANSCRIPT_FORMAT) {
           throw new UnknownPluginFormat(`${agent} transcript line at ${offset} declares format ${String(line.v)}`);
         }
-        const createdAt = lineTime({ timestamp: line.at }, input.now);
+        const createdAt = lineTime({ timestamp: line.at }, input.now, undatedAt);
         const type = str(line.type);
 
         if (type === 'prompt') {

@@ -12,7 +12,7 @@
 import type { RelationalStore } from './adapters.js';
 import { ingestEvent } from '../ingest/events.js';
 import type { ReadScope } from '../read/scope.js';
-import { getSession } from '../read/sessions.js';
+import { sessionLifecycle } from '../read/sessions.js';
 import { SERVER_PROTOCOL } from '../constants.js';
 
 /** What a person's end says produced it. */
@@ -30,14 +30,15 @@ export type EndSessionOutcome =
 
 /** End an open session as member `by`, or answer null for a session the Project does not hold or has deleted, before or during the write. Rejects with the ingest refusal when the write does not land for any other reason. */
 export async function endSession(db: RelationalStore, scope: ReadScope, sessionId: string, now: number, by: string): Promise<EndSessionOutcome | null> {
-  const before = await getSession(db, scope, sessionId);
+  // The lifecycle columns, never the presented dates: a session shown as finished is still open to an end.
+  const before = await sessionLifecycle(db, scope, sessionId);
   if (before === null) return null;
   if (before.endedAt !== null) return { outcome: 'already_ended', endedAt: before.endedAt };
   if (before.machineId === null) throw new Error('the session names no machine, so no end can be attributed to it');
   const result = await ingestEvent(db, { projectId: scope.projectId, machineId: before.machineId, tokenId: before.createdByTokenId, bodyBytes: 0, now, writeOrigin: 'server', actor: by }, {
     eventId: crypto.randomUUID(), sessionId, kind: 'session.end', createdAt: now, channel: 'http', producer: OWNER_END_PRODUCER, payload: { endedAt: now },
   });
-  const after = await getSession(db, scope, sessionId);
+  const after = await sessionLifecycle(db, scope, sessionId);
   if (after === null) return null;
   if (!result.persisted) throw new Error(`the session's end was refused: ${result.reason}`);
   return after.endedAt === null ? { outcome: 'open', endedAt: null } : { outcome: after.endedAt === now ? 'ended' : 'already_ended', endedAt: after.endedAt };

@@ -73,7 +73,7 @@ async function parseArm(sqlite: Database, env: { db: unknown; blobs: { put: (k: 
 
   await parseOnce(env as never, {
     projectId: PROJECT, transcriptId: TRANSCRIPT, sessionId: SESSION, machineId: MACHINE,
-    tokenId, agent, size: bytes.length, parsedOffset: 0, fidelity: null, openPromptId: null,
+    tokenId, agent, size: bytes.length, parsedOffset: 0, fidelity: null, openPromptId: null, imported: false,
   }, NOW);
 }
 
@@ -113,7 +113,7 @@ describe('native plugin transcripts land one row per fact', () => {
     await parseOnce(env as never, {
       projectId: PROJECT, transcriptId: TRANSCRIPT, sessionId: SESSION, machineId: MACHINE,
       tokenId, agent: 'opencode', size: utf8(TRANSCRIPT_TEXT).length,
-      parsedOffset: 0, fidelity: null, openPromptId: null,
+      parsedOffset: 0, fidelity: null, openPromptId: null, imported: false,
     }, NOW);
     expect(count(sqlite, 'events')).toBe(before);
     expect(count(sqlite, 'prompt_batches')).toBe(1);

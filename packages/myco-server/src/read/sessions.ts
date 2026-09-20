@@ -1,4 +1,5 @@
 import type { RelationalStore } from '../core/adapters.js';
+import { occurredAt, presentedEndedAt, presentedStartedAt } from '../db/session-dates.js';
 import { inListChunks, keyset, page, type Page, type ReadScope } from './scope.js';
 import { notTombstonedSql, NOT_TOMBSTONED_PARAMS } from '../core/tombstones.js';
 import { sessionMaterialReadySql, titlingClaimAvailableSql } from './material-readiness.js';
@@ -91,9 +92,13 @@ export function sessionLabel(title: string | null, firstPrompt: string | null, a
   return sessionId.slice(0, 8);
 }
 
-/** All joins land on primary keys, so the row count and the order are those of `sessions` alone. */
+/** Presented conversation dates fall back to raw lifecycle dates. */
+export const PRESENTED_STARTED_AT = presentedStartedAt('s.');
+export const PRESENTED_ENDED_AT = presentedEndedAt('s.');
+
+/** All joins land on primary keys, preserving the session row count. */
 const SESSION_COLUMNS = `s.session_id, s.machine_id, s.created_by_token_id, s.first_received_at, s.last_received_at,
-     s.agent, s.branch, s.started_at, s.ended_at, s.origin_path, s.parent_session_id, s.parent_reason,
+     s.agent, s.branch, ${PRESENTED_STARTED_AT} AS started_at, ${PRESENTED_ENDED_AT} AS ended_at, s.origin_path, s.parent_session_id, s.parent_reason,
      s.title, s.summary, s.titled_at, s.ended_by, ${FIRST_PROMPT_SQL} AS first_prompt,
      c.member_id, c.runtime_label, c.runtime_kind, m.label AS member_label, e.label AS ended_by_label`;
 const SESSION_FROM = `FROM sessions s
@@ -181,7 +186,7 @@ export async function unarchiveProject(db: RelationalStore, projectId: string): 
   return (await projectExists(db, projectId)) ? 'not_archived' : 'absent';
 }
 
-/** A project's sessions, most recently started first, over `idx_sessions_occurred`. The key is `COALESCE(started_at, first_received_at)` paired with `session_id`: a keyset page must order by a value no later write moves, or an actively capturing session slips above the cursor between two pages and appears on neither. Both halves stay with the first writer — `started_at` is the minimum over the session's starts, `first_received_at` never changes. */
+/** Sessions ordered by presented start and session ID. Refinement can move rows between keyset pages. */
 export interface SessionFilters {
   branch?: string;
   /** Sessions started at or after this instant (ms). */
@@ -233,7 +238,8 @@ export function containsPattern(text: string): string {
  * a column the rows are no longer ordered by, which drops and repeats rows
  * across pages rather than failing.
  */
-const SESSION_OCCURRED_AT = 'COALESCE(s.started_at, s.first_received_at)';
+/** The instant a session is ordered by: `PRESENTED_STARTED_AT` falling through to the first receipt, spelled flat. `idx_sessions_occurred` indexes this exact expression; a nested form plans as a sort instead, so the two are written the same way and move together. */
+export const SESSION_OCCURRED_AT = occurredAt('s.');
 
 export async function listSessions(db: RelationalStore, scope: ReadScope, opts: { limit?: number; cursor?: string } & SessionFilters = {}): Promise<Page<SessionRow>> {
   const k = keyset(opts, { order: SESSION_OCCURRED_AT, id: 's.session_id', direction: 'DESC' });
@@ -242,9 +248,11 @@ export async function listSessions(db: RelationalStore, scope: ReadScope, opts: 
   if ((opts.fidelity ?? 'full') === 'full') conditions.push(FULL_FIDELITY);
   const params: unknown[] = [scope.projectId];
   if (opts.branch !== undefined) { conditions.push('s.branch = ?'); params.push(opts.branch); }
-  if (opts.since !== undefined) { conditions.push('s.started_at >= ?'); params.push(opts.since); }
-  if (opts.state === 'open') conditions.push('s.ended_at IS NULL');
-  if (opts.state === 'ended') conditions.push('s.ended_at IS NOT NULL');
+  // The instant the page is ordered by, so the filter admits what the order shows.
+  if (opts.since !== undefined) { conditions.push(`${SESSION_OCCURRED_AT} >= ?`); params.push(opts.since); }
+  // Open and ended as the page shows them, so a session listed with an end is not also listed as open.
+  if (opts.state === 'open') conditions.push(`${PRESENTED_ENDED_AT} IS NULL`);
+  if (opts.state === 'ended') conditions.push(`${PRESENTED_ENDED_AT} IS NOT NULL`);
   if (opts.memberLabel !== undefined) { conditions.push('m.label = ?'); params.push(opts.memberLabel); }
   if (opts.sessionId !== undefined) { conditions.push('s.session_id = ?'); params.push(opts.sessionId); }
   if (opts.q !== undefined && opts.q.trim() !== '') {
@@ -270,6 +278,34 @@ export async function getSession(db: RelationalStore, scope: ReadScope, sessionI
     .bind(scope.projectId, sessionId)
     .first<Record<string, unknown>>();
   return row === null ? null : toSession(row);
+}
+
+/**
+ * A session's lifecycle columns, with no presented date over them. Admission,
+ * reopening, ending and titling read these: a session presented as finished is
+ * still open to the lifecycle until an end lands. A deleted session answers null.
+ */
+export interface SessionLifecycle {
+  machineId: string | null;
+  createdByTokenId: string;
+  startedAt: number | null;
+  endedAt: number | null;
+  firstReceivedAt: number;
+}
+
+export async function sessionLifecycle(db: RelationalStore, scope: ReadScope, sessionId: string): Promise<SessionLifecycle | null> {
+  const row = await db
+    .prepare(`SELECT s.machine_id, s.created_by_token_id, s.started_at, s.ended_at, s.first_received_at
+                FROM sessions s WHERE s.project_id = ? AND s.session_id = ? AND ${LIVE_SESSION}`)
+    .bind(scope.projectId, sessionId)
+    .first<Record<string, unknown>>();
+  return row === null ? null : {
+    machineId: text(row.machine_id),
+    createdByTokenId: row.created_by_token_id as string,
+    startedAt: num(row.started_at),
+    endedAt: num(row.ended_at),
+    firstReceivedAt: row.first_received_at as number,
+  };
 }
 
 /** How many of each child a session holds. One statement per table rather than a join: the projections have no common key and a five-way LEFT JOIN would multiply rows. */
@@ -384,8 +420,8 @@ export async function listSessionSummaries(db: RelationalStore, scope: ReadScope
 /** What the project holds, one count per projection: they share no key, and a join would multiply rows. */
 export async function projectStats(db: RelationalStore, scope: ReadScope, nowMs: number): Promise<ProjectStats> {
   const sessions = await db
-    .prepare(`SELECT COUNT(*) AS total, SUM(CASE WHEN ended_at IS NULL THEN 1 ELSE 0 END) AS open,
-                     SUM(CASE WHEN COALESCE(started_at, first_received_at) >= ? THEN 1 ELSE 0 END) AS recent, MAX(last_received_at) AS last
+    .prepare(`SELECT COUNT(*) AS total, SUM(CASE WHEN ${PRESENTED_ENDED_AT} IS NULL THEN 1 ELSE 0 END) AS open,
+                     SUM(CASE WHEN ${SESSION_OCCURRED_AT} >= ? THEN 1 ELSE 0 END) AS recent, MAX(last_received_at) AS last
                 FROM sessions s WHERE s.project_id = ? AND ${LIVE_SESSION}`)
     .bind(nowMs - WEEK_MS, scope.projectId)
     .first<Record<string, unknown>>();

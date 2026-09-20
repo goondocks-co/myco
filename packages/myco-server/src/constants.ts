@@ -1,4 +1,4 @@
-export const SERVER_SCHEMA_VERSION = 44;
+export const SERVER_SCHEMA_VERSION = 45;
 
 /** The member identity every dispatched runtime authenticates as; durable so attribution survives across runs. */
 export const HARNESS_MEMBER_ID = 'mem_harness';
@@ -117,3 +117,6 @@ export const WORKER_POLL_IDLE_MS = 2_000;
 
 /** Maximum error detail stored on a run. */
 export const MAX_RUN_ERROR_CHARS = 2000;
+
+/** The producer a transcript parse writes its derived events under; what tells a derived turn from one a member shipped. */
+export const TRANSCRIPT_PARSE_ADAPTER = 'transcript-parse';

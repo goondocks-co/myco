@@ -23,16 +23,17 @@
  * regardless is the one defect that would lose rows silently and in bulk, which
  * is exactly what a transcript-first design cannot afford.
  */
-import type { RelationalStore, ServerEnv } from '../core/adapters.js';
+import type { PreparedStatement, RelationalStore, ServerEnv } from '../core/adapters.js';
 import { emit, type Classifier } from '../telemetry.js';
 import { uuidv5 } from '../hash.js';
 import { planEventWrite, type EventWrite, type IngestResult } from './events.js';
 import { idFields, kindSpec } from './kinds.js';
 import { parserFor } from './parsers/registry.js';
 import { isBlock, type DerivedEvent } from './parsers/index.js';
+import { resolvePresentedDates } from './projections.js';
 import { segmentsToRead, splitCompleteLines } from './segments.js';
 import { registeredObjectKeySql } from '../core/blob-objects.js';
-import { MAX_BLOB_BYTES, SERVER_PROTOCOL } from '../constants.js';
+import { MAX_BLOB_BYTES, SERVER_PROTOCOL, TRANSCRIPT_PARSE_ADAPTER } from '../constants.js';
 
 /** Derived events collapsed into one database call. */
 export const TRANSCRIPT_PARSE_EVENTS_PER_BATCH = 20;
@@ -72,7 +73,7 @@ export const PARSER_VERSION = 2;
 export const TRANSCRIPT_PARSE_MALFORMED_LIMIT = 8;
 
 /** What a derived event says produced it. The one field that separates a parsed row from a hook-shipped one, and what the parity gate partitions on. */
-export const TRANSCRIPT_PRODUCER = { adapter: 'transcript-parse', version: String(SERVER_PROTOCOL) } as const;
+export const TRANSCRIPT_PRODUCER = { adapter: TRANSCRIPT_PARSE_ADAPTER, version: String(SERVER_PROTOCOL) } as const;
 
 /**
  * Which transcripts still owe a pass: bytes unread, and either no failure or a
@@ -105,6 +106,8 @@ interface ParseTarget {
   /** The turn open where the cursor stands, recorded by the pass that stopped there. */
   openPromptId: string | null;
   parserContext?: Record<string, unknown> | null;
+  /** Whether the latest segment arrived by import; lifecycle ownership is resolved from durable events. */
+  imported: boolean;
 }
 
 function contextFromStored(raw: unknown): Record<string, unknown> | null {
@@ -121,7 +124,7 @@ export type ParseFailure = Extract<Classifier, 'parse'> | 'blob_absent';
 /** The next transcript with unread bytes and no failure holding it, oldest receipt first. */
 async function nextTarget(db: RelationalStore, now: number): Promise<ParseTarget | null> {
   const row = await db
-    .prepare(`SELECT project_id, transcript_id, session_id, machine_id, token_id, agent, size, parsed_offset, fidelity, open_prompt_id, parser_context
+    .prepare(`SELECT project_id, transcript_id, session_id, machine_id, token_id, agent, size, parsed_offset, fidelity, open_prompt_id, parser_context, imported_at
                 FROM transcripts
                WHERE ${PENDING_TRANSCRIPTS}
                  AND NOT EXISTS (SELECT 1 FROM session_tombstones t WHERE t.project_id = transcripts.project_id AND t.session_id = transcripts.session_id)
@@ -141,6 +144,7 @@ async function nextTarget(db: RelationalStore, now: number): Promise<ParseTarget
     fidelity: (row.fidelity as string | null) ?? null,
     openPromptId: (row.open_prompt_id as string | null) ?? null,
     parserContext: contextFromStored(row.parser_context),
+    imported: row.imported_at !== null && row.imported_at !== undefined,
   };
 }
 
@@ -162,12 +166,17 @@ function turnOf(event: DerivedEvent): string | null {
   return typeof named === 'string' ? named : null;
 }
 
+/** Persists pass state and the dates of retained imported rows in one batch. */
+async function finalizePass(db: RelationalStore, target: ParseTarget, statement: PreparedStatement): Promise<void> {
+  await db.batch([statement, ...(target.imported ? [resolvePresentedDates(db, target.projectId, target.sessionId)] : [])]);
+}
+
 /** Stop this transcript where it stands and say why. Its rows to this point are kept; later passes skip it until the failure is cleared. */
 async function stop(db: RelationalStore, target: ParseTarget, classifier: ParseFailure, now: number): Promise<void> {
-  await db
+  const statement = db
     .prepare(`UPDATE transcripts SET parse_error = ?, parse_failed_at = ?, parser_version = ? WHERE project_id = ? AND transcript_id = ?`)
-    .bind(classifier, now, PARSER_VERSION, target.projectId, target.transcriptId)
-    .run();
+    .bind(classifier, now, PARSER_VERSION, target.projectId, target.transcriptId);
+  await finalizePass(db, target, statement);
   emit({ kind: 'transcript_parse_failed', projectId: target.projectId, transcriptId: target.transcriptId, reason: classifier });
 }
 
@@ -281,12 +290,13 @@ export async function parseOnce(env: Pick<ServerEnv, 'db' | 'blobs'>, target: Pa
   const recoveringHeader = needsHeader && target.parsedOffset > 0;
   const readOffset = recoveringHeader ? 0 : target.parsedOffset;
   const { results: segments } = await env.db
-    .prepare(`SELECT s.base_offset, s.length, s.blob_key, ${registeredObjectKeySql('s.project_id', 's.blob_key')} AS object_key
+    .prepare(`SELECT s.base_offset, s.length, s.blob_key, e.channel, e.created_at, ${registeredObjectKeySql('s.project_id', 's.blob_key')} AS object_key
                 FROM transcript_segments s
+                LEFT JOIN events e ON e.project_id = s.project_id AND e.event_id = s.event_id
                WHERE s.project_id = ? AND s.transcript_id = ? AND s.base_offset + s.length > ?
                ORDER BY s.base_offset`)
     .bind(target.projectId, target.transcriptId, readOffset)
-    .all<{ base_offset: number; length: number; blob_key: string; object_key: string | null }>();
+    .all<{ base_offset: number; length: number; blob_key: string; object_key: string | null; channel: string | null; created_at: number | null }>();
   calls += 1;
 
   const taken = segmentsToRead(
@@ -353,7 +363,14 @@ export async function parseOnce(env: Pick<ServerEnv, 'db' | 'blobs'>, target: Pa
       .bind(JSON.stringify(transcriptMeta), target.projectId, target.transcriptId).run();
     return { derived: 0, calls: calls + 1, nextOffset: null, failure: null };
   }
-  const events = await parser.parse({ lines: split.lines, sessionId: target.sessionId, now, openPromptId: target.openPromptId ?? undefined, transcriptMeta });
+  // Undated imported lines use the timestamp of the segment containing their first byte.
+  const imported = segments.filter((segment) => segment.channel === 'import'
+    && segment.base_offset < readEnd && segment.base_offset + segment.length > readOffset);
+  const lines = split.lines.map((line) => {
+    const segment = imported.find((s) => line.offset >= s.base_offset && line.offset < s.base_offset + s.length);
+    return segment?.created_at == null ? line : { ...line, undatedAt: segment.created_at };
+  });
+  const events = await parser.parse({ lines, sessionId: target.sessionId, now, openPromptId: target.openPromptId ?? undefined, transcriptMeta });
   const ctx = { projectId: target.projectId, machineId: target.machineId, tokenId: target.tokenId, bodyBytes: 0, now, writeOrigin: 'server' as const };
 
   let derived = 0;
@@ -414,12 +431,12 @@ export async function parseOnce(env: Pick<ServerEnv, 'db' | 'blobs'>, target: Pa
   // Uploaded bytes may end mid-turn; later segments continue the same prompt.
   const openPrompt = lastTurn;
 
-  await env.db
+  const advance = env.db
     .prepare(`UPDATE transcripts SET parsed_offset = MAX(parsed_offset, ?), parsed_at = ?, parser_version = ?, fidelity = COALESCE(fidelity, ?), open_prompt_id = ?,
                  parser_context = COALESCE(parser_context, ?), parse_error = NULL, parse_failed_at = NULL
                WHERE project_id = ? AND transcript_id = ?`)
-    .bind(cursor, now, PARSER_VERSION, parser.fidelity, openPrompt, transcriptMeta === undefined ? null : JSON.stringify(transcriptMeta), target.projectId, target.transcriptId)
-    .run();
+    .bind(cursor, now, PARSER_VERSION, parser.fidelity, openPrompt, transcriptMeta === undefined ? null : JSON.stringify(transcriptMeta), target.projectId, target.transcriptId);
+  await finalizePass(env.db, target, advance);
   calls += 1;
 
   emit({ kind: 'transcript_parsed', projectId: target.projectId, transcriptId: target.transcriptId, derived, offset: cursor });
