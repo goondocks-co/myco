@@ -61,7 +61,10 @@ export interface WorkerFacts {
   capabilities: string[] | null;
   /** Capability names this Deployment does not know, counted rather than carried. */
   unknownCapabilities: number | null;
+  /** Null for a row that records no reason, and for one whose stored reason is outside the vocabulary. */
   lastReason: ContactOutcome | null;
+  /** Whether the stored reason was outside the vocabulary: null when none is recorded, else 0 or 1. */
+  unknownReason: number | null;
   /** 0 for a lease holder with no recorded contact. */
   lastSeenAt: number;
   busy: { runId: string; projectId: string; task: string | null; leaseExpiresAt: number } | null;
@@ -144,6 +147,20 @@ export function declaredWork(): DeclaredWorkFacts[] {
   ];
 }
 
+/**
+ * The claim outcomes a document may carry.
+ *
+ * `worker_contacts.last_reason` has no column constraint and the fleet read casts
+ * whatever it holds to `ContactOutcome`, so a row written by an older or damaged
+ * writer can hold any string. The type below fails to compile if `ContactOutcome`
+ * gains a member this list does not, so the vocabulary cannot drift from it.
+ */
+const CONTACT_OUTCOMES = ['claimed', 'no_work', 'no_harness', 'at_limit', 'lost_race'] as const;
+type CoversOutcomes<T extends readonly ContactOutcome[]> = ContactOutcome extends T[number] ? T : never;
+const KNOWN_OUTCOMES: CoversOutcomes<typeof CONTACT_OUTCOMES> = CONTACT_OUTCOMES;
+
+const isKnownOutcome = (value: string): value is ContactOutcome => (KNOWN_OUTCOMES as readonly string[]).includes(value);
+
 const workerFacts = (row: WorkerFleetRow): WorkerFacts => ({
   credentialId: row.credentialId,
   machineId: row.machineId,
@@ -152,7 +169,10 @@ const workerFacts = (row: WorkerFleetRow): WorkerFacts => ({
   capabilities: row.capabilities === null ? null : row.capabilities.filter(isKnownWorkerCapability),
   // A worker reports its own strings; only the ones this Deployment knows are carried, and the rest are counted so an absence is not read as none reported.
   unknownCapabilities: row.capabilities === null ? null : row.capabilities.filter((value) => !isKnownWorkerCapability(value)).length,
-  lastReason: row.lastReason,
+  lastReason: row.lastReason !== null && isKnownOutcome(row.lastReason) ? row.lastReason : null,
+  // A stored reason outside the vocabulary is counted, never carried: an absence
+  // is not read as a worker that answered nothing.
+  unknownReason: row.lastReason === null ? null : isKnownOutcome(row.lastReason) ? 0 : 1,
   lastSeenAt: row.lastSeenAt,
   busy: row.busy === null ? null : { runId: row.busy.runId, projectId: row.busy.projectId, task: row.busy.task, leaseExpiresAt: row.busy.leaseExpiresAt },
   eligible: row.eligible,

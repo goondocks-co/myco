@@ -52,6 +52,45 @@ describe('the Deployment names what it is configured to do', () => {
     expect(document.ingestBacklog).toMatchObject({ pendingTranscriptBytes: 0, pendingImportedTranscripts: 0 });
   });
 
+  it('counts a stored claim reason outside the vocabulary rather than carrying its text', async () => {
+    const r = await rig();
+    await ensureMember(r.db, 'mem_w1', NOW, 'admin', 'a worker');
+    const credential = await issueMemberToken(r.db, { memberId: 'mem_w1', machineId: 'build-box' }, NOW);
+    await recordWorkerContact(r.db, { credentialId: credential.tokenId, machineId: 'build-box', offers: [], capabilities: [], reason: 'no_work', now: NOW });
+    // The column carries no constraint, so an older or damaged writer can leave any
+    // string where a reason belongs. This is that row.
+    r.sqlite.run(`UPDATE worker_contacts SET last_reason = ? WHERE credential_id = ?`,
+      ['refused: /Users/dev/.myco/secrets.env could not be read', credential.tokenId]);
+
+    const document = await deploymentDiagnostics(r.serverEnv, NOW);
+    expect(document.workers?.fleet[0]).toMatchObject({ lastReason: null, unknownReason: 1 });
+    expect(JSON.stringify(document)).not.toContain('secrets.env');
+    expect(JSON.stringify(document)).not.toContain('refused:');
+  });
+
+  it('carries a known reason and counts none unknown', async () => {
+    const r = await rig();
+    await ensureMember(r.db, 'mem_w1', NOW, 'admin', 'a worker');
+    const credential = await issueMemberToken(r.db, { memberId: 'mem_w1', machineId: 'build-box' }, NOW);
+    await recordWorkerContact(r.db, { credentialId: credential.tokenId, machineId: 'build-box', offers: [], capabilities: [], reason: 'no_harness', now: NOW });
+
+    const document = await deploymentDiagnostics(r.serverEnv, NOW);
+    expect(document.workers?.fleet[0]).toMatchObject({ lastReason: 'no_harness', unknownReason: 0 });
+  });
+
+  it('records no reason for a lease holder that has never reported one', async () => {
+    const r = await rig();
+    await ensureMember(r.db, 'mem_w1', NOW, 'admin', 'a worker');
+    const credential = await issueMemberToken(r.db, { memberId: 'mem_w1', machineId: 'legacy-box' }, NOW);
+    r.sqlite.run(
+      `INSERT INTO agent_runs (id, project_id, agent_id, task, status, queued_at, started_at, leased_by, lease_expires_at)
+       VALUES ('run_held', 'proj_1', 'myco-agent', 'title-summary', 'running', ?, ?, ?, ?)`,
+      [NOW, NOW, credential.tokenId, NOW + 90_000],
+    );
+    const document = await deploymentDiagnostics(r.serverEnv, NOW);
+    expect(document.workers?.fleet[0]).toMatchObject({ lastReason: null, unknownReason: null, lastSeenAt: 0 });
+  });
+
   it('carries only the fields it declares for a worker, so a producer growing one does not widen the document', async () => {
     const r = await rig();
     await ensureMember(r.db, 'mem_w1', NOW, 'admin', 'a worker');
@@ -59,7 +98,7 @@ describe('the Deployment names what it is configured to do', () => {
     await recordWorkerContact(r.db, { credentialId: credential.tokenId, machineId: 'build-box', offers: [], capabilities: [], reason: 'no_work', now: NOW });
     const document = await deploymentDiagnostics(r.serverEnv, NOW);
     expect(Object.keys(document.workers!.fleet[0]!).sort())
-      .toEqual(['busy', 'capabilities', 'credentialId', 'eligible', 'lastReason', 'lastSeenAt', 'machineId', 'offers', 'recent', 'unknownCapabilities', 'unknownOffers']);
+      .toEqual(['busy', 'capabilities', 'credentialId', 'eligible', 'lastReason', 'lastSeenAt', 'machineId', 'offers', 'recent', 'unknownCapabilities', 'unknownOffers', 'unknownReason']);
   });
 
   it('carries no capability name it does not know, so a worker cannot place its own text in the document', async () => {
