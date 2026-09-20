@@ -7,6 +7,7 @@ import { parse as parseToml } from 'smol-toml';
 import { expandHome, resolveMycoHome } from '../grove/paths.js';
 import { shouldDeferSubsystem, SYMBIONT_CONFIG_SUBSYSTEM } from '../grove/subsystem-claim.js';
 import { atomicWriteFileSync } from '../utils/atomic-write.js';
+import { assertSafeProjectRoot } from '../project-root.js';
 import { findTomlSectionEnd, buildTomlMcpSection, upsertTomlSection, upsertTomlSectionKeys, removeTomlSectionKeys, readTomlSectionKey } from './toml-helpers.js';
 import {
   deepMergeSettings,
@@ -17,7 +18,7 @@ import {
   type JsonSettingsAudit,
 } from './settings-merge.js';
 import { readJsonFile, writeJsonFile, writeOrDeleteJsonFile } from './json-helpers.js';
-import { ensureAgentsMd, ensureSymlink, isMycoHookGroup, containsMycoLauncherReference, hasMycoManagedMarker, MYCO_MANAGED_MARKER } from './install-helpers.js';
+import { ensureAgentsMd, ensureSymlink, isMycoHookGroup, withoutMycoHooks, containsMycoLauncherReference, hasMycoManagedMarker, MYCO_MANAGED_MARKER } from './install-helpers.js';
 import { hookCommands, memberHookTemplate } from './member-hooks.js';
 import { CREDENTIAL_FLAG, type CredentialSource } from '../member/constants.js';
 import { MEMBER_MCP_LEVERS, memberMcpTemplate, memberRemoteMcp } from './member-hooks.js';
@@ -56,11 +57,11 @@ const WRANGLER_CACHE_DIR = '.wrangler/';
 const AGENTS_MANAGED_START = '<!-- myco:managed:start -->';
 const AGENTS_MANAGED_END = '<!-- myco:managed:end -->';
 
-/** The always-present managed guidance lines — byte-identical to the historical static block. */
+/** The always-present managed guidance lines. */
 const AGENTS_MANAGED_BASE_LINES = [
   '- When `capture.ignore_plan_dirs_in_git` is enabled, custom directories in `capture.plan_dirs` may be intentionally gitignored after capture into Myco.',
   '- Do not force-add files from intentionally gitignored custom plan directories unless the user explicitly asks.',
-  '- When orienting in this codebase — finding a feature, locating files relevant to a change, or understanding an unfamiliar subsystem — use Myco first: call `myco tool call myco_cortex --json --input \'{"op":"canopy_map"}\'` as the CLI path, or `myco_cortex({"op":"canopy_map"})` via MCP when the host exposes Myco tools cleanly, before falling back to Glob/Grep.',
+  '- Myco tools take a `project` argument; pass this repo\'s git remote or the project id from session-start context. Writes without it are refused.',
 ] as const;
 
 /** Managed AGENTS.md block. */
@@ -377,7 +378,7 @@ export interface ManagedProjectFilesResult {
   skillSymlinks: number;
 }
 
-export type InstallScope = 'project' | 'global' | 'member-project';
+export type InstallScope = 'project' | 'global' | 'member-project' | 'member-global';
 
 /**
  * Per-scope capability switch. Centralizes the "which operations run
@@ -423,6 +424,10 @@ const SCOPE_CAPABILITIES: Record<InstallScope, ScopeCapabilities> = {
   'member-project': {
     agentsMd: false, gitignore: false, instructions: false, pluginPackage: false,
     globalLauncher: false, flatSkills: false, detectionGate: false, mcpHomeEnv: false,
+  },
+  'member-global': {
+    agentsMd: false, gitignore: false, instructions: false, pluginPackage: false,
+    globalLauncher: false, flatSkills: true, detectionGate: false, mcpHomeEnv: false,
   },
 };
 
@@ -494,6 +499,14 @@ export class SymbiontInstaller {
     return SCOPE_CAPABILITIES[this.installScope];
   }
 
+  private get isGlobalScope(): boolean {
+    return this.installScope === 'global' || this.installScope === 'member-global';
+  }
+
+  private get isMemberScope(): boolean {
+    return this.installScope === 'member-project' || this.installScope === 'member-global';
+  }
+
   /**
    * Absolute path for a manifest target field, resolved by scope:
    *
@@ -506,7 +519,7 @@ export class SymbiontInstaller {
   private resolveAbsoluteTarget(field: 'hooks' | 'skills' | 'settings'): string | null {
     const reg = this.manifest.registration;
     if (!reg) return null;
-    if (this.installScope === 'global') {
+    if (this.isGlobalScope) {
       // Settings under global scope must be EXPLICIT — no silent fallback.
       //
       // Historically, an undefined `globalSettingsTarget` fell back to
@@ -565,7 +578,7 @@ export class SymbiontInstaller {
     const reg = this.manifest.registration;
     if (!reg) return [];
     const defaultKey = reg.mcpServersKey ?? 'mcpServers';
-    if (this.installScope === 'global') {
+    if (this.isGlobalScope) {
       const targets = reg.globalMcpTarget;
       if (!targets || targets.length === 0) return [];
       return targets.map((entry) => ({
@@ -857,21 +870,22 @@ export class SymbiontInstaller {
 
   /** Run all registration steps. */
   install(): InstallResult {
-    if (this.installScope === 'member-project') {
+    if (this.isMemberScope) {
       // Every refusal runs before the first write: a member is provisioned
       // with both surfaces or with neither, never with a plugin whose tools
       // the host would then refuse to serve.
       if (this.isMemberPluginFile()) {
         this.assertMemberMcpWritable();
         const hooks = this.writeMemberPlugin();
-        return { ...emptyInstallResult(), hooks, mcp: this.installMemberMcp() };
+        return this.finishMemberInstall({ ...emptyInstallResult(), hooks, mcp: this.installMemberMcp() });
       }
       if (this.renderMemberHooks('registry') === null) return emptyInstallResult();
       this.assertMemberMcpWritable();
       const hooks = this.installMemberHooks();
-      return { ...emptyInstallResult(), hooks, mcp: this.installMemberMcp() };
+      return this.finishMemberInstall({ ...emptyInstallResult(), hooks, mcp: this.installMemberMcp(), settings: this.isGlobalScope && this.installSettings() });
     }
     if (this.deferGlobalSymbiontConfig()) return emptyInstallResult();
+    this.assertLegacyGlobalInstallAllowed();
     const reg = this.manifest.registration;
     if (this.capabilities.detectionGate && !this.isAvailableForScope()) {
       // Agent isn't installed on this machine — skip silently, never
@@ -1754,15 +1768,9 @@ export class SymbiontInstaller {
     return block;
   }
 
-  /**
-   * Write the member's hook block into the manifest's `memberHooksTarget`,
-   * preserving every key the file already holds and every hook group Myco
-   * does not own. The target must be ignored by git — a settings file with a
-   * machine-absolute binary path and this machine's credential source is not
-   * shareable — so an unignored target is added to `.git/info/exclude`, which
-   * needs no commit and no consent from the repo's own `.gitignore`.
-   */
+  /** Write scoped member hooks, preserving foreign commands and excluding project targets from git. */
   installMemberHooks(): boolean {
+    this.assertMemberMcpWritable();
     const block = this.renderMemberHooks('registry');
     if (block === null) return false;
     const targetPath = this.resolveAbsoluteTarget('hooks');
@@ -1772,7 +1780,7 @@ export class SymbiontInstaller {
     const existingHooks = (settings.hooks ?? {}) as Record<string, unknown[]>;
     const mergedHooks: Record<string, unknown[]> = {};
     for (const [event, groups] of Object.entries(existingHooks)) {
-      const foreign = (groups as Array<Record<string, unknown>>).filter((group) => !isMycoHookGroup(group));
+      const foreign = withoutMycoHooks(groups as Array<Record<string, unknown>>);
       if (foreign.length > 0) mergedHooks[event] = foreign;
     }
     for (const [event, groups] of Object.entries(block)) {
@@ -1782,7 +1790,7 @@ export class SymbiontInstaller {
     const reg = this.manifest.registration;
     if (reg?.hooksConfigVersion !== undefined) settings.version = reg.hooksConfigVersion;
     const written = writeJsonFile(targetPath, settings);
-    this.ensureGitIgnored(targetPath);
+    if (!this.isGlobalScope) this.ensureGitIgnored(targetPath);
     return written;
   }
 
@@ -1817,7 +1825,7 @@ export class SymbiontInstaller {
 
   /** The binary every command this install writes names: a member project's own home's, else the machine's. */
   private binaryPath(): string {
-    return this.installScope === 'member-project' ? resolveManagedBinaryPath(this.memberHomeDir()) : resolveManagedBinaryPath();
+    return this.isMemberScope ? resolveManagedBinaryPath(this.memberHomeDir()) : resolveManagedBinaryPath();
   }
 
   /**
@@ -1829,6 +1837,7 @@ export class SymbiontInstaller {
    * file is no global config.
    */
   private assertNoMemberMcpConflict(): void {
+    if (this.isGlobalScope) return;
     const reg = this.manifest.registration;
     if (!reg?.memberMcpGlobalMerge || !reg.mcpTarget) return;
     const toml = reg.mcpFormat === 'toml';
@@ -1858,8 +1867,9 @@ export class SymbiontInstaller {
     );
   }
 
-  /** The member's MCP server list file: the manifest's mcpTarget under the project root, or null. */
+  /** The member's MCP file in the selected installation scope, or null. */
   private memberMcpTargetPath(): string | null {
+    if (this.isGlobalScope) return this.resolveAbsoluteMcpTargets()[0]?.path ?? null;
     const target = this.manifest.registration?.mcpTarget;
     return target ? path.join(this.projectRoot, target) : null;
   }
@@ -1960,7 +1970,9 @@ export class SymbiontInstaller {
       throw this.memberMcpConflict(`could not read ${filePath} (${firstLine(error)})`, 'Fix the file');
     }
     try {
-      return (toml ? parseToml(raw) : JSON.parse(raw)) as Record<string, unknown>;
+      const parsed: unknown = toml ? parseToml(raw) : JSON.parse(raw);
+      if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error('expected a configuration object');
+      return parsed as Record<string, unknown>;
     } catch (error) {
       throw this.memberMcpConflict(`could not read ${filePath} (${firstLine(error)})`, 'Fix the file');
     }
@@ -1991,9 +2003,80 @@ export class SymbiontInstaller {
   private assertMemberMcpWritable(): void {
     this.readMemberMcpTarget();
     this.assertNoMemberMcpConflict();
+    if (this.installScope === 'member-global') this.assertGlobalMemberOwnership();
   }
 
-  /** A symbiont whose member surface is a plugin file the agent loads from the project. */
+  /** Retire this project's member registrations after their global replacements are written. */
+  private finishMemberInstall(result: InstallResult): InstallResult {
+    if (this.installScope !== 'member-global') return result;
+    const local = this.projectMemberInstaller();
+    const hooks = local.uninstallMemberHooks();
+    const mcp = local.uninstallMemberMcp();
+    return { ...result, hooks: hooks || result.hooks, mcp: mcp || result.mcp };
+  }
+
+  /** Global member provisioning cannot take another installation's capture or Deployment. */
+  private assertGlobalMemberOwnership(): void {
+    assertSafeProjectRoot(this.projectRoot);
+    const local = this.projectMemberInstaller();
+    local.readMemberMcpTarget();
+    const localHooks = local.resolveAbsoluteTarget('hooks');
+    if (localHooks && !this.isMemberPluginFile()) this.readMcpFile(localHooks, false);
+    if (localHooks && this.isMemberPluginFile()) local.assertMemberPluginTargetIsMyco(localHooks);
+    const target = this.resolveAbsoluteTarget('hooks');
+    if (target && fs.existsSync(target)) {
+      if (this.isMemberPluginFile()) {
+        let content: string;
+        try { content = fs.readFileSync(target, 'utf8'); } catch (error) {
+          throw new MemberProvisionConflictError(`could not read ${target} (${firstLine(error)}), so nothing was written.`);
+        }
+        if (!content.includes(MEMBER_PLUGIN_MARKER)) {
+          throw new MemberProvisionConflictError(`Global hooks at ${target} belong to another installation. Complete its capture cutover before provisioning globally.`);
+        }
+      } else {
+        const settings = this.readMcpFile(target, false);
+        const commands = hookCommands(settings?.hooks).filter((command) => rawHasMycoOwnershipSignal(command));
+        if (commands.some((command) => !command.includes(CREDENTIAL_FLAG) || !command.includes(this.binaryPath()))) {
+          throw new MemberProvisionConflictError(`Global hooks at ${target} belong to another installation. Complete its capture cutover before provisioning globally.`);
+        }
+      }
+    }
+    const reg = this.manifest.registration;
+    const mcpTarget = this.memberMcpTargetPath();
+    if (!mcpTarget) return;
+    const existing = this.mycoServerIn(mcpTarget, reg?.mcpFormat === 'toml', reg?.mcpFormat === 'toml' ? TOML_MCP_SERVERS_KEY : (reg?.mcpServersKey ?? 'mcpServers'));
+    if (existing === null) return;
+    const desired = this.renderMemberMcp('registry')?.[MYCO_MCP_SERVER_NAME] as Record<string, unknown> | undefined;
+    const helperKey = reg?.memberMcpHeadersHelperKey;
+    const sameCredentialSource = helperKey
+      ? existing[helperKey] === desired?.[helperKey]
+      : isDeepStrictEqual(existing.command, desired?.command) && isDeepStrictEqual(existing.args, desired?.args);
+    if (!this.isMemberMcpServer(existing) || existing.url !== desired?.url || !sameCredentialSource) {
+      throw this.memberMcpConflict(`the global Myco MCP entry in ${mcpTarget} belongs to another installation or Deployment`, 'Complete its capture cutover before replacing the global entry');
+    }
+  }
+
+  private projectMemberInstaller(): SymbiontInstaller {
+    return new SymbiontInstaller(this.manifest, this.projectRoot, this.packageRoot, this.suppressBundledTemplates, this.vaultDir, this.groveId, 'member-project', this.memberHomeDir());
+  }
+
+  /** Legacy reconciliation cannot replace a global member registration. */
+  private assertLegacyGlobalInstallAllowed(): void {
+    if (this.installScope !== 'global') return;
+    const target = this.resolveAbsoluteTarget('hooks');
+    const raw = target && fs.existsSync(target) ? fs.readFileSync(target, 'utf8') : '';
+    const memberHooks = this.manifest.registration?.hooksFormat !== HOOKS_FORMAT_PLUGIN_FILE
+      && rawHasMycoOwnershipSignal(raw) && raw.includes(CREDENTIAL_FLAG);
+    const reg = this.manifest.registration;
+    const memberMcp = this.resolveAbsoluteMcpTargets().some(({ path: filePath, serversKey }) => {
+      const server = this.mycoServerIn(filePath, reg?.mcpFormat === 'toml', reg?.mcpFormat === 'toml' ? TOML_MCP_SERVERS_KEY : serversKey);
+      return server !== null && this.isMemberMcpServer(server);
+    });
+    const member = memberHooks || memberMcp;
+    if (member) throw new MemberProvisionConflictError(`Global member hooks at ${target} require member provisioning. Run \`myco member provision ${this.manifest.name}\` from a joined project.`);
+  }
+
+  /** A symbiont whose member integration is a plugin file. */
   isMemberPluginFile(): boolean {
     const reg = this.manifest.registration;
     return reg?.hooksFormat === HOOKS_FORMAT_PLUGIN_FILE && Boolean(reg.memberHooksTarget);
@@ -2010,10 +2093,10 @@ export class SymbiontInstaller {
     const rendered = this.renderMemberPlugin('registry');
     const targetPath = this.resolveAbsoluteTarget('hooks');
     if (rendered === null || targetPath === null) return false;
-    this.assertNoMemberPluginConflict();
+    if (!this.isGlobalScope) this.assertNoMemberPluginConflict();
     this.assertMemberPluginTargetIsMyco(targetPath);
     const written = this.writeManagedFile(targetPath, rendered);
-    this.ensureGitIgnored(targetPath);
+    if (!this.isGlobalScope) this.ensureGitIgnored(targetPath);
     return written;
   }
 
@@ -2080,8 +2163,8 @@ export class SymbiontInstaller {
     const kept: Record<string, unknown[]> = {};
     let removed = false;
     for (const [event, groups] of Object.entries(existingHooks)) {
-      const foreign = (groups as Array<Record<string, unknown>>).filter((group) => !isMycoHookGroup(group));
-      if (foreign.length !== (groups as unknown[]).length) removed = true;
+      const foreign = withoutMycoHooks(groups as Array<Record<string, unknown>>);
+      if ((groups as Array<Record<string, unknown>>).some(isMycoHookGroup)) removed = true;
       if (foreign.length > 0) kept[event] = foreign;
     }
     if (!removed) return false;
@@ -2701,8 +2784,8 @@ export class SymbiontInstaller {
    * project and global installs track independently.
    */
   private getSettingsAuditPath(): string {
-    const stateRoot = this.installScope === 'global' ? resolveMycoHome() : this.vaultDir;
-    const scopeTag = this.installScope === 'global' ? 'global' : 'project';
+    const stateRoot = this.isGlobalScope ? (this.isMemberScope ? this.memberHomeDir() : resolveMycoHome()) : this.vaultDir;
+    const scopeTag = this.isGlobalScope ? 'global' : 'project';
     return path.join(stateRoot, 'installer-audit', `${this.manifest.name}-${scopeTag}-settings.json`);
   }
 

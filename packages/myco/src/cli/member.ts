@@ -14,12 +14,12 @@ import { getMachineId } from '../machine-id.js';
 import { isSafeProjectRoot } from '../project-root.js';
 import { RUNTIME_HOME_FILENAME, defaultMycoHome, readHomePin, resolveMycoHome } from '../paths/home.js';
 import { unboundedBudget } from '../member/budget.js';
-import { CREDENTIAL_FLAG, CREDENTIAL_SOURCES, isProjectId, memberHeaders, MEMBER_TOKEN_REFRESH_WINDOW_MS, SERVER_FLAG } from '../member/constants.js';
+import { CREDENTIAL_FLAG, CREDENTIAL_SOURCES, deploymentScopedHeaders, isProjectId, memberHeaders, MEMBER_TOKEN_REFRESH_WINDOW_MS, SERVER_FLAG } from '../member/constants.js';
 import { isHttpsUrl, isMemberTokenShape, parseCredentialFlag, resolveCredential, resolveMemberProjectRoot } from '../member/credential.js';
 import { refreshMemberCredential, type RefreshReport } from '../member/refresh.js';
 import { runImport } from '../member/import.js';
 import { clearMissingMembership, listMissingMemberships, pruneMissingMemberships, readMissingMembership } from '../member/no-membership.js';
-import { deploymentUrl, listRegistryEntries, readRegistryEntry, removeRegistryEntry, writeRegistryEntry, REGISTRY_VERSION, type RegistryEntry } from '../member/registry.js';
+import { deploymentUrl, listRegistryEntries, readDeploymentMembership, readRegistryEntry, removeRegistryEntry, writeRegistryEntry, REGISTRY_VERSION, type RegistryEntry } from '../member/registry.js';
 import { applySpoolRetention, lastAckAt } from '../member/retention.js';
 import { MemberSpool, type DrainResult } from '../member/spool.js';
 import { ServerClient, type FetchLike } from '../member/transport.js';
@@ -34,7 +34,7 @@ Ops:
   join <server-url> --project <id> (--token-stdin | --token-env <NAME>) [--root <dir>] [--provision <agent>]
                      Record this machine's membership of a project on a Myco server. The token is read
                      from stdin or from the named environment variable — never from the command line.
-                     --provision writes the agent's hooks for this project.
+                     --provision installs the agent's hooks and MCP entry globally.
   leave [--purge]    Forget this project's membership, and remove the surfaces that answer over it: any
                      member plugin (OpenCode, Pi) and the project's own Myco MCP entry, so those agents
                      fall back to what is installed for all your projects. The spool is kept unless
@@ -47,8 +47,8 @@ Ops:
   refresh [--all]    Rotate the member token when its refresh window is open. The predecessor keeps
                      working until the successor is first used; an env-sourced token is never rotated.
   provision <agent> [--root <dir>]
-                     Write the agent's hooks and MCP entry for a project this machine has already joined,
-                     from the recorded membership. No token needs to be supplied or changed.
+                     Install the agent's hooks and MCP entry globally using the recorded membership.
+                     --root selects the membership, not the installation scope. No token is changed.
   link-github [--root <dir>] [--open]
                      Connect your GitHub account to this membership for the dashboard: prints a one-time
                      link to open in a browser within ten minutes. --open hands it to the browser as well.
@@ -224,7 +224,8 @@ function provisionAgent(
     fail(`unknown agent "${agent}" — the membership is recorded; provision it with \`myco member provision <agent>\``);
     return false;
   }
-  const installer = new SymbiontInstaller(manifest, root, deps.packageRoot ?? resolvePackageRoot(), false, undefined, null, 'member-project', mycoHome);
+  const packageRoot = deps.packageRoot ?? resolvePackageRoot();
+  const installer = new SymbiontInstaller(manifest, root, packageRoot, false, undefined, null, 'member-global', mycoHome);
   let installed;
   try {
     installed = installer.install();
@@ -235,10 +236,8 @@ function provisionAgent(
   }
   const surface = installer.isMemberPluginFile() ? 'plugin' : 'hooks';
   out(installed.hooks || installed.mcp
-    ? `provisioned ${manifest.displayName} for ${root}${installed.mcp ? ` (${surface} and MCP)` : ''}`
-    : `no registration changes for ${manifest.displayName} at ${root}`);
-  const note = manifest.registration?.memberProvisionNote;
-  if (note) out(note);
+    ? `provisioned ${manifest.displayName} globally${installed.mcp ? ` (${surface} and MCP)` : ''}`
+    : `no global registration changes for ${manifest.displayName}`);
   return true;
 }
 
@@ -645,6 +644,18 @@ export function runMcpHeaders(args: readonly string[], deps: MemberCliDeps = {})
   const serverIdx = args.indexOf(SERVER_FLAG);
   const expected = serverIdx >= 0 ? args[serverIdx + 1] : undefined;
   if (!expected || expected.startsWith('--')) return fail(`pass ${SERVER_FLAG} <server-url>, the Deployment this entry's URL names`, 2);
+  if (source === 'registry') {
+    const home = homeFor(deps);
+    const binding = readRegistryEntry(resolveMemberProjectRoot(deps.cwd), home);
+    if (binding === null) {
+      const membership = readDeploymentMembership(expected, home);
+      if (!membership || deploymentUrl(membership.serverUrl) !== deploymentUrl(expected) || !isHttpsUrl(membership.serverUrl) || !isMemberTokenShape(membership.token)) {
+        return fail('no valid membership for the configured Deployment', 1);
+      }
+      out(JSON.stringify(deploymentScopedHeaders(membership)));
+      return;
+    }
+  }
   const record = resolveCredential(source, { cwd: deps.cwd, env: deps.env, mycoHome: deps.mycoHome, invokedBy: 'mcp-headers' });
   if (record === null) {
     process.exitCode = 1;

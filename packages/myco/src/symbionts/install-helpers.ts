@@ -157,6 +157,17 @@ export function isMycoHookGroup(group: Record<string, unknown>): boolean {
   return false;
 }
 
+/** Remove Myco commands while preserving other commands in shared matcher groups. */
+export function withoutMycoHooks(groups: Array<Record<string, unknown>>): Array<Record<string, unknown>> {
+  return groups.flatMap((group) => {
+    if (Array.isArray(group.hooks)) {
+      const hooks = group.hooks.filter((hook: { command?: string }) => !hook.command || !isMycoHookCommand(hook.command));
+      return hooks.length > 0 ? [{ ...group, hooks }] : [];
+    }
+    return isMycoHookGroup(group) ? [] : [group];
+  });
+}
+
 /**
  * Create a starter AGENTS.md if the project doesn't have one.
  * Idempotent — skips if AGENTS.md already exists.

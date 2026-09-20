@@ -108,13 +108,12 @@ describe('SymbiontInstaller installScope=global', () => {
     expect(installer.isAvailableForScope()).toBe(true);
     installer.install();
 
-    // Hooks + MCP land in ~/.claude/settings.json (the same file under
-    // global scope — settings-merge handles the marker-bounded block).
+    // Hooks and MCP use Claude's separate user-wide files.
     const settingsPath = path.join(tmpHome, '.claude', 'settings.json');
     expect(fs.existsSync(settingsPath)).toBe(true);
     const settings = JSON.parse(fs.readFileSync(settingsPath, 'utf-8'));
     expect(settings.hooks).toBeDefined();
-    expect(settings.mcpServers?.myco).toBeDefined();
+    expect(JSON.parse(fs.readFileSync(path.join(tmpHome, '.claude.json'), 'utf8')).mcpServers?.myco).toBeDefined();
 
     // No launcher trampolines are written — the binary is the launcher
     // now; the hook command invokes it directly.
@@ -189,7 +188,7 @@ describe('SymbiontInstaller installScope=global', () => {
 
   it('defers a global uninstall (strips nothing) when a peer owns the symbiont-config claim', () => {
     fs.mkdirSync(path.join(tmpHome, '.claude'), { recursive: true });
-    const settingsPath = path.join(tmpHome, '.claude', 'settings.json');
+    const settingsPath = path.join(tmpHome, '.claude.json');
 
     // Install with NO peer claim first so the Myco-managed block exists.
     new SymbiontInstaller(

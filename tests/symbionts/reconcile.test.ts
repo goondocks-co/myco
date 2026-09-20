@@ -88,8 +88,14 @@ describe('reconcileConfiguredSymbionts (global-install model)', () => {
     reconcileConfiguredSymbionts(root, path.join(root, '.myco'), null);
 
     const agents = fs.readFileSync(path.join(root, 'AGENTS.md'), 'utf-8');
-    expect(agents).toContain('myco tool call myco_cortex --json --input');
+    expect(agents).toContain('Myco tools take a `project` argument');
     expect(agents).not.toContain('node .agents/myco-cli.cjs tool call myco_cortex');
+    expect(agents).toStartWith('# Project Rules\n');
+    const ignorePath = path.join(root, '.gitignore');
+    const ignored = fs.readFileSync(ignorePath, 'utf8');
+    reconcileConfiguredSymbionts(root, path.join(root, '.myco'), null);
+    expect(fs.readFileSync(path.join(root, 'AGENTS.md'), 'utf8')).toBe(agents);
+    expect(fs.readFileSync(ignorePath, 'utf8')).toBe(ignored);
     expect(fs.existsSync(path.join(root, '.agents/myco-run.cjs'))).toBe(false);
     expect(fs.existsSync(path.join(root, '.agents/myco-cli.cjs'))).toBe(false);
   });
@@ -125,7 +131,7 @@ describe('reconcileConfiguredSymbionts (global-install model)', () => {
     expect(agents).not.toContain('okf/index.md');
     expect(agents).not.toContain('Open Knowledge Format');
     expect(agents).not.toContain('OKF wiki');
-    expect(agents).toContain('myco tool call myco_cortex --json --input');
+    expect(agents).toContain('Myco tools take a `project` argument');
   });
 
   it('is idempotent — double reconcile is byte-stable', () => {
@@ -182,9 +188,9 @@ describe('reconcileConfiguredSymbionts (global-install model)', () => {
     expect(outcomes.map((o) => o.projectId).sort()).toEqual(['proj_dev', 'proj_prod']);
     // Both projects in the home get their stale guidance rewritten.
     expect(fs.readFileSync(path.join(devRoot, 'AGENTS.md'), 'utf-8'))
-      .toContain('myco tool call myco_cortex --json --input');
+      .toContain('Myco tools take a `project` argument');
     expect(fs.readFileSync(path.join(prodRoot, 'AGENTS.md'), 'utf-8'))
-      .toContain('myco tool call myco_cortex --json --input');
+      .toContain('Myco tools take a `project` argument');
   });
 
   it('skips a hosted (treeless synthetic-root) row entirely — no fs writes, no error outcome (AC #10)', () => {
@@ -221,6 +227,6 @@ describe('reconcileConfiguredSymbionts (global-install model)', () => {
     expect(fs.existsSync(syntheticRoot)).toBe(false);
     // The real project is still reconciled.
     expect(fs.readFileSync(path.join(realRoot, 'AGENTS.md'), 'utf-8'))
-      .toContain('myco tool call myco_cortex --json --input');
+      .toContain('Myco tools take a `project` argument');
   });
 });

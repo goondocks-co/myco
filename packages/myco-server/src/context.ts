@@ -48,6 +48,9 @@ export interface RouteContext {
   origin: string;
 }
 
+/** An authenticated member request with no default Project. */
+export type UnboundMemberContext = Pick<RouteContext, 'memberId' | 'machineId' | 'tokenId' | 'body' | 'now'>;
+
 /**
  * Context for a Deployment-scoped route: a worker's claim, lease and end.
  *

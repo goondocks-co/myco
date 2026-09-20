@@ -71,6 +71,9 @@ export interface ToolContext {
   now: number;
 }
 
+/** Protocol discovery can precede a member naming the Project for a tool call. */
+export type ProtocolContext = ToolContext | (Omit<ToolContext, 'projectId' | 'principal'> & { projectId: null; principal: MemberPrincipal });
+
 /** A domain refusal the tool answers as a result rather than an error, the shape the member-side handlers answer. */
 export interface ToolFailure {
   ok: false;
@@ -129,7 +132,7 @@ export async function recordRunToolCall(
 }
 
 /** The identifiers telemetry names the principal by. */
-export function principalFields(ctx: ToolContext): Record<string, string> {
+export function principalFields(ctx: Pick<ToolContext, 'principal'>): Record<string, string> {
   const p = ctx.principal;
   if (p.kind === 'member') return { memberId: p.memberId, tokenId: p.tokenId };
   if (p.kind === 'run') return { runId: p.runId, tokenId: p.tokenId };
@@ -137,7 +140,7 @@ export function principalFields(ctx: ToolContext): Record<string, string> {
 }
 
 /** The one Project a principal is bound to — a run's, a grant's — or null for a member, whose credential spans the Deployment. */
-export function boundProject(ctx: ToolContext): string | null {
+export function boundProject(ctx: ProtocolContext): string | null {
   return ctx.principal.kind === 'member' ? null : ctx.projectId;
 }
 
