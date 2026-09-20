@@ -19,6 +19,8 @@ import { SERVER_SCHEMA_VERSION } from '../constants.js';
 import { schemaVersion } from '../read/meta.js';
 import { listProjects } from '../read/sessions.js';
 import { listQueuedAcrossProjects, workerLiveness } from './runs.js';
+import { RETAINED_TASKS } from './task-catalogue.js';
+import { heldByWords } from '@goondocks/myco-shared/run-holds';
 import { CONTACT_RECENT_MS, isContactOutcome, readWorkerFleet, type ContactOutcome, type WorkerFleetRow } from './worker-contacts.js';
 import { pendingImportedTranscripts, pendingTranscriptBytes } from '../ingest/parse.js';
 import { DEFERRED_JOBS, SERVER_JOBS, WAKE_CONTINUATIONS } from './jobs.js';
@@ -67,18 +69,30 @@ export interface WorkerFacts {
   unknownReason: number | null;
   /** 0 for a lease holder with no recorded contact. */
   lastSeenAt: number;
-  busy: { runId: string; projectId: string; task: string | null; leaseExpiresAt: number } | null;
+  busy: { runId: string; projectId: string; task: string | null; unknownTask: number | null; leaseExpiresAt: number } | null;
   eligible: boolean;
   recent: boolean;
 }
+
+/** A task the catalogue retains, or null for one it does not name. */
+const knownTask = (task: string | null): string | null => (task !== null && RETAINED_TASKS.includes(task) ? task : null);
+
+/** A holder the shared vocabulary names, or null. */
+const knownHolder = (heldBy: string | null): string | null => (heldBy !== null && heldByWords(heldBy) !== null ? heldBy : null);
 
 /** One queued run, by the facts that explain its wait. */
 export interface QueuedRunFacts {
   runId: string;
   projectId: string;
+  /** Null for a task the catalogue does not retain; the run id still names the row. */
   task: string | null;
+  /** Whether the stored task was outside the catalogue: null when the row names none. */
+  unknownTask: number | null;
   queuedAt: number;
+  /** Null for a holder the shared vocabulary does not name. */
   heldBy: string | null;
+  /** Whether the stored holder was outside the vocabulary: null when the row names none. */
+  unknownHeldBy: number | null;
   /** Whether the row still names the credential of a launch, which is what keeps it out of the claim queue. */
   launched: boolean;
 }
@@ -159,13 +173,23 @@ const workerFacts = (row: WorkerFleetRow): WorkerFacts => ({
   // A stored reason outside the vocabulary is counted, never carried.
   unknownReason: row.lastReason === null ? null : isContactOutcome(row.lastReason) ? 0 : 1,
   lastSeenAt: row.lastSeenAt,
-  busy: row.busy === null ? null : { runId: row.busy.runId, projectId: row.busy.projectId, task: row.busy.task, leaseExpiresAt: row.busy.leaseExpiresAt },
+  busy: row.busy === null ? null : {
+    runId: row.busy.runId, projectId: row.busy.projectId, leaseExpiresAt: row.busy.leaseExpiresAt,
+    task: knownTask(row.busy.task),
+    unknownTask: row.busy.task === null ? null : knownTask(row.busy.task) === null ? 1 : 0,
+  },
   eligible: row.eligible,
   recent: row.recent,
 });
 
 function queuedFacts(row: { id: string; projectId: string; task: string | null; queuedAt: number; heldBy: string | null; dispatchedBy: string | null }): QueuedRunFacts {
-  return { runId: row.id, projectId: row.projectId, task: row.task, queuedAt: row.queuedAt, heldBy: row.heldBy, launched: row.dispatchedBy !== null };
+  return {
+    runId: row.id, projectId: row.projectId, queuedAt: row.queuedAt, launched: row.dispatchedBy !== null,
+    task: knownTask(row.task),
+    unknownTask: row.task === null ? null : knownTask(row.task) === null ? 1 : 0,
+    heldBy: knownHolder(row.heldBy),
+    unknownHeldBy: row.heldBy === null ? null : knownHolder(row.heldBy) === null ? 1 : 0,
+  };
 }
 
 /**

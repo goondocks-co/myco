@@ -91,6 +91,47 @@ describe('the Deployment names what it is configured to do', () => {
     expect(document.workers?.fleet[0]).toMatchObject({ lastReason: null, unknownReason: null, lastSeenAt: 0 });
   });
 
+  it('counts a queued row whose task and holder are outside their vocabularies, keeping the run id', async () => {
+    const r = await rig();
+    r.sqlite.run(
+      `INSERT INTO agent_runs (id, project_id, agent_id, task, status, queued_at, held_by)
+       VALUES ('run_odd', 'proj_1', 'myco-agent', ?, 'queued', ?, ?)`,
+      ['exfiltrate /Users/dev/.ssh/id_ed25519', NOW, 'a reason the operator typed'],
+    );
+    const document = await deploymentDiagnostics(r.serverEnv, NOW);
+    const queued = document.queuedRuns?.find((row) => row.runId === 'run_odd');
+    // The run id stays: it is what correlates the row with the queue.
+    expect(queued).toMatchObject({ runId: 'run_odd', task: null, unknownTask: 1, heldBy: null, unknownHeldBy: 1 });
+    expect(JSON.stringify(document)).not.toContain('id_ed25519');
+    expect(JSON.stringify(document)).not.toContain('operator typed');
+  });
+
+  it('keeps a retained task and a holder the shared vocabulary names', async () => {
+    const r = await rig();
+    r.sqlite.run(
+      `INSERT INTO agent_runs (id, project_id, agent_id, task, status, queued_at, held_by)
+       VALUES ('run_ok', 'proj_1', 'myco-agent', 'title-summary', 'queued', ?, 'worker')`,
+      [NOW],
+    );
+    const document = await deploymentDiagnostics(r.serverEnv, NOW);
+    expect(document.queuedRuns?.find((row) => row.runId === 'run_ok'))
+      .toMatchObject({ task: 'title-summary', unknownTask: 0, heldBy: 'worker', unknownHeldBy: 0 });
+  });
+
+  it('names no task for a held run whose stored task the catalogue does not retain', async () => {
+    const r = await rig();
+    await ensureMember(r.db, 'mem_w1', NOW, 'admin', 'a worker');
+    const credential = await issueMemberToken(r.db, { memberId: 'mem_w1', machineId: 'build-box' }, NOW);
+    r.sqlite.run(
+      `INSERT INTO agent_runs (id, project_id, agent_id, task, status, queued_at, started_at, leased_by, lease_expires_at)
+       VALUES ('run_busy', 'proj_1', 'myco-agent', ?, 'running', ?, ?, ?, ?)`,
+      ['whatever the caller sent', NOW, NOW, credential.tokenId, NOW + 90_000],
+    );
+    const document = await deploymentDiagnostics(r.serverEnv, NOW);
+    expect(document.workers?.fleet[0]?.busy).toMatchObject({ runId: 'run_busy', task: null, unknownTask: 1 });
+    expect(JSON.stringify(document)).not.toContain('whatever the caller sent');
+  });
+
   it('carries only the fields it declares for a worker, so a producer growing one does not widen the document', async () => {
     const r = await rig();
     await ensureMember(r.db, 'mem_w1', NOW, 'admin', 'a worker');
