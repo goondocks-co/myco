@@ -4,12 +4,16 @@ import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { readStdin, setBufferedStdin } from '@myco/hooks/read-stdin.js';
 
-function spawnReadStdinChild() {
-  const moduleUrl = pathToFileURL(path.resolve('packages/myco/src/hooks/read-stdin.ts')).href;
-  const script = `
-    import { readStdin } from ${JSON.stringify(moduleUrl)};
+const STDIN_CHILD_TIMEOUT_MS = 4_000;
+
+function spawnReadStdinChild(body = `
     const data = await readStdin();
     process.stdout.write(JSON.stringify({ data }));
+  `) {
+  const moduleUrl = pathToFileURL(path.resolve('packages/myco/src/hooks/read-stdin.ts')).href;
+  const script = `
+    import { readStdin, setBufferedStdin } from ${JSON.stringify(moduleUrl)};
+    ${body}
   `;
 
   // Under bun test, process.execPath is bun itself — which accepts TypeScript
@@ -23,6 +27,8 @@ function spawnReadStdinChild() {
 
   return spawn(process.execPath, args, {
     stdio: ['pipe', 'pipe', 'pipe'],
+    timeout: STDIN_CHILD_TIMEOUT_MS,
+    killSignal: 'SIGKILL',
   });
 }
 
@@ -54,17 +60,33 @@ describe('setBufferedStdin', () => {
   });
 
   it('clears the injected buffer after one read', async () => {
-    setBufferedStdin(Buffer.from('{"a":1}', 'utf-8'));
-    expect(await readStdin()).toBe('{"a":1}');
-    // Second read must fall through to fd 0; under bun test fd 0 is empty/closed,
-    // so the fall-through path coerces to '{}'.
-    expect(await readStdin()).toBe('{}');
+    const child = spawnReadStdinChild(`
+      setBufferedStdin(Buffer.from('{"a":1}', 'utf-8'));
+      const buffered = await readStdin();
+      const fallback = await readStdin();
+      process.stdout.write(JSON.stringify({ buffered, fallback }));
+    `);
+    child.stdin.end('{"b":2}');
+
+    const result = await collect(child);
+    expect(result.code).toBe(0);
+    expect(result.stderr).toBe('');
+    expect(JSON.parse(result.stdout)).toEqual({ buffered: '{"a":1}', fallback: '{"b":2}' });
   });
 
   it('clearing with null removes a previously injected buffer', async () => {
-    setBufferedStdin(Buffer.from('{"a":1}', 'utf-8'));
-    setBufferedStdin(null);
-    expect(await readStdin()).toBe('{}');
+    const child = spawnReadStdinChild(`
+      setBufferedStdin(Buffer.from('{"a":1}', 'utf-8'));
+      setBufferedStdin(null);
+      const data = await readStdin();
+      process.stdout.write(JSON.stringify({ data }));
+    `);
+    child.stdin.end('{"b":2}');
+
+    const result = await collect(child);
+    expect(result.code).toBe(0);
+    expect(result.stderr).toBe('');
+    expect(JSON.parse(result.stdout)).toEqual({ data: '{"b":2}' });
   });
 });
 
