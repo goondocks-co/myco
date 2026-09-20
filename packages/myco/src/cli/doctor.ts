@@ -1723,6 +1723,7 @@ export async function checkMemberMcpResolution(
               : `${manifest.displayName}'s ${target.scope} entry starts its MCP server in a directory that is not ${root}, so it resolves another project's membership or none.`,
             reason: cwd === null ? 'mcp_cwd_ambiguous' : 'mcp_cwd_elsewhere',
             scope: target.scope,
+            root: cwd === null ? undefined : root,
             symbiont: manifest.name,
             fixable: false,
           });

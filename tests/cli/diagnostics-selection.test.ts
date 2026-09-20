@@ -73,6 +73,20 @@ async function exportAll(): Promise<{ checks: CheckFact[]; selection: { root: st
 const mcpChecks = (checks: CheckFact[]) => checks.filter((c) => c.name === 'Member MCP resolution');
 
 describe('member export --all across two projects', () => {
+  it('keeps the affected root when a global launcher names another project directory', async () => {
+    const alpha = project('alpha', 'proj_alpha');
+    const beta = project('beta', 'proj_beta');
+    writeJson(path.join(home, '.cursor', 'mcp.json'), cursorMember(alpha));
+
+    const found = mcpChecks((await exportAll()).checks).filter((c) => c.symbiont === 'cursor');
+    expect(found.filter((c) => c.reason === 'mcp_entry_stdio')).toEqual([
+      expect.objectContaining({ root: null, scope: 'global', status: 'ok' }),
+    ]);
+    expect(found.filter((c) => c.reason === 'mcp_cwd_elsewhere')).toEqual([
+      expect.objectContaining({ root: beta, scope: 'global', status: 'warn' }),
+    ]);
+  });
+
   it('keeps the affected root on a global entry that names another Deployment', async () => {
     project('alpha', 'proj_alpha');
     const beta = project('beta', 'proj_beta', 'https://other.example');
