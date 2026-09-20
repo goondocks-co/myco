@@ -11,7 +11,9 @@ import { KeyReveal } from '../components/access/KeyReveal';
 import { refusalText, useAccessActions, useInvitations, useMembers, usePaged, type ActivityRow, type CredentialRow } from '../hooks/use-access';
 import { useMe } from '../hooks/use-me';
 import { useProjects } from '../hooks/use-projects';
+import { useWorkerFleet } from '../hooks/use-status';
 import { formatCount, formatDateTime, formatRelative } from '../lib/format';
+import { FLEET_UNKNOWN_WORDS, offersWords, REASON_WORDS, workerFor, workerState, type FleetLookup } from '../lib/worker-state';
 
 /** What a captured event is, in the person's words. */
 const KIND_LABEL: Record<string, string> = {
@@ -19,6 +21,12 @@ const KIND_LABEL: Record<string, string> = {
   response: 'Response', plan: 'Plan', attachment: 'Attachment', 'transcript.segment': 'Transcript', 'compaction.pre': 'Compaction', 'compaction.post': 'Compaction',
   'subagent.start': 'Subagent started', 'subagent.stop': 'Subagent stopped', 'stop.failure': 'Stop failed', 'task.completed': 'Task completed', notification: 'Notification', error: 'Error',
 };
+
+/** What a credential's own record allows: whether it would authenticate, never whether it is writing. */
+function credentialWords(credential: CredentialRow, revokedByName: string | null): string {
+  if (credential.revokedAt !== null) return `stopped${revokedByName === null ? '' : ` by ${revokedByName}`}`;
+  return credential.live ? 'allowed to write' : 'expired';
+}
 
 const button = 'rounded-md border border-outline-variant/30 px-2.5 py-1 font-sans text-xs text-on-surface transition-colors hover:bg-surface-container-high';
 const primary = 'rounded-md bg-primary px-3 py-1.5 font-sans text-sm text-on-primary transition-opacity hover:opacity-90';
@@ -28,7 +36,10 @@ export function Access() {
   const me = useMe();
   const members = useMembers();
   const invitations = useInvitations();
-  const credentials = usePaged<CredentialRow>(['credentials'], '/api/credentials?limit=50');
+  // Each purpose is paged on its own.
+  const credentials = usePaged<CredentialRow>(['credentials', 'member'], '/api/credentials?purpose=member&limit=50');
+  const runCredentials = usePaged<CredentialRow>(['credentials', 'run'], '/api/credentials?purpose=run&limit=50');
+  const fleet = useWorkerFleet();
   const actions = useAccessActions();
 
   const [revokeMemberId, setRevokeMemberId] = useState<string | null>(null);
@@ -47,12 +58,13 @@ export function Access() {
   const target = list.find((m) => m.id === revokeMemberId);
   const isMe = (id: string) => me.data?.member?.id === id;
   const nameOf = (id: string | null) => (id === null ? null : list.find((m) => m.id === id)?.label ?? id);
-  const openCredential = credentials.rows.find((c) => c.id === openCredentialId) ?? null;
+  const openCredential = [...credentials.rows, ...runCredentials.rows].find((c) => c.id === openCredentialId) ?? null;
+  const runtimes = credentials.rows;
 
   return (
     <PageContainer>
       <PageHeader title="Members" subtitle="Who is a member of this server, who has been invited, and which runtimes write here. Everything is open to every member, and every change names who made it." />
-      <PageLoading isLoading={members.isPending} error={members.error ?? invitations.error ?? credentials.error}>
+      <PageLoading isLoading={members.isPending} error={members.error ?? invitations.error ?? credentials.error ?? runCredentials.error}>
         <div className="flex flex-col gap-4">
           <Panel padded title="Members" actions={<button type="button" className={primary} onClick={() => { setInvited(null); setInviteError(null); setInviteFor(''); setInviteOpen(true); }}>Invite</button>}>
             <ul className="flex flex-col divide-y divide-outline-variant/10" aria-label="Members">
@@ -60,7 +72,7 @@ export function Access() {
                 <li key={m.id} className="flex items-center gap-3 py-2 font-sans text-sm">
                   <StatusDot tone={m.revokedAt !== null ? 'outline' : m.linked ? 'sage' : 'ochre'} />
                   <div className="min-w-0 flex-1">
-                    <div className="text-on-surface">{m.label ?? m.id}{isMe(m.id) && <span className="ml-2 font-mono text-[10px] uppercase text-on-surface-variant">you</span>}</div>
+                    <div className="text-on-surface">{m.label ?? m.id}{isMe(m.id) && <span className="ml-2 font-mono text-[10px] uppercase text-on-surface-variant">you</span>}{m.role === 'admin' && <span className="ml-2 font-mono text-[10px] uppercase text-on-surface-variant">admin</span>}</div>
                     <div className="font-mono text-[11px] text-on-surface-variant">{m.id}</div>
                   </div>
                   <span className="text-xs text-on-surface-variant">{m.revokedAt !== null ? `removed ${formatRelative(m.revokedAt)}${nameOf(m.revokedBy) ? ` by ${nameOf(m.revokedBy)}` : ''}` : m.linked ? 'account connected' : 'no account yet'}</span>
@@ -93,21 +105,45 @@ export function Access() {
           </Panel>
 
           <Panel padded title="Runtimes">
+            <p className="mb-2 font-sans text-xs text-on-surface-variant">
+              One machine, one runtime. What each is allowed to do, and what this server last heard from it. Select one to see what it wrote.
+            </p>
             <ul className="flex flex-col divide-y divide-outline-variant/10" aria-label="Runtimes">
-              {credentials.rows.map((c) => (
-                <li key={c.id} className="flex items-center gap-3 py-2 font-sans text-sm">
-                  <StatusDot tone={c.live ? 'sage' : 'outline'} />
-                  <button type="button" className="min-w-0 flex-1 text-left" onClick={() => setOpenCredentialId(c.id)}>
-                    <div className="text-on-surface">{c.machineId ?? c.id} <span className="text-xs text-on-surface-variant">· {nameOf(c.memberId)}</span></div>
-                    <div className="font-mono text-[11px] text-on-surface-variant">{c.id} · started {formatRelative(c.lineageStartedAt)}</div>
-                  </button>
-                  <span className="text-xs text-on-surface-variant">{c.live ? 'writing' : c.revokedAt !== null ? `stopped${nameOf(c.revokedBy) ? ` by ${nameOf(c.revokedBy)}` : ''}` : 'expired'}</span>
-                  {c.live && <button type="button" className={button} onClick={() => { setStopError(null); setRevokeCredentialId(c.id); }}>Stop</button>}
-                </li>
+              {runtimes.map((c) => (
+                <RuntimeRow
+                  key={c.id}
+                  credential={c}
+                  memberName={nameOf(c.memberId)}
+                  revokedByName={nameOf(c.revokedBy)}
+                  lookup={workerFor(fleet, c.id)}
+                  onOpen={() => setOpenCredentialId(c.id)}
+                  onStop={() => { setStopError(null); setRevokeCredentialId(c.id); }}
+                />
               ))}
             </ul>
+            {runtimes.length === 0 && !credentials.isPending && <p className="font-sans text-sm text-on-surface-variant">No runtime has joined yet.</p>}
             {credentials.hasMore && <button type="button" className={`${button} mt-3`} onClick={credentials.more}>Show more</button>}
-            {credentials.rows.length === 0 && !credentials.isPending && <p className="font-sans text-sm text-on-surface-variant">No runtimes have joined yet.</p>}
+            {runCredentials.rows.length > 0 && (
+              <details className="mt-3">
+                <summary className="cursor-pointer font-sans text-xs text-on-surface-variant">Run credentials</summary>
+                <p className="mt-1 font-sans text-xs text-on-surface-variant">
+                  One per agent run, stopped when its run ends. These belong to runs, not to machines.
+                </p>
+                <ul className="mt-1 flex flex-col divide-y divide-outline-variant/10" aria-label="Run credentials">
+                  {runCredentials.rows.map((c) => (
+                    <li key={c.id} className="flex items-center gap-3 py-2 font-sans text-sm">
+                      <StatusDot tone={c.live ? 'ochre' : 'outline'} />
+                      <button type="button" className="min-w-0 flex-1 text-left" onClick={() => setOpenCredentialId(c.id)}>
+                        <div className="font-mono text-[11px] text-on-surface-variant">{c.id} · started {formatRelative(c.lineageStartedAt)}</div>
+                      </button>
+                      <span className="text-xs text-on-surface-variant">{credentialWords(c, nameOf(c.revokedBy))}</span>
+                      {c.live && <button type="button" className={button} onClick={() => { setStopError(null); setRevokeCredentialId(c.id); }}>Stop</button>}
+                    </li>
+                  ))}
+                </ul>
+                {runCredentials.hasMore && <button type="button" className={`${button} mt-2`} onClick={runCredentials.more}>Show more</button>}
+              </details>
+            )}
           </Panel>
         </div>
       </PageLoading>
@@ -188,6 +224,44 @@ export function Access() {
   );
 }
 
+/** One machine's runtime: what its credential allows, and what this server last heard from it as a worker. */
+function RuntimeRow({ credential, memberName, revokedByName, lookup, onOpen, onStop }: {
+  credential: CredentialRow;
+  memberName: string | null;
+  revokedByName: string | null;
+  lookup: FleetLookup;
+  onOpen: () => void;
+  onStop: () => void;
+}) {
+  const state = lookup.known ? workerState(lookup.worker, Date.now()) : null;
+  return (
+    <li className="flex flex-col gap-1 py-2 font-sans text-sm">
+      <div className="flex items-center gap-3">
+        <StatusDot tone={state?.tone ?? (credential.live ? 'sage' : 'outline')} />
+        <button type="button" className="min-w-0 flex-1 text-left" onClick={onOpen}>
+          <div className="text-on-surface">{credential.machineId ?? credential.id}{memberName === null ? '' : <span className="text-xs text-on-surface-variant"> · {memberName}</span>}</div>
+          <div className="font-mono text-[11px] text-on-surface-variant">{credential.id} · started {formatRelative(credential.lineageStartedAt)}</div>
+        </button>
+        <span className="text-xs text-on-surface-variant">{credentialWords(credential, revokedByName)}</span>
+        {credential.live && <button type="button" className={button} onClick={onStop}>Stop</button>}
+      </div>
+      {lookup.known ? (
+        <>
+          <p className="pl-5 font-sans text-xs text-on-surface-variant">{state!.line}</p>
+          <p className="pl-5 font-sans text-xs text-on-surface-variant">{offersWords(lookup.worker)}</p>
+          {lookup.worker.busy === null && lookup.worker.lastReason !== null && lookup.worker.lastSeenAt > 0 && (
+            <p className="pl-5 font-sans text-xs text-on-surface-variant">
+              Last claim: {REASON_WORDS[lookup.worker.lastReason]}. That is what this worker's last poll found, not what every worker can run.
+            </p>
+          )}
+        </>
+      ) : (
+        <p className="pl-5 font-sans text-xs text-on-surface-variant">{FLEET_UNKNOWN_WORDS[lookup.why]}</p>
+      )}
+    </li>
+  );
+}
+
 function CredentialActivity({ credential, memberName }: { credential: CredentialRow; memberName: string }) {
   const activity = usePaged<ActivityRow>(['credential-activity', credential.id], `/api/credentials/${encodeURIComponent(credential.id)}/activity?limit=50`);
   const projects = useProjects();
@@ -196,7 +270,7 @@ function CredentialActivity({ credential, memberName }: { credential: Credential
     <div className="flex flex-col gap-3 p-4">
       <div>
         <div className="font-serif text-lg text-on-surface">{credential.machineId ?? credential.id}</div>
-        <div className="font-sans text-xs text-on-surface-variant">{memberName} · {credential.live ? 'writing' : credential.revokedAt !== null ? 'stopped' : 'expired'} · {(credential.bytesWritten / 1_048_576).toFixed(1)} MB written</div>
+        <div className="font-sans text-xs text-on-surface-variant">{memberName} · {credentialWords(credential, null)} · {(credential.bytesWritten / 1_048_576).toFixed(1)} MB written</div>
       </div>
       <PageLoading isLoading={activity.isPending} error={activity.error}>
         {activity.rows.length === 0 ? (

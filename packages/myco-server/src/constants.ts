@@ -1,5 +1,8 @@
 export const SERVER_SCHEMA_VERSION = 44;
 
+/** The member identity every dispatched runtime authenticates as; durable so attribution survives across runs. */
+export const HARNESS_MEMBER_ID = 'mem_harness';
+
 /** Titling: how many of a session's earliest user prompts (with their first response) reach the model. */
 export const MAX_MATERIAL_PROMPTS = 12;
 /** Titling: the material's total character budget. */

@@ -15,7 +15,8 @@
  */
 import type { RelationalStore } from '../core/adapters.js';
 import { emit } from '../telemetry.js';
-import { credentialLive } from '../db/liveness.js';
+import { HARNESS_MEMBER_ID } from '../constants.js';
+import { credentialLive, runCredential } from '../db/liveness.js';
 import { revokeInvitationsOfMember } from './enrollment.js';
 import { revokeLinkKeysOfMember } from './identity-link.js';
 import { revokeCredentialsOfMember } from './tokens.js';
@@ -31,15 +32,16 @@ export interface MemberRow {
   createdAt: number;
   revokedAt: number | null;
   revokedBy: string | null;
+  /** How many of this member's own runtimes authenticate now. Run credentials are counted under their purpose, not here. */
   liveCredentials: number;
 }
 
 export async function listMembers(db: RelationalStore, nowMs: number): Promise<MemberRow[]> {
   const { results } = await db
     .prepare(`SELECT m.id, m.label, m.role, m.github_id IS NOT NULL AS linked, m.created_at, m.revoked_at, m.revoked_by,
-                     (SELECT COUNT(*) FROM member_credentials c WHERE c.member_id = m.id AND ${credentialLive('c')}) AS live_credentials
+                     (SELECT COUNT(*) FROM member_credentials c WHERE c.member_id = m.id AND ${credentialLive('c')} AND NOT (${runCredential('c')})) AS live_credentials
                 FROM members m ORDER BY m.created_at ASC, m.id ASC`)
-    .bind(nowMs)
+    .bind(nowMs, HARNESS_MEMBER_ID)
     .all<Record<string, unknown>>();
   return results.map((r) => ({
     id: r.id as string,

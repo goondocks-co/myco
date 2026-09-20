@@ -646,7 +646,8 @@ export async function applyRunUpdate(
   const guarded = 'status' in update;
   const guard = guarded ? ` AND status NOT IN (${TERMINAL_RUN_STATUSES.map(() => '?').join(', ')})` : '';
   const leaseGuard = lease === undefined ? '' : ` AND status = 'running' AND leased_by = ? AND dispatched_by = ? AND lease_expires_at > ?`;
-  const release = lease !== undefined && isTerminalRunStatus(update.status) ? ', leased_by = NULL, lease_expires_at = NULL' : '';
+  // Terminal transitions release the current worker lease.
+  const release = isTerminalRunStatus(update.status) ? ', leased_by = NULL, lease_expires_at = NULL' : '';
   const result = await db
     .prepare(`UPDATE agent_runs SET ${columns.map((c) => `${c} = ?`).join(', ')}${release} WHERE project_id = ? AND id = ?${guard}${leaseGuard}`)
     .bind(...columns.map((c) => update[c] ?? null), scope.projectId, runId, ...(guarded ? TERMINAL_RUN_STATUSES : []),

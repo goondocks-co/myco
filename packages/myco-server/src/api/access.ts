@@ -84,11 +84,13 @@ export async function handleRevokeInvitation(env: ServerEnv, ctx: OwnerContext):
   return ok({ revoked: result.revoked, revokedBy: ctx.member.id });
 }
 
-/** The Deployment's credentials, paginated. `token_hash` is never selected, so there is nothing here to redact. */
+/** The Deployment's credentials, paginated, optionally narrowed to one purpose. `token_hash` is never selected, so there is nothing here to redact. */
 export async function handleCredentials(env: ServerEnv, ctx: OwnerContext): Promise<Response> {
   const page = paging(ctx.url);
   if (page instanceof Response) return page;
-  return ok(await listCredentials(env.db, ctx.now, page));
+  const purpose = ctx.url.searchParams.get('purpose');
+  if (purpose !== null && purpose !== 'run' && purpose !== 'member') return badRequest('purpose must be run or member');
+  return ok(await listCredentials(env.db, ctx.now, { ...page, ...(purpose === null ? {} : { purpose }) }));
 }
 
 export async function handleRevokeCredential(env: ServerEnv, ctx: OwnerContext): Promise<Response> {

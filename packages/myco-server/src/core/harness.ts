@@ -25,7 +25,8 @@ import type { ServerEnv } from './adapters.js';
 import { ensureMember } from '../auth/enrollment.js';
 import { issueMemberToken, revokeCredentialOfMember } from '../auth/tokens.js';
 import { projectExists } from '../read/sessions.js';
-import { WORKER_LEASE_MS, MAX_RUN_ERROR_CHARS } from '../constants.js';
+import { HARNESS_MEMBER_ID, WORKER_LEASE_MS, MAX_RUN_ERROR_CHARS } from '../constants.js';
+export { HARNESS_MEMBER_ID };
 import { pruneWorkerContacts, WORKER_CONTACT_RETENTION_MS } from './worker-contacts.js';
 import { emit } from '../telemetry.js';
 import { claimQueuedRun, deploymentTaskEntriesSince, lapsedLeases, nextClaimable, recordClaimedInput, recordQueueHolder, renewRunLease, requeueLapsedLease, UNATTRIBUTED_DISPATCH_ACTOR, type ActorCeiling, type ClaimedRunRow } from './runs.js';
@@ -38,8 +39,6 @@ import { HARNESS_CREDENTIALS } from '@goondocks/myco-shared/harness-providers';
 import { admissionForTask, runTimeoutForTask, UNLANDED_TASKS } from './task-catalogue.js';
 import { buildTaskInput, inputBuilderFor, instructionFor, instructionsFileFor, uninstructedError } from './task-inputs.js';
 
-/** The member identity every dispatched runtime authenticates as; durable so attribution survives across runs. */
-export const HARNESS_MEMBER_ID = 'mem_harness';
 /** The agent identity a dispatched runtime claims under when its task names none; matches DEFAULT_AGENT_ID in the runner (packages/myco/src/constants.ts). */
 export const HARNESS_AGENT_ID = 'myco-agent';
 const HARNESS_MACHINE_ID = 'harness';
