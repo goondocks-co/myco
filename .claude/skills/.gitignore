@@ -5,5 +5,3 @@
 #   !my-skill
 *
 !.gitignore
-# Hand-authored project skill, not produced by the skill pipeline.
-!audit-capture-fidelity

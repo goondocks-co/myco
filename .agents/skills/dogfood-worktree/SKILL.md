@@ -1,6 +1,13 @@
 ---
 name: dogfood-worktree
-description: Procedure for dogfooding Myco changes inside a git worktree so capture, MCP, and CLI route to the worktree's own build instead of the production binary. Use when developing Myco in a git worktree, when capture/MCP in a worktree behaves like production or points at the wrong build, or when wiring up `make dev-link-worktree` / `make dev-unlink-worktree`. Covers why `.myco/runtime.command` does not travel with `git worktree add`, why a build must happen first, the direct-CLI `MYCO_HOME` gotcha, the shared-vault schema rollup hazard across worktrees, and the vendor-asset build gotcha.
+description: >-
+  This skill should be used when the user asks to "dogfood this change", "test this in a
+  worktree", "why is the worktree using the production binary", or when capture, MCP, or the
+  CLI in a git worktree behaves like production instead of the worktree build. Covers `make
+  dev-link-worktree` / `make dev-unlink-worktree`, why `.myco/runtime.command` does not
+  travel with `git worktree add`, why a build must happen first, the direct-CLI `MYCO_HOME`
+  trap, the shared-vault schema rollup hazard across worktrees, and the vendor-asset build
+  step.
 ---
 
 # Dogfooding Myco in a Git Worktree
@@ -28,11 +35,11 @@ With no pin:
   to PATH `myco` = the **production** binary. Capture then hits the prod
   daemon/vault. Unacceptable for dogfooding.
 
-Either way a fresh worktree never uses **its own** build until you pin it.
+Either way a fresh worktree never uses **its own** build until it is pinned.
 
 ## Procedure
 
-1. **Create the worktree** off the branch you're developing:
+1. **Create the worktree** off the branch under development:
    ```bash
    git worktree add ../myco-<feature> <branch>
    cd ../myco-<feature>
@@ -63,7 +70,7 @@ Either way a fresh worktree never uses **its own** build until you pin it.
    (`~/.myco`) for `myco tool call`, `myco doctor`, plan lookups, and session
    lookups.
 
-   When you need direct CLI calls to read or mutate the dogfood dev vault, prefix
+   For direct CLI calls to read or mutate the dogfood dev vault, prefix
    the command explicitly:
    ```bash
    MYCO_HOME="$HOME/.myco-dev" MYCO_CLAIMS_HOME="$HOME/.myco" \
@@ -80,7 +87,7 @@ Either way a fresh worktree never uses **its own** build until you pin it.
    make dev-unlink-worktree   # removes the worktree's .myco/runtime.command
    ```
    Resolution then falls back through the chain (→ prod `myco` for a sibling
-   worktree), so unlink only when you're finished dogfooding that worktree.
+   worktree), so unlink only after dogfooding that worktree is finished.
 
 ## Caveats — codified so we stop rediscovering them
 
@@ -115,7 +122,7 @@ To dogfood **daemon-side** changes (schema migrations, reconcile/daemon logic):
 check out the feature branch on the **main checkout** and rebuild + restart there —
 `make dev-build && myco-dev restart`. After a worktree teardown + rebase the
 `~/.local/bin/myco-dev` symlink already points at the main binary, so **no
-`make dev-link` is needed** — only re-link if the symlink was removed or you are
+`make dev-link` is needed** — only re-link if the symlink was removed or the build is
 switching which branch the daemon tracks.
 
 **The worktree daemon path no longer self-isolates.** The dev daemon variant has
