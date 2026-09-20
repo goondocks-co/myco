@@ -24,7 +24,7 @@ import { CREDENTIAL_FLAG, SERVER_FLAG, type CredentialSource } from '../member/c
 import { isHttpsUrl, parseCredentialFlag } from '../member/credential.js';
 import { deploymentUrl } from '../member/registry.js';
 import { MCP_PATH } from '../plugins/spec.js';
-import { MEMBER_MCP_LEVERS, memberMcpTemplate, memberRemoteMcp } from './member-hooks.js';
+import { MCP_HEADERS_ARGS, MEMBER_MCP_LEVERS, memberMcpTemplate, memberRemoteMcp } from './member-hooks.js';
 import { readRegistryEntry } from '../member/registry.js';
 import { runGit } from '../utils/git.js';
 import { resolveRuntimeCommand, resolveRuntimeHome } from '../daemon/update-checker.js';
@@ -230,6 +230,19 @@ const MYCO_LAUNCHER_PLACEHOLDER = '{{mycoLauncher}}';
  * matches, so the hourly detection tick never churns a config the agent owns.
  */
 const MYCO_BINARY_PLACEHOLDER = '{{mycoBinary}}';
+
+/** The words a credential flag and its source take on a command line the writer emits. */
+const CREDENTIAL_ARGV_WORDS = 2;
+
+/** The words a member headers helper carries after `member mcp-headers`: the credential flag and the server flag, each with its value. */
+const HELPER_FLAG_WORDS = 4;
+
+/** The arguments a member's stdio launcher runs the bridge with, before the credential flag and its source; `mcp-template-shape.test.ts` holds every template to them. */
+const MEMBER_BRIDGE_ARGS: readonly string[] = ['mcp'];
+
+/** The file names a managed member binary is installed under, read from the layout the installs share. */
+const MANAGED_BINARY_NAMES: readonly string[] = (['linux', 'win32'] as const)
+  .map((platform) => managedBinaryPath('/', platform, '/').replaceAll('\\', '/').split('/').pop() ?? '');
 
 /**
  * Resolve `{{mycoLauncher}}` to a direct binary invocation. `binaryPath` is
@@ -2000,25 +2013,65 @@ export class SymbiontInstaller {
 
   /**
    * Whether an entry names a credential source a member could resolve from, and
-   * a Deployment where a headers helper needs one. An argument list holding a
-   * value that is not a word names nothing.
+   * a Deployment where a headers helper needs one: the headers helper
+   * provisioning writes, or its launcher — the member bridge's own arguments,
+   * then the credential flag and its source, and nothing else. A launcher
+   * carries a source only where it names a member binary to run; arguments
+   * alone launch nothing. An argument list holding a value that is not a word
+   * names nothing.
    */
   private declaresUsableCredential(entry: Record<string, unknown>): boolean {
-    const helperKey = this.manifest.registration?.memberMcpHeadersHelperKey;
-    const helper = helperKey === undefined ? undefined : entry[helperKey];
-    if (typeof helper === 'string') {
-      // The helper is the command provisioning writes: its arguments ride
-      // unquoted after the binary path, so its words are its arguments.
-      const words = this.helperWords(entry) ?? [];
-      return parseCredentialFlag(words) !== null && this.helperDeployment(entry) !== null;
-    }
-    const args: string[] = [];
-    for (const list of [entry.command, entry.args]) {
+    if (this.helperWords(entry) !== null) return this.canonicalHelper(entry) !== null;
+    const binary = this.launcherBinary(entry);
+    if (binary === null || !this.namesMemberBinary(binary)) return false;
+    const argv = this.launcherArgv(entry);
+    if (argv === null || argv.length !== MEMBER_BRIDGE_ARGS.length + CREDENTIAL_ARGV_WORDS) return false;
+    if (argv.slice(0, MEMBER_BRIDGE_ARGS.length).join(' ') !== MEMBER_BRIDGE_ARGS.join(' ')) return false;
+    return parseCredentialFlag(argv.slice(-CREDENTIAL_ARGV_WORDS)) !== null;
+  }
+
+  /**
+   * A launcher's arguments, with the executable a command list leads with
+   * dropped, or null where any word of either list is not a string.
+   */
+  private launcherArgv(entry: Record<string, unknown>): string[] | null {
+    const argv: string[] = [];
+    for (const [list, executable] of [[entry.command, 1], [entry.args, 0]] as const) {
       if (!Array.isArray(list)) continue;
-      if (!list.every((word): word is string => typeof word === 'string')) return false;
-      args.push(...list);
+      if (!list.every((word): word is string => typeof word === 'string')) return null;
+      argv.push(...list.slice(executable));
     }
-    return parseCredentialFlag(args) !== null;
+    return argv;
+  }
+
+  /**
+   * The credential source and Deployment an entry's headers helper names, or
+   * null where its words are not the command provisioning writes: the member's
+   * binary, `member mcp-headers`, then the credential flag and the server
+   * flag, each with its value and in that order. Any other command names
+   * nothing, whichever of the same words it carries.
+   */
+  private canonicalHelper(entry: Record<string, unknown>): { source: CredentialSource; deployment: string } | null {
+    const words = this.helperWords(entry);
+    if (words === null || words[0] === undefined || !this.namesMemberBinary(words[0])) return null;
+    if (words.slice(1, 1 + MCP_HEADERS_ARGS.length).join(' ') !== MCP_HEADERS_ARGS.join(' ')) return null;
+    const flags = words.slice(1 + MCP_HEADERS_ARGS.length);
+    if (flags.length !== HELPER_FLAG_WORDS || flags[0] !== CREDENTIAL_FLAG || flags[2] !== SERVER_FLAG) return null;
+    const source = parseCredentialFlag(flags.slice(0, CREDENTIAL_ARGV_WORDS));
+    const deployment = this.deploymentNamed(flags[3]);
+    return source === null || deployment === null ? null : { source, deployment };
+  }
+
+  /** The executable an entry's launcher runs, or null where it declares none. */
+  private launcherBinary(entry: Record<string, unknown>): string | null {
+    const command = entry.command;
+    if (typeof command === 'string') return command;
+    return Array.isArray(command) && typeof command[0] === 'string' ? command[0] : null;
+  }
+
+  /** Whether a command word names a member binary: the one this install writes, or one installed under the managed binary's name. */
+  private namesMemberBinary(word: string): boolean {
+    return word === this.binaryPath() || MANAGED_BINARY_NAMES.includes(word.replaceAll('\\', '/').split('/').pop() ?? word);
   }
 
   /** The words of the headers helper this entry declares, or null where it declares none. */
@@ -2037,10 +2090,7 @@ export class SymbiontInstaller {
 
   /** The Deployment a headers helper names, or null where it names none a member could use. */
   private helperDeployment(entry: Record<string, unknown>): string | null {
-    const words = this.helperWords(entry);
-    if (words === null) return null;
-    const named = words[words.indexOf(SERVER_FLAG) + 1];
-    return words.includes(SERVER_FLAG) && named !== undefined && !named.startsWith('--') ? this.deploymentNamed(named) : null;
+    return this.canonicalHelper(entry)?.deployment ?? null;
   }
 
   /** The Deployment this entry's URL names, or null where the URL is not one a member's entry carries. */

@@ -316,6 +316,41 @@ describe('what a report reads from the member MCP targets', () => {
     expect(installer.inspectMemberMcp().every((t) => t.present && !t.carriesCredential)).toBe(true);
   });
 
+  it('reads a command that is not the member headers helper as printing none, however many of its words it carries', () => {
+    const { installer } = globalInstaller('claude-code');
+    // Every flag the writer emits, under a command that prints them back, and
+    // under the member's own binary at a subcommand that prints nothing.
+    for (const helper of [
+      `echo member ${CREDENTIAL_FLAG} registry --server ${SERVER_URL}`,
+      `echo member mcp-headers ${CREDENTIAL_FLAG} registry --server ${SERVER_URL}`,
+      `${resolveManagedBinaryPath()} member mcp ${CREDENTIAL_FLAG} registry --server ${SERVER_URL}`,
+      `${resolveManagedBinaryPath()} member mcp-headers --server ${SERVER_URL} ${CREDENTIAL_FLAG} registry`,
+      `${resolveManagedBinaryPath()} member mcp-headers ${CREDENTIAL_FLAG} registry --server ${SERVER_URL} --verbose`,
+    ]) {
+      writeEntries(installer, { type: 'http', url: `${SERVER_URL}/mcp`, headersHelper: helper });
+      const seen = installer.inspectMemberMcp(SERVER_URL);
+      expect({ helper, seen: seen.every((t) => t.present && !t.carriesCredential && t.deploymentsAgree === false && t.namesExpectedDeployment === false) })
+        .toEqual({ helper, seen: true });
+    }
+  });
+
+  it('reads a launcher that is not the member binary, or runs it at other arguments, as not the member\'s', () => {
+    const { installer } = globalInstaller('claude-code');
+    // The writer runs the member binary at the bridge and appends the flag last.
+    for (const launcher of [
+      { type: 'stdio', command: '/opt/myco', args: ['mcp', CREDENTIAL_FLAG, 'registry', '--project', 'p'] },
+      { type: 'stdio', command: '/opt/myco', args: ['doctor', CREDENTIAL_FLAG, 'registry'] },
+      { type: 'stdio', command: '/opt/myco', args: ['mcp', '--project', 'p', CREDENTIAL_FLAG, 'registry'] },
+      { type: 'stdio', command: '/bin/echo', args: ['mcp', CREDENTIAL_FLAG, 'registry'] },
+      { type: 'local', command: ['/bin/echo', 'mcp', CREDENTIAL_FLAG, 'registry'] },
+      { type: 'local', command: [42, 'mcp', CREDENTIAL_FLAG, 'registry'] },
+    ]) {
+      writeEntries(installer, launcher);
+      expect({ launcher, seen: installer.inspectMemberMcp().every((t) => t.present && !t.carriesCredential) })
+        .toEqual({ launcher, seen: true });
+    }
+  });
+
   it('reads the helper provisioning writes as the member\'s', () => {
     const { installer } = globalInstaller('claude-code');
     writeEntries(installer, claudeRemote());

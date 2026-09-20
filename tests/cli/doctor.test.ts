@@ -987,16 +987,17 @@ describe('checkMemberMcpResolution', () => {
       .toContainEqual({ reason: 'mcp_target_unreadable', symbiont: 'cursor', scope: 'project', status: 'warn' });
   });
 
-  it('warns that a member entry naming no transport cannot be reached, without calling it a launcher', async () => {
+  it('warns that a member entry naming no command carries no credential, without calling it a launcher', async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-doctor-mcp-proj-'));
     fs.mkdirSync(path.join(root, '.myco'));
     member(root, path.join(homeDir, '.myco'), 'proj_1');
     fs.mkdirSync(path.join(root, '.cursor'), { recursive: true });
-    // The credential is there; neither a url nor a command is, so what carries it is not known.
+    // The flag is there; no command runs it, so nothing resolves the membership.
     fs.writeFileSync(path.join(root, '.cursor', 'mcp.json'), JSON.stringify({ mcpServers: { myco: { args: ['mcp', '--credential', 'registry'] } } }));
 
-    expect(reasons(await checkMemberMcpResolution(path.join(root, '.myco'), process.env)))
-      .toContainEqual({ reason: 'mcp_entry_unknown_transport', symbiont: 'cursor', scope: 'project', status: 'warn' });
+    const found = reasons(await checkMemberMcpResolution(path.join(root, '.myco'), process.env));
+    expect(found).toContainEqual({ reason: 'mcp_entry_no_credential', symbiont: 'cursor', scope: 'project', status: 'warn' });
+    expect(found.every((r) => !(r.symbiont === 'cursor' && r.reason === 'mcp_entry_stdio'))).toBe(true);
   });
 
   it('does not warn that a symbiont this machine never installed declares no server', async () => {
