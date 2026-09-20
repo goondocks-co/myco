@@ -2097,12 +2097,17 @@ export class SymbiontInstaller {
       // another, and a server that is not cannot resolve the membership.
       // The Deployments the entry names, as answers rather than as URLs: whether
       // its own two agree, and whether they name the one the caller expects.
-      const named = [this.entryDeployment(entry), this.helperDeployment(entry)].filter((url): url is string => url !== null);
-      const deploymentsAgree = named.length === 0 ? null : named.every((url) => url === named[0]);
-      const expected = this.deploymentNamed(expectedDeployment);
-      const namesExpectedDeployment = named.length === 0 || expected === null
+      // An entry naming neither answers nothing; one naming either must name
+      // both, and name them the same, or it routes somewhere it cannot reach.
+      const declares = typeof entry.url === 'string' || this.helperWords(entry) !== null;
+      const dialled = this.entryDeployment(entry);
+      const minted = this.helperDeployment(entry);
+      const both = dialled !== null && minted !== null;
+      const deploymentsAgree = !declares ? null : both && dialled === minted;
+      const expected = expectedDeployment === undefined ? undefined : this.deploymentNamed(expectedDeployment);
+      const namesExpectedDeployment = !declares || expected === undefined
         ? null
-        : named.every((url) => url === expected);
+        : expected !== null && both && dialled === expected && minted === expected;
       return { scope, present: true, transport, carriesCredential: this.declaresUsableCredential(entry), declaredCwd,
         deploymentsAgree, namesExpectedDeployment, readable: true };
     });

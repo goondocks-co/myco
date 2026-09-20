@@ -345,8 +345,45 @@ describe('what a report reads from the member MCP targets', () => {
     // Matching text is not a Deployment: `mcp-headers` could resolve neither.
     writeEntries(installer, { type: 'http', url: 'not-a-url/mcp', headersHelper: `/opt/myco member mcp-headers ${CREDENTIAL_FLAG} registry --server not-a-url` });
 
+    // The entry names identities; they are not Deployments, which is an answer
+    // rather than an absence.
     const seen = installer.inspectMemberMcp('not-a-url');
-    expect(seen.every((t) => t.present && t.deploymentsAgree === null && t.namesExpectedDeployment === null && !t.carriesCredential)).toBe(true);
+    expect(seen.every((t) => t.present && t.deploymentsAgree === false && t.namesExpectedDeployment === false && !t.carriesCredential)).toBe(true);
+  });
+
+  it('does not read a valid helper as agreement when the URL it dials is no Deployment', () => {
+    const { installer } = globalInstaller('claude-code');
+    // The helper mints for a real Deployment; the host would dial something else.
+    writeEntries(installer, { type: 'http', url: 'not-a-url/mcp', headersHelper: `/opt/myco member mcp-headers ${CREDENTIAL_FLAG} registry --server ${SERVER_URL}` });
+
+    const seen = installer.inspectMemberMcp(SERVER_URL);
+    expect(seen.every((t) => t.deploymentsAgree === false && t.namesExpectedDeployment === false)).toBe(true);
+  });
+
+  it('does not read a valid URL as agreement when its helper mints for no Deployment', () => {
+    const { installer } = globalInstaller('claude-code');
+    writeEntries(installer, { type: 'http', url: `${SERVER_URL}/mcp`, headersHelper: `/opt/myco member mcp-headers ${CREDENTIAL_FLAG} registry --server not-a-url` });
+
+    const seen = installer.inspectMemberMcp(SERVER_URL);
+    expect(seen.every((t) => t.deploymentsAgree === false && t.namesExpectedDeployment === false)).toBe(true);
+  });
+
+  it('answers false for a membership whose own URL names no Deployment, rather than not answering', () => {
+    const { installer } = globalInstaller('claude-code');
+    writeEntries(installer, claudeRemote());
+
+    // The entry is sound; the Deployment it is compared against is not one.
+    expect(installer.inspectMemberMcp('not-a-url').every((t) => t.deploymentsAgree === true && t.namesExpectedDeployment === false)).toBe(true);
+    // Asked about no Deployment at all, it answers only for itself.
+    expect(installer.inspectMemberMcp().every((t) => t.deploymentsAgree === true && t.namesExpectedDeployment === null)).toBe(true);
+  });
+
+  it('answers nothing about a launcher, which names no Deployment either way', () => {
+    const { installer } = globalInstaller('claude-code');
+    writeEntries(installer, { type: 'stdio', command: '/opt/myco', args: ['mcp', CREDENTIAL_FLAG, 'registry'] });
+
+    const seen = installer.inspectMemberMcp(SERVER_URL);
+    expect(seen.every((t) => t.deploymentsAgree === null && t.namesExpectedDeployment === null)).toBe(true);
   });
 
   it('says a target it could not read is unread, rather than reading it as no entry', () => {
