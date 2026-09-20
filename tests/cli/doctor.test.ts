@@ -964,6 +964,19 @@ describe('checkMemberMcpResolution', () => {
       .filter((r) => r.reason === 'mcp_entry_absent')).toEqual([]);
   });
 
+  it('attributes a missing globally installed MCP entry to the machine', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-doctor-mcp-proj-'));
+    fs.mkdirSync(path.join(root, '.myco'));
+    member(root, path.join(homeDir, '.myco'), 'proj_1');
+    fs.mkdirSync(path.join(homeDir, '.claude'), { recursive: true });
+    fs.writeFileSync(path.join(homeDir, '.claude', 'settings.json'), JSON.stringify({
+      hooks: { SessionStart: [{ hooks: [{ type: 'command', command: '/opt/myco hook session-start --myco-managed' }] }] },
+    }));
+
+    expect(reasons(await checkMemberMcpResolution(path.join(root, '.myco'), process.env)))
+      .toContainEqual({ reason: 'mcp_entry_absent', symbiont: 'claude-code', scope: 'global', status: 'warn' });
+  });
+
   it('names a symbiont that declares no Myco server, and still names the machine pin a non-default home lacks', async () => {
     const mycoHome = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-doctor-mcp-other-home-'));
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-doctor-mcp-proj-'));

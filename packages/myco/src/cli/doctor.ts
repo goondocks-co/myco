@@ -1759,6 +1759,7 @@ export async function checkMemberMcpResolution(
         status: 'warn',
         detail: `${manifest.displayName} is set up for capture but declares no Myco MCP server, so it reads no project intelligence. Run \`myco member join --provision ${manifest.name}\`.`,
         reason: 'mcp_entry_absent',
+        scope: 'global',
         symbiont: manifest.name,
         fixable: false,
       });

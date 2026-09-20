@@ -46,7 +46,7 @@ function tempProjectRoot(): string {
   return root;
 }
 afterEach(() => {
-  process.env.MYCO_HOME = savedHome;
+  if (savedHome === undefined) delete process.env.MYCO_HOME; else process.env.MYCO_HOME = savedHome;
   for (const dir of temps.splice(0)) fs.rmSync(dir, { recursive: true, force: true });
 });
 
