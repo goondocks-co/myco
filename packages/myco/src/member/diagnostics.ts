@@ -48,9 +48,9 @@ export interface MembershipFacts {
   joinedAt: number | null;
   unavailableFields: string[];
   expiresAt: number | null;
-  expired: boolean;
+  expired: boolean | null;
   refreshAfter: number | null;
-  refreshTerminal: boolean;
+  refreshTerminal: boolean | null;
 }
 
 export interface SpoolSessionFacts {
@@ -233,9 +233,9 @@ function membershipOf(entry: RegistryEntry, now: number): MembershipFacts {
     machineId: entry.machineId,
     joinedAt,
     expiresAt,
-    expired: expiresAt !== null && expiresAt <= now,
+    expired: unavailableFields.includes('expiresAt') ? null : expiresAt !== null && expiresAt <= now,
     refreshAfter,
-    refreshTerminal: refreshTerminal === true,
+    refreshTerminal: unavailableFields.includes('refreshTerminal') ? null : refreshTerminal === true,
     unavailableFields,
   };
 }

@@ -94,8 +94,20 @@ describe('a member report carries no credential and no captured content', () => 
     expect(membership.tokenId).toBeNull();
     expect(membership.joinedAt).toBeNull();
     expect(membership.expiresAt).toBeNull();
+    expect(membership.expired).toBeNull();
     expect(membership.unavailableFields).toEqual(['tokenId', 'joinedAt', 'expiresAt']);
     expect(JSON.stringify(membership)).not.toContain(SECRET);
+  });
+
+  it('distinguishes absent optional state from invalid derived state', () => {
+    const absent = projectDiagnostics(entry({ expiresAt: undefined, refreshTerminal: undefined }), mycoHome, NOW).membership;
+    expect(absent.expired).toBe(false);
+    expect(absent.refreshTerminal).toBe(false);
+    const invalid = JSON.parse(JSON.stringify(entry()));
+    invalid.refreshTerminal = 'unknown';
+    const damaged = projectDiagnostics(invalid, mycoHome, NOW).membership;
+    expect(damaged.refreshTerminal).toBeNull();
+    expect(damaged.unavailableFields).toContain('refreshTerminal');
   });
 
   it('keeps a refusal\'s code and drops the sentence the server sent with it', () => {
