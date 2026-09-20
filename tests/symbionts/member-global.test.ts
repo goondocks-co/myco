@@ -29,6 +29,22 @@ afterEach(() => {
 const installer = (name: string) => new SymbiontInstaller(loadManifests().find((m) => m.name === name)!, root, resolvePackageRoot(), false, undefined, null, 'member-global', mycoHome);
 
 describe('global member installation', () => {
+  it('checks the selected member home claim when the ambient home differs', () => {
+    const previousClaims = process.env.MYCO_CLAIMS_HOME;
+    const previousHome = process.env.MYCO_HOME;
+    delete process.env.MYCO_CLAIMS_HOME;
+    process.env.MYCO_HOME = home;
+    try {
+      claimSubsystem(SYMBIONT_CONFIG_SUBSYSTEM, 'peer', { claimsHome: mycoHome });
+      expect(() => installer('codex').install()).toThrow(/claimed by another installation/);
+      expect(fs.existsSync(path.join(home, '.codex'))).toBe(false);
+    } finally {
+      releaseSubsystemClaim(SYMBIONT_CONFIG_SUBSYSTEM, 'peer', { claimsHome: mycoHome });
+      if (previousClaims === undefined) delete process.env.MYCO_CLAIMS_HOME; else process.env.MYCO_CLAIMS_HOME = previousClaims;
+      if (previousHome === undefined) delete process.env.MYCO_HOME; else process.env.MYCO_HOME = previousHome;
+    }
+  });
+
   it('refuses a peer claim before writing and accepts the selected member home owner', () => {
     const previous = process.env.MYCO_CLAIMS_HOME;
     process.env.MYCO_CLAIMS_HOME = mycoHome;
