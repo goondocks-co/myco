@@ -31,6 +31,7 @@ import { idFields, kindSpec } from './kinds.js';
 import { parserFor } from './parsers/registry.js';
 import { isBlock, type DerivedEvent } from './parsers/index.js';
 import { resolvePresentedDates } from './projections.js';
+import { sessionLifecycle } from '../read/sessions.js';
 import { segmentsToRead, splitCompleteLines } from './segments.js';
 import { registeredObjectKeySql } from '../core/blob-objects.js';
 import { MAX_BLOB_BYTES, SERVER_PROTOCOL, TRANSCRIPT_PARSE_ADAPTER } from '../constants.js';
@@ -146,6 +147,12 @@ async function nextTarget(db: RelationalStore, now: number): Promise<ParseTarget
     parserContext: contextFromStored(row.parser_context),
     imported: row.imported_at !== null && row.imported_at !== undefined,
   };
+}
+
+/** The date an import gave this session, as the lifecycle holds it. */
+async function importedSessionDate(db: RelationalStore, target: ParseTarget): Promise<number | undefined> {
+  const lifecycle = await sessionLifecycle(db, { projectId: target.projectId }, target.sessionId);
+  return lifecycle === null ? undefined : lifecycle.startedAt ?? lifecycle.firstReceivedAt;
 }
 
 /**
@@ -362,7 +369,9 @@ export async function parseOnce(env: Pick<ServerEnv, 'db' | 'blobs'>, target: Pa
       .bind(JSON.stringify(transcriptMeta), target.projectId, target.transcriptId).run();
     return { derived: 0, calls: calls + 1, nextOffset: null, failure: null };
   }
-  const events = await parser.parse({ lines: split.lines, sessionId: target.sessionId, now, openPromptId: target.openPromptId ?? undefined, transcriptMeta });
+  // An imported transcript's undated lines take the date the import gave the session, not this pass's clock.
+  const undatedAt = target.imported ? await importedSessionDate(env.db, target) : undefined;
+  const events = await parser.parse({ lines: split.lines, sessionId: target.sessionId, now, openPromptId: target.openPromptId ?? undefined, transcriptMeta, ...(undatedAt === undefined ? {} : { undatedAt }) });
   const ctx = { projectId: target.projectId, machineId: target.machineId, tokenId: target.tokenId, bodyBytes: 0, now, writeOrigin: 'server' as const };
 
   let derived = 0;

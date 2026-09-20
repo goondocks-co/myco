@@ -56,7 +56,7 @@ export const claudeCodeParser: TranscriptParser = {
   planTags: ['ultraplan'],
   continuation: { parentSessionIdPath: 'session_id', markerPaths: ['isCompactSummary'] },
 
-  async parse({ lines: all, sessionId, now, openPromptId }: ParserInput): Promise<DerivedEvent[]> {
+  async parse({ lines: all, sessionId, now, openPromptId, undatedAt }: ParserInput): Promise<DerivedEvent[]> {
     const lines = ownedLines(all, sessionId, claudeCodeParser.continuation);
     const events: DerivedEvent[] = [];
     const pending = new Map<string, PendingCall>();
@@ -79,7 +79,7 @@ export const claudeCodeParser: TranscriptParser = {
     };
 
     for (const { value, offset } of lines) {
-      const createdAt = lineTime(value, now);
+      const createdAt = lineTime(value, now, undatedAt);
       const type = str(value.type);
       const message = isBlock(value.message) ? value.message : undefined;
 

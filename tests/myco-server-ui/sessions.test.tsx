@@ -926,3 +926,60 @@ describe('Project home', () => {
     expect(await screen.findByText('Nothing captured yet.')).toBeTruthy();
   });
 });
+
+/**
+ * One row per session, however the pages arrived.
+ *
+ * Sessions are ordered by a date the server revises as a transcript is parsed, so
+ * a session can reach two pages of one flattened list: the cursor that opened the
+ * second page was taken before the first page's order was revised. The rail keys
+ * its rows by session id, so a repeated row would be two children under one key.
+ * The list is refreshed on focus, remount and invalidation — the order settles on
+ * the next read rather than being pinned across requests.
+ */
+describe('a session repeated across pages', () => {
+  const summary = (id: string, startedAt: number) => session({ sessionId: id, startedAt, title: `session ${id}` });
+
+  it('lists the session once, keeping the place the first page gave it and what the later page said', async () => {
+    const first = [summary('s_a', NOW - 1_000), summary('s_b', NOW - 2_000)];
+    // The second page repeats s_b, as a revised order does, carrying a later title.
+    const second = [session({ sessionId: 's_b', startedAt: NOW - 4_000, title: 'session s_b refined' }), summary('s_c', NOW - 5_000)];
+    server({
+      '/auth/me': () => Response.json(ME),
+      '/api/projects': () => Response.json(PROJECTS),
+      '/api/projects/x/sessions?limit=50': () => Response.json({ rows: first, cursor: 'c1' }),
+      '/api/projects/x/sessions?limit=50&cursor=c1': () => Response.json({ rows: second, cursor: null }),
+    });
+    mount('/p/x/sessions');
+    expect(await screen.findByText('session s_a')).toBeTruthy();
+    fireEvent.click(await screen.findByRole('button', { name: 'Load more' }));
+
+    await waitFor(() => expect(screen.getByText('session s_c')).toBeTruthy());
+    // Once, not twice: the repeated row is one child under its one key.
+    expect(screen.queryAllByText('session s_b')).toHaveLength(0);
+    expect(screen.queryAllByText('session s_b refined')).toHaveLength(1);
+    expect(screen.queryAllByText('session s_a')).toHaveLength(1);
+    expect(screen.queryAllByText('session s_c')).toHaveLength(1);
+  });
+
+  it('re-walks the pages on a refetch, still listing each session once', async () => {
+    const first = [summary('s_a', NOW - 1_000), summary('s_b', NOW - 2_000)];
+    const second = [summary('s_b', NOW - 4_000), summary('s_c', NOW - 5_000)];
+    server({
+      '/auth/me': () => Response.json(ME),
+      '/api/projects': () => Response.json(PROJECTS),
+      '/api/projects/x/sessions?limit=50': () => Response.json({ rows: first, cursor: 'c1' }),
+      '/api/projects/x/sessions?limit=50&cursor=c1': () => Response.json({ rows: second, cursor: null }),
+    });
+    mount('/p/x/sessions');
+    expect(await screen.findByText('session s_a')).toBeTruthy();
+    fireEvent.click(await screen.findByRole('button', { name: 'Load more' }));
+    await waitFor(() => expect(screen.getByText('session s_c')).toBeTruthy());
+
+    // A focus refetch walks every page again with fresh cursors.
+    fireEvent(window, new Event('focus'));
+    await waitFor(() => expect(screen.queryAllByText('session s_b')).toHaveLength(1));
+    expect(screen.queryAllByText('session s_a')).toHaveLength(1);
+    expect(screen.queryAllByText('session s_c')).toHaveLength(1);
+  });
+});

@@ -18,6 +18,7 @@ import { resolvePresentedDates } from '@myco-server-worker/ingest/projections.js
 import { issueMemberToken } from '@myco-server-worker/auth/tokens.js';
 import { sha256HexOf } from '@myco-server-worker/hash.js';
 import { listSessions } from '@myco-server-worker/read/sessions.js';
+import { endSession } from '@myco-server-worker/core/session-end.js';
 import { searchProject } from '@myco-server-worker/read/search.js';
 import { registerBlob } from './helpers/d1.js';
 import { envelope, sqliteEnv, uuid } from './helpers/fixtures.js';
@@ -407,5 +408,82 @@ describe('an imported pass that stops after retaining rows', () => {
     expect(r.sqlite.query('SELECT parse_error FROM transcripts').get()).toMatchObject({ parse_error: 'parse' });
     expect(r.sqlite.query('SELECT COUNT(*) AS n FROM prompt_batches').get()).toEqual({ n: count });
     expect(state(r.sqlite)).toMatchObject({ started_at: IMPORT_AT, ended_at: IMPORT_AT, occurred_started_at: DERIVED_FIRST, occurred_ended_at: DERIVED_FIRST + count - 1 });
+  });
+});
+
+/**
+ * The lifecycle beneath a presented date, on the two paths that read it.
+ *
+ * A presented end is a reader's fact. Ending a session and dating a line are
+ * lifecycle acts, and both take the lifecycle columns: an imported session shown
+ * as finished is still open to an owner's end, and a line the transcript left
+ * undated belongs to the date the import gave the session rather than to the
+ * instant the parse happened to run.
+ */
+describe('a presented date does not decide the lifecycle', () => {
+  it('ends an imported session presented as finished whose lifecycle is still open', async () => {
+    // Turns derived after the import's end: the end no longer applies to the
+    // lifecycle, which reads open, while the presented end stands at the import's.
+    const later = line({ type: 'user', promptId: uuid(31), message: { content: 'a later question' }, timestamp: new Date(IMPORT_AT + 50_000).toISOString() })
+      + line({ type: 'assistant', message: { content: [{ type: 'text', text: 'a later answer' }] }, timestamp: new Date(IMPORT_AT + 60_000).toISOString() });
+    const r = await rig(later);
+    await importFacts(r.serverEnv, r.tokenId);
+    await drain(r.env, r.sqlite);
+    await r.serverEnv.db.batch([resolvePresentedDates(r.serverEnv.db, PROJECT, SESSION)]);
+
+    const presented = (await listSessions(r.serverEnv.db, { projectId: PROJECT })).rows[0]!;
+    const raw = r.sqlite.query(`SELECT started_at, ended_at FROM sessions`).get() as { started_at: number | null; ended_at: number | null };
+    expect(presented.endedAt).not.toBeNull();
+    expect(raw.ended_at).toBeNull();
+
+    const endedAt = NOW + 5_000;
+    const outcome = await endSession(r.serverEnv.db, { projectId: PROJECT }, SESSION, endedAt, 'mem_machine_1');
+    expect(outcome).toEqual({ outcome: 'ended', endedAt });
+
+    // The lifecycle write landed, and titling was requested off the end it wrote.
+    const after = r.sqlite.query(`SELECT ended_at, ended_by, titling_requested_at FROM sessions`).get() as { ended_at: number | null; ended_by: string | null; titling_requested_at: number | null };
+    expect(after.ended_at).toBe(endedAt);
+    expect(after.ended_by).toBe('mem_machine_1');
+    expect(after.titling_requested_at).not.toBeNull();
+  });
+
+  it('answers already_ended only when the lifecycle itself holds an end', async () => {
+    const r = await rig(conversation());
+    await importFacts(r.serverEnv, r.tokenId);
+    const raw = r.sqlite.query(`SELECT ended_at FROM sessions`).get() as { ended_at: number | null };
+    expect(raw.ended_at).toBe(IMPORT_AT);
+
+    expect(await endSession(r.serverEnv.db, { projectId: PROJECT }, SESSION, NOW + 5_000, 'mem_machine_1'))
+      .toEqual({ outcome: 'already_ended', endedAt: IMPORT_AT });
+  });
+
+  it('dates an imported line the transcript left undated to the import, not to the parse', async () => {
+    // One turn with no timestamp at all: the only date available is the session's.
+    const undated = line({ type: 'user', promptId: uuid(41), message: { content: 'an undated question' } })
+      + line({ type: 'assistant', message: { content: [{ type: 'text', text: 'an undated answer' }] } });
+    const r = await rig(undated);
+    await send(r.serverEnv, r.tokenId, 'session.start', IMPORT_AT, { agent: 'claude-code', startedAt: IMPORT_AT, originPath: '/w/p' }, 'import');
+    await drain(r.env, r.sqlite);
+    await r.serverEnv.db.batch([resolvePresentedDates(r.serverEnv.db, PROJECT, SESSION)]);
+
+    const prompts = r.sqlite.query(`SELECT created_at FROM prompt_batches WHERE project_id = ?`).all(PROJECT) as { created_at: number }[];
+    expect(prompts.length).toBeGreaterThan(0);
+    for (const prompt of prompts) expect(prompt.created_at).toBe(IMPORT_AT);
+    // The conversation stays where the import put it rather than moving to the parse.
+    const presented = (await listSessions(r.serverEnv.db, { projectId: PROJECT })).rows[0]!;
+    expect(presented.startedAt).toBe(IMPORT_AT);
+    expect(presented.startedAt).not.toBe(NOW);
+  });
+
+  it('dates a live undated line to now, which is when it arrived', async () => {
+    const undated = line({ type: 'user', promptId: uuid(51), message: { content: 'a live undated question' } });
+    const r = await rig(undated);
+    // A hook-shipped transcript owes no import date.
+    r.sqlite.run(`UPDATE transcripts SET imported_at = NULL WHERE project_id = ?`, [PROJECT]);
+    await drain(r.env, r.sqlite);
+
+    const prompts = r.sqlite.query(`SELECT created_at FROM prompt_batches WHERE project_id = ?`).all(PROJECT) as { created_at: number }[];
+    expect(prompts.length).toBeGreaterThan(0);
+    for (const prompt of prompts) expect(prompt.created_at).toBe(NOW);
   });
 });

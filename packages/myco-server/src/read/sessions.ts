@@ -280,6 +280,34 @@ export async function getSession(db: RelationalStore, scope: ReadScope, sessionI
   return row === null ? null : toSession(row);
 }
 
+/**
+ * A session's lifecycle columns, with no presented date over them. Admission,
+ * reopening, ending and titling read these: a session presented as finished is
+ * still open to the lifecycle until an end lands. A deleted session answers null.
+ */
+export interface SessionLifecycle {
+  machineId: string | null;
+  createdByTokenId: string;
+  startedAt: number | null;
+  endedAt: number | null;
+  firstReceivedAt: number;
+}
+
+export async function sessionLifecycle(db: RelationalStore, scope: ReadScope, sessionId: string): Promise<SessionLifecycle | null> {
+  const row = await db
+    .prepare(`SELECT s.machine_id, s.created_by_token_id, s.started_at, s.ended_at, s.first_received_at
+                FROM sessions s WHERE s.project_id = ? AND s.session_id = ? AND ${LIVE_SESSION}`)
+    .bind(scope.projectId, sessionId)
+    .first<Record<string, unknown>>();
+  return row === null ? null : {
+    machineId: text(row.machine_id),
+    createdByTokenId: row.created_by_token_id as string,
+    startedAt: num(row.started_at),
+    endedAt: num(row.ended_at),
+    firstReceivedAt: row.first_received_at as number,
+  };
+}
+
 /** How many of each child a session holds. One statement per table rather than a join: the projections have no common key and a five-way LEFT JOIN would multiply rows. */
 export async function sessionCounts(db: RelationalStore, scope: ReadScope, sessionId: string): Promise<SessionCounts> {
   const tables = [

@@ -72,7 +72,7 @@ export const piParser: TranscriptParser = {
     let planPosition = 0;
 
     for (const { value, offset } of input.lines as readonly ParsedLine[]) {
-      const createdAt = lineTime({ timestamp: value.timestamp }, input.now);
+      const createdAt = lineTime({ timestamp: value.timestamp }, input.now, input.undatedAt);
       const type = str(value.type);
 
       if (type === 'custom_message' && MYCO_CUSTOM_TYPES.has(String(value.customType))) continue;
