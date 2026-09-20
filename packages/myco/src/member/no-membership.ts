@@ -82,12 +82,42 @@ export function recordMissingMembership(
   }
 }
 
-/** This root's record, or null when nothing has missed here. */
-export function readMissingMembership(root: string, mycoHome: string = resolveMycoHome()): MissingMembershipRecord | null {
-  const read = readPrivateJson<MissingMembershipRecord>(missingMembershipPath(path.resolve(root), mycoHome));
-  if (!read.ok) return null;
+/** A record a report asked for: held, never written, or there and unusable. */
+export type MissingMembershipResult =
+  | { status: 'present'; record: MissingMembershipRecord }
+  | { status: 'missing' }
+  | { status: 'unavailable' };
+
+/** Private read and base record shape. */
+function readRecordFile(file: string): MissingMembershipResult {
+  const read = readPrivateJson<MissingMembershipRecord>(file);
+  if (!read.ok) return read.reason === 'missing' ? { status: 'missing' } : { status: 'unavailable' };
   const value = read.value;
-  return typeof value?.root === 'string' && typeof value.count === 'number' ? value : null;
+  const shaped = typeof value?.root === 'string' && typeof value.count === 'number';
+  return shaped ? { status: 'present', record: value } : { status: 'unavailable' };
+}
+
+/** An instant a surface can render: finite, and a date. */
+const rendersAsInstant = (value: unknown): boolean =>
+  typeof value === 'number' && Number.isFinite(value) && !Number.isNaN(new Date(value).getTime());
+
+/** Diagnostic count and timestamp validation. */
+function reportable(record: MissingMembershipRecord): boolean {
+  return Number.isSafeInteger(record.count) && record.count >= 0
+    && record.version === MISSING_MEMBERSHIP_VERSION
+    && rendersAsInstant(record.firstAt) && rendersAsInstant(record.lastAt);
+}
+
+/** This root's record, or null when nothing has missed here and when the file holds nothing readable. */
+export function readMissingMembership(root: string, mycoHome: string = resolveMycoHome()): MissingMembershipRecord | null {
+  const read = readRecordFile(missingMembershipPath(path.resolve(root), mycoHome));
+  return read.status === 'present' ? read.record : null;
+}
+
+/** This root's record as a report reads it: held, never written, or there and unusable. */
+export function readMissingMembershipResult(root: string, mycoHome: string = resolveMycoHome()): MissingMembershipResult {
+  const read = readRecordFile(missingMembershipPath(path.resolve(root), mycoHome));
+  return read.status === 'present' && !reportable(read.record) ? { status: 'unavailable' } : read;
 }
 
 /** Every root that has missed under this home, newest miss first, each with the file it was read from. */
@@ -103,10 +133,29 @@ export function readMissingMemberships(
   const found: Array<{ record: MissingMembershipRecord; file: string }> = [];
   for (const name of names) {
     const file = path.join(unmemberedDir(mycoHome), name);
-    const read = readPrivateJson<MissingMembershipRecord>(file);
-    if (read.ok && typeof read.value?.root === 'string' && typeof read.value.count === 'number') found.push({ record: read.value, file });
+    const read = readRecordFile(file);
+    if (read.status === 'present') found.push({ record: read.record, file });
   }
   return found.sort((a, b) => b.record.lastAt - a.record.lastAt);
+}
+
+/** Every record this home holds, with what the store could not answer for. `readable` is false only where the directory itself could not be listed. */
+export function listMissingMembershipsResult(mycoHome: string = resolveMycoHome()): { records: MissingMembershipRecord[]; readable: boolean; unavailableRecords: number } {
+  let names: string[];
+  try {
+    names = fs.readdirSync(unmemberedDir(mycoHome)).filter((f) => f.endsWith('.json'));
+  } catch (err) {
+    // A store no capture has missed into holds no record; any other errno is one this report could not read.
+    return { records: [], readable: (err as NodeJS.ErrnoException).code === 'ENOENT', unavailableRecords: 0 };
+  }
+  const records: MissingMembershipRecord[] = [];
+  let unavailableRecords = 0;
+  for (const name of names) {
+    const read = readRecordFile(path.join(unmemberedDir(mycoHome), name));
+    if (read.status === 'present' && reportable(read.record)) records.push(read.record);
+    else if (read.status !== 'missing') unavailableRecords += 1;
+  }
+  return { records: records.sort((a, b) => b.lastAt - a.lastAt), readable: true, unavailableRecords };
 }
 
 /** Every root that has missed under this home, newest miss first. */

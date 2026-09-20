@@ -17,7 +17,7 @@ import path from 'node:path';
 import { MemberSpool, spoolDirFor } from '@myco/member/spool.js';
 import { updateSessionState } from '@myco/member/session-state.js';
 import { listRegistryEntriesResult, readRegistryEntryResult, registryEntryPath, writeRegistryEntry, type RegistryEntry } from '@myco/member/registry.js';
-import { recordMissingMembership } from '@myco/member/no-membership.js';
+import { listMissingMembershipsResult, readMissingMembership, readMissingMembershipResult, recordMissingMembership } from '@myco/member/no-membership.js';
 import { mintId, promptEvent, type EnvelopeContext } from '@myco/member/envelope.js';
 import { memberDiagnostics, projectDiagnostics, MAX_REFUSALS_REPORTED } from '@myco/member/diagnostics.js';
 import { runExport } from '@myco/cli/member.js';
@@ -28,6 +28,8 @@ const NOW = 1_800_000_000_000;
 type Report = {
   selection: { root: string | null; scope: string; membershipPresent: boolean | null };
   registry: { readable: boolean; unavailableEntries: number };
+  missedCaptureStore: { readable: boolean; unavailableRecords: number };
+  missedCapture: unknown[];
   projects: unknown[];
 };
 const SECRET = 'mt_thisisaverysecrettokenvalue';
@@ -628,6 +630,58 @@ describe('a registry the export could not read', () => {
     expect(listed.entries.map((held) => held.projectId).sort()).toEqual(['proj_1', 'proj_v1']);
     // Nothing was rewritten: the file on disk is still the v1 it was.
     expect(JSON.parse(fs.readFileSync(registryEntryPath('/home/dev/v1', mycoHome), 'utf-8')).version).toBe(1);
+  });
+});
+
+describe('a missed-capture record the report could not use', () => {
+  /** The file `recordMissingMembership` writes for a root, holding whatever is given. */
+  const writeRecord = (root: string, value: unknown) => {
+    recordMissingMembership(root, { mycoHome, invokedBy: 'hook stop' });
+    const dir = path.join(mycoHome, 'member', 'unmembered');
+    const name = fs.readdirSync(dir).filter((f) => f.endsWith('.json'))[0]!;
+    fs.writeFileSync(path.join(dir, name), JSON.stringify(value), { mode: 0o600 });
+  };
+
+  it('counts a record it cannot count or date, rather than reporting no misses', async () => {
+    const root = tempProjectRoot();
+    writeRecord(root, { version: 1, root, count: -1, firstAt: NOW, lastAt: NOW });
+
+    const lines: string[] = [];
+    await runExport(['--all'], { mycoHome, now: () => NOW, cwd: '/', stdout: (l) => lines.push(l), stderr: () => {} });
+    const report = JSON.parse(lines.join('\n')) as Report;
+    expect(report.missedCapture).toEqual([]);
+    expect(report.missedCaptureStore).toEqual({ readable: true, unavailableRecords: 1 });
+  });
+
+  it('reports the asked root as unknown where its record is unusable', async () => {
+    const root = tempProjectRoot();
+    writeRecord(root, { version: 1, root, count: 2, firstAt: NOW, lastAt: Number.NaN });
+
+    const lines: string[] = [];
+    await runExport([], { mycoHome, now: () => NOW, cwd: root, stdout: (l) => lines.push(l), stderr: () => {} });
+    const report = JSON.parse(lines.join('\n')) as Report;
+    expect(report.missedCapture).toEqual([]);
+    expect(report.missedCaptureStore).toEqual({ readable: false, unavailableRecords: 1 });
+  });
+
+  it('leaves the runtime reading a record the report will not, so a hook still counts its misses', () => {
+    const root = tempProjectRoot();
+    writeRecord(root, { version: 1, root, count: -1, firstAt: NOW, lastAt: NOW });
+
+    expect(readMissingMembership(root, mycoHome)).toMatchObject({ root, count: -1 });
+    expect(readMissingMembershipResult(root, mycoHome)).toEqual({ status: 'unavailable' });
+  });
+
+  it('counts a record at a version this build does not write', () => {
+    const root = tempProjectRoot();
+    writeRecord(root, { version: 2, root, count: 1, firstAt: NOW, lastAt: NOW });
+
+    expect(readMissingMembershipResult(root, mycoHome)).toEqual({ status: 'unavailable' });
+    expect(listMissingMembershipsResult(mycoHome)).toMatchObject({ records: [], readable: true, unavailableRecords: 1 });
+  });
+
+  it('reads a store nothing has missed into as holding none', () => {
+    expect(listMissingMembershipsResult(mycoHome)).toEqual({ records: [], readable: true, unavailableRecords: 0 });
   });
 });
 

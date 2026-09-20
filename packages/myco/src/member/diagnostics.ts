@@ -153,6 +153,14 @@ export interface SelectionFacts {
   membershipPresent: boolean | null;
 }
 
+/** What the missed-capture record store could answer for. */
+export interface MissedCaptureStoreFacts {
+  /** False where the store, or the record asked for, could not be read. */
+  readable: boolean;
+  /** Record files that are there and unusable. */
+  unavailableRecords: number;
+}
+
 /** What the registry could answer for. */
 export interface RegistryFacts {
   /** False where the registry, or the entry asked for, could not be read. */
@@ -175,6 +183,8 @@ export interface MemberDiagnostics {
   registry: RegistryFacts;
   /** The roots the caller asked about, and no others. */
   missedCapture: MissedCaptureFacts[];
+  /** What the store behind that list could answer for. */
+  missedCaptureStore: MissedCaptureStoreFacts;
   /** Null when the caller gathered none; a report says it holds none rather than that none failed. */
   checks: CheckFacts[] | null;
   omissions: readonly string[];
@@ -293,6 +303,8 @@ export function memberDiagnostics(opts: {
   selection: { root: string | null; scope: 'root' | 'all' };
   /** What the caller's registry read could answer; a direct caller that omits it reports a registry it read whole. */
   registry?: RegistryFacts;
+  /** What the caller's missed-capture read could answer; omitted reports a store read whole. */
+  missedCaptureStore?: MissedCaptureStoreFacts;
   checks?: readonly CheckFacts[];
 }): MemberDiagnostics {
   const registry: RegistryFacts = opts.registry ?? { readable: true, unavailableEntries: 0 };
@@ -306,6 +318,7 @@ export function memberDiagnostics(opts: {
     registry,
     projects: opts.entries.map((entry) => projectDiagnostics(entry, opts.mycoHome, opts.now)),
     missedCapture: opts.missedCapture.map(missedCaptureOf),
+    missedCaptureStore: opts.missedCaptureStore ?? { readable: true, unavailableRecords: 0 },
     checks: opts.checks === undefined ? null : [...opts.checks],
     omissions: MEMBER_OMISSIONS,
   };

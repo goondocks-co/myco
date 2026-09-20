@@ -19,7 +19,7 @@ import { CREDENTIAL_FLAG, CREDENTIAL_SOURCES, deploymentScopedHeaders, isProject
 import { isHttpsUrl, isMemberTokenShape, parseCredentialFlag, resolveCredential, resolveMemberProjectRoot } from '../member/credential.js';
 import { refreshMemberCredential, type RefreshReport } from '../member/refresh.js';
 import { runImport } from '../member/import.js';
-import { clearMissingMembership, listMissingMemberships, pruneMissingMemberships, readMissingMembership } from '../member/no-membership.js';
+import { clearMissingMembership, listMissingMemberships, listMissingMembershipsResult, pruneMissingMemberships, readMissingMembership, readMissingMembershipResult } from '../member/no-membership.js';
 import { deploymentUrl, listRegistryEntries, listRegistryEntriesResult, readDeploymentMembership, readRegistryEntry, readRegistryEntryResult, removeRegistryEntry, writeRegistryEntry, REGISTRY_VERSION, type RegistryEntry } from '../member/registry.js';
 import { applySpoolRetention } from '../member/retention.js';
 import { memberDiagnostics, projectDiagnostics } from '../member/diagnostics.js';
@@ -384,7 +384,8 @@ export function runStatus(args: readonly string[], deps: MemberCliDeps = {}): vo
     out(`spool:      ${spool.readable ? spool.sessionFiles : 'unknown'} session file(s), ${spool.unacknowledgedTotal ?? 'unknown'} un-acknowledged event(s)`);
     out(`last ack:   ${!spool.stateReadable ? 'unknown — state could not be read' : spool.lastAckAt === null ? '—' : when(spool.lastAckAt)}`);
     const last = refusals.entries[refusals.entries.length - 1];
-    out(`refused:    ${refusals.logReadable ? `${refusals.loggedSinceLastReset} logged${last ? `; last ${last.kind ?? 'unknown kind'} ${last.eventId ?? 'unknown event'} (${last.code ?? 'code not recognised'}) at ${when(last.at)}` : ''}` : 'the log could not be read'}`);
+    const damaged = refusals.unreadableLines > 0 ? `, ${refusals.unreadableLines} unreadable` : '';
+    out(`refused:    ${refusals.logReadable ? `${refusals.loggedSinceLastReset} logged${damaged}${last ? `; last ${last.kind ?? 'unknown kind'} ${last.eventId ?? 'unknown event'} (${last.code ?? 'code not recognised'}) at ${when(last.at)}` : ''}` : 'the log could not be read'}`);
     out(`latch:      ${!facts.latchReadable ? 'unknown — latch could not be read' : latch ? `offline since ${when(latch.since)}, next probe ${when(latch.nextProbeAt)} (backoff ${latch.backoffMs} ms)` : 'online'}`);
   }
   reportMissedCapture(out, args, deps);
@@ -412,9 +413,12 @@ export async function runExport(args: readonly string[], deps: MemberCliDeps = {
     readable: selected?.status !== 'unavailable',
     unavailableEntries: selected?.status === 'unavailable' ? 1 : 0,
   };
-  const missedCapture = all
-    ? listMissingMemberships(mycoHome)
-    : root === null ? [] : [readMissingMembership(root, mycoHome)].filter((record) => record !== null);
+  const missedRead = all || root === null ? null : readMissingMembershipResult(root, mycoHome);
+  const { records: missedCapture, ...missedCaptureStore } = all ? listMissingMembershipsResult(mycoHome) : {
+    records: missedRead?.status === 'present' ? [missedRead.record] : [],
+    readable: missedRead?.status !== 'unavailable',
+    unavailableRecords: missedRead?.status === 'unavailable' ? 1 : 0,
+  };
   const { checkBinaryVersionSkew, checkRuntimePin, checkMemberMcpResolution } = await import('./doctor.js');
   const checkRoots = [...new Set(all ? entries.map((entry) => entry.root) : root === null ? [] : [root])];
   const toFacts = (check: DoctorCheck, checkRoot: string | null = null) => ({
@@ -424,12 +428,13 @@ export async function runExport(args: readonly string[], deps: MemberCliDeps = {
   const machineChecks = [checkBinaryVersionSkew(), await checkRuntimePin()]
     .filter((check): check is DoctorCheck => check !== null).map((check) => toFacts(check));
   const projectChecks = await Promise.all(checkRoots.map(async (checkRoot) =>
-    (await checkMemberMcpResolution(path.join(checkRoot, '.myco'), { ...(deps.env ?? process.env), MYCO_HOME: mycoHome }))
+    // A report reads the registry where it stands: no upgrade, no write lock.
+    (await checkMemberMcpResolution(path.join(checkRoot, '.myco'), { ...(deps.env ?? process.env), MYCO_HOME: mycoHome }, { registryRead: 'strict' }))
       .map((check) => toFacts(check, checkRoot))));
   const checks = [...new Map([...machineChecks, ...projectChecks.flat()].map((check) => [JSON.stringify(check), check])).values()];
   out(JSON.stringify(memberDiagnostics({
     mycoHome, now: (deps.now ?? Date.now)(), entries, missedCapture,
-    selection: { root, scope: all ? 'all' : 'root' }, registry, checks,
+    selection: { root, scope: all ? 'all' : 'root' }, registry, missedCaptureStore, checks,
   }), null, 2));
 }
 
