@@ -5,7 +5,7 @@
  * against what a member could have shipped: an event id matching the id
  * grammar, a session id within the opaque bound ingest accepts, a kind from the
  * shipped vocabulary, a code from the member's own, and an instant a reader can
- * date. Anything else is null, and no field carries text a writer chose.
+ * date. Anything else is null, and the free-text reason is omitted.
  */
 import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
 import fs from 'node:fs';
@@ -22,7 +22,7 @@ const SESSION_ID = 'sess-a';
 let mycoHome: string;
 const savedHome = process.env.MYCO_HOME;
 beforeEach(() => { mycoHome = tempMycoHome(); process.env.MYCO_HOME = mycoHome; });
-afterEach(() => { process.env.MYCO_HOME = savedHome; });
+afterEach(() => { if (savedHome === undefined) delete process.env.MYCO_HOME; else process.env.MYCO_HOME = savedHome; });
 
 const entry = (): RegistryEntry => ({
   version: REGISTRY_VERSION, projectId: 'proj_1', serverUrl: 'https://srv.example/', token: 'A'.repeat(43),
