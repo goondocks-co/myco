@@ -90,10 +90,7 @@ export async function planEventWrite(db: RelationalStore, ctx: IngestContext, bo
   const parsed = parseEnvelope(body, ctx.now);
   if (!parsed.ok) return parsed;
   const e = parsed.value;
-  // `transcript-parse` names the Deployment's own parser, and provenance is
-  // decided from it: a member writing under that adapter would read as a row
-  // the parser derived. It is the server's to claim, and a member's write
-  // carrying it is refused here, where every entry point plans its event.
+  // The transcript parser adapter is reserved for server-origin writes.
   if (e.producer.adapter === TRANSCRIPT_PARSE_ADAPTER && (ctx.writeOrigin ?? 'member') === 'member') {
     return { ok: false, ...refusal(`producer.adapter ${TRANSCRIPT_PARSE_ADAPTER} is reserved for the Deployment's transcript parser`) };
   }

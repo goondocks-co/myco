@@ -32,15 +32,15 @@ export type Fidelity = (typeof FIDELITIES)[number];
 export interface ParsedLine {
   value: Record<string, unknown>;
   offset: number;
+  /** Fallback time for an undated line whose first byte belongs to an imported segment. */
+  undatedAt?: number;
 }
 
 export interface ParserInput {
   lines: readonly ParsedLine[];
   sessionId: string;
-  /** The ceiling every line time is clamped to, and the instant a line with no readable timestamp is dated to unless `undatedAt` names another. */
+  /** The ceiling for line timestamps and the fallback for undated live lines. */
   now: number;
-  /** The instant an undated line takes instead of `now`, clamped to `now`. A live parse names none. */
-  undatedAt?: number;
   /**
    * The turn open where this window begins, when it began before it.
    *

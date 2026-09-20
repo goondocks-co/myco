@@ -22,7 +22,7 @@ export const cursorParser: TranscriptParser = {
   fidelity: 'no_tool_results',
   planTags: [],
 
-  async parse({ lines, sessionId, now, openPromptId, undatedAt }: ParserInput): Promise<DerivedEvent[]> {
+  async parse({ lines, sessionId, now, openPromptId }: ParserInput): Promise<DerivedEvent[]> {
     const events: DerivedEvent[] = [];
     let promptId: string | undefined = openPromptId;
     let reply: { text: string[]; offset: number; createdAt: number; promptId?: string } | null = null;
@@ -41,7 +41,7 @@ export const cursorParser: TranscriptParser = {
       });
     };
 
-    for (const { value, offset } of lines) {
+    for (const { value, offset, undatedAt } of lines) {
       const type = str(value.type);
       if (type !== 'user' && type !== 'assistant') continue;
       const message = isBlock(value.message) ? value.message : undefined;

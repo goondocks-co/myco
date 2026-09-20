@@ -48,7 +48,7 @@ const conversation = (): string =>
 const metadataTail = (n: number): string =>
   Array.from({ length: n }, (_, i) => line({ type: 'file-history-snapshot', messageId: `m${i}`, snapshot: { trackedFileBackups: {} } })).join('');
 
-async function rig(text: string, sliceBytes = 1 << 20) {
+async function rig(text: string, sliceBytes = 1 << 20, channel: 'import' | 'cli' = 'import') {
   const { sqlite, serverEnv } = sqliteEnv();
   const issued = await issueMemberToken(serverEnv.db, { memberId: 'mem_machine_1', machineId: MACHINE }, NOW);
   const bytes = new TextEncoder().encode(text) as Uint8Array<ArrayBuffer>;
@@ -56,18 +56,21 @@ async function rig(text: string, sliceBytes = 1 << 20) {
               VALUES (?, ?, ?, ?, ?, ?)`, [PROJECT, SESSION, MACHINE, issued.tokenId, NOW, NOW]);
   sqlite.run(`INSERT INTO transcripts (project_id, transcript_id, session_id, machine_id, agent, size, segment_count, first_received_at, last_received_at, token_id, imported_at)
               VALUES (?, ?, ?, ?, 'claude-code', ?, 1, ?, ?, ?, ?)`,
-             [PROJECT, TRANSCRIPT, SESSION, MACHINE, bytes.length, NOW, NOW, issued.tokenId, NOW]);
-  await appendSegments(sqlite, serverEnv, issued.tokenId, bytes, 0, sliceBytes);
+             [PROJECT, TRANSCRIPT, SESSION, MACHINE, bytes.length, NOW, NOW, issued.tokenId, channel === 'import' ? NOW : null]);
+  await appendSegments(sqlite, serverEnv, issued.tokenId, bytes, 0, sliceBytes, channel);
   return { sqlite, serverEnv, env: { db: serverEnv.db, blobs: serverEnv.blobs }, tokenId: issued.tokenId };
 }
 
 /** Stores `bytes` as segments from `baseOffset`, growing the transcript's size as a later upload does. */
-async function appendSegments(sqlite: Database, serverEnv: { blobs: { put(key: string, body: ReadableStream): Promise<unknown> } }, tokenId: string, bytes: Uint8Array<ArrayBuffer>, baseOffset: number, sliceBytes: number) {
+async function appendSegments(sqlite: Database, serverEnv: { blobs: { put(key: string, body: ReadableStream): Promise<unknown> } }, tokenId: string, bytes: Uint8Array<ArrayBuffer>, baseOffset: number, sliceBytes: number, channel: 'import' | 'cli' = 'import') {
   for (let at = 0; at < bytes.length; at += sliceBytes) {
     const slice = bytes.subarray(at, Math.min(at + sliceBytes, bytes.length));
     const key = await sha256HexOf(slice);
     const objectKey = registerBlob(sqlite, { projectId: PROJECT, key, size: slice.length, tokenId, receivedAt: NOW });
     await serverEnv.blobs.put(objectKey, new Blob([slice]).stream() as ReadableStream);
+    sqlite.run(`INSERT INTO events(project_id, event_id, session_id, token_id, kind, channel, payload, envelope_hash, created_at, received_at)
+                VALUES (?, ?, ?, ?, 'transcript.segment', ?, '{}', 'fixture', ?, ?)`,
+               [PROJECT, `e${baseOffset + at}`, SESSION, tokenId, channel, NOW, NOW]);
     sqlite.run(`INSERT INTO transcript_segments (project_id, transcript_id, base_offset, length, blob_key, event_id, created_at, received_at, token_id)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`, [PROJECT, TRANSCRIPT, baseOffset + at, slice.length, key, `e${baseOffset + at}`, NOW, NOW, tokenId]);
   }
@@ -512,4 +515,30 @@ describe('two import ends at one instant', () => {
     const [ascending, descending] = [await settleEnds([900, 901]), await settleEnds([901, 900])];
     expect(ascending).toEqual(descending);
   });
+});
+
+
+describe('undated lines in mixed imported and live segments', () => {
+  for (const firstLane of ['import', 'cli'] as const) {
+    it(`dates each line by its bytes when ${firstLane} arrives first`, async () => {
+      const lastLane = firstLane === 'import' ? 'cli' : 'import';
+      const undated = (id: number) => line({ type: 'user', promptId: uuid(id), message: { content: `undated ${id}` } });
+      const first = undated(801);
+      const r = await rig(first, 1 << 20, firstLane);
+      await importFacts(r.serverEnv, r.tokenId);
+      const more = new TextEncoder().encode(undated(802));
+      const key = await sha256HexOf(more);
+      const objectKey = registerBlob(r.sqlite, { projectId: PROJECT, key, size: more.length, tokenId: r.tokenId, receivedAt: NOW });
+      await r.serverEnv.blobs.put(objectKey, new Blob([more]).stream());
+      const result = await send(r.serverEnv, r.tokenId, 'transcript.segment', NOW,
+        { transcriptId: TRANSCRIPT, baseOffset: new TextEncoder().encode(first).length, length: more.length, blob: key, agent: 'claude-code' }, lastLane);
+      expect(result.persisted).toBe(true);
+      await drain(r.env, r.sqlite);
+      expect(r.sqlite.query('SELECT text, created_at FROM prompt_batches ORDER BY text').all()).toEqual([
+        { text: 'undated 801', created_at: firstLane === 'import' ? IMPORT_AT : NOW },
+        { text: 'undated 802', created_at: lastLane === 'import' ? IMPORT_AT : NOW },
+      ]);
+      expect(state(r.sqlite)).toMatchObject({ occurred_started_at: null, occurred_ended_at: null });
+    });
+  }
 });

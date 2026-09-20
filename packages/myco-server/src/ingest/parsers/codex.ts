@@ -64,7 +64,7 @@ export const codexParser: TranscriptParser = {
   planTags: ['proposed_plan'],
   headerContext: codexHeaderContext,
 
-  async parse({ lines, sessionId, now, openPromptId, transcriptMeta, undatedAt }: ParserInput): Promise<DerivedEvent[]> {
+  async parse({ lines, sessionId, now, openPromptId, transcriptMeta }: ParserInput): Promise<DerivedEvent[]> {
     const events: DerivedEvent[] = [];
     const pending = new Map<string, PendingCall>();
     let promptId: string | undefined = openPromptId;
@@ -86,7 +86,7 @@ export const codexParser: TranscriptParser = {
       });
     };
 
-    for (const { value, offset } of lines) {
+    for (const { value, offset, undatedAt } of lines) {
       if (str(value.type) !== 'response_item' || !isBlock(value.payload)) continue;
       const payload = value.payload;
       const createdAt = lineTime(value, now, undatedAt);
