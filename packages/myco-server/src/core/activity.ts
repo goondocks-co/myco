@@ -11,7 +11,7 @@
  * read as idle, fall to a depth where no job runs, and stop reclaiming the very
  * invitations those joins are spending.
  */
-import type { RelationalStore } from './adapters.js';
+import type { PreparedStatement, RelationalStore } from './adapters.js';
 
 /** The key under which the Deployment records the last owner request it served. */
 export const LAST_REQUEST_KEY = 'last_request_at';
@@ -25,11 +25,16 @@ export const REQUEST_STAMP_INTERVAL_MS = 60_000;
  * write a minute rather than one per request.
  */
 export async function stampRequest(db: RelationalStore, now: number): Promise<void> {
-  await db.prepare(
+  await stampRequestStatement(db, now).run();
+}
+
+/** The same conditional write, prepared and unrun. `gate` conjoins a condition the stamp must meet, so a batch stamps only what it admitted. */
+export function stampRequestStatement(db: RelationalStore, now: number, gate?: { sql: string; params: unknown[] }): PreparedStatement {
+  return db.prepare(
     `INSERT OR REPLACE INTO schema_meta (key, value)
        SELECT ?, ?
-        WHERE NOT EXISTS (SELECT 1 FROM schema_meta WHERE key = ? AND CAST(value AS INTEGER) > ?)`,
-  ).bind(LAST_REQUEST_KEY, String(now), LAST_REQUEST_KEY, now - REQUEST_STAMP_INTERVAL_MS).run();
+        WHERE NOT EXISTS (SELECT 1 FROM schema_meta WHERE key = ? AND CAST(value AS INTEGER) > ?)${gate === undefined ? '' : ` AND (${gate.sql})`}`,
+  ).bind(LAST_REQUEST_KEY, String(now), LAST_REQUEST_KEY, now - REQUEST_STAMP_INTERVAL_MS, ...(gate?.params ?? []));
 }
 
 /** When the Deployment last saw activity — a capture receipt, a run starting, an owner request, a join — or null when it never has. */
