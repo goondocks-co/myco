@@ -477,8 +477,7 @@ function sessionPlan(sqlite: Database, sql: string): { index: string | null; sca
  * here, so the test below holds the same plan against a statement the module
  * itself executes.
  */
-// The expression the read layer orders by, never a copy of it: a copy drifts
-// from the index and the plan then proves the copy fast.
+// The ordering expression is shared with the production read.
 const OCCURRED_AT = SESSION_OCCURRED_AT;
 const A4_SESSION_LIST = (keyset: boolean): string =>
   `SELECT s.session_id, s.machine_id, s.created_by_token_id, s.first_received_at, s.last_received_at,

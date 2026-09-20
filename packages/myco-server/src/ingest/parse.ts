@@ -23,7 +23,7 @@
  * regardless is the one defect that would lose rows silently and in bulk, which
  * is exactly what a transcript-first design cannot afford.
  */
-import type { RelationalStore, ServerEnv } from '../core/adapters.js';
+import type { PreparedStatement, RelationalStore, ServerEnv } from '../core/adapters.js';
 import { emit, type Classifier } from '../telemetry.js';
 import { uuidv5 } from '../hash.js';
 import { planEventWrite, type EventWrite, type IngestResult } from './events.js';
@@ -166,12 +166,17 @@ function turnOf(event: DerivedEvent): string | null {
   return typeof named === 'string' ? named : null;
 }
 
+/** Persists pass state and the dates of retained imported rows in one batch. */
+async function finalizePass(db: RelationalStore, target: ParseTarget, statement: PreparedStatement): Promise<void> {
+  await db.batch([statement, ...(target.imported ? [resolvePresentedDates(db, target.projectId, target.sessionId)] : [])]);
+}
+
 /** Stop this transcript where it stands and say why. Its rows to this point are kept; later passes skip it until the failure is cleared. */
 async function stop(db: RelationalStore, target: ParseTarget, classifier: ParseFailure, now: number): Promise<void> {
-  await db
+  const statement = db
     .prepare(`UPDATE transcripts SET parse_error = ?, parse_failed_at = ?, parser_version = ? WHERE project_id = ? AND transcript_id = ?`)
-    .bind(classifier, now, PARSER_VERSION, target.projectId, target.transcriptId)
-    .run();
+    .bind(classifier, now, PARSER_VERSION, target.projectId, target.transcriptId);
+  await finalizePass(db, target, statement);
   emit({ kind: 'transcript_parse_failed', projectId: target.projectId, transcriptId: target.transcriptId, reason: classifier });
 }
 
@@ -423,13 +428,7 @@ export async function parseOnce(env: Pick<ServerEnv, 'db' | 'blobs'>, target: Pa
                  parser_context = COALESCE(parser_context, ?), parse_error = NULL, parse_failed_at = NULL
                WHERE project_id = ? AND transcript_id = ?`)
     .bind(cursor, now, PARSER_VERSION, parser.fidelity, openPrompt, transcriptMeta === undefined ? null : JSON.stringify(transcriptMeta), target.projectId, target.transcriptId);
-  // An imported session is presented at its transcript file's mtime until the
-  // derived rows say when the conversation happened; a live transcript can
-  // establish no overlay, and an accepted live segment clears one with its own
-  // write. The recompute rides with the cursor, so an imported pass spends no
-  // extra call for it.
-  const present = target.imported ? [resolvePresentedDates(env.db, target.projectId, target.sessionId)] : [];
-  await env.db.batch([advance, ...present]);
+  await finalizePass(env.db, target, advance);
   calls += 1;
 
   emit({ kind: 'transcript_parsed', projectId: target.projectId, transcriptId: target.transcriptId, derived, offset: cursor });

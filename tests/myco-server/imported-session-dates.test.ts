@@ -12,7 +12,7 @@
  */
 import { describe, expect, it } from 'bun:test';
 import { Database } from 'bun:sqlite';
-import { parseOnce } from '@myco-server-worker/ingest/parse.js';
+import { parseOnce, TRANSCRIPT_PARSE_EVENTS_PER_BATCH } from '@myco-server-worker/ingest/parse.js';
 import { ingestEvent } from '@myco-server-worker/ingest/events.js';
 import { resolvePresentedDates } from '@myco-server-worker/ingest/projections.js';
 import { issueMemberToken } from '@myco-server-worker/auth/tokens.js';
@@ -373,5 +373,29 @@ describe('the dates and state a search filters on', () => {
       "SELECT created_at AS created, status FROM embedding_sources WHERE project_id = ? AND type = 'session' AND record_id = ?")
       .get(PROJECT, SESSION) as { created: number; status: string };
     expect(semantic).toEqual({ created: DERIVED_FIRST, status: 'completed' });
+  });
+});
+
+
+describe('an imported pass that stops after retaining rows', () => {
+  it('presents retained dates when the project is archived between event batches', async () => {
+    nextEvent = 100;
+    const count = TRANSCRIPT_PARSE_EVENTS_PER_BATCH;
+    const text = Array.from({ length: count + 1 }, (_, i) => line({ type: 'user', promptId: uuid(i + 1), message: { content: `retained ${i}` }, timestamp: new Date(DERIVED_FIRST + i).toISOString() })).join('');
+    const r = await rig(text);
+    await importFacts(r.serverEnv, r.tokenId);
+    let archived = false;
+    const db = { ...r.env.db, batch: async (statements: Parameters<typeof r.env.db.batch>[0]) => {
+      const result = await r.env.db.batch(statements);
+      if (!archived) {
+        r.sqlite.run('UPDATE projects SET archived_at = ? WHERE project_id = ?', [NOW, PROJECT]);
+        archived = true;
+      }
+      return result;
+    } };
+    await drain({ ...r.env, db }, r.sqlite);
+    expect(r.sqlite.query('SELECT parse_error FROM transcripts').get()).toMatchObject({ parse_error: 'parse' });
+    expect(r.sqlite.query('SELECT COUNT(*) AS n FROM prompt_batches').get()).toEqual({ n: count });
+    expect(state(r.sqlite)).toMatchObject({ started_at: IMPORT_AT, ended_at: IMPORT_AT, occurred_started_at: DERIVED_FIRST, occurred_ended_at: DERIVED_FIRST + count - 1 });
   });
 });
