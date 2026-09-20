@@ -59,6 +59,7 @@ const MYCO_PLUGIN_FILE_MARKER = 'myco:plugin-marker';
 export type DoctorReason = 'home_pin_missing' | 'mcp_entry_absent' | 'mcp_target_unreadable' | 'mcp_entry_http' | 'mcp_entry_stdio' | 'mcp_entry_unknown_transport' | 'mcp_entry_no_credential'
   | 'binary_manifest_missing' | 'binary_manifest_unreadable' | 'binary_manifest_unversioned'
   | 'binary_version_skew' | 'binary_version_current'
+  | 'mcp_cwd_ambiguous' | 'mcp_cwd_elsewhere'
   | 'runtime_pin_refused' | 'runtime_pin_redundant' | 'runtime_pin_target_absent' | 'runtime_pin_override';
 
 export interface DoctorCheck {
@@ -1648,7 +1649,7 @@ export async function checkMemberMcpResolution(
 ): Promise<DoctorCheck[]> {
   const { resolveProjectRoot } = await import('../project-root.js');
   const { resolveMycoHome, defaultMycoHome, readMachineHomePin } = await import('../paths/home.js');
-  const { readRegistryEntry, readRegistryEntryResult } = await import('../member/registry.js');
+  const { readRegistryEntry, readRegistryEntryResult, listRegistryEntriesResult } = await import('../member/registry.js');
   const { loadManifests } = await import('../symbionts/detect.js');
   const root = resolveProjectRoot(vaultDir);
   const home = resolveMycoHome({ cwd: root, env });
@@ -1674,6 +1675,8 @@ export async function checkMemberMcpResolution(
   // override. Every scope a target was read at is reported on its own; which
   // one a given host prefers is not decided here.
   const { SymbiontInstaller } = await import('../symbionts/installer.js');
+  // Counted as a report reads it: no migration, and an entry it could not read is not one it can claim resolves.
+  const readable = listRegistryEntriesResult(home);
   const packageRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
   const TRANSPORT_REASON = { http: 'mcp_entry_http', stdio: 'mcp_entry_stdio' } as const;
   for (const manifest of loadManifests()) {
@@ -1697,6 +1700,30 @@ export async function checkMemberMcpResolution(
           fixable: false,
         });
         continue;
+      }
+      // A launcher starts where its entry says, not where the project is. Naming
+      // no directory it resolves whatever membership the machine holds, which is
+      // this project only where the machine holds exactly one readable one;
+      // naming a directory it must be this project's own root.
+      if (target.transport === 'stdio') {
+        const cwd = target.declaredCwd;
+        const resolves = cwd === null
+          ? readable.readable && readable.unavailableEntries === 0 && readable.entries.length === 1
+          : path.resolve(cwd) === path.resolve(root);
+        if (!resolves) {
+          checks.push({
+            name: 'Member MCP resolution',
+            status: 'warn',
+            detail: cwd === null
+              ? `${manifest.displayName} starts its MCP server in a directory of its own choosing and its ${target.scope} entry names none, so it resolves this project's membership only where this machine holds exactly one readable one.`
+              : `${manifest.displayName}'s ${target.scope} entry starts its MCP server in a directory that is not ${root}, so it resolves another project's membership or none.`,
+            reason: cwd === null ? 'mcp_cwd_ambiguous' : 'mcp_cwd_elsewhere',
+            scope: target.scope,
+            symbiont: manifest.name,
+            fixable: false,
+          });
+          continue;
+        }
       }
       // A member entry is on disk; whether the server answers is not read here.
       // One that names no transport cannot be dialed, so it is a warning that

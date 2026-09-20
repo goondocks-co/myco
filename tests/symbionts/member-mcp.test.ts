@@ -210,7 +210,7 @@ describe('what a report reads from the member MCP targets', () => {
     expect(files.length).toBeGreaterThan(0);
 
     const seen = installer.inspectMemberMcp();
-    expect(seen).toEqual(files.map(() => ({ scope: 'global', present: true, transport: 'http', carriesCredential: true, readable: true })));
+    expect(seen).toEqual(files.map(() => ({ scope: 'global', present: true, transport: 'http', carriesCredential: true, declaredCwd: null, readable: true })));
     // Presence, transport and scope only: the URL and the headers helper stay inside.
     expect(JSON.stringify(seen)).not.toContain(SERVER_URL);
   });
@@ -288,7 +288,7 @@ describe('what a report reads from the member MCP targets', () => {
     for (const target of targets.slice(1)) write(target, ['not an entry']);
 
     const seen = installer.inspectMemberMcp();
-    expect(seen[0]).toEqual({ scope: 'global', present: true, transport: 'stdio', carriesCredential: true, readable: true });
+    expect(seen[0]).toEqual({ scope: 'global', present: true, transport: 'stdio', carriesCredential: true, declaredCwd: null, readable: true });
     expect(seen.slice(1).every((t) => !t.readable && !t.present)).toBe(true);
   });
 
@@ -310,7 +310,7 @@ describe('what a report reads from the member MCP targets', () => {
 
     const seen = override.inspectMemberMcp();
     // One target, the project's own: the member scope's global paths are not consulted.
-    expect(seen).toEqual([{ scope: 'project', present: true, transport: 'http', carriesCredential: true, readable: true }]);
+    expect(seen).toEqual([{ scope: 'project', present: true, transport: 'http', carriesCredential: true, declaredCwd: null, readable: true }]);
     expect(globalTargetPaths(override)).toEqual([projectTarget]);
   });
 });

@@ -57,8 +57,8 @@ const writeJson = (file: string, body: unknown): void => {
   fs.writeFileSync(file, JSON.stringify(body), 'utf-8');
 };
 
-/** Cursor takes no headers helper, so its member entry is the stdio bridge carrying the credential flag. */
-const cursorMember = () => ({ mcpServers: { myco: { type: 'stdio', command: '/opt/myco', args: ['mcp', CREDENTIAL_FLAG, 'registry'] } } });
+/** Cursor takes no headers helper, so its member entry is the stdio bridge carrying the credential flag and the project it starts in. */
+const cursorMember = (root: string) => ({ mcpServers: { myco: { type: 'stdio', command: '/opt/myco', args: ['mcp', CREDENTIAL_FLAG, 'registry'], cwd: root } } });
 /** A server entry that is not the member's: a URL and none of the headers its credential travels in. */
 const notMember = (url: string) => ({ mcpServers: { myco: { type: 'http', url } } });
 
@@ -81,8 +81,8 @@ describe('member export --all across two projects', () => {
     fs.writeFileSync(path.join(home, '.codex', 'config.toml'),
       `[mcp_servers.myco]\nurl = "${SERVER}/mcp"\nhttp_headers_helper = "/opt/myco member mcp-headers ${CREDENTIAL_FLAG} registry"\n`, 'utf-8');
     // A project override apiece, each in its own checkout.
-    writeJson(path.join(alpha, '.cursor', 'mcp.json'), cursorMember());
-    writeJson(path.join(beta, '.cursor', 'mcp.json'), cursorMember());
+    writeJson(path.join(alpha, '.cursor', 'mcp.json'), cursorMember(alpha));
+    writeJson(path.join(beta, '.cursor', 'mcp.json'), cursorMember(beta));
 
     const report = await exportAll();
     expect(report.selection).toMatchObject({ root: null, scope: 'all', membershipPresent: true });
@@ -101,7 +101,7 @@ describe('member export --all across two projects', () => {
   it('names a project whose override could not be read without hiding the other project\'s', async () => {
     const alpha = project('alpha', 'proj_alpha');
     const beta = project('beta', 'proj_beta');
-    writeJson(path.join(alpha, '.cursor', 'mcp.json'), cursorMember());
+    writeJson(path.join(alpha, '.cursor', 'mcp.json'), cursorMember(alpha));
     fs.mkdirSync(path.join(beta, '.cursor'), { recursive: true });
     fs.writeFileSync(path.join(beta, '.cursor', 'mcp.json'), 'not configuration at all', 'utf-8');
 

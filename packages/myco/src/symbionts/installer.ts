@@ -1998,13 +1998,13 @@ export class SymbiontInstaller {
   /**
    * What this symbiont's MCP targets say about the member's entry, for a report.
    *
-   * Presence, transport, scope and whether the entry carries this member's
-   * credential: the entry itself holds a URL and the headers a credential
+   * Presence, transport, scope, the directory a launcher declares, and whether
+   * the entry carries this member's credential: the entry itself holds a URL and the headers a credential
    * travels in, and none of that leaves this class. Reading
    * goes through the same parser the writes use, so a file that cannot be read
    * is named as such rather than read as an empty one.
    */
-  inspectMemberMcp(): Array<{ scope: 'global' | 'project'; present: boolean; transport: 'http' | 'stdio' | null; carriesCredential: boolean; readable: boolean }> {
+  inspectMemberMcp(): Array<{ scope: 'global' | 'project'; present: boolean; transport: 'http' | 'stdio' | null; carriesCredential: boolean; declaredCwd: string | null; readable: boolean }> {
     const toml = this.manifest.registration?.mcpFormat === 'toml';
     const scope = this.isGlobalScope ? 'global' as const : 'project' as const;
     return this.resolveAbsoluteMcpTargets().map(({ path: filePath, serversKey }) => {
@@ -2014,27 +2014,30 @@ export class SymbiontInstaller {
       try {
         file = this.readMcpFile(filePath, toml);
       } catch {
-        return { scope, present: false, transport: null, carriesCredential: false, readable: false };
+        return { scope, present: false, transport: null, carriesCredential: false, declaredCwd: null, readable: false };
       }
       // A key that is not there is a file declaring no server; a key that is
       // there and is not a server block is a file nothing can read an entry
       // from, and each target answers for itself.
       const servers = file?.[key];
-      if (file === null || servers === undefined) return { scope, present: false, transport: null, carriesCredential: false, readable: true };
+      if (file === null || servers === undefined) return { scope, present: false, transport: null, carriesCredential: false, declaredCwd: null, readable: true };
       if (servers === null || typeof servers !== 'object' || Array.isArray(servers)) {
-        return { scope, present: false, transport: null, carriesCredential: false, readable: false };
+        return { scope, present: false, transport: null, carriesCredential: false, declaredCwd: null, readable: false };
       }
       const server = (servers as Record<string, unknown>)[MYCO_MCP_SERVER_NAME];
-      if (server === undefined) return { scope, present: false, transport: null, carriesCredential: false, readable: true };
+      if (server === undefined) return { scope, present: false, transport: null, carriesCredential: false, declaredCwd: null, readable: true };
       if (server === null || typeof server !== 'object' || Array.isArray(server)) {
-        return { scope, present: false, transport: null, carriesCredential: false, readable: false };
+        return { scope, present: false, transport: null, carriesCredential: false, declaredCwd: null, readable: false };
       }
       const entry = server as Record<string, unknown>;
       const transport = typeof entry.url === 'string' ? 'http' as const : typeof entry.command === 'string' ? 'stdio' as const : null;
+      // A launcher started outside the project finds its membership through the
+      // directory the entry names, so the directory is a fact about it.
+      const declaredCwd = typeof entry.cwd === 'string' && entry.cwd !== '' ? entry.cwd : null;
       // What the entry declares is one fact; whether it is the entry member
       // provisioning writes — the one carrying this member's credential — is
       // another, and a server that is not cannot resolve the membership.
-      return { scope, present: true, transport, carriesCredential: this.isMemberMcpServer(entry), readable: true };
+      return { scope, present: true, transport, carriesCredential: this.isMemberMcpServer(entry), declaredCwd, readable: true };
     });
   }
 
