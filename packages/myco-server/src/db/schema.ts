@@ -1429,6 +1429,9 @@ const V42_STATEMENTS: readonly string[] = [
  * answered, and the time of that contact. No token, no credential environment
  * and no request body beyond those parsed fields.
  *
+ * `offers` and `capabilities` are null while no report is held: a renewal
+ * refreshes contact without supplying one, and a reader answers unknown.
+ *
  * `credential_id` is what a lease names, so a busy worker joins its runs
  * directly. A credential is not a machine: a rotation takes a new row, and no
  * two credentials are merged into one worker.
@@ -1437,8 +1440,8 @@ const V44_STATEMENTS: readonly string[] = [
   `CREATE TABLE IF NOT EXISTS worker_contacts (
      credential_id TEXT PRIMARY KEY REFERENCES member_credentials(id),
      machine_id    TEXT,
-     offers        TEXT NOT NULL DEFAULT '[]',
-     capabilities  TEXT NOT NULL DEFAULT '[]',
+     offers        TEXT,
+     capabilities  TEXT,
      last_reason   TEXT,
      last_seen_at  INTEGER NOT NULL,
      updated_at    INTEGER NOT NULL)`,

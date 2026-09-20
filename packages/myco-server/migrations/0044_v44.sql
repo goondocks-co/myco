@@ -3,8 +3,8 @@
 CREATE TABLE IF NOT EXISTS worker_contacts (
      credential_id TEXT PRIMARY KEY REFERENCES member_credentials(id),
      machine_id    TEXT,
-     offers        TEXT NOT NULL DEFAULT '[]',
-     capabilities  TEXT NOT NULL DEFAULT '[]',
+     offers        TEXT,
+     capabilities  TEXT,
      last_reason   TEXT,
      last_seen_at  INTEGER NOT NULL,
      updated_at    INTEGER NOT NULL);

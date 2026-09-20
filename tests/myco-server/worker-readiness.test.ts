@@ -166,6 +166,22 @@ describe('what a worker last said about itself', () => {
     expect((await readWorkerFleet(r.e.db, NOW + 1_000))[0]).toMatchObject({ offers: OFFER });
   });
 
+  it('leaves an absent or unreadable report alone on a lease renewal, which supplies none', async () => {
+    const r = await rig();
+    const legacy = await r.admin('mem_legacy', 'legacy-box');
+    // A worker whose first contact is a renewal has reported nothing yet.
+    expect(await recordWorkerContact(r.e.db, { credentialId: legacy.tokenId, machineId: 'legacy-box', now: NOW })).toBe(true);
+    expect((await readWorkerFleet(r.e.db, NOW))[0]).toMatchObject({ offers: null, capabilities: null, lastReason: null, lastSeenAt: NOW });
+
+    const worker1 = await r.admin('mem_w1', 'mba');
+    await recordWorkerContact(r.e.db, { credentialId: worker1.tokenId, machineId: 'mba', offers: OFFER, capabilities: ['repository-checkout'], reason: 'no_work', now: NOW });
+    r.e.sqlite.run(`UPDATE worker_contacts SET offers = '[{"id":' WHERE credential_id = ?`, [worker1.tokenId]);
+    // A renewal refreshes the contact time and keeps the unreadable report unreadable.
+    expect(await recordWorkerContact(r.e.db, { credentialId: worker1.tokenId, machineId: 'mba', now: NOW + 60_000 })).toBe(true);
+    const after = (await readWorkerFleet(r.e.db, NOW + 60_000)).find((w) => w.credentialId === worker1.tokenId);
+    expect(after).toMatchObject({ offers: null, lastSeenAt: NOW + 60_000, lastReason: 'no_work' });
+  });
+
   it('stops calling a worker eligible once its member no longer administers the Deployment, as the claim route does', async () => {
     const r = await rig();
     const worker1 = await r.admin('mem_w1', 'mba');

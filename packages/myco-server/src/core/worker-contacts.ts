@@ -154,12 +154,14 @@ export async function recordWorkerContact(
   contact: { credentialId: string; machineId: string | null; offers?: readonly ReportedHarness[]; capabilities?: readonly string[]; reason?: ContactOutcome; now: number },
 ): Promise<boolean> {
   const stored = await readWorkerContact(db, contact.credentialId);
-  // A lease renewal carries no offer of its own; it refreshes the liveness of
-  // what the worker last reported rather than erasing it.
-  const offers = boundedOffers(contact.offers ?? stored?.offers ?? []);
-  const capabilities = boundedCapabilities(contact.capabilities ?? stored?.capabilities ?? []);
+  // Only a claim supplies a report. A renewal refreshes the liveness of the one
+  // already held and leaves an absent or unreadable one as it stands: null is
+  // stored, and a reader answers unknown.
+  const offers = contact.offers === undefined ? (stored?.offers ?? null) : boundedOffers(contact.offers);
+  const capabilities = contact.capabilities === undefined ? (stored?.capabilities ?? null) : boundedCapabilities(contact.capabilities);
   const reason = contact.reason ?? stored?.lastReason ?? null;
-  if (unchanged(stored, offers, capabilities, reason) && contact.now - stored!.lastSeenAt < CONTACT_THROTTLE_MS) return false;
+  if (offers !== null && capabilities !== null
+    && unchanged(stored, offers, capabilities, reason) && contact.now - stored!.lastSeenAt < CONTACT_THROTTLE_MS) return false;
   await db.prepare(
     `INSERT INTO worker_contacts (credential_id, machine_id, offers, capabilities, last_reason, last_seen_at, updated_at)
      VALUES (?, ?, ?, ?, ?, ?, ?)
@@ -167,7 +169,7 @@ export async function recordWorkerContact(
        machine_id = excluded.machine_id, offers = excluded.offers, capabilities = excluded.capabilities,
        last_reason = excluded.last_reason, last_seen_at = excluded.last_seen_at, updated_at = excluded.updated_at`,
   ).bind(
-    contact.credentialId, contact.machineId, JSON.stringify(offers), JSON.stringify(capabilities),
+    contact.credentialId, contact.machineId, offers === null ? null : JSON.stringify(offers), capabilities === null ? null : JSON.stringify(capabilities),
     reason, contact.now, contact.now,
   ).run();
   return true;
