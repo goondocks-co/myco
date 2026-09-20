@@ -15,7 +15,8 @@ import path from 'node:path';
 import { run as runMemberCli } from '@myco/cli/member.js';
 import { CREDENTIAL_FLAG } from '@myco/member/constants.js';
 import { REGISTRY_VERSION, writeRegistryEntry } from '@myco/member/registry.js';
-import { resolvePackageRoot } from '@myco/symbionts/detect.js';
+import { loadManifests, resolvePackageRoot } from '@myco/symbionts/detect.js';
+import { SymbiontInstaller } from '@myco/symbionts/installer.js';
 import { tempMycoHome } from './helpers/server.js';
 
 const TOKEN = 'A'.repeat(43);
@@ -24,14 +25,20 @@ const GLOBAL_CONFIG = '.config/opencode/opencode.json';
 
 let mycoHome: string;
 let root: string;
+let agentHome: string;
+let previousHome: string | undefined;
 beforeEach(() => {
   mycoHome = tempMycoHome();
   root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'myco-opencode-mcp-')));
   execFileSync('git', ['init', '-q', root]);
+  agentHome = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-opencode-agent-home-'));
+  previousHome = process.env.HOME;
+  process.env.HOME = agentHome;
 });
 afterEach(() => {
   fs.rmSync(root, { recursive: true, force: true });
-  for (const file of [GLOBAL_PLUGIN, GLOBAL_CONFIG]) fs.rmSync(path.join(os.homedir(), file), { recursive: true, force: true });
+  if (previousHome === undefined) delete process.env.HOME; else process.env.HOME = previousHome;
+  fs.rmSync(agentHome, { recursive: true, force: true });
   process.exitCode = 0;
 });
 
@@ -39,7 +46,7 @@ const join = (): void => writeRegistryEntry({
   version: REGISTRY_VERSION, projectId: 'proj_1', serverUrl: 'https://myco.example', token: TOKEN, root, machineId: 'm1', joinedAt: 1, updatedAt: 1,
 }, { mycoHome });
 
-const globalConfigPath = (): string => path.join(os.homedir(), GLOBAL_CONFIG);
+const globalConfigPath = (): string => path.join(agentHome, GLOBAL_CONFIG);
 
 const writeGlobalConfig = (server: Record<string, unknown> | string): string => {
   const file = globalConfigPath();
@@ -73,10 +80,10 @@ describe('OpenCode member MCP', () => {
     fs.writeFileSync(path.join(root, 'opencode.json'), JSON.stringify({ mcp: { other: { type: 'local', command: ['/bin/true'] } } }));
     const provisioned = await member(['provision', 'opencode']);
     expect(provisioned.err).toEqual([]);
-    expect(provisioned.out[0]).toBe(`provisioned OpenCode for ${root} (plugin and MCP)`);
+    expect(provisioned.out[0]).toBe('provisioned OpenCode globally (plugin and MCP)');
 
-    const raw = fs.readFileSync(path.join(root, 'opencode.json'), 'utf8');
-    const server = projectConfig().mcp!.myco;
+    const raw = fs.readFileSync(globalConfigPath(), 'utf8');
+    const server = JSON.parse(raw).mcp.myco;
     expect(server.type).toBe('local');
     expect(server.command!.slice(-3)).toEqual(['mcp', CREDENTIAL_FLAG, 'registry']);
     expect(server.command![0]).toBe(memberBinary);
@@ -104,7 +111,7 @@ describe('OpenCode member MCP', () => {
     });
   }
 
-  it('refuses a global config it cannot read, and provisions when there is none or when the global server only launches Myco', async () => {
+  it('refuses an unreadable or legacy global config and provisions an absent one', async () => {
     join();
     const global = writeGlobalConfig('{"mcp": {"myco": ');
     expect((await member(['provision', 'opencode'])).err.join('\n')).toContain(`could not read ${global}`);
@@ -114,13 +121,11 @@ describe('OpenCode member MCP', () => {
     process.exitCode = 0;
     fs.rmSync(global);
     expect((await member(['provision', 'opencode'])).out[0]).toContain('(plugin and MCP)');
-    fs.rmSync(path.join(root, 'opencode.json'));
-    fs.rmSync(path.join(root, '.opencode'), { recursive: true });
 
     // The shape a 1.4 global install leaves: a launcher the project's own command replaces.
     writeGlobalConfig({ type: 'local', command: ['/Users/someone/.myco/bin/myco', 'mcp'], enabled: true, timeout: 30 });
-    expect((await member(['provision', 'opencode'])).out[0]).toContain('(plugin and MCP)');
-    expect(process.exitCode ?? 0).toBe(0);
+    expect((await member(['provision', 'opencode'])).err.join('\n')).toContain('capture cutover');
+    expect(process.exitCode).toBe(2);
   });
 
   // A project `opencode.json` Myco cannot parse: the user's bytes are theirs,
@@ -153,6 +158,7 @@ describe('OpenCode member MCP', () => {
     join();
     await member(['provision', 'codex']);
     const config = path.join(root, '.codex', 'config.toml');
+    fs.mkdirSync(path.dirname(config), { recursive: true });
     const mangled = '[mcp_servers.myco\nurl = "https://myco.example/mcp"\n';
     fs.writeFileSync(config, mangled);
     const left = await member(['leave']);
@@ -165,7 +171,7 @@ describe('OpenCode member MCP', () => {
   it('leave removes the member entry, keeps other servers, and never a 1.4 project install\'s entry', async () => {
     join();
     fs.writeFileSync(path.join(root, 'opencode.json'), JSON.stringify({ mcp: { other: { type: 'local', command: ['/bin/true'] } } }));
-    await member(['provision', 'opencode']);
+    new SymbiontInstaller(loadManifests().find((m) => m.name === 'opencode')!, root, resolvePackageRoot(), false, undefined, null, 'member-project', mycoHome).install();
     const left = await member(['leave']);
     expect(left.out).toContain(`removed OpenCode MCP server from ${root}`);
     expect(projectConfig().mcp!.myco).toBeUndefined();

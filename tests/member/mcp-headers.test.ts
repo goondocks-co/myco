@@ -11,7 +11,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { run as runMemberCli } from '@myco/cli/member.js';
-import { memberHeaders } from '@myco/member/constants.js';
+import { deploymentScopedHeaders, memberHeaders } from '@myco/member/constants.js';
 import { REGISTRY_VERSION, writeRegistryEntry } from '@myco/member/registry.js';
 import { loadManifests, resolvePackageRoot } from '@myco/symbionts/detect.js';
 import { SymbiontInstaller } from '@myco/symbionts/installer.js';
@@ -47,6 +47,15 @@ async function headers(args: string[], cwd: string): Promise<{ out: string[]; er
 }
 
 describe('myco member mcp-headers', () => {
+  it('resolves the named Deployment outside any joined project without inventing a project header', async () => {
+    join(TOKEN);
+    const result = await headers(['--credential', 'registry', '--server', SERVER_A], os.homedir());
+    expect(result.err).toEqual([]);
+    expect(JSON.parse(result.out[0])).toEqual(deploymentScopedHeaders({ token: TOKEN }));
+    const wrong = await headers(['--credential', 'registry', '--server', SERVER_B], os.homedir());
+    expect(wrong.out).toEqual([]);
+    expect(process.exitCode).toBe(1);
+  });
   it('prints the member headers as one JSON object from any directory of the project, and the rotated token once the registry holds it', async () => {
     join(TOKEN);
     const first = await headers(['--credential', 'registry', '--server', SERVER_A], path.join(root, 'src', 'deep'));

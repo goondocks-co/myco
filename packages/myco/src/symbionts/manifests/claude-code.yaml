@@ -334,12 +334,12 @@ registration:
   # connection, and again after a 401 or 403 on a tool call — not after a 401
   # while connecting, which fails the connection.
   memberMcpHeadersHelperKey: headersHelper
-  globalMcpTarget: ~/.claude/settings.json
+  globalMcpTarget: ~/.claude.json
   skillsTarget: .claude/skills
   globalSkillsTarget: ~/.claude/skills
   settingsTarget: .claude/settings.json
   # Claude Code's ~/.claude/settings.json is a multi-key settings file:
-  # `hooks`, `permissions`, `mcpServers`, etc. all live at the root.
+  # `hooks` and `permissions` live at the root.
   # Pointing globalSettingsTarget at the same path as globalHooksTarget
   # opts the installer in to merging the settings template (`permissions`
   # block) alongside the hooks block — Claude Code's schema accepts both.

@@ -22,6 +22,7 @@
     "packages/myco-shared/src/**/*",
     "packages/myco-deploy/src/**/*",
     "tests/**/*.ts",
+    "scripts/smoke-member-global.ts",
     "scripts/smoke-worker-run.ts",
     "scripts/smoke-worker-service.ts"
   ],

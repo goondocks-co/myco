@@ -35,6 +35,8 @@ function homeResolvingScripts(): string[] {
     .filter((f) => f.endsWith('.ts'))
     // The worker rig requires an explicit home; checkout pins cannot select its credentials.
     .filter((f) => f !== 'smoke-worker-service.ts')
+    // The installer smoke test uses an ephemeral home and must not follow a live installation's pin.
+    .filter((f) => f !== 'smoke-member-global.ts')
     .filter((f) => {
       const source = fs.readFileSync(path.join(SCRIPTS_DIR, f), 'utf8');
       return (

@@ -435,9 +435,8 @@ describe('`myco member join` under a non-default home', () => {
       { ...joinDeps(project, home, out), packageRoot: resolvePackageRoot() },
     );
 
-    // `.mcp.json` is committed in a normal repo: a machine's home path in it
-    // travels to everyone who clones. `myco mcp` reads the pin itself.
-    const mcp = JSON.parse(fs.readFileSync(path.join(project, '.mcp.json'), 'utf-8')) as {
+    // MCP uses the user-wide file and resolves the member home through its pin.
+    const mcp = JSON.parse(fs.readFileSync(path.join(homeDir, '.claude.json'), 'utf-8')) as {
       mcpServers: Record<string, { env?: Record<string, string> }>;
     };
     expect(Object.keys(mcp.mcpServers)).toEqual(['myco']);
