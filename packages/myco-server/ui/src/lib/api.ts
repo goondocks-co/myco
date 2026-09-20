@@ -69,7 +69,41 @@ export function postJson<T>(path: string, body?: unknown): Promise<T> {
 export interface StatusResponse {
   schema: { expected: number; found: number | null; matches: boolean };
   capabilities: Capability[];
+  workers: WorkerStatus;
   projects: ProjectReceipt[];
+}
+
+/** A harness a worker reported offering, and whether the worker reported it logged in. Its own probe, not a provider check. */
+export interface ReportedHarness {
+  id: string;
+  authenticated: boolean;
+}
+
+/** One worker, as the Deployment last heard from it and as its leases stand now. */
+export interface WorkerRow {
+  credentialId: string;
+  machineId: string | null;
+  offers: ReportedHarness[];
+  capabilities: string[];
+  lastReason: 'claimed' | 'no_work' | 'no_harness' | 'at_limit' | 'lost_race' | null;
+  /** 0 when this worker has never been recorded — a lease holder from before contacts were kept. */
+  lastSeenAt: number;
+  busy: { runId: string; projectId: string; task: string | null; leaseExpiresAt: number } | null;
+  eligible: boolean;
+  recent: boolean;
+}
+
+/**
+ * `available` is read before any number here: a Deployment whose store could
+ * not be questioned answers zeros, and those zeros mean "not known" rather than
+ * "none attached".
+ */
+export interface WorkerStatus {
+  available: boolean;
+  workersBusy: number;
+  runsQueued: number;
+  recentWithinMs: number;
+  fleet: WorkerRow[];
 }
 
 export interface Capability {

@@ -38,6 +38,14 @@ export const asOwnerPatch = async (path: string, body?: unknown): Promise<Reques
     body: body === undefined ? undefined : JSON.stringify(body),
   });
 
+/** An authenticated owner PUT, same-origin so the CSRF check admits it. */
+export const asOwnerPut = async (path: string, body?: unknown): Promise<Request> =>
+  new Request(`https://s${path}`, {
+    method: 'PUT',
+    headers: { cookie: await ownerCookie(), 'cf-connecting-ip': '1.2.3.4', origin: 'https://s', 'content-type': 'application/json' },
+    body: body === undefined ? undefined : JSON.stringify(body),
+  });
+
 /** An authenticated owner POST, same-origin so the CSRF check admits it. */
 export const asOwnerPost = async (path: string, body?: unknown): Promise<Request> =>
   new Request(`https://s${path}`, {

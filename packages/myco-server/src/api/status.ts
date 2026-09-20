@@ -4,6 +4,7 @@ import { SERVER_SCHEMA_VERSION } from '../constants.js';
 import { schemaVersion } from '../read/meta.js';
 import { listVisibleProjects } from './scope.js';
 import { workerLiveness } from '../core/runs.js';
+import { CONTACT_RECENT_MS, readWorkerFleet, type WorkerFleetRow } from '../core/worker-contacts.js';
 import { ok } from './scope.js';
 
 /**
@@ -40,12 +41,18 @@ export async function handleStatus(env: ServerEnv, ctx: OwnerContext): Promise<R
   // target: a store that is missing, misconfigured, or unreachable all read as unusable
   // here rather than only the one shape a single platform happens to produce.
   const capabilities = deploymentCapabilities(env);
-  let workers = { workersBusy: 0, runsQueued: 0 };
+  // `available: false` is the one field a surface reads before the numbers. A
+  // store this handler could not question answers zero busy and zero queued,
+  // and zero here means "not known", never "none attached".
+  let workers: {
+    available: boolean; workersBusy: number; runsQueued: number; recentWithinMs: number; fleet: WorkerFleetRow[];
+  } = { available: false, workersBusy: 0, runsQueued: 0, recentWithinMs: CONTACT_RECENT_MS, fleet: [] };
   let found: number | null = null;
   let projects: Awaited<ReturnType<typeof listVisibleProjects>> = [];
   try {
     found = await schemaVersion(env.db);
-    workers = await workerLiveness(env.db, ctx.now);
+    const counts = await workerLiveness(env.db, ctx.now);
+    workers = { available: true, ...counts, recentWithinMs: CONTACT_RECENT_MS, fleet: await readWorkerFleet(env.db, ctx.now) };
     projects = await listVisibleProjects(env.db, ctx.member, { includeArchived: true });
   } catch {
     return ok({ schema: { expected: SERVER_SCHEMA_VERSION, found: null, matches: false }, capabilities, workers, projects: [] });
@@ -53,9 +60,10 @@ export async function handleStatus(env: ServerEnv, ctx: OwnerContext): Promise<R
   return ok({
     schema: { expected: SERVER_SCHEMA_VERSION, found, matches: found === SERVER_SCHEMA_VERSION },
     capabilities,
-    // What a capability list cannot answer: whether the queue is moving. A
-    // Deployment can be configured to run tasks and have no worker driving any,
-    // and a queue growing beside nothing busy is the shape of that.
+    // What a capability list cannot answer: whether the queue is moving, and
+    // which workers are attached. A capability is this server's own runtime
+    // configuration; a worker attaches from elsewhere, and the two are reported
+    // apart. `fleet` carries what each worker last reported about itself.
     workers,
     projects: projects.map((p) => ({ projectId: p.projectId, lastActivityAt: p.lastActivityAt, sessionCount: p.sessionCount, archivedAt: p.archivedAt })),
   });

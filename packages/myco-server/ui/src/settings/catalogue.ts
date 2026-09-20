@@ -54,7 +54,7 @@ export const LEAF_GROUPS: readonly LeafGroup[] = [
   {
     id: 'agent',
     label: 'Agent',
-    note: 'The provider and model that generate this server\'s intelligence.',
+    note: 'The provider and model this server uses for the work it runs itself. A task a worker drives runs on that worker\'s harness, which chooses its own model; what a run actually used is recorded on the run.',
     leaves: [
       { leaf: 'agent.provider.type', label: 'Provider', kind: 'select', options: PROVIDERS, note: 'Which service generates this server\'s intelligence; its credential lives under Credentials.' },
       { leaf: 'agent.provider.model', label: 'Model', kind: 'text', note: 'The provider\'s model identifier.' },
@@ -63,7 +63,7 @@ export const LEAF_GROUPS: readonly LeafGroup[] = [
       { leaf: 'agent.provider.local_backend', label: 'Local backend', kind: 'select', options: ['ollama', 'lmstudio'] },
       { leaf: 'agent.reasoningLevel', label: 'Reasoning profile', kind: 'select', options: ['low', 'default', 'high'] },
       { leaf: 'agent.model', label: 'Default model (advanced)', kind: 'text' },
-      { leaf: 'agent.harness', label: 'Runtime', kind: 'text', note: 'claude-sdk or openai-agents.' },
+      { leaf: 'agent.harness', label: 'Runtime (retired)', kind: 'text', readOnly: true, note: 'Named the in-binary runtime this server no longer uses. Shown so a value an older deployment stored is visible; it changes nothing. A task a worker drives runs on that worker\'s harness, set under Workers.' },
       { leaf: 'agent.run_retention_days', label: 'Keep run records for', kind: 'number', min: 1, max: 365, unit: 'days' },
       { leaf: 'agent.semantic_write_check_enabled', label: 'Check writes before they land', kind: 'toggle' },
     ],
@@ -139,7 +139,7 @@ export const LEAF_GROUPS: readonly LeafGroup[] = [
   {
     id: 'workers',
     label: 'Workers',
-    note: 'Which harness a worker drives. A worker offers what it has logged in; this names what to prefer.',
+    note: 'Which harness a worker drives. A worker offers what it has logged in; this names what to prefer. Status shows what each attached worker last reported.',
     leaves: [
       { leaf: 'worker.harness', label: 'Preferred harness', kind: 'text', note: 'claude-code, codex, opencode, cursor or antigravity.' },
       { leaf: 'worker.harness_fallback', label: 'Fallback order', kind: 'json', note: 'A JSON array of harness names, tried in order.' },
