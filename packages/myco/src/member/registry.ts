@@ -25,7 +25,7 @@ import path from 'node:path';
 import { resolveMycoHome } from '../paths/home.js';
 import { LifecycleLock, withFileLockSync, type AcquireResult } from '../utils/lifecycle-lock.js';
 import { isProjectId } from './constants.js';
-import { ensureMemberDir, ensurePrivateFile, memberRoot, readPrivateJson, reportSkippedPrivateFile, writePrivateFileAtomic } from './store.js';
+import { assertMemberPathContained, pathIsAbsent, ensureMemberDir, ensurePrivateFile, memberRoot, readPrivateJson, reportSkippedPrivateFile, writePrivateFileAtomic } from './store.js';
 
 export const REGISTRY_VERSION = 2;
 const PROJECTS_DIRNAME = 'projects';
@@ -499,6 +499,11 @@ export type RegistryRefusal = 'missing' | 'unreadable' | 'loose-mode' | 'malform
  */
 function readEntryFile(file: string, name: string, mycoHome: string, readLegacy = false):
   { ok: true; entry: RegistryEntry } | { ok: false; reason: RegistryRefusal; stderrReason: RegistryRefusal; detail?: string } {
+  try {
+    assertMemberPathContained(file, mycoHome);
+  } catch {
+    return { ok: false, reason: 'unreadable', stderrReason: 'unreadable' };
+  }
   const read = readPrivateJson<ProjectBinding>(file);
   if (!read.ok) {
     const stderrReason = read.reason;
@@ -518,6 +523,11 @@ function readEntryFile(file: string, name: string, mycoHome: string, readLegacy 
   if (!isBinding(read.value)) return malformed('not a registry entry');
   if (!isProjectId(read.value.projectId)) return malformed('project id out of grammar');
   if (!keyed(read.value.root)) return malformed('root mismatch');
+  try {
+    assertMemberPathContained(deploymentPath(read.value.serverUrl, mycoHome), mycoHome);
+  } catch {
+    return { ok: false, reason: 'unreadable', stderrReason: 'unreadable' };
+  }
   const composed = compose(read.value, mycoHome);
   if (composed === null) return { ok: false, reason: 'malformed', stderrReason: 'malformed', detail: `no membership for ${read.value.serverUrl}` };
   return { ok: true, entry: composed };
@@ -534,10 +544,11 @@ export function listRegistryEntriesResult(mycoHome: string = resolveMycoHome()):
   const dir = projectsDir(mycoHome);
   let names: string[];
   try {
+    assertMemberPathContained(dir, mycoHome);
     names = fs.readdirSync(dir).sort();
   } catch (err) {
     // A registry no member has written yet holds no membership; any other errno is one this report could not read.
-    return { entries: [], readable: (err as NodeJS.ErrnoException).code === 'ENOENT', unavailableEntries: 0 };
+    return { entries: [], readable: (err as NodeJS.ErrnoException).code === 'ENOENT' && pathIsAbsent(dir), unavailableEntries: 0 };
   }
   const entries: RegistryEntry[] = [];
   let unavailableEntries = 0;
@@ -545,7 +556,7 @@ export function listRegistryEntriesResult(mycoHome: string = resolveMycoHome()):
     if (!name.endsWith('.json')) continue;
     const read = readEntryFile(path.join(dir, name), name, mycoHome, true);
     if (read.ok) entries.push(read.entry);
-    else if (read.reason !== 'missing') unavailableEntries += 1;
+    else unavailableEntries += 1;
   }
   return { entries, readable: true, unavailableEntries };
 }

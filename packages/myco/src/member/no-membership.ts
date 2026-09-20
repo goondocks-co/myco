@@ -29,7 +29,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { resolveMycoHome } from '../paths/home.js';
 import { registryKeyFor } from './registry.js';
-import { ensureMemberDir, memberRoot, readPrivateJson, writePrivateFileAtomic } from './store.js';
+import { assertMemberPathContained, pathIsAbsent, ensureMemberDir, memberRoot, readPrivateJson, writePrivateFileAtomic } from './store.js';
 
 export const UNMEMBERED_DIRNAME = 'unmembered';
 
@@ -97,6 +97,16 @@ function readRecordFile(file: string): MissingMembershipResult {
   return shaped ? { status: 'present', record: value } : { status: 'unavailable' };
 }
 
+/** A diagnostic record inside this home, or an unavailable path. */
+function readDiagnosticRecord(file: string, mycoHome: string): MissingMembershipResult {
+  try {
+    assertMemberPathContained(file, mycoHome);
+  } catch {
+    return { status: 'unavailable' };
+  }
+  return readRecordFile(file);
+}
+
 /** An instant a surface can render: finite, and a date. */
 const rendersAsInstant = (value: unknown): boolean =>
   typeof value === 'number' && Number.isFinite(value) && !Number.isNaN(new Date(value).getTime());
@@ -121,7 +131,7 @@ export function readMissingMembership(root: string, mycoHome: string = resolveMy
 export function readMissingMembershipResult(root: string, mycoHome: string = resolveMycoHome()): MissingMembershipResult {
   const resolved = path.resolve(root);
   const file = missingMembershipPath(resolved, mycoHome);
-  const read = readRecordFile(file);
+  const read = readDiagnosticRecord(file, mycoHome);
   if (read.status !== 'present') return read;
   const usable = keyed(read.record, path.basename(file)) && reportable(read.record);
   return usable ? read : { status: 'unavailable' };
@@ -150,17 +160,18 @@ export function readMissingMemberships(
 export function listMissingMembershipsResult(mycoHome: string = resolveMycoHome()): { records: MissingMembershipRecord[]; readable: boolean; unavailableRecords: number } {
   let names: string[];
   try {
+    assertMemberPathContained(unmemberedDir(mycoHome), mycoHome);
     names = fs.readdirSync(unmemberedDir(mycoHome)).filter((f) => f.endsWith('.json'));
   } catch (err) {
     // A store no capture has missed into holds no record; any other errno is one this report could not read.
-    return { records: [], readable: (err as NodeJS.ErrnoException).code === 'ENOENT', unavailableRecords: 0 };
+    return { records: [], readable: (err as NodeJS.ErrnoException).code === 'ENOENT' && pathIsAbsent(unmemberedDir(mycoHome)), unavailableRecords: 0 };
   }
   const records: MissingMembershipRecord[] = [];
   let unavailableRecords = 0;
   for (const name of names) {
-    const read = readRecordFile(path.join(unmemberedDir(mycoHome), name));
+    const read = readDiagnosticRecord(path.join(unmemberedDir(mycoHome), name), mycoHome);
     if (read.status === 'present' && keyed(read.record, name) && reportable(read.record)) records.push(read.record);
-    else if (read.status !== 'missing') unavailableRecords += 1;
+    else unavailableRecords += 1;
   }
   return { records: records.sort((a, b) => b.lastAt - a.lastAt), readable: true, unavailableRecords };
 }
