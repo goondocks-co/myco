@@ -432,7 +432,7 @@ export async function runExport(args: readonly string[], deps: MemberCliDeps = {
   const gathered = [
     checkBinaryVersionSkew(),
     await checkRuntimePin(),
-    ...(checkRoot === null ? [] : await checkMemberMcpResolution(checkRoot, deps.env ?? process.env)),
+    ...(checkRoot === null ? [] : await checkMemberMcpResolution(path.join(checkRoot, '.myco'), { ...(deps.env ?? process.env), MYCO_HOME: mycoHome })),
   ];
   const checks = gathered
     .filter((check): check is NonNullable<typeof check> => check !== null)

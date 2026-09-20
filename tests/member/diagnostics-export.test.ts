@@ -203,6 +203,17 @@ describe('an unjoined project still produces a report', () => {
   });
 });
 
+it('exports the MCP configuration of the selected project', async () => {
+  const project = tempProjectRoot();
+  writeRegistryEntry(entry({ root: project }), { mycoHome });
+  fs.mkdirSync(path.join(project, '.codex'));
+  fs.writeFileSync(path.join(project, '.codex', 'config.toml'), '[mcp_servers.myco]\nurl = "https://myco.example.com/mcp"\n');
+  const lines: string[] = [];
+  await runExport([], { mycoHome, cwd: project, stdout: (line) => lines.push(line) });
+  const report = JSON.parse(lines.join('\n'));
+  expect(report.checks).toContainEqual(expect.objectContaining({ symbiont: 'codex', scope: 'project', reason: 'mcp_entry_http' }));
+});
+
 describe('a log that could not be read is not an empty one', () => {
   it('says so, rather than reporting no refusals', () => {
     const e = entry();
