@@ -41,13 +41,13 @@ export const cursorParser: TranscriptParser = {
       });
     };
 
-    for (const { value, offset } of lines) {
+    for (const { value, offset, undatedAt } of lines) {
       const type = str(value.type);
       if (type !== 'user' && type !== 'assistant') continue;
       const message = isBlock(value.message) ? value.message : undefined;
       const text = textOf(message?.content);
       if (text.trim() === '') continue;
-      const createdAt = lineTime(value, now);
+      const createdAt = lineTime(value, now, undatedAt);
 
       if (type === 'user') {
         await flushReply();

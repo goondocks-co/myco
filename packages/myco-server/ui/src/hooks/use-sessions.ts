@@ -271,7 +271,10 @@ export function useSessions(projectId: string, filters: SessionListFilters = {})
   if (filters.q !== undefined && filters.q.trim() !== '') params.set('q', filters.q.trim());
   if (filters.branch !== undefined && filters.branch !== '') params.set('branch', filters.branch);
   if (filters.member !== undefined && filters.member !== '') params.set('member', filters.member);
-  return usePaged<SessionSummaryRow>(['sessions', projectId, params.toString()], `${project(projectId)}/sessions?${params.toString()}`);
+  // Sessions order by a date the parse revises, so one session can reach two pages.
+  return usePaged<SessionSummaryRow>(['sessions', projectId, params.toString()], `${project(projectId)}/sessions?${params.toString()}`, {
+    rowKey: (row) => row.sessionId,
+  });
 }
 
 /** A session's turns of the named origins, oldest first. One page holds every turn a person typed in any session seen so far; the origins sit in the key so a toggle never shows the other list's pages. */

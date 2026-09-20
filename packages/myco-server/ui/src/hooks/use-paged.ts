@@ -4,8 +4,14 @@ import { fetchJson } from '../lib/api';
 
 export interface Page<T> { rows: T[]; cursor: string | null }
 
-/** A cursor-paged read, page after page; `more()` fetches the next while a cursor remains. Refetch, focus and remount all keep one copy of every row. A read with `enabled: false` waits, pending, until it is wanted. */
-export function usePaged<T>(key: readonly unknown[], path: string, opts: { enabled?: boolean } = {}) {
+/**
+ * A cursor-paged read, page after page; `more()` fetches the next while a cursor
+ * remains. A read with `enabled: false` waits, pending, until it is wanted.
+ *
+ * `rowKey` lists a row once: its first position, its latest payload. A refresh
+ * re-walks the loaded pages.
+ */
+export function usePaged<T>(key: readonly unknown[], path: string, opts: { enabled?: boolean; rowKey?: (row: T) => string } = {}) {
   const query = useInfiniteQuery({
     queryKey: [...key],
     initialPageParam: null as string | null,
@@ -14,7 +20,12 @@ export function usePaged<T>(key: readonly unknown[], path: string, opts: { enabl
       fetchJson<Page<T>>(pageParam === null ? path : `${path}${path.includes('?') ? '&' : '?'}cursor=${encodeURIComponent(pageParam)}`, signal),
     getNextPageParam: (last) => last.cursor ?? undefined,
   });
-  const rows = useMemo(() => query.data?.pages.flatMap((p) => p.rows) ?? [], [query.data]);
+  const rowKey = opts.rowKey;
+  const rows = useMemo(() => {
+    const flat = query.data?.pages.flatMap((p) => p.rows) ?? [];
+    // A Map keeps the first insertion's position and the last write's value.
+    return rowKey === undefined ? flat : [...new Map(flat.map((row) => [rowKey(row), row])).values()];
+  }, [query.data, rowKey]);
   return {
     rows,
     isPending: query.isPending,

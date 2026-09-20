@@ -93,7 +93,7 @@ const target = (sqlite: Database) => {
 async function drain(env: { db: unknown; blobs: unknown }, sqlite: Database, max = 50): Promise<number> {
   let passes = 0;
   while (passes < max && target(sqlite).parsed_offset < target(sqlite).size && target(sqlite).parse_error === null) {
-    const t = sqlite.query(`SELECT project_id, transcript_id, session_id, machine_id, token_id, agent, size, parsed_offset, fidelity, open_prompt_id, parser_context FROM transcripts`).get() as Record<string, unknown>;
+    const t = sqlite.query(`SELECT project_id, transcript_id, session_id, machine_id, token_id, agent, size, parsed_offset, fidelity, open_prompt_id, parser_context, imported_at FROM transcripts`).get() as Record<string, unknown>;
     const before = target(sqlite).parsed_offset;
     await parseOnce(env as never, {
       projectId: t.project_id as string, transcriptId: t.transcript_id as string, sessionId: t.session_id as string,
@@ -101,6 +101,7 @@ async function drain(env: { db: unknown; blobs: unknown }, sqlite: Database, max
       size: t.size as number, parsedOffset: t.parsed_offset as number, fidelity: null,
       openPromptId: (t.open_prompt_id as string | null) ?? null,
       parserContext: typeof t.parser_context === 'string' ? JSON.parse(t.parser_context) : null,
+      imported: t.imported_at !== null && t.imported_at !== undefined,
     }, NOW);
     passes += 1;
     if (target(sqlite).parsed_offset === before) break;
@@ -299,7 +300,7 @@ describe('parsing a held transcript', () => {
     const t = sqlite.query(`SELECT * FROM transcripts`).get() as Record<string, unknown>;
     const report = await parseOnce(env as never, {
       projectId: PROJECT, transcriptId: TRANSCRIPT, sessionId: SESSION, machineId: MACHINE,
-      tokenId: t.token_id as string, agent: 'claude-code', size: t.size as number, parsedOffset: 0, fidelity: null, openPromptId: null,
+      tokenId: t.token_id as string, agent: 'claude-code', size: t.size as number, parsedOffset: 0, fidelity: null, openPromptId: null, imported: false,
     }, NOW);
     expect(report.calls).toBeLessThanOrEqual(TRANSCRIPT_PARSE_CALLS_PER_PASS + 2);
     expect(report.derived).toBeGreaterThan(TRANSCRIPT_PARSE_EVENTS_PER_BATCH);
@@ -320,7 +321,7 @@ describe('parsing a held transcript', () => {
     const t = sqlite.query(`SELECT * FROM transcripts`).get() as Record<string, unknown>;
     const report = await parseOnce(env as never, {
       projectId: PROJECT, transcriptId: TRANSCRIPT, sessionId: SESSION, machineId: MACHINE,
-      tokenId: t.token_id as string, agent: 'claude-code', size: t.size as number, parsedOffset: 0, fidelity: null, openPromptId: null,
+      tokenId: t.token_id as string, agent: 'claude-code', size: t.size as number, parsedOffset: 0, fidelity: null, openPromptId: null, imported: false,
     }, NOW);
     expect(report.calls).toBeLessThanOrEqual(TRANSCRIPT_PARSE_CALLS_PER_PASS + 2);
   });
@@ -356,7 +357,7 @@ describe('parsing a held transcript', () => {
     const t = sqlite.query(`SELECT * FROM transcripts`).get() as Record<string, unknown>;
     await parseOnce(env as never, {
       projectId: PROJECT, transcriptId: TRANSCRIPT, sessionId: SESSION, machineId: MACHINE,
-      tokenId: t.token_id as string, agent: 'claude-code', size: t.size as number, parsedOffset: 0, fidelity: null, openPromptId: null,
+      tokenId: t.token_id as string, agent: 'claude-code', size: t.size as number, parsedOffset: 0, fidelity: null, openPromptId: null, imported: false,
     }, NOW);
     const mid = sqlite.query(`SELECT parsed_offset, size, open_prompt_id FROM transcripts`).get() as { parsed_offset: number; size: number; open_prompt_id: string | null };
     expect(mid.parsed_offset).toBeLessThan(mid.size);
@@ -439,7 +440,7 @@ describe('parsing a held transcript', () => {
     const t = sqlite.query(`SELECT * FROM transcripts`).get() as Record<string, unknown>;
     const first = await parseOnce(env as never, {
       projectId: PROJECT, transcriptId: TRANSCRIPT, sessionId: SESSION, machineId: MACHINE,
-      tokenId: t.token_id as string, agent: 'claude-code', size: t.size as number, parsedOffset: 0, fidelity: null, openPromptId: null,
+      tokenId: t.token_id as string, agent: 'claude-code', size: t.size as number, parsedOffset: 0, fidelity: null, openPromptId: null, imported: false,
     }, NOW);
     expect(first.nextOffset).toBeGreaterThan(0);
     expect(first.nextOffset).toBeLessThan(t.size as number);
