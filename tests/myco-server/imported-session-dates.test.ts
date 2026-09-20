@@ -487,3 +487,29 @@ describe('a presented date does not decide the lifecycle', () => {
     for (const prompt of prompts) expect(prompt.created_at).toBe(NOW);
   });
 });
+
+describe('two import ends at one instant', () => {
+  /** An import ships a second `session.end` at the same instant, declaring a different end. */
+  const sendEnd = (r: { serverEnv: { db: unknown }; tokenId: string }, eventId: number, endedAt: number) =>
+    ingestEvent(r.serverEnv.db as never, ctxFor(r.tokenId),
+      envelope({ eventId: uuid(eventId), sessionId: SESSION, kind: 'session.end', createdAt: IMPORT_AT, channel: 'import', payload: { endedAt } }));
+
+  /** The two ends in the given arrival order, with a member's own turn between them. */
+  async function settleEnds(order: readonly [number, number]) {
+    nextEvent = 100;
+    const r = await rig(conversation());
+    await send(r.serverEnv, r.tokenId, 'session.start', IMPORT_AT, { agent: 'claude-code', startedAt: IMPORT_AT, originPath: '/w/p' }, 'import');
+    await sendEnd(r, order[0], order[0] === 900 ? IMPORT_AT : IMPORT_AT + 40_000);
+    // A turn a member shipped, dated between the two declared ends.
+    await send(r.serverEnv, r.tokenId, 'prompt', IMPORT_AT + 20_000, { promptId: uuid(950), text: 'between the ends', origin: 'user' }, 'cli');
+    await sendEnd(r, order[1], order[1] === 900 ? IMPORT_AT : IMPORT_AT + 40_000);
+    await drain(r.env, r.sqlite);
+    return state(r.sqlite);
+  }
+
+  it('names the same end whichever order they arrive in, so ownership does not turn on delivery', async () => {
+    // Same instant, different declared ends: only the event id can order them.
+    const [ascending, descending] = [await settleEnds([900, 901]), await settleEnds([901, 900])];
+    expect(ascending).toEqual(descending);
+  });
+});

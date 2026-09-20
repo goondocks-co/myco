@@ -21,13 +21,13 @@ const unionOf = (list: readonly Source[]): string => list.map((s) => `SELECT pro
   COALESCE(${s.session}, '') AS session_id, ${s.prompt} AS prompt_id, ${s.created} AS created_at, ${s.observation} AS observation_type
   FROM ${s.table} WHERE ${s.eligible}`).join(' UNION ALL ');
 
-/** The `embedding_sources` view over a set of sources; a later step replaces the view by rendering it from the same shape. */
+/** The `embedding_sources` view over a set of sources. */
 export const embeddingSourcesView = (list: readonly Source[]): string => `CREATE VIEW IF NOT EXISTS embedding_sources AS SELECT s.*, v.revision,
     COALESCE((SELECT k.state FROM knowledge_release_state k WHERE k.project_id = s.project_id AND k.namespace = s.namespace AND k.record_id = s.record_id ORDER BY k.checked_at DESC, k.id LIMIT 1), '') AS release_state,
     COALESCE((SELECT k.confidence FROM knowledge_release_state k WHERE k.project_id = s.project_id AND k.namespace = s.namespace AND k.record_id = s.record_id ORDER BY k.checked_at DESC, k.id LIMIT 1), '') AS release_confidence
     FROM (${unionOf(list)}) s JOIN embedding_versions v ON v.project_id = s.project_id AND v.type = s.type AND v.record_id = s.record_id`;
 
-/** The sources as v45 reads them: a session's date and its running-or-finished state are the ones it is presented with, which is what a search filters on. */
+/** The sources with a session dated and stated by what it is presented with; what a search filters on. */
 export const SOURCES_WITH_PRESENTED_SESSION_DATE: readonly Source[] = sources.map((s) => s.table === 'sessions'
   ? { ...s, created: occurredAt(), status: presentedStatus() }
   : s);
