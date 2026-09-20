@@ -20,7 +20,8 @@ import { refreshMemberCredential, type RefreshReport } from '../member/refresh.j
 import { runImport } from '../member/import.js';
 import { clearMissingMembership, listMissingMemberships, pruneMissingMemberships, readMissingMembership } from '../member/no-membership.js';
 import { deploymentUrl, listRegistryEntries, readDeploymentMembership, readRegistryEntry, removeRegistryEntry, writeRegistryEntry, REGISTRY_VERSION, type RegistryEntry } from '../member/registry.js';
-import { applySpoolRetention, lastAckAt } from '../member/retention.js';
+import { applySpoolRetention } from '../member/retention.js';
+import { memberDiagnostics, projectDiagnostics } from '../member/diagnostics.js';
 import { MemberSpool, type DrainResult } from '../member/spool.js';
 import { ServerClient, type FetchLike } from '../member/transport.js';
 import { openBrowser } from './open-browser.js';
@@ -44,6 +45,9 @@ Ops:
   status [--all]     The registry entry (token redacted), expiry, spool depth per session,
                      last acknowledgement and refusal, the offline latch, and any capture
                      attempts that found no membership.
+  export [--all]     The same facts as status, as one JSON document, with the binary, runtime-pin
+                     and MCP-resolution checks. Carries no token, no captured content and no
+                     free-text detail; the document's omissions list names what is left out.
   refresh [--all]    Rotate the member token when its refresh window is open. The predecessor keeps
                      working until the successor is first used; an env-sourced token is never rotated.
   provision <agent> [--root <dir>]
@@ -354,37 +358,88 @@ export async function runDrain(args: readonly string[], deps: MemberCliDeps = {}
   return results;
 }
 
+/**
+ * This machine's membership, in lines.
+ *
+ * The facts come from `projectDiagnostics`, which `export` also reads. The token
+ * is shown redacted here; a report carries none at all.
+ */
 export function runStatus(args: readonly string[], deps: MemberCliDeps = {}): void {
   const out = deps.stdout ?? ((l) => process.stdout.write(`${l}\n`));
   const now = deps.now ?? Date.now;
+  const mycoHome = homeFor(deps);
   for (const entry of entriesFor(args, deps)) {
-    const spool = new MemberSpool(entry.projectId, { mycoHome: homeFor(deps) });
-    out(`project:    ${entry.projectId}`);
-    out(`root:       ${entry.root}`);
-    out(`server:     ${entry.serverUrl}`);
-    out(`token:      ${redact(entry.token)}${entry.tokenId ? ` (${entry.tokenId})` : ''}`);
-    out(`expires:    ${when(entry.expiresAt)}${entry.expiresAt !== undefined && entry.expiresAt <= now() ? ' (EXPIRED)' : ''}`);
-    out(`refresh:    ${entry.refreshTerminal ? 'unavailable — re-provision with `myco member join`' : entry.refreshAfter === undefined ? 'not yet announced' : `after ${when(entry.refreshAfter)}`}`);
-    out(`machine:    ${entry.machineId}`);
-    out(`joined:     ${when(entry.joinedAt)}`);
-    const sessions = spool.sessionIds();
-    let lastAck = 0;
-    let depth = 0;
-    for (const sessionId of sessions) {
-      const d = spool.depth(sessionId);
-      depth += d;
-      out(`spool:      ${sessionId} — ${d} un-acknowledged`);
-    }
-    for (const sessionId of spool.stateSessionIds()) lastAck = Math.max(lastAck, lastAckAt(spool, sessionId));
-    out(`spool:      ${sessions.length} session file(s), ${depth} un-acknowledged event(s)`);
-    out(`last ack:   ${lastAck > 0 ? when(lastAck) : '—'}`);
-    const refused = spool.readRefused();
-    const last = refused[refused.length - 1];
-    out(`refused:    ${refused.length} logged${last ? `; last ${last.kind} ${last.eventId} (${last.code}) at ${when(last.at)}` : ''}`);
-    const latch = spool.readLatch();
+    const facts = projectDiagnostics(entry, mycoHome, now());
+    const { membership, spool, latch, refusals } = facts;
+    out(`project:    ${membership.projectId}`);
+    out(`root:       ${membership.root}`);
+    out(`server:     ${membership.serverUrl}`);
+    out(`token:      ${redact(entry.token)}${membership.tokenId ? ` (${membership.tokenId})` : ''}`);
+    out(`expires:    ${when(membership.expiresAt ?? undefined)}${membership.expired ? ' (EXPIRED)' : ''}`);
+    out(`refresh:    ${membership.refreshTerminal ? 'unavailable — re-provision with `myco member join`' : membership.refreshAfter === null ? 'not yet announced' : `after ${when(membership.refreshAfter)}`}`);
+    out(`machine:    ${membership.machineId}`);
+    out(`joined:     ${when(membership.joinedAt)}`);
+    for (const session of spool.sessions) out(`spool:      ${session.sessionId} — ${session.unacknowledged} un-acknowledged`);
+    out(`spool:      ${spool.sessionFiles} session file(s), ${spool.unacknowledgedTotal} un-acknowledged event(s)`);
+    out(`last ack:   ${spool.lastAckAt === null ? '—' : when(spool.lastAckAt)}`);
+    const last = refusals.entries[refusals.entries.length - 1];
+    out(`refused:    ${refusals.logReadable ? `${refusals.loggedSinceLastReset} logged${last ? `; last ${last.kind} ${last.eventId} (${last.code ?? 'code not recognised'}) at ${when(last.at)}` : ''}` : 'the log could not be read'}`);
     out(`latch:      ${latch ? `offline since ${when(latch.since)}, next probe ${when(latch.nextProbeAt)} (backoff ${latch.backoffMs} ms)` : 'online'}`);
   }
   reportMissedCapture(out, args, deps);
+}
+
+/**
+ * This machine's membership diagnostics, as one JSON document.
+ *
+ * The facts `status` prints, plus the binary's version skew, the project's
+ * runtime pin, and whether an agent's MCP entry resolves this project's
+ * membership. Without `--all` the document names the asked project's root and no
+ * other root on this machine.
+ */
+/** The project root a directory belongs to, or null where it belongs to none. */
+function projectRootOrNull(cwd?: string): string | null {
+  try {
+    return resolveMemberProjectRoot(cwd);
+  } catch {
+    return null;
+  }
+}
+
+export async function runExport(args: readonly string[], deps: MemberCliDeps = {}): Promise<void> {
+  const out = deps.stdout ?? ((l) => process.stdout.write(`${l}\n`));
+  const mycoHome = homeFor(deps);
+  const all = args.includes('--all');
+  // The registry is read here rather than through `entriesFor`, which reports an
+  // absent membership in words: stdout carries the document and nothing else, and
+  // a root with no membership is the case this report exists to name.
+  // `--all` names every membership; anything else names one project's root, which
+  // is null in a directory belonging to none. A report for a root the registry
+  // holds nothing for carries no membership rather than every membership.
+  const root = all ? null : projectRootOrNull(deps.cwd);
+  const entries = all
+    ? listRegistryEntries(mycoHome)
+    : root === null ? [] : [readRegistryEntry(root, mycoHome)].filter((entry) => entry !== null);
+  const missedCapture = all
+    ? listMissingMemberships(mycoHome)
+    : root === null ? [] : [readMissingMembership(root, mycoHome)].filter((record) => record !== null);
+  const { checkBinaryVersionSkew, checkRuntimePin, checkMemberMcpResolution } = await import('./doctor.js');
+  // The MCP-resolution check reads one project's own files, so it runs only where
+  // this report names a root. With `--all` outside any project there is none, and
+  // the report carries the checks that describe the machine alone.
+  const checkRoot = root ?? entries[0]?.root ?? null;
+  const gathered = [
+    checkBinaryVersionSkew(),
+    await checkRuntimePin(),
+    ...(checkRoot === null ? [] : await checkMemberMcpResolution(checkRoot, deps.env ?? process.env)),
+  ];
+  const checks = gathered
+    .filter((check): check is NonNullable<typeof check> => check !== null)
+    .map((check) => ({ name: check.name, status: check.status, fixable: check.fixable, fixId: check.fixId ?? null }));
+  out(JSON.stringify(memberDiagnostics({
+    mycoHome, now: (deps.now ?? Date.now)(), entries, missedCapture,
+    selection: { root, scope: all ? 'all' : 'root' }, checks,
+  }), null, 2));
 }
 
 /**
@@ -674,6 +729,7 @@ export async function run(args: readonly string[], deps: MemberCliDeps = {}): Pr
     case 'leave': runLeave(rest, deps); return;
     case 'drain': await runDrain(rest, deps); return;
     case 'status': runStatus(rest, deps); return;
+    case 'export': await runExport(rest, deps); return;
     case 'refresh': await runRefresh(rest, deps); return;
     case 'link-github': await runLinkGithub(rest, deps); return;
     case 'provision': runProvision(rest, deps); return;

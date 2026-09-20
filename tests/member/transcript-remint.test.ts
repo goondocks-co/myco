@@ -61,7 +61,7 @@ describe('a transcript the Deployment reports replaced', () => {
     const pointer = readSessionState(spool.dir, SESSION).transcript!;
     expect([pointer.transcriptId, pointer.nextOffset]).toEqual([fresh.transcriptId, fs.statSync(file).size]);
     // Nothing was refused: the replacement is a new transcript, not a lost segment.
-    expect(spool.readRefused()).toEqual([]);
+    expect(spool.readRefused().entries).toEqual([]);
   });
 
   it('refuses a second disagreement under the fresh id rather than re-minting forever', async () => {
@@ -78,7 +78,7 @@ describe('a transcript the Deployment reports replaced', () => {
 
     expect(result.endedBy).toBe('refused');
     expect(posted).toHaveLength(2);
-    expect(spool.readRefused().map((r) => r.code)).toEqual(['transcript_replaced']);
+    expect(spool.readRefused().entries.map((r) => r.code)).toEqual(['transcript_replaced']);
   });
 
   it('never re-mints a pointer whose file is too short for a digest: the same bytes mint the same id', async () => {

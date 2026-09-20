@@ -303,12 +303,14 @@ describe('Deployment Settings', () => {
 });
 
 describe('Operations and Notifications', () => {
-  it('serves the live Backup panel, names what is still pending, and the nav carries the three entries', async () => {
+  it('serves the live Backup and Diagnostics panels, and the nav carries the three entries', async () => {
     server(base({ '/api/backups': () => Response.json({ backups: [] }) }));
     mount('/operations');
     expect(await screen.findByText('No backups yet. The first one is a click away.')).toBeTruthy();
     expect(screen.getByRole('button', { name: 'Create backup' })).toBeTruthy();
-    expect(screen.getByTestId('pending-diagnostics')).toBeTruthy();
+    // The diagnostics export is served, not pending: it downloads from the owner route.
+    expect(screen.queryByTestId('pending-diagnostics')).toBeNull();
+    expect(screen.getByTestId('download-diagnostics').getAttribute('href')).toBe('/api/diagnostics');
     const nav = screen.getByRole('navigation', { name: 'Server' });
     expect(within(nav).getByRole('link', { name: /Settings/ })).toBeTruthy();
     expect(within(nav).getByRole('link', { name: /Operations/ })).toBeTruthy();

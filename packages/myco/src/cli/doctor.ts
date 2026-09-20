@@ -889,7 +889,7 @@ function isHooksRegisteredAt(
  * of bug that has historically silently broken `myco --version` and masked
  * stale code running in the daemon. See PR #263 incident postmortem.
  */
-function checkBinaryVersionSkew(): DoctorCheck {
+export function checkBinaryVersionSkew(): DoctorCheck {
   const baked = getPluginVersion();
   // Walk up from the binary to @goondocks/myco core — that's the manifest
   // npm install actually shipped. (Source checkouts find packages/myco/.)

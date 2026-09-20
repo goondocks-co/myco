@@ -305,12 +305,43 @@ export class MemberSpool {
     fs.appendFileSync(file, line, { mode: MEMBER_FILE_MODE });
   }
 
-  readRefused(): RefusedEntry[] {
+  /**
+   * The refusal log: what it holds, what it could not hold, and whether it could
+   * be read at all.
+   *
+   * An absent file is `readable` with no refusals — no log is no refusals. Any
+   * other read failure is `readable: false`, so a log behind a permission or an
+   * I/O error never reads as an empty one. Per line, a line that is not JSON or
+   * not a JSON object is counted rather than carried: one such line costs that
+   * line, and the count says the log is damaged.
+   */
+  readRefused(): { entries: RefusedEntry[]; unreadableLines: number; readable: boolean } {
+    let raw: string;
     try {
-      return fs.readFileSync(this.refusedPath(), 'utf-8').split('\n').filter(Boolean).map((l) => JSON.parse(l) as RefusedEntry);
-    } catch {
-      return [];
+      raw = fs.readFileSync(this.refusedPath(), 'utf-8');
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === 'ENOENT') return { entries: [], unreadableLines: 0, readable: true };
+      reportSkippedPrivateFile('refusal log', this.refusedPath(), { reason: 'unreadable', detail: (err as Error).message });
+      return { entries: [], unreadableLines: 0, readable: false };
     }
+    const entries: RefusedEntry[] = [];
+    let unreadableLines = 0;
+    for (const line of raw.split('\n')) {
+      if (line.length === 0) continue;
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(line);
+      } catch {
+        unreadableLines += 1;
+        continue;
+      }
+      if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+        unreadableLines += 1;
+        continue;
+      }
+      entries.push(parsed as RefusedEntry);
+    }
+    return { entries, unreadableLines, readable: true };
   }
 
   // ---------------------------------------------------------------------------

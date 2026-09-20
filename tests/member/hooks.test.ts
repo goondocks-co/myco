@@ -293,7 +293,7 @@ describe('member hooks through the worker: claude-code, transcript-first', () =>
     expect(fresh.head_hash).not.toBe(held[0].head_hash);
     expect(fresh.size).toBe(fs.statSync(tx).size);
     expect(readSessionState(new MemberSpool('proj_1', { mycoHome }).dir, session).transcript?.transcriptId).toBe(fresh.transcript_id);
-    expect(new MemberSpool('proj_1', { mycoHome }).readRefused()).toEqual([]);
+    expect(new MemberSpool('proj_1', { mycoHome }).readRefused().entries).toEqual([]);
   });
 
   it('restores the session block once per compaction from the start the harness fires after compacting', async () => {
