@@ -340,6 +340,15 @@ describe('what a report reads from the member MCP targets', () => {
     expect(installer.inspectMemberMcp().every((t) => t.present && t.transport === 'stdio' && !t.carriesCredential)).toBe(true);
   });
 
+  it('names no Deployment for a URL a membership could not carry, however well the two match', () => {
+    const { installer } = globalInstaller('claude-code');
+    // Matching text is not a Deployment: `mcp-headers` could resolve neither.
+    writeEntries(installer, { type: 'http', url: 'not-a-url/mcp', headersHelper: `/opt/myco member mcp-headers ${CREDENTIAL_FLAG} registry --server not-a-url` });
+
+    const seen = installer.inspectMemberMcp('not-a-url');
+    expect(seen.every((t) => t.present && t.deploymentsAgree === null && t.namesExpectedDeployment === null && !t.carriesCredential)).toBe(true);
+  });
+
   it('says a target it could not read is unread, rather than reading it as no entry', () => {
     const { installer } = globalInstaller('claude-code');
     writeEntries(installer, claudeRemote());

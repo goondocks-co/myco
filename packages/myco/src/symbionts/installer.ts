@@ -21,7 +21,7 @@ import { readJsonFile, writeJsonFile, writeOrDeleteJsonFile } from './json-helpe
 import { ensureAgentsMd, ensureSymlink, isMycoHookGroup, withoutMycoHooks, containsMycoLauncherReference, hasMycoManagedMarker, MYCO_MANAGED_MARKER } from './install-helpers.js';
 import { hookCommands, memberHookTemplate } from './member-hooks.js';
 import { CREDENTIAL_FLAG, SERVER_FLAG, type CredentialSource } from '../member/constants.js';
-import { parseCredentialFlag } from '../member/credential.js';
+import { isHttpsUrl, parseCredentialFlag } from '../member/credential.js';
 import { deploymentUrl } from '../member/registry.js';
 import { MCP_PATH } from '../plugins/spec.js';
 import { MEMBER_MCP_LEVERS, memberMcpTemplate, memberRemoteMcp } from './member-hooks.js';
@@ -2028,19 +2028,26 @@ export class SymbiontInstaller {
     return typeof helper === 'string' ? helper.split(/\s+/).filter((word) => word !== '') : null;
   }
 
+  /** A Deployment a member's entry may name: the identity of a URL a membership could carry, else null. */
+  private deploymentNamed(value: string | undefined): string | null {
+    if (value === undefined) return null;
+    const named = deploymentUrl(value);
+    return isHttpsUrl(named) ? named : null;
+  }
+
   /** The Deployment a headers helper names, or null where it names none a member could use. */
   private helperDeployment(entry: Record<string, unknown>): string | null {
     const words = this.helperWords(entry);
     if (words === null) return null;
     const named = words[words.indexOf(SERVER_FLAG) + 1];
-    return words.includes(SERVER_FLAG) && named !== undefined && !named.startsWith('--') ? deploymentUrl(named) : null;
+    return words.includes(SERVER_FLAG) && named !== undefined && !named.startsWith('--') ? this.deploymentNamed(named) : null;
   }
 
   /** The Deployment this entry's URL names, or null where the URL is not one a member's entry carries. */
   private entryDeployment(entry: Record<string, unknown>): string | null {
     const url = entry.url;
     if (typeof url !== 'string' || !url.endsWith(MCP_PATH)) return null;
-    return deploymentUrl(url.slice(0, -MCP_PATH.length));
+    return this.deploymentNamed(url.slice(0, -MCP_PATH.length));
   }
 
   /**
@@ -2092,9 +2099,10 @@ export class SymbiontInstaller {
       // its own two agree, and whether they name the one the caller expects.
       const named = [this.entryDeployment(entry), this.helperDeployment(entry)].filter((url): url is string => url !== null);
       const deploymentsAgree = named.length === 0 ? null : named.every((url) => url === named[0]);
-      const namesExpectedDeployment = named.length === 0 || expectedDeployment === undefined
+      const expected = this.deploymentNamed(expectedDeployment);
+      const namesExpectedDeployment = named.length === 0 || expected === null
         ? null
-        : named.every((url) => url === deploymentUrl(expectedDeployment));
+        : named.every((url) => url === expected);
       return { scope, present: true, transport, carriesCredential: this.declaresUsableCredential(entry), declaredCwd,
         deploymentsAgree, namesExpectedDeployment, readable: true };
     });
