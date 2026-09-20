@@ -64,7 +64,7 @@ export function leaseWords(expiresAt: number, now: number): string {
 /** What workers a queued run waits on: presence only, never why this run waits. */
 function queuedFleetWords(fleet: WorkerStatus | undefined): string {
   if (fleet === undefined || !fleet.available) return FLEET_UNKNOWN_WORDS.unavailable;
-  if (fleet.fleet.length === 0) return 'No worker contact is recorded. A queued run waits until one claims it.';
+  if (fleet.fleet.length === 0) return `${FLEET_UNKNOWN_WORDS.absent} A queued run waits until one claims it.`;
   const recent = fleet.fleet.filter((w) => w.recent || w.busy !== null).length;
   const busy = fleet.fleet.filter((w) => w.busy !== null).length;
   return `${recent} of ${fleet.fleet.length} ${fleet.fleet.length === 1 ? 'worker' : 'workers'} heard from recently, ${busy} driving a run. Status says what each one last reported.`;

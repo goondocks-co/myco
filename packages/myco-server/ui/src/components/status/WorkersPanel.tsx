@@ -1,6 +1,6 @@
 import { Panel } from '../ui/panel';
 import { StatusDot } from '../ui/status-dot';
-import { offersWords, REASON_WORDS, workerState } from '../../lib/worker-state';
+import { FLEET_UNKNOWN_WORDS, offersWords, REASON_WORDS, workerState } from '../../lib/worker-state';
 import type { WorkerStatus } from '../../lib/api';
 
 /**
@@ -33,7 +33,7 @@ export function WorkersPanel({ workers, now = Date.now() }: { workers: WorkerSta
       </p>
       {workers.fleet.length === 0 ? (
         <p className="mt-2 font-sans text-sm text-on-surface-variant">
-          No worker has been heard from. {queued > 0 ? 'Queued runs wait until one attaches.' : ''}
+          {FLEET_UNKNOWN_WORDS.absent} {queued > 0 ? 'Queued runs wait until one attaches.' : ''}
         </p>
       ) : (
         <ul className="mt-2 flex flex-col gap-3" aria-label="Workers">

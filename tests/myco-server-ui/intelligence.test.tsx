@@ -382,7 +382,7 @@ describe('the worker behind a run', () => {
     }));
     mount('/p/x/runs/r1');
     expect(await screen.findByText(/Worker contact unavailable/)).toBeTruthy();
-    expect(screen.queryByText(/No worker contact is recorded/)).toBeNull();
+    expect(screen.queryByText(/No worker contact recorded/)).toBeNull();
   });
 
   it('says a queued run with an empty record has no contact recorded, never that no worker was heard from', async () => {
@@ -393,6 +393,6 @@ describe('the worker behind a run', () => {
       '/api/projects/x/runs/r1': () => Response.json(detail(queued)),
     }));
     mount('/p/x/runs/r1');
-    expect(await screen.findByText('No worker contact is recorded. A queued run waits until one claims it.')).toBeTruthy();
+    expect(await screen.findByText('No worker contact recorded. A queued run waits until one claims it.')).toBeTruthy();
   });
 });
