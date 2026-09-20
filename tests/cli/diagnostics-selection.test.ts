@@ -41,12 +41,12 @@ afterEach(() => {
 });
 
 /** A registered project on disk: a Git repository this machine is a member of. */
-function project(name: string, projectId: string): string {
+function project(name: string, projectId: string, server = SERVER): string {
   const root = path.join(sandbox, name);
   fs.mkdirSync(root, { recursive: true });
   execFileSync('git', ['init', '-q'], { cwd: root });
   writeRegistryEntry({
-    version: REGISTRY_VERSION, projectId, serverUrl: `${SERVER}/`, token: 'A'.repeat(43),
+    version: REGISTRY_VERSION, projectId, serverUrl: `${server}/`, token: 'A'.repeat(43),
     root, machineId: 'm1', joinedAt: 1, updatedAt: 1,
   }, { mycoHome });
   return root;
@@ -73,6 +73,32 @@ async function exportAll(): Promise<{ checks: CheckFact[]; selection: { root: st
 const mcpChecks = (checks: CheckFact[]) => checks.filter((c) => c.name === 'Member MCP resolution');
 
 describe('member export --all across two projects', () => {
+  it('keeps the affected root on a global entry that names another Deployment', async () => {
+    project('alpha', 'proj_alpha');
+    const beta = project('beta', 'proj_beta', 'https://other.example');
+    fs.mkdirSync(path.join(home, '.codex'), { recursive: true });
+    fs.writeFileSync(path.join(home, '.codex', 'config.toml'),
+      `[mcp_servers.myco]\nurl = "${SERVER}/mcp"\nhttp_headers_helper = "/opt/myco member mcp-headers ${CREDENTIAL_FLAG} registry --server ${SERVER}"\n`);
+
+    const found = mcpChecks((await exportAll()).checks).filter((c) => c.symbiont === 'codex');
+    expect(found.filter((c) => c.reason === 'mcp_entry_http')).toEqual([
+      expect.objectContaining({ root: null, scope: 'global', status: 'ok' }),
+    ]);
+    expect(found.filter((c) => c.reason === 'mcp_server_stale')).toEqual([
+      expect.objectContaining({ root: beta, scope: 'global', status: 'warn' }),
+    ]);
+  });
+
+  it('reports a missing machine home pin once across selected projects', async () => {
+    mycoHome = path.join(sandbox, 'other-home');
+    project('alpha', 'proj_alpha');
+    project('beta', 'proj_beta');
+
+    expect((await exportAll()).checks.filter((c) => c.reason === 'home_pin_missing')).toEqual([
+      expect.objectContaining({ root: null, scope: 'global', status: 'warn' }),
+    ]);
+  });
+
   it('attributes each project override to its own root and names the shared global entry once', async () => {
     const alpha = project('alpha', 'proj_alpha');
     const beta = project('beta', 'proj_beta');

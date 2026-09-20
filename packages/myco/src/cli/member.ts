@@ -477,7 +477,7 @@ export async function runExport(args: readonly string[], deps: MemberCliDeps = {
   const checkRoots = [...new Set(all ? entries.map((entry) => entry.root) : root === null ? [] : [root])];
   const toFacts = (check: DoctorCheck, checkRoot: string | null = null) => ({
     name: check.name, status: check.status, reason: check.reason ?? null, symbiont: check.symbiont ?? null,
-    scope: check.scope ?? null, root: check.scope === 'global' ? null : checkRoot, fixable: check.fixable, fixId: check.fixId ?? null,
+    scope: check.scope ?? null, root: check.root ?? (check.scope === 'global' ? null : checkRoot), fixable: check.fixable, fixId: check.fixId ?? null,
   });
   const machineChecks = [checkBinaryVersionSkew(), await checkRuntimePin()]
     .filter((check): check is DoctorCheck => check !== null).map((check) => toFacts(check));
