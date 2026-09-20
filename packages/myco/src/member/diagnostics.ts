@@ -318,7 +318,10 @@ export function memberDiagnostics(opts: {
     registry,
     projects: opts.entries.map((entry) => projectDiagnostics(entry, opts.mycoHome, opts.now)),
     missedCapture: opts.missedCapture.map(missedCaptureOf),
-    missedCaptureStore: opts.missedCaptureStore ?? { readable: true, unavailableRecords: 0 },
+    missedCaptureStore: {
+      readable: opts.missedCaptureStore?.readable ?? true,
+      unavailableRecords: opts.missedCaptureStore?.unavailableRecords ?? 0,
+    },
     checks: opts.checks === undefined ? null : [...opts.checks],
     omissions: MEMBER_OMISSIONS,
   };
