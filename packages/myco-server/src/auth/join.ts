@@ -7,7 +7,8 @@ import {
   enrollmentTarget, explainEnrollment, machineClaimable, spendStatement,
   type EnrollmentRefusal, type Fragment,
 } from './enrollment.js';
-import { roleBehindCredential } from './members-admin.js';
+import { roleBehindCredentialStatement } from './members-admin.js';
+import { asMemberRole } from './roles.js';
 import { mintInsert } from './tokens.js';
 import { stampRequestStatement } from '../core/activity.js';
 import { sha256Hex } from '../hash.js';
@@ -71,6 +72,7 @@ export async function handleJoin(env: ServerEnv, request: Request, now: number):
   };
   const { statement: credential, issued } = await mintInsert(env.db, { memberId, machineId }, now, null, runtime, admitted);
   const minted: Fragment = { sql: `EXISTS (SELECT 1 FROM member_credentials WHERE id = ?)`, params: [issued.tokenId] };
+  const roleRead = roleBehindCredentialStatement(env.db, issued.tokenId);
 
   const statements = [
     ensureMemberStatement(env.db, memberId, now, invitation?.role ?? 'member', admitted),
@@ -79,6 +81,7 @@ export async function handleJoin(env: ServerEnv, request: Request, now: number):
     spendStatement(env.db, admission, now, machineId, minted),
     // Only a committed credential advances the activity clock.
     stampRequestStatement(env.db, now, minted),
+    roleRead,
   ];
   const credentialAt = statements.indexOf(credential);
   const results = await env.db.batch(statements);
@@ -95,7 +98,8 @@ export async function handleJoin(env: ServerEnv, request: Request, now: number):
       : `enrollment key ${explained.reason.replace('_', ' ')}`);
   }
 
-  const committedRole = await roleBehindCredential(env.db, issued.tokenId);
+  const roleRow = results[statements.indexOf(roleRead)]!.results[0] as { role?: unknown } | undefined;
+  const committedRole = asMemberRole(roleRow?.role);
   if (committedRole === null) throw new StorageContractError(`credential ${issued.tokenId} inserted but names no member`);
 
   emit({ kind: 'member_joined', memberId, tokenId: issued.tokenId, machineId, enrollmentId: invitation?.id });

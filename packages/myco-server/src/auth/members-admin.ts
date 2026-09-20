@@ -13,7 +13,7 @@
  * member row having changed in this very transaction. Machine claims are
  * permanent and untouched: a departed member's history stays theirs.
  */
-import type { RelationalStore } from '../core/adapters.js';
+import type { PreparedStatement, RelationalStore } from '../core/adapters.js';
 import { emit } from '../telemetry.js';
 import { HARNESS_MEMBER_ID } from '../constants.js';
 import { credentialLive, runCredential } from '../db/liveness.js';
@@ -55,13 +55,11 @@ export async function listMembers(db: RelationalStore, nowMs: number): Promise<M
   }));
 }
 
-/** The role of the member a credential belongs to, or null when the Deployment holds no such credential. */
-export async function roleBehindCredential(db: RelationalStore, tokenId: string): Promise<MemberRole | null> {
-  const row = await db
+/** Reads the member role behind a credential within its caller's transaction. */
+export function roleBehindCredentialStatement(db: RelationalStore, tokenId: string): PreparedStatement {
+  return db
     .prepare(`SELECT m.role AS role FROM member_credentials c JOIN members m ON m.id = c.member_id WHERE c.id = ?`)
-    .bind(tokenId)
-    .first<{ role: string }>();
-  return row === null ? null : asMemberRole(row.role);
+    .bind(tokenId);
 }
 
 /** The role a member holds, or null when the Deployment holds no such member. */

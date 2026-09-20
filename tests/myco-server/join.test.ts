@@ -240,7 +240,7 @@ describe('a refused join leaves no trace', () => {
     expect(r.members()).toBe(before);
   });
 
-  it('refuses a key it holds no row for without consulting the identity, as it did before', async () => {
+  it('refuses an unknown key ahead of a contested identity', async () => {
     const r = await rig();
     const joined = await r.key();
     expect((await json(await r.join({ key: joined.key, machineId: 'local_34e40e49' }))).joined).toBe(true);
@@ -296,16 +296,19 @@ describe('a refused join leaves no trace', () => {
     expect(claim.member_id).toBe(answer.memberId as string);
   });
 
-  it('writes nothing and leaves the key unspent when the transaction faults', async () => {
+  it.each(['credential', 'activity'] as const)('writes nothing and leaves the key unspent when the %s write faults', async (stage) => {
     const r = await rig();
     const key = await r.key();
     const before = counts(r.e);
-    r.e.sqlite.exec(`CREATE TRIGGER fail_join_credential BEFORE INSERT ON member_credentials
-      WHEN NEW.machine_id = 'fresh_machine' BEGIN SELECT RAISE(ABORT, 'storage fault'); END`);
+    r.e.sqlite.exec("DELETE FROM schema_meta WHERE key = 'last_request_at'");
+    const target = stage === 'credential' ? "member_credentials WHEN NEW.machine_id = 'fresh_machine'" : "schema_meta WHEN NEW.key = 'last_request_at'";
+    r.e.sqlite.exec(`CREATE TRIGGER fail_join_write BEFORE INSERT ON ${target}
+      BEGIN SELECT RAISE(ABORT, 'storage fault'); END`);
     await expect(handleJoin({ ...r.e.env, db: r.e.db }, joinRequest({ key: key.key, machineId: 'fresh_machine' }), r.now)).rejects.toThrow('storage fault');
     expect(counts(r.e)).toEqual(before);
     expect(unspent(r.e)).toBe(1);
-    r.e.sqlite.exec('DROP TRIGGER fail_join_credential');
+    expect(r.e.sqlite.query("SELECT value FROM schema_meta WHERE key = 'last_request_at'").get()).toBeNull();
+    r.e.sqlite.exec('DROP TRIGGER fail_join_write');
     expect((await json(await r.join({ key: key.key, machineId: 'fresh_machine' }))).joined).toBe(true);
   });
 
@@ -343,6 +346,26 @@ describe('a refused join leaves no trace', () => {
     expect(answer).toMatchObject({ joined: true, role: 'admin' });
     const recorded = r.e.sqlite.query(`SELECT role FROM members WHERE id = ?`).get(answer.memberId as string) as { role: string };
     expect(recorded.role).toBe('admin');
+  });
+
+  it('returns the committed role without another storage call', async () => {
+    const r = await rig();
+    const key = await r.key({ role: 'admin' });
+    let committed = false;
+    const db: typeof r.e.db = {
+      prepare(sql) {
+        if (committed) throw new Error('storage unavailable after commit');
+        return r.e.db.prepare(sql);
+      },
+      async batch(statements) {
+        const results = await r.e.db.batch(statements);
+        committed = true;
+        return results;
+      },
+    };
+    const response = await handleJoin({ ...r.e.env, db }, joinRequest({ key: key.key, machineId: 'admin_machine' }), r.now);
+    expect(await json(response)).toMatchObject({ joined: true, role: 'admin' });
+    expect(committed).toBe(true);
   });
 
   it('refuses a root credential whose admission fails, rather than issuing one unconditionally', async () => {

@@ -881,8 +881,7 @@ describe('gates', () => {
     expect(backfill).not.toMatch(/\bNULL\b\s*(,|$)[^`]*--\s*revoked/);
     const tokens = readFileSync(join(SRC, 'auth', 'tokens.ts'), 'utf8');
     expect(tokens.match(/INTO member_credentials\b/g)).toHaveLength(1);
-    // The live-token predicate stays parenthesised: unbracketed, a root credential
-    // (a NULL predecessor) would satisfy the OR and skip the caller's gate entirely.
+    // The parenthesized predecessor predicate is conjoined with the admission gate.
     expect(tokens).toMatch(/INSERT INTO member_credentials \([^)]*\)\s+SELECT \?, \?, \?, \?, \?, \?, NULL, 0, \?, \?, \?, NULL, \?, \?\s+WHERE \(\? IS NULL OR \$\{TOKEN_LIVE\}\)\$\{gate === undefined \? '' : ` AND \(\$\{gate\.sql\}\)`\}`/);
     expect(tokens).toMatch(/UPDATE member_credentials SET revoked_at = \? WHERE predecessor_id = \? AND revoked_at IS NULL AND first_used_at IS NULL AND \$\{TOKEN_LIVE\}`/);
     expect(readFileSync(join(SRC, 'ingest', 'quota.ts'), 'utf8')).toMatch(/export const TOKEN_LIVE = 'EXISTS \(SELECT 1 FROM member_credentials WHERE id = \? AND revoked_at IS NULL\)';/);
