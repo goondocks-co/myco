@@ -62,6 +62,24 @@ describe('the Deployment names what it is configured to do', () => {
       .toEqual(['busy', 'capabilities', 'credentialId', 'eligible', 'lastReason', 'lastSeenAt', 'machineId', 'offers', 'recent', 'unknownCapabilities']);
   });
 
+  it('carries no capability name it does not know, so a worker cannot place its own text in the document', async () => {
+    const r = await rig();
+    await ensureMember(r.db, 'mem_w1', NOW, 'admin', 'a worker');
+    const credential = await issueMemberToken(r.db, { memberId: 'mem_w1', machineId: 'build-box' }, NOW);
+    // A worker reports whatever it likes; the endpoint stores every string it is given.
+    await recordWorkerContact(r.db, {
+      credentialId: credential.tokenId, machineId: 'build-box', offers: [],
+      capabilities: ['repository-checkout', 'mt_thisisaverysecrettokenvalue', 'whatever-it-calls-itself'],
+      reason: 'no_work', now: NOW,
+    });
+
+    const document = await deploymentDiagnostics(r.serverEnv, NOW);
+    const worker = document.workers!.fleet[0]!;
+    expect(worker.capabilities).toEqual(['repository-checkout']);
+    expect(worker.unknownCapabilities).toBe(2);
+    expect(JSON.stringify(document)).not.toContain('mt_thisisaverysecrettokenvalue');
+  });
+
   it('answers what it is configured to run, and the work it declares, from the registry', async () => {
     const r = await rig();
     const document = await deploymentDiagnostics(r.serverEnv, NOW);

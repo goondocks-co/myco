@@ -193,7 +193,8 @@ export const missedCaptureOf = (record: MissingMembershipRecord): MissedCaptureF
 
 /** One project's spool, latch and refusal log. */
 export function projectDiagnostics(entry: RegistryEntry, mycoHome: string, now: number): ProjectDiagnostics {
-  const spool = new MemberSpool(entry.projectId, { mycoHome });
+  // A report reads the spool where it is; a layout it could not use is a fact to carry, not a directory to make.
+  const spool = new MemberSpool(entry.projectId, { mycoHome, initialize: false });
   // Acknowledgement is held in session state, which outlives the spool file a
   // session's records were written to.
   const acked = new Map(spool.stateSessionIds().map((sessionId) => [sessionId, lastAckAt(spool, sessionId)]));
@@ -210,11 +211,10 @@ export function projectDiagnostics(entry: RegistryEntry, mycoHome: string, now: 
   return {
     membership: membershipOf(entry, now),
     spool: {
-      // A spool nothing could read reports no sessions and says so, rather than reporting none pending.
       readable: spooled.readable,
       sessionFiles: sessions.length,
-      // Null where any session's own file could not be read: a total over the rest would read as the whole.
-      unacknowledgedTotal: sessions.some((session) => session.unacknowledged === null)
+      // Null where the directory, or any session file in it, could not be read: a total over what was readable would read as the whole.
+      unacknowledgedTotal: !spooled.readable || sessions.some((session) => session.unacknowledged === null)
         ? null
         : sessions.reduce((total, session) => total + (session.unacknowledged ?? 0), 0),
       lastAckAt: lastAck > 0 ? lastAck : null,

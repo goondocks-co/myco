@@ -14,7 +14,7 @@ import fs from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import os from 'node:os';
 import path from 'node:path';
-import { MemberSpool } from '@myco/member/spool.js';
+import { MemberSpool, spoolDirFor } from '@myco/member/spool.js';
 import { writeRegistryEntry, type RegistryEntry } from '@myco/member/registry.js';
 import { recordMissingMembership } from '@myco/member/no-membership.js';
 import { memberDiagnostics, projectDiagnostics, MAX_REFUSALS_REPORTED } from '@myco/member/diagnostics.js';
@@ -27,7 +27,18 @@ const SECRET = 'mt_thisisaverysecrettokenvalue';
 let mycoHome: string;
 const savedHome = process.env.MYCO_HOME;
 beforeEach(() => { mycoHome = tempMycoHome(); process.env.MYCO_HOME = mycoHome; });
-afterEach(() => { process.env.MYCO_HOME = savedHome; });
+const temps: string[] = [];
+/** A real project directory the report may name, removed with the rest of the fixture. */
+function tempProjectRoot(): string {
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'myco-project-')));
+  execFileSync('git', ['init', '-q'], { cwd: root });
+  temps.push(root);
+  return root;
+}
+afterEach(() => {
+  process.env.MYCO_HOME = savedHome;
+  for (const dir of temps.splice(0)) fs.rmSync(dir, { recursive: true, force: true });
+});
 
 const entry = (over: Partial<RegistryEntry> = {}): RegistryEntry => ({
   version: 2,
@@ -173,8 +184,7 @@ describe('an unjoined project still produces a report', () => {
   it('writes a document naming the root it looked for, with the membership absent', async () => {
     // A real project directory: the export names a root only where one could
     // hold a project, so a path that is only a string is no root at all.
-    const project = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'myco-unjoined-')));
-    execFileSync('git', ['init', '-q'], { cwd: project });
+    const project = tempProjectRoot();
     recordMissingMembership(project, { mycoHome, now: () => NOW, invokedBy: 'hook stop' });
     const lines: string[] = [];
     const stderr: string[] = [];
@@ -260,5 +270,100 @@ describe('the report states the build it came from', () => {
     const report = memberDiagnostics({ mycoHome, now: NOW, entries: [e], missedCapture: [], selection: { root: e.root, scope: 'root' } });
     expect(report.buildVersion.length).toBeGreaterThan(0);
     expect(report.memberProtocol).toBeGreaterThan(0);
+  });
+});
+
+describe('a spool a report could not read', () => {
+  it('reports a session whose own file is unreadable as unknown, not as nothing pending', () => {
+    const e = entry();
+    writeRegistryEntry(e, { mycoHome });
+    const spool = new MemberSpool('proj_1', { mycoHome });
+    fs.mkdirSync(spool.dir, { recursive: true });
+    // A directory where the session's records belong: the read fails for a reason that is not absence.
+    fs.mkdirSync(path.join(spool.dir, 'sess-a.jsonl'));
+
+    const facts = projectDiagnostics(e, mycoHome, NOW);
+    expect(facts.spool.readable).toBe(true);
+    expect(facts.spool.sessions).toEqual([{ sessionId: 'sess-a', unacknowledged: null, lastAckAt: null }]);
+    expect(facts.spool.unacknowledgedTotal).toBeNull();
+  });
+
+  it('reports a spool directory it could not read as unknown, leaving the layout as it found it', () => {
+    const e = entry();
+    writeRegistryEntry(e, { mycoHome });
+    const broken = spoolDirFor('proj_1', mycoHome);
+    fs.rmSync(broken, { recursive: true, force: true });
+    fs.mkdirSync(path.dirname(broken), { recursive: true });
+    // A file where the spool directory belongs: listing it fails with ENOTDIR.
+    fs.writeFileSync(broken, 'not a directory', 'utf-8');
+
+    const facts = projectDiagnostics(e, mycoHome, NOW);
+    expect(facts.spool.readable).toBe(false);
+    expect(facts.spool.sessionFiles).toBe(0);
+    expect(facts.spool.unacknowledgedTotal).toBeNull();
+    // The report read the layout and did not repair it.
+    expect(fs.statSync(broken).isFile()).toBe(true);
+    expect(fs.readFileSync(broken, 'utf-8')).toBe('not a directory');
+  });
+
+  it('reads an absent spool directory as the empty one it is', () => {
+    const e = entry();
+    writeRegistryEntry(e, { mycoHome });
+    fs.rmSync(spoolDirFor('proj_1', mycoHome), { recursive: true, force: true });
+
+    const facts = projectDiagnostics(e, mycoHome, NOW);
+    expect(facts.spool).toMatchObject({ readable: true, sessionFiles: 0, unacknowledgedTotal: 0 });
+  });
+});
+
+describe('a refusal record short of a field it is read by', () => {
+  it('counts it unreadable rather than reporting a blank id at the epoch', () => {
+    const e = entry();
+    writeRegistryEntry(e, { mycoHome });
+    const spool = new MemberSpool('proj_1', { mycoHome });
+    fs.mkdirSync(spool.dir, { recursive: true });
+    const whole = { eventId: 'ev-1', sessionId: 'sess-a', kind: 'prompt', code: 'refused', reason: 'no', at: NOW };
+    fs.writeFileSync(path.join(spool.dir, 'refused.jsonl'), [
+      JSON.stringify(whole),
+      '{}',
+      JSON.stringify({ ...whole, at: 'bad' }),
+      JSON.stringify({ ...whole, eventId: '' }),
+    ].join('\n'), 'utf-8');
+
+    const facts = projectDiagnostics(e, mycoHome, NOW);
+    expect(facts.refusals.logReadable).toBe(true);
+    expect(facts.refusals.loggedSinceLastReset).toBe(1);
+    expect(facts.refusals.unreadableLines).toBe(3);
+  });
+});
+
+describe('a directory belonging to no project', () => {
+  it('names no root, so a bare export does not report the directory it was run from', async () => {
+    const bare = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'myco-bare-')));
+    temps.push(bare);
+    const lines: string[] = [];
+    await runExport([], { mycoHome, now: () => NOW, cwd: bare, stdout: (l) => lines.push(l), stderr: () => {} });
+    const report = JSON.parse(lines.join('\n')) as { selection: { root: string | null; membershipPresent: boolean } };
+    expect(report.selection).toMatchObject({ root: null, membershipPresent: false });
+  });
+});
+
+describe('a check the report cannot tell apart from another', () => {
+  it('carries the reason it failed on and the symbiont it names, and none of its sentence', () => {
+    const facts = memberDiagnostics({
+      mycoHome, now: NOW, entries: [], missedCapture: [],
+      selection: { root: null, scope: 'root' },
+      checks: [
+        { name: 'Member MCP resolution', status: 'warn', reason: 'home_pin_missing', symbiont: null, fixable: false, fixId: null },
+        { name: 'Member MCP resolution', status: 'warn', reason: 'mcp_cwd_missing', symbiont: 'claude-code', fixable: false, fixId: null },
+        { name: 'Member MCP resolution', status: 'warn', reason: 'memberships_ambiguous', symbiont: 'cursor', fixable: false, fixId: null },
+      ],
+    });
+
+    expect(facts.checks).toEqual([
+      { name: 'Member MCP resolution', status: 'warn', reason: 'home_pin_missing', symbiont: null, fixable: false, fixId: null },
+      { name: 'Member MCP resolution', status: 'warn', reason: 'mcp_cwd_missing', symbiont: 'claude-code', fixable: false, fixId: null },
+      { name: 'Member MCP resolution', status: 'warn', reason: 'memberships_ambiguous', symbiont: 'cursor', fixable: false, fixId: null },
+    ]);
   });
 });
