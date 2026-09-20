@@ -233,6 +233,16 @@ describe('an imported session a member goes on capturing live', () => {
 
     await drain(r.env, r.sqlite);
     expect(state(r.sqlite)).toMatchObject({ started_at: IMPORT_AT, occurred_started_at: null, occurred_ended_at: null });
+
+    const later = new TextEncoder().encode(line({ type: 'user', promptId: uuid(4), message: { content: 'later import' }, timestamp: new Date(DERIVED_LAST + 10_000).toISOString() }));
+    const laterKey = await sha256HexOf(later);
+    const laterObject = registerBlob(r.sqlite, { projectId: PROJECT, key: laterKey, size: later.length, tokenId: r.tokenId, receivedAt: NOW });
+    await r.serverEnv.blobs.put(laterObject, new Blob([later]).stream() as ReadableStream);
+    expect(await send(r.serverEnv, r.tokenId, 'transcript.segment', DERIVED_LAST + 10_000,
+      { transcriptId: TRANSCRIPT, baseOffset: size + more.length, length: later.length, blob: laterKey, agent: 'claude-code' }, 'import')).toMatchObject({ persisted: true, projected: true });
+    expect((r.sqlite.query('SELECT imported_at FROM transcripts').get() as { imported_at: number | null }).imported_at).not.toBeNull();
+    await drain(r.env, r.sqlite);
+    expect(state(r.sqlite)).toMatchObject({ occurred_started_at: null, occurred_ended_at: null });
   });
 });
 

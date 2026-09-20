@@ -272,7 +272,7 @@ const IMPORT_OWNS_LIFECYCLE_SQL = `(
            WHERE fe.project_id = sessions.project_id AND fe.event_id = sessions.facts_event_id AND fe.channel = 'import')
   AND NOT EXISTS (SELECT 1 FROM events le
            WHERE le.project_id = sessions.project_id AND le.session_id = sessions.session_id
-             AND le.kind IN ('session.start', 'session.end') AND le.channel <> 'import')
+             AND le.kind IN ('session.start', 'session.end', 'transcript.segment') AND le.channel <> 'import')
   AND NOT EXISTS (SELECT 1 FROM events lt
            WHERE lt.project_id = sessions.project_id AND lt.session_id = sessions.session_id
              AND lt.kind = 'prompt' AND lt.producer_adapter <> '${TRANSCRIPT_PARSE_ADAPTER}'
