@@ -180,15 +180,7 @@ export interface MemberDiagnostics {
   omissions: readonly string[];
 }
 
-/**
- * The Deployment a report names: origin and path, with the userinfo, query and
- * fragment a credential rides in dropped.
- *
- * Only `http` and `https` are named. A scheme whose body is its path — `data:`
- * is the plain case — carries whatever it holds through every field cleared
- * here, so a stored value outside the two a Deployment is reached over reports
- * as unknown rather than as itself.
- */
+/** HTTP routing URL without userinfo, query or fragment; null for an unusable URL. */
 function exportedServerUrl(raw: string): string | null {
   let url: URL;
   try {
@@ -233,7 +225,7 @@ function refusalOf(entry: RefusedEntry): RefusalFacts {
   };
 }
 
-/** What a record says, without the free text: the invoker it names is a runtime field and is not a closed vocabulary. */
+/** Missed-capture counts and times, without the free-text invoker. */
 export const missedCaptureOf = (record: MissingMembershipRecord): MissedCaptureFacts =>
   ({ root: record.root, count: record.count, firstAt: record.firstAt, lastAt: record.lastAt });
 
@@ -287,16 +279,7 @@ export function projectDiagnostics(entry: RegistryEntry, mycoHome: string, now: 
   };
 }
 
-/**
- * The memberships the caller named, with what each spool records.
- *
- * `checks` and `missedCapture` are supplied rather than gathered: the doctor
- * checks live in the CLI tree, and the roots a report may name are the caller's
- * to scope — a report about one project names that project's lost capture and no
- * other root on the machine. An empty `entries` is a report about a root the
- * registry holds no membership for, which `selection` states.
- */
-/** True for a membership held, false for one the registry says is not there, and null where it holds none and could not be read. */
+/** True for a held membership, false for confirmed absence, null for an unavailable selection. */
 function membershipPresent(held: number, registry: RegistryFacts): boolean | null {
   if (held > 0) return true;
   return registry.readable && registry.unavailableEntries === 0 ? false : null;
