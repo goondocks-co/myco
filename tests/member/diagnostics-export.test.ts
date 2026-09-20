@@ -88,6 +88,16 @@ describe('a member report carries no credential and no captured content', () => 
     expect(report.projects[0]!.membership.machineId).toBe('dev-laptop');
   });
 
+  it('reports damaged membership fields without serializing their values', () => {
+    const e = entry({ tokenId: SECRET, joinedAt: Number.NaN, expiresAt: Number.POSITIVE_INFINITY });
+    const membership = projectDiagnostics(e, mycoHome, NOW).membership;
+    expect(membership.tokenId).toBeNull();
+    expect(membership.joinedAt).toBeNull();
+    expect(membership.expiresAt).toBeNull();
+    expect(membership.unavailableFields).toEqual(['tokenId', 'joinedAt', 'expiresAt']);
+    expect(JSON.stringify(membership)).not.toContain(SECRET);
+  });
+
   it('keeps a refusal\'s code and drops the sentence the server sent with it', () => {
     const e = entry();
     writeRegistryEntry(e, { mycoHome });

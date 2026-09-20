@@ -45,7 +45,8 @@ export interface MembershipFacts {
   tokenId: string | null;
   memberId: string | null;
   machineId: string;
-  joinedAt: number;
+  joinedAt: number | null;
+  unavailableFields: string[];
   expiresAt: number | null;
   expired: boolean;
   refreshAfter: number | null;
@@ -207,19 +208,35 @@ function exportedServerUrl(raw: string): string | null {
 }
 
 function membershipOf(entry: RegistryEntry, now: number): MembershipFacts {
+  const unavailableFields: string[] = [];
+  const readField = <T>(name: string, value: unknown, valid: (v: unknown) => v is T, optional = false): T | null => {
+    if (optional && value === undefined) return null;
+    if (valid(value)) return value;
+    unavailableFields.push(name);
+    return null;
+  };
+  const instant = (value: unknown): value is number => typeof value === 'number' && Number.isFinite(value) && !Number.isNaN(new Date(value).getTime());
+  const identifier = (value: unknown): value is string => typeof value === 'string' && value.length > 0 && value !== entry.token;
+  const tokenId = readField('tokenId', entry.tokenId, identifier, true);
+  const memberId = readField('memberId', entry.memberId, identifier, true);
+  const joinedAt = readField('joinedAt', entry.joinedAt, instant);
+  const expiresAt = readField('expiresAt', entry.expiresAt, instant, true);
+  const refreshAfter = readField('refreshAfter', entry.refreshAfter, instant, true);
+  const refreshTerminal = readField('refreshTerminal', entry.refreshTerminal, (v): v is boolean => typeof v === 'boolean', true);
   return {
     registryVersion: entry.version ?? REGISTRY_VERSION,
     serverUrl: exportedServerUrl(entry.serverUrl),
     projectId: entry.projectId,
     root: entry.root,
-    tokenId: entry.tokenId ?? null,
-    memberId: entry.memberId ?? null,
+    tokenId,
+    memberId,
     machineId: entry.machineId,
-    joinedAt: entry.joinedAt,
-    expiresAt: entry.expiresAt ?? null,
-    expired: entry.expiresAt !== undefined && entry.expiresAt <= now,
-    refreshAfter: entry.refreshAfter ?? null,
-    refreshTerminal: entry.refreshTerminal === true,
+    joinedAt,
+    expiresAt,
+    expired: expiresAt !== null && expiresAt <= now,
+    refreshAfter,
+    refreshTerminal: refreshTerminal === true,
+    unavailableFields,
   };
 }
 

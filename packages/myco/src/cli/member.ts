@@ -379,7 +379,8 @@ export function runStatus(args: readonly string[], deps: MemberCliDeps = {}): vo
     out(`expires:    ${when(membership.expiresAt ?? undefined)}${membership.expired ? ' (EXPIRED)' : ''}`);
     out(`refresh:    ${membership.refreshTerminal ? 'unavailable — re-provision with `myco member join`' : membership.refreshAfter === null ? 'not yet announced' : `after ${when(membership.refreshAfter)}`}`);
     out(`machine:    ${membership.machineId}`);
-    out(`joined:     ${when(membership.joinedAt)}`);
+    out(`joined:     ${membership.joinedAt === null ? 'unknown' : when(membership.joinedAt)}`);
+    if (membership.unavailableFields.length > 0) out(`membership: unknown ${membership.unavailableFields.join(', ')}`);
     for (const session of spool.sessions) out(`spool:      ${session.sessionId} — ${session.unacknowledged ?? 'unknown'} un-acknowledged`);
     out(`spool:      ${spool.readable ? spool.sessionFiles : 'unknown'} session file(s), ${spool.unacknowledgedTotal ?? 'unknown'} un-acknowledged event(s)`);
     out(`last ack:   ${!spool.stateReadable ? 'unknown — state could not be read' : spool.lastAckAt === null ? '—' : when(spool.lastAckAt)}`);
