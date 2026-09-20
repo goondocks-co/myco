@@ -243,7 +243,7 @@ it('exports the MCP configuration of the selected project', async () => {
   writeRegistryEntry(entry({ root: project }), { mycoHome });
   fs.mkdirSync(path.join(project, '.codex'));
   fs.writeFileSync(path.join(project, '.codex', 'config.toml'),
-    '[mcp_servers.myco]\nurl = "https://myco.example.com/mcp"\nhttp_headers_helper = "myco member mcp-headers --credential registry"\n');
+    '[mcp_servers.myco]\nurl = "https://myco.example.com/mcp"\nhttp_headers_helper = "myco member mcp-headers --credential registry --server https://myco.example.com"\n');
   const lines: string[] = [];
   await runExport([], { mycoHome, cwd: project, stdout: (line) => lines.push(line) });
   const report = JSON.parse(lines.join('\n'));

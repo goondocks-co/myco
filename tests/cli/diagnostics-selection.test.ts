@@ -79,7 +79,7 @@ describe('member export --all across two projects', () => {
     // One global entry, reached from either project.
     fs.mkdirSync(path.join(home, '.codex'), { recursive: true });
     fs.writeFileSync(path.join(home, '.codex', 'config.toml'),
-      `[mcp_servers.myco]\nurl = "${SERVER}/mcp"\nhttp_headers_helper = "/opt/myco member mcp-headers ${CREDENTIAL_FLAG} registry"\n`, 'utf-8');
+      `[mcp_servers.myco]\nurl = "${SERVER}/mcp"\nhttp_headers_helper = "/opt/myco member mcp-headers ${CREDENTIAL_FLAG} registry --server ${SERVER}"\n`, 'utf-8');
     // A project override apiece, each in its own checkout.
     writeJson(path.join(alpha, '.cursor', 'mcp.json'), cursorMember(alpha));
     writeJson(path.join(beta, '.cursor', 'mcp.json'), cursorMember(beta));
