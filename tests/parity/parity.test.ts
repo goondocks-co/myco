@@ -26,31 +26,42 @@ import { titlingBackfill } from './scenarios/titling-backfill.ts';
 import { sessionEnd } from './scenarios/session-end.ts';
 import { projectCounts } from './scenarios/project-counts.ts';
 import { objectLifecycle } from './scenarios/object-lifecycle.ts';
+import { parseShard, selectShard } from '../../scripts/test-shards.mjs';
+import durations from '../../scripts/test-durations.json';
+import { writeFileSync } from 'node:fs';
 
 const scenarios = [restoreContinuation, repositories, canopy, skillCandidates, sessionsTitling, sessionTurns, plans, spores, recall, backupRestore, tick, dispatchQueue, scheduledTasks, cortex, replacedRun, search, grants, importParity, workerWire, codexRecording, toolBlobRetention, titlingBackfill, sessionEnd, projectCounts, objectLifecycle];
+const DEFAULT_SCENARIO_DURATION_MS = 15_000;
 
 if (!process.env.MYCO_PARITY) {
   test.skip('parity scenarios (run via npm run test:parity)', () => {});
 } else {
-  const boots = [
-    { name: 'selfhosted' as const, boot: bootSelfhosted },
-    { name: 'cloudflare' as const, boot: bootCloudflare },
-  ];
-  for (const { name, boot } of boots) {
-    describe(`[${name}]`, () => {
-      let target: ParityTarget | null = null;
-      beforeAll(async () => {
-        target = await boot();
-      }, 240_000);
-      afterAll(async () => {
-        await target?.stop();
+  const weights: Record<string, number> = durations.parity;
+  const selected = selectShard(scenarios, parseShard(process.env.MYCO_PARITY_SHARD), (scenario) => weights[scenario.name] ?? DEFAULT_SCENARIO_DURATION_MS);
+  if (process.env.MYCO_PARITY_PLAN_FILE) {
+    writeFileSync(process.env.MYCO_PARITY_PLAN_FILE, JSON.stringify(selected.map((scenario) => scenario.name)));
+    test.skip('parity shard manifest', () => {});
+  } else {
+    const boots = [
+      { name: 'selfhosted' as const, boot: bootSelfhosted },
+      { name: 'cloudflare' as const, boot: bootCloudflare },
+    ];
+    for (const { name, boot } of boots) {
+      describe(`[${name}]`, () => {
+        let target: ParityTarget | null = null;
+        beforeAll(async () => {
+          target = await boot();
+        }, 240_000);
+        afterAll(async () => {
+          await target?.stop();
+        });
+        for (const scenario of selected) {
+          it(scenario.name, async () => {
+            if (target === null) throw new Error(`${name} target never booted`);
+            await runScenario(target, scenario);
+          }, 180_000);
+        }
       });
-      for (const scenario of scenarios) {
-        it(scenario.name, async () => {
-          if (target === null) throw new Error(`${name} target never booted`);
-          await runScenario(target, scenario);
-        }, 180_000);
-      }
-    });
+    }
   }
 }
