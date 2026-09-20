@@ -93,15 +93,25 @@ describe('the Deployment names what it is configured to do', () => {
 
   it('counts a queued row whose task and holder are outside their vocabularies, keeping the run id', async () => {
     const r = await rig();
-    r.sqlite.run(
-      `INSERT INTO agent_runs (id, project_id, agent_id, task, status, queued_at, held_by)
-       VALUES ('run_odd', 'proj_1', 'myco-agent', ?, 'queued', ?, ?)`,
-      ['exfiltrate /Users/dev/.ssh/id_ed25519', NOW, 'a reason the operator typed'],
-    );
+    const rows: [string, string, string][] = [
+      ['run_odd', 'exfiltrate /Users/dev/.ssh/id_ed25519', 'a reason the operator typed'],
+      // A key every object inherits is not a declaration, and must not read as one.
+      ['run_proto', 'constructor', '__proto__'],
+      ['run_proto2', 'toString', 'constructor'],
+    ];
+    for (const [id, task, heldBy] of rows) {
+      r.sqlite.run(
+        `INSERT INTO agent_runs (id, project_id, agent_id, task, status, queued_at, held_by)
+         VALUES (?, 'proj_1', 'myco-agent', ?, 'queued', ?, ?)`,
+        [id, task, NOW, heldBy],
+      );
+    }
     const document = await deploymentDiagnostics(r.serverEnv, NOW);
-    const queued = document.queuedRuns?.find((row) => row.runId === 'run_odd');
-    // The run id stays: it is what correlates the row with the queue.
-    expect(queued).toMatchObject({ runId: 'run_odd', task: null, unknownTask: 1, heldBy: null, unknownHeldBy: 1 });
+    for (const [id] of rows) {
+      // The run id stays: it is what correlates the row with the queue.
+      expect(document.queuedRuns?.find((row) => row.runId === id))
+        .toMatchObject({ runId: id, task: null, unknownTask: 1, heldBy: null, unknownHeldBy: 1 });
+    }
     expect(JSON.stringify(document)).not.toContain('id_ed25519');
     expect(JSON.stringify(document)).not.toContain('operator typed');
   });

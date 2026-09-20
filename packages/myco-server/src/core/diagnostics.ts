@@ -20,7 +20,8 @@ import { schemaVersion } from '../read/meta.js';
 import { listProjects } from '../read/sessions.js';
 import { listQueuedAcrossProjects, workerLiveness } from './runs.js';
 import { RETAINED_TASKS } from './task-catalogue.js';
-import { heldByWords } from '@goondocks/myco-shared/run-holds';
+import { HELD_BY_WORDS } from '@goondocks/myco-shared/run-holds';
+import { declared } from './declared.js';
 import { CONTACT_RECENT_MS, isContactOutcome, readWorkerFleet, type ContactOutcome, type WorkerFleetRow } from './worker-contacts.js';
 import { pendingImportedTranscripts, pendingTranscriptBytes } from '../ingest/parse.js';
 import { DEFERRED_JOBS, SERVER_JOBS, WAKE_CONTINUATIONS } from './jobs.js';
@@ -77,8 +78,9 @@ export interface WorkerFacts {
 /** A task the catalogue retains, or null for one it does not name. */
 const knownTask = (task: string | null): string | null => (task !== null && RETAINED_TASKS.includes(task) ? task : null);
 
-/** A holder the shared vocabulary names, or null. */
-const knownHolder = (heldBy: string | null): string | null => (heldBy !== null && heldByWords(heldBy) !== null ? heldBy : null);
+
+/** A holder the shared vocabulary declares, or null. An inherited key is not a declaration. */
+const knownHolder = (heldBy: string | null): string | null => (heldBy !== null && declared(HELD_BY_WORDS, heldBy) !== undefined ? heldBy : null);
 
 /** One queued run, by the facts that explain its wait. */
 export interface QueuedRunFacts {
