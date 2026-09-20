@@ -109,7 +109,7 @@ describe('WorkersPanel', () => {
     render(<WorkersPanel workers={status({ available: false, fleet: [], workersBusy: 0, runsQueued: 0 })} now={NOW} />);
     expect(screen.getByText(/Worker status unavailable/)).toBeDefined();
     // Nothing that would read as "no workers attached" or "nothing queued".
-    expect(screen.queryByText(/No worker has been heard from/)).toBeNull();
+    expect(screen.queryByText(/No worker contact recorded/)).toBeNull();
     expect(screen.queryByText(/Nothing queued/)).toBeNull();
   });
 

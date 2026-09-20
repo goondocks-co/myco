@@ -14,19 +14,23 @@ const MEMBERS = { members: [
 const originalFetch = globalThis.fetch;
 afterEach(() => { globalThis.fetch = originalFetch; });
 
-function server(routes: Record<string, (init?: RequestInit) => Response>): { posts: { path: string; body: unknown }[] } {
+/** One stubbed endpoint. It is handed the request's own URL so a test can answer what the page actually asked for. */
+type Endpoint = (init?: RequestInit, url?: URL) => Response;
+
+function server(routes: Record<string, Endpoint>): { posts: { path: string; body: unknown }[] } {
   const posts: { path: string; body: unknown }[] = [];
   globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
     const href = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
-    const pathname = new URL(href, 'https://s').pathname;
-    if (init?.method === 'POST') posts.push({ path: pathname, body: init.body ? JSON.parse(String(init.body)) : undefined });
-    return routes[pathname]?.(init) ?? new Response(null, { status: 404 });
+    const url = new URL(href, 'https://s');
+    if (init?.method === 'POST') posts.push({ path: url.pathname, body: init.body ? JSON.parse(String(init.body)) : undefined });
+    return routes[url.pathname]?.(init, url) ?? new Response(null, { status: 404 });
   }) as typeof fetch;
   return { posts };
 }
 
-function mount(path: string) {
+function mount(path: string, seed?: (client: QueryClient) => void) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  seed?.(client);
   return render(<AppearanceProvider><QueryClientProvider client={client}><MemoryRouter initialEntries={[path]}><App /></MemoryRouter></QueryClientProvider></AppearanceProvider>);
 }
 
@@ -77,7 +81,11 @@ describe('Deployment Access', () => {
       '/api/members': () => Response.json(MEMBERS),
       '/api/members/mem_1/revoke': () => Response.json({ error: 'last_member' }, { status: 409 }),
       '/api/enrollment': () => Response.json({ invitations: [] }),
-      '/api/credentials': () => Response.json({ rows: [{ id: 'mt_1', memberId: 'mem_1', machineId: 'old-laptop', expiresAt: 1, revokedAt: null, revokedBy: null, bytesWritten: 0, lineageStartedAt: 0, firstUsedAt: null, live: false }], cursor: null }),
+      '/api/credentials': (_init, url) => Response.json({
+        rows: url?.searchParams.get('purpose') === 'run' ? []
+          : [{ id: 'mt_1', memberId: 'mem_1', machineId: 'old-laptop', expiresAt: 1, revokedAt: null, revokedBy: null, bytesWritten: 0, lineageStartedAt: 0, firstUsedAt: null, live: false, purpose: 'member' }],
+        cursor: null,
+      }),
     });
     mount('/access');
     expect(await screen.findByText('old-laptop')).toBeTruthy();
@@ -121,5 +129,125 @@ describe('Project Access', () => {
     fireEvent.click(await screen.findByRole('button', { name: 'Rotate' }));
     expect((await screen.findByTestId('key-reveal')).textContent).toBe('mycoext_' + 'y'.repeat(43));
     expect(posts).toEqual([{ path: '/api/projects/proj_1/grants/eg_1/rotate', body: undefined }]);
+  });
+});
+
+/**
+ * What a runtime's two records say, and what neither of them says.
+ *
+ * A credential's own record answers what it is allowed to do; the worker record
+ * answers what this server last heard it doing. A runtime missing from the
+ * worker record has no contact recorded — an observation is kept for a bounded
+ * time, so its absence is not evidence that it never claimed a run — and a
+ * server that cannot be asked is unknown rather than empty. A run's own
+ * credential belongs to its run, not to a machine.
+ */
+const NOW_MS = Date.now();
+const FLEET_WORKER = {
+  credentialId: 'mt_1', machineId: 'sirkirby-mbp', offers: [{ id: 'codex', authenticated: true }], capabilities: [],
+  lastReason: 'no_work', lastSeenAt: NOW_MS - 3_000, busy: null, eligible: true, recent: true,
+};
+const statusRoute = (over: Record<string, unknown> = {}) => () => Response.json({
+  schema: { expected: 44, found: 44, matches: true }, capabilities: [],
+  workers: { available: true, workersBusy: 0, runsQueued: 0, recentWithinMs: 90_000, fleet: [FLEET_WORKER], ...over },
+  projects: [],
+});
+const credential = (over: Record<string, unknown> = {}) => ({
+  id: 'mt_1', memberId: 'mem_1', machineId: 'sirkirby-mbp', expiresAt: NOW_MS + 86_400_000, revokedAt: null, revokedBy: null,
+  bytesWritten: 0, lineageStartedAt: NOW_MS - 86_400_000, firstUsedAt: null, live: true, purpose: 'member', ...over,
+});
+const ADMIN_MEMBERS = { members: [{ ...MEMBERS.members[0], role: 'admin' }, { ...MEMBERS.members[1], role: 'member' }] };
+
+/** A Deployment whose credentials answer per purpose, as the route does. */
+function accessServer(credentials: { member?: unknown[]; run?: unknown[] }, routes: Record<string, Endpoint> = {}) {
+  return server({
+    '/auth/me': () => Response.json(ME),
+    '/api/projects': () => Response.json({ projects: [] }),
+    '/api/members': () => Response.json(ADMIN_MEMBERS),
+    '/api/enrollment': () => Response.json({ invitations: [] }),
+    '/api/status': statusRoute(),
+    '/api/credentials': (_init, url) => Response.json({
+      rows: url?.searchParams.get('purpose') === 'run' ? credentials.run ?? [] : credentials.member ?? [],
+      cursor: null,
+    }),
+    ...routes,
+  });
+}
+
+describe('a runtime and the worker record beside it', () => {
+  it('says a valid credential is allowed to write, and never that it is writing', async () => {
+    accessServer({ member: [credential()] });
+    mount('/access');
+    expect(await screen.findByText('allowed to write')).toBeTruthy();
+    expect(screen.queryByText('writing')).toBeNull();
+  });
+
+  it('shows what the worker last reported in the same words Status uses', async () => {
+    accessServer({ member: [credential()] });
+    mount('/access');
+    expect(await screen.findByText(/sirkirby-mbp · Polling for work · Last contact \d+s ago/)).toBeTruthy();
+    expect(screen.getByText(/Reported authenticated: Codex\./)).toBeTruthy();
+    expect(screen.getByText(/Provider access has not been tested by this check\./)).toBeTruthy();
+    expect(screen.getByText(/not what every worker can run/)).toBeTruthy();
+  });
+
+  it('reports a runtime the worker record does not hold as having no contact recorded', async () => {
+    accessServer({ member: [credential()] }, { '/api/status': statusRoute({ fleet: [] }) });
+    mount('/access');
+    expect(await screen.findByText('No worker contact recorded.')).toBeTruthy();
+    // Nothing here knows whether it ever claimed a run.
+    expect(screen.queryByText(/never claimed/i)).toBeNull();
+  });
+
+  it('says the worker record is unavailable rather than empty when the server cannot be asked', async () => {
+    accessServer({ member: [credential()] }, {
+      '/api/status': () => Response.json({
+        schema: { expected: 44, found: null, matches: false }, capabilities: [],
+        workers: { available: false, workersBusy: 0, runsQueued: 0, recentWithinMs: 90_000, fleet: [] }, projects: [],
+      }),
+    });
+    mount('/access');
+    expect(await screen.findByText(/Worker contact unavailable/)).toBeTruthy();
+    expect(screen.queryByText('No worker contact recorded.')).toBeNull();
+  });
+
+  it('keeps a run\'s own credential out of the runtimes list and in a section of its own', async () => {
+    accessServer({
+      member: [credential()],
+      run: [credential({ id: 'mt_run', memberId: 'mem_harness', machineId: 'harness', purpose: 'run' })],
+    });
+    mount('/access');
+    const runtimes = await screen.findByLabelText('Runtimes');
+    expect(runtimes.textContent).toContain('sirkirby-mbp');
+    expect(runtimes.textContent).not.toContain('mt_run');
+    expect(screen.getByLabelText('Run credentials').textContent).toContain('mt_run');
+  });
+
+  it('shows an attached worker even when a full page of run credentials was minted after it', async () => {
+    // The archive of run credentials is asked for separately, so a burst of them
+    // cannot push a machine's runtime off the list.
+    const archive = Array.from({ length: 50 }, (_, i) => credential({
+      id: `mt_run_${i}`, memberId: 'mem_harness', machineId: 'harness', purpose: 'run', lineageStartedAt: NOW_MS - i,
+    }));
+    accessServer({ member: [credential({ lineageStartedAt: NOW_MS - 86_400_000 })], run: archive });
+    mount('/access');
+    const runtimes = await screen.findByLabelText('Runtimes');
+    expect(runtimes.textContent).toContain('sirkirby-mbp');
+    expect(await screen.findByText(/sirkirby-mbp · Polling for work/)).toBeTruthy();
+    expect(screen.getByLabelText('Run credentials').textContent).toContain('mt_run_0');
+  });
+
+  it('does not show a cached worker record as current after the refresh fails', async () => {
+    const cached = { schema: { expected: 44, found: 44, matches: true }, capabilities: [], workers: { available: true, workersBusy: 0, runsQueued: 0, recentWithinMs: 90_000, fleet: [FLEET_WORKER] }, projects: [] };
+    accessServer({ member: [credential()] }, { '/api/status': () => new Response(null, { status: 500 }) });
+    mount('/access', (client) => client.setQueryData(['status'], cached));
+    expect(await screen.findByText(/Worker contact unavailable/)).toBeTruthy();
+    expect(screen.queryByText(/Polling for work/)).toBeNull();
+  });
+
+  it('marks which members hold the role a worker\'s credential needs', async () => {
+    accessServer({});
+    mount('/access');
+    expect(await screen.findByText('admin')).toBeTruthy();
   });
 });

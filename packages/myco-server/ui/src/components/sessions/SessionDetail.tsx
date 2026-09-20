@@ -404,7 +404,7 @@ function Fact({ label, value }: { label: string; value: React.ReactNode }) {
 function readState(t: TranscriptRecord): string {
   if (t.parseError !== null) return 'Could not be read in full';
   if (t.parsedOffset < t.size) return 'Still being read';
-  if (t.fidelity !== null && t.fidelity !== 'full') return 'Read; this agent records no tool results';
+  if (t.fidelity !== null && t.fidelity !== 'full') return 'Read; this format may omit some tool results';
   return 'Read';
 }
 

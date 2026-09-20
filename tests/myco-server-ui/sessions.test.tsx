@@ -762,6 +762,40 @@ describe('Session detail', () => {
     expect(requested).not.toContain(BLOB(KEY_SEG));
   });
 
+  /** Renders the Transcript tab over one transcript record with these fields overridden. */
+  const transcriptWith = async (over: Record<string, unknown>) => {
+    const payload = transcriptPayload();
+    const record = { ...payload.transcript, ...over };
+    server(detailRoutes({
+      '/api/projects/x/sessions/s1/transcript': () => Response.json({ ...payload, transcript: record, transcripts: [record] }),
+    }));
+    mount('/p/x/sessions/s1');
+    fireEvent.click(await screen.findByRole('tab', { name: 'Transcript' }));
+  };
+
+  it('describes a format that may omit tool results without claiming this recording holds none', async () => {
+    await transcriptWith({ fidelity: 'no_tool_results' });
+    expect(await screen.findByText('Read; this format may omit some tool results')).toBeTruthy();
+    expect(screen.queryByText(/records no tool results/)).toBeNull();
+  });
+
+  it('says a fully read transcript is read', async () => {
+    await transcriptWith({ fidelity: 'full' });
+    expect(await screen.findByText('Read')).toBeTruthy();
+  });
+
+  it('reports a parse error ahead of the format limitation', async () => {
+    await transcriptWith({ fidelity: 'no_tool_results', parseError: 'parse', parseFailedAt: NOW });
+    expect(await screen.findByText('Could not be read in full')).toBeTruthy();
+    expect(screen.queryByText(/may omit some tool results/)).toBeNull();
+  });
+
+  it('reports bytes still unread ahead of the format limitation', async () => {
+    await transcriptWith({ fidelity: 'no_tool_results', parsedOffset: 1_000_000 });
+    expect(await screen.findByText('Still being read')).toBeTruthy();
+    expect(screen.queryByText(/may omit some tool results/)).toBeNull();
+  });
+
   it('says nothing was captured rather than taking the route down when the answer carries no list', async () => {
     // The shape the route answered before a session could hold more than one
     // transcript. Rendering it as an empty page is recoverable; mapping over the

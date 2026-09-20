@@ -11,8 +11,11 @@ import { MetricCard } from '../components/ui/metric-card';
 import { StatusDot, type StatusTone } from '../components/ui/status-dot';
 import { SubtabPill } from '../components/ui/subtab-pill';
 import { MEMORY_TASKS, taskRefusalText, useAgents, useDispatchMemoryTask, useRun, useRuns, type PhaseRow, type ReportRow, type RunDetailRow, type RunListRow, type RunToolCallRow } from '../hooks/use-intelligence';
-import { ApiError } from '../lib/api';
+import { useWorkerFleet } from '../hooks/use-status';
+import { ApiError, type WorkerStatus } from '../lib/api';
 import { formatCost, formatDateTime, formatDuration, formatRelative, formatTokens } from '../lib/format';
+import { harnessLabel } from '../lib/harness';
+import { FLEET_UNKNOWN_WORDS, leaseStanding, offersWords, sinceWords, untilWords, workerFor, workerName, type LeaseStanding } from '../lib/worker-state';
 import { NotFound } from './NotFound';
 
 /** The statuses a run is written with; anything else renders neutral rather than assuming the set is closed. */
@@ -39,6 +42,27 @@ export function queuedWords(run: { position: number | null; heldBy: string | nul
   const turn = ahead === 0 ? 'next in line' : `${ahead} ahead of it`;
   const holder = run.heldBy === null ? 'a limit' : (heldByWords(run.heldBy) ?? run.heldBy);
   return `waiting — ${turn} · held by ${holder}`;
+}
+
+/** Which worker a run names: the machine where the worker record holds an observation of that credential, else the credential. Whether it still holds the run is `leaseStanding`. */
+export function workerWords(leasedBy: string | null, fleet: WorkerStatus | undefined): string {
+  if (leasedBy === null) return 'not recorded';
+  const lookup = workerFor(fleet, leasedBy);
+  return lookup.known ? workerName(lookup.worker) : leasedBy;
+}
+
+/** A held lease, by when it ends. One already past says so rather than counting down to nothing. */
+export function leaseWords(expiresAt: number, now: number): string {
+  return expiresAt <= now ? 'expired, not yet swept' : `expires in ${untilWords(expiresAt, now)}`;
+}
+
+/** What workers a queued run waits on: presence only, never why this run waits. */
+function queuedFleetWords(fleet: WorkerStatus | undefined): string {
+  if (fleet === undefined || !fleet.available) return FLEET_UNKNOWN_WORDS.unavailable;
+  if (fleet.fleet.length === 0) return `${FLEET_UNKNOWN_WORDS.absent} A queued run waits until one claims it.`;
+  const recent = fleet.fleet.filter((w) => w.recent || w.busy !== null).length;
+  const busy = fleet.fleet.filter((w) => w.busy !== null).length;
+  return `${recent} of ${fleet.fleet.length} ${fleet.fleet.length === 1 ? 'worker' : 'workers'} heard from recently, ${busy} driving a run. Status says what each one last reported.`;
 }
 
 const RESUME_TEXT: Record<string, string> = {
@@ -173,17 +197,21 @@ function RunRow({ run, active, onOpen }: { run: RunListRow; active: boolean; onO
 function RunDetail({ projectId, runId }: { projectId: string; runId: string }) {
   const detail = useRun(projectId, runId);
   const agents = useAgents();
+  const fleet = useWorkerFleet();
   if (detail.error instanceof ApiError && detail.error.status === 404) return <NotFound />;
   return (
     <PageLoading isLoading={detail.isPending} error={detail.error}>
-      {detail.data && <RunBody run={detail.data.run} phases={detail.data.phases} reports={detail.data.reports} toolCalls={detail.data.toolCalls} agentName={agents.data?.agents.find((a) => a.id === detail.data.run.agentId)?.name ?? null} />}
+      {detail.data && <RunBody run={detail.data.run} phases={detail.data.phases} reports={detail.data.reports} toolCalls={detail.data.toolCalls} agentName={agents.data?.agents.find((a) => a.id === detail.data.run.agentId)?.name ?? null} fleet={fleet} />}
     </PageLoading>
   );
 }
 
-function RunBody({ run, phases, reports, toolCalls, agentName }: { run: RunDetailRow; phases: PhaseRow[] | null; reports: ReportRow[]; toolCalls: RunToolCallRow[]; agentName: string | null }) {
+function RunBody({ run, phases, reports, toolCalls, agentName, fleet }: { run: RunDetailRow; phases: PhaseRow[] | null; reports: ReportRow[]; toolCalls: RunToolCallRow[]; agentName: string | null; fleet: WorkerStatus | undefined }) {
   const failed = run.status === 'failed' || run.error !== null;
   const deploy = deployWords(run);
+  // One instant for every lease word on the page: the holder and the expiry read the same clock.
+  const now = Date.now();
+  const standing = leaseStanding(run.leasedBy, run.leaseExpiresAt, now);
   return (
     <div className="flex flex-col gap-4">
       <div>
@@ -192,6 +220,13 @@ function RunBody({ run, phases, reports, toolCalls, agentName }: { run: RunDetai
         <div className="font-mono text-[11px] text-on-surface-variant">{run.id}</div>
         {deploy !== null && <div className="mt-1 font-sans text-xs text-tertiary">{deploy}</div>}
       </div>
+
+      {run.status === 'queued' && (
+        <Panel padded title="Waiting">
+          <p className="font-sans text-sm text-on-surface-variant">{queuedWords(run)}</p>
+          <p className="mt-1 font-sans text-xs text-on-surface-variant">{queuedFleetWords(fleet)}</p>
+        </Panel>
+      )}
 
       {failed && (
         <Panel tone="terra" eyebrow="Failure record" title={run.status === 'failed' ? 'This run failed' : 'This run recorded an error'} data-testid="failure-record">
@@ -220,7 +255,10 @@ function RunBody({ run, phases, reports, toolCalls, agentName }: { run: RunDetai
         <dl className="grid gap-x-6 gap-y-1 font-sans text-sm sm:grid-cols-2">
           <Fact label="Agent" value={agentName ?? run.agentId} />
           <Fact label="Model" value={run.provider === null && run.model === null ? null : `${run.provider ?? ''}${run.provider && run.model ? ' · ' : ''}${run.model ?? ''}`} />
-          <Fact label="Credential" value={run.dispatchedBy} />
+          <Fact label={standing === 'lapsed' ? 'Last worker' : 'Worker'} value={workerWords(run.leasedBy, fleet)} />
+          <Fact label="Harness" value={run.harness === null ? null : harnessLabel(run.harness)} />
+          {run.leaseExpiresAt !== null && <Fact label="Lease" value={leaseWords(run.leaseExpiresAt, now)} />}
+          <Fact label="Run credential" value={run.dispatchedBy} />
           <Fact label="Reasoning" value={run.reasoningLevel} />
           <Fact label="Dry run" value={run.dryRun ? 'yes' : 'no'} />
           <Fact label="Resumable" value={run.resumable ? 'yes' : 'no'} />
@@ -229,6 +267,8 @@ function RunBody({ run, phases, reports, toolCalls, agentName }: { run: RunDetai
           {usageScopeText(run.usageData) !== null && <Fact label="Token coverage" value={usageScopeText(run.usageData)} />}
         </dl>
       </Panel>
+
+      {run.leasedBy !== null && <HolderRecord credentialId={run.leasedBy} fleet={fleet} standing={standing} />}
 
       <Panel title="Phases" padded={phases !== null && phases.length > 0 ? false : true}>
         {phases === null ? (
@@ -305,6 +345,26 @@ function RunBody({ run, phases, reports, toolCalls, agentName }: { run: RunDetai
         )}
       </Panel>
     </div>
+  );
+}
+
+/** What this server has heard from the worker a run names, as it stands now, not as a record of this run. The title follows `LeaseStanding`; only a standing lease says which run a worker drives. */
+function HolderRecord({ credentialId, fleet, standing }: { credentialId: string; fleet: WorkerStatus | undefined; standing: LeaseStanding }) {
+  const lookup = workerFor(fleet, credentialId);
+  return (
+    <Panel padded title={standing === 'lapsed' ? 'The worker that last held this run' : 'The worker holding this run'}>
+      {lookup.known ? (
+        <>
+          <p className="font-sans text-sm text-on-surface">
+            {lookup.worker.lastSeenAt === 0 ? 'No contact recorded.' : `Last contact ${sinceWords(lookup.worker.lastSeenAt, Date.now())}.`}
+          </p>
+          <p className="mt-1 font-sans text-xs text-on-surface-variant">{offersWords(lookup.worker)}</p>
+          <p className="mt-1 font-sans text-xs text-on-surface-variant">This is what the worker reports now, not what it reported for this run.</p>
+        </>
+      ) : (
+        <p className="font-sans text-sm text-on-surface-variant">{FLEET_UNKNOWN_WORDS[lookup.why]}</p>
+      )}
+    </Panel>
   );
 }
 

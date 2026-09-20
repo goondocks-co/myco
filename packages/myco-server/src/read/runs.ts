@@ -1,6 +1,6 @@
 import type { RelationalStore } from '../core/adapters.js';
 import { keyset, page, type Page, type ReadScope } from './scope.js';
-import { getRun, RUN_TOOL_EVENT } from '../core/runs.js';
+import { getRun, isTerminalRunStatus, RUN_TOOL_EVENT } from '../core/runs.js';
 import { readRunCloseEvidence, type RunCloseEvidence } from '../core/run-postconditions.js';
 
 /** The most calls one run's detail lists; a run that called more is read in the record rather than the page. */
@@ -34,6 +34,12 @@ export interface RunListRow {
   replaced: boolean;
   /** The run this one stands in for: the deployment that ended that run put this one in its place. */
   replaces: string | null;
+  /** The harness the claim chose; null when the row records none. */
+  harness: string | null;
+  /** The worker credential holding the run. A terminal close and a requeue both clear it, so null records no holder. */
+  leasedBy: string | null;
+  /** When the held lease ends; null whenever the row names no holder. */
+  leaseExpiresAt: number | null;
 }
 
 /**
@@ -110,7 +116,8 @@ const contextValue = (key: string): string => `CASE WHEN json_valid(run_context)
 const LIST_COLUMNS = `id, agent_id, task, status, provider, model, started_at, resumed_at, completed_at,
   tokens_used, cost_usd, cost_source, dry_run, resumable, resume_status, (error IS NOT NULL) AS failed,
   queued_at, held_by, CASE WHEN status = 'queued' THEN ${POSITION_SQL} ELSE NULL END AS position,
-  ${contextValue('replaced')} AS replaced, ${contextValue('replaces')} AS replaces`;
+  ${contextValue('replaced')} AS replaced, ${contextValue('replaces')} AS replaces,
+  harness, leased_by, lease_expires_at`;
 
 const DETAIL_COLUMNS = `${LIST_COLUMNS}, instruction, session_ref, actual_cost_usd, estimated_cost_usd, reasoning_level,
   resume_mode, resume_attempts, error, dispatched_by, usage_data, actions_taken, checkpoints`;
@@ -120,6 +127,8 @@ const num = (value: unknown): number | null => (value as number | null) ?? null;
 const flag = (value: unknown): boolean => Number(value) === 1;
 
 function toListRow(row: Record<string, unknown>): RunListRow {
+  // Terminal runs have no current worker lease.
+  const ended = isTerminalRunStatus(row.status);
   return {
     id: row.id as string,
     agentId: row.agent_id as string,
@@ -142,6 +151,9 @@ function toListRow(row: Record<string, unknown>): RunListRow {
     position: num(row.position),
     replaced: flag(row.replaced),
     replaces: text(row.replaces),
+    harness: text(row.harness),
+    leasedBy: ended ? null : text(row.leased_by),
+    leaseExpiresAt: ended ? null : num(row.lease_expires_at),
   };
 }
 

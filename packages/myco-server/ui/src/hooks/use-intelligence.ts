@@ -24,6 +24,12 @@ export interface RunListRow {
   position: number | null;
   replaced: boolean;
   replaces: string | null;
+  /** The harness the claim chose; null when the row records none. */
+  harness: string | null;
+  /** The worker credential holding this run. A terminal close and a requeue both clear it, so null records no holder. */
+  leasedBy: string | null;
+  /** When the held lease ends; null whenever the row names no holder. */
+  leaseExpiresAt: number | null;
 }
 
 export interface RunDetailRow extends RunListRow {
