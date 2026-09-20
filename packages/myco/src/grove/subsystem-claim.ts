@@ -82,9 +82,9 @@ export interface ClaimDeps {
  * how the dogfood-claims-symbiont-config / prod-defers coordination (PR #530)
  * keeps working across the two-home split.
  */
-export function resolveClaimsHome(): string {
+export function resolveClaimsHome(memberHome = resolveMycoHome()): string {
   const override = process.env.MYCO_CLAIMS_HOME?.trim();
-  return override && override.length > 0 ? path.resolve(expandHome(override)) : resolveMycoHome();
+  return override && override.length > 0 ? path.resolve(expandHome(override)) : memberHome;
 }
 
 function claimsDir(claimsHome: string): string {

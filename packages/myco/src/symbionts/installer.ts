@@ -5,7 +5,7 @@ import path from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 import { parse as parseToml } from 'smol-toml';
 import { expandHome, resolveMycoHome } from '../grove/paths.js';
-import { shouldDeferSubsystem, SYMBIONT_CONFIG_SUBSYSTEM } from '../grove/subsystem-claim.js';
+import { isClaimedByPeer, resolveClaimsHome, shouldDeferSubsystem, SYMBIONT_CONFIG_SUBSYSTEM } from '../grove/subsystem-claim.js';
 import { atomicWriteFileSync } from '../utils/atomic-write.js';
 import { assertSafeProjectRoot } from '../project-root.js';
 import { findTomlSectionEnd, buildTomlMcpSection, upsertTomlSection, upsertTomlSectionKeys, removeTomlSectionKeys, readTomlSectionKey } from './toml-helpers.js';
@@ -2017,6 +2017,10 @@ export class SymbiontInstaller {
 
   /** Global member provisioning cannot take another installation's capture or Deployment. */
   private assertGlobalMemberOwnership(): void {
+    const memberHome = this.memberHomeDir();
+    if (isClaimedByPeer(SYMBIONT_CONFIG_SUBSYSTEM, memberHome, { claimsHome: resolveClaimsHome(memberHome) })) {
+      throw new MemberProvisionConflictError('Global symbiont configuration is claimed by another installation. Release its symbiont-config claim before provisioning globally.');
+    }
     assertSafeProjectRoot(this.projectRoot);
     const local = this.projectMemberInstaller();
     local.readMemberMcpTarget();
@@ -2144,7 +2148,7 @@ export class SymbiontInstaller {
   }
 
   /**
-   * Strip Myco's hook groups from the member target, deleting the file when
+   * Strip member hook commands from the member target, deleting the file when
    * nothing but an empty hooks map is left. The inverse of
    * `installMemberHooks`, so `myco member leave --purge` removes what
    * provisioning wrote and never touches a key the agent owns.
@@ -2163,8 +2167,8 @@ export class SymbiontInstaller {
     const kept: Record<string, unknown[]> = {};
     let removed = false;
     for (const [event, groups] of Object.entries(existingHooks)) {
-      const foreign = withoutMycoHooks(groups as Array<Record<string, unknown>>);
-      if ((groups as Array<Record<string, unknown>>).some(isMycoHookGroup)) removed = true;
+      const foreign = withoutMycoHooks(groups as Array<Record<string, unknown>>, command => command.includes(CREDENTIAL_FLAG));
+      if (!isDeepStrictEqual(groups, foreign)) removed = true;
       if (foreign.length > 0) kept[event] = foreign;
     }
     if (!removed) return false;

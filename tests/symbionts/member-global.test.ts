@@ -7,6 +7,7 @@ import { REGISTRY_VERSION, writeRegistryEntry } from '@myco/member/registry.js';
 import { loadManifests, resolvePackageRoot } from '@myco/symbionts/detect.js';
 import { SymbiontInstaller } from '@myco/symbionts/installer.js';
 import { tempMycoHome } from '../member/helpers/server.js';
+import { claimSubsystem, releaseSubsystemClaim, SYMBIONT_CONFIG_SUBSYSTEM } from '@myco/grove/subsystem-claim.js';
 
 let root: string;
 let home: string;
@@ -28,6 +29,49 @@ afterEach(() => {
 const installer = (name: string) => new SymbiontInstaller(loadManifests().find((m) => m.name === name)!, root, resolvePackageRoot(), false, undefined, null, 'member-global', mycoHome);
 
 describe('global member installation', () => {
+  it('checks the selected member home claim when the ambient home differs', () => {
+    const previousClaims = process.env.MYCO_CLAIMS_HOME;
+    const previousHome = process.env.MYCO_HOME;
+    delete process.env.MYCO_CLAIMS_HOME;
+    process.env.MYCO_HOME = home;
+    try {
+      claimSubsystem(SYMBIONT_CONFIG_SUBSYSTEM, 'peer', { claimsHome: mycoHome });
+      expect(() => installer('codex').install()).toThrow(/claimed by another installation/);
+      expect(fs.existsSync(path.join(home, '.codex'))).toBe(false);
+    } finally {
+      releaseSubsystemClaim(SYMBIONT_CONFIG_SUBSYSTEM, 'peer', { claimsHome: mycoHome });
+      if (previousClaims === undefined) delete process.env.MYCO_CLAIMS_HOME; else process.env.MYCO_CLAIMS_HOME = previousClaims;
+      if (previousHome === undefined) delete process.env.MYCO_HOME; else process.env.MYCO_HOME = previousHome;
+    }
+  });
+
+  it('refuses a peer claim before writing and accepts the selected member home owner', () => {
+    const previous = process.env.MYCO_CLAIMS_HOME;
+    process.env.MYCO_CLAIMS_HOME = mycoHome;
+    try {
+      claimSubsystem(SYMBIONT_CONFIG_SUBSYSTEM, 'peer');
+      expect(() => installer('codex').install()).toThrow(/claimed by another installation/);
+      expect(fs.existsSync(path.join(home, '.codex'))).toBe(false);
+      releaseSubsystemClaim(SYMBIONT_CONFIG_SUBSYSTEM, 'peer');
+      claimSubsystem(SYMBIONT_CONFIG_SUBSYSTEM, mycoHome);
+      expect(installer('codex').install().hooks).toBe(true);
+    } finally {
+      releaseSubsystemClaim(SYMBIONT_CONFIG_SUBSYSTEM, mycoHome);
+      if (previous === undefined) delete process.env.MYCO_CLAIMS_HOME; else process.env.MYCO_CLAIMS_HOME = previous;
+    }
+  });
+
+  it('preserves legacy and foreign project commands while removing member commands', () => {
+    const target = path.join(root, '.codex', 'hooks.json');
+    fs.mkdirSync(path.dirname(target), { recursive: true });
+    const legacy = { command: '/opt/myco hook stop --myco-managed' };
+    const foreign = { command: 'other-hook --credential registry' };
+    const member = { command: '/opt/myco hook stop --credential registry --myco-managed' };
+    fs.writeFileSync(target, JSON.stringify({ hooks: { Stop: [{ hooks: [legacy, foreign, member] }], SessionStart: [legacy, member] } }));
+    installer('codex').install();
+    expect(JSON.parse(fs.readFileSync(target, 'utf8')).hooks).toEqual({ Stop: [{ hooks: [legacy, foreign] }], SessionStart: [legacy] });
+  });
+
   it('installs Codex hooks, enables hooks, and writes remote MCP globally without project configuration', () => {
     const target = path.join(home, '.codex', 'config.toml');
     fs.mkdirSync(path.dirname(target), { recursive: true });
