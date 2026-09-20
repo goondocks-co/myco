@@ -24,6 +24,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { resolveMycoHome } from '../paths/home.js';
 import { LifecycleLock, withFileLockSync, type AcquireResult } from '../utils/lifecycle-lock.js';
+import { isProjectId } from './constants.js';
 import { ensureMemberDir, ensurePrivateFile, memberRoot, readPrivateJson, reportSkippedPrivateFile, writePrivateFileAtomic } from './store.js';
 
 export const REGISTRY_VERSION = 2;
@@ -504,14 +505,19 @@ function readEntryFile(file: string, name: string, mycoHome: string, readLegacy 
     return { ok: false, reason: read.reason, stderrReason, detail: read.detail };
   }
   const keyed = (root: string): boolean => name === `${registryKeyFor(root)}.json`;
+  const malformed = (detail: string) => ({ ok: false as const, reason: 'malformed' as const, stderrReason: 'malformed' as const, detail });
   if (readLegacy && readableVersion(read.value) === 1) {
     const v1 = read.value as unknown;
-    if (!isEntry(v1)) return { ok: false, reason: 'malformed', stderrReason: 'malformed', detail: 'not a registry entry' };
-    if (!keyed(v1.root)) return { ok: false, reason: 'malformed', stderrReason: 'malformed', detail: 'root mismatch' };
+    if (!isEntry(v1)) return malformed('not a registry entry');
+    // The id names the project's spool directory, so one outside the grammar is
+    // refused here rather than resolved into a path.
+    if (!isProjectId(v1.projectId)) return malformed('project id out of grammar');
+    if (!keyed(v1.root)) return malformed('root mismatch');
     return { ok: true, entry: v1 };
   }
-  if (!isBinding(read.value)) return { ok: false, reason: 'malformed', stderrReason: 'malformed', detail: 'not a registry entry' };
-  if (!keyed(read.value.root)) return { ok: false, reason: 'malformed', stderrReason: 'malformed', detail: 'root mismatch' };
+  if (!isBinding(read.value)) return malformed('not a registry entry');
+  if (!isProjectId(read.value.projectId)) return malformed('project id out of grammar');
+  if (!keyed(read.value.root)) return malformed('root mismatch');
   const composed = compose(read.value, mycoHome);
   if (composed === null) return { ok: false, reason: 'malformed', stderrReason: 'malformed', detail: `no membership for ${read.value.serverUrl}` };
   return { ok: true, entry: composed };

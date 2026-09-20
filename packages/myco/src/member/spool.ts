@@ -18,7 +18,7 @@ import { resolveMycoHome } from '../paths/home.js';
 import { LifecycleLock, withFileLockSync } from '../utils/lifecycle-lock.js';
 import { canStartRequest, clippedRequestBudget, longestDeclaredHookTimeoutMs, type HookBudget } from './budget.js';
 import {
-  MEMBER_FILE_MODE, MEMBER_PROTOCOL, OFFLINE_BACKOFF_INITIAL_MS, OFFLINE_BACKOFF_MAX_MS, REFUSED_LOG_MAX_BYTES, type MemberCode,
+  isProjectId, MEMBER_FILE_MODE, MEMBER_PROTOCOL, OFFLINE_BACKOFF_INITIAL_MS, OFFLINE_BACKOFF_MAX_MS, REFUSED_LOG_MAX_BYTES, type MemberCode,
 } from './constants.js';
 import type { BlobSource, BlobStager, MemberEnvelope, OutboundEvent } from './envelope.js';
 import { bufferLockPath, readSessionState, readSessionStateResult, readSessionStateUnlocked, updateSessionState, writeSessionStateUnlocked, type SessionState, type SessionStateRead } from './session-state.js';
@@ -113,8 +113,22 @@ export interface DrainOptions {
   clientFor?: (record: ClientRecord) => ServerClient;
 }
 
+/**
+ * The directory a project's spool lives in.
+ *
+ * The id names one directory under the spool root and never a path: it must be
+ * a project id, and the joined path must resolve to a direct child of that root.
+ * Both hold before any directory is made, so a caller that only reads is bound
+ * by the same containment as one that writes.
+ */
 export function spoolDirFor(projectId: string, mycoHome: string = resolveMycoHome()): string {
-  return path.join(memberRoot(mycoHome), SPOOL_DIRNAME, projectId);
+  const spoolRoot = path.join(memberRoot(mycoHome), SPOOL_DIRNAME);
+  const dir = path.join(spoolRoot, projectId);
+  const rel = path.relative(spoolRoot, path.resolve(dir));
+  if (!isProjectId(projectId) || rel === '' || path.isAbsolute(rel) || rel.split(path.sep).length !== 1) {
+    throw new Error(`spoolDirFor: ${projectId} does not name a project's spool under ${spoolRoot}`);
+  }
+  return dir;
 }
 
 /** The wire envelope of a spool record: the seven fields, nothing member-private, no buffer timestamp. */
