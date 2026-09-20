@@ -1,4 +1,4 @@
-.PHONY: build build-all build-fast build-only build-rebuild rebuild check check-fast check-all test test-fast test-integration test-all lint clean watch install dev-build dev-install dev-refresh dev-link dev-deploy dev-link-worktree dev-unlink dev-unlink-worktree dev-build-windows dev-link-windows dev-claim-prod dev-claim-dev ui-dev daemon-dev dev ui ui-myco
+.PHONY: build build-all build-fast build-only build-rebuild rebuild check check-fast check-all test test-fast test-integration test-all lint clean watch install dev-build dev-install dev-refresh dev-link dev-deploy dev-link-worktree dev-unlink dev-unlink-worktree dev-build-windows dev-link-windows dev-claim-prod dev-claim-dev worktree-sweep ui-dev daemon-dev dev ui ui-myco
 
 # `make build` runs the fast unit-test profile + build. Integration / smoke
 # tests are deliberately excluded from the inner dev loop — they pair real
@@ -378,3 +378,12 @@ dev-claim-dev:
 	@MYCO_RUN_REDIRECTED=1 MYCO_TRAMPOLINED=1 MYCO_HOME="$(HOME)/.myco-dev" MYCO_CLAIMS_HOME="$(HOME)/.myco" myco subsystem claim symbiont-config --force \
 		&& echo "✓ dev (~/.myco-dev) owns symbiont-config — the dev daemon manages global agent config; prod defers" \
 		|| echo "⚠ claim failed — run: MYCO_HOME=~/.myco-dev MYCO_CLAIMS_HOME=~/.myco myco subsystem claim symbiont-config --force"
+
+# Retire worktrees and branches whose pull request already merged. Cleanup done
+# as a lane's last step is lost whenever the lane dies mid-flight; this sweep
+# does not depend on that lane still being alive, and is safe to run at any
+# time. It holds anything it cannot prove is finished — uncommitted work, an
+# open or absent pull request — and reads state as it runs, so a worktree
+# another session creates mid-sweep is never retired out from under it.
+worktree-sweep:
+	@node scripts/worktree-sweep.mjs $(ARGS)
