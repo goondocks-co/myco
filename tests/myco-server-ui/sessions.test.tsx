@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it } from 'bun:test';
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { MemoryRouter, useLocation, useNavigate } from 'react-router-dom';
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { focusManager, QueryClient, QueryClientProvider } from '@tanstack/react-query';
 
 import App from '../../packages/myco-server/ui/src/App';
 import { AppearanceProvider } from '../../packages/myco-server/ui/src/providers/appearance';
@@ -965,7 +965,7 @@ describe('a session repeated across pages', () => {
   it('re-walks the pages on a refetch, still listing each session once', async () => {
     const first = [summary('s_a', NOW - 1_000), summary('s_b', NOW - 2_000)];
     const second = [summary('s_b', NOW - 4_000), summary('s_c', NOW - 5_000)];
-    server({
+    const { requested } = server({
       '/auth/me': () => Response.json(ME),
       '/api/projects': () => Response.json(PROJECTS),
       '/api/projects/x/sessions?limit=50': () => Response.json({ rows: first, cursor: 'c1' }),
@@ -976,9 +976,20 @@ describe('a session repeated across pages', () => {
     fireEvent.click(await screen.findByRole('button', { name: 'Load more' }));
     await waitFor(() => expect(screen.getByText('session s_c')).toBeTruthy());
 
-    // A focus refetch walks every page again with fresh cursors.
-    fireEvent(window, new Event('focus'));
-    await waitFor(() => expect(screen.queryAllByText('session s_b')).toHaveLength(1));
+    const pages = ['/api/projects/x/sessions?limit=50', '/api/projects/x/sessions?limit=50&cursor=c1'];
+    const before = pages.map((page) => requested.filter((url) => url === page).length);
+    focusManager.setFocused(false);
+    try {
+      focusManager.setFocused(true);
+      await waitFor(() => {
+        for (const [index, page] of pages.entries()) {
+          expect(requested.filter((url) => url === page).length).toBeGreaterThan(before[index]!);
+        }
+      });
+    } finally {
+      focusManager.setFocused(undefined);
+    }
+    expect(screen.queryAllByText('session s_b')).toHaveLength(1);
     expect(screen.queryAllByText('session s_a')).toHaveLength(1);
     expect(screen.queryAllByText('session s_c')).toHaveLength(1);
   });
