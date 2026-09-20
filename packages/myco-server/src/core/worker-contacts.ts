@@ -29,7 +29,7 @@ export interface ReportedHarness {
 export const CONTACT_OUTCOMES = ['claimed', 'no_work', 'no_harness', 'at_limit', 'lost_race'] as const;
 export type ContactOutcome = (typeof CONTACT_OUTCOMES)[number];
 
-/** Whether a value is one of them. The column carries no constraint, so a stored reason is a string until this says otherwise. */
+/** Whether a stored value belongs to the contact outcome vocabulary. */
 export const isContactOutcome = (value: string): value is ContactOutcome => (CONTACT_OUTCOMES as readonly string[]).includes(value);
 
 /** How much of a worker's report is kept, so one poll can never grow the row without bound. */
