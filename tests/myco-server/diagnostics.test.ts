@@ -278,7 +278,7 @@ describe('the document is an owner surface', () => {
     const res = await worker.fetch(await asOwner('/api/diagnostics'), r.env);
     expect(res.status).toBe(503);
     expect(res.headers.get('content-disposition')).toBeNull();
-    expect(await res.json()).toEqual({ error: 'unavailable' });
+    expect(await res.json() as { error: string }).toEqual({ error: 'unavailable' });
   });
 
   it('downloads an unavailable-store document when a diagnostic query fails after admission', async () => {
