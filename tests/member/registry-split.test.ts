@@ -248,6 +248,28 @@ describe('registry split', () => {
     expect(readRegistryEntry(a, mycoHome)).toMatchObject({ token: 'live', tokenId: 'mt_live', projectId: 'proj_1' });
   });
 
+  for (const condition of ['loose-mode', 'malformed', 'unreadable'] as const) {
+    it(`preserves the shared credential when a surviving binding is ${condition}`, () => {
+      const a = path.join(mycoHome, 'a');
+      const b = path.join(mycoHome, 'b');
+      writeRegistryEntry(entry(a), { mycoHome });
+      writeRegistryEntry(entry(b, { projectId: 'proj_2' }), { mycoHome });
+      const binding = registryEntryPath(b, mycoHome);
+      if (condition === 'loose-mode') fs.chmodSync(binding, 0o644);
+      if (condition === 'malformed') fs.writeFileSync(binding, '{broken');
+      if (condition === 'unreadable') {
+        fs.unlinkSync(binding);
+        fs.mkdirSync(binding, { mode: 0o700 });
+      }
+      const membership = deploymentPath('https://s.example', mycoHome);
+      const before = fs.readFileSync(membership);
+      expect(removeRegistryEntry(a, mycoHome)).toBe(true);
+      expect(fs.readFileSync(membership)).toEqual(before);
+      expect(fs.existsSync(binding)).toBe(true);
+      expect(stderrLines.join('')).toContain('skipped');
+    });
+  }
+
   it('takes the credential with the last binding that named it, and not before', () => {
     const a = path.join(mycoHome, 'a');
     const b = path.join(mycoHome, 'b');
