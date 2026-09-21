@@ -149,16 +149,29 @@ export function ensureMemberDir(dir: string, mycoHome: string = resolveMycoHome(
   const levels = [root, ...(rel === '' ? [] : rel.split(path.sep).map((_, i, parts) => path.join(root, ...parts.slice(0, i + 1))))];
   for (const level of levels) {
     if (!fs.existsSync(level)) fs.mkdirSync(level, { mode: MEMBER_DIR_MODE });
-    const mode = fs.statSync(level).mode & 0o777;
+    const stat = fs.statSync(level);
+    if (!stat.isDirectory()) throw new Error(`ensureMemberDir: ${level} is not a directory`);
+    const mode = stat.mode & 0o777;
     if (mode !== MEMBER_DIR_MODE) fs.chmodSync(level, MEMBER_DIR_MODE);
   }
 }
 
 /** Create `file` empty with mode 0600 when absent, so a later default-mode open finds it already private. */
 export function ensurePrivateFile(file: string): void {
-  if (fs.existsSync(file)) return;
-  const fd = fs.openSync(file, fs.constants.O_WRONLY | fs.constants.O_CREAT, MEMBER_FILE_MODE);
-  fs.closeSync(fd);
+  const entry = entryAt(file);
+  if (entry.at === 'unknown') throw new Error(`ensurePrivateFile: ${file} could not be checked (${entry.code})`);
+  if (entry.at === 'entry') {
+    if (!entry.stat.isFile()) throw new Error(`ensurePrivateFile: ${file} is not a regular file`);
+    return;
+  }
+  try {
+    const fd = fs.openSync(file, fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_EXCL, MEMBER_FILE_MODE);
+    fs.closeSync(fd);
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== 'EEXIST') throw err;
+    const current = entryAt(file);
+    if (current.at !== 'entry' || !current.stat.isFile()) throw err;
+  }
 }
 
 /** Write `content` to `file` atomically (tmp in the same directory, then rename), mode 0600. */

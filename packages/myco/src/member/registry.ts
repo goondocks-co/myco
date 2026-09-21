@@ -454,21 +454,27 @@ export function removeRegistryEntry(root: string, mycoHome: string = resolveMyco
     const read = readPrivateJson<ProjectBinding>(file);
     const serverUrl = read.ok && isBinding(read.value) ? read.value.serverUrl : null;
     fs.unlinkSync(file);
-    if (serverUrl !== null && !anyBindingNames(serverUrl, mycoHome)) {
+    if (serverUrl !== null && !anyBindingMayName(serverUrl, mycoHome)) {
       fs.rmSync(deploymentPath(serverUrl, mycoHome), { force: true });
     }
     return true;
   }, mycoHome);
 }
 
-/** Whether any project binding still names `serverUrl`. Read under the registry lock by its one caller. */
-function anyBindingNames(serverUrl: string, mycoHome: string): boolean {
+/** Whether a binding names `serverUrl`, or an unreadable binding prevents ruling out that reference. Caller holds the registry lock. */
+function anyBindingMayName(serverUrl: string, mycoHome: string): boolean {
   const dir = projectsDir(mycoHome);
   if (!fs.existsSync(dir)) return false;
   for (const name of fs.readdirSync(dir)) {
     if (!name.endsWith('.json')) continue;
-    const read = readPrivateJson<ProjectBinding>(path.join(dir, name));
-    if (read.ok && isBinding(read.value) && read.value.serverUrl === serverUrl) return true;
+    const file = path.join(dir, name);
+    const read = readEntryFile(file, name, mycoHome, true);
+    if (!read.ok) {
+      if (read.reason === 'missing') continue;
+      reportSkippedPrivateFile('binding reference check', file, read);
+      return true;
+    }
+    if (deploymentUrl(read.entry.serverUrl) === deploymentUrl(serverUrl)) return true;
   }
   return false;
 }

@@ -75,6 +75,28 @@ describe('member registry', () => {
     expect(listRegistryEntries(mycoHome).map((e) => e.projectId)).toEqual(['proj_2']);
   });
 
+  it('refuses a regular file where a member directory is required without changing it', () => {
+    const file = memberRoot(mycoHome);
+    fs.writeFileSync(file, 'preserve', { mode: 0o600 });
+    expect(() => ensureMemberDir(file, mycoHome)).toThrow();
+    expect(mode(file)).toBe(0o600);
+    expect(fs.readFileSync(file, 'utf8')).toBe('preserve');
+  });
+
+  for (const exists of [true, false]) {
+    it(`refuses a registry lock symlink to an ${exists ? 'existing' : 'absent'} external target`, () => {
+      const external = path.join(mycoHome, 'outside');
+      if (exists) fs.writeFileSync(external, 'preserve', { mode: 0o644 });
+      ensureMemberDir(projectsDir(mycoHome), mycoHome);
+      fs.symlinkSync(external, path.join(projectsDir(mycoHome), '.lock'));
+      expect(() => writeRegistryEntry(entryFor(path.join(mycoHome, 'repo')), { mycoHome })).toThrow();
+      if (exists) {
+        expect(fs.readFileSync(external, 'utf8')).toBe('preserve');
+        expect(mode(external)).toBe(0o644);
+      } else expect(fs.existsSync(external)).toBe(false);
+    });
+  }
+
   it('ensureMemberDir refuses a path outside the member root and fixes a loose mode', () => {
     expect(() => ensureMemberDir(path.join(mycoHome, 'elsewhere'), mycoHome)).toThrow('outside the member root');
     const dir = path.join(memberRoot(mycoHome), 'x', 'y');
