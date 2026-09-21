@@ -13,6 +13,7 @@ import { wrappingKeyFromText } from '../wrapping-key.js';
 import { sqliteVectorStore } from './vectors.js';
 import type { NativeSqlite } from './native.js';
 import { configuredEmbeddingProvider } from '../../core/embedding/configured-provider.js';
+import { sqliteStoreMaintenance } from './store-maintenance.js';
 
 export const SOURCE_LIMIT = { limit: 600, periodMs: 60_000 };
 export const TOKEN_LIMIT = { limit: 300, periodMs: 60_000 };
@@ -114,6 +115,7 @@ export function serverEnvFromBunConfig(config: BunServerConfig): BunServerEnv {
     platform: bunPlatform(config),
     ...(config.harnessLaunch === undefined ? {} : { harnessLaunch: config.harnessLaunch }),
     ...(config.recovery === undefined ? {} : { recovery: config.recovery }),
+    storeMaintenance: sqliteStoreMaintenance(config.sqlite),
     ...(config.harnessTasks === undefined ? {} : { harnessTasks: config.harnessTasks }),
     ...(config.origin === undefined || config.origin === '' ? {} : { origin: config.origin }),
     ...(config.fleet === undefined || !Number.isInteger(config.fleet) || config.fleet < 1 ? {} : { fleet: config.fleet }),

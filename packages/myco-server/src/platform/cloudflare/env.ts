@@ -7,6 +7,7 @@
  * deployment for no architectural gain — and the mapping to product vocabulary
  * happens here.
  */
+import { d1StoreMaintenance } from './store-maintenance.js';
 import type {
   BlobFailureClassifier, BlobStore, ErrorClassifier, OwnerBindings,
   PlatformDescriptor, RateLimiter, RelationalStore, ServerEnv,
@@ -82,7 +83,15 @@ export type _StagingBucketSatisfies = AssertAssignable<StagingBucket, R2Bucket>;
 export const REQUIRED_BINDINGS = ['MYCO_DB', 'BUCKET', 'SOURCE_LIMIT', 'TOKEN_LIMIT'] as const;
 
 /** D1 reports its own failures with a `D1_ERROR` prefix; nothing else does. */
-export const classifyD1Error: ErrorClassifier = (message) => (message.startsWith('D1_ERROR') ? 'db' : null);
+/**
+ * D1's own failures. A reached limit is refused in the words D1 documents
+ * (https://developers.cloudflare.com/d1/observability/debug-d1/), and is named apart from any other storage error.
+ */
+export const classifyD1Error: ErrorClassifier = (message) => {
+  if (/exceeded D1's free tier daily row (read|write) limit/.test(message)) return 'store_quota';
+  if (/Exceeded maximum DB size|exceeded D1's maximum account storage limit/.test(message)) return 'store_size';
+  return message.startsWith('D1_ERROR') ? 'db' : null;
+};
 
 export { classifyR2BlobFailure, R2_BAD_DIGEST_CODE } from './r2-digest.js';
 
@@ -171,6 +180,7 @@ export function serverEnvFromBindings(bindings: CloudflareBindings, deferred?: D
     ...(bindings.VECTORIZE === undefined ? {} : { vectors: cloudflareVectorStore(bindings.VECTORIZE) }),
     embeddingProvider: async () => bindings.AI === undefined ? null : cloudflareEmbeddingProvider(bindings.AI),
     ...(recoveryPort(bindings) === undefined ? {} : { recovery: recoveryPort(bindings) }),
+    ...(bindings.MYCO_DB === undefined ? {} : { storeMaintenance: d1StoreMaintenance(bindings.MYCO_DB) }),
     ...(bindings.HARNESS_LAUNCH_MODE === 'record' ? { harnessLaunch: recordingLaunch(bindings) }
       : embeddingRuntime ? { harnessLaunch: cloudflareEmbeddingLaunch(bindings.MYCO_ORIGIN!, (work) => deferred!.waitUntil(work), { lifetime: deferred!.lifetime }), harnessTasks: [EMBEDDING_TASK] } : {}),
     ...(bindings.MYCO_ORIGIN === undefined || bindings.MYCO_ORIGIN === '' ? {} : { origin: bindings.MYCO_ORIGIN }),
