@@ -105,8 +105,8 @@ export function sqliteStoreMaintenance(sqlite: Database): StoreMaintenancePort {
   };
   return {
     support: {
-      optimize: { supported: true, label: 'SQLite optimize' },
-      integrity: { supported: true, label: 'SQLite integrity check and foreign key check' },
+      optimize: { supported: true, label: 'Refreshes the statistics queries are planned from' },
+      integrity: { supported: true, label: 'Checks every table, index and page, and every link between records' },
     },
     exclusivity: { kind: 'serving-owner', holder: crypto.randomUUID() },
     run,

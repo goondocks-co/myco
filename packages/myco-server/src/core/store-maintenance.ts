@@ -319,7 +319,7 @@ export async function runMaintenance(
 }
 
 const alreadyRunning = (check: MaintenanceCheck): RunAnswer =>
-  ({ outcome: 'refused', refusal: 'already_running', reason: `a ${check} run is already in progress` });
+  ({ outcome: 'refused', refusal: 'already_running', reason: `an ${check} run is already in progress` });
 
 /** What an owner is told about one check. */
 export interface MaintenanceCheckStatus {

@@ -114,6 +114,7 @@ describe('housekeeping on the Operations page', () => {
         reads++;
         return reads === 1 ? new Response(null, { status: 503 }) : Response.json(progress);
       },
+      '/api/maintenance': () => Response.json({ checks: [] }),
     });
     mount('/operations');
     expect(await screen.findByText(/could not report on the backfill/)).toBeTruthy();
@@ -331,5 +332,72 @@ describe('automatic recovery on the Operations page', () => {
     // A producer whose attempts are numbered still names the number.
     expect(latestWords({ ...base, latest: { ...latest, attempt: 7 } } as never)).toContain('Attempt 7');
     expect(latestWords({ ...base, latest: { ...latest, attempt: 7 } } as never)).toContain('staged everything it named');
+  });
+});
+
+describe('store maintenance on the Operations page', () => {
+  const hostedStatus = {
+    checks: [
+      {
+        check: 'optimize', support: { supported: true, label: 'Refreshes the statistics queries are planned from' },
+        cadence: { state: 'not_configured', leaf: 'maintenance.auto_optimize' }, dueAt: null, running: false, latest: null,
+      },
+      {
+        check: 'integrity', support: { supported: true, label: 'A quick check of every table and index, and of every link between records' },
+        cadence: { state: 'on', intervalHours: 168 }, dueAt: 0, running: false,
+        latest: {
+          runId: 'r1', trigger: 'schedule', state: 'findings', startedAt: 0, finishedAt: 1, errorClass: null,
+          findings: ['foreign key: smoke_child row 1 names a missing smoke_parent'], findingsOmitted: 2,
+          measurements: [
+            { name: 'size', state: 'measured', value: 2 * 1024 * 1024, unit: 'bytes' },
+            { name: 'daily_quota', state: 'unavailable', reason: 'reported only by account analytics' },
+          ],
+        },
+      },
+    ],
+  };
+
+  it('shows each check\'s findings, what it could not measure, and an unset schedule as unset', async () => {
+    server({
+      '/auth/me': () => Response.json(ME),
+      '/api/projects': () => Response.json(PROJECTS),
+      '/api/maintenance': () => Response.json(hostedStatus),
+    });
+    mount('/operations');
+    const integrity = await screen.findByTestId('maintenance-integrity');
+    expect(within(integrity).getByText('foreign key: smoke_child row 1 names a missing smoke_parent')).toBeTruthy();
+    expect(within(integrity).getByText('…and 2 more not kept')).toBeTruthy();
+    expect(within(integrity).getByText('Unavailable — reported only by account analytics')).toBeTruthy();
+    expect(within(integrity).getByText('2.0 MB')).toBeTruthy();
+    const optimize = screen.getByTestId('maintenance-optimize');
+    expect(within(optimize).getByText('Never run.')).toBeTruthy();
+    expect(within(optimize).getByText(/Automatic runs are not set up/)).toBeTruthy();
+  });
+
+  it('runs a check on the button and shows a refusal in the server\'s words', async () => {
+    const { requested } = server({
+      '/auth/me': () => Response.json(ME),
+      '/api/projects': () => Response.json(PROJECTS),
+      '/api/maintenance': () => Response.json(hostedStatus),
+      '/api/maintenance/optimize/run': () => Response.json({ error: 'refused', refusal: 'already_running', reason: 'an optimize run is already in progress' }, { status: 409 }),
+    });
+    mount('/operations');
+    const optimize = await screen.findByTestId('maintenance-optimize');
+    fireEvent.click(within(optimize).getByRole('button', { name: 'Run now' }));
+    expect(await within(optimize).findByRole('alert')).toBeTruthy();
+    expect(within(optimize).getByRole('alert').textContent).toBe('an optimize run is already in progress');
+    expect(requested).toContain('POST /api/maintenance/optimize/run');
+  });
+
+  it('offers no run for a check this server cannot perform', async () => {
+    server({
+      '/auth/me': () => Response.json(ME),
+      '/api/projects': () => Response.json(PROJECTS),
+      '/api/maintenance': () => Response.json({ checks: [{ check: 'integrity', support: { supported: false, reason: 'this Deployment has no store maintenance' }, cadence: { state: 'off' }, dueAt: null, running: false, latest: null }] }),
+    });
+    mount('/operations');
+    const integrity = await screen.findByTestId('maintenance-integrity');
+    expect(within(integrity).getByText('Not available on this server: this Deployment has no store maintenance.')).toBeTruthy();
+    expect(within(integrity).queryByRole('button')).toBeNull();
   });
 });

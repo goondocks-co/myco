@@ -65,8 +65,8 @@ export function d1StoreMaintenance(db: D1Like): StoreMaintenancePort {
   };
   return {
     support: {
-      optimize: { supported: true, label: 'D1 optimize' },
-      integrity: { supported: true, label: 'D1 quick check and foreign key check' },
+      optimize: { supported: true, label: 'Refreshes the statistics queries are planned from' },
+      integrity: { supported: true, label: 'A quick check of every table and index, and of every link between records' },
     },
     exclusivity: { kind: 'platform-limit', statementLimitMs: D1_QUERY_LIMIT_MS, statements: D1_STATEMENTS },
     run,
