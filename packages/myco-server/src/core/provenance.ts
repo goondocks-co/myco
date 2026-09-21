@@ -19,7 +19,8 @@
 import type { RelationalStore } from './adapters.js';
 import type { ReadScope } from '../read/scope.js';
 
-export const RELEASE_NAMESPACES = ['spore', 'skill', 'session', 'plan'] as const;
+/** The namespaces 1.x wrote and the search and embedding reads join on (`read/search.ts` `namespace`), so one row answers all three. */
+export const RELEASE_NAMESPACES = ['sessions', 'prompt_batches', 'spores', 'plans', 'skill_records'] as const;
 export type ReleaseNamespace = (typeof RELEASE_NAMESPACES)[number];
 
 export const isReleaseNamespace = (value: unknown): value is ReleaseNamespace =>

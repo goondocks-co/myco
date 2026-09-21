@@ -104,7 +104,7 @@ const harnessEventOf = (input: NormalizedHookInput): string | undefined =>
  * GUI-launched agent inherits no `MYCO_HOME` from any shell; the home comes
  * from the project's `.myco/runtime.home` pin, found by walking up from here.
  */
-function hookCwd(input: NormalizedHookInput): string {
+export function hookCwd(input: NormalizedHookInput): string {
   const named = input.raw.cwd;
   if (typeof named !== 'string' || named.length === 0) return process.cwd();
   try {

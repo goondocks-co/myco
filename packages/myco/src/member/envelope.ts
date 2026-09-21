@@ -250,11 +250,12 @@ function toolCallPayload(ctx: EnvelopeContext, input: NormalizedHookInput, opts:
 // ---------------------------------------------------------------------------
 
 export function sessionStartEvent(ctx: EnvelopeContext, facts: {
-  branch?: string; startedAt?: number; originPath?: string; parentSessionId?: string; parentReason?: string;
+  branch?: string; headSha?: string; startedAt?: number; originPath?: string; parentSessionId?: string; parentReason?: string;
 }): OutboundEvent {
   return envelope(ctx, 'session.start', {
     agent: trunc(ctx.agent, BOUNDS.agent),
     branch: trunc(facts.branch, BOUNDS.branch),
+    headSha: facts.headSha,
     startedAt: facts.startedAt,
     originPath: facts.originPath === undefined ? undefined : trunc(homeRelativePath(facts.originPath), BOUNDS.originPath),
     parentSessionId: facts.parentSessionId,
@@ -262,8 +263,8 @@ export function sessionStartEvent(ctx: EnvelopeContext, facts: {
   });
 }
 
-export function sessionEndEvent(ctx: EnvelopeContext, facts: { endedAt?: number } = {}): OutboundEvent {
-  return envelope(ctx, 'session.end', { endedAt: facts.endedAt ?? (ctx.now ?? Date.now)() });
+export function sessionEndEvent(ctx: EnvelopeContext, facts: { endedAt?: number; headSha?: string } = {}): OutboundEvent {
+  return envelope(ctx, 'session.end', { endedAt: facts.endedAt ?? (ctx.now ?? Date.now)(), headSha: facts.headSha });
 }
 
 export function promptEvent(ctx: EnvelopeContext, facts: {

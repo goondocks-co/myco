@@ -2,8 +2,8 @@ import fs from 'node:fs';
 import { evaluateSessionCaptureRules } from './capture-rules.js';
 import { readTranscriptMeta } from './transcript-meta.js';
 import { AntigravityJsonlParser } from '../symbionts/parsers/antigravity-jsonl.js';
-import { runGit } from '../utils/git.js';
-import { runMemberHook, type HookMainOptions, type HookRun } from '../member/capture.js';
+import { gitFacts } from '../member/git-facts.js';
+import { hookCwd, runMemberHook, type HookMainOptions, type HookRun } from '../member/capture.js';
 import { deriveId, promptEvent, sessionStartEvent, type OutboundEvent } from '../member/envelope.js';
 import { servedOnce } from '../member/recall.js';
 import { compactionStart, recordCompaction, sessionContextRequest } from '../member/compaction.js';
@@ -73,16 +73,12 @@ export async function main(opts: HookMainOptions = {}) {
       return { events: [] };
     }
 
-    let branch: string | undefined;
-    let remote: string | undefined;
-    try {
-      branch = runGit(['rev-parse', '--abbrev-ref', 'HEAD'], process.cwd());
-      remote = runGit(['remote', 'get-url', 'origin'], process.cwd()) || undefined;
-    } catch { /* not a git repo */ }
+    const git = gitFacts(hookCwd(input));
 
     const lineage = sessionLineage(agent, sessionId, transcriptPath);
     const events: OutboundEvent[] = [sessionStartEvent(ctx, {
-      branch,
+      branch: git.branch,
+      headSha: git.headSha,
       startedAt: run.now(),
       originPath: typeof input.raw.cwd === 'string' && input.raw.cwd.length > 0 ? input.raw.cwd : process.cwd(),
       parentSessionId: lineage?.parentSessionId,
@@ -112,7 +108,7 @@ export async function main(opts: HookMainOptions = {}) {
       events,
       // A symbiont whose harness discards a SessionStart answer is asked for
       // nothing: the call would spend the hook's budget on a block nobody reads.
-      context: HOOK_CONFIG[agent]?.capabilities.sessionStartInjection === true ? recall(sessionId, branch, remote) : undefined,
+      context: HOOK_CONFIG[agent]?.capabilities.sessionStartInjection === true ? recall(sessionId, git.branch, git.remote) : undefined,
       record: captured.length === 0 && !compacted ? undefined : (state) => {
         if (compacted) recordCompaction(state);
         for (const [hash, promptId] of captured) {

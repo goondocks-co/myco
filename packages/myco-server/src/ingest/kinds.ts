@@ -96,6 +96,7 @@ export const KINDS: readonly KindSpec[] = [
     fields: {
       agent: str(64, 'agent', true),
       branch: str(256, 'branch'),
+      headSha: str(40),
       startedAt: time('started_at'),
       originPath: str(1024, 'origin_path'),
       parentSessionId: { bound: { type: 'sessionId' }, column: 'parent_session_id' },
@@ -103,7 +104,7 @@ export const KINDS: readonly KindSpec[] = [
     },
     projection: 'sessions',
   },
-  { name: 'session.end', fields: { endedAt: time('ended_at') }, projection: 'sessions' },
+  { name: 'session.end', fields: { endedAt: time('ended_at'), headSha: str(40) }, projection: 'sessions' },
   {
     name: 'prompt',
     fields: {
