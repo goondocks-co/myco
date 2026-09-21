@@ -12,9 +12,13 @@
  * unavailable. When a limit is actually reached, D1 refuses the query in documented words, which
  * `classifyD1Error` names.
  *
- * A D1 statement cannot be cancelled once sent: a timer that gave up on it would release the claim while the
- * statement still ran. The check therefore sets no timer. Each statement is bounded by D1's own per-query
- * limits, and the claim is held for the longest invocation that can carry it.
+ * A D1 statement cannot be cancelled once sent, so the check sets no timer of its own. D1 ends every query
+ * within 30 seconds (https://developers.cloudflare.com/d1/platform/limits/), and a check sends a fixed number of
+ * statements one after another, so its work is over by that many limits after its claim; that is its bound.
+ *
+ * `quick_check` reports at most 100 problems by SQLite's own default. `foreign_key_check` has no documented
+ * bounded form on D1, and D1 refuses at commit any write that would leave a foreign key dangling, so rows reach
+ * it only from a store that arrived damaged.
  */
 import type { MaintenanceCheck, PortResult, StoreMaintenancePort, StoreMeasurement } from '../../core/store-maintenance.js';
 
@@ -23,12 +27,10 @@ interface D1Like {
   prepare(sql: string): { all<T>(): Promise<{ results: T[]; meta?: { size_after?: number } }> };
 }
 
-/**
- * How long a hosted claim stays exclusive: the longest a Worker invocation that runs a check may live — an alarm
- * or scheduled wake is limited to fifteen minutes of wall time — with margin. A claim whose invocation died is
- * free again after it.
- */
-export const HOSTED_CLAIM_MS = 20 * 60_000;
+/** D1's maximum SQL query duration. */
+export const D1_QUERY_LIMIT_MS = 30_000;
+/** The statements each check sends, in sequence. */
+export const D1_STATEMENTS: Readonly<Record<MaintenanceCheck, number>> = { optimize: 1, integrity: 2 };
 
 export const SIZE_LIMIT_UNAVAILABLE =
   'the plan\'s database size limit is not readable from the Worker (500 MB on Workers Free, 10 GB on Workers Paid)';
@@ -66,7 +68,7 @@ export function d1StoreMaintenance(db: D1Like): StoreMaintenancePort {
       optimize: { supported: true, label: 'D1 optimize' },
       integrity: { supported: true, label: 'D1 quick check and foreign key check' },
     },
-    claimMs: { optimize: HOSTED_CLAIM_MS, integrity: HOSTED_CLAIM_MS },
+    exclusivity: { kind: 'platform-limit', statementLimitMs: D1_QUERY_LIMIT_MS, statements: D1_STATEMENTS },
     run,
   };
 }

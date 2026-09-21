@@ -9,8 +9,9 @@
  * What a target can do is its port's declaration, never inferred: a check the port does not support is stated as
  * unavailable with its reason, and a measurement the target has no source for is unavailable rather than zero.
  *
- * Exclusivity is the claim. A claim carries an expiry past the port's own bound, and a completion lands only on
- * the claim that made it, so a run that outlived its claim can never overwrite a newer one.
+ * One check runs at a time on a Deployment. How that is held depends on what bounds the work on the target, which
+ * its port declares (`Exclusivity`). A completion lands only on the record its own run created, so no run ever
+ * replaces the outcome of a newer one.
  */
 import type { ServerEnv } from './adapters.js';
 import type { PowerState } from './power.js';
@@ -58,22 +59,32 @@ export type MeasurementName = 'size' | 'reclaimable' | 'size_limit' | 'daily_quo
 export interface PortResult {
   findings: string[];
   measurements: StoreMeasurement[];
-  /** Set when the check stopped at its own bound before covering the store: what it did not reach. Recorded as a `timeout` failure. */
-  incomplete?: string;
 }
 
 export type CheckSupport = { supported: true; label: string } | { supported: false; reason: string };
 
 /**
- * One target's store maintenance.
+ * How a target keeps one check running at a time.
  *
- * `claimMs` is how long a claim on this target must stay exclusive: the port's own bound on a check plus whatever
- * the target cannot interrupt once started. A target whose operation cannot be cancelled declares the lifetime
- * of the invocation that carries it, so exclusivity outlasts the work rather than a timer.
+ * `serving-owner`: the port belongs to the one process that serves the store for its whole lifetime, so the
+ * port's own record of the work it has in flight is the whole truth. A check is running exactly while this
+ * process has it in flight, however long that takes, and a running record another holder left behind is dead.
+ *
+ * `platform-limit`: every statement ends within the platform's own `statementLimitMs`, and a run sends a fixed
+ * number in sequence — the check's own `statements` and the two its claim writes and reads back — so its work is
+ * over by that many limits after the claim is written. A running record is live until then.
  */
+export type Exclusivity =
+  | { kind: 'serving-owner'; holder: string }
+  | { kind: 'platform-limit'; statementLimitMs: number; statements: Readonly<Record<MaintenanceCheck, number>> };
+
+/** The statements a claim sends before the check's own: the conditional write and its read-back. */
+export const CLAIM_STATEMENTS = 2;
+
+/** One target's store maintenance: what it supports, how it holds a check exclusive, and the work. */
 export interface StoreMaintenancePort {
   support: Readonly<Record<MaintenanceCheck, CheckSupport>>;
-  claimMs: Readonly<Record<MaintenanceCheck, number>>;
+  exclusivity: Exclusivity;
   run(check: MaintenanceCheck): Promise<PortResult>;
 }
 
@@ -88,7 +99,10 @@ export interface MaintenanceOutcome {
   trigger: MaintenanceTrigger;
   state: OutcomeState;
   startedAt: number;
-  claimExpiresAt: number;
+  /** For a `platform-limit` target, when the run's work is over at the latest, counted from the write of its claim; null on a `serving-owner` target. */
+  claimExpiresAt: number | null;
+  /** The serving process that ran it, on a `serving-owner` target. */
+  holder: string | null;
   finishedAt: number | null;
   /** The named cause when `state` is `failed`. */
   errorClass: string | null;
@@ -103,8 +117,9 @@ export interface MaintenanceOutcome {
 /** Why a run did not start. */
 export type MaintenanceRefusal = 'unsupported' | 'not_configured' | 'already_running' | 'not_due';
 
+/** `recorded` is false when the run's own record had been replaced before it finished, and the newer record stands. */
 export type RunAnswer =
-  | { outcome: 'ran'; record: MaintenanceOutcome }
+  | { outcome: 'ran'; record: MaintenanceOutcome; recorded: boolean }
   | { outcome: 'refused'; refusal: MaintenanceRefusal; reason: string };
 
 /**
@@ -154,21 +169,32 @@ export async function latestOutcome(env: Pick<ServerEnv, 'db'>, check: Maintenan
   return parseOutcome(row?.value);
 }
 
-/** Whether the outcome still holds its claim: running, and inside its expiry. */
-export const claimLive = (outcome: MaintenanceOutcome | null, now: number): boolean =>
-  outcome !== null && outcome.state === 'running' && outcome.claimExpiresAt > now;
+/** Checks in flight in this process, per serving-owner port: the port is made once per serving process. */
+const inFlight = new WeakMap<StoreMaintenancePort, Set<MaintenanceCheck>>();
 
-/** When a configured check next falls due: the last claim's start plus the interval, or now when it never ran. */
+function inFlightOf(port: StoreMaintenancePort): Set<MaintenanceCheck> {
+  let held = inFlight.get(port);
+  if (held === undefined) { held = new Set(); inFlight.set(port, held); }
+  return held;
+}
+
+/** Whether a check is running now, by the port's own exclusivity. */
+export function checkRunning(port: StoreMaintenancePort, latest: MaintenanceOutcome | null, check: MaintenanceCheck, now: number): boolean {
+  if (port.exclusivity.kind === 'serving-owner') return inFlightOf(port).has(check);
+  return latest !== null && latest.state === 'running' && latest.claimExpiresAt !== null && latest.claimExpiresAt > now;
+}
+
+/** When a configured check next falls due: the last run's start plus the interval, or now when it never ran. */
 export function dueAt(cadence: Cadence, latest: MaintenanceOutcome | null, now: number): number | null {
   if (cadence.state !== 'on') return null;
   return latest === null ? now : latest.startedAt + cadence.intervalHours * HOUR_MS;
 }
 
 /**
- * Whether the clock should run this check now: supported, configured, not held by a live claim, and due.
+ * Whether the clock should run this check now: supported, configured, not running, and due.
  *
- * A run that failed consumed its interval exactly as one that succeeded did, so a check that cannot succeed at
- * this depth is not due again until its next interval and never holds the Deployment awake in between.
+ * A run that failed consumed its interval exactly as one that succeeded did, so a check that cannot succeed is
+ * not due again until its next interval and never holds the Deployment awake in between.
  */
 export async function maintenanceDue(env: ServerEnv, check: MaintenanceCheck, now: number): Promise<boolean> {
   const port = env.storeMaintenance;
@@ -176,7 +202,7 @@ export async function maintenanceDue(env: ServerEnv, check: MaintenanceCheck, no
   const cadence = await cadenceOf(env, check);
   if (cadence.state !== 'on') return false;
   const latest = await latestOutcome(env, check);
-  if (claimLive(latest, now)) return false;
+  if (checkRunning(port, latest, check, now)) return false;
   const due = dueAt(cadence, latest, now);
   return due !== null && now >= due;
 }
@@ -189,28 +215,33 @@ export async function anyMaintenanceDue(env: ServerEnv, now: number): Promise<bo
 }
 
 /**
- * Claims a check for one run in a single conditional write.
+ * Records a new run in a single conditional write and answers whether this run holds the record.
  *
- * The row is replaced only when no live claim holds it and, for a scheduled run, only when the interval has
- * passed since the last claim's start. Two wakes, or a wake and an owner, racing for the same check therefore
- * claim it once: the loser's write matches no row and it reads back a run id that is not its own.
+ * For a scheduled run the write lands only when the interval has passed after the last run's start; on a
+ * `platform-limit` target it also lands only when no running record is inside its bound. Two wakes, or a wake and
+ * an owner, racing for the same check therefore start it once: the loser's write matches nothing and it reads
+ * back a run id that is not its own.
  */
-async function claim(env: ServerEnv, record: MaintenanceOutcome, notBefore: number | null): Promise<boolean> {
+async function claim(env: ServerEnv, record: MaintenanceOutcome, notBefore: number | null, claimedAt: number, bounded: boolean): Promise<boolean> {
   const key = metaKey(record.check);
-  const cadenceGate = notBefore === null ? '' : ` AND CAST(json_extract(value, '$.startedAt') AS INTEGER) > ?`;
-  await env.db.prepare(
-    `INSERT OR REPLACE INTO schema_meta (key, value)
-       SELECT ?, ?
-        WHERE NOT EXISTS (
-          SELECT 1 FROM schema_meta
-           WHERE key = ?
-             AND ((json_extract(value, '$.state') = 'running' AND CAST(json_extract(value, '$.claimExpiresAt') AS INTEGER) > ?)${cadenceGate === '' ? '' : ` OR (1${cadenceGate})`}))`,
-  ).bind(key, JSON.stringify(record), key, record.startedAt, ...(notBefore === null ? [] : [notBefore])).run();
+  const blockers: string[] = [];
+  const params: unknown[] = [];
+  if (bounded) {
+    blockers.push(`(json_extract(value, '$.state') = 'running' AND CAST(json_extract(value, '$.claimExpiresAt') AS INTEGER) > ?)`);
+    params.push(claimedAt);
+  }
+  if (notBefore !== null) {
+    blockers.push(`CAST(json_extract(value, '$.startedAt') AS INTEGER) > ?`);
+    params.push(notBefore);
+  }
+  const gate = blockers.length === 0 ? '' : ` WHERE NOT EXISTS (SELECT 1 FROM schema_meta WHERE key = ? AND (${blockers.join(' OR ')}))`;
+  await env.db.prepare(`INSERT OR REPLACE INTO schema_meta (key, value) SELECT ?, ?${gate}`)
+    .bind(key, JSON.stringify(record), ...(gate === '' ? [] : [key, ...params])).run();
   const held = await latestOutcome(env, record.check);
   return held?.runId === record.runId;
 }
 
-/** Records a finished run, only over the claim that run made. Answers whether the record landed. */
+/** Records a finished run, only over the record that run created. Answers whether it landed. */
 async function complete(env: ServerEnv, record: MaintenanceOutcome): Promise<boolean> {
   const result = await env.db.prepare(
     `UPDATE schema_meta SET value = ? WHERE key = ? AND json_extract(value, '$.runId') = ?`,
@@ -218,7 +249,8 @@ async function complete(env: ServerEnv, record: MaintenanceOutcome): Promise<boo
   return result.meta.changes === 1;
 }
 
-function boundFindings(findings: readonly string[]): { findings: string[]; findingsOmitted: number } {
+/** At most `MAX_FINDINGS` findings of at most `MAX_FINDING_CHARS` each; the count beyond is kept as a number. */
+export function boundFindings(findings: readonly string[]): { findings: string[]; findingsOmitted: number } {
   return {
     findings: findings.slice(0, MAX_FINDINGS).map((f) => (f.length > MAX_FINDING_CHARS ? `${f.slice(0, MAX_FINDING_CHARS)}…` : f)),
     findingsOmitted: Math.max(0, findings.length - MAX_FINDINGS),
@@ -229,8 +261,9 @@ function boundFindings(findings: readonly string[]): { findings: string[]; findi
  * Runs one check: the clock's job and the owner's request both come here.
  *
  * A scheduled run is refused unless the check is configured and due; an owner's run skips the cadence but never
- * the claim. The port's failure is recorded under its named class; nothing is recorded as healthy that the store
- * did not answer.
+ * exclusivity. On a `serving-owner` target the in-flight mark is taken before the first await, so two callers in
+ * the serving process cannot both pass it, and it is released only when the port's work has settled. The port's
+ * failure is recorded under its named class; nothing is recorded as healthy that the store did not answer.
  */
 export async function runMaintenance(
   env: ServerEnv, check: MaintenanceCheck, trigger: MaintenanceTrigger, now: number,
@@ -240,56 +273,53 @@ export async function runMaintenance(
   if (port === undefined) return { outcome: 'refused', refusal: 'unsupported', reason: 'this Deployment has no store maintenance' };
   const support = port.support[check];
   if (!support.supported) return { outcome: 'refused', refusal: 'unsupported', reason: support.reason };
-
-  let notBefore: number | null = null;
-  if (trigger === 'schedule') {
-    const cadence = await cadenceOf(env, check);
-    if (cadence.state !== 'on') {
-      return { outcome: 'refused', refusal: 'not_configured', reason: cadence.state === 'off' ? `automatic ${check} is off` : `${cadence.leaf} is ${cadence.state === 'invalid' ? 'invalid' : 'not set'}` };
-    }
-    notBefore = now - cadence.intervalHours * HOUR_MS;
-  }
-
-  const record: MaintenanceOutcome = {
-    runId: crypto.randomUUID(), check, trigger, state: 'running', startedAt: now,
-    claimExpiresAt: now + port.claimMs[check], finishedAt: null, errorClass: null,
-    findings: [], findingsOmitted: 0, measurements: [], powerState: options.powerState ?? null,
-  };
-  if (!(await claim(env, record, notBefore))) {
-    const held = await latestOutcome(env, check);
-    return claimLive(held, now)
-      ? { outcome: 'refused', refusal: 'already_running', reason: `a ${check} run is already in progress` }
-      : { outcome: 'refused', refusal: 'not_due', reason: `${check} is not due yet` };
-  }
-
-  const clock = options.clock ?? (() => Date.now());
-  let finished: MaintenanceOutcome;
+  const exclusivity = port.exclusivity;
+  const running = exclusivity.kind === 'serving-owner' ? inFlightOf(port) : null;
+  if (running?.has(check)) return alreadyRunning(check);
+  running?.add(check);
   try {
-    const result = await port.run(check);
-    const bounded = boundFindings(result.findings);
-    finished = result.incomplete === undefined
-      ? { ...record, ...bounded, measurements: result.measurements, finishedAt: clock(), state: result.findings.length === 0 ? 'healthy' : 'findings' }
-      : { ...record, ...boundFindings([...result.findings, result.incomplete]), measurements: result.measurements, finishedAt: clock(), state: 'failed', errorClass: 'timeout' };
-  } catch (err) {
-    finished = { ...record, state: 'failed', finishedAt: clock(), errorClass: maintenanceErrorClass(err, env) };
+    let notBefore: number | null = null;
+    if (trigger === 'schedule') {
+      const cadence = await cadenceOf(env, check);
+      if (cadence.state !== 'on') {
+        return { outcome: 'refused', refusal: 'not_configured', reason: cadence.state === 'off' ? `automatic ${check} is off` : `${cadence.leaf} is ${cadence.state === 'invalid' ? 'invalid' : 'not set'}` };
+      }
+      notBefore = now - cadence.intervalHours * HOUR_MS;
+    }
+    const clock = options.clock ?? (() => Date.now());
+    const claimedAt = clock();
+    const record: MaintenanceOutcome = {
+      runId: crypto.randomUUID(), check, trigger, state: 'running', startedAt: now,
+      claimExpiresAt: exclusivity.kind === 'platform-limit'
+        ? claimedAt + (exclusivity.statements[check] + CLAIM_STATEMENTS) * exclusivity.statementLimitMs
+        : null,
+      holder: exclusivity.kind === 'serving-owner' ? exclusivity.holder : null,
+      finishedAt: null, errorClass: null, findings: [], findingsOmitted: 0, measurements: [], powerState: options.powerState ?? null,
+    };
+    if (!(await claim(env, record, notBefore, claimedAt, exclusivity.kind === 'platform-limit'))) {
+      const held = await latestOutcome(env, check);
+      return exclusivity.kind === 'platform-limit' && checkRunning(port, held, check, claimedAt)
+        ? alreadyRunning(check)
+        : { outcome: 'refused', refusal: 'not_due', reason: `${check} is not due yet` };
+    }
+    let finished: MaintenanceOutcome;
+    try {
+      const result = await port.run(check);
+      finished = {
+        ...record, ...boundFindings(result.findings), measurements: result.measurements, finishedAt: clock(),
+        state: result.findings.length === 0 ? 'healthy' : 'findings',
+      };
+    } catch (err) {
+      finished = { ...record, state: 'failed', finishedAt: clock(), errorClass: classify(err, env.platform?.classifyError) };
+    }
+    return { outcome: 'ran', record: finished, recorded: await complete(env, finished) };
+  } finally {
+    running?.delete(check);
   }
-  // A completion that finds its claim replaced leaves the newer record standing; the answer still reports this run.
-  await complete(env, finished);
-  return { outcome: 'ran', record: finished };
 }
 
-/** A port's timeout, named so the recorded class says what happened rather than `unknown`. */
-export class MaintenanceTimeoutError extends Error {
-  constructor(readonly check: MaintenanceCheck, readonly afterMs: number) {
-    super(`${check} did not finish within ${afterMs} ms`);
-    this.name = 'MaintenanceTimeoutError';
-  }
-}
-
-function maintenanceErrorClass(err: unknown, env: ServerEnv): string {
-  if (err instanceof MaintenanceTimeoutError) return 'timeout';
-  return classify(err, env.platform?.classifyError);
-}
+const alreadyRunning = (check: MaintenanceCheck): RunAnswer =>
+  ({ outcome: 'refused', refusal: 'already_running', reason: `a ${check} run is already in progress` });
 
 /** What an owner is told about one check. */
 export interface MaintenanceCheckStatus {
@@ -310,7 +340,8 @@ export async function maintenanceStatus(env: ServerEnv, now: number): Promise<Ma
     const cadence = await cadenceOf(env, check);
     const latest = await latestOutcome(env, check);
     return {
-      check, support, cadence, latest, running: claimLive(latest, now),
+      check, support, cadence, latest,
+      running: port !== undefined && checkRunning(port, latest, check, now),
       dueAt: support.supported ? dueAt(cadence, latest, now) : null,
     };
   }));

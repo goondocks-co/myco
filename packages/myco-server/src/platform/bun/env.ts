@@ -115,7 +115,7 @@ export function serverEnvFromBunConfig(config: BunServerConfig): BunServerEnv {
     platform: bunPlatform(config),
     ...(config.harnessLaunch === undefined ? {} : { harnessLaunch: config.harnessLaunch }),
     ...(config.recovery === undefined ? {} : { recovery: config.recovery }),
-    storeMaintenance: sqliteStoreMaintenance(config.sqlite),
+    ...(config.sqlite === undefined || config.sqlite === null ? {} : { storeMaintenance: sqliteStoreMaintenance(config.sqlite) }),
     ...(config.harnessTasks === undefined ? {} : { harnessTasks: config.harnessTasks }),
     ...(config.origin === undefined || config.origin === '' ? {} : { origin: config.origin }),
     ...(config.fleet === undefined || !Number.isInteger(config.fleet) || config.fleet < 1 ? {} : { fleet: config.fleet }),
