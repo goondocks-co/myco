@@ -150,6 +150,12 @@ export const SERVER_JOBS: readonly ServerJob[] = [
     runsThrough: 'idle',
     converges: 'no raw transcript segment behind the parse cursor outlives the Deployment window, and no blob any row still references is removed while no blob nothing references is kept; a segment inside the window or ahead of the cursor, and every derived row, is never pruned',
   },
+  // #1274 — release provenance
+  {
+    name: 'release-provenance-reconcile',
+    runsThrough: 'sleep',
+    converges: "every enabled Project is checked once its reconcile interval has passed or its owner asked, within its GitHub lookup budget: each captured session commit's release state reflects the refs it was checked against, a released state is never rewritten, and a check that cannot reach GitHub changes no state and records why on the Project",
+  },
 ];
 
 /** A job declared for a state, awaiting the child that gives it work. Nothing runs it; naming the owner keeps the table honest. */
@@ -159,7 +165,6 @@ export interface DeferredJob extends ServerJob {
 
 /** Declared with #919's engine, not yet given an implementation; a tick never sees these. */
 export const DEFERRED_JOBS: readonly DeferredJob[] = [
-  { name: 'release-provenance-reconcile', runsThrough: 'sleep', converges: 'every release-state row reflects the git state it was checked against', owner: '#919' },
 ];
 
 const JOB_BY_NAME = new Map(SERVER_JOBS.map((j) => [j.name, j]));

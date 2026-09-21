@@ -181,7 +181,7 @@ export function basenameOf(path: unknown): string | null {
 const COMMIT_SHA = /^[0-9a-f]{40}$/;
 
 /**
- * The commit a session was on, as the git provenance release reconciliation
+ * The commit a session stood on, as the git provenance release reconciliation
  * reads: one row per session and capture point. The earliest start and the
  * latest end win, so the rows converge in any delivery order; a value that is
  * not a full commit SHA writes nothing.

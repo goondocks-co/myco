@@ -9,61 +9,7 @@ import {
   classifyCommit, memoizedCompare, newestPerLine, resolveRunRefs, MAX_RELEASE_LINES, type ReleaseRefConfig,
 } from '@myco-server-worker/core/release-classify.js';
 
-const sha = (c: string) => c.repeat(40);
-const A = sha('a'); // in v1.2.0 (package a) and main
-const B = sha('b'); // in main only
-const C = sha('c'); // squashed: head diverged, merge commit M in v1.2.0
-const M = sha('d');
-const D = sha('e'); // on GitHub, in nothing
-const X = sha('f'); // in b/v2.0.0 only (package b)
-const MISSING = sha('9');
-
-interface Repo {
-  tags: string[];
-  /** ref -> commits it contains */
-  contains: Record<string, string[]>;
-  commits: string[];
-  pulls: Record<string, Array<{ number: number; merged_at: string | null; merge_commit_sha: string; base: { ref: string } }>>;
-  link?: string;
-}
-
-const REPO: Repo = {
-  tags: ['refs/tags/a/v1.1.0', 'refs/tags/a/v1.2.0', 'refs/tags/a/v1.2.0-rc.1', 'refs/tags/b/v2.0.0'],
-  contains: {
-    'refs/tags/a/v1.2.0': [A, M],
-    'refs/tags/a/v1.1.0': [],
-    'refs/tags/b/v2.0.0': [X],
-    main: [A, B, M],
-  },
-  commits: [A, B, C, M, D, X],
-  pulls: { [C]: [{ number: 7, merged_at: '2026-09-01T00:00:00Z', merge_commit_sha: M, base: { ref: 'main' } }] },
-};
-
-function fakeGithub(repo: Repo, calls: string[] = []): typeof fetch {
-  return (async (input: RequestInfo | URL) => {
-    const url = new URL(String(input));
-    const path = decodeURIComponent(url.pathname.replace('/repos/o/r', ''));
-    calls.push(path);
-    const json = (body: unknown, headers: Record<string, string> = {}) => new Response(JSON.stringify(body), { status: 200, headers });
-    if (path === '') return json({ default_branch: 'main' });
-    const listing = /^\/git\/matching-refs\/(.+)$/.exec(path);
-    if (listing) {
-      const prefix = `refs/${listing[1]}`;
-      return json(repo.tags.filter((t) => t.startsWith(prefix)).map((ref) => ({ ref })), repo.link ? { link: repo.link } : {});
-    }
-    const compare = /^\/compare\/([0-9a-f]{40})\.\.\.(.+)$/.exec(path);
-    if (compare) {
-      const [, commit, ref] = compare;
-      if (!repo.commits.includes(commit) || !(ref in repo.contains)) return new Response('{}', { status: 404 });
-      return json({ status: repo.contains[ref].includes(commit) ? 'ahead' : 'diverged' });
-    }
-    const pulls = /^\/commits\/([0-9a-f]{40})\/pulls$/.exec(path);
-    if (pulls) return json(repo.pulls[pulls[1]] ?? []);
-    const commit = /^\/commits\/([0-9a-f]{40})$/.exec(path);
-    if (commit) return repo.commits.includes(commit[1]) ? json({ sha: commit[1] }) : new Response('{}', { status: 404 });
-    return new Response('{}', { status: 500 });
-  }) as typeof fetch;
-}
+import { A, B, C, D, M, MISSING, REPO, X, fakeGithub, sha, type Repo } from './helpers/github-fake.js';
 
 const CONFIG: ReleaseRefConfig = {
   productionRefs: ['refs/tags/a/v*', 'refs/tags/b/v*'],

@@ -1,3 +1,4 @@
+import { handleReleaseProvenance, handleRequestReleaseCheck, handleSaveReleaseProvenance } from './api/release-provenance.js';
 import { handleRepository, handleSaveRepository, handleRemoveRepository, handleRunRepository } from './api/repositories.js';
 import { handleProjectMap, handleRunMap } from './api/canopy.js';
 import { handleSkillCandidates, handleReviewSkillCandidate } from './api/skill-candidates.js';
@@ -226,6 +227,9 @@ export const ROUTES: readonly Route[] = [
   { method: 'GET', path: '/api/projects/{projectId}/repository', pattern: /^\/api\/projects\/(?<projectId>[A-Za-z0-9._-]{1,64})\/repository$/, auth: 'owner', handler: handleRepository },
   { method: 'PUT', path: '/api/projects/{projectId}/repository', pattern: /^\/api\/projects\/(?<projectId>[A-Za-z0-9._-]{1,64})\/repository$/, auth: 'owner', handler: handleSaveRepository },
   { method: 'DELETE', path: '/api/projects/{projectId}/repository', pattern: /^\/api\/projects\/(?<projectId>[A-Za-z0-9._-]{1,64})\/repository$/, auth: 'owner', handler: handleRemoveRepository },
+  { method: 'GET', path: '/api/projects/{projectId}/release-provenance', pattern: /^\/api\/projects\/(?<projectId>[A-Za-z0-9._-]{1,64})\/release-provenance$/, auth: 'owner', handler: handleReleaseProvenance },
+  { method: 'PUT', path: '/api/projects/{projectId}/release-provenance', pattern: /^\/api\/projects\/(?<projectId>[A-Za-z0-9._-]{1,64})\/release-provenance$/, auth: 'owner', handler: handleSaveReleaseProvenance },
+  { method: 'POST', path: '/api/projects/{projectId}/release-provenance/check', pattern: /^\/api\/projects\/(?<projectId>[A-Za-z0-9._-]{1,64})\/release-provenance\/check$/, auth: 'owner', handler: handleRequestReleaseCheck },
   { method: 'PUT', path: '/api/projects/{projectId}/capabilities/{capability}', pattern: /^\/api\/projects\/(?<projectId>[A-Za-z0-9._-]{1,64})\/capabilities\/(?<capability>[a-z_]{1,32})$/, auth: 'owner', handler: handleSetProjectCapability },
   { method: 'GET', path: '/auth/login', auth: 'auth', handler: handleLogin },
   { method: 'GET', path: '/auth/callback', auth: 'auth', handler: handleCallback },

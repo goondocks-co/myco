@@ -6,7 +6,7 @@
  * and a row written here read the same way.
  *
  * **Absence of evidence is never negative evidence.** `not_on_release_line`
- * is claimed only when every candidate ref was listed completely and checked.
+ * is claimed only when every candidate ref is listed completely and checked.
  * A truncated tag listing, or more release lines than one run checks, leaves
  * the answer `unknown`; a failed read — a rejected credential, a rate limit,
  * a timeout, a spent budget — is `unavailable`, which the caller answers by
@@ -84,12 +84,24 @@ export function pathMatchesGlob(path: string, glob: string): boolean {
   return path === glob || path.startsWith(`${glob}/`);
 }
 
+/**
+ * A captured path's repository-relative readings. A tool records the path it
+ * touched as the tool named it — absolute, home-relative or relative to where the
+ * agent ran — so every suffix at a directory boundary is a candidate, and a
+ * mapping matches when any of them does.
+ */
+function relativeReadings(path: string): string[] {
+  const parts = path.replace(/\\/g, '/').split('/').filter((p) => p !== '' && p !== '.' && p !== '~');
+  return parts.map((_, i) => parts.slice(i).join('/'));
+}
+
 /** The tag patterns a session's changed paths select; empty when nothing maps. */
 export function tagPatternsForChangedPaths(changedPaths: readonly string[], mappings: readonly PackageTagMapping[]): string[] {
   if (mappings.length === 0 || changedPaths.length === 0) return [];
   const matched = new Set<string>();
   for (const path of changedPaths) {
-    for (const mapping of mappings) if (pathMatchesGlob(path, mapping.pathGlob)) matched.add(mapping.tagPattern);
+    const readings = relativeReadings(path);
+    for (const mapping of mappings) if (readings.some((r) => pathMatchesGlob(r, mapping.pathGlob))) matched.add(mapping.tagPattern);
   }
   return [...matched];
 }
@@ -127,6 +139,8 @@ function newerFirst(a: Version, b: Version): number {
 
 export interface ResolvedPattern {
   pattern: string;
+  /** The object each checked ref points at, so a run can tell whether anything moved after a record's check. */
+  shas: string[];
   /** Newest tag per release line, newest line first. */
   refs: string[];
   /** False when the listing or the line bound left refs unchecked, so a miss proves nothing. */
@@ -156,11 +170,14 @@ export function newestPerLine(pattern: string, refs: readonly string[]): { refs:
 /** Resolve one configured production ref or pattern into the refs a run checks. One listing per pattern. */
 export async function resolveProductionRef(reads: GithubReads, configured: string): Promise<ResolvedPattern> {
   const pattern = qualifyTagRef(configured);
-  if (!/[*?]/.test(pattern)) return { pattern, refs: [pattern], complete: true };
-  const prefix = pattern.split(/[*?]/, 1)[0].replace(/^refs\//, '');
+  const prefix = (/[*?]/.test(pattern) ? pattern.split(/[*?]/, 1)[0] : pattern).replace(/^refs\//, '');
   const listed = await reads.matchingRefs(prefix);
-  if (!listed.ok) return { pattern, refs: [], complete: false, failure: listed.failure };
-  return { pattern, ...newestPerLine(pattern, listed.value) };
+  if (!listed.ok) return { pattern, refs: [], shas: [], complete: false, failure: listed.failure };
+  const sha = new Map(listed.value.map((r) => [r.ref, r.sha]));
+  const picked = /[*?]/.test(pattern)
+    ? newestPerLine(pattern, [...sha.keys()])
+    : { refs: sha.has(pattern) ? [pattern] : [], complete: true };
+  return { pattern, ...picked, shas: picked.refs.map((ref) => sha.get(ref) ?? '') };
 }
 
 /** A listing that failed for a reason retrying could fix; `truncated` and `not_found` are answers, not outages. */
@@ -169,13 +186,40 @@ export const isTransient = (failure: GithubFailure): boolean => failure !== 'tru
 export interface RunRefs {
   config: ReleaseRefConfig;
   production: ReadonlyMap<string, ResolvedPattern>;
+  /** The first failed read of an integration branch head, which makes every classification of the run unavailable. */
+  integrationFailure?: GithubFailure;
+  /**
+   * Every checked ref and the object it points at, in configuration order. A
+   * record classified under the same fingerprint cannot classify differently,
+   * so a run skips it; null when a read failed and nothing is established.
+   */
+  fingerprint: string | null;
 }
 
-/** Resolve every configured production ref once per run; sessions share the result. */
+/** Resolve every configured ref once per run; sessions share the result. */
 export async function resolveRunRefs(reads: GithubReads, config: ReleaseRefConfig): Promise<RunRefs> {
   const production = new Map<string, ResolvedPattern>();
-  for (const ref of config.productionRefs) production.set(qualifyTagRef(ref), await resolveProductionRef(reads, ref));
-  return { config, production };
+  const parts: string[] = [];
+  let failed = false;
+  for (const ref of config.productionRefs) {
+    const resolved = await resolveProductionRef(reads, ref);
+    production.set(resolved.pattern, resolved);
+    if (resolved.failure !== undefined && isTransient(resolved.failure)) failed = true;
+    parts.push(`${resolved.pattern}=${resolved.failure ?? resolved.refs.map((r, i) => `${r}@${resolved.shas[i]}`).join(',')}`);
+  }
+  let integrationFailure: GithubFailure | undefined;
+  for (const ref of config.integrationRefs) {
+    const branch = integrationBranch(ref);
+    const head = await reads.branchHead(branch);
+    if (!head.ok) {
+      integrationFailure ??= head.failure;
+      if (isTransient(head.failure)) failed = true;
+      parts.push(`${branch}@${head.failure}`);
+      continue;
+    }
+    parts.push(`${branch}@${head.value}`);
+  }
+  return { config, production, integrationFailure, fingerprint: failed ? null : parts.join('\n') };
 }
 
 export interface ClassifyInput {
@@ -222,7 +266,7 @@ const contains = (status: CompareStatus) => status === 'ahead' || status === 'id
  *
  * Production refs first, by direct ancestry and then by a merged pull
  * request's squash commit; then integration branches; then the negative
- * answer, and only when nothing was left unchecked.
+ * answer, and only when nothing is left unchecked.
  */
 export async function classifyCommit(
   reads: GithubReads,
@@ -236,6 +280,7 @@ export async function classifyCommit(
   if (config.productionRefs.length === 0 && config.integrationRefs.length === 0) {
     return classified('unreconciled', 'low', 'configuration', null, sha, 'No release refs configured', {});
   }
+  if (run.integrationFailure !== undefined && isTransient(run.integrationFailure)) return unavailable(run.integrationFailure);
 
   const patterns = tagPatternsForChangedPaths(input.changedPaths, config.packageMap);
   const selected = filterRefsByPackagePatterns(config.productionRefs.map(qualifyTagRef), patterns);

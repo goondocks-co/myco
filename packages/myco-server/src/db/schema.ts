@@ -1522,9 +1522,44 @@ const V45_STATEMENTS: readonly string[] = [
     ON CONFLICT(project_id, type, record_id) DO UPDATE SET revision = excluded.revision; END`,
 ];
 
+/**
+ * Schema v46: one Project's release provenance configuration and the outcome
+ * of its latest check.
+ *
+ * The eight per-repository `release_provenance.*` leaves live here, keyed on
+ * the Project, with the sealed reference to a credential whose one purpose is
+ * reading release tags and pull requests. The latest check is recorded beside
+ * them — when it started and finished, what it concluded and why it stopped —
+ * so a failed check is visible next to the states it left untouched.
+ */
+const V46_STATEMENTS: readonly string[] = [
+  `CREATE TABLE IF NOT EXISTS project_release_provenance (
+     project_id         TEXT NOT NULL PRIMARY KEY CHECK (${PROJECT_ID_GRAMMAR}) REFERENCES projects(project_id),
+     revision           TEXT NOT NULL,
+     enabled            INTEGER NOT NULL CHECK (enabled IN (0, 1)),
+     github_repo        TEXT,
+     production_refs    TEXT NOT NULL,
+     integration_refs   TEXT NOT NULL,
+     package_map        TEXT NOT NULL,
+     include_unknown    INTEGER NOT NULL CHECK (include_unknown IN (0, 1)),
+     max_lookups        INTEGER NOT NULL,
+     secret_slot        TEXT,
+     updated_at         INTEGER NOT NULL,
+     updated_by         TEXT NOT NULL,
+     check_requested_at INTEGER,
+     check_started_at   INTEGER,
+     check_finished_at  INTEGER,
+     check_status       TEXT,
+     check_failure      TEXT,
+     check_counts       TEXT,
+     check_lookups      INTEGER,
+     check_fingerprint  TEXT,
+     last_complete_at   INTEGER)`,
+];
+
 /** Ordered schema steps; each step's last statement stamps its version. A database at version n receives steps n+1 and later. Step 2 opens with two guard tables, ahead of every ADD COLUMN so a repaired database re-applies the step whole: one CHECK fails when an existing project id is out of grammar, the other when a session has no machine identity and the token that minted it has none to backfill from. The step aborts on the guard's insert and the applier records nothing. Identity binding reads `machine_id`, so a session that kept a NULL refuses every later write to itself; BREAK-GLASS.md carries the repair. */
 
-export const SCHEMA_STEPS: readonly SchemaStep[] = [withStamp(1, V1_STATEMENTS), withStamp(2, V2_STATEMENTS), withStamp(3, V3_STATEMENTS), withStamp(4, V4_STATEMENTS), withStamp(5, V5_STATEMENTS), withStamp(6, V6_STATEMENTS), withStamp(7, V7_STATEMENTS), withStamp(8, V8_STATEMENTS), withStamp(9, V9_STATEMENTS), withStamp(10, V10_STATEMENTS), withStamp(11, V11_STATEMENTS), withStamp(12, V12_STATEMENTS), withStamp(13, V13_STATEMENTS), withStamp(14, V14_STATEMENTS), withStamp(15, V15_STATEMENTS), withStamp(16, V16_STATEMENTS), withStamp(17, V17_STATEMENTS), withStamp(18, V18_STATEMENTS), withStamp(19, V19_STATEMENTS), withStamp(20, V20_STATEMENTS), withStamp(21, V21_STATEMENTS), withStamp(22, V22_STATEMENTS), withStamp(23, V23_STATEMENTS), withStamp(24, V24_STATEMENTS), withStamp(25, V25_STATEMENTS), withStamp(26, V26_STATEMENTS), withStamp(27, V27_STATEMENTS), withStamp(28, V28_STATEMENTS), withStamp(29, V29_STATEMENTS), withStamp(30, V30_STATEMENTS), withStamp(31, V31_STATEMENTS), withStamp(32, V32_STATEMENTS), withStamp(33, V33_STATEMENTS), withStamp(34, V34_STATEMENTS), withStamp(35, V35_STATEMENTS), withStamp(36, V36_STATEMENTS), withStamp(37, V37_STATEMENTS), withStamp(38, V38_STATEMENTS), withStamp(39, V39_STATEMENTS), withStamp(40, V40_STATEMENTS), withStamp(41, V41_STATEMENTS), withStamp(42, V42_STATEMENTS), withStamp(43, V43_STATEMENTS), withStamp(44, V44_STATEMENTS), withStamp(45, V45_STATEMENTS)];
+export const SCHEMA_STEPS: readonly SchemaStep[] = [withStamp(1, V1_STATEMENTS), withStamp(2, V2_STATEMENTS), withStamp(3, V3_STATEMENTS), withStamp(4, V4_STATEMENTS), withStamp(5, V5_STATEMENTS), withStamp(6, V6_STATEMENTS), withStamp(7, V7_STATEMENTS), withStamp(8, V8_STATEMENTS), withStamp(9, V9_STATEMENTS), withStamp(10, V10_STATEMENTS), withStamp(11, V11_STATEMENTS), withStamp(12, V12_STATEMENTS), withStamp(13, V13_STATEMENTS), withStamp(14, V14_STATEMENTS), withStamp(15, V15_STATEMENTS), withStamp(16, V16_STATEMENTS), withStamp(17, V17_STATEMENTS), withStamp(18, V18_STATEMENTS), withStamp(19, V19_STATEMENTS), withStamp(20, V20_STATEMENTS), withStamp(21, V21_STATEMENTS), withStamp(22, V22_STATEMENTS), withStamp(23, V23_STATEMENTS), withStamp(24, V24_STATEMENTS), withStamp(25, V25_STATEMENTS), withStamp(26, V26_STATEMENTS), withStamp(27, V27_STATEMENTS), withStamp(28, V28_STATEMENTS), withStamp(29, V29_STATEMENTS), withStamp(30, V30_STATEMENTS), withStamp(31, V31_STATEMENTS), withStamp(32, V32_STATEMENTS), withStamp(33, V33_STATEMENTS), withStamp(34, V34_STATEMENTS), withStamp(35, V35_STATEMENTS), withStamp(36, V36_STATEMENTS), withStamp(37, V37_STATEMENTS), withStamp(38, V38_STATEMENTS), withStamp(39, V39_STATEMENTS), withStamp(40, V40_STATEMENTS), withStamp(41, V41_STATEMENTS), withStamp(42, V42_STATEMENTS), withStamp(43, V43_STATEMENTS), withStamp(44, V44_STATEMENTS), withStamp(45, V45_STATEMENTS), withStamp(46, V46_STATEMENTS)];
 
 /** Every statement of every step, in application order. */
 export const SCHEMA_DDL: readonly string[] = SCHEMA_STEPS.flatMap((s) => s.statements);

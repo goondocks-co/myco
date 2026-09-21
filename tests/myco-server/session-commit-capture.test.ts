@@ -1,5 +1,5 @@
 /**
- * The commit a session was on lands in git provenance, one row per capture
+ * The commit a session stands on lands in git provenance, one row per capture
  * point, converging in any delivery order; anything but a full SHA writes nothing.
  */
 import { describe, expect, it } from 'bun:test';

@@ -25,6 +25,8 @@
  * never returned, logged or placed in evidence.
  */
 
+import type { OutboundFetch } from './adapters.js';
+
 const GITHUB_API = 'https://api.github.com';
 const DEFAULT_TIMEOUT_MS = 5_000;
 
@@ -45,6 +47,11 @@ export type GithubRead<T> = { ok: true; value: T } | { ok: false; failure: Githu
 
 export type CompareStatus = 'ahead' | 'identical' | 'behind' | 'diverged';
 
+export interface ListedRef {
+  ref: string;
+  sha: string;
+}
+
 export interface MergedPull {
   number: number;
   mergeCommitSha: string;
@@ -54,8 +61,10 @@ export interface MergedPull {
 export interface GithubReads {
   /** Whether the repository is reachable with this credential; a private repository without one reads `not_found`. */
   repository(): Promise<GithubRead<{ defaultBranch: string }>>;
-  /** Every ref under `refs/{prefix}`, or `truncated` when GitHub signals more or the list exceeds the bound. */
-  matchingRefs(prefix: string): Promise<GithubRead<string[]>>;
+  /** Every ref under `refs/{prefix}` with the object it points at, or `truncated` when GitHub signals more or the list exceeds the bound. */
+  matchingRefs(prefix: string): Promise<GithubRead<ListedRef[]>>;
+  /** The commit a branch points at. */
+  branchHead(branch: string): Promise<GithubRead<string>>;
   /** Whether `ref` contains `sha`. */
   compare(sha: string, ref: string): Promise<GithubRead<CompareStatus>>;
   /** Whether the commit exists on GitHub. */
@@ -69,7 +78,7 @@ export interface GithubReadOptions {
   repo: string;
   token: string | null;
   maxLookups: number;
-  fetcher?: typeof fetch;
+  fetcher?: OutboundFetch;
   timeoutMs?: number;
 }
 
@@ -106,16 +115,13 @@ export function githubReads(options: GithubReadOptions): GithubReads {
   async function read<T>(path: string, parse: (body: unknown, response: Response) => GithubRead<T>): Promise<GithubRead<T>> {
     if (used >= options.maxLookups) return { ok: false, failure: 'budget_exhausted' };
     used += 1;
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    const signal = AbortSignal.timeout(timeoutMs);
     try {
-      const response = await fetcher(`${GITHUB_API}/repos/${options.repo}${path ? `/${path}` : ''}`, { headers, signal: controller.signal });
+      const response = await fetcher(`${GITHUB_API}/repos/${options.repo}${path ? `/${path}` : ''}`, { headers, signal });
       if (!response.ok) return { ok: false, failure: failureFor(response), status: response.status };
       return parse(await response.json(), response);
     } catch (error) {
-      return { ok: false, failure: controller.signal.aborted ? 'timeout' : error instanceof SyntaxError ? 'unexpected_response' : 'network' };
-    } finally {
-      clearTimeout(timer);
+      return { ok: false, failure: signal.aborted ? 'timeout' : error instanceof SyntaxError ? 'unexpected_response' : 'network' };
     }
   }
 
@@ -129,8 +135,15 @@ export function githubReads(options: GithubReadOptions): GithubReads {
     matchingRefs: (prefix) => read(`git/matching-refs/${encodeRef(prefix)}`, (body, response) => {
       if (!Array.isArray(body)) return bad;
       if (/rel="next"/.test(response.headers.get('link') ?? '') || body.length > MAX_LISTED_REFS) return { ok: false, failure: 'truncated' };
-      const refs = body.map((entry) => (entry as { ref?: unknown }).ref).filter((ref): ref is string => typeof ref === 'string');
+      const refs: ListedRef[] = [];
+      for (const entry of body as Array<{ ref?: unknown; object?: { sha?: unknown } }>) {
+        if (typeof entry.ref === 'string' && typeof entry.object?.sha === 'string') refs.push({ ref: entry.ref, sha: entry.object.sha });
+      }
       return { ok: true, value: refs };
+    }),
+    branchHead: (branch) => read(`git/ref/heads/${encodeRef(branch)}`, (body) => {
+      const head = (body as { object?: { sha?: unknown } } | null)?.object?.sha;
+      return isCommitSha(head) ? { ok: true, value: head } : bad;
     }),
     compare: (sha, ref) => read(`compare/${sha}...${encodeRef(ref)}?per_page=1`, (body) => {
       const status = (body as { status?: unknown } | null)?.status;
