@@ -468,17 +468,13 @@ function anyBindingMayName(serverUrl: string, mycoHome: string): boolean {
   for (const name of fs.readdirSync(dir)) {
     if (!name.endsWith('.json')) continue;
     const file = path.join(dir, name);
-    const read = readPrivateJson<ProjectBinding>(file);
+    const read = readEntryFile(file, name, mycoHome, true);
     if (!read.ok) {
       if (read.reason === 'missing') continue;
       reportSkippedPrivateFile('binding reference check', file, read);
       return true;
     }
-    if (!isBinding(read.value)) {
-      reportSkippedPrivateFile('binding reference check', file, { reason: 'malformed' });
-      return true;
-    }
-    if (deploymentUrl(read.value.serverUrl) === deploymentUrl(serverUrl)) return true;
+    if (deploymentUrl(read.entry.serverUrl) === deploymentUrl(serverUrl)) return true;
   }
   return false;
 }

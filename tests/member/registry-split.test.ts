@@ -270,6 +270,31 @@ describe('registry split', () => {
     });
   }
 
+  for (const condition of ['root-mismatch', 'invalid-project', 'escaped-link', 'valid-other'] as const) {
+    it(`uses canonical binding validation before cleanup with ${condition}`, () => {
+      const a = path.join(mycoHome, 'a');
+      const b = path.join(mycoHome, 'b');
+      writeRegistryEntry(entry(a), { mycoHome });
+      writeRegistryEntry(entry(b, { projectId: 'proj_2', serverUrl: 'https://other.example' }), { mycoHome });
+      const file = registryEntryPath(b, mycoHome);
+      const binding = read(file);
+      if (condition === 'root-mismatch') binding.root = path.join(mycoHome, 'wrong-root');
+      if (condition === 'invalid-project') binding.projectId = '../invalid';
+      fs.writeFileSync(file, JSON.stringify(binding));
+      if (condition === 'escaped-link') {
+        const external = path.join(mycoHome, 'external.json');
+        fs.renameSync(file, external);
+        fs.symlinkSync(external, file);
+      }
+      const membership = deploymentPath('https://s.example', mycoHome);
+      const before = fs.readFileSync(membership);
+      expect(removeRegistryEntry(a, mycoHome)).toBe(true);
+      if (condition === 'valid-other') expect(fs.existsSync(membership)).toBe(false);
+      else expect(fs.readFileSync(membership)).toEqual(before);
+      expect(fs.readFileSync(file, 'utf8')).toBe(JSON.stringify(binding));
+    });
+  }
+
   it('takes the credential with the last binding that named it, and not before', () => {
     const a = path.join(mycoHome, 'a');
     const b = path.join(mycoHome, 'b');
