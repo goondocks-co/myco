@@ -18,8 +18,8 @@
  * **Compare direction.** `compare/{sha}...{ref}` answers `ahead` or
  * `identical` exactly when `ref` contains `sha`; `behind` and `diverged` mean
  * it does not. A squash-merged pull request's head reads `diverged` against
- * its base, which is why the pull-request read exists. Verified read-only
- * against goondocks-co/myco on 2026-09-21.
+ * its base; its merge commit, from the pull-request read, is what the base
+ * contains.
  *
  * The token is sent only as the Authorization header of these requests and is
  * never returned, logged or placed in evidence.
@@ -28,7 +28,7 @@
 import type { OutboundFetch } from './adapters.js';
 
 const GITHUB_API = 'https://api.github.com';
-const DEFAULT_TIMEOUT_MS = 5_000;
+export const GITHUB_READ_TIMEOUT_MS = 5_000;
 
 /** A tag listing longer than this is treated as truncated rather than read whole. */
 export const MAX_LISTED_REFS = 2_000;
@@ -103,7 +103,7 @@ const encodeRef = (ref: string) => ref.split('/').map(encodeURIComponent).join('
 export function githubReads(options: GithubReadOptions): GithubReads {
   if (!isGithubRepo(options.repo)) throw new Error('A GitHub repository is named owner/name.');
   const fetcher = options.fetcher ?? fetch;
-  const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+  const timeoutMs = options.timeoutMs ?? GITHUB_READ_TIMEOUT_MS;
   const headers: Record<string, string> = {
     accept: 'application/vnd.github+json',
     'x-github-api-version': '2022-11-28',

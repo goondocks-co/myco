@@ -7,8 +7,9 @@ import { transcriptPhase } from './stop.js';
 export async function main(opts: HookMainOptions = {}) {
   await runMemberHook('session-end', opts, (run) => {
     const transcript = transcriptPhase(run);
+    const git = gitFacts(hookCwd(run.input));
     return {
-      events: [sessionEndEvent(run.ctx, { endedAt: run.now(), headSha: gitFacts(hookCwd(run.input)).headSha }), ...transcript.events],
+      events: [sessionEndEvent(run.ctx, { endedAt: run.now(), headSha: git.headSha, dirty: git.dirty }), ...transcript.events],
       record: transcript.record,
       probe: true,
       // SessionEnd gets a bounded slice of transcript work inside its budget.

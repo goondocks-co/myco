@@ -150,11 +150,11 @@ export const SERVER_JOBS: readonly ServerJob[] = [
     runsThrough: 'idle',
     converges: 'no raw transcript segment behind the parse cursor outlives the Deployment window, and no blob any row still references is removed while no blob nothing references is kept; a segment inside the window or ahead of the cursor, and every derived row, is never pruned',
   },
-  // #1274 — release provenance
+  // Release provenance
   {
     name: 'release-provenance-reconcile',
     runsThrough: 'sleep',
-    converges: "every enabled Project is checked once its reconcile interval has passed or its owner asked, within its GitHub lookup budget: each captured session commit's release state reflects the refs it was checked against, a released state is never rewritten, and a check that cannot reach GitHub changes no state and records why on the Project",
+    converges: "every enabled Project is checked once its reconcile interval has passed or its owner asked, within its GitHub lookup budget: each session's release state reflects its latest captured commit against the refs of that check, a released state changes only for a newer captured commit and keeps the state it replaced, one check holds a Project at a time and publishes only under the settings it read, and a check that cannot reach GitHub or read its stored data changes no state and records why on the Project",
   },
 ];
 

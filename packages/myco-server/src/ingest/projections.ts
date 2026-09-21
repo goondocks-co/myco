@@ -182,20 +182,23 @@ const COMMIT_SHA = /^[0-9a-f]{40}$/;
 
 /**
  * The commit a session stood on, as the git provenance release reconciliation
- * reads: one row per session and capture point. The earliest start and the
- * latest end win, so the rows converge in any delivery order; a value that is
- * not a full commit SHA writes nothing.
+ * reads: one row per session and capture point, with whether tracked files
+ * differed from it. The earliest start and the latest end win, so the rows
+ * converge in any delivery order; a value that is not a full commit SHA
+ * writes nothing.
  */
 const sessionCommit = (db: RelationalStore, ctx: WriteContext, e: CaptureEnvelope, p: Payload, point: 'session_start' | 'session_end', at: number): PreparedStatement[] => {
   const headSha = typeof p.headSha === 'string' && COMMIT_SHA.test(p.headSha) ? p.headSha : null;
   if (headSha === null) return [];
+  const dirty = p.dirty === true ? 1 : 0;
   const wins = point === 'session_start' ? 'excluded.captured_at < knowledge_git_provenance.captured_at' : 'excluded.captured_at > knowledge_git_provenance.captured_at';
   return [db.prepare(`INSERT INTO knowledge_git_provenance
-      (project_id, identity_key, session_id, capture_point, captured_at, branch, head_sha, status_hash, created_at)
-      SELECT ?, ?, ?, ?, ?, (SELECT branch FROM sessions WHERE project_id = ? AND session_id = ?), ?, '', ? WHERE ${RAW_ROW_GATE}
-      ON CONFLICT(project_id, identity_key) DO UPDATE SET head_sha = excluded.head_sha, captured_at = excluded.captured_at, branch = excluded.branch
+      (project_id, identity_key, session_id, capture_point, captured_at, branch, head_sha, is_dirty, status_hash, created_at)
+      SELECT ?, ?, ?, ?, ?, (SELECT branch FROM sessions WHERE project_id = ? AND session_id = ?), ?, ?, '', ? WHERE ${RAW_ROW_GATE}
+      ON CONFLICT(project_id, identity_key) DO UPDATE SET head_sha = excluded.head_sha, is_dirty = excluded.is_dirty,
+        captured_at = excluded.captured_at, branch = excluded.branch
         WHERE ${wins}`)
-    .bind(ctx.projectId, `session:${e.sessionId}:${point}`, e.sessionId, point, at, ctx.projectId, e.sessionId, headSha, ctx.now, ...rawGateParams(ctx, e))];
+    .bind(ctx.projectId, `session:${e.sessionId}:${point}`, e.sessionId, point, at, ctx.projectId, e.sessionId, headSha, dirty, ctx.now, ...rawGateParams(ctx, e))];
 };
 
 /** Session facts come from the earliest `session.start` in the total order (client time, then the smaller event id), so any delivery order converges — ties included: an event that ranks earlier than the one whose facts are held replaces every fact, an absent one included; a later one changes nothing. `started_at` is the minimum and `ended_at` the maximum of the events that carry them; identity columns (`machine_id`, `created_by_token_id`, `first_received_at`) stay with the first writer. A Project still named by its own id takes the basename of the first start that carries a usable origin path; a renamed or onboarded Project keeps its name. */

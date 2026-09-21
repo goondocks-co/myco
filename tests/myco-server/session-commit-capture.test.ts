@@ -54,4 +54,13 @@ describe('session commit capture', () => {
     expect(rows(sqlite)).toEqual([]);
     expect(await ingestEvent(db, ctx, end(3, 3_000, 'a'.repeat(41)))).toMatchObject({ persisted: false });
   });
+
+  it('records whether tracked files differed from the end commit', async () => {
+    const { db, sqlite } = rig();
+    await ingestEvent(db, ctx, start(1, 1_000, S1));
+    await ingestEvent(db, ctx, envelope({ eventId: uuid(2), kind: 'session.end', createdAt: 2_000, payload: { endedAt: 2_000, headSha: S2, dirty: true } }));
+    expect(sqlite.query("SELECT capture_point, is_dirty FROM knowledge_git_provenance ORDER BY capture_point").all())
+      .toEqual([{ capture_point: 'session_end', is_dirty: 1 }, { capture_point: 'session_start', is_dirty: 0 }]);
+  });
 });
+

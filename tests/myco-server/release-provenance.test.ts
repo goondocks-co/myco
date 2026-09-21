@@ -14,7 +14,9 @@ import { getReleaseState } from '@myco-server-worker/core/provenance.js';
 import worker from '@myco-server-worker/index.js';
 import { sqliteEnv } from './helpers/fixtures.js';
 import { asOwner, asOwnerPost, OWNER_ENV } from './helpers/owner.js';
-import { A, B, C, D, MISSING, REPO, fakeGithub, type Repo } from './helpers/github-fake.js';
+import { issueMemberToken } from '@myco-server-worker/auth/tokens.js';
+import { memberHeaders } from './helpers/fixtures.js';
+import { A, B, C, D, MISSING, REPO, X, fakeGithub, type Repo } from './helpers/github-fake.js';
 
 const TOKEN = 'fixture-release-token-with-no-real-permissions';
 const P = 'proj_1';
@@ -131,7 +133,7 @@ describe('the scheduled release check', () => {
     const changed = await reconcileReleaseProvenance(env(r, REPO, [], auth), 100 * MIN);
     expect(changed).toBe(5);
     expect(byRecord(r)).toEqual({ s_merged: 'merged_unreleased', s_nowhere: 'not_on_release_line', s_released: 'released', s_squashed: 'released', s_unpushed: 'unknown' });
-    expect(await getReleaseState(r.db, SCOPE, 'spores', 'sp_1')).toMatchObject({ state: 'released', basisRef: 'refs/tags/a/v1.2.0' });
+    expect(await getReleaseState(r.db, SCOPE, 'spore', 'sp_1')).toMatchObject({ state: 'released', basisRef: 'refs/tags/a/v1.2.0' });
     const view = await r.store.describe(P);
     expect(view.check).toMatchObject({ status: 'complete', failure: null, counts: { checked: 5, changed: 5, unknown: 1, unavailable: 0, deferred: 0 }, lastCompleteAt: 100 * MIN });
     expect(auth.every((a) => a === `Bearer ${TOKEN}`)).toBe(true);
@@ -223,5 +225,192 @@ describe('release provenance routes', () => {
     expect(await check.json()).toMatchObject({ requested: true, releaseProvenance: { check: { requestedAt: expect.any(Number) } } });
     expect((await worker.fetch(new Request('https://s' + path, { headers: { 'cf-connecting-ip': '1.2.3.4' } }), env)).status).toBe(401);
     expect((await worker.fetch(await asOwner('/api/projects/missing/release-provenance'), env)).status).toBe(404);
+  });
+});
+
+describe('release state on every surface', () => {
+  it('reads the same state, age and failed latest check over the owner API and MCP', async () => {
+    const r = rig();
+    await r.store.save(P, settings(), 'mem_1', 1);
+    seedSession(r, 's_merged', B);
+    r.sqlite.query("INSERT OR IGNORE INTO agents (id, name, source, enabled, created_at) VALUES ('myco', 'Myco', 'built-in', 1, 1)").run();
+    r.sqlite.query(`INSERT INTO spores (project_id, id, agent_id, observation_type, content, created_at, session_id)
+      VALUES (?, 'sp_1', 'myco', 'decision', 'provenance agreement probe', 1, 's_merged')`).run(P);
+    const fetcher = fakeGithub(REPO);
+    await reconcileReleaseProvenance({ ...r.serverEnv, outbound: fetcher }, 100 * MIN);
+    await r.store.requestCheck(P, 150 * MIN);
+    await reconcileReleaseProvenance({ ...r.serverEnv, outbound: (async () => new Response('{}', { status: 429 })) as unknown as typeof fetch }, 150 * MIN);
+
+    const expected = {
+      state: 'merged_unreleased', confidence: 'medium', ref: 'main', checkedAt: 100 * MIN,
+      latestCheck: { status: 'unavailable', failure: 'rate_limited', finishedAt: 150 * MIN },
+    };
+    const env = { ...r.env, ...OWNER_ENV };
+    const http = await (await worker.fetch(await asOwner(`/api/projects/${P}/sessions/s_merged`), env)).json() as { release: unknown };
+    expect(http.release).toMatchObject(expected);
+
+    const { token } = await issueMemberToken(r.db, { memberId: 'mem_machine_1', machineId: 'machine_1' }, Date.now());
+    const mcp = async (name: string, args: Record<string, unknown>) => {
+      const res = await worker.fetch(new Request('https://s/mcp', { method: 'POST', headers: memberHeaders(token),
+        body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name, arguments: args } }) }), r.env);
+      return ((await res.json()) as { result: { structuredContent: { result: any } } }).result.structuredContent.result;
+    };
+    expect((await mcp('myco_sessions', { op: 'get', id: 's_merged' })).release).toEqual(http.release);
+
+    const found = await mcp('myco_search', { query: 'agreement probe', mode: 'fts', type: 'spore' });
+    expect(found.results[0]).toMatchObject({ id: 'sp_1', release: { state: 'merged_unreleased', ref: 'main', checked_at: 100 * MIN } });
+    const httpSearch = await (await worker.fetch(await asOwner(`/api/projects/${P}/search?q=${encodeURIComponent('agreement probe')}&mode=fts&type=spore`), env)).json() as any;
+    expect(httpSearch.results?.[0]?.release ?? null).toEqual(found.results[0].release);
+  });
+});
+
+describe('one check at a time, for the settings it read', () => {
+  /** A GitHub whose first compare waits until released, so a check can be held mid-flight. */
+  function heldGithub(repo: Repo = REPO) {
+    const inner = fakeGithub(repo);
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    let reached!: () => void;
+    const waiting = new Promise<void>((resolve) => { reached = resolve; });
+    let held = false;
+    const calls: string[] = [];
+    const fetcher = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      calls.push(String(input));
+      if (!held && String(input).includes('/compare/')) { held = true; reached(); await gate; }
+      return inner(input, init);
+    }) as typeof fetch;
+    return { fetcher, release, waiting, calls };
+  }
+
+  async function heldCheck() {
+    const r = rig();
+    await r.store.save(P, settings(), 'mem_1', 1);
+    seedSession(r, 's_merged', B);
+    seedSession(r, 's_released', A);
+    const github = heldGithub();
+    const running = checkProject(r.db, r.secrets, github.fetcher, P, 100 * MIN);
+    await github.waiting;
+    return { r, github, running };
+  }
+
+  it('refuses a second check while one holds the Project', async () => {
+    const { r, github, running } = await heldCheck();
+    const other: string[] = [];
+    expect(await checkProject(r.db, r.secrets, fakeGithub(REPO, other), P, 100 * MIN)).toBe(0);
+    await r.store.requestCheck(P, 101 * MIN);
+    expect(await reconcileReleaseProvenance({ ...r.serverEnv, outbound: fakeGithub(REPO, other) }, 101 * MIN)).toBe(0);
+    expect(other).toEqual([]);
+    github.release();
+    expect(await running).toBe(2);
+    expect(r.sqlite.query('SELECT check_run_id AS runId, check_status AS status FROM project_release_provenance').get()).toEqual({ runId: null, status: 'complete' });
+  });
+
+  it('publishes nothing from a check whose settings were saved while it waited on GitHub', async () => {
+    const { r, github, running } = await heldCheck();
+    const view = await r.store.describe(P);
+    await r.store.save(P, settings({ revision: view.revision, githubRepo: 'o/other', credential: undefined }), 'mem_1', 150 * MIN);
+    github.release();
+    expect(await running).toBe(0);
+    expect(rows(r)).toEqual([]);
+    expect((await r.store.describe(P)).check).toMatchObject({ status: null, finishedAt: null, requestedAt: 150 * MIN });
+    // The new settings are checked on the next pass.
+    const seen: string[] = [];
+    await reconcileReleaseProvenance({ ...r.serverEnv, outbound: fakeGithub(REPO, seen) }, 151 * MIN);
+    expect((await r.store.describe(P)).check).toMatchObject({ status: 'complete', finishedAt: 151 * MIN });
+  });
+
+  it('lets a lapsed lease be taken over, and fences the check that lost it', async () => {
+    const { r, github, running } = await heldCheck();
+    r.sqlite.query('UPDATE project_release_provenance SET check_lease_until = 0').run();
+    expect(await checkProject(r.db, r.secrets, fakeGithub(REPO), P, 300 * MIN)).toBe(2);
+    const after = rows(r);
+    github.release();
+    expect(await running).toBe(0);
+    expect(rows(r)).toEqual(after);
+    expect((await r.store.describe(P)).check).toMatchObject({ status: 'complete', finishedAt: 300 * MIN });
+  });
+});
+
+describe('the source a session state is classified from', () => {
+  const addCommit = (r: ReturnType<typeof rig>, sessionId: string, point: 'session_start' | 'session_end', headSha: string, dirty = 0, at = 20) =>
+    r.sqlite.query(`INSERT INTO knowledge_git_provenance (project_id, identity_key, session_id, capture_point, captured_at, head_sha, is_dirty, status_hash, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, '', ?) ON CONFLICT(project_id, identity_key) DO UPDATE SET head_sha = excluded.head_sha, is_dirty = excluded.is_dirty, captured_at = excluded.captured_at`)
+      .run(P, `session:${sessionId}:${point}`, sessionId, point, at, headSha, dirty, at);
+  const newSession = (r: ReturnType<typeof rig>, sessionId: string) => r.sqlite.query(`INSERT INTO sessions
+    (project_id, session_id, machine_id, created_by_token_id, first_received_at, last_received_at) VALUES (?, ?, 'machine_1', 'mt_1', 1, 1)`).run(P, sessionId);
+  const state = (r: ReturnType<typeof rig>, sessionId: string) => r.sqlite.query(
+    `SELECT state, basis_kind AS basisKind, json_extract(evidence_json, '$.source') AS source, json_extract(evidence_json, '$.previous') AS previous
+     FROM knowledge_release_state WHERE record_id = ?`).get(sessionId) as { state: string; basisKind: string; source: string; previous: string | null };
+  const check = async (r: ReturnType<typeof rig>, at: number) => { await r.store.requestCheck(P, at); return reconcileReleaseProvenance({ ...r.serverEnv, outbound: fakeGithub(REPO) }, at); };
+
+  it('never presents a session standing on a released start commit as released, and classifies its end commit when captured under unchanged refs', async () => {
+    const r = rig();
+    await r.store.save(P, settings(), 'mem_1', 1);
+    newSession(r, 's_live');
+    addCommit(r, 's_live', 'session_start', A);
+    await check(r, 100 * MIN);
+    expect(state(r, 's_live')).toMatchObject({ state: 'unknown', basisKind: 'missing_git_evidence', source: `session_start:${A}:0` });
+    addCommit(r, 's_live', 'session_end', B);
+    expect(await check(r, 110 * MIN)).toBe(1);
+    const after = state(r, 's_live');
+    expect(after).toMatchObject({ state: 'merged_unreleased', source: `session_end:${B}:0` });
+    expect(JSON.parse(after.previous!)).toMatchObject({ state: 'unknown', source: `session_start:${A}:0`, checked_at: 100 * MIN });
+  });
+
+  it('classifies a later end commit of a released session afresh and keeps the released state it replaced', async () => {
+    const r = rig();
+    await r.store.save(P, settings(), 'mem_1', 1);
+    newSession(r, 's_resumed');
+    addCommit(r, 's_resumed', 'session_end', A, 0, 20);
+    await check(r, 100 * MIN);
+    expect(state(r, 's_resumed').state).toBe('released');
+    addCommit(r, 's_resumed', 'session_end', D, 0, 30);
+    await check(r, 110 * MIN);
+    const after = state(r, 's_resumed');
+    expect(after).toMatchObject({ state: 'not_on_release_line', source: `session_end:${D}:0` });
+    expect(JSON.parse(after.previous!)).toMatchObject({ state: 'released', source: `session_end:${A}:0` });
+  });
+
+  it('reads uncommitted changes at session end as unknown, and never rewrites a released row with no recorded source', async () => {
+    const r = rig();
+    await r.store.save(P, settings(), 'mem_1', 1);
+    newSession(r, 's_dirty');
+    addCommit(r, 's_dirty', 'session_end', A, 1);
+    newSession(r, 's_history');
+    addCommit(r, 's_history', 'session_end', D);
+    r.sqlite.query(`INSERT INTO knowledge_release_state (project_id, id, identity_key, namespace, record_id, state, confidence, checked_at, created_at, evidence_json)
+      VALUES (?, 'rs_old', ?, 'sessions', 's_history', 'released', 'high', 5, 5, '{}')`).run(P, `${P}:sessions:s_history`);
+    const historical = r.sqlite.query("SELECT * FROM knowledge_release_state WHERE id = 'rs_old'").get();
+    await check(r, 100 * MIN);
+    expect(state(r, 's_dirty')).toMatchObject({ state: 'unknown', basisKind: 'dirty_worktree' });
+    expect(r.sqlite.query("SELECT * FROM knowledge_release_state WHERE record_id = 's_history'").all()).toEqual([historical]);
+  });
+});
+
+describe('stored data that cannot be read', () => {
+  it('names unreadable settings, runs no check, and keeps every state', async () => {
+    const r = rig();
+    await r.store.save(P, settings(), 'mem_1', 1);
+    seedSession(r, 's_merged', B);
+    await reconcileReleaseProvenance({ ...r.serverEnv, outbound: fakeGithub(REPO) }, 100 * MIN);
+    const before = rows(r);
+    r.sqlite.query("UPDATE project_release_provenance SET production_refs = 'not json', check_requested_at = ?").run(200 * MIN);
+    expect((await r.store.describe(P)).problem).toBe('stored_settings_unreadable');
+    const seen: string[] = [];
+    await reconcileReleaseProvenance({ ...r.serverEnv, outbound: fakeGithub(REPO, seen) }, 200 * MIN);
+    expect(seen).toEqual([]);
+    expect(rows(r)).toEqual(before);
+    const status = r.sqlite.query('SELECT check_status AS status, check_failure AS failure FROM project_release_provenance').get();
+    expect(status).toEqual({ status: 'unavailable', failure: 'stored_settings_unreadable' });
+  });
+
+  it('reads a session whose changed paths cannot be read as unknown rather than as a session that changed nothing', async () => {
+    const r = rig();
+    await r.store.save(P, settings(), 'mem_1', 1);
+    seedSession(r, 's_paths', X, ['packages/b/y.ts']);
+    r.sqlite.query("UPDATE tool_calls SET files_affected = '[broken' WHERE session_id = 's_paths'").run();
+    await reconcileReleaseProvenance({ ...r.serverEnv, outbound: fakeGithub(REPO) }, 100 * MIN);
+    expect(byRecord(r).s_paths).toBe('unknown');
+    expect((await r.store.describe(P)).check).toMatchObject({ status: 'partial', failure: 'changed_paths_unreadable' });
   });
 });

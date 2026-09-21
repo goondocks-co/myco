@@ -104,7 +104,7 @@ export const KINDS: readonly KindSpec[] = [
     },
     projection: 'sessions',
   },
-  { name: 'session.end', fields: { endedAt: time('ended_at'), headSha: str(40) }, projection: 'sessions' },
+  { name: 'session.end', fields: { endedAt: time('ended_at'), headSha: str(40), dirty: { bound: { type: 'bool' } } }, projection: 'sessions' },
   {
     name: 'prompt',
     fields: {

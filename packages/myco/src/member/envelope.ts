@@ -263,8 +263,8 @@ export function sessionStartEvent(ctx: EnvelopeContext, facts: {
   });
 }
 
-export function sessionEndEvent(ctx: EnvelopeContext, facts: { endedAt?: number; headSha?: string } = {}): OutboundEvent {
-  return envelope(ctx, 'session.end', { endedAt: facts.endedAt ?? (ctx.now ?? Date.now)(), headSha: facts.headSha });
+export function sessionEndEvent(ctx: EnvelopeContext, facts: { endedAt?: number; headSha?: string; dirty?: boolean } = {}): OutboundEvent {
+  return envelope(ctx, 'session.end', { endedAt: facts.endedAt ?? (ctx.now ?? Date.now)(), headSha: facts.headSha, dirty: facts.headSha === undefined ? undefined : facts.dirty });
 }
 
 export function promptEvent(ctx: EnvelopeContext, facts: {

@@ -1,9 +1,8 @@
 /**
  * Release classification of one captured commit against a Project's refs.
  *
- * The vocabulary — states, confidence, basis kinds — is the one 1.x recorded
- * in `knowledge_release_state`, carried unchanged so a row written before 2.0
- * and a row written here read the same way.
+ * The vocabulary — states, confidence, basis kinds — is the one stored in
+ * `knowledge_release_state`, so every row reads the same way whoever wrote it.
  *
  * **Absence of evidence is never negative evidence.** `not_on_release_line`
  * is claimed only when every candidate ref is listed completely and checked.
@@ -62,7 +61,7 @@ export type ClassifyOutcome =
   | { kind: 'classified'; classification: Classification }
   | { kind: 'unavailable'; failure: GithubFailure; reason: string };
 
-// --- Ref patterns (ported from 1.x release-provenance/refs.ts and package-map.ts) ---
+// --- Ref patterns ---
 
 export function globToRegex(pattern: string): RegExp {
   const escaped = pattern.replace(/[.+^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '.*').replace(/\?/g, '.');

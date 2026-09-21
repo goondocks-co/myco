@@ -1530,7 +1530,9 @@ const V45_STATEMENTS: readonly string[] = [
  * the Project, with the sealed reference to a credential whose one purpose is
  * reading release tags and pull requests. The latest check is recorded beside
  * them — when it started and finished, what it concluded and why it stopped —
- * so a failed check is visible next to the states it left untouched.
+ * so a failed check is visible next to the states it left untouched. The
+ * running check holds `check_run_id` until `check_lease_until`; its writes
+ * land only while it holds the run id under the revision it read.
  */
 const V46_STATEMENTS: readonly string[] = [
   `CREATE TABLE IF NOT EXISTS project_release_provenance (
@@ -1547,6 +1549,8 @@ const V46_STATEMENTS: readonly string[] = [
      updated_at         INTEGER NOT NULL,
      updated_by         TEXT NOT NULL,
      check_requested_at INTEGER,
+     check_run_id       TEXT,
+     check_lease_until  INTEGER,
      check_started_at   INTEGER,
      check_finished_at  INTEGER,
      check_status       TEXT,

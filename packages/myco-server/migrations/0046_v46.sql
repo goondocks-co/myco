@@ -14,6 +14,8 @@ CREATE TABLE IF NOT EXISTS project_release_provenance (
      updated_at         INTEGER NOT NULL,
      updated_by         TEXT NOT NULL,
      check_requested_at INTEGER,
+     check_run_id       TEXT,
+     check_lease_until  INTEGER,
      check_started_at   INTEGER,
      check_finished_at  INTEGER,
      check_status       TEXT,

@@ -6,7 +6,7 @@ import { Database } from 'bun:sqlite';
 import { renderMigrationFiles } from '@myco-server-worker/db/migrate.js';
 import { sqliteRelationalStore } from '@myco-server-worker/platform/bun/sqlite.js';
 import {
-  getReleaseState, getReleaseStatesForRecords, isReleaseNamespace, listReleaseStates,
+  canonicalNamespace, getReleaseState, getReleaseStatesForRecords, isReleaseNamespace, listReleaseStates,
 } from '@myco-server-worker/core/provenance.js';
 import type { RelationalStore } from '@myco-server-worker/core/adapters.js';
 import type { ReadScope } from '@myco-server-worker/read/scope.js';
@@ -34,57 +34,73 @@ function seed(sqlite: Database, projectId: string, id: string, namespace: string
 describe('release state', () => {
   it('reads one record within its Project', async () => {
     const { db, sqlite } = store();
-    seed(sqlite, SCOPE.projectId, 'rs1', 'spores', 'sp1');
-    expect((await getReleaseState(db, SCOPE, 'spores', 'sp1'))?.state).toBe('released');
-    expect(await getReleaseState(db, OTHER, 'spores', 'sp1')).toBeNull();
+    seed(sqlite, SCOPE.projectId, 'rs1', 'spore', 'sp1');
+    expect((await getReleaseState(db, SCOPE, 'spore', 'sp1'))?.state).toBe('released');
+    expect(await getReleaseState(db, OTHER, 'spore', 'sp1')).toBeNull();
   });
 
   it('answers many records in one query, absent ids simply missing', async () => {
     const { db, sqlite } = store();
-    seed(sqlite, SCOPE.projectId, 'rs1', 'spores', 'sp1');
-    seed(sqlite, SCOPE.projectId, 'rs2', 'spores', 'sp2', 'unreleased');
-    const map = await getReleaseStatesForRecords(db, SCOPE, 'spores', ['sp1', 'sp2', 'sp_absent']);
+    seed(sqlite, SCOPE.projectId, 'rs1', 'spore', 'sp1');
+    seed(sqlite, SCOPE.projectId, 'rs2', 'spore', 'sp2', 'unreleased');
+    const map = await getReleaseStatesForRecords(db, SCOPE, 'spore', ['sp1', 'sp2', 'sp_absent']);
     expect(Object.keys(map).sort()).toEqual(['sp1', 'sp2']);
     expect(map.sp2.state).toBe('unreleased');
   });
 
   it('answers an empty request without querying at all', async () => {
     const { db } = store();
-    expect(await getReleaseStatesForRecords(db, SCOPE, 'spores', [])).toEqual({});
+    expect(await getReleaseStatesForRecords(db, SCOPE, 'spore', [])).toEqual({});
   });
 
   it('de-duplicates repeated ids rather than widening the query', async () => {
     const { db, sqlite } = store();
-    seed(sqlite, SCOPE.projectId, 'rs1', 'spores', 'sp1');
-    const map = await getReleaseStatesForRecords(db, SCOPE, 'spores', ['sp1', 'sp1', 'sp1']);
+    seed(sqlite, SCOPE.projectId, 'rs1', 'spore', 'sp1');
+    const map = await getReleaseStatesForRecords(db, SCOPE, 'spore', ['sp1', 'sp1', 'sp1']);
     expect(Object.keys(map)).toEqual(['sp1']);
   });
 
   it('keeps namespaces apart, so a skill id does not answer for a spore', async () => {
     const { db, sqlite } = store();
-    seed(sqlite, SCOPE.projectId, 'rs1', 'skill_records', 'shared_id');
-    expect(await getReleaseState(db, SCOPE, 'spores', 'shared_id')).toBeNull();
-    expect(await getReleaseState(db, SCOPE, 'skill_records', 'shared_id')).not.toBeNull();
+    seed(sqlite, SCOPE.projectId, 'rs1', 'skill', 'shared_id');
+    expect(await getReleaseState(db, SCOPE, 'spore', 'shared_id')).toBeNull();
+    expect(await getReleaseState(db, SCOPE, 'skill', 'shared_id')).not.toBeNull();
   });
 
   it('answers no record of another Project in a bulk lookup', async () => {
     const { db, sqlite } = store();
-    seed(sqlite, OTHER.projectId, 'rs1', 'spores', 'sp1');
-    expect(await getReleaseStatesForRecords(db, SCOPE, 'spores', ['sp1'])).toEqual({});
+    seed(sqlite, OTHER.projectId, 'rs1', 'spore', 'sp1');
+    expect(await getReleaseStatesForRecords(db, SCOPE, 'spore', ['sp1'])).toEqual({});
   });
 
   it('names the known namespaces, so an unknown one is refused rather than read as unreleased', () => {
-    expect(isReleaseNamespace('spores')).toBe(true);
-    expect(isReleaseNamespace('spore')).toBe(false);
+    expect(isReleaseNamespace('spore')).toBe(true);
+    expect(isReleaseNamespace('sporez')).toBe(false);
     expect(isReleaseNamespace(undefined)).toBe(false);
   });
 
   it('lists by namespace and state within the Project', async () => {
     const { db, sqlite } = store();
-    seed(sqlite, SCOPE.projectId, 'rs1', 'spores', 'sp1', 'released');
-    seed(sqlite, SCOPE.projectId, 'rs2', 'skill_records', 'sk1', 'released');
-    seed(sqlite, OTHER.projectId, 'rs3', 'spores', 'sp9', 'released');
-    expect((await listReleaseStates(db, SCOPE, { namespace: 'spores' })).map((r) => r.recordId)).toEqual(['sp1']);
+    seed(sqlite, SCOPE.projectId, 'rs1', 'spore', 'sp1', 'released');
+    seed(sqlite, SCOPE.projectId, 'rs2', 'skill', 'sk1', 'released');
+    seed(sqlite, OTHER.projectId, 'rs3', 'spore', 'sp9', 'released');
+    expect((await listReleaseStates(db, SCOPE, { namespace: 'spore' })).map((r) => r.recordId)).toEqual(['sp1']);
     expect((await listReleaseStates(db, SCOPE)).length).toBe(2);
   });
+
+  it('answers the public singular namespaces for rows stored under the table names the reconciler and search write', async () => {
+    const { db, sqlite } = store();
+    seed(sqlite, SCOPE.projectId, 'rs1', 'spores', 'sp1', 'merged_unreleased');
+    seed(sqlite, SCOPE.projectId, 'rs2', 'sessions', 'se1');
+    seed(sqlite, SCOPE.projectId, 'rs3', 'skill_records', 'sk1');
+    seed(sqlite, SCOPE.projectId, 'rs4', 'plans', 'pl1');
+    expect(await getReleaseState(db, SCOPE, 'spore', 'sp1')).toMatchObject({ namespace: 'spore', state: 'merged_unreleased' });
+    expect(Object.keys(await getReleaseStatesForRecords(db, SCOPE, 'session', ['se1']))).toEqual(['se1']);
+    expect((await listReleaseStates(db, SCOPE, { namespace: 'skill' })).map((r) => [r.namespace, r.recordId])).toEqual([['skill', 'sk1']]);
+    expect((await listReleaseStates(db, SCOPE, { namespace: 'plan' })).map((r) => r.recordId)).toEqual(['pl1']);
+    for (const n of ['spore', 'skill', 'session', 'plan']) expect(isReleaseNamespace(n)).toBe(true);
+    expect([canonicalNamespace('spores'), canonicalNamespace('skill_records'), canonicalNamespace('spore'), canonicalNamespace('sporez')])
+      .toEqual(['spore', 'skill', 'spore', null]);
+  });
 });
+
