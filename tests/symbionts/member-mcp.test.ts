@@ -168,3 +168,288 @@ describe('the member MCP server', () => {
     expect(fs.existsSync(target)).toBe(false);
   });
 });
+
+describe('what a report reads from the member MCP targets', () => {
+  /** A member installer at the scope the 2.0 join uses, with its global target under a home of its own. */
+  const savedEnv: Array<[string, string | undefined]> = [];
+  afterEach(() => { for (const [key, value] of savedEnv.splice(0)) { if (value === undefined) delete process.env[key]; else process.env[key] = value; } });
+
+  /**
+   * A member installer at the scope the 2.0 join uses. The symbiont's global
+   * target is a `~` path, so HOME moves into the sandbox and the sandbox
+   * sentinel refuses any expansion that leaves it.
+   */
+  function globalInstaller(name: string): { installer: SymbiontInstaller; root: string; home: string } {
+    const sandbox = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-inspect-sandbox-'));
+    const root = path.join(sandbox, 'project');
+    const home = path.join(sandbox, 'home');
+    fs.mkdirSync(root, { recursive: true });
+    fs.mkdirSync(home, { recursive: true });
+    roots.push(sandbox);
+    for (const key of ['HOME', 'MYCO_SANDBOX_ROOT']) savedEnv.push([key, process.env[key]]);
+    process.env.HOME = home;
+    process.env.MYCO_SANDBOX_ROOT = sandbox;
+    const manifest = loadManifests().find((m) => m.name === name);
+    if (!manifest) throw new Error(`no manifest ${name}`);
+    return { installer: new SymbiontInstaller(manifest, root, resolvePackageRoot(), false, undefined, null, 'member-global', path.join(home, '.myco')), root, home };
+  }
+
+  /** Writes the member's server into every target the installer resolves, as the install does. */
+  function writeEntries(installer: SymbiontInstaller, server: Record<string, unknown>): string[] {
+    const files = globalTargetPaths(installer);
+    for (const file of files) {
+      fs.mkdirSync(path.dirname(file), { recursive: true });
+      fs.writeFileSync(file, JSON.stringify({ mcpServers: { myco: server } }), 'utf-8');
+    }
+    return files;
+  }
+
+  it('reads the global targets under the member scope, and names the transport without the entry', () => {
+    const { installer } = globalInstaller('claude-code');
+    const files = writeEntries(installer, claudeRemote());
+    expect(files.length).toBeGreaterThan(0);
+
+    const seen = installer.inspectMemberMcp();
+    expect(seen).toEqual(files.map(() => ({ scope: 'global', present: true, transport: 'http', carriesCredential: true, declaredCwd: null, deploymentsAgree: true, namesExpectedDeployment: null, readable: true })));
+    // The Deployments are answered, never handed out: no URL, no helper command,
+    // and nothing a credential travels in.
+    expect(JSON.stringify(seen)).not.toContain(SERVER_URL);
+    expect(JSON.stringify(seen)).not.toContain('mcp-headers');
+    expect(JSON.stringify(seen)).not.toContain(CREDENTIAL_FLAG);
+  });
+
+  it('reads a global target with no Myco server as absent, not as unreadable', () => {
+    const { installer } = globalInstaller('claude-code');
+    for (const file of globalTargetPaths(installer)) {
+      fs.mkdirSync(path.dirname(file), { recursive: true });
+      fs.writeFileSync(file, JSON.stringify({ mcpServers: { somethingElse: { url: 'https://elsewhere' } } }), 'utf-8');
+    }
+
+    expect(installer.inspectMemberMcp().every((t) => t.readable && !t.present && t.transport === null && !t.carriesCredential)).toBe(true);
+  });
+
+  it('reads a server that carries no member credential as present and not the member\'s', () => {
+    const { installer } = globalInstaller('claude-code');
+    // A 1.4 project install's shape: a URL, and none of the headers the
+    // member's credential travels in.
+    writeEntries(installer, { type: 'http', url: `${SERVER_URL}/mcp` });
+
+    const seen = installer.inspectMemberMcp();
+    expect(seen.every((t) => t.present && t.transport === 'http' && !t.carriesCredential)).toBe(true);
+  });
+
+  it('reads a launcher without the credential argument as not the member\'s either', () => {
+    const { installer } = globalInstaller('claude-code');
+    writeEntries(installer, { type: 'stdio', command: '/opt/myco', args: ['mcp'] });
+
+    const seen = installer.inspectMemberMcp();
+    expect(seen.every((t) => t.present && t.transport === 'stdio' && !t.carriesCredential)).toBe(true);
+  });
+
+  it('reads a member entry that names no transport as the member\'s, and as naming none', () => {
+    const { installer } = globalInstaller('claude-code');
+    // The headers its credential travels in, and neither a URL to send them to
+    // nor a launcher to start.
+    writeEntries(installer, { headersHelper: helperFor('registry') });
+
+    const seen = installer.inspectMemberMcp();
+    expect(seen.every((t) => t.present && t.carriesCredential && t.transport === null && t.readable)).toBe(true);
+  });
+
+  it('reads a servers block that is not one as unread, not as a file declaring nothing', () => {
+    const { installer } = globalInstaller('claude-code');
+    for (const file of globalTargetPaths(installer)) {
+      fs.mkdirSync(path.dirname(file), { recursive: true });
+      fs.writeFileSync(file, JSON.stringify({ mcpServers: 'not a block' }), 'utf-8');
+    }
+
+    expect(installer.inspectMemberMcp().every((t) => !t.readable && !t.present)).toBe(true);
+  });
+
+  it('reads a myco entry that is not an object as unread', () => {
+    const { installer } = globalInstaller('claude-code');
+    for (const file of globalTargetPaths(installer)) {
+      fs.mkdirSync(path.dirname(file), { recursive: true });
+      fs.writeFileSync(file, JSON.stringify({ mcpServers: { myco: 'not an entry' } }), 'utf-8');
+    }
+
+    expect(installer.inspectMemberMcp().every((t) => !t.readable && !t.present)).toBe(true);
+  });
+
+  it('answers for each target on its own, so a malformed one is not hidden by a valid one', () => {
+    // Copilot declares more than one global target and takes no headers helper,
+    // so its member entry is the launcher carrying the credential flag.
+    const { installer } = globalInstaller('copilot');
+    const targets = globalTargets(installer);
+    expect(targets.length).toBeGreaterThan(1);
+    for (const { path: file } of targets) fs.mkdirSync(path.dirname(file), { recursive: true });
+    // Each host reads its servers under its own key.
+    const write = (target: { path: string; serversKey: string }, myco: unknown) =>
+      fs.writeFileSync(target.path, JSON.stringify({ [target.serversKey]: { myco } }), 'utf-8');
+    write(targets[0]!, { type: 'stdio', command: '/opt/myco', args: ['mcp', CREDENTIAL_FLAG, 'registry'] });
+    // A myco key that is not a server block: unreadable, and read on its own.
+    for (const target of targets.slice(1)) write(target, ['not an entry']);
+
+    const seen = installer.inspectMemberMcp();
+    expect(seen[0]).toEqual({ scope: 'global', present: true, transport: 'stdio', carriesCredential: true, declaredCwd: null, deploymentsAgree: null, namesExpectedDeployment: null, readable: true });
+    expect(seen.slice(1).every((t) => !t.readable && !t.present)).toBe(true);
+  });
+
+  it('reads a launcher whose credential flag names no source as not the member\'s', () => {
+    const { installer } = globalInstaller('claude-code');
+    // The flag alone, a source the member does not know, and a list holding a
+    // value that is not a word: none of them names a source.
+    for (const args of [['mcp', CREDENTIAL_FLAG], ['mcp', CREDENTIAL_FLAG, 'somewhere-else'], ['mcp', CREDENTIAL_FLAG, 42, 'registry']]) {
+      writeEntries(installer, { type: 'stdio', command: '/opt/myco', args });
+      expect(installer.inspectMemberMcp().every((t) => t.present && !t.carriesCredential)).toBe(true);
+    }
+  });
+
+  it('reads a headers helper naming no Deployment as not the member\'s', () => {
+    const { installer } = globalInstaller('claude-code');
+    // `mcp-headers` refuses without the server its entry's URL names.
+    writeEntries(installer, { type: 'http', url: `${SERVER_URL}/mcp`, headersHelper: `/opt/myco member mcp-headers ${CREDENTIAL_FLAG} registry` });
+    expect(installer.inspectMemberMcp().every((t) => t.present && !t.carriesCredential)).toBe(true);
+
+    // And with a server flag carrying no value.
+    writeEntries(installer, { type: 'http', url: `${SERVER_URL}/mcp`, headersHelper: `/opt/myco member mcp-headers ${CREDENTIAL_FLAG} registry --server --verbose` });
+    expect(installer.inspectMemberMcp().every((t) => t.present && !t.carriesCredential)).toBe(true);
+  });
+
+  it('reads a command that is not the member headers helper as printing none, however many of its words it carries', () => {
+    const { installer } = globalInstaller('claude-code');
+    // Every flag the writer emits, under a command that prints them back, and
+    // under the member's own binary at a subcommand that prints nothing.
+    for (const helper of [
+      `echo member ${CREDENTIAL_FLAG} registry --server ${SERVER_URL}`,
+      `echo member mcp-headers ${CREDENTIAL_FLAG} registry --server ${SERVER_URL}`,
+      `${resolveManagedBinaryPath()} member mcp ${CREDENTIAL_FLAG} registry --server ${SERVER_URL}`,
+      `${resolveManagedBinaryPath()} member mcp-headers --server ${SERVER_URL} ${CREDENTIAL_FLAG} registry`,
+      `${resolveManagedBinaryPath()} member mcp-headers ${CREDENTIAL_FLAG} registry --server ${SERVER_URL} --verbose`,
+    ]) {
+      writeEntries(installer, { type: 'http', url: `${SERVER_URL}/mcp`, headersHelper: helper });
+      const seen = installer.inspectMemberMcp(SERVER_URL);
+      expect({ helper, seen: seen.every((t) => t.present && !t.carriesCredential && t.deploymentsAgree === false && t.namesExpectedDeployment === false) })
+        .toEqual({ helper, seen: true });
+    }
+  });
+
+  it('reads a launcher that is not the member binary, or runs it at other arguments, as not the member\'s', () => {
+    const { installer } = globalInstaller('claude-code');
+    // The writer runs the member binary at the bridge and appends the flag last.
+    for (const launcher of [
+      { type: 'stdio', command: '/opt/myco', args: ['mcp', CREDENTIAL_FLAG, 'registry', '--project', 'p'] },
+      { type: 'stdio', command: '/opt/myco', args: ['doctor', CREDENTIAL_FLAG, 'registry'] },
+      { type: 'stdio', command: '/opt/myco', args: ['mcp', '--project', 'p', CREDENTIAL_FLAG, 'registry'] },
+      { type: 'stdio', command: '/bin/echo', args: ['mcp', CREDENTIAL_FLAG, 'registry'] },
+      { type: 'local', command: ['/bin/echo', 'mcp', CREDENTIAL_FLAG, 'registry'] },
+      { type: 'local', command: [42, 'mcp', CREDENTIAL_FLAG, 'registry'] },
+    ]) {
+      writeEntries(installer, launcher);
+      expect({ launcher, seen: installer.inspectMemberMcp().every((t) => t.present && !t.carriesCredential) })
+        .toEqual({ launcher, seen: true });
+    }
+  });
+
+  it('reads the helper provisioning writes as the member\'s', () => {
+    const { installer } = globalInstaller('claude-code');
+    writeEntries(installer, claudeRemote());
+    expect(installer.inspectMemberMcp().every((t) => t.present && t.carriesCredential)).toBe(true);
+  });
+
+  it('reads a launcher written as an argument list, which opencode writes, as the member\'s', () => {
+    const { installer } = globalInstaller('claude-code');
+    // The template as a member's entry carries it: the flag and its source
+    // appended to the command list, with no separate argument list.
+    const written = memberMcpTemplate({ myco: { type: 'local', command: ['/opt/myco', 'mcp'] } }, 'registry').myco;
+    expect(written).toMatchObject({ command: ['/opt/myco', 'mcp', CREDENTIAL_FLAG, 'registry'] });
+    writeEntries(installer, written as Record<string, unknown>);
+
+    expect(installer.inspectMemberMcp().every((t) => t.present && t.transport === 'stdio' && t.carriesCredential)).toBe(true);
+  });
+
+  it('reads a command list carrying no source as a launcher that is not the member\'s', () => {
+    const { installer } = globalInstaller('claude-code');
+    writeEntries(installer, { type: 'local', command: ['/opt/myco', 'mcp'] });
+
+    expect(installer.inspectMemberMcp().every((t) => t.present && t.transport === 'stdio' && !t.carriesCredential)).toBe(true);
+  });
+
+  it('names no Deployment for a URL a membership could not carry, however well the two match', () => {
+    const { installer } = globalInstaller('claude-code');
+    // Matching text is not a Deployment: `mcp-headers` could resolve neither.
+    writeEntries(installer, { type: 'http', url: 'not-a-url/mcp', headersHelper: `/opt/myco member mcp-headers ${CREDENTIAL_FLAG} registry --server not-a-url` });
+
+    // The entry names identities; they are not Deployments, which is an answer
+    // rather than an absence.
+    const seen = installer.inspectMemberMcp('not-a-url');
+    expect(seen.every((t) => t.present && t.deploymentsAgree === false && t.namesExpectedDeployment === false && !t.carriesCredential)).toBe(true);
+  });
+
+  it('does not read a valid helper as agreement when the URL it dials is no Deployment', () => {
+    const { installer } = globalInstaller('claude-code');
+    // The helper mints for a real Deployment; the host would dial something else.
+    writeEntries(installer, { type: 'http', url: 'not-a-url/mcp', headersHelper: `/opt/myco member mcp-headers ${CREDENTIAL_FLAG} registry --server ${SERVER_URL}` });
+
+    const seen = installer.inspectMemberMcp(SERVER_URL);
+    expect(seen.every((t) => t.deploymentsAgree === false && t.namesExpectedDeployment === false)).toBe(true);
+  });
+
+  it('does not read a valid URL as agreement when its helper mints for no Deployment', () => {
+    const { installer } = globalInstaller('claude-code');
+    writeEntries(installer, { type: 'http', url: `${SERVER_URL}/mcp`, headersHelper: `/opt/myco member mcp-headers ${CREDENTIAL_FLAG} registry --server not-a-url` });
+
+    const seen = installer.inspectMemberMcp(SERVER_URL);
+    expect(seen.every((t) => t.deploymentsAgree === false && t.namesExpectedDeployment === false)).toBe(true);
+  });
+
+  it('answers false for a membership whose own URL names no Deployment, rather than not answering', () => {
+    const { installer } = globalInstaller('claude-code');
+    writeEntries(installer, claudeRemote());
+
+    // The entry is sound; the Deployment it is compared against is not one.
+    expect(installer.inspectMemberMcp('not-a-url').every((t) => t.deploymentsAgree === true && t.namesExpectedDeployment === false)).toBe(true);
+    // Asked about no Deployment at all, it answers only for itself.
+    expect(installer.inspectMemberMcp().every((t) => t.deploymentsAgree === true && t.namesExpectedDeployment === null)).toBe(true);
+  });
+
+  it('answers nothing about a launcher, which names no Deployment either way', () => {
+    const { installer } = globalInstaller('claude-code');
+    writeEntries(installer, { type: 'stdio', command: '/opt/myco', args: ['mcp', CREDENTIAL_FLAG, 'registry'] });
+
+    const seen = installer.inspectMemberMcp(SERVER_URL);
+    expect(seen.every((t) => t.deploymentsAgree === null && t.namesExpectedDeployment === null)).toBe(true);
+  });
+
+  it('says a target it could not read is unread, rather than reading it as no entry', () => {
+    const { installer } = globalInstaller('claude-code');
+    writeEntries(installer, claudeRemote());
+    for (const file of globalTargetPaths(installer)) fs.writeFileSync(file, 'not configuration at all', 'utf-8');
+
+    expect(installer.inspectMemberMcp().every((t) => !t.readable && !t.present)).toBe(true);
+  });
+
+  it('reads the project target under an override, never the global one', () => {
+    const { root } = globalInstaller('claude-code');
+    const manifest = loadManifests().find((m) => m.name === 'claude-code')!;
+    const override = new SymbiontInstaller(manifest, root, resolvePackageRoot(), false, undefined, null, 'member-project');
+    const projectTarget = path.join(root, manifest.registration!.mcpTarget!);
+    fs.mkdirSync(path.dirname(projectTarget), { recursive: true });
+    fs.writeFileSync(projectTarget, JSON.stringify({ mcpServers: { myco: claudeRemote() } }), 'utf-8');
+
+    const seen = override.inspectMemberMcp();
+    // One target, the project's own: the member scope's global paths are not consulted.
+    expect(seen).toEqual([{ scope: 'project', present: true, transport: 'http', carriesCredential: true, declaredCwd: null, deploymentsAgree: true, namesExpectedDeployment: null, readable: true }]);
+    expect(globalTargetPaths(override)).toEqual([projectTarget]);
+  });
+});
+
+/** The absolute MCP targets an installer resolves at its own scope, each with the key its host reads servers under. */
+function globalTargets(installer: SymbiontInstaller): Array<{ path: string; serversKey: string }> {
+  return (installer as unknown as { resolveAbsoluteMcpTargets(): Array<{ path: string; serversKey: string }> }).resolveAbsoluteMcpTargets();
+}
+
+/** Those targets' paths alone. */
+function globalTargetPaths(installer: SymbiontInstaller): string[] {
+  return globalTargets(installer).map((t) => t.path);
+}

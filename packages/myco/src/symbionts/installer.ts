@@ -20,8 +20,11 @@ import {
 import { readJsonFile, writeJsonFile, writeOrDeleteJsonFile } from './json-helpers.js';
 import { ensureAgentsMd, ensureSymlink, isMycoHookGroup, withoutMycoHooks, containsMycoLauncherReference, hasMycoManagedMarker, MYCO_MANAGED_MARKER } from './install-helpers.js';
 import { hookCommands, memberHookTemplate } from './member-hooks.js';
-import { CREDENTIAL_FLAG, type CredentialSource } from '../member/constants.js';
-import { MEMBER_MCP_LEVERS, memberMcpTemplate, memberRemoteMcp } from './member-hooks.js';
+import { CREDENTIAL_FLAG, SERVER_FLAG, type CredentialSource } from '../member/constants.js';
+import { isHttpsUrl, parseCredentialFlag } from '../member/credential.js';
+import { deploymentUrl } from '../member/registry.js';
+import { MCP_PATH } from '../plugins/spec.js';
+import { MCP_HEADERS_ARGS, MEMBER_MCP_LEVERS, memberMcpTemplate, memberRemoteMcp } from './member-hooks.js';
 import { readRegistryEntry } from '../member/registry.js';
 import { runGit } from '../utils/git.js';
 import { resolveRuntimeCommand, resolveRuntimeHome } from '../daemon/update-checker.js';
@@ -227,6 +230,19 @@ const MYCO_LAUNCHER_PLACEHOLDER = '{{mycoLauncher}}';
  * matches, so the hourly detection tick never churns a config the agent owns.
  */
 const MYCO_BINARY_PLACEHOLDER = '{{mycoBinary}}';
+
+/** The words a credential flag and its source take on a command line the writer emits. */
+const CREDENTIAL_ARGV_WORDS = 2;
+
+/** The words a member headers helper carries after `member mcp-headers`: the credential flag and the server flag, each with its value. */
+const HELPER_FLAG_WORDS = 4;
+
+/** The arguments a member's stdio launcher runs the bridge with, before the credential flag and its source; `mcp-template-shape.test.ts` holds every template to them. */
+const MEMBER_BRIDGE_ARGS: readonly string[] = ['mcp'];
+
+/** The file names a managed member binary is installed under, read from the layout the installs share. */
+const MANAGED_BINARY_NAMES: readonly string[] = (['linux', 'win32'] as const)
+  .map((platform) => managedBinaryPath('/', platform, '/').replaceAll('\\', '/').split('/').pop() ?? '');
 
 /**
  * Resolve `{{mycoLauncher}}` to a direct binary invocation. `binaryPath` is
@@ -1993,6 +2009,158 @@ export class SymbiontInstaller {
     const targetPath = this.memberMcpTargetPath();
     if (targetPath === null) return null;
     return this.readMcpFile(targetPath, this.manifest.registration?.mcpFormat === 'toml');
+  }
+
+  /**
+   * Whether an entry names a credential source a member could resolve from, and
+   * a Deployment where a headers helper needs one: the headers helper
+   * provisioning writes, or its launcher — the member bridge's own arguments,
+   * then the credential flag and its source, and nothing else. A launcher
+   * carries a source only where it names a member binary to run; arguments
+   * alone launch nothing. An argument list holding a value that is not a word
+   * names nothing.
+   */
+  private declaresUsableCredential(entry: Record<string, unknown>): boolean {
+    if (this.helperWords(entry) !== null) return this.canonicalHelper(entry) !== null;
+    const binary = this.launcherBinary(entry);
+    if (binary === null || !this.namesMemberBinary(binary)) return false;
+    const argv = this.launcherArgv(entry);
+    if (argv === null || argv.length !== MEMBER_BRIDGE_ARGS.length + CREDENTIAL_ARGV_WORDS) return false;
+    if (argv.slice(0, MEMBER_BRIDGE_ARGS.length).join(' ') !== MEMBER_BRIDGE_ARGS.join(' ')) return false;
+    return parseCredentialFlag(argv.slice(-CREDENTIAL_ARGV_WORDS)) !== null;
+  }
+
+  /**
+   * A launcher's arguments, with the executable a command list leads with
+   * dropped, or null where any word of either list is not a string.
+   */
+  private launcherArgv(entry: Record<string, unknown>): string[] | null {
+    const argv: string[] = [];
+    for (const [list, executable] of [[entry.command, 1], [entry.args, 0]] as const) {
+      if (!Array.isArray(list)) continue;
+      if (!list.every((word): word is string => typeof word === 'string')) return null;
+      argv.push(...list.slice(executable));
+    }
+    return argv;
+  }
+
+  /**
+   * The credential source and Deployment an entry's headers helper names, or
+   * null where its words are not the command provisioning writes: the member's
+   * binary, `member mcp-headers`, then the credential flag and the server
+   * flag, each with its value and in that order. Any other command names
+   * nothing, whichever of the same words it carries.
+   */
+  private canonicalHelper(entry: Record<string, unknown>): { source: CredentialSource; deployment: string } | null {
+    const words = this.helperWords(entry);
+    if (words === null || words[0] === undefined || !this.namesMemberBinary(words[0])) return null;
+    if (words.slice(1, 1 + MCP_HEADERS_ARGS.length).join(' ') !== MCP_HEADERS_ARGS.join(' ')) return null;
+    const flags = words.slice(1 + MCP_HEADERS_ARGS.length);
+    if (flags.length !== HELPER_FLAG_WORDS || flags[0] !== CREDENTIAL_FLAG || flags[2] !== SERVER_FLAG) return null;
+    const source = parseCredentialFlag(flags.slice(0, CREDENTIAL_ARGV_WORDS));
+    const deployment = this.deploymentNamed(flags[3]);
+    return source === null || deployment === null ? null : { source, deployment };
+  }
+
+  /** The executable an entry's launcher runs, or null where it declares none. */
+  private launcherBinary(entry: Record<string, unknown>): string | null {
+    const command = entry.command;
+    if (typeof command === 'string') return command;
+    return Array.isArray(command) && typeof command[0] === 'string' ? command[0] : null;
+  }
+
+  /** Whether a command word names a member binary: the one this install writes, or one installed under the managed binary's name. */
+  private namesMemberBinary(word: string): boolean {
+    return word === this.binaryPath() || MANAGED_BINARY_NAMES.includes(word.replaceAll('\\', '/').split('/').pop() ?? word);
+  }
+
+  /** The words of the headers helper this entry declares, or null where it declares none. */
+  private helperWords(entry: Record<string, unknown>): string[] | null {
+    const helperKey = this.manifest.registration?.memberMcpHeadersHelperKey;
+    const helper = helperKey === undefined ? undefined : entry[helperKey];
+    return typeof helper === 'string' ? helper.split(/\s+/).filter((word) => word !== '') : null;
+  }
+
+  /** A Deployment a member's entry may name: the identity of a URL a membership could carry, else null. */
+  private deploymentNamed(value: string | undefined): string | null {
+    if (value === undefined) return null;
+    const named = deploymentUrl(value);
+    return isHttpsUrl(named) ? named : null;
+  }
+
+  /** The Deployment a headers helper names, or null where it names none a member could use. */
+  private helperDeployment(entry: Record<string, unknown>): string | null {
+    return this.canonicalHelper(entry)?.deployment ?? null;
+  }
+
+  /** The Deployment this entry's URL names, or null where the URL is not one a member's entry carries. */
+  private entryDeployment(entry: Record<string, unknown>): string | null {
+    const url = entry.url;
+    if (typeof url !== 'string' || !url.endsWith(MCP_PATH)) return null;
+    return this.deploymentNamed(url.slice(0, -MCP_PATH.length));
+  }
+
+  /**
+   * What this symbiont's MCP targets say about the member's entry, for a report.
+   *
+   * Presence, transport, scope, the directory a launcher declares, whether the
+   * entry carries this member's credential, and whether the Deployments it
+   * names agree with each other and with `expectedDeployment`: the entry itself holds a URL and the headers a credential
+   * travels in, and none of that leaves this class. Reading
+   * goes through the same parser the writes use, so a file that cannot be read
+   * is named as such rather than read as an empty one.
+   */
+  inspectMemberMcp(expectedDeployment?: string): Array<{ scope: 'global' | 'project'; present: boolean; transport: 'http' | 'stdio' | null; carriesCredential: boolean; declaredCwd: string | null; deploymentsAgree: boolean | null; namesExpectedDeployment: boolean | null; readable: boolean }> {
+    const toml = this.manifest.registration?.mcpFormat === 'toml';
+    const scope = this.isGlobalScope ? 'global' as const : 'project' as const;
+    return this.resolveAbsoluteMcpTargets().map(({ path: filePath, serversKey }) => {
+      // A TOML host keeps its servers under one section whatever the manifest names.
+      const key = toml ? TOML_MCP_SERVERS_KEY : serversKey;
+      let file: Record<string, unknown> | null;
+      try {
+        file = this.readMcpFile(filePath, toml);
+      } catch {
+        return { scope, present: false, transport: null, carriesCredential: false, declaredCwd: null, deploymentsAgree: null, namesExpectedDeployment: null, readable: false };
+      }
+      // A key that is not there is a file declaring no server; a key that is
+      // there and is not a server block is a file nothing can read an entry
+      // from, and each target answers for itself.
+      const servers = file?.[key];
+      if (file === null || servers === undefined) return { scope, present: false, transport: null, carriesCredential: false, declaredCwd: null, deploymentsAgree: null, namesExpectedDeployment: null, readable: true };
+      if (servers === null || typeof servers !== 'object' || Array.isArray(servers)) {
+        return { scope, present: false, transport: null, carriesCredential: false, declaredCwd: null, deploymentsAgree: null, namesExpectedDeployment: null, readable: false };
+      }
+      const server = (servers as Record<string, unknown>)[MYCO_MCP_SERVER_NAME];
+      if (server === undefined) return { scope, present: false, transport: null, carriesCredential: false, declaredCwd: null, deploymentsAgree: null, namesExpectedDeployment: null, readable: true };
+      if (server === null || typeof server !== 'object' || Array.isArray(server)) {
+        return { scope, present: false, transport: null, carriesCredential: false, declaredCwd: null, deploymentsAgree: null, namesExpectedDeployment: null, readable: false };
+      }
+      const entry = server as Record<string, unknown>;
+      // A launcher names its command as a word or as an argument list; opencode writes the list.
+      const launcher = typeof entry.command === 'string' || (Array.isArray(entry.command) && entry.command.length > 0);
+      const transport = typeof entry.url === 'string' ? 'http' as const : launcher ? 'stdio' as const : null;
+      // A launcher started outside the project finds its membership through the
+      // directory the entry names, so the directory is a fact about it.
+      const declaredCwd = typeof entry.cwd === 'string' && entry.cwd !== '' ? entry.cwd : null;
+      // What the entry declares is one fact; whether it is the entry member
+      // provisioning writes — the one carrying this member's credential — is
+      // another, and a server that is not cannot resolve the membership.
+      // The Deployments the entry names, as answers rather than as URLs: whether
+      // its own two agree, and whether they name the one the caller expects.
+      // An entry naming neither answers nothing; one naming either must name
+      // both, and name them the same, or it routes somewhere it cannot reach.
+      const declares = typeof entry.url === 'string' || this.helperWords(entry) !== null;
+      const dialled = this.entryDeployment(entry);
+      const minted = this.helperDeployment(entry);
+      const both = dialled !== null && minted !== null;
+      const deploymentsAgree = !declares ? null : both && dialled === minted;
+      const expected = expectedDeployment === undefined ? undefined : this.deploymentNamed(expectedDeployment);
+      const namesExpectedDeployment = !declares || expected === undefined
+        ? null
+        : expected !== null && both && dialled === expected && minted === expected;
+      return { scope, present: true, transport, carriesCredential: this.declaresUsableCredential(entry), declaredCwd,
+        deploymentsAgree, namesExpectedDeployment, readable: true };
+    });
   }
 
   /**

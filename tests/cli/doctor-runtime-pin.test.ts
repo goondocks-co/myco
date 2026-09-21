@@ -9,7 +9,7 @@ import { afterEach, describe, it, expect } from 'bun:test';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { classifyRuntimePin } from '@myco/cli/doctor';
+import { checkBinaryVersionSkew, classifyRuntimePin } from '@myco/cli/doctor';
 import { DOCTOR_FIXERS } from '@myco/cli/doctor-fixes';
 import type { DoctorCheck, DoctorFixContext } from '@myco/cli/doctor-fixes';
 import type { ResolutionFacts } from '@myco/runtime/binary-resolution.js';
@@ -41,6 +41,7 @@ describe('classifyRuntimePin', () => {
       pinTargetExists: true,
     });
     expect(check?.status).toBe('ok');
+    expect(check!.reason).toBe('runtime_pin_override');
     expect(check!.detail).toContain('override');
     expect(check!.fixable).toBe(false);
   });
@@ -51,6 +52,7 @@ describe('classifyRuntimePin', () => {
       pinTargetExists: true,
     });
     expect(check?.status).toBe('warn');
+    expect(check!.reason).toBe('runtime_pin_redundant');
     expect(check!.fixable).toBe(true);
     expect(check!.fixId).toBe('runtime-pin-redundant');
     expect(check!.fixData).toEqual({ pinPath: '/home/u/.myco/runtime.command', managedBinary: MANAGED });
@@ -62,6 +64,7 @@ describe('classifyRuntimePin', () => {
       pinTargetExists: false,
     });
     expect(check?.status).toBe('fail');
+    expect(check!.reason).toBe('runtime_pin_refused');
     expect(check!.detail).toContain('refused');
     expect(check!.detail).toContain('0666');
   });
@@ -72,6 +75,7 @@ describe('classifyRuntimePin', () => {
       pinTargetExists: false,
     });
     expect(check?.status).toBe('fail');
+    expect(check!.reason).toBe('runtime_pin_target_absent');
     expect(check!.detail).toContain('/gone/myco');
     // Repointing an operator override is not doctor's call.
     expect(check!.fixable).toBe(false);
@@ -119,5 +123,18 @@ describe('runtime-pin-redundant fixer', () => {
 
     expect(fs.existsSync(pinPath)).toBe(true);
     expect(actions.join(' ')).toContain('left in place');
+  });
+});
+
+describe('the binary version row', () => {
+  it('names why it could not compare, or that it matched', () => {
+    // The live install decides which branch answers; every one of them carries
+    // a reason a report can read without its sentence.
+    const check = checkBinaryVersionSkew();
+    expect(check.name).toBe('Binary version');
+    expect([
+      'binary_manifest_missing', 'binary_manifest_unreadable', 'binary_manifest_unversioned',
+      'binary_version_skew', 'binary_version_current',
+    ]).toContain(check.reason);
   });
 });

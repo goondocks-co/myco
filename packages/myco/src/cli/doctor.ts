@@ -9,6 +9,7 @@ import fs from 'node:fs';
 import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { findCorePackageRoot } from '../utils/find-package-root.js';
 import { getPluginVersion } from '../version.js';
 import { readDaemonState, resolveDaemonServiceState } from '../daemon/service-state.js';
@@ -54,10 +55,25 @@ const MYCO_PLUGIN_FILE_MARKER = 'myco:plugin-marker';
 
 // --- Types ---
 
+/** What a check failed on, in a closed vocabulary a report carries where its detail text cannot go. */
+export type DoctorReason = 'home_pin_missing' | 'mcp_entry_absent' | 'mcp_target_unreadable' | 'mcp_entry_http' | 'mcp_entry_stdio' | 'mcp_entry_unknown_transport' | 'mcp_entry_no_credential'
+  | 'binary_manifest_missing' | 'binary_manifest_unreadable' | 'binary_manifest_unversioned'
+  | 'binary_version_skew' | 'binary_version_current'
+  | 'mcp_cwd_ambiguous' | 'mcp_cwd_elsewhere' | 'mcp_server_mismatch' | 'mcp_server_stale'
+  | 'runtime_pin_refused' | 'runtime_pin_redundant' | 'runtime_pin_target_absent' | 'runtime_pin_override';
+
 export interface DoctorCheck {
   name: string;
   status: 'ok' | 'fail' | 'warn';
   detail: string;
+  /** Absent where a check has only one way to fail, which its name already says. */
+  reason?: DoctorReason;
+  /** The symbiont a check names, where it names one. */
+  symbiont?: string;
+  /** The configuration scope a check read, where it read one. */
+  scope?: 'global' | 'project';
+  /** The project root a check is about, where its answer holds for that root alone. */
+  root?: string;
   fixable: boolean;
   fixId?: import('./doctor-fixes.js').DoctorFixerId;
   fixData?: Record<string, unknown>;
@@ -889,33 +905,34 @@ function isHooksRegisteredAt(
  * of bug that has historically silently broken `myco --version` and masked
  * stale code running in the daemon. See PR #263 incident postmortem.
  */
-function checkBinaryVersionSkew(): DoctorCheck {
+export function checkBinaryVersionSkew(): DoctorCheck {
   const baked = getPluginVersion();
   // Walk up from the binary to @goondocks/myco core — that's the manifest
   // npm install actually shipped. (Source checkouts find packages/myco/.)
   const argv0 = process.argv[0];
   const installedRoot = argv0 ? findCorePackageRoot(path.dirname(argv0)) : null;
   if (!installedRoot) {
-    return { name: 'Binary version', status: 'warn', detail: `binary baked at ${baked}; could not find installed package.json to compare`, fixable: false };
+    return { name: 'Binary version', status: 'warn', detail: `binary baked at ${baked}; could not find installed package.json to compare`, reason: 'binary_manifest_missing', fixable: false };
   }
   let installedVersion = '';
   try {
     installedVersion = (JSON.parse(fs.readFileSync(path.join(installedRoot, 'package.json'), 'utf-8')) as { version?: string }).version ?? '';
   } catch (err) {
-    return { name: 'Binary version', status: 'warn', detail: `binary baked at ${baked}; could not read installed package.json: ${(err as Error).message}`, fixable: false };
+    return { name: 'Binary version', status: 'warn', detail: `binary baked at ${baked}; could not read installed package.json: ${(err as Error).message}`, reason: 'binary_manifest_unreadable', fixable: false };
   }
   if (!installedVersion) {
-    return { name: 'Binary version', status: 'warn', detail: `binary baked at ${baked}; installed package.json has no version`, fixable: false };
+    return { name: 'Binary version', status: 'warn', detail: `binary baked at ${baked}; installed package.json has no version`, reason: 'binary_manifest_unversioned', fixable: false };
   }
   if (installedVersion !== baked) {
     return {
       name: 'Binary version',
       status: 'fail',
       detail: `installed package.json says ${installedVersion} but binary --version reports ${baked} (npm upgrade refreshed JS but not the compiled binary; reinstall with \`npm install -g @goondocks/myco@${installedVersion}\` to fix)`,
+      reason: 'binary_version_skew',
       fixable: false,
     };
   }
-  return { name: 'Binary version', status: 'ok', detail: baked, fixable: false };
+  return { name: 'Binary version', status: 'ok', detail: baked, reason: 'binary_version_current', fixable: false };
 }
 
 /**
@@ -1564,6 +1581,7 @@ export function classifyRuntimePin(args: {
         status: 'fail',
         detail: `${facts.pinRefusal.pinPath} exists but is refused (${facts.pinRefusal.reason}) — `
           + 'every consumer ignores it. Fix its ownership/permissions (0644) or remove it.',
+        reason: 'runtime_pin_refused',
         fixable: false,
       };
     }
@@ -1577,6 +1595,7 @@ export function classifyRuntimePin(args: {
         status: 'warn',
         detail: `${facts.pinPath} names the managed binary — redundant (resolution reaches it `
           + 'without the pin) and it suppresses PATH diagnostics. Remove it.',
+        reason: 'runtime_pin_redundant',
       },
       'runtime-pin-redundant',
       { pinPath: facts.pinPath, managedBinary: facts.managedBinary },
@@ -1589,11 +1608,12 @@ export function classifyRuntimePin(args: {
       status: 'fail',
       detail: `points at ${facts.pin}, which does not exist — the pin wins over every fallback, `
         + 'so repoint it or remove it.',
+      reason: 'runtime_pin_target_absent',
       fixable: false,
     };
   }
 
-  return { name: 'Runtime pin', status: 'ok', detail: `${facts.pin} (override)`, fixable: false };
+  return { name: 'Runtime pin', status: 'ok', detail: `${facts.pin} (override)`, reason: 'runtime_pin_override', fixable: false };
 }
 
 /** {@link classifyRuntimePin} bound to the live install layout. */
@@ -1610,39 +1630,40 @@ export async function checkRuntimePin(): Promise<DoctorCheck | null> {
   }
 }
 
-/** Whether the `myco` server in an MCP list file carries the host's headers-helper key. */
-function memberMcpHasHelper(raw: string, format: string | undefined, serversKey: string | undefined, helperKey: string): boolean {
-  if (format === 'toml') return readTomlSectionKey(raw, `mcp_servers.${MYCO_MCP_SERVER_NAME}`, helperKey) !== undefined;
-  try {
-    const servers = (JSON.parse(raw) as Record<string, Record<string, Record<string, unknown>> | undefined>)[serversKey ?? 'mcpServers'];
-    return typeof servers?.[MYCO_MCP_SERVER_NAME]?.[helperKey] === 'string';
-  } catch {
-    return false;
-  }
-}
 
 /**
- * Whether the member MCP servers provisioned for this project resolve a
- * membership from wherever the harness starts them.
+ * Whether this project's membership resolves for the symbionts set up on this
+ * machine: the machine pin for a non-default home, and the Myco MCP server each
+ * symbiont declares.
  *
- * A hook runs in the project, so its membership resolves from its directory.
- * A stdio MCP child is started where the harness chooses — Codex's and
- * Cursor's at `/` or the user's home — so it finds the project only through a
- * `cwd` the entry carries (the TOML entry does), through the machine pin for
- * a non-default home, and through the one membership a machine holds. Each
- * of those is checked here as a fact on disk, and the check says which one is
- * missing rather than reporting the install healthy.
+ * The entry is read where the installer writes it — the symbiont's global
+ * targets under the member scope, its project target under an override — and
+ * the check reports which scope carries it, over what transport, and whether
+ * it is the entry provisioning writes — the one carrying this member's
+ * credential — or that a target could not be read. It reports what the
+ * configuration declares, never that a server answers or that a credential
+ * authenticates.
  */
-export async function checkMemberMcpResolution(vaultDir: string, env: NodeJS.ProcessEnv = process.env): Promise<DoctorCheck[]> {
+export async function checkMemberMcpResolution(
+  vaultDir: string,
+  env: NodeJS.ProcessEnv = process.env,
+  opts: { registryRead?: 'migrate' | 'strict' } = {},
+): Promise<DoctorCheck[]> {
   const { resolveProjectRoot } = await import('../project-root.js');
   const { resolveMycoHome, defaultMycoHome, readMachineHomePin } = await import('../paths/home.js');
-  const { readRegistryEntry, listRegistryEntries } = await import('../member/registry.js');
+  const { readRegistryEntry, readRegistryEntryResult, listRegistryEntriesResult, deploymentUrl } = await import('../member/registry.js');
   const { loadManifests } = await import('../symbionts/detect.js');
   const root = resolveProjectRoot(vaultDir);
   const home = resolveMycoHome({ cwd: root, env });
-  if (readRegistryEntry(root, home) === null) return [];
+  // Strict reads leave legacy entries unchanged and acquire no write lock.
+  const strict = opts.registryRead === 'strict' ? readRegistryEntryResult(root, home) : null;
+  const membership = strict !== null
+    ? (strict.status === 'present' ? strict.entry : null)
+    : readRegistryEntry(root, home);
+  if (membership === null) return [];
+  // The Deployment this project is a member of; every entry must name it.
+  const selectedDeployment = deploymentUrl(membership.serverUrl);
   const checks: DoctorCheck[] = [];
-  const memberships = listRegistryEntries(home).length;
   const homeDir = env.HOME && env.HOME.length > 0 ? env.HOME : undefined;
   const nonDefaultHome = path.resolve(home) !== path.resolve(defaultMycoHome(homeDir));
   if (nonDefaultHome && readMachineHomePin({ env: {}, homeDir })?.home !== path.resolve(home)) {
@@ -1650,36 +1671,131 @@ export async function checkMemberMcpResolution(vaultDir: string, env: NodeJS.Pro
       name: 'Member MCP resolution',
       status: 'warn',
       detail: `this project's membership lives in ${home}, but the machine pin (${path.join(defaultMycoHome(homeDir), 'runtime.home')}) does not name it; an MCP server started outside ${root} resolves the default home and finds no membership. Run \`MYCO_HOME=${home} myco member join\` again to pin the machine.`,
+      reason: 'home_pin_missing',
+      scope: 'global',
       fixable: false,
     });
   }
+  // The member's MCP entry lives where the installer writes it: the symbiont's
+  // global targets under the member scope, its project target under an
+  // override. Every scope a target was read at is reported on its own; which
+  // one a given host prefers is not decided here.
+  const { SymbiontInstaller } = await import('../symbionts/installer.js');
+  // Counted as a report reads it: no migration, and an entry it could not read is not one it can claim resolves.
+  const readable = listRegistryEntriesResult(home);
+  const packageRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
+  const TRANSPORT_REASON = { http: 'mcp_entry_http', stdio: 'mcp_entry_stdio' } as const;
   for (const manifest of loadManifests()) {
-    const target = manifest.registration?.mcpTarget;
-    if (!target) continue;
-    const file = path.join(root, target);
-    let raw: string;
-    try { raw = fs.readFileSync(file, 'utf-8'); } catch { continue; }
-    if (!raw.includes(MYCO_MCP_SERVER_NAME)) continue;
-    // A remote entry resolves its membership through the headers helper, which
-    // the host runs in the project or session directory and which names its
-    // Deployment — neither a cwd nor a single membership is needed.
-    const helperKey = manifest.registration?.memberMcpHeadersHelperKey;
-    if (helperKey && memberMcpHasHelper(raw, manifest.registration?.mcpFormat, manifest.registration?.mcpServersKey, helperKey)) continue;
-    if (manifest.registration?.mcpFormat === 'toml') {
-      if (/\bcwd\s*=/.test(raw)) continue;
+    if (!manifest.registration) continue;
+    const at = (scope: 'member-global' | 'member-project') => new SymbiontInstaller(manifest, root, packageRoot, false, undefined, null, scope, home);
+    const global = at('member-global');
+    const seen = [...global.inspectMemberMcp(selectedDeployment), ...at('member-project').inspectMemberMcp(selectedDeployment)];
+    if (seen.length === 0) continue;
+
+    for (const target of seen.filter((t) => t.present)) {
+      // An entry that does not carry this member's credential cannot
+      // authenticate or resolve the membership, whatever it routes over.
+      if (!target.carriesCredential) {
+        checks.push({
+          name: 'Member MCP resolution',
+          status: 'warn',
+          detail: `${manifest.displayName}'s ${target.scope} configuration declares a Myco MCP server that carries no member credential, so it resolves no membership. Run \`myco member join --provision ${manifest.name}\`.`,
+          reason: 'mcp_entry_no_credential',
+          scope: target.scope,
+          symbiont: manifest.name,
+          fixable: false,
+        });
+        continue;
+      }
+      // A launcher resolves this project only from an absolute directory that is
+      // its root, or from any directory where the machine holds one membership.
+      if (target.transport === 'stdio') {
+        const cwd = target.declaredCwd !== null && path.isAbsolute(target.declaredCwd) ? target.declaredCwd : null;
+        const resolves = cwd === null
+          ? readable.readable && readable.unavailableEntries === 0 && readable.entries.length === 1
+          : path.resolve(cwd) === path.resolve(root);
+        if (!resolves) {
+          checks.push({
+            name: 'Member MCP resolution',
+            status: 'warn',
+            detail: cwd === null
+              ? `${manifest.displayName} starts its MCP server in a directory of its own choosing and its ${target.scope} entry names no absolute one, so it resolves this project's membership only where this machine holds exactly one readable one.`
+              : `${manifest.displayName}'s ${target.scope} entry starts its MCP server in a directory that is not ${root}, so it resolves another project's membership or none.`,
+            reason: cwd === null ? 'mcp_cwd_ambiguous' : 'mcp_cwd_elsewhere',
+            scope: target.scope,
+            root: cwd === null ? undefined : root,
+            symbiont: manifest.name,
+            fixable: false,
+          });
+          continue;
+        }
+      }
+      // Headers are minted for the Deployment the helper names and sent to the
+      // one the URL names. Whether those two agree is true of the entry itself;
+      // whether they name this project's Deployment is true of this project.
+      if (target.deploymentsAgree === false) {
+        checks.push({
+          name: 'Member MCP resolution',
+          status: 'warn',
+          detail: `${manifest.displayName}'s ${target.scope} entry sends its headers to a Deployment its helper does not mint them for.`,
+          reason: 'mcp_server_mismatch',
+          scope: target.scope,
+          symbiont: manifest.name,
+          fixable: false,
+        });
+        continue;
+      }
+      if (target.namesExpectedDeployment === false) {
+        checks.push({
+          name: 'Member MCP resolution',
+          status: 'warn',
+          detail: `${manifest.displayName}'s ${target.scope} entry names a Deployment this project is not a member of, so it resolves no membership for it.`,
+          reason: 'mcp_server_stale',
+          scope: target.scope,
+          root,
+          symbiont: manifest.name,
+          fixable: false,
+        });
+        continue;
+      }
+      // A member entry is on disk; whether the server answers is not read here.
+      // One that names no transport cannot be dialed, so it is a warning that
+      // keeps its own reason.
       checks.push({
         name: 'Member MCP resolution',
-        status: 'warn',
-        detail: `${manifest.displayName}'s MCP server entry in ${target} carries no cwd, so the server starts wherever ${manifest.displayName} starts it and resolves no membership from there. Re-run \`myco member join --provision ${manifest.name}\`.`,
+        status: target.transport === null ? 'warn' : 'ok',
+        detail: target.transport === null
+          ? `${manifest.displayName}'s ${target.scope} configuration declares a member entry that names neither a URL nor a launcher, so nothing can reach it.`
+          : `${manifest.displayName} declares a member entry in its ${target.scope} configuration over ${target.transport} transport.`,
+        reason: target.transport === null ? 'mcp_entry_unknown_transport' : TRANSPORT_REASON[target.transport],
+        scope: target.scope,
+        symbiont: manifest.name,
         fixable: false,
       });
-      continue;
     }
-    if (memberships > 1) {
+    for (const target of seen.filter((t) => !t.readable)) {
       checks.push({
         name: 'Member MCP resolution',
         status: 'warn',
-        detail: `${manifest.displayName} starts its MCP server in a directory of its own choosing, and this machine holds ${memberships} memberships, so the server resolves none of them unless ${manifest.displayName} is opened from ${root}.`,
+        detail: `${manifest.displayName}'s ${target.scope} MCP configuration could not be read, so whether the member's server is declared there is unknown.`,
+        reason: 'mcp_target_unreadable',
+        scope: target.scope,
+        symbiont: manifest.name,
+        fixable: false,
+      });
+    }
+    // A symbiont this machine never installed resolves targets all the same, so
+    // an absent entry is a finding only where the hooks say it was installed.
+    // That gate decides nothing about a target already reported above.
+    const quiet = seen.every((target) => !target.present && target.readable);
+    if (quiet && global.isConfigured()) {
+      checks.push({
+        name: 'Member MCP resolution',
+        status: 'warn',
+        detail: `${manifest.displayName} is set up for capture but declares no Myco MCP server, so it reads no project intelligence. Run \`myco member join --provision ${manifest.name}\`.`,
+        reason: 'mcp_entry_absent',
+        scope: 'global',
+        symbiont: manifest.name,
         fixable: false,
       });
     }

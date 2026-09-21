@@ -16,3 +16,22 @@ export function memberHeaders(credential: { token: string; projectId: string }, 
 export function deploymentScopedHeaders(credential: { token: string }, protocol: number = MEMBER_PROTOCOL): Record<string, string> {
   return credentialHeaders(credential.token, protocol);
 }
+
+/** The grammar a minted event id matches. A session id is opaque and only length-bounded; it has no grammar. */
+export const ID_GRAMMAR = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+
+/** The longest an event or session id may be. */
+export const MAX_ID_CHARS = 128;
+
+/** Every event kind a member may ship. */
+export const MEMBER_KINDS = [
+  'session.start', 'session.end', 'prompt', 'tool.use', 'tool.failure', 'response', 'plan', 'attachment',
+  'transcript.segment', 'compaction.pre', 'compaction.post', 'subagent.start', 'subagent.stop',
+  'stop.failure', 'task.completed', 'notification', 'error',
+] as const;
+
+export type MemberKind = (typeof MEMBER_KINDS)[number];
+
+/** Whether a value names an event kind a member ships. */
+export const isMemberKind = (value: unknown): value is MemberKind =>
+  typeof value === 'string' && (MEMBER_KINDS as readonly string[]).includes(value);

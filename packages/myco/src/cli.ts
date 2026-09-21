@@ -43,7 +43,7 @@ Commands:
   host <subcommand>        Serve your team from this machine (enable|disable|status|rotate-key|members|revoke)
   login <invite-link>      Redeem an invite link and sign this machine in
   import                   Bring this machine's existing agent history to its Deployment
-  member <op>              2.0 member: join | leave | drain | status | refresh
+  member <op>              2.0 member: join | leave | drain | status | export | refresh
   settings                 Print harness settings for a sandboxed agent (--harness <name> --project <id>)
   version                  Show plugin version
   mcp                     Start the MCP stdio server

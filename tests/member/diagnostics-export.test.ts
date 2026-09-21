@@ -1,0 +1,746 @@
+/**
+ * What `myco member export` may say, and what it must never carry.
+ *
+ * The report is a fixed field set built from the registry, the spool, the
+ * refusal log, the latch and the no-membership record. These gates hold the
+ * three properties a person pasting one into an issue depends on: no credential
+ * and no captured content leave the machine, a code read back from disk is one
+ * of the closed set or nothing, and a damaged record never reads as a healthy
+ * zero. The unjoined case is a gate of its own — it is the failure the report
+ * most often exists to name, so it must still produce a document.
+ */
+import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
+import fs from 'node:fs';
+import { execFileSync } from 'node:child_process';
+import os from 'node:os';
+import path from 'node:path';
+import { MemberSpool, spoolDirFor } from '@myco/member/spool.js';
+import { updateSessionState } from '@myco/member/session-state.js';
+import { listRegistryEntriesResult, readRegistryEntryResult, registryEntryPath, writeRegistryEntry, type RegistryEntry } from '@myco/member/registry.js';
+import { listMissingMembershipsResult, readMissingMembership, readMissingMembershipResult, recordMissingMembership } from '@myco/member/no-membership.js';
+import { mintId, promptEvent, type EnvelopeContext } from '@myco/member/envelope.js';
+import { memberDiagnostics, projectDiagnostics, MAX_REFUSALS_REPORTED } from '@myco/member/diagnostics.js';
+import { runExport } from '@myco/cli/member.js';
+import { tempMycoHome } from './helpers/server.js';
+
+const NOW = 1_800_000_000_000;
+/** The shape a report's callers assert against. */
+type Report = {
+  selection: { root: string | null; scope: string; membershipPresent: boolean | null };
+  registry: { readable: boolean; unavailableEntries: number };
+  missedCaptureStore: { readable: boolean; unavailableRecords: number };
+  missedCapture: unknown[];
+  projects: unknown[];
+};
+const SECRET = 'mt_thisisaverysecrettokenvalue';
+
+let mycoHome: string;
+const savedHome = process.env.MYCO_HOME;
+beforeEach(() => { mycoHome = tempMycoHome(); process.env.MYCO_HOME = mycoHome; });
+const temps: string[] = [];
+/** A real project directory the report may name, removed with the rest of the fixture. */
+function tempProjectRoot(): string {
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'myco-project-')));
+  execFileSync('git', ['init', '-q'], { cwd: root });
+  temps.push(root);
+  return root;
+}
+afterEach(() => {
+  if (savedHome === undefined) delete process.env.MYCO_HOME; else process.env.MYCO_HOME = savedHome;
+  for (const dir of temps.splice(0)) fs.rmSync(dir, { recursive: true, force: true });
+});
+
+const entry = (over: Partial<RegistryEntry> = {}): RegistryEntry => ({
+  version: 2,
+  projectId: 'proj_1',
+  serverUrl: 'https://myco.example.com',
+  token: SECRET,
+  tokenId: 'mt_abc123',
+  memberId: 'mem_dev',
+  machineId: 'dev-laptop',
+  root: '/home/dev/acme-web',
+  joinedAt: NOW - 86_400_000,
+  updatedAt: NOW - 86_400_000,
+  expiresAt: NOW + 86_400_000,
+  ...over,
+});
+
+/** A refusal log written straight to disk, so a line can be malformed the way a damaged file is. */
+function writeRefusedLog(projectId: string, lines: readonly string[]): void {
+  const spool = new MemberSpool(projectId, { mycoHome });
+  fs.writeFileSync(path.join(spool.dir, 'refused.jsonl'), lines.join('\n') + '\n', { mode: 0o600 });
+}
+
+/** An event id as a member mints one; the report carries only ids of this shape. */
+const evId = (n: number) => `3f2504e0-4f89-41d3-9a0c-${String(n).padStart(12, '0')}`;
+
+const refusal = (over: Record<string, unknown> = {}) => JSON.stringify({
+  eventId: evId(1), sessionId: 'sess_1', kind: 'prompt', code: 'clock_skew', reason: 'the server said /Users/dev/secret.env was ahead', at: NOW, ...over,
+});
+
+describe('a member report carries no credential and no captured content', () => {
+  it('omits the token, and every field that could hold one', () => {
+    const e = entry();
+    writeRegistryEntry(e, { mycoHome });
+    const report = memberDiagnostics({ mycoHome, now: NOW, entries: [e], missedCapture: [], selection: { root: e.root, scope: 'root' } });
+    const serialized = JSON.stringify(report);
+    expect(serialized).not.toContain(SECRET);
+    expect(serialized).not.toContain('"token"');
+    // The id that names the credential is what correlates the two halves, and is kept.
+    expect(report.projects[0]!.membership.tokenId).toBe('mt_abc123');
+    expect(report.projects[0]!.membership.machineId).toBe('dev-laptop');
+  });
+
+  it('reports damaged membership fields without serializing their values', () => {
+    const e = entry({ tokenId: SECRET, joinedAt: Number.NaN, expiresAt: Number.POSITIVE_INFINITY });
+    const membership = projectDiagnostics(e, mycoHome, NOW).membership;
+    expect(membership.tokenId).toBeNull();
+    expect(membership.joinedAt).toBeNull();
+    expect(membership.expiresAt).toBeNull();
+    expect(membership.expired).toBeNull();
+    expect(membership.unavailableFields).toEqual(['tokenId', 'joinedAt', 'expiresAt']);
+    expect(JSON.stringify(membership)).not.toContain(SECRET);
+  });
+
+  it('distinguishes absent optional state from invalid derived state', () => {
+    const absent = projectDiagnostics(entry({ expiresAt: undefined, refreshTerminal: undefined }), mycoHome, NOW).membership;
+    expect(absent.expired).toBe(false);
+    expect(absent.refreshTerminal).toBe(false);
+    const invalid = JSON.parse(JSON.stringify(entry()));
+    invalid.refreshTerminal = 'unknown';
+    const damaged = projectDiagnostics(invalid, mycoHome, NOW).membership;
+    expect(damaged.refreshTerminal).toBeNull();
+    expect(damaged.unavailableFields).toContain('refreshTerminal');
+  });
+
+  it('keeps a refusal\'s code and drops the sentence the server sent with it', () => {
+    const e = entry();
+    writeRegistryEntry(e, { mycoHome });
+    writeRefusedLog('proj_1', [refusal()]);
+    const facts = projectDiagnostics(e, mycoHome, NOW);
+    expect(facts.refusals.entries[0]).toEqual({ eventId: evId(1), sessionId: 'sess_1', kind: 'prompt', code: 'clock_skew', at: NOW });
+    expect(JSON.stringify(facts)).not.toContain('secret.env');
+  });
+
+  it('names what it leaves out', () => {
+    const e = entry();
+    writeRegistryEntry(e, { mycoHome });
+    const report = memberDiagnostics({ mycoHome, now: NOW, entries: [e], missedCapture: [], selection: { root: e.root, scope: 'root' } });
+    expect(report.omissions.length).toBeGreaterThan(0);
+    expect(report.omissions.join(' ')).toContain('credentials');
+  });
+});
+
+describe('a code read back from disk is checked against the closed set', () => {
+  it('reports a code outside the vocabulary as none, and counts it', () => {
+    const e = entry();
+    writeRegistryEntry(e, { mycoHome });
+    writeRefusedLog('proj_1', [
+      refusal({ code: 'clock_skew' }),
+      refusal({ eventId: evId(2), code: 'something the server made up' }),
+    ]);
+    const facts = projectDiagnostics(e, mycoHome, NOW);
+    expect(facts.refusals.entries.map((r) => r.code)).toEqual(['clock_skew', null]);
+    expect(facts.refusals.unknownCodes).toBe(1);
+    // The arbitrary string never reaches the report.
+    expect(JSON.stringify(facts)).not.toContain('made up');
+  });
+});
+
+describe('a damaged record is not a healthy zero', () => {
+  it('counts the lines it could not read, and still reports the ones it could', () => {
+    const e = entry();
+    writeRegistryEntry(e, { mycoHome });
+    writeRefusedLog('proj_1', ['{not json', refusal(), 'also not json']);
+    const facts = projectDiagnostics(e, mycoHome, NOW);
+    expect(facts.refusals.loggedSinceLastReset).toBe(1);
+    expect(facts.refusals.unreadableLines).toBe(2);
+  });
+
+  it('reports no refusals and nothing unreadable when the log does not exist', () => {
+    const e = entry();
+    writeRegistryEntry(e, { mycoHome });
+    const facts = projectDiagnostics(e, mycoHome, NOW);
+    expect(facts.refusals).toMatchObject({ loggedSinceLastReset: 0, unreadableLines: 0, unknownCodes: 0, truncated: false });
+  });
+
+  it('says when the log holds more than the report lists', () => {
+    const e = entry();
+    writeRegistryEntry(e, { mycoHome });
+    writeRefusedLog('proj_1', Array.from({ length: MAX_REFUSALS_REPORTED + 5 }, (_, i) => refusal({ eventId: evId(i) })));
+    const facts = projectDiagnostics(e, mycoHome, NOW);
+    expect(facts.refusals.entries).toHaveLength(MAX_REFUSALS_REPORTED);
+    expect(facts.refusals.truncated).toBe(true);
+    expect(facts.refusals.loggedSinceLastReset).toBe(MAX_REFUSALS_REPORTED + 5);
+  });
+});
+
+describe('the latch is reported by its own three fields', () => {
+  it('carries only since, nextProbeAt and backoffMs', () => {
+    const e = entry();
+    writeRegistryEntry(e, { mycoHome });
+    const spool = new MemberSpool('proj_1', { mycoHome });
+    spool.markOffline(NOW);
+    const facts = projectDiagnostics(e, mycoHome, NOW);
+    expect(Object.keys(facts.latch ?? {}).sort()).toEqual(['backoffMs', 'nextProbeAt', 'since']);
+  });
+
+  it('reports no latch while the spool is online', () => {
+    const e = entry();
+    writeRegistryEntry(e, { mycoHome });
+    expect(projectDiagnostics(e, mycoHome, NOW).latch).toBeNull();
+  });
+});
+
+describe('the report names the roots the caller asked about, and no others', () => {
+  it('leaves another project\'s lost capture out of a single-project report', async () => {
+    const e = entry();
+    writeRegistryEntry(e, { mycoHome });
+    recordMissingMembership('/home/dev/unrelated-repo', { mycoHome, now: () => NOW, invokedBy: 'hook stop' });
+    const lines: string[] = [];
+    await runExport([], { mycoHome, now: () => NOW, cwd: e.root, stdout: (l) => lines.push(l), stderr: () => {} });
+    const report = JSON.parse(lines.join('\n')) as { missedCapture: { root: string }[] };
+    expect(report.missedCapture).toEqual([]);
+  });
+
+  it('carries every root with --all', async () => {
+    const e = entry();
+    writeRegistryEntry(e, { mycoHome });
+    recordMissingMembership('/home/dev/unrelated-repo', { mycoHome, now: () => NOW, invokedBy: 'hook stop' });
+    const lines: string[] = [];
+    await runExport(['--all'], { mycoHome, now: () => NOW, cwd: e.root, stdout: (l) => lines.push(l), stderr: () => {} });
+    const report = JSON.parse(lines.join('\n')) as { missedCapture: { root: string }[]; selection: { scope: string } };
+    expect(report.selection.scope).toBe('all');
+    expect(report.missedCapture.map((r) => r.root)).toContain('/home/dev/unrelated-repo');
+  });
+});
+
+describe('an unjoined project still produces a report', () => {
+  it('writes a document naming the root it looked for, with the membership absent', async () => {
+    // A real project directory: the export names a root only where one could
+    // hold a project, so a path that is only a string is no root at all.
+    const project = tempProjectRoot();
+    recordMissingMembership(project, { mycoHome, now: () => NOW, invokedBy: 'hook stop' });
+    const lines: string[] = [];
+    const stderr: string[] = [];
+    await runExport([], { mycoHome, now: () => NOW, cwd: project, stdout: (l) => lines.push(l), stderr: (l) => stderr.push(l) });
+    const raw = lines.join('\n');
+    // Stdout is the document and nothing else: a reader pipes it straight into a file.
+    const report = JSON.parse(raw) as {
+      bundle: string; buildVersion: string; selection: { root: string | null; scope: string; membershipPresent: boolean };
+      projects: unknown[]; missedCapture: { root: string; count: number }[];
+    };
+    expect(report.bundle).toBe('myco.member.diagnostics');
+    expect(report.selection).toMatchObject({ membershipPresent: false, scope: 'root' });
+    expect(report.projects).toEqual([]);
+    expect(report.missedCapture[0]).toMatchObject({ root: project, count: 1 });
+    expect(report.buildVersion.length).toBeGreaterThan(0);
+  });
+});
+
+it('exports the MCP configuration of the selected project', async () => {
+  const project = tempProjectRoot();
+  writeRegistryEntry(entry({ root: project }), { mycoHome });
+  fs.mkdirSync(path.join(project, '.codex'));
+  fs.writeFileSync(path.join(project, '.codex', 'config.toml'),
+    '[mcp_servers.myco]\nurl = "https://myco.example.com/mcp"\nhttp_headers_helper = "myco member mcp-headers --credential registry --server https://myco.example.com"\n');
+  const lines: string[] = [];
+  await runExport([], { mycoHome, cwd: project, stdout: (line) => lines.push(line) });
+  const report = JSON.parse(lines.join('\n'));
+  expect(report.checks).toContainEqual(expect.objectContaining({ symbiont: 'codex', scope: 'project', reason: 'mcp_entry_http' }));
+});
+
+describe('a log that could not be read is not an empty one', () => {
+  it('says so, rather than reporting no refusals', () => {
+    const e = entry();
+    writeRegistryEntry(e, { mycoHome });
+    const spool = new MemberSpool('proj_1', { mycoHome });
+    // A directory in place of the log: the read fails for a reason that is not absence.
+    fs.mkdirSync(path.join(spool.dir, 'refused.jsonl'));
+    const facts = projectDiagnostics(e, mycoHome, NOW);
+    expect(facts.refusals.logReadable).toBe(false);
+    expect(facts.refusals.loggedSinceLastReset).toBe(0);
+  });
+
+  it('reads an absent log as no refusals, which it is', () => {
+    const e = entry();
+    writeRegistryEntry(e, { mycoHome });
+    expect(projectDiagnostics(e, mycoHome, NOW).refusals).toMatchObject({ logReadable: true, loggedSinceLastReset: 0 });
+  });
+
+  it('counts a line that parses to something other than an object', () => {
+    const e = entry();
+    writeRegistryEntry(e, { mycoHome });
+    writeRefusedLog('proj_1', ['null', '"a string"', '[1,2]', '42', refusal()]);
+    const facts = projectDiagnostics(e, mycoHome, NOW);
+    expect(facts.refusals).toMatchObject({ logReadable: true, loggedSinceLastReset: 1, unreadableLines: 4 });
+    expect(facts.refusals.entries[0]!.code).toBe('clock_skew');
+  });
+});
+
+describe('a directory in no project still produces a report', () => {
+  it('names every membership with --all and no root', async () => {
+    const e = entry();
+    writeRegistryEntry(e, { mycoHome });
+    const lines: string[] = [];
+    await runExport(['--all'], { mycoHome, now: () => NOW, cwd: '/', stdout: (l) => lines.push(l), stderr: () => {} });
+    const report = JSON.parse(lines.join('\n')) as Report;
+    expect(report.selection).toEqual({ root: null, scope: 'all', membershipPresent: true });
+    expect(report.registry).toEqual({ readable: true, unavailableEntries: 0 });
+    expect(report.projects).toHaveLength(1);
+  });
+
+  it('writes a document with no membership for a bare call in no project', async () => {
+    const lines: string[] = [];
+    await runExport([], { mycoHome, now: () => NOW, cwd: '/', stdout: (l) => lines.push(l), stderr: () => {} });
+    const report = JSON.parse(lines.join('\n')) as { bundle: string; selection: { root: string | null; membershipPresent: boolean }; projects: unknown[]; missedCapture: unknown[] };
+    expect(report.bundle).toBe('myco.member.diagnostics');
+    expect(report.selection.membershipPresent).toBe(false);
+    expect(report.projects).toEqual([]);
+    expect(report.missedCapture).toEqual([]);
+  });
+
+  it('names every membership with --all when the registry holds none', async () => {
+    const lines: string[] = [];
+    await runExport(['--all'], { mycoHome, now: () => NOW, cwd: '/', stdout: (l) => lines.push(l), stderr: () => {} });
+    const report = JSON.parse(lines.join('\n')) as { selection: { scope: string; membershipPresent: boolean }; projects: unknown[]; checks: unknown[] };
+    expect(report.selection).toMatchObject({ scope: 'all', membershipPresent: false });
+    expect(report.projects).toEqual([]);
+    // The checks that describe the machine are still answered.
+    expect(Array.isArray(report.checks)).toBe(true);
+  });
+});
+
+describe('the report states the build it came from', () => {
+  it('carries the binary version beside the member protocol', () => {
+    const e = entry();
+    writeRegistryEntry(e, { mycoHome });
+    const report = memberDiagnostics({ mycoHome, now: NOW, entries: [e], missedCapture: [], selection: { root: e.root, scope: 'root' } });
+    expect(report.buildVersion.length).toBeGreaterThan(0);
+    expect(report.memberProtocol).toBeGreaterThan(0);
+  });
+});
+
+describe('a spool a report could not read', () => {
+  it('reports a session whose own file is unreadable as unknown, not as nothing pending', () => {
+    const e = entry();
+    writeRegistryEntry(e, { mycoHome });
+    const spool = new MemberSpool('proj_1', { mycoHome });
+    fs.mkdirSync(spool.dir, { recursive: true });
+    // A directory where the session's records belong: the read fails for a reason that is not absence.
+    fs.mkdirSync(path.join(spool.dir, 'sess-a.jsonl'));
+
+    const facts = projectDiagnostics(e, mycoHome, NOW);
+    expect(facts.spool.readable).toBe(true);
+    expect(facts.spool.sessions).toEqual([{ sessionId: 'sess-a', unacknowledged: null, stateReadable: true, lastAckAt: null }]);
+    expect(facts.spool.unacknowledgedTotal).toBeNull();
+  });
+
+  it('reports a session whose lock path it could not take as unknown, through the export a caller runs', async () => {
+    const root = tempProjectRoot();
+    const e = entry({ root });
+    writeRegistryEntry(e, { mycoHome });
+    // A real append: it writes the records AND the session state the report
+    // reads the acknowledgement from, both under the same lock.
+    const spool = new MemberSpool('proj_1', { mycoHome });
+    const ctx: EnvelopeContext = { agent: 'claude-code', sessionId: 'sess-a', stage: spool.stagerFor('sess-a'), version: '2.0.0-test' };
+    spool.append('sess-a', promptEvent(ctx, { promptId: mintId(), text: 'a turn' }));
+    expect(fs.existsSync(path.join(spool.dir, 'sess-a.state.json'))).toBe(true);
+
+    // A directory where that lock belongs: every read under it fails.
+    const lock = path.join(spool.dir, '.sess-a.lock');
+    fs.rmSync(lock, { force: true });
+    fs.mkdirSync(lock);
+
+    const facts = projectDiagnostics(e, mycoHome, NOW);
+    expect(facts.spool.readable).toBe(true);
+    expect(facts.spool.stateReadable).toBe(false);
+    expect(facts.spool.sessions).toEqual([{ sessionId: 'sess-a', unacknowledged: null, stateReadable: false, lastAckAt: null }]);
+    expect(facts.spool.unacknowledgedTotal).toBeNull();
+
+    // And the export a person runs answers rather than crashing.
+    const lines: string[] = [];
+    await runExport([], { mycoHome, now: () => NOW, cwd: root, stdout: (l) => lines.push(l), stderr: () => {} });
+    const report = JSON.parse(lines.join('\n')) as { projects: Array<{ spool: { readable: boolean; stateReadable: boolean; unacknowledgedTotal: number | null } }> };
+    expect(report.projects[0]!.spool).toMatchObject({ readable: true, stateReadable: false, unacknowledgedTotal: null });
+  });
+
+  it('reports a spool directory it could not read as unknown, leaving the layout as it found it', () => {
+    const e = entry();
+    writeRegistryEntry(e, { mycoHome });
+    const broken = spoolDirFor('proj_1', mycoHome);
+    fs.rmSync(broken, { recursive: true, force: true });
+    fs.mkdirSync(path.dirname(broken), { recursive: true });
+    // A file where the spool directory belongs: listing it fails with ENOTDIR.
+    fs.writeFileSync(broken, 'not a directory', 'utf-8');
+
+    const facts = projectDiagnostics(e, mycoHome, NOW);
+    expect(facts.spool.readable).toBe(false);
+    expect(facts.spool.sessionFiles).toBe(0);
+    expect(facts.spool.unacknowledgedTotal).toBeNull();
+    // The report read the layout and did not repair it.
+    expect(fs.statSync(broken).isFile()).toBe(true);
+    expect(fs.readFileSync(broken, 'utf-8')).toBe('not a directory');
+  });
+
+  it('reads an absent spool directory as the empty one it is', () => {
+    const e = entry();
+    writeRegistryEntry(e, { mycoHome });
+    fs.rmSync(spoolDirFor('proj_1', mycoHome), { recursive: true, force: true });
+
+    const facts = projectDiagnostics(e, mycoHome, NOW);
+    expect(facts.spool).toMatchObject({ readable: true, sessionFiles: 0, unacknowledgedTotal: 0 });
+  });
+});
+
+describe('a refusal record short of a field it is read by', () => {
+  it('counts it unreadable rather than reporting a blank id at the epoch', () => {
+    const e = entry();
+    writeRegistryEntry(e, { mycoHome });
+    const spool = new MemberSpool('proj_1', { mycoHome });
+    fs.mkdirSync(spool.dir, { recursive: true });
+    const whole = { eventId: 'ev-1', sessionId: 'sess-a', kind: 'prompt', code: 'refused', reason: 'no', at: NOW };
+    fs.writeFileSync(path.join(spool.dir, 'refused.jsonl'), [
+      JSON.stringify(whole),
+      '{}',
+      JSON.stringify({ ...whole, at: 'bad' }),
+      JSON.stringify({ ...whole, sessionId: '' }),
+    ].join('\n'), 'utf-8');
+
+    const facts = projectDiagnostics(e, mycoHome, NOW);
+    expect(facts.refusals.logReadable).toBe(true);
+    expect(facts.refusals.loggedSinceLastReset).toBe(1);
+    expect(facts.refusals.unreadableLines).toBe(3);
+  });
+});
+
+describe('a refusal the drain raised against an unparsable spool line', () => {
+  it('reaches the report naming no event and no kind, rather than counting as a damaged line', async () => {
+    const e = entry();
+    writeRegistryEntry(e, { mycoHome });
+    const spool = new MemberSpool('proj_1', { mycoHome });
+    fs.writeFileSync(path.join(spool.dir, 'sess-a.jsonl'), 'not json\n', 'utf-8');
+    // The record never parses, so the drain refuses it without reaching a server.
+    const client = { send: () => { throw new Error('a line that cannot be parsed reaches no server'); } };
+    const budget = { deadline: NOW + 60_000, connectTimeoutMs: 1_000, drains: true } as never;
+    const result = await spool.drainSession('sess-a', client as never, budget, { now: () => NOW });
+    expect(result.refused).toBe(1);
+
+    const facts = projectDiagnostics(e, mycoHome, NOW);
+    expect(facts.refusals.unreadableLines).toBe(0);
+    expect(facts.refusals.entries).toEqual([{ eventId: null, sessionId: 'sess-a', kind: null, code: 'refused', at: NOW }]);
+  });
+});
+
+describe('a session state the report could not use', () => {
+  it('reports the acknowledgement unknown, and withholds a spool total that would read as the whole', () => {
+    const e = entry();
+    writeRegistryEntry(e, { mycoHome });
+    const spool = new MemberSpool('proj_1', { mycoHome });
+    fs.writeFileSync(path.join(spool.dir, 'sess-a.jsonl'), '', 'utf-8');
+    // Parsable JSON that is not a state: the file is there and holds nothing the report can read.
+    fs.writeFileSync(path.join(spool.dir, 'sess-a.state.json'), JSON.stringify({ version: 'wrong' }), { mode: 0o600 });
+
+    const facts = projectDiagnostics(e, mycoHome, NOW);
+    expect(facts.spool.readable).toBe(true);
+    expect(facts.spool.stateReadable).toBe(false);
+    expect(facts.spool.lastAckAt).toBeNull();
+    expect(facts.spool.sessions).toEqual([{ sessionId: 'sess-a', unacknowledged: null, stateReadable: false, lastAckAt: null }]);
+  });
+});
+
+describe('an offline latch the report could not use', () => {
+  it('says whether this member is holding off is unknown, rather than reporting it online', () => {
+    const e = entry();
+    writeRegistryEntry(e, { mycoHome });
+    const spool = new MemberSpool('proj_1', { mycoHome });
+    fs.writeFileSync(path.join(spool.dir, 'offline.json'), JSON.stringify({ since: 'soon' }), { mode: 0o600 });
+
+    const facts = projectDiagnostics(e, mycoHome, NOW);
+    expect(facts.latchReadable).toBe(false);
+    expect(facts.latch).toBeNull();
+  });
+
+  it('says unknown for a latch file holding null, rather than throwing on its fields', () => {
+    const e = entry();
+    writeRegistryEntry(e, { mycoHome });
+    const spool = new MemberSpool('proj_1', { mycoHome });
+    fs.writeFileSync(path.join(spool.dir, 'offline.json'), 'null', { mode: 0o600 });
+
+    const facts = projectDiagnostics(e, mycoHome, NOW);
+    expect(facts.latchReadable).toBe(false);
+    expect(facts.latch).toBeNull();
+  });
+
+  it('reads an absent latch as the member being online, which it is', () => {
+    const e = entry();
+    writeRegistryEntry(e, { mycoHome });
+    new MemberSpool('proj_1', { mycoHome });
+
+    const facts = projectDiagnostics(e, mycoHome, NOW);
+    expect(facts.latchReadable).toBe(true);
+    expect(facts.latch).toBeNull();
+  });
+});
+
+describe('a state file the report can reach but cannot trust', () => {
+  it('leaves the pending count unknown rather than counting every record as un-acknowledged', () => {
+    const e = entry();
+    writeRegistryEntry(e, { mycoHome });
+    const spool = new MemberSpool('proj_1', { mycoHome });
+    fs.writeFileSync(path.join(spool.dir, 'sess-a.jsonl'), ['{"a":1}', '{"a":2}'].join('\n') + '\n', 'utf-8');
+    // A state whose acknowledged mark is unusable: counting from zero here would
+    // report two records pending on a session that may have shipped both.
+    fs.writeFileSync(path.join(spool.dir, 'sess-a.state.json'), JSON.stringify({ version: 1, highWater: 'two', prompts: {} }), { mode: 0o600 });
+
+    const facts = projectDiagnostics(e, mycoHome, NOW);
+    expect(facts.spool.sessions).toEqual([{ sessionId: 'sess-a', unacknowledged: null, stateReadable: false, lastAckAt: null }]);
+    expect(facts.spool.unacknowledgedTotal).toBeNull();
+    expect(facts.spool.stateReadable).toBe(false);
+  });
+
+  it('refuses a state whose acknowledgement is not an instant, and leaves the mark the runtime keeps', () => {
+    const e = entry();
+    writeRegistryEntry(e, { mycoHome });
+    const spool = new MemberSpool('proj_1', { mycoHome });
+    fs.writeFileSync(path.join(spool.dir, 'sess-a.jsonl'), ['{"a":1}', '{"a":2}'].join('\n') + '\n', 'utf-8');
+    // A real mark, then one field beside it corrupted as the raw JSON it would arrive as.
+    updateSessionState(spool.dir, 'sess-a', (state) => { state.highWater = 2; });
+    const file = path.join(spool.dir, 'sess-a.state.json');
+    const saved = JSON.parse(fs.readFileSync(file, 'utf-8')) as Record<string, unknown>;
+    fs.writeFileSync(file, JSON.stringify({ ...saved, lastAckAt: 'yesterday' }), { mode: 0o600 });
+
+    // The report will not count or date it.
+    const facts = projectDiagnostics(e, mycoHome, NOW);
+    expect(facts.spool.stateReadable).toBe(false);
+    expect(facts.spool.lastAckAt).toBeNull();
+    expect(facts.spool.sessions).toEqual([{ sessionId: 'sess-a', unacknowledged: null, stateReadable: false, lastAckAt: null }]);
+
+    // The runtime still holds the mark, so nothing acknowledged is drained again.
+    const after = updateSessionState(spool.dir, 'sess-a', () => {});
+    expect(after.highWater).toBe(2);
+  });
+});
+
+describe('a private file that is there and cannot be opened', () => {
+  it('reads as unreadable rather than as absent', () => {
+    const e = entry();
+    writeRegistryEntry(e, { mycoHome });
+    const spool = new MemberSpool('proj_1', { mycoHome });
+    fs.writeFileSync(path.join(spool.dir, 'sess-a.jsonl'), '', 'utf-8');
+    // A directory where the state file belongs: stat succeeds, the open does not.
+    fs.mkdirSync(path.join(spool.dir, 'sess-a.state.json'));
+
+    const facts = projectDiagnostics(e, mycoHome, NOW);
+    expect(facts.spool.stateReadable).toBe(false);
+    expect(facts.spool.sessions[0]!.stateReadable).toBe(false);
+  });
+});
+
+describe('a Deployment URL carrying credentials', () => {
+  it('exports the origin and the path, and neither the userinfo nor the query a token can ride in', () => {
+    const e = { ...entry(), serverUrl: 'https://joiner:sQuirrel@deployment.example/base?token=zEbra#fRagment' };
+    writeRegistryEntry(e, { mycoHome });
+
+    const facts = projectDiagnostics(e, mycoHome, NOW);
+    expect(facts.membership.serverUrl).toBe('https://deployment.example/base');
+    expect(JSON.stringify(facts)).not.toMatch(/sQuirrel|joiner|zEbra|fRagment/);
+  });
+
+  it('reports a stored value that is not a URL as unknown rather than passing it through', () => {
+    const e = { ...entry(), serverUrl: 'not a url' };
+    writeRegistryEntry(e, { mycoHome });
+
+    expect(projectDiagnostics(e, mycoHome, NOW).membership.serverUrl).toBeNull();
+  });
+
+  it('names no scheme a Deployment is not reached over, whose body would survive every field cleared', () => {
+    const e = { ...entry(), serverUrl: 'data:text/plain,sQuirrel' };
+    writeRegistryEntry(e, { mycoHome });
+
+    const facts = projectDiagnostics(e, mycoHome, NOW);
+    expect(facts.membership.serverUrl).toBeNull();
+    expect(JSON.stringify(facts)).not.toMatch(/sQuirrel/);
+  });
+
+  it('keeps a plain http Deployment, which a local one is reached over', () => {
+    const e = { ...entry(), serverUrl: 'http://127.0.0.1:8787/' };
+    writeRegistryEntry(e, { mycoHome });
+
+    expect(projectDiagnostics(e, mycoHome, NOW).membership.serverUrl).toBe('http://127.0.0.1:8787/');
+  });
+});
+
+describe('a registry the report could not read', () => {
+  it('answers unavailable for an entry file it cannot use, rather than that no membership is held', () => {
+    const root = tempProjectRoot();
+    const e = entry({ root });
+    writeRegistryEntry(e, { mycoHome });
+    // The entry is there and says nothing the read can use.
+    fs.writeFileSync(registryEntryPath(root, mycoHome), '{"nope":1}', { mode: 0o600 });
+
+    expect(readRegistryEntryResult(root, mycoHome)).toEqual({ status: 'unavailable' });
+    const listed = listRegistryEntriesResult(mycoHome);
+    expect(listed).toMatchObject({ readable: true, unavailableEntries: 1 });
+    expect(listed.entries).toEqual([]);
+  });
+
+  it('reads an entry never written as missing, and one it holds as present', () => {
+    const root = tempProjectRoot();
+    expect(readRegistryEntryResult(root, mycoHome)).toEqual({ status: 'missing' });
+    const e = entry({ root });
+    writeRegistryEntry(e, { mycoHome });
+    expect(readRegistryEntryResult(root, mycoHome).status).toBe('present');
+  });
+
+  it('says a membership is unknown where the registry held none and could not be read', () => {
+    const facts = memberDiagnostics({
+      mycoHome, now: NOW, entries: [], missedCapture: [],
+      selection: { root: null, scope: 'all' }, registry: { readable: false, unavailableEntries: 0 },
+    });
+    expect(facts.selection.membershipPresent).toBeNull();
+    expect(facts.registry).toEqual({ readable: false, unavailableEntries: 0 });
+  });
+
+  it('says a membership is absent where the registry answered and held none', () => {
+    const facts = memberDiagnostics({ mycoHome, now: NOW, entries: [], missedCapture: [], selection: { root: null, scope: 'all' } });
+    expect(facts.selection.membershipPresent).toBe(false);
+    expect(facts.registry).toEqual({ readable: true, unavailableEntries: 0 });
+  });
+});
+
+describe('a registry the export could not read', () => {
+  /** An entry file that is there and holds nothing a read can use. */
+  const damage = (root: string) => fs.writeFileSync(registryEntryPath(root, mycoHome), '{"nope":1}', { mode: 0o600 });
+
+  it('reports the asked project as unknown rather than as never joined', async () => {
+    const root = tempProjectRoot();
+    writeRegistryEntry(entry({ root }), { mycoHome });
+    damage(root);
+
+    const lines: string[] = [];
+    await runExport([], { mycoHome, now: () => NOW, cwd: root, stdout: (l) => lines.push(l), stderr: () => {} });
+    const report = JSON.parse(lines.join('\n')) as Report;
+    expect(report.selection.membershipPresent).toBeNull();
+    expect(report.registry).toEqual({ readable: false, unavailableEntries: 1 });
+    expect(report.projects).toHaveLength(0);
+  });
+
+  it('counts an entry it could not use with --all, and still names the memberships it could', async () => {
+    const good = tempProjectRoot();
+    const bad = tempProjectRoot();
+    writeRegistryEntry(entry({ root: good }), { mycoHome });
+    writeRegistryEntry(entry({ root: bad, projectId: 'proj_2' }), { mycoHome });
+    damage(bad);
+
+    const lines: string[] = [];
+    await runExport(['--all'], { mycoHome, now: () => NOW, cwd: '/', stdout: (l) => lines.push(l), stderr: () => {} });
+    const report = JSON.parse(lines.join('\n')) as Report;
+    // One membership held is a membership held, however much else the registry could not answer for.
+    expect(report.selection.membershipPresent).toBe(true);
+    expect(report.registry).toEqual({ readable: true, unavailableEntries: 1 });
+    expect(report.projects).toHaveLength(1);
+  });
+
+  it('reads the registry without repairing it, so a layout it cannot migrate still answers', () => {
+    const root = tempProjectRoot();
+    writeRegistryEntry(entry({ root }), { mycoHome });
+    // A v1 entry beside a lock path nothing can take: a read that migrated would write here.
+    const v1 = { version: 1, projectId: 'proj_v1', serverUrl: 'https://deployment.example', token: SECRET, tokenId: 'mt_v1', memberId: 'mem_v1', root: '/home/dev/v1', machineId: 'dev-laptop', joinedAt: NOW, updatedAt: NOW };
+    fs.writeFileSync(registryEntryPath('/home/dev/v1', mycoHome), JSON.stringify(v1), { mode: 0o600 });
+
+    const listed = listRegistryEntriesResult(mycoHome);
+    expect(listed.readable).toBe(true);
+    expect(listed.unavailableEntries).toBe(0);
+    expect(listed.entries.map((held) => held.projectId).sort()).toEqual(['proj_1', 'proj_v1']);
+    // Nothing was rewritten: the file on disk is still the v1 it was.
+    expect(JSON.parse(fs.readFileSync(registryEntryPath('/home/dev/v1', mycoHome), 'utf-8')).version).toBe(1);
+  });
+});
+
+describe('a missed-capture record the report could not use', () => {
+  /** The file `recordMissingMembership` writes for a root, holding whatever is given. */
+  const writeRecord = (root: string, value: unknown) => {
+    recordMissingMembership(root, { mycoHome, invokedBy: 'hook stop' });
+    const dir = path.join(mycoHome, 'member', 'unmembered');
+    const name = fs.readdirSync(dir).filter((f) => f.endsWith('.json'))[0]!;
+    fs.writeFileSync(path.join(dir, name), JSON.stringify(value), { mode: 0o600 });
+  };
+
+  it('counts a record it cannot count or date, rather than reporting no misses', async () => {
+    const root = tempProjectRoot();
+    writeRecord(root, { version: 1, root, count: -1, firstAt: NOW, lastAt: NOW });
+
+    const lines: string[] = [];
+    await runExport(['--all'], { mycoHome, now: () => NOW, cwd: '/', stdout: (l) => lines.push(l), stderr: () => {} });
+    const report = JSON.parse(lines.join('\n')) as Report;
+    expect(report.missedCapture).toEqual([]);
+    expect(report.missedCaptureStore).toEqual({ readable: true, unavailableRecords: 1 });
+  });
+
+  it('reports the asked root as unknown where its record is unusable', async () => {
+    const root = tempProjectRoot();
+    writeRecord(root, { version: 1, root, count: 2, firstAt: NOW, lastAt: Number.NaN });
+
+    const lines: string[] = [];
+    await runExport([], { mycoHome, now: () => NOW, cwd: root, stdout: (l) => lines.push(l), stderr: () => {} });
+    const report = JSON.parse(lines.join('\n')) as Report;
+    expect(report.missedCapture).toEqual([]);
+    expect(report.missedCaptureStore).toEqual({ readable: false, unavailableRecords: 1 });
+  });
+
+  it('leaves the runtime reading a record the report will not, so a hook still counts its misses', () => {
+    const root = tempProjectRoot();
+    writeRecord(root, { version: 1, root, count: -1, firstAt: NOW, lastAt: NOW });
+
+    expect(readMissingMembership(root, mycoHome)).toMatchObject({ root, count: -1 });
+    expect(readMissingMembershipResult(root, mycoHome)).toEqual({ status: 'unavailable' });
+  });
+
+  it('counts a record at a version this build does not write', () => {
+    const root = tempProjectRoot();
+    writeRecord(root, { version: 2, root, count: 1, firstAt: NOW, lastAt: NOW });
+
+    expect(readMissingMembershipResult(root, mycoHome)).toEqual({ status: 'unavailable' });
+    expect(listMissingMembershipsResult(mycoHome)).toMatchObject({ records: [], readable: true, unavailableRecords: 1 });
+  });
+
+  it('reads a store nothing has missed into as holding none', () => {
+    expect(listMissingMembershipsResult(mycoHome)).toEqual({ records: [], readable: true, unavailableRecords: 0 });
+  });
+});
+
+describe('a directory belonging to no project', () => {
+  it('names no root, so a bare export does not report the directory it was run from', async () => {
+    const bare = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'myco-bare-')));
+    temps.push(bare);
+    const lines: string[] = [];
+    await runExport([], { mycoHome, now: () => NOW, cwd: bare, stdout: (l) => lines.push(l), stderr: () => {} });
+    const report = JSON.parse(lines.join('\n')) as { selection: { root: string | null; membershipPresent: boolean } };
+    expect(report.selection).toMatchObject({ root: null, membershipPresent: false });
+  });
+});
+
+describe('a check the report cannot tell apart from another', () => {
+  it('carries the reason, the symbiont and the scope it read, and none of its sentence', () => {
+    const facts = memberDiagnostics({
+      mycoHome, now: NOW, entries: [], missedCapture: [],
+      selection: { root: null, scope: 'root' },
+      checks: [
+        { name: 'Member MCP resolution', status: 'warn', reason: 'home_pin_missing', symbiont: null, scope: null, fixable: false, fixId: null },
+        { name: 'Member MCP resolution', status: 'ok', reason: 'mcp_entry_http', symbiont: 'claude-code', scope: 'global', fixable: false, fixId: null },
+        { name: 'Member MCP resolution', status: 'ok', reason: 'mcp_entry_http', symbiont: 'claude-code', scope: 'project', fixable: false, fixId: null },
+        { name: 'Member MCP resolution', status: 'warn', reason: 'mcp_target_unreadable', symbiont: 'cursor', scope: 'global', fixable: false, fixId: null },
+      ],
+    });
+
+    // Each scope stays its own line: a reader sees where the entry was found,
+    // and the export decides no precedence between them.
+    expect(facts.checks).toEqual([
+      { name: 'Member MCP resolution', status: 'warn', reason: 'home_pin_missing', symbiont: null, scope: null, fixable: false, fixId: null },
+      { name: 'Member MCP resolution', status: 'ok', reason: 'mcp_entry_http', symbiont: 'claude-code', scope: 'global', fixable: false, fixId: null },
+      { name: 'Member MCP resolution', status: 'ok', reason: 'mcp_entry_http', symbiont: 'claude-code', scope: 'project', fixable: false, fixId: null },
+      { name: 'Member MCP resolution', status: 'warn', reason: 'mcp_target_unreadable', symbiont: 'cursor', scope: 'global', fixable: false, fixId: null },
+    ]);
+  });
+});

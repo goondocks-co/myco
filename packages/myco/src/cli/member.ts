@@ -10,6 +10,7 @@
  */
 import fs from 'node:fs';
 import path from 'node:path';
+import type { DoctorCheck } from './doctor.js';
 import { getMachineId } from '../machine-id.js';
 import { isSafeProjectRoot } from '../project-root.js';
 import { RUNTIME_HOME_FILENAME, defaultMycoHome, readHomePin, resolveMycoHome } from '../paths/home.js';
@@ -18,9 +19,10 @@ import { CREDENTIAL_FLAG, CREDENTIAL_SOURCES, deploymentScopedHeaders, isProject
 import { isHttpsUrl, isMemberTokenShape, parseCredentialFlag, resolveCredential, resolveMemberProjectRoot } from '../member/credential.js';
 import { refreshMemberCredential, type RefreshReport } from '../member/refresh.js';
 import { runImport } from '../member/import.js';
-import { clearMissingMembership, listMissingMemberships, pruneMissingMemberships, readMissingMembership } from '../member/no-membership.js';
-import { deploymentUrl, listRegistryEntries, readDeploymentMembership, readRegistryEntry, removeRegistryEntry, writeRegistryEntry, REGISTRY_VERSION, type RegistryEntry } from '../member/registry.js';
-import { applySpoolRetention, lastAckAt } from '../member/retention.js';
+import { clearMissingMembership, listMissingMembershipsResult, pruneMissingMemberships, readMissingMembership, readMissingMembershipResult, type MissingMembershipRecord } from '../member/no-membership.js';
+import { deploymentUrl, listRegistryEntries, listRegistryEntriesResult, readDeploymentMembership, readRegistryEntry, readRegistryEntryResult, removeRegistryEntry, writeRegistryEntry, REGISTRY_VERSION, type RegistryEntry } from '../member/registry.js';
+import { applySpoolRetention } from '../member/retention.js';
+import { memberDiagnostics, projectDiagnostics } from '../member/diagnostics.js';
 import { MemberSpool, type DrainResult } from '../member/spool.js';
 import { ServerClient, type FetchLike } from '../member/transport.js';
 import { openBrowser } from './open-browser.js';
@@ -44,6 +46,9 @@ Ops:
   status [--all]     The registry entry (token redacted), expiry, spool depth per session,
                      last acknowledgement and refusal, the offline latch, and any capture
                      attempts that found no membership.
+  export [--all]     The same facts as status, as one JSON document, with the binary, runtime-pin
+                     and MCP-resolution checks. Carries no token, no captured content and no
+                     free-text detail; the document's omissions list names what is left out.
   refresh [--all]    Rotate the member token when its refresh window is open. The predecessor keeps
                      working until the successor is first used; an env-sourced token is never rotated.
   provision <agent> [--root <dir>]
@@ -95,6 +100,56 @@ function entriesFor(args: readonly string[], deps: MemberCliDeps): RegistryEntry
     return [];
   }
   return [entry];
+}
+
+/**
+ * The memberships a diagnostic surface reads, and what the registry could not
+ * answer for. Reads only: no migration and no write lock, so a damaged entry is
+ * reported rather than repaired.
+ */
+function registrySelection(args: readonly string[], deps: MemberCliDeps): {
+  root: string | null; all: boolean; entries: RegistryEntry[]; readable: boolean; unavailableEntries: number;
+} {
+  const mycoHome = homeFor(deps);
+  const all = args.includes('--all');
+  if (all) return { root: null, all, ...listRegistryEntriesResult(mycoHome) };
+  const root = projectRootOrNull(deps.cwd);
+  const selected = root === null ? null : readRegistryEntryResult(root, mycoHome);
+  return {
+    root, all,
+    entries: selected?.status === 'present' ? [selected.entry] : [],
+    readable: selected?.status !== 'unavailable',
+    unavailableEntries: selected?.status === 'unavailable' ? 1 : 0,
+  };
+}
+
+/**
+ * The missed-capture records a diagnostic surface reads, and what the store
+ * could not answer for. A record naming another root, or one nothing can count
+ * or date, is unavailable rather than a number.
+ *
+ * `missedCaptureRoot` is the root a hook keys its misses under, which carries no
+ * project-root gate: a record exists for directories a registry entry cannot.
+ */
+function missedCaptureRoot(deps: MemberCliDeps): string | null {
+  try {
+    return resolveMemberProjectRoot(deps.cwd);
+  } catch {
+    return null;
+  }
+}
+
+function missedCaptureSelection(root: string | null, all: boolean, deps: MemberCliDeps): {
+  records: MissingMembershipRecord[]; readable: boolean; unavailableRecords: number;
+} {
+  const mycoHome = homeFor(deps);
+  if (all) return listMissingMembershipsResult(mycoHome);
+  const read = root === null ? null : readMissingMembershipResult(root, mycoHome);
+  return {
+    records: read?.status === 'present' ? [read.record] : [],
+    readable: read?.status !== 'unavailable',
+    unavailableRecords: read?.status === 'unavailable' ? 1 : 0,
+  };
 }
 
 /** The flags `join` understands. An unknown flag is refused: a token must never reach argv, and a typo must never look like a success. */
@@ -354,37 +409,87 @@ export async function runDrain(args: readonly string[], deps: MemberCliDeps = {}
   return results;
 }
 
+/**
+ * This machine's membership, in lines.
+ *
+ * The facts come from `projectDiagnostics`, which `export` also reads. The token
+ * is shown redacted here; a report carries none at all.
+ */
 export function runStatus(args: readonly string[], deps: MemberCliDeps = {}): void {
   const out = deps.stdout ?? ((l) => process.stdout.write(`${l}\n`));
   const now = deps.now ?? Date.now;
-  for (const entry of entriesFor(args, deps)) {
-    const spool = new MemberSpool(entry.projectId, { mycoHome: homeFor(deps) });
-    out(`project:    ${entry.projectId}`);
-    out(`root:       ${entry.root}`);
-    out(`server:     ${entry.serverUrl}`);
-    out(`token:      ${redact(entry.token)}${entry.tokenId ? ` (${entry.tokenId})` : ''}`);
-    out(`expires:    ${when(entry.expiresAt)}${entry.expiresAt !== undefined && entry.expiresAt <= now() ? ' (EXPIRED)' : ''}`);
-    out(`refresh:    ${entry.refreshTerminal ? 'unavailable — re-provision with `myco member join`' : entry.refreshAfter === undefined ? 'not yet announced' : `after ${when(entry.refreshAfter)}`}`);
-    out(`machine:    ${entry.machineId}`);
-    out(`joined:     ${when(entry.joinedAt)}`);
-    const sessions = spool.sessionIds();
-    let lastAck = 0;
-    let depth = 0;
-    for (const sessionId of sessions) {
-      const d = spool.depth(sessionId);
-      depth += d;
-      out(`spool:      ${sessionId} — ${d} un-acknowledged`);
-    }
-    for (const sessionId of spool.stateSessionIds()) lastAck = Math.max(lastAck, lastAckAt(spool, sessionId));
-    out(`spool:      ${sessions.length} session file(s), ${depth} un-acknowledged event(s)`);
-    out(`last ack:   ${lastAck > 0 ? when(lastAck) : '—'}`);
-    const refused = spool.readRefused();
-    const last = refused[refused.length - 1];
-    out(`refused:    ${refused.length} logged${last ? `; last ${last.kind} ${last.eventId} (${last.code}) at ${when(last.at)}` : ''}`);
-    const latch = spool.readLatch();
-    out(`latch:      ${latch ? `offline since ${when(latch.since)}, next probe ${when(latch.nextProbeAt)} (backoff ${latch.backoffMs} ms)` : 'online'}`);
+  const err = deps.stderr ?? ((l: string) => process.stderr.write(`${l}\n`));
+  const mycoHome = homeFor(deps);
+  const selection = registrySelection(args, deps);
+  for (const entry of selection.entries) {
+    const facts = projectDiagnostics(entry, mycoHome, now());
+    const { membership, spool, latch, refusals } = facts;
+    out(`project:    ${membership.projectId}`);
+    out(`root:       ${membership.root}`);
+    out(`server:     ${membership.serverUrl ?? 'unknown'}`);
+    out(`token:      ${redact(entry.token)}${membership.tokenId ? ` (${membership.tokenId})` : ''}`);
+    out(`expires:    ${membership.unavailableFields.includes('expiresAt') ? 'unknown' : `${when(membership.expiresAt ?? undefined)}${membership.expired === true ? ' (EXPIRED)' : ''}`}`);
+    out(`refresh:    ${membership.refreshTerminal === null ? 'unknown'
+      : membership.refreshTerminal ? 'unavailable — re-provision with `myco member join`'
+      : membership.unavailableFields.includes('refreshAfter') ? 'unknown'
+      : membership.refreshAfter === null ? 'not yet announced' : `after ${when(membership.refreshAfter)}`}`);
+    out(`machine:    ${membership.machineId}`);
+    out(`joined:     ${membership.joinedAt === null ? 'unknown' : when(membership.joinedAt)}`);
+    if (membership.unavailableFields.length > 0) out(`membership: unknown ${membership.unavailableFields.join(', ')}`);
+    for (const session of spool.sessions) out(`spool:      ${session.sessionId} — ${session.unacknowledged ?? 'unknown'} un-acknowledged`);
+    out(`spool:      ${spool.readable ? spool.sessionFiles : 'unknown'} session file(s), ${spool.unacknowledgedTotal ?? 'unknown'} un-acknowledged event(s)`);
+    out(`last ack:   ${!spool.stateReadable ? 'unknown — state could not be read' : spool.lastAckAt === null ? '—' : when(spool.lastAckAt)}`);
+    const last = refusals.entries[refusals.entries.length - 1];
+    const damaged = refusals.unreadableLines > 0 ? `, ${refusals.unreadableLines} unreadable` : '';
+    out(`refused:    ${refusals.logReadable ? `${refusals.loggedSinceLastReset} logged${damaged}${last ? `; last ${last.kind ?? 'unknown kind'} ${last.eventId ?? 'unknown event'} (${last.code ?? 'code not recognised'}) at ${last.at === null ? 'unknown' : when(last.at)}` : ''}` : 'the log could not be read'}`);
+    out(`latch:      ${!facts.latchReadable ? 'unknown — latch could not be read' : latch ? `offline since ${when(latch.since)}, next probe ${when(latch.nextProbeAt)} (backoff ${latch.backoffMs} ms)` : 'online'}`);
   }
-  reportMissedCapture(out, args, deps);
+  if (selection.all) {
+    if (!selection.readable) err('myco member: the registry directory could not be read');
+    else if (selection.unavailableEntries > 0) {
+      out(`registry:   ${selection.unavailableEntries} ${selection.unavailableEntries === 1 ? 'entry' : 'entries'} could not be read`);
+    }
+  } else if (selection.root === null) err('myco member: this directory belongs to no project');
+  else if (!selection.readable) err(`myco member: the registry entry for ${selection.root} could not be read`);
+  else if (selection.entries.length === 0) {
+    err(`myco member: no registry entry for ${selection.root} — run \`myco member join <server-url> --project <id>\``);
+  }
+  reportMissedCapture(out, selection, deps);
+}
+
+/** A safe Git project root, or null outside one. */
+function projectRootOrNull(cwd?: string): string | null {
+  try {
+    const root = resolveMemberProjectRoot(cwd);
+    return isSafeProjectRoot(root) ? root : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Export selected memberships and routing checks as one JSON document. */
+export async function runExport(args: readonly string[], deps: MemberCliDeps = {}): Promise<void> {
+  const out = deps.stdout ?? ((l) => process.stdout.write(`${l}\n`));
+  const mycoHome = homeFor(deps);
+  const { root, all, entries, ...registry } = registrySelection(args, deps);
+  const { records: missedCapture, ...missedCaptureStore } = missedCaptureSelection(root, all, deps);
+  const { checkBinaryVersionSkew, checkRuntimePin, checkMemberMcpResolution } = await import('./doctor.js');
+  const checkRoots = [...new Set(all ? entries.map((entry) => entry.root) : root === null ? [] : [root])];
+  const toFacts = (check: DoctorCheck, checkRoot: string | null = null) => ({
+    name: check.name, status: check.status, reason: check.reason ?? null, symbiont: check.symbiont ?? null,
+    scope: check.scope ?? null, root: check.root ?? (check.scope === 'global' ? null : checkRoot), fixable: check.fixable, fixId: check.fixId ?? null,
+  });
+  const machineChecks = [checkBinaryVersionSkew(), await checkRuntimePin()]
+    .filter((check): check is DoctorCheck => check !== null).map((check) => toFacts(check));
+  const projectChecks = await Promise.all(checkRoots.map(async (checkRoot) =>
+    // A report reads the registry where it stands: no upgrade, no write lock.
+    (await checkMemberMcpResolution(path.join(checkRoot, '.myco'), { ...(deps.env ?? process.env), MYCO_HOME: mycoHome }, { registryRead: 'strict' }))
+      .map((check) => toFacts(check, checkRoot))));
+  const checks = [...new Map([...machineChecks, ...projectChecks.flat()].map((check) => [JSON.stringify(check), check])).values()];
+  out(JSON.stringify(memberDiagnostics({
+    mycoHome, now: (deps.now ?? Date.now)(), entries, missedCapture,
+    selection: { root, scope: all ? 'all' : 'root' }, registry, missedCaptureStore, checks,
+  }), null, 2));
 }
 
 /**
@@ -395,17 +500,20 @@ export function runStatus(args: readonly string[], deps: MemberCliDeps = {}): vo
  * project whose pin, home or join is wrong reads "N hook invocations found no
  * registry entry for <root>" instead of an empty report.
  */
-function reportMissedCapture(out: (line: string) => void, args: readonly string[], deps: MemberCliDeps): void {
+function reportMissedCapture(out: (line: string) => void, selection: { root: string | null; all: boolean }, deps: MemberCliDeps): void {
   const mycoHome = homeFor(deps);
   // Status is one of the two moments that sweep the store (the other is `join`);
   // a hook counts its miss and gets out of the way.
   pruneMissingMemberships(mycoHome, (deps.now ?? Date.now)());
-  const records = args.includes('--all')
-    ? listMissingMemberships(mycoHome)
-    : [readMissingMembership(resolveMemberProjectRoot(deps.cwd), mycoHome)].filter((r) => r !== null);
+  const { records, readable, unavailableRecords } = missedCaptureSelection(selection.all ? null : missedCaptureRoot(deps), selection.all, deps);
   for (const record of records) {
     out(`unmembered: ${record.count} hook invocation(s) found no registry entry for ${record.root}`);
     out(`            first ${when(record.firstAt)}, last ${when(record.lastAt)}${record.lastInvokedBy ? ` (${record.lastInvokedBy})` : ''}`);
+  }
+  if (!readable) {
+    out(`unmembered: unknown — ${selection.all ? 'the missed-capture store' : 'the record for this project'} could not be read`);
+  } else if (unavailableRecords > 0) {
+    out(`unmembered: ${unavailableRecords} record(s) could not be read`);
   }
 }
 
@@ -674,6 +782,7 @@ export async function run(args: readonly string[], deps: MemberCliDeps = {}): Pr
     case 'leave': runLeave(rest, deps); return;
     case 'drain': await runDrain(rest, deps); return;
     case 'status': runStatus(rest, deps); return;
+    case 'export': await runExport(rest, deps); return;
     case 'refresh': await runRefresh(rest, deps); return;
     case 'link-github': await runLinkGithub(rest, deps); return;
     case 'provision': runProvision(rest, deps); return;
