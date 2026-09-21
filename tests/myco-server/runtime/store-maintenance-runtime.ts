@@ -72,7 +72,6 @@ const mf = new Miniflare({
   ],
   compatibilityDate: '2026-07-01',
   d1Databases: ['DB'],
-  d1Persist: path.join(RUN, 'd1'),
 });
 const call = async (step: string) => (await mf.dispatchFetch(`http://runtime/${step}`)).json() as Promise<any>;
 
