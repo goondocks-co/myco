@@ -24,7 +24,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { resolveMycoHome } from '../paths/home.js';
 import { LifecycleLock, withFileLockSync, type AcquireResult } from '../utils/lifecycle-lock.js';
-import { ensureMemberDir, ensurePrivateFile, memberRoot, readPrivateJson, reportSkippedPrivateFile, writePrivateFileAtomic } from './store.js';
+import { isProjectId } from './constants.js';
+import { assertMemberPathContained, pathIsAbsent, ensureMemberDir, ensurePrivateFile, memberRoot, readPrivateJson, reportSkippedPrivateFile, writePrivateFileAtomic } from './store.js';
 
 export const REGISTRY_VERSION = 2;
 const PROJECTS_DIRNAME = 'projects';
@@ -481,25 +482,89 @@ export function listRegistryEntries(mycoHome: string = resolveMycoHome()): Regis
   for (const name of fs.readdirSync(dir).sort()) {
     if (!name.endsWith('.json')) continue;
     const file = path.join(dir, name);
-    const read = readPrivateJson<ProjectBinding>(file);
-    if (!read.ok) {
-      reportSkippedPrivateFile('registry entry', file, read);
-      continue;
-    }
-    if (!isBinding(read.value)) {
-      reportSkippedPrivateFile('registry entry', file, { reason: 'malformed', detail: 'not a registry entry' });
-      continue;
-    }
-    if (name !== `${registryKeyFor(read.value.root)}.json`) {
-      reportSkippedPrivateFile('registry entry', file, { reason: 'malformed', detail: 'root mismatch' });
-      continue;
-    }
-    const composed = compose(read.value, mycoHome);
-    if (composed === null) {
-      reportSkippedPrivateFile('registry entry', file, { reason: 'malformed', detail: `no membership for ${read.value.serverUrl}` });
-      continue;
-    }
-    entries.push(composed);
+    const read = readEntryFile(file, name, mycoHome);
+    if (read.ok) entries.push(read.entry);
+    else reportSkippedPrivateFile('registry entry', file, { reason: read.stderrReason, detail: read.detail });
   }
   return entries;
+}
+
+/** Why one entry file yielded no entry. `missing` is absence; every other value is a file that is there and unusable. */
+export type RegistryRefusal = 'missing' | 'unreadable' | 'loose-mode' | 'malformed';
+
+/**
+ * The one read of one entry file: the private read, the shape, the key, and the
+ * membership a v2 binding composes with. A v1 file is already a whole entry and
+ * is read as one, so nothing here migrates or writes.
+ */
+function readEntryFile(file: string, name: string, mycoHome: string, readLegacy = false):
+  { ok: true; entry: RegistryEntry } | { ok: false; reason: RegistryRefusal; stderrReason: RegistryRefusal; detail?: string } {
+  try {
+    assertMemberPathContained(file, mycoHome);
+  } catch {
+    return { ok: false, reason: 'unreadable', stderrReason: 'unreadable' };
+  }
+  const read = readPrivateJson<ProjectBinding>(file);
+  if (!read.ok) {
+    const stderrReason = read.reason;
+    return { ok: false, reason: read.reason, stderrReason, detail: read.detail };
+  }
+  const keyed = (root: string): boolean => name === `${registryKeyFor(root)}.json`;
+  const malformed = (detail: string) => ({ ok: false as const, reason: 'malformed' as const, stderrReason: 'malformed' as const, detail });
+  if (readLegacy && readableVersion(read.value) === 1) {
+    const v1 = read.value as unknown;
+    if (!isEntry(v1)) return malformed('not a registry entry');
+    // The id names the project's spool directory, so one outside the grammar is
+    // refused here rather than resolved into a path.
+    if (!isProjectId(v1.projectId)) return malformed('project id out of grammar');
+    if (!keyed(v1.root)) return malformed('root mismatch');
+    return { ok: true, entry: v1 };
+  }
+  if (!isBinding(read.value)) return malformed('not a registry entry');
+  if (!isProjectId(read.value.projectId)) return malformed('project id out of grammar');
+  if (!keyed(read.value.root)) return malformed('root mismatch');
+  try {
+    assertMemberPathContained(deploymentPath(read.value.serverUrl, mycoHome), mycoHome);
+  } catch {
+    return { ok: false, reason: 'unreadable', stderrReason: 'unreadable' };
+  }
+  const composed = compose(read.value, mycoHome);
+  if (composed === null) return { ok: false, reason: 'malformed', stderrReason: 'malformed', detail: `no membership for ${read.value.serverUrl}` };
+  return { ok: true, entry: composed };
+}
+
+/** An entry a report asked for: held, never written, or there and unusable. */
+export type RegistryEntryResult =
+  | { status: 'present'; entry: RegistryEntry }
+  | { status: 'missing' }
+  | { status: 'unavailable' };
+
+/** Every membership this machine holds, with what the registry could not answer for. Reads only: no migration, no lock, nothing written. `readable` is false only where the projects directory itself could not be listed. */
+export function listRegistryEntriesResult(mycoHome: string = resolveMycoHome()): { entries: RegistryEntry[]; readable: boolean; unavailableEntries: number } {
+  const dir = projectsDir(mycoHome);
+  let names: string[];
+  try {
+    assertMemberPathContained(dir, mycoHome);
+    names = fs.readdirSync(dir).sort();
+  } catch (err) {
+    // A registry no member has written yet holds no membership; any other errno is one this report could not read.
+    return { entries: [], readable: (err as NodeJS.ErrnoException).code === 'ENOENT' && pathIsAbsent(dir), unavailableEntries: 0 };
+  }
+  const entries: RegistryEntry[] = [];
+  let unavailableEntries = 0;
+  for (const name of names) {
+    if (!name.endsWith('.json')) continue;
+    const read = readEntryFile(path.join(dir, name), name, mycoHome, true);
+    if (read.ok) entries.push(read.entry);
+    else unavailableEntries += 1;
+  }
+  return { entries, readable: true, unavailableEntries };
+}
+
+/** The entry for `root` as a report reads it, in one parse and without repairing anything. */
+export function readRegistryEntryResult(root: string, mycoHome: string = resolveMycoHome()): RegistryEntryResult {
+  const file = registryEntryPath(root, mycoHome);
+  const read = readEntryFile(file, path.basename(file), mycoHome, true);
+  if (read.ok) return { status: 'present', entry: read.entry };
+  return read.reason === 'missing' ? { status: 'missing' } : { status: 'unavailable' };
 }

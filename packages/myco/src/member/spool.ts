@@ -18,11 +18,11 @@ import { resolveMycoHome } from '../paths/home.js';
 import { LifecycleLock, withFileLockSync } from '../utils/lifecycle-lock.js';
 import { canStartRequest, clippedRequestBudget, longestDeclaredHookTimeoutMs, type HookBudget } from './budget.js';
 import {
-  MEMBER_FILE_MODE, MEMBER_PROTOCOL, OFFLINE_BACKOFF_INITIAL_MS, OFFLINE_BACKOFF_MAX_MS, REFUSED_LOG_MAX_BYTES, type MemberCode,
+  isProjectId, MEMBER_FILE_MODE, MEMBER_PROTOCOL, OFFLINE_BACKOFF_INITIAL_MS, OFFLINE_BACKOFF_MAX_MS, REFUSED_LOG_MAX_BYTES, type MemberCode,
 } from './constants.js';
 import type { BlobSource, BlobStager, MemberEnvelope, OutboundEvent } from './envelope.js';
-import { bufferLockPath, readSessionState, readSessionStateUnlocked, updateSessionState, writeSessionStateUnlocked, type SessionState } from './session-state.js';
-import { ensureMemberDir, ensurePrivateFile, memberRoot, readPrivateJson, reportSkippedPrivateFile, writePrivateFileAtomic } from './store.js';
+import { bufferLockPath, readSessionState, readSessionStateResult, readSessionStateUnlocked, sessionStatePath, updateSessionState, writeSessionStateUnlocked, type SessionState, type SessionStateRead } from './session-state.js';
+import { assertMemberPathContained, ensureMemberDir, ensurePrivateFile, memberRoot, pathIsAbsent, readPrivateJson, reportSkippedPrivateFile, writePrivateFileAtomic } from './store.js';
 import type { ClientRecord, Outcome, ServerClient } from './transport.js';
 
 export const SPOOL_DIRNAME = 'spool';
@@ -57,6 +57,39 @@ export interface RefusedEntry {
   at: number;
 }
 
+/**
+ * Whether a line of the refusal log is one `appendRefused` wrote.
+ *
+ * `eventId` and `kind` are empty for a refusal the drain raises against an
+ * unparsable spool line, which names no event; a report carries those as null.
+ * Every other field must be there for the line to say anything at all.
+ */
+function isRefusedEntry(value: unknown): value is RefusedEntry {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) return false;
+  const row = value as Record<string, unknown>;
+  for (const field of ['sessionId', 'code'] as const) {
+    if (typeof row[field] !== 'string' || row[field] === '') return false;
+  }
+  for (const field of ['eventId', 'kind', 'reason'] as const) {
+    if (typeof row[field] !== 'string') return false;
+  }
+  return typeof row.at === 'number' && Number.isFinite(row.at);
+}
+
+/** The records a spool's bytes hold; a torn line reads as null. */
+function parseSpoolLines(raw: string): Array<SpoolRecord | null> {
+  const records: Array<SpoolRecord | null> = [];
+  for (const line of raw.split('\n')) {
+    if (!line.trim()) continue;
+    try {
+      records.push(JSON.parse(line) as SpoolRecord);
+    } catch {
+      records.push(null);
+    }
+  }
+  return records;
+}
+
 export type DrainEnd = Outcome['class'] | 'budget' | 'protocol_mismatch' | 'drained';
 
 export interface DrainResult {
@@ -80,8 +113,22 @@ export interface DrainOptions {
   clientFor?: (record: ClientRecord) => ServerClient;
 }
 
+/**
+ * The directory a project's spool lives in.
+ *
+ * The id names one directory under the spool root and never a path: it must be
+ * a project id, and the joined path must resolve to a direct child of that root.
+ * Both hold before any directory is made, so a caller that only reads is bound
+ * by the same containment as one that writes.
+ */
 export function spoolDirFor(projectId: string, mycoHome: string = resolveMycoHome()): string {
-  return path.join(memberRoot(mycoHome), SPOOL_DIRNAME, projectId);
+  const spoolRoot = path.join(memberRoot(mycoHome), SPOOL_DIRNAME);
+  const dir = path.join(spoolRoot, projectId);
+  const rel = path.relative(spoolRoot, path.resolve(dir));
+  if (!isProjectId(projectId) || rel === '' || path.isAbsolute(rel) || rel.split(path.sep).length !== 1) {
+    throw new Error(`spoolDirFor: ${projectId} does not name a project's spool under ${spoolRoot}`);
+  }
+  return dir;
 }
 
 /** The wire envelope of a spool record: the seven fields, nothing member-private, no buffer timestamp. */
@@ -91,6 +138,9 @@ export function toWire(record: SpoolRecord): MemberEnvelope {
   return out as unknown as MemberEnvelope;
 }
 
+/** What a report says of a path it could not hold to the member root: the check refuses a link out, a component it could not read, and one that is not a directory alike. */
+const UNAVAILABLE_PATH = 'path unavailable';
+
 const stderr = (line: string): void => { process.stderr.write(`[myco] member: ${line}\n`); };
 
 export class MemberSpool {
@@ -99,10 +149,17 @@ export class MemberSpool {
   /** The home this spool lives under; retention ages that home and no other. */
   readonly mycoHome: string;
 
-  constructor(readonly projectId: string, opts: { mycoHome?: string } = {}) {
+  /**
+   * `initialize` false skips creating the spool's directories, so a caller that
+   * only reads can be built against a layout that is broken — a file where the
+   * directory belongs — and report it. It is not a read-only spool: the writing
+   * methods write and create their required directories.
+   */
+  constructor(readonly projectId: string, opts: { mycoHome?: string; initialize?: boolean } = {}) {
     this.mycoHome = opts.mycoHome ?? resolveMycoHome();
     this.dir = spoolDirFor(projectId, this.mycoHome);
     this.blobsDir = path.join(this.dir, BLOBS_DIRNAME);
+    if (opts.initialize === false) return;
     ensureMemberDir(this.dir, this.mycoHome);
     ensureMemberDir(this.blobsDir, this.mycoHome);
   }
@@ -110,6 +167,22 @@ export class MemberSpool {
   /** The blob staging dir of one session: staged bytes belong to the session that staged them. */
   blobsDirFor(sessionId: string): string {
     return path.join(this.blobsDir, sessionId);
+  }
+
+  /**
+   * Whether a report may touch `target`: it must resolve under the member
+   * root with its links read, so neither the read nor the lock the read takes
+   * reaches a file outside it. A link out, a component that could not be read
+   * and one that is not a directory all answer false here, before anything is
+   * opened or created.
+   */
+  private reachable(target: string): boolean {
+    try {
+      assertMemberPathContained(target, this.mycoHome);
+      return true;
+    } catch {
+      return false;
+    }
   }
 
   /**
@@ -207,6 +280,7 @@ export class MemberSpool {
    * is only reachable through this set.
    */
   stateSessionIds(): string[] {
+    if (!this.reachable(this.dir)) return [];
     try {
       return fs.readdirSync(this.dir)
         .filter((file) => file.endsWith(STATE_FILE_SUFFIX))
@@ -216,7 +290,7 @@ export class MemberSpool {
     }
   }
 
-  /** Every record of the session's spool, read under the append lock; a torn line reads as null. */
+  /** Every record of the session's spool, read under the append lock; a torn line reads as null. A spool that is not there is empty; a lock this process cannot take still throws, as every writer here does. */
   readRecords(sessionId: string): Array<SpoolRecord | null> {
     const file = this.spoolFile(sessionId);
     const lock = bufferLockPath(this.dir, sessionId);
@@ -228,17 +302,92 @@ export class MemberSpool {
       } catch {
         return [];
       }
-      const out: Array<SpoolRecord | null> = [];
-      for (const line of raw.split('\n')) {
-        if (!line.trim()) continue;
-        try {
-          out.push(JSON.parse(line) as SpoolRecord);
-        } catch {
-          out.push(null);
-        }
-      }
-      return out;
+      return parseSpoolLines(raw);
     });
+  }
+
+  /**
+   * Every record of the session's spool, or the fact that it could not be read.
+   *
+   * The whole read answers, the lock it is taken under included: a lock path
+   * that is a directory, a spool that is one, a file or lock that leads outside
+   * the member root, and a file that goes away between the listing and the read
+   * all report rather than throw. The caller names a session the listing just
+   * held a file for, so a file that is no longer there is one the read lost,
+   * not an empty spool.
+   */
+  readRecordsOrNull(sessionId: string): { readable: true; records: Array<SpoolRecord | null> } | { readable: false } {
+    try {
+      const file = this.spoolFile(sessionId);
+      const lock = bufferLockPath(this.dir, sessionId);
+      if (!this.reachable(file) || !this.reachable(lock)) return { readable: false };
+      ensurePrivateFile(lock);
+      return withFileLockSync(lock, () => {
+        let raw: string;
+        try {
+          raw = fs.readFileSync(file, 'utf-8');
+        } catch {
+          return { readable: false as const };
+        }
+        return { readable: true as const, records: parseSpoolLines(raw) };
+      });
+    } catch {
+      return { readable: false };
+    }
+  }
+
+  /**
+   * A session's acknowledgement, or the fact that its state could not be read.
+   *
+   * State is read under the same append lock the records are, so a lock path
+   * that is a directory fails here too — before any record is counted. A state
+   * file that is not there is a session with no acknowledgement yet.
+   */
+  readAck(sessionId: string): { readable: true; lastAckAt: number | null } | { readable: false } {
+    if (!this.reachable(sessionStatePath(this.dir, sessionId)) || !this.reachable(bufferLockPath(this.dir, sessionId))) return { readable: false };
+    let read: SessionStateRead;
+    try {
+      read = readSessionStateResult(this.dir, sessionId);
+    } catch {
+      return { readable: false };
+    }
+    if (read.ok) return { readable: true, lastAckAt: read.state.lastAckAt ?? null };
+    // A state a session has not written yet is one with no acknowledgement.
+    return read.reason === 'missing' ? { readable: true, lastAckAt: null } : { readable: false };
+  }
+
+  /** The spool as a report reads it: a directory nothing could read carries `readable: false`, and a session whose own file could not be read carries a null depth. */
+  readSpool(): { readable: boolean; sessions: Array<{ sessionId: string; unacknowledged: number | null }> } {
+    if (!this.reachable(this.dir)) return { readable: false, sessions: [] };
+    let names: string[];
+    try {
+      names = fs.readdirSync(this.dir).filter((name) => name.endsWith('.jsonl'));
+    } catch (err) {
+      // A spool a member has not written yet is empty, not unreadable — and
+      // absence is the directory's own, so a link to nothing, or a directory
+      // the listing lost, is a spool that could not be read.
+      if ((err as NodeJS.ErrnoException).code === 'ENOENT' && pathIsAbsent(this.dir)) return { readable: true, sessions: [] };
+      return { readable: false, sessions: [] };
+    }
+    const refusedLog = path.basename(REFUSED_LOG_FILE, '.jsonl');
+    const sessions = names
+      .map((name) => path.basename(name, '.jsonl'))
+      .filter((sessionId) => sessionId !== refusedLog)
+      .map((sessionId) => {
+        const read = this.readRecordsOrNull(sessionId);
+        if (!read.readable) return { sessionId, unacknowledged: null };
+        // The count is records against the acknowledged mark, so a state the
+        // report cannot use leaves it unknown rather than counting from zero.
+        let state: SessionStateRead;
+        try {
+          state = readSessionStateResult(this.dir, sessionId);
+        } catch {
+          return { sessionId, unacknowledged: null };
+        }
+        if (!state.ok) return { sessionId, unacknowledged: state.reason === 'missing' ? read.records.length : null };
+        return { sessionId, unacknowledged: Math.max(0, read.records.length - state.state.highWater) };
+      });
+    return { readable: true, sessions };
   }
 
   /** Un-acknowledged records in the session's spool. */
@@ -256,14 +405,32 @@ export class MemberSpool {
     return path.join(this.dir, OFFLINE_LATCH_FILE);
   }
 
-  readLatch(): OfflineLatch | null {
+  /**
+   * The latch, or the fact that its file could not be used.
+   *
+   * A latch that is not there is no latch: readable, with none held. A mode
+   * refusal, an unparsable file or one that is not a latch is unreadable. The
+   * one parse and shape check; `readLatch` derives from it.
+   */
+  readLatchResult(): { readable: true; latch: OfflineLatch | null } | { readable: false; reason: 'unreadable' | 'loose-mode' | 'malformed' | 'invalid'; detail?: string } {
+    if (!this.reachable(this.latchPath())) return { readable: false, reason: 'unreadable', detail: UNAVAILABLE_PATH };
     const read = readPrivateJson<OfflineLatch>(this.latchPath());
     if (!read.ok) {
-      if (read.reason !== 'missing') reportSkippedPrivateFile('offline latch', this.latchPath(), read);
-      return null;
+      return read.reason === 'missing' ? { readable: true, latch: null } : { readable: false, reason: read.reason, detail: read.detail };
     }
-    const l = read.value;
-    return typeof l.since === 'number' && typeof l.nextProbeAt === 'number' && typeof l.backoffMs === 'number' ? l : null;
+    // Runtime latches accept numeric fields; reports check renderability separately.
+    const l = read.value as unknown;
+    const shaped = l !== null && typeof l === 'object' && !Array.isArray(l)
+      && ['since', 'nextProbeAt', 'backoffMs'].every((field) => typeof (l as Record<string, unknown>)[field] === 'number');
+    return shaped ? { readable: true, latch: l as OfflineLatch } : { readable: false, reason: 'invalid', detail: 'not an offline latch' };
+  }
+
+  /** The latch held, or null where none is: a file that could not be used reads as none, a mode or parse refusal with one stderr line. */
+  readLatch(): OfflineLatch | null {
+    const read = this.readLatchResult();
+    if (read.readable) return read.latch;
+    if (read.reason !== 'invalid') reportSkippedPrivateFile('offline latch', this.latchPath(), read);
+    return null;
   }
 
   /** True when a hook may dial: no latch, the probe time has come, or the caller forces a probe. */
@@ -305,12 +472,51 @@ export class MemberSpool {
     fs.appendFileSync(file, line, { mode: MEMBER_FILE_MODE });
   }
 
-  readRefused(): RefusedEntry[] {
-    try {
-      return fs.readFileSync(this.refusedPath(), 'utf-8').split('\n').filter(Boolean).map((l) => JSON.parse(l) as RefusedEntry);
-    } catch {
-      return [];
+  /**
+   * The refusal log: what it holds, what it could not hold, and whether it could
+   * be read at all.
+   *
+   * An absent file is `readable` with no refusals — no log is no refusals, and
+   * absence is the entry's own, so a link to nothing is a log that could not be
+   * read. Any other read failure is `readable: false`, so a log behind a
+   * permission or an I/O error never reads as an empty one. Per line, a line that is not JSON or
+   * not a JSON object is counted rather than carried: one such line costs that
+   * line, and the count says the log is damaged.
+   */
+  readRefused(): { entries: RefusedEntry[]; unreadableLines: number; readable: boolean } {
+    const file = this.refusedPath();
+    if (!this.reachable(file)) {
+      reportSkippedPrivateFile('refusal log', file, { reason: 'unreadable', detail: UNAVAILABLE_PATH });
+      return { entries: [], unreadableLines: 0, readable: false };
     }
+    let raw: string;
+    try {
+      raw = fs.readFileSync(file, 'utf-8');
+    } catch (err) {
+      // Absence is the entry's own and the read's errno together: a removal a
+      // read lost to, or any other failure, is a log that could not be read.
+      if ((err as NodeJS.ErrnoException).code === 'ENOENT' && pathIsAbsent(file)) return { entries: [], unreadableLines: 0, readable: true };
+      reportSkippedPrivateFile('refusal log', file, { reason: 'unreadable', detail: (err as Error).message });
+      return { entries: [], unreadableLines: 0, readable: false };
+    }
+    const entries: RefusedEntry[] = [];
+    let unreadableLines = 0;
+    for (const line of raw.split('\n')) {
+      if (line.length === 0) continue;
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(line);
+      } catch {
+        unreadableLines += 1;
+        continue;
+      }
+      if (!isRefusedEntry(parsed)) {
+        unreadableLines += 1;
+        continue;
+      }
+      entries.push(parsed);
+    }
+    return { entries, unreadableLines, readable: true };
   }
 
   // ---------------------------------------------------------------------------

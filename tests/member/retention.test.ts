@@ -176,7 +176,7 @@ describe('spool retention', () => {
     const result = await spool.drainSession('sess-A', new ServerClient({ serverUrl: 'https://s', token: rig.token, projectId: 'proj_1' }, rig.fetch), unboundedBudget(), { force: true });
     expect({ acked: result.acked, refused: result.refused }).toEqual({ acked: 1, refused: 0 });
     expect(rig.rows('attachments')).toBe(1);
-    expect(spool.readRefused()).toEqual([]);
+    expect(spool.readRefused().entries).toEqual([]);
   });
 
   it('re-staging a sha restarts its grace: the mtime says when a hook last named the bytes, not when they were first written', () => {

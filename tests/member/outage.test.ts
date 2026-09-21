@@ -82,7 +82,7 @@ describe('outage convergence', () => {
     expect(distinct).toBe(TOTAL);
     const stored = new Set((rig.env.sqlite.query('SELECT event_id FROM events').all() as Array<{ event_id: string }>).map((r) => r.event_id));
     expect(stored).toEqual(ids);
-    expect(spool.readRefused()).toEqual([]);
+    expect(spool.readRefused().entries).toEqual([]);
     expect(passes).toBeGreaterThan(1);
   });
 });

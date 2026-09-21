@@ -1,13 +1,13 @@
 import { utf8 } from '../hash.js';
+import { ID_GRAMMAR, MAX_ID_CHARS } from '@goondocks/myco-shared/member-protocol';
 import { MAX_CLOCK_SKEW_MS } from '../constants.js';
 import { refusal, type Refusal } from '../telemetry.js';
 
 export const MAX_PAYLOAD_BYTES = 262_144;
-export const MAX_ID_CHARS = 128;
 export const MAX_PAYLOAD_DEPTH = 32;
 export const MAX_PAYLOAD_NODES = 100_000;
 /** Member-minted logical ids: 36-character lowercase UUIDs; the server checks the grammar, not the version. */
-export const ID_GRAMMAR = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+export { ID_GRAMMAR, MAX_ID_CHARS } from '@goondocks/myco-shared/member-protocol';
 /** Producer identifiers: adapter names and member versions. */
 export const PRODUCER_GRAMMAR = /^[A-Za-z0-9._-]{1,64}$/;
 

@@ -78,19 +78,43 @@ function isState(value: unknown): value is SessionState {
   return s.version === SESSION_STATE_VERSION && typeof s.highWater === 'number' && typeof s.prompts === 'object' && s.prompts !== null;
 }
 
-/** The state as last written; a missing, loose-moded, or malformed file reads as empty (the latter two with one stderr line). */
+/** Why a state file yielded no state: absent, refused by its mode, unparsable, or parsed but not a state. */
+export type SessionStateRefusal = 'missing' | 'unreadable' | 'loose-mode' | 'malformed' | 'invalid';
+
+export type SessionStateRead =
+  | { ok: true; state: SessionState }
+  | { ok: false; reason: SessionStateRefusal; detail?: string };
+
+/** The one parse, schema check and default merge over a state file; both readers below derive from it. */
+function readStateFile(spoolDir: string, sessionId: string): SessionStateRead {
+  const read = readPrivateJson<SessionState>(sessionStatePath(spoolDir, sessionId));
+  if (!read.ok) return { ok: false, reason: read.reason, detail: read.detail };
+  if (!isState(read.value)) return { ok: false, reason: 'invalid', detail: 'not a session state' };
+  return { ok: true, state: { ...emptySessionState(), ...read.value } };
+}
+
+/** An instant a surface can render: finite, and a date. */
+const rendersAsInstant = (value: unknown): boolean =>
+  typeof value === 'number' && Number.isFinite(value) && !Number.isNaN(new Date(value).getTime());
+
+/** Diagnostic state requires a non-negative whole high-water mark and a renderable acknowledgement timestamp. */
+export function readSessionStateResultUnlocked(spoolDir: string, sessionId: string): SessionStateRead {
+  const read = readStateFile(spoolDir, sessionId);
+  if (!read.ok) return read;
+  const { highWater, lastAckAt } = read.state;
+  const reportable = Number.isSafeInteger(highWater) && highWater >= 0 && (lastAckAt === undefined || rendersAsInstant(lastAckAt));
+  return reportable ? read : { ok: false, reason: 'invalid', detail: 'a reported field is not a number a report can use' };
+}
+
+/** The state as last written; a missing, loose-moded, malformed or invalid file reads as empty (all but missing with one stderr line). */
 export function readSessionStateUnlocked(spoolDir: string, sessionId: string): SessionState {
-  const file = sessionStatePath(spoolDir, sessionId);
-  const read = readPrivateJson<SessionState>(file);
-  if (!read.ok) {
-    if (read.reason !== 'missing') reportSkippedPrivateFile('session state', file, read);
-    return emptySessionState();
+  const read = readStateFile(spoolDir, sessionId);
+  if (read.ok) return read.state;
+  if (read.reason !== 'missing') {
+    reportSkippedPrivateFile('session state', sessionStatePath(spoolDir, sessionId),
+      { reason: read.reason === 'invalid' ? 'malformed' : read.reason, detail: read.detail });
   }
-  if (!isState(read.value)) {
-    reportSkippedPrivateFile('session state', file, { reason: 'malformed', detail: 'not a session state' });
-    return emptySessionState();
-  }
-  return { ...emptySessionState(), ...read.value };
+  return emptySessionState();
 }
 
 function trimTracked(state: SessionState): void {
@@ -126,6 +150,13 @@ export function readSessionState(spoolDir: string, sessionId: string): SessionSt
   const lock = bufferLockPath(spoolDir, sessionId);
   ensurePrivateFile(lock);
   return withFileLockSync(lock, () => readSessionStateUnlocked(spoolDir, sessionId));
+}
+
+/** The state, or why it could not be used, read under the buffer lock. A lock this process cannot take throws, as it does for every other reader here. */
+export function readSessionStateResult(spoolDir: string, sessionId: string): SessionStateRead {
+  const lock = bufferLockPath(spoolDir, sessionId);
+  ensurePrivateFile(lock);
+  return withFileLockSync(lock, () => readSessionStateResultUnlocked(spoolDir, sessionId));
 }
 
 /** Locked read-modify-write: `mutate` sees the current state and its edits are written back before the lock is released. */

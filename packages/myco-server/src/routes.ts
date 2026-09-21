@@ -10,6 +10,7 @@ import { clearCookie } from './auth/owner/cookie.js';
 import { handleCallback, handleLogin } from './auth/owner/routes.js';
 import { handleArchiveProject, handleCreateProject, handleProjects, handleUnarchiveProject, handleRenameProject } from './api/projects.js';
 import { handleStatus } from './api/status.js';
+import { handleDiagnostics } from './api/diagnostics.js';
 import { handleProjectSearch } from './api/search.js';
 import { handleWake } from './api/wake.js';
 import { handleSetTitlingBackfill, handleTitlingBackfill } from './api/titling-backfill.js';
@@ -158,6 +159,7 @@ export const ROUTES: readonly Route[] = [
   { method: 'GET', path: '/auth/me', auth: 'owner', membership: 'optional', handler: handleMe },
   { method: 'POST', path: '/auth/link', auth: 'owner', membership: 'optional', handler: handleLink },
   { method: 'GET', path: '/api/status', auth: 'owner', handler: handleStatus },
+  { method: 'GET', path: '/api/diagnostics', auth: 'owner', handler: handleDiagnostics },
   { method: 'GET', path: '/api/projects', auth: 'owner', handler: handleProjects },
   { method: 'POST', path: '/api/projects', auth: 'owner', handler: handleCreateProject },
   { method: 'POST', path: '/api/projects/{projectId}/archive', pattern: /^\/api\/projects\/(?<projectId>[A-Za-z0-9._-]{1,64})\/archive$/, auth: 'owner', handler: handleArchiveProject },

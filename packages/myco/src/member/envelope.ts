@@ -18,10 +18,8 @@ import type { NormalizedHookInput } from '../hooks/normalize.js';
 import type { PromptOrigin } from '../hooks/capture-rules.js';
 import { MEMBER_ID_NAMESPACE, MEMBER_INLINE_TEXT_MAX_BYTES } from './constants.js';
 
-export type MemberKind =
-  | 'session.start' | 'session.end' | 'prompt' | 'tool.use' | 'tool.failure' | 'response' | 'plan' | 'attachment'
-  | 'transcript.segment' | 'compaction.pre' | 'compaction.post' | 'subagent.start' | 'subagent.stop'
-  | 'stop.failure' | 'task.completed' | 'notification' | 'error';
+export type { MemberKind } from '@goondocks/myco-shared/member-protocol';
+type MemberKind = import('@goondocks/myco-shared/member-protocol').MemberKind;
 
 export interface MemberEnvelope {
   eventId: string;

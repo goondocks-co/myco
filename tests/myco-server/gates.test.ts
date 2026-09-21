@@ -1109,6 +1109,7 @@ describe('gates', () => {
       'owner GET /api/backups/{backupId}/artifact',
       'owner GET /api/credentials',
       'owner GET /api/credentials/{id}/activity',
+      'owner GET /api/diagnostics',
       'owner GET /api/enrollment',
       'owner GET /api/kpis',
       'owner GET /api/members',

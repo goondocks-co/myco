@@ -79,7 +79,7 @@ describe('member spool', () => {
     const r = await spool.drainSession('sess-hw', clientFor(rig), unboundedBudget());
     expect(r).toMatchObject({ sent: 3, acked: 2, refused: 1, remaining: 0 });
     expect(rig.rows('events')).toBe(2);
-    const refused = spool.readRefused();
+    const refused = spool.readRefused().entries;
     expect(refused).toHaveLength(1);
     expect(Object.keys(refused[0]).sort()).toEqual(['at', 'code', 'eventId', 'kind', 'reason', 'sessionId']);
     expect(refused[0]).toMatchObject({ eventId: b.envelope.eventId, kind: 'made.up', code: 'unknown_kind' });
@@ -141,7 +141,7 @@ describe('member spool', () => {
     const r = await spool.drainSession('sess-parked', clientFor(rig), unboundedBudget());
     expect(r).toMatchObject({ sent: 1, acked: 0, refused: 0, remaining: 3, endedBy: 'parked' });
     expect(stderrLines.join('')).toContain('write quota exceeded — capture parked');
-    expect(spool.readRefused()).toEqual([]);
+    expect(spool.readRefused().entries).toEqual([]);
   });
 
   it('a 401 without the header ends the pass as unauthorized; a 429 without the header after a 401 in the same pass is unauthorized too', async () => {

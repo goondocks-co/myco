@@ -31,6 +31,11 @@ export const MEMBER_CODES = [
 ] as const;
 export type MemberCode = (typeof MEMBER_CODES)[number];
 
+/** Whether a value is one of the codes above. A code read back from disk is a string until this says otherwise. */
+export function isMemberCode(value: unknown): value is MemberCode {
+  return typeof value === 'string' && (MEMBER_CODES as readonly string[]).includes(value);
+}
+
 /** Codes that re-slice a transcript from the server's held size instead of refusing. */
 export const RESLICE_CODES: readonly MemberCode[] = ['offset_gap', 'offset_overlap'];
 /** The code that parks the spool: the token is at its write quota. */
