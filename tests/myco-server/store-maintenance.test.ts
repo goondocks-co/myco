@@ -12,6 +12,8 @@ import os from 'node:os';
 import path from 'node:path';
 import { migrateAndSeed } from './helpers/d1.js';
 import { sqliteEnv } from './helpers/fixtures.js';
+import { OWNER_ENV, asOwner, asOwnerPost } from './helpers/owner.js';
+import worker from '@myco-server-worker/index.js';
 import { sqliteStoreMaintenance, checkIntegrityOffThread } from '@myco-server-worker/platform/bun/store-maintenance.js';
 import { classifyD1Error } from '@myco-server-worker/platform/cloudflare/env.js';
 import {
@@ -244,4 +246,22 @@ it('D1\'s documented limit refusals are named apart from other storage errors', 
   expect(classifyD1Error('D1_ERROR: Exceeded maximum DB size.')).toBe('store_size');
   expect(classifyD1Error("D1_ERROR: Your account has exceeded D1's maximum account storage limit, please contact Cloudflare")).toBe('store_size');
   expect(classifyD1Error('D1_ERROR: no such table: x')).toBe('db');
+});
+
+it('an owner reads every check and runs one through the served routes, on the path the clock takes', async () => {
+  const e = sqliteEnv();
+  const env = { ...e.env, ...OWNER_ENV };
+  const listed = await (await worker.fetch(await asOwner('/api/maintenance'), env)).json() as { checks: Array<{ check: string; support: { supported: boolean }; cadence: { state: string }; latest: unknown }> };
+  expect(listed.checks.map((c) => [c.check, c.support.supported, c.cadence.state, c.latest])).toEqual([
+    ['optimize', true, 'not_configured', null],
+    ['integrity', true, 'not_configured', null],
+  ]);
+  const ran = await worker.fetch(await asOwnerPost('/api/maintenance/integrity/run'), env);
+  expect(ran.status).toBe(200);
+  expect(await ran.json()).toMatchObject({ check: 'integrity', trigger: 'owner', state: 'healthy', findings: [] });
+  const again = await (await worker.fetch(await asOwner('/api/maintenance'), env)).json() as { checks: Array<{ check: string; latest: { state: string } | null }> };
+  expect(again.checks.find((c) => c.check === 'integrity')?.latest?.state).toBe('healthy');
+  expect((await worker.fetch(await asOwnerPost('/api/maintenance/vacuum/run'), env)).status).toBe(404);
+  const signedOut = new Request('https://s/api/maintenance/optimize/run', { method: 'POST', headers: { 'cf-connecting-ip': '1.2.3.4', origin: 'https://s' } });
+  expect((await worker.fetch(signedOut, env)).status).toBe(401);
 });
