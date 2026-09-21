@@ -153,7 +153,7 @@ export function listBufferSessionIds(bufferDir: string): string[] {
   try {
     return fs.readdirSync(bufferDir)
       .filter((f) => f.endsWith('.jsonl'))
-      .map((f) => f.replace('.jsonl', ''));
+      .map((f) => path.basename(f, '.jsonl'));
   } catch {
     return [];
   }

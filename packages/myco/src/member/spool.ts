@@ -371,7 +371,7 @@ export class MemberSpool {
     }
     const refusedLog = path.basename(REFUSED_LOG_FILE, '.jsonl');
     const sessions = names
-      .map((name) => name.replace('.jsonl', ''))
+      .map((name) => path.basename(name, '.jsonl'))
       .filter((sessionId) => sessionId !== refusedLog)
       .map((sessionId) => {
         const read = this.readRecordsOrNull(sessionId);
