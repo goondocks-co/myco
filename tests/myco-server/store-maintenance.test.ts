@@ -12,7 +12,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { migrateAndSeed } from './helpers/d1.js';
 import { sqliteEnv } from './helpers/fixtures.js';
-import { OWNER_ENV, asOwner, asOwnerPost } from './helpers/owner.js';
+import { OWNER_ENV, asOwner, asOwnerPost, ownerCookie } from './helpers/owner.js';
 import worker from '@myco-server-worker/index.js';
 import { sqliteStoreMaintenance, checkIntegrityOffThread } from '@myco-server-worker/platform/bun/store-maintenance.js';
 import { classifyD1Error } from '@myco-server-worker/platform/cloudflare/env.js';
@@ -133,7 +133,7 @@ function coreEnv(port: StoreMaintenancePort) {
     .run(leaf, JSON.stringify(value));
   const setRecord = (check: MaintenanceCheck, record: Record<string, unknown>) => fixture.sqlite
     .query(`INSERT OR REPLACE INTO schema_meta (key, value) VALUES (?, ?)`).run(`maintenance.${check}`, JSON.stringify(record));
-  return { env, setLeaf, setRecord };
+  return { env, setLeaf, setRecord, settle: fixture.deferred.settle };
 }
 
 const D1_LIKE: Exclusivity = { kind: 'platform-limit', statementLimitMs: 30_000, statements: { optimize: 1, integrity: 2 } };
@@ -184,18 +184,18 @@ it('the engine runs a due check on its own clock alone, holds an idle Deployment
   expect(await latestOutcome(env, 'optimize')).toMatchObject({ state: 'healthy', trigger: 'schedule', powerState: 'sleep' });
 });
 
-it('on the serving owner, work in flight refuses a second run however long it has taken', async () => {
+it('on the serving owner, an owner\'s run answers its running claim, and work in flight refuses a second run however long it has taken', async () => {
   const gated = gatedPort();
-  const { env } = coreEnv(gated.port);
+  const { env, settle } = coreEnv(gated.port);
   const t0 = 1_000 * HOUR;
-  const first = runMaintenance(env, 'optimize', 'owner', t0);
-  await Bun.sleep(5);
+  expect(await runMaintenance(env, 'optimize', 'owner', t0)).toMatchObject({ outcome: 'started', record: { state: 'running', trigger: 'owner' } });
   expect(await runMaintenance(env, 'optimize', 'owner', t0 + 48 * HOUR, { clock: () => t0 + 48 * HOUR })).toMatchObject({ outcome: 'refused', refusal: 'already_running' });
   expect(await maintenanceDue(env, 'optimize', t0 + 48 * HOUR)).toBe(false);
   gated.release();
-  expect(await first).toMatchObject({ outcome: 'ran', recorded: true });
+  await settle();
+  expect(await latestOutcome(env, 'optimize')).toMatchObject({ state: 'healthy', trigger: 'owner' });
   expect(gated.calls).toEqual(['optimize']);
-  expect(await runMaintenance(env, 'optimize', 'owner', t0 + 49 * HOUR)).toMatchObject({ outcome: 'ran' });
+  expect(await runMaintenance(env, 'optimize', 'owner', t0 + 49 * HOUR)).toMatchObject({ outcome: 'started' });
 });
 
 it('on the serving owner, a running record another process left is not a run', async () => {
@@ -204,7 +204,7 @@ it('on the serving owner, a running record another process left is not a run', a
     runId: 'dead', check: 'optimize', trigger: 'owner', state: 'running', startedAt: 0, claimExpiresAt: null, holder: 'a-process-that-died',
     finishedAt: null, errorClass: null, findings: [], findingsOmitted: 0, measurements: [], powerState: null,
   });
-  expect(await runMaintenance(env, 'optimize', 'owner', HOUR)).toMatchObject({ outcome: 'ran', recorded: true, record: { holder: 'this-process' } });
+  expect(await runMaintenance(env, 'optimize', 'owner', HOUR)).toMatchObject({ outcome: 'started', record: { holder: 'this-process' } });
 });
 
 it('on a platform-limited store, a run inside its bound refuses another, and past it a stale finish never replaces the newer record', async () => {
@@ -234,8 +234,12 @@ it('a port failure is recorded under its named class', async () => {
     ...releasedPort(),
     run: async () => { throw new Error("D1_ERROR: Your account has exceeded D1's free tier daily row read limit. Upgrade to a paid plan"); },
   };
-  const { env } = coreEnv(failing);
-  expect(await runMaintenance(env, 'optimize', 'owner', 0)).toMatchObject({ outcome: 'ran', record: { state: 'failed', errorClass: 'store_quota' } });
+  const { env, settle } = coreEnv(failing);
+  expect(await runMaintenance(env, 'optimize', 'owner', 0)).toMatchObject({ outcome: 'started' });
+  await settle();
+  expect(await latestOutcome(env, 'optimize')).toMatchObject({ state: 'failed', errorClass: 'store_quota' });
+  const d1: StoreMaintenancePort = { ...failing, exclusivity: D1_LIKE };
+  expect(await runMaintenance({ ...env, storeMaintenance: d1 }, 'optimize', 'owner', 0)).toMatchObject({ outcome: 'ran', record: { state: 'failed', errorClass: 'store_quota' } });
 });
 
 it('findings past the kept limit are counted, and the outcome keeps its state', () => {
@@ -316,7 +320,7 @@ it('on the self-hosted clock, a scheduled integrity check is claimed and handed 
   pending.release();
   await settling;
   expect(await latestOutcome(env, 'integrity')).toMatchObject({ state: 'healthy', trigger: 'schedule', powerState: 'sleep' });
-  expect(await runMaintenance(env, 'integrity', 'owner', t0 + 2 * 60_000)).toMatchObject({ outcome: 'ran', recorded: true });
+  expect(await runMaintenance(env, 'integrity', 'owner', t0 + 2 * 60_000)).toMatchObject({ outcome: 'started' });
 });
 
 it('a handed-off check that fails records its named class and releases its in-flight mark', async () => {
@@ -327,7 +331,7 @@ it('a handed-off check that fails records its named class and releases its in-fl
   await env.settle();
   expect(await latestOutcome(env, 'integrity')).toMatchObject({ state: 'failed', errorClass: expect.any(String), finishedAt: expect.any(Number) });
   expect((await latestOutcome(env, 'integrity'))?.errorClass).not.toBe('none');
-  expect(await runMaintenance(env, 'integrity', 'owner', t0 + 1)).toMatchObject({ outcome: 'ran' });
+  expect(await runMaintenance(env, 'integrity', 'owner', t0 + 1)).toMatchObject({ outcome: 'started' });
 });
 
 it('an unreadable maintenance record is reported by name without stopping the tick\'s other jobs', async () => {
@@ -371,4 +375,32 @@ it('on the self-hosted target, close() waits for a handed-off check and records 
   const row = reopened.query(`SELECT value FROM schema_meta WHERE key = 'maintenance.integrity'`).get() as { value: string };
   reopened.close();
   expect(JSON.parse(row.value)).toMatchObject({ state: 'healthy', trigger: 'schedule' });
+});
+
+it('on the self-hosted target, an owner\'s run is answered at once with its running claim, reads as running, and lands after the answer', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-maintenance-owner-'));
+  dirs.push(dir);
+  const databasePath = path.join(dir, 'myco.db');
+  const seed = new Database(databasePath, { create: true });
+  migrateAndSeed(seed);
+  seed.close();
+  const handler = await createBunHandler({ databasePath, blobDir: path.join(dir, 'blobs'), header: 'x-forwarded-for', wakeLoop: false, ...OWNER_ENV });
+  const pending = pendingIntegrity();
+  handler.env.storeMaintenance = pending.port;
+  const owner = async (route: string, method = 'GET') => handler.fetch(new Request(`https://s${route}`, {
+    method, headers: { cookie: await ownerCookie(), 'x-forwarded-for': '1.2.3.4', origin: 'https://s' },
+  }));
+  const ran = await owner('/api/maintenance/integrity/run', 'POST');
+  expect(ran.status).toBe(200);
+  expect(await ran.json()).toMatchObject({ check: 'integrity', trigger: 'owner', state: 'running', finishedAt: null, holder: 'this-process' });
+  const listed = await (await owner('/api/maintenance')).json() as { checks: Array<{ check: string; running: boolean; latest: { state: string } | null }> };
+  expect(listed.checks.find((c) => c.check === 'integrity')).toMatchObject({ running: true, latest: { state: 'running' } });
+  const again = await owner('/api/maintenance/integrity/run', 'POST');
+  expect(again.status).toBe(409);
+  expect(await again.json()).toMatchObject({ refusal: 'already_running' });
+  pending.release();
+  await handler.env.settle();
+  const after = await (await owner('/api/maintenance')).json() as { checks: Array<{ check: string; running: boolean; latest: { state: string; trigger: string } | null }> };
+  expect(after.checks.find((c) => c.check === 'integrity')).toMatchObject({ running: false, latest: { state: 'healthy', trigger: 'owner' } });
+  await handler.close();
 });

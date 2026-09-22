@@ -14,7 +14,8 @@ export async function handleMaintenanceStatus(env: ServerEnv, ctx: OwnerContext)
 }
 
 /**
- * `POST /api/maintenance/{check}/run`: runs the check now, outside its cadence, and answers the recorded outcome.
+ * `POST /api/maintenance/{check}/run`: runs the check now, outside its cadence, and answers the recorded outcome, or
+ * the running claim where the run continues past the request.
  * A refusal — unsupported here, or a run already in progress — answers 409 with its name and reason.
  */
 export async function handleRunMaintenance(env: ServerEnv, ctx: OwnerContext): Promise<Response> {

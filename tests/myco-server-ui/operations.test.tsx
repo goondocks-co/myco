@@ -414,6 +414,28 @@ describe('store maintenance on the Operations page', () => {
     expect(within(optimize).getByRole('button', { name: 'Running…' }).hasAttribute('disabled')).toBe(true);
   });
 
+  it('takes a run answered with its running claim as running, with no error, and reads the status again', async () => {
+    const supported = { supported: true, label: 'Checks every table, index and page' };
+    const claim = { runId: 'r4', trigger: 'owner', state: 'running', startedAt: 0, finishedAt: null, errorClass: null, findings: [], findingsOmitted: 0, measurements: [] };
+    let running = false;
+    const { requested } = server({
+      '/auth/me': () => Response.json(ME),
+      '/api/projects': () => Response.json(PROJECTS),
+      '/api/maintenance': () => Response.json({
+        checks: [{ check: 'integrity', support: supported, cadence: { state: 'off' }, dueAt: null, running, latest: running ? claim : null }],
+      }),
+      '/api/maintenance/integrity/run': () => { running = true; return Response.json(claim); },
+    });
+    mount('/operations');
+    const integrity = await screen.findByTestId('maintenance-integrity');
+    expect(within(integrity).getByTestId('maintenance-integrity-outcome').textContent).toBe('Never run.');
+    fireEvent.click(within(integrity).getByRole('button', { name: 'Run now' }));
+    expect(await within(integrity).findByText(/^Running since /)).toBeTruthy();
+    expect(within(integrity).getByRole('button', { name: 'Running…' }).hasAttribute('disabled')).toBe(true);
+    expect(within(integrity).queryByRole('alert')).toBeNull();
+    expect(requested.filter((r) => r === 'GET /api/maintenance').length).toBeGreaterThanOrEqual(2);
+  });
+
   it('offers no run for a check this server cannot perform', async () => {
     server({
       '/auth/me': () => Response.json(ME),

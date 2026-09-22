@@ -13,10 +13,10 @@
  * its port declares (`Exclusivity`). A completion lands only on the record its own run created, so no run ever
  * replaces the outcome of a newer one.
  *
- * A scheduled run on a `serving-owner` target has no bound but the store's size, so the clock's job claims it and
- * hands the work to the env's deferral (`afterResponse`), which the serving process drains before it closes the
- * store; the tick carries on with its other jobs meanwhile. A `platform-limit` run is bounded and finishes inside
- * the invocation that claimed it.
+ * A run on a `serving-owner` target has no bound but the store's size, so its caller claims it and hands the work
+ * to the env's deferral (`afterResponse`), which the serving process drains before it closes the store; the tick
+ * carries on with its other jobs, and an owner's request is answered with the running claim. A `platform-limit`
+ * run is bounded and finishes inside the invocation that claimed it.
  */
 import type { ServerEnv } from './adapters.js';
 import type { PowerState } from './power.js';
@@ -292,9 +292,8 @@ async function finishRun(env: ServerEnv, port: StoreMaintenancePort, record: Mai
  *
  * A scheduled run is refused unless the check is configured and due; an owner's run skips the cadence but never
  * exclusivity. On a `serving-owner` target the in-flight mark is taken before the first await, so two callers in
- * the serving process cannot both pass it, and it is released only when the port's work has settled — for a
- * scheduled run, inside the deferral that carries the work, which reports a failure to record the outcome as a
- * `store_maintenance_failed` event.
+ * the serving process cannot both pass it, and it is released only when the port's work has settled inside the
+ * deferral that carries it, which reports a failure to record the outcome as a `store_maintenance_failed` event.
  */
 export async function runMaintenance(
   env: ServerEnv, check: MaintenanceCheck, trigger: MaintenanceTrigger, now: number,
@@ -334,7 +333,7 @@ export async function runMaintenance(
         ? alreadyRunning(check)
         : { outcome: 'refused', refusal: 'not_due', reason: `${check} is not due yet` };
     }
-    if (running !== null && trigger === 'schedule') {
+    if (running !== null) {
       env.afterResponse(() => finishRun(env, port, record, clock).then(
         () => undefined,
         (err: unknown) => { emit({ kind: 'store_maintenance_failed', check, error_class: classify(err, env.platform?.classifyError) }); },

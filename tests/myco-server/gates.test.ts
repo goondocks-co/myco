@@ -774,8 +774,7 @@ describe('gates', () => {
   });
 
   it('schedules work past an answer from the events route and the store maintenance hand-off only', () => {
-    // Only captured event processing and scheduled store maintenance may defer
-    // work. The serving process drains deferred work before closing the store.
+    // Only captured event processing and store maintenance may defer work. The serving process drains deferred work before closing the store.
     const callers = files(SRC)
       .filter((f) => /\bafterResponse\(/.test(stripComments(readFileSync(f, 'utf8'))))
       .map((f) => f.slice(SRC.length + 1))
