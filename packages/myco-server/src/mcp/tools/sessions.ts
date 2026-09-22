@@ -6,6 +6,7 @@
  * the Deployment dispatches after the session ends; they answer null and
  * empty until it lands. Timestamps are the Deployment's, in milliseconds.
  */
+import { getReleaseStatus } from '../../core/provenance.js';
 import { getPlan } from '../../read/plans.js';
 import { getSession, listSessionSummaries, sessionCounts, type SessionRow } from '../../read/sessions.js';
 import { failure, scopeOf, type ToolContext } from '../context.js';
@@ -59,7 +60,7 @@ export async function handleSessions(input: ToolInput, ctx: ToolContext): Promis
     const row = await getSession(db, scope, id);
     if (row === null) return failure('Session not found');
     const counts = await sessionCounts(db, scope, id);
-    return { ...summary(row, counts), counts };
+    return { ...summary(row, counts), counts, release: await getReleaseStatus(db, scope, 'session', id) };
   }
 
   let sessionId: string | undefined;

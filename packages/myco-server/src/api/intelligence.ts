@@ -19,7 +19,7 @@ import { notFound, ok, resolveProjectScope } from './scope.js';
 import { countSpores, getSpore, listSpores, listSupersededSporeIds, listSupersedingSporeIds } from '../core/spores.js';
 import { getPublishedSkillContent, listLineageForSkill, listSkillRecords } from '../core/skills.js';
 import { listDigestRevisions, listDigests } from '../core/digests.js';
-import { listReleaseStates } from '../core/provenance.js';
+import { canonicalNamespace, listReleaseStates } from '../core/provenance.js';
 import { listInstructions } from '../read/cortex.js';
 import { getRun } from '../core/runs.js';
 
@@ -167,10 +167,13 @@ export async function handleProjectInstructions(env: ServerEnv, ctx: OwnerContex
 export async function handleProjectReleaseStates(env: ServerEnv, ctx: OwnerContext): Promise<Response> {
   const scope = await scopeOf(env, ctx);
   if (scope === null) return notFound();
-  const namespace = ctx.url.searchParams.get('namespace');
+  const named = ctx.url.searchParams.get('namespace');
+  const namespace = named === null ? undefined : canonicalNamespace(named);
+  // A namespace no record carries names no release state.
+  if (namespace === null) return ok({ releaseStates: [] });
   return ok({
     releaseStates: await listReleaseStates(env.db, scope, {
-      namespace: namespace === null ? undefined : namespace as never,
+      namespace,
       state: ctx.url.searchParams.get('state') ?? undefined,
       limit: clampLimit(ctx.url.searchParams.get('limit')),
     }),

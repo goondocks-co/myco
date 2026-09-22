@@ -6,7 +6,7 @@ import { Database } from 'bun:sqlite';
 import { renderMigrationFiles } from '@myco-server-worker/db/migrate.js';
 import { sqliteRelationalStore } from '@myco-server-worker/platform/bun/sqlite.js';
 import {
-  getReleaseState, getReleaseStatesForRecords, isReleaseNamespace, listReleaseStates,
+  canonicalNamespace, getReleaseState, getReleaseStatesForRecords, isReleaseNamespace, listReleaseStates,
 } from '@myco-server-worker/core/provenance.js';
 import type { RelationalStore } from '@myco-server-worker/core/adapters.js';
 import type { ReadScope } from '@myco-server-worker/read/scope.js';
@@ -87,4 +87,20 @@ describe('release state', () => {
     expect((await listReleaseStates(db, SCOPE, { namespace: 'spore' })).map((r) => r.recordId)).toEqual(['sp1']);
     expect((await listReleaseStates(db, SCOPE)).length).toBe(2);
   });
+
+  it('answers the public singular namespaces for rows stored under the table names the reconciler and search write', async () => {
+    const { db, sqlite } = store();
+    seed(sqlite, SCOPE.projectId, 'rs1', 'spores', 'sp1', 'merged_unreleased');
+    seed(sqlite, SCOPE.projectId, 'rs2', 'sessions', 'se1');
+    seed(sqlite, SCOPE.projectId, 'rs3', 'skill_records', 'sk1');
+    seed(sqlite, SCOPE.projectId, 'rs4', 'plans', 'pl1');
+    expect(await getReleaseState(db, SCOPE, 'spore', 'sp1')).toMatchObject({ namespace: 'spore', state: 'merged_unreleased' });
+    expect(Object.keys(await getReleaseStatesForRecords(db, SCOPE, 'session', ['se1']))).toEqual(['se1']);
+    expect((await listReleaseStates(db, SCOPE, { namespace: 'skill' })).map((r) => [r.namespace, r.recordId])).toEqual([['skill', 'sk1']]);
+    expect((await listReleaseStates(db, SCOPE, { namespace: 'plan' })).map((r) => r.recordId)).toEqual(['pl1']);
+    for (const n of ['spore', 'skill', 'session', 'plan']) expect(isReleaseNamespace(n)).toBe(true);
+    expect([canonicalNamespace('spores'), canonicalNamespace('skill_records'), canonicalNamespace('spore'), canonicalNamespace('sporez')])
+      .toEqual(['spore', 'skill', 'spore', null]);
+  });
 });
+

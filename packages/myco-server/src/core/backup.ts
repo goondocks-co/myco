@@ -60,8 +60,8 @@ export const EMPTY_ONLY_TABLES: ReadonlySet<string> = new Set([
  * state, transient quota state, the credential-store table nothing else may
  * touch, the backup index itself, the migration guard tables, operator
  * configuration, and what a worker last said about itself, which the workers
- * attached to the restored Deployment state again on their next claim. Settings, capability admissions, repository connections and
- * sealed secrets require their validated writers and a recorded actor.
+ * attached to the restored Deployment state again on their next claim. Settings, capability admissions, repository connections,
+ * release provenance settings and sealed secrets require their validated writers and a recorded actor.
  * Operators re-enter configuration on the dashboard after a restore.
  */
 export const EXCLUDED_TABLES: ReadonlySet<string> = new Set([
@@ -70,7 +70,7 @@ export const EXCLUDED_TABLES: ReadonlySet<string> = new Set([
   ...['prompt_batches', 'responses', 'spores', 'plans', 'skill_records', 'sessions', 'search_blob_chunks']
     .flatMap((table) => ['', '_data', '_idx', '_docsize', '_config'].map((suffix) => `${table}_fts${suffix}`)),
   'schema_meta', 'member_tokens', 'blob_reservations', 'step_up_authorities',
-  'deployment_settings', 'project_capabilities', 'project_repositories', 'deployment_secrets', 'backups',
+  'deployment_settings', 'project_capabilities', 'project_repositories', 'project_release_provenance', 'deployment_secrets', 'backups',
   'backup_restore_progress',
   'object_releases', 'blob_release_candidates', 'backup_release_candidates', 'recovery_holds', 'restore_reference_guard',
   'worker_contacts',

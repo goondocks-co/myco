@@ -7,6 +7,7 @@ import { NOT_TOMBSTONED_PARAMS } from '../core/tombstones.js';
 import { IMPORT_DISABLED, IMPORT_ENABLED_LEAF, LEAF_OFF } from '../core/import-policy.js';
 import { leafOffChecks } from '../core/settings.js';
 import { TRANSCRIPT_PARSE_ADAPTER } from '../constants.js';
+import { filesNamedByToolInput } from '@goondocks/myco-shared/member-protocol';
 
 /** The identity of the write in flight: project, token, machine, the server clock, and the nonce that names this request's raw row. */
 export interface WriteContext {
@@ -178,6 +179,33 @@ export function basenameOf(path: unknown): string | null {
   return last === '' || last === '.' || last === '..' || last === '~' || last.length > MAX_PROJECT_NAME_CHARS ? null : last;
 }
 
+const COMMIT_SHA = /^[0-9a-f]{40}$/;
+/** A session end row's observation error when the member could not read whether tracked files differed from the commit. */
+export const GIT_STATUS_UNREADABLE = 'status_unreadable';
+
+/**
+ * The commit a session stood on, as the git provenance release reconciliation
+ * reads: one row per session and capture point, with whether tracked files
+ * differed from it. An end that does not say records `GIT_STATUS_UNREADABLE`
+ * as its error rather than a clean worktree. The earliest start and the latest
+ * end win, whole, so the rows converge in any delivery order; a value that is
+ * not a full commit SHA writes nothing.
+ */
+const sessionCommit = (db: RelationalStore, ctx: WriteContext, e: CaptureEnvelope, p: Payload, point: 'session_start' | 'session_end', at: number): PreparedStatement[] => {
+  const headSha = typeof p.headSha === 'string' && COMMIT_SHA.test(p.headSha) ? p.headSha : null;
+  if (headSha === null) return [];
+  const dirty = p.dirty === true ? 1 : 0;
+  const error = point === 'session_end' && typeof p.dirty !== 'boolean' ? GIT_STATUS_UNREADABLE : null;
+  const wins = point === 'session_start' ? 'excluded.captured_at < knowledge_git_provenance.captured_at' : 'excluded.captured_at > knowledge_git_provenance.captured_at';
+  return [db.prepare(`INSERT INTO knowledge_git_provenance
+      (project_id, identity_key, session_id, capture_point, captured_at, branch, head_sha, is_dirty, error, status_hash, created_at)
+      SELECT ?, ?, ?, ?, ?, (SELECT branch FROM sessions WHERE project_id = ? AND session_id = ?), ?, ?, ?, '', ? WHERE ${RAW_ROW_GATE}
+      ON CONFLICT(project_id, identity_key) DO UPDATE SET head_sha = excluded.head_sha, is_dirty = excluded.is_dirty, error = excluded.error,
+        captured_at = excluded.captured_at, branch = excluded.branch
+        WHERE ${wins}`)
+    .bind(ctx.projectId, `session:${e.sessionId}:${point}`, e.sessionId, point, at, ctx.projectId, e.sessionId, headSha, dirty, error, ctx.now, ...rawGateParams(ctx, e))];
+};
+
 /** Session facts come from the earliest `session.start` in the total order (client time, then the smaller event id), so any delivery order converges — ties included: an event that ranks earlier than the one whose facts are held replaces every fact, an absent one included; a later one changes nothing. `started_at` is the minimum and `ended_at` the maximum of the events that carry them; identity columns (`machine_id`, `created_by_token_id`, `first_received_at`) stay with the first writer. A Project still named by its own id takes the basename of the first start that carries a usable origin path; a renamed or onboarded Project keeps its name. */
 const sessionStart = ({ db, ctx, e, p, spec }: Inputs): KindPlan => {
   const startedAt = orderingTime(spec, p, 'startedAt', e.createdAt);
@@ -212,6 +240,7 @@ const sessionStart = ({ db, ctx, e, p, spec }: Inputs): KindPlan => {
               ...rank, startedAt,
               ctx.projectId, e.sessionId, ...rawGateParams(ctx, e)),
       ...nameProject,
+      ...sessionCommit(db, ctx, e, p, 'session_start', startedAt),
     ],
     incidental: [resolvePresentedDates(db, ctx.projectId, e.sessionId, { sql: RAW_ROW_GATE, params: rawGateParams(ctx, e) })],
     reads: [],
@@ -326,6 +355,7 @@ const sessionEnd = ({ db, ctx, e, p, spec }: Inputs): KindPlan => {
             ELSE MIN(COALESCE(titling_requested_at, ?), ?) END
         WHERE project_id = ? AND session_id = ? AND ${RAW_ROW_GATE}`)
         .bind(...endAppliesParams(endedAt), endedAt, ...endAppliesParams(endedAt), ctx.actor, requestedAt, ...endAppliesParams(endedAt), requestedAt, requestedAt, ctx.projectId, e.sessionId, ...rawGateParams(ctx, e)),
+      ...sessionCommit(db, ctx, e, p, 'session_end', endedAt),
     ],
     incidental: [resolvePresentedDates(db, ctx.projectId, e.sessionId, { sql: RAW_ROW_GATE, params: rawGateParams(ctx, e) })],
     reads: [],
@@ -376,6 +406,7 @@ const prompt = ({ db, ctx, e, p, contentHash }: Inputs): KindPlan => {
   };
 };
 
+/** A tool call row; one that carries no `filesAffected` records the paths its input names, so hook and parsed calls read alike. */
 const toolCall = ({ db, ctx, e, p }: Inputs): KindPlan => {
   const inputBlob = p.blob as string | undefined;
   const outputBlob = p.outputBlob as string | undefined;
@@ -390,7 +421,7 @@ const toolCall = ({ db, ctx, e, p }: Inputs): KindPlan => {
         ON CONFLICT (project_id, tool_call_id) DO NOTHING`)
         .bind(ctx.projectId, p.toolCallId, e.sessionId, opt(p.promptId), e.eventId, p.toolName, opt(p.mycoTool), opt(p.mycoOp),
               json(p.input), opt(inputBlob), opt(p.output), opt(outputBlob), e.kind === 'tool.failure' ? 0 : bool(p.success), opt(p.errorMessage),
-              opt(p.durationMs), json(p.filesAffected), opt(p.canopyInjectionTokens), e.createdAt, ctx.tokenId, ctx.now, ...rawGateParams(ctx, e)),
+              opt(p.durationMs), json(p.filesAffected ?? filesNamedByToolInput(p.input)), opt(p.canopyInjectionTokens), e.createdAt, ctx.tokenId, ctx.now, ...rawGateParams(ctx, e)),
     ],
     reads: [],
     refusal: () => NOT_STORED,

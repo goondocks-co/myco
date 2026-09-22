@@ -25,6 +25,7 @@ import { admitRecoveryExport } from './recovery-admission.js';
 import { attemptAdvancing, recoveryScheduleOf, SCHEDULE_JOB } from './recovery-schedule.js';
 import { PRUNE_FILE_BUDGET, stagingPrunePolicy, STAGING_RETENTION_JOB } from './staging-retention.js';
 import { backfillImportedTitles, titleReadySessions } from './titling.js';
+import { reconcileReleaseProvenance } from './release-provenance.js';
 import { MAINTENANCE_JOB, runMaintenance, type MaintenanceCheck } from './store-maintenance.js';
 
 /** The retention window when the leaf is unset, and the bounds the leaf itself declares. */
@@ -225,4 +226,5 @@ export const JOB_IMPLEMENTATIONS: Readonly<Record<string, JobRun>> = {
   [MAINTENANCE_JOB.integrity]: scheduledMaintenance('integrity'),
   // #1151 — worker mode
   'worker-lease-sweep': (env, now) => expireLeases(env, now),
+  'release-provenance-reconcile': reconcileReleaseProvenance,
 };

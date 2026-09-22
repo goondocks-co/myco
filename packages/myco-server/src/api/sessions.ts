@@ -1,3 +1,4 @@
+import { getReleaseStatus } from '../core/provenance.js';
 import type { ServerEnv } from '../core/adapters.js';
 import type { OwnerContext } from '../context.js';
 import { getSession, listSessionSummaries, projectStats, sessionCounts, type SessionFilters } from '../read/sessions.js';
@@ -82,7 +83,7 @@ export async function handleSession(env: ServerEnv, ctx: OwnerContext): Promise<
   if (scope === null) return notFound();
   const session = await getSession(env.db, scope, sessionId);
   if (session === null) return notFound();
-  return ok({ session, counts: await sessionCounts(env.db, scope, sessionId), projectId: scope.projectId });
+  return ok({ session, counts: await sessionCounts(env.db, scope, sessionId), release: await getReleaseStatus(env.db, scope, 'session', sessionId), projectId: scope.projectId });
 }
 
 export async function handleSessionChildren(env: ServerEnv, ctx: OwnerContext): Promise<Response> {

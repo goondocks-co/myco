@@ -1,3 +1,5 @@
+import { ReleaseChip } from '../release/ReleaseChip';
+import type { ReleaseStatus } from '../../hooks/use-release-provenance';
 import { useEffect, useState } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
 import { Check, Copy, Loader2, Sparkles, X } from 'lucide-react';
@@ -57,7 +59,7 @@ export function SessionDetail({ projectId, sessionId, onDeleted }: { projectId: 
     <PageLoading isLoading={detail.isPending} error={detail.error} loadingText="Loading session…">
       {detail.data && (
         <div className="flex flex-col gap-5">
-          <Header projectId={projectId} session={detail.data.session} />
+          <Header projectId={projectId} session={detail.data.session} release={detail.data.release} />
           <div className="flex justify-end">
             <DeleteSession projectId={projectId} session={detail.data.session} counts={detail.data.counts} onDeleted={onDeleted} />
           </div>
@@ -191,7 +193,7 @@ const TITLING_POLL_MS = 5_000;
 const isTerminal = (status: string): boolean => status === 'completed' || status === 'failed' || status === 'skipped';
 
 /** The session's name, state and the facts that identify the run, in one glance. */
-function Header({ projectId, session }: { projectId: string; session: SessionRow }) {
+function Header({ projectId, session, release }: { projectId: string; session: SessionRow; release?: ReleaseStatus | null }) {
   const open = session.endedAt === null;
   return (
     <div className="space-y-2">
@@ -203,6 +205,7 @@ function Header({ projectId, session }: { projectId: string; session: SessionRow
         <h2 className="myco-display-lg m-0 min-w-0 text-on-surface">{session.label}</h2>
         {session.agent !== null && <Badge variant="outline" className="font-mono text-[10px] px-1.5 py-0">{session.agent}</Badge>}
         {session.branch !== null && <Badge variant="secondary" className="font-mono text-[10px] px-1.5 py-0">{session.branch}</Badge>}
+        <ReleaseChip release={release} />
         <GenerateSummary projectId={projectId} sessionId={session.sessionId} session={session} />
         {open && <EndSession projectId={projectId} session={session} />}
       </div>

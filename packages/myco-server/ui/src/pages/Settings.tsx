@@ -9,6 +9,7 @@ import { PageLoading } from '../components/ui/page-loading';
 import { Panel } from '../components/ui/panel';
 import { SubtabPill } from '../components/ui/subtab-pill';
 import { AppearanceSection } from '../layout/AppearanceSection';
+import { ReleaseTracking } from '../components/release/ReleaseTracking';
 import { useMembers } from '../hooks/use-access';
 import { useProjects } from '../hooks/use-projects';
 import { settingsRefusalText, useRepository, useRepositoryActions, type RepositoryRow, useCapabilities, useSecrets, useSettings, useSettingsActions, type LeafRow, type SecretRow } from '../hooks/use-settings';
@@ -268,6 +269,7 @@ function ProjectCapabilityPanel({ projectId, name }: { projectId: string; name: 
         {error !== null && <p className="mt-2 font-sans text-xs text-tertiary">{error}</p>}
       </PageLoading>
       <ProjectRepository projectId={projectId} />
+      <ReleaseTracking projectId={projectId} />
     </Panel>
   );
 }

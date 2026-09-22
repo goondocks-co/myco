@@ -50,7 +50,7 @@ const sharedFiles = () =>
     !f.includes(`${join(SRC, 'platform')}/`) && !f.includes(`${join(SRC, 'entry')}/`) && f !== join(SRC, 'index.ts'));
 
 /** Every `emit` call across src; a call removed or added moves the total. */
-const EMIT_CALLS = 129;
+const EMIT_CALLS = 130;
 /** The one migrations directory: the emit script writes it, the rendered-steps gate verifies it, and wrangler.toml applies from it. */
 const MIGRATIONS_DIR = 'migrations';
 const K = SyntaxKind as unknown as Record<string, number>;
@@ -801,11 +801,12 @@ describe('gates', () => {
       .filter((f) => f !== join(SRC, 'core', 'secrets.ts'))
       .filter((f) => /deploymentSecretStore\(/.test(stripComments(readFileSync(f, 'utf8'))))
       .map((f) => f.slice(SRC.length + 1));
-    // The settings surface, which only ever calls `describe`/`list`/`put`/`delete`;
-    // and the one dispatcher, which opens a provider credential to hand it to
-    // the launched runtime's environment and nothing else. A new file here is
-    // the thing to look at.
-    expect(callers.sort()).toEqual([join('api', 'repositories.ts'), join('api', 'settings.ts'), join('core', 'provider-credentials.ts'), join('core', 'run-repository.ts')]);
+    // The settings surfaces, which only ever call `describe`/`list`/`put`/`delete`;
+    // the one dispatcher, which opens a provider credential to hand it to the
+    // launched runtime's environment and nothing else; and the release check,
+    // which opens its own purpose-labelled slot to authenticate GitHub reads.
+    // A new file here is the thing to look at.
+    expect(callers.sort()).toEqual([join('api', 'release-provenance.ts'), join('api', 'repositories.ts'), join('api', 'settings.ts'), join('core', 'provider-credentials.ts'), join('core', 'release-provenance.ts'), join('core', 'run-repository.ts')]);
     const credentialCallers = files(SRC).filter((f) => /\bopenProviderCredential\(/.test(stripComments(readFileSync(f, 'utf8'))))
       .map((f) => f.slice(SRC.length + 1)).sort();
     expect(credentialCallers).toEqual([join('core', 'embedding', 'configured-provider.ts'), join('core', 'harness.ts'), join('core', 'provider-credentials.ts')]);
@@ -1122,6 +1123,7 @@ describe('gates', () => {
       'owner GET /api/projects/{projectId}/digests/{tier}/revisions',
       'owner GET /api/projects/{projectId}/grants',
       'owner GET /api/projects/{projectId}/plans',
+      'owner GET /api/projects/{projectId}/release-provenance',
       'owner GET /api/projects/{projectId}/release-states',
       'owner GET /api/projects/{projectId}/repository',
       'owner GET /api/projects/{projectId}/runs',
@@ -1163,6 +1165,7 @@ describe('gates', () => {
       'owner POST /api/projects/{projectId}/grants',
       'owner POST /api/projects/{projectId}/grants/{grantId}/revoke',
       'owner POST /api/projects/{projectId}/grants/{grantId}/rotate',
+      'owner POST /api/projects/{projectId}/release-provenance/check',
       'owner POST /api/projects/{projectId}/sessions/{sessionId}/end',
       'owner POST /api/projects/{projectId}/sessions/{sessionId}/plans/{planKey}/status',
       'owner POST /api/projects/{projectId}/sessions/{sessionId}/title',
@@ -1174,6 +1177,7 @@ describe('gates', () => {
       'owner POST /auth/logout',
       'owner PUT /api/agents/{agentId}',
       'owner PUT /api/projects/{projectId}/capabilities/{capability}',
+      'owner PUT /api/projects/{projectId}/release-provenance',
       'owner PUT /api/projects/{projectId}/repository',
       'owner PUT /api/secrets/{name}',
       'owner PUT /api/settings/{leaf}',

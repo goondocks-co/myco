@@ -35,3 +35,21 @@ export type MemberKind = (typeof MEMBER_KINDS)[number];
 /** Whether a value names an event kind a member ships. */
 export const isMemberKind = (value: unknown): value is MemberKind =>
   typeof value === 'string' && (MEMBER_KINDS as readonly string[]).includes(value);
+
+/** The most file paths one tool call records, and the longest one path may be. */
+export const MAX_FILES_AFFECTED = 100;
+export const MAX_FILE_PATH_CHARS = 1024;
+
+const FILE_KEYS = ['file_path', 'path', 'notebook_path'] as const;
+
+/** The file paths a tool input names under its conventional path keys, or undefined when it names none. */
+export function filesNamedByToolInput(toolInput: unknown): string[] | undefined {
+  if (!toolInput || typeof toolInput !== 'object') return undefined;
+  const record = toolInput as Record<string, unknown>;
+  const files: string[] = [];
+  for (const key of FILE_KEYS) {
+    const v = record[key];
+    if (typeof v === 'string' && v.length > 0 && v.length <= MAX_FILE_PATH_CHARS) files.push(v);
+  }
+  return files.length > 0 ? files.slice(0, MAX_FILES_AFFECTED) : undefined;
+}

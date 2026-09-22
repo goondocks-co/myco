@@ -28,6 +28,15 @@ export interface SearchResult {
   session_id?: string;
   prompt_id?: string;
   retrieve?: { tool: string; input: { op: string; id: string } };
+  /** Whether the record's source work is released, as the latest release check left it; absent when it has no release state. */
+  release?: ReleaseAnnotation;
+}
+
+export interface ReleaseAnnotation {
+  state: string;
+  confidence: string;
+  ref: string | null;
+  checked_at: number;
 }
 
 export interface SearchAnswer {
