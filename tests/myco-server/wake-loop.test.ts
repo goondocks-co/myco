@@ -52,6 +52,29 @@ describe('the wake loop', () => {
     expect(ticks).toBe(seen);
   });
 
+  it('stop resolves only once a tick already running has returned, and starts no other', async () => {
+    let ticks = 0;
+    let release: () => void = () => {};
+    let returned = false;
+    const loop = startWakeLoop(async () => {
+      ticks += 1;
+      await new Promise<void>((resolve) => { release = resolve; });
+      returned = true;
+      return { nextWakeMs: 0 };
+    }, { floorMs: 5 });
+    await settle(5);
+    expect(ticks).toBe(1);
+    let stopped = false;
+    const stopping = loop.stop().then(() => { stopped = true; });
+    await settle(10);
+    expect(stopped).toBe(false);
+    release();
+    await stopping;
+    expect({ returned, stopped }).toEqual({ returned: true, stopped: true });
+    await settle(20);
+    expect(ticks).toBe(1);
+  });
+
   it('comes back after a tick that throws', async () => {
     let ticks = 0;
     const loop = startWakeLoop(async () => { ticks += 1; if (ticks === 1) throw new Error('boom'); return { nextWakeMs: 5 }; }, { floorMs: 5 });

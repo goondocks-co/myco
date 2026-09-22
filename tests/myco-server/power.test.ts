@@ -124,7 +124,7 @@ describe('what runs at each depth', () => {
 
   it('runs a clock-owned job on the target\'s own clock alone: a tick an owner requests never drains stored objects or starts a backup', () => {
     const owned = SERVER_JOBS.filter((j) => j.wake === 'clock').map((j) => j.name);
-    expect(owned).toEqual([SCHEDULE_JOB, STAGING_RETENTION_JOB, 'object-release-drain']);
+    expect(owned).toEqual([SCHEDULE_JOB, STAGING_RETENTION_JOB, 'object-release-drain', 'database-optimize', 'database-integrity-check']);
     for (const state of ['active', 'idle', 'sleep'] as const) {
       expect(jobsDueAt(state, 'request').map((j) => j.name).filter((name) => owned.includes(name))).toEqual([]);
       expect(jobsDueAt(state, 'clock').map((j) => j.name)).toEqual(expect.arrayContaining(owned));

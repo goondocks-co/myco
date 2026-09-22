@@ -21,6 +21,7 @@ import type { VectorStore } from './embedding/vectors.js';
 // ---------------------------------------------------------------------------
 
 import type { RecoveryProducerPort } from './recovery-producer.js';
+import type { StoreMaintenancePort } from './store-maintenance.js';
 
 export interface RunResult {
   results: unknown[];
@@ -98,7 +99,11 @@ export type SourceIdentity = (request: Request) => string | null;
 // ---------------------------------------------------------------------------
 
 /** Broad cause of a failure. It decides retryable vs terminal; `db` is any storage-layer error the adapter recognises as its own. */
-export type ErrorClass = 'parse' | 'quota' | 'constraint' | 'schema' | 'db' | 'revoked' | 'unknown';
+/**
+ * `quota` is a member credential's own byte quota. `store_quota` and `store_size` are the store's platform limits:
+ * a daily usage limit reached, or the database at its maximum size.
+ */
+export type ErrorClass = 'parse' | 'quota' | 'store_quota' | 'store_size' | 'constraint' | 'schema' | 'db' | 'revoked' | 'unknown';
 
 /**
  * A platform's recogniser for its own storage errors, consulted only after the
@@ -238,6 +243,8 @@ export interface ServerEnv {
    * carry it; only starting an attempt and reading its progress cross this seam.
    */
   recovery?: RecoveryProducerPort;
+  /** This target's store maintenance: what it can check and optimize, and how. Absent, every check is unavailable. */
+  storeMaintenance?: StoreMaintenancePort;
   /**
    * Wake the Deployment soon. Requested work — a dispatch, a queued run — calls
    * this so the tick that sweeps and drains follows without waiting for the

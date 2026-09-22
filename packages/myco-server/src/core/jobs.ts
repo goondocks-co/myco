@@ -145,6 +145,19 @@ export const SERVER_JOBS: readonly ServerJob[] = [
     wake: 'clock',
     converges: 'every journaled stored object is deleted by a store delete the store acknowledged, and only then is its journal row removed; no expired upload authority survives unjournaled; with no recovery hold open, every candidate a hold deferred is decided again against the rows; a registered object is never journaled',
   },
+  // Store maintenance
+  {
+    name: 'database-optimize',
+    runsThrough: 'sleep',
+    wake: 'clock',
+    converges: 'a Deployment whose owner turned automatic optimize on at an interval has had the store\'s query-planner statistics refreshed by its own target\'s optimize at least once per interval since the last run started, and the outcome of the latest run is recorded under its run id; a check this target does not support, one that is not configured, and one still running runs nothing',
+  },
+  {
+    name: 'database-integrity-check',
+    runsThrough: 'sleep',
+    wake: 'clock',
+    converges: 'a Deployment whose owner turned automatic integrity checking on at an interval has had its store checked by its own target\'s integrity and foreign key checks at least once per interval since the last run started, and the findings or the named failure of the latest run are recorded under its run id; a check this target does not support, one that is not configured, and one still running runs nothing',
+  },
   {
     name: 'transcript-retention',
     runsThrough: 'idle',
