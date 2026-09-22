@@ -196,12 +196,8 @@ export async function grantExpiry(env: ServerEnv, now: number): Promise<number> 
 }
 
 /** Runs a store maintenance check when it is due, and answers 1 for a run it started; the outcome, failure included, is in the run's record. */
-const scheduledMaintenance = (check: MaintenanceCheck): JobRun => async (env, now, state) => {
-  const answer = await runMaintenance(env, check, 'schedule', now, { powerState: state });
-  if (answer.outcome === 'refused') return 0;
-  emit({ kind: 'store_maintenance', check, state: answer.record.state, error_class: answer.record.errorClass ?? 'none' });
-  return 1;
-};
+const scheduledMaintenance = (check: MaintenanceCheck): JobRun => async (env, now, state) =>
+  ((await runMaintenance(env, check, 'schedule', now, { powerState: state })).outcome === 'refused' ? 0 : 1);
 
 /** Every declared job's implementation, by name. A declared job absent here is refused by a gate, never skipped in silence. */
 export const JOB_IMPLEMENTATIONS: Readonly<Record<string, JobRun>> = {

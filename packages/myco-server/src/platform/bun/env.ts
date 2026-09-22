@@ -89,7 +89,7 @@ export function bunPlatform(config: BunServerConfig): PlatformDescriptor {
 
 /** The self-hosted env, which also knows how to wait for the work it deferred. */
 export interface BunServerEnv extends ServerEnv {
-  /** Resolves once every deferred piece of work has settled. */
+  /** Resolves once every deferred piece of work has settled, including work deferred while it waited. */
   settle(): Promise<void>;
 }
 
@@ -105,7 +105,7 @@ export function serverEnvFromBunConfig(config: BunServerConfig): BunServerEnv {
       const tracked: Promise<void> = work().catch(() => undefined).finally(() => { pending.delete(tracked); });
       pending.add(tracked);
     },
-    settle: async () => { await Promise.allSettled([...pending]); },
+    settle: async () => { while (pending.size > 0) await Promise.allSettled([...pending]); },
     outbound: fetch,
     secrets: {
       GITHUB_CLIENT_ID: config.GITHUB_CLIENT_ID,

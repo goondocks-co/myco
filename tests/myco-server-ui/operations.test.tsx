@@ -389,6 +389,31 @@ describe('store maintenance on the Operations page', () => {
     expect(requested).toContain('POST /api/maintenance/optimize/run');
   });
 
+  it('words a running record the server no longer runs as interrupted and offers a run, and a live one as running', async () => {
+    const runningRecord = {
+      runId: 'r2', trigger: 'schedule', state: 'running', startedAt: 0, finishedAt: null, errorClass: null,
+      findings: [], findingsOmitted: 0, measurements: [],
+    };
+    const supported = { supported: true, label: 'Checks every table, index and page' };
+    server({
+      '/auth/me': () => Response.json(ME),
+      '/api/projects': () => Response.json(PROJECTS),
+      '/api/maintenance': () => Response.json({
+        checks: [
+          { check: 'integrity', support: supported, cadence: { state: 'off' }, dueAt: null, running: false, latest: runningRecord },
+          { check: 'optimize', support: supported, cadence: { state: 'off' }, dueAt: null, running: true, latest: { ...runningRecord, runId: 'r3' } },
+        ],
+      }),
+    });
+    mount('/operations');
+    const integrity = await screen.findByTestId('maintenance-integrity');
+    expect(within(integrity).getByTestId('maintenance-integrity-outcome').textContent).toMatch(/^Interrupted: started .+ \(scheduled\) and ended without recording an outcome\.$/);
+    expect(within(integrity).getByRole('button', { name: 'Run now' }).hasAttribute('disabled')).toBe(false);
+    const optimize = screen.getByTestId('maintenance-optimize');
+    expect(within(optimize).getByTestId('maintenance-optimize-outcome').textContent).toMatch(/^Running since /);
+    expect(within(optimize).getByRole('button', { name: 'Running…' }).hasAttribute('disabled')).toBe(true);
+  });
+
   it('offers no run for a check this server cannot perform', async () => {
     server({
       '/auth/me': () => Response.json(ME),

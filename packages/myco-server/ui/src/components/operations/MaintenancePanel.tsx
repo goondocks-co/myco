@@ -37,6 +37,8 @@ const FAILURE_WORDS: Record<string, string> = {
 
 const button = 'rounded-md border border-outline-variant/30 px-2.5 py-1 font-sans text-xs text-on-surface transition-colors hover:bg-surface-container-high disabled:opacity-50';
 const dateLabel = (ms: number): string => new Date(ms).toLocaleString();
+/** How often the panel re-reads while a check is running, so its outcome appears without a reload. */
+const RUNNING_REFRESH_MS = 5_000;
 const bytesLabel = (bytes: number): string => (bytes >= 1024 * 1024 ? `${(bytes / (1024 * 1024)).toFixed(1)} MB` : `${Math.round(bytes / 1024)} KB`);
 
 function cadenceWords(cadence: Cadence): string {
@@ -46,10 +48,15 @@ function cadenceWords(cadence: Cadence): string {
   return 'Automatic runs are not set up. Turn them on and choose an interval under Settings · Maintenance.';
 }
 
-function outcomeWords(outcome: Outcome): string {
+/** A `running` record is live only while the server reports the check running; otherwise its run ended without recording an outcome. */
+function outcomeWords(outcome: Outcome, running: boolean): string {
   const when = dateLabel(outcome.finishedAt ?? outcome.startedAt);
   const by = outcome.trigger === 'owner' ? 'run by hand' : 'scheduled';
-  if (outcome.state === 'running') return `Running since ${dateLabel(outcome.startedAt)} (${by}).`;
+  if (outcome.state === 'running') {
+    return running
+      ? `Running since ${dateLabel(outcome.startedAt)} (${by}).`
+      : `Interrupted: started ${dateLabel(outcome.startedAt)} (${by}) and ended without recording an outcome.`;
+  }
   if (outcome.state === 'healthy') return `No problems found ${when} (${by}).`;
   if (outcome.state === 'findings') return `Problems found ${when} (${by}):`;
   return `Did not finish ${when} (${by}): ${FAILURE_WORDS[outcome.errorClass ?? ''] ?? `failed (${outcome.errorClass ?? 'unknown'})`}.`;
@@ -78,7 +85,7 @@ function CheckRow({ status }: { status: CheckStatus }) {
         <>
           <p className="m-0 font-sans text-xs text-on-surface-variant">{status.support.label}. {cadenceWords(status.cadence)}</p>
           <p className="m-0 font-sans text-sm text-on-surface" data-testid={`maintenance-${status.check}-outcome`}>
-            {latest === null ? 'Never run.' : outcomeWords(latest)}
+            {latest === null ? (status.running ? 'Running…' : 'Never run.') : outcomeWords(latest, status.running)}
           </p>
           {latest !== null && latest.findings.length > 0 && (
             <ul className="m-0 list-disc pl-5 font-mono text-xs text-on-surface">
@@ -105,7 +112,11 @@ function CheckRow({ status }: { status: CheckStatus }) {
 
 /** The store's routine checks: what this server can run, what each last found, and a way to run one now. */
 export function MaintenancePanel() {
-  const status = useQuery({ queryKey: ['maintenance'], queryFn: ({ signal }) => fetchJson<{ checks: CheckStatus[] }>('/api/maintenance', signal) });
+  const status = useQuery({
+    queryKey: ['maintenance'],
+    queryFn: ({ signal }) => fetchJson<{ checks: CheckStatus[] }>('/api/maintenance', signal),
+    refetchInterval: (query) => (query.state.data?.checks.some((c) => c.running) ? RUNNING_REFRESH_MS : false),
+  });
   return (
     <Panel title="Store maintenance" eyebrow="Server" data-testid="maintenance">
       {status.isError ? (

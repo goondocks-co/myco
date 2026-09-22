@@ -12,11 +12,16 @@
  * One check runs at a time on a Deployment. How that is held depends on what bounds the work on the target, which
  * its port declares (`Exclusivity`). A completion lands only on the record its own run created, so no run ever
  * replaces the outcome of a newer one.
+ *
+ * A scheduled run on a `serving-owner` target has no bound but the store's size, so the clock's job claims it and
+ * hands the work to the env's deferral (`afterResponse`), which the serving process drains before it closes the
+ * store; the tick carries on with its other jobs meanwhile. A `platform-limit` run is bounded and finishes inside
+ * the invocation that claimed it.
  */
 import type { ServerEnv } from './adapters.js';
 import type { PowerState } from './power.js';
 import { leafValues } from './settings.js';
-import { classify } from '../telemetry.js';
+import { classify, emit } from '../telemetry.js';
 
 export const MAINTENANCE_CHECKS = ['optimize', 'integrity'] as const;
 export type MaintenanceCheck = (typeof MAINTENANCE_CHECKS)[number];
@@ -117,9 +122,13 @@ export interface MaintenanceOutcome {
 /** Why a run did not start. */
 export type MaintenanceRefusal = 'unsupported' | 'not_configured' | 'already_running' | 'not_due';
 
-/** `recorded` is false when the run's own record had been replaced before it finished, and the newer record stands. */
+/**
+ * `recorded` is false when the run's own record had been replaced before it finished, and the newer record stands.
+ * `started` is a claimed run whose work continues in the env's deferral; `record` is its running claim.
+ */
 export type RunAnswer =
   | { outcome: 'ran'; record: MaintenanceOutcome; recorded: boolean }
+  | { outcome: 'started'; record: MaintenanceOutcome }
   | { outcome: 'refused'; refusal: MaintenanceRefusal; reason: string };
 
 /**
@@ -258,12 +267,34 @@ export function boundFindings(findings: readonly string[]): { findings: string[]
 }
 
 /**
+ * Asks the port for the check a claimed run holds and records what it answered, over that run's record alone. A
+ * port failure is recorded under its named class; nothing is recorded as healthy that the store did not answer.
+ * Every finished run is reported as a `store_maintenance` event.
+ */
+async function finishRun(env: ServerEnv, port: StoreMaintenancePort, record: MaintenanceOutcome, clock: () => number): Promise<{ record: MaintenanceOutcome; recorded: boolean }> {
+  let finished: MaintenanceOutcome;
+  try {
+    const result = await port.run(record.check);
+    finished = {
+      ...record, ...boundFindings(result.findings), measurements: result.measurements, finishedAt: clock(),
+      state: result.findings.length === 0 ? 'healthy' : 'findings',
+    };
+  } catch (err) {
+    finished = { ...record, state: 'failed', finishedAt: clock(), errorClass: classify(err, env.platform?.classifyError) };
+  }
+  const recorded = await complete(env, finished);
+  emit({ kind: 'store_maintenance', check: finished.check, state: finished.state, error_class: finished.errorClass ?? 'none', recorded });
+  return { record: finished, recorded };
+}
+
+/**
  * Runs one check: the clock's job and the owner's request both come here.
  *
  * A scheduled run is refused unless the check is configured and due; an owner's run skips the cadence but never
  * exclusivity. On a `serving-owner` target the in-flight mark is taken before the first await, so two callers in
- * the serving process cannot both pass it, and it is released only when the port's work has settled. The port's
- * failure is recorded under its named class; nothing is recorded as healthy that the store did not answer.
+ * the serving process cannot both pass it, and it is released only when the port's work has settled — for a
+ * scheduled run, inside the deferral that carries the work, which reports a failure to record the outcome as a
+ * `store_maintenance_failed` event.
  */
 export async function runMaintenance(
   env: ServerEnv, check: MaintenanceCheck, trigger: MaintenanceTrigger, now: number,
@@ -277,6 +308,7 @@ export async function runMaintenance(
   const running = exclusivity.kind === 'serving-owner' ? inFlightOf(port) : null;
   if (running?.has(check)) return alreadyRunning(check);
   running?.add(check);
+  let deferred = false;
   try {
     let notBefore: number | null = null;
     if (trigger === 'schedule') {
@@ -302,19 +334,17 @@ export async function runMaintenance(
         ? alreadyRunning(check)
         : { outcome: 'refused', refusal: 'not_due', reason: `${check} is not due yet` };
     }
-    let finished: MaintenanceOutcome;
-    try {
-      const result = await port.run(check);
-      finished = {
-        ...record, ...boundFindings(result.findings), measurements: result.measurements, finishedAt: clock(),
-        state: result.findings.length === 0 ? 'healthy' : 'findings',
-      };
-    } catch (err) {
-      finished = { ...record, state: 'failed', finishedAt: clock(), errorClass: classify(err, env.platform?.classifyError) };
+    if (running !== null && trigger === 'schedule') {
+      env.afterResponse(() => finishRun(env, port, record, clock).then(
+        () => undefined,
+        (err: unknown) => { emit({ kind: 'store_maintenance_failed', check, error_class: classify(err, env.platform?.classifyError) }); },
+      ).finally(() => { running.delete(check); }));
+      deferred = true;
+      return { outcome: 'started', record };
     }
-    return { outcome: 'ran', record: finished, recorded: await complete(env, finished) };
+    return { outcome: 'ran', ...(await finishRun(env, port, record, clock)) };
   } finally {
-    running?.delete(check);
+    if (!deferred) running?.delete(check);
   }
 }
 

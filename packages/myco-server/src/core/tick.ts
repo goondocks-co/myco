@@ -76,8 +76,14 @@ export async function engineAssertions(env: ServerEnv, now: number): Promise<Pow
   // So does a producer hold nothing has settled: it defers deletion until the job that settles it runs.
   if (await holdSettlementDue(env)) assertions.push({ name: 'recovery:hold', maxDepth: 'sleep' });
   // A due store check holds it there as well, and stops holding once a run claims it: a run that fails consumes
-  // its interval as one that succeeds does, so a check that cannot succeed never keeps the Deployment awake.
-  if (await anyMaintenanceDue(env, now)) assertions.push({ name: 'maintenance:due', maxDepth: 'sleep' });
+  // its interval as one that succeeds does, so a check that cannot succeed never keeps the Deployment awake. A
+  // maintenance record that cannot be read asserts nothing and is reported by name; every other job still runs,
+  // and the check's own job meets the same fault when its depth runs it.
+  try {
+    if (await anyMaintenanceDue(env, now)) assertions.push({ name: 'maintenance:due', maxDepth: 'sleep' });
+  } catch (err) {
+    emit({ kind: 'maintenance_due_failed', error_class: classify(err, env.platform?.classifyError) });
+  }
   return assertions;
 }
 

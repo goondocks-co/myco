@@ -5,7 +5,7 @@
  * The native checks run over a file on disk: the integrity check reads it from a thread of its own. What
  * they find is SQLite's own answer for a store this test damaged, never a stand-in.
  */
-import { afterEach, expect, it } from 'bun:test';
+import { afterEach, expect, it, spyOn } from 'bun:test';
 import { Database } from 'bun:sqlite';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -22,6 +22,9 @@ import {
 } from '@myco-server-worker/core/store-maintenance.js';
 import type { ServerEnv } from '@myco-server-worker/core/adapters.js';
 import { engineAssertions, runTick } from '@myco-server-worker/core/tick.js';
+import { serverEnvFromBunConfig } from '@myco-server-worker/platform/bun/env.js';
+import { createBunHandler } from '@myco-server-worker/entry/bun.js';
+import { stampRequest } from '@myco-server-worker/core/activity.js';
 
 const HOUR = 3_600_000;
 const dirs: string[] = [];
@@ -152,11 +155,11 @@ it('a scheduled run starts once per interval', async () => {
   setLeaf('maintenance.auto_optimize_interval_hours', 24);
   const t0 = 1_000 * HOUR;
   expect(await maintenanceDue(env, 'optimize', t0)).toBe(true);
-  expect(await runMaintenance(env, 'optimize', 'schedule', t0)).toMatchObject({ outcome: 'ran', recorded: true, record: { state: 'healthy', trigger: 'schedule' } });
+  expect(await runMaintenance(env, 'optimize', 'schedule', t0)).toMatchObject({ outcome: 'started', record: { state: 'running', trigger: 'schedule' } });
   expect(await maintenanceDue(env, 'optimize', t0 + HOUR)).toBe(false);
   expect(await runMaintenance(env, 'optimize', 'schedule', t0 + HOUR)).toMatchObject({ outcome: 'refused', refusal: 'not_due' });
   expect(await maintenanceDue(env, 'optimize', t0 + 24 * HOUR)).toBe(true);
-  expect(await runMaintenance(env, 'optimize', 'schedule', t0 + 24 * HOUR)).toMatchObject({ outcome: 'ran' });
+  expect(await runMaintenance(env, 'optimize', 'schedule', t0 + 24 * HOUR)).toMatchObject({ outcome: 'started' });
 });
 
 it('the engine runs a due check on its own clock alone, holds an idle Deployment at sleep for it, and lets go once it ran', async () => {
@@ -264,4 +267,108 @@ it('an owner reads every check and runs one through the served routes, on the pa
   expect((await worker.fetch(await asOwnerPost('/api/maintenance/vacuum/run'), env)).status).toBe(404);
   const signedOut = new Request('https://s/api/maintenance/optimize/run', { method: 'POST', headers: { 'cf-connecting-ip': '1.2.3.4', origin: 'https://s' } });
   expect((await worker.fetch(signedOut, env)).status).toBe(401);
+});
+
+/** A native integrity port whose work waits until the test releases it, on the serving-owner exclusivity the self-hosted port declares. */
+function pendingIntegrity() {
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => { release = resolve; });
+  const calls: MaintenanceCheck[] = [];
+  const port: StoreMaintenancePort = {
+    support: { optimize: { supported: false, reason: 'not in this test' }, integrity: { supported: true, label: 'test' } },
+    exclusivity: { kind: 'serving-owner', holder: 'this-process' },
+    run: async (check) => { calls.push(check); await gate; return { findings: [], measurements: [] }; },
+  };
+  return { port, calls, release };
+}
+
+function nativeEnv(port: StoreMaintenancePort) {
+  const { sqlite } = volume();
+  for (const [leaf, value] of [['maintenance.auto_integrity_check', true], ['maintenance.auto_integrity_check_interval_hours', 24]] as const) {
+    sqlite.query(`INSERT OR REPLACE INTO deployment_settings (leaf, value, updated_at, updated_by) VALUES (?, ?, 0, 'test')`).run(leaf, JSON.stringify(value));
+  }
+  const env = serverEnvFromBunConfig({ sqlite, blobDir: fs.mkdtempSync(path.join(os.tmpdir(), 'myco-maintenance-blobs-')) });
+  env.storeMaintenance = port;
+  return { env, sqlite };
+}
+
+it('on the self-hosted clock, a scheduled integrity check is claimed and handed off; the next tick runs the lease sweep and every other job while it reads', async () => {
+  const pending = pendingIntegrity();
+  const { env } = nativeEnv(pending.port);
+  const t0 = 1_000 * HOUR;
+  await stampRequest(env.db, t0 - 31 * 60_000);
+  const first = await runTick(env, t0, { wake: 'clock' });
+  expect(first.jobs.find((j) => j.name === 'database-integrity-check')).toEqual({ name: 'database-integrity-check', changed: 1, failed: null });
+  expect(pending.calls).toEqual(['integrity']);
+  expect(await latestOutcome(env, 'integrity')).toMatchObject({ state: 'running', trigger: 'schedule', holder: 'this-process' });
+
+  const next = await runTick(env, t0 + 60_000, { wake: 'clock' });
+  expect(next.jobs.find((j) => j.name === 'worker-lease-sweep')).toEqual({ name: 'worker-lease-sweep', changed: 0, failed: null });
+  expect(next.jobs.every((j) => j.failed === null)).toBe(true);
+  expect(next.jobs.find((j) => j.name === 'database-integrity-check')?.changed).toBe(0);
+  expect(await runMaintenance(env, 'integrity', 'owner', t0 + 60_000)).toMatchObject({ outcome: 'refused', refusal: 'already_running' });
+  expect(pending.calls).toEqual(['integrity']);
+
+  let settled = false;
+  const settling = env.settle().then(() => { settled = true; });
+  await Bun.sleep(5);
+  expect(settled).toBe(false);
+  pending.release();
+  await settling;
+  expect(await latestOutcome(env, 'integrity')).toMatchObject({ state: 'healthy', trigger: 'schedule', powerState: 'sleep' });
+  expect(await runMaintenance(env, 'integrity', 'owner', t0 + 2 * 60_000)).toMatchObject({ outcome: 'ran', recorded: true });
+});
+
+it('a handed-off check that fails records its named class and releases its in-flight mark', async () => {
+  const failing: StoreMaintenancePort = { ...pendingIntegrity().port, run: async () => { throw new Error('SQLITE_CORRUPT: database disk image is malformed'); } };
+  const { env } = nativeEnv(failing);
+  const t0 = 1_000 * HOUR;
+  expect(await runMaintenance(env, 'integrity', 'schedule', t0)).toMatchObject({ outcome: 'started', record: { state: 'running' } });
+  await env.settle();
+  expect(await latestOutcome(env, 'integrity')).toMatchObject({ state: 'failed', errorClass: expect.any(String), finishedAt: expect.any(Number) });
+  expect((await latestOutcome(env, 'integrity'))?.errorClass).not.toBe('none');
+  expect(await runMaintenance(env, 'integrity', 'owner', t0 + 1)).toMatchObject({ outcome: 'ran' });
+});
+
+it('an unreadable maintenance record is reported by name without stopping the tick\'s other jobs', async () => {
+  const { env, setLeaf } = coreEnv(releasedPort());
+  setLeaf('maintenance.auto_optimize', true);
+  setLeaf('maintenance.auto_optimize_interval_hours', 24);
+  await env.db.prepare(`INSERT OR REPLACE INTO schema_meta (key, value) VALUES ('maintenance.optimize', 'not a record')`).run();
+  await stampRequest(env.db, 1_000 * HOUR - 31 * 60_000);
+  const logged: string[] = [];
+  const log = spyOn(console, 'log').mockImplementation((...args: unknown[]) => { logged.push(args.map(String).join(' ')); });
+  try {
+    const report = await runTick(env, 1_000 * HOUR, { wake: 'clock' });
+    expect(report.jobs.find((j) => j.name === 'worker-lease-sweep')).toEqual({ name: 'worker-lease-sweep', changed: 0, failed: null });
+    expect(report.jobs.filter((j) => j.failed !== null).map((j) => j.name)).toEqual(['database-optimize']);
+  } finally {
+    log.mockRestore();
+  }
+  expect(logged.map((l) => JSON.parse(l) as Record<string, unknown>).find((e) => e.kind === 'maintenance_due_failed'))
+    .toMatchObject({ error_class: expect.any(String) });
+});
+
+it('on the self-hosted target, close() waits for a handed-off check and records it before the store closes', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-maintenance-close-'));
+  dirs.push(dir);
+  const databasePath = path.join(dir, 'myco.db');
+  const seed = new Database(databasePath, { create: true });
+  migrateAndSeed(seed);
+  seed.close();
+  const handler = await createBunHandler({ databasePath, blobDir: path.join(dir, 'blobs'), header: 'x-forwarded-for', wakeLoop: false });
+  const pending = pendingIntegrity();
+  handler.env.storeMaintenance = pending.port;
+  await handler.env.db.prepare(`INSERT OR REPLACE INTO deployment_settings (leaf, value, updated_at, updated_by) VALUES ('maintenance.auto_integrity_check', 'true', 0, 't'), ('maintenance.auto_integrity_check_interval_hours', '24', 0, 't')`).run();
+  expect(await runMaintenance(handler.env, 'integrity', 'schedule', 1_000 * HOUR)).toMatchObject({ outcome: 'started' });
+  let closed = false;
+  const closing = handler.close().then(() => { closed = true; });
+  await Bun.sleep(5);
+  expect(closed).toBe(false);
+  pending.release();
+  await closing;
+  const reopened = new Database(databasePath, { readonly: true });
+  const row = reopened.query(`SELECT value FROM schema_meta WHERE key = 'maintenance.integrity'`).get() as { value: string };
+  reopened.close();
+  expect(JSON.parse(row.value)).toMatchObject({ state: 'healthy', trigger: 'schedule' });
 });
