@@ -112,7 +112,7 @@ export const DEPLOYMENT_LEAF_SPECS: Readonly<Record<string, LeafSpec>> = {
   'maintenance.auto_optimize': {},
   'maintenance.auto_optimize_interval_hours': {},
   'notifications.retention_days': {},
-  'release_provenance.reconcile_interval_minutes': {},
+  'release_provenance.reconcile_interval_minutes': { type: 'integer', min: 1, max: 1440 },
   // #1147 — transcript-first ingest. 0 keeps transcripts indefinitely; a write
   // has no delete, so 0 is how a Deployment returns to keeping everything.
   'retention.transcripts': { type: 'integer', min: 0, max: 3650 },

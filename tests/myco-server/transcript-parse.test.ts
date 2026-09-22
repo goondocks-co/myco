@@ -37,6 +37,9 @@ import { sqliteEnv, count, registeredObject, uuid } from './helpers/fixtures.js'
 const FIXTURES = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'fixtures');
 import { issueMemberToken } from '@myco-server-worker/auth/tokens.js';
 import { sha256HexOf } from '@myco-server-worker/hash.js';
+import { checkProject, releaseProvenance } from '@myco-server-worker/core/release-provenance.js';
+import { deploymentSecretStore } from '@myco-server-worker/core/secrets.js';
+import { REPO, X, fakeGithub } from './helpers/github-fake.js';
 
 const NOW = Date.parse('2027-01-01T00:00:00Z');
 const PROJECT = 'proj_1';
@@ -110,6 +113,29 @@ async function drain(env: { db: unknown; blobs: unknown }, sqlite: Database, max
 }
 
 describe('parsing a held transcript', () => {
+  it('records the file a parsed Edit names, and a release check maps the session to that package', async () => {
+    const at = (n: number) => new Date(Date.parse('2026-09-01T10:00:00Z') + n * 1000).toISOString();
+    const text = line({ type: 'user', promptId: uuid(1), message: { content: 'edit b' }, timestamp: at(0) })
+      + line({ type: 'assistant', message: { content: [{ type: 'tool_use', id: 'te', name: 'Edit',
+        input: { file_path: '/Users/dev/repo/packages/b/src/y.ts', old_string: 'a', new_string: 'b' } }] }, timestamp: at(1) })
+      + line({ type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: 'te', content: 'ok' }] }, timestamp: at(2) });
+    const { sqlite, env, serverEnv } = await rig(text);
+    await drain(env, sqlite);
+    expect(sqlite.query('SELECT tool_name, files_affected FROM tool_calls').all())
+      .toEqual([{ tool_name: 'Edit', files_affected: JSON.stringify(['/Users/dev/repo/packages/b/src/y.ts']) }]);
+
+    const store = releaseProvenance(serverEnv.db, deploymentSecretStore(serverEnv.db, serverEnv.wrappingKey));
+    await store.save(PROJECT, { revision: null, enabled: true, githubRepo: 'o/r', productionRefs: ['refs/tags/a/v*', 'refs/tags/b/v*'],
+      integrationRefs: ['main'], packageMap: [{ pathGlob: 'packages/a/', tagPattern: 'refs/tags/a/v*' }, { pathGlob: 'packages/b/', tagPattern: 'refs/tags/b/v*' }],
+      includeUnknown: true, maxLookups: 50 }, 'mem_1', NOW);
+    sqlite.run(`INSERT INTO knowledge_git_provenance (project_id, identity_key, session_id, capture_point, captured_at, head_sha, status_hash, created_at)
+      VALUES (?, ?, ?, 'session_end', ?, ?, '', ?)`, [PROJECT, `session:${SESSION}:session_end`, SESSION, NOW, X, NOW]);
+    await checkProject(serverEnv.db, deploymentSecretStore(serverEnv.db, serverEnv.wrappingKey), fakeGithub(REPO), PROJECT, NOW);
+    const state = sqlite.query(`SELECT state, basis_ref, json_extract(evidence_json, '$.package_patterns') AS patterns
+      FROM knowledge_release_state WHERE record_id = ?`).get(SESSION);
+    expect(state).toEqual({ state: 'released', basis_ref: 'refs/tags/b/v2.0.0', patterns: JSON.stringify(['refs/tags/b/v*']) });
+  });
+
   const codexMessage = (role: string, text: string) => line({ type: 'response_item', payload: { type: 'message', role, content: [{ type: role === 'assistant' ? 'output_text' : 'input_text', text }] } });
 
   it('finishes a large record across segments before reading the following human turn', async () => {

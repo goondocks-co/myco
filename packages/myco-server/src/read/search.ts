@@ -6,7 +6,8 @@ import { semanticSearch, type SemanticSearch } from './embedding.js';
 import { EmbeddingUnavailable } from '../core/embedding/provider.js';
 import { notTombstonedSql } from '../core/tombstones.js';
 
-import { SEARCH_TYPES, SEARCH_API_LIMIT, SEARCH_MAX_LIMIT, SEARCH_PREVIEW_CHARS, type SearchType, type SearchOptions, type SearchResult, type SearchAnswer } from './search-types.js';
+import { SEARCH_TYPES, SEARCH_API_LIMIT, SEARCH_MAX_LIMIT, SEARCH_PREVIEW_CHARS, type SearchType, type SearchOptions, type SearchResult, type SearchAnswer, type ReleaseAnnotation } from './search-types.js';
+import { getReleaseStatesForRecords, isReleaseNamespace, type ReleaseNamespace } from '../core/provenance.js';
 export * from './search-types.js';
 const SEARCH_MAX_TERMS = 16;
 
@@ -110,8 +111,29 @@ async function searchType(db: RelationalStore, scope: ReadScope, type: SearchTyp
   }));
 }
 
+/** Each result's release state, one bulk read per namespace present. */
+async function withRelease(db: RelationalStore, scope: ReadScope, results: SearchResult[]): Promise<SearchResult[]> {
+  const byNamespace = new Map<ReleaseNamespace, string[]>();
+  for (const r of results) if (isReleaseNamespace(r.type)) byNamespace.set(r.type, [...(byNamespace.get(r.type) ?? []), r.id]);
+  const states = new Map<string, ReleaseAnnotation>();
+  for (const [namespace, ids] of byNamespace) {
+    for (const [id, row] of Object.entries(await getReleaseStatesForRecords(db, scope, namespace, ids))) {
+      states.set(`${namespace}:${id}`, { state: row.state, confidence: row.confidence, ref: row.basisRef, checked_at: row.checkedAt });
+    }
+  }
+  return results.map((r) => {
+    const release = states.get(`${r.type}:${r.id}`);
+    return release === undefined ? r : { ...r, release };
+  });
+}
+
 /** One scoped search implementation for HTTP and MCP. An unavailable semantic provider is explicit. */
 export async function searchProject(db: RelationalStore, scope: ReadScope, opts: SearchOptions, resolveSemantic?: () => Promise<SemanticSearch | null>): Promise<SearchAnswer> {
+  const answer = await searchUnannotated(db, scope, opts, resolveSemantic);
+  return { ...answer, results: await withRelease(db, scope, answer.results) };
+}
+
+async function searchUnannotated(db: RelationalStore, scope: ReadScope, opts: SearchOptions, resolveSemantic?: () => Promise<SemanticSearch | null>): Promise<SearchAnswer> {
   const query = opts.query.trim();
   if (query.length === 0 || query.length > SEARCH_QUERY_MAX_CHARS) throw new InvalidSearch(`query must contain 1–${SEARCH_QUERY_MAX_CHARS} characters`);
   const words = query.split(/\s+/);

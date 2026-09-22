@@ -1,3 +1,4 @@
+import type { ReleaseStatus } from './use-release-provenance';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { ApiError, fetchJson, postJson, SignedOutError } from '../lib/api';
 import { usePaged } from './use-paged';
@@ -41,6 +42,8 @@ export interface SessionCounts {
 export interface SessionResponse {
   session: SessionRow;
   counts: SessionCounts;
+  /** Whether the session's work is released, or null when it has no release state. */
+  release?: ReleaseStatus | null;
   projectId: string;
 }
 
