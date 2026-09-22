@@ -5,6 +5,7 @@ import { Panel } from '../components/ui/panel';
 import { BackupPanel } from '../components/operations/BackupPanel';
 import { RecoveryPanel } from '../components/operations/RecoveryPanel';
 import { WakePanel } from '../components/operations/WakePanel';
+import { MaintenancePanel } from '../components/operations/MaintenancePanel';
 import { TitlingBackfillPanel } from '../components/operations/TitlingBackfillPanel';
 
 const button = 'rounded-md border border-outline-variant/30 px-2.5 py-1 font-sans text-xs text-on-surface transition-colors hover:bg-surface-container-high';
@@ -21,6 +22,7 @@ export function Operations() {
           </p>
         </Panel>
         <WakePanel />
+        <MaintenancePanel />
         <TitlingBackfillPanel />
         <BackupPanel />
         <RecoveryPanel />

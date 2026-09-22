@@ -50,7 +50,7 @@ const sharedFiles = () =>
     !f.includes(`${join(SRC, 'platform')}/`) && !f.includes(`${join(SRC, 'entry')}/`) && f !== join(SRC, 'index.ts'));
 
 /** Every `emit` call across src; a call removed or added moves the total. */
-const EMIT_CALLS = 127;
+const EMIT_CALLS = 130;
 /** The one migrations directory: the emit script writes it, the rendered-steps gate verifies it, and wrangler.toml applies from it. */
 const MIGRATIONS_DIR = 'migrations';
 const K = SyntaxKind as unknown as Record<string, number>;
@@ -773,15 +773,13 @@ describe('gates', () => {
     }
   });
 
-  it('schedules work past an answer from exactly one module, and that module is the events route', () => {
-    // `afterResponse` is the one way a request leaves work behind. Holding its
-    // callers to the events route keeps every deferred piece of work a consequence
-    // of a capture the caller made, never of a read or a refusal.
+  it('schedules work past an answer from the events route and the store maintenance hand-off only', () => {
+    // Only captured event processing and store maintenance may defer work. The serving process drains deferred work before closing the store.
     const callers = files(SRC)
       .filter((f) => /\bafterResponse\(/.test(stripComments(readFileSync(f, 'utf8'))))
       .map((f) => f.slice(SRC.length + 1))
       .filter((f) => !f.startsWith('platform/') && !f.startsWith('core/adapters'));
-    expect(callers).toEqual([join('ingest', 'events.ts')]);
+    expect(callers.sort()).toEqual([join('core', 'store-maintenance.ts'), join('ingest', 'events.ts')]);
   });
 
   it('opens a Deployment secret from exactly one function under src, and no display surface calls it', () => {
@@ -1113,6 +1111,7 @@ describe('gates', () => {
       'owner GET /api/diagnostics',
       'owner GET /api/enrollment',
       'owner GET /api/kpis',
+      'owner GET /api/maintenance',
       'owner GET /api/members',
       'owner GET /api/projects',
       'owner GET /api/projects/{projectId}/activity',
@@ -1159,6 +1158,7 @@ describe('gates', () => {
       'owner POST /api/enrollment',
       'owner POST /api/enrollment/{id}/revoke',
       'owner POST /api/harness/dispatch',
+      'owner POST /api/maintenance/{check}/run',
       'owner POST /api/members/{memberId}/revoke',
       'owner POST /api/projects',
       'owner POST /api/projects/{projectId}/archive',

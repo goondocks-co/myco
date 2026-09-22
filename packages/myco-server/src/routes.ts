@@ -14,6 +14,7 @@ import { handleStatus } from './api/status.js';
 import { handleDiagnostics } from './api/diagnostics.js';
 import { handleProjectSearch } from './api/search.js';
 import { handleWake } from './api/wake.js';
+import { handleMaintenanceStatus, handleRunMaintenance } from './api/maintenance.js';
 import { handleSetTitlingBackfill, handleTitlingBackfill } from './api/titling-backfill.js';
 import {
   handleDeleteSecret, handleProjectCapabilities, handleSecrets, handleSetProjectCapability,
@@ -105,6 +106,8 @@ export const ROUTES: readonly Route[] = [
   { method: 'GET', path: '/health', auth: 'public', bodyMode: 'none', handler: health },
   { method: 'POST', path: '/api/harness/dispatch', auth: 'owner', handler: handleHarnessDispatch },
   { method: 'POST', path: '/api/wake', auth: 'owner', handler: handleWake },
+  { method: 'GET', path: '/api/maintenance', auth: 'owner', handler: handleMaintenanceStatus },
+  { method: 'POST', path: '/api/maintenance/{check}/run', pattern: /^\/api\/maintenance\/(?<check>[a-z]{1,32})\/run$/, auth: 'owner', handler: handleRunMaintenance },
   { method: 'GET', path: '/api/titling-backfill', auth: 'owner', handler: handleTitlingBackfill },
   { method: 'PUT', path: '/api/titling-backfill', auth: 'owner', handler: handleSetTitlingBackfill },
   { method: 'POST', path: '/events', auth: 'member', bodyMode: 'json', shape: 'persisted', handler: handleEvents },

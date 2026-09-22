@@ -80,7 +80,7 @@ export interface BunHandler {
   env: BunServerEnv;
   /** Binds the listening server, which is what can report a socket address. */
   bind(server: AddressableServer): void;
-  /** Waits for work deferred past an answer, then closes the store. */
+  /** Stops the wake loop and waits for a tick in flight, then for work deferred past an answer, then closes the store. */
   close(): Promise<void>;
 }
 
@@ -105,7 +105,7 @@ export async function createBunHandler(options: BunServerOptions): Promise<BunHa
     fetch: options.uiAssets !== undefined ? withStaticMap(options.uiAssets, core)
       : options.uiDir === undefined ? core : withStaticAssets(options.uiDir, core),
     bind: (listening: AddressableServer) => { bound = listening; if (options.originOf !== undefined && typeof listening.port === 'number') env.origin = options.originOf(listening.port); },
-    close: async () => { loop?.stop(); await env.settle(); sqlite.close(); },
+    close: async () => { await loop?.stop(); await env.settle(); sqlite.close(); },
   };
 }
 
