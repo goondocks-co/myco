@@ -19,6 +19,7 @@ import type { PromptOrigin } from '../hooks/capture-rules.js';
 import { MEMBER_ID_NAMESPACE, MEMBER_INLINE_TEXT_MAX_BYTES } from './constants.js';
 
 export type { MemberKind } from '@goondocks/myco-shared/member-protocol';
+import { filesNamedByToolInput } from '@goondocks/myco-shared/member-protocol';
 type MemberKind = import('@goondocks/myco-shared/member-protocol').MemberKind;
 
 export interface MemberEnvelope {
@@ -72,7 +73,6 @@ export const BOUNDS = {
   mycoTool: 64, mycoOp: 64, agentType: 64, trigger: 64, message: 4096, level: 64, threadLabel: 256, title: 256,
   description: 4096, fileItem: 1024, tagItem: 64,
 } as const;
-const MAX_FILES_AFFECTED = 100;
 const MAX_PLAN_TAGS = 32;
 
 // ---------------------------------------------------------------------------
@@ -201,20 +201,6 @@ function mycoToolFields(toolName: string, toolInput: unknown): { mycoTool?: stri
   return { mycoTool: trunc(leaf, BOUNDS.mycoTool), mycoOp: trunc(op, BOUNDS.mycoOp) };
 }
 
-const FILE_KEYS = ['file_path', 'path', 'notebook_path'] as const;
-
-/** File paths named by a tool input's conventional path keys. */
-function filesAffected(toolInput: unknown): string[] | undefined {
-  if (!toolInput || typeof toolInput !== 'object') return undefined;
-  const record = toolInput as Record<string, unknown>;
-  const files: string[] = [];
-  for (const key of FILE_KEYS) {
-    const v = record[key];
-    if (typeof v === 'string' && v.length > 0 && v.length <= BOUNDS.fileItem) files.push(v);
-  }
-  return files.length > 0 ? files.slice(0, MAX_FILES_AFFECTED) : undefined;
-}
-
 /** A tool's output as text: a string as it is, a structured result as compact JSON, nothing for an absent one. */
 export function toolOutputText(output: unknown): string | undefined {
   if (output === undefined || output === null) return undefined;
@@ -239,7 +225,7 @@ function toolCallPayload(ctx: EnvelopeContext, input: NormalizedHookInput, opts:
       output,
       success: opts.success,
       ...mycoToolFields(toolName, input.toolInput),
-      filesAffected: filesAffected(input.toolInput),
+      filesAffected: filesNamedByToolInput(input.toolInput),
     },
     blobSource: spilled.blobSource,
   };

@@ -47,10 +47,21 @@ export interface ReleaseStatus {
 const key = (projectId: string) => ['release-provenance', projectId];
 const path = (projectId: string) => `/api/projects/${encodeURIComponent(projectId)}/release-provenance`;
 
+/** How often the settings are read again while a requested or running check has not finished. */
+export const RELEASE_CHECK_REFRESH_MS = 2_000;
+
+/** A check was requested after the latest one started, or the latest one has not finished. */
+export function checkPending(check: ReleaseCheck | null | undefined): boolean {
+  if (!check) return false;
+  if (check.requestedAt !== null && (check.startedAt === null || check.requestedAt > check.startedAt)) return true;
+  return check.startedAt !== null && (check.finishedAt === null || check.finishedAt < check.startedAt);
+}
+
 export function useReleaseProvenance(projectId: string) {
   return useQuery({
     queryKey: key(projectId),
     queryFn: ({ signal }) => fetchJson<{ releaseProvenance: ReleaseProvenanceRow }>(path(projectId), signal),
+    refetchInterval: (query) => (checkPending(query.state.data?.releaseProvenance.check) ? RELEASE_CHECK_REFRESH_MS : false),
   });
 }
 

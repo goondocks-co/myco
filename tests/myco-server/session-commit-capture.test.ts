@@ -6,6 +6,7 @@ import { describe, expect, it } from 'bun:test';
 import { ingestEvent } from '@myco-server-worker/ingest/events.js';
 import { seededSqlite, seedCredential, sqliteD1 } from './helpers/d1.js';
 import { envelope, uuid } from './helpers/fixtures.js';
+import { GIT_STATUS_UNREADABLE } from '@myco-server-worker/ingest/projections.js';
 
 const ctx = { projectId: 'proj_1', machineId: 'machine_1', tokenId: 'mt_1', bodyBytes: 100, now: 5_000 };
 const S1 = 'a'.repeat(40);
@@ -61,6 +62,21 @@ describe('session commit capture', () => {
     await ingestEvent(db, ctx, envelope({ eventId: uuid(2), kind: 'session.end', createdAt: 2_000, payload: { endedAt: 2_000, headSha: S2, dirty: true } }));
     expect(sqlite.query("SELECT capture_point, is_dirty FROM knowledge_git_provenance ORDER BY capture_point").all())
       .toEqual([{ capture_point: 'session_end', is_dirty: 1 }, { capture_point: 'session_start', is_dirty: 0 }]);
+  });
+
+  it('records an end that does not say whether tracked files differed as unreadable, and the latest end replaces it whole', async () => {
+    const { db, sqlite } = rig();
+    const endWith = (n: number, at: number, dirty?: boolean) => envelope({ eventId: uuid(n), kind: 'session.end', createdAt: at,
+      payload: { endedAt: at, headSha: S2, ...(dirty === undefined ? {} : { dirty }) } });
+    const endRow = () => sqlite.query("SELECT is_dirty, error, captured_at FROM knowledge_git_provenance WHERE capture_point = 'session_end'").get();
+    await ingestEvent(db, ctx, endWith(1, 1_000, false));
+    expect(endRow()).toEqual({ is_dirty: 0, error: null, captured_at: 1_000 });
+    await ingestEvent(db, ctx, endWith(2, 2_000));
+    expect(endRow()).toEqual({ is_dirty: 0, error: GIT_STATUS_UNREADABLE, captured_at: 2_000 });
+    await ingestEvent(db, ctx, endWith(3, 1_500, false));
+    expect(endRow()).toEqual({ is_dirty: 0, error: GIT_STATUS_UNREADABLE, captured_at: 2_000 });
+    await ingestEvent(db, ctx, endWith(4, 3_000, false));
+    expect(endRow()).toEqual({ is_dirty: 0, error: null, captured_at: 3_000 });
   });
 });
 

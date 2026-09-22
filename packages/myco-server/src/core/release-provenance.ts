@@ -15,8 +15,8 @@
  * **The source is the session's latest captured commit.** A session's end
  * commit is classified when captured; with only its start commit, its own work
  * is uncaptured and the answer is `unknown`, as it is for an end commit with
- * uncommitted tracked changes. Each row records its source commit, and a new
- * source is classified afresh.
+ * uncommitted tracked changes or with cleanliness git could not read. Each row
+ * records its source commit, and a new source is classified afresh.
  *
  * **History is kept.** A `released` row is final for the source it was
  * checked from; a row without a recorded source is final outright. Every
@@ -34,8 +34,13 @@
  *
  * **Bounded.** One check makes at most the Project's configured number of
  * GitHub reads, classifies at most `SESSIONS_PER_CHECK` sessions, and skips a
- * session already classified under the same refs fingerprint, so a quiet
- * repository costs its tag listings and nothing more.
+ * session already classified from the same inputs — repository, package map,
+ * refs and the session's changed paths — so a quiet repository costs its tag
+ * listings and nothing more.
+ *
+ * **Spores and plans follow their session.** Each check gives a spore or plan
+ * that has no release state, or that now names another session, its session's
+ * state, without a GitHub read; a released row stays.
  */
 import type { ServerEnv, OutboundFetch, RelationalStore } from './adapters.js';
 import type { SecretStore } from './secrets.js';
@@ -332,12 +337,24 @@ export function releaseProvenance(db: RelationalStore, secrets: SecretStore) {
 /** How long a claimed check holds the Project: every read at its timeout, and a margin. */
 const leaseMs = (maxLookups: number) => Math.min(maxLookups * GITHUB_READ_TIMEOUT_MS + 60_000, 30 * 60_000);
 
-interface Candidate { sessionId: string; point: 'session_start' | 'session_end'; headSha: string; dirty: number }
+/** Whether tracked files differed from the commit: `0`, `1`, or `unknown` when git could not say. */
+type Cleanliness = '0' | '1' | 'unknown';
+
+interface Candidate { sessionId: string; point: 'session_start' | 'session_end'; headSha: string; cleanliness: Cleanliness; pathsMark: number }
+
+/** A git provenance row's cleanliness as `Cleanliness`; a row that records an observation error is `unknown`. */
+const CLEANLINESS_SQL = "CASE WHEN g.error IS NOT NULL THEN 'unknown' ELSE CAST(g.is_dirty AS TEXT) END";
+/**
+ * How many tool calls the session holds when a package map is in use, so
+ * changed paths that arrive later mark its classification stale, and 0
+ * without a package map. Binds the map flag.
+ */
+const PATHS_MARK_SQL = 'CASE WHEN ? = 1 THEN (SELECT COUNT(*) FROM tool_calls t WHERE t.project_id = g.project_id AND t.session_id = g.session_id) ELSE 0 END';
 
 const identityOf = (projectId: string, namespace: string, recordId: string) => `${projectId}:${namespace}:${recordId}`;
 
 /** The captured commit a row is classified from: a new one is classified afresh. */
-const sourceOf = (c: Candidate) => `${c.point}:${c.headSha}:${c.dirty}`;
+const sourceOf = (c: Candidate) => `${c.point}:${c.headSha}:${c.cleanliness}`;
 
 /** Failures that stop the whole check: every later read would meet the same answer. */
 const STOPS_CHECK = new Set<GithubFailure>(['budget_exhausted', 'credential_rejected', 'rate_limited', 'timeout', 'network', 'not_found', 'unexpected_response']);
@@ -368,12 +385,30 @@ interface Claim { projectId: string; runId: string; revision: string }
 const FENCE = 'EXISTS (SELECT 1 FROM project_release_provenance f WHERE f.project_id = ? AND f.check_run_id = ? AND f.revision = ?)';
 const fenceParams = (claim: Claim) => [claim.projectId, claim.runId, claim.revision];
 
+const HELD_SOURCE = "json_extract(knowledge_release_state.evidence_json, '$.source')";
+const NEW_SOURCE = "json_extract(excluded.evidence_json, '$.source')";
+/**
+ * The upsert every release state write ends with. A released row stays for its
+ * recorded source, and a row without a recorded source stays released; any
+ * change of state keeps the replaced state in `evidence_json.previous`.
+ */
+const RELEASE_UPSERT = `ON CONFLICT(project_id, identity_key) DO UPDATE SET source_session_id = excluded.source_session_id, state = excluded.state, confidence = excluded.confidence,
+    basis_kind = excluded.basis_kind, basis_ref = excluded.basis_ref, basis_sha = excluded.basis_sha,
+    release_pr_number = excluded.release_pr_number, reason = excluded.reason,
+    evidence_json = CASE WHEN knowledge_release_state.state IS excluded.state AND ${HELD_SOURCE} IS ${NEW_SOURCE}
+      THEN json_set(excluded.evidence_json, '$.previous', json(COALESCE(json_extract(knowledge_release_state.evidence_json, '$.previous'), 'null')))
+      ELSE json_set(excluded.evidence_json, '$.previous', json_object('state', knowledge_release_state.state, 'source', ${HELD_SOURCE},
+        'basis_ref', knowledge_release_state.basis_ref, 'checked_at', knowledge_release_state.checked_at)) END,
+    checked_at = excluded.checked_at, updated_at = excluded.checked_at
+  WHERE knowledge_release_state.state <> 'released' OR (${HELD_SOURCE} IS NOT NULL AND ${HELD_SOURCE} IS NOT ${NEW_SOURCE})`;
+
+/** The records that carry their session's release state: namespace, table and key column. */
+const DERIVED = [['spores', 'spores', 'id'], ['plans', 'plans', 'plan_key']] as const;
+
 /**
  * Write one session's classification and carry it to the spores and plans the
- * session produced, inside the claim. A released row stays for its recorded
- * source, and a row without a recorded source stays released; any
- * change of state keeps the replaced state in `evidence_json.previous`.
- * Answers whether the session's state changed, or null when the claim is gone.
+ * session produced, inside the claim. Answers whether the session's state
+ * changed, or null when the claim is gone.
  */
 async function writeClassification(
   db: RelationalStore, claim: Claim, c: Candidate, classification: Classification, fingerprint: string | null, now: number,
@@ -383,38 +418,48 @@ async function writeClassification(
   const previous = await db.prepare('SELECT state FROM knowledge_release_state WHERE project_id = ? AND identity_key = ?')
     .bind(projectId, identity).first<{ state: string }>();
   const k = classification;
-  const evidence = JSON.stringify({ ...k.evidence, source: sourceOf(c), refs_fingerprint: fingerprint });
+  const evidence = JSON.stringify({ ...k.evidence, source: sourceOf(c), refs_fingerprint: fingerprint, paths_mark: c.pathsMark });
   const columns = [k.state, k.confidence, k.basisKind, k.basisRef, k.basisSha, k.releasePrNumber, k.reason, evidence, now];
-  const heldSource = "json_extract(knowledge_release_state.evidence_json, '$.source')";
-  const newSource = "json_extract(excluded.evidence_json, '$.source')";
-  const upsert = `ON CONFLICT(project_id, identity_key) DO UPDATE SET state = excluded.state, confidence = excluded.confidence,
-      basis_kind = excluded.basis_kind, basis_ref = excluded.basis_ref, basis_sha = excluded.basis_sha,
-      release_pr_number = excluded.release_pr_number, reason = excluded.reason,
-      evidence_json = CASE WHEN knowledge_release_state.state IS excluded.state AND ${heldSource} IS ${newSource}
-        THEN json_set(excluded.evidence_json, '$.previous', json(COALESCE(json_extract(knowledge_release_state.evidence_json, '$.previous'), 'null')))
-        ELSE json_set(excluded.evidence_json, '$.previous', json_object('state', knowledge_release_state.state, 'source', ${heldSource},
-          'basis_ref', knowledge_release_state.basis_ref, 'checked_at', knowledge_release_state.checked_at)) END,
-      checked_at = excluded.checked_at, updated_at = excluded.checked_at
-    WHERE knowledge_release_state.state <> 'released' OR (${heldSource} IS NOT NULL AND ${heldSource} IS NOT ${newSource})`;
   const derived = (namespace: string, table: string, key: string) => db.prepare(`INSERT INTO knowledge_release_state
       (project_id, id, identity_key, namespace, record_id, source_session_id, state, confidence, basis_kind, basis_ref,
        basis_sha, release_pr_number, reason, evidence_json, checked_at, created_at)
     SELECT project_id, 'rs_' || lower(hex(randomblob(16))), project_id || ':${namespace}:' || ${key}, '${namespace}', ${key}, session_id,
        ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
-      FROM ${table} WHERE project_id = ? AND session_id = ? AND ${FENCE} ${upsert}`).bind(...columns, now, projectId, c.sessionId, ...fenceParams(claim));
+      FROM ${table} WHERE project_id = ? AND session_id = ? AND ${FENCE} ${RELEASE_UPSERT}`).bind(...columns, now, projectId, c.sessionId, ...fenceParams(claim));
   await db.batch([
     db.prepare(`INSERT INTO knowledge_release_state (project_id, id, identity_key, namespace, record_id, source_session_id,
         state, confidence, basis_kind, basis_ref, basis_sha, release_pr_number, reason, evidence_json, checked_at, created_at)
-      SELECT ?, ?, ?, 'sessions', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ? WHERE ${FENCE} ${upsert}`)
+      SELECT ?, ?, ?, 'sessions', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ? WHERE ${FENCE} ${RELEASE_UPSERT}`)
       .bind(projectId, `rs_${crypto.randomUUID().replaceAll('-', '')}`, identity, c.sessionId, c.sessionId, ...columns, now, ...fenceParams(claim)),
-    derived('spores', 'spores', 'id'),
-    derived('plans', 'plans', 'plan_key'),
+    ...DERIVED.map(([namespace, table, key]) => derived(namespace, table, key)),
   ]);
   // The row is read back rather than counted: a store may report no changes for an INSERT ... SELECT.
   const written = await db.prepare(`SELECT 1 AS written FROM knowledge_release_state WHERE project_id = ? AND identity_key = ?
     AND checked_at = ? AND json_extract(evidence_json, '$.source') = ?`).bind(projectId, identity, now, sourceOf(c)).first();
   if (written === null) return (await holds(db, claim)) ? false : null;
   return previous?.state !== k.state;
+}
+
+/**
+ * Give each spore and plan its session's current release state when it has
+ * none, or when it now names another session, inside the claim. Reads no
+ * GitHub; a released row is kept. At most `SESSIONS_PER_CHECK` records per
+ * namespace, so a backlog completes over later checks.
+ */
+async function propagateDerived(db: RelationalStore, claim: Claim, now: number): Promise<void> {
+  const { projectId } = claim;
+  const sessionPrefix = identityOf(projectId, 'sessions', '');
+  await db.batch(DERIVED.map(([namespace, table, key]) => db.prepare(`INSERT INTO knowledge_release_state
+      (project_id, id, identity_key, namespace, record_id, source_session_id, state, confidence, basis_kind, basis_ref,
+       basis_sha, release_pr_number, reason, evidence_json, checked_at, created_at)
+    SELECT r.project_id, 'rs_' || lower(hex(randomblob(16))), r.project_id || ':${namespace}:' || r.${key}, '${namespace}', r.${key}, r.session_id,
+       k.state, k.confidence, k.basis_kind, k.basis_ref, k.basis_sha, k.release_pr_number, k.reason,
+       json_remove(k.evidence_json, '$.previous'), k.checked_at, ?
+      FROM ${table} r JOIN knowledge_release_state k ON k.project_id = r.project_id AND k.identity_key = ? || r.session_id
+      WHERE r.project_id = ? AND ${FENCE} AND NOT EXISTS (SELECT 1 FROM knowledge_release_state d
+        WHERE d.project_id = r.project_id AND d.identity_key = r.project_id || ':${namespace}:' || r.${key}
+          AND (d.source_session_id IS r.session_id OR d.state = 'released'))
+      LIMIT ? ${RELEASE_UPSERT}`).bind(now, sessionPrefix, projectId, ...fenceParams(claim), SESSIONS_PER_CHECK)));
 }
 
 const holds = async (db: RelationalStore, claim: Claim) => (await db.prepare(`SELECT 1 AS held FROM project_release_provenance
@@ -480,16 +525,18 @@ async function classifyProject(
   counts: ReleaseCheckCounts, hasToken: boolean, now: number,
 ): Promise<{ failure: string | null; fingerprint: string | null } | null> {
   const { projectId } = claim;
+  await propagateDerived(db, claim, now);
   const repository = await reads.repository();
   if (!repository.ok) {
     const notFound = hasToken ? 'repository_not_found' : 'repository_not_found_without_credential';
     return { failure: repository.failure === 'not_found' ? notFound : repository.failure, fingerprint: null };
   }
   const run = await resolveRunRefs(reads, settings);
-  const fingerprint = run.fingerprint;
+  const fingerprint = run.fingerprint === null ? null : `repo=${settings.githubRepo}\n${run.fingerprint}`;
+  const mapped = settings.packageMap.length > 0 ? 1 : 0;
   // The session's latest captured commit: its end, or its start while no end is captured.
   const { results: candidates } = await db.prepare(`SELECT g.session_id AS sessionId, g.capture_point AS point, g.head_sha AS headSha,
-      g.is_dirty AS dirty, g.captured_at AS capturedAt
+      ${CLEANLINESS_SQL} AS cleanliness, ${PATHS_MARK_SQL} AS pathsMark, g.captured_at AS capturedAt
     FROM knowledge_git_provenance g
     WHERE g.project_id = ? AND g.session_id IS NOT NULL AND g.head_sha IS NOT NULL
       AND (g.capture_point = 'session_end' OR (g.capture_point = 'session_start' AND NOT EXISTS (
@@ -497,10 +544,11 @@ async function classifyProject(
       AND NOT EXISTS (SELECT 1 FROM knowledge_release_state k
         WHERE k.project_id = g.project_id AND k.identity_key = ? || g.session_id
           AND ((k.state = 'released' AND json_extract(k.evidence_json, '$.source') IS NULL)
-            OR (json_extract(k.evidence_json, '$.source') = g.capture_point || ':' || g.head_sha || ':' || g.is_dirty
-              AND (k.state = 'released' OR (? IS NOT NULL AND json_extract(k.evidence_json, '$.refs_fingerprint') = ?)))))
+            OR (json_extract(k.evidence_json, '$.source') = g.capture_point || ':' || g.head_sha || ':' || ${CLEANLINESS_SQL}
+              AND (k.state = 'released' OR (? IS NOT NULL AND json_extract(k.evidence_json, '$.refs_fingerprint') = ?
+                AND json_extract(k.evidence_json, '$.paths_mark') IS ${PATHS_MARK_SQL})))))
     ORDER BY capturedAt DESC, sessionId LIMIT ?`)
-    .bind(projectId, identityOf(projectId, 'sessions', ''), fingerprint, fingerprint, SESSIONS_PER_CHECK + 1)
+    .bind(mapped, projectId, identityOf(projectId, 'sessions', ''), fingerprint, fingerprint, mapped, SESSIONS_PER_CHECK + 1)
     .all<Candidate & { capturedAt: number }>();
   if (candidates.length > SESSIONS_PER_CHECK) counts.deferred += candidates.length - SESSIONS_PER_CHECK;
   const compare = memoizedCompare(reads);
@@ -511,8 +559,10 @@ async function classifyProject(
     let classification: Classification;
     if (candidate.point === 'session_start') {
       classification = uncaptured(candidate, 'missing_git_evidence', 'Only the commit the session started on is captured; its own work is not');
-    } else if (candidate.dirty === 1) {
+    } else if (candidate.cleanliness === '1') {
       classification = uncaptured(candidate, 'dirty_worktree', 'The session ended with uncommitted changes to tracked files');
+    } else if (candidate.cleanliness === 'unknown') {
+      classification = uncaptured(candidate, 'missing_git_evidence', 'Whether the session ended with uncommitted changes could not be read');
     } else {
       const paths = settings.packageMap.length === 0 ? [] : await changedPaths(db, projectId, candidate.sessionId);
       if (paths === null) {

@@ -17,6 +17,7 @@ import { asOwner, asOwnerPost, OWNER_ENV } from './helpers/owner.js';
 import { issueMemberToken } from '@myco-server-worker/auth/tokens.js';
 import { memberHeaders } from './helpers/fixtures.js';
 import { A, B, C, D, MISSING, REPO, X, fakeGithub, type Repo } from './helpers/github-fake.js';
+import { GIT_STATUS_UNREADABLE } from '@myco-server-worker/ingest/projections.js';
 
 const TOKEN = 'fixture-release-token-with-no-real-permissions';
 const P = 'proj_1';
@@ -332,10 +333,10 @@ describe('one check at a time, for the settings it read', () => {
 });
 
 describe('the source a session state is classified from', () => {
-  const addCommit = (r: ReturnType<typeof rig>, sessionId: string, point: 'session_start' | 'session_end', headSha: string, dirty = 0, at = 20) =>
-    r.sqlite.query(`INSERT INTO knowledge_git_provenance (project_id, identity_key, session_id, capture_point, captured_at, head_sha, is_dirty, status_hash, created_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, '', ?) ON CONFLICT(project_id, identity_key) DO UPDATE SET head_sha = excluded.head_sha, is_dirty = excluded.is_dirty, captured_at = excluded.captured_at`)
-      .run(P, `session:${sessionId}:${point}`, sessionId, point, at, headSha, dirty, at);
+  const addCommit = (r: ReturnType<typeof rig>, sessionId: string, point: 'session_start' | 'session_end', headSha: string, dirty = 0, at = 20, error: string | null = null) =>
+    r.sqlite.query(`INSERT INTO knowledge_git_provenance (project_id, identity_key, session_id, capture_point, captured_at, head_sha, is_dirty, error, status_hash, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, '', ?) ON CONFLICT(project_id, identity_key) DO UPDATE SET head_sha = excluded.head_sha, is_dirty = excluded.is_dirty, error = excluded.error, captured_at = excluded.captured_at`)
+      .run(P, `session:${sessionId}:${point}`, sessionId, point, at, headSha, dirty, error, at);
   const newSession = (r: ReturnType<typeof rig>, sessionId: string) => r.sqlite.query(`INSERT INTO sessions
     (project_id, session_id, machine_id, created_by_token_id, first_received_at, last_received_at) VALUES (?, ?, 'machine_1', 'mt_1', 1, 1)`).run(P, sessionId);
   const state = (r: ReturnType<typeof rig>, sessionId: string) => r.sqlite.query(
@@ -384,6 +385,68 @@ describe('the source a session state is classified from', () => {
     await check(r, 100 * MIN);
     expect(state(r, 's_dirty')).toMatchObject({ state: 'unknown', basisKind: 'dirty_worktree' });
     expect(r.sqlite.query("SELECT * FROM knowledge_release_state WHERE record_id = 's_history'").all()).toEqual([historical]);
+  });
+
+  it('reads an end whose cleanliness git could not read as unknown, replacing the clean end it followed and keeping the released state', async () => {
+    const r = rig();
+    await r.store.save(P, settings(), 'mem_1', 1);
+    newSession(r, 's_resumed');
+    addCommit(r, 's_resumed', 'session_end', A, 0, 20);
+    await check(r, 100 * MIN);
+    expect(state(r, 's_resumed')).toMatchObject({ state: 'released', source: `session_end:${A}:0` });
+    addCommit(r, 's_resumed', 'session_end', A, 0, 30, GIT_STATUS_UNREADABLE);
+    await check(r, 110 * MIN);
+    const after = state(r, 's_resumed');
+    expect(after).toMatchObject({ state: 'unknown', basisKind: 'missing_git_evidence', source: `session_end:${A}:unknown` });
+    expect(JSON.parse(after.previous!)).toMatchObject({ state: 'released', source: `session_end:${A}:0` });
+  });
+
+  it('classifies a session again when its package mapping or its changed paths change, and not while they hold', async () => {
+    const r = rig();
+    const saved = await r.store.save(P, settings({ packageMap: [{ pathGlob: 'packages/a/', tagPattern: 'refs/tags/a/v*' }] }), 'mem_1', 1);
+    newSession(r, 's_mapped');
+    addCommit(r, 's_mapped', 'session_end', X);
+    newSession(r, 's_late_paths');
+    addCommit(r, 's_late_paths', 'session_end', X);
+    const toolCall = (sessionId: string, n: number, file: string) => r.sqlite.query(`INSERT INTO tool_calls
+      (project_id, tool_call_id, session_id, event_id, tool_name, success, created_at, token_id, received_at, files_affected)
+      VALUES (?, ?, ?, ?, 'Edit', 1, 1, 'mt_1', 1, ?)`).run(P, `tc_${sessionId}_${n}`, sessionId, `ev_${sessionId}_${n}`, JSON.stringify([file]));
+    toolCall('s_mapped', 1, 'packages/a/x.ts');
+    toolCall('s_late_paths', 1, 'packages/a/x.ts');
+    await check(r, 100 * MIN);
+    expect([state(r, 's_mapped').state, state(r, 's_late_paths').state]).toEqual(['not_on_release_line', 'not_on_release_line']);
+
+    toolCall('s_late_paths', 2, 'packages/b/y.ts');
+    await check(r, 110 * MIN);
+    expect([state(r, 's_mapped').state, state(r, 's_late_paths').state]).toEqual(['not_on_release_line', 'not_on_release_line']);
+    expect((await r.store.describe(P)).check?.counts).toMatchObject({ checked: 1 });
+
+    await r.store.save(P, settings({ revision: saved.revision, credential: undefined, packageMap: [{ pathGlob: 'packages/a/', tagPattern: 'refs/tags/b/v*' }] }), 'mem_1', 115 * MIN);
+    await check(r, 120 * MIN);
+    expect([state(r, 's_mapped').state, state(r, 's_late_paths').state]).toEqual(['released', 'released']);
+
+    await check(r, 130 * MIN);
+    expect((await r.store.describe(P)).check?.counts).toMatchObject({ checked: 0 });
+  });
+
+  it('gives a spore or plan recorded after its session was classified the session state, without reading GitHub', async () => {
+    const r = rig();
+    await r.store.save(P, settings(), 'mem_1', 1);
+    newSession(r, 's_done');
+    addCommit(r, 's_done', 'session_end', A);
+    await check(r, 100 * MIN);
+    expect(state(r, 's_done').state).toBe('released');
+    r.sqlite.query("INSERT OR IGNORE INTO agents (id, name, source, enabled, created_at) VALUES ('myco', 'Myco', 'built-in', 1, 1)").run();
+    r.sqlite.query(`INSERT INTO spores (project_id, id, agent_id, observation_type, content, created_at, session_id)
+      VALUES (?, 'sp_late', 'myco', 'decision', 'x', 200, 's_done')`).run(P);
+    r.sqlite.query(`INSERT INTO plans (project_id, plan_key, session_id, event_id, machine_id, content_hash, status, created_at, updated_at, token_id, received_at)
+      VALUES (?, 'plan_late', 's_done', 'ev_plan', 'machine_1', 'h', 'active', 200, 200, 'mt_1', 200)`).run(P);
+    const seen: string[] = [];
+    await r.store.requestCheck(P, 110 * MIN);
+    await reconcileReleaseProvenance({ ...r.serverEnv, outbound: fakeGithub(REPO, seen) }, 110 * MIN);
+    expect(seen.filter((p) => p.startsWith('/compare') || p.startsWith('/commits'))).toEqual([]);
+    expect(await getReleaseState(r.db, SCOPE, 'spore', 'sp_late')).toMatchObject({ state: 'released', basisRef: 'refs/tags/a/v1.2.0' });
+    expect(await getReleaseState(r.db, SCOPE, 'plan', 'plan_late')).toMatchObject({ state: 'released', basisRef: 'refs/tags/a/v1.2.0' });
   });
 });
 

@@ -188,9 +188,10 @@ export interface RunRefs {
   /** The first failed read of an integration branch head, which makes every classification of the run unavailable. */
   integrationFailure?: GithubFailure;
   /**
-   * Every checked ref and the object it points at, in configuration order. A
-   * record classified under the same fingerprint cannot classify differently,
-   * so a run skips it; null when a read failed and nothing is established.
+   * The package map, then every checked ref and the object it points at, in
+   * configuration order. With the repository and the session's changed paths,
+   * these are every input of a classification; null when a read failed and
+   * nothing is established.
    */
   fingerprint: string | null;
 }
@@ -198,7 +199,7 @@ export interface RunRefs {
 /** Resolve every configured ref once per run; sessions share the result. */
 export async function resolveRunRefs(reads: GithubReads, config: ReleaseRefConfig): Promise<RunRefs> {
   const production = new Map<string, ResolvedPattern>();
-  const parts: string[] = [];
+  const parts: string[] = [`map=${JSON.stringify(config.packageMap)}`];
   let failed = false;
   for (const ref of config.productionRefs) {
     const resolved = await resolveProductionRef(reads, ref);

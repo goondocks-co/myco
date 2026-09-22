@@ -2,6 +2,7 @@ import { MAX_BLOB_BYTES } from '../constants.js';
 import { utf8 } from '../hash.js';
 import { AHEAD_OF_CLOCK, aheadOfClock, ID_GRAMMAR, MAX_ID_CHARS, MAX_PAYLOAD_BYTES, type Refused } from './envelope.js';
 import { refusal, type Refusal } from '../telemetry.js';
+import { MAX_FILE_PATH_CHARS, MAX_FILES_AFFECTED } from '@goondocks/myco-shared/member-protocol';
 
 /** Ceilings every bound of its type states; each is a real limit, never the language's. */
 export const MAX_TIME_MS = 4_102_444_800_000;
@@ -82,7 +83,7 @@ const toolCallFields: Record<string, FieldSpec> = {
   output: str(4096, 'output_preview'),
   outputBlob: blob('output_blob_key'),
   durationMs: int(MAX_DURATION_MS, 'duration_ms'),
-  filesAffected: { bound: { type: 'stringArray', maxItems: 100, maxItem: 1024 }, column: 'files_affected' },
+  filesAffected: { bound: { type: 'stringArray', maxItems: MAX_FILES_AFFECTED, maxItem: MAX_FILE_PATH_CHARS }, column: 'files_affected' },
   success: { bound: { type: 'bool' }, required: true, column: 'success' },
   mycoTool: str(64, 'myco_tool'),
   mycoOp: str(64, 'myco_op'),

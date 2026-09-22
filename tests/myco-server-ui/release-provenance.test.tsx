@@ -4,7 +4,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 
 import { ReleaseChip } from '../../packages/myco-server/ui/src/components/release/ReleaseChip';
 import { ReleaseTracking, checkSummary } from '../../packages/myco-server/ui/src/components/release/ReleaseTracking';
-import type { ReleaseProvenanceRow } from '../../packages/myco-server/ui/src/hooks/use-release-provenance';
+import { checkPending, RELEASE_CHECK_REFRESH_MS, type ReleaseProvenanceRow } from '../../packages/myco-server/ui/src/hooks/use-release-provenance';
 
 const NOW = Date.now();
 const TOKEN = 'ghp_fixturetokenvalue1234567890';
@@ -72,6 +72,21 @@ describe('release tracking in project settings', () => {
     expect(screen.getByTestId('release-check').textContent).toContain('48 checked · 3 changed · 2 unknown · 0 not reached');
     fireEvent.click(screen.getByRole('button', { name: 'Check now' }));
     await waitFor(() => expect(sent).toEqual([{ method: 'POST', path: '/api/projects/x/release-provenance/check' }]));
+  });
+
+  it('reads the settings again until a requested check finishes, then stops', async () => {
+    const requested = row({ check: { ...row().check!, requestedAt: NOW } });
+    const finished = row({ check: { ...row().check!, requestedAt: NOW, startedAt: NOW + 1, finishedAt: NOW + 1,
+      counts: { checked: 0, changed: 0, unchanged: 0, unknown: 0, unavailable: 0, deferred: 0 } } });
+    let reads = 0;
+    globalThis.fetch = (async () => Response.json({ releaseProvenance: reads++ === 0 ? requested : finished })) as typeof fetch;
+    mount(<ReleaseTracking projectId="x" />);
+    await waitFor(() => expect(screen.getByTestId('release-check').textContent).toContain('check requested'));
+    await waitFor(() => expect(screen.getByTestId('release-check').textContent).toContain('0 checked'), { timeout: RELEASE_CHECK_REFRESH_MS * 2 });
+    expect(screen.getByTestId('release-check').textContent).not.toContain('check requested');
+    expect(checkPending(finished.check)).toBe(false);
+    expect(checkPending({ ...finished.check!, finishedAt: null })).toBe(true);
+    expect(reads).toBe(2);
   });
 
   it('names a failed check and unreadable stored settings honestly', () => {
