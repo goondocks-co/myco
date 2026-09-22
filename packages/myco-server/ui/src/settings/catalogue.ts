@@ -159,7 +159,7 @@ export const LEAF_GROUPS: readonly LeafGroup[] = [
   {
     id: 'maintenance',
     label: 'Maintenance',
-    note: 'Routine checks on the store.',
+    note: 'Routine checks on the store. Nothing runs until a check is turned on with an interval; a check turned on runs at the next wake and then on its interval. What each check does on this server, and what it last found, is under Operations.',
     leaves: [
       { leaf: 'maintenance.auto_optimize', label: 'Optimize automatically', kind: 'toggle' },
       { leaf: 'maintenance.auto_optimize_interval_hours', label: 'Optimize every', kind: 'number', min: 1, max: 720, unit: 'hours' },

@@ -12,7 +12,8 @@
 export interface WakeLoop {
   /** Wake soon, unless a wake is already due sooner. */
   ensure(): Promise<void>;
-  stop(): void;
+  /** Ends the loop; resolves once a tick already running has returned. */
+  stop(): Promise<void>;
 }
 
 export interface WakeLoopOptions {
@@ -31,7 +32,7 @@ export function startWakeLoop(tick: () => Promise<{ nextWakeMs: number | null }>
   const soonMs = options.soonMs ?? ENSURE_SOON_MS;
   let timer: ReturnType<typeof setTimeout> | null = null;
   let dueAt = Number.POSITIVE_INFINITY;
-  let running = false;
+  let running: Promise<unknown> | null = null;
   let again = false;
   let stopped = false;
 
@@ -50,15 +51,16 @@ export function startWakeLoop(tick: () => Promise<{ nextWakeMs: number | null }>
 
   const fire = async (): Promise<void> => {
     if (stopped) return;
-    if (running) { again = true; return; }
-    running = true;
+    if (running !== null) { again = true; return; }
     let nextWakeMs: number | null = options.floorMs;
+    const ticking = tick();
+    running = ticking;
     try {
-      nextWakeMs = (await tick()).nextWakeMs;
+      nextWakeMs = (await ticking).nextWakeMs;
     } catch {
       // The tick reports its own failures; the loop's job is only to come back.
     } finally {
-      running = false;
+      running = null;
     }
     if (again) { again = false; arm(0); return; }
     arm(nextWakeMs ?? options.floorMs);
@@ -69,10 +71,11 @@ export function startWakeLoop(tick: () => Promise<{ nextWakeMs: number | null }>
 
   return {
     ensure: async () => { arm(soonMs); },
-    stop: () => {
+    stop: async () => {
       stopped = true;
       if (timer !== null) clearTimeout(timer);
       timer = null;
+      await running?.catch(() => undefined);
     },
   };
 }

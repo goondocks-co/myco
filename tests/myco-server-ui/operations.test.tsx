@@ -114,6 +114,7 @@ describe('housekeeping on the Operations page', () => {
         reads++;
         return reads === 1 ? new Response(null, { status: 503 }) : Response.json(progress);
       },
+      '/api/maintenance': () => Response.json({ checks: [] }),
     });
     mount('/operations');
     expect(await screen.findByText(/could not report on the backfill/)).toBeTruthy();
@@ -331,5 +332,119 @@ describe('automatic recovery on the Operations page', () => {
     // A producer whose attempts are numbered still names the number.
     expect(latestWords({ ...base, latest: { ...latest, attempt: 7 } } as never)).toContain('Attempt 7');
     expect(latestWords({ ...base, latest: { ...latest, attempt: 7 } } as never)).toContain('staged everything it named');
+  });
+});
+
+describe('store maintenance on the Operations page', () => {
+  const hostedStatus = {
+    checks: [
+      {
+        check: 'optimize', support: { supported: true, label: 'Refreshes the statistics queries are planned from' },
+        cadence: { state: 'not_configured', leaf: 'maintenance.auto_optimize' }, dueAt: null, running: false, latest: null,
+      },
+      {
+        check: 'integrity', support: { supported: true, label: 'A quick check of every table and index, and of every link between records' },
+        cadence: { state: 'on', intervalHours: 168 }, dueAt: 0, running: false,
+        latest: {
+          runId: 'r1', trigger: 'schedule', state: 'findings', startedAt: 0, finishedAt: 1, errorClass: null,
+          findings: ['foreign key: smoke_child row 1 names a missing smoke_parent'], findingsOmitted: 2,
+          measurements: [
+            { name: 'size', state: 'measured', value: 2 * 1024 * 1024, unit: 'bytes' },
+            { name: 'daily_quota', state: 'unavailable', reason: 'reported only by account analytics' },
+          ],
+        },
+      },
+    ],
+  };
+
+  it('shows each check\'s findings, what it could not measure, and an unset schedule as unset', async () => {
+    server({
+      '/auth/me': () => Response.json(ME),
+      '/api/projects': () => Response.json(PROJECTS),
+      '/api/maintenance': () => Response.json(hostedStatus),
+    });
+    mount('/operations');
+    const integrity = await screen.findByTestId('maintenance-integrity');
+    expect(within(integrity).getByText('foreign key: smoke_child row 1 names a missing smoke_parent')).toBeTruthy();
+    expect(within(integrity).getByText('…and 2 more not kept')).toBeTruthy();
+    expect(within(integrity).getByText('Unavailable — reported only by account analytics')).toBeTruthy();
+    expect(within(integrity).getByText('2.0 MB')).toBeTruthy();
+    const optimize = screen.getByTestId('maintenance-optimize');
+    expect(within(optimize).getByText('Never run.')).toBeTruthy();
+    expect(within(optimize).getByText(/Automatic runs are not set up/)).toBeTruthy();
+  });
+
+  it('runs a check on the button and shows a refusal in the server\'s words', async () => {
+    const { requested } = server({
+      '/auth/me': () => Response.json(ME),
+      '/api/projects': () => Response.json(PROJECTS),
+      '/api/maintenance': () => Response.json(hostedStatus),
+      '/api/maintenance/optimize/run': () => Response.json({ error: 'refused', refusal: 'already_running', reason: 'an optimize run is already in progress' }, { status: 409 }),
+    });
+    mount('/operations');
+    const optimize = await screen.findByTestId('maintenance-optimize');
+    fireEvent.click(within(optimize).getByRole('button', { name: 'Run now' }));
+    expect(await within(optimize).findByRole('alert')).toBeTruthy();
+    expect(within(optimize).getByRole('alert').textContent).toBe('an optimize run is already in progress');
+    expect(requested).toContain('POST /api/maintenance/optimize/run');
+  });
+
+  it('words a running record the server no longer runs as interrupted and offers a run, and a live one as running', async () => {
+    const runningRecord = {
+      runId: 'r2', trigger: 'schedule', state: 'running', startedAt: 0, finishedAt: null, errorClass: null,
+      findings: [], findingsOmitted: 0, measurements: [],
+    };
+    const supported = { supported: true, label: 'Checks every table, index and page' };
+    server({
+      '/auth/me': () => Response.json(ME),
+      '/api/projects': () => Response.json(PROJECTS),
+      '/api/maintenance': () => Response.json({
+        checks: [
+          { check: 'integrity', support: supported, cadence: { state: 'off' }, dueAt: null, running: false, latest: runningRecord },
+          { check: 'optimize', support: supported, cadence: { state: 'off' }, dueAt: null, running: true, latest: { ...runningRecord, runId: 'r3' } },
+        ],
+      }),
+    });
+    mount('/operations');
+    const integrity = await screen.findByTestId('maintenance-integrity');
+    expect(within(integrity).getByTestId('maintenance-integrity-outcome').textContent).toMatch(/^Interrupted: started .+ \(scheduled\) and ended without recording an outcome\.$/);
+    expect(within(integrity).getByRole('button', { name: 'Run now' }).hasAttribute('disabled')).toBe(false);
+    const optimize = screen.getByTestId('maintenance-optimize');
+    expect(within(optimize).getByTestId('maintenance-optimize-outcome').textContent).toMatch(/^Running since /);
+    expect(within(optimize).getByRole('button', { name: 'Running…' }).hasAttribute('disabled')).toBe(true);
+  });
+
+  it('takes a run answered with its running claim as running, with no error, and reads the status again', async () => {
+    const supported = { supported: true, label: 'Checks every table, index and page' };
+    const claim = { runId: 'r4', trigger: 'owner', state: 'running', startedAt: 0, finishedAt: null, errorClass: null, findings: [], findingsOmitted: 0, measurements: [] };
+    let running = false;
+    const { requested } = server({
+      '/auth/me': () => Response.json(ME),
+      '/api/projects': () => Response.json(PROJECTS),
+      '/api/maintenance': () => Response.json({
+        checks: [{ check: 'integrity', support: supported, cadence: { state: 'off' }, dueAt: null, running, latest: running ? claim : null }],
+      }),
+      '/api/maintenance/integrity/run': () => { running = true; return Response.json(claim); },
+    });
+    mount('/operations');
+    const integrity = await screen.findByTestId('maintenance-integrity');
+    expect(within(integrity).getByTestId('maintenance-integrity-outcome').textContent).toBe('Never run.');
+    fireEvent.click(within(integrity).getByRole('button', { name: 'Run now' }));
+    expect(await within(integrity).findByText(/^Running since /)).toBeTruthy();
+    expect(within(integrity).getByRole('button', { name: 'Running…' }).hasAttribute('disabled')).toBe(true);
+    expect(within(integrity).queryByRole('alert')).toBeNull();
+    expect(requested.filter((r) => r === 'GET /api/maintenance').length).toBeGreaterThanOrEqual(2);
+  });
+
+  it('offers no run for a check this server cannot perform', async () => {
+    server({
+      '/auth/me': () => Response.json(ME),
+      '/api/projects': () => Response.json(PROJECTS),
+      '/api/maintenance': () => Response.json({ checks: [{ check: 'integrity', support: { supported: false, reason: 'this Deployment has no store maintenance' }, cadence: { state: 'off' }, dueAt: null, running: false, latest: null }] }),
+    });
+    mount('/operations');
+    const integrity = await screen.findByTestId('maintenance-integrity');
+    expect(within(integrity).getByText('Not available on this server: this Deployment has no store maintenance.')).toBeTruthy();
+    expect(within(integrity).queryByRole('button')).toBeNull();
   });
 });

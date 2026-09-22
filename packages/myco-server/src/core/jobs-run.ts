@@ -25,6 +25,7 @@ import { admitRecoveryExport } from './recovery-admission.js';
 import { attemptAdvancing, recoveryScheduleOf, SCHEDULE_JOB } from './recovery-schedule.js';
 import { PRUNE_FILE_BUDGET, stagingPrunePolicy, STAGING_RETENTION_JOB } from './staging-retention.js';
 import { backfillImportedTitles, titleReadySessions } from './titling.js';
+import { MAINTENANCE_JOB, runMaintenance, type MaintenanceCheck } from './store-maintenance.js';
 
 /** The retention window when the leaf is unset, and the bounds the leaf itself declares. */
 export const RUN_RETENTION_DAYS_DEFAULT = 30;
@@ -194,6 +195,10 @@ export async function grantExpiry(env: ServerEnv, now: number): Promise<number> 
   return changed;
 }
 
+/** Runs a store maintenance check when it is due, and answers 1 for a run it started; the outcome, failure included, is in the run's record. */
+const scheduledMaintenance = (check: MaintenanceCheck): JobRun => async (env, now, state) =>
+  ((await runMaintenance(env, check, 'schedule', now, { powerState: state })).outcome === 'refused' ? 0 : 1);
+
 /** Every declared job's implementation, by name. A declared job absent here is refused by a gate, never skipped in silence. */
 export const JOB_IMPLEMENTATIONS: Readonly<Record<string, JobRun>> = {
   'embedding-reconcile': dispatchEmbeddingWork,
@@ -216,6 +221,8 @@ export const JOB_IMPLEMENTATIONS: Readonly<Record<string, JobRun>> = {
     const drained = await drainObjectReleases(env, now);
     return drained.expired + drained.deleted + drained.decided;
   },
+  [MAINTENANCE_JOB.optimize]: scheduledMaintenance('optimize'),
+  [MAINTENANCE_JOB.integrity]: scheduledMaintenance('integrity'),
   // #1151 — worker mode
   'worker-lease-sweep': (env, now) => expireLeases(env, now),
 };
