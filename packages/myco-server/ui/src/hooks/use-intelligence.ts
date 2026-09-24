@@ -137,6 +137,7 @@ const project = (projectId: string) => `/api/projects/${seg(projectId)}`;
 export const MEMORY_TASKS = [
   { id: 'extract-curate', label: 'Extract session knowledge', description: 'Read captured sessions and save useful findings as spores.' },
   { id: 'vault-seed', label: 'Seed from repository', description: 'Read the connected repository and save project knowledge as spores.' },
+  { id: 'canopy-map', label: 'Update the code map', description: 'Read the connected repository and write its code map: where things live and the files that carry each area.' },
 ] as const;
 export type MemoryTask = typeof MEMORY_TASKS[number]['id'];
 type DispatchAnswer = { outcome: 'unchanged' } | { runId: string; projectId: string; queued: boolean };

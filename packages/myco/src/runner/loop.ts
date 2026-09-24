@@ -22,6 +22,7 @@ import { classifyEventAnswer, rawAnswerOf, type RawAnswer } from '../member/tran
 import type { RunEvent } from './events.js';
 import { parseRepositoryCheckoutSpec, REPOSITORY_CHECKOUT_CAPABILITY, type RepositoryCheckoutSpec } from '@goondocks/myco-shared/repository';
 import { prepareWorkerCheckout } from './repository.js';
+import { MAP_TASK } from '@goondocks/myco-shared/canopy';
 import type { RepositoryCheckout } from './repository-checkout.js';
 
 /** What a claim answers: the run, the harness chosen for it, and what it runs under. */
@@ -239,7 +240,7 @@ async function drive(options: WorkerOptions, run: ClaimedRun, heartbeatMs: numbe
         if (answer.body.held !== true) { lost = true; stopping.abort(); throw new Error('The repository lease is no longer held.'); }
         if (typeof answer.body.error === 'string') throw new Error(answer.body.error);
         return answer.body;
-      }, options.repositoryGitPath);
+      }, { gitPath: options.repositoryGitPath, digests: run.task === MAP_TASK });
     }
     stopping.signal.throwIfAborted();
     stream = driver.run({

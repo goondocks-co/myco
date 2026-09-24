@@ -34,7 +34,6 @@ export type { ActorCeiling } from './runs.js';
 import { applyRunUpdate, ensureAgent, getDispatchActor, recordDispatch, dispatchLoad, failQueuedRun, hasSuccessorOf, INPUT_UNCHANGED, launchQueued, listQueuedAcrossProjects, recordQueued, getRun, hasLiveTaskRun, restoreDispatchCredential, returnToQueue, skipQueued, successorsSince, NO_LIMITS, type RunRow } from './runs.js';
 import { openProviderCredential } from './provider-credentials.js';
 import { leafValues } from './settings.js';
-import { MAP_TASK } from '@goondocks/myco-shared/canopy';
 import { HARNESS_CREDENTIALS } from '@goondocks/myco-shared/harness-providers';
 import { admissionForTask, runTimeoutForTask, UNLANDED_TASKS } from './task-catalogue.js';
 import { buildTaskInput, inputBuilderFor, instructionFor, instructionsFileFor, uninstructedError } from './task-inputs.js';
@@ -57,15 +56,15 @@ export const CAPTURE_DRIVEN_ADMISSION = 'captureDriven';
 /**
  * The tasks the launch seam serves, which a worker cannot.
  *
- * Two of them declare no tool: their whole surface is a server-side step
- * loop over a run route — `/runs/embedding-step` and `/runs/canopy-map` —
- * rather than the MCP surface a worker's harness speaks. The third is the
- * containerized runtime's own end-to-end proof, so serving it anywhere else
- * would leave the path it exists to exercise untested.
+ * One declares no tool: its whole surface is a server-side step loop over a
+ * run route — `/runs/embedding-step` — rather than the MCP surface a worker's
+ * harness speaks. The other is the containerized runtime's own end-to-end
+ * proof, so serving it anywhere else would leave the path it exists to
+ * exercise untested.
  *
- * These three are why the seam survives, and all three retire with it.
+ * These two are why the seam survives, and both retire with it.
  */
-export const RUNTIME_SERVED_TASKS: readonly string[] = ['embedding-reconcile', MAP_TASK, 'container-smoke'];
+export const RUNTIME_SERVED_TASKS: readonly string[] = ['embedding-reconcile', 'container-smoke'];
 /** How many runs of one task a Project may have re-queued in a day in place of runs the platform replaced. */
 export const REPLACED_REQUEUES_PER_DAY = 2;
 /** The window the per-day caps are counted over. */

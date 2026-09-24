@@ -1506,9 +1506,9 @@ export function mapSourcePinOfRun(run: Pick<RunRow, 'runContext'>): MapSourcePin
   return parseMapSourcePin(value);
 }
 
-export async function pinMapSourceForRun(db: RelationalStore, scope: ReadScope, run: RunRow, pin: MapSourcePin): Promise<MapSourcePin | null> {
+export async function pinMapSourceForRun(db: RelationalStore, scope: ReadScope, run: RunRow, pin: MapSourcePin, lease?: RunLease): Promise<MapSourcePin | null> {
   mapSourcePinOfRun(run);
-  const fresh = await pinRunPreparation(db, scope, run, 'canopy', parseMapSourcePin(pin));
+  const fresh = await pinRunPreparation(db, scope, run, 'canopy', parseMapSourcePin(pin), lease);
   return fresh === null ? null : mapSourcePinOfRun(fresh);
 }
 

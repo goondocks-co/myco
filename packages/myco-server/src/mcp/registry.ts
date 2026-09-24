@@ -13,7 +13,7 @@
 import { NO_OP, SERVED_TOOLS, UNSERVED_OPS, type ServedTool } from '../core/tool-catalogue.js';
 import type { ToolContext } from './context.js';
 import { handleAgent } from './tools/agent.js';
-import { handleCortexInstructions, handleCortexProjectsActivity } from './tools/cortex.js';
+import { handleCortexCanopyMap, handleCortexInstructions, handleCortexProjectsActivity } from './tools/cortex.js';
 import { handlePlans } from './tools/plans.js';
 import { handleSessions } from './tools/sessions.js';
 import { handleSkills } from './tools/skills.js';
@@ -43,6 +43,7 @@ export const TOOL_REGISTRY: Record<ServedTool, ToolEntry> = {
     defaultOp: 'instructions',
     ops: {
       instructions: served(handleCortexInstructions),
+      canopy_map: served(handleCortexCanopyMap),
       projects_activity: served(handleCortexProjectsActivity),
       ...notServed('myco_cortex'),
     },

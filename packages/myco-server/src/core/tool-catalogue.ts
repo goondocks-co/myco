@@ -40,6 +40,7 @@ export const RUN_TOOLS = [
   'myco_run_spores',
   'myco_run_sessions',
   'myco_run_prompts',
+  'myco_run_map',
 ] as const;
 
 export type RunTool = (typeof RUN_TOOLS)[number];
@@ -48,6 +49,8 @@ export type RunTool = (typeof RUN_TOOLS)[number];
 export const TITLE_WRITE_TOOL: RunTool = 'myco_run_sessions';
 /** The run tool an extraction run's mark of a read prompt lands through; the close rule reads the write back under this name. */
 export const PROMPT_MARK_TOOL: RunTool = 'myco_run_prompts';
+/** The run tool a map run reads its prior map and writes its new one through. */
+export const MAP_WRITE_TOOL: RunTool = 'myco_run_map';
 
 /** Whether this name is one of the run-only tools. */
 export function isRunTool(name: string): name is RunTool {
@@ -84,7 +87,7 @@ export const PROJECT_PIVOT = 'project';
  * declared op enum.
  */
 export const UNSERVED_OPS: Readonly<Partial<Record<ServedTool, Readonly<Record<string, string>>>>> = {
-  myco_cortex: { digest: '#1170', canopy_map: '#1170', canopy_entry: '#1170', notifications: '#922', maintenance_summary: '#923' },
+  myco_cortex: { digest: '#1170', canopy_entry: 'never', notifications: '#922', maintenance_summary: '#923' },
   myco_plans: { delete: 'never' },
 };
 
@@ -107,6 +110,7 @@ export const WRITE_OPS: Readonly<Partial<Record<AnyTool, readonly string[]>>> = 
   myco_run: ['state_set'],
   myco_run_sessions: ['title'],
   myco_run_prompts: ['mark_processed'],
+  myco_run_map: ['write'],
 };
 
 /** Whether this op of this tool writes. */

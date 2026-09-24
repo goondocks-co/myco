@@ -2,9 +2,10 @@
  * The tools only a run may call.
  *
  * A run reaches the catalogued tools where its work is a member's work — every
- * write of vault content, and search. These four are the operations that are
- * the run's own: material reads bounded by its window, its state, its prompt
- * cursor, and its session's titling material and title. They are not in
+ * write of vault content, and search. These are the operations that are the
+ * run's own: material reads bounded by its window, its state, its prompt
+ * cursor, its session's titling material and title, and the repository map a
+ * map run keeps. They are not in
  * `SERVED_TOOLS`, are never listed to a member or a grant, and have no
  * counterpart in `packages/myco/src/tools/definitions.ts`.
  *
@@ -90,6 +91,20 @@ export const RUN_DEFINITIONS: readonly RunToolDefinition[] = [
         limit: { type: 'number', description: 'For unprocessed: page size, clamped to this run\'s window.' },
         include_active: { type: 'boolean', description: 'For unprocessed: include prompts of sessions still in flight. Defaults to false.' },
         include_text: { type: 'boolean', description: 'For unprocessed: include each prompt\'s body and an excerpt of the agent\'s first response. Defaults to false, which reads no bodies at all.' },
+        [PROJECT_PIVOT]: project,
+      },
+      required: ['op'],
+    },
+  },
+  {
+    name: 'myco_run_map',
+    description: 'This Project\'s repository map, for the run that keeps it: the current map and whether it was already read from this run\'s commit, and the one write of the new map.',
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+    inputSchema: {
+      type: 'object',
+      properties: {
+        op: { type: 'string', enum: ['get', 'write'], description: 'get: the current map, this run\'s commit, and unchanged true when the map was already read from it. write: store the new map, once per run.' },
+        artifact: { type: ['object', 'string'], description: 'For write: the map as one JSON object, {directories, domains}, as the run\'s instructions describe it.' },
         [PROJECT_PIVOT]: project,
       },
       required: ['op'],

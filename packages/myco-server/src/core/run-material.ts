@@ -15,7 +15,6 @@ export const CONTENT_PREVIEW_MAX_CHARS = 360;
 
 /** Tool names 1.4 retired. A preview naming one is rewritten before it reaches a model. */
 export const RETIRED_TOOL_NAMES = [
-  'canopy_map',
   'myco_context',
   'myco_recall',
   'myco_remember',

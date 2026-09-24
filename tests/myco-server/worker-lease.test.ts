@@ -118,11 +118,11 @@ describe('the claim queue', () => {
     expect(await claimNextRun(f.e.serverEnv, { tokenId: await f.worker('mem_w'), machineId: 'm1', harnesses: OFFERED, now: NOW + 1 })).toEqual({ claimed: false, reason: 'no_work' });
   });
 
-  it('leaves the three tasks the launch seam serves out of the queue a worker reads', async () => {
+  it('leaves the two tasks the launch seam serves out of the queue a worker reads', async () => {
     // Named here rather than read from the constant: a list that loops over
     // itself passes on an empty one.
-    expect([...RUNTIME_SERVED_TASKS].sort()).toEqual(['canopy-map', 'container-smoke', 'embedding-reconcile']);
-    for (const task of ['canopy-map', 'container-smoke', 'embedding-reconcile']) {
+    expect([...RUNTIME_SERVED_TASKS].sort()).toEqual(['container-smoke', 'embedding-reconcile']);
+    for (const task of ['container-smoke', 'embedding-reconcile']) {
       const f = fixture(task);
       f.queue(`run_${task}`, NOW);
       expect({ task, outcome: await claimNextRun(f.e.serverEnv, { tokenId: await f.worker('mem_w'), machineId: 'm1', harnesses: OFFERED, now: NOW + 1 }) })

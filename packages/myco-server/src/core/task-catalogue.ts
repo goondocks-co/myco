@@ -19,8 +19,8 @@
  *   `hasConfiguredProvider` resolves it locally.
  * - **An embedding provider**, per Deployment, for deterministic vector work.
  *
- * Three of the retained tasks are the run outcomes of plan §2.5: one prompt
- * each, built by the Deployment, with declared expected evidence
+ * Four of the retained tasks are run outcomes: one prompt each, built by the
+ * Deployment, with declared expected evidence
  * (`core/run-postconditions.ts`). `OUTCOME_TASKS` names them, and
  * `tests/myco-server/task-catalogue.test.ts` holds the close rules, the input
  * builders and this list to one another.
@@ -36,8 +36,11 @@ export const EXTRACTION_TASK = 'extract-curate';
 /** The task that seeds a Project from a checkout of its code and git history. */
 export const SEEDING_TASK = 'vault-seed';
 
-/** The three run outcomes: every worker-served task with a prompt of its own. */
-export const OUTCOME_TASKS: readonly string[] = [EXTRACTION_TASK, SEEDING_TASK, TITLING_TASK];
+/** The task that keeps a Project's repository map from a checkout of its code. */
+export { MAP_TASK };
+
+/** The four run outcomes: every worker-served task with a prompt of its own. */
+export const OUTCOME_TASKS: readonly string[] = [EXTRACTION_TASK, SEEDING_TASK, TITLING_TASK, MAP_TASK];
 
 /** Tasks whose required worker capability is not available for dispatch. */
 export const UNLANDED_TASKS: readonly string[] = [];
@@ -65,7 +68,7 @@ export const RETAINED_TASKS = Object.keys(TASK_ADMISSION);
  * and holds every name here to one `RUN_TOOL_MAP` entry.
  */
 export const TASK_TOOLS: Readonly<Record<string, readonly string[]>> = {
-  [MAP_TASK]: ['code_grep', 'fs_list', 'fs_read', 'fs_tree', 'vault_report'],
+  [MAP_TASK]: ['vault_canopy_map', 'vault_report'],
   'embedding-reconcile': [],
   'container-smoke': [],
   [EXTRACTION_TASK]: [
@@ -86,8 +89,8 @@ export function taskTools(task: string | null): readonly string[] {
  *
  * The dispatcher's flat default is a titling run's shape: a handful of turns at
  * low reasoning, done in seconds. An extraction pass reads a page of prompts
- * and searches before each write; a seeding run explores a whole checkout. Both
- * take minutes, and a run aborted mid-work has spent its money and left only
+ * and searches before each write; a seeding or map run explores a whole
+ * checkout. Each takes minutes, and a run aborted mid-work has spent its money and left only
  * what it had written. A task named here carries its own budget into the run's
  * context, which is also the window the run's own routes admit it inside and
  * the point past which the stale sweep gives up on it.

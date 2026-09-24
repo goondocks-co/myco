@@ -37,6 +37,13 @@ export const KNOWN_WORKER_CAPABILITIES: readonly string[] = [REPOSITORY_CHECKOUT
 export const isKnownWorkerCapability = (value: string): boolean => KNOWN_WORKER_CAPABILITIES.includes(value);
 /** Source lives beside the run's own instructions and MCP configuration. */
 export const RUN_REPOSITORY_DIR = 'repo';
+/**
+ * The listing the worker writes beside the checkout: one line per committed
+ * regular file, `<sha256 of its content>  <path>`, sorted by path, in the
+ * `sha256sum` format. A run that grounds an artifact in file content reads its
+ * digests here rather than hashing files itself.
+ */
+export const RUN_REPOSITORY_DIGESTS_FILE = 'repo.sha256';
 /** Git inspection commands available to unattended source-reading runs. */
 export const SOURCE_GIT_READ_COMMANDS = ['log', 'shortlog', 'show', 'diff', 'diff-tree', 'ls-tree', 'ls-files', 'rev-parse', 'rev-list', 'status', 'grep', 'blame', 'cat-file', 'describe'] as const;
 /** The maximum Git fetch depth for a source-reading run. */

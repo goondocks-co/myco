@@ -1,5 +1,5 @@
 /**
- * The tasks whose prompt the server builds: the three run outcomes.
+ * The tasks whose prompt the server builds: the four run outcomes.
  *
  * A dispatched run holds no vault. For these tasks the Deployment assembles the
  * instruction itself, carries it on the run row, and hashes what went into it.
@@ -17,9 +17,10 @@
  */
 import type { ServerEnv } from './adapters.js';
 import type { RepositoryCheckoutSpec } from '@goondocks/myco-shared/repository';
+import { buildMapInput } from './canopy-input.js';
 import { buildExtractionInput } from './extraction-input.js';
 import { buildSeedingInput } from './seeding-input.js';
-import { EXTRACTION_TASK, SEEDING_TASK, TITLING_TASK } from './task-catalogue.js';
+import { EXTRACTION_TASK, MAP_TASK, SEEDING_TASK, TITLING_TASK } from './task-catalogue.js';
 import { buildTitlingInput } from './titling-input.js';
 
 /** What one build answers: the run's prompt, the standing rules for its instructions file, the hash of the material behind it, and what that material counted. */
@@ -58,6 +59,7 @@ export const INPUT_BUILDERS: Readonly<Record<string, TaskInputBuilder>> = {
   [EXTRACTION_TASK]: { build: () => buildExtractionInput() },
   [SEEDING_TASK]: { build: (env, projectId) => buildSeedingInput(env, projectId) },
   [TITLING_TASK]: { build: (_env, _projectId, _now, options) => buildTitlingInput(options.params ?? {}) },
+  [MAP_TASK]: { build: (env, projectId, _now, options) => buildMapInput(env, projectId, options) },
 };
 
 /** The builder for this task, or null for a task the server builds no input for. */

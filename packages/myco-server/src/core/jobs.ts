@@ -234,7 +234,7 @@ export interface TaskSchedule {
  * `harness-health`: one call, one report, proof the runtime still works.
  */
 export const TASK_SCHEDULE: Readonly<Record<string, TaskSchedule | null>> = {
-  [MAP_TASK]: { enabled: false, intervalSeconds: 21_600, runIn: ['idle', 'sleep'], overlap: 'skip', maxRunsPerDay: 4 },
+  [MAP_TASK]: { enabled: false, intervalSeconds: 21_600, runIn: ['idle', 'sleep'], overlap: 'skip', maxRunsPerDay: 4, preCondition: 'has-capture-since-map' },
   'embedding-reconcile': null,
   'container-smoke': { intervalSeconds: 86_400, runIn: ['sleep'], overlap: 'skip', maxRunsPerDay: 2 },
   [EXTRACTION_TASK]: { intervalSeconds: 3600, runIn: ['idle', 'sleep'], overlap: 'skip', maxRunsPerDay: 12, reservedRunsPerDay: { count: 3, preCondition: 'has-recent-live-prompts' }, preCondition: 'has-unprocessed-prompts' },
