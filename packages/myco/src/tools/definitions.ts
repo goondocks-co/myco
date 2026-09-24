@@ -109,7 +109,7 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
   },
   {
     name: TOOL_CORTEX,
-    description: 'Retrieve project intelligence. op: "instructions" (default) returns the project\'s session-start instructions and its project id. op: "notifications" returns notifications for the request scope (use unread_only and limit to filter). op: "maintenance_summary" returns the per-Grove maintenance summary (db sizes, last backup/optimize, integrity status, and overdue flags). op: "projects_activity" returns the cross-project activity feed (last activity, scheduled runs, active flag). op: "digest", op: "canopy_map" and op: "canopy_entry" are served by the local runtime only; a Deployment answers them not_served.',
+    description: 'Retrieve project intelligence. op: "instructions" (default) returns the project\'s session-start instructions and its project id. op: "notifications" returns notifications for the request scope (use unread_only and limit to filter). op: "maintenance_summary" returns the per-Grove maintenance summary (db sizes, last backup/optimize, integrity status, and overdue flags). op: "projects_activity" returns the cross-project activity feed (last activity, scheduled runs, active flag). op: "canopy_map" returns the project\'s repository map as markdown, with the commit it was read from. op: "digest" and op: "canopy_entry" are served by the local runtime only; a Deployment answers them not_served.',
     annotations: {
       readOnlyHint: true,
       destructiveHint: false,

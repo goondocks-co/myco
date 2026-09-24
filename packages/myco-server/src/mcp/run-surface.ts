@@ -10,7 +10,7 @@
  * of vault content, and search — it calls the catalogued tools, so one
  * operation has one implementation and one attribution path. Where the
  * operation is the run's own — material reads bounded by its window, its state,
- * its prompt cursor, its session's material and title — it calls the run-only
+ * its prompt cursor, its session's material and title, the map it keeps — it calls the run-only
  * tools (`run-definitions.ts`), which no member and no grant can see.
  *
  * `report` is the exception to the allowlist and is served to every run. A
@@ -26,6 +26,7 @@ import { TOOL_DEFINITIONS, type ToolDefinition } from './definitions.js';
 import { RUN_DEFINITIONS, RUN_PROJECT_DESCRIPTION } from './run-definitions.js';
 import type { RegistryEntry } from './registry.js';
 import { handleRun } from './tools/run.js';
+import { handleRunMap } from './tools/run-map.js';
 import { handleRunPrompts } from './tools/run-prompts.js';
 import { handleRunSessions } from './tools/run-sessions.js';
 import { handleRunSpores } from './tools/run-spores.js';
@@ -55,6 +56,7 @@ export const RUN_TOOL_MAP: Readonly<Record<string, readonly RunSurfaceTarget[]>>
   ],
   vault_search_fts: [{ tool: 'myco_search', op: NO_OP }],
   vault_search_semantic: [{ tool: 'myco_search', op: NO_OP }],
+  vault_canopy_map: [{ tool: 'myco_run_map', op: 'get' }, { tool: 'myco_run_map', op: 'write' }],
 };
 
 /** The handlers for the run-only tools, keyed as the served registry is. */
@@ -63,6 +65,7 @@ export const RUN_TOOL_REGISTRY: Record<string, { defaultOp: string; ops: Record<
   myco_run_spores: { defaultOp: 'list', ops: { list: { handler: handleRunSpores }, get: { handler: handleRunSpores } } },
   myco_run_sessions: { defaultOp: 'list', ops: { list: { handler: handleRunSessions }, material: { handler: handleRunSessions }, title: { handler: handleRunSessions } } },
   myco_run_prompts: { defaultOp: 'unprocessed', ops: { unprocessed: { handler: handleRunPrompts }, mark_processed: { handler: handleRunPrompts } } },
+  myco_run_map: { defaultOp: 'get', ops: { get: { handler: handleRunMap }, write: { handler: handleRunMap } } },
 };
 
 /** The `(tool, op)` pairs one run may call. */

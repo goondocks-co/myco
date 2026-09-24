@@ -31,7 +31,7 @@ if (process.argv.includes('status')) process.exit(0);
   };
   const git = (...args) => cp.execFileSync('git', ['-C', 'repo', ...args], { encoding: 'utf8' }).trim();
   const observed = { cwd: process.cwd(), args, commit: git('rev-parse', 'HEAD'), history: git('rev-list', '--count', 'HEAD'),
-    source: fs.readFileSync('repo/AGENTS.md', 'utf8'), rules: fs.readFileSync('AGENTS.md', 'utf8'),
+    source: fs.readFileSync('repo/AGENTS.md', 'utf8'), rules: fs.readFileSync('AGENTS.md', 'utf8'), listing: fs.existsSync('repo.sha256'),
     gitConfig: fs.readFileSync('repo/.git/config', 'utf8'), gitTokenPresent: process.env.MYCO_GIT_TOKEN !== undefined };
   const saved = await call('myco_spores', { op: 'save', type: 'decision', content: 'The second commit revises the project rules (AGENTS.md).',
     agent_line: 'Read the current project rules in AGENTS.md before changing code.', tags: ['rules', 'history'] });
@@ -97,6 +97,8 @@ describe('worker repository checkout over the Deployment wire', () => {
         const observed = JSON.parse(await readFile(evidence, 'utf8')) as Record<string, unknown>;
         expect(observed).toMatchObject({ commit: source.second, history: '2', source: 'Second committed rules.', gitTokenPresent: false });
         expect(observed.rules).toContain('# Myco seeding run');
+        // A seeding run grounds nothing in digests, so its checkout hashes nothing.
+        expect(observed.listing).toBe(false);
         expect(observed.args).toContain('Bash(git -C repo log:*)');
         expect(JSON.stringify(observed)).not.toContain(GIT_READ_CREDENTIAL.token);
         expect(JSON.stringify(lines)).not.toContain(owner.token);

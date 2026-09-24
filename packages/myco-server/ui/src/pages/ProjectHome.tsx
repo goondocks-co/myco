@@ -1,15 +1,17 @@
 import { useEffect, useState } from 'react';
-import { ArrowRight, ListChecks } from 'lucide-react';
+import { ArrowRight, ListChecks, Map as MapIcon } from 'lucide-react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import { AccentSurface } from '../components/ui/accent-surface';
 import { Eyebrow } from '../components/ui/eyebrow';
 import { MetricCard } from '../components/ui/metric-card';
 import { PageContainer } from '../components/ui/page-container';
 import { PageLoading } from '../components/ui/page-loading';
+import { MarkdownContent } from '../components/ui/markdown-content';
 import { Panel } from '../components/ui/panel';
 import { Skeleton } from '../components/ui/skeleton';
 import { ActivitySparkline } from '../components/ui/sparkline';
 import { StatusDot, type StatusTone } from '../components/ui/status-dot';
+import { useCanopyMap, type CanopyMapRow } from '../hooks/use-canopy-map';
 import { useRuns, type RunListRow } from '../hooks/use-intelligence';
 import { planPath, useProjectPlans, type ProjectPlanRow } from '../hooks/use-plans';
 import { useProjectActions, useProjects } from '../hooks/use-projects';
@@ -26,6 +28,8 @@ const TYPE_LABEL: Record<FeedItem['type'], string> = { session: 'Session', run: 
 const OPEN_SESSIONS_SHOWN = 6;
 const RUNS_SHOWN = 6;
 const PLANS_SHOWN = 6;
+/** How much of a commit id the map panel names. */
+const SHORT_COMMIT_CHARS = 8;
 /** How long after the last capture the project still counts as capturing. */
 const CAPTURE_FRESH_MS = 7 * 24 * 60 * 60 * 1000;
 
@@ -87,6 +91,7 @@ function Home({ project }: { project: ProjectSummary }) {
   const open = useSessions(project.projectId, { state: 'open' });
   const runs = useRuns(project.projectId, null);
   const plans = useProjectPlans(project.projectId, 'all');
+  const map = useCanopyMap(project.projectId);
   const settings = useSettings();
   const base = `/p/${encodeURIComponent(project.projectId)}`;
   const runningRuns = runs.rows.filter((r) => r.status === 'running').length;
@@ -116,6 +121,7 @@ function Home({ project }: { project: ProjectSummary }) {
                 <ActivityFeed base={base} items={activity.data.items} />
               </div>
             </div>
+            <RepositoryMapPanel base={base} map={map.data?.map ?? null} pending={map.isPending} error={map.error} />
           </>
         )}
       </PageLoading>
@@ -308,6 +314,34 @@ function PlansPanel({ projectId, base, plans, pending, error }: { projectId: str
             </li>
           ))}
         </ul>
+      )}
+    </Panel>
+  );
+}
+
+/** The code map a map run keeps: where things live and the files that carry each area, read from one commit. */
+export function RepositoryMapPanel({ base, map, pending, error }: { base: string; map: CanopyMapRow | null; pending: boolean; error: Error | null }) {
+  return (
+    <Panel tone="sage" eyebrow="Code map" title={map === null ? 'No map yet' : 'Where things live'} data-testid="repository-map" actions={map === null ? undefined : (
+      <Link to={`${base}/runs/${encodeURIComponent(map.sourceRunId)}`} className="inline-flex items-center gap-1 font-sans text-xs text-on-surface-variant hover:text-on-surface">The run that wrote it <ArrowRight className="h-3 w-3" /></Link>
+    )}>
+      {pending ? (
+        <Skeleton className="h-24 w-full rounded-md" />
+      ) : error ? (
+        <PanelError what="the code map" />
+      ) : map === null ? (
+        <p className="m-0 font-sans text-sm text-on-surface-variant">A map appears here once the project connects its repository and a map run reads it. Start one from Runs with “Update the code map”.</p>
+      ) : (
+        <div className="flex flex-col gap-3">
+          <p className="m-0 flex flex-wrap items-center gap-1.5 font-mono text-[11px] text-outline">
+            <MapIcon className="h-3 w-3 shrink-0 text-sage" />
+            <span title={map.repository.commit}>{map.repository.branch} @ {map.repository.commit.slice(0, SHORT_COMMIT_CHARS)}</span>
+            <span>· {formatRelative(map.generatedAt)}</span>
+          </p>
+          <div className="max-h-[32rem] overflow-y-auto pr-1">
+            <MarkdownContent content={map.content} skipHtml />
+          </div>
+        </div>
       )}
     </Panel>
   );

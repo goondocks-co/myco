@@ -39,9 +39,6 @@ function declaredTools(task: TaskFile): string[] {
   return [...new Set(phased)].sort();
 }
 
-/** The names `RUN_TOOL_MAP` does not map; the Canopy map's source tools are served by the seam and not by MCP. */
-const SEAM_TOOLS = new Set(['code_grep', 'fs_list', 'fs_read', 'fs_tree']);
-
 describe('the task tool table', () => {
   it('names every retained task and no other', () => {
     expect(Object.keys(TASK_TOOLS).sort()).toEqual([...RETAINED_TASKS].sort());
@@ -50,7 +47,7 @@ describe('the task tool table', () => {
   it('declares no tool twice, and none the run surface cannot serve', () => {
     for (const task of RETAINED_TASKS) {
       expect({ task, duplicates: new Set(TASK_TOOLS[task]).size === TASK_TOOLS[task].length }).toEqual({ task, duplicates: true });
-      const unmapped = TASK_TOOLS[task].filter((tool) => !SEAM_TOOLS.has(tool) && (RUN_TOOL_MAP[tool] ?? []).length === 0);
+      const unmapped = TASK_TOOLS[task].filter((tool) => (RUN_TOOL_MAP[tool] ?? []).length === 0);
       expect({ task, unmapped }).toEqual({ task, unmapped: [] });
     }
   });
@@ -62,13 +59,14 @@ describe('the task tool table', () => {
     // The two outcomes the catalogue alone defines have no file; the rest still do.
     expect(withFile.sort()).toEqual(['canopy-map', 'container-smoke', 'title-summary', 'vault-seed'].sort());
     for (const task of withFile) {
-      if (task === 'vault-seed') continue;
+      if (task === 'vault-seed' || task === 'canopy-map') continue;
       expect({ task, tools: [...TASK_TOOLS[task]].sort() }).toEqual({ task, tools: declaredTools(files.get(task)!) });
     }
-    // The seeding outcome is one prompt over a checkout the harness explores
-    // with its own tools, so its surface is the vault writes alone and not the
-    // phased file's source tools.
+    // The seeding and map outcomes are one prompt over a checkout the harness
+    // explores with its own tools, so their surfaces are their Myco reads and
+    // writes alone and not the phased files' source tools.
     expect([...TASK_TOOLS['vault-seed']].sort()).toEqual(['vault_create_spore', 'vault_report', 'vault_search_fts', 'vault_search_semantic', 'vault_spore', 'vault_spores']);
+    expect([...TASK_TOOLS['canopy-map']].sort()).toEqual(['vault_canopy_map', 'vault_report']);
   });
 
   it('answers nothing for a task it does not serve or for no task', () => {

@@ -196,7 +196,7 @@
   "parity": {
     "backup: interrupted report restore resumes through the owner HTTP route": 23420,
     "repositories: sealed project access and immutable held-run commit": 11861,
-    "canopy: held committed-source map publication and shared project read": 10105,
+    "canopy: a worker map run pinned to its commit, closed on its map, and read over MCP": 10105,
     "skills: member review preserves approval attribution and refuses stale revisions": 18405,
     "sessions and titling: capture, the unbound-runtime fallback, label, MCP, an owner's ask": 16829,
     "session turns: capture keyed to prompts, turns read, turn body, tool calls on their own, rail summaries and filters": 308,

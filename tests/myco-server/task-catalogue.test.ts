@@ -1,6 +1,6 @@
 /**
  * The task catalogue: every retained task names a gate, the set matches the
- * ledger's KEEP list rather than drifting from it, and the three run outcomes
+ * ledger's KEEP list rather than drifting from it, and the four run outcomes
  * are held to a close rule and an input builder each — no outcome without a
  * rule, no rule without an outcome.
  */
@@ -8,6 +8,7 @@ import { describe, expect, it } from 'bun:test';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { MAP_TASK, MAP_UNCHANGED_ACTION } from '@goondocks/myco-shared/canopy';
 import { admissionForTask, EXTRACTION_TASK, MANUAL_ONLY_TASKS, OUTCOME_TASKS, RETAINED_TASKS, SEEDING_TASK, TASK_ADMISSION, TITLING_TASK, UNLANDED_TASKS } from '@myco-server-worker/core/task-catalogue.js';
 import { TASK_SCHEDULE } from '@myco-server-worker/core/jobs.js';
 import { scheduledTasks } from '@myco-server-worker/core/scheduled-tasks.js';
@@ -70,7 +71,7 @@ describe('what the clock runs', () => {
   it('makes a declared, switched-off schedule live when an owner switches it on', () => {
     const live = scheduledTasks({ 'canopy-map': { schedule: { enabled: true } } });
     expect(live.map((t) => t.task).sort()).toEqual(['canopy-map', 'container-smoke', EXTRACTION_TASK]);
-    expect(live.find((t) => t.task === 'canopy-map')!.schedule).toMatchObject({ enabled: true, intervalSeconds: 21_600, maxRunsPerDay: 4, overlap: 'skip' });
+    expect(live.find((t) => t.task === 'canopy-map')!.schedule).toMatchObject({ enabled: true, intervalSeconds: 21_600, maxRunsPerDay: 4, overlap: 'skip', preCondition: 'has-capture-since-map' });
   });
 
   it('takes a switched-off override away from a task the Deployment otherwise runs', () => {
@@ -107,7 +108,7 @@ describe('what each task owes before it closes', () => {
 });
 
 /**
- * Gate: the three run outcomes, and only the three, are the tasks a worker
+ * Gate: the four run outcomes, and only the four, are the tasks a worker
  * serves under a prompt the Deployment builds, and each one's run is held to
  * the row it owed.
  *
@@ -116,7 +117,7 @@ describe('what each task owes before it closes', () => {
  * alone; a rule for a task no builder instructs would govern runs that never
  * start. The three lists are held to one another here, by name.
  */
-describe('the three run outcomes', () => {
+describe('the four run outcomes', () => {
   it('name which of them a worker cannot drive yet, and only among themselves', () => {
     for (const task of UNLANDED_TASKS) expect({ task, outcome: OUTCOME_TASKS.includes(task) }).toEqual({ task, outcome: true });
     expect(UNLANDED_TASKS).not.toContain(SEEDING_TASK);
@@ -126,11 +127,15 @@ describe('the three run outcomes', () => {
     const workerServed = RETAINED_TASKS.filter((task) => !RUNTIME_SERVED_TASKS.includes(task)).sort();
     expect(workerServed).toEqual([...OUTCOME_TASKS].sort());
     expect(Object.keys(INPUT_BUILDERS).sort()).toEqual([...OUTCOME_TASKS].sort());
-    expect([...OUTCOME_TASKS].sort()).toEqual([EXTRACTION_TASK, SEEDING_TASK, TITLING_TASK].sort());
+    expect([...OUTCOME_TASKS].sort()).toEqual([EXTRACTION_TASK, SEEDING_TASK, TITLING_TASK, MAP_TASK].sort());
   });
 
   it('each close on a rule that names an artifact the server can see, and accept a skip only where the server reads to agree with it', () => {
-    for (const task of OUTCOME_TASKS) {
+    // The map's pass with nothing to do closes under its own action, and its
+    // artifact rule reads back that the current map reflects this run's input.
+    const map = RUN_CLOSE_RULES[MAP_TASK]!;
+    expect({ reports: map.reports.includes(MAP_UNCHANGED_ACTION), artifact: typeof map.artifact }).toEqual({ reports: true, artifact: 'function' });
+    for (const task of OUTCOME_TASKS.filter((t) => t !== MAP_TASK)) {
       const rule = RUN_CLOSE_RULES[task];
       expect({ task, artifact: typeof rule?.artifact, skip: rule?.reports.includes(RUN_SKIP_ACTION), skipHolds: typeof rule?.skipHolds })
         .toEqual({ task, artifact: 'function', skip: true, skipHolds: 'function' });
@@ -139,8 +144,8 @@ describe('the three run outcomes', () => {
     for (const [task, rule] of Object.entries(RUN_CLOSE_RULES)) {
       expect({ task, paired: rule.reports.includes(RUN_SKIP_ACTION) === (rule.skipHolds !== undefined) }).toEqual({ task, paired: true });
     }
-    // A rule with an artifact check belongs to an outcome or to the map, which is the seam's own code task.
+    // A rule with an artifact check belongs to an outcome.
     const artifactRules = Object.entries(RUN_CLOSE_RULES).filter(([, rule]) => rule.artifact !== undefined).map(([task]) => task).sort();
-    expect(artifactRules).toEqual([...OUTCOME_TASKS, 'canopy-map'].sort());
+    expect(artifactRules).toEqual([...OUTCOME_TASKS].sort());
   });
 });
