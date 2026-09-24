@@ -1,5 +1,6 @@
 import { spawn } from 'node:child_process';
-import { mkdtemp, mkdir, open, rm, writeFile } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
+import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { repositoryUrl, repositoryBranch, REPOSITORY_COMMIT_PATTERN as SHA_PATTERN, MAX_REPOSITORY_HISTORY_DEPTH } from '@goondocks/myco-shared/repository';
@@ -29,10 +30,15 @@ export interface RepositoryCheckoutRequest {
   historyDepth?: number;
 }
 
+/** One committed regular file and the SHA-256 digest of its content. */
+export interface CheckoutFileDigest { path: string; sha256: string }
+
 export interface RepositoryCheckout {
   root: string;
   commit: string;
   changedPaths?: string[];
+  /** Every committed regular file, sorted by path. */
+  digests: CheckoutFileDigest[];
   dispose: () => Promise<void>;
 }
 
@@ -141,20 +147,21 @@ export async function prepareRepositoryCheckout(request: RepositoryCheckoutReque
     await run('checkout', '--quiet', '--detach', pinned);
     const actual = (await run('rev-parse', 'HEAD')).trim();
     if (actual !== pinned) throw new Error('Repository checkout does not match its pinned commit.');
+    const digests: CheckoutFileDigest[] = [];
     for (const entry of files) {
       signal.throwIfAborted();
       if (entry.mode !== '100644' && entry.mode !== '100755') continue;
-      const file = await open(join(root, entry.path), 'r');
-      try {
-        const bytes = Buffer.alloc(LFS_POINTER_PREFIX.length);
-        await file.read(bytes, 0, bytes.length, 0);
-        if (bytes.toString('utf8') === LFS_POINTER_PREFIX) throw new Error('Repository contains Git LFS pointers; LFS source is not supported yet.');
-      } finally { await file.close(); }
+      const body = await readFile(join(root, entry.path));
+      if (body.subarray(0, LFS_POINTER_PREFIX.length).toString('utf8') === LFS_POINTER_PREFIX) {
+        throw new Error('Repository contains Git LFS pointers; LFS source is not supported yet.');
+      }
+      digests.push({ path: entry.path, sha256: createHash('sha256').update(body).digest('hex') });
     }
+    digests.sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
     await rm(askpass);
     delete env.MYCO_GIT_USERNAME;
     delete env.MYCO_GIT_TOKEN;
-    return { root, commit: pinned, changedPaths, dispose };
+    return { root, commit: pinned, changedPaths, digests, dispose };
   } catch (error) {
     await dispose();
     throw error;

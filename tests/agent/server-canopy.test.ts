@@ -49,7 +49,7 @@ it('publishes grounded maps through held routes, preserves unchanged domains, an
         }) as typeof fetch);
       const ctx = { client, budget, runId: id, agentId: 'myco' };
       return { ctx, prepare: async () => materializeRunMap(ctx, await prepareRunMap(ctx),
-        { root, commit, changedPaths, dispose: async () => {} }, new AbortController().signal, 'map-definition') };
+        { root, commit, changedPaths, digests: [], dispose: async () => {} }, new AbortController().signal, 'map-definition') };
     };
     const first = await run('first', []);
     const prepared = await first.prepare();

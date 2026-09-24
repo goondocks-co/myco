@@ -1,5 +1,6 @@
 import { afterAll, beforeAll, describe, expect, it } from 'bun:test';
 import { execFileSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { access, readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { prepareRepositoryCheckout, repositoryUrl } from '@myco/runner/repository-checkout.js';
@@ -34,6 +35,8 @@ describe('committed repository checkout', () => {
       expect(execFileSync('git', ['rev-list', '--count', 'HEAD'], { cwd: checkout.root, encoding: 'utf8' }).trim()).toBe('2');
       await expect(prepareRepositoryCheckout({ ...request(), destination, pin: async (commit) => commit })).rejects.toThrow();
       expect(await readFile(join(destination, 'AGENTS.md'), 'utf8')).toBe('Second committed rules.');
+      expect(checkout.digests).toContainEqual({ path: 'AGENTS.md', sha256: createHash('sha256').update('Second committed rules.').digest('hex') });
+      expect(checkout.digests.map((file) => file.path)).toEqual([...checkout.digests.map((file) => file.path)].sort());
     } finally { await checkout.dispose(); }
     await expect(access(destination)).rejects.toThrow();
   });

@@ -1,8 +1,14 @@
+import { writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import { REPOSITORY_COMMIT_PATTERN, RUN_REPOSITORY_DIR, type RepositoryAccess, type RepositoryCheckoutSpec } from '@goondocks/myco-shared/repository';
+import { REPOSITORY_COMMIT_PATTERN, RUN_REPOSITORY_DIGESTS_FILE, RUN_REPOSITORY_DIR, type RepositoryAccess, type RepositoryCheckoutSpec } from '@goondocks/myco-shared/repository';
 import { prepareRepositoryCheckout, CHECKOUT_TIMEOUT_MS, type RepositoryCheckout } from './repository-checkout.js';
 
-/** Prepare source with credentials held only by the checkout process. */
+/** The digest listing's text: `sha256sum` lines, one per committed regular file. */
+export function digestListing(checkout: Pick<RepositoryCheckout, 'digests'>): string {
+  return checkout.digests.map((file) => `${file.sha256}  ${file.path}\n`).join('');
+}
+
+/** Prepare source with credentials held only by the checkout process, and write its digest listing beside it. */
 export async function prepareWorkerCheckout(
   spec: RepositoryCheckoutSpec, scratchDir: string, signal: AbortSignal,
   request: (input: Record<string, unknown>, signal: AbortSignal) => Promise<Record<string, unknown>>, gitPath?: string,
@@ -16,7 +22,7 @@ export async function prepareWorkerCheckout(
     throw new Error('The repository read credential is invalid.');
   }
   checkoutSignal.throwIfAborted();
-  return prepareRepositoryCheckout({
+  const checkout = await prepareRepositoryCheckout({
     url: spec.url, branch: spec.branch, historyDepth: spec.historyDepth,
     credential: repository.credential, commit: repository.commit, signal: checkoutSignal, gitPath,
     destination: join(scratchDir, RUN_REPOSITORY_DIR),
@@ -29,4 +35,11 @@ export async function prepareWorkerCheckout(
       return pin.commit;
     },
   });
+  try {
+    await writeFile(join(scratchDir, RUN_REPOSITORY_DIGESTS_FILE), digestListing(checkout), { mode: 0o600 });
+  } catch (error) {
+    await checkout.dispose();
+    throw error;
+  }
+  return checkout;
 }
