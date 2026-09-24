@@ -1,6 +1,7 @@
 import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { createReadStream } from 'node:fs';
+import { mkdtemp, mkdir, open, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { repositoryUrl, repositoryBranch, REPOSITORY_COMMIT_PATTERN as SHA_PATTERN, MAX_REPOSITORY_HISTORY_DEPTH } from '@goondocks/myco-shared/repository';
@@ -28,6 +29,8 @@ export interface RepositoryCheckoutRequest {
   destination?: string;
   /** Git fetch depth, bounded by the source-reading policy. */
   historyDepth?: number;
+  /** Hash every committed regular file into `digests`. */
+  digests?: boolean;
 }
 
 /** One committed regular file and the SHA-256 digest of its content. */
@@ -37,9 +40,29 @@ export interface RepositoryCheckout {
   root: string;
   commit: string;
   changedPaths?: string[];
-  /** Every committed regular file, sorted by path. */
-  digests: CheckoutFileDigest[];
+  /** Every committed regular file whose path fits one listing line, sorted by path; present when the request asked for digests. */
+  digests?: CheckoutFileDigest[];
   dispose: () => Promise<void>;
+}
+
+/** A path a `sha256sum` line cannot carry: a line break would split the line. */
+const UNLISTABLE_PATH = /[\n\r]/;
+
+/**
+ * The SHA-256 digest of each named file under `root`, streamed, sorted by path.
+ * A path with a line break is left out; a file without a digest is one a map
+ * run revisits rather than one it grounds.
+ */
+export async function hashCommittedFiles(root: string, paths: readonly string[], signal: AbortSignal): Promise<CheckoutFileDigest[]> {
+  const digests: CheckoutFileDigest[] = [];
+  for (const path of paths) {
+    signal.throwIfAborted();
+    if (UNLISTABLE_PATH.test(path)) continue;
+    const hash = createHash('sha256');
+    for await (const chunk of createReadStream(join(root, path), { signal })) hash.update(chunk as Buffer);
+    digests.push({ path, sha256: hash.digest('hex') });
+  }
+  return digests.sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
 }
 
 /** One bounded Git process group; cancellation stops its transport children too. */
@@ -147,21 +170,21 @@ export async function prepareRepositoryCheckout(request: RepositoryCheckoutReque
     await run('checkout', '--quiet', '--detach', pinned);
     const actual = (await run('rev-parse', 'HEAD')).trim();
     if (actual !== pinned) throw new Error('Repository checkout does not match its pinned commit.');
-    const digests: CheckoutFileDigest[] = [];
-    for (const entry of files) {
+    const regular = files.filter((entry) => entry.mode === '100644' || entry.mode === '100755').map((entry) => entry.path);
+    for (const path of regular) {
       signal.throwIfAborted();
-      if (entry.mode !== '100644' && entry.mode !== '100755') continue;
-      const body = await readFile(join(root, entry.path));
-      if (body.subarray(0, LFS_POINTER_PREFIX.length).toString('utf8') === LFS_POINTER_PREFIX) {
-        throw new Error('Repository contains Git LFS pointers; LFS source is not supported yet.');
-      }
-      digests.push({ path: entry.path, sha256: createHash('sha256').update(body).digest('hex') });
+      const file = await open(join(root, path), 'r');
+      try {
+        const bytes = Buffer.alloc(LFS_POINTER_PREFIX.length);
+        await file.read(bytes, 0, bytes.length, 0);
+        if (bytes.toString('utf8') === LFS_POINTER_PREFIX) throw new Error('Repository contains Git LFS pointers; LFS source is not supported yet.');
+      } finally { await file.close(); }
     }
-    digests.sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
+    const digests = request.digests === true ? await hashCommittedFiles(root, regular, signal) : undefined;
     await rm(askpass);
     delete env.MYCO_GIT_USERNAME;
     delete env.MYCO_GIT_TOKEN;
-    return { root, commit: pinned, changedPaths, digests, dispose };
+    return { root, commit: pinned, changedPaths, ...(digests === undefined ? {} : { digests }), dispose };
   } catch (error) {
     await dispose();
     throw error;

@@ -110,8 +110,8 @@ export const LEAF_GROUPS: readonly LeafGroup[] = [
     label: 'Code map',
     note: 'How this server keeps its map of each project\'s code.',
     leaves: [
-      { leaf: 'cortex.canopy.refresh.background_enabled', label: 'Refresh in the background', kind: 'toggle', defaultValue: true, note: 'Requires server scheduling and the project’s Code map capability. Task schedule overrides and daily limits also apply.' },
-      { leaf: 'cortex.canopy.refresh.background_period_minutes', label: 'Refresh every', kind: 'number', min: 1, unit: 'minutes', defaultValue: 60 },
+      { leaf: 'cortex.canopy.refresh.background_enabled', label: 'Refresh in the background', kind: 'toggle', defaultValue: false, note: 'Requires server scheduling and the project’s Code map capability. Task schedule overrides and daily limits also apply.' },
+      { leaf: 'cortex.canopy.refresh.background_period_minutes', label: 'Refresh every', kind: 'number', min: 1, unit: 'minutes', defaultValue: 360 },
       { leaf: 'cortex.canopy.exclude.patterns', label: 'Exclude patterns', kind: 'patterns', defaultValue: [], note: 'Additional paths the map leaves out, beside the built-in patterns. A map run reads committed files only, so ignored files never reach it.' },
       { leaf: 'cortex.canopy.exclude.default_patterns', label: 'Built-in exclude patterns', kind: 'patterns', defaultValue: CANOPY_DEFAULT_EXCLUDE_PATTERNS, readOnly: true, note: 'Maintained by Myco. Add extra patterns above.' },
     ],

@@ -1,9 +1,12 @@
 import { afterAll, beforeAll, describe, expect, it } from 'bun:test';
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { access, readFile, writeFile } from 'node:fs/promises';
+import { access, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { prepareRepositoryCheckout, repositoryUrl } from '@myco/runner/repository-checkout.js';
+import { hashCommittedFiles, prepareRepositoryCheckout, repositoryUrl } from '@myco/runner/repository-checkout.js';
+import { prepareWorkerCheckout } from '@myco/runner/repository.js';
+import { RUN_REPOSITORY_DIGESTS_FILE } from '@goondocks/myco-shared/repository';
 
 import { gitRepositoryFixture, GIT_READ_CREDENTIAL } from '../helpers/git-repository.js';
 
@@ -29,14 +32,13 @@ const request = () => ({ url, branch: 'main', credential: { username: 'reader', 
 describe('committed repository checkout', () => {
   it('supplies bounded history and removes its owned destination without removing pre-existing paths', async () => {
     const destination = join(home, 'run-source');
-    const checkout = await prepareRepositoryCheckout({ ...request(), destination, historyDepth: 200, pin: async (commit) => commit });
+    const checkout = await prepareRepositoryCheckout({ ...request(), destination, historyDepth: 200, digests: true, pin: async (commit) => commit });
     try {
       expect(checkout.root).toBe(destination);
       expect(execFileSync('git', ['rev-list', '--count', 'HEAD'], { cwd: checkout.root, encoding: 'utf8' }).trim()).toBe('2');
       await expect(prepareRepositoryCheckout({ ...request(), destination, pin: async (commit) => commit })).rejects.toThrow();
       expect(await readFile(join(destination, 'AGENTS.md'), 'utf8')).toBe('Second committed rules.');
-      expect(checkout.digests).toContainEqual({ path: 'AGENTS.md', sha256: createHash('sha256').update('Second committed rules.').digest('hex') });
-      expect(checkout.digests.map((file) => file.path)).toEqual([...checkout.digests.map((file) => file.path)].sort());
+      expect(checkout.digests).toEqual([{ path: 'AGENTS.md', sha256: createHash('sha256').update('Second committed rules.').digest('hex') }]);
     } finally { await checkout.dispose(); }
     await expect(access(destination)).rejects.toThrow();
   });
@@ -45,6 +47,7 @@ describe('committed repository checkout', () => {
     const checkout = await prepareRepositoryCheckout({ ...request(), pin: async (resolved) => { expect(resolved).toBe(second); return first; } });
     try {
       expect(checkout.commit).toBe(first);
+      expect(checkout).not.toHaveProperty('digests');
       expect(await readFile(join(checkout.root, 'AGENTS.md'), 'utf8')).toBe('First committed rules.');
       const config = await readFile(join(checkout.root, '.git/config'), 'utf8');
       expect(config).not.toContain(token);
@@ -71,6 +74,36 @@ describe('committed repository checkout', () => {
       expect(checkout.commit).toBe(second);
       expect(checkout.changedPaths).toEqual(['AGENTS.md']);
     } finally { await checkout.dispose(); }
+  });
+
+  it('streams a digest of each named file, sorted, and leaves out a path a listing line cannot carry', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'myco-digests-'));
+    try {
+      await writeFile(join(root, 'b.ts'), 'b');
+      await writeFile(join(root, 'a.ts'), 'a');
+      await writeFile(join(root, 'split\nname.ts'), 'x');
+      await writeFile(join(root, 'carriage\rname.ts'), 'y');
+      const sha = (text: string) => createHash('sha256').update(text).digest('hex');
+      expect(await hashCommittedFiles(root, ['b.ts', 'split\nname.ts', 'a.ts', 'carriage\rname.ts'], AbortSignal.timeout(5_000)))
+        .toEqual([{ path: 'a.ts', sha256: sha('a') }, { path: 'b.ts', sha256: sha('b') }]);
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
+
+  it('writes the digest listing beside a worker checkout only when the run asks for one', async () => {
+    const answer = async (input: Record<string, unknown>) => input.commit === undefined
+      ? { repository: { url, branch: 'main', credential: { username: 'reader', token } } }
+      : { pin: { url, branch: 'main', commit: input.commit } };
+    const spec = { url, branch: 'main', historyDepth: 1 };
+    for (const digests of [true, false]) {
+      const scratch = await mkdtemp(join(tmpdir(), 'myco-worker-checkout-'));
+      try {
+        const checkout = await prepareWorkerCheckout(spec, scratch, AbortSignal.timeout(15_000), answer, { gitPath, digests });
+        try {
+          const listing = await readFile(join(scratch, RUN_REPOSITORY_DIGESTS_FILE), 'utf8').catch(() => null);
+          expect({ digests, listing }).toEqual({ digests, listing: digests ? `${createHash('sha256').update('Second committed rules.').digest('hex')}  AGENTS.md\n` : null });
+        } finally { await checkout.dispose(); }
+      } finally { await rm(scratch, { recursive: true, force: true }); }
+    }
   });
 
   it('refuses invalid credentials without exposing them', async () => {

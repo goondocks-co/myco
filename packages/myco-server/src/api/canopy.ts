@@ -14,14 +14,18 @@ export async function handleProjectMap(env: ServerEnv, ctx: OwnerContext): Promi
   return scope === null ? notFound() : ok({ map: await readCanopyMap(env.db, scope) });
 }
 
-/** Preparation, source pinning and publication share one held-map-run admission. */
+/**
+ * Preparation, source pinning and publication share one held-map-run admission,
+ * for a run the launch seam started. A run a worker leases holds none of it: its
+ * input is pinned with its commit and its map lands through `myco_run_map`.
+ */
 export async function handleRunMap(env: ServerEnv, ctx: RouteContext): Promise<Response> {
   const body = parseJsonObject(ctx.body);
   if (body === null || typeof body.runId !== 'string' || !body.runId || body.runId.length > 192) {
     return Response.json(refused(ctx, refusal('runId is required', 'parse')));
   }
   const run = await heldRun(env, ctx, body.runId, [MAP_TASK]);
-  if (run === null) return ok({ persisted: true, held: false });
+  if (run === null || run.leaseExpiresAt !== null) return ok({ persisted: true, held: false });
   const scope = { projectId: ctx.projectId };
   try {
     if (body.op === 'prepare') {

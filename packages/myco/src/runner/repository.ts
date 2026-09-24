@@ -1,17 +1,20 @@
 import { writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { REPOSITORY_COMMIT_PATTERN, RUN_REPOSITORY_DIGESTS_FILE, RUN_REPOSITORY_DIR, type RepositoryAccess, type RepositoryCheckoutSpec } from '@goondocks/myco-shared/repository';
-import { prepareRepositoryCheckout, CHECKOUT_TIMEOUT_MS, type RepositoryCheckout } from './repository-checkout.js';
+import { prepareRepositoryCheckout, CHECKOUT_TIMEOUT_MS, type CheckoutFileDigest, type RepositoryCheckout } from './repository-checkout.js';
 
-/** The digest listing's text: `sha256sum` lines, one per committed regular file. */
-export function digestListing(checkout: Pick<RepositoryCheckout, 'digests'>): string {
-  return checkout.digests.map((file) => `${file.sha256}  ${file.path}\n`).join('');
+/** The digest listing's text: `sha256sum` lines, one per listed file. */
+export function digestListing(digests: readonly CheckoutFileDigest[]): string {
+  return digests.map((file) => `${file.sha256}  ${file.path}\n`).join('');
 }
 
-/** Prepare source with credentials held only by the checkout process, and write its digest listing beside it. */
+/** What a worker checkout does beyond the source: the Git executable, and whether the run reads a digest listing. */
+export interface WorkerCheckoutOptions { gitPath?: string; digests?: boolean }
+
+/** Prepare source with credentials held only by the checkout process, and, where asked, write its digest listing beside it. */
 export async function prepareWorkerCheckout(
   spec: RepositoryCheckoutSpec, scratchDir: string, signal: AbortSignal,
-  request: (input: Record<string, unknown>, signal: AbortSignal) => Promise<Record<string, unknown>>, gitPath?: string,
+  request: (input: Record<string, unknown>, signal: AbortSignal) => Promise<Record<string, unknown>>, options: WorkerCheckoutOptions = {},
 ): Promise<RepositoryCheckout> {
   const checkoutSignal = AbortSignal.any([signal, AbortSignal.timeout(CHECKOUT_TIMEOUT_MS)]);
   const answer = await request({}, checkoutSignal);
@@ -24,7 +27,7 @@ export async function prepareWorkerCheckout(
   checkoutSignal.throwIfAborted();
   const checkout = await prepareRepositoryCheckout({
     url: spec.url, branch: spec.branch, historyDepth: spec.historyDepth,
-    credential: repository.credential, commit: repository.commit, signal: checkoutSignal, gitPath,
+    credential: repository.credential, commit: repository.commit, signal: checkoutSignal, gitPath: options.gitPath, digests: options.digests,
     destination: join(scratchDir, RUN_REPOSITORY_DIR),
     pin: async (commit) => {
       const result = await request({ url: spec.url, branch: spec.branch, commit }, checkoutSignal);
@@ -35,8 +38,9 @@ export async function prepareWorkerCheckout(
       return pin.commit;
     },
   });
+  if (checkout.digests === undefined) return checkout;
   try {
-    await writeFile(join(scratchDir, RUN_REPOSITORY_DIGESTS_FILE), digestListing(checkout), { mode: 0o600 });
+    await writeFile(join(scratchDir, RUN_REPOSITORY_DIGESTS_FILE), digestListing(checkout.digests), { mode: 0o600 });
   } catch (error) {
     await checkout.dispose();
     throw error;

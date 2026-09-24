@@ -96,14 +96,15 @@ export async function scheduleLeaves(env: ServerEnv): Promise<ScheduleLeaves> {
   };
   const overrides = parse(byLeaf.get('agent.tasks'));
   const tasks = overrides !== null && typeof overrides === 'object' && !Array.isArray(overrides) ? overrides as Record<string, unknown> : {};
-  const enabled: unknown = byLeaf.has(mapEnabled) ? JSON.parse(byLeaf.get(mapEnabled)!) : true;
-  const period: unknown = byLeaf.has(mapPeriod) ? JSON.parse(byLeaf.get(mapPeriod)!) : 60;
-  if (typeof enabled !== 'boolean' || typeof period !== 'number' || !Number.isSafeInteger(period) || period < 1) throw new Error('Canopy refresh requires a boolean and a positive whole number of minutes.');
+  // Unset, the map refresh is off and keeps the interval `TASK_SCHEDULE` declares.
+  const enabled: unknown = byLeaf.has(mapEnabled) ? JSON.parse(byLeaf.get(mapEnabled)!) : false;
+  const period: unknown = byLeaf.has(mapPeriod) ? JSON.parse(byLeaf.get(mapPeriod)!) : null;
+  if (typeof enabled !== 'boolean' || (period !== null && (typeof period !== 'number' || !Number.isSafeInteger(period) || period < 1))) throw new Error('Canopy refresh requires a boolean and a positive whole number of minutes.');
   const mapOverride = tasks[MAP_TASK];
   const mapTask = mapOverride !== null && typeof mapOverride === 'object' && !Array.isArray(mapOverride) ? mapOverride as Record<string, unknown> : {};
   const configured = scheduleOverride(MAP_TASK, tasks);
   const mapSchedule = configured !== null && typeof configured === 'object' && !Array.isArray(configured) ? configured as Record<string, unknown> : {};
-  tasks[MAP_TASK] = { ...mapTask, schedule: { intervalSeconds: period * 60, ...mapSchedule, enabled: enabled && mapSchedule.enabled !== false } };
+  tasks[MAP_TASK] = { ...mapTask, schedule: { ...(period === null ? {} : { intervalSeconds: period * 60 }), ...mapSchedule, enabled: enabled && mapSchedule.enabled !== false } };
   return {
     enabled: parse(byLeaf.get('agent.scheduled_tasks_enabled')) === true,
     coldThresholdDays: days('agent.cold_project_threshold_days', COLD_PROJECT_THRESHOLD_DAYS_DEFAULT),

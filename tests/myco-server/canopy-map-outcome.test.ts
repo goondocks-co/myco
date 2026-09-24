@@ -20,6 +20,8 @@ import { claimNextRun, dispatchTask, endLeasedRun, prepareDispatch } from '@myco
 import { projectRepositories } from '@myco-server-worker/core/repositories.js';
 import { RUN_CLOSE_ARTIFACT_ERROR } from '@myco-server-worker/core/run-postconditions.js';
 import { mapSourcePinOfRun, getRun } from '@myco-server-worker/core/runs.js';
+import { OUTCOME_TASKS, taskTools } from '@myco-server-worker/core/task-catalogue.js';
+import { runAllowlist } from '@myco-server-worker/mcp/run-surface.js';
 import { deploymentSecretStore } from '@myco-server-worker/core/secrets.js';
 import { prepareWorkerRepository } from '@myco-server-worker/core/worker-repository.js';
 import { MAP_SOURCE_UNPINNED } from '@myco-server-worker/mcp/tools/run-map.js';
@@ -158,7 +160,7 @@ describe('a map run a worker claimed', () => {
     expect(r.e.sqlite.query(`SELECT error FROM agent_runs WHERE id = ?`).get(third.id)).toEqual({ error: RUN_CLOSE_ARTIFACT_ERROR });
   });
 
-  it('is listed its map tool only on a map run, and loses the write on a dry run', async () => {
+  it('is listed its map tool on a map run, reading and writing', async () => {
     const r = await rig();
     await r.repositories.save('proj_1', { ...SOURCE, revision: null }, 'mem_worker', r.clock());
     const run = await r.claimMap();
@@ -170,9 +172,67 @@ describe('a map run a worker claimed', () => {
     expect(tools.map((t) => t.name).sort()).toEqual(['myco_run', 'myco_run_map']);
     expect(tools.find((t) => t.name === 'myco_run_map')!.inputSchema.properties.op!.enum).toEqual(['get', 'write']);
   });
+
+  it('keeps only the read on a dry run, and is off every other outcome\'s surface', () => {
+    const surface = (task: string, dryRun: boolean) =>
+      Object.fromEntries([...runAllowlist(taskTools(task), { dryRun })].map(([tool, ops]) => [tool, [...ops].sort()]));
+    expect(surface(MAP_TASK, true)).toEqual({ myco_run: ['report'], myco_run_map: ['get'] });
+    expect(surface(MAP_TASK, false)).toEqual({ myco_run: ['report'], myco_run_map: ['get', 'write'] });
+    for (const task of OUTCOME_TASKS.filter((t) => t !== MAP_TASK)) {
+      for (const dryRun of [false, true]) expect({ task, dryRun, map: 'myco_run_map' in surface(task, dryRun) }).toEqual({ task, dryRun, map: false });
+    }
+  });
+
+  it('is refused the launch seam\'s map route while a worker leases it', async () => {
+    const r = await rig();
+    await r.repositories.save('proj_1', { ...SOURCE, revision: null }, 'mem_worker', r.clock());
+    const run = await r.claimMap();
+    await r.pinCommit(run.id, COMMIT_A);
+    for (const body of [{ op: 'prepare' }, { op: 'pin', source: { inputHash: 'e'.repeat(64), priorRevision: null } }, { op: 'write', artifact: ARTIFACT }]) {
+      const res = await worker.fetch(new Request(`${ORIGIN}/runs/canopy-map`, {
+        method: 'POST', headers: memberHeaders(run.runToken, { [PROJECT_HEADER]: 'proj_1' }), body: JSON.stringify({ runId: run.id, ...body }),
+      }), r.e.env);
+      expect({ op: body.op, answer: await res.json() }).toEqual({ op: body.op, answer: { persisted: true, held: false } });
+    }
+    expect(r.e.sqlite.query(`SELECT COUNT(*) AS n FROM canopy_maps`).get()).toEqual({ n: 0 });
+    expect(mapSourcePinOfRun((await getRun(r.e.db, scope, run.id))!)?.inputHash).not.toBe('e'.repeat(64));
+  });
 });
 
 describe('when the clock maps a Project', () => {
+  it('re-arms on work captured after the last completed map run, whether it wrote a map or found it standing', async () => {
+    const r = await rig();
+    await r.repositories.save('proj_1', { ...SOURCE, revision: null }, 'mem_worker', r.clock());
+    const capture = (id: string) => {
+      r.advance(10);
+      r.e.sqlite.run(`INSERT INTO sessions (project_id, session_id, machine_id, created_by_token_id, first_received_at, last_received_at) VALUES ('proj_1', ?, 'm1', 'tok_1', ?, ?)`, [id, r.clock(), r.clock()]);
+    };
+    capture('s1');
+    expect(await capturedSinceMap(r.e.db, scope)).toBe(true);
+    const first = await r.claimMap();
+    await r.pinCommit(first.id, COMMIT_A);
+    await r.call(first.runToken, 'myco_run_map', { op: 'write', artifact: ARTIFACT });
+    await r.call(first.runToken, 'myco_run', { op: 'report', action: MAP_ACTION, summary: 'mapped' });
+    expect(await r.end(first.id)).toEqual({ ended: true, status: 'completed' });
+    expect(await capturedSinceMap(r.e.db, scope)).toBe(false);
+
+    capture('s2');
+    expect(await capturedSinceMap(r.e.db, scope)).toBe(true);
+    const second = await r.claimMap();
+    await r.pinCommit(second.id, COMMIT_A);
+    await r.call(second.runToken, 'myco_run', { op: 'report', action: MAP_UNCHANGED_ACTION, summary: 'nothing moved' });
+    expect(await r.end(second.id)).toEqual({ ended: true, status: 'completed' });
+    expect(await capturedSinceMap(r.e.db, scope)).toBe(false);
+
+    // A run that failed settles nothing.
+    capture('s3');
+    const failed = await r.claimMap();
+    await r.pinCommit(failed.id, COMMIT_B);
+    await r.call(failed.runToken, 'myco_run', { op: 'report', action: MAP_UNCHANGED_ACTION, summary: 'nothing moved' });
+    expect(await r.end(failed.id)).toEqual({ ended: true, status: 'failed' });
+    expect(await capturedSinceMap(r.e.db, scope)).toBe(true);
+  });
+
   it('waits for work captured after the current map', async () => {
     const r = await rig();
     expect(await capturedSinceMap(r.e.db, scope)).toBe(false);
