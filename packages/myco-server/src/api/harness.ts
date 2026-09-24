@@ -4,7 +4,7 @@
  * A dispatch of a worker-served task is answered by the queue: neither front
  * door runs a harness, so the ask lands a queued run whether or not a worker is
  * attached, and an operator reads the wait on the run rather than as a refusal
- * here. The three tasks that still ride the launch seam refuse without one,
+ * here. The two tasks that still ride the launch seam refuse without one,
  * which local dev and the parity harness treat as the expected answer. The
  * dispatch itself is `core/harness.ts`; this route decides only how it is asked
  * for and answered.

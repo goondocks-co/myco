@@ -26,6 +26,7 @@ import { listProjects } from '../read/sessions.js';
 import { listUnprocessedPrompts, newestUnprocessedSession } from '../read/prompts.js';
 import { emit } from '../telemetry.js';
 import { MAP_TASK } from '@goondocks/myco-shared/canopy';
+import { capturedSinceMap } from './canopy.js';
 
 const DAY_MS = 86_400_000;
 
@@ -243,6 +244,7 @@ export async function hasUnprocessedPrompts(db: RelationalStore, projectId: stri
  */
 export const PRE_CONDITIONS: Readonly<Record<string, (args: { db: RelationalStore; projectId: string; now: number }) => Promise<boolean>>> = {
   'has-unprocessed-prompts': ({ db, projectId }) => hasUnprocessedPrompts(db, projectId),
+  'has-capture-since-map': ({ db, projectId }) => capturedSinceMap(db, { projectId }),
   'has-recent-live-prompts': async ({ db, projectId, now }) => {
     const session = await newestUnprocessedSession(db, { projectId });
     return session !== null && session.liveCapture === 1 && session.endedAt >= now - DAY_MS && session.endedAt <= now;

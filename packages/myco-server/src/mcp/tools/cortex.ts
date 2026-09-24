@@ -1,6 +1,7 @@
 /**
  * `myco_cortex` over the Deployment's project intelligence: the standing
- * instructions a session starts from, and the activity of every Project.
+ * instructions a session starts from, the Project's repository map, and the
+ * activity of every Project.
  *
  * The instructions are the `instructions.template` Settings leaf, which any
  * member edits — static text the Deployment stores and serves, not an artifact
@@ -11,6 +12,7 @@
  * The notification and maintenance ops are named in the registry as not yet
  * served; nothing here answers them.
  */
+import { readCanopyMap } from '../../read/canopy.js';
 import { listProjects } from '../../read/sessions.js';
 import { instructionsTemplate } from '../../core/settings.js';
 import { failure, scopeOf, type ToolContext } from '../context.js';
@@ -36,6 +38,34 @@ export async function handleCortexInstructions(input: ToolInput, ctx: ToolContex
     project_id: scope.projectId,
     configured: template.length > 0,
   } satisfies InstructionsResult;
+}
+
+/** The answer when the Project holds no map yet. */
+export const NO_MAP_MESSAGE = 'No repository map yet. A map run writes one once the Project connects its repository.';
+
+export interface CanopyMapResult {
+  content: string;
+  project_id: string;
+  generated_at?: number;
+  revision?: string;
+  repository?: { url: string; branch: string; commit: string };
+  is_empty?: true;
+  message?: string;
+}
+
+/** The Project's repository map, rendered as markdown, with the commit it reflects. */
+export async function handleCortexCanopyMap(input: ToolInput, ctx: ToolContext): Promise<unknown> {
+  const scope = await scopeOf(ctx, input);
+  if (scope === null) return failure('Project not found');
+  const map = await readCanopyMap(ctx.env.db, scope);
+  if (map === null) return { content: '', project_id: scope.projectId, is_empty: true, message: NO_MAP_MESSAGE } satisfies CanopyMapResult;
+  return {
+    content: map.content,
+    project_id: scope.projectId,
+    generated_at: map.generatedAt,
+    revision: map.revision,
+    repository: map.repository,
+  } satisfies CanopyMapResult;
 }
 
 /** Every Project of the Deployment with its last activity; `active` when something arrived in the last seven days. */

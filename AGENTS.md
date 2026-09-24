@@ -75,7 +75,7 @@ Myco installs once at the per-user/global level for every symbiont; project-loca
 
 Three actors interact with Myco. Mixing them is the source of architectural drift.
 
-- **Myco agent** — Myco's own intelligence runs, driven on a worker: three outcomes (`extract-curate`, `vault-seed`, `title-summary`), each one prompt the Deployment builds with declared close evidence (`packages/myco-server/src/core/task-catalogue.ts`, `run-postconditions.ts`). Does work users don't do. Its tools come from the run-scoped MCP surface: a run-scoped credential whose allowlist is the task's declared tools, enforced at the MCP chokepoint — **not** the member's tool set.
+- **Myco agent** — Myco's own intelligence runs, driven on a worker: four outcomes (`extract-curate`, `vault-seed`, `title-summary`, `canopy-map`), each one prompt the Deployment builds with declared close evidence (`packages/myco-server/src/core/task-catalogue.ts`, `run-postconditions.ts`). Does work users don't do. Its tools come from the run-scoped MCP surface: a run-scoped credential whose allowlist is the task's declared tools, enforced at the MCP chokepoint — **not** the member's tool set.
 - **Symbiont** — coding agents like Claude Code, Cursor, opencode, Codex that integrate with Myco via hooks + the MCP bridge + installed skills. Symbionts **use Myco; they do not control it**.
 - **User** — the human. Uses Myco, controls Myco, reviews Myco-agent-generated data, and administers the Myco agent.
 

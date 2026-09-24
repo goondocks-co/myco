@@ -1,8 +1,10 @@
-import { CANOPY_DEFAULT_EXCLUDE_PATTERNS, MAP_TASK, parseMapArtifact, type MapSettings } from '@goondocks/myco-shared/canopy';
+import { CANOPY_DEFAULT_EXCLUDE_PATTERNS, MAP_TASK, parseMapArtifact, type MapSettings, type MapSourcePin, type StoredMap } from '@goondocks/myco-shared/canopy';
+import type { RepositoryPin } from '@goondocks/myco-shared/repository';
 import type { RelationalStore } from './adapters.js';
 import type { ReadScope } from '../read/scope.js';
 import { readCanopyMap } from '../read/canopy.js';
-import { mapSourcePinOfRun, repositoryPinOfRun, type RunRow } from './runs.js';
+import { sha256Hex } from '../hash.js';
+import { mapSourcePinOfRun, pinMapSourceForRun, repositoryPinOfRun, type RunLease, type RunRow } from './runs.js';
 import { leafValues } from './settings.js';
 import { repositoryIdentity } from './repositories.js';
 
@@ -13,6 +15,43 @@ export async function readMapSettings(db: RelationalStore): Promise<MapSettings>
   const custom: unknown = raw === undefined ? [] : JSON.parse(raw);
   if (!Array.isArray(custom) || !custom.every((pattern) => typeof pattern === 'string')) throw new Error('Canopy exclusion patterns must be an array of strings.');
   return { defaultPatterns: [...CANOPY_DEFAULT_EXCLUDE_PATTERNS], userPatterns: custom };
+}
+
+/**
+ * The hash a map's input carries: the committed source a pass reads and the
+ * exclusions it reads under. Two passes over the same commit under the same
+ * exclusions read the same input, and the second closes as unchanged.
+ */
+export async function mapInputHash(settings: MapSettings, repository: RepositoryPin): Promise<string> {
+  return sha256Hex(JSON.stringify({ settings, repository: { url: repository.url, branch: repository.branch, commit: repository.commit } }));
+}
+
+/**
+ * Pin a map run's input at the instant its commit is pinned: the hash of that
+ * commit under the Deployment's exclusions, and the map revision the run
+ * succeeds. Written once; a repeat answers the pin already held.
+ */
+export async function pinMapSourceAtCommit(db: RelationalStore, scope: ReadScope, run: RunRow, repository: RepositoryPin, lease?: RunLease): Promise<MapSourcePin | null> {
+  const current = await readCanopyMap(db, scope);
+  const inputHash = await mapInputHash(await readMapSettings(db), repository);
+  return pinMapSourceForRun(db, scope, run, { inputHash, priorRevision: current?.revision ?? null }, lease);
+}
+
+/**
+ * Whether the Project captured work after its current map's generation, or holds
+ * no map. Captured work is what moves a repository, and a clock that finds none
+ * after the map spends no pass on it.
+ */
+export async function capturedSinceMap(db: RelationalStore, scope: ReadScope): Promise<boolean> {
+  const row = await db.prepare(`SELECT 1 AS one FROM sessions
+    WHERE project_id = ? AND last_received_at > COALESCE((SELECT generated_at FROM canopy_maps WHERE project_id = ?), -1) LIMIT 1`)
+    .bind(scope.projectId, scope.projectId).first<{ one: number }>();
+  return row !== null;
+}
+
+/** Whether the current map already reflects the input this run pinned, so the run owes no new one. */
+export function mapInputUnchanged(current: StoredMap | null, source: MapSourcePin | null): boolean {
+  return current !== null && source !== null && current.inputHash === source.inputHash && current.revision === source.priorRevision;
 }
 
 /** Publish one map against the revision and committed source the held run prepared. */
