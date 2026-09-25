@@ -342,7 +342,7 @@ async function drive(options: WorkerOptions, run: ClaimedRun, heartbeatMs: numbe
         const parsed = parseWorkerUsage(reported);
         usage = Object.values(parsed).every((value) => value == null) ? null : parsed;
       }
-      if (step.value.kind === 'tool_call') options.log(`run ${run.id} called ${step.value.name}: ${step.value.status}`);
+      if (step.value.kind === 'tool_call') options.log(`run ${run.id} called ${step.value.name}: ${step.value.status}${step.value.detail === undefined ? '' : ` (${step.value.detail})`}`);
       if (step.value.kind === 'ended') options.log(`run ${run.id} ended ${step.value.stop}`);
     }
   } catch (error) {

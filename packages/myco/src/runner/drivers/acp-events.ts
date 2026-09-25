@@ -3,6 +3,7 @@ import type { RunEvent } from '../events.js';
 import { numberOf, recordOf, stringOf } from './stream.js';
 
 const TOOL_STATUS = { pending: 'started', in_progress: 'started', completed: 'ok', failed: 'error' } as const;
+type RunToolStatus = (typeof TOOL_STATUS)[keyof typeof TOOL_STATUS];
 const LAST_RESPONSE_VERSIONS = new Set(['1.18.21', '1.18.29']);
 
 function countOf(value: unknown): number | null {
@@ -19,7 +20,9 @@ function modelOf(value: Record<string, unknown>): string | null {
 
 /** One newly created ACP session and its reported accounting. */
 export class AcpEvents {
-  private readonly calls = new Map<string, { name: string; status: string | null }>();
+  private readonly calls = new Map<string, { name: string; status: RunToolStatus | null }>();
+  /** Calls this client refused, whose failure is final. */
+  private readonly refusals = new Set<string>();
   private model: string | null;
   private estimatedCostUsd: number | null = null;
 
@@ -40,12 +43,8 @@ export class AcpEvents {
     } else if (type === 'tool_call' || type === 'tool_call_update') {
       const id = stringOf(update.toolCallId);
       if (id === null) return;
-      const previous = this.calls.get(id);
-      const name = stringOf(update.title) ?? previous?.name ?? 'tool';
       const raw = stringOf(update.status);
-      const status = raw !== null && Object.hasOwn(TOOL_STATUS, raw) ? TOOL_STATUS[raw as keyof typeof TOOL_STATUS] : null;
-      this.calls.set(id, { name, status: status ?? previous?.status ?? null });
-      if (status !== null && status !== previous?.status) yield { kind: 'tool_call', name, status };
+      yield* this.call(id, stringOf(update.title), raw !== null && Object.hasOwn(TOOL_STATUS, raw) ? TOOL_STATUS[raw as keyof typeof TOOL_STATUS] : null);
     } else if (type === 'config_option_update') {
       this.model = modelOf(update) ?? this.model;
     } else if (type === 'current_model_update') {
@@ -55,6 +54,31 @@ export class AcpEvents {
       const amount = numberOf(cost?.amount);
       if (cost?.currency === 'USD' && amount !== null && amount > 0) this.estimatedCostUsd = amount;
     }
+  }
+
+  /**
+   * A call this client refused the agent, as that call's failure. The refusal
+   * is the call's outcome: whatever the agent reports about the call afterwards,
+   * failed or completed, changes nothing.
+   */
+  *refused(toolCall: Record<string, unknown>, detail: string): Iterable<RunEvent> {
+    const id = stringOf(toolCall.toolCallId);
+    const name = stringOf(toolCall.title) ?? (id === null ? undefined : this.calls.get(id)?.name) ?? 'tool';
+    if (id !== null) {
+      if (this.refusals.has(id)) return;
+      this.refusals.add(id);
+      this.calls.set(id, { name, status: 'error' });
+    }
+    yield { kind: 'tool_call', name, status: 'error', detail };
+  }
+
+  /** A call's status, reported when it changes, and never after the call was refused. */
+  private *call(id: string, title: string | null, status: RunToolStatus | null): Iterable<RunEvent> {
+    if (this.refusals.has(id)) return;
+    const previous = this.calls.get(id);
+    const name = title ?? previous?.name ?? 'tool';
+    this.calls.set(id, { name, status: status ?? previous?.status ?? null });
+    if (status !== null && status !== previous?.status) yield { kind: 'tool_call', name, status };
   }
 
   usage(result: Record<string, unknown>): WorkerUsage {
