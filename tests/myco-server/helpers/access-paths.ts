@@ -21,6 +21,7 @@ export const DEPLOYMENT_ACCESS_PATH_INDEXES: ReadonlyMap<string, string> = new M
   ['idx_object_releases_created', 'the object-release drain deletes journaled objects across the Deployment, oldest first'],
   ['idx_recovery_holds_open', 'at most one recovery hold was open in a Deployment, before step 43 gave a hold its holder'],
   ['idx_recovery_holds_open_holder', "at most one recovery hold of each holder is open in a Deployment: its own export producer's, and an operator backup's"],
+  ['idx_sessions_untitled_ended', 'the titling convergence takes ended, untitled sessions across the Deployment, newest end first'],
   ['idx_worker_contacts_seen', 'the worker-contact sweep forgets Deployment-wide observations by age, and a worker names no Project'],
 ]);
 

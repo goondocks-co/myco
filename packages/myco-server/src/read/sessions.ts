@@ -489,20 +489,32 @@ export async function latestPromptId(db: RelationalStore, scope: ReadScope, sess
   return row?.prompt_id ?? null;
 }
 
-/** Claims an ended session's first automatic attempt, or a retry of one that ended untitled with its stamp before `retryBefore`. */
-export async function claimTitling(db: RelationalStore, projectId: string, sessionId: string, nowMs: number, retryBefore: number): Promise<boolean> {
+/** The session's titling stamp as it stands, or null when the project holds no such session. */
+const titlingStamp = (db: RelationalStore, projectId: string, sessionId: string) =>
+  db.prepare(`SELECT titled_at FROM sessions WHERE project_id = ? AND session_id = ?`).bind(projectId, sessionId).first<{ titled_at: number | null }>();
+
+/**
+ * Claims an ended session's first automatic attempt or, given `retryBefore`, a
+ * retry of one that ended untitled with its stamp before that instant; null
+ * admits a first attempt only. Answers the stamp it replaced, so an attempt that
+ * never launches can put exactly that back.
+ */
+export async function claimTitling(db: RelationalStore, projectId: string, sessionId: string, nowMs: number, retryBefore: number | null): Promise<{ claimed: boolean; previous: number | null }> {
+  const row = await titlingStamp(db, projectId, sessionId);
+  if (row === null) return { claimed: false, previous: null };
+  const previous = row.titled_at ?? null;
   const result = await db
-    .prepare(`UPDATE sessions SET titled_at = ? WHERE project_id = ? AND session_id = ? AND ended_at IS NOT NULL AND ${titlingClaimAvailableSql('sessions')} AND ${sessionMaterialReadySql('sessions')}`)
-    .bind(nowMs, projectId, sessionId, retryBefore)
+    .prepare(`UPDATE sessions SET titled_at = ? WHERE project_id = ? AND session_id = ? AND titled_at IS ? AND ended_at IS NOT NULL AND ${titlingClaimAvailableSql('sessions')} AND ${sessionMaterialReadySql('sessions')}`)
+    .bind(nowMs, projectId, sessionId, previous, retryBefore)
     .run();
-  return result.meta.changes === 1;
+  return { claimed: result.meta.changes === 1, previous };
 }
 
 /**
  * Claims a titling attempt an owner asked for: any session, ended or not, titled or not. Refused while an attempt begun within `inFlightMs` may still be running, so two asks make one run. Stamps `titled_at`, and answers the stamp it replaced so an attempt that never launches can put it back.
  */
 export async function claimOwnerTitling(db: RelationalStore, projectId: string, sessionId: string, nowMs: number, inFlightMs: number): Promise<{ claimed: boolean; previous: number | null }> {
-  const row = await db.prepare(`SELECT titled_at FROM sessions WHERE project_id = ? AND session_id = ?`).bind(projectId, sessionId).first<{ titled_at: number | null }>();
+  const row = await titlingStamp(db, projectId, sessionId);
   if (row === null) return { claimed: false, previous: null };
   const result = await db
     .prepare(`UPDATE sessions SET titled_at = ? WHERE project_id = ? AND session_id = ? AND (titled_at IS NULL OR titled_at < ?) AND ${sessionMaterialReadySql('sessions')}`)

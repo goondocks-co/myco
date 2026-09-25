@@ -128,12 +128,13 @@ const REFUSAL_OUTCOME: Readonly<Record<DispatchRefusal, TitlingOutcome>> = {
 };
 
 /**
- * Titles one session: at its end (`claim`, the default) or on an owner's ask
- * (`owner`). Decides in this order, and writes nothing before the claim:
+ * Titles one session: at its end (`claim`, the default; a first attempt unless
+ * `retry` admits one that ended untitled) or on an owner's ask (`owner`).
+ * Decides in this order, and writes nothing before the claim:
  * a bound runtime, a provider and its credential, material to read, the claim,
  * the launch. Resolves with the outcome it emitted; never rejects.
  */
-export async function titleSession(env: ServerEnv, target: TitlingTarget, opts: { mode?: TitlingMode; by?: string; actor?: string; ceiling?: ActorCeiling } = {}): Promise<TitlingResult> {
+export async function titleSession(env: ServerEnv, target: TitlingTarget, opts: { mode?: TitlingMode; by?: string; actor?: string; ceiling?: ActorCeiling; retry?: boolean } = {}): Promise<TitlingResult> {
   const { projectId, sessionId, now } = target;
   const mode = opts.mode ?? 'claim';
   const skipped = (outcome: TitlingOutcome): TitlingResult => { emit({ kind: 'session_title_skipped', projectId, sessionId, outcome, mode }); return { outcome }; };
@@ -149,7 +150,7 @@ export async function titleSession(env: ServerEnv, target: TitlingTarget, opts: 
     // The claim is the last thing before the launch, so a refusal decided above costs nothing.
     const claim = mode === 'owner'
       ? await claimOwnerTitling(env.db, projectId, sessionId, now, OWNER_TITLING_WINDOW_MS)
-      : { claimed: await claimTitling(env.db, projectId, sessionId, now, now - OWNER_TITLING_WINDOW_MS), previous: null };
+      : await claimTitling(env.db, projectId, sessionId, now, opts.retry === true ? now - OWNER_TITLING_WINDOW_MS : null);
     if (!claim.claimed) {
       await assertSessionMaterialReady(env.db, projectId, sessionId);
       return skipped('already');
@@ -239,8 +240,8 @@ export async function titlingBackfillPolicy(env: ServerEnv): Promise<TitlingBack
 }
 
 /**
- * Converges every ended session on a title: newest first, a bounded page per
- * wake, in the block's states, inside its interval and daily ceiling, and under
+ * Converges every ended session on a title while scheduled intelligence is on:
+ * newest first, a bounded page per wake, in the block's states, inside its interval and daily ceiling, and under
  * its overlap rule. A session its own capture owes a title — an end request
  * whose attempt ended untitled, or a live session that ended without one — is
  * always a candidate; a wholly imported session is one only while the block is
@@ -256,7 +257,7 @@ export async function titlingBackfillPolicy(env: ServerEnv): Promise<TitlingBack
  */
 export async function backfillTitles(env: ServerEnv, now: number, state: PowerState): Promise<number> {
   const policy = await titlingBackfillPolicy(env);
-  if (!(policy.runIn as readonly string[]).includes(state)) return 0;
+  if (!policy.scheduledTasksEnabled || !(policy.runIn as readonly string[]).includes(state)) return 0;
   const last = await deploymentLastTaskEntryAt(env.db, TITLING_TASK, TITLING_BACKFILL_ACTOR);
   if (last !== null && now - last < policy.intervalSeconds * 1000) return 0;
   const since = now - DAY_MS;
@@ -277,7 +278,7 @@ export async function backfillTitles(env: ServerEnv, now: number, state: PowerSt
   if (env.origin === undefined) throw new Error('The titling backfill requires the Deployment origin to be configured.');
   let dispatched = 0;
   for (const target of candidates) {
-    const result = await titleSession(env, { ...target, now, origin: env.origin }, { mode: 'claim', actor: TITLING_BACKFILL_ACTOR, ...(ceiling === undefined ? {} : { ceiling }) });
+    const result = await titleSession(env, { ...target, now, origin: env.origin }, { mode: 'claim', actor: TITLING_BACKFILL_ACTOR, retry: true, ...(ceiling === undefined ? {} : { ceiling }) });
     if (result.outcome === 'dispatched' || result.outcome === 'queued') dispatched += 1;
     if (result.outcome === 'ceiling') {
       emit({ kind: 'titling_backfill_at_ceiling', runsPerDay: policy.runsPerDay, used: policy.runsPerDay });

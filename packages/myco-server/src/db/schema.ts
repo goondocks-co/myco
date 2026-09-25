@@ -1,5 +1,6 @@
 import { blobObjectKeySql } from '../core/blob-objects.js';
 import { MEMBER_TOKEN_BYTE_QUOTA } from '../constants.js';
+import { TITLING_TASK } from '../core/task-catalogue.js';
 import { MEMBER_TOKEN_TTL_MS } from '../auth/tokens.js';
 import { V19_STATEMENTS } from './schema-v19.js';
 import { embeddingSourcesView, SOURCES_WITH_PRESENTED_SESSION_DATE, V20_STATEMENTS } from './schema-v20.js';
@@ -1562,20 +1563,28 @@ const V46_STATEMENTS: readonly string[] = [
 ];
 
 /**
- * Schema v47: how many automatic titling attempts a worker took on a session.
+ * Schema v47: how many automatic titling attempts workers took on a session.
  *
- * The count moves when a worker claims a `claim`-mode `title-summary` run, so a
- * run no worker ever took costs its session nothing. The titling claim refuses
- * a session at `TITLING_MAX_ATTEMPTS`; an owner's ask is neither counted nor
- * bounded.
+ * An attempt is one logical `claim`-mode `title-summary` run, counted at its
+ * first worker claim. `agent_runs.attempt_counted` marks the run once counted,
+ * so a lease that lapses and is claimed again adds nothing, and a successor
+ * the platform ran in place of a counted run carries the mark without adding
+ * to the count. The titling claim refuses a session at `TITLING_MAX_ATTEMPTS`;
+ * an owner's ask is neither counted nor bounded. `idx_sessions_untitled_ended`
+ * is the titling convergence's ordered path over the ended, untitled sessions.
  */
 const V47_STATEMENTS: readonly string[] = [
   `ALTER TABLE sessions ADD COLUMN titling_attempts INTEGER NOT NULL DEFAULT 0`,
+  `ALTER TABLE agent_runs ADD COLUMN attempt_counted INTEGER`,
   `CREATE TRIGGER IF NOT EXISTS agent_runs_title_attempt AFTER UPDATE OF status ON agent_runs
-     WHEN old.status = 'queued' AND new.status = 'running' AND new.task = 'title-summary'
+     WHEN old.status = 'queued' AND new.status = 'running' AND new.attempt_counted IS NULL AND new.task = '${TITLING_TASK}'
        AND json_valid(new.run_context) AND json_extract(new.run_context, '$.mode') = 'claim' BEGIN
     UPDATE sessions SET titling_attempts = titling_attempts + 1
-     WHERE project_id = new.project_id AND session_id = json_extract(new.run_context, '$.session_id'); END`,
+     WHERE project_id = new.project_id AND session_id = json_extract(new.run_context, '$.session_id')
+       AND NOT EXISTS (SELECT 1 FROM agent_runs p WHERE p.project_id = new.project_id
+         AND p.id = json_extract(new.run_context, '$.replaces') AND p.attempt_counted = 1);
+    UPDATE agent_runs SET attempt_counted = 1 WHERE project_id = new.project_id AND id = new.id; END`,
+  `CREATE INDEX IF NOT EXISTS idx_sessions_untitled_ended ON sessions (ended_at) WHERE ended_at IS NOT NULL AND title IS NULL`,
 ];
 
 /** Ordered schema steps; each step's last statement stamps its version. A database at version n receives steps n+1 and later. Step 2 opens with two guard tables, ahead of every ADD COLUMN so a repaired database re-applies the step whole: one CHECK fails when an existing project id is out of grammar, the other when a session has no machine identity and the token that minted it has none to backfill from. The step aborts on the guard's insert and the applier records nothing. Identity binding reads `machine_id`, so a session that kept a NULL refuses every later write to itself; BREAK-GLASS.md carries the repair. */

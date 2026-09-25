@@ -9,13 +9,13 @@ import { describe, expect, it } from 'bun:test';
 import { serverEnvFromBindings } from '@myco-server-worker/platform/cloudflare/env.js';
 import type { PreparedStatement, RelationalStore, ServerEnv } from '@myco-server-worker/core/adapters.js';
 import {
-  backfillTitles, titleSession, titlingBackfillPolicy, titlingBackfillProgress, TITLING_BACKFILL_ACTOR, TITLING_BACKFILL_BATCH, TITLING_TASK,
+  backfillTitles, titleReadySessions, titleSession, titlingBackfillPolicy, titlingBackfillProgress, TITLING_BACKFILL_ACTOR, TITLING_BACKFILL_BATCH, TITLING_TASK,
 } from '@myco-server-worker/core/titling.js';
 import { TITLING_BACKFILL_SCHEDULE, SERVER_JOBS } from '@myco-server-worker/core/jobs.js';
 import { runTick } from '@myco-server-worker/core/tick.js';
 import worker from '@myco-server-worker/index.js';
 import { OWNER_ENV, ownerCookie } from './helpers/owner.js';
-import { listConvergenceTitleSessions } from '@myco-server-worker/read/children.js';
+import { listConvergenceTitleSessions, untitledReason } from '@myco-server-worker/read/children.js';
 import { count, sqliteEnv, withHarness } from './helpers/fixtures.js';
 
 const NOW = 1_800_000_000_000;
@@ -112,6 +112,10 @@ describe('the imported-session backfill', () => {
     r.session('fresh-request', { imported: false, endedAt: NOW - 6000 });
     r.sqlite.run(`UPDATE sessions SET titling_requested_at = ? WHERE session_id = 'fresh-request'`, [NOW - 6000]);
 
+    // Scheduled intelligence off stops the whole convergence.
+    expect(await backfillTitles(r.env, NOW, 'idle')).toBe(0);
+    expect(r.runs()).toEqual([]);
+    r.setting('agent.scheduled_tasks_enabled', true);
     expect((await titlingBackfillProgress(r.env, NOW)).enabled).toBe(false);
     expect(await backfillTitles(r.env, NOW, 'idle')).toBe(4);
     expect(r.runs().map((run) => run.sessionId).sort()).toEqual(['live', 'mixed', 'no-transcript', 'requested']);
@@ -123,6 +127,7 @@ describe('the imported-session backfill', () => {
 
   it('counts an attempt only when a worker claims the run: a queued run that expires unclaimed is re-queued, and a session workers took the bound on is left', async () => {
     const r = rig();
+    r.setting('agent.scheduled_tasks_enabled', true);
     r.setting('agent.tasks', { [TITLING_TASK]: { schedule: { intervalSeconds: 0 } } });
     r.session('s', { imported: false });
     const attempts = () => (r.sqlite.query(`SELECT titling_attempts AS n FROM sessions WHERE session_id = 's'`).get() as { n: number }).n;
@@ -132,16 +137,29 @@ describe('the imported-session backfill', () => {
     expect(attempts()).toBe(0);
     expect(r.runs().map((run) => run.status)).toContain('queued');
     expect(r.runs().filter((run) => run.status === 'failed').length).toBe(1);
-    // Each worker claim counts; an owner-mode claim does not.
-    const claim = (mode: string) => {
+    // Each logical run a worker claims counts once; a lease that lapses and is claimed again, a successor of a
+    // counted run, and an owner-mode claim add nothing.
+    const claim = (mode: string, opts: { lapses?: number; replaces?: string } = {}) => {
       const id = `run_${mode}_${Math.random()}`;
-      r.sqlite.run(`INSERT INTO agent_runs (id, project_id, agent_id, task, status, queued_at, run_context) SELECT ?, project_id, agent_id, task, 'queued', ?, ? FROM agent_runs LIMIT 1`, [id, NOW, JSON.stringify({ session_id: 's', mode })]);
-      r.sqlite.run(`UPDATE agent_runs SET status = 'running', started_at = ? WHERE id = ?`, [NOW, id]);
+      const context = { session_id: 's', mode, ...(opts.replaces === undefined ? {} : { replaces: opts.replaces }) };
+      r.sqlite.run(`INSERT INTO agent_runs (id, project_id, agent_id, task, status, queued_at, run_context) SELECT ?, project_id, agent_id, task, 'queued', ?, ? FROM agent_runs LIMIT 1`, [id, NOW, JSON.stringify(context)]);
+      for (let i = 0; i <= (opts.lapses ?? 0); i += 1) {
+        r.sqlite.run(`UPDATE agent_runs SET status = 'running', started_at = ? WHERE id = ?`, [NOW, id]);
+        if (i < (opts.lapses ?? 0)) r.sqlite.run(`UPDATE agent_runs SET status = 'queued', started_at = NULL WHERE id = ?`, [id]);
+      }
       r.sqlite.run(`UPDATE agent_runs SET status = 'failed', completed_at = ? WHERE id = ?`, [NOW, id]);
+      return id;
     };
     claim('owner');
     expect(attempts()).toBe(0);
-    for (let i = 0; i < 3; i += 1) claim('claim');
+    const lapsed = claim('claim', { lapses: 3 });
+    expect(attempts()).toBe(1);
+    const successor = claim('claim', { replaces: lapsed });
+    expect(attempts()).toBe(1);
+    claim('claim', { replaces: successor });
+    expect(attempts()).toBe(1);
+    claim('claim');
+    claim('claim');
     expect(attempts()).toBe(3);
     r.sqlite.run(`UPDATE agent_runs SET status = 'failed' WHERE status = 'queued'`);
     expect(await backfillTitles(r.env, NOW + 3 * DAY, 'idle')).toBe(0);
@@ -202,6 +220,67 @@ describe('the imported-session backfill', () => {
     expect(r.runs().map((run) => run.sessionId).sort()).toEqual(['a', 'b']);
     expect(tables()).toEqual(before);
     expect(count(r.sqlite, 'agent_runs')).toBe(2);
+  });
+
+  it('keeps a retry the ceiling refused as the retry it was, so the end-request job never takes it outside the ceiling', async () => {
+    const r = rig();
+    r.setting('agent.scheduled_tasks_enabled', true);
+    r.setting('agent.tasks', { [TITLING_TASK]: { schedule: { intervalSeconds: 0, maxRunsPerDay: 1 } } });
+    for (const [id, endedAt] of [['a', NOW - 1000], ['b', NOW - 2000]] as const) {
+      r.session(id, { imported: false, endedAt });
+      r.sqlite.run(`UPDATE sessions SET titling_requested_at = ?, titled_at = ? WHERE session_id = ?`, [endedAt, NOW - DAY, id]);
+    }
+    expect(await backfillTitles(r.env, NOW, 'idle')).toBe(1);
+    // A session's own end, like the end-request job, makes a first attempt only.
+    expect((await titleSession(r.env, { projectId: 'proj_1', sessionId: 'b', now: NOW, origin: ORIGIN })).outcome).toBe('already');
+    // A wake that sized its page before another filled the ceiling: the run write refuses the retry.
+    const refused = await titleSession(r.env, { projectId: 'proj_1', sessionId: 'b', now: NOW, origin: ORIGIN },
+      { mode: 'claim', actor: TITLING_BACKFILL_ACTOR, retry: true, ceiling: { actor: TITLING_BACKFILL_ACTOR, task: TITLING_TASK, perDay: 1, sinceMs: NOW - DAY } });
+    expect(refused.outcome).toBe('ceiling');
+    expect(r.titledAt('b')).toBe(NOW - DAY);
+    expect(await titleReadySessions(r.env, NOW + 1)).toBe(0);
+    expect(r.runs().map((run) => [run.sessionId, run.actor])).toEqual([['a', TITLING_BACKFILL_ACTOR]]);
+  });
+
+  it('reads the ended, untitled sessions through their own partial index', () => {
+    const r = rig();
+    const plan = (sql: string, binds: unknown[]) => (r.sqlite.query(`EXPLAIN QUERY PLAN ${sql}`).all(...(binds as never[])) as { detail: string }[]).map((row) => row.detail);
+    let captured = '';
+    const store = { prepare: (sql: string) => { captured = sql; return { bind: () => ({ all: async () => ({ results: [] }), first: async () => null }) }; } } as unknown as RelationalStore;
+    void listConvergenceTitleSessions(store, 5, NOW, true);
+    expect(plan(captured, [NOW, 1, 5])[0]).toContain('USING INDEX idx_sessions_untitled_ended');
+  });
+
+  it('names why each ended session is untitled, and nothing for a titled or open one', async () => {
+    const r = rig();
+    const reason = (id: string) => untitledReason(r.env.db, 'proj_1', id);
+    r.session('capture', { parsed: false, material: false });
+    r.session('silent', { material: false, imported: false });
+    r.session('imported');
+    r.session('waiting', { imported: false });
+    r.session('requested-import');
+    r.sqlite.run(`UPDATE sessions SET titling_requested_at = ended_at WHERE session_id = 'requested-import'`);
+    r.session('flight', { imported: false });
+    r.session('stopped', { imported: false });
+    r.sqlite.run(`UPDATE sessions SET titling_attempts = 3 WHERE session_id = 'stopped'`);
+    r.session('stopped-in-flight', { imported: false });
+    r.sqlite.run(`UPDATE sessions SET titling_attempts = 3 WHERE session_id = 'stopped-in-flight'`);
+    r.on();
+    for (const id of ['flight', 'stopped-in-flight']) {
+      r.sqlite.run(`UPDATE sessions SET titling_attempts = 0 WHERE session_id = ?`, [id]);
+      await titleSession(r.env, { projectId: 'proj_1', sessionId: id, now: NOW, origin: ORIGIN });
+    }
+    r.sqlite.run(`UPDATE sessions SET titling_attempts = 3 WHERE session_id = 'stopped-in-flight'`);
+    r.session('titled', { title: 'Named', imported: false });
+    r.session('open', { imported: false });
+    r.sqlite.run(`UPDATE sessions SET ended_at = NULL WHERE session_id = 'open'`);
+    const expected: Record<string, string | null> = {
+      capture: 'capture_pending', silent: 'no_material', imported: 'imported', waiting: 'waiting', 'requested-import': 'waiting',
+      flight: 'in_progress', 'stopped-in-flight': 'in_progress', stopped: 'stopped', titled: null, open: null, absent: null,
+    };
+    const answered: Record<string, string | null> = {};
+    for (const id of Object.keys(expected)) answered[id] = await reason(id);
+    expect(answered).toEqual(expected);
   });
 
   /**

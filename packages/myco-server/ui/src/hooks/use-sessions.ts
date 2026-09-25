@@ -49,7 +49,7 @@ export const UNTITLED_REASON_TEXT: Record<UntitledReason, string> = {
   in_progress: 'Untitled: a title is being written',
   stopped: 'Untitled: automatic titling stopped trying. Use Generate summary to try again',
   imported: 'Untitled: imported sessions are titled by the backfill on Operations while it is on',
-  waiting: 'Untitled: a title will be tried automatically when a worker is free',
+  waiting: 'Untitled: will be tried automatically soon',
 };
 
 export interface SessionResponse {
