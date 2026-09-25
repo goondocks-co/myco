@@ -500,6 +500,8 @@ export async function checkProject(
     lookups = reads.lookupsUsed();
     if (outcome === null) superseded = true;
     else ({ failure, fingerprint } = outcome);
+    // What the check ran with, not the setting read later: a token lifts GitHub's per-address limit.
+    if (!token && failure === 'rate_limited') failure += '_without_credential';
   }
 
   const status: ReleaseCheckStatus = failure === null

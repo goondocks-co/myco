@@ -41,6 +41,8 @@ export async function handleStatus(env: ServerEnv, ctx: OwnerContext): Promise<R
   // target: a store that is missing, misconfigured, or unreachable all read as unusable
   // here rather than only the one shape a single platform happens to produce.
   const capabilities = deploymentCapabilities(env);
+  // Which target this is, as it names itself: a surface whose advice differs by target reads it here.
+  const target = env.platform?.name ?? null;
   // `available: false` is the one field a surface reads before the numbers. A
   // store this handler could not question answers zero busy and zero queued,
   // and zero here means "not known", never "none attached".
@@ -55,10 +57,11 @@ export async function handleStatus(env: ServerEnv, ctx: OwnerContext): Promise<R
     workers = { available: true, ...counts, recentWithinMs: CONTACT_RECENT_MS, fleet: await readWorkerFleet(env.db, ctx.now) };
     projects = await listVisibleProjects(env.db, ctx.member, { includeArchived: true });
   } catch {
-    return ok({ schema: { expected: SERVER_SCHEMA_VERSION, found: null, matches: false }, capabilities, workers, projects: [] });
+    return ok({ schema: { expected: SERVER_SCHEMA_VERSION, found: null, matches: false }, target, capabilities, workers, projects: [] });
   }
   return ok({
     schema: { expected: SERVER_SCHEMA_VERSION, found, matches: found === SERVER_SCHEMA_VERSION },
+    target,
     capabilities,
     // What a capability list cannot answer: whether the queue is moving, and
     // which workers are attached. A capability is this server's own runtime
