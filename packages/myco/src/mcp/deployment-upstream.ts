@@ -39,7 +39,11 @@ export function resolveDeploymentUpstream(
   opts: CredentialOptions = {},
 ): DeploymentUpstream | null {
   const record = resolveCredential(source, opts);
-  if (record === null) return null;
+  return record === null ? null : upstreamOf(record, source);
+}
+
+/** The Deployment upstream a resolved credential record names. */
+export function upstreamOf(record: CredentialRecord, source: CredentialSource): DeploymentUpstream {
   const base = record.serverUrl.replace(/\/+$/, '');
   return {
     mcpUrl: new URL(`${base}${MCP_PATH}`),

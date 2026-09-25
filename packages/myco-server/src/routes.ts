@@ -18,7 +18,7 @@ import { handleMaintenanceStatus, handleRunMaintenance } from './api/maintenance
 import { handleSetTitlingBackfill, handleTitlingBackfill } from './api/titling-backfill.js';
 import {
   handleDeleteSecret, handleProjectCapabilities, handleSecrets, handleSetProjectCapability,
-  handleSetSecret, handleSetSetting, handleSettings,
+  handleMemberSettings, handleSetSecret, handleSetSetting, handleSettings,
 } from './api/settings.js';
 import {
   handleBackupArtifact, handleCreateBackup, handleListBackups, handlePinBackup,
@@ -91,7 +91,7 @@ export type Route =
   | { method: string; path: string; auth: 'public'; bodyMode: 'none'; handler: PublicHandler }
   | ({ method: string; path: string; auth: 'member'; bodyMode: 'json'; shape: Exclude<Shape, 'stored'>; quotaPrecheck?: boolean; handler: MemberHandler; grant?: GrantHandler; run?: RunHandler; legacyRunRoute?: true }
     & ({ unbound?: never } | { shape: 'answered'; quotaPrecheck: false; unbound: UnboundMemberHandler }))
-  | { method: string; path: string; auth: 'member'; bodyMode: 'json'; shape: 'refreshed'; quotaPrecheck: false; scope: 'credential'; admitsLapsed?: true; credential: CredentialHandler; handler?: never; grant?: never; run?: never; legacyRunRoute?: never }
+  | { method: string; path: string; auth: 'member'; bodyMode: 'json'; shape: 'refreshed' | 'persisted'; quotaPrecheck: false; scope: 'credential'; admitsLapsed?: true; credential: CredentialHandler; handler?: never; grant?: never; run?: never; legacyRunRoute?: never }
   | { method: string; path: string; auth: 'member'; bodyMode: 'json'; shape: 'persisted'; quotaPrecheck: false; scope: 'deployment'; deployment: DeploymentHandler; handler?: never; grant?: never; run?: never; legacyRunRoute?: never }
   | { method: string; path: string; pattern: RegExp; auth: 'member'; bodyMode: 'stream'; shape: 'stored'; quotaPrecheck?: boolean; maxBodyBytes: number; handler: StreamHandler; legacyRunRoute?: true }
   | { method: string; path: string; auth: 'auth'; handler: AuthHandler }
@@ -163,6 +163,8 @@ export const ROUTES: readonly Route[] = [
   { method: 'POST', path: '/mcp', auth: 'member', bodyMode: 'json', shape: 'answered', quotaPrecheck: false, handler: handleMcp, grant: handleGrantMcp, run: handleRunMcp, unbound: handleUnboundMcp },
   { method: 'POST', path: '/members/join', auth: 'enroll', handler: handleJoin },
   { method: 'POST', path: '/members/link-github', auth: 'member', bodyMode: 'json', shape: 'persisted', quotaPrecheck: false, handler: handleLinkGithub },
+  // Deployment Settings as a member's CLI reads them: Deployment-wide, so no Project is read or created; writes stay on the dashboard's owner routes.
+  { method: 'POST', path: '/members/settings', auth: 'member', bodyMode: 'json', shape: 'persisted', quotaPrecheck: false, scope: 'credential', credential: handleMemberSettings },
   { method: 'GET', path: '/auth/me', auth: 'owner', membership: 'optional', handler: handleMe },
   { method: 'POST', path: '/auth/link', auth: 'owner', membership: 'optional', handler: handleLink },
   { method: 'GET', path: '/api/status', auth: 'owner', handler: handleStatus },

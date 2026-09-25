@@ -2,7 +2,7 @@
 import { isHelpRequest, loadEnv } from './cli/shared.js';
 import { resolveVaultDir } from './vault/resolve.js';
 import { runLaunchPreamble } from './cli/launch-preamble.js';
-import { isMemberReadVerb } from './cli/member-read-verbs.js';
+import { isMemberVerb } from './cli/member-verbs.js';
 import fs from 'node:fs';
 import path from 'node:path';
 
@@ -139,7 +139,7 @@ async function helpForCommand(command: string, args: readonly string[] = []): Pr
 async function main(): Promise<void> {
   const [cmd, ...args] = process.argv.slice(2);
   if (!cmd || cmd === '--help' || cmd === '-h') {
-    process.stdout.write(USAGE);
+    process.stdout.write((await import('./cli/member-dispatch.js')).helpText(USAGE));
     return;
   }
   if (isHelpRequest(args)) {
@@ -290,16 +290,16 @@ async function main(): Promise<void> {
   // The sandbox settings emitter reads no vault and writes nothing.
   if (cmd === 'settings') return (await import('./cli/settings.js')).run(args);
 
-  // A retained read verb in a joined project — or one that declares a
-  // credential source — is answered by the Deployment and reads no project
+  // A retained verb in a joined project — or one that declares a credential
+  // source — runs as a 2.0 member: its reads are the Deployment's and its
+  // doctor, logs and config are the member's own, and none reads a project
   // vault, so it sits above the myco.yaml gate. A root with no membership
-  // falls through to the verb's local handler below.
-  if (isMemberReadVerb(cmd)) {
-    const memberReads = await import('./cli/member-reads.js');
-    const source = memberReads.memberReadSource(args);
-    if (source !== null) {
+  // falls through to the verb's 1.4 handler below.
+  if (isMemberVerb(cmd)) {
+    const answered = await (await import('./cli/member-dispatch.js')).runMemberVerb(cmd, args);
+    if (answered !== null) {
       // The verb reports its outcome; the exit status is the dispatcher's to set.
-      if (!await memberReads.run(cmd, args, source)) process.exitCode = 1;
+      if (!answered) process.exitCode = 1;
       return;
     }
   }
