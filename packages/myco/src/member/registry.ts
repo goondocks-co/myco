@@ -574,3 +574,22 @@ export function readRegistryEntryResult(root: string, mycoHome: string = resolve
   if (read.ok) return { status: 'present', entry: read.entry };
   return read.reason === 'missing' ? { status: 'missing' } : { status: 'unavailable' };
 }
+
+/** Every Deployment this home holds a membership of, whether or not a project is bound to it. Reads only. */
+export function listDeploymentMemberships(mycoHome: string = resolveMycoHome()): DeploymentMembership[] {
+  const dir = deploymentsDir(mycoHome);
+  if (!fs.existsSync(dir)) return [];
+  const memberships: DeploymentMembership[] = [];
+  for (const name of fs.readdirSync(dir).sort()) {
+    if (!name.endsWith('.json')) continue;
+    const file = path.join(dir, name);
+    const read = readPrivateJson<DeploymentMembership>(file);
+    if (!read.ok) {
+      if (read.reason !== 'missing') reportSkippedPrivateFile('deployment membership', file, read);
+      continue;
+    }
+    if (isMembership(read.value)) memberships.push(read.value);
+    else reportSkippedPrivateFile('deployment membership', file, { reason: 'malformed', detail: 'not a deployment membership' });
+  }
+  return memberships;
+}

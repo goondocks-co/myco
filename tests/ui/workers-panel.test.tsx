@@ -96,7 +96,7 @@ describe('WorkersPanel', () => {
     render(<WorkersPanel workers={status({ fleet: [worker({ offers: null, capabilities: null })] })} now={NOW} />);
     expect(screen.getByText(/Offers unknown: the stored report could not be read\./)).toBeDefined();
     expect(screen.getByText(/Polling, with no readable report of its harnesses/)).toBeDefined();
-    expect(screen.getByTestId('status-dot').dataset.tone).toBe('terracotta');
+    expect(screen.getAllByTestId('status-dot').at(-1)!.dataset.tone).toBe('terracotta');
   });
 
   it('says a credential the claim route would refuse is not polling for work', () => {
@@ -111,6 +111,29 @@ describe('WorkersPanel', () => {
     // Nothing that would read as "no workers attached" or "nothing queued".
     expect(screen.queryByText(/No worker contact recorded/)).toBeNull();
     expect(screen.queryByText(/Nothing queued/)).toBeNull();
+  });
+
+  it('heads the panel with how many workers are attached and what the queue holds', () => {
+    render(<WorkersPanel workers={status({ runsQueued: 1 })} now={NOW} />);
+    expect(screen.getByText('1 worker attached, 0 driving a run. 1 queued run.')).toBeDefined();
+    expect(screen.queryByText(/myco worker install/)).toBeNull();
+  });
+
+  it('says no worker is attached, when one was last heard from, and what waits for one', () => {
+    render(<WorkersPanel workers={status({ runsQueued: 3, fleet: [worker({ recent: false, lastSeenAt: NOW - 8 * 86_400_000 })] })} now={NOW} />);
+    expect(screen.getByText('No worker attached. Last worker contact 8d ago. 3 queued runs wait until one attaches.')).toBeDefined();
+    expect(screen.getByText(/`myco worker install` there keeps one running/)).toBeDefined();
+    expect(screen.getAllByTestId('status-dot')[0]!.dataset.tone).toBe('terracotta');
+  });
+
+  it('says no worker is attached, and that no contact is recorded, when the fleet holds nothing', () => {
+    render(<WorkersPanel workers={status({ runsQueued: 1, fleet: [] })} now={NOW} />);
+    expect(screen.getByText('No worker attached. No worker contact recorded. 1 queued run waits until one attaches.')).toBeDefined();
+  });
+
+  it('does not count a recent worker the claim route would refuse as attached', () => {
+    render(<WorkersPanel workers={status({ fleet: [worker({ eligible: false })] })} now={NOW} />);
+    expect(screen.getByText('No worker attached. Last worker contact 3s ago. Nothing queued.')).toBeDefined();
   });
 
   it('shows a lease holder that predates contact records as busy, with no invented contact time', () => {

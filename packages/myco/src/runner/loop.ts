@@ -22,6 +22,7 @@ import { classifyEventAnswer, rawAnswerOf, type RawAnswer } from '../member/tran
 import type { RunEvent } from './events.js';
 import { parseRepositoryCheckoutSpec, REPOSITORY_CHECKOUT_CAPABILITY, type RepositoryCheckoutSpec } from '@goondocks/myco-shared/repository';
 import { prepareWorkerCheckout } from './repository.js';
+import { holdWorkerInstance } from './instance.js';
 import { MAP_TASK } from '@goondocks/myco-shared/canopy';
 import type { RepositoryCheckout } from './repository-checkout.js';
 
@@ -46,7 +47,19 @@ export interface WorkerOptions {
   /** Git executable override for a controlled checkout environment. */
   repositoryGitPath?: string;
   serverUrl: string;
-  token: string;
+  /**
+   * The member credential, or where to read it. A reader is asked before every
+   * request, so a worker left running follows a credential rotated underneath
+   * it; it answers null once the membership is gone.
+   */
+  token: string | (() => string | null);
+  /**
+   * Where this machine's worker locks live (`instance.ts`), or null for a worker
+   * that shares the Deployment with nothing — a test's own server.
+   */
+  lockDir: string | null;
+  /** Every address this worker's Deployment answers at; the worker locks each. Defaults to `serverUrl`. */
+  deploymentUrls?: readonly string[];
   runRoot: string;
   /** Only these harnesses are offered, where the caller names any. */
   only?: readonly string[];
@@ -73,6 +86,10 @@ type WorkerAnswer =
   | { kind: 'refused'; code: string; detail: string }
   | { kind: 'unreachable'; detail: string };
 
+/** The credential to present now: the one given, or the one the membership holds at this moment. */
+const credentialOf = (options: WorkerOptions): string | null =>
+  typeof options.token === 'function' ? options.token() : options.token;
+
 /**
  * One worker request, classified the way every other member call is.
  *
@@ -82,12 +99,25 @@ type WorkerAnswer =
  * arrive here as themselves rather than as an unreadable body.
  */
 async function post(options: WorkerOptions, path: string, body: unknown): Promise<WorkerAnswer> {
+  const token = credentialOf(options);
+  if (token === null) return { kind: 'refused', code: 'no_membership', detail: 'this machine no longer holds a membership of the Deployment' };
+  const answer = await postAs(options, token, path, body);
+  // A credential rotated between the read and the request is refused as the
+  // predecessor; the one now on disk is the one to present.
+  if (answer.kind === 'refused' && answer.code === 'unauthorized') {
+    const current = credentialOf(options);
+    if (current !== null && current !== token) return postAs(options, current, path, body);
+  }
+  return answer;
+}
+
+async function postAs(options: WorkerOptions, token: string, path: string, body: unknown): Promise<WorkerAnswer> {
   const send = options.fetchImpl ?? fetch;
   let raw: RawAnswer;
   try {
     const res = await send(new URL(path, options.serverUrl).toString(), {
       method: 'POST',
-      headers: { ...deploymentScopedHeaders({ token: options.token }), 'content-type': 'application/json' },
+      headers: { ...deploymentScopedHeaders({ token }), 'content-type': 'application/json' },
       body: JSON.stringify(body),
       signal: options.signal,
     });
@@ -308,6 +338,41 @@ export interface WorkerOutcome {
  * worker keeps polling, and says once that it is failing and once that it is back.
  */
 export async function runWorker(options: WorkerOptions): Promise<WorkerOutcome> {
+  const instance = await becomeInstance(options);
+  if (instance === null) return { driven: 0, refused: null };
+  try {
+    return await claimUntilStopped(options);
+  } finally {
+    instance.release();
+  }
+}
+
+/**
+ * Hold this machine's worker locks for the Deployment, waiting while another
+ * worker holds them and checking again at the idle poll interval. Null when the
+ * worker is stopped before it gets them.
+ */
+async function becomeInstance(options: WorkerOptions): Promise<{ release: () => void } | null> {
+  if (options.lockDir === null) return { release: () => {} };
+  const urls = options.deploymentUrls ?? [options.serverUrl];
+  let said = false;
+  while (!options.signal.aborted) {
+    const attempt = holdWorkerInstance(options.lockDir, urls);
+    if (attempt.held) {
+      if (said) options.log('the other worker stopped; this one serves the Deployment now');
+      return attempt;
+    }
+    if (!said) {
+      said = true;
+      const holder = attempt.holder === null ? 'another process' : `process ${attempt.holder.pid}`;
+      options.log(`another worker on this machine (${holder}) already serves ${options.serverUrl}; waiting until it stops`);
+    }
+    await sleep(options.pollIdleMs, options.signal);
+  }
+  return null;
+}
+
+async function claimUntilStopped(options: WorkerOptions): Promise<WorkerOutcome> {
   const harnesses: DetectedHarness[] = detectHarnesses(options.only);
   const ready = harnesses.filter((h) => h.authenticated).map((h) => h.id);
   options.log(ready.length === 0

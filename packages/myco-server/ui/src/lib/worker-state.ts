@@ -85,6 +85,51 @@ export function workerState(worker: WorkerRow, now: number): { tone: StatusTone;
   };
 }
 
+/** A worker counts as attached while it drives a run, or while it is heard from recently on a credential the claim route admits. */
+export function isAttached(worker: WorkerRow): boolean {
+  return worker.busy !== null || (worker.recent && worker.eligible);
+}
+
+/** The latest contact any worker made, or null when the fleet records none. */
+export function lastContactAt(workers: WorkerStatus): number | null {
+  const latest = Math.max(0, ...workers.fleet.map((w) => w.lastSeenAt));
+  return latest > 0 ? latest : null;
+}
+
+/** What waits in the queue, as the headline ends it. */
+function queueWords(queued: number, attached: boolean): string {
+  if (queued === 0) return 'Nothing queued.';
+  const runs = `${queued} queued ${queued === 1 ? 'run' : 'runs'}`;
+  return attached ? `${runs}.` : `${runs} ${queued === 1 ? 'waits' : 'wait'} until one attaches.`;
+}
+
+/**
+ * The fleet in one line: whether any worker is attached, when one was last
+ * heard from, and what the queue holds. Only for a Deployment that answered;
+ * an unanswered one is `FLEET_UNKNOWN_WORDS.unavailable`.
+ */
+export function fleetHeadline(workers: WorkerStatus, now: number): { tone: StatusTone; attached: number; line: string } {
+  const attached = workers.fleet.filter(isAttached);
+  if (attached.length > 0) {
+    const busy = attached.filter((w) => w.busy !== null).length;
+    return {
+      tone: 'sage',
+      attached: attached.length,
+      line: `${attached.length} ${attached.length === 1 ? 'worker' : 'workers'} attached, ${busy} driving a run. ${queueWords(workers.runsQueued, true)}`,
+    };
+  }
+  const last = lastContactAt(workers);
+  const contact = last === null ? FLEET_UNKNOWN_WORDS.absent : `Last worker contact ${sinceWords(last, now)}.`;
+  return {
+    tone: workers.runsQueued > 0 ? 'terracotta' : 'outline',
+    attached: 0,
+    line: `No worker attached. ${contact} ${queueWords(workers.runsQueued, false)}`,
+  };
+}
+
+/** How a person attaches one, said wherever none is attached. */
+export const ATTACH_WORDS = 'A worker runs on a machine where a coding agent is logged in; `myco worker install` there keeps one running whenever that person is logged in.';
+
 /**
  * What the fleet says about one credential. `unavailable` is a Deployment that
  * could not be asked; `absent` is an answer holding no observation of it, which

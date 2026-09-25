@@ -6,21 +6,33 @@
  * needs no vault and no project, so it reads the Deployment membership this
  * machine already holds and claims work across every Project that Deployment
  * serves.
+ *
+ * `install` keeps one running as a login service (`runner/service.ts`), under
+ * the member home its membership lives in; `uninstall` removes it and `status`
+ * reports it. Joining a Deployment installs it (`member join`), and leaving the
+ * last project on a Deployment removes it (`member leave`).
  */
+import path from 'node:path';
 import { resolveMycoHome } from '../paths/home.js';
-import { readDeploymentMembership } from '../member/registry.js';
+import { deploymentUrl, listDeploymentMemberships, readDeploymentMembership } from '../member/registry.js';
 import { detectHarnesses } from '../runner/detect.js';
 import { runWorker } from '../runner/loop.js';
+import { workerLockDir } from '../runner/instance.js';
+import { describeWorkerService, ensureWorkerService, removeWorkerService, workerServiceWords, type EnsureWorkerOutcome, type WorkerServiceDeps } from './worker-service.js';
 import { parseFlags } from './shared.js';
-import path from 'node:path';
 
 export const WORKER_HELP = `myco worker — run tasks for a Deployment on this machine's harnesses
 
 Usage:
-  myco worker --server <url> [options]
+  myco worker --server <url> [options]   Attach in this terminal until stopped.
+  myco worker install [--server <url>]   Keep a worker running whenever you are logged in.
+  myco worker uninstall [--server <url>] Stop that worker and remove it.
+  myco worker status [--server <url>]    Whether it is installed and serving.
 
 Options:
-  --server <url>     The Deployment to attach to. Required.
+  --server <url>     The Deployment to attach to. Required to attach; install,
+                     uninstall and status default to every Deployment this
+                     machine holds a membership of.
   --harness <id>     Offer only this harness. Repeatable.
   --once             Drive one run and stop.
   --no-worker        (myco server run) Start the Deployment without its own worker.
@@ -28,7 +40,8 @@ Options:
 
 A worker offers the harnesses it finds installed and logged in. The Deployment
 chooses which one runs each task, from the harness it prefers and the order it
-falls back through.`;
+falls back through. One worker serves a Deployment per machine: a second one
+waits until the first stops.`;
 
 /** What a worker waits before its first answer tells it the Deployment's own cadence. */
 const POLL_IDLE_MS = 2_000;
@@ -40,8 +53,65 @@ function harnessesNamed(args: readonly string[]): string[] {
   return out;
 }
 
-export async function run(args: string[]): Promise<boolean> {
+/** The Deployments a service verb acts on: the one named, else every one this home holds a membership of. */
+function serversFor(flags: Map<string, string>, mycoHome: string): string[] | { error: string } {
+  const named = flags.get('server');
+  if (named === 'true') return { error: '--server needs the Deployment\'s address' };
+  if (named !== undefined) return [deploymentUrl(named)];
+  const held = listDeploymentMemberships(mycoHome).map((m) => deploymentUrl(m.serverUrl));
+  return held.length > 0 ? held : { error: `this machine holds no Deployment membership in ${mycoHome}. Run \`myco login\` first.` };
+}
+
+function reportEnsured(url: string, ensured: EnsureWorkerOutcome, out: (line: string) => void): boolean {
+  switch (ensured.kind) {
+    case 'installed':
+      if (!ensured.outcome.loaded) {
+        out(`${url}: the worker service is written, and the platform is not running it (${ensured.outcome.detail ?? 'no detail'}). Unit: ${ensured.outcome.unitFile}`);
+        return false;
+      }
+      out(`${url}: ${ensured.outcome.changed ? 'a worker now runs whenever you are logged in' : 'the worker service was already running'}.`);
+      out(`  Unit: ${ensured.outcome.unitFile}`);
+      out(`  Logs: ${ensured.outLog}`);
+      return true;
+    case 'refused':
+      out(`${url}: no worker service installed — ${ensured.refusal.detail}`);
+      // A Deployment that runs its own worker needs none, which is success.
+      return ensured.refusal.reason === 'own_deployment';
+    case 'unsupported':
+      out(`${url}: no worker service installed — ${ensured.detail}`);
+      return false;
+  }
+}
+
+async function runServiceVerb(verb: 'install' | 'uninstall' | 'status', args: string[], deps: WorkerServiceDeps): Promise<boolean> {
+  const { flags } = parseFlags(args);
+  const mycoHome = deps.mycoHome ?? resolveMycoHome({ cwd: process.cwd() });
+  const scoped = { ...deps, mycoHome };
+  const servers = serversFor(flags, mycoHome);
+  if ('error' in servers) { console.error(`myco worker ${verb}: ${servers.error}`); return false; }
+  let ok = true;
+  for (const url of servers) {
+    if (verb === 'install') {
+      ok = reportEnsured(url, await ensureWorkerService(url, scoped), (line) => { console.log(line); }) && ok;
+    } else if (verb === 'uninstall') {
+      const removed = removeWorkerService(url, scoped);
+      console.log('unsupported' in removed
+        ? `${url}: ${removed.unsupported}`
+        : removed.removed ? `${url}: worker service removed.` : `${url}: no worker service was installed.`);
+    } else {
+      const words = workerServiceWords(describeWorkerService(url, scoped));
+      console.log(`${url}: ${words.line}`);
+      ok = words.ok && ok;
+    }
+  }
+  return ok;
+}
+
+const SERVICE_VERBS = new Set(['install', 'uninstall', 'status']);
+
+export async function run(args: string[], deps: WorkerServiceDeps = {}): Promise<boolean> {
   if (args[0] === '--help' || args[0] === '-h') { console.log(WORKER_HELP); return true; }
+  if (args[0] !== undefined && SERVICE_VERBS.has(args[0])) return runServiceVerb(args[0] as 'install' | 'uninstall' | 'status', args.slice(1), deps);
   const { flags } = parseFlags(args);
   const only = harnessesNamed(args);
 
@@ -57,8 +127,8 @@ export async function run(args: string[]): Promise<boolean> {
     console.error('myco worker: --server <url> names the Deployment to attach to');
     return false;
   }
-  const membership = readDeploymentMembership(serverUrl);
-  if (membership === null) {
+  const mycoHome = resolveMycoHome();
+  if (readDeploymentMembership(serverUrl, mycoHome) === null) {
     console.error(`myco worker: this machine holds no membership of ${serverUrl}. Run \`myco login\` first.`);
     return false;
   }
@@ -68,8 +138,9 @@ export async function run(args: string[]): Promise<boolean> {
 
   const { driven, refused } = await runWorker({
     serverUrl,
-    token: membership.token,
-    runRoot: path.join(resolveMycoHome(), 'worker', 'runs'),
+    token: () => readDeploymentMembership(serverUrl, mycoHome)?.token ?? null,
+    lockDir: workerLockDir(),
+    runRoot: path.join(mycoHome, 'worker', 'runs'),
     ...(only.length === 0 ? {} : { only }),
     ...(flags.get('once') === 'true' ? { once: true } : {}),
     pollIdleMs: POLL_IDLE_MS,

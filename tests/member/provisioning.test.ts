@@ -13,7 +13,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { resetMachineIdCache } from '@myco/machine-id.js';
-import { runJoin, runLeave } from '@myco/cli/member.js';
+import { runJoin, runLeave, runStatus } from '@myco/cli/member.js';
 import { run as runSettings } from '@myco/cli/settings.js';
 import { CREDENTIAL_FLAG, NEVER_DRAINS_HOOK, hookNameInCommand } from '@myco/member/constants.js';
 import { readRegistryEntry, REGISTRY_VERSION, writeRegistryEntry } from '@myco/member/registry.js';
@@ -276,5 +276,52 @@ describe('myco member join / leave', () => {
     expect(fs.existsSync(spool.dir)).toBe(false);
     expect(fs.existsSync(path.join(projectRoot, MEMBER_TARGET))).toBe(false);
     expect(fs.existsSync(path.join(home, '.claude', 'settings.json'))).toBe(true);
+  });
+
+  it('installs a worker to run at login on join, reports it in status, and removes it with the last project', async () => {
+    const commands: string[] = [];
+    const loaded = new Set<string>();
+    const worker = {
+      home, platform: 'darwin' as const, binaryPath: path.join(home, '.myco', 'bin', 'myco'),
+      detect: () => [{ id: 'codex', installed: true, authenticated: true }], harnessDirs: () => [],
+      ownDeploymentUrls: async () => [], lockDir: path.join(home, 'locks'),
+      runner: (command: string, args: readonly string[]) => {
+        const line = [command, ...args].join(' ');
+        commands.push(line);
+        if (line.startsWith('launchctl load')) loaded.add(args.at(-1)!);
+        if (line.startsWith('launchctl unload')) loaded.delete(args.at(-1)!);
+        if (line.startsWith('launchctl list')) return { status: loaded.size > 0 ? 0 : 113 };
+        return { status: 0 };
+      },
+    };
+    const out: string[] = [];
+    await join(['https://server.example', '--project', PROJECT, '--token-env', 'JOIN_TOKEN', '--root', projectRoot], {
+      env: { JOIN_TOKEN: rig.token }, stdout: (l: string) => out.push(l), worker,
+    });
+    const agents = path.join(home, 'Library', 'LaunchAgents');
+    const [unit] = fs.readdirSync(agents);
+    expect(unit).toMatch(/^co\.goondocks\.myco-worker\.[0-9a-f]{16}\.plist$/);
+    expect(fs.readFileSync(path.join(agents, unit!), 'utf8')).toContain(`<key>MYCO_HOME</key><string>${mycoHome}</string>`);
+    expect(out.join('\n')).toContain('a worker for https://server.example runs whenever you are logged in');
+
+    const status: string[] = [];
+    runStatus([], { mycoHome, cwd: projectRoot, stdout: (l: string) => status.push(l), stderr: () => {}, worker });
+    expect(status.find((l) => l.startsWith('worker:'))).toMatch(/running at login/);
+
+    out.length = 0;
+    expect(runLeave([], { mycoHome, cwd: projectRoot, packageRoot: PKG_ROOT, stdout: (l: string) => out.push(l), stderr: () => {}, worker })).toBe(true);
+    expect(fs.readdirSync(agents)).toEqual([]);
+    expect(out.join('\n')).toContain('removed the worker service for https://server.example');
+    expect(loaded.size).toBe(0);
+  });
+
+  it('installs no worker when asked not to', async () => {
+    const out: string[] = [];
+    await join(['https://server.example', '--project', PROJECT, '--token-env', 'JOIN_TOKEN', '--root', projectRoot, '--no-worker'], {
+      env: { JOIN_TOKEN: rig.token }, stdout: (l: string) => out.push(l),
+      worker: { home, binaryPath: path.join(home, '.myco', 'bin', 'myco'), runner: () => { throw new Error('no platform command runs'); } },
+    });
+    expect(readRegistryEntry(projectRoot, mycoHome)).not.toBeNull();
+    expect(out.join('\n')).not.toMatch(/worker/);
   });
 });
