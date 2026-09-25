@@ -673,24 +673,25 @@ export class MemberSpool {
       /**
        * Whether a refusal is final for `record`: its code is permanent; the
        * Deployment lacks bytes this member no longer holds; or no code names
-       * the cause and the record has been held for
-       * `UNCLASSIFIED_REFUSAL_HOLD_MS` with its wait at `REFUSAL_RETRY_MAX_MS`.
+       * the cause and the holds before it were an unbroken run of such
+       * refusals, begun at least `UNCLASSIFIED_REFUSAL_HOLD_MS` ago, whose own
+       * wait has reached `REFUSAL_RETRY_MAX_MS`.
        */
       const verdictOn = (record: SpoolRecord, code: MemberCode, sourceGone: boolean): 'final' | 'held-too-long' | 'held' => {
         if (refusalPermanent(code) || (code === BLOB_ABSENT_CODE && sourceGone)) return 'final';
         if (REFUSAL_SUBJECT[code] !== 'unclassified') return 'held';
-        const wait = readSessionState(this.dir, sessionId).eventRetry;
-        const heldTooLong = wait !== undefined && wait.backoffMs >= REFUSAL_RETRY_MAX_MS && now() - wait.since >= UNCLASSIFIED_REFUSAL_HOLD_MS;
+        const run = readSessionState(this.dir, sessionId).eventRetry?.unclassified;
+        const heldTooLong = run !== undefined && run.backoffMs >= REFUSAL_RETRY_MAX_MS && now() - run.since >= UNCLASSIFIED_REFUSAL_HOLD_MS;
         return heldTooLong ? 'held-too-long' : 'held';
       };
       /** Keep the record at the high-water, and every record after it, for a later pass: the session's wait starts or lengthens. */
-      const hold = () => deferAfterRefusal(this.dir, sessionId, 'eventRetry', now());
+      const hold = (unclassified: boolean) => deferAfterRefusal(this.dir, sessionId, 'eventRetry', now(), { unclassified });
       /** Log a refusal of `record` and apply it: true when the pass moves past the record, false when the record is held. */
       const refuse = (record: SpoolRecord, code: MemberCode, reason: string, sourceGone: boolean): boolean => {
         const verdict = verdictOn(record, code, sourceGone);
         if (verdict === 'held') {
           const alreadyHeld = readSessionState(this.dir, sessionId).eventRetry !== undefined;
-          const wait = hold();
+          const wait = hold(REFUSAL_SUBJECT[code] === 'unclassified');
           if (!alreadyHeld) this.appendRefused({ eventId: record.eventId, sessionId, kind: record.kind, code, reason, at: now(), held: { retryAt: wait.at } });
           stderr(`${record.kind} ${record.eventId} refused by the server (${code}): ${reason} — kept spooled with the session's later events, sent again later`);
           return false;
@@ -726,7 +727,7 @@ export class MemberSpool {
           if (blobOutcome === 'gone') {
             sourceGone = true;
           } else if (blobOutcome === 'unreadable') {
-            hold();
+            hold(false);
             stderr(`${record.kind} ${record.eventId}: its staged bytes at ${record._blobSource.path} could not be read — kept spooled with the session's later events, sent again later`);
             result.endedBy = 'unreadable';
             break;

@@ -83,7 +83,7 @@ describe('an event refused for a passing reason', () => {
     expect(first).toMatchObject({ sent: 3, acked: 2, refused: 0, remaining: 3, endedBy: 'refused' });
     expect(spy.answers.map((a) => [a.eventId, a.code ?? 'ok'])).toEqual([[ids[0], 'ok'], [ids[1], 'ok'], [ids[2], 'clock_skew']]);
     const wait = readSessionState(spool.dir, 'sess-skew').eventRetry!;
-    expect(wait).toMatchObject({ backoffMs: REFUSAL_RETRY_INITIAL_MS, since: ahead });
+    expect(wait).toEqual({ at: ahead + REFUSAL_RETRY_INITIAL_MS, backoffMs: REFUSAL_RETRY_INITIAL_MS });
     expect(spool.readRefused().entries.map((e) => [e.eventId, e.code, e.held])).toEqual([[ids[2], 'clock_skew', { retryAt: wait.at }]]);
     expect(storedIds(rig, 'sess-skew')).toEqual([ids[0], ids[1]].sort());
 
@@ -180,7 +180,7 @@ describe('an event refused for a passing reason', () => {
       setSystemTime(new Date(at));
       expect(await drain()).toMatchObject({ endedBy: 'refused', remaining: 2, refused: 0 });
     }
-    expect(readSessionState(spool.dir, 'sess-bad').eventRetry).toMatchObject({ since: t0, backoffMs: REFUSAL_RETRY_MAX_MS });
+    expect(readSessionState(spool.dir, 'sess-bad').eventRetry).toMatchObject({ backoffMs: REFUSAL_RETRY_MAX_MS, unclassified: { since: t0, backoffMs: REFUSAL_RETRY_MAX_MS } });
     expect(storedIds(rig, 'sess-bad')).toEqual([]);
 
     setSystemTime(new Date(t0 + UNCLASSIFIED_REFUSAL_HOLD_MS));
@@ -212,12 +212,77 @@ describe('an event refused for a passing reason', () => {
       refusals += 1;
       if (result.refused > 0) break;
       expect(result).toMatchObject({ endedBy: 'refused', remaining: 1 });
-      expect(readSessionState(spool.dir, 'sess-away').eventRetry!.since).toBe(t0);
+      expect(readSessionState(spool.dir, 'sess-away').eventRetry!.unclassified!.since).toBe(t0);
       at += REFUSAL_RETRY_MAX_MS;
     }
     // 5 min doubling reaches the 6 h cap on the eighth refusal; the ninth, past the hold at the cap, lets it go.
     expect(refusals).toBe(9);
     expect(spool.sessionIds()).toEqual([]);
+  });
+
+  it('times the hold of an unclassified refusal from the first of an unbroken run of them, not from a hold for another cause before it', async () => {
+    const t0 = Date.now();
+    setSystemTime(new Date(t0));
+    const rig = await memberRig();
+    const spool = new MemberSpool(PROJECT, { mycoHome });
+    const ctx = ctxFor(spool, 'sess-archived-weekend');
+    spool.append('sess-archived-weekend', prompt(ctx, 'captured while archived'));
+    let code: MemberCode = 'project_archived';
+    const spy = answering(rig, () => code);
+    const drain = () => spool.drainSession('sess-archived-weekend', clientFor(rig, spy.fetch), unboundedBudget(), { now: () => Date.now() });
+
+    // Archived for a weekend: held every six hours, the wait at its cap long before the end.
+    let at = t0;
+    for (; at <= t0 + UNCLASSIFIED_REFUSAL_HOLD_MS + HOUR_MS; at += 6 * HOUR_MS) {
+      setSystemTime(new Date(at));
+      expect(await drain()).toMatchObject({ endedBy: 'refused', refused: 0, remaining: 1 });
+    }
+    expect(readSessionState(spool.dir, 'sess-archived-weekend').eventRetry).toMatchObject({ backoffMs: REFUSAL_RETRY_MAX_MS });
+    expect(readSessionState(spool.dir, 'sess-archived-weekend').eventRetry!.unclassified).toBeUndefined();
+
+    // Unarchived, and the next answer names no cause: the first of a run, not the end of the hold.
+    code = 'refused';
+    setSystemTime(new Date(at));
+    expect(await drain()).toMatchObject({ endedBy: 'refused', refused: 0, remaining: 1 });
+    expect(readSessionState(spool.dir, 'sess-archived-weekend').eventRetry!.unclassified).toEqual({ since: at, backoffMs: REFUSAL_RETRY_INITIAL_MS });
+  });
+
+  it('starts the unclassified run over when a hold for another cause breaks it', async () => {
+    const t0 = Date.now();
+    setSystemTime(new Date(t0));
+    const rig = await memberRig();
+    const spool = new MemberSpool(PROJECT, { mycoHome });
+    const ctx = ctxFor(spool, 'sess-broken-run');
+    spool.append('sess-broken-run', prompt(ctx, 'unknown, then archived, then unknown'));
+    const archivedAt = t0 + 36 * HOUR_MS;
+    const spy = answering(rig, () => (Date.now() === archivedAt ? 'project_archived' : 'refused'));
+    const drain = () => spool.drainSession('sess-broken-run', clientFor(rig, spy.fetch), unboundedBudget(), { now: () => Date.now() });
+
+    for (let at = t0; at <= t0 + UNCLASSIFIED_REFUSAL_HOLD_MS + 6 * HOUR_MS; at += 6 * HOUR_MS) {
+      setSystemTime(new Date(at));
+      expect(await drain()).toMatchObject({ endedBy: 'refused', refused: 0, remaining: 1 });
+    }
+    // 78 h of refusals, broken at 36 h: the run is 42 h old, short of the hold.
+    expect(readSessionState(spool.dir, 'sess-broken-run').eventRetry!.unclassified!.since).toBe(archivedAt + 6 * HOUR_MS);
+    expect(spool.depth('sess-broken-run')).toBe(1);
+  });
+
+  it('holds a refusal that names its cause even when it ends an unclassified run that has reached the hold, and starts the run over', async () => {
+    const t0 = Date.now();
+    setSystemTime(new Date(t0));
+    const rig = await memberRig();
+    const spool = new MemberSpool(PROJECT, { mycoHome });
+    const ctx = ctxFor(spool, 'sess-archived-after');
+    spool.append('sess-archived-after', prompt(ctx, 'unknown for three days, then archived'));
+    const archivedAt = t0 + UNCLASSIFIED_REFUSAL_HOLD_MS;
+    const spy = answering(rig, () => (Date.now() >= archivedAt ? 'project_archived' : 'refused'));
+    const drain = () => spool.drainSession('sess-archived-after', clientFor(rig, spy.fetch), unboundedBudget(), { now: () => Date.now() });
+
+    for (let at = t0; at <= archivedAt; at += 6 * HOUR_MS) {
+      setSystemTime(new Date(at));
+      expect(await drain()).toMatchObject({ endedBy: 'refused', refused: 0, remaining: 1 });
+    }
+    expect(readSessionState(spool.dir, 'sess-archived-after').eventRetry!.unclassified).toBeUndefined();
   });
 
   it('never drops a record for its age when the refusal names the Deployment, the clock or the server\'s version', async () => {
