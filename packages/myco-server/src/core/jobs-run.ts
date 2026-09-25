@@ -24,7 +24,7 @@ import { recoveryHoldRelease } from './recovery-hold.js';
 import { admitRecoveryExport } from './recovery-admission.js';
 import { attemptAdvancing, recoveryScheduleOf, SCHEDULE_JOB } from './recovery-schedule.js';
 import { PRUNE_FILE_BUDGET, stagingPrunePolicy, STAGING_RETENTION_JOB } from './staging-retention.js';
-import { backfillImportedTitles, titleReadySessions } from './titling.js';
+import { backfillTitles, titleReadySessions } from './titling.js';
 import { reconcileReleaseProvenance } from './release-provenance.js';
 import { MAINTENANCE_JOB, runMaintenance, type MaintenanceCheck } from './store-maintenance.js';
 
@@ -212,7 +212,7 @@ export const JOB_IMPLEMENTATIONS: Readonly<Record<string, JobRun>> = {
   // #1147 — transcript-first ingest
   'transcript-parse': (env, now) => parseTranscripts(env, now),
   'session-titling': titleReadySessions,
-  'titling-backfill': backfillImportedTitles,
+  'titling-backfill': backfillTitles,
   'transcript-retention': transcriptRetention,
   [SCHEDULE_JOB]: scheduledRecoveryExport,
   [STAGING_RETENTION_JOB]: pruneRecoveryStagings,

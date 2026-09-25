@@ -12,9 +12,9 @@ import { StatusDot } from '../ui/status-dot';
 import { SubtabPill } from '../ui/subtab-pill';
 import { Surface } from '../ui/surface';
 import {
-  blobUrl, memberName, PROMPT_ORIGINS, RENDERABLE_IMAGE_TYPES, runtimeName, TITLING_OUTCOME_TEXT, TITLING_WATCH_MS, useSession, useSessionChildren, useTitleSession, useTranscript, useTurns,
+  blobUrl, memberName, PROMPT_ORIGINS, RENDERABLE_IMAGE_TYPES, runtimeName, TITLING_OUTCOME_TEXT, TITLING_WATCH_MS, UNTITLED_REASON_TEXT, useSession, useSessionChildren, useTitleSession, useTranscript, useTurns,
   type TranscriptRecord,
-  type AttachmentRow, type ContextInjectionRow, type PlanRow, type SessionRow, type TurnRow,
+  type AttachmentRow, type ContextInjectionRow, type PlanRow, type SessionRow, type TurnRow, type UntitledReason,
 } from '../../hooks/use-sessions';
 import { useQueryClient } from '@tanstack/react-query';
 import { useRun, useSpores } from '../../hooks/use-intelligence';
@@ -59,7 +59,7 @@ export function SessionDetail({ projectId, sessionId, onDeleted }: { projectId: 
     <PageLoading isLoading={detail.isPending} error={detail.error} loadingText="Loading session…">
       {detail.data && (
         <div className="flex flex-col gap-5">
-          <Header projectId={projectId} session={detail.data.session} release={detail.data.release} />
+          <Header projectId={projectId} session={detail.data.session} release={detail.data.release} untitled={detail.data.untitled ?? null} />
           <div className="flex justify-end">
             <DeleteSession projectId={projectId} session={detail.data.session} counts={detail.data.counts} onDeleted={onDeleted} />
           </div>
@@ -193,7 +193,7 @@ const TITLING_POLL_MS = 5_000;
 const isTerminal = (status: string): boolean => status === 'completed' || status === 'failed' || status === 'skipped';
 
 /** The session's name, state and the facts that identify the run, in one glance. */
-function Header({ projectId, session, release }: { projectId: string; session: SessionRow; release?: ReleaseStatus | null }) {
+function Header({ projectId, session, release, untitled }: { projectId: string; session: SessionRow; release?: ReleaseStatus | null; untitled: UntitledReason | null }) {
   const open = session.endedAt === null;
   return (
     <div className="space-y-2">
@@ -216,6 +216,7 @@ function Header({ projectId, session, release }: { projectId: string; session: S
         {open
           ? <span>Last received {formatRelative(session.lastReceivedAt)}</span>
           : <span>Ran {formatDuration(session.startedAt, session.endedAt)}{session.endedBy !== null && ` · ended by ${session.endedByLabel ?? session.endedBy}`}</span>}
+        {untitled !== null && <span>{UNTITLED_REASON_TEXT[untitled]}</span>}
       </div>
     </div>
   );

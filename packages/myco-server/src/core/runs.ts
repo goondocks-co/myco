@@ -165,16 +165,10 @@ export const LIVE_RUN_STATUSES = "status IN ('pending', 'running')";
  */
 export const IN_FLIGHT_RUN_STATUSES = "status IN ('pending', 'running', 'queued')";
 
-/** The session's stamped automatic attempt failed, and no title run still holds the session. */
-export const failedAutomaticTitleSql = (session: string): string => `(EXISTS (
-  SELECT 1 FROM agent_runs r WHERE r.project_id = ${session}.project_id AND r.task = '${TITLING_TASK}'
-    AND r.status = 'failed' AND COALESCE(r.queued_at, r.started_at) = ${session}.titled_at
-    AND json_extract(CASE WHEN json_valid(r.run_context) THEN r.run_context END, '$.session_id') = ${session}.session_id
-    AND json_extract(CASE WHEN json_valid(r.run_context) THEN r.run_context END, '$.mode') = 'claim')
-  AND NOT EXISTS (SELECT 1 FROM agent_runs r WHERE r.project_id = ${session}.project_id AND r.task = '${TITLING_TASK}'
+/** A `title-summary` run naming the session is queued or running. */
+export const titleRunInFlightSql = (session: string): string => `EXISTS (SELECT 1 FROM agent_runs r WHERE r.project_id = ${session}.project_id AND r.task = '${TITLING_TASK}'
     AND r.${IN_FLIGHT_RUN_STATUSES}
-    AND json_extract(CASE WHEN json_valid(r.run_context) THEN r.run_context END, '$.session_id') = ${session}.session_id)
-)`;
+    AND json_extract(CASE WHEN json_valid(r.run_context) THEN r.run_context END, '$.session_id') = ${session}.session_id)`;
 
 
 /** The actor a dispatch spec names, and null for a spec that names none. A spec the store did not write is not read as JSON at all. */

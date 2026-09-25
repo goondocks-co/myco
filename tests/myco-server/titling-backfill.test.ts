@@ -9,13 +9,13 @@ import { describe, expect, it } from 'bun:test';
 import { serverEnvFromBindings } from '@myco-server-worker/platform/cloudflare/env.js';
 import type { PreparedStatement, RelationalStore, ServerEnv } from '@myco-server-worker/core/adapters.js';
 import {
-  backfillImportedTitles, titleSession, titlingBackfillPolicy, titlingBackfillProgress, TITLING_BACKFILL_ACTOR, TITLING_BACKFILL_BATCH, TITLING_TASK,
+  backfillTitles, titleSession, titlingBackfillPolicy, titlingBackfillProgress, TITLING_BACKFILL_ACTOR, TITLING_BACKFILL_BATCH, TITLING_TASK,
 } from '@myco-server-worker/core/titling.js';
 import { TITLING_BACKFILL_SCHEDULE, SERVER_JOBS } from '@myco-server-worker/core/jobs.js';
 import { runTick } from '@myco-server-worker/core/tick.js';
 import worker from '@myco-server-worker/index.js';
 import { OWNER_ENV, ownerCookie } from './helpers/owner.js';
-import { listBackfillTitleSessions } from '@myco-server-worker/read/children.js';
+import { listConvergenceTitleSessions } from '@myco-server-worker/read/children.js';
 import { count, sqliteEnv, withHarness } from './helpers/fixtures.js';
 
 const NOW = 1_800_000_000_000;
@@ -63,14 +63,14 @@ describe('the imported-session backfill', () => {
     const r = rig();
     r.session('s1');
     expect(await titlingBackfillPolicy(r.env)).toEqual({ scheduledTasksEnabled: false, backfillEnabled: false, runsPerDay: 24, intervalSeconds: 900, runIn: ['active', 'idle'], overlap: 'queue', enabled: false });
-    expect(await backfillImportedTitles(r.env, NOW, 'idle')).toBe(0);
+    expect(await backfillTitles(r.env, NOW, 'idle')).toBe(0);
     r.setting('agent.scheduled_tasks_enabled', true);
     expect((await titlingBackfillPolicy(r.env)).enabled).toBe(false);
-    expect(await backfillImportedTitles(r.env, NOW, 'idle')).toBe(0);
+    expect(await backfillTitles(r.env, NOW, 'idle')).toBe(0);
     r.setting('agent.scheduled_tasks_enabled', false);
     r.setting('agent.tasks', { [TITLING_TASK]: { schedule: { enabled: true } } });
     expect((await titlingBackfillPolicy(r.env)).enabled).toBe(false);
-    expect(await backfillImportedTitles(r.env, NOW, 'idle')).toBe(0);
+    expect(await backfillTitles(r.env, NOW, 'idle')).toBe(0);
     expect(r.runs()).toEqual([]);
     expect(r.titledAt('s1')).toBeNull();
   });
@@ -81,24 +81,70 @@ describe('the imported-session backfill', () => {
     r.session('older', { endedAt: NOW - DAY });
     r.session('newest', { endedAt: NOW - 1000 });
     r.session('middle', { endedAt: NOW - 3600_000, project: 'proj_2' });
-    r.session('live', { imported: false });
     r.session('unparsed', { parsed: false });
     r.session('titled', { title: 'Already titled' });
     r.session('silent', { material: false });
-    r.session('no-transcript', { transcript: false });
     r.session('deleted');
     r.sqlite.run(`INSERT INTO session_tombstones (project_id, session_id, reason, created_at, created_by) VALUES ('proj_1', 'deleted', NULL, ?, 'mem_1')`, [NOW]);
 
-    expect((await listBackfillTitleSessions(r.env.db, 10)).map((c) => c.sessionId)).toEqual(['newest', 'middle', 'older']);
-    expect(await backfillImportedTitles(r.env, NOW, 'idle')).toBe(3);
+    expect((await listConvergenceTitleSessions(r.env.db, 10, NOW, true)).map((c) => c.sessionId)).toEqual(['newest', 'middle', 'older']);
+    expect(await backfillTitles(r.env, NOW, 'idle')).toBe(3);
     expect(r.runs().map((run) => [run.projectId, run.sessionId, run.mode, run.actor]).sort()).toEqual([
       ['proj_1', 'newest', 'claim', TITLING_BACKFILL_ACTOR], ['proj_1', 'older', 'claim', TITLING_BACKFILL_ACTOR], ['proj_2', 'middle', 'claim', TITLING_BACKFILL_ACTOR],
     ]);
-    for (const id of ['live', 'unparsed', 'titled', 'silent', 'no-transcript', 'deleted']) expect({ id, titledAt: r.titledAt(id) }).toEqual({ id, titledAt: null });
+    for (const id of ['unparsed', 'titled', 'silent', 'deleted']) expect({ id, titledAt: r.titledAt(id) }).toEqual({ id, titledAt: null });
     // A second wake inside the interval dispatches nothing; one past it finds every candidate already attempted.
-    expect(await backfillImportedTitles(r.env, NOW + 1, 'idle')).toBe(0);
-    expect(await backfillImportedTitles(r.env, NOW + 901_000, 'idle')).toBe(0);
+    expect(await backfillTitles(r.env, NOW + 1, 'idle')).toBe(0);
+    expect(await backfillTitles(r.env, NOW + 901_000, 'idle')).toBe(0);
     expect(r.runs().length).toBe(3);
+  });
+
+  it('titles a session its own capture owes a title with the backfill stopped: a live or transcript-less session that ended unrequested, and an end request whose attempt ended untitled', async () => {
+    const r = rig();
+    r.session('imported', { endedAt: NOW - 1000 });
+    r.session('live', { imported: false, endedAt: NOW - 2000 });
+    r.session('mixed', { endedAt: NOW - 3000 });
+    r.sqlite.run(`INSERT INTO transcripts (project_id, transcript_id, session_id, machine_id, size, parsed_offset, first_received_at, last_received_at, token_id, imported_at)
+                  VALUES ('proj_1', 'tx_mixed_live', 'mixed', 'm1', 10, 10, ?, ?, 'tok_1', NULL)`, [NOW, NOW]);
+    r.session('no-transcript', { transcript: false, endedAt: NOW - 4000 });
+    r.session('requested', { imported: false, endedAt: NOW - 5000 });
+    r.sqlite.run(`UPDATE sessions SET titling_requested_at = ?, titled_at = ? WHERE session_id = 'requested'`, [NOW - 5000, NOW - DAY]);
+    r.session('fresh-request', { imported: false, endedAt: NOW - 6000 });
+    r.sqlite.run(`UPDATE sessions SET titling_requested_at = ? WHERE session_id = 'fresh-request'`, [NOW - 6000]);
+
+    expect((await titlingBackfillProgress(r.env, NOW)).enabled).toBe(false);
+    expect(await backfillTitles(r.env, NOW, 'idle')).toBe(4);
+    expect(r.runs().map((run) => run.sessionId).sort()).toEqual(['live', 'mixed', 'no-transcript', 'requested']);
+    expect(r.titledAt('imported')).toBeNull();
+    // A live request's first attempt is `session-titling`'s, never the convergence's.
+    expect(r.titledAt('fresh-request')).toBeNull();
+    expect(await titlingBackfillProgress(r.env, NOW + 1)).toMatchObject({ remaining: 1, owed: 0 });
+  });
+
+  it('counts an attempt only when a worker claims the run: a queued run that expires unclaimed is re-queued, and a session workers took the bound on is left', async () => {
+    const r = rig();
+    r.setting('agent.tasks', { [TITLING_TASK]: { schedule: { intervalSeconds: 0 } } });
+    r.session('s', { imported: false });
+    const attempts = () => (r.sqlite.query(`SELECT titling_attempts AS n FROM sessions WHERE session_id = 's'`).get() as { n: number }).n;
+    expect(await backfillTitles(r.env, NOW, 'idle')).toBe(1);
+    // Nothing claims it: the stale sweep fails it a day on, and the session keeps every attempt.
+    expect((await runTick(r.env, NOW + DAY + 1)).jobs.find((j) => j.name === 'run-stale-sweep')?.changed).toBeGreaterThanOrEqual(1);
+    expect(attempts()).toBe(0);
+    expect(r.runs().map((run) => run.status)).toContain('queued');
+    expect(r.runs().filter((run) => run.status === 'failed').length).toBe(1);
+    // Each worker claim counts; an owner-mode claim does not.
+    const claim = (mode: string) => {
+      const id = `run_${mode}_${Math.random()}`;
+      r.sqlite.run(`INSERT INTO agent_runs (id, project_id, agent_id, task, status, queued_at, run_context) SELECT ?, project_id, agent_id, task, 'queued', ?, ? FROM agent_runs LIMIT 1`, [id, NOW, JSON.stringify({ session_id: 's', mode })]);
+      r.sqlite.run(`UPDATE agent_runs SET status = 'running', started_at = ? WHERE id = ?`, [NOW, id]);
+      r.sqlite.run(`UPDATE agent_runs SET status = 'failed', completed_at = ? WHERE id = ?`, [NOW, id]);
+    };
+    claim('owner');
+    expect(attempts()).toBe(0);
+    for (let i = 0; i < 3; i += 1) claim('claim');
+    expect(attempts()).toBe(3);
+    r.sqlite.run(`UPDATE agent_runs SET status = 'failed' WHERE status = 'queued'`);
+    expect(await backfillTitles(r.env, NOW + 3 * DAY, 'idle')).toBe(0);
   });
 
   it('takes a bounded page per wake, counts its ceiling across the Deployment, and reports where it stands', async () => {
@@ -107,12 +153,12 @@ describe('the imported-session backfill', () => {
     r.setting('agent.tasks', { [TITLING_TASK]: { schedule: { enabled: true, intervalSeconds: 0, maxRunsPerDay: TITLING_BACKFILL_BATCH + 2 } } });
     for (let i = 0; i < TITLING_BACKFILL_BATCH + 4; i += 1) r.session(`s${i}`, { project: i % 2 === 0 ? 'proj_1' : 'proj_2', endedAt: NOW - i * 1000 });
 
-    expect(await backfillImportedTitles(r.env, NOW, 'idle')).toBe(TITLING_BACKFILL_BATCH);
-    expect(await backfillImportedTitles(r.env, NOW + 1, 'idle')).toBe(2);
-    expect(await backfillImportedTitles(r.env, NOW + 2, 'idle')).toBe(0);
+    expect(await backfillTitles(r.env, NOW, 'idle')).toBe(TITLING_BACKFILL_BATCH);
+    expect(await backfillTitles(r.env, NOW + 1, 'idle')).toBe(2);
+    expect(await backfillTitles(r.env, NOW + 2, 'idle')).toBe(0);
     expect(await titlingBackfillProgress(r.env, NOW + 2)).toMatchObject({ enabled: true, runsPerDay: TITLING_BACKFILL_BATCH + 2, usedToday: TITLING_BACKFILL_BATCH + 2, remaining: 2, inFlight: TITLING_BACKFILL_BATCH + 2, completedToday: 0, failedToday: 0 });
     // The window rolls: a day later the same ceiling admits the rest.
-    expect(await backfillImportedTitles(r.env, NOW + DAY + 3, 'idle')).toBe(2);
+    expect(await backfillTitles(r.env, NOW + DAY + 3, 'idle')).toBe(2);
     expect(await titlingBackfillProgress(r.env, NOW + DAY + 3)).toMatchObject({ usedToday: 2, remaining: 0 });
   });
 
@@ -122,12 +168,12 @@ describe('the imported-session backfill', () => {
     r.setting('agent.tasks', { [TITLING_TASK]: { schedule: { enabled: true, intervalSeconds: 0, runIn: ['idle'], overlap: 'skip' } } });
     r.session('a', { endedAt: NOW - 1000 });
     r.session('b', { endedAt: NOW - 2000 });
-    expect(await backfillImportedTitles(r.env, NOW, 'active')).toBe(0);
-    expect(await backfillImportedTitles(r.env, NOW, 'idle')).toBe(TITLING_BACKFILL_BATCH > 2 ? 2 : TITLING_BACKFILL_BATCH);
+    expect(await backfillTitles(r.env, NOW, 'active')).toBe(0);
+    expect(await backfillTitles(r.env, NOW, 'idle')).toBe(TITLING_BACKFILL_BATCH > 2 ? 2 : TITLING_BACKFILL_BATCH);
     r.session('c', { endedAt: NOW - 3000 });
-    expect(await backfillImportedTitles(r.env, NOW + 1, 'idle')).toBe(0);
+    expect(await backfillTitles(r.env, NOW + 1, 'idle')).toBe(0);
     r.sqlite.run(`UPDATE agent_runs SET status = 'completed', completed_at = ? WHERE task = ?`, [NOW + 2, TITLING_TASK]);
-    expect(await backfillImportedTitles(r.env, NOW + 3, 'idle')).toBe(1);
+    expect(await backfillTitles(r.env, NOW + 3, 'idle')).toBe(1);
   });
 
   it('never counts a person\'s own ask against the ceiling, and the ask is admitted at the ceiling', async () => {
@@ -136,8 +182,8 @@ describe('the imported-session backfill', () => {
     r.setting('agent.tasks', { [TITLING_TASK]: { schedule: { enabled: true, intervalSeconds: 0, maxRunsPerDay: 1 } } });
     r.session('a', { endedAt: NOW - 1000 });
     r.session('b', { endedAt: NOW - 2000 });
-    expect(await backfillImportedTitles(r.env, NOW, 'idle')).toBe(1);
-    expect(await backfillImportedTitles(r.env, NOW + 1, 'idle')).toBe(0);
+    expect(await backfillTitles(r.env, NOW, 'idle')).toBe(1);
+    expect(await backfillTitles(r.env, NOW + 1, 'idle')).toBe(0);
     const ask = await titleSession(r.env, { projectId: 'proj_1', sessionId: 'b', now: NOW + 2, origin: ORIGIN }, { mode: 'owner', by: 'mem_1' });
     expect(['dispatched', 'queued']).toContain(ask.outcome);
     expect(r.runs().map((run) => [run.sessionId, run.actor])).toEqual([['a', TITLING_BACKFILL_ACTOR], ['b', 'mem_1']]);
@@ -151,7 +197,7 @@ describe('the imported-session backfill', () => {
     r.session('a'); r.session('b');
     const tables = () => (r.sqlite.query(`SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name`).all() as { name: string }[]).map((t) => t.name);
     const before = tables();
-    const dispatched = await Promise.all([backfillImportedTitles(r.env, NOW, 'idle'), backfillImportedTitles(r.env, NOW, 'idle')]);
+    const dispatched = await Promise.all([backfillTitles(r.env, NOW, 'idle'), backfillTitles(r.env, NOW, 'idle')]);
     expect(dispatched.reduce((a, b) => a + b, 0)).toBe(2);
     expect(r.runs().map((run) => run.sessionId).sort()).toEqual(['a', 'b']);
     expect(tables()).toEqual(before);
@@ -208,7 +254,7 @@ describe('the imported-session backfill', () => {
       return undefined;
     }) };
 
-    const dispatched = await Promise.all(Array.from({ length: wakes }, () => backfillImportedTitles(env, NOW, 'idle')));
+    const dispatched = await Promise.all(Array.from({ length: wakes }, () => backfillTitles(env, NOW, 'idle')));
     expect(dispatched.reduce((a, b) => a + b, 0)).toBe(1);
     expect(r.runs().length).toBe(1);
     // The sessions the refused wakes selected keep their attempt for a later day.

@@ -489,11 +489,11 @@ export async function latestPromptId(db: RelationalStore, scope: ReadScope, sess
   return row?.prompt_id ?? null;
 }
 
-/** Claims an ended session's first attempt or a retry eligible after new live capture. */
-export async function claimTitling(db: RelationalStore, projectId: string, sessionId: string, nowMs: number): Promise<boolean> {
+/** Claims an ended session's first automatic attempt, or a retry of one that ended untitled with its stamp before `retryBefore`. */
+export async function claimTitling(db: RelationalStore, projectId: string, sessionId: string, nowMs: number, retryBefore: number): Promise<boolean> {
   const result = await db
     .prepare(`UPDATE sessions SET titled_at = ? WHERE project_id = ? AND session_id = ? AND ended_at IS NOT NULL AND ${titlingClaimAvailableSql('sessions')} AND ${sessionMaterialReadySql('sessions')}`)
-    .bind(nowMs, projectId, sessionId)
+    .bind(nowMs, projectId, sessionId, retryBefore)
     .run();
   return result.meta.changes === 1;
 }

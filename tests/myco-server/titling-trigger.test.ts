@@ -5,7 +5,7 @@
  * with one bound it launches a `title-summary` run for the ended session,
  * calling back to the request's own origin.
  */
-import { TITLING_RUN_TIMEOUT_SECONDS, titleReadySessions } from '@myco-server-worker/core/titling.js';
+import { backfillTitles, OWNER_TITLING_WINDOW_MS, TITLING_RUN_TIMEOUT_SECONDS, titleReadySessions } from '@myco-server-worker/core/titling.js';
 import { serverEnvFromBindings } from '@myco-server-worker/platform/cloudflare/env.js';
 import { describe, expect, it } from 'bun:test';
 import worker from '@myco-server-worker/index.js';
@@ -13,7 +13,7 @@ import { issueMemberToken } from '@myco-server-worker/auth/tokens.js';
 import { envelope, memberPost, sqliteEnv, uuid } from './helpers/fixtures.js';
 
 describe('the events route', () => {
-  it('retries a failed automatic title once for later captured material, after parsing and after the prior run closes', async () => {
+  it('retries a failed automatic title through the paced convergence, after parsing, past the run window and after every title run of the session closes', async () => {
     const e = sqliteEnv();
     const t = await issueMemberToken(e.db, { memberId: 'mem_machine_1', machineId: 'machine_1' }, Date.now());
     const post = async (over: Record<string, unknown>) => (await worker.fetch(memberPost(t.token, envelope(over)), e.env, e.deferred)).json();
@@ -22,32 +22,32 @@ describe('the events route', () => {
       VALUES ('proj_1', 'tx', 'sess_1', 'machine_1', 100, 100, 1, 2, ?)`, [t.tokenId]);
     await post({ eventId: uuid(2), kind: 'session.end', payload: { endedAt: 5_000 } });
     await e.deferred.settle();
+    e.sqlite.run(`INSERT INTO deployment_settings (leaf, value, updated_at, updated_by) VALUES ('agent.tasks', ?, 1, 'mem_1')`, [JSON.stringify({ 'title-summary': { schedule: { intervalSeconds: 0 } } })]);
     const first = e.sqlite.query(`SELECT id, queued_at FROM agent_runs`).get() as { id: string; queued_at: number };
     const env = { ...serverEnvFromBindings(e.env), origin: 'https://s' };
-    const later = first.queued_at + 1_000;
+    const later = first.queued_at + OWNER_TITLING_WINDOW_MS + 1_000;
+    // The run still waits: nothing retries it.
+    expect(await backfillTitles(env, later, 'idle')).toBe(0);
+    e.sqlite.run(`UPDATE agent_runs SET status = 'failed', completed_at = ? WHERE id = ?`, [later, first.id]);
+    // A request's first attempt is spent, so the end-request job never takes it again.
+    expect(await titleReadySessions(env, later + 1)).toBe(0);
+    // Late bytes unparsed hold the retry; inside the run window it is held too.
     e.sqlite.run(`UPDATE transcripts SET size = 200, last_received_at = ? WHERE transcript_id = 'tx'`, [later]);
-    expect(await titleReadySessions(env, later + 1)).toBe(0);
+    expect(await backfillTitles(env, later + 1, 'idle')).toBe(0);
     e.sqlite.run(`UPDATE transcripts SET parsed_offset = size WHERE transcript_id = 'tx'`);
-    expect(await titleReadySessions(env, later + 1)).toBe(0);
-    e.sqlite.run(`UPDATE transcripts SET parsed_offset = 100 WHERE transcript_id = 'tx'`);
-    e.sqlite.run(`UPDATE agent_runs SET status = 'failed', completed_at = ? WHERE id = ?`, [later + 2, first.id]);
-    expect(await titleReadySessions(env, later + 3)).toBe(0);
-    e.sqlite.run(`UPDATE transcripts SET parsed_offset = size WHERE transcript_id = 'tx'`);
-    e.sqlite.run(`UPDATE transcripts SET imported_at = ? WHERE transcript_id = 'tx'`, [later]);
-    expect(await titleReadySessions(env, later + 3)).toBe(0);
-    e.sqlite.run(`UPDATE transcripts SET imported_at = NULL WHERE transcript_id = 'tx'`);
+    expect(await backfillTitles(env, first.queued_at + 1, 'idle')).toBe(0);
+    // An owner's attempt in flight holds it.
     e.sqlite.run(`INSERT INTO agent_runs (project_id, id, agent_id, task, status, queued_at, run_context)
-      SELECT project_id, 'owner-attempt', agent_id, task, 'queued', ?, json_set(run_context, '$.mode', 'owner') FROM agent_runs WHERE id = ?`, [later + 3, first.id]);
-    expect(await titleReadySessions(env, later + 3)).toBe(0);
+      SELECT project_id, 'owner-attempt', agent_id, task, 'queued', ?, json_set(run_context, '$.mode', 'owner') FROM agent_runs WHERE id = ?`, [later + 1, first.id]);
+    expect(await backfillTitles(env, later + 2, 'idle')).toBe(0);
     e.sqlite.run(`UPDATE agent_runs SET status = 'failed' WHERE id = 'owner-attempt'`);
-    expect((await Promise.all([titleReadySessions(env, later + 4), titleReadySessions(env, later + 4)])).sort()).toEqual([0, 1]);
-    expect(await titleReadySessions(env, later + 5)).toBe(0);
+    // Two wakes at once make one retry.
+    expect((await Promise.all([backfillTitles(env, later + 3, 'idle'), backfillTitles(env, later + 3, 'idle')])).sort()).toEqual([0, 1]);
     expect(e.sqlite.query(`SELECT COUNT(*) AS n FROM agent_runs WHERE id != 'owner-attempt'`).get()).toEqual({ n: 2 });
-    e.sqlite.run(`UPDATE agent_runs SET status = 'failed', completed_at = ? WHERE status = 'queued'`, [later + 6]);
-    expect(await titleReadySessions(env, later + 7)).toBe(0);
-    e.sqlite.run(`UPDATE transcripts SET last_received_at = ? WHERE transcript_id = 'tx'`, [later + 8]);
+    // Never over a title that stands.
+    e.sqlite.run(`UPDATE agent_runs SET status = 'failed', completed_at = ? WHERE status = 'queued'`, [later + 4]);
     e.sqlite.run(`UPDATE sessions SET title = 'A title already written', summary = 'Keep this result' WHERE session_id = 'sess_1'`);
-    expect(await titleReadySessions(env, later + 9)).toBe(0);
+    expect(await backfillTitles(env, later + 2 * OWNER_TITLING_WINDOW_MS, 'idle')).toBe(0);
   });
 
   it('persists a deferred title with the admitted live end and retries after parsing, while import creates no request', async () => {

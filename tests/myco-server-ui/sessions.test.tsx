@@ -568,6 +568,17 @@ describe('Session detail', () => {
     expect(screen.getByText(/Built the executor\./).textContent).toBe('Built the executor.\nTests pass.');
   });
 
+  it('says why an ended session has no title, in the reader\'s words, and says nothing once it has one', async () => {
+    server(detailRoutes({ '/api/projects/x/sessions/s1': () => Response.json({ session: session({ endedAt: NOW - 1000 }), untitled: 'stopped', counts, projectId: 'x' }) }));
+    mount('/p/x/sessions/s1');
+    expect(await screen.findByText('Untitled: automatic titling stopped trying. Use Generate summary to try again')).toBeTruthy();
+    cleanup();
+    server(detailRoutes({ '/api/projects/x/sessions/s1': () => Response.json({ session: session({ endedAt: NOW - 1000, title: 'Named', titledAt: NOW }), untitled: null, counts, projectId: 'x' }) }));
+    mount('/p/x/sessions/s1');
+    expect((await screen.findByRole('heading', { level: 2 })).textContent).toBe('Named');
+    expect(screen.queryByText(/^Untitled:/)).toBeNull();
+  });
+
   it('renders an image attachment inline only for the renderable types, and links the rest', async () => {
     server(detailRoutes());
     mount('/p/x/sessions/s1?tab=attachments');
