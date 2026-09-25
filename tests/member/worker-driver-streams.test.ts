@@ -158,6 +158,43 @@ describe('the Claude Code driver', () => {
     expect(events.at(-1)).toEqual({ kind: 'ended', stop: 'error', detail: 'permission refused for mcp__myco__myco_run_sessions, mcp__myco__myco_run' });
   });
 
+  it('reads a refusal of a tool outside the run\'s grant as that call failing, and the turn\'s own end as the run\'s', async () => {
+    // The harness keeping a run to its tools is the grant working: the run did
+    // its work over its own server, and a refused shell call is one failed call.
+    const dir = stubHarness('claude', [
+      '{"type":"system","subtype":"init","session_id":"sess_9"}',
+      '{"type":"assistant","message":{"content":[{"type":"tool_use","id":"tu_1","name":"Bash","input":{"command":"ls"}}]}}',
+      '{"type":"system","subtype":"permission_denied","tool_name":"Bash","tool_use_id":"tu_1"}',
+      '{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"tu_1","is_error":true,"content":"Claude requested permissions to use Bash, but you haven\'t granted it yet."}]}}',
+      '{"type":"assistant","message":{"content":[{"type":"tool_use","id":"tu_2","name":"Read","input":{"file_path":"/etc/hosts"}}]}}',
+      '{"type":"assistant","message":{"content":[{"type":"tool_use","id":"tu_3","name":"mcp__myco__myco_run","input":{"op":"report"}}]}}',
+      '{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"tu_3","content":"{\\"ok\\":true}"}]}}',
+      '{"type":"result","subtype":"success","is_error":false,"stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":1},"permission_denials":[{"tool_name":"Bash","tool_use_id":"tu_1","tool_input":{"command":"ls"}},{"tool_name":"Read","tool_use_id":"tu_2","tool_input":{"file_path":"/etc/hosts"}}]}',
+    ]);
+    process.env.PATH = `${dir}:${process.env.PATH ?? ''}`;
+    const events = await collect(claudeCodeDriver.run({ ...runDir(), prompt: 'do it', credentialEnv: {} }, new AbortController().signal));
+    expect(events.at(-1)).toEqual({ kind: 'ended', stop: 'end_turn', detail: null });
+    // Each refused call is one failed call, whichever line said so first.
+    expect(events.filter((e) => e.kind === 'tool_call' && e.status === 'error')).toEqual([
+      { kind: 'tool_call', name: 'Bash', status: 'error' },
+      { kind: 'tool_call', name: 'Read', status: 'error' },
+    ]);
+  });
+
+  it('reads a refused history command in a source run as outside its grant, and a refused file read as the run kept from its work', async () => {
+    const run = runDir();
+    mkdirSync(join(run.scratchDir, 'repo'));
+    const result = (denials: string): string => `{"type":"result","subtype":"success","is_error":false,"stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":1},"permission_denials":[${denials}]}`;
+    const shell = '{"tool_name":"Bash","tool_use_id":"tu_1","tool_input":{"command":"git log | head"}}';
+    process.env.PATH = `${stubHarness('claude', [result(shell)])}:${process.env.PATH ?? ''}`;
+    const scoped = await collect(claudeCodeDriver.run({ ...run, sourceReadOnly: true, prompt: 'read history', credentialEnv: {} }, new AbortController().signal));
+    expect(scoped.at(-1)).toEqual({ kind: 'ended', stop: 'end_turn', detail: null });
+
+    process.env.PATH = `${stubHarness('claude', [result(`${shell},{"tool_name":"Read","tool_use_id":"tu_2","tool_input":{"file_path":"repo/README.md"}}`)])}:${process.env.PATH ?? ''}`;
+    const granted = await collect(claudeCodeDriver.run({ ...run, sourceReadOnly: true, prompt: 'read history', credentialEnv: {} }, new AbortController().signal));
+    expect(granted.at(-1)).toEqual({ kind: 'ended', stop: 'error', detail: 'permission refused for Read' });
+  });
+
   it('reads an in-band error on a message as the end of the run', async () => {
     const dir = stubHarness('claude', [
       '{"type":"system","subtype":"init","session_id":"sess_9"}',

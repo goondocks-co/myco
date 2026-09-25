@@ -36,11 +36,14 @@ const STOP: Readonly<Record<string, StopReason>> = {
  *
  * There is nobody at a terminal to answer a permission prompt, so nobody is
  * declared to answer one and every tool that would have asked is refused. The
- * run's own server is allowed whole; the mode is the asking one, so the
- * machine's own `bypassPermissions` or `auto` does not reach a queued run.
- * Source runs additionally allow file reads and bounded Git history commands.
+ * mode is the asking one, so the machine's own `bypassPermissions` or `auto`
+ * does not reach a queued run. What the run may call is its grant
+ * (`grantOf`), passed as `--allowedTools`.
  */
-export const RUN_PERMISSIONS: readonly string[] = ['--permission-mode', 'manual', '--permission-prompts', 'none', '--allowedTools', `mcp__${MCP_SERVER_NAME}`];
+export const RUN_PERMISSIONS: readonly string[] = ['--permission-mode', 'manual', '--permission-prompts', 'none'];
+
+/** The run's own server, allowed whole. */
+const SERVER_GRANT = `mcp__${MCP_SERVER_NAME}`;
 
 /** Source runs can inspect files and repository history without approving writes. */
 function sourceReadTools(scratchDir: string): string[] {
@@ -50,16 +53,38 @@ function sourceReadTools(scratchDir: string): string[] {
   return ['Read', 'Glob', 'Grep', ...prefixes.flatMap((prefix) => SOURCE_GIT_READ_COMMANDS.map((command) => `Bash(${prefix} ${command}:*)`))];
 }
 
+/** The `--allowedTools` rules a run is granted: its own server, and file and history reads for a source run. */
+function grantOf(spec: RunSpec): string[] {
+  return [SERVER_GRANT, ...(spec.sourceReadOnly === true ? sourceReadTools(spec.scratchDir) : [])];
+}
+
+/**
+ * Whether a grant allows every call of this tool.
+ *
+ * A bare rule names a whole tool, and the server rule every tool the server
+ * serves. A rule with a specifier, `Bash(git log:*)`, allows only the calls it
+ * matches, and the harness refuses a call of that tool only when the call is
+ * outside every such rule, so a refusal of it is a call the run was never
+ * granted.
+ */
+function grantsWhole(grant: readonly string[], tool: string): boolean {
+  return grant.some((rule) => rule === tool || (rule === SERVER_GRANT && tool.startsWith(`${SERVER_GRANT}__`)));
+}
+
 /** A message's content blocks. */
 function blocksOf(message: Record<string, unknown> | null): Record<string, unknown>[] {
   const content = message?.content;
   return Array.isArray(content) ? content.map(recordOf).filter((b): b is Record<string, unknown> => b !== null) : [];
 }
 
-/** The tools a turn's result says were refused, by name. */
-function deniedTools(result: Record<string, unknown>): string[] {
+/** The calls a turn's result says were refused: the tool each named, and its call id where it carries one. */
+function refusalsOf(result: Record<string, unknown>): { tool: string; id: string | null }[] {
   const denials = Array.isArray(result.permission_denials) ? result.permission_denials : [];
-  return denials.map((d) => stringOf(recordOf(d)?.tool_name)).filter((n): n is string => n !== null);
+  return denials.flatMap((d) => {
+    const denial = recordOf(d);
+    const tool = stringOf(denial?.tool_name);
+    return tool === null ? [] : [{ tool, id: stringOf(denial?.tool_use_id) }];
+  });
 }
 
 export const claudeCodeDriver: Driver = {
@@ -67,6 +92,7 @@ export const claudeCodeDriver: Driver = {
   async *run(spec: RunSpec, signal: AbortSignal): AsyncIterable<RunEvent> {
     const harness = harnessById('claude-code')!;
     const isolation = harness.isolation.kind === 'flag' ? harness.isolation.args : [];
+    const grant = grantOf(spec);
     const started = startHarness(harness.binary, [
       '-p', spec.prompt,
       '--output-format', 'stream-json',
@@ -74,22 +100,22 @@ export const claudeCodeDriver: Driver = {
       '--mcp-config', spec.mcpConfigPath,
       ...isolation,
       ...RUN_PERMISSIONS,
-      ...(spec.sourceReadOnly === true ? sourceReadTools(spec.scratchDir) : []),
+      '--allowedTools', ...grant,
     ], { cwd: spec.scratchDir, env: spec.credentialEnv, signal });
 
     let ended = false;
     let failure: string | null = null;
     /** The tool each call id named, so a result can be read back as that call's outcome. */
     const calls = new Map<string, string>();
-    /** Calls already reported as refused: the harness says so twice, on a system line and on the result. */
-    const denied = new Set<string>();
+    /** Calls whose outcome has been reported: the harness reports a refusal on a system line, on the call's result and on the turn's result. */
+    const reported = new Set<string>();
     for await (const line of jsonLines(started.lines)) {
       const type = stringOf(line.type);
       if (type === 'system' && stringOf(line.subtype) === 'init') {
         yield { kind: 'started', harness: harness.id, sessionId: stringOf(line.session_id) };
       } else if (type === 'system' && stringOf(line.subtype) === 'permission_denied') {
         const id = stringOf(line.tool_use_id);
-        if (id !== null) denied.add(id);
+        if (id !== null) reported.add(id);
         yield { kind: 'tool_call', name: stringOf(line.tool_name) ?? 'tool', status: 'error' };
       } else if (type === 'assistant') {
         failure ??= stringOf(line.error);
@@ -109,15 +135,23 @@ export const claudeCodeDriver: Driver = {
         for (const block of blocksOf(recordOf(line.message))) {
           if (stringOf(block.type) !== 'tool_result') continue;
           const id = stringOf(block.tool_use_id) ?? '';
-          if (denied.has(id)) continue;
+          if (reported.has(id)) continue;
+          reported.add(id);
           yield { kind: 'tool_call', name: calls.get(id) ?? 'tool', status: block.is_error === true ? 'error' : 'ok' };
         }
       } else if (type === 'result') {
         yield { kind: 'usage', ...claudeUsage(line) };
         ended = true;
-        // A turn the harness calls a success while it refused the run's own
-        // tools is the run doing nothing; the refusals are its outcome.
-        const refused = deniedTools(line);
+        // A refused call outside the grant is the harness keeping the run to
+        // its tools, and is reported as that call's failure. A refusal of a
+        // granted tool is the run kept from its own work, and ends the run.
+        const refusals = refusalsOf(line);
+        for (const { tool, id } of refusals) {
+          if (id !== null && reported.has(id)) continue;
+          if (id !== null) reported.add(id);
+          yield { kind: 'tool_call', name: tool, status: 'error' };
+        }
+        const refused = refusals.filter(({ tool }) => grantsWhole(grant, tool)).map(({ tool }) => tool);
         if (refused.length > 0) { yield { kind: 'ended', stop: 'error', detail: `permission refused for ${[...new Set(refused)].join(', ')}` }; break; }
         const stop = failure !== null || line.is_error === true ? 'error' : STOP[stringOf(line.stop_reason) ?? ''] ?? 'error';
         yield { kind: 'ended', stop, detail: stop === 'error' ? failure ?? stringOf(line.terminal_reason) ?? stringOf(line.subtype) : null };
