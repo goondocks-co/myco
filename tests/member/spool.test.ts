@@ -1,6 +1,6 @@
 /**
  * The spool: write-ahead append, the wire carries only the seven envelope
- * fields, the drain's high-water on acked and refused, deletion of a fully
+ * fields, the drain's high-water on acked and on a refusal final for the record, deletion of a fully
  * acknowledged file via deleteIfSync with the state reset inside the lock,
  * the per-session lease (two concurrent drains → each event once), the
  * offline latch, the protocol-mismatch diagnostic, and the refusal log's
@@ -70,12 +70,12 @@ describe('member spool', () => {
     expect(readSessionState(spool.dir, 'sess-wire').highWater).toBe(0);
   });
 
-  it('advances the high-water on acked and refused, logs refusals without payloads, and deletes the file only when all are acknowledged', async () => {
+  it('advances the high-water on acked and on a refusal final for the record, logs refusals without payloads, and deletes the file only when all are acknowledged', async () => {
     const rig = await memberRig();
     const spool = new MemberSpool('proj_1', { mycoHome });
     const ctx = ctxFor(spool, 'sess-hw');
     const [a, b, c] = prompts(ctx, 3);
-    b.envelope.kind = 'made.up' as never; // a terminal refusal in the middle
+    b.envelope.eventId = 'not an id'; // a refusal of the record itself, in the middle
     for (const e of [a, b, c]) spool.append('sess-hw', e);
     const r = await spool.drainSession('sess-hw', clientFor(rig), unboundedBudget());
     expect(r).toMatchObject({ sent: 3, acked: 2, refused: 1, remaining: 0 });
@@ -83,7 +83,7 @@ describe('member spool', () => {
     const refused = spool.readRefused().entries;
     expect(refused).toHaveLength(1);
     expect(Object.keys(refused[0]).sort()).toEqual(['at', 'code', 'eventId', 'kind', 'reason', 'sessionId']);
-    expect(refused[0]).toMatchObject({ eventId: b.envelope.eventId, kind: 'made.up', code: 'unknown_kind' });
+    expect(refused[0]).toMatchObject({ eventId: 'not an id', kind: 'prompt', code: 'id_grammar' });
     expect(JSON.stringify(refused)).not.toContain('p1');
     expect(fs.existsSync(path.join(spool.dir, 'sess-hw.jsonl'))).toBe(false);
   });

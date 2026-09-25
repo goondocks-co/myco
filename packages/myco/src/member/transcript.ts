@@ -24,14 +24,12 @@ import { firstHeading, sha256Text } from './text.js';
 import { SymbiontRegistry } from '../symbionts/registry.js';
 import type { TranscriptTurn } from '../symbionts/adapter.js';
 import { canStartRequest, clippedRequestBudget, type HookBudget } from './budget.js';
-import {
-  REFUSAL_PERMANENCE, TRANSCRIPT_HEAD_HASH_BYTES, TRANSCRIPT_RETRY_INITIAL_MS, TRANSCRIPT_RETRY_MAX_MS, TRANSCRIPT_SLICE_BYTES, type MemberCode,
-} from './constants.js';
+import { refusalPermanent, TRANSCRIPT_HEAD_HASH_BYTES, TRANSCRIPT_SLICE_BYTES, type MemberCode } from './constants.js';
 import {
   attachmentEvent, deriveId, planEvent, planKeyForTag, promptEvent, queuedPromptIdFor, transcriptSegmentEvent, TEXT_MEDIA_TYPE,
   type EnvelopeContext, type OutboundEvent, type TranscriptRole,
 } from './envelope.js';
-import { readSessionState, updateSessionState, type SessionState, type TranscriptPointer } from './session-state.js';
+import { clearRefusalRetry, deferAfterRefusal, readSessionState, updateSessionState, type SessionState, type TranscriptPointer } from './session-state.js';
 import type { MemberSpool } from './spool.js';
 import type { ServerClient } from './transport.js';
 
@@ -414,7 +412,7 @@ export async function shipTranscriptSegments(
       // as `endPass` documents, the caller logs its own refusal.
       if (blob.class === 'refused') {
         spool.endPass(blob, now());
-        return { shipped, endedBy: logRefusal(blob.code, blob.reason, REFUSAL_PERMANENCE[blob.code] === 'permanent') };
+        return { shipped, endedBy: logRefusal(blob.code, blob.reason, refusalPermanent(blob.code)) };
       }
       if (blob.class !== 'reslice') spool.endPass(blob, now());
       return { shipped, endedBy: blob.class === 'reslice' ? 'refused' : blob.class };
@@ -444,7 +442,7 @@ export async function shipTranscriptSegments(
           continue;
         }
         // A second disagreement under a fresh identity is final; so is any code final for these bytes.
-        const permanent = REFUSAL_PERMANENCE[outcome.code] === 'permanent' || (outcome.code === REPLACED_CODE && reminted);
+        const permanent = refusalPermanent(outcome.code) || (outcome.code === REPLACED_CODE && reminted);
         spool.endPass(outcome, now());
         return { shipped, endedBy: logRefusal(outcome.code, outcome.reason, permanent) };
       }
@@ -467,8 +465,7 @@ export async function shipTranscriptSegments(
  * every transcript is acknowledged to its end, refused for good, or gone from
  * disk; set otherwise, so a pass that could not finish leaves the session for
  * the backlog to reach from another hook. A transient refusal also sets when a
- * backlog walk may try again, doubling from `TRANSCRIPT_RETRY_INITIAL_MS` to
- * `TRANSCRIPT_RETRY_MAX_MS`.
+ * backlog walk may try again (`deferAfterRefusal`).
  */
 export async function shipSessionTranscripts(
   ctx: EnvelopeContext, spool: MemberSpool, client: ServerClient, budget: HookBudget,
@@ -490,13 +487,10 @@ export async function shipSessionTranscripts(
   }
   if (refusedForNow) {
     spool.markTranscriptBacklog(ctx.sessionId);
-    updateSessionState(spool.dir, ctx.sessionId, (s) => {
-      const backoffMs = s.transcriptRetry === undefined ? TRANSCRIPT_RETRY_INITIAL_MS : Math.min(s.transcriptRetry.backoffMs * 2, TRANSCRIPT_RETRY_MAX_MS);
-      s.transcriptRetry = { at: now() + backoffMs, backoffMs };
-    }, now());
+    deferAfterRefusal(spool.dir, ctx.sessionId, 'transcriptRetry', now());
     return { shipped, endedBy: 'refused' };
   }
   spool.clearTranscriptBacklog(ctx.sessionId);
-  if (state.transcriptRetry !== undefined) updateSessionState(spool.dir, ctx.sessionId, (s) => { delete s.transcriptRetry; }, now());
+  if (state.transcriptRetry !== undefined) clearRefusalRetry(spool.dir, ctx.sessionId, 'transcriptRetry', now());
   return { shipped, endedBy: 'done' };
 }

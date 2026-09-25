@@ -37,25 +37,45 @@ export function isMemberCode(value: unknown): value is MemberCode {
 }
 
 /**
- * What a refusal says about the bytes it refused, for every code the server can
- * answer. `permanent`: these bytes, or this session, can never be accepted —
- * sending them again only repeats the refusal. `transient`: the refusal is about
- * the moment, the credential, the Project or the member's build, and the same
- * bytes may be accepted later. Closed over `MEMBER_CODES`: a code the server
- * adds is classified here before it compiles.
+ * What a refusal judges, for every code the server can answer: the record
+ * itself (its bytes, its shape, its ids, or a row the Deployment already holds
+ * under them); the session it belongs to; what the Deployment holds or allows
+ * at the moment; the credential presenting it; the member's clock; the
+ * server's version; or nothing the code names. Closed over `MEMBER_CODES`: a
+ * code the server adds is classified here before it compiles.
  */
-export const REFUSAL_PERMANENCE: Readonly<Record<MemberCode, 'permanent' | 'transient'>> = {
-  body_cap: 'permanent', blob_cap: 'permanent', digest_mismatch: 'permanent', media_type: 'permanent',
-  blob_length_mismatch: 'permanent', parse: 'permanent', session_tombstoned: 'permanent',
-  refused: 'transient', quota: 'transient', content_length: 'transient', empty_body: 'transient', blob_absent: 'transient',
-  no_project: 'transient', offset_gap: 'transient', offset_overlap: 'transient', identity_mismatch: 'transient',
-  no_machine_identity: 'transient', unknown_kind: 'transient', unknown_field: 'transient', id_grammar: 'transient',
-  clock_skew: 'transient', event_id_conflict: 'transient', projection_conflict: 'transient', refresh_too_early: 'transient',
-  lineage_expired: 'transient', enrollment_unknown: 'transient', enrollment_used: 'transient', enrollment_expired: 'transient',
-  enrollment_revoked: 'transient', identity_claimed: 'transient', enrollment_no_project: 'transient', project_archived: 'transient',
-  run_scope: 'transient', no_run: 'transient', project_mismatch: 'transient', transcript_replaced: 'transient',
-  not_admin: 'transient', import_disabled: 'transient', unavailable: 'transient',
+export type RefusalSubject = 'record' | 'session' | 'deployment' | 'credential' | 'clock' | 'server-version' | 'unclassified';
+
+export const REFUSAL_SUBJECT: Readonly<Record<MemberCode, RefusalSubject>> = {
+  body_cap: 'record', blob_cap: 'record', digest_mismatch: 'record', media_type: 'record', blob_length_mismatch: 'record',
+  parse: 'record', id_grammar: 'record', event_id_conflict: 'record', projection_conflict: 'record', identity_mismatch: 'record',
+  session_tombstoned: 'session',
+  no_project: 'deployment', project_archived: 'deployment', blob_absent: 'deployment', offset_gap: 'deployment', offset_overlap: 'deployment',
+  transcript_replaced: 'deployment', import_disabled: 'deployment', content_length: 'deployment', empty_body: 'deployment', unavailable: 'deployment',
+  quota: 'credential', no_machine_identity: 'credential', refresh_too_early: 'credential', lineage_expired: 'credential',
+  enrollment_unknown: 'credential', enrollment_used: 'credential', enrollment_expired: 'credential', enrollment_revoked: 'credential',
+  identity_claimed: 'credential', enrollment_no_project: 'credential', run_scope: 'credential', no_run: 'credential',
+  project_mismatch: 'credential', not_admin: 'credential',
+  clock_skew: 'clock',
+  unknown_kind: 'server-version', unknown_field: 'server-version',
+  refused: 'unclassified',
 };
+
+/** Subjects a later answer cannot change: a refusal of the record or its session is repeated for the same bytes, whenever they are sent. */
+const FINAL_SUBJECTS: readonly RefusalSubject[] = ['record', 'session'];
+
+/**
+ * What a refusal says about the bytes it refused. `permanent`: these bytes, or
+ * this session, can never be accepted — sending them again only repeats the
+ * refusal. `transient`: the refusal is about the Deployment, the credential,
+ * the clock or the server's version, and the same bytes may be accepted later.
+ */
+export const REFUSAL_PERMANENCE: Readonly<Record<MemberCode, 'permanent' | 'transient'>> = Object.fromEntries(
+  MEMBER_CODES.map((code) => [code, FINAL_SUBJECTS.includes(REFUSAL_SUBJECT[code]) ? 'permanent' : 'transient']),
+) as Record<MemberCode, 'permanent' | 'transient'>;
+
+/** Whether a refusal with `code` is final for the bytes it refused. */
+export const refusalPermanent = (code: MemberCode): boolean => REFUSAL_PERMANENCE[code] === 'permanent';
 
 /** Codes that re-slice a transcript from the server's held size instead of refusing. */
 export const RESLICE_CODES: readonly MemberCode[] = ['offset_gap', 'offset_overlap'];
@@ -175,14 +195,17 @@ export const MEMBER_TRANSCRIPT_RETENTION_MS = 30 * MS_PER_DAY;
 /** Ceiling on the per-project refusal diagnostic log. */
 export const REFUSED_LOG_MAX_BYTES = 1024 * 1024;
 
-/** Offline latch backoff: first probe delay, doubling up to the ceiling. */
-/** How long a session's transcripts wait after a transient refusal before a backlog walk sends them again, doubling to the cap. */
-export const TRANSCRIPT_RETRY_INITIAL_MS = 5 * 60 * 1000;
-export const TRANSCRIPT_RETRY_MAX_MS = 6 * 60 * 60 * 1000;
+/** How long a session's spooled events, or its transcripts, wait after a transient refusal before a backlog walk sends them again, doubling to the cap. */
+export const REFUSAL_RETRY_INITIAL_MS = 5 * 60 * 1000;
+export const REFUSAL_RETRY_MAX_MS = 6 * 60 * 60 * 1000;
+/** An unclassified refusal of one spooled record is final for that record once it has been refused this long and its wait has reached `REFUSAL_RETRY_MAX_MS`. */
+export const UNCLASSIFIED_REFUSAL_HOLD_HOURS = 72;
+export const UNCLASSIFIED_REFUSAL_HOLD_MS = UNCLASSIFIED_REFUSAL_HOLD_HOURS * 60 * 60 * 1000;
 /** How long a refresh the Deployment refused for want of a Project waits before a membership with none bound asks again. */
 export const REFRESH_NO_PROJECT_BACKOFF_MS = 60 * 60 * 1000;
 /** How often a build may ask once more about a terminal refusal another build recorded. */
 export const TERMINAL_RETRY_INTERVAL_MS = 24 * 60 * 60 * 1000;
+/** Offline latch backoff: first probe delay, doubling up to the ceiling. */
 export const OFFLINE_BACKOFF_INITIAL_MS = 30_000;
 export const OFFLINE_BACKOFF_MAX_MS = 10 * 60 * 1000;
 

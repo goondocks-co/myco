@@ -7,6 +7,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { withFileLockSync } from '../utils/lifecycle-lock.js';
+import { REFUSAL_RETRY_INITIAL_MS, REFUSAL_RETRY_MAX_MS } from './constants.js';
 import { ensurePrivateFile, readPrivateJson, reportSkippedPrivateFile, writePrivateFileAtomic } from './store.js';
 
 export const SESSION_STATE_VERSION = 1;
@@ -26,6 +27,19 @@ export interface TranscriptPointer {
   /** The code the Deployment refused this transcript with for good, when it has; nothing ships under this identity again. */
   refused?: string;
 }
+
+/** When a backlog walk may send a session's records again after a transient refusal, the wait that set it, and since when the same record has been refused. */
+export interface RefusalRetry {
+  at: number;
+  backoffMs: number;
+  /** When the first refusal of the held record arrived; a refusal of another record starts the wait over. */
+  since: number;
+  /** The record the refusal held, when the wait is one record's. */
+  heldId?: string;
+}
+
+/** The state fields that hold a wait after a transient refusal: one for the session's spooled events, one for its transcripts. */
+export type RetryField = 'eventRetry' | 'transcriptRetry';
 
 export interface SessionState {
   version: typeof SESSION_STATE_VERSION;
@@ -59,7 +73,9 @@ export interface SessionState {
   /** Set when no one symbiont's declared transcript layout names this session's transcript, so a hook's backlog walk passes it over rather than search again. */
   agentUnknown?: true;
   /** When a backlog walk may send this session's transcripts again after a transient refusal, and the wait that set it. */
-  transcriptRetry?: { at: number; backoffMs: number };
+  transcriptRetry?: RefusalRetry;
+  /** When a backlog walk may send this session's spooled events again after a transient refusal held them, and the wait that set it. */
+  eventRetry?: RefusalRetry;
   /** When this session first appended to the spool; the clock retention measures from until an acknowledgement arrives. */
   startedAt?: number;
   /** When the server last acknowledged one of this session's records. */
@@ -191,6 +207,29 @@ export function updateSessionState(spoolDir: string, sessionId: string, mutate: 
     writeSessionStateUnlocked(spoolDir, sessionId, state, now);
     return state;
   });
+}
+
+/** Whether a wait after a transient refusal still runs at `now`. */
+export const retryWaiting = (retry: RefusalRetry | undefined, now: number): boolean => retry !== undefined && retry.at > now;
+
+/**
+ * Start or lengthen a session's wait after a transient refusal of `heldId`:
+ * `REFUSAL_RETRY_INITIAL_MS`, then double the last wait, to
+ * `REFUSAL_RETRY_MAX_MS`. A refusal of a different record than the one the
+ * wait held starts it over.
+ */
+export function deferAfterRefusal(spoolDir: string, sessionId: string, field: RetryField, now: number, heldId?: string): RefusalRetry {
+  const state = updateSessionState(spoolDir, sessionId, (s) => {
+    const previous = s[field]?.heldId === heldId ? s[field] : undefined;
+    const backoffMs = previous === undefined ? REFUSAL_RETRY_INITIAL_MS : Math.min(previous.backoffMs * 2, REFUSAL_RETRY_MAX_MS);
+    s[field] = { at: now + backoffMs, backoffMs, since: previous?.since ?? now, ...(heldId === undefined ? {} : { heldId }) };
+  }, now);
+  return state[field]!;
+}
+
+/** End a session's wait: the records it held were delivered or let go. */
+export function clearRefusalRetry(spoolDir: string, sessionId: string, field: RetryField, now: number): void {
+  updateSessionState(spoolDir, sessionId, (s) => { delete s[field]; }, now);
 }
 
 /** Remove a session's state file (after its spool is fully acknowledged and deleted, or on purge). */

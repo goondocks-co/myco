@@ -14,7 +14,9 @@
  * id and a transcript segment by its offset, so a session another process is
  * delivering at the same moment is neither lost nor doubled. Each session's
  * events go first, and its transcripts ship only once they are all
- * acknowledged, the order the session's own hooks keep.
+ * acknowledged, the order the session's own hooks keep. A session whose events
+ * or transcripts a transient refusal held is passed over until its wait runs
+ * out; an explicit full pass sends them regardless.
  */
 import fs from 'node:fs';
 import path from 'node:path';
@@ -25,7 +27,7 @@ import { resolveTranscriptPath } from '../symbionts/transcript-discovery.js';
 import { canStartRequest, unboundedBudget, type HookBudget } from './budget.js';
 import { refreshDue, refreshMemberCredential } from './refresh.js';
 import { readRegistryEntry, type RegistryEntry } from './registry.js';
-import { pointerBehind, pointersOf, readSessionState, updateSessionState, type SessionState } from './session-state.js';
+import { pointerBehind, pointersOf, readSessionState, retryWaiting, updateSessionState, type SessionState } from './session-state.js';
 import { MemberSpool, type DrainEnd, type DrainOptions, type DrainResult } from './spool.js';
 import { ensurePrivateFile, writePrivateFileAtomic } from './store.js';
 import { shipSessionTranscripts, type ShipResult } from './transcript.js';
@@ -56,7 +58,7 @@ export interface BacklogReport {
   sessions: BacklogSession[];
   /** The sessions whose spooled events this walk actually offered the Deployment and got a session's own answer to: the ones retention may judge stuck. */
   tried: string[];
-  /** Why the walk stopped: `done` when it reached and tried every session; `skipped` when it passed one it could not try (latched, or held by another process). */
+  /** Why the walk stopped: `done` when it reached every session and tried each one not waiting after a refusal; `skipped` when it passed one it could not try (latched, or held by another process). */
   endedBy: 'done' | 'skipped' | 'budget' | DrainEnd | ShipResult['endedBy'];
 }
 
@@ -148,9 +150,14 @@ export async function drainBacklog(spool: MemberSpool, client: ServerClient, bud
     const session: BacklogSession = { sessionId };
     report.sessions.push(session);
     if (spooled.has(sessionId)) {
-      const events = await spool.drainSession(sessionId, client, budget, { force: opts.force, now, onUnauthorized: opts.onUnauthorized, clientFor: opts.clientFor });
+      const events = await spool.drainSession(sessionId, client, budget, {
+        force: opts.force, now, onUnauthorized: opts.onUnauthorized, clientFor: opts.clientFor, honourRetry: opts.rescan !== true,
+      });
       session.events = events;
-      if (events.skipped !== undefined) { skipped = true; continue; }
+      if (events.skipped !== undefined) {
+        if (events.skipped !== 'deferred') skipped = true;
+        continue;
+      }
       if (!sessionTried(events)) { report.endedBy = events.endedBy; break; }
       report.tried.push(sessionId);
       if (events.remaining > 0) continue;
@@ -159,7 +166,7 @@ export async function drainBacklog(spool: MemberSpool, client: ServerClient, bud
     const state = readSessionState(spool.dir, sessionId);
     // Every transcript acknowledged to its end, or gone from disk: nothing is left to deliver.
     if (!pointersOf(state).some(pointerBehind)) { spool.clearTranscriptBacklog(sessionId); continue; }
-    if (state.transcriptRetry !== undefined && state.transcriptRetry.at > now() && opts.rescan !== true) { session.transcripts = 'deferred'; continue; }
+    if (opts.rescan !== true && retryWaiting(state.transcriptRetry, now())) { session.transcripts = 'deferred'; continue; }
     const agent = labelSession(spool, sessionId, state, opts.rescan === true);
     if (agent === null) {
       // The bytes and the mark stay: the session is reported, and kept, until a symbiont can be named for it.

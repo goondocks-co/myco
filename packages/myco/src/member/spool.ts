@@ -18,11 +18,15 @@ import { resolveMycoHome } from '../paths/home.js';
 import { LifecycleLock, withFileLockSync } from '../utils/lifecycle-lock.js';
 import { canStartRequest, clippedRequestBudget, longestDeclaredHookTimeoutMs, type HookBudget } from './budget.js';
 import {
-  isProjectId, MEMBER_FILE_MODE, MEMBER_PROTOCOL, OFFLINE_BACKOFF_INITIAL_MS, OFFLINE_BACKOFF_MAX_MS, REFUSED_LOG_MAX_BYTES, type MemberCode,
+  isProjectId, MEMBER_FILE_MODE, MEMBER_PROTOCOL, OFFLINE_BACKOFF_INITIAL_MS, OFFLINE_BACKOFF_MAX_MS, REFUSAL_RETRY_MAX_MS, REFUSAL_SUBJECT, refusalPermanent,
+  REFUSED_LOG_MAX_BYTES, UNCLASSIFIED_REFUSAL_HOLD_HOURS, UNCLASSIFIED_REFUSAL_HOLD_MS, type MemberCode,
 } from './constants.js';
 import type { BlobSource, BlobStager, MemberEnvelope, OutboundEvent } from './envelope.js';
 import { REJOIN_HINT } from './delivery-notice.js';
-import { bufferLockPath, readSessionState, readSessionStateResult, readSessionStateUnlocked, sessionStatePath, updateSessionState, writeSessionStateUnlocked, type SessionState, type SessionStateRead } from './session-state.js';
+import {
+  bufferLockPath, deferAfterRefusal, readSessionState, readSessionStateResult, readSessionStateUnlocked, retryWaiting, sessionStatePath, updateSessionState,
+  writeSessionStateUnlocked, type SessionState, type SessionStateRead,
+} from './session-state.js';
 import { assertMemberPathContained, ensureMemberDir, ensurePrivateFile, memberRoot, pathIsAbsent, readPrivateJson, reportSkippedPrivateFile, writePrivateFileAtomic } from './store.js';
 import type { ClientRecord, Outcome, ServerClient } from './transport.js';
 
@@ -35,6 +39,8 @@ const DRAIN_LEASE_SUFFIX = '.drain.lock';
 const TRANSCRIPT_BACKLOG_SUFFIX = '.transcript-backlog';
 /** Suffix of a session's state file, the sibling of its spool file. */
 const STATE_FILE_SUFFIX = '.state.json';
+/** The code the Deployment answers an event whose blob it does not hold. */
+const BLOB_ABSENT_CODE: MemberCode = 'blob_absent';
 
 /** The seven envelope fields; nothing else leaves the spool. */
 export const WIRE_FIELDS = ['eventId', 'sessionId', 'kind', 'createdAt', 'channel', 'producer', 'payload'] as const;
@@ -97,7 +103,8 @@ export type DrainEnd = Outcome['class'] | 'budget' | 'protocol_mismatch' | 'drai
 
 export interface DrainResult {
   sessionId: string;
-  skipped?: 'lease' | 'latched' | 'never-drains';
+  /** `deferred`: the session's events wait out a transient refusal, and the caller asked that the wait be honoured. */
+  skipped?: 'lease' | 'latched' | 'never-drains' | 'deferred';
   sent: number;
   acked: number;
   refused: number;
@@ -114,6 +121,8 @@ export interface DrainOptions {
   onUnauthorized?: () => Promise<ClientRecord | null>;
   /** Builds a client from a record; used after `onUnauthorized` supplies a new one. */
   clientFor?: (record: ClientRecord) => ServerClient;
+  /** Pass over a session whose events wait out a transient refusal. A backlog walk honours the wait; a session's own hooks and an explicit drain send regardless. */
+  honourRetry?: boolean;
 }
 
 /**
@@ -589,12 +598,19 @@ export class MemberSpool {
     return outcome;
   }
 
-  /** One drain pass over a session's spool under the session lease; the high-water advances on `acked` and `refused`. */
+  /**
+   * One drain pass over a session's spool under the session lease, in spool
+   * order. The high-water advances on `acked` and on a refusal final for the
+   * record. Any other refusal holds the record, and every record after it, for
+   * a later pass: the pass ends `refused`, and the session's wait starts or
+   * lengthens.
+   */
   async drainSession(sessionId: string, client: ServerClient, budget: HookBudget, opts: DrainOptions = {}): Promise<DrainResult> {
     const now = opts.now ?? Date.now;
     const result: DrainResult = { sessionId, sent: 0, acked: 0, refused: 0, remaining: 0, endedBy: 'drained' };
     if (!budget.drains) return { ...result, skipped: 'never-drains', remaining: this.depth(sessionId) };
     if (!this.shouldDial(now(), opts.force)) return { ...result, skipped: 'latched', remaining: this.depth(sessionId) };
+    if (opts.honourRetry === true && retryWaiting(readSessionState(this.dir, sessionId).eventRetry, now())) return { ...result, skipped: 'deferred', remaining: this.depth(sessionId) };
     ensurePrivateFile(this.leasePath(sessionId));
     const lease = LifecycleLock.acquire(this.leasePath(sessionId), { command: 'myco member drain' });
     if (!lease.acquired) return { ...result, skipped: 'lease', remaining: this.depth(sessionId) };
@@ -631,10 +647,42 @@ export class MemberSpool {
           fs.unlinkSync(source.path);
         } catch { /* already gone */ }
       };
+      // A high-water past the held record ends the wait it set.
       const persist = (highWater: number, acked?: boolean) => updateSessionState(this.dir, sessionId, (s) => {
         s.highWater = highWater;
         if (acked) s.lastAckAt = now();
+        delete s.eventRetry;
       }, now());
+      /**
+       * Whether a refusal is final for `record`: its code is permanent; the
+       * Deployment lacks bytes this member no longer holds; or no code names
+       * the cause and the same record has been refused for
+       * `UNCLASSIFIED_REFUSAL_HOLD_MS` with its wait at `REFUSAL_RETRY_MAX_MS`.
+       */
+      const verdictOn = (record: SpoolRecord, code: MemberCode, sourceGone: boolean): 'final' | 'held-too-long' | 'held' => {
+        if (refusalPermanent(code) || (code === BLOB_ABSENT_CODE && sourceGone)) return 'final';
+        if (REFUSAL_SUBJECT[code] !== 'unclassified') return 'held';
+        const wait = readSessionState(this.dir, sessionId).eventRetry;
+        const heldTooLong = wait?.heldId === record.eventId && wait.backoffMs >= REFUSAL_RETRY_MAX_MS && now() - wait.since >= UNCLASSIFIED_REFUSAL_HOLD_MS;
+        return heldTooLong ? 'held-too-long' : 'held';
+      };
+      /** Log a refusal of `record` and apply it: true when the pass moves past the record, false when the record is held. */
+      const refuse = (record: SpoolRecord, code: MemberCode, reason: string, sourceGone: boolean): boolean => {
+        const verdict = verdictOn(record, code, sourceGone);
+        const logged = verdict === 'held-too-long' ? `refused for ${UNCLASSIFIED_REFUSAL_HOLD_HOURS} h: ${reason}` : reason;
+        this.appendRefused({ eventId: record.eventId, sessionId, kind: record.kind, code, reason: logged, at: now() });
+        if (verdict === 'held') {
+          deferAfterRefusal(this.dir, sessionId, 'eventRetry', now(), record.eventId);
+          stderr(`${record.kind} ${record.eventId} refused by the server (${code}): ${reason} — kept spooled with the session's later events, sent again later`);
+          return false;
+        }
+        stderr(`${record.kind} ${record.eventId} refused by the server (${code}): ${logged} — dropped`);
+        result.refused += 1;
+        i += 1;
+        release(record);
+        persist(i);
+        return true;
+      };
 
       pass: while (i < records.length) {
         if (!canStartRequest(budget, now())) { result.endedBy = 'budget'; break; }
@@ -651,9 +699,17 @@ export class MemberSpool {
           result.endedBy = 'protocol_mismatch';
           break;
         }
+        let sourceGone = false;
         if (record._blobSource) {
           const blobOutcome = await this.uploadBlob(activeClient, record._blobSource, budget, now, uploaded);
-          if (blobOutcome !== null && blobOutcome.class !== 'acked' && blobOutcome.class !== 'refused') {
+          if (blobOutcome === null) {
+            sourceGone = true;
+          } else if (blobOutcome.class === 'refused') {
+            // The record's bytes were refused: the refusal of the bytes is the record's.
+            if (refuse(record, blobOutcome.code, blobOutcome.reason, false)) continue;
+            result.endedBy = 'refused';
+            break;
+          } else if (blobOutcome.class !== 'acked') {
             result.endedBy = this.endPass(blobOutcome, now());
             break;
           }
@@ -669,13 +725,9 @@ export class MemberSpool {
             persist(i, true);
             continue;
           case 'refused':
-            this.appendRefused({ eventId: record.eventId, sessionId, kind: record.kind, code: outcome.code, reason: outcome.reason, at: now() });
-            stderr(`${record.kind} ${record.eventId} refused by the server (${outcome.code}): ${outcome.reason}`);
-            result.refused += 1;
-            i += 1;
-            release(record);
-            persist(i);
-            continue;
+            if (refuse(record, outcome.code, outcome.reason, sourceGone)) continue;
+            result.endedBy = 'refused';
+            break pass;
           case 'reslice':
             stderr(`${record.kind} ${record.eventId} answered ${outcome.code} on the event spool — left spooled`);
             result.endedBy = outcome.class;
@@ -731,10 +783,10 @@ export class MemberSpool {
    * Public because the transcript-segment path ends its own passes and must
    * not carry a second copy of the policy.
    *
-   * Refusal LOGGING is not here and belongs to the caller: `refused` does not
-   * end a pass on the event path (the high-water advances past it and the
-   * drain continues), and only the caller holds the event whose id, kind and
-   * code `refused.jsonl` records. Every caller that can be refused logs it.
+   * Refusals are not here and belong to the caller: what a refusal does to a
+   * pass depends on whether it is final for the record, and only the caller
+   * holds the record whose id, kind and code `refused.jsonl` records. Every
+   * caller that can be refused logs it.
    */
   endPass(outcome: Outcome, now: number): DrainEnd {
     switch (outcome.class) {
