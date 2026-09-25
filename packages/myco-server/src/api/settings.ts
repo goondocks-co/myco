@@ -73,16 +73,24 @@ export async function handleSettings(env: ServerEnv): Promise<Response> {
   });
 }
 
-/** A URL with its userinfo, query and fragment removed; any other string unchanged. */
-function withoutUrlSecrets(value: string): string {
-  const url = /^[a-z][\w+.-]*:\/\//i.test(value) && URL.canParse(value) ? new URL(value) : null;
-  return url === null ? value : `${url.protocol}//${url.host}${url.pathname}`;
-}
+/** A token that addresses a host: a scheme or `//` ahead of it, or `name:secret@host` followed by a port or a path. */
+const URL_TOKEN = /^(?:[a-z][\w+.-]*:)?\/\/|^[^:/@]+:[^/@]*@[\w.-]+[:/]/i;
+/** The userinfo of a URL token, with the scheme and `//` it follows kept in group 1. */
+const USERINFO = /^((?:[a-z][\w+.-]*:)?\/\/)?[^/@?#]*@/i;
+
+/**
+ * A string with every URL inside it — whole, embedded in prose, or inside a
+ * JSON-encoded value — stripped of its userinfo, query and fragment. Tokens
+ * are split at whitespace, quotes, brackets, commas and backslashes.
+ */
+const withoutUrlSecrets = (value: string): string =>
+  value.replace(/[^\s"'<>(),\\]+/g, (token) => (URL_TOKEN.test(token) ? token.replace(USERINFO, '$1').replace(/[?#].*$/, '') : token));
 
 /**
  * The same leaves to a member credential, Deployment-wide, over a member json
- * route whose body is the empty object. Every URL string a value holds, at any
- * depth, leaves without its userinfo, query and fragment.
+ * route whose body is the empty object. Every URL a string value holds, at any
+ * depth and anywhere in the string, leaves without its userinfo, query and
+ * fragment.
  */
 export const handleMemberSettings = emptyBodyRoute(async (env: ServerEnv) =>
   ok(JSON.parse(await (await handleSettings(env)).text(), (_key, value: unknown) => (typeof value === 'string' ? withoutUrlSecrets(value) : value))));

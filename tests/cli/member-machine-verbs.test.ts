@@ -170,20 +170,27 @@ describe('a joined member with no 1.4 vault', () => {
   it('the settings read strips userinfo, query and fragment from every URL a leaf holds, and creates no Project whatever the request names', async () => {
     const rig = await memberRig();
     join(rig);
-    leaf(rig, 'agent.provider.base_url', 'https://reader:hunter2@llm.example/v1?api_key=sk-inline#frag');
-    leaf(rig, 'embedding.base_url', 'http://embed.example:8080/api?token=t');
-    leaf(rig, 'instructions.template', 'Say hello. See https://docs.example/?q=kept-as-text for more.');
+    const shapes: Record<string, [string, string]> = {
+      'agent.provider.base_url': ['https://reader:hunter2@llm.example/v1?api_key=sk-inline#frag', 'https://llm.example/v1'],
+      'embedding.base_url': ['reader:hunter2@llm.internal:8080/v1?key=sk-inline', 'llm.internal:8080/v1'],
+      'embedding.provider': ['//reader:hunter2@h.example/p?q=sk-inline', '//h.example/p'],
+      'instructions.template': [
+        'See {"url":"https://reader:hunter2@h.example/p?key=sk-inline"} and https://docs.example/guide?token=sk-inline, or mail bob@example.com.',
+        'See {"url":"https://h.example/p"} and https://docs.example/guide, or mail bob@example.com.',
+      ],
+      'agent.limits.concurrent_runs': ['https://h.example/p?x=a@b', 'https://h.example/p'],
+    };
+    for (const [name, [stored]] of Object.entries(shapes)) leaf(rig, name, stored);
     const projects = rig.rows('projects');
 
     const res = await rig.fetch('https://s/members/settings', { method: 'POST', headers: { ...rig.headers({ 'x-myco-project': 'proj_never_seen' }), 'content-type': 'application/json' }, body: '{}' });
     const text = await res.text();
     const leaves = (JSON.parse(text) as { leaves: Array<{ leaf: string; value: unknown; updatedBy: string | null }> }).leaves;
-    const value = (name: string) => leaves.find((l) => l.leaf === name)?.value;
-    expect(value('agent.provider.base_url')).toBe('https://llm.example/v1');
-    expect(value('embedding.base_url')).toBe('http://embed.example:8080/api');
-    expect(value('instructions.template')).toBe('Say hello. See https://docs.example/?q=kept-as-text for more.');
+    for (const [name, [, shown]] of Object.entries(shapes)) {
+      expect({ name, value: leaves.find((l) => l.leaf === name)?.value }).toEqual({ name, value: shown });
+    }
     expect(leaves.find((l) => l.leaf === 'agent.provider.base_url')?.updatedBy).toBe('mem_machine_1');
-    for (const hidden of ['hunter2', 'reader', 'sk-inline', 'token=t', 'frag']) expect(text).not.toContain(hidden);
+    for (const hidden of ['hunter2', 'reader', 'sk-inline', 'frag']) expect(text).not.toContain(hidden);
     expect(rig.rows('projects')).toBe(projects);
     expect(rig.env.sqlite.query("SELECT COUNT(*) AS n FROM projects WHERE project_id = 'proj_never_seen'").get()).toEqual({ n: 0 });
 
@@ -335,6 +342,37 @@ describe('a joined member with no 1.4 vault', () => {
     expect(ran.stdout).toMatch(/Capture\s+.*!!.*Claude Code's global hooks .* are Myco's 1\.4 capture, not the member's/);
     expect(ran.stdout).toMatch(/Capture\s+.*FAIL.*no harness on this machine captures for the member/);
     expect(ran.stdout).not.toContain('captures for the member from');
+  });
+
+  it('doctor reports a 1.4 OpenCode plugin as 1.4 capture, and the member plugin as the member\'s', async () => {
+    const rig = await memberRig();
+    join(rig);
+    const plugin = path.join(userHome, '.config', 'opencode', 'plugins', 'myco.ts');
+    fs.mkdirSync(path.dirname(plugin), { recursive: true });
+    fs.writeFileSync(plugin, '// myco:plugin-marker\nexport const MycoPlugin = async () => ({});\n');
+
+    const legacy = await verb('doctor', [], rig.fetch);
+    expect(legacy.stdout).toMatch(/Capture\s+.*!!.*OpenCode's global hooks .* are Myco's 1\.4 capture, not the member's/);
+    expect(legacy.stdout).not.toContain('OpenCode captures for the member');
+
+    fs.writeFileSync(plugin, '// myco:plugin-marker\n// myco:member-plugin\nexport const MycoPlugin = async () => ({});\n');
+    const member = await verb('doctor', [], rig.fetch);
+    expect(member.stdout).toMatch(/Capture\s+.*ok.*OpenCode captures for the member from its global hooks/);
+  });
+
+  it('doctor reads Codex member hooks from a hooks.json that carries a TOML footer', async () => {
+    const rig = await memberRig();
+    join(rig);
+    const program = path.join(userHome, 'bin', 'myco');
+    fs.mkdirSync(path.dirname(program), { recursive: true });
+    fs.writeFileSync(program, '#!/bin/sh\n', { mode: 0o755 });
+    const hooks = { hooks: { SessionStart: [{ hooks: [{ type: 'command', command: `${program} hook session-start --symbiont codex --credential registry --myco-managed` }] }] } };
+    fs.mkdirSync(path.join(userHome, '.codex'), { recursive: true });
+    fs.writeFileSync(path.join(userHome, '.codex', 'hooks.json'), `${JSON.stringify(hooks, null, 2)}\n\n[features]\ncodex_hooks = true\n`);
+
+    const ran = await verb('doctor', [], rig.fetch);
+
+    expect(ran.stdout).toMatch(/Capture\s+.*ok.*Codex captures for the member from its global hooks/);
   });
 
   it('doctor names a member hook whose program is missing or not executable, and counts it as no capture', async () => {
