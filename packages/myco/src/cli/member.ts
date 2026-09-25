@@ -29,17 +29,20 @@ import { openBrowser } from './open-browser.js';
 import { loadManifests, resolvePackageRoot } from '../symbionts/detect.js';
 import { MemberMcpConflictError, MemberProvisionConflictError, SymbiontInstaller } from '../symbionts/installer.js';
 import { ensureVaultGitignoreCurrent } from '../vault/gitignore.js';
+import { describeWorkerService, ensuredWorkerWords, ensureWorkerService, removeWorkerService, workerServiceWords, type WorkerServiceDeps } from './worker-service.js';
 
 export const MEMBER_HELP = `Usage: myco member <op> [options]
 
 Ops:
-  join <server-url> --project <id> (--token-stdin | --token-env <NAME>) [--root <dir>] [--provision <agent>]
+  join <server-url> --project <id> (--token-stdin | --token-env <NAME>) [--root <dir>] [--provision <agent>] [--no-worker]
                      Record this machine's membership of a project on a Myco server. The token is read
                      from stdin or from the named environment variable — never from the command line.
-                     --provision installs the agent's hooks and MCP entry globally.
+                     --provision installs the agent's hooks and MCP entry globally. A worker for the
+                     server is installed to run at login (\`myco worker install\`) unless --no-worker.
   leave [--purge]    Forget this project's membership, and remove the surfaces that answer over it: any
                      member plugin (OpenCode, Pi) and the project's own Myco MCP entry, so those agents
-                     fall back to what is installed for all your projects. The spool is kept unless
+                     fall back to what is installed for all your projects. Leaving the last project on a
+                     server removes its worker service. The spool is kept unless
                      --purge is given, which also removes the hooks this project was provisioned with.
   drain [--all]      Deliver every spooled event for this project (or every joined project with --all);
                      no harness budget, the offline latch is ignored, retention is applied first.
@@ -77,6 +80,8 @@ export interface MemberCliDeps {
   packageRoot?: string;
   /** Opens a URL in the browser for `link-github --open`; defaults to the platform opener. */
   openBrowser?: (url: string) => void;
+  /** What `join` and `leave` install and remove the worker service through; defaults to this machine's platform. */
+  worker?: WorkerServiceDeps;
 }
 
 const redact = (token: string): string => `${token.slice(0, 4)}…${token.slice(-4)}`;
@@ -160,6 +165,7 @@ interface JoinArgs {
   tokenEnv?: string;
   root?: string;
   provision?: string;
+  noWorker?: boolean;
   error?: string;
 }
 
@@ -181,6 +187,7 @@ function parseJoin(args: readonly string[]): JoinArgs {
       case '--token-env': parsed.tokenEnv = value(arg, args[++i]); break;
       case '--root': parsed.root = value(arg, args[++i]); break;
       case '--provision': parsed.provision = value(arg, args[++i]); break;
+      case '--no-worker': parsed.noWorker = true; break;
       default:
         if (arg.startsWith('-')) refuse(`unknown option ${arg.split('=')[0]}`);
         else if (parsed.serverUrl === undefined) parsed.serverUrl = arg;
@@ -248,6 +255,7 @@ export async function runJoin(args: readonly string[], deps: MemberCliDeps = {})
   out('connect your GitHub account for the dashboard: myco member link-github');
 
   if (parsed.provision && !provisionAgent(parsed.provision, root, mycoHome, deps, out, fail)) return null;
+  if (!parsed.noWorker) await joinWorker(parsed.serverUrl, mycoHome, deps, out);
 
   // #1148: the machine's existing history for this project, once, bounded by
   // what the Deployment allows. A failure never fails the join — the membership
@@ -258,6 +266,15 @@ export async function runJoin(args: readonly string[], deps: MemberCliDeps = {})
   const imported = report?.projects.reduce((n, project) => n + project.agents.reduce((m, a) => m + a.imported, 0), 0) ?? 0;
   if (imported > 0) out(`imported ${imported} past sessions; run \`myco import\` to reach further back`);
   return entry;
+}
+
+/**
+ * Keep a worker for the joined Deployment running at login. A machine that
+ * cannot host one is told why and stays joined: the membership is what the
+ * join is for, and `myco worker install` retries the service on its own.
+ */
+async function joinWorker(serverUrl: string, mycoHome: string, deps: MemberCliDeps, out: (line: string) => void): Promise<void> {
+  out(`${deploymentUrl(serverUrl)}: ${ensuredWorkerWords(await ensureWorkerService(serverUrl, { ...deps.worker, mycoHome })).line}`);
 }
 
 /**
@@ -353,6 +370,12 @@ export function runLeave(args: readonly string[], deps: MemberCliDeps = {}): boo
   removeRegistryEntry(root, mycoHome);
   clearMissingMembership(root, mycoHome);
   out(`left ${entry.projectId} for ${root}`);
+  // The last binding on a Deployment takes its membership with it, and a worker
+  // service left behind would restart all day with nothing to claim under.
+  if (readDeploymentMembership(entry.serverUrl, mycoHome) === null && describeWorkerService(entry.serverUrl, { ...deps.worker, mycoHome })?.installed === true) {
+    const removed = removeWorkerService(entry.serverUrl, { ...deps.worker, mycoHome });
+    if ('removed' in removed && removed.removed) out(`removed the worker service for ${deploymentUrl(entry.serverUrl)}`);
+  }
   // The pin points at a home that no longer holds this project. Left standing it
   // would send every hook here to look for a membership that is gone, and each
   // one would count another miss.
@@ -443,6 +466,7 @@ export function runStatus(args: readonly string[], deps: MemberCliDeps = {}): vo
     const damaged = refusals.unreadableLines > 0 ? `, ${refusals.unreadableLines} unreadable` : '';
     out(`refused:    ${refusals.logReadable ? `${refusals.loggedSinceLastReset} logged${damaged}${last ? `; last ${last.kind ?? 'unknown kind'} ${last.eventId ?? 'unknown event'} (${last.code ?? 'code not recognised'}) at ${last.at === null ? 'unknown' : when(last.at)}` : ''}` : 'the log could not be read'}`);
     out(`latch:      ${!facts.latchReadable ? 'unknown — latch could not be read' : latch ? `offline since ${when(latch.since)}, next probe ${when(latch.nextProbeAt)} (backoff ${latch.backoffMs} ms)` : 'online'}`);
+    out(`worker:     ${workerServiceWords(describeWorkerService(entry.serverUrl, { ...deps.worker, mycoHome })).line}`);
   }
   if (selection.all) {
     if (!selection.readable) err('myco member: the registry directory could not be read');

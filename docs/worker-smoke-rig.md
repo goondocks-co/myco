@@ -1,6 +1,6 @@
 # Persistent macOS worker smoke rig
 
-The opt-in rig runs an installed `myco worker` through the existing service manager and restarts it after a crash. Choose `login` to start with a user session or `boot` to start when the machine boots. Both run as the invoking user. The rig does not start a Deployment or a capture daemon, and it does not configure host VM startup or automatic login.
+A member keeps a worker running with `myco worker install`, which `myco member join` also runs; this rig is the separate smoke harness for boot-scope and crash-recovery checks. The opt-in rig runs an installed `myco worker` through the existing service manager and restarts it after a crash. Choose `login` to start with a user session or `boot` to start when the machine boots. Both run as the invoking user. The rig does not start a Deployment or a capture daemon, and it does not configure host VM startup or automatic login.
 
 Use a reviewed, signed native binary in a persistent directory. Keep its membership home, working directory and logs outside temporary directories and source checkouts. The service gets only the declared home and PATH. It reads credentials from the membership registry and the harness's ordinary login store. No credential is embedded in the service definition.
 

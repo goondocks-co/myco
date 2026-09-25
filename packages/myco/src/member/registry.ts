@@ -574,3 +574,39 @@ export function readRegistryEntryResult(root: string, mycoHome: string = resolve
   if (read.ok) return { status: 'present', entry: read.entry };
   return read.reason === 'missing' ? { status: 'missing' } : { status: 'unavailable' };
 }
+
+/** Every Deployment this home holds a membership of, whether or not a project is bound to it. Reads only. */
+export function listDeploymentMemberships(mycoHome: string = resolveMycoHome()): DeploymentMembership[] {
+  const dir = deploymentsDir(mycoHome);
+  if (!fs.existsSync(dir)) return [];
+  const memberships: DeploymentMembership[] = [];
+  for (const name of fs.readdirSync(dir).sort()) {
+    if (!name.endsWith('.json')) continue;
+    const file = path.join(dir, name);
+    const read = readPrivateJson<DeploymentMembership>(file);
+    if (!read.ok) {
+      if (read.reason !== 'missing') reportSkippedPrivateFile('deployment membership', file, read);
+      continue;
+    }
+    if (isMembership(read.value)) memberships.push(read.value);
+    else reportSkippedPrivateFile('deployment membership', file, { reason: 'malformed', detail: 'not a deployment membership' });
+  }
+  return memberships;
+}
+
+/** A Deployment membership as a reader that must tell absence from damage sees it. */
+export type DeploymentMembershipResult =
+  | { status: 'present'; membership: DeploymentMembership }
+  | { status: 'missing' }
+  | { status: 'unavailable'; reason: string };
+
+/**
+ * The membership for `serverUrl`, distinguishing a file that is not there from
+ * one that is there and cannot be read, has loose permissions, or is not a
+ * membership. Reads only, and reports nothing to stderr.
+ */
+export function readDeploymentMembershipResult(serverUrl: string, mycoHome: string = resolveMycoHome()): DeploymentMembershipResult {
+  const read = readPrivateJson<DeploymentMembership>(deploymentPath(serverUrl, mycoHome));
+  if (!read.ok) return read.reason === 'missing' ? { status: 'missing' } : { status: 'unavailable', reason: read.detail === undefined ? read.reason : `${read.reason} (${read.detail})` };
+  return isMembership(read.value) ? { status: 'present', membership: read.value } : { status: 'unavailable', reason: 'not a deployment membership' };
+}
