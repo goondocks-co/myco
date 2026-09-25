@@ -28,14 +28,16 @@ export interface TranscriptPointer {
   refused?: string;
 }
 
-/** When a backlog walk may send a session's records again after a transient refusal, the wait that set it, and since when the same record has been refused. */
+/**
+ * When a backlog walk may send a session's records again after a transient
+ * refusal, the wait that set it, and when the first refusal of the held
+ * records arrived. A pass that moves past them clears it, so a wait always
+ * belongs to the records it held.
+ */
 export interface RefusalRetry {
   at: number;
   backoffMs: number;
-  /** When the first refusal of the held record arrived; a refusal of another record starts the wait over. */
   since: number;
-  /** The record the refusal held, when the wait is one record's. */
-  heldId?: string;
 }
 
 /** The state fields that hold a wait after a transient refusal: one for the session's spooled events, one for its transcripts. */
@@ -213,16 +215,15 @@ export function updateSessionState(spoolDir: string, sessionId: string, mutate: 
 export const retryWaiting = (retry: RefusalRetry | undefined, now: number): boolean => retry !== undefined && retry.at > now;
 
 /**
- * Start or lengthen a session's wait after a transient refusal of `heldId`:
+ * Start or lengthen a session's wait after a transient refusal:
  * `REFUSAL_RETRY_INITIAL_MS`, then double the last wait, to
- * `REFUSAL_RETRY_MAX_MS`. A refusal of a different record than the one the
- * wait held starts it over.
+ * `REFUSAL_RETRY_MAX_MS`.
  */
-export function deferAfterRefusal(spoolDir: string, sessionId: string, field: RetryField, now: number, heldId?: string): RefusalRetry {
+export function deferAfterRefusal(spoolDir: string, sessionId: string, field: RetryField, now: number): RefusalRetry {
   const state = updateSessionState(spoolDir, sessionId, (s) => {
-    const previous = s[field]?.heldId === heldId ? s[field] : undefined;
+    const previous = s[field];
     const backoffMs = previous === undefined ? REFUSAL_RETRY_INITIAL_MS : Math.min(previous.backoffMs * 2, REFUSAL_RETRY_MAX_MS);
-    s[field] = { at: now + backoffMs, backoffMs, since: previous?.since ?? now, ...(heldId === undefined ? {} : { heldId }) };
+    s[field] = { at: now + backoffMs, backoffMs, since: previous?.since ?? now };
   }, now);
   return state[field]!;
 }

@@ -18,7 +18,7 @@ describe('refusal permanence', () => {
   it('holds final only what judges the record or its session: what judges the Deployment, the credential, the clock or the server\'s version is sent again', () => {
     const permanent = MEMBER_CODES.filter((code) => REFUSAL_PERMANENCE[code] === 'permanent').sort();
     expect(permanent).toEqual([
-      'blob_cap', 'blob_length_mismatch', 'body_cap', 'digest_mismatch', 'event_id_conflict', 'id_grammar', 'identity_mismatch', 'media_type', 'parse',
+      'blob_cap', 'blob_length_mismatch', 'body_cap', 'digest_mismatch', 'event_id_conflict', 'id_grammar', 'identity_mismatch', 'invalid_field', 'media_type', 'parse',
       'projection_conflict', 'session_tombstoned',
     ]);
     for (const code of MEMBER_CODES) {

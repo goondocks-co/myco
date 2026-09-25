@@ -17,7 +17,7 @@ import { readSessionState } from '@myco/member/session-state.js';
 import { MemberSpool } from '@myco/member/spool.js';
 import { ServerClient, type FetchLike } from '@myco/member/transport.js';
 import { memberRig, tempMycoHome, type MemberRig } from './helpers/server.js';
-import { registerTestMember } from './helpers/hooks.js';
+import { registerTestMember, runHook } from './helpers/hooks.js';
 
 const PROJECT = 'proj_1';
 const SERVER_URL = 'https://member-test.invalid';
@@ -82,8 +82,9 @@ describe('an event refused for a passing reason', () => {
     const first = await spool.drainSession('sess-skew', clientFor(rig, spy.fetch), unboundedBudget(), { now: () => ahead });
     expect(first).toMatchObject({ sent: 3, acked: 2, refused: 0, remaining: 3, endedBy: 'refused' });
     expect(spy.answers.map((a) => [a.eventId, a.code ?? 'ok'])).toEqual([[ids[0], 'ok'], [ids[1], 'ok'], [ids[2], 'clock_skew']]);
-    expect(readSessionState(spool.dir, 'sess-skew').eventRetry).toMatchObject({ heldId: ids[2], backoffMs: REFUSAL_RETRY_INITIAL_MS });
-    expect(spool.readRefused().entries.map((e) => [e.eventId, e.code])).toEqual([[ids[2], 'clock_skew']]);
+    const wait = readSessionState(spool.dir, 'sess-skew').eventRetry!;
+    expect(wait).toMatchObject({ backoffMs: REFUSAL_RETRY_INITIAL_MS, since: ahead });
+    expect(spool.readRefused().entries.map((e) => [e.eventId, e.code, e.held])).toEqual([[ids[2], 'clock_skew', { retryAt: wait.at }]]);
     expect(storedIds(rig, 'sess-skew')).toEqual([ids[0], ids[1]].sort());
 
     // The Deployment's clock reaches the member's; the session's own next hook sends at once.
@@ -179,14 +180,44 @@ describe('an event refused for a passing reason', () => {
       setSystemTime(new Date(at));
       expect(await drain()).toMatchObject({ endedBy: 'refused', remaining: 2, refused: 0 });
     }
-    expect(readSessionState(spool.dir, 'sess-bad').eventRetry).toMatchObject({ heldId: bad, since: t0, backoffMs: REFUSAL_RETRY_MAX_MS });
+    expect(readSessionState(spool.dir, 'sess-bad').eventRetry).toMatchObject({ since: t0, backoffMs: REFUSAL_RETRY_MAX_MS });
     expect(storedIds(rig, 'sess-bad')).toEqual([]);
 
     setSystemTime(new Date(t0 + UNCLASSIFIED_REFUSAL_HOLD_MS));
     expect(await drain()).toMatchObject({ endedBy: 'drained', refused: 1, acked: 1, remaining: 0 });
     expect(storedIds(rig, 'sess-bad')).toEqual([good]);
-    const logged = spool.readRefused().entries.at(-1)!;
-    expect({ eventId: logged.eventId, code: logged.code, held: logged.reason.startsWith('refused for 72 h') }).toEqual({ eventId: bad, code: 'refused', held: true });
+    // One entry when the record was first held, one when it was let go: the retries between log nothing.
+    const logged = spool.readRefused().entries;
+    expect(logged.map((e) => [e.eventId, e.code, e.held === undefined ? 'dropped' : 'held'])).toEqual([[bad, 'refused', 'held'], [bad, 'refused', 'dropped']]);
+    expect(logged[1].reason.startsWith('refused for 72 h')).toBe(true);
+  });
+
+  it('keeps an unclassified refusal held past the hold while its wait has not reached the longest', async () => {
+    const t0 = Date.now();
+    setSystemTime(new Date(t0));
+    const rig = await memberRig();
+    const spool = new MemberSpool(PROJECT, { mycoHome });
+    const ctx = ctxFor(spool, 'sess-away');
+    spool.append('sess-away', prompt(ctx, 'refused before the machine went away'));
+    const spy = answering(rig, () => 'refused');
+    const drain = () => spool.drainSession('sess-away', clientFor(rig, spy.fetch), unboundedBudget(), { now: () => Date.now() });
+
+    expect(await drain()).toMatchObject({ endedBy: 'refused', remaining: 1 });
+    // The machine was off for longer than the hold: one refusal is not yet a record held at the longest wait.
+    let at = t0 + UNCLASSIFIED_REFUSAL_HOLD_MS + 8 * HOUR_MS;
+    let refusals = 1;
+    for (let attempt = 0; attempt < 20; attempt += 1) {
+      setSystemTime(new Date(at));
+      const result = await drain();
+      refusals += 1;
+      if (result.refused > 0) break;
+      expect(result).toMatchObject({ endedBy: 'refused', remaining: 1 });
+      expect(readSessionState(spool.dir, 'sess-away').eventRetry!.since).toBe(t0);
+      at += REFUSAL_RETRY_MAX_MS;
+    }
+    // 5 min doubling reaches the 6 h cap on the eighth refusal; the ninth, past the hold at the cap, lets it go.
+    expect(refusals).toBe(9);
+    expect(spool.sessionIds()).toEqual([]);
   });
 
   it('never drops a record for its age when the refusal names the Deployment, the clock or the server\'s version', async () => {
@@ -225,5 +256,85 @@ describe('an event refused for a passing reason', () => {
     // The capped record's event was never offered: its bytes' refusal is its own.
     expect(spy.answers.map((a) => a.eventId)).toEqual([gone.envelope.eventId, after.envelope.eventId]);
     expect(storedIds(rig, 'sess-bytes')).toEqual([after.envelope.eventId]);
+  });
+  it('holds a record whose staged bytes are there but could not be read, keeps the bytes, and delivers it once they can be', async () => {
+    const rig = await memberRig();
+    const spool = new MemberSpool(PROJECT, { mycoHome });
+    const ctx = ctxFor(spool, 'sess-locked');
+    const big = prompt(ctx, 'l'.repeat(300_000));
+    const after = prompt(ctx, 'after');
+    for (const e of [big, after]) spool.append('sess-locked', e);
+    const staged = big.blobSource!.path;
+    fs.chmodSync(staged, 0o000);
+    const spy = answering(rig);
+    try {
+      const held = await spool.drainSession('sess-locked', clientFor(rig, spy.fetch), unboundedBudget());
+      expect(held).toMatchObject({ sent: 0, refused: 0, remaining: 2, endedBy: 'unreadable' });
+      expect(readSessionState(spool.dir, 'sess-locked').eventRetry?.backoffMs).toBe(REFUSAL_RETRY_INITIAL_MS);
+      expect(fs.existsSync(staged)).toBe(true);
+    } finally {
+      fs.chmodSync(staged, 0o600);
+    }
+    expect(await spool.drainSession('sess-locked', clientFor(rig, spy.fetch), unboundedBudget())).toMatchObject({ acked: 2, remaining: 0, endedBy: 'drained' });
+    expect(storedIds(rig, 'sess-locked')).toEqual(idsOf([big, after]).sort());
+  });
+
+  it('holds a record the Deployment answers blob_absent while its staged bytes are still on this machine, and uploads them again', async () => {
+    const rig = await memberRig();
+    const spool = new MemberSpool(PROJECT, { mycoHome });
+    const ctx = ctxFor(spool, 'sess-blob');
+    const big = prompt(ctx, 'b'.repeat(300_000));
+    spool.append('sess-blob', big);
+    let refusals = 1;
+    const spy = answering(rig, () => (refusals-- > 0 ? 'blob_absent' : null));
+    expect(await spool.drainSession('sess-blob', clientFor(rig, spy.fetch), unboundedBudget())).toMatchObject({ refused: 0, remaining: 1, endedBy: 'refused' });
+    expect(fs.existsSync(big.blobSource!.path)).toBe(true);
+    expect(await spool.drainSession('sess-blob', clientFor(rig, spy.fetch), unboundedBudget())).toMatchObject({ acked: 1, remaining: 0, endedBy: 'drained' });
+    expect(storedIds(rig, 'sess-blob')).toEqual([big.envelope.eventId]);
+  });
+
+  it('drops at once a record the Deployment refuses for a field outside its bound, and delivers the records after it', async () => {
+    const rig = await memberRig();
+    const spool = new MemberSpool(PROJECT, { mycoHome });
+    const ctx = ctxFor(spool, 'sess-field');
+    const bad = prompt(ctx, 'bad origin');
+    (bad.envelope.payload as Record<string, unknown>).origin = 'not-an-origin';
+    const after = prompt(ctx, 'after');
+    for (const e of [bad, after]) spool.append('sess-field', e);
+
+    expect(await spool.drainSession('sess-field', clientFor(rig, rig.fetch), unboundedBudget())).toMatchObject({ refused: 1, acked: 1, remaining: 0, endedBy: 'drained' });
+    expect(spool.readRefused().entries.map((e) => [e.eventId, e.code, e.held])).toEqual([[bad.envelope.eventId, 'invalid_field', undefined]]);
+    expect(storedIds(rig, 'sess-field')).toEqual([after.envelope.eventId]);
+  });
+
+  it('drops the events of a session another machine owns rather than holding them: the identity is not this machine\'s to change', async () => {
+    const rig = await memberRig();
+    const other = await rig.otherMachine();
+    const spool = new MemberSpool(PROJECT, { mycoHome });
+    const theirs = sessionStartEvent(ctxFor(spool, 'sess-theirs'), { startedAt: Date.now() });
+    const answer = await new ServerClient({ serverUrl: SERVER_URL, token: other.token, projectId: PROJECT }, rig.fetch).postEvent(theirs.envelope, unboundedBudget());
+    expect(answer.class).toBe('acked');
+    const ctx = ctxFor(spool, 'sess-theirs');
+    for (const e of [prompt(ctx, 'mine 1'), prompt(ctx, 'mine 2')]) spool.append('sess-theirs', e);
+
+    expect(await spool.drainSession('sess-theirs', clientFor(rig, rig.fetch), unboundedBudget())).toMatchObject({ refused: 2, remaining: 0, endedBy: 'drained' });
+    expect(spool.readRefused().entries.map((e) => [e.code, e.held])).toEqual([['identity_mismatch', undefined], ['identity_mismatch', undefined]]);
+    expect(readSessionState(spool.dir, 'sess-theirs').eventRetry).toBeUndefined();
+  });
+
+  it('delivers the other sessions\' backlog from a probing hook whose own session is held on a refusal of its own records', async () => {
+    const rig = await memberRig();
+    registerTestMember({ mycoHome, token: rig.token, tokenId: rig.tokenId, projectId: PROJECT, expiresAt: rig.expiresAt, serverUrl: SERVER_URL });
+    const spool = new MemberSpool(PROJECT, { mycoHome });
+    spool.append('sess-own', prompt(ctxFor(spool, 'sess-own'), 'held'));
+    const otherEvents = [sessionStartEvent(ctxFor(spool, 'sess-other'), { startedAt: Date.now() })];
+    for (const e of otherEvents) spool.append('sess-other', e);
+    const spy = answering(rig, (e) => (e.sessionId === 'sess-own' ? 'unknown_kind' : null));
+
+    await runHook('stop', { session_id: 'sess-own', hook_event_name: 'Stop', last_assistant_message: 'done' }, { fetch: spy.fetch });
+
+    expect(spool.depth('sess-own')).toBeGreaterThan(0);
+    expect(storedIds(rig, 'sess-other')).toEqual(idsOf(otherEvents));
+    expect(spool.sessionIds()).toEqual(['sess-own']);
   });
 });

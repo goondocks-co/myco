@@ -27,7 +27,7 @@ describe('ingest', () => {
 
     // A member's own capture, which is every write that names no origin.
     expect(await ingestEvent(db, ctx, forged)).toEqual({
-      persisted: false, code: 'refused',
+      persisted: false, code: 'invalid_field',
       reason: `producer.adapter ${TRANSCRIPT_PARSE_ADAPTER} is reserved for the Deployment's transcript parser`,
     });
     expect(count(sqlite, 'events')).toBe(0);

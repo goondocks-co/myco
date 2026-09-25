@@ -27,6 +27,8 @@ export const MEMBER_CODES = [
   'not_admin',
   // #1148 — bounded import
   'import_disabled',
+  // a field outside its declared shape or bound
+  'invalid_field',
   'unavailable',
 ] as const;
 export type MemberCode = (typeof MEMBER_CODES)[number];
@@ -48,7 +50,7 @@ export type RefusalSubject = 'record' | 'session' | 'deployment' | 'credential' 
 
 export const REFUSAL_SUBJECT: Readonly<Record<MemberCode, RefusalSubject>> = {
   body_cap: 'record', blob_cap: 'record', digest_mismatch: 'record', media_type: 'record', blob_length_mismatch: 'record',
-  parse: 'record', id_grammar: 'record', event_id_conflict: 'record', projection_conflict: 'record', identity_mismatch: 'record',
+  parse: 'record', id_grammar: 'record', invalid_field: 'record', event_id_conflict: 'record', projection_conflict: 'record', identity_mismatch: 'record',
   session_tombstoned: 'session',
   no_project: 'deployment', project_archived: 'deployment', blob_absent: 'deployment', offset_gap: 'deployment', offset_overlap: 'deployment',
   transcript_replaced: 'deployment', import_disabled: 'deployment', content_length: 'deployment', empty_body: 'deployment', unavailable: 'deployment',

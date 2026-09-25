@@ -28,7 +28,7 @@ import { canStartRequest, unboundedBudget, type HookBudget } from './budget.js';
 import { refreshDue, refreshMemberCredential } from './refresh.js';
 import { readRegistryEntry, type RegistryEntry } from './registry.js';
 import { pointerBehind, pointersOf, readSessionState, retryWaiting, updateSessionState, type SessionState } from './session-state.js';
-import { MemberSpool, type DrainEnd, type DrainOptions, type DrainResult } from './spool.js';
+import { HOLD_ENDS, MemberSpool, type DrainEnd, type DrainOptions, type DrainResult } from './spool.js';
 import { ensurePrivateFile, writePrivateFileAtomic } from './store.js';
 import { shipSessionTranscripts, type ShipResult } from './transcript.js';
 import { ServerClient, type FetchLike } from './transport.js';
@@ -63,12 +63,15 @@ export interface BacklogReport {
 }
 
 /** Event pass endings that belong to the session alone. Any other answer — unreachable, the credential refused, the quota, the protocol window, the budget — would be the next session's too, so the walk ends there: a mis-deployed server costs one request, not one per session. */
-const EVENTS_CONTINUE: readonly DrainEnd[] = ['drained', 'acked', 'refused', 'reslice', 'protocol_mismatch'];
+const EVENTS_CONTINUE: readonly DrainEnd[] = ['drained', 'acked', 'reslice', 'protocol_mismatch', ...HOLD_ENDS];
 /** Transcript pass endings that belong to the session alone. */
 const TRANSCRIPTS_CONTINUE: readonly ShipResult['endedBy'][] = ['done', 'absent', 'refused', 'rejected'];
 
 /** Whether an event pass offered the session to the Deployment and got the session's own answer, rather than stopping on something every session would meet. */
 export const sessionTried = (events: DrainResult): boolean => events.skipped === undefined && EVENTS_CONTINUE.includes(events.endedBy);
+
+/** Whether an event pass ended holding a record of the session's own, which says nothing about any other session's. */
+export const sessionHeld = (events: DrainResult): boolean => events.skipped === undefined && HOLD_ENDS.includes(events.endedBy);
 
 /** The sessions in walk order: sorted, starting after the one the last walk ended on, so a session that holds a walk up cannot starve the ones after it. */
 function walkOrder(spool: MemberSpool, ids: readonly string[]): string[] {
