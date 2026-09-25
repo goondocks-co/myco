@@ -1,7 +1,8 @@
 /**
  * Spool retention: an un-acknowledged spool is never age-deleted. A session
  * spool the server has not acknowledged for `MEMBER_SPOOL_QUARANTINE_MS`, and
- * that a delivery walk reaching every session still could not deliver, is
+ * that a delivery pass has just offered the Deployment and still could not
+ * deliver, is
  * moved into the spool's `quarantine/` subdir (`quarantineBufferFile`), and
  * quarantined files older than `MEMBER_SPOOL_QUARANTINE_PRUNE_MS` are pruned
  * (`pruneQuarantinedBuffers`). A machine that cannot deliver at all — offline,
@@ -264,18 +265,20 @@ export interface RetentionOptions {
   /** The caller's own session was delivered in full this pass: the state of sessions long since delivered may go. */
   delivered?: boolean;
   /**
-   * A delivery walk reached every session of the project this pass. Only then
-   * may a spool unacknowledged past the cap be quarantined: what a complete walk
-   * could not deliver is stuck, where a spool nobody could reach — offline, a
-   * refused credential, a walk cut short by its budget — is only waiting.
+   * The sessions a delivery pass offered the Deployment this time and got the
+   * session's own answer to. Only such a session may be quarantined for its
+   * age: what the Deployment was offered and still did not take is stuck, where
+   * a spool nobody could offer — offline, a refused credential, a walk cut short
+   * by its budget — is only waiting.
    */
-  walked?: boolean;
+  tried?: readonly string[];
 }
 
-/** Quarantine every session spool unacknowledged past the cap once a walk has reached them all, prune quarantined files past the prune cap, release staged bytes nothing references, and after a drain that delivered everything, prune the state of sessions long since delivered. */
+/** Quarantine every session spool unacknowledged past the cap that a delivery pass just tried and could not deliver, prune quarantined files past the prune cap, release staged bytes nothing references, and after a drain that delivered everything, prune the state of sessions long since delivered. */
 export function applySpoolRetention(spool: MemberSpool, now: number = Date.now(), opts: RetentionOptions = {}): RetentionResult {
   const result: RetentionResult = { quarantined: [], pruned: 0, prunedStates: 0, releasedBlobs: 0, prunedTranscripts: 0 };
-  for (const sessionId of opts.walked === true ? spool.sessionIds() : []) {
+  const tried = new Set(opts.tried ?? []);
+  for (const sessionId of spool.sessionIds().filter((id) => tried.has(id))) {
     if (spool.depth(sessionId) === 0) continue;
     if (now - unacknowledgedSince(spool, sessionId) < MEMBER_SPOOL_QUARANTINE_MS) continue;
     const quarantineDir = path.join(spool.dir, BUFFER_QUARANTINE_DIRNAME);

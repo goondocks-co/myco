@@ -423,8 +423,8 @@ export async function runDrain(args: readonly string[], deps: MemberCliDeps = {}
   for (const entry of entriesFor(args, deps)) {
     const backlog = await drainEntryBacklog(entry, { mycoHome, fetch: deps.fetch, now });
     for (const line of backlogLines(entry.projectId, backlog)) out(line);
-    // Retention follows the drain: what a complete walk delivered is never quarantined for its age.
-    const retention = applySpoolRetention(new MemberSpool(entry.projectId, { mycoHome }), now(), { walked: backlog.endedBy === 'done' });
+    // Retention follows the drain, and judges only the sessions the drain offered the Deployment.
+    const retention = applySpoolRetention(new MemberSpool(entry.projectId, { mycoHome }), now(), { tried: backlog.tried });
     if (retention.quarantined.length > 0 || retention.pruned > 0 || retention.releasedBlobs > 0) out(`${entry.projectId}: quarantined ${retention.quarantined.length}, pruned ${retention.pruned}, released ${retention.releasedBlobs} staged file(s)`);
     results.push(...backlog.sessions.flatMap((s) => (s.events ? [s.events] : [])));
   }
@@ -437,7 +437,7 @@ export function backlogLines(projectId: string, backlog: BacklogReport): string[
   return backlog.sessions.map(({ sessionId, events: r, transcripts: t }) => {
     const parts: string[] = [];
     if (r) parts.push(`sent ${r.sent}, acked ${r.acked}, refused ${r.refused}, remaining ${r.remaining}${r.skipped ? ` (skipped: ${r.skipped})` : ''}${r.endedBy !== 'drained' ? ` — ended by ${r.endedBy}` : ''}`);
-    if (t !== undefined) parts.push(typeof t === 'string' ? `transcript ${t === 'lease' ? 'held by another process' : 'names no symbiont; left undelivered'}` : `transcript segments ${t.shipped}${t.endedBy !== 'done' ? ` — ended by ${t.endedBy}` : ''}`);
+    if (t !== undefined) parts.push(typeof t === 'string' ? `transcript ${t === 'lease' ? 'held by another process' : t === 'deferred' ? 'waiting after a refusal' : 'names no symbiont; left undelivered'}` : `transcript segments ${t.shipped}${t.endedBy !== 'done' ? ` — ended by ${t.endedBy}` : ''}`);
     return `${projectId} ${sessionId}: ${parts.join('; ')}`;
   });
 }

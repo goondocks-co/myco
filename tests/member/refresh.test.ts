@@ -14,9 +14,9 @@ import path from 'node:path';
 import { resetMachineIdCache } from '@myco/machine-id.js';
 import { run as runMemberCli } from '@myco/cli/member.js';
 import { unboundedBudget } from '@myco/member/budget.js';
-import { MEMBER_TOKEN_REFRESH_WINDOW_MS, PROJECT_HEADER } from '@myco/member/constants.js';
+import { MEMBER_TOKEN_REFRESH_WINDOW_MS, PROJECT_HEADER, REFRESH_NO_PROJECT_BACKOFF_MS, TERMINAL_RETRY_INTERVAL_MS } from '@myco/member/constants.js';
 import { ENV_MEMBER_TOKEN, ENV_PROJECT, ENV_SERVER_URL, resolveMemberProjectRoot } from '@myco/member/credential.js';
-import { refreshDue, refreshMemberCredential, refreshMembership, refreshableRoot } from '@myco/member/refresh.js';
+import { buildIdentity, refreshDue, refreshMemberCredential, refreshMembership, refreshableRoot } from '@myco/member/refresh.js';
 import { readDeploymentMembership, readRegistryEntry, writeDeploymentMembership, writeRegistryEntry, type RegistryEntry } from '@myco/member/registry.js';
 import { MemberSpool } from '@myco/member/spool.js';
 import { ServerClient, type FetchLike } from '@myco/member/transport.js';
@@ -216,6 +216,36 @@ describe('member token rotation', () => {
     const entry = readRegistryEntry(root, mycoHome)!;
     expect({ terminal: entry.refreshTerminal, token: entry.token }).toEqual({ terminal: undefined, token: rig.token });
     expect(refreshDue(entry, Date.now())).toBe(true);
+  });
+
+  it('asks about another build\'s terminal refusal once per build per day, recording the attempt whatever answers it, so two builds sharing a home never alternate', async () => {
+    const now = Date.now();
+    const terminal = { expiresAt: now - 1, refreshAfter: undefined, refreshTerminal: true, refreshTerminalBy: 'build-x' };
+    expect(refreshDue({ ...terminal, refreshRetries: undefined }, now, 'build-a')).toBe(true);
+    const tried = { ...terminal, refreshRetries: { 'build-a': now, 'build-b': now } };
+    expect([refreshDue(tried, now + 1, 'build-a'), refreshDue(tried, now + 1, 'build-b')]).toEqual([false, false]);
+    expect(refreshDue(tried, now + TERMINAL_RETRY_INTERVAL_MS, 'build-a')).toBe(true);
+    expect(refreshDue({ ...tried, refreshTerminalBy: 'build-a' }, now + 10 * TERMINAL_RETRY_INTERVAL_MS, 'build-a')).toBe(false);
+
+    // The attempt is recorded before the dial: an unreachable Deployment spends it as surely as an answer.
+    writeDeploymentMembership({ serverUrl: SERVER_URL, token: 'x'.repeat(43), refreshTerminal: true, machineId: 'machine_1', joinedAt: 1, updatedAt: 1 }, { mycoHome });
+    let dials = 0;
+    const unreachable: FetchLike = async () => { dials += 1; throw new TypeError('fetch failed'); };
+    expect((await refreshMembership(SERVER_URL, { mycoHome, fetch: unreachable, budget: budget() })).status).toBe('retry');
+    expect(readDeploymentMembership(SERVER_URL, mycoHome)!.refreshRetries?.[buildIdentity()]).toBeGreaterThan(0);
+    expect((await refreshMembership(SERVER_URL, { mycoHome, fetch: unreachable, budget: budget() })).status).toBe('not-due');
+    expect(dials).toBe(1);
+  });
+
+  it('waits before asking again when a server refuses a refresh naming no Project, for a membership no project is bound to', async () => {
+    writeDeploymentMembership({ serverUrl: SERVER_URL, token: 'x'.repeat(43), expiresAt: Date.now() + DAY_MS, machineId: 'machine_1', joinedAt: 1, updatedAt: 1 }, { mycoHome });
+    let dials = 0;
+    const olderServer: FetchLike = async () => { dials += 1; return Response.json({ refreshed: false, code: 'no_project', reason: 'no project' }, { headers: { 'x-myco-protocol': '1' } }); };
+    expect((await refreshMembership(SERVER_URL, { mycoHome, fetch: olderServer, budget: budget() })).status).toBe('retry');
+    const held = readDeploymentMembership(SERVER_URL, mycoHome)!;
+    expect({ terminal: held.refreshTerminal, waits: (held.refreshAfter ?? 0) - Date.now() > REFRESH_NO_PROJECT_BACKOFF_MS - 60_000 }).toEqual({ terminal: undefined, waits: true });
+    expect((await refreshMembership(SERVER_URL, { mycoHome, fetch: olderServer, budget: budget() })).status).toBe('not-due');
+    expect(dials).toBe(1);
   });
 
   it('`myco member refresh` rotates the entry and says what happened', async () => {

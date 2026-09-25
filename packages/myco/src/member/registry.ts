@@ -49,6 +49,8 @@ export interface DeploymentMembership {
   refreshTerminal?: boolean;
   /** The build that recorded `refreshTerminal`; absent on a refusal recorded before builds said so. */
   refreshTerminalBy?: string;
+  /** When each build last asked about a terminal refusal another build recorded, by build identity. */
+  refreshRetries?: Record<string, number>;
   machineId: string;
   joinedAt: number;
   updatedAt: number;
@@ -82,6 +84,8 @@ export interface RegistryEntry {
   refreshTerminal?: boolean;
   /** The build that recorded `refreshTerminal`; absent on a refusal recorded before builds said so. */
   refreshTerminalBy?: string;
+  /** When each build last asked about a terminal refusal another build recorded, by build identity. */
+  refreshRetries?: Record<string, number>;
   /** The worktree-aware project root this entry is keyed on. */
   root: string;
   machineId: string;
@@ -183,7 +187,7 @@ function isMembership(value: unknown): value is DeploymentMembership {
 }
 
 /** The fields that describe one token rather than the membership: they are true of the token they were recorded for and of no other. */
-export const TOKEN_SCOPED_FIELDS = ['tokenId', 'expiresAt', 'refreshAfter', 'refreshTerminal', 'refreshTerminalBy'] as const;
+export const TOKEN_SCOPED_FIELDS = ['tokenId', 'expiresAt', 'refreshAfter', 'refreshTerminal', 'refreshTerminalBy', 'refreshRetries'] as const;
 
 /**
  * The membership `fresh` leaves on disk over `held`: the held one with every
@@ -239,6 +243,7 @@ function compose(binding: ProjectBinding, mycoHome: string): RegistryEntry | nul
     routeMissingNoticedAt: membership.routeMissingNoticedAt,
     refreshTerminal: membership.refreshTerminal,
     refreshTerminalBy: membership.refreshTerminalBy,
+    refreshRetries: membership.refreshRetries,
     root: binding.root,
     machineId: membership.machineId,
     joinedAt: binding.joinedAt,
@@ -260,6 +265,7 @@ function decompose(entry: RegistryEntry): { membership: DeploymentMembership; bi
       routeMissingNoticedAt: entry.routeMissingNoticedAt,
       refreshTerminal: entry.refreshTerminal,
       refreshTerminalBy: entry.refreshTerminalBy,
+      refreshRetries: entry.refreshRetries,
       machineId: entry.machineId,
       joinedAt: entry.joinedAt,
       updatedAt: entry.updatedAt,

@@ -27,39 +27,56 @@ import { refreshDue, refreshMemberCredential } from './refresh.js';
 import { readRegistryEntry, type RegistryEntry } from './registry.js';
 import { pointerBehind, pointersOf, readSessionState, updateSessionState, type SessionState } from './session-state.js';
 import { MemberSpool, type DrainEnd, type DrainOptions, type DrainResult } from './spool.js';
-import { ensurePrivateFile } from './store.js';
+import { ensurePrivateFile, writePrivateFileAtomic } from './store.js';
 import { shipSessionTranscripts, type ShipResult } from './transcript.js';
 import { ServerClient, type FetchLike } from './transport.js';
 
 /** Marks a spool whose session states have been read once for transcripts behind their files. */
 export const BACKLOG_SCANNED_FILE = '.transcript-backlog-scanned';
+/** The session the last walk ended on; the next walk starts after it. */
+export const BACKLOG_CURSOR_FILE = '.backlog-cursor';
 
 export interface BacklogOptions extends DrainOptions {
   /** This machine's id, which a replaced transcript's fresh identity is minted under. */
   machineId: string;
   /** The session the caller delivers itself; the walk leaves it alone. */
   exclude?: string;
-  /** Read every session state for transcripts behind their files, not only the sessions already marked. */
+  /** An explicit full pass: every session state read for transcripts behind their files, not only the sessions already marked, and every deferral after a transient refusal ignored. */
   rescan?: boolean;
 }
 
 export interface BacklogSession {
   sessionId: string;
   events?: DrainResult;
-  /** The transcript pass; `no-agent` when no symbiont can be named for the session, `lease` when another process holds it. */
-  transcripts?: ShipResult | 'no-agent' | 'lease';
+  /** The transcript pass; `no-agent` when no symbiont can be named for the session, `lease` when another process holds it, `deferred` while a transient refusal's wait runs. */
+  transcripts?: ShipResult | 'no-agent' | 'lease' | 'deferred';
 }
 
 export interface BacklogReport {
   sessions: BacklogSession[];
+  /** The sessions whose spooled events this walk actually offered the Deployment and got a session's own answer to: the ones retention may judge stuck. */
+  tried: string[];
   /** Why the walk stopped: `done` when it reached and tried every session; `skipped` when it passed one it could not try (latched, or held by another process). */
   endedBy: 'done' | 'skipped' | 'budget' | DrainEnd | ShipResult['endedBy'];
 }
 
-/** Event pass endings that say nothing about the next session. Any other answer would be the next session's too, so the walk ends there: a mis-deployed server costs one request, not one per session. */
-const EVENTS_CONTINUE: readonly DrainEnd[] = ['drained', 'acked', 'refused', 'reslice'];
-/** Transcript pass endings that say nothing about the next session. */
-const TRANSCRIPTS_CONTINUE: readonly ShipResult['endedBy'][] = ['done', 'absent', 'refused'];
+/** Event pass endings that belong to the session alone. Any other answer — unreachable, the credential refused, the quota, the protocol window, the budget — would be the next session's too, so the walk ends there: a mis-deployed server costs one request, not one per session. */
+const EVENTS_CONTINUE: readonly DrainEnd[] = ['drained', 'acked', 'refused', 'reslice', 'protocol_mismatch'];
+/** Transcript pass endings that belong to the session alone. */
+const TRANSCRIPTS_CONTINUE: readonly ShipResult['endedBy'][] = ['done', 'absent', 'refused', 'rejected'];
+
+/** Whether an event pass offered the session to the Deployment and got the session's own answer, rather than stopping on something every session would meet. */
+export const sessionTried = (events: DrainResult): boolean => events.skipped === undefined && EVENTS_CONTINUE.includes(events.endedBy);
+
+/** The sessions in walk order: sorted, starting after the one the last walk ended on, so a session that holds a walk up cannot starve the ones after it. */
+function walkOrder(spool: MemberSpool, ids: readonly string[]): string[] {
+  const sorted = [...ids].sort();
+  let cursor: string | null = null;
+  try { cursor = fs.readFileSync(path.join(spool.dir, BACKLOG_CURSOR_FILE), 'utf-8').trim() || null; } catch { /* no walk yet */ }
+  if (cursor === null) return sorted;
+  const start = sorted.findIndex((id) => id > cursor!);
+  return start <= 0 ? sorted : [...sorted.slice(start), ...sorted.slice(0, start)];
+}
 
 /** Mark every session whose state holds a transcript pointer behind its file; returns how many were marked. */
 export function markBehindTranscripts(spool: MemberSpool): number {
@@ -113,10 +130,10 @@ function labelSession(spool: MemberSpool, sessionId: string, state: SessionState
   return agent;
 }
 
-/** Deliver the backlog inside `budget`, session by session, until it is delivered, the budget is spent, or an answer says the next session would fare no better. */
+/** Deliver the backlog inside `budget`, session by session, until it is delivered, the budget is spent, or an answer says the next session would fare no better. A session's own failure never ends the walk. */
 export async function drainBacklog(spool: MemberSpool, client: ServerClient, budget: HookBudget, opts: BacklogOptions): Promise<BacklogReport> {
   const now = opts.now ?? Date.now;
-  const report: BacklogReport = { sessions: [], endedBy: 'done' };
+  const report: BacklogReport = { sessions: [], tried: [], endedBy: 'done' };
   if (!budget.drains) return report;
   const scanned = path.join(spool.dir, BACKLOG_SCANNED_FILE);
   if (opts.rescan === true || !fs.existsSync(scanned)) {
@@ -124,7 +141,7 @@ export async function drainBacklog(spool: MemberSpool, client: ServerClient, bud
     ensurePrivateFile(scanned);
   }
   const spooled = new Set(spool.sessionIds());
-  const ids = [...new Set([...spooled, ...spool.transcriptBacklogIds()])].filter((id) => id !== opts.exclude).sort();
+  const ids = walkOrder(spool, [...new Set([...spooled, ...spool.transcriptBacklogIds()])].filter((id) => id !== opts.exclude));
   let skipped = false;
   for (const sessionId of ids) {
     if (!canStartRequest(budget, now())) { report.endedBy = 'budget'; break; }
@@ -134,13 +151,15 @@ export async function drainBacklog(spool: MemberSpool, client: ServerClient, bud
       const events = await spool.drainSession(sessionId, client, budget, { force: opts.force, now, onUnauthorized: opts.onUnauthorized, clientFor: opts.clientFor });
       session.events = events;
       if (events.skipped !== undefined) { skipped = true; continue; }
-      if (!EVENTS_CONTINUE.includes(events.endedBy)) { report.endedBy = events.endedBy; break; }
+      if (!sessionTried(events)) { report.endedBy = events.endedBy; break; }
+      report.tried.push(sessionId);
       if (events.remaining > 0) continue;
     }
     if (!spool.hasTranscriptBacklog(sessionId)) continue;
     const state = readSessionState(spool.dir, sessionId);
     // Every transcript acknowledged to its end, or gone from disk: nothing is left to deliver.
     if (!pointersOf(state).some(pointerBehind)) { spool.clearTranscriptBacklog(sessionId); continue; }
+    if (state.transcriptRetry !== undefined && state.transcriptRetry.at > now() && opts.rescan !== true) { session.transcripts = 'deferred'; continue; }
     const agent = labelSession(spool, sessionId, state, opts.rescan === true);
     if (agent === null) {
       // The bytes and the mark stay: the session is reported, and kept, until a symbiont can be named for it.
@@ -154,6 +173,8 @@ export async function drainBacklog(spool: MemberSpool, client: ServerClient, bud
     if (shipped !== null && !TRANSCRIPTS_CONTINUE.includes(shipped.endedBy)) { report.endedBy = shipped.endedBy; break; }
   }
   if (report.endedBy === 'done' && skipped) report.endedBy = 'skipped';
+  const last = report.sessions.at(-1);
+  if (last !== undefined) writePrivateFileAtomic(path.join(spool.dir, BACKLOG_CURSOR_FILE), last.sessionId);
   return report;
 }
 

@@ -253,7 +253,7 @@ describe('a member that could not deliver', () => {
 
       const client = new ServerClient(readRegistryEntry(root, mycoHome)!, rig.fetch);
       const report = await drainBacklog(spool, client, unboundedBudget(), { force: true, machineId: 'machine_1' });
-      expect(report).toEqual({ endedBy: 'done', sessions: [{ sessionId, transcripts: { shipped: 1, endedBy: 'done' } }] });
+      expect(report).toEqual({ endedBy: 'done', tried: [], sessions: [{ sessionId, transcripts: { shipped: 1, endedBy: 'done' } }] });
       expect(rig.env.sqlite.query('SELECT agent FROM transcripts WHERE session_id = ?').get(sessionId)).toEqual({ agent: 'claude-code' });
       expect(spool.transcriptBacklogIds()).toEqual([]);
       expect(readSessionState(spool.dir, sessionId).agent).toBe('claude-code');
@@ -284,7 +284,7 @@ describe('the backlog walk', () => {
     const client = new ServerClient({ serverUrl: SERVER_URL, token: rig.token, projectId: PROJECT }, spy.fetch);
 
     const held = await spool.withSessionLease('sess-held', () => drainBacklog(spool, client, unboundedBudget(), { force: true, machineId: 'machine_1' }));
-    expect(held).toEqual({ endedBy: 'skipped', sessions: [{ sessionId: 'sess-held', transcripts: 'lease' }] });
+    expect(held).toEqual({ endedBy: 'skipped', tried: [], sessions: [{ sessionId: 'sess-held', transcripts: 'lease' }] });
     expect(blobUploads(spy)).toBe(0);
     expect(spool.transcriptBacklogIds()).toEqual(['sess-held']);
 
@@ -398,5 +398,106 @@ describe('the backlog walk', () => {
     const dials = spy.requests.filter((r) => r.path === '/tokens/refresh').length;
     for (let i = 0; i < 3; i += 1) await runHook('session-start', { session_id: `sess-again-${i}`, hook_event_name: 'SessionStart', transcript_path: transcript(`sess-again-${i}`, 'r'), cwd: '/work/repo' }, { fetch: spy.fetch });
     expect(spy.requests.filter((r) => r.path === '/tokens/refresh').length).toBe(dials);
+  });
+
+  /** A fetch that answers the first `times` transcript segment events with a refusal of `code`, and forwards everything else. */
+  const refusingSegments = (rig: MemberRig, code: string, times: number): typeof rig.fetch => {
+    let left = times;
+    return async (input, init) => {
+      const req = new Request(input, init);
+      const body = req.method === 'POST' ? await req.clone().text() : '';
+      if (left > 0 && new URL(req.url).pathname === '/events' && body.includes('"transcript.segment"')) {
+        left -= 1;
+        return Response.json({ persisted: false, code, reason: code }, { headers: { 'x-myco-protocol': '1' } });
+      }
+      return rig.fetch(req);
+    };
+  };
+
+  it('sends a transcript again after a transient refusal — one clock_skew, then a working Deployment delivers it whole — waiting out the backoff between', async () => {
+    const rig = await memberRig();
+    const spool = new MemberSpool(PROJECT, { mycoHome });
+    const file = stranded(spool, 'sess-skew');
+    const spy = recordingFetch(refusingSegments(rig, 'clock_skew', 1));
+    const client = new ServerClient({ serverUrl: SERVER_URL, token: rig.token, projectId: PROJECT }, spy.fetch);
+    let t = Date.now();
+    const walk = () => drainBacklog(spool, client, unboundedBudget(), { force: true, machineId: 'machine_1', now: () => t });
+
+    expect((await walk()).sessions).toEqual([{ sessionId: 'sess-skew', transcripts: { shipped: 0, endedBy: 'refused' } }]);
+    const after = readSessionState(spool.dir, 'sess-skew');
+    expect({ refused: after.transcript?.refused, nextOffset: after.transcript?.nextOffset, marked: spool.transcriptBacklogIds() })
+      .toEqual({ refused: undefined, nextOffset: 0, marked: ['sess-skew'] });
+    expect(after.transcriptRetry?.at).toBeGreaterThan(t);
+
+    const uploads = blobUploads(spy);
+    expect((await walk()).sessions).toEqual([{ sessionId: 'sess-skew', transcripts: 'deferred' }]);
+    expect(blobUploads(spy)).toBe(uploads);
+
+    t = after.transcriptRetry!.at + 1;
+    expect((await walk()).sessions).toEqual([{ sessionId: 'sess-skew', transcripts: { shipped: 1, endedBy: 'done' } }]);
+    const delivered = readSessionState(spool.dir, 'sess-skew');
+    expect({ nextOffset: delivered.transcript?.nextOffset, retry: delivered.transcriptRetry, marked: spool.transcriptBacklogIds() })
+      .toEqual({ nextOffset: fs.statSync(file).size, retry: undefined, marked: [] });
+    expect(segmentsOf(rig, 'sess-skew')).toBe(1);
+  });
+
+  it('never uploads a transcript refused for good again, not even from its own session\'s turn end', async () => {
+    const rig = await memberRig();
+    registerTestMember({ mycoHome, token: rig.token, tokenId: rig.tokenId, projectId: PROJECT, expiresAt: rig.expiresAt, serverUrl: SERVER_URL });
+    const spool = new MemberSpool(PROJECT, { mycoHome });
+    const tx = transcript('sess-gone', 'refused for good');
+    const spy = recordingFetch(refusingSegments(rig, 'session_tombstoned', 1));
+    await runHook('stop', { session_id: 'sess-gone', hook_event_name: 'Stop', transcript_path: tx, last_assistant_message: 'x' }, { fetch: spy.fetch });
+    expect(readSessionState(spool.dir, 'sess-gone').transcript?.refused).toBe('session_tombstoned');
+    const uploads = blobUploads(spy);
+    fs.appendFileSync(tx, `${JSON.stringify({ type: 'user', message: { role: 'user', content: 'later' } })}\n`);
+    await runHook('stop', { session_id: 'sess-gone', hook_event_name: 'Stop', transcript_path: tx, last_assistant_message: 'x' }, { fetch: spy.fetch });
+    expect(blobUploads(spy)).toBe(uploads);
+    expect(segmentsOf(rig, 'sess-gone')).toBe(0);
+  });
+
+  it('walks past a session stuck on its own records, delivers the ones after it, and quarantines only the stuck one it tried', async () => {
+    const rig = await memberRig();
+    registerTestMember({ mycoHome, token: rig.token, tokenId: rig.tokenId, projectId: PROJECT, expiresAt: rig.expiresAt, serverUrl: SERVER_URL });
+    const spool = new MemberSpool(PROJECT, { mycoHome });
+    const longAgo = Date.now() - 40 * DAY_MS;
+    const ctx = (sessionId: string) => ({ agent: 'claude-code', sessionId, stage: spool.stagerFor(sessionId), now: () => longAgo });
+    const { sessionStartEvent } = await import('@myco/member/envelope.js');
+    for (const id of ['sess-a-stuck', 'sess-b', 'sess-c']) spool.appendAndRecord(id, [sessionStartEvent(ctx(id), { startedAt: longAgo })], undefined, longAgo);
+    // A record this build's protocol cannot send: the session is stuck on its own spool.
+    const stuckFile = path.join(spool.dir, 'sess-a-stuck.jsonl');
+    fs.writeFileSync(stuckFile, fs.readFileSync(stuckFile, 'utf-8').replace('"_memberProtocol":1', '"_memberProtocol":999'));
+
+    const out: string[] = [];
+    await runMemberCli(['drain'], { mycoHome, fetch: rig.fetch, stdout: (l) => out.push(l), stderr: () => {} });
+
+    for (const id of ['sess-b', 'sess-c']) expect(rig.env.sqlite.query('SELECT COUNT(*) AS n FROM events WHERE session_id = ?').get(id)).toEqual({ n: 1 });
+    expect(spool.sessionIds()).toEqual([]);
+    expect(fs.existsSync(path.join(spool.dir, 'quarantine', 'sess-a-stuck.jsonl'))).toBe(true);
+    expect(out.join('\n')).toContain('quarantined 1');
+  });
+
+  it('starts each walk after the session the last one ended on, so a session that spends the whole budget cannot starve the ones after it', async () => {
+    const rig = await memberRig();
+    const spool = new MemberSpool(PROJECT, { mycoHome });
+    const { sessionStartEvent } = await import('@myco/member/envelope.js');
+    for (const id of ['sess-a-slow', 'sess-b']) spool.appendAndRecord(id, [sessionStartEvent({ agent: 'claude-code', sessionId: id, stage: spool.stagerFor(id) }, { startedAt: Date.now() })]);
+    let t = Date.now();
+    // The Deployment answers the first session's events with a re-slice, and the answer takes the rest of the budget.
+    const slow: typeof rig.fetch = async (input, init) => {
+      const req = new Request(input, init);
+      const body = req.method === 'POST' ? await req.clone().text() : '';
+      if (new URL(req.url).pathname === '/events' && body.includes('"sess-a-slow"')) {
+        t += 60 * 60 * 1000;
+        return Response.json({ persisted: false, code: 'offset_gap', reason: 'gap', transcript: { size: 0 } }, { headers: { 'x-myco-protocol': '1' } });
+      }
+      return rig.fetch(req);
+    };
+    const client = new ServerClient({ serverUrl: SERVER_URL, token: rig.token, projectId: PROJECT }, slow);
+    const walk = () => drainBacklog(spool, client, { ...unboundedBudget(), deadline: t + 60_000 }, { force: true, machineId: 'machine_1', now: () => t });
+
+    expect((await walk()).sessions.map((x) => x.sessionId)).toEqual(['sess-a-slow']);
+    expect((await walk()).sessions.map((x) => x.sessionId)).toEqual(['sess-b', 'sess-a-slow']);
+    expect(rig.env.sqlite.query(`SELECT COUNT(*) AS n FROM events WHERE session_id = 'sess-b'`).get()).toEqual({ n: 1 });
   });
 });

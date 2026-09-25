@@ -180,7 +180,7 @@ export function attachOptions(serverUrl: string, mycoHome: string, fetchImpl?: t
     serverUrl,
     token: () => readDeploymentMembership(serverUrl, mycoHome)?.token ?? null,
     // The membership's own rotation, the one every hook on this machine uses: a worker left running renews its credential, a lapsed one included.
-    renew: async (force) => { await refreshMembership(serverUrl, { mycoHome, budget: unboundedBudget(), force, ...(fetchImpl === undefined ? {} : { fetch: fetchImpl }) }); },
+    renew: async (force) => (await refreshMembership(serverUrl, { mycoHome, budget: unboundedBudget(), force, ...(fetchImpl === undefined ? {} : { fetch: fetchImpl }) })).status,
     lockDir: workerLockDir(),
     runRoot: path.join(mycoHome, 'worker', 'runs'),
     onAttached: () => { clearWorkerRefusal(mycoHome, serverUrl); },

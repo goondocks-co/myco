@@ -9,8 +9,8 @@ import { createServer } from '@myco-server-worker/pipeline.js';
 import { issueMemberToken, MEMBER_TOKEN_TTL_MS } from '@myco-server-worker/auth/tokens.js';
 import { ensureMember } from '@myco-server-worker/auth/enrollment.js';
 import { attachOptions } from '@myco/cli/worker.js';
-import { readDeploymentMembership, writeDeploymentMembership } from '@myco/member/registry.js';
-import { probeWorkerAdmission } from '@myco/runner/loop.js';
+import { acquireRegistryLock, readDeploymentMembership, writeDeploymentMembership } from '@myco/member/registry.js';
+import { probeWorkerAdmission, RENEW_BUSY_WAIT_MS } from '@myco/runner/loop.js';
 import { sqliteEnv } from '../myco-server/helpers/fixtures.ts';
 import { tempMycoHome } from './helpers/server.js';
 
@@ -67,4 +67,27 @@ describe('a worker\'s credential', () => {
     expect(await d.ask()).toBe('unauthorized');
     expect(d.paths).toEqual(['/worker/lease']);
   });
+
+  it('waits on a registry another process holds rather than ending: once it is free, the lapsed credential rotates and the worker is admitted', async () => {
+    const d = await deployment(Date.now() - 20 * DAY_MS);
+    const lock = acquireRegistryLock(mycoHome);
+    if (!lock.acquired) throw new Error('the test could not take the registry lock');
+    setTimeout(() => { lock.lock.release(); }, RENEW_BUSY_WAIT_MS * 3);
+    expect(await d.ask()).toBe('admitted');
+    const held = readDeploymentMembership(SERVER_URL, mycoHome)!;
+    expect({ rotated: held.token !== d.issued.token, terminal: held.refreshTerminal }).toEqual({ rotated: true, terminal: undefined });
+  });
+
+  it('never takes a registry held the whole time for a refusal: the worker waits, and nothing is recorded as final', async () => {
+    const d = await deployment(Date.now() - 20 * DAY_MS);
+    const lock = acquireRegistryLock(mycoHome);
+    if (!lock.acquired) throw new Error('the test could not take the registry lock');
+    try {
+      expect(await d.ask()).toBe('unknown');
+    } finally {
+      lock.lock.release();
+    }
+    expect(readDeploymentMembership(SERVER_URL, mycoHome)!.refreshTerminal).toBeUndefined();
+    expect(await d.ask()).toBe('admitted');
+  }, 20_000);
 });

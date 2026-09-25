@@ -54,7 +54,7 @@ describe('spool retention', () => {
     // Past the cap: moved, not deleted; the bytes survive.
     // A spool no walk has reached is only waiting, whatever its age.
     expect(applySpoolRetention(spool, t0 + MEMBER_SPOOL_QUARANTINE_MS + DAY).quarantined).toEqual([]);
-    const r = applySpoolRetention(spool, t0 + MEMBER_SPOOL_QUARANTINE_MS + DAY, { walked: true });
+    const r = applySpoolRetention(spool, t0 + MEMBER_SPOOL_QUARANTINE_MS + DAY, { tried: ['sess-old'] });
     expect(r.quarantined).toHaveLength(1);
     const quarantined = path.join(spool.dir, BUFFER_QUARANTINE_DIRNAME, 'sess-old.jsonl');
     expect(r.quarantined[0]).toBe(quarantined);
@@ -110,9 +110,25 @@ describe('spool retention', () => {
 
     fs.rmSync(file);
     const report = await drainBacklog(spool, client, unboundedBudget(), { force: true, machineId: 'machine_1' });
-    expect(report).toEqual({ endedBy: 'done', sessions: [{ sessionId: 'sess-tx' }] });
+    expect(report).toEqual({ endedBy: 'done', tried: [], sessions: [{ sessionId: 'sess-tx' }] });
     expect(spool.transcriptBacklogIds()).toEqual([]);
     expect(applySpoolRetention(spool, late, { delivered: true }).prunedStates).toBe(1);
+  });
+
+  it('never prunes a state whose transcript is behind its file, even once its backlog mark is gone', async () => {
+    const rig = await memberRig();
+    const spool = new MemberSpool('proj_1', { mycoHome });
+    const client = new ServerClient({ serverUrl: 'https://s', token: rig.token, projectId: 'proj_1' }, rig.fetch);
+    const t0 = Date.now();
+    const file = path.join(fs.mkdtempSync(path.join(mycoHome, 'tx-')), 'sess-unmarked.jsonl');
+    fs.writeFileSync(file, 'x\n');
+    spool.appendAndRecord('sess-unmarked', [promptEvent(ctxFor(spool, 'sess-unmarked'), { promptId: mintId(), text: 'u' })], (state) => {
+      state.transcript = { path: file, transcriptId: 'tx-unmarked', inode: Number(fs.statSync(file).ino), nextOffset: 0, parsedSize: 0 };
+    }, t0);
+    await spool.drainSession('sess-unmarked', client, unboundedBudget(), { now: () => t0, force: true });
+    spool.clearTranscriptBacklog('sess-unmarked');
+    expect(applySpoolRetention(spool, t0 + MEMBER_SESSION_STATE_RETENTION_MS + DAY, { delivered: true }).prunedStates).toBe(0);
+    expect(readSessionState(spool.dir, 'sess-unmarked').transcript?.path).toBe(file);
   });
 
   it('quarantines the events of a stuck session but keeps its state while its transcript is in the backlog', () => {
@@ -123,7 +139,7 @@ describe('spool retention', () => {
     spool.appendAndRecord('sess-stuck', [promptEvent(ctxFor(spool, 'sess-stuck'), { promptId: mintId(), text: 'stuck' })], (state) => {
       state.transcript = { path: file, transcriptId: 'tx-stuck', inode: Number(fs.statSync(file).ino), nextOffset: 0, parsedSize: 0 };
     }, t0);
-    const r = applySpoolRetention(spool, t0 + MEMBER_SPOOL_QUARANTINE_MS + DAY, { walked: true });
+    const r = applySpoolRetention(spool, t0 + MEMBER_SPOOL_QUARANTINE_MS + DAY, { tried: ['sess-stuck'] });
     expect(r.quarantined).toHaveLength(1);
     expect(spool.sessionIds()).toEqual([]);
     const state = readSessionState(spool.dir, 'sess-stuck');
@@ -168,7 +184,7 @@ describe('spool retention', () => {
     spool.appendAndRecord('sess-offline', [promptEvent(ctxFor(spool, 'sess-offline'), { promptId: mintId(), text: 'later' })], undefined, late);
     expect(fs.statSync(path.join(spool.dir, 'sess-offline.jsonl')).mtimeMs).toBeGreaterThan(t0);
     expect(unacknowledgedSince(spool, 'sess-offline')).toBe(t0);
-    expect(applySpoolRetention(spool, late, { walked: true }).quarantined).toHaveLength(1);
+    expect(applySpoolRetention(spool, late, { tried: ['sess-offline'] }).quarantined).toHaveLength(1);
   });
 
   it('an acknowledgement moves the clock forward; nothing else does', async () => {
@@ -260,7 +276,7 @@ describe('spool retention', () => {
     spool.appendAndRecord('sess-q', [attachmentEvent(ctxFor(spool, 'sess-q'), { blobSource: source, attachmentId: mintId() })], undefined, t0);
 
     // Nothing ever acknowledged it: quarantined, not deleted — and the bytes go with it.
-    const quarantined = applySpoolRetention(spool, t0 + MEMBER_SPOOL_QUARANTINE_MS + DAY, { walked: true });
+    const quarantined = applySpoolRetention(spool, t0 + MEMBER_SPOOL_QUARANTINE_MS + DAY, { tried: ['sess-q'] });
     expect(quarantined.quarantined).toHaveLength(1);
     expect(fs.existsSync(source.path)).toBe(false);
     const moved = path.join(spool.dir, BUFFER_QUARANTINE_DIRNAME, 'blobs', 'sess-q', source.sha256);

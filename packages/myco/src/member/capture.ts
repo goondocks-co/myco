@@ -15,7 +15,7 @@ import { writeHookResponse, type HookResponse } from '../hooks/response.js';
 import { canStartRequest, clippedRequestBudget, resolveHookBudget, type HookBudget } from './budget.js';
 import { resolveMycoHome } from '../paths/home.js';
 import { getMachineId } from '../machine-id.js';
-import { drainBacklog } from './backlog.js';
+import { drainBacklog, sessionTried } from './backlog.js';
 import { parseCredentialFlag, registryCredential, resolveCredential, resolveMemberProjectRoot, type CredentialRecord, type CredentialSource } from './credential.js';
 import { deliveryNotice } from './delivery-notice.js';
 import { ensureJoinedFromCode, joinCodePresent } from './join-code.js';
@@ -226,9 +226,9 @@ export async function runMemberHook(
         const backlog = ownDelivered ? await drainBacklog(spool, live.client, budget, { exclude: sessionId, now, machineId: getMachineId(), ...recovery }) : null;
         // Probing hooks also apply spool retention for the project; a drain
         // that delivered everything also lets go of the state of sessions
-        // delivered long ago, and one that reached every session may
-        // quarantine what it still could not deliver.
-        applySpoolRetention(spool, now(), { delivered: ownDelivered, walked: backlog?.endedBy === 'done' });
+        // delivered long ago, and a session this hook offered the Deployment
+        // and still could not deliver may be quarantined for its age.
+        applySpoolRetention(spool, now(), { delivered: ownDelivered, tried: [...(sessionTried(drained) ? [sessionId] : []), ...(backlog?.tried ?? [])] });
       }
       const notice = root === null ? null : deliveryNotice(readRegistryEntry(root, mycoHome) ?? live.credential, now());
       if (notice !== null) {

@@ -36,6 +36,27 @@ export function isMemberCode(value: unknown): value is MemberCode {
   return typeof value === 'string' && (MEMBER_CODES as readonly string[]).includes(value);
 }
 
+/**
+ * What a refusal says about the bytes it refused, for every code the server can
+ * answer. `permanent`: these bytes, or this session, can never be accepted —
+ * sending them again only repeats the refusal. `transient`: the refusal is about
+ * the moment, the credential, the Project or the member's build, and the same
+ * bytes may be accepted later. Closed over `MEMBER_CODES`: a code the server
+ * adds is classified here before it compiles.
+ */
+export const REFUSAL_PERMANENCE: Readonly<Record<MemberCode, 'permanent' | 'transient'>> = {
+  body_cap: 'permanent', blob_cap: 'permanent', digest_mismatch: 'permanent', media_type: 'permanent',
+  blob_length_mismatch: 'permanent', parse: 'permanent', session_tombstoned: 'permanent',
+  refused: 'transient', quota: 'transient', content_length: 'transient', empty_body: 'transient', blob_absent: 'transient',
+  no_project: 'transient', offset_gap: 'transient', offset_overlap: 'transient', identity_mismatch: 'transient',
+  no_machine_identity: 'transient', unknown_kind: 'transient', unknown_field: 'transient', id_grammar: 'transient',
+  clock_skew: 'transient', event_id_conflict: 'transient', projection_conflict: 'transient', refresh_too_early: 'transient',
+  lineage_expired: 'transient', enrollment_unknown: 'transient', enrollment_used: 'transient', enrollment_expired: 'transient',
+  enrollment_revoked: 'transient', identity_claimed: 'transient', enrollment_no_project: 'transient', project_archived: 'transient',
+  run_scope: 'transient', no_run: 'transient', project_mismatch: 'transient', transcript_replaced: 'transient',
+  not_admin: 'transient', import_disabled: 'transient', unavailable: 'transient',
+};
+
 /** Codes that re-slice a transcript from the server's held size instead of refusing. */
 export const RESLICE_CODES: readonly MemberCode[] = ['offset_gap', 'offset_overlap'];
 /** The code that parks the spool: the token is at its write quota. */
@@ -155,6 +176,13 @@ export const MEMBER_TRANSCRIPT_RETENTION_MS = 30 * MS_PER_DAY;
 export const REFUSED_LOG_MAX_BYTES = 1024 * 1024;
 
 /** Offline latch backoff: first probe delay, doubling up to the ceiling. */
+/** How long a session's transcripts wait after a transient refusal before a backlog walk sends them again, doubling to the cap. */
+export const TRANSCRIPT_RETRY_INITIAL_MS = 5 * 60 * 1000;
+export const TRANSCRIPT_RETRY_MAX_MS = 6 * 60 * 60 * 1000;
+/** How long a refresh the Deployment refused for want of a Project waits before a membership with none bound asks again. */
+export const REFRESH_NO_PROJECT_BACKOFF_MS = 60 * 60 * 1000;
+/** How often a build may ask once more about a terminal refusal another build recorded. */
+export const TERMINAL_RETRY_INTERVAL_MS = 24 * 60 * 60 * 1000;
 export const OFFLINE_BACKOFF_INITIAL_MS = 30_000;
 export const OFFLINE_BACKOFF_MAX_MS = 10 * 60 * 1000;
 

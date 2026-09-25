@@ -58,6 +58,8 @@ export interface SessionState {
   agent?: string;
   /** Set when no one symbiont's declared transcript layout names this session's transcript, so a hook's backlog walk passes it over rather than search again. */
   agentUnknown?: true;
+  /** When a backlog walk may send this session's transcripts again after a transient refusal, and the wait that set it. */
+  transcriptRetry?: { at: number; backoffMs: number };
   /** When this session first appended to the spool; the clock retention measures from until an acknowledgement arrives. */
   startedAt?: number;
   /** When the server last acknowledged one of this session's records. */

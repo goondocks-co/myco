@@ -26,7 +26,10 @@
 import { resolveMycoHome } from '../paths/home.js';
 import { getPluginVersion } from '../version.js';
 import type { RequestBudget } from './budget.js';
-import { MEMBER_TOKEN_REFRESH_WINDOW_MS, ROUTE_MISSING_NOTICE_INTERVAL_MS, type MemberCode } from './constants.js';
+import fs from 'node:fs';
+import {
+  MEMBER_TOKEN_REFRESH_WINDOW_MS, REFRESH_NO_PROJECT_BACKOFF_MS, ROUTE_MISSING_NOTICE_INTERVAL_MS, TERMINAL_RETRY_INTERVAL_MS, type MemberCode,
+} from './constants.js';
 import { REJOIN_HINT } from './delivery-notice.js';
 import type { CredentialRecord } from './credential.js';
 import {
@@ -59,24 +62,45 @@ export interface RefreshOptions {
 /** Refusals that say the request, not the credential, fell short: the token may still rotate, so they are retried rather than recorded as final. `no_project` is a server that requires a Project on this route. */
 const RETRYABLE_REFUSALS: readonly MemberCode[] = ['no_project'];
 
-/** What `refreshDue` reads: the window the server announced, the expiry, and whether rotation is already terminal and which build said so. */
-export type RefreshWindow = Pick<RegistryEntry, 'expiresAt' | 'refreshAfter' | 'refreshTerminal' | 'refreshTerminalBy'>;
+/** What `refreshDue` reads: the window the server announced, the expiry, whether rotation is already terminal and which build said so, and when each build last asked about it again. */
+export type RefreshWindow = Pick<RegistryEntry, 'expiresAt' | 'refreshAfter' | 'refreshTerminal' | 'refreshTerminalBy' | 'refreshRetries'>;
 
-/** Whether a terminal refusal was recorded by another build than this one: such a refusal is asked about once more, and this build's answer is the one kept. */
-const terminalFromAnotherBuild = (entry: RefreshWindow, build: string): boolean => entry.refreshTerminal === true && entry.refreshTerminalBy !== build;
+/**
+ * The identity of the running build: its version, and the program file it runs
+ * from. Two builds of one version — development builds of one commit, a
+ * reinstall — are told apart by the file.
+ */
+export function buildIdentity(): string {
+  try {
+    const stat = fs.statSync(process.execPath);
+    return `${getPluginVersion()}@${stat.size}:${Math.trunc(stat.mtimeMs)}`;
+  } catch {
+    return getPluginVersion();
+  }
+}
+
+/**
+ * Whether a terminal refusal may be asked about again by `build`: never when
+ * this build recorded it; otherwise once per `TERMINAL_RETRY_INTERVAL_MS`,
+ * counted from the attempt this build last made, whatever that attempt was
+ * answered with.
+ */
+const terminalRetryDue = (entry: RefreshWindow, now: number, build: string): boolean => {
+  if (entry.refreshTerminalBy === build) return false;
+  const last = entry.refreshRetries?.[build];
+  return last === undefined || now - last >= TERMINAL_RETRY_INTERVAL_MS;
+};
 
 const stderr = (line: string): void => { process.stderr.write(`[myco] member: ${line}\n`); };
 
 /**
- * True when the token's refresh window is open: never after a terminal
- * refusal this build recorded — one recorded by another build, or by none, is
- * asked about once more;
- * the announced `refreshAfter` when there is one; otherwise the last quarter of
- * the TTL before `expiresAt`. An entry that knows neither is due — one dial
- * teaches it the window the server keeps.
+ * True when the token's refresh window is open: after a terminal refusal, only
+ * as `terminalRetryDue` allows; the announced `refreshAfter` when there is one;
+ * otherwise the last quarter of the TTL before `expiresAt`. An entry that
+ * knows neither is due — one dial teaches it the window the server keeps.
  */
-export function refreshDue(entry: RefreshWindow, now: number, build: string = getPluginVersion()): boolean {
-  if (entry.refreshTerminal) return terminalFromAnotherBuild(entry, build);
+export function refreshDue(entry: RefreshWindow, now: number, build: string = buildIdentity()): boolean {
+  if (entry.refreshTerminal) return terminalRetryDue(entry, now, build);
   if (entry.refreshAfter !== undefined) return now >= entry.refreshAfter;
   if (entry.expiresAt !== undefined) return entry.expiresAt - now <= MEMBER_TOKEN_REFRESH_WINDOW_MS;
   return true;
@@ -106,7 +130,7 @@ export interface MembershipRefreshReport {
 export async function refreshMembership(serverUrl: string, opts: RefreshOptions): Promise<MembershipRefreshReport> {
   const mycoHome = opts.mycoHome ?? resolveMycoHome();
   const now = opts.now ?? Date.now;
-  const build = getPluginVersion();
+  const build = buildIdentity();
   const due = (held: RefreshWindow): boolean => (opts.force === true && held.refreshTerminal !== true) || refreshDue(held, now(), build);
   const before = readDeploymentMembership(serverUrl, mycoHome);
   if (!before) return { status: 'no-entry', membership: null };
@@ -116,10 +140,16 @@ export async function refreshMembership(serverUrl: string, opts: RefreshOptions)
   if (!lock.acquired) return { status: 'busy', membership: before };
   try {
     // Re-read inside the lock: the winner of a race has already written the successor this membership would have asked for.
-    const held = readDeploymentMembership(serverUrl, mycoHome);
+    let held = readDeploymentMembership(serverUrl, mycoHome);
     if (!held) return { status: 'no-entry', membership: null };
     if (held.token !== before.token || !due(held)) return { status: 'not-due', membership: held };
 
+    // Asking again about another build's terminal refusal is recorded before the dial, so whatever answers it, this build asks once per interval.
+    if (held.refreshTerminal === true) {
+      const retries = Object.fromEntries(Object.entries(held.refreshRetries ?? {}).filter(([, at]) => now() - at < TERMINAL_RETRY_INTERVAL_MS));
+      held = { ...held, refreshRetries: { ...retries, [build]: now() }, updatedAt: now() };
+      writeDeploymentMembership(held, { mycoHome, locked: true });
+    }
     const outcome = await refreshCredential({ serverUrl: held.serverUrl, token: held.token, projectId: opts.projectId }, opts.fetch ?? globalThis.fetch, opts.budget);
     const write = (next: Partial<DeploymentMembership>): DeploymentMembership | null => {
       writeDeploymentMembership({ ...held, ...next, updatedAt: now() }, { mycoHome, locked: true });
@@ -140,7 +170,10 @@ export async function refreshMembership(serverUrl: string, opts: RefreshOptions)
           membership: succeed({ token: outcome.token, tokenId: outcome.tokenId, expiresAt: outcome.expiresAt, refreshAfter: outcome.refreshAfter }),
         };
       case 'refused': {
-        if (RETRYABLE_REFUSALS.includes(outcome.code)) return { status: 'retry', membership: held };
+        if (RETRYABLE_REFUSALS.includes(outcome.code)) {
+          // A membership no project is bound to can never name one, so it waits before it asks again.
+          return { status: 'retry', membership: opts.projectId === undefined ? write({ refreshAfter: now() + REFRESH_NO_PROJECT_BACKOFF_MS }) : held };
+        }
         if (outcome.refreshAfter !== undefined) {
           // A window announced is a token that still rotates: any terminal refusal recorded against it no longer holds.
           return { status: outcome.code === 'refresh_too_early' ? 'too-early' : 'terminal', membership: write({ refreshAfter: outcome.refreshAfter, refreshTerminal: false }) };
