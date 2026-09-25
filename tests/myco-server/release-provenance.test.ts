@@ -145,6 +145,36 @@ describe('the scheduled release check', () => {
     expect((await without.store.describe(P)).check).toMatchObject({ failure: 'rate_limited_without_credential' });
   });
 
+  it('records a refusal without a token as a rate limit when GitHub signals one, and never as a rejected credential', async () => {
+    const answering = (status: number, headers: Record<string, string> = {}, body = '{}') =>
+      (async () => new Response(body, { status, headers })) as unknown as typeof fetch;
+    const secondary = JSON.stringify({ message: 'You have exceeded a secondary rate limit. Please wait a few minutes before you try again.' });
+    const cases: Array<[string, typeof fetch, boolean, string]> = [
+      ['secondary limit message', answering(403, {}, secondary), false, 'rate_limited_without_credential'],
+      ['retry-after', answering(403, { 'retry-after': '60' }), false, 'rate_limited_without_credential'],
+      ['bare 403', answering(403), false, 'forbidden_without_credential'],
+      ['bare 403 with a token', answering(403), true, 'credential_rejected'],
+      ['secondary limit message with a token', answering(403, {}, secondary), true, 'rate_limited'],
+    ];
+    for (const [name, outbound, withToken, failure] of cases) {
+      const r = rig();
+      await r.store.save(P, settings(withToken ? {} : { credential: undefined }), 'mem_1', 1);
+      await reconcileReleaseProvenance({ ...r.serverEnv, outbound }, 100 * MIN);
+      expect({ name, check: (await r.store.describe(P)).check }).toMatchObject({ name, check: { status: 'unavailable', failure, lookups: 1 } });
+    }
+  });
+
+  it('stops a check without a token at the first refused comparison and records it as refused', async () => {
+    const { r } = await configured();
+    await r.store.save(P, settings({ revision: (await r.store.describe(P)).revision, credential: null }), 'mem_1', 2);
+    const github = fakeGithub(REPO, []);
+    const outbound = ((input: RequestInfo | URL, init?: RequestInit) => (String(input).includes('/compare/')
+      ? Promise.resolve(new Response('{}', { status: 403 })) : github(input, init))) as typeof fetch;
+    await reconcileReleaseProvenance({ ...r.serverEnv, outbound }, 100 * MIN);
+    expect((await r.store.describe(P)).check).toMatchObject({ status: 'unavailable', failure: 'forbidden_without_credential',
+      counts: { checked: 0, unavailable: 1, deferred: 4 } });
+  });
+
   it('classifies every captured commit, carries it to the session spores, and records a complete check', async () => {
     const { r } = await configured();
     const auth: Array<string | null> = [];

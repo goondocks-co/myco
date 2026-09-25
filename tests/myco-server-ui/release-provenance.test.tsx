@@ -165,6 +165,13 @@ describe('a lookup token, by the target this Deployment runs on', () => {
       .toContain('stopped: GitHub rate limit reached without a lookup token. Earlier states are kept. Add a read-only lookup token'));
   });
 
+  it('says GitHub refused a lookup made without a token, blaming no credential', async () => {
+    deployment('bun', 'forbidden_without_credential');
+    await waitFor(() => expect(screen.getByTestId('release-check').textContent)
+      .toContain('stopped: GitHub refused lookups made without a lookup token. Earlier states are kept.'));
+    expect(screen.getByTestId('release-check').textContent).not.toMatch(/refused the credential|forbidden_without_credential/);
+  });
+
   it('names no token remedy when the rate-limited check had one, even if it was removed since', async () => {
     deployment('bun', 'rate_limited');
     await waitFor(() => expect(screen.getByTestId('release-check').textContent).toContain('stopped: GitHub rate limit reached. Earlier states are kept.'));
