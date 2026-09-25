@@ -17,8 +17,8 @@ function emptyBodyRefusal(body: string): Refusal | null {
 }
 
 /** A member json route whose body is the empty object: any other body is refused before `handler` runs. */
-export const emptyBodyRoute = (handler: (env: ServerEnv, ctx: RouteContext) => Promise<Response>) =>
-  async (env: ServerEnv, ctx: RouteContext): Promise<Response> => {
+export const emptyBodyRoute = <C extends Pick<RouteContext, 'body'>>(handler: (env: ServerEnv, ctx: C) => Promise<Response>) =>
+  async (env: ServerEnv, ctx: C): Promise<Response> => {
     const malformed = emptyBodyRefusal(ctx.body);
     return malformed === null ? handler(env, ctx) : Response.json({ persisted: false, code: malformed.classifier, reason: malformed.reason });
   };
@@ -28,7 +28,7 @@ export const emptyBodyRoute = (handler: (env: ServerEnv, ctx: RouteContext) => P
  * that links a GitHub account to its member. Answered once; the key is never
  * shown again and only its digest is stored.
  */
-export const handleLinkGithub = emptyBodyRoute(async (env, ctx) => {
+export const handleLinkGithub = emptyBodyRoute(async (env: ServerEnv, ctx: RouteContext) => {
   const issued = await issueIdentityLinkAuthority(env.db, ctx.memberId, ctx.now);
   return Response.json({ persisted: true, key: issued.key, expiresAt: issued.expiresAt });
 });

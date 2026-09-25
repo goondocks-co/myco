@@ -13,6 +13,7 @@
  * A `fail` row sets a non-zero exit. Nothing here repairs: each row names the
  * command that does.
  */
+import fs from 'node:fs';
 import path from 'node:path';
 import { withoutCredentialFlag } from '../mcp/deployment-upstream.js';
 import type { CredentialSource } from '../member/constants.js';
@@ -38,7 +39,29 @@ const iso = (ms: number | null | undefined): string => (typeof ms === 'number' &
 
 const row = (name: string, status: DoctorCheck['status'], detail: string): DoctorCheck => ({ name, status, detail, fixable: false });
 
-/** Which harnesses capture for the member, at which scope; a harness with 1.4 capture only is named for provisioning. */
+/** The program a hook command runs: its first word after any `NAME=value` assignments, unquoted. */
+export function hookExecutable(command: string): string | null {
+  const words = command.match(/"[^"]*"|'[^']*'|\S+/g) ?? [];
+  const program = words.find((word) => !/^[A-Za-z_][A-Za-z0-9_]*=/.test(word));
+  return program === undefined ? null : program.replace(/^(["'])(.*)\1$/, '$2');
+}
+
+/** Why a hook's program cannot run, or null when it can. */
+function programProblem(program: string): string | null {
+  if (!path.isAbsolute(program)) return null;
+  try {
+    fs.accessSync(program, fs.constants.X_OK);
+    return null;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === 'ENOENT' ? 'is missing' : 'is not executable';
+  }
+}
+
+/**
+ * Which harnesses capture for the member, at which scope. A harness with 1.4
+ * capture only is named for provisioning, and a member hook whose program is
+ * missing or not executable captures nothing, so it is named too.
+ */
 function captureChecks(root: string, mycoHome: string, packageRoot: string): DoctorCheck[] {
   const checks: DoctorCheck[] = [];
   let capturing = 0;
@@ -50,8 +73,16 @@ function captureChecks(root: string, mycoHome: string, packageRoot: string): Doc
       if (!hooks.readable) {
         checks.push(row('Capture', 'warn', `${manifest.displayName}'s ${hooks.scope} hooks (${hooks.target}) could not be read, so whether it captures is unknown.`));
       } else if (hooks.member) {
-        capturing += 1;
-        checks.push(row('Capture', 'ok', `${manifest.displayName} captures for the member from its ${hooks.scope} hooks (${hooks.target}).`));
+        const broken = [...new Set(hooks.memberCommands.map(hookExecutable).filter((p): p is string => p !== null))]
+          .map((program) => ({ program, problem: programProblem(program) }))
+          .filter((entry): entry is { program: string; problem: string } => entry.problem !== null);
+        if (broken.length > 0) {
+          const { program, problem } = broken[0];
+          checks.push(row('Capture', 'warn', `${manifest.displayName}'s ${hooks.scope} hooks (${hooks.target}) run ${program}, which ${problem}, so they capture nothing. Run \`myco member provision ${manifest.name}\` from this project.`));
+        } else {
+          capturing += 1;
+          checks.push(row('Capture', 'ok', `${manifest.displayName} captures for the member from its ${hooks.scope} hooks (${hooks.target}).`));
+        }
       } else if (hooks.present) {
         checks.push(row('Capture', 'warn', `${manifest.displayName}'s ${hooks.scope} hooks (${hooks.target}) are Myco's 1.4 capture, not the member's. Run \`myco member provision ${manifest.name}\`.`));
       }

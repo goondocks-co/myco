@@ -206,8 +206,12 @@ describe('the dispatched read verbs in a fresh joined checkout', () => {
     const ran = await cli(m, 'search', 'quokka');
     expect(ran.status).toBe(1);
     expect(ran.stderr).toContain('No myco.yaml found');
-    const help = await cli(m, '--help');
-    expect(help.stdout).toContain('grove <subcommand>');
-    expect(legacyArtifacts(m)).toEqual([]);
+    const fresh = await cli(m, '--help');
+    expect(fresh.stdout).toContain('Project intelligence (answered by the Deployment for this project)');
+    fs.mkdirSync(path.join(m.home, 'groves'));
+    const legacy = await cli(m, '--help');
+    expect(legacy.stdout).toContain('grove <subcommand>');
+    expect(legacy.stdout).not.toContain('2.0 member (a project joined');
+    expect(legacyArtifacts(m).filter((p) => p !== path.join(m.home, 'groves'))).toEqual([]);
   }, 40_000);
 });

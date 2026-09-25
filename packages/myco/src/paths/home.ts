@@ -20,6 +20,9 @@ export const MYCO_HOME_ENV = 'MYCO_HOME';
  */
 export const RUNTIME_HOME_FILENAME = 'runtime.home';
 
+/** The directory under a Myco home that holds a 1.4 install's Groves; its presence is what marks a home as carrying a 1.4 install. */
+export const GROVES_DIRNAME = 'groves';
+
 /** The `.myco` directory: a project's, and the default home under `~`. */
 const MYCO_DIRNAME = '.myco';
 

@@ -18,7 +18,7 @@ import {
   type JsonSettingsAudit,
 } from './settings-merge.js';
 import { readJsonFile, writeJsonFile, writeOrDeleteJsonFile } from './json-helpers.js';
-import { ensureAgentsMd, ensureSymlink, isMycoHookGroup, withoutMycoHooks, containsMycoLauncherReference, hasMycoManagedMarker, MYCO_MANAGED_MARKER } from './install-helpers.js';
+import { ensureAgentsMd, ensureSymlink, isMycoHookCommand, isMycoHookGroup, withoutMycoHooks, containsMycoLauncherReference, hasMycoManagedMarker, MYCO_MANAGED_MARKER } from './install-helpers.js';
 import { hookCommands, memberHookTemplate } from './member-hooks.js';
 import { CREDENTIAL_FLAG, SERVER_FLAG, type CredentialSource } from '../member/constants.js';
 import { isHttpsUrl, parseCredentialFlag } from '../member/credential.js';
@@ -331,6 +331,19 @@ function rawHasMycoOwnershipSignal(raw: string): boolean {
 /** Marker text used to identify unmodified instruction stubs. */
 const INSTRUCTIONS_STUB_MARKER = 'Edit AGENTS.md, not this file';
 
+
+/**
+ * The hook commands a hooks file declares under `hooks`. A file that is not
+ * strict JSON (Codex's `hooks.json` carries a TOML footer) is read for its
+ * `"command"` strings instead.
+ */
+function hookCommandsIn(raw: string): string[] {
+  try {
+    return hookCommands((JSON.parse(raw) as { hooks?: unknown }).hooks);
+  } catch {
+    return [...raw.matchAll(/"command"\s*:\s*("(?:[^"\\]|\\.)*")/g)].map((m) => JSON.parse(m[1]) as string);
+  }
+}
 
 /** Start/end markers for the reference block prepended to existing instruction files. */
 const INSTRUCTIONS_REF_START = '<!-- myco:agents-ref:start -->';
@@ -2101,24 +2114,35 @@ export class SymbiontInstaller {
   }
 
   /**
-   * Whether this scope's hooks target carries Myco's capture, and whether it is
-   * the member's: a member hook command, or a member plugin, declares its
-   * credential source. Reads only; a target that exists and cannot be read is
-   * reported unreadable rather than absent.
+   * Whether this scope's hooks target carries Myco's capture, and whether that
+   * capture is the member's. A hooks file is read hook by hook: a Myco hook
+   * command is the member's when the command itself declares a credential
+   * source, so a credential flag elsewhere in the file — a permission rule, a
+   * foreign hook — decides nothing. A plugin file is the member's when it is the
+   * member plugin. `memberCommands` are the member hook commands found, for a
+   * caller that checks what they run. Reads only; a target that exists and
+   * cannot be read is reported unreadable rather than absent.
    */
-  inspectMemberHooks(): { scope: 'global' | 'project'; target: string | null; present: boolean; member: boolean; readable: boolean } {
+  inspectMemberHooks(): { scope: 'global' | 'project'; target: string | null; present: boolean; member: boolean; memberCommands: string[]; readable: boolean } {
     const scope = this.isGlobalScope ? 'global' as const : 'project' as const;
     const target = this.resolveAbsoluteTarget('hooks');
-    if (target === null || !fs.existsSync(target)) return { scope, target, present: false, member: false, readable: true };
+    const none = { scope, target, present: false, member: false, memberCommands: [] as string[] };
+    if (target === null || !fs.existsSync(target)) return { ...none, readable: true };
     let raw: string;
     try {
       raw = fs.readFileSync(target, 'utf-8');
     } catch {
-      return { scope, target, present: false, member: false, readable: false };
+      return { ...none, readable: false };
     }
     const present = this.isConfigured();
-    return { scope, target, present, member: present && raw.includes(CREDENTIAL_FLAG), readable: true };
+    if (this.manifest.registration?.hooksFormat === HOOKS_FORMAT_PLUGIN_FILE) {
+      return { ...none, present, member: present && raw.includes(MEMBER_PLUGIN_MARKER), readable: true };
+    }
+    const memberCommands = hookCommandsIn(raw)
+      .filter((command) => isMycoHookCommand(command) && parseCredentialFlag(command.split(/\s+/)) !== null);
+    return { ...none, present, member: present && memberCommands.length > 0, memberCommands, readable: true };
   }
+
 
   /**
    * What this symbiont's MCP targets say about the member's entry, for a report.

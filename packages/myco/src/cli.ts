@@ -139,8 +139,7 @@ async function helpForCommand(command: string, args: readonly string[] = []): Pr
 async function main(): Promise<void> {
   const [cmd, ...args] = process.argv.slice(2);
   if (!cmd || cmd === '--help' || cmd === '-h') {
-    const { memberHelpApplies, MEMBER_USAGE } = await import('./cli/member-dispatch.js');
-    process.stdout.write(memberHelpApplies() ? MEMBER_USAGE : USAGE);
+    process.stdout.write((await import('./cli/member-dispatch.js')).helpText(USAGE));
     return;
   }
   if (isHelpRequest(args)) {

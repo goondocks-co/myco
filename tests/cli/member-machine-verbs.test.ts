@@ -11,7 +11,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { deploymentSecretStore } from '@myco-server-worker/core/secrets.js';
 import { wrappingKeyFromText } from '@myco-server-worker/platform/wrapping-key.js';
-import { MEMBER_USAGE, memberHelpApplies, runMemberVerb } from '@myco/cli/member-dispatch.js';
+import { MEMBER_SECTION, MEMBER_USAGE, helpText, runMemberVerb } from '@myco/cli/member-dispatch.js';
 import { runProvision } from '@myco/cli/member.js';
 import { MEMBER_SETTINGS_ISSUE, MEMBER_TIER_LEAVES } from '@myco/cli/member-config.js';
 import type { MemberVerb } from '@myco/cli/member-verbs.js';
@@ -69,6 +69,12 @@ function legacyArtifacts(): string[] {
   };
   for (const dir of [checkout, mycoHome, userHome]) walk(dir);
   return found;
+}
+
+/** Claude Code's global settings file, which is also its hooks file. */
+function writeClaudeSettings(settings: Record<string, unknown>): void {
+  fs.mkdirSync(path.join(userHome, '.claude'), { recursive: true });
+  fs.writeFileSync(path.join(userHome, '.claude', 'settings.json'), JSON.stringify(settings, null, 2));
 }
 
 const join = (rig: Pick<MemberRig, 'token' | 'tokenId' | 'expiresAt'>): void => {
@@ -159,6 +165,30 @@ describe('a joined member with no 1.4 vault', () => {
     const answer = await (await rig.fetch('https://s/members/settings', { method: 'POST', headers: { ...rig.headers(), 'content-type': 'application/json' }, body: '{}' })).text();
     expect(answer).toContain('"persisted":true');
     expect(answer).not.toContain(secret);
+  });
+
+  it('the settings read strips userinfo, query and fragment from every URL a leaf holds, and creates no Project whatever the request names', async () => {
+    const rig = await memberRig();
+    join(rig);
+    leaf(rig, 'agent.provider.base_url', 'https://reader:hunter2@llm.example/v1?api_key=sk-inline#frag');
+    leaf(rig, 'embedding.base_url', 'http://embed.example:8080/api?token=t');
+    leaf(rig, 'instructions.template', 'Say hello. See https://docs.example/?q=kept-as-text for more.');
+    const projects = rig.rows('projects');
+
+    const res = await rig.fetch('https://s/members/settings', { method: 'POST', headers: { ...rig.headers({ 'x-myco-project': 'proj_never_seen' }), 'content-type': 'application/json' }, body: '{}' });
+    const text = await res.text();
+    const leaves = (JSON.parse(text) as { leaves: Array<{ leaf: string; value: unknown; updatedBy: string | null }> }).leaves;
+    const value = (name: string) => leaves.find((l) => l.leaf === name)?.value;
+    expect(value('agent.provider.base_url')).toBe('https://llm.example/v1');
+    expect(value('embedding.base_url')).toBe('http://embed.example:8080/api');
+    expect(value('instructions.template')).toBe('Say hello. See https://docs.example/?q=kept-as-text for more.');
+    expect(leaves.find((l) => l.leaf === 'agent.provider.base_url')?.updatedBy).toBe('mem_machine_1');
+    for (const hidden of ['hunter2', 'reader', 'sk-inline', 'token=t', 'frag']) expect(text).not.toContain(hidden);
+    expect(rig.rows('projects')).toBe(projects);
+    expect(rig.env.sqlite.query("SELECT COUNT(*) AS n FROM projects WHERE project_id = 'proj_never_seen'").get()).toEqual({ n: 0 });
+
+    const shown = await verb('config', ['get', 'agent.provider.base_url'], rig.fetch);
+    expect(shown.stdout).toBe('https://llm.example/v1');
   });
 
   it('doctor reports the membership, the Deployment, the credential and the spool, and fails naming the missing capture', async () => {
@@ -272,18 +302,79 @@ describe('a joined member with no 1.4 vault', () => {
     expect(bad.stderr).toContain('Usage: myco logs');
   });
 
-  it('help lists the member\'s commands on a machine with a membership, and the 1.4 list otherwise', async () => {
+  it('help lists the member\'s commands for a joined root or a home with no 1.4 install, and the 1.4 list otherwise', async () => {
     const rig = await memberRig();
-    expect(memberHelpApplies({ cwd: checkout, mycoHome })).toBe(false);
+    const LEGACY = 'Usage: myco <command> [args]\n\nCommands:\n  grove <subcommand>       Manage local Groves\n';
+    const help = (cwd: string) => helpText(LEGACY, { cwd, mycoHome });
+    expect(help(checkout)).toBe(MEMBER_USAGE);
+    fs.mkdirSync(path.join(mycoHome, 'groves'));
+    expect(help(checkout)).toBe(LEGACY);
     join(rig);
-    expect(memberHelpApplies({ cwd: checkout, mycoHome })).toBe(true);
-    expect(memberHelpApplies({ cwd: freshCheckout(), mycoHome })).toBe(true);
+    expect(help(checkout)).toBe(MEMBER_USAGE);
+    const unjoined = help(freshCheckout());
+    expect(unjoined.startsWith(LEGACY)).toBe(true);
+    expect(unjoined).toContain(MEMBER_SECTION);
     for (const retired of [/\bgrove\b/i, /\bdaemon\b/i, /^\s+mcp\b/m, /stdio/i, /^\s+hook\b/m, /^\s+restart\b/m, /^\s+service\b/m]) {
       expect(MEMBER_USAGE).not.toMatch(retired);
     }
     for (const kept of ['search <query>', 'session [id|latest]', 'stats', 'doctor', 'logs', 'config get', 'login <invite-link>', 'member <op>']) {
       expect(MEMBER_USAGE).toContain(kept);
     }
+  });
+
+  it('doctor does not count 1.4 capture as the member\'s, whatever else in the file carries a credential flag', async () => {
+    const rig = await memberRig();
+    join(rig);
+    writeClaudeSettings({
+      permissions: { allow: ['Bash(myco tool call --credential registry:*)'] },
+      hooks: { SessionStart: [{ hooks: [{ type: 'command', command: 'myco-run hook session-start' }] }] },
+    });
+
+    const ran = await verb('doctor', [], rig.fetch);
+
+    expect(ran.stdout).toMatch(/Capture\s+.*!!.*Claude Code's global hooks .* are Myco's 1\.4 capture, not the member's/);
+    expect(ran.stdout).toMatch(/Capture\s+.*FAIL.*no harness on this machine captures for the member/);
+    expect(ran.stdout).not.toContain('captures for the member from');
+  });
+
+  it('doctor names a member hook whose program is missing or not executable, and counts it as no capture', async () => {
+    const rig = await memberRig();
+    join(rig);
+    const program = path.join(userHome, 'bin', 'myco');
+    const member = (event: string) => ({ hooks: [{ type: 'command', command: `${program} hook ${event} --symbiont claude-code --credential registry --myco-managed` }] });
+    writeClaudeSettings({ hooks: { SessionStart: [member('session-start')], Stop: [member('stop')] } });
+
+    const missing = await verb('doctor', [], rig.fetch);
+    expect(missing.stdout).toContain(`run ${program}, which is missing, so they capture nothing. Run \`myco member provision claude-code\` from this project.`);
+    expect(missing.stdout).toMatch(/Capture\s+.*FAIL.*no harness on this machine captures for the member/);
+
+    fs.mkdirSync(path.dirname(program), { recursive: true });
+    fs.writeFileSync(program, '#!/bin/sh\n', { mode: 0o644 });
+    const inert = await verb('doctor', [], rig.fetch);
+    expect(inert.stdout).toContain(`run ${program}, which is not executable`);
+
+    fs.chmodSync(program, 0o755);
+    const runnable = await verb('doctor', [], rig.fetch);
+    expect(runnable.stdout).toMatch(/Capture\s+.*ok.*Claude Code captures for the member from its global hooks/);
+  });
+
+  it('config get answers before a Deployment that stops answering holds it past the request deadline', async () => {
+    const rig = await memberRig();
+    join(rig);
+    const stalls: FetchLike = async (input, init) => {
+      const request = new Request(input, init);
+      if (new URL(request.url).pathname !== '/members/settings') return rig.fetch(request);
+      return new Promise<Response>((_resolve, reject) => {
+        request.signal.addEventListener('abort', () => reject(request.signal.reason));
+      });
+    };
+    const started = Date.now();
+    const out: string[] = [];
+    const err: string[] = [];
+    const answered = await runMemberVerb('config', ['get'], { cwd: checkout, mycoHome, fetch: stalls, requestTimeoutMs: 200, stdout: (l) => out.push(l), stderr: (l) => err.push(l) });
+    expect(answered).toBe(false);
+    expect(Date.now() - started).toBeLessThan(5_000);
+    expect(err.join('\n')).toContain('did not answer its settings (timeout): no answer within 200 ms');
   });
 });
 

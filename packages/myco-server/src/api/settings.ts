@@ -73,8 +73,19 @@ export async function handleSettings(env: ServerEnv): Promise<Response> {
   });
 }
 
-/** The same leaves to a member credential, over a member json route whose body is the empty object. */
-export const handleMemberSettings = emptyBodyRoute((env) => handleSettings(env));
+/** A URL with its userinfo, query and fragment removed; any other string unchanged. */
+function withoutUrlSecrets(value: string): string {
+  const url = /^[a-z][\w+.-]*:\/\//i.test(value) && URL.canParse(value) ? new URL(value) : null;
+  return url === null ? value : `${url.protocol}//${url.host}${url.pathname}`;
+}
+
+/**
+ * The same leaves to a member credential, Deployment-wide, over a member json
+ * route whose body is the empty object. Every URL string a value holds, at any
+ * depth, leaves without its userinfo, query and fragment.
+ */
+export const handleMemberSettings = emptyBodyRoute(async (env: ServerEnv) =>
+  ok(JSON.parse(await (await handleSettings(env)).text(), (_key, value: unknown) => (typeof value === 'string' ? withoutUrlSecrets(value) : value))));
 
 /** Set one Deployment leaf. */
 export async function handleSetSetting(env: ServerEnv, ctx: OwnerContext): Promise<Response> {

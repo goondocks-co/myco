@@ -7,15 +7,21 @@
  */
 import { describe, expect, it } from 'bun:test';
 import { execFileSync } from 'node:child_process';
+import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 
 const CLI_PATH = path.resolve('packages/myco/src/cli.ts');
+
+/** A home carrying a 1.4 install (a Groves directory) and no membership: its help is the 1.4 command list. */
+const LEGACY_HOME = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-host-help-home-'));
+fs.mkdirSync(path.join(LEGACY_HOME, 'groves'));
 
 function runCli(args: string[]): { status: number; stdout: string; stderr: string } {
   try {
     const stdout = execFileSync(process.execPath, [CLI_PATH, ...args], {
       encoding: 'utf-8',
-      env: { ...process.env },
+      env: { ...process.env, MYCO_HOME: LEGACY_HOME },
     });
     return { status: 0, stdout, stderr: '' };
   } catch (err) {

@@ -13,16 +13,14 @@
  * once more after a 401 on a credential no other process has replaced since.
  */
 import { callTool, withMcpClient, type ToolCallOutcome } from '../mcp/client-call.js';
-import {
-  declaredCredentialSource, deploymentTransport, probeDeploymentHealth, resolveDeploymentUpstream, type DeploymentUpstream,
-} from '../mcp/deployment-upstream.js';
-import { unboundedBudget } from '../member/budget.js';
-import type { CredentialSource } from '../member/constants.js';
-import { resolveMemberProjectRoot } from '../member/credential.js';
+import { declaredCredentialSource, deploymentTransport, upstreamOf } from '../mcp/deployment-upstream.js';
+import { unboundedBudget, type RequestBudget } from '../member/budget.js';
+import { CONNECT_TIMEOUT_CAP_MS, UNBOUNDED_REQUEST_TIMEOUT_MS, type CredentialSource } from '../member/constants.js';
+import { resolveCredential, resolveMemberProjectRoot, type CredentialRecord } from '../member/credential.js';
 import { REJOIN_HINT } from '../member/delivery-notice.js';
 import { refreshMemberCredential, type RefreshStatus } from '../member/refresh.js';
 import { readRegistryEntryResult, registryEntryPath } from '../member/registry.js';
-import type { FetchLike } from '../member/transport.js';
+import { ServerClient, type FetchLike } from '../member/transport.js';
 import { resolveMycoHome } from '../paths/home.js';
 
 export interface MemberVerbDeps {
@@ -31,6 +29,8 @@ export interface MemberVerbDeps {
   mycoHome?: string;
   fetch?: FetchLike;
   now?: () => number;
+  /** The deadline of each request to a member route or the health route; the member default when absent. */
+  requestTimeoutMs?: number;
   stdout?: (line: string) => void;
   stderr?: (line: string) => void;
 }
@@ -90,27 +90,25 @@ function renewalEnded(deps: MemberVerbDeps): boolean {
   return read.status === 'present' && read.entry.refreshTerminal === true;
 }
 
-const upstreamFor = (source: CredentialSource, deps: MemberVerbDeps): DeploymentUpstream | null =>
-  resolveDeploymentUpstream(source, { cwd: cwdOf(deps), env: envOf(deps), mycoHome: homeOf(deps), invokedBy: 'cli' });
+const credentialFor = (source: CredentialSource, deps: MemberVerbDeps): CredentialRecord | null =>
+  resolveCredential(source, { cwd: cwdOf(deps), env: envOf(deps), mycoHome: homeOf(deps), invokedBy: 'cli' });
 
-/** A member json route's answer: its body, or the refusal it carries in the route's shape. */
-async function postRoute(upstream: DeploymentUpstream, fetchImpl: FetchLike, path: string, body: Record<string, unknown>): Promise<DeploymentOutcome<Record<string, unknown>>> {
-  const url = new URL(`${upstream.healthUrl.href.replace(/\/health$/, '')}${path}`);
-  let res: Response;
-  try {
-    res = await fetchImpl(url, { method: 'POST', headers: { ...upstream.headers, 'content-type': 'application/json' }, body: JSON.stringify(body) });
-  } catch (error) {
-    return { ok: false, error: { code: 'unreachable', message: (error as Error).message } };
-  }
-  if (res.status === 401) return { ok: false, error: { code: 'unauthorized', message: 'The Deployment refused the credential (HTTP 401).' } };
-  let answer: Record<string, unknown>;
-  try {
-    answer = await res.json() as Record<string, unknown>;
-  } catch {
-    return { ok: false, error: { code: 'unavailable', message: `The Deployment answered HTTP ${res.status} with no JSON body.` } };
-  }
-  if (!res.ok || typeof answer.code === 'string') {
-    return { ok: false, error: { code: typeof answer.code === 'string' ? answer.code : 'unavailable', message: typeof answer.reason === 'string' ? answer.reason : `HTTP ${res.status}` } };
+/** The deadline and redirect policy of every member request (`ServerClient`), with the request deadline a caller may shorten. */
+const budgetOf = (deps: MemberVerbDeps): RequestBudget => ({
+  connectTimeoutMs: CONNECT_TIMEOUT_CAP_MS,
+  requestTimeoutMs: deps.requestTimeoutMs ?? UNBOUNDED_REQUEST_TIMEOUT_MS,
+});
+
+/** A member json route's answer body, or the refusal it carries in the route's shape, under the member request deadline. */
+async function postRoute(client: ServerClient, budget: RequestBudget, path: string, body: Record<string, unknown>): Promise<DeploymentOutcome<Record<string, unknown>>> {
+  const raw = await client.request('POST', path, { body: JSON.stringify(body), headers: { 'content-type': 'application/json' }, budget, scope: 'deployment' });
+  if (raw.kind === 'timeout') return { ok: false, error: { code: 'timeout', message: `no answer within ${budget.requestTimeoutMs} ms` } };
+  if (raw.kind === 'transport') return { ok: false, error: { code: 'unreachable', message: raw.detail } };
+  if (raw.status === 401) return { ok: false, error: { code: 'unauthorized', message: 'The Deployment refused the credential (HTTP 401).' } };
+  const answer = raw.json;
+  if (answer === null) return { ok: false, error: { code: 'unavailable', message: `The Deployment answered HTTP ${raw.status} with no JSON body.` } };
+  if (raw.status < 200 || raw.status >= 300 || typeof answer.code === 'string') {
+    return { ok: false, error: { code: typeof answer.code === 'string' ? answer.code : 'unavailable', message: typeof answer.reason === 'string' ? answer.reason : `HTTP ${raw.status}` } };
   }
   return { ok: true, value: answer };
 }
@@ -136,42 +134,37 @@ export function membershipProblem(deps: MemberVerbDeps = {}): string | null {
 export async function openDeployment(source: CredentialSource, deps: MemberVerbDeps = {}): Promise<DeploymentHandle | null> {
   if (source === 'registry' && membershipProblem(deps) !== null) return null;
   if (source === 'registry') await renew(deps, false);
-  let upstream = upstreamFor(source, deps);
-  if (upstream === null) return null;
+  let record = credentialFor(source, deps);
+  if (record === null) return null;
   const fetchImpl: FetchLike = deps.fetch ?? globalThis.fetch;
+  const budget = budgetOf(deps);
   let renewedAfterRefusal = false;
 
   /** Run one request, and once after a 401 on an unchanged registry credential renew it and run it again. */
-  const withRenewal = async <T>(attempt: (at: DeploymentUpstream) => Promise<DeploymentOutcome<T>>): Promise<DeploymentOutcome<T>> => {
-    const first = await attempt(upstream!);
+  const withRenewal = async <T>(attempt: (at: CredentialRecord) => Promise<DeploymentOutcome<T>>): Promise<DeploymentOutcome<T>> => {
+    const first = await attempt(record!);
     if (first.ok || first.error.code !== 'unauthorized' || source !== 'registry' || renewedAfterRefusal) return first;
     renewedAfterRefusal = true;
-    const presented = upstream!.headers.authorization;
+    const presented = record!.token;
     const status = await renew(deps, true);
-    const next = upstreamFor(source, deps);
-    if (next === null || next.headers.authorization === presented) {
+    const next = credentialFor(source, deps);
+    if (next === null || next.token === presented) {
       return { ok: false, error: { code: 'unauthorized', message: RENEWAL_TERMINAL.includes(status) || renewalEnded(deps)
         ? `the Deployment refused this machine's credential and it cannot be renewed — ${REJOIN_HINT}`
         : `the Deployment refused this machine's credential and it could not be renewed yet (${status}); try again shortly` } };
     }
-    upstream = next;
-    return attempt(upstream);
+    record = next;
+    return attempt(record);
   };
 
-  const transport = (at: DeploymentUpstream) => deploymentTransport(at, {}, deps.fetch);
+  const transport = (at: CredentialRecord) => deploymentTransport(upstreamOf(at, source), {}, deps.fetch);
+  const client = (at: CredentialRecord) => new ServerClient({ serverUrl: at.serverUrl, token: at.token, projectId: at.projectId }, fetchImpl);
   return {
-    serverUrl: upstream.healthUrl.href.replace(/\/health$/, ''),
-    projectId: upstream.projectId,
-    healthy: async () => {
-      if (deps.fetch === undefined) return probeDeploymentHealth(upstream!.healthUrl);
-      try {
-        return (await deps.fetch(upstream!.healthUrl)).ok;
-      } catch {
-        return false;
-      }
-    },
+    serverUrl: record.serverUrl.replace(/\/+$/, ''),
+    projectId: record.projectId,
+    healthy: () => client(record!).health(budget),
     call: (tool, args) => withRenewal((at) => callTool(transport(at), tool, args)),
     listTools: () => withRenewal((at) => withMcpClient(transport(at), async (client) => (await client.listTools()).tools.map((t) => t.name))),
-    post: (path, body) => withRenewal((at) => postRoute(at, fetchImpl, path, body)),
+    post: (path, body) => withRenewal((at) => postRoute(client(at), budget, path, body)),
   };
 }

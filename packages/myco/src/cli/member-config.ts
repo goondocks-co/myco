@@ -3,8 +3,9 @@
  *
  * Two tiers (docs/architecture/myco-2.0.md §7.8). **Deployment Settings** are
  * read from the Deployment over the member credential (`POST /members/settings`,
- * the same leaves the dashboard's Settings page reads); provider credentials
- * live in the Deployment's secret store and never reach that answer. They are
+ * the same leaves the dashboard's Settings page reads, each URL value without
+ * its userinfo, query and fragment); provider credentials live in the
+ * Deployment's secret store and never reach that answer. They are
  * written in the dashboard, not here. **Member Settings** have no owner the 2.0
  * member reads yet (#1393), so `get` says so and `set` refuses rather than
  * writing a value nothing honours; the 1.4 tiers are never written from here.
