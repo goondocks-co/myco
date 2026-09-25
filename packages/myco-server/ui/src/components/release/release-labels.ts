@@ -9,6 +9,7 @@ export const RELEASE_STATE_LABEL: Record<string, string> = {
 
 export const CHECK_FAILURE_LABEL: Record<string, string> = {
   credential_rejected: 'GitHub refused the credential',
+  forbidden_without_credential: 'GitHub refused lookups made without a lookup token',
   rate_limited: 'GitHub rate limit reached',
   rate_limited_without_credential: 'GitHub rate limit reached without a lookup token',
   budget_exhausted: 'lookup limit reached',

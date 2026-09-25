@@ -47,7 +47,7 @@ import type { SecretStore } from './secrets.js';
 import { deploymentSecretStore } from './secrets.js';
 import { leafValues } from './settings.js';
 import { repositoryIdentity } from './repositories.js';
-import { GITHUB_READ_TIMEOUT_MS, githubReads, isGithubRepo, type GithubFailure } from './github-refs.js';
+import { GITHUB_READ_TIMEOUT_MS, githubReads, isGithubRepo } from './github-refs.js';
 import {
   classifyCommit, memoizedCompare, resolveRunRefs, type Classification, type PackageTagMapping,
 } from './release-classify.js';
@@ -356,9 +356,6 @@ const identityOf = (projectId: string, namespace: string, recordId: string) => `
 /** The captured commit a row is classified from: a new one is classified afresh. */
 const sourceOf = (c: Candidate) => `${c.point}:${c.headSha}:${c.cleanliness}`;
 
-/** Failures that stop the whole check: every later read would meet the same answer. */
-const STOPS_CHECK = new Set<GithubFailure>(['budget_exhausted', 'credential_rejected', 'rate_limited', 'timeout', 'network', 'not_found', 'unexpected_response']);
-
 /** The paths a session's tool calls touched, or null when a stored list cannot be read. */
 async function changedPaths(db: RelationalStore, projectId: string, sessionId: string): Promise<string[] | null> {
   const { results } = await db.prepare(`SELECT files_affected AS files FROM tool_calls
@@ -500,8 +497,8 @@ export async function checkProject(
     lookups = reads.lookupsUsed();
     if (outcome === null) superseded = true;
     else ({ failure, fingerprint } = outcome);
-    // What the check ran with, not the setting read later: a token lifts GitHub's per-address limit.
-    if (!token && failure === 'rate_limited') failure += '_without_credential';
+    // What the check ran with, not the setting read later: a limit or refusal met without a token says so.
+    if (!token && (failure === 'rate_limited' || failure === 'forbidden')) failure += '_without_credential';
   }
 
   const status: ReleaseCheckStatus = failure === null
@@ -575,7 +572,8 @@ async function classifyProject(
         if (outcome.kind === 'unavailable') {
           counts.unavailable += 1;
           failure = outcome.failure;
-          if (STOPS_CHECK.has(outcome.failure)) { counts.deferred += batch.length - i - 1; break; }
+          // Every failure but a truncated listing stops the whole check: every later read would meet the same answer.
+          if (outcome.failure !== 'truncated') { counts.deferred += batch.length - i - 1; break; }
           continue;
         }
         classification = outcome.classification;
