@@ -9,6 +9,7 @@ import { unboundedBudget } from '@myco/member/budget.js';
 import { MEMBER_SPOOL_QUARANTINE_MS } from '@myco/member/constants.js';
 import { mintId, promptEvent, toolUseEvent, type EnvelopeContext } from '@myco/member/envelope.js';
 import { normalizeHookInput } from '@myco/hooks/normalize.js';
+import { drainBacklog } from '@myco/member/backlog.js';
 import { MemberSpool } from '@myco/member/spool.js';
 import { ServerClient, type FetchLike } from '@myco/member/transport.js';
 import { memberRig, tempMycoHome } from './helpers/server.js';
@@ -69,8 +70,8 @@ describe('outage convergence', () => {
     const fastBudget = { ...unboundedBudget(), connectTimeoutMs: 20, requestTimeoutMs: 40 };
     let passes = 0;
     for (; passes < 3_000; passes++) {
-      const results = await spool.drainAll(client, fastBudget, { now, force: true });
-      if (results.every((r) => r.remaining === 0) && spool.sessionIds().length === 0) break;
+      const report = await drainBacklog(spool, client, fastBudget, { now, force: true, machineId: 'machine_1' });
+      if (report.sessions.every((r) => r.events?.remaining === 0) && spool.sessionIds().length === 0) break;
       if (passes === 20) t += MEMBER_SPOOL_QUARANTINE_MS + 1; // the 30-day skip
       t += 60_000;
     }

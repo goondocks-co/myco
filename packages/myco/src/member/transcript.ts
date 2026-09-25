@@ -24,7 +24,9 @@ import { firstHeading, sha256Text } from './text.js';
 import { SymbiontRegistry } from '../symbionts/registry.js';
 import type { TranscriptTurn } from '../symbionts/adapter.js';
 import { canStartRequest, clippedRequestBudget, type HookBudget } from './budget.js';
-import { TRANSCRIPT_HEAD_HASH_BYTES, TRANSCRIPT_SLICE_BYTES, type MemberCode } from './constants.js';
+import {
+  REFUSAL_PERMANENCE, TRANSCRIPT_HEAD_HASH_BYTES, TRANSCRIPT_RETRY_INITIAL_MS, TRANSCRIPT_RETRY_MAX_MS, TRANSCRIPT_SLICE_BYTES, type MemberCode,
+} from './constants.js';
 import {
   attachmentEvent, deriveId, planEvent, planKeyForTag, promptEvent, queuedPromptIdFor, transcriptSegmentEvent, TEXT_MEDIA_TYPE,
   type EnvelopeContext, type OutboundEvent, type TranscriptRole,
@@ -285,7 +287,8 @@ export function transcriptHeadHash(filePath: string): string | null {
 
 export interface ShipResult {
   shipped: number;
-  endedBy: 'done' | 'budget' | 'retry' | 'parked' | 'refused' | 'unauthorized' | 'route_missing' | 'protocol' | 'absent';
+  /** `rejected`: refused for good, and recorded on the pointer. `refused`: refused for now; the same bytes are sent again later. */
+  endedBy: 'done' | 'budget' | 'retry' | 'parked' | 'refused' | 'rejected' | 'unauthorized' | 'route_missing' | 'protocol' | 'absent';
 }
 
 const readSlice = (file: string, offset: number, length: number): Buffer => {
@@ -328,6 +331,7 @@ export async function shipTranscriptSegments(
   const { sessionId } = ctx;
   let pointer = slotPointer(readSessionState(spool.dir, sessionId), slot);
   if (!pointer) return { shipped: 0, endedBy: 'absent' };
+  if (pointer.refused !== undefined) return { shipped: 0, endedBy: 'rejected' };
   /**
    * Move THIS transcript's offset, computed under the lock against what is
    * stored — never against the snapshot read above. Two rules:
@@ -389,8 +393,18 @@ export async function shipTranscriptSegments(
       transcriptId: pointer.transcriptId, baseOffset: offset, blobSource: source, originPath: pointer.path,
       headHash: opts.headHash ?? pointer.headHash, role: slot.role,
     });
-    const logRefusal = (code: MemberCode, reason: string): void => {
+    // Every refusal is logged. One that is permanent for these bytes is also
+    // recorded on the pointer, so no later pass uploads this transcript again;
+    // a transient one leaves the pointer where it was, and the bytes are sent again.
+    const refused = pointer.transcriptId;
+    const logRefusal = (code: MemberCode, reason: string, permanent: boolean): ShipResult['endedBy'] => {
       spool.appendRefused({ eventId: event.envelope.eventId, sessionId, kind: event.envelope.kind, code, reason, at: now() });
+      if (!permanent) return 'refused';
+      updateSessionState(spool.dir, sessionId, (s) => {
+        const stored = slotPointer(s, slot);
+        if (stored?.transcriptId === refused) setSlotPointer(s, slot, { ...stored, refused: code });
+      }, now());
+      return 'rejected';
     };
 
     const blob = await client.postBlob(bytes, source.sha256, source.mediaType, clippedRequestBudget(budget, now()));
@@ -398,7 +412,10 @@ export async function shipTranscriptSegments(
       // One policy for what an outcome does: the spool's `endPass` owns the
       // latch and the diagnostics, here as much as on the event path — and,
       // as `endPass` documents, the caller logs its own refusal.
-      if (blob.class === 'refused') logRefusal(blob.code, blob.reason);
+      if (blob.class === 'refused') {
+        spool.endPass(blob, now());
+        return { shipped, endedBy: logRefusal(blob.code, blob.reason, REFUSAL_PERMANENCE[blob.code] === 'permanent') };
+      }
       if (blob.class !== 'reslice') spool.endPass(blob, now());
       return { shipped, endedBy: blob.class === 'reslice' ? 'refused' : blob.class };
     }
@@ -426,9 +443,10 @@ export async function shipTranscriptSegments(
           process.stderr.write(`[myco] member: transcript ${pointer.path} was replaced under its identity; shipping it again as ${fresh.transcriptId}\n`);
           continue;
         }
-        logRefusal(outcome.code, outcome.reason);
+        // A second disagreement under a fresh identity is final; so is any code final for these bytes.
+        const permanent = REFUSAL_PERMANENCE[outcome.code] === 'permanent' || (outcome.code === REPLACED_CODE && reminted);
         spool.endPass(outcome, now());
-        return { shipped, endedBy: outcome.class };
+        return { shipped, endedBy: logRefusal(outcome.code, outcome.reason, permanent) };
       }
       default:
         spool.endPass(outcome, now());
@@ -439,21 +457,46 @@ export async function shipTranscriptSegments(
 
 /**
  * Ship every transcript the session holds a pointer for: its own, then each
- * subagent transcript beside it, inside one budget. A pass that ends for any
- * reason other than finishing its transcript ends the whole walk: whatever
- * stopped it will stop the next one too.
+ * subagent transcript beside it, inside one budget. A refusal belongs to the
+ * transcript it names, so the walk carries on past it: one refused for good is
+ * passed over from then on, one refused for now is sent again later. Any other
+ * reason a pass ends for — the budget, the Deployment unreachable, the
+ * credential refused — ends the whole walk: it will stop the next one too.
+ *
+ * The session's transcript backlog mark follows the outcome: cleared once
+ * every transcript is acknowledged to its end, refused for good, or gone from
+ * disk; set otherwise, so a pass that could not finish leaves the session for
+ * the backlog to reach from another hook. A transient refusal also sets when a
+ * backlog walk may try again, doubling from `TRANSCRIPT_RETRY_INITIAL_MS` to
+ * `TRANSCRIPT_RETRY_MAX_MS`.
  */
 export async function shipSessionTranscripts(
   ctx: EnvelopeContext, spool: MemberSpool, client: ServerClient, budget: HookBudget,
   opts: { now?: () => number; until?: number; machineId: string },
 ): Promise<ShipResult> {
+  const now = opts.now ?? Date.now;
   let shipped = 0;
+  let refusedForNow = false;
   const state = readSessionState(spool.dir, ctx.sessionId);
   const slots: TranscriptSlot[] = [PRIMARY_SLOT, ...Object.keys(state.siblings).sort().map((p): TranscriptSlot => ({ role: 'subagent', path: p }))];
   for (const slot of slots) {
     const result = await shipTranscriptSegments(ctx, spool, client, budget, { ...opts, slot });
     shipped += result.shipped;
-    if (result.endedBy !== 'done' && result.endedBy !== 'absent') return { shipped, endedBy: result.endedBy };
+    if (result.endedBy === 'refused') { refusedForNow = true; continue; }
+    if (result.endedBy !== 'done' && result.endedBy !== 'absent' && result.endedBy !== 'rejected') {
+      spool.markTranscriptBacklog(ctx.sessionId);
+      return { shipped, endedBy: result.endedBy };
+    }
   }
+  if (refusedForNow) {
+    spool.markTranscriptBacklog(ctx.sessionId);
+    updateSessionState(spool.dir, ctx.sessionId, (s) => {
+      const backoffMs = s.transcriptRetry === undefined ? TRANSCRIPT_RETRY_INITIAL_MS : Math.min(s.transcriptRetry.backoffMs * 2, TRANSCRIPT_RETRY_MAX_MS);
+      s.transcriptRetry = { at: now() + backoffMs, backoffMs };
+    }, now());
+    return { shipped, endedBy: 'refused' };
+  }
+  spool.clearTranscriptBacklog(ctx.sessionId);
+  if (state.transcriptRetry !== undefined) updateSessionState(spool.dir, ctx.sessionId, (s) => { delete s.transcriptRetry; }, now());
   return { shipped, endedBy: 'done' };
 }

@@ -64,6 +64,8 @@ export const replacedRun: ParityScenario = {
     // ending revokes the credential its dispatch minted, so the next link in
     // the chain gets its own, exactly as a real dispatch would.
     const minted: string[] = [];
+    // The harness member these credentials belong to; every scenario that seeds one ensures it exists.
+    await target.sql(`INSERT OR IGNORE INTO members(id,label,created_at) VALUES ('mem_harness','harness',${now})`);
     const mintRuntime = async (n: number): Promise<{ token: string; tokenId: string }> => {
       const token = `parity-replaced-${n}-${stamp}`.padEnd(43, 'x').slice(0, 43);
       const tokenId = `mt_parity_replaced_${n}_${stamp}`;

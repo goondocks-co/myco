@@ -12,7 +12,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import {
   deploymentPath, deploymentsDir, listRegistryEntries, migrateRegistry, projectsDir, readDeploymentMembership,
-  readRegistryEntry, registryEntryPath, registryKeyFor, removeRegistryEntry, writeRegistryEntry, REGISTRY_VERSION, type RegistryEntry,
+  readRegistryEntry, registryEntryPath, registryKeyFor, removeRegistryEntry, writeDeploymentMembership, writeRegistryEntry, REGISTRY_VERSION, TOKEN_SCOPED_FIELDS, type RegistryEntry,
 } from '@myco/member/registry.js';
 import { ensureMemberDir } from '@myco/member/store.js';
 import { resolveMemberProjectRoot } from '@myco/member/credential.js';
@@ -246,6 +246,27 @@ describe('registry split', () => {
     const held = readDeploymentMembership('https://s.example', mycoHome)!;
     expect({ tokenId: held.tokenId, expiresAt: held.expiresAt, refreshAfter: held.refreshAfter }).toEqual({ tokenId: 'mt_live', expiresAt: 5_000, refreshAfter: 4_000 });
     expect(readRegistryEntry(a, mycoHome)).toMatchObject({ token: 'live', tokenId: 'mt_live', projectId: 'proj_1' });
+  });
+
+  it('drops every field of the replaced token when a new credential lands, through both writers, and keeps them when the token is the same', () => {
+    const a = path.join(mycoHome, 'a');
+    const stale = { token: 'old', tokenId: 'mt_old', expiresAt: 5_000, refreshAfter: 4_000, refreshTerminal: true };
+    writeRegistryEntry(entry(a, stale), { mycoHome });
+
+    writeRegistryEntry(entry(a, { token: 'old', tokenId: undefined }), { mycoHome });
+    expect(readRegistryEntry(a, mycoHome)).toMatchObject(stale);
+
+    // `myco member join` with a raw token: nothing but the token is known of it.
+    writeRegistryEntry({ version: REGISTRY_VERSION, projectId: 'proj_1', serverUrl: 'https://s.example', token: 'joined', root: a, machineId: 'm1', joinedAt: 2, updatedAt: 2 }, { mycoHome });
+    const joined = readDeploymentMembership('https://s.example', mycoHome)!;
+    expect(TOKEN_SCOPED_FIELDS.filter((field) => joined[field] !== undefined)).toEqual([]);
+
+    writeRegistryEntry(entry(a, stale), { mycoHome });
+    // `myco login` redeems an invite: a fresh token with its own id and expiry, and no rotation state yet.
+    writeDeploymentMembership({ serverUrl: 'https://s.example', token: 'invited', tokenId: 'mt_new', expiresAt: 90_000, machineId: 'm1', joinedAt: 3, updatedAt: 3 }, { mycoHome });
+    const invited = readRegistryEntry(a, mycoHome)!;
+    expect({ token: invited.token, tokenId: invited.tokenId, expiresAt: invited.expiresAt, refreshAfter: invited.refreshAfter, refreshTerminal: invited.refreshTerminal })
+      .toEqual({ token: 'invited', tokenId: 'mt_new', expiresAt: 90_000, refreshAfter: undefined, refreshTerminal: undefined });
   });
 
   for (const condition of ['loose-mode', 'malformed', 'unreadable'] as const) {

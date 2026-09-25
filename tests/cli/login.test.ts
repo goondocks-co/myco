@@ -14,6 +14,7 @@ import { issueEnrollmentAuthority } from '@myco-server-worker/auth/enrollment.js
 import { run } from '@myco/cli/login.js';
 import { readDeploymentMembership, readRegistryEntry } from '@myco/member/registry.js';
 import { unjoinedRig } from '../member/helpers/server.js';
+import { recordingPlatform } from '../member/helpers/service-platform.js';
 
 describe('myco login', () => {
   let home: string;
@@ -34,13 +35,24 @@ describe('myco login', () => {
     fs.rmSync(root, { recursive: true, force: true });
   });
 
-  const deps = (rig: ReturnType<typeof unjoinedRig>) => ({
+  /** A worker service written into the test home and started by a platform that only records. */
+  const workerDeps = (platform = recordingPlatform()) => ({
+    home, platform: 'darwin' as const, binaryPath: path.join(home, '.myco', 'bin', 'myco'),
+    detect: () => [{ id: 'codex', installed: true, authenticated: true }], harnessDirs: () => [],
+    ownDeploymentUrls: async () => [], admission: async () => 'admitted' as const, lockDir: path.join(home, 'locks'),
+    runner: platform.runner,
+  });
+  const deps = (rig: ReturnType<typeof unjoinedRig>, worker = workerDeps()) => ({
     fetch: rig.fetch as typeof fetch,
     mycoHome: home,
     machineId: 'machine_person',
     stdout: (l: string) => out.push(l),
     stderr: (l: string) => err.push(l),
+    worker,
   });
+  const workerUnits = (): string[] => {
+    try { return fs.readdirSync(path.join(home, 'Library', 'LaunchAgents')); } catch { return []; }
+  };
 
   it('redeems a Project-bound link, binding that Project to the named root', async () => {
     const rig = unjoinedRig();
@@ -64,6 +76,25 @@ describe('myco login', () => {
     // No Project was named, so nothing invented one for this root.
     expect(readRegistryEntry(root, home)).toBe(null);
     expect(out.join('\n')).toContain('myco member join');
+  });
+
+  it('keeps a worker running at login for an administrator who signs in, and installs none for a member', async () => {
+    const admin = unjoinedRig();
+    const platform = recordingPlatform();
+    const adminKey = (await issueEnrollmentAuthority(admin.env.db, Date.now(), { role: 'admin' })).key;
+    expect(await run([`https://s/join#${adminKey}`, '--root', root], deps(admin, workerDeps(platform)))).toBe(true);
+    expect(workerUnits()).toHaveLength(1);
+    expect(platform.running.size).toBe(1);
+    expect(out.join('\n')).toContain('a worker now runs whenever you are logged in');
+
+    fs.rmSync(path.join(home, 'Library'), { recursive: true, force: true });
+    out.length = 0;
+    const member = unjoinedRig();
+    const memberKey = (await issueEnrollmentAuthority(member.env.db, Date.now(), { role: 'member' })).key;
+    const untouched = { ...workerDeps(), runner: () => { throw new Error('no platform command runs for a member'); } };
+    expect(await run([`https://t/join#${memberKey}`, '--root', root], deps(member, untouched))).toBe(true);
+    expect(workerUnits()).toEqual([]);
+    expect(out.join('\n')).not.toMatch(/worker/);
   });
 
   it('reports a spent link as spent, and writes nothing', async () => {

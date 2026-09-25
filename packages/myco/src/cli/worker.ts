@@ -16,6 +16,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { resolveMycoHome } from '../paths/home.js';
 import { deploymentUrl, listDeploymentMemberships, readDeploymentMembership } from '../member/registry.js';
+import { unboundedBudget } from '../member/budget.js';
+import { refreshMembership } from '../member/refresh.js';
 import { detectHarnesses } from '../runner/detect.js';
 import { runWorker, type WorkerOptions } from '../runner/loop.js';
 import { clearWorkerRefusal, isTerminalRefusal, recordWorkerRefusal, type TerminalRefusal } from '../runner/refusal.js';
@@ -173,10 +175,12 @@ export function sameProgram(file: string, identity = executableIdentity): () => 
 }
 
 /** Where a worker attached from this terminal or a login service claims from, and how it knows it is alone. */
-export function attachOptions(serverUrl: string, mycoHome: string): Pick<WorkerOptions, 'serverUrl' | 'token' | 'lockDir' | 'runRoot' | 'onAttached' | 'stillCurrent'> {
+export function attachOptions(serverUrl: string, mycoHome: string, fetchImpl?: typeof fetch): Pick<WorkerOptions, 'serverUrl' | 'token' | 'renew' | 'lockDir' | 'runRoot' | 'onAttached' | 'stillCurrent'> {
   return {
     serverUrl,
     token: () => readDeploymentMembership(serverUrl, mycoHome)?.token ?? null,
+    // The membership's own rotation, the one every hook on this machine uses: a worker left running renews its credential, a lapsed one included.
+    renew: async (force) => (await refreshMembership(serverUrl, { mycoHome, budget: unboundedBudget(), force, ...(fetchImpl === undefined ? {} : { fetch: fetchImpl }) })).status,
     lockDir: workerLockDir(),
     runRoot: path.join(mycoHome, 'worker', 'runs'),
     onAttached: () => { clearWorkerRefusal(mycoHome, serverUrl); },

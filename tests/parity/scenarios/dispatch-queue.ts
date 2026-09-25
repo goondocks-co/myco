@@ -75,6 +75,8 @@ export const dispatchQueue: ParityScenario = {
     // this proves on each target's store rather than on one of them.
     const stranded = `run_parity_stranded`;
     const credential = `mt_parity_stranded`;
+    // The harness member this credential belongs to; every scenario that seeds one ensures it exists.
+    await target.sql(`INSERT OR IGNORE INTO members(id,label,created_at) VALUES ('mem_harness','harness',${now})`);
     await target.sql(`INSERT INTO member_credentials (id, member_id, machine_id, token_hash, issued_at, expires_at, revoked_at, bytes_written, lineage_root, lineage_started_at, predecessor_id, first_used_at)
       VALUES (${lit(credential)}, 'mem_harness', 'harness', ${lit(`h_${credential}`)}, ${now}, ${now + 3_600_000}, NULL, 0, ${lit(credential)}, ${now}, NULL, NULL)`);
     await target.sql(`INSERT INTO agent_runs (project_id, id, agent_id, task, status, queued_at, held_by, dispatch_spec, dispatched_by)

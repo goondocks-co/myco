@@ -23,6 +23,8 @@ export interface TranscriptPointer {
   nextOffset: number;
   /** Bytes of the transcript the member has already read for its own derivations: plan-file writes, and for an agent whose hooks write its turn rows, prompts, plans and images. */
   parsedSize: number;
+  /** The code the Deployment refused this transcript with for good, when it has; nothing ships under this identity again. */
+  refused?: string;
 }
 
 export interface SessionState {
@@ -52,11 +54,31 @@ export interface SessionState {
   delivered: string[];
   /** Compactions this session has been through, advanced by the hook that observes one before it asks for the block served after it. */
   compactionOrdinal: number;
+  /** The manifest name of the symbiont whose hooks captured this session; a transcript shipped from another session's hook is labelled with it. */
+  agent?: string;
+  /** Set when no one symbiont's declared transcript layout names this session's transcript, so a hook's backlog walk passes it over rather than search again. */
+  agentUnknown?: true;
+  /** When a backlog walk may send this session's transcripts again after a transient refusal, and the wait that set it. */
+  transcriptRetry?: { at: number; backoffMs: number };
   /** When this session first appended to the spool; the clock retention measures from until an acknowledgement arrives. */
   startedAt?: number;
   /** When the server last acknowledged one of this session's records. */
   lastAckAt?: number;
   updatedAt: number;
+}
+
+/** Every transcript pointer a session holds: its own, then the subagent transcripts beside it. */
+export const pointersOf = (state: SessionState): TranscriptPointer[] =>
+  [...(state.transcript ? [state.transcript] : []), ...Object.values(state.siblings)];
+
+/** Whether a transcript holds bytes on disk past what the Deployment acknowledged, and may still be sent them. */
+export function pointerBehind(pointer: TranscriptPointer): boolean {
+  if (pointer.refused !== undefined) return false;
+  try {
+    return fs.statSync(pointer.path).size > pointer.nextOffset;
+  } catch {
+    return false;
+  }
 }
 
 export function emptySessionState(now: number = Date.now()): SessionState {

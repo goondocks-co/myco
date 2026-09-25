@@ -200,11 +200,12 @@ export async function revokeMemberLineage(db: RelationalStore, tokenId: string, 
   return { revoked: result.meta.changes };
 }
 
-/** The window opens at `expires_at − MEMBER_TOKEN_REFRESH_WINDOW_MS`; earlier, the answer is `refresh_too_early` with the instant it opens. A token that already expires at its lineage ceiling answers `lineage_expired`: no successor could outlive it. Past both checks, one batch revokes the live, never-used successor this token may already have and inserts the new one — expiring one TTL from now or at the ceiling, whichever is sooner — and the answer carries the successor's own window start as `refreshAfter`. Both statements act only while the presented token is still live at that instant (`TOKEN_LIVE` on each): a token revoked in between changes nothing — its banked successor stays as it is — and raises `TokenRevokedError`. The presented token stays live; the successor's first authenticated use revokes it. */
+/** The window opens at `expires_at − MEMBER_TOKEN_REFRESH_WINDOW_MS`; earlier, the answer is `refresh_too_early` with the instant it opens. It stays open past the token's own expiry: a token that lapsed with its holder offline still asks for its successor, up to the lineage ceiling. A token that already expires at its lineage ceiling, or presented once the ceiling has passed, answers `lineage_expired`: no successor could outlive it. Past both checks, one batch revokes the live, never-used successor this token may already have and inserts the new one — expiring one TTL from now or at the ceiling, whichever is sooner — and the answer carries the successor's own window start as `refreshAfter`. Both statements act only while the presented token is still live at that instant (`TOKEN_LIVE` on each): a token revoked in between changes nothing — its banked successor stays as it is — and raises `TokenRevokedError`. The presented token stays live; the successor's first authenticated use revokes it. */
 export async function refreshMemberToken(db: RelationalStore, subject: RefreshSubject, nowMs: number): Promise<RefreshResult> {
   const opensAt = windowOpensAt(subject.expiresAt);
   if (nowMs < opensAt) return { refreshed: false, code: 'refresh_too_early', reason: REFRESH_TOO_EARLY, refreshAfter: opensAt };
-  if (subject.lineageStartedAt + MEMBER_TOKEN_MAX_LINEAGE_MS <= subject.expiresAt) return { refreshed: false, code: 'lineage_expired', reason: LINEAGE_EXPIRED };
+  const ceiling = subject.lineageStartedAt + MEMBER_TOKEN_MAX_LINEAGE_MS;
+  if (ceiling <= subject.expiresAt || ceiling <= nowMs) return { refreshed: false, code: 'lineage_expired', reason: LINEAGE_EXPIRED };
   // The successor inherits its runtime binding from the STORED predecessor row, never
   // from the refreshing request. A re-auth that re-establishes identity from what the
   // caller sends is how a device silently loses its binding and reverts to whoever
@@ -229,9 +230,12 @@ export async function activateSuccessor(db: RelationalStore, auth: Pick<MemberAu
   ]);
 }
 
-/** One read: the database schema version, joined to the credential row for the digest and to its member, kept only while that member is live. The version must equal this build's before any token decision is made; a missing version row is a mismatch. A row without its lineage columns, or whose member is revoked, never authenticates. */
+/** Whether a credential past its own expiry authenticates: `live` refuses it, `lapsed` admits it — for the one route that decides against the lineage ceiling instead (`admitsLapsed` in the route table). A revoked credential, or one whose member is revoked, never authenticates under either. */
+export type ExpiryAdmission = 'live' | 'lapsed';
+
+/** One read: the database schema version, joined to the credential row for the digest and to its member, kept only while that member is live. The version must equal this build's before any token decision is made; a missing version row is a mismatch. A row without its lineage columns, or whose member is revoked, never authenticates; an expired row authenticates only under `lapsed`. */
 export async function authenticateServerMemberToken(
-  db: RelationalStore, digest: string, nowMs: number,
+  db: RelationalStore, digest: string, nowMs: number, expiry: ExpiryAdmission = 'live',
 ): Promise<MemberAuth | null> {
   const row = await db
     .prepare(`SELECT s.value AS schema_version,
@@ -251,7 +255,7 @@ export async function authenticateServerMemberToken(
   if (row.lineage_root === null || row.lineage_started_at === null) return null;
   if (row.revoked_at !== null) return null;
   if (row.member_live === null) return null;
-  if (row.expires_at <= nowMs) return null;
+  if (expiry === 'live' && row.expires_at <= nowMs) return null;
   return {
     memberId: row.member_id, tokenId: row.id, machineId: row.machine_id, bytesWritten: row.bytes_written,
     expiresAt: row.expires_at, lineageRoot: row.lineage_root, lineageStartedAt: row.lineage_started_at,

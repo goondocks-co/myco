@@ -14,10 +14,14 @@ import type { NormalizedHookInput } from '../hooks/normalize.js';
 import { writeHookResponse, type HookResponse } from '../hooks/response.js';
 import { canStartRequest, clippedRequestBudget, resolveHookBudget, type HookBudget } from './budget.js';
 import { resolveMycoHome } from '../paths/home.js';
-import { parseCredentialFlag, resolveCredential, resolveMemberProjectRoot, type CredentialRecord, type CredentialSource } from './credential.js';
+import { getMachineId } from '../machine-id.js';
+import { drainBacklog, sessionTried } from './backlog.js';
+import { parseCredentialFlag, registryCredential, resolveCredential, resolveMemberProjectRoot, type CredentialRecord, type CredentialSource } from './credential.js';
+import { deliveryNotice } from './delivery-notice.js';
 import { ensureJoinedFromCode, joinCodePresent } from './join-code.js';
 import type { EnvelopeContext, OutboundEvent } from './envelope.js';
 import { refreshDue, refreshMemberCredential, refreshableRoot, rotatedCredential } from './refresh.js';
+import { readRegistryEntry } from './registry.js';
 import { applySpoolRetention } from './retention.js';
 import type { SessionState } from './session-state.js';
 import { MemberSpool } from './spool.js';
@@ -82,8 +86,14 @@ export interface HookOutcome {
    * dial, so it never spends a budget the spool has already decided is wasted.
    */
   context?: (run: HookRun) => Promise<HookResponse | undefined>;
-  /** Dial even while the offline latch is set (Stop/SessionEnd always probe). */
+  /** Dial even while the offline latch is set, and deliver the project's backlog with what the budget has left (Stop/SessionEnd always probe). */
   probe?: boolean;
+  /**
+   * How this hook hands the person a delivery notice, for a hook whose answer
+   * the harness shows the agent: the response with the notice added to it.
+   * Every hook that dials also prints the notice to stderr.
+   */
+  notice?: (text: string, response: HookResponse) => HookResponse;
   /** Work after the spool drain, inside the budget (transcript shipping). */
   afterDrain?: (run: HookRun) => Promise<void>;
 }
@@ -116,6 +126,20 @@ export function hookCwd(input: NormalizedHookInput): string {
   } catch {
     return process.cwd();
   }
+}
+
+/**
+ * The run with its credential renewed, when the token's refresh window is open
+ * and the hook has budget to ask — or when another hook has already renewed it.
+ * The run as it was otherwise: the predecessor stays valid until its
+ * successor's first use.
+ */
+async function rotated(run: HookRun, root: string, mycoHome: string, fetchImpl: FetchLike): Promise<HookRun> {
+  if (!refreshDue(run.credential, run.now()) || !canStartRequest(run.budget, run.now())) return run;
+  const report = await refreshMemberCredential(root, { mycoHome, fetch: fetchImpl, now: run.now, budget: clippedRequestBudget(run.budget, run.now()) });
+  if (report.entry === null || report.entry.token === run.credential.token) return run;
+  const credential = registryCredential(report.entry, root);
+  return { ...run, credential, client: new ServerClient(credential, fetchImpl) };
 }
 
 export async function runMemberHook(
@@ -163,35 +187,53 @@ export async function runMemberHook(
 
     const outcome = await handle(run);
     response = outcome.response ?? {};
-    spool.appendAndRecord(sessionId, outcome.events, outcome.record, now());
+    const record = outcome.events.length > 0 || outcome.record ? (state: SessionState) => {
+      state.agent ??= input.agent;
+      outcome.record?.(state);
+    } : undefined;
+    spool.appendAndRecord(sessionId, outcome.events, record, now());
     if (budget.drains) {
+      const fetchImpl = opts.fetch ?? globalThis.fetch;
+      const root = refreshableRoot(credential);
+      // Rotation goes first: a token inside its window renews, and a lapsed one delivers nothing until it has.
+      const live = root === null ? run : await rotated(run, root, mycoHome, fetchImpl);
       // The seam is a dial like any other: a hook that never drains never asks
       // the server for anything, and a latched spool costs one connect timeout
       // per backoff window rather than one per prompt.
       if (outcome.context && spool.shouldDial(now(), outcome.probe)) {
         try {
-          const served = await outcome.context(run);
+          const served = await outcome.context(live);
           if (served !== undefined) response = served;
         } catch (error) {
           process.stderr.write(`[myco] ${hookName}: context skipped (${(error as Error).message})\n`);
         }
       }
-      const fetchImpl = opts.fetch ?? globalThis.fetch;
-      const root = refreshableRoot(credential);
       // A 401 on a live send: another hook may have rotated this root's token, so the registry is re-read and the record retried once.
       const recovery = root === null ? {} : {
-        onUnauthorized: async (): Promise<ClientRecord | null> => rotatedCredential(root, credential, mycoHome),
-        clientFor: (record: ClientRecord) => new ServerClient(record, fetchImpl),
+        onUnauthorized: async (): Promise<ClientRecord | null> => rotatedCredential(root, live.credential, mycoHome),
+        clientFor: (clientRecord: ClientRecord) => new ServerClient(clientRecord, fetchImpl),
       };
-      const drained = await spool.drainSession(sessionId, client, budget, { force: outcome.probe, now, ...recovery });
-      if (outcome.afterDrain) await outcome.afterDrain(run);
-      // Probing hooks (Stop/SessionEnd) also apply spool retention for the
-      // project; a drain that delivered everything also lets go of the state
-      // of sessions delivered long ago.
-      if (outcome.probe) applySpoolRetention(spool, now(), { delivered: drained.skipped === undefined && drained.endedBy === 'drained' && drained.remaining === 0 });
-      // Registry-sourced credentials rotate after the hook's main work, inside what remains of the budget; env-sourced ones never do.
-      if (root !== null && refreshDue(credential, now()) && canStartRequest(budget, now())) {
-        await refreshMemberCredential(root, { mycoHome, fetch: fetchImpl, now, budget: clippedRequestBudget(budget, now()) });
+      const drained = await spool.drainSession(sessionId, live.client, budget, { force: outcome.probe, now, ...recovery });
+      if (outcome.afterDrain) await outcome.afterDrain(live);
+      // A refused token is asked once whether it still rotates, so a refusal that is final is recorded and said.
+      if (root !== null && drained.endedBy === 'unauthorized' && canStartRequest(budget, now())) {
+        await refreshMemberCredential(root, { mycoHome, fetch: fetchImpl, now, budget: clippedRequestBudget(budget, now()), force: true });
+      }
+      // Delivered in full: every event acknowledged, and no transcript byte of the session still waiting.
+      const ownDelivered = drained.skipped === undefined && drained.endedBy === 'drained' && drained.remaining === 0 && !spool.hasTranscriptBacklog(sessionId);
+      if (outcome.probe) {
+        // The session's own capture is delivered first; the backlog of every other session gets what the budget has left.
+        const backlog = ownDelivered ? await drainBacklog(spool, live.client, budget, { exclude: sessionId, now, machineId: getMachineId(), ...recovery }) : null;
+        // Probing hooks also apply spool retention for the project; a drain
+        // that delivered everything also lets go of the state of sessions
+        // delivered long ago, and a session this hook offered the Deployment
+        // and still could not deliver may be quarantined for its age.
+        applySpoolRetention(spool, now(), { delivered: ownDelivered, tried: [...(sessionTried(drained) ? [sessionId] : []), ...(backlog?.tried ?? [])] });
+      }
+      const notice = root === null ? null : deliveryNotice(readRegistryEntry(root, mycoHome) ?? live.credential, now());
+      if (notice !== null) {
+        process.stderr.write(`[myco] ${notice}\n`);
+        if (outcome.notice) response = outcome.notice(notice, response);
       }
     }
   } catch (error) {

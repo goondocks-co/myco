@@ -76,9 +76,10 @@ describe('a transcript the Deployment reports replaced', () => {
 
     const result = await shipTranscriptSegments(ctx, spool, client, unboundedBudget(), { machineId: MACHINE });
 
-    expect(result.endedBy).toBe('refused');
+    expect(result.endedBy).toBe('rejected');
     expect(posted).toHaveLength(2);
     expect(spool.readRefused().entries.map((r) => r.code)).toEqual(['transcript_replaced']);
+    expect(readSessionState(spool.dir, SESSION).transcript?.refused).toBe('transcript_replaced');
   });
 
   it('never re-mints a pointer whose file is too short for a digest: the same bytes mint the same id', async () => {
@@ -95,5 +96,7 @@ describe('a transcript the Deployment reports replaced', () => {
     expect(result.endedBy).toBe('refused');
     expect(posted).toHaveLength(1);
     expect(readSessionState(spool.dir, SESSION).transcript?.transcriptId).toBe(pointer.transcriptId);
+    // A first disagreement it could not answer with a fresh identity is not final: the bytes are sent again later.
+    expect(readSessionState(spool.dir, SESSION).transcript?.refused).toBeUndefined();
   });
 });
