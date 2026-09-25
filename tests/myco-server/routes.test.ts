@@ -63,6 +63,12 @@ describe('route table', () => {
     }
   });
 
+  it('answers on the credential alone, and admits a credential past its expiry, on the refresh route alone', () => {
+    const scoped = ROUTES.filter((r) => 'scope' in r && r.scope === 'credential').map((r) => `${r.method} ${r.path}`);
+    const lapsed = ROUTES.filter((r) => 'admitsLapsed' in r && r.admitsLapsed === true).map((r) => `${r.method} ${r.path}`);
+    expect({ scoped, lapsed }).toEqual({ scoped: ['POST /tokens/refresh'], lapsed: ['POST /tokens/refresh'] });
+  });
+
   it('routes exactly the child segments the handler serves', async () => {
     const { CHILD_SEGMENTS } = await import('@myco-server-worker/api/sessions.js');
     const child = ROUTES.find((r) => r.path.endsWith('/{child}'));

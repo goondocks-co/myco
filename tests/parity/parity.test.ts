@@ -26,11 +26,12 @@ import { titlingBackfill } from './scenarios/titling-backfill.ts';
 import { sessionEnd } from './scenarios/session-end.ts';
 import { projectCounts } from './scenarios/project-counts.ts';
 import { objectLifecycle } from './scenarios/object-lifecycle.ts';
+import { tokenRefresh } from './scenarios/token-refresh.ts';
 import { parseShard, selectShard } from '../../scripts/test-shards.mjs';
 import durations from '../../scripts/test-durations.json';
 import { writeFileSync } from 'node:fs';
 
-const scenarios = [restoreContinuation, repositories, canopy, skillCandidates, sessionsTitling, sessionTurns, plans, spores, recall, backupRestore, tick, dispatchQueue, scheduledTasks, cortex, replacedRun, search, grants, importParity, workerWire, codexRecording, toolBlobRetention, titlingBackfill, sessionEnd, projectCounts, objectLifecycle];
+const scenarios = [restoreContinuation, repositories, canopy, skillCandidates, sessionsTitling, sessionTurns, plans, spores, recall, backupRestore, tick, dispatchQueue, scheduledTasks, cortex, replacedRun, search, grants, importParity, workerWire, codexRecording, toolBlobRetention, titlingBackfill, sessionEnd, projectCounts, objectLifecycle, tokenRefresh];
 const DEFAULT_SCENARIO_DURATION_MS = 15_000;
 
 if (!process.env.MYCO_PARITY) {

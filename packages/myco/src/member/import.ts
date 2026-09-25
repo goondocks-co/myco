@@ -401,6 +401,7 @@ async function shipSession(
   // Committed with the pointer so a killed import leaves no receipt for an
   // event it never appended.
   spool.appendAndRecord(sessionId, facts, (state) => {
+    state.agent ??= candidate.agent;
     state.transcript = { ...pointer, nextOffset: fromOffset };
   }, now());
 

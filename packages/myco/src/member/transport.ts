@@ -6,15 +6,19 @@
  * connect timeout bounds the wait for response headers, the request timeout
  * bounds the whole exchange.
  */
-import { MEMBER_CODES, MEMBER_PROTOCOL, memberHeaders, PARKED_CODE, PROTOCOL_HEADER, RESLICE_CODES, type MemberCode } from './constants.js';
+import { deploymentScopedHeaders, MEMBER_CODES, MEMBER_PROTOCOL, memberHeaders, PARKED_CODE, PROTOCOL_HEADER, RESLICE_CODES, type MemberCode } from './constants.js';
 import type { RequestBudget } from './budget.js';
 import type { MemberEnvelope } from './envelope.js';
 
 export type FetchLike = (input: string | URL | Request, init?: RequestInit) => Promise<Response>;
 
-export interface ClientRecord {
+/** A credential and the Deployment it is for: all a Deployment-scoped request carries. */
+export interface DeploymentRecord {
   serverUrl: string;
   token: string;
+}
+
+export interface ClientRecord extends DeploymentRecord {
   projectId: string;
 }
 
@@ -81,28 +85,51 @@ export async function rawAnswerOf(res: Response): Promise<RawAnswer> {
   };
 }
 
+/**
+ * `POST /tokens/refresh` for a credential. The server answers it on the
+ * credential alone; a Project is named whenever the caller knows one, since a
+ * server that predates that answer refuses a refresh naming none. Only a
+ * membership no project is bound to sends none.
+ */
+export async function refreshCredential(record: DeploymentRecord & { projectId?: string }, fetchImpl: FetchLike, budget: RequestBudget, protocol: number = MEMBER_PROTOCOL): Promise<RefreshOutcome> {
+  const client = new ServerClient(record, fetchImpl, { protocol });
+  const raw = await client.request('POST', REFRESH_PATH, {
+    body: '{}', headers: { 'content-type': JSON_CONTENT_TYPE }, budget, scope: record.projectId === undefined ? 'deployment' : 'project',
+  });
+  return classifyRefreshAnswer(raw);
+}
+
 export class ServerClient {
   private readonly base: string;
   private readonly protocol: number;
 
-  constructor(private readonly record: ClientRecord, private readonly fetchImpl: FetchLike = globalThis.fetch, opts: { protocol?: number } = {}) {
+  constructor(private readonly record: DeploymentRecord & { projectId?: string }, private readonly fetchImpl: FetchLike = globalThis.fetch, opts: { protocol?: number } = {}) {
     this.base = record.serverUrl.replace(/\/+$/, '');
     this.protocol = opts.protocol ?? MEMBER_PROTOCOL;
   }
 
-  get projectId(): string {
+  get projectId(): string | undefined {
     return this.record.projectId;
   }
 
-  /** Authenticated fetch bounded across upload, response headers and response body by the request deadline. */
-  async request(method: string, path: string, init: { body?: BodyInit; headers?: Record<string, string>; budget: RequestBudget }): Promise<RawAnswer> {
+  /** The headers a request in `scope` carries; a Project-scoped request from a client that names no Project is a caller's bug. */
+  private headersFor(scope: 'project' | 'deployment'): Record<string, string> {
+    if (scope === 'deployment') return deploymentScopedHeaders(this.record, this.protocol);
+    const { projectId } = this.record;
+    if (projectId === undefined) throw new Error('ServerClient: a Project-scoped request needs a client that names a Project');
+    return memberHeaders({ token: this.record.token, projectId }, this.protocol);
+  }
+
+  /** Authenticated fetch bounded across upload, response headers and response body by the request deadline. A `deployment` request names no Project. */
+  async request(method: string, path: string, init: { body?: BodyInit; headers?: Record<string, string>; budget: RequestBudget; scope?: 'project' | 'deployment' }): Promise<RawAnswer> {
+    const headers = { ...this.headersFor(init.scope ?? 'project'), ...init.headers };
     const controller = new AbortController();
     let timedOut = false;
     const requestTimer = setTimeout(() => { timedOut = true; controller.abort(); }, init.budget.requestTimeoutMs);
     try {
       const res = await this.fetchImpl(`${this.base}${path}`, {
         method,
-        headers: { ...memberHeaders(this.record, this.protocol), ...init.headers },
+        headers,
         body: init.body,
         // A redirect is an error, never a hop. Following one ships the capture
         // body to whatever host the response names and answers in that host's
@@ -147,8 +174,7 @@ export class ServerClient {
   }
 
   async refresh(budget: RequestBudget): Promise<RefreshOutcome> {
-    const raw = await this.request('POST', REFRESH_PATH, { body: '{}', headers: { 'content-type': JSON_CONTENT_TYPE }, budget });
-    return classifyRefreshAnswer(raw);
+    return refreshCredential(this.record, this.fetchImpl, budget, this.protocol);
   }
 
   /** `GET /health` answers 200 on the public route; no credential is consulted there. */

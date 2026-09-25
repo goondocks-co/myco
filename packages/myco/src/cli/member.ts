@@ -24,6 +24,8 @@ import { deploymentUrl, listRegistryEntries, listRegistryEntriesResult, readDepl
 import { applySpoolRetention } from '../member/retention.js';
 import { memberDiagnostics, projectDiagnostics } from '../member/diagnostics.js';
 import { MemberSpool, type DrainResult } from '../member/spool.js';
+import { drainEntryBacklog, type BacklogReport } from '../member/backlog.js';
+import { REJOIN_HINT } from '../member/delivery-notice.js';
 import { ServerClient, type FetchLike } from '../member/transport.js';
 import { openBrowser } from './open-browser.js';
 import { loadManifests, resolvePackageRoot } from '../symbionts/detect.js';
@@ -416,20 +418,28 @@ function readStdin(deps: MemberCliDeps): string {
 export async function runDrain(args: readonly string[], deps: MemberCliDeps = {}): Promise<DrainResult[]> {
   const out = deps.stdout ?? ((l) => process.stdout.write(`${l}\n`));
   const now = deps.now ?? Date.now;
+  const mycoHome = homeFor(deps);
   const results: DrainResult[] = [];
   for (const entry of entriesFor(args, deps)) {
-    const spool = new MemberSpool(entry.projectId, { mycoHome: homeFor(deps) });
-    const retention = applySpoolRetention(spool, now());
+    const backlog = await drainEntryBacklog(entry, { mycoHome, fetch: deps.fetch, now });
+    for (const line of backlogLines(entry.projectId, backlog)) out(line);
+    // Retention follows the drain, and judges only the sessions the drain offered the Deployment.
+    const retention = applySpoolRetention(new MemberSpool(entry.projectId, { mycoHome }), now(), { tried: backlog.tried });
     if (retention.quarantined.length > 0 || retention.pruned > 0 || retention.releasedBlobs > 0) out(`${entry.projectId}: quarantined ${retention.quarantined.length}, pruned ${retention.pruned}, released ${retention.releasedBlobs} staged file(s)`);
-    const client = new ServerClient(entry, deps.fetch ?? globalThis.fetch);
-    const drained = await spool.drainAll(client, unboundedBudget(), { force: true, now });
-    for (const r of drained) {
-      out(`${entry.projectId} ${r.sessionId}: sent ${r.sent}, acked ${r.acked}, refused ${r.refused}, remaining ${r.remaining}${r.skipped ? ` (skipped: ${r.skipped})` : ''}${r.endedBy !== 'drained' ? ` — ended by ${r.endedBy}` : ''}`);
-    }
-    if (drained.length === 0) out(`${entry.projectId}: spool empty`);
-    results.push(...drained);
+    results.push(...backlog.sessions.flatMap((s) => (s.events ? [s.events] : [])));
   }
   return results;
+}
+
+/** One line per session a backlog walk reached, and one for a walk that reached none. */
+export function backlogLines(projectId: string, backlog: BacklogReport): string[] {
+  if (backlog.sessions.length === 0) return [`${projectId}: spool empty`];
+  return backlog.sessions.map(({ sessionId, events: r, transcripts: t }) => {
+    const parts: string[] = [];
+    if (r) parts.push(`sent ${r.sent}, acked ${r.acked}, refused ${r.refused}, remaining ${r.remaining}${r.skipped ? ` (skipped: ${r.skipped})` : ''}${r.endedBy !== 'drained' ? ` — ended by ${r.endedBy}` : ''}`);
+    if (t !== undefined) parts.push(typeof t === 'string' ? `transcript ${t === 'lease' ? 'held by another process' : t === 'deferred' ? 'waiting after a refusal' : 'names no symbiont; left undelivered'}` : `transcript segments ${t.shipped}${t.endedBy !== 'done' ? ` — ended by ${t.endedBy}` : ''}`);
+    return `${projectId} ${sessionId}: ${parts.join('; ')}`;
+  });
 }
 
 /**
@@ -453,7 +463,7 @@ export function runStatus(args: readonly string[], deps: MemberCliDeps = {}): vo
     out(`token:      ${redact(entry.token)}${membership.tokenId ? ` (${membership.tokenId})` : ''}`);
     out(`expires:    ${membership.unavailableFields.includes('expiresAt') ? 'unknown' : `${when(membership.expiresAt ?? undefined)}${membership.expired === true ? ' (EXPIRED)' : ''}`}`);
     out(`refresh:    ${membership.refreshTerminal === null ? 'unknown'
-      : membership.refreshTerminal ? 'unavailable — re-provision with `myco member join`'
+      : membership.refreshTerminal ? `unavailable — ${REJOIN_HINT}`
       : membership.unavailableFields.includes('refreshAfter') ? 'unknown'
       : membership.refreshAfter === null ? 'not yet announced' : `after ${when(membership.refreshAfter)}`}`);
     out(`machine:    ${membership.machineId}`);
@@ -703,9 +713,9 @@ function refreshLine(report: RefreshReport): string {
     case 'not-due': return `not due — refresh window opens ${when(entry?.refreshAfter ?? (entry?.expiresAt === undefined ? undefined : entry.expiresAt - MEMBER_TOKEN_REFRESH_WINDOW_MS))}`;
     case 'too-early': return `the server is not ready to rotate yet — retry after ${when(entry?.refreshAfter)}`;
     case 'busy': return 'another myco process is rotating this token';
-    case 'lineage-expired': return 'this token chain has reached its lifetime — re-provision with `myco member join`';
-    case 'unauthorized': return 'the server refused this token — re-provision with `myco member join`';
-    case 'terminal': return 'the server refused to rotate this token — re-provision with `myco member join`';
+    case 'lineage-expired': return `this token chain has reached its lifetime — ${REJOIN_HINT}`;
+    case 'unauthorized': return `the server refused this token — ${REJOIN_HINT}`;
+    case 'terminal': return `the server refused to rotate this token — ${REJOIN_HINT}`;
     case 'route-missing': return 'this server does not rotate member tokens';
     case 'protocol': return 'the server refuses this build\'s member protocol — upgrade myco';
     case 'no-entry': return 'no registry entry';
@@ -750,7 +760,7 @@ export async function runLinkGithub(args: readonly string[], deps: MemberCliDeps
       if (open) (deps.openBrowser ?? openBrowser)(url);
       return url;
     }
-    case 'unauthorized': return fail('the server refused this credential — re-provision with `myco member join`');
+    case 'unauthorized': return fail(`the server refused this credential — ${REJOIN_HINT}`);
     case 'route_missing': return fail('this server does not link GitHub accounts');
     case 'protocol': return fail('the server refuses this build\'s member protocol — upgrade myco');
     case 'refused': return fail(`the server refused: ${outcome.reason || outcome.code}`);

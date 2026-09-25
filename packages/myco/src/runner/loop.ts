@@ -18,6 +18,7 @@ import { detectHarnesses, type DetectedHarness } from './detect.js';
 import { driverFor } from './drivers/registry.js';
 import { discardRunDir, writeRunDir } from './mcp-config.js';
 import { deploymentScopedHeaders, MEMBER_PROTOCOL } from '../member/constants.js';
+import type { RefreshStatus } from '../member/refresh.js';
 import { classifyEventAnswer, rawAnswerOf, type RawAnswer } from '../member/transport.js';
 import type { RunEvent } from './events.js';
 import { parseRepositoryCheckoutSpec, REPOSITORY_CHECKOUT_CAPABILITY, type RepositoryCheckoutSpec } from '@goondocks/myco-shared/repository';
@@ -54,6 +55,13 @@ export interface WorkerOptions {
    */
   token: string | (() => string | null);
   /**
+   * Renews the credential `token` reads, and says what came of it: asked before
+   * every request, when it is due only (`force` false), and after the
+   * Deployment refuses the credential (`force` true) before that refusal is
+   * taken as final. The next read of `token` presents whatever it wrote.
+   */
+  renew?: (force: boolean) => Promise<RefreshStatus>;
+  /**
    * Where this machine's worker locks live (`instance.ts`), or null for a worker
    * that shares the Deployment with nothing — a test's own server.
    */
@@ -80,7 +88,7 @@ export interface WorkerOptions {
 }
 
 /** What a request needs of a worker: where, as whom, and when to give up. */
-type Requester = Pick<WorkerOptions, 'serverUrl' | 'token' | 'fetchImpl' | 'signal'>;
+type Requester = Pick<WorkerOptions, 'serverUrl' | 'token' | 'renew' | 'fetchImpl' | 'signal'>;
 
 /**
  * What a worker's request came back as.
@@ -108,17 +116,55 @@ const credentialOf = (options: Requester): string | null =>
  * member classifier, so a protocol window, a dead credential and a refusal all
  * arrive here as themselves rather than as an unreadable body.
  */
+const NO_MEMBERSHIP: WorkerAnswer = { kind: 'refused', code: 'no_membership', detail: 'this machine no longer holds a membership of the Deployment' };
+
 async function post(options: Requester, path: string, body: unknown): Promise<WorkerAnswer> {
+  await options.renew?.(false);
   const token = credentialOf(options);
-  if (token === null) return { kind: 'refused', code: 'no_membership', detail: 'this machine no longer holds a membership of the Deployment' };
+  if (token === null) return NO_MEMBERSHIP;
   const answer = await postAs(options, token, path, body);
-  // A credential rotated between the read and the request is refused as the
-  // predecessor; the one now on disk is the one to present.
-  if (answer.kind === 'refused' && answer.code === 'unauthorized') {
-    const current = credentialOf(options);
-    if (current !== null && current !== token) return postAs(options, current, path, body);
+  if (answer.kind !== 'refused' || answer.code !== 'unauthorized') return answer;
+  const next = await afterRefusal(options, token);
+  switch (next.kind) {
+    case 'present': return postAs(options, next.token, path, body);
+    case 'final': return answer;
+    case 'gone': return NO_MEMBERSHIP;
+    default: return { kind: 'unreachable', detail: next.detail };
   }
-  return answer;
+}
+
+/** Renewal answers that say the refused credential is finished: nothing a later renewal asks can change it. */
+const RENEWAL_FINAL: readonly RefreshStatus[] = ['unauthorized', 'terminal', 'lineage-expired', 'route-missing', 'not-due'];
+/** How long a worker waits for another process holding the registry — most often a hook rotating this very credential — and how often it looks. */
+export const RENEW_BUSY_WAIT_MS = 250;
+export const RENEW_BUSY_ATTEMPTS = 20;
+
+/**
+ * What to do after the Deployment refused `refused`. A credential rotated
+ * between the read and the request is presented as it now stands. One still
+ * the same is renewed — a lapsed one rotates — and presented again when that
+ * replaced it. The refusal is final only when the renewal says the credential
+ * is finished; a registry another process holds is waited on, and a renewal
+ * that could not be completed leaves the worker waiting rather than ended.
+ */
+async function afterRefusal(options: Requester, refused: string): Promise<
+  { kind: 'present'; token: string } | { kind: 'final' } | { kind: 'gone' } | { kind: 'wait'; detail: string }
+> {
+  for (let attempt = 0; ; attempt += 1) {
+    const current = credentialOf(options);
+    if (current === null) return { kind: 'gone' };
+    if (current !== refused) return { kind: 'present', token: current };
+    if (options.renew === undefined) return { kind: 'final' };
+    const status = await options.renew(true);
+    const renewed = credentialOf(options);
+    if (renewed === null || status === 'no-entry') return { kind: 'gone' };
+    if (renewed !== refused) return { kind: 'present', token: renewed };
+    if (RENEWAL_FINAL.includes(status)) return { kind: 'final' };
+    if (status !== 'busy' || attempt + 1 >= RENEW_BUSY_ATTEMPTS || options.signal.aborted) {
+      return { kind: 'wait', detail: `the credential was refused and could not be renewed yet (${status})` };
+    }
+    await sleep(RENEW_BUSY_WAIT_MS, options.signal);
+  }
 }
 
 async function postAs(options: Requester, token: string, path: string, body: unknown): Promise<WorkerAnswer> {

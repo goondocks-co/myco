@@ -22,6 +22,8 @@ export interface CredentialRecord {
   expiresAt?: number;
   refreshAfter?: number;
   refreshTerminal?: boolean;
+  refreshTerminalBy?: string;
+  refreshRetries?: Record<string, number>;
   source: CredentialSource;
   /** The project root the registry entry is keyed on; absent for env-sourced records. */
   root?: string;
@@ -119,9 +121,15 @@ export function resolveCredential(
     stderr(`registry entry for ${root} names a non-https server — no capture`);
     return null;
   }
+  return registryCredential(entry, root);
+}
+
+/** The credential a registry entry holds, for the project root it is keyed on. */
+export function registryCredential(entry: RegistryEntry, root: string): CredentialRecord {
   return {
     serverUrl: entry.serverUrl, token: entry.token, tokenId: entry.tokenId, projectId: entry.projectId,
-    expiresAt: entry.expiresAt, refreshAfter: entry.refreshAfter, refreshTerminal: entry.refreshTerminal, source: 'registry', root,
+    expiresAt: entry.expiresAt, refreshAfter: entry.refreshAfter, refreshTerminal: entry.refreshTerminal, refreshTerminalBy: entry.refreshTerminalBy,
+    refreshRetries: entry.refreshRetries, source: 'registry', root,
   };
 }
 

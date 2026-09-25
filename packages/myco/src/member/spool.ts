@@ -21,6 +21,7 @@ import {
   isProjectId, MEMBER_FILE_MODE, MEMBER_PROTOCOL, OFFLINE_BACKOFF_INITIAL_MS, OFFLINE_BACKOFF_MAX_MS, REFUSED_LOG_MAX_BYTES, type MemberCode,
 } from './constants.js';
 import type { BlobSource, BlobStager, MemberEnvelope, OutboundEvent } from './envelope.js';
+import { REJOIN_HINT } from './delivery-notice.js';
 import { bufferLockPath, readSessionState, readSessionStateResult, readSessionStateUnlocked, sessionStatePath, updateSessionState, writeSessionStateUnlocked, type SessionState, type SessionStateRead } from './session-state.js';
 import { assertMemberPathContained, ensureMemberDir, ensurePrivateFile, memberRoot, pathIsAbsent, readPrivateJson, reportSkippedPrivateFile, writePrivateFileAtomic } from './store.js';
 import type { ClientRecord, Outcome, ServerClient } from './transport.js';
@@ -30,6 +31,8 @@ export const BLOBS_DIRNAME = 'blobs';
 export const OFFLINE_LATCH_FILE = 'offline.json';
 export const REFUSED_LOG_FILE = 'refused.jsonl';
 const DRAIN_LEASE_SUFFIX = '.drain.lock';
+/** Suffix of the marker naming a session whose transcripts may hold bytes the Deployment has not acknowledged. */
+const TRANSCRIPT_BACKLOG_SUFFIX = '.transcript-backlog';
 /** Suffix of a session's state file, the sibling of its spool file. */
 const STATE_FILE_SUFFIX = '.state.json';
 
@@ -266,7 +269,56 @@ export class MemberSpool {
       if (state.startedAt === undefined) state.startedAt = now;
       record?.(state);
       writeSessionStateUnlocked(this.dir, sessionId, state, now);
+      // Write-ahead, with the pointer that names the bytes: a hook killed
+      // before its transcript pass still leaves the session in the backlog.
+      if (state.transcript !== undefined || Object.keys(state.siblings).length > 0) this.markTranscriptBacklog(sessionId);
     });
+  }
+
+  // ---------------------------------------------------------------------------
+  // Transcript backlog
+  // ---------------------------------------------------------------------------
+
+  private transcriptBacklogPath(sessionId: string): string {
+    return path.join(this.dir, `.${sessionId}${TRANSCRIPT_BACKLOG_SUFFIX}`);
+  }
+
+  /** Name the session as one whose transcripts may hold bytes not yet acknowledged. The session state's pointers say which bytes. */
+  markTranscriptBacklog(sessionId: string): void {
+    ensurePrivateFile(this.transcriptBacklogPath(sessionId));
+  }
+
+  /** The session's transcripts are acknowledged to their end, or their files are gone. */
+  clearTranscriptBacklog(sessionId: string): void {
+    try { fs.unlinkSync(this.transcriptBacklogPath(sessionId)); } catch { /* not marked */ }
+  }
+
+  hasTranscriptBacklog(sessionId: string): boolean {
+    return fs.existsSync(this.transcriptBacklogPath(sessionId));
+  }
+
+  /** Every session marked as holding transcript bytes not yet acknowledged. */
+  transcriptBacklogIds(): string[] {
+    if (!this.reachable(this.dir)) return [];
+    try {
+      return fs.readdirSync(this.dir)
+        .filter((file) => file.startsWith('.') && file.endsWith(TRANSCRIPT_BACKLOG_SUFFIX))
+        .map((file) => file.slice(1, -TRANSCRIPT_BACKLOG_SUFFIX.length));
+    } catch {
+      return [];
+    }
+  }
+
+  /** Run `fn` holding the session's drain lease; null, without running it, when another process holds the lease. */
+  async withSessionLease<T>(sessionId: string, fn: () => Promise<T>): Promise<T | null> {
+    ensurePrivateFile(this.leasePath(sessionId));
+    const lease = LifecycleLock.acquire(this.leasePath(sessionId), { command: 'myco member drain' });
+    if (!lease.acquired) return null;
+    try {
+      return await fn();
+    } finally {
+      lease.lock.release();
+    }
   }
 
   /** Session ids with a spool file. */
@@ -697,7 +749,7 @@ export class MemberSpool {
         this.markOffline(now);
         return outcome.class;
       case 'unauthorized':
-        stderr('member token refused — re-provision (`myco member join`); events stay spooled');
+        stderr(`member token refused — events stay spooled; ${REJOIN_HINT}`);
         return outcome.class;
       case 'protocol':
         stderr(`server refuses member protocol ${MEMBER_PROTOCOL} (server_protocol=${outcome.serverProtocol ?? '?'}, min_compat_member_protocol=${outcome.minCompatMemberProtocol ?? '?'}) — upgrade myco; events stay spooled`);
@@ -706,18 +758,5 @@ export class MemberSpool {
       default:
         return outcome.class;
     }
-  }
-
-  /** Drain every session of the project in turn, inside the budget. */
-  async drainAll(client: ServerClient, budget: HookBudget, opts: DrainOptions = {}): Promise<DrainResult[]> {
-    const results: DrainResult[] = [];
-    for (const sessionId of this.sessionIds()) {
-      const r = await this.drainSession(sessionId, client, budget, opts);
-      results.push(r);
-      // Anything that will answer the same way for the next session ends the
-      // walk: a mis-deployed server must cost one request, not one per session.
-      if (r.endedBy !== 'drained' && r.endedBy !== 'reslice' && r.endedBy !== 'refused' && r.endedBy !== 'acked') break;
-    }
-    return results;
   }
 }

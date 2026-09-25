@@ -321,15 +321,87 @@ describe('token refresh', () => {
     for (const t of [fresh.root, a]) expect((await fresh.post(t.token, 9)).status).toBe(401);
   });
 
-  it('refuses an expired or a revoked token on the refresh route like any other: 401 without a row written', async () => {
+  it('refuses a revoked token on the refresh route, and an expired one on every other route: 401 without a row written', async () => {
     const r = await rig();
     const revoked = await issueMemberToken(r.e.db, { memberId: 'mem_machine_1', machineId: 'machine_1' }, T0);
     await revokeCredentialAsMember(r.e.db, { id: 'mem_machine_1', label: 'machine_1', role: 'admin' }, revoked.tokenId, T0 + 1);
     r.clock.now = WINDOW_OPENS;
     expect((await r.refresh(revoked.token)).status).toBe(401);
-    r.clock.now = r.root.expiresAt;
-    expect((await r.refresh(r.root.token)).status).toBe(401);
+    r.clock.now = r.root.expiresAt + 1;
+    expect((await r.refresh(revoked.token)).status).toBe(401);
+    expect((await r.post(r.root.token, 1)).status).toBe(401);
+    expect((await r.fetch(memberPost(r.root.token, '{}', '/import/plan'))).status).toBe(401);
     expect(count(r.e.sqlite, 'member_credentials')).toBe(2);
+  });
+
+  it('rotates a token that lapsed while its holder was offline: the successor is minted in the same lineage, expiring one TTL from the refresh, and captures', async () => {
+    const r = await rig();
+    r.clock.now = r.root.expiresAt + 30 * 24 * 60 * 60 * 1000;
+    expect((await r.post(r.root.token, 1)).status).toBe(401);
+    const res = await r.capture(() => r.refresh(r.root.token));
+    const body = await json(res);
+    expect({ status: res.status, refreshed: body.refreshed, expiresAt: body.expiresAt }).toEqual({ status: 200, refreshed: true, expiresAt: r.clock.now + MEMBER_TOKEN_TTL_MS });
+    expect(r.row(body.tokenId as string)).toMatchObject({ predecessor_id: r.root.tokenId, lineage_root: r.root.tokenId, lineage_started_at: T0, revoked_at: null, first_used_at: null });
+    expect(r.emitted('token_refreshed')).toEqual([{ kind: 'token_refreshed', memberId: 'mem_machine_1', tokenId: body.tokenId, predecessorId: r.root.tokenId }]);
+    r.clock.now += 1;
+    expect((await json(await r.post(body.token as string, 2))).persisted).toBe(true);
+    expect(r.row(r.root.tokenId)).toMatchObject({ revoked_at: r.clock.now });
+  });
+
+  it('rotates a lapsed token once: a replay after its successor is used answers 401 as a lineage replay, and a repeat before that use supersedes the unused successor', async () => {
+    const r = await rig();
+    r.clock.now = r.root.expiresAt + 1_000;
+    const first = await json(await r.refresh(r.root.token));
+    r.clock.now += 1;
+    const second = await json(await r.refresh(r.root.token));
+    expect([first.refreshed, second.refreshed]).toEqual([true, true]);
+    expect(r.row(first.tokenId as string)).toMatchObject({ revoked_at: r.clock.now });
+    expect(r.e.sqlite.query(`SELECT id FROM member_credentials WHERE predecessor_id = ? AND revoked_at IS NULL`).all(r.root.tokenId)).toEqual([{ id: second.tokenId }]);
+    expect((await r.post(first.token as string, 1)).status).toBe(401);
+    r.clock.now += 1;
+    expect((await json(await r.post(second.token as string, 2))).persisted).toBe(true);
+    r.clock.now += 1;
+    const replay = await r.capture(() => r.refresh(r.root.token));
+    expect(replay.status).toBe(401);
+    expect(r.emitted('lineage_replayed')).toMatchObject([{ tokenId: r.root.tokenId, successorId: second.tokenId }]);
+    expect(count(r.e.sqlite, 'member_credentials')).toBe(3);
+  });
+
+  it('answers lineage_expired to a lapsed token presented past its lineage ceiling, minting nothing', async () => {
+    const r = await rig();
+    r.clock.now = T0 + MEMBER_TOKEN_MAX_LINEAGE_MS;
+    const res = await r.capture(() => r.refresh(r.root.token));
+    expect({ status: res.status, body: await json(res) }).toEqual({ status: 200, body: { refreshed: false, code: 'lineage_expired', reason: 'token lineage expired' } });
+    expect(r.emitted('refresh_refused')).toEqual([{ kind: 'refresh_refused', memberId: 'mem_machine_1', tokenId: r.root.tokenId, reason: 'lineage_expired' }]);
+    expect(count(r.e.sqlite, 'member_credentials')).toBe(1);
+    r.clock.now = T0 + MEMBER_TOKEN_MAX_LINEAGE_MS - 1;
+    const last = await json(await r.refresh(r.root.token));
+    expect(last).toMatchObject({ refreshed: true, expiresAt: T0 + MEMBER_TOKEN_MAX_LINEAGE_MS });
+  });
+
+  it('rotates on the credential alone: a request naming no Project and one naming a Project the Deployment has never seen both rotate, and no Project row is created', async () => {
+    const r = await rig();
+    r.clock.now = r.root.expiresAt + 1_000;
+    const projects = count(r.e.sqlite, 'projects');
+    const bare = await r.fetch(memberPost(r.root.token, '{}', '/tokens/refresh', { 'x-myco-project': '' }));
+    const bareBody = await json(bare);
+    expect({ status: bare.status, refreshed: bareBody.refreshed }).toEqual({ status: 200, refreshed: true });
+    expect(r.row(bareBody.tokenId as string)).toMatchObject({ predecessor_id: r.root.tokenId, lineage_root: r.root.tokenId });
+    r.clock.now += 1;
+    const named = new Request('https://s/tokens/refresh', { method: 'POST', headers: memberHeaders(r.root.token, { 'x-myco-project': 'proj_brand_new' }), body: '{}' });
+    expect(named.headers.get('x-myco-project')).toBe('proj_brand_new');
+    const namedBody = await json(await r.fetch(named));
+    expect(namedBody.refreshed).toBe(true);
+    expect(count(r.e.sqlite, 'projects')).toBe(projects);
+    expect(r.e.sqlite.query(`SELECT COUNT(*) AS n FROM projects WHERE project_id = 'proj_brand_new'`).get()).toEqual({ n: 0 });
+  });
+
+  it('never admits a lapsed token of a revoked member', async () => {
+    const r = await rig();
+    r.e.sqlite.query(`UPDATE members SET revoked_at = ? WHERE id = ?`).run(T0 + 1, 'mem_machine_1');
+    r.clock.now = r.root.expiresAt + 1;
+    expect((await r.refresh(r.root.token)).status).toBe(401);
+    expect(count(r.e.sqlite, 'member_credentials')).toBe(1);
   });
 
   it('lets a token at its write quota rotate: the refresh route is exempt from the byte pre-check while /events refuses', async () => {

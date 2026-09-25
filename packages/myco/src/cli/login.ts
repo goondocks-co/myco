@@ -20,7 +20,10 @@ import { resolveMycoHome } from '../paths/home.js';
 import { isSafeProjectRoot } from '../project-root.js';
 import { resolveMemberProjectRoot } from '../member/credential.js';
 import { runImport } from '../member/import.js';
-import { exchangeJoinCode, parseJoinCode, recordJoinAnswer, JOIN_CODE_REFUSALS } from '../member/join-code.js';
+import { ADMIN_ROLE, exchangeJoinCode, parseJoinCode, recordJoinAnswer, JOIN_CODE_REFUSALS } from '../member/join-code.js';
+import { ensuredWorkerWords, ensureWorkerService, type WorkerServiceDeps } from './worker-service.js';
+import { drainEntryBacklog } from '../member/backlog.js';
+import { deploymentUrl, listRegistryEntries } from '../member/registry.js';
 
 export const LOGIN_HELP = `Usage: myco login <invite-link>
 
@@ -52,6 +55,8 @@ export interface LoginDeps {
   machineId?: string;
   stdout?: (line: string) => void;
   stderr?: (line: string) => void;
+  /** How an administrator's worker service is installed. */
+  worker?: WorkerServiceDeps;
 }
 
 interface LoginArgs {
@@ -114,13 +119,28 @@ export async function run(args: readonly string[], deps: LoginDeps = {}): Promis
     if (!isSafeProjectRoot(root)) return fail(`${root} is not a project directory`);
   }
 
-  recordJoinAnswer(code, answer, {
-    mycoHome: deps.mycoHome ?? resolveMycoHome(), root, now: deps.now?.() ?? Date.now(), machineId,
-  });
+  const mycoHome = deps.mycoHome ?? resolveMycoHome();
+  recordJoinAnswer(code, answer, { mycoHome, root, now: deps.now?.() ?? Date.now(), machineId });
 
   out(`Signed in to ${code.serverUrl} as ${answer.memberId} (${answer.role}).`);
+  // An administrator's machine runs the Deployment's work; a sign-in keeps its worker running at login.
+  if (answer.role === ADMIN_ROLE) out(`  ${ensuredWorkerWords(await ensureWorkerService(code.serverUrl, { ...deps.worker, mycoHome })).line}`);
   if (root !== undefined) out(`  Connected ${root} to project ${answer.projectId}. Your agents capture there from now on.`);
   else out('  No project yet — connect your first one with `myco member join`.');
+
+  // What this machine captured while it could not deliver reaches the
+  // Deployment now, for every project bound to it: the new credential is the
+  // one every binding on this Deployment reads.
+  for (const entry of listRegistryEntries(mycoHome).filter((e) => deploymentUrl(e.serverUrl) === deploymentUrl(code.serverUrl))) {
+    try {
+      const backlog = await drainEntryBacklog(entry, { mycoHome, fetch: deps.fetch, now: deps.now, machineId });
+      const delivered = backlog.sessions.filter((s) => (s.events?.acked ?? 0) > 0 || (typeof s.transcripts === 'object' && s.transcripts.shipped > 0)).length;
+      if (delivered > 0) out(`  Delivered ${delivered} session(s) captured in ${entry.root} while this machine could not reach the deployment.`);
+      if (backlog.endedBy !== 'done') err(`  Some capture in ${entry.root} is still waiting (${backlog.endedBy}); \`myco member drain\` retries it.`);
+    } catch (error) {
+      err(`  Could not deliver waiting capture in ${entry.root} (${(error as Error).message}); \`myco member drain\` retries it.`);
+    }
+  }
 
   // A machine arrives with history, and the bounded pass over what is already
   // on its disk runs once, here. Only where the invitation named a Project:
@@ -129,7 +149,7 @@ export async function run(args: readonly string[], deps: LoginDeps = {}): Promis
   // history whenever the person wants it.
   if (root !== undefined) {
     const report = await runImport({ serverUrl: code.serverUrl }, {
-      fetch: deps.fetch, now: deps.now, cwd: deps.cwd, mycoHome: deps.mycoHome ?? resolveMycoHome(), machineId,
+      fetch: deps.fetch, now: deps.now, cwd: deps.cwd, mycoHome, machineId,
     }).catch(() => null);
     const imported = report?.projects.reduce((n, p) => n + p.agents.reduce((m, a) => m + a.imported, 0), 0) ?? 0;
     if (imported > 0) out(`  Imported ${imported} past sessions. Run \`myco import\` to reach further back.`);

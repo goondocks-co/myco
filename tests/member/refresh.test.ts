@@ -14,10 +14,10 @@ import path from 'node:path';
 import { resetMachineIdCache } from '@myco/machine-id.js';
 import { run as runMemberCli } from '@myco/cli/member.js';
 import { unboundedBudget } from '@myco/member/budget.js';
-import { MEMBER_TOKEN_REFRESH_WINDOW_MS } from '@myco/member/constants.js';
+import { MEMBER_TOKEN_REFRESH_WINDOW_MS, PROJECT_HEADER, REFRESH_NO_PROJECT_BACKOFF_MS, TERMINAL_RETRY_INTERVAL_MS } from '@myco/member/constants.js';
 import { ENV_MEMBER_TOKEN, ENV_PROJECT, ENV_SERVER_URL, resolveMemberProjectRoot } from '@myco/member/credential.js';
-import { refreshDue, refreshMemberCredential, refreshableRoot } from '@myco/member/refresh.js';
-import { readRegistryEntry, writeRegistryEntry, type RegistryEntry } from '@myco/member/registry.js';
+import { buildIdentity, refreshDue, refreshMemberCredential, refreshMembership, refreshableRoot } from '@myco/member/refresh.js';
+import { readDeploymentMembership, readRegistryEntry, writeDeploymentMembership, writeRegistryEntry, type RegistryEntry } from '@myco/member/registry.js';
 import { MemberSpool } from '@myco/member/spool.js';
 import { ServerClient, type FetchLike } from '@myco/member/transport.js';
 import { memberRig, tempMycoHome, type MemberRig } from './helpers/server.js';
@@ -70,26 +70,26 @@ const prompt = (fetchImpl: FetchLike, text: string) =>
 const budget = () => ({ connectTimeoutMs: 2_000, requestTimeoutMs: 10_000 });
 
 describe('member token rotation', () => {
-  it('a hook inside the window writes the successor; the next hook uses it and the predecessor is revoked at that first use', async () => {
+  it('a hook inside the window writes the successor before it delivers, and delivers on it: the predecessor is revoked at that first use', async () => {
     const rig = await nearExpiryRig();
     registerTestMember({ mycoHome, token: rig.token, tokenId: rig.tokenId, projectId: PROJECT, expiresAt: rig.expiresAt, serverUrl: SERVER_URL });
     const spy = recordingFetch(rig.fetch);
 
     await prompt(spy.fetch, 'first');
     expect(refreshCalls(spy)).toBe(1);
+    expect(spy.requests[0].path).toBe('/tokens/refresh');
     const successor = readRegistryEntry(root, mycoHome)!;
     expect(successor.token).not.toBe(rig.token);
     expect(successor.tokenId).not.toBe(rig.tokenId);
     expect(successor.expiresAt).toBeGreaterThan(rig.expiresAt);
     expect(successor.refreshAfter).toBe(successor.expiresAt! - MEMBER_TOKEN_REFRESH_WINDOW_MS);
-    expect(tokenRow(rig, successor.tokenId!)).toEqual({ predecessor_id: rig.tokenId, lineage_root: rig.tokenId, first_used_at: null, revoked_at: null });
-    expect(tokenRow(rig, rig.tokenId).revoked_at).toBeNull();
+    expect(tokenRow(rig, successor.tokenId!)).toMatchObject({ predecessor_id: rig.tokenId, lineage_root: rig.tokenId, revoked_at: null });
+    expect(tokenRow(rig, successor.tokenId!).first_used_at).not.toBeNull();
+    expect(tokenRow(rig, rig.tokenId).revoked_at).not.toBeNull();
     expect(rig.rows('prompt_batches')).toBe(1);
 
     await prompt(spy.fetch, 'second');
     expect(rig.rows('prompt_batches')).toBe(2);
-    expect(tokenRow(rig, successor.tokenId!).first_used_at).not.toBeNull();
-    expect(tokenRow(rig, rig.tokenId).revoked_at).not.toBeNull();
     // The successor's own window is a full TTL away: the second hook does not dial the refresh route.
     expect(refreshCalls(spy)).toBe(1);
   });
@@ -161,8 +161,8 @@ describe('member token rotation', () => {
     expect((await new ServerClient(successor, rig.fetch).refresh(budget())).class).toBe('refused');
     expect(tokenRow(rig, rig.tokenId).revoked_at).not.toBeNull();
 
-    // This hook resolved the predecessor; the successor lands in the registry while its first send is in flight.
-    registerTestMember({ mycoHome, token: rig.token, tokenId: rig.tokenId, projectId: PROJECT, expiresAt: rig.expiresAt, serverUrl: SERVER_URL });
+    // This hook resolved the predecessor, recorded with a window it does not see open; the successor lands in the registry while its first send is in flight.
+    registerTestMember({ mycoHome, token: rig.token, tokenId: rig.tokenId, projectId: PROJECT, expiresAt: rig.expiresAt + 7 * DAY_MS, serverUrl: SERVER_URL });
     let swapped = false;
     const swapping: FetchLike = async (input, init) => {
       const req = new Request(input, init);
@@ -179,8 +179,73 @@ describe('member token rotation', () => {
     expect(eventCalls(spy)).toBe(2);
     expect(rig.rows('prompt_batches')).toBe(1);
     expect(new MemberSpool(PROJECT, { mycoHome }).depth(session)).toBe(0);
-    expect(out.stderr).not.toContain('re-provision');
+    expect(out.stderr).not.toContain('myco login');
     expect(refreshCalls(spy)).toBe(0);
+  });
+
+  it('rotates a membership no project is bound to, as a worker-only machine holds, with a request that names no Project', async () => {
+    const rig = await memberRig({ now: Date.now() - 20 * DAY_MS });
+    writeDeploymentMembership({ serverUrl: SERVER_URL, token: rig.token, tokenId: rig.tokenId, expiresAt: rig.expiresAt, machineId: 'machine_1', joinedAt: 1, updatedAt: 1 }, { mycoHome });
+    const spy = recordingFetch(rig.fetch);
+
+    const report = await refreshMembership(SERVER_URL, { mycoHome, fetch: spy.fetch, budget: budget() });
+
+    expect(report.status).toBe('refreshed');
+    expect(spy.requests.map((r) => ({ path: r.path, project: PROJECT_HEADER in r.headers }))).toEqual([{ path: '/tokens/refresh', project: false }]);
+    const held = readDeploymentMembership(SERVER_URL, mycoHome)!;
+    expect({ token: held.token === rig.token, tokenId: held.tokenId, terminal: held.refreshTerminal }).toEqual({ token: false, tokenId: report.tokenId, terminal: undefined });
+    expect(tokenRow(rig, report.tokenId!)).toMatchObject({ predecessor_id: rig.tokenId, lineage_root: rig.tokenId });
+    expect((await refreshMembership(SERVER_URL, { mycoHome, fetch: spy.fetch, budget: budget() })).status).toBe('not-due');
+    expect((await refreshMembership('https://elsewhere.invalid', { mycoHome, fetch: spy.fetch, budget: budget() })).status).toBe('no-entry');
+  });
+
+  it('names the Project of a project root on its refresh, and reads a server refusing a refresh for want of a Project as a retry, never as final', async () => {
+    const rig = await nearExpiryRig();
+    registerTestMember({ mycoHome, token: rig.token, tokenId: rig.tokenId, projectId: PROJECT, expiresAt: rig.expiresAt, serverUrl: SERVER_URL });
+    const seen: Array<string | null> = [];
+    const olderServer: FetchLike = async (input, init) => {
+      const req = new Request(input, init);
+      seen.push(req.headers.get(PROJECT_HEADER));
+      return Response.json({ refreshed: false, code: 'no_project', reason: 'no project' }, { headers: { 'x-myco-protocol': '1' } });
+    };
+
+    const report = await refreshMemberCredential(root, { mycoHome, fetch: olderServer, budget: budget() });
+
+    expect(seen).toEqual([PROJECT]);
+    expect(report.status).toBe('retry');
+    const entry = readRegistryEntry(root, mycoHome)!;
+    expect({ terminal: entry.refreshTerminal, token: entry.token }).toEqual({ terminal: undefined, token: rig.token });
+    expect(refreshDue(entry, Date.now())).toBe(true);
+  });
+
+  it('asks about another build\'s terminal refusal once per build per day, recording the attempt whatever answers it, so two builds sharing a home never alternate', async () => {
+    const now = Date.now();
+    const terminal = { expiresAt: now - 1, refreshAfter: undefined, refreshTerminal: true, refreshTerminalBy: 'build-x' };
+    expect(refreshDue({ ...terminal, refreshRetries: undefined }, now, 'build-a')).toBe(true);
+    const tried = { ...terminal, refreshRetries: { 'build-a': now, 'build-b': now } };
+    expect([refreshDue(tried, now + 1, 'build-a'), refreshDue(tried, now + 1, 'build-b')]).toEqual([false, false]);
+    expect(refreshDue(tried, now + TERMINAL_RETRY_INTERVAL_MS, 'build-a')).toBe(true);
+    expect(refreshDue({ ...tried, refreshTerminalBy: 'build-a' }, now + 10 * TERMINAL_RETRY_INTERVAL_MS, 'build-a')).toBe(false);
+
+    // The attempt is recorded before the dial: an unreachable Deployment spends it as surely as an answer.
+    writeDeploymentMembership({ serverUrl: SERVER_URL, token: 'x'.repeat(43), refreshTerminal: true, machineId: 'machine_1', joinedAt: 1, updatedAt: 1 }, { mycoHome });
+    let dials = 0;
+    const unreachable: FetchLike = async () => { dials += 1; throw new TypeError('fetch failed'); };
+    expect((await refreshMembership(SERVER_URL, { mycoHome, fetch: unreachable, budget: budget() })).status).toBe('retry');
+    expect(readDeploymentMembership(SERVER_URL, mycoHome)!.refreshRetries?.[buildIdentity()]).toBeGreaterThan(0);
+    expect((await refreshMembership(SERVER_URL, { mycoHome, fetch: unreachable, budget: budget() })).status).toBe('not-due');
+    expect(dials).toBe(1);
+  });
+
+  it('waits before asking again when a server refuses a refresh naming no Project, for a membership no project is bound to', async () => {
+    writeDeploymentMembership({ serverUrl: SERVER_URL, token: 'x'.repeat(43), expiresAt: Date.now() + DAY_MS, machineId: 'machine_1', joinedAt: 1, updatedAt: 1 }, { mycoHome });
+    let dials = 0;
+    const olderServer: FetchLike = async () => { dials += 1; return Response.json({ refreshed: false, code: 'no_project', reason: 'no project' }, { headers: { 'x-myco-protocol': '1' } }); };
+    expect((await refreshMembership(SERVER_URL, { mycoHome, fetch: olderServer, budget: budget() })).status).toBe('retry');
+    const held = readDeploymentMembership(SERVER_URL, mycoHome)!;
+    expect({ terminal: held.refreshTerminal, waits: (held.refreshAfter ?? 0) - Date.now() > REFRESH_NO_PROJECT_BACKOFF_MS - 60_000 }).toEqual({ terminal: undefined, waits: true });
+    expect((await refreshMembership(SERVER_URL, { mycoHome, fetch: olderServer, budget: budget() })).status).toBe('not-due');
+    expect(dials).toBe(1);
   });
 
   it('`myco member refresh` rotates the entry and says what happened', async () => {
@@ -202,12 +267,14 @@ describe('member token rotation', () => {
     expect(rig.rows('member_credentials')).toBe(2);
   });
 
-  it('a terminal refusal stops every further dial until the entry is re-provisioned', () => {
+  it('a terminal refusal this build recorded stops every further dial until the entry is re-provisioned; one another build recorded is asked about once more', () => {
     const now = Date.now();
-    const entry = { expiresAt: now + 1_000, refreshAfter: undefined, refreshTerminal: undefined };
+    const entry = { expiresAt: now + 1_000, refreshAfter: undefined, refreshTerminal: undefined, refreshTerminalBy: undefined };
     expect(refreshDue(entry, now)).toBe(true);
-    expect(refreshDue({ ...entry, refreshTerminal: true }, now)).toBe(false);
+    expect(refreshDue({ ...entry, refreshTerminal: true, refreshTerminalBy: 'build-b' }, now, 'build-b')).toBe(false);
+    expect(refreshDue({ ...entry, refreshTerminal: true, refreshTerminalBy: 'build-a' }, now, 'build-b')).toBe(true);
+    expect(refreshDue({ ...entry, refreshTerminal: true }, now, 'build-b')).toBe(true);
     expect(refreshDue({ ...entry, expiresAt: now + 6 * DAY_MS }, now)).toBe(false);
-    expect(refreshDue({ expiresAt: undefined, refreshAfter: undefined, refreshTerminal: undefined }, now)).toBe(true);
+    expect(refreshDue({ expiresAt: undefined, refreshAfter: undefined, refreshTerminal: undefined, refreshTerminalBy: undefined }, now)).toBe(true);
   });
 });
