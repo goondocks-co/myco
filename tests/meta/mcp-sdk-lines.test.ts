@@ -3,8 +3,9 @@
  * importers.
  *
  * The 2.0 line (`@modelcontextprotocol/client`, `@modelcontextprotocol/server`)
- * is the Deployment-facing side: the stdio bridge, the CLI tool client, and
- * the Deployment upstream they share — both ends of the bridge speak the
+ * is the Deployment-facing side: the stdio bridge, the CLI tool client, the
+ * one-call client the CLI tool and the member read verbs share, and the
+ * Deployment upstream they all use — both ends of the bridge speak the
  * same line the Deployment serves. The 1.x line (`@modelcontextprotocol/sdk`)
  * is the local daemon's own MCP server and the surfaces built on it, which
  * #925 retires with the daemon. A file crossing from one list to the other
@@ -19,7 +20,7 @@ const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..
 const SRC = path.join(REPO_ROOT, 'packages', 'myco', 'src');
 
 /** The Deployment-facing files: the 2.0 line and nothing of the 1.x line. */
-const MODERN_LINE = ['cli/tool.ts', 'mcp/deployment-upstream.ts', 'mcp/stdio-bridge.ts'];
+const MODERN_LINE = ['cli/tool.ts', 'mcp/client-call.ts', 'mcp/deployment-upstream.ts', 'mcp/stdio-bridge.ts'];
 /** The local-daemon files on the 1.x line, retired with the daemon (#925). */
 const DAEMON_LINE = ['daemon/external-listener.ts', 'mcp/http.ts', 'mcp/server.ts'];
 

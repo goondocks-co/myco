@@ -11,7 +11,7 @@
  * the one writer of the registry entry, and a bridge that meets a stale token
  * re-reads the entry the next time it rebuilds its upstream.
  */
-import { StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
+import { StreamableHTTPClientTransport, type FetchLike } from '@modelcontextprotocol/client';
 import { memberHeaders, type CredentialSource } from '../member/constants.js';
 import { parseCredentialFlag, resolveCredential, type CredentialOptions, type CredentialRecord } from '../member/credential.js';
 import { CREDENTIAL_FLAG, CREDENTIAL_SOURCES } from '../member/constants.js';
@@ -50,9 +50,16 @@ export function resolveDeploymentUpstream(
   };
 }
 
-/** A fresh client transport to the Deployment's `/mcp`, carrying the member headers on every request. */
-export function deploymentTransport(upstream: DeploymentUpstream, extraHeaders: Record<string, string> = {}): StreamableHTTPClientTransport {
-  return new StreamableHTTPClientTransport(upstream.mcpUrl, { requestInit: { headers: { ...upstream.headers, ...extraHeaders } } });
+/** A fresh client transport to the Deployment's `/mcp`, carrying the member headers on every request, over `fetchImpl` when one is given. */
+export function deploymentTransport(
+  upstream: DeploymentUpstream,
+  extraHeaders: Record<string, string> = {},
+  fetchImpl?: FetchLike,
+): StreamableHTTPClientTransport {
+  return new StreamableHTTPClientTransport(upstream.mcpUrl, {
+    requestInit: { headers: { ...upstream.headers, ...extraHeaders } },
+    ...(fetchImpl === undefined ? {} : { fetch: fetchImpl }),
+  });
 }
 
 /** True when the Deployment answers its health route. */
@@ -63,6 +70,18 @@ export async function probeDeploymentHealth(healthUrl: URL): Promise<boolean> {
   } catch {
     return false;
   }
+}
+
+/** The credential flag and its value removed from an argument list; the flag names the Deployment path and is no argument of the verb. */
+export function withoutCredentialFlag(args: readonly string[]): string[] {
+  const out: string[] = [];
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i];
+    if (arg === CREDENTIAL_FLAG) { i++; continue; }
+    if (arg.startsWith(`${CREDENTIAL_FLAG}=`)) continue;
+    out.push(arg);
+  }
+  return out;
 }
 
 /** True when the command line carries the credential flag at all, whatever its value. */
