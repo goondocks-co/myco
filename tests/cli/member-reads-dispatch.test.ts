@@ -10,8 +10,9 @@
  * (`tests/helpers/redirect-fetch-preload.ts`); the command line, the registry
  * and the dispatcher are a member's.
  *
- * A checkout with no membership still takes the verb's local handler, which
- * refuses without a vault and creates none.
+ * `doctor`, `config get`, `logs` and `--help` run as the member there too. A
+ * checkout with no membership still takes the verb's 1.4 handler, which
+ * refuses without a vault and creates none, and prints the 1.4 command list.
  */
 import { afterAll, beforeAll, describe, expect, it } from 'bun:test';
 import { Database } from 'bun:sqlite';
@@ -58,6 +59,7 @@ beforeAll(async () => {
   // A second, newer Project leads the Deployment's project list; stats must still report the joined one.
   sqlite.query(`INSERT INTO projects (project_id,name,created_at) VALUES ('proj_2','other',1)`).run();
   sqlite.query(`INSERT INTO members (id,label,created_at,revoked_at) VALUES ('mem_machine_1','machine_1',0,NULL)`).run();
+  sqlite.query(`INSERT INTO deployment_settings (leaf,value,updated_at,updated_by) VALUES ('instructions.template',?,0,'mem_machine_1')`).run(JSON.stringify('Answer from the Deployment.'));
   ({ token } = await issueMemberToken(sqliteRelationalStore(sqlite), { memberId: 'mem_machine_1', machineId: 'machine_1' }, Date.now()));
   sqlite.close();
   const started = await serve({ databasePath, blobDir: path.join(root, 'blobs'), port: 0, bind: 'loopback', transport: 'loopback', sourceFrom: 'socket' });
@@ -144,6 +146,22 @@ describe('the dispatched read verbs in a fresh joined checkout', () => {
     expect(legacyArtifacts(m)).toEqual([]);
   }, 40_000);
 
+  it('doctor, config get, logs and --help run as the member', async () => {
+    const m = machine(true);
+    const doctor = await cli(m, 'doctor');
+    expect(doctor.stdout).toContain('myco doctor (member)');
+    expect(doctor.stdout).toMatch(/Deployment\s+.*ok.*answers, and serves this machine's credential \d+ tools/);
+    expect(doctor.stdout).not.toMatch(/Vault|Database|Daemon|Grove/);
+    const config = await cli(m, 'config', 'get', 'instructions.template');
+    expect({ status: config.status, stdout: config.stdout.trim(), stderr: config.stderr }).toEqual({ status: 0, stdout: 'Answer from the Deployment.', stderr: '' });
+    const logs = await cli(m, 'logs');
+    expect(logs.status).toBe(0);
+    expect(logs.stdout).toContain('=== refused events (proj_1) ===');
+    const help = await cli(m, '--help');
+    expect(help.stdout).toContain('Project intelligence (answered by the Deployment for this project)');
+    expect(help.stdout).not.toMatch(/grove|daemon|stdio/i);
+    expect(legacyArtifacts(m)).toEqual([]);
+  }, 60_000);
   it('a subdirectory of the joined root, and a worktree of the joined repository, reach the same Deployment', async () => {
     const m = machine(true);
     const sub = path.join(m.checkout, 'packages', 'deep');
@@ -188,6 +206,8 @@ describe('the dispatched read verbs in a fresh joined checkout', () => {
     const ran = await cli(m, 'search', 'quokka');
     expect(ran.status).toBe(1);
     expect(ran.stderr).toContain('No myco.yaml found');
+    const help = await cli(m, '--help');
+    expect(help.stdout).toContain('grove <subcommand>');
     expect(legacyArtifacts(m)).toEqual([]);
   }, 40_000);
 });

@@ -2101,6 +2101,26 @@ export class SymbiontInstaller {
   }
 
   /**
+   * Whether this scope's hooks target carries Myco's capture, and whether it is
+   * the member's: a member hook command, or a member plugin, declares its
+   * credential source. Reads only; a target that exists and cannot be read is
+   * reported unreadable rather than absent.
+   */
+  inspectMemberHooks(): { scope: 'global' | 'project'; target: string | null; present: boolean; member: boolean; readable: boolean } {
+    const scope = this.isGlobalScope ? 'global' as const : 'project' as const;
+    const target = this.resolveAbsoluteTarget('hooks');
+    if (target === null || !fs.existsSync(target)) return { scope, target, present: false, member: false, readable: true };
+    let raw: string;
+    try {
+      raw = fs.readFileSync(target, 'utf-8');
+    } catch {
+      return { scope, target, present: false, member: false, readable: false };
+    }
+    const present = this.isConfigured();
+    return { scope, target, present, member: present && raw.includes(CREDENTIAL_FLAG), readable: true };
+  }
+
+  /**
    * What this symbiont's MCP targets say about the member's entry, for a report.
    *
    * Presence, transport, scope, the directory a launcher declares, whether the

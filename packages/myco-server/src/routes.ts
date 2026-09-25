@@ -18,7 +18,7 @@ import { handleMaintenanceStatus, handleRunMaintenance } from './api/maintenance
 import { handleSetTitlingBackfill, handleTitlingBackfill } from './api/titling-backfill.js';
 import {
   handleDeleteSecret, handleProjectCapabilities, handleSecrets, handleSetProjectCapability,
-  handleSetSecret, handleSetSetting, handleSettings,
+  handleMemberSettings, handleSetSecret, handleSetSetting, handleSettings,
 } from './api/settings.js';
 import {
   handleBackupArtifact, handleCreateBackup, handleListBackups, handlePinBackup,
@@ -163,6 +163,8 @@ export const ROUTES: readonly Route[] = [
   { method: 'POST', path: '/mcp', auth: 'member', bodyMode: 'json', shape: 'answered', quotaPrecheck: false, handler: handleMcp, grant: handleGrantMcp, run: handleRunMcp, unbound: handleUnboundMcp },
   { method: 'POST', path: '/members/join', auth: 'enroll', handler: handleJoin },
   { method: 'POST', path: '/members/link-github', auth: 'member', bodyMode: 'json', shape: 'persisted', quotaPrecheck: false, handler: handleLinkGithub },
+  // Deployment Settings as a member's CLI reads them; writes stay on the dashboard's owner routes.
+  { method: 'POST', path: '/members/settings', auth: 'member', bodyMode: 'json', shape: 'persisted', quotaPrecheck: false, handler: handleMemberSettings },
   { method: 'GET', path: '/auth/me', auth: 'owner', membership: 'optional', handler: handleMe },
   { method: 'POST', path: '/auth/link', auth: 'owner', membership: 'optional', handler: handleLink },
   { method: 'GET', path: '/api/status', auth: 'owner', handler: handleStatus },
