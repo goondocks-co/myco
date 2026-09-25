@@ -330,10 +330,10 @@ Dispositions: **KEEP** — exists in 2.0 in recognisable form. **REPLACE** — t
 | `doctor` | REPLACE | M | Blk | Checks member wiring, credential liveness, spool depth, harness detection **and Deployment reachability from this machine**; the second on-demand reconcile verb (plan §2.5) | C2 |
 | `remove` | REPLACE | M | Blk | Member uninstall only; a Deployment is destroyed by the Operator, not the CLI | #917 |
 | `open` | REPLACE | M | Blk | Opens the Deployment dashboard URL | #918 |
-| `search` | REPLACE | M, Core | Blk | Server-backed search + vector adapters | #921 |
-| `vectors` | REPLACE | M, Core | Blk | Server-side vector search | #921 |
-| `session` | REPLACE | M, Core | Blk | Server-backed read | #921 |
-| `stats` | REPLACE | M, Core | Blk | Deployment quota/storage/schema health; today reads a local SQLite file | #922 |
+| `search` | REPLACE | M, Core | Blk | Server-backed search + vector adapters. A joined project, or a declared `--credential`, is answered by the Deployment's `myco_search` over the member credential (`cli/member-reads.ts`); a root with no membership keeps the 1.4 handler | #921 |
+| `vectors` | REPLACE | M, Core | Blk | Server-side vector search: `myco_search` in `semantic` mode for a joined project (`cli/member-reads.ts`); a root with no membership keeps the 1.4 handler | #921 |
+| `session` | REPLACE | M, Core | Blk | Server-backed read: `myco_sessions` for a joined project (`cli/member-reads.ts`); a root with no membership keeps the 1.4 handler | #921 |
+| `stats` | REPLACE | M, Core | Blk | Deployment quota/storage/schema health. A joined project reports its sessions, activity and recent runs from `myco_cortex` `projects_activity` and `myco_agent` (`cli/member-reads.ts`); quota, storage and schema health have no member-credential read yet. A root with no membership keeps the 1.4 handler, which reads a local SQLite file | #922 |
 | `logs` | REPLACE | M | Blk | Local log files under `MYCO_HOME` with a CLI view; server logs are a separate surface (**UI**) | #922 |
 | `config` | REPLACE | M, Core | Blk | Two tiers: Member Settings local, Deployment Settings server-side | #915 |
 | `setup-llm` | REPLACE | Core, UI | Blk | Deployment Settings — Intelligence Provider credentials | #915 |

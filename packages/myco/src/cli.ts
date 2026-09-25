@@ -2,6 +2,7 @@
 import { isHelpRequest, loadEnv } from './cli/shared.js';
 import { resolveVaultDir } from './vault/resolve.js';
 import { runLaunchPreamble } from './cli/launch-preamble.js';
+import { isMemberReadVerb } from './cli/member-read-verbs.js';
 import fs from 'node:fs';
 import path from 'node:path';
 
@@ -21,10 +22,11 @@ Commands:
   config <get|set> [args]  Get or set vault config values
   detect-providers         Detect available LLM/embedding providers (JSON)
   verify                   Test LLM and embedding connectivity
-  stats                    Vault health, index counts, vector count
-  search <query>           Combined FTS + vector search with scores
-  vectors <query>          Raw vector search with similarity scores
-  session [id|latest]      Show a session
+  stats                    Project stats: the Deployment's for a joined project, else the local vault's
+  search <query>           Search: the Deployment's for a joined project, else the local vault's
+  vectors <query>          Semantic search with scores: the Deployment's for a joined project, else the daemon's
+  session [id|latest]      Show a session: from the Deployment for a joined project, else the local vault
+                           (these four take --credential registry|env to ask a Deployment from anywhere)
   logs [options]           View daemon logs
   setup-llm [options]      Configure LLM and embedding providers
   setup-digest [options]   Configure digest and capture settings
@@ -287,6 +289,20 @@ async function main(): Promise<void> {
 
   // The sandbox settings emitter reads no vault and writes nothing.
   if (cmd === 'settings') return (await import('./cli/settings.js')).run(args);
+
+  // A retained read verb in a joined project — or one that declares a
+  // credential source — is answered by the Deployment and reads no project
+  // vault, so it sits above the myco.yaml gate. A root with no membership
+  // falls through to the verb's local handler below.
+  if (isMemberReadVerb(cmd)) {
+    const memberReads = await import('./cli/member-reads.js');
+    const source = memberReads.memberReadSource(args);
+    if (source !== null) {
+      // The verb reports its outcome; the exit status is the dispatcher's to set.
+      if (!await memberReads.run(cmd, args, source)) process.exitCode = 1;
+      return;
+    }
+  }
 
   if (cmd === 'doctor') {
     const vaultDir = resolveVaultDir();

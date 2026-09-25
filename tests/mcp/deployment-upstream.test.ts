@@ -1,8 +1,7 @@
 import { describe, expect, it } from 'bun:test';
-import { withoutCredentialFlag } from '@myco/cli/tool.js';
 import { ENV_MEMBER_TOKEN, ENV_PROJECT, ENV_SERVER_URL } from '@myco/member/credential.js';
 import { MEMBER_PROTOCOL, PROJECT_HEADER, PROTOCOL_HEADER } from '@myco/member/constants.js';
-import { credentialFlagPresent, declaredCredentialSource, deploymentHeaders, resolveDeploymentUpstream } from '@myco/mcp/deployment-upstream.js';
+import { credentialFlagPresent, declaredCredentialSource, deploymentHeaders, resolveDeploymentUpstream, withoutCredentialFlag } from '@myco/mcp/deployment-upstream.js';
 
 /**
  * The Deployment upstream a declared credential source resolves to: the

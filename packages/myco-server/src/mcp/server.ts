@@ -8,7 +8,7 @@
  * runs the handler with the caller's context. A failure the caller can act on
  * — bad arguments, an unknown tool, an op not yet served, a storage fault — is
  * a JSON-RPC error whose `data.code` names it; the member-side CLI and bridge
- * classify on that code (`packages/myco/src/cli/tool.ts` `classifyMcpError`).
+ * classify on that code (`packages/myco/src/mcp/client-call.ts` `classifyMcpError`).
  * A result carries the serialized text for an agent and the raw value under
  * `structuredContent.result` for a client that wants the shape entire.
  *

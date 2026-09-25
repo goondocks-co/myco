@@ -1,10 +1,10 @@
 import fs from 'node:fs';
-import { Client, ProtocolError, SdkHttpError, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
+import { StreamableHTTPClientTransport, type Client } from '@modelcontextprotocol/client';
 import { DaemonClient } from '@myco/daemon/client.js';
 import { buildBridgeRequestHeaders } from '@myco/mcp/stdio-bridge.js';
-import { declaredCredentialSource, deploymentTransport, resolveDeploymentUpstream } from '@myco/mcp/deployment-upstream.js';
+import { declaredCredentialSource, deploymentTransport, resolveDeploymentUpstream, withoutCredentialFlag } from '@myco/mcp/deployment-upstream.js';
+import { extractStructuredResult, withMcpClient as withTransportClient, type ToolCallError, type ToolCallOutcome } from '@myco/mcp/client-call.js';
 import { CREDENTIAL_FLAG, type CredentialSource } from '@myco/member/constants.js';
-import { getPluginVersion } from '@myco/version.js';
 
 /**
  * `myco tool list` / `myco tool call` — decision-14e572a3: the CLI is a thin
@@ -31,10 +31,7 @@ import { getPluginVersion } from '@myco/version.js';
  * `.data` field the SDK's error-response builder already knows to forward.
  */
 
-interface ToolCliError {
-  code: string;
-  message: string;
-}
+type ToolCliError = ToolCallError;
 
 interface ToolCliEnvelope {
   ok: boolean;
@@ -51,18 +48,6 @@ interface ParsedCallArgs {
 const DAEMON_UNAVAILABLE_MESSAGE =
   'The Myco daemon is not running and could not be started automatically. '
   + 'Run `myco doctor` to diagnose, or `myco service start` to start it, then try again.';
-
-/** The credential flag and its value removed from an argument list; the flag names the Deployment path and is no tool argument. */
-export function withoutCredentialFlag(args: readonly string[]): string[] {
-  const out: string[] = [];
-  for (let i = 0; i < args.length; i++) {
-    const arg = args[i];
-    if (arg === CREDENTIAL_FLAG) { i++; continue; }
-    if (arg.startsWith(`${CREDENTIAL_FLAG}=`)) continue;
-    out.push(arg);
-  }
-  return out;
-}
 
 export async function run(args: string[], vaultDir: string): Promise<void> {
   let source: CredentialSource | null;
@@ -155,12 +140,12 @@ export async function run(args: string[], vaultDir: string): Promise<void> {
 }
 
 /**
- * Connect to the LOCAL daemon's `/mcp` over a fresh stateless transport, run
- * `fn`, and close. Daemon-down UX per decision-14e572a3: `ensureRunning()`
- * first (spawns/recovers exactly like every other daemon-backed CLI path),
- * then a clear, actionable error instead of a hung connection attempt.
+ * The transport for this invocation: the Deployment when a credential source
+ * is declared, the local daemon otherwise. The daemon is `ensureRunning()`
+ * first (spawned or recovered like every other daemon-backed CLI path), and a
+ * daemon that still does not answer is a clear error rather than a hung
+ * connection attempt.
  */
-/** The transport for this invocation: the Deployment when a credential source is declared, the local daemon otherwise. */
 async function transportFor(vaultDir: string, source: CredentialSource | null): Promise<{ ok: true; transport: StreamableHTTPClientTransport } | { ok: false; error: ToolCliError }> {
   if (source !== null) {
     const upstream = resolveDeploymentUpstream(source, { cwd: process.cwd(), env: process.env, invokedBy: 'tool' });
@@ -175,119 +160,15 @@ async function transportFor(vaultDir: string, source: CredentialSource | null): 
   return { ok: true, transport: new StreamableHTTPClientTransport(new URL(`http://127.0.0.1:${info.port}/mcp`), { requestInit: { headers } }) };
 }
 
+/** Run `fn` against a fresh client over this invocation's transport, and close. */
 async function withMcpClient<T>(
   vaultDir: string,
   source: CredentialSource | null,
   fn: (client: Client) => Promise<T>,
-): Promise<{ ok: true; value: T } | { ok: false; error: ToolCliError }> {
+): Promise<ToolCallOutcome<T>> {
   const resolved = await transportFor(vaultDir, source);
   if (!resolved.ok) return resolved;
-  const transport = resolved.transport;
-  const client = new Client({ name: 'myco-cli', version: getPluginVersion() });
-  try {
-    await client.connect(transport);
-    const value = await fn(client);
-    return { ok: true, value };
-  } catch (error) {
-    return { ok: false, error: classifyMcpError(error) };
-  } finally {
-    await client.close().catch(() => { /* best-effort */ });
-  }
-}
-
-/** Pull the daemon's full raw tool result back out of a `CallToolResult`.
- *  `structuredContent.result` is the primary path (set by `mcp/server.ts`
- *  for every successful call). Falls back to parsing the human-readable
- *  `content` text — reached only against an older daemon build (e.g. an
- *  attached project's host mid-upgrade) that predates the
- *  `structuredContent` addition. */
-type ToolCallResult = Awaited<ReturnType<Client['callTool']>>;
-
-function extractStructuredResult(response: ToolCallResult): unknown {
-  const structuredContent = (response as { structuredContent?: Record<string, unknown> }).structuredContent;
-  if (structuredContent && 'result' in structuredContent) {
-    return structuredContent.result;
-  }
-  const content = (response as { content?: Array<{ type: string; text?: string }> }).content;
-  const text = content?.find((entry) => entry.type === 'text')?.text;
-  if (typeof text !== 'string') return undefined;
-  try {
-    return JSON.parse(text);
-  } catch {
-    return text;
-  }
-}
-
-/**
- * Team Host refusal codes (`daemon/host-proxy.ts`'s member-side soft-fails)
- * → the retryability hint appended to their already-friendly messages. The
- * proxy's message says what happened and what to do; the hint says whether
- * plain retry is worth it, which the wire envelope's router-route twin
- * carries as `retryable` but the JSON-RPC envelope does not.
- */
-const HOST_REFUSAL_HINTS: Record<string, string> = {
-  host_unreachable: 'Retryable — the host may be briefly offline; try again shortly.',
-  host_auth_rejected: 'Not retryable until this machine re-joins the host.',
-  host_protocol_mismatch: 'Not retryable until the version mismatch is resolved.',
-};
-
-/**
- * Translate an error thrown by the MCP client into the CLI's stable error
- * envelope. Three shapes reach here:
- *
- *   - `ProtocolError` — a JSON-RPC error response from a dispatched tool call
- *     (unknown tool, invalid input, a tool's own failure), OR a member-side
- *     Team Host refusal (`host_unreachable` / `host_auth_rejected` /
- *     `host_protocol_mismatch` — schema-valid since the proxy echoes the
- *     request id, so the SDK classifies them as proper JSON-RPC errors).
- *     `.data.code` carries the original code (see `tools/error.ts` and
- *     `daemon/host-proxy.ts` `mcpSoftFail`).
- *   - `SdkHttpError` — a non-2xx HTTP response the transport never got to
- *     parse as JSON-RPC: the Deployment pipeline's refusals in the `answered`
- *     shape (`no_project`, `body_cap`, `unavailable`), and the local `/mcp`
- *     handler's pre-dispatch refusals (`legacy_vault` 503 as a JSON-RPC
- *     error body; `foreign_grove` 403 and `unknown_tenancy` 404 as
- *     `{error, message}` — see `mcp/http.ts`). The response body travels as
- *     `data.text`; the structured `{code, message}` is recovered from either
- *     shape. A 401 is the credential itself refused — `unauthorized` — and
- *     anything else a generic `tool_call_failed` with the status.
- */
-function classifyMcpError(error: unknown): ToolCliError {
-  if (error instanceof ProtocolError) {
-    const data = error.data as { code?: unknown } | undefined;
-    const code = typeof data?.code === 'string' ? data.code : 'tool_call_failed';
-    const hint = HOST_REFUSAL_HINTS[code];
-    return { code, message: hint ? `${error.message} ${hint}` : error.message };
-  }
-  if (error instanceof SdkHttpError) {
-    const structured = typeof error.data.text === 'string' ? extractStructuredHttpError(error.data.text) : null;
-    if (structured) return structured;
-    if (error.status === 401) return { code: 'unauthorized', message: 'The upstream refused the credential (HTTP 401).' };
-    return {
-      code: 'tool_call_failed',
-      message: `The upstream rejected the request (HTTP ${error.status}): ${error.message}`,
-    };
-  }
-  return { code: 'tool_call_failed', message: (error as Error)?.message ?? String(error) };
-}
-
-/** Recover `{code, message}` from the body the transport surfaced as text for a
- *  non-2xx that never reached the JSON-RPC dispatcher: a JSON-RPC error body
- *  `{error:{message, data:{code}}}`, or the router-route twin `{error, message}`.
- *  Returns null for anything else. */
-function extractStructuredHttpError(text: string): ToolCliError | null {
-  const start = text.indexOf('{');
-  if (start === -1) return null;
-  try {
-    const body = JSON.parse(text.slice(start)) as { error?: string | { message?: string; data?: { code?: unknown } }; message?: string };
-    if (typeof body.error === 'string' && typeof body.message === 'string') return { code: body.error, message: body.message };
-    const code = typeof body.error === 'object' ? body.error?.data?.code : undefined;
-    const msg = typeof body.error === 'object' ? body.error?.message : undefined;
-    if (typeof code === 'string' && typeof msg === 'string') return { code, message: msg };
-  } catch {
-    // Not JSON — fall through to the generic message.
-  }
-  return null;
+  return withTransportClient(resolved.transport, fn);
 }
 
 function parseCallArgs(args: string[]): ParsedCallArgs {
