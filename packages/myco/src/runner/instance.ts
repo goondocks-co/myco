@@ -13,6 +13,7 @@
  * worker's membership is read from: two homes holding memberships of one
  * Deployment are still one machine.
  */
+import fs from 'node:fs';
 import path from 'node:path';
 import { defaultMycoHome } from '../paths/home.js';
 import { deploymentKeyFor } from '../member/registry.js';
@@ -58,22 +59,20 @@ export function holdWorkerInstance(lockDir: string, deploymentUrls: readonly str
   return { held: true, release };
 }
 
-/** Whether a process with this id exists. One owned by another user still exists. */
-function processExists(pid: number): boolean {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (error) {
-    return (error as NodeJS.ErrnoException).code === 'EPERM';
-  }
-}
-
 /**
  * The process serving the Deployment at `serverUrl` on this machine, or null
- * when none does. A holder record left by a process that was killed outright
- * names a process that no longer exists, and is read as no holder.
+ * when none does. The lock itself answers, through a shared lease that only a
+ * held exclusive lock refuses; the holder record is read only once the lock
+ * says someone holds it, so a record left behind by a killed process, or a pid
+ * since reused, never reads as a worker.
  */
 export function workerHolder(lockDir: string, serverUrl: string): LockHolder | null {
-  const holder = readLockHolder(workerLockPath(lockDir, serverUrl));
-  return holder !== null && processExists(holder.pid) ? holder : null;
+  const lockPath = workerLockPath(lockDir, serverUrl);
+  if (!fs.existsSync(lockPath)) return null;
+  const probe = LifecycleLock.acquire(lockPath, { mode: 'shared' });
+  if (probe.acquired) {
+    probe.lock.release();
+    return null;
+  }
+  return probe.holder ?? readLockHolder(lockPath) ?? { pid: 0, startedAt: 0 };
 }

@@ -1646,7 +1646,7 @@ export async function checkWorkerServices(vaultDir: string, deps: import('./work
   return listDeploymentMemberships(mycoHome).map((membership) => {
     const url = deploymentUrl(membership.serverUrl);
     const words = workerServiceWords(describeWorkerService(url, { ...deps, mycoHome }));
-    return { name: 'Worker service', status: words.ok ? 'ok' : 'warn', detail: `${url}: ${words.line}`, fixable: false };
+    return { name: 'Worker service', status: words.status, detail: `${url}: ${words.line}`, fixable: false };
   });
 }
 

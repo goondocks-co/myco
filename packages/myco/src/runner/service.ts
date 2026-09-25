@@ -13,6 +13,7 @@
  * process restarting all day to do nothing.
  */
 import crypto from 'node:crypto';
+import fs from 'node:fs';
 import path from 'node:path';
 import { deploymentUrl } from '../member/registry.js';
 import { HARNESSES } from './harnesses.js';
@@ -30,6 +31,7 @@ import {
   type ServiceUnit,
 } from '../server/service.js';
 import type { LockHolder } from '../utils/lifecycle-lock.js';
+import { readWorkerRefusal, type WorkerRefusalRecord } from './refusal.js';
 
 const WORKER_LABEL_PREFIX = 'co.goondocks.myco-worker';
 const WORKER_UNIT_PREFIX = 'myco-worker';
@@ -58,6 +60,10 @@ export interface WorkerServiceTarget {
 export function workerServiceUnit(serverUrl: string, mycoHome: string): ServiceUnit {
   const url = deploymentUrl(serverUrl);
   const id = crypto.createHash('sha256').update(JSON.stringify([url, path.resolve(mycoHome)])).digest('hex').slice(0, UNIT_ID_HEX_CHARS);
+  return unitWithId(id, url);
+}
+
+function unitWithId(id: string, url: string): ServiceUnit {
   return {
     label: `${WORKER_LABEL_PREFIX}.${id}`,
     unitName: `${WORKER_UNIT_PREFIX}-${id}`,
@@ -66,6 +72,53 @@ export function workerServiceUnit(serverUrl: string, mycoHome: string): ServiceU
     logName: `worker-${new URL(url).host.replace(/[^A-Za-z0-9.-]/g, '_')}`,
     restartDelaySeconds: WORKER_RESTART_DELAY_SECONDS,
   };
+}
+
+/** A worker unit found on disk, with the Deployment and member home it names where it can be read. */
+export interface FoundWorkerUnit {
+  unitFile: string;
+  serverUrl: string | null;
+  mycoHome: string | null;
+  spec: ServiceSpec;
+}
+
+const UNIT_FILE = {
+  darwin: new RegExp(`^${WORKER_LABEL_PREFIX.replace(/\./g, '\\.')}\\.([0-9a-f]{${UNIT_ID_HEX_CHARS}})\\.plist$`),
+  linux: new RegExp(`^${WORKER_UNIT_PREFIX}-([0-9a-f]{${UNIT_ID_HEX_CHARS}})\\.service$`),
+  win32: new RegExp(`^${WORKER_UNIT_PREFIX}-([0-9a-f]{${UNIT_ID_HEX_CHARS}})\\.task\\.xml$`),
+} as const;
+
+const unescapeXml = (value: string): string =>
+  value.replace(/&quot;/g, '"').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&');
+
+/**
+ * Every worker unit written for this user, whichever home wrote it. The
+ * Deployment and home are read back from the unit's own arguments and
+ * environment; a unit that cannot be read names neither, and can still be
+ * removed by its file name.
+ */
+export function listWorkerUnits(home: string, platform: NodeJS.Platform = process.platform): FoundWorkerUnit[] {
+  const pattern = UNIT_FILE[platform as keyof typeof UNIT_FILE];
+  if (pattern === undefined) return [];
+  const probe: ServiceSpec = {
+    unit: unitWithId('0'.repeat(UNIT_ID_HEX_CHARS), 'https://unit.invalid'), binaryPath: '/myco', home, pathEnv: '', logDir: home, env: {},
+  };
+  const dir = path.dirname(servicePaths(probe, platform).unitFile);
+  if (!fs.existsSync(dir)) return [];
+  const found: FoundWorkerUnit[] = [];
+  for (const name of fs.readdirSync(dir).sort()) {
+    const id = pattern.exec(name)?.[1];
+    if (id === undefined) continue;
+    const unitFile = path.join(dir, name);
+    const text = unescapeXml(fs.readFileSync(unitFile, 'utf8'));
+    const serverUrl = /--server(?:<\/string>\s*<string>|\s+)([^<\s"]+)/.exec(text)?.[1] ?? null;
+    const mycoHome = /MYCO_HOME(?:<\/key><string>|=)([^<\n"]+)/.exec(text)?.[1] ?? null;
+    found.push({
+      unitFile, serverUrl, mycoHome,
+      spec: { ...probe, unit: unitWithId(id, serverUrl ?? 'https://unit.invalid') },
+    });
+  }
+  return found;
 }
 
 /** Directories holding the harnesses this machine has, so a service finds them without a login shell's `PATH`. */
@@ -101,7 +154,9 @@ export interface WorkerServicePreconditions {
 export type WorkerServiceRefusal =
   | { reason: 'no_membership'; detail: string }
   | { reason: 'own_deployment'; detail: string }
-  | { reason: 'no_harness'; detail: string };
+  | { reason: 'no_harness'; detail: string }
+  | { reason: 'not_admin'; detail: string }
+  | { reason: 'unauthorized'; detail: string };
 
 /** Null when a worker service belongs here; otherwise why it does not. */
 export function workerServiceRefusal(serverUrl: string, pre: WorkerServicePreconditions): WorkerServiceRefusal | null {
@@ -126,8 +181,9 @@ export function workerServiceLogs(target: WorkerServiceTarget): { outLog: string
   return { outLog, errLog };
 }
 
+/** Install the worker unit. A worker already running under the same unit, give or take its `PATH`, keeps running. */
 export function installWorkerService(target: WorkerServiceTarget, harnessDirs: readonly string[], options: ServiceOptions = {}): ServiceOutcome {
-  return installService(workerServiceSpec(target, harnessDirs), { platform: target.platform, ...options });
+  return installService(workerServiceSpec(target, harnessDirs), { platform: target.platform, ...options, keepRunning: true });
 }
 
 export function uninstallWorkerService(target: WorkerServiceTarget, options: ServiceOptions = {}): { unitFile: string; removed: boolean } {
@@ -139,7 +195,10 @@ export interface WorkerServiceStatus {
   unitFile: string;
   installed: boolean;
   loaded: boolean;
+  running: boolean;
   detail?: string;
+  /** The refusal that last ended a worker for this Deployment from this home. */
+  refusal: WorkerRefusalRecord | null;
   /** The process serving this Deployment on this machine, whichever started it. */
   serving: LockHolder | null;
   outLog: string;
@@ -157,7 +216,9 @@ export function workerServiceStatus(
     unitFile: paths.unitFile,
     installed: state.installed,
     loaded: state.loaded,
+    running: state.running,
     ...(state.detail === undefined ? {} : { detail: state.detail }),
+    refusal: readWorkerRefusal(target.mycoHome, target.serverUrl),
     serving: workerHolder(options.lockDir ?? workerLockDir(target.home), target.serverUrl),
     outLog: paths.outLog,
     errLog: paths.errLog,

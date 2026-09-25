@@ -93,7 +93,7 @@ async function runGlobalRemove(opts: { purge: boolean; assumeYes: boolean }): Pr
     } catch { /* registry unreadable — the summary still describes the rest */ }
     const summary = [
       'myco remove will tear down the machine-wide Myco install:',
-      '  - unregister the Myco OS service',
+      '  - unregister the Myco OS service and the worker login services',
       "  - strip Myco's blocks from every detected agent's global config",
       `  - clean project-local artifacts in ${projectCount} registered project${projectCount === 1 ? '' : 's'}`,
       purge
@@ -132,6 +132,16 @@ async function runGlobalRemove(opts: { purge: boolean; assumeYes: boolean }): Pr
     const { ExternalMcpHardKillBlockedError } = await import('../service/windows.js');
     if (err instanceof ExternalMcpHardKillBlockedError) throw err;
     console.log(`  ⚠ Service uninstall skipped: ${(err as Error).message}`);
+  }
+
+  // --- Remove the worker login services this home installed, and any whose
+  //     membership is already gone, so none restarts into a home being removed. ---
+  try {
+    const { sweepWorkerServices } = await import('./worker-service.js');
+    const removed = sweepWorkerServices({ mycoHome });
+    if (removed.length > 0) console.log(`  ✓ Removed ${removed.length} worker service${removed.length === 1 ? '' : 's'}`);
+  } catch (err) {
+    console.log(`  ⚠ Worker service removal skipped: ${(err as Error).message}`);
   }
 
   // --- Stop the daemon before deleting its files. Unregistering the service

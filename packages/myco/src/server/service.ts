@@ -268,9 +268,10 @@ export function renderUnit(spec: ServiceSpec, paths: ServicePaths, platform = pr
   throw new ServicePlatformUnsupported(`no per-user service is defined for ${platform}`);
 }
 
-/** What one platform command answered: its exit status, or the reason it could not be run at all. */
+/** What one platform command answered: its exit status and what it printed, or the reason it could not be run at all. */
 export interface CommandResult {
   status: number | null;
+  stdout?: string;
   error?: Error;
 }
 
@@ -278,35 +279,51 @@ export interface CommandResult {
 export type ServiceRunner = (command: string, args: readonly string[]) => CommandResult;
 
 export const platformRunner: ServiceRunner = (command, args) => {
-  const result = spawnSync(command, [...args], { stdio: 'ignore' });
-  return { status: result.status, ...(result.error === undefined ? {} : { error: result.error }) };
+  const result = spawnSync(command, [...args], { stdio: ['ignore', 'pipe', 'ignore'], encoding: 'utf8' });
+  return { status: result.status, stdout: result.stdout ?? '', ...(result.error === undefined ? {} : { error: result.error }) };
 };
 
-/** How a unit is loaded and unloaded, per platform. */
+/**
+ * How a unit is loaded and unloaded, per platform. Loading restarts a unit that
+ * is already running, so the process runs what the unit now says. Unloading
+ * names the unit the way the platform registered it, so a registration whose
+ * file is already gone is still removed.
+ */
 function lifecycleCommands(unit: ServiceUnit, paths: ServicePaths, platform: NodeJS.Platform): { load: string[][]; unload: string[][] } {
   if (platform === 'darwin') {
     return {
       load: [['launchctl', 'unload', paths.unitFile], ['launchctl', 'load', '-w', paths.unitFile]],
-      unload: [['launchctl', 'unload', '-w', paths.unitFile]],
+      unload: [['launchctl', 'unload', '-w', paths.unitFile], ['launchctl', 'remove', unit.label]],
     };
   }
   if (platform === 'linux') {
+    const name = `${unit.unitName}.service`;
     return {
-      load: [['systemctl', '--user', 'daemon-reload'], ['systemctl', '--user', 'enable', '--now', `${unit.unitName}.service`]],
-      unload: [['systemctl', '--user', 'disable', '--now', `${unit.unitName}.service`]],
+      load: [['systemctl', '--user', 'daemon-reload'], ['systemctl', '--user', 'enable', name], ['systemctl', '--user', 'restart', name]],
+      unload: [['systemctl', '--user', 'disable', '--now', name]],
     };
   }
   return {
-    load: [['schtasks', '/Create', '/TN', unit.unitName, '/XML', paths.unitFile, '/F'], ['schtasks', '/Run', '/TN', unit.unitName]],
+    load: [['schtasks', '/End', '/TN', unit.unitName], ['schtasks', '/Create', '/TN', unit.unitName, '/XML', paths.unitFile, '/F'], ['schtasks', '/Run', '/TN', unit.unitName]],
     unload: [['schtasks', '/End', '/TN', unit.unitName], ['schtasks', '/Delete', '/TN', unit.unitName, '/F']],
   };
+}
+
+/** The unit's text with its `PATH` value blanked, so two units differing only there compare equal. */
+function withoutPath(unit: string): string {
+  return unit
+    .replace(/(<key>PATH<\/key><string>)[^<]*(<\/string>)/, '$1$2')
+    .replace(/^Environment=PATH=.*$/m, 'Environment=PATH=')
+    .replace(/set &quot;PATH=.*?&quot; &amp;&amp; /, '');
 }
 
 export interface ServiceOutcome {
   unitFile: string;
   /** Whether the platform accepted the unit; a written unit that did not load is reported, never assumed. */
   loaded: boolean;
-  /** Whether this call wrote a unit different from the one already there. */
+  /** Whether the platform reports the process running. */
+  running: boolean;
+  /** False only where a running unit was left as it was. */
   changed: boolean;
   detail?: string;
 }
@@ -316,24 +333,28 @@ export interface ServiceOptions {
   runner?: ServiceRunner;
 }
 
+export interface InstallOptions extends ServiceOptions {
+  /**
+   * Leave a running unit alone when nothing but its `PATH` would change. A
+   * worker interrupted mid-run loses the run it holds, and the `PATH` a unit is
+   * written with depends on the shell the install ran from.
+   */
+  keepRunning?: boolean;
+}
+
 /**
- * Write the unit and hand it to the platform.
- *
- * Idempotent: a unit already written with the same content, and already held
- * by the platform, is left running rather than restarted, so installing twice
- * never interrupts the process the first install started.
+ * Write the unit and hand it to the platform, which starts it, or restarts it
+ * where it was already running.
  */
-export function installService(spec: ServiceSpec, options: ServiceOptions = {}): ServiceOutcome {
+export function installService(spec: ServiceSpec, options: InstallOptions = {}): ServiceOutcome {
   const platform = options.platform ?? process.platform;
   const runner = options.runner ?? platformRunner;
   assertInstalledBinary(spec.binaryPath);
   const paths = servicePaths(spec, platform);
   const unit = renderUnit(spec, paths, platform);
-  const current = existsSync(paths.unitFile) ? readFileSync(paths.unitFile, 'utf8') : null;
-  const changed = current !== unit;
-  if (!changed) {
+  if (options.keepRunning === true && existsSync(paths.unitFile) && withoutPath(readFileSync(paths.unitFile, 'utf8')) === withoutPath(unit)) {
     const held = statusOfService(spec, options);
-    if (held.loaded) return { unitFile: paths.unitFile, loaded: true, changed: false };
+    if (held.running) return { unitFile: paths.unitFile, loaded: true, running: true, changed: false };
   }
   mkdirSync(path.dirname(paths.unitFile), { recursive: true });
   mkdirSync(paths.logDir, { recursive: true });
@@ -345,11 +366,11 @@ export function installService(spec: ServiceSpec, options: ServiceOptions = {}):
     // The first darwin command unloads a unit that may not be loaded, and a
     // refusal there is the expected answer rather than a failure.
     if (result.error !== undefined && command !== 'launchctl') {
-      return { unitFile: paths.unitFile, loaded: false, changed, detail: `${command} could not be run: ${result.error.message}` };
+      return { unitFile: paths.unitFile, loaded: false, running: false, changed: true, detail: `${command} could not be run: ${result.error.message}` };
     }
   }
   const verify = statusOfService(spec, options);
-  return { unitFile: paths.unitFile, loaded: verify.loaded, changed, ...(verify.detail === undefined ? {} : { detail: verify.detail }) };
+  return { unitFile: paths.unitFile, loaded: verify.loaded, running: verify.running, changed: true, ...(verify.detail === undefined ? {} : { detail: verify.detail }) };
 }
 
 /** Stop the running service without removing its unit, for an operator acting on the volume underneath it. */
@@ -366,39 +387,63 @@ export function startService(spec: ServiceSpec, options: ServiceOptions = {}): S
   const platform = options.platform ?? process.platform;
   const runner = options.runner ?? platformRunner;
   const paths = servicePaths(spec, platform);
-  if (!existsSync(paths.unitFile)) return { unitFile: paths.unitFile, loaded: false, changed: false, detail: 'no service unit is installed' };
+  if (!existsSync(paths.unitFile)) return { unitFile: paths.unitFile, loaded: false, running: false, changed: false, detail: 'no service unit is installed' };
   for (const [command, ...args] of lifecycleCommands(spec.unit, paths, platform).load) runner(command!, args);
   const verify = statusOfService(spec, options);
-  return { unitFile: paths.unitFile, loaded: verify.loaded, changed: false, ...(verify.detail === undefined ? {} : { detail: verify.detail }) };
+  return { unitFile: paths.unitFile, loaded: verify.loaded, running: verify.running, changed: true, ...(verify.detail === undefined ? {} : { detail: verify.detail }) };
 }
 
-/** Stop the service and remove its unit. Removing a unit that is not there is not an error. */
+/**
+ * Stop the service and remove its unit. The platform is asked to let go of the
+ * unit whether or not its file is still there; removing a unit that is not
+ * there is not an error.
+ */
 export function uninstallService(spec: ServiceSpec, options: ServiceOptions = {}): { unitFile: string; removed: boolean } {
   const platform = options.platform ?? process.platform;
   const runner = options.runner ?? platformRunner;
   const paths = servicePaths(spec, platform);
+  for (const [command, ...args] of lifecycleCommands(spec.unit, paths, platform).unload) runner(command!, args);
   const removed = existsSync(paths.unitFile);
-  if (removed) {
-    for (const [command, ...args] of lifecycleCommands(spec.unit, paths, platform).unload) runner(command!, args);
-  }
   rmSync(paths.unitFile, { force: true });
   return { unitFile: paths.unitFile, removed };
 }
 
-/** Whether the platform is holding the service, read from the platform rather than from the unit file. */
-export function statusOfService(spec: ServiceSpec, options: ServiceOptions = {}): { installed: boolean; loaded: boolean; detail?: string } {
+export interface ServiceStatus {
+  /** Whether the unit file is written. */
+  installed: boolean;
+  /** Whether the platform holds the unit, to start at login. */
+  loaded: boolean;
+  /** Whether the platform reports its process running now. */
+  running: boolean;
+  detail?: string;
+}
+
+/**
+ * Whether the platform is holding the service and running it, read from the
+ * platform rather than from the unit file: launchd lists a running job with its
+ * PID, systemd answers `is-active`, Task Scheduler reports a status.
+ */
+export function statusOfService(spec: ServiceSpec, options: ServiceOptions = {}): ServiceStatus {
   const platform = options.platform ?? process.platform;
   const runner = options.runner ?? platformRunner;
   const paths = servicePaths(spec, platform);
-  if (!existsSync(paths.unitFile)) return { installed: false, loaded: false, detail: 'no service unit is installed' };
-  const probe = platform === 'darwin'
-    ? ['launchctl', 'list', spec.unit.label]
-    : platform === 'linux'
-      ? ['systemctl', '--user', 'is-enabled', `${spec.unit.unitName}.service`]
-      : ['schtasks', '/Query', '/TN', spec.unit.unitName];
-  const result = runner(probe[0]!, probe.slice(1));
-  if (result.error !== undefined) return { installed: true, loaded: false, detail: `${probe[0]} could not be run` };
-  return result.status === 0
-    ? { installed: true, loaded: true }
-    : { installed: true, loaded: false, detail: 'the unit is installed and the platform is not running it' };
+  if (!existsSync(paths.unitFile)) return { installed: false, loaded: false, running: false, detail: 'no service unit is installed' };
+  const ask = (probe: readonly string[]): CommandResult => runner(probe[0]!, probe.slice(1));
+  let loaded: CommandResult;
+  let running: boolean;
+  if (platform === 'darwin') {
+    loaded = ask(['launchctl', 'list', spec.unit.label]);
+    running = loaded.status === 0 && /"PID"\s*=\s*\d+/.test(loaded.stdout ?? '');
+  } else if (platform === 'linux') {
+    loaded = ask(['systemctl', '--user', 'is-enabled', `${spec.unit.unitName}.service`]);
+    running = loaded.error === undefined && ask(['systemctl', '--user', 'is-active', `${spec.unit.unitName}.service`]).status === 0;
+  } else {
+    loaded = ask(['schtasks', '/Query', '/TN', spec.unit.unitName, '/FO', 'LIST']);
+    running = loaded.status === 0 && /Status:\s*Running/i.test(loaded.stdout ?? '');
+  }
+  if (loaded.error !== undefined) return { installed: true, loaded: false, running: false, detail: `the platform's service manager could not be run` };
+  if (loaded.status !== 0) return { installed: true, loaded: false, running: false, detail: 'the unit is installed and the platform is not holding it' };
+  return running
+    ? { installed: true, loaded: true, running: true }
+    : { installed: true, loaded: true, running: false, detail: 'the platform holds the unit and its process is not running' };
 }

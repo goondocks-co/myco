@@ -44,6 +44,9 @@ mock.module('@myco/service/manager.js', () => ({
   getServiceManager: () => fakeServiceManager,
 }));
 
+const sweepWorkerServices = vi.fn((_deps: { mycoHome?: string }) => [] as string[]);
+mock.module('@myco/cli/worker-service.js', () => ({ sweepWorkerServices }));
+
 let testVaultDir = '';
 class UnsafeProjectRootError extends Error {
   constructor(public readonly projectRoot: string, public readonly reason: string) {
@@ -396,6 +399,7 @@ describe('myco remove (global) confirmation gate', () => {
 
     expect(process.exitCode).toBe(1);
     expect(fakeServiceManager.uninstallCalls).toHaveLength(0);
+    expect(sweepWorkerServices).not.toHaveBeenCalled();
     expect(fs.existsSync(path.join(sandbox.mycoHome, 'launcher.cjs'))).toBe(true);
     expect(fs.existsSync(path.join(sandbox.mycoHome, 'mcp-launcher.cjs'))).toBe(true);
     // The summary names the machine-wide blast radius.
@@ -408,6 +412,8 @@ describe('myco remove (global) confirmation gate', () => {
 
     expect(confirmMock).not.toHaveBeenCalled();
     expect(fakeServiceManager.uninstallCalls.length).toBeGreaterThan(0);
+    // The worker login services this home installed go with it.
+    expect(sweepWorkerServices).toHaveBeenCalledWith({ mycoHome: sandbox.mycoHome });
     expect(fs.existsSync(path.join(sandbox.mycoHome, 'launcher.cjs'))).toBe(false);
     expect(fs.existsSync(path.join(sandbox.mycoHome, 'mcp-launcher.cjs'))).toBe(false);
     // No --purge: captured data home is preserved.

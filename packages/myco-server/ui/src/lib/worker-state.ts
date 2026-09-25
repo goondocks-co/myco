@@ -90,9 +90,9 @@ export function isAttached(worker: WorkerRow): boolean {
   return worker.busy !== null || (worker.recent && worker.eligible);
 }
 
-/** The latest contact any worker made, or null when the fleet records none. */
+/** The latest contact a worker the claim route would admit made, or null when the fleet records none. */
 export function lastContactAt(workers: WorkerStatus): number | null {
-  const latest = Math.max(0, ...workers.fleet.map((w) => w.lastSeenAt));
+  const latest = Math.max(0, ...workers.fleet.filter((w) => w.eligible).map((w) => w.lastSeenAt));
   return latest > 0 ? latest : null;
 }
 
@@ -127,8 +127,12 @@ export function fleetHeadline(workers: WorkerStatus, now: number): { tone: Statu
   };
 }
 
-/** How a person attaches one, said wherever none is attached. */
-export const ATTACH_WORDS = 'A worker runs on a machine where a coding agent is logged in; `myco worker install` there keeps one running whenever that person is logged in.';
+/** How a person attaches one, said wherever none is attached: the words around the command, and the command. */
+export const ATTACH_WORDS = {
+  before: 'A worker runs on an administrator\'s machine where a coding agent is logged in. Running',
+  command: 'myco worker install',
+  after: 'there keeps one running whenever they are logged in.',
+} as const;
 
 /**
  * What the fleet says about one credential. `unavailable` is a Deployment that

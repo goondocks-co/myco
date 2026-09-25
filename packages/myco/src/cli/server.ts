@@ -30,7 +30,7 @@ import { parseFlags } from './shared.js';
 import path from 'node:path';
 import { resolveMycoHome } from '../paths/home.js';
 import { readDeploymentMembership } from '../member/registry.js';
-import { runWorker } from '../runner/loop.js';
+import { runWorker, type WorkerOptions } from '../runner/loop.js';
 import { workerLockDir } from '../runner/instance.js';
 
 /** What a worker waits before its first answer tells it the Deployment's own cadence. */
@@ -233,10 +233,27 @@ function fail(message: string): never {
  * without a worker and says so: the Deployment still takes work, and the queue
  * waits for a worker that can claim it.
  */
+/**
+ * Where the in-process worker claims from and what it locks: its own loopback,
+ * and the origin members reach it at, so no other worker on this machine claims
+ * for the same Deployment under either address.
+ */
+export function localWorkerTarget(record: Pick<LocalDeploymentRecord, 'port' | 'origin'>, mycoHome: string, lockDir = workerLockDir()): Pick<WorkerOptions, 'serverUrl' | 'token' | 'lockDir' | 'deploymentUrls' | 'runRoot'> {
+  const urls = localDeploymentUrls(record);
+  const serverUrl = urls[0]!;
+  return {
+    serverUrl,
+    token: () => readDeploymentMembership(serverUrl, mycoHome)?.token ?? null,
+    lockDir,
+    deploymentUrls: urls,
+    runRoot: path.join(mycoHome, 'worker', 'runs'),
+  };
+}
+
 async function startLocalWorker(record: Pick<LocalDeploymentRecord, 'port' | 'origin'>): Promise<void> {
-  const [serverUrl, ...fronts] = localDeploymentUrls(record);
   const mycoHome = resolveMycoHome();
-  const membership = readDeploymentMembership(serverUrl!, mycoHome);
+  const target = localWorkerTarget(record, mycoHome);
+  const membership = readDeploymentMembership(target.serverUrl, mycoHome);
   if (membership === null) {
     console.log('No membership for this Deployment on this machine; serving without a worker. Run `myco login` to attach one.');
     return;
@@ -250,11 +267,7 @@ async function startLocalWorker(record: Pick<LocalDeploymentRecord, 'port' | 'or
   // to surface as an unhandled rejection, which would say nothing about what the
   // queue is now waiting for.
   void runWorker({
-    serverUrl: serverUrl!,
-    token: () => readDeploymentMembership(serverUrl!, mycoHome)?.token ?? null,
-    lockDir: workerLockDir(),
-    deploymentUrls: [serverUrl!, ...fronts],
-    runRoot: path.join(mycoHome, 'worker', 'runs'),
+    ...target,
     pollIdleMs: WORKER_POLL_IDLE_MS,
     log: (line) => { console.log(`worker: ${line}`); },
     signal: stopping.signal,

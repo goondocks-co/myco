@@ -11,7 +11,11 @@ import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { holdWorkerInstance, workerHolder } from '@myco/runner/instance.js';
+import { holdWorkerInstance, workerHolder, workerLockDir, workerLockPath } from '@myco/runner/instance.js';
+import { deploymentKeyFor } from '@myco/member/registry.js';
+import { readWorkerRefusal } from '@myco/runner/refusal.js';
+import { attachOptions, executableIdentity, sameProgram } from '@myco/cli/worker.js';
+import { localWorkerTarget } from '@myco/cli/server.js';
 import { runWorker, type WorkerOptions } from '@myco/runner/loop.js';
 
 const URL_ = 'https://myco.example';
@@ -49,23 +53,38 @@ describe('the machine-wide worker lock', () => {
     expect(holdWorkerInstance(lockDir, [URL_]).held).toBe(true);
   });
 
-  it('excludes a worker for the public address while the native server holds its loopback and origin, and holds nothing half-taken', () => {
+  it('excludes a worker for the public address while the native server holds its loopback and origin', () => {
     const native = holdWorkerInstance(lockDir, [LOOPBACK, URL_]);
     expect(native.held).toBe(true);
     expect(holdWorkerInstance(lockDir, [URL_]).held).toBe(false);
+    expect(holdWorkerInstance(lockDir, [LOOPBACK]).held).toBe(false);
     if (native.held) native.release();
+  });
 
-    // A worker for the public address alone blocks the native server, which then holds neither.
-    const service = holdWorkerInstance(lockDir, [URL_]);
-    expect(holdWorkerInstance(lockDir, [LOOPBACK, URL_]).held).toBe(false);
-    expect(holdWorkerInstance(lockDir, [LOOPBACK]).held).toBe(true);
-    if (service.held) service.release();
+  it('holds nothing half-taken when the lock it is refused is not the first it takes', () => {
+    // The locks are taken in key order; blocking the later one means the earlier was already taken when the refusal came.
+    const [earlier, later] = [LOOPBACK, URL_].sort((a, b) => (deploymentKeyFor(a) < deploymentKeyFor(b) ? -1 : 1)) as [string, string];
+    const other = holdWorkerInstance(lockDir, [later]);
+    expect(holdWorkerInstance(lockDir, [earlier, later]).held).toBe(false);
+    const free = holdWorkerInstance(lockDir, [earlier]);
+    expect(free.held).toBe(true);
+    if (free.held) free.release();
+    if (other.held) other.release();
   });
 
   it('names the process serving a Deployment, and nobody once it has let go', () => {
     const held = holdWorkerInstance(lockDir, [URL_]);
     expect(workerHolder(lockDir, URL_)?.pid).toBe(process.pid);
     if (held.held) held.release();
+    expect(workerHolder(lockDir, URL_)).toBeNull();
+    expect(workerHolder(lockDir, 'https://never.example')).toBeNull();
+  });
+
+  it('does not take a holder record left by a killed worker for a worker, whatever pid it names', () => {
+    const lockPath = workerLockPath(lockDir, URL_);
+    fs.mkdirSync(lockDir, { recursive: true });
+    // This process's own pid is alive; the record says it holds the lock, and the lock says nobody does.
+    fs.writeFileSync(lockPath, JSON.stringify({ pid: process.pid, startedAt: 1, command: 'myco worker' }));
     expect(workerHolder(lockDir, URL_)).toBeNull();
   });
 });
@@ -149,10 +168,82 @@ describe('the credential a worker presents', () => {
     expect(outcome.refused).toBeNull();
   });
 
+  it('does not retry a refused credential that is still the one on disk', async () => {
+    const seen: string[] = [];
+    const stopping = new AbortController();
+    const outcome = await runWorker(options({
+      signal: stopping.signal,
+      token: () => 'tok-dead',
+      fetchImpl: (async (_input: string | URL | Request, init?: RequestInit) => { seen.push(bearerOf(init)); return new Response('', { status: 401 }); }) as unknown as typeof fetch,
+    }));
+    expect(seen).toEqual(['Bearer tok-dead']);
+    expect(outcome.refused).toBe('unauthorized');
+  });
+
   it('ends the attachment once the membership is gone', async () => {
     const stopping = new AbortController();
     const outcome = await runWorker(options({ signal: stopping.signal, token: () => null }));
     expect(outcome).toEqual({ driven: 0, refused: 'no_membership' });
     stopping.abort();
+  });
+});
+
+describe('a worker whose program is replaced on disk', () => {
+  it('stops before its next claim, so its service starts the new program', async () => {
+    let current = true;
+    let claims = 0;
+    const stopping = new AbortController();
+    const outcome = await runWorker(options({
+      signal: stopping.signal,
+      stillCurrent: () => current,
+      fetchImpl: (async () => { claims += 1; if (claims === 2) current = false; return idle(); }) as unknown as typeof fetch,
+    }));
+    expect(outcome).toEqual({ driven: 0, refused: null, replaced: true });
+    expect(claims).toBe(2);
+  });
+
+  it('notices a replacement by rename, the way an update installs one', () => {
+    const program = path.join(scratch, 'myco');
+    fs.writeFileSync(program, 'one');
+    const same = sameProgram(program);
+    expect(same()).toBe(true);
+    const next = path.join(scratch, 'myco.next');
+    fs.writeFileSync(next, 'two');
+    fs.renameSync(next, program);
+    expect(same()).toBe(false);
+    expect(executableIdentity(path.join(scratch, 'absent'))).toBeNull();
+  });
+});
+
+describe('where each worker takes its locks', () => {
+  it('the native server\'s worker locks its loopback and the origin members reach it at', () => {
+    const target = localWorkerTarget({ port: 8787, origin: URL_ }, path.join(scratch, 'home'), lockDir);
+    expect(target.serverUrl).toBe(LOOPBACK);
+    expect(target.deploymentUrls).toEqual([LOOPBACK, URL_]);
+    const native = holdWorkerInstance(target.lockDir!, target.deploymentUrls!);
+    expect(holdWorkerInstance(lockDir, [URL_]).held).toBe(false);
+    if (native.held) native.release();
+    expect(localWorkerTarget({ port: 8787 }, scratch).lockDir).toBe(workerLockDir());
+  });
+
+  it('a worker started from the CLI or a login service locks in this machine\'s lock directory', () => {
+    const attach = attachOptions(URL_, path.join(scratch, 'home'));
+    expect(attach.lockDir).toBe(workerLockDir());
+    expect(attach.lockDir).toBe(path.join(process.env.HOME ?? os.homedir(), '.myco', 'worker', 'locks'));
+  });
+});
+
+describe('a worker the Deployment will not have', () => {
+  it('ends successfully with the refusal recorded, so its service does not restart it into the same answer', async () => {
+    const saved = process.env.MYCO_HOME;
+    const mycoHome = path.join(scratch, 'member');
+    process.env.MYCO_HOME = mycoHome;
+    try {
+      const { run } = await import('@myco/cli/worker.js');
+      expect(await run(['--server', URL_])).toBe(true);
+      expect(readWorkerRefusal(mycoHome, URL_)?.code).toBe('no_membership');
+    } finally {
+      if (saved === undefined) delete process.env.MYCO_HOME; else process.env.MYCO_HOME = saved;
+    }
   });
 });

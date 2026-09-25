@@ -29,7 +29,7 @@ import { openBrowser } from './open-browser.js';
 import { loadManifests, resolvePackageRoot } from '../symbionts/detect.js';
 import { MemberMcpConflictError, MemberProvisionConflictError, SymbiontInstaller } from '../symbionts/installer.js';
 import { ensureVaultGitignoreCurrent } from '../vault/gitignore.js';
-import { describeWorkerService, ensureWorkerService, removeWorkerService, workerServiceWords, type WorkerServiceDeps } from './worker-service.js';
+import { describeWorkerService, ensuredWorkerWords, ensureWorkerService, removeWorkerService, workerServiceWords, type WorkerServiceDeps } from './worker-service.js';
 
 export const MEMBER_HELP = `Usage: myco member <op> [options]
 
@@ -274,16 +274,7 @@ export async function runJoin(args: readonly string[], deps: MemberCliDeps = {})
  * join is for, and `myco worker install` retries the service on its own.
  */
 async function joinWorker(serverUrl: string, mycoHome: string, deps: MemberCliDeps, out: (line: string) => void): Promise<void> {
-  const ensured = await ensureWorkerService(serverUrl, { ...deps.worker, mycoHome });
-  if (ensured.kind === 'installed' && ensured.outcome.loaded) {
-    out(`a worker for ${deploymentUrl(serverUrl)} runs whenever you are logged in; logs: ${ensured.outLog}`);
-  } else if (ensured.kind === 'installed') {
-    out(`the worker service is written and the platform is not running it (${ensured.outcome.detail ?? 'no detail'}); run \`myco worker status\``);
-  } else if (ensured.kind === 'refused' && ensured.refusal.reason === 'own_deployment') {
-    out(ensured.refusal.detail);
-  } else {
-    out(`no worker service installed: ${ensured.kind === 'refused' ? ensured.refusal.detail : ensured.detail}`);
-  }
+  out(`${deploymentUrl(serverUrl)}: ${ensuredWorkerWords(await ensureWorkerService(serverUrl, { ...deps.worker, mycoHome })).line}`);
 }
 
 /**
@@ -381,7 +372,7 @@ export function runLeave(args: readonly string[], deps: MemberCliDeps = {}): boo
   out(`left ${entry.projectId} for ${root}`);
   // The last binding on a Deployment takes its membership with it, and a worker
   // service left behind would restart all day with nothing to claim under.
-  if (readDeploymentMembership(entry.serverUrl, mycoHome) === null) {
+  if (readDeploymentMembership(entry.serverUrl, mycoHome) === null && describeWorkerService(entry.serverUrl, { ...deps.worker, mycoHome })?.installed === true) {
     const removed = removeWorkerService(entry.serverUrl, { ...deps.worker, mycoHome });
     if ('removed' in removed && removed.removed) out(`removed the worker service for ${deploymentUrl(entry.serverUrl)}`);
   }

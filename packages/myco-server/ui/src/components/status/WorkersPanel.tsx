@@ -1,6 +1,7 @@
 import { Panel } from '../ui/panel';
 import { StatusDot } from '../ui/status-dot';
-import { ATTACH_WORDS, fleetHeadline, offersWords, REASON_WORDS, workerState } from '../../lib/worker-state';
+import { fleetHeadline, offersWords, REASON_WORDS, workerState } from '../../lib/worker-state';
+import { AttachHint } from './AttachHint';
 import type { WorkerStatus } from '../../lib/api';
 
 /**
@@ -32,7 +33,7 @@ export function WorkersPanel({ workers, now = Date.now() }: { workers: WorkerSta
         <span>{headline.line}</span>
       </div>
       <p className="mt-1 font-sans text-sm text-on-surface-variant">
-        {headline.attached === 0 ? `${ATTACH_WORDS} ` : ''}Workers attach from wherever their harnesses are logged in; what each reports below is its own check of its machine.
+        {headline.attached === 0 && <><AttachHint />{' '}</>}Workers attach from wherever their harnesses are logged in; what each reports below is its own check of its machine.
       </p>
       {workers.fleet.length === 0 ? null : (
         <ul className="mt-2 flex flex-col gap-3" aria-label="Workers">

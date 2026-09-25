@@ -11,6 +11,7 @@ import { checkWorkerServices } from '@myco/cli/doctor.js';
 import { ensureWorkerService, type WorkerServiceDeps } from '@myco/cli/worker-service.js';
 import { writeDeploymentMembership } from '@myco/member/registry.js';
 import { holdWorkerInstance } from '@myco/runner/instance.js';
+import { recordingPlatform } from '../member/helpers/service-platform.js';
 
 let scratch: string;
 let deps: WorkerServiceDeps;
@@ -19,16 +20,10 @@ beforeEach(() => {
   const home = path.join(scratch, 'home');
   const mycoHome = path.join(home, '.myco');
   fs.mkdirSync(mycoHome, { recursive: true });
-  const loaded = new Set<string>();
   deps = {
     mycoHome, home, platform: 'linux', binaryPath: path.join(mycoHome, 'bin', 'myco'), lockDir: path.join(scratch, 'locks'),
     detect: () => [{ id: 'claude-code', installed: true, authenticated: true }], harnessDirs: () => [], ownDeploymentUrls: async () => [],
-    runner: (command, args) => {
-      const line = [command, ...args].join(' ');
-      if (line.startsWith('systemctl --user enable')) loaded.add(args.at(-1)!);
-      if (line.startsWith('systemctl --user is-enabled')) return { status: loaded.has(args.at(-1)!) ? 0 : 1 };
-      return { status: 0 };
-    },
+    admission: async () => 'admitted', runner: recordingPlatform().runner,
   };
 });
 afterEach(() => { fs.rmSync(scratch, { recursive: true, force: true }); });

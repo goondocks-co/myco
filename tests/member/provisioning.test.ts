@@ -22,6 +22,7 @@ import { loadManifests } from '@myco/symbionts/detect.js';
 import { SymbiontInstaller } from '@myco/symbionts/installer.js';
 import { hookCommands } from '@myco/symbionts/member-hooks.js';
 import { memberRig, tempMycoHome, type MemberRig } from './helpers/server.js';
+import { recordingPlatform } from './helpers/service-platform.js';
 
 const PKG_ROOT = path.resolve(__dirname, '..', '..', 'packages', 'myco');
 const MEMBER_TARGET = path.join('.claude', 'settings.local.json');
@@ -279,20 +280,12 @@ describe('myco member join / leave', () => {
   });
 
   it('installs a worker to run at login on join, reports it in status, and removes it with the last project', async () => {
-    const commands: string[] = [];
-    const loaded = new Set<string>();
+    const platform = recordingPlatform();
     const worker = {
       home, platform: 'darwin' as const, binaryPath: path.join(home, '.myco', 'bin', 'myco'),
       detect: () => [{ id: 'codex', installed: true, authenticated: true }], harnessDirs: () => [],
-      ownDeploymentUrls: async () => [], lockDir: path.join(home, 'locks'),
-      runner: (command: string, args: readonly string[]) => {
-        const line = [command, ...args].join(' ');
-        commands.push(line);
-        if (line.startsWith('launchctl load')) loaded.add(args.at(-1)!);
-        if (line.startsWith('launchctl unload')) loaded.delete(args.at(-1)!);
-        if (line.startsWith('launchctl list')) return { status: loaded.size > 0 ? 0 : 113 };
-        return { status: 0 };
-      },
+      ownDeploymentUrls: async () => [], admission: async () => 'admitted' as const, lockDir: path.join(home, 'locks'),
+      runner: platform.runner,
     };
     const out: string[] = [];
     await join(['https://server.example', '--project', PROJECT, '--token-env', 'JOIN_TOKEN', '--root', projectRoot], {
@@ -302,7 +295,7 @@ describe('myco member join / leave', () => {
     const [unit] = fs.readdirSync(agents);
     expect(unit).toMatch(/^co\.goondocks\.myco-worker\.[0-9a-f]{16}\.plist$/);
     expect(fs.readFileSync(path.join(agents, unit!), 'utf8')).toContain(`<key>MYCO_HOME</key><string>${mycoHome}</string>`);
-    expect(out.join('\n')).toContain('a worker for https://server.example runs whenever you are logged in');
+    expect(out.join('\n')).toContain('https://server.example: a worker now runs whenever you are logged in');
 
     const status: string[] = [];
     runStatus([], { mycoHome, cwd: projectRoot, stdout: (l: string) => status.push(l), stderr: () => {}, worker });
@@ -312,7 +305,7 @@ describe('myco member join / leave', () => {
     expect(runLeave([], { mycoHome, cwd: projectRoot, packageRoot: PKG_ROOT, stdout: (l: string) => out.push(l), stderr: () => {}, worker })).toBe(true);
     expect(fs.readdirSync(agents)).toEqual([]);
     expect(out.join('\n')).toContain('removed the worker service for https://server.example');
-    expect(loaded.size).toBe(0);
+    expect(platform.loaded.size).toBe(0);
   });
 
   it('installs no worker when asked not to', async () => {

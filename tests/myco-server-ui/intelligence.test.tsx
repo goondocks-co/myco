@@ -423,6 +423,7 @@ describe('the worker behind a run', () => {
       '/api/projects/x/runs/r1': () => Response.json(detail(queued)),
     }));
     mount('/p/x/runs/r1');
-    expect(await screen.findByText(/^No worker attached\. No worker contact recorded\. 1 queued run waits until one attaches\. A worker runs on a machine where a coding agent is logged in/)).toBeTruthy();
+    expect(await screen.findByText('No worker attached. No worker contact recorded. 1 queued run waits until one attaches.')).toBeTruthy();
+    expect(screen.getByText('myco worker install').tagName).toBe('CODE');
   });
 });

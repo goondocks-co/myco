@@ -122,7 +122,10 @@ describe('WorkersPanel', () => {
   it('says no worker is attached, when one was last heard from, and what waits for one', () => {
     render(<WorkersPanel workers={status({ runsQueued: 3, fleet: [worker({ recent: false, lastSeenAt: NOW - 8 * 86_400_000 })] })} now={NOW} />);
     expect(screen.getByText('No worker attached. Last worker contact 8d ago. 3 queued runs wait until one attaches.')).toBeDefined();
-    expect(screen.getByText(/`myco worker install` there keeps one running/)).toBeDefined();
+    // The command is set as code, not as raw backticks, and names whose machine can run one.
+    expect(screen.getByText('myco worker install').tagName).toBe('CODE');
+    expect(screen.getByText(/an administrator's machine/)).toBeDefined();
+    expect(screen.queryByText(/`/)).toBeNull();
     expect(screen.getAllByTestId('status-dot')[0]!.dataset.tone).toBe('terracotta');
   });
 
@@ -131,9 +134,14 @@ describe('WorkersPanel', () => {
     expect(screen.getByText('No worker attached. No worker contact recorded. 1 queued run waits until one attaches.')).toBeDefined();
   });
 
-  it('does not count a recent worker the claim route would refuse as attached', () => {
+  it('does not count a worker the claim route would refuse as attached, or its contact as a worker\'s', () => {
+    render(<WorkersPanel workers={status({ fleet: [worker({ eligible: false }), worker({ credentialId: 'mt_2', recent: false, lastSeenAt: NOW - 2 * 3_600_000 })] })} now={NOW} />);
+    expect(screen.getByText('No worker attached. Last worker contact 2h ago. Nothing queued.')).toBeDefined();
+  });
+
+  it('records no worker contact when only a credential the claim route refuses has been heard from', () => {
     render(<WorkersPanel workers={status({ fleet: [worker({ eligible: false })] })} now={NOW} />);
-    expect(screen.getByText('No worker attached. Last worker contact 3s ago. Nothing queued.')).toBeDefined();
+    expect(screen.getByText('No worker attached. No worker contact recorded. Nothing queued.')).toBeDefined();
   });
 
   it('shows a lease holder that predates contact records as busy, with no invented contact time', () => {

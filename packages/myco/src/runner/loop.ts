@@ -70,7 +70,17 @@ export interface WorkerOptions {
   log: (line: string) => void;
   fetchImpl?: typeof fetch;
   signal: AbortSignal;
+  /** Told once, when the Deployment first answers a claim: the worker is attached. */
+  onAttached?: () => void;
+  /**
+   * Whether the program this worker runs is still the one on disk, asked before
+   * each claim. False ends the worker, so the service starts the new one.
+   */
+  stillCurrent?: () => boolean;
 }
+
+/** What a request needs of a worker: where, as whom, and when to give up. */
+type Requester = Pick<WorkerOptions, 'serverUrl' | 'token' | 'fetchImpl' | 'signal'>;
 
 /**
  * What a worker's request came back as.
@@ -87,7 +97,7 @@ type WorkerAnswer =
   | { kind: 'unreachable'; detail: string };
 
 /** The credential to present now: the one given, or the one the membership holds at this moment. */
-const credentialOf = (options: WorkerOptions): string | null =>
+const credentialOf = (options: Requester): string | null =>
   typeof options.token === 'function' ? options.token() : options.token;
 
 /**
@@ -98,7 +108,7 @@ const credentialOf = (options: WorkerOptions): string | null =>
  * member classifier, so a protocol window, a dead credential and a refusal all
  * arrive here as themselves rather than as an unreadable body.
  */
-async function post(options: WorkerOptions, path: string, body: unknown): Promise<WorkerAnswer> {
+async function post(options: Requester, path: string, body: unknown): Promise<WorkerAnswer> {
   const token = credentialOf(options);
   if (token === null) return { kind: 'refused', code: 'no_membership', detail: 'this machine no longer holds a membership of the Deployment' };
   const answer = await postAs(options, token, path, body);
@@ -111,7 +121,7 @@ async function post(options: WorkerOptions, path: string, body: unknown): Promis
   return answer;
 }
 
-async function postAs(options: WorkerOptions, token: string, path: string, body: unknown): Promise<WorkerAnswer> {
+async function postAs(options: Requester, token: string, path: string, body: unknown): Promise<WorkerAnswer> {
   const send = options.fetchImpl ?? fetch;
   let raw: RawAnswer;
   try {
@@ -322,8 +332,25 @@ async function drive(options: WorkerOptions, run: ClaimedRun, heartbeatMs: numbe
 /** How a worker's attachment ended: what it drove, and the code it was refused with where a Deployment refused it. */
 export interface WorkerOutcome {
   driven: number;
-  /** The code the Deployment answered, or null when the worker was stopped or drove its one run. A worker refused here cannot claim anything and exits non-zero. */
+  /** The code the Deployment answered, or null when the worker was stopped or drove its one run. A worker refused here cannot claim anything. */
   refused: string | null;
+  /** Set when the program on disk changed under this worker, which stopped so the new one can start. */
+  replaced?: true;
+}
+
+/** Whether the Deployment's worker routes admit this credential, or why not; `unknown` where it could not be asked. */
+export type WorkerAdmission = 'admitted' | 'not_admin' | 'unauthorized' | 'unknown';
+
+/**
+ * Ask the Deployment whether it admits this credential as a worker, without
+ * claiming anything. A lease renewal naming no run is admitted or refused by
+ * the same rule as a claim, and changes nothing.
+ */
+export async function probeWorkerAdmission(options: Requester): Promise<WorkerAdmission> {
+  const answer = await post(options, '/worker/lease', {});
+  if (answer.kind === 'answered') return 'admitted';
+  if (answer.kind === 'refused' && (answer.code === 'not_admin' || answer.code === 'unauthorized')) return answer.code;
+  return 'unknown';
 }
 
 /**
@@ -381,9 +408,14 @@ async function claimUntilStopped(options: WorkerOptions): Promise<WorkerOutcome>
 
   let driven = 0;
   let unreachable = false;
+  let attached = false;
   /** The reason the last claim answered nothing, so a change in it is said once and a repeat is not. */
   let waiting: string | null = null;
   while (!options.signal.aborted) {
+    if (options.stillCurrent !== undefined && !options.stillCurrent()) {
+      options.log('the myco program on disk changed; stopping so the new one starts');
+      return { driven, refused: null, replaced: true };
+    }
     const answer = await post(options, '/worker/claim', { harnesses, capabilities: [REPOSITORY_CHECKOUT_CAPABILITY] });
     if (answer.kind === 'refused') {
       options.log(`the Deployment refused the claim: ${answer.code}${answer.detail === '' ? '' : ` — ${answer.detail}`}`);
@@ -398,6 +430,7 @@ async function claimUntilStopped(options: WorkerOptions): Promise<WorkerOutcome>
       continue;
     }
     if (unreachable) { unreachable = false; options.log(`reached ${options.serverUrl} again`); }
+    if (!attached) { attached = true; options.onAttached?.(); }
 
     const claim = answer.body;
     if (claim.claimed !== true) {
