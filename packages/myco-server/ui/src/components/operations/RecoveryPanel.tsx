@@ -1,4 +1,5 @@
 import { Link } from 'react-router-dom';
+import { formatUntil } from '../../lib/format';
 import { Panel } from '../ui/panel';
 import { unsupported, useRecovery, type RecoveryAvailability, type RecoverySchedule, type RecoveryStatus } from '../../hooks/use-recovery';
 
@@ -6,12 +7,8 @@ const dateLabel = (ms: number): string => new Date(ms).toLocaleString();
 
 /** How long until an instant, in the coarse words a cadence deserves. */
 function whenLabel(at: number, now: number): string {
-  const ms = at - now;
-  if (ms <= 0) return 'now';
-  const hours = ms / (60 * 60 * 1000);
-  if (hours < 1) return `in ${Math.max(1, Math.round(ms / 60_000))} min`;
-  if (hours < 48) return `in ${Math.round(hours)} h`;
-  return `on ${dateLabel(at)}`;
+  if (at <= now) return 'now';
+  return at - now < 48 * 60 * 60 * 1000 ? `in ${formatUntil(at, now)}` : `on ${dateLabel(at)}`;
 }
 
 /** What the schedule is doing, in one line an owner can act on. */

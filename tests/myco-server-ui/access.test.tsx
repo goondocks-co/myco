@@ -5,6 +5,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 
 import App from '../../packages/myco-server/ui/src/App';
 import { AppearanceProvider } from '../../packages/myco-server/ui/src/providers/appearance';
+import { formatRelative, formatUntil } from '../../packages/myco-server/ui/src/lib/format';
 
 const ME = { sub: '583231', login: 'octocat', member: { id: 'mem_1', label: 'chris' } };
 const MEMBERS = { members: [
@@ -249,5 +250,42 @@ describe('a runtime and the worker record beside it', () => {
     accessServer({});
     mount('/access');
     expect(await screen.findByText('admin')).toBeTruthy();
+  });
+});
+
+describe('an open invitation says when it stops working', () => {
+  const invitation = (expiresAt: number) => ({ id: 'en_1', memberId: null, createdBy: 'mem_1', createdAt: Date.now(), expiresAt, role: 'member', projectId: null });
+
+  it('counts down to an invitation 60 minutes out, never "just now"', async () => {
+    accessServer({}, { '/api/enrollment': () => Response.json({ invitations: [invitation(Date.now() + 60 * 60_000)] }) });
+    mount('/access');
+    expect(await screen.findByText(/by chris · expires in 59m$/)).toBeTruthy();
+    expect(screen.queryByText(/just now/)).toBeNull();
+  });
+
+  it('says an invitation past its expiry has expired, not that it expires', async () => {
+    accessServer({}, { '/api/enrollment': () => Response.json({ invitations: [invitation(Date.now() - 5 * 60_000)] }) });
+    mount('/access');
+    expect(await screen.findByText(/by chris · expired$/)).toBeTruthy();
+    expect(screen.queryByText(/expires/)).toBeNull();
+  });
+});
+
+describe('future instants', () => {
+  const now = 1_790_000_000_000;
+
+  it('formatUntil counts a lease in seconds, then minutes, hours and days', () => {
+    expect(formatUntil(now + 62_000, now)).toBe('62s');
+    expect(formatUntil(now + 60 * 60_000, now)).toBe('60m');
+    expect(formatUntil(now + 3 * 3_600_000, now)).toBe('3h');
+    expect(formatUntil(now + 3 * 86_400_000, now)).toBe('3d');
+    expect(formatUntil(now - 1, now)).toBe('now');
+  });
+
+  it('formatRelative labels a future instant instead of clamping it to "just now"', () => {
+    expect(formatRelative(now + 60 * 60_000, now)).toBe('in 60m');
+    // A server clock a few seconds ahead is still just now.
+    expect(formatRelative(now + 5_000, now)).toBe('just now');
+    expect(formatRelative(now - 5 * 60_000, now)).toBe('5m ago');
   });
 });

@@ -13,9 +13,9 @@ import { SubtabPill } from '../components/ui/subtab-pill';
 import { MEMORY_TASKS, taskRefusalText, useAgents, useDispatchMemoryTask, useRun, useRuns, type PhaseRow, type ReportRow, type RunDetailRow, type RunListRow, type RunToolCallRow } from '../hooks/use-intelligence';
 import { useWorkerFleet } from '../hooks/use-status';
 import { ApiError, type WorkerStatus } from '../lib/api';
-import { formatCost, formatDateTime, formatDuration, formatRelative, formatTokens } from '../lib/format';
+import { formatCost, formatDateTime, formatDuration, formatRelative, formatTokens, formatUntil } from '../lib/format';
 import { harnessLabel } from '../lib/harness';
-import { FLEET_UNKNOWN_WORDS, fleetHeadline, leaseStanding, offersWords, sinceWords, untilWords, workerFor, workerName, type LeaseStanding } from '../lib/worker-state';
+import { FLEET_UNKNOWN_WORDS, fleetHeadline, leaseStanding, offersWords, sinceWords, workerFor, workerName, type LeaseStanding } from '../lib/worker-state';
 import { NotFound } from './NotFound';
 import { AttachHint } from '../components/status/AttachHint';
 
@@ -54,7 +54,7 @@ export function workerWords(leasedBy: string | null, fleet: WorkerStatus | undef
 
 /** A held lease, by when it ends. One already past says so rather than counting down to nothing. */
 export function leaseWords(expiresAt: number, now: number): string {
-  return expiresAt <= now ? 'expired, not yet swept' : `expires in ${untilWords(expiresAt, now)}`;
+  return expiresAt <= now ? 'expired, not yet swept' : `expires in ${formatUntil(expiresAt, now)}`;
 }
 
 /** What workers a queued run waits on: presence only, never why this run waits. */
