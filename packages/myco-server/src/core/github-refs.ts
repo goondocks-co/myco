@@ -11,9 +11,10 @@
  * never makes more requests than the owner allowed.
  *
  * **A failure is named, never collapsed into "no".** A rejected credential, a
- * rate limit, a timeout and a truncated listing each come back as their own
- * failure, and the classifier treats every one of them as the absence of
- * evidence rather than as evidence of absence.
+ * refused token-less lookup (`forbidden`), a rate limit, a timeout and a
+ * truncated listing each come back as their own failure, and the classifier
+ * treats every one of them as the absence of evidence rather than as evidence
+ * of absence.
  *
  * **Compare direction.** `compare/{sha}...{ref}` answers `ahead` or
  * `identical` exactly when `ref` contains `sha`; `behind` and `diverged` mean
@@ -36,6 +37,7 @@ export const MAX_LISTED_REFS = 2_000;
 export type GithubFailure =
   | 'budget_exhausted'
   | 'credential_rejected'
+  | 'forbidden'
   | 'rate_limited'
   | 'not_found'
   | 'truncated'
@@ -90,11 +92,18 @@ export const isCommitSha = (value: unknown): value is string => typeof value ===
 
 const COMPARE_STATUSES = new Set<string>(['ahead', 'identical', 'behind', 'diverged']);
 
-function failureFor(response: Response): GithubFailure {
-  if (response.status === 401) return 'credential_rejected';
-  if (response.status === 429) return 'rate_limited';
-  if (response.status === 403) return response.headers.get('x-ratelimit-remaining') === '0' ? 'rate_limited' : 'credential_rejected';
-  if (response.status === 404 || response.status === 422) return 'not_found';
+/** GitHub's rate-limit wording, primary and secondary; a secondary limit's 403 can carry no limit header. */
+const RATE_LIMIT_MESSAGE = /rate limit/i;
+
+/**
+ * A refused read, named. A 429, or a 403 carrying `x-ratelimit-remaining: 0`, `retry-after` or GitHub's rate-limit
+ * message, is a rate limit. Any other 401 or 403 refused the token, or, on a lookup without one, the lookup itself.
+ */
+async function failureFor(response: Response, token: string | null): Promise<GithubFailure> {
+  const { status, headers } = response;
+  if (status === 429 || (status === 403 && (headers.get('x-ratelimit-remaining') === '0' || headers.has('retry-after') || RATE_LIMIT_MESSAGE.test(await response.text())))) return 'rate_limited';
+  if (status === 401 || status === 403) return token ? 'credential_rejected' : 'forbidden';
+  if (status === 404 || status === 422) return 'not_found';
   return 'unexpected_response';
 }
 
@@ -118,7 +127,7 @@ export function githubReads(options: GithubReadOptions): GithubReads {
     const signal = AbortSignal.timeout(timeoutMs);
     try {
       const response = await fetcher(`${GITHUB_API}/repos/${options.repo}${path ? `/${path}` : ''}`, { headers, signal });
-      if (!response.ok) return { ok: false, failure: failureFor(response), status: response.status };
+      if (!response.ok) return { ok: false, failure: await failureFor(response, options.token), status: response.status };
       return parse(await response.json(), response);
     } catch (error) {
       return { ok: false, failure: signal.aborted ? 'timeout' : error instanceof SyntaxError ? 'unexpected_response' : 'network' };
