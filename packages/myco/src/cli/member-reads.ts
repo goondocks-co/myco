@@ -1,0 +1,327 @@
+/**
+ * The retained read verbs for a joined project — `search`, `vectors`,
+ * `session` and `stats` — answered by the Deployment.
+ *
+ * Each verb is a presentation over the served MCP tools (`myco_search`,
+ * `myco_sessions`, `myco_cortex`, `myco_agent`) called on the Deployment's
+ * `/mcp` with the member credential, the same chokepoint an agent's tool call
+ * reaches, so a person and an agent asking the same question get the same
+ * answer. Nothing here opens a vault, a database or the local daemon, and
+ * `tests/meta/member-read-boundary.test.ts` holds the import closure to that.
+ *
+ * Routing (`memberReadSource`): a declared `--credential registry|env` names
+ * the source; otherwise a project root the registry holds a membership for
+ * reads over the registry. A root with neither has no Deployment to ask, and
+ * the dispatcher runs the verb's local handler instead.
+ *
+ * The registry credential is renewed through the membership's own rotation
+ * (`member/refresh.ts`) before the first call when its window is open, and once
+ * more after a 401 on a credential no other process has replaced since.
+ */
+import { CONTENT_SNIPPET_CHARS } from '../constants.js';
+import { callTool, type ToolCallOutcome } from '../mcp/client-call.js';
+import {
+  declaredCredentialSource, deploymentTransport, resolveDeploymentUpstream, withoutCredentialFlag, type DeploymentUpstream,
+} from '../mcp/deployment-upstream.js';
+import { unboundedBudget } from '../member/budget.js';
+import type { CredentialSource } from '../member/constants.js';
+import { resolveMemberProjectRoot } from '../member/credential.js';
+import { REJOIN_HINT } from '../member/delivery-notice.js';
+import { refreshMemberCredential, type RefreshStatus } from '../member/refresh.js';
+import { readRegistryEntryResult } from '../member/registry.js';
+import type { FetchLike } from '../member/transport.js';
+import { resolveMycoHome } from '../paths/home.js';
+import type { MemberReadVerb } from './member-read-verbs.js';
+
+export { MEMBER_READ_VERBS, isMemberReadVerb, type MemberReadVerb } from './member-read-verbs.js';
+
+/** Results a `search` shows. */
+export const SEARCH_LIMIT = 10;
+/** Results a `vectors` shows. */
+export const VECTORS_LIMIT = 20;
+/** Recent sessions a short session id is matched against. */
+export const SESSION_PREFIX_WINDOW = 100;
+/** Recent runs `stats` summarises. */
+export const STATS_RUN_WINDOW = 20;
+/** The share of the top score a `vectors` result must reach to be marked as passing the default threshold. */
+const VECTORS_RELATIVE_THRESHOLD = 0.5;
+
+export interface MemberReadDeps {
+  cwd?: string;
+  env?: NodeJS.ProcessEnv;
+  mycoHome?: string;
+  fetch?: FetchLike;
+  now?: () => number;
+  stdout?: (line: string) => void;
+  stderr?: (line: string) => void;
+}
+
+/** Renewal answers that leave nothing to retry: the credential is finished until a new one is issued. */
+const RENEWAL_TERMINAL: readonly RefreshStatus[] = ['unauthorized', 'terminal', 'lineage-expired'];
+
+const cwdOf = (deps: MemberReadDeps): string => deps.cwd ?? process.cwd();
+const envOf = (deps: MemberReadDeps): NodeJS.ProcessEnv => deps.env ?? process.env;
+const homeOf = (deps: MemberReadDeps): string => deps.mycoHome ?? resolveMycoHome({ cwd: cwdOf(deps), env: envOf(deps) });
+
+/**
+ * The credential source a read verb takes, or null when this invocation has no
+ * Deployment to ask: the declared `--credential` source, else `registry` when
+ * the registry holds this root's membership — an entry that cannot be read
+ * included, so it is reported rather than passed over. A declared value that
+ * is not a source throws.
+ */
+export function memberReadSource(args: readonly string[], deps: MemberReadDeps = {}): CredentialSource | null {
+  const declared = declaredCredentialSource(args);
+  if (declared !== null) return declared;
+  const root = resolveMemberProjectRoot(cwdOf(deps));
+  return readRegistryEntryResult(root, homeOf(deps)).status === 'missing' ? null : 'registry';
+}
+
+/** A tool answer that reports a failure in its body rather than as an error: `{ ok: false, error }`. */
+function answeredFailure(value: unknown): string | null {
+  if (value === null || typeof value !== 'object' || (value as { ok?: unknown }).ok !== false) return null;
+  const error = (value as { error?: unknown }).error;
+  return typeof error === 'string' ? error : 'the Deployment answered a failure';
+}
+
+/** One verb's view of the Deployment: where it is, which Project it reads, and the call. */
+interface DeploymentReader {
+  serverUrl: string;
+  projectId: string;
+  call: (tool: string, args: Record<string, unknown>) => Promise<ToolCallOutcome<unknown>>;
+}
+
+/** The registry credential renewed through the membership's own rotation; `force` asks even outside the window. */
+async function renew(deps: MemberReadDeps, force: boolean): Promise<RefreshStatus> {
+  const report = await refreshMemberCredential(resolveMemberProjectRoot(cwdOf(deps)), {
+    mycoHome: homeOf(deps), budget: unboundedBudget(), force,
+    ...(deps.fetch === undefined ? {} : { fetch: deps.fetch }),
+    ...(deps.now === undefined ? {} : { now: deps.now }),
+  });
+  return report.status;
+}
+
+/** Whether the registry records this root's credential as finished: a terminal refusal no renewal asks past. */
+function renewalEnded(deps: MemberReadDeps): boolean {
+  const read = readRegistryEntryResult(resolveMemberProjectRoot(cwdOf(deps)), homeOf(deps));
+  return read.status === 'present' && read.entry.refreshTerminal === true;
+}
+
+const upstreamFor = (source: CredentialSource, deps: MemberReadDeps): DeploymentUpstream | null =>
+  resolveDeploymentUpstream(source, { cwd: cwdOf(deps), env: envOf(deps), mycoHome: homeOf(deps), invokedBy: 'cli' });
+
+async function openReader(source: CredentialSource, deps: MemberReadDeps): Promise<DeploymentReader | null> {
+  if (source === 'registry') await renew(deps, false);
+  let upstream = upstreamFor(source, deps);
+  if (upstream === null) return null;
+  const serverUrl = upstream.mcpUrl.origin + upstream.mcpUrl.pathname.replace(/\/mcp$/, '');
+  const dial = (at: DeploymentUpstream, tool: string, args: Record<string, unknown>) =>
+    callTool(deploymentTransport(at, {}, deps.fetch), tool, args);
+  let renewedAfterRefusal = false;
+  return {
+    serverUrl,
+    projectId: upstream.projectId,
+    call: async (tool, args) => {
+      const first = await dial(upstream!, tool, args);
+      if (first.ok || first.error.code !== 'unauthorized' || source !== 'registry' || renewedAfterRefusal) return first;
+      renewedAfterRefusal = true;
+      const presented = upstream!.headers.authorization;
+      const status = await renew(deps, true);
+      const next = upstreamFor(source, deps);
+      if (next === null || next.headers.authorization === presented) {
+        return { ok: false, error: { code: 'unauthorized', message: RENEWAL_TERMINAL.includes(status) || renewalEnded(deps)
+          ? `the Deployment refused this machine's credential and it cannot be renewed — ${REJOIN_HINT}`
+          : `the Deployment refused this machine's credential and it could not be renewed yet (${status}); try again shortly` } };
+      }
+      upstream = next;
+      return dial(upstream, tool, args);
+    },
+  };
+}
+
+type Out = (line: string) => void;
+
+/** A tool's answer, or null with the failure written to stderr under the verb's name. */
+async function ask(reader: DeploymentReader, verb: MemberReadVerb, err: Out, tool: string, args: Record<string, unknown>): Promise<unknown | null> {
+  const outcome = await reader.call(tool, args);
+  if (!outcome.ok) {
+    err(`myco ${verb}: ${reader.serverUrl} did not answer ${tool} (${outcome.error.code}): ${outcome.error.message}`);
+    return null;
+  }
+  const failed = answeredFailure(outcome.value);
+  if (failed !== null) {
+    err(`myco ${verb}: ${reader.serverUrl} answered ${tool} with a failure: ${failed}`);
+    return null;
+  }
+  return outcome.value;
+}
+
+const iso = (ms: number | null | undefined): string => (typeof ms === 'number' && Number.isFinite(ms) ? new Date(ms).toISOString() : 'never');
+
+const sourceLine = (reader: DeploymentReader): string => `Deployment: ${reader.serverUrl}  project: ${reader.projectId}`;
+
+interface SearchHit { id: string; type: string; title?: string; preview?: string; score: number }
+interface SearchAnswer { results: SearchHit[]; mode: string; provider_unavailable: boolean }
+
+async function runSearch(reader: DeploymentReader, query: string, out: Out, err: Out): Promise<boolean> {
+  const answer = await ask(reader, 'search', err, 'myco_search', { query, limit: SEARCH_LIMIT }) as SearchAnswer | null;
+  if (answer === null) return false;
+  out(`=== Search: "${query}" ===`);
+  out(sourceLine(reader));
+  out(`Mode: ${answer.mode}${answer.provider_unavailable ? ' (semantic search unavailable on this Deployment)' : ''}`);
+  if (answer.results.length === 0) out('  (no results)');
+  for (const hit of answer.results) out(`  [${hit.type}] ${(hit.preview || hit.title || '').slice(0, CONTENT_SNIPPET_CHARS)}`);
+  return true;
+}
+
+async function runVectors(reader: DeploymentReader, query: string, out: Out, err: Out): Promise<boolean> {
+  const answer = await ask(reader, 'vectors', err, 'myco_search', { query, mode: 'semantic', limit: VECTORS_LIMIT }) as SearchAnswer | null;
+  if (answer === null) return false;
+  if (answer.provider_unavailable) {
+    err(`myco vectors: semantic search is unavailable on ${reader.serverUrl} — the Deployment has no embedding provider configured`);
+    return false;
+  }
+  out(`Query: "${query}"`);
+  out(sourceLine(reader));
+  out('');
+  if (answer.results.length === 0) {
+    out('(no results)');
+    return true;
+  }
+  const top = answer.results[0].score;
+  out(`Top score: ${top.toFixed(4)}`);
+  out(`Default threshold (${VECTORS_RELATIVE_THRESHOLD}x): ${(top * VECTORS_RELATIVE_THRESHOLD).toFixed(4)}`);
+  out('');
+  out('  Sim     Ratio  Type       ID');
+  out('  ------  -----  ---------  ' + '-'.repeat(50));
+  for (const hit of answer.results) {
+    const pass = hit.score >= top * VECTORS_RELATIVE_THRESHOLD ? '✓' : ' ';
+    out(`${pass} ${hit.score.toFixed(4)}  ${(top === 0 ? 0 : hit.score / top).toFixed(2)}   ${(hit.type ?? 'unknown').padEnd(9)}  ${hit.id.slice(0, 50)}`);
+  }
+  return true;
+}
+
+interface SessionSummary {
+  id: string; status: string; title: string | null; branch: string | null; user: string | null; agent: string | null;
+  started_at: number | null; ended_at: number | null; prompt_count: number; tool_count: number; summary: string;
+}
+
+async function runSession(reader: DeploymentReader, idOrLatest: string | undefined, out: Out, err: Out): Promise<boolean> {
+  let id = idOrLatest;
+  if (id === undefined || id === 'latest') {
+    const latest = await ask(reader, 'session', err, 'myco_sessions', { op: 'list', limit: 1 }) as SessionSummary[] | null;
+    if (latest === null) return false;
+    if (latest.length === 0) {
+      out(sourceLine(reader));
+      out('No sessions found');
+      return true;
+    }
+    id = latest[0].id;
+  }
+  let outcome = await reader.call('myco_sessions', { op: 'get', id });
+  if (outcome.ok && answeredFailure(outcome.value) !== null) {
+    // A short id is matched against the recent sessions, and must name exactly one.
+    const recent = await ask(reader, 'session', err, 'myco_sessions', { op: 'list', limit: SESSION_PREFIX_WINDOW }) as SessionSummary[] | null;
+    if (recent === null) return false;
+    const prefix = id;
+    const matches = recent.filter((s) => s.id.startsWith(prefix));
+    if (matches.length !== 1) {
+      err(matches.length === 0
+        ? `myco session: no session ${prefix} on ${reader.serverUrl} for project ${reader.projectId}`
+        : `myco session: ${prefix} names ${matches.length} sessions (${matches.map((s) => s.id).join(', ')}); give more of the id`);
+      return false;
+    }
+    outcome = await reader.call('myco_sessions', { op: 'get', id: matches[0].id });
+  }
+  if (!outcome.ok) {
+    err(`myco session: ${reader.serverUrl} did not answer myco_sessions (${outcome.error.code}): ${outcome.error.message}`);
+    return false;
+  }
+  const failed = answeredFailure(outcome.value);
+  if (failed !== null) {
+    err(`myco session: ${reader.serverUrl} answered myco_sessions with a failure: ${failed}`);
+    return false;
+  }
+  const s = outcome.value as SessionSummary;
+  out(sourceLine(reader));
+  out(`Session: ${s.id}`);
+  out(`Status:  ${s.status}`);
+  if (s.title) out(`Title:   ${s.title}`);
+  if (s.agent) out(`Agent:   ${s.agent}`);
+  if (s.branch) out(`Branch:  ${s.branch}`);
+  if (s.user) out(`User:    ${s.user}`);
+  out(`Started: ${iso(s.started_at)}`);
+  if (s.ended_at) out(`Ended:   ${iso(s.ended_at)}`);
+  out(`Prompts: ${s.prompt_count}`);
+  out(`Tools:   ${s.tool_count}`);
+  if (s.summary) out(`\nSummary:\n${s.summary}`);
+  return true;
+}
+
+interface ProjectActivity { id: string; name: string | null; session_count: number; last_activity_at: number | null; active: boolean }
+interface RunRow { task: string | null; status: string; started_at: number | null; queued_at: number | null; completed_at: number | null }
+
+async function runStats(reader: DeploymentReader, out: Out, err: Out): Promise<boolean> {
+  const activity = await ask(reader, 'stats', err, 'myco_cortex', { op: 'projects_activity' }) as { projects: ProjectActivity[] } | null;
+  if (activity === null) return false;
+  const runs = await ask(reader, 'stats', err, 'myco_agent', { op: 'runs', limit: STATS_RUN_WINDOW }) as { data: { runs: RunRow[] } } | null;
+  if (runs === null) return false;
+  const project = activity.projects.find((p) => p.id === reader.projectId) ?? null;
+
+  out('=== Myco Deployment ===');
+  out(`Deployment: ${reader.serverUrl}`);
+  out(`Project:    ${reader.projectId}${project?.name ? ` (${project.name})` : ''}`);
+  out(`Projects:   ${activity.projects.length} on this Deployment`);
+
+  out('\n--- Data ---');
+  out(`Sessions:      ${project?.session_count ?? 0}`);
+  out(`Last activity: ${iso(project?.last_activity_at)}`);
+  out(`Active:        ${project?.active ? 'yes' : 'no'} (activity in the last seven days)`);
+
+  out(`\n--- Agent runs (latest ${STATS_RUN_WINDOW}) ---`);
+  const rows = runs.data.runs;
+  if (rows.length === 0) {
+    out('No runs yet');
+    return true;
+  }
+  const last = rows[0];
+  out(`Last run:   ${iso(last.started_at ?? last.queued_at)} ${last.task ?? 'unknown task'} (${last.status})`);
+  const byStatus = new Map<string, number>();
+  for (const row of rows) byStatus.set(row.status, (byStatus.get(row.status) ?? 0) + 1);
+  out(`By status:  ${[...byStatus].map(([status, n]) => `${status} ${n}`).join(', ')}`);
+  return true;
+}
+
+const USAGE: Record<MemberReadVerb, string> = {
+  search: 'Usage: myco search <query>',
+  vectors: 'Usage: myco vectors <query>',
+  session: 'Usage: myco session [id|latest]',
+  stats: 'Usage: myco stats',
+};
+
+/**
+ * Answer one read verb from the Deployment over `source`. True when the verb
+ * answered; false after a usage error, a credential that resolves nowhere, or
+ * a Deployment that refused or failed the call — each written to stderr.
+ */
+export async function run(verb: MemberReadVerb, args: readonly string[], source: CredentialSource, deps: MemberReadDeps = {}): Promise<boolean> {
+  const out = deps.stdout ?? ((line: string) => process.stdout.write(`${line}\n`));
+  const err = deps.stderr ?? ((line: string) => process.stderr.write(`${line}\n`));
+  const operands = withoutCredentialFlag(args);
+  const query = operands.join(' ').trim();
+  if ((verb === 'search' || verb === 'vectors') && query.length === 0) { err(USAGE[verb]); return false; }
+  if (verb === 'stats' && operands.length > 0) { err(USAGE.stats); return false; }
+  if (verb === 'session' && operands.length > 1) { err(USAGE.session); return false; }
+
+  const reader = await openReader(source, deps);
+  if (reader === null) {
+    err(`myco ${verb}: no member credential resolves for this project (--credential ${source}); the reason is above`);
+    return false;
+  }
+  switch (verb) {
+    case 'search': return runSearch(reader, query, out, err);
+    case 'vectors': return runVectors(reader, query, out, err);
+    case 'session': return runSession(reader, operands[0], out, err);
+    case 'stats': return runStats(reader, out, err);
+  }
+}
