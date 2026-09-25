@@ -1,6 +1,8 @@
 import type { RelationalStore } from '../core/adapters.js';
 import { assertSessionMaterialReady, sessionMaterialReadySql, titlingClaimAvailableSql } from './material-readiness.js';
 import { notTombstonedSql } from '../core/tombstones.js';
+import { titleRunInFlightSql } from '../core/runs.js';
+import { TITLING_MAX_ATTEMPTS } from '../constants.js';
 import { progressOf } from './plans.js';
 import { keyset, page, type Page, type ReadScope } from './scope.js';
 
@@ -145,10 +147,10 @@ const MATERIAL_PROMPT_SQL = `pb.origin = 'user' AND pb.text IS NOT NULL`;
 const sessionHasMaterialSql = (alias: string): string => `EXISTS (SELECT 1 FROM prompt_batches pb
   WHERE pb.project_id = ${alias}.project_id AND pb.session_id = ${alias}.session_id AND ${MATERIAL_PROMPT_SQL})`;
 
-/** Automatic title requests with ready inline material and an available claim. */
+/** Live end requests not yet attempted, with ready inline material; oldest request first. */
 export async function listReadyTitleSessions(db: RelationalStore, limit: number): Promise<{ projectId: string; sessionId: string }[]> {
   const { results } = await db.prepare(`SELECT s.project_id AS projectId, s.session_id AS sessionId FROM sessions s
-    WHERE s.titling_requested_at IS NOT NULL AND s.ended_at IS NOT NULL AND ${titlingClaimAvailableSql('s')} AND s.title IS NULL
+    WHERE s.titling_requested_at IS NOT NULL AND s.ended_at IS NOT NULL AND s.titled_at IS NULL AND s.title IS NULL
       AND ${notTombstonedSql('s')} AND ${sessionMaterialReadySql('s')} AND ${sessionHasMaterialSql('s')}
     ORDER BY s.titling_requested_at, s.project_id, s.session_id LIMIT ?`).bind(limit).all<{ projectId: string; sessionId: string }>();
   return results;
@@ -158,22 +160,46 @@ export async function listReadyTitleSessions(db: RelationalStore, limit: number)
 const importedSessionSql = (alias: string): string => `EXISTS (SELECT 1 FROM transcripts t WHERE t.project_id = ${alias}.project_id AND t.session_id = ${alias}.session_id)
   AND NOT EXISTS (SELECT 1 FROM transcripts t WHERE t.project_id = ${alias}.project_id AND t.session_id = ${alias}.session_id AND t.imported_at IS NULL)`;
 
-/** The imported sessions the backfill may title: ended, never attempted, untitled, every transcript parsed, with inline material; newest first. */
-const BACKFILL_CANDIDATE_SQL = `FROM sessions s
-    WHERE s.ended_at IS NOT NULL AND s.titled_at IS NULL AND s.title IS NULL AND ${importedSessionSql('s')}
-      AND ${notTombstonedSql('s')} AND ${sessionMaterialReadySql('s')} AND ${sessionHasMaterialSql('s')}`;
+/**
+ * The ended, untitled sessions the titling convergence may claim: every
+ * transcript parsed, inline material, and an available claim. A live end
+ * request's first attempt is `session-titling`'s and is left out. Binds two
+ * values: the latest stamp a retry may replace, then 1 when wholly imported
+ * sessions are admitted and 0 when they are not.
+ */
+const CONVERGENCE_SQL = `FROM sessions s
+    WHERE s.ended_at IS NOT NULL AND s.title IS NULL AND NOT (s.titled_at IS NULL AND s.titling_requested_at IS NOT NULL)
+      AND ${titlingClaimAvailableSql('s')} AND ${notTombstonedSql('s')} AND ${sessionMaterialReadySql('s')} AND ${sessionHasMaterialSql('s')}
+      AND (? = 1 OR s.titling_requested_at IS NOT NULL OR NOT (${importedSessionSql('s')}))`;
 
-/** Up to `limit` sessions the imported-session backfill may title next, newest first. */
-export async function listBackfillTitleSessions(db: RelationalStore, limit: number): Promise<{ projectId: string; sessionId: string }[]> {
-  const { results } = await db.prepare(`SELECT s.project_id AS projectId, s.session_id AS sessionId ${BACKFILL_CANDIDATE_SQL}
-    ORDER BY s.ended_at DESC, s.project_id, s.session_id LIMIT ?`).bind(limit).all<{ projectId: string; sessionId: string }>();
+/** Up to `limit` sessions the titling convergence may claim next, newest first. */
+export async function listConvergenceTitleSessions(db: RelationalStore, limit: number, retryBefore: number, imported: boolean): Promise<{ projectId: string; sessionId: string }[]> {
+  const { results } = await db.prepare(`SELECT s.project_id AS projectId, s.session_id AS sessionId ${CONVERGENCE_SQL}
+    ORDER BY s.ended_at DESC, s.project_id, s.session_id LIMIT ?`).bind(retryBefore, imported ? 1 : 0, limit).all<{ projectId: string; sessionId: string }>();
   return results;
 }
 
-/** How many imported sessions the backfill has left to title. */
-export async function countBackfillTitleSessions(db: RelationalStore): Promise<number> {
-  const row = await db.prepare(`SELECT COUNT(*) AS c ${BACKFILL_CANDIDATE_SQL}`).first<{ c: number }>();
-  return row?.c ?? 0;
+/** What the titling convergence has left: sessions whose own capture owes them a title, and wholly imported sessions the backfill switch admits. */
+export async function countConvergenceTitleSessions(db: RelationalStore, retryBefore: number): Promise<{ live: number; imported: number }> {
+  const row = await db.prepare(`SELECT COUNT(*) AS total, COALESCE(SUM(s.titling_requested_at IS NULL AND ${importedSessionSql('s')}), 0) AS imported ${CONVERGENCE_SQL}`)
+    .bind(retryBefore, 1).first<{ total: number; imported: number }>();
+  return { live: (row?.total ?? 0) - (row?.imported ?? 0), imported: row?.imported ?? 0 };
+}
+
+/** Why an ended session carries no title yet, in the order a reader can act on it. */
+export type UntitledReason = 'capture_pending' | 'no_material' | 'in_progress' | 'stopped' | 'imported' | 'waiting';
+
+/** Why an ended session is untitled; null for a titled or open session, or one the project does not hold. */
+export async function untitledReason(db: RelationalStore, projectId: string, sessionId: string): Promise<UntitledReason | null> {
+  const row = await db.prepare(`SELECT CASE WHEN s.title IS NOT NULL OR s.ended_at IS NULL THEN NULL
+      WHEN NOT ${sessionMaterialReadySql('s')} THEN 'capture_pending'
+      WHEN NOT ${sessionHasMaterialSql('s')} THEN 'no_material'
+      WHEN ${titleRunInFlightSql('s')} THEN 'in_progress'
+      WHEN s.titling_attempts >= ${TITLING_MAX_ATTEMPTS} THEN 'stopped'
+      WHEN s.titling_requested_at IS NULL AND ${importedSessionSql('s')} THEN 'imported'
+      ELSE 'waiting' END AS reason FROM sessions s WHERE s.project_id = ? AND s.session_id = ?`)
+    .bind(projectId, sessionId).first<{ reason: UntitledReason | null }>();
+  return row?.reason ?? null;
 }
 
 const MATERIAL_SQL = `SELECT pb.prompt_id, substr(pb.text, 1, ?) AS prompt,

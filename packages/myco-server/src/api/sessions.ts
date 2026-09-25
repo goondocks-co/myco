@@ -5,7 +5,7 @@ import { getSession, listSessionSummaries, projectStats, sessionCounts, type Ses
 import { activityFeed } from '../read/activity.js';
 import { badRequest, notFound, ok, resolveProjectScope, sessionInScope } from './scope.js';
 import { decodeCursor } from '../read/scope.js';
-import { listAttachments, listContextInjections, listPlans, listPrompts, listResponses, listToolCalls } from '../read/children.js';
+import { listAttachments, listContextInjections, listPlans, listPrompts, listResponses, listToolCalls, untitledReason } from '../read/children.js';
 import { listTurns, parseOrigins, promptInSession, turnDetail } from '../read/turns.js';
 import { listSegments, listTranscripts } from '../read/transcript.js';
 import { titleSession } from '../core/titling.js';
@@ -83,7 +83,7 @@ export async function handleSession(env: ServerEnv, ctx: OwnerContext): Promise<
   if (scope === null) return notFound();
   const session = await getSession(env.db, scope, sessionId);
   if (session === null) return notFound();
-  return ok({ session, counts: await sessionCounts(env.db, scope, sessionId), release: await getReleaseStatus(env.db, scope, 'session', sessionId), projectId: scope.projectId });
+  return ok({ session, untitled: await untitledReason(env.db, scope.projectId, sessionId), counts: await sessionCounts(env.db, scope, sessionId), release: await getReleaseStatus(env.db, scope, 'session', sessionId), projectId: scope.projectId });
 }
 
 export async function handleSessionChildren(env: ServerEnv, ctx: OwnerContext): Promise<Response> {

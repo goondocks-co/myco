@@ -39,8 +39,23 @@ export interface SessionCounts {
   attachments: number;
 }
 
+/** Why an ended session has no title yet; the server's reason, in its own vocabulary. */
+export type UntitledReason = 'capture_pending' | 'no_material' | 'in_progress' | 'stopped' | 'imported' | 'waiting';
+
+/** Each untitled reason in the reader's words. */
+export const UNTITLED_REASON_TEXT: Record<UntitledReason, string> = {
+  capture_pending: 'Untitled: the transcript is still being processed',
+  no_material: 'Untitled: nothing was typed in this session to title',
+  in_progress: 'Untitled: a title is being written',
+  stopped: 'Untitled: automatic titling stopped trying. Use Generate summary to try again',
+  imported: 'Untitled: imported sessions are titled by the backfill on Operations while it is on',
+  waiting: 'Untitled: will be tried automatically soon',
+};
+
 export interface SessionResponse {
   session: SessionRow;
+  /** Why the ended session has no title; null when it has one or is still open. */
+  untitled?: UntitledReason | null;
   counts: SessionCounts;
   /** Whether the session's work is released, or null when it has no release state. */
   release?: ReleaseStatus | null;

@@ -79,8 +79,8 @@ describe('housekeeping on the Operations page', () => {
       .toBe('The server is in use. Old run records could not be removed; closed 0 runs whose runtime went away. Next wake in 1 min.');
   });
 
-  it('shows where the imported-session backfill stands and starts or stops it through its own route', async () => {
-    let progress = { scheduledTasksEnabled: true, backfillEnabled: false, runsPerDay: 24, intervalSeconds: 900, runIn: ['active', 'idle'], overlap: 'queue', enabled: false, remaining: 12, usedToday: 0, inFlight: 0, completedToday: 0, failedToday: 0 };
+  it('shows where session titling stands and starts or stops it through its own route', async () => {
+    let progress = { scheduledTasksEnabled: true, backfillEnabled: false, runsPerDay: 24, intervalSeconds: 900, runIn: ['active', 'idle'], overlap: 'queue', enabled: false, remaining: 12, owed: 0, usedToday: 0, inFlight: 0, completedToday: 0, failedToday: 0 };
     const puts: unknown[] = [];
     const { requested } = server({
       '/auth/me': () => Response.json(ME),
@@ -94,7 +94,7 @@ describe('housekeeping on the Operations page', () => {
       },
     });
     mount('/operations');
-    expect((await screen.findByText(/12 fully parsed imported sessions waiting for a first title attempt/)).textContent).toContain('The backfill is stopped.');
+    expect((await screen.findByText(/12 fully parsed imported sessions waiting for a title attempt/)).textContent).toContain('The imported-session backfill is stopped.');
     fireEvent.click(await screen.findByRole('button', { name: 'Start backfill' }));
     expect((await screen.findByText(/Today: 5 of 24 started/)).textContent).toContain('Dispatches while the server is in use or idle, at most once every 15 min. Today: 5 of 24 started, 5 in flight, 0 titled, 0 failed.');
     expect(puts).toEqual([{ enabled: true }]);
@@ -105,7 +105,7 @@ describe('housekeeping on the Operations page', () => {
   it('says when the backfill cannot be read and reads it again on request, and says when a switch was refused and retries it', async () => {
     let reads = 0;
     let puts = 0;
-    const progress = { scheduledTasksEnabled: true, backfillEnabled: false, runsPerDay: 24, intervalSeconds: 900, runIn: ['active', 'idle'], overlap: 'queue', enabled: false, remaining: 3, usedToday: 0, inFlight: 0, completedToday: 0, failedToday: 0 };
+    const progress = { scheduledTasksEnabled: true, backfillEnabled: false, runsPerDay: 24, intervalSeconds: 900, runIn: ['active', 'idle'], overlap: 'queue', enabled: false, remaining: 3, owed: 0, usedToday: 0, inFlight: 0, completedToday: 0, failedToday: 0 };
     server({
       '/auth/me': () => Response.json(ME),
       '/api/projects': () => Response.json(PROJECTS),
@@ -131,11 +131,11 @@ describe('housekeeping on the Operations page', () => {
   });
 
   it('words the backfill in every state, and its policy', () => {
-    const base = { scheduledTasksEnabled: true, backfillEnabled: true, runsPerDay: 24, intervalSeconds: 900, runIn: ['active', 'idle'], overlap: 'queue' as const, enabled: true, remaining: 0, usedToday: 3, inFlight: 1, completedToday: 2, failedToday: 0 };
-    expect(progressWords(base)).toBe('No fully parsed imported sessions are waiting for a first title attempt. Dispatches while the server is in use or idle, at most once every 15 min. Today: 3 of 24 started, 1 in flight, 2 titled, 0 failed.');
-    expect(progressWords({ ...base, remaining: 1, runsPerDay: null, runIn: ['idle'], intervalSeconds: 60 })).toBe('1 fully parsed imported session waiting for a first title attempt. Dispatches while the server is idle, at most once every 1 min. Today: 3 started, 1 in flight, 2 titled, 0 failed.');
-    expect(progressWords({ ...base, scheduledTasksEnabled: false, enabled: false })).toBe('No fully parsed imported sessions are waiting for a first title attempt. The backfill is on but runs only while scheduled intelligence is on; turn that on in Settings.');
-    expect(progressWords({ ...base, backfillEnabled: false, enabled: false, remaining: 2 })).toBe('2 fully parsed imported sessions waiting for a first title attempt. The backfill is stopped.');
+    const base = { scheduledTasksEnabled: true, backfillEnabled: true, runsPerDay: 24, intervalSeconds: 900, runIn: ['active', 'idle'], overlap: 'queue' as const, enabled: true, remaining: 0, owed: 0, usedToday: 3, inFlight: 1, completedToday: 2, failedToday: 0 };
+    expect(progressWords(base)).toBe('No ended live sessions are waiting for a title. No fully parsed imported sessions are waiting for a title attempt. Dispatches while the server is in use or idle, at most once every 15 min. Today: 3 of 24 started, 1 in flight, 2 titled, 0 failed.');
+    expect(progressWords({ ...base, owed: 4, remaining: 1, runsPerDay: null, runIn: ['idle'], intervalSeconds: 60 })).toBe('4 ended live sessions waiting for a title; these are titled automatically within the daily limit. 1 fully parsed imported session waiting for a title attempt. Dispatches while the server is idle, at most once every 1 min. Today: 3 started, 1 in flight, 2 titled, 0 failed.');
+    expect(progressWords({ ...base, scheduledTasksEnabled: false, enabled: false, owed: 2 })).toBe('2 ended live sessions waiting for a title; these are titled automatically within the daily limit. No fully parsed imported sessions are waiting for a title attempt. The imported-session backfill is on but runs only while scheduled intelligence is on; turn that on in Settings. Dispatches while the server is in use or idle, at most once every 15 min. Today: 3 of 24 started, 1 in flight, 2 titled, 0 failed.');
+    expect(progressWords({ ...base, backfillEnabled: false, enabled: false, remaining: 2, owed: 1 })).toBe('1 ended live session waiting for a title; these are titled automatically within the daily limit. 2 fully parsed imported sessions waiting for a title attempt. The imported-session backfill is stopped. Dispatches while the server is in use or idle, at most once every 15 min. Today: 3 of 24 started, 1 in flight, 2 titled, 0 failed.');
     expect(policyWords({ runIn: ['active', 'idle', 'sleep'], intervalSeconds: 3600 })).toBe('Dispatches while the server is in use, idle or asleep, at most once every 60 min.');
     expect(policyWords({ runIn: [], intervalSeconds: 10 })).toBe('Dispatches in no state, at most once every 1 min.');
   });

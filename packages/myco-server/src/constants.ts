@@ -1,4 +1,4 @@
-export const SERVER_SCHEMA_VERSION = 46;
+export const SERVER_SCHEMA_VERSION = 47;
 
 /** The member identity every dispatched runtime authenticates as; durable so attribution survives across runs. */
 export const HARNESS_MEMBER_ID = 'mem_harness';
@@ -9,6 +9,8 @@ export const MAX_MATERIAL_PROMPTS = 12;
 export const MAX_MATERIAL_CHARS = 8_000;
 /** Titling: each prompt or response excerpt is cut to this many characters. */
 export const MATERIAL_EXCERPT_CHARS = 600;
+/** Titling: how many automatic attempts a worker may take on one session before the clock stops asking. */
+export const TITLING_MAX_ATTEMPTS = 3;
 export const SERVER_PROTOCOL = 1;
 export const MIN_COMPAT_MEMBER_PROTOCOL = 1;
 export const PROTOCOL_HEADER = 'x-myco-protocol';
