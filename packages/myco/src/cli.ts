@@ -22,10 +22,11 @@ Commands:
   config <get|set> [args]  Get or set vault config values
   detect-providers         Detect available LLM/embedding providers (JSON)
   verify                   Test LLM and embedding connectivity
-  stats                    Vault health, index counts, vector count
-  search <query>           Combined FTS + vector search with scores
-  vectors <query>          Raw vector search with similarity scores
-  session [id|latest]      Show a session
+  stats                    Project stats: the Deployment's for a joined project, else the local vault's
+  search <query>           Search: the Deployment's for a joined project, else the local vault's
+  vectors <query>          Semantic search with scores: the Deployment's for a joined project, else the daemon's
+  session [id|latest]      Show a session: from the Deployment for a joined project, else the local vault
+                           (these four take --credential registry|env to ask a Deployment from anywhere)
   logs [options]           View daemon logs
   setup-llm [options]      Configure LLM and embedding providers
   setup-digest [options]   Configure digest and capture settings

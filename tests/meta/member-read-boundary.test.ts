@@ -67,6 +67,14 @@ describe('the dispatcher routes the member read verbs above the myco.yaml gate',
     expect(routed).toBeLessThan(gate);
   });
 
+  it('the routed verbs are exactly the §7.1 CLI rows the ledger names as answered by the Deployment', () => {
+    const doc = fs.readFileSync(path.join(REPO_ROOT, 'docs', 'architecture', 'myco-2.0.md'), 'utf8');
+    const section = doc.slice(doc.indexOf('### 7.1 CLI commands'), doc.indexOf('### 7.2 '));
+    const ledger = [...section.matchAll(/^\| `([^`]+)` \|[^\n]*`cli\/member-reads\.ts`[^\n]*$/gm)].map((m) => m[1]).sort();
+    expect(ledger.length).toBeGreaterThan(0);
+    expect([...MEMBER_READ_VERBS].sort() as string[]).toEqual(ledger);
+  });
+
   it.each([...MEMBER_READ_VERBS])('%s is a verb the dispatcher knows', (verb) => {
     expect(cli.includes(`case '${verb}':`)).toBe(true);
   });

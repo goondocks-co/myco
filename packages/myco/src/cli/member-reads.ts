@@ -28,7 +28,7 @@ import type { CredentialSource } from '../member/constants.js';
 import { resolveMemberProjectRoot } from '../member/credential.js';
 import { REJOIN_HINT } from '../member/delivery-notice.js';
 import { refreshMemberCredential, type RefreshStatus } from '../member/refresh.js';
-import { readRegistryEntryResult } from '../member/registry.js';
+import { readRegistryEntryResult, registryEntryPath } from '../member/registry.js';
 import type { FetchLike } from '../member/transport.js';
 import { resolveMycoHome } from '../paths/home.js';
 import type { MemberReadVerb } from './member-read-verbs.js';
@@ -313,6 +313,18 @@ export async function run(verb: MemberReadVerb, args: readonly string[], source:
   if (verb === 'stats' && operands.length > 0) { err(USAGE.stats); return false; }
   if (verb === 'session' && operands.length > 1) { err(USAGE.session); return false; }
 
+  if (source === 'registry') {
+    const root = resolveMemberProjectRoot(cwdOf(deps));
+    const read = readRegistryEntryResult(root, homeOf(deps));
+    if (read.status === 'unavailable') {
+      err(`myco ${verb}: this project's membership could not be read: ${registryEntryPath(root, homeOf(deps))} is unreadable or names a Deployment membership that is. Repair or remove it, then run \`myco login <link>\`.`);
+      return false;
+    }
+    if (read.status === 'missing') {
+      err(`myco ${verb}: ${root} holds no membership under ${homeOf(deps)}; run \`myco login <link>\` from this project`);
+      return false;
+    }
+  }
   const reader = await openReader(source, deps);
   if (reader === null) {
     err(`myco ${verb}: no member credential resolves for this project (--credential ${source}); the reason is above`);

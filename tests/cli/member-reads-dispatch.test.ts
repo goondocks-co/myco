@@ -26,6 +26,8 @@ import { sqliteRelationalStore } from '@myco-server-worker/platform/bun/sqlite.j
 import { callTool } from '@myco/mcp/client-call.js';
 import { deploymentTransport, resolveDeploymentUpstream } from '@myco/mcp/deployment-upstream.js';
 import { ENV_MEMBER_TOKEN, ENV_PROJECT, ENV_SERVER_URL } from '@myco/member/credential.js';
+import { registryEntryPath } from '@myco/member/registry.js';
+import { unmemberedDir } from '@myco/member/no-membership.js';
 import { registerTestMember } from '../member/helpers/hooks.js';
 import { tempMycoHome } from '../member/helpers/server.js';
 
@@ -53,6 +55,8 @@ beforeAll(async () => {
   sqlite.exec('PRAGMA foreign_keys = ON');
   for (const file of renderMigrationFiles()) sqlite.exec(file.sql);
   sqlite.query(`INSERT INTO projects (project_id,name,created_at) VALUES (?,?,0)`).run(PROJECT, 'reads');
+  // A second, newer Project leads the Deployment's project list; stats must still report the joined one.
+  sqlite.query(`INSERT INTO projects (project_id,name,created_at) VALUES ('proj_2','other',1)`).run();
   sqlite.query(`INSERT INTO members (id,label,created_at,revoked_at) VALUES ('mem_machine_1','machine_1',0,NULL)`).run();
   ({ token } = await issueMemberToken(sqliteRelationalStore(sqlite), { memberId: 'mem_machine_1', machineId: 'machine_1' }, Date.now()));
   sqlite.close();
@@ -68,7 +72,7 @@ beforeAll(async () => {
   expect(saved.ok).toBe(true);
 });
 
-interface Machine { checkout: string; home: string; userHome: string }
+interface Machine { checkout: string; home: string; userHome: string; cwd?: string }
 
 /** A fresh checkout and member home; joined to the Deployment when asked. */
 function machine(joined: boolean): Machine {
@@ -89,7 +93,7 @@ function cli(m: Machine, ...args: string[]): Promise<{ status: number | null; st
   });
   for (const key of [ENV_SERVER_URL, ENV_MEMBER_TOKEN, ENV_PROJECT]) delete env[key];
   return new Promise((resolve) => {
-    const child = spawn(process.execPath, ['--preload', PRELOAD, CLI, ...args], { cwd: m.checkout, env, stdio: ['ignore', 'pipe', 'pipe'] });
+    const child = spawn(process.execPath, ['--preload', PRELOAD, CLI, ...args], { cwd: m.cwd ?? m.checkout, env, stdio: ['ignore', 'pipe', 'pipe'] });
     let stdout = '';
     let stderr = '';
     child.stdout.on('data', (chunk) => { stdout += String(chunk); });
@@ -137,6 +141,45 @@ describe('the dispatched read verbs in a fresh joined checkout', () => {
     expect(stats.status).toBe(0);
     expect(stats.stdout).toContain(`Project:    ${PROJECT} (reads)`);
     expect(stats.stdout).toContain('Sessions:      0');
+    expect(legacyArtifacts(m)).toEqual([]);
+  }, 40_000);
+
+  it('a subdirectory of the joined root, and a worktree of the joined repository, reach the same Deployment', async () => {
+    const m = machine(true);
+    const sub = path.join(m.checkout, 'packages', 'deep');
+    fs.mkdirSync(sub, { recursive: true });
+    const fromSub = await cli({ ...m, cwd: sub }, 'search', 'quokka');
+    expect(fromSub.stderr).toBe('');
+    expect(fromSub.stdout).toContain(`Deployment: ${SERVER_URL}  project: ${PROJECT}`);
+
+    execFileSync('git', ['-C', m.checkout, '-c', 'user.email=t@example.invalid', '-c', 'user.name=t', 'commit', '-q', '--allow-empty', '-m', 'root']);
+    const worktree = path.join(tempDir('myco-reads-worktrees-'), 'wt');
+    execFileSync('git', ['-C', m.checkout, 'worktree', 'add', '-q', worktree]);
+    const fromWorktree = await cli({ ...m, cwd: worktree }, 'search', 'quokka');
+    expect(fromWorktree.stderr).toBe('');
+    expect(fromWorktree.stdout).toContain(`Deployment: ${SERVER_URL}  project: ${PROJECT}`);
+    expect(legacyArtifacts(m)).toEqual([]);
+  }, 40_000);
+
+  it('a membership whose entry cannot be read is refused by name, never answered by the 1.4 handler, and records no missed capture', async () => {
+    const m = machine(true);
+    const entry = registryEntryPath(m.checkout, m.home);
+    fs.writeFileSync(entry, '{ not json');
+    const ran = await cli(m, 'search', 'quokka');
+    expect(ran.status).toBe(1);
+    expect(ran.stderr).toContain(`this project's membership could not be read: ${entry}`);
+    expect(ran.stderr).not.toContain('No myco.yaml found');
+    expect(ran.stderr).not.toContain('no registry entry');
+    expect(fs.existsSync(unmemberedDir(m.home))).toBe(false);
+    expect(legacyArtifacts(m)).toEqual([]);
+  }, 40_000);
+
+  it('a declared registry credential in a directory with no membership is refused, and records no missed capture', async () => {
+    const m = machine(false);
+    const ran = await cli(m, 'stats', '--credential', 'registry');
+    expect(ran.status).toBe(1);
+    expect(ran.stderr).toContain(`${m.checkout} holds no membership under ${m.home}`);
+    expect(fs.existsSync(unmemberedDir(m.home))).toBe(false);
     expect(legacyArtifacts(m)).toEqual([]);
   }, 40_000);
 
