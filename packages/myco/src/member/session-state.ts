@@ -52,6 +52,8 @@ export interface SessionState {
   delivered: string[];
   /** Compactions this session has been through, advanced by the hook that observes one before it asks for the block served after it. */
   compactionOrdinal: number;
+  /** The manifest name of the symbiont whose hooks captured this session; a transcript shipped from another session's hook is labelled with it. */
+  agent?: string;
   /** When this session first appended to the spool; the clock retention measures from until an acknowledgement arrives. */
   startedAt?: number;
   /** When the server last acknowledged one of this session's records. */

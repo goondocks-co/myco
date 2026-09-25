@@ -517,7 +517,7 @@ The port is `ServerEnv.wake` — "wake me soon", called by requested work — wi
 | `upgrade-auto-check` | REPLACE | M | Blk | An on-demand check: `myco upgrade --check` resolves the channel target and reports, persisting nothing (`upgrade/release-resolver.ts`); a server format break is one binary self-update (plan §2.2) | C2 |
 | `upgrade-adopt` | REPLACE | M | Blk | Adopting a staged upgrade is the same verb without the flag: `myco upgrade` | C2 |
 | `service-reconcile` | REPLACE | M | Blk | Reconciles 1.4's platform service. **Planned DROP in #1170 (sweep)** per plan §2.6: the member runs no service to converge, and the self-hosted binary's user-service install is the installer's job. | #1170 |
-| `capture-buffer-drain` | DROP | — | Blk | Capture is hook-invoked and write-ahead; the member drains its own spool with no scheduled job | #925 |
+| `capture-buffer-drain` | DROP | — | Blk | Capture is hook-invoked and write-ahead; the member drains its own spool, and a turn-end hook delivers the other sessions' backlog (spooled events and undelivered transcript bytes) with what its budget leaves, with no scheduled job | #925, #1382 |
 | `capture-only-notice-sweep` | DROP | — | Blk | Notices a degraded daemon-capture mode that no longer exists | #925 |
 | `content-claim-expiry` | DROP | — | Blk | Content claims are a Team Host publication mechanism; retired with Team | #925 |
 | `routed-transcript-cache-gc` | DROP | — | Blk | Routed capture is a Team Host mechanism; retired with Team | #925 |

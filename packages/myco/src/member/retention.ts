@@ -235,15 +235,16 @@ function pruneQuarantinedStagedBlobs(spool: MemberSpool): number {
 /**
  * Remove the state files of sessions whose spool is fully delivered and gone,
  * untouched for the retention window. Only after a drain that delivered
- * everything: a state whose spool still holds records, or whose session was
- * written to inside the window, is a live session's and stays. The session's
- * staging directory goes with it when nothing is left in it.
+ * everything: a state whose spool still holds records, whose transcripts are
+ * still in the backlog, or whose session was written to inside the window, is
+ * a live session's and stays. The session's staging directory goes with it
+ * when nothing is left in it.
  */
 export function pruneDeliveredSessionState(spool: MemberSpool, now: number = Date.now()): number {
   let pruned = 0;
   const live = new Set(spool.sessionIds());
   for (const sessionId of spool.stateSessionIds()) {
-    if (live.has(sessionId)) continue;
+    if (live.has(sessionId) || spool.hasTranscriptBacklog(sessionId)) continue;
     const state = readSessionState(spool.dir, sessionId);
     if (state.highWater > 0 || now - state.updatedAt < MEMBER_SESSION_STATE_RETENTION_MS) continue;
     removeSessionState(spool.dir, sessionId);

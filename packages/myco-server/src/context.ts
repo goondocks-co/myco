@@ -48,8 +48,8 @@ export interface RouteContext {
   origin: string;
 }
 
-/** An authenticated member request with no default Project. */
-export type UnboundMemberContext = Pick<RouteContext, 'memberId' | 'machineId' | 'tokenId' | 'body' | 'now'>;
+/** An authenticated member request with no default Project: the credential it presented, and its body. */
+export type UnboundMemberContext = Pick<RouteContext, 'memberId' | 'machineId' | 'tokenId' | 'expiresAt' | 'lineageRoot' | 'lineageStartedAt' | 'runtime' | 'body' | 'now'>;
 
 /**
  * Context for a Deployment-scoped route: a worker's claim, lease and end.

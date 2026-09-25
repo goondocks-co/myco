@@ -14,10 +14,10 @@ import path from 'node:path';
 import { resetMachineIdCache } from '@myco/machine-id.js';
 import { run as runMemberCli } from '@myco/cli/member.js';
 import { unboundedBudget } from '@myco/member/budget.js';
-import { MEMBER_TOKEN_REFRESH_WINDOW_MS } from '@myco/member/constants.js';
+import { MEMBER_TOKEN_REFRESH_WINDOW_MS, PROJECT_HEADER } from '@myco/member/constants.js';
 import { ENV_MEMBER_TOKEN, ENV_PROJECT, ENV_SERVER_URL, resolveMemberProjectRoot } from '@myco/member/credential.js';
-import { refreshDue, refreshMemberCredential, refreshableRoot } from '@myco/member/refresh.js';
-import { readRegistryEntry, writeRegistryEntry, type RegistryEntry } from '@myco/member/registry.js';
+import { refreshDue, refreshMemberCredential, refreshMembership, refreshableRoot } from '@myco/member/refresh.js';
+import { readDeploymentMembership, readRegistryEntry, writeDeploymentMembership, writeRegistryEntry, type RegistryEntry } from '@myco/member/registry.js';
 import { MemberSpool } from '@myco/member/spool.js';
 import { ServerClient, type FetchLike } from '@myco/member/transport.js';
 import { memberRig, tempMycoHome, type MemberRig } from './helpers/server.js';
@@ -70,26 +70,26 @@ const prompt = (fetchImpl: FetchLike, text: string) =>
 const budget = () => ({ connectTimeoutMs: 2_000, requestTimeoutMs: 10_000 });
 
 describe('member token rotation', () => {
-  it('a hook inside the window writes the successor; the next hook uses it and the predecessor is revoked at that first use', async () => {
+  it('a hook inside the window writes the successor before it delivers, and delivers on it: the predecessor is revoked at that first use', async () => {
     const rig = await nearExpiryRig();
     registerTestMember({ mycoHome, token: rig.token, tokenId: rig.tokenId, projectId: PROJECT, expiresAt: rig.expiresAt, serverUrl: SERVER_URL });
     const spy = recordingFetch(rig.fetch);
 
     await prompt(spy.fetch, 'first');
     expect(refreshCalls(spy)).toBe(1);
+    expect(spy.requests[0].path).toBe('/tokens/refresh');
     const successor = readRegistryEntry(root, mycoHome)!;
     expect(successor.token).not.toBe(rig.token);
     expect(successor.tokenId).not.toBe(rig.tokenId);
     expect(successor.expiresAt).toBeGreaterThan(rig.expiresAt);
     expect(successor.refreshAfter).toBe(successor.expiresAt! - MEMBER_TOKEN_REFRESH_WINDOW_MS);
-    expect(tokenRow(rig, successor.tokenId!)).toEqual({ predecessor_id: rig.tokenId, lineage_root: rig.tokenId, first_used_at: null, revoked_at: null });
-    expect(tokenRow(rig, rig.tokenId).revoked_at).toBeNull();
+    expect(tokenRow(rig, successor.tokenId!)).toMatchObject({ predecessor_id: rig.tokenId, lineage_root: rig.tokenId, revoked_at: null });
+    expect(tokenRow(rig, successor.tokenId!).first_used_at).not.toBeNull();
+    expect(tokenRow(rig, rig.tokenId).revoked_at).not.toBeNull();
     expect(rig.rows('prompt_batches')).toBe(1);
 
     await prompt(spy.fetch, 'second');
     expect(rig.rows('prompt_batches')).toBe(2);
-    expect(tokenRow(rig, successor.tokenId!).first_used_at).not.toBeNull();
-    expect(tokenRow(rig, rig.tokenId).revoked_at).not.toBeNull();
     // The successor's own window is a full TTL away: the second hook does not dial the refresh route.
     expect(refreshCalls(spy)).toBe(1);
   });
@@ -161,8 +161,8 @@ describe('member token rotation', () => {
     expect((await new ServerClient(successor, rig.fetch).refresh(budget())).class).toBe('refused');
     expect(tokenRow(rig, rig.tokenId).revoked_at).not.toBeNull();
 
-    // This hook resolved the predecessor; the successor lands in the registry while its first send is in flight.
-    registerTestMember({ mycoHome, token: rig.token, tokenId: rig.tokenId, projectId: PROJECT, expiresAt: rig.expiresAt, serverUrl: SERVER_URL });
+    // This hook resolved the predecessor, recorded with a window it does not see open; the successor lands in the registry while its first send is in flight.
+    registerTestMember({ mycoHome, token: rig.token, tokenId: rig.tokenId, projectId: PROJECT, expiresAt: rig.expiresAt + 7 * DAY_MS, serverUrl: SERVER_URL });
     let swapped = false;
     const swapping: FetchLike = async (input, init) => {
       const req = new Request(input, init);
@@ -179,8 +179,24 @@ describe('member token rotation', () => {
     expect(eventCalls(spy)).toBe(2);
     expect(rig.rows('prompt_batches')).toBe(1);
     expect(new MemberSpool(PROJECT, { mycoHome }).depth(session)).toBe(0);
-    expect(out.stderr).not.toContain('re-provision');
+    expect(out.stderr).not.toContain('myco login');
     expect(refreshCalls(spy)).toBe(0);
+  });
+
+  it('rotates a membership no project is bound to, as a worker-only machine holds, with a request that names no Project', async () => {
+    const rig = await memberRig({ now: Date.now() - 20 * DAY_MS });
+    writeDeploymentMembership({ serverUrl: SERVER_URL, token: rig.token, tokenId: rig.tokenId, expiresAt: rig.expiresAt, machineId: 'machine_1', joinedAt: 1, updatedAt: 1 }, { mycoHome });
+    const spy = recordingFetch(rig.fetch);
+
+    const report = await refreshMembership(SERVER_URL, { mycoHome, fetch: spy.fetch, budget: budget() });
+
+    expect(report.status).toBe('refreshed');
+    expect(spy.requests.map((r) => [r.path, r.headers[PROJECT_HEADER]])).toEqual([['/tokens/refresh', undefined]]);
+    const held = readDeploymentMembership(SERVER_URL, mycoHome)!;
+    expect({ token: held.token === rig.token, tokenId: held.tokenId, terminal: held.refreshTerminal }).toEqual({ token: false, tokenId: report.tokenId, terminal: undefined });
+    expect(tokenRow(rig, report.tokenId!)).toMatchObject({ predecessor_id: rig.tokenId, lineage_root: rig.tokenId });
+    expect((await refreshMembership(SERVER_URL, { mycoHome, fetch: spy.fetch, budget: budget() })).status).toBe('not-due');
+    expect((await refreshMembership('https://elsewhere.invalid', { mycoHome, fetch: spy.fetch, budget: budget() })).status).toBe('no-entry');
   });
 
   it('`myco member refresh` rotates the entry and says what happened', async () => {

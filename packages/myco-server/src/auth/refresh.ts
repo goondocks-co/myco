@@ -1,5 +1,5 @@
 import type { ServerEnv } from '../core/adapters.js';
-import type { RouteContext } from '../context.js';
+import type { UnboundMemberContext } from '../context.js';
 import { emit, refusal, type Refusal } from '../telemetry.js';
 import { refreshMemberToken, type RefreshResult } from './tokens.js';
 
@@ -17,7 +17,7 @@ function parseRefreshBody(body: string): Refusal | null {
 }
 
 /** Answers in the route's shape: a refusal is 200 `{refreshed:false, code, reason[, refreshAfter]}` with one `refresh_refused` event carrying the classifier only; a success is 200 `{refreshed:true, token, tokenId, expiresAt, refreshAfter}` with one `token_refreshed` event naming the successor and its predecessor by id. */
-function answer(ctx: RouteContext, result: RefreshResult): Response {
+function answer(ctx: UnboundMemberContext, result: RefreshResult): Response {
   if (result.refreshed) {
     emit({ kind: 'token_refreshed', memberId: ctx.memberId, tokenId: result.tokenId, predecessorId: ctx.tokenId });
   } else {
@@ -27,8 +27,8 @@ function answer(ctx: RouteContext, result: RefreshResult): Response {
   return Response.json(result);
 }
 
-/** `POST /tokens/refresh`: the presented token asks for its successor. */
-export async function handleRefresh(env: ServerEnv, ctx: RouteContext): Promise<Response> {
+/** `POST /tokens/refresh`: the presented token asks for its successor. The credential is the whole of the request, so a Project named beside it changes nothing. */
+export async function handleRefresh(env: ServerEnv, ctx: UnboundMemberContext): Promise<Response> {
   const malformed = parseRefreshBody(ctx.body);
   if (malformed !== null) return answer(ctx, { refreshed: false, code: malformed.classifier, reason: malformed.reason });
   return answer(ctx, await refreshMemberToken(env.db, ctx, ctx.now));

@@ -88,7 +88,7 @@ export type Shape = 'persisted' | 'stored' | 'refreshed' | 'answered';
 export type Route =
   | { method: string; path: string; auth: 'public'; bodyMode: 'none'; handler: PublicHandler }
   | ({ method: string; path: string; auth: 'member'; bodyMode: 'json'; shape: Exclude<Shape, 'stored'>; quotaPrecheck?: boolean; handler: MemberHandler; grant?: GrantHandler; run?: RunHandler; legacyRunRoute?: true; admitsLapsed?: true }
-    & ({ unbound?: never } | { shape: 'answered'; quotaPrecheck: false; unbound: UnboundMemberHandler }))
+    & ({ unbound?: never } | { shape: 'answered' | 'refreshed'; quotaPrecheck: false; unbound: UnboundMemberHandler }))
   | { method: string; path: string; auth: 'member'; bodyMode: 'json'; shape: 'persisted'; quotaPrecheck: false; scope: 'deployment'; deployment: DeploymentHandler; handler?: never; grant?: never; run?: never; legacyRunRoute?: never }
   | { method: string; path: string; pattern: RegExp; auth: 'member'; bodyMode: 'stream'; shape: 'stored'; quotaPrecheck?: boolean; maxBodyBytes: number; handler: StreamHandler; legacyRunRoute?: true }
   | { method: string; path: string; auth: 'auth'; handler: AuthHandler }
@@ -112,7 +112,8 @@ export const ROUTES: readonly Route[] = [
   { method: 'PUT', path: '/api/titling-backfill', auth: 'owner', handler: handleSetTitlingBackfill },
   { method: 'POST', path: '/events', auth: 'member', bodyMode: 'json', shape: 'persisted', handler: handleEvents },
   { method: 'POST', path: '/blobs/{sha256}', pattern: /^\/blobs\/(?<key>[0-9a-f]{64})$/, auth: 'member', bodyMode: 'stream', shape: 'stored', maxBodyBytes: MAX_BLOB_BYTES, handler: handleBlob },
-  { method: 'POST', path: '/tokens/refresh', auth: 'member', bodyMode: 'json', shape: 'refreshed', quotaPrecheck: false, admitsLapsed: true, handler: handleRefresh },
+  // A credential is the Deployment's, so its refresh names no Project: `unbound` answers the request that carries none.
+  { method: 'POST', path: '/tokens/refresh', auth: 'member', bodyMode: 'json', shape: 'refreshed', quotaPrecheck: false, admitsLapsed: true, handler: handleRefresh, unbound: handleRefresh },
   // #1148 — bounded import and backfill
   { method: 'POST', path: '/import/plan', auth: 'member', bodyMode: 'json', shape: 'persisted', quotaPrecheck: false, handler: handleImportPlan },
   // The run's own channel. `legacyRunRoute: true` admits the harness credential as a

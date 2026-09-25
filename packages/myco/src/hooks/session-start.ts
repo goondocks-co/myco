@@ -6,6 +6,7 @@ import { gitFacts } from '../member/git-facts.js';
 import { hookCwd, runMemberHook, type HookMainOptions, type HookRun } from '../member/capture.js';
 import { deriveId, promptEvent, sessionStartEvent, type OutboundEvent } from '../member/envelope.js';
 import { servedOnce } from '../member/recall.js';
+import { withNotice } from '../member/delivery-notice.js';
 import { compactionStart, recordCompaction, sessionContextRequest } from '../member/compaction.js';
 import { readSessionState } from '../member/session-state.js';
 import { sessionLineage } from '../member/transcript.js';
@@ -109,6 +110,7 @@ export async function main(opts: HookMainOptions = {}) {
       // A symbiont whose harness discards a SessionStart answer is asked for
       // nothing: the call would spend the hook's budget on a block nobody reads.
       context: HOOK_CONFIG[agent]?.capabilities.sessionStartInjection === true ? recall(sessionId, git.branch, git.remote) : undefined,
+      notice: HOOK_CONFIG[agent]?.capabilities.sessionStartInjection === true ? withNotice : undefined,
       record: captured.length === 0 && !compacted ? undefined : (state) => {
         if (compacted) recordCompaction(state);
         for (const [hash, promptId] of captured) {

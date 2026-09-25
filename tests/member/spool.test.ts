@@ -14,6 +14,7 @@ import { unboundedBudget, resolveHookBudget } from '@myco/member/budget.js';
 import { MEMBER_PROTOCOL, OFFLINE_BACKOFF_INITIAL_MS, OFFLINE_BACKOFF_MAX_MS, PROJECT_HEADER, REFUSED_LOG_MAX_BYTES } from '@myco/member/constants.js';
 import { mintId, promptEvent, type EnvelopeContext } from '@myco/member/envelope.js';
 import { readSessionState, updateSessionState } from '@myco/member/session-state.js';
+import { drainBacklog } from '@myco/member/backlog.js';
 import { MemberSpool, WIRE_FIELDS, toWire, type SpoolRecord } from '@myco/member/spool.js';
 import { shipTranscriptSegments } from '@myco/member/transcript.js';
 import { ServerClient, type FetchLike } from '@myco/member/transport.js';
@@ -151,7 +152,7 @@ describe('member spool', () => {
     for (const e of prompts(ctx, 2)) spool.append('sess-401', e);
     const r = await spool.drainSession('sess-401', clientFor(rig, rig.fetch, 'x'.repeat(43)), unboundedBudget());
     expect(r).toMatchObject({ endedBy: 'unauthorized', remaining: 2 });
-    expect(stderrLines.join('')).toContain('member token refused — re-provision');
+    expect(stderrLines.join('')).toContain('member token refused — events stay spooled');
     // onUnauthorized supplies a good record once: the pass continues on it.
     stderrLines.length = 0;
     const retried = await spool.drainSession('sess-401', clientFor(rig, rig.fetch, 'x'.repeat(43)), unboundedBudget(), {
@@ -314,7 +315,7 @@ describe('member spool', () => {
     expect(readSessionState(spool.dir, sessionId).transcript).toEqual(rotated);
   });
 
-  it('drainAll stops at the first outcome that will answer the same way for every other session', async () => {
+  it('the backlog walk stops at the first outcome that will answer the same way for every other session', async () => {
     const rig = await memberRig();
     const spool = new MemberSpool('proj_1', { mycoHome });
     for (const sessionId of ['sess-a', 'sess-b', 'sess-c']) {
@@ -326,10 +327,10 @@ describe('member spool', () => {
       return rig.fetch(input, init);
     });
 
-    const results = await spool.drainAll(client, unboundedBudget(), { force: true });
+    const report = await drainBacklog(spool, client, unboundedBudget(), { force: true, machineId: 'machine_1' });
 
-    expect(results).toHaveLength(1);
-    expect(results[0].endedBy).toBe('route_missing');
+    expect(report.sessions).toHaveLength(1);
+    expect(report.endedBy).toBe('route_missing');
     expect(seen).toHaveLength(1);
     expect(spool.sessionIds()).toHaveLength(3);
   });

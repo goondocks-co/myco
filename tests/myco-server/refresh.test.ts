@@ -379,6 +379,17 @@ describe('token refresh', () => {
     expect(last).toMatchObject({ refreshed: true, expiresAt: T0 + MEMBER_TOKEN_MAX_LINEAGE_MS });
   });
 
+  it('rotates a credential that names no Project, and creates no Project row for one it does name', async () => {
+    const r = await rig();
+    r.clock.now = r.root.expiresAt + 1_000;
+    const projects = count(r.e.sqlite, 'projects');
+    const res = await r.fetch(memberPost(r.root.token, '{}', '/tokens/refresh', { 'x-myco-project': '' }));
+    const body = await json(res);
+    expect({ status: res.status, refreshed: body.refreshed }).toEqual({ status: 200, refreshed: true });
+    expect(r.row(body.tokenId as string)).toMatchObject({ predecessor_id: r.root.tokenId, lineage_root: r.root.tokenId });
+    expect(count(r.e.sqlite, 'projects')).toBe(projects);
+  });
+
   it('never admits a lapsed token of a revoked member', async () => {
     const r = await rig();
     r.e.sqlite.query(`UPDATE members SET revoked_at = ? WHERE id = ?`).run(T0 + 1, 'mem_machine_1');

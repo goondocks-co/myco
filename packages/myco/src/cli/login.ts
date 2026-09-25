@@ -21,6 +21,8 @@ import { isSafeProjectRoot } from '../project-root.js';
 import { resolveMemberProjectRoot } from '../member/credential.js';
 import { runImport } from '../member/import.js';
 import { exchangeJoinCode, parseJoinCode, recordJoinAnswer, JOIN_CODE_REFUSALS } from '../member/join-code.js';
+import { drainEntryBacklog } from '../member/backlog.js';
+import { deploymentUrl, listRegistryEntries } from '../member/registry.js';
 
 export const LOGIN_HELP = `Usage: myco login <invite-link>
 
@@ -121,6 +123,21 @@ export async function run(args: readonly string[], deps: LoginDeps = {}): Promis
   out(`Signed in to ${code.serverUrl} as ${answer.memberId} (${answer.role}).`);
   if (root !== undefined) out(`  Connected ${root} to project ${answer.projectId}. Your agents capture there from now on.`);
   else out('  No project yet — connect your first one with `myco member join`.');
+
+  // What this machine captured while it could not deliver reaches the
+  // Deployment now, for every project bound to it: the new credential is the
+  // one every binding on this Deployment reads.
+  const mycoHome = deps.mycoHome ?? resolveMycoHome();
+  for (const entry of listRegistryEntries(mycoHome).filter((e) => deploymentUrl(e.serverUrl) === deploymentUrl(code.serverUrl))) {
+    try {
+      const backlog = await drainEntryBacklog(entry, { mycoHome, fetch: deps.fetch, now: deps.now, machineId });
+      const delivered = backlog.sessions.filter((s) => (s.events?.acked ?? 0) > 0 || (typeof s.transcripts === 'object' && s.transcripts.shipped > 0)).length;
+      if (delivered > 0) out(`  Delivered ${delivered} session(s) captured in ${entry.root} while this machine could not reach the deployment.`);
+      if (backlog.endedBy !== 'done') err(`  Some capture in ${entry.root} is still waiting (${backlog.endedBy}); \`myco member drain\` retries it.`);
+    } catch (error) {
+      err(`  Could not deliver waiting capture in ${entry.root} (${(error as Error).message}); \`myco member drain\` retries it.`);
+    }
+  }
 
   // A machine arrives with history, and the bounded pass over what is already
   // on its disk runs once, here. Only where the invitation named a Project:

@@ -442,6 +442,11 @@ export async function shipTranscriptSegments(
  * subagent transcript beside it, inside one budget. A pass that ends for any
  * reason other than finishing its transcript ends the whole walk: whatever
  * stopped it will stop the next one too.
+ *
+ * The session's transcript backlog mark follows the outcome: cleared once
+ * every transcript is acknowledged to its end or its file is gone, set
+ * otherwise, so a pass that could not finish leaves the session for the
+ * backlog to reach from another hook.
  */
 export async function shipSessionTranscripts(
   ctx: EnvelopeContext, spool: MemberSpool, client: ServerClient, budget: HookBudget,
@@ -453,7 +458,11 @@ export async function shipSessionTranscripts(
   for (const slot of slots) {
     const result = await shipTranscriptSegments(ctx, spool, client, budget, { ...opts, slot });
     shipped += result.shipped;
-    if (result.endedBy !== 'done' && result.endedBy !== 'absent') return { shipped, endedBy: result.endedBy };
+    if (result.endedBy !== 'done' && result.endedBy !== 'absent') {
+      spool.markTranscriptBacklog(ctx.sessionId);
+      return { shipped, endedBy: result.endedBy };
+    }
   }
+  spool.clearTranscriptBacklog(ctx.sessionId);
   return { shipped, endedBy: 'done' };
 }

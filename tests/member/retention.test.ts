@@ -17,6 +17,7 @@ import { longestDeclaredHookTimeoutMs, unboundedBudget } from '@myco/member/budg
 import { MEMBER_SESSION_STATE_RETENTION_MS, MEMBER_SPOOL_QUARANTINE_MS, MEMBER_SPOOL_QUARANTINE_PRUNE_MS } from '@myco/member/constants.js';
 import { attachmentEvent, mintId, promptEvent, type EnvelopeContext } from '@myco/member/envelope.js';
 import { applySpoolRetention, lastAckAt, pruneDeliveredSessionState, unacknowledgedSince } from '@myco/member/retention.js';
+import { drainBacklog } from '@myco/member/backlog.js';
 import { MemberSpool } from '@myco/member/spool.js';
 import { readSessionState, sessionStatePath, updateSessionState } from '@myco/member/session-state.js';
 import { ServerClient } from '@myco/member/transport.js';
@@ -86,6 +87,30 @@ describe('spool retention', () => {
     await spool.drainSession('sess-live', client, unboundedBudget(), { now: () => far + DAY, force: true });
     expect(spool.sessionIds()).toEqual([]);
     expect(applySpoolRetention(spool, far + 2 * DAY)).toEqual({ quarantined: [], pruned: 0, prunedStates: 0, releasedBlobs: 0, prunedTranscripts: 0 });
+  });
+
+  it('keeps the state of a session whose transcript bytes are undelivered, and lets it go once its transcript file is gone', async () => {
+    const rig = await memberRig();
+    const spool = new MemberSpool('proj_1', { mycoHome });
+    const client = new ServerClient({ serverUrl: 'https://s', token: rig.token, projectId: 'proj_1' }, rig.fetch);
+    const t0 = Date.now();
+    const file = path.join(fs.mkdtempSync(path.join(mycoHome, 'tx-')), 'sess-tx.jsonl');
+    fs.writeFileSync(file, `${JSON.stringify({ type: 'user', message: { role: 'user', content: 'x' } })}\n`);
+    spool.appendAndRecord('sess-tx', [promptEvent(ctxFor(spool, 'sess-tx'), { promptId: mintId(), text: 'tx' })], (state) => {
+      state.transcript = { path: file, transcriptId: 'tx-kept', inode: Number(fs.statSync(file).ino), nextOffset: 0, parsedSize: 0 };
+    }, t0);
+    await spool.drainSession('sess-tx', client, unboundedBudget(), { now: () => t0, force: true });
+    expect(spool.sessionIds()).toEqual([]);
+    expect(spool.transcriptBacklogIds()).toEqual(['sess-tx']);
+    const late = t0 + MEMBER_SESSION_STATE_RETENTION_MS + DAY;
+    expect(applySpoolRetention(spool, late, { delivered: true }).prunedStates).toBe(0);
+    expect(readSessionState(spool.dir, 'sess-tx').transcript?.path).toBe(file);
+
+    fs.rmSync(file);
+    const report = await drainBacklog(spool, client, unboundedBudget(), { force: true, machineId: 'machine_1' });
+    expect(report).toEqual({ endedBy: 'done', sessions: [{ sessionId: 'sess-tx' }] });
+    expect(spool.transcriptBacklogIds()).toEqual([]);
+    expect(applySpoolRetention(spool, late, { delivered: true }).prunedStates).toBe(1);
   });
 
   it('prunes the state of a session delivered long ago only after a drain that delivered everything, and never one still holding records', async () => {

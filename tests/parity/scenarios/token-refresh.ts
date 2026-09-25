@@ -1,15 +1,17 @@
 import { createHash, randomBytes } from 'node:crypto';
 import { expect } from 'bun:test';
 import { MEMBER_TOKEN_MAX_LINEAGE_MS, MEMBER_TOKEN_TTL_MS } from '@myco-server-worker/auth/tokens.js';
+import { PROJECT_HEADER } from '@myco-server-worker/constants.js';
 import { expectPersisted, lit, MACHINE_ID, MEMBER_ID, memberHeadersFor, type ParityScenario, type ParityTarget } from '../harness.ts';
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
 /**
  * A member offline past its token's expiry on both targets: the lapsed token
- * still rotates while its lineage is live, the successor captures, a replay of
- * the lapsed token once its successor is in use answers 401, and a lapsed token
- * whose lineage ceiling has passed is told `lineage_expired` with nothing minted.
+ * still rotates while its lineage is live, over a request that names no
+ * Project; the successor captures; a replay of the lapsed token once its
+ * successor is in use answers 401; and a lapsed token whose lineage ceiling has
+ * passed is told `lineage_expired` with nothing minted.
  */
 export const tokenRefresh: ParityScenario = {
   name: 'token refresh: a token lapsed offline rotates once within its lineage, and past the lineage ceiling is refused by name',
@@ -24,9 +26,11 @@ export const tokenRefresh: ParityScenario = {
         VALUES (${lit(tokenId)}, ${lit(MEMBER_ID)}, ${lit(MACHINE_ID)}, ${lit(digest)}, ${issuedAt}, ${issuedAt + MEMBER_TOKEN_TTL_MS}, NULL, 0, NULL, ${lit(tokenId)}, ${issuedAt}, NULL)`);
       return { token, tokenId };
     };
-    const refresh = (token: string) => fetch(`${target.url}/tokens/refresh`, {
-      method: 'POST', headers: { ...memberHeadersFor(token, target.projectId), 'content-type': 'application/json' }, body: '{}',
-    });
+    /** The member's own refresh: the credential is the Deployment's, so the request names no Project. */
+    const refresh = (token: string) => {
+      const { [PROJECT_HEADER]: _project, ...headers } = memberHeadersFor(token, target.projectId);
+      return fetch(`${target.url}/tokens/refresh`, { method: 'POST', headers: { ...headers, 'content-type': 'application/json' }, body: '{}' });
+    };
     const post = (token: string) => fetch(`${target.url}/events`, {
       method: 'POST',
       headers: { ...memberHeadersFor(token, target.projectId), 'content-type': 'application/json' },

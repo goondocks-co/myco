@@ -460,7 +460,10 @@ export function createServer(deps: ServerDeps) {
     if (!request.headers.has(PROJECT_HEADER) && route.bodyMode === 'json' && route.unbound !== undefined) {
       const body = await readBoundedBody(request, MAX_BODY_BYTES);
       if (!body.ok) return refuse(auth, shapeOf(route), body.reason, 'body_cap');
-      return route.unbound(env, { memberId: auth.memberId, machineId: auth.machineId, tokenId: auth.tokenId, body: body.text, now });
+      return route.unbound(env, {
+        memberId: auth.memberId, machineId: auth.machineId, tokenId: auth.tokenId, expiresAt: auth.expiresAt,
+        lineageRoot: auth.lineageRoot, lineageStartedAt: auth.lineageStartedAt, runtime: auth.runtime, body: body.text, now,
+      });
     }
     if (projectId === null) return refuse(auth, shapeOf(route), NO_PROJECT, 'no_project');
 
