@@ -36,6 +36,14 @@ export function recordingPlatform(): RecordingPlatform {
     else if (line.startsWith('systemctl --user disable')) drop(name);
     else if (line.startsWith('systemctl --user is-enabled')) return { status: loaded.has(name) ? 0 : 1 };
     else if (line.startsWith('systemctl --user is-active')) return { status: running.has(name) ? 0 : 3 };
+    else if (line.startsWith('schtasks /Create')) loaded.add(args[args.indexOf('/TN') + 1]!);
+    else if (line.startsWith('schtasks /Run')) start(args[args.indexOf('/TN') + 1]!);
+    else if (line.startsWith('schtasks /Delete')) drop(args[args.indexOf('/TN') + 1]!);
+    else if (line.startsWith('schtasks /Query')) return { status: loaded.has(args[args.indexOf('/TN') + 1]!) ? 0 : 1 };
+    else if (line.startsWith('powershell.exe')) {
+      const task = /-TaskName '([^']+)'/.exec(line)?.[1] ?? '';
+      return { status: 0, stdout: running.has(task) ? 'Running\r\n' : 'Ready\r\n' };
+    }
     return { status: 0 };
   };
   return { runner, commands, loaded, running, dies };

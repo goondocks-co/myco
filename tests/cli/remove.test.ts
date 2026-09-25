@@ -44,7 +44,7 @@ mock.module('@myco/service/manager.js', () => ({
   getServiceManager: () => fakeServiceManager,
 }));
 
-const sweepWorkerServices = vi.fn((_deps: { mycoHome?: string }) => [] as string[]);
+const sweepWorkerServices = vi.fn((_deps: { mycoHome?: string }) => ({ removed: [] as string[], kept: [] as Array<{ unitFile: string; reason: string }> }));
 mock.module('@myco/cli/worker-service.js', () => ({ sweepWorkerServices }));
 
 let testVaultDir = '';

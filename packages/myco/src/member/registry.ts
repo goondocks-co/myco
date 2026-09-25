@@ -593,3 +593,20 @@ export function listDeploymentMemberships(mycoHome: string = resolveMycoHome()):
   }
   return memberships;
 }
+
+/** A Deployment membership as a reader that must tell absence from damage sees it. */
+export type DeploymentMembershipResult =
+  | { status: 'present'; membership: DeploymentMembership }
+  | { status: 'missing' }
+  | { status: 'unavailable'; reason: string };
+
+/**
+ * The membership for `serverUrl`, distinguishing a file that is not there from
+ * one that is there and cannot be read, has loose permissions, or is not a
+ * membership. Reads only, and reports nothing to stderr.
+ */
+export function readDeploymentMembershipResult(serverUrl: string, mycoHome: string = resolveMycoHome()): DeploymentMembershipResult {
+  const read = readPrivateJson<DeploymentMembership>(deploymentPath(serverUrl, mycoHome));
+  if (!read.ok) return read.reason === 'missing' ? { status: 'missing' } : { status: 'unavailable', reason: read.detail === undefined ? read.reason : `${read.reason} (${read.detail})` };
+  return isMembership(read.value) ? { status: 'present', membership: read.value } : { status: 'unavailable', reason: 'not a deployment membership' };
+}

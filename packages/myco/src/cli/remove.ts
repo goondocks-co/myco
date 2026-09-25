@@ -138,8 +138,9 @@ async function runGlobalRemove(opts: { purge: boolean; assumeYes: boolean }): Pr
   //     membership is already gone, so none restarts into a home being removed. ---
   try {
     const { sweepWorkerServices } = await import('./worker-service.js');
-    const removed = sweepWorkerServices({ mycoHome });
+    const { removed, kept } = sweepWorkerServices({ mycoHome });
     if (removed.length > 0) console.log(`  ✓ Removed ${removed.length} worker service${removed.length === 1 ? '' : 's'}`);
+    for (const unit of kept) console.log(`  ⚠ Left worker service ${unit.unitFile}: ${unit.reason}`);
   } catch (err) {
     console.log(`  ⚠ Worker service removal skipped: ${(err as Error).message}`);
   }

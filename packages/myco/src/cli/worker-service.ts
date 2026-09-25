@@ -8,7 +8,7 @@
  */
 import { resolveHomeDir, resolveMycoHome } from '../paths/home.js';
 import { isDefaultMycoHome } from '../grove/paths.js';
-import { deploymentUrl, listDeploymentMemberships, readDeploymentMembership } from '../member/registry.js';
+import { deploymentUrl, listDeploymentMemberships, readDeploymentMembership, readDeploymentMembershipResult } from '../member/registry.js';
 import { detectHarnesses, type DetectedHarness } from '../runner/detect.js';
 import { probeWorkerAdmission, type WorkerAdmission } from '../runner/loop.js';
 import { clearWorkerRefusal, readWorkerRefusal, recordWorkerRefusal, type TerminalRefusal } from '../runner/refusal.js';
@@ -188,30 +188,46 @@ export function removeWorkerService(serverUrl: string, deps: WorkerServiceDeps =
   }
 }
 
+/** What a sweep did: the units it removed, and the ones it left because it could not tell whose they are. */
+export interface WorkerSweep {
+  removed: string[];
+  kept: Array<{ unitFile: string; reason: string }>;
+}
+
 /**
  * Remove every worker unit this home is responsible for: the one for each
  * Deployment it holds a membership of, whether or not its file is still there,
- * and every unit on disk that names this home or names a membership its home no
- * longer holds. A unit another home still has a membership for is left to that
- * home.
+ * and every unit on disk that names this home or names a membership whose file
+ * no longer exists. A unit another home still has a membership for is left to
+ * that home, and so is one whose membership or unit cannot be read: an
+ * unreadable file is not an absent one.
  */
-export function sweepWorkerServices(deps: WorkerServiceDeps = {}): string[] {
+export function sweepWorkerServices(deps: WorkerServiceDeps = {}): WorkerSweep {
   const mycoHome = deps.mycoHome ?? resolveMycoHome({ cwd: process.cwd() });
   const home = deps.home ?? resolveHomeDir();
   const platform = deps.platform ?? process.platform;
   const options = { platform, ...(deps.runner === undefined ? {} : { runner: deps.runner }) };
-  const removed: string[] = [];
+  const sweep: WorkerSweep = { removed: [], kept: [] };
   for (const membership of listDeploymentMemberships(mycoHome)) {
     const outcome = removeWorkerService(membership.serverUrl, { ...deps, mycoHome, home, platform });
-    if ('removed' in outcome && outcome.removed) removed.push(outcome.unitFile);
+    if ('removed' in outcome && outcome.removed) sweep.removed.push(outcome.unitFile);
   }
   for (const found of listWorkerUnits(home, platform)) {
-    const ours = found.mycoHome === mycoHome;
-    const orphaned = found.mycoHome === null || found.serverUrl === null || readDeploymentMembership(found.serverUrl, found.mycoHome) === null;
-    if (!ours && !orphaned) continue;
-    if (uninstallService(found.spec, options).removed) removed.push(found.unitFile);
+    if (found.mycoHome !== mycoHome) {
+      if (found.mycoHome === null || found.serverUrl === null) {
+        sweep.kept.push({ unitFile: found.unitFile, reason: 'the unit does not say which home and Deployment it serves' });
+        continue;
+      }
+      const membership = readDeploymentMembershipResult(found.serverUrl, found.mycoHome);
+      if (membership.status === 'present') continue;
+      if (membership.status === 'unavailable') {
+        sweep.kept.push({ unitFile: found.unitFile, reason: `its membership in ${found.mycoHome} could not be read: ${membership.reason}` });
+        continue;
+      }
+    }
+    if (uninstallService(found.spec, options).removed) sweep.removed.push(found.unitFile);
   }
-  return removed;
+  return sweep;
 }
 
 function serviceOptions(deps: WorkerServiceDeps): { runner?: ServiceRunner; lockDir?: string } {

@@ -421,7 +421,7 @@ export interface ServiceStatus {
 /**
  * Whether the platform is holding the service and running it, read from the
  * platform rather than from the unit file: launchd lists a running job with its
- * PID, systemd answers `is-active`, Task Scheduler reports a status.
+ * PID, systemd answers `is-active`, Task Scheduler reports the task's state.
  */
 export function statusOfService(spec: ServiceSpec, options: ServiceOptions = {}): ServiceStatus {
   const platform = options.platform ?? process.platform;
@@ -438,8 +438,10 @@ export function statusOfService(spec: ServiceSpec, options: ServiceOptions = {})
     loaded = ask(['systemctl', '--user', 'is-enabled', `${spec.unit.unitName}.service`]);
     running = loaded.error === undefined && ask(['systemctl', '--user', 'is-active', `${spec.unit.unitName}.service`]).status === 0;
   } else {
-    loaded = ask(['schtasks', '/Query', '/TN', spec.unit.unitName, '/FO', 'LIST']);
-    running = loaded.status === 0 && /Status:\s*Running/i.test(loaded.stdout ?? '');
+    // Task Scheduler's own status text is translated; the ScheduledTask state is an enum name that is not.
+    loaded = ask(['schtasks', '/Query', '/TN', spec.unit.unitName]);
+    running = loaded.status === 0
+      && ask(['powershell.exe', '-NoProfile', '-NonInteractive', '-Command', `(Get-ScheduledTask -TaskName '${spec.unit.unitName}').State`]).stdout?.trim() === 'Running';
   }
   if (loaded.error !== undefined) return { installed: true, loaded: false, running: false, detail: `the platform's service manager could not be run` };
   if (loaded.status !== 0) return { installed: true, loaded: false, running: false, detail: 'the unit is installed and the platform is not holding it' };

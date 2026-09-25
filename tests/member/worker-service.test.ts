@@ -33,7 +33,7 @@ import {
   type WorkerServiceDeps,
 } from '@myco/cli/worker-service.js';
 import { checkWorkerServices } from '@myco/cli/doctor.js';
-import { removeRegistryEntry, writeDeploymentMembership } from '@myco/member/registry.js';
+import { deploymentPath, removeRegistryEntry, writeDeploymentMembership } from '@myco/member/registry.js';
 import { holdWorkerInstance } from '@myco/runner/instance.js';
 import { readWorkerRefusal, recordWorkerRefusal } from '@myco/runner/refusal.js';
 import { resolveMycoHome } from '@myco/paths/home.js';
@@ -157,6 +157,15 @@ describe('installing and removing the worker service', () => {
       uninstallService(defaultSpec(path.join(home, '.myco', 'bin', 'myco'), home, platform), { platform, runner: server.runner });
       expect({ platform, commands: server.commands.length > 0 }).toEqual({ platform, commands: true });
     }
+  });
+
+  it('reads a Windows task as running from its state, not from translated status text', () => {
+    const rec = recordingPlatform();
+    const spec = workerServiceSpec(target({ platform: 'win32' }), []);
+    expect(installWorkerService(target({ platform: 'win32' }), [], { runner: rec.runner })).toMatchObject({ loaded: true, running: true });
+    rec.running.clear();
+    expect(statusOfService(spec, { platform: 'win32', runner: rec.runner })).toMatchObject({ loaded: true, running: false });
+    expect(rec.commands.some((line) => line.includes(`(Get-ScheduledTask -TaskName '${spec.unit.unitName}').State`))).toBe(true);
   });
 
   it('starts an enabled unit whose process failed, and does not call it running', () => {
@@ -308,7 +317,8 @@ describe('removing every worker unit a home is responsible for', () => {
     member(mycoHome, 'https://second.example');
 
     rec.commands.length = 0;
-    const removed = sweepWorkerServices({ mycoHome, home, platform: 'darwin', runner: rec.runner });
+    const { removed, kept } = sweepWorkerServices({ mycoHome, home, platform: 'darwin', runner: rec.runner });
+    expect(kept).toEqual([]);
     expect(removed.map((file) => path.basename(file)).sort()).toEqual([
       `${workerServiceUnit(URL_, mycoHome).label}.plist`,
       `${workerServiceUnit('https://gone.example', gone).label}.plist`,
@@ -325,7 +335,33 @@ describe('removing every worker unit a home is responsible for', () => {
     installWorkerService(target({ mycoHome: other, serverUrl: 'https://other.example' }), [], { runner: rec.runner });
     removeRegistryEntry('/nowhere', other);
     fs.rmSync(path.join(other, 'member', 'deployments'), { recursive: true, force: true });
-    expect(sweepWorkerServices({ mycoHome, home, platform: 'darwin', runner: rec.runner })).toHaveLength(1);
+    expect(sweepWorkerServices({ mycoHome, home, platform: 'darwin', runner: rec.runner }).removed).toHaveLength(1);
     expect(listWorkerUnits(home, 'darwin')).toEqual([]);
   });
+
+  for (const [damage, reason] of [
+    ['malformed', /not a deployment membership|malformed/],
+    ['loose', /loose-mode/],
+    ['unreadable', /unreadable/],
+  ] as const) {
+    it(`keeps another home's unit whose membership file is ${damage}, and says so`, () => {
+      const rec = recordingPlatform();
+      const other = path.join(home, '.myco');
+      member(other, 'https://other.example');
+      installWorkerService(target({ mycoHome: other, serverUrl: 'https://other.example' }), [], { runner: rec.runner });
+      const file = deploymentPath('https://other.example', other);
+      if (damage === 'malformed') fs.writeFileSync(file, '{"version":2}', { mode: 0o600 });
+      if (damage === 'loose') fs.chmodSync(file, 0o644);
+      if (damage === 'unreadable') fs.chmodSync(path.dirname(file), 0o000);
+      try {
+        const sweep = sweepWorkerServices({ mycoHome, home, platform: 'darwin', runner: rec.runner });
+        expect(sweep.removed).toEqual([]);
+        expect(sweep.kept).toEqual([{ unitFile: servicePaths(workerServiceSpec(target({ mycoHome: other, serverUrl: 'https://other.example' }), []), 'darwin').unitFile, reason: expect.stringMatching(reason) }]);
+        expect(listWorkerUnits(home, 'darwin')).toHaveLength(1);
+        expect([...rec.loaded]).toEqual([workerServiceUnit('https://other.example', other).label]);
+      } finally {
+        fs.chmodSync(path.dirname(file), 0o700);
+      }
+    });
+  }
 });
