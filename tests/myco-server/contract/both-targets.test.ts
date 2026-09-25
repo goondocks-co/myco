@@ -296,6 +296,16 @@ describe('one server product, two deployment targets', () => {
     expect(said).toEqual(['cloudflare', 'bun']);
   });
 
+  it('still names its target when the store cannot be questioned', async () => {
+    const said: unknown[] = [];
+    for (const t of TARGETS) {
+      const broken = { ...t.env, db: { prepare: () => { throw new Error('not a database'); } } } as unknown as ServerEnv;
+      const body = await json(await handleStatus(broken, { member: { id: 'mem_owner', role: 'admin' }, now: Date.now() } as unknown as OwnerContext));
+      said.push([(body.schema as { found: unknown }).found, body.target]);
+    }
+    expect(said).toEqual([[null, 'cloudflare'], [null, 'bun']]);
+  });
+
 
 });
 

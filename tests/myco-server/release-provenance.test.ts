@@ -128,6 +128,23 @@ describe('the scheduled release check', () => {
     return { r, repo: repo ?? REPO };
   }
 
+  it('records whether a rate-limited check ran with a token, so the remedy follows the check and not a later setting', async () => {
+    const outbound = (async () => new Response('{}', { status: 429 })) as unknown as typeof fetch;
+    const withToken = rig();
+    await withToken.store.save(P, settings(), 'mem_1', 1);
+    await reconcileReleaseProvenance({ ...withToken.serverEnv, outbound }, 100 * MIN);
+    expect((await withToken.store.describe(P)).check).toMatchObject({ status: 'unavailable', failure: 'rate_limited' });
+
+    const without = rig();
+    await without.store.save(P, settings({ credential: undefined }), 'mem_1', 1);
+    await reconcileReleaseProvenance({ ...without.serverEnv, outbound }, 100 * MIN);
+    const view = await without.store.describe(P);
+    expect(view.check).toMatchObject({ status: 'unavailable', failure: 'rate_limited_without_credential', lookups: 1 });
+    // Adding a token afterwards leaves the recorded check as it ran.
+    await without.store.save(P, settings({ revision: view.revision }), 'mem_1', 2);
+    expect((await without.store.describe(P)).check).toMatchObject({ failure: 'rate_limited_without_credential' });
+  });
+
   it('classifies every captured commit, carries it to the session spores, and records a complete check', async () => {
     const { r } = await configured();
     const auth: Array<string | null> = [];
