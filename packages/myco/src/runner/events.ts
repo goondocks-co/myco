@@ -19,7 +19,8 @@ export type StopReason = 'end_turn' | 'max_tokens' | 'max_turn_requests' | 'refu
 export type RunEvent =
   | { kind: 'started'; harness: string; sessionId: string | null }
   | { kind: 'message'; role: 'assistant' | 'thought'; text: string }
-  | { kind: 'tool_call'; name: string; status: 'started' | 'ok' | 'error' }
+  /** `detail` says why a call failed where the driver itself refused it. */
+  | { kind: 'tool_call'; name: string; status: 'started' | 'ok' | 'error'; detail?: string }
   | ({ kind: 'usage' } & WorkerUsage)
   | { kind: 'ended'; stop: StopReason; detail: string | null };
 

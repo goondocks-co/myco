@@ -27,6 +27,7 @@ import { PROJECT_HEADER, PROTOCOL_HEADER } from '@myco/member/constants.js';
 import { stubAcpHarness, STUB_DETECTED, STUB_HARNESS } from '../helpers/stub-acp-harness.ts';
 import { readFileSync } from 'node:fs';
 import { turnOver, type Channel } from '@myco/runner/drivers/acp.js';
+import { listRunTools, type RunTools } from '@myco/runner/drivers/run-tools.js';
 import type { RunEvent } from '@myco/runner/events.js';
 import { globalFetchDouble } from '../helpers/global-fetch.js';
 
@@ -535,6 +536,10 @@ describe('the Codex driver', () => {
   });
 });
 
+/** The tools the run's server lists for a run, in place of asking a server. */
+const RUN_TOOL_NAMES = ['myco_run', 'myco_run_sessions', 'noop_ping'];
+const listed = async (): Promise<RunTools> => ({ ok: true, names: new Set(RUN_TOOL_NAMES) });
+
 /** A peer that answers the protocol, in place of a harness binary. */
 function peer(answer: (method: string, id: number) => string | null): { channel: Channel; close: () => void; asked: string[] } {
   const asked: string[] = [];
@@ -563,7 +568,7 @@ describe('the agent-protocol driver', () => {
       const notifications = method === 'session/prompt' ? recording.filter((row) => typeof row.method === 'string') : [];
       return [...notifications, response].map((row) => JSON.stringify(row)).join('\n') + '\n';
     });
-    const events = await collect(turnOver(p.channel, 'opencode', { ...runDir(), prompt: 'fixture', credentialEnv: {} }, () => ''));
+    const events = await collect(turnOver(p.channel, 'opencode', { ...runDir(), prompt: 'fixture', credentialEnv: {} }, () => '', listed));
     expect(events.filter((event) => event.kind === 'tool_call')).toEqual([
       { kind: 'tool_call', name: 'fixture_fixture_receipt', status: 'started' },
       { kind: 'tool_call', name: 'fixture_fixture_receipt', status: 'ok' },
@@ -584,7 +589,7 @@ describe('the agent-protocol driver', () => {
       if (method === 'session/prompt') return `${JSON.stringify({ jsonrpc: '2.0', id, result: { stopReason: 'end_turn' } })}\n`;
       return `${JSON.stringify({ jsonrpc: '2.0', id, result: {} })}\n`;
     });
-    const events = await collect(turnOver(p.channel, 'opencode', spec, () => ''));
+    const events = await collect(turnOver(p.channel, 'opencode', spec, () => '', listed));
     expect(events[0]).toEqual({ kind: 'started', harness: 'opencode', sessionId: 'sess_acp' });
     expect(events.at(-1)).toEqual({ kind: 'ended', stop: 'end_turn', detail: null });
     expect(p.asked).toEqual(['initialize', 'session/new', 'session/prompt', 'session/close']);
@@ -593,7 +598,7 @@ describe('the agent-protocol driver', () => {
   it('answers a stop reason the protocol does not name as a failure', async () => {
     const spec = { ...runDir(), prompt: 'do it', credentialEnv: {} };
     const p = peer((method, id) => `${JSON.stringify({ jsonrpc: '2.0', id, result: method === 'session/prompt' ? { stopReason: 'something_else' } : { sessionId: 's' } })}\n`);
-    const events = await collect(turnOver(p.channel, 'opencode', spec, () => 'stderr said this'));
+    const events = await collect(turnOver(p.channel, 'opencode', spec, () => 'stderr said this', listed));
     const last = events.at(-1)!;
     expect(last.kind).toBe('ended');
     if (last.kind === 'ended') { expect(last.stop).toBe('error'); expect(last.detail).toContain('stderr said this'); }
@@ -606,10 +611,348 @@ describe('the agent-protocol driver', () => {
       if (method === 'session/prompt') { queueMicrotask(() => { p.close(); }); return null; }
       return `${JSON.stringify({ jsonrpc: '2.0', id, result: { sessionId: 's' } })}\n`;
     });
-    const events = await collect(turnOver(p.channel, 'opencode', spec, () => 'it exited 137'));
+    const events = await collect(turnOver(p.channel, 'opencode', spec, () => 'it exited 137', listed));
     const last = events.at(-1)!;
     expect(last.kind).toBe('ended');
     if (last.kind === 'ended') { expect(last.stop).toBe('error'); expect(last.detail).toContain('closed the connection'); }
+  });
+});
+
+/** How long an agent waits for the client to answer one of its requests before giving up on it. */
+const AGENT_WAIT_MS = 1_000;
+
+/** The options OpenCode offers with a permission request. */
+const PERMISSION_OPTIONS = [
+  { optionId: 'once', kind: 'allow_once', name: 'Allow once' },
+  { optionId: 'always', kind: 'allow_always', name: 'Always allow' },
+  { optionId: 'reject', kind: 'reject_once', name: 'Reject' },
+];
+
+/** The options cursor-agent offered with every permission request in a recorded session. */
+const CURSOR_OPTIONS = [
+  { optionId: 'allow-once', name: 'Allow once', kind: 'allow_once' },
+  { optionId: 'allow-always', name: 'Allow always', kind: 'allow_always' },
+  { optionId: 'reject-once', name: 'Reject', kind: 'reject_once' },
+];
+
+const OUTSIDE_GRANT = 'outside the run\'s grant';
+
+interface Turn {
+  /** The id the client gave its prompt call. */
+  promptId: number;
+  /** Send the client a request under this id, and read its answer, or null when none came. */
+  ask(id: number | string, method: string, params: Record<string, unknown>): Promise<Record<string, unknown> | null>;
+  /** Send the client a session update. */
+  update(update: Record<string, unknown>): void;
+}
+
+/**
+ * An agent that makes requests of the client during its turn: `turn` runs when
+ * the prompt arrives, and the prompt is answered with `end_turn` once it is done.
+ */
+function askingAgent(turn: (agent: Turn) => Promise<void>): Channel {
+  let read: ((line: string) => void) | null = null;
+  const send = (message: Record<string, unknown>): void => { queueMicrotask(() => read?.(`${JSON.stringify({ jsonrpc: '2.0', ...message })}\n`)); };
+  const asked = new Map<number | string, (answer: Record<string, unknown>) => void>();
+  const agent = (promptId: number): Turn => ({
+    promptId,
+    ask: (id, method, params) => new Promise((resolve) => {
+      const timer = setTimeout(() => { asked.delete(id); resolve(null); }, AGENT_WAIT_MS);
+      asked.set(id, (answer) => { clearTimeout(timer); resolve(answer); });
+      send({ id, method, params });
+    }),
+    update: (update) => { send({ method: 'session/update', params: { sessionId: 'sess_acp', update } }); },
+  });
+  return {
+    write: (line) => {
+      const message = JSON.parse(line) as Record<string, unknown>;
+      const id = message.id as number | string;
+      if (typeof message.method !== 'string') {
+        const answered = asked.get(id);
+        asked.delete(id);
+        answered?.(message);
+      } else if (message.method === 'session/new') send({ id, result: { sessionId: 'sess_acp' } });
+      else if (message.method === 'session/prompt') void turn(agent(id as number)).then(() => { send({ id, result: { stopReason: 'end_turn' } }); });
+      else send({ id, result: {} });
+    },
+    onLine: (fn) => { read = fn; },
+    onClose: () => undefined,
+  };
+}
+
+/** The option an answer to a permission request selected, or null when it selected none or none came. */
+function chosenOption(answer: Record<string, unknown> | null): string | null {
+  const outcome = (answer?.result as { outcome?: { optionId?: unknown } } | undefined)?.outcome;
+  return typeof outcome?.optionId === 'string' ? outcome.optionId : null;
+}
+
+/** A permission request for this call, in the agent's session. */
+const permissionFor = (toolCall: Record<string, unknown>, options = PERMISSION_OPTIONS): Record<string, unknown> => ({ sessionId: 'sess_acp', toolCall, options });
+
+/** A turn's tool call events. */
+const toolCalls = (events: readonly RunEvent[]): RunEvent[] => events.filter((e) => e.kind === 'tool_call');
+
+describe('the agent-protocol driver answering what the agent asks of it', () => {
+  it('allows a call inside the run\'s grant once, and the turn goes on to use it', async () => {
+    const answers: unknown[] = [];
+    const channel = askingAgent(async (agent) => {
+      const call = { toolCallId: 'call_1', title: 'myco_myco_run', kind: 'other' };
+      agent.update({ sessionUpdate: 'tool_call', ...call, status: 'pending' });
+      const answer = await agent.ask('perm-1', 'session/request_permission', permissionFor(call));
+      answers.push(answer?.result);
+      if (chosenOption(answer) === 'once') agent.update({ sessionUpdate: 'tool_call_update', toolCallId: 'call_1', status: 'completed' });
+    });
+    const events = await collect(turnOver(channel, 'opencode', { ...runDir(), prompt: 'do it', credentialEnv: {} }, () => '', listed));
+    expect(answers).toEqual([{ outcome: { outcome: 'selected', optionId: 'once' } }]);
+    expect(toolCalls(events)).toEqual([
+      { kind: 'tool_call', name: 'myco_myco_run', status: 'started' },
+      { kind: 'tool_call', name: 'myco_myco_run', status: 'ok' },
+    ]);
+    expect(events.at(-1)).toEqual({ kind: 'ended', stop: 'end_turn', detail: null });
+  });
+
+  it('rejects a call outside the run\'s grant once, as that call failing once, and the turn\'s own end is the run\'s', async () => {
+    const answers: unknown[] = [];
+    const channel = askingAgent(async (agent) => {
+      const shell = { toolCallId: 'call_1', title: 'ls', kind: 'execute', rawInput: { command: 'ls' } };
+      agent.update({ sessionUpdate: 'tool_call', ...shell, status: 'pending' });
+      answers.push((await agent.ask(0, 'session/request_permission', permissionFor(shell)))?.result);
+      // The agent reports this refused call failed as well; the other it never reports.
+      agent.update({ sessionUpdate: 'tool_call_update', toolCallId: 'call_1', status: 'failed' });
+      answers.push((await agent.ask(1, 'session/request_permission', permissionFor({ toolCallId: 'call_2', title: 'https://example.com', kind: 'fetch' })))?.result);
+    });
+    const events = await collect(turnOver(channel, 'opencode', { ...runDir(), prompt: 'do it', credentialEnv: {} }, () => '', listed));
+    const rejected = { outcome: { outcome: 'selected', optionId: 'reject' } };
+    expect(answers).toEqual([rejected, rejected]);
+    expect(toolCalls(events)).toEqual([
+      { kind: 'tool_call', name: 'ls', status: 'started' },
+      { kind: 'tool_call', name: 'ls', status: 'error', detail: OUTSIDE_GRANT },
+      { kind: 'tool_call', name: 'https://example.com', status: 'error', detail: OUTSIDE_GRANT },
+    ]);
+    expect(events.at(-1)).toEqual({ kind: 'ended', stop: 'end_turn', detail: null });
+  });
+
+  it('answers from the same grant a Claude Code run holds: a source run\'s reads and scoped history commands, the run\'s listed tools, and nothing past them', async () => {
+    const run = runDir();
+    mkdirSync(join(run.scratchDir, 'repo'));
+    const answerFor = async (toolCall: Record<string, unknown>, sourceReadOnly: boolean): Promise<string | null> => {
+      let chosen: string | null = null;
+      const channel = askingAgent(async (agent) => {
+        chosen = chosenOption(await agent.ask(1, 'session/request_permission', permissionFor({ toolCallId: 'c', ...toolCall })));
+      });
+      await collect(turnOver(channel, 'opencode', { ...run, sourceReadOnly, prompt: 'read history', credentialEnv: {} }, () => '', listed));
+      return chosen;
+    };
+    const shell = (command: string): Record<string, unknown> => ({ kind: 'execute', title: command, rawInput: { command } });
+    const cases: Array<[Record<string, unknown>, boolean, string]> = [
+      [{ kind: 'other', title: 'mcp__myco__myco_run_sessions' }, false, 'once'],
+      [{ kind: 'other', title: 'myco_myco_run' }, false, 'once'],
+      [{ kind: 'other', title: 'mcp__myco__myco_unlisted' }, false, 'reject'],
+      [{ kind: 'other', title: 'myco_myco_unlisted' }, false, 'reject'],
+      // A tool of a user's own server named `myco-dev`, as OpenCode names it.
+      [{ kind: 'other', title: 'myco_dev_search' }, false, 'reject'],
+      [{ kind: 'other', title: 'mcp__mycox__foo' }, false, 'reject'],
+      [{ kind: 'other', title: 'mycox_foo' }, false, 'reject'],
+      [{ kind: 'read', title: 'repo/README.md' }, false, 'reject'],
+      [{ kind: 'read', title: 'repo/README.md' }, true, 'once'],
+      [shell('git -C repo log --oneline'), true, 'once'],
+      [shell('git -C repo log --oneline'), false, 'reject'],
+      [shell('git log | head'), true, 'reject'],
+      [shell('git -C repo log -1\nrm -rf repo'), true, 'reject'],
+      [shell('git -C repo log -1\rrm -rf repo'), true, 'reject'],
+      [shell('git -C repo showx'), true, 'reject'],
+      [shell('git -C repo push'), true, 'reject'],
+      [{ kind: 'edit', title: 'myco_notes' }, true, 'reject'],
+      // A file edit whose title happens to spell one of the run's tools.
+      [{ kind: 'edit', title: 'myco_myco_run' }, true, 'reject'],
+      // Cursor names a server and tool in its input: only the run's server, and only a listed tool.
+      [{ kind: 'other', title: 'myco: myco_run', rawInput: { providerIdentifier: 'myco', toolName: 'myco_run' } }, false, 'once'],
+      [{ kind: 'other', title: 'myco: unlisted', rawInput: { providerIdentifier: 'myco', toolName: 'unlisted' } }, false, 'reject'],
+      [{ kind: 'other', title: 'myco-dev: myco_run', rawInput: { providerIdentifier: 'myco-dev', toolName: 'myco_run' } }, false, 'reject'],
+      [{ kind: 'search', title: 'TODO', rawInput: { pattern: 'TODO' } }, true, 'once'],
+      [{ kind: 'search', title: 'TODO', rawInput: { pattern: 'TODO' } }, false, 'reject'],
+      [{ kind: 'search', title: 'react hooks', rawInput: { query: 'react hooks' } }, true, 'reject'],
+      [{ kind: 'search', title: 'context7_resolve_library_id', rawInput: { libraryName: 'react' } }, true, 'reject'],
+    ];
+    for (const [toolCall, sourceReadOnly, expected] of cases) {
+      expect({ toolCall, sourceReadOnly, chosen: await answerFor(toolCall, sourceReadOnly) }).toEqual({ toolCall, sourceReadOnly, chosen: expected });
+    }
+  });
+
+  it('refuses a request that names another session, and reports nothing for this one', async () => {
+    const answers: unknown[] = [];
+    const channel = askingAgent(async (agent) => {
+      answers.push((await agent.ask(1, 'session/request_permission', { ...permissionFor({ toolCallId: 'c', kind: 'other', title: 'myco_myco_run' }), sessionId: 'sess_other' }))?.result);
+    });
+    const events = await collect(turnOver(channel, 'opencode', { ...runDir(), prompt: 'do it', credentialEnv: {} }, () => '', listed));
+    expect(answers).toEqual([{ outcome: { outcome: 'selected', optionId: 'reject' } }]);
+    expect(toolCalls(events)).toEqual([]);
+  });
+
+  it('never takes a request of the agent\'s for the answer to a call of its own, whatever id the request carries', async () => {
+    const answers: unknown[] = [];
+    const channel = askingAgent(async (agent) => {
+      // The agent numbers its requests itself, and this one reuses the id of the prompt the client is waiting on.
+      const answer = await agent.ask(agent.promptId, 'session/request_permission', permissionFor({ toolCallId: 'call_1', title: 'myco_myco_run', kind: 'other' }));
+      answers.push(answer);
+    });
+    const events = await collect(turnOver(channel, 'opencode', { ...runDir(), prompt: 'do it', credentialEnv: {} }, () => '', listed));
+    expect(events.at(-1)).toEqual({ kind: 'ended', stop: 'end_turn', detail: null });
+    expect(answers).toEqual([{ jsonrpc: '2.0', id: 3, result: { outcome: { outcome: 'selected', optionId: 'once' } } }]);
+  });
+
+  it('answers a request it does not implement as a method not found, so the agent does not wait on it', async () => {
+    const answers: unknown[] = [];
+    const channel = askingAgent(async (agent) => {
+      answers.push(await agent.ask(7, 'fs/read_text_file', { sessionId: 'sess_acp', path: '/etc/hosts' }));
+      answers.push(await agent.ask('term-1', 'terminal/create', { sessionId: 'sess_acp', command: 'ls' }));
+    });
+    const events = await collect(turnOver(channel, 'opencode', { ...runDir(), prompt: 'do it', credentialEnv: {} }, () => '', listed));
+    expect(answers).toEqual([
+      { jsonrpc: '2.0', id: 7, error: { code: -32601, message: 'Method not found: fs/read_text_file' } },
+      { jsonrpc: '2.0', id: 'term-1', error: { code: -32601, message: 'Method not found: terminal/create' } },
+    ]);
+    expect(events.at(-1)).toEqual({ kind: 'ended', stop: 'end_turn', detail: null });
+  });
+});
+
+/**
+ * cursor-agent's own shapes, from a recorded session: its permission request
+ * carries only what changed about a call, and what the call is was said in the
+ * session's updates before it.
+ */
+describe('the agent-protocol driver answering cursor-agent', () => {
+  const MCP_CALL = 'call-73d7b7b8-94c0-4ee7-8d2d-ecf76f3b8634-1\nfc_p2jeY2Y-4SRMt5-91d0bee7-aws_ue1_0';
+  const SHELL_CALL = 'call-73d7b7b8-94c0-4ee7-8d2d-ecf76f3b8634-2\nfc_p2jeY2Y-4SRMt5-91d0bee7-aws_ue1_1';
+
+  /** The recorded MCP call to the run server's `noop_ping`, up to its permission request; the answer is returned. */
+  async function cursorMcpCall(agent: Turn): Promise<Record<string, unknown> | null> {
+    agent.update({ sessionUpdate: 'tool_call', toolCallId: MCP_CALL, title: 'MCP: tool', kind: 'other', status: 'pending', rawInput: {} });
+    agent.update({ sessionUpdate: 'tool_call_update', toolCallId: MCP_CALL, title: 'myco: noop_ping', rawInput: { providerIdentifier: 'myco', toolName: 'noop_ping', args: {} } });
+    agent.update({ sessionUpdate: 'tool_call_update', toolCallId: MCP_CALL, status: 'in_progress' });
+    return agent.ask(0, 'session/request_permission', permissionFor({
+      toolCallId: MCP_CALL, title: 'myco-noop_ping: noop_ping', kind: 'other', status: 'pending',
+      content: [{ type: 'content', content: { type: 'text', text: '```json\n{}\n```' } }],
+    }, CURSOR_OPTIONS));
+  }
+
+  /** The recorded shell call, up to its permission request; the answer is returned. */
+  async function cursorShellCall(agent: Turn, command: string): Promise<Record<string, unknown> | null> {
+    agent.update({ sessionUpdate: 'tool_call', toolCallId: SHELL_CALL, title: `\`${command}\``, kind: 'execute', status: 'pending', rawInput: { command } });
+    agent.update({ sessionUpdate: 'tool_call_update', toolCallId: SHELL_CALL, status: 'in_progress' });
+    return agent.ask(1, 'session/request_permission', permissionFor({
+      toolCallId: SHELL_CALL, title: `\`${command}\``, kind: 'execute', status: 'pending',
+      content: [{ type: 'content', content: { type: 'text', text: `Not in allowlist: ${command}` } }],
+    }, CURSOR_OPTIONS));
+  }
+
+  it('allows a call of the run server\'s tool that the request itself names only by title', async () => {
+    const answers: unknown[] = [];
+    const channel = askingAgent(async (agent) => {
+      answers.push((await cursorMcpCall(agent))?.result);
+      agent.update({ sessionUpdate: 'tool_call_update', toolCallId: MCP_CALL, status: 'completed', rawOutput: { success: true } });
+    });
+    const events = await collect(turnOver(channel, 'cursor', { ...runDir(), prompt: 'do it', credentialEnv: {} }, () => '', listed));
+    expect(answers).toEqual([{ outcome: { outcome: 'selected', optionId: 'allow-once' } }]);
+    expect(toolCalls(events)).toEqual([
+      { kind: 'tool_call', name: 'MCP: tool', status: 'started' },
+      { kind: 'tool_call', name: 'myco: noop_ping', status: 'ok' },
+    ]);
+  });
+
+  it('allows a source run\'s history read whose command only an earlier update carries', async () => {
+    const run = runDir();
+    mkdirSync(join(run.scratchDir, 'repo'));
+    const answers: unknown[] = [];
+    const channel = askingAgent(async (agent) => { answers.push((await cursorShellCall(agent, 'git -C repo log'))?.result); });
+    await collect(turnOver(channel, 'cursor', { ...run, sourceReadOnly: true, prompt: 'read history', credentialEnv: {} }, () => '', listed));
+    expect(answers).toEqual([{ outcome: { outcome: 'selected', optionId: 'allow-once' } }]);
+  });
+
+  it('keeps a refused call failed when the agent then reports it completed', async () => {
+    const answers: unknown[] = [];
+    const channel = askingAgent(async (agent) => {
+      answers.push((await cursorShellCall(agent, 'git status'))?.result);
+      agent.update({ sessionUpdate: 'tool_call_update', toolCallId: SHELL_CALL, status: 'completed' });
+    });
+    const events = await collect(turnOver(channel, 'cursor', { ...runDir(), prompt: 'do it', credentialEnv: {} }, () => '', listed));
+    expect(answers).toEqual([{ outcome: { outcome: 'selected', optionId: 'reject-once' } }]);
+    expect(toolCalls(events)).toEqual([
+      { kind: 'tool_call', name: '`git status`', status: 'started' },
+      { kind: 'tool_call', name: '`git status`', status: 'error', detail: OUTSIDE_GRANT },
+    ]);
+    expect(events.at(-1)).toEqual({ kind: 'ended', stop: 'end_turn', detail: null });
+  });
+
+  it('refuses a web search in a source run: it is not a file search', async () => {
+    const run = runDir();
+    mkdirSync(join(run.scratchDir, 'repo'));
+    const answers: unknown[] = [];
+    const channel = askingAgent(async (agent) => {
+      answers.push((await agent.ask(2, 'session/request_permission', permissionFor({ toolCallId: 'web_search_1', title: 'Search: secret source text', kind: 'search', status: 'pending' }, CURSOR_OPTIONS)))?.result);
+    });
+    await collect(turnOver(channel, 'cursor', { ...run, sourceReadOnly: true, prompt: 'read history', credentialEnv: {} }, () => '', listed));
+    expect(answers).toEqual([{ outcome: { outcome: 'selected', optionId: 'reject-once' } }]);
+  });
+
+  it('refuses a call of the run server when its tools could not be listed, and says why', async () => {
+    const answers: unknown[] = [];
+    const channel = askingAgent(async (agent) => { answers.push((await cursorMcpCall(agent))?.result); });
+    const unlisted = async (): Promise<RunTools> => ({ ok: false, reason: 'unauthorized: The upstream refused the credential (HTTP 401).' });
+    const events = await collect(turnOver(channel, 'cursor', { ...runDir(), prompt: 'do it', credentialEnv: {} }, () => '', unlisted));
+    expect(answers).toEqual([{ outcome: { outcome: 'selected', optionId: 'reject-once' } }]);
+    expect(toolCalls(events).at(-1)).toEqual({
+      kind: 'tool_call', name: 'myco-noop_ping: noop_ping', status: 'error',
+      detail: 'the run\'s tools could not be listed: unauthorized: The upstream refused the credential (HTTP 401).',
+    });
+  });
+});
+
+describe('the tools a run\'s server lists for it', () => {
+  /** An MCP server that lists these pages of tools, recording the credential each request carried. */
+  function mcpServer(pages: string[][], status = 200): { url: string; seen: string[]; stop: () => void } {
+    const seen: string[] = [];
+    const server = Bun.serve({
+      port: 0,
+      hostname: '127.0.0.1',
+      async fetch(request) {
+        if (request.method !== 'POST') return new Response(null, { status: 405 });
+        seen.push(request.headers.get('authorization') ?? '');
+        if (status !== 200) return new Response('unavailable', { status });
+        const message = await request.json() as { id?: number; method: string; params?: { protocolVersion?: string; cursor?: string } };
+        if (message.id === undefined) return new Response(null, { status: 202 });
+        if (message.method === 'initialize') {
+          return Response.json({ jsonrpc: '2.0', id: message.id, result: { protocolVersion: message.params?.protocolVersion, capabilities: { tools: {} }, serverInfo: { name: 'myco', version: '0' } } });
+        }
+        const page = Number(message.params?.cursor ?? '0');
+        const tools = pages[page]!.map((name) => ({ name, inputSchema: { type: 'object' } }));
+        return Response.json({ jsonrpc: '2.0', id: message.id, result: { tools, ...(page + 1 < pages.length ? { nextCursor: String(page + 1) } : {}) } });
+      },
+    });
+    return { url: `http://127.0.0.1:${server.port}`, seen, stop: () => { void server.stop(true); } };
+  }
+
+  it('reads every page the run\'s server lists, over the run\'s own credential', async () => {
+    const server = mcpServer([['myco_run'], ['myco_run_sessions']]);
+    try {
+      const run = writeRunDir(mkdtempSync(join(tmpdir(), 'myco-run-')), 'run_1', { ...CONNECTION, serverUrl: server.url });
+      const answers: unknown[] = [];
+      const channel = askingAgent(async (agent) => {
+        answers.push(chosenOption(await agent.ask(1, 'session/request_permission', permissionFor({ toolCallId: 'c', kind: 'other', title: 'myco_myco_run_sessions' }))));
+      });
+      await collect(turnOver(channel, 'opencode', { ...run, prompt: 'do it', credentialEnv: {} }, () => ''));
+      expect(answers).toEqual(['once']);
+      expect(new Set(server.seen)).toEqual(new Set([`Bearer ${CONNECTION.runToken}`]));
+    } finally { server.stop(); }
+  });
+
+  it('answers why when the server will not list them', async () => {
+    const server = mcpServer([], 503);
+    try {
+      const listing = await listRunTools({ url: `${server.url}/mcp`, headers: {} });
+      expect(listing.ok).toBe(false);
+      if (!listing.ok) expect(listing.reason).toContain('503');
+    } finally { server.stop(); }
   });
 });
 
