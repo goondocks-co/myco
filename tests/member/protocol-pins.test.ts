@@ -14,7 +14,7 @@ import { IMPORT_PLAN_MAX_CANDIDATES as SERVER_PLAN_MAX } from '@myco-server-work
 import { IMPORT_PLAN_MAX_CANDIDATES as MEMBER_PLAN_MAX } from '@myco/member/import.js';
 import { OUTBOUND_CHANNELS as MEMBER_CHANNELS } from '@myco/member/envelope.js';
 import { KINDS, kindSpec, PLAN_SOURCES as SERVER_PLAN_SOURCES, PLAN_STATUSES as SERVER_PLAN_STATUSES, PROMPT_ORIGINS as SERVER_PROMPT_ORIGINS, TRANSCRIPT_ROLES as SERVER_TRANSCRIPT_ROLES } from '@myco-server-worker/ingest/kinds.js';
-import { PLAN_SOURCES, PLAN_STATUSES, PROMPT_ORIGINS, TRANSCRIPT_ROLES } from '@goondocks/myco-shared/member-protocol';
+import { MEMBER_KINDS, PLAN_SOURCES, PLAN_STATUSES, PROMPT_ORIGINS, TRANSCRIPT_ROLES } from '@goondocks/myco-shared/member-protocol';
 import { CaptureRuleSchema } from '@goondocks/myco-shared/capture-rule-schema';
 import { MEMBER_TOKEN_PATTERN as SERVER_TOKEN_PATTERN, MEMBER_TOKEN_REFRESH_WINDOW_MS as SERVER_REFRESH_WINDOW_MS } from '@myco-server-worker/auth/tokens.js';
 import { longestDeclaredHookTimeoutMs } from '@myco/member/budget.js';
@@ -52,14 +52,20 @@ const BOUND_FIELDS: Record<keyof typeof BOUNDS, [string, string] | [string, stri
 /**
  * What the worker judges final about a record's own shape, per member
  * protocol: the channels, and per kind its required fields, its enum values
- * and its exactly-one and at-most-one pairs. A record outside any of them is
+ * and its exactly-one and at-most-one pairs; and the kinds a member ships.
+ * A kind a Deployment does not know is held rather than dropped, so a member
+ * shipping one before its Deployment knows it holds that session's capture. A record outside any of them is
  * refused `invalid_field` and dropped, never held. A member that widens one of
  * these, or a worker that adds a required field, would have its records
  * dropped by the other side at the same protocol, so the change is a member
  * protocol bump and a new row here, never an edit of an existing row.
  */
-const FINAL_SHAPE_BY_PROTOCOL: Record<number, unknown> = {
+const FINAL_SHAPE_BY_PROTOCOL: Record<number, { memberKinds: readonly string[]; channels: readonly string[]; kinds: Record<string, unknown> }> = {
   1: {
+    memberKinds: [
+      'attachment', 'compaction.post', 'compaction.pre', 'error', 'notification', 'plan', 'prompt', 'response', 'session.end',
+      'session.start', 'stop.failure', 'subagent.start', 'subagent.stop', 'task.completed', 'tool.failure', 'tool.use', 'transcript.segment',
+    ],
     channels: ['cli', 'http', 'import'],
     kinds: {
       'attachment': { required: ['attachmentId', 'blob'], enums: {} },
@@ -103,8 +109,17 @@ describe('member ↔ worker pins', () => {
   });
 
   it('changes what the worker judges final about a record\'s shape only with a member protocol bump: channels, required fields, enum values and field pairs are pinned per protocol', () => {
-    expect({ protocol: MEMBER_PROTOCOL, shape: finalShape() }).toEqual({ protocol: MEMBER_PROTOCOL, shape: FINAL_SHAPE_BY_PROTOCOL[MEMBER_PROTOCOL] });
-    expect({ protocol: SERVER_PROTOCOL, shape: finalShape() }).toEqual({ protocol: SERVER_PROTOCOL, shape: FINAL_SHAPE_BY_PROTOCOL[SERVER_PROTOCOL] });
+    const workerShape = (protocol: number) => {
+      const { memberKinds: _memberKinds, ...shape } = FINAL_SHAPE_BY_PROTOCOL[protocol] ?? { memberKinds: [] };
+      return shape;
+    };
+    expect({ protocol: MEMBER_PROTOCOL, shape: finalShape() }).toEqual({ protocol: MEMBER_PROTOCOL, shape: workerShape(MEMBER_PROTOCOL) });
+    expect({ protocol: SERVER_PROTOCOL, shape: finalShape() }).toEqual({ protocol: SERVER_PROTOCOL, shape: workerShape(SERVER_PROTOCOL) });
+  });
+
+  it('changes the kinds a member ships only with a member protocol bump, and ships only kinds the worker catalogues', () => {
+    expect({ protocol: MEMBER_PROTOCOL, memberKinds: [...MEMBER_KINDS].sort() as readonly string[] }).toEqual({ protocol: MEMBER_PROTOCOL, memberKinds: FINAL_SHAPE_BY_PROTOCOL[MEMBER_PROTOCOL]?.memberKinds });
+    expect(MEMBER_KINDS.filter((kind) => kindSpec(kind) === null)).toEqual([]);
   });
 
   it('judges a record\'s enum fields against the lists the member\'s emitted values are typed from', () => {
