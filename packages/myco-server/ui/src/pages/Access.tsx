@@ -12,7 +12,7 @@ import { refusalText, useAccessActions, useInvitations, useMembers, usePaged, ty
 import { useMe } from '../hooks/use-me';
 import { useProjects } from '../hooks/use-projects';
 import { useWorkerFleet } from '../hooks/use-status';
-import { formatCount, formatDateTime, formatRelative } from '../lib/format';
+import { formatCount, formatDateTime, formatRelative, formatUntil } from '../lib/format';
 import { FLEET_UNKNOWN_WORDS, offersWords, REASON_WORDS, workerFor, workerState, type FleetLookup } from '../lib/worker-state';
 
 /** What a captured event is, in the person's words. */
@@ -26,6 +26,11 @@ const KIND_LABEL: Record<string, string> = {
 function credentialWords(credential: CredentialRow, revokedByName: string | null): string {
   if (credential.revokedAt !== null) return `stopped${revokedByName === null ? '' : ` by ${revokedByName}`}`;
   return credential.live ? 'allowed to write' : 'expired';
+}
+
+/** When an open invitation stops working. The list holds only unexpired ones, so a past one has lapsed since it loaded. */
+export function invitationExpiry(expiresAt: number, now: number): string {
+  return expiresAt <= now ? 'expired' : `expires in ${formatUntil(expiresAt, now)}`;
 }
 
 const button = 'rounded-md border border-outline-variant/30 px-2.5 py-1 font-sans text-xs text-on-surface transition-colors hover:bg-surface-container-high';
@@ -94,7 +99,7 @@ export function Access() {
                   <li key={i.id} className="flex items-center gap-3 py-2 font-sans text-sm">
                     <div className="min-w-0 flex-1">
                       <div className="text-on-surface">{i.memberId === null ? 'A new member' : `Another runtime for ${nameOf(i.memberId)}`}</div>
-                      <div className="text-xs text-on-surface-variant">{nameOf(i.createdBy) ? `by ${nameOf(i.createdBy)} · ` : ''}expires {formatRelative(i.expiresAt)}</div>
+                      <div className="text-xs text-on-surface-variant">{nameOf(i.createdBy) ? `by ${nameOf(i.createdBy)} · ` : ''}{invitationExpiry(i.expiresAt, Date.now())}</div>
                     </div>
                     <button type="button" className={button} onClick={() => { setWithdrawError(null); actions.revokeInvitation.mutate(i.id, { onError: (err) => setWithdrawError(refusalText(err)) }); }}>Withdraw</button>
                   </li>

@@ -5,6 +5,8 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 
 import App from '../../packages/myco-server/ui/src/App';
 import { AppearanceProvider } from '../../packages/myco-server/ui/src/providers/appearance';
+import { formatRelative, formatUntil } from '../../packages/myco-server/ui/src/lib/format';
+import { invitationExpiry } from '../../packages/myco-server/ui/src/pages/Access';
 
 const ME = { sub: '583231', login: 'octocat', member: { id: 'mem_1', label: 'chris' } };
 const MEMBERS = { members: [
@@ -249,5 +251,54 @@ describe('a runtime and the worker record beside it', () => {
     accessServer({});
     mount('/access');
     expect(await screen.findByText('admin')).toBeTruthy();
+  });
+});
+
+describe('an open invitation says when it stops working', () => {
+  const invitation = (expiresAt: number) => ({ id: 'en_1', memberId: null, createdBy: 'mem_1', createdAt: Date.now(), expiresAt, role: 'member', projectId: null });
+
+  it('counts down to an invitation 60 minutes out, never "just now"', async () => {
+    accessServer({}, { '/api/enrollment': () => Response.json({ invitations: [invitation(Date.now() + 60 * 60_000)] }) });
+    mount('/access');
+    expect(await screen.findByText(/by chris · expires in (59|60)m$/)).toBeTruthy();
+    expect(screen.queryByText(/just now/)).toBeNull();
+  });
+
+  it('says an invitation past its expiry has expired, not that it expires', async () => {
+    accessServer({}, { '/api/enrollment': () => Response.json({ invitations: [invitation(Date.now() - 5 * 60_000)] }) });
+    mount('/access');
+    expect(await screen.findByText(/by chris · expired$/)).toBeTruthy();
+    expect(screen.queryByText(/expires/)).toBeNull();
+  });
+});
+
+describe('future instants', () => {
+  const now = 1_790_000_000_000;
+
+  it('formatUntil counts a lease in seconds, then minutes, hours and days', () => {
+    expect(formatUntil(now + 62_000, now)).toBe('62s');
+    expect(formatUntil(now + 1, now)).toBe('1s');
+    expect(formatUntil(now + 60 * 60_000, now)).toBe('60m');
+    expect(formatUntil(now + 3 * 3_600_000, now)).toBe('3h');
+    expect(formatUntil(now + 3 * 86_400_000, now)).toBe('3d');
+    expect(formatUntil(now, now)).toBe('now');
+  });
+
+  it('formatUntil counts a schedule coarsely: no seconds, and hours from one hour out', () => {
+    expect(formatUntil(now + 30_000, now, true)).toBe('1m');
+    expect(formatUntil(now + 45 * 60_000, now, true)).toBe('45m');
+    expect(formatUntil(now + 119 * 60_000, now, true)).toBe('2h');
+  });
+
+  it('an invitation at or past its expiry has expired, and "now" never follows "expires in"', () => {
+    expect(invitationExpiry(now, now)).toBe('expired');
+    expect(invitationExpiry(now - 1, now)).toBe('expired');
+    expect(invitationExpiry(now + 1, now)).toBe('expires in 1s');
+    expect(invitationExpiry(now + 60 * 60_000, now)).toBe('expires in 60m');
+  });
+
+  it('formatRelative reads a future instant as just now, since a capturing clock can run ahead', () => {
+    expect(formatRelative(now + 2 * 60_000, now)).toBe('just now');
+    expect(formatRelative(now - 5 * 60_000, now)).toBe('5m ago');
   });
 });

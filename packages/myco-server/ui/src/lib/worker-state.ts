@@ -1,3 +1,4 @@
+import { formatUntil } from './format';
 import { harnessLabel } from './harness';
 import type { WorkerRow, WorkerStatus } from './api';
 import type { StatusTone } from '../components/ui/status-dot';
@@ -25,13 +26,6 @@ export type LeaseStanding = 'held' | 'lapsed' | 'none';
 export function leaseStanding(leasedBy: string | null, expiresAt: number | null, now: number): LeaseStanding {
   if (leasedBy === null) return 'none';
   return expiresAt !== null && expiresAt > now ? 'held' : 'lapsed';
-}
-
-/** A lease runs in seconds and renews on a 30s heartbeat, so it is counted in seconds until a couple of minutes out. */
-export function untilWords(at: number, now: number): string {
-  const delta = at - now;
-  if (delta <= 0) return 'now';
-  return delta < 120_000 ? `${Math.round(delta / 1000)}s` : `${Math.floor(delta / 60_000)}m`;
 }
 
 /** Why the last claim took nothing, in the words an owner reads. Each describes THAT poll, not the whole queue. */
@@ -69,7 +63,7 @@ export function workerState(worker: WorkerRow, now: number): { tone: StatusTone;
   const name = workerName(worker);
   if (worker.busy !== null) {
     const task = worker.busy.task ?? 'a run';
-    return { tone: 'sage', line: `${name} · Running ${task} for ${worker.busy.projectId} · Lease expires in ${untilWords(worker.busy.leaseExpiresAt, now)}` };
+    return { tone: 'sage', line: `${name} · Running ${task} for ${worker.busy.projectId} · Lease expires in ${formatUntil(worker.busy.leaseExpiresAt, now)}` };
   }
   if (worker.lastSeenAt === 0) return { tone: 'outline', line: `${name} · No contact recorded` };
   if (!worker.recent) return { tone: 'outline', line: `${name} · Not seen recently · Last contact ${sinceWords(worker.lastSeenAt, now)}` };

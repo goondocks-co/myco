@@ -3,17 +3,36 @@ function toMillis(ts: number): number {
   return ts < 1e12 ? ts * 1000 : ts;
 }
 
+const MINUTE = 60_000;
+const HOUR = 60 * MINUTE;
+const DAY = 24 * HOUR;
+
+/**
+ * How long ago a past instant was. A future instant reads "just now": a capturing machine's clock can run ahead of
+ * this one. Say a deadline with `formatUntil`.
+ */
 export function formatRelative(ts: number | null, now: number = Date.now()): string {
   if (ts === null) return 'never';
   const delta = Math.max(0, now - toMillis(ts));
-  const minute = 60_000;
-  const hour = 60 * minute;
-  const day = 24 * hour;
-  if (delta < minute) return 'just now';
-  if (delta < hour) return `${Math.floor(delta / minute)}m ago`;
-  if (delta < day) return `${Math.floor(delta / hour)}h ago`;
-  if (delta < 30 * day) return `${Math.floor(delta / day)}d ago`;
+  if (delta < MINUTE) return 'just now';
+  if (delta < HOUR) return `${Math.floor(delta / MINUTE)}m ago`;
+  if (delta < DAY) return `${Math.floor(delta / HOUR)}h ago`;
+  if (delta < 30 * DAY) return `${Math.floor(delta / DAY)}d ago`;
   return new Date(toMillis(ts)).toLocaleDateString();
+}
+
+/**
+ * How long until a future instant, as the span that follows "in": seconds until two minutes out (a lease renews on a
+ * 30s heartbeat), then minutes, hours and days. `coarse` suits a schedule: no seconds, and hours from one hour out.
+ * An instant already past is "now"; a caller says what past means.
+ */
+export function formatUntil(ts: number, now: number = Date.now(), coarse = false): string {
+  const delta = toMillis(ts) - now;
+  if (delta <= 0) return 'now';
+  if (!coarse && delta < 2 * MINUTE) return `${Math.ceil(delta / 1000)}s`;
+  if (delta < (coarse ? HOUR : 2 * HOUR)) return `${Math.max(1, Math.floor(delta / MINUTE))}m`;
+  if (delta < 2 * DAY) return `${Math.round(delta / HOUR)}h`;
+  return `${Math.round(delta / DAY)}d`;
 }
 
 export function formatDateTime(ts: number | null): string {
