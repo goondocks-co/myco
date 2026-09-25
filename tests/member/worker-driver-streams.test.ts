@@ -195,6 +195,45 @@ describe('the Claude Code driver', () => {
     expect(granted.at(-1)).toEqual({ kind: 'ended', stop: 'error', detail: 'permission refused for Read' });
   });
 
+  it('reads a refusal of a tool that only shares the run server\'s prefix as outside the grant', async () => {
+    const dir = stubHarness('claude', [
+      '{"type":"result","subtype":"success","is_error":false,"stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":1},"permission_denials":[{"tool_name":"mcp__mycox__foo","tool_use_id":"tu_1","tool_input":{}}]}',
+    ]);
+    process.env.PATH = `${dir}:${process.env.PATH ?? ''}`;
+    const events = await collect(claudeCodeDriver.run({ ...runDir(), prompt: 'do it', credentialEnv: {} }, new AbortController().signal));
+    expect(events.at(-1)).toEqual({ kind: 'ended', stop: 'end_turn', detail: null });
+    expect(events.filter((e) => e.kind === 'tool_call')).toEqual([{ kind: 'tool_call', name: 'mcp__mycox__foo', status: 'error' }]);
+  });
+
+  it('reports a refused call once when the harness says so on its result and on the turn\'s result, with no system line', async () => {
+    const dir = stubHarness('claude', [
+      '{"type":"assistant","message":{"content":[{"type":"tool_use","id":"tu_1","name":"Bash","input":{"command":"ls"}}]}}',
+      '{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"tu_1","is_error":true,"content":"Claude requested permissions to use Bash, but you haven\'t granted it yet."}]}}',
+      '{"type":"result","subtype":"success","is_error":false,"stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":1},"permission_denials":[{"tool_name":"Bash","tool_use_id":"tu_1","tool_input":{"command":"ls"}}]}',
+    ]);
+    process.env.PATH = `${dir}:${process.env.PATH ?? ''}`;
+    const events = await collect(claudeCodeDriver.run({ ...runDir(), prompt: 'do it', credentialEnv: {} }, new AbortController().signal));
+    expect(events.filter((e) => e.kind === 'tool_call')).toEqual([
+      { kind: 'tool_call', name: 'Bash', status: 'started' },
+      { kind: 'tool_call', name: 'Bash', status: 'error' },
+    ]);
+    expect(events.at(-1)).toEqual({ kind: 'ended', stop: 'end_turn', detail: null });
+  });
+
+  it('reports every call result that names no call, since none can be matched to another', async () => {
+    const dir = stubHarness('claude', [
+      '{"type":"user","message":{"content":[{"type":"tool_result","is_error":true,"content":"first"}]}}',
+      '{"type":"user","message":{"content":[{"type":"tool_result","is_error":true,"content":"second"}]}}',
+      RESULT_SUCCESS,
+    ]);
+    process.env.PATH = `${dir}:${process.env.PATH ?? ''}`;
+    const events = await collect(claudeCodeDriver.run({ ...runDir(), prompt: 'do it', credentialEnv: {} }, new AbortController().signal));
+    expect(events.filter((e) => e.kind === 'tool_call')).toEqual([
+      { kind: 'tool_call', name: 'tool', status: 'error' },
+      { kind: 'tool_call', name: 'tool', status: 'error' },
+    ]);
+  });
+
   it('reads an in-band error on a message as the end of the run', async () => {
     const dir = stubHarness('claude', [
       '{"type":"system","subtype":"init","session_id":"sess_9"}',

@@ -109,14 +109,19 @@ export const claudeCodeDriver: Driver = {
     const calls = new Map<string, string>();
     /** Calls whose outcome has been reported: the harness reports a refusal on a system line, on the call's result and on the turn's result. */
     const reported = new Set<string>();
+    /** Whether this is the first report of a call's outcome, recording it; a call with no id cannot be matched, so each of its reports is its own. */
+    const firstReport = (id: string | null): boolean => {
+      if (id === null) return true;
+      if (reported.has(id)) return false;
+      reported.add(id);
+      return true;
+    };
     for await (const line of jsonLines(started.lines)) {
       const type = stringOf(line.type);
       if (type === 'system' && stringOf(line.subtype) === 'init') {
         yield { kind: 'started', harness: harness.id, sessionId: stringOf(line.session_id) };
       } else if (type === 'system' && stringOf(line.subtype) === 'permission_denied') {
-        const id = stringOf(line.tool_use_id);
-        if (id !== null) reported.add(id);
-        yield { kind: 'tool_call', name: stringOf(line.tool_name) ?? 'tool', status: 'error' };
+        if (firstReport(stringOf(line.tool_use_id))) yield { kind: 'tool_call', name: stringOf(line.tool_name) ?? 'tool', status: 'error' };
       } else if (type === 'assistant') {
         failure ??= stringOf(line.error);
         for (const block of blocksOf(recordOf(line.message))) {
@@ -134,10 +139,9 @@ export const claudeCodeDriver: Driver = {
       } else if (type === 'user') {
         for (const block of blocksOf(recordOf(line.message))) {
           if (stringOf(block.type) !== 'tool_result') continue;
-          const id = stringOf(block.tool_use_id) ?? '';
-          if (reported.has(id)) continue;
-          reported.add(id);
-          yield { kind: 'tool_call', name: calls.get(id) ?? 'tool', status: block.is_error === true ? 'error' : 'ok' };
+          const id = stringOf(block.tool_use_id);
+          if (!firstReport(id)) continue;
+          yield { kind: 'tool_call', name: (id === null ? undefined : calls.get(id)) ?? 'tool', status: block.is_error === true ? 'error' : 'ok' };
         }
       } else if (type === 'result') {
         yield { kind: 'usage', ...claudeUsage(line) };
@@ -147,9 +151,7 @@ export const claudeCodeDriver: Driver = {
         // granted tool is the run kept from its own work, and ends the run.
         const refusals = refusalsOf(line);
         for (const { tool, id } of refusals) {
-          if (id !== null && reported.has(id)) continue;
-          if (id !== null) reported.add(id);
-          yield { kind: 'tool_call', name: tool, status: 'error' };
+          if (firstReport(id)) yield { kind: 'tool_call', name: tool, status: 'error' };
         }
         const refused = refusals.filter(({ tool }) => grantsWhole(grant, tool)).map(({ tool }) => tool);
         if (refused.length > 0) { yield { kind: 'ended', stop: 'error', detail: `permission refused for ${[...new Set(refused)].join(', ')}` }; break; }
