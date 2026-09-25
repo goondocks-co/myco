@@ -1,13 +1,15 @@
 import type { RelationalStore } from '../core/adapters.js';
-import { failedAutomaticTitleSql } from '../core/runs.js';
+import { titleRunInFlightSql } from '../core/runs.js';
+import { TITLING_MAX_ATTEMPTS } from '../constants.js';
 
-/** A first attempt, or a failed automatic attempt followed by newly captured live bytes. */
-export const titlingClaimAvailableSql = (alias: string): string => `(${alias}.titled_at IS NULL OR (
-  ${alias}.title IS NULL
-  AND EXISTS (SELECT 1 FROM transcripts t WHERE t.project_id = ${alias}.project_id AND t.session_id = ${alias}.session_id
-    AND t.last_received_at > ${alias}.titled_at AND t.imported_at IS NULL)
-  AND ${failedAutomaticTitleSql(alias)}
-))`;
+/**
+ * An automatic titling claim the session admits: under the attempt bound, and
+ * either never attempted or an attempt that ended untitled — stamped before the
+ * bound instant, with no title run of the session queued or running. Binds one
+ * value, the latest stamp a retry may replace.
+ */
+export const titlingClaimAvailableSql = (alias: string): string => `(${alias}.titling_attempts < ${TITLING_MAX_ATTEMPTS} AND (${alias}.titled_at IS NULL OR (
+  ${alias}.title IS NULL AND ${alias}.titled_at < ? AND NOT ${titleRunInFlightSql(alias)})))`;
 
 const UNREADY_TRANSCRIPT_SQL = `t.parsed_offset < t.size OR t.parse_error IS NOT NULL`;
 

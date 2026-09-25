@@ -108,12 +108,12 @@ export const SERVER_JOBS: readonly ServerJob[] = [
   {
     name: 'session-titling',
     runsThrough: 'idle',
-    converges: 'every unclaimed live session-end request with fully parsed material has a titling run; imported sessions are not automatically titled',
+    converges: 'every live session-end request with fully parsed material has had its first titling attempt; a retry, and every other session, is the titling backfill\'s',
   },
   {
     name: 'titling-backfill',
     runsThrough: 'idle',
-    converges: 'every untitled imported session with fully parsed material has had one titling attempt, newest first, inside the Deployment\'s daily backfill ceiling while scheduled intelligence is on; a live session, and a session already attempted, is never touched here',
+    converges: 'every ended, untitled session with fully parsed material is claimed, newest first, until it carries a title or workers have taken the attempt bound on it, inside the Deployment\'s daily titling ceiling and pace; a session its own capture owes a title always, a wholly imported one only while the backfill is on',
   },
   // #1151 — worker mode
   {
@@ -243,9 +243,9 @@ export const TASK_SCHEDULE: Readonly<Record<string, TaskSchedule | null>> = {
 };
 
 /**
- * The block the imported-session backfill runs under, in the same vocabulary
- * and under the same `agent.tasks` override as every scheduled task. Off until
- * an operator turns it on: `enabled` decides whether a wake dispatches at all,
+ * The block the titling convergence runs under, in the same vocabulary
+ * and under the same `agent.tasks` override as every scheduled task:
+ * `enabled`, off until an operator turns it on, admits wholly imported sessions,
  * `runIn` the power states a wake dispatches in, `maxRunsPerDay` a ceiling
  * counted across the Deployment by the backfill's actor, `intervalSeconds` the
  * least time between two wakes that dispatch, and `overlap: 'skip'` holds a

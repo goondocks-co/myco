@@ -121,6 +121,8 @@ export const workerWire: ParityScenario = {
       // while the run is live. Its retirement is what the end is checked by.
       const minted = running.dispatchedBy ?? '';
       expect(minted).not.toBe('');
+      // The claim is the session's titling attempt; the queue never counted one.
+      expect(await target.sql(`SELECT titling_attempts AS attempts FROM sessions WHERE session_id = ${lit(sessionId)}`)).toEqual([{ attempts: 1 }]);
 
       // Only the child receives the run's MCP connection and reads its material.
       await waitFor(async () => existsSync(receipt) || ended() !== null, Boolean, 20_000);
