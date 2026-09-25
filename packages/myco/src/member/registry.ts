@@ -178,6 +178,28 @@ function isMembership(value: unknown): value is DeploymentMembership {
     && typeof m.machineId === 'string';
 }
 
+/** The fields that describe one token rather than the membership: they are true of the token they were recorded for and of no other. */
+export const TOKEN_SCOPED_FIELDS = ['tokenId', 'expiresAt', 'refreshAfter', 'refreshTerminal'] as const;
+
+/**
+ * The membership `fresh` leaves on disk over `held`: the held one with every
+ * field `fresh` defines laid over it, and `joinedAt` kept, since no one
+ * project's write knows when the machine joined the Deployment. A `fresh`
+ * carrying a different token replaces the credential, so none of the held
+ * token's own fields survive it: a new token starts with no expiry, no refresh
+ * window and no terminal refusal but the ones `fresh` itself records.
+ */
+function mergeMembership(held: DeploymentMembership | null, fresh: DeploymentMembership): DeploymentMembership {
+  if (held === null) return fresh;
+  const base: Partial<DeploymentMembership> = { ...held };
+  if (held.token !== fresh.token) for (const field of TOKEN_SCOPED_FIELDS) delete base[field];
+  return {
+    ...base,
+    ...Object.fromEntries(Object.entries(fresh).filter(([, v]) => v !== undefined)),
+    joinedAt: held.joinedAt,
+  } as DeploymentMembership;
+}
+
 /** The membership for `serverUrl`, or null when absent or unreadable. */
 export function readDeploymentMembership(serverUrl: string, mycoHome: string = resolveMycoHome()): DeploymentMembership | null {
   const file = deploymentPath(serverUrl, mycoHome);
@@ -393,12 +415,7 @@ export function writeRegistryEntry(entry: RegistryEntry, opts: { mycoHome?: stri
     //
     // `joinedAt` is when this machine joined the DEPLOYMENT, which no one project's
     // binding knows, so an existing membership keeps the instant it already has.
-    const held = readDeploymentMembership(entry.serverUrl, mycoHome);
-    const merged: DeploymentMembership = held === null ? membership : {
-      ...held,
-      ...Object.fromEntries(Object.entries(membership).filter(([, v]) => v !== undefined)),
-      joinedAt: held.joinedAt,
-    } as DeploymentMembership;
+    const merged = mergeMembership(readDeploymentMembership(entry.serverUrl, mycoHome), membership);
     writePrivateFileAtomic(deploymentPath(entry.serverUrl, mycoHome), `${JSON.stringify(merged, null, 2)}\n`);
     writePrivateFileAtomic(registryEntryPath(entry.root, mycoHome), `${JSON.stringify(binding, null, 2)}\n`);
   };
@@ -424,13 +441,7 @@ export function writeDeploymentMembership(
   const mycoHome = opts.mycoHome ?? resolveMycoHome();
   const write = () => {
     prepareRegistryDir(mycoHome);
-    const held = readDeploymentMembership(membership.serverUrl, mycoHome);
-    const fresh: DeploymentMembership = { version: REGISTRY_VERSION, ...membership };
-    const merged: DeploymentMembership = held === null ? fresh : {
-      ...held,
-      ...Object.fromEntries(Object.entries(fresh).filter(([, v]) => v !== undefined)),
-      joinedAt: held.joinedAt,
-    } as DeploymentMembership;
+    const merged = mergeMembership(readDeploymentMembership(membership.serverUrl, mycoHome), { version: REGISTRY_VERSION, ...membership });
     writePrivateFileAtomic(deploymentPath(membership.serverUrl, mycoHome), `${JSON.stringify(merged, null, 2)}\n`);
   };
   if (opts.locked) write();

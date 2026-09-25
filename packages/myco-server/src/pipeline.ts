@@ -1,7 +1,7 @@
 import type { ErrorClassifier, OutboundFetch, ServerEnv } from './core/adapters.js';
 import { stampRequest } from './core/activity.js';
 import { matchRoute, methodsServing, type Route, type Shape } from './routes.js';
-import { activateSuccessor, authenticateServerMemberToken, detectLineageReplay, MEMBER_TOKEN_PATTERN, type MemberAuth } from './auth/tokens.js';
+import { activateSuccessor, authenticateServerMemberToken, detectLineageReplay, MEMBER_TOKEN_PATTERN, type ExpiryAdmission, type MemberAuth } from './auth/tokens.js';
 import { heldRunOfCredential } from './api/run-admission.js';
 import { recordRunCall, type HeldRun } from './core/runs.js';
 import { HARNESS_MEMBER_ID } from './core/harness.js';
@@ -72,6 +72,9 @@ const deploymentScoped = (route: MemberRoute): route is DeploymentRoute => 'scop
 /** A member route that also admits an External Agent grant. */
 type GrantRoute = Extract<MemberRoute, { bodyMode: 'json' }> & { grant: NonNullable<Extract<MemberRoute, { bodyMode: 'json' }>['grant']> };
 const admitsGrant = (route: Route): route is GrantRoute => route.auth === 'member' && route.bodyMode === 'json' && route.grant !== undefined;
+/** How a credential past its expiry is treated on the matched route: admitted only where the route table declares `admitsLapsed`, refused everywhere else, an unmatched path included. */
+const expiryAdmissionOf = (route: Route | undefined): ExpiryAdmission =>
+  route?.auth === 'member' && 'admitsLapsed' in route && route.admitsLapsed === true ? 'lapsed' : 'live';
 /** The refusal shape of a member route, as the route table declares it. */
 const shapeOf = (route: MemberRoute): Shape => route.shape;
 /** A grant authenticated to its Project. */
@@ -331,7 +334,7 @@ export function createServer(deps: ServerDeps) {
 
     let auth: MemberAuth | null;
     try {
-      auth = await authenticateServerMemberToken(env.db, await sha256Hex(presented), now);
+      auth = await authenticateServerMemberToken(env.db, await sha256Hex(presented), now, expiryAdmissionOf(matched?.route));
     } catch (err) {
       if (!(err instanceof SchemaMismatchError)) throw err;
       emit({ kind: 'schema_mismatch', expected: err.expected, found: err.found });
