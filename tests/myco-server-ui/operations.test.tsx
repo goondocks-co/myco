@@ -169,7 +169,7 @@ describe('automatic recovery on the Operations page', () => {
     mount('/operations');
 
     expect((await screen.findByTestId('recovery-cadence')).textContent).toContain('Every 6 h');
-    expect(screen.getByTestId('recovery-cadence').textContent).toContain('Next due in 3 h');
+    expect(screen.getByTestId('recovery-cadence').textContent).toContain('Next due in 3h');
     expect(screen.getByTestId('recovery-latest').textContent).toContain('Attempt 7');
     const available = screen.getByTestId('recovery-available').textContent ?? '';
     expect(available).toContain('complete staging');
