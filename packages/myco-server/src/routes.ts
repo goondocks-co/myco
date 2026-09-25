@@ -3,7 +3,7 @@ import { handleRepository, handleSaveRepository, handleRemoveRepository, handleR
 import { handleProjectMap, handleRunMap } from './api/canopy.js';
 import { handleSkillCandidates, handleReviewSkillCandidate } from './api/skill-candidates.js';
 import type { ServerEnv } from './core/adapters.js';
-import type { UnboundMemberContext } from './context.js';
+import type { CredentialContext, UnboundMemberContext } from './context.js';
 import type { AuthContext, DeploymentContext, GrantContext, OwnerContext, RouteContext, RunContext, SessionContext, StreamContext } from './context.js';
 import { handleLink, handleMe } from './api/identity.js';
 import { handleLinkGithub } from './auth/members.js';
@@ -64,6 +64,8 @@ export type PublicHandler = (request: Request) => Promise<Response>;
 export type MemberHandler = (env: ServerEnv, ctx: RouteContext) => Promise<Response>;
 /** Protocol handlers without a default Project; tool dispatch must resolve one before any project operation. */
 export type UnboundMemberHandler = (env: ServerEnv, ctx: UnboundMemberContext) => Promise<Response>;
+
+export type CredentialHandler = (env: ServerEnv, ctx: CredentialContext) => Promise<Response>;
 /** Grant handlers answer a json route reached over an External Agent grant: the grant's Project and the consumed body, nothing of a member. A route declares one to admit grants at all. */
 export type GrantHandler = (env: ServerEnv, ctx: GrantContext) => Promise<Response>;
 /** Run handlers answer a json route reached over a run's credential: the run, its Project and the consumed body. A route declares one to serve the run principal at all; a run credential is refused on every member route that declares neither this nor `legacyRunRoute`. */
@@ -84,11 +86,12 @@ export type EnrollHandler = (env: ServerEnv, request: Request, now: number) => P
 /** The key a member route answers under: `{<shape>: true|false, …}` on every outcome after authentication, refusals and 503s included. */
 export type Shape = 'persisted' | 'stored' | 'refreshed' | 'answered';
 
-/** `quotaPrecheck: false` marks a member route the pipeline does not pre-check against the byte quota and never reads a constraint failure as a quota refusal; what such a route stores through the ingest path is still charged there. Absent, the route is pre-checked. `admitsLapsed: true` marks the one route a credential past its own expiry still authenticates on — the refresh, which decides against the lineage ceiling instead; every other route refuses an expired credential. */
+/** `quotaPrecheck: false` marks a member route the pipeline does not pre-check against the byte quota and never reads a constraint failure as a quota refusal; what such a route stores through the ingest path is still charged there. Absent, the route is pre-checked. `scope: 'credential'` marks a route answered on the presented credential alone: no Project is read from the request or resolved, whatever header it carries. Only such a route may declare `admitsLapsed: true`, the one place a credential past its own expiry still authenticates — the refresh, which decides against the lineage ceiling instead; every other route refuses an expired credential. */
 export type Route =
   | { method: string; path: string; auth: 'public'; bodyMode: 'none'; handler: PublicHandler }
-  | ({ method: string; path: string; auth: 'member'; bodyMode: 'json'; shape: Exclude<Shape, 'stored'>; quotaPrecheck?: boolean; handler: MemberHandler; grant?: GrantHandler; run?: RunHandler; legacyRunRoute?: true; admitsLapsed?: true }
-    & ({ unbound?: never } | { shape: 'answered' | 'refreshed'; quotaPrecheck: false; unbound: UnboundMemberHandler }))
+  | ({ method: string; path: string; auth: 'member'; bodyMode: 'json'; shape: Exclude<Shape, 'stored'>; quotaPrecheck?: boolean; handler: MemberHandler; grant?: GrantHandler; run?: RunHandler; legacyRunRoute?: true }
+    & ({ unbound?: never } | { shape: 'answered'; quotaPrecheck: false; unbound: UnboundMemberHandler }))
+  | { method: string; path: string; auth: 'member'; bodyMode: 'json'; shape: 'refreshed'; quotaPrecheck: false; scope: 'credential'; admitsLapsed?: true; credential: CredentialHandler; handler?: never; grant?: never; run?: never; legacyRunRoute?: never }
   | { method: string; path: string; auth: 'member'; bodyMode: 'json'; shape: 'persisted'; quotaPrecheck: false; scope: 'deployment'; deployment: DeploymentHandler; handler?: never; grant?: never; run?: never; legacyRunRoute?: never }
   | { method: string; path: string; pattern: RegExp; auth: 'member'; bodyMode: 'stream'; shape: 'stored'; quotaPrecheck?: boolean; maxBodyBytes: number; handler: StreamHandler; legacyRunRoute?: true }
   | { method: string; path: string; auth: 'auth'; handler: AuthHandler }
@@ -112,8 +115,7 @@ export const ROUTES: readonly Route[] = [
   { method: 'PUT', path: '/api/titling-backfill', auth: 'owner', handler: handleSetTitlingBackfill },
   { method: 'POST', path: '/events', auth: 'member', bodyMode: 'json', shape: 'persisted', handler: handleEvents },
   { method: 'POST', path: '/blobs/{sha256}', pattern: /^\/blobs\/(?<key>[0-9a-f]{64})$/, auth: 'member', bodyMode: 'stream', shape: 'stored', maxBodyBytes: MAX_BLOB_BYTES, handler: handleBlob },
-  // A credential is the Deployment's, so its refresh names no Project: `unbound` answers the request that carries none.
-  { method: 'POST', path: '/tokens/refresh', auth: 'member', bodyMode: 'json', shape: 'refreshed', quotaPrecheck: false, admitsLapsed: true, handler: handleRefresh, unbound: handleRefresh },
+  { method: 'POST', path: '/tokens/refresh', auth: 'member', bodyMode: 'json', shape: 'refreshed', quotaPrecheck: false, scope: 'credential', admitsLapsed: true, credential: handleRefresh },
   // #1148 — bounded import and backfill
   { method: 'POST', path: '/import/plan', auth: 'member', bodyMode: 'json', shape: 'persisted', quotaPrecheck: false, handler: handleImportPlan },
   // The run's own channel. `legacyRunRoute: true` admits the harness credential as a

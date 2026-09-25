@@ -328,6 +328,7 @@ export async function shipTranscriptSegments(
   const { sessionId } = ctx;
   let pointer = slotPointer(readSessionState(spool.dir, sessionId), slot);
   if (!pointer) return { shipped: 0, endedBy: 'absent' };
+  if (pointer.refused !== undefined) return { shipped: 0, endedBy: 'refused' };
   /**
    * Move THIS transcript's offset, computed under the lock against what is
    * stored — never against the snapshot read above. Two rules:
@@ -389,8 +390,14 @@ export async function shipTranscriptSegments(
       transcriptId: pointer.transcriptId, baseOffset: offset, blobSource: source, originPath: pointer.path,
       headHash: opts.headHash ?? pointer.headHash, role: slot.role,
     });
+    // A refusal is final for this transcript: it is logged once, and the pointer records it so no later pass uploads it again.
+    const refused = pointer.transcriptId;
     const logRefusal = (code: MemberCode, reason: string): void => {
       spool.appendRefused({ eventId: event.envelope.eventId, sessionId, kind: event.envelope.kind, code, reason, at: now() });
+      updateSessionState(spool.dir, sessionId, (s) => {
+        const stored = slotPointer(s, slot);
+        if (stored?.transcriptId === refused) setSlotPointer(s, slot, { ...stored, refused: code });
+      }, now());
     };
 
     const blob = await client.postBlob(bytes, source.sha256, source.mediaType, clippedRequestBudget(budget, now()));
@@ -439,14 +446,15 @@ export async function shipTranscriptSegments(
 
 /**
  * Ship every transcript the session holds a pointer for: its own, then each
- * subagent transcript beside it, inside one budget. A pass that ends for any
- * reason other than finishing its transcript ends the whole walk: whatever
- * stopped it will stop the next one too.
+ * subagent transcript beside it, inside one budget. A transcript the
+ * Deployment refused for good is passed over; a pass that ends for any other
+ * reason than finishing its transcript ends the whole walk: whatever stopped
+ * it will stop the next one too.
  *
  * The session's transcript backlog mark follows the outcome: cleared once
- * every transcript is acknowledged to its end or its file is gone, set
- * otherwise, so a pass that could not finish leaves the session for the
- * backlog to reach from another hook.
+ * every transcript is acknowledged to its end, refused for good, or gone from
+ * disk; set otherwise, so a pass that could not finish leaves the session for
+ * the backlog to reach from another hook.
  */
 export async function shipSessionTranscripts(
   ctx: EnvelopeContext, spool: MemberSpool, client: ServerClient, budget: HookBudget,
@@ -458,7 +466,7 @@ export async function shipSessionTranscripts(
   for (const slot of slots) {
     const result = await shipTranscriptSegments(ctx, spool, client, budget, { ...opts, slot });
     shipped += result.shipped;
-    if (result.endedBy !== 'done' && result.endedBy !== 'absent') {
+    if (result.endedBy !== 'done' && result.endedBy !== 'absent' && result.endedBy !== 'refused') {
       spool.markTranscriptBacklog(ctx.sessionId);
       return { shipped, endedBy: result.endedBy };
     }

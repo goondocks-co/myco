@@ -24,12 +24,13 @@
  * than the TTL renews on its first hook back.
  */
 import { resolveMycoHome } from '../paths/home.js';
+import { getPluginVersion } from '../version.js';
 import type { RequestBudget } from './budget.js';
-import { MEMBER_TOKEN_REFRESH_WINDOW_MS, ROUTE_MISSING_NOTICE_INTERVAL_MS } from './constants.js';
+import { MEMBER_TOKEN_REFRESH_WINDOW_MS, ROUTE_MISSING_NOTICE_INTERVAL_MS, type MemberCode } from './constants.js';
 import { REJOIN_HINT } from './delivery-notice.js';
 import type { CredentialRecord } from './credential.js';
 import {
-  acquireRegistryLock, readDeploymentMembership, readRegistryEntry, writeDeploymentMembership, type DeploymentMembership, type RegistryEntry,
+  acquireRegistryLock, readDeploymentMembership, readRegistryEntry, writeDeploymentMembership, TOKEN_SCOPED_FIELDS, type DeploymentMembership, type RegistryEntry,
 } from './registry.js';
 import { refreshCredential, type ClientRecord, type FetchLike } from './transport.js';
 
@@ -51,21 +52,31 @@ export interface RefreshOptions {
   budget: RequestBudget;
   /** Dial whether or not the window is open — to learn whether a token a capture route refused still rotates. Never past a terminal refusal. */
   force?: boolean;
+  /** The Project the request names, when the caller works in one; a membership no project is bound to names none. */
+  projectId?: string;
 }
 
-/** What `refreshDue` reads: the window the server announced, the expiry, and whether rotation is already terminal. */
-export type RefreshWindow = Pick<RegistryEntry, 'expiresAt' | 'refreshAfter' | 'refreshTerminal'>;
+/** Refusals that say the request, not the credential, fell short: the token may still rotate, so they are retried rather than recorded as final. `no_project` is a server that requires a Project on this route. */
+const RETRYABLE_REFUSALS: readonly MemberCode[] = ['no_project'];
+
+/** What `refreshDue` reads: the window the server announced, the expiry, and whether rotation is already terminal and which build said so. */
+export type RefreshWindow = Pick<RegistryEntry, 'expiresAt' | 'refreshAfter' | 'refreshTerminal' | 'refreshTerminalBy'>;
+
+/** Whether a terminal refusal was recorded by another build than this one: such a refusal is asked about once more, and this build's answer is the one kept. */
+const terminalFromAnotherBuild = (entry: RefreshWindow, build: string): boolean => entry.refreshTerminal === true && entry.refreshTerminalBy !== build;
 
 const stderr = (line: string): void => { process.stderr.write(`[myco] member: ${line}\n`); };
 
 /**
  * True when the token's refresh window is open: never after a terminal
- * refusal; the announced `refreshAfter` when there is one; otherwise the last
- * quarter of the TTL before `expiresAt`. An entry that knows neither is due —
- * one dial teaches it the window the server keeps.
+ * refusal this build recorded — one recorded by another build, or by none, is
+ * asked about once more;
+ * the announced `refreshAfter` when there is one; otherwise the last quarter of
+ * the TTL before `expiresAt`. An entry that knows neither is due — one dial
+ * teaches it the window the server keeps.
  */
-export function refreshDue(entry: RefreshWindow, now: number): boolean {
-  if (entry.refreshTerminal) return false;
+export function refreshDue(entry: RefreshWindow, now: number, build: string = getPluginVersion()): boolean {
+  if (entry.refreshTerminal) return terminalFromAnotherBuild(entry, build);
   if (entry.refreshAfter !== undefined) return now >= entry.refreshAfter;
   if (entry.expiresAt !== undefined) return entry.expiresAt - now <= MEMBER_TOKEN_REFRESH_WINDOW_MS;
   return true;
@@ -95,7 +106,8 @@ export interface MembershipRefreshReport {
 export async function refreshMembership(serverUrl: string, opts: RefreshOptions): Promise<MembershipRefreshReport> {
   const mycoHome = opts.mycoHome ?? resolveMycoHome();
   const now = opts.now ?? Date.now;
-  const due = (held: RefreshWindow): boolean => (opts.force === true ? held.refreshTerminal !== true : refreshDue(held, now()));
+  const build = getPluginVersion();
+  const due = (held: RefreshWindow): boolean => (opts.force === true && held.refreshTerminal !== true) || refreshDue(held, now(), build);
   const before = readDeploymentMembership(serverUrl, mycoHome);
   if (!before) return { status: 'no-entry', membership: null };
   if (!due(before)) return { status: 'not-due', membership: before };
@@ -108,9 +120,16 @@ export async function refreshMembership(serverUrl: string, opts: RefreshOptions)
     if (!held) return { status: 'no-entry', membership: null };
     if (held.token !== before.token || !due(held)) return { status: 'not-due', membership: held };
 
-    const outcome = await refreshCredential(held, opts.fetch ?? globalThis.fetch, opts.budget);
+    const outcome = await refreshCredential({ serverUrl: held.serverUrl, token: held.token, projectId: opts.projectId }, opts.fetch ?? globalThis.fetch, opts.budget);
     const write = (next: Partial<DeploymentMembership>): DeploymentMembership | null => {
       writeDeploymentMembership({ ...held, ...next, updatedAt: now() }, { mycoHome, locked: true });
+      return readDeploymentMembership(serverUrl, mycoHome);
+    };
+    /** The membership as the successor holds it: nothing of the predecessor's own state carried over. */
+    const succeed = (next: Pick<DeploymentMembership, 'token' | 'tokenId' | 'expiresAt' | 'refreshAfter'>): DeploymentMembership | null => {
+      const kept: Partial<DeploymentMembership> = { ...held };
+      for (const field of TOKEN_SCOPED_FIELDS) delete kept[field];
+      writeDeploymentMembership({ ...(kept as DeploymentMembership), ...next, updatedAt: now() }, { mycoHome, locked: true });
       return readDeploymentMembership(serverUrl, mycoHome);
     };
     switch (outcome.class) {
@@ -118,23 +137,25 @@ export async function refreshMembership(serverUrl: string, opts: RefreshOptions)
         return {
           status: 'refreshed',
           tokenId: outcome.tokenId,
-          membership: write({ token: outcome.token, tokenId: outcome.tokenId, expiresAt: outcome.expiresAt, refreshAfter: outcome.refreshAfter }),
+          membership: succeed({ token: outcome.token, tokenId: outcome.tokenId, expiresAt: outcome.expiresAt, refreshAfter: outcome.refreshAfter }),
         };
       case 'refused': {
+        if (RETRYABLE_REFUSALS.includes(outcome.code)) return { status: 'retry', membership: held };
         if (outcome.refreshAfter !== undefined) {
-          return { status: outcome.code === 'refresh_too_early' ? 'too-early' : 'terminal', membership: write({ refreshAfter: outcome.refreshAfter }) };
+          // A window announced is a token that still rotates: any terminal refusal recorded against it no longer holds.
+          return { status: outcome.code === 'refresh_too_early' ? 'too-early' : 'terminal', membership: write({ refreshAfter: outcome.refreshAfter, refreshTerminal: false }) };
         }
         if (outcome.code === 'lineage_expired') {
           stderr(`token lineage expired — capture stops reaching the server at ${new Date(held.expiresAt ?? now()).toISOString()}; ${REJOIN_HINT}`);
-          return { status: 'lineage-expired', membership: write({ refreshTerminal: true }) };
+          return { status: 'lineage-expired', membership: write({ refreshTerminal: true, refreshTerminalBy: build }) };
         }
         stderr(`token rotation refused (${outcome.code})${outcome.reason ? `: ${outcome.reason}` : ''} — ${REJOIN_HINT}`);
-        return { status: 'terminal', membership: write({ refreshTerminal: true }) };
+        return { status: 'terminal', membership: write({ refreshTerminal: true, refreshTerminalBy: build }) };
       }
       case 'unauthorized':
         stderr(`member token refused — ${REJOIN_HINT}`);
         // The token no longer authenticates anywhere, so its life ended now, whatever expiry it was issued with.
-        return { status: 'unauthorized', membership: write({ refreshTerminal: true, expiresAt: Math.min(held.expiresAt ?? now(), now()) }) };
+        return { status: 'unauthorized', membership: write({ refreshTerminal: true, refreshTerminalBy: build, expiresAt: Math.min(held.expiresAt ?? now(), now()) }) };
       case 'route_missing': {
         const noticedAt = held.routeMissingNoticedAt ?? 0;
         if (now() - noticedAt < ROUTE_MISSING_NOTICE_INTERVAL_MS) return { status: 'route-missing', membership: held };
@@ -156,7 +177,7 @@ export async function refreshMemberCredential(root: string, opts: RefreshOptions
   const mycoHome = opts.mycoHome ?? resolveMycoHome();
   const entry = readRegistryEntry(root, mycoHome);
   if (!entry) return { status: 'no-entry', entry: null };
-  const report = await refreshMembership(entry.serverUrl, { ...opts, mycoHome });
+  const report = await refreshMembership(entry.serverUrl, { ...opts, mycoHome, projectId: entry.projectId });
   return { status: report.status, tokenId: report.tokenId, entry: report.membership === null ? null : readRegistryEntry(root, mycoHome) };
 }
 

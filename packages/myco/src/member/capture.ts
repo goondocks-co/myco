@@ -219,14 +219,16 @@ export async function runMemberHook(
       if (root !== null && drained.endedBy === 'unauthorized' && canStartRequest(budget, now())) {
         await refreshMemberCredential(root, { mycoHome, fetch: fetchImpl, now, budget: clippedRequestBudget(budget, now()), force: true });
       }
-      const ownDelivered = drained.skipped === undefined && drained.endedBy === 'drained' && drained.remaining === 0;
+      // Delivered in full: every event acknowledged, and no transcript byte of the session still waiting.
+      const ownDelivered = drained.skipped === undefined && drained.endedBy === 'drained' && drained.remaining === 0 && !spool.hasTranscriptBacklog(sessionId);
       if (outcome.probe) {
         // The session's own capture is delivered first; the backlog of every other session gets what the budget has left.
-        if (ownDelivered) await drainBacklog(spool, live.client, budget, { exclude: sessionId, now, machineId: getMachineId(), ...recovery });
+        const backlog = ownDelivered ? await drainBacklog(spool, live.client, budget, { exclude: sessionId, now, machineId: getMachineId(), ...recovery }) : null;
         // Probing hooks also apply spool retention for the project; a drain
         // that delivered everything also lets go of the state of sessions
-        // delivered long ago.
-        applySpoolRetention(spool, now(), { delivered: ownDelivered });
+        // delivered long ago, and one that reached every session may
+        // quarantine what it still could not deliver.
+        applySpoolRetention(spool, now(), { delivered: ownDelivered, walked: backlog?.endedBy === 'done' });
       }
       const notice = root === null ? null : deliveryNotice(readRegistryEntry(root, mycoHome) ?? live.credential, now());
       if (notice !== null) {

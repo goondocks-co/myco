@@ -379,15 +379,21 @@ describe('token refresh', () => {
     expect(last).toMatchObject({ refreshed: true, expiresAt: T0 + MEMBER_TOKEN_MAX_LINEAGE_MS });
   });
 
-  it('rotates a credential that names no Project, and creates no Project row for one it does name', async () => {
+  it('rotates on the credential alone: a request naming no Project and one naming a Project the Deployment has never seen both rotate, and no Project row is created', async () => {
     const r = await rig();
     r.clock.now = r.root.expiresAt + 1_000;
     const projects = count(r.e.sqlite, 'projects');
-    const res = await r.fetch(memberPost(r.root.token, '{}', '/tokens/refresh', { 'x-myco-project': '' }));
-    const body = await json(res);
-    expect({ status: res.status, refreshed: body.refreshed }).toEqual({ status: 200, refreshed: true });
-    expect(r.row(body.tokenId as string)).toMatchObject({ predecessor_id: r.root.tokenId, lineage_root: r.root.tokenId });
+    const bare = await r.fetch(memberPost(r.root.token, '{}', '/tokens/refresh', { 'x-myco-project': '' }));
+    const bareBody = await json(bare);
+    expect({ status: bare.status, refreshed: bareBody.refreshed }).toEqual({ status: 200, refreshed: true });
+    expect(r.row(bareBody.tokenId as string)).toMatchObject({ predecessor_id: r.root.tokenId, lineage_root: r.root.tokenId });
+    r.clock.now += 1;
+    const named = new Request('https://s/tokens/refresh', { method: 'POST', headers: memberHeaders(r.root.token, { 'x-myco-project': 'proj_brand_new' }), body: '{}' });
+    expect(named.headers.get('x-myco-project')).toBe('proj_brand_new');
+    const namedBody = await json(await r.fetch(named));
+    expect(namedBody.refreshed).toBe(true);
     expect(count(r.e.sqlite, 'projects')).toBe(projects);
+    expect(r.e.sqlite.query(`SELECT COUNT(*) AS n FROM projects WHERE project_id = 'proj_brand_new'`).get()).toEqual({ n: 0 });
   });
 
   it('never admits a lapsed token of a revoked member', async () => {

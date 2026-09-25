@@ -1,9 +1,13 @@
 /**
  * Spool retention: an un-acknowledged spool is never age-deleted. A session
- * spool the server has not acknowledged for `MEMBER_SPOOL_QUARANTINE_MS` is
+ * spool the server has not acknowledged for `MEMBER_SPOOL_QUARANTINE_MS`, and
+ * that a delivery walk reaching every session still could not deliver, is
  * moved into the spool's `quarantine/` subdir (`quarantineBufferFile`), and
  * quarantined files older than `MEMBER_SPOOL_QUARANTINE_PRUNE_MS` are pruned
- * (`pruneQuarantinedBuffers`).
+ * (`pruneQuarantinedBuffers`). A machine that cannot deliver at all — offline,
+ * or holding a credential the Deployment refuses — quarantines nothing, however
+ * long that lasts. A quarantined session whose transcripts are still in the
+ * backlog keeps its state, and with it the pointers to those bytes.
  *
  * "No acknowledgement" is measured on the acknowledgement itself — the drain
  * stamps `lastAckAt` on every ack — falling back to the session's first append
@@ -32,7 +36,7 @@ import { MEMBER_DIR_MODE, MEMBER_SESSION_STATE_RETENTION_MS, MEMBER_SPOOL_QUARAN
 import { resolveMycoHome } from '../paths/home.js';
 import { BUNDLED_MANIFESTS } from '../symbionts/manifests.generated.js';
 import { expandRoot } from '../symbionts/transcript-discovery.js';
-import { readSessionState, removeSessionState } from './session-state.js';
+import { pointerBehind, pointersOf, readSessionState, removeSessionState, updateSessionState } from './session-state.js';
 import { BLOBS_DIRNAME, type MemberSpool } from './spool.js';
 
 export interface RetentionResult {
@@ -247,6 +251,8 @@ export function pruneDeliveredSessionState(spool: MemberSpool, now: number = Dat
     if (live.has(sessionId) || spool.hasTranscriptBacklog(sessionId)) continue;
     const state = readSessionState(spool.dir, sessionId);
     if (state.highWater > 0 || now - state.updatedAt < MEMBER_SESSION_STATE_RETENTION_MS) continue;
+    // The pointers themselves, not only the mark: a mark cleared while another hook set it again must not cost the bytes.
+    if (pointersOf(state).some(pointerBehind)) continue;
     removeSessionState(spool.dir, sessionId);
     try { fs.rmdirSync(spool.blobsDirFor(sessionId)); } catch { /* absent, or still holding bytes the blob sweep owns */ }
     pruned += 1;
@@ -254,17 +260,31 @@ export function pruneDeliveredSessionState(spool: MemberSpool, now: number = Dat
   return pruned;
 }
 
-/** Quarantine every session spool unacknowledged past the cap, prune quarantined files past the prune cap, release staged bytes nothing references, and after a drain that delivered everything, prune the state of sessions long since delivered. */
-export function applySpoolRetention(spool: MemberSpool, now: number = Date.now(), opts: { delivered?: boolean } = {}): RetentionResult {
+export interface RetentionOptions {
+  /** The caller's own session was delivered in full this pass: the state of sessions long since delivered may go. */
+  delivered?: boolean;
+  /**
+   * A delivery walk reached every session of the project this pass. Only then
+   * may a spool unacknowledged past the cap be quarantined: what a complete walk
+   * could not deliver is stuck, where a spool nobody could reach — offline, a
+   * refused credential, a walk cut short by its budget — is only waiting.
+   */
+  walked?: boolean;
+}
+
+/** Quarantine every session spool unacknowledged past the cap once a walk has reached them all, prune quarantined files past the prune cap, release staged bytes nothing references, and after a drain that delivered everything, prune the state of sessions long since delivered. */
+export function applySpoolRetention(spool: MemberSpool, now: number = Date.now(), opts: RetentionOptions = {}): RetentionResult {
   const result: RetentionResult = { quarantined: [], pruned: 0, prunedStates: 0, releasedBlobs: 0, prunedTranscripts: 0 };
-  for (const sessionId of spool.sessionIds()) {
+  for (const sessionId of opts.walked === true ? spool.sessionIds() : []) {
     if (spool.depth(sessionId) === 0) continue;
     if (now - unacknowledgedSince(spool, sessionId) < MEMBER_SPOOL_QUARANTINE_MS) continue;
     const quarantineDir = path.join(spool.dir, BUFFER_QUARANTINE_DIRNAME);
     if (!fs.existsSync(quarantineDir)) fs.mkdirSync(quarantineDir, { mode: MEMBER_DIR_MODE });
     const target = quarantineBufferFile(spool.dir, `${sessionId}.jsonl`);
     quarantineStagedBlobs(spool, sessionId, target);
-    removeSessionState(spool.dir, sessionId);
+    // The events move; the transcript pointers stay, so bytes still on disk are delivered once delivery resumes.
+    if (spool.hasTranscriptBacklog(sessionId)) updateSessionState(spool.dir, sessionId, (state) => { state.highWater = 0; }, now);
+    else removeSessionState(spool.dir, sessionId);
     result.quarantined.push(target);
     process.stderr.write(`[myco] member: spool for session ${sessionId} had no acknowledgement for ${Math.round(MEMBER_SPOOL_QUARANTINE_MS / 86_400_000)} days — quarantined at ${target}\n`);
   }

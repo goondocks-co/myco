@@ -24,7 +24,7 @@ import { unboundedBudget } from '@myco/member/budget.js';
 import { resolveMemberProjectRoot } from '@myco/member/credential.js';
 import { recordJoinAnswer } from '@myco/member/join-code.js';
 import { refreshDue } from '@myco/member/refresh.js';
-import { readRegistryEntry } from '@myco/member/registry.js';
+import { readRegistryEntry, writeDeploymentMembership } from '@myco/member/registry.js';
 import { emptySessionState, readSessionState, updateSessionState } from '@myco/member/session-state.js';
 import { MemberSpool } from '@myco/member/spool.js';
 import { transcriptPointerFor } from '@myco/member/transcript.js';
@@ -172,6 +172,36 @@ describe('a member that could not deliver', () => {
     expect(counts()).toEqual(before);
   });
 
+  for (const recovery of ['turn end', 'member drain'] as const) {
+    it(`keeps a session captured offline more than 30 days ago, transcript pointer included, and delivers it by ${recovery} once back`, async () => {
+      const rig = await memberRig();
+      registerTestMember({ mycoHome, token: rig.token, tokenId: rig.tokenId, projectId: PROJECT, expiresAt: rig.expiresAt, serverUrl: SERVER_URL });
+      const offline: typeof rig.fetch = async () => { throw new TypeError('fetch failed'); };
+      const longAgo = Date.now() - 32 * DAY_MS;
+      const tx = transcript('sess-early', 'written early in the outage');
+      for (const [hook, raw] of [
+        ['session-start', { hook_event_name: 'SessionStart', transcript_path: tx, cwd: '/work/repo' }],
+        ['stop', { hook_event_name: 'Stop', transcript_path: tx, last_assistant_message: 'x' }],
+      ] as const) await runHook(hook, { session_id: 'sess-early', ...raw }, { fetch: offline, now: () => longAgo });
+      const spool = new MemberSpool(PROJECT, { mycoHome });
+      expect(spool.transcriptBacklogIds()).toEqual(['sess-early']);
+
+      // Still offline, 32 days on: a turn end of another session runs retention and must not quarantine what nothing could deliver.
+      await runHook('stop', { session_id: 'sess-late', hook_event_name: 'Stop', transcript_path: transcript('sess-late', 'late'), last_assistant_message: 'x' }, { fetch: offline });
+      expect(spool.sessionIds()).toEqual(['sess-early']);
+      expect(readSessionState(spool.dir, 'sess-early').transcript?.path).toBe(tx);
+
+      if (recovery === 'turn end') {
+        await runHook('stop', { session_id: 'sess-back', hook_event_name: 'Stop', transcript_path: transcript('sess-back', 'back'), last_assistant_message: 'x' }, { fetch: rig.fetch });
+      } else {
+        await runMemberCli(['drain'], { mycoHome, fetch: rig.fetch, stdout: () => {}, stderr: () => {} });
+      }
+      expect(rig.env.sqlite.query(`SELECT COUNT(*) AS n FROM events WHERE session_id = 'sess-early' AND kind = 'session.start'`).get()).toEqual({ n: 1 });
+      expect(segmentsOf(rig, 'sess-early')).toBe(1);
+      expect(fs.existsSync(path.join(spool.dir, 'quarantine', 'sess-early.jsonl'))).toBe(false);
+    });
+  }
+
   it('gives the backlog only what the owning session leaves of the turn end\'s budget', async () => {
     const rig = await memberRig();
     registerTestMember({ mycoHome, token: rig.token, tokenId: rig.tokenId, projectId: PROJECT, expiresAt: rig.expiresAt, serverUrl: SERVER_URL });
@@ -226,9 +256,147 @@ describe('a member that could not deliver', () => {
       expect(report).toEqual({ endedBy: 'done', sessions: [{ sessionId, transcripts: { shipped: 1, endedBy: 'done' } }] });
       expect(rig.env.sqlite.query('SELECT agent FROM transcripts WHERE session_id = ?').get(sessionId)).toEqual({ agent: 'claude-code' });
       expect(spool.transcriptBacklogIds()).toEqual([]);
+      expect(readSessionState(spool.dir, sessionId).agent).toBe('claude-code');
     } finally {
       if (savedUserHome === undefined) delete process.env.HOME;
       else process.env.HOME = savedUserHome;
     }
+  });
+});
+
+describe('the backlog walk', () => {
+  /** A session that ended with its transcript undelivered: the pointer and the mark, and no hook left to fire. */
+  const stranded = (spool: MemberSpool, sessionId: string, agent: string | null = 'claude-code'): string => {
+    const file = transcript(sessionId, `stranded ${sessionId}`);
+    spool.appendAndRecord(sessionId, [], (state) => {
+      if (agent !== null) state.agent = agent;
+      state.transcript = transcriptPointerFor(file, 'machine_1')!;
+    });
+    return file;
+  };
+  const blobUploads = (spy: ReturnType<typeof recordingFetch>): number => spy.requests.filter((r) => r.path.startsWith('/blobs/')).length;
+
+  it('leaves a session whose lease another process holds to that process, and delivers it once the lease is free', async () => {
+    const rig = await memberRig();
+    const spool = new MemberSpool(PROJECT, { mycoHome });
+    stranded(spool, 'sess-held');
+    const spy = recordingFetch(rig.fetch);
+    const client = new ServerClient({ serverUrl: SERVER_URL, token: rig.token, projectId: PROJECT }, spy.fetch);
+
+    const held = await spool.withSessionLease('sess-held', () => drainBacklog(spool, client, unboundedBudget(), { force: true, machineId: 'machine_1' }));
+    expect(held).toEqual({ endedBy: 'skipped', sessions: [{ sessionId: 'sess-held', transcripts: 'lease' }] });
+    expect(blobUploads(spy)).toBe(0);
+    expect(spool.transcriptBacklogIds()).toEqual(['sess-held']);
+
+    const free = await drainBacklog(spool, client, unboundedBudget(), { force: true, machineId: 'machine_1' });
+    expect(free.endedBy).toBe('done');
+    expect(segmentsOf(rig, 'sess-held')).toBe(1);
+  });
+
+  it('ships a turn end\'s own transcript only under the session lease', async () => {
+    const rig = await memberRig();
+    registerTestMember({ mycoHome, token: rig.token, tokenId: rig.tokenId, projectId: PROJECT, expiresAt: rig.expiresAt, serverUrl: SERVER_URL });
+    const spool = new MemberSpool(PROJECT, { mycoHome });
+    const tx = transcript('sess-own', 'own');
+    await spool.withSessionLease('sess-own', () => runHook('stop', { session_id: 'sess-own', hook_event_name: 'Stop', transcript_path: tx, last_assistant_message: 'x' }, { fetch: rig.fetch }));
+    expect(segmentsOf(rig, 'sess-own')).toBe(0);
+    expect(spool.transcriptBacklogIds()).toEqual(['sess-own']);
+  });
+
+  it('gives up on a transcript the Deployment refuses for good: logged once, never uploaded again, by a turn end or by `member drain`', async () => {
+    const rig = await memberRig();
+    registerTestMember({ mycoHome, token: rig.token, tokenId: rig.tokenId, projectId: PROJECT, expiresAt: rig.expiresAt, serverUrl: SERVER_URL });
+    const spool = new MemberSpool(PROJECT, { mycoHome });
+    stranded(spool, 'sess-refused');
+    const refusing: typeof rig.fetch = async (input, init) => {
+      const req = new Request(input, init);
+      if (new URL(req.url).pathname.startsWith('/blobs/')) return Response.json({ stored: false, code: 'media_type', reason: 'refused' }, { headers: { 'x-myco-protocol': '1' } });
+      return rig.fetch(req);
+    };
+    const spy = recordingFetch(refusing);
+    const client = new ServerClient({ serverUrl: SERVER_URL, token: rig.token, projectId: PROJECT }, spy.fetch);
+
+    await drainBacklog(spool, client, unboundedBudget(), { force: true, machineId: 'machine_1' });
+    expect(blobUploads(spy)).toBe(1);
+    expect(spool.transcriptBacklogIds()).toEqual([]);
+    expect(readSessionState(spool.dir, 'sess-refused').transcript?.refused).toBe('media_type');
+
+    await drainBacklog(spool, client, unboundedBudget(), { force: true, machineId: 'machine_1', rescan: true });
+    await runMemberCli(['drain'], { mycoHome, fetch: spy.fetch, stdout: () => {}, stderr: () => {} });
+    expect(blobUploads(spy)).toBe(1);
+    expect(spool.readRefused().entries.map((e) => e.code)).toEqual(['media_type']);
+  });
+
+  it('keeps and reports a session no single symbiont can be named for, and does not search for one again on every turn end', async () => {
+    const rig = await memberRig();
+    const spool = new MemberSpool(PROJECT, { mycoHome });
+    const file = stranded(spool, 'sess-unnamed', null);
+    const client = new ServerClient({ serverUrl: SERVER_URL, token: rig.token, projectId: PROJECT }, rig.fetch);
+
+    const report = await drainBacklog(spool, client, unboundedBudget(), { force: true, machineId: 'machine_1' });
+    expect(report.sessions).toEqual([{ sessionId: 'sess-unnamed', transcripts: 'no-agent' }]);
+    expect(spool.transcriptBacklogIds()).toEqual(['sess-unnamed']);
+    expect(readSessionState(spool.dir, 'sess-unnamed').agentUnknown).toBe(true);
+    const said: string[] = [];
+    const write = process.stderr.write.bind(process.stderr);
+    (process.stderr as unknown as { write: (c: unknown) => boolean }).write = ((c: unknown) => { said.push(String(c)); return true; }) as never;
+    try {
+      expect((await drainBacklog(spool, client, unboundedBudget(), { force: true, machineId: 'machine_1' })).sessions).toEqual([{ sessionId: 'sess-unnamed', transcripts: 'no-agent' }]);
+    } finally {
+      (process.stderr as unknown as { write: unknown }).write = write;
+    }
+    expect(said.join('')).not.toContain('no one symbiont');
+
+    // Two layouts that both name the file: no guess.
+    const layout = { roots: [path.dirname(file)], patterns: ['{sessionId}.jsonl'], retention: 'harness' as const };
+    const state = readSessionState(spool.dir, 'sess-unnamed');
+    expect(agentOfSession('sess-unnamed', state, [{ name: 'a', capture: { transcriptDiscovery: layout } }, { name: 'b', capture: { transcriptDiscovery: layout } }])).toBeNull();
+    expect(agentOfSession('sess-unnamed', state, [{ name: 'a', capture: { transcriptDiscovery: layout } }, { name: 'b' }])).toBe('a');
+  });
+
+  it('does not walk the backlog from a turn end that could not deliver its own session', async () => {
+    const rig = await memberRig();
+    registerTestMember({ mycoHome, token: rig.token, tokenId: rig.tokenId, projectId: PROJECT, expiresAt: rig.expiresAt, serverUrl: SERVER_URL });
+    const spool = new MemberSpool(PROJECT, { mycoHome });
+    stranded(spool, 'sess-waiting');
+    // The Deployment answers this turn end's own events with a reslice: nothing it cannot retry, and no latch, yet not delivered.
+    const ownRefused: typeof rig.fetch = async (input, init) => {
+      const req = new Request(input, init);
+      const body = req.method === 'POST' ? await req.clone().text() : '';
+      if (new URL(req.url).pathname === '/events' && body.includes('"sess-own"')) {
+        return Response.json({ persisted: false, code: 'offset_gap', reason: 'gap', transcript: { size: 0 } }, { headers: { 'x-myco-protocol': '1' } });
+      }
+      return rig.fetch(req);
+    };
+    const tx = transcript('sess-own', 'own');
+    await runHook('session-start', { session_id: 'sess-own', hook_event_name: 'SessionStart', transcript_path: tx, cwd: '/work/repo' }, { fetch: ownRefused });
+    await runHook('stop', { session_id: 'sess-own', hook_event_name: 'Stop', transcript_path: tx, last_assistant_message: 'x' }, { fetch: ownRefused });
+
+    expect(spool.depth('sess-own')).toBe(1);
+    expect(segmentsOf(rig, 'sess-waiting')).toBe(0);
+    expect(spool.transcriptBacklogIds()).toContain('sess-waiting');
+  });
+
+  it('asks once more about a terminal refusal another build recorded, renews a lapsed token of a live lineage on it, and never asks twice about its own', async () => {
+    const rig = await memberRig({ now: Date.now() - 20 * DAY_MS });
+    registerTestMember({ mycoHome, token: rig.token, tokenId: rig.tokenId, projectId: PROJECT, expiresAt: rig.expiresAt, serverUrl: SERVER_URL });
+    writeDeploymentMembership({ serverUrl: SERVER_URL, token: rig.token, refreshTerminal: true, machineId: 'machine_1', joinedAt: 1, updatedAt: 1 }, { mycoHome });
+    expect(readRegistryEntry(root, mycoHome)).toMatchObject({ refreshTerminal: true, refreshTerminalBy: undefined });
+    const spy = recordingFetch(rig.fetch);
+
+    await session(spy.fetch, 'sess-after-upgrade', 'after the upgrade');
+    const renewed = readRegistryEntry(root, mycoHome)!;
+    expect({ renewed: renewed.token !== rig.token, terminal: renewed.refreshTerminal }).toEqual({ renewed: true, terminal: undefined });
+    expect(segmentsOf(rig, 'sess-after-upgrade')).toBe(1);
+
+    // This build's own terminal refusal is final: no hook asks again.
+    revoke(rig, renewed.tokenId!);
+    await runHook('session-start', { session_id: 'sess-refused', hook_event_name: 'SessionStart', transcript_path: transcript('sess-refused', 'r'), cwd: '/work/repo' }, { fetch: spy.fetch });
+    const refused = readRegistryEntry(root, mycoHome)!;
+    expect(refused.refreshTerminal).toBe(true);
+    expect(refused.refreshTerminalBy).toBeDefined();
+    const dials = spy.requests.filter((r) => r.path === '/tokens/refresh').length;
+    for (let i = 0; i < 3; i += 1) await runHook('session-start', { session_id: `sess-again-${i}`, hook_event_name: 'SessionStart', transcript_path: transcript(`sess-again-${i}`, 'r'), cwd: '/work/repo' }, { fetch: spy.fetch });
+    expect(spy.requests.filter((r) => r.path === '/tokens/refresh').length).toBe(dials);
   });
 });

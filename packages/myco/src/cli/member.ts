@@ -421,11 +421,11 @@ export async function runDrain(args: readonly string[], deps: MemberCliDeps = {}
   const mycoHome = homeFor(deps);
   const results: DrainResult[] = [];
   for (const entry of entriesFor(args, deps)) {
-    const spool = new MemberSpool(entry.projectId, { mycoHome });
-    const retention = applySpoolRetention(spool, now());
-    if (retention.quarantined.length > 0 || retention.pruned > 0 || retention.releasedBlobs > 0) out(`${entry.projectId}: quarantined ${retention.quarantined.length}, pruned ${retention.pruned}, released ${retention.releasedBlobs} staged file(s)`);
     const backlog = await drainEntryBacklog(entry, { mycoHome, fetch: deps.fetch, now });
     for (const line of backlogLines(entry.projectId, backlog)) out(line);
+    // Retention follows the drain: what a complete walk delivered is never quarantined for its age.
+    const retention = applySpoolRetention(new MemberSpool(entry.projectId, { mycoHome }), now(), { walked: backlog.endedBy === 'done' });
+    if (retention.quarantined.length > 0 || retention.pruned > 0 || retention.releasedBlobs > 0) out(`${entry.projectId}: quarantined ${retention.quarantined.length}, pruned ${retention.pruned}, released ${retention.releasedBlobs} staged file(s)`);
     results.push(...backlog.sessions.flatMap((s) => (s.events ? [s.events] : [])));
   }
   return results;

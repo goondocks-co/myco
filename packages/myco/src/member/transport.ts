@@ -85,10 +85,17 @@ export async function rawAnswerOf(res: Response): Promise<RawAnswer> {
   };
 }
 
-/** `POST /tokens/refresh` for a credential: the credential is the Deployment's, so the request names no Project. */
-export async function refreshCredential(record: DeploymentRecord, fetchImpl: FetchLike, budget: RequestBudget, protocol: number = MEMBER_PROTOCOL): Promise<RefreshOutcome> {
-  const client = new ServerClient({ serverUrl: record.serverUrl, token: record.token }, fetchImpl, { protocol });
-  const raw = await client.request('POST', REFRESH_PATH, { body: '{}', headers: { 'content-type': JSON_CONTENT_TYPE }, budget, scope: 'deployment' });
+/**
+ * `POST /tokens/refresh` for a credential. The server answers it on the
+ * credential alone; a Project is named whenever the caller knows one, since a
+ * server that predates that answer refuses a refresh naming none. Only a
+ * membership no project is bound to sends none.
+ */
+export async function refreshCredential(record: DeploymentRecord & { projectId?: string }, fetchImpl: FetchLike, budget: RequestBudget, protocol: number = MEMBER_PROTOCOL): Promise<RefreshOutcome> {
+  const client = new ServerClient(record, fetchImpl, { protocol });
+  const raw = await client.request('POST', REFRESH_PATH, {
+    body: '{}', headers: { 'content-type': JSON_CONTENT_TYPE }, budget, scope: record.projectId === undefined ? 'deployment' : 'project',
+  });
   return classifyRefreshAnswer(raw);
 }
 

@@ -69,12 +69,15 @@ const servesRun = (route: MemberRoute): route is RunRoute => route.bodyMode === 
 /** A route scoped to the whole Deployment rather than to one Project. */
 type DeploymentRoute = Extract<MemberRoute, { scope: 'deployment' }>;
 const deploymentScoped = (route: MemberRoute): route is DeploymentRoute => 'scope' in route && route.scope === 'deployment';
+/** A route answered on the presented credential alone, with no Project read or resolved. */
+type CredentialRoute = Extract<MemberRoute, { scope: 'credential' }>;
+const credentialScoped = (route: MemberRoute): route is CredentialRoute => 'scope' in route && route.scope === 'credential';
 /** A member route that also admits an External Agent grant. */
 type GrantRoute = Extract<MemberRoute, { bodyMode: 'json' }> & { grant: NonNullable<Extract<MemberRoute, { bodyMode: 'json' }>['grant']> };
 const admitsGrant = (route: Route): route is GrantRoute => route.auth === 'member' && route.bodyMode === 'json' && route.grant !== undefined;
 /** How a credential past its expiry is treated on the matched route: admitted only where the route table declares `admitsLapsed`, refused everywhere else, an unmatched path included. */
 const expiryAdmissionOf = (route: Route | undefined): ExpiryAdmission =>
-  route?.auth === 'member' && 'admitsLapsed' in route && route.admitsLapsed === true ? 'lapsed' : 'live';
+  route?.auth === 'member' && credentialScoped(route) && route.admitsLapsed === true ? 'lapsed' : 'live';
 /** The refusal shape of a member route, as the route table declares it. */
 const shapeOf = (route: MemberRoute): Shape => route.shape;
 /** A grant authenticated to its Project. */
@@ -454,16 +457,14 @@ export function createServer(deps: ServerDeps) {
     // claim carries a minted run credential and a Deployment credential opened
     // for the harness, so a fourth route added later cannot forget the check.
     if (deploymentScoped(route)) return await asDeployment(request, env, auth, auth.machineId, route, now);
+    if (credentialScoped(route)) return await asCredential(request, env, auth, auth.machineId, route, now);
 
     // Only a declared protocol handler can receive a request without a default Project.
     const projectId = requestedProject(request);
     if (!request.headers.has(PROJECT_HEADER) && route.bodyMode === 'json' && route.unbound !== undefined) {
       const body = await readBoundedBody(request, MAX_BODY_BYTES);
       if (!body.ok) return refuse(auth, shapeOf(route), body.reason, 'body_cap');
-      return route.unbound(env, {
-        memberId: auth.memberId, machineId: auth.machineId, tokenId: auth.tokenId, expiresAt: auth.expiresAt,
-        lineageRoot: auth.lineageRoot, lineageStartedAt: auth.lineageStartedAt, runtime: auth.runtime, body: body.text, now,
-      });
+      return route.unbound(env, { memberId: auth.memberId, machineId: auth.machineId, tokenId: auth.tokenId, body: body.text, now });
     }
     if (projectId === null) return refuse(auth, shapeOf(route), NO_PROJECT, 'no_project');
 
@@ -532,6 +533,22 @@ export function createServer(deps: ServerDeps) {
       });
       if (drivesRun) await recordRunRoute(env, auth, route.path, answered, heldBefore, now);
       return answered;
+    } catch (err) {
+      return failed(env, auth, route, err, bodyBytes);
+    }
+  }
+
+  /** A request answered on the presented credential alone — its refresh. It names no Project and creates none, whatever header it carries. */
+  async function asCredential(request: Request, env: ServerEnv, auth: MemberAuth, machineId: string, route: CredentialRoute, now: number): Promise<Response> {
+    let bodyBytes = 0;
+    try {
+      const body = await readBoundedBody(request, MAX_BODY_BYTES);
+      if (!body.ok) return refuse(auth, shapeOf(route), body.reason, 'body_cap');
+      bodyBytes = body.bytes;
+      return await route.credential(env, {
+        memberId: auth.memberId, machineId, tokenId: auth.tokenId, expiresAt: auth.expiresAt,
+        lineageRoot: auth.lineageRoot, lineageStartedAt: auth.lineageStartedAt, runtime: auth.runtime, body: body.text, now,
+      });
     } catch (err) {
       return failed(env, auth, route, err, bodyBytes);
     }

@@ -45,8 +45,10 @@ export interface DeploymentMembership {
   refreshAfter?: number;
   /** When the `route_missing` refresh diagnostic was last printed. */
   routeMissingNoticedAt?: number;
-  /** Set once the server has refused this token's rotation terminally; nothing dials again until the membership is re-provisioned. */
+  /** Set once the server has refused this token's rotation terminally; nothing dials again until a new credential replaces the token, or a build other than the one that recorded it asks once more. */
   refreshTerminal?: boolean;
+  /** The build that recorded `refreshTerminal`; absent on a refusal recorded before builds said so. */
+  refreshTerminalBy?: string;
   machineId: string;
   joinedAt: number;
   updatedAt: number;
@@ -76,8 +78,10 @@ export interface RegistryEntry {
   refreshAfter?: number;
   /** When the `route_missing` refresh diagnostic was last printed. */
   routeMissingNoticedAt?: number;
-  /** Set once the server has refused this token's rotation terminally; nothing dials again until the entry is re-provisioned. */
+  /** Set once the server has refused this token's rotation terminally; nothing dials again until a new credential replaces the token, or a build other than the one that recorded it asks once more. */
   refreshTerminal?: boolean;
+  /** The build that recorded `refreshTerminal`; absent on a refusal recorded before builds said so. */
+  refreshTerminalBy?: string;
   /** The worktree-aware project root this entry is keyed on. */
   root: string;
   machineId: string;
@@ -179,7 +183,7 @@ function isMembership(value: unknown): value is DeploymentMembership {
 }
 
 /** The fields that describe one token rather than the membership: they are true of the token they were recorded for and of no other. */
-export const TOKEN_SCOPED_FIELDS = ['tokenId', 'expiresAt', 'refreshAfter', 'refreshTerminal'] as const;
+export const TOKEN_SCOPED_FIELDS = ['tokenId', 'expiresAt', 'refreshAfter', 'refreshTerminal', 'refreshTerminalBy'] as const;
 
 /**
  * The membership `fresh` leaves on disk over `held`: the held one with every
@@ -234,6 +238,7 @@ function compose(binding: ProjectBinding, mycoHome: string): RegistryEntry | nul
     refreshAfter: membership.refreshAfter,
     routeMissingNoticedAt: membership.routeMissingNoticedAt,
     refreshTerminal: membership.refreshTerminal,
+    refreshTerminalBy: membership.refreshTerminalBy,
     root: binding.root,
     machineId: membership.machineId,
     joinedAt: binding.joinedAt,
@@ -254,6 +259,7 @@ function decompose(entry: RegistryEntry): { membership: DeploymentMembership; bi
       refreshAfter: entry.refreshAfter,
       routeMissingNoticedAt: entry.routeMissingNoticedAt,
       refreshTerminal: entry.refreshTerminal,
+      refreshTerminalBy: entry.refreshTerminalBy,
       machineId: entry.machineId,
       joinedAt: entry.joinedAt,
       updatedAt: entry.updatedAt,
