@@ -19,7 +19,8 @@ import type { PromptOrigin } from '../hooks/capture-rules.js';
 import { MEMBER_ID_NAMESPACE, MEMBER_INLINE_TEXT_MAX_BYTES } from './constants.js';
 
 export type { MemberKind } from '@goondocks/myco-shared/member-protocol';
-import { filesNamedByToolInput } from '@goondocks/myco-shared/member-protocol';
+import { filesNamedByToolInput, type PlanStatus, type TranscriptRole, type WirePromptOrigin } from '@goondocks/myco-shared/member-protocol';
+export type { TranscriptRole } from '@goondocks/myco-shared/member-protocol';
 type MemberKind = import('@goondocks/myco-shared/member-protocol').MemberKind;
 
 export interface MemberEnvelope {
@@ -187,7 +188,7 @@ function envelope(ctx: EnvelopeContext, kind: MemberKind, payload: Record<string
 }
 
 /** Hook-rule origins map onto the wire's: `human` is the wire's `user`; the others keep their name. */
-export function wireOrigin(origin: PromptOrigin | undefined): 'user' | 'system' | 'agent_dispatch' | 'hook_injected' {
+export function wireOrigin(origin: PromptOrigin | undefined): WirePromptOrigin {
   return origin === undefined || origin === 'human' ? 'user' : origin;
 }
 
@@ -363,7 +364,7 @@ export function errorEvent(ctx: EnvelopeContext, input: NormalizedHookInput): Ou
 }
 
 export function planEvent(ctx: EnvelopeContext, facts: {
-  planKey: string; content: string; title?: string; status?: 'active' | 'in_progress' | 'completed' | 'abandoned'; originPath?: string; tags?: string[]; promptId?: string;
+  planKey: string; content: string; title?: string; status?: PlanStatus; originPath?: string; tags?: string[]; promptId?: string;
 }): OutboundEvent {
   const spilled = inlineOrBlob(ctx, 'content', facts.content);
   return envelope(ctx, 'plan', {
@@ -391,9 +392,6 @@ export function attachmentEvent(ctx: EnvelopeContext, facts: {
 }
 
 /** One slice of a transcript: the bytes are read from the transcript file itself at drain time. */
-/** What a transcript is to its session: the session's own, or a delegated agent's written beside it. */
-export type TranscriptRole = 'primary' | 'subagent';
-
 export function transcriptSegmentEvent(ctx: EnvelopeContext, facts: {
   transcriptId: string; baseOffset: number; blobSource: BlobSource; originPath?: string; headHash?: string; role?: TranscriptRole;
 }): OutboundEvent {

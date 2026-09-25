@@ -36,6 +36,26 @@ export type MemberKind = (typeof MEMBER_KINDS)[number];
 export const isMemberKind = (value: unknown): value is MemberKind =>
   typeof value === 'string' && (MEMBER_KINDS as readonly string[]).includes(value);
 
+/**
+ * The values a record's enum fields may carry: what a member emits and what a
+ * Deployment admits, from one list. A Deployment refuses any other value as
+ * `invalid_field`, which a member treats as final for the record, so widening
+ * one ships as a member protocol bump.
+ */
+export const PROMPT_ORIGINS = ['user', 'system', 'agent_dispatch', 'hook_injected', 'unknown'] as const;
+export type WirePromptOrigin = (typeof PROMPT_ORIGINS)[number];
+
+export const PLAN_STATUSES = ['active', 'in_progress', 'completed', 'abandoned'] as const;
+export type PlanStatus = (typeof PLAN_STATUSES)[number];
+
+/** The channel a plan version arrived through. A row written before the column, or by a member that names none, reads NULL — which means "inferred from the key shape", the honest value rather than a guessed default. */
+export const PLAN_SOURCES = ['path', 'tag', 'save'] as const;
+export type PlanSource = (typeof PLAN_SOURCES)[number];
+
+/** What a transcript is to its session: the session's own, or a delegated agent's written beside it. */
+export const TRANSCRIPT_ROLES = ['primary', 'subagent'] as const;
+export type TranscriptRole = (typeof TRANSCRIPT_ROLES)[number];
+
 /** The most file paths one tool call records, and the longest one path may be. */
 export const MAX_FILES_AFFECTED = 100;
 export const MAX_FILE_PATH_CHARS = 1024;

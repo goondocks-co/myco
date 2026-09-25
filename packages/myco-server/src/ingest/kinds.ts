@@ -2,7 +2,7 @@ import { MAX_BLOB_BYTES } from '../constants.js';
 import { utf8 } from '../hash.js';
 import { AHEAD_OF_CLOCK, aheadOfClock, ID_GRAMMAR, MAX_ID_CHARS, MAX_PAYLOAD_BYTES, type Refused } from './envelope.js';
 import { refusal, type Refusal } from '../telemetry.js';
-import { MAX_FILE_PATH_CHARS, MAX_FILES_AFFECTED } from '@goondocks/myco-shared/member-protocol';
+import { MAX_FILE_PATH_CHARS, MAX_FILES_AFFECTED, PLAN_SOURCES, PLAN_STATUSES, PROMPT_ORIGINS, TRANSCRIPT_ROLES } from '@goondocks/myco-shared/member-protocol';
 
 /** Ceilings every bound of its type states; each is a real limit, never the language's. */
 export const MAX_TIME_MS = 4_102_444_800_000;
@@ -67,12 +67,7 @@ const time = (column: string): FieldSpec => ({ bound: { type: 'time' }, column }
 /** An open JSON value bounded by the encoded length of its serialization; the payload cap is the same ceiling stated per field. */
 const json = (column?: string): FieldSpec => ({ bound: { type: 'json', maxBytes: MAX_PAYLOAD_BYTES }, column });
 
-export const PROMPT_ORIGINS = ['user', 'system', 'agent_dispatch', 'hook_injected', 'unknown'] as const;
-export const PLAN_STATUSES = ['active', 'in_progress', 'completed', 'abandoned'] as const;
-/** The channel a plan version arrived through. A row written before the column, or by a member that names none, reads NULL — which means "inferred from the key shape", the honest value rather than a guessed default. */
-export const PLAN_SOURCES = ['path', 'tag', 'save'] as const;
-/** What a transcript is: the session's own, or a subagent sibling beside it. */
-export const TRANSCRIPT_ROLES = ['primary', 'subagent'] as const;
+export { PLAN_SOURCES, PLAN_STATUSES, PROMPT_ORIGINS, TRANSCRIPT_ROLES } from '@goondocks/myco-shared/member-protocol';
 
 const toolCallFields: Record<string, FieldSpec> = {
   toolCallId: id('key', 'tool_call_id', true),
