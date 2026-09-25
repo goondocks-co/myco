@@ -43,6 +43,9 @@ export interface JoinCode {
   key: string;
 }
 
+/** The role an invitation grants a member who administers the Deployment, and so may run its work. */
+export const ADMIN_ROLE = 'admin';
+
 /** What the Deployment answers a spent code with. */
 export interface JoinAnswer {
   memberId: string;

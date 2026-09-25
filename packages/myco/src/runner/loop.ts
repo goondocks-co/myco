@@ -54,6 +54,13 @@ export interface WorkerOptions {
    */
   token: string | (() => string | null);
   /**
+   * Renews the credential `token` reads: asked before every request, when it
+   * is due only (`force` false), and once more after the Deployment refuses the
+   * credential (`force` true) before that refusal is taken as final. The next
+   * read of `token` presents whatever it wrote.
+   */
+  renew?: (force: boolean) => Promise<void>;
+  /**
    * Where this machine's worker locks live (`instance.ts`), or null for a worker
    * that shares the Deployment with nothing — a test's own server.
    */
@@ -80,7 +87,7 @@ export interface WorkerOptions {
 }
 
 /** What a request needs of a worker: where, as whom, and when to give up. */
-type Requester = Pick<WorkerOptions, 'serverUrl' | 'token' | 'fetchImpl' | 'signal'>;
+type Requester = Pick<WorkerOptions, 'serverUrl' | 'token' | 'renew' | 'fetchImpl' | 'signal'>;
 
 /**
  * What a worker's request came back as.
@@ -109,16 +116,21 @@ const credentialOf = (options: Requester): string | null =>
  * arrive here as themselves rather than as an unreadable body.
  */
 async function post(options: Requester, path: string, body: unknown): Promise<WorkerAnswer> {
+  await options.renew?.(false);
   const token = credentialOf(options);
   if (token === null) return { kind: 'refused', code: 'no_membership', detail: 'this machine no longer holds a membership of the Deployment' };
   const answer = await postAs(options, token, path, body);
+  if (answer.kind !== 'refused' || answer.code !== 'unauthorized') return answer;
   // A credential rotated between the read and the request is refused as the
-  // predecessor; the one now on disk is the one to present.
-  if (answer.kind === 'refused' && answer.code === 'unauthorized') {
-    const current = credentialOf(options);
-    if (current !== null && current !== token) return postAs(options, current, path, body);
+  // predecessor; the one now on disk is the one to present. A credential still
+  // the same is renewed once — a lapsed one rotates — and presented again only
+  // when that renewal replaced it.
+  let current = credentialOf(options);
+  if (current === token && options.renew !== undefined) {
+    await options.renew(true);
+    current = credentialOf(options);
   }
-  return answer;
+  return current !== null && current !== token ? postAs(options, current, path, body) : answer;
 }
 
 async function postAs(options: Requester, token: string, path: string, body: unknown): Promise<WorkerAnswer> {
