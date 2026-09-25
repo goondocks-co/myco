@@ -21,6 +21,8 @@ function modelOf(value: Record<string, unknown>): string | null {
 /** One newly created ACP session and its reported accounting. */
 export class AcpEvents {
   private readonly calls = new Map<string, { name: string; status: RunToolStatus | null }>();
+  /** Calls this client refused, whose failure is final. */
+  private readonly refusals = new Set<string>();
   private model: string | null;
   private estimatedCostUsd: number | null = null;
 
@@ -55,20 +57,24 @@ export class AcpEvents {
   }
 
   /**
-   * A call this client refused the agent, as that call's failure. The agent
-   * reports the refused call failed as well, and that is the same outcome.
+   * A call this client refused the agent, as that call's failure. The refusal
+   * is the call's outcome: whatever the agent reports about the call afterwards,
+   * failed or completed, changes nothing.
    */
-  *refused(params: Record<string, unknown>, sessionId: string): Iterable<RunEvent> {
-    if (params.sessionId !== sessionId) return;
-    const toolCall = recordOf(params.toolCall);
-    const id = stringOf(toolCall?.toolCallId);
-    const title = stringOf(toolCall?.title);
-    if (id === null) yield { kind: 'tool_call', name: title ?? 'tool', status: 'error' };
-    else yield* this.call(id, title, 'error');
+  *refused(toolCall: Record<string, unknown>, detail: string): Iterable<RunEvent> {
+    const id = stringOf(toolCall.toolCallId);
+    const name = stringOf(toolCall.title) ?? (id === null ? undefined : this.calls.get(id)?.name) ?? 'tool';
+    if (id !== null) {
+      if (this.refusals.has(id)) return;
+      this.refusals.add(id);
+      this.calls.set(id, { name, status: 'error' });
+    }
+    yield { kind: 'tool_call', name, status: 'error', detail };
   }
 
-  /** A call's status, reported when it changes. */
+  /** A call's status, reported when it changes, and never after the call was refused. */
   private *call(id: string, title: string | null, status: RunToolStatus | null): Iterable<RunEvent> {
+    if (this.refusals.has(id)) return;
     const previous = this.calls.get(id);
     const name = title ?? previous?.name ?? 'tool';
     this.calls.set(id, { name, status: status ?? previous?.status ?? null });
