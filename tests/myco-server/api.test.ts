@@ -267,9 +267,12 @@ describe('GET /api/status', () => {
     expect(res.status).toBe(200);
     const body = await res.json() as {
       schema: { matches: boolean; found: number };
+      target: string | null;
       capabilities: { capability: string; label: string; present: boolean; operatorNames: string[] }[];
     };
     expect(body.schema.matches).toBe(true);
+    // The Worker names its target, which is how the dashboard gives Cloudflare-specific advice.
+    expect(body.target).toBe('cloudflare');
     // A bare test env binds no harness runtime; that capability is reported absent, by the binding an operator adds.
     expect(body.capabilities.filter((c) => !c.present).map((c) => [c.capability, c.operatorNames])).toEqual([['harness-runtime', []]]);
     expect(body.capabilities.map((c) => c.capability).sort())

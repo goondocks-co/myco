@@ -20,6 +20,16 @@ export const CHECK_FAILURE_LABEL: Record<string, string> = {
   unexpected_response: 'unexpected GitHub response',
 };
 
+/**
+ * Whether lookups without a token can be relied on where this Deployment runs. GitHub limits an unauthenticated
+ * lookup per network address, and a Cloudflare Worker's lookups leave from addresses other tenants share and have
+ * already spent, so there a token is needed even for a public repository. It follows the target, not the repository.
+ */
+export const lookupTokenNeeded = (target: string | null | undefined) => target === 'cloudflare';
+
+/** What a token-less rate-limited check needs next: a token lifts GitHub's limit, whatever the target. */
+export const RATE_LIMIT_REMEDY = 'Add a read-only lookup token: GitHub allows far more lookups with one.';
+
 export const releaseStateLabel = (state: string) => RELEASE_STATE_LABEL[state] ?? state;
 export const checkFailureLabel = (failure: string | null) => (failure === null ? null : CHECK_FAILURE_LABEL[failure] ?? failure);
 /** A ref as people name it: `refs/tags/myco/v2.0.3` is `myco/v2.0.3`. */

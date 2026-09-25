@@ -26,6 +26,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import type { ServerEnv } from '@myco-server-worker/core/adapters.js';
+import type { OwnerContext } from '@myco-server-worker/context.js';
+import { handleStatus } from '@myco-server-worker/api/status.js';
 import { createServer } from '@myco-server-worker/pipeline.js';
 import { serverEnvFromBindings } from '@myco-server-worker/platform/cloudflare/env.js';
 import { serverEnvFromBunConfig } from '@myco-server-worker/platform/bun/env.js';
@@ -283,6 +285,15 @@ describe('one server product, two deployment targets', () => {
     }
     // Each target names its own infrastructure in its own vocabulary.
     expect(W.env.platform.name).not.toBe(C.env.platform.name);
+  });
+
+  it('names its own target on the status surface, so the dashboard can advise per target', async () => {
+    const said: string[] = [];
+    for (const t of TARGETS) {
+      const res = await handleStatus(t.env, { member: { id: 'mem_owner', role: 'admin' }, now: Date.now() } as unknown as OwnerContext);
+      said.push((await json(res)).target as string);
+    }
+    expect(said).toEqual(['cloudflare', 'bun']);
   });
 
 
