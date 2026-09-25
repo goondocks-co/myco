@@ -15,8 +15,9 @@ import { useWorkerFleet } from '../hooks/use-status';
 import { ApiError, type WorkerStatus } from '../lib/api';
 import { formatCost, formatDateTime, formatDuration, formatRelative, formatTokens } from '../lib/format';
 import { harnessLabel } from '../lib/harness';
-import { FLEET_UNKNOWN_WORDS, leaseStanding, offersWords, sinceWords, untilWords, workerFor, workerName, type LeaseStanding } from '../lib/worker-state';
+import { FLEET_UNKNOWN_WORDS, fleetHeadline, leaseStanding, offersWords, sinceWords, untilWords, workerFor, workerName, type LeaseStanding } from '../lib/worker-state';
 import { NotFound } from './NotFound';
+import { AttachHint } from '../components/status/AttachHint';
 
 /** The statuses a run is written with; anything else renders neutral rather than assuming the set is closed. */
 const STATUS_TABS = [
@@ -57,9 +58,10 @@ export function leaseWords(expiresAt: number, now: number): string {
 }
 
 /** What workers a queued run waits on: presence only, never why this run waits. */
-function queuedFleetWords(fleet: WorkerStatus | undefined): string {
+function queuedFleetWords(fleet: WorkerStatus | undefined, now: number): string {
   if (fleet === undefined || !fleet.available) return FLEET_UNKNOWN_WORDS.unavailable;
-  if (fleet.fleet.length === 0) return `${FLEET_UNKNOWN_WORDS.absent} A queued run waits until one claims it.`;
+  const headline = fleetHeadline(fleet, now);
+  if (headline.attached === 0) return headline.line;
   const recent = fleet.fleet.filter((w) => w.recent || w.busy !== null).length;
   const busy = fleet.fleet.filter((w) => w.busy !== null).length;
   return `${recent} of ${fleet.fleet.length} ${fleet.fleet.length === 1 ? 'worker' : 'workers'} heard from recently, ${busy} driving a run. Status says what each one last reported.`;
@@ -224,7 +226,10 @@ function RunBody({ run, phases, reports, toolCalls, agentName, fleet }: { run: R
       {run.status === 'queued' && (
         <Panel padded title="Waiting">
           <p className="font-sans text-sm text-on-surface-variant">{queuedWords(run)}</p>
-          <p className="mt-1 font-sans text-xs text-on-surface-variant">{queuedFleetWords(fleet)}</p>
+          <p className="mt-1 font-sans text-xs text-on-surface-variant">{queuedFleetWords(fleet, now)}</p>
+          {fleet !== undefined && fleet.available && fleetHeadline(fleet, now).attached === 0 && (
+            <p className="mt-1 font-sans text-xs text-on-surface-variant"><AttachHint /></p>
+          )}
         </Panel>
       )}
 

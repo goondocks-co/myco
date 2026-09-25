@@ -79,6 +79,7 @@ async function rig(before: (path: string, n: number) => Response | null = () => 
       const outcome = await runWorker({
         serverUrl: 'https://deployment.example',
         token,
+        lockDir: null,
         runRoot: mkdtempSync(join(tmpdir(), 'myco-wire-runs-')),
         only: [STUB_HARNESS],
         once: opts.once ?? true,
@@ -226,6 +227,7 @@ describe('a worker on the real claim wire', () => {
     const { driven, refused } = await runWorker({
       serverUrl: 'https://deployment.example',
       token: 'x'.repeat(43),
+      lockDir: null,
       runRoot: mkdtempSync(join(tmpdir(), 'myco-wire-runs-')),
       only: [STUB_HARNESS],
       pollIdleMs: 10,

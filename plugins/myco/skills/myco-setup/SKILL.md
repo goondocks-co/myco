@@ -75,7 +75,15 @@ myco update
 
 This is the reconcile: it detects installed agents, writes their hooks with the binary's absolute path, and refreshes the managed files. It is safe to run repeatedly.
 
-## 5. Verify
+## 5. Keep a worker running
+
+```bash
+myco worker install
+```
+
+The worker is what runs the deployment's analysis on this machine's logged-in agent. This keeps one running whenever the user is logged in, restarting it if it stops. Only an administrator's machine can run one. It needs an agent logged in first, and it is safe to run again.
+
+## 6. Verify
 
 ```bash
 myco doctor

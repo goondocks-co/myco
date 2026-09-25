@@ -593,7 +593,7 @@ describe('the cadence a worker keeps', () => {
 
     const started = Date.now();
     await runWorker({
-      serverUrl: 'https://deployment.example', token: 'tok',
+      serverUrl: 'https://deployment.example', token: 'tok', lockDir: null,
       runRoot: mkdtempSync(join(tmpdir(), 'myco-worker-')),
       pollIdleMs: FALLBACK_MS, log: () => {}, fetchImpl, signal: stopping.signal,
     });
@@ -631,7 +631,7 @@ describe('the cadence a worker keeps', () => {
     }) as unknown as typeof fetch;
 
     await runWorker({
-      serverUrl: 'https://deployment.example', token: 'tok',
+      serverUrl: 'https://deployment.example', token: 'tok', lockDir: null,
       runRoot: mkdtempSync(join(tmpdir(), 'myco-worker-')),
       once: true, pollIdleMs: FALLBACK_MS, log: () => {}, fetchImpl, signal: stopping.signal,
     });
@@ -676,7 +676,7 @@ describe('the budget a run is held to', () => {
       const bound = setTimeout(() => { writeFileSync(release, ''); stopping.abort(); }, 10_000);
       try {
         const outcome = await runWorker({
-          serverUrl: 'https://deployment.example', token: 'tok', runRoot: join(scratch, 'runs'),
+          serverUrl: 'https://deployment.example', token: 'tok', lockDir: null, runRoot: join(scratch, 'runs'),
           only: [STUB_HARNESS], once: true, pollIdleMs: 100, log: (line) => { lines.push(line); }, fetchImpl, signal: stopping.signal,
         });
         expect(outcome).toEqual({ driven: 1, refused: null });

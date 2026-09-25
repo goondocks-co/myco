@@ -72,7 +72,7 @@ describe('worker repository checkout over the Deployment wire', () => {
         process.env.PATH = `${binaries}:${previousPath ?? ''}`;
         expect(detectHarnesses(['claude-code'])).toEqual([{ id: 'claude-code', installed: true, authenticated: true }]);
         const lines: string[] = [];
-        const outcome = await runWorker({ serverUrl: origin, token: owner.token, runRoot, only: ['claude-code'], once: true,
+        const outcome = await runWorker({ serverUrl: origin, token: owner.token, lockDir: null, runRoot, only: ['claude-code'], once: true,
           repositoryGitPath: source.gitPath, pollIdleMs: 10, signal: AbortSignal.timeout(20_000), log: (line) => { lines.push(line); } });
         expect(outcome).toEqual({ driven: 1, refused: null });
         const row = e.sqlite.query(`SELECT status,error,run_context AS context FROM agent_runs WHERE id='run_seed'`).get() as { status: string; error: string | null; context: string };

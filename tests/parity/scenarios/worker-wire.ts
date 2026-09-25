@@ -158,7 +158,7 @@ export const workerWire: ParityScenario = {
     let finished: WorkerOutcome | null = null;
     const attached = runWorker({
       serverUrl: target.url,
-      token: target.memberToken,
+      token: target.memberToken, lockDir: null,
       runRoot: mkdtempSync(join(tmpdir(), 'myco-parity-worker-')),
       only: [STUB_HARNESS],
       once: true,

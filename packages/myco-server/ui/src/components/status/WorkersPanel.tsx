@@ -1,6 +1,7 @@
 import { Panel } from '../ui/panel';
 import { StatusDot } from '../ui/status-dot';
-import { FLEET_UNKNOWN_WORDS, offersWords, REASON_WORDS, workerState } from '../../lib/worker-state';
+import { fleetHeadline, offersWords, REASON_WORDS, workerState } from '../../lib/worker-state';
+import { AttachHint } from './AttachHint';
 import type { WorkerStatus } from '../../lib/api';
 
 /**
@@ -23,19 +24,18 @@ export function WorkersPanel({ workers, now = Date.now() }: { workers: WorkerSta
     );
   }
 
-  const queued = workers.runsQueued;
-  const queueLine = queued === 0 ? 'Nothing queued.' : `${queued} queued ${queued === 1 ? 'run' : 'runs'}.`;
+  const headline = fleetHeadline(workers, now);
 
   return (
-    <Panel padded title="Workers">
-      <p className="font-sans text-sm text-on-surface-variant">
-        {queueLine} Workers attach from wherever their harnesses are logged in; what each reports below is its own check of its machine.
+    <Panel padded title="Workers" tone={headline.tone === 'terracotta' ? 'terra' : 'sage'}>
+      <div className="flex items-center gap-2 font-sans text-sm text-on-surface">
+        <StatusDot tone={headline.tone} />
+        <span>{headline.line}</span>
+      </div>
+      <p className="mt-1 font-sans text-sm text-on-surface-variant">
+        {headline.attached === 0 && <><AttachHint />{' '}</>}Workers attach from wherever their harnesses are logged in; what each reports below is its own check of its machine.
       </p>
-      {workers.fleet.length === 0 ? (
-        <p className="mt-2 font-sans text-sm text-on-surface-variant">
-          {FLEET_UNKNOWN_WORDS.absent} {queued > 0 ? 'Queued runs wait until one attaches.' : ''}
-        </p>
-      ) : (
+      {workers.fleet.length === 0 ? null : (
         <ul className="mt-2 flex flex-col gap-3" aria-label="Workers">
           {workers.fleet.map((worker) => {
             const state = workerState(worker, now);

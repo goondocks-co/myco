@@ -72,6 +72,11 @@ export function resolveLocalPaths(mycoHome = resolveMycoHome()): LocalDeployment
   };
 }
 
+/** Every address this machine's Deployment answers at: its own loopback, and the origin that fronts it where one does. */
+export function localDeploymentUrls(record: Pick<LocalDeploymentRecord, 'port' | 'origin'>): string[] {
+  return [`http://127.0.0.1:${record.port}`, ...(record.origin === undefined ? [] : [record.origin])];
+}
+
 /** Whether this machine holds a locally-run Deployment. */
 export function localDeploymentPresent(paths = resolveLocalPaths()): boolean {
   return existsSync(paths.recordFile);

@@ -37,7 +37,7 @@ for (const harness of HARNESSES) {
   const client = new Client({ name: 'myco-worker-smoke', version: '1' });
   try {
     const { driven, refused } = await runWorker({
-      serverUrl: SERVER, token: membership.token, runRoot, only: [harness], once: true, pollIdleMs: 1_000,
+      serverUrl: SERVER, token: membership.token, lockDir: null, runRoot, only: [harness], once: true, pollIdleMs: 1_000,
       log: (line) => { lines.push(line); console.log(line); }, signal: stopping.signal,
     });
     assert.equal(refused, null, 'The Deployment refused the worker');

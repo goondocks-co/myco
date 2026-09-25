@@ -30,7 +30,8 @@ import { parseFlags } from './shared.js';
 import path from 'node:path';
 import { resolveMycoHome } from '../paths/home.js';
 import { readDeploymentMembership } from '../member/registry.js';
-import { runWorker } from '../runner/loop.js';
+import { runWorker, type WorkerOptions } from '../runner/loop.js';
+import { workerLockDir } from '../runner/instance.js';
 
 /** What a worker waits before its first answer tells it the Deployment's own cadence. */
 const WORKER_POLL_IDLE_MS = 2_000;
@@ -40,6 +41,7 @@ import {
   LocalRecordUnreadable,
   createLocalDeployment,
   localDeploymentPresent,
+  localDeploymentUrls,
   readLocalRecord,
   removeLocalDeployment,
   resolveLocalPaths,
@@ -231,9 +233,27 @@ function fail(message: string): never {
  * without a worker and says so: the Deployment still takes work, and the queue
  * waits for a worker that can claim it.
  */
-async function startLocalWorker(port: number): Promise<void> {
-  const serverUrl = `http://127.0.0.1:${port}`;
-  const membership = readDeploymentMembership(serverUrl);
+/**
+ * Where the in-process worker claims from and what it locks: its own loopback,
+ * and the origin members reach it at, so no other worker on this machine claims
+ * for the same Deployment under either address.
+ */
+export function localWorkerTarget(record: Pick<LocalDeploymentRecord, 'port' | 'origin'>, mycoHome: string, lockDir = workerLockDir()): Pick<WorkerOptions, 'serverUrl' | 'token' | 'lockDir' | 'deploymentUrls' | 'runRoot'> {
+  const urls = localDeploymentUrls(record);
+  const serverUrl = urls[0]!;
+  return {
+    serverUrl,
+    token: () => readDeploymentMembership(serverUrl, mycoHome)?.token ?? null,
+    lockDir,
+    deploymentUrls: urls,
+    runRoot: path.join(mycoHome, 'worker', 'runs'),
+  };
+}
+
+async function startLocalWorker(record: Pick<LocalDeploymentRecord, 'port' | 'origin'>): Promise<void> {
+  const mycoHome = resolveMycoHome();
+  const target = localWorkerTarget(record, mycoHome);
+  const membership = readDeploymentMembership(target.serverUrl, mycoHome);
   if (membership === null) {
     console.log('No membership for this Deployment on this machine; serving without a worker. Run `myco login` to attach one.');
     return;
@@ -247,9 +267,7 @@ async function startLocalWorker(port: number): Promise<void> {
   // to surface as an unhandled rejection, which would say nothing about what the
   // queue is now waiting for.
   void runWorker({
-    serverUrl,
-    token: membership.token,
-    runRoot: path.join(resolveMycoHome(), 'worker', 'runs'),
+    ...target,
     pollIdleMs: WORKER_POLL_IDLE_MS,
     log: (line) => { console.log(`worker: ${line}`); },
     signal: stopping.signal,
@@ -338,7 +356,7 @@ export async function run(args: string[]): Promise<void> {
         // install produces spores rather than a queue nothing claims. It is an
         // ordinary client of the HTTP surface, the same one a worker on another
         // machine is, so both run identical code.
-        if (flags.get('no-worker') !== 'true') await startLocalWorker(started.port);
+        if (flags.get('no-worker') !== 'true') await startLocalWorker({ port: started.port, origin: readLocalRecord(paths).origin });
         // The process stays up until the platform signals it; `startDeployment`
         // owns the drain.
         await new Promise<never>(() => {});
@@ -363,7 +381,7 @@ export async function run(args: string[]): Promise<void> {
       if (command === 'status') {
         if (!localDeploymentPresent(paths)) { console.log('No Deployment on this machine. `myco server create --target local` provisions one.'); return; }
         const record = readLocalRecord(paths);
-        const service = statusOfService(servicePaths(localSpec()));
+        const service = statusOfService(localSpec());
         console.log('\nDeployment');
         console.log(`  Directory:  ${paths.root}`);
         console.log(`  Address:    ${record.origin ?? `http://127.0.0.1:${record.port}`}`);
@@ -378,7 +396,7 @@ export async function run(args: string[]): Promise<void> {
         // service stops before the store moves and starts again on the
         // migrated volume.
         const spec = localSpec();
-        const running = statusOfService(servicePaths(spec)).loaded;
+        const running = statusOfService(spec).loaded;
         if (running) {
           console.log('Stopping the Deployment before it migrates.');
           stopService(spec);

@@ -12,7 +12,7 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import {
-  SERVICE_LABEL,
+  SERVER_UNIT,
   ServicePathUnsupported,
   ServicePlatformUnsupported,
   assertInstalledBinary,
@@ -80,9 +80,9 @@ describe('the per-user service unit', () => {
   });
 
   it('names the same service on every platform it records one under', () => {
-    expect(rendered('darwin')).toContain(SERVICE_LABEL);
+    expect(rendered('darwin')).toContain(SERVER_UNIT.label);
     expect(servicePaths(defaultSpec(BINARY, HOME), 'darwin').unitFile)
-      .toBe(join(HOME, 'Library', 'LaunchAgents', `${SERVICE_LABEL}.plist`));
+      .toBe(join(HOME, 'Library', 'LaunchAgents', `${SERVER_UNIT.label}.plist`));
     expect(servicePaths(defaultSpec(BINARY, HOME), 'linux').unitFile)
       .toBe(join(HOME, '.config', 'systemd', 'user', 'myco-server.service'));
   });

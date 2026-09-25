@@ -1632,6 +1632,25 @@ export async function checkRuntimePin(): Promise<DoctorCheck | null> {
 
 
 /**
+ * The worker login service for each Deployment the member home holds a
+ * membership of: installed or not, held by the platform or not, and which
+ * process on this machine serves the Deployment. A Deployment with no worker
+ * attached anywhere leaves its runs queued, so a missing one warns.
+ */
+export async function checkWorkerServices(vaultDir: string, deps: import('./worker-service.js').WorkerServiceDeps = {}): Promise<DoctorCheck[]> {
+  const { resolveProjectRoot } = await import('../project-root.js');
+  const { resolveMycoHome } = await import('../paths/home.js');
+  const { deploymentUrl, listDeploymentMemberships } = await import('../member/registry.js');
+  const { describeWorkerService, workerServiceWords } = await import('./worker-service.js');
+  const mycoHome = deps.mycoHome ?? resolveMycoHome({ cwd: resolveProjectRoot(vaultDir) });
+  return listDeploymentMemberships(mycoHome).map((membership) => {
+    const url = deploymentUrl(membership.serverUrl);
+    const words = workerServiceWords(describeWorkerService(url, { ...deps, mycoHome }));
+    return { name: 'Worker service', status: words.status, detail: `${url}: ${words.line}`, fixable: false };
+  });
+}
+
+/**
  * Whether this project's membership resolves for the symbionts set up on this
  * machine: the machine pin for a non-default home, and the Myco MCP server each
  * symbiont declares.
@@ -1844,6 +1863,7 @@ export async function runChecks(
   const runtimePin = await checkRuntimePin();
   if (runtimePin) checks.push(runtimePin);
   checks.push(...await checkMemberMcpResolution(vaultDir));
+  checks.push(...await checkWorkerServices(vaultDir));
   // Leftover per-host networking state lives under the machine's home and team
   // home — nothing about it is project-scoped, and the moment a user is most
   // likely to run `doctor` after upgrading is from their home directory, which
