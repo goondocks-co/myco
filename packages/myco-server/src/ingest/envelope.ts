@@ -41,7 +41,8 @@ export interface CaptureEnvelope {
 
 export type Refused = { ok: false } & Refusal;
 export type ParseResult = { ok: true; value: CaptureEnvelope } | Refused;
-const refused = (reason: string, classifier?: Refusal['classifier']): Refused => ({ ok: false, ...refusal(reason, classifier) });
+/** A refusal of the envelope's own shape: `invalid_field` unless a more specific classifier names it. */
+const refused = (reason: string, classifier: Refusal['classifier'] = 'invalid_field'): Refused => ({ ok: false, ...refusal(reason, classifier) });
 
 /** Every channel an envelope may declare. Exported so the member's own list is pinned against it rather than kept in step by hand. */
 export const CHANNELS: ReadonlySet<string> = new Set<Channel>(['cli', 'http', 'import']);

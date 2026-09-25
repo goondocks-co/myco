@@ -7,6 +7,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { withFileLockSync } from '../utils/lifecycle-lock.js';
+import { REFUSAL_RETRY_INITIAL_MS, REFUSAL_RETRY_MAX_MS } from './constants.js';
 import { ensurePrivateFile, readPrivateJson, reportSkippedPrivateFile, writePrivateFileAtomic } from './store.js';
 
 export const SESSION_STATE_VERSION = 1;
@@ -26,6 +27,29 @@ export interface TranscriptPointer {
   /** The code the Deployment refused this transcript with for good, when it has; nothing ships under this identity again. */
   refused?: string;
 }
+
+/**
+ * When a backlog walk may send a session's records again after a transient
+ * refusal, and the wait that set it. A pass that moves past the held records
+ * clears it, so a wait always belongs to the records it held.
+ */
+export interface RefusalRetry {
+  at: number;
+  backoffMs: number;
+  /**
+   * The run of consecutive holds whose refusal named no cause: when the first
+   * of them arrived, and the wait the run alone has grown to. A hold for any
+   * other cause ends the run.
+   */
+  unclassified?: { since: number; backoffMs: number };
+}
+
+/** The wait after `previous`: `REFUSAL_RETRY_INITIAL_MS` for the first, then double the last, to `REFUSAL_RETRY_MAX_MS`. */
+const nextBackoff = (previous: { backoffMs: number } | undefined): number =>
+  previous === undefined ? REFUSAL_RETRY_INITIAL_MS : Math.min(previous.backoffMs * 2, REFUSAL_RETRY_MAX_MS);
+
+/** The state fields that hold a wait after a transient refusal: one for the session's spooled events, one for its transcripts. */
+export type RetryField = 'eventRetry' | 'transcriptRetry';
 
 export interface SessionState {
   version: typeof SESSION_STATE_VERSION;
@@ -59,7 +83,9 @@ export interface SessionState {
   /** Set when no one symbiont's declared transcript layout names this session's transcript, so a hook's backlog walk passes it over rather than search again. */
   agentUnknown?: true;
   /** When a backlog walk may send this session's transcripts again after a transient refusal, and the wait that set it. */
-  transcriptRetry?: { at: number; backoffMs: number };
+  transcriptRetry?: RefusalRetry;
+  /** When a backlog walk may send this session's spooled events again after a transient refusal held them, and the wait that set it. */
+  eventRetry?: RefusalRetry;
   /** When this session first appended to the spool; the clock retention measures from until an acknowledgement arrives. */
   startedAt?: number;
   /** When the server last acknowledged one of this session's records. */
@@ -191,6 +217,33 @@ export function updateSessionState(spoolDir: string, sessionId: string, mutate: 
     writeSessionStateUnlocked(spoolDir, sessionId, state, now);
     return state;
   });
+}
+
+/** Whether a wait after a transient refusal still runs at `now`. */
+export const retryWaiting = (retry: RefusalRetry | undefined, now: number): boolean => retry !== undefined && retry.at > now;
+
+/**
+ * Start or lengthen a session's wait after a hold: `REFUSAL_RETRY_INITIAL_MS`,
+ * then double the last wait, to `REFUSAL_RETRY_MAX_MS`. `unclassified` says
+ * the hold's refusal named no cause, which extends the run of such holds; a
+ * hold for any other cause ends it.
+ */
+export function deferAfterRefusal(spoolDir: string, sessionId: string, field: RetryField, now: number, cause: { unclassified: boolean } = { unclassified: false }): RefusalRetry {
+  const state = updateSessionState(spoolDir, sessionId, (s) => {
+    const previous = s[field];
+    const backoffMs = nextBackoff(previous);
+    const run = previous?.unclassified;
+    s[field] = {
+      at: now + backoffMs, backoffMs,
+      ...(cause.unclassified ? { unclassified: { since: run?.since ?? now, backoffMs: nextBackoff(run) } } : {}),
+    };
+  }, now);
+  return state[field]!;
+}
+
+/** End a session's wait: the records it held were delivered or let go. */
+export function clearRefusalRetry(spoolDir: string, sessionId: string, field: RetryField, now: number): void {
+  updateSessionState(spoolDir, sessionId, (s) => { delete s[field]; }, now);
 }
 
 /** Remove a session's state file (after its spool is fully acknowledged and deleted, or on purge). */

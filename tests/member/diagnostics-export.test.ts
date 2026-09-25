@@ -118,7 +118,7 @@ describe('a member report carries no credential and no captured content', () => 
     writeRegistryEntry(e, { mycoHome });
     writeRefusedLog('proj_1', [refusal()]);
     const facts = projectDiagnostics(e, mycoHome, NOW);
-    expect(facts.refusals.entries[0]).toEqual({ eventId: evId(1), sessionId: 'sess_1', kind: 'prompt', code: 'clock_skew', at: NOW });
+    expect(facts.refusals.entries[0]).toEqual({ eventId: evId(1), sessionId: 'sess_1', kind: 'prompt', code: 'clock_skew', at: NOW, held: false });
     expect(JSON.stringify(facts)).not.toContain('secret.env');
   });
 
@@ -428,7 +428,7 @@ describe('a refusal the drain raised against an unparsable spool line', () => {
 
     const facts = projectDiagnostics(e, mycoHome, NOW);
     expect(facts.refusals.unreadableLines).toBe(0);
-    expect(facts.refusals.entries).toEqual([{ eventId: null, sessionId: 'sess-a', kind: null, code: 'refused', at: NOW }]);
+    expect(facts.refusals.entries).toEqual([{ eventId: null, sessionId: 'sess-a', kind: null, code: 'refused', at: NOW, held: false }]);
   });
 });
 

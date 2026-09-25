@@ -175,7 +175,7 @@ describe('kind catalogue', () => {
     const forged = envelope({ eventId: uuid(9), producer: { adapter: TRANSCRIPT_PARSE_ADAPTER, version: '1' } });
 
     expect(await json(await worker.fetch(memberPost(t.token, forged), e.env))).toEqual({
-      persisted: false, code: 'refused',
+      persisted: false, code: 'invalid_field',
       reason: `producer.adapter ${TRANSCRIPT_PARSE_ADAPTER} is reserved for the Deployment's transcript parser`,
     });
     expect((e.sqlite.query(`SELECT COUNT(*) c FROM events WHERE producer_adapter = ?`).get(TRANSCRIPT_PARSE_ADAPTER) as any).c).toBe(0);
@@ -186,10 +186,10 @@ describe('kind catalogue', () => {
     const t = await member(e);
     expect(await json(await worker.fetch(memberPost(t.token, envelope({ kind: 'made.up', payload: {} })), e.env))).toEqual({ persisted: false, code: 'unknown_kind', reason: 'unknown kind made.up' });
     expect(await json(await worker.fetch(memberPost(t.token, envelope({ payload: { promptId: uuid(2), text: 'x', origin: 'user', extra: 1 } })), e.env))).toEqual({ persisted: false, code: 'unknown_field', reason: 'unknown field payload.extra' });
-    expect(await json(await worker.fetch(memberPost(t.token, envelope({ payload: { promptId: uuid(2), origin: 'user' } })), e.env))).toEqual({ persisted: false, code: 'refused', reason: 'exactly one of text or blob is required' });
-    expect(await json(await worker.fetch(memberPost(t.token, envelope({ payload: { promptId: uuid(2), text: 'x', blob: 'a'.repeat(64), origin: 'user' } })), e.env))).toEqual({ persisted: false, code: 'refused', reason: 'exactly one of text or blob is required' });
-    expect(await json(await worker.fetch(memberPost(t.token, envelope({ payload: { promptId: uuid(2), text: 'x', origin: 'human' } })), e.env))).toEqual({ persisted: false, code: 'refused', reason: `origin must be one of ${PROMPT_ORIGINS.join(', ')}` });
-    expect(await json(await worker.fetch(memberPost(t.token, envelope({ kind: 'tool.use', payload: { toolCallId: uuid(3), toolName: 'x'.repeat(65), input: {}, success: true } })), e.env))).toEqual({ persisted: false, code: 'refused', reason: 'toolName must be a string of at most 64 characters' });
+    expect(await json(await worker.fetch(memberPost(t.token, envelope({ payload: { promptId: uuid(2), origin: 'user' } })), e.env))).toEqual({ persisted: false, code: 'invalid_field', reason: 'exactly one of text or blob is required' });
+    expect(await json(await worker.fetch(memberPost(t.token, envelope({ payload: { promptId: uuid(2), text: 'x', blob: 'a'.repeat(64), origin: 'user' } })), e.env))).toEqual({ persisted: false, code: 'invalid_field', reason: 'exactly one of text or blob is required' });
+    expect(await json(await worker.fetch(memberPost(t.token, envelope({ payload: { promptId: uuid(2), text: 'x', origin: 'human' } })), e.env))).toEqual({ persisted: false, code: 'invalid_field', reason: `origin must be one of ${PROMPT_ORIGINS.join(', ')}` });
+    expect(await json(await worker.fetch(memberPost(t.token, envelope({ kind: 'tool.use', payload: { toolCallId: uuid(3), toolName: 'x'.repeat(65), input: {}, success: true } })), e.env))).toEqual({ persisted: false, code: 'invalid_field', reason: 'toolName must be a string of at most 64 characters' });
     expect(count(e.sqlite, 'events')).toBe(0);
     expect(bytesWritten(e.sqlite, t.tokenId)).toBe(0);
   });
@@ -265,7 +265,7 @@ describe('kind catalogue', () => {
     const atCap = await json(await worker.fetch(memberPost(t.token, envelope({ eventId: uuid(280), payload: { promptId: uuid(2), text: 'x'.repeat(MAX_PAYLOAD_BYTES - fixed), origin: 'user' } })), e.env));
     expect(atCap).toEqual({ persisted: true, projected: true });
     const over = await json(await worker.fetch(memberPost(t.token, envelope({ eventId: uuid(281), payload: { promptId: uuid(282), text: 'x'.repeat(MAX_PAYLOAD_BYTES - fixed + 1), origin: 'user' } })), e.env));
-    expect(over).toEqual({ persisted: false, code: 'refused', reason: PAYLOAD_CAP_REASON });
+    expect(over).toEqual({ persisted: false, code: 'invalid_field', reason: PAYLOAD_CAP_REASON });
     expect(count(e.sqlite, 'events')).toBe(1);
   });
 
@@ -562,7 +562,7 @@ describe('kind catalogue', () => {
     const t = await member(e);
     const tx = `tx_${'c'.repeat(32)}`;
     const zero = await json(await worker.fetch(memberPost(t.token, envelope({ eventId: uuid(420), kind: 'transcript.segment', payload: { transcriptId: tx, baseOffset: 0, length: 0, blob: 'a'.repeat(64) } })), e.env));
-    expect(zero).toEqual({ persisted: false, code: 'refused', reason: `length must be an integer between 1 and ${MAX_BLOB_BYTES}` });
+    expect(zero).toEqual({ persisted: false, code: 'invalid_field', reason: `length must be an integer between 1 and ${MAX_BLOB_BYTES}` });
     const a = utf8('ten-bytes!');
     const ka = await upload(e, t.token, a);
     expect(await json(await worker.fetch(memberPost(t.token, envelope({ eventId: uuid(421), kind: 'transcript.segment', payload: { transcriptId: tx, baseOffset: 0, length: a.byteLength, blob: ka } })), e.env))).toEqual({ persisted: true, projected: true, transcript: { size: a.byteLength, segmentCount: 1 } });
@@ -791,7 +791,11 @@ describe('kind catalogue', () => {
       { name: 'transcriptId grammar', request: () => post({ kind: 'transcript.segment', payload: { transcriptId: 'tx_short', baseOffset: 0, length: 1, blob: segKey } }), kind: 'ingest_refused', reason: 'transcriptId must match the transcript id grammar', classifier: 'id_grammar' },
       { name: 'createdAt ahead of the clock', request: () => post({ createdAt: now + MAX_CLOCK_SKEW_MS + 60_000 }), kind: 'ingest_refused', reason: `createdAt is more than ${MAX_CLOCK_SKEW_MS} ms ahead of the server clock`, classifier: 'clock_skew' },
       { name: 'startedAt ahead of the clock', request: () => post({ kind: 'session.start', payload: { agent: 'a', startedAt: now + MAX_CLOCK_SKEW_MS + 60_000 } }), kind: 'ingest_refused', reason: `startedAt is more than ${MAX_CLOCK_SKEW_MS} ms ahead of the server clock`, classifier: 'clock_skew' },
-      { name: 'a plain bound', request: () => post({ payload: { promptId: uuid(2), origin: 'user' } }), kind: 'ingest_refused', reason: 'exactly one of text or blob is required', classifier: 'refused' },
+      { name: 'an exactly-one pair', request: () => post({ payload: { promptId: uuid(2), origin: 'user' } }), kind: 'ingest_refused', reason: 'exactly one of text or blob is required', classifier: 'invalid_field' },
+      { name: 'a required field', request: () => post({ payload: { text: 'x', origin: 'user' } }), kind: 'ingest_refused', reason: 'promptId is required', classifier: 'invalid_field' },
+      { name: 'an enum bound', request: () => post({ payload: { promptId: uuid(2), text: 'x', origin: 'nobody' } }), kind: 'ingest_refused', reason: `origin must be one of ${PROMPT_ORIGINS.join(', ')}`, classifier: 'invalid_field' },
+      { name: 'the channel', request: () => post({ channel: 'carrier-pigeon' }), kind: 'ingest_refused', reason: 'channel must be one of cli, http, import', classifier: 'invalid_field' },
+      { name: 'a negative createdAt', request: () => post({ createdAt: -1 }), kind: 'ingest_refused', reason: 'createdAt must be a non-negative integer', classifier: 'invalid_field' },
       { name: 'body not JSON', request: () => memberPost(t1.token, '{'), kind: 'ingest_refused', reason: 'body must be JSON', classifier: 'parse' },
       { name: 'body over the cap', request: () => memberPost(t1.token, '0'.repeat(MAX_BODY_BYTES + 1)), kind: 'ingest_refused', reason: `body exceeds ${MAX_BODY_BYTES} bytes`, classifier: 'body_cap' },
       { name: 'absent blob', request: () => post({ kind: 'attachment', payload: { attachmentId: uuid(1102), blob: absent } }), kind: 'ingest_refused', reason: `blob not present: ${absent}`, classifier: 'blob_absent' },

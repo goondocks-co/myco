@@ -44,7 +44,7 @@ const whole = { eventId: EVENT_ID, sessionId: SESSION_ID, kind: 'prompt', code: 
 describe('a refusal the log holds', () => {
   it('carries an event, session, kind, code and instant a member could have shipped', () => {
     const facts = projectDiagnostics(logRefusals([whole]), mycoHome, NOW).refusals;
-    expect(facts.entries).toEqual([{ eventId: EVENT_ID, sessionId: SESSION_ID, kind: 'prompt', code: 'refused', at: NOW }]);
+    expect(facts.entries).toEqual([{ eventId: EVENT_ID, sessionId: SESSION_ID, kind: 'prompt', code: 'refused', at: NOW, held: false }]);
   });
 
   it('nulls an event id outside the grammar rather than carrying what the file says', () => {
