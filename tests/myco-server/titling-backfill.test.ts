@@ -99,7 +99,7 @@ describe('the imported-session backfill', () => {
     expect(r.runs().length).toBe(3);
   });
 
-  it('titles a session its own capture owes a title with the backfill stopped: a live or transcript-less session that ended unrequested, and an end request whose attempt ended untitled', async () => {
+  it('titles a session its own capture owes a title with scheduled intelligence and the backfill off: a live or transcript-less session that ended unrequested, and an end request whose attempt ended untitled', async () => {
     const r = rig();
     r.session('imported', { endedAt: NOW - 1000 });
     r.session('live', { imported: false, endedAt: NOW - 2000 });
@@ -112,11 +112,8 @@ describe('the imported-session backfill', () => {
     r.session('fresh-request', { imported: false, endedAt: NOW - 6000 });
     r.sqlite.run(`UPDATE sessions SET titling_requested_at = ? WHERE session_id = 'fresh-request'`, [NOW - 6000]);
 
-    // Scheduled intelligence off stops the whole convergence.
-    expect(await backfillTitles(r.env, NOW, 'idle')).toBe(0);
-    expect(r.runs()).toEqual([]);
-    r.setting('agent.scheduled_tasks_enabled', true);
-    expect((await titlingBackfillProgress(r.env, NOW)).enabled).toBe(false);
+    // Scheduled intelligence is off, as it is on a Deployment nobody configured: what live capture owes is still titled.
+    expect((await titlingBackfillProgress(r.env, NOW)).scheduledTasksEnabled).toBe(false);
     expect(await backfillTitles(r.env, NOW, 'idle')).toBe(4);
     expect(r.runs().map((run) => run.sessionId).sort()).toEqual(['live', 'mixed', 'no-transcript', 'requested']);
     expect(r.titledAt('imported')).toBeNull();
@@ -125,9 +122,20 @@ describe('the imported-session backfill', () => {
     expect(await titlingBackfillProgress(r.env, NOW + 1)).toMatchObject({ remaining: 1, owed: 0 });
   });
 
+  it('titles an imported session only while scheduled intelligence and the backfill are both on', async () => {
+    const r = rig();
+    r.session('imported');
+    r.setting('agent.tasks', { [TITLING_TASK]: { schedule: { enabled: true, intervalSeconds: 0 } } });
+    expect(await backfillTitles(r.env, NOW, 'idle')).toBe(0);
+    r.setting('agent.scheduled_tasks_enabled', true);
+    r.setting('agent.tasks', { [TITLING_TASK]: { schedule: { enabled: false, intervalSeconds: 0 } } });
+    expect(await backfillTitles(r.env, NOW + 1, 'idle')).toBe(0);
+    r.setting('agent.tasks', { [TITLING_TASK]: { schedule: { enabled: true, intervalSeconds: 0 } } });
+    expect(await backfillTitles(r.env, NOW + 2, 'idle')).toBe(1);
+  });
+
   it('counts an attempt only when a worker claims the run: a queued run that expires unclaimed is re-queued, and a session workers took the bound on is left', async () => {
     const r = rig();
-    r.setting('agent.scheduled_tasks_enabled', true);
     r.setting('agent.tasks', { [TITLING_TASK]: { schedule: { intervalSeconds: 0 } } });
     r.session('s', { imported: false });
     const attempts = () => (r.sqlite.query(`SELECT titling_attempts AS n FROM sessions WHERE session_id = 's'`).get() as { n: number }).n;
@@ -224,7 +232,6 @@ describe('the imported-session backfill', () => {
 
   it('keeps a retry the ceiling refused as the retry it was, so the end-request job never takes it outside the ceiling', async () => {
     const r = rig();
-    r.setting('agent.scheduled_tasks_enabled', true);
     r.setting('agent.tasks', { [TITLING_TASK]: { schedule: { intervalSeconds: 0, maxRunsPerDay: 1 } } });
     for (const [id, endedAt] of [['a', NOW - 1000], ['b', NOW - 2000]] as const) {
       r.session(id, { imported: false, endedAt });

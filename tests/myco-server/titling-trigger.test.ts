@@ -23,7 +23,6 @@ describe('the events route', () => {
     await post({ eventId: uuid(2), kind: 'session.end', payload: { endedAt: 5_000 } });
     await e.deferred.settle();
     e.sqlite.run(`INSERT INTO deployment_settings (leaf, value, updated_at, updated_by) VALUES ('agent.tasks', ?, 1, 'mem_1')`, [JSON.stringify({ 'title-summary': { schedule: { intervalSeconds: 0 } } })]);
-    e.sqlite.run(`INSERT INTO deployment_settings (leaf, value, updated_at, updated_by) VALUES ('agent.scheduled_tasks_enabled', 'true', 1, 'mem_1')`);
     const first = e.sqlite.query(`SELECT id, queued_at FROM agent_runs`).get() as { id: string; queued_at: number };
     const env = { ...serverEnvFromBindings(e.env), origin: 'https://s' };
     const later = first.queued_at + OWNER_TITLING_WINDOW_MS + 1_000;

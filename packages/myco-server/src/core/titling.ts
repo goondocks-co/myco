@@ -240,12 +240,12 @@ export async function titlingBackfillPolicy(env: ServerEnv): Promise<TitlingBack
 }
 
 /**
- * Converges every ended session on a title while scheduled intelligence is on:
- * newest first, a bounded page per wake, in the block's states, inside its interval and daily ceiling, and under
+ * Converges every ended session on a title: newest first, a bounded page per
+ * wake, in the block's states, inside its interval and daily ceiling, and under
  * its overlap rule. A session its own capture owes a title — an end request
  * whose attempt ended untitled, or a live session that ended without one — is
- * always a candidate; a wholly imported session is one only while the block is
- * on. Each attempt is the same `claim` a session's own end makes, bounded by the
+ * always a candidate; a wholly imported session is one only while scheduled
+ * intelligence and the block are both on. Each attempt is the same `claim` a session's own end makes, bounded by the
  * attempts workers took, and never over a title that stands. The ceiling, the
  * interval and the overlap count this actor's runs across every Project. The
  * ceiling is held by the run write itself: the count read here sizes the page,
@@ -257,7 +257,7 @@ export async function titlingBackfillPolicy(env: ServerEnv): Promise<TitlingBack
  */
 export async function backfillTitles(env: ServerEnv, now: number, state: PowerState): Promise<number> {
   const policy = await titlingBackfillPolicy(env);
-  if (!policy.scheduledTasksEnabled || !(policy.runIn as readonly string[]).includes(state)) return 0;
+  if (!(policy.runIn as readonly string[]).includes(state)) return 0;
   const last = await deploymentLastTaskEntryAt(env.db, TITLING_TASK, TITLING_BACKFILL_ACTOR);
   if (last !== null && now - last < policy.intervalSeconds * 1000) return 0;
   const since = now - DAY_MS;
