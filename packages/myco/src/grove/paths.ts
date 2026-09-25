@@ -4,10 +4,11 @@ import os from 'node:os';
 import path from 'node:path';
 
 import { MACHINE_RUNTIME_COMMAND_FILENAME } from '../constants/update.js';
-import { expandHome, resolveMycoHome, type MycoHomeOptions } from '../paths/home.js';
+import { GROVES_DIRNAME, expandHome, resolveMycoHome, type MycoHomeOptions } from '../paths/home.js';
 import { assertGroveEraId, isGroveEraId } from './ids.js';
 
 export {
+  GROVES_DIRNAME,
   MYCO_HOME_ENV,
   RUNTIME_HOME_FILENAME,
   defaultMycoHome,
@@ -54,7 +55,6 @@ export function pathsEquivalent(a: string, b: string): boolean {
   }
 }
 
-export const GROVES_DIRNAME = 'groves';
 export const SERVICE_DIRNAME = 'service';
 export const GROVE_METADATA_FILENAME = 'grove.toml';
 export const GROVE_CONFIG_FILENAME = 'grove.yaml';

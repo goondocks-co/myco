@@ -1,5 +1,6 @@
 import type { ServerEnv } from '../core/adapters.js';
 import type { OwnerContext } from '../context.js';
+import { emptyBodyRoute } from '../auth/members.js';
 import { badRequest, notFound, ok, readJsonObject, resolveProjectScope } from './scope.js';
 import { SecretValueError, deploymentSecretStore, type SecretDescription } from '../core/secrets.js';
 import {
@@ -54,10 +55,14 @@ function writerFor(env: ServerEnv) {
 const MAX_SECRET_CHARS = 4096;
 
 
-/** Every Deployment leaf this server accepts, with whatever is stored for it. A leaf with no row is reported absent rather than defaulted — the reader layers its own defaults. */
-export async function handleSettings(env: ServerEnv, ctx: OwnerContext): Promise<Response> {
+/**
+ * Every Deployment leaf this server accepts, with whatever is stored for it. A leaf with no row is reported absent rather than defaulted — the reader layers its own defaults.
+ * The dashboard reads it over an owner session and a member's CLI over its credential; it answers in the member routes' `persisted` shape for both. Provider credentials live in the secret store and never reach this answer.
+ */
+export async function handleSettings(env: ServerEnv): Promise<Response> {
   const stored = await settingsWriter(env.db).leaves();
   return ok({
+    persisted: true,
     leaves: DEPLOYMENT_LEAVES.map((leaf) => ({
       leaf,
       configured: leaf in stored,
@@ -67,6 +72,28 @@ export async function handleSettings(env: ServerEnv, ctx: OwnerContext): Promise
     })),
   });
 }
+
+/** A token that addresses a host: a scheme or `//` ahead of it, or `name:secret@host` followed by a port or a path. */
+const URL_TOKEN = /^(?:[a-z][\w+.-]*:)?\/\/|^[^:/@]+:[^/@]*@[\w.-]+[:/]/i;
+/** The userinfo of a URL token, with the scheme and `//` it follows kept in group 1. */
+const USERINFO = /^((?:[a-z][\w+.-]*:)?\/\/)?[^/@?#]*@/i;
+
+/**
+ * A string with every URL inside it — whole, embedded in prose, or inside a
+ * JSON-encoded value — stripped of its userinfo, query and fragment. Tokens
+ * are split at whitespace, quotes, brackets, commas and backslashes.
+ */
+const withoutUrlSecrets = (value: string): string =>
+  value.replace(/[^\s"'<>(),\\]+/g, (token) => (URL_TOKEN.test(token) ? token.replace(USERINFO, '$1').replace(/[?#].*$/, '') : token));
+
+/**
+ * The same leaves to a member credential, Deployment-wide, over a member json
+ * route whose body is the empty object. Every URL a string value holds, at any
+ * depth and anywhere in the string, leaves without its userinfo, query and
+ * fragment.
+ */
+export const handleMemberSettings = emptyBodyRoute(async (env: ServerEnv) =>
+  ok(JSON.parse(await (await handleSettings(env)).text(), (_key, value: unknown) => (typeof value === 'string' ? withoutUrlSecrets(value) : value))));
 
 /** Set one Deployment leaf. */
 export async function handleSetSetting(env: ServerEnv, ctx: OwnerContext): Promise<Response> {
