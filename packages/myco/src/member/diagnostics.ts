@@ -105,6 +105,8 @@ export interface RefusalFacts {
   code: MemberCode | null;
   /** Null where the log holds no instant a reader can date. */
   at: number | null;
+  /** Whether the record was kept spooled for a later pass rather than dropped. */
+  held: boolean;
 }
 
 /** Capture an invocation could not attribute, for one project root. */
@@ -265,6 +267,7 @@ function refusalOf(entry: RefusedEntry): RefusalFacts {
     kind: isMemberKind(entry.kind) ? entry.kind : null,
     code: isMemberCode(entry.code) ? entry.code : null,
     at: rendersAsInstant(entry.at) ? entry.at : null,
+    held: entry.held !== undefined,
   };
 }
 

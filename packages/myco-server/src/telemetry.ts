@@ -70,6 +70,8 @@ export const CLASSIFIERS = [
   'not_admin',
   // #1148 — bounded import
   'import_disabled',
+  // a field outside its declared shape or bound
+  'invalid_field',
 ] as const;
 export type Classifier = (typeof CLASSIFIERS)[number];
 

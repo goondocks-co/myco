@@ -13,7 +13,7 @@ import { CHANNELS as SERVER_CHANNELS, ID_GRAMMAR, MAX_PAYLOAD_BYTES, PRODUCER_GR
 import { IMPORT_PLAN_MAX_CANDIDATES as SERVER_PLAN_MAX } from '@myco-server-worker/constants.js';
 import { IMPORT_PLAN_MAX_CANDIDATES as MEMBER_PLAN_MAX } from '@myco/member/import.js';
 import { OUTBOUND_CHANNELS as MEMBER_CHANNELS } from '@myco/member/envelope.js';
-import { kindSpec } from '@myco-server-worker/ingest/kinds.js';
+import { KINDS, kindSpec } from '@myco-server-worker/ingest/kinds.js';
 import { MEMBER_TOKEN_PATTERN as SERVER_TOKEN_PATTERN, MEMBER_TOKEN_REFRESH_WINDOW_MS as SERVER_REFRESH_WINDOW_MS } from '@myco-server-worker/auth/tokens.js';
 import { longestDeclaredHookTimeoutMs } from '@myco/member/budget.js';
 import { isProjectId as memberIsProjectId, PROJECT_ID_PATTERN as MEMBER_PROJECT_ID_PATTERN } from '@myco/member/constants.js';
@@ -47,11 +47,62 @@ const BOUND_FIELDS: Record<keyof typeof BOUNDS, [string, string] | [string, stri
   tagItem: ['plan', 'tags', 'item'],
 };
 
+/**
+ * What the worker judges final about a record's own shape, per member
+ * protocol: the channels, and per kind its required fields, its enum values
+ * and its exactly-one and at-most-one pairs. A record outside any of them is
+ * refused `invalid_field` and dropped, never held. A member that widens one of
+ * these, or a worker that adds a required field, would have its records
+ * dropped by the other side at the same protocol, so the change is a member
+ * protocol bump and a new row here, never an edit of an existing row.
+ */
+const FINAL_SHAPE_BY_PROTOCOL: Record<number, unknown> = {
+  1: {
+    channels: ['cli', 'http', 'import'],
+    kinds: {
+      'attachment': { required: ['attachmentId', 'blob'], enums: {} },
+      'compaction.post': { required: [], enums: {}, atMostOne: ['summary', 'blob'] },
+      'compaction.pre': { required: [], enums: {}, atMostOne: ['summary', 'blob'] },
+      'error': { required: ['message'], enums: {} },
+      'notification': { required: ['message'], enums: {} },
+      'plan': { required: ['planKey'], enums: { source: ['path', 'save', 'tag'], status: ['abandoned', 'active', 'completed', 'in_progress'] }, exactlyOne: ['content', 'blob'] },
+      'prompt': { required: ['origin', 'promptId'], enums: { origin: ['agent_dispatch', 'hook_injected', 'system', 'unknown', 'user'] }, exactlyOne: ['text', 'blob'] },
+      'response': { required: ['responseId'], enums: {}, exactlyOne: ['text', 'blob'] },
+      'session.end': { required: [], enums: {} },
+      'session.start': { required: ['agent'], enums: {} },
+      'stop.failure': { required: [], enums: {} },
+      'subagent.start': { required: ['subagentId'], enums: {} },
+      'subagent.stop': { required: ['subagentId'], enums: {} },
+      'task.completed': { required: [], enums: {} },
+      'tool.failure': { required: ['errorMessage', 'success', 'toolCallId', 'toolName'], enums: {}, exactlyOne: ['input', 'blob'], atMostOne: ['output', 'outputBlob'] },
+      'tool.use': { required: ['success', 'toolCallId', 'toolName'], enums: {}, exactlyOne: ['input', 'blob'], atMostOne: ['output', 'outputBlob'] },
+      'transcript.segment': { required: ['baseOffset', 'blob', 'length', 'transcriptId'], enums: { role: ['primary', 'subagent'] } },
+    },
+  },
+};
+
+/** The worker's final-shape judgements, read from its own catalogue. */
+function finalShape(): unknown {
+  const kinds = Object.fromEntries([...KINDS].sort((a, b) => a.name.localeCompare(b.name)).map((spec) => {
+    const required = Object.entries(spec.fields).filter(([, f]) => f.required === true).map(([field]) => field).sort();
+    const enums = Object.fromEntries(Object.entries(spec.fields)
+      .flatMap(([field, f]) => (f.bound.type === 'enum' ? [[field, [...f.bound.values].sort()] as const] : []))
+      .sort(([a], [b]) => a.localeCompare(b)));
+    return [spec.name, { required, enums, ...(spec.exactlyOne ? { exactlyOne: [...spec.exactlyOne] } : {}), ...(spec.atMostOne ? { atMostOne: [...spec.atMostOne] } : {}) }];
+  }));
+  return { channels: [...SERVER_CHANNELS].sort(), kinds };
+}
+
 describe('member ↔ worker pins', () => {
   it('MEMBER_PROTOCOL is inside the server window', () => {
     expect(MEMBER_PROTOCOL).toBeGreaterThanOrEqual(MIN_COMPAT_MEMBER_PROTOCOL);
     expect(MEMBER_PROTOCOL).toBeLessThanOrEqual(SERVER_PROTOCOL);
     expect(PROTOCOL_HEADER).toBe(SERVER_PROTOCOL_HEADER);
+  });
+
+  it('changes what the worker judges final about a record\'s shape only with a member protocol bump: channels, required fields, enum values and field pairs are pinned per protocol', () => {
+    expect({ protocol: MEMBER_PROTOCOL, shape: finalShape() }).toEqual({ protocol: MEMBER_PROTOCOL, shape: FINAL_SHAPE_BY_PROTOCOL[MEMBER_PROTOCOL] });
+    expect({ protocol: SERVER_PROTOCOL, shape: finalShape() }).toEqual({ protocol: SERVER_PROTOCOL, shape: FINAL_SHAPE_BY_PROTOCOL[SERVER_PROTOCOL] });
   });
 
   it('the member code list is exactly the worker classifiers plus unavailable', () => {

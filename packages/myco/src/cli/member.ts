@@ -474,7 +474,7 @@ export function runStatus(args: readonly string[], deps: MemberCliDeps = {}): vo
     out(`last ack:   ${!spool.stateReadable ? 'unknown — state could not be read' : spool.lastAckAt === null ? '—' : when(spool.lastAckAt)}`);
     const last = refusals.entries[refusals.entries.length - 1];
     const damaged = refusals.unreadableLines > 0 ? `, ${refusals.unreadableLines} unreadable` : '';
-    out(`refused:    ${refusals.logReadable ? `${refusals.loggedSinceLastReset} logged${damaged}${last ? `; last ${last.kind ?? 'unknown kind'} ${last.eventId ?? 'unknown event'} (${last.code ?? 'code not recognised'}) at ${last.at === null ? 'unknown' : when(last.at)}` : ''}` : 'the log could not be read'}`);
+    out(`refused:    ${refusals.logReadable ? `${refusals.loggedSinceLastReset} logged${damaged}${last ? `; last ${last.kind ?? 'unknown kind'} ${last.eventId ?? 'unknown event'} (${last.code ?? 'code not recognised'}${last.held ? ', kept spooled' : ''}) at ${last.at === null ? 'unknown' : when(last.at)}` : ''}` : 'the log could not be read'}`);
     out(`latch:      ${!facts.latchReadable ? 'unknown — latch could not be read' : latch ? `offline since ${when(latch.since)}, next probe ${when(latch.nextProbeAt)} (backoff ${latch.backoffMs} ms)` : 'online'}`);
     out(`worker:     ${workerServiceWords(describeWorkerService(entry.serverUrl, { ...deps.worker, mycoHome })).line}`);
   }

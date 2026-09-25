@@ -64,7 +64,8 @@ const bytes = utf8('code-bytes');
 
 /** One request per classifier that the deployed entry answers with that code. */
 const DRIVERS: Record<Classifier, (r: Rig) => Promise<Response>> = {
-  refused: (r) => r.post(r.t1.token, { createdAt: -1 }),
+  refused: (r) => r.fetch(memberPost(r.t1.token, '[]', '/tokens/refresh')),
+  invalid_field: (r) => r.post(r.t1.token, { createdAt: -1 }),
   parse: (r) => r.fetch(memberPost(r.t1.token, 'not json')),
   quota: async (r) => {
     r.e.sqlite.query(`UPDATE member_credentials SET bytes_written = ? WHERE id = ?`).run(MEMBER_TOKEN_BYTE_QUOTA, r.t1.tokenId);

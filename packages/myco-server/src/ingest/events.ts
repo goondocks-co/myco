@@ -92,7 +92,7 @@ export async function planEventWrite(db: RelationalStore, ctx: IngestContext, bo
   const e = parsed.value;
   // The transcript parser adapter is reserved for server-origin writes.
   if (e.producer.adapter === TRANSCRIPT_PARSE_ADAPTER && (ctx.writeOrigin ?? 'member') === 'member') {
-    return { ok: false, ...refusal(`producer.adapter ${TRANSCRIPT_PARSE_ADAPTER} is reserved for the Deployment's transcript parser`) };
+    return { ok: false, ...refusal(`producer.adapter ${TRANSCRIPT_PARSE_ADAPTER} is reserved for the Deployment's transcript parser`, 'invalid_field') };
   }
   const spec = kindSpec(e.kind);
   if (!spec) return { ok: false, ...refusal(`unknown kind ${e.kind}`, 'unknown_kind') };

@@ -15,7 +15,7 @@ import { writeHookResponse, type HookResponse } from '../hooks/response.js';
 import { canStartRequest, clippedRequestBudget, resolveHookBudget, type HookBudget } from './budget.js';
 import { resolveMycoHome } from '../paths/home.js';
 import { getMachineId } from '../machine-id.js';
-import { drainBacklog, sessionTried } from './backlog.js';
+import { drainBacklog, sessionHeld, sessionTried } from './backlog.js';
 import { parseCredentialFlag, registryCredential, resolveCredential, resolveMemberProjectRoot, type CredentialRecord, type CredentialSource } from './credential.js';
 import { deliveryNotice } from './delivery-notice.js';
 import { ensureJoinedFromCode, joinCodePresent } from './join-code.js';
@@ -222,8 +222,9 @@ export async function runMemberHook(
       // Delivered in full: every event acknowledged, and no transcript byte of the session still waiting.
       const ownDelivered = drained.skipped === undefined && drained.endedBy === 'drained' && drained.remaining === 0 && !spool.hasTranscriptBacklog(sessionId);
       if (outcome.probe) {
-        // The session's own capture is delivered first; the backlog of every other session gets what the budget has left.
-        const backlog = ownDelivered ? await drainBacklog(spool, live.client, budget, { exclude: sessionId, now, machineId: getMachineId(), ...recovery }) : null;
+        // The session's own capture is offered first; the backlog of every other session gets what the budget has left,
+        // once the session's own is delivered or held on a refusal of its own records.
+        const backlog = ownDelivered || sessionHeld(drained) ? await drainBacklog(spool, live.client, budget, { exclude: sessionId, now, machineId: getMachineId(), ...recovery }) : null;
         // Probing hooks also apply spool retention for the project; a drain
         // that delivered everything also lets go of the state of sessions
         // delivered long ago, and a session this hook offered the Deployment

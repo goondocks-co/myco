@@ -218,7 +218,8 @@ export function kindSpec(name: string): KindSpec | null {
 
 export type Payload = Record<string, unknown>;
 export type PayloadResult = { ok: true; value: Payload } | Refused;
-const refused = (reason: string, classifier?: Refusal['classifier']): Refused => ({ ok: false, ...refusal(reason, classifier) });
+/** A refusal of the payload's own shape: `invalid_field` unless a more specific classifier names it. */
+const refused = (reason: string, classifier: Refusal['classifier'] = 'invalid_field'): Refused => ({ ok: false, ...refusal(reason, classifier) });
 
 /** Statically total over the bound union: a bound shape the switch below does not classify fails to compile. */
 const unclassified = (bound: never): never => { throw new Error(`unclassified bound ${JSON.stringify(bound)}`); };
@@ -231,31 +232,31 @@ function boundViolation(field: string, value: unknown, bound: Bound, now: number
     case 'transcriptId':
       return typeof value === 'string' && TRANSCRIPT_ID_GRAMMAR.test(value) ? null : refusal(`${field} must match the transcript id grammar`, 'id_grammar');
     case 'sessionId':
-      return typeof value === 'string' && value !== '' && value.length <= MAX_ID_CHARS ? null : refusal(`${field} must be a non-empty string of at most ${MAX_ID_CHARS} characters`);
+      return typeof value === 'string' && value !== '' && value.length <= MAX_ID_CHARS ? null : refusal(`${field} must be a non-empty string of at most ${MAX_ID_CHARS} characters`, 'invalid_field');
     case 'blobKey':
-      return typeof value === 'string' && BLOB_KEY_GRAMMAR.test(value) ? null : refusal(`${field} must be a lowercase hex sha256`);
+      return typeof value === 'string' && BLOB_KEY_GRAMMAR.test(value) ? null : refusal(`${field} must be a lowercase hex sha256`, 'invalid_field');
     case 'string':
-      return typeof value === 'string' && value.length <= bound.max ? null : refusal(`${field} must be a string of at most ${bound.max} characters`);
+      return typeof value === 'string' && value.length <= bound.max ? null : refusal(`${field} must be a string of at most ${bound.max} characters`, 'invalid_field');
     case 'enum':
-      return typeof value === 'string' && bound.values.includes(value) ? null : refusal(`${field} must be one of ${bound.values.join(', ')}`);
+      return typeof value === 'string' && bound.values.includes(value) ? null : refusal(`${field} must be one of ${bound.values.join(', ')}`, 'invalid_field');
     case 'int': {
       if (typeof value === 'number' && Number.isSafeInteger(value) && value >= bound.min && value <= bound.max) return null;
       return refusal(bound.min === 0
         ? `${field} must be a non-negative integer of at most ${bound.max}`
-        : `${field} must be an integer between ${bound.min} and ${bound.max}`);
+        : `${field} must be an integer between ${bound.min} and ${bound.max}`, 'invalid_field');
     }
     case 'time': {
-      if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 0) return refusal(`${field} must be a non-negative integer`);
+      if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 0) return refusal(`${field} must be a non-negative integer`, 'invalid_field');
       return aheadOfClock(value, now) ? refusal(AHEAD_OF_CLOCK(field), 'clock_skew') : null;
     }
     case 'bool':
-      return typeof value === 'boolean' ? null : refusal(`${field} must be a boolean`);
+      return typeof value === 'boolean' ? null : refusal(`${field} must be a boolean`, 'invalid_field');
     case 'stringArray':
       return Array.isArray(value) && value.length <= bound.maxItems && value.every((v) => typeof v === 'string' && v.length <= bound.maxItem)
         ? null
-        : refusal(`${field} must be an array of at most ${bound.maxItems} strings of at most ${bound.maxItem} characters`);
+        : refusal(`${field} must be an array of at most ${bound.maxItems} strings of at most ${bound.maxItem} characters`, 'invalid_field');
     case 'json':
-      return utf8(JSON.stringify(value)).byteLength <= bound.maxBytes ? null : refusal(`${field} must serialize to at most ${bound.maxBytes} bytes`);
+      return utf8(JSON.stringify(value)).byteLength <= bound.maxBytes ? null : refusal(`${field} must serialize to at most ${bound.maxBytes} bytes`, 'invalid_field');
   }
   return unclassified(bound);
 }
