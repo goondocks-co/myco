@@ -8,14 +8,12 @@ const HOUR = 60 * MINUTE;
 const DAY = 24 * HOUR;
 
 /**
- * How long ago a past instant was. A server clock a little ahead of this one still reads "just now"; an instant
- * further in the future is labelled "in …" rather than clamped, since a countdown read as "just now" says the
- * opposite of what it means. Say a deadline with `formatUntil`.
+ * How long ago a past instant was. A future instant reads "just now": a capturing machine's clock can run ahead of
+ * this one. Say a deadline with `formatUntil`.
  */
 export function formatRelative(ts: number | null, now: number = Date.now()): string {
   if (ts === null) return 'never';
-  const delta = now - toMillis(ts);
-  if (delta < -MINUTE) return `in ${formatUntil(ts, now)}`;
+  const delta = Math.max(0, now - toMillis(ts));
   if (delta < MINUTE) return 'just now';
   if (delta < HOUR) return `${Math.floor(delta / MINUTE)}m ago`;
   if (delta < DAY) return `${Math.floor(delta / HOUR)}h ago`;
@@ -25,13 +23,14 @@ export function formatRelative(ts: number | null, now: number = Date.now()): str
 
 /**
  * How long until a future instant, as the span that follows "in": seconds until two minutes out (a lease renews on a
- * 30s heartbeat), then minutes, hours and days. An instant already past is "now"; a caller says what past means.
+ * 30s heartbeat), then minutes, hours and days. `coarse` suits a schedule: no seconds, and hours from one hour out.
+ * An instant already past is "now"; a caller says what past means.
  */
-export function formatUntil(ts: number, now: number = Date.now()): string {
+export function formatUntil(ts: number, now: number = Date.now(), coarse = false): string {
   const delta = toMillis(ts) - now;
   if (delta <= 0) return 'now';
-  if (delta < 2 * MINUTE) return `${Math.round(delta / 1000)}s`;
-  if (delta < 2 * HOUR) return `${Math.floor(delta / MINUTE)}m`;
+  if (!coarse && delta < 2 * MINUTE) return `${Math.ceil(delta / 1000)}s`;
+  if (delta < (coarse ? HOUR : 2 * HOUR)) return `${Math.max(1, Math.floor(delta / MINUTE))}m`;
   if (delta < 2 * DAY) return `${Math.round(delta / HOUR)}h`;
   return `${Math.round(delta / DAY)}d`;
 }

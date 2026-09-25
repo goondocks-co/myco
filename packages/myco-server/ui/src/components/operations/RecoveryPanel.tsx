@@ -8,7 +8,7 @@ const dateLabel = (ms: number): string => new Date(ms).toLocaleString();
 /** How long until an instant, in the coarse words a cadence deserves. */
 function whenLabel(at: number, now: number): string {
   if (at <= now) return 'now';
-  return at - now < 48 * 60 * 60 * 1000 ? `in ${formatUntil(at, now)}` : `on ${dateLabel(at)}`;
+  return at - now < 48 * 60 * 60 * 1000 ? `in ${formatUntil(at, now, true)}` : `on ${dateLabel(at)}`;
 }
 
 /** What the schedule is doing, in one line an owner can act on. */
