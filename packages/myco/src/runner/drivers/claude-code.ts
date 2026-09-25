@@ -15,12 +15,9 @@ import { claudeUsage } from './usage.js';
  * with an `error` field while the process exits non-zero and still writes a
  * well-formed `result`; both are read.
  */
-import { realpathSync } from 'node:fs';
-import { join } from 'node:path';
 import { harnessById } from '../harnesses.js';
 import type { Driver, RunEvent, RunSpec, StopReason } from '../events.js';
-import { MCP_SERVER_NAME } from '../mcp-config.js';
-import { RUN_REPOSITORY_DIR, SOURCE_GIT_READ_COMMANDS } from '@goondocks/myco-shared/repository';
+import { grantOf, grantsWhole } from './grant.js';
 import { jsonLines, recordOf, startHarness, stringOf } from './stream.js';
 
 const STOP: Readonly<Record<string, StopReason>> = {
@@ -41,35 +38,6 @@ const STOP: Readonly<Record<string, StopReason>> = {
  * (`grantOf`), passed as `--allowedTools`.
  */
 export const RUN_PERMISSIONS: readonly string[] = ['--permission-mode', 'manual', '--permission-prompts', 'none'];
-
-/** The run's own server, allowed whole. */
-const SERVER_GRANT = `mcp__${MCP_SERVER_NAME}`;
-
-/** Source runs can inspect files and repository history without approving writes. */
-function sourceReadTools(scratchDir: string): string[] {
-  const root = join(scratchDir, RUN_REPOSITORY_DIR);
-  const paths = [...new Set([RUN_REPOSITORY_DIR, root, realpathSync(root)])];
-  const prefixes = ['git', ...paths.map((path) => `git -C ${path}`)];
-  return ['Read', 'Glob', 'Grep', ...prefixes.flatMap((prefix) => SOURCE_GIT_READ_COMMANDS.map((command) => `Bash(${prefix} ${command}:*)`))];
-}
-
-/** The `--allowedTools` rules a run is granted: its own server, and file and history reads for a source run. */
-function grantOf(spec: RunSpec): string[] {
-  return [SERVER_GRANT, ...(spec.sourceReadOnly === true ? sourceReadTools(spec.scratchDir) : [])];
-}
-
-/**
- * Whether a grant allows every call of this tool.
- *
- * A bare rule names a whole tool, and the server rule every tool the server
- * serves. A rule with a specifier, `Bash(git log:*)`, allows only the calls it
- * matches, and the harness refuses a call of that tool only when the call is
- * outside every such rule, so a refusal of it is a call the run was never
- * granted.
- */
-function grantsWhole(grant: readonly string[], tool: string): boolean {
-  return grant.some((rule) => rule === tool || (rule === SERVER_GRANT && tool.startsWith(`${SERVER_GRANT}__`)));
-}
 
 /** A message's content blocks. */
 function blocksOf(message: Record<string, unknown> | null): Record<string, unknown>[] {
@@ -149,6 +117,9 @@ export const claudeCodeDriver: Driver = {
         // A refused call outside the grant is the harness keeping the run to
         // its tools, and is reported as that call's failure. A refusal of a
         // granted tool is the run kept from its own work, and ends the run.
+        // The harness refuses a call of a tool held only by scoped rules when
+        // the call is outside every one of them, so only a tool granted whole
+        // is judged granted here.
         const refusals = refusalsOf(line);
         for (const { tool, id } of refusals) {
           if (firstReport(id)) yield { kind: 'tool_call', name: tool, status: 'error' };

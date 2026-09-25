@@ -613,6 +613,166 @@ describe('the agent-protocol driver', () => {
   });
 });
 
+/** How long an agent waits for the client to answer one of its requests before giving up on it. */
+const AGENT_WAIT_MS = 1_000;
+
+/** The options an agent offers with a permission request. */
+const PERMISSION_OPTIONS = [
+  { optionId: 'once', kind: 'allow_once', name: 'Allow once' },
+  { optionId: 'always', kind: 'allow_always', name: 'Always allow' },
+  { optionId: 'reject', kind: 'reject_once', name: 'Reject' },
+];
+
+interface Turn {
+  /** The id the client gave its prompt call. */
+  promptId: number;
+  /** Send the client a request under this id, and read its answer, or null when none came. */
+  ask(id: number | string, method: string, params: Record<string, unknown>): Promise<Record<string, unknown> | null>;
+  /** Send the client a session update. */
+  update(update: Record<string, unknown>): void;
+}
+
+/**
+ * An agent that makes requests of the client during its turn: `turn` runs when
+ * the prompt arrives, and the prompt is answered with `end_turn` once it is done.
+ */
+function askingAgent(turn: (agent: Turn) => Promise<void>): Channel {
+  let read: ((line: string) => void) | null = null;
+  const send = (message: Record<string, unknown>): void => { queueMicrotask(() => read?.(`${JSON.stringify({ jsonrpc: '2.0', ...message })}\n`)); };
+  const asked = new Map<number | string, (answer: Record<string, unknown>) => void>();
+  const agent = (promptId: number): Turn => ({
+    promptId,
+    ask: (id, method, params) => new Promise((resolve) => {
+      const timer = setTimeout(() => { asked.delete(id); resolve(null); }, AGENT_WAIT_MS);
+      asked.set(id, (answer) => { clearTimeout(timer); resolve(answer); });
+      send({ id, method, params });
+    }),
+    update: (update) => { send({ method: 'session/update', params: { sessionId: 'sess_acp', update } }); },
+  });
+  return {
+    write: (line) => {
+      const message = JSON.parse(line) as Record<string, unknown>;
+      const id = message.id as number | string;
+      if (typeof message.method !== 'string') {
+        const answered = asked.get(id);
+        asked.delete(id);
+        answered?.(message);
+      } else if (message.method === 'session/new') send({ id, result: { sessionId: 'sess_acp' } });
+      else if (message.method === 'session/prompt') void turn(agent(id as number)).then(() => { send({ id, result: { stopReason: 'end_turn' } }); });
+      else send({ id, result: {} });
+    },
+    onLine: (fn) => { read = fn; },
+    onClose: () => undefined,
+  };
+}
+
+/** The option an answer to a permission request selected, or null when it selected none or none came. */
+function chosenOption(answer: Record<string, unknown> | null): string | null {
+  const outcome = (answer?.result as { outcome?: { optionId?: unknown } } | undefined)?.outcome;
+  return typeof outcome?.optionId === 'string' ? outcome.optionId : null;
+}
+
+/** A permission request for this call, in the agent's session. */
+const permissionFor = (toolCall: Record<string, unknown>): Record<string, unknown> => ({ sessionId: 'sess_acp', toolCall, options: PERMISSION_OPTIONS });
+
+describe('the agent-protocol driver answering what the agent asks of it', () => {
+  it('allows a call inside the run\'s grant once, and the turn goes on to use it', async () => {
+    const answers: unknown[] = [];
+    const channel = askingAgent(async (agent) => {
+      const call = { toolCallId: 'call_1', title: 'myco_myco_run', kind: 'other' };
+      agent.update({ sessionUpdate: 'tool_call', ...call, status: 'pending' });
+      const answer = await agent.ask('perm-1', 'session/request_permission', permissionFor(call));
+      answers.push(answer?.result);
+      if (chosenOption(answer) === 'once') agent.update({ sessionUpdate: 'tool_call_update', toolCallId: 'call_1', status: 'completed' });
+    });
+    const events = await collect(turnOver(channel, 'opencode', { ...runDir(), prompt: 'do it', credentialEnv: {} }, () => ''));
+    expect(answers).toEqual([{ outcome: { outcome: 'selected', optionId: 'once' } }]);
+    expect(events.filter((e) => e.kind === 'tool_call')).toEqual([
+      { kind: 'tool_call', name: 'myco_myco_run', status: 'started' },
+      { kind: 'tool_call', name: 'myco_myco_run', status: 'ok' },
+    ]);
+    expect(events.at(-1)).toEqual({ kind: 'ended', stop: 'end_turn', detail: null });
+  });
+
+  it('rejects a call outside the run\'s grant once, as that call failing once, and the turn\'s own end is the run\'s', async () => {
+    const answers: unknown[] = [];
+    const channel = askingAgent(async (agent) => {
+      const shell = { toolCallId: 'call_1', title: 'ls', kind: 'execute', rawInput: { command: 'ls' } };
+      agent.update({ sessionUpdate: 'tool_call', ...shell, status: 'pending' });
+      answers.push((await agent.ask(0, 'session/request_permission', permissionFor(shell)))?.result);
+      // The agent reports this refused call failed as well; the other it never reports.
+      agent.update({ sessionUpdate: 'tool_call_update', toolCallId: 'call_1', status: 'failed' });
+      answers.push((await agent.ask(1, 'session/request_permission', permissionFor({ toolCallId: 'call_2', title: 'https://example.com', kind: 'fetch' })))?.result);
+    });
+    const events = await collect(turnOver(channel, 'opencode', { ...runDir(), prompt: 'do it', credentialEnv: {} }, () => ''));
+    const rejected = { outcome: { outcome: 'selected', optionId: 'reject' } };
+    expect(answers).toEqual([rejected, rejected]);
+    expect(events.filter((e) => e.kind === 'tool_call')).toEqual([
+      { kind: 'tool_call', name: 'ls', status: 'started' },
+      { kind: 'tool_call', name: 'ls', status: 'error' },
+      { kind: 'tool_call', name: 'https://example.com', status: 'error' },
+    ]);
+    expect(events.at(-1)).toEqual({ kind: 'ended', stop: 'end_turn', detail: null });
+  });
+
+  it('answers from the same grant a Claude Code run holds: a source run\'s reads and scoped history commands, and nothing past them', async () => {
+    const run = runDir();
+    mkdirSync(join(run.scratchDir, 'repo'));
+    const answerFor = async (toolCall: Record<string, unknown>, sourceReadOnly: boolean): Promise<unknown> => {
+      let chosen: string | null = null;
+      const channel = askingAgent(async (agent) => {
+        chosen = chosenOption(await agent.ask(1, 'session/request_permission', permissionFor({ toolCallId: 'c', ...toolCall })));
+      });
+      await collect(turnOver(channel, 'opencode', { ...run, sourceReadOnly, prompt: 'read history', credentialEnv: {} }, () => ''));
+      return chosen;
+    };
+    const shell = (command: string): Record<string, unknown> => ({ kind: 'execute', title: command, rawInput: { command } });
+    const cases: Array<[Record<string, unknown>, boolean, string]> = [
+      [{ kind: 'other', title: 'mcp__myco__myco_run_sessions' }, false, 'once'],
+      [{ kind: 'other', title: 'mcp__mycox__foo' }, false, 'reject'],
+      [{ kind: 'other', title: 'mycox_foo' }, false, 'reject'],
+      [{ kind: 'read', title: 'repo/README.md' }, false, 'reject'],
+      [{ kind: 'read', title: 'repo/README.md' }, true, 'once'],
+      [shell('git -C repo log --oneline'), true, 'once'],
+      [shell('git -C repo log --oneline'), false, 'reject'],
+      [shell('git log | head'), true, 'reject'],
+      [shell('git -C repo push'), true, 'reject'],
+      [{ kind: 'edit', title: 'myco_notes' }, true, 'reject'],
+      [{ kind: 'other', title: 'myco_x --flag' }, true, 'reject'],
+      [{ kind: 'search', title: 'TODO' }, true, 'once'],
+    ];
+    for (const [toolCall, sourceReadOnly, expected] of cases) {
+      expect({ toolCall, sourceReadOnly, chosen: await answerFor(toolCall, sourceReadOnly) }).toEqual({ toolCall, sourceReadOnly, chosen: expected });
+    }
+  });
+
+  it('never takes a request of the agent\'s for the answer to a call of its own, whatever id the request carries', async () => {
+    const answers: unknown[] = [];
+    const channel = askingAgent(async (agent) => {
+      // The agent numbers its requests itself, and this one reuses the id of the prompt the client is waiting on.
+      const answer = await agent.ask(agent.promptId, 'session/request_permission', permissionFor({ toolCallId: 'call_1', title: 'myco_myco_run', kind: 'other' }));
+      answers.push(answer);
+    });
+    const events = await collect(turnOver(channel, 'opencode', { ...runDir(), prompt: 'do it', credentialEnv: {} }, () => ''));
+    expect(events.at(-1)).toEqual({ kind: 'ended', stop: 'end_turn', detail: null });
+    expect(answers).toEqual([{ jsonrpc: '2.0', id: 3, result: { outcome: { outcome: 'selected', optionId: 'once' } } }]);
+  });
+
+  it('answers a request it does not implement as a method not found, so the agent does not wait on it', async () => {
+    const answers: unknown[] = [];
+    const channel = askingAgent(async (agent) => {
+      answers.push(await agent.ask(7, 'fs/read_text_file', { sessionId: 'sess_acp', path: '/etc/hosts' }));
+      answers.push(await agent.ask('term-1', 'terminal/create', { sessionId: 'sess_acp', command: 'ls' }));
+    });
+    const events = await collect(turnOver(channel, 'opencode', { ...runDir(), prompt: 'do it', credentialEnv: {} }, () => ''));
+    expect(answers).toEqual([
+      { jsonrpc: '2.0', id: 7, error: { code: -32601, message: 'Method not found: fs/read_text_file' } },
+      { jsonrpc: '2.0', id: 'term-1', error: { code: -32601, message: 'Method not found: terminal/create' } },
+    ]);
+    expect(events.at(-1)).toEqual({ kind: 'ended', stop: 'end_turn', detail: null });
+  });
+});
+
 describe('the run credential a driver launches under', () => {
   it('reaches the run\'s own files and never a command line or a stream a log would carry', async () => {
     // A stub that writes back everything a process list and a log would show,
