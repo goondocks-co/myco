@@ -178,6 +178,20 @@ export async function latestOutcome(env: Pick<ServerEnv, 'db'>, check: Maintenan
   return parseOutcome(row?.value);
 }
 
+/**
+ * What the newest finished check measured of the store, and when it finished; null when no finished check carries
+ * a measurement. Read from the recorded outcomes alone: the store is not asked again.
+ */
+export async function latestMeasurements(env: Pick<ServerEnv, 'db'>): Promise<{ measuredAt: number; measurements: StoreMeasurement[] } | null> {
+  let newest: { measuredAt: number; measurements: StoreMeasurement[] } | null = null;
+  for (const check of MAINTENANCE_CHECKS) {
+    const outcome = await latestOutcome(env, check);
+    if (outcome === null || outcome.finishedAt === null || outcome.measurements.length === 0) continue;
+    if (newest === null || outcome.finishedAt > newest.measuredAt) newest = { measuredAt: outcome.finishedAt, measurements: outcome.measurements };
+  }
+  return newest;
+}
+
 /** Checks in flight in this process, per serving-owner port: the port is made once per serving process. */
 const inFlight = new WeakMap<StoreMaintenancePort, Set<MaintenanceCheck>>();
 

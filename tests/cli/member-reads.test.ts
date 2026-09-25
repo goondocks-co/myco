@@ -10,7 +10,10 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { parseTranscripts } from '@myco-server-worker/ingest/parse.js';
-import { run as runRead } from '@myco/cli/member-reads.js';
+import { run as runRead, STATUS_READ_PATH } from '@myco/cli/member-reads.js';
+import { MEMBER_TOKEN_BYTE_QUOTA, SERVER_SCHEMA_VERSION } from '@myco-server-worker/constants.js';
+import { latestOutcome, runMaintenance } from '@myco-server-worker/core/store-maintenance.js';
+import { DAILY_QUOTA_UNAVAILABLE, SIZE_LIMIT_UNAVAILABLE } from '@myco-server-worker/platform/cloudflare/store-maintenance.js';
 import { memberSource as memberReadSource, type MemberVerbDeps as MemberReadDeps } from '@myco/cli/deployment-reader.js';
 import { MEMBER_READ_VERBS, type MemberReadVerb } from '@myco/cli/member-verbs.js';
 import { callTool } from '@myco/mcp/client-call.js';
@@ -157,21 +160,49 @@ describe('the retained read verbs in a joined project with no 1.4 vault', () => 
     expect(legacyArtifacts()).toEqual([]);
   });
 
-  it('stats reports the Deployment\'s project, not a local vault', async () => {
+  it('stats reports the Deployment\'s project and health, not a local vault', async () => {
     const rig = await memberRig();
     join(rig);
     await seedSession(rig, 'sess-stats', 'count me');
+    const spy = recordingFetch(rig.fetch);
 
-    const ran = await read('stats', [], rig.fetch);
+    const ran = await read('stats', [], spy.fetch);
 
     expect(ran.stderr).toBe('');
     expect(ran.ok).toBe(true);
     expect(ran.stdout).toContain(`Deployment: ${SERVER_URL}`);
+    expect(ran.stdout).toContain(`Target:     ${rig.env.serverEnv.platform.name}`);
     expect(ran.stdout).toContain(`Project:    ${PROJECT}`);
     expect(ran.stdout).toContain('Sessions:      1');
     expect(ran.stdout).toContain('Active:        yes');
+    const bytes = (n: number) => `${n.toLocaleString('en-US')} bytes`;
+    const tokenId = readRegistryEntry(checkout, mycoHome)!.tokenId;
+    const charged = (rig.env.sqlite.query('SELECT bytes_written FROM member_credentials WHERE id = ?').get(tokenId) as { bytes_written: number }).bytes_written;
+    const blobs = (rig.env.sqlite.query('SELECT COALESCE(SUM(size), 0) AS n FROM blobs').get() as { n: number }).n;
+    expect(charged).toBeGreaterThan(0);
+    expect(ran.stdout).toContain(`Schema:     expected ${SERVER_SCHEMA_VERSION}, found ${SERVER_SCHEMA_VERSION}\n`);
+    expect(ran.stdout).toContain(`Quota:      ${bytes(charged)} used of ${bytes(MEMBER_TOKEN_BYTE_QUOTA)} (this machine's credential)`);
+    expect(ran.stdout).toContain(`Blobs:      ${bytes(blobs)}`);
+    expect(ran.stdout).toContain('Database:   unavailable: no store maintenance check has finished yet; the database is measured when one runs');
+    expect(spy.requests.filter((r) => r.path === STATUS_READ_PATH).map((r) => r.body)).toEqual(['{}']);
     expect(ran.stdout).not.toContain('Vault');
     expect(legacyArtifacts()).toEqual([]);
+  });
+
+  it('stats shows every database measurement store maintenance recorded, each one the target cannot report named with why', async () => {
+    const rig = await memberRig();
+    join(rig);
+    const ran = await runMaintenance(rig.env.serverEnv, 'optimize', 'owner', Date.now());
+    expect(ran.outcome).toBe('ran');
+    const recorded = (await latestOutcome(rig.env.serverEnv, 'optimize'))!;
+
+    const stats = await read('stats', [], rig.fetch);
+
+    expect(stats.ok).toBe(true);
+    expect(stats.stdout).toContain('Database:   unavailable: D1 reported no size for this query');
+    expect(stats.stdout).toContain(`Size limit: unavailable: ${SIZE_LIMIT_UNAVAILABLE}`);
+    expect(stats.stdout).toContain(`Daily quota: unavailable: ${DAILY_QUOTA_UNAVAILABLE}`);
+    expect(stats.stdout).toContain(`measured by store maintenance at ${new Date(recorded.finishedAt!).toISOString()}`);
   });
 
   it('vectors asks the Deployment for semantic search and names the Deployment that cannot serve it', async () => {

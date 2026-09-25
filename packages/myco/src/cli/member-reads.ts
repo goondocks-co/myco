@@ -6,8 +6,11 @@
  * `myco_sessions`, `myco_cortex`, `myco_agent`) called on the Deployment's
  * `/mcp` with the member credential, the same chokepoint an agent's tool call
  * reaches, so a person and an agent asking the same question get the same
- * answer. Nothing here opens a vault, a database or the local daemon, and
- * `tests/meta/member-read-boundary.test.ts` holds the import closure to that.
+ * answer. `stats` also reads the Deployment's health — schema, this
+ * credential's quota and storage — from the member route `POST /members/status`,
+ * which no MCP tool serves. Nothing here opens a vault, a database or the local
+ * daemon, and `tests/meta/member-read-boundary.test.ts` holds the import
+ * closure to that.
  *
  * Routing and the credential, its renewal included, are the member verbs'
  * shared reader's (`cli/deployment-reader.ts`).
@@ -28,6 +31,8 @@ export const VECTORS_LIMIT = 20;
 export const SESSION_PREFIX_WINDOW = 100;
 /** Recent runs `stats` summarises. */
 export const STATS_RUN_WINDOW = 20;
+/** The member route that answers the Deployment's health: schema, this credential's quota, and storage. */
+export const STATUS_READ_PATH = '/members/status';
 /** The share of the top score a `vectors` result must reach to be marked as passing the default threshold. */
 const VECTORS_RELATIVE_THRESHOLD = 0.5;
 
@@ -160,17 +165,59 @@ async function runSession(reader: DeploymentHandle, idOrLatest: string | undefin
 interface ProjectActivity { id: string; name: string | null; session_count: number; last_activity_at: number | null; active: boolean }
 interface RunRow { task: string | null; status: string; started_at: number | null; queued_at: number | null; completed_at: number | null }
 
+/** A byte count the Deployment measured, or why it could not. */
+type ByteFact = { state: 'measured'; value: number; unit: 'bytes' } | { state: 'unavailable'; reason: string };
+type NamedFact = ByteFact & { name: string };
+interface DeploymentHealth {
+  target: string | null;
+  schema: { expected: number; found: number | null; matches: boolean };
+  quota: { used: ByteFact; limit: ByteFact };
+  storage: { blobs: ByteFact; database: { measuredAt: number | null; measurements: NamedFact[] } };
+}
+
+/** The Deployment's health over its member route, or null with the failure written to stderr. */
+async function readHealth(reader: DeploymentHandle, err: Out): Promise<DeploymentHealth | null> {
+  const answer = await reader.post(STATUS_READ_PATH, {});
+  if (!answer.ok) {
+    err(`myco stats: ${reader.serverUrl} did not answer its health (${answer.error.code}): ${answer.error.message}`);
+    return null;
+  }
+  const health = answer.value as Partial<DeploymentHealth>;
+  if (health.schema === undefined || health.quota === undefined || health.storage === undefined) {
+    err(`myco stats: ${reader.serverUrl} answered its health without its schema, quota and storage`);
+    return null;
+  }
+  return health as DeploymentHealth;
+}
+
+const byteCount = (n: number): string => `${n.toLocaleString('en-US')} bytes`;
+const fact = (f: ByteFact): string => (f.state === 'measured' ? byteCount(f.value) : `unavailable: ${f.reason}`);
+/** How a database measurement is labelled; a name with no label here is shown as sent. */
+const MEASUREMENT_LABEL: Record<string, string> = { size: 'Database', reclaimable: 'Reclaimable', size_limit: 'Size limit', daily_quota: 'Daily quota' };
+
 async function runStats(reader: DeploymentHandle, out: Out, err: Out): Promise<boolean> {
   const activity = await ask(reader, 'stats', err, 'myco_cortex', { op: 'projects_activity' }) as { projects: ProjectActivity[] } | null;
   if (activity === null) return false;
   const runs = await ask(reader, 'stats', err, 'myco_agent', { op: 'runs', limit: STATS_RUN_WINDOW }) as { data: { runs: RunRow[] } } | null;
   if (runs === null) return false;
+  const health = await readHealth(reader, err);
+  if (health === null) return false;
   const project = activity.projects.find((p) => p.id === reader.projectId) ?? null;
 
   out('=== Myco Deployment ===');
   out(`Deployment: ${reader.serverUrl}`);
+  out(`Target:     ${health.target ?? 'unavailable: the Deployment names no target'}`);
   out(`Project:    ${reader.projectId}${project?.name ? ` (${project.name})` : ''}`);
   out(`Projects:   ${activity.projects.length} on this Deployment`);
+
+  out('\n--- Health ---');
+  const { expected, found, matches } = health.schema;
+  out(`Schema:     expected ${expected}, found ${found ?? 'unavailable: the store answered no version'}${matches ? '' : ' (MISMATCH)'}`);
+  out(`Quota:      ${fact(health.quota.used)} used of ${fact(health.quota.limit)} (this machine's credential)`);
+  out(`Blobs:      ${fact(health.storage.blobs)}`);
+  const { measuredAt, measurements } = health.storage.database;
+  for (const m of measurements) out(`${`${MEASUREMENT_LABEL[m.name] ?? m.name}:`.padEnd(11)} ${fact(m)}`);
+  if (measuredAt !== null) out(`            measured by store maintenance at ${iso(measuredAt)}`);
 
   out('\n--- Data ---');
   out(`Sessions:      ${project?.session_count ?? 0}`);

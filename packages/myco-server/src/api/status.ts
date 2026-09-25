@@ -1,6 +1,10 @@
 import type { CapabilityStatus, ServerEnv } from '../core/adapters.js';
-import type { OwnerContext } from '../context.js';
-import { SERVER_SCHEMA_VERSION } from '../constants.js';
+import type { CredentialContext, OwnerContext } from '../context.js';
+import { MEMBER_TOKEN_BYTE_QUOTA, SERVER_SCHEMA_VERSION } from '../constants.js';
+import { emptyBodyRoute } from '../auth/members.js';
+import { latestMeasurements, type StoreMeasurement } from '../core/store-maintenance.js';
+import { heldQuotaBytes } from '../ingest/quota.js';
+import { recordedBlobBytes } from '../read/blobs.js';
 import { schemaVersion } from '../read/meta.js';
 import { listVisibleProjects } from './scope.js';
 import { workerLiveness } from '../core/runs.js';
@@ -19,6 +23,12 @@ import { ok } from './scope.js';
 export function deploymentCapabilities(env: ServerEnv): CapabilityStatus[] {
   return env.platform?.capabilities() ?? [];
 }
+
+/** Which target this is, as it names itself; null when it names none. */
+const deploymentTarget = (env: ServerEnv): string | null => env.platform?.name ?? null;
+
+/** The schema this server expects beside the one its store holds; `found` is null when the store answered none. */
+const schemaCheck = (found: number | null) => ({ expected: SERVER_SCHEMA_VERSION, found, matches: found === SERVER_SCHEMA_VERSION });
 
 /** Those capabilities this environment cannot currently perform. */
 export function absentCapabilities(env: ServerEnv): CapabilityStatus[] {
@@ -41,8 +51,8 @@ export async function handleStatus(env: ServerEnv, ctx: OwnerContext): Promise<R
   // target: a store that is missing, misconfigured, or unreachable all read as unusable
   // here rather than only the one shape a single platform happens to produce.
   const capabilities = deploymentCapabilities(env);
-  // Which target this is, as it names itself: a surface whose advice differs by target reads it here.
-  const target = env.platform?.name ?? null;
+  // A surface whose advice differs by target reads the target here.
+  const target = deploymentTarget(env);
   // `available: false` is the one field a surface reads before the numbers. A
   // store this handler could not question answers zero busy and zero queued,
   // and zero here means "not known", never "none attached".
@@ -57,10 +67,10 @@ export async function handleStatus(env: ServerEnv, ctx: OwnerContext): Promise<R
     workers = { available: true, ...counts, recentWithinMs: CONTACT_RECENT_MS, fleet: await readWorkerFleet(env.db, ctx.now) };
     projects = await listVisibleProjects(env.db, ctx.member, { includeArchived: true });
   } catch {
-    return ok({ schema: { expected: SERVER_SCHEMA_VERSION, found: null, matches: false }, target, capabilities, workers, projects: [] });
+    return ok({ schema: schemaCheck(null), target, capabilities, workers, projects: [] });
   }
   return ok({
-    schema: { expected: SERVER_SCHEMA_VERSION, found, matches: found === SERVER_SCHEMA_VERSION },
+    schema: schemaCheck(found),
     target,
     capabilities,
     // What a capability list cannot answer: whether the queue is moving, and
@@ -71,3 +81,38 @@ export async function handleStatus(env: ServerEnv, ctx: OwnerContext): Promise<R
     projects: projects.map((p) => ({ projectId: p.projectId, lastActivityAt: p.lastActivityAt, sessionCount: p.sessionCount, archivedAt: p.archivedAt })),
   });
 }
+
+/** A byte count this Deployment measured, or why it could not. */
+export type ByteFact = { state: 'measured'; value: number; unit: 'bytes' } | { state: 'unavailable'; reason: string };
+
+const bytes = (value: number): ByteFact => ({ state: 'measured', value, unit: 'bytes' });
+
+/** The database measurements store maintenance last recorded, or the size named unavailable and why. */
+async function databaseStorage(env: ServerEnv): Promise<{ measuredAt: number | null; measurements: StoreMeasurement[] }> {
+  if (env.storeMaintenance === undefined) {
+    return { measuredAt: null, measurements: [{ name: 'size', state: 'unavailable', reason: 'this target has no store maintenance to measure the database' }] };
+  }
+  const recorded = await latestMeasurements(env);
+  return recorded ?? {
+    measuredAt: null,
+    measurements: [{ name: 'size', state: 'unavailable', reason: 'no store maintenance check has finished yet; the database is measured when one runs' }],
+  };
+}
+
+/**
+ * `POST /members/status`: the Deployment's health as a member credential reads it, over a body that is the empty
+ * object. Deployment-wide facts — the target, the schema check, the bytes recorded blobs hold and the database
+ * measurements store maintenance last recorded — and the presented credential's own byte quota. No Project is read
+ * or created, and nothing names another member, machine or worker.
+ */
+export const handleMemberStatus = emptyBodyRoute(async (env: ServerEnv, ctx: CredentialContext) => {
+  const held = await heldQuotaBytes(env.db, { tokenId: ctx.tokenId, now: ctx.now });
+  const used: ByteFact = held === null ? { state: 'unavailable', reason: 'no credential row carries this token' } : bytes(held);
+  return ok({
+    persisted: true,
+    target: deploymentTarget(env),
+    schema: schemaCheck(await schemaVersion(env.db)),
+    quota: { used, limit: bytes(MEMBER_TOKEN_BYTE_QUOTA) },
+    storage: { blobs: bytes(await recordedBlobBytes(env.db)), database: await databaseStorage(env) },
+  });
+});
