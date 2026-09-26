@@ -7,8 +7,10 @@
  * when the unit omits it.
  */
 import { describe, expect, it } from 'bun:test';
-import { existsSync, readFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { spawnSync } from 'node:child_process';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import {
@@ -18,6 +20,7 @@ import {
   assertInstalledBinary,
   assertUnquotablePath,
   defaultSpec,
+  reloadServiceDetached,
   renderUnit,
   servicePaths,
 } from '@myco/server/service.js';
@@ -195,6 +198,53 @@ describe('what a Deployment on this machine never reaches for', () => {
       const unit = rendered(platform);
       expect({ platform, viaInterpreter: /\b(node|npx|npm|bun)\b/.test(unit) }).toEqual({ platform, viaInterpreter: false });
       expect({ platform, viaContainer: /\bdocker\b/.test(unit) }).toEqual({ platform, viaContainer: false });
+    }
+  });
+});
+
+describe('a unit loaded again from a process of its own', () => {
+  const withUnit = (home: string): ReturnType<typeof defaultSpec> => {
+    const spec = defaultSpec(BINARY, home);
+    const { unitFile } = servicePaths(spec, 'darwin');
+    mkdirSync(dirname(unitFile), { recursive: true });
+    writeFileSync(unitFile, '<plist/>');
+    return spec;
+  };
+
+  it('runs the unit\'s own unload and load in a detached shell that parses no path', () => {
+    const home = mkdtempSync(join(tmpdir(), 'myco reload '));
+    try {
+      const spec = withUnit(home);
+      const { unitFile } = servicePaths(spec, 'darwin');
+      const bin = join(home, 'bin');
+      mkdirSync(bin);
+      const record = join(home, 'launchctl.calls');
+      writeFileSync(join(bin, 'launchctl'), `#!/bin/sh\nprintf '%s|' "$@" >> '${record}'\necho >> '${record}'\n`, { mode: 0o755 });
+      const started: string[][] = [];
+      expect(reloadServiceDetached(spec, {
+        platform: 'darwin',
+        spawnDetached: (command, args) => {
+          started.push([command, args[0]!]);
+          return spawnSync(command, [...args], { env: { PATH: `${bin}:/bin:/usr/bin` } }).status === 0;
+        },
+      })).toBe(true);
+      expect(started).toEqual([['/bin/sh', '-c']]);
+      expect(readFileSync(record, 'utf8')).toBe(`unload|${unitFile}|\nload|-w|${unitFile}|\n`);
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  it('does nothing without a unit, or on a platform whose service stops its whole group', () => {
+    const home = mkdtempSync(join(tmpdir(), 'myco-reload-'));
+    try {
+      const never = (): boolean => { throw new Error('nothing should be started'); };
+      expect(reloadServiceDetached(defaultSpec(BINARY, home), { platform: 'darwin', spawnDetached: never })).toBe(false);
+      const spec = withUnit(home);
+      expect(reloadServiceDetached(spec, { platform: 'linux', spawnDetached: never })).toBe(false);
+      expect(reloadServiceDetached(spec, { platform: 'win32', spawnDetached: never })).toBe(false);
+    } finally {
+      rmSync(home, { recursive: true, force: true });
     }
   });
 });

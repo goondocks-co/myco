@@ -52,6 +52,7 @@ import {
   managedBinaryPath,
 } from '../install/managed-binary.js';
 import type { AssetRefs } from './release-assets.js';
+import { placeExecutable, readyExecutable, type ProgramProbe } from '../install/place-binary.js';
 
 // ---------------------------------------------------------------------------
 // Download size cap (DoS / availability guard)
@@ -480,6 +481,8 @@ export interface StageBinaryDeps {
   download: (url: string, destPath: string, headers?: Record<string, string>) => Promise<void>;
   /** Hex SHA-256 of the file at `filePath`. */
   computeSha256: (filePath: string) => Promise<string>;
+  /** Whether a verified download runs on this machine. Defaults to `readyExecutable`. */
+  ready?: (filePath: string) => ProgramProbe;
 }
 
 /** Result of a successful `stageBinary`. */
@@ -578,25 +581,21 @@ export async function stageBinary(
   // Sums file served its purpose.
   rmSafe(tempSums);
 
-  // --- 3: RENAME verified temp into versions/<v>/ (atomic, same fs) ---
+  // --- 3: PLACE the verified temp into versions/<v>/, once it runs here ---
   // Only now do we create the version-specific directory.
   try {
-    fs.mkdirSync(vDir, { recursive: true });
-    fs.renameSync(tempPath, vBinPath);
-    if (platform !== 'win32') {
-      try {
-        fs.chmodSync(vBinPath, 0o755);
-      } catch {
-        /* best-effort: keep going */
-      }
-    }
+    placeExecutable(tempPath, vBinPath, {
+      platform,
+      move: true,
+      ready: deps.ready ?? ((file) => readyExecutable(file, platform)),
+    });
   } catch (err) {
     rmSafe(tempPath);
-    // If we created the version dir but the rename failed, clean it up so
+    // If we created the version dir but the placement failed, clean it up so
     // nothing half-lands under versions/<v>/.
     try { fs.rmSync(vDir, { recursive: true, force: true }); } catch { /* best-effort */ }
     return {
-      error: `could not stage binary to ${vBinPath}: ${String(err)} — staging aborted (stable binary untouched)`,
+      error: `could not stage binary to ${vBinPath}: ${err instanceof Error ? err.message : String(err)} — staging aborted (stable binary untouched)`,
     };
   }
 
@@ -617,8 +616,9 @@ export interface AdoptStagedDeps {
 }
 
 /**
- * Copy the versioned binary into the managed path atomically (temp+rename,
- * same fs; `chmod 0o755` on non-win32).
+ * Copy the versioned binary into the managed path atomically through
+ * `placeExecutable` (temp beside it, synced, `chmod 0o755` on non-win32, one
+ * rename). The bytes were judged runnable when they were staged.
  *
  * CONTRACT:
  *   - Assumes the daemon is ALREADY stopped (Task 5 owns the stop).
@@ -645,36 +645,11 @@ export async function adoptStaged(
 ): Promise<void> {
   const { home, platform, version, localAppData } = params;
 
-  const src = versionBinaryPath(home, platform, version, localAppData);
-  const dest = managedBinaryPath(home, platform, localAppData);
-  const destDir = path.dirname(dest);
-  const tmp = path.join(destDir, `.myco-adopt-${process.pid}-${Date.now()}.tmp`);
-
-  fs.mkdirSync(destDir, { recursive: true });
-
-  // Copy src → temp in the same dir as dest (same filesystem → rename is atomic).
-  fs.copyFileSync(src, tmp);
-
-  // On non-win32, chmod must succeed: a 0644 binary from copyFileSync cannot
-  // be exec'd by the daemon. If chmod fails, clean the tmp and rethrow so
-  // Task 5 can restore rather than adopting a non-executable binary.
-  if (platform !== 'win32') {
-    try {
-      fs.chmodSync(tmp, 0o755);
-    } catch (chmodErr) {
-      rmSafe(tmp);
-      throw chmodErr;
-    }
-  }
-
-  // Atomic rename over the managed binary.
-  // If rename fails, clean the tmp (managed binary is untouched) and rethrow.
-  try {
-    fs.renameSync(tmp, dest);
-  } catch (renameErr) {
-    rmSafe(tmp);
-    throw renameErr;
-  }
+  placeExecutable(
+    versionBinaryPath(home, platform, version, localAppData),
+    managedBinaryPath(home, platform, localAppData),
+    { platform },
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -698,31 +673,11 @@ export async function restoreVersion(
   version: string,
   localAppData?: string,
 ): Promise<void> {
-  const src = versionBinaryPath(home, platform, version, localAppData);
-  const dest = managedBinaryPath(home, platform, localAppData);
-  const destDir = path.dirname(dest);
-  const tmp = path.join(destDir, `.myco-restore-${process.pid}-${Date.now()}.tmp`);
-
-  fs.mkdirSync(destDir, { recursive: true });
-  fs.copyFileSync(src, tmp);
-
-  // On non-win32, chmod must succeed (same rationale as adoptStaged).
-  if (platform !== 'win32') {
-    try {
-      fs.chmodSync(tmp, 0o755);
-    } catch (chmodErr) {
-      rmSafe(tmp);
-      throw chmodErr;
-    }
-  }
-
-  // Rename failure cleans the tmp and rethrows; managed binary is untouched.
-  try {
-    fs.renameSync(tmp, dest);
-  } catch (renameErr) {
-    rmSafe(tmp);
-    throw renameErr;
-  }
+  placeExecutable(
+    versionBinaryPath(home, platform, version, localAppData),
+    managedBinaryPath(home, platform, localAppData),
+    { platform },
+  );
 }
 
 // ---------------------------------------------------------------------------

@@ -53,3 +53,24 @@ npm run smoke:worker-service -- uninstall
 ```
 
 Removal affects only this rig's unit. It preserves sibling Myco services, the membership, logs and captured data. Service registration, bounded crash recovery and bounded reboot recovery are separate from the sustained daily-use acceptance gate.
+
+## Replace the binary under a running worker
+
+Put the new build beside the old one, prove it runs, then rename it over the old one. The rename gives the new program a fresh inode, so the running worker keeps its own image, and a hook never runs a half-written file:
+
+```sh
+BIN="$HOME/myco-rig/bin/myco"   # the path the unit runs
+cp /path/to/new/myco "$BIN.new" && chmod 755 "$BIN.new" \
+  && codesign --verify --strict "$BIN.new" && "$BIN.new" --version \
+  && mv -f "$BIN.new" "$BIN"
+```
+
+On Linux, leave out the `codesign` step. On macOS, if `codesign --verify --strict` fails, the kernel will kill the program when it runs. Sign it ad hoc again with `codesign --force --sign - --preserve-metadata=entitlements,identifier "$BIN.new"`, then run the line again.
+
+The worker notices the new program before its next claim. It runs the new program's `--version`, and stays on the old program if that fails. On macOS it then asks launchd to load its unit again, and the new program starts within seconds. Plain restarts go wrong on macOS. A LaunchAgent that launchd loaded at login carries the code requirement that Background Task Management recorded for its program. For an ad hoc signature that requirement is the program's hash. launchd's own restart of a replaced program is killed with `OS_REASON_CODESIGNING` ("Launch Constraint Violation" in the crash report), and it starts only on the retry a restart delay later. A worker built before this behavior existed does not reload itself, so load its unit again yourself after the rename:
+
+```sh
+launchctl unload ~/Library/LaunchAgents/<label>.plist && launchctl load -w ~/Library/LaunchAgents/<label>.plist
+```
+
+`launchctl kickstart -k` is not a substitute. It restarts the unit under the recorded requirement, and the kernel kills that start.

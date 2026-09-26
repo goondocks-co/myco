@@ -14,7 +14,9 @@ import path from 'node:path';
 import { holdWorkerInstance, workerHolder, workerLockDir, workerLockPath } from '@myco/runner/instance.js';
 import { deploymentKeyFor } from '@myco/member/registry.js';
 import { readWorkerRefusal } from '@myco/runner/refusal.js';
-import { attachOptions, executableIdentity, sameProgram } from '@myco/cli/worker.js';
+import { attachOptions, endReplacedWorker, executableIdentity, sameProgram } from '@myco/cli/worker.js';
+import { programRuns } from '@myco/install/place-binary.js';
+import { workerServiceUnit } from '@myco/runner/service.js';
 import { localWorkerTarget } from '@myco/cli/server.js';
 import { runWorker, type WorkerOptions } from '@myco/runner/loop.js';
 
@@ -205,13 +207,75 @@ describe('a worker whose program is replaced on disk', () => {
   it('notices a replacement by rename, the way an update installs one', () => {
     const program = path.join(scratch, 'myco');
     fs.writeFileSync(program, 'one');
-    const same = sameProgram(program);
+    const same = sameProgram(program, executableIdentity, () => ({ runs: true }));
     expect(same()).toBe(true);
     const next = path.join(scratch, 'myco.next');
     fs.writeFileSync(next, 'two');
     fs.renameSync(next, program);
     expect(same()).toBe(false);
     expect(executableIdentity(path.join(scratch, 'absent'))).toBeNull();
+  });
+
+  it('stays on its program while the replacement does not run, and judges each replacement once', () => {
+    const program = path.join(scratch, 'myco');
+    fs.writeFileSync(program, 'one');
+    const probed: string[] = [];
+    const said: string[] = [];
+    let runs = false;
+    const same = sameProgram(program, executableIdentity, (file) => {
+      probed.push(fs.readFileSync(file, 'utf8'));
+      return runs ? { runs: true } : { runs: false, detail: 'ended by SIGKILL' };
+    }, (line) => { said.push(line); });
+    fs.writeFileSync(program, 'partial');
+    expect(same()).toBe(true);
+    expect(same()).toBe(true);
+    expect(probed).toEqual(['partial']);
+    expect(said).toEqual(['the myco program on disk changed, and the new one does not run (ended by SIGKILL); staying on this one']);
+    runs = true;
+    fs.writeFileSync(program, 'complete program');
+    expect(same()).toBe(false);
+    expect(probed).toEqual(['partial', 'complete program']);
+  });
+
+  it('a program the kernel will not run is judged by running it', () => {
+    const program = path.join(scratch, 'myco');
+    fs.writeFileSync(program, '#!/bin/sh\nkill -9 $$\n', { mode: 0o755 });
+    expect(programRuns(program)).toEqual({ runs: false, detail: 'ended by SIGKILL' });
+    fs.writeFileSync(program, '#!/bin/sh\n[ "$1" = --version ] && echo 1.0.0\n', { mode: 0o755 });
+    expect(programRuns(program)).toEqual({ runs: true });
+    expect(programRuns(path.join(scratch, 'absent')).runs).toBe(false);
+  });
+});
+
+describe('a replaced worker running as its macOS login service', () => {
+  const unitLabel = (): string => workerServiceUnit(URL_, path.join(scratch, 'member')).label;
+
+  it('asks the service to load its unit again and ends when that stops it', async () => {
+    const stopping = new AbortController();
+    const reloaded: string[] = [];
+    const ended = endReplacedWorker(URL_, path.join(scratch, 'member'), stopping.signal, {
+      platform: 'darwin', env: { XPC_SERVICE_NAME: unitLabel() }, home: scratch, waitMs: 60_000,
+      reload: (spec) => { reloaded.push(spec.unit.label); setTimeout(() => { stopping.abort(); }, 5); return true; },
+    });
+    expect(await ended).toBe(true);
+    expect(reloaded).toEqual([unitLabel()]);
+  });
+
+  it('ends non-zero for its service to restart it when no reload stops it, it cannot ask for one, or it is not that service', async () => {
+    const member = path.join(scratch, 'member');
+    const signal = new AbortController().signal;
+    const asked: string[] = [];
+    const reload = (answer: boolean) => (spec: { unit: { label: string } }): boolean => { asked.push(spec.unit.label); return answer; };
+    expect(await endReplacedWorker(URL_, member, signal, { platform: 'darwin', env: { XPC_SERVICE_NAME: unitLabel() }, home: scratch, waitMs: 5, reload: reload(true) })).toBe(false);
+    expect(await endReplacedWorker(URL_, member, signal, { platform: 'darwin', env: { XPC_SERVICE_NAME: unitLabel() }, home: scratch, waitMs: 5, reload: reload(false) })).toBe(false);
+    expect(asked).toEqual([unitLabel(), unitLabel()]);
+    for (const deps of [
+      { platform: 'darwin' as const, env: {} },
+      { platform: 'darwin' as const, env: { XPC_SERVICE_NAME: 'co.goondocks.myco-worker.someone-else' } },
+      { platform: 'linux' as const, env: { XPC_SERVICE_NAME: unitLabel() } },
+    ]) {
+      expect(await endReplacedWorker(URL_, member, signal, { ...deps, home: scratch, waitMs: 5, reload: () => { throw new Error('no reload expected'); } })).toBe(false);
+    }
   });
 });
 

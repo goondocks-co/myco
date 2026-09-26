@@ -23,7 +23,7 @@
  * Every platform command runs through a {@link ServiceRunner}, so a caller can
  * exercise install and uninstall without handing a unit to the real platform.
  */
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { homedir } from 'node:os';
@@ -307,6 +307,45 @@ function lifecycleCommands(unit: ServiceUnit, paths: ServicePaths, platform: Nod
     load: [['schtasks', '/End', '/TN', unit.unitName], ['schtasks', '/Create', '/TN', unit.unitName, '/XML', paths.unitFile, '/F'], ['schtasks', '/Run', '/TN', unit.unitName]],
     unload: [['schtasks', '/End', '/TN', unit.unitName], ['schtasks', '/Delete', '/TN', unit.unitName, '/F']],
   };
+}
+
+/** Starts a process outside the caller's session and does not wait for it; false when it could not be started. */
+export type DetachedSpawner = (command: string, args: readonly string[]) => boolean;
+
+export const platformDetachedSpawner: DetachedSpawner = (command, args) => {
+  try {
+    const child = spawn(command, [...args], { detached: true, stdio: 'ignore' });
+    child.unref();
+    return child.pid !== undefined;
+  } catch {
+    return false;
+  }
+};
+
+/**
+ * Load a macOS unit again from a process of its own, so the unit's process can
+ * ask for it: the unload stops that process, and the helper, in a session of its
+ * own, goes on to load the unit.
+ *
+ * This is how a unit whose program was replaced starts on the new program. A
+ * LaunchAgent that launchd loaded at login carries a code requirement Background
+ * Task Management recorded for its program, and for an ad hoc signature that
+ * requirement is the program's hash. launchd's own restart of a replaced program
+ * is killed with OS_REASON_CODESIGNING, and it runs only on the retry a restart
+ * delay later. A unit loaded here carries no such requirement. Only macOS: a
+ * systemd unit restarts its replaced program, and stopping it kills its cgroup.
+ */
+export function reloadServiceDetached(spec: ServiceSpec, options: ServiceOptions & { spawnDetached?: DetachedSpawner } = {}): boolean {
+  const platform = options.platform ?? process.platform;
+  if (platform !== 'darwin') return false;
+  const paths = servicePaths(spec, platform);
+  if (!existsSync(paths.unitFile)) return false;
+  const words: string[] = [];
+  const steps = lifecycleCommands(spec.unit, paths, platform).load.map((argv) =>
+    argv.map((word) => { words.push(word); return `"\${${words.length}}"`; }).join(' '));
+  // Every word is passed as a positional parameter, so no path is ever parsed as shell.
+  const script = ['sleep 1', ...steps].join('; ');
+  return (options.spawnDetached ?? platformDetachedSpawner)('/bin/sh', ['-c', script, 'myco-reload', ...words]);
 }
 
 /** The unit's text with its `PATH` value blanked, so two units differing only there compare equal. */

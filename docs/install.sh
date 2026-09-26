@@ -288,6 +288,23 @@ success "Checksum verified."
 # ---------------------------------------------------------------------------
 chmod +x "${TMP_DIR}/myco"
 
+# The kernel must run it before anything is replaced: a Darwin build whose ad hoc
+# signature does not verify is killed at exec, hooks included. Such a signature is
+# made again, keeping entitlements and identifier (as the build does); one that
+# verifies is never replaced.
+if [ "$os" = "darwin" ] && ! codesign --verify --strict "${TMP_DIR}/myco" 2>/dev/null; then
+  warn "The downloaded binary's signature does not verify on this Mac; signing it ad hoc again."
+  if ! codesign --force --sign - --preserve-metadata=entitlements,identifier "${TMP_DIR}/myco" 2>/dev/null \
+    || ! codesign --verify --strict "${TMP_DIR}/myco" 2>/dev/null; then
+    error "The downloaded binary's signature cannot be made valid on this Mac; nothing was installed."
+    exit 1
+  fi
+fi
+if ! "${TMP_DIR}/myco" --version >/dev/null 2>&1; then
+  error "The downloaded binary does not run on this machine; nothing was installed."
+  exit 1
+fi
+
 # Place verified binary in its versioned slot (atomic mv — TMP_DIR is under $BIN_DIR,
 # same filesystem, so this rename never produces a partial file under $VERSION_DIR).
 mkdir -p "${VERSION_DIR}"

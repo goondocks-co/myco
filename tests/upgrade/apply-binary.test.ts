@@ -83,6 +83,8 @@ interface StageOpts {
   sha256sumsText?: string;
   /** Make the asset download throw. */
   downloadThrows?: boolean;
+  /** Whether the verified download runs on this machine. Default true. */
+  runs?: boolean;
 }
 
 function makeStageRec(opts: StageOpts = {}): StageRecorder {
@@ -103,6 +105,8 @@ function makeStageRec(opts: StageOpts = {}): StageRecorder {
     computeSha256: vi.fn(async (filePath: string) => {
       return sha256(fs.readFileSync(filePath, 'utf-8'));
     }),
+    // The fixture bytes are not a program; whether one runs is judged in place-binary.test.ts.
+    ready: vi.fn(() => (opts.runs === false ? { runs: false as const, detail: 'ended by SIGKILL' } : { runs: true as const })),
   };
 
   return rec;
@@ -193,6 +197,10 @@ describe('stageBinary — failure invariants', () => {
     {
       name: 'download throws',
       opts: { downloadThrows: true },
+    },
+    {
+      name: 'the verified download does not run on this machine',
+      opts: { runs: false },
     },
     {
       name: 'checksum mismatch',
@@ -624,8 +632,8 @@ describe('adoptStaged — chmod-failure propagation (T4)', () => {
     const stablePath = writeStableBinary();
 
     const chmodSpy = vi.spyOn(fs, 'chmodSync').mockImplementation((p, _mode) => {
-      // Only intercept the .myco-adopt-* temp file; let other chmod calls pass.
-      if (typeof p === 'string' && p.includes('.myco-adopt-')) {
+      // Only intercept the .myco-place-* temp file; let other chmod calls pass.
+      if (typeof p === 'string' && p.includes('.myco-place-')) {
         throw new Error('chmod injected failure');
       }
       // Pass through to real implementation for other paths.
@@ -671,7 +679,7 @@ describe('restoreVersion — chmod-failure propagation (T4)', () => {
     fs.writeFileSync(stablePath, NEW_BYTES);
 
     const chmodSpy = vi.spyOn(fs, 'chmodSync').mockImplementation((p, _mode) => {
-      if (typeof p === 'string' && p.includes('.myco-restore-')) {
+      if (typeof p === 'string' && p.includes('.myco-place-')) {
         throw new Error('chmod injected failure');
       }
       return undefined;

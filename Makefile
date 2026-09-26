@@ -131,14 +131,16 @@ process.platform === 'linux' ? 'linux-' + (process.arch === 'arm64' ? 'arm64' : 
 # one-time setup (runtime pins, subsystem claim, symbiont refresh) lives in
 # `dev-link` and is deliberately not repeated here.
 #
-# rm -f before cp: a running dev daemon may hold this path open. cp would
-# rewrite the same inode (ETXTBSY on Linux / corrupt live text pages on
-# macOS); removing first gives the new binary a fresh inode.
+# The binary is copied beside the old one, run, then renamed over it: a running
+# dev daemon keeps the old inode (cp over it would rewrite live text pages), a
+# hook never finds the path missing or half-written, and a build the kernel
+# will not run never replaces one it will.
 dev-install:
 	@mkdir -p $(HOME)/.myco-dev/bin $(HOME)/.local/bin
-	@rm -f $(HOME)/.myco-dev/bin/myco
-	@cp $(PWD)/packages/myco-$(HOST_TARGET)/bin/myco $(HOME)/.myco-dev/bin/myco
-	@chmod +x $(HOME)/.myco-dev/bin/myco
+	@cp $(PWD)/packages/myco-$(HOST_TARGET)/bin/myco $(HOME)/.myco-dev/bin/myco.new
+	@chmod 755 $(HOME)/.myco-dev/bin/myco.new
+	@$(HOME)/.myco-dev/bin/myco.new --version >/dev/null || { rm -f $(HOME)/.myco-dev/bin/myco.new; echo "the new build does not run here; ~/.myco-dev/bin/myco is unchanged" >&2; exit 1; }
+	@mv -f $(HOME)/.myco-dev/bin/myco.new $(HOME)/.myco-dev/bin/myco
 	@rm -f $(HOME)/.local/bin/myco-dev
 	@printf '#!/bin/sh\nexport MYCO_HOME="$$HOME/.myco-dev"\nexport MYCO_CLAIMS_HOME="$$HOME/.myco"\nexec "$$HOME/.myco-dev/bin/myco" "$$@"\n' > $(HOME)/.local/bin/myco-dev
 	@chmod +x $(HOME)/.local/bin/myco-dev

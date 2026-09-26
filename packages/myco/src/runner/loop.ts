@@ -531,7 +531,8 @@ async function claimUntilStopped(options: WorkerOptions): Promise<WorkerOutcome>
   return { driven, refused: null };
 }
 
-function sleep(ms: number, signal: AbortSignal): Promise<void> {
+/** Wait `ms`, or until `signal` aborts. */
+export function sleep(ms: number, signal: AbortSignal): Promise<void> {
   return new Promise((resolve) => {
     if (signal.aborted) { resolve(); return; }
     const timer = setTimeout(done, ms);
