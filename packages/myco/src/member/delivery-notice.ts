@@ -18,9 +18,9 @@ export const REJOIN_HINT = 'ask a Deployment admin for an invite link and run `m
 export function deliveryNotice(credential: Pick<CredentialRecord, 'serverUrl' | 'expiresAt' | 'refreshTerminal'>, now: number): string | null {
   if (credential.refreshTerminal !== true) return null;
   if (credential.expiresAt !== undefined && credential.expiresAt > now) {
-    return `Myco can no longer renew this machine's membership of ${credential.serverUrl}; capture stops reaching it at ${new Date(credential.expiresAt).toISOString()}. To keep it delivered, ${REJOIN_HINT}.`;
+    return `Myco can no longer renew this machine's membership of ${credential.serverUrl} (the machine was inactive too long, or its credential ended); capture stops reaching it at ${new Date(credential.expiresAt).toISOString()}. To keep it delivered, ${REJOIN_HINT}.`;
   }
-  return `Myco capture is not being delivered: this machine's membership of ${credential.serverUrl} has ended. What is captured stays on this machine and is delivered once you ${REJOIN_HINT}.`;
+  return `Myco capture is not being delivered: this machine's membership of ${credential.serverUrl} has ended (the machine was inactive too long, or its credential ended). What is captured stays on this machine and is delivered once you ${REJOIN_HINT}.`;
 }
 
 /** A hook answer with the notice after whatever it already carries, in each of the forms the answer may take. */

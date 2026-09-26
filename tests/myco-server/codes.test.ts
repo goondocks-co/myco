@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'bun:test';
 import worker from '@myco-server-worker/index.js';
-import { issueMemberToken, MEMBER_TOKEN_MAX_LINEAGE_MS, MEMBER_TOKEN_REFRESH_WINDOW_MS, MEMBER_TOKEN_TTL_MS } from '@myco-server-worker/auth/tokens.js';
+import { issueMemberToken, MEMBER_LINEAGE_IDLE_MS, MEMBER_TOKEN_REFRESH_WINDOW_MS, MEMBER_TOKEN_TTL_MS } from '@myco-server-worker/auth/tokens.js';
 import { MAX_BLOB_BYTES, MAX_CLOCK_SKEW_MS, MEMBER_TOKEN_BYTE_QUOTA, PROJECT_HEADER } from '@myco-server-worker/constants.js';
 import { MAX_BODY_BYTES } from '@myco-server-worker/ingest/body.js';
 import { sha256HexOf, utf8 } from '@myco-server-worker/hash.js';
@@ -157,8 +157,10 @@ const DRIVERS: Record<Classifier, (r: Rig) => Promise<Response>> = {
   no_run: (r) => r.mcp(r.harness.token),
   project_mismatch: async (r) => { await r.running(); return r.mcp(r.harness.token, { [PROJECT_HEADER]: 'proj_2' }); },
   refresh_too_early: (r) => r.fetch(memberPost(r.t1.token, '{}', '/tokens/refresh')),
+  // A lapsed token whose lineage has not refreshed for the inactivity bound.
   lineage_expired: (r) => {
-    r.e.sqlite.query(`UPDATE member_credentials SET lineage_started_at = expires_at - ? WHERE id = ?`).run(MEMBER_TOKEN_MAX_LINEAGE_MS, r.windowed.tokenId);
+    const issuedAt = r.now - MEMBER_LINEAGE_IDLE_MS;
+    r.e.sqlite.query(`UPDATE member_credentials SET issued_at = ?, expires_at = ? WHERE id = ?`).run(issuedAt, issuedAt + MEMBER_TOKEN_TTL_MS, r.windowed.tokenId);
     return r.fetch(memberPost(r.windowed.token, '{}', '/tokens/refresh'));
   },
 };
