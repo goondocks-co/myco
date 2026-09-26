@@ -1362,6 +1362,19 @@ export async function deploymentTaskEntriesSince(db: RelationalStore, task: stri
   return row?.c ?? 0;
 }
 
+/**
+ * A Deployment-wide daily ceiling of `perDay` as one read sees it: `used` is the
+ * entries `deploymentTaskEntriesSince` counts, capped at `perDay`, and `pivotAt`
+ * is the entry time of the `perDay`-th newest once that many count. The window
+ * falls below the ceiling when that entry leaves it; every older one leaves first.
+ */
+export async function deploymentTaskCeilingWindow(db: RelationalStore, task: string, sinceMs: number, actor: string, perDay: number): Promise<{ used: number; pivotAt: number | null }> {
+  const row = await db.prepare(`SELECT COUNT(*) AS used, MIN(at) AS pivot FROM (SELECT COALESCE(queued_at, started_at) AS at FROM agent_runs
+      WHERE ${ACTOR_ENTRY_SQL} ORDER BY at DESC LIMIT ?)`).bind(task, sinceMs, actor, Math.max(0, perDay)).first<{ used: number; pivot: number | null }>();
+  const used = row?.used ?? 0;
+  return { used, pivotAt: perDay > 0 && used >= perDay ? row?.pivot ?? null : null };
+}
+
 /** When `actor` last entered a run of `task` anywhere in the Deployment, or null when it never has. */
 export async function deploymentLastTaskEntryAt(db: RelationalStore, task: string, actor: string): Promise<number | null> {
   const row = await db.prepare(

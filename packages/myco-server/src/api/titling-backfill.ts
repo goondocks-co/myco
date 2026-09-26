@@ -40,6 +40,9 @@ export async function handleSetTitlingBackfill(env: ServerEnv, ctx: OwnerContext
   if (!isObject(schedule)) return badRequest(UNREADABLE);
   const next = { ...held, [TITLING_TASK]: { ...task, schedule: { ...schedule, enabled } } };
   const result = await settingsWriter(env.db).setLeaf(OVERRIDES_LEAF, next, ctx.member.id, ctx.now);
-  if (!result.applied) return badRequest(`the task overrides could not be written: ${result.refusal.reason}`);
+  if (!result.applied) {
+    const refusal = result.refusal;
+    return badRequest(`the task overrides could not be written: ${refusal.reason === 'invalid_value' ? refusal.detail : refusal.reason}; correct them under Task overrides in Settings first`);
+  }
   return ok(await titlingBackfillProgress(env, ctx.now));
 }

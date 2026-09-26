@@ -2,6 +2,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link } from 'react-router-dom';
 import { Panel } from '../ui/panel';
 import { fetchJson, putJson } from '../../lib/api';
+import { formatUntil } from '../../lib/format';
 
 export interface BackfillProgress {
   scheduledTasksEnabled: boolean;
@@ -17,6 +18,8 @@ export interface BackfillProgress {
   inFlight: number;
   completedToday: number;
   failedToday: number;
+  /** What holds the next dispatch while sessions wait for one; null when nothing does. */
+  waiting: { reason: 'interval' | 'overlap' | 'ceiling'; until: number | null } | null;
 }
 
 const plural = (n: number, word: string): string => `${n} ${word}${n === 1 ? '' : 's'}`;
@@ -31,15 +34,32 @@ export function policyWords(p: Pick<BackfillProgress, 'runIn' | 'intervalSeconds
   return `Dispatches ${when}, at most once every ${minutes} min.`;
 }
 
+/** An instant a hold lifts, as a clock time and how far off it is; one already reached, or unknown, reads "soon". */
+export const liftsAt = (until: number | null, now: number): string =>
+  (until === null || until <= now ? 'soon' : `at ${new Date(until).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })} (in ${formatUntil(until, now, true)})`);
+
+/** Why no title is starting while sessions wait for one, in the reader's words; empty when nothing holds it. A title can start only in the states the schedule names, so a lifted hold says when one can start, never when one will. */
+export function waitingWords(p: Pick<BackfillProgress, 'waiting' | 'runsPerDay'>, now: number = Date.now()): string {
+  const w = p.waiting;
+  if (w === null) return '';
+  if (w.reason === 'ceiling') {
+    if (p.runsPerDay === 0) return "The daily limit is 0; nothing is titled until it's raised in Settings.";
+    return `Daily limit of ${p.runsPerDay ?? 0} reached; the next title can start ${liftsAt(w.until, now)}.`;
+  }
+  if (w.reason === 'overlap') return 'Waiting for the title run in flight to finish.';
+  return `The next titles can start ${liftsAt(w.until, now)}.`;
+}
+
 /** Where titling stands, in the reader's words: titles owed for live sessions continue within the daily limit; imported sessions need both scheduled intelligence and the backfill switch. */
-export function progressWords(p: BackfillProgress): string {
+export function progressWords(p: BackfillProgress, now: number = Date.now()): string {
   const owed = p.owed === 0 ? 'No ended live sessions are waiting for a title.' : `${plural(p.owed, 'ended live session')} waiting for a title; these are titled automatically within the daily limit.`;
   const left = p.remaining === 0 ? 'No fully parsed imported sessions are waiting for a title attempt.' : `${plural(p.remaining, 'fully parsed imported session')} waiting for a title attempt.`;
   const imported = !p.backfillEnabled ? `${left} The imported-session backfill is stopped.`
     : !p.scheduledTasksEnabled ? `${left} The imported-session backfill is on but runs only while scheduled intelligence is on; turn that on in Settings.`
     : left;
   const ceiling = p.runsPerDay === null ? `${p.usedToday} started` : `${p.usedToday} of ${p.runsPerDay} started`;
-  return `${owed} ${imported} ${policyWords(p)} Today: ${ceiling}, ${p.inFlight} in flight, ${p.completedToday} titled, ${p.failedToday} failed.`;
+  const waiting = waitingWords(p, now);
+  return `${owed} ${imported} ${waiting === '' ? '' : `${waiting} `}${policyWords(p)} Today: ${ceiling}, ${p.inFlight} in flight, ${p.completedToday} titled, ${p.failedToday} failed.`;
 }
 
 const button = 'rounded-md border border-outline-variant/30 px-2.5 py-1 font-sans text-xs text-on-surface transition-colors hover:bg-surface-container-high aria-busy:opacity-60';
