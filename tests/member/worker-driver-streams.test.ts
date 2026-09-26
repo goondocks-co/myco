@@ -26,10 +26,12 @@ import { MCP_SERVER_NAME } from '@myco/runner/mcp-config.js';
 import { PROJECT_HEADER, PROTOCOL_HEADER } from '@myco/member/constants.js';
 import { stubAcpHarness, STUB_DETECTED, STUB_HARNESS } from '../helpers/stub-acp-harness.ts';
 import { readFileSync } from 'node:fs';
-import { turnOver, type Channel } from '@myco/runner/drivers/acp.js';
+import { RUN_AGENT, turnOver, type Channel } from '@myco/runner/drivers/acp.js';
 import { listRunTools, type RunTools } from '@myco/runner/drivers/run-tools.js';
+import { runGrant } from '@myco/runner/drivers/grant.js';
 import type { RunEvent } from '@myco/runner/events.js';
 import { globalFetchDouble } from '../helpers/global-fetch.js';
+import { listingOnly, withRunMcp } from '../helpers/run-mcp-fetch.ts';
 
 const CONNECTION = { serverUrl: 'https://deployment.example', projectId: 'proj_1', runToken: 'tok_run_secret' };
 
@@ -119,7 +121,7 @@ describe('the Claude Code driver', () => {
     const argv = readFileSync(join(dir, 'argv.txt'), 'utf8').split('\n');
     expect(argv).toContain('Bash(git log:*)');
     expect(argv).toContain('Bash(git -C repo rev-list:*)');
-    expect(argv).toContain('Bash(git -C repo grep:*)');
+    expect(argv).not.toContain('Bash(git -C repo grep:*)');
     expect(argv).toContain('Bash(git -C repo blame:*)');
     expect(argv).toContain(`Bash(git -C ${repo} log:*)`);
     expect(argv).toContain(`Bash(git -C ${realpathSync(repo)} log:*)`);
@@ -538,6 +540,15 @@ describe('the Codex driver', () => {
 
 /** The tools the run's server lists for a run, in place of asking a server. */
 const RUN_TOOL_NAMES = ['myco_run', 'myco_run_sessions', 'noop_ping'];
+
+/** A session opened in the run's own agent, as OpenCode reports its mode. */
+const RUN_AGENT_MODE = { configOptions: [{ id: 'mode', currentValue: RUN_AGENT }] };
+
+/** A recorded `session/new` answer, with the session's mode the run's own agent. */
+function inRunAgent(answer: Record<string, unknown>): Record<string, unknown> {
+  const result = answer.result as { configOptions: Array<Record<string, unknown>> };
+  return { ...answer, result: { ...result, configOptions: result.configOptions.map((option) => (option.id === 'mode' ? { ...option, currentValue: RUN_AGENT } : option)) } };
+}
 const listed = async (): Promise<RunTools> => ({ ok: true, names: new Set(RUN_TOOL_NAMES) });
 
 /** A peer that answers the protocol, in place of a harness binary. */
@@ -564,7 +575,8 @@ describe('the agent-protocol driver', () => {
       .trim().split('\n').map((line) => JSON.parse(line) as Record<string, unknown>);
     const p = peer((method, id) => {
       if (method === 'session/close') return `${JSON.stringify({ id, result: {} })}\n`;
-      const response = recording.find((row) => row.id === id)!;
+      const recorded = recording.find((row) => row.id === id)!;
+      const response = method === 'session/new' ? inRunAgent(recorded) : recorded;
       const notifications = method === 'session/prompt' ? recording.filter((row) => typeof row.method === 'string') : [];
       return [...notifications, response].map((row) => JSON.stringify(row)).join('\n') + '\n';
     });
@@ -585,7 +597,7 @@ describe('the agent-protocol driver', () => {
     const spec = { ...runDir(), prompt: 'do it', credentialEnv: {} };
     const p = peer((method, id) => {
       if (method === 'initialize') return `${JSON.stringify({ jsonrpc: '2.0', id, result: { protocolVersion: 1 } })}\n`;
-      if (method === 'session/new') return `${JSON.stringify({ jsonrpc: '2.0', id, result: { sessionId: 'sess_acp' } })}\n`;
+      if (method === 'session/new') return `${JSON.stringify({ jsonrpc: '2.0', id, result: { sessionId: 'sess_acp', ...RUN_AGENT_MODE } })}\n`;
       if (method === 'session/prompt') return `${JSON.stringify({ jsonrpc: '2.0', id, result: { stopReason: 'end_turn' } })}\n`;
       return `${JSON.stringify({ jsonrpc: '2.0', id, result: {} })}\n`;
     });
@@ -597,7 +609,7 @@ describe('the agent-protocol driver', () => {
 
   it('answers a stop reason the protocol does not name as a failure', async () => {
     const spec = { ...runDir(), prompt: 'do it', credentialEnv: {} };
-    const p = peer((method, id) => `${JSON.stringify({ jsonrpc: '2.0', id, result: method === 'session/prompt' ? { stopReason: 'something_else' } : { sessionId: 's' } })}\n`);
+    const p = peer((method, id) => `${JSON.stringify({ jsonrpc: '2.0', id, result: method === 'session/prompt' ? { stopReason: 'something_else' } : { sessionId: 's', ...RUN_AGENT_MODE } })}\n`);
     const events = await collect(turnOver(p.channel, 'opencode', spec, () => 'stderr said this', listed));
     const last = events.at(-1)!;
     expect(last.kind).toBe('ended');
@@ -609,7 +621,7 @@ describe('the agent-protocol driver', () => {
     const p = peer((method, id) => {
       // The peer answers the handshake and then goes away without answering the prompt.
       if (method === 'session/prompt') { queueMicrotask(() => { p.close(); }); return null; }
-      return `${JSON.stringify({ jsonrpc: '2.0', id, result: { sessionId: 's' } })}\n`;
+      return `${JSON.stringify({ jsonrpc: '2.0', id, result: { sessionId: 's', ...RUN_AGENT_MODE } })}\n`;
     });
     const events = await collect(turnOver(p.channel, 'opencode', spec, () => 'it exited 137', listed));
     const last = events.at(-1)!;
@@ -671,7 +683,7 @@ function askingAgent(turn: (agent: Turn) => Promise<void>): Channel {
         const answered = asked.get(id);
         asked.delete(id);
         answered?.(message);
-      } else if (message.method === 'session/new') send({ id, result: { sessionId: 'sess_acp' } });
+      } else if (message.method === 'session/new') send({ id, result: { sessionId: 'sess_acp', ...RUN_AGENT_MODE } });
       else if (message.method === 'session/prompt') void turn(agent(id as number)).then(() => { send({ id, result: { stopReason: 'end_turn' } }); });
       else send({ id, result: {} });
     },
@@ -860,13 +872,19 @@ describe('the agent-protocol driver answering cursor-agent', () => {
     ]);
   });
 
-  it('allows a source run\'s history read whose command only an earlier update carries', async () => {
+  it('allows a source run\'s history read whose command only an earlier update carries, where the grant holds Git reads', async () => {
     const run = runDir();
     mkdirSync(join(run.scratchDir, 'repo'));
-    const answers: unknown[] = [];
-    const channel = askingAgent(async (agent) => { answers.push((await cursorShellCall(agent, 'git -C repo log'))?.result); });
-    await collect(turnOver(channel, 'cursor', { ...run, sourceReadOnly: true, prompt: 'read history', credentialEnv: {} }, () => '', listed));
-    expect(answers).toEqual([{ outcome: { outcome: 'selected', optionId: 'allow-once' } }]);
+    const spec = { ...run, sourceReadOnly: true, prompt: 'read history', credentialEnv: {} };
+    const answerFor = async (sourceGit: 'shim' | 'none'): Promise<unknown[]> => {
+      const answers: unknown[] = [];
+      const channel = askingAgent(async (agent) => { answers.push((await cursorShellCall(agent, 'git -C repo log'))?.result); });
+      await collect(turnOver(channel, 'cursor', spec, () => '', listed, { grant: runGrant(spec, { sourceGit }) }));
+      return answers;
+    };
+    expect(await answerFor('shim')).toEqual([{ outcome: { outcome: 'selected', optionId: 'allow-once' } }]);
+    // Cursor's own grant holds no Git reads: its shell does not reach the run's git.
+    expect(await answerFor('none')).toEqual([{ outcome: { outcome: 'selected', optionId: 'reject-once' } }]);
   });
 
   it('keeps a refused call failed when the agent then reports it completed', async () => {
@@ -895,16 +913,15 @@ describe('the agent-protocol driver answering cursor-agent', () => {
     expect(answers).toEqual([{ outcome: { outcome: 'selected', optionId: 'reject-once' } }]);
   });
 
-  it('refuses a call of the run server when its tools could not be listed, and says why', async () => {
-    const answers: unknown[] = [];
-    const channel = askingAgent(async (agent) => { answers.push((await cursorMcpCall(agent))?.result); });
+  it('ends the run before opening a session when the run\'s tools could not be listed, and says why', async () => {
+    const p = peer((_method, id) => `${JSON.stringify({ jsonrpc: '2.0', id, result: { sessionId: 's', ...RUN_AGENT_MODE } })}\n`);
     const unlisted = async (): Promise<RunTools> => ({ ok: false, reason: 'unauthorized: The upstream refused the credential (HTTP 401).' });
-    const events = await collect(turnOver(channel, 'cursor', { ...runDir(), prompt: 'do it', credentialEnv: {} }, () => '', unlisted));
-    expect(answers).toEqual([{ outcome: { outcome: 'selected', optionId: 'reject-once' } }]);
-    expect(toolCalls(events).at(-1)).toEqual({
-      kind: 'tool_call', name: 'myco-noop_ping: noop_ping', status: 'error',
+    const events = await collect(turnOver(p.channel, 'cursor', { ...runDir(), prompt: 'do it', credentialEnv: {} }, () => '', unlisted));
+    expect(p.asked).toEqual(['initialize']);
+    expect(events).toEqual([{
+      kind: 'ended', stop: 'error',
       detail: 'the run\'s tools could not be listed: unauthorized: The upstream refused the credential (HTTP 401).',
-    });
+    }]);
   });
 });
 
@@ -949,7 +966,7 @@ describe('the tools a run\'s server lists for it', () => {
   it('answers why when the server will not list them', async () => {
     const server = mcpServer([], 503);
     try {
-      const listing = await listRunTools({ url: `${server.url}/mcp`, headers: {} });
+      const listing = await listRunTools({ url: `${server.url}/mcp`, headers: {} }, new AbortController().signal);
       expect(listing.ok).toBe(false);
       if (!listing.ok) expect(listing.reason).toContain('503');
     } finally { server.stop(); }
@@ -1094,10 +1111,10 @@ describe('the budget a run is held to', () => {
       });
       const bound = setTimeout(() => { writeFileSync(release, ''); stopping.abort(); }, 10_000);
       try {
-        const outcome = await runWorker({
+        const outcome = await withRunMcp('https://deployment.example', (request) => listingOnly(request), () => runWorker({
           serverUrl: 'https://deployment.example', token: 'tok', lockDir: null, runRoot: join(scratch, 'runs'),
           only: [STUB_HARNESS], once: true, pollIdleMs: 100, log: (line) => { lines.push(line); }, fetchImpl, signal: stopping.signal,
-        });
+        }));
         expect(outcome).toEqual({ driven: 1, refused: null });
         expect(lines.some((line) => line.includes('lease lost'))).toBe(!leaseHeld);
         expect(lines.some((line) => line.includes('outlived its budget'))).toBe(true);

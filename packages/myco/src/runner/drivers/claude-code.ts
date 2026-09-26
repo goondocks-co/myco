@@ -17,7 +17,7 @@ import { claudeUsage } from './usage.js';
  */
 import { harnessById } from '../harnesses.js';
 import type { Driver, RunEvent, RunSpec, StopReason } from '../events.js';
-import { grantOf, grantsWhole } from './grant.js';
+import { runGrant, grantsWhole } from './grant.js';
 import { jsonLines, recordOf, startHarness, stringOf } from './stream.js';
 
 const STOP: Readonly<Record<string, StopReason>> = {
@@ -38,6 +38,13 @@ const STOP: Readonly<Record<string, StopReason>> = {
  * (`grantOf`), passed as `--allowedTools`.
  */
 export const RUN_PERMISSIONS: readonly string[] = ['--permission-mode', 'manual', '--permission-prompts', 'none'];
+
+/**
+ * The variable naming a script this harness sources before every shell
+ * command, after the snapshot of the user's shell configuration, which sets
+ * PATH as that configuration does.
+ */
+const SHELL_SETUP_VARIABLE = 'CLAUDE_ENV_FILE';
 
 /** A message's content blocks. */
 function blocksOf(message: Record<string, unknown> | null): Record<string, unknown>[] {
@@ -60,7 +67,7 @@ export const claudeCodeDriver: Driver = {
   async *run(spec: RunSpec, signal: AbortSignal): AsyncIterable<RunEvent> {
     const harness = harnessById('claude-code')!;
     const isolation = harness.isolation.kind === 'flag' ? harness.isolation.args : [];
-    const grant = grantOf(spec);
+    const { rules: grant, env, shellSetup } = runGrant(spec, harness);
     const started = startHarness(harness.binary, [
       '-p', spec.prompt,
       '--output-format', 'stream-json',
@@ -69,7 +76,7 @@ export const claudeCodeDriver: Driver = {
       ...isolation,
       ...RUN_PERMISSIONS,
       '--allowedTools', ...grant,
-    ], { cwd: spec.scratchDir, env: spec.credentialEnv, signal });
+    ], { cwd: spec.scratchDir, env: { ...spec.credentialEnv, ...env, ...(shellSetup === null ? {} : { [SHELL_SETUP_VARIABLE]: shellSetup }) }, signal });
 
     let ended = false;
     let failure: string | null = null;
