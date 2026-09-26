@@ -31,6 +31,7 @@ import { ensureMember } from '@myco-server-worker/auth/enrollment.js';
 import { RUN_CLOSE_ERROR } from '@myco-server-worker/core/run-postconditions.js';
 import { sqliteEnv } from '../myco-server/helpers/fixtures.ts';
 import { stubAcpHarness, STUB_DETECTED, STUB_HARNESS } from '../helpers/stub-acp-harness.ts';
+import { withRunMcp } from '../helpers/run-mcp-fetch.ts';
 
 const NOW = 1_800_000_000_000;
 const PROJECT_ID = 'proj_1';
@@ -76,7 +77,9 @@ async function rig(before: (path: string, n: number) => Response | null = () => 
     const stopping = opts.stopping ?? new AbortController();
     const bound = setTimeout(() => { stopping.abort(); }, ATTACH_BOUND_MS);
     try {
-      const outcome = await runWorker({
+      // The driver lists the run's tools over the run's credential before it
+      // opens a session, from the same Deployment.
+      const outcome = await withRunMcp('https://deployment.example', (request) => server.handleRequest(request, e.serverEnv), () => runWorker({
         serverUrl: 'https://deployment.example',
         token,
         lockDir: null,
@@ -87,7 +90,7 @@ async function rig(before: (path: string, n: number) => Response | null = () => 
         log: (line) => { lines.push(line); },
         fetchImpl,
         signal: stopping.signal,
-      });
+      }));
       return { ...outcome, lines };
     } finally {
       clearTimeout(bound);

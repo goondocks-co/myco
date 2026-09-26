@@ -13,7 +13,7 @@
  * every successful call. A thrown tool error's string `code` travels in the
  * JSON-RPC error's `data`.
  */
-import { Client, ProtocolError, SdkHttpError, type StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
+import { Client, ProtocolError, SdkHttpError, type RequestOptions, type StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
 import { getPluginVersion } from '../version.js';
 
 export interface ToolCallError {
@@ -23,15 +23,20 @@ export interface ToolCallError {
 
 export type ToolCallOutcome<T> = { ok: true; value: T } | { ok: false; error: ToolCallError };
 
-/** Connect over `transport`, run `fn`, and close; a failure is answered as a classified error, never thrown. */
+/**
+ * Connect over `transport`, run `fn`, and close; a failure is answered as a
+ * classified error, never thrown. `options` holds the connection's handshake
+ * and is handed to `fn` for its own requests.
+ */
 export async function withMcpClient<T>(
   transport: StreamableHTTPClientTransport,
-  fn: (client: Client) => Promise<T>,
+  fn: (client: Client, options: RequestOptions) => Promise<T>,
+  options: RequestOptions = {},
 ): Promise<ToolCallOutcome<T>> {
   const client = new Client({ name: 'myco-cli', version: getPluginVersion() });
   try {
-    await client.connect(transport);
-    return { ok: true, value: await fn(client) };
+    await client.connect(transport, options);
+    return { ok: true, value: await fn(client, options) };
   } catch (error) {
     return { ok: false, error: classifyMcpError(error) };
   } finally {

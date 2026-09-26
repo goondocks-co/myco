@@ -18,9 +18,13 @@ export interface RunServer {
 /** The names of the tools the run's server serves, or why they could not be read. */
 export type RunTools = { ok: true; names: ReadonlySet<string> } | { ok: false; reason: string };
 
-/** Every tool the run's server lists for the run's credential; the client reads every page. */
-export async function listRunTools(server: RunServer): Promise<RunTools> {
+/**
+ * Every tool the run's server lists for the run's credential; the client reads
+ * every page. The listing stops when `signal` aborts, and is answered as a
+ * failure then.
+ */
+export async function listRunTools(server: RunServer, signal: AbortSignal): Promise<RunTools> {
   const transport = new StreamableHTTPClientTransport(new URL(server.url), { requestInit: { headers: server.headers } });
-  const listed = await withMcpClient(transport, async (client) => new Set((await client.listTools()).tools.map((tool) => tool.name)));
+  const listed = await withMcpClient(transport, async (client, options) => new Set((await client.listTools(undefined, options)).tools.map((tool) => tool.name)), { signal });
   return listed.ok ? { ok: true, names: listed.value } : { ok: false, reason: `${listed.error.code}: ${listed.error.message}` };
 }

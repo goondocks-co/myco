@@ -61,6 +61,15 @@ describe('the harness manifest', () => {
       'claude-code': 'flag', codex: 'home', opencode: 'additive', cursor: 'additive', antigravity: 'additive',
     });
   });
+
+  it('says how each harness is made to ask before a call, so a protocol run\'s grant decides each one', () => {
+    // OpenCode allows every tool under its default configuration, so its runs
+    // start in an agent of their own that asks for everything.
+    expect(Object.fromEntries(HARNESSES.map((h) => [h.id, h.asking]))).toEqual({
+      'claude-code': { kind: 'native' }, codex: { kind: 'native' },
+      opencode: { kind: 'run-agent', env: 'OPENCODE_CONFIG_CONTENT' }, cursor: { kind: 'default' }, antigravity: { kind: 'default' },
+    });
+  });
 });
 
 describe('the run credential', () => {

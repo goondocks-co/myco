@@ -11,7 +11,9 @@
  * fields over them.
  *
  * The call is then named in the grant's vocabulary before the grant is asked:
- * - a file read is `Read`, and a command is `Bash` with the command it runs;
+ * - a file read is `Read`, and a command is `Bash` with the command it runs,
+ *   refused whatever it runs when the directory it names to run in is outside
+ *   the run's own;
  * - a search is `Grep` when it searches for a pattern, and is outside the grant
  *   when it has a query, a URL or a web call id instead;
  * - a call of no narrower kind is a tool of the run's server when it names one
@@ -21,9 +23,10 @@
  *   every character outside `[A-Za-z0-9_-]` replaced by `_`.
  * Nothing else is in the grant.
  */
+import { existsSync, realpathSync } from 'node:fs';
+import { isAbsolute, relative, resolve, sep } from 'node:path';
 import { MCP_SERVER_NAME } from '../mcp-config.js';
-import { grantsCall, SERVER_GRANT, SHELL_TOOL } from './grant.js';
-import type { RunTools } from './run-tools.js';
+import { grantsCall, SERVER_GRANT, SHELL_TOOL, type RunGrant } from './grant.js';
 import { recordOf, stringOf } from './stream.js';
 
 /** The protocol's kind for a call it has no narrower kind for, which is the kind an MCP tool's call carries. */
@@ -39,6 +42,10 @@ const REJECT_ONCE = 'reject_once';
 /** Why a call was refused. */
 const OUTSIDE_GRANT = 'outside the run\'s grant';
 const NO_ALLOW_ONCE = 'the agent offered no way to allow the call once';
+const OUTSIDE_RUN_DIR = 'the command would run outside the run\'s directory';
+
+/** The input fields an agent names a command's working directory in: OpenCode reports the directory a command runs in as `cwd`, and the one the agent asked for as `workdir`. */
+const WORKING_DIRECTORY_FIELDS = ['cwd', 'workdir'] as const;
 
 /** The protocol's answer to a permission request. */
 export type PermissionOutcome = { outcome: 'selected'; optionId: string } | { outcome: 'cancelled' };
@@ -57,12 +64,38 @@ export class ToolCalls {
     if (id !== null) this.known.set(id, this.merged(update));
   }
 
-  /** The call as everything said about it, these fields over what was said before. A field that is absent or null is unchanged. */
+  /**
+   * The call as everything said about it, these fields over what was said
+   * before. A field that is absent or null is unchanged, and so is each field of
+   * the call's input: an agent that reports only part of the input later has
+   * not withdrawn the rest.
+   */
   merged(toolCall: Record<string, unknown>): Record<string, unknown> {
     const id = stringOf(toolCall.toolCallId);
-    const changed = Object.fromEntries(Object.entries(toolCall).filter(([, value]) => value !== undefined && value !== null));
-    return { ...(id === null ? {} : this.known.get(id)), ...changed };
+    const known = id === null ? {} : this.known.get(id) ?? {};
+    const changed = present(toolCall);
+    const input = recordOf(changed.rawInput);
+    return { ...known, ...changed, ...(input === null ? {} : { rawInput: { ...recordOf(known.rawInput), ...present(input) } }) };
   }
+}
+
+/** A record's fields that hold a value. */
+const present = (record: Record<string, unknown>): Record<string, unknown> =>
+  Object.fromEntries(Object.entries(record).filter(([, value]) => value !== undefined && value !== null));
+
+/** The physical path, where it exists. */
+const physical = (path: string): string => (existsSync(path) ? realpathSync(path) : path);
+
+/** Whether every working directory a command's input names is inside the run's directory. */
+function runsInside(toolCall: Record<string, unknown>, runDir: string): boolean {
+  const input = recordOf(toolCall.rawInput);
+  const root = physical(runDir);
+  return WORKING_DIRECTORY_FIELDS.every((field) => {
+    const named = stringOf(input?.[field]);
+    if (named === null) return true;
+    const path = relative(root, physical(resolve(root, named)));
+    return path === '' || (path !== '..' && !path.startsWith(`..${sep}`) && !isAbsolute(path));
+  });
 }
 
 /** The name of one of the run's listed tools that this call names, or null. */
@@ -83,14 +116,15 @@ function searchesFiles(toolCall: Record<string, unknown>): boolean {
 }
 
 /** A call as the grant names it, or why it names nothing the grant can hold. */
-function grantCallOf(toolCall: Record<string, unknown>, tools: RunTools): { tool: string; command: string | null } | { unnamed: string } {
+function grantCallOf(toolCall: Record<string, unknown>, tools: ReadonlySet<string>, runDir: string): { tool: string; command: string | null } | { unnamed: string } {
   switch (stringOf(toolCall.kind) ?? UNKINDED) {
     case 'read': return { tool: 'Read', command: null };
-    case 'execute': return { tool: SHELL_TOOL, command: stringOf(stringOf(recordOf(toolCall.rawInput)?.command)?.trim()) };
+    case 'execute':
+      if (!runsInside(toolCall, runDir)) return { unnamed: OUTSIDE_RUN_DIR };
+      return { tool: SHELL_TOOL, command: stringOf(stringOf(recordOf(toolCall.rawInput)?.command)?.trim()) };
     case 'search': return searchesFiles(toolCall) ? { tool: 'Grep', command: null } : { unnamed: OUTSIDE_GRANT };
     case UNKINDED: {
-      if (!tools.ok) return { unnamed: `the run's tools could not be listed: ${tools.reason}` };
-      const tool = runToolOf(toolCall, tools.names);
+      const tool = runToolOf(toolCall, tools);
       return tool === null ? { unnamed: OUTSIDE_GRANT } : { tool: `${SERVER_GRANT}__${tool}`, command: null };
     }
     default: return { unnamed: OUTSIDE_GRANT };
@@ -112,17 +146,17 @@ function optionOf(options: unknown, kind: string): string | null {
  * cancels the request when the agent offers none.
  */
 export function answerPermission(
-  grant: readonly string[],
-  tools: RunTools,
+  grant: Pick<RunGrant, 'rules' | 'runDir'>,
+  tools: ReadonlySet<string>,
   sessionId: string | null,
   params: Record<string, unknown>,
   toolCall: Record<string, unknown>,
 ): { outcome: PermissionOutcome; refusal: string | null } {
   const refusal = ((): string | null => {
     if (sessionId === null || params.sessionId !== sessionId) return OUTSIDE_GRANT;
-    const call = grantCallOf(toolCall, tools);
+    const call = grantCallOf(toolCall, tools, grant.runDir);
     if ('unnamed' in call) return call.unnamed;
-    if (!grantsCall(grant, call.tool, call.command)) return OUTSIDE_GRANT;
+    if (!grantsCall(grant.rules, call.tool, call.command)) return OUTSIDE_GRANT;
     return optionOf(params.options, ALLOW_ONCE) === null ? NO_ALLOW_ONCE : null;
   })();
   if (refusal === null) return { outcome: { outcome: 'selected', optionId: optionOf(params.options, ALLOW_ONCE)! }, refusal };

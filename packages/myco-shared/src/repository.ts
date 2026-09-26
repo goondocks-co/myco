@@ -44,8 +44,8 @@ export const RUN_REPOSITORY_DIR = 'repo';
  * digests here rather than hashing files itself.
  */
 export const RUN_REPOSITORY_DIGESTS_FILE = 'repo.sha256';
-/** Git inspection commands available to unattended source-reading runs. */
-export const SOURCE_GIT_READ_COMMANDS = ['log', 'shortlog', 'show', 'diff', 'diff-tree', 'ls-tree', 'ls-files', 'rev-parse', 'rev-list', 'status', 'grep', 'blame', 'cat-file', 'describe'] as const;
+/** Git inspection commands available to unattended source-reading runs. A text search goes through the harness's own search tool: `git grep -O` runs a program. */
+export const SOURCE_GIT_READ_COMMANDS = ['log', 'shortlog', 'show', 'diff', 'diff-tree', 'ls-tree', 'ls-files', 'rev-parse', 'rev-list', 'status', 'blame', 'cat-file', 'describe'] as const;
 /** The maximum Git fetch depth for a source-reading run. */
 export const MAX_REPOSITORY_HISTORY_DEPTH = 200;
 

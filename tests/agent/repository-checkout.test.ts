@@ -1,5 +1,6 @@
 import { afterAll, beforeAll, describe, expect, it } from 'bun:test';
 import { execFileSync } from 'node:child_process';
+import { existsSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { access, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -54,6 +55,17 @@ describe('committed repository checkout', () => {
       expect(config).not.toContain('reader');
     } finally { await checkout.dispose(); }
     await expect(access(checkout.root)).rejects.toThrow();
+  });
+
+  it('configures no program in the checkout\'s repository: only its format and its remote', async () => {
+    const checkout = await prepareRepositoryCheckout({ ...request(), pin: async (commit) => commit });
+    try {
+      const keys = execFileSync('git', ['config', '--file', join(checkout.root, '.git/config'), '--name-only', '--list'], { encoding: 'utf8' }).split('\n').filter(Boolean);
+      const format = ['core.repositoryformatversion', 'core.filemode', 'core.bare', 'core.logallrefupdates', 'core.ignorecase', 'core.precomposeunicode', 'core.symlinks'];
+      expect(keys.filter((key) => !format.includes(key.toLowerCase()))).toEqual(['remote.origin.url', 'remote.origin.fetch']);
+      const beside = ['info/attributes', 'config.worktree', 'commondir'].filter((path) => existsSync(join(checkout.root, '.git', path)));
+      expect(beside).toEqual([]);
+    } finally { await checkout.dispose(); }
   });
 
   it('uses a fresh workspace and committed content for each run', async () => {
