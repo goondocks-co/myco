@@ -18,7 +18,7 @@
 import { CONTENT_SNIPPET_CHARS } from '../constants.js';
 import { withoutCredentialFlag } from '../mcp/deployment-upstream.js';
 import type { CredentialSource } from '../member/constants.js';
-import { membershipProblem, openDeployment, type DeploymentHandle, type MemberVerbDeps } from './deployment-reader.js';
+import { membershipProblem, openDeployment, ROUTE_MISSING, type DeploymentHandle, type MemberVerbDeps } from './deployment-reader.js';
 import type { MemberReadVerb } from './member-verbs.js';
 
 export { MEMBER_READ_VERBS, isMemberReadVerb, type MemberReadVerb } from './member-verbs.js';
@@ -167,57 +167,68 @@ interface RunRow { task: string | null; status: string; started_at: number | nul
 
 /** A byte count the Deployment measured, or why it could not. */
 type ByteFact = { state: 'measured'; value: number; unit: 'bytes' } | { state: 'unavailable'; reason: string };
-type NamedFact = ByteFact & { name: string };
+type StorageFact = ByteFact & { name: string; measuredAt: number | null };
 interface DeploymentHealth {
   target: string | null;
-  schema: { expected: number; found: number | null; matches: boolean };
+  schema: { expected: number; found: number | null };
   quota: { used: ByteFact; limit: ByteFact };
-  storage: { blobs: ByteFact; database: { measuredAt: number | null; measurements: NamedFact[] } };
+  storage: StorageFact[];
 }
 
-/** The Deployment's health over its member route, or null with the failure written to stderr. */
-async function readHealth(reader: DeploymentHandle, err: Out): Promise<DeploymentHealth | null> {
+/** The Deployment's health over its member route, or why it is unavailable and whether that is a failure. */
+async function readHealth(reader: DeploymentHandle): Promise<{ ok: true; health: DeploymentHealth } | { ok: false; reason: string; failed: boolean }> {
   const answer = await reader.post(STATUS_READ_PATH, {});
   if (!answer.ok) {
-    err(`myco stats: ${reader.serverUrl} did not answer its health (${answer.error.code}): ${answer.error.message}`);
-    return null;
+    return answer.error.code === ROUTE_MISSING
+      ? { ok: false, reason: 'this Deployment does not report health yet; update it', failed: false }
+      : { ok: false, reason: `${reader.serverUrl} did not answer (${answer.error.code}): ${answer.error.message}`, failed: true };
   }
   const health = answer.value as Partial<DeploymentHealth>;
-  if (health.schema === undefined || health.quota === undefined || health.storage === undefined) {
-    err(`myco stats: ${reader.serverUrl} answered its health without its schema, quota and storage`);
-    return null;
+  if (health.schema === undefined || health.quota === undefined || !Array.isArray(health.storage)) {
+    return { ok: false, reason: `${reader.serverUrl} answered without its schema, quota and storage`, failed: true };
   }
-  return health as DeploymentHealth;
+  return { ok: true, health: health as DeploymentHealth };
 }
 
 const byteCount = (n: number): string => `${n.toLocaleString('en-US')} bytes`;
-const fact = (f: ByteFact): string => (f.state === 'measured' ? byteCount(f.value) : `unavailable: ${f.reason}`);
-/** How a database measurement is labelled; a name with no label here is shown as sent. */
-const MEASUREMENT_LABEL: Record<string, string> = { size: 'Database', reclaimable: 'Reclaimable', size_limit: 'Size limit', daily_quota: 'Daily quota' };
+/** A fact as a line reads it; a state this CLI does not know is named rather than guessed at. */
+const fact = (f: { state: string; value?: number; reason?: string }): string => {
+  if (f.state === 'measured' && typeof f.value === 'number') return byteCount(f.value);
+  if (f.state === 'unavailable') return `unavailable: ${f.reason ?? 'no reason given'}`;
+  return `not understood by this CLI (state ${JSON.stringify(f.state)}); update it`;
+};
+/** How a storage measurement is labelled; a name with no label here is shown as sent. */
+const MEASUREMENT_LABEL: Record<string, string> = { blob_bytes: 'Blobs', size: 'Database', reclaimable: 'Reclaimable', size_limit: 'Size limit', daily_quota: 'Daily quota' };
+/** The column the health values start at: the longest known label, its colon and a space; a longer label keeps one space. */
+const HEALTH_COLUMN = 13;
+const healthLine = (label: string, value: string): string => `${`${label}:`.padEnd(HEALTH_COLUMN - 1)} ${value}`;
 
 async function runStats(reader: DeploymentHandle, out: Out, err: Out): Promise<boolean> {
   const activity = await ask(reader, 'stats', err, 'myco_cortex', { op: 'projects_activity' }) as { projects: ProjectActivity[] } | null;
   if (activity === null) return false;
   const runs = await ask(reader, 'stats', err, 'myco_agent', { op: 'runs', limit: STATS_RUN_WINDOW }) as { data: { runs: RunRow[] } } | null;
   if (runs === null) return false;
-  const health = await readHealth(reader, err);
-  if (health === null) return false;
+  const read = await readHealth(reader);
+  if (!read.ok && read.failed) err(`myco stats: health unavailable: ${read.reason}`);
   const project = activity.projects.find((p) => p.id === reader.projectId) ?? null;
 
   out('=== Myco Deployment ===');
   out(`Deployment: ${reader.serverUrl}`);
-  out(`Target:     ${health.target ?? 'unavailable: the Deployment names no target'}`);
+  if (read.ok) out(`Target:     ${read.health.target ?? 'unavailable: the Deployment names no target'}`);
   out(`Project:    ${reader.projectId}${project?.name ? ` (${project.name})` : ''}`);
   out(`Projects:   ${activity.projects.length} on this Deployment`);
 
   out('\n--- Health ---');
-  const { expected, found, matches } = health.schema;
-  out(`Schema:     expected ${expected}, found ${found ?? 'unavailable: the store answered no version'}${matches ? '' : ' (MISMATCH)'}`);
-  out(`Quota:      ${fact(health.quota.used)} used of ${fact(health.quota.limit)} (this machine's credential)`);
-  out(`Blobs:      ${fact(health.storage.blobs)}`);
-  const { measuredAt, measurements } = health.storage.database;
-  for (const m of measurements) out(`${`${MEASUREMENT_LABEL[m.name] ?? m.name}:`.padEnd(11)} ${fact(m)}`);
-  if (measuredAt !== null) out(`            measured by store maintenance at ${iso(measuredAt)}`);
+  if (!read.ok) {
+    out(healthLine('Health', `unavailable: ${read.reason}`));
+  } else {
+    const { schema, quota, storage } = read.health;
+    out(healthLine('Schema', `expected ${schema.expected}, found ${schema.found ?? 'unavailable: the store answered no version'}`));
+    out(healthLine('Quota', `${fact(quota.used)} used of ${fact(quota.limit)} (this machine's credential)`));
+    for (const m of storage) {
+      out(healthLine(MEASUREMENT_LABEL[m.name] ?? m.name, `${fact(m)}${typeof m.measuredAt === 'number' ? ` (measured ${iso(m.measuredAt)})` : ''}`));
+    }
+  }
 
   out('\n--- Data ---');
   out(`Sessions:      ${project?.session_count ?? 0}`);
@@ -228,14 +239,14 @@ async function runStats(reader: DeploymentHandle, out: Out, err: Out): Promise<b
   const rows = runs.data.runs;
   if (rows.length === 0) {
     out('No runs yet');
-    return true;
+  } else {
+    const last = rows[0];
+    out(`Last run:   ${iso(last.started_at ?? last.queued_at)} ${last.task ?? 'unknown task'} (${last.status})`);
+    const byStatus = new Map<string, number>();
+    for (const row of rows) byStatus.set(row.status, (byStatus.get(row.status) ?? 0) + 1);
+    out(`By status:  ${[...byStatus].map(([status, n]) => `${status} ${n}`).join(', ')}`);
   }
-  const last = rows[0];
-  out(`Last run:   ${iso(last.started_at ?? last.queued_at)} ${last.task ?? 'unknown task'} (${last.status})`);
-  const byStatus = new Map<string, number>();
-  for (const row of rows) byStatus.set(row.status, (byStatus.get(row.status) ?? 0) + 1);
-  out(`By status:  ${[...byStatus].map(([status, n]) => `${status} ${n}`).join(', ')}`);
-  return true;
+  return read.ok || !read.failed;
 }
 
 const USAGE: Record<MemberReadVerb, string> = {

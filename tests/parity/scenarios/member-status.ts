@@ -6,7 +6,7 @@ import { SIZE_LIMIT_UNAVAILABLE } from '@myco-server-worker/platform/cloudflare/
 import { RUN_SCOPE } from '@myco-server-worker/pipeline.js';
 import { lit, waitFor, type ParityScenario } from '../harness.ts';
 
-interface Measurement { name: string; state: 'measured' | 'unavailable'; value?: number; reason?: string }
+interface Measurement { name: string; state: 'measured' | 'unavailable'; value?: number; unit?: string; reason?: string }
 interface Outcome { finishedAt: number | null; measurements: Measurement[] }
 
 /**
@@ -45,20 +45,21 @@ export const memberStatus: ParityScenario = {
     const health = (await res.json()) as {
       persisted: boolean; target: string | null; schema: unknown;
       quota: { used: unknown; limit: unknown };
-      storage: { blobs: unknown; database: { measuredAt: number | null; measurements: Measurement[] } };
+      storage: Array<Measurement & { measuredAt: number | null }>;
     };
     expect(Object.keys(health).sort()).toEqual(['persisted', 'quota', 'schema', 'storage', 'target']);
     expect(health.persisted).toBe(true);
     expect(health.target).toBe(target.name === 'cloudflare' ? 'cloudflare' : 'bun');
     expect(health.schema).toEqual({ expected: SERVER_SCHEMA_VERSION, found: SERVER_SCHEMA_VERSION, matches: true });
     expect(health.quota).toEqual({ used: { state: 'measured', value: await held(), unit: 'bytes' }, limit: { state: 'measured', value: MEMBER_TOKEN_BYTE_QUOTA, unit: 'bytes' } });
-    expect(health.storage.blobs).toEqual({ state: 'measured', value: await blobs(), unit: 'bytes' });
-    expect(health.storage.database).toEqual({ measuredAt: recorded.finishedAt, measurements: recorded.measurements });
-    const size = health.storage.database.measurements.find((m) => m.name === 'size');
-    expect(size?.state).toBe('measured');
-    expect(size?.value).toBeGreaterThan(0);
+    const named = (name: string) => health.storage.find((m) => m.name === name);
+    expect(health.storage.slice(0, 2).map((m) => m.name)).toEqual(['blob_bytes', 'size']);
+    expect(named('blob_bytes')).toEqual({ name: 'blob_bytes', state: 'measured', value: await blobs(), unit: 'bytes', measuredAt: recorded.finishedAt });
+    for (const m of recorded.measurements) expect(named(m.name)).toEqual({ ...m, measuredAt: recorded.finishedAt });
+    expect(named('size')?.state).toBe('measured');
+    expect(named('size')?.value).toBeGreaterThan(0);
     if (target.name === 'cloudflare') {
-      expect(health.storage.database.measurements.find((m) => m.name === 'size_limit')).toEqual({ name: 'size_limit', state: 'unavailable', reason: SIZE_LIMIT_UNAVAILABLE });
+      expect(named('size_limit')).toEqual({ name: 'size_limit', state: 'unavailable', reason: SIZE_LIMIT_UNAVAILABLE, measuredAt: recorded.finishedAt });
     }
     expect(await target.sql(`SELECT COUNT(*) AS n FROM projects WHERE project_id = ${lit(unseen)}`)).toEqual([{ n: 0 }]);
 

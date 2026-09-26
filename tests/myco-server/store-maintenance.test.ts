@@ -17,8 +17,8 @@ import worker from '@myco-server-worker/index.js';
 import { sqliteStoreMaintenance, checkIntegrityOffThread } from '@myco-server-worker/platform/bun/store-maintenance.js';
 import { classifyD1Error } from '@myco-server-worker/platform/cloudflare/env.js';
 import {
-  boundFindings, cadenceOf, CLAIM_STATEMENTS, latestOutcome, maintenanceDue, MAX_FINDINGS, runMaintenance,
-  type Exclusivity, type MaintenanceCheck, type PortResult, type StoreMaintenancePort,
+  boundFindings, cadenceOf, CLAIM_STATEMENTS, latestMeasurements, latestOutcome, maintenanceDue, MAX_FINDINGS, RECORD_STATEMENTS, runMaintenance,
+  type Exclusivity, type MaintenanceCheck, type PortResult, type StoreMaintenancePort, type StoreMeasurement,
 } from '@myco-server-worker/core/store-maintenance.js';
 import type { ServerEnv } from '@myco-server-worker/core/adapters.js';
 import { engineAssertions, runTick } from '@myco-server-worker/core/tick.js';
@@ -150,12 +150,13 @@ it('an unset or invalid cadence is stated as such and schedules nothing', async 
 });
 
 it('a scheduled run starts once per interval', async () => {
-  const { env, setLeaf } = coreEnv(releasedPort());
+  const { env, setLeaf, settle } = coreEnv(releasedPort());
   setLeaf('maintenance.auto_optimize', true);
   setLeaf('maintenance.auto_optimize_interval_hours', 24);
   const t0 = 1_000 * HOUR;
   expect(await maintenanceDue(env, 'optimize', t0)).toBe(true);
   expect(await runMaintenance(env, 'optimize', 'schedule', t0)).toMatchObject({ outcome: 'started', record: { state: 'running', trigger: 'schedule' } });
+  await settle();
   expect(await maintenanceDue(env, 'optimize', t0 + HOUR)).toBe(false);
   expect(await runMaintenance(env, 'optimize', 'schedule', t0 + HOUR)).toMatchObject({ outcome: 'refused', refusal: 'not_due' });
   expect(await maintenanceDue(env, 'optimize', t0 + 24 * HOUR)).toBe(true);
@@ -213,7 +214,7 @@ it('on a platform-limited store, a run inside its bound refuses another, and pas
   const t0 = 1_000 * HOUR;
   const stale = runMaintenance(env, 'optimize', 'owner', t0, { clock: () => t0 });
   await Bun.sleep(5);
-  const bound = (1 + CLAIM_STATEMENTS) * 30_000;
+  const bound = (1 + RECORD_STATEMENTS.optimize + CLAIM_STATEMENTS) * 30_000;
   expect(await runMaintenance(env, 'optimize', 'owner', t0 + bound - 1, { clock: () => t0 + bound - 1 })).toMatchObject({ outcome: 'refused', refusal: 'already_running' });
   const fresh = await runMaintenance({ ...env, storeMaintenance: releasedPort(D1_LIKE) }, 'optimize', 'owner', t0 + bound, { clock: () => t0 + bound });
   expect(fresh).toMatchObject({ outcome: 'ran', recorded: true, record: { state: 'healthy' } });
@@ -221,6 +222,39 @@ it('on a platform-limited store, a run inside its bound refuses another, and pas
   expect(await stale).toMatchObject({ outcome: 'ran', recorded: false });
   const latest = await latestOutcome(env, 'optimize');
   expect(latest?.runId).toBe(fresh.outcome === 'ran' ? fresh.record.runId : '');
+});
+
+it('optimize records the bytes recorded blobs hold beside the port\'s measurements, and integrity adds none', async () => {
+  const both: StoreMaintenancePort = {
+    support: { optimize: { supported: true, label: 'test' }, integrity: { supported: true, label: 'test' } },
+    exclusivity: D1_LIKE,
+    run: async () => ({ findings: [], measurements: [{ name: 'size', state: 'measured', value: 4096, unit: 'bytes' }] }),
+  };
+  const fixture = sqliteEnv();
+  const env = { ...fixture.serverEnv, storeMaintenance: both } as ServerEnv;
+  fixture.sqlite.query(`INSERT INTO blobs (project_id, key, size, media_type, token_id, received_at, generation) VALUES ('proj_1', 'a', 300, 'text/plain', 't', 0, '00000000-0000-4000-8000-000000000001'), ('proj_2', 'b', 45, 'text/plain', 't', 0, '00000000-0000-4000-8000-000000000002')`).run();
+  expect(await runMaintenance(env, 'optimize', 'owner', HOUR)).toMatchObject({ outcome: 'ran', record: { measurements: [
+    { name: 'size', state: 'measured', value: 4096, unit: 'bytes' }, { name: 'blob_bytes', state: 'measured', value: 345, unit: 'bytes' },
+  ] } });
+  expect(await runMaintenance(env, 'integrity', 'owner', HOUR)).toMatchObject({ outcome: 'ran', record: { measurements: [{ name: 'size', state: 'measured', value: 4096, unit: 'bytes' }] } });
+});
+
+it('serves each measurement from the check that finished last, whichever check that is', async () => {
+  const { env, setRecord } = coreEnv(releasedPort());
+  const size = (value: number): StoreMeasurement => ({ name: 'size', state: 'measured', value, unit: 'bytes' });
+  const blobs: StoreMeasurement = { name: 'blob_bytes', state: 'measured', value: 7, unit: 'bytes' };
+  const finished = (check: MaintenanceCheck, finishedAt: number, measurements: unknown[]) => setRecord(check, {
+    runId: `${check}-${finishedAt}`, check, trigger: 'owner', state: 'healthy', startedAt: finishedAt - 1, claimExpiresAt: null, holder: null,
+    finishedAt, errorClass: null, findings: [], findingsOmitted: 0, measurements, powerState: null,
+  });
+  finished('optimize', 100, [size(1_000), blobs]);
+  finished('integrity', 200, [size(2_000)]);
+  expect(await latestMeasurements(env)).toEqual([{ ...size(2_000), measuredAt: 200 }, { ...blobs, measuredAt: 100 }]);
+  finished('optimize', 300, [size(3_000), blobs]);
+  expect(await latestMeasurements(env)).toEqual([{ ...size(3_000), measuredAt: 300 }, { ...blobs, measuredAt: 300 }]);
+  setRecord('integrity', { runId: 'running', check: 'integrity', trigger: 'owner', state: 'running', startedAt: 400, claimExpiresAt: null, holder: null,
+    finishedAt: null, errorClass: null, findings: [], findingsOmitted: 0, measurements: [], powerState: null });
+  expect(await latestMeasurements(env)).toEqual([{ ...size(3_000), measuredAt: 300 }, { ...blobs, measuredAt: 300 }]);
 });
 
 it('an unsupported check is refused with its reason and records nothing', async () => {

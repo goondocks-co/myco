@@ -1,8 +1,8 @@
 /**
  * `POST /members/status`: the Deployment's health a member credential reads —
- * the target, the schema check, this credential's byte quota, the bytes
- * recorded blobs hold and the database measurements store maintenance last
- * recorded — over an empty body, resolving no Project, and to no credential but
+ * the target, the schema check, this credential's byte quota, and the storage
+ * measurements store maintenance last recorded, blob bytes among them — over
+ * an empty body, resolving no Project, and to no credential but
  * a member's.
  */
 import { describe, expect, it } from 'bun:test';
@@ -22,7 +22,8 @@ import { OWNER_ENV, asOwnerPost } from './helpers/owner.js';
 const status = (token: string, body = '{}', extra: Record<string, string> = {}) =>
   new Request('https://s/members/status', { method: 'POST', headers: { ...memberHeaders(token, extra), 'content-type': 'application/json' }, body });
 
-const measured = (value: number) => ({ state: 'measured', value, unit: 'bytes' });
+const measured = (value: number) => ({ state: 'measured' as const, value, unit: 'bytes' as const });
+const NOT_MEASURED = 'not measured yet; store maintenance measures it when a check runs';
 
 describe('POST /members/status', () => {
   it('answers the target, the schema check, this credential\'s quota and the Deployment\'s storage, and nothing else', async () => {
@@ -45,30 +46,40 @@ describe('POST /members/status', () => {
       target: e.serverEnv.platform.name,
       schema: { expected: SERVER_SCHEMA_VERSION, found: SERVER_SCHEMA_VERSION, matches: true },
       quota: { used: measured(charged + 1000), limit: measured(MEMBER_TOKEN_BYTE_QUOTA) },
-      storage: {
-        blobs: measured(blobTotal),
-        database: { measuredAt: null, measurements: [{ name: 'size', state: 'unavailable', reason: 'no store maintenance check has finished yet; the database is measured when one runs' }] },
-      },
+      storage: [
+        { name: 'blob_bytes', state: 'unavailable', reason: NOT_MEASURED, measuredAt: null },
+        { name: 'size', state: 'unavailable', reason: NOT_MEASURED, measuredAt: null },
+      ],
     });
 
     const ran = await runMaintenance(e.serverEnv, 'optimize', 'owner', Date.now());
     expect(ran.outcome).toBe('ran');
     const recorded = (await latestOutcome(e.serverEnv, 'optimize'))!;
-    const after = await (await worker.fetch(status(t.token), e.env)).json() as { storage: { database: unknown } };
-    expect(after.storage.database).toEqual({ measuredAt: recorded.finishedAt, measurements: recorded.measurements });
-    expect(recorded.measurements.map((m) => m.name)).toContain('size');
+    expect(recorded.measurements.find((m) => m.name === 'blob_bytes')).toEqual({ name: 'blob_bytes', ...measured(blobTotal) });
+    const later = new TextEncoder().encode('bytes stored after the check measured');
+    expect((await worker.fetch(blobPost(t.token, await sha256HexOf(later), later), e.env)).status).toBe(200);
+
+    const after = await jsonBody<{ storage: Array<{ name: string }> }>(await worker.fetch(status(t.token), e.env));
+    const dated = recorded.measurements.map((m) => ({ ...m, measuredAt: recorded.finishedAt }));
+    expect(after.storage).toEqual([
+      dated.find((m) => m.name === 'blob_bytes')!, dated.find((m) => m.name === 'size')!,
+      ...dated.filter((m) => m.name !== 'blob_bytes' && m.name !== 'size'),
+    ]);
+    expect(after.storage.map((m) => m.name)).toEqual(['blob_bytes', 'size', 'size_limit', 'daily_quota']);
   });
 
-  it('names the database size unavailable on a target with no store maintenance', async () => {
+  it('names blob bytes and the database size unavailable on a target with no store maintenance', async () => {
     const e = sqliteEnv();
     const t = await issueMemberToken(e.db, { memberId: 'mem_machine_1', machineId: 'machine_1' }, Date.now());
     const answer = await handleMemberStatus({ ...e.serverEnv, storeMaintenance: undefined }, {
       memberId: 'mem_machine_1', machineId: 'machine_1', tokenId: t.tokenId, expiresAt: t.expiresAt,
       lineageRoot: t.tokenId, lineageStartedAt: Date.now(), runtime: NO_RUNTIME_CLAIMS, body: '{}', now: Date.now(),
     });
-    expect(((await answer.json()) as { storage: { database: unknown } }).storage.database).toEqual({
-      measuredAt: null, measurements: [{ name: 'size', state: 'unavailable', reason: 'this target has no store maintenance to measure the database' }],
-    });
+    const reason = 'this target has no store maintenance to measure it';
+    expect((await jsonBody<{ storage: unknown }>(answer)).storage).toEqual([
+      { name: 'blob_bytes', state: 'unavailable', reason, measuredAt: null },
+      { name: 'size', state: 'unavailable', reason, measuredAt: null },
+    ]);
   });
 
   it('refuses a body that is not the empty object, a run\'s credential and a grant, and creates no Project whatever the request names', async () => {
