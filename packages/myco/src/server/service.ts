@@ -330,25 +330,43 @@ export const platformDetachedSpawner: DetachedSpawner = (command, args, logFile)
   }
 };
 
+/** Seconds the reload helper waits for launchd to let go of the unit it unloaded. */
+export const RELOAD_TEARDOWN_SECONDS = 20;
+
 /** Seconds the reload helper keeps loading a unit it unloaded before it gives up. */
 export const RELOAD_GIVE_UP_SECONDS = 30;
 
 /**
- * The reload helper: unload the unit, then load it until launchd lists it,
+ * The reload helper. It unloads the unit and waits, for
+ * {@link RELOAD_TEARDOWN_SECONDS}, until launchd no longer lists it: the legacy
+ * `unload` can return while the job is still being torn down. It then loads the
+ * unit until launchd lists it with a process other than the one it replaces,
  * backing off to 8 s between tries for {@link RELOAD_GIVE_UP_SECONDS}. Loading
  * is judged by `launchctl list <label>`, never by `load`'s exit status, which
- * the legacy verb does not set reliably. The label and the unit file arrive as
+ * the legacy verb does not set reliably. A helper stopped after the unload says
+ * so. The label, the unit file and the replaced process's PID arrive as
  * positional parameters, so no path is ever parsed as shell.
  */
 const RELOAD_SCRIPT = [
-  'label="$1"; unit="$2"',
+  'label="$1"; unit="$2"; replaced="$3"',
   'say() { echo "$(date +%Y-%m-%dT%H:%M:%S) myco reload of $label: $*"; }',
+  'pid_listed() { launchctl list "$label" 2>/dev/null | sed -n \'s/.*"PID" = \\([0-9]*\\);.*/\\1/p\'; }',
   'sleep 1',
+  'trap \'say "stopped after unload; run myco worker install"; exit 1\' TERM HUP INT',
+  'say "unloading"',
   'launchctl unload "$unit"',
+  'held=0',
+  'while launchctl list "$label" >/dev/null 2>&1; do',
+  `  if [ "$held" -ge ${RELOAD_TEARDOWN_SECONDS} ]; then say "still listed $held s after unload; loading anyway"; break; fi`,
+  '  sleep 1; held=$((held + 1))',
+  'done',
   'waited=0; pause=1',
   'while :; do',
   '  launchctl load -w "$unit"',
-  '  if launchctl list "$label" >/dev/null 2>&1; then say "loaded again"; exit 0; fi',
+  '  if launchctl list "$label" >/dev/null 2>&1; then',
+  '    now=$(pid_listed)',
+  '    if [ -z "$replaced" ] || [ "$now" != "$replaced" ]; then say "loaded again${now:+ as process $now}"; exit 0; fi',
+  '  fi',
   `  if [ "$waited" -ge ${RELOAD_GIVE_UP_SECONDS} ]; then break; fi`,
   '  say "not loaded yet; trying again in $pause s"',
   '  sleep "$pause"; waited=$((waited + pause)); pause=$((pause * 2)); if [ "$pause" -gt 8 ]; then pause=8; fi',
@@ -360,8 +378,9 @@ const RELOAD_SCRIPT = [
 /**
  * Load a macOS unit again from a process of its own, so the unit's process can
  * ask for it: the unload stops that process, and the helper, in a session of its
- * own, goes on to load the unit, and retries until launchd holds it. What the
- * helper does is appended to the unit's error log.
+ * own, goes on to load the unit, and retries until launchd holds it with a new
+ * process. `replacing` is the PID of the process being replaced. What the helper
+ * does is appended to the unit's error log.
  *
  * This is how a unit whose program was replaced starts on the new program. A
  * LaunchAgent that launchd loaded at login carries a code requirement Background
@@ -371,12 +390,12 @@ const RELOAD_SCRIPT = [
  * delay later. A unit loaded here carries no such requirement. Only macOS: a
  * systemd unit restarts its replaced program, and stopping it kills its cgroup.
  */
-export function reloadServiceDetached(spec: ServiceSpec, options: ServiceOptions & { spawnDetached?: DetachedSpawner } = {}): boolean {
+export function reloadServiceDetached(spec: ServiceSpec, options: ServiceOptions & { spawnDetached?: DetachedSpawner; replacing?: number } = {}): boolean {
   const platform = options.platform ?? process.platform;
   if (platform !== 'darwin') return false;
   const paths = servicePaths(spec, platform);
   if (!existsSync(paths.unitFile)) return false;
-  return (options.spawnDetached ?? platformDetachedSpawner)('/bin/sh', ['-c', RELOAD_SCRIPT, 'myco-reload', spec.unit.label, paths.unitFile], paths.errLog);
+  return (options.spawnDetached ?? platformDetachedSpawner)('/bin/sh', ['-c', RELOAD_SCRIPT, 'myco-reload', spec.unit.label, paths.unitFile, options.replacing === undefined ? '' : String(options.replacing)], paths.errLog);
 }
 
 /** The unit's text with its `PATH` value blanked, so two units differing only there compare equal. */
@@ -478,6 +497,9 @@ export function uninstallService(spec: ServiceSpec, options: ServiceOptions = {}
   return { unitFile: paths.unitFile, removed };
 }
 
+/** Why a written unit is not loaded, when the platform answered and does not hold it. */
+export const UNIT_NOT_HELD = 'the unit is installed and the platform is not holding it';
+
 export interface ServiceStatus {
   /** Whether the unit file is written. */
   installed: boolean;
@@ -514,7 +536,7 @@ export function statusOfService(spec: ServiceSpec, options: ServiceOptions = {})
       && ask(['powershell.exe', '-NoProfile', '-NonInteractive', '-Command', `(Get-ScheduledTask -TaskName '${spec.unit.unitName}').State`]).stdout?.trim() === 'Running';
   }
   if (loaded.error !== undefined) return { installed: true, loaded: false, running: false, detail: `the platform's service manager could not be run` };
-  if (loaded.status !== 0) return { installed: true, loaded: false, running: false, detail: 'the unit is installed and the platform is not holding it' };
+  if (loaded.status !== 0) return { installed: true, loaded: false, running: false, detail: UNIT_NOT_HELD };
   return running
     ? { installed: true, loaded: true, running: true }
     : { installed: true, loaded: true, running: false, detail: 'the platform holds the unit and its process is not running' };

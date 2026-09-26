@@ -299,7 +299,7 @@ describe('when a worker service belongs on this machine', () => {
     expect(fs.existsSync(unitFile)).toBe(true);
     expect(workerServiceWords(describeWorkerService(URL_, d))).toEqual({
       status: 'warn',
-      line: 'installed, and the platform is not holding it (the unit is installed and the platform is not holding it) — run `myco worker install`',
+      line: 'installed, and the platform is not holding it — run `myco worker install`',
     });
     const [check] = await checkWorkerServices(scratch, d);
     expect(check).toMatchObject({ status: 'warn', detail: expect.stringContaining('myco worker install') });

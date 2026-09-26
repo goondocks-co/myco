@@ -222,7 +222,7 @@ export async function endReplacedWorker(serverUrl: string, mycoHome: string, sto
   const unit = workerServiceUnit(serverUrl, mycoHome);
   if (platform !== 'darwin' || (deps.env ?? process.env).XPC_SERVICE_NAME !== unit.label) return false;
   const spec = workerServiceSpec({ serverUrl, mycoHome, binaryPath: process.execPath, home: deps.home ?? os.homedir(), platform }, []);
-  if (!(deps.reload ?? ((s: ServiceSpec) => reloadServiceDetached(s, { platform })))(spec)) return false;
+  if (!(deps.reload ?? ((s: ServiceSpec) => reloadServiceDetached(s, { platform, replacing: process.pid })))(spec)) return false;
   console.log('worker: asked the login service to start the new program');
   await sleep(deps.waitMs ?? SERVICE_RELOAD_WAIT_MS, stopped);
   return stopped.aborted;
