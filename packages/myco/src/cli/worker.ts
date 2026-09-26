@@ -204,7 +204,8 @@ export interface ReplacedWorkerDeps {
   env?: NodeJS.ProcessEnv;
   platform?: NodeJS.Platform;
   home?: string;
-  reload?: (spec: ServiceSpec) => boolean;
+  /** Ask for the unit to be loaded again, replacing process `replacing`. */
+  reload?: (spec: ServiceSpec, replacing: number) => boolean;
   waitMs?: number;
 }
 
@@ -222,7 +223,8 @@ export async function endReplacedWorker(serverUrl: string, mycoHome: string, sto
   const unit = workerServiceUnit(serverUrl, mycoHome);
   if (platform !== 'darwin' || (deps.env ?? process.env).XPC_SERVICE_NAME !== unit.label) return false;
   const spec = workerServiceSpec({ serverUrl, mycoHome, binaryPath: process.execPath, home: deps.home ?? os.homedir(), platform }, []);
-  if (!(deps.reload ?? ((s: ServiceSpec) => reloadServiceDetached(s, { platform, replacing: process.pid })))(spec)) return false;
+  const reload = deps.reload ?? ((s: ServiceSpec, replacing: number) => reloadServiceDetached(s, { platform, replacing }));
+  if (!reload(spec, process.pid)) return false;
   console.log('worker: asked the login service to start the new program');
   await sleep(deps.waitMs ?? SERVICE_RELOAD_WAIT_MS, stopped);
   return stopped.aborted;

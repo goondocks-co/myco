@@ -269,10 +269,11 @@ describe('a replaced worker running as its macOS login service', () => {
     const reloaded: string[] = [];
     const ended = endReplacedWorker(URL_, path.join(scratch, 'member'), stopping.signal, {
       platform: 'darwin', env: { XPC_SERVICE_NAME: unitLabel() }, home: scratch, waitMs: 60_000,
-      reload: (spec) => { reloaded.push(spec.unit.label); setTimeout(() => { stopping.abort(); }, 5); return true; },
+      reload: (spec, replacing) => { reloaded.push(`${spec.unit.label} ${replacing}`); setTimeout(() => { stopping.abort(); }, 5); return true; },
     });
     expect(await ended).toBe(true);
-    expect(reloaded).toEqual([unitLabel()]);
+    // The helper is told which process it replaces, so it never takes this one for the reloaded unit.
+    expect(reloaded).toEqual([`${unitLabel()} ${process.pid}`]);
   });
 
   it('ends non-zero for its service to restart it when no reload stops it, it cannot ask for one, or it is not that service', async () => {
