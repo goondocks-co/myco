@@ -2,9 +2,41 @@
 
 PRAGMA defer_foreign_keys = ON;
 
-DROP TABLE IF EXISTS _v48_guard_credential_rows;
+CREATE TABLE IF NOT EXISTS member_credentials (
+     id                 TEXT PRIMARY KEY,
+     member_id          TEXT NOT NULL REFERENCES members(id),
+     token_hash         TEXT NOT NULL,
+     machine_id         TEXT,
+     runtime_label      TEXT,
+     runtime_kind       TEXT,
+     issued_at          INTEGER NOT NULL,
+     expires_at         INTEGER NOT NULL,
+     revoked_at         INTEGER,
+     lineage_root       TEXT NOT NULL,
+     lineage_started_at INTEGER NOT NULL,
+     predecessor_id     TEXT,
+     first_used_at      INTEGER,
+     bytes_written      INTEGER NOT NULL DEFAULT 0,
+     revoked_by         TEXT);
 
-CREATE TABLE _v48_guard_credential_rows AS SELECT * FROM member_credentials;
+CREATE TABLE IF NOT EXISTS _v48_credential_rows (
+     id                 TEXT PRIMARY KEY,
+     member_id          TEXT NOT NULL REFERENCES members(id),
+     token_hash         TEXT NOT NULL,
+     machine_id         TEXT,
+     runtime_label      TEXT,
+     runtime_kind       TEXT,
+     issued_at          INTEGER NOT NULL,
+     expires_at         INTEGER NOT NULL,
+     revoked_at         INTEGER,
+     lineage_root       TEXT NOT NULL,
+     lineage_started_at INTEGER NOT NULL,
+     predecessor_id     TEXT,
+     first_used_at      INTEGER,
+     bytes_written      INTEGER NOT NULL DEFAULT 0,
+     revoked_by         TEXT);
+
+INSERT OR REPLACE INTO _v48_credential_rows (id, member_id, token_hash, machine_id, runtime_label, runtime_kind, issued_at, expires_at, revoked_at, lineage_root, lineage_started_at, predecessor_id, first_used_at, bytes_written, revoked_by) SELECT id, member_id, token_hash, machine_id, runtime_label, runtime_kind, issued_at, expires_at, revoked_at, lineage_root, lineage_started_at, predecessor_id, first_used_at, bytes_written, revoked_by FROM member_credentials;
 
 DROP TABLE member_credentials;
 
@@ -36,22 +68,17 @@ CREATE INDEX IF NOT EXISTS idx_member_credentials_started ON member_credentials 
 
 CREATE INDEX IF NOT EXISTS idx_member_credentials_member ON member_credentials (member_id, revoked_at);
 
-INSERT INTO member_credentials
-     (id, member_id, token_hash, machine_id, runtime_label, runtime_kind, issued_at, expires_at, revoked_at,
-      lineage_root, lineage_started_at, predecessor_id, first_used_at, bytes_written, revoked_by)
-     SELECT id, member_id, token_hash, machine_id, runtime_label, runtime_kind, issued_at, expires_at, revoked_at,
-            lineage_root, lineage_started_at, predecessor_id, first_used_at, bytes_written, revoked_by
-       FROM _v48_guard_credential_rows;
+INSERT INTO member_credentials (id, member_id, token_hash, machine_id, runtime_label, runtime_kind, issued_at, expires_at, revoked_at, lineage_root, lineage_started_at, predecessor_id, first_used_at, bytes_written, revoked_by) SELECT id, member_id, token_hash, machine_id, runtime_label, runtime_kind, issued_at, expires_at, revoked_at, lineage_root, lineage_started_at, predecessor_id, first_used_at, bytes_written, revoked_by FROM _v48_credential_rows;
 
 DROP TABLE IF EXISTS _v48_guard_rows_kept;
 
 CREATE TABLE _v48_guard_rows_kept (ok INTEGER NOT NULL CHECK (ok = 1));
 
 INSERT INTO _v48_guard_rows_kept (ok)
-     SELECT CASE WHEN (SELECT COUNT(*) FROM member_credentials) = (SELECT COUNT(*) FROM _v48_guard_credential_rows) THEN 1 ELSE 0 END;
+     SELECT CASE WHEN (SELECT COUNT(*) FROM member_credentials) = (SELECT COUNT(*) FROM _v48_credential_rows) THEN 1 ELSE 0 END;
 
 DROP TABLE _v48_guard_rows_kept;
 
-DROP TABLE _v48_guard_credential_rows;
+DROP TABLE _v48_credential_rows;
 
 INSERT OR REPLACE INTO schema_meta (key, value) VALUES ('version', '48');

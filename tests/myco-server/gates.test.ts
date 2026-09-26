@@ -888,10 +888,11 @@ describe('gates', () => {
     const schemaInserts = [...schema.matchAll(/INSERT (OR IGNORE )?INTO member_credentials[\s\S]*?`/g)].map((m) => m[0]);
     expect(schemaInserts).toHaveLength(2);
     const [backfill, rebuild] = schemaInserts as [string, string];
-    // The rebuild copies back from its holding table, which holds exactly what the table held before the step.
-    expect(rebuild).toMatch(/FROM _v48_guard_credential_rows`$/);
-    expect(schema.match(/CREATE TABLE _v48_guard_credential_rows\b[^`]*`/g)).toEqual(['CREATE TABLE _v48_guard_credential_rows AS SELECT * FROM member_credentials`']);
-    expect(schema.match(/INTO _v48_guard_credential_rows\b/g)).toBeNull();
+    // The rebuild copies back from its holding table, and the holding table is written from member_credentials alone.
+    expect(rebuild).toMatch(/FROM _v48_credential_rows`$/);
+    const holdingWrites = [...schema.matchAll(/INTO _v48_credential_rows\b[^`]*`/g)].map((m) => m[0]);
+    expect(holdingWrites).toHaveLength(1);
+    expect(holdingWrites[0]).toMatch(/SELECT \$\{CREDENTIAL_COLUMNS\} FROM member_credentials`$/);
     expect(backfill.match(/INTO member_credentials\b/g)).toHaveLength(1);
     expect(backfill).toMatch(/COALESCE\(t\.revoked_at, t\.expires_at\)/);
     expect(backfill).not.toMatch(/\bNULL\b\s*(,|$)[^`]*--\s*revoked/);

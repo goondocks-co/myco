@@ -100,6 +100,28 @@ function seedCredentials(sqlite: Database): void {
   sqlite.exec(`INSERT INTO worker_contacts (credential_id, machine_id, last_seen_at, updated_at) VALUES ('mt_next', 'machine_1', 1, 1)`);
 }
 
+/**
+ * Everything SQLite records about `member_credentials` but its CHECK: every column (`table_xinfo`), every foreign key,
+ * every index with its columns (`index_xinfo`) and its DDL, and the table's own DDL with the CHECK clause taken out.
+ * Whitespace is folded so a layout change reads as no change.
+ */
+function credentialShape(sqlite: Database, dropCheck: boolean) {
+  const fold = (sql: string) => sql.replace(/\s+/g, ' ').replace(/\( /g, '(').replace(/ \)/g, ')').trim();
+  const table = fold((sqlite.query(`SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'member_credentials'`).get() as { sql: string }).sql);
+  const indexes = (sqlite.query(`SELECT name, "unique", origin, partial FROM pragma_index_list('member_credentials') ORDER BY name`).all() as { name: string }[])
+    .map((index) => ({
+      ...index,
+      columns: sqlite.query(`SELECT seqno, cid, name, "desc", coll, "key" FROM pragma_index_xinfo(?) ORDER BY seqno`).all(index.name),
+      sql: ((sqlite.query(`SELECT sql FROM sqlite_master WHERE type = 'index' AND name = ?`).get(index.name) as { sql: string | null }).sql ?? '').replace(/\s+/g, ' '),
+    }));
+  return {
+    table: dropCheck ? table.replace(/, CONSTRAINT member_tokens_quota CHECK \(bytes_written <= 1073741824\)\)$/, ')') : table,
+    columns: sqlite.query(`SELECT cid, name, type, "notnull", dflt_value, pk, hidden FROM pragma_table_xinfo('member_credentials') ORDER BY cid`).all(),
+    foreignKeys: sqlite.query(`SELECT id, seq, "table", "from", "to", on_update, on_delete, "match" FROM pragma_foreign_key_list('member_credentials') ORDER BY id, seq`).all(),
+    indexes,
+  };
+}
+
 const credentialRows = (sqlite: Database) => sqlite.query('SELECT * FROM member_credentials ORDER BY id').all();
 const referencingRows = (sqlite: Database) => ({
   runs: sqlite.query('SELECT id, dispatched_by, leased_by FROM agent_runs ORDER BY id').all(),
@@ -134,6 +156,58 @@ describe('migrateOnly across step 48 (#1416)', () => {
     sqlite.close();
   });
 
+  it('changes nothing about member_credentials but the CHECK: columns, foreign keys, indexes and their columns are as step 47 left them', () => {
+    const path = join(scratch(), 'myco.sqlite');
+    const v47 = migrateTo(path, 47);
+    seedCredentials(v47);
+    const before = credentialShape(v47, true);
+    expect(before.table).not.toMatch(/CHECK/);
+    expect(before.foreignKeys).toEqual([expect.objectContaining({ table: 'members', from: 'member_id', to: 'id' })]);
+    v47.close();
+
+    expect(migrateOnly(path)).toBe(1);
+    const after = new Database(path);
+    expect(credentialShape(after, false)).toEqual(before);
+    after.close();
+  });
+
+  it('recovers by re-running from any state a run torn outside a transaction leaves: every row comes back, the copy is never dropped first', () => {
+    const step48 = SCHEMA_STEPS.find((s) => s.version === 48)!.statements;
+    const lastIndex = step48.findIndex((sql) => sql.startsWith('INSERT INTO member_credentials'));
+    // Every prefix that stops before the rows are back: after the copy, after the drop, after the empty table and its indexes.
+    for (let torn = 3; torn <= lastIndex; torn += 1) {
+      const path = join(scratch(), 'myco.sqlite');
+      const v47 = migrateTo(path, 47);
+      seedCredentials(v47);
+      const rows = credentialRows(v47);
+      v47.exec('PRAGMA foreign_keys = OFF');
+      for (const sql of step48.slice(0, torn)) v47.exec(sql);
+      v47.close();
+
+      expect({ torn, applied: migrateOnly(path) }).toEqual({ torn, applied: 1 });
+      const healed = new Database(path);
+      expect({ torn, rows: credentialRows(healed) }).toEqual({ torn, rows });
+      expect({ torn, holding: healed.query(`SELECT name FROM sqlite_master WHERE name LIKE '_v48_%'`).all() }).toEqual({ torn, holding: [] });
+      healed.close();
+    }
+  });
+
+  it('re-applied by hand over a volume already at 48, changes nothing', () => {
+    const path = join(scratch(), 'myco.sqlite');
+    const v47 = migrateTo(path, 47);
+    seedCredentials(v47);
+    v47.close();
+    migrateOnly(path);
+    const sqlite = new Database(path);
+    sqlite.exec('PRAGMA foreign_keys = ON');
+    const rows = credentialRows(sqlite);
+    const shape = credentialShape(sqlite, false);
+    sqlite.transaction(() => { for (const sql of SCHEMA_STEPS.find((s) => s.version === 48)!.statements) sqlite.exec(sql); })();
+    expect(credentialRows(sqlite)).toEqual(rows);
+    expect(credentialShape(sqlite, false)).toEqual(shape);
+    sqlite.close();
+  });
+
   it('rolls a step that fails part-way back whole: the volume stays at 47 with every row, and applies cleanly once the fault is gone', () => {
     const path = join(scratch(), 'myco.sqlite');
     const v47 = migrateTo(path, 47);
@@ -148,7 +222,7 @@ describe('migrateOnly across step 48 (#1416)', () => {
     expect(after.query(`SELECT value FROM schema_meta WHERE key = 'version'`).get()).toEqual({ value: '47' });
     expect(credentialRows(after)).toEqual(rows);
     expect((after.query(`SELECT sql FROM sqlite_master WHERE name = 'member_credentials'`).get() as { sql: string }).sql).toMatch(/member_tokens_quota/);
-    expect(after.query(`SELECT name FROM sqlite_master WHERE name = '_v48_guard_credential_rows'`).all()).toEqual([]);
+    expect(after.query(`SELECT name FROM sqlite_master WHERE name = '_v48_credential_rows'`).all()).toEqual([]);
     after.exec(`DROP VIEW _v48_guard_rows_kept`);
     after.close();
 

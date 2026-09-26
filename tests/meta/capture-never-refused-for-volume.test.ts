@@ -51,10 +51,88 @@ const COMPARES = [
   /\bbytes_?[wW]ritten\b[^;\n`]*\bBETWEEN\b/i,
 ];
 
+/**
+ * Every server file that imports from `ingest/live-credential.ts`, and exactly what it imports. Two of those helpers
+ * answer the counter under another name — `storedBytes` reads it, `carriedBytes` is the SQL that reads it — so a file
+ * comparing either is comparing the counter without naming it. Pinning each importer to its names closes that door the
+ * way `COUNTER_READERS` closes the literal one: a new reader is a decision this list has to be edited for.
+ */
+const LIVE_CREDENTIAL_IMPORTS: Record<string, readonly string[]> = {
+  'api/status.ts': ['storedBytes'],            // reported to the member as information
+  'auth/tokens.ts': ['TOKEN_LIVE', 'carriedBytes'], // the successor insert's liveness, and the carry at rotation
+  'ingest/blobs.ts': ['credentialLive'],       // the upload's admission
+  'ingest/events.ts': ['ALWAYS', 'credentialLive'], // the event's admission
+};
+
+/** A whole import or re-export statement naming the live-credential module, however it is spelled. */
+const LIVE_CREDENTIAL_IMPORT = /\b(?:import|export)\s+(?:type\s+)?([^;]*?)\s+from\s+['"][./]*(?:ingest\/)?live-credential(?:\.js)?['"]/g;
+const DYNAMIC_LIVE_CREDENTIAL = /import\(\s*['"][^'"]*live-credential(?:\.js)?['"]\s*\)/;
+
+/** What each file imports from the live-credential module: its names, or `*` for a namespace import or a dynamic one. */
+function liveCredentialImports(files: ReadonlyMap<string, string>): Record<string, string[]> {
+  const found: Record<string, string[]> = {};
+  for (const [file, text] of files) {
+    if (file === 'ingest/live-credential.ts') continue;
+    const names: string[] = [];
+    for (const m of text.matchAll(LIVE_CREDENTIAL_IMPORT)) {
+      const clause = m[1]!;
+      const braces = /\{([^}]*)\}/.exec(clause);
+      if (braces === null || /\*/.test(clause) || clause.replace(/\{[^}]*\}/, '').replace(/[\s,]/g, '') !== '') names.push('*');
+      if (braces !== null) names.push(...braces[1]!.split(',').map((n) => n.replace(/^\s*type\s+/, '').split(/\s+as\s+/)[0]!.trim()).filter(Boolean));
+    }
+    if (DYNAMIC_LIVE_CREDENTIAL.test(text)) names.push('*');
+    if (names.length > 0) found[file] = [...new Set(names)].sort();
+  }
+  return found;
+}
+
+/** The server source, keyed by path relative to `src/`. */
+const tree = (): Map<string, string> => new Map(sources(SRC).map((f) => [rel(f), fs.readFileSync(f, 'utf8')]));
+
+/** Every way `files` could compare the stored-bytes count: naming it outside its readers, or reaching a helper that reads it from a file not pinned to it. */
+function volumeReaders(files: ReadonlyMap<string, string>): string[] {
+  const problems: string[] = [];
+  for (const [file, text] of files) {
+    if (/\bbytes_written\b|\bbytesWritten\b/.test(text) && !(file in COUNTER_READERS)) problems.push(`${file} names the counter`);
+  }
+  const imports = liveCredentialImports(files);
+  for (const [file, names] of Object.entries(imports)) {
+    const allowed = LIVE_CREDENTIAL_IMPORTS[file];
+    if (allowed === undefined) problems.push(`${file} imports ${names.join(', ')} from ingest/live-credential`);
+    else if (names.join(',') !== [...allowed].sort().join(',')) problems.push(`${file} imports ${names.join(', ')}, pinned to ${[...allowed].sort().join(', ')}`);
+  }
+  for (const file of Object.keys(LIVE_CREDENTIAL_IMPORTS)) if (!(file in imports)) problems.push(`${file} is pinned but imports nothing`);
+  return problems;
+}
+
 describe('capture is never refused for volume', () => {
   it('names the counter only where it is charged, carried, reported or declared', () => {
     const naming = sources(SRC).filter((f) => /\bbytes_written\b|\bbytesWritten\b/.test(fs.readFileSync(f, 'utf8'))).map(rel).sort();
     expect(naming).toEqual(Object.keys(COUNTER_READERS).sort());
+  });
+
+  it('reaches the helpers that read the counter only from the files pinned to them, by exactly the names pinned', () => {
+    expect(liveCredentialImports(tree())).toEqual(Object.fromEntries(Object.entries(LIVE_CREDENTIAL_IMPORTS).map(([f, n]) => [f, [...n].sort()])));
+    expect(volumeReaders(tree())).toEqual([]);
+  });
+
+  it('catches a helper-based comparison the literal name would miss: the pipeline refusing on storedBytes or carriedBytes', () => {
+    const files = tree();
+    const pipeline = files.get('pipeline.ts')!;
+    const mutations = [
+      `import { storedBytes } from './ingest/live-credential.js';\n${pipeline}\nconst full = async (db: never, id: string) => ((await storedBytes(db, id)) ?? 0) >= 2 ** 30;\n`,
+      `import { carriedBytes as held } from './ingest/live-credential.js';\n${pipeline}\nconst over = (id: string) => \`\${held(id, 0).sql} > 1\`;\n`,
+      `import * as live from './ingest/live-credential.js';\n${pipeline}\n`,
+      `${pipeline}\nconst later = () => import('./ingest/live-credential.js');\n`,
+      `export { storedBytes } from './ingest/live-credential.js';\n${pipeline}`,
+    ];
+    for (const mutated of mutations) {
+      const problems = volumeReaders(new Map([...files, ['pipeline.ts', mutated]]));
+      expect({ mutated: mutated.slice(0, 60), caught: problems.some((p) => p.startsWith('pipeline.ts')) }).toEqual({ mutated: mutated.slice(0, 60), caught: true });
+    }
+    // A reader pinned to one helper reaching for another is caught too.
+    const status = files.get('api/status.ts')!.replace("import { storedBytes } from '../ingest/live-credential.js';", "import { carriedBytes, storedBytes } from '../ingest/live-credential.js';");
+    expect(volumeReaders(new Map([...files, ['api/status.ts', status]]))).toEqual(['api/status.ts imports carriedBytes, storedBytes, pinned to storedBytes']);
   });
 
   it('compares the counter nowhere in the server source but the frozen DDL of steps 1 and 5', () => {

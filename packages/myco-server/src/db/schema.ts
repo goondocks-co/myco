@@ -1589,6 +1589,27 @@ const V47_STATEMENTS: readonly string[] = [
   `CREATE INDEX IF NOT EXISTS idx_sessions_untitled_ended ON sessions (ended_at) WHERE ended_at IS NOT NULL AND title IS NULL`,
 ];
 
+/** The columns of `member_credentials`, in declared order; step 48 copies them by name, never by position. */
+const CREDENTIAL_COLUMNS = 'id, member_id, token_hash, machine_id, runtime_label, runtime_kind, issued_at, expires_at, revoked_at, lineage_root, lineage_started_at, predecessor_id, first_used_at, bytes_written, revoked_by';
+
+/** The body of `member_credentials` from step 48 on: the step-5 table with the byte-ceiling CHECK gone. */
+const CREDENTIALS_V48_BODY = `(
+     id                 TEXT PRIMARY KEY,
+     member_id          TEXT NOT NULL REFERENCES members(id),
+     token_hash         TEXT NOT NULL,
+     machine_id         TEXT,
+     runtime_label      TEXT,
+     runtime_kind       TEXT,
+     issued_at          INTEGER NOT NULL,
+     expires_at         INTEGER NOT NULL,
+     revoked_at         INTEGER,
+     lineage_root       TEXT NOT NULL,
+     lineage_started_at INTEGER NOT NULL,
+     predecessor_id     TEXT,
+     first_used_at      INTEGER,
+     bytes_written      INTEGER NOT NULL DEFAULT 0,
+     revoked_by         TEXT)`;
+
 /**
  * Schema v48: capture is never refused for volume (#1416). `member_credentials`
  * loses the `member_tokens_quota` CHECK, the lifetime byte ceiling every capture
@@ -1605,48 +1626,35 @@ const V47_STATEMENTS: readonly string[] = [
  * transaction on both targets, with the foreign keys deferred to its commit.
  * A guard fails the step unless every row came back.
  *
- * Its cost is the credential table's own rows — a few hundred at most — plus
- * one probe of each referencing index per row; no other table is rewritten.
+ * Re-running the step is its recovery, from any state a run interrupted outside
+ * a transaction could leave: the holding table is kept when it exists and
+ * refreshed from whatever credential table stands, so its rows are never
+ * dropped before they are back in `member_credentials`, and a credential table
+ * a torn run dropped is created again empty before it is read.
+ *
+ * Its cost is the credential table's own rows plus one probe of each
+ * referencing index per row; no other table is rewritten.
  */
 const V48_STATEMENTS: readonly string[] = [
   `PRAGMA defer_foreign_keys = ON`,
-  `DROP TABLE IF EXISTS _v48_guard_credential_rows`,
-  `CREATE TABLE _v48_guard_credential_rows AS SELECT * FROM member_credentials`,
+  `CREATE TABLE IF NOT EXISTS member_credentials ${CREDENTIALS_V48_BODY}`,
+  `CREATE TABLE IF NOT EXISTS _v48_credential_rows ${CREDENTIALS_V48_BODY}`,
+  `INSERT OR REPLACE INTO _v48_credential_rows (${CREDENTIAL_COLUMNS}) SELECT ${CREDENTIAL_COLUMNS} FROM member_credentials`,
   `DROP TABLE member_credentials`,
-  `CREATE TABLE IF NOT EXISTS member_credentials (
-     id                 TEXT PRIMARY KEY,
-     member_id          TEXT NOT NULL REFERENCES members(id),
-     token_hash         TEXT NOT NULL,
-     machine_id         TEXT,
-     runtime_label      TEXT,
-     runtime_kind       TEXT,
-     issued_at          INTEGER NOT NULL,
-     expires_at         INTEGER NOT NULL,
-     revoked_at         INTEGER,
-     lineage_root       TEXT NOT NULL,
-     lineage_started_at INTEGER NOT NULL,
-     predecessor_id     TEXT,
-     first_used_at      INTEGER,
-     bytes_written      INTEGER NOT NULL DEFAULT 0,
-     revoked_by         TEXT)`,
+  `CREATE TABLE IF NOT EXISTS member_credentials ${CREDENTIALS_V48_BODY}`,
   `CREATE UNIQUE INDEX IF NOT EXISTS idx_member_credentials_hash ON member_credentials (token_hash)`,
   `CREATE UNIQUE INDEX IF NOT EXISTS idx_member_credentials_live_successor
      ON member_credentials (predecessor_id) WHERE revoked_at IS NULL`,
   `CREATE INDEX IF NOT EXISTS idx_member_credentials_lineage ON member_credentials (lineage_root)`,
   `CREATE INDEX IF NOT EXISTS idx_member_credentials_started ON member_credentials (lineage_started_at, id)`,
   `CREATE INDEX IF NOT EXISTS idx_member_credentials_member ON member_credentials (member_id, revoked_at)`,
-  `INSERT INTO member_credentials
-     (id, member_id, token_hash, machine_id, runtime_label, runtime_kind, issued_at, expires_at, revoked_at,
-      lineage_root, lineage_started_at, predecessor_id, first_used_at, bytes_written, revoked_by)
-     SELECT id, member_id, token_hash, machine_id, runtime_label, runtime_kind, issued_at, expires_at, revoked_at,
-            lineage_root, lineage_started_at, predecessor_id, first_used_at, bytes_written, revoked_by
-       FROM _v48_guard_credential_rows`,
+  `INSERT INTO member_credentials (${CREDENTIAL_COLUMNS}) SELECT ${CREDENTIAL_COLUMNS} FROM _v48_credential_rows`,
   `DROP TABLE IF EXISTS _v48_guard_rows_kept`,
   `CREATE TABLE _v48_guard_rows_kept (ok INTEGER NOT NULL CHECK (ok = 1))`,
   `INSERT INTO _v48_guard_rows_kept (ok)
-     SELECT CASE WHEN (SELECT COUNT(*) FROM member_credentials) = (SELECT COUNT(*) FROM _v48_guard_credential_rows) THEN 1 ELSE 0 END`,
+     SELECT CASE WHEN (SELECT COUNT(*) FROM member_credentials) = (SELECT COUNT(*) FROM _v48_credential_rows) THEN 1 ELSE 0 END`,
   `DROP TABLE _v48_guard_rows_kept`,
-  `DROP TABLE _v48_guard_credential_rows`,
+  `DROP TABLE _v48_credential_rows`,
 ];
 
 /** Ordered schema steps; each step's last statement stamps its version. A database at version n receives steps n+1 and later. Step 2 opens with two guard tables, ahead of every ADD COLUMN so a repaired database re-applies the step whole: one CHECK fails when an existing project id is out of grammar, the other when a session has no machine identity and the token that minted it has none to backfill from. The step aborts on the guard's insert and the applier records nothing. Identity binding reads `machine_id`, so a session that kept a NULL refuses every later write to itself; BREAK-GLASS.md carries the repair. */

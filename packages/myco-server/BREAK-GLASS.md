@@ -137,6 +137,25 @@ npm run migrations:apply
 
 **Do NOT drop the objects for step 5.** The rule above is for a file whose `ADD COLUMN` cannot be re-run. Step 5 has none: every statement is `IF NOT EXISTS`, `OR IGNORE` or `OR REPLACE`, and the step opens by dropping its own guard table, so re-application over an already-migrated database is a no-op. The tables it creates — `members`, `member_credentials`, `machine_claims`, `enrollment_authorities` — hold the LIVE credentials of a serving Deployment the moment it is past the backfill. Dropping them destroys every member's ability to capture and every record of who wrote what. For step 5 the recovery is `npm run migrations:apply`, and nothing else.
 
+**Do NOT drop `member_credentials` or `_v48_credential_rows` for step 48.** Step 48 (#1416) rebuilds `member_credentials` to drop its byte-ceiling CHECK: it copies every row into `_v48_credential_rows`, drops the table, creates it again and copies the rows back, and it is written to be re-run from any point. It keeps the holding table when one exists and refreshes it from whatever credential table stands, and it creates an absent credential table again before reading it, so the holding table's rows are never dropped before they are back. `member_credentials` holds every LIVE credential, and `_v48_credential_rows` may hold the only copy of them. Dropping either by hand, or deleting the step's ledger row and editing its file, can lose every member's credential. Recovery for a failed step 48 is re-running `npm run migrations:apply:remote`, which is safe after a failure part-way and a no-op once the ledger records `0048_v48.sql`, and nothing else.
+
+Before applying step 48 to the hosted Deployment, take a D1 Time Travel bookmark, so that there is a point to restore to whatever happens:
+
+```bash
+cd packages/myco-server
+npx wrangler d1 time-travel info myco-server -c wrangler.deploy.toml   # prints the current bookmark; record it
+npm run migrations:apply:remote
+# Only if the Deployment must go back to before the step:
+# npx wrangler d1 time-travel restore myco-server --bookmark=<BOOKMARK> -c wrangler.deploy.toml
+```
+
+After it applies, confirm the step landed whole: `schema_meta.version` is `48`, the credential count matches the count read before, and no `_v48_%` table remains:
+
+```bash
+npx wrangler d1 execute myco-server --remote -c wrangler.deploy.toml --command \
+  "SELECT (SELECT value FROM schema_meta WHERE key = 'version') AS version, (SELECT COUNT(*) FROM member_credentials) AS credentials, (SELECT COUNT(*) FROM sqlite_master WHERE name LIKE '\_v48\_%' ESCAPE '\\') AS leftovers"
+```
+
 # Break-glass: step 2 refused by a guard
 
 Step 2 opens with two guard tables, ahead of every `ADD COLUMN`, so an aborted run leaves the database at v1 and a repaired one re-applies the step whole. Both fail the same way — `CHECK constraint failed: ok` on the guard's `INSERT` — so read which rows tripped it before repairing.
