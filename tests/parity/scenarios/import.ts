@@ -7,8 +7,7 @@ import { expectPersisted, lit, MEMBER_ID, type ParityScenario, type ParityTarget
  * Three of this feature's mechanisms are exactly the places the two stores have
  * diverged before, so each is exercised here rather than only in-process:
  *
- *   - the plan route's answers, which read the transcripts a Project holds and
- *     the room a credential has left;
+ *   - the plan route's answers, which read the transcripts a Project holds;
  *   - the parse order, which rests on a partial index and on NULLs sorting
  *     first in an ascending key;
  *   - the leaf that turns import off, which is an admission fragment composed

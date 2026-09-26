@@ -1,14 +1,14 @@
 import type { RelationalStore, PreparedStatement, ServerEnv } from '../core/adapters.js';
 import type { RouteContext } from '../context.js';
 import { sha256Hex, sha256HexOf, utf8 } from '../hash.js';
-import { emit, refusal, StorageContractError, type Classifier, type Refusal } from '../telemetry.js';
+import { emit, refusal, StorageContractError, TokenRevokedError, type Classifier, type Refusal } from '../telemetry.js';
 import { parseEnvelope, type CaptureEnvelope, type Refused } from './envelope.js';
 import { kindSpec, parsePayload, type KindSpec, type Payload } from './kinds.js';
 import { titleSession } from '../core/titling.js';
 import { pendingSearchBlobs } from '../core/search-index.js';
 import { TRANSCRIPT_PARSE_ADAPTER } from '../constants.js';
 import { planKind, projectLive, sharedChecks, type Fragment, type KindPlan, type ReadRows, type WriteContext } from './projections.js';
-import { ALWAYS, withinQuota } from './quota.js';
+import { ALWAYS, credentialLive } from './live-credential.js';
 
 /** The held size and segment count of a transcript, answered on every outcome of a `transcript.segment`. */
 export interface TranscriptExtra {
@@ -24,10 +24,11 @@ export type IngestResult =
 /**
  * Who is writing.
  *
- * `member` is a credentialed caller: the write is charged to its quota and
- * admitted only while its credential is live. `server` is the Deployment
- * writing from bytes it has already accepted and already charged — a transcript
- * it parsed — so it is charged nothing and its admission does not consult a
+ * `member` is a credentialed caller: the write is admitted only while its
+ * credential is live, and its bytes are counted on that credential for
+ * reporting. `server` is the Deployment writing from bytes it has already
+ * accepted and already counted — a transcript it parsed — so it is counted
+ * nothing and its admission does not consult a
  * credential's liveness. A member's credential rotates; the events derived from
  * the bytes that credential shipped must not stop landing when it does.
  */
@@ -64,10 +65,7 @@ function spilledKey(spec: KindSpec, p: Payload): string | null {
   return pair && pair[1] === 'blob' && typeof p.blob === 'string' ? (p.blob as string) : null;
 }
 
-export const QUOTA_REASON = 'token write quota exceeded';
-const OVER_QUOTA: Refusal = refusal(QUOTA_REASON, 'quota');
-
-/** Stores one event in a single transaction. The raw insert carries every admission precondition — the quota (`withinQuota`: the one counter plus the token's live blob reservations, so event traffic never takes the room an upload in flight holds), the shared checks derived from the catalogue and the kind's declared identities (session identity, the continued rows the kind names, referenced blobs present, referenced prompts owned by this machine — in that order) and the kind's own — so a refused event leaves no row and no charge; the quota charge, the session receipt, and the kind's projections apply only to the raw row this request wrote, named by a per-request nonce; same-batch reads decide the response. A stored event is read through its session's machine, so a duplicate or a conflict is answered only to the machine that wrote it and another machine's event id is refused like any other unstored one. */
+/** Stores one event in a single transaction. The raw insert carries every admission precondition — the credential still live (`credentialLive`; never a volume: capture is not refused for the bytes a credential has stored), the shared checks derived from the catalogue and the kind's declared identities (session identity, the continued rows the kind names, referenced blobs present, referenced prompts owned by this machine — in that order) and the kind's own — so a refused event leaves no row and no count; the byte count, the session receipt, and the kind's projections apply only to the raw row this request wrote, named by a per-request nonce; same-batch reads decide the response. A stored event is read through its session's machine, so a duplicate or a conflict is answered only to the machine that wrote it and another machine's event id is refused like any other unstored one. */
 export async function ingestEvent(db: RelationalStore, ctx: IngestContext, body: unknown): Promise<IngestResult> {
   const planned = await planEventWrite(db, ctx, body);
   if (!planned.ok) return refused(ctx, planned);
@@ -104,15 +102,15 @@ export async function planEventWrite(db: RelationalStore, ctx: IngestContext, bo
   const digest = await envelopeHash(e);
   const contentHash = await contentHashOf(spec, p);
   const plan: KindPlan = planKind(spec, { db, ctx: write, e, p, contentHash });
-  // A server-origin write is charged nothing and consults no credential's
-  // liveness: the bytes it derives from were accepted and charged when the
+  // A server-origin write is counted nothing and consults no credential's
+  // liveness: the bytes it derives from were accepted and counted when the
   // member shipped them, and that member's credential rotates on its own
   // schedule. `ALWAYS` keeps the admission's shape so the raw insert and the
   // same-batch read stay one expression.
   const charged = (ctx.writeOrigin ?? 'member') === 'member';
-  const quotaAdmission = charged ? withinQuota(write, ctx.bodyBytes) : ALWAYS;
+  const liveAdmission = charged ? credentialLive(ctx.tokenId) : ALWAYS;
   const checks = [projectLive(write), ...sharedChecks(spec, write, e, p, plan.identities)];
-  const admission: Fragment[] = [quotaAdmission, ...checks.map((c) => c.admission), ...plan.admission];
+  const admission: Fragment[] = [liveAdmission, ...checks.map((c) => c.admission), ...plan.admission];
 
   const raw = db
     .prepare(`INSERT INTO events
@@ -124,7 +122,7 @@ export async function planEventWrite(db: RelationalStore, ctx: IngestContext, bo
           e.producer.adapter, e.producer.version, spilledKey(spec, p), e.payloadBytes.byteLength, write.nonce,
           ...admission.flatMap((a) => a.params));
 
-  const quota = charged
+  const counted = charged
     ? db.prepare(`UPDATE member_credentials SET bytes_written = bytes_written + (? * changes()) WHERE id = ?`).bind(ctx.bodyBytes, ctx.tokenId)
     : db.prepare(`SELECT 1 AS uncharged`);
 
@@ -159,12 +157,12 @@ export async function planEventWrite(db: RelationalStore, ctx: IngestContext, bo
        WHERE ev.project_id = ? AND ev.event_id = ? AND s.machine_id IS ?`)
     .bind(ctx.projectId, e.eventId, ctx.machineId);
 
-  const admitted = db.prepare(`SELECT ${quotaAdmission.sql} AS within_quota`).bind(...quotaAdmission.params);
+  const admitted = db.prepare(`SELECT ${liveAdmission.sql} AS live`).bind(...liveAdmission.params);
   const shared = checks.map((c) => db.prepare(c.read.sql).bind(...c.read.params));
   const priors = plan.priors ?? [];
   // Beside the projections in the batch, outside the evidence a conflict is read from.
   const incidental = plan.incidental ?? [];
-  const statements: PreparedStatement[] = [raw, quota, receipt, ...priors, ...plan.projections, ...incidental, stored, admitted, ...shared, ...plan.reads];
+  const statements: PreparedStatement[] = [raw, counted, receipt, ...priors, ...plan.projections, ...incidental, stored, admitted, ...shared, ...plan.reads];
 
   const interpret = (results: BatchResult[]): IngestResult => {
   if (results.length !== statements.length) throw new StorageContractError(`batch answered ${results.length} results for ${statements.length} statements`);
@@ -174,7 +172,7 @@ export async function planEventWrite(db: RelationalStore, ctx: IngestContext, bo
   const projectionResults = results.slice(base, base + plan.projections.length);
   const afterWrites = base + plan.projections.length + incidental.length;
   const storedRow = results[afterWrites].results[0] as { envelope_hash?: string; ingest_nonce?: string } | undefined;
-  const withinQuotaRow = results[afterWrites + 1].results[0] as { within_quota: number } | undefined;
+  const liveRow = results[afterWrites + 1].results[0] as { live: number } | undefined;
   const allReads: ReadRows = results.slice(afterWrites + 2).map((r) => r.results as Record<string, unknown>[]);
   const sharedRows = allReads.slice(0, checks.length);
   const reads = allReads.slice(checks.length);
@@ -202,7 +200,10 @@ export async function planEventWrite(db: RelationalStore, ctx: IngestContext, bo
     emit({ kind: 'ingest_duplicate', projectId: ctx.projectId, tokenId: ctx.tokenId });
     return { persisted: true, duplicate: true, ...extra };
   }
-  if (withinQuotaRow?.within_quota !== 1) return { ...refused(ctx, OVER_QUOTA), ...extra };
+  // A credential revoked after this request authenticated: not the caller's
+  // request at fault, so no terminal refusal. The pipeline answers 503 and the
+  // retry meets the revocation at authentication.
+  if (liveRow?.live !== 1) throw new TokenRevokedError(ctx.tokenId);
   const sharedRefusal = checks.map((c, i) => c.refusal(sharedRows[i]?.[0])).find((r) => r !== null) ?? null;
   return { ...refused(ctx, sharedRefusal ?? plan.refusal(reads)), ...extra };
   };

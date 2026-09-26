@@ -4,7 +4,7 @@ import { serverEnvFromBindings } from '@myco-server-worker/platform/cloudflare/e
 import worker from '@myco-server-worker/index.js';
 import { createServer } from '@myco-server-worker/pipeline.js';
 import { mintMemberToken } from '@myco-server-worker/auth/tokens.js';
-import { MAX_BLOB_BYTES, MEMBER_TOKEN_BYTE_QUOTA, MIN_COMPAT_MEMBER_PROTOCOL, PROJECT_HEADER, PROTOCOL_HEADER, RETRY_AFTER_SECONDS, SERVER_PROTOCOL } from '@myco-server-worker/constants.js';
+import { MAX_BLOB_BYTES, MIN_COMPAT_MEMBER_PROTOCOL, PROJECT_HEADER, PROTOCOL_HEADER, RETRY_AFTER_SECONDS, SERVER_PROTOCOL } from '@myco-server-worker/constants.js';
 import { sha256Hex } from '@myco-server-worker/hash.js';
 import { createIngestThrottle } from './helpers/throttle.js';
 import { authRow, noMemberRow } from './helpers/rows.js';
@@ -17,7 +17,6 @@ interface EnvOpts {
   writeThrows?: boolean;
   expiresAt?: number;
   revokedAt?: number | null;
-  bytesWritten?: number;
   sourceLimitThrows?: boolean;
   tokenLimitThrows?: boolean;
   schemaVersion?: string | null;
@@ -29,7 +28,6 @@ async function envFor(token: string, opts: EnvOpts = {}) {
   const member = authRow({
     expires_at: opts.expiresAt ?? Date.now() + 1_000_000,
     revoked_at: opts.revokedAt ?? null,
-    bytes_written: opts.bytesWritten ?? 0,
     ...version,
   });
   const nobody = noMemberRow({ ...version });
@@ -41,8 +39,10 @@ async function envFor(token: string, opts: EnvOpts = {}) {
     MYCO_DB: {
       prepare: (sql: string) => ({
         ...statement(),
+        sql,
         bind: (h: string) => ({
           ...statement(),
+          sql,
           first: async () => {
             if (opts.authThrows) throw new Error('D1_ERROR: boom');
             if (!sql.includes('schema_meta')) return null;
@@ -51,7 +51,8 @@ async function envFor(token: string, opts: EnvOpts = {}) {
           },
         }),
       }),
-      batch: async (stmts: unknown[]) => { if (opts.writeThrows) throw new Error('D1_ERROR: boom'); return stmts.map(() => ({ results: [], meta: { changes: 1 } })); },
+      // The credential is live: the one row a capture's admission reads back answers so.
+      batch: async (stmts: { sql?: string }[]) => { if (opts.writeThrows) throw new Error('D1_ERROR: boom'); return stmts.map((st) => ({ results: st.sql?.includes(' AS live') ? [{ live: 1 }] : [], meta: { changes: 1 } })); },
     },
     BUCKET: memoryBlobStore(),
     SOURCE_LIMIT: opts.sourceLimitThrows ? { limit: async () => { throw new Error('limiter down'); } } : createIngestThrottle(opts.sourceLimit ?? 100, 60_000, 100, () => 0),
@@ -232,27 +233,18 @@ describe('pipeline (via the deployed entry)', () => {
     expect(JSON.stringify(failed)).not.toContain('203.0.113.7');
   });
 
-  it('answers a constraint failure as a quota refusal only when the token is at quota, otherwise 503, on the json route and the stream route alike', async () => {
+  it('answers a constraint failure as 503 on the json route and the stream route alike: no failure reads as a quota refusal (#1416)', async () => {
     const token = mintMemberToken();
-    const constraintEnv = async (bytesWritten: number) => {
-      const env = await envFor(token, { bytesWritten: 0 });
+    const constraintEnv = async () => {
+      const env = await envFor(token);
       const db = env.MYCO_DB;
-      env.MYCO_DB = {
-        ...db,
-        prepare: (sql: string) => {
-          if (sql.includes('SELECT bytes_written FROM member_credentials')) return { bind: () => ({ first: async () => ({ bytes_written: bytesWritten }) }) };
-          return db.prepare(sql);
-        },
-        batch: async () => { throw new Error('D1_ERROR: SQLITE_CONSTRAINT_CHECK'); },
-      };
+      env.MYCO_DB = { ...db, batch: async () => { throw new Error('D1_ERROR: CHECK constraint failed: member_tokens_quota: SQLITE_CONSTRAINT_CHECK'); } };
       return env;
     };
     const blob = () => blobPost(token, 'b'.repeat(64), new Uint8Array([1, 2]));
     for (const [route, request, shape] of [['events', post, 'persisted'], ['blobs', blob, 'stored']] as const) {
-      const atQuota = await worker.fetch(request(token), await constraintEnv(MEMBER_TOKEN_BYTE_QUOTA - 1));
-      expect({ route, status: atQuota.status, body: await atQuota.json() }).toEqual({ route, status: 200, body: { [shape]: false, code: 'quota', reason: 'token write quota exceeded' } });
-      const under = await worker.fetch(request(token), await constraintEnv(0));
-      expect({ route, status: under.status, body: await under.json() }).toEqual({ route, status: 503, body: { [shape]: false, code: 'unavailable', reason: 'unavailable' } });
+      const res = await worker.fetch(request(token), await constraintEnv());
+      expect({ route, status: res.status, body: await res.json() }).toEqual({ route, status: 503, body: { [shape]: false, code: 'unavailable', reason: 'unavailable' } });
     }
   });
 
@@ -263,13 +255,6 @@ describe('pipeline (via the deployed entry)', () => {
       const req = new Request('https://s/events', { method: 'POST', body: JSON.stringify(good), headers: { authorization: `${scheme} ${token}`, 'cf-connecting-ip': '1.2.3.4', [PROJECT_HEADER]: 'proj_1', ...PROTOCOL } });
       expect((await worker.fetch(req, env)).status).toBe(200);
     }
-  });
-
-  it('refuses a write past the token byte quota before touching storage', async () => {
-    const token = mintMemberToken();
-    const res = await worker.fetch(post(token), await envFor(token, { bytesWritten: MEMBER_TOKEN_BYTE_QUOTA - 1, writeThrows: true }));
-    expect(res.status).toBe(200);
-    expect(await jsonBody(res)).toEqual({ persisted: false, code: 'quota', reason: 'token write quota exceeded' });
   });
 
   it('stamps security headers on 200, 401, 429, and 503', async () => {

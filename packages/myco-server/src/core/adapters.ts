@@ -100,10 +100,10 @@ export type SourceIdentity = (request: Request) => string | null;
 
 /** Broad cause of a failure. It decides retryable vs terminal; `db` is any storage-layer error the adapter recognises as its own. */
 /**
- * `quota` is a member credential's own byte quota. `store_quota` and `store_size` are the store's platform limits:
- * a daily usage limit reached, or the database at its maximum size.
+ * `store_quota` and `store_size` are the store's platform limits: a daily usage limit reached, or the database at its
+ * maximum size. Both answer 503 and are retried; neither refuses a member's capture.
  */
-export type ErrorClass = 'parse' | 'quota' | 'store_quota' | 'store_size' | 'constraint' | 'schema' | 'db' | 'revoked' | 'unknown';
+export type ErrorClass = 'parse' | 'store_quota' | 'store_size' | 'constraint' | 'schema' | 'db' | 'revoked' | 'unknown';
 
 /**
  * A platform's recogniser for its own storage errors, consulted only after the

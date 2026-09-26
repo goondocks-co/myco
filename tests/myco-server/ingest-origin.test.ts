@@ -15,6 +15,7 @@
 import type { Database } from 'bun:sqlite';
 import { describe, expect, it } from 'bun:test';
 import { ingestEvent, planEventWrite } from '@myco-server-worker/ingest/events.js';
+import { TokenRevokedError } from '@myco-server-worker/telemetry.js';
 import { count, envelope, sqliteEnv, bytesWritten, uuid } from './helpers/fixtures.js';
 import { issueMemberToken } from '@myco-server-worker/auth/tokens.js';
 
@@ -45,12 +46,12 @@ describe('write origin', () => {
     expect(count(sqlite, 'events')).toBe(1);
   });
 
-  it('refuses a member write once its credential is revoked', async () => {
+  it('admits no member write once its credential is revoked: it raises, for the pipeline to answer as retryable, and stores nothing', async () => {
     const { sqlite, db, tokenId } = await rig();
     revoke(sqlite, tokenId);
-    const result = await ingestEvent(db, ctxFor(tokenId), start(2));
-    expect(result.persisted).toBe(false);
+    await expect(ingestEvent(db, ctxFor(tokenId), start(2))).rejects.toBeInstanceOf(TokenRevokedError);
     expect(count(sqlite, 'events')).toBe(0);
+    expect(bytesWritten(sqlite, tokenId)).toBe(0);
   });
 
   it('stores a server write under the same revoked credential, which is what keeps a parse alive across a rotation', async () => {
@@ -79,7 +80,7 @@ describe('write origin', () => {
   it('defaults to a member write when no origin is named, so nothing becomes uncharged by omission', async () => {
     const { sqlite, db, tokenId } = await rig();
     revoke(sqlite, tokenId);
-    expect((await ingestEvent(db, ctxFor(tokenId), start(6))).persisted).toBe(false);
+    await expect(ingestEvent(db, ctxFor(tokenId), start(6))).rejects.toBeInstanceOf(TokenRevokedError);
     expect(count(sqlite, 'events')).toBe(0);
   });
 

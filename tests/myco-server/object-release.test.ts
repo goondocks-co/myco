@@ -1,7 +1,6 @@
 import { describe, expect, it } from 'bun:test';
 import worker from '@myco-server-worker/index.js';
 import { issueMemberToken } from '@myco-server-worker/auth/tokens.js';
-import { MEMBER_TOKEN_BYTE_QUOTA } from '@myco-server-worker/constants.js';
 import { sha256HexOf, utf8 } from '@myco-server-worker/hash.js';
 import { blobObjectKey, blobObjectKeySql, registeredObjectKeySql, snapshotBlobObject } from '@myco-server-worker/core/blob-objects.js';
 import {
@@ -296,11 +295,19 @@ describe('the one physical name', () => {
 });
 
 describe('upload authority is the only way bytes become registered', () => {
-  it('holds every refused, failed or expired upload to one outcome: its bytes are journaled or never written, and the quota is untouched', async () => {
-    const e = sqliteEnv();
+  it('holds every refused, failed or expired upload to one outcome: its bytes are journaled or never written, and the count is untouched', async () => {
+    let revoke: string | null = null;
+    const e = sqliteEnv({
+      onSql: (sql, sqlite) => {
+        if (revoke === null || !sql.startsWith('INSERT INTO blob_reservations')) return;
+        sqlite.run('UPDATE member_credentials SET revoked_at = 1 WHERE id = ?', [revoke]);
+        revoke = null;
+      },
+    });
     const t = await member(e);
-    e.sqlite.run('UPDATE member_credentials SET bytes_written = ? WHERE id = ?', [MEMBER_TOKEN_BYTE_QUOTA - 1, t.tokenId]);
-    expect(await capture(e, t.token)).toMatchObject({ stored: false, code: 'quota' });
+    revoke = t.tokenId;
+    expect(await capture(e, t.token)).toMatchObject({ stored: false, code: 'unavailable' });
+    expect((e.sqlite.query('SELECT bytes_written AS b FROM member_credentials WHERE id = ?').get(t.tokenId) as { b: number }).b).toBe(0);
     expect([e.bucket.puts, journaled(e.sqlite), count(e.sqlite, 'blob_reservations')]).toEqual([[], [], 0]);
     await drain(e);
     expect(lost(e)).toEqual([]);

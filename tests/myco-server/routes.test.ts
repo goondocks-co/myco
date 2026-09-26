@@ -9,28 +9,18 @@ const bodyModeOf = (route: Route): string | undefined => ('bodyMode' in route ? 
 
 describe('route table', () => {
   /**
-   * Routes whose writes are not charged to the member byte quota.
+   * Member routes that are not a member's capture, each labelled with what it
+   * does instead. A capture route is refused on an archived Project; none of
+   * these is. No route is refused for the bytes a credential has stored (#1416).
    *
-   * The quota bounds what a member's CAPTURE may write. `/tokens/refresh` mints a
-   * successor credential, which is the server's own bookkeeping. The run-control
-   * routes are the Deployment's own scheduled intelligence: charging those against
-   * a human's capture allowance would let ordinary agent work exhaust that
-   * member's ability to record their own sessions. A worker's claim, lease and
-   * end are the Deployment's own work for the same reason, and are scoped to the
-   * Deployment rather than to any Project, so no member's capture pays for them.
-   */
-  /**
-   * Member routes exempt from the byte quota that are not run routes, each
-   * labelled with what it does instead of a member's capture.
-   *
-   * Fail-closed on purpose: exemption is a decision, so a new route declaring
-   * `quotaPrecheck: false` fails here until someone names it. Inverting this to
-   * name the capture routes instead would make every future route exempt by
-   * default, which is the direction that costs the user.
+   * Fail-closed on purpose: `capture: false` is a decision, so a new route
+   * declaring it fails here until someone names it. The run routes are the
+   * Deployment's own scheduled intelligence, and a worker's claim, lease and end
+   * are the Deployment's own work, scoped to no Project.
    */
   const NON_RUN_EXEMPT = new Set([
     '/tokens/refresh',        // mints a successor credential; the server's own bookkeeping
-    '/mcp',                   // reads and tool writes, charged where they store
+    '/mcp',                   // reads and tool writes
     '/members/link-github',   // identity, not capture
     '/members/settings',      // a read of Deployment Settings
     '/members/status',        // a read of Deployment health
@@ -39,10 +29,10 @@ describe('route table', () => {
     '/context/prompt', '/context/session',                              // injection reads
     '/worker/claim', '/worker/lease', '/worker/end', '/worker/repository',                    // the Deployment's own work, scoped to no Project
   ]);
-  const quotaExempt = (r: { path: string; legacyRunRoute?: true }): boolean =>
+  const notCapture = (r: { path: string; legacyRunRoute?: true }): boolean =>
     r.legacyRunRoute === true || NON_RUN_EXEMPT.has(r.path);
 
-  it('declares an auth kind and a body mode for every route, a shape for every member route, and charges every member route to the quota but the named exemptions', () => {
+  it('declares an auth kind and a body mode for every route, a shape for every member route, and marks every member route capture but the named exceptions', () => {
     for (const r of ROUTES) {
       expect(['public', 'member', 'auth', 'owner', 'enroll']).toContain(r.auth);
       if (r.auth === 'auth' || r.auth === 'owner' || r.auth === 'enroll') continue;
@@ -51,7 +41,7 @@ describe('route table', () => {
       if (r.bodyMode === 'stream') expect(r.maxBodyBytes).toBe(MAX_BLOB_BYTES);
       if (r.auth === 'member') {
         expect({ path: r.path, shape: r.shape }).toEqual({ path: r.path, shape: r.bodyMode === 'stream' ? 'stored' : r.path === '/tokens/refresh' ? 'refreshed' : r.path === '/mcp' ? 'answered' : 'persisted' });
-        expect({ path: r.path, quotaPrecheck: r.quotaPrecheck }).toEqual({ path: r.path, quotaPrecheck: quotaExempt(r) ? false : undefined });
+        expect({ path: r.path, capture: r.capture }).toEqual({ path: r.path, capture: notCapture(r) ? false : undefined });
       }
     }
     expect(ROUTES.filter((r) => r.auth === 'public' || r.auth === 'member').map((r) => `${r.method} ${r.path}`)).toEqual(['GET /health', 'POST /events', 'POST /blobs/{sha256}', 'POST /tokens/refresh', 'POST /import/plan', 'POST /runs/claim', 'POST /runs/get', 'POST /runs/update', 'POST /runs/failed', 'POST /runs/resume-admission', 'POST /runs/supersede', 'POST /runs/reports', 'POST /runs/report', 'POST /runs/events', 'POST /runs/embedding-step', 'POST /spores/save', 'POST /spores/list', 'POST /spores/get', 'POST /spores/resolve', 'POST /context/prompt', 'POST /context/session', 'POST /runs/repository', 'POST /runs/canopy-map', 'POST /worker/claim', 'POST /worker/lease', 'POST /worker/end', 'POST /worker/repository', 'POST /mcp', 'POST /members/link-github', 'POST /members/settings', 'POST /members/status']);

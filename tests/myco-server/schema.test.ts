@@ -2,7 +2,7 @@ import { describe, it, expect } from 'bun:test';
 import { Database } from 'bun:sqlite';
 import { SCHEMA_DDL, SCHEMA_STEPS } from '@myco-server-worker/db/schema.js';
 import { renderMigrationFiles } from '@myco-server-worker/db/migrate.js';
-import { MEMBER_TOKEN_BYTE_QUOTA, SERVER_SCHEMA_VERSION } from '@myco-server-worker/constants.js';
+import { SERVER_SCHEMA_VERSION } from '@myco-server-worker/constants.js';
 import { DEPLOYMENT_ACCESS_PATH_INDEXES } from './helpers/access-paths.js';
 
 const table = (name: string) => SCHEMA_DDL.find((s) => new RegExp(`CREATE TABLE IF NOT EXISTS ${name}\\b`).test(s))!;
@@ -28,14 +28,20 @@ describe('server schema', () => {
     expect(table('sessions')).toMatch(/created_by_token_id TEXT NOT NULL/);
   });
 
-  it('gives project_id referential identity and tracks token write volume with a named quota constraint', () => {
+  it('gives project_id referential identity, and counts a credential\'s stored bytes without bounding them (#1416)', () => {
     expect(table('projects')).toBeDefined();
     expect(SCHEMA_DDL).toContain('ALTER TABLE projects ADD COLUMN archived_at INTEGER');
     expect(SCHEMA_DDL).toContain('ALTER TABLE projects ADD COLUMN archived_by TEXT');
     expect(table('member_tokens')).toMatch(/REFERENCES projects/);
     expect(table('member_tokens')).toMatch(/bytes_written INTEGER NOT NULL DEFAULT 0/);
-    expect(table('member_tokens')).toMatch(new RegExp(`CONSTRAINT member_tokens_quota CHECK \\(bytes_written <= ${MEMBER_TOKEN_BYTE_QUOTA}\\)`));
+    // The v1 table, which nothing writes after v5, keeps its own ceiling.
+    expect(table('member_tokens')).toMatch(/CONSTRAINT member_tokens_quota CHECK \(bytes_written <= 1073741824\)/);
     expect(table('events')).toMatch(/envelope_hash TEXT NOT NULL/);
+    const sqlite = applied();
+    const credentials = (sqlite.query(`SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'member_credentials'`).get() as { sql: string }).sql;
+    expect(credentials).toMatch(/bytes_written\s+INTEGER NOT NULL DEFAULT 0/);
+    expect(credentials).not.toMatch(/CHECK|quota/i);
+    sqlite.close();
   });
 
   it('adds producer identity, the spill key, and payload bytes to events, and only facts to sessions', () => {
@@ -87,6 +93,17 @@ describe('server schema', () => {
         continue;
       }
       expect(s).toMatch(/IF NOT EXISTS/);
+    }
+  });
+
+  it('runs every step inside one transaction on both targets: no step opens or ends one, vacuums, attaches, or sets a pragma but deferring foreign keys', () => {
+    // D1 applies a migration file atomically and `migrateOnly` wraps each step in BEGIN IMMEDIATE … COMMIT.
+    for (const { version, statements } of SCHEMA_STEPS) {
+      for (const sql of statements) {
+        const unsafe = /^\s*(BEGIN|COMMIT|END|ROLLBACK|SAVEPOINT|RELEASE|VACUUM|ATTACH|DETACH)\b/i.test(sql)
+          || (/^\s*PRAGMA\b/i.test(sql) && sql.trim() !== 'PRAGMA defer_foreign_keys = ON');
+        expect({ version, sql: sql.slice(0, 60), unsafe }).toEqual({ version, sql: sql.slice(0, 60), unsafe: false });
+      }
     }
   });
 

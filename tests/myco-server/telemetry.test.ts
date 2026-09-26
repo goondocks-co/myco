@@ -21,9 +21,9 @@ describe('telemetry', () => {
     expect(classify(new Error('something else'))).toBe('unknown');
   });
 
-  it('classifies the named quota constraint as quota and any other constraint failure as constraint', () => {
-    expect(classify(new Error('D1_ERROR: CHECK constraint failed: member_tokens_quota: SQLITE_CONSTRAINT'))).toBe('quota');
-    expect(classify(new Error('CHECK constraint failed: member_tokens_quota'))).toBe('quota');
+  it('classifies every constraint failure as constraint: no constraint names a byte quota any more (#1416)', () => {
+    expect(classify(new Error('D1_ERROR: CHECK constraint failed: member_tokens_quota: SQLITE_CONSTRAINT'))).toBe('constraint');
+    expect(classify(new Error('CHECK constraint failed: member_tokens_quota'))).toBe('constraint');
     expect(classify(new Error('D1_ERROR: FOREIGN KEY constraint failed: SQLITE_CONSTRAINT'))).toBe('constraint');
     expect(classify(new Error('D1_ERROR: SQLITE_CONSTRAINT_CHECK'))).toBe('constraint');
     expect(classify(new SchemaMismatchError(1, '0'))).toBe('schema');

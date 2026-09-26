@@ -3,8 +3,8 @@ import type { StreamContext } from '../context.js';
 import { BLOB_RESERVATION_TTL_MS, MAX_BLOB_BYTES, RETRY_AFTER_SECONDS } from '../constants.js';
 import { blobObjectKey } from '../core/blob-objects.js';
 import { consumeExpiredAuthorities, consumeUploadAuthority } from '../core/object-release.js';
-import { classifyBlobStore, emit, UNAVAILABLE, type Classifier } from '../telemetry.js';
-import { withinQuota } from './quota.js';
+import { classifyBlobStore, emit, TokenRevokedError, UNAVAILABLE, type Classifier } from '../telemetry.js';
+import { credentialLive } from './live-credential.js';
 
 export const MAX_MEDIA_TYPE_CHARS = 128;
 const TOKEN = String.raw`[A-Za-z0-9!#$%&'*+.^_\`|~-]+`;
@@ -43,15 +43,15 @@ function refuse(ctx: StreamContext, reason: string, classifier: Classifier): Res
 /**
  * Content-addressed upload under its own authority.
  *
- * - **Authority first.** One statement admits the body against `withinQuota` and writes the reservation row, whose id
+ * - **Authority first.** One statement admits the body while the credential is live (`credentialLive`) and writes the reservation row, whose id
  *   is this upload's generation. Nothing touches the store before it commits. The same batch consumes the credential's
  *   expired authorities, journaling their bytes (`core/object-release.ts`).
  * - **Bytes under the generation.** A registered row decides a duplicate before any byte moves. With none, the body is
  *   stored at `<project>/<key>~<generation>` (`core/blob-objects.ts`), a name no other write uses. Bytes already in the
  *   store under another name are never taken as this upload's.
- * - **Reconcile.** The reservation moves to the size the store recorded, and the quota is re-admitted.
- * - **Registration consumes the authority.** One batch registers the row only while the reservation is live, charges
- *   the credential, and removes the reservation; the same batch journals this upload's bytes when a row already
+ * - **Reconcile.** The reservation moves to the size the store recorded, while the credential is still live.
+ * - **Registration consumes the authority.** One batch registers the row only while the reservation is live, counts
+ *   the bytes on the credential, and removes the reservation; the same batch journals this upload's bytes when a row already
  *   registers the content or the authority expired.
  * - **Every other exit consumes it too.** A refusal, a failed or unknown store write, or an error journals the
  *   generation's bytes and removes the reservation in one batch. A write still in flight can only land under a name the
@@ -72,25 +72,26 @@ export async function handleBlob(env: ServerEnv, request: Request, ctx: StreamCo
   const expiresAt = ctx.now + BLOB_RESERVATION_TTL_MS;
   const physical = blobObjectKey(ctx.projectId, key, reservationId);
 
-  /** Admission and the reservation are one statement: the row is written only when `withinQuota` holds for this body. The credential's expired authorities are consumed in the same transaction, so a credential whose requests keep dying accumulates rows no faster than it makes them; the sweep is keyed on the credential alone, matching what `heldBytes` counts, and the drain consumes what a credential that never uploads again leaves. */
-  const admission = withinQuota(ctx, size);
+  /** Admission and the reservation are one statement: the row is written only while the credential is live. No volume is an admission: capture is never refused for the bytes a credential has stored (#1416). The credential's expired authorities are consumed in the same transaction, so a credential whose requests keep dying accumulates rows no faster than it makes them; the sweep is keyed on the credential alone, and the drain consumes what a credential that never uploads again leaves. */
+  const admission = credentialLive(ctx.tokenId);
   const admitted = await db.batch([
     ...consumeExpiredAuthorities(db, 'token_id = ? AND expires_at <= ?', [ctx.tokenId, ctx.now], ctx.now),
     db.prepare(`INSERT INTO blob_reservations (reservation_id, project_id, key, token_id, size, expires_at)
                   SELECT ?, ?, ?, ?, ?, ? WHERE ${admission.sql}`)
       .bind(reservationId, ctx.projectId, key, ctx.tokenId, size, expiresAt, ...admission.params),
   ]);
-  if (admitted[admitted.length - 1]!.meta.changes !== 1) return refuse(ctx, 'token write quota exceeded', 'quota');
-  /** Every upload reconciles before its row: the reservation moves to the size the store recorded and is held for a fresh TTL, and the quota is re-admitted in the same statement — counting every live reservation but this one — so a request whose room event traffic took while the body streamed is refused here, ahead of the charge, and a second upload in flight is admitted against the size this one will charge. An authority another consumer already took changes nothing: its bytes are journaled, and the upload is answered as retryable rather than as over quota. */
-  const reconcile = async (storedSize: number): Promise<'held' | 'quota' | 'consumed'> => {
-    const resized = withinQuota(ctx, storedSize, reservationId);
+  // Revoked after this request authenticated: the pipeline answers 503, and the retry meets the revocation at authentication.
+  if (admitted[admitted.length - 1]!.meta.changes !== 1) throw new TokenRevokedError(ctx.tokenId);
+  /** Every upload reconciles before its row: the reservation moves to the size the store recorded and is held for a fresh TTL, in one statement that holds only while the credential is live — so a credential revoked while the body streamed registers nothing. An authority another consumer already took changes nothing: its bytes are journaled, and the upload is answered as retryable. */
+  const reconcile = async (storedSize: number): Promise<'held' | 'revoked' | 'consumed'> => {
+    const resized = credentialLive(ctx.tokenId);
     const moved = await db
       .prepare(`UPDATE blob_reservations SET size = ?, expires_at = ? WHERE reservation_id = ? AND ${resized.sql}`)
       .bind(storedSize, ctx.clock() + BLOB_RESERVATION_TTL_MS, reservationId, ...resized.params)
       .run();
     if (moved.meta.changes === 1) return 'held';
     const held = await db.prepare(`SELECT 1 AS held FROM blob_reservations WHERE reservation_id = ?`).bind(reservationId).first();
-    return held === null ? 'consumed' : 'quota';
+    return held === null ? 'consumed' : 'revoked';
   };
   const expired = (): Response => {
     emit({ kind: 'blob_upload_expired', projectId: ctx.projectId, tokenId: ctx.tokenId });
@@ -124,7 +125,7 @@ export async function handleBlob(env: ServerEnv, request: Request, ctx: StreamCo
       consumed = true;
       return expired();
     }
-    if (reconciled === 'quota') return refuse(ctx, 'token write quota exceeded', 'quota');
+    if (reconciled === 'revoked') throw new TokenRevokedError(ctx.tokenId);
 
     const at = ctx.clock();
     const live = `EXISTS (SELECT 1 FROM blob_reservations WHERE reservation_id = ? AND expires_at > ?)`;

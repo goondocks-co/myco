@@ -3,7 +3,7 @@ import {
   MEMBER_TOKEN_BYTES, MEMBER_TOKEN_TTL_MS, MEMBER_TOKEN_PATTERN, MEMBER_TOKEN_REFRESH_WINDOW_MS, MEMBER_TOKEN_MAX_LINEAGE_MS,
   mintMemberToken, issueMemberToken, revokeCredentialAsMember, revokeMemberLineage, authenticateServerMemberToken,
 } from '@myco-server-worker/auth/tokens.js';
-import { MEMBER_TOKEN_BYTE_QUOTA, TOKEN_ID_PREFIX } from '@myco-server-worker/constants.js';
+import { TOKEN_ID_PREFIX } from '@myco-server-worker/constants.js';
 import { SchemaMismatchError } from '@myco-server-worker/telemetry.js';
 import { sha256Hex } from '@myco-server-worker/hash.js';
 import { authRow, noMemberRow } from './helpers/rows.js';
@@ -37,7 +37,6 @@ describe('member tokens', () => {
     expect(MEMBER_TOKEN_REFRESH_WINDOW_MS).toBe(MEMBER_TOKEN_TTL_MS / 4);
     expect(MEMBER_TOKEN_MAX_LINEAGE_MS).toBe(90 * 24 * 60 * 60 * 1000);
     expect(MEMBER_TOKEN_MAX_LINEAGE_MS).toBeGreaterThan(MEMBER_TOKEN_TTL_MS);
-    expect(MEMBER_TOKEN_BYTE_QUOTA).toBeGreaterThan(0);
   });
 
   it('issues a root token whose row expires exactly one TTL after issue, roots its own lineage at issue, always lands, and stores only the digest', async () => {
@@ -86,10 +85,10 @@ describe('member tokens', () => {
     expect(asMember.calls[0].sql).toMatch(/WHERE id = \? AND member_id = \? AND revoked_at IS NULL/);
   });
 
-  it('authenticates a live token digest and returns its bound machine, volume, lifetime, lineage, predecessor and first use', async () => {
+  it('authenticates a live token digest and returns its bound machine, lifetime, lineage, predecessor and first use', async () => {
     const digest = await sha256Hex(mintMemberToken());
-    expect(await authenticateServerMemberToken(fakeDb(authRow({ bytes_written: 42 })), digest, 1_000))
-      .toEqual({ memberId: 'mem_1', tokenId: 'mt_1', machineId: 'machine_1', bytesWritten: 42, expiresAt: 2_000, lineageRoot: 'mt_1', lineageStartedAt: 1_000, predecessorId: null, firstUsedAt: null, runtime: { runtimeLabel: null, runtimeKind: null } });
+    expect(await authenticateServerMemberToken(fakeDb(authRow()), digest, 1_000))
+      .toEqual({ memberId: 'mem_1', tokenId: 'mt_1', machineId: 'machine_1', expiresAt: 2_000, lineageRoot: 'mt_1', lineageStartedAt: 1_000, predecessorId: null, firstUsedAt: null, runtime: { runtimeLabel: null, runtimeKind: null } });
     expect(await authenticateServerMemberToken(fakeDb(authRow({ predecessor_id: 'mt_0', lineage_root: 'mt_0', lineage_started_at: 500, first_used_at: 900 })), digest, 1_000))
       .toMatchObject({ predecessorId: 'mt_0', lineageRoot: 'mt_0', lineageStartedAt: 500, firstUsedAt: 900 });
   });

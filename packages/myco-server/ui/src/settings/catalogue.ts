@@ -175,8 +175,9 @@ export const LEAF_GROUPS: readonly LeafGroup[] = [
       { leaf: 'notifications.retention_days', label: 'Keep notifications for', kind: 'number', min: 0, max: 365, unit: 'days' },
       // #1147 — 0 keeps transcripts indefinitely. A setting cannot be cleared once
       // written, so 0 is how a server returns to keeping everything; raising this
-      // minimum would strand any server that had ever set a window.
-      { leaf: 'retention.transcripts', label: 'Keep raw transcripts for', kind: 'number', min: 0, max: 3650, unit: 'days', note: 'Set to 0 to keep them indefinitely. Sessions, prompts, replies and plans are kept whatever this says.' },
+      // minimum would strand any server that had ever set a window. #1416 — this,
+      // not a refusal of new capture, is how a server manages its storage.
+      { leaf: 'retention.transcripts', label: 'Keep raw transcripts for', kind: 'number', min: 0, max: 3650, unit: 'days', note: 'Removes the raw transcript bytes a server has already processed, once they are older than this. Bytes not yet processed are kept whatever their age, and sessions, prompts, replies, tool calls and plans are never removed. Unset or 0 keeps raw transcripts forever. New capture is never refused for the space it takes.' },
       { leaf: 'release_provenance.reconcile_interval_minutes', label: 'Reconcile release state every', kind: 'number', min: 1, max: 1440, unit: 'minutes' },
     ],
   },
