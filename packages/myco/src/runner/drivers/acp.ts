@@ -19,7 +19,7 @@ import type { Driver, RunEvent, RunSpec, StopReason } from '../events.js';
 import { MCP_SERVER_NAME } from '../mcp-config.js';
 import { AcpEvents } from './acp-events.js';
 import { answerPermission, ToolCalls } from './acp-permission.js';
-import { grantOf } from './grant.js';
+import { runGrant, type RunGrant } from './grant.js';
 import { listRunTools, type RunServer, type RunTools } from './run-tools.js';
 import { recordOf, stringOf } from './stream.js';
 
@@ -133,6 +133,42 @@ export class Connection {
   }
 }
 
+/** The agent a run starts in on a harness that asks only where its configuration says to. */
+export const RUN_AGENT = 'myco-run';
+
+/** The shell a run's commands run under: one that reads no startup file, so the run's environment is the one its commands see. */
+const RUN_SHELL = '/bin/sh';
+
+/**
+ * The configuration a run-agent harness is given: an agent of the run's own,
+ * the default, under which every call asks, and a shell that reads no user
+ * startup file. Its permission comes after every rule the harness's other
+ * configuration holds, and the last rule that matches a call decides it.
+ */
+export function runAgentConfig(platform: NodeJS.Platform = process.platform): Record<string, unknown> {
+  return {
+    default_agent: RUN_AGENT,
+    ...(platform === 'win32' ? {} : { shell: RUN_SHELL }),
+    agent: { [RUN_AGENT]: { mode: 'primary', description: 'A Myco run: every call is asked, and answered from the run\'s grant.', permission: { '*': 'ask' } } },
+  };
+}
+
+/** The environment that makes this harness ask before every call, and the session mode that shows it will. */
+function askingOf(harness: Harness | null): { env: Record<string, string>; mode: string | null } {
+  if (harness?.asking.kind !== 'run-agent') return { env: {}, mode: null };
+  return { env: { [harness.asking.env]: JSON.stringify(runAgentConfig()) }, mode: RUN_AGENT };
+}
+
+/** The mode a session reports it started in: a configuration option named `mode`, or the protocol's own current mode. */
+function sessionModeOf(info: Record<string, unknown>): string | null {
+  const options = Array.isArray(info.configOptions) ? info.configOptions.map(recordOf) : [];
+  const option = options.find((candidate) => candidate?.id === 'mode');
+  return stringOf(option?.currentValue) ?? stringOf(recordOf(info.modes)?.currentModeId);
+}
+
+/** How long listing the run's tools may take before the run ends. */
+export const RUN_TOOLS_TIMEOUT_MS = 15_000;
+
 /** The one request this client implements. */
 const REQUEST_PERMISSION = 'session/request_permission';
 
@@ -145,7 +181,10 @@ const SESSION_UPDATE = 'session/update';
  * a process so a peer can answer it without one.
  *
  * The tools the run's server serves are listed before the session opens, so a
- * permission request naming one of them can be recognised. A permission
+ * permission request naming one of them can be recognised; a run whose tools
+ * cannot be listed ends there, since every call of them would be refused. A
+ * session on a harness that asks only under the run's own agent must report
+ * that agent as its mode, or the run ends before its prompt. A permission
  * request is answered from the run's grant as it arrives. A call refused
  * outside the grant is that call's failure, never the run's: the turn ends on
  * the agent's own stop reason. Every other request is answered as a method this
@@ -156,11 +195,14 @@ export async function* turnOver(
   id: string,
   spec: RunSpec,
   detailOnFailure: () => string,
-  listTools: (server: RunServer) => Promise<RunTools> = listRunTools,
+  listTools: (server: RunServer, signal: AbortSignal) => Promise<RunTools> = listRunTools,
+  options: { grant?: RunGrant; signal?: AbortSignal } = {},
 ): AsyncIterable<RunEvent> {
-  const grant = grantOf(spec);
+  const grant = options.grant ?? runGrant(spec);
+  const signal = options.signal ?? new AbortController().signal;
   const server = runServerOf(spec);
-  let tools: RunTools = { ok: false, reason: 'the run\'s tools were not listed before the session opened' };
+  const asking = askingOf(harnessById(id));
+  let tools: ReadonlySet<string> = new Set();
   let events: AcpEvents | undefined;
   let sessionId: string | null = null;
   const calls = new ToolCalls();
@@ -187,9 +229,19 @@ export async function* turnOver(
   }
   try {
     const initialized = await connection.call('initialize', { protocolVersion: 1, clientCapabilities: {} });
-    tools = await listTools(server);
+    const listed = await listTools(server, AbortSignal.any([signal, AbortSignal.timeout(RUN_TOOLS_TIMEOUT_MS)]));
+    if (!listed.ok) {
+      yield { kind: 'ended', stop: 'error', detail: `the run's tools could not be listed: ${listed.reason}` };
+      return;
+    }
+    tools = listed.names;
     const session = await connection.call('session/new', { cwd: spec.scratchDir, mcpServers: [acpServerOf(server)] });
     const info = recordOf(session.result) ?? {};
+    const mode = sessionModeOf(info);
+    if (asking.mode !== null && mode !== asking.mode) {
+      yield { kind: 'ended', stop: 'error', detail: `the harness opened the session in mode ${mode ?? '(none)'} rather than the run's agent ${asking.mode}, so its calls would not be asked` };
+      return;
+    }
     sessionId = stringOf(info.sessionId);
     events = new AcpEvents(id, stringOf(recordOf(recordOf(initialized.result)?.agentInfo)?.version), info);
     yield { kind: 'started', harness: id, sessionId };
@@ -234,9 +286,10 @@ export function acpDriver(id: string): Driver {
     async *run(spec: RunSpec, signal: AbortSignal): AsyncIterable<RunEvent> {
       const harness = harnessById(id)!;
       const { command, args } = commandOf(harness);
+      const grant = runGrant(spec);
       const child = spawn(command, [...args], {
         cwd: spec.scratchDir,
-        env: { ...process.env, ...spec.credentialEnv },
+        env: { ...process.env, ...spec.credentialEnv, ...grant.env, ...askingOf(harness).env },
         stdio: ['pipe', 'pipe', 'pipe'],
       });
       let errors = '';
@@ -254,7 +307,7 @@ export function acpDriver(id: string): Driver {
         onClose: (closed) => { child.once('close', closed); child.once('error', closed); },
       };
       try {
-        yield* turnOver(channel, id, spec, () => errors.slice(0, 2000));
+        yield* turnOver(channel, id, spec, () => errors.slice(0, 2000), listRunTools, { grant, signal });
       } finally {
         signal.removeEventListener('abort', stop);
         child.kill('SIGTERM');
