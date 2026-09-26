@@ -411,6 +411,24 @@ describe('LaunchdServiceManager', () => {
     expect(runner.calls).toEqual([['kickstart', '-k', 'gui/501/co.goondocks.myco']]);
   });
 
+  test('reload boots the unit out and loads it again, so a replaced program starts without a code-signing kill', async () => {
+    const s = spec(home);
+    await mgr.install(s);
+    runner.calls = [];
+    const plistPath = path.join(agentsDir, `${s.label}.plist`);
+    await mgr.reload(s.label);
+    expect(runner.calls).toEqual([
+      ['bootout', `gui/501/${s.label}`],
+      ['bootstrap', 'gui/501', plistPath],
+      ['enable', `gui/501/${s.label}`],
+    ]);
+  });
+
+  test('reload without a unit file restarts, which names the missing service', async () => {
+    await mgr.reload('co.goondocks.myco');
+    expect(runner.calls).toEqual([['kickstart', '-k', 'gui/501/co.goondocks.myco']]);
+  });
+
   test('restart throws when launchctl exits non-zero', async () => {
     runner.exitOverrides.set('kickstart', { stdout: 'Could not find specified service', exitCode: 3 });
     await expect(mgr.restart('co.goondocks.missing')).rejects.toThrow(/kickstart.*failed.*exit 3/i);

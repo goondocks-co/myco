@@ -195,6 +195,12 @@ export class LaunchdServiceManager implements ServiceManager {
     );
   }
 
+  async reload(label: string): Promise<void> {
+    const plistPath = this.plistPath(label);
+    if (!fs.existsSync(plistPath)) return this.restart(label);
+    await this.rebootstrap(label, plistPath);
+  }
+
   restartShellCommand(label: string): string {
     // Literal command the detached update / restart script invokes after the
     // daemon exits. Mirrors restart() above so launchd's KeepAlive cannot race

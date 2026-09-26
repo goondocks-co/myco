@@ -5,7 +5,7 @@
  * Given a release channel, fetch the GitHub releases list, pick the channel's
  * release, and resolve the binary-update references for THIS machine's target
  * triple — the `{ assetUrl, sha256sumsUrl, assetName, targetVersion }` the
- * `applyBinaryUpdate` primitive consumes.
+ * `stageBinary` primitive consumes.
  *
  * The daemon resolves these BEFORE it spawns the detached `__apply-update`
  * orchestrator, because the orchestrator runs after the daemon has exited and

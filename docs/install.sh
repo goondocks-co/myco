@@ -288,6 +288,37 @@ success "Checksum verified."
 # ---------------------------------------------------------------------------
 chmod +x "${TMP_DIR}/myco"
 
+# The kernel must run it before anything is replaced: a Darwin build whose ad hoc
+# signature does not verify is killed at exec, hooks included. Only an ad hoc (or
+# absent) signature is made again, keeping entitlements and identifier as the build
+# does; a certificate's signature is never replaced, and one that verifies is kept.
+if [ "$os" = "darwin" ] && ! codesign --verify --strict "${TMP_DIR}/myco" 2>/dev/null; then
+  if ! codesign -dv "${TMP_DIR}/myco" 2>&1 | grep -q -E '^Signature=adhoc$|not signed at all'; then
+    error "The downloaded binary's signature does not verify, and it is not an ad hoc signature; nothing was installed."
+    exit 1
+  fi
+  warn "The downloaded binary's signature does not verify on this Mac; signing it ad hoc again."
+  if ! codesign --force --sign - --preserve-metadata=entitlements,identifier "${TMP_DIR}/myco" 2>/dev/null \
+    || ! codesign --verify --strict "${TMP_DIR}/myco" 2>/dev/null; then
+    error "The downloaded binary's signature cannot be made valid on this Mac; nothing was installed."
+    exit 1
+  fi
+fi
+
+# `--version` within 30 seconds, or it does not run here. macOS has no timeout(1),
+# so a watchdog kills a probe that hangs.
+"${TMP_DIR}/myco" --version >/dev/null 2>&1 &
+_probe=$!
+( sleep 30; kill -9 "$_probe" 2>/dev/null ) &
+_watchdog=$!
+if wait "$_probe"; then _runs=1; else _runs=0; fi
+kill "$_watchdog" 2>/dev/null || true
+wait "$_watchdog" 2>/dev/null || true
+if [ "$_runs" -ne 1 ]; then
+  error "The downloaded binary does not run on this machine; nothing was installed."
+  exit 1
+fi
+
 # Place verified binary in its versioned slot (atomic mv — TMP_DIR is under $BIN_DIR,
 # same filesystem, so this rename never produces a partial file under $VERSION_DIR).
 mkdir -p "${VERSION_DIR}"

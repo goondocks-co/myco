@@ -229,6 +229,17 @@ describe('runAdopt — happy path (stop-confirmed → adoptStaged → restart �
     // No direct spawn.
     expect(rec.deps.spawnDetached).not.toHaveBeenCalled();
   });
+
+  it('reloads rather than restarts where the manager can, so launchd does not start the placed program under the requirement recorded for the one it replaced', async () => {
+    const rec = makeAdoptDeps({ healthSequence: [{ version: '1.2.3' }] });
+    const reloaded: string[] = [];
+    (rec.mgr as { reload?: (label: string) => Promise<void> }).reload = async (label) => { reloaded.push(label); };
+    await run([writeParamsFile(makeParams({ serviceManagedLabel: 'co.goondocks.myco' }))], rec.deps);
+
+    expect(reloaded).toEqual(['co.goondocks.myco']);
+    expect(rec.mgr.restartCalls).toEqual([]);
+    expect(rec.deps.spawnDetached).not.toHaveBeenCalled();
+  });
 });
 
 // ---------------------------------------------------------------------------

@@ -121,6 +121,13 @@ export interface ServiceManager {
    *  KeepAlive/Restart could fire and spawn an unwanted instance).
    *  Throws if the service is not installed. */
   restart(label: string): Promise<void>;
+  /** Optional: start the service on its program as it is on disk now, where
+   *  `restart` would not. A launchd agent loaded at login carries a code
+   *  requirement recorded for its program; `kickstart` of a replaced program is
+   *  killed with OS_REASON_CODESIGNING, and a load carries no such requirement.
+   *  Stops the service's process first, so it is never called from that process.
+   *  Absent where `restart` already starts the program on disk. */
+  reload?(label: string): Promise<void>;
   /** The literal shell command that, when run from any detached process,
    *  restarts the service via the platform's native primitive. Used by the
    *  detached update / restart scripts that must run AFTER the daemon exits

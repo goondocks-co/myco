@@ -7,8 +7,10 @@
  * when the unit omits it.
  */
 import { describe, expect, it } from 'bun:test';
-import { existsSync, readFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { spawnSync } from 'node:child_process';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import {
@@ -18,6 +20,8 @@ import {
   assertInstalledBinary,
   assertUnquotablePath,
   defaultSpec,
+  platformDetachedSpawner,
+  reloadServiceDetached,
   renderUnit,
   servicePaths,
 } from '@myco/server/service.js';
@@ -195,6 +199,196 @@ describe('what a Deployment on this machine never reaches for', () => {
       const unit = rendered(platform);
       expect({ platform, viaInterpreter: /\b(node|npx|npm|bun)\b/.test(unit) }).toEqual({ platform, viaInterpreter: false });
       expect({ platform, viaContainer: /\bdocker\b/.test(unit) }).toEqual({ platform, viaContainer: false });
+    }
+  });
+});
+
+describe('a unit loaded again from a process of its own', () => {
+  const withUnit = (home: string): ReturnType<typeof defaultSpec> => {
+    const spec = defaultSpec(BINARY, home);
+    const { unitFile } = servicePaths(spec, 'darwin');
+    mkdirSync(dirname(unitFile), { recursive: true });
+    writeFileSync(unitFile, '<plist/>');
+    return spec;
+  };
+
+  /**
+   * Run the reload helper through a real `/bin/sh` against a fake `launchctl`.
+   * The unit starts loaded as process 100. `unload` leaves it listed, still as
+   * process 100, for `lingers` more `list` calls — the teardown the legacy verb
+   * does not wait for. `load` registers it as process 200 only from attempt
+   * `loadsFrom` on; `list` answers only for a registered unit, whatever `load`
+   * exits with. `sleep` is a no-op, so waiting costs nothing.
+   */
+  function reloadAgainst(home: string, { loadsFrom = 1, lingers = 0, replacing = 100 as number | undefined } = {}): { status: boolean; calls: string; log: string; spawned: string[][] } {
+    const spec = withUnit(home);
+    const bin = join(home, 'bin');
+    mkdirSync(bin);
+    const record = join(home, 'launchctl.calls');
+    const listed = join(home, 'listed');
+    const linger = join(home, 'linger');
+    const attempts = join(home, 'loads');
+    writeFileSync(listed, '100');
+    writeFileSync(join(bin, 'sleep'), '#!/bin/sh\nexit 0\n', { mode: 0o755 });
+    writeFileSync(join(bin, 'launchctl'), [
+      '#!/bin/sh',
+      `printf '%s|' "$@" >> '${record}'; echo >> '${record}'`,
+      'case "$1" in',
+      `  unload) echo ${lingers} > '${linger}' ;;`,
+      `  load) n=$(( $(cat '${attempts}' 2>/dev/null || echo 0) + 1 )); echo $n > '${attempts}'`,
+      `        if [ $n -ge ${loadsFrom} ]; then rm -f '${linger}'; echo 200 > '${listed}'; else echo 'Load failed: 5: Input/output error'; fi ;;`,
+      '  list)',
+      `        if [ -f '${linger}' ]; then left=$(cat '${linger}'); if [ "$left" -le 0 ]; then rm -f '${listed}' '${linger}'; else echo $((left - 1)) > '${linger}'; fi; fi`,
+      `        [ -f '${listed}' ] || exit 113`,
+      `        printf '{\\n\\t"PID" = %s;\\n\\t"Label" = "x";\\n};\\n' "$(cat '${listed}')" ;;`,
+      'esac',
+      'exit 0',
+    ].join('\n'), { mode: 0o755 });
+    const spawned: string[][] = [];
+    let log = '';
+    const status = reloadServiceDetached(spec, {
+      platform: 'darwin',
+      ...(replacing === undefined ? {} : { replacing }),
+      spawnDetached: (command, args, logFile) => {
+        spawned.push([command, args[0]!, logFile, ...args.slice(3)]);
+        const run = spawnSync(command, [...args], { env: { PATH: `${bin}:/bin:/usr/bin` }, encoding: 'utf8' });
+        log = `${run.stdout}${run.stderr}`;
+        return run.status === 0;
+      },
+    });
+    return { status, calls: existsSync(record) ? readFileSync(record, 'utf8') : '', log, spawned };
+  }
+
+  const loads = (calls: string): number => calls.split('\n').filter((line) => line.startsWith('load|')).length;
+
+  it('unloads the unit and loads it again, in a detached shell whose output goes to the unit\'s error log', () => {
+    const home = mkdtempSync(join(tmpdir(), 'myco reload '));
+    try {
+      const { unitFile, errLog } = servicePaths(defaultSpec(BINARY, home), 'darwin');
+      const result = reloadAgainst(home);
+      expect(result.status).toBe(true);
+      expect(result.spawned).toEqual([['/bin/sh', '-c', errLog, SERVER_UNIT.label, unitFile, '100']]);
+      expect(result.calls).toBe(`unload|${unitFile}|\nlist|${SERVER_UNIT.label}|\nload|-w|${unitFile}|\nlist|${SERVER_UNIT.label}|\nlist|${SERVER_UNIT.label}|\n`);
+      expect(result.log).toMatch(/myco reload of co\.goondocks\.myco-server: unloading\n.*: loaded again as process 200\n$/);
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  it('waits for launchd to let go of the unit it unloaded before loading it, so the job being torn down is never taken for the new one', () => {
+    const home = mkdtempSync(join(tmpdir(), 'myco-reload-'));
+    try {
+      const result = reloadAgainst(home, { lingers: 3 });
+      expect(result.status).toBe(true);
+      const calls = result.calls.split('\n');
+      // Four lists after the unload (three still naming process 100), then the load.
+      expect(calls.slice(1, 5).every((line) => line.startsWith('list|'))).toBe(true);
+      expect(calls[5]!.startsWith('load|')).toBe(true);
+      expect(result.log).toContain('loaded again as process 200');
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  it('does not take the process it replaces for the reloaded unit, even when the teardown outlasts its wait', () => {
+    const home = mkdtempSync(join(tmpdir(), 'myco-reload-'));
+    try {
+      // Listed as process 100 through the whole teardown wait and every load, then gone.
+      const result = reloadAgainst(home, { lingers: 1000, loadsFrom: Number.MAX_SAFE_INTEGER });
+      expect(result.status).toBe(false);
+      expect(result.log).toContain('still listed 20 s after unload; loading anyway');
+      expect(result.log).not.toMatch(/: loaded again/);
+      expect(result.log).toMatch(/could not be loaded again/);
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  it('loads again until launchd holds the unit, whatever the first load answered', () => {
+    const home = mkdtempSync(join(tmpdir(), 'myco-reload-'));
+    try {
+      const result = reloadAgainst(home, { loadsFrom: 2 });
+      expect(result.status).toBe(true);
+      expect(loads(result.calls)).toBe(2);
+      expect(result.log).toContain('Load failed: 5: Input/output error');
+      expect(result.log).toContain('not loaded yet; trying again in 1 s');
+      expect(result.log).toContain('loaded again as process 200');
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  it('gives up after its window and says so in the log, rather than trying forever', () => {
+    const home = mkdtempSync(join(tmpdir(), 'myco-reload-'));
+    try {
+      const result = reloadAgainst(home, { loadsFrom: Number.MAX_SAFE_INTEGER });
+      expect(result.status).toBe(false);
+      // Pauses of 1, 2, 4, 8, 8, 8 s reach the 30 s window on the seventh load.
+      expect(loads(result.calls)).toBe(7);
+      expect(result.log).toMatch(/could not be loaded again; it runs again after myco worker install or the next login\n$/);
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  it('says so when it is stopped after the unload', () => {
+    if (process.platform === 'win32') return;
+    const home = mkdtempSync(join(tmpdir(), 'myco-reload-'));
+    try {
+      const spec = withUnit(home);
+      const bin = join(home, 'bin');
+      mkdirSync(bin);
+      // The unload stops the helper itself, the way a caller's TERM would.
+      writeFileSync(join(bin, 'launchctl'), '#!/bin/sh\n[ "$1" = unload ] && kill -TERM $PPID\nexit 0\n', { mode: 0o755 });
+      writeFileSync(join(bin, 'sleep'), '#!/bin/sh\nexit 0\n', { mode: 0o755 });
+      let log = '';
+      let status = null as number | null;
+      reloadServiceDetached(spec, {
+        platform: 'darwin',
+        spawnDetached: (command, args) => {
+          const run = spawnSync(command, [...args], { env: { PATH: `${bin}:/bin:/usr/bin` }, encoding: 'utf8' });
+          log = `${run.stdout}${run.stderr}`;
+          status = run.status;
+          return true;
+        },
+      });
+      expect(status).toBe(1);
+      expect(log).toMatch(/: unloading\n.*: stopped after unload; run myco worker install\n$/);
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  it('starts the helper in a session of its own, so the unload of the unit it serves does not stop it', async () => {
+    if (process.platform === 'win32') return;
+    const home = mkdtempSync(join(tmpdir(), 'myco-reload-'));
+    try {
+      const log = join(home, 'logs', 'helper.log');
+      expect(platformDetachedSpawner('/bin/sh', ['-c', 'echo "$$ $(ps -o pgid= -p $$)"'], log)).toBe(true);
+      let text = '';
+      for (let i = 0; i < 100 && !/\d+ +\d+/.test(text); i += 1) {
+        await new Promise((resolve) => setTimeout(resolve, 20));
+        text = existsSync(log) ? readFileSync(log, 'utf8') : '';
+      }
+      const [pid, pgid] = text.trim().split(/\s+/).map(Number);
+      // A session leader leads its own process group; the test runner's group is another.
+      expect(pgid).toBe(pid!);
+      expect(pgid).not.toBe(Number(spawnSync('ps', ['-o', 'pgid=', '-p', String(process.pid)], { encoding: 'utf8' }).stdout.trim()));
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  it('does nothing without a unit, or on a platform whose service stops its whole group', () => {
+    const home = mkdtempSync(join(tmpdir(), 'myco-reload-'));
+    try {
+      const never = (): boolean => { throw new Error('nothing should be started'); };
+      expect(reloadServiceDetached(defaultSpec(BINARY, home), { platform: 'darwin', spawnDetached: never })).toBe(false);
+      const spec = withUnit(home);
+      expect(reloadServiceDetached(spec, { platform: 'linux', spawnDetached: never })).toBe(false);
+      expect(reloadServiceDetached(spec, { platform: 'win32', spawnDetached: never })).toBe(false);
+    } finally {
+      rmSync(home, { recursive: true, force: true });
     }
   });
 });

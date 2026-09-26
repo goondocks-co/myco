@@ -13,15 +13,19 @@
  * last project on a Deployment removes it (`member leave`).
  */
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { resolveMycoHome } from '../paths/home.js';
 import { deploymentUrl, listDeploymentMemberships, readDeploymentMembership } from '../member/registry.js';
 import { unboundedBudget } from '../member/budget.js';
 import { refreshMembership } from '../member/refresh.js';
 import { detectHarnesses } from '../runner/detect.js';
-import { runWorker, type WorkerOptions } from '../runner/loop.js';
+import { runWorker, sleep, type WorkerOptions } from '../runner/loop.js';
 import { clearWorkerRefusal, isTerminalRefusal, recordWorkerRefusal, type TerminalRefusal } from '../runner/refusal.js';
+import { programRuns, type ProgramProbe } from '../install/place-binary.js';
 import { workerLockDir } from '../runner/instance.js';
+import { workerServiceSpec, workerServiceUnit } from '../runner/service.js';
+import { reloadServiceDetached, type ServiceSpec } from '../server/service.js';
 import { describeWorkerService, ensuredWorkerWords, ensureWorkerService, removeWorkerService, workerServiceWords, type WorkerServiceDeps } from './worker-service.js';
 import { parseFlags } from './shared.js';
 
@@ -131,9 +135,7 @@ export async function run(args: string[], deps: WorkerServiceDeps = {}): Promise
     signal: stopping.signal,
   });
   console.log(`worker: drove ${outcome.driven} run${outcome.driven === 1 ? '' : 's'}`);
-  // A worker whose program was replaced ends non-zero, so its service starts
-  // the new one.
-  if (outcome.replaced === true) return false;
+  if (outcome.replaced === true) return endReplacedWorker(serverUrl, mycoHome, stopping.signal);
   if (outcome.refused === null) return true;
   if (isTerminalRefusal(outcome.refused)) return endRefused(serverUrl, mycoHome, outcome.refused);
   console.error(`myco worker: ${serverUrl} refused this worker (${outcome.refused})`);
@@ -168,14 +170,69 @@ export function executableIdentity(file: string): string | null {
   }
 }
 
-/** Whether the program at `file` is still the one this process started from. */
-export function sameProgram(file: string, identity = executableIdentity): () => boolean {
+/**
+ * Whether the program at `file` is still the one this process started from.
+ *
+ * A program replaced on disk ends the worker only once the new one runs; one
+ * that does not is said once, and the worker keeps running on the program it
+ * started from until the file changes again.
+ */
+export function sameProgram(
+  file: string,
+  identity = executableIdentity,
+  runs: (file: string) => ProgramProbe = programRuns,
+  log: (line: string) => void = () => {},
+): () => boolean {
   const started = identity(file);
-  return () => started === null || identity(file) === started;
+  let judged = started;
+  return () => {
+    const now = identity(file);
+    if (started === null || now === null || now === started || now === judged) return true;
+    judged = now;
+    const probe = runs(file);
+    if (probe.runs) return false;
+    log(`the myco program on disk changed, and the new one does not run (${probe.detail}); staying on this one`);
+    return true;
+  };
+}
+
+/** Longest a replaced worker waits for its service to stop it before ending on its own. */
+const SERVICE_RELOAD_WAIT_MS = 60_000;
+
+/** What handing a replaced worker to its service needs; each defaults to the real process. */
+export interface ReplacedWorkerDeps {
+  env?: NodeJS.ProcessEnv;
+  platform?: NodeJS.Platform;
+  home?: string;
+  /** Ask for the unit to be loaded again, replacing process `replacing`. */
+  reload?: (spec: ServiceSpec, replacing: number) => boolean;
+  waitMs?: number;
+}
+
+/**
+ * End a worker whose program was replaced, so the new program runs.
+ *
+ * A worker running as its macOS login service asks launchd to load its unit
+ * again and waits to be stopped by that load: launchd's own restart of a
+ * replaced program is killed once for a code requirement recorded at login
+ * (`reloadServiceDetached`). True when the service stopped it. Anywhere else,
+ * or when no reload comes, it ends non-zero and its service restarts it.
+ */
+export async function endReplacedWorker(serverUrl: string, mycoHome: string, stopped: AbortSignal, deps: ReplacedWorkerDeps = {}): Promise<boolean> {
+  const platform = deps.platform ?? process.platform;
+  const unit = workerServiceUnit(serverUrl, mycoHome);
+  if (platform !== 'darwin' || (deps.env ?? process.env).XPC_SERVICE_NAME !== unit.label) return false;
+  const spec = workerServiceSpec({ serverUrl, mycoHome, binaryPath: process.execPath, home: deps.home ?? os.homedir(), platform }, []);
+  const reload = deps.reload ?? ((s: ServiceSpec, replacing: number) => reloadServiceDetached(s, { platform, replacing }));
+  if (!reload(spec, process.pid)) return false;
+  console.log('worker: asked the login service to start the new program');
+  await sleep(deps.waitMs ?? SERVICE_RELOAD_WAIT_MS, stopped);
+  return stopped.aborted;
 }
 
 /** Where a worker attached from this terminal or a login service claims from, and how it knows it is alone. */
-export function attachOptions(serverUrl: string, mycoHome: string, fetchImpl?: typeof fetch): Pick<WorkerOptions, 'serverUrl' | 'token' | 'renew' | 'lockDir' | 'runRoot' | 'onAttached' | 'stillCurrent'> {
+/** `program` is the file this process runs, whose replacement ends the worker once the new one runs. */
+export function attachOptions(serverUrl: string, mycoHome: string, fetchImpl?: typeof fetch, program: string = process.execPath): Pick<WorkerOptions, 'serverUrl' | 'token' | 'renew' | 'lockDir' | 'runRoot' | 'onAttached' | 'stillCurrent'> {
   return {
     serverUrl,
     token: () => readDeploymentMembership(serverUrl, mycoHome)?.token ?? null,
@@ -184,6 +241,6 @@ export function attachOptions(serverUrl: string, mycoHome: string, fetchImpl?: t
     lockDir: workerLockDir(),
     runRoot: path.join(mycoHome, 'worker', 'runs'),
     onAttached: () => { clearWorkerRefusal(mycoHome, serverUrl); },
-    stillCurrent: sameProgram(process.execPath),
+    stillCurrent: sameProgram(program, executableIdentity, programRuns, (line) => { console.log(`worker: ${line}`); }),
   };
 }

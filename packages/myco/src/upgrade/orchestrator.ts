@@ -423,7 +423,10 @@ export async function restart(
         ?? (await import('../daemon/api/restart.js')).findInstalledServiceLabel;
       const owning = (await resolver(deps.getServiceManager(), mycoHome))?.manager
         ?? deps.getServiceManager();
-      await owning.restart(serviceManagedLabel);
+      // A reload where the manager has one: this process is not the
+      // service's, and the program on disk is usually the one just placed.
+      if (owning.reload) await owning.reload(serviceManagedLabel);
+      else await owning.restart(serviceManagedLabel);
       return;
     } catch (err) {
       process.stderr.write(

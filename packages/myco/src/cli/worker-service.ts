@@ -33,6 +33,7 @@ import {
   uninstallService,
   type ServiceOutcome,
   type ServiceRunner,
+  UNIT_NOT_HELD,
 } from '../server/service.js';
 
 /** What the service verbs read and run, each replaceable so a caller never hands a unit to the real platform by accident. */
@@ -265,7 +266,10 @@ export function workerServiceWords(status: WorkerServiceStatus | null): { status
   }
   if (status.refusal !== null) return REFUSAL_WORDS[status.refusal.code];
   if (!status.installed) return { status: 'warn', line: 'not installed, and no worker on this machine serves this Deployment — run `myco worker install`' };
-  if (!status.loaded) return { status: 'warn', line: `installed, and the platform is not holding it (${status.detail ?? 'no detail'}) — run \`myco worker install\`` };
+  if (!status.loaded) {
+    const why = status.detail === undefined || status.detail === UNIT_NOT_HELD ? '' : ` (${status.detail})`;
+    return { status: 'warn', line: `installed, and the platform is not holding it${why} — run \`myco worker install\`` };
+  }
   if (!status.running) return { status: 'warn', line: `installed, and its process is not running — see ${status.errLog}; \`myco worker install\` starts it` };
   return { status: 'warn', line: `running at login, and not yet serving this Deployment — see ${status.outLog}` };
 }
