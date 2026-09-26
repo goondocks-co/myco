@@ -138,7 +138,8 @@ export const HARNESSES: readonly Harness[] = [
     credential: { kind: 'file', path: '~/.gemini/antigravity-cli/settings.json', requires: [] },
     isolation: { kind: 'additive' },
     asking: { kind: 'default' },
-    sourceGit: 'shim',
+    // Its shell has not been seen reaching the run's git.
+    sourceGit: 'none',
   },
 ];
 

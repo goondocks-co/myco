@@ -4,14 +4,21 @@
  *
  * A source run is granted scoped Git read commands. Several of Git's read
  * commands take options that write a file (`--output`), run a program
- * (`grep -O`), or read outside the run's checkout (`diff --no-index`), and Git
- * accepts any unambiguous abbreviation of a long option. A harness that matches
- * a grant by command prefix cannot see those arguments, so the rules are
- * enforced where the arguments arrive: a `git` of the run's own, first on the
- * harness's PATH, that refuses what is not a read of the checkout and otherwise
- * runs the machine's Git with the machine's and the user's Git configuration
- * out of reach. A driver that does see each command applies the same rules
- * through `gitReadRefusal` before it allows one.
+ * (`--ext-diff`), or read a file named by path (`blame --contents`,
+ * `diff --no-index`), and Git accepts any unambiguous abbreviation of a long
+ * option. A harness that matches a grant by command prefix cannot see those
+ * arguments, so the rules are enforced where the arguments arrive: a `git` of
+ * the run's own, first on the harness's PATH, that refuses what is not a read
+ * of the checkout and otherwise runs the machine's Git on the checkout's own
+ * repository, named outright rather than discovered, with the machine's and the
+ * user's Git configuration out of reach. A driver that does see each command
+ * applies the same rules through `gitReadRefusal` before it allows one.
+ *
+ * The only configuration that Git reads is then the checkout's own
+ * `.git/config`, which the worker writes (`repository-checkout.ts`), and the
+ * entries the run's `git` gives on top of it. A diff, text conversion or filter
+ * program is defined only in configuration, so an attributes file in the
+ * checkout can name one but never define one.
  *
  * The harness's environment also carries a Git configuration that no Git will
  * parse, which the run's `git` removes: a Git reached any other way, through a
@@ -22,20 +29,46 @@
  * Git command is granted, and a source run reads through its file tools.
  */
 import { accessSync, constants, mkdirSync, realpathSync, statSync, writeFileSync } from 'node:fs';
-import { delimiter, dirname, join } from 'node:path';
+import { delimiter, join } from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { RUN_REPOSITORY_DIR, SOURCE_GIT_READ_COMMANDS } from '@goondocks/myco-shared/repository';
 
 /**
  * Long options no source run may pass a read command: each writes a file, runs
- * a program, or reads outside the checkout. Git takes any unambiguous
- * abbreviation of a long option, so a name that begins one of these is refused
- * as well.
+ * a program, or reads a file named by path (`blame --contents`,
+ * `blame --ignore-revs-file`, `ls-files --exclude-from`,
+ * `rev-parse --resolve-git-dir`). Git takes any unambiguous abbreviation of a
+ * long option, so a name that begins one of these is refused as well.
  */
-export const REFUSED_GIT_LONG_OPTIONS = ['output', 'open-files-in-pager', 'no-index', 'ext-diff', 'help'] as const;
+export const REFUSED_GIT_LONG_OPTIONS = [
+  'output', 'open-files-in-pager', 'no-index', 'ext-diff', 'help',
+  'contents', 'ignore-revs-file', 'exclude-from', 'resolve-git-dir',
+] as const;
 
-/** Short options no source run may pass, matched with or without an attached value: `grep -O<command>` runs a program. */
-export const REFUSED_GIT_SHORT_OPTIONS = ['-O'] as const;
+/**
+ * Full option names that begin a refused one and are allowed: Git takes an
+ * exact name as that option, never as an abbreviation of a longer one
+ * (`blame --ignore-rev <rev>`, `log --exclude=<glob>`).
+ */
+export const EXACT_GIT_LONG_OPTIONS = ['ignore-rev', 'exclude'] as const;
+
+/**
+ * Short options no source run may pass, each with the read commands it is
+ * refused for (every one where none are named): `-O<file>` reads a file as the
+ * diff order, `blame -S <file>` reads a revisions file, and `ls-files -X <file>`
+ * reads an exclude file. Git takes short options bundled behind one dash
+ * (`-pO<file>`), so a single-dash argument holding the letter anywhere is
+ * refused.
+ */
+export const REFUSED_GIT_SHORT_OPTIONS: readonly { letter: string; commands?: readonly string[] }[] = [
+  { letter: 'O' },
+  { letter: 'S', commands: ['blame'] },
+  { letter: 'X', commands: ['ls-files'] },
+];
+
+/** The short options refused for this read command. */
+const refusedShortLetters = (command: string): string[] =>
+  REFUSED_GIT_SHORT_OPTIONS.filter((option) => option.commands === undefined || option.commands.includes(command)).map((option) => option.letter);
 
 /** The options Git may be given before its command: a directory, and turning the pager off. */
 const DIRECTORY_OPTION = '-C';
@@ -51,12 +84,35 @@ export const GIT_TRIPWIRE_ENV: Readonly<Record<string, string>> = { GIT_CONFIG_C
 const SHIM_GIT_ENV: Readonly<Record<string, string>> = {
   GIT_CONFIG_NOSYSTEM: '1',
   GIT_CONFIG_GLOBAL: '/dev/null',
+  GIT_ATTR_NOSYSTEM: '1',
   GIT_PAGER: 'cat',
   PAGER: 'cat',
   GIT_OPTIONAL_LOCKS: '0',
   GIT_NO_LAZY_FETCH: '1',
   GIT_TERMINAL_PROMPT: '0',
 };
+
+/**
+ * Configuration the run's `git` gives the Git it runs, over the repository's
+ * own: a bare repository is used only where one is named; the user's own
+ * attributes and ignore files are not read; and a commit's signature is
+ * checked by no program, since checking one runs whichever program the
+ * signature's format names.
+ */
+const SHIM_GIT_CONFIG: readonly (readonly [string, string])[] = [
+  ['safe.bareRepository', 'explicit'],
+  ['core.attributesFile', '/dev/null'],
+  ['core.excludesFile', '/dev/null'],
+  ['gpg.program', '/dev/null'],
+  ['gpg.ssh.program', '/dev/null'],
+  ['gpg.x509.program', '/dev/null'],
+];
+
+/** The Git variables that give Git `SHIM_GIT_CONFIG`. */
+const shimConfigEnv = (): Record<string, string> => Object.fromEntries([
+  ['GIT_CONFIG_COUNT', String(SHIM_GIT_CONFIG.length)],
+  ...SHIM_GIT_CONFIG.flatMap(([key, value], at) => [[`GIT_CONFIG_KEY_${at}`, key], [`GIT_CONFIG_VALUE_${at}`, value]]),
+]);
 
 /** The oldest Git that reads `GIT_CONFIG_GLOBAL` and `GIT_CONFIG_COUNT`, both of which the confinement relies on. */
 const MIN_GIT_VERSION: readonly [number, number] = [2, 32];
@@ -65,20 +121,35 @@ const MIN_GIT_VERSION: readonly [number, number] = [2, 32];
 const SHIM_DIR = 'bin';
 const SHELL_SETUP_FILE = 'shell-env.sh';
 
-/** Why a long option is refused, by the option it names. */
-function refusedLong(arg: string): string | null {
-  if (!arg.startsWith('--') || arg === '--') return null;
+/** Why an option is refused, by the option it names. */
+function refusedOption(arg: string, shortLetters: readonly string[]): string | null {
+  if (arg === '--' || !arg.startsWith('-') || arg.length < 2) return null;
+  if (!arg.startsWith('--')) {
+    const letter = shortLetters.find((refused) => arg.slice(1).includes(refused));
+    return letter === undefined ? null : `-${letter} is not allowed in this run`;
+  }
   const name = arg.slice(2).split('=', 1)[0]!;
+  if ((EXACT_GIT_LONG_OPTIONS as readonly string[]).includes(name)) return null;
   const refused = REFUSED_GIT_LONG_OPTIONS.find((option) => option.startsWith(name));
   return refused === undefined ? null : `--${refused} is not allowed in this run`;
+}
+
+/** Whether a path leaves the checkout by its words alone: it is absolute, or it has a `..` component. */
+const leavesCheckout = (path: string): boolean => path.startsWith('/') || path.split('/').includes('..');
+
+/** Why an argument names a path outside the checkout, itself or as the value after its first `=`. */
+function refusedPath(arg: string): string | null {
+  const value = arg.includes('=') ? arg.slice(arg.indexOf('=') + 1) : arg;
+  const path = [arg, value].find(leavesCheckout);
+  return path === undefined ? null : `git reads only inside this run's checkout, not ${path}`;
 }
 
 /**
  * Why these arguments to `git` are not a read this run may make, or null when
  * they are: `-C <dir>` and the pager switch before a granted read command, and
- * no refused option after it. The directory `-C` names is not judged here; the
- * grant names the directories a call may give, and the run's `git` checks where
- * it actually lands.
+ * after it no refused option and no path that leaves the checkout. The
+ * directory `-C` names is not judged here; the grant names the directories a
+ * call may give, and the run's `git` checks where it actually lands.
  */
 export function gitReadRefusal(args: readonly string[]): string | null {
   let at = 0;
@@ -96,9 +167,9 @@ export function gitReadRefusal(args: readonly string[]): string | null {
   const command = args[at];
   if (command === undefined) return 'a Git read command is required';
   if (!(SOURCE_GIT_READ_COMMANDS as readonly string[]).includes(command)) return `git ${command} is not a read this run may make`;
+  const shortLetters = refusedShortLetters(command);
   for (const arg of args.slice(at + 1)) {
-    if (REFUSED_GIT_SHORT_OPTIONS.some((option) => arg.startsWith(option))) return `${arg.slice(0, 2)} is not allowed in this run`;
-    const refused = refusedLong(arg);
+    const refused = refusedOption(arg, shortLetters) ?? refusedPath(arg);
     if (refused !== null) return refused;
   }
   return null;
@@ -166,12 +237,15 @@ const quoted = (value: string): string => `'${value.replaceAll('\'', '\'\\\'\'')
  * Each `-C` is applied by changing directory, so where Git runs is the
  * physical directory the shell lands in, a symbolic link in the checkout
  * followed; the checkout must contain it. Every Git variable is then removed,
- * the tripwire among them, and Git runs with neither the system's nor the
- * user's configuration.
+ * the tripwire among them, and Git runs on the checkout's repository by name,
+ * so no directory inside the checkout is taken for a repository, with neither
+ * the system's nor the user's configuration, and with nothing to read on its
+ * standard input.
  */
 export function gitShimScript(realGit: string, repository: string): string {
   const commands = SOURCE_GIT_READ_COMMANDS.join('|');
-  const env = Object.entries(SHIM_GIT_ENV).map(([name, value]) => `${name}=${quoted(value)}`).join(' ');
+  const variables = { ...SHIM_GIT_ENV, ...shimConfigEnv() };
+  const env = Object.entries(variables).map(([name, value]) => `${name}=${quoted(value)}`).join(' ');
   return [
     '#!/bin/sh',
     '# This run\'s git: read commands only, inside the run\'s checkout.',
@@ -203,24 +277,36 @@ export function gitShimScript(realGit: string, repository: string): string {
     'esac',
     'read=$1',
     'shift',
+    'case $read in',
+    ...SOURCE_GIT_READ_COMMANDS.map((command) => `  ${command}) letters=${quoted(refusedShortLetters(command).join(' '))} ;;`),
+    'esac',
     'for arg in "$@"; do',
     '  case $arg in',
-    ...REFUSED_GIT_SHORT_OPTIONS.map((option) => `    ${option}*) refuse "${option} is not allowed in this run" ;;`),
     '    --) ;;',
     '    --*)',
     '      name=${arg#--}',
     '      name=${name%%=*}',
-    `      for refused in ${REFUSED_GIT_LONG_OPTIONS.join(' ')}; do`,
-    '        case $refused in "$name"*) refuse "--$refused is not allowed in this run" ;; esac',
+    `      case $name in ${EXACT_GIT_LONG_OPTIONS.join('|')}) ;; *)`,
+    `        for refused in ${REFUSED_GIT_LONG_OPTIONS.join(' ')}; do`,
+    '          case $refused in "$name"*) refuse "--$refused is not allowed in this run" ;; esac',
+    '        done ;;',
+    '      esac ;;',
+    '    -?*)',
+    '      for letter in $letters; do',
+    '        case $arg in -*"$letter"*) refuse "-$letter is not allowed in this run" ;; esac',
     '      done ;;',
     '  esac',
+    '  for path in "$arg" "${arg#*=}"; do',
+    '    case $path in /*) refuse "git reads only inside this run\'s checkout, not $path" ;; esac',
+    '    case /$path/ in */../*) refuse "git reads only inside this run\'s checkout, not $path" ;; esac',
+    '  done',
     'done',
     'unset $(command -p env | command -p sed -n \'s/^\\(GIT_[A-Za-z0-9_]*\\)=.*/\\1/p\')',
     `${env}`,
-    `export ${Object.keys(SHIM_GIT_ENV).join(' ')}`,
-    `GIT_CEILING_DIRECTORIES=${quoted(dirname(repository))}`,
-    'export GIT_CEILING_DIRECTORIES',
-    'exec "$git" --no-pager "$read" "$@"',
+    'GIT_DIR=$repo/.git',
+    'GIT_WORK_TREE=$repo',
+    `export ${Object.keys(variables).join(' ')} GIT_DIR GIT_WORK_TREE`,
+    'exec "$git" --no-pager "$read" "$@" </dev/null',
     '',
   ].join('\n');
 }
