@@ -18,7 +18,7 @@ import { AlreadyRunning, dispatchPrepared, HARNESS_AGENT_ID, prepareDispatch, ty
 import { buildTaskInput } from './task-inputs.js';
 import type { PowerState } from './power.js';
 import { ensureAgent, hasLiveTaskRun, INPUT_UNCHANGED, lastTaskEntryAt, projectAdmission, recordSkipped, taskEntriesSince } from './runs.js';
-import { leafValues, type ProjectCapability } from './settings.js';
+import { isScheduleCount, leafValues, type ProjectCapability } from './settings.js';
 import { TASK_SCHEDULE, type ScheduleState, type TaskSchedule } from './jobs.js';
 import { declared } from './declared.js';
 import { admissionForTask, runTimeoutForTask } from './task-catalogue.js';
@@ -307,7 +307,7 @@ export function resolveSchedule(declared: TaskSchedule, override: unknown): Task
     runIn: states(o.runIn) ?? declared.runIn,
     preCondition: typeof o.preCondition === 'string' ? o.preCondition : declared.preCondition,
     accelerator: accelerator(o.accelerator) ?? declared.accelerator,
-    maxRunsPerDay: num(o.maxRunsPerDay) ?? declared.maxRunsPerDay,
+    maxRunsPerDay: (isScheduleCount(o.maxRunsPerDay) ? o.maxRunsPerDay : undefined) ?? declared.maxRunsPerDay,
     reservedRunsPerDay: reservedRunsPerDay(o.reservedRunsPerDay) ?? declared.reservedRunsPerDay,
     runWhenCold: typeof o.runWhenCold === 'boolean' ? o.runWhenCold : declared.runWhenCold,
     overlap: o.overlap === 'skip' || o.overlap === 'queue' ? o.overlap : declared.overlap,

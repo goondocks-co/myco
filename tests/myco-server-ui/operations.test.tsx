@@ -97,7 +97,7 @@ describe('housekeeping on the Operations page', () => {
     expect((await screen.findByText(/12 fully parsed imported sessions waiting for a title attempt/)).textContent).toContain('The imported-session backfill is stopped.');
     fireEvent.click(await screen.findByRole('button', { name: 'Start backfill' }));
     expect((await screen.findByText(/Today: 5 of 24 started/)).textContent).toContain('Dispatches while the server is in use or idle, at most once every 15 min. Today: 5 of 24 started, 5 in flight, 0 titled, 0 failed.');
-    expect((await screen.findByText(/Today: 5 of 24 started/)).textContent).toContain('Waiting for the daily limit of 24 to free a place at ');
+    expect((await screen.findByText(/Today: 5 of 24 started/)).textContent).toContain('Daily limit of 24 reached; the next title can start at ');
     expect(puts).toEqual([{ enabled: true }]);
     expect(await screen.findByRole('button', { name: 'Stop backfill' })).toBeTruthy();
     expect(requested).toContain('PUT /api/titling-backfill');
@@ -141,17 +141,22 @@ describe('housekeeping on the Operations page', () => {
     expect(policyWords({ runIn: [], intervalSeconds: 10 })).toBe('Dispatches in no state, at most once every 1 min.');
   });
 
-  it('says what holds the next title while sessions wait for one, and when it lifts', () => {
+  it('says what holds the next title while sessions wait for one, and when it can start', () => {
     const now = 1_800_000_000_000;
     const clock = (at: number) => new Date(at).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
-    expect(liftsAt(now + 150 * 60_000, now)).toBe(`at ${clock(now + 150 * 60_000)} (in 3h)`);
+    const later = now + 150 * 60_000;
+    expect(liftsAt(later, now)).toBe(`at ${clock(later)} (in 3h)`);
     expect(liftsAt(null, now)).toBe('soon');
+    expect(liftsAt(now, now)).toBe('soon');
+    expect(liftsAt(now - 60_000, now)).toBe('soon');
     expect(waitingWords({ runsPerDay: 24, waiting: null }, now)).toBe('');
-    expect(waitingWords({ runsPerDay: 24, waiting: { reason: 'ceiling', until: now + 150 * 60_000 } }, now)).toBe(`Waiting for the daily limit of 24 to free a place at ${clock(now + 150 * 60_000)} (in 3h).`);
+    expect(waitingWords({ runsPerDay: 24, waiting: { reason: 'ceiling', until: later } }, now)).toBe(`Daily limit of 24 reached; the next title can start at ${clock(later)} (in 3h).`);
+    expect(waitingWords({ runsPerDay: 0, waiting: { reason: 'ceiling', until: null } }, now)).toBe("The daily limit is 0; nothing is titled until it's raised in Settings.");
     expect(waitingWords({ runsPerDay: 24, waiting: { reason: 'overlap', until: null } }, now)).toBe('Waiting for the title run in flight to finish.');
-    expect(waitingWords({ runsPerDay: 24, waiting: { reason: 'interval', until: now + 12 * 60_000 } }, now)).toBe(`The next titles start at ${clock(now + 12 * 60_000)} (in 12m).`);
+    expect(waitingWords({ runsPerDay: 24, waiting: { reason: 'interval', until: now + 12 * 60_000 } }, now)).toBe(`The next titles can start at ${clock(now + 12 * 60_000)} (in 12m).`);
+    expect(waitingWords({ runsPerDay: 24, waiting: { reason: 'interval', until: now - 1 } }, now)).toBe('The next titles can start soon.');
     const base = { scheduledTasksEnabled: true, backfillEnabled: false, runsPerDay: 24, intervalSeconds: 900, runIn: ['active', 'idle'], overlap: 'queue' as const, enabled: false, remaining: 0, owed: 7, usedToday: 24, inFlight: 0, completedToday: 24, failedToday: 0 };
-    expect(progressWords({ ...base, waiting: { reason: 'ceiling', until: now + 150 * 60_000 } }, now)).toBe(`7 ended live sessions waiting for a title; these are titled automatically within the daily limit. No fully parsed imported sessions are waiting for a title attempt. The imported-session backfill is stopped. Waiting for the daily limit of 24 to free a place at ${clock(now + 150 * 60_000)} (in 3h). Dispatches while the server is in use or idle, at most once every 15 min. Today: 24 of 24 started, 0 in flight, 24 titled, 0 failed.`);
+    expect(progressWords({ ...base, waiting: { reason: 'ceiling', until: later } }, now)).toBe(`7 ended live sessions waiting for a title; these are titled automatically within the daily limit. No fully parsed imported sessions are waiting for a title attempt. The imported-session backfill is stopped. Daily limit of 24 reached; the next title can start at ${clock(later)} (in 3h). Dispatches while the server is in use or idle, at most once every 15 min. Today: 24 of 24 started, 0 in flight, 24 titled, 0 failed.`);
   });
 });
 

@@ -34,17 +34,20 @@ export function policyWords(p: Pick<BackfillProgress, 'runIn' | 'intervalSeconds
   return `Dispatches ${when}, at most once every ${minutes} min.`;
 }
 
-/** An instant a hold lifts, as a clock time and how far off it is. */
+/** An instant a hold lifts, as a clock time and how far off it is; one already reached, or unknown, reads "soon". */
 export const liftsAt = (until: number | null, now: number): string =>
-  (until === null ? 'soon' : `at ${new Date(until).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })} (in ${formatUntil(until, now, true)})`);
+  (until === null || until <= now ? 'soon' : `at ${new Date(until).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })} (in ${formatUntil(until, now, true)})`);
 
-/** Why no title is starting while sessions wait for one, in the reader's words; empty when nothing holds it. */
+/** Why no title is starting while sessions wait for one, in the reader's words; empty when nothing holds it. A title can start only in the states the schedule names, so a lifted hold says when one can start, never when one will. */
 export function waitingWords(p: Pick<BackfillProgress, 'waiting' | 'runsPerDay'>, now: number = Date.now()): string {
   const w = p.waiting;
   if (w === null) return '';
-  if (w.reason === 'ceiling') return `Waiting for the daily limit of ${p.runsPerDay ?? 0} to free a place ${liftsAt(w.until, now)}.`;
+  if (w.reason === 'ceiling') {
+    if (p.runsPerDay === 0) return "The daily limit is 0; nothing is titled until it's raised in Settings.";
+    return `Daily limit of ${p.runsPerDay ?? 0} reached; the next title can start ${liftsAt(w.until, now)}.`;
+  }
   if (w.reason === 'overlap') return 'Waiting for the title run in flight to finish.';
-  return `The next titles start ${liftsAt(w.until, now)}.`;
+  return `The next titles can start ${liftsAt(w.until, now)}.`;
 }
 
 /** Where titling stands, in the reader's words: titles owed for live sessions continue within the daily limit; imported sessions need both scheduled intelligence and the backfill switch. */
