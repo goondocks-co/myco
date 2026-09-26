@@ -342,7 +342,7 @@ describe('a unit loaded again from a process of its own', () => {
       writeFileSync(join(bin, 'launchctl'), '#!/bin/sh\n[ "$1" = unload ] && kill -TERM $PPID\nexit 0\n', { mode: 0o755 });
       writeFileSync(join(bin, 'sleep'), '#!/bin/sh\nexit 0\n', { mode: 0o755 });
       let log = '';
-      let status: number | null = null;
+      let status = null as number | null;
       reloadServiceDetached(spec, {
         platform: 'darwin',
         spawnDetached: (command, args) => {
