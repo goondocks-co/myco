@@ -12,8 +12,8 @@ export const MEMBER_TOKEN_BYTES = 32;
 export const MEMBER_TOKEN_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 /** The tail of a token's life in which a refresh is admitted: the last quarter of the TTL. */
 export const MEMBER_TOKEN_REFRESH_WINDOW_MS = MEMBER_TOKEN_TTL_MS / 4;
-/** How long a lineage of refreshed tokens runs from its root's issue; no token of the lineage expires later. */
-export const MEMBER_TOKEN_MAX_LINEAGE_MS = 90 * 24 * 60 * 60 * 1000;
+/** How long after its issue (the lineage's last refresh, or the join) a lapsed token may still refresh. Longer than the TTL, so it never bounds a live token. */
+export const MEMBER_LINEAGE_IDLE_MS = 90 * 24 * 60 * 60 * 1000;
 /** Shape of every minted token: `MEMBER_TOKEN_BYTES` random bytes as unpadded base64url. */
 export const MEMBER_TOKEN_PATTERN = new RegExp(`^[A-Za-z0-9_-]{${Math.ceil((MEMBER_TOKEN_BYTES * 4) / 3)}}$`);
 
@@ -25,7 +25,7 @@ export interface MemberAuth {
   expiresAt: number;
   /** The first token of the chain this one belongs to: its own id for an operator-minted token. */
   lineageRoot: string;
-  /** The issue instant of the lineage root; every token of the chain expires no later than `lineageStartedAt + MEMBER_TOKEN_MAX_LINEAGE_MS`. */
+  /** The issue instant of the lineage root: when the machine joined. Carried to every successor for display; no refresh decides on it. */
   lineageStartedAt: number;
   /** The token this one succeeded by refresh; null for an operator-minted token. */
   predecessorId: string | null;
@@ -56,7 +56,11 @@ export type RefreshResult =
   | { refreshed: false; code: Classifier; reason: string; refreshAfter?: number };
 
 export const REFRESH_TOO_EARLY = 'refresh window not yet open';
-export const LINEAGE_EXPIRED = 'token lineage expired';
+/** The `revoked_by` of every row of a lineage the pipeline ended when a superseded credential of it asked to rotate: a credential used from two places, ended by no member. */
+export const LINEAGE_REPLAY_REVOKER = 'lineage-replay';
+/** The `code` of the 401 answering a credential a replay revocation ended, so its member can say why; the member pins the same string. */
+export const LINEAGE_REPLAYED_CODE = 'lineage_replayed';
+export const LINEAGE_INACTIVE = 'token lineage inactive';
 
 /** The instant a token's refresh window opens: `MEMBER_TOKEN_REFRESH_WINDOW_MS` before it expires. Every `refreshAfter` on the wire is this instant for some token. */
 export const windowOpensAt = (expiresAt: number): number => expiresAt - MEMBER_TOKEN_REFRESH_WINDOW_MS;
@@ -90,7 +94,7 @@ export interface RuntimeClaims {
 
 export const NO_RUNTIME_CLAIMS: RuntimeClaims = { runtimeLabel: null, runtimeKind: null };
 
-/** The one INSERT into member_credentials, prepared and unrun: a fresh token and id, the digest stored, `bytes_written` at 0, the runtime claims as given, and the lineage columns — its own id and `nowMs` for a root, the inherited chain for a successor. The row expires one TTL from now or at the lineage ceiling, whichever is sooner. A successor's row is written only while its predecessor is still live at the instant of the insert (the statement's change count says whether it was); a root has no predecessor. Both obey the optional admission gate. */
+/** The one INSERT into member_credentials, prepared and unrun: a fresh token and id, the digest stored, `bytes_written` at 0, the runtime claims as given, and the lineage columns — its own id and `nowMs` for a root, the inherited chain for a successor. The row expires one TTL from now. A successor's row is written only while its predecessor is still live at the instant of the insert (the statement's change count says whether it was); a root has no predecessor. Both obey the optional admission gate. */
 function memberTokenInsert(
   db: RelationalStore, member: { memberId: string; machineId: string | null }, nowMs: number, lineage: TokenLineage | null, tokenId: string, digest: string, runtime: RuntimeClaims,
   gate?: { sql: string; params: unknown[] },
@@ -98,7 +102,7 @@ function memberTokenInsert(
   const predecessorId = lineage === null ? null : lineage.predecessorId;
   const lineageRoot = lineage === null ? tokenId : lineage.lineageRoot;
   const lineageStartedAt = lineage === null ? nowMs : lineage.lineageStartedAt;
-  const expiresAt = Math.min(nowMs + MEMBER_TOKEN_TTL_MS, lineageStartedAt + MEMBER_TOKEN_MAX_LINEAGE_MS);
+  const expiresAt = nowMs + MEMBER_TOKEN_TTL_MS;
   const statement = db
     .prepare(`INSERT INTO member_credentials (id, member_id, machine_id, token_hash, issued_at, expires_at, revoked_at, bytes_written, predecessor_id, lineage_root, lineage_started_at, first_used_at, runtime_label, runtime_kind)
               SELECT ?, ?, ?, ?, ?, ?, NULL, 0, ?, ?, ?, NULL, ?, ?
@@ -118,7 +122,7 @@ export async function mintInsert(
   return { statement, issued: { token, tokenId, expiresAt } };
 }
 
-/** Sole inserter of member_credentials rows. Stores the digest; returns the raw token once. Without `lineage` the token roots a lineage of its own; with it, the token succeeds `lineage.predecessorId` and expires no later than the lineage ceiling. */
+/** Sole inserter of member_credentials rows. Stores the digest; returns the raw token once. Without `lineage` the token roots a lineage of its own; with it, the token succeeds `lineage.predecessorId`. Either way it expires one TTL from `nowMs`. */
 export async function issueMemberToken(
   db: RelationalStore, member: { memberId: string; machineId: string | null }, nowMs: number, lineage: TokenLineage | null = null, runtime: RuntimeClaims = NO_RUNTIME_CLAIMS,
 ): Promise<IssuedMemberToken> {
@@ -137,7 +141,7 @@ export async function issueMemberToken(
  * re-derivation of who owns what, and until there is one, an operator can always
  * answer who ended a credential.
  */
-/** The one attributed revocation of a credential, as a statement: the runner above executes and records it; the break-glass script renders it. */
+/** The attributed revocation of one token row, as a statement: the break-glass script renders it for a token whose successors are known to be its owner's. */
 export function revokeCredentialStatement(db: RelationalStore, revokedBy: string, tokenId: string, nowMs: number): PreparedStatement {
   return db
     .prepare(`UPDATE member_credentials SET revoked_at = ?, revoked_by = ? WHERE id = ? AND revoked_at IS NULL`)
@@ -145,22 +149,32 @@ export function revokeCredentialStatement(db: RelationalStore, revokedBy: string
 }
 
 /**
+ * The attributed revocation of a credential's whole lineage, as a statement: the named token, the predecessor still live while
+ * its successor is banked, and any successor already minted from it. Each is the same machine's credential at another moment,
+ * and a live one left behind would rotate on. `memberId` confines it to that member's own rows.
+ */
+export function revokeLineageStatement(db: RelationalStore, revokedBy: string, tokenId: string, nowMs: number, memberId: string | null = null): PreparedStatement {
+  return db
+    .prepare(`UPDATE member_credentials SET revoked_at = ?, revoked_by = ? WHERE lineage_root = (SELECT lineage_root FROM member_credentials WHERE id = ?) AND revoked_at IS NULL${memberId === null ? '' : ' AND member_id = ?'}`)
+    .bind(nowMs, revokedBy, tokenId, ...(memberId === null ? [] : [memberId]));
+}
+
+/**
  * Revoke a credential as the member asking, at the reach their role gives them.
  *
  * An admin administers membership and reaches any credential of the Deployment.
  * A member reaches only their own, which is what lets anyone end a laptop they
- * have lost without also letting them end everybody else's capture. The two
- * cases are the two statements above; this chooses between them and never
- * widens either.
+ * have lost without also letting them end everybody else's capture. Both reach
+ * the whole lineage of the named credential through the one statement above;
+ * this chooses the member predicate and never widens it.
  */
 export async function revokeCredentialAsMember(
   db: RelationalStore, actor: DashboardMember, tokenId: string, nowMs: number,
 ): Promise<{ revoked: boolean; revokedBy: string }> {
   const revokedBy = actor.id;
-  if (!isAdmin(actor.role)) return { revoked: await revokeCredentialOfMember(db, revokedBy, tokenId, nowMs), revokedBy };
-  const result = await revokeCredentialStatement(db, revokedBy, tokenId, nowMs).run();
-  const revoked = result.meta.changes === 1;
-  emit({ kind: 'credential_revoked', tokenId, revokedBy, revoked });
+  const result = await revokeLineageStatement(db, revokedBy, tokenId, nowMs, isAdmin(actor.role) ? null : revokedBy).run();
+  const revoked = result.meta.changes > 0;
+  emit({ kind: 'credential_revoked', tokenId, revokedBy, revoked, rows: result.meta.changes });
   return { revoked, revokedBy };
 }
 
@@ -191,19 +205,15 @@ export function revokeCredentialsOfMember(db: RelationalStore, memberId: string,
 
 /** Revokes every live token of the lineage `tokenId` belongs to — the named token, its predecessors, and its successors — in one statement; `revoked` counts the rows that changed. */
 export async function revokeMemberLineage(db: RelationalStore, tokenId: string, nowMs: number, revokedBy: string): Promise<{ revoked: number }> {
-  const result = await db
-    .prepare(`UPDATE member_credentials SET revoked_at = ?, revoked_by = ? WHERE lineage_root = (SELECT lineage_root FROM member_credentials WHERE id = ?) AND revoked_at IS NULL`)
-    .bind(nowMs, revokedBy, tokenId)
-    .run();
+  const result = await revokeLineageStatement(db, revokedBy, tokenId, nowMs).run();
   return { revoked: result.meta.changes };
 }
 
-/** The window opens at `expires_at − MEMBER_TOKEN_REFRESH_WINDOW_MS`; earlier, the answer is `refresh_too_early` with the instant it opens. It stays open past the token's own expiry: a token that lapsed with its holder offline still asks for its successor, up to the lineage ceiling. A token that already expires at its lineage ceiling, or presented once the ceiling has passed, answers `lineage_expired`: no successor could outlive it. Past both checks, one batch revokes the live, never-used successor this token may already have and inserts the new one — expiring one TTL from now or at the ceiling, whichever is sooner — and the answer carries the successor's own window start as `refreshAfter`. Both statements act only while the presented token is still live at that instant (`TOKEN_LIVE` on each): a token revoked in between changes nothing — its banked successor stays as it is — and raises `TokenRevokedError`. The presented token stays live; the successor's first authenticated use revokes it. */
+/** The window opens at `expires_at − MEMBER_TOKEN_REFRESH_WINDOW_MS`; earlier, the answer is `refresh_too_early` with the instant it opens. It stays open past the token's own expiry: a token that lapsed with its holder offline still asks for its successor until `MEMBER_LINEAGE_IDLE_MS` after its own `issued_at` (`lineageInactive`); past that it answers `lineage_expired`, the code every member build treats as final. A lineage is never refused for its age: every successor expires one TTL from its refresh. Past both checks, one batch revokes the live, never-used successor this token may already have and inserts the new one, and the answer carries the successor's own window start as `refreshAfter`. Both statements act only while the presented token is still live at that instant (`TOKEN_LIVE` on each): a token revoked in between changes nothing — its banked successor stays as it is — and raises `TokenRevokedError`. The presented token stays live; the successor's first authenticated use revokes it. */
 export async function refreshMemberToken(db: RelationalStore, subject: RefreshSubject, nowMs: number): Promise<RefreshResult> {
   const opensAt = windowOpensAt(subject.expiresAt);
   if (nowMs < opensAt) return { refreshed: false, code: 'refresh_too_early', reason: REFRESH_TOO_EARLY, refreshAfter: opensAt };
-  const ceiling = subject.lineageStartedAt + MEMBER_TOKEN_MAX_LINEAGE_MS;
-  if (ceiling <= subject.expiresAt || ceiling <= nowMs) return { refreshed: false, code: 'lineage_expired', reason: LINEAGE_EXPIRED };
+  if (subject.expiresAt <= nowMs && await lineageInactive(db, subject.tokenId, nowMs)) return { refreshed: false, code: 'lineage_expired', reason: LINEAGE_INACTIVE };
   // The successor inherits its runtime binding from the STORED predecessor row, never
   // from the refreshing request. A re-auth that re-establishes identity from what the
   // caller sends is how a device silently loses its binding and reverts to whoever
@@ -219,6 +229,12 @@ export async function refreshMemberToken(db: RelationalStore, subject: RefreshSu
   return { refreshed: true, ...successor.issued, refreshAfter: windowOpensAt(successor.issued.expiresAt) };
 }
 
+/** Whether a lapsed token's lineage has gone unrefreshed for `MEMBER_LINEAGE_IDLE_MS`, read off the presented row's immutable `issued_at` — not `first_used_at`, which the pipeline stamps on this very request when it activates a never-used successor. A missing row reads as active and meets the insert's liveness gate. */
+async function lineageInactive(db: RelationalStore, tokenId: string, nowMs: number): Promise<boolean> {
+  const row = await db.prepare(`SELECT issued_at FROM member_credentials WHERE id = ?`).bind(tokenId).first<{ issued_at: number }>();
+  return row !== null && row.issued_at + MEMBER_LINEAGE_IDLE_MS <= nowMs;
+}
+
 /** A successor's first authenticated use, as one batch: the successor takes over its predecessor's stored-bytes count (`carriedBytes`: the counter plus live blob reservations; nothing when the predecessor row is gone) and records the instant; the predecessor is revoked. Every statement guards itself, so a repeat changes nothing. */
 export async function activateSuccessor(db: RelationalStore, auth: Pick<MemberAuth, 'tokenId'> & { predecessorId: string }, nowMs: number): Promise<void> {
   const held = carriedBytes(auth.predecessorId, nowMs);
@@ -228,7 +244,7 @@ export async function activateSuccessor(db: RelationalStore, auth: Pick<MemberAu
   ]);
 }
 
-/** Whether a credential past its own expiry authenticates: `live` refuses it, `lapsed` admits it — for the one route that decides against the lineage ceiling instead (`admitsLapsed` in the route table). A revoked credential, or one whose member is revoked, never authenticates under either. */
+/** Whether a credential past its own expiry authenticates: `live` refuses it, `lapsed` admits it — for the one route that decides against the lineage's inactivity instead (`admitsLapsed` in the route table). A revoked credential, or one whose member is revoked, never authenticates under either. */
 export type ExpiryAdmission = 'live' | 'lapsed';
 
 /** One read: the database schema version, joined to the credential row for the digest and to its member, kept only while that member is live. The version must equal this build's before any token decision is made; a missing version row is a mismatch. A row without its lineage columns, or whose member is revoked, never authenticates; an expired row authenticates only under `lapsed`. */
@@ -274,6 +290,8 @@ export interface LineageReplay {
   successorId: string;
   /** The instant the successor first authenticated — the instant this credential stopped working. */
   activatedAt: number;
+  /** The presented credential's own `issued_at`. */
+  issuedAt: number;
 }
 
 /**
@@ -288,21 +306,34 @@ export interface LineageReplay {
  * a rotation race or a holder of a copy, and only the audit record tells an
  * operator which lineages are seeing it.
  *
+ * A successor revoked before its first use has been passed over too
+ * when its predecessor has another successor that has been used: a second
+ * holder rotated the same predecessor, and the lineage moved on through theirs.
+ * A successor revoked unused with no used sibling moved nothing on — an
+ * operator ended it, or a later refresh by the same holder replaced it.
+ *
  * The read runs only after authentication has already failed, so the admission
  * path stays one statement.
  */
 export async function detectLineageReplay(db: RelationalStore, digest: string, nowMs: number): Promise<LineageReplay | null> {
   const row = await db
-    .prepare(`SELECT p.id, p.member_id, p.lineage_root, p.machine_id, s.id AS successor_id, s.first_used_at
+    .prepare(`SELECT p.id, p.member_id, p.lineage_root, p.machine_id, p.issued_at, s.id AS successor_id, s.first_used_at
                 FROM member_credentials p
-                JOIN member_credentials s ON s.predecessor_id = p.id
-               WHERE p.token_hash = ? AND p.revoked_at IS NOT NULL AND s.first_used_at IS NOT NULL
+                JOIN member_credentials s ON s.lineage_root = p.lineage_root AND s.id <> p.id AND s.first_used_at IS NOT NULL
+                 AND (s.predecessor_id = p.id OR (p.first_used_at IS NULL AND s.predecessor_id = p.predecessor_id))
+               WHERE p.token_hash = ? AND p.revoked_at IS NOT NULL
                ORDER BY s.first_used_at DESC`)
     .bind(digest)
-    .first<{ id: string; member_id: string; lineage_root: string; machine_id: string | null; successor_id: string; first_used_at: number }>();
+    .first<{ id: string; member_id: string; lineage_root: string; machine_id: string | null; issued_at: number; successor_id: string; first_used_at: number }>();
   if (row === null) return null;
   return {
     tokenId: row.id, memberId: row.member_id, lineageRoot: row.lineage_root, machineId: row.machine_id,
-    successorId: row.successor_id, activatedAt: row.first_used_at,
+    successorId: row.successor_id, activatedAt: row.first_used_at, issuedAt: row.issued_at,
   };
+}
+
+/** Whether a digest that failed to authenticate belongs to a row a replay revocation ended (`LINEAGE_REPLAY_REVOKER`). */
+export async function revokedForReplay(db: RelationalStore, digest: string): Promise<boolean> {
+  const row = await db.prepare(`SELECT 1 AS hit FROM member_credentials WHERE token_hash = ? AND revoked_by = ?`).bind(digest, LINEAGE_REPLAY_REVOKER).first<{ hit: number }>();
+  return row !== null;
 }

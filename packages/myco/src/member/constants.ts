@@ -43,6 +43,12 @@ export const MEMBER_CODES = [
 ] as const;
 export type MemberCode = (typeof MEMBER_CODES)[number];
 
+/** The `code` on a 401 whose credential the Deployment revoked, with its whole lineage, because a superseded token of it asked to rotate: it was used from two places. Not a refusal code — it rides the 401 — and pinned against the worker. */
+export const LINEAGE_REPLAYED_CODE = 'lineage_replayed';
+
+/** Why a credential's rotation became terminal: `replayed` for a lineage the Deployment revoked on replay, `refused` for any other final answer. */
+export type RefreshTerminalReason = 'replayed' | 'refused';
+
 /** Whether a value is one of the codes above. A code read back from disk is a string until this says otherwise. */
 export function isMemberCode(value: unknown): value is MemberCode {
   return typeof value === 'string' && (MEMBER_CODES as readonly string[]).includes(value);

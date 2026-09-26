@@ -24,7 +24,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { resolveMycoHome } from '../paths/home.js';
 import { LifecycleLock, withFileLockSync, type AcquireResult } from '../utils/lifecycle-lock.js';
-import { isProjectId } from './constants.js';
+import { isProjectId, type RefreshTerminalReason } from './constants.js';
 import { assertMemberPathContained, pathIsAbsent, ensureMemberDir, ensurePrivateFile, memberRoot, readPrivateJson, reportSkippedPrivateFile, writePrivateFileAtomic } from './store.js';
 
 export const REGISTRY_VERSION = 2;
@@ -49,6 +49,8 @@ export interface DeploymentMembership {
   refreshTerminal?: boolean;
   /** The build that recorded `refreshTerminal`; absent on a refusal recorded before builds said so. */
   refreshTerminalBy?: string;
+  /** Why `refreshTerminal` was recorded; absent on a refusal recorded before members said why. */
+  refreshTerminalReason?: RefreshTerminalReason;
   /** When each build last asked about a terminal refusal another build recorded, by build identity. */
   refreshRetries?: Record<string, number>;
   machineId: string;
@@ -84,6 +86,8 @@ export interface RegistryEntry {
   refreshTerminal?: boolean;
   /** The build that recorded `refreshTerminal`; absent on a refusal recorded before builds said so. */
   refreshTerminalBy?: string;
+  /** Why `refreshTerminal` was recorded; absent on a refusal recorded before members said why. */
+  refreshTerminalReason?: RefreshTerminalReason;
   /** When each build last asked about a terminal refusal another build recorded, by build identity. */
   refreshRetries?: Record<string, number>;
   /** The worktree-aware project root this entry is keyed on. */
@@ -187,7 +191,7 @@ function isMembership(value: unknown): value is DeploymentMembership {
 }
 
 /** The fields that describe one token rather than the membership: they are true of the token they were recorded for and of no other. */
-export const TOKEN_SCOPED_FIELDS = ['tokenId', 'expiresAt', 'refreshAfter', 'refreshTerminal', 'refreshTerminalBy', 'refreshRetries'] as const;
+export const TOKEN_SCOPED_FIELDS = ['tokenId', 'expiresAt', 'refreshAfter', 'refreshTerminal', 'refreshTerminalBy', 'refreshTerminalReason', 'refreshRetries'] as const;
 
 /**
  * The membership `fresh` leaves on disk over `held`: the held one with every
@@ -243,6 +247,7 @@ function compose(binding: ProjectBinding, mycoHome: string): RegistryEntry | nul
     routeMissingNoticedAt: membership.routeMissingNoticedAt,
     refreshTerminal: membership.refreshTerminal,
     refreshTerminalBy: membership.refreshTerminalBy,
+    refreshTerminalReason: membership.refreshTerminalReason,
     refreshRetries: membership.refreshRetries,
     root: binding.root,
     machineId: membership.machineId,
@@ -265,6 +270,7 @@ function decompose(entry: RegistryEntry): { membership: DeploymentMembership; bi
       routeMissingNoticedAt: entry.routeMissingNoticedAt,
       refreshTerminal: entry.refreshTerminal,
       refreshTerminalBy: entry.refreshTerminalBy,
+      refreshTerminalReason: entry.refreshTerminalReason,
       refreshRetries: entry.refreshRetries,
       machineId: entry.machineId,
       joinedAt: entry.joinedAt,

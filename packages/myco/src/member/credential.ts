@@ -8,7 +8,7 @@
  */
 import { resolveProjectRoot, resolveVaultDir } from '../project-root.js';
 import { resolveMycoHome } from '../paths/home.js';
-import { CREDENTIAL_FLAG, CREDENTIAL_SOURCES, MEMBER_TOKEN_PATTERN, type CredentialSource } from './constants.js';
+import { CREDENTIAL_FLAG, CREDENTIAL_SOURCES, MEMBER_TOKEN_PATTERN, type CredentialSource, type RefreshTerminalReason } from './constants.js';
 import { recordMissingMembership } from './no-membership.js';
 import { listRegistryEntries, readRegistryEntry, type RegistryEntry } from './registry.js';
 
@@ -23,6 +23,7 @@ export interface CredentialRecord {
   refreshAfter?: number;
   refreshTerminal?: boolean;
   refreshTerminalBy?: string;
+  refreshTerminalReason?: RefreshTerminalReason;
   refreshRetries?: Record<string, number>;
   source: CredentialSource;
   /** The project root the registry entry is keyed on; absent for env-sourced records. */
@@ -129,7 +130,7 @@ export function registryCredential(entry: RegistryEntry, root: string): Credenti
   return {
     serverUrl: entry.serverUrl, token: entry.token, tokenId: entry.tokenId, projectId: entry.projectId,
     expiresAt: entry.expiresAt, refreshAfter: entry.refreshAfter, refreshTerminal: entry.refreshTerminal, refreshTerminalBy: entry.refreshTerminalBy,
-    refreshRetries: entry.refreshRetries, source: 'registry', root,
+    refreshTerminalReason: entry.refreshTerminalReason, refreshRetries: entry.refreshRetries, source: 'registry', root,
   };
 }
 

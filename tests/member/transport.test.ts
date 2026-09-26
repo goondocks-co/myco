@@ -125,6 +125,17 @@ describe('ServerClient classification', () => {
     expect(await old.postEvent(env, budget)).toMatchObject({ class: 'protocol', serverProtocol: 1, minCompatMemberProtocol: 1 });
   });
 
+  it('a 401 naming a replay revocation is a refusal of the credential that says why — and only without the protocol header, which alone makes a 401 route_missing', async () => {
+    const env = promptEvent(ctx('s8'), { promptId: mintId(), text: 'hi' }).envelope;
+    const answering = (headers: Record<string, string>): FetchLike => async () =>
+      Response.json({ error: 'unauthorized', code: 'lineage_replayed' }, { status: 401, headers });
+    const replayed = new ServerClient({ serverUrl: 'https://s', token: 'x'.repeat(43), projectId: 'proj_1' }, answering({}));
+    expect(await replayed.postEvent(env, budget)).toEqual({ class: 'unauthorized', status: 401, replayed: true });
+    expect(await replayed.refresh(budget)).toEqual({ class: 'unauthorized', status: 401, replayed: true });
+    const served = new ServerClient({ serverUrl: 'https://s', token: 'x'.repeat(43), projectId: 'proj_1' }, answering({ 'x-myco-protocol': '1' }));
+    expect(await served.postEvent(env, budget)).toEqual({ class: 'route_missing', status: 401 });
+  });
+
   it('a redirect is never followed and never answers acked: the capture body reaches no other host', async () => {
     const rig = await memberRig();
     const elsewhere: Array<{ path: string; body: string }> = [];

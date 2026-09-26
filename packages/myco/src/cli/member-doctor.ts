@@ -136,7 +136,7 @@ export async function run(args: readonly string[], source: CredentialSource, dep
     if (membership.refreshTerminal === true) {
       checks.push(row('Credential', 'fail', `the Deployment will not renew this credential — ${REJOIN_HINT}.`));
     } else if (membership.expired === true) {
-      checks.push(row('Credential', 'warn', `expired at ${iso(membership.expiresAt)}; the next hook or member read renews it while its lineage is live.`));
+      checks.push(row('Credential', 'warn', `expired at ${iso(membership.expiresAt)}; the next hook or member read renews it unless this machine has been inactive too long.`));
     } else {
       checks.push(row('Credential', 'ok', `expires ${iso(membership.expiresAt)}; ${membership.refreshAfter === null ? 'the renewal window is not announced yet' : `renews after ${iso(membership.refreshAfter)}`}.`));
     }

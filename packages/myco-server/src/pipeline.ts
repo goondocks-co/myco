@@ -1,7 +1,7 @@
 import type { ErrorClassifier, OutboundFetch, ServerEnv } from './core/adapters.js';
 import { stampRequest } from './core/activity.js';
 import { matchRoute, methodsServing, type Route, type Shape } from './routes.js';
-import { activateSuccessor, authenticateServerMemberToken, detectLineageReplay, MEMBER_TOKEN_PATTERN, type ExpiryAdmission, type MemberAuth } from './auth/tokens.js';
+import { activateSuccessor, authenticateServerMemberToken, detectLineageReplay, LINEAGE_REPLAY_REVOKER, MEMBER_LINEAGE_IDLE_MS, LINEAGE_REPLAYED_CODE, MEMBER_TOKEN_PATTERN, revokedForReplay, revokeMemberLineage, type ExpiryAdmission, type MemberAuth } from './auth/tokens.js';
 import { heldRunOfCredential } from './api/run-admission.js';
 import { recordRunCall, type HeldRun } from './core/runs.js';
 import { HARNESS_MEMBER_ID } from './core/harness.js';
@@ -60,6 +60,8 @@ function withProtocol(res: Response): Response {
 
 const RETRY_AFTER = { 'retry-after': String(RETRY_AFTER_SECONDS) };
 const unauthorized = () => Response.json({ error: 'unauthorized' }, { status: 401, headers: { 'www-authenticate': 'Bearer realm="myco"' } });
+/** A 401 to a credential a replay revocation ended, naming why. Like every 401 before authentication it carries no protocol header, so a member reads it as a refusal of its credential. */
+const replayRevoked = () => Response.json({ error: 'unauthorized', code: LINEAGE_REPLAYED_CODE }, { status: 401, headers: { 'www-authenticate': 'Bearer realm="myco"' } });
 const unavailable = () => Response.json({ error: UNAVAILABLE }, { status: 503, headers: RETRY_AFTER });
 type MemberRoute = Extract<Route, { auth: 'member' }>;
 /** A json member route that serves the run principal. */
@@ -77,6 +79,8 @@ const admitsGrant = (route: Route): route is GrantRoute => route.auth === 'membe
 /** How a credential past its expiry is treated on the matched route: admitted only where the route table declares `admitsLapsed`, refused everywhere else, an unmatched path included. */
 const expiryAdmissionOf = (route: Route | undefined): ExpiryAdmission =>
   route?.auth === 'member' && credentialScoped(route) && route.admitsLapsed === true ? 'lapsed' : 'live';
+/** Whether the matched route asks for the presented credential's successor: the one route on which a superseded credential ends its lineage. */
+const asksToRotate = (route: Route | undefined): boolean => route?.auth === 'member' && credentialScoped(route) && route.shape === 'refreshed';
 /** The refusal shape of a member route, as the route table declares it. */
 const shapeOf = (route: MemberRoute): Shape => route.shape;
 /** A grant authenticated to its Project. */
@@ -339,18 +343,27 @@ export function createServer(deps: ServerDeps) {
     if (!auth) {
       const digest = await sha256Hex(presented);
       emit({ kind: 'auth_failed', credential: 'member', matched: matched !== null, source: (await sha256Hex(source)).slice(0, 16) });
-      // A superseded credential answers 401 like any other, and the answer is the same
-      // to the holder either way. The record is what differs: this names which lineage
-      // is still being presented after it moved on, and how long after.
+      // A superseded credential presented anywhere but the refresh route is recorded and
+      // answered 401 like any other: a hook that lost a rotation race, or a bridge that
+      // built its headers before the rotation, re-reads the registry and carries on. A
+      // member asks to rotate only the token its registry holds, under the registry lock,
+      // so a superseded one on the refresh route means a second holder rotated the
+      // lineage: every live row of it is revoked, the second holder's included — while the
+      // presented row's issue falls inside the idle window. One issued earlier, from a backup or
+      // a log, is refused like any other and ends nothing.
       const replay = await detectLineageReplay(env.db, digest, now);
+      const rotating = replay !== null && asksToRotate(matched?.route) && replay.issuedAt + MEMBER_LINEAGE_IDLE_MS > now;
       if (replay !== null) {
+        const revoked = rotating ? (await revokeMemberLineage(env.db, replay.tokenId, now, LINEAGE_REPLAY_REVOKER)).revoked : 0;
         emit({
           kind: 'lineage_replayed', memberId: replay.memberId, tokenId: replay.tokenId,
           lineageRoot: replay.lineageRoot, successorId: replay.successorId,
           sinceActivationMs: now - replay.activatedAt,
           withinHookRace: now - replay.activatedAt <= LINEAGE_REPLAY_GRACE_MS,
+          revoked,
         });
       }
+      if (rotating || await revokedForReplay(env.db, digest)) return (await env.sourceLimit.limit({ key: source })).success ? replayRevoked() : limited();
       return anonymous();
     }
     return withProtocol(await member(request, env, auth, matched, url, now));

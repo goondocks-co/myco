@@ -713,7 +713,7 @@ function refreshLine(report: RefreshReport): string {
     case 'not-due': return `not due — refresh window opens ${when(entry?.refreshAfter ?? (entry?.expiresAt === undefined ? undefined : entry.expiresAt - MEMBER_TOKEN_REFRESH_WINDOW_MS))}`;
     case 'too-early': return `the server is not ready to rotate yet — retry after ${when(entry?.refreshAfter)}`;
     case 'busy': return 'another myco process is rotating this token';
-    case 'lineage-expired': return `this token chain has reached its lifetime — ${REJOIN_HINT}`;
+    case 'lineage-expired': return `this machine was inactive too long, or its credential ended — ${REJOIN_HINT}`;
     case 'unauthorized': return `the server refused this token — ${REJOIN_HINT}`;
     case 'terminal': return `the server refused to rotate this token — ${REJOIN_HINT}`;
     case 'route-missing': return 'this server does not rotate member tokens';

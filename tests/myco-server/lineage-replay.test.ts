@@ -3,13 +3,16 @@
  *
  * A rotation revokes the predecessor at the successor's first use, so every later
  * request on the predecessor answers 401 exactly like an expired or operator-revoked
- * one. The audit record is the only thing that separates them.
+ * one, and the audit record is the only thing that separates them — on every route
+ * but the refresh route. A superseded credential asking to rotate means a second
+ * holder rotated the lineage, and the whole lineage is revoked, that holder's
+ * successor included (#1417).
  */
 import { refreshed } from './helpers/outcomes.js';
 import { jsonBody } from '../helpers/json-body.js';
 import { describe, expect, it } from 'bun:test';
 import worker from '@myco-server-worker/index.js';
-import { activateSuccessor, issueMemberToken, refreshMemberToken, revokeMemberLineage } from '@myco-server-worker/auth/tokens.js';
+import { activateSuccessor, issueMemberToken, LINEAGE_REPLAY_REVOKER, MEMBER_LINEAGE_IDLE_MS, refreshMemberToken, revokeMemberLineage } from '@myco-server-worker/auth/tokens.js';
 import { LINEAGE_REPLAY_GRACE_MS, PROJECT_HEADER, PROTOCOL_HEADER, SERVER_PROTOCOL } from '@myco-server-worker/constants.js';
 import { envelope, sqliteEnv, uuid } from './helpers/fixtures.js';
 
@@ -36,6 +39,19 @@ async function rotated(now: number) {
   await activateSuccessor(e.db, { tokenId: refreshed.tokenId, predecessorId: root.tokenId }, now);
   return { e, root, successor: refreshed };
 }
+
+const refreshRequest = (token: string) => new Request('https://s/tokens/refresh', {
+  method: 'POST',
+  headers: { authorization: `Bearer ${token}`, 'cf-connecting-ip': '1.2.3.4', 'content-type': 'application/json', [PROTOCOL_HEADER]: String(SERVER_PROTOCOL) },
+  body: '{}',
+});
+const mcpRequest = (token: string) => new Request('https://s/mcp', {
+  method: 'POST',
+  headers: { authorization: `Bearer ${token}`, 'cf-connecting-ip': '1.2.3.4', 'content-type': 'application/json', [PROJECT_HEADER]: 'proj_1', [PROTOCOL_HEADER]: String(SERVER_PROTOCOL) },
+  body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list' }),
+});
+const liveIn = (e: ReturnType<typeof sqliteEnv>, root: string) =>
+  (e.sqlite.query(`SELECT COUNT(*) c FROM member_credentials WHERE lineage_root = ? AND revoked_at IS NULL`).get(root) as { c: number }).c;
 
 const post = (token: string) => new Request('https://s/events', {
   method: 'POST',
@@ -146,5 +162,99 @@ describe('superseded credential', () => {
       expect(res.status).toBe(401);
       expect(lines.filter((l) => l.kind === 'lineage_replayed')).toEqual([]);
     }
+  });
+});
+
+describe('a superseded credential asking to rotate', () => {
+  it('thief first: the owner\'s rotation with the head a thief already rotated revokes every live row of the lineage, the thief\'s included, and says why', async () => {
+    const now = Date.now();
+    const { e, root, successor: thief } = await rotated(now);
+    expect(liveIn(e, root.tokenId)).toBe(1);
+
+    const { value: res, lines } = await emitted(() => worker.fetch(refreshRequest(root.token), e.env));
+    expect(res.status).toBe(401);
+    expect(res.headers.get(PROTOCOL_HEADER)).toBeNull();
+    expect(await jsonBody(res)).toEqual({ error: 'unauthorized', code: 'lineage_replayed' });
+    expect(lines.find((l) => l.kind === 'lineage_replayed')).toMatchObject({ tokenId: root.tokenId, successorId: thief.tokenId, revoked: 1 });
+    expect(liveIn(e, root.tokenId)).toBe(0);
+    expect(e.sqlite.query(`SELECT revoked_by FROM member_credentials WHERE id = ?`).get(thief.tokenId)).toEqual({ revoked_by: LINEAGE_REPLAY_REVOKER });
+
+    // The thief's successor is refused on every route, naming why; the owner's head stays refused the same way.
+    for (const req of [post(thief.token!), refreshRequest(thief.token!), refreshRequest(root.token)]) {
+      const refused = await worker.fetch(req, e.env);
+      expect({ status: refused.status, body: await jsonBody(refused) }).toEqual({ status: 401, body: { error: 'unauthorized', code: 'lineage_replayed' } });
+    }
+  });
+
+  it('revokes with no grace: a rotation asked within a second of the successor\'s first use ends the lineage too', async () => {
+    const now = Date.now();
+    const { e, root } = await rotated(now);
+    e.sqlite.query(`UPDATE member_credentials SET first_used_at = ? WHERE predecessor_id = ?`).run(Date.now(), root.tokenId);
+    expect((await emitted(() => worker.fetch(refreshRequest(root.token), e.env))).value.status).toBe(401);
+    expect(liveIn(e, root.tokenId)).toBe(0);
+  });
+
+  it('revokes only while the superseded credential was issued inside the idle window: an older one, from a backup or a log, is refused and ends nothing', async () => {
+    const margin = 60_000;
+    for (const [issuedAgo, revokes] of [[MEMBER_LINEAGE_IDLE_MS - margin, true], [MEMBER_LINEAGE_IDLE_MS, false], [MEMBER_LINEAGE_IDLE_MS * 3, false]] as const) {
+      const now = Date.now();
+      const { e, root, successor } = await rotated(now);
+      e.sqlite.query(`UPDATE member_credentials SET issued_at = ? WHERE id = ?`).run(now - issuedAgo, root.tokenId);
+      const { value: res, lines } = await emitted(() => worker.fetch(refreshRequest(root.token), e.env));
+      expect({ issuedAgo, status: res.status, body: await jsonBody(res), live: liveIn(e, root.tokenId) }).toEqual({
+        issuedAgo, status: 401, body: revokes ? { error: 'unauthorized', code: 'lineage_replayed' } : { error: 'unauthorized' }, live: revokes ? 0 : 1,
+      });
+      expect(lines.find((l) => l.kind === 'lineage_replayed')).toMatchObject({ tokenId: root.tokenId, revoked: revokes ? 1 : 0 });
+      if (!revokes) expect((await (await worker.fetch(post(successor.token!), e.env)).json() as Record<string, unknown>).persisted).toBe(true);
+    }
+  });
+
+  it('owner first: a superseded credential on a capture or tool route, however late, revokes nothing — a stale bridge or a racing hook re-reads the registry', async () => {
+    const activatedAt = Date.now() - LINEAGE_REPLAY_GRACE_MS * 10;
+    const { e, root, successor } = await rotated(activatedAt);
+    e.sqlite.query(`UPDATE member_credentials SET first_used_at = ? WHERE predecessor_id = ?`).run(activatedAt, root.tokenId);
+    for (const req of [post(root.token), mcpRequest(root.token)]) {
+      const { value: res, lines } = await emitted(() => worker.fetch(req, e.env));
+      expect({ status: res.status, body: await jsonBody(res) }).toEqual({ status: 401, body: { error: 'unauthorized' } });
+      expect(lines.find((l) => l.kind === 'lineage_replayed')).toMatchObject({ withinHookRace: false, revoked: 0 });
+    }
+    expect(liveIn(e, root.tokenId)).toBe(1);
+    expect((await (await worker.fetch(post(successor.token!), e.env)).json() as Record<string, unknown>).persisted).toBe(true);
+  });
+
+  it('a thief who rotated the head the owner had already rotated, but not yet used: the owner\'s passed-over successor asking to rotate ends the lineage', async () => {
+    const now = Date.now();
+    const e = sqliteEnv();
+    const head = await issueMemberToken(e.db, { memberId: 'mem_machine_1', machineId: 'machine_1' }, now);
+    const subject = { memberId: 'mem_machine_1', tokenId: head.tokenId, machineId: 'machine_1', expiresAt: head.expiresAt, lineageRoot: head.tokenId, lineageStartedAt: now, runtime: { runtimeLabel: null, runtimeKind: null } };
+    const owners = refreshed(await refreshMemberToken(e.db, subject, head.expiresAt - 2_000));
+    const thiefs = refreshed(await refreshMemberToken(e.db, subject, head.expiresAt - 1_000));
+    // The thief's rotation revoked the owner's unused successor; its first use revokes the head.
+    expect(e.sqlite.query(`SELECT revoked_at IS NOT NULL AS r, first_used_at FROM member_credentials WHERE id = ?`).get(owners.tokenId)).toEqual({ r: 1, first_used_at: null });
+    expect((await (await worker.fetch(post(thiefs.token), e.env)).json() as Record<string, unknown>).persisted).toBe(true);
+
+    // The owner's successor on a capture route is recorded as passed over, and nothing more.
+    const { value: onCapture, lines } = await emitted(() => worker.fetch(post(owners.token), e.env));
+    expect(onCapture.status).toBe(401);
+    expect(lines.find((l) => l.kind === 'lineage_replayed')).toMatchObject({ tokenId: owners.tokenId, successorId: thiefs.tokenId, revoked: 0 });
+    expect(liveIn(e, head.tokenId)).toBe(1);
+
+    const rotation = await worker.fetch(refreshRequest(owners.token), e.env);
+    expect({ status: rotation.status, body: await jsonBody(rotation) }).toEqual({ status: 401, body: { error: 'unauthorized', code: 'lineage_replayed' } });
+    expect(liveIn(e, head.tokenId)).toBe(0);
+    expect((await worker.fetch(post(thiefs.token), e.env)).status).toBe(401);
+  });
+
+  it('says nothing about a successor the same holder replaced before using it: no other successor of its predecessor was used', async () => {
+    const now = Date.now();
+    const e = sqliteEnv();
+    const head = await issueMemberToken(e.db, { memberId: 'mem_machine_1', machineId: 'machine_1' }, now);
+    const subject = { memberId: 'mem_machine_1', tokenId: head.tokenId, machineId: 'machine_1', expiresAt: head.expiresAt, lineageRoot: head.tokenId, lineageStartedAt: now, runtime: { runtimeLabel: null, runtimeKind: null } };
+    const lost = refreshed(await refreshMemberToken(e.db, subject, head.expiresAt - 2_000));
+    refreshed(await refreshMemberToken(e.db, subject, head.expiresAt - 1_000));
+    const { value: res, lines } = await emitted(() => worker.fetch(refreshRequest(lost.token), e.env));
+    expect({ status: res.status, body: await jsonBody(res) }).toEqual({ status: 401, body: { error: 'unauthorized' } });
+    expect(lines.filter((l) => l.kind === 'lineage_replayed')).toEqual([]);
+    expect(liveIn(e, head.tokenId)).toBe(2);
   });
 });
