@@ -12,13 +12,15 @@
  * A source run's Git rules come only with the run's own `git` and the
  * environment that puts it first (`source-git.ts`): a harness matching a rule
  * by its prefix cannot see a command's arguments, and the run's `git` is where
- * they are held to reads of the checkout. Where no such `git` can be written,
- * no Git rule is granted.
+ * they are held to reads of the checkout. Where the harness's shell does not
+ * reach the run's `git`, or no such `git` can be written, no Git rule is
+ * granted.
  */
 import { realpathSync } from 'node:fs';
 import { join } from 'node:path';
 import { RUN_REPOSITORY_DIR, SOURCE_GIT_READ_COMMANDS } from '@goondocks/myco-shared/repository';
 import type { RunSpec } from '../events.js';
+import type { Harness } from '../harnesses.js';
 import { MCP_SERVER_NAME } from '../mcp-config.js';
 import { gitReadRefusal, prepareSourceGit, shellWords, type SourceGit } from './source-git.js';
 
@@ -58,13 +60,14 @@ export interface RunGrant {
 }
 
 /**
- * The run's grant: its own server, and file and history reads for a source
- * run. For a source run this writes the run's `git` into its scratch directory
- * first, so a grant holding a Git rule always comes with the environment that
- * confines it.
+ * The run's grant on this harness: its own server, and file and history reads
+ * for a source run. History reads are granted only on a harness whose shell
+ * reaches the run's `git`, and this writes that `git` into the run's scratch
+ * directory first, so a grant holding a Git rule always comes with the
+ * environment that confines it.
  */
-export function runGrant(spec: RunSpec, platform: NodeJS.Platform = process.platform): RunGrant {
-  const git = spec.sourceReadOnly === true ? prepareSourceGit(spec.scratchDir, platform) : null;
+export function runGrant(spec: RunSpec, harness: Pick<Harness, 'sourceGit'>, platform: NodeJS.Platform = process.platform): RunGrant {
+  const git = spec.sourceReadOnly === true && harness.sourceGit === 'shim' ? prepareSourceGit(spec.scratchDir, platform) : null;
   return {
     rules: [SERVER_GRANT, ...(spec.sourceReadOnly === true ? sourceReadTools(spec.scratchDir, git) : [])],
     env: git?.env ?? {},

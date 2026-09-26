@@ -67,7 +67,7 @@ export const claudeCodeDriver: Driver = {
   async *run(spec: RunSpec, signal: AbortSignal): AsyncIterable<RunEvent> {
     const harness = harnessById('claude-code')!;
     const isolation = harness.isolation.kind === 'flag' ? harness.isolation.args : [];
-    const { rules: grant, env, shellSetup } = runGrant(spec);
+    const { rules: grant, env, shellSetup } = runGrant(spec, harness);
     const started = startHarness(harness.binary, [
       '-p', spec.prompt,
       '--output-format', 'stream-json',

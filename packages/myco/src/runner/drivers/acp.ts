@@ -198,10 +198,11 @@ export async function* turnOver(
   listTools: (server: RunServer, signal: AbortSignal) => Promise<RunTools> = listRunTools,
   options: { grant?: RunGrant; signal?: AbortSignal } = {},
 ): AsyncIterable<RunEvent> {
-  const grant = options.grant ?? runGrant(spec);
+  const harness = harnessById(id);
+  const grant = options.grant ?? runGrant(spec, harness ?? { sourceGit: 'none' });
   const signal = options.signal ?? new AbortController().signal;
   const server = runServerOf(spec);
-  const asking = askingOf(harnessById(id));
+  const asking = askingOf(harness);
   let tools: ReadonlySet<string> = new Set();
   let events: AcpEvents | undefined;
   let sessionId: string | null = null;
@@ -286,7 +287,7 @@ export function acpDriver(id: string): Driver {
     async *run(spec: RunSpec, signal: AbortSignal): AsyncIterable<RunEvent> {
       const harness = harnessById(id)!;
       const { command, args } = commandOf(harness);
-      const grant = runGrant(spec);
+      const grant = runGrant(spec, harness);
       const child = spawn(command, [...args], {
         cwd: spec.scratchDir,
         env: { ...process.env, ...spec.credentialEnv, ...grant.env, ...askingOf(harness).env },

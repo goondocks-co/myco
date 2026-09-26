@@ -23,8 +23,12 @@ import { listRunTools, type RunTools } from '@myco/runner/drivers/run-tools.js';
 import { GIT_TRIPWIRE_ENV, gitReadRefusal, shellWords } from '@myco/runner/drivers/source-git.js';
 import type { RunEvent } from '@myco/runner/events.js';
 import { writeRunDir } from '@myco/runner/mcp-config.js';
+import { harnessById, HARNESSES } from '@myco/runner/harnesses.js';
 
 const CONNECTION = { serverUrl: 'https://deployment.example', projectId: 'proj_1', runToken: 'tok_run_secret' };
+
+/** A harness whose shell reaches the run's own `git`. */
+const SHIM = { sourceGit: 'shim' } as const;
 
 /** Git for setting a fixture up, reading neither the machine's nor the user's configuration. */
 const setupEnv = { ...process.env, GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_NOSYSTEM: '1' };
@@ -74,7 +78,7 @@ const VECTORS: Array<{ args: string[]; creates?: string }> = [
 
 describe('the run\'s own git', () => {
   function shim(run: { scratchDir: string; mcpConfigPath: string }, args: readonly string[], env: Record<string, string> = {}): { status: number | null; stderr: string } {
-    const grant = runGrant({ ...run, prompt: '', credentialEnv: {}, sourceReadOnly: true });
+    const grant = runGrant({ ...run, prompt: '', credentialEnv: {}, sourceReadOnly: true }, SHIM);
     const result = spawnSync(join(run.scratchDir, 'bin', 'git'), [...args], { cwd: run.scratchDir, env: { ...process.env, ...grant.env, ...env }, encoding: 'utf8' });
     return { status: result.status, stderr: result.stderr };
   }
@@ -82,7 +86,7 @@ describe('the run\'s own git', () => {
   it('runs a read of the checkout with the machine\'s Git', () => {
     const run = sourceRun();
     const result = spawnSync(join(run.scratchDir, 'bin', 'git'), ['-C', 'repo', 'log', '--format=%s'], {
-      cwd: run.scratchDir, env: { ...process.env, ...runGrant({ ...run, prompt: '', credentialEnv: {}, sourceReadOnly: true }).env }, encoding: 'utf8',
+      cwd: run.scratchDir, env: { ...process.env, ...runGrant({ ...run, prompt: '', credentialEnv: {}, sourceReadOnly: true }, SHIM).env }, encoding: 'utf8',
     });
     expect({ status: result.status, stdout: result.stdout }).toEqual({ status: 0, stdout: 'two\none\n' });
   });
@@ -126,7 +130,7 @@ describe('the run\'s own git', () => {
 
   it('is the git a shell reaches after the user\'s configuration puts another first and defines its own', () => {
     const run = sourceRun();
-    const grant = runGrant({ ...run, prompt: '', credentialEnv: {}, sourceReadOnly: true });
+    const grant = runGrant({ ...run, prompt: '', credentialEnv: {}, sourceReadOnly: true }, SHIM);
     // A shell whose startup put the machine's Git first and defined `git` itself, then the run's setup.
     const script = `PATH=/usr/bin:/bin:$PATH; git() { echo user-function; }; . ${JSON.stringify(grant.shellSetup!)}; command -v git`;
     const reached = execFileSync('/bin/sh', ['-c', script], { env: { ...process.env, ...grant.env }, encoding: 'utf8' }).trim();
@@ -135,9 +139,22 @@ describe('the run\'s own git', () => {
 
   it('is not written, and no Git command granted, where it cannot hold one: on Windows', () => {
     const run = sourceRun();
-    const grant = runGrant({ ...run, prompt: '', credentialEnv: {}, sourceReadOnly: true }, 'win32');
+    const grant = runGrant({ ...run, prompt: '', credentialEnv: {}, sourceReadOnly: true }, SHIM, 'win32');
     expect(grant.rules.filter((rule) => rule.startsWith(`${SHELL_TOOL}(`))).toEqual([]);
     expect({ env: grant.env, shellSetup: grant.shellSetup, written: existsSync(join(run.scratchDir, 'bin', 'git')) }).toEqual({ env: {}, shellSetup: null, written: false });
+  });
+
+  it('grants Git reads only on a harness whose shell reaches the run\'s git: none on Cursor, which keeps its file tools', () => {
+    expect(Object.fromEntries(HARNESSES.map((h) => [h.id, h.sourceGit]))).toEqual({
+      'claude-code': 'shim', codex: 'none', opencode: 'shim', cursor: 'none', antigravity: 'shim',
+    });
+    const run = sourceRun();
+    const cursor = runGrant({ ...run, prompt: '', credentialEnv: {}, sourceReadOnly: true }, harnessById('cursor')!);
+    expect(cursor.rules.filter((rule) => rule.startsWith(`${SHELL_TOOL}(`))).toEqual([]);
+    expect(cursor.rules).toEqual(expect.arrayContaining(['Read', 'Glob', 'Grep']));
+    expect({ env: cursor.env, shellSetup: cursor.shellSetup, written: existsSync(join(run.scratchDir, 'bin', 'git')) }).toEqual({ env: {}, shellSetup: null, written: false });
+    const shim = runGrant({ ...run, prompt: '', credentialEnv: {}, sourceReadOnly: true }, { ...harnessById('cursor')!, sourceGit: 'shim' });
+    expect(shim.rules).toContain(`${SHELL_TOOL}(git -C repo log:*)`);
   });
 
   it('grants no Git search: runs search with their own tool', () => {
@@ -155,7 +172,7 @@ describe('the protocol driver judging a command from its words', () => {
 
   it('refuses the same vectors the run\'s git refuses, however they are quoted, and allows a read', () => {
     const run = sourceRun();
-    const { rules } = runGrant({ ...run, prompt: '', credentialEnv: {}, sourceReadOnly: true });
+    const { rules } = runGrant({ ...run, prompt: '', credentialEnv: {}, sourceReadOnly: true }, SHIM);
     const quote = (arg: string): string => `'${arg}'`;
     for (const { args } of VECTORS) {
       // Where `-C` leads is the grant's to judge, by the directories its rules name.
@@ -171,7 +188,7 @@ describe('the protocol driver judging a command from its words', () => {
 
   it('refuses a command whose working directory is outside the run\'s, when only an earlier update names it', () => {
     const run = sourceRun();
-    const grant = runGrant({ ...run, prompt: '', credentialEnv: {}, sourceReadOnly: true });
+    const grant = runGrant({ ...run, prompt: '', credentialEnv: {}, sourceReadOnly: true }, SHIM);
     const options = [{ optionId: 'once', kind: 'allow_once' }, { optionId: 'reject', kind: 'reject_once' }];
     const answerFor = (cwd: string): { outcome: unknown; refusal: string | null } => {
       const calls = new ToolCalls();

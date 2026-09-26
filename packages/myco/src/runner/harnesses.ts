@@ -1,8 +1,8 @@
 /**
- * Every harness a worker can drive, and the five facts that differ between them.
+ * Every harness a worker can drive, and the six facts that differ between them.
  *
  * Detection, the three drivers and `myco doctor` all read this one table, so a
- * fact about a harness is stated once. The five that differ:
+ * fact about a harness is stated once. The six that differ:
  *
  * - **`binary`** — what to look for on PATH.
  * - **`launch`** — three shapes, not two. A harness may speak the protocol
@@ -17,6 +17,9 @@
  *   airtight, which is why it is a field rather than one rule applied thrice.
  * - **`asking`** — how a harness is made to ask before a call, so the run's
  *   grant decides every call a protocol driver is asked about.
+ * - **`sourceGit`** — whether a source run's shell commands reach the run's
+ *   own `git`, so the grant offers Git reads only where they can be held to
+ *   reads of the checkout.
  */
 
 import { expandHome } from '../paths/home.js';
@@ -67,6 +70,14 @@ export type Asking =
   | { kind: 'default' }
   | { kind: 'run-agent'; env: string };
 
+/**
+ * Whether a source run on this harness may read Git history. `shim`: the
+ * harness runs a shell command with the run's own `git` first on its PATH, so
+ * the run is granted Git read commands. `none`: it does not, and a source run
+ * reads its checkout through its file tools alone.
+ */
+export type SourceGit = 'shim' | 'none';
+
 export interface Harness {
   id: string;
   binary: string;
@@ -74,6 +85,7 @@ export interface Harness {
   credential: CredentialProbe;
   isolation: Isolation;
   asking: Asking;
+  sourceGit: SourceGit;
 }
 
 export const HARNESSES: readonly Harness[] = [
@@ -86,6 +98,7 @@ export const HARNESSES: readonly Harness[] = [
     credential: { kind: 'file-or-command', path: '~/.claude/.credentials.json', requires: ['claudeAiOauth', 'accessToken'], args: ['auth', 'status'] },
     isolation: { kind: 'flag', args: ['--strict-mcp-config'] },
     asking: { kind: 'native' },
+    sourceGit: 'shim',
   },
   {
     id: 'codex',
@@ -95,6 +108,8 @@ export const HARNESSES: readonly Harness[] = [
     credential: { kind: 'file', path: '~/.codex/auth.json', requires: ['OPENAI_API_KEY', 'tokens', 'personal_access_token'] },
     isolation: { kind: 'home', env: 'CODEX_HOME' },
     asking: { kind: 'native' },
+    // Its driver holds a run to a sandbox rather than to the run's grant.
+    sourceGit: 'none',
   },
   {
     id: 'opencode',
@@ -104,6 +119,7 @@ export const HARNESSES: readonly Harness[] = [
     isolation: { kind: 'additive' },
     // Its default configuration allows every tool without asking.
     asking: { kind: 'run-agent', env: 'OPENCODE_CONFIG_CONTENT' },
+    sourceGit: 'shim',
   },
   {
     id: 'cursor',
@@ -112,6 +128,8 @@ export const HARNESSES: readonly Harness[] = [
     credential: { kind: 'command', args: ['status'] },
     isolation: { kind: 'additive' },
     asking: { kind: 'default' },
+    // Its shell puts the system directories first on PATH before each command.
+    sourceGit: 'none',
   },
   {
     id: 'antigravity',
@@ -120,6 +138,7 @@ export const HARNESSES: readonly Harness[] = [
     credential: { kind: 'file', path: '~/.gemini/antigravity-cli/settings.json', requires: [] },
     isolation: { kind: 'additive' },
     asking: { kind: 'default' },
+    sourceGit: 'shim',
   },
 ];
 

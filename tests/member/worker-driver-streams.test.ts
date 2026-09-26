@@ -28,6 +28,7 @@ import { stubAcpHarness, STUB_DETECTED, STUB_HARNESS } from '../helpers/stub-acp
 import { readFileSync } from 'node:fs';
 import { RUN_AGENT, turnOver, type Channel } from '@myco/runner/drivers/acp.js';
 import { listRunTools, type RunTools } from '@myco/runner/drivers/run-tools.js';
+import { runGrant } from '@myco/runner/drivers/grant.js';
 import type { RunEvent } from '@myco/runner/events.js';
 import { globalFetchDouble } from '../helpers/global-fetch.js';
 import { listingOnly, withRunMcp } from '../helpers/run-mcp-fetch.ts';
@@ -871,13 +872,19 @@ describe('the agent-protocol driver answering cursor-agent', () => {
     ]);
   });
 
-  it('allows a source run\'s history read whose command only an earlier update carries', async () => {
+  it('allows a source run\'s history read whose command only an earlier update carries, where the grant holds Git reads', async () => {
     const run = runDir();
     mkdirSync(join(run.scratchDir, 'repo'));
-    const answers: unknown[] = [];
-    const channel = askingAgent(async (agent) => { answers.push((await cursorShellCall(agent, 'git -C repo log'))?.result); });
-    await collect(turnOver(channel, 'cursor', { ...run, sourceReadOnly: true, prompt: 'read history', credentialEnv: {} }, () => '', listed));
-    expect(answers).toEqual([{ outcome: { outcome: 'selected', optionId: 'allow-once' } }]);
+    const spec = { ...run, sourceReadOnly: true, prompt: 'read history', credentialEnv: {} };
+    const answerFor = async (sourceGit: 'shim' | 'none'): Promise<unknown[]> => {
+      const answers: unknown[] = [];
+      const channel = askingAgent(async (agent) => { answers.push((await cursorShellCall(agent, 'git -C repo log'))?.result); });
+      await collect(turnOver(channel, 'cursor', spec, () => '', listed, { grant: runGrant(spec, { sourceGit }) }));
+      return answers;
+    };
+    expect(await answerFor('shim')).toEqual([{ outcome: { outcome: 'selected', optionId: 'allow-once' } }]);
+    // Cursor's own grant holds no Git reads: its shell does not reach the run's git.
+    expect(await answerFor('none')).toEqual([{ outcome: { outcome: 'selected', optionId: 'reject-once' } }]);
   });
 
   it('keeps a refused call failed when the agent then reports it completed', async () => {
