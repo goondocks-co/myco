@@ -178,7 +178,7 @@ export function Access() {
         open={revokeCredentialId !== null}
         onOpenChange={(open) => { if (!open) setRevokeCredentialId(null); }}
         title="Stop this runtime?"
-        description="It stops writing at once. What it already wrote stays, attributed to it."
+        description="It stops writing at once, and the machine has to sign in again (`myco login <link>`) to write any more. What it already wrote stays, attributed to it."
         confirmLabel="Stop"
         isPending={actions.revokeCredential.isPending}
         errorMessage={stopError}

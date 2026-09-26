@@ -12,7 +12,7 @@ import { refreshed } from './helpers/outcomes.js';
 import { jsonBody } from '../helpers/json-body.js';
 import { describe, expect, it } from 'bun:test';
 import worker from '@myco-server-worker/index.js';
-import { activateSuccessor, issueMemberToken, LINEAGE_REPLAY_REVOKER, refreshMemberToken, revokeMemberLineage } from '@myco-server-worker/auth/tokens.js';
+import { activateSuccessor, issueMemberToken, LINEAGE_REPLAY_REVOKER, MEMBER_LINEAGE_IDLE_MS, refreshMemberToken, revokeMemberLineage } from '@myco-server-worker/auth/tokens.js';
 import { LINEAGE_REPLAY_GRACE_MS, PROJECT_HEADER, PROTOCOL_HEADER, SERVER_PROTOCOL } from '@myco-server-worker/constants.js';
 import { envelope, sqliteEnv, uuid } from './helpers/fixtures.js';
 
@@ -192,6 +192,21 @@ describe('a superseded credential asking to rotate', () => {
     e.sqlite.query(`UPDATE member_credentials SET first_used_at = ? WHERE predecessor_id = ?`).run(Date.now(), root.tokenId);
     expect((await emitted(() => worker.fetch(refreshRequest(root.token), e.env))).value.status).toBe(401);
     expect(liveIn(e, root.tokenId)).toBe(0);
+  });
+
+  it('revokes only while the superseded credential was issued inside the idle window: an older one, from a backup or a log, is refused and ends nothing', async () => {
+    const margin = 60_000;
+    for (const [issuedAgo, revokes] of [[MEMBER_LINEAGE_IDLE_MS - margin, true], [MEMBER_LINEAGE_IDLE_MS, false], [MEMBER_LINEAGE_IDLE_MS * 3, false]] as const) {
+      const now = Date.now();
+      const { e, root, successor } = await rotated(now);
+      e.sqlite.query(`UPDATE member_credentials SET issued_at = ? WHERE id = ?`).run(now - issuedAgo, root.tokenId);
+      const { value: res, lines } = await emitted(() => worker.fetch(refreshRequest(root.token), e.env));
+      expect({ issuedAgo, status: res.status, body: await jsonBody(res), live: liveIn(e, root.tokenId) }).toEqual({
+        issuedAgo, status: 401, body: revokes ? { error: 'unauthorized', code: 'lineage_replayed' } : { error: 'unauthorized' }, live: revokes ? 0 : 1,
+      });
+      expect(lines.find((l) => l.kind === 'lineage_replayed')).toMatchObject({ tokenId: root.tokenId, revoked: revokes ? 1 : 0 });
+      if (!revokes) expect((await (await worker.fetch(post(successor.token!), e.env)).json() as Record<string, unknown>).persisted).toBe(true);
+    }
   });
 
   it('owner first: a superseded credential on a capture or tool route, however late, revokes nothing — a stale bridge or a racing hook re-reads the registry', async () => {

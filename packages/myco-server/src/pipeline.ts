@@ -1,7 +1,7 @@
 import type { ErrorClassifier, OutboundFetch, ServerEnv } from './core/adapters.js';
 import { stampRequest } from './core/activity.js';
 import { matchRoute, methodsServing, type Route, type Shape } from './routes.js';
-import { activateSuccessor, authenticateServerMemberToken, detectLineageReplay, LINEAGE_REPLAY_REVOKER, LINEAGE_REPLAYED_CODE, MEMBER_TOKEN_PATTERN, revokedForReplay, revokeMemberLineage, type ExpiryAdmission, type MemberAuth } from './auth/tokens.js';
+import { activateSuccessor, authenticateServerMemberToken, detectLineageReplay, LINEAGE_REPLAY_REVOKER, MEMBER_LINEAGE_IDLE_MS, LINEAGE_REPLAYED_CODE, MEMBER_TOKEN_PATTERN, revokedForReplay, revokeMemberLineage, type ExpiryAdmission, type MemberAuth } from './auth/tokens.js';
 import { heldRunOfCredential } from './api/run-admission.js';
 import { recordRunCall, type HeldRun } from './core/runs.js';
 import { HARNESS_MEMBER_ID } from './core/harness.js';
@@ -348,9 +348,11 @@ export function createServer(deps: ServerDeps) {
       // built its headers before the rotation, re-reads the registry and carries on. A
       // member asks to rotate only the token its registry holds, under the registry lock,
       // so a superseded one on the refresh route means a second holder rotated the
-      // lineage: every live row of it is revoked, the second holder's included.
+      // lineage: every live row of it is revoked, the second holder's included — while the
+      // presented row's issue falls inside the idle window. One issued earlier, from a backup or
+      // a log, is refused like any other and ends nothing.
       const replay = await detectLineageReplay(env.db, digest, now);
-      const rotating = replay !== null && asksToRotate(matched?.route);
+      const rotating = replay !== null && asksToRotate(matched?.route) && replay.issuedAt + MEMBER_LINEAGE_IDLE_MS > now;
       if (replay !== null) {
         const revoked = rotating ? (await revokeMemberLineage(env.db, replay.tokenId, now, LINEAGE_REPLAY_REVOKER)).revoked : 0;
         emit({

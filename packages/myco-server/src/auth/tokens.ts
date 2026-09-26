@@ -290,6 +290,8 @@ export interface LineageReplay {
   successorId: string;
   /** The instant the successor first authenticated — the instant this credential stopped working. */
   activatedAt: number;
+  /** The presented credential's own `issued_at`. */
+  issuedAt: number;
 }
 
 /**
@@ -315,18 +317,18 @@ export interface LineageReplay {
  */
 export async function detectLineageReplay(db: RelationalStore, digest: string, nowMs: number): Promise<LineageReplay | null> {
   const row = await db
-    .prepare(`SELECT p.id, p.member_id, p.lineage_root, p.machine_id, s.id AS successor_id, s.first_used_at
+    .prepare(`SELECT p.id, p.member_id, p.lineage_root, p.machine_id, p.issued_at, s.id AS successor_id, s.first_used_at
                 FROM member_credentials p
                 JOIN member_credentials s ON s.lineage_root = p.lineage_root AND s.id <> p.id AND s.first_used_at IS NOT NULL
                  AND (s.predecessor_id = p.id OR (p.first_used_at IS NULL AND s.predecessor_id = p.predecessor_id))
                WHERE p.token_hash = ? AND p.revoked_at IS NOT NULL
                ORDER BY s.first_used_at DESC`)
     .bind(digest)
-    .first<{ id: string; member_id: string; lineage_root: string; machine_id: string | null; successor_id: string; first_used_at: number }>();
+    .first<{ id: string; member_id: string; lineage_root: string; machine_id: string | null; issued_at: number; successor_id: string; first_used_at: number }>();
   if (row === null) return null;
   return {
     tokenId: row.id, memberId: row.member_id, lineageRoot: row.lineage_root, machineId: row.machine_id,
-    successorId: row.successor_id, activatedAt: row.first_used_at,
+    successorId: row.successor_id, activatedAt: row.first_used_at, issuedAt: row.issued_at,
   };
 }
 

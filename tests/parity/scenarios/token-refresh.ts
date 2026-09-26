@@ -34,14 +34,15 @@ export const tokenRefresh: ParityScenario = {
     /** Seeds a successor issued at `issuedAt` whose lineage started at `startedAt`, its root before it — a machine that joined then and has rotated since. A used one has revoked its root; an unused one leaves it live. */
     const seedSuccessor = async (startedAt: number, issuedAt: number, used = true) => {
       const root = `mt_parity_${randomBytes(6).toString('hex')}`;
+      const rootToken = randomBytes(32).toString('base64url');
       const token = randomBytes(32).toString('base64url');
       const tokenId = `mt_parity_${randomBytes(6).toString('hex')}`;
       const digest = createHash('sha256').update(token).digest('hex');
       await target.sql(`INSERT INTO member_credentials (id, member_id, machine_id, token_hash, issued_at, expires_at, revoked_at, bytes_written, predecessor_id, lineage_root, lineage_started_at, first_used_at)
-        VALUES (${lit(root)}, ${lit(MEMBER_ID)}, ${lit(MACHINE_ID)}, ${lit(createHash('sha256').update(root).digest('hex'))}, ${startedAt}, ${startedAt + MEMBER_TOKEN_TTL_MS}, ${used ? issuedAt + 1 : 'NULL'}, 0, NULL, ${lit(root)}, ${startedAt}, NULL)`);
+        VALUES (${lit(root)}, ${lit(MEMBER_ID)}, ${lit(MACHINE_ID)}, ${lit(createHash('sha256').update(rootToken).digest('hex'))}, ${startedAt}, ${startedAt + MEMBER_TOKEN_TTL_MS}, ${used ? issuedAt + 1 : 'NULL'}, 0, NULL, ${lit(root)}, ${startedAt}, NULL)`);
       await target.sql(`INSERT INTO member_credentials (id, member_id, machine_id, token_hash, issued_at, expires_at, revoked_at, bytes_written, predecessor_id, lineage_root, lineage_started_at, first_used_at)
         VALUES (${lit(tokenId)}, ${lit(MEMBER_ID)}, ${lit(MACHINE_ID)}, ${lit(digest)}, ${issuedAt}, ${issuedAt + MEMBER_TOKEN_TTL_MS}, NULL, 0, ${lit(root)}, ${lit(root)}, ${startedAt}, ${used ? issuedAt + 1 : 'NULL'})`);
-      return { token, tokenId, root };
+      return { token, tokenId, root, rootToken };
     };
     /** The member's own refresh: the credential is the Deployment's, so the request names no Project. */
     const refresh = (token: string) => {
@@ -89,6 +90,13 @@ export const tokenRefresh: ParityScenario = {
     expect(await target.sql(`SELECT predecessor_id AS predecessor, lineage_root AS root, lineage_started_at AS started FROM member_credentials WHERE id = ${lit(keptBody.tokenId)}`))
       .toEqual([{ predecessor: longLived.tokenId, root: longLived.root, started: now - 2 * MEMBER_LINEAGE_IDLE_MS }]);
     await expectPersisted(await post(keptBody.token), 'long-lived lineage successor capture');
+
+    // A superseded token issued before the idle window, asking to rotate, is refused like any other and ends nothing.
+    const ancient = await seedSuccessor(now - MEMBER_LINEAGE_IDLE_MS - DAY_MS, now - 5 * DAY_MS);
+    const ancientReplay = await refresh(ancient.rootToken);
+    expect({ status: ancientReplay.status, body: await ancientReplay.json() }).toEqual({ status: 401, body: { error: 'unauthorized' } });
+    expect(await liveOf(ancient.root)).toEqual([{ n: 1 }]);
+    await expectPersisted(await post(ancient.token), 'current lineage after an ancient replay');
 
     // A successor never used before the bound passed is refused, though the refresh request itself is its first use.
     const unused = await seedSuccessor(now - 2 * MEMBER_LINEAGE_IDLE_MS, now - MEMBER_LINEAGE_IDLE_MS - DAY_MS, false);
