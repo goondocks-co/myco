@@ -1,9 +1,11 @@
 import type { CapabilityStatus, ServerEnv } from '../core/adapters.js';
 import type { CredentialContext, OwnerContext } from '../context.js';
-import { MEMBER_TOKEN_BYTE_QUOTA, SERVER_SCHEMA_VERSION } from '../constants.js';
+import { SERVER_SCHEMA_VERSION } from '../constants.js';
 import { emptyBodyRoute } from '../auth/members.js';
 import { latestMeasurements, type MeasurementName, type StoreMeasurement } from '../core/store-maintenance.js';
-import { heldQuotaBytes } from '../ingest/quota.js';
+import { storedBytes } from '../ingest/live-credential.js';
+import { transcriptRetentionDays } from '../ingest/retention.js';
+import { leafValues } from '../core/settings.js';
 import { schemaVersion } from '../read/meta.js';
 import { listVisibleProjects } from './scope.js';
 import { workerLiveness } from '../core/runs.js';
@@ -105,19 +107,38 @@ async function storageFacts(env: ServerEnv): Promise<StorageFact[]> {
 }
 
 /**
+ * How long the Deployment keeps a transcript's raw bytes once they are processed, as `retention.transcripts` says:
+ * `forever` when no window is set or it is set to 0, `days` for a window, `unavailable` when the stored value does not
+ * read — the retention job then prunes nothing. `configured` says whether an owner wrote the leaf. Only processed raw
+ * bytes are ever pruned; everything derived from them is kept.
+ */
+export type RetentionFact =
+  | { state: 'forever'; configured: boolean }
+  | { state: 'days'; days: number; configured: true }
+  | { state: 'unavailable'; reason: string };
+
+async function transcriptRetentionFact(env: ServerEnv): Promise<RetentionFact> {
+  const raw = (await leafValues(env.db, ['retention.transcripts'])).get('retention.transcripts');
+  const window = transcriptRetentionDays(raw);
+  if (window === 'unreadable') return { state: 'unavailable', reason: 'the stored window does not read; nothing is pruned until it is set again' };
+  return window === null ? { state: 'forever', configured: raw !== undefined } : { state: 'days', days: window, configured: true };
+}
+
+/**
  * `POST /members/status`: the Deployment's health as a member credential reads it, over a body that is the empty
- * object. Deployment-wide facts — the target, the schema check and the storage measurements store maintenance last
- * recorded — and the presented credential's own byte quota. No Project is read or created, and nothing names another
- * member, machine or worker.
+ * object. Deployment-wide facts — the target, the schema check, the transcript retention window and the storage
+ * measurements store maintenance last recorded — and the bytes the presented credential has stored, as information:
+ * capture is never refused for volume. No Project is read or created, and nothing names another member, machine or
+ * worker.
  */
 export const handleMemberStatus = emptyBodyRoute(async (env: ServerEnv, ctx: CredentialContext) => {
-  const held = await heldQuotaBytes(env.db, { tokenId: ctx.tokenId, now: ctx.now });
-  const used: ByteFact = held === null ? { state: 'unavailable', reason: 'no credential row carries this token' } : bytes(held);
+  const stored = await storedBytes(env.db, ctx.tokenId);
   return ok({
     persisted: true,
     target: deploymentTarget(env),
     schema: schemaCheck(await schemaVersion(env.db)),
-    quota: { used, limit: bytes(MEMBER_TOKEN_BYTE_QUOTA) },
+    stored: stored === null ? { state: 'unavailable', reason: 'no credential row carries this token' } satisfies ByteFact : bytes(stored),
+    retention: { transcripts: await transcriptRetentionFact(env) },
     storage: await storageFacts(env),
   });
 });

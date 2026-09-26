@@ -86,14 +86,14 @@ export type EnrollHandler = (env: ServerEnv, request: Request, now: number) => P
 /** The key a member route answers under: `{<shape>: true|false, …}` on every outcome after authentication, refusals and 503s included. */
 export type Shape = 'persisted' | 'stored' | 'refreshed' | 'answered';
 
-/** `quotaPrecheck: false` marks a member route the pipeline does not pre-check against the byte quota and never reads a constraint failure as a quota refusal; what such a route stores through the ingest path is still charged there. Absent, the route is pre-checked. `scope: 'credential'` marks a route answered on the presented credential alone: no Project is read from the request or resolved, whatever header it carries. Only such a route may declare `admitsLapsed: true`, the one place a credential past its own expiry still authenticates — the refresh, which decides against the lineage ceiling instead; every other route refuses an expired credential. */
+/** `capture: false` marks a member route that is not a member's capture: it is answered on an archived Project, where a capture route is refused. Absent, the route is capture. No route, capture or not, is refused for the bytes a credential has stored (#1416). `scope: 'credential'` marks a route answered on the presented credential alone: no Project is read from the request or resolved, whatever header it carries. Only such a route may declare `admitsLapsed: true`, the one place a credential past its own expiry still authenticates — the refresh, which decides against the lineage ceiling instead; every other route refuses an expired credential. */
 export type Route =
   | { method: string; path: string; auth: 'public'; bodyMode: 'none'; handler: PublicHandler }
-  | ({ method: string; path: string; auth: 'member'; bodyMode: 'json'; shape: Exclude<Shape, 'stored'>; quotaPrecheck?: boolean; handler: MemberHandler; grant?: GrantHandler; run?: RunHandler; legacyRunRoute?: true }
-    & ({ unbound?: never } | { shape: 'answered'; quotaPrecheck: false; unbound: UnboundMemberHandler }))
-  | { method: string; path: string; auth: 'member'; bodyMode: 'json'; shape: 'refreshed' | 'persisted'; quotaPrecheck: false; scope: 'credential'; admitsLapsed?: true; credential: CredentialHandler; handler?: never; grant?: never; run?: never; legacyRunRoute?: never }
-  | { method: string; path: string; auth: 'member'; bodyMode: 'json'; shape: 'persisted'; quotaPrecheck: false; scope: 'deployment'; deployment: DeploymentHandler; handler?: never; grant?: never; run?: never; legacyRunRoute?: never }
-  | { method: string; path: string; pattern: RegExp; auth: 'member'; bodyMode: 'stream'; shape: 'stored'; quotaPrecheck?: boolean; maxBodyBytes: number; handler: StreamHandler; legacyRunRoute?: true }
+  | ({ method: string; path: string; auth: 'member'; bodyMode: 'json'; shape: Exclude<Shape, 'stored'>; capture?: boolean; handler: MemberHandler; grant?: GrantHandler; run?: RunHandler; legacyRunRoute?: true }
+    & ({ unbound?: never } | { shape: 'answered'; capture: false; unbound: UnboundMemberHandler }))
+  | { method: string; path: string; auth: 'member'; bodyMode: 'json'; shape: 'refreshed' | 'persisted'; capture: false; scope: 'credential'; admitsLapsed?: true; credential: CredentialHandler; handler?: never; grant?: never; run?: never; legacyRunRoute?: never }
+  | { method: string; path: string; auth: 'member'; bodyMode: 'json'; shape: 'persisted'; capture: false; scope: 'deployment'; deployment: DeploymentHandler; handler?: never; grant?: never; run?: never; legacyRunRoute?: never }
+  | { method: string; path: string; pattern: RegExp; auth: 'member'; bodyMode: 'stream'; shape: 'stored'; capture?: boolean; maxBodyBytes: number; handler: StreamHandler; legacyRunRoute?: true }
   | { method: string; path: string; auth: 'auth'; handler: AuthHandler }
   | { method: string; path: string; auth: 'enroll'; handler: EnrollHandler }
   | { method: string; path: string; pattern?: RegExp; auth: 'owner'; membership?: never; maxBodyBytes?: number; handler: OwnerHandler }
@@ -115,40 +115,37 @@ export const ROUTES: readonly Route[] = [
   { method: 'PUT', path: '/api/titling-backfill', auth: 'owner', handler: handleSetTitlingBackfill },
   { method: 'POST', path: '/events', auth: 'member', bodyMode: 'json', shape: 'persisted', handler: handleEvents },
   { method: 'POST', path: '/blobs/{sha256}', pattern: /^\/blobs\/(?<key>[0-9a-f]{64})$/, auth: 'member', bodyMode: 'stream', shape: 'stored', maxBodyBytes: MAX_BLOB_BYTES, handler: handleBlob },
-  { method: 'POST', path: '/tokens/refresh', auth: 'member', bodyMode: 'json', shape: 'refreshed', quotaPrecheck: false, scope: 'credential', admitsLapsed: true, credential: handleRefresh },
+  { method: 'POST', path: '/tokens/refresh', auth: 'member', bodyMode: 'json', shape: 'refreshed', capture: false, scope: 'credential', admitsLapsed: true, credential: handleRefresh },
   // #1148 — bounded import and backfill
-  { method: 'POST', path: '/import/plan', auth: 'member', bodyMode: 'json', shape: 'persisted', quotaPrecheck: false, handler: handleImportPlan },
+  { method: 'POST', path: '/import/plan', auth: 'member', bodyMode: 'json', shape: 'persisted', capture: false, handler: handleImportPlan },
   // The run's own channel. `legacyRunRoute: true` admits the harness credential as a
   // member here alone, with whatever admission each handler performs itself —
   // `heldRun` on the task surfaces, none on the run-row handlers. The model's tool
   // surface is `/mcp`; these are the worker's and the push-launch seam's, and go
-  // with the seam. `quotaPrecheck: false`: the byte quota bounds what a
-  // member's CAPTURE may write, and charging a Deployment's own scheduled
-  // intelligence against a human's capture allowance would let ordinary agent
-  // work exhaust that member's ability to record their sessions.
-  { method: 'POST', path: '/runs/claim', auth: 'member', legacyRunRoute: true, bodyMode: 'json', shape: 'persisted', quotaPrecheck: false, handler: handleClaimRun },
-  { method: 'POST', path: '/runs/get', auth: 'member', legacyRunRoute: true, bodyMode: 'json', shape: 'persisted', quotaPrecheck: false, handler: handleGetRun },
-  { method: 'POST', path: '/runs/update', auth: 'member', legacyRunRoute: true, bodyMode: 'json', shape: 'persisted', quotaPrecheck: false, handler: handleUpdateRun },
-  { method: 'POST', path: '/runs/failed', auth: 'member', legacyRunRoute: true, bodyMode: 'json', shape: 'persisted', quotaPrecheck: false, handler: handleRecordFailure },
-  { method: 'POST', path: '/runs/resume-admission', auth: 'member', legacyRunRoute: true, bodyMode: 'json', shape: 'persisted', quotaPrecheck: false, handler: handleAdmitResume },
-  { method: 'POST', path: '/runs/supersede', auth: 'member', legacyRunRoute: true, bodyMode: 'json', shape: 'persisted', quotaPrecheck: false, handler: handleSupersedeRuns },
-  { method: 'POST', path: '/runs/reports', auth: 'member', legacyRunRoute: true, bodyMode: 'json', shape: 'persisted', quotaPrecheck: false, handler: handleRunReports },
-  { method: 'POST', path: '/runs/report', auth: 'member', legacyRunRoute: true, bodyMode: 'json', shape: 'persisted', quotaPrecheck: false, handler: handleWriteReport },
-  { method: 'POST', path: '/runs/events', auth: 'member', legacyRunRoute: true, bodyMode: 'json', shape: 'persisted', quotaPrecheck: false, handler: handleRecordRunEvents },
-  { method: 'POST', path: '/runs/embedding-step', auth: 'member', legacyRunRoute: true, bodyMode: 'json', shape: 'persisted', quotaPrecheck: false, handler: handleEmbeddingStep },
-  { method: 'POST', path: '/spores/save', auth: 'member', bodyMode: 'json', shape: 'persisted', quotaPrecheck: false, handler: handleSaveSpore },
-  { method: 'POST', path: '/spores/list', auth: 'member', bodyMode: 'json', shape: 'persisted', quotaPrecheck: false, handler: handleListSpores },
-  { method: 'POST', path: '/spores/get', auth: 'member', bodyMode: 'json', shape: 'persisted', quotaPrecheck: false, handler: handleGetSpore },
-  { method: 'POST', path: '/spores/resolve', auth: 'member', bodyMode: 'json', shape: 'persisted', quotaPrecheck: false, handler: handleResolveSpore },
+  // with the seam. `capture: false`: a run is the Deployment's own scheduled
+  // intelligence, not a member's capture.
+  { method: 'POST', path: '/runs/claim', auth: 'member', legacyRunRoute: true, bodyMode: 'json', shape: 'persisted', capture: false, handler: handleClaimRun },
+  { method: 'POST', path: '/runs/get', auth: 'member', legacyRunRoute: true, bodyMode: 'json', shape: 'persisted', capture: false, handler: handleGetRun },
+  { method: 'POST', path: '/runs/update', auth: 'member', legacyRunRoute: true, bodyMode: 'json', shape: 'persisted', capture: false, handler: handleUpdateRun },
+  { method: 'POST', path: '/runs/failed', auth: 'member', legacyRunRoute: true, bodyMode: 'json', shape: 'persisted', capture: false, handler: handleRecordFailure },
+  { method: 'POST', path: '/runs/resume-admission', auth: 'member', legacyRunRoute: true, bodyMode: 'json', shape: 'persisted', capture: false, handler: handleAdmitResume },
+  { method: 'POST', path: '/runs/supersede', auth: 'member', legacyRunRoute: true, bodyMode: 'json', shape: 'persisted', capture: false, handler: handleSupersedeRuns },
+  { method: 'POST', path: '/runs/reports', auth: 'member', legacyRunRoute: true, bodyMode: 'json', shape: 'persisted', capture: false, handler: handleRunReports },
+  { method: 'POST', path: '/runs/report', auth: 'member', legacyRunRoute: true, bodyMode: 'json', shape: 'persisted', capture: false, handler: handleWriteReport },
+  { method: 'POST', path: '/runs/events', auth: 'member', legacyRunRoute: true, bodyMode: 'json', shape: 'persisted', capture: false, handler: handleRecordRunEvents },
+  { method: 'POST', path: '/runs/embedding-step', auth: 'member', legacyRunRoute: true, bodyMode: 'json', shape: 'persisted', capture: false, handler: handleEmbeddingStep },
+  { method: 'POST', path: '/spores/save', auth: 'member', bodyMode: 'json', shape: 'persisted', capture: false, handler: handleSaveSpore },
+  { method: 'POST', path: '/spores/list', auth: 'member', bodyMode: 'json', shape: 'persisted', capture: false, handler: handleListSpores },
+  { method: 'POST', path: '/spores/get', auth: 'member', bodyMode: 'json', shape: 'persisted', capture: false, handler: handleGetSpore },
+  { method: 'POST', path: '/spores/resolve', auth: 'member', bodyMode: 'json', shape: 'persisted', capture: false, handler: handleResolveSpore },
   // What a prompt is served: the plan nudge and the session's unseen spores.
-  // `quotaPrecheck: false`: the byte quota bounds what a member's capture may
-  // write, and this route answers a read of the Project's own intelligence.
-  { method: 'POST', path: '/context/prompt', auth: 'member', bodyMode: 'json', shape: 'persisted', quotaPrecheck: false, handler: handlePromptContext },
+  // `capture: false`: this route answers a read of the Project's own intelligence.
+  { method: 'POST', path: '/context/prompt', auth: 'member', bodyMode: 'json', shape: 'persisted', capture: false, handler: handlePromptContext },
   // What a starting session or a starting subagent is served: the Project's
   // instructions, and the preferred digest where a Deployment asks for it.
-  { method: 'POST', path: '/context/session', auth: 'member', bodyMode: 'json', shape: 'persisted', quotaPrecheck: false, handler: handleSessionContext },
-  { method: 'POST', path: '/runs/repository', auth: 'member', legacyRunRoute: true, bodyMode: 'json', shape: 'persisted', quotaPrecheck: false, handler: handleRunRepository },
-  { method: 'POST', path: '/runs/canopy-map', auth: 'member', legacyRunRoute: true, bodyMode: 'json', shape: 'persisted', quotaPrecheck: false, handler: handleRunMap },
+  { method: 'POST', path: '/context/session', auth: 'member', bodyMode: 'json', shape: 'persisted', capture: false, handler: handleSessionContext },
+  { method: 'POST', path: '/runs/repository', auth: 'member', legacyRunRoute: true, bodyMode: 'json', shape: 'persisted', capture: false, handler: handleRunRepository },
+  { method: 'POST', path: '/runs/canopy-map', auth: 'member', legacyRunRoute: true, bodyMode: 'json', shape: 'persisted', capture: false, handler: handleRunMap },
   // The tool surface: the seven MCP tools over the Deployment for a member, the
   // read-only six for an External Agent grant, answered as JSON-RPC. `answered`
   // is its refusal shape — an error envelope, at 400 or 503.
@@ -156,17 +153,17 @@ export const ROUTES: readonly Route[] = [
   // across every Project, so it names none and the pipeline resolves none. Only
   // an administrator is admitted: a claim answers with a minted run credential
   // and the Deployment's own harness credential.
-  { method: 'POST', path: '/worker/claim', auth: 'member', bodyMode: 'json', shape: 'persisted', quotaPrecheck: false, scope: 'deployment', deployment: handleWorkerClaim },
-  { method: 'POST', path: '/worker/lease', auth: 'member', bodyMode: 'json', shape: 'persisted', quotaPrecheck: false, scope: 'deployment', deployment: handleWorkerLease },
-  { method: 'POST', path: '/worker/end', auth: 'member', bodyMode: 'json', shape: 'persisted', quotaPrecheck: false, scope: 'deployment', deployment: handleWorkerEnd },
-  { method: 'POST', path: '/worker/repository', auth: 'member', bodyMode: 'json', shape: 'persisted', quotaPrecheck: false, scope: 'deployment', deployment: handleWorkerRepository },
-  { method: 'POST', path: '/mcp', auth: 'member', bodyMode: 'json', shape: 'answered', quotaPrecheck: false, handler: handleMcp, grant: handleGrantMcp, run: handleRunMcp, unbound: handleUnboundMcp },
+  { method: 'POST', path: '/worker/claim', auth: 'member', bodyMode: 'json', shape: 'persisted', capture: false, scope: 'deployment', deployment: handleWorkerClaim },
+  { method: 'POST', path: '/worker/lease', auth: 'member', bodyMode: 'json', shape: 'persisted', capture: false, scope: 'deployment', deployment: handleWorkerLease },
+  { method: 'POST', path: '/worker/end', auth: 'member', bodyMode: 'json', shape: 'persisted', capture: false, scope: 'deployment', deployment: handleWorkerEnd },
+  { method: 'POST', path: '/worker/repository', auth: 'member', bodyMode: 'json', shape: 'persisted', capture: false, scope: 'deployment', deployment: handleWorkerRepository },
+  { method: 'POST', path: '/mcp', auth: 'member', bodyMode: 'json', shape: 'answered', capture: false, handler: handleMcp, grant: handleGrantMcp, run: handleRunMcp, unbound: handleUnboundMcp },
   { method: 'POST', path: '/members/join', auth: 'enroll', handler: handleJoin },
-  { method: 'POST', path: '/members/link-github', auth: 'member', bodyMode: 'json', shape: 'persisted', quotaPrecheck: false, handler: handleLinkGithub },
+  { method: 'POST', path: '/members/link-github', auth: 'member', bodyMode: 'json', shape: 'persisted', capture: false, handler: handleLinkGithub },
   // Deployment Settings as a member's CLI reads them: Deployment-wide, so no Project is read or created; writes stay on the dashboard's owner routes.
-  { method: 'POST', path: '/members/settings', auth: 'member', bodyMode: 'json', shape: 'persisted', quotaPrecheck: false, scope: 'credential', credential: handleMemberSettings },
-  // Deployment health as a member's `myco stats` reads it: Deployment-wide facts and the credential's own quota, so no Project is read or created.
-  { method: 'POST', path: '/members/status', auth: 'member', bodyMode: 'json', shape: 'persisted', quotaPrecheck: false, scope: 'credential', credential: handleMemberStatus },
+  { method: 'POST', path: '/members/settings', auth: 'member', bodyMode: 'json', shape: 'persisted', capture: false, scope: 'credential', credential: handleMemberSettings },
+  // Deployment health as a member's `myco stats` reads it: Deployment-wide facts, the credential's own stored bytes and the transcript retention window, so no Project is read or created.
+  { method: 'POST', path: '/members/status', auth: 'member', bodyMode: 'json', shape: 'persisted', capture: false, scope: 'credential', credential: handleMemberStatus },
   { method: 'GET', path: '/auth/me', auth: 'owner', membership: 'optional', handler: handleMe },
   { method: 'POST', path: '/auth/link', auth: 'owner', membership: 'optional', handler: handleLink },
   { method: 'GET', path: '/api/status', auth: 'owner', handler: handleStatus },

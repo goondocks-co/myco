@@ -7,11 +7,9 @@ import { MAX_PROJECTS } from '../constants.js';
  *
  * Member Access is Deployment-wide, so a member reaching a Project the server has
  * never seen is the ordinary case — a new checkout, a new repository — not an
- * error. What it must not be is unlimited. The credential quota bounds BYTES per
- * credential and says nothing about ROWS in `projects`, so a credential that
- * cycles the header through fresh names would fill the table while staying well
- * inside its quota; an ephemeral sandbox's credential is the cheapest way to do
- * it. `MAX_PROJECTS` is that bound.
+ * error. What it must not be is unlimited: a credential that cycles the header
+ * through fresh names would fill the table, and an ephemeral sandbox's
+ * credential is the cheapest way to do it. `MAX_PROJECTS` is that bound.
  *
  * The ceiling is enforced inside the INSERT rather than around it: SQLite
  * evaluates the count as part of the statement, and writes are serialized, so

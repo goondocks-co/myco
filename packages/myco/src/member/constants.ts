@@ -8,12 +8,22 @@
 export { MEMBER_PROTOCOL, PROTOCOL_HEADER, PROJECT_HEADER, memberHeaders, deploymentScopedHeaders } from '@goondocks/myco-shared/member-protocol';
 
 /**
+ * Codes a server built before this member may still answer and this build's
+ * server never does. `quota`: a server before #1416 refused capture past a
+ * credential's lifetime byte ceiling; the member parks on it, and the parked
+ * capture drains once the Deployment is updated.
+ */
+export const RETIRED_SERVER_CODES = ['quota'] as const;
+
+/**
  * Every stable `code` a server answer can carry: the worker's refusal
- * classifiers plus the 503 `unavailable` code. The member classifies on these
- * and never on `reason` text.
+ * classifiers, the 503 `unavailable` code, and the retired codes an older
+ * server may still answer. The member classifies on these and never on
+ * `reason` text.
  */
 export const MEMBER_CODES = [
-  'refused', 'parse', 'quota', 'body_cap', 'blob_cap', 'content_length', 'media_type', 'digest_mismatch', 'empty_body',
+  ...RETIRED_SERVER_CODES,
+  'refused', 'parse', 'body_cap', 'blob_cap', 'content_length', 'media_type', 'digest_mismatch', 'empty_body',
   'blob_absent', 'no_project', 'offset_gap', 'offset_overlap', 'identity_mismatch', 'no_machine_identity', 'blob_length_mismatch',
   'unknown_kind', 'unknown_field', 'id_grammar', 'clock_skew', 'event_id_conflict', 'projection_conflict',
   'refresh_too_early', 'lineage_expired',
@@ -81,7 +91,7 @@ export const refusalPermanent = (code: MemberCode): boolean => REFUSAL_PERMANENC
 
 /** Codes that re-slice a transcript from the server's held size instead of refusing. */
 export const RESLICE_CODES: readonly MemberCode[] = ['offset_gap', 'offset_overlap'];
-/** The code that parks the spool: the token is at its write quota. */
+/** The code that parks the spool: a server built before #1416 refusing the token for its write quota. This build's server never answers it — capture is not refused for volume — so the parked capture drains on the next pass against it. */
 export const PARKED_CODE: MemberCode = 'quota';
 
 /** Fixed namespace for every UUIDv5 the member derives (subagent ids, plan keys, queued-prompt ids). */

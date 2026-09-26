@@ -11,12 +11,12 @@
  *
  * So the member asks first. This answers, per candidate, whether to ship it and
  * from which byte, and the answer is the whole of what the member needs to know:
- * the bounds this Deployment sets, the sessions it refuses, the bytes it holds,
- * and whether the credential has room.
+ * the bounds this Deployment sets, the sessions it refuses, and the bytes it
+ * holds.
  *
  * **Nothing here is an authority.** Every rule it applies is applied again by
- * the admission the write path already carries — tenancy, tombstones, quota,
- * and the import switch — so a member that skipped this route writes exactly
+ * the admission the write path already carries — tenancy, tombstones and
+ * the import switch — so a member that skipped this route writes exactly
  * what a member that used it would. It exists to stop bytes being spent on
  * writes that will be refused, not to decide whether they may be.
  *
@@ -31,14 +31,13 @@ import { IMPORT_PLAN_MAX_CANDIDATES } from '../constants.js';
 import { importPolicy, IMPORT_DISABLED } from '../core/import-policy.js';
 import { tombstonedAmong } from '../core/tombstones.js';
 import { heldTranscriptsFor, type HeldTranscript } from '../read/transcript.js';
-import { remainingQuotaBytes } from '../ingest/quota.js';
 import { refused } from '../ingest/events.js';
 import { emit, refusal } from '../telemetry.js';
 
 const DAY_MS = 86_400_000;
 
 /** Why a candidate is not being shipped. Each is a stable name an operator and a report read; none is a caller's text. Exported as a value so a reader can enumerate them rather than restate them. */
-export const SKIP_REASONS = ['held', 'tombstoned', 'replaced', 'session_held', 'window', 'cap', 'quota'] as const;
+export const SKIP_REASONS = ['held', 'tombstoned', 'replaced', 'session_held', 'window', 'cap'] as const;
 export type SkipReason = (typeof SKIP_REASONS)[number];
 
 /** What the member offers: an identity it minted, the file's size and age, and the digest of its first bytes. */
@@ -77,10 +76,11 @@ function parseCandidate(value: unknown): Candidate | null {
 /**
  * Every candidate's answer, in the order the member offered them.
  *
- * The order is the member's: it offers newest first, the quota is spent in
- * that order, and this walks the offer as given.
+ * The order is the member's: it offers newest first, the per-agent cap is
+ * spent in that order, and this walks the offer as given. No candidate is
+ * skipped for the bytes it would store: capture is never refused for volume.
  */
-function planCandidates(candidates: readonly Candidate[], held: readonly HeldTranscript[], tombstoned: ReadonlySet<string>, room: number, now: number, windowDays: number, maxPerAgent: number): {
+function planCandidates(candidates: readonly Candidate[], held: readonly HeldTranscript[], tombstoned: ReadonlySet<string>, now: number, windowDays: number, maxPerAgent: number): {
   answers: CandidateAnswer[];
   counts: Record<string, number>;
   /** Candidates admitted against a held transcript that carries no digest to compare them with. */
@@ -100,7 +100,6 @@ function planCandidates(candidates: readonly Candidate[], held: readonly HeldTra
   const answers: CandidateAnswer[] = [];
   const counts: Record<string, number> = {};
   const taken = new Map<string, number>();
-  let left = room;
   let uncompared = 0;
 
   const skip = (c: Candidate, reason: SkipReason): void => {
@@ -139,13 +138,6 @@ function planCandidates(candidates: readonly Candidate[], held: readonly HeldTra
     if (count >= maxPerAgent) { skip(c, 'cap'); continue; }
 
     const fromOffset = mine?.size ?? 0;
-    const owed = c.sizeBytes - fromOffset;
-    // Whole or not at all: a transcript is the unit that must not be half
-    // imported, and a later smaller one may still fit the room this one does
-    // not.
-    if (owed > left) { skip(c, 'quota'); continue; }
-
-    left -= owed;
     taken.set(c.agent, count + 1);
     counts.take = (counts.take ?? 0) + 1;
     answers.push({ transcriptId: c.transcriptId, take: 'from', fromOffset });
@@ -179,14 +171,11 @@ export async function handleImportPlan(env: ServerEnv, ctx: RouteContext): Promi
   const identities = [...new Set(candidates.map((c) => c.transcriptId))];
 
   // Each read through the module that owns its table: the transcripts a Project
-  // holds, the sessions it has deleted, and the room the credential has left —
-  // that last through the same expression every quota admission reads, so what
-  // a caller is told it may spend is what the write path will admit.
+  // holds and the sessions it has deleted.
   const held = await heldTranscriptsFor(env.db, { projectId: ctx.projectId }, sessionIds, identities);
   const tombstoned = await tombstonedAmong(env.db, ctx.projectId, sessionIds);
-  const room = await remainingQuotaBytes(env.db, { tokenId: ctx.tokenId, now: ctx.now });
 
-  const { answers, counts, uncompared } = planCandidates(candidates, held, tombstoned, room, ctx.now, policy.windowDays, policy.maxPerAgent);
+  const { answers, counts, uncompared } = planCandidates(candidates, held, tombstoned, ctx.now, policy.windowDays, policy.maxPerAgent);
   emit({ kind: 'import_planned', projectId: ctx.projectId, offered: candidates.length, admitted: counts.take ?? 0 });
   if (uncompared > 0) emit({ kind: 'import_identity_uncompared', projectId: ctx.projectId, pairs: uncompared });
   return Response.json({ persisted: true, policy, candidates: answers, counts });

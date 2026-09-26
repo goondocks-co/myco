@@ -21,7 +21,7 @@ import { longestDeclaredHookTimeoutMs } from '@myco/member/budget.js';
 import { isProjectId as memberIsProjectId, PROJECT_ID_PATTERN as MEMBER_PROJECT_ID_PATTERN } from '@myco/member/constants.js';
 import {
   ENROLLMENT_KEY_PATTERN, JOIN_PATH,
-  MEMBER_CODES, MEMBER_ID_NAMESPACE, MEMBER_INLINE_TEXT_MAX_BYTES, MEMBER_PROTOCOL, MEMBER_TOKEN_PATTERN, MEMBER_TOKEN_REFRESH_WINDOW_MS, PARKED_CODE, PROTOCOL_HEADER, RESLICE_CODES, TRANSCRIPT_SLICE_BYTES,
+  MEMBER_CODES, MEMBER_ID_NAMESPACE, MEMBER_INLINE_TEXT_MAX_BYTES, MEMBER_PROTOCOL, MEMBER_TOKEN_PATTERN, MEMBER_TOKEN_REFRESH_WINDOW_MS, PARKED_CODE, PROTOCOL_HEADER, RESLICE_CODES, RETIRED_SERVER_CODES, TRANSCRIPT_SLICE_BYTES,
 } from '@myco/member/constants.js';
 import { BOUNDS, producerIdentifier, wireOrigin } from '@myco/member/envelope.js';
 import { HOOK_CONFIG } from '@myco/hooks/hook-config.generated.js';
@@ -139,9 +139,11 @@ describe('member ↔ worker pins', () => {
     }
   });
 
-  it('the member code list is exactly the worker classifiers plus unavailable', () => {
-    expect(new Set(MEMBER_CODES)).toEqual(new Set([...CLASSIFIERS, UNAVAILABLE]));
-    expect(MEMBER_CODES).toHaveLength(CLASSIFIERS.length + 1);
+  it('the member code list is exactly the worker classifiers plus unavailable plus the retired codes an older server answers', () => {
+    expect(new Set(MEMBER_CODES)).toEqual(new Set([...CLASSIFIERS, UNAVAILABLE, ...RETIRED_SERVER_CODES]));
+    expect(MEMBER_CODES).toHaveLength(CLASSIFIERS.length + 1 + RETIRED_SERVER_CODES.length);
+    // A retired code is one this build's server never answers.
+    for (const code of RETIRED_SERVER_CODES) expect(CLASSIFIERS as readonly string[]).not.toContain(code);
   });
 
   it('agrees on the channels an envelope may carry, and on the candidates one import plan holds', () => {
@@ -165,7 +167,8 @@ describe('member ↔ worker pins', () => {
 
   it('the action classes name worker classifiers', () => {
     for (const code of RESLICE_CODES) expect(CLASSIFIERS as readonly string[]).toContain(code);
-    expect(CLASSIFIERS as readonly string[]).toContain(PARKED_CODE);
+    // Parking answers an older server's quota refusal; this build's server never parks a member.
+    expect(RETIRED_SERVER_CODES as readonly string[]).toContain(PARKED_CODE);
   });
 
   it('inline and slice ceilings sit under the server caps', () => {

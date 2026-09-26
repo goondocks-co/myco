@@ -60,6 +60,8 @@ Ordinary offboarding is the dashboard (`POST /api/members/{memberId}/revoke`): o
 
 A leaked member token is revoked by setting `revoked_at` on its row. The pipeline refuses a revoked token on the next request; there is no cache to flush.
 
+Revocation, not a byte ceiling, is what stops a leaked credential: capture is never refused for volume (#1416), so a live credential keeps storing until it is revoked. Its `bytes_written` says how much it stored.
+
 `revokeCredentialAsMember` is the code path; `npm run token:revoke -- <TOKEN_ID> <YOUR_MEMBER_ID>` prints its attributed `UPDATE`. Find the credential by member and machine, print the statement, apply it with `wrangler d1 execute`, then confirm the command reported one changed row — zero rows means no live credential had that id:
 
 ```bash
@@ -134,6 +136,25 @@ npm run migrations:apply
 `ALTER TABLE ... ADD COLUMN` has no inverse in SQLite; a re-run over a column that already exists fails with `duplicate column name`. Migrations are emitted from `V*_STATEMENTS` ([src/db/schema.ts](src/db/schema.ts)) and every statement there is written `IF NOT EXISTS` where the syntax allows it, so re-application is safe for everything except `ADD COLUMN` — for those, delete the `ALTER` from the emitted file for the recovery run only, and never edit a file the ledger already records.
 
 **Do NOT drop the objects for step 5.** The rule above is for a file whose `ADD COLUMN` cannot be re-run. Step 5 has none: every statement is `IF NOT EXISTS`, `OR IGNORE` or `OR REPLACE`, and the step opens by dropping its own guard table, so re-application over an already-migrated database is a no-op. The tables it creates — `members`, `member_credentials`, `machine_claims`, `enrollment_authorities` — hold the LIVE credentials of a serving Deployment the moment it is past the backfill. Dropping them destroys every member's ability to capture and every record of who wrote what. For step 5 the recovery is `npm run migrations:apply`, and nothing else.
+
+**Do NOT drop `member_credentials` or `_v48_credential_rows` for step 48.** Step 48 (#1416) rebuilds `member_credentials` to drop its byte-ceiling CHECK: it copies every row into `_v48_credential_rows`, drops the table, creates it again and copies the rows back, and it is written to be re-run from any point. It keeps the holding table when one exists and refreshes it from whatever credential table stands, and it creates an absent credential table again before reading it, so the holding table's rows are never dropped before they are back. `member_credentials` holds every LIVE credential, and `_v48_credential_rows` may hold the only copy of them. Dropping either by hand, or deleting the step's ledger row and editing its file, can lose every member's credential. Recovery for a failed step 48 is re-running `npm run migrations:apply:remote`, which is safe after a failure part-way and a no-op once the ledger records `0048_v48.sql`, and nothing else.
+
+Before applying step 48 to the hosted Deployment, take a D1 Time Travel bookmark, so that there is a point to restore to whatever happens:
+
+```bash
+cd packages/myco-server
+npx wrangler d1 time-travel info myco-server -c wrangler.deploy.toml   # prints the current bookmark; record it
+npm run migrations:apply:remote
+# Only if the Deployment must go back to before the step:
+# npx wrangler d1 time-travel restore myco-server --bookmark=<BOOKMARK> -c wrangler.deploy.toml
+```
+
+After it applies, confirm the step landed whole: `schema_meta.version` is `48`, the credential count matches the count read before, and no `_v48_%` table remains:
+
+```bash
+npx wrangler d1 execute myco-server --remote -c wrangler.deploy.toml --command \
+  "SELECT (SELECT value FROM schema_meta WHERE key = 'version') AS version, (SELECT COUNT(*) FROM member_credentials) AS credentials, (SELECT COUNT(*) FROM sqlite_master WHERE name LIKE '\_v48\_%' ESCAPE '\\') AS leftovers"
+```
 
 # Break-glass: step 2 refused by a guard
 

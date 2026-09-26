@@ -22,6 +22,7 @@ import {
   TRANSCRIPT_PARSE_CALLS_PER_PASS, TRANSCRIPT_PARSE_EVENTS_PER_BATCH, TRANSCRIPT_PARSE_MALFORMED_LIMIT,
   TRANSCRIPT_PARSE_BYTES_PER_READ, TRANSCRIPT_PARSE_SEGMENTS_PER_READ, TRANSCRIPT_PARSE_RECORD_BYTES,
 } from '@myco-server-worker/ingest/parse.js';
+import { settingsWriter } from '@myco-server-worker/core/settings.js';
 import { freeOrphanedBlobs, TOMBSTONE_SWEEP_GRACE_MS, transcriptRetention, transcriptRetentionDays } from '@myco-server-worker/ingest/retention.js';
 import { blobHeld } from '@myco-server-worker/core/blob-references.js';
 import { listTranscripts } from '@myco-server-worker/read/transcript.js';
@@ -681,6 +682,29 @@ describe('transcript retention', () => {
     await drain(env, sqlite);
     expect(await transcriptRetention(serverEnv, NOW)).toBe(0);
     expect(count(sqlite, 'transcript_segments')).toBeGreaterThan(0);
+  });
+
+  it('keeps processed raw bytes forever while no window is set, and with 90 days set prunes only those older than 90 days, keeping every derived row (#1416)', async () => {
+    const { sqlite, env, serverEnv } = await rig(body(2));
+    await drain(env, sqlite);
+    const segments = count(sqlite, 'transcript_segments');
+    const derived = count(sqlite, 'prompt_batches');
+    expect(segments).toBeGreaterThan(0);
+    // Unset: a year-old segment the parse has read stays.
+    sqlite.run(`UPDATE transcript_segments SET created_at = ?`, [NOW - 365 * 86_400_000]);
+    expect(await transcriptRetention(serverEnv, NOW)).toBe(0);
+    expect(count(sqlite, 'transcript_segments')).toBe(segments);
+
+    await settingsWriter(serverEnv.db).setLeaf('retention.transcripts', 90, 'mem_machine_1', NOW);
+    sqlite.run(`UPDATE transcript_segments SET created_at = ?`, [NOW - 89 * 86_400_000]);
+    expect(await transcriptRetention(serverEnv, NOW)).toBe(0);
+    expect(count(sqlite, 'transcript_segments')).toBe(segments);
+
+    sqlite.run(`UPDATE transcript_segments SET created_at = ?`, [NOW - 91 * 86_400_000]);
+    expect(await transcriptRetention(serverEnv, NOW)).toBeGreaterThan(0);
+    expect(count(sqlite, 'transcript_segments')).toBe(0);
+    expect(count(sqlite, 'prompt_batches')).toBe(derived);
+    expect(count(sqlite, 'transcripts')).toBe(1);
   });
 
   it('prunes nothing and says so when the window is unreadable, rather than pruning on a rule nobody wrote', async () => {

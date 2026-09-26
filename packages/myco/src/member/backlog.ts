@@ -62,7 +62,7 @@ export interface BacklogReport {
   endedBy: 'done' | 'skipped' | 'budget' | DrainEnd | ShipResult['endedBy'];
 }
 
-/** Event pass endings that belong to the session alone. Any other answer — unreachable, the credential refused, the quota, the protocol window, the budget — would be the next session's too, so the walk ends there: a mis-deployed server costs one request, not one per session. */
+/** Event pass endings that belong to the session alone. Any other answer — unreachable, the credential refused, an older server's quota, the protocol window, the budget — would be the next session's too, so the walk ends there: a mis-deployed server costs one request, not one per session. */
 const EVENTS_CONTINUE: readonly DrainEnd[] = ['drained', 'acked', 'reslice', 'protocol_mismatch', ...HOLD_ENDS];
 /** Transcript pass endings that belong to the session alone. */
 const TRANSCRIPTS_CONTINUE: readonly ShipResult['endedBy'][] = ['done', 'absent', 'refused', 'rejected'];

@@ -106,6 +106,30 @@ export async function memberRig(opts: { now?: number; projectId?: string; machin
   };
 }
 
+/**
+ * A server built before #1416, in front of the rig's: while `atQuota` holds, a
+ * capture POST (`/events`, `/blobs/…`) is answered the way that server refused
+ * a credential past its lifetime byte ceiling — 200, `code: 'quota'`, in the
+ * route's shape, with the protocol header. Anything else, and every request
+ * once `atQuota` is cleared, reaches the rig's own worker, which never refuses
+ * for volume: the Deployment updated in place.
+ */
+export function olderServerAtQuota(fetch: MemberRig['fetch']): { fetch: MemberRig['fetch']; atQuota: boolean; refused: number } {
+  const state = {
+    atQuota: true,
+    refused: 0,
+    fetch: async (input: string | URL | Request, init?: RequestInit): Promise<Response> => {
+      const req = new Request(input, init);
+      const { pathname } = new URL(req.url);
+      const capture = pathname === '/events' ? 'persisted' : pathname.startsWith('/blobs/') ? 'stored' : null;
+      if (!state.atQuota || capture === null) return fetch(req);
+      state.refused += 1;
+      return Response.json({ [capture]: false, code: 'quota', reason: 'token write quota exceeded' }, { headers: { [PROTOCOL_HEADER]: String(SERVER_PROTOCOL) } });
+    },
+  };
+  return state;
+}
+
 /** A blob stager over a temp directory: bytes land in `<dir>/<sha256>`. */
 export function tempStager(dir: string = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-member-blobs-'))): { stage: BlobStager; dir: string } {
   const stage: BlobStager = (bytes, mediaType) => {

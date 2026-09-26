@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'bun:test';
 import worker from '@myco-server-worker/index.js';
 import { issueMemberToken, MEMBER_TOKEN_MAX_LINEAGE_MS, MEMBER_TOKEN_REFRESH_WINDOW_MS, MEMBER_TOKEN_TTL_MS } from '@myco-server-worker/auth/tokens.js';
-import { MAX_BLOB_BYTES, MAX_CLOCK_SKEW_MS, MEMBER_TOKEN_BYTE_QUOTA, PROJECT_HEADER } from '@myco-server-worker/constants.js';
+import { MAX_BLOB_BYTES, MAX_CLOCK_SKEW_MS, PROJECT_HEADER } from '@myco-server-worker/constants.js';
 import { MAX_BODY_BYTES } from '@myco-server-worker/ingest/body.js';
 import { sha256HexOf, utf8 } from '@myco-server-worker/hash.js';
 import { CLASSIFIERS, UNAVAILABLE, type Classifier } from '@myco-server-worker/telemetry.js';
@@ -67,10 +67,6 @@ const DRIVERS: Record<Classifier, (r: Rig) => Promise<Response>> = {
   refused: (r) => r.fetch(memberPost(r.t1.token, '[]', '/tokens/refresh')),
   invalid_field: (r) => r.post(r.t1.token, { createdAt: -1 }),
   parse: (r) => r.fetch(memberPost(r.t1.token, 'not json')),
-  quota: async (r) => {
-    r.e.sqlite.query(`UPDATE member_credentials SET bytes_written = ? WHERE id = ?`).run(MEMBER_TOKEN_BYTE_QUOTA, r.t1.tokenId);
-    return r.post(r.t1.token, {});
-  },
   body_cap: (r) => r.fetch(memberPost(r.t1.token, 'x'.repeat(MAX_BODY_BYTES + 1))),
   blob_cap: (r) => r.fetch(new Request(`https://s/blobs/${'a'.repeat(64)}`, { method: 'POST', headers: memberHeaders(r.t1.token, { 'content-type': 'text/plain', 'content-length': String(MAX_BLOB_BYTES + 1) }), body: new Uint8Array(8) })),
   content_length: (r) => {

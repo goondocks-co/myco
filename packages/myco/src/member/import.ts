@@ -248,8 +248,8 @@ export function collectCandidates(
       });
     }
   }
-  // Newest first: the plan spends the credential's remaining room in the order
-  // it is offered, so the most recent history is what survives a tight quota.
+  // Newest first: the plan spends the per-agent cap in the order it is
+  // offered, so the most recent history is what an import brings.
   candidates.sort((a, b) => b.modifiedAt - a.modifiedAt);
   return { candidates, found, unattributable, unbound, active };
 }

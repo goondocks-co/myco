@@ -818,7 +818,7 @@ export class MemberSpool {
   endPass(outcome: Outcome, now: number): DrainEnd {
     switch (outcome.class) {
       case 'parked':
-        stderr('write quota exceeded — capture parked');
+        stderr('the Deployment refused capture for its write quota — capture stays spooled and ships once the Deployment is updated');
         return outcome.class;
       case 'retry':
         this.markOffline(now, outcome.retryAfterMs);

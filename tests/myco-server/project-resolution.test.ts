@@ -9,9 +9,10 @@ import { jsonBody } from '../helpers/json-body.js';
 import { describe, expect, it } from 'bun:test';
 import worker from '@myco-server-worker/index.js';
 import { issueMemberToken } from '@myco-server-worker/auth/tokens.js';
-import { MAX_PROJECTS, MEMBER_TOKEN_BYTE_QUOTA, PROJECT_HEADER, PROTOCOL_HEADER, SERVER_PROTOCOL } from '@myco-server-worker/constants.js';
+import { MAX_PROJECTS, PROJECT_HEADER, PROTOCOL_HEADER, SERVER_PROTOCOL } from '@myco-server-worker/constants.js';
+import { MAX_BODY_BYTES } from '@myco-server-worker/ingest/body.js';
 import { resolveProject } from '@myco-server-worker/ingest/projects.js';
-import { envelope, sqliteEnv, uuid } from './helpers/fixtures.js';
+import { envelope, RETIRED_BYTE_CEILING, sqliteEnv, uuid } from './helpers/fixtures.js';
 
 const json = async (res: Response) => (await res.json()) as Record<string, unknown>;
 
@@ -81,19 +82,27 @@ describe('project resolution', () => {
     expect((await json(await worker.fetch(post(r.token, 'proj_1', 5), r.e.env))).persisted).toBe(true);
   });
 
-  it('spends no Project seat on a request it refuses without touching storage: a credential at its quota creates nothing', async () => {
+  it('spends no Project seat on a request it refuses without touching storage: a body over the cap creates nothing', async () => {
     // Resolution is the first thing on the admission path that can write, so it runs
-    // after every refusal the caller cannot retry into success. A quota refusal is one
-    // of those: the credential is done, and it must not consume a Deployment seat on
-    // the way to being told so.
+    // after every refusal the caller cannot retry into success, and a refused request
+    // never consumes a Deployment seat on the way to being told so.
     const r = await rig();
-    r.e.sqlite.query(`UPDATE member_credentials SET bytes_written = ? WHERE machine_id = 'machine_1'`).run(MEMBER_TOKEN_BYTE_QUOTA - 1);
     const before = r.count();
 
-    const res = await worker.fetch(post(r.token, 'proj_quota_refused', 9), r.e.env);
-    expect(await jsonBody(res)).toEqual({ persisted: false, code: 'quota', reason: 'token write quota exceeded' });
+    const res = await worker.fetch(new Request('https://s/events', {
+      method: 'POST', body: 'x'.repeat(MAX_BODY_BYTES + 1),
+      headers: { authorization: `Bearer ${r.token}`, 'cf-connecting-ip': '1.2.3.4', [PROJECT_HEADER]: 'proj_body_refused', [PROTOCOL_HEADER]: String(SERVER_PROTOCOL) },
+    }), r.e.env);
+    expect((await jsonBody(res) as { code: string }).code).toBe('body_cap');
     expect(r.count()).toBe(before);
-    expect(r.e.sqlite.query(`SELECT 1 FROM projects WHERE project_id = 'proj_quota_refused'`).get()).toBeNull();
+    expect(r.e.sqlite.query(`SELECT 1 FROM projects WHERE project_id = 'proj_body_refused'`).get()).toBeNull();
+  });
+
+  it('spends a Project seat on capture whatever the credential has stored, past the retired 1 GiB ceiling (#1416)', async () => {
+    const r = await rig();
+    r.e.sqlite.query(`UPDATE member_credentials SET bytes_written = ? WHERE machine_id = 'machine_1'`).run(RETIRED_BYTE_CEILING);
+    expect((await json(await worker.fetch(post(r.token, 'proj_past_ceiling', 9), r.e.env))).persisted).toBe(true);
+    expect(r.e.sqlite.query(`SELECT 1 AS held FROM projects WHERE project_id = 'proj_past_ceiling'`).get()).toEqual({ held: 1 });
   });
 
   it('never passes the ceiling under concurrent creation, and admits every racer that names one Project', async () => {

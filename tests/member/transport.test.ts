@@ -5,14 +5,14 @@
  * the protocol header), unauthorized (401 without), protocol (409).
  */
 import { describe, expect, it } from 'bun:test';
-import { MEMBER_TOKEN_BYTE_QUOTA } from '@myco-server-worker/constants.js';
+import { RETIRED_BYTE_CEILING } from '../myco-server/helpers/fixtures.js';
 import { mintMemberToken } from '@myco-server-worker/auth/tokens.js';
 import { CLASSIFIERS } from '@myco-server-worker/telemetry.js';
 import { sha256HexOf, utf8 } from '@myco-server-worker/hash.js';
 import { mintId, promptEvent, transcriptSegmentEvent, type EnvelopeContext } from '@myco/member/envelope.js';
 import { MEMBER_PROTOCOL } from '@myco/member/constants.js';
 import { ServerClient, type FetchLike } from '@myco/member/transport.js';
-import { memberRig, tempStager } from './helpers/server.js';
+import { memberRig, olderServerAtQuota, tempStager } from './helpers/server.js';
 
 const budget = { connectTimeoutMs: 2_000, requestTimeoutMs: 4_000 };
 const stager = tempStager();
@@ -44,13 +44,18 @@ describe('ServerClient classification', () => {
       .toEqual({ class: 'reslice', code: 'offset_overlap', heldSize: first.size });
   });
 
-  it('parked on quota, for events and blobs', async () => {
+  it('parked on an older server\'s quota, for events and blobs; acked by this build\'s server past the retired ceiling (#1416)', async () => {
     const rig = await memberRig();
-    rig.env.sqlite.query(`UPDATE member_credentials SET bytes_written = ? WHERE id = ?`).run(MEMBER_TOKEN_BYTE_QUOTA, rig.tokenId);
-    const client = new ServerClient({ serverUrl: 'https://s', token: rig.token, projectId: 'proj_1' }, rig.fetch);
-    expect(await client.postEvent(promptEvent(ctx('s3'), { promptId: mintId(), text: 'hi' }).envelope, budget)).toMatchObject({ class: 'parked', code: 'quota' });
+    rig.env.sqlite.query(`UPDATE member_credentials SET bytes_written = ? WHERE id = ?`).run(RETIRED_BYTE_CEILING, rig.tokenId);
+    const older = olderServerAtQuota(rig.fetch);
+    const client = new ServerClient({ serverUrl: 'https://s', token: rig.token, projectId: 'proj_1' }, older.fetch);
+    const event = promptEvent(ctx('s3'), { promptId: mintId(), text: 'hi' }).envelope;
     const bytes = utf8('x');
+    expect(await client.postEvent(event, budget)).toMatchObject({ class: 'parked', code: 'quota' });
     expect(await client.postBlob(bytes, await sha256HexOf(bytes), 'text/plain', budget)).toMatchObject({ class: 'parked', code: 'quota' });
+    older.atQuota = false;
+    expect(await client.postEvent(event, budget)).toMatchObject({ class: 'acked' });
+    expect(await client.postBlob(bytes, await sha256HexOf(bytes), 'text/plain', budget)).toMatchObject({ class: 'acked' });
   });
 
   it('refused carries the server code for every other terminal refusal', async () => {

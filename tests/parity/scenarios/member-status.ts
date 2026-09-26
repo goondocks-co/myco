@@ -1,6 +1,6 @@
 import { expect } from 'bun:test';
 import { jsonBody } from '../../helpers/json-body.js';
-import { MEMBER_TOKEN_BYTE_QUOTA, SERVER_SCHEMA_VERSION } from '@myco-server-worker/constants.js';
+import { SERVER_SCHEMA_VERSION } from '@myco-server-worker/constants.js';
 import { sha256Hex } from '@myco-server-worker/hash.js';
 import { SIZE_LIMIT_UNAVAILABLE } from '@myco-server-worker/platform/cloudflare/store-maintenance.js';
 import { RUN_SCOPE } from '@myco-server-worker/pipeline.js';
@@ -11,14 +11,15 @@ interface Outcome { finishedAt: number | null; measurements: Measurement[] }
 
 /**
  * Deployment health read over a member credential on both targets: the target,
- * the schema check, the presented credential's own byte quota, the bytes
+ * the schema check, the bytes the presented credential stored (information,
+ * never a limit), the transcript retention window, the bytes
  * recorded blobs hold, and the database measurements the target's store
  * maintenance recorded, with what the target cannot report named unavailable;
  * a body that is not the empty object, a run's credential and a grant refused;
  * and no Project created for whatever Project the request names.
  */
 export const memberStatus: ParityScenario = {
-  name: 'member status: a member credential reads the schema check, its own quota and the Deployment\'s storage',
+  name: 'member status: a member credential reads the schema check, its own stored bytes, the retention window and the Deployment\'s storage',
   async run(target) {
     const owner = { ...target.ownerHeaders(), origin: target.url };
     const ownerPost = (path: string, body: Record<string, unknown> = {}) =>
@@ -36,22 +37,22 @@ export const memberStatus: ParityScenario = {
     const recorded = (await waitFor(optimize, (latest) => latest?.finishedAt != null))!;
 
     const tokenId = String((await target.sql(`SELECT id FROM member_credentials WHERE token_hash = ${lit(await sha256Hex(target.memberToken))}`))[0]?.id);
-    const held = async () => Number((await target.sql(`SELECT (SELECT bytes_written FROM member_credentials WHERE id = ${lit(tokenId)})
-      + (SELECT COALESCE(SUM(size), 0) FROM blob_reservations WHERE token_id = ${lit(tokenId)} AND expires_at > ${Date.now()}) AS n`))[0]?.n);
+    const stored = async () => Number((await target.sql(`SELECT bytes_written AS n FROM member_credentials WHERE id = ${lit(tokenId)}`))[0]?.n);
     const blobs = async () => Number((await target.sql('SELECT COALESCE(SUM(size), 0) AS n FROM blobs'))[0]?.n);
 
     const res = await read('{}');
     expect(res.status).toBe(200);
     const health = (await res.json()) as {
       persisted: boolean; target: string | null; schema: unknown;
-      quota: { used: unknown; limit: unknown };
+      stored: unknown; retention: unknown;
       storage: Array<Measurement & { measuredAt: number | null }>;
     };
-    expect(Object.keys(health).sort()).toEqual(['persisted', 'quota', 'schema', 'storage', 'target']);
+    expect(Object.keys(health).sort()).toEqual(['persisted', 'retention', 'schema', 'storage', 'stored', 'target']);
     expect(health.persisted).toBe(true);
     expect(health.target).toBe(target.name === 'cloudflare' ? 'cloudflare' : 'bun');
     expect(health.schema).toEqual({ expected: SERVER_SCHEMA_VERSION, found: SERVER_SCHEMA_VERSION, matches: true });
-    expect(health.quota).toEqual({ used: { state: 'measured', value: await held(), unit: 'bytes' }, limit: { state: 'measured', value: MEMBER_TOKEN_BYTE_QUOTA, unit: 'bytes' } });
+    expect(health.stored).toEqual({ state: 'measured', value: await stored(), unit: 'bytes' });
+    expect(health.retention).toEqual({ transcripts: { state: 'forever', configured: false } });
     const named = (name: string) => health.storage.find((m) => m.name === name);
     expect(health.storage.slice(0, 2).map((m) => m.name)).toEqual(['blob_bytes', 'size']);
     expect(named('blob_bytes')).toEqual({ name: 'blob_bytes', state: 'measured', value: await blobs(), unit: 'bytes', measuredAt: recorded.finishedAt });

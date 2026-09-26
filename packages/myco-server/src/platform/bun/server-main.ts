@@ -121,6 +121,11 @@ export interface StartedDeployment {
  * `schema_meta.version` as its last statement, which is the ledger: steps at or
  * below the stamped version are already applied.
  *
+ * Each step applies in one transaction, as `wrangler d1 migrations apply`
+ * applies each file: a step that fails part-way leaves nothing behind, and a
+ * step that rebuilds a table other tables reference (step 48) defers the
+ * foreign key check to its own commit.
+ *
  * This is the only production path that applies migrations for this target. The
  * request handler refuses a volume that is behind rather than migrating it, and
  * the Cloudflare target migrates through `wrangler d1 migrations apply` —
@@ -145,16 +150,25 @@ export function migrateOnly(databasePath: string, native?: NativeSqlite): number
     let applied = 0;
     for (const step of SCHEMA_STEPS) {
       if (step.version <= stamped) continue;
-      // Statement by statement, so a step that failed part-way re-runs: every
-      // statement but ADD COLUMN is written to re-apply, and a column that is
-      // already there is the one shape SQLite cannot express as IF NOT EXISTS.
-      for (const statement of step.statements) {
-        try {
-          sqlite.exec(statement);
-        } catch (err) {
-          const duplicateColumn = /^ALTER TABLE \w+ ADD COLUMN/.test(statement) && /duplicate column name/i.test((err as Error).message);
-          if (!duplicateColumn) throw err;
+      // One transaction per step. A volume a build before this one left
+      // part-way through a step still re-runs it: every statement but ADD
+      // COLUMN is written to re-apply, and a column that is already there is
+      // the one shape SQLite cannot express as IF NOT EXISTS.
+      sqlite.exec('BEGIN IMMEDIATE');
+      try {
+        for (const statement of step.statements) {
+          try {
+            sqlite.exec(statement);
+          } catch (err) {
+            const duplicateColumn = /^ALTER TABLE \w+ ADD COLUMN/.test(statement) && /duplicate column name/i.test((err as Error).message);
+            if (!duplicateColumn) throw err;
+          }
         }
+        sqlite.exec('COMMIT');
+      } catch (err) {
+        // SQLite ends the transaction itself on some failures; roll back only one still open.
+        if (sqlite.inTransaction) sqlite.exec('ROLLBACK');
+        throw err;
       }
       applied += 1;
     }
