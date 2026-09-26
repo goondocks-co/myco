@@ -289,6 +289,23 @@ describe('when a worker service belongs on this machine', () => {
     expect(workerServiceWords(null).status).toBe('warn');
   });
 
+  it('says so when a reload left the unit unloaded, and `myco worker install` loads it again', async () => {
+    member();
+    const d = deps();
+    await ensureWorkerService(URL_, d);
+    // The reload helper unloaded the unit and could not load it again.
+    const unitFile = servicePaths(workerServiceSpec(target(), []), 'darwin').unitFile;
+    d.rec.runner('launchctl', ['unload', unitFile]);
+    expect(fs.existsSync(unitFile)).toBe(true);
+    expect(workerServiceWords(describeWorkerService(URL_, d))).toEqual({
+      status: 'warn',
+      line: 'installed, and the platform is not holding it — run `myco worker install`',
+    });
+    const [check] = await checkWorkerServices(scratch, d);
+    expect(check).toMatchObject({ status: 'warn', detail: expect.stringContaining('myco worker install') });
+    expect(await ensureWorkerService(URL_, d)).toMatchObject({ kind: 'installed', outcome: { loaded: true, running: true } });
+  });
+
   it('tells a membership that cannot run a worker so, and never to install one', async () => {
     member();
     recordWorkerRefusal(mycoHome, URL_, 'not_admin', 1);
