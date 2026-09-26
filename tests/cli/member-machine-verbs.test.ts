@@ -414,6 +414,26 @@ describe('a joined member with no 1.4 vault', () => {
     expect(Date.now() - started).toBeLessThan(5_000);
     expect(err.join('\n')).toContain('did not answer its settings (timeout): no answer within 200 ms');
   });
+
+  it('config get names a Deployment that does not serve the settings read, and renews nothing', async () => {
+    const rig = await memberRig();
+    join(rig);
+    const older: FetchLike = async (input, init) => {
+      const request = new Request(input, init);
+      const url = new URL(request.url);
+      if (url.pathname === '/members/settings') url.pathname = '/members/settings-not-served';
+      return rig.fetch(new Request(url, request));
+    };
+    const spy = recordingFetch(older);
+    const token = readRegistryEntry(checkout, mycoHome)!.token;
+
+    const ran = await verb('config', ['get'], spy.fetch);
+
+    expect(ran.answered).toBe(false);
+    expect(ran.stderr).toContain('did not answer its settings (route_missing): the Deployment does not serve /members/settings; update it');
+    expect(spy.requests.filter((r) => r.path === '/tokens/refresh')).toEqual([]);
+    expect(readRegistryEntry(checkout, mycoHome)!.token).toBe(token);
+  });
 });
 
 describe('the Member leaves the config verb names', () => {

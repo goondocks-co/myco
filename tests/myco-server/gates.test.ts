@@ -701,6 +701,11 @@ describe('gates', () => {
         malformed: (token) => new Request('https://s/members/settings', { method: 'POST', headers: memberHeaders(token), body: JSON.stringify({ leaf: 'x' }) }),
         wellFormed: (token) => new Request('https://s/members/settings', { method: 'POST', headers: memberHeaders(token), body: '{}' }),
       },
+      'POST /members/status': {
+        shape: 'persisted',
+        malformed: (token) => new Request('https://s/members/status', { method: 'POST', headers: memberHeaders(token), body: JSON.stringify({ project: 'x' }) }),
+        wellFormed: (token) => new Request('https://s/members/status', { method: 'POST', headers: memberHeaders(token), body: '{}' }),
+      },
     };
     /** How each shape answers: the status of a terminal refusal, where its code and reason sit, and what a well-formed request that stored or answered looks like. */
     const SHAPES: Record<Shape, { refusedStatus: number; refusal: (body: any) => { refused: boolean; code: unknown; reason: unknown }; accepted: (body: any) => boolean }> = {
@@ -1086,6 +1091,7 @@ describe('gates', () => {
       'member POST /mcp',
       'member POST /members/link-github',
       'member POST /members/settings',
+      'member POST /members/status',
       'member POST /runs/canopy-map',
       'member POST /runs/claim',
       'member POST /runs/embedding-step',

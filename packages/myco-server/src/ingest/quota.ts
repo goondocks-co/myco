@@ -22,11 +22,17 @@ export function heldBytes(ctx: QuotaContext, except: string | null = null): Frag
   };
 }
 
-/** The bytes a credential may still write: the quota less what it holds, floored at zero. Read through `heldBytes`, so what a caller is told it may spend and what the admission will actually admit are the same expression. */
-export async function remainingQuotaBytes(db: RelationalStore, ctx: QuotaContext): Promise<number> {
+/** What a credential holds against its quota, read through `heldBytes`; null when no credential row carries the id. */
+export async function heldQuotaBytes(db: RelationalStore, ctx: QuotaContext): Promise<number | null> {
   const held = heldBytes(ctx);
-  const row = await db.prepare(`SELECT ${MEMBER_TOKEN_BYTE_QUOTA} - (${held.sql}) AS remaining`).bind(...held.params).first<{ remaining: number }>();
-  return Math.max(0, row?.remaining ?? 0);
+  const row = await db.prepare(`SELECT ${held.sql} AS held`).bind(...held.params).first<{ held: number | null }>();
+  return row?.held ?? null;
+}
+
+/** The bytes a credential may still write: the quota less what it holds, floored at zero, and zero for an id no credential row carries. Read through `heldBytes`, so what a caller is told it may spend and what the admission will actually admit are the same expression. */
+export async function remainingQuotaBytes(db: RelationalStore, ctx: QuotaContext): Promise<number> {
+  const held = await heldQuotaBytes(db, ctx);
+  return held === null ? 0 : Math.max(0, MEMBER_TOKEN_BYTE_QUOTA - held);
 }
 
 /** An admission that always holds, in the fragment shape every other admission takes. What a write the Deployment makes for itself is admitted by: it spends no quota and names no credential to be live. */

@@ -10,7 +10,7 @@ import { handleLinkGithub } from './auth/members.js';
 import { clearCookie } from './auth/owner/cookie.js';
 import { handleCallback, handleLogin } from './auth/owner/routes.js';
 import { handleArchiveProject, handleCreateProject, handleProjects, handleUnarchiveProject, handleRenameProject } from './api/projects.js';
-import { handleStatus } from './api/status.js';
+import { handleMemberStatus, handleStatus } from './api/status.js';
 import { handleDiagnostics } from './api/diagnostics.js';
 import { handleProjectSearch } from './api/search.js';
 import { handleWake } from './api/wake.js';
@@ -165,6 +165,8 @@ export const ROUTES: readonly Route[] = [
   { method: 'POST', path: '/members/link-github', auth: 'member', bodyMode: 'json', shape: 'persisted', quotaPrecheck: false, handler: handleLinkGithub },
   // Deployment Settings as a member's CLI reads them: Deployment-wide, so no Project is read or created; writes stay on the dashboard's owner routes.
   { method: 'POST', path: '/members/settings', auth: 'member', bodyMode: 'json', shape: 'persisted', quotaPrecheck: false, scope: 'credential', credential: handleMemberSettings },
+  // Deployment health as a member's `myco stats` reads it: Deployment-wide facts and the credential's own quota, so no Project is read or created.
+  { method: 'POST', path: '/members/status', auth: 'member', bodyMode: 'json', shape: 'persisted', quotaPrecheck: false, scope: 'credential', credential: handleMemberStatus },
   { method: 'GET', path: '/auth/me', auth: 'owner', membership: 'optional', handler: handleMe },
   { method: 'POST', path: '/auth/link', auth: 'owner', membership: 'optional', handler: handleLink },
   { method: 'GET', path: '/api/status', auth: 'owner', handler: handleStatus },

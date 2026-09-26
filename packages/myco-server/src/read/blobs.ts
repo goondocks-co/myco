@@ -9,6 +9,12 @@ export interface BlobRow {
   objectKey: string;
 }
 
+/** The bytes every recorded blob holds, across every Project of the Deployment. */
+export async function recordedBlobBytes(db: RelationalStore): Promise<number> {
+  const row = await db.prepare('SELECT COALESCE(SUM(size), 0) AS bytes FROM blobs').first<{ bytes: number }>();
+  return row?.bytes ?? 0;
+}
+
 /** A stored blob's record inside the scope, or null. Blobs are keyed `(project_id, key)`, so the scope is part of the lookup rather than a filter applied afterwards. */
 export async function getBlob(db: RelationalStore, scope: ReadScope, key: string): Promise<BlobRow | null> {
   const row = await db

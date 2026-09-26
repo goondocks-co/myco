@@ -21,6 +21,7 @@
 import type { ServerEnv } from './adapters.js';
 import type { PowerState } from './power.js';
 import { leafValues } from './settings.js';
+import { recordedBlobBytes } from '../read/blobs.js';
 import { classify, emit } from '../telemetry.js';
 
 export const MAINTENANCE_CHECKS = ['optimize', 'integrity'] as const;
@@ -58,7 +59,10 @@ const META_KEY_PREFIX = 'maintenance.';
 export type StoreMeasurement =
   | { name: MeasurementName; state: 'measured'; value: number; unit: 'bytes' }
   | { name: MeasurementName; state: 'unavailable'; reason: string };
-export type MeasurementName = 'size' | 'reclaimable' | 'size_limit' | 'daily_quota';
+export type MeasurementName = 'size' | 'reclaimable' | 'size_limit' | 'daily_quota' | 'blob_bytes';
+
+/** A measurement with the instant the check that took it finished. */
+export type DatedMeasurement = StoreMeasurement & { measuredAt: number };
 
 /** What a port reports from one check. `findings` are the store's own words, one per problem. */
 export interface PortResult {
@@ -76,7 +80,8 @@ export type CheckSupport = { supported: true; label: string } | { supported: fal
  * process has it in flight, however long that takes, and a running record another holder left behind is dead.
  *
  * `platform-limit`: every statement ends within the platform's own `statementLimitMs`, and a run sends a fixed
- * number in sequence — the check's own `statements` and the two its claim writes and reads back — so its work is
+ * number in sequence — the check's own `statements`, the ones this module adds to it (`RECORD_STATEMENTS`) and the
+ * two its claim writes and reads back — so its work is
  * over by that many limits after the claim is written. A running record is live until then.
  */
 export type Exclusivity =
@@ -85,6 +90,15 @@ export type Exclusivity =
 
 /** The statements a claim sends before the check's own: the conditional write and its read-back. */
 export const CLAIM_STATEMENTS = 2;
+
+/** The statements this module sends inside a check beside the port's own: optimize also measures the bytes recorded blobs hold. */
+export const RECORD_STATEMENTS: Readonly<Record<MaintenanceCheck, number>> = { optimize: 1, integrity: 0 };
+
+/** What a check measures on every target beside what the port reports: optimize measures the bytes recorded blobs hold. */
+async function recordMeasurements(env: ServerEnv, check: MaintenanceCheck): Promise<StoreMeasurement[]> {
+  if (check !== 'optimize') return [];
+  return [{ name: 'blob_bytes', state: 'measured', value: await recordedBlobBytes(env.db), unit: 'bytes' }];
+}
 
 /** One target's store maintenance: what it supports, how it holds a check exclusive, and the work. */
 export interface StoreMaintenancePort {
@@ -176,6 +190,23 @@ function parseOutcome(raw: string | undefined): MaintenanceOutcome | null {
 export async function latestOutcome(env: Pick<ServerEnv, 'db'>, check: MaintenanceCheck): Promise<MaintenanceOutcome | null> {
   const row = await env.db.prepare('SELECT value FROM schema_meta WHERE key = ?').bind(metaKey(check)).first<{ value: string }>();
   return parseOutcome(row?.value);
+}
+
+/**
+ * The newest recorded value of every measurement, each dated by the finish of the check that took it. A measurement
+ * two checks take is the later one's. Read from the recorded outcomes alone: the store is not measured again.
+ */
+export async function latestMeasurements(env: Pick<ServerEnv, 'db'>): Promise<DatedMeasurement[]> {
+  const newest = new Map<MeasurementName, DatedMeasurement>();
+  for (const check of MAINTENANCE_CHECKS) {
+    const outcome = await latestOutcome(env, check);
+    if (outcome === null || outcome.finishedAt === null) continue;
+    for (const m of outcome.measurements) {
+      const held = newest.get(m.name);
+      if (held === undefined || outcome.finishedAt > held.measuredAt) newest.set(m.name, { ...m, measuredAt: outcome.finishedAt });
+    }
+  }
+  return [...newest.values()];
 }
 
 /** Checks in flight in this process, per serving-owner port: the port is made once per serving process. */
@@ -275,8 +306,9 @@ async function finishRun(env: ServerEnv, port: StoreMaintenancePort, record: Mai
   let finished: MaintenanceOutcome;
   try {
     const result = await port.run(record.check);
+    const measurements = [...result.measurements, ...(await recordMeasurements(env, record.check))];
     finished = {
-      ...record, ...boundFindings(result.findings), measurements: result.measurements, finishedAt: clock(),
+      ...record, ...boundFindings(result.findings), measurements, finishedAt: clock(),
       state: result.findings.length === 0 ? 'healthy' : 'findings',
     };
   } catch (err) {
@@ -322,7 +354,7 @@ export async function runMaintenance(
     const record: MaintenanceOutcome = {
       runId: crypto.randomUUID(), check, trigger, state: 'running', startedAt: now,
       claimExpiresAt: exclusivity.kind === 'platform-limit'
-        ? claimedAt + (exclusivity.statements[check] + CLAIM_STATEMENTS) * exclusivity.statementLimitMs
+        ? claimedAt + (exclusivity.statements[check] + RECORD_STATEMENTS[check] + CLAIM_STATEMENTS) * exclusivity.statementLimitMs
         : null,
       holder: exclusivity.kind === 'serving-owner' ? exclusivity.holder : null,
       finishedAt: null, errorClass: null, findings: [], findingsOmitted: 0, measurements: [], powerState: options.powerState ?? null,
