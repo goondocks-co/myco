@@ -10,7 +10,10 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { parseTranscripts } from '@myco-server-worker/ingest/parse.js';
-import { run as runRead } from '@myco/cli/member-reads.js';
+import { run as runRead, STATUS_READ_PATH } from '@myco/cli/member-reads.js';
+import { MEMBER_TOKEN_BYTE_QUOTA, SERVER_SCHEMA_VERSION } from '@myco-server-worker/constants.js';
+import { latestOutcome, runMaintenance } from '@myco-server-worker/core/store-maintenance.js';
+import { DAILY_QUOTA_UNAVAILABLE, SIZE_LIMIT_UNAVAILABLE } from '@myco-server-worker/platform/cloudflare/store-maintenance.js';
 import { memberSource as memberReadSource, type MemberVerbDeps as MemberReadDeps } from '@myco/cli/deployment-reader.js';
 import { MEMBER_READ_VERBS, type MemberReadVerb } from '@myco/cli/member-verbs.js';
 import { callTool } from '@myco/mcp/client-call.js';
@@ -24,6 +27,19 @@ import { recordingFetch, registerTestMember, runHook } from '../member/helpers/h
 import type { FetchLike } from '@myco/member/transport.js';
 
 const DAY_MS = 24 * 60 * 60 * 1000;
+const NOT_MEASURED = 'not measured yet; store maintenance measures it when a check runs';
+const bytes = (n: number) => `${n.toLocaleString('en-US')} bytes`;
+
+/** The rig's Deployment as one that predates `path`: the request reaches the pipeline under a path no route serves. */
+function withoutRoute(path: string, inner: FetchLike): FetchLike {
+  return async (input, init) => {
+    const request = new Request(input, init);
+    const url = new URL(request.url);
+    if (url.pathname !== path) return inner(request);
+    url.pathname = `${path}-not-served`;
+    return inner(new Request(url, request));
+  };
+}
 const SERVER_URL = 'https://member-test.invalid';
 const PROJECT = 'proj_1';
 
@@ -157,21 +173,107 @@ describe('the retained read verbs in a joined project with no 1.4 vault', () => 
     expect(legacyArtifacts()).toEqual([]);
   });
 
-  it('stats reports the Deployment\'s project, not a local vault', async () => {
+  it('stats reports the Deployment\'s project and health, not a local vault', async () => {
     const rig = await memberRig();
     join(rig);
     await seedSession(rig, 'sess-stats', 'count me');
+    const spy = recordingFetch(rig.fetch);
 
-    const ran = await read('stats', [], rig.fetch);
+    const ran = await read('stats', [], spy.fetch);
 
     expect(ran.stderr).toBe('');
     expect(ran.ok).toBe(true);
     expect(ran.stdout).toContain(`Deployment: ${SERVER_URL}`);
+    expect(ran.stdout).toContain(`Target:     ${rig.env.serverEnv.platform.name}`);
     expect(ran.stdout).toContain(`Project:    ${PROJECT}`);
     expect(ran.stdout).toContain('Sessions:      1');
     expect(ran.stdout).toContain('Active:        yes');
+    const tokenId = readRegistryEntry(checkout, mycoHome)!.tokenId;
+    const charged = (rig.env.sqlite.query('SELECT bytes_written FROM member_credentials WHERE id = ?').get(tokenId) as { bytes_written: number }).bytes_written;
+    expect(charged).toBeGreaterThan(0);
+    expect(ran.stdout).toContain(`Schema:      expected ${SERVER_SCHEMA_VERSION}, found ${SERVER_SCHEMA_VERSION}\n`);
+    expect(ran.stdout).toContain(`Quota:       ${bytes(charged)} used of ${bytes(MEMBER_TOKEN_BYTE_QUOTA)} (this machine's credential)`);
+    expect(ran.stdout).toContain(`Blobs:       unavailable: ${NOT_MEASURED}`);
+    expect(ran.stdout).toContain(`Database:    unavailable: ${NOT_MEASURED}`);
+    expect(spy.requests.filter((r) => r.path === STATUS_READ_PATH).map((r) => r.body)).toEqual(['{}']);
     expect(ran.stdout).not.toContain('Vault');
     expect(legacyArtifacts()).toEqual([]);
+  });
+
+  it('stats shows every storage measurement store maintenance recorded, dated, each one the target cannot report named with why', async () => {
+    const rig = await memberRig();
+    join(rig);
+    await seedSession(rig, 'sess-measured', 'measure me');
+    const ran = await runMaintenance(rig.env.serverEnv, 'optimize', 'owner', Date.now());
+    expect(ran.outcome).toBe('ran');
+    const recorded = (await latestOutcome(rig.env.serverEnv, 'optimize'))!;
+    const at = `(measured ${new Date(recorded.finishedAt!).toISOString()})`;
+    const blobs = (rig.env.sqlite.query('SELECT COALESCE(SUM(size), 0) AS n FROM blobs').get() as { n: number }).n;
+    expect(blobs).toBeGreaterThan(0);
+
+    const stats = await read('stats', [], rig.fetch);
+
+    expect(stats.ok).toBe(true);
+    expect(stats.stdout).toContain(`Blobs:       ${bytes(blobs)} ${at}`);
+    expect(stats.stdout).toContain(`Database:    unavailable: D1 reported no size for this query ${at}`);
+    expect(stats.stdout).toContain(`Size limit:  unavailable: ${SIZE_LIMIT_UNAVAILABLE} ${at}`);
+    expect(stats.stdout).toContain(`Daily quota: unavailable: ${DAILY_QUOTA_UNAVAILABLE} ${at}`);
+  });
+
+  it('stats against a Deployment that does not serve the health route prints the rest, says to update it, and renews nothing', async () => {
+    const rig = await memberRig();
+    join(rig);
+    await seedSession(rig, 'sess-older', 'older deployment');
+    const spy = recordingFetch(withoutRoute(STATUS_READ_PATH, rig.fetch));
+    const before = readRegistryEntry(checkout, mycoHome)!;
+
+    const ran = await read('stats', [], spy.fetch);
+
+    expect(ran.ok).toBe(true);
+    expect(ran.stderr).toBe('');
+    expect(ran.stdout).toContain('Health:      unavailable: this Deployment does not report health yet; update it');
+    expect(ran.stdout).toContain('Sessions:      1');
+    expect(ran.stdout).toContain('--- Agent runs');
+    expect(spy.requests.filter((r) => r.path === '/tokens/refresh')).toEqual([]);
+    const after = readRegistryEntry(checkout, mycoHome)!;
+    expect({ token: after.token, refreshTerminal: after.refreshTerminal }).toEqual({ token: before.token, refreshTerminal: before.refreshTerminal });
+  });
+
+  it('stats names a storage fact in a state this CLI does not know rather than printing a number for it', async () => {
+    const rig = await memberRig();
+    join(rig);
+    const newer: FetchLike = async (input, init) => {
+      const request = new Request(input, init);
+      const answer = await rig.fetch(request);
+      if (new URL(request.url).pathname !== STATUS_READ_PATH) return answer;
+      const body = await answer.json() as { storage: unknown[] };
+      body.storage.push({ name: 'blob_objects', state: 'estimated', measuredAt: null });
+      return Response.json(body, { status: answer.status, headers: answer.headers });
+    };
+
+    const ran = await read('stats', [], newer);
+
+    expect(ran.ok).toBe(true);
+    expect(ran.stdout).toContain('blob_objects: not understood by this CLI (state "estimated"); update it');
+    expect(ran.stdout).not.toContain('undefined');
+  });
+
+  it('stats prints the project and its runs when the health read fails, and fails naming it', async () => {
+    const rig = await memberRig();
+    join(rig);
+    const stalls: FetchLike = async (input, init) => {
+      const request = new Request(input, init);
+      if (new URL(request.url).pathname !== STATUS_READ_PATH) return rig.fetch(request);
+      return new Promise<Response>((_resolve, reject) => { request.signal.addEventListener('abort', () => reject(request.signal.reason)); });
+    };
+
+    const ran = await read('stats', [], stalls, { requestTimeoutMs: 200 });
+
+    expect(ran.ok).toBe(false);
+    expect(ran.stdout).toContain(`Health:      unavailable: ${SERVER_URL} did not answer (timeout): no answer within 200 ms`);
+    expect(ran.stdout).toContain('Sessions:      0');
+    expect(ran.stdout).toContain('No runs yet');
+    expect(ran.stderr).toContain(`myco stats: health unavailable: ${SERVER_URL} did not answer (timeout)`);
   });
 
   it('vectors asks the Deployment for semantic search and names the Deployment that cannot serve it', async () => {

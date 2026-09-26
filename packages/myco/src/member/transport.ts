@@ -192,13 +192,16 @@ export class ServerClient {
   }
 }
 
+/** A 401 the Deployment answered after authenticating the credential, which it stamps with its protocol: the path is not a route it serves. */
+export const routeMissing = (raw: RawAnswer): boolean => raw.kind === 'response' && raw.status === 401 && raw.protocolHeader;
+
 /** The classes every route shares, decided on the status line: 401 by the protocol header, 409 as protocol, 429/503/5xx/transport/timeout as retry. Null when the answer is a 200 the route classifies itself. */
 function classifyCommon(raw: RawAnswer): Outcome | null {
   if (raw.kind === 'transport') return { class: 'retry', detail: raw.detail };
   if (raw.kind === 'timeout') return { class: 'retry', detail: `timeout (${raw.phase})` };
   const { status } = raw;
   if (status === 200) return null;
-  if (status === 401) return raw.protocolHeader ? { class: 'route_missing', status } : { class: 'unauthorized', status };
+  if (status === 401) return routeMissing(raw) ? { class: 'route_missing', status } : { class: 'unauthorized', status };
   if (status === 409) {
     return {
       class: 'protocol',

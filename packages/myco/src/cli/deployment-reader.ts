@@ -20,7 +20,7 @@ import { resolveCredential, resolveMemberProjectRoot, type CredentialRecord } fr
 import { REJOIN_HINT } from '../member/delivery-notice.js';
 import { refreshMemberCredential, type RefreshStatus } from '../member/refresh.js';
 import { readRegistryEntryResult, registryEntryPath } from '../member/registry.js';
-import { ServerClient, type FetchLike } from '../member/transport.js';
+import { routeMissing, ServerClient, type FetchLike } from '../member/transport.js';
 import { resolveMycoHome } from '../paths/home.js';
 
 export interface MemberVerbDeps {
@@ -55,6 +55,9 @@ export function memberSource(args: readonly string[], deps: MemberVerbDeps = {})
 
 /** Renewal answers that leave nothing to retry: the credential is finished until a new one is issued. */
 const RENEWAL_TERMINAL: readonly RefreshStatus[] = ['unauthorized', 'terminal', 'lineage-expired'];
+
+/** The code of a member route the Deployment does not serve: an older Deployment answers it after authenticating the credential, so no renewal follows. */
+export const ROUTE_MISSING = 'route_missing';
 
 /** A failed request, as every Deployment request answers one. */
 export interface DeploymentError { code: string; message: string }
@@ -104,6 +107,7 @@ async function postRoute(client: ServerClient, budget: RequestBudget, path: stri
   const raw = await client.request('POST', path, { body: JSON.stringify(body), headers: { 'content-type': 'application/json' }, budget, scope: 'deployment' });
   if (raw.kind === 'timeout') return { ok: false, error: { code: 'timeout', message: `no answer within ${budget.requestTimeoutMs} ms` } };
   if (raw.kind === 'transport') return { ok: false, error: { code: 'unreachable', message: raw.detail } };
+  if (routeMissing(raw)) return { ok: false, error: { code: ROUTE_MISSING, message: `the Deployment does not serve ${path}; update it` } };
   if (raw.status === 401) return { ok: false, error: { code: 'unauthorized', message: 'The Deployment refused the credential (HTTP 401).' } };
   const answer = raw.json;
   if (answer === null) return { ok: false, error: { code: 'unavailable', message: `The Deployment answered HTTP ${raw.status} with no JSON body.` } };
