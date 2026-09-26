@@ -103,12 +103,12 @@ const SKIP_WORDS: Readonly<Record<string, string>> = {
   replaced: 'the file changed since it was written',
   window: 'older than this Deployment reaches back',
   cap: 'past the per-agent limit',
-  quota: 'no storage room left',
+  quota: 'refused for the Deployment\'s storage quota; update the Deployment',
 };
 
 /** What a person is told about a pass that stopped early, in the same vocabulary. */
 const STOPPED_WORDS: Readonly<Record<string, string>> = {
-  parked: 'the Deployment has no storage room left',
+  parked: 'the Deployment refused it for its storage quota; update the Deployment',
   unauthorized: 'this machine is not signed in to that Deployment',
   route_missing: 'that Deployment does not offer import',
   protocol: 'that Deployment expects a different version of Myco',

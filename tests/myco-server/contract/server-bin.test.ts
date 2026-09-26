@@ -22,6 +22,8 @@ import { join } from 'node:path';
 import { exitFailureLine, LIVE_RUNS_QUERY, main, migrateOnly } from '@myco-server-worker/platform/bun/server-main.js';
 import { LIVE_RUN_STATUSES } from '@myco-server-worker/core/runs.js';
 import { bunPlatform } from '@myco-server-worker/platform/bun/env.js';
+import { SCHEMA_STEPS } from '@myco-server-worker/db/schema.js';
+import { SERVER_SCHEMA_VERSION } from '@myco-server-worker/constants.js';
 
 const roots: string[] = [];
 const scratch = () => {
@@ -75,6 +77,100 @@ describe('migrateOnly', () => {
     sqlite.close();
 
     expect(migrateOnly(path)).toBe(1);
+  });
+});
+
+/** Brings a volume to `version` as `migrateOnly` would, one transaction per step, so a test can seed rows a step then migrates. */
+function migrateTo(path: string, version: number): Database {
+  const sqlite = new Database(path, { create: true });
+  sqlite.exec('PRAGMA foreign_keys = ON');
+  for (const step of SCHEMA_STEPS.filter((s) => s.version <= version)) sqlite.transaction(() => { for (const sql of step.statements) sqlite.exec(sql); })();
+  return sqlite;
+}
+
+/** Credentials at the retired 1 GiB ceiling, a successor lineage, and every table that references a credential holding a row that does. */
+function seedCredentials(sqlite: Database): void {
+  sqlite.exec(`INSERT INTO projects (project_id, name, created_at) VALUES ('proj_1', 'one', 0)`);
+  sqlite.exec(`INSERT INTO members (id, label, created_at, revoked_at) VALUES ('mem_1', 'one', 0, NULL)`);
+  sqlite.exec(`INSERT INTO member_credentials (id, member_id, token_hash, machine_id, issued_at, expires_at, revoked_at, lineage_root, lineage_started_at, predecessor_id, first_used_at, bytes_written, revoked_by)
+    VALUES ('mt_root', 'mem_1', 'h_root', 'machine_1', 1, 2, 3, 'mt_root', 1, NULL, NULL, 1073712707, 'mem_1'),
+           ('mt_next', 'mem_1', 'h_next', 'machine_1', 3, 9999999999999, NULL, 'mt_root', 1, 'mt_root', 4, 1073741824, NULL)`);
+  sqlite.exec(`INSERT INTO agents (id, name, source, enabled, created_at) VALUES ('agent_1', 'one', 'built-in', 1, 0)`);
+  sqlite.exec(`INSERT INTO agent_runs (project_id, id, agent_id, status, started_at, dispatched_by, leased_by) VALUES ('proj_1', 'run_1', 'agent_1', 'completed', 1, 'mt_root', 'mt_next')`);
+  sqlite.exec(`INSERT INTO worker_contacts (credential_id, machine_id, last_seen_at, updated_at) VALUES ('mt_next', 'machine_1', 1, 1)`);
+}
+
+const credentialRows = (sqlite: Database) => sqlite.query('SELECT * FROM member_credentials ORDER BY id').all();
+const referencingRows = (sqlite: Database) => ({
+  runs: sqlite.query('SELECT id, dispatched_by, leased_by FROM agent_runs ORDER BY id').all(),
+  contacts: sqlite.query('SELECT credential_id FROM worker_contacts ORDER BY credential_id').all(),
+});
+
+describe('migrateOnly across step 48 (#1416)', () => {
+  it('migrates a v47 volume whose credentials are referenced: every row, counter and reference kept, the byte CHECK gone, foreign keys still enforced', () => {
+    const path = join(scratch(), 'myco.sqlite');
+    const v47 = migrateTo(path, 47);
+    seedCredentials(v47);
+    expect(() => v47.exec(`UPDATE member_credentials SET bytes_written = 1073741825 WHERE id = 'mt_next'`)).toThrow(/member_tokens_quota/);
+    const rows = credentialRows(v47);
+    const refs = referencingRows(v47);
+    v47.close();
+
+    expect(migrateOnly(path)).toBe(1);
+
+    const sqlite = new Database(path);
+    sqlite.exec('PRAGMA foreign_keys = ON');
+    expect(sqlite.query(`SELECT value FROM schema_meta WHERE key = 'version'`).get()).toEqual({ value: '48' });
+    expect(credentialRows(sqlite)).toEqual(rows);
+    expect(referencingRows(sqlite)).toEqual(refs);
+    expect(sqlite.query('PRAGMA foreign_key_check').all()).toEqual([]);
+    expect((sqlite.query(`SELECT sql FROM sqlite_master WHERE name = 'member_credentials'`).get() as { sql: string }).sql).not.toMatch(/CHECK/);
+    expect((sqlite.query(`SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name = 'member_credentials' ORDER BY name`).all() as { name: string }[]).map((r) => r.name))
+      .toEqual(['idx_member_credentials_hash', 'idx_member_credentials_lineage', 'idx_member_credentials_live_successor', 'idx_member_credentials_member', 'idx_member_credentials_started', 'sqlite_autoindex_member_credentials_1']);
+    expect(sqlite.query(`SELECT name FROM sqlite_master WHERE name LIKE '_v48_%'`).all()).toEqual([]);
+    sqlite.exec(`UPDATE member_credentials SET bytes_written = 5000000000 WHERE id = 'mt_next'`);
+    expect(sqlite.query(`SELECT bytes_written FROM member_credentials WHERE id = 'mt_next'`).get()).toEqual({ bytes_written: 5_000_000_000 });
+    expect(() => sqlite.exec(`INSERT INTO agent_runs (project_id, id, agent_id, status, started_at, dispatched_by) VALUES ('proj_1', 'run_2', 'agent_1', 'completed', 1, 'mt_absent')`)).toThrow(/FOREIGN KEY/);
+    sqlite.close();
+  });
+
+  it('rolls a step that fails part-way back whole: the volume stays at 47 with every row, and applies cleanly once the fault is gone', () => {
+    const path = join(scratch(), 'myco.sqlite');
+    const v47 = migrateTo(path, 47);
+    seedCredentials(v47);
+    const rows = credentialRows(v47);
+    // A view under the guard's name fails the step after it has dropped and re-created the credential table.
+    v47.exec(`CREATE VIEW _v48_guard_rows_kept AS SELECT 1 AS ok`);
+    v47.close();
+
+    expect(() => migrateOnly(path)).toThrow();
+    const after = new Database(path);
+    expect(after.query(`SELECT value FROM schema_meta WHERE key = 'version'`).get()).toEqual({ value: '47' });
+    expect(credentialRows(after)).toEqual(rows);
+    expect((after.query(`SELECT sql FROM sqlite_master WHERE name = 'member_credentials'`).get() as { sql: string }).sql).toMatch(/member_tokens_quota/);
+    expect(after.query(`SELECT name FROM sqlite_master WHERE name = '_v48_guard_credential_rows'`).all()).toEqual([]);
+    after.exec(`DROP VIEW _v48_guard_rows_kept`);
+    after.close();
+
+    expect(migrateOnly(path)).toBe(1);
+    const healed = new Database(path);
+    expect(credentialRows(healed)).toEqual(rows);
+    healed.close();
+  });
+
+  it('walks the whole chain natively from a v1 volume holding a credential to the build\'s version', () => {
+    const path = join(scratch(), 'myco.sqlite');
+    const v1 = migrateTo(path, 1);
+    v1.exec(`INSERT INTO projects (project_id, name, created_at) VALUES ('proj_1', 'one', 0)`);
+    v1.exec(`INSERT INTO member_tokens (id, project_id, machine_id, token_hash, expires_at, revoked_at, bytes_written) VALUES ('mt_1', 'proj_1', 'machine_1', 'h', 9999999999999, NULL, 1073741824)`);
+    v1.close();
+
+    expect(migrateOnly(path)).toBe(SCHEMA_STEPS.length - 1);
+    const sqlite = new Database(path);
+    expect(sqlite.query(`SELECT value FROM schema_meta WHERE key = 'version'`).get()).toEqual({ value: String(SERVER_SCHEMA_VERSION) });
+    expect(sqlite.query(`SELECT id, machine_id, bytes_written FROM member_credentials`).all()).toEqual([{ id: 'mt_1', machine_id: 'machine_1', bytes_written: 1073741824 }]);
+    expect(sqlite.query('PRAGMA foreign_key_check').all()).toEqual([]);
+    sqlite.close();
   });
 });
 

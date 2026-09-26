@@ -61,7 +61,7 @@ export type CredentialContext = Pick<RouteContext, 'memberId' | 'machineId' | 't
  * one queue across every Project the Deployment holds, so it can name no Project
  * ahead of the row it is given; the Project travels back in the answer, read off
  * the run the claim took. Nothing here resolves a Project into existence and
- * nothing is charged to a member's capture quota.
+ * nothing is counted as a member's capture.
  */
 export interface DeploymentContext {
   /** The member holding the presented credential; the pipeline has already admitted it as an admin. */

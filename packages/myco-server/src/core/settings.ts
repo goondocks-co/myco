@@ -118,8 +118,10 @@ export const DEPLOYMENT_LEAF_SPECS: Readonly<Record<string, LeafSpec>> = {
   'maintenance.auto_optimize_interval_hours': {},
   'notifications.retention_days': {},
   'release_provenance.reconcile_interval_minutes': { type: 'integer', min: 1, max: 1440 },
-  // #1147 — transcript-first ingest. 0 keeps transcripts indefinitely; a write
-  // has no delete, so 0 is how a Deployment returns to keeping everything.
+  // #1147 — transcript-first ingest. Unset or 0 keeps raw transcripts forever;
+  // a write has no delete, so 0 is how a Deployment returns to keeping
+  // everything. A window prunes only processed raw bytes (`ingest/retention.ts`),
+  // and is how a Deployment manages storage: capture is never refused (#1416).
   'retention.transcripts': { type: 'integer', min: 0, max: 3650 },
   'skills.confidence_threshold': {},
   'skills.usage_stale_days': {},

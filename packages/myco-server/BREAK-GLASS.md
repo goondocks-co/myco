@@ -60,6 +60,8 @@ Ordinary offboarding is the dashboard (`POST /api/members/{memberId}/revoke`): o
 
 A leaked member token is revoked by setting `revoked_at` on its row. The pipeline refuses a revoked token on the next request; there is no cache to flush.
 
+Revocation, not a byte ceiling, is what stops a leaked credential: capture is never refused for volume (#1416), so a live credential keeps storing until it is revoked. Its `bytes_written` says how much it stored.
+
 `revokeCredentialAsMember` is the code path; `npm run token:revoke -- <TOKEN_ID> <YOUR_MEMBER_ID>` prints its attributed `UPDATE`. Find the credential by member and machine, print the statement, apply it with `wrangler d1 execute`, then confirm the command reported one changed row — zero rows means no live credential had that id:
 
 ```bash

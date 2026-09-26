@@ -6,8 +6,9 @@
  * `myco_sessions`, `myco_cortex`, `myco_agent`) called on the Deployment's
  * `/mcp` with the member credential, the same chokepoint an agent's tool call
  * reaches, so a person and an agent asking the same question get the same
- * answer. `stats` also reads the Deployment's health — schema, this
- * credential's quota and storage — from the member route `POST /members/status`,
+ * answer. `stats` also reads the Deployment's health — schema, the bytes this
+ * credential stored, the transcript retention window and storage — from the
+ * member route `POST /members/status`,
  * which no MCP tool serves. Nothing here opens a vault, a database or the local
  * daemon, and `tests/meta/member-read-boundary.test.ts` holds the import
  * closure to that.
@@ -31,7 +32,7 @@ export const VECTORS_LIMIT = 20;
 export const SESSION_PREFIX_WINDOW = 100;
 /** Recent runs `stats` summarises. */
 export const STATS_RUN_WINDOW = 20;
-/** The member route that answers the Deployment's health: schema, this credential's quota, and storage. */
+/** The member route that answers the Deployment's health: schema, the bytes this credential stored, the transcript retention window, and storage. */
 export const STATUS_READ_PATH = '/members/status';
 /** The share of the top score a `vectors` result must reach to be marked as passing the default threshold. */
 const VECTORS_RELATIVE_THRESHOLD = 0.5;
@@ -168,10 +169,14 @@ interface RunRow { task: string | null; status: string; started_at: number | nul
 /** A byte count the Deployment measured, or why it could not. */
 type ByteFact = { state: 'measured'; value: number; unit: 'bytes' } | { state: 'unavailable'; reason: string };
 type StorageFact = ByteFact & { name: string; measuredAt: number | null };
+/** How long the Deployment keeps processed raw transcript bytes. */
+type RetentionFact = { state: 'forever'; configured: boolean } | { state: 'days'; days: number } | { state: 'unavailable'; reason: string };
 interface DeploymentHealth {
   target: string | null;
   schema: { expected: number; found: number | null };
-  quota: { used: ByteFact; limit: ByteFact };
+  /** Bytes this machine's credential has stored: information, never a limit. */
+  stored: ByteFact;
+  retention: { transcripts: RetentionFact };
   storage: StorageFact[];
 }
 
@@ -184,8 +189,8 @@ async function readHealth(reader: DeploymentHandle): Promise<{ ok: true; health:
       : { ok: false, reason: `${reader.serverUrl} did not answer (${answer.error.code}): ${answer.error.message}`, failed: true };
   }
   const health = answer.value as Partial<DeploymentHealth>;
-  if (health.schema === undefined || health.quota === undefined || !Array.isArray(health.storage)) {
-    return { ok: false, reason: `${reader.serverUrl} answered without its schema, quota and storage`, failed: true };
+  if (health.schema === undefined || health.stored === undefined || health.retention === undefined || !Array.isArray(health.storage)) {
+    return { ok: false, reason: `${reader.serverUrl} answered without its schema, stored bytes, retention and storage; update it`, failed: true };
   }
   return { ok: true, health: health as DeploymentHealth };
 }
@@ -202,6 +207,13 @@ const MEASUREMENT_LABEL: Record<string, string> = { blob_bytes: 'Blobs', size: '
 /** The column the health values start at: the longest known label, its colon and a space; a longer label keeps one space. */
 const HEALTH_COLUMN = 13;
 const healthLine = (label: string, value: string): string => `${`${label}:`.padEnd(HEALTH_COLUMN - 1)} ${value}`;
+/** The transcript retention window as a line reads it; a state this CLI does not know is named rather than guessed at. */
+const retentionWords = (r: { state: string; days?: number; configured?: boolean; reason?: string }): string => {
+  if (r.state === 'forever') return `raw bytes kept forever (${r.configured === true ? 'retention set to 0' : 'no retention set'})`;
+  if (r.state === 'days' && typeof r.days === 'number') return `raw bytes kept ${r.days} day${r.days === 1 ? '' : 's'} after processing`;
+  if (r.state === 'unavailable') return `unavailable: ${r.reason ?? 'no reason given'}`;
+  return `not understood by this CLI (state ${JSON.stringify(r.state)}); update it`;
+};
 
 async function runStats(reader: DeploymentHandle, out: Out, err: Out): Promise<boolean> {
   const activity = await ask(reader, 'stats', err, 'myco_cortex', { op: 'projects_activity' }) as { projects: ProjectActivity[] } | null;
@@ -222,9 +234,10 @@ async function runStats(reader: DeploymentHandle, out: Out, err: Out): Promise<b
   if (!read.ok) {
     out(healthLine('Health', `unavailable: ${read.reason}`));
   } else {
-    const { schema, quota, storage } = read.health;
+    const { schema, stored, retention, storage } = read.health;
     out(healthLine('Schema', `expected ${schema.expected}, found ${schema.found ?? 'unavailable: the store answered no version'}`));
-    out(healthLine('Quota', `${fact(quota.used)} used of ${fact(quota.limit)} (this machine's credential)`));
+    out(healthLine('Stored', `${fact(stored)} by this machine`));
+    out(healthLine('Transcripts', retentionWords(retention.transcripts)));
     for (const m of storage) {
       out(healthLine(MEASUREMENT_LABEL[m.name] ?? m.name, `${fact(m)}${typeof m.measuredAt === 'number' ? ` (measured ${iso(m.measuredAt)})` : ''}`));
     }

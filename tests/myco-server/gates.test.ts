@@ -9,14 +9,14 @@ import { issueExternalGrant } from '@myco-server-worker/auth/grants.js';
 import worker from '@myco-server-worker/index.js';
 import { createIngestThrottle } from './helpers/throttle.js';
 import { issueMemberToken, MEMBER_TOKEN_REFRESH_WINDOW_MS, MEMBER_TOKEN_TTL_MS } from '@myco-server-worker/auth/tokens.js';
-import { MEMBER_TOKEN_BYTE_QUOTA, PROJECT_HEADER, RETRY_AFTER_SECONDS, SERVER_SCHEMA_VERSION } from '@myco-server-worker/constants.js';
+import { PROJECT_HEADER, RETRY_AFTER_SECONDS, SERVER_SCHEMA_VERSION } from '@myco-server-worker/constants.js';
 import { renderMigrationFiles } from '@myco-server-worker/db/migrate.js';
 import { SCHEMA_DDL } from '@myco-server-worker/db/schema.js';
 import { cloudflareSourceOf } from '@myco-server-worker/platform/cloudflare/source.js';
 import { sha256Hex } from '@myco-server-worker/hash.js';
 import { kindSpec } from '@myco-server-worker/ingest/kinds.js';
 import { createScanner, SyntaxKind } from 'typescript/unstable/ast';
-import { envelope as fixture, memberHeaders, sqliteEnv, uuid, PROTOCOL, count } from './helpers/fixtures.js';
+import { envelope as fixture, memberHeaders, sqliteEnv, uuid, PROTOCOL, count, RETIRED_BYTE_CEILING } from './helpers/fixtures.js';
 import { isDeploymentAccessPath } from './helpers/access-paths.js';
 import { OWNER_ENV as OWNER_ENV2, ownerCookie as ownerCookie2 } from './helpers/owner.js';
 
@@ -353,19 +353,19 @@ describe('gates', () => {
     expect(tokenKeys).toEqual([]);
   });
 
-  it('bounds bytes_written by the schema even when the auth row read is stale', async () => {
-    const { env: e, db, sqlite } = sqliteEnv({ staleBytesWritten: 0 });
+  it('admits an event past the retired 1 GiB lifetime ceiling, and keeps counting it (#1416)', async () => {
+    const { env: e, db, sqlite } = sqliteEnv();
     const t1 = await issueMemberToken(db, { memberId: 'mem_machine_1', machineId: 'machine_1' }, Date.now());
-    sqlite.query(`UPDATE member_credentials SET bytes_written = ? WHERE id = ?`).run(MEMBER_TOKEN_BYTE_QUOTA - 100, t1.tokenId);
+    sqlite.query(`UPDATE member_credentials SET bytes_written = ? WHERE id = ?`).run(RETIRED_BYTE_CEILING, t1.tokenId);
     const body = envelope({ payload: { promptId: uuid(2), text: 'x'.repeat(200), origin: 'user' } });
     const res = await worker.fetch(withSource('/events', { method: 'POST', headers: { authorization: `Bearer ${t1.token}`, [PROJECT_HEADER]: 'proj_1', ...PROTOCOL }, body }), e);
     expect(res.status).toBe(200);
-    expect(await jsonBody(res)).toEqual({ persisted: false, code: 'quota', reason: 'token write quota exceeded' });
-    expect((sqlite.query(`SELECT COUNT(*) c FROM events`).get() as any).c).toBe(0);
-    expect((sqlite.query(`SELECT bytes_written b FROM member_credentials WHERE id = ?`).get(t1.tokenId) as any).b).toBe(MEMBER_TOKEN_BYTE_QUOTA - 100);
+    expect(await jsonBody(res)).toEqual({ persisted: true, projected: true });
+    expect((sqlite.query(`SELECT COUNT(*) c FROM events`).get() as any).c).toBe(1);
+    expect((sqlite.query(`SELECT bytes_written b FROM member_credentials WHERE id = ?`).get(t1.tokenId) as any).b).toBe(RETIRED_BYTE_CEILING + new TextEncoder().encode(body).byteLength);
   });
 
-  it('charges the quota only for a stored event: a replay and another machine\'s attempt leave bytes_written unchanged', async () => {
+  it('counts bytes only for a stored event: a replay and another machine\'s attempt leave bytes_written unchanged', async () => {
     const { env: e, db, sqlite } = sqliteEnv();
     const t1 = await issueMemberToken(db, { memberId: 'mem_machine_1', machineId: 'machine_1' }, Date.now());
     const t3 = await issueMemberToken(db, { memberId: 'mem_machine_3', machineId: 'machine_3' }, Date.now());
@@ -878,13 +878,20 @@ describe('gates', () => {
     expect(offenders).toEqual([]);
   });
 
-  it('inserts into member_credentials from exactly one live-issuing statement under src, and the migration backfill can only land revoked rows', () => {
+  it('inserts into member_credentials from exactly one live-issuing statement under src; the migration backfill can only land revoked rows, and the step-48 rebuild only the rows the table already held', () => {
     const inserting = files(SRC).filter((f) => /INTO member_credentials\b/.test(readFileSync(f, 'utf8')));
     // The schema's backfill is the one other writer. It is bounded here rather than
     // waved through: every row it lands carries a revoked_at, so the exemption cannot
     // become a path that mints a live credential outside the live-token predicate.
     expect([...inserting].sort()).toEqual([join(SRC, 'auth', 'tokens.ts'), join(SRC, 'db', 'schema.ts')].sort());
-    const backfill = readFileSync(join(SRC, 'db', 'schema.ts'), 'utf8').match(/INSERT (OR IGNORE )?INTO member_credentials[\s\S]*?`/)![0];
+    const schema = readFileSync(join(SRC, 'db', 'schema.ts'), 'utf8');
+    const schemaInserts = [...schema.matchAll(/INSERT (OR IGNORE )?INTO member_credentials[\s\S]*?`/g)].map((m) => m[0]);
+    expect(schemaInserts).toHaveLength(2);
+    const [backfill, rebuild] = schemaInserts as [string, string];
+    // The rebuild copies back from its holding table, which holds exactly what the table held before the step.
+    expect(rebuild).toMatch(/FROM _v48_guard_credential_rows`$/);
+    expect(schema.match(/CREATE TABLE _v48_guard_credential_rows\b[^`]*`/g)).toEqual(['CREATE TABLE _v48_guard_credential_rows AS SELECT * FROM member_credentials`']);
+    expect(schema.match(/INTO _v48_guard_credential_rows\b/g)).toBeNull();
     expect(backfill.match(/INTO member_credentials\b/g)).toHaveLength(1);
     expect(backfill).toMatch(/COALESCE\(t\.revoked_at, t\.expires_at\)/);
     expect(backfill).not.toMatch(/\bNULL\b\s*(,|$)[^`]*--\s*revoked/);
@@ -893,7 +900,7 @@ describe('gates', () => {
     // The parenthesized predecessor predicate is conjoined with the admission gate.
     expect(tokens).toMatch(/INSERT INTO member_credentials \([^)]*\)\s+SELECT \?, \?, \?, \?, \?, \?, NULL, 0, \?, \?, \?, NULL, \?, \?\s+WHERE \(\? IS NULL OR \$\{TOKEN_LIVE\}\)\$\{gate === undefined \? '' : ` AND \(\$\{gate\.sql\}\)`\}`/);
     expect(tokens).toMatch(/UPDATE member_credentials SET revoked_at = \? WHERE predecessor_id = \? AND revoked_at IS NULL AND first_used_at IS NULL AND \$\{TOKEN_LIVE\}`/);
-    expect(readFileSync(join(SRC, 'ingest', 'quota.ts'), 'utf8')).toMatch(/export const TOKEN_LIVE = 'EXISTS \(SELECT 1 FROM member_credentials WHERE id = \? AND revoked_at IS NULL\)';/);
+    expect(readFileSync(join(SRC, 'ingest', 'live-credential.ts'), 'utf8')).toMatch(/export const TOKEN_LIVE = 'EXISTS \(SELECT 1 FROM member_credentials WHERE id = \? AND revoked_at IS NULL\)';/);
   });
 
   it('emits only fixed classifiers as telemetry reasons', () => {

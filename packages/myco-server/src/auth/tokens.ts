@@ -2,7 +2,7 @@ import { toBase64Url } from '../base64.js';
 import type { RelationalStore, PreparedStatement } from '../core/adapters.js';
 import { SERVER_SCHEMA_VERSION, TOKEN_ID_BYTES, TOKEN_ID_PREFIX } from '../constants.js';
 import { sha256Hex } from '../hash.js';
-import { heldBytes, TOKEN_LIVE } from '../ingest/quota.js';
+import { carriedBytes, TOKEN_LIVE } from '../ingest/live-credential.js';
 import { emit, SchemaMismatchError, TokenRevokedError, type Classifier } from '../telemetry.js';
 import { MEMBER_REVOKED_BY, memberRevokedByParams } from '../db/liveness.js';
 import { isAdmin } from './roles.js';
@@ -22,7 +22,6 @@ export interface MemberAuth {
   memberId: string;
   tokenId: string;
   machineId: string | null;
-  bytesWritten: number;
   expiresAt: number;
   /** The first token of the chain this one belongs to: its own id for an operator-minted token. */
   lineageRoot: string;
@@ -69,7 +68,6 @@ interface AuthRow {
   machine_id: string | null;
   expires_at: number | null;
   revoked_at: number | null;
-  bytes_written: number | null;
   lineage_root: string | null;
   lineage_started_at: number | null;
   predecessor_id: string | null;
@@ -221,9 +219,9 @@ export async function refreshMemberToken(db: RelationalStore, subject: RefreshSu
   return { refreshed: true, ...successor.issued, refreshAfter: windowOpensAt(successor.issued.expiresAt) };
 }
 
-/** A successor's first authenticated use, as one batch: the successor takes over what its predecessor holds against the quota (`heldBytes`: the charged counter plus live blob reservations; nothing when the predecessor row is gone) and records the instant; the predecessor is revoked. Every statement guards itself, so a repeat changes nothing. */
+/** A successor's first authenticated use, as one batch: the successor takes over its predecessor's stored-bytes count (`carriedBytes`: the counter plus live blob reservations; nothing when the predecessor row is gone) and records the instant; the predecessor is revoked. Every statement guards itself, so a repeat changes nothing. */
 export async function activateSuccessor(db: RelationalStore, auth: Pick<MemberAuth, 'tokenId'> & { predecessorId: string }, nowMs: number): Promise<void> {
-  const held = heldBytes({ tokenId: auth.predecessorId, now: nowMs });
+  const held = carriedBytes(auth.predecessorId, nowMs);
   await db.batch([
     db.prepare(`UPDATE member_credentials SET bytes_written = COALESCE(${held.sql}, 0), first_used_at = ? WHERE id = ? AND first_used_at IS NULL`).bind(...held.params, nowMs, auth.tokenId),
     db.prepare(`UPDATE member_credentials SET revoked_at = ? WHERE id = ? AND revoked_at IS NULL`).bind(nowMs, auth.predecessorId),
@@ -239,7 +237,7 @@ export async function authenticateServerMemberToken(
 ): Promise<MemberAuth | null> {
   const row = await db
     .prepare(`SELECT s.value AS schema_version,
-                     t.id, t.member_id, t.machine_id, t.expires_at, t.revoked_at, t.bytes_written,
+                     t.id, t.member_id, t.machine_id, t.expires_at, t.revoked_at,
                      t.lineage_root, t.lineage_started_at, t.predecessor_id, t.first_used_at,
                      t.runtime_label, t.runtime_kind, m.id AS member_live
                 FROM schema_meta s
@@ -251,13 +249,13 @@ export async function authenticateServerMemberToken(
 
   if (!row) throw new SchemaMismatchError(SERVER_SCHEMA_VERSION, null);
   if (row.schema_version !== String(SERVER_SCHEMA_VERSION)) throw new SchemaMismatchError(SERVER_SCHEMA_VERSION, row.schema_version);
-  if (row.id === null || row.member_id === null || row.expires_at === null || row.bytes_written === null) return null;
+  if (row.id === null || row.member_id === null || row.expires_at === null) return null;
   if (row.lineage_root === null || row.lineage_started_at === null) return null;
   if (row.revoked_at !== null) return null;
   if (row.member_live === null) return null;
   if (expiry === 'live' && row.expires_at <= nowMs) return null;
   return {
-    memberId: row.member_id, tokenId: row.id, machineId: row.machine_id, bytesWritten: row.bytes_written,
+    memberId: row.member_id, tokenId: row.id, machineId: row.machine_id,
     expiresAt: row.expires_at, lineageRoot: row.lineage_root, lineageStartedAt: row.lineage_started_at,
     predecessorId: row.predecessor_id, firstUsedAt: row.first_used_at,
     runtime: { runtimeLabel: row.runtime_label, runtimeKind: row.runtime_kind },

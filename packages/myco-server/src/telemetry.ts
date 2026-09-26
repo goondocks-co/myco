@@ -37,7 +37,6 @@ export function classify(err: unknown, platform?: ErrorClassifier): ErrorClass {
   if (err instanceof TokenRevokedError) return 'revoked';
   if (err instanceof StorageContractError) return 'db';
   const message = err instanceof Error ? err.message : String(err);
-  if (message.includes('member_tokens_quota')) return 'quota';
   if (/constraint failed|SQLITE_CONSTRAINT/i.test(message)) return 'constraint';
   return platform?.(message) ?? 'unknown';
 }
@@ -53,9 +52,9 @@ export function classifyBlobStore(err: unknown, platform?: BlobFailureClassifier
   return platform?.(message) ?? 'other';
 }
 
-/** The fixed reasons telemetry may carry, and the `code` every terminal refusal answers with beside its `reason`; a caller's text never becomes one. */
+/** The fixed reasons telemetry may carry, and the `code` every terminal refusal answers with beside its `reason`; a caller's text never becomes one. None refuses capture for volume (#1416). */
 export const CLASSIFIERS = [
-  'refused', 'parse', 'quota', 'body_cap', 'blob_cap', 'content_length', 'media_type', 'digest_mismatch', 'empty_body',
+  'refused', 'parse', 'body_cap', 'blob_cap', 'content_length', 'media_type', 'digest_mismatch', 'empty_body',
   'blob_absent', 'no_project', 'offset_gap', 'offset_overlap', 'identity_mismatch', 'no_machine_identity', 'blob_length_mismatch',
   'unknown_kind', 'unknown_field', 'id_grammar', 'clock_skew', 'event_id_conflict', 'projection_conflict',
   'refresh_too_early', 'lineage_expired',
