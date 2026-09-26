@@ -175,8 +175,10 @@ describe('the import plan', () => {
       { sessionId: 's1', transcriptId: 'tx_big', sizeBytes: 26_214_400 },
       { sessionId: 's2', transcriptId: 'tx_bigger', sizeBytes: 900_000_000 },
       { sessionId: 's3', transcriptId: 'tx_small', sizeBytes: 200 },
+      // One transcript larger than the whole retired ceiling is still taken whole.
+      { sessionId: 's4', transcriptId: 'tx_huge', sizeBytes: 2 * RETIRED_BYTE_CEILING },
     ]);
-    expect([...got.values()].map((a) => a.take)).toEqual(['from', 'from', 'from']);
+    expect([...got.values()].map((a) => a.take)).toEqual(['from', 'from', 'from', 'from']);
 
     // The plan is advice. It stores nothing and counts nothing.
     expect([count(r.sqlite, 'blobs'), count(r.sqlite, 'events'), count(r.sqlite, 'transcript_segments')]).toEqual([0, 0, 0]);
