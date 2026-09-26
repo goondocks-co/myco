@@ -186,6 +186,21 @@ describe('stageBinary — success', () => {
 // stageBinary — failure invariants (the core safety property)
 // ===========================================================================
 
+describe('stageBinary — the default runnable gate', () => {
+  it('refuses a verified download this machine does not run, when no gate is injected', async () => {
+    if (process.platform === 'win32') return; // Windows' loader is the judge there; nothing is run
+    const rec = makeStageRec();
+    delete rec.deps.ready;
+    const stablePath = writeStableBinary();
+    const result = await stageBinary({ refs: baseRefs(), home: tmpHome, platform: process.platform }, rec.deps);
+
+    expect(result).toMatchObject({ error: expect.stringContaining('does not run on this machine') });
+    expect(fs.existsSync(versionDir(tmpHome, process.platform, VERSION))).toBe(false);
+    expect(fs.readdirSync(versionsDir(tmpHome, process.platform))).toEqual([]);
+    expect(fs.readFileSync(stablePath, 'utf-8')).toBe(STABLE_BYTES);
+  });
+});
+
 describe('stageBinary — failure invariants', () => {
   // Every failure scenario must satisfy ALL of these:
   //   1. Returns { error }
@@ -296,7 +311,7 @@ describe('adoptStaged', () => {
     const binDir = path.dirname(managedBinaryPath(tmpHome, PLATFORM));
     const entries = fs.readdirSync(binDir);
     // Only the managed binary ('myco') + versions dir should remain; no temps.
-    const temps = entries.filter((e) => e.startsWith('.myco-adopt-'));
+    const temps = entries.filter((e) => e.startsWith('.myco-place-'));
     expect(temps).toEqual([]);
   });
 
@@ -347,7 +362,7 @@ describe('restoreVersion', () => {
     await restoreVersion(tmpHome, PLATFORM, PREV_VERSION);
 
     const binDir = path.dirname(stablePath);
-    const temps = fs.readdirSync(binDir).filter((e) => e.startsWith('.myco-restore-'));
+    const temps = fs.readdirSync(binDir).filter((e) => e.startsWith('.myco-place-'));
     expect(temps).toEqual([]);
   });
 
@@ -535,6 +550,7 @@ describe('adoptStaged — mode and failure', () => {
   });
 
   it('leaves no temp in bin dir when rename fails (MINOR-3 cleanup)', async () => {
+    if (process.platform === 'win32') return; // a directory's mode does not forbid writes on Windows
     // Write the version binary so copyFileSync succeeds.
     writeVersionBinary(VERSION, NEW_BYTES);
     // Make the destination dir read-only so renameSync fails.
@@ -553,7 +569,7 @@ describe('adoptStaged — mode and failure', () => {
 
     // No temp file should remain in the bin dir.
     const binDir = path.dirname(dest);
-    const temps = fs.readdirSync(binDir).filter((e) => e.startsWith('.myco-adopt-'));
+    const temps = fs.readdirSync(binDir).filter((e) => e.startsWith('.myco-place-'));
     expect(temps).toEqual([]);
   });
 });
@@ -587,6 +603,7 @@ describe('restoreVersion — mode and failure', () => {
   });
 
   it('leaves no temp in bin dir when rename fails (MINOR-3 cleanup)', async () => {
+    if (process.platform === 'win32') return; // a directory's mode does not forbid writes on Windows
     writeVersionBinary(PREV_VERSION, PREV_BYTES);
     const dest = managedBinaryPath(tmpHome, PLATFORM);
     const destDir = path.dirname(dest);
@@ -602,7 +619,7 @@ describe('restoreVersion — mode and failure', () => {
       fs.chmodSync(destDir, 0o755);
     }
 
-    const temps = fs.readdirSync(destDir).filter((e) => e.startsWith('.myco-restore-'));
+    const temps = fs.readdirSync(destDir).filter((e) => e.startsWith('.myco-place-'));
     expect(temps).toEqual([]);
   });
 });
@@ -653,7 +670,7 @@ describe('adoptStaged — chmod-failure propagation (T4)', () => {
 
     // No temp file should remain in the managed bin dir.
     const binDir = path.dirname(stablePath);
-    const temps = fs.readdirSync(binDir).filter((e) => e.startsWith('.myco-adopt-'));
+    const temps = fs.readdirSync(binDir).filter((e) => e.startsWith('.myco-place-'));
     expect(temps).toEqual([]);
   });
 });
@@ -698,7 +715,7 @@ describe('restoreVersion — chmod-failure propagation (T4)', () => {
 
     // No temp file should remain in the managed bin dir.
     const binDir = path.dirname(stablePath);
-    const temps = fs.readdirSync(binDir).filter((e) => e.startsWith('.myco-restore-'));
+    const temps = fs.readdirSync(binDir).filter((e) => e.startsWith('.myco-place-'));
     expect(temps).toEqual([]);
   });
 });

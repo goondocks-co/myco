@@ -24,7 +24,7 @@
  * exercise install and uninstall without handing a unit to the real platform.
  */
 import { spawn, spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { closeSync, existsSync, mkdirSync, openSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { homedir } from 'node:os';
 
@@ -309,23 +309,59 @@ function lifecycleCommands(unit: ServiceUnit, paths: ServicePaths, platform: Nod
   };
 }
 
-/** Starts a process outside the caller's session and does not wait for it; false when it could not be started. */
-export type DetachedSpawner = (command: string, args: readonly string[]) => boolean;
+/**
+ * Starts a process in a session of its own and does not wait for it, its output
+ * appended to `logFile`; false when it could not be started.
+ */
+export type DetachedSpawner = (command: string, args: readonly string[], logFile: string) => boolean;
 
-export const platformDetachedSpawner: DetachedSpawner = (command, args) => {
+export const platformDetachedSpawner: DetachedSpawner = (command, args, logFile) => {
+  let fd: number | null = null;
   try {
-    const child = spawn(command, [...args], { detached: true, stdio: 'ignore' });
+    mkdirSync(path.dirname(logFile), { recursive: true });
+    fd = openSync(logFile, 'a');
+    const child = spawn(command, [...args], { detached: true, stdio: ['ignore', fd, fd] });
     child.unref();
     return child.pid !== undefined;
   } catch {
     return false;
+  } finally {
+    if (fd !== null) closeSync(fd);
   }
 };
+
+/** Seconds the reload helper keeps loading a unit it unloaded before it gives up. */
+export const RELOAD_GIVE_UP_SECONDS = 30;
+
+/**
+ * The reload helper: unload the unit, then load it until launchd lists it,
+ * backing off to 8 s between tries for {@link RELOAD_GIVE_UP_SECONDS}. Loading
+ * is judged by `launchctl list <label>`, never by `load`'s exit status, which
+ * the legacy verb does not set reliably. The label and the unit file arrive as
+ * positional parameters, so no path is ever parsed as shell.
+ */
+const RELOAD_SCRIPT = [
+  'label="$1"; unit="$2"',
+  'say() { echo "$(date +%Y-%m-%dT%H:%M:%S) myco reload of $label: $*"; }',
+  'sleep 1',
+  'launchctl unload "$unit"',
+  'waited=0; pause=1',
+  'while :; do',
+  '  launchctl load -w "$unit"',
+  '  if launchctl list "$label" >/dev/null 2>&1; then say "loaded again"; exit 0; fi',
+  `  if [ "$waited" -ge ${RELOAD_GIVE_UP_SECONDS} ]; then break; fi`,
+  '  say "not loaded yet; trying again in $pause s"',
+  '  sleep "$pause"; waited=$((waited + pause)); pause=$((pause * 2)); if [ "$pause" -gt 8 ]; then pause=8; fi',
+  'done',
+  'say "could not be loaded again; it runs again after myco worker install or the next login"',
+  'exit 1',
+].join('\n');
 
 /**
  * Load a macOS unit again from a process of its own, so the unit's process can
  * ask for it: the unload stops that process, and the helper, in a session of its
- * own, goes on to load the unit.
+ * own, goes on to load the unit, and retries until launchd holds it. What the
+ * helper does is appended to the unit's error log.
  *
  * This is how a unit whose program was replaced starts on the new program. A
  * LaunchAgent that launchd loaded at login carries a code requirement Background
@@ -340,12 +376,7 @@ export function reloadServiceDetached(spec: ServiceSpec, options: ServiceOptions
   if (platform !== 'darwin') return false;
   const paths = servicePaths(spec, platform);
   if (!existsSync(paths.unitFile)) return false;
-  const words: string[] = [];
-  const steps = lifecycleCommands(spec.unit, paths, platform).load.map((argv) =>
-    argv.map((word) => { words.push(word); return `"\${${words.length}}"`; }).join(' '));
-  // Every word is passed as a positional parameter, so no path is ever parsed as shell.
-  const script = ['sleep 1', ...steps].join('; ');
-  return (options.spawnDetached ?? platformDetachedSpawner)('/bin/sh', ['-c', script, 'myco-reload', ...words]);
+  return (options.spawnDetached ?? platformDetachedSpawner)('/bin/sh', ['-c', RELOAD_SCRIPT, 'myco-reload', spec.unit.label, paths.unitFile], paths.errLog);
 }
 
 /** The unit's text with its `PATH` value blanked, so two units differing only there compare equal. */

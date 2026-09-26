@@ -237,6 +237,20 @@ describe('a worker whose program is replaced on disk', () => {
     expect(probed).toEqual(['partial', 'complete program']);
   });
 
+  it('an attached worker judges a replacement of its program by running it', () => {
+    if (process.platform === 'win32') return;
+    const program = path.join(scratch, 'myco');
+    fs.writeFileSync(program, '#!/bin/sh\nexit 0\n', { mode: 0o755 });
+    const { stillCurrent } = attachOptions(URL_, path.join(scratch, 'home'), undefined, program);
+    const next = path.join(scratch, 'myco.next');
+    fs.writeFileSync(next, '#!/bin/sh\nkill -9 $$\n', { mode: 0o755 });
+    fs.renameSync(next, program);
+    expect(stillCurrent!()).toBe(true);
+    fs.writeFileSync(next, '#!/bin/sh\n[ "$1" = --version ] && echo 2.0.0\n', { mode: 0o755 });
+    fs.renameSync(next, program);
+    expect(stillCurrent!()).toBe(false);
+  });
+
   it('a program the kernel will not run is judged by running it', () => {
     const program = path.join(scratch, 'myco');
     fs.writeFileSync(program, '#!/bin/sh\nkill -9 $$\n', { mode: 0o755 });

@@ -26,20 +26,34 @@ describe('whether a program runs here', () => {
     expect(calls).toEqual([['codesign', '--verify', '--strict', '/x/myco'], ['/x/myco', '--version']]);
   });
 
-  it('signs ad hoc again, keeping entitlements and identifier, only a Darwin signature that does not verify', () => {
-    let verifies = 0;
-    const { run, calls } = recorder((command, args) => (command === 'codesign' && args[0] === '--verify' && verifies++ === 0 ? { status: 1 } : { status: 0 }));
-    expect(readyExecutable('/x/myco', 'darwin', run)).toEqual({ runs: true });
-    expect(calls).toEqual([
-      ['codesign', '--verify', '--strict', '/x/myco'],
-      ['codesign', '--force', '--sign', '-', '--preserve-metadata=entitlements,identifier', '/x/myco'],
-      ['codesign', '--verify', '--strict', '/x/myco'],
-      ['/x/myco', '--version'],
-    ]);
+  it('signs ad hoc again, keeping entitlements and identifier, only an ad hoc or absent Darwin signature that does not verify', () => {
+    for (const shown of ['Executable=/x/myco\nSignature=adhoc\nTeamIdentifier=not set\n', '/x/myco: code object is not signed at all\n']) {
+      let verifies = 0;
+      const { run, calls } = recorder((command, args) => {
+        if (command === 'codesign' && args[0] === '-dv') return { status: shown.includes('not signed') ? 1 : 0, output: shown };
+        return command === 'codesign' && args[0] === '--verify' && verifies++ === 0 ? { status: 1 } : { status: 0 };
+      });
+      expect(readyExecutable('/x/myco', 'darwin', run)).toEqual({ runs: true });
+      expect(calls).toEqual([
+        ['codesign', '--verify', '--strict', '/x/myco'],
+        ['codesign', '-dv', '/x/myco'],
+        ['codesign', '--force', '--sign', '-', '--preserve-metadata=entitlements,identifier', '/x/myco'],
+        ['codesign', '--verify', '--strict', '/x/myco'],
+        ['/x/myco', '--version'],
+      ]);
+    }
+  });
+
+  it('never replaces a certificate\'s signature that does not verify', () => {
+    const { run, calls } = recorder((command, args) => (command === 'codesign' && args[0] === '-dv'
+      ? { status: 0, output: 'Authority=Developer ID Application: Someone (TEAM123)\nTeamIdentifier=TEAM123\n' }
+      : command === 'codesign' ? { status: 1 } : { status: 0 }));
+    expect(readyExecutable('/x/myco', 'darwin', run)).toEqual({ runs: false, detail: 'its signature does not verify, and it is not an ad hoc signature this machine may make again' });
+    expect(calls.some((call) => call.includes('--force') || call[0] === '/x/myco')).toBe(false);
   });
 
   it('refuses a program whose signature cannot be made to verify, or that the kernel kills', () => {
-    const unsignable = recorder((command) => (command === 'codesign' ? { status: 1 } : { status: 0 }));
+    const unsignable = recorder((command, args) => (command === 'codesign' && args[0] === '-dv' ? { status: 0, output: 'Signature=adhoc\n' } : command === 'codesign' ? { status: 1 } : { status: 0 }));
     expect(readyExecutable('/x/myco', 'darwin', unsignable.run)).toEqual({ runs: false, detail: 'its signature does not verify and could not be signed again (exited 1)' });
     expect(unsignable.calls.some(([command]) => command === '/x/myco')).toBe(false);
     const killed = recorder((command) => (command === '/x/myco' ? { status: null, signal: 'SIGKILL' } : { status: 0 }));

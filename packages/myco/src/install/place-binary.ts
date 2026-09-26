@@ -27,12 +27,17 @@ const PROGRAM_PROBE_TIMEOUT_MS = 30_000;
 /** Whether a program runs, or why it does not. */
 export type ProgramProbe = { runs: true } | { runs: false; detail: string };
 
-/** Runs one command to completion; the default is the real platform, a test passes its own. */
-export type CommandRun = (command: string, args: readonly string[]) => { status: number | null; signal?: NodeJS.Signals | null; error?: Error };
+/** Runs one command to completion, with what it printed; the default is the real platform, a test passes its own. */
+export type CommandRun = (command: string, args: readonly string[]) => { status: number | null; signal?: NodeJS.Signals | null; error?: Error; output?: string };
 
 const platformRun: CommandRun = (command, args) => {
-  const result = spawnSync(command, [...args], { stdio: 'ignore', timeout: PROGRAM_PROBE_TIMEOUT_MS });
-  return { status: result.status, signal: result.signal, ...(result.error === undefined ? {} : { error: result.error }) };
+  const result = spawnSync(command, [...args], { stdio: ['ignore', 'pipe', 'pipe'], encoding: 'utf8', timeout: PROGRAM_PROBE_TIMEOUT_MS });
+  return {
+    status: result.status,
+    signal: result.signal,
+    output: `${result.stdout ?? ''}${result.stderr ?? ''}`,
+    ...(result.error === undefined ? {} : { error: result.error }),
+  };
 };
 
 const failed = (result: ReturnType<CommandRun>): string | null => {
@@ -53,14 +58,19 @@ export function programRuns(file: string, run: CommandRun = platformRun): Progra
 /**
  * Make `file` a program this machine runs, or say why it is not.
  *
- * On macOS the signature must pass `codesign --verify --strict`; one that does
- * not is signed ad hoc again, keeping its entitlements and identifier, and verified again. A
- * signature that verifies is never replaced. Every platform but Windows must
- * then run the file.
+ * On macOS the signature must pass `codesign --verify --strict`. One that does
+ * not is signed ad hoc again, keeping its entitlements and identifier, and
+ * verified again, but only when it is ad hoc or absent: a certificate's
+ * signature that does not verify is refused, never replaced. A signature that
+ * verifies is never replaced. Every platform but Windows must then run the file.
  */
 export function readyExecutable(file: string, platform: NodeJS.Platform = process.platform, run: CommandRun = platformRun): ProgramProbe {
   if (platform === 'win32') return { runs: true };
   if (platform === 'darwin' && failed(run('codesign', ['--verify', '--strict', file])) !== null) {
+    const shown = run('codesign', ['-dv', file]).output ?? '';
+    if (!/^Signature=adhoc$/m.test(shown) && !/not signed at all/.test(shown)) {
+      return { runs: false, detail: 'its signature does not verify, and it is not an ad hoc signature this machine may make again' };
+    }
     const signing = failed(run('codesign', ['--force', '--sign', '-', '--preserve-metadata=entitlements,identifier', file]))
       ?? failed(run('codesign', ['--verify', '--strict', file]));
     if (signing !== null) return { runs: false, detail: `its signature does not verify and could not be signed again (${signing})` };
@@ -68,14 +78,31 @@ export function readyExecutable(file: string, platform: NodeJS.Platform = proces
   return programRuns(file, run);
 }
 
-/** Flush a file, or a directory's entries, to disk. A directory that cannot be opened for it is left as it is. */
-function syncPath(p: string): void {
+/**
+ * Flush a file to disk. It is opened for writing, which Windows requires of a
+ * flush; there the flush is best effort, since the rename alone is what a
+ * reader sees.
+ */
+function syncFile(file: string, platform: NodeJS.Platform): void {
   let fd: number | null = null;
   try {
-    fd = fs.openSync(p, 'r');
+    fd = fs.openSync(file, 'r+');
     fs.fsyncSync(fd);
   } catch (err) {
-    if (!fs.statSync(p).isDirectory()) throw err;
+    if (platform !== 'win32') throw err;
+  } finally {
+    if (fd !== null) fs.closeSync(fd);
+  }
+}
+
+/** Flush a directory's entries to disk, where the platform can open a directory for it. */
+function syncDirectory(dir: string): void {
+  let fd: number | null = null;
+  try {
+    fd = fs.openSync(dir, 'r');
+    fs.fsyncSync(fd);
+  } catch {
+    /* a directory that cannot be opened for it is left as it is */
   } finally {
     if (fd !== null) fs.closeSync(fd);
   }
@@ -84,8 +111,8 @@ function syncPath(p: string): void {
 /**
  * Put the executable at `src` at `dest`, which may be running.
  *
- * The bytes go to a temporary file beside `dest`, are synced to disk and
- * made executable, and replace `dest` by one rename, so `dest` is always either
+ * The bytes go to a temporary file beside `dest`, are made executable and
+ * synced to disk, and replace `dest` by one rename, so `dest` is always either
  * the program it held or the whole new one. `move` renames `src` there rather than
  * copying it. `ready`, when given, must pass on the temporary file first; a
  * refusal leaves `dest` untouched. Throws on any failure, with the temporary
@@ -105,13 +132,13 @@ export function placeExecutable(
   fs.mkdirSync(staging, { recursive: true });
   try {
     if (options.move === true) fs.renameSync(src, tmp); else fs.copyFileSync(src, tmp);
-    syncPath(tmp);
     if (platform !== 'win32') fs.chmodSync(tmp, 0o755);
+    syncFile(tmp, platform);
     const probe = options.ready?.(tmp);
     if (probe !== undefined && !probe.runs) throw new Error(`${src} does not run on this machine: ${probe.detail}`);
     fs.renameSync(tmp, dest);
   } finally {
     fs.rmSync(staging, { recursive: true, force: true });
   }
-  if (platform !== 'win32') syncPath(dir);
+  if (platform !== 'win32') syncDirectory(dir);
 }

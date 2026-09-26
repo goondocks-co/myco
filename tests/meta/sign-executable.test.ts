@@ -21,6 +21,13 @@ it('refuses a failed signing, verification or execution step', () => {
   }
 });
 
+it('bounds every step, so a program that hangs at exec fails the build', () => {
+  const timeouts: unknown[] = [];
+  signExecutable({ target: 'darwin-arm64', platform: 'darwin', outfile: '/tmp/compiled-myco',
+    run: (_command: string, _args: string[], options: { timeout?: number }) => { timeouts.push(options.timeout); return { status: 0 }; } });
+  expect(timeouts).toEqual([60_000, 60_000, 60_000]);
+});
+
 it('refuses an artifact the kernel kills at exec', () => {
   let calls = 0;
   expect(() => signExecutable({ target: 'darwin-arm64', platform: 'darwin', outfile: '/tmp/compiled-myco',

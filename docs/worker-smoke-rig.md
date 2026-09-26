@@ -65,7 +65,7 @@ cp /path/to/new/myco "$BIN.new" && chmod 755 "$BIN.new" \
   && mv -f "$BIN.new" "$BIN"
 ```
 
-On Linux, leave out the `codesign` step. On macOS, if `codesign --verify --strict` fails, the kernel will kill the program when it runs. Sign it ad hoc again with `codesign --force --sign - --preserve-metadata=entitlements,identifier "$BIN.new"`, then run the line again.
+On Linux, leave out the `codesign` step. On macOS, if `codesign --verify --strict` fails, the kernel will kill the program when it runs. If `codesign -dv "$BIN.new"` shows `Signature=adhoc`, sign it ad hoc again with `codesign --force --sign - --preserve-metadata=entitlements,identifier "$BIN.new"`, then run the line again. Never re-sign a binary that carries a certificate's signature; get a good build instead.
 
 The worker notices the new program before its next claim. It runs the new program's `--version`, and stays on the old program if that fails. On macOS it then asks launchd to load its unit again, and the new program starts within seconds. Plain restarts go wrong on macOS. A LaunchAgent that launchd loaded at login carries the code requirement that Background Task Management recorded for its program. For an ad hoc signature that requirement is the program's hash. launchd's own restart of a replaced program is killed with `OS_REASON_CODESIGNING` ("Launch Constraint Violation" in the crash report), and it starts only on the retry a restart delay later. A worker built before this behavior existed does not reload itself, so load its unit again yourself after the rename:
 

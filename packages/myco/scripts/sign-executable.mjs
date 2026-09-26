@@ -1,5 +1,8 @@
 import { spawnSync } from 'node:child_process';
 
+/** Longest any one step may take; a program that hangs at exec fails the build rather than holding it. */
+const STEP_TIMEOUT_MS = 60_000;
+
 /**
  * Signs a Darwin executable built on Darwin ad hoc, keeping its entitlements and identifier,
  * then refuses it unless `codesign --verify --strict` passes and the kernel
@@ -12,7 +15,7 @@ export function signExecutable({ target, outfile, platform = process.platform, r
     ['codesign', ['--verify', '--strict', outfile]],
     [outfile, ['--version']],
   ]) {
-    const result = run(command, args, { stdio: 'inherit' });
+    const result = run(command, args, { stdio: 'inherit', timeout: STEP_TIMEOUT_MS });
     if (result.error || result.status !== 0) {
       const step = command === outfile ? `${outfile} --version` : `codesign ${args[0]}`;
       throw new Error(`Darwin executable signing failed at ${step}: ${result.error?.message ?? result.signal ?? result.status}`);

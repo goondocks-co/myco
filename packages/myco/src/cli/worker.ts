@@ -229,7 +229,8 @@ export async function endReplacedWorker(serverUrl: string, mycoHome: string, sto
 }
 
 /** Where a worker attached from this terminal or a login service claims from, and how it knows it is alone. */
-export function attachOptions(serverUrl: string, mycoHome: string, fetchImpl?: typeof fetch): Pick<WorkerOptions, 'serverUrl' | 'token' | 'renew' | 'lockDir' | 'runRoot' | 'onAttached' | 'stillCurrent'> {
+/** `program` is the file this process runs, whose replacement ends the worker once the new one runs. */
+export function attachOptions(serverUrl: string, mycoHome: string, fetchImpl?: typeof fetch, program: string = process.execPath): Pick<WorkerOptions, 'serverUrl' | 'token' | 'renew' | 'lockDir' | 'runRoot' | 'onAttached' | 'stillCurrent'> {
   return {
     serverUrl,
     token: () => readDeploymentMembership(serverUrl, mycoHome)?.token ?? null,
@@ -238,6 +239,6 @@ export function attachOptions(serverUrl: string, mycoHome: string, fetchImpl?: t
     lockDir: workerLockDir(),
     runRoot: path.join(mycoHome, 'worker', 'runs'),
     onAttached: () => { clearWorkerRefusal(mycoHome, serverUrl); },
-    stillCurrent: sameProgram(process.execPath, executableIdentity, programRuns, (line) => { console.log(`worker: ${line}`); }),
+    stillCurrent: sameProgram(program, executableIdentity, programRuns, (line) => { console.log(`worker: ${line}`); }),
   };
 }
