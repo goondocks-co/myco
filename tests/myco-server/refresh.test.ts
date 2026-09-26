@@ -4,7 +4,7 @@ import worker from '@myco-server-worker/index.js';
 import { createServer } from '@myco-server-worker/pipeline.js';
 import { cloudflareSourceOf } from '@myco-server-worker/platform/cloudflare/source.js';
 import {
-  MEMBER_TOKEN_MAX_LINEAGE_MS, MEMBER_TOKEN_PATTERN, MEMBER_TOKEN_REFRESH_WINDOW_MS, MEMBER_TOKEN_TTL_MS,
+  MEMBER_LINEAGE_IDLE_MS, MEMBER_TOKEN_PATTERN, MEMBER_TOKEN_REFRESH_WINDOW_MS, MEMBER_TOKEN_TTL_MS,
   issueMemberToken, revokeCredentialAsMember, revokeMemberLineage,
 } from '@myco-server-worker/auth/tokens.js';
 import { BLOB_RESERVATION_TTL_MS, PROTOCOL_HEADER, RETRY_AFTER_SECONDS, SERVER_PROTOCOL } from '@myco-server-worker/constants.js';
@@ -92,25 +92,27 @@ describe('token refresh', () => {
     for (const stale of issued.slice(0, 3)) expect((await r.fetch(memberPost(stale, '{}', '/tokens/refresh'))).status).toBe(401);
   });
 
-  it('clamps every successor to the lineage ceiling and answers lineage_expired to a token already expiring at it, without refreshAfter', async () => {
+  it('never ends a lineage for age: a machine rotating at every window keeps rotating long past the inactivity bound, each successor one TTL from its refresh', async () => {
     const r = await rig();
-    const startedAt = T0 - MEMBER_TOKEN_MAX_LINEAGE_MS + MEMBER_TOKEN_TTL_MS + 1_000;
-    r.e.sqlite.query(`UPDATE member_credentials SET lineage_started_at = ? WHERE id = ?`).run(startedAt, r.root.tokenId);
-    const ceiling = startedAt + MEMBER_TOKEN_MAX_LINEAGE_MS;
-    expect(ceiling).toBeGreaterThan(r.root.expiresAt);
+    let held: { token: string; tokenId: string; expiresAt: number } = r.root;
+    while (r.clock.now < T0 + 2 * MEMBER_LINEAGE_IDLE_MS) {
+      const next = await successorOf(r, held.token, held.expiresAt);
+      expect(next.expiresAt).toBe(r.clock.now + MEMBER_TOKEN_TTL_MS);
+      held = next;
+    }
+    expect(r.row(held.tokenId)).toMatchObject({ lineage_root: r.root.tokenId, lineage_started_at: T0, revoked_at: null });
+    r.clock.now += 1;
+    expect((await json(await r.post(held.token, 1))).persisted).toBe(true);
+  });
+
+  it('rotates a token an earlier build clamped at the retired lineage ceiling: its successor expires one TTL from the refresh', async () => {
+    const r = await rig();
+    // The shape the retired 90-day ceiling left: a lineage that started 90 days before the token's expiry.
+    r.e.sqlite.query(`UPDATE member_credentials SET lineage_started_at = expires_at - ? WHERE id = ?`).run(MEMBER_LINEAGE_IDLE_MS, r.root.tokenId);
     r.clock.now = WINDOW_OPENS;
-    const clamped = await json(await r.refresh(r.root.token));
-    expect(clamped).toMatchObject({ refreshed: true, expiresAt: ceiling, refreshAfter: ceiling - MEMBER_TOKEN_REFRESH_WINDOW_MS });
-    expect(r.row(clamped.tokenId as string)).toMatchObject({ expires_at: ceiling, lineage_started_at: startedAt, lineage_root: r.root.tokenId });
-    r.clock.now = ceiling - MEMBER_TOKEN_REFRESH_WINDOW_MS;
-    const res = await r.capture(() => r.refresh(clamped.token as string));
-    expect({ status: res.status, body: await json(res) }).toEqual({ status: 200, body: { refreshed: false, code: 'lineage_expired', reason: 'token lineage expired' } });
-    expect(r.emitted('refresh_refused')).toEqual([{ kind: 'refresh_refused', memberId: 'mem_machine_1', tokenId: clamped.tokenId, reason: 'lineage_expired' }]);
-    expect(count(r.e.sqlite, 'member_credentials')).toBe(2);
-    r.clock.now = ceiling - 1;
-    expect((await json(await r.post(clamped.token as string, 1))).persisted).toBe(true);
-    r.clock.now = ceiling;
-    expect((await r.post(clamped.token as string, 2)).status).toBe(401);
+    const res = await r.capture(() => r.refresh(r.root.token));
+    expect(await json(res)).toMatchObject({ refreshed: true, expiresAt: WINDOW_OPENS + MEMBER_TOKEN_TTL_MS });
+    expect(r.emitted('refresh_refused')).toEqual([]);
   });
 
   it('activates a successor at its first authenticated use, once: the predecessor is valid until then and revoked after, and the successor takes over its charged bytes plus its live reservations in that batch', async () => {
@@ -324,6 +326,27 @@ describe('token refresh', () => {
     for (const t of [fresh.root, a]) expect((await fresh.post(t.token, 9)).status).toBe(401);
   });
 
+  it('stops a credential from the dashboard with every live row of its lineage: a successor already minted from it, unused, is stopped too', async () => {
+    for (const actor of [{ id: 'mem_machine_1', label: 'machine_1', role: 'admin' as const }, { id: 'mem_machine_1', label: 'machine_1', role: 'member' as const }]) {
+      const r = await rig();
+      const banked = await successorOf(r, r.root.token, r.root.expiresAt);
+      expect(r.row(banked.tokenId)).toMatchObject({ revoked_at: null, first_used_at: null });
+      expect(await revokeCredentialAsMember(r.e.db, actor, r.root.tokenId, r.clock.now)).toEqual({ revoked: true, revokedBy: 'mem_machine_1' });
+      expect(r.row(banked.tokenId)).toMatchObject({ revoked_at: r.clock.now });
+      r.clock.now += 1;
+      expect((await r.post(banked.token, 1)).status).toBe(401);
+      expect((await r.refresh(r.root.token)).status).toBe(401);
+    }
+  });
+
+  it('a member stopping another member\'s credential stops nothing of that lineage', async () => {
+    const r = await rig();
+    const banked = await successorOf(r, r.root.token, r.root.expiresAt);
+    expect(await revokeCredentialAsMember(r.e.db, { id: 'mem_other', label: 'other', role: 'member' }, banked.tokenId, r.clock.now)).toEqual({ revoked: false, revokedBy: 'mem_other' });
+    expect(r.row(r.root.tokenId)).toMatchObject({ revoked_at: null });
+    expect(r.row(banked.tokenId)).toMatchObject({ revoked_at: null });
+  });
+
   it('refuses a revoked token on the refresh route, and an expired one on every other route: 401 without a row written', async () => {
     const r = await rig();
     const revoked = await issueMemberToken(r.e.db, { memberId: 'mem_machine_1', machineId: 'machine_1' }, T0);
@@ -370,16 +393,39 @@ describe('token refresh', () => {
     expect(count(r.e.sqlite, 'member_credentials')).toBe(3);
   });
 
-  it('answers lineage_expired to a lapsed token presented past its lineage ceiling, minting nothing', async () => {
+  it('answers lineage_expired to a lapsed token whose lineage has not refreshed for the inactivity bound, minting nothing; a moment inside the bound it rotates', async () => {
     const r = await rig();
-    r.clock.now = T0 + MEMBER_TOKEN_MAX_LINEAGE_MS;
+    r.clock.now = T0 + MEMBER_LINEAGE_IDLE_MS;
     const res = await r.capture(() => r.refresh(r.root.token));
-    expect({ status: res.status, body: await json(res) }).toEqual({ status: 200, body: { refreshed: false, code: 'lineage_expired', reason: 'token lineage expired' } });
+    expect({ status: res.status, body: await json(res) }).toEqual({ status: 200, body: { refreshed: false, code: 'lineage_expired', reason: 'token lineage inactive' } });
     expect(r.emitted('refresh_refused')).toEqual([{ kind: 'refresh_refused', memberId: 'mem_machine_1', tokenId: r.root.tokenId, reason: 'lineage_expired' }]);
     expect(count(r.e.sqlite, 'member_credentials')).toBe(1);
-    r.clock.now = T0 + MEMBER_TOKEN_MAX_LINEAGE_MS - 1;
+    r.clock.now = T0 + MEMBER_LINEAGE_IDLE_MS - 1;
     const last = await json(await r.refresh(r.root.token));
-    expect(last).toMatchObject({ refreshed: true, expiresAt: T0 + MEMBER_TOKEN_MAX_LINEAGE_MS });
+    expect(last).toMatchObject({ refreshed: true, expiresAt: r.clock.now + MEMBER_TOKEN_TTL_MS });
+  });
+
+  it('measures inactivity from the lineage\'s last refresh, not its join: a lapsed successor of a lineage older than the bound rotates while its own refresh is inside it', async () => {
+    const r = await rig();
+    const successor = await successorOf(r, r.root.token, r.root.expiresAt);
+    const refreshedAt = r.clock.now;
+    r.clock.now = refreshedAt + 1;
+    expect((await json(await r.post(successor.token, 1))).persisted).toBe(true);
+    r.clock.now = refreshedAt + MEMBER_LINEAGE_IDLE_MS - 1;
+    expect(r.clock.now).toBeGreaterThan(T0 + MEMBER_LINEAGE_IDLE_MS);
+    const kept = await json(await r.refresh(successor.token));
+    expect(kept).toMatchObject({ refreshed: true, expiresAt: r.clock.now + MEMBER_TOKEN_TTL_MS });
+    expect(r.row(kept.tokenId as string)).toMatchObject({ predecessor_id: successor.tokenId, lineage_root: r.root.tokenId, lineage_started_at: T0 });
+  });
+
+  it('refuses a lapsed successor never used before the bound passed, though this very request activates it', async () => {
+    const r = await rig();
+    const successor = await successorOf(r, r.root.token, r.root.expiresAt);
+    r.clock.now += MEMBER_LINEAGE_IDLE_MS;
+    const refused = await json(await r.refresh(successor.token));
+    expect(refused).toEqual({ refreshed: false, code: 'lineage_expired', reason: 'token lineage inactive' });
+    expect(r.row(successor.tokenId)).toMatchObject({ first_used_at: r.clock.now });
+    expect(count(r.e.sqlite, 'member_credentials')).toBe(2);
   });
 
   it('rotates on the credential alone: a request naming no Project and one naming a Project the Deployment has never seen both rotate, and no Project row is created', async () => {

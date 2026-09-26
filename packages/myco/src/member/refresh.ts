@@ -20,8 +20,9 @@
  * (`myco login`, `myco member join`), which clears it.
  *
  * A token past its own expiry still rotates: the server admits a lapsed token
- * on this route alone, up to its lineage ceiling, so a machine offline longer
- * than the TTL renews on its first hook back.
+ * on this route alone, so a machine offline longer than the TTL renews on its
+ * first hook back. A lineage never ends for age; only a machine silent long
+ * enough that the server refuses its lapsed token (`lineage_expired`) re-joins.
  */
 import { resolveMycoHome } from '../paths/home.js';
 import { getPluginVersion } from '../version.js';
@@ -179,16 +180,19 @@ export async function refreshMembership(serverUrl: string, opts: RefreshOptions)
           return { status: outcome.code === 'refresh_too_early' ? 'too-early' : 'terminal', membership: write({ refreshAfter: outcome.refreshAfter, refreshTerminal: false }) };
         }
         if (outcome.code === 'lineage_expired') {
-          stderr(`token lineage expired — capture stops reaching the server at ${new Date(held.expiresAt ?? now()).toISOString()}; ${REJOIN_HINT}`);
-          return { status: 'lineage-expired', membership: write({ refreshTerminal: true, refreshTerminalBy: build }) };
+          stderr(`this machine was inactive too long, or its credential ended — capture stops reaching the server at ${new Date(held.expiresAt ?? now()).toISOString()}; ${REJOIN_HINT}`);
+          return { status: 'lineage-expired', membership: write({ refreshTerminal: true, refreshTerminalBy: build, refreshTerminalReason: 'refused' }) };
         }
         stderr(`token rotation refused (${outcome.code})${outcome.reason ? `: ${outcome.reason}` : ''} — ${REJOIN_HINT}`);
-        return { status: 'terminal', membership: write({ refreshTerminal: true, refreshTerminalBy: build }) };
+        return { status: 'terminal', membership: write({ refreshTerminal: true, refreshTerminalBy: build, refreshTerminalReason: 'refused' }) };
       }
       case 'unauthorized':
-        stderr(`member token refused — ${REJOIN_HINT}`);
+        stderr(outcome.replayed === true ? `this machine's credential was used from two places and has been revoked for safety — ${REJOIN_HINT}` : `member token refused — ${REJOIN_HINT}`);
         // The token no longer authenticates anywhere, so its life ended now, whatever expiry it was issued with.
-        return { status: 'unauthorized', membership: write({ refreshTerminal: true, refreshTerminalBy: build, expiresAt: Math.min(held.expiresAt ?? now(), now()) }) };
+        return {
+          status: 'unauthorized',
+          membership: write({ refreshTerminal: true, refreshTerminalBy: build, refreshTerminalReason: outcome.replayed === true ? 'replayed' : 'refused', expiresAt: Math.min(held.expiresAt ?? now(), now()) }),
+        };
       case 'route_missing': {
         const noticedAt = held.routeMissingNoticedAt ?? 0;
         if (now() - noticedAt < ROUTE_MISSING_NOTICE_INTERVAL_MS) return { status: 'route-missing', membership: held };

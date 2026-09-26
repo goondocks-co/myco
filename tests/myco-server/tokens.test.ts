@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'bun:test';
 import {
-  MEMBER_TOKEN_BYTES, MEMBER_TOKEN_TTL_MS, MEMBER_TOKEN_PATTERN, MEMBER_TOKEN_REFRESH_WINDOW_MS, MEMBER_TOKEN_MAX_LINEAGE_MS,
+  MEMBER_TOKEN_BYTES, MEMBER_TOKEN_TTL_MS, MEMBER_TOKEN_PATTERN, MEMBER_TOKEN_REFRESH_WINDOW_MS, MEMBER_LINEAGE_IDLE_MS,
   mintMemberToken, issueMemberToken, revokeCredentialAsMember, revokeMemberLineage, authenticateServerMemberToken,
 } from '@myco-server-worker/auth/tokens.js';
 import { TOKEN_ID_PREFIX } from '@myco-server-worker/constants.js';
@@ -31,12 +31,13 @@ describe('member tokens', () => {
     expect(mintMemberToken().length).toBe(Math.ceil((MEMBER_TOKEN_BYTES * 4) / 3));
   });
 
-  it('bounds the credential lifetime, the refresh window, the lineage, and the write volume', () => {
+  it('bounds the credential lifetime, the refresh window, a lineage\'s inactivity, and the write volume', () => {
     expect(MEMBER_TOKEN_TTL_MS).toBeGreaterThan(0);
     expect(MEMBER_TOKEN_TTL_MS).toBeLessThanOrEqual(30 * 24 * 60 * 60 * 1000);
     expect(MEMBER_TOKEN_REFRESH_WINDOW_MS).toBe(MEMBER_TOKEN_TTL_MS / 4);
-    expect(MEMBER_TOKEN_MAX_LINEAGE_MS).toBe(90 * 24 * 60 * 60 * 1000);
-    expect(MEMBER_TOKEN_MAX_LINEAGE_MS).toBeGreaterThan(MEMBER_TOKEN_TTL_MS);
+    expect(MEMBER_LINEAGE_IDLE_MS).toBe(90 * 24 * 60 * 60 * 1000);
+    // Longer than a token lives, so the inactivity bound never refuses a live token: the refresh reads it for a lapsed one alone.
+    expect(MEMBER_LINEAGE_IDLE_MS).toBeGreaterThan(MEMBER_TOKEN_TTL_MS);
   });
 
   it('issues a root token whose row expires exactly one TTL after issue, roots its own lineage at issue, always lands, and stores only the digest', async () => {
@@ -52,15 +53,13 @@ describe('member tokens', () => {
     expect(calls[0].params).not.toContain(issued.token);
   });
 
-  it('issues a successor into its predecessor\'s lineage, only while the predecessor is live, expiring one TTL from now or at the lineage ceiling, whichever is sooner', async () => {
+  it('issues a successor into its predecessor\'s lineage, only while the predecessor is live, expiring one TTL from now however long ago the lineage started', async () => {
     const { db, calls } = recordingDb();
     const inside = await issueMemberToken(db, { memberId: 'mem_machine_1', machineId: 'machine_1' }, 5_000, { predecessorId: 'mt_pred', lineageRoot: 'mt_root', lineageStartedAt: 1_000 });
     expect(inside.expiresAt).toBe(5_000 + MEMBER_TOKEN_TTL_MS);
     expect(calls[0].params).toEqual([inside.tokenId, 'mem_machine_1', 'machine_1', await sha256Hex(inside.token), 5_000, inside.expiresAt, 'mt_pred', 'mt_root', 1_000, null, null, 'mt_pred', 'mt_pred']);
-    const startedAt = 5_000 - MEMBER_TOKEN_MAX_LINEAGE_MS + 10;
-    const clamped = await issueMemberToken(db, { memberId: 'mem_machine_1', machineId: 'machine_1' }, 5_000, { predecessorId: 'mt_pred', lineageRoot: 'mt_root', lineageStartedAt: startedAt });
-    expect(clamped.expiresAt).toBe(startedAt + MEMBER_TOKEN_MAX_LINEAGE_MS);
-    expect(clamped.expiresAt).toBe(5_010);
+    const old = await issueMemberToken(db, { memberId: 'mem_machine_1', machineId: 'machine_1' }, 5_000, { predecessorId: 'mt_pred', lineageRoot: 'mt_root', lineageStartedAt: 5_000 - 4 * MEMBER_LINEAGE_IDLE_MS });
+    expect(old.expiresAt).toBe(5_000 + MEMBER_TOKEN_TTL_MS);
   });
 
   it('revokes a whole lineage by any of its ids in one statement, counting the rows that changed', async () => {
@@ -72,17 +71,19 @@ describe('member tokens', () => {
     expect(await revokeMemberLineage(recordingDb(0).db, 'mt_missing', 9_000, 'mem_machine_1')).toEqual({ revoked: 0 });
   });
 
-  it('revokes by id and only once, reporting whether a live row matched', async () => {
-    const { db, calls } = recordingDb();
+  it('revokes the whole lineage of the named credential in one statement, reporting whether any live row matched', async () => {
+    const { db, calls } = recordingDb(2);
     expect(await revokeCredentialAsMember(db, ADMIN, 'mt_1', 9_000)).toEqual({ revoked: true, revokedBy: 'mem_machine_1' });
-    expect(calls[0].sql).toMatch(/UPDATE member_credentials SET revoked_at = \?, revoked_by = \? WHERE id = \? AND revoked_at IS NULL/);
+    expect(calls).toHaveLength(1);
+    expect(calls[0].sql).toMatch(/UPDATE member_credentials SET revoked_at = \?, revoked_by = \?\s+WHERE lineage_root = \(SELECT lineage_root FROM member_credentials WHERE id = \?\) AND revoked_at IS NULL$/);
     expect(calls[0].params).toEqual([9_000, 'mem_machine_1', 'mt_1']);
     expect(await revokeCredentialAsMember(recordingDb(0).db, ADMIN, 'mt_missing', 9_000)).toEqual({ revoked: false, revokedBy: 'mem_machine_1' });
 
     // A member reaches only its own: the statement carries the member id as a predicate, not just as attribution.
     const asMember = recordingDb();
     expect(await revokeCredentialAsMember(asMember.db, MEMBER, 'mt_1', 9_000)).toEqual({ revoked: true, revokedBy: 'mem_machine_2' });
-    expect(asMember.calls[0].sql).toMatch(/WHERE id = \? AND member_id = \? AND revoked_at IS NULL/);
+    expect(asMember.calls[0].sql).toMatch(/WHERE lineage_root = \(SELECT lineage_root FROM member_credentials WHERE id = \?\) AND revoked_at IS NULL AND member_id = \?$/);
+    expect(asMember.calls[0].params).toEqual([9_000, 'mem_machine_2', 'mt_1', 'mem_machine_2']);
   });
 
   it('authenticates a live token digest and returns its bound machine, lifetime, lineage, predecessor and first use', async () => {

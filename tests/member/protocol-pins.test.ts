@@ -16,11 +16,11 @@ import { OUTBOUND_CHANNELS as MEMBER_CHANNELS } from '@myco/member/envelope.js';
 import { KINDS, kindSpec, PLAN_SOURCES as SERVER_PLAN_SOURCES, PLAN_STATUSES as SERVER_PLAN_STATUSES, PROMPT_ORIGINS as SERVER_PROMPT_ORIGINS, TRANSCRIPT_ROLES as SERVER_TRANSCRIPT_ROLES } from '@myco-server-worker/ingest/kinds.js';
 import { MEMBER_KINDS, PLAN_SOURCES, PLAN_STATUSES, PROMPT_ORIGINS, TRANSCRIPT_ROLES } from '@goondocks/myco-shared/member-protocol';
 import { CaptureRuleSchema } from '@goondocks/myco-shared/capture-rule-schema';
-import { MEMBER_TOKEN_PATTERN as SERVER_TOKEN_PATTERN, MEMBER_TOKEN_REFRESH_WINDOW_MS as SERVER_REFRESH_WINDOW_MS } from '@myco-server-worker/auth/tokens.js';
+import { LINEAGE_REPLAYED_CODE as SERVER_LINEAGE_REPLAYED_CODE, MEMBER_TOKEN_PATTERN as SERVER_TOKEN_PATTERN, MEMBER_TOKEN_REFRESH_WINDOW_MS as SERVER_REFRESH_WINDOW_MS } from '@myco-server-worker/auth/tokens.js';
 import { longestDeclaredHookTimeoutMs } from '@myco/member/budget.js';
 import { isProjectId as memberIsProjectId, PROJECT_ID_PATTERN as MEMBER_PROJECT_ID_PATTERN } from '@myco/member/constants.js';
 import {
-  ENROLLMENT_KEY_PATTERN, JOIN_PATH,
+  ENROLLMENT_KEY_PATTERN, JOIN_PATH, LINEAGE_REPLAYED_CODE,
   MEMBER_CODES, MEMBER_ID_NAMESPACE, MEMBER_INLINE_TEXT_MAX_BYTES, MEMBER_PROTOCOL, MEMBER_TOKEN_PATTERN, MEMBER_TOKEN_REFRESH_WINDOW_MS, PARKED_CODE, PROTOCOL_HEADER, RESLICE_CODES, RETIRED_SERVER_CODES, TRANSCRIPT_SLICE_BYTES,
 } from '@myco/member/constants.js';
 import { BOUNDS, producerIdentifier, wireOrigin } from '@myco/member/envelope.js';
@@ -213,6 +213,7 @@ describe('member ↔ worker pins', () => {
 
   it('the window the member assumes before the server announces one is the window the server keeps', () => {
     expect(MEMBER_TOKEN_REFRESH_WINDOW_MS).toBe(SERVER_REFRESH_WINDOW_MS);
+    expect(LINEAGE_REPLAYED_CODE).toBe(SERVER_LINEAGE_REPLAYED_CODE);
   });
 
   it('admits exactly the project ids the server does — no more, since the member decides one before the server ever sees it', () => {

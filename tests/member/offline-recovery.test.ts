@@ -3,8 +3,8 @@
  * or holding a credential the Deployment refuses — through the real hooks and
  * the in-process worker.
  *
- * A lapsed token of a live lineage renews on the first hook back and that hook
- * delivers on it. A refusal that is final is recorded and said, on stderr and in
+ * A lapsed token of a lineage refreshed within the inactivity bound renews on
+ * the first hook back and that hook delivers on it, however old the lineage. A refusal that is final is recorded and said, on stderr and in
  * the session-start injection. What was captured meanwhile, the turn-end
  * transcript included, stays on disk and reaches the Deployment once a new
  * credential is in place, from the next probing hook of any session, after
@@ -15,7 +15,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { issueMemberToken, MEMBER_TOKEN_MAX_LINEAGE_MS } from '@myco-server-worker/auth/tokens.js';
+import { issueMemberToken, MEMBER_LINEAGE_IDLE_MS } from '@myco-server-worker/auth/tokens.js';
 import { parseTranscripts } from '@myco-server-worker/ingest/parse.js';
 import { resetMachineIdCache } from '@myco/machine-id.js';
 import { run as runMemberCli } from '@myco/cli/member.js';
@@ -23,7 +23,7 @@ import { agentOfSession, drainBacklog } from '@myco/member/backlog.js';
 import { unboundedBudget } from '@myco/member/budget.js';
 import { resolveMemberProjectRoot } from '@myco/member/credential.js';
 import { recordJoinAnswer } from '@myco/member/join-code.js';
-import { refreshDue } from '@myco/member/refresh.js';
+import { refreshDue, refreshMembership } from '@myco/member/refresh.js';
 import { readRegistryEntry, writeDeploymentMembership } from '@myco/member/registry.js';
 import { emptySessionState, readSessionState, updateSessionState } from '@myco/member/session-state.js';
 import { MemberSpool } from '@myco/member/spool.js';
@@ -36,6 +36,8 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 const SERVER_URL = 'https://member-test.invalid';
 const PROJECT = 'proj_1';
 const NOT_DELIVERED = 'capture is not being delivered';
+const INACTIVE = 'the machine was inactive too long, or its credential ended';
+const TWO_PLACES = 'was used from two places and has been revoked for safety';
 
 let mycoHome: string;
 let root: string;
@@ -80,6 +82,83 @@ const segmentsOf = (rig: MemberRig, sessionId: string): number =>
   (rig.env.sqlite.query('SELECT COUNT(*) AS n FROM transcript_segments s JOIN transcripts t ON t.transcript_id = s.transcript_id WHERE t.session_id = ?').get(sessionId) as { n: number }).n;
 const revoke = (rig: MemberRig, tokenId: string): void => { rig.env.sqlite.query('UPDATE member_credentials SET revoked_at = ? WHERE id = ?').run(Date.now(), tokenId); };
 
+/** A second holder of the credential, acting on the Deployment directly: rotating a token and capturing on the result. */
+const secondHolder = (rig: MemberRig) => ({
+  rotate: async (token: string) => {
+    const res = await rig.fetch(new Request('https://s/tokens/refresh', { method: 'POST', headers: rig.headers({ authorization: `Bearer ${token}`, 'content-type': 'application/json' }), body: '{}' }));
+    const body = await res.json() as { refreshed: boolean; token: string; tokenId: string };
+    expect(body.refreshed).toBe(true);
+    return body;
+  },
+  capture: (token: string) => rig.fetch(new Request('https://s/events', {
+    method: 'POST', headers: rig.headers({ authorization: `Bearer ${token}`, 'content-type': 'application/json' }),
+    body: JSON.stringify({ eventId: crypto.randomUUID(), sessionId: `thief-${crypto.randomUUID()}`, kind: 'session.start', createdAt: Date.now(), channel: 'cli', producer: { adapter: 'thief', version: '1' }, payload: { agent: 'claude-code', startedAt: Date.now() } }),
+  })),
+});
+const liveRows = (rig: MemberRig): number =>
+  (rig.env.sqlite.query('SELECT COUNT(*) AS n FROM member_credentials WHERE revoked_at IS NULL').get() as { n: number }).n;
+
+describe('a credential used from two places', () => {
+  it('thief first: the owner\'s next hook, refused, rotates with the head the thief moved past — which revokes the whole lineage, the thief\'s successor included — and says why', async () => {
+    const rig = await memberRig({ now: Date.now() - 6.5 * DAY_MS });
+    // The registry believes no rotation is due, so the hook's first dial is capture, not a refresh.
+    registerTestMember({ mycoHome, token: rig.token, tokenId: rig.tokenId, projectId: PROJECT, expiresAt: Date.now() + 5 * DAY_MS, serverUrl: SERVER_URL });
+    const thief = secondHolder(rig);
+    const stolen = await thief.rotate(rig.token);
+    expect((await thief.capture(stolen.token)).status).toBe(200);
+    const spy = recordingFetch(rig.fetch);
+
+    const tx = transcript('sess-owner', 'mine');
+    const start = await runHook('session-start', { session_id: 'sess-owner', hook_event_name: 'SessionStart', transcript_path: tx, cwd: '/work/repo' }, { fetch: spy.fetch });
+
+    // The hook's first dials are its own work, refused; the rotation it forces follows them.
+    const paths = spy.requests.map((r) => r.path);
+    expect(paths[0]).not.toBe('/tokens/refresh');
+    expect(paths.indexOf('/tokens/refresh')).toBeGreaterThan(0);
+    expect(liveRows(rig)).toBe(0);
+    expect((await thief.capture(stolen.token)).status).toBe(401);
+    const held = readRegistryEntry(root, mycoHome)!;
+    expect({ terminal: held.refreshTerminal, reason: held.refreshTerminalReason }).toEqual({ terminal: true, reason: 'replayed' });
+    expect(start.stderr).toContain(TWO_PLACES);
+    expect(start.stdout).toContain(TWO_PLACES);
+    expect(start.stdout).toContain('myco login <link>');
+    expect(new MemberSpool(PROJECT, { mycoHome }).depth('sess-owner')).toBe(1);
+  });
+
+  it('a thief who rotated the head after the owner had, before the owner used its successor: the owner\'s passed-over successor, refused, rotates — and the lineage is revoked the same way', async () => {
+    const rig = await memberRig({ now: Date.now() - 6.5 * DAY_MS });
+    registerTestMember({ mycoHome, token: rig.token, tokenId: rig.tokenId, projectId: PROJECT, expiresAt: rig.expiresAt, serverUrl: SERVER_URL });
+    expect((await refreshMembership(SERVER_URL, { mycoHome, fetch: rig.fetch, budget: unboundedBudget() })).status).toBe('refreshed');
+    const owners = readRegistryEntry(root, mycoHome)!;
+    const thief = secondHolder(rig);
+    const stolen = await thief.rotate(rig.token);
+    expect((await thief.capture(stolen.token)).status).toBe(200);
+    const spy = recordingFetch(rig.fetch);
+
+    const tx = transcript('sess-owner-2', 'mine too');
+    const start = await runHook('session-start', { session_id: 'sess-owner-2', hook_event_name: 'SessionStart', transcript_path: tx, cwd: '/work/repo' }, { fetch: spy.fetch });
+
+    expect(spy.requests[0].path).not.toBe('/tokens/refresh');
+    expect(spy.requests.some((r) => r.path === '/tokens/refresh')).toBe(true);
+    expect(readRegistryEntry(root, mycoHome)!.token).toBe(owners.token);
+    expect(liveRows(rig)).toBe(0);
+    expect((await thief.capture(stolen.token)).status).toBe(401);
+    expect(readRegistryEntry(root, mycoHome)!.refreshTerminalReason).toBe('replayed');
+    expect(start.stdout).toContain(TWO_PLACES);
+  });
+
+  it('a re-login clears the reason with the rest of the replaced token\'s state', async () => {
+    const rig = await memberRig();
+    registerTestMember({ mycoHome, token: 'x'.repeat(43), tokenId: 'mt_old', projectId: PROJECT, expiresAt: Date.now() - DAY_MS, serverUrl: SERVER_URL });
+    const held = readRegistryEntry(root, mycoHome)!;
+    writeDeploymentMembership({ serverUrl: SERVER_URL, token: held.token, tokenId: held.tokenId, expiresAt: held.expiresAt, machineId: held.machineId, joinedAt: 1, updatedAt: 1, refreshTerminal: true, refreshTerminalReason: 'replayed' }, { mycoHome });
+    expect(readRegistryEntry(root, mycoHome)!.refreshTerminalReason).toBe('replayed');
+    writeDeploymentMembership({ serverUrl: SERVER_URL, token: rig.token, tokenId: rig.tokenId, expiresAt: rig.expiresAt, machineId: held.machineId, joinedAt: 1, updatedAt: 2 }, { mycoHome });
+    const fresh = readRegistryEntry(root, mycoHome)!;
+    expect({ terminal: fresh.refreshTerminal, reason: fresh.refreshTerminalReason }).toEqual({ terminal: undefined, reason: undefined });
+  });
+});
+
 describe('a member that could not deliver', () => {
   it('renews a token that lapsed offline on its first hook back, before anything else is dialled, and delivers the session on it', async () => {
     const rig = await memberRig({ now: Date.now() - 20 * DAY_MS });
@@ -102,8 +181,24 @@ describe('a member that could not deliver', () => {
     expect(new MemberSpool(PROJECT, { mycoHome }).sessionIds()).toEqual([]);
   });
 
-  it('says so at the point of use once the lineage has ended, and keeps what it captures', async () => {
-    const rig = await memberRig({ now: Date.now() - MEMBER_TOKEN_MAX_LINEAGE_MS - DAY_MS });
+  it('renews a lapsed token of a lineage that started long past the inactivity bound but kept refreshing', async () => {
+    const rig = await memberRig({ now: Date.now() - 20 * DAY_MS });
+    rig.env.sqlite.query('UPDATE member_credentials SET lineage_started_at = ? WHERE id = ?').run(Date.now() - 2 * MEMBER_LINEAGE_IDLE_MS, rig.tokenId);
+    registerTestMember({ mycoHome, token: rig.token, tokenId: rig.tokenId, projectId: PROJECT, expiresAt: rig.expiresAt, serverUrl: SERVER_URL });
+    const spy = recordingFetch(rig.fetch);
+
+    const { start } = await session(spy.fetch, 'sess-old-lineage', 'a year of daily use');
+
+    expect(spy.requests[0].path).toBe('/tokens/refresh');
+    const renewed = readRegistryEntry(root, mycoHome)!;
+    expect(renewed.token).not.toBe(rig.token);
+    expect(renewed.refreshTerminal).toBeUndefined();
+    expect(start.stderr).not.toContain(NOT_DELIVERED);
+    expect(segmentsOf(rig, 'sess-old-lineage')).toBe(1);
+  });
+
+  it('says so at the point of use once the machine has been silent past the inactivity bound, and keeps what it captures', async () => {
+    const rig = await memberRig({ now: Date.now() - MEMBER_LINEAGE_IDLE_MS - DAY_MS });
     registerTestMember({ mycoHome, token: rig.token, tokenId: rig.tokenId, projectId: PROJECT, expiresAt: rig.expiresAt, serverUrl: SERVER_URL });
     const spy = recordingFetch(rig.fetch);
 
@@ -113,7 +208,9 @@ describe('a member that could not deliver', () => {
     expect(readRegistryEntry(root, mycoHome)!.refreshTerminal).toBe(true);
     expect(start.stderr).toContain(NOT_DELIVERED);
     expect(start.stderr).toContain('myco login <link>');
+    expect(start.stderr).toContain(INACTIVE);
     expect(start.stdout).toContain(NOT_DELIVERED);
+    expect(start.stdout).toContain(INACTIVE);
     expect(rig.rows('member_credentials')).toBe(1);
     expect(rig.rows('sessions')).toBe(0);
     expect(new MemberSpool(PROJECT, { mycoHome }).depth('sess-ended')).toBe(1);
