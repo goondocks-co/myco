@@ -71,14 +71,14 @@ head -c 100 /dev/zero | tr '\0' 'x' | curl -sS -m 25 -w ' [%{http_code}] t=%{tim
   -H 'content-type: text/plain' -H 'content-length: 26214401' --data-binary @-
 ```
 
-`E1` needs the token's counter at the ceiling with no blob behind it, which is what a token spends its quota on events for. Move it, run the upload, then put it back:
+`E1` needs the credential's counter at the retired 1 GiB ceiling with no blob behind it, which is what a credential that stored its bytes as events looks like. Move it, run the upload, then put it back:
 
 ```bash
-sql "UPDATE member_tokens SET bytes_written = 1073741823 WHERE id = '<TOKEN_ID_1>'"
-blob "$T1" "$(printf 'quota-probe' | shasum -a 256 | cut -d' ' -f1)" 'quota-probe'
-sql "SELECT bytes_written FROM member_tokens WHERE id = '<TOKEN_ID_1>'"
+sql "UPDATE member_credentials SET bytes_written = 1073741824 WHERE id = '<TOKEN_ID_1>'"
+blob "$T1" "$(printf 'ceiling-probe' | shasum -a 256 | cut -d' ' -f1)" 'ceiling-probe'
+sql "SELECT bytes_written FROM member_credentials WHERE id = '<TOKEN_ID_1>'"
 sql "SELECT COUNT(*) FROM blobs WHERE token_id = '<TOKEN_ID_1>'"
-sql "UPDATE member_tokens SET bytes_written = <PREVIOUS> WHERE id = '<TOKEN_ID_1>'"
+sql "UPDATE member_credentials SET bytes_written = <PREVIOUS> WHERE id = '<TOKEN_ID_1>'"
 ```
 
 ## Rows
@@ -113,14 +113,14 @@ sql "UPDATE member_tokens SET bytes_written = <PREVIOUS> WHERE id = '<TOKEN_ID_1
 | D4 | a `409` (protocol) with 25 MiB in flight | `409`, read cleanly by the client |
 | D5 | `GET /health` after all of D | `{ok:true}` |
 | D6 | a normal store after all of D | `{stored:true, duplicate:false, …}` |
-| E1 | a blob upload by a token whose quota is spent on event bodies | `{stored:false, code:'quota', reason:'token write quota exceeded'}`; no `blobs` row appears and `bytes_written` does not move |
+| E1 | a blob upload by a credential counted at the retired 1 GiB ceiling (#1416) | `{stored:true, duplicate:false, …}`; the `blobs` row appears and `bytes_written` grows by the blob's size — capture is never refused for volume |
 | E2 | `session.start` with `startedAt` at `4102444800000` | `{persisted:false, code:'clock_skew', reason:'startedAt is more than 300000 ms ahead of the server clock'}` |
 | E3 | `session.end` with `endedAt` recomputed at run time as `now + 10*60*1000` (never the recorded absolute value, which sits in the past on replay) | `{persisted:false, code:'clock_skew', reason:'endedAt is more than 300000 ms ahead of the server clock'}` |
 | E4 | `session.start` with `startedAt: 0` | `{persisted:true, projected:true}`; `sessions.started_at = 0` — history replays, only the future is bounded |
 | E5 | an expired `blob_reservations` row seeded for the token, then any upload | the expired row is gone and the live ones remain |
 | X1 | a token whose `member_tokens.machine_id` is NULL, on `/blobs` and on `/events` | `{stored:false, code:'no_machine_identity', reason:'token has no machine identity'}` and `{persisted:false, code:'no_machine_identity', reason:'token has no machine identity'}`; no blob, event, or session row |
 | X2 | three `prompt` events on one `promptId` (e1 < e2 < e3 by `createdAt`; e2 carries `threadLabel` only, e3 `promptKind` only), delivered e1,e2,e3 to one prompt and e3,e1,e2 to another | both rows column-identical but for `prompt_id`/`event_id`/`received_at`: `prompt_kind` = e3's, `thread_label` NULL (e3 carried none), `created_at` = e1's, `updated_at` = e3's — the ranked winner supplies every merged column |
-| X3 | a live `blob_reservations` row seeded for the token at `quota − bytes_written − 5`, then a 14-byte upload; the row deleted, the same upload again | first `{stored:false, code:'quota', reason:'token write quota exceeded'}` with `bytes_written` unmoved and the live row untouched; then `{stored:true, …}` and `bytes_written` + 14 |
+| X3 | a live `blob_reservations` row of any size seeded for the token (1 GiB, say), then a 14-byte upload | `{stored:true, duplicate:false, …}` with the live row untouched — a reservation is an upload's authority, never room it takes from another (#1416) |
 | R1 | `/events` with a revoked token | `401` |
 | R2 | `/blobs` with a revoked token | `401` |
 | T1 | `refresh "$T1"` on a token minted today | `{refreshed:false, code:'refresh_too_early', reason:'refresh window not yet open', refreshAfter:<expires_at − 151200000>}` |
@@ -296,6 +296,8 @@ Verdict D: D1 PASS (edge `400` in 56 ms, Worker never invoked — this is the ex
 
 ### E · one counter, the clock bound on an ordering, and the reservation sweep
 
+The E1 lines below record the run of 2026-08-18, before #1416, when that server refused capture past the ceiling. The row above states what this build answers.
+
 ```
 E1 bytes_written before: 1365
 SQL UPDATE member_tokens SET bytes_written = 1073741823 WHERE id = 'mt_MSugzSw07q-Y1WmQ'
@@ -330,6 +332,8 @@ SQL DELETE FROM blob_reservations WHERE reservation_id='smoke-live'  (cleanup of
 Verdict E: E1 PASS (`token write quota exceeded`; `bytes_written` unmoved at 1073741823, 0 blob rows, R2 key absent; counter restored to 1365 afterwards), E2 PASS, E3 PASS, E4 PASS (`sessions.started_at = 0`, machine_1), E5 PASS (both expired rows swept, `smoke-live` remained; the seeded live row was then deleted by SQL as cleanup). R2 key stored: `proj_1/d03b559c85315013f5d53c4bacb9538819c8d1f3c00123cb554859cd3d90f3dc`. No edge errors in E.
 
 ### X · a machine-less token on both routes, three-event order independence, and a live reservation at admission
+
+The X3 lines below record the run of 2026-08-18, before #1416. The row above states what this build answers.
 
 ```
 SQL (X1 token row; hash redacted): INSERT INTO member_tokens (id, project_id, machine_id, token_hash, expires_at, revoked_at, bytes_written)               VALUES ('mt_QQ1NPe1wd0iN48no', 'proj_1', NULL, '<sha256>', 1787685921617, NULL, 0); 

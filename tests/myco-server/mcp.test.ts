@@ -9,7 +9,7 @@ import { describe, expect, it } from 'bun:test';
 import { SHIPPED_SKILLS } from '@goondocks/myco-shared/skills';
 import worker from '@myco-server-worker/index.js';
 import { issueMemberToken } from '@myco-server-worker/auth/tokens.js';
-import { MEMBER_TOKEN_BYTE_QUOTA, PROJECT_HEADER } from '@myco-server-worker/constants.js';
+import { PROJECT_HEADER } from '@myco-server-worker/constants.js';
 import { isServedTool, isWriteOp, PROJECT_PIVOT } from '@myco-server-worker/core/tool-catalogue.js';
 import { MAX_SPORE_CONTENT_BYTES } from '@myco-server-worker/core/spores.js';
 import { archiveProject } from '@myco-server-worker/read/sessions.js';
@@ -34,7 +34,7 @@ import type { ServedTool } from '@myco-server-worker/core/tool-catalogue.js';
 import { NO_OP, TOOL_REGISTRY, opOf } from '@myco-server-worker/mcp/registry.js';
 import { runAllowlist, runDefinitions } from '@myco-server-worker/mcp/run-surface.js';
 import { NO_LIVE_RUN, RUN_PROJECT_MISMATCH, RUN_SCOPE } from '@myco-server-worker/pipeline.js';
-import { envelope, memberHeaders, sqliteEnv } from './helpers/fixtures.js';
+import { envelope, memberHeaders, RETIRED_BYTE_CEILING, sqliteEnv } from './helpers/fixtures.js';
 
 /** The Project every fixture request names in its header, and the one a write falls back to here. */
 const FIXTURE_PROJECT = 'proj_1';
@@ -290,13 +290,13 @@ describe('POST /mcp', () => {
     expect((sqlite.query(`SELECT COUNT(*) c FROM resolution_events WHERE new_spore_id = ?`).get(merged.new_spore_id) as any).c).toBe(1);
   });
 
-  it('answers a plan the size the payload cap admits, and an over-quota save as a result rather than a failure', async () => {
+  it('saves a plan the size the payload cap admits, and saves another past the retired 1 GiB ceiling (#1416)', async () => {
     const { call, sqlite, t1 } = await setup();
     const big = (await call(t1.token, 'myco_plans', { op: 'save', session_id: 'sess_a', plan_key: 'big', content: 'x'.repeat(200_000) })).result;
     expect(big.ok).toBe(true);
-    sqlite.query(`UPDATE member_credentials SET bytes_written = ? WHERE id = ?`).run(MEMBER_TOKEN_BYTE_QUOTA - 1, t1.tokenId);
-    const over = await call(t1.token, 'myco_plans', { op: 'save', session_id: 'sess_a', plan_key: 'more', content: 'y'.repeat(1000) });
-    expect({ status: over.status, result: over.result }).toEqual({ status: 200, result: { ok: false, code: 'quota', error: 'token write quota exceeded' } });
+    sqlite.query(`UPDATE member_credentials SET bytes_written = ? WHERE id = ?`).run(RETIRED_BYTE_CEILING, t1.tokenId);
+    const past = await call(t1.token, 'myco_plans', { op: 'save', session_id: 'sess_a', plan_key: 'more', content: 'y'.repeat(1000) });
+    expect({ status: past.status, ok: past.result.ok }).toEqual({ status: 200, ok: true });
   });
 
   it('lists and reads sessions in the member-side shape, filtered in the query', async () => {

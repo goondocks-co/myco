@@ -1,4 +1,4 @@
-export const SERVER_SCHEMA_VERSION = 47;
+export const SERVER_SCHEMA_VERSION = 48;
 
 /** The member identity every dispatched runtime authenticates as; durable so attribution survives across runs. */
 export const HARNESS_MEMBER_ID = 'mem_harness';
@@ -20,26 +20,15 @@ export const PROJECT_HEADER = 'x-myco-project';
  * The most Projects one Deployment holds.
  *
  * A member resolves Projects by naming them, so this is the only bound on rows in
- * `projects`: the byte quota is per credential and counts bytes, not rows, and a
- * credential cycling the Project header through fresh names stays inside it while
- * filling the table. Set well above what any real Deployment reaches, so it is a
+ * `projects`: without it, a credential cycling the Project header through fresh
+ * names fills the table. Set well above what any real Deployment reaches, so it is a
  * backstop against a runaway or hostile runtime rather than a working limit.
  */
 export const MAX_PROJECTS = 1_000;
 
-/**
- * The bytes one credential may write, across the whole Deployment: 1 GiB.
- *
- * The ceiling is per CREDENTIAL, and a credential spans the Deployment: a machine
- * active in three Projects holds one credential and 1 GiB in total, not one per
- * Project. The reservation half of the count is scoped the same way (`heldBytes`
- * keys on the credential alone) — a reservation summed per Project against a
- * charge counted Deployment-wide would understate what a credential holds, and
- * `withinQuota` adds the two together.
- */
-export const MEMBER_TOKEN_BYTE_QUOTA = 1_073_741_824;
+/** The most bytes one blob upload may carry (25 MiB): an abuse guard sized above every real segment — the member ships a transcript in slices of 8 MiB. */
 export const MAX_BLOB_BYTES = 26_214_400;
-/** How long an in-flight blob reservation counts against a token's quota. A request that dies between reserving and recording its row leaves a row behind; it stops counting when it expires, so an abandoned reservation heals itself. */
+/** How long an in-flight blob reservation holds its upload's authority. A request that dies between reserving and recording its row leaves a row behind; it expires, so an abandoned reservation heals itself. */
 export const BLOB_RESERVATION_TTL_MS = 900_000;
 export const MAX_CLOCK_SKEW_MS = 300_000;
 export const RETRY_AFTER_SECONDS = 60;

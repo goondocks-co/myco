@@ -1,5 +1,4 @@
 import { blobObjectKeySql } from '../core/blob-objects.js';
-import { MEMBER_TOKEN_BYTE_QUOTA } from '../constants.js';
 import { TITLING_TASK } from '../core/task-catalogue.js';
 import { MEMBER_TOKEN_TTL_MS } from '../auth/tokens.js';
 import { V19_STATEMENTS } from './schema-v19.js';
@@ -10,6 +9,9 @@ import { V22_STATEMENTS } from './schema-v22.js';
 
 import { projectIdGrammar, PROJECT_ID_GRAMMAR } from './project-id.js';
 export { projectIdGrammar, PROJECT_ID_GRAMMAR } from './project-id.js';
+
+/** The lifetime byte ceiling steps 1 and 5 write into their credential tables' CHECK, verbatim, so their DDL renders byte for byte as applied. Step 48 drops it from `member_credentials`: capture is never refused for volume (#1416). */
+const RETIRED_CREDENTIAL_BYTE_CEILING = 1_073_741_824;
 
 export interface SchemaStep {
   version: number;
@@ -32,7 +34,7 @@ const V1_STATEMENTS: readonly string[] = [
      expires_at    INTEGER NOT NULL,
      revoked_at    INTEGER,
      bytes_written INTEGER NOT NULL DEFAULT 0,
-     CONSTRAINT member_tokens_quota CHECK (bytes_written <= ${MEMBER_TOKEN_BYTE_QUOTA}))`,
+     CONSTRAINT member_tokens_quota CHECK (bytes_written <= ${RETIRED_CREDENTIAL_BYTE_CEILING}))`,
   `CREATE UNIQUE INDEX IF NOT EXISTS idx_member_tokens_hash ON member_tokens (token_hash)`,
   `CREATE TABLE IF NOT EXISTS sessions (
      project_id          TEXT NOT NULL,
@@ -320,9 +322,9 @@ const V4_STATEMENTS: readonly string[] = [
  * member indistinguishable from an operator's own action, and flat membership is
  * what puts that in reach of everyone rather than of one owner.
  *
- * The quota CHECK keeps the name `member_tokens_quota` verbatim. `classify()`
- * matches that literal to mark a quota violation terminal; renaming it turns a
- * terminal refusal into a 503 the member retries forever.
+ * Step 48 drops the byte-ceiling CHECK named `member_tokens_quota` from
+ * `member_credentials`; `member_tokens`, which nothing writes after this step,
+ * keeps its own.
  */
 const V5_STATEMENTS: readonly string[] = [
   `DROP TABLE IF EXISTS _v5_guard_credential_backfillable`,
@@ -369,7 +371,7 @@ const V5_STATEMENTS: readonly string[] = [
      first_used_at      INTEGER,
      bytes_written      INTEGER NOT NULL DEFAULT 0,
      revoked_by         TEXT,
-     CONSTRAINT member_tokens_quota CHECK (bytes_written <= ${MEMBER_TOKEN_BYTE_QUOTA}))`,
+     CONSTRAINT member_tokens_quota CHECK (bytes_written <= ${RETIRED_CREDENTIAL_BYTE_CEILING}))`,
   `CREATE UNIQUE INDEX IF NOT EXISTS idx_member_credentials_hash ON member_credentials (token_hash)`,
   `CREATE UNIQUE INDEX IF NOT EXISTS idx_member_credentials_live_successor
      ON member_credentials (predecessor_id) WHERE revoked_at IS NULL`,
@@ -1587,9 +1589,69 @@ const V47_STATEMENTS: readonly string[] = [
   `CREATE INDEX IF NOT EXISTS idx_sessions_untitled_ended ON sessions (ended_at) WHERE ended_at IS NOT NULL AND title IS NULL`,
 ];
 
+/**
+ * Schema v48: capture is never refused for volume (#1416). `member_credentials`
+ * loses the `member_tokens_quota` CHECK, the lifetime byte ceiling every capture
+ * admission once compared `bytes_written` against; the column stays, a
+ * reporting counter charged per stored byte and carried to a rotated successor.
+ *
+ * SQLite cannot drop a CHECK, so the table is rebuilt, preserving every row.
+ * The order is the one foreign keys allow: `agent_runs.dispatched_by`,
+ * `agent_runs.leased_by` and `worker_contacts.credential_id` reference the table,
+ * so dropping it counts each referencing row as a deferred violation, and only
+ * inserting the parent rows back clears the count — a rename never does. So the
+ * rows go to a holding table, the table is dropped and created again under its
+ * own name with its own indexes, and the rows come back. The step runs in one
+ * transaction on both targets, with the foreign keys deferred to its commit.
+ * A guard fails the step unless every row came back.
+ *
+ * Its cost is the credential table's own rows — a few hundred at most — plus
+ * one probe of each referencing index per row; no other table is rewritten.
+ */
+const V48_STATEMENTS: readonly string[] = [
+  `PRAGMA defer_foreign_keys = ON`,
+  `DROP TABLE IF EXISTS _v48_guard_credential_rows`,
+  `CREATE TABLE _v48_guard_credential_rows AS SELECT * FROM member_credentials`,
+  `DROP TABLE member_credentials`,
+  `CREATE TABLE IF NOT EXISTS member_credentials (
+     id                 TEXT PRIMARY KEY,
+     member_id          TEXT NOT NULL REFERENCES members(id),
+     token_hash         TEXT NOT NULL,
+     machine_id         TEXT,
+     runtime_label      TEXT,
+     runtime_kind       TEXT,
+     issued_at          INTEGER NOT NULL,
+     expires_at         INTEGER NOT NULL,
+     revoked_at         INTEGER,
+     lineage_root       TEXT NOT NULL,
+     lineage_started_at INTEGER NOT NULL,
+     predecessor_id     TEXT,
+     first_used_at      INTEGER,
+     bytes_written      INTEGER NOT NULL DEFAULT 0,
+     revoked_by         TEXT)`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS idx_member_credentials_hash ON member_credentials (token_hash)`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS idx_member_credentials_live_successor
+     ON member_credentials (predecessor_id) WHERE revoked_at IS NULL`,
+  `CREATE INDEX IF NOT EXISTS idx_member_credentials_lineage ON member_credentials (lineage_root)`,
+  `CREATE INDEX IF NOT EXISTS idx_member_credentials_started ON member_credentials (lineage_started_at, id)`,
+  `CREATE INDEX IF NOT EXISTS idx_member_credentials_member ON member_credentials (member_id, revoked_at)`,
+  `INSERT INTO member_credentials
+     (id, member_id, token_hash, machine_id, runtime_label, runtime_kind, issued_at, expires_at, revoked_at,
+      lineage_root, lineage_started_at, predecessor_id, first_used_at, bytes_written, revoked_by)
+     SELECT id, member_id, token_hash, machine_id, runtime_label, runtime_kind, issued_at, expires_at, revoked_at,
+            lineage_root, lineage_started_at, predecessor_id, first_used_at, bytes_written, revoked_by
+       FROM _v48_guard_credential_rows`,
+  `DROP TABLE IF EXISTS _v48_guard_rows_kept`,
+  `CREATE TABLE _v48_guard_rows_kept (ok INTEGER NOT NULL CHECK (ok = 1))`,
+  `INSERT INTO _v48_guard_rows_kept (ok)
+     SELECT CASE WHEN (SELECT COUNT(*) FROM member_credentials) = (SELECT COUNT(*) FROM _v48_guard_credential_rows) THEN 1 ELSE 0 END`,
+  `DROP TABLE _v48_guard_rows_kept`,
+  `DROP TABLE _v48_guard_credential_rows`,
+];
+
 /** Ordered schema steps; each step's last statement stamps its version. A database at version n receives steps n+1 and later. Step 2 opens with two guard tables, ahead of every ADD COLUMN so a repaired database re-applies the step whole: one CHECK fails when an existing project id is out of grammar, the other when a session has no machine identity and the token that minted it has none to backfill from. The step aborts on the guard's insert and the applier records nothing. Identity binding reads `machine_id`, so a session that kept a NULL refuses every later write to itself; BREAK-GLASS.md carries the repair. */
 
-export const SCHEMA_STEPS: readonly SchemaStep[] = [withStamp(1, V1_STATEMENTS), withStamp(2, V2_STATEMENTS), withStamp(3, V3_STATEMENTS), withStamp(4, V4_STATEMENTS), withStamp(5, V5_STATEMENTS), withStamp(6, V6_STATEMENTS), withStamp(7, V7_STATEMENTS), withStamp(8, V8_STATEMENTS), withStamp(9, V9_STATEMENTS), withStamp(10, V10_STATEMENTS), withStamp(11, V11_STATEMENTS), withStamp(12, V12_STATEMENTS), withStamp(13, V13_STATEMENTS), withStamp(14, V14_STATEMENTS), withStamp(15, V15_STATEMENTS), withStamp(16, V16_STATEMENTS), withStamp(17, V17_STATEMENTS), withStamp(18, V18_STATEMENTS), withStamp(19, V19_STATEMENTS), withStamp(20, V20_STATEMENTS), withStamp(21, V21_STATEMENTS), withStamp(22, V22_STATEMENTS), withStamp(23, V23_STATEMENTS), withStamp(24, V24_STATEMENTS), withStamp(25, V25_STATEMENTS), withStamp(26, V26_STATEMENTS), withStamp(27, V27_STATEMENTS), withStamp(28, V28_STATEMENTS), withStamp(29, V29_STATEMENTS), withStamp(30, V30_STATEMENTS), withStamp(31, V31_STATEMENTS), withStamp(32, V32_STATEMENTS), withStamp(33, V33_STATEMENTS), withStamp(34, V34_STATEMENTS), withStamp(35, V35_STATEMENTS), withStamp(36, V36_STATEMENTS), withStamp(37, V37_STATEMENTS), withStamp(38, V38_STATEMENTS), withStamp(39, V39_STATEMENTS), withStamp(40, V40_STATEMENTS), withStamp(41, V41_STATEMENTS), withStamp(42, V42_STATEMENTS), withStamp(43, V43_STATEMENTS), withStamp(44, V44_STATEMENTS), withStamp(45, V45_STATEMENTS), withStamp(46, V46_STATEMENTS), withStamp(47, V47_STATEMENTS)];
+export const SCHEMA_STEPS: readonly SchemaStep[] = [withStamp(1, V1_STATEMENTS), withStamp(2, V2_STATEMENTS), withStamp(3, V3_STATEMENTS), withStamp(4, V4_STATEMENTS), withStamp(5, V5_STATEMENTS), withStamp(6, V6_STATEMENTS), withStamp(7, V7_STATEMENTS), withStamp(8, V8_STATEMENTS), withStamp(9, V9_STATEMENTS), withStamp(10, V10_STATEMENTS), withStamp(11, V11_STATEMENTS), withStamp(12, V12_STATEMENTS), withStamp(13, V13_STATEMENTS), withStamp(14, V14_STATEMENTS), withStamp(15, V15_STATEMENTS), withStamp(16, V16_STATEMENTS), withStamp(17, V17_STATEMENTS), withStamp(18, V18_STATEMENTS), withStamp(19, V19_STATEMENTS), withStamp(20, V20_STATEMENTS), withStamp(21, V21_STATEMENTS), withStamp(22, V22_STATEMENTS), withStamp(23, V23_STATEMENTS), withStamp(24, V24_STATEMENTS), withStamp(25, V25_STATEMENTS), withStamp(26, V26_STATEMENTS), withStamp(27, V27_STATEMENTS), withStamp(28, V28_STATEMENTS), withStamp(29, V29_STATEMENTS), withStamp(30, V30_STATEMENTS), withStamp(31, V31_STATEMENTS), withStamp(32, V32_STATEMENTS), withStamp(33, V33_STATEMENTS), withStamp(34, V34_STATEMENTS), withStamp(35, V35_STATEMENTS), withStamp(36, V36_STATEMENTS), withStamp(37, V37_STATEMENTS), withStamp(38, V38_STATEMENTS), withStamp(39, V39_STATEMENTS), withStamp(40, V40_STATEMENTS), withStamp(41, V41_STATEMENTS), withStamp(42, V42_STATEMENTS), withStamp(43, V43_STATEMENTS), withStamp(44, V44_STATEMENTS), withStamp(45, V45_STATEMENTS), withStamp(46, V46_STATEMENTS), withStamp(47, V47_STATEMENTS), withStamp(48, V48_STATEMENTS)];
 
 /** Every statement of every step, in application order. */
 export const SCHEMA_DDL: readonly string[] = SCHEMA_STEPS.flatMap((s) => s.statements);

@@ -135,13 +135,14 @@ export function journaled(sqlite: Database): string[] {
   return (sqlite.query('SELECT physical FROM object_releases ORDER BY physical').all() as { physical: string }[]).map((row) => row.physical);
 }
 
+/** The lifetime byte ceiling a credential carried before #1416. Capture past it is admitted; tests seed a counter at or over it to hold that. */
+export const RETIRED_BYTE_CEILING = 1_073_741_824;
+
 /** A SQLite-backed Env with the migrated schema, two projects, recording limiters, an in-memory blob store, and every statement it executes. */
-export function sqliteEnv(opts: { staleBytesWritten?: number; onSql?: (sql: string, sqlite: Database) => void; beforeStep42?: (sqlite: Database) => void } = {}) {
+export function sqliteEnv(opts: { onSql?: (sql: string, sqlite: Database) => void; beforeStep42?: (sqlite: Database) => void } = {}) {
   const sqlite: Database = seededSqlite({ beforeStep42: opts.beforeStep42 });
   const executed: string[] = [];
   const db = sqliteD1(sqlite, {
-    onFirst: (sql, row) =>
-      row && opts.staleBytesWritten !== undefined && sql.includes('member_credentials') ? { ...row, bytes_written: opts.staleBytesWritten } : row,
     onSql: (sql) => { executed.push(sql); opts.onSql?.(sql, sqlite); },
   });
   const source = recordingLimiter();

@@ -18,7 +18,7 @@ import { jsonBody, objectAt } from '../helpers/json-body.js';
 import { describe, expect, it } from 'bun:test';
 import { handleImportPlan } from '@myco-server-worker/api/import.js';
 import { IMPORT_MAX_SESSIONS_DEFAULT, IMPORT_WINDOW_DAYS_DEFAULT } from '@myco-server-worker/core/import-policy.js';
-import { MEMBER_TOKEN_BYTE_QUOTA } from '@myco-server-worker/constants.js';
+import { RETIRED_BYTE_CEILING } from './helpers/fixtures.js';
 import { issueMemberToken } from '@myco-server-worker/auth/tokens.js';
 import { settingsWriter } from '@myco-server-worker/core/settings.js';
 import { sqliteEnv, count } from './helpers/fixtures.js';
@@ -63,9 +63,9 @@ async function rig() {
   // mechanism.
   const leaf = (name: string, value: unknown) => settingsWriter(serverEnv.db).setLeaf(name, value, 'mem_machine_1', NOW);
 
-  /** Charge the credential so only `room` bytes are left. */
-  const spend = (room: number) =>
-    sqlite.run(`UPDATE member_credentials SET bytes_written = ? WHERE id = ?`, [MEMBER_TOKEN_BYTE_QUOTA - room, issued.tokenId]);
+  /** Set the credential's stored-bytes count. */
+  const spend = (bytes: number) =>
+    sqlite.run(`UPDATE member_credentials SET bytes_written = ? WHERE id = ?`, [bytes, issued.tokenId]);
 
   const plan = async (offers: readonly Offer[], over: Record<string, unknown> = {}) => {
     const body = JSON.stringify({
@@ -168,24 +168,20 @@ describe('the import plan', () => {
     expect((await r.plan([{ sessionId: 's1', transcriptId: 'tx_a' }], { windowDays: 90 })).code).toBe('import_disabled');
   });
 
-  it('spends the quota per whole transcript, lets a smaller one fit after a larger one did not, and writes nothing', async () => {
+  it('takes every transcript whatever the credential has stored, past the retired 1 GiB ceiling, and writes nothing (#1416)', async () => {
     const r = await rig();
-    r.spend(1500);
+    r.spend(RETIRED_BYTE_CEILING);
     const got = await r.answers([
-      { sessionId: 's1', transcriptId: 'tx_big', sizeBytes: 1200 },
-      { sessionId: 's2', transcriptId: 'tx_bigger', sizeBytes: 1000 },
+      { sessionId: 's1', transcriptId: 'tx_big', sizeBytes: 26_214_400 },
+      { sessionId: 's2', transcriptId: 'tx_bigger', sizeBytes: 900_000_000 },
       { sessionId: 's3', transcriptId: 'tx_small', sizeBytes: 200 },
     ]);
-    expect(got.get('tx_big')?.take).toBe('from');
-    // Does not fit whole: refused rather than half-admitted.
-    expect(got.get('tx_bigger')).toEqual({ transcriptId: 'tx_bigger', take: 'none', reason: 'quota' });
-    // A later, smaller one still fits the room the refused one did not take.
-    expect(got.get('tx_small')?.take).toBe('from');
+    expect([...got.values()].map((a) => a.take)).toEqual(['from', 'from', 'from']);
 
-    // The plan is advice. It stores nothing and charges nothing.
+    // The plan is advice. It stores nothing and counts nothing.
     expect([count(r.sqlite, 'blobs'), count(r.sqlite, 'events'), count(r.sqlite, 'transcript_segments')]).toEqual([0, 0, 0]);
     expect((r.sqlite.query(`SELECT bytes_written AS b FROM member_credentials WHERE id = ?`).get(r.tokenId) as { b: number }).b)
-      .toBe(MEMBER_TOKEN_BYTE_QUOTA - 1500);
+      .toBe(RETIRED_BYTE_CEILING);
   });
 
   it('admits a new identity it cannot compare, and says so', async () => {

@@ -6,7 +6,7 @@ import { KINDS, kindSpec, parsePayload, blobFields, promptReferenceFields, order
 import { basenameOf, planKind, RAW_ROW_GATE, type WriteContext } from '@myco-server-worker/ingest/projections.js';
 import { MAX_PAYLOAD_BYTES, PAYLOAD_CAP_REASON } from '@myco-server-worker/ingest/envelope.js';
 import { MAX_BODY_BYTES } from '@myco-server-worker/ingest/body.js';
-import { MAX_BLOB_BYTES, MAX_CLOCK_SKEW_MS, MEMBER_TOKEN_BYTE_QUOTA, TRANSCRIPT_PARSE_ADAPTER } from '@myco-server-worker/constants.js';
+import { MAX_BLOB_BYTES, MAX_CLOCK_SKEW_MS, TRANSCRIPT_PARSE_ADAPTER } from '@myco-server-worker/constants.js';
 import { sha256Hex, sha256HexOf, utf8 } from '@myco-server-worker/hash.js';
 import { blobPost, bytesWritten, count, envelope, memberHeaders, memberPost, sqliteEnv, PRODUCER, TEXT_MEDIA_TYPE, uuid } from './helpers/fixtures.js';
 
@@ -810,8 +810,6 @@ describe('kind catalogue', () => {
       { name: 'media type', request: () => blob({ 'content-type': 'nonsense' }), kind: 'blob_refused', reason: 'invalid content-type', classifier: 'media_type' },
       { name: 'empty body', request: () => blob({}, new Uint8Array(0)), kind: 'blob_refused', reason: 'empty body', classifier: 'empty_body' },
       { name: 'digest mismatch', request: () => blob({}, utf8('other-bytes'), 'd'.repeat(64)), kind: 'blob_refused', reason: 'digest mismatch', classifier: 'digest_mismatch' },
-      { name: 'event quota', request: () => { e.sqlite.query(`UPDATE member_credentials SET bytes_written = ? WHERE id = ?`).run(MEMBER_TOKEN_BYTE_QUOTA - 1, t1.tokenId); return post({}); }, kind: 'ingest_refused', reason: 'token write quota exceeded', classifier: 'quota' },
-      { name: 'blob quota', request: () => blob({}, utf8('fresh-bytes'), 'c'.repeat(64)), kind: 'blob_refused', reason: 'token write quota exceeded', classifier: 'quota' },
     ];
     const observed: Record<string, unknown>[] = [];
     for (const row of table) {
@@ -852,7 +850,7 @@ describe('kind catalogue', () => {
     }
     // The fixtures above take the storing path only. Drive the branches they never enter — the duplicate read, the
     // orphan adoption and the reservation reconcile it forces, the expiry sweep with rows to sweep, the ceiling on an
-    // adopted object, and a quota already spent on event bodies — so a scan on a branch off the happy path is still
+    // adopted object, and a credential counted past the retired ceiling — so a scan on a branch off the happy path is still
     // inspected. A gate that sees only what one round of fixtures executed reports coverage, not cost.
     await worker.fetch(blobPost(t.token, await sha256HexOf(utf8('dup-bytes')), utf8('dup-bytes')), e.env);
     await worker.fetch(blobPost(t.token, await sha256HexOf(utf8('dup-bytes')), utf8('dup-bytes')), e.env);
@@ -874,8 +872,7 @@ describe('kind catalogue', () => {
       body: 'x',
     }), e.env);
 
-    e.sqlite.query(`UPDATE member_credentials SET bytes_written = ? WHERE id = ?`).run(MEMBER_TOKEN_BYTE_QUOTA, t.tokenId);
-    await worker.fetch(blobPost(t.token, await sha256HexOf(utf8('over-quota')), utf8('over-quota')), e.env);
+    await worker.fetch(blobPost(t.token, await sha256HexOf(utf8('past-ceiling')), utf8('past-ceiling')), e.env);
     await worker.fetch(memberPost(t.token, envelope({ eventId: uuid(n++), kind: 'session.start', createdAt: 4_000, payload: FIXTURES['session.start'].payload })), e.env);
 
     const scoped = new Set(['events', 'sessions', 'prompt_batches', 'tool_calls', 'responses', 'plans', 'attachments', 'transcripts', 'transcript_segments', 'tags', 'blobs', 'blob_reservations']);
@@ -902,8 +899,8 @@ describe('kind catalogue', () => {
         const constraints = search[2].split(' AND ');
         const equalities = constraints.filter((c) => c.endsWith('=?')).length;
         // A lookup is narrow when the tenant leads it, when it matches every column of a unique index and so can
-        // reach one row at most, or when a single credential leads it — a credential's rows are bounded by that
-        // credential's own byte quota, which is a tighter bound than a project's.
+        // reach one row at most, or when a single credential leads it — the rows it reaches are that credential's own
+        // in-flight upload reservations, which expire and are consumed as it reserves.
         const seek = unique.get(search[1]) === equalities;
         const byCredential = constraints[0] === 'token_id=?';
         expect({ detail: step.detail, narrowed: table === null || equalities >= 2 || seek || byCredential })

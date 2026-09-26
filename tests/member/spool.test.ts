@@ -9,7 +9,7 @@
 import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
 import fs from 'node:fs';
 import path from 'node:path';
-import { MEMBER_TOKEN_BYTE_QUOTA } from '@myco-server-worker/constants.js';
+import { RETIRED_BYTE_CEILING } from '../myco-server/helpers/fixtures.js';
 import { unboundedBudget, resolveHookBudget } from '@myco/member/budget.js';
 import { MEMBER_PROTOCOL, OFFLINE_BACKOFF_INITIAL_MS, OFFLINE_BACKOFF_MAX_MS, PROJECT_HEADER, REFUSED_LOG_MAX_BYTES } from '@myco/member/constants.js';
 import { mintId, promptEvent, type EnvelopeContext } from '@myco/member/envelope.js';
@@ -18,7 +18,7 @@ import { drainBacklog } from '@myco/member/backlog.js';
 import { MemberSpool, WIRE_FIELDS, toWire, type SpoolRecord } from '@myco/member/spool.js';
 import { shipTranscriptSegments } from '@myco/member/transcript.js';
 import { ServerClient, type FetchLike } from '@myco/member/transport.js';
-import { memberRig, tempMycoHome, type MemberRig } from './helpers/server.js';
+import { memberRig, olderServerAtQuota, tempMycoHome, type MemberRig } from './helpers/server.js';
 import { recordingFetch } from './helpers/hooks.js';
 
 let mycoHome: string;
@@ -133,16 +133,34 @@ describe('member spool', () => {
     expect(spool.shouldDial(t, true)).toBe(true);
   });
 
-  it('parked ends the pass with the quota line on stderr and keeps every event spooled; nothing reaches refused.jsonl', async () => {
+  it('parked on an older server\'s quota ends the pass with the quota line on stderr and keeps every event spooled; nothing reaches refused.jsonl', async () => {
     const rig = await memberRig();
-    rig.env.sqlite.query(`UPDATE member_credentials SET bytes_written = ? WHERE id = ?`).run(MEMBER_TOKEN_BYTE_QUOTA, rig.tokenId);
+    const older = olderServerAtQuota(rig.fetch);
     const spool = new MemberSpool('proj_1', { mycoHome });
     const ctx = ctxFor(spool, 'sess-parked');
     for (const e of prompts(ctx, 3)) spool.append('sess-parked', e);
-    const r = await spool.drainSession('sess-parked', clientFor(rig), unboundedBudget());
+    const r = await spool.drainSession('sess-parked', clientFor(rig, older.fetch), unboundedBudget());
     expect(r).toMatchObject({ sent: 1, acked: 0, refused: 0, remaining: 3, endedBy: 'parked' });
-    expect(stderrLines.join('')).toContain('write quota exceeded — capture parked');
+    expect(stderrLines.join('')).toContain('the Deployment refused capture for its write quota — capture stays spooled');
     expect(spool.readRefused().entries).toEqual([]);
+  });
+
+  it('drains capture parked on an older server\'s quota on the next pass once the Deployment is updated, past the retired ceiling (#1416)', async () => {
+    const rig = await memberRig();
+    rig.env.sqlite.query(`UPDATE member_credentials SET bytes_written = ? WHERE id = ?`).run(RETIRED_BYTE_CEILING, rig.tokenId);
+    const older = olderServerAtQuota(rig.fetch);
+    const spool = new MemberSpool('proj_1', { mycoHome });
+    const ctx = ctxFor(spool, 'sess-parked-drains');
+    for (const e of prompts(ctx, 3)) spool.append('sess-parked-drains', e);
+    expect(await spool.drainSession('sess-parked-drains', clientFor(rig, older.fetch), unboundedBudget())).toMatchObject({ remaining: 3, endedBy: 'parked' });
+    expect(rig.rows('events')).toBe(0);
+
+    older.atQuota = false;
+    const r = await spool.drainSession('sess-parked-drains', clientFor(rig, older.fetch), unboundedBudget());
+    expect(r).toMatchObject({ acked: 3, refused: 0, remaining: 0 });
+    expect(rig.rows('events')).toBe(3);
+    expect(spool.readRefused().entries).toEqual([]);
+    expect((rig.env.sqlite.query('SELECT bytes_written AS b FROM member_credentials WHERE id = ?').get(rig.tokenId) as { b: number }).b).toBeGreaterThan(RETIRED_BYTE_CEILING);
   });
 
   it('a 401 without the header ends the pass as unauthorized; a 429 without the header after a 401 in the same pass is unauthorized too', async () => {
@@ -254,6 +272,31 @@ describe('member spool', () => {
     expect(result).toEqual({ shipped: 0, endedBy: 'route_missing' });
     expect(spool.readLatch()).not.toBeNull();
     expect(stderrLines.join('')).toContain('contract bug');
+  });
+
+  it('a transcript parked on an older server\'s quota keeps its offset, and ships whole on the next pass once the Deployment is updated (#1416)', async () => {
+    const rig = await memberRig();
+    rig.env.sqlite.query(`UPDATE member_credentials SET bytes_written = ? WHERE id = ?`).run(RETIRED_BYTE_CEILING, rig.tokenId);
+    const older = olderServerAtQuota(rig.fetch);
+    const spool = new MemberSpool('proj_1', { mycoHome });
+    const sessionId = 'sess-ship-parked';
+    const file = path.join(mycoHome, 'ship-parked.jsonl');
+    fs.writeFileSync(file, '{"type":"user"}\n{"type":"assistant"}\n');
+    const transcriptId = `tx_${'e'.repeat(32)}`;
+    updateSessionState(spool.dir, sessionId, (s) => {
+      s.transcript = { path: file, transcriptId, inode: fs.statSync(file).ino, nextOffset: 0, parsedSize: 0 };
+    });
+    const client = clientFor(rig, older.fetch);
+    const ctx: EnvelopeContext = { agent: 'claude-code', sessionId, stage: spool.stagerFor(sessionId), version: '2.0.0-test' };
+
+    expect(await shipTranscriptSegments(ctx, spool, client, unboundedBudget())).toEqual({ shipped: 0, endedBy: 'parked' });
+    expect(readSessionState(spool.dir, sessionId).transcript).toMatchObject({ nextOffset: 0 });
+    expect(rig.rows('transcript_segments')).toBe(0);
+
+    older.atQuota = false;
+    expect(await shipTranscriptSegments(ctx, spool, client, unboundedBudget())).toMatchObject({ shipped: 1, endedBy: 'done' });
+    expect(readSessionState(spool.dir, sessionId).transcript).toMatchObject({ nextOffset: fs.statSync(file).size });
+    expect(rig.rows('transcript_segments')).toBe(1);
   });
 
   it('the transcript pointer moves only its own transcript: a value committed mid-flight does not regress', async () => {
