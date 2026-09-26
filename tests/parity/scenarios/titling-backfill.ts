@@ -11,10 +11,11 @@ import { expectPersisted, lit, MEMBER_ID, type ParityScenario, type ParityTarget
  * re-queued — an end request whose run expired unclaimed, a live session that
  * ended unrequested — and one workers took the attempt bound on is left and
  * says why. Both targets bind the recording runtime, so the run row waits and
- * no title is written.
+ * no title is written. At the daily ceiling, the owner reads that the next
+ * title waits on it, and when it lifts.
  */
 export const titlingBackfill: ParityScenario = {
-  name: 'titling backfill: imported sessions off by default, started and stopped by the operator, one claim per imported session after its parse, idempotent; what live capture owes converges regardless, bounded by worker-claimed attempts',
+  name: 'titling backfill: imported sessions off by default, started and stopped by the operator, one claim per imported session after its parse, idempotent; what live capture owes converges regardless, bounded by worker-claimed attempts; at the ceiling the owner reads the wait and when it lifts',
   async run(target: ParityTarget) {
     const stamp = Date.now();
     const post = async (sessionId: string, kind: string, payload: Record<string, unknown>, channel: 'cli' | 'import' = 'import') => {
@@ -104,6 +105,20 @@ export const titlingBackfill: ParityScenario = {
     expect(await reason(stranded)).toBe('stopped');
     await owner('POST', '/api/wake');
     expect((await runsOf(stranded)).length).toBe(2);
+
+    // Held at the daily ceiling: a session live capture owes a title waits, and the owner reads why and when it lifts.
+    const held = `parity-held-${stamp}`;
+    await post(held, 'session.start', { agent: 'claude-code', startedAt: stamp - 90_000 }, 'cli');
+    await post(held, 'prompt', { promptId: crypto.randomUUID(), text: `Title me ${held}`, origin: 'user' }, 'cli');
+    await post(held, 'session.end', { endedAt: stamp + 2_000 }, 'import');
+    const used = (await owner('GET', '/api/titling-backfill')).usedToday as number;
+    expect(used).toBeGreaterThanOrEqual(1);
+    await target.sql(`INSERT OR REPLACE INTO deployment_settings (leaf, value, updated_at, updated_by) VALUES ('agent.tasks', ${lit(JSON.stringify({ 'title-summary': { schedule: { enabled: false, intervalSeconds: 0, maxRunsPerDay: used } } }))}, ${stamp}, ${lit(MEMBER_ID)})`);
+    await owner('POST', '/api/wake');
+    expect(await runsOf(held)).toEqual([]);
+    const waiting = (await owner('GET', '/api/titling-backfill')).waiting as { reason: string; until: number | null };
+    expect(waiting.reason).toBe('ceiling');
+    expect(waiting.until).toBeGreaterThan(Date.now());
     await target.sql(`DELETE FROM deployment_settings WHERE leaf = 'agent.tasks'`);
     await target.sql(`INSERT OR REPLACE INTO deployment_settings (leaf, value, updated_at, updated_by) VALUES ('agent.scheduled_tasks_enabled', 'false', ${stamp}, ${lit(MEMBER_ID)})`);
   },

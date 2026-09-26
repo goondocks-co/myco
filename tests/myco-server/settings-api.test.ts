@@ -182,9 +182,10 @@ function sampleFor(leaf: string): unknown {
   // the moment the rule tightens, and the guess is what would need finding.
   const spec = DEPLOYMENT_LEAF_SPECS[leaf];
   if (spec !== undefined && 'type' in spec) {
-    return spec.type === 'integer' ? spec.min : `# sample ${leaf}`;
+    if (spec.type === 'integer') return spec.min;
+    if (spec.type === 'task-overrides') return { digest: { model: 'claude', schedule: { maxRunsPerDay: 0 } } };
+    return `# sample ${leaf}`;
   }
-  if (leaf === 'agent.tasks') return { digest: { model: 'claude' } };
   if (/thinking_budget_map/.test(leaf)) return { adaptive: true };
   if (/patterns$/.test(leaf)) return ['dist/**'];
   if (/(_enabled|inject_on_|inject_intent|prevent_deep_sleep|auto_optimize$|auto_integrity_check$|semantic_write_check)/.test(leaf)) return true;

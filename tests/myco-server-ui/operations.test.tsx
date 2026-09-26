@@ -5,7 +5,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import App from '../../packages/myco-server/ui/src/App';
 import { AppearanceProvider } from '../../packages/myco-server/ui/src/providers/appearance';
 import { reportWords } from '../../packages/myco-server/ui/src/components/operations/WakePanel';
-import { policyWords, progressWords } from '../../packages/myco-server/ui/src/components/operations/TitlingBackfillPanel';
+import { liftsAt, policyWords, progressWords, waitingWords } from '../../packages/myco-server/ui/src/components/operations/TitlingBackfillPanel';
 import { availableWords, cadenceWords, latestWords } from '../../packages/myco-server/ui/src/components/operations/RecoveryPanel';
 
 const ME = { sub: '583231', login: 'octocat', member: { id: 'mem_1', label: 'chris' } };
@@ -80,7 +80,7 @@ describe('housekeeping on the Operations page', () => {
   });
 
   it('shows where session titling stands and starts or stops it through its own route', async () => {
-    let progress = { scheduledTasksEnabled: true, backfillEnabled: false, runsPerDay: 24, intervalSeconds: 900, runIn: ['active', 'idle'], overlap: 'queue', enabled: false, remaining: 12, owed: 0, usedToday: 0, inFlight: 0, completedToday: 0, failedToday: 0 };
+    let progress = { scheduledTasksEnabled: true, backfillEnabled: false, runsPerDay: 24, intervalSeconds: 900, runIn: ['active', 'idle'], overlap: 'queue', enabled: false, remaining: 12, owed: 0, usedToday: 0, inFlight: 0, completedToday: 0, failedToday: 0, waiting: null as null | { reason: 'ceiling'; until: number } };
     const puts: unknown[] = [];
     const { requested } = server({
       '/auth/me': () => Response.json(ME),
@@ -88,7 +88,7 @@ describe('housekeeping on the Operations page', () => {
       '/api/titling-backfill': (init) => {
         if (init?.method === 'PUT') {
           puts.push(JSON.parse(String(init.body)));
-          progress = { ...progress, backfillEnabled: true, enabled: true, usedToday: 5, inFlight: 5 };
+          progress = { ...progress, backfillEnabled: true, enabled: true, usedToday: 5, inFlight: 5, waiting: { reason: 'ceiling', until: Date.now() + 2 * 3_600_000 } };
         }
         return Response.json(progress);
       },
@@ -97,6 +97,7 @@ describe('housekeeping on the Operations page', () => {
     expect((await screen.findByText(/12 fully parsed imported sessions waiting for a title attempt/)).textContent).toContain('The imported-session backfill is stopped.');
     fireEvent.click(await screen.findByRole('button', { name: 'Start backfill' }));
     expect((await screen.findByText(/Today: 5 of 24 started/)).textContent).toContain('Dispatches while the server is in use or idle, at most once every 15 min. Today: 5 of 24 started, 5 in flight, 0 titled, 0 failed.');
+    expect((await screen.findByText(/Today: 5 of 24 started/)).textContent).toContain('Daily limit of 24 reached; the next title can start at ');
     expect(puts).toEqual([{ enabled: true }]);
     expect(await screen.findByRole('button', { name: 'Stop backfill' })).toBeTruthy();
     expect(requested).toContain('PUT /api/titling-backfill');
@@ -105,7 +106,7 @@ describe('housekeeping on the Operations page', () => {
   it('says when the backfill cannot be read and reads it again on request, and says when a switch was refused and retries it', async () => {
     let reads = 0;
     let puts = 0;
-    const progress = { scheduledTasksEnabled: true, backfillEnabled: false, runsPerDay: 24, intervalSeconds: 900, runIn: ['active', 'idle'], overlap: 'queue', enabled: false, remaining: 3, owed: 0, usedToday: 0, inFlight: 0, completedToday: 0, failedToday: 0 };
+    const progress = { scheduledTasksEnabled: true, backfillEnabled: false, runsPerDay: 24, intervalSeconds: 900, runIn: ['active', 'idle'], overlap: 'queue', enabled: false, remaining: 3, owed: 0, usedToday: 0, inFlight: 0, completedToday: 0, failedToday: 0, waiting: null };
     server({
       '/auth/me': () => Response.json(ME),
       '/api/projects': () => Response.json(PROJECTS),
@@ -131,13 +132,31 @@ describe('housekeeping on the Operations page', () => {
   });
 
   it('words the backfill in every state, and its policy', () => {
-    const base = { scheduledTasksEnabled: true, backfillEnabled: true, runsPerDay: 24, intervalSeconds: 900, runIn: ['active', 'idle'], overlap: 'queue' as const, enabled: true, remaining: 0, owed: 0, usedToday: 3, inFlight: 1, completedToday: 2, failedToday: 0 };
+    const base = { scheduledTasksEnabled: true, backfillEnabled: true, runsPerDay: 24, intervalSeconds: 900, runIn: ['active', 'idle'], overlap: 'queue' as const, enabled: true, remaining: 0, owed: 0, usedToday: 3, inFlight: 1, completedToday: 2, failedToday: 0, waiting: null };
     expect(progressWords(base)).toBe('No ended live sessions are waiting for a title. No fully parsed imported sessions are waiting for a title attempt. Dispatches while the server is in use or idle, at most once every 15 min. Today: 3 of 24 started, 1 in flight, 2 titled, 0 failed.');
     expect(progressWords({ ...base, owed: 4, remaining: 1, runsPerDay: null, runIn: ['idle'], intervalSeconds: 60 })).toBe('4 ended live sessions waiting for a title; these are titled automatically within the daily limit. 1 fully parsed imported session waiting for a title attempt. Dispatches while the server is idle, at most once every 1 min. Today: 3 started, 1 in flight, 2 titled, 0 failed.');
     expect(progressWords({ ...base, scheduledTasksEnabled: false, enabled: false, owed: 2 })).toBe('2 ended live sessions waiting for a title; these are titled automatically within the daily limit. No fully parsed imported sessions are waiting for a title attempt. The imported-session backfill is on but runs only while scheduled intelligence is on; turn that on in Settings. Dispatches while the server is in use or idle, at most once every 15 min. Today: 3 of 24 started, 1 in flight, 2 titled, 0 failed.');
     expect(progressWords({ ...base, backfillEnabled: false, enabled: false, remaining: 2, owed: 1 })).toBe('1 ended live session waiting for a title; these are titled automatically within the daily limit. 2 fully parsed imported sessions waiting for a title attempt. The imported-session backfill is stopped. Dispatches while the server is in use or idle, at most once every 15 min. Today: 3 of 24 started, 1 in flight, 2 titled, 0 failed.');
     expect(policyWords({ runIn: ['active', 'idle', 'sleep'], intervalSeconds: 3600 })).toBe('Dispatches while the server is in use, idle or asleep, at most once every 60 min.');
     expect(policyWords({ runIn: [], intervalSeconds: 10 })).toBe('Dispatches in no state, at most once every 1 min.');
+  });
+
+  it('says what holds the next title while sessions wait for one, and when it can start', () => {
+    const now = 1_800_000_000_000;
+    const clock = (at: number) => new Date(at).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+    const later = now + 150 * 60_000;
+    expect(liftsAt(later, now)).toBe(`at ${clock(later)} (in 3h)`);
+    expect(liftsAt(null, now)).toBe('soon');
+    expect(liftsAt(now, now)).toBe('soon');
+    expect(liftsAt(now - 60_000, now)).toBe('soon');
+    expect(waitingWords({ runsPerDay: 24, waiting: null }, now)).toBe('');
+    expect(waitingWords({ runsPerDay: 24, waiting: { reason: 'ceiling', until: later } }, now)).toBe(`Daily limit of 24 reached; the next title can start at ${clock(later)} (in 3h).`);
+    expect(waitingWords({ runsPerDay: 0, waiting: { reason: 'ceiling', until: null } }, now)).toBe("The daily limit is 0; nothing is titled until it's raised in Settings.");
+    expect(waitingWords({ runsPerDay: 24, waiting: { reason: 'overlap', until: null } }, now)).toBe('Waiting for the title run in flight to finish.');
+    expect(waitingWords({ runsPerDay: 24, waiting: { reason: 'interval', until: now + 12 * 60_000 } }, now)).toBe(`The next titles can start at ${clock(now + 12 * 60_000)} (in 12m).`);
+    expect(waitingWords({ runsPerDay: 24, waiting: { reason: 'interval', until: now - 1 } }, now)).toBe('The next titles can start soon.');
+    const base = { scheduledTasksEnabled: true, backfillEnabled: false, runsPerDay: 24, intervalSeconds: 900, runIn: ['active', 'idle'], overlap: 'queue' as const, enabled: false, remaining: 0, owed: 7, usedToday: 24, inFlight: 0, completedToday: 24, failedToday: 0 };
+    expect(progressWords({ ...base, waiting: { reason: 'ceiling', until: later } }, now)).toBe(`7 ended live sessions waiting for a title; these are titled automatically within the daily limit. No fully parsed imported sessions are waiting for a title attempt. The imported-session backfill is stopped. Daily limit of 24 reached; the next title can start at ${clock(later)} (in 3h). Dispatches while the server is in use or idle, at most once every 15 min. Today: 24 of 24 started, 0 in flight, 24 titled, 0 failed.`);
   });
 });
 

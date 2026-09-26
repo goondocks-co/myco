@@ -33,11 +33,16 @@ export type ProjectCapability = (typeof PROJECT_CAPABILITIES)[number];
  *
  * `markdown` means text: a string, no ASCII control character but newline and
  * tab, within `maxBytes` of UTF-8.
+ *
+ * `task-overrides` means an object of per-task overrides whose schedule
+ * counts, where one is given, are whole numbers of 0 or more: a count is bound
+ * into SQL as a row limit, and a fraction there refuses the statement.
  */
 export type LeafSpec =
   | Record<string, never>
   | { readonly type: 'integer'; readonly min: number; readonly max: number }
-  | { readonly type: 'markdown'; readonly maxBytes: number };
+  | { readonly type: 'markdown'; readonly maxBytes: number }
+  | { readonly type: 'task-overrides' };
 
 /**
  * The leaves this tier owns, from §7.8 of the architecture ledger.
@@ -80,7 +85,7 @@ export const DEPLOYMENT_LEAF_SPECS: Readonly<Record<string, LeafSpec>> = {
   'agent.scheduled_tasks_enabled': {},
   'agent.semantic_write_check_enabled': {},
   'agent.summary_batch_interval': {},
-  'agent.tasks': {},
+  'agent.tasks': { type: 'task-overrides' },
   'backup.auto_interval_hours': {},
   'backup.recovery.keep_stagings': {},
   'backup.retention.keep_daily': {},
@@ -131,6 +136,27 @@ const DEPLOYMENT_LEAF_SET = new Set(DEPLOYMENT_LEAVES);
 /** Any ASCII control character but newline and tab; a stored setting is text a person edits, not a control stream. */
 const CONTROL_CHARACTERS = /[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/;
 
+const isRecord = (v: unknown): v is Record<string, unknown> => v !== null && typeof v === 'object' && !Array.isArray(v);
+
+/** The schedule counts a task override carries, each a whole number of 0 or more when given. */
+export const SCHEDULE_COUNT_FIELDS = ['maxRunsPerDay'] as const;
+
+/** What a per-task override violates, naming the field; null when every schedule count it gives is a whole number of 0 or more. */
+function taskOverridesViolation(value: unknown): string | null {
+  if (!isRecord(value)) return 'expected an object of task overrides';
+  for (const [task, override] of Object.entries(value)) {
+    if (!isRecord(override) || !isRecord(override.schedule)) continue;
+    for (const field of SCHEDULE_COUNT_FIELDS) {
+      const count = override.schedule[field];
+      if (count !== undefined && !isScheduleCount(count)) return `${task}.schedule.${field}: expected a whole number of 0 or more`;
+    }
+  }
+  return null;
+}
+
+/** A schedule count: a whole number of 0 or more that SQL binds exactly. */
+export const isScheduleCount = (v: unknown): v is number => typeof v === 'number' && Number.isSafeInteger(v) && v >= 0;
+
 /** What the value violates, or null when it satisfies the leaf's rule. */
 export function leafRuleViolation(spec: LeafSpec, value: unknown): string | null {
   if (!('type' in spec)) return null;
@@ -139,6 +165,7 @@ export function leafRuleViolation(spec: LeafSpec, value: unknown): string | null
     if (value < spec.min || value > spec.max) return `expected a whole number from ${spec.min} to ${spec.max}`;
     return null;
   }
+  if (spec.type === 'task-overrides') return taskOverridesViolation(value);
   if (typeof value !== 'string') return 'expected Markdown text';
   if (CONTROL_CHARACTERS.test(value)) return 'expected Markdown text without control characters';
   const bytes = new TextEncoder().encode(value).length;

@@ -5,12 +5,13 @@
  * inside the block's interval and the Deployment-wide daily ceiling, and
  * stoppable through the same override the operator's switch writes.
  */
-import { describe, expect, it } from 'bun:test';
+import { afterEach, describe, expect, it, spyOn } from 'bun:test';
 import { serverEnvFromBindings } from '@myco-server-worker/platform/cloudflare/env.js';
 import type { PreparedStatement, RelationalStore, ServerEnv } from '@myco-server-worker/core/adapters.js';
 import {
   backfillTitles, titleReadySessions, titleSession, titlingBackfillPolicy, titlingBackfillProgress, TITLING_BACKFILL_ACTOR, TITLING_BACKFILL_BATCH, TITLING_TASK,
 } from '@myco-server-worker/core/titling.js';
+import { deploymentTaskCeilingWindow } from '@myco-server-worker/core/runs.js';
 import { TITLING_BACKFILL_SCHEDULE, SERVER_JOBS } from '@myco-server-worker/core/jobs.js';
 import { runTick } from '@myco-server-worker/core/tick.js';
 import worker from '@myco-server-worker/index.js';
@@ -314,7 +315,7 @@ describe('the imported-session backfill', () => {
     return { ...db, prepare: (sql: string) => wrap(db.prepare(sql), sql) };
   }
 
-  const isCeilingCount = (sql: string) => sql.includes('COUNT(*) AS c FROM agent_runs') && sql.includes("status != 'skipped'");
+  const isCeilingCount = (sql: string) => sql.includes('MIN(at) AS pivot') && sql.includes("status != 'skipped'");
   const isCandidateList = (sql: string) => sql.includes('ORDER BY s.ended_at DESC');
   const isRunInsert = (sql: string) => sql.startsWith('INSERT INTO agent_runs');
 
@@ -377,5 +378,254 @@ describe('the imported-session backfill', () => {
     r.session('b');
     expect((await runTick(r.env, NOW + 1)).jobs.find((j) => j.name === 'titling-backfill')).toEqual({ name: 'titling-backfill', changed: 0, failed: null });
     expect(r.runs().length).toBe(1);
+  });
+});
+
+describe('why a wake of the titling convergence dispatched nothing', () => {
+  let log: ReturnType<typeof spyOn> | undefined;
+  afterEach(() => { log?.mockRestore(); log = undefined; });
+  /** The `titling_backfill_waiting` events emitted from here on. */
+  const waits = () => {
+    const events: Array<Record<string, unknown>> = [];
+    log = spyOn(console, 'log').mockImplementation((...args: unknown[]) => {
+      try {
+        const event = JSON.parse(String(args[0])) as Record<string, unknown>;
+        if (event.kind === 'titling_backfill_waiting') events.push(event);
+      } catch { /* not an event */ }
+    });
+    return events;
+  };
+  /** Every run still queued is claimed by a worker (the attempt counts) and closes with a title written. */
+  const workersTitle = (r: ReturnType<typeof rig>, at: number) => {
+    for (const run of r.runs().filter((x) => x.status === 'queued')) {
+      r.sqlite.run(`UPDATE agent_runs SET status = 'running', started_at = ? WHERE id = ?`, [at, run.id]);
+      r.sqlite.run(`UPDATE agent_runs SET status = 'completed', completed_at = ? WHERE id = ?`, [at, run.id]);
+      r.sqlite.run(`UPDATE sessions SET title = 'Titled' WHERE project_id = ? AND session_id = ?`, [run.projectId, run.sessionId]);
+    }
+  };
+
+  it('spends the default daily ceiling on the newest owed sessions, names the wait once with the instant it lifts, and takes the older live shapes the wake it lifts', async () => {
+    // The Deployment as it stood when #1381 went live: scheduled intelligence on, the backfill block untouched, a
+    // backlog of 24 owed live sessions newer than seven more: a live session that ended unrequested and never got a
+    // stamp, one stamped long ago whose title never landed, and synthetic live sessions in a second project.
+    const r = rig();
+    r.setting('agent.scheduled_tasks_enabled', true);
+    for (let i = 0; i < 24; i += 1) r.session(`backlog-${i}`, { imported: false, endedAt: NOW - 3 * DAY - i * 1000 });
+    r.session('never-stamped', { imported: false, endedAt: NOW - 15 * DAY });
+    r.session('stamped-untitled', { imported: false, endedAt: NOW - 26 * DAY });
+    r.sqlite.run(`UPDATE sessions SET titled_at = ? WHERE session_id = 'stamped-untitled'`, [NOW - 25 * DAY]);
+    for (let i = 0; i < 5; i += 1) {
+      r.session(`titling-live-${i}`, { project: 'proj_2', imported: false, endedAt: NOW - 25 * DAY - i * 1000 });
+      r.sqlite.run(`UPDATE sessions SET titled_at = ? WHERE session_id = ?`, [NOW - 25 * DAY, `titling-live-${i}`]);
+    }
+    const events = waits();
+    const policy = await titlingBackfillPolicy(r.env);
+    expect(policy).toMatchObject({ runsPerDay: 24, intervalSeconds: 900 });
+
+    // A wake a minute, as the hosted clock delivers them while the Deployment is in use.
+    let now = NOW;
+    let firstEntry: number | null = null;
+    const wake = async () => { const n = await backfillTitles(r.env, now, 'active'); if (n > 0) firstEntry ??= now; workersTitle(r, now + 30_000); now += 60_000; return n; };
+    let dispatched = 0;
+    for (let i = 0; i < 120; i += 1) dispatched += await wake();
+    expect(dispatched).toBe(24);
+    expect(r.runs().every((run) => run.sessionId.startsWith('backlog-'))).toBe(true);
+    const lastEntry = Math.max(...(r.sqlite.query(`SELECT queued_at AS at FROM agent_runs WHERE task = ?`).all(TITLING_TASK) as { at: number }[]).map((row) => row.at));
+    // One report per wait, not one per wake: each interval between dispatches, then the ceiling with when it lifts.
+    const ceiling = events.filter((e) => e.wait === 'ceiling');
+    expect(ceiling).toEqual([{ kind: 'titling_backfill_waiting', wait: 'ceiling', until: firstEntry! + DAY + 1, runsPerDay: 24 }]);
+    expect(events.filter((e) => e.wait === 'interval').map((e) => e.until)).toEqual(
+      [...new Set((r.sqlite.query(`SELECT queued_at AS at FROM agent_runs WHERE task = ? ORDER BY queued_at`).all(TITLING_TASK) as { at: number }[]).map((row) => row.at))].map((at) => at + 900_000),
+    );
+    expect(lastEntry).toBeLessThan(firstEntry! + DAY);
+    expect(await titlingBackfillProgress(r.env, now)).toMatchObject({ owed: 7, usedToday: 24, waiting: { reason: 'ceiling', until: firstEntry! + DAY + 1 } });
+
+    // Nothing moves, and nothing more is reported, until the window frees a place; that wake takes the older shapes.
+    now = firstEntry! + DAY;
+    expect(await backfillTitles(r.env, now, 'active')).toBe(0);
+    expect(events.length).toBe(ceiling.length + events.filter((e) => e.wait === 'interval').length);
+    now += 1;
+    expect(await backfillTitles(r.env, now, 'active')).toBe(5);
+    const taken = () => r.runs().slice(24).map((run) => run.sessionId).sort();
+    expect(taken()).toEqual(['never-stamped', 'titling-live-0', 'titling-live-1', 'titling-live-2', 'titling-live-3']);
+    // The window is full again; the next place frees as the second page of the backlog leaves it, and the rest go.
+    const second = [...new Set((r.sqlite.query(`SELECT queued_at AS at FROM agent_runs WHERE task = ? ORDER BY queued_at`).all(TITLING_TASK) as { at: number }[]).map((row) => row.at))][1]!;
+    expect(await titlingBackfillProgress(r.env, now + 1)).toMatchObject({ owed: 2, waiting: { reason: 'ceiling', until: second + DAY + 1 } });
+    expect(await backfillTitles(r.env, second + DAY + 1, 'active')).toBe(2);
+    expect(taken()).toEqual(['never-stamped', 'stamped-untitled', 'titling-live-0', 'titling-live-1', 'titling-live-2', 'titling-live-3', 'titling-live-4']);
+  });
+
+  it('names each gate that held it, reports a wait only when it changes, and forgets it once a wake dispatches', async () => {
+    const r = rig();
+    r.setting('agent.scheduled_tasks_enabled', true);
+    r.setting('agent.tasks', { [TITLING_TASK]: { schedule: { runIn: ['idle'], overlap: 'skip', maxRunsPerDay: 2 } } });
+    r.session('a', { imported: false, endedAt: NOW - 1000 });
+    r.session('b', { imported: false, endedAt: NOW - 2000 });
+    r.session('c', { imported: false, endedAt: NOW - 3000 });
+    const events = waits();
+
+    expect(await backfillTitles(r.env, NOW, 'active')).toBe(0);
+    expect(await backfillTitles(r.env, NOW + 1, 'active')).toBe(0);
+    expect(events).toEqual([{ kind: 'titling_backfill_waiting', wait: 'state', until: null, state: 'active' }]);
+    expect(await backfillTitles(r.env, NOW + 2, 'idle')).toBe(2);
+    // Inside the interval: named once with its end, however many wakes it holds.
+    for (let i = 3; i < 10; i += 1) expect(await backfillTitles(r.env, NOW + i, 'idle')).toBe(0);
+    expect(events.slice(1)).toEqual([{ kind: 'titling_backfill_waiting', wait: 'interval', until: NOW + 2 + 900_000 }]);
+    expect(await titlingBackfillProgress(r.env, NOW + 10)).toMatchObject({ owed: 1, inFlight: 2, waiting: { reason: 'ceiling', until: NOW + 2 + DAY + 1 } });
+    // Past it, the runs still in flight hold it under `skip`; once they close, the ceiling does.
+    expect(await backfillTitles(r.env, NOW + 900_002, 'idle')).toBe(0);
+    expect(events.slice(2)).toEqual([{ kind: 'titling_backfill_waiting', wait: 'overlap', until: null }]);
+    r.sqlite.run(`UPDATE agent_runs SET status = 'completed', completed_at = ? WHERE task = ?`, [NOW + 900_003, TITLING_TASK]);
+    expect(await titlingBackfillProgress(r.env, NOW + 900_004)).toMatchObject({ inFlight: 0, waiting: { reason: 'ceiling', until: NOW + 2 + DAY + 1 } });
+    expect(await backfillTitles(r.env, NOW + 900_004, 'idle')).toBe(0);
+    expect(await backfillTitles(r.env, NOW + 900_005, 'idle')).toBe(0);
+    expect(events.slice(3)).toEqual([{ kind: 'titling_backfill_waiting', wait: 'ceiling', until: NOW + 2 + DAY + 1, runsPerDay: 2 }]);
+    // The ceiling lifts on the dot and the wake dispatches its page again; the next hold is reported afresh.
+    expect(await backfillTitles(r.env, NOW + 2 + DAY + 1, 'idle')).toBe(2);
+    expect(await backfillTitles(r.env, NOW + 3 + DAY + 1, 'idle')).toBe(0);
+    expect(events.slice(4)).toEqual([{ kind: 'titling_backfill_waiting', wait: 'interval', until: NOW + 2 + DAY + 1 + 900_000 }]);
+  });
+
+  it('reports the ceiling again when only the instant it lifts moves: another wake\'s entry, and a lowered limit', async () => {
+    const r = rig();
+    r.setting('agent.tasks', { [TITLING_TASK]: { schedule: { intervalSeconds: 0, maxRunsPerDay: 2 } } });
+    for (let i = 0; i < 2; i += 1) {
+      r.session(`s${i}`, { imported: false, endedAt: NOW - 1000 - i });
+      expect(await backfillTitles(r.env, NOW + i * 10, 'idle')).toBe(1);
+    }
+    r.session('waiting', { imported: false, endedAt: NOW - 5000 });
+    const events = waits();
+    expect(await backfillTitles(r.env, NOW + 20, 'idle')).toBe(0);
+    expect(await backfillTitles(r.env, NOW + 21, 'idle')).toBe(0);
+    expect(events).toEqual([{ kind: 'titling_backfill_waiting', wait: 'ceiling', until: NOW + DAY + 1, runsPerDay: 2 }]);
+    // A wake elsewhere that sized its page before this one entered a run: same limit, a later lift.
+    r.sqlite.run(`INSERT INTO agent_runs (id, project_id, agent_id, task, status, queued_at, run_context, dispatch_spec)
+                  SELECT 'run_elsewhere', project_id, agent_id, task, 'queued', ?, run_context, dispatch_spec FROM agent_runs WHERE task = ? LIMIT 1`, [NOW + 30, TITLING_TASK]);
+    expect(await backfillTitles(r.env, NOW + 40, 'idle')).toBe(0);
+    expect(await backfillTitles(r.env, NOW + 41, 'idle')).toBe(0);
+    expect(events.slice(1)).toEqual([{ kind: 'titling_backfill_waiting', wait: 'ceiling', until: NOW + 10 + DAY + 1, runsPerDay: 2 }]);
+    // The limit lowered while at it: the newest entry now decides.
+    r.setting('agent.tasks', { [TITLING_TASK]: { schedule: { intervalSeconds: 0, maxRunsPerDay: 1 } } });
+    expect(await backfillTitles(r.env, NOW + 50, 'idle')).toBe(0);
+    expect(events.slice(2)).toEqual([{ kind: 'titling_backfill_waiting', wait: 'ceiling', until: NOW + 30 + DAY + 1, runsPerDay: 1 }]);
+    // A limit of 0 holds with no instant to lift at.
+    r.setting('agent.tasks', { [TITLING_TASK]: { schedule: { intervalSeconds: 0, maxRunsPerDay: 0 } } });
+    expect(await backfillTitles(r.env, NOW + 60, 'idle')).toBe(0);
+    expect(events.slice(3)).toEqual([{ kind: 'titling_backfill_waiting', wait: 'ceiling', until: null, runsPerDay: 0 }]);
+    expect(await titlingBackfillProgress(r.env, NOW + 61)).toMatchObject({ runsPerDay: 0, waiting: { reason: 'ceiling', until: null } });
+  });
+
+  it('reports the ceiling again when the limit is lowered and the instant it lifts stays: one wake\'s page shares an entry time', async () => {
+    const r = rig();
+    r.setting('agent.tasks', { [TITLING_TASK]: { schedule: { intervalSeconds: 0, maxRunsPerDay: 2 } } });
+    r.session('a', { imported: false, endedAt: NOW - 1000 });
+    r.session('b', { imported: false, endedAt: NOW - 2000 });
+    expect(await backfillTitles(r.env, NOW, 'idle')).toBe(2);
+    r.session('c', { imported: false, endedAt: NOW - 3000 });
+    const events = waits();
+    expect(await backfillTitles(r.env, NOW + 1, 'idle')).toBe(0);
+    r.setting('agent.tasks', { [TITLING_TASK]: { schedule: { intervalSeconds: 0, maxRunsPerDay: 1 } } });
+    expect(await backfillTitles(r.env, NOW + 2, 'idle')).toBe(0);
+    expect(await backfillTitles(r.env, NOW + 3, 'idle')).toBe(0);
+    expect(events).toEqual([
+      { kind: 'titling_backfill_waiting', wait: 'ceiling', until: NOW + DAY + 1, runsPerDay: 2 },
+      { kind: 'titling_backfill_waiting', wait: 'ceiling', until: NOW + DAY + 1, runsPerDay: 1 },
+    ]);
+  });
+
+  it('reports no wait for imported sessions while the backfill is stopped, and the hold once it is on', async () => {
+    const r = rig();
+    r.setting('agent.scheduled_tasks_enabled', true);
+    r.setting('agent.tasks', { [TITLING_TASK]: { schedule: { maxRunsPerDay: 0 } } });
+    r.session('imported');
+    expect(await titlingBackfillProgress(r.env, NOW)).toMatchObject({ owed: 0, remaining: 1, enabled: false, waiting: null });
+    r.setting('agent.tasks', { [TITLING_TASK]: { schedule: { enabled: true, maxRunsPerDay: 0 } } });
+    expect(await titlingBackfillProgress(r.env, NOW)).toMatchObject({ owed: 0, remaining: 1, enabled: true, waiting: { reason: 'ceiling', until: null } });
+    // Scheduled intelligence off stops it too.
+    r.setting('agent.scheduled_tasks_enabled', false);
+    expect(await titlingBackfillProgress(r.env, NOW)).toMatchObject({ remaining: 1, enabled: false, waiting: null });
+  });
+
+  it('takes a schedule count only as a whole number of 0 or more: a fraction held already reads as the declared limit, and a write of one is refused by name', async () => {
+    const r = rig();
+    r.setting('agent.scheduled_tasks_enabled', true);
+    r.session('a', { imported: false });
+    const declaredLimit = TITLING_BACKFILL_SCHEDULE.maxRunsPerDay ?? null;
+    for (const held of [2.5, -1, '3', Number.MAX_SAFE_INTEGER + 2]) {
+      r.setting('agent.tasks', { [TITLING_TASK]: { schedule: { maxRunsPerDay: held } } });
+      expect({ held, runsPerDay: (await titlingBackfillPolicy(r.env)).runsPerDay }).toEqual({ held, runsPerDay: declaredLimit });
+      expect((await titlingBackfillProgress(r.env, NOW)).runsPerDay).toBe(declaredLimit);
+    }
+    r.setting('agent.tasks', { [TITLING_TASK]: { schedule: { maxRunsPerDay: 2.5, intervalSeconds: 0 } } });
+    expect(await backfillTitles(r.env, NOW, 'idle')).toBe(1);
+
+    const cookie = await ownerCookie();
+    const request = (method: string, path: string, body?: unknown) => worker.fetch(new Request(`https://s${path}`, {
+      method, headers: { cookie, 'cf-connecting-ip': '1.2.3.4', origin: 'https://s', ...(body === undefined ? {} : { 'content-type': 'application/json' }) },
+      ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+    }), { ...r.bindings, ...OWNER_ENV });
+    expect((await request('GET', '/api/titling-backfill')).status).toBe(200);
+    const stored = () => (r.sqlite.query(`SELECT value FROM deployment_settings WHERE leaf = 'agent.tasks'`).get() as { value: string }).value;
+    const before = stored();
+    // The switch over a held fraction is refused, naming the field, and the held value stands.
+    const switched = await request('PUT', '/api/titling-backfill', { enabled: true });
+    expect(switched.status).toBe(400);
+    expect(JSON.stringify(await switched.json())).toContain('title-summary.schedule.maxRunsPerDay: expected a whole number of 0 or more');
+    expect(stored()).toBe(before);
+    // The settings write refuses every count that is not a whole number of 0 or more, and takes one that is.
+    for (const count of [2.5, -1, '3', null]) {
+      const res = await request('PUT', '/api/settings/agent.tasks', { value: { [TITLING_TASK]: { schedule: { maxRunsPerDay: count } } } });
+      const body: unknown = await res.json();
+      expect({ count, status: res.status, body }).toEqual({ count, status: 400, body: { applied: false, reason: 'invalid_value', leaf: 'agent.tasks', detail: `${TITLING_TASK}.schedule.maxRunsPerDay: expected a whole number of 0 or more` } });
+    }
+    const accepted: Array<Record<string, unknown>> = [{ [TITLING_TASK]: { schedule: { maxRunsPerDay: 0 } } }, { [TITLING_TASK]: { model: 'small' } }, { 'extract-curate': { schedule: { intervalSeconds: 60 } } }];
+    for (const value of accepted) {
+      const answer: unknown = await (await request('PUT', '/api/settings/agent.tasks', { value })).json();
+      expect(answer).toEqual({ applied: true });
+    }
+    expect((await request('PUT', '/api/settings/agent.tasks', { value: ['title-summary'] })).status).toBe(400);
+  });
+
+  it('names a wake whose every candidate was refused before a run started, with the outcomes, once', async () => {
+    const r = rig();
+    r.setting('agent.tasks', { [TITLING_TASK]: { schedule: { intervalSeconds: 0 } } });
+    r.session('orphan', { project: 'proj_gone', imported: false });
+    const events = waits();
+    expect(await backfillTitles(r.env, NOW, 'idle')).toBe(0);
+    expect(await backfillTitles(r.env, NOW + 1, 'idle')).toBe(0);
+    expect(events).toEqual([{ kind: 'titling_backfill_waiting', wait: 'skipped', until: null, outcomes: { error: 1 } }]);
+    // Nothing to title reports nothing, and a wait after it is reported again.
+    r.sqlite.run(`UPDATE sessions SET title = 'Named' WHERE session_id = 'orphan'`);
+    expect(await backfillTitles(r.env, NOW + 2, 'idle')).toBe(0);
+    r.sqlite.run(`UPDATE sessions SET title = NULL WHERE session_id = 'orphan'`);
+    expect(await backfillTitles(r.env, NOW + 3, 'idle')).toBe(0);
+    expect(events.length).toBe(2);
+    expect(await titlingBackfillProgress(r.env, NOW + 4)).toMatchObject({ owed: 1, waiting: null });
+    // A wake that dispatches forgets the wait: the same refusal after it is reported again.
+    r.session('good', { imported: false, endedAt: NOW - 500 });
+    expect(await backfillTitles(r.env, NOW + 5, 'idle')).toBe(1);
+    expect(await backfillTitles(r.env, NOW + 6, 'idle')).toBe(0);
+    expect(events.length).toBe(3);
+    expect(events[2]).toEqual(events[0]);
+  });
+
+  it('reads the ceiling\'s window as the entry whose leaving frees a place, a lowered ceiling included, and reports no wait while nothing waits', async () => {
+    const r = rig();
+    r.setting('agent.tasks', { [TITLING_TASK]: { schedule: { intervalSeconds: 0, maxRunsPerDay: 5 } } });
+    for (let i = 0; i < 5; i += 1) {
+      r.session(`s${i}`, { imported: false, endedAt: NOW - i * 1000 });
+      expect(await backfillTitles(r.env, NOW + i * 10, 'idle')).toBe(1);
+    }
+    const window = (perDay: number) => deploymentTaskCeilingWindow(r.env.db, TITLING_TASK, NOW - DAY + 50, TITLING_BACKFILL_ACTOR, perDay);
+    expect(await window(5)).toEqual({ used: 5, pivotAt: NOW });
+    // Lowered to 3: the third newest entry is the one whose leaving brings the window under it.
+    expect(await window(3)).toEqual({ used: 3, pivotAt: NOW + 20 });
+    expect(await window(6)).toEqual({ used: 5, pivotAt: null });
+    expect(await window(0)).toEqual({ used: 0, pivotAt: null });
+    r.setting('agent.tasks', { [TITLING_TASK]: { schedule: { intervalSeconds: 0, maxRunsPerDay: 3 } } });
+    // Every session has its attempt: the ceiling holds, but nothing waits on it.
+    expect(await titlingBackfillProgress(r.env, NOW + 50)).toMatchObject({ owed: 0, usedToday: 5, waiting: null });
+    r.session('late', { imported: false, endedAt: NOW + 40 });
+    expect(await titlingBackfillProgress(r.env, NOW + 50)).toMatchObject({ owed: 1, waiting: { reason: 'ceiling', until: NOW + 20 + DAY + 1 } });
   });
 });

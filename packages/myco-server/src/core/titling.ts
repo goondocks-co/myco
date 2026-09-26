@@ -18,7 +18,7 @@ import { MATERIAL_EXCERPT_CHARS, MAX_MATERIAL_CHARS, MAX_MATERIAL_PROMPTS } from
 import { emit } from '../telemetry.js';
 import type { RelationalStore, ServerEnv } from './adapters.js';
 import { countConvergenceTitleSessions, listConvergenceTitleSessions, sessionMaterialRows, sessionMaterialTailRows, listReadyTitleSessions, type MaterialRow } from '../read/children.js';
-import { deploymentLastTaskEntryAt, deploymentTaskEntriesSince, deploymentTaskRunTally } from './runs.js';
+import { deploymentLastTaskEntryAt, deploymentTaskCeilingWindow, deploymentTaskEntriesSince, deploymentTaskRunTally } from './runs.js';
 import { TITLING_BACKFILL_SCHEDULE, type ScheduleState } from './jobs.js';
 import type { PowerState } from './power.js';
 import { scheduleFor, scheduleLeaves } from './scheduled-tasks.js';
@@ -240,6 +240,51 @@ export async function titlingBackfillPolicy(env: ServerEnv): Promise<TitlingBack
 }
 
 /**
+ * Why a wake of the convergence dispatched nothing: out of the block's states,
+ * inside its interval, held by a run in flight under `overlap: skip`, at the
+ * daily ceiling, or every candidate it tried met a refusal before a run started.
+ * `until` is when the hold lifts, where a clock decides it: the interval's end,
+ * or the instant the ceiling's window next frees a place.
+ */
+export type BackfillWaitReason = 'state' | 'interval' | 'overlap' | 'ceiling' | 'skipped';
+export interface BackfillWait {
+  reason: BackfillWaitReason;
+  until: number | null;
+}
+
+/** The interval's hold at `now`, from the last entry the backfill made; null once it has passed. */
+export function intervalWait(policy: Pick<TitlingBackfillPolicy, 'intervalSeconds'>, lastEntryAt: number | null, now: number): BackfillWait | null {
+  if (lastEntryAt === null || now - lastEntryAt >= policy.intervalSeconds * 1000) return null;
+  return { reason: 'interval', until: lastEntryAt + policy.intervalSeconds * 1000 };
+}
+
+/** The ceiling's hold, from the window `deploymentTaskCeilingWindow` read; null while the window holds fewer entries than the ceiling. It lifts the instant the pivot entry falls out of the trailing day. */
+export function ceilingWait(policy: Pick<TitlingBackfillPolicy, 'runsPerDay'>, window: { used: number; pivotAt: number | null }): BackfillWait | null {
+  if (policy.runsPerDay === null || window.used < policy.runsPerDay) return null;
+  return { reason: 'ceiling', until: window.pivotAt === null ? null : window.pivotAt + DAY_MS + 1 };
+}
+
+/**
+ * The wait each Deployment's convergence last reported, by its store: a wake
+ * reports a wait only when it differs from the one before, and forgets it on a
+ * wake that dispatches or finds nothing to title. It decides nothing; a process
+ * that starts afresh reports the standing wait once more.
+ */
+const reportedWaits = new WeakMap<RelationalStore, string>();
+
+function reportWait(db: RelationalStore, wait: BackfillWait | null, detail: Record<string, unknown> = {}): void {
+  if (wait === null) {
+    reportedWaits.delete(db);
+    return;
+  }
+  const key = JSON.stringify([wait.reason, wait.until, detail]);
+  if (reportedWaits.get(db) === key) return;
+  reportedWaits.set(db, key);
+  const named: BackfillWaitReason = wait.reason;
+  emit({ kind: 'titling_backfill_waiting', wait: named, until: wait.until, ...detail });
+}
+
+/**
  * Converges every ended session on a title: newest first, a bounded page per
  * wake, in the block's states, inside its interval and daily ceiling, and under
  * its overlap rule. A session its own capture owes a title — an end request
@@ -253,40 +298,63 @@ export async function titlingBackfillPolicy(env: ServerEnv): Promise<TitlingBack
  * deciding at once write at most the ceiling between them and a refused session
  * keeps its claim. Idempotent: a session claimed by one wake is no longer a
  * candidate for the next, and a wake out of state, inside the interval, at the
- * ceiling or held by overlap dispatches nothing.
+ * ceiling or held by overlap dispatches nothing. A wake that dispatches nothing
+ * names its wait in `titling_backfill_waiting` when the wait changes.
  */
 export async function backfillTitles(env: ServerEnv, now: number, state: PowerState): Promise<number> {
   const policy = await titlingBackfillPolicy(env);
-  if (!(policy.runIn as readonly string[]).includes(state)) return 0;
-  const last = await deploymentLastTaskEntryAt(env.db, TITLING_TASK, TITLING_BACKFILL_ACTOR);
-  if (last !== null && now - last < policy.intervalSeconds * 1000) return 0;
+  if (!(policy.runIn as readonly string[]).includes(state)) {
+    reportWait(env.db, { reason: 'state', until: null }, { state });
+    return 0;
+  }
+  const interval = intervalWait(policy, await deploymentLastTaskEntryAt(env.db, TITLING_TASK, TITLING_BACKFILL_ACTOR), now);
+  if (interval !== null) {
+    reportWait(env.db, interval);
+    return 0;
+  }
   const since = now - DAY_MS;
-  if (policy.overlap === 'skip' && (await deploymentTaskRunTally(env.db, TITLING_TASK, since, TITLING_BACKFILL_ACTOR)).inFlight > 0) return 0;
+  if (policy.overlap === 'skip' && (await deploymentTaskRunTally(env.db, TITLING_TASK, since, TITLING_BACKFILL_ACTOR)).inFlight > 0) {
+    reportWait(env.db, { reason: 'overlap', until: null });
+    return 0;
+  }
   let page = TITLING_BACKFILL_BATCH;
   let ceiling: ActorCeiling | undefined;
   if (policy.runsPerDay !== null) {
-    const used = await deploymentTaskEntriesSince(env.db, TITLING_TASK, since, TITLING_BACKFILL_ACTOR);
-    if (used >= policy.runsPerDay) {
-      emit({ kind: 'titling_backfill_at_ceiling', runsPerDay: policy.runsPerDay, used });
+    const window = await deploymentTaskCeilingWindow(env.db, TITLING_TASK, since, TITLING_BACKFILL_ACTOR, policy.runsPerDay);
+    const held = ceilingWait(policy, window);
+    if (held !== null) {
+      reportWait(env.db, held, { runsPerDay: policy.runsPerDay });
       return 0;
     }
-    page = Math.min(page, policy.runsPerDay - used);
+    page = Math.min(page, policy.runsPerDay - window.used);
     ceiling = { actor: TITLING_BACKFILL_ACTOR, task: TITLING_TASK, perDay: policy.runsPerDay, sinceMs: since };
   }
   const candidates = await listConvergenceTitleSessions(env.db, page, now - OWNER_TITLING_WINDOW_MS, policy.enabled);
-  if (candidates.length === 0) return 0;
+  if (candidates.length === 0) {
+    reportWait(env.db, null);
+    return 0;
+  }
   if (env.origin === undefined) throw new Error('The titling backfill requires the Deployment origin to be configured.');
   let dispatched = 0;
+  let atCeiling = false;
+  const outcomes: Partial<Record<TitlingOutcome, number>> = {};
   for (const target of candidates) {
     const result = await titleSession(env, { ...target, now, origin: env.origin }, { mode: 'claim', actor: TITLING_BACKFILL_ACTOR, retry: true, ...(ceiling === undefined ? {} : { ceiling }) });
+    outcomes[result.outcome] = (outcomes[result.outcome] ?? 0) + 1;
     if (result.outcome === 'dispatched' || result.outcome === 'queued') dispatched += 1;
     if (result.outcome === 'ceiling') {
-      emit({ kind: 'titling_backfill_at_ceiling', runsPerDay: policy.runsPerDay, used: policy.runsPerDay });
+      atCeiling = true;
       break;
     }
   }
+  if (dispatched > 0) reportWait(env.db, null);
+  else if (atCeiling) reportWait(env.db, { reason: 'ceiling', until: null }, { runsPerDay: policy.runsPerDay });
+  else reportWait(env.db, { reason: 'skipped', until: null }, { outcomes });
   return dispatched;
 }
+
+/** What an owner reads of the convergence's wait: the holds a clock decides. The power state and a skipped candidate are known only to a wake, and are reported by it. */
+export type TitlingBackfillWait = BackfillWait & { reason: 'interval' | 'overlap' | 'ceiling' };
 
 export interface TitlingBackfillProgress extends TitlingBackfillPolicy {
   /** Wholly imported sessions still untitled and ready for the backfill. */
@@ -301,16 +369,23 @@ export interface TitlingBackfillProgress extends TitlingBackfillPolicy {
   completedToday: number;
   /** Runs of the trailing day that closed without one. */
   failedToday: number;
+  /** What holds the next dispatch while sessions wait for one: the ceiling first, then a run in flight, then the interval; null when nothing waits or nothing holds it. */
+  waiting: TitlingBackfillWait | null;
 }
 
-/** Where the backfill stands: its policy, what is left, and how the trailing day's runs went. */
+/** Where the backfill stands: its policy, what is left, how the trailing day's runs went, and what the next dispatch waits for. */
 export async function titlingBackfillProgress(env: ServerEnv, now: number): Promise<TitlingBackfillProgress> {
   const policy = await titlingBackfillPolicy(env);
   const since = now - DAY_MS;
-  const [left, usedToday, tally] = await Promise.all([
+  const [left, usedToday, tally, window, last] = await Promise.all([
     countConvergenceTitleSessions(env.db, now - OWNER_TITLING_WINDOW_MS),
     deploymentTaskEntriesSince(env.db, TITLING_TASK, since, TITLING_BACKFILL_ACTOR),
     deploymentTaskRunTally(env.db, TITLING_TASK, since, TITLING_BACKFILL_ACTOR),
+    policy.runsPerDay === null ? null : deploymentTaskCeilingWindow(env.db, TITLING_TASK, since, TITLING_BACKFILL_ACTOR, policy.runsPerDay),
+    deploymentLastTaskEntryAt(env.db, TITLING_TASK, TITLING_BACKFILL_ACTOR),
   ]);
-  return { ...policy, remaining: left.imported, owed: left.live, usedToday, inFlight: tally.inFlight, completedToday: tally.completed, failedToday: tally.failed };
+  const waits = left.live > 0 || (policy.enabled && left.imported > 0);
+  const overlap: BackfillWait | null = policy.overlap === 'skip' && tally.inFlight > 0 ? { reason: 'overlap', until: null } : null;
+  const waiting = !waits ? null : ((window === null ? null : ceilingWait(policy, window)) ?? overlap ?? intervalWait(policy, last, now)) as TitlingBackfillWait | null;
+  return { ...policy, remaining: left.imported, owed: left.live, usedToday, inFlight: tally.inFlight, completedToday: tally.completed, failedToday: tally.failed, waiting };
 }
