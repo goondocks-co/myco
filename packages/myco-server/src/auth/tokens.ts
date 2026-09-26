@@ -56,6 +56,10 @@ export type RefreshResult =
   | { refreshed: false; code: Classifier; reason: string; refreshAfter?: number };
 
 export const REFRESH_TOO_EARLY = 'refresh window not yet open';
+/** The `revoked_by` of every row of a lineage the pipeline ended when a superseded credential of it asked to rotate: a credential used from two places, ended by no member. */
+export const LINEAGE_REPLAY_REVOKER = 'lineage-replay';
+/** The `code` of the 401 answering a credential a replay revocation ended, so its member can say why; the member pins the same string. */
+export const LINEAGE_REPLAYED_CODE = 'lineage_replayed';
 export const LINEAGE_INACTIVE = 'token lineage inactive';
 
 /** The instant a token's refresh window opens: `MEMBER_TOKEN_REFRESH_WINDOW_MS` before it expires. Every `refreshAfter` on the wire is this instant for some token. */
@@ -137,7 +141,7 @@ export async function issueMemberToken(
  * re-derivation of who owns what, and until there is one, an operator can always
  * answer who ended a credential.
  */
-/** The one attributed revocation of a credential, as a statement: the runner above executes and records it; the break-glass script renders it. */
+/** The attributed revocation of one token row, as a statement: the break-glass script renders it for a token whose successors are known to be its owner's. */
 export function revokeCredentialStatement(db: RelationalStore, revokedBy: string, tokenId: string, nowMs: number): PreparedStatement {
   return db
     .prepare(`UPDATE member_credentials SET revoked_at = ?, revoked_by = ? WHERE id = ? AND revoked_at IS NULL`)
@@ -145,22 +149,32 @@ export function revokeCredentialStatement(db: RelationalStore, revokedBy: string
 }
 
 /**
+ * The attributed revocation of a credential's whole lineage, as a statement: the named token, the predecessor still live while
+ * its successor is banked, and any successor already minted from it. Each is the same machine's credential at another moment,
+ * and a live one left behind would rotate on. `memberId` confines it to that member's own rows.
+ */
+export function revokeLineageStatement(db: RelationalStore, revokedBy: string, tokenId: string, nowMs: number, memberId: string | null = null): PreparedStatement {
+  return db
+    .prepare(`UPDATE member_credentials SET revoked_at = ?, revoked_by = ? WHERE lineage_root = (SELECT lineage_root FROM member_credentials WHERE id = ?) AND revoked_at IS NULL${memberId === null ? '' : ' AND member_id = ?'}`)
+    .bind(nowMs, revokedBy, tokenId, ...(memberId === null ? [] : [memberId]));
+}
+
+/**
  * Revoke a credential as the member asking, at the reach their role gives them.
  *
  * An admin administers membership and reaches any credential of the Deployment.
  * A member reaches only their own, which is what lets anyone end a laptop they
- * have lost without also letting them end everybody else's capture. The two
- * cases are the two statements above; this chooses between them and never
- * widens either.
+ * have lost without also letting them end everybody else's capture. Both reach
+ * the whole lineage of the named credential through the one statement above;
+ * this chooses the member predicate and never widens it.
  */
 export async function revokeCredentialAsMember(
   db: RelationalStore, actor: DashboardMember, tokenId: string, nowMs: number,
 ): Promise<{ revoked: boolean; revokedBy: string }> {
   const revokedBy = actor.id;
-  if (!isAdmin(actor.role)) return { revoked: await revokeCredentialOfMember(db, revokedBy, tokenId, nowMs), revokedBy };
-  const result = await revokeCredentialStatement(db, revokedBy, tokenId, nowMs).run();
-  const revoked = result.meta.changes === 1;
-  emit({ kind: 'credential_revoked', tokenId, revokedBy, revoked });
+  const result = await revokeLineageStatement(db, revokedBy, tokenId, nowMs, isAdmin(actor.role) ? null : revokedBy).run();
+  const revoked = result.meta.changes > 0;
+  emit({ kind: 'credential_revoked', tokenId, revokedBy, revoked, rows: result.meta.changes });
   return { revoked, revokedBy };
 }
 
@@ -191,10 +205,7 @@ export function revokeCredentialsOfMember(db: RelationalStore, memberId: string,
 
 /** Revokes every live token of the lineage `tokenId` belongs to — the named token, its predecessors, and its successors — in one statement; `revoked` counts the rows that changed. */
 export async function revokeMemberLineage(db: RelationalStore, tokenId: string, nowMs: number, revokedBy: string): Promise<{ revoked: number }> {
-  const result = await db
-    .prepare(`UPDATE member_credentials SET revoked_at = ?, revoked_by = ? WHERE lineage_root = (SELECT lineage_root FROM member_credentials WHERE id = ?) AND revoked_at IS NULL`)
-    .bind(nowMs, revokedBy, tokenId)
-    .run();
+  const result = await revokeLineageStatement(db, revokedBy, tokenId, nowMs).run();
   return { revoked: result.meta.changes };
 }
 
@@ -293,6 +304,12 @@ export interface LineageReplay {
  * a rotation race or a holder of a copy, and only the audit record tells an
  * operator which lineages are seeing it.
  *
+ * A successor revoked before its first use has been passed over too
+ * when its predecessor has another successor that has been used: a second
+ * holder rotated the same predecessor, and the lineage moved on through theirs.
+ * A successor revoked unused with no used sibling moved nothing on — an
+ * operator ended it, or a later refresh by the same holder replaced it.
+ *
  * The read runs only after authentication has already failed, so the admission
  * path stays one statement.
  */
@@ -300,8 +317,9 @@ export async function detectLineageReplay(db: RelationalStore, digest: string, n
   const row = await db
     .prepare(`SELECT p.id, p.member_id, p.lineage_root, p.machine_id, s.id AS successor_id, s.first_used_at
                 FROM member_credentials p
-                JOIN member_credentials s ON s.predecessor_id = p.id
-               WHERE p.token_hash = ? AND p.revoked_at IS NOT NULL AND s.first_used_at IS NOT NULL
+                JOIN member_credentials s ON s.lineage_root = p.lineage_root AND s.id <> p.id AND s.first_used_at IS NOT NULL
+                 AND (s.predecessor_id = p.id OR (p.first_used_at IS NULL AND s.predecessor_id = p.predecessor_id))
+               WHERE p.token_hash = ? AND p.revoked_at IS NOT NULL
                ORDER BY s.first_used_at DESC`)
     .bind(digest)
     .first<{ id: string; member_id: string; lineage_root: string; machine_id: string | null; successor_id: string; first_used_at: number }>();
@@ -310,4 +328,10 @@ export async function detectLineageReplay(db: RelationalStore, digest: string, n
     tokenId: row.id, memberId: row.member_id, lineageRoot: row.lineage_root, machineId: row.machine_id,
     successorId: row.successor_id, activatedAt: row.first_used_at,
   };
+}
+
+/** Whether a digest that failed to authenticate belongs to a row a replay revocation ended (`LINEAGE_REPLAY_REVOKER`). */
+export async function revokedForReplay(db: RelationalStore, digest: string): Promise<boolean> {
+  const row = await db.prepare(`SELECT 1 AS hit FROM member_credentials WHERE token_hash = ? AND revoked_by = ?`).bind(digest, LINEAGE_REPLAY_REVOKER).first<{ hit: number }>();
+  return row !== null;
 }

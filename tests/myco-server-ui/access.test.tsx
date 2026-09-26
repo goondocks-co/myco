@@ -184,6 +184,12 @@ describe('a runtime and the worker record beside it', () => {
     expect(screen.queryByText('writing')).toBeNull();
   });
 
+  it('says a credential the Deployment ended on replay was used from two places, not who stopped it', async () => {
+    accessServer({ member: [credential({ revokedAt: NOW_MS - 1_000, revokedBy: 'lineage-replay', live: false })] });
+    mount('/access');
+    expect(await screen.findByText('stopped: used from two places')).toBeTruthy();
+  });
+
   it('shows what the worker last reported in the same words Status uses', async () => {
     accessServer({ member: [credential()] });
     mount('/access');

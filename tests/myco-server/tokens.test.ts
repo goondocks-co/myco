@@ -71,17 +71,19 @@ describe('member tokens', () => {
     expect(await revokeMemberLineage(recordingDb(0).db, 'mt_missing', 9_000, 'mem_machine_1')).toEqual({ revoked: 0 });
   });
 
-  it('revokes by id and only once, reporting whether a live row matched', async () => {
-    const { db, calls } = recordingDb();
+  it('revokes the whole lineage of the named credential in one statement, reporting whether any live row matched', async () => {
+    const { db, calls } = recordingDb(2);
     expect(await revokeCredentialAsMember(db, ADMIN, 'mt_1', 9_000)).toEqual({ revoked: true, revokedBy: 'mem_machine_1' });
-    expect(calls[0].sql).toMatch(/UPDATE member_credentials SET revoked_at = \?, revoked_by = \? WHERE id = \? AND revoked_at IS NULL/);
+    expect(calls).toHaveLength(1);
+    expect(calls[0].sql).toMatch(/UPDATE member_credentials SET revoked_at = \?, revoked_by = \?\s+WHERE lineage_root = \(SELECT lineage_root FROM member_credentials WHERE id = \?\) AND revoked_at IS NULL$/);
     expect(calls[0].params).toEqual([9_000, 'mem_machine_1', 'mt_1']);
     expect(await revokeCredentialAsMember(recordingDb(0).db, ADMIN, 'mt_missing', 9_000)).toEqual({ revoked: false, revokedBy: 'mem_machine_1' });
 
     // A member reaches only its own: the statement carries the member id as a predicate, not just as attribution.
     const asMember = recordingDb();
     expect(await revokeCredentialAsMember(asMember.db, MEMBER, 'mt_1', 9_000)).toEqual({ revoked: true, revokedBy: 'mem_machine_2' });
-    expect(asMember.calls[0].sql).toMatch(/WHERE id = \? AND member_id = \? AND revoked_at IS NULL/);
+    expect(asMember.calls[0].sql).toMatch(/WHERE lineage_root = \(SELECT lineage_root FROM member_credentials WHERE id = \?\) AND revoked_at IS NULL AND member_id = \?$/);
+    expect(asMember.calls[0].params).toEqual([9_000, 'mem_machine_2', 'mt_1', 'mem_machine_2']);
   });
 
   it('authenticates a live token digest and returns its bound machine, lifetime, lineage, predecessor and first use', async () => {

@@ -6,7 +6,7 @@
  * connect timeout bounds the wait for response headers, the request timeout
  * bounds the whole exchange.
  */
-import { deploymentScopedHeaders, MEMBER_CODES, MEMBER_PROTOCOL, memberHeaders, PARKED_CODE, PROTOCOL_HEADER, RESLICE_CODES, type MemberCode } from './constants.js';
+import { deploymentScopedHeaders, LINEAGE_REPLAYED_CODE, MEMBER_CODES, MEMBER_PROTOCOL, memberHeaders, PARKED_CODE, PROTOCOL_HEADER, RESLICE_CODES, type MemberCode } from './constants.js';
 import type { RequestBudget } from './budget.js';
 import type { MemberEnvelope } from './envelope.js';
 
@@ -35,7 +35,7 @@ export type Outcome =
   | { class: 'refused'; code: MemberCode; reason: string }
   | { class: 'retry'; status?: number; detail: string; retryAfterMs?: number; anonymousLimited?: boolean }
   | { class: 'route_missing'; status: 401 }
-  | { class: 'unauthorized'; status: 401 }
+  | { class: 'unauthorized'; status: 401; replayed?: true }
   | { class: 'protocol'; serverProtocol?: number; minCompatMemberProtocol?: number };
 
 export type RefreshOutcome =
@@ -201,7 +201,10 @@ function classifyCommon(raw: RawAnswer): Outcome | null {
   if (raw.kind === 'timeout') return { class: 'retry', detail: `timeout (${raw.phase})` };
   const { status } = raw;
   if (status === 200) return null;
-  if (status === 401) return routeMissing(raw) ? { class: 'route_missing', status } : { class: 'unauthorized', status };
+  if (status === 401) {
+    if (routeMissing(raw)) return { class: 'route_missing', status };
+    return raw.json?.code === LINEAGE_REPLAYED_CODE ? { class: 'unauthorized', status, replayed: true } : { class: 'unauthorized', status };
+  }
   if (status === 409) {
     return {
       class: 'protocol',

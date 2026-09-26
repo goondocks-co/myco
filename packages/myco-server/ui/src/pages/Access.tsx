@@ -8,7 +8,7 @@ import { Panel } from '../components/ui/panel';
 import { SlideoutDetailPanel } from '../components/ui/slideout-detail-panel';
 import { StatusDot } from '../components/ui/status-dot';
 import { KeyReveal } from '../components/access/KeyReveal';
-import { refusalText, useAccessActions, useInvitations, useMembers, usePaged, type ActivityRow, type CredentialRow } from '../hooks/use-access';
+import { LINEAGE_REPLAY_ACTOR, refusalText, useAccessActions, useInvitations, useMembers, usePaged, type ActivityRow, type CredentialRow } from '../hooks/use-access';
 import { useMe } from '../hooks/use-me';
 import { useProjects } from '../hooks/use-projects';
 import { useWorkerFleet } from '../hooks/use-status';
@@ -24,6 +24,7 @@ const KIND_LABEL: Record<string, string> = {
 
 /** What a credential's own record allows: whether it would authenticate, never whether it is writing. */
 function credentialWords(credential: CredentialRow, revokedByName: string | null): string {
+  if (credential.revokedAt !== null && credential.revokedBy === LINEAGE_REPLAY_ACTOR) return 'stopped: used from two places';
   if (credential.revokedAt !== null) return `stopped${revokedByName === null ? '' : ` by ${revokedByName}`}`;
   return credential.live ? 'allowed to write' : 'expired';
 }

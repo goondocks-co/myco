@@ -326,6 +326,27 @@ describe('token refresh', () => {
     for (const t of [fresh.root, a]) expect((await fresh.post(t.token, 9)).status).toBe(401);
   });
 
+  it('stops a credential from the dashboard with every live row of its lineage: a successor already minted from it, unused, is stopped too', async () => {
+    for (const actor of [{ id: 'mem_machine_1', label: 'machine_1', role: 'admin' as const }, { id: 'mem_machine_1', label: 'machine_1', role: 'member' as const }]) {
+      const r = await rig();
+      const banked = await successorOf(r, r.root.token, r.root.expiresAt);
+      expect(r.row(banked.tokenId)).toMatchObject({ revoked_at: null, first_used_at: null });
+      expect(await revokeCredentialAsMember(r.e.db, actor, r.root.tokenId, r.clock.now)).toEqual({ revoked: true, revokedBy: 'mem_machine_1' });
+      expect(r.row(banked.tokenId)).toMatchObject({ revoked_at: r.clock.now });
+      r.clock.now += 1;
+      expect((await r.post(banked.token, 1)).status).toBe(401);
+      expect((await r.refresh(r.root.token)).status).toBe(401);
+    }
+  });
+
+  it('a member stopping another member\'s credential stops nothing of that lineage', async () => {
+    const r = await rig();
+    const banked = await successorOf(r, r.root.token, r.root.expiresAt);
+    expect(await revokeCredentialAsMember(r.e.db, { id: 'mem_other', label: 'other', role: 'member' }, banked.tokenId, r.clock.now)).toEqual({ revoked: false, revokedBy: 'mem_other' });
+    expect(r.row(r.root.tokenId)).toMatchObject({ revoked_at: null });
+    expect(r.row(banked.tokenId)).toMatchObject({ revoked_at: null });
+  });
+
   it('refuses a revoked token on the refresh route, and an expired one on every other route: 401 without a row written', async () => {
     const r = await rig();
     const revoked = await issueMemberToken(r.e.db, { memberId: 'mem_machine_1', machineId: 'machine_1' }, T0);

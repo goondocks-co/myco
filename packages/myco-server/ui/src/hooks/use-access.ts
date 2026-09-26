@@ -63,6 +63,9 @@ export interface GrantRow {
 /** The one value `revokedBy` carries that is not a member: the expiry sweep, which has no actor to name. */
 export const GRANT_EXPIRY_ACTOR = 'expiry';
 
+/** The `revokedBy` of a credential the Deployment ended because it was used from two places; no member acted. */
+export const LINEAGE_REPLAY_ACTOR = 'lineage-replay';
+
 export function useMembers() {
   return useQuery({ queryKey: ['members'], queryFn: ({ signal }) => fetchJson<{ members: MemberRow[] }>('/api/members', signal) });
 }

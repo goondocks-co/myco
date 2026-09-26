@@ -137,7 +137,7 @@ sql "UPDATE member_credentials SET bytes_written = <PREVIOUS> WHERE id = '<TOKEN
 
 ## Last observed output — in-process (T1–T7)
 
-Run on 2026-08-21 through the in-process worker (`tests/myco-server/helpers/d1.ts` over the migrated schema, `index.ts default.fetch`, real clock), with the `expires_at`/`lineage_started_at` moves of the rows above applied by SQL; raw tokens redacted, ids as issued. No edge output yet.
+Run on 2026-08-21 through the in-process worker (`tests/myco-server/helpers/d1.ts` over the migrated schema, `index.ts default.fetch`, real clock), with the `expires_at`/`lineage_started_at` moves of the rows above applied by SQL; raw tokens redacted, ids as issued. No edge output yet. Historical: this run predates #1417, so its T5 line records the retired 90-day lineage ceiling (`token lineage expired`); T5 today answers as the table above says.
 
 ```
 T1 {"refreshed":false,"code":"refresh_too_early","reason":"refresh window not yet open","refreshAfter":1787736226465} [200]
