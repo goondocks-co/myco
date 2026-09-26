@@ -20,8 +20,9 @@
  * (`myco login`, `myco member join`), which clears it.
  *
  * A token past its own expiry still rotates: the server admits a lapsed token
- * on this route alone, up to its lineage ceiling, so a machine offline longer
- * than the TTL renews on its first hook back.
+ * on this route alone, so a machine offline longer than the TTL renews on its
+ * first hook back. A lineage never ends for age; only a machine silent long
+ * enough that the server refuses its lapsed token (`lineage_expired`) re-joins.
  */
 import { resolveMycoHome } from '../paths/home.js';
 import { getPluginVersion } from '../version.js';
@@ -179,7 +180,7 @@ export async function refreshMembership(serverUrl: string, opts: RefreshOptions)
           return { status: outcome.code === 'refresh_too_early' ? 'too-early' : 'terminal', membership: write({ refreshAfter: outcome.refreshAfter, refreshTerminal: false }) };
         }
         if (outcome.code === 'lineage_expired') {
-          stderr(`token lineage expired — capture stops reaching the server at ${new Date(held.expiresAt ?? now()).toISOString()}; ${REJOIN_HINT}`);
+          stderr(`this machine was inactive too long, or its credential ended — capture stops reaching the server at ${new Date(held.expiresAt ?? now()).toISOString()}; ${REJOIN_HINT}`);
           return { status: 'lineage-expired', membership: write({ refreshTerminal: true, refreshTerminalBy: build }) };
         }
         stderr(`token rotation refused (${outcome.code})${outcome.reason ? `: ${outcome.reason}` : ''} — ${REJOIN_HINT}`);

@@ -3,8 +3,8 @@
  * or holding a credential the Deployment refuses — through the real hooks and
  * the in-process worker.
  *
- * A lapsed token of a live lineage renews on the first hook back and that hook
- * delivers on it. A refusal that is final is recorded and said, on stderr and in
+ * A lapsed token of a lineage refreshed within the inactivity bound renews on
+ * the first hook back and that hook delivers on it, however old the lineage. A refusal that is final is recorded and said, on stderr and in
  * the session-start injection. What was captured meanwhile, the turn-end
  * transcript included, stays on disk and reaches the Deployment once a new
  * credential is in place, from the next probing hook of any session, after
@@ -15,7 +15,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { issueMemberToken, MEMBER_TOKEN_MAX_LINEAGE_MS } from '@myco-server-worker/auth/tokens.js';
+import { issueMemberToken, MEMBER_LINEAGE_IDLE_MS } from '@myco-server-worker/auth/tokens.js';
 import { parseTranscripts } from '@myco-server-worker/ingest/parse.js';
 import { resetMachineIdCache } from '@myco/machine-id.js';
 import { run as runMemberCli } from '@myco/cli/member.js';
@@ -36,6 +36,7 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 const SERVER_URL = 'https://member-test.invalid';
 const PROJECT = 'proj_1';
 const NOT_DELIVERED = 'capture is not being delivered';
+const INACTIVE = 'the machine was inactive too long, or its credential ended';
 
 let mycoHome: string;
 let root: string;
@@ -102,8 +103,24 @@ describe('a member that could not deliver', () => {
     expect(new MemberSpool(PROJECT, { mycoHome }).sessionIds()).toEqual([]);
   });
 
-  it('says so at the point of use once the lineage has ended, and keeps what it captures', async () => {
-    const rig = await memberRig({ now: Date.now() - MEMBER_TOKEN_MAX_LINEAGE_MS - DAY_MS });
+  it('renews a lapsed token of a lineage that started long past the inactivity bound but kept refreshing', async () => {
+    const rig = await memberRig({ now: Date.now() - 20 * DAY_MS });
+    rig.env.sqlite.query('UPDATE member_credentials SET lineage_started_at = ? WHERE id = ?').run(Date.now() - 2 * MEMBER_LINEAGE_IDLE_MS, rig.tokenId);
+    registerTestMember({ mycoHome, token: rig.token, tokenId: rig.tokenId, projectId: PROJECT, expiresAt: rig.expiresAt, serverUrl: SERVER_URL });
+    const spy = recordingFetch(rig.fetch);
+
+    const { start } = await session(spy.fetch, 'sess-old-lineage', 'a year of daily use');
+
+    expect(spy.requests[0].path).toBe('/tokens/refresh');
+    const renewed = readRegistryEntry(root, mycoHome)!;
+    expect(renewed.token).not.toBe(rig.token);
+    expect(renewed.refreshTerminal).toBeUndefined();
+    expect(start.stderr).not.toContain(NOT_DELIVERED);
+    expect(segmentsOf(rig, 'sess-old-lineage')).toBe(1);
+  });
+
+  it('says so at the point of use once the machine has been silent past the inactivity bound, and keeps what it captures', async () => {
+    const rig = await memberRig({ now: Date.now() - MEMBER_LINEAGE_IDLE_MS - DAY_MS });
     registerTestMember({ mycoHome, token: rig.token, tokenId: rig.tokenId, projectId: PROJECT, expiresAt: rig.expiresAt, serverUrl: SERVER_URL });
     const spy = recordingFetch(rig.fetch);
 
@@ -113,7 +130,9 @@ describe('a member that could not deliver', () => {
     expect(readRegistryEntry(root, mycoHome)!.refreshTerminal).toBe(true);
     expect(start.stderr).toContain(NOT_DELIVERED);
     expect(start.stderr).toContain('myco login <link>');
+    expect(start.stderr).toContain(INACTIVE);
     expect(start.stdout).toContain(NOT_DELIVERED);
+    expect(start.stdout).toContain(INACTIVE);
     expect(rig.rows('member_credentials')).toBe(1);
     expect(rig.rows('sessions')).toBe(0);
     expect(new MemberSpool(PROJECT, { mycoHome }).depth('sess-ended')).toBe(1);

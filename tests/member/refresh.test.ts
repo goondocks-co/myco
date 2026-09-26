@@ -248,6 +248,43 @@ describe('member token rotation', () => {
     expect(dials).toBe(1);
   });
 
+  it('reads `lineage_expired` as final whichever server answers it — one built before #1417 answers it for age — and says the machine was inactive or its credential ended, and how to re-join', async () => {
+    writeDeploymentMembership({ serverUrl: SERVER_URL, token: 'x'.repeat(43), expiresAt: Date.now() - DAY_MS, machineId: 'machine_1', joinedAt: 1, updatedAt: 1 }, { mycoHome });
+    let dials = 0;
+    const olderServer: FetchLike = async () => { dials += 1; return Response.json({ refreshed: false, code: 'lineage_expired', reason: 'token lineage expired' }, { headers: { 'x-myco-protocol': '1' } }); };
+    const lines: string[] = [];
+    const write = process.stderr.write;
+    process.stderr.write = ((chunk: string | Uint8Array) => { lines.push(String(chunk)); return true; }) as typeof process.stderr.write;
+    let status: string;
+    try {
+      status = (await refreshMembership(SERVER_URL, { mycoHome, fetch: olderServer, budget: budget() })).status;
+    } finally {
+      process.stderr.write = write;
+    }
+    expect(status).toBe('lineage-expired');
+    const held = readDeploymentMembership(SERVER_URL, mycoHome)!;
+    expect(held.refreshTerminal).toBe(true);
+    expect(lines.join('')).toContain('this machine was inactive too long, or its credential ended');
+    expect(lines.join('')).toContain('myco login <link>');
+    expect(lines.join('')).not.toMatch(/90 days|lifetime|ceiling/);
+    expect((await refreshMembership(SERVER_URL, { mycoHome, fetch: olderServer, budget: budget() })).status).toBe('not-due');
+    expect(dials).toBe(1);
+  });
+
+  it('`myco member refresh` says a refused lineage means the machine was inactive too long or its credential ended, never that the chain reached a lifetime', async () => {
+    registerTestMember({ mycoHome, token: 'x'.repeat(43), tokenId: 'mt_old', projectId: PROJECT, expiresAt: Date.now() - DAY_MS, serverUrl: SERVER_URL });
+    const olderServer: FetchLike = async () => Response.json({ refreshed: false, code: 'lineage_expired', reason: 'token lineage expired' }, { headers: { 'x-myco-protocol': '1' } });
+    const out: string[] = [];
+    const write = process.stderr.write;
+    process.stderr.write = (() => true) as typeof process.stderr.write;
+    try {
+      await runMemberCli(['refresh'], { mycoHome, fetch: olderServer, stdout: (l) => out.push(l), stderr: () => undefined });
+    } finally {
+      process.stderr.write = write;
+    }
+    expect(out.join('\n')).toContain('proj_1: this machine was inactive too long, or its credential ended — ask a Deployment admin for an invite link');
+  });
+
   it('`myco member refresh` rotates the entry and says what happened', async () => {
     const rig = await nearExpiryRig();
     registerTestMember({ mycoHome, token: rig.token, tokenId: rig.tokenId, projectId: PROJECT, expiresAt: rig.expiresAt, serverUrl: SERVER_URL });
