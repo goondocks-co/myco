@@ -46,6 +46,12 @@ export const RUN_REPOSITORY_DIR = 'repo';
 export const RUN_REPOSITORY_DIGESTS_FILE = 'repo.sha256';
 /** Git inspection commands available to unattended source-reading runs. A text search goes through the harness's own search tool: `git grep -O` runs a program. */
 export const SOURCE_GIT_READ_COMMANDS = ['log', 'shortlog', 'show', 'diff', 'diff-tree', 'ls-tree', 'ls-files', 'rev-parse', 'rev-list', 'status', 'blame', 'cat-file', 'describe'] as const;
+/**
+ * How a source-reading run's instructions tell it to read Git: one call per
+ * read, naming the checkout the same way from wherever the shell stands, and a
+ * refused or failed call taken as that call's answer rather than the run's end.
+ */
+export const SOURCE_GIT_RULES = `Run each Git read as a separate shell tool call naming the checkout by the literal relative path: \`git -C ${RUN_REPOSITORY_DIR} <command>\`. Do not use shell variables, pipelines, command chains, or \`cd\`; those forms require permissions this unattended run does not hold. Allowed Git commands: ${SOURCE_GIT_READ_COMMANDS.join(', ')}. A refused or failed call ends that call, not the run: read its error, and carry on with the rest of the work.`;
 /** The maximum Git fetch depth for a source-reading run. */
 export const MAX_REPOSITORY_HISTORY_DEPTH = 200;
 

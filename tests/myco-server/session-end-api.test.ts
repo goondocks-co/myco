@@ -41,7 +41,7 @@ describe('ending a session as a person', () => {
     expect(body.outcome).toBe('ended');
     expect(r.row('s1')).toEqual({ endedAt: body.endedAt, endedBy: 'mem_machine_1', requestedAt: body.endedAt, lastReceivedAt: NOW - 5_000 });
     expect(r.sqlite.query(`SELECT kind, channel, producer_adapter AS adapter, token_id AS tokenId FROM events`).all()).toEqual([{ kind: 'session.end', channel: 'http', adapter: 'deployment', tokenId: r.tokenId }]);
-    expect((await listReadyTitleSessions(r.db, 10)).map((s) => s.sessionId)).toEqual(['s1']);
+    expect((await listReadyTitleSessions(r.db, 10, NOW - 5_000)).map((s) => s.sessionId)).toEqual(['s1']);
 
     const again = await r.post('s1');
     expect(await again.json() as unknown).toEqual({ outcome: 'already_ended', endedAt: body.endedAt });

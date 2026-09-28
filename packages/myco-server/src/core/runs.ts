@@ -724,11 +724,26 @@ export async function insertReport(db: RelationalStore, scope: ReadScope, report
  */
 export const RUN_TOOL_EVENT = 'run_tool';
 
+/** The outcome a run's call is recorded under when the Deployment answered it with a failure. */
+export const RUN_CALL_FAILED = 'failed';
+
+/** The longest failure message a recorded call keeps. */
+export const RUN_CALL_FAILURE_CHARS = 300;
+
+/** Why the Deployment answered a run's call with a failure: the error's code, and what it said. */
+export interface RunCallFailure {
+  code: string;
+  message: string;
+}
+
 /**
  * Record one call a run made back to the Deployment, whichever door it came
  * through: an MCP tool the harness child called, or a run route a container
  * drove itself. One list holds both, so an empty one means the run reached this
  * Deployment not at all rather than reached it another way.
+ *
+ * A call answered with a failure is recorded with what the failure said, so a
+ * run that ended without its work reads as the call that failed it.
  *
  * A store that refuses the row is named in telemetry rather than failing the
  * call the caller already has an answer to.
@@ -736,13 +751,15 @@ export const RUN_TOOL_EVENT = 'run_tool';
 export async function recordRunCall(
   db: RelationalStore,
   scope: ReadScope,
-  call: { runId: string; toolName: string; op: string | null; durationMs: number | null; recordedAt: number },
+  call: { runId: string; toolName: string; op: string | null; durationMs: number | null; recordedAt: number; failure?: RunCallFailure },
 ): Promise<void> {
+  const failure = call.failure === undefined ? undefined : { code: call.failure.code, message: call.failure.message.slice(0, RUN_CALL_FAILURE_CHARS) };
+  const payload = { ...(call.op === null ? {} : { op: call.op }), ...(failure === undefined ? {} : { failure }) };
   try {
     await recordRunEvents(db, scope, [{
       runId: call.runId, phaseName: null, eventType: RUN_TOOL_EVENT, toolName: call.toolName,
-      outcome: 'success', durationMs: call.durationMs,
-      payload: call.op === null ? null : JSON.stringify({ op: call.op }), recordedAt: call.recordedAt,
+      outcome: failure === undefined ? 'success' : RUN_CALL_FAILED, durationMs: call.durationMs,
+      payload: Object.keys(payload).length === 0 ? null : JSON.stringify(payload), recordedAt: call.recordedAt,
     }]);
   } catch {
     emit({ kind: 'run_tool_unrecorded', runId: call.runId, tool: call.toolName, op: call.op });

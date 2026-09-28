@@ -1,6 +1,6 @@
 import type { RelationalStore } from '../core/adapters.js';
 import { keyset, page, type Page, type ReadScope } from './scope.js';
-import { getRun, isTerminalRunStatus, RUN_TOOL_EVENT } from '../core/runs.js';
+import { getRun, isTerminalRunStatus, RUN_CALL_FAILED, RUN_TOOL_EVENT, type RunCallFailure } from '../core/runs.js';
 import { readRunCloseEvidence, type RunCloseEvidence } from '../core/run-postconditions.js';
 
 /** The most calls one run's detail lists; a run that called more is read in the record rather than the page. */
@@ -86,6 +86,8 @@ export interface RunToolCallRow {
   op: string | null;
   durationMs: number | null;
   recordedAt: number;
+  /** Present on a call the Deployment answered with a failure: its code, and what it said. */
+  failure?: RunCallFailure;
 }
 
 export interface RunDetail {
@@ -233,16 +235,31 @@ export async function listRuns(db: RelationalStore, scope: ReadScope, opts: RunF
   return page(results.map(toListRow), k.limit, (r) => ({ createdAt: r.queuedAt ?? r.startedAt ?? 0, id: r.id }));
 }
 
-/** The op a recorded tool call names, off the payload the record carries. */
-function opOfPayload(raw: string | null): string | null {
+/** A recorded call's payload as an object, or null where it holds none. */
+function payloadOf(raw: string | null): Record<string, unknown> | null {
   if (raw === null) return null;
   try {
     const parsed: unknown = JSON.parse(raw);
-    const op = typeof parsed === 'object' && parsed !== null ? (parsed as { op?: unknown }).op : undefined;
-    return typeof op === 'string' && op.length > 0 ? op : null;
+    return typeof parsed === 'object' && parsed !== null ? parsed as Record<string, unknown> : null;
   } catch {
     return null;
   }
+}
+
+/** The op a recorded tool call names, off the payload the record carries. */
+function opOfPayload(raw: string | null): string | null {
+  const op = payloadOf(raw)?.op;
+  return typeof op === 'string' && op.length > 0 ? op : null;
+}
+
+/** The failure recorded against a call whose outcome is failed, or null for any other call. */
+function failureOf(outcome: string | null, raw: string | null): RunCallFailure | null {
+  if (outcome !== RUN_CALL_FAILED) return null;
+  const failure = payloadOf(raw)?.failure as { code?: unknown; message?: unknown } | undefined;
+  return {
+    code: typeof failure?.code === 'string' ? failure.code : 'tool_call_failed',
+    message: typeof failure?.message === 'string' ? failure.message : '',
+  };
 }
 
 /**
@@ -254,17 +271,21 @@ function opOfPayload(raw: string | null): string | null {
  */
 export async function runToolCalls(db: RelationalStore, scope: ReadScope, runId: string, limit = MAX_TOOL_CALLS): Promise<RunToolCallRow[]> {
   const { results } = await db
-    .prepare(`SELECT tool_name AS tool, duration_ms AS durationMs, payload, recorded_at AS recordedAt
+    .prepare(`SELECT tool_name AS tool, duration_ms AS durationMs, outcome, payload, recorded_at AS recordedAt
        FROM agent_run_events WHERE project_id = ? AND run_id = ? AND event_type = ?
        ORDER BY recorded_at ASC, id ASC LIMIT ?`)
     .bind(scope.projectId, runId, RUN_TOOL_EVENT, limit)
     .all<Record<string, unknown>>();
-  return results.map((r) => ({
-    tool: String(r.tool ?? ''),
-    op: opOfPayload(text(r.payload)),
-    durationMs: typeof r.durationMs === 'number' ? r.durationMs : null,
-    recordedAt: Number(r.recordedAt ?? 0),
-  }));
+  return results.map((r) => {
+    const failure = failureOf(text(r.outcome), text(r.payload));
+    return {
+      tool: String(r.tool ?? ''),
+      op: opOfPayload(text(r.payload)),
+      durationMs: typeof r.durationMs === 'number' ? r.durationMs : null,
+      recordedAt: Number(r.recordedAt ?? 0),
+      ...(failure === null ? {} : { failure }),
+    };
+  });
 }
 
 /** One run inside the scope with its phases and the calls it made, or null — including when the run exists under another project. */

@@ -11,6 +11,8 @@ import { join } from 'node:path';
 import { serverEnvFromBindings } from '@myco-server-worker/platform/cloudflare/env.js';
 import { serverEnvFromBunConfig } from '@myco-server-worker/platform/bun/env.js';
 import { createBunHandler } from '@myco-server-worker/entry/bun.js';
+import { titleReadySessions } from '@myco-server-worker/core/titling.js';
+import { SESSION_END_SETTLE_MS } from '@myco-server-worker/constants.js';
 import { renderMigrationFiles } from '@myco-server-worker/db/migrate.js';
 import { issueMemberToken } from '@myco-server-worker/auth/tokens.js';
 import { sqliteRelationalStore } from '@myco-server-worker/platform/bun/sqlite.js';
@@ -65,17 +67,23 @@ describe('afterResponse', () => {
     const { token } = await issueMemberToken(sqliteRelationalStore(sqlite), { memberId: 'mem_machine_1', machineId: 'machine_1' }, Date.now());
     sqlite.close();
 
-    // The work a session's end leaves behind is a titling dispatch: a run queued for a worker to claim, and the session's claim spent. close() lands both before the store closes.
+    // The work left behind is a titling dispatch for an ended session: a run queued for a worker to claim, and the session's claim spent. close() lands both before the store closes.
     const logged: string[] = [];
     const originalLog = console.log;
     console.log = (...args: unknown[]) => { logged.push(args.map(String).join(' ')); };
     try {
-      const handler = await createBunHandler({ databasePath, blobDir: join(root, 'blobs'), header: 'x-forwarded-for' } as never);
+      const handler = await createBunHandler({ databasePath, blobDir: join(root, 'blobs'), header: 'x-forwarded-for', wakeLoop: false } as never);
       const post = (over: Record<string, unknown>) => handler.fetch(memberPost(token, envelope(over), '/events', { 'x-forwarded-for': '1.2.3.4' }));
       expect((await post({ eventId: uuid(1), kind: 'session.start', payload: { agent: 'a', startedAt: 1_000 } })).status).toBe(200);
       expect((await post({ eventId: uuid(2), payload: { promptId: uuid(20), text: 'hello there', origin: 'user' } })).status).toBe(200);
       expect((await post({ eventId: uuid(3), kind: 'session.end', createdAt: 5_000, payload: { endedAt: 5_000 } })).status).toBe(200);
-      await handler.close();
+      const slow = later();
+      handler.env.afterResponse(() => slow.promise.then(async () => {
+        await titleReadySessions({ ...handler.env, origin: 'https://s' }, Date.now() + SESSION_END_SETTLE_MS);
+      }));
+      const closing = handler.close();
+      slow.done();
+      await closing;
     } finally {
       console.log = originalLog;
     }

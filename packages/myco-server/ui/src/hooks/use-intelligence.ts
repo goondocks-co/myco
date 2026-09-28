@@ -77,6 +77,8 @@ export interface RunToolCallRow {
   op: string | null;
   durationMs: number | null;
   recordedAt: number;
+  /** Present on a call the Deployment answered with a failure. */
+  failure?: { code: string; message: string };
 }
 
 export interface RunDetailResponse {
