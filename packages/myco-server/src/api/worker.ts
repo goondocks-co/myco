@@ -18,7 +18,7 @@ import { parseWorkerAccounting, WorkerUsageError } from '@goondocks/myco-shared/
 import type { ServerEnv } from '../core/adapters.js';
 import type { DeploymentContext } from '../context.js';
 import { claimNextRun, endLeasedRun, renewLease, type OfferedHarness } from '../core/harness.js';
-import { WORKER_HEARTBEAT_MS, WORKER_POLL_IDLE_MS } from '../constants.js';
+import { WORKER_HEARTBEAT_MS, WORKER_LEASE_MS, WORKER_POLL_IDLE_MS } from '../constants.js';
 import { ok } from './scope.js';
 import { prepareWorkerRepository } from '../core/worker-repository.js';
 import { recordWorkerContact } from '../core/worker-contacts.js';
@@ -89,7 +89,10 @@ export async function handleWorkerClaim(env: ServerEnv, ctx: DeploymentContext):
   // carries none of its own, so a lease changed here changes what every
   // attached worker does without shipping one.
   if (!outcome.claimed) return ok({ persisted: true, claimed: false, reason: outcome.reason, pollAfterMs: WORKER_POLL_IDLE_MS });
-  return ok({ persisted: true, claimed: true, heartbeatMs: WORKER_HEARTBEAT_MS, run: outcome.run });
+  // `leaseMs` is the lease granted from this request's admission. A worker
+  // counts it down on its own clock from when it sent the claim, so the two
+  // machines' clocks never have to agree.
+  return ok({ persisted: true, claimed: true, heartbeatMs: WORKER_HEARTBEAT_MS, leaseMs: WORKER_LEASE_MS, run: outcome.run });
 }
 
 /** Extend the lease on a run this worker holds. `held: false` tells a worker another holds its run now, so it stops driving it. */
@@ -100,14 +103,22 @@ export async function handleWorkerLease(env: ServerEnv, ctx: DeploymentContext):
   if (run === null) return ok({ persisted: true, held: false, reason: 'lease names a projectId and a runId' });
   // A worker names the attempt it drives, so a renewal left over from an
   // earlier attempt of the same run never renews the attempt that replaced it.
-  const attemptId = typeof asked.attemptId === 'string' && RUN_ID_SHAPE.test(asked.attemptId) ? asked.attemptId : undefined;
+  // One that names none is a worker from before attempts, and renews as it did;
+  // one that names an attempt this route cannot read is refused, as the end is.
+  let attemptId: string | undefined;
+  try {
+    attemptId = parseWorkerAccounting({ attemptId: asked.attemptId }).attemptId;
+  } catch (error) {
+    if (error instanceof WorkerUsageError) return ok({ persisted: false, code: 'parse', reason: error.message });
+    throw error;
+  }
   const outcome = await renewLease(env, { tokenId: ctx.tokenId, now: ctx.now }, { ...run, ...(attemptId === undefined ? {} : { attemptId }) });
   // A worker driving a run stops polling the claim, so the renewal is the only
   // contact it makes. It names no offer and no outcome of its own: the stored
   // report keeps its liveness refreshed.
   if (outcome.held) await recordWorkerContact(env.db, { credentialId: ctx.tokenId, machineId: ctx.machineId, now: ctx.now });
   return ok(outcome.held
-    ? { persisted: true, held: true, expiresAt: outcome.expiresAt }
+    ? { persisted: true, held: true, expiresAt: outcome.expiresAt, leaseMs: WORKER_LEASE_MS }
     : { persisted: true, held: false, reason: 'the lease is no longer held' });
 }
 

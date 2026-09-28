@@ -18,7 +18,7 @@
  * read arrived in time.
  */
 import { describe, expect, it } from 'bun:test';
-import { existsSync, mkdtempSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { runWorker, type WorkerOptions, type WorkerOutcome } from '@myco/runner/loop.js';
@@ -38,6 +38,8 @@ const SERVER_URL = 'https://deployment.example';
 const SETTLE_MS = 5_000;
 /** A dark wake: longer than the two seconds a worker waits between polls, shorter than the settle. */
 const DARK_WAKE_MS = 2_500;
+/** How often a worker polls an empty queue, scaled down for the test. */
+const POLL_MS = 50;
 /** A sleep long enough that any lease a worker held lapses in it. */
 const SLEEP_MS = 5 * 60_000;
 
@@ -82,6 +84,10 @@ async function host(options: { heartbeatMs?: number } = {}) {
     if (path === '/worker/claim' && answer?.claimed === true && options.heartbeatMs !== undefined) {
       return Response.json({ ...answer, heartbeatMs: options.heartbeatMs }, { headers: response.headers });
     }
+    // An empty queue is polled at the test's own cadence, so every wake is seen at a wait of its own.
+    if (path === '/worker/claim' && answer?.claimed === false) {
+      return Response.json({ ...answer, pollAfterMs: POLL_MS }, { headers: response.headers });
+    }
     return response;
   }) as unknown as typeof fetch;
 
@@ -115,16 +121,16 @@ async function host(options: { heartbeatMs?: number } = {}) {
       lockDir: null,
       runRoot: mkdtempSync(join(tmpdir(), `myco-sleep-${name}-`)),
       only: [STUB_HARNESS],
-      pollIdleMs: 50,
+      pollIdleMs: POLL_MS,
       log: (line) => { lines.push(line); },
       fetchImpl,
       signal: stopping.signal,
       clock,
-      wakeSettleMs: SETTLE_MS,
+      wakeSettle: { baseMs: SETTLE_MS, maxMs: SETTLE_MS },
       ...extra,
     });
     workers.push({ name, lines, outcome });
-    return lines;
+    return { lines, outcome };
   };
   const claims = () => workers.flatMap((w) => w.lines.filter((l) => l.startsWith('claimed ')).map((l) => `${w.name}: ${l}`));
   const lost = () => workers.flatMap((w) => w.lines.filter((l) => l.includes('lease lost')).map((l) => `${w.name}: ${l}`));
@@ -136,13 +142,30 @@ async function host(options: { heartbeatMs?: number } = {}) {
   /** The run's MCP server, answered by the same Deployment, for the driver's tool listing. */
   const mcp = <T>(fn: () => Promise<T>): Promise<T> => withRunMcp(SERVER_URL, (request) => server.handleRequest(request, e.serverEnv), fn);
   const goOffline = () => { offline = true; };
-  return { e, clock, sleep, goOffline, member, queueRun, row, attach, claims, lost, report, stop, sent, mcp };
+  /** Time passes on both clocks in a step too short to read as sleep; the host stays up. */
+  const advance = async (ms: number) => { offset += ms; };
+  return { e, clock, sleep, advance, goOffline, member, queueRun, row, attach, claims, lost, report, stop, sent, mcp };
+}
+
+/** A stub harness whose turn is held open until released; `pid` names the harness process once it has its prompt. */
+function heldTurn() {
+  const dir = mkdtempSync(join(tmpdir(), 'myco-sleep-release-'));
+  const release = join(dir, 'release');
+  const pidFile = join(dir, 'peer.pid');
+  expect(stubAcpHarness({ holdUntil: release, pidFile })).toEqual(STUB_DETECTED);
+  return {
+    release: () => { if (!existsSync(release)) writeFileSync(release, ''); },
+    pid: (): number | null => (existsSync(pidFile) ? Number(readFileSync(pidFile, 'utf8')) : null),
+  };
+}
+
+/** Whether a process is still running. */
+function alive(pid: number): boolean {
+  try { process.kill(pid, 0); return true; } catch { return false; }
 }
 
 function turnRelease() {
-  const release = join(mkdtempSync(join(tmpdir(), 'myco-sleep-release-')), 'release');
-  expect(stubAcpHarness({ holdUntil: release })).toEqual(STUB_DETECTED);
-  return () => { if (!existsSync(release)) writeFileSync(release, ''); };
+  return heldTurn().release;
 }
 
 describe('two workers on a host that sleeps', () => {
@@ -179,15 +202,17 @@ describe('two workers on a host that sleeps', () => {
   }, 60_000);
 
   it('stops a harness whose lease lapsed while the host slept, from its own clock, and reports nothing on the run', async () => {
-    const release = turnRelease();
+    const turn = heldTurn();
+    const release = turn.release;
     const h = await host({ heartbeatMs: 200 });
     const a = await h.member('mem_mac');
     await h.mcp(async () => {
       try {
         h.queueRun('run_napped');
-        const lines = h.attach('mac', a.token);
-        await until('the run to be driven', () => h.row('run_napped').status === 'running');
-        await wait(200);
+        const { lines, outcome } = h.attach('mac', a.token, { once: true });
+        await until('the harness to have its prompt', () => turn.pid() !== null);
+        const pid = turn.pid()!;
+        expect(alive(pid)).toBe(true);
         // The host sleeps past the lease; the Deployment returns the run to the
         // queue; and the network is not back yet when the host wakes, so no
         // renewal is answered.
@@ -199,6 +224,10 @@ describe('two workers on a host that sleeps', () => {
         // the harness without waiting on an answer that is not coming.
         await until('the worker to stop the harness it no longer holds', () => lines.some((l) => l.includes('slept past')), 3_000)
           .catch((error: Error) => { throw new Error(`${error.message}\n${h.report()}`); });
+        // The drive returned with the turn still held open, so the harness was
+        // stopped rather than left to finish; and the process is gone.
+        expect(await outcome).toEqual({ driven: 1, refused: null });
+        await until('the harness process to end', () => !alive(pid), 5_000);
         // It reported nothing on a run it no longer holds.
         expect(h.sent.filter((s) => s.path === '/worker/end')).toEqual([]);
       } finally {
@@ -227,6 +256,10 @@ describe('two workers on a host that sleeps', () => {
         await until('the run to end', () => !['queued', 'running'].includes(h.row('run_slow').status));
         await wait(200);
         expect({ claims: h.claims().length, lost: h.lost() }, h.report()).toEqual({ claims: 1, lost: [] });
+        // Every renewal names the attempt the claim answered, so the Deployment renews that attempt and no other.
+        const attemptId = (h.sent.find((s) => s.path === '/worker/claim' && s.answer?.claimed === true)?.answer?.run as { attemptId?: string } | undefined)?.attemptId;
+        expect(attemptId).toEqual(expect.any(String));
+        expect([...new Set(h.sent.filter((s) => s.path === '/worker/lease').map((s) => s.body?.attemptId))]).toEqual([attemptId]);
         expect([held.mac, held.vm].sort((x, y) => y.holds - x.holds)).toEqual([{ holds: 1, releases: 1 }, { holds: 0, releases: 0 }]);
       } finally {
         release();
@@ -234,4 +267,70 @@ describe('two workers on a host that sleeps', () => {
       }
     });
   }, 30_000);
+
+  it('lengthens the settle each time the host sleeps before it settled, so a longer wake after short ones claims nothing', async () => {
+    const release = turnRelease();
+    const h = await host();
+    const a = await h.member('mem_mac');
+    // Scaled: a base of 600 ms that doubles to a ceiling of 4.8 s.
+    const settle = { baseMs: 600, maxMs: 4_800 };
+    await h.mcp(async () => {
+      try {
+        const { lines } = h.attach('mac', a.token, { wakeSettle: settle });
+        await wait(200);
+        await h.sleep(SLEEP_MS);
+        h.queueRun('run_cycling');
+        // Each wake is longer than the base settle, and shorter than the settle the sleeps before it have grown to.
+        for (const wake of [300, 900, 1_800, 3_600]) {
+          await wait(wake);
+          await h.sleep(SLEEP_MS);
+        }
+        expect({ claims: h.claims() }, h.report()).toEqual({ claims: [] });
+        // The settle it now waits out is the ceiling, and it says so.
+        expect(lines.filter((l) => l.startsWith('this machine woke')).at(-1)).toContain('awake 5s');
+        // Awake past the ceiling, it takes the run.
+        await until('the run to be claimed once the host stayed up', () => h.claims().length > 0, 10_000);
+        release();
+        await until('the run to end', () => !['queued', 'running'].includes(h.row('run_cycling').status));
+        expect({ claims: h.claims().length, lost: h.lost() }, h.report()).toEqual({ claims: 1, lost: [] });
+      } finally {
+        release();
+        await h.stop();
+      }
+    });
+  }, 60_000);
+
+  it('keeps driving a run through a short sleep inside the lease its renewals hold, however long ago it was claimed', async () => {
+    const release = turnRelease();
+    const h = await host({ heartbeatMs: 100 });
+    const a = await h.member('mem_mac');
+    await h.mcp(async () => {
+      try {
+        h.queueRun('run_long');
+        h.attach('mac', a.token, { once: true });
+        await until('the run to be driven', () => h.row('run_long').status === 'running');
+        // Time passes in steps too short to read as sleep, each followed by a
+        // renewal, until the claim itself is further back than a lease.
+        for (let elapsed = 0; elapsed <= WORKER_LEASE_MS + 10_000; elapsed += 4_000) {
+          await h.advance(4_000);
+          await wait(150);
+        }
+        // A sleep shorter than what is left of the renewed lease.
+        await h.sleep(30_000);
+        await wait(500);
+        expect(h.row('run_long').status).toBe('running');
+        release();
+        await until('the run to end', () => !['queued', 'running'].includes(h.row('run_long').status));
+        await wait(200);
+        expect({
+          stopped: h.report().includes('slept past'),
+          lost: h.lost(),
+          ended: h.sent.filter((s) => s.path === '/worker/end').map((s) => s.body?.status),
+        }, h.report()).toEqual({ stopped: false, lost: [], ended: ['completed'] });
+      } finally {
+        release();
+        await h.stop();
+      }
+    });
+  }, 60_000);
 });

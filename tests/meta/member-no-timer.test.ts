@@ -62,6 +62,24 @@ const BOUNDED_TIMERS: Readonly<Record<string, { calls: number; form: 'cleared' |
   },
 };
 
+/**
+ * The request deadlines the member closure may hold: `AbortSignal.timeout`, by
+ * module, at the count each module has.
+ *
+ * A deadline is a timer the runtime keeps. It is allowed only as the deadline of
+ * a request or a child: every site must be the signal a call is given, alone or
+ * joined to the caller's own (`AbortSignal.any([signal, AbortSignal.timeout(…)])`),
+ * so it cannot fire on anything but the call it bounds. Like the list above, this
+ * only shrinks.
+ */
+const REQUEST_DEADLINES: Readonly<Record<string, { calls: number; bound: string }>> = {
+  'packages/myco/src/member/join-code.ts': { calls: 1, bound: 'one poll of a join code' },
+  'packages/myco/src/runner/drivers/acp.ts': { calls: 1, bound: "the listing of the run's own tools" },
+  'packages/myco/src/runner/loop.ts': { calls: 1, bound: "one worker request (claim, renewal, end), through the loop's one helper" },
+  'packages/myco/src/runner/repository-checkout.ts': { calls: 1, bound: "one run's source checkout request" },
+  'packages/myco/src/runner/repository.ts': { calls: 1, bound: "one run's source checkout" },
+};
+
 /** A repeating timer is allowed only where a run holds it, and only if the same module ends it. */
 const REPEATING_TIMER = 'packages/myco/src/runner/loop.ts';
 
@@ -79,6 +97,11 @@ const GLOBAL_REACH = /globalThis\b\s+as\b|globalThis\b(?:\s+as\b[^[\n]{0,80})?\s
 const TIMER_CALL = /\b(setInterval|setTimeout|setImmediate)\s*\(|Bun\.sleep\s*\(|scheduler\.wait\s*\(/g;
 const TIMER_CLEARED = /\b(clearInterval|clearTimeout)\s*\(/g;
 const TIMER_AWAITED = /new Promise[\s\S]{0,160}?(set(Interval|Timeout)|Bun\.sleep)\s*\(/g;
+/** A deadline, whatever the spelling: a call through the property, or through a computed name. */
+const DEADLINE_IDENTIFIER = /\bAbortSignal\s*(?:\.\s*timeout\b|\[\s*['"`]timeout['"`]\s*\])/;
+const DEADLINE_CALL = /\bAbortSignal\s*(?:\.\s*timeout|\[\s*['"`]timeout['"`]\s*\])\s*\(/g;
+/** A deadline given to a call: joined to the caller's signal, or passed as a call's own `signal`. */
+const DEADLINE_BOUND = /AbortSignal\.any\(\s*\[[^\]]*?AbortSignal\.timeout\(|\bsignal\s*:[^,\n]*?AbortSignal\.timeout\(/g;
 
 /** What a machine-side scheduler is made of; none of it may be reachable from a member entry. */
 const SCHEDULER_TOKENS: readonly RegExp[] = [/\bPowerManager\b/, /\bJobRunner\b/, /\bPOWER_JOB_NAMES\b/, /\bregisterJob\s*\(/];
@@ -106,6 +129,21 @@ describe('the 2.0 member entry graph', () => {
   it('names a timer in no module but the allowlisted ones, whatever the spelling', () => {
     const naming = [...CODE].filter(([, code]) => TIMER_IDENTIFIERS.test(code)).map(([key]) => key);
     expect(naming.sort()).toEqual(Object.keys(BOUNDED_TIMERS).sort());
+  });
+
+  it('holds a request deadline in no module but the allowlisted ones, whatever the spelling', () => {
+    const naming = [...CODE].filter(([, code]) => DEADLINE_IDENTIFIER.test(code)).map(([key]) => key);
+    expect(naming.sort()).toEqual(Object.keys(REQUEST_DEADLINES).sort());
+  });
+
+  it('gives every request deadline to the call it bounds, at the count the allowlist declares', () => {
+    for (const [key, { calls }] of Object.entries(REQUEST_DEADLINES)) {
+      const code = CODE.get(key);
+      expect({ key, present: code !== undefined }).toEqual({ key, present: true });
+      const sites = (code!.match(DEADLINE_CALL) ?? []).length;
+      const bound = (code!.match(DEADLINE_BOUND) ?? []).length;
+      expect({ key, sites, bound }).toEqual({ key, sites: calls, bound: calls });
+    }
   });
 
   it('reaches into the global object for nothing but a plain member, so a name assembled at runtime has nowhere to land', () => {

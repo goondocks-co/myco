@@ -136,10 +136,9 @@ export async function run(args: string[], deps: WorkerServiceDeps = {}): Promise
     ...(only.length === 0 ? {} : { only }),
     ...(flags.get('once') === 'true' ? { once: true } : {}),
     pollIdleMs: POLL_IDLE_MS,
-    log: (line) => { console.log(workerLogLine(line)); },
     signal: stopping.signal,
   });
-  console.log(workerLogLine(`drove ${outcome.driven} run${outcome.driven === 1 ? '' : 's'}`));
+  attach.log(`drove ${outcome.driven} run${outcome.driven === 1 ? '' : 's'}`);
   if (outcome.replaced === true) return endReplacedWorker(serverUrl, mycoHome, stopping.signal);
   if (outcome.refused === null) return true;
   if (isTerminalRefusal(outcome.refused)) return endRefused(serverUrl, mycoHome, outcome.refused);
@@ -237,7 +236,8 @@ export async function endReplacedWorker(serverUrl: string, mycoHome: string, sto
 
 /** Where a worker attached from this terminal or a login service claims from, and how it knows it is alone. */
 /** `program` is the file this process runs, whose replacement ends the worker once the new one runs. */
-export function attachOptions(serverUrl: string, mycoHome: string, fetchImpl?: typeof fetch, program: string = process.execPath): Pick<WorkerOptions, 'serverUrl' | 'token' | 'renew' | 'lockDir' | 'runRoot' | 'onAttached' | 'stillCurrent' | 'keepAwake'> {
+export function attachOptions(serverUrl: string, mycoHome: string, fetchImpl?: typeof fetch, program: string = process.execPath): Pick<WorkerOptions, 'serverUrl' | 'token' | 'renew' | 'lockDir' | 'runRoot' | 'onAttached' | 'stillCurrent' | 'keepAwake' | 'log'> {
+  const log = (line: string): void => { console.log(workerLogLine(line)); };
   return {
     serverUrl,
     token: () => readDeploymentMembership(serverUrl, mycoHome)?.token ?? null,
@@ -246,7 +246,8 @@ export function attachOptions(serverUrl: string, mycoHome: string, fetchImpl?: t
     lockDir: workerLockDir(),
     runRoot: path.join(mycoHome, 'worker', 'runs'),
     onAttached: () => { clearWorkerRefusal(mycoHome, serverUrl); },
-    stillCurrent: sameProgram(program, executableIdentity, programRuns, (line) => { console.log(workerLogLine(line)); }),
+    stillCurrent: sameProgram(program, executableIdentity, programRuns, log),
     keepAwake: keepMachineAwake,
+    log,
   };
 }

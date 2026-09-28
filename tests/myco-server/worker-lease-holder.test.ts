@@ -12,6 +12,8 @@ import { issueMemberToken } from '@myco-server-worker/auth/tokens.js';
 import { HARNESS_MEMBER_ID, claimNextRun, endLeasedRun, expireLeases, renewLease } from '@myco-server-worker/core/harness.js';
 import { getRunDetail, listRuns } from '@myco-server-worker/read/runs.js';
 import { WORKER_LEASE_MS } from '@myco-server-worker/constants.js';
+import worker_ from '@myco-server-worker/entry/cloudflare.js';
+import { memberHeaders } from './helpers/fixtures.js';
 
 const NOW = 1_800_000_000_000;
 const SCOPE = { projectId: 'proj_1' };
@@ -28,13 +30,21 @@ async function rig() {
     [NOW, JSON.stringify({ serverUrl: 'https://s', actor: 'deployment', timeoutSeconds: 300 }), JSON.stringify({ timeoutSeconds: 300 })],
   );
   /** A worker: an administrator's credential issued on a named machine. */
+  const issued = new Map<string, string>();
   const worker = async (memberId: string, machineId: string) => {
     e.sqlite.run(`INSERT OR IGNORE INTO members (id, label, created_at, role) VALUES (?, 'a worker', ?, 'admin')`, [memberId, NOW]);
-    return (await issueMemberToken(e.db, { memberId, machineId }, NOW)).tokenId;
+    const minted = await issueMemberToken(e.db, { memberId, machineId }, NOW);
+    issued.set(minted.tokenId, minted.token);
+    return minted.tokenId;
+  };
+  /** A worker route asked over the Deployment's own pipeline, as the worker whose credential this is. */
+  const route = async (tokenId: string, path: string, body: unknown) => {
+    const res = await worker_.fetch(new Request(`https://s${path}`, { method: 'POST', headers: memberHeaders(issued.get(tokenId)!), body: JSON.stringify(body) }), e.env);
+    return await res.json() as Record<string, unknown>;
   };
   const claim = (tokenId: string, now: number) => claimNextRun(e.serverEnv, { tokenId, machineId: 'unused', harnesses: OFFERED, now });
   const row = () => e.sqlite.query(`SELECT status, leased_by AS leasedBy, lease_expires_at AS leaseExpiresAt FROM agent_runs WHERE id = 'run_1'`).get() as Record<string, unknown>;
-  return { e, worker, claim, row };
+  return { e, worker, claim, row, route };
 }
 
 describe('the lease on a run', () => {
@@ -64,6 +74,38 @@ describe('the lease on a run', () => {
     expect(await endLeasedRun(r.e.serverEnv, { tokenId: mac, now: NOW + WORKER_LEASE_MS + 3 }, { ...RUN, status: 'completed' }))
       .toEqual({ ended: false, reason: 'the lease is no longer held' });
     expect(r.row()).toMatchObject({ status: 'running', leasedBy: vm });
+  });
+});
+
+describe('a renewal names the attempt it renews', () => {
+  it('renews the attempt a worker names and no earlier one, and renews as before for a worker that names none', async () => {
+    const r = await rig();
+    // The Deployment's pipeline reads the real clock, so the claims are placed around it.
+    const now = Date.now();
+    const mac = await r.worker('mem_mac', 'sirkirby_mac');
+    const first = await r.claim(mac, now);
+    if (!first.claimed) throw new Error('not claimed');
+    // The same worker's lease lapses and it takes the run again: a second attempt, on the same credential.
+    await expireLeases(r.e.serverEnv, now + WORKER_LEASE_MS);
+    const second = await r.claim(mac, now + WORKER_LEASE_MS + 1);
+    if (!second.claimed) throw new Error('not reclaimed');
+    expect(second.run.attemptId).not.toBe(first.run.attemptId);
+    expect(await r.route(mac, '/worker/lease', { ...RUN, attemptId: first.run.attemptId })).toMatchObject({ persisted: true, held: false });
+    expect(await r.route(mac, '/worker/lease', { ...RUN, attemptId: second.run.attemptId })).toMatchObject({ persisted: true, held: true, leaseMs: WORKER_LEASE_MS });
+    expect(await r.route(mac, '/worker/lease', RUN)).toMatchObject({ persisted: true, held: true, leaseMs: WORKER_LEASE_MS });
+  });
+
+  it('refuses a renewal naming an attempt it cannot read, as it refuses such an end', async () => {
+    const r = await rig();
+    const mac = await r.worker('mem_mac', 'sirkirby_mac');
+    expect((await r.claim(mac, Date.now())).claimed).toBe(true);
+    for (const attemptId of ['not an id!', 42, '']) {
+      expect({ attemptId, lease: await r.route(mac, '/worker/lease', { ...RUN, attemptId }) })
+        .toEqual({ attemptId, lease: { persisted: false, code: 'parse', reason: expect.any(String) } });
+      expect({ attemptId, end: await r.route(mac, '/worker/end', { ...RUN, status: 'failed', attemptId }) })
+        .toEqual({ attemptId, end: { persisted: false, code: 'parse', reason: expect.any(String) } });
+    }
+    expect(r.row()).toMatchObject({ status: 'running', leasedBy: mac });
   });
 });
 
