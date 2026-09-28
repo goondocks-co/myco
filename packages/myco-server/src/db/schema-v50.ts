@@ -6,7 +6,7 @@ import { PROJECT_ID_GRAMMAR } from './project-id.js';
  * `embedding_hubness_members` holds, per Project and model, every spore vector
  * the stored distance moments cover: its state (0 settled, 1 joining, 2
  * leaving), its count, mean and sum of squared deviations of cosine distance to
- * the other members, and a copy of its vector (float32, base64). A spore added
+ * the other members, and a copy of its vector (float32 without its zero tail, base64). A spore added
  * or removed changes each member's moments by one sample, read from the copies,
  * so its vector may be deleted from the vector store while it leaves.
  *

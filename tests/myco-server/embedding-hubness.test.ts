@@ -128,7 +128,7 @@ function fixture(target: Target) {
     expect(members()).toEqual(current().map((id) => ({ id, state: 0, n: expected.size - 1 })));
     expect(f.sqlite.query('SELECT hubness_model, hubness_count FROM embedding_cursors').get()).toEqual({ hubness_model: MODEL, hubness_count: expected.size });
   };
-  return { ...f, spore, index, native, reads, commitPause, context, step, settle, work, current, members, expectExact, repaired };
+  return { ...f, spore, index, native, reads, commitPause, context, step, settle, work, current, members, recompute, expectExact, repaired };
 }
 
 const hubnessSteps = (phases: EmbeddingStep['phase'][]) => phases.filter((p) => p === 'hubness').length;
@@ -275,6 +275,87 @@ describe.each(TARGETS)('%s: spore calibration', (target) => {
     expect(f.repaired()).toBe(0);
     expect(late).toEqual({ phase: 'hubness', processed: 0 });
     expect(await f.work(T)).toBe(false);
+  });
+
+  test('calibration work stays pending between the steps of an operation, so the next run takes it up', async () => {
+    const f = fixture(target);
+    for (let i = 0; i < 120; i++) f.spore(`s${String(i).padStart(3, '0')}`, `spore ${i}`);
+    await f.settle(T);
+    f.spore('s999', 'the spore that joins');
+    expect((await f.step(T)).phase).toBe('missing');
+    f.index?.apply();
+    expect(await f.step(T)).toEqual({ phase: 'hubness', processed: 1 });
+    expect(f.members().some((m) => m.state === 1)).toBe(true);
+    expect(await f.work(T)).toBe(true);
+    expect(await f.step(T)).toEqual({ phase: 'hubness', processed: 1 });
+    expect(await f.work(T)).toBe(true);
+    expect(await f.settle(T)).toEqual(['hubness', 'settled']);
+    expect(await f.work(T)).toBe(false);
+    await f.expectExact();
+    expect(f.repaired()).toBe(0);
+  });
+
+  test('a spore whose vector the store does not yet return does not hold a removed spore in the calibration', async () => {
+    const f = fixture(target);
+    for (let i = 0; i < 12; i++) f.spore(`s${String(i).padStart(2, '0')}`, `spore ${i}`);
+    await f.settle(T);
+    f.spore('s99', 'not yet visible');
+    expect((await f.step(T)).phase).toBe('missing');
+    f.index?.apply();
+    const hidden = (f.sqlite.query("SELECT id FROM embedding_receipts WHERE record_id = 's99'").get() as { id: string }).id;
+    const native = f.context.vectors;
+    f.context.vectors = { ...native, get: async (scope, ids) => (await native.get(scope, ids)).filter((v) => v.id !== hidden) };
+    const gone = f.current().find((id) => id !== hidden)!;
+    f.sqlite.run("UPDATE spores SET status = 'superseded' WHERE project_id = 'p' AND id = (SELECT record_id FROM embedding_receipts WHERE id = ?)", [gone]);
+    for (let i = 0; i < 3; i++) { await f.settle(T + i * C); f.index?.apply(); }
+    expect(f.members().map((m) => m.id)).not.toContain(gone);
+    expect(f.members().map((m) => m.id)).not.toContain(hidden);
+    expect(f.members().every((m) => m.state === 0 && m.n === f.members().length - 1)).toBe(true);
+    expect(await f.work(T + 3 * C)).toBe(true);
+    f.context.vectors = native;
+    await f.settle(T + 3 * C);
+    await f.expectExact();
+    expect(f.repaired()).toBe(0);
+  });
+
+  test('while calibration is built or extended over several operations, no receipt publishes statistics over fewer than all other spores', async () => {
+    const f = fixture(target);
+    for (let i = 0; i < 120; i++) f.spore(`s${String(i).padStart(3, '0')}`, `spore ${i}`);
+    await f.settle(T);
+    await f.expectExact();
+    const published = () => new Map((f.sqlite.query("SELECT id, neighbor_mean, neighbor_std FROM embedding_receipts WHERE type = 'spore' AND ready = 1").all() as
+      Array<{ id: string; neighbor_mean: number | null; neighbor_std: number | null }>).map((r) => [r.id, [r.neighbor_mean, r.neighbor_std] as const]));
+    const same = (a: readonly [number | null, number | null], b: readonly [number | null, number | null]) =>
+      (a[0] === null ? b[0] === null : b[0] !== null && Math.abs(a[0] - b[0]) < 1e-12) && (a[1] === null ? b[1] === null : b[1] !== null && Math.abs(a[1] - b[1]) < 1e-12);
+    /** Steps to settled; after every step each receipt holds what it held before or its statistics over every other spore. */
+    const stepChecked = async (before: Map<string, readonly [number | null, number | null]>) => {
+      const exact = await f.recompute();
+      let steps = 0;
+      for (;;) {
+        const { processed } = await f.step(T);
+        f.index?.apply();
+        steps++;
+        for (const [id, held] of published()) {
+          const full = exact.get(id)!;
+          const ok = same(held, before.get(id) ?? [null, null]) || same(held, [full.mean, full.std]);
+          expect({ step: steps, id, ok }).toEqual({ step: steps, id, ok: true });
+        }
+        if (processed === 0) return steps;
+      }
+    };
+    // The build after schema step 50: the membership record starts empty under receipts that carry full statistics.
+    f.sqlite.run('DELETE FROM embedding_hubness_members');
+    f.sqlite.run('UPDATE embedding_cursors SET hubness_count = NULL, hubness_cursor = NULL');
+    const cleared = f.repaired();
+    expect(await stepChecked(published())).toBeGreaterThan(6);
+    await f.expectExact();
+    // Fifty new spores join over three operations under the 120 already calibrated.
+    for (let i = 0; i < 50; i++) f.spore(`n${String(i).padStart(3, '0')}`, `new spore ${i}`);
+    for (let i = 0; i < 50; i++) expect((await f.step(T)).phase).toBe('missing');
+    f.index?.apply();
+    expect(await stepChecked(published())).toBeGreaterThan(6);
+    await f.expectExact();
+    expect(f.repaired()).toBe(cleared);
   });
 
   test('moments that no longer count every other member are recomputed in full', async () => {

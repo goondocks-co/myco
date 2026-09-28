@@ -1,5 +1,4 @@
 import type { PreparedStatement, RelationalStore } from '../adapters.js';
-import { cosineSimilarity } from './vectors.js';
 import type { EmbeddingContext, EmbeddingStep } from './reconcile.js';
 
 /** Settled members one step reads. */
@@ -57,12 +56,29 @@ function exclude(m: Moments, x: number): Moments {
 const neighborStats = (m: Moments): [number | null, number | null] =>
   m.n === 0 ? [null, null] : [m.mean, Math.sqrt(Math.max(0, m.m2 / m.n))];
 
-const distance = (a: Float32Array, b: Float32Array): number => 1 - cosineSimilarity(a, b);
+/**
+ * `1 - cosineSimilarity` over copies whose zero tail is dropped: the dimensions past a copy's length are zero, so the
+ * sums, and the distance, are those of the full stored vectors.
+ */
+function distance(a: Float32Array, b: Float32Array): number {
+  const length = Math.max(a.length, b.length);
+  let dot = 0, aa = 0, bb = 0;
+  for (let i = 0; i < length; i++) {
+    const x = a[i] ?? 0, y = b[i] ?? 0;
+    dot += x * y; aa += x ** 2; bb += y ** 2;
+  }
+  return 1 - (aa === 0 || bb === 0 ? 0 : Math.max(-1, Math.min(1, dot / Math.sqrt(aa * bb))));
+}
 
+/** A stored vector as float32 bytes in base64, without its zero tail. */
 function encodeVector(values: ArrayLike<number>): string {
-  const bytes = new Uint8Array(Float32Array.from(values).buffer);
+  let length = values.length;
+  while (length > 0 && values[length - 1] === 0) length--;
+  const floats = new Float32Array(length);
+  for (let i = 0; i < length; i++) floats[i] = values[i]!;
+  const bytes = new Uint8Array(floats.buffer);
   let binary = '';
-  for (const byte of bytes) binary += String.fromCharCode(byte);
+  for (let i = 0; i < bytes.length; i += 0x2000) binary += String.fromCharCode(...bytes.subarray(i, i + 0x2000));
   return btoa(binary);
 }
 
@@ -89,8 +105,10 @@ export async function hubnessPending(db: RelationalStore, projectId: string, mod
  * Each current spore vector's moments cover its cosine distance to every other current spore vector. The membership
  * record changes by operations of at most `HUBNESS_SUBJECTS` spore vectors, all joining or all leaving: an operation adds or
  * removes its subjects' distances on every settled member one page per step, reading vectors from the members' copies,
- * and a joining subject collects its own moments on the way. Leaving runs first, so a spore that changed leaves with its
- * old vector and joins with its new one. Each step's writes commit only against the token it read.
+ * and a joining subject collects its own moments on the way. Leaving starts before joining: a joiner waits until the
+ * vector store returns its vector, and a spore that is gone leaves the calibration meanwhile. A receipt's
+ * neighbour statistics change only when its moments cover every other current spore vector; until then it keeps the
+ * statistics it has. Each step's writes commit only against the token it read.
  */
 export async function reconcileHubness(context: EmbeddingContext, projectId: string): Promise<EmbeddingStep> {
   const { db, vectors, provider } = context;
@@ -161,8 +179,8 @@ export async function reconcileHubness(context: EmbeddingContext, projectId: str
       }
     }
   }
-  const statements = [...carry(db, projectId, model, token, targets)];
-  if (joins) statements.push(...carry(db, projectId, model, token, subjects, last));
+  const carried = joins ? [...targets, ...subjects] : targets;
+  const statements = [carry(db, projectId, model, token, carried)];
   let done: boolean;
   if (last) {
     statements.push(joins
@@ -170,9 +188,11 @@ export async function reconcileHubness(context: EmbeddingContext, projectId: str
         .bind(projectId, model, projectId, token)
       : db.prepare(`DELETE FROM embedding_hubness_members WHERE project_id = ? AND model_key = ? AND state = ${MEMBER.leaving} AND ${HOLDS}`)
         .bind(projectId, model, projectId, token));
+    statements.push(...await publish(db, projectId, model, token, carried, count));
     done = await commit(statements, `, hubness_cursor = NULL, hubness_model = ?,
       hubness_count = (SELECT COUNT(*) FROM embedding_hubness_members WHERE project_id = ? AND model_key = ?)`, [model, projectId, model]);
   } else {
+    statements.push(...await publish(db, projectId, model, token, carried, count));
     done = await commit(statements, ', hubness_cursor = ?', [targets[targets.length - 1]!.id]);
   }
   return { phase: 'hubness', processed: done || started ? 1 : 0 };
@@ -197,15 +217,27 @@ async function members(db: RelationalStore, projectId: string, model: string, wh
   return rows.map((r) => ({ ...r, values: decodeVector(r.vector) }));
 }
 
-/** Writes members' moments and, for settled or settling members, the neighbour statistics their receipts carry. */
-function carry(db: RelationalStore, projectId: string, model: string, token: string, rows: Loaded[], publish = true): PreparedStatement[] {
-  if (rows.length === 0) return [];
-  const json = JSON.stringify(rows.map((r) => [r.id, r.n, r.mean, r.m2, ...neighborStats(r)]));
-  const statements = [db.prepare(`WITH ${CARRIED} UPDATE embedding_hubness_members SET n = (SELECT v.n FROM v WHERE v.id = embedding_hubness_members.id),
+/** Writes members' moments. */
+function carry(db: RelationalStore, projectId: string, model: string, token: string, rows: Loaded[]): PreparedStatement {
+  const json = JSON.stringify(rows.map((r) => [r.id, r.n, r.mean, r.m2]));
+  return db.prepare(`WITH ${CARRIED} UPDATE embedding_hubness_members SET n = (SELECT v.n FROM v WHERE v.id = embedding_hubness_members.id),
     mean = (SELECT v.mean FROM v WHERE v.id = embedding_hubness_members.id), m2 = (SELECT v.m2 FROM v WHERE v.id = embedding_hubness_members.id)
-    WHERE project_id = ? AND model_key = ? AND id IN (SELECT id FROM v) AND ${HOLDS}`).bind(json, projectId, model, projectId, token)];
-  if (publish) statements.push(db.prepare(`WITH ${CARRIED} UPDATE embedding_receipts SET neighbor_mean = (SELECT v.neighbor_mean FROM v WHERE v.id = embedding_receipts.id),
+    WHERE project_id = ? AND model_key = ? AND id IN (SELECT id FROM v) AND ${HOLDS}`).bind(json, projectId, model, projectId, token);
+}
+
+/**
+ * Publishes the neighbour statistics of the rows whose moments cover every other current spore vector: the members once
+ * this operation's leavers are gone are exactly the current spore vectors, and the row counts all of them but itself.
+ */
+async function publish(db: RelationalStore, projectId: string, model: string, token: string, rows: Loaded[], count: number): Promise<PreparedStatement[]> {
+  const full = rows.filter((r) => r.n === count - 1);
+  if (full.length === 0) return [];
+  const { complete } = (await db.prepare(`SELECT NOT EXISTS (SELECT 1 FROM embedding_hubness_members m WHERE m.project_id = ? AND m.model_key = ?
+      AND m.state <> ${MEMBER.leaving} AND NOT ${currentMember('m')}) AND NOT EXISTS (${UNCOVERED}) AS complete`)
+    .bind(projectId, model, projectId, model).first<{ complete: number }>())!;
+  if (complete !== 1) return [];
+  const json = JSON.stringify(full.map((r) => [r.id, r.n, r.mean, r.m2, ...neighborStats(r)]));
+  return [db.prepare(`WITH ${CARRIED} UPDATE embedding_receipts SET neighbor_mean = (SELECT v.neighbor_mean FROM v WHERE v.id = embedding_receipts.id),
     neighbor_std = (SELECT v.neighbor_std FROM v WHERE v.id = embedding_receipts.id)
-    WHERE project_id = ? AND model_key = ? AND id IN (SELECT id FROM v) AND ${HOLDS}`).bind(json, projectId, model, projectId, token));
-  return statements;
+    WHERE project_id = ? AND model_key = ? AND id IN (SELECT id FROM v) AND ${HOLDS}`).bind(json, projectId, model, projectId, token)];
 }

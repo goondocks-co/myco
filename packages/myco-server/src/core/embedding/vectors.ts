@@ -77,7 +77,7 @@ export function vectorMatches(metadata: VectorMetadata, filters: VectorFilters =
   });
 }
 
-export function cosineSimilarity(a: ArrayLike<number>, b: ArrayLike<number>): number {
+export function cosineSimilarity(a: readonly number[], b: readonly number[]): number {
   if (a.length !== b.length) throw new Error('vector dimensions differ');
   let dot = 0, aa = 0, bb = 0;
   for (let i = 0; i < a.length; i++) { dot += a[i]! * b[i]!; aa += a[i]! ** 2; bb += b[i]! ** 2; }
