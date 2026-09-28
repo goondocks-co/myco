@@ -9,8 +9,9 @@ import { backupCloudflareDeployment } from '@myco/server/cloudflare-backup.js';
 import * as cloudflare from '@myco/server/cloudflare.js';
 import { writeDeploymentRecord, type CloudflareFetch, type OperatorObjectTimeouts } from '@myco/server/cloudflare.js';
 import { RECOVERY_RETRY, verifyRecoveryBundle, type RecoveryRetryPolicy } from '@myco/server/recovery-bundle.js';
-import type { CommandRunner } from '@myco/server/runner.js';
+import { CommandTimedOut, type CommandRunner } from '@myco/server/runner.js';
 import { sqliteEnv } from '../myco-server/helpers/fixtures.js';
+import { SCHEMA_QUERY } from '@myco/server/recovery-schema.js';
 import { recoveryConfigurationOf } from '@myco/server/cloudflare-resources.js';
 import { RECOVERY_CREDENTIAL_NAMES } from '@myco-server-worker/core/recovery-staging.js';
 import * as blobs from '@myco-server-worker/platform/bun/blobs.js';
@@ -20,6 +21,7 @@ const IMMEDIATE_RETRY: RecoveryRetryPolicy = {
   objectReads: { ...RECOVERY_RETRY.objectReads, backoffMs: [0] },
   holdReads: { ...RECOVERY_RETRY.holdReads, backoffMs: [0] },
   holdRounds: { ...RECOVERY_RETRY.holdRounds, backoffMs: [0] },
+  snapshots: { ...RECOVERY_RETRY.snapshots, backoffMs: [0] },
 };
 
 const quote = (value: string) => '"' + value.replaceAll('"', '""') + '"';
@@ -60,6 +62,8 @@ function fixture() {
   let downloadFails = false;
   let metadataReads = 0;
   const calls: string[][] = [];
+  /** Every export that found a file already at its output path, which a clean attempt never leaves. */
+  const leftovers: string[] = [];
   const statements: Array<{ sql: string; timeoutMs?: number }> = [];
   const runner: CommandRunner = { async run(command, args, options) {
     calls.push([...args]);
@@ -90,7 +94,9 @@ function fixture() {
           sql.push(`INSERT INTO ${quote(table)} (${Object.keys(row).map(quote).join(',')}) VALUES (${Object.values(row).map(literal).join(',')});`);
         }
       }
-      fs.writeFileSync(args[args.indexOf('--output') + 1]!, sql.join('\n'));
+      const output = args[args.indexOf('--output') + 1]!;
+      if (fs.existsSync(output)) leftovers.push(output);
+      fs.writeFileSync(output, sql.join('\n'));
       return { code: 0, stdout: '', stderr: '' };
     }
     throw new Error(`unexpected provider command ${args.join(' ')}`);
@@ -103,7 +109,7 @@ function fixture() {
     expect(new Headers(init?.headers).get('Authorization')).toBe('Bearer fixture-operator-token');
     return downloadFails ? new Response('object unavailable', { status: 503 }) : new Response(key === backupKey ? backupBody : bytes);
   };
-  return { source, root, mycoHome, destination, record, runner, calls, statements, body, bytes, digest, backupKey, backupBody,
+  return { source, root, mycoHome, destination, record, runner, calls, leftovers, statements, body, bytes, digest, backupKey, backupBody,
     /** The key R2 holds the registered blob's bytes under. */
     blobSource: `proj_1/${digest}~${generation}`,
     fetchObject,
@@ -156,6 +162,8 @@ it('refuses schema drift and leaves the artifact incomplete', async () => {
     await expect(f.backup()).rejects.toThrow('schema or configuration changed');
     expect(fs.existsSync(path.join(f.destination, 'myco.sqlite'))).toBe(false);
     expect(f.calls.some((call) => call.includes('get'))).toBe(false);
+    // A snapshot that saw its source change is not a transient failure, so it is not captured again.
+    expect(f.calls.filter((call) => call.includes('export'))).toHaveLength(1);
   } finally { f.cleanup(); }
 });
 
@@ -235,6 +243,17 @@ it('bounds every hold statement it sends, so no hold waits on a provider command
   } finally { f.cleanup(); }
 });
 
+/** What `wrangler d1 execute --json` prints when the Cloudflare API refuses a request with `note`. */
+const apiRefusal = (note: string) => ({ code: 1, stderr: '', stdout: JSON.stringify({ error: {
+  text: 'A request to the Cloudflare API (/accounts/fixture-account/d1/database/fixture-database/query) failed.', notes: [{ text: note }],
+} }) });
+/** The account refusal D1 answers for an account and credential that other requests succeed with. */
+const accountRefused = apiRefusal('The given account is not valid or is not authorized to access this service [code: 7403]');
+const authenticationError = apiRefusal('Authentication error [code: 10000]');
+/** What Wrangler prints when a request loses its connection or its name lookup. */
+const connectionLost = { code: 1, stdout: '', stderr: '✘ [ERROR] fetch failed\n' };
+/** What `wrangler d1 export` prints when its SQL download loses its connection. */
+const exportLost = { code: 1, stdout: '🌀 Executing on remote database myco-server (fixture-database):\nDownloading SQL to d1.sql\n', stderr: '✘ [ERROR] fetch failed\n' };
 /** What Bun's fetch throws when its signal's timeout fires. */
 const timedOut = () => new DOMException('The operation timed out.', 'TimeoutError');
 /** The files a resume would accept or sweep: every regular file under the artifact's blob directory. */
@@ -261,6 +280,25 @@ it('retries an object read that times out, and completes a verified artifact', a
     ]);
     expect((await verifyRecoveryBundle(f.destination)).status).toBe('complete');
     expect(new Uint8Array(fs.readFileSync(path.join(f.destination, 'blobs', 'proj_1', f.digest)))).toEqual(f.bytes);
+  } finally { f.cleanup(); }
+});
+
+it('logs in again after a login that timed out, and completes the object read on a later attempt', async () => {
+  const f = fixture();
+  try {
+    let logins = 0;
+    const runner: CommandRunner = { run: async (command, args, options) => {
+      if (args.includes('auth') && ++logins === 1) throw new CommandTimedOut(command, args, options?.timeoutMs ?? 0, 'ended');
+      return f.runner.run(command, args, options);
+    } };
+    const reports: string[] = [];
+    const result = await f.backup({ runner, report: (line) => reports.push(line) });
+    expect(result.status).toBe('complete');
+    expect(logins).toBe(2);
+    expect(reports.filter((line) => line.includes('answered nothing in'))).toEqual([
+      expect.stringContaining(`(attempt 2 of ${RECOVERY_RETRY.objectReads.attempts})`),
+    ]);
+    expect((await verifyRecoveryBundle(f.destination)).status).toBe('complete');
   } finally { f.cleanup(); }
 });
 
@@ -426,15 +464,15 @@ describe('a recovery hold write that does not answer', () => {
     } finally { f.cleanup(); }
   });
 
-  /** A runner whose next `count` D1 statements fail as wrangler reports a lost connection, and then answer. */
-  const blip = (f: ReturnType<typeof fixture>, count: number) => {
+  /** A runner whose next `count` D1 statements fail as wrangler reports `failure` (a lost connection), and then answer. */
+  const blip = (f: ReturnType<typeof fixture>, count: number, failure: { code: number; stdout: string; stderr: string } = connectionLost) => {
     const failed: string[] = [];
     const at: number[] = [];
     const runner: CommandRunner = { run: async (command, args, options) => {
       if (args.includes('execute') && failed.length < count) {
         at.push(performance.now());
         failed.push(args[args.indexOf('--command') + 1]!.trimStart().split(/\s+/)[0]!);
-        return { code: 1, stdout: '', stderr: 'fetch failed' };
+        return failure;
       }
       return f.runner.run(command, args, options);
     } };
@@ -466,6 +504,47 @@ describe('a recovery hold write that does not answer', () => {
       expect((await f.backup({ runner })).status).toBe('complete');
       expect(failed).toEqual(['SELECT', 'SELECT', 'SELECT']);
       expect(holds(f)).toEqual([{ token, holder: 'operator', released: 1 }]);
+    } finally { f.cleanup(); }
+  });
+
+  it('rides out a transient account refusal on the write and every read back, and opens one hold', async () => {
+    const f = fixture();
+    try {
+      const { runner, failed } = blip(f, 4, accountRefused);
+      const reports: string[] = [];
+      expect((await f.backup({ runner, report: (line) => reports.push(line) })).status).toBe('complete');
+      expect(failed).toEqual(['INSERT', 'SELECT', 'SELECT', 'SELECT']);
+      expect(holds(f)).toEqual([{ token: expect.any(String), holder: 'operator', released: 1 }]);
+      expect(reports.some((line) => line.includes('did not answer about this backup\'s recovery hold (read 1 of') && line.includes('[code: 7403]'))).toBe(true);
+    } finally { f.cleanup(); }
+  });
+
+  it('resumes through a transient account refusal on every read of a round', async () => {
+    const f = fixture();
+    try {
+      f.downloadFails(true);
+      await expect(f.backup()).rejects.toThrow('HTTP 503');
+      f.downloadFails(false);
+      const token = JSON.parse(fs.readFileSync(path.join(f.destination, '.recovery-hold.json'), 'utf8')).token;
+      const { runner, failed } = blip(f, 3, accountRefused);
+      expect((await f.backup({ runner })).status).toBe('complete');
+      expect(failed).toEqual(['SELECT', 'SELECT', 'SELECT']);
+      expect(holds(f)).toEqual([{ token, holder: 'operator', released: 1 }]);
+    } finally { f.cleanup(); }
+  });
+
+  it('refuses a resume whose account refusal persists, saying the credential or account may be wrong', async () => {
+    const f = fixture();
+    try {
+      f.downloadFails(true);
+      await expect(f.backup()).rejects.toThrow('HTTP 503');
+      f.downloadFails(false);
+      const { runner, failed } = blip(f, Number.POSITIVE_INFINITY, accountRefused);
+      const { attempts } = RECOVERY_RETRY.holdRounds;
+      const failure = await f.backup({ runner }).then(() => null, (error: Error) => error.message);
+      expect(failure).toContain(`recovery hold after ${attempts} attempts`);
+      expect(failure).toContain('the source refused this account (code 7403), so the credential or the account may be wrong');
+      expect(failed).toHaveLength(attempts * RECOVERY_RETRY.holdReads.attempts);
     } finally { f.cleanup(); }
   });
 
@@ -514,6 +593,156 @@ describe('a recovery hold write that does not answer', () => {
       expect(acquires).toBe(attempts);
       expect(holds(f)).toEqual([]);
       expect(fs.existsSync(path.join(f.destination, 'myco.sqlite'))).toBe(false);
+    } finally { f.cleanup(); }
+  });
+});
+
+describe('a transient Cloudflare failure during the snapshot', () => {
+  const isSchemaRead = (args: readonly string[]) => args.includes('execute') && args[args.indexOf('--command') + 1] === SCHEMA_QUERY;
+  const isExport = (args: readonly string[]) => args.includes('export');
+  /** A runner that answers `fail(args)` for the commands it names, and passes every other one to the fixture's. */
+  const failing = (f: ReturnType<typeof fixture>, fail: (args: readonly string[]) => ReturnType<CommandRunner['run']> | null): CommandRunner => ({
+    run: async (command, args, options) => (fail(args) ?? f.runner.run(command, args, options)),
+  });
+  /** An export whose SQL download loses its connection after writing part of the file. */
+  const downloadLost = async (f: ReturnType<typeof fixture>, args: readonly string[]) => {
+    const output = args[args.indexOf('--output') + 1]!;
+    if (fs.existsSync(output)) f.leftovers.push(output);
+    fs.writeFileSync(output, 'PRAGMA defer_foreign_keys=TRUE;\nINSERT INTO "recovery_fixture" ("id","body","bytes") VALUES (999,\'partial\',NULL);\nINSERT INTO "sess');
+    return exportLost;
+  };
+  const captured = (f: ReturnType<typeof fixture>) => {
+    const recovered = new Database(path.join(f.destination, 'myco.sqlite'), { readonly: true });
+    try { return recovered.query('SELECT id, body FROM recovery_fixture').all(); } finally { recovered.close(); }
+  };
+
+  it('captures again after an export download and a schema read that each fail once, and completes a verified artifact', async () => {
+    const f = fixture();
+    try {
+      let exports = 0;
+      let schemaReads = 0;
+      const runner = failing(f, (args) => {
+        if (isExport(args) && ++exports === 1) return downloadLost(f, args);
+        // The second attempt's schema read after its export.
+        if (isSchemaRead(args) && ++schemaReads === 3) return Promise.resolve(accountRefused);
+        return null;
+      });
+      const reports: string[] = [];
+      const result = await f.backup({ runner, report: (line) => reports.push(line) });
+      expect(result.status).toBe('complete');
+      expect(exports).toBe(3);
+      expect(schemaReads).toBe(5);
+      expect(reports.filter((line) => line.startsWith('Capturing the database snapshot failed'))).toEqual([
+        expect.stringContaining(`fetch failed); starting it again in 0 s (attempt 2 of ${RECOVERY_RETRY.snapshots.attempts})`),
+        expect.stringContaining(`[code: 7403]); starting it again in 0 s (attempt 3 of ${RECOVERY_RETRY.snapshots.attempts})`),
+      ]);
+      // No attempt found what an earlier one left, and nothing of the partial download reached the artifact.
+      expect(f.leftovers).toEqual([]);
+      expect(captured(f)).toEqual([{ id: 3, body: f.body }]);
+      expect((await verifyRecoveryBundle(f.destination)).status).toBe('complete');
+    } finally { f.cleanup(); }
+  });
+
+  it('waits the bound\'s backoff before each capture after the first', async () => {
+    const f = fixture();
+    try {
+      const at: number[] = [];
+      const runner = failing(f, (args) => {
+        if (!isExport(args)) return null;
+        at.push(performance.now());
+        return at.length < 3 ? downloadLost(f, args) : null;
+      });
+      const retry = { ...IMMEDIATE_RETRY, snapshots: { attempts: 3, backoffMs: [60, 90] } };
+      const reports: string[] = [];
+      expect((await f.backup({ runner, retry, report: (line) => reports.push(line) })).status).toBe('complete');
+      expect(at).toHaveLength(3);
+      expect(at[1]! - at[0]!).toBeGreaterThanOrEqual(55);
+      expect(at[2]! - at[1]!).toBeGreaterThanOrEqual(85);
+    } finally { f.cleanup(); }
+  });
+
+  it('keeps the production snapshot bound: four captures, waiting 15 s, 60 s and 120 s between them', () => {
+    expect(RECOVERY_RETRY.snapshots).toEqual({ attempts: 4, backoffMs: [15_000, 60_000, 120_000] });
+  });
+
+  it('compares the schema reads of one attempt only, never one attempt\'s with another\'s', async () => {
+    const f = fixture();
+    try {
+      let schemaReads = 0;
+      const runner = failing(f, (args) => {
+        // The first attempt's read after its export fails, and a deploy changes the schema before the next attempt.
+        if (isSchemaRead(args) && ++schemaReads === 2) {
+          f.source.sqlite.exec('CREATE TABLE changed_schema(id TEXT)');
+          return Promise.resolve(connectionLost);
+        }
+        return null;
+      });
+      const result = await f.backup({ runner });
+      expect(result.status).toBe('complete');
+      const recovered = new Database(path.join(f.destination, 'myco.sqlite'), { readonly: true });
+      try {
+        expect(recovered.query("SELECT name FROM sqlite_master WHERE name = 'changed_schema'").all()).toEqual([{ name: 'changed_schema' }]);
+      } finally { recovered.close(); }
+    } finally { f.cleanup(); }
+  });
+
+  it('gives up after its bound when every export download fails, naming the attempts, and a later run never uses the partial file', async () => {
+    const f = fixture();
+    try {
+      let exports = 0;
+      const runner = failing(f, (args) => isExport(args) ? (exports += 1, downloadLost(f, args)) : null);
+      const { attempts } = RECOVERY_RETRY.snapshots;
+      const failure = await f.backup({ runner }).then(() => null, (error: Error) => error.message);
+      expect(failure).toStartWith(`the database snapshot was not captured after ${attempts} attempts: `);
+      expect(failure).toContain('fetch failed');
+      expect(failure).not.toContain('refused this account');
+      expect(exports).toBe(attempts);
+      expect(JSON.parse(fs.readFileSync(path.join(f.destination, 'recovery.json'), 'utf8')).status).toBe('snapshot');
+      expect(fs.existsSync(path.join(f.destination, 'myco.sqlite'))).toBe(false);
+      // The last attempt's partial download is still on disk; the next run starts from an empty work directory.
+      expect(fs.existsSync(path.join(f.destination, '.snapshot', 'd1.sql'))).toBe(true);
+      expect((await f.backup()).status).toBe('complete');
+      expect(f.leftovers).toEqual([]);
+      expect(captured(f)).toEqual([{ id: 3, body: f.body }]);
+      expect((await verifyRecoveryBundle(f.destination)).status).toBe('complete');
+    } finally { f.cleanup(); }
+  });
+
+  it('completes after a single account refusal on its schema read', async () => {
+    const f = fixture();
+    try {
+      let schemaReads = 0;
+      const runner = failing(f, (args) => isSchemaRead(args) && ++schemaReads === 1 ? Promise.resolve(accountRefused) : null);
+      expect((await f.backup({ runner })).status).toBe('complete');
+      expect(schemaReads).toBe(3);
+      expect(f.calls.filter(isExport)).toHaveLength(1);
+      expect((await verifyRecoveryBundle(f.destination)).status).toBe('complete');
+    } finally { f.cleanup(); }
+  });
+
+  it('fails an account refusal that persists after its bound, saying the credential or account may be wrong', async () => {
+    const f = fixture();
+    try {
+      let schemaReads = 0;
+      const runner = failing(f, (args) => isSchemaRead(args) ? (schemaReads += 1, Promise.resolve(accountRefused)) : null);
+      const { attempts } = RECOVERY_RETRY.snapshots;
+      const failure = await f.backup({ runner }).then(() => null, (error: Error) => error.message);
+      expect(failure).toStartWith(`the database snapshot was not captured after ${attempts} attempts: `);
+      expect(failure).toEndWith('; the source refused this account (code 7403), so the credential or the account may be wrong');
+      expect(schemaReads).toBe(attempts);
+      expect(f.calls.filter(isExport)).toHaveLength(0);
+    } finally { f.cleanup(); }
+  });
+
+  it('fails at once on an authentication error, without capturing again', async () => {
+    const f = fixture();
+    try {
+      let schemaReads = 0;
+      const runner = failing(f, (args) => isSchemaRead(args) ? (schemaReads += 1, Promise.resolve(authenticationError)) : null);
+      const failure = await f.backup({ runner }).then(() => null, (error: Error) => error.message);
+      expect(failure).toStartWith('the database snapshot was not captured: ');
+      expect(failure).toEndWith('; the source refused this account (code 10000), so the credential or the account may be wrong');
+      expect(schemaReads).toBe(1);
     } finally { f.cleanup(); }
   });
 });

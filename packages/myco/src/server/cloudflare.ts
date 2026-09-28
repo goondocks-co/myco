@@ -466,6 +466,14 @@ export function cloudflareObjectStore(
       ? new Headers({ 'X-Auth-Key': parsed.data.key, 'X-Auth-Email': parsed.data.email })
       : new Headers({ Authorization: `Bearer ${parsed.data.token}` });
   };
+  /** One Wrangler login shared by every request while it holds; a login that failed is dropped, so the next request asks again. */
+  const login = (): Promise<Headers> => {
+    const pending: Promise<Headers> = authenticate().catch((error: unknown) => {
+      if (credentials === pending) credentials = undefined;
+      throw error;
+    });
+    return pending;
+  };
   /**
    * One request, with the credential refreshed once on a 401 or 403. A read's window closes when its response begins,
    * and `abort` ends the request afterwards; an upload's window covers the request and its acknowledgement.
@@ -478,7 +486,7 @@ export function cloudflareObjectStore(
     const objectPath = key.split('/').map(segment).join('/');
     const url = `https://api.cloudflare.com/client/v4/accounts/${segment(options.accountId)}/r2/buckets/${segment(options.bucketName)}/objects/${objectPath}`;
     for (let attempt = 0; attempt < 2; attempt += 1) {
-      credentials ??= authenticate();
+      credentials ??= login();
       const used = credentials;
       const headers = new Headers(await used);
       const content = body?.();
