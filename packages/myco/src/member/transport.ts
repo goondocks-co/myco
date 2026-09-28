@@ -61,8 +61,15 @@ const CODE_SET = new Set<string>(MEMBER_CODES);
 const memberCode = (value: unknown): MemberCode | null => (typeof value === 'string' && CODE_SET.has(value) ? (value as MemberCode) : null);
 const reasonOf = (body: Record<string, unknown> | null): string => (typeof body?.reason === 'string' ? body.reason : '');
 
-/** Whether `text` is all of the body `res` declared; a body that declares no length cannot be shown whole. */
+/**
+ * Whether `text` is all of the body `res` declared. A body that declares no
+ * length — chunked, as a hosted Deployment answers — cannot be shown whole, and
+ * neither can an encoded one: its declared length counts the encoded bytes,
+ * not the decoded text read here.
+ */
 function bodyComplete(res: Response, text: string): boolean {
+  const encoding = res.headers.get('content-encoding');
+  if (encoding !== null && encoding.trim().toLowerCase() !== 'identity') return false;
   const declared = res.headers.get('content-length');
   return declared !== null && /^\d+$/.test(declared) && new TextEncoder().encode(text).byteLength === Number(declared);
 }
