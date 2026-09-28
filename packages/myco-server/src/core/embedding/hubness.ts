@@ -1,13 +1,19 @@
 import type { PreparedStatement, RelationalStore } from '../adapters.js';
 import type { EmbeddingContext, EmbeddingStep } from './reconcile.js';
+import { VECTOR_LOST_MS, VECTOR_REWRITE_LIMIT } from './provider.js';
 
 /** Settled members one step reads. */
 const HUBNESS_PAGE = 50;
 /** The most spore vectors one operation adds or removes, which bounds one step to about a thousand distances. */
 const HUBNESS_SUBJECTS = 20;
-export const CURRENT_SPORE_VECTORS = `SELECT r.id FROM embedding_receipts r JOIN embedding_sources s
+/** Indexed spore receipts under the model whose source revision is current. Binds: project id, model key. */
+const sporeVectors = (columns: string) => `SELECT ${columns} FROM embedding_receipts r JOIN embedding_sources s
   ON s.project_id = r.project_id AND s.type = r.type AND s.record_id = r.record_id AND s.revision = r.revision
   WHERE r.project_id = ? AND r.model_key = ? AND r.type = 'spore' AND r.ready = 1`;
+/** Every current spore vector, including one left out of calibration while the vector store does not return it. */
+export const SPORE_VECTORS = sporeVectors('r.id');
+/** The spore vectors calibration covers: current, and not left out while the vector store does not return them. */
+export const CURRENT_SPORE_VECTORS = `${SPORE_VECTORS} AND r.rewrites = 0`;
 
 /** A member row's state: covered by every other member's moments, joining the set, or leaving it. */
 const MEMBER = { settled: 0, joining: 1, leaving: 2 } as const;
@@ -15,11 +21,16 @@ const MEMBER = { settled: 0, joining: 1, leaving: 2 } as const;
 /** Member row `m` names a current spore vector under its model. */
 const currentMember = (m: string) => `EXISTS (SELECT 1 FROM embedding_receipts r JOIN embedding_sources s
   ON s.project_id = r.project_id AND s.type = r.type AND s.record_id = r.record_id AND s.revision = r.revision
-  WHERE r.project_id = ${m}.project_id AND r.model_key = ${m}.model_key AND r.id = ${m}.id AND r.type = 'spore' AND r.ready = 1)`;
+  WHERE r.project_id = ${m}.project_id AND r.model_key = ${m}.model_key AND r.id = ${m}.id AND r.type = 'spore' AND r.ready = 1 AND r.rewrites = 0)`;
 
-/** Current spore vectors no member row names. Binds: project id, model key. */
-const UNCOVERED = `${CURRENT_SPORE_VECTORS} AND NOT EXISTS (SELECT 1 FROM embedding_hubness_members m
+const NOT_MEMBER = `NOT EXISTS (SELECT 1 FROM embedding_hubness_members m
   WHERE m.project_id = r.project_id AND m.model_key = r.model_key AND m.id = r.id)`;
+/** Current spore vectors no member row names. Binds: project id, model key. */
+const UNCOVERED = `${sporeVectors('r.id, r.updated_at, r.rewrites')} AND r.rewrites = 0 AND ${NOT_MEMBER}`;
+/** Spore vectors left out of calibration while the vector store does not return them. Binds: project id, model key. */
+const MISSING = `${sporeVectors('r.id, r.updated_at, r.rewrites')} AND r.rewrites > 0 AND ${NOT_MEMBER}`;
+/** A left-out spore vector no longer written again: written again the most times, and still not returned `VECTOR_LOST_MS` after the last write. Binds: the lost cutoff. */
+const ABANDONED = `(r.rewrites >= ${VECTOR_REWRITE_LIMIT} AND r.updated_at <= ?)`;
 
 /** Settled members whose moments do not count exactly the other members. Binds: project id, model key. */
 const MISCOUNTED = `SELECT COALESCE(MIN(n) <> COUNT(*) - 1 OR MAX(n) <> COUNT(*) - 1, 0) AS miscounted
@@ -33,6 +44,7 @@ const CARRIED = `v AS (SELECT json_extract(j.value, '$[0]') AS id, json_extract(
   json_extract(j.value, '$[3]') AS m2, json_extract(j.value, '$[4]') AS neighbor_mean, json_extract(j.value, '$[5]') AS neighbor_std FROM json_each(?) j)`;
 
 interface Moments { n: number; mean: number; m2: number }
+interface Candidate { id: string; updated_at: number; rewrites: number }
 interface Member extends Moments { id: string; state: number; vector: string }
 interface Loaded extends Member { values: Float32Array }
 
@@ -91,15 +103,38 @@ function decodeVector(encoded: string): Float32Array {
   return new Float32Array(bytes.buffer);
 }
 
+/** A Project's spore vectors under one model left out of calibration while the vector store does not return them. */
+export interface MissingSporeVectors {
+  /** Being written again, or due to be. */
+  rewriting: number;
+  /** Written again, and waited on for `VECTOR_LOST_MS` from that write. */
+  waiting: number;
+  /** Written again `VECTOR_REWRITE_LIMIT` times and still not returned; no longer written again. */
+  abandoned: number;
+}
+
+export async function missingSporeVectors(db: RelationalStore, projectId: string, model: string, now: number): Promise<MissingSporeVectors> {
+  const row = await db.prepare(`SELECT COALESCE(SUM(r.ready = 0 OR (r.updated_at <= ? AND r.rewrites < ${VECTOR_REWRITE_LIMIT})), 0) AS rewriting,
+      COALESCE(SUM(r.ready = 1 AND r.updated_at > ?), 0) AS waiting,
+      COALESCE(SUM(r.ready = 1 AND r.updated_at <= ? AND r.rewrites >= ${VECTOR_REWRITE_LIMIT}), 0) AS abandoned
+    FROM embedding_receipts r JOIN embedding_sources s
+      ON s.project_id = r.project_id AND s.type = r.type AND s.record_id = r.record_id AND s.revision = r.revision
+    WHERE r.project_id = ? AND r.model_key = ? AND r.rewrites > 0 AND r.ready >= 0 AND r.type = 'spore'`)
+    .bind(now - VECTOR_LOST_MS, now - VECTOR_LOST_MS, now - VECTOR_LOST_MS, projectId, model).first<MissingSporeVectors>();
+  return { rewriting: row?.rewriting ?? 0, waiting: row?.waiting ?? 0, abandoned: row?.abandoned ?? 0 };
+}
+
 /**
  * Calibration work is pending: a member of another model, an operation in progress, a member whose vector is no longer
- * current, a current vector no member covers, or settled moments that do not count the other members.
+ * current, a current vector no member covers, a left-out vector that is still looked for or due to be written again,
+ * statistics still to publish, or settled moments that do not count the other members.
  */
-export async function hubnessPending(db: RelationalStore, projectId: string, model: string): Promise<boolean> {
+export async function hubnessPending(db: RelationalStore, projectId: string, model: string, now: number): Promise<boolean> {
   const row = await db.prepare(`SELECT EXISTS (SELECT 1 FROM embedding_hubness_members m WHERE m.project_id = ?
       AND (m.model_key <> ? OR m.state <> ${MEMBER.settled} OR NOT ${currentMember('m')}))
-    OR EXISTS (${UNCOVERED}) OR (${MISCOUNTED}) AS pending`)
-    .bind(projectId, model, projectId, model, projectId, model).first<{ pending: number }>();
+    OR EXISTS (${UNCOVERED}) OR EXISTS (${MISSING} AND NOT ${ABANDONED})
+    OR EXISTS (SELECT 1 FROM embedding_cursors c WHERE c.project_id = ? AND c.hubness_cursor IS NOT NULL) OR (${MISCOUNTED}) AS pending`)
+    .bind(projectId, model, projectId, model, projectId, model, now - VECTOR_LOST_MS, projectId, projectId, model).first<{ pending: number }>();
   return row?.pending === 1;
 }
 
@@ -111,12 +146,18 @@ export async function hubnessPending(db: RelationalStore, projectId: string, mod
  * vector store returns its vector, and a spore that is gone leaves the calibration meanwhile. A receipt's
  * neighbour statistics change only when its moments cover every other current spore vector; until then it keeps the
  * statistics it has. Each step's writes commit only against the token it read.
+ *
+ * A joiner is waited on for `VECTOR_LOST_MS` from its write. A vector the store still does not return then is taken as
+ * lost: its receipt goes back to the write path, and its spore is left out of calibration, which publishes the other
+ * members' statistics in one pass. A left-out vector is looked for on each step until `VECTOR_LOST_MS` after each new
+ * write, joins once the store returns it, and is written again at most `VECTOR_REWRITE_LIMIT` times.
  */
-export async function reconcileHubness(context: EmbeddingContext, projectId: string): Promise<EmbeddingStep> {
+export async function reconcileHubness(context: EmbeddingContext, projectId: string, now: number): Promise<EmbeddingStep> {
   const { db, vectors, provider } = context;
   const model = provider.modelKey;
-  const count = (await db.prepare(`SELECT COUNT(*) AS n FROM (${CURRENT_SPORE_VECTORS})`).bind(projectId, model).first<{ n: number }>())!.n;
-  if (count < 2) return { phase: 'settled', processed: 0 };
+  const tally = async (sql: string) => (await db.prepare(`SELECT COUNT(*) AS n FROM (${sql})`).bind(projectId, model).first<{ n: number }>())!.n;
+  if (await tally(SPORE_VECTORS) < 2) return { phase: 'settled', processed: 0 };
+  let count = await tally(CURRENT_SPORE_VECTORS);
   let token = await cursorToken(db, projectId);
   const commit = async (statements: PreparedStatement[], set = '', binds: unknown[] = []): Promise<boolean> => {
     const results = await db.batch([...statements,
@@ -134,28 +175,62 @@ export async function reconcileHubness(context: EmbeddingContext, projectId: str
   let subjects = await members(db, projectId, model, `state <> ${MEMBER.settled}`, [], HUBNESS_SUBJECTS);
   let started = false;
   if (subjects.length === 0) {
+    let waiting = false;
     const leaving = (await db.prepare(`SELECT m.id FROM embedding_hubness_members m WHERE m.project_id = ? AND m.model_key = ?
       AND m.state = ${MEMBER.settled} AND NOT ${currentMember('m')} ORDER BY m.id LIMIT ?`).bind(projectId, model, HUBNESS_SUBJECTS).all<{ id: string }>()).results;
     if (leaving.length > 0) {
       started = await commit([db.prepare(`UPDATE embedding_hubness_members SET state = ${MEMBER.leaving} WHERE project_id = ? AND model_key = ?
         AND state = ${MEMBER.settled} AND id IN (SELECT value FROM json_each(?)) AND ${HOLDS}`)
         .bind(projectId, model, JSON.stringify(leaving.map((r) => r.id)), projectId, token)], ', hubness_cursor = NULL');
+      if (!started) return { phase: 'hubness', processed: 0 };
     } else {
-      const joining = (await db.prepare(`${UNCOVERED} ORDER BY r.id LIMIT ?`).bind(projectId, model, HUBNESS_SUBJECTS).all<{ id: string }>()).results;
-      if (joining.length === 0) {
-        const { miscounted } = (await db.prepare(MISCOUNTED).bind(projectId, model).first<{ miscounted: number }>())!;
-        if (miscounted !== 1) return { phase: 'settled', processed: 0 };
+      const lostBefore = now - VECTOR_LOST_MS;
+      const joining = (await db.prepare(`${UNCOVERED} ORDER BY r.id LIMIT ?`).bind(projectId, model, HUBNESS_SUBJECTS).all<Candidate>()).results;
+      const asked = joining.length > 0 ? joining : await leftOut(db, projectId, model, lostBefore);
+      const visible = asked.length === 0 ? [] : await vectors.get({ projectId, modelKey: model }, asked.map((r) => r.id));
+      const seen = new Set(visible.map((v) => v.id));
+      const unseen = asked.filter((r) => !seen.has(r.id));
+      const lost = unseen.filter((r) => r.updated_at <= lostBefore && r.rewrites < VECTOR_REWRITE_LIMIT);
+      waiting = unseen.some((r) => r.updated_at > lostBefore);
+      if (visible.length === 0 && lost.length === 0) {
+        if (joining.length > 0) return { phase: 'visibility', processed: 0 };
+      } else {
+        const statements = visible.map((v) => db.prepare(`INSERT INTO embedding_hubness_members(project_id, model_key, id, state, vector)
+          SELECT ?, ?, ?, ${MEMBER.joining}, ? WHERE ${HOLDS}`).bind(projectId, model, v.id, encodeVector(v.values), projectId, token));
+        if (joining.length === 0 && visible.length > 0) {
+          statements.push(db.prepare(`UPDATE embedding_receipts SET rewrites = 0 WHERE project_id = ? AND model_key = ? AND id IN (SELECT value FROM json_each(?))
+            AND ready = 1 AND rewrites > 0 AND ${HOLDS}`).bind(projectId, model, JSON.stringify(visible.map((v) => v.id)), projectId, token));
+        }
+        if (lost.length > 0) {
+          statements.push(db.prepare(`UPDATE embedding_receipts SET ready = 0, rewrites = rewrites + 1 WHERE project_id = ? AND model_key = ?
+            AND id IN (SELECT value FROM json_each(?)) AND ready = 1 AND rewrites < ${VECTOR_REWRITE_LIMIT} AND updated_at <= ? AND ${HOLDS}`)
+            .bind(projectId, model, JSON.stringify(lost.map((r) => r.id)), lostBefore, projectId, token));
+        }
+        // Joiners start an operation, whose pages publish every member; a joiner left out alone starts a publication pass.
+        started = await commit(statements, visible.length > 0 ? ', hubness_cursor = NULL' : joining.length > 0 ? ", hubness_cursor = ''" : '');
+        if (!started) return { phase: 'hubness', processed: 0 };
+        if (visible.length === 0) return { phase: 'visibility', processed: 1 };
+      }
+    }
+    if (!started) {
+      const { miscounted } = (await db.prepare(MISCOUNTED).bind(projectId, model).first<{ miscounted: number }>())!;
+      if (miscounted === 1) {
         const done = await commit([db.prepare(`DELETE FROM embedding_hubness_members WHERE project_id = ? AND model_key = ? AND ${HOLDS}`)
           .bind(projectId, model, projectId, token)], ', hubness_cursor = NULL, hubness_count = NULL');
         return { phase: 'hubness', processed: done ? 1 : 0 };
       }
-      const visible = await vectors.get({ projectId, modelKey: model }, joining.map((r) => r.id));
-      if (visible.length === 0) return { phase: 'visibility', processed: 0 };
-      started = await commit(visible.map((v) => db.prepare(`INSERT INTO embedding_hubness_members(project_id, model_key, id, state, vector)
-        SELECT ?, ?, ?, ${MEMBER.joining}, ? WHERE ${HOLDS}`).bind(projectId, model, v.id, encodeVector(v.values), projectId, token)), ', hubness_cursor = NULL');
+      const after = (await db.prepare('SELECT hubness_cursor FROM embedding_cursors WHERE project_id = ?').bind(projectId).first<{ hubness_cursor: string | null }>())?.hubness_cursor ?? null;
+      if (after === null) return { phase: waiting ? 'visibility' : 'settled', processed: 0 };
+      // The publication pass: the settled members' statistics, one page per step.
+      const page = await members(db, projectId, model, `state = ${MEMBER.settled} AND id > ?`, [after], HUBNESS_PAGE + 1);
+      const last = page.length <= HUBNESS_PAGE;
+      const targets = page.slice(0, HUBNESS_PAGE);
+      const done = await commit(await publish(db, projectId, model, token, targets, count),
+        last ? ', hubness_cursor = NULL' : ', hubness_cursor = ?', last ? [] : [targets[targets.length - 1]!.id]);
+      return { phase: 'hubness', processed: done ? 1 : 0 };
     }
-    if (!started) return { phase: 'hubness', processed: 0 };
     token = await cursorToken(db, projectId);
+    count = await tally(CURRENT_SPORE_VECTORS);
     subjects = await members(db, projectId, model, `state <> ${MEMBER.settled}`, [], HUBNESS_SUBJECTS);
     if (subjects.length === 0) return { phase: 'hubness', processed: 1 };
   }
@@ -198,6 +273,20 @@ export async function reconcileHubness(context: EmbeddingContext, projectId: str
     done = await commit(statements, ', hubness_cursor = ?', [targets[targets.length - 1]!.id]);
   }
   return { phase: 'hubness', processed: done || started ? 1 : 0 };
+}
+
+/**
+ * Left-out spore vectors to look for: those still written again first, then those no longer written again from the
+ * probe cursor on, wrapping, so each one is looked for in turn. Moves the probe cursor past the last one taken.
+ */
+async function leftOut(db: RelationalStore, projectId: string, model: string, lostBefore: number): Promise<Candidate[]> {
+  const probe = (await db.prepare('SELECT hubness_probe FROM embedding_cursors WHERE project_id = ?').bind(projectId)
+    .first<{ hubness_probe: string | null }>())?.hubness_probe ?? '';
+  const rows = (await db.prepare(`${MISSING} ORDER BY ${ABANDONED}, ${ABANDONED} AND r.id <= ?, r.id LIMIT ?`)
+    .bind(projectId, model, lostBefore, lostBefore, probe, HUBNESS_SUBJECTS).all<Candidate>()).results;
+  const next = rows.filter((r) => r.rewrites >= VECTOR_REWRITE_LIMIT && r.updated_at <= lostBefore).at(-1)?.id;
+  if (next !== undefined) await db.prepare('UPDATE embedding_cursors SET hubness_probe = ? WHERE project_id = ?').bind(next, projectId).run();
+  return rows;
 }
 
 /** The calibration's commit token, minted when the cursor has none. */

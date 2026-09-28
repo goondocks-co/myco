@@ -15,7 +15,8 @@ import { Miniflare } from 'miniflare';
 import { SCHEMA_STEPS } from '../../../packages/myco-server/src/db/schema.js';
 import { reconcileEmbedding, type EmbeddingContext } from '../../../packages/myco-server/src/core/embedding/reconcile.js';
 import { hasEmbeddingWork } from '../../../packages/myco-server/src/core/embedding/jobs.js';
-import { CURRENT_SPORE_VECTORS } from '../../../packages/myco-server/src/core/embedding/hubness.js';
+import { CURRENT_SPORE_VECTORS, missingSporeVectors } from '../../../packages/myco-server/src/core/embedding/hubness.js';
+import { VECTOR_LOST_MS, VECTOR_REWRITE_LIMIT } from '../../../packages/myco-server/src/core/embedding/provider.js';
 import { cloudflareVectorStore } from '../../../packages/myco-server/src/platform/cloudflare/vectors.js';
 import { cosineSimilarity } from '../../../packages/myco-server/src/core/embedding/vectors.js';
 import type { BlobStore, RelationalStore } from '../../../packages/myco-server/src/core/adapters.js';
@@ -48,10 +49,12 @@ try {
   for (const step of SCHEMA_STEPS) for (const sql of step.statements) await db.prepare(sql).run();
   await db.prepare("INSERT INTO projects(project_id, name, created_at) VALUES ('p', 'p', 1)").run();
   await db.prepare("INSERT INTO agents(id, name, source, enabled, created_at) VALUES ('a', 'a', 'built-in', 1, 1)").run();
-  const vectors = cloudflareVectorStore(indexFixture());
+  const store = cloudflareVectorStore(indexFixture());
+  // Writes of the spore `lost` are dropped, so the store never returns its vector.
+  const vectors: typeof store = { ...store, upsert: (scope, stored) => store.upsert(scope, stored.filter((v) => v.metadata.record_id !== 'lost')) };
   const context: EmbeddingContext = { db, blobs: {} as BlobStore, vectors, provider: { modelKey: 'm', embed: async (text) => embedding(text) } };
   const spore = (id: string, content: string) => db.prepare("INSERT INTO spores(project_id, id, agent_id, content, observation_type, created_at) VALUES ('p', ?, 'a', ?, 'decision', 1)").bind(id, content).run();
-  const now = 10 ** 12;
+  let now = 10 ** 12;
   const settle = async () => {
     const phases: string[] = [];
     for (let i = 0; i < 500; i++) {
@@ -92,6 +95,17 @@ try {
   await db.prepare("DELETE FROM spores WHERE id = 's050'").run();
   check('a revision and a removal cost one leaving and one joining operation', await settle(), 6);
   check('changed: exact, counted, quiet', await exact(), { spores: 120, withinTolerance: true, hubnessCount: 120, pending: false });
+  await spore('lost', 'a spore whose vector the store never returns');
+  await spore('n001', 'a spore added beside it');
+  check('a vector the store does not return is waited on, and the spore beside it joins', await settle(), 3);
+  now += VECTOR_LOST_MS;
+  check('taken as lost: written again, left out, and the others published in one pass', await settle(), 3);
+  check('left out: exact over the others, counted, looked for', await exact(), { spores: 121, withinTolerance: true, hubnessCount: 121, pending: true });
+  for (let attempt = 2; attempt <= VECTOR_REWRITE_LIMIT; attempt++) { now += VECTOR_LOST_MS; await settle(); }
+  now += VECTOR_LOST_MS;
+  await settle();
+  check('the rewrite bound spent: exact, counted, quiet', await exact(), { spores: 121, withinTolerance: true, hubnessCount: 121, pending: false });
+  check('reported as no longer written again', await missingSporeVectors(db, 'p', 'm', now), { rewriting: 0, waiting: 0, abandoned: 1 });
 } finally {
   await mf.dispose();
   fs.writeFileSync(EVIDENCE, JSON.stringify({ checks }, null, 2));

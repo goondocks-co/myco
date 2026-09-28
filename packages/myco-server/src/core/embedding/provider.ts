@@ -8,6 +8,14 @@ export const VECTOR_DELETE_CONFIRM_MS = 5 * 60 * 1000;
 export const VECTOR_WRITE_TIMEOUT_MS = 60_000;
 /** A delete that failed, or that its confirmation found unapplied, is sent again after this back-off. */
 export const VECTOR_DELETE_RETRY_MS = 60 * 60 * 1000;
+/**
+ * A written vector the vector store still does not return this long after its write is taken as lost and written
+ * again. Fifteen times a hosted index's p99 apply latency (under two minutes) plus the write bound, so a vector that is
+ * merely slow to appear is never written twice; spore calibration waits on a vector for at most this long.
+ */
+export const VECTOR_LOST_MS = 30 * 60 * 1000;
+/** A lost spore vector is written again at most this many times; after that the spore stays out of calibration and is reported. */
+export const VECTOR_REWRITE_LIMIT = 2;
 export interface EmbeddingProvider {
   modelKey: string;
   embed(text: string): Promise<number[]>;
