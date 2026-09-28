@@ -11,13 +11,14 @@
  */
 import { describe, expect, it } from 'bun:test';
 import { execFileSync, spawnSync } from 'node:child_process';
-import { appendFileSync, chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, symlinkSync, writeFileSync } from 'node:fs';
+import { appendFileSync, chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { SOURCE_GIT_READ_COMMANDS } from '@goondocks/myco-shared/repository';
-import { acpDriver, RUN_AGENT, RUN_TOOLS_TIMEOUT_MS, runAgentConfig, turnOver, type Channel } from '@myco/runner/drivers/acp.js';
+import { acpDriver, RUN_AGENT_PREFIX, RUN_TOOLS_TIMEOUT_MS, runAgentConfig, runAsking, turnOver, type Channel } from '@myco/runner/drivers/acp.js';
 import { answerPermission, ToolCalls } from '@myco/runner/drivers/acp-permission.js';
 import { claudeCodeDriver } from '@myco/runner/drivers/claude-code.js';
+import { driverFor } from '@myco/runner/drivers/registry.js';
 import { grantsCall, runGrant, SHELL_TOOL } from '@myco/runner/drivers/grant.js';
 import { listRunTools, type RunTools } from '@myco/runner/drivers/run-tools.js';
 import { GIT_TRIPWIRE_ENV, gitReadRefusal, gitShimScript, shellWords } from '@myco/runner/drivers/source-git.js';
@@ -453,17 +454,114 @@ describe('the environment a harness is started in', () => {
     }).toEqual({ path: join(run.scratchDir, 'bin'), setup: join(run.scratchDir, 'shell-env.sh'), tripwire: '1' });
   });
 
-  it('starts OpenCode in an agent of the run\'s own under which every call asks, with a shell that reads no startup file', async () => {
+  it('starts OpenCode in an agent of the run\'s own under which every call asks, with a shell that reads no startup file and no plugin loaded', async () => {
     const stub = envRecorder('opencode');
     process.env.PATH = `${stub.dir}:${process.env.PATH ?? ''}`;
     const run = writeRunDir(mkdtempSync(join(tmpdir(), 'myco-run-')), 'run_1', CONNECTION);
     await collect(acpDriver('opencode').run({ ...run, prompt: 'do it', credentialEnv: {} }, new AbortController().signal));
-    expect(JSON.parse(envOf(stub.seen).OPENCODE_CONFIG_CONTENT!)).toEqual({
-      default_agent: RUN_AGENT,
+    const env = envOf(stub.seen);
+    const config = JSON.parse(env.OPENCODE_CONFIG_CONTENT!) as Record<string, unknown> & { default_agent: string };
+    expect(config).toEqual({
+      default_agent: expect.stringMatching(new RegExp(`^${RUN_AGENT_PREFIX}-[0-9a-f]{16}$`)),
       shell: '/bin/sh',
-      agent: { [RUN_AGENT]: { mode: 'primary', description: expect.any(String), permission: { '*': 'ask' } } },
+      // A refused call ends that call, not the turn: the agent goes on with its work.
+      experimental: { continue_loop_on_deny: true },
+      agent: { [config.default_agent]: { mode: 'primary', description: expect.any(String), permission: { '*': 'ask' } } },
     });
-    expect(runAgentConfig('win32')).not.toHaveProperty('shell');
+    // A plugin runs inside the harness and can answer a permission request
+    // before the driver does, so a run loads none of the machine's.
+    expect(env.OPENCODE_PURE).toBe('1');
+    expect(runAgentConfig('myco-run-x', 'win32')).not.toHaveProperty('shell');
+  });
+
+  /** A stub `cursor-agent` that copies the configuration directory it was pointed at, then exits. */
+  function cursorRecorder(): { dir: string; seen: string; env: string } {
+    const dir = mkdtempSync(join(tmpdir(), 'myco-stub-'));
+    const seen = join(dir, 'seen');
+    const env = join(dir, 'env.txt');
+    writeFileSync(join(dir, 'cursor-agent'), `#!/bin/sh\nenv > ${JSON.stringify(env)}\ncp -R "$CURSOR_CONFIG_DIR" ${JSON.stringify(seen)}\n`, { mode: 0o755 });
+    chmodSync(join(dir, 'cursor-agent'), 0o755);
+    return { dir, seen, env };
+  }
+
+  /** The machine's own Cursor configuration directory, holding these files, named the way Cursor finds it. */
+  function machineCursor(files: Record<string, string>): { dir: string; restore: () => void } {
+    const dir = mkdtempSync(join(tmpdir(), 'myco-machine-cursor-'));
+    for (const [name, body] of Object.entries(files)) writeFileSync(join(dir, name), body);
+    const before = process.env.CURSOR_CONFIG_DIR;
+    process.env.CURSOR_CONFIG_DIR = dir;
+    return { dir, restore: () => { if (before === undefined) delete process.env.CURSOR_CONFIG_DIR; else process.env.CURSOR_CONFIG_DIR = before; } };
+  }
+
+  it('starts Cursor over a configuration of the run\'s own that approves nothing in advance, and leaves the machine\'s untouched', async () => {
+    const machineSettings = {
+      permissions: { allow: ['Shell(ls)', 'Shell(git)', 'Mcp(myco:myco_plans)'], deny: ['Shell(rm)'] },
+      approvalMode: 'unrestricted',
+      autoAcceptWebSearch: true,
+      model: { modelId: 'machine-model' },
+      privacyCache: { ghostMode: true },
+    };
+    const machine = machineCursor({
+      'cli-config.json': JSON.stringify(machineSettings),
+      'permissions.json': JSON.stringify({ terminalAllowlist: ['git'], mcpAllowlist: ['myco:*'] }),
+      'acp-config.json': JSON.stringify({ selectedModelVariantId: 'variant' }),
+    });
+    const stub = cursorRecorder();
+    process.env.PATH = `${stub.dir}:${process.env.PATH ?? ''}`;
+    try {
+      const run = writeRunDir(mkdtempSync(join(tmpdir(), 'myco-run-')), 'run_1', CONNECTION);
+      await collect(driverFor('cursor')!.run({ ...run, prompt: 'do it', credentialEnv: {} }, new AbortController().signal));
+      expect(envOf(stub.env).CURSOR_CONFIG_DIR).toBe(join(run.scratchDir, 'cursor-home'));
+      const seen = JSON.parse(readFileSync(join(stub.seen, 'cli-config.json'), 'utf8')) as Record<string, unknown>;
+      // Nothing is approved in advance and nothing runs everything: every call
+      // the agent makes is asked, and the run's grant answers it. A denial only
+      // narrows a run, so the machine's are kept, as is every other setting.
+      expect(seen).toEqual({
+        ...machineSettings,
+        permissions: { allow: [], deny: ['Shell(rm)'] },
+        approvalMode: 'allowlist',
+        autoAcceptWebSearch: false,
+      });
+      // The second allowlist Cursor reads beside its settings is not carried.
+      expect(readdirSync(stub.seen).sort()).toEqual(['acp-config.json', 'cli-config.json']);
+      expect(JSON.parse(readFileSync(join(machine.dir, 'cli-config.json'), 'utf8'))).toEqual(machineSettings);
+    } finally { machine.restore(); }
+  });
+
+  it('writes a Cursor run\'s settings even where the machine has none, since Cursor\'s own default allows a command', async () => {
+    const machine = machineCursor({});
+    const stub = cursorRecorder();
+    process.env.PATH = `${stub.dir}:${process.env.PATH ?? ''}`;
+    try {
+      const run = writeRunDir(mkdtempSync(join(tmpdir(), 'myco-run-')), 'run_1', CONNECTION);
+      await collect(driverFor('cursor')!.run({ ...run, prompt: 'do it', credentialEnv: {} }, new AbortController().signal));
+      expect(JSON.parse(readFileSync(join(stub.seen, 'cli-config.json'), 'utf8'))).toEqual({
+        permissions: { allow: [], deny: [] }, approvalMode: 'allowlist', autoAcceptWebSearch: false,
+      });
+    } finally { machine.restore(); }
+  });
+
+  it('refuses to start a harness that reads a configuration of the run\'s own when its driver writes none', async () => {
+    const stub = cursorRecorder();
+    process.env.PATH = `${stub.dir}:${process.env.PATH ?? ''}`;
+    const run = writeRunDir(mkdtempSync(join(tmpdir(), 'myco-run-')), 'run_1', CONNECTION);
+    const events = await collect(acpDriver('cursor').run({ ...run, prompt: 'do it', credentialEnv: {} }, new AbortController().signal));
+    expect(events).toEqual([{ kind: 'ended', stop: 'error', detail: 'no run configuration is written for cursor, so its own would decide the run\'s calls' }]);
+    expect(existsSync(stub.env)).toBe(false);
+  });
+
+  it('names each OpenCode run\'s agent afresh, so no configuration the harness merges after the run\'s can define it', async () => {
+    const stub = envRecorder('opencode');
+    process.env.PATH = `${stub.dir}:${process.env.PATH ?? ''}`;
+    const agentOf = async (): Promise<string> => {
+      const run = writeRunDir(mkdtempSync(join(tmpdir(), 'myco-run-')), 'run_1', CONNECTION);
+      await collect(acpDriver('opencode').run({ ...run, prompt: 'do it', credentialEnv: {} }, new AbortController().signal));
+      return (JSON.parse(envOf(stub.seen).OPENCODE_CONFIG_CONTENT!) as { default_agent: string }).default_agent;
+    };
+    const first = await agentOf();
+    const second = await agentOf();
+    expect(first).not.toBe(second);
+    expect([first, second]).not.toContain(RUN_AGENT_PREFIX);
   });
 });
 
@@ -489,13 +587,19 @@ const listed = async (): Promise<RunTools> => ({ ok: true, names: new Set(['noop
 describe('a run on a harness that asks only under the run\'s agent', () => {
   it('ends before its prompt when the session opens in any other mode', async () => {
     const run = writeRunDir(mkdtempSync(join(tmpdir(), 'myco-run-')), 'run_1', CONNECTION);
+    const asking = runAsking(harnessById('opencode'));
     const other = peerInMode('build');
-    const events = await collect(turnOver(other.channel, 'opencode', { ...run, prompt: 'do it', credentialEnv: {} }, () => '', listed));
+    const events = await collect(turnOver(other.channel, 'opencode', { ...run, prompt: 'do it', credentialEnv: {} }, () => '', listed, { asking }));
     expect(other.asked).toEqual(['initialize', 'session/new']);
-    expect(events).toEqual([{ kind: 'ended', stop: 'error', detail: `the harness opened the session in mode build rather than the run's agent ${RUN_AGENT}, so its calls would not be asked` }]);
+    expect(events).toEqual([{ kind: 'ended', stop: 'error', detail: `the harness opened the session in mode build rather than the run's agent ${asking.mode!}, so its calls would not be asked` }]);
 
-    const own = peerInMode(RUN_AGENT);
-    expect((await collect(turnOver(own.channel, 'opencode', { ...run, prompt: 'do it', credentialEnv: {} }, () => '', listed))).at(-1)).toEqual({ kind: 'ended', stop: 'end_turn', detail: null });
+    // An agent a configuration defines under the fixed part of the name is not the run's.
+    const prefixed = peerInMode(RUN_AGENT_PREFIX);
+    expect((await collect(turnOver(prefixed.channel, 'opencode', { ...run, prompt: 'do it', credentialEnv: {} }, () => '', listed, { asking }))).at(-1)?.kind).toBe('ended');
+    expect(prefixed.asked).toEqual(['initialize', 'session/new']);
+
+    const own = peerInMode(asking.mode!);
+    expect((await collect(turnOver(own.channel, 'opencode', { ...run, prompt: 'do it', credentialEnv: {} }, () => '', listed, { asking }))).at(-1)).toEqual({ kind: 'ended', stop: 'end_turn', detail: null });
   });
 });
 
@@ -516,7 +620,7 @@ describe('listing the run\'s tools', () => {
       signal.addEventListener('abort', () => { resolve({ ok: false, reason: 'the listing was stopped' }); }, { once: true });
     });
     setTimeout(() => { stopping.abort(); }, 50);
-    const peer = peerInMode(RUN_AGENT);
+    const peer = peerInMode('build');
     const started = Date.now();
     const events = await collect(turnOver(peer.channel, 'cursor', { ...run, prompt: 'do it', credentialEnv: {} }, () => '', waiting, { signal: stopping.signal }));
     // Stopped by the run, well before the listing's own timeout would end it.

@@ -15,7 +15,7 @@ import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, 
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { claudeCodeDriver } from '@myco/runner/drivers/claude-code.js';
-import { codexDriver } from '@myco/runner/drivers/codex.js';
+import { codexDriver, RUN_PERMISSIONS } from '@myco/runner/drivers/codex.js';
 import { jsonLines } from '@myco/runner/drivers/stream.js';
 import { discardRunDir, writeRunDir } from '@myco/runner/mcp-config.js';
 import { credentialFile, harnessById } from '@myco/runner/harnesses.js';
@@ -26,7 +26,7 @@ import { MCP_SERVER_NAME } from '@myco/runner/mcp-config.js';
 import { PROJECT_HEADER, PROTOCOL_HEADER } from '@myco/member/constants.js';
 import { stubAcpHarness, STUB_DETECTED, STUB_HARNESS } from '../helpers/stub-acp-harness.ts';
 import { readFileSync } from 'node:fs';
-import { RUN_AGENT, turnOver, type Channel } from '@myco/runner/drivers/acp.js';
+import { runAsking, turnOver, type Channel } from '@myco/runner/drivers/acp.js';
 import { listRunTools, type RunTools } from '@myco/runner/drivers/run-tools.js';
 import { runGrant } from '@myco/runner/drivers/grant.js';
 import type { RunEvent } from '@myco/runner/events.js';
@@ -320,14 +320,78 @@ describe('the Codex driver', () => {
     expect(written).toContain(CONNECTION.runToken);
   });
 
-  it('gives source runs a read-only sandbox with no approval prompts', async () => {
+  it('holds a run to a sandbox of its own, since the harness never asks and the run\'s grant never reaches it', async () => {
     const dir = stubHarness('codex', ['{"type":"turn.completed","usage":{}}']);
     process.env.PATH = `${dir}:${process.env.PATH ?? ''}`;
-    const run = runDir();
-    await collect(codexDriver.run({ ...run, sourceReadOnly: true, prompt: 'read source', credentialEnv: {} }, new AbortController().signal));
-    const config = parse(readFileSync(join(run.scratchDir, 'codex-home', 'config.toml'), 'utf8'));
-    expect(config.sandbox_mode).toBe('read-only');
-    expect(config.approval_policy).toBe('never');
+    for (const sourceReadOnly of [true, false]) {
+      const run = runDir();
+      await collect(codexDriver.run({ ...run, sourceReadOnly, prompt: 'read source', credentialEnv: {} }, new AbortController().signal));
+      const home = join(run.scratchDir, 'codex-home');
+      const config = parse(readFileSync(join(home, 'config.toml'), 'utf8')) as Record<string, unknown>;
+      // Reads reach the system's minimal set and the run's own directory, and
+      // nothing else: not the temporary directories, not the run's
+      // configuration home or MCP configuration, which hold its credentials.
+      // Writes reach nothing on a source run, and only the run's directory
+      // otherwise. A sandbox judges a file by its physical path.
+      expect({
+        approval: config.approval_policy,
+        profile: config.default_permissions,
+        permissions: config.permissions,
+        sandbox: config.sandbox_mode,
+        search: config.web_search,
+      }).toEqual({
+        approval: 'never',
+        profile: RUN_PERMISSIONS,
+        permissions: {
+          [RUN_PERMISSIONS]: {
+            filesystem: {
+              ':minimal': 'read',
+              ':slash_tmp': 'deny',
+              ':tmpdir': 'deny',
+              // The harness runs a helper of its own program in the sandbox, by the path PATH gave it.
+              [dir]: 'read',
+              [realpathSync(dir)]: 'read',
+              [realpathSync(run.scratchDir)]: sourceReadOnly ? 'read' : 'write',
+              [realpathSync(home)]: 'deny',
+              [realpathSync(run.mcpConfigPath)]: 'deny',
+            },
+          },
+        },
+        sandbox: undefined,
+        search: 'disabled',
+      });
+    }
+  });
+
+  it('holds a run to its own sandbox whatever sandbox, permission profile or web search the machine configured', async () => {
+    const machine = machineCodexHome({
+      'auth.json': LOGIN,
+      'config.toml': [
+        'sandbox_mode = "danger-full-access"',
+        'default_permissions = "mine"',
+        'web_search = "live"',
+        '',
+        '[sandbox_workspace_write]',
+        'writable_roots = ["/"]',
+        '',
+        '[permissions.mine.filesystem]',
+        '":root" = "write"',
+        '',
+      ].join('\n'),
+    });
+    process.env.PATH = `${stubCodexReadingItsHome()}:${process.env.PATH ?? ''}`;
+    try {
+      const run = runDir();
+      await collect(codexDriver.run({ ...run, sourceReadOnly: true, prompt: 'do it', credentialEnv: {} }, new AbortController().signal));
+      const read = parse(readFileSync(join(run.scratchDir, 'codex-home', 'config.toml'), 'utf8')) as Record<string, unknown>;
+      expect({
+        sandbox: read.sandbox_mode,
+        roots: read.sandbox_workspace_write,
+        profile: read.default_permissions,
+        profiles: Object.keys(objectAt(read, 'permissions')),
+        search: read.web_search,
+      }).toEqual({ sandbox: undefined, roots: undefined, profile: RUN_PERMISSIONS, profiles: [RUN_PERMISSIONS], search: 'disabled' });
+    } finally { machine.remove(); }
   });
 
   /** What a login looks like in the file this harness keeps one in. */
@@ -429,8 +493,8 @@ describe('the Codex driver', () => {
       expect(read.tui).toEqual({ theme: 'dark' });
       expect(read.notify).toEqual(['a-command']);
       // A run queued from elsewhere answers no approvals and is bounded by its
-      // own directory, whatever the machine allows the person in front of it.
-      expect({ approval: read.approval_policy, sandbox: read.sandbox_mode }).toEqual({ approval: 'never', sandbox: 'workspace-write' });
+      // own sandbox, whatever the machine allows the person in front of it.
+      expect({ approval: read.approval_policy, profile: read.default_permissions }).toEqual({ approval: 'never', profile: RUN_PERMISSIONS });
       // The run's server is the only server, whether the machine declared its
       // own under a header or at the root — and no header a machine's server
       // carries reaches the run's directory.
@@ -541,6 +605,10 @@ describe('the Codex driver', () => {
 /** The tools the run's server lists for a run, in place of asking a server. */
 const RUN_TOOL_NAMES = ['myco_run', 'myco_run_sessions', 'noop_ping'];
 
+/** The run's own agent, under the name these runs are given in place of one drawn for each. */
+const RUN_AGENT = 'myco-run-test';
+const ASKING = { asking: runAsking(harnessById('opencode'), RUN_AGENT) };
+
 /** A session opened in the run's own agent, as OpenCode reports its mode. */
 const RUN_AGENT_MODE = { configOptions: [{ id: 'mode', currentValue: RUN_AGENT }] };
 
@@ -580,7 +648,7 @@ describe('the agent-protocol driver', () => {
       const notifications = method === 'session/prompt' ? recording.filter((row) => typeof row.method === 'string') : [];
       return [...notifications, response].map((row) => JSON.stringify(row)).join('\n') + '\n';
     });
-    const events = await collect(turnOver(p.channel, 'opencode', { ...runDir(), prompt: 'fixture', credentialEnv: {} }, () => '', listed));
+    const events = await collect(turnOver(p.channel, 'opencode', { ...runDir(), prompt: 'fixture', credentialEnv: {} }, () => '', listed, ASKING));
     expect(events.filter((event) => event.kind === 'tool_call')).toEqual([
       { kind: 'tool_call', name: 'fixture_fixture_receipt', status: 'started' },
       { kind: 'tool_call', name: 'fixture_fixture_receipt', status: 'ok' },
@@ -601,7 +669,7 @@ describe('the agent-protocol driver', () => {
       if (method === 'session/prompt') return `${JSON.stringify({ jsonrpc: '2.0', id, result: { stopReason: 'end_turn' } })}\n`;
       return `${JSON.stringify({ jsonrpc: '2.0', id, result: {} })}\n`;
     });
-    const events = await collect(turnOver(p.channel, 'opencode', spec, () => '', listed));
+    const events = await collect(turnOver(p.channel, 'opencode', spec, () => '', listed, ASKING));
     expect(events[0]).toEqual({ kind: 'started', harness: 'opencode', sessionId: 'sess_acp' });
     expect(events.at(-1)).toEqual({ kind: 'ended', stop: 'end_turn', detail: null });
     expect(p.asked).toEqual(['initialize', 'session/new', 'session/prompt', 'session/close']);
@@ -610,7 +678,7 @@ describe('the agent-protocol driver', () => {
   it('answers a stop reason the protocol does not name as a failure', async () => {
     const spec = { ...runDir(), prompt: 'do it', credentialEnv: {} };
     const p = peer((method, id) => `${JSON.stringify({ jsonrpc: '2.0', id, result: method === 'session/prompt' ? { stopReason: 'something_else' } : { sessionId: 's', ...RUN_AGENT_MODE } })}\n`);
-    const events = await collect(turnOver(p.channel, 'opencode', spec, () => 'stderr said this', listed));
+    const events = await collect(turnOver(p.channel, 'opencode', spec, () => 'stderr said this', listed, ASKING));
     const last = events.at(-1)!;
     expect(last.kind).toBe('ended');
     if (last.kind === 'ended') { expect(last.stop).toBe('error'); expect(last.detail).toContain('stderr said this'); }
@@ -623,7 +691,7 @@ describe('the agent-protocol driver', () => {
       if (method === 'session/prompt') { queueMicrotask(() => { p.close(); }); return null; }
       return `${JSON.stringify({ jsonrpc: '2.0', id, result: { sessionId: 's', ...RUN_AGENT_MODE } })}\n`;
     });
-    const events = await collect(turnOver(p.channel, 'opencode', spec, () => 'it exited 137', listed));
+    const events = await collect(turnOver(p.channel, 'opencode', spec, () => 'it exited 137', listed, ASKING));
     const last = events.at(-1)!;
     expect(last.kind).toBe('ended');
     if (last.kind === 'ended') { expect(last.stop).toBe('error'); expect(last.detail).toContain('closed the connection'); }
@@ -714,7 +782,7 @@ describe('the agent-protocol driver answering what the agent asks of it', () => 
       answers.push(answer?.result);
       if (chosenOption(answer) === 'once') agent.update({ sessionUpdate: 'tool_call_update', toolCallId: 'call_1', status: 'completed' });
     });
-    const events = await collect(turnOver(channel, 'opencode', { ...runDir(), prompt: 'do it', credentialEnv: {} }, () => '', listed));
+    const events = await collect(turnOver(channel, 'opencode', { ...runDir(), prompt: 'do it', credentialEnv: {} }, () => '', listed, ASKING));
     expect(answers).toEqual([{ outcome: { outcome: 'selected', optionId: 'once' } }]);
     expect(toolCalls(events)).toEqual([
       { kind: 'tool_call', name: 'myco_myco_run', status: 'started' },
@@ -733,7 +801,7 @@ describe('the agent-protocol driver answering what the agent asks of it', () => 
       agent.update({ sessionUpdate: 'tool_call_update', toolCallId: 'call_1', status: 'failed' });
       answers.push((await agent.ask(1, 'session/request_permission', permissionFor({ toolCallId: 'call_2', title: 'https://example.com', kind: 'fetch' })))?.result);
     });
-    const events = await collect(turnOver(channel, 'opencode', { ...runDir(), prompt: 'do it', credentialEnv: {} }, () => '', listed));
+    const events = await collect(turnOver(channel, 'opencode', { ...runDir(), prompt: 'do it', credentialEnv: {} }, () => '', listed, ASKING));
     const rejected = { outcome: { outcome: 'selected', optionId: 'reject' } };
     expect(answers).toEqual([rejected, rejected]);
     expect(toolCalls(events)).toEqual([
@@ -752,7 +820,7 @@ describe('the agent-protocol driver answering what the agent asks of it', () => 
       const channel = askingAgent(async (agent) => {
         chosen = chosenOption(await agent.ask(1, 'session/request_permission', permissionFor({ toolCallId: 'c', ...toolCall })));
       });
-      await collect(turnOver(channel, 'opencode', { ...run, sourceReadOnly, prompt: 'read history', credentialEnv: {} }, () => '', listed));
+      await collect(turnOver(channel, 'opencode', { ...run, sourceReadOnly, prompt: 'read history', credentialEnv: {} }, () => '', listed, ASKING));
       return chosen;
     };
     const shell = (command: string): Record<string, unknown> => ({ kind: 'execute', title: command, rawInput: { command } });
@@ -796,7 +864,7 @@ describe('the agent-protocol driver answering what the agent asks of it', () => 
     const channel = askingAgent(async (agent) => {
       answers.push((await agent.ask(1, 'session/request_permission', { ...permissionFor({ toolCallId: 'c', kind: 'other', title: 'myco_myco_run' }), sessionId: 'sess_other' }))?.result);
     });
-    const events = await collect(turnOver(channel, 'opencode', { ...runDir(), prompt: 'do it', credentialEnv: {} }, () => '', listed));
+    const events = await collect(turnOver(channel, 'opencode', { ...runDir(), prompt: 'do it', credentialEnv: {} }, () => '', listed, ASKING));
     expect(answers).toEqual([{ outcome: { outcome: 'selected', optionId: 'reject' } }]);
     expect(toolCalls(events)).toEqual([]);
   });
@@ -808,7 +876,7 @@ describe('the agent-protocol driver answering what the agent asks of it', () => 
       const answer = await agent.ask(agent.promptId, 'session/request_permission', permissionFor({ toolCallId: 'call_1', title: 'myco_myco_run', kind: 'other' }));
       answers.push(answer);
     });
-    const events = await collect(turnOver(channel, 'opencode', { ...runDir(), prompt: 'do it', credentialEnv: {} }, () => '', listed));
+    const events = await collect(turnOver(channel, 'opencode', { ...runDir(), prompt: 'do it', credentialEnv: {} }, () => '', listed, ASKING));
     expect(events.at(-1)).toEqual({ kind: 'ended', stop: 'end_turn', detail: null });
     expect(answers).toEqual([{ jsonrpc: '2.0', id: 3, result: { outcome: { outcome: 'selected', optionId: 'once' } } }]);
   });
@@ -819,7 +887,7 @@ describe('the agent-protocol driver answering what the agent asks of it', () => 
       answers.push(await agent.ask(7, 'fs/read_text_file', { sessionId: 'sess_acp', path: '/etc/hosts' }));
       answers.push(await agent.ask('term-1', 'terminal/create', { sessionId: 'sess_acp', command: 'ls' }));
     });
-    const events = await collect(turnOver(channel, 'opencode', { ...runDir(), prompt: 'do it', credentialEnv: {} }, () => '', listed));
+    const events = await collect(turnOver(channel, 'opencode', { ...runDir(), prompt: 'do it', credentialEnv: {} }, () => '', listed, ASKING));
     expect(answers).toEqual([
       { jsonrpc: '2.0', id: 7, error: { code: -32601, message: 'Method not found: fs/read_text_file' } },
       { jsonrpc: '2.0', id: 'term-1', error: { code: -32601, message: 'Method not found: terminal/create' } },
@@ -957,7 +1025,7 @@ describe('the tools a run\'s server lists for it', () => {
       const channel = askingAgent(async (agent) => {
         answers.push(chosenOption(await agent.ask(1, 'session/request_permission', permissionFor({ toolCallId: 'c', kind: 'other', title: 'myco_myco_run_sessions' }))));
       });
-      await collect(turnOver(channel, 'opencode', { ...run, prompt: 'do it', credentialEnv: {} }, () => ''));
+      await collect(turnOver(channel, 'opencode', { ...run, prompt: 'do it', credentialEnv: {} }, () => '', undefined, ASKING));
       expect(answers).toEqual(['once']);
       expect(new Set(server.seen)).toEqual(new Set([`Bearer ${CONNECTION.runToken}`]));
     } finally { server.stop(); }
@@ -1137,4 +1205,38 @@ describe('the budget a run is held to', () => {
       }
     }, 15_000);
   }
+});
+
+describe('what a worker reports of a turn a failed call cut short', () => {
+  it('reports a completed turn with the calls that failed, and that the turn ended right after one', async () => {
+    // The harness refuses one call and ends its turn at once, as OpenCode does
+    // after a `reject_once`: the stop reason alone reads as a clean finish.
+    process.env.PATH = `${stubHarness('claude', [
+      '{"type":"system","subtype":"init","session_id":"sess_cut"}',
+      '{"type":"assistant","message":{"content":[{"type":"tool_use","id":"tu_1","name":"Bash","input":{"command":"ls"}}]}}',
+      '{"type":"system","subtype":"permission_denied","tool_name":"Bash","tool_use_id":"tu_1"}',
+      '{"type":"result","subtype":"success","is_error":false,"stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":1},"permission_denials":[{"tool_name":"Bash","tool_use_id":"tu_1","tool_input":{"command":"ls"}}]}',
+    ])}:${process.env.PATH ?? ''}`;
+    const end: { body: Record<string, unknown> | null } = { body: null };
+    const fetchImpl = (async (input: string | URL | Request, init?: RequestInit) => {
+      const url = String(typeof input === 'string' || input instanceof URL ? input : input.url);
+      if (url.endsWith('/worker/claim')) {
+        return new Response(JSON.stringify({
+          persisted: true, claimed: true, heartbeatMs: 60_000,
+          run: { projectId: 'proj_1', id: 'run_cut', task: 'title-summary', instruction: 'do it', harness: 'claude-code', runToken: 'tok_run', credentialEnv: {}, timeoutSeconds: 300 },
+        }), { status: 200 });
+      }
+      if (url.endsWith('/worker/end')) { end.body = JSON.parse(String(init?.body)) as Record<string, unknown>; return new Response(JSON.stringify({ persisted: true, ended: true }), { status: 200 }); }
+      return new Response(JSON.stringify({ persisted: true }), { status: 200 });
+    }) as unknown as typeof fetch;
+    await runWorker({
+      serverUrl: 'https://deployment.example', token: 'tok', lockDir: null,
+      runRoot: mkdtempSync(join(tmpdir(), 'myco-worker-')),
+      once: true, pollIdleMs: 3_000, log: () => {}, fetchImpl, signal: new AbortController().signal,
+    });
+    expect({ status: end.body?.status, error: end.body?.error }).toEqual({
+      status: 'completed',
+      error: 'a call failed or was refused: Bash; the turn ended right after the last of them',
+    });
+  }, 15_000);
 });

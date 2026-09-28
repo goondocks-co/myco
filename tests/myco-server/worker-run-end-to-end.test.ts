@@ -91,8 +91,8 @@ async function rig() {
     return claimed.run;
   };
   /** The worker's own report that the harness ended its turn. */
-  const workerEnds = (runId: string, status: 'completed' | 'failed', now: number) =>
-    endLeasedRun(e.serverEnv, { tokenId: workerToken, now }, { projectId: 'proj_1', runId, status });
+  const workerEnds = (runId: string, status: 'completed' | 'failed', now: number, error?: string) =>
+    endLeasedRun(e.serverEnv, { tokenId: workerToken, now }, { projectId: 'proj_1', runId, status, ...(error === undefined ? {} : { error }) });
   return { e, workerToken, asRun, outcome, calls, claimedTitling, claimedRetitle, workerEnds, verifyOutcome };
 }
 
@@ -166,6 +166,24 @@ describe('what a worker reporting `completed` actually closes', () => {
     await expect(r.verifyOutcome(run.id)).rejects.toThrow();
     r.e.sqlite.run('UPDATE agent_runs SET status = ? WHERE id = ?', ['completed', run.id]);
     await expect(r.verifyOutcome(run.id)).rejects.toThrow('The run left no task artifact');
+  });
+
+  it('records what cut a run short beside the artifact it owed, where the worker saw calls fail before the turn ended', async () => {
+    const r = await rig();
+    const run = await r.claimedTitling(NOW + 1);
+    await r.asRun(run.runToken, 'myco_run', { op: 'report', action: 'summary', summary: 'could not read the session' });
+    const note = '2 calls failed or were refused: myco_run_sessions ×2; the turn ended right after the last of them';
+    expect(await r.workerEnds(run.id, 'completed', NOW + 3, note)).toEqual({ ended: true, status: 'failed' });
+    expect(r.outcome(run.id)).toEqual({ status: 'failed', error: `${RUN_CLOSE_ARTIFACT_ERROR}: ${note}` });
+  });
+
+  it('keeps no error on a run that closed, whatever calls failed along the way', async () => {
+    const r = await rig();
+    const run = await r.claimedTitling(NOW + 1);
+    await r.asRun(run.runToken, 'myco_run_sessions', { op: 'title', title: 'Add a retry to the runner', summary: 'The runner gained a retry around its one flaky call.' });
+    await r.asRun(run.runToken, 'myco_run', { op: 'report', action: 'summary', summary: 'titled one session' });
+    expect(await r.workerEnds(run.id, 'completed', NOW + 3, 'a call failed or was refused: Bash (outside the run\'s grant)')).toEqual({ ended: true, status: 'completed' });
+    expect(r.outcome(run.id)).toEqual({ status: 'completed', error: null });
   });
 
   it('completes a titling run that wrote the title under its own credential', async () => {

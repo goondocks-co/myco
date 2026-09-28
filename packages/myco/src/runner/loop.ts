@@ -14,13 +14,13 @@ import { parseWorkerUsage, type WorkerUsage } from '@goondocks/myco-shared/worke
  * so two workers never both report an outcome for one run.
  */
 import { mkdirSync } from 'node:fs';
-import { detectHarnesses, type DetectedHarness } from './detect.js';
+import { detectHarnesses, offerOf, WITHHELD_REASON } from './detect.js';
 import { driverFor } from './drivers/registry.js';
 import { discardRunDir, writeRunDir } from './mcp-config.js';
 import { deploymentScopedHeaders, MEMBER_PROTOCOL } from '../member/constants.js';
 import type { RefreshStatus } from '../member/refresh.js';
 import { classifyEventAnswer, rawAnswerOf, type RawAnswer } from '../member/transport.js';
-import type { RunEvent } from './events.js';
+import { failedCallsNote, type RunEvent } from './events.js';
 import { parseRepositoryCheckoutSpec, REPOSITORY_CHECKOUT_CAPABILITY, type RepositoryCheckoutSpec } from '@goondocks/myco-shared/repository';
 import { prepareWorkerCheckout } from './repository.js';
 import { holdWorkerInstance } from './instance.js';
@@ -371,7 +371,7 @@ async function drive(options: WorkerOptions, run: ClaimedRun, heartbeatMs: numbe
   const last = events.at(-1);
   if (last === undefined || last.kind !== 'ended') return { status: 'failed', error: 'the harness wrote no ending', usage };
   return last.stop === 'end_turn'
-    ? { status: 'completed', error: null, usage }
+    ? { status: 'completed', error: failedCallsNote(events), usage }
     : { status: 'failed', usage, error: `the harness stopped: ${last.stop}${last.detail === null ? '' : ` (${last.detail})`}` };
 }
 
@@ -446,7 +446,8 @@ async function becomeInstance(options: WorkerOptions): Promise<{ release: () => 
 }
 
 async function claimUntilStopped(options: WorkerOptions): Promise<WorkerOutcome> {
-  const harnesses: DetectedHarness[] = detectHarnesses(options.only);
+  const { offered: harnesses, withheld } = offerOf(detectHarnesses(options.only));
+  for (const id of withheld) options.log(`not offering ${id}: ${WITHHELD_REASON}`);
   const ready = harnesses.filter((h) => h.authenticated).map((h) => h.id);
   options.log(ready.length === 0
     ? `no harness on this machine is logged in; nothing can be claimed (found: ${harnesses.map((h) => h.id).join(', ') || 'none'})`

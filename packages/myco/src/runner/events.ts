@@ -63,3 +63,37 @@ export function reachedEnd(events: readonly RunEvent[]): boolean {
   const last = events.at(-1);
   return last !== undefined && last.kind === 'ended' && last.stop === 'end_turn';
 }
+
+/** How many kinds of failed call a note names before it counts the rest. */
+const NOTED_FAILURES = 5;
+
+/**
+ * What a run's record says about the calls that failed or were refused in it,
+ * or null where none did.
+ *
+ * A harness can end its turn cleanly right after a call fails or is refused,
+ * with the rest of its work never done, and the stop reason alone reads as a
+ * run that finished. So the calls are named, each with why where the driver
+ * knows it and how many times it failed, and the note says so when the turn
+ * ended right after one: when the last thing the agent did before its turn
+ * ended was a call that failed, with no message or successful call after it.
+ */
+export function failedCallsNote(events: readonly RunEvent[]): string | null {
+  const failed = new Map<string, number>();
+  let endedOnFailure = false;
+  for (const event of events) {
+    if (event.kind === 'tool_call' && event.status === 'error') {
+      const named = event.detail === undefined ? event.name : `${event.name} (${event.detail})`;
+      failed.set(named, (failed.get(named) ?? 0) + 1);
+      endedOnFailure = true;
+    } else if ((event.kind === 'tool_call' && event.status === 'ok') || (event.kind === 'message' && event.role === 'assistant')) {
+      endedOnFailure = false;
+    }
+  }
+  if (failed.size === 0) return null;
+  const total = [...failed.values()].reduce((sum, count) => sum + count, 0);
+  const named = [...failed].slice(0, NOTED_FAILURES).map(([call, count]) => (count === 1 ? call : `${call} ×${count}`));
+  const rest = failed.size > NOTED_FAILURES ? `, and ${failed.size - NOTED_FAILURES} more` : '';
+  const calls = total === 1 ? 'a call failed or was refused' : `${total} calls failed or were refused`;
+  return `${calls}: ${named.join('; ')}${rest}${endedOnFailure ? '; the turn ended right after the last of them' : ''}`;
+}

@@ -16,13 +16,15 @@
  * the run's server is a run with no login, and the harness fails its turn on a
  * 401 from the model's API on a machine that is signed in.
  */
-import { existsSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { existsSync, readFileSync, realpathSync, symlinkSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { parse, stringify, type TomlTableWithoutBigInt } from 'smol-toml';
 import { HARNESS_CREDENTIALS } from '@goondocks/myco-shared/harness-providers';
+import { locate } from '../detect.js';
 import { credentialFile, harnessById, type Harness } from '../harnesses.js';
 import type { Driver, RunEvent, RunSpec } from '../events.js';
 import { MCP_SERVER_NAME } from '../mcp-config.js';
+import { freshRunHome } from './run-home.js';
 import { jsonLines, numberOf, recordOf, startHarness, stringOf } from './stream.js';
 
 /** The table every MCP server this harness reads is declared under. */
@@ -57,9 +59,40 @@ function carryLogin(home: string, spec: RunSpec, harness: Harness): void {
   if (login !== null && existsSync(login)) symlinkSync(login, join(home, 'auth.json'));
 }
 
+/** The permission profile a run's commands run under, and the only one its configuration defines. */
+export const RUN_PERMISSIONS = 'myco_run';
+
+/**
+ * What a run's commands may touch, as the harness's sandbox holds them to it.
+ *
+ * This harness never asks before a call and the run's grant does not reach it,
+ * so the sandbox is the run's whole bound: a command reads the system's own
+ * minimal set and the run's directory, and writes nothing (a source run) or
+ * only the run's directory; the temporary directories every command could
+ * otherwise read and write are closed. Within the run's directory, the run's
+ * configuration home and its MCP configuration are closed as well: they hold
+ * the run's credentials, which are the harness's to read and not its
+ * commands'. The harness's own program is readable, in the directory PATH
+ * finds it in and the one it is installed in, since the harness runs a helper
+ * of its own inside the same sandbox, by the path PATH gave it, to read the
+ * run's instructions. A command reaches no network. Paths are physical, since
+ * the sandbox judges the path a file really has.
+ */
+export function runFilesystem(spec: RunSpec, home: string, installed: string | null): Record<string, string> {
+  return {
+    ':minimal': 'read',
+    ':slash_tmp': 'deny',
+    ':tmpdir': 'deny',
+    ...(installed === null ? {} : { [dirname(installed)]: 'read', [dirname(realpathSync(installed))]: 'read' }),
+    [realpathSync(spec.scratchDir)]: spec.sourceReadOnly === true ? 'read' : 'write',
+    [realpathSync(home)]: 'deny',
+    [realpathSync(spec.mcpConfigPath)]: 'deny',
+  };
+}
+
 /**
  * The configuration the run reads: the machine's own, with the run's MCP server
- * in place of every other and the two settings a queued run cannot inherit.
+ * in place of every other and the settings a queued run cannot inherit.
  *
  * What the operator set is what a run on their machine behaves under, and it is
  * carried as it stands — `[model_providers]` and the headers one can hold
@@ -67,18 +100,19 @@ function carryLogin(home: string, spec: RunSpec, harness: Harness): void {
  * the exception: a run's tools are the run's alone, and a server the operator
  * configured carries the operator's own headers besides.
  *
- * Two settings are the run's rather than the machine's. There is nobody at a
+ * The rest are the run's rather than the machine's. There is nobody at a
  * terminal to answer an approval, so a run that asked for one would hang until
- * its budget ended it. And a run queued from elsewhere is bounded by its own
- * directory, rather than by what an operator allows themselves sitting in front
- * of the machine — `danger-full-access` on a laptop is a setting for the person
- * holding it.
+ * its budget ended it. A run queued from elsewhere is bounded by the sandbox
+ * `runFilesystem` describes, rather than by what an operator allows themselves
+ * sitting in front of the machine: `danger-full-access` on a laptop is a setting
+ * for the person holding it, and so is any permission profile they defined. And
+ * the harness's own web search, which no sandbox holds, is off.
  *
  * It is read and written through a parser: this file is the operator's, and a
  * scan for the lines that look like server declarations mistakes a multi-line
  * string that contains one for the real thing.
  */
-function runConfig(spec: RunSpec, harness: Harness): string {
+function runConfig(spec: RunSpec, harness: Harness, home: string): string {
   const login = credentialFile(harness);
   // A harness keeps its login inside its configuration home, so the directory
   // holding the declared login file is the home this run is additive over.
@@ -87,7 +121,13 @@ function runConfig(spec: RunSpec, harness: Harness): string {
     ? parse(readFileSync(machinePath, 'utf8'))
     : {}) as Record<string, unknown>;
   machine.approval_policy = 'never';
-  machine.sandbox_mode = spec.sourceReadOnly === true ? 'read-only' : 'workspace-write';
+  // The run's permission profile is the run's whole sandbox, so the machine's
+  // own sandbox settings are dropped rather than left beside it.
+  delete machine.sandbox_mode;
+  delete machine.sandbox_workspace_write;
+  machine.default_permissions = RUN_PERMISSIONS;
+  machine.permissions = { [RUN_PERMISSIONS]: { filesystem: runFilesystem(spec, home, locate(harness.binary)) } };
+  machine.web_search = 'disabled';
 
   // The run's connection is authored once, in `mcp-config.ts`. This reads that
   // file and restates it in the language this harness configures servers in,
@@ -100,21 +140,11 @@ function runConfig(spec: RunSpec, harness: Harness): string {
   return stringify(machine as TomlTableWithoutBigInt);
 }
 
-/**
- * The configuration home a run reads, built where the run's own files are.
- *
- * The directory belongs to the run and goes when the run does, so what the
- * harness writes beside its configuration — sessions, history, logs — is the
- * run's and never the machine's. It is built from nothing on every attempt: a
- * worker killed mid-run leaves a home behind, and the run it belongs to is
- * claimed again under the same id.
- */
+/** The configuration home a run reads, built where the run's own files are (`run-home.ts`). */
 function runHome(spec: RunSpec, harness: Harness): string {
-  const home = join(spec.scratchDir, 'codex-home');
-  rmSync(home, { recursive: true, force: true });
-  mkdirSync(home, { recursive: true, mode: 0o700 });
+  const home = freshRunHome(spec.scratchDir, 'codex-home');
   carryLogin(home, spec, harness);
-  writeFileSync(join(home, 'config.toml'), runConfig(spec, harness), { mode: 0o600 });
+  writeFileSync(join(home, 'config.toml'), runConfig(spec, harness, home), { mode: 0o600 });
   return home;
 }
 
