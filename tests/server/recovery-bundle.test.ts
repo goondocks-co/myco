@@ -368,7 +368,8 @@ describe('verified recovery artifacts', () => {
 
   /** The production attempt bounds with no waits between attempts. */
   const immediate: RecoveryRetryPolicy = {
-    objectReads: { ...RECOVERY_RETRY.objectReads, backoffMs: [0] }, holdOpens: { ...RECOVERY_RETRY.holdOpens, backoffMs: [0] },
+    objectReads: { ...RECOVERY_RETRY.objectReads, backoffMs: [0] }, holdReads: { ...RECOVERY_RETRY.holdReads, backoffMs: [0] },
+    holdRounds: { ...RECOVERY_RETRY.holdRounds, backoffMs: [0] },
   };
   const reset = () => Object.assign(new Error('The socket connection was closed unexpectedly.'), { code: 'ECONNRESET' });
 
