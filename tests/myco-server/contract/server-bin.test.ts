@@ -128,6 +128,9 @@ const referencingRows = (sqlite: Database) => ({
   contacts: sqlite.query('SELECT credential_id FROM worker_contacts ORDER BY credential_id').all(),
 });
 
+/** How many steps a volume at step 47 is behind this build. */
+const STEPS_AFTER_47 = SERVER_SCHEMA_VERSION - 47;
+
 describe('migrateOnly across step 48 (#1416)', () => {
   it('migrates a v47 volume whose credentials are referenced: every row, counter and reference kept, the byte CHECK gone, foreign keys still enforced', () => {
     const path = join(scratch(), 'myco.sqlite');
@@ -138,11 +141,11 @@ describe('migrateOnly across step 48 (#1416)', () => {
     const refs = referencingRows(v47);
     v47.close();
 
-    expect(migrateOnly(path)).toBe(1);
+    expect(migrateOnly(path)).toBe(STEPS_AFTER_47);
 
     const sqlite = new Database(path);
     sqlite.exec('PRAGMA foreign_keys = ON');
-    expect(sqlite.query(`SELECT value FROM schema_meta WHERE key = 'version'`).get()).toEqual({ value: '48' });
+    expect(sqlite.query(`SELECT value FROM schema_meta WHERE key = 'version'`).get()).toEqual({ value: String(SERVER_SCHEMA_VERSION) });
     expect(credentialRows(sqlite)).toEqual(rows);
     expect(referencingRows(sqlite)).toEqual(refs);
     expect(sqlite.query('PRAGMA foreign_key_check').all()).toEqual([]);
@@ -165,7 +168,7 @@ describe('migrateOnly across step 48 (#1416)', () => {
     expect(before.foreignKeys).toEqual([expect.objectContaining({ table: 'members', from: 'member_id', to: 'id' })]);
     v47.close();
 
-    expect(migrateOnly(path)).toBe(1);
+    expect(migrateOnly(path)).toBe(STEPS_AFTER_47);
     const after = new Database(path);
     expect(credentialShape(after, false)).toEqual(before);
     after.close();
@@ -184,7 +187,7 @@ describe('migrateOnly across step 48 (#1416)', () => {
       for (const sql of step48.slice(0, torn)) v47.exec(sql);
       v47.close();
 
-      expect({ torn, applied: migrateOnly(path) }).toEqual({ torn, applied: 1 });
+      expect({ torn, applied: migrateOnly(path) }).toEqual({ torn, applied: STEPS_AFTER_47 });
       const healed = new Database(path);
       expect({ torn, rows: credentialRows(healed) }).toEqual({ torn, rows });
       expect({ torn, holding: healed.query(`SELECT name FROM sqlite_master WHERE name LIKE '_v48_%'`).all() }).toEqual({ torn, holding: [] });
@@ -226,7 +229,7 @@ describe('migrateOnly across step 48 (#1416)', () => {
     after.exec(`DROP VIEW _v48_guard_rows_kept`);
     after.close();
 
-    expect(migrateOnly(path)).toBe(1);
+    expect(migrateOnly(path)).toBe(STEPS_AFTER_47);
     const healed = new Database(path);
     expect(credentialRows(healed)).toEqual(rows);
     healed.close();

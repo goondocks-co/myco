@@ -1,7 +1,8 @@
 import { PROJECT_ID_GRAMMAR } from './project-id.js';
 import { occurredAt, presentedStatus } from './session-dates.js';
 
-const sources = [
+/** Every embeddable table: its vector type, key, the columns its revision follows, and each clause of its `embedding_sources` SELECT. */
+export const EMBEDDING_SOURCES = [
   { table: 'sessions', type: 'session', id: 'session_id', columns: 'title, summary, started_at, ended_at',
     title: "COALESCE(title, 'Session')", text: "COALESCE(title, '') || char(10) || summary", blob: 'NULL',
     status: "CASE WHEN ended_at IS NULL THEN 'active' ELSE 'completed' END", session: 'session_id', prompt: 'NULL', created: 'COALESCE(started_at, first_received_at)', observation: "''", eligible: "summary IS NOT NULL AND trim(summary) <> ''" },
@@ -14,7 +15,7 @@ const sources = [
 ] as const;
 
 /** One embedding source, with every clause of its SELECT as text. */
-type Source = { readonly [K in keyof (typeof sources)[number]]: string };
+type Source = { readonly [K in keyof (typeof EMBEDDING_SOURCES)[number]]: string };
 
 const unionOf = (list: readonly Source[]): string => list.map((s) => `SELECT project_id, '${s.type}' AS type, '${s.table}' AS namespace, ${s.id} AS record_id,
   ${s.title} AS title, ${s.text} AS text, ${s.blob} AS blob_key, ${s.status} AS status,
@@ -28,9 +29,17 @@ export const embeddingSourcesView = (list: readonly Source[]): string => `CREATE
     FROM (${unionOf(list)}) s JOIN embedding_versions v ON v.project_id = s.project_id AND v.type = s.type AND v.record_id = s.record_id`;
 
 /** The sources with a session dated and stated by what it is presented with; what a search filters on. */
-export const SOURCES_WITH_PRESENTED_SESSION_DATE: readonly Source[] = sources.map((s) => s.table === 'sessions'
+export const SOURCES_WITH_PRESENTED_SESSION_DATE: readonly Source[] = EMBEDDING_SOURCES.map((s) => s.table === 'sessions'
   ? { ...s, created: occurredAt(), status: presentedStatus() }
   : s);
+
+/** The trigger body that gives a source row a new embedding revision, read from `new`. */
+export const newSourceRevision = (s: Source): string => `INSERT INTO embedding_versions(project_id, type, record_id, revision) VALUES(new.project_id, '${s.type}', new.${s.id}, lower(hex(randomblob(16))))
+      ON CONFLICT(project_id, type, record_id) DO UPDATE SET revision = excluded.revision;`;
+
+/** The trigger statement that gives the record a release state row names (through `old` or `new`) a new embedding revision. */
+export const newReleaseRecordRevision = (row: 'old' | 'new'): string => `UPDATE embedding_versions SET revision = lower(hex(randomblob(16))) WHERE project_id = ${row}.project_id AND record_id = ${row}.record_id
+      AND (${EMBEDDING_SOURCES.map((s) => `(${row}.namespace = '${s.table}' AND type = '${s.type}')`).join(' OR ')});`;
 
 /** Source mutations invalidate vectors atomically; provider calls occur only during reconciliation. */
 export const V20_STATEMENTS: readonly string[] = [
@@ -51,22 +60,19 @@ export const V20_STATEMENTS: readonly string[] = [
   `CREATE TABLE IF NOT EXISTS embedding_hubness_work (
     project_id TEXT PRIMARY KEY CHECK (${PROJECT_ID_GRAMMAR}), target TEXT NOT NULL, after_id TEXT NOT NULL DEFAULT '',
     count INTEGER NOT NULL DEFAULT 0, mean REAL NOT NULL DEFAULT 0, m2 REAL NOT NULL DEFAULT 0)`,
-  ...sources.flatMap((s) => [
+  ...EMBEDDING_SOURCES.flatMap((s) => [
     `CREATE TRIGGER IF NOT EXISTS ${s.table}_embedding_ai AFTER INSERT ON ${s.table} BEGIN
-      INSERT INTO embedding_versions(project_id, type, record_id, revision) VALUES(new.project_id, '${s.type}', new.${s.id}, lower(hex(randomblob(16))))
-      ON CONFLICT(project_id, type, record_id) DO UPDATE SET revision = excluded.revision; END`,
+      ${newSourceRevision(s)} END`,
     `CREATE TRIGGER IF NOT EXISTS ${s.table}_embedding_au AFTER UPDATE OF ${s.columns} ON ${s.table} BEGIN
-      INSERT INTO embedding_versions(project_id, type, record_id, revision) VALUES(new.project_id, '${s.type}', new.${s.id}, lower(hex(randomblob(16))))
-      ON CONFLICT(project_id, type, record_id) DO UPDATE SET revision = excluded.revision; END`,
+      ${newSourceRevision(s)} END`,
     `CREATE TRIGGER IF NOT EXISTS ${s.table}_embedding_ad AFTER DELETE ON ${s.table} BEGIN
       DELETE FROM embedding_versions WHERE project_id = old.project_id AND type = '${s.type}' AND record_id = old.${s.id}; END`,
     `INSERT OR IGNORE INTO embedding_versions(project_id, type, record_id, revision) SELECT project_id, '${s.type}', ${s.id}, lower(hex(randomblob(16))) FROM ${s.table}`,
   ]),
   ...(['INSERT', 'UPDATE', 'DELETE'] as const).map((op) => {
-    const rows = op === 'UPDATE' ? ['old', 'new'] : [op === 'DELETE' ? 'old' : 'new'];
+    const rows: Array<'old' | 'new'> = op === 'UPDATE' ? ['old', 'new'] : [op === 'DELETE' ? 'old' : 'new'];
     return `CREATE TRIGGER IF NOT EXISTS knowledge_release_embedding_${op.toLowerCase()} AFTER ${op} ON knowledge_release_state BEGIN
-      ${rows.map((row) => `UPDATE embedding_versions SET revision = lower(hex(randomblob(16))) WHERE project_id = ${row}.project_id AND record_id = ${row}.record_id
-      AND (${sources.map((s) => `(${row}.namespace = '${s.table}' AND type = '${s.type}')`).join(' OR ')});`).join('\n')} END`;
+      ${rows.map((row) => newReleaseRecordRevision(row)).join('\n')} END`;
   }),
-  embeddingSourcesView(sources),
+  embeddingSourcesView(EMBEDDING_SOURCES),
 ];
