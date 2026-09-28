@@ -7,7 +7,7 @@ import type { NativeSqlite } from '@myco-server-worker/platform/bun/native.js';
 import { acquireRecoveryHold, openRecoveryHold, readRecoveryHold, releaseOperatorHold } from '@myco-server-worker/core/object-release.js';
 import { LOCAL_SECRET_NAMES, readLocalRecord, resolveLocalPaths, type LocalDeploymentPaths } from './local.js';
 import { LocalVolume } from './local-volume.js';
-import { createRecoveryBundle, type RecoveryHoldOwner, type RecoveryHoldReading, type RecoveryManifest } from './recovery-bundle.js';
+import { createRecoveryBundle, type RecoveryHoldOwner, type RecoveryHoldReading, type RecoveryManifest, type RecoveryRetryPolicy } from './recovery-bundle.js';
 
 function configuration(paths: LocalDeploymentPaths) {
   const { port, origin, sourceFrom, trustedHeader, trustedHops, fleet } = readLocalRecord(paths);
@@ -61,7 +61,7 @@ export function localRecoveryHold(paths: LocalDeploymentPaths, native?: NativeSq
  * snapshot names until the artifact completes.
  */
 export async function backupLocalDeployment(options: {
-  destination: string; paths?: LocalDeploymentPaths; report?: (line: string) => void; native?: NativeSqlite;
+  destination: string; paths?: LocalDeploymentPaths; report?: (line: string) => void; native?: NativeSqlite; retry?: RecoveryRetryPolicy;
 }): Promise<RecoveryManifest> {
   const paths = options.paths ?? resolveLocalPaths();
   const source = diskBlobStore(paths.blobDir);
@@ -80,5 +80,5 @@ export async function backupLocalDeployment(options: {
       if (held === null) throw new Error(`source Deployment is missing blob ${blob.key}`);
       return held.body;
     },
-  }, options.report));
+  }, options.report, options.retry));
 }

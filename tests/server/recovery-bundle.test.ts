@@ -5,7 +5,10 @@ import os from 'node:os';
 import path from 'node:path';
 import { Database } from 'bun:sqlite';
 import { createBackup } from '@myco-server-worker/core/backup.js';
-import { copyRecoveryBundle, copyRecoveryObjects, createRecoveryBundle, preparedObjectKeys, verifyRecoveryBundle, type RecoveryAdapter, type RecoveryObjectDestination } from '@myco/server/recovery-bundle.js';
+import {
+  copyRecoveryBundle, copyRecoveryObjects, createRecoveryBundle, preparedObjectKeys, RECOVERY_RETRY, verifyRecoveryBundle,
+  type RecoveryAdapter, type RecoveryObjectDestination, type RecoveryRetryPolicy,
+} from '@myco/server/recovery-bundle.js';
 import { sqliteEnv } from '../myco-server/helpers/fixtures.js';
 import { legacyBlob } from '../myco-server/helpers/d1.js';
 
@@ -360,6 +363,55 @@ describe('verified recovery artifacts', () => {
       const again = await createRecoveryBundle(f.destination, f.adapter);
       expect(again).toEqual(result);
       expect(f.reads).toHaveLength(2);
+    } finally { f.cleanup(); }
+  });
+
+  /** The production attempt bounds with no waits between attempts. */
+  const immediate: RecoveryRetryPolicy = {
+    objectReads: { ...RECOVERY_RETRY.objectReads, backoffMs: [0] }, holdReads: { ...RECOVERY_RETRY.holdReads, backoffMs: [0] },
+    holdRounds: { ...RECOVERY_RETRY.holdRounds, backoffMs: [0] },
+  };
+  const reset = () => Object.assign(new Error('The socket connection was closed unexpectedly.'), { code: 'ECONNRESET' });
+
+  it('retries a transient read in the copy loop every source adapter shares, and keeps only whole objects', async () => {
+    const f = fixture();
+    try {
+      const [first, second] = [...f.bodies.keys()];
+      const attempts = new Map<string, number>();
+      const reports: string[] = [];
+      const result = await createRecoveryBundle(f.destination, { ...f.adapter, blob: async (blob, workDir) => {
+        const attempt = (attempts.get(blob.key) ?? 0) + 1;
+        attempts.set(blob.key, attempt);
+        // The first object's source refuses the connection once; the second loses it halfway through the body once.
+        if (blob.key === first && attempt === 1) throw reset();
+        if (blob.key === second && attempt === 1) {
+          const body = f.bodies.get(blob.key)!;
+          return new ReadableStream<Uint8Array>({
+            start(controller) { controller.enqueue(new TextEncoder().encode(body.slice(0, 4))); },
+            pull(controller) { controller.error(reset()); },
+          });
+        }
+        return f.adapter.blob(blob, workDir);
+      } }, (line) => reports.push(line), immediate);
+      expect(result.status).toBe('complete');
+      expect(Object.fromEntries(attempts)).toEqual({ [first!]: 2, [second!]: 2 });
+      expect(reports.filter((line) => line.startsWith('Reading '))).toHaveLength(2);
+      for (const [key, body] of f.bodies) expect(fs.readFileSync(path.join(f.destination, 'blobs', key), 'utf8')).toBe(body);
+      expect((await verifyRecoveryBundle(f.destination)).status).toBe('complete');
+    } finally { f.cleanup(); }
+  });
+
+  it('does not retry a digest mismatch or an unclassified failure', async () => {
+    const f = fixture();
+    try {
+      let reads = 0;
+      const corrupt = createRecoveryBundle(f.destination, { ...f.adapter, blob: async () => { reads += 1; return new Response('wrong bytes').body!; } }, () => {}, immediate);
+      await expect(corrupt).rejects.toThrow(/was not stored: stored bytes do not match the declared sha256 digest$/);
+      expect(reads).toBe(1);
+      const faulty = createRecoveryBundle(f.destination, { ...f.adapter, blob: async () => { reads += 1; throw new Error('volume unreadable'); } }, () => {}, immediate);
+      await expect(faulty).rejects.toThrow(/was not stored: volume unreadable$/);
+      expect(reads).toBe(2);
+      expect(fs.readdirSync(path.join(f.destination, 'blobs'), { recursive: true }).filter((name) => String(name).includes('.partial'))).toEqual([]);
     } finally { f.cleanup(); }
   });
 

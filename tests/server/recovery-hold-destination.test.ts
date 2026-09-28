@@ -14,8 +14,8 @@ import path from 'node:path';
 import { backupLocalDeployment, localRecoveryHold } from '@myco/server/local-backup.js';
 import { resolveLocalPaths, writeLocalRecord } from '@myco/server/local.js';
 import {
-  abandonRecoveryHold, createRecoveryBundle, recoveryHoldOfDestination, verifyRecoveryBundle,
-  type RecoveryHoldOwner, type RecoveryHoldReading, type RecoveryHoldSource,
+  abandonRecoveryHold, createRecoveryBundle, RECOVERY_RETRY, recoveryHoldOfDestination, verifyRecoveryBundle,
+  type RecoveryHoldOwner, type RecoveryHoldReading, type RecoveryHoldSource, type RecoveryRetryPolicy,
 } from '@myco/server/recovery-bundle.js';
 import { SERVER_SCHEMA_VERSION } from '@myco-server-worker/constants.js';
 import { diskBlobStore } from '@myco-server-worker/platform/bun/blobs.js';
@@ -24,6 +24,12 @@ import { sqliteRelationalStore } from '@myco-server-worker/platform/bun/sqlite.j
 import { sqliteEnv } from '../myco-server/helpers/fixtures.js';
 
 const HOLD_FILE = '.recovery-hold.json';
+/** The production attempt bounds with no waits between attempts. */
+const IMMEDIATE: RecoveryRetryPolicy = {
+  objectReads: { ...RECOVERY_RETRY.objectReads, backoffMs: [0] },
+  holdReads: { ...RECOVERY_RETRY.holdReads, backoffMs: [0] },
+  holdRounds: { ...RECOVERY_RETRY.holdRounds, backoffMs: [0] },
+};
 
 /** A native Deployment on disk: one blob registered under its own generation, and the volume the backup will read. */
 function deployment() {
@@ -308,7 +314,7 @@ const capture = (
     hold: source.owner,
     snapshot: async (file) => syntheticSnapshot(file, stamp(), hold()),
     blob: async () => copy(),
-  }, report);
+  }, report, IMMEDIATE);
 
 /** The bytes the synthetic snapshot's one object holds. */
 const objectBytes = async (): Promise<ReadableStream> => new Response(OBJECT).body!;
@@ -388,7 +394,7 @@ it('reports an unresolved release instead of claiming one, and reconciles the sa
       },
       snapshot: async (file) => syntheticSnapshot(file, source.identity(), carriedHold(source)),
       blob: () => objectBytes(),
-    }, (line) => { lines.push(line); });
+    }, (line) => { lines.push(line); }, IMMEDIATE);
     // The artifact is complete either way: an unresolved hold never unmakes what was verified.
     expect(manifest.status).toBe('complete');
     expect(lines.some((line) => line.includes('recovery hold is unresolved'))).toBe(true);

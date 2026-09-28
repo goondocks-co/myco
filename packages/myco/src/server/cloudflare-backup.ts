@@ -3,14 +3,16 @@ import path from 'node:path';
 import { z } from 'zod';
 import {
   cloudflareBlobReader, D1_STATEMENT_TIMEOUT_MS, ensureCommandDir, exportDatabase, queryCloudflareDatabase, runCloudflareStatement,
-  readDeploymentRecord, type CloudflareOptions, type CloudflareFetch, type DeploymentRecord,
+  readDeploymentRecord, type CloudflareOptions, type CloudflareFetch, type DeploymentRecord, type OperatorObjectTimeouts,
 } from './cloudflare.js';
 import type { LifecycleOptions } from './cloudflare-lifecycle.js';
 import { renderDeployConfig } from './deploy-config.js';
 import { RECOVERY_CREDENTIAL_NAMES } from '@myco-server-worker/core/recovery-staging.js';
 import { recoveryHoldOf, recoveryHoldSql } from '@myco-server-worker/core/object-release.js';
 import { recoveryConfigurationOf } from './cloudflare-resources.js';
-import { createRecoveryBundle, type RecoveryHoldOwner, type RecoveryHoldReading, type RecoveryManifest } from './recovery-bundle.js';
+import {
+  createRecoveryBundle, type RecoveryHoldOwner, type RecoveryHoldReading, type RecoveryManifest, type RecoveryRetryPolicy,
+} from './recovery-bundle.js';
 import { assertRecoverableSchema, buildSnapshotDatabase, exportedTables } from './recovery-snapshot.js';
 import { schemaObjects, SCHEMA_QUERY } from './recovery-schema.js';
 
@@ -79,7 +81,7 @@ export function cloudflareRecoveryHoldOf(options: LifecycleOptions & { fetch?: C
 
 /** Capture provider SQL and all registered R2 bytes without changing the serving Deployment. */
 export async function backupCloudflareDeployment(
-  options: LifecycleOptions & { destination: string; fetch?: CloudflareFetch },
+  options: LifecycleOptions & { destination: string; fetch?: CloudflareFetch; timeouts?: OperatorObjectTimeouts; retry?: RecoveryRetryPolicy },
 ): Promise<RecoveryManifest> {
   const record = readDeploymentRecord(options.mycoHome);
   if (record === null) throw new Error('No Cloudflare Deployment record exists on this machine');
@@ -123,5 +125,5 @@ export async function backupCloudflareDeployment(
       return { configuration: { ...recorded }, credentialsRequired: [...RECOVERY_CREDENTIAL_NAMES] };
     },
     blob: async (blob) => readBlob(blob.source),
-  }, options.report);
+  }, options.report, options.retry);
 }
