@@ -61,12 +61,14 @@ const neighborStats = (m: Moments): [number | null, number | null] =>
  * sums, and the distance, are those of the full stored vectors.
  */
 function distance(a: Float32Array, b: Float32Array): number {
-  const length = Math.max(a.length, b.length);
+  const shared = Math.min(a.length, b.length);
   let dot = 0, aa = 0, bb = 0;
-  for (let i = 0; i < length; i++) {
-    const x = a[i] ?? 0, y = b[i] ?? 0;
+  for (let i = 0; i < shared; i++) {
+    const x = a[i]!, y = b[i]!;
     dot += x * y; aa += x ** 2; bb += y ** 2;
   }
+  for (let i = shared; i < a.length; i++) aa += a[i]! ** 2;
+  for (let i = shared; i < b.length; i++) bb += b[i]! ** 2;
   return 1 - (aa === 0 || bb === 0 ? 0 : Math.max(-1, Math.min(1, dot / Math.sqrt(aa * bb))));
 }
 

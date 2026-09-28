@@ -358,6 +358,53 @@ describe.each(TARGETS)('%s: spore calibration', (target) => {
     expect(f.repaired()).toBe(cleared);
   });
 
+  test('a spore added and one removed while an operation runs publish no statistics over the operation\'s own set', async () => {
+    const f = fixture(target);
+    for (let i = 0; i < 120; i++) f.spore(`s${String(i).padStart(3, '0')}`, `spore ${i}`);
+    await f.settle(T);
+    const published = () => new Map((f.sqlite.query("SELECT id, neighbor_mean, neighbor_std FROM embedding_receipts WHERE type = 'spore' AND ready = 1").all() as
+      Array<{ id: string; neighbor_mean: number | null; neighbor_std: number | null }>).map((r) => [r.id, [r.neighbor_mean, r.neighbor_std] as const]));
+    f.spore('y', 'joins first');
+    expect((await f.step(T)).phase).toBe('missing');
+    f.index?.apply();
+    expect(await f.step(T)).toEqual({ phase: 'hubness', processed: 1 });
+    const before = published();
+    // The member count stays at the current count while the membership names a removed spore and misses a new one.
+    f.sqlite.run("DELETE FROM spores WHERE project_id = 'p' AND id = 's000'");
+    f.spore('z', 'arrives while y joins');
+    expect((await f.step(T)).phase).toBe('missing');
+    f.index?.apply();
+    const exact = await f.recompute();
+    // The removed spore's vector is deleted first, then y's operation takes its next page.
+    expect(await f.step(T)).toEqual({ phase: 'orphans', processed: 1 });
+    f.index?.apply();
+    expect(await f.step(T)).toEqual({ phase: 'hubness', processed: 1 });
+    expect(f.members().some((m) => m.state === 1)).toBe(true);
+    const wrong = [...published()].filter(([id, held]) => {
+      const full = exact.get(id);
+      if (full === undefined) return false;
+      const kept = before.get(id) ?? [null, null];
+      const same = (x: number | null, y: number | null) => x === null ? y === null : y !== null && Math.abs(x - y) < 1e-12;
+      return !(same(held[0], kept[0]) && same(held[1], kept[1])) && !(same(held[0], full.mean) && same(held[1], full.std));
+    });
+    expect(wrong).toEqual([]);
+    await f.settle(T + C);
+    await f.expectExact();
+    expect(f.repaired()).toBe(0);
+  });
+
+  test('spores whose embeddings end in zeros calibrate exactly against full-length ones', async () => {
+    const f = fixture(target);
+    const embed = f.context.provider.embed;
+    f.context.provider = { ...f.context.provider, embed: async (text) => text.startsWith('short') ? [...(await embed(text)).slice(0, 5), 0, 0, 0] : embed(text) };
+    for (let i = 0; i < 10; i++) f.spore(`s${i}`, `spore ${i}`);
+    f.spore('t1', 'short one');
+    f.spore('t2', 'short two');
+    await f.settle(T);
+    await f.expectExact();
+    expect(f.repaired()).toBe(0);
+  });
+
   test('moments that no longer count every other member are recomputed in full', async () => {
     const f = fixture(target);
     for (let i = 0; i < 8; i++) f.spore(`s${i}`, `spore ${i}`);
