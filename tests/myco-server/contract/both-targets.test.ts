@@ -32,10 +32,10 @@ import { createServer } from '@myco-server-worker/pipeline.js';
 import { serverEnvFromBindings } from '@myco-server-worker/platform/cloudflare/env.js';
 import { serverEnvFromBunConfig } from '@myco-server-worker/platform/bun/env.js';
 import { migrateAndSeed } from '../helpers/d1.js';
-import { titleSession } from '@myco-server-worker/core/titling.js';
+import { titleReadySessions, titleSession } from '@myco-server-worker/core/titling.js';
 import { listSessions, renameProject } from '@myco-server-worker/read/sessions.js';
 import { issueMemberToken } from '@myco-server-worker/auth/tokens.js';
-import { MAX_BLOB_BYTES, MAX_PROJECTS, MIN_COMPAT_MEMBER_PROTOCOL, PROJECT_HEADER, PROTOCOL_HEADER, SERVER_PROTOCOL } from '@myco-server-worker/constants.js';
+import { MAX_BLOB_BYTES, MAX_PROJECTS, MIN_COMPAT_MEMBER_PROTOCOL, PROJECT_HEADER, PROTOCOL_HEADER, SERVER_PROTOCOL, SESSION_END_SETTLE_MS } from '@myco-server-worker/constants.js';
 import { MAX_BODY_BYTES } from '@myco-server-worker/ingest/body.js';
 import { getRunDetail, listRuns } from '@myco-server-worker/read/runs.js';
 import { issueExternalGrant, revokeExternalGrant } from '@myco-server-worker/auth/grants.js';
@@ -406,9 +406,12 @@ describe('archival refuses capture the same on both stores', () => {
       const beforeEnd = (await titleSession(t.env, { projectId: 'proj_1', sessionId: 'sess_t', now: 5_000, origin: 'https://s' })).outcome;
       expect(await post({ eventId: uuid(302), sessionId: 'sess_t', kind: 'session.end', createdAt: 6_000, payload: { endedAt: 6_000 } })).toEqual({ persisted: true, projected: true });
       await t.settle();
+      const settled = (): number => Date.now() + SESSION_END_SETTLE_MS;
+      await titleReadySessions({ ...t.env, origin: 'https://s' }, settled());
       const titled = await row('sess_t');
       expect(await post({ eventId: uuid(303), sessionId: 'sess_t', kind: 'session.end', createdAt: 7_000, payload: { endedAt: 7_000 } })).toEqual({ persisted: true, projected: true });
       await t.settle();
+      await titleReadySessions({ ...t.env, origin: 'https://s' }, settled());
       const sentAfterSecondEnd = sent.length;
 
       await settings([]);
@@ -416,11 +419,12 @@ describe('archival refuses capture the same on both stores', () => {
       expect((await post({ eventId: uuid(321), sessionId: 'sess_n', payload: { promptId: uuid(330), text: 'No provider here', origin: 'user' } })).persisted).toBe(true);
       expect((await post({ eventId: uuid(322), sessionId: 'sess_n', kind: 'session.end', createdAt: 8_000, payload: { endedAt: 8_000 } })).projected).toBe(true);
       await t.settle();
+      await titleReadySessions({ ...t.env, origin: 'https://s' }, settled());
       const unprovided = await row('sess_n');
 
       const renamed = await renameProject(t.env.db, 'proj_1', 'Myco');
       const absent = await renameProject(t.env.db, 'proj_nobody', 'Nobody');
-      // Each end leaves a run for a worker to claim; the Deployment itself runs no harness, so the settings it holds decide nothing here.
+      // Each settled end request leaves a run for a worker to claim; the Deployment itself runs no harness, so the settings it holds decide nothing here.
       const queued = (await t.env.db.prepare(`SELECT task, status, held_by AS heldBy, dispatched_by AS dispatchedBy FROM agent_runs ORDER BY queued_at, id`).all<Record<string, unknown>>()).results;
       outcomes.push({
         labelBefore, beforeEnd, title: titled?.title, summary: titled?.summary, label: titled?.label, attempted: titled?.titledAt !== null,

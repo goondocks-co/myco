@@ -31,7 +31,7 @@ import { readFileSync } from 'node:fs';
 import { runAsking, turnOver, type Channel } from '@myco/runner/drivers/acp.js';
 import { listRunTools, type RunTools } from '@myco/runner/drivers/run-tools.js';
 import { runGrant } from '@myco/runner/drivers/grant.js';
-import type { RunEvent } from '@myco/runner/events.js';
+import { failedCallsNote, type RunEvent } from '@myco/runner/events.js';
 import { globalFetchDouble } from '../helpers/global-fetch.js';
 import { listingOnly, withRunMcp } from '../helpers/run-mcp-fetch.ts';
 
@@ -153,6 +153,28 @@ describe('the Claude Code driver', () => {
     ]);
   });
 
+  it('names a call that failed with what its result said, so a turn that ended right after reads as cut short by that call', async () => {
+    const said = 'MCP error -32001: Session capture is incomplete or has errors; retry after its transcripts are fully processed.';
+    const dir = stubHarness('claude', [
+      '{"type":"system","subtype":"init","session_id":"sess_9"}',
+      '{"type":"assistant","message":{"content":[{"type":"tool_use","id":"tu_1","name":"mcp__myco__myco_run_sessions","input":{"op":"material"}}]}}',
+      `{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"tu_1","is_error":true,"content":${JSON.stringify(said)}}]}}`,
+      '{"type":"assistant","message":{"content":[{"type":"tool_use","id":"tu_2","name":"mcp__myco__myco_run_sessions","input":{"op":"material"}}]}}',
+      `{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"tu_2","is_error":true,"content":[{"type":"text","text":${JSON.stringify(`${said}\nmore detail`)}}]}]}}`,
+      '{"type":"assistant","message":{"content":[{"type":"tool_use","id":"tu_3","name":"Bash","input":{"command":"git -C repo log"}}]}}',
+      `{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"tu_3","is_error":true,"content":${JSON.stringify('Exit code 1\ngit: cannot change to repo')}}]}}`,
+      RESULT_SUCCESS,
+    ]);
+    process.env.PATH = `${dir}:${process.env.PATH ?? ''}`;
+    const events = await collect(claudeCodeDriver.run({ ...runDir(), prompt: 'do it', credentialEnv: {} }, new AbortController().signal));
+    expect(events.filter((e) => e.kind === 'tool_call' && e.status === 'error')).toEqual([
+      { kind: 'tool_call', name: 'mcp__myco__myco_run_sessions', status: 'error', detail: said },
+      { kind: 'tool_call', name: 'mcp__myco__myco_run_sessions', status: 'error', detail: said },
+      { kind: 'tool_call', name: 'Bash', status: 'error', detail: 'git: cannot change to repo (exit code 1)' },
+    ]);
+    expect(failedCallsNote(events)).toBe(`3 calls failed or were refused: mcp__myco__myco_run_sessions (${said}) ×2; Bash (git: cannot change to repo (exit code 1)); the turn ended right after the last of them`);
+  });
+
   it('reads a turn the harness calls a success while it refused the run\'s tools as a failure naming them', async () => {
     const dir = stubHarness('claude', [
       '{"type":"system","subtype":"init","session_id":"sess_9"}',
@@ -220,7 +242,7 @@ describe('the Claude Code driver', () => {
     const events = await collect(claudeCodeDriver.run({ ...runDir(), prompt: 'do it', credentialEnv: {} }, new AbortController().signal));
     expect(events.filter((e) => e.kind === 'tool_call')).toEqual([
       { kind: 'tool_call', name: 'Bash', status: 'started' },
-      { kind: 'tool_call', name: 'Bash', status: 'error' },
+      { kind: 'tool_call', name: 'Bash', status: 'error', detail: 'Claude requested permissions to use Bash, but you haven\'t granted it yet.' },
     ]);
     expect(events.at(-1)).toEqual({ kind: 'ended', stop: 'end_turn', detail: null });
   });
@@ -234,8 +256,8 @@ describe('the Claude Code driver', () => {
     process.env.PATH = `${dir}:${process.env.PATH ?? ''}`;
     const events = await collect(claudeCodeDriver.run({ ...runDir(), prompt: 'do it', credentialEnv: {} }, new AbortController().signal));
     expect(events.filter((e) => e.kind === 'tool_call')).toEqual([
-      { kind: 'tool_call', name: 'tool', status: 'error' },
-      { kind: 'tool_call', name: 'tool', status: 'error' },
+      { kind: 'tool_call', name: 'tool', status: 'error', detail: 'first' },
+      { kind: 'tool_call', name: 'tool', status: 'error', detail: 'second' },
     ]);
   });
 

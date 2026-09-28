@@ -1,11 +1,13 @@
 /**
- * The events route schedules a title past its answer for exactly the ends it
- * projects: a start, a replayed end and a conflicting end leave nothing behind.
- * The deferred work is a dispatch: with no runtime bound it stamps nothing, and
- * with one bound it launches a `title-summary` run for the ended session,
- * calling back to the request's own origin.
+ * A projected session end records a title request and dispatches nothing as it
+ * arrives: the end hook sends the transcript bytes the end closes after it. The
+ * wake cycle dispatches the request once the session has sent nothing for the
+ * settle window and every byte it holds is read, queueing a `title-summary` run
+ * for a worker that calls back to the Deployment's origin.
  */
 import { backfillTitles, OWNER_TITLING_WINDOW_MS, TITLING_RUN_TIMEOUT_SECONDS, titleReadySessions } from '@myco-server-worker/core/titling.js';
+import { SESSION_END_SETTLE_MS } from '@myco-server-worker/constants.js';
+import { longestDeclaredHookTimeoutMs } from '@myco/member/budget.js';
 import { serverEnvFromBindings } from '@myco-server-worker/platform/cloudflare/env.js';
 import { describe, expect, it } from 'bun:test';
 import worker from '@myco-server-worker/index.js';
@@ -13,6 +15,10 @@ import { issueMemberToken } from '@myco-server-worker/auth/tokens.js';
 import { envelope, memberPost, sqliteEnv, uuid } from './helpers/fixtures.js';
 
 describe('the events route', () => {
+  it('waits for an ended session to settle longer than any member hook may run, so the end hook has sent every byte it sends', () => {
+    expect(SESSION_END_SETTLE_MS).toBeGreaterThan(longestDeclaredHookTimeoutMs());
+  });
+
   it('retries a failed automatic title through the paced convergence, after parsing, past the run window and after every title run of the session closes', async () => {
     const e = sqliteEnv();
     const t = await issueMemberToken(e.db, { memberId: 'mem_machine_1', machineId: 'machine_1' }, Date.now());
@@ -23,8 +29,10 @@ describe('the events route', () => {
     await post({ eventId: uuid(2), kind: 'session.end', payload: { endedAt: 5_000 } });
     await e.deferred.settle();
     e.sqlite.run(`INSERT INTO deployment_settings (leaf, value, updated_at, updated_by) VALUES ('agent.tasks', ?, 1, 'mem_1')`, [JSON.stringify({ 'title-summary': { schedule: { intervalSeconds: 0 } } })]);
-    const first = e.sqlite.query(`SELECT id, queued_at FROM agent_runs`).get() as { id: string; queued_at: number };
     const env = { ...serverEnvFromBindings(e.env), origin: 'https://s' };
+    const received = (e.sqlite.query(`SELECT last_received_at AS at FROM sessions WHERE session_id = 'sess_1'`).get() as { at: number }).at;
+    expect(await titleReadySessions(env, received + SESSION_END_SETTLE_MS)).toBe(1);
+    const first = e.sqlite.query(`SELECT id, queued_at FROM agent_runs`).get() as { id: string; queued_at: number };
     const later = first.queued_at + OWNER_TITLING_WINDOW_MS + 1_000;
     // The run still waits: nothing retries it.
     expect(await backfillTitles(env, later, 'idle')).toBe(0);
@@ -65,55 +73,80 @@ describe('the events route', () => {
     expect(e.sqlite.query(`SELECT count(*) AS n FROM agent_runs`).get()).toEqual({ n: 0 });
     await post({ eventId: uuid(3), kind: 'prompt', payload: { promptId: uuid(21), text: 'second turn', origin: 'user' } });
     e.sqlite.run(`UPDATE transcripts SET parsed_offset = size WHERE transcript_id = 'tx'`);
-    expect(await titleReadySessions({ ...serverEnvFromBindings(e.env), origin: 'https://s' }, Date.now())).toBe(1);
-    expect(await titleReadySessions({ ...serverEnvFromBindings(e.env), origin: 'https://s' }, Date.now())).toBe(0);
+    const settled = Date.now() + SESSION_END_SETTLE_MS;
+    expect(await titleReadySessions({ ...serverEnvFromBindings(e.env), origin: 'https://s' }, settled)).toBe(1);
+    expect(await titleReadySessions({ ...serverEnvFromBindings(e.env), origin: 'https://s' }, settled)).toBe(0);
     expect(e.sqlite.query(`SELECT count(*) AS n FROM agent_runs`).get()).toEqual({ n: 1 });
     await post({ eventId: uuid(4), sessionId: 'imported', kind: 'session.end', channel: 'import', payload: { endedAt: 5_000 } });
     expect(e.sqlite.query(`SELECT titling_requested_at FROM sessions WHERE session_id = 'imported'`).get()).toEqual({ titling_requested_at: null });
   });
 
-  it('defers one titling for a projected session end, and none for a start, a replay, or a conflicting end', async () => {
+  it('dispatches no title as an end arrives, and one for its request once the session has settled, whatever a replay or a conflicting end sends', async () => {
     const e = sqliteEnv();
     const t = await issueMemberToken(e.db, { memberId: 'mem_machine_1', machineId: 'machine_1' }, Date.now());
     const post = async (over: Record<string, unknown>) => (await worker.fetch(memberPost(t.token, envelope(over)), e.env, e.deferred)).json() as Promise<Record<string, unknown>>;
+    const env = { ...serverEnvFromBindings(e.env), origin: 'https://s' };
 
     expect((await post({ eventId: uuid(1), kind: 'session.start', payload: { agent: 'claude-code', startedAt: 1_000 } })).persisted).toBe(true);
-    expect(e.deferred.pending).toHaveLength(0);
     expect((await post({ eventId: uuid(2), kind: 'prompt', payload: { promptId: uuid(20), text: 'hi', origin: 'user' } })).persisted).toBe(true);
-    expect(e.deferred.pending).toHaveLength(0);
-
     expect(await post({ eventId: uuid(3), kind: 'session.end', createdAt: 5_000, payload: { endedAt: 5_000 } })).toEqual({ persisted: true, projected: true });
-    expect(e.deferred.pending).toHaveLength(1);
     expect(await post({ eventId: uuid(3), kind: 'session.end', createdAt: 5_000, payload: { endedAt: 5_000 } })).toEqual({ persisted: true, duplicate: true });
-    expect(e.deferred.pending).toHaveLength(1);
     expect((await post({ eventId: uuid(3), kind: 'session.end', createdAt: 5_000, payload: { endedAt: 5_500 } })).code).toBe('event_id_conflict');
-    expect(e.deferred.pending).toHaveLength(1);
+    expect(e.deferred.pending).toHaveLength(0);
     await e.deferred.settle();
-    // Titling runs on a worker, so a Deployment with no runtime bound still
-    // schedules it: the claim is spent and the run waits to be claimed.
-    expect((e.sqlite.query(`SELECT titled_at FROM sessions WHERE session_id = 'sess_1'`).get() as { titled_at: number | null }).titled_at).not.toBeNull();
-    expect(e.sqlite.query(`SELECT status, task, held_by FROM agent_runs`).all()).toEqual([{ status: 'queued', task: 'title-summary', held_by: 'worker' }]);
+    const received = (e.sqlite.query(`SELECT last_received_at AS at FROM sessions WHERE session_id = 'sess_1'`).get() as { at: number }).at;
+    expect(e.sqlite.query(`SELECT titled_at FROM sessions WHERE session_id = 'sess_1'`).get()).toEqual({ titled_at: null });
 
-    expect((await post({ eventId: uuid(4), kind: 'session.end', createdAt: 6_000, payload: { endedAt: 6_000 } })).projected).toBe(true);
-    expect(e.deferred.pending).toHaveLength(2);
-    await e.deferred.settle();
+    expect(await titleReadySessions(env, received + SESSION_END_SETTLE_MS - 1)).toBe(0);
+    expect(await titleReadySessions(env, received + SESSION_END_SETTLE_MS)).toBe(1);
+    expect(await titleReadySessions(env, received + SESSION_END_SETTLE_MS + 1)).toBe(0);
+    expect(e.sqlite.query(`SELECT status, task, held_by FROM agent_runs`).all()).toEqual([{ status: 'queued', task: 'title-summary', held_by: 'worker' }]);
   });
 
-  it('queues one titling run for an ended session, carrying the request\'s own origin, and launches nothing even with a runtime bound', async () => {
+  it('holds an end\'s title while the transcript bytes its end hook sends after the end are still arriving or unread', async () => {
+    const e = sqliteEnv();
+    const t = await issueMemberToken(e.db, { memberId: 'mem_machine_1', machineId: 'machine_1' }, Date.now());
+    const post = async (over: Record<string, unknown>) => (await worker.fetch(memberPost(t.token, envelope(over)), e.env, e.deferred)).json() as Promise<Record<string, unknown>>;
+    const env = { ...serverEnvFromBindings(e.env), origin: 'https://s' };
+    const receivedAt = (): number => (e.sqlite.query(`SELECT last_received_at AS at FROM sessions WHERE session_id = 'sess_1'`).get() as { at: number }).at;
+
+    await post({ eventId: uuid(1), kind: 'prompt', payload: { promptId: uuid(20), text: 'first turn', origin: 'user' } });
+    e.sqlite.run(`INSERT INTO transcripts (project_id, transcript_id, session_id, machine_id, size, parsed_offset, first_received_at, last_received_at, token_id)
+      VALUES ('proj_1', 'tx', 'sess_1', 'machine_1', 100, 100, 1, 2, ?)`, [t.tokenId]);
+    // The end lands with every byte received so far read: the material reads as ready at this instant.
+    await post({ eventId: uuid(2), kind: 'session.end', payload: { endedAt: 5_000 } });
+    await e.deferred.settle();
+    expect(e.sqlite.query(`SELECT count(*) AS n FROM agent_runs`).get()).toEqual({ n: 0 });
+    const end = receivedAt();
+    // The end hook then sends the transcript's tail, a moment after the end.
+    const tail = end + 1_000;
+    e.sqlite.run(`UPDATE sessions SET last_received_at = ? WHERE session_id = 'sess_1'`, [tail]);
+    e.sqlite.run(`UPDATE transcripts SET size = 200, last_received_at = ? WHERE transcript_id = 'tx'`, [tail]);
+    expect(await titleReadySessions(env, end + SESSION_END_SETTLE_MS)).toBe(0);
+    // Settled but unread: still held.
+    expect(await titleReadySessions(env, tail + SESSION_END_SETTLE_MS)).toBe(0);
+    e.sqlite.run(`UPDATE transcripts SET parsed_offset = size WHERE transcript_id = 'tx'`);
+    expect(await titleReadySessions(env, tail + SESSION_END_SETTLE_MS)).toBe(1);
+  });
+
+  it('queues the settled request\'s title for a worker, calling back to the Deployment\'s origin, and launches nothing even with a runtime bound', async () => {
     const e = sqliteEnv();
     const t = await issueMemberToken(e.db, { memberId: 'mem_machine_1', machineId: 'machine_1' }, Date.now());
     e.sqlite.query(`INSERT OR REPLACE INTO deployment_settings (leaf, value, updated_at, updated_by) VALUES ('agent.provider.type', '"openai-compatible"', 1, 'test'), ('agent.provider.base_url', '"http://models.internal/v1"', 1, 'test')`).run();
     const launches: Array<{ runId: string; timeoutSeconds: number; envVars: Record<string, string> }> = [];
     const bound = { ...e.env, HARNESS: { idFromName: (name: string) => ({ name }), get: () => ({ launch: async (spec: never) => { launches.push(spec); } }) } };
     const post = async (over: Record<string, unknown>) => (await worker.fetch(memberPost(t.token, envelope(over)), bound, e.deferred)).json() as Promise<Record<string, unknown>>;
+    const env = { ...serverEnvFromBindings(bound), origin: 'https://s' };
 
     expect((await post({ eventId: uuid(1), kind: 'session.start', payload: { agent: 'claude-code', startedAt: 1_000 } })).persisted).toBe(true);
     expect((await post({ eventId: uuid(2), kind: 'prompt', payload: { promptId: uuid(20), text: 'hi', origin: 'user' } })).persisted).toBe(true);
     expect(await post({ eventId: uuid(3), kind: 'session.end', createdAt: 5_000, payload: { endedAt: 5_000 } })).toEqual({ persisted: true, projected: true });
     await e.deferred.settle();
+    const settled = (e.sqlite.query(`SELECT last_received_at AS at FROM sessions WHERE session_id = 'sess_1'`).get() as { at: number }).at + SESSION_END_SETTLE_MS;
+    expect(await titleReadySessions(env, settled)).toBe(1);
     // A bound runtime serves three tasks and titling is not one of them: the
-    // run waits for a worker, and the origin the request arrived on rides the
-    // row so a worker calls back to the Deployment that asked.
+    // run waits for a worker, and the Deployment's origin rides the row so a
+    // worker calls back to it.
     expect(launches).toHaveLength(0);
     expect((e.sqlite.query(`SELECT titled_at FROM sessions WHERE session_id = 'sess_1'`).get() as { titled_at: number | null }).titled_at).not.toBeNull();
     const row = e.sqlite.query(`SELECT id, status, task, held_by, dispatched_by, run_context, dispatch_spec FROM agent_runs`).all() as Array<Record<string, unknown>>;
@@ -127,6 +160,7 @@ describe('the events route', () => {
     // A second end of the same session finds the claim spent and queues nothing.
     expect((await post({ eventId: uuid(4), kind: 'session.end', createdAt: 6_000, payload: { endedAt: 6_000 } })).projected).toBe(true);
     await e.deferred.settle();
+    expect(await titleReadySessions(env, settled + 2 * SESSION_END_SETTLE_MS)).toBe(0);
     expect(launches).toHaveLength(0);
     expect(e.sqlite.query(`SELECT COUNT(*) AS n FROM agent_runs`).get()).toEqual({ n: 1 });
   });

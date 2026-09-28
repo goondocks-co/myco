@@ -181,16 +181,14 @@ describe('an imported transcript in the store', () => {
     };
     expect((await start('s-live', 'cli')).persisted).toBe(true);
     expect((await start('s-imported', 'import')).persisted).toBe(true);
-    expect(e.deferred.pending).toHaveLength(0);
 
     // Both arms in one test: a change that stopped scheduling titles entirely
     // would pass an assertion that only checked the import arm.
     expect((await end('s-live', 'cli')).projected).toBe(true);
-    expect(e.deferred.pending).toHaveLength(1);
-
     expect((await end('s-imported', 'import')).projected).toBe(true);
-    expect(e.deferred.pending).toHaveLength(1);
     await e.deferred.settle();
+    const requested = (id: string): boolean => (e.sqlite.query(`SELECT titling_requested_at AS at FROM sessions WHERE session_id = ?`).get(id) as { at: number | null }).at !== null;
+    expect({ live: requested('s-live'), imported: requested('s-imported') }).toEqual({ live: true, imported: false });
   });
 
   it('lets ordinary capture through while import is switched off', async () => {

@@ -64,6 +64,16 @@ export function reachedEnd(events: readonly RunEvent[]): boolean {
   return last !== undefined && last.kind === 'ended' && last.stop === 'end_turn';
 }
 
+/** The longest account of why one call failed that a run's record keeps. */
+export const CALL_DETAIL_CHARS = 200;
+
+/** Why a call failed as the harness reported it, as one bounded line, or undefined where it said nothing. */
+export function callFailureDetail(said: string | null): string | undefined {
+  const line = said?.split('\n').map((part) => part.trim()).find((part) => part.length > 0);
+  if (line === undefined) return undefined;
+  return line.length > CALL_DETAIL_CHARS ? `${line.slice(0, CALL_DETAIL_CHARS - 1)}…` : line;
+}
+
 /** How many kinds of failed call a note names before it counts the rest. */
 const NOTED_FAILURES = 5;
 

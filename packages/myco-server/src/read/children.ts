@@ -147,12 +147,17 @@ const MATERIAL_PROMPT_SQL = `pb.origin = 'user' AND pb.text IS NOT NULL`;
 const sessionHasMaterialSql = (alias: string): string => `EXISTS (SELECT 1 FROM prompt_batches pb
   WHERE pb.project_id = ${alias}.project_id AND pb.session_id = ${alias}.session_id AND ${MATERIAL_PROMPT_SQL})`;
 
-/** Live end requests not yet attempted, with ready inline material; oldest request first. */
-export async function listReadyTitleSessions(db: RelationalStore, limit: number): Promise<{ projectId: string; sessionId: string }[]> {
+/**
+ * Live end requests not yet attempted, with ready inline material, from
+ * sessions whose member last sent anything at or before `settledBefore`;
+ * oldest request first.
+ */
+export async function listReadyTitleSessions(db: RelationalStore, limit: number, settledBefore: number): Promise<{ projectId: string; sessionId: string }[]> {
   const { results } = await db.prepare(`SELECT s.project_id AS projectId, s.session_id AS sessionId FROM sessions s
     WHERE s.titling_requested_at IS NOT NULL AND s.ended_at IS NOT NULL AND s.titled_at IS NULL AND s.title IS NULL
+      AND s.last_received_at <= ?
       AND ${notTombstonedSql('s')} AND ${sessionMaterialReadySql('s')} AND ${sessionHasMaterialSql('s')}
-    ORDER BY s.titling_requested_at, s.project_id, s.session_id LIMIT ?`).bind(limit).all<{ projectId: string; sessionId: string }>();
+    ORDER BY s.titling_requested_at, s.project_id, s.session_id LIMIT ?`).bind(settledBefore, limit).all<{ projectId: string; sessionId: string }>();
   return results;
 }
 

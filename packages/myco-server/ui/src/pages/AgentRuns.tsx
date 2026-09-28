@@ -315,11 +315,17 @@ function RunBody({ run, phases, reports, toolCalls, agentName, fleet }: { run: R
         ) : (
           <ul className="divide-y divide-outline-variant/10" aria-label="Calls back to this Deployment">
             {toolCalls.map((call, i) => (
-              <li key={`${call.recordedAt}-${i}`} className="flex items-center gap-2 px-5 py-2 font-sans text-sm">
-                <StatusDot tone="sage" />
-                <span className="font-mono text-[11px] text-on-surface">{call.tool}</span>
-                {call.op !== null && <span className="font-mono text-[11px] text-on-surface-variant">{call.op}</span>}
-                <span className="ml-auto font-mono text-[11px] text-on-surface-variant">{formatRelative(call.recordedAt)}</span>
+              <li key={`${call.recordedAt}-${i}`} className="flex flex-col gap-1 px-5 py-2 font-sans text-sm" data-failed={call.failure === undefined ? undefined : 'true'}>
+                <div className="flex items-center gap-2">
+                  <StatusDot tone={call.failure === undefined ? 'sage' : 'terracotta'} />
+                  <span className="font-mono text-[11px] text-on-surface">{call.tool}</span>
+                  {call.op !== null && <span className="font-mono text-[11px] text-on-surface-variant">{call.op}</span>}
+                  {call.failure !== undefined && <span className="font-sans text-[11px] text-tertiary">failed</span>}
+                  <span className="ml-auto font-mono text-[11px] text-on-surface-variant">{formatRelative(call.recordedAt)}</span>
+                </div>
+                {call.failure !== undefined && call.failure.message !== '' && (
+                  <p className="pl-4 font-sans text-xs text-on-surface-variant">{call.failure.message}</p>
+                )}
               </li>
             ))}
           </ul>

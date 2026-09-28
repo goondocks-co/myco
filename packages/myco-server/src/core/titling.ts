@@ -2,8 +2,9 @@
  * A session's title and summary, written on the Deployment by a run of the
  * `title-summary` task on the agent harness.
  *
- * The request that ends a session schedules this past its answer; a person asks
- * for it from the dashboard. Either way the gate is here and the model call is
+ * The request that ends a session asks for this, and the wake cycle dispatches
+ * it once the session has settled; a person asks for it from the dashboard.
+ * Either way the gate is here and the model call is
  * not: this module decides whether a run should start — a bound runtime, a
  * provider and credential, material to read, the session's claim — and then
  * dispatches through the one dispatcher (`core/harness.ts`). The run reads its
@@ -14,7 +15,7 @@
  * Every step before the launch writes nothing but the claim, and a launch the
  * runtime refuses gives the claim back. Every outcome is emitted; none is thrown.
  */
-import { MATERIAL_EXCERPT_CHARS, MAX_MATERIAL_CHARS, MAX_MATERIAL_PROMPTS } from '../constants.js';
+import { MATERIAL_EXCERPT_CHARS, MAX_MATERIAL_CHARS, MAX_MATERIAL_PROMPTS, SESSION_END_SETTLE_MS } from '../constants.js';
 import { emit } from '../telemetry.js';
 import type { RelationalStore, ServerEnv } from './adapters.js';
 import { countConvergenceTitleSessions, listConvergenceTitleSessions, sessionMaterialRows, sessionMaterialTailRows, listReadyTitleSessions, type MaterialRow } from '../read/children.js';
@@ -187,9 +188,15 @@ export async function titleSession(env: ServerEnv, target: TitlingTarget, opts: 
 /** The most deferred session titles one wake can attempt. */
 export const SESSION_TITLE_BATCH = 20;
 
-/** Live end requests not yet attempted, once their parsed material can be claimed. */
+/**
+ * Live end requests not yet attempted, once their session has settled and its
+ * parsed material can be claimed. A request is taken only here, never as its
+ * end arrives: the end hook sends the transcript bytes the end closes after the
+ * end itself, so a title dispatched on the end would read material still
+ * arriving (`SESSION_END_SETTLE_MS`).
+ */
 export async function titleReadySessions(env: ServerEnv, now: number): Promise<number> {
-  const requests = await listReadyTitleSessions(env.db, SESSION_TITLE_BATCH);
+  const requests = await listReadyTitleSessions(env.db, SESSION_TITLE_BATCH, now - SESSION_END_SETTLE_MS);
   if (requests.length === 0) return 0;
   if (env.origin === undefined) throw new Error('Deferred titling requires the Deployment origin to be configured.');
   let dispatched = 0;

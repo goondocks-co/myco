@@ -29,7 +29,7 @@ import { acceptedActions } from '../core/run-postconditions.js';
 import { isServedTool, isWriteOp, NO_OP, PROJECT_PIVOT, type AnyTool } from '../core/tool-catalogue.js';
 import { emit } from '../telemetry.js';
 import { normalizeRemote, projectForRemote } from '../core/remotes.js';
-import { boundProject, namedProject, principalFields, recordRunToolCall, type ToolContext, type ProtocolContext } from './context.js';
+import { boundProject, isToolFailure, namedProject, principalFields, recordRunToolCall, type ToolContext, type ProtocolContext } from './context.js';
 import { resolveTenancyArgument } from '../api/scope.js';
 import { TOOL_DEFINITIONS, definitionOf, type ToolDefinition } from './definitions.js';
 import { externalDefinitions, isExternalCall } from './external.js';
@@ -123,6 +123,9 @@ export const SERVED_PROTOCOL_VERSIONS: readonly string[] = SUPPORTED_PROTOCOL_VE
 export function serializeResult(_tool: AnyTool, result: unknown): string {
   return JSON.stringify(result);
 }
+
+/** The code a run's call is recorded with when its tool answered with a failure rather than raising one. */
+const RETURNED_FAILURE = 'tool_failure';
 
 const toolError = (err: ToolError): ProtocolError => new ProtocolError(TOOL_ERROR_CODE, err.message, { code: err.code });
 
@@ -225,8 +228,13 @@ export function definitionsFor(ctx: Pick<ToolContext, 'principal'>): readonly To
   return surfaceFor(ctx).definitions;
 }
 
-/** Run one tool call for this context: the principal's surface, validation, op resolution, the handler. Every failure leaves as a `ToolError`. */
-export async function callTool(ctx: ProtocolContext, name: string, args: unknown): Promise<{ tool: AnyTool; op: string; result: unknown }> {
+/**
+ * Run one tool call for this context: the principal's surface, validation, op
+ * resolution, the handler. Every failure leaves as a `ToolError`. `admitted`
+ * hears the `(tool, op)` once the principal's surface has admitted the call,
+ * before anything else can fail it.
+ */
+export async function callTool(ctx: ProtocolContext, name: string, args: unknown, admitted?: (call: { tool: AnyTool; op: string }) => void): Promise<{ tool: AnyTool; op: string; result: unknown }> {
   const surface = surfaceFor(ctx);
   const definition = surface.definitionOf(name);
   if (definition === undefined) throw unknownTool(name);
@@ -236,6 +244,7 @@ export async function callTool(ctx: ProtocolContext, name: string, args: unknown
   if (bound !== null && named !== undefined && named !== bound && !(await namesBoundProject(ctx, named, bound))) throw unknownTool(name);
   const op = surface.opOf(name, input);
   if (!surface.allows(name, op)) throw unknownTool(name);
+  admitted?.({ tool: name as AnyTool, op });
   validateInput(definition, input);
   if (isWriteOp(name as AnyTool, op) && bound === null && namedProject(input) === undefined) throw missingProject(name);
   const entry = surface.entryFor(name, op);
@@ -278,11 +287,18 @@ export function createProtocolServer(ctx: ProtocolContext, version: string, onFa
     // Every call a run makes and the Deployment answers is recorded against the
     // run: an empty list against a closed run is how a harness that never dialled
     // the Deployment at all is read.
+    // A call the run's surface admitted is recorded, answered or
+    // failed, with what a failure said, so a run cut short by a failing tool
+    // reads as that tool's failure.
     const began = Date.now();
+    let admission: { tool: AnyTool; op: string } | null = null;
     try {
-      const { tool, op, result } = await callTool(ctx, name, args);
+      const { tool, op, result } = await callTool(ctx, name, args, (call) => { admission = call; });
       emit({ kind: 'mcp_tool', tool, op, status: 'ok', ...principalFields(ctx) });
-      if (ctx.projectId !== null) await recordRunToolCall(ctx, { tool, op, durationMs: Date.now() - began });
+      if (ctx.projectId !== null) {
+        const failure = isToolFailure(result) ? { code: RETURNED_FAILURE, message: result.error } : undefined;
+        await recordRunToolCall(ctx, { tool, op, durationMs: Date.now() - began, ...(failure === undefined ? {} : { failure }) });
+      }
       return { content: [{ type: 'text' as const, text: serializeResult(tool, result) }], structuredContent: { result } };
     } catch (err) {
       if (!(err instanceof ToolError)) onFailure(err);
@@ -290,6 +306,11 @@ export function createProtocolServer(ctx: ProtocolContext, version: string, onFa
       // A refused call is named in telemetry and writes nothing: a credential may
       // not turn calls it is not admitted to make into rows.
       emit({ kind: 'mcp_tool', tool: surfaceFor(ctx).definitionOf(name) === undefined ? 'unknown' : name, status: failure.code, ...principalFields(ctx) });
+      // Set inside `callTool`, which control-flow narrowing does not follow.
+      const admitted = admission as { tool: AnyTool; op: string } | null;
+      if (admitted !== null && ctx.projectId !== null) {
+        await recordRunToolCall(ctx, { ...admitted, durationMs: Date.now() - began, failure: { code: failure.code, message: failure.message } });
+      }
       throw toolError(failure);
     }
   });
