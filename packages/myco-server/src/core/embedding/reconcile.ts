@@ -41,7 +41,11 @@ const metadataOf = (s: EmbeddingSource): VectorMetadata => ({ type: s.type, reco
   status: s.status, session_id: s.session_id, created_at: s.created_at, observation_type: s.observation_type,
   release_state: s.release_state, release_confidence: s.release_confidence });
 
-/** A receipt's `ready`: 0 while its write is journaled, 1 once indexed, and negative once its vector's deletion has begun. */
+/**
+ * A receipt's `ready`: 0 while its write is journaled, 1 once indexed, and negative once its vector's deletion has begun.
+ * Spore calibration returns an indexed spore receipt whose vector the store never returns to 0, counting it in
+ * `rewrites`, and never moves a negative one.
+ */
 export const RECEIPT = { journaled: 0, ready: 1, deletionSent: -1, deletionFailed: -2 } as const;
 
 /**
@@ -144,5 +148,5 @@ export async function reconcileEmbedding(context: EmbeddingContext, projectId: s
     }
     return { phase: 'orphans', processed: 1 };
   }
-  return reconcileHubness(context, projectId);
+  return reconcileHubness(context, projectId, now);
 }
