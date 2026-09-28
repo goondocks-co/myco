@@ -284,12 +284,10 @@ export function createProtocolServer(ctx: ProtocolContext, version: string, onFa
 
   server.setRequestHandler('tools/call', async (request) => {
     const { name, arguments: args } = request.params;
-    // Every call a run makes and the Deployment answers is recorded against the
-    // run: an empty list against a closed run is how a harness that never dialled
-    // the Deployment at all is read.
-    // A call the run's surface admitted is recorded, answered or
-    // failed, with what a failure said, so a run cut short by a failing tool
-    // reads as that tool's failure.
+    // Every call a run's surface admits is recorded against the run, answered or
+    // failed, with what a failure said: an empty list against a closed run is how
+    // a harness that never dialled the Deployment is read, and a failed call is
+    // how a run cut short by a failing tool is.
     const began = Date.now();
     let admission: { tool: AnyTool; op: string } | null = null;
     try {

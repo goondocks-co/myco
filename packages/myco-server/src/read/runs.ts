@@ -235,7 +235,6 @@ export async function listRuns(db: RelationalStore, scope: ReadScope, opts: RunF
   return page(results.map(toListRow), k.limit, (r) => ({ createdAt: r.queuedAt ?? r.startedAt ?? 0, id: r.id }));
 }
 
-/** The op a recorded tool call names, off the payload the record carries. */
 /** A recorded call's payload as an object, or null where it holds none. */
 function payloadOf(raw: string | null): Record<string, unknown> | null {
   if (raw === null) return null;
@@ -247,6 +246,7 @@ function payloadOf(raw: string | null): Record<string, unknown> | null {
   }
 }
 
+/** The op a recorded tool call names, off the payload the record carries. */
 function opOfPayload(raw: string | null): string | null {
   const op = payloadOf(raw)?.op;
   return typeof op === 'string' && op.length > 0 ? op : null;

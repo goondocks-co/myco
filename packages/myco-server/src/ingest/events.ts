@@ -210,6 +210,10 @@ export async function planEventWrite(db: RelationalStore, ctx: IngestContext, bo
   return { ok: true, write: { statements, interpret } };
 }
 
+/** The kind whose projected arrival, on any channel but import, asks for its session's title. */
+const SESSION_END_KIND = 'session.end';
+/** The channel a member ships pre-existing bytes on; an end arriving over it asks for no title. */
+const IMPORT_CHANNEL = 'import';
 /** The kind whose projected arrival leaves the Deployment bytes to read. */
 const TRANSCRIPT_SEGMENT_KIND = 'transcript.segment';
 
@@ -236,6 +240,14 @@ export async function handleEvents(env: ServerEnv, ctx: RouteContext): Promise<R
   if (result.persisted && result.projected === true && envelope?.kind === TRANSCRIPT_SEGMENT_KIND) {
     env.afterResponse(async () => {
       try { await env.wake?.(); } catch { emit({ kind: 'transcript_wake_failed', projectId: ctx.projectId }); }
+    });
+  }
+  // A live end asks for a title, which a wake takes once the session has
+  // settled; the clock is nudged so a Deployment asleep wakes into the active
+  // cadence and takes it then, rather than at its floor.
+  if (result.persisted && result.projected === true && envelope?.kind === SESSION_END_KIND && envelope.channel !== IMPORT_CHANNEL) {
+    env.afterResponse(async () => {
+      try { await env.wake?.(); } catch { emit({ kind: 'title_wake_failed', projectId: ctx.projectId }); }
     });
   }
   return Response.json(result);

@@ -8,6 +8,7 @@
 import { backfillTitles, OWNER_TITLING_WINDOW_MS, TITLING_RUN_TIMEOUT_SECONDS, titleReadySessions } from '@myco-server-worker/core/titling.js';
 import { SESSION_END_SETTLE_MS } from '@myco-server-worker/constants.js';
 import { longestDeclaredHookTimeoutMs } from '@myco/member/budget.js';
+import { POWER_THRESHOLDS, runTick, WAKE_INTERVALS } from '@myco-server-worker/core/tick.js';
 import { serverEnvFromBindings } from '@myco-server-worker/platform/cloudflare/env.js';
 import { describe, expect, it } from 'bun:test';
 import worker from '@myco-server-worker/index.js';
@@ -92,8 +93,10 @@ describe('the events route', () => {
     expect(await post({ eventId: uuid(3), kind: 'session.end', createdAt: 5_000, payload: { endedAt: 5_000 } })).toEqual({ persisted: true, projected: true });
     expect(await post({ eventId: uuid(3), kind: 'session.end', createdAt: 5_000, payload: { endedAt: 5_000 } })).toEqual({ persisted: true, duplicate: true });
     expect((await post({ eventId: uuid(3), kind: 'session.end', createdAt: 5_000, payload: { endedAt: 5_500 } })).code).toBe('event_id_conflict');
-    expect(e.deferred.pending).toHaveLength(0);
+    // The one end that projected leaves a wake behind and no dispatch; a replay and a conflicting end leave nothing.
+    expect(e.deferred.pending).toHaveLength(1);
     await e.deferred.settle();
+    expect(e.sqlite.query(`SELECT count(*) AS n FROM agent_runs`).get()).toEqual({ n: 0 });
     const received = (e.sqlite.query(`SELECT last_received_at AS at FROM sessions WHERE session_id = 'sess_1'`).get() as { at: number }).at;
     expect(e.sqlite.query(`SELECT titled_at FROM sessions WHERE session_id = 'sess_1'`).get()).toEqual({ titled_at: null });
 
@@ -101,6 +104,42 @@ describe('the events route', () => {
     expect(await titleReadySessions(env, received + SESSION_END_SETTLE_MS)).toBe(1);
     expect(await titleReadySessions(env, received + SESSION_END_SETTLE_MS + 1)).toBe(0);
     expect(e.sqlite.query(`SELECT status, task, held_by FROM agent_runs`).all()).toEqual([{ status: 'queued', task: 'title-summary', held_by: 'worker' }]);
+  });
+
+  it('wakes the clock when a live end asks for a title, so a Deployment asleep takes it on the active cadence once settled, not at its floor', async () => {
+    const e = sqliteEnv();
+    const t = await issueMemberToken(e.db, { memberId: 'mem_machine_1', machineId: 'machine_1' }, Date.now());
+    let wakes = 0;
+    const clock = { idFromName: (name: string) => name, get: () => ({ ensure: async () => { wakes += 1; } }) };
+    const bound = { ...e.env, CLOCK: clock };
+    const post = async (over: Record<string, unknown>) => (await worker.fetch(memberPost(t.token, envelope(over)), bound, e.deferred)).json() as Promise<Record<string, unknown>>;
+    const env = { ...serverEnvFromBindings(bound), origin: 'https://s' };
+    const titleRuns = (): unknown => e.sqlite.query(`SELECT count(*) AS n FROM agent_runs WHERE task = 'title-summary'`).get();
+
+    await post({ eventId: uuid(1), kind: 'prompt', payload: { promptId: uuid(20), text: 'long ago', origin: 'user' } });
+    await e.deferred.settle();
+    e.sqlite.run(`UPDATE sessions SET last_received_at = last_received_at - ?`, [2 * POWER_THRESHOLDS.deepSleepMs]);
+    e.sqlite.run(`DELETE FROM schema_meta WHERE key = 'last_request_at'`);
+    const asleep = await runTick(env, Date.now());
+    expect({ state: asleep.state, next: asleep.nextWakeMs }).toEqual({ state: 'deep_sleep', next: null });
+    const before = wakes;
+
+    // An import's end asks for no title and wakes nothing; a live end wakes the clock.
+    await post({ eventId: uuid(2), sessionId: 'imported', kind: 'session.end', channel: 'import', payload: { endedAt: 5_000 } });
+    await e.deferred.settle();
+    expect(wakes).toBe(before);
+    await post({ eventId: uuid(3), kind: 'session.end', payload: { endedAt: 5_000 } });
+    await e.deferred.settle();
+    expect(wakes).toBe(before + 1);
+
+    // The wake it asked for runs inside the settle window: nothing is dispatched, and it asks for the next wake on the active cadence.
+    const woken = Date.now();
+    const first = await runTick(env, woken);
+    expect({ state: first.state, next: first.nextWakeMs, runs: titleRuns() }).toEqual({ state: 'active', next: WAKE_INTERVALS.activeMs, runs: { n: 0 } });
+    expect(WAKE_INTERVALS.activeMs).toBeGreaterThan(SESSION_END_SETTLE_MS);
+    // That next wake finds the session settled and dispatches its title.
+    await runTick(env, woken + WAKE_INTERVALS.activeMs);
+    expect(titleRuns()).toEqual({ n: 1 });
   });
 
   it('holds an end\'s title while the transcript bytes its end hook sends after the end are still arriving or unread', async () => {
