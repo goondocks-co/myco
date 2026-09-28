@@ -1,5 +1,6 @@
-import { expect, it } from 'bun:test';
-import { cloudflareBlobReader, cloudflareObjectStore } from '@myco/server/cloudflare.js';
+import { describe, expect, it } from 'bun:test';
+import { cloudflareBlobReader, cloudflareObjectStore, type CloudflareFetch } from '@myco/server/cloudflare.js';
+import { transientReadFailure } from '@myco/server/object-read.js';
 import type { CommandRunner } from '@myco/server/runner.js';
 
 const options = { accountId: 'fixture-account', bucketName: 'fixture-bucket', configDir: '/operator' };
@@ -134,4 +135,65 @@ it('refuses oversized uploads and malformed acknowledgements without exposing re
   await expect(store.put('project/key', () => oversized)).rejects.toThrow('300 MB');
   expect(requests).toBe(0);
   await expect(store.put('project/key', () => new Blob())).rejects.toThrow('did not confirm object write');
+});
+
+describe('the windows an object read waits in', () => {
+  const login: CommandRunner = { async run() { return { code: 0, stdout: JSON.stringify({ type: 'oauth', token: 'fixture' }), stderr: '' }; } };
+  const timeouts = { responseMs: 150, stallMs: 150 };
+  const reader = (fetch: CloudflareFetch) => cloudflareBlobReader({ ...options, runner: login, fetch, timeouts });
+  const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+  /** A request that answers only by honouring its signal, as a connection that never responds does. */
+  const unanswered: CloudflareFetch = (_url, init) => new Promise((_, reject) => {
+    init.signal!.addEventListener('abort', () => reject(init.signal!.reason));
+  });
+  const settled = async (read: Promise<unknown>) => read.then(() => null, (error: unknown) => error);
+
+  it('keeps a slow body going for as long as bytes keep arriving', async () => {
+    const chunks = 8;
+    const started = Date.now();
+    const body = await reader(async () => new Response(new ReadableStream<Uint8Array>({
+      async start(controller) {
+        for (let index = 0; index < chunks; index += 1) { await sleep(60); controller.enqueue(new Uint8Array([index])); }
+        controller.close();
+      },
+    })))('project/slow');
+    expect(new Uint8Array(await new Response(body).arrayBuffer())).toEqual(Uint8Array.from({ length: chunks }, (_, index) => index));
+    // The whole transfer outlasted both windows several times over.
+    expect(Date.now() - started).toBeGreaterThan(timeouts.stallMs * 3);
+  });
+
+  it('does not count the time its reader spends away from the body', async () => {
+    const body = (await reader(async () => new Response(new Uint8Array([1, 2, 3])))('project/idle')).getReader();
+    await sleep(timeouts.stallMs * 2);
+    expect((await body.read()).value).toEqual(new Uint8Array([1, 2, 3]));
+  });
+
+  it('ends a body that stops sending, within one window, as a failure worth retrying', async () => {
+    let signal: AbortSignal | undefined;
+    const body = await reader(async (_url, init) => {
+      signal = init.signal ?? undefined;
+      return new Response(new ReadableStream<Uint8Array>({ start(controller) { controller.enqueue(new Uint8Array([1])); } }));
+    })('project/stalled');
+    const started = Date.now();
+    const failure = await settled(new Response(body).arrayBuffer());
+    expect(String(failure)).toContain('stalled: no bytes arrived for 0.15 s');
+    expect(transientReadFailure(failure)).toBe(true);
+    expect(Date.now() - started).toBeLessThan(timeouts.stallMs * 10);
+    // The request itself is ended, so its connection is not held open.
+    expect(signal?.aborted).toBe(true);
+  }, 5_000);
+
+  it('ends a request whose response never begins, as a failure worth retrying', async () => {
+    const started = Date.now();
+    const failure = await settled(reader(unanswered)('project/silent'));
+    expect(String(failure)).toContain('did not begin answering the read of project/silent');
+    expect(transientReadFailure(failure)).toBe(true);
+    expect(Date.now() - started).toBeLessThan(timeouts.responseMs * 10);
+  }, 5_000);
+
+  it('classifies a server error as worth retrying, and an absent object or refused credential as final', async () => {
+    const answering = (status: number) => settled(reader(async () => new Response(null, { status }))('project/key'));
+    for (const status of [500, 502, 503, 429]) expect(transientReadFailure(await answering(status))).toBe(true);
+    for (const status of [404, 403, 400]) expect(transientReadFailure(await answering(status))).toBe(false);
+  });
 });

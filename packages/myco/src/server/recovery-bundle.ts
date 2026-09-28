@@ -12,6 +12,7 @@ import { blobArtifactKey, snapshotBlobObject } from '@myco-server-worker/core/bl
 import { RECOVERY_CREDENTIAL_NAMES, recordedFleet } from '@myco-server-worker/core/recovery-staging.js';
 import { atomicWriteFileSync, syncDirectoryForDurability as syncDirectory } from '@myco/utils/atomic-write.js';
 import { LifecycleLock } from '@myco/utils/lifecycle-lock.js';
+import { transientReadFailure } from './object-read.js';
 import { fingerprintSchema, STAGING_FORMAT } from './recovery-contract.js';
 import { quoteIdentifier } from './recovery-schema.js';
 
@@ -363,6 +364,33 @@ function readHoldFile<T>(root: string, name: string, schema: { parse(value: unkn
 const readHoldIntent = (root: string): RecoveryHoldIntent | null => readHoldFile(root, HOLD_FILE, holdIntentSchema);
 const readHoldBound = (root: string): RecoveryHoldBound | null => readHoldFile(root, HOLD_BOUND_FILE, holdBoundSchema);
 
+/** How many times one step is tried, and how long to wait before each retry: `backoffMs[n]` precedes attempt n + 2. */
+export interface RetryBound { attempts: number; backoffMs: readonly number[] }
+
+/**
+ * What a backup retries before it gives up.
+ *
+ * - `objectReads`: one object's read and store, retried only on a transient failure (`transientReadFailure`): a
+ *   timeout, a reset or refused connection, or an HTTP 5xx or 429. A missing object, a refused credential, a size or
+ *   digest mismatch and a local disk error fail at once. The waits add up to a little under two minutes, so a source
+ *   that stalls one object for several minutes is ridden out inside one run.
+ * - `holdOpens`: opening this backup's recovery hold, retried while the source answers the token absent. Every
+ *   attempt asks for the same token, which the source opens at most once, so a retry never takes a second hold.
+ */
+export interface RecoveryRetryPolicy { objectReads: RetryBound; holdOpens: RetryBound }
+export const RECOVERY_RETRY: RecoveryRetryPolicy = {
+  objectReads: { attempts: 6, backoffMs: [2_000, 5_000, 15_000, 30_000, 60_000] },
+  holdOpens: { attempts: 3, backoffMs: [5_000, 15_000] },
+};
+
+const backoff = (bound: RetryBound, attempt: number): number => bound.backoffMs[Math.min(attempt - 1, bound.backoffMs.length - 1)] ?? 0;
+const pause = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
+/** A failure's message on one line, short enough for a progress report: its start, and its end, where a cause is said. */
+const briefly = (error: unknown): string => {
+  const text = (error instanceof Error ? error.message : String(error)).replace(/\s+/g, ' ').trim();
+  return text.length > 240 ? `${text.slice(0, 80)} ... ${text.slice(-155)}` : text;
+};
+
 /** How many times a lost answer is reconciled by asking about the same token before the attempt refuses. */
 const HOLD_RECONCILE_ATTEMPTS = 3;
 /**
@@ -393,15 +421,35 @@ async function reconcile(owner: RecoveryHoldOwner, token: string, report: (line:
   throw new Error(`the source did not answer about this backup's recovery hold: ${last instanceof Error ? last.message : String(last)}`, { cause: last });
 }
 
-/** Opens `token` and answers what the source holds for it, whether or not the write itself answered. */
-async function openAndReconcile(owner: RecoveryHoldOwner, token: string, report: (line: string) => void): Promise<RecoveryHoldReading> {
-  let answered: RecoveryHoldReading | null = null;
-  try {
-    answered = await owner.acquire(token);
-  } catch {
-    report('The recovery hold write did not answer; reading the same token back rather than taking another hold');
+/**
+ * Opens `token` and answers what the source holds for it, whether or not the write itself answered.
+ *
+ * A write that failed or answered nothing is read back by the same token. A token the source still answers absent is
+ * asked for again, up to `bound.attempts` writes: the write may not have reached the source, or may land after the
+ * read, and asking for the same token again opens it at most once. Any other answer is returned at once.
+ */
+async function openAndReconcile(
+  owner: RecoveryHoldOwner, token: string, report: (line: string) => void, bound: RetryBound,
+): Promise<RecoveryHoldReading & { attempts: number }> {
+  for (let attempt = 1; ; attempt += 1) {
+    let answered: RecoveryHoldReading | null = null;
+    try {
+      answered = await owner.acquire(token);
+    } catch (error) {
+      report(`The recovery hold write did not answer (${briefly(error)}); reading the same token back rather than taking another hold`);
+    }
+    const reading = answered !== null && answered.state === 'open' ? answered : await reconcile(owner, token, report);
+    if (reading.state !== 'absent' || attempt >= bound.attempts) return { ...reading, attempts: attempt };
+    const wait = backoff(bound, attempt);
+    report(`The source answers this backup's recovery hold absent; asking for the same token again in ${Math.round(wait / 1000)} s (attempt ${attempt + 1} of ${bound.attempts})`);
+    await pause(wait);
   }
-  return answered !== null && answered.state === 'open' ? answered : reconcile(owner, token, report);
+}
+
+/** The refusal for a hold the source would not open, naming how many writes were sent. */
+function notOpened(reading: RecoveryHoldReading & { attempts: number }): Error {
+  const tries = reading.attempts === 1 ? '' : ` after ${reading.attempts} attempts`;
+  return new Error(`recovery hold was not opened on the source (${reading.state})${tries}; nothing was captured`);
 }
 
 /**
@@ -468,7 +516,7 @@ function assertSnapshotHold(db: Database, facts: { deploymentId: string; schemaV
  * the snapshot carries, which is checked where the snapshot is read.
  */
 async function heldForSnapshot(
-  root: string, owner: RecoveryHoldOwner, snapshotTaken: boolean, complete: boolean, report: (line: string) => void,
+  root: string, owner: RecoveryHoldOwner, snapshotTaken: boolean, complete: boolean, report: (line: string) => void, retry: RetryBound,
 ): Promise<{ token: string; bound: RecoveryHoldBound } | null> {
   const recorded = readHoldIntent(root);
   if (recorded !== null && recorded.locator !== owner.locator) throw new Error('recovery destination holds a recovery hold of another Deployment');
@@ -479,8 +527,8 @@ async function heldForSnapshot(
     if (snapshotTaken) throw new Error('recovery destination holds a snapshot taken with no recovery hold; capture into a new directory');
     const token = crypto.randomUUID();
     durableFile(path.join(root, HOLD_FILE), `${JSON.stringify({ token, locator: owner.locator, createdAt: new Date().toISOString() } satisfies RecoveryHoldIntent, null, 2)}\n`);
-    const reading = await openAndReconcile(owner, token, report);
-    if (reading.state !== 'open') throw new Error(`recovery hold was not opened on the source (${reading.state}); nothing was captured`);
+    const reading = await openAndReconcile(owner, token, report, retry);
+    if (reading.state !== 'open') throw notOpened(reading);
     report('Holding every object this snapshot names on the source until the artifact completes');
     return { token, bound: bindHold(root, token, reading) };
   }
@@ -498,8 +546,8 @@ async function heldForSnapshot(
   }
   if (snapshotTaken) throw new Error(`the recovery hold protecting this snapshot is ${reading.state}; capture into a new directory`);
   if (reading.state !== 'absent') throw new Error(`this destination's recovery hold is ${reading.state}; capture into a new directory`);
-  const reopened = await openAndReconcile(owner, recorded.token, report);
-  if (reopened.state !== 'open') throw new Error(`recovery hold was not opened on the source (${reopened.state}); nothing was captured`);
+  const reopened = await openAndReconcile(owner, recorded.token, report, retry);
+  if (reopened.state !== 'open') throw notOpened(reopened);
   if (bound !== null) {
     assertBoundIdentity(bound, reopened);
     return { token: recorded.token, bound };
@@ -575,7 +623,7 @@ export async function abandonRecoveryHold(destination: string, owner: RecoveryHo
 
 /** One writer owns snapshot publication, content verification and the final completion manifest on both targets. */
 async function writeRecoveryBundle(
-  destination: string, adapter: RecoveryAdapter, report: (line: string) => void, seed?: RecoveryManifest,
+  destination: string, adapter: RecoveryAdapter, report: (line: string) => void, seed?: RecoveryManifest, retry: RecoveryRetryPolicy = RECOVERY_RETRY,
 ): Promise<RecoveryManifest> {
   const root = path.resolve(destination);
   assertOwnedDirectory(root);
@@ -609,7 +657,7 @@ async function writeRecoveryBundle(
     // this artifact holds its own copy. A destination whose hold is gone with a snapshot already taken refuses here.
     const held = adapter.hold === undefined
       ? null
-      : await heldForSnapshot(root, adapter.hold, manifest.status !== 'snapshot', manifest.status === 'complete', report);
+      : await heldForSnapshot(root, adapter.hold, manifest.status !== 'snapshot', manifest.status === 'complete', report, retry.holdOpens);
     if (manifest.status === 'snapshot') {
       report('Capturing the database snapshot');
       fs.rmSync(workDir, { recursive: true, force: true });
@@ -642,6 +690,30 @@ async function writeRecoveryBundle(
         || facts.blobCount !== snapshot.blobCount || facts.blobBytes !== snapshot.blobBytes) throw new Error('recovery manifest does not describe its database');
       assertSnapshotHold(db, facts, held);
       const complete = manifest.status === 'complete';
+      /**
+       * One object read from the source and stored, retried on a transient failure. The store publishes an object under
+       * its key only once every byte arrived and its digest holds, so a failed attempt leaves nothing a retry or a later
+       * resume would accept.
+       */
+      const readAndStore = async (blob: RecoverySourceObject): Promise<{ size: number }> => {
+        const bound = retry.objectReads;
+        for (let attempt = 1; ; attempt += 1) {
+          let body: ReadableStream | undefined;
+          try {
+            body = await adapter.blob(blob, workDir);
+            return await store.put(blob.key, body, 'sha256' in blob ? { sha256: blob.sha256 } : undefined);
+          } catch (error) {
+            await body?.cancel(error).catch(() => {});
+            if (!transientReadFailure(error) || attempt >= bound.attempts) {
+              const tries = attempt === 1 ? '' : ` after ${attempt} attempts`;
+              throw new Error(`recovery object ${blob.key} was not stored${tries}: ${error instanceof Error ? error.message : String(error)}`, { cause: error });
+            }
+            const wait = backoff(bound, attempt);
+            report(`Reading ${blob.key} failed (${briefly(error)}); trying again in ${Math.round(wait / 1000)} s (attempt ${attempt + 1} of ${bound.attempts})`);
+            await pause(wait);
+          }
+        }
+      };
       const copyObject = async (blob: RecoverySourceObject, progress: string): Promise<RecoveryBlob> => {
         const file = blobPath(root, blob);
         ensureContentDirectory(path.dirname(file), complete);
@@ -653,13 +725,7 @@ async function writeRecoveryBundle(
         }
         if (complete) throw new Error(`completed recovery artifact is missing blob ${blob.key}`);
         report(progress);
-        const body = await adapter.blob(blob, workDir);
-        let stored;
-        try {
-          stored = await store.put(blob.key, body, 'sha256' in blob ? { sha256: blob.sha256 } : undefined);
-        } catch (error) {
-          throw new Error(`recovery object ${blob.key} was not stored: ${error instanceof Error ? error.message : String(error)}`, { cause: error });
-        }
+        const stored = await readAndStore(blob);
         if (stored.size !== blob.bytes) { await store.delete(blob.key); throw new Error(`recovery blob has an unexpected size: ${blob.key}`); }
         fs.chmodSync(file, OWNER_FILE_MODE);
         syncFile(file);
@@ -724,9 +790,9 @@ async function writeRecoveryBundle(
 }
 
 export async function createRecoveryBundle(
-  destination: string, adapter: RecoveryAdapter, report: (line: string) => void = () => {},
+  destination: string, adapter: RecoveryAdapter, report: (line: string) => void = () => {}, retry: RecoveryRetryPolicy = RECOVERY_RETRY,
 ): Promise<RecoveryManifest> {
-  return writeRecoveryBundle(destination, adapter, report);
+  return writeRecoveryBundle(destination, adapter, report, undefined, retry);
 }
 
 /** Verify a completed artifact using its own source identity, without consulting the source Deployment. */
