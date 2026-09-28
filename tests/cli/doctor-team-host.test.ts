@@ -86,8 +86,9 @@ describe('checkTeamHostReachability', () => {
   });
 
   test('multiple hosts each get their own row, named only on the first', async () => {
-    writeHostRecordFixture(host({ host_id: HOST_A, label: 'a' }));
-    writeHostRecordFixture(host({ host_id: 'host_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb', label: 'b' }));
+    // No address on record, so neither is probed: the rows, not reachability, are under test.
+    writeHostRecordFixture({ ...host({ host_id: HOST_A, label: 'a' }), host_url: undefined });
+    writeHostRecordFixture({ ...host({ host_id: 'host_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb', label: 'b' }), host_url: undefined });
     const checks = await checkTeamHostReachability();
     expect(checks).toHaveLength(2);
     expect(checks[0].name).toBe('Team Host');
@@ -221,7 +222,6 @@ describe('checkDatabase / checkCaptureFlow — attached project hosted finding',
     writeHostRecordFixture({
       host_id: HOST_A,
       label: 'mac-studio',
-      host_url: 'https://host-a.tailnet.ts.net:8443',
       protocol_version: HOST_PROTOCOL_VERSION,
       created_at: new Date().toISOString(),
       projects: [],

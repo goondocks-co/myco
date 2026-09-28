@@ -39,6 +39,7 @@ import { UpgradeCard } from '../components/operations/UpgradeCard';
 import { BackupCard } from '../components/operations/BackupCard';
 import { DiagnosticsCard } from '../components/operations/DiagnosticsCard';
 import { useDaemon } from '../hooks/use-daemon';
+import { useDebounce } from '../hooks/use-debounce';
 import { SETTINGS_GROUPS, type SettingField, type SettingGroup, type SettingScope } from '../settings/manifest';
 import { useUnifiedSettings } from '../hooks/use-unified-settings';
 import { useProjectSelection } from '../hooks/use-project-selection';
@@ -90,15 +91,6 @@ const SCOPE_BADGE_FOR: Record<SettingScope, 'project' | 'grove' | 'machine'> = {
 };
 
 /* ---------- Filter state ---------- */
-
-function useDebouncedValue<T>(value: T, delayMs: number): T {
-  const [debounced, setDebounced] = useState(value);
-  useEffect(() => {
-    const t = setTimeout(() => setDebounced(value), delayMs);
-    return () => clearTimeout(t);
-  }, [value, delayMs]);
-  return debounced;
-}
 
 function fieldMatchesSearch(field: SettingField, needle: string): boolean {
   if (!needle) return true;
@@ -299,7 +291,7 @@ function SettingsInner() {
 
   const [scope, setScope] = useState<ScopeFilter>('all');
   const [searchInput, setSearchInput] = useState('');
-  const search = useDebouncedValue(searchInput, 150);
+  const search = useDebounce(searchInput, 150);
   const [activeGroupId, setActiveGroupId] = useState<string>(SETTINGS_GROUPS[0]?.id ?? '');
   const mainScrollRef = useRef<HTMLDivElement | null>(null);
 

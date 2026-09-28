@@ -106,20 +106,52 @@ describe('the in-process rate limiter', () => {
   });
 
   it('costs no more for keys that never repeat than for one that always does', async () => {
-    at.now = 0;
-    const l = limiter({ limit: 1_000_000, periodMs: 60_000, maxKeys: 50_000 });
-    const time = async (key: (i: number) => string) => {
-      const started = Bun.nanoseconds();
-      for (let i = 0; i < 20_000; i++) await l.limit({ key: key(i) });
-      return Bun.nanoseconds() - started;
+    // Cost is counted, not timed: every map read, write, delete and element a walk
+    // visits. A reclaim sweep on every miss makes rotating keys quadratic in the
+    // number of keys seen; a constant per-request cost keeps the two workloads equal.
+    const probe = { ops: 0 };
+    const measure = async (key: (i: number) => string) => {
+      at.now = 0;
+      const l = withCountedMaps(probe, () => limiter({ limit: 1_000_000, periodMs: 60_000, maxKeys: 50_000 }));
+      probe.ops = 0;
+      for (let i = 0; i < REQUESTS; i++) await l.limit({ key: key(i) });
+      return probe.ops;
     };
-    const rotating = await time((i) => `rotating-${i}`);
-    const repeated = await time(() => 'repeated');
-    // A reclaim sweep on every miss makes rotating keys quadratic; this bounds the
-    // ratio far below the ~445x that shape produced.
-    expect(rotating / repeated).toBeLessThan(20);
+    const REQUESTS = 2_000;
+    const rotating = await measure((i) => `rotating-${i}`);
+    const repeated = await measure(() => 'repeated');
+    expect(repeated).toBeGreaterThanOrEqual(REQUESTS);
+    expect(rotating).toBeLessThanOrEqual(repeated * 2);
   });
 });
+
+/**
+ * Runs `build` with the global `Map` replaced by one that counts every operation
+ * into `probe`, so the maps it constructs are counted and nothing else is.
+ */
+function withCountedMaps<T>(probe: { ops: number }, build: () => T): T {
+  const NativeMap = globalThis.Map;
+  class CountedMap<K, V> extends NativeMap<K, V> {
+    override get(key: K) { probe.ops += 1; return super.get(key); }
+    override has(key: K) { probe.ops += 1; return super.has(key); }
+    override set(key: K, value: V) { probe.ops += 1; return super.set(key, value); }
+    override delete(key: K) { probe.ops += 1; return super.delete(key); }
+    override clear() { probe.ops += this.size; super.clear(); }
+    override forEach(fn: (value: V, key: K, map: Map<K, V>) => void, self?: unknown) {
+      super.forEach((value, key, map) => { probe.ops += 1; fn.call(self, value, key, map); });
+    }
+    override *entries(): MapIterator<[K, V]> { for (const e of super.entries()) { probe.ops += 1; yield e; } }
+    override *keys(): MapIterator<K> { for (const k of super.keys()) { probe.ops += 1; yield k; } }
+    override *values(): MapIterator<V> { for (const v of super.values()) { probe.ops += 1; yield v; } }
+    override [Symbol.iterator]() { return this.entries(); }
+  }
+  globalThis.Map = CountedMap as MapConstructor;
+  try {
+    return build();
+  } finally {
+    globalThis.Map = NativeMap;
+  }
+}
 
 describe('the disk blob store', () => {
   const root = () => mkdtempSync(join(tmpdir(), 'myco-blobstore-'));

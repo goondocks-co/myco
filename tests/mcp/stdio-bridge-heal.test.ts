@@ -55,6 +55,13 @@ function startFakeDaemon(port: number, pid: number): Promise<Server> {
   });
 }
 
+/** The port the operating system gave a server listening on port 0. */
+function portOf(srv: Server): number {
+  const address = srv.address();
+  if (address === null || typeof address === 'string') throw new Error('server is not listening on a TCP port');
+  return address.port;
+}
+
 function stopServer(srv: Server): Promise<void> {
   return new Promise((resolve) => {
     srv.closeAllConnections?.();
@@ -93,7 +100,7 @@ describe('stdio-bridge heal primitives — kill+restart cycle', () => {
   let vaultDir: string;
   let priorMycoHome: string | undefined;
   let server: Server | null = null;
-  let port: number;
+  let port = 0;
 
   beforeEach(() => {
     mycoHome = mkdtempSync(join(tmpdir(), 'myco-bridge-heal-primitives-'));
@@ -101,9 +108,10 @@ describe('stdio-bridge heal primitives — kill+restart cycle', () => {
     mkdirSync(vaultDir, { recursive: true });
     priorMycoHome = process.env.MYCO_HOME;
     process.env.MYCO_HOME = mycoHome;
-    // Pick a high random port; in the unlikely event of collision, the
-    // `srv.once('error', reject)` surfaces it and the test errors fast.
-    port = 40_000 + Math.floor(Math.random() * 20_000);
+    // Each test's first server listens on port 0 and takes the port the
+    // operating system hands it; a restart reuses that port. A port picked at
+    // random can already be held by another process on a busy machine.
+    port = 0;
   });
 
   afterEach(async () => {
@@ -114,7 +122,8 @@ describe('stdio-bridge heal primitives — kill+restart cycle', () => {
   });
 
   it('probeDaemonHealth: true on live /health, false on closed port, true again after restart', async () => {
-    server = await startFakeDaemon(port, process.pid);
+    server = await startFakeDaemon(0, process.pid);
+    port = portOf(server);
     expect(await probeDaemonHealth({ port })).toBe(true);
 
     await stopServer(server);
@@ -139,8 +148,9 @@ describe('stdio-bridge heal primitives — kill+restart cycle', () => {
         res.end();
       });
       srv.once('error', reject);
-      srv.listen(port, '127.0.0.1', () => resolve(srv));
+      srv.listen(0, '127.0.0.1', () => resolve(srv));
     });
+    port = portOf(server);
     expect(await probeDaemonHealth({ port })).toBe(false);
   });
 
@@ -149,15 +159,16 @@ describe('stdio-bridge heal primitives — kill+restart cycle', () => {
       const srv = createServer((req, res) => {
         if (req.url === '/health') {
           res.writeHead(200, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ myco: false, pid: process.pid, port }));
+          res.end(JSON.stringify({ myco: false, pid: process.pid, port: portOf(srv) }));
           return;
         }
         res.writeHead(404);
         res.end();
       });
       srv.once('error', reject);
-      srv.listen(port, '127.0.0.1', () => resolve(srv));
+      srv.listen(0, '127.0.0.1', () => resolve(srv));
     });
+    port = portOf(server);
     expect(await probeDaemonHealth({ port })).toBe(false);
   });
 
@@ -168,6 +179,8 @@ describe('stdio-bridge heal primitives — kill+restart cycle', () => {
   });
 
   it('DaemonClient.getInfo: picks up the latest port + auth_token from daemon.json on each call', () => {
+    // Only recorded in daemon.json; nothing listens on it.
+    port = 47_123;
     const initialAuth = randomBytes(16).toString('hex');
     writeDaemonJson(mycoHome, port, process.pid, initialAuth);
 
@@ -195,8 +208,9 @@ describe('stdio-bridge heal primitives — kill+restart cycle', () => {
     // AND a fresh getInfo() after the restart picks up the new
     // auth_token. That's the contract the reconnect loop depends on.
     const authOriginal = randomBytes(16).toString('hex');
+    server = await startFakeDaemon(0, process.pid);
+    port = portOf(server);
     writeDaemonJson(mycoHome, port, process.pid, authOriginal);
-    server = await startFakeDaemon(port, process.pid);
 
     expect(await probeDaemonHealth({ port })).toBe(true);
     const initial = new DaemonClient(vaultDir).getInfo();
