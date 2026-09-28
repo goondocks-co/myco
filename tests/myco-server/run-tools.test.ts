@@ -24,6 +24,7 @@ import { RUN_TOOL_MAP, RUN_TOOL_REGISTRY, runAllowlist, runDefinitions } from '@
 import { GRANT_INSTRUCTIONS, RUN_INSTRUCTIONS, runInstructionsFor, SERVER_INSTRUCTIONS, SERVER_INSTRUCTIONS_MAX_BYTES } from '@myco-server-worker/mcp/server.js';
 import { acceptedActions, RUN_CLOSE_ERROR, RUN_CLOSE_RULES, RUN_SKIP_ACTION, runCloseRefusal, unacceptedActionError } from '@myco-server-worker/core/run-postconditions.js';
 import { getRun } from '@myco-server-worker/core/runs.js';
+import { runToolCalls } from '@myco-server-worker/read/runs.js';
 import { MAP_ACTION, MAP_TASK, MAP_UNCHANGED_ACTION } from '@goondocks/myco-shared/canopy';
 import { ROUTES } from '@myco-server-worker/routes.js';
 import { readdirSync, readFileSync } from 'node:fs';
@@ -531,6 +532,25 @@ describe('a titling run reads and writes its own session', () => {
     await second.dispatch('run_t2', TITLING, { mode: 'claim' });
     second.sqlite.run(`UPDATE sessions SET title = 'Already', summary = 'Set' WHERE session_id = 'sess_1'`);
     expect((await second.call(second.harness.token, 'myco_run_sessions', { op: 'title', title: 'B', summary: 'C' }) as any).result.written).toBe(false);
+  });
+
+  it('records each call it failed against the run with what the failure said, and a call off the run\'s surface not at all', async () => {
+    const { harness, dispatch, call, sqlite, prompt, db } = await setup();
+    prompt('first');
+    await dispatch('run_t', TITLING, { mode: 'claim' });
+    sqlite.run(`INSERT INTO transcripts (project_id, transcript_id, session_id, machine_id, first_received_at, last_received_at, token_id, size, parsed_offset, fidelity)
+      VALUES ('proj_1', 'tx_pending', 'sess_1', 'm1', ?, ?, 'tok_1', 200, 100, 'full')`, [NOW, NOW]);
+    expect((await call(harness.token, 'myco_run_sessions', { op: 'material' })).error?.message).toContain('Session capture is incomplete');
+    expect((await call(harness.token, 'myco_run_sessions', { op: 'title', title: '', summary: 'x' })).result.ok).toBe(false);
+    expect((await call(harness.token, 'myco_spores', { op: 'save', type: 'gotcha', content: 'off the surface' })).error?.message).toContain('Unknown tool');
+    sqlite.run(`UPDATE transcripts SET parsed_offset = size WHERE transcript_id = 'tx_pending'`);
+    expect((await call(harness.token, 'myco_run_sessions', { op: 'material' })).result.batches).toHaveLength(1);
+    const calls = (await runToolCalls(db, { projectId: 'proj_1' }, 'run_t')).map(({ tool, op, failure }) => ({ tool, op, failure }));
+    expect(calls).toEqual([
+      { tool: 'myco_run_sessions', op: 'material', failure: { code: 'tool_call_failed', message: 'Session capture is incomplete or has errors; retry after its transcripts are fully processed.' } },
+      { tool: 'myco_run_sessions', op: 'title', failure: { code: 'tool_failure', message: expect.stringContaining('a title is 1 to') } },
+      { tool: 'myco_run_sessions', op: 'material', failure: undefined },
+    ]);
   });
 
   it('refuses a run whose dispatch named no session, rather than failing its write', async () => {

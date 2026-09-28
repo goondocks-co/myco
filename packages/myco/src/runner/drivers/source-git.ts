@@ -29,7 +29,7 @@
  * Git command is granted, and a source run reads through its file tools.
  */
 import { accessSync, constants, mkdirSync, realpathSync, statSync, writeFileSync } from 'node:fs';
-import { delimiter, join } from 'node:path';
+import { delimiter, dirname, join } from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { RUN_REPOSITORY_DIR, SOURCE_GIT_READ_COMMANDS } from '@goondocks/myco-shared/repository';
 
@@ -236,7 +236,12 @@ const quoted = (value: string): string => `'${value.replaceAll('\'', '\'\\\'\'')
  *
  * Each `-C` is applied by changing directory, so where Git runs is the
  * physical directory the shell lands in, a symbolic link in the checkout
- * followed; the checkout must contain it. Every Git variable is then removed,
+ * followed; the checkout must contain it. A relative `-C` names a directory
+ * from where the shell stands, as Git's own does, and where no such directory
+ * is there, from the run's own directory, which the checkout sits in and which
+ * a run's instructions name the checkout from: a harness whose shell keeps the
+ * directory a command changed to still reaches `-C repo` from anywhere inside
+ * the checkout. Every Git variable is then removed,
  * the tripwire among them, and Git runs on the checkout's repository by name,
  * so no directory inside the checkout is taken for a repository, with neither
  * the system's nor the user's configuration, and with nothing to read on its
@@ -250,6 +255,7 @@ export function gitShimScript(realGit: string, repository: string): string {
     '#!/bin/sh',
     '# This run\'s git: read commands only, inside the run\'s checkout.',
     `repo=${quoted(repository)}`,
+    `run=${quoted(dirname(repository))}`,
     `git=${quoted(realGit)}`,
     'refuse() { printf \'git: %s\\n\' "$1" >&2; exit 1; }',
     'unset CDPATH',
@@ -258,7 +264,10 @@ export function gitShimScript(realGit: string, repository: string): string {
     `    ${DIRECTORY_OPTION})`,
     `      [ "$#" -ge 2 ] || refuse '${DIRECTORY_OPTION} needs a directory'`,
     '      case $2 in /*) dir=$2 ;; *) dir=./$2 ;; esac',
-    '      cd -- "$dir" 2>/dev/null || refuse "cannot change to $2"',
+    '      if ! cd -- "$dir" 2>/dev/null; then',
+    '        case $2 in /*) refuse "cannot change to $2" ;; esac',
+    '        cd -- "$run/$2" 2>/dev/null || refuse "cannot change to $2"',
+    '      fi',
     '      shift 2 ;;',
     `    ${NO_PAGER_OPTIONS.join('|')}) shift ;;`,
     '    -*) refuse "git $1 is not allowed in this run" ;;',
@@ -273,7 +282,7 @@ export function gitShimScript(realGit: string, repository: string): string {
     'here=$(pwd -P) || refuse \'cannot read the current directory\'',
     'case $here/ in',
     '  "$repo"/*) ;;',
-    '  *) refuse "git runs only inside this run\'s checkout, not in $here" ;;',
+    '  *) refuse "git runs only inside this run\'s checkout, not in $here: name it with -C $repo" ;;',
     'esac',
     'read=$1',
     'shift',

@@ -16,7 +16,7 @@ import { claudeUsage } from './usage.js';
  * well-formed `result`; both are read.
  */
 import { harnessById } from '../harnesses.js';
-import type { Driver, RunEvent, RunSpec, StopReason } from '../events.js';
+import { callFailureDetail, type Driver, type RunEvent, type RunSpec, type StopReason } from '../events.js';
 import { runGrant, grantsWhole } from './grant.js';
 import { jsonLines, recordOf, startHarness, stringOf } from './stream.js';
 
@@ -50,6 +50,26 @@ const SHELL_SETUP_VARIABLE = 'CLAUDE_ENV_FILE';
 function blocksOf(message: Record<string, unknown> | null): Record<string, unknown>[] {
   const content = message?.content;
   return Array.isArray(content) ? content.map(recordOf).filter((b): b is Record<string, unknown> => b !== null) : [];
+}
+
+/** What a call's result block says, from its text or its text blocks. */
+function resultText(content: unknown): string | null {
+  if (typeof content === 'string') return content;
+  if (!Array.isArray(content)) return null;
+  const texts = content.map(recordOf).flatMap((block) => (block !== null && stringOf(block.type) === 'text' ? [stringOf(block.text)] : [])).filter((t): t is string => t !== null);
+  return texts.length === 0 ? null : texts.join('\n');
+}
+
+/** A failed shell call's result opens with its exit code on a line of its own; what the command said follows it. */
+const EXIT_CODE_LINE = /^Exit code (\d+)\r?\n/;
+
+/** Why a call failed, from its result: what the command said, with its exit code, where the call was a shell command. */
+function failureDetail(content: unknown): string | undefined {
+  const said = resultText(content);
+  const exit = said === null ? null : EXIT_CODE_LINE.exec(said);
+  if (said === null || exit === null) return callFailureDetail(said);
+  const after = callFailureDetail(said.slice(exit[0].length));
+  return after === undefined ? callFailureDetail(said) : callFailureDetail(`${after} (exit code ${exit[1]})`);
 }
 
 /** The calls a turn's result says were refused: the tool each named, and its call id where it carries one. */
@@ -116,7 +136,10 @@ export const claudeCodeDriver: Driver = {
           if (stringOf(block.type) !== 'tool_result') continue;
           const id = stringOf(block.tool_use_id);
           if (!firstReport(id)) continue;
-          yield { kind: 'tool_call', name: (id === null ? undefined : calls.get(id)) ?? 'tool', status: block.is_error === true ? 'error' : 'ok' };
+          const name = (id === null ? undefined : calls.get(id)) ?? 'tool';
+          if (block.is_error !== true) { yield { kind: 'tool_call', name, status: 'ok' }; continue; }
+          const detail = failureDetail(block.content);
+          yield { kind: 'tool_call', name, status: 'error', ...(detail === undefined ? {} : { detail }) };
         }
       } else if (type === 'result') {
         yield { kind: 'usage', ...claudeUsage(line) };

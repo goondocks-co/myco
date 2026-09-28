@@ -15,7 +15,7 @@
  * name (`tests/myco-server/task-inputs.test.ts`).
  */
 import { MAP_ACTION, MAP_UNCHANGED_ACTION, MAX_MAP_BYTES } from '@goondocks/myco-shared/canopy';
-import { RUN_REPOSITORY_DIGESTS_FILE, RUN_REPOSITORY_DIR, SOURCE_GIT_READ_COMMANDS, MAX_REPOSITORY_HISTORY_DEPTH } from '@goondocks/myco-shared/repository';
+import { RUN_REPOSITORY_DIGESTS_FILE, RUN_REPOSITORY_DIR, SOURCE_GIT_RULES, MAX_REPOSITORY_HISTORY_DEPTH } from '@goondocks/myco-shared/repository';
 import { sha256Hex } from '../hash.js';
 import type { ServerEnv } from './adapters.js';
 import { readMapSettings } from './canopy.js';
@@ -48,7 +48,7 @@ export const MAP_RULES = [
   '',
   '## Git',
   '',
-  `Run each Git read as a separate shell tool call using the literal relative path: \`git -C ${RUN_REPOSITORY_DIR} <command>\`. Do not use shell variables, pipelines, command chains, or \`cd\`; those forms require permissions this unattended run does not hold. Allowed Git commands: ${SOURCE_GIT_READ_COMMANDS.join(', ')}. The checkout holds at most ${MAX_REPOSITORY_HISTORY_DEPTH} commits of history.`,
+  `${SOURCE_GIT_RULES} The checkout holds at most ${MAX_REPOSITORY_HISTORY_DEPTH} commits of history.`,
   '',
   '## The artifact',
   '',

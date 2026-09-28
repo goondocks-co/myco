@@ -9,7 +9,7 @@ import { deploymentSecretStore } from '@myco-server-worker/core/secrets.js';
 import {
   cleanSummary, cleanTitle, OWNER_TITLING_WINDOW_MS, RUN_OVERRUN_MARGIN_MS, sessionMaterial, titleSession, titleReadySessions, TITLING_RUN_TIMEOUT_SECONDS, TITLING_TASK, titlingParamsOf,
 } from '@myco-server-worker/core/titling.js';
-import { MAX_MATERIAL_CHARS, MAX_MATERIAL_PROMPTS, MATERIAL_EXCERPT_CHARS } from '@myco-server-worker/constants.js';
+import { MAX_MATERIAL_CHARS, MAX_MATERIAL_PROMPTS, MATERIAL_EXCERPT_CHARS, SESSION_END_SETTLE_MS } from '@myco-server-worker/constants.js';
 import type { RelationalStore, ServerEnv } from '@myco-server-worker/core/adapters.js';
 import { dispatchTask, prepareDispatch } from '@myco-server-worker/core/harness.js';
 import { sqliteEnv, withHarness } from './helpers/fixtures.js';
@@ -92,11 +92,11 @@ describe('titleSession', () => {
     expect(h.runRows()).toHaveLength(0);
     h.prompt('s1', 'p2', 'second turn correction', NOW - 1_000);
     h.sqlite.run(`UPDATE transcripts SET parsed_offset = size WHERE transcript_id = 'tx1'`);
-    await expect(titleReadySessions({ ...h.env, origin: undefined }, NOW)).rejects.toThrow('Deployment origin');
-    expect(await titleReadySessions(env, NOW + 1)).toBe(1);
+    await expect(titleReadySessions({ ...h.env, origin: undefined }, NOW + SESSION_END_SETTLE_MS)).rejects.toThrow('Deployment origin');
+    expect(await titleReadySessions(env, NOW + SESSION_END_SETTLE_MS + 1)).toBe(1);
     expect(h.runRows()).toHaveLength(1);
     expect((await sessionMaterial(h.db, 'proj_1', 's1')).map((p) => p.prompt)).toEqual(['first turn', 'second turn correction']);
-    expect(await titleReadySessions(env, NOW + 2)).toBe(0);
+    expect(await titleReadySessions(env, NOW + SESSION_END_SETTLE_MS + 2)).toBe(0);
     expect(h.runRows()).toHaveLength(1);
   });
 

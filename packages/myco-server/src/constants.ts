@@ -11,6 +11,14 @@ export const MAX_MATERIAL_CHARS = 8_000;
 export const MATERIAL_EXCERPT_CHARS = 600;
 /** Titling: how many automatic attempts a worker may take on one session before the clock stops asking. */
 export const TITLING_MAX_ATTEMPTS = 3;
+/**
+ * Titling: how long a session that asked for a title at its end must have sent
+ * nothing before its title is dispatched. A member's end hook ships the end and
+ * then the transcript bytes it closes, inside the hook's own timeout, so a
+ * session quiet for longer than any hook may run holds every byte that hook
+ * sends. It exceeds the longest hook timeout a symbiont template declares.
+ */
+export const SESSION_END_SETTLE_MS = 35_000;
 export const SERVER_PROTOCOL = 1;
 export const MIN_COMPAT_MEMBER_PROTOCOL = 1;
 export const PROTOCOL_HEADER = 'x-myco-protocol';

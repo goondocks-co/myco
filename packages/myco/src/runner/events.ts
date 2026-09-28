@@ -19,7 +19,7 @@ export type StopReason = 'end_turn' | 'max_tokens' | 'max_turn_requests' | 'refu
 export type RunEvent =
   | { kind: 'started'; harness: string; sessionId: string | null }
   | { kind: 'message'; role: 'assistant' | 'thought'; text: string }
-  /** `detail` says why a call failed where the driver itself refused it. */
+  /** `detail` says why a call failed, where the driver refused it or the harness reported why. */
   | { kind: 'tool_call'; name: string; status: 'started' | 'ok' | 'error'; detail?: string }
   | ({ kind: 'usage' } & WorkerUsage)
   | { kind: 'ended'; stop: StopReason; detail: string | null };
@@ -62,6 +62,16 @@ export interface Driver {
 export function reachedEnd(events: readonly RunEvent[]): boolean {
   const last = events.at(-1);
   return last !== undefined && last.kind === 'ended' && last.stop === 'end_turn';
+}
+
+/** The longest account of why one call failed that a run's record keeps. */
+export const CALL_DETAIL_CHARS = 200;
+
+/** Why a call failed as the harness reported it, as one bounded line, or undefined where it said nothing. */
+export function callFailureDetail(said: string | null): string | undefined {
+  const line = said?.split('\n').map((part) => part.trim()).find((part) => part.length > 0);
+  if (line === undefined) return undefined;
+  return line.length > CALL_DETAIL_CHARS ? `${line.slice(0, CALL_DETAIL_CHARS - 1)}…` : line;
 }
 
 /** How many kinds of failed call a note names before it counts the rest. */

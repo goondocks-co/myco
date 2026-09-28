@@ -17,7 +17,7 @@ import { join } from 'node:path';
 import { HARNESSES, offerable } from '@myco/runner/harnesses.js';
 import { DRIVERS, driverFor, RUN_HOMES } from '@myco/runner/drivers/registry.js';
 import { offerOf } from '@myco/runner/detect.js';
-import { failedCallsNote, reachedEnd, type RunEvent } from '@myco/runner/events.js';
+import { CALL_DETAIL_CHARS, callFailureDetail, failedCallsNote, reachedEnd, type RunEvent } from '@myco/runner/events.js';
 import { discardRunDir, mcpConfigOf, MCP_SERVER_NAME, RUN_INSTRUCTIONS_FILES, writeRunDir } from '@myco/runner/mcp-config.js';
 import { PROJECT_HEADER, PROTOCOL_HEADER } from '@myco/member/constants.js';
 import { HARNESS_CREDENTIALS } from '@goondocks/myco-shared/harness-providers';
@@ -193,6 +193,15 @@ describe('what a run\'s record says of the calls that failed in it', () => {
     // A thought is not the agent going on; a message to the user is.
     expect(failedCallsNote([failed('x'), { kind: 'message', role: 'thought', text: 'hm' }, ended])).toContain('the turn ended right after');
     expect(failedCallsNote([failed('x'), { kind: 'message', role: 'assistant', text: 'I could not.' }, ended])).toBe('a call failed or was refused: x');
+  });
+
+  it('keeps one line of why a call failed, bounded, and nothing where the harness said nothing', () => {
+    expect(callFailureDetail('\n  git: cannot change to repo  \nmore')).toBe('git: cannot change to repo');
+    expect(callFailureDetail(null)).toBeUndefined();
+    expect(callFailureDetail(' \n ')).toBeUndefined();
+    const long = callFailureDetail('x'.repeat(CALL_DETAIL_CHARS * 2))!;
+    expect(long).toHaveLength(CALL_DETAIL_CHARS);
+    expect(long.endsWith('…')).toBe(true);
   });
 
   it('names five kinds of failed call and counts the rest', () => {

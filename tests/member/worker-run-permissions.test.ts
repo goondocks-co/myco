@@ -176,11 +176,71 @@ const VECTORS: Array<{ args: string[]; creates?: string }> = [
 ];
 
 describe('the run\'s own git', () => {
-  function shim(run: { scratchDir: string; mcpConfigPath: string }, args: readonly string[], env: Record<string, string> = {}): { status: number | null; stderr: string } {
+  function shim(run: { scratchDir: string; mcpConfigPath: string }, args: readonly string[], env: Record<string, string> = {}, cwd = run.scratchDir): { status: number | null; stdout: string; stderr: string } {
     const grant = runGrant({ ...run, prompt: '', credentialEnv: {}, sourceReadOnly: true }, SHIM);
-    const result = spawnSync(join(run.scratchDir, 'bin', 'git'), [...args], { cwd: run.scratchDir, env: { ...process.env, ...grant.env, ...env }, encoding: 'utf8' });
-    return { status: result.status, stderr: result.stderr };
+    const result = spawnSync(join(run.scratchDir, 'bin', 'git'), [...args], { cwd, env: { ...process.env, ...grant.env, ...env }, encoding: 'utf8' });
+    return { status: result.status, stdout: result.stdout, stderr: result.stderr };
   }
+
+  /** A source run whose checkout holds a committed subdirectory, as a harness's shell would stand in after a `cd`. */
+  function runWithSubdirectory(): { run: ReturnType<typeof sourceRun>; sub: string } {
+    const run = sourceRun();
+    const sub = join(run.repo, 'pkg', 'src');
+    mkdirSync(sub, { recursive: true });
+    writeFileSync(join(sub, 'b'), 'b\n');
+    setupGit(run.repo, 'add', '-A');
+    setupGit(run.repo, '-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-qm', 'three');
+    return { run, sub };
+  }
+
+  it('reads the checkout from a directory inside it, whether the call names the checkout relative to the run\'s directory, absolutely, or not at all', () => {
+    const { run, sub } = runWithSubdirectory();
+    const reads: string[][] = [
+      ['log', '--format=%s'],
+      ['-C', 'repo', 'log', '--format=%s'],
+      ['-C', join(run.scratchDir, 'repo'), 'log', '--format=%s'],
+      ['-C', realpathSync(run.repo), 'log', '--format=%s'],
+    ];
+    for (const cwd of [sub, join(run.repo, 'pkg'), run.repo]) {
+      for (const args of reads) {
+        const { status, stdout, stderr } = shim(run, args, {}, cwd);
+        expect({ cwd, args, status, stdout, stderr }).toEqual({ cwd, args, status: 0, stdout: 'three\ntwo\none\n', stderr: '' });
+      }
+    }
+    // A directory the shell can reach from where it stands is the one Git runs in, as Git's own `-C` has it.
+    expect(shim(run, ['-C', '..', 'log', '--format=%s'], {}, sub).stdout).toBe('three\ntwo\none\n');
+    expect(shim(run, ['-C', 'src', 'ls-files'], {}, join(run.repo, 'pkg')).stdout).toBe('b\n');
+  });
+
+  it('refuses from a directory inside the checkout everything it refuses from the run\'s directory, and a directory named from the run\'s that leads out of the checkout', () => {
+    const { run, sub } = runWithSubdirectory();
+    const elsewhere = sourceRun();
+    symlinkSync(elsewhere.repo, join(run.repo, 'link'));
+    symlinkSync(elsewhere.repo, join(run.scratchDir, 'escape'));
+    const outside = (args: string[]): void => {
+      const { status, stderr } = shim(run, args, {}, sub);
+      expect({ args, status, refused: stderr.includes('only inside this run\'s checkout') }).toEqual({ args, status: 1, refused: true });
+    };
+    outside(['-C', 'repo/link', 'log', '-1']);
+    outside(['-C', 'escape', 'log', '-1']);
+    outside(['-C', '../../..', 'log', '-1']);
+    outside(['-C', '.', '-C', '../../..', 'log', '-1']);
+    outside(['-C', join(run.scratchDir, 'repo', '..'), 'log', '-1']);
+    expect(shim(run, ['-C', 'nowhere', 'log', '-1'], {}, sub).stderr).toBe('git: cannot change to nowhere\n');
+    expect(shim(run, ['-C', join(run.scratchDir, 'nowhere'), 'log', '-1'], {}, sub).stderr).toContain('cannot change to');
+    for (const { args, creates } of VECTORS) {
+      const { status, stderr } = shim(run, args, {}, sub);
+      expect({ args, status, refused: stderr.startsWith('git: ') }).toEqual({ args, status: 1, refused: true });
+      if (creates !== undefined) {
+        const made = [run.scratchDir, run.repo, sub, join(run.repo, 'pkg')].some((dir) => existsSync(join(dir, creates)));
+        expect({ args, made }).toEqual({ args, made: false });
+      }
+    }
+    for (const args of OUTSIDE_READS(join(run.scratchDir, 'outside'))) {
+      const { status, stderr } = shim(run, args, {}, sub);
+      expect({ args, status, refused: stderr.startsWith('git: ') }).toEqual({ args, status: 1, refused: true });
+    }
+  });
 
   it('runs a read of the checkout with the machine\'s Git', () => {
     const run = sourceRun();

@@ -1,9 +1,10 @@
 import { expect } from 'bun:test';
 import { expectPersisted, lit, MEMBER_ID, type ParityScenario, type ParityTarget } from '../harness.ts';
+import { SESSION_END_SETTLE_MS } from '@myco-server-worker/constants.js';
 
 /**
- * The proof scenario for #1042: capture through /events, the after-response
- * titling dispatch, the dashboard label, the MCP read, and an owner's ask —
+ * The proof scenario for #1042: capture through /events, the settled end
+ * request's titling dispatch, the dashboard label, the MCP read, and an owner's ask —
  * identical on both targets. Both parity targets bind the recording runtime,
  * which takes a dispatch and starts nothing: the claim is stamped and a run
  * row waits, no title is ever written, and the session is labelled from its
@@ -33,6 +34,11 @@ export const sessionsTitling: ParityScenario = {
       await post(sessionId, 'prompt', { promptId: crypto.randomUUID(), text: prompt, origin: 'user' });
       await post(sessionId, 'session.end', { endedAt: Date.now() });
     };
+    const settleAndWake = async (id: string) => {
+      await target.sql(`UPDATE sessions SET last_received_at = last_received_at - ${2 * SESSION_END_SETTLE_MS} WHERE session_id = ${lit(id)}`);
+      const res = await fetch(`${target.url}/api/wake`, { method: 'POST', headers: { ...target.ownerHeaders(), origin: target.url } });
+      expect(res.status).toBe(200);
+    };
     const sessionRow = (id: string) => target.sql(`SELECT title, summary, titled_at FROM sessions WHERE session_id=${lit(id)}`).then((rows) => rows[0]);
     const ownerRows = async () => {
       const res = await fetch(`${target.url}/api/projects/${target.projectId}/sessions`, { headers: target.ownerHeaders() });
@@ -45,10 +51,12 @@ export const sessionsTitling: ParityScenario = {
       return (await res.json()) as { outcome: string; runId?: string };
     };
 
-    // capture, then the end's deferred attempt: titling runs on a worker, so
-    // the claim is stamped and the run waits in the claim queue on both targets
+    // capture, then the end's request, taken by a wake once the session has
+    // settled: titling runs on a worker, so the claim is stamped and the run
+    // waits in the claim queue on both targets
     const s1 = `parity-${Date.now()}-1`;
     await runSession(s1, 'Add a retry to the runner please');
+    await settleAndWake(s1);
     const runFor = (sessionId: string) => target.sql(`SELECT status, harness, held_by AS heldBy, dispatched_by IS NOT NULL AS credentialed FROM agent_runs WHERE task = 'title-summary' AND run_context LIKE ${lit(`%${sessionId}%`)} ORDER BY queued_at DESC LIMIT 1`);
     expect(await runFor(s1)).toEqual([{ status: 'queued', harness: null, heldBy: 'worker', credentialed: 0 }]);
     expect(await sessionRow(s1)).toEqual({ title: null, summary: null, titled_at: expect.any(Number) });
@@ -71,6 +79,7 @@ export const sessionsTitling: ParityScenario = {
     // a second end of the session changes nothing: one attempt per session
     const stamped = (await sessionRow(s1)) as { titled_at: number };
     await post(s1, 'session.end', { endedAt: Date.now() });
+    await settleAndWake(s1);
     expect(await askTitle(s1)).toEqual({ outcome: 'already' });
     expect(await sessionRow(s1)).toEqual({ title: null, summary: null, titled_at: stamped.titled_at });
     expect(await target.sql(`SELECT COUNT(*) AS c FROM agent_runs WHERE task = 'title-summary' AND run_context LIKE ${lit(`%${s1}%`)}`)).toEqual([{ c: 1 }]);

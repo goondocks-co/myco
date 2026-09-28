@@ -24,7 +24,7 @@ import type { ServerEnv } from '../core/adapters.js';
 import type { GrantContext, RouteContext, RunContext } from '../context.js';
 import type { ReadScope } from '../read/scope.js';
 import { resolveTenancyArgument } from '../api/scope.js';
-import { recordRunCall, sessionNamedByRun } from '../core/runs.js';
+import { recordRunCall, sessionNamedByRun, type RunCallFailure } from '../core/runs.js';
 import { emit } from '../telemetry.js';
 import { taskTools } from '../core/task-catalogue.js';
 import { readWindowFor, type ReadWindow } from '../core/read-window.js';
@@ -115,21 +115,27 @@ export function runToolContext(env: ServerEnv, ctx: RunContext): ToolContext {
  * Only a run principal is recorded: a member's call is the dashboard's own
  * traffic and a grant's is its own surface, and neither is work a run owes.
  *
- * Only a call the surface admitted and answered is recorded. A refused call
- * writes nothing at all — the one rule that keeps a credential from turning
- * calls it may not make into rows — and it is named in telemetry instead.
+ * Only a call the surface admitted is recorded, answered or failed; a failed
+ * one carries what its failure said. A refused call writes nothing at all —
+ * the one rule that keeps a credential from turning calls it may not make into
+ * rows — and it is named in telemetry instead.
  */
 export async function recordRunToolCall(
   ctx: ToolContext,
-  call: { tool: string; op: string; durationMs: number },
+  call: { tool: string; op: string; durationMs: number; failure?: RunCallFailure },
 ): Promise<void> {
   const p = ctx.principal;
   if (p.kind !== 'run') return;
-  emit({ kind: 'run_tool', runId: p.runId, task: p.task, tool: call.tool, op: call.op, tokenId: p.tokenId });
+  emit({ kind: 'run_tool', runId: p.runId, task: p.task, tool: call.tool, op: call.op, tokenId: p.tokenId, ...(call.failure === undefined ? {} : { failure: call.failure.code }) });
   await recordRunCall(ctx.env.db, { projectId: ctx.projectId }, {
     runId: p.runId, toolName: call.tool, op: call.op, durationMs: call.durationMs, recordedAt: ctx.now,
+    ...(call.failure === undefined ? {} : { failure: call.failure }),
   });
 }
+
+/** Whether a tool's answer is the failure it returned rather than threw. */
+export const isToolFailure = (result: unknown): result is ToolFailure =>
+  typeof result === 'object' && result !== null && (result as { ok?: unknown }).ok === false && typeof (result as { error?: unknown }).error === 'string';
 
 /** The identifiers telemetry names the principal by. */
 export function principalFields(ctx: Pick<ToolContext, 'principal'>): Record<string, string> {

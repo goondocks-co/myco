@@ -1,5 +1,6 @@
 import { expect } from 'bun:test';
 import { expectPersisted, lit, MEMBER_ID, type ParityScenario, type ParityTarget } from '../harness.ts';
+import { SESSION_END_SETTLE_MS } from '@myco-server-worker/constants.js';
 
 /**
  * The imported-session backfill (#1203) on both targets: an import brings a
@@ -86,8 +87,12 @@ export const titlingBackfill: ParityScenario = {
     const DAY = 86_400_000;
     const runsOf = (id: string) => target.sql(`SELECT status, json_extract(dispatch_spec, '$.actor') AS actor FROM agent_runs
       WHERE task = 'title-summary' AND json_extract(run_context, '$.session_id') = ${lit(id)} ORDER BY COALESCE(queued_at, started_at)`);
+    expect(await runsOf(stranded)).toEqual([]);
+    // The end request is taken once the session has settled; the unrequested session is the backfill's.
+    await target.sql(`UPDATE sessions SET last_received_at = last_received_at - ${2 * SESSION_END_SETTLE_MS} WHERE session_id IN (${lit(stranded)}, ${lit(unrequested)})`);
+    await owner('POST', '/api/wake');
     expect(await runsOf(stranded)).toEqual([{ status: 'queued', actor: 'deployment' }]);
-    expect(await runsOf(unrequested)).toEqual([]);
+    expect(await runsOf(unrequested)).toEqual([{ status: 'queued', actor: 'backfill' }]);
     await target.sql(`UPDATE agent_runs SET queued_at = queued_at - ${2 * DAY} WHERE task = 'title-summary' AND json_extract(run_context, '$.session_id') = ${lit(stranded)}`);
     await target.sql(`UPDATE sessions SET titled_at = titled_at - ${2 * DAY} WHERE session_id = ${lit(stranded)}`);
     await owner('POST', '/api/wake');

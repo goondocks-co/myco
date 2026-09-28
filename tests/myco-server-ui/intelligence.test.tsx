@@ -194,6 +194,23 @@ describe('Agent runs', () => {
     expect(screen.queryByTestId('no-tool-calls')).toBeNull();
   });
 
+  it('shows a call the Deployment answered with a failure, and what the failure said', async () => {
+    const said = 'Session capture is incomplete or has errors; retry after its transcripts are fully processed.';
+    server(base({
+      '/api/projects/x/runs': () => Response.json({ rows: [run({ status: 'failed', failed: true })], cursor: null }),
+      '/api/projects/x/runs/r1': () => Response.json(detail({ status: 'failed', failed: true, error: 'the run ended without its artifact' }, [], [], [
+        { tool: 'myco_run_sessions', op: 'material', durationMs: 12, recordedAt: NOW - 2000, failure: { code: 'tool_call_failed', message: said } },
+        { tool: 'myco_run', op: 'report', durationMs: 3, recordedAt: NOW - 1000 },
+      ])),
+    }));
+    mount('/p/x/runs/r1');
+    const calls = await screen.findByLabelText('Calls back to this Deployment');
+    const failed = calls.querySelectorAll('[data-failed="true"]');
+    expect(failed).toHaveLength(1);
+    expect(failed[0]!.textContent).toContain('myco_run_sessions');
+    expect(failed[0]!.textContent).toContain(said);
+  });
+
   it('tells an unreadable phase record apart from an empty one', async () => {
     server(base({
       '/api/projects/x/runs': () => Response.json({ rows: [run()], cursor: null }),
