@@ -13,6 +13,10 @@ import { deploymentSecretStore } from '@myco-server-worker/core/secrets.js';
 import { reconcileEmbedding } from '@myco-server-worker/core/embedding/reconcile.js';
 import { hasEmbeddingWork } from '@myco-server-worker/core/embedding/jobs.js';
 import type { EmbeddingProvider } from '@myco-server-worker/core/embedding/provider.js';
+import { EMBEDDING_SOURCES, embeddingSourcesView, SOURCES_WITH_PRESENTED_SESSION_DATE } from '@myco-server-worker/db/schema-v20.js';
+import { RELEASE_REVISION_COLUMNS } from '@myco-server-worker/db/schema-v49.js';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { configureSqliteLibrary } from '../../packages/myco-server/src/platform/bun/sqlite-library.js';
 import { sqliteVectorStore } from '../../packages/myco-server/src/platform/bun/vectors.js';
 import { sqliteEnv } from './helpers/fixtures.js';
@@ -20,6 +24,7 @@ import { A, B, D, MISSING, REPO, fakeGithub, type Repo } from './helpers/github-
 
 configureSqliteLibrary();
 const P = 'proj_1';
+const SERVER_SRC = join(import.meta.dir, '..', '..', 'packages', 'myco-server', 'src');
 const MIN = 60_000;
 const opened: ReturnType<typeof sqliteEnv>[] = [];
 afterEach(() => { for (const f of opened.splice(0)) f.sqlite.close(); });
@@ -51,6 +56,10 @@ describe('embedding revisions follow the values a vector is built from', () => {
   function seededSources() {
     const f = fixture();
     seedSessionRecords(f, 's_1');
+    seedSessionRecords(f, 's_2');
+    f.sqlite.run(`INSERT OR IGNORE INTO projects (project_id, name, created_at) VALUES ('proj_2', 'two', 1)`);
+    // A spore under the session's own id, so a release state moved to the spores namespace names a record that exists.
+    f.insert('spores', { project_id: P, id: 's_1', agent_id: 'myco', session_id: 's_1', observation_type: 'gotcha', content: 'Keyed like the session', created_at: 3 });
     f.insert('skill_records', { project_id: P, id: 'sk_1', agent_id: 'myco', name: 'skill-one', display_name: 'Skill one', description: 'Does one thing',
       status: 'active', generation: 1, path: 'skills/skill-one', created_at: 5, updated_at: 5 });
     f.insert('knowledge_release_state', { project_id: P, id: 'rs_1', identity_key: `${P}:sessions:s_1`, namespace: 'sessions', record_id: 's_1',
@@ -59,6 +68,50 @@ describe('embedding revisions follow the values a vector is built from', () => {
     return f;
   }
 
+  /** The record each source table's seeded row is keyed by. */
+  const RECORDS: Record<string, [string]> = { sessions: ['s_1'], spores: ['sp_s_1'], plans: ['plan_s_1'], skill_records: ['sk_1'] };
+
+  /** Columns the embedding view reads that a source's revision does not follow, each with what makes that safe. */
+  const SOURCE_EXCEPTIONS: Record<string, Record<string, string>> = {
+    sessions: {
+      session_id: "the record's key, which no update changes",
+      first_received_at: 'written when the session row is inserted and never after',
+      occurred_started_at: 'followed by sessions_embedding_occurred',
+      occurred_ended_at: 'followed by sessions_embedding_occurred',
+    },
+  };
+  /** Release state columns the view reads that its revision does not follow: they order rows for one record, and the identity key holds one row per record. */
+  const RELEASE_VIEW_EXCEPTIONS: Record<string, string> = { checked_at: 'orders rows for one record', id: 'orders rows for one record' };
+
+  const watched = (s: { columns: string }) => s.columns.split(',').map((c) => c.trim());
+  const CLAUSES = ['title', 'text', 'blob', 'status', 'session', 'prompt', 'created', 'observation', 'eligible'] as const;
+
+  /** Every column of the source's table that one of its view clauses names. */
+  function referencedColumns(f: ReturnType<typeof fixture>, s: (typeof SOURCES_WITH_PRESENTED_SESSION_DATE)[number]): string[] {
+    const columns = new Set((f.sqlite.query(`PRAGMA table_info(${s.table})`).all() as { name: string }[]).map((c) => c.name));
+    const words = CLAUSES.flatMap((clause) => s[clause].replace(/'[^']*'/g, ' ').match(/\b[a-z_][a-z0-9_]*\b/gi) ?? []);
+    return [...new Set(words.filter((w) => columns.has(w)))].sort();
+  }
+
+  /** Every release state column the embedding view reads. */
+  const releaseColumnsTheViewReads = () => [...new Set([...embeddingSourcesView(EMBEDDING_SOURCES).matchAll(/\bk\.(\w+)/g)].map((m) => m[1]))].sort();
+
+  /** A value for the column that differs from the seeded one and satisfies the table's constraints. */
+  function changedValue(table: string, column: string): string {
+    const special: Record<string, string> = {
+      'spores.session_id': "'s_2'", 'plans.session_id': "'s_2'", 'spores.status': "'superseded'", 'plans.status': "'completed'",
+      'skill_records.status': "'retired'", 'sessions.ended_at': 'NULL',
+      'knowledge_release_state.project_id': "'proj_2'", 'knowledge_release_state.namespace': "'spores'", 'knowledge_release_state.record_id': "'s_2'",
+      'knowledge_release_state.state': "'released'", 'knowledge_release_state.confidence': "'high'",
+    };
+    return special[`${table}.${column}`] ?? `CASE WHEN typeof(${column}) = 'integer' THEN ${column} + 1 ELSE COALESCE(${column}, '') || ' changed' END`;
+  }
+
+  const moved = (before: Revision[], after: Revision[]) => {
+    const was = new Map(before.map((r) => [`${r.type}:${r.record_id}`, r.revision]));
+    return after.filter((r) => was.get(`${r.type}:${r.record_id}`) !== r.revision).map((r) => `${r.type}:${r.record_id}`).sort();
+  };
+
   it('leaves every revision as it was when any column of any embeddable row is written back unchanged', () => {
     const f = seededSources();
     const tables = (f.sqlite.query(`SELECT DISTINCT tbl_name AS t FROM sqlite_master WHERE type = 'trigger'
@@ -66,7 +119,7 @@ describe('embedding revisions follow the values a vector is built from', () => {
     // A new table whose updates re-revision a record is seeded here before this passes.
     expect(tables).toEqual(['knowledge_release_state', 'plans', 'sessions', 'skill_records', 'spores']);
     const before = f.revisions();
-    expect(before.map((r) => r.type).sort()).toEqual(['plan', 'session', 'skill', 'spore']);
+    expect([...new Set(before.map((r) => r.type))].sort()).toEqual(['plan', 'session', 'skill', 'spore']);
     for (const table of tables) {
       const columns = (f.sqlite.query(`PRAGMA table_info(${table})`).all() as { name: string }[]).map((c) => c.name);
       f.sqlite.run(`UPDATE ${table} SET ${columns.map((c) => `${c} = ${c}`).join(', ')}`);
@@ -77,24 +130,72 @@ describe('embedding revisions follow the values a vector is built from', () => {
     }
   });
 
-  it('gives a record a new revision when a value its revision follows changes, and only that record', () => {
-    const f = seededSources();
-    const changes: Array<[string, string, string]> = [
-      ['session', 's_1', `UPDATE sessions SET summary = 'A new summary' WHERE session_id = 's_1'`],
-      ['session', 's_1', `UPDATE sessions SET ended_at = NULL WHERE session_id = 's_1'`],
-      ['spore', 'sp_s_1', `UPDATE spores SET status = 'superseded' WHERE id = 'sp_s_1'`],
-      ['plan', 'plan_s_1', `UPDATE plans SET content = 'Revised plan', content_hash = 'h2' WHERE plan_key = 'plan_s_1'`],
-      ['skill', 'sk_1', `UPDATE skill_records SET description = 'Does another thing' WHERE id = 'sk_1'`],
-      ['session', 's_1', `UPDATE knowledge_release_state SET state = 'released' WHERE id = 'rs_1'`],
-      ['session', 's_1', `UPDATE knowledge_release_state SET confidence = 'high' WHERE id = 'rs_1'`],
-    ];
-    for (const [type, recordId, sql] of changes) {
-      const before = f.revisions();
-      f.sqlite.run(sql);
-      const after = f.revisions();
-      const moved = after.filter((r, i) => r.revision !== before[i].revision).map((r) => `${r.type}:${r.record_id}`);
-      expect({ sql, moved }).toEqual({ sql, moved: [`${type}:${recordId}`] });
+  it('gives a record a new revision when any value its revision follows changes, and no other record', () => {
+    const probe = fixture();
+    for (const s of EMBEDDING_SOURCES) {
+      const [key] = RECORDS[s.table];
+      // Every column the revision follows, and every column the view builds the record from but the named exceptions.
+      const presented = SOURCES_WITH_PRESENTED_SESSION_DATE.find((x) => x.table === s.table)!;
+      const read = [...referencedColumns(probe, s), ...referencedColumns(probe, presented)].filter((c) => !(c in (SOURCE_EXCEPTIONS[s.table] ?? {})));
+      for (const column of [...new Set([...watched(s), ...read])]) {
+        const f = seededSources();
+        const before = f.revisions();
+        const sql = `UPDATE ${s.table} SET ${column} = ${changedValue(s.table, column)} WHERE project_id = '${P}' AND ${s.id} = '${key}'`;
+        f.sqlite.run(sql);
+        expect({ sql, changed: f.sqlite.query(`SELECT changes() AS n`).get() }).toEqual({ sql, changed: { n: 1 } });
+        expect({ sql, moved: moved(before, f.revisions()) }).toEqual({ sql, moved: [`${s.type}:${key}`] });
+      }
     }
+  });
+
+  it('gives the records a release state names a new revision when any value it follows changes, and no other record', () => {
+    // Every value the release trigger follows, and every column the embedding view reads from the release state but the two named exceptions.
+    const columns = [...new Set([...RELEASE_REVISION_COLUMNS.split(',').map((c) => c.trim()), ...releaseColumnsTheViewReads()])]
+      .filter((c) => !(c in RELEASE_VIEW_EXCEPTIONS));
+    const expected: Record<string, string[]> = {
+      project_id: ['session:s_1'], namespace: ['session:s_1', 'spore:s_1'], record_id: ['session:s_1', 'session:s_2'],
+      state: ['session:s_1'], confidence: ['session:s_1'],
+    };
+    expect(columns.sort()).toEqual(Object.keys(expected).sort());
+    for (const column of columns) {
+      const f = seededSources();
+      const before = f.revisions();
+      // The source session is scoped to the Project, so a row moved to another Project names none there.
+      const also = column === 'project_id' ? ', source_session_id = NULL' : '';
+      const sql = `UPDATE knowledge_release_state SET ${column} = ${changedValue('knowledge_release_state', column)}${also} WHERE id = 'rs_1'`;
+      f.sqlite.run(sql);
+      expect({ sql, moved: moved(before, f.revisions()) }).toEqual({ sql, moved: expected[column] });
+    }
+  });
+
+  it('follows every column the embedding view builds a record from, but the named exceptions', () => {
+    const f = fixture();
+    const current = f.sqlite.query(`SELECT sql FROM sqlite_master WHERE type = 'view' AND name = 'embedding_sources'`).get() as { sql: string };
+    // The view a database serves is the one built from the presented session sources.
+    expect(current.sql).toBe(embeddingSourcesView(SOURCES_WITH_PRESENTED_SESSION_DATE).replace('CREATE VIEW IF NOT EXISTS', 'CREATE VIEW'));
+    for (const sources of [EMBEDDING_SOURCES, SOURCES_WITH_PRESENTED_SESSION_DATE]) {
+      for (const s of sources) {
+        const exceptions = SOURCE_EXCEPTIONS[s.table] ?? {};
+        const unwatched = referencedColumns(f, s).filter((c) => !watched(s).includes(c) && !(c in exceptions));
+        expect({ table: s.table, unwatched }).toEqual({ table: s.table, unwatched: [] });
+      }
+    }
+    const release = releaseColumnsTheViewReads().filter((c) => !RELEASE_REVISION_COLUMNS.includes(c) && !(c in RELEASE_VIEW_EXCEPTIONS));
+    expect({ table: 'knowledge_release_state', unwatched: release }).toEqual({ table: 'knowledge_release_state', unwatched: [] });
+  });
+
+  it('holds each named exception to the reason it gives', () => {
+    const f = fixture();
+    // The presented session dates are followed by their own trigger.
+    const occurred = (f.sqlite.query(`SELECT sql FROM sqlite_master WHERE type = 'trigger' AND name = 'sessions_embedding_occurred'`).get() as { sql: string }).sql;
+    for (const column of ['occurred_started_at', 'occurred_ended_at']) {
+      expect(occurred).toContain(`new.${column} IS NOT old.${column}`);
+      expect(occurred).toMatch(new RegExp(`AFTER UPDATE OF [\\w\\s,]*\\b${column}\\b`));
+    }
+    // Nothing under src writes a session's first receipt after inserting the row.
+    const writers = [...new Bun.Glob('**/*.ts').scanSync(SERVER_SRC)]
+      .filter((file) => /first_received_at\s*=|SET[^;`]*\bfirst_received_at\b/i.test(readFileSync(join(SERVER_SRC, file), 'utf8')));
+    expect(writers).toEqual([]);
   });
 
   it('keeps the revision when a release state records a new check under the same state and confidence', () => {

@@ -87,6 +87,40 @@ function declaredIndexes(steps: readonly SchemaStep[]): Map<string, string> {
   return new Map(rows.map((r) => [r.name, r.tbl_name]));
 }
 
+/** Every trigger a prefix of the steps leaves standing, by name, with its SQL. */
+function declaredTriggers(steps: readonly SchemaStep[]): Map<string, string> {
+  const sqlite = fresh();
+  for (const step of steps) sqlite.exec(renderMigrationFile(step));
+  const rows = sqlite.query(`SELECT name, sql FROM sqlite_master WHERE type='trigger'`).all() as { name: string; sql: string }[];
+  sqlite.close();
+  return new Map(rows.map((r) => [r.name, r.sql]));
+}
+
+/** What a trigger does: when it fires, on which event of which table, and which tables its body writes. */
+function triggerShape(sql: string): { timing: string; event: string; table: string; writes: string[] } | null {
+  const head = /^CREATE TRIGGER (?:IF NOT EXISTS )?\w+\s+(BEFORE|AFTER|INSTEAD OF)\s+(INSERT|UPDATE|DELETE)\b[\s\S]*?\bON\s+(\w+)/i.exec(sql.trim());
+  const begin = sql.search(/\bBEGIN\b/i);
+  if (head === null || begin < 0) return null;
+  const writes = [...sql.slice(begin).matchAll(/\b(?:INSERT(?:\s+OR\s+\w+)?\s+INTO|REPLACE\s+INTO|(?<!DO\s+)UPDATE|DELETE\s+FROM)\s+(\w+)/gi)]
+    .map((m) => m[1].toLowerCase());
+  return { timing: head[1].toUpperCase(), event: head[2].toUpperCase(), table: head[3], writes: [...new Set(writes)].sort() };
+}
+
+/**
+ * Whether a view or trigger a step drops at `index` is created again later in
+ * the same step: for a trigger, on the same table and event, writing the same
+ * tables as the definition it replaces (`prior`).
+ */
+function recreatedAfterDrop(statements: readonly string[], index: number, kind: 'VIEW' | 'TRIGGER', name: string, prior: string | null): boolean {
+  const create = new RegExp(`^\\s*CREATE ${kind} (?:IF NOT EXISTS )?${name}\\b`, 'i');
+  const later = statements.slice(index + 1).filter((x) => create.test(x));
+  if (later.length === 0) return false;
+  if (kind === 'VIEW') return true;
+  const before = prior === null ? null : triggerShape(prior);
+  if (before === null || before.writes.length === 0) return false;
+  return later.every((x) => JSON.stringify(triggerShape(x)) === JSON.stringify(before));
+}
+
 /** Applies one step the way `wrangler d1 migrations apply` does: statement by statement, stopping at the first failure. `Database.exec` on a whole file runs past a failing statement, so a file-at-once apply cannot stand in for the production applier. */
 const step = (sqlite: Database, s: SchemaStep): void => { for (const statement of s.statements) sqlite.exec(statement); };
 
@@ -359,7 +393,7 @@ describe('versioned schema steps', () => {
           .filter((t): t is string => t !== undefined),
       );
       const indexesBefore = (): Map<string, string> => declaredIndexes(SCHEMA_STEPS.slice(0, n));
-      for (const s of SCHEMA_STEPS[n].statements) {
+      for (const [index, s] of SCHEMA_STEPS[n].statements.entries()) {
         const dropped = /^DROP TABLE (?:IF EXISTS )?(\w+)/i.exec(s)?.[1];
         if (dropped !== undefined) {
           expect({ step: n + 1, dropped, selfCreated: createdHere.has(dropped) })
@@ -378,14 +412,15 @@ describe('versioned schema steps', () => {
         // step puts it back, which is how a derived definition is replaced.
         const droppedView = /^DROP VIEW (?:IF EXISTS )?(\w+)/i.exec(s)?.[1];
         if (droppedView !== undefined) {
-          const replaced = SCHEMA_STEPS[n].statements.some((x) => new RegExp(`^CREATE VIEW (?:IF NOT EXISTS )?${droppedView}\\b`, 'i').test(x));
+          const replaced = recreatedAfterDrop(SCHEMA_STEPS[n].statements, index, 'VIEW', droppedView, null);
           expect({ step: n + 1, droppedView, replaced }).toEqual({ step: n + 1, droppedView, replaced: true });
           continue;
         }
-        // A trigger holds no rows either: the same step creates it again under its own name.
+        // A trigger holds no rows either: the same step creates it again, after the drop, doing what it did.
         const droppedTrigger = /^DROP TRIGGER (?:IF EXISTS )?(\w+)/i.exec(s)?.[1];
         if (droppedTrigger !== undefined) {
-          const replaced = SCHEMA_STEPS[n].statements.some((x) => new RegExp(`^CREATE TRIGGER (?:IF NOT EXISTS )?${droppedTrigger}\\b`, 'i').test(x));
+          const prior = declaredTriggers(SCHEMA_STEPS.slice(0, n)).get(droppedTrigger) ?? null;
+          const replaced = recreatedAfterDrop(SCHEMA_STEPS[n].statements, index, 'TRIGGER', droppedTrigger, prior);
           expect({ step: n + 1, droppedTrigger, replaced }).toEqual({ step: n + 1, droppedTrigger, replaced: true });
           continue;
         }
@@ -400,6 +435,33 @@ describe('versioned schema steps', () => {
       const copied = stepTwo.slice(0, i).some((prev) => new RegExp(`INSERT INTO \\w+ .* FROM ${dropped[1]}\\b`, 'is').test(prev));
       expect({ statement: s, safe: scratch || copied }).toEqual({ statement: s, safe: true });
     });
+  });
+
+  it('accepts a dropped trigger only when the step creates it again after the drop, on the same table and event and writing the same tables', () => {
+    const step = SCHEMA_STEPS.find((x) => x.version === 49)!.statements;
+    const prior = declaredTriggers(SCHEMA_STEPS.filter((x) => x.version < 49));
+    const drops = step.flatMap((sql, i) => { const name = /^DROP TRIGGER IF EXISTS (\w+)/.exec(sql)?.[1]; return name === undefined ? [] : [{ i, name }]; });
+    expect(drops.length).toBe(5);
+    for (const { i, name } of drops) {
+      const create = i + 1;
+      const judge = (statements: string[], at = i) => recreatedAfterDrop(statements, at, 'TRIGGER', name, prior.get(name) ?? null);
+      expect({ name, shipped: judge([...step]) }).toEqual({ name, shipped: true });
+      // The create placed ahead of the drop leaves no trigger standing.
+      const reordered = [...step]; [reordered[i], reordered[create]] = [reordered[create], reordered[i]];
+      expect({ name, reordered: judge(reordered, create) }).toEqual({ name, reordered: false });
+      // A body that writes nothing, and one on another event or table, is not the trigger it replaces.
+      for (const [label, edit] of [
+        ['no-op body', (sql: string) => sql.replace(/BEGIN[\s\S]*END$/, 'BEGIN SELECT 1; END')],
+        ['another event', (sql: string) => sql.replace(/AFTER UPDATE( OF [\w\s,]+?)? ON/, 'AFTER DELETE ON')],
+        ['another table', (sql: string) => sql.replace(/ ON (\w+)\n/, ' ON projects\n')],
+      ] as const) {
+        const edited = [...step]; edited[create] = edit(step[create]);
+        expect(edited[create]).not.toBe(step[create]);
+        expect({ name, label, accepted: judge(edited) }).toEqual({ name, label, accepted: false });
+      }
+    }
+    expect(recreatedAfterDrop(['DROP VIEW IF EXISTS v', 'CREATE VIEW IF NOT EXISTS v AS SELECT 1'], 0, 'VIEW', 'v', null)).toBe(true);
+    expect(recreatedAfterDrop(['CREATE VIEW IF NOT EXISTS v AS SELECT 1', 'DROP VIEW IF EXISTS v'], 1, 'VIEW', 'v', null)).toBe(false);
   });
 
   it('aborts step 2 on an out-of-grammar project id, leaving the database at v1, and completes once the row is fixed', () => {
