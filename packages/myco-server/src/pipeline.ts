@@ -462,10 +462,12 @@ export function createServer(deps: ServerDeps) {
     }
     // A credential its issuer minted not to rotate is one an orchestrator hands to every
     // sandbox it starts through the environment. It is refused every route that mints an
-    // authority able to outlive it, before its body is read, whether live or lapsed: the
-    // refresh, so no holder of a copy can mint a successor and fork its lineage, and the
-    // GitHub link, whose dashboard session reaches invitations and new runtimes. It lives
-    // out its TTL or a Stop, and is renewed by minting another.
+    // authority able to outlive it, before its body is read or its role is, whether live or
+    // lapsed: the refresh, so no holder of a copy can mint a successor and fork its lineage;
+    // the GitHub link, whose dashboard session reaches invitations and new runtimes; and the
+    // worker's claim and repository, which answer a run credential, the provider key its
+    // harness reads, and a repository credential. It lives out its TTL or a Stop, and is
+    // renewed by minting another.
     if (mintsAuthority(route) && !auth.rotates) return refuse(auth, shapeOf(route), asksToRotate(route) ? NON_ROTATING : NON_ROTATING_AUTHORITY, 'non_rotating');
     if (auth.machineId === null) return refuse(auth, shapeOf(route), NO_MACHINE_IDENTITY, 'no_machine_identity');
 

@@ -17,6 +17,10 @@ import {
 import { NON_ROTATING, NON_ROTATING_AUTHORITY } from '@myco-server-worker/pipeline.js';
 import { ROUTES } from '@myco-server-worker/routes.js';
 import { readdirSync, readFileSync, statSync } from 'node:fs';
+import ts from 'typescript-v6';
+import { ensureMember } from '@myco-server-worker/auth/enrollment.js';
+import { serverEnvFromBindings } from '@myco-server-worker/platform/cloudflare/env.js';
+import { deploymentSecretStore } from '@myco-server-worker/core/secrets.js';
 import { join, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { memberHeaders } from './helpers/fixtures.js';
@@ -160,31 +164,54 @@ describe('every route that mints an authority able to outlive the credential (#1
   const linkRequest = (token: string) => new Request('https://s/members/link-github', { method: 'POST', headers: memberHeaders(token), body: '{}' });
   const linkKeys = (e: Env) => (e.sqlite.query(`SELECT COUNT(*) c FROM identity_link_authorities`).get() as { c: number }).c;
 
-  it('is declared in the route table: the refresh and the GitHub link, and no other member route', () => {
+  it('is declared in the route table: the refresh, the worker\'s claim and repository, and the GitHub link, and no other member route', () => {
     const declared = ROUTES.filter((r) => r.auth === 'member' && 'mintsAuthority' in r && r.mintsAuthority === true).map((r) => `${r.method} ${r.path}`);
-    expect(declared).toEqual(['POST /tokens/refresh', 'POST /members/link-github']);
+    expect(declared).toEqual(['POST /tokens/refresh', 'POST /worker/claim', 'POST /worker/repository', 'POST /members/link-github']);
   });
 
-  it('is the only member route that reaches an authority minter: every other caller is an owner route, the join, or a run credential minted not to rotate', () => {
-    // A minter is anything that answers with a new token or key. Each file that calls one is named here with the door
-    // that reaches it, so a member route that starts minting fails this gate until it is declared `mintsAuthority`.
-    const MINTERS = /\b(issueIdentityLinkAuthority|issueEnrollmentAuthority|issueExternalGrant|rotateExternalGrant|mintInsert|issueMemberToken)\(/;
-    const callers: string[] = [];
+  it('is the only member route that reaches a minter or a secret opener: every call site is pinned by the function that makes it, and the door that reaches it', () => {
+    // A minter answers a new token or key; an opener answers a decrypted secret. Each call site is named here by the
+    // function that makes it, with the door that reaches it, so a new caller fails this gate until it is placed.
+    const MINTERS = new Set(['issueIdentityLinkAuthority', 'issueEnrollmentAuthority', 'issueExternalGrant', 'rotateExternalGrant', 'mintInsert', 'issueMemberToken', 'openProviderCredential']);
+    const OPENERS = new Set(['secrets.get', 'repositories.access']);
+    const sites: string[] = [];
     const walk = (dir: string): void => {
       for (const name of readdirSync(dir)) {
         const file = join(dir, name);
-        if (statSync(file).isDirectory()) walk(file);
-        else if (file.endsWith('.ts') && readFileSync(file, 'utf8').split('\n').some((line) => MINTERS.test(line) && !/^\s*(export\s+)?(async\s+)?function\b/.test(line))) callers.push(relative(SRC, file));
+        if (statSync(file).isDirectory()) { walk(file); continue; }
+        if (!file.endsWith('.ts')) continue;
+        const source = ts.createSourceFile(file, readFileSync(file, 'utf8'), ts.ScriptTarget.Latest, true);
+        const visit = (node: ts.Node, owner: string | null): void => {
+          let named = owner;
+          if (owner === null && (ts.isFunctionDeclaration(node) || ts.isMethodDeclaration(node)) && node.name) named = node.name.getText(source);
+          if (owner === null && ts.isVariableDeclaration(node) && node.initializer !== undefined) named = node.name.getText(source);
+          if (ts.isCallExpression(node)) {
+            const callee = node.expression;
+            const called = ts.isIdentifier(callee) ? callee.text : ts.isPropertyAccessExpression(callee) ? `${callee.expression.getText(source)}.${callee.name.text}` : '';
+            if (MINTERS.has(called) || OPENERS.has(called)) sites.push(`${relative(SRC, file)} ${named ?? '<module>'} -> ${called}`);
+          }
+          ts.forEachChild(node, (child) => visit(child, named));
+        };
+        visit(source, null);
       }
     };
     walk(SRC);
-    expect(callers.sort()).toEqual([
-      'api/access.ts', // POST /api/enrollment — owner session
-      'api/grants.ts', // grant mint and rotate — owner session
-      'auth/join.ts', // POST /members/join — an enrollment key, no member credential
-      'auth/members.ts', // POST /members/link-github — mintsAuthority
-      'auth/tokens.ts', // the insert itself, and the refresh — mintsAuthority
-      'core/harness.ts', // run credentials, minted not to rotate
+    expect([...new Set(sites)].sort()).toEqual([
+      'api/access.ts handleMintInvitation -> issueEnrollmentAuthority', // owner session
+      'api/grants.ts handleMintGrant -> issueExternalGrant', // owner session
+      'api/grants.ts handleRotateGrant -> rotateExternalGrant', // owner session
+      'auth/join.ts handleJoin -> mintInsert', // an enrollment key, no member credential
+      'auth/members.ts handleLinkGithub -> issueIdentityLinkAuthority', // POST /members/link-github — mintsAuthority
+      'auth/tokens.ts issueMemberToken -> mintInsert', // the insert itself
+      'auth/tokens.ts refreshMemberToken -> mintInsert', // POST /tokens/refresh — mintsAuthority
+      'core/embedding/configured-provider.ts configuredEmbeddingProvider -> openProviderCredential', // the Deployment's own embedding job
+      'core/harness.ts claimNextRun -> issueMemberToken', // POST /worker/claim — mintsAuthority; a run credential minted not to rotate
+      'core/harness.ts harnessCredentialEnv -> openProviderCredential', // a launch or a claim — POST /worker/claim is mintsAuthority
+      'core/harness.ts launchDispatch -> issueMemberToken', // an owner dispatch or the tick; a run credential minted not to rotate
+      'core/harness.ts prepareDispatch -> openProviderCredential', // an owner dispatch or the tick
+      'core/release-provenance.ts checkProject -> secrets.get', // the Deployment's own release job
+      'core/repositories.ts projectRepositories -> secrets.get', // the store behind repositories.access
+      'core/run-repository.ts prepareRunRepository -> repositories.access', // a run's held task, or POST /worker/repository — mintsAuthority
     ].sort());
     const harness = readFileSync(join(SRC, 'core', 'harness.ts'), 'utf8').split('\n').filter((line) => /issueMemberToken\(/.test(line) && !/^import/.test(line));
     expect(harness.length).toBe(2);
@@ -204,5 +231,49 @@ describe('every route that mints an authority able to outlive the credential (#1
     const res = await worker.fetch(linkRequest(rotating.token), { ...e.env, ...OWNER_ENV });
     expect(await jsonBody(res)).toMatchObject({ persisted: true });
     expect(linkKeys(e)).toBe(1);
+  });
+});
+
+describe('a worker claim from a credential minted not to rotate (#1420)', () => {
+  const NOW = Date.now();
+  const WRAP_KEY = btoa(String.fromCharCode(...crypto.getRandomValues(new Uint8Array(32))));
+  const API_KEY = 'sk-ant-TEST-PROVIDER-KEY-0420';
+  const claimRequest = (token: string) => new Request('https://s/worker/claim', {
+    method: 'POST', headers: memberHeaders(token), body: JSON.stringify({ harnesses: [{ id: 'claude-code', authenticated: true }] }),
+  });
+
+  /** An administrator's credential, rotating or not, a queued run a worker can take, and the provider key its harness would read. */
+  async function queued(rotates: boolean) {
+    const e = sqliteEnv();
+    const bindings = { ...e.env, SECRET_WRAP_KEY: { get: async () => WRAP_KEY } };
+    const env = serverEnvFromBindings(bindings as never);
+    await deploymentSecretStore(env.db, env.wrappingKey).put('anthropic', API_KEY, 'mem_admin', NOW);
+    e.sqlite.run(`INSERT OR IGNORE INTO agents (id, name, source, enabled, created_at) VALUES ('myco-agent', 'a', 'built-in', 1, ?)`, [NOW]);
+    e.sqlite.run(
+      `INSERT INTO agent_runs (project_id, id, agent_id, task, status, queued_at, held_by, dispatch_spec, run_context, instruction)
+       VALUES ('proj_1', 'run_q', 'myco-agent', 'extract-curate', 'queued', ?, 'worker', ?, ?, 'do it')`,
+      [NOW, JSON.stringify({ serverUrl: 'https://s', actor: 'deployment', timeoutSeconds: 300 }), JSON.stringify({ timeoutSeconds: 300 })],
+    );
+    await ensureMember(e.db, 'mem_admin', NOW, 'admin', 'an administrator');
+    const token = await issueMemberToken(e.db, { memberId: 'mem_admin', machineId: 'machine_admin' }, NOW, null, NO_RUNTIME_CLAIMS, { rotates });
+    return { e, bindings, token };
+  }
+
+  it('is refused before anything is claimed: no run credential, no provider key, the run still queued', async () => {
+    const { e, bindings, token } = await queued(false);
+    const res = await worker.fetch(claimRequest(token.token), bindings as never);
+    const body = await jsonBody(res);
+    expect(body).toEqual({ persisted: false, code: 'non_rotating', reason: NON_ROTATING_AUTHORITY });
+    expect(JSON.stringify(body)).not.toContain(API_KEY);
+    expect(e.sqlite.query(`SELECT status, dispatched_by FROM agent_runs WHERE id = 'run_q'`).get()).toEqual({ status: 'queued', dispatched_by: null });
+    expect(e.sqlite.query(`SELECT COUNT(*) c FROM member_credentials`).get()).toEqual({ c: 1 });
+  });
+
+  it('from a credential that rotates, still claims the run and answers the harness its provider key', async () => {
+    const { e, bindings, token } = await queued(true);
+    const body = await jsonBody(await worker.fetch(claimRequest(token.token), bindings as never)) as { claimed: boolean; run: { credentialEnv: Record<string, string> } };
+    expect(body.claimed).toBe(true);
+    expect(body.run.credentialEnv).toEqual({ ANTHROPIC_API_KEY: API_KEY });
+    expect((e.sqlite.query(`SELECT status FROM agent_runs WHERE id = 'run_q'`).get() as { status: string }).status).not.toBe('queued');
   });
 });

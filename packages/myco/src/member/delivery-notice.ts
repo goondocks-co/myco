@@ -16,10 +16,11 @@ import type { CredentialRecord } from './credential.js';
 export const REJOIN_HINT = 'ask a Deployment admin for an invite link and run `myco login <link>`';
 
 /** The notice for a credential, or null while it is still rotating, or does not rotate and has not expired. */
-export function deliveryNotice(credential: Pick<CredentialRecord, 'serverUrl' | 'expiresAt' | 'refreshTerminal' | 'refreshTerminalReason' | 'nonRotating'>, now: number): string | null {
+export function deliveryNotice(credential: Pick<CredentialRecord, 'serverUrl' | 'expiresAt' | 'refreshTerminal' | 'refreshTerminalReason' | 'nonRotating' | 'refusedAt'>, now: number): string | null {
   if (credential.nonRotating === true && credential.refreshTerminal !== true) {
-    if (credential.expiresAt === undefined || credential.expiresAt > now) return null;
-    return `Myco capture is not being delivered: this machine's credential for ${credential.serverUrl} does not rotate, and the server stopped accepting it at ${new Date(credential.expiresAt).toISOString()} (it expired, or was stopped). What is captured stays on this machine and is delivered once you ${REJOIN_HINT}.`;
+    const endedAt = credential.refusedAt ?? (credential.expiresAt !== undefined && credential.expiresAt <= now ? credential.expiresAt : undefined);
+    if (endedAt === undefined) return null;
+    return `Myco capture is not being delivered: this machine's credential for ${credential.serverUrl} does not rotate, and the server stopped accepting it at ${new Date(endedAt).toISOString()} (it expired, or was stopped). What is captured stays on this machine and is delivered once you ${REJOIN_HINT}.`;
   }
   if (credential.refreshTerminal !== true) return null;
   if (credential.refreshTerminalReason === 'replayed') {

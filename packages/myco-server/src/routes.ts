@@ -86,13 +86,13 @@ export type EnrollHandler = (env: ServerEnv, request: Request, now: number) => P
 /** The key a member route answers under: `{<shape>: true|false, …}` on every outcome after authentication, refusals and 503s included. */
 export type Shape = 'persisted' | 'stored' | 'refreshed' | 'answered';
 
-/** `capture: false` marks a member route that is not a member's capture: it is answered on an archived Project, where a capture route is refused. Absent, the route is capture. No route, capture or not, is refused for the bytes a credential has stored (#1416). `scope: 'credential'` marks a route answered on the presented credential alone: no Project is read from the request or resolved, whatever header it carries. Only such a route may declare `admitsLapsed: true`, the one place a credential past its own expiry still authenticates — the refresh, which decides against the lineage ceiling instead; every other route refuses an expired credential. `mintsAuthority: true` marks a member route whose answer is an authority that can outlive the presented credential — a successor token, or a key that links a GitHub account and so opens the dashboard's owner surface, where invitations, runtimes and grants are minted; a credential its issuer minted not to rotate is refused on every such route. */
+/** `capture: false` marks a member route that is not a member's capture: it is answered on an archived Project, where a capture route is refused. Absent, the route is capture. No route, capture or not, is refused for the bytes a credential has stored (#1416). `scope: 'credential'` marks a route answered on the presented credential alone: no Project is read from the request or resolved, whatever header it carries. Only such a route may declare `admitsLapsed: true`, the one place a credential past its own expiry still authenticates — the refresh, which decides against the lineage ceiling instead; every other route refuses an expired credential. `mintsAuthority: true` marks a member route whose answer is an authority that can outlive the presented credential — a successor token, a key that links a GitHub account and so opens the dashboard's owner surface, where invitations, runtimes and grants are minted, a claimed run's credential and the provider key its harness reads, or a leased run's repository credential; a credential its issuer minted not to rotate is refused on every such route. */
 export type Route =
   | { method: string; path: string; auth: 'public'; bodyMode: 'none'; handler: PublicHandler }
   | ({ method: string; path: string; auth: 'member'; bodyMode: 'json'; shape: Exclude<Shape, 'stored'>; capture?: boolean; mintsAuthority?: true; handler: MemberHandler; grant?: GrantHandler; run?: RunHandler; legacyRunRoute?: true }
     & ({ unbound?: never } | { shape: 'answered'; capture: false; unbound: UnboundMemberHandler }))
   | { method: string; path: string; auth: 'member'; bodyMode: 'json'; shape: 'refreshed' | 'persisted'; capture: false; scope: 'credential'; admitsLapsed?: true; mintsAuthority?: true; credential: CredentialHandler; handler?: never; grant?: never; run?: never; legacyRunRoute?: never }
-  | { method: string; path: string; auth: 'member'; bodyMode: 'json'; shape: 'persisted'; capture: false; scope: 'deployment'; deployment: DeploymentHandler; handler?: never; grant?: never; run?: never; legacyRunRoute?: never }
+  | { method: string; path: string; auth: 'member'; bodyMode: 'json'; shape: 'persisted'; capture: false; scope: 'deployment'; mintsAuthority?: true; deployment: DeploymentHandler; handler?: never; grant?: never; run?: never; legacyRunRoute?: never }
   | { method: string; path: string; pattern: RegExp; auth: 'member'; bodyMode: 'stream'; shape: 'stored'; capture?: boolean; maxBodyBytes: number; handler: StreamHandler; legacyRunRoute?: true }
   | { method: string; path: string; auth: 'auth'; handler: AuthHandler }
   | { method: string; path: string; auth: 'enroll'; handler: EnrollHandler }
@@ -153,10 +153,10 @@ export const ROUTES: readonly Route[] = [
   // across every Project, so it names none and the pipeline resolves none. Only
   // an administrator is admitted: a claim answers with a minted run credential
   // and the Deployment's own harness credential.
-  { method: 'POST', path: '/worker/claim', auth: 'member', bodyMode: 'json', shape: 'persisted', capture: false, scope: 'deployment', deployment: handleWorkerClaim },
+  { method: 'POST', path: '/worker/claim', auth: 'member', bodyMode: 'json', shape: 'persisted', capture: false, scope: 'deployment', mintsAuthority: true, deployment: handleWorkerClaim },
   { method: 'POST', path: '/worker/lease', auth: 'member', bodyMode: 'json', shape: 'persisted', capture: false, scope: 'deployment', deployment: handleWorkerLease },
   { method: 'POST', path: '/worker/end', auth: 'member', bodyMode: 'json', shape: 'persisted', capture: false, scope: 'deployment', deployment: handleWorkerEnd },
-  { method: 'POST', path: '/worker/repository', auth: 'member', bodyMode: 'json', shape: 'persisted', capture: false, scope: 'deployment', deployment: handleWorkerRepository },
+  { method: 'POST', path: '/worker/repository', auth: 'member', bodyMode: 'json', shape: 'persisted', capture: false, scope: 'deployment', mintsAuthority: true, deployment: handleWorkerRepository },
   { method: 'POST', path: '/mcp', auth: 'member', bodyMode: 'json', shape: 'answered', capture: false, handler: handleMcp, grant: handleGrantMcp, run: handleRunMcp, unbound: handleUnboundMcp },
   { method: 'POST', path: '/members/join', auth: 'enroll', handler: handleJoin },
   { method: 'POST', path: '/members/link-github', auth: 'member', bodyMode: 'json', shape: 'persisted', capture: false, mintsAuthority: true, handler: handleLinkGithub },

@@ -141,7 +141,7 @@ export async function refreshMembership(serverUrl: string, opts: RefreshOptions)
   const due = (held: RefreshWindow): boolean => (opts.force === true && held.refreshTerminal !== true) || refreshDue(held, now(), build);
   const before = readDeploymentMembership(serverUrl, mycoHome);
   if (!before) return { status: 'no-entry', membership: null };
-  if (before.nonRotating === true) return endNonRotating(serverUrl, before, mycoHome, now, opts.force === true);
+  if (before.nonRotating === true) return confirmNonRotating(serverUrl, before, mycoHome, now, opts);
   if (!due(before)) return { status: 'not-due', membership: before };
 
   const lock = acquireRegistryLock(mycoHome);
@@ -225,20 +225,44 @@ export async function refreshMembership(serverUrl: string, opts: RefreshOptions)
 }
 
 /**
- * A token the Deployment said does not rotate: nothing dials, since no answer to it can differ. A forced renewal
- * follows a refusal of that token, so its life ended now whatever expiry it was issued with; the entry records that
- * under the registry lock, and the delivery notice reads it. A token another process replaced meanwhile is left as it is.
+ * A token the Deployment said does not rotate. Nothing dials in the ordinary course: no answer to its refresh can
+ * mint anything. A forced renewal follows a 401 somewhere else, which a proxy or a route this Deployment does not
+ * serve can answer too, so it asks the refresh route once: a token that still authenticates is answered
+ * `non_rotating`, and one the Deployment stopped is answered 401, which the entry records as `refusedAt` for the
+ * delivery notice. Once recorded, or once the token is past its expiry, nothing asks again. A token another process
+ * replaced meanwhile is left as it is.
  */
-function endNonRotating(serverUrl: string, before: DeploymentMembership, mycoHome: string, now: () => number, refused: boolean): MembershipRefreshReport {
-  if (!refused || (before.expiresAt !== undefined && before.expiresAt <= now())) return { status: 'non-rotating', membership: before };
+async function confirmNonRotating(serverUrl: string, before: DeploymentMembership, mycoHome: string, now: () => number, opts: RefreshOptions): Promise<MembershipRefreshReport> {
+  if (opts.force !== true || typeof before.refusedAt === 'number' || (before.expiresAt !== undefined && before.expiresAt <= now())) return { status: 'non-rotating', membership: before };
   const lock = acquireRegistryLock(mycoHome);
   if (!lock.acquired) return { status: 'busy', membership: before };
   try {
     const held = readDeploymentMembership(serverUrl, mycoHome);
     if (!held) return { status: 'no-entry', membership: null };
-    if (held.token !== before.token || held.nonRotating !== true) return { status: 'not-due', membership: held };
-    writeDeploymentMembership({ ...held, expiresAt: Math.min(held.expiresAt ?? now(), now()), updatedAt: now() }, { mycoHome, locked: true });
-    return { status: 'non-rotating', membership: readDeploymentMembership(serverUrl, mycoHome) };
+    if (held.token !== before.token || held.nonRotating !== true || typeof held.refusedAt === 'number') return { status: 'non-rotating', membership: held };
+    const outcome = await refreshCredential({ serverUrl: held.serverUrl, token: held.token, projectId: opts.projectId }, opts.fetch ?? globalThis.fetch, opts.budget);
+    if (outcome.class !== 'unauthorized') return { status: 'non-rotating', membership: held };
+    stderr(`this machine's credential for ${held.serverUrl} does not rotate and the server no longer accepts it — ${REJOIN_HINT}`);
+    writeDeploymentMembership({ ...held, refusedAt: now(), updatedAt: now() }, { mycoHome, locked: true });
+    return { status: 'unauthorized', membership: readDeploymentMembership(serverUrl, mycoHome) };
+  } finally {
+    lock.lock.release();
+  }
+}
+
+/**
+ * Clear a refusal recorded against a non-rotating token once a send on that same token is acknowledged: the
+ * Deployment accepts it after all. A no-op for any other entry, and when another process holds the registry.
+ */
+export function clearNonRotatingRefusal(serverUrl: string, token: string, mycoHome: string = resolveMycoHome(), now: () => number = Date.now): void {
+  const before = readDeploymentMembership(serverUrl, mycoHome);
+  if (typeof before?.refusedAt !== 'number' || before.token !== token) return;
+  const lock = acquireRegistryLock(mycoHome);
+  if (!lock.acquired) return;
+  try {
+    const held = readDeploymentMembership(serverUrl, mycoHome);
+    if (typeof held?.refusedAt !== 'number' || held.token !== token) return;
+    writeDeploymentMembership({ ...held, refusedAt: null, updatedAt: now() }, { mycoHome, locked: true });
   } finally {
     lock.lock.release();
   }

@@ -365,7 +365,7 @@ describe('a credential minted not to rotate (#1420)', () => {
     expect(rig.rows('member_credentials')).toBe(1);
   });
 
-  it('in a registry, stopped from the dashboard: the refused capture ends the token\'s life now without a dial, and the notice says capture is not delivered', async () => {
+  it('in a registry, stopped from the dashboard: the refused capture confirms it with one refresh dial, records it, and the notice says capture is not delivered', async () => {
     const rig = await nonRotatingRig(6.5 * DAY_MS);
     registerTestMember({ mycoHome, token: rig.token, tokenId: rig.tokenId, projectId: PROJECT, expiresAt: rig.expiresAt, serverUrl: SERVER_URL });
     const spy = recordingFetch(rig.fetch);
@@ -375,12 +375,55 @@ describe('a credential minted not to rotate (#1420)', () => {
 
     const stopped = await prompt(spy.fetch, 'after the stop');
 
-    expect(refreshCalls(spy)).toBe(1);
+    expect(refreshCalls(spy)).toBe(2);
     const entry = readRegistryEntry(root, mycoHome)!;
-    expect({ nonRotating: entry.nonRotating, refreshTerminal: entry.refreshTerminal, ended: entry.expiresAt! <= Date.now() }).toEqual({ nonRotating: true, refreshTerminal: false, ended: true });
+    expect({ nonRotating: entry.nonRotating, refreshTerminal: entry.refreshTerminal, refused: typeof entry.refusedAt, expiresAt: entry.expiresAt }).toEqual({ nonRotating: true, refreshTerminal: false, refused: 'number', expiresAt: rig.expiresAt });
     expect(stopped.stderr).toContain('Myco capture is not being delivered');
     expect(stopped.stderr).toContain('does not rotate, and the server stopped accepting it');
     expect(new MemberSpool(PROJECT, { mycoHome }).depth(session)).toBeGreaterThan(0);
+
+    await prompt(spy.fetch, 'still stopped');
+    expect(refreshCalls(spy)).toBe(2);
+  });
+
+  it('in a registry, a 401 that is not the Deployment\'s (a proxy): the confirming dial finds the token live, nothing is recorded, no notice, and the next hook delivers', async () => {
+    const rig = await nonRotatingRig(6.5 * DAY_MS);
+    registerTestMember({ mycoHome, token: rig.token, tokenId: rig.tokenId, projectId: PROJECT, expiresAt: rig.expiresAt, serverUrl: SERVER_URL });
+    await prompt(rig.fetch, 'before the proxy');
+    let refuseOnce = true;
+    const proxy: FetchLike = async (input, init) => {
+      const req = new Request(input, init);
+      if (refuseOnce && new URL(req.url).pathname === '/events') { refuseOnce = false; return new Response('{"error":"unauthorized"}', { status: 401 }); }
+      return rig.fetch(req);
+    };
+    const spy = recordingFetch(proxy);
+
+    const refused = await prompt(spy.fetch, 'through the proxy');
+
+    expect(refreshCalls(spy)).toBe(1);
+    const entry = readRegistryEntry(root, mycoHome)!;
+    expect({ refusedAt: entry.refusedAt, expiresAt: entry.expiresAt }).toEqual({ refusedAt: undefined, expiresAt: rig.expiresAt });
+    expect(refused.stderr).not.toContain('Myco capture is not being delivered');
+
+    const next = await prompt(spy.fetch, 'after the proxy');
+    expect(next.stderr).not.toContain('Myco capture is not being delivered');
+    expect(rig.rows('prompt_batches')).toBe(3);
+    expect(new MemberSpool(PROJECT, { mycoHome }).depth(session)).toBe(0);
+  });
+
+  it('in a registry, a refusal recorded against a token the Deployment still accepts is cleared by the next acknowledged send', async () => {
+    const rig = await nonRotatingRig(6.5 * DAY_MS);
+    registerTestMember({ mycoHome, token: rig.token, tokenId: rig.tokenId, projectId: PROJECT, expiresAt: rig.expiresAt, serverUrl: SERVER_URL });
+    await prompt(rig.fetch, 'first');
+    const held = readDeploymentMembership(SERVER_URL, mycoHome)!;
+    writeDeploymentMembership({ ...held, refusedAt: Date.now() - 1_000 }, { mycoHome });
+    expect(deliveryNotice(readRegistryEntry(root, mycoHome)!, Date.now())).toContain('Myco capture is not being delivered');
+
+    const delivered = await prompt(rig.fetch, 'accepted after all');
+
+    expect(rig.rows('prompt_batches')).toBe(2);
+    expect(readRegistryEntry(root, mycoHome)!.refusedAt).toBeNull();
+    expect(delivered.stderr).not.toContain('Myco capture is not being delivered');
   });
 
   it('answered `non_rotating` over a terminal state an older build recorded, clears it, and says so without inventing an expiry', async () => {

@@ -63,6 +63,36 @@ describe('operator scripts', () => {
     expect({ rotating: rotatesAfter(['--rotating']), nonRotating: rotatesAfter(['--non-rotating']) }).toEqual({ rotating: 1, nonRotating: 0 });
   });
 
+  it('mint --non-rotating creates its member as a plain member, and --rotating as an administrator', () => {
+    const applied = (args: string[]) => {
+      const { code, out } = run('mint-local.ts', ['mem_s', 'machine_s', ...args]);
+      expect(code).toBe(0);
+      const sqlite = new Database(':memory:');
+      for (const f of renderMigrationFiles()) sqlite.exec(f.sql);
+      sqlite.exec(out);
+      return sqlite.query(`SELECT m.role, c.rotates FROM members m JOIN member_credentials c ON c.member_id = m.id`).get();
+    };
+    expect(applied(['--non-rotating'])).toEqual({ role: 'member', rotates: 0 });
+    expect(applied(['--rotating'])).toEqual({ role: 'admin', rotates: 1 });
+  });
+
+  it('mint --non-rotating never hands a shared credential to a member that administers the Deployment: applied there, it fails by name, writes no credential and leaves the role as it was', () => {
+    const { code, out } = run('mint-local.ts', ['mem_s', 'machine_s', '--non-rotating']);
+    expect(code).toBe(0);
+    const sqlite = new Database(':memory:');
+    for (const f of renderMigrationFiles()) sqlite.exec(f.sql);
+    sqlite.exec(`INSERT INTO members (id, label, created_at, revoked_at, role) VALUES ('mem_s', 'mem_s', 1, NULL, 'admin')`);
+    // Applied statement by statement, as `wrangler d1 execute` reports each: the guard is the one that fails.
+    const statements = out.split('\n').filter((l) => !l.startsWith('--')).join('\n').split(';').map((x) => x.trim()).filter(Boolean);
+    const failed: string[] = [];
+    for (const statement of statements) {
+      try { sqlite.run(statement); } catch (error) { failed.push(`${statement.split('(')[0]!.trim()} — ${(error as Error).message}`); }
+    }
+    expect(failed).toEqual(['INSERT INTO _mint_refused_member_administers_deployment — CHECK constraint failed: ok = 1']);
+    expect(sqlite.query(`SELECT COUNT(*) c FROM member_credentials`).get()).toEqual({ c: 0 });
+    expect(sqlite.query(`SELECT role FROM members WHERE id = 'mem_s'`).get()).toEqual({ role: 'admin' });
+  });
+
   it('mint refuses to run without a machine id', () => {
     const { code, err } = run('mint-local.ts', ['proj_s']);
     expect(code).toBe(2);

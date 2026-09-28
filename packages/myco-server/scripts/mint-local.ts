@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
 import { ensureMember } from '../src/auth/enrollment.ts';
 import { issueExternalGrant } from '../src/auth/grants.ts';
-import { issueMemberToken, NO_RUNTIME_CLAIMS } from '../src/auth/tokens.ts';
+import { mintInsert, NO_RUNTIME_CLAIMS } from '../src/auth/tokens.ts';
 import { sqlCapture } from './sql-capture.ts';
 
 const USAGE = [
@@ -16,7 +16,8 @@ const printToken = args.includes('--print-token');
 const ROTATION_CHOICE = [
   'say how the credential is held — one of:',
   '  --rotating      for `myco member join … --token-env|--token-stdin`: a registry on one machine renews it every week and it never expires while in use',
-  '  --non-rotating  for MYCO_MEMBER_TOKEN, a sandbox or any `--credential env` runtime: every holder shares it, nothing renews it, and it expires 7 days after mint — mint another to renew',
+  '  --non-rotating  for MYCO_MEMBER_TOKEN, a sandbox or any `--credential env` runtime: every holder shares it, nothing renews it, and it expires 7 days after mint — mint another to renew.',
+  '                  It is minted for a member who does not administer the Deployment: name one of its own (e.g. <member_id>-sandbox).',
 ].join('\n');
 /** The value after `flag`, or undefined when the flag is absent; a flag followed by another flag or nothing is a usage error. */
 const valueOf = (flag: string): string | undefined => {
@@ -31,6 +32,13 @@ const valueOf = (flag: string): string | undefined => {
 };
 const now = Date.now();
 const { db, statements } = sqlCapture();
+
+/** Fails the applied SQL, naming why, unless the credential it minted exists: a non-rotating mint for a member that administers the Deployment writes none. */
+const NON_ADMIN_GUARD = (tokenId: string): string[] => [
+  `CREATE TABLE IF NOT EXISTS _mint_refused_member_administers_deployment (ok INTEGER NOT NULL CHECK (ok = 1))`,
+  `INSERT INTO _mint_refused_member_administers_deployment (ok) SELECT CASE WHEN EXISTS (SELECT 1 FROM member_credentials WHERE id = '${tokenId}') THEN 1 ELSE 0 END`,
+  `DROP TABLE _mint_refused_member_administers_deployment`,
+];
 
 if (args.includes('--grant')) {
   const projectId = valueOf('--grant')!;
@@ -51,9 +59,16 @@ if (args.includes('--grant')) {
     console.error(`${ROTATION_CHOICE}\n${USAGE}`);
     process.exit(2);
   }
-  await ensureMember(db, memberId, now, 'admin');
-  const issued = await issueMemberToken(db, { memberId, machineId }, now, null, NO_RUNTIME_CLAIMS, { rotates: !nonRotating });
-  console.log(`-- token_id ${issued.tokenId} expires_at ${issued.expiresAt}${nonRotating ? ' non-rotating' : ''}`);
+  // A credential every holder shares never carries the Deployment's authority: its member is created a plain member, the
+  // insert lands only while that member is one, and the guard after it fails the applied SQL by name when it did not —
+  // a member that already administers the Deployment is never downgraded, and never handed one.
+  await ensureMember(db, memberId, now, nonRotating ? 'member' : 'admin');
+  const { statement, issued } = await mintInsert(db, { memberId, machineId }, now, null, NO_RUNTIME_CLAIMS, nonRotating
+    ? { rotates: false, gate: { sql: `EXISTS (SELECT 1 FROM members WHERE id = ? AND role = 'member')`, params: [memberId] } }
+    : {});
+  await statement.run();
+  if (nonRotating) statements.push(...NON_ADMIN_GUARD(issued.tokenId));
+  console.log(`-- token_id ${issued.tokenId} expires_at ${issued.expiresAt}${nonRotating ? ` non-rotating, for member ${memberId} which must not administer the Deployment` : ''}`);
   for (const statement of statements) console.log(`${statement};`);
   if (printToken) console.error(`MYCO_MEMBER_TOKEN=${issued.token}`);
   else console.error(`-- token_id ${issued.tokenId} minted; rerun with --print-token to print the raw token to stderr`);
