@@ -173,3 +173,67 @@ describe('ServerClient classification', () => {
     expect(await new ServerClient({ serverUrl: 'https://s', token: 'x', projectId: 'p' }, async () => { throw new Error('down'); }).health(budget)).toBe(false);
   });
 });
+
+describe('an answer cut short by the request deadline', () => {
+  /** Headers now, declaring a whole acked body; the body ends empty once the request is aborted, as Bun reads a deadline that fires between the two. */
+  const cutShort: FetchLike = async (_input, init) => {
+    const body = JSON.stringify({ persisted: true });
+    const signal = init?.signal ?? undefined;
+    const stream = new ReadableStream<Uint8Array>({ start(controller) { signal?.addEventListener('abort', () => { controller.close(); }, { once: true }); } });
+    return new Response(stream, { status: 200, headers: { 'content-type': 'application/json', 'content-length': String(body.length) } });
+  };
+
+  it('is a request that timed out, never a 200 in the wrong shape', async () => {
+    const client = new ServerClient({ serverUrl: 'https://s', token: 'x'.repeat(43), projectId: 'proj_1' }, cutShort);
+    const env = promptEvent(ctx('s_cut'), { promptId: mintId(), text: 'hi' }).envelope;
+    expect(await client.postEvent(env, { connectTimeoutMs: 50, requestTimeoutMs: 50 })).toEqual({ class: 'retry', detail: 'timeout (request)' });
+  });
+
+  /** A body that ends when the request is aborted, after `sent` of it, under `headers`. */
+  const cutAfter = (sent: string, headers: Record<string, string>): FetchLike => async (_input, init) => {
+    const signal = init?.signal ?? undefined;
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        if (sent !== '') controller.enqueue(new TextEncoder().encode(sent));
+        signal?.addEventListener('abort', () => { controller.close(); }, { once: true });
+      },
+    });
+    return new Response(stream, { status: 200, headers: { 'content-type': 'application/json', ...headers } });
+  };
+
+  it('is a request that timed out when the answer declares no length, as a hosted Deployment answers chunked and gzipped', async () => {
+    const whole = JSON.stringify({ persisted: true });
+    const chunked = { 'transfer-encoding': 'chunked' };
+    const gzipped = { ...chunked, 'content-encoding': 'gzip' };
+    for (const [what, sent, headers] of [
+      ['nothing, chunked', '', chunked], ['part, chunked', whole.slice(0, 8), chunked],
+      ['nothing, chunked gzip', '', gzipped], ['part, chunked gzip', whole.slice(0, 8), gzipped],
+    ] as const) {
+      const client = new ServerClient({ serverUrl: 'https://s', token: 'x'.repeat(43), projectId: 'proj_1' }, cutAfter(sent, headers));
+      const env = promptEvent(ctx(`s_chunked_${what.replace(/[^a-z]/g, '_')}`), { promptId: mintId(), text: 'hi' }).envelope;
+      expect({ what, outcome: await client.postEvent(env, { connectTimeoutMs: 50, requestTimeoutMs: 50 }) })
+        .toEqual({ what, outcome: { class: 'retry', detail: 'timeout (request)' } });
+    }
+  });
+
+  it('cannot show an encoded answer whole by its declared length, which counts the encoded bytes', async () => {
+    // A gzip answer's length is the compressed size. A decoded text that happens
+    // to be that many bytes is still not shown whole by it, so a cut read stays a timeout.
+    const decoded = JSON.stringify({ persisted: true });
+    const client = new ServerClient({ serverUrl: 'https://s', token: 'x'.repeat(43), projectId: 'proj_1' },
+      cutAfter(decoded, { 'content-encoding': 'gzip', 'content-length': String(new TextEncoder().encode(decoded).byteLength) }));
+    const env = promptEvent(ctx('s_gzip_length'), { promptId: mintId(), text: 'hi' }).envelope;
+    expect(await client.postEvent(env, { connectTimeoutMs: 50, requestTimeoutMs: 50 })).toEqual({ class: 'retry', detail: 'timeout (request)' });
+  });
+
+  it('keeps a whole answer that landed as the deadline fired', async () => {
+    const whole: FetchLike = async (_input, init) => {
+      const body = JSON.stringify({ persisted: true });
+      await new Promise<void>((resolve) => { init?.signal?.addEventListener('abort', () => { resolve(); }, { once: true }); });
+      return new Response(body, { status: 200, headers: { 'content-type': 'application/json', 'content-length': String(body.length) } });
+    };
+    const client = new ServerClient({ serverUrl: 'https://s', token: 'x'.repeat(43), projectId: 'proj_1' }, whole);
+    const env = promptEvent(ctx('s_whole'), { promptId: mintId(), text: 'hi' }).envelope;
+    expect(await client.postEvent(env, { connectTimeoutMs: 50, requestTimeoutMs: 50 })).toMatchObject({ class: 'acked' });
+  });
+});
