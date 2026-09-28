@@ -57,6 +57,7 @@ const SHIPPED_MIGRATION_DIGESTS: Record<string, string> = {
   '0047_v47.sql': '51a1ec0db9be9733a45c1c2f71a290866f0ff6b722e94ca135bcb234c29ceafb',
   '0048_v48.sql': '97225cac29e20c2174dd76c296575f0e1e844e7f40ff86f938e39bbb5f83a1fd',
   '0049_v49.sql': '860a63d6bd62e906e4cee88dc8cae21b4a283d5db376cbe815faa18dd9bd75f7',
+  '0050_v50.sql': '5d334354e3ae48f22c66d6734b3da79a0a184ae575d857c7eb8c649db5fb0027',
 };
 const sha256 = (bytes: Buffer): string => createHash('sha256').update(bytes).digest('hex');
 
@@ -136,7 +137,7 @@ describe('versioned schema steps', () => {
       sqlite.run(`INSERT INTO agent_reports (project_id, run_id, agent_id, action, summary, created_at)
         VALUES ('proj_1', 'run_old', 'agent_old', 'note', 'Existing history', 1)`);
       const before = sqlite.query('SELECT * FROM agent_reports').all();
-      expect(await applySchemaSteps(sqliteD1(sqlite))).toEqual([37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49]);
+      expect(await applySchemaSteps(sqliteD1(sqlite))).toEqual([37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50]);
       expect(sqlite.query('SELECT * FROM agent_reports').all()).toEqual(before);
       expect(sqlite.query('SELECT * FROM backup_restore_progress').all()).toEqual([]);
       expect(await applySchemaSteps(sqliteD1(sqlite))).toEqual([]);
@@ -150,7 +151,7 @@ describe('versioned schema steps', () => {
       sqlite.run(`INSERT INTO backups (id, key, created_at, size_bytes, counts_json, schema_version, producer, pinned)
         VALUES ('bk_old', 'backups/lineage__1__bk_old.jsonl', 1, 40, '{}', 13, 'mem_1', 1)`);
       const before = sqlite.query<Record<string, unknown>, []>('SELECT * FROM backups').get();
-      expect(await applySchemaSteps(sqliteD1(sqlite))).toEqual([41, 42, 43, 44, 45, 46, 47, 48, 49]);
+      expect(await applySchemaSteps(sqliteD1(sqlite))).toEqual([41, 42, 43, 44, 45, 46, 47, 48, 49, 50]);
       expect(sqlite.query('SELECT * FROM backups').get()).toEqual({ ...before, sha256: null });
       expect(await applySchemaSteps(sqliteD1(sqlite))).toEqual([]);
       const insert = (sha256: string) => sqlite.run(`INSERT INTO backups (id, key, created_at, size_bytes, counts_json, schema_version, producer, pinned, sha256)
@@ -166,7 +167,7 @@ describe('versioned schema steps', () => {
       await applySchemaSteps(sqliteD1(sqlite), SCHEMA_STEPS.filter(({ version }) => version <= 41));
       sqlite.run(`INSERT INTO blobs (project_id, key, size, media_type, token_id, received_at) VALUES ('proj_1', ?, 3, 'text/plain', 't1', 1)`, ['a'.repeat(64)]);
       const before = sqlite.query<Record<string, unknown>, []>('SELECT * FROM blobs').get();
-      expect(await applySchemaSteps(sqliteD1(sqlite))).toEqual([42, 43, 44, 45, 46, 47, 48, 49]);
+      expect(await applySchemaSteps(sqliteD1(sqlite))).toEqual([42, 43, 44, 45, 46, 47, 48, 49, 50]);
       expect(sqlite.query('SELECT * FROM blobs').get()).toEqual({ ...before, generation: null });
       expect(await applySchemaSteps(sqliteD1(sqlite))).toEqual([]);
       const generation = (value: string) => sqlite.run(`INSERT INTO blobs (project_id, key, size, media_type, token_id, received_at, generation)
@@ -209,7 +210,7 @@ describe('versioned schema steps', () => {
       session('no-transcript', null);
       session('already-named', 'cursor'); transcript('already-named', 'tx7', 'codex');
       const before = sqlite.query<Record<string, unknown>, []>('SELECT * FROM sessions ORDER BY session_id').all();
-      expect(await applySchemaSteps(sqliteD1(sqlite))).toEqual([40, 41, 42, 43, 44, 45, 46, 47, 48, 49]);
+      expect(await applySchemaSteps(sqliteD1(sqlite))).toEqual([40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50]);
       const after = sqlite.query<Record<string, unknown>, []>('SELECT * FROM sessions ORDER BY session_id').all();
       const agents = Object.fromEntries(after.map((row) => [row.session_id, row.agent]));
       expect(agents).toEqual({ 'one-agent': 'codex', 'two-transcripts-one-agent': 'claude-code', 'two-agents': null, 'unnamed-transcript': null, 'no-transcript': null, 'already-named': 'cursor' });
@@ -227,7 +228,7 @@ describe('versioned schema steps', () => {
       sqlite.run(`INSERT INTO sessions (project_id, session_id, machine_id, created_by_token_id, first_received_at, last_received_at, ended_at, title, summary, titled_at, titled_by)
         VALUES ('proj_1', 'old', 'm1', 't1', 1, 2, 2, 'Existing title', 'Existing summary', 2, 'mem_1')`);
       const before = sqlite.query<Record<string, unknown>, []>('SELECT * FROM sessions').get();
-      expect(await applySchemaSteps(sqliteD1(sqlite))).toEqual([39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49]);
+      expect(await applySchemaSteps(sqliteD1(sqlite))).toEqual([39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50]);
       expect(sqlite.query('SELECT * FROM sessions').get()).toEqual({ ...before, ended_by: null, occurred_started_at: null, occurred_ended_at: null, titling_attempts: 0 });
       expect(await applySchemaSteps(sqliteD1(sqlite))).toEqual([]);
     } finally { sqlite.close(); }
@@ -240,7 +241,7 @@ describe('versioned schema steps', () => {
       sqlite.run(`INSERT INTO sessions (project_id, session_id, machine_id, created_by_token_id, first_received_at, last_received_at, ended_at, title, summary)
         VALUES ('proj_1', 'old', 'm1', 't1', 1, 2, 2, 'Existing title', 'Existing summary')`);
       const before = sqlite.query<Record<string, unknown>, []>('SELECT * FROM sessions').get();
-      expect(await applySchemaSteps(sqliteD1(sqlite))).toEqual([36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49]);
+      expect(await applySchemaSteps(sqliteD1(sqlite))).toEqual([36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50]);
       expect(sqlite.query('SELECT * FROM sessions').get()).toEqual({ ...before, titling_requested_at: null, ended_by: null, occurred_started_at: null, occurred_ended_at: null, titling_attempts: 0 });
       expect(await applySchemaSteps(sqliteD1(sqlite))).toEqual([]);
     } finally { sqlite.close(); }
@@ -253,7 +254,7 @@ describe('versioned schema steps', () => {
       sqlite.run(`INSERT INTO transcripts (project_id, transcript_id, session_id, machine_id, agent, size, parsed_offset, first_received_at, last_received_at, token_id)
         VALUES ('proj_1', 'tx_1', 's1', 'm1', 'codex', 1000, 500, 1, 2, 't1')`);
       const before = sqlite.query<Record<string, unknown>, []>('SELECT * FROM transcripts').get();
-      expect(await applySchemaSteps(sqliteD1(sqlite))).toEqual([35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49]);
+      expect(await applySchemaSteps(sqliteD1(sqlite))).toEqual([35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50]);
       expect(sqlite.query('SELECT * FROM transcripts').get()).toEqual({ ...before, parser_context: null });
       expect(await applySchemaSteps(sqliteD1(sqlite))).toEqual([]);
     } finally {
@@ -538,7 +539,7 @@ describe('versioned schema steps', () => {
     }
     expect(checked.sort()).toEqual([
       'agent_reports', 'agent_run_events', 'agent_run_write_intents', 'agent_runs', 'agent_state', 'agent_turns',
-      'attachments', 'blob_release_candidates', 'blob_reservations', 'blobs', 'canopy_maps', 'cortex_instructions', 'digest_extract_revisions', 'digest_extracts', 'embedding_cursors', 'embedding_hubness_work', 'embedding_receipts', 'embedding_versions', 'enrollment_authorities', 'external_grants',
+      'attachments', 'blob_release_candidates', 'blob_reservations', 'blobs', 'canopy_maps', 'cortex_instructions', 'digest_extract_revisions', 'digest_extracts', 'embedding_cursors', 'embedding_hubness_members', 'embedding_hubness_work', 'embedding_receipts', 'embedding_versions', 'enrollment_authorities', 'external_grants',
       'knowledge_git_provenance', 'knowledge_release_state', 'plans', 'project_capabilities', 'project_release_provenance', 'project_remotes', 'project_repositories', 'projects',
       'prompt_batches', 'resolution_events', 'responses', 'search_blob_chunks', 'search_blob_queue', 'session_injections', 'session_tombstones', 'skill_candidates', 'skill_lineage', 'skill_records',
       'skill_usage', 'spore_injections', 'spores', 'tags', 'tool_calls', 'transcript_segments', 'transcripts',

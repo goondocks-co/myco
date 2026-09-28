@@ -84,6 +84,16 @@ function fixture(target: Target) {
     }
     throw new Error(`embedding did not settle: ${phases.slice(-5).join(',')}`);
   };
+  /** Steps until a step processes nothing, leaving queued vector mutations queued; returns the phases stepped. */
+  const calibrate = async (now: number): Promise<EmbeddingStep['phase'][]> => {
+    const phases: EmbeddingStep['phase'][] = [];
+    for (let i = 0; i < 200; i++) {
+      const { phase, processed } = await step(now);
+      phases.push(phase);
+      if (processed === 0) return phases;
+    }
+    throw new Error(`calibration did not settle: ${phases.slice(-5).join(',')}`);
+  };
   const receipts = () => f.sqlite.query('SELECT record_id, ready, updated_at FROM embedding_receipts ORDER BY record_id, ready').all() as Array<{ record_id: string; ready: number; updated_at: number }>;
   const receiptIds = () => (f.sqlite.query('SELECT id FROM embedding_receipts ORDER BY id').all() as Array<{ id: string }>).map((r) => r.id);
   const stored = async () => (await native.query(SCOPE, { values: [1, 1], topK: 100 })).map((h) => h.id).sort();
@@ -103,7 +113,7 @@ function fixture(target: Target) {
   const receiptOf = (record: string) => (f.sqlite.query(`SELECT r.id FROM embedding_receipts r JOIN embedding_versions v
     ON v.project_id = r.project_id AND v.type = r.type AND v.record_id = r.record_id AND v.revision = r.revision WHERE r.record_id = ?`).get(record) as { id: string }).id;
   return { ...f, insert, spore, index, native, apply, vectors, deletes, upserts, inEmbed, inUpsert, inDelete, hang, model, inconsistencies, failDeletes: (n: number) => { failDeletes = n; },
-    context, step, settle, receipts, receiptIds, stored, work, held, receiptOf };
+    context, step, settle, calibrate, receipts, receiptIds, stored, work, held, receiptOf };
 }
 
 /** Three indexed spores, then one edited so its previous revision's vector is an orphan. */
@@ -339,6 +349,7 @@ describe.each(['sqlite-vec', 'vectorize'] as const)('%s: vector calls are bounde
     await expect(f.step(T)).rejects.toThrow('vector delete did not settle within 20 ms');
     expect(f.receipts().filter((r) => r.ready < 0)).toEqual([{ record_id: 'one', ready: RECEIPT.deletionFailed, updated_at: T }]);
     f.hang.delete = false;
+    expect(await f.calibrate(T)).toEqual(['hubness', 'hubness', 'settled']);
     expect(await f.work(T + R - 1)).toBe(false);
     expect(await f.step(T + R)).toEqual({ phase: 'orphans', processed: 1 });
     expect(f.receipts().every((r) => r.ready === RECEIPT.ready)).toBe(true);
@@ -354,6 +365,7 @@ describe('vectorize: mutations applied after the call returns', () => {
     expect(await f.step(T)).toEqual({ phase: 'orphans', processed: 1 });
     expect(await f.held(f.old)).toBe(true);
     f.apply();
+    expect(await f.calibrate(T)).toEqual(['hubness', 'hubness', 'settled']);
     expect(await f.work(T + C - 1)).toBe(false);
     expect(await f.step(T + C)).toEqual({ phase: 'orphans', processed: 1 });
     expect(f.receipts().every((r) => r.ready === RECEIPT.ready)).toBe(true);
@@ -368,6 +380,7 @@ describe('vectorize: mutations applied after the call returns', () => {
     expect(await f.step(T + C)).toEqual({ phase: 'orphans', processed: 1 });
     expect(f.index!.deleted).toEqual([[f.old], [f.old]]);
     expect(f.receipts().filter((r) => r.ready < 0)).toEqual([{ record_id: 'one', ready: RECEIPT.deletionFailed, updated_at: T + C }]);
+    expect(await f.calibrate(T + C)).toEqual(['hubness', 'hubness', 'settled']);
     expect(await f.work(T + C + R - 1)).toBe(false);
     f.apply();
     expect(await f.work(T + C + R)).toBe(true);

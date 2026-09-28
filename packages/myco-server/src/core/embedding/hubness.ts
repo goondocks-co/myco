@@ -1,60 +1,245 @@
-import { cosineSimilarity } from './vectors.js';
+import type { PreparedStatement, RelationalStore } from '../adapters.js';
 import type { EmbeddingContext, EmbeddingStep } from './reconcile.js';
 
+/** Settled members one step reads. */
 const HUBNESS_PAGE = 50;
+/** The most spore vectors one operation adds or removes, which bounds one step to about a thousand distances. */
+const HUBNESS_SUBJECTS = 20;
 export const CURRENT_SPORE_VECTORS = `SELECT r.id FROM embedding_receipts r JOIN embedding_sources s
   ON s.project_id = r.project_id AND s.type = r.type AND s.record_id = r.record_id AND s.revision = r.revision
   WHERE r.project_id = ? AND r.model_key = ? AND r.type = 'spore' AND r.ready = 1`;
 
-/** One target's population-distance moments advance by one bounded page per step. */
+/** A member row's state: covered by every other member's moments, joining the set, or leaving it. */
+const MEMBER = { settled: 0, joining: 1, leaving: 2 } as const;
+
+/** Member row `m` names a current spore vector under its model. */
+const currentMember = (m: string) => `EXISTS (SELECT 1 FROM embedding_receipts r JOIN embedding_sources s
+  ON s.project_id = r.project_id AND s.type = r.type AND s.record_id = r.record_id AND s.revision = r.revision
+  WHERE r.project_id = ${m}.project_id AND r.model_key = ${m}.model_key AND r.id = ${m}.id AND r.type = 'spore' AND r.ready = 1)`;
+
+/** Current spore vectors no member row names. Binds: project id, model key. */
+const UNCOVERED = `${CURRENT_SPORE_VECTORS} AND NOT EXISTS (SELECT 1 FROM embedding_hubness_members m
+  WHERE m.project_id = r.project_id AND m.model_key = r.model_key AND m.id = r.id)`;
+
+/** Settled members whose moments do not count exactly the other members. Binds: project id, model key. */
+const MISCOUNTED = `SELECT COALESCE(MIN(n) <> COUNT(*) - 1 OR MAX(n) <> COUNT(*) - 1, 0) AS miscounted
+  FROM embedding_hubness_members WHERE project_id = ? AND model_key = ?`;
+
+/** Every calibration write holds only while the cursor still carries the token its step read. Binds: project id, token. */
+const HOLDS = `EXISTS (SELECT 1 FROM embedding_cursors c WHERE c.project_id = ? AND c.hubness_token IS ?)`;
+
+/** Rows carried as one JSON array of `[id, n, mean, m2, neighbor_mean, neighbor_std]`. */
+const CARRIED = `v AS (SELECT json_extract(j.value, '$[0]') AS id, json_extract(j.value, '$[1]') AS n, json_extract(j.value, '$[2]') AS mean,
+  json_extract(j.value, '$[3]') AS m2, json_extract(j.value, '$[4]') AS neighbor_mean, json_extract(j.value, '$[5]') AS neighbor_std FROM json_each(?) j)`;
+
+interface Moments { n: number; mean: number; m2: number }
+interface Member extends Moments { id: string; state: number; vector: string }
+interface Loaded extends Member { values: Float32Array }
+
+/** Welford's update with one more sample. */
+function include(m: Moments, x: number): Moments {
+  const n = m.n + 1;
+  const delta = x - m.mean;
+  const mean = m.mean + delta / n;
+  return { n, mean, m2: m.m2 + delta * (x - mean) };
+}
+
+/** Welford's update with one sample taken back out: the exact inverse of `include`, up to rounding. */
+function exclude(m: Moments, x: number): Moments {
+  if (m.n <= 1) return { n: 0, mean: 0, m2: 0 };
+  const n = m.n - 1;
+  const mean = (m.n * m.mean - x) / n;
+  return { n, mean, m2: m.m2 - (x - m.mean) * (x - mean) };
+}
+
+/** The mean and population standard deviation a search reads; absent without a sample. */
+const neighborStats = (m: Moments): [number | null, number | null] =>
+  m.n === 0 ? [null, null] : [m.mean, Math.sqrt(Math.max(0, m.m2 / m.n))];
+
+/**
+ * `1 - cosineSimilarity` over copies whose zero tail is dropped: the dimensions past a copy's length are zero, so the
+ * sums, and the distance, are those of the full stored vectors.
+ */
+function distance(a: Float32Array, b: Float32Array): number {
+  const shared = Math.min(a.length, b.length);
+  let dot = 0, aa = 0, bb = 0;
+  for (let i = 0; i < shared; i++) {
+    const x = a[i]!, y = b[i]!;
+    dot += x * y; aa += x ** 2; bb += y ** 2;
+  }
+  for (let i = shared; i < a.length; i++) aa += a[i]! ** 2;
+  for (let i = shared; i < b.length; i++) bb += b[i]! ** 2;
+  return 1 - (aa === 0 || bb === 0 ? 0 : Math.max(-1, Math.min(1, dot / Math.sqrt(aa * bb))));
+}
+
+/** A stored vector as float32 bytes in base64, without its zero tail. */
+function encodeVector(values: ArrayLike<number>): string {
+  let length = values.length;
+  while (length > 0 && values[length - 1] === 0) length--;
+  const floats = new Float32Array(length);
+  for (let i = 0; i < length; i++) floats[i] = values[i]!;
+  const bytes = new Uint8Array(floats.buffer);
+  let binary = '';
+  for (let i = 0; i < bytes.length; i += 0x2000) binary += String.fromCharCode(...bytes.subarray(i, i + 0x2000));
+  return btoa(binary);
+}
+
+function decodeVector(encoded: string): Float32Array {
+  const binary = atob(encoded);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+  return new Float32Array(bytes.buffer);
+}
+
+/**
+ * Calibration work is pending: a member of another model, an operation in progress, a member whose vector is no longer
+ * current, a current vector no member covers, or settled moments that do not count the other members.
+ */
+export async function hubnessPending(db: RelationalStore, projectId: string, model: string): Promise<boolean> {
+  const row = await db.prepare(`SELECT EXISTS (SELECT 1 FROM embedding_hubness_members m WHERE m.project_id = ?
+      AND (m.model_key <> ? OR m.state <> ${MEMBER.settled} OR NOT ${currentMember('m')}))
+    OR EXISTS (${UNCOVERED}) OR (${MISCOUNTED}) AS pending`)
+    .bind(projectId, model, projectId, model, projectId, model).first<{ pending: number }>();
+  return row?.pending === 1;
+}
+
+/**
+ * Each current spore vector's moments cover its cosine distance to every other current spore vector. The membership
+ * record changes by operations of at most `HUBNESS_SUBJECTS` spore vectors, all joining or all leaving: an operation adds or
+ * removes its subjects' distances on every settled member one page per step, reading vectors from the members' copies,
+ * and a joining subject collects its own moments on the way. Leaving starts before joining: a joiner waits until the
+ * vector store returns its vector, and a spore that is gone leaves the calibration meanwhile. A receipt's
+ * neighbour statistics change only when its moments cover every other current spore vector; until then it keeps the
+ * statistics it has. Each step's writes commit only against the token it read.
+ */
 export async function reconcileHubness(context: EmbeddingContext, projectId: string): Promise<EmbeddingStep> {
   const { db, vectors, provider } = context;
-  const scope = { projectId, modelKey: provider.modelKey };
-  const count = (await db.prepare(`SELECT COUNT(*) AS n FROM (${CURRENT_SPORE_VECTORS})`).bind(projectId, provider.modelKey).first<{ n: number }>())!.n;
-  const cursor = await db.prepare('SELECT * FROM embedding_cursors WHERE project_id = ?').bind(projectId)
-    .first<{ hubness_model: string | null; hubness_count: number | null; hubness_target_count: number | null; hubness_cursor: string | null }>();
-  if (count < 2 || cursor?.hubness_model === provider.modelKey && cursor.hubness_count === count) return { phase: 'settled', processed: 0 };
-  const reset = cursor?.hubness_model !== provider.modelKey || cursor.hubness_target_count !== count;
-  if (reset) await db.batch([
-    db.prepare(`INSERT INTO embedding_cursors(project_id, hubness_model, hubness_target_count) VALUES (?, ?, ?)
-      ON CONFLICT(project_id) DO UPDATE SET hubness_model = excluded.hubness_model, hubness_target_count = excluded.hubness_target_count,
-      hubness_count = NULL, hubness_cursor = NULL`).bind(projectId, provider.modelKey, count),
-    db.prepare('DELETE FROM embedding_hubness_work WHERE project_id = ?').bind(projectId),
-  ]);
-  const target = await db.prepare(`${CURRENT_SPORE_VECTORS} AND r.id > ? ORDER BY r.id LIMIT 1`)
-    .bind(projectId, provider.modelKey, reset ? '' : cursor?.hubness_cursor ?? '').first<{ id: string }>();
-  if (target === null) {
-    await db.prepare('UPDATE embedding_cursors SET hubness_count = ?, hubness_cursor = NULL WHERE project_id = ?').bind(count, projectId).run();
-    return { phase: 'settled', processed: 0 };
+  const model = provider.modelKey;
+  const count = (await db.prepare(`SELECT COUNT(*) AS n FROM (${CURRENT_SPORE_VECTORS})`).bind(projectId, model).first<{ n: number }>())!.n;
+  if (count < 2) return { phase: 'settled', processed: 0 };
+  let token = await cursorToken(db, projectId);
+  const commit = async (statements: PreparedStatement[], set = '', binds: unknown[] = []): Promise<boolean> => {
+    const results = await db.batch([...statements,
+      db.prepare(`UPDATE embedding_cursors SET hubness_token = lower(hex(randomblob(8)))${set} WHERE project_id = ? AND hubness_token IS ?`)
+        .bind(...binds, projectId, token)]);
+    return results[results.length - 1]!.meta.changes === 1;
+  };
+  const stale = await db.prepare('SELECT 1 AS found FROM embedding_hubness_members WHERE project_id = ? AND model_key <> ? LIMIT 1').bind(projectId, model).first();
+  if (stale !== null) {
+    const done = await commit([db.prepare(`DELETE FROM embedding_hubness_members WHERE project_id = ? AND model_key <> ? AND ${HOLDS}`)
+      .bind(projectId, model, projectId, token)], ', hubness_cursor = NULL');
+    return { phase: 'hubness', processed: done ? 1 : 0 };
   }
-  const [held] = await vectors.get(scope, [target.id]);
-  if (held === undefined) return { phase: 'visibility', processed: 0 };
-  const work = await db.prepare('SELECT * FROM embedding_hubness_work WHERE project_id = ? AND target = ?').bind(projectId, target.id)
-    .first<{ after_id: string; count: number; mean: number; m2: number }>();
-  const page = (await db.prepare(`${CURRENT_SPORE_VECTORS} AND r.id > ? ORDER BY r.id LIMIT ?`)
-    .bind(projectId, provider.modelKey, work?.after_id ?? '', HUBNESS_PAGE).all<{ id: string }>()).results;
-  const neighbors = await vectors.get(scope, page.map((r) => r.id));
-  if (neighbors.length !== page.length) return { phase: 'visibility', processed: 0 };
-  let n = work?.count ?? 0, mean = work?.mean ?? 0, m2 = work?.m2 ?? 0;
-  for (const v of neighbors) {
-    if (v.id === target.id) continue;
-    const distance = 1 - cosineSimilarity(held.values, v.values);
-    n++;
-    const delta = distance - mean;
-    mean += delta / n;
-    m2 += delta * (distance - mean);
+
+  let subjects = await members(db, projectId, model, `state <> ${MEMBER.settled}`, [], HUBNESS_SUBJECTS);
+  let started = false;
+  if (subjects.length === 0) {
+    const leaving = (await db.prepare(`SELECT m.id FROM embedding_hubness_members m WHERE m.project_id = ? AND m.model_key = ?
+      AND m.state = ${MEMBER.settled} AND NOT ${currentMember('m')} ORDER BY m.id LIMIT ?`).bind(projectId, model, HUBNESS_SUBJECTS).all<{ id: string }>()).results;
+    if (leaving.length > 0) {
+      started = await commit([db.prepare(`UPDATE embedding_hubness_members SET state = ${MEMBER.leaving} WHERE project_id = ? AND model_key = ?
+        AND state = ${MEMBER.settled} AND id IN (SELECT value FROM json_each(?)) AND ${HOLDS}`)
+        .bind(projectId, model, JSON.stringify(leaving.map((r) => r.id)), projectId, token)], ', hubness_cursor = NULL');
+    } else {
+      const joining = (await db.prepare(`${UNCOVERED} ORDER BY r.id LIMIT ?`).bind(projectId, model, HUBNESS_SUBJECTS).all<{ id: string }>()).results;
+      if (joining.length === 0) {
+        const { miscounted } = (await db.prepare(MISCOUNTED).bind(projectId, model).first<{ miscounted: number }>())!;
+        if (miscounted !== 1) return { phase: 'settled', processed: 0 };
+        const done = await commit([db.prepare(`DELETE FROM embedding_hubness_members WHERE project_id = ? AND model_key = ? AND ${HOLDS}`)
+          .bind(projectId, model, projectId, token)], ', hubness_cursor = NULL, hubness_count = NULL');
+        return { phase: 'hubness', processed: done ? 1 : 0 };
+      }
+      const visible = await vectors.get({ projectId, modelKey: model }, joining.map((r) => r.id));
+      if (visible.length === 0) return { phase: 'visibility', processed: 0 };
+      started = await commit(visible.map((v) => db.prepare(`INSERT INTO embedding_hubness_members(project_id, model_key, id, state, vector)
+        SELECT ?, ?, ?, ${MEMBER.joining}, ? WHERE ${HOLDS}`).bind(projectId, model, v.id, encodeVector(v.values), projectId, token)), ', hubness_cursor = NULL');
+    }
+    if (!started) return { phase: 'hubness', processed: 0 };
+    token = await cursorToken(db, projectId);
+    subjects = await members(db, projectId, model, `state <> ${MEMBER.settled}`, [], HUBNESS_SUBJECTS);
+    if (subjects.length === 0) return { phase: 'hubness', processed: 1 };
   }
-  if (page.length === HUBNESS_PAGE) {
-    await db.prepare(`INSERT INTO embedding_hubness_work(project_id, target, after_id, count, mean, m2) VALUES (?, ?, ?, ?, ?, ?)
-      ON CONFLICT(project_id) DO UPDATE SET target = excluded.target, after_id = excluded.after_id, count = excluded.count, mean = excluded.mean, m2 = excluded.m2`)
-      .bind(projectId, target.id, page[page.length - 1].id, n, mean, m2).run();
+
+  const joins = subjects[0]!.state === MEMBER.joining;
+  const after = (await db.prepare('SELECT hubness_cursor FROM embedding_cursors WHERE project_id = ?').bind(projectId).first<{ hubness_cursor: string | null }>())?.hubness_cursor ?? '';
+  const page = await members(db, projectId, model, `state = ${MEMBER.settled} AND id > ?`, [after], HUBNESS_PAGE + 1);
+  const last = page.length <= HUBNESS_PAGE;
+  const targets = page.slice(0, HUBNESS_PAGE);
+  for (const target of targets) {
+    for (const subject of subjects) {
+      const d = distance(subject.values, target.values);
+      Object.assign(target, joins ? include(target, d) : exclude(target, d));
+      if (joins) Object.assign(subject, include(subject, d));
+    }
+  }
+  if (last && joins) {
+    for (let i = 0; i < subjects.length; i++) {
+      for (let j = i + 1; j < subjects.length; j++) {
+        const d = distance(subjects[i]!.values, subjects[j]!.values);
+        Object.assign(subjects[i]!, include(subjects[i]!, d));
+        Object.assign(subjects[j]!, include(subjects[j]!, d));
+      }
+    }
+  }
+  const carried = joins ? [...targets, ...subjects] : targets;
+  const statements = [carry(db, projectId, model, token, carried)];
+  let done: boolean;
+  if (last) {
+    statements.push(joins
+      ? db.prepare(`UPDATE embedding_hubness_members SET state = ${MEMBER.settled} WHERE project_id = ? AND model_key = ? AND state = ${MEMBER.joining} AND ${HOLDS}`)
+        .bind(projectId, model, projectId, token)
+      : db.prepare(`DELETE FROM embedding_hubness_members WHERE project_id = ? AND model_key = ? AND state = ${MEMBER.leaving} AND ${HOLDS}`)
+        .bind(projectId, model, projectId, token));
+    statements.push(...await publish(db, projectId, model, token, carried, count));
+    done = await commit(statements, `, hubness_cursor = NULL, hubness_model = ?,
+      hubness_count = (SELECT COUNT(*) FROM embedding_hubness_members WHERE project_id = ? AND model_key = ?)`, [model, projectId, model]);
   } else {
-    await db.batch([
-      db.prepare('UPDATE embedding_receipts SET neighbor_mean = ?, neighbor_std = ? WHERE project_id = ? AND model_key = ? AND id = ?')
-        .bind(n === 0 ? null : mean, n === 0 ? null : Math.sqrt(Math.max(0, m2 / n)), projectId, provider.modelKey, target.id),
-      db.prepare('UPDATE embedding_cursors SET hubness_cursor = ? WHERE project_id = ?').bind(target.id, projectId),
-      db.prepare('DELETE FROM embedding_hubness_work WHERE project_id = ?').bind(projectId),
-    ]);
+    statements.push(...await publish(db, projectId, model, token, carried, count));
+    done = await commit(statements, ', hubness_cursor = ?', [targets[targets.length - 1]!.id]);
   }
-  return { phase: 'hubness', processed: 1 };
+  return { phase: 'hubness', processed: done || started ? 1 : 0 };
+}
+
+/** The calibration's commit token, minted when the cursor has none. */
+async function cursorToken(db: RelationalStore, projectId: string): Promise<string> {
+  const read = async () => (await db.prepare('SELECT hubness_token FROM embedding_cursors WHERE project_id = ?').bind(projectId)
+    .first<{ hubness_token: string | null }>())?.hubness_token ?? null;
+  const held = await read();
+  if (held !== null) return held;
+  await db.batch([
+    db.prepare('INSERT INTO embedding_cursors(project_id) VALUES (?) ON CONFLICT(project_id) DO NOTHING').bind(projectId),
+    db.prepare('UPDATE embedding_cursors SET hubness_token = lower(hex(randomblob(8))) WHERE project_id = ? AND hubness_token IS NULL').bind(projectId),
+  ]);
+  return (await read())!;
+}
+
+async function members(db: RelationalStore, projectId: string, model: string, where: string, binds: unknown[], limit: number): Promise<Loaded[]> {
+  const rows = (await db.prepare(`SELECT id, state, n, mean, m2, vector FROM embedding_hubness_members WHERE project_id = ? AND model_key = ? AND ${where}
+    ORDER BY id LIMIT ?`).bind(projectId, model, ...binds, limit).all<Member>()).results;
+  return rows.map((r) => ({ ...r, values: decodeVector(r.vector) }));
+}
+
+/** Writes members' moments. */
+function carry(db: RelationalStore, projectId: string, model: string, token: string, rows: Loaded[]): PreparedStatement {
+  const json = JSON.stringify(rows.map((r) => [r.id, r.n, r.mean, r.m2]));
+  return db.prepare(`WITH ${CARRIED} UPDATE embedding_hubness_members SET n = (SELECT v.n FROM v WHERE v.id = embedding_hubness_members.id),
+    mean = (SELECT v.mean FROM v WHERE v.id = embedding_hubness_members.id), m2 = (SELECT v.m2 FROM v WHERE v.id = embedding_hubness_members.id)
+    WHERE project_id = ? AND model_key = ? AND id IN (SELECT id FROM v) AND ${HOLDS}`).bind(json, projectId, model, projectId, token);
+}
+
+/**
+ * Publishes the neighbour statistics of the rows whose moments cover every other current spore vector: the members once
+ * this operation's leavers are gone are exactly the current spore vectors, and the row counts all of them but itself.
+ */
+async function publish(db: RelationalStore, projectId: string, model: string, token: string, rows: Loaded[], count: number): Promise<PreparedStatement[]> {
+  const full = rows.filter((r) => r.n === count - 1);
+  if (full.length === 0) return [];
+  const { complete } = (await db.prepare(`SELECT NOT EXISTS (SELECT 1 FROM embedding_hubness_members m WHERE m.project_id = ? AND m.model_key = ?
+      AND m.state <> ${MEMBER.leaving} AND NOT ${currentMember('m')}) AND NOT EXISTS (${UNCOVERED}) AS complete`)
+    .bind(projectId, model, projectId, model).first<{ complete: number }>())!;
+  if (complete !== 1) return [];
+  const json = JSON.stringify(full.map((r) => [r.id, r.n, r.mean, r.m2, ...neighborStats(r)]));
+  return [db.prepare(`WITH ${CARRIED} UPDATE embedding_receipts SET neighbor_mean = (SELECT v.neighbor_mean FROM v WHERE v.id = embedding_receipts.id),
+    neighbor_std = (SELECT v.neighbor_std FROM v WHERE v.id = embedding_receipts.id)
+    WHERE project_id = ? AND model_key = ? AND id IN (SELECT id FROM v) AND ${HOLDS}`).bind(json, projectId, model, projectId, token)];
 }
