@@ -1,9 +1,19 @@
 import type { VectorIndex } from '../../../packages/myco-server/src/platform/cloudflare/vectors.js';
 import { cosineSimilarity } from '../../../packages/myco-server/src/core/embedding/vectors.js';
 
-export function indexFixture(): VectorIndex {
+/**
+ * With `deferDeletes`, `deleteByIds` accepts the mutation and the vectors stay readable until `applyDeletes()`,
+ * as Vectorize applies its mutation log after acknowledging the call.
+ */
+export function indexFixture(): VectorIndex;
+export function indexFixture(options: { deferDeletes: true }): VectorIndex & { applyDeletes(): void; deleted: string[][] };
+export function indexFixture({ deferDeletes = false } = {}): VectorIndex & { applyDeletes(): void; deleted: string[][] } {
   const rows = new Map<string, Parameters<VectorIndex['upsert']>[0][number]>();
+  const pending: string[] = [];
+  const deleted: string[][] = [];
   return {
+    deleted,
+    applyDeletes: () => { for (const id of pending.splice(0)) rows.delete(id); },
     upsert: async (vectors) => { for (const v of vectors) rows.set(v.id, v); },
     query: async (values, options) => ({ matches: [...rows.values()]
       .filter((v) => v.namespace === options.namespace && Object.entries(options.filter ?? {}).every(([key, raw]) => {
@@ -18,6 +28,10 @@ export function indexFixture(): VectorIndex {
       if (ids.length > 20) throw new Error('too many ids in payload; max id count is 20');
       return ids.flatMap((id) => rows.has(id) ? [rows.get(id)!] : []);
     },
-    deleteByIds: async (ids) => { for (const id of ids) rows.delete(id); },
+    deleteByIds: async (ids) => {
+      deleted.push([...ids]);
+      if (deferDeletes) pending.push(...ids);
+      else for (const id of ids) rows.delete(id);
+    },
   };
 }

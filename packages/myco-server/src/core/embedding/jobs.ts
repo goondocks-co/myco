@@ -5,18 +5,17 @@ import { leafValues } from '../settings.js';
 import { listProjects } from '../../read/sessions.js';
 import { CURRENT_SPORE_VECTORS } from './hubness.js';
 import { resolveSemanticSearch } from '../search.js';
-import { VECTOR_DELETE_RETRY_MS } from './provider.js';
+import { DELETION_DUE, deletionDueBinds } from './reconcile.js';
 
 const EMBEDDING_RETRY_MS = 60_000;
 export const EMBEDDING_TASK = 'embedding-reconcile';
 
-/** The backlog includes unfinished sources, durable deletion receipts and an incomplete hubness pass. */
+/** The backlog includes unfinished sources, deletions that are due and an incomplete hubness pass. */
 export async function hasEmbeddingWork(db: RelationalStore, projectId: string, model: string, now: number): Promise<boolean> {
   const row = await db.prepare(`SELECT EXISTS(SELECT 1 FROM embedding_sources s WHERE s.project_id = ? AND NOT EXISTS
     (SELECT 1 FROM embedding_receipts r WHERE r.project_id = s.project_id AND r.type = s.type AND r.record_id = s.record_id AND r.revision = s.revision AND r.model_key = ? AND r.ready = 1))
-    OR EXISTS(SELECT 1 FROM embedding_receipts r WHERE r.project_id = ? AND (r.ready <> -1 OR r.updated_at <= ?) AND (r.model_key <> ? OR NOT EXISTS
-    (SELECT 1 FROM embedding_sources s WHERE s.project_id = r.project_id AND s.type = r.type AND s.record_id = r.record_id AND s.revision = r.revision))) AS pending`)
-    .bind(projectId, model, projectId, now - VECTOR_DELETE_RETRY_MS, model).first<{ pending: number }>();
+    OR EXISTS(SELECT 1 FROM embedding_receipts r WHERE r.project_id = ? AND ${DELETION_DUE}) AS pending`)
+    .bind(projectId, model, projectId, ...deletionDueBinds(model, now)).first<{ pending: number }>();
   if (row?.pending === 1) return true;
   const count = (await db.prepare(`SELECT COUNT(*) AS n FROM (${CURRENT_SPORE_VECTORS})`).bind(projectId, model).first<{ n: number }>())!.n;
   if (count < 2) return false;
