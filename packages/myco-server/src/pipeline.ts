@@ -81,6 +81,8 @@ const expiryAdmissionOf = (route: Route | undefined): ExpiryAdmission =>
   route?.auth === 'member' && credentialScoped(route) && route.admitsLapsed === true ? 'lapsed' : 'live';
 /** Whether the matched route asks for the presented credential's successor: the one route on which a superseded credential ends its lineage. */
 const asksToRotate = (route: Route | undefined): boolean => route?.auth === 'member' && credentialScoped(route) && route.shape === 'refreshed';
+/** Whether the matched route answers with an authority that can outlive the presented credential, as the route table declares it. */
+const mintsAuthority = (route: MemberRoute): boolean => 'mintsAuthority' in route && route.mintsAuthority === true;
 /** The refusal shape of a member route, as the route table declares it. */
 const shapeOf = (route: MemberRoute): Shape => route.shape;
 /** A grant authenticated to its Project. */
@@ -148,6 +150,10 @@ export const NO_PROJECT = 'project header required';
 export const NOT_ADMIN = 'this route serves an administrator of the Deployment';
 /** What a run's credential is told on a member route that is not its run's surface. */
 export const RUN_SCOPE = 'a run credential reaches only its run\'s surface';
+/** What a credential its issuer minted not to rotate is told on the refresh route. */
+export const NON_ROTATING = 'this credential does not rotate; mint another when it expires';
+/** What a credential its issuer minted not to rotate is told on any other route that mints an authority able to outlive it. */
+export const NON_ROTATING_AUTHORITY = 'a credential that does not rotate mints no authority that outlives it';
 /** What a run's credential is told when no live run names it. */
 export const NO_LIVE_RUN = 'credential holds no live run';
 /** What a run's credential is told when the Project header names a Project other than the run's. */
@@ -454,6 +460,15 @@ export function createServer(deps: ServerDeps) {
       if (servesRun(route)) return asRun(request, env, auth, route, now);
       if (route.legacyRunRoute !== true) return refuse(auth, shapeOf(route), RUN_SCOPE, 'run_scope');
     }
+    // A credential its issuer minted not to rotate is one an orchestrator hands to every
+    // sandbox it starts through the environment. It is refused every route that mints an
+    // authority able to outlive it, before its body is read or its role is, whether live or
+    // lapsed: the refresh, so no holder of a copy can mint a successor and fork its lineage;
+    // the GitHub link, whose dashboard session reaches invitations and new runtimes; and the
+    // worker's claim and repository, which answer a run credential, the provider key its
+    // harness reads, and a repository credential. It lives out its TTL or a Stop, and is
+    // renewed by minting another.
+    if (mintsAuthority(route) && !auth.rotates) return refuse(auth, shapeOf(route), asksToRotate(route) ? NON_ROTATING : NON_ROTATING_AUTHORITY, 'non_rotating');
     if (auth.machineId === null) return refuse(auth, shapeOf(route), NO_MACHINE_IDENTITY, 'no_machine_identity');
 
     // #1151 — worker mode. A Deployment-scoped route names no Project, so it is

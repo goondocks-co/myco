@@ -53,6 +53,10 @@ export interface DeploymentMembership {
   refreshTerminalReason?: RefreshTerminalReason;
   /** When each build last asked about a terminal refusal another build recorded, by build identity. */
   refreshRetries?: Record<string, number>;
+  /** Set once the Deployment answered that this token does not rotate: its issuer minted it for an environment. Nothing dials the refresh route again for it, and nothing about it is terminal; it delivers until it expires, and a new credential replaces it. */
+  nonRotating?: boolean;
+  /** The instant the Deployment refused this non-rotating token's refresh with a 401, confirming it no longer authenticates; null once a send on it is acknowledged again. */
+  refusedAt?: number | null;
   machineId: string;
   joinedAt: number;
   updatedAt: number;
@@ -90,6 +94,10 @@ export interface RegistryEntry {
   refreshTerminalReason?: RefreshTerminalReason;
   /** When each build last asked about a terminal refusal another build recorded, by build identity. */
   refreshRetries?: Record<string, number>;
+  /** Set once the Deployment answered that this token does not rotate: its issuer minted it for an environment. Nothing dials the refresh route again for it, and nothing about it is terminal; it delivers until it expires, and a new credential replaces it. */
+  nonRotating?: boolean;
+  /** The instant the Deployment refused this non-rotating token's refresh with a 401, confirming it no longer authenticates; null once a send on it is acknowledged again. */
+  refusedAt?: number | null;
   /** The worktree-aware project root this entry is keyed on. */
   root: string;
   machineId: string;
@@ -191,7 +199,7 @@ function isMembership(value: unknown): value is DeploymentMembership {
 }
 
 /** The fields that describe one token rather than the membership: they are true of the token they were recorded for and of no other. */
-export const TOKEN_SCOPED_FIELDS = ['tokenId', 'expiresAt', 'refreshAfter', 'refreshTerminal', 'refreshTerminalBy', 'refreshTerminalReason', 'refreshRetries'] as const;
+export const TOKEN_SCOPED_FIELDS = ['tokenId', 'expiresAt', 'refreshAfter', 'refreshTerminal', 'refreshTerminalBy', 'refreshTerminalReason', 'refreshRetries', 'nonRotating', 'refusedAt'] as const;
 
 /**
  * The membership `fresh` leaves on disk over `held`: the held one with every
@@ -249,6 +257,8 @@ function compose(binding: ProjectBinding, mycoHome: string): RegistryEntry | nul
     refreshTerminalBy: membership.refreshTerminalBy,
     refreshTerminalReason: membership.refreshTerminalReason,
     refreshRetries: membership.refreshRetries,
+    nonRotating: membership.nonRotating,
+    refusedAt: membership.refusedAt,
     root: binding.root,
     machineId: membership.machineId,
     joinedAt: binding.joinedAt,
@@ -272,6 +282,8 @@ function decompose(entry: RegistryEntry): { membership: DeploymentMembership; bi
       refreshTerminalBy: entry.refreshTerminalBy,
       refreshTerminalReason: entry.refreshTerminalReason,
       refreshRetries: entry.refreshRetries,
+      nonRotating: entry.nonRotating,
+      refusedAt: entry.refusedAt,
       machineId: entry.machineId,
       joinedAt: entry.joinedAt,
       updatedAt: entry.updatedAt,

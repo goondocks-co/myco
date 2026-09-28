@@ -25,6 +25,8 @@ export interface CredentialRecord {
   refreshTerminalBy?: string;
   refreshTerminalReason?: RefreshTerminalReason;
   refreshRetries?: Record<string, number>;
+  nonRotating?: boolean;
+  refusedAt?: number | null;
   source: CredentialSource;
   /** The project root the registry entry is keyed on; absent for env-sourced records. */
   root?: string;
@@ -130,7 +132,7 @@ export function registryCredential(entry: RegistryEntry, root: string): Credenti
   return {
     serverUrl: entry.serverUrl, token: entry.token, tokenId: entry.tokenId, projectId: entry.projectId,
     expiresAt: entry.expiresAt, refreshAfter: entry.refreshAfter, refreshTerminal: entry.refreshTerminal, refreshTerminalBy: entry.refreshTerminalBy,
-    refreshTerminalReason: entry.refreshTerminalReason, refreshRetries: entry.refreshRetries, source: 'registry', root,
+    refreshTerminalReason: entry.refreshTerminalReason, refreshRetries: entry.refreshRetries, nonRotating: entry.nonRotating, refusedAt: entry.refusedAt, source: 'registry', root,
   };
 }
 

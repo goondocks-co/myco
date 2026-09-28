@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'bun:test';
 import worker from '@myco-server-worker/index.js';
-import { issueMemberToken, MEMBER_LINEAGE_IDLE_MS, MEMBER_TOKEN_REFRESH_WINDOW_MS, MEMBER_TOKEN_TTL_MS } from '@myco-server-worker/auth/tokens.js';
+import { issueMemberToken, MEMBER_LINEAGE_IDLE_MS, MEMBER_TOKEN_REFRESH_WINDOW_MS, MEMBER_TOKEN_TTL_MS, NO_RUNTIME_CLAIMS } from '@myco-server-worker/auth/tokens.js';
 import { MAX_BLOB_BYTES, MAX_CLOCK_SKEW_MS, PROJECT_HEADER } from '@myco-server-worker/constants.js';
 import { MAX_BODY_BYTES } from '@myco-server-worker/ingest/body.js';
 import { sha256HexOf, utf8 } from '@myco-server-worker/hash.js';
@@ -158,6 +158,11 @@ const DRIVERS: Record<Classifier, (r: Rig) => Promise<Response>> = {
     const issuedAt = r.now - MEMBER_LINEAGE_IDLE_MS;
     r.e.sqlite.query(`UPDATE member_credentials SET issued_at = ?, expires_at = ? WHERE id = ?`).run(issuedAt, issuedAt + MEMBER_TOKEN_TTL_MS, r.windowed.tokenId);
     return r.fetch(memberPost(r.windowed.token, '{}', '/tokens/refresh'));
+  },
+  // A credential its issuer minted for an environment, asking to rotate.
+  non_rotating: async (r) => {
+    const fixed = await issueMemberToken(r.e.db, { memberId: 'mem_machine_1', machineId: 'machine_1' }, r.now, null, NO_RUNTIME_CLAIMS, { rotates: false });
+    return r.fetch(memberPost(fixed.token, '{}', '/tokens/refresh'));
   },
 };
 

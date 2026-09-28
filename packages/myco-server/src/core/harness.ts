@@ -23,7 +23,7 @@ import { repositoryIdentity } from './repositories.js';
 import { DEPLOYMENT_WIDE_HOLDS, heldBy, readDispatchLimits, type DispatchLimits, type HeldBy } from './limits.js';
 import type { ServerEnv } from './adapters.js';
 import { ensureMember } from '../auth/enrollment.js';
-import { issueMemberToken, revokeCredentialOfMember } from '../auth/tokens.js';
+import { issueMemberToken, NO_RUNTIME_CLAIMS, revokeCredentialOfMember } from '../auth/tokens.js';
 import { projectExists } from '../read/sessions.js';
 import { HARNESS_MEMBER_ID, WORKER_LEASE_MS, MAX_RUN_ERROR_CHARS } from '../constants.js';
 export { HARNESS_MEMBER_ID };
@@ -576,7 +576,7 @@ export async function launchDispatch(env: ServerEnv, prepared: PreparedDispatch,
   const timeoutSeconds = spec.timeoutSeconds ?? DEFAULT_DISPATCH_TIMEOUT_SECONDS;
   await ensureMember(env.db, HARNESS_MEMBER_ID, now, 'member', 'harness runtime');
   await ensureAgent(env.db, { id: HARNESS_AGENT_ID, name: HARNESS_AGENT_ID, provider: prepared.providerType, model: prepared.model, enabled: true }, now);
-  const minted = await issueMemberToken(env.db, { memberId: HARNESS_MEMBER_ID, machineId: HARNESS_MACHINE_ID }, now);
+  const minted = await issueMemberToken(env.db, { memberId: HARNESS_MEMBER_ID, machineId: HARNESS_MACHINE_ID }, now, null, NO_RUNTIME_CLAIMS, { rotates: false });
 
   const runId = spec.runId ?? `run_${crypto.randomUUID()}`;
   // The run's bound rides its context with the task's parameters, so the sweep
@@ -953,7 +953,7 @@ export async function claimNextRun(
 
   await ensureMember(env.db, HARNESS_MEMBER_ID, worker.now, 'member', 'harness runtime');
   await ensureAgent(env.db, { id: HARNESS_AGENT_ID, name: HARNESS_AGENT_ID, provider: harness, model: null, enabled: true }, worker.now);
-  const minted = await issueMemberToken(env.db, { memberId: HARNESS_MEMBER_ID, machineId: HARNESS_MACHINE_ID }, worker.now);
+  const minted = await issueMemberToken(env.db, { memberId: HARNESS_MEMBER_ID, machineId: HARNESS_MACHINE_ID }, worker.now, null, NO_RUNTIME_CLAIMS, { rotates: false });
 
   // The claim carries the same admission the launch does, in the write. A run
   // held by a limit stays queued with that limit recorded on it, and two

@@ -20,7 +20,7 @@ import { parseCredentialFlag, registryCredential, resolveCredential, resolveMemb
 import { deliveryNotice } from './delivery-notice.js';
 import { ensureJoinedFromCode, joinCodePresent } from './join-code.js';
 import type { EnvelopeContext, OutboundEvent } from './envelope.js';
-import { refreshDue, refreshMemberCredential, refreshableRoot, rotatedCredential } from './refresh.js';
+import { refreshDue, refreshMemberCredential, refreshableRoot, rotatedCredential, clearNonRotatingRefusal } from './refresh.js';
 import { readRegistryEntry } from './registry.js';
 import { applySpoolRetention } from './retention.js';
 import type { SessionState } from './session-state.js';
@@ -231,6 +231,8 @@ export async function runMemberHook(
         // and still could not deliver may be quarantined for its age.
         applySpoolRetention(spool, now(), { delivered: ownDelivered, tried: [...(sessionTried(drained) ? [sessionId] : []), ...(backlog?.tried ?? [])] });
       }
+      // An acknowledged send is the Deployment accepting this token after all: a refusal recorded against it no longer holds.
+      if (root !== null && drained.acked > 0) clearNonRotatingRefusal(live.credential.serverUrl, live.credential.token, mycoHome, now);
       const notice = root === null ? null : deliveryNotice(readRegistryEntry(root, mycoHome) ?? live.credential, now());
       if (notice !== null) {
         process.stderr.write(`[myco] ${notice}\n`);
