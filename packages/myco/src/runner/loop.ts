@@ -192,7 +192,7 @@ async function postAs(options: Requester, token: string, path: string, body: unk
       body: JSON.stringify(body),
       signal: options.signal,
     });
-    raw = await rawAnswerOf(res);
+    raw = await rawAnswerOf(res, options.signal);
   } catch (error) {
     raw = { kind: 'transport', detail: error instanceof Error ? error.message : String(error) };
   }
