@@ -25,14 +25,15 @@ import { HARNESS_CREDENTIALS } from '@goondocks/myco-shared/harness-providers';
 const CONNECTION = { serverUrl: 'https://deployment.example', projectId: 'proj_1', runToken: 'tok_run_secret_value' };
 
 describe('the harness manifest', () => {
-  it('gives every harness a driver, an isolation mechanism and a credential probe', () => {
+  it('gives every harness a run can be held on a driver, and every harness an isolation mechanism and a credential probe', () => {
     for (const harness of HARNESSES) {
-      expect({ id: harness.id, driven: driverFor(harness.id) !== null }).toEqual({ id: harness.id, driven: true });
+      // A harness no worker offers has no driver, so no run is started on it.
+      expect({ id: harness.id, driven: driverFor(harness.id) !== null }).toEqual({ id: harness.id, driven: offerable(harness) });
       expect(['flag', 'home', 'additive']).toContain(harness.isolation.kind);
       expect(['file', 'command', 'file-or-command']).toContain(harness.credential.kind);
       expect(harness.binary.length).toBeGreaterThan(0);
     }
-    expect(Object.keys(DRIVERS).sort()).toEqual(HARNESSES.map((h) => h.id).sort());
+    expect(Object.keys(DRIVERS).sort()).toEqual(HARNESSES.filter(offerable).map((h) => h.id).sort());
   });
 
   it('names the same harnesses the Deployment opens a credential for, and each its own provider', () => {

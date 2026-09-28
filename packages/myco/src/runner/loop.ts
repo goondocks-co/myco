@@ -16,6 +16,7 @@ import { parseWorkerUsage, type WorkerUsage } from '@goondocks/myco-shared/worke
 import { mkdirSync } from 'node:fs';
 import { detectHarnesses, offerOf, WITHHELD_REASON } from './detect.js';
 import { driverFor } from './drivers/registry.js';
+import { harnessById, offerable } from './harnesses.js';
 import { discardRunDir, writeRunDir } from './mcp-config.js';
 import { deploymentScopedHeaders, MEMBER_PROTOCOL } from '../member/constants.js';
 import type { RefreshStatus } from '../member/refresh.js';
@@ -255,6 +256,8 @@ async function drive(options: WorkerOptions, run: ClaimedRun, heartbeatMs: numbe
     options.log(`run ${run.id} failed before its harness started: ${error}`);
     return { status: 'failed', error };
   };
+  const named = harnessById(run.harness);
+  if (named !== null && !offerable(named)) return failedBeforeStart(`this worker does not drive ${run.harness}: ${WITHHELD_REASON}`);
   const driver = driverFor(run.harness);
   if (driver === null) return failedBeforeStart(`no driver serves the harness ${run.harness}`);
   // A harness given nothing to do ends its turn at once, and a worker that

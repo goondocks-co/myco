@@ -15,11 +15,13 @@ import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, 
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { claudeCodeDriver } from '@myco/runner/drivers/claude-code.js';
-import { codexDriver, RUN_PERMISSIONS } from '@myco/runner/drivers/codex.js';
+import { codexDriver, RUN_FEATURES_OFF, RUN_PERMISSIONS } from '@myco/runner/drivers/codex.js';
 import { jsonLines } from '@myco/runner/drivers/stream.js';
 import { discardRunDir, writeRunDir } from '@myco/runner/mcp-config.js';
 import { credentialFile, harnessById } from '@myco/runner/harnesses.js';
-import { detectHarnesses } from '@myco/runner/detect.js';
+import { detectHarnesses, WITHHELD_REASON } from '@myco/runner/detect.js';
+import { driverFor } from '@myco/runner/drivers/registry.js';
+import { run as runWorkerCli } from '@myco/cli/worker.js';
 import { runWorker } from '@myco/runner/loop.js';
 import { parse } from 'smol-toml';
 import { MCP_SERVER_NAME } from '@myco/runner/mcp-config.js';
@@ -278,8 +280,9 @@ describe('the Codex driver', () => {
     ]);
     process.env.PATH = `${dir}:${process.env.PATH ?? ''}`;
     const events = await collect(codexDriver.run({ ...runDir(), prompt: 'do it', credentialEnv: {} }, new AbortController().signal));
-    // The error item does not end the turn and does not fail the run.
-    expect(events.filter((e) => e.kind === 'tool_call')).toHaveLength(1);
+    // The error item does not end the turn, does not fail the run, and is not
+    // a call: a note of the calls that failed would otherwise blame it.
+    expect(events.filter((e) => e.kind === 'tool_call')).toEqual([]);
     expect(events.at(-1)).toEqual({ kind: 'ended', stop: 'end_turn', detail: null });
     expect(events.find((e) => e.kind === 'usage')).toEqual({ kind: 'usage', inputTokens: 28, outputTokens: 5, cachedTokens: 14, costUsd: null });
   });
@@ -394,6 +397,33 @@ describe('the Codex driver', () => {
     } finally { machine.remove(); }
   });
 
+  it('turns off every feature that reaches outside the run\'s sandbox or tools, and keeps credentials out of its commands\' environment, whatever the machine set', async () => {
+    const machine = machineCodexHome({
+      'auth.json': LOGIN,
+      'config.toml': [
+        '[features]',
+        'memories = true',
+        ...RUN_FEATURES_OFF.map((feature) => `${feature} = true`),
+        '',
+        '[shell_environment_policy]',
+        'inherit = "all"',
+        'ignore_default_excludes = true',
+        'include_only = ["OPENAI_API_KEY"]',
+        '',
+      ].join('\n'),
+    });
+    process.env.PATH = `${stubCodexReadingItsHome()}:${process.env.PATH ?? ''}`;
+    try {
+      const run = runDir();
+      await collect(codexDriver.run({ ...run, prompt: 'do it', credentialEnv: {} }, new AbortController().signal));
+      const read = parse(readFileSync(join(run.scratchDir, 'codex-home', 'config.toml'), 'utf8')) as Record<string, unknown>;
+      expect(read.features).toEqual({ memories: true, ...Object.fromEntries(RUN_FEATURES_OFF.map((feature) => [feature, false])) });
+      // Image viewing reads a file in the harness's own process, outside the sandbox (#1426).
+      expect(RUN_FEATURES_OFF).toContain('view_image');
+      expect(read.shell_environment_policy).toEqual({ inherit: 'all', ignore_default_excludes: false });
+    } finally { machine.remove(); }
+  });
+
   /** What a login looks like in the file this harness keeps one in. */
   const LOGIN = '{"tokens":{"access_token":"tok_machine_login"}}';
 
@@ -486,6 +516,7 @@ describe('the Codex driver', () => {
       const read = parse(merged) as Record<string, unknown>;
       expect(read.model).toBe('gpt-machine');
       expect(read.features).toEqual({
+        ...Object.fromEntries(RUN_FEATURES_OFF.map((feature) => [feature, false])),
         web_search: true,
         instructions: 'a machine writes prose here, and prose says things like\n[mcp_servers.playwright]\n',
         kept_after_the_string: true,
@@ -1239,4 +1270,89 @@ describe('what a worker reports of a turn a failed call cut short', () => {
       error: 'a call failed or was refused: Bash; the turn ended right after the last of them',
     });
   }, 15_000);
+});
+
+/**
+ * Antigravity installed and logged in on this machine, as detection finds it:
+ * a stub `agy`, a stub protocol sidecar that records that it was started, and
+ * a settings file where the manifest declares its login. The home directory is
+ * the test process's own throwaway (`tests/setup/sandbox-preload`).
+ */
+function stubAntigravity(): { started: string; remove: () => void } {
+  const dir = mkdtempSync(join(tmpdir(), 'myco-stub-agy-'));
+  const started = join(dir, 'started');
+  writeFileSync(join(dir, 'agy'), '#!/bin/sh\nexit 0\n', { mode: 0o755 });
+  writeFileSync(join(dir, 'agy_acp_server.par'), `#!/bin/sh\ntouch ${JSON.stringify(started)}\n`, { mode: 0o755 });
+  const settings = credentialFile(harnessById('antigravity')!)!;
+  mkdirSync(dirname(settings), { recursive: true });
+  writeFileSync(settings, JSON.stringify({ permissions: { allow: ['mcp(myco/myco_run)'] } }));
+  process.env.PATH = `${dir}:${process.env.PATH ?? ''}`;
+  return { started, remove: () => { rmSync(dirname(settings), { recursive: true, force: true }); } };
+}
+
+describe('a harness no worker offers', () => {
+  it('is left out of every claim the worker makes, though detection finds it logged in', async () => {
+    const agy = stubAntigravity();
+    expect(stubAcpHarness()).toEqual(STUB_DETECTED);
+    try {
+      // The gate is not vacuous: the machine really has it, logged in.
+      expect(detectHarnesses(['antigravity'])).toEqual([{ id: 'antigravity', installed: true, authenticated: true }]);
+      const stopping = new AbortController();
+      const claims: unknown[] = [];
+      const logged: string[] = [];
+      const fetchImpl = (async (input: string | URL | Request, init?: RequestInit) => {
+        const url = String(typeof input === 'string' || input instanceof URL ? input : input.url);
+        if (url.endsWith('/worker/claim')) {
+          claims.push((JSON.parse(String(init?.body)) as { harnesses: unknown }).harnesses);
+          stopping.abort();
+          return new Response(JSON.stringify({ persisted: true, claimed: false, reason: 'no_work', pollAfterMs: 10 }), { status: 200 });
+        }
+        return new Response(JSON.stringify({ persisted: true }), { status: 200 });
+      }) as unknown as typeof fetch;
+      await runWorker({
+        serverUrl: 'https://deployment.example', token: 'tok', lockDir: null, only: ['antigravity', STUB_HARNESS],
+        runRoot: mkdtempSync(join(tmpdir(), 'myco-worker-')),
+        pollIdleMs: 3_000, log: (line) => { logged.push(line); }, fetchImpl, signal: stopping.signal,
+      });
+      expect(claims).toEqual([[{ id: STUB_HARNESS, installed: true, authenticated: true }]]);
+      expect(logged).toContain(`not offering antigravity: ${WITHHELD_REASON}`);
+    } finally { agy.remove(); }
+  }, 15_000);
+
+  it('is never driven, even for a run a Deployment names it for: the run fails before anything starts', async () => {
+    const agy = stubAntigravity();
+    try {
+      expect(driverFor('antigravity')).toBeNull();
+      const end: { body: Record<string, unknown> | null } = { body: null };
+      const fetchImpl = (async (input: string | URL | Request, init?: RequestInit) => {
+        const url = String(typeof input === 'string' || input instanceof URL ? input : input.url);
+        if (url.endsWith('/worker/claim')) {
+          return new Response(JSON.stringify({
+            persisted: true, claimed: true, heartbeatMs: 60_000,
+            run: { projectId: 'proj_1', id: 'run_agy', task: 'title-summary', instruction: 'do it', harness: 'antigravity', runToken: 'tok_run', credentialEnv: {}, timeoutSeconds: 300 },
+          }), { status: 200 });
+        }
+        if (url.endsWith('/worker/end')) { end.body = JSON.parse(String(init?.body)) as Record<string, unknown>; return new Response(JSON.stringify({ persisted: true, ended: true }), { status: 200 }); }
+        return new Response(JSON.stringify({ persisted: true }), { status: 200 });
+      }) as unknown as typeof fetch;
+      await runWorker({
+        serverUrl: 'https://deployment.example', token: 'tok', lockDir: null,
+        runRoot: mkdtempSync(join(tmpdir(), 'myco-worker-')),
+        once: true, pollIdleMs: 3_000, log: () => {}, fetchImpl, signal: new AbortController().signal,
+      });
+      expect({ status: end.body?.status, error: end.body?.error }).toEqual({ status: 'failed', error: `this worker does not drive antigravity: ${WITHHELD_REASON}` });
+      expect(existsSync(agy.started)).toBe(false);
+    } finally { agy.remove(); }
+  }, 15_000);
+
+  it('is named as not offered where the operator lists what the machine has', async () => {
+    const agy = stubAntigravity();
+    const printed: string[] = [];
+    const log = console.log;
+    console.log = (...args: unknown[]) => { printed.push(args.join(' ')); };
+    try {
+      expect(await runWorkerCli(['--detect', '--harness', 'antigravity'])).toBe(true);
+    } finally { console.log = log; agy.remove(); }
+    expect(printed).toEqual([`${'antigravity'.padEnd(14)} installed  logged in  not offered: ${WITHHELD_REASON}`]);
+  });
 });

@@ -91,6 +91,41 @@ export function runFilesystem(spec: RunSpec, home: string, installed: string | n
 }
 
 /**
+ * The harness features a run never has, whatever the machine turned on: each
+ * acts outside the sandbox `runFilesystem` describes or outside the run's
+ * tools. Connectors and plugins bring tools and servers of their own, and so
+ * do the features that install or suggest them. The browser and computer
+ * features drive programs outside the sandbox. Image viewing reads a file in
+ * the harness's own process rather than through a sandboxed command, and image
+ * generation calls a service the run was not given. Hooks run the machine's
+ * own commands at points in the turn.
+ */
+export const RUN_FEATURES_OFF = [
+  'apps',
+  'browser_use',
+  'browser_use_external',
+  'browser_use_full_cdp_access',
+  'computer_use',
+  'hooks',
+  'image_generation',
+  'in_app_browser',
+  'in_app_local_automation',
+  'plugins',
+  'remote_plugin',
+  'skill_mcp_dependency_install',
+  'tool_suggest',
+  'view_image',
+] as const;
+
+/**
+ * Which of the harness's environment its commands see: its own default, which
+ * leaves out every variable named like a key, secret or token. The harness's
+ * environment holds the run's credential where the Deployment handed one, and
+ * a machine policy that keeps those variables would hand it to every command.
+ */
+export const RUN_SHELL_ENVIRONMENT = { inherit: 'all', ignore_default_excludes: false } as const;
+
+/**
  * The configuration the run reads: the machine's own, with the run's MCP server
  * in place of every other and the settings a queued run cannot inherit.
  *
@@ -105,8 +140,10 @@ export function runFilesystem(spec: RunSpec, home: string, installed: string | n
  * its budget ended it. A run queued from elsewhere is bounded by the sandbox
  * `runFilesystem` describes, rather than by what an operator allows themselves
  * sitting in front of the machine: `danger-full-access` on a laptop is a setting
- * for the person holding it, and so is any permission profile they defined. And
- * the harness's own web search, which no sandbox holds, is off.
+ * for the person holding it, and so is any permission profile they defined. The
+ * harness's own web search, which no sandbox holds, is off, as are the features
+ * in `RUN_FEATURES_OFF`, and its commands see the environment
+ * `RUN_SHELL_ENVIRONMENT` describes rather than the machine's policy.
  *
  * It is read and written through a parser: this file is the operator's, and a
  * scan for the lines that look like server declarations mistakes a multi-line
@@ -128,6 +165,8 @@ function runConfig(spec: RunSpec, harness: Harness, home: string): string {
   machine.default_permissions = RUN_PERMISSIONS;
   machine.permissions = { [RUN_PERMISSIONS]: { filesystem: runFilesystem(spec, home, locate(harness.binary)) } };
   machine.web_search = 'disabled';
+  machine.features = { ...recordOf(machine.features), ...Object.fromEntries(RUN_FEATURES_OFF.map((feature) => [feature, false])) };
+  machine.shell_environment_policy = { ...RUN_SHELL_ENVIRONMENT };
 
   // The run's connection is authored once, in `mcp-config.ts`. This reads that
   // file and restates it in the language this harness configures servers in,
@@ -169,10 +208,10 @@ export const codexDriver: Driver = {
       } else if (type === 'item.completed') {
         const item = recordOf(line.item);
         const itemType = item === null ? null : stringOf(item.type);
-        // An error item is one item among many and never the end of the turn.
+        // An error item is one item among many, never the end of the turn and
+        // never a call: only a tool's own item is a call, named by its tool.
         if (itemType === 'agent_message') yield { kind: 'message', role: 'assistant', text: stringOf(item?.text) ?? '' };
         else if (itemType === 'mcp_tool_call') yield { kind: 'tool_call', name: stringOf(item?.tool) ?? 'mcp', status: toolStatus(stringOf(item?.status)) };
-        else if (itemType === 'error') yield { kind: 'tool_call', name: 'item', status: 'error' };
       } else if (type === 'turn.completed') {
         const usage = recordOf(line.usage);
         yield {

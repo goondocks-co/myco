@@ -11,7 +11,7 @@
  */
 import { describe, expect, it } from 'bun:test';
 import { execFileSync, spawnSync } from 'node:child_process';
-import { appendFileSync, chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, symlinkSync, writeFileSync } from 'node:fs';
+import { appendFileSync, chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { SOURCE_GIT_READ_COMMANDS } from '@goondocks/myco-shared/repository';
@@ -19,6 +19,7 @@ import { acpDriver, RUN_AGENT_PREFIX, RUN_TOOLS_TIMEOUT_MS, runAgentConfig, runA
 import { answerPermission, ToolCalls } from '@myco/runner/drivers/acp-permission.js';
 import { claudeCodeDriver } from '@myco/runner/drivers/claude-code.js';
 import { driverFor } from '@myco/runner/drivers/registry.js';
+import { writeCursorRunHome } from '@myco/runner/drivers/cursor.js';
 import { grantsCall, runGrant, SHELL_TOOL } from '@myco/runner/drivers/grant.js';
 import { listRunTools, type RunTools } from '@myco/runner/drivers/run-tools.js';
 import { GIT_TRIPWIRE_ENV, gitReadRefusal, gitShimScript, shellWords } from '@myco/runner/drivers/source-git.js';
@@ -522,6 +523,10 @@ describe('the environment a harness is started in', () => {
         approvalMode: 'allowlist',
         autoAcceptWebSearch: false,
       });
+      // Readable only by the worker's user, as the harness first finds it.
+      const home = mkdtempSync(join(tmpdir(), 'myco-cursor-home-'));
+      writeCursorRunHome(home, machine.dir);
+      expect((statSync(join(home, 'cli-config.json')).mode & 0o777).toString(8)).toBe('600');
       // The second allowlist Cursor reads beside its settings is not carried.
       expect(readdirSync(stub.seen).sort()).toEqual(['acp-config.json', 'cli-config.json']);
       expect(JSON.parse(readFileSync(join(machine.dir, 'cli-config.json'), 'utf8'))).toEqual(machineSettings);
