@@ -36,8 +36,14 @@ export interface RunListRow {
   replaces: string | null;
   /** The harness the claim chose; null when the row records none. */
   harness: string | null;
-  /** The worker credential holding the run. A terminal close and a requeue both clear it, so null records no holder. */
+  /** The worker credential holding the run now; null once the run ends or returns to the queue, and for a run no worker took. */
   leasedBy: string | null;
+  /**
+   * The worker that ran the run: the credential that held it last and the
+   * machine that credential names. It stays once the run ends, so which
+   * machine ran a run is read off the run; null for a run no worker holds or held.
+   */
+  worker: { credentialId: string; machineId: string | null } | null;
   /** When the held lease ends; null whenever the row names no holder. */
   leaseExpiresAt: number | null;
 }
@@ -119,7 +125,8 @@ const LIST_COLUMNS = `id, agent_id, task, status, provider, model, started_at, r
   tokens_used, cost_usd, cost_source, dry_run, resumable, resume_status, (error IS NOT NULL) AS failed,
   queued_at, held_by, CASE WHEN status = 'queued' THEN ${POSITION_SQL} ELSE NULL END AS position,
   ${contextValue('replaced')} AS replaced, ${contextValue('replaces')} AS replaces,
-  harness, leased_by, lease_expires_at`;
+  harness, leased_by, lease_expires_at,
+  (SELECT c.machine_id FROM member_credentials c WHERE c.id = agent_runs.leased_by) AS leased_machine`;
 
 const DETAIL_COLUMNS = `${LIST_COLUMNS}, instruction, session_ref, actual_cost_usd, estimated_cost_usd, reasoning_level,
   resume_mode, resume_attempts, error, dispatched_by, usage_data, actions_taken, checkpoints`;
@@ -155,6 +162,7 @@ function toListRow(row: Record<string, unknown>): RunListRow {
     replaces: text(row.replaces),
     harness: text(row.harness),
     leasedBy: ended ? null : text(row.leased_by),
+    worker: row.leased_by == null ? null : { credentialId: row.leased_by as string, machineId: text(row.leased_machine) },
     leaseExpiresAt: ended ? null : num(row.lease_expires_at),
   };
 }

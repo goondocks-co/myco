@@ -287,6 +287,7 @@ describe('what an operator reads', () => {
     expect(await endLeasedRun(f.e.serverEnv, { tokenId: ta, now: NOW + 2 }, { projectId: 'proj_1', runId: 'run_1', status: 'completed' }))
       .toMatchObject({ ended: true });
     expect(await workerLiveness(f.e.db, NOW + 3)).toEqual({ workersBusy: 0, runsQueued: 0 });
-    expect(f.row('run_1')).toMatchObject({ leasedBy: null, leaseExpiresAt: null });
+    // The lease is over; the row still names the worker that ran it.
+    expect(f.row('run_1')).toMatchObject({ leasedBy: ta, leaseExpiresAt: null });
   });
 });

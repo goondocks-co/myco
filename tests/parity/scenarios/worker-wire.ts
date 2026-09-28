@@ -5,12 +5,16 @@ import { join } from 'node:path';
 import { runWorker, type WorkerOutcome } from '@myco/runner/loop.js';
 import { stubAcpHarness, STUB_DETECTED, STUB_HARNESS } from '../../helpers/stub-acp-harness.ts';
 import { RUN_CLOSE_ERROR } from '@myco-server-worker/core/run-postconditions.js';
-import { lit, MEMBER_ID, type ParityScenario, type ParityTarget, waitFor } from '../harness.ts';
+import { lit, MACHINE_ID, MEMBER_ID, type ParityScenario, type ParityTarget, waitFor } from '../harness.ts';
 
 /** Well under the scenario timeout, so a worker that cannot claim reports rather than hangs. */
 const ATTACH_BOUND_MS = 45_000;
 /** How far ahead another scenario's queued run is parked while this one claims, and back again afterwards. */
 const PARK_MS = 3_600_000;
+/** The renewal cadence the claim's answer is rewritten to, so a held turn renews several times inside the scenario. The lease the Deployment grants is its own. */
+const HEARTBEAT_MS = 300;
+/** How many renewals, each answered held, the run must see while it is driven. */
+const RENEWALS = 3;
 
 /**
  * The shipped worker attached to a booted Deployment, on both targets.
@@ -84,10 +88,18 @@ export const workerWire: ParityScenario = {
      * The worker's own headers are passed through untouched: the credential, the
      * protocol it speaks and the content type are what the Deployment answers.
      */
-    const fetchImpl = ((input: string | URL | Request, init?: RequestInit) => fetch(input, {
-      ...init,
-      headers: { ...Object.fromEntries(new Headers(init?.headers)), 'cf-connecting-ip': '1.2.3.4' },
-    })) as typeof fetch;
+    const renewals: boolean[] = [];
+    const fetchImpl = (async (input: string | URL | Request, init?: RequestInit) => {
+      const response = await fetch(input, {
+        ...init,
+        headers: { ...Object.fromEntries(new Headers(init?.headers)), 'cf-connecting-ip': '1.2.3.4' },
+      });
+      const path = new URL(typeof input === 'string' || input instanceof URL ? String(input) : input.url).pathname;
+      if (path === '/worker/lease') renewals.push(((await response.clone().json()) as { held?: unknown }).held === true);
+      if (path !== '/worker/claim') return response;
+      const answer = await response.json() as Record<string, unknown>;
+      return Response.json(answer.claimed === true ? { ...answer, heartbeatMs: HEARTBEAT_MS } : answer, { status: response.status, headers: response.headers });
+    }) as typeof fetch;
 
     const row = async () =>
       (await target.sql(
@@ -129,6 +141,12 @@ export const workerWire: ParityScenario = {
       expect(existsSync(receipt)).toBe(true);
       expect(JSON.parse(readFileSync(receipt, 'utf8'))).toMatchObject({ session_id: sessionId, prompt_count: 0, batches: [] });
 
+      // The lease is renewed while the run is driven, and every renewal is
+      // answered held: nothing else takes a run whose lease is live.
+      await waitFor(async () => renewals.length, (n) => n >= RENEWALS || ended() !== null, 20_000);
+      expect(`${target.name} renewals: ${renewals.length >= RENEWALS} refused ${renewals.filter((held) => !held).length}`)
+        .toBe(`${target.name} renewals: true refused 0`);
+
       // Everything above was read with the turn still open. Only now does the
       // harness get to finish.
       releaseTurn();
@@ -149,6 +167,12 @@ export const workerWire: ParityScenario = {
       expect(await target.sql(
         `SELECT revoked_at IS NOT NULL AS revoked FROM member_credentials WHERE id = ${lit(minted)}`,
       )).toEqual([{ revoked: 1 }]);
+      // The ended run still names the worker that ran it: the member's
+      // credential, and the machine that credential was issued to.
+      expect(await target.sql(
+        `SELECT c.member_id AS memberId, c.machine_id AS machineId, r.lease_expires_at AS leaseExpiresAt
+           FROM agent_runs r JOIN member_credentials c ON c.id = r.leased_by WHERE r.id = ${lit(runId)}`,
+      )).toEqual([{ memberId: MEMBER_ID, machineId: MACHINE_ID, leaseExpiresAt: null }]);
     };
 
     // A worker that cannot claim polls by design, so the attachment is bounded

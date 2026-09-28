@@ -59,6 +59,7 @@ function peerScript(turnDelaySeconds: string, holdUntil: string, holdTicks: numb
     'for arg in "$@"; do',
     '  if [ "$arg" = "status" ]; then exit 0; fi',
     'done',
+    options.spawnedFile === undefined ? '' : `printf '%s\\n' "$$" >> ${quote(options.spawnedFile)}`,
     '',
     'reply() {',
     `  printf '{"jsonrpc":"2.0","id":%s,"result":%s}\\n' "$1" "$2"`,
@@ -106,6 +107,8 @@ interface StubOptions {
   pidFile?: string;
   /** Save session material read through the MCP connection supplied by ACP. */
   mcpReceipt?: string;
+  /** Append the PID of every harness process a driver starts, before it reads anything, so a test can tell whether one was started at all. */
+  spawnedFile?: string;
 }
 
 /**
