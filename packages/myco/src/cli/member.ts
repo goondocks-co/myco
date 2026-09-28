@@ -717,6 +717,7 @@ function refreshLine(report: RefreshReport): string {
     case 'unauthorized': return `the server refused this token — ${REJOIN_HINT}`;
     case 'terminal': return `the server refused to rotate this token — ${REJOIN_HINT}`;
     case 'route-missing': return 'this server does not rotate member tokens';
+    case 'non-rotating': return `this credential does not rotate — it delivers until ${when(entry?.expiresAt)}; before then, ${REJOIN_HINT}`;
     case 'protocol': return 'the server refuses this build\'s member protocol — upgrade myco';
     case 'no-entry': return 'no registry entry';
     default: return 'the server could not be reached — try again later';

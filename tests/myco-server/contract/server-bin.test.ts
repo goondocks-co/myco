@@ -101,6 +101,15 @@ function seedCredentials(sqlite: Database): void {
 }
 
 /**
+ * The columns a step after 48 adds to `member_credentials`, each with the value every row it finds takes and the
+ * clause the ALTER appends to the table's DDL. Step 48's own properties are read with them taken out, once every
+ * row is seen to carry the value.
+ */
+const ADDED_AFTER_48: Record<string, { value: unknown; ddl: string }> = {
+  rotates: { value: 1, ddl: ', rotates INTEGER NOT NULL DEFAULT 1' },
+};
+
+/**
  * Everything SQLite records about `member_credentials` but its CHECK: every column (`table_xinfo`), every foreign key,
  * every index with its columns (`index_xinfo`) and its DDL, and the table's own DDL with the CHECK clause taken out.
  * Whitespace is folded so a layout change reads as no change.
@@ -114,15 +123,26 @@ function credentialShape(sqlite: Database, dropCheck: boolean) {
       columns: sqlite.query(`SELECT seqno, cid, name, "desc", coll, "key" FROM pragma_index_xinfo(?) ORDER BY seqno`).all(index.name),
       sql: ((sqlite.query(`SELECT sql FROM sqlite_master WHERE type = 'index' AND name = ?`).get(index.name) as { sql: string | null }).sql ?? '').replace(/\s+/g, ' '),
     }));
+  const withoutLater = Object.values(ADDED_AFTER_48).reduce((ddl, added) => ddl.replace(added.ddl, ''), table);
   return {
-    table: dropCheck ? table.replace(/, CONSTRAINT member_tokens_quota CHECK \(bytes_written <= 1073741824\)\)$/, ')') : table,
-    columns: sqlite.query(`SELECT cid, name, type, "notnull", dflt_value, pk, hidden FROM pragma_table_xinfo('member_credentials') ORDER BY cid`).all(),
+    table: dropCheck ? withoutLater.replace(/, CONSTRAINT member_tokens_quota CHECK \(bytes_written <= 1073741824\)\)$/, ')') : withoutLater,
+    columns: (sqlite.query(`SELECT cid, name, type, "notnull", dflt_value, pk, hidden FROM pragma_table_xinfo('member_credentials') ORDER BY cid`).all() as { name: string }[])
+      .filter((column) => !(column.name in ADDED_AFTER_48)),
     foreignKeys: sqlite.query(`SELECT id, seq, "table", "from", "to", on_update, on_delete, "match" FROM pragma_foreign_key_list('member_credentials') ORDER BY id, seq`).all(),
     indexes,
   };
 }
 
-const credentialRows = (sqlite: Database) => sqlite.query('SELECT * FROM member_credentials ORDER BY id').all();
+/** Every credential row, with the columns a later step added taken out once each row is seen to hold that step's value. */
+const credentialRows = (sqlite: Database) => (sqlite.query('SELECT * FROM member_credentials ORDER BY id').all() as Record<string, unknown>[]).map((row) => {
+  const kept = { ...row };
+  for (const [name, added] of Object.entries(ADDED_AFTER_48)) {
+    if (!(name in kept)) continue;
+    expect({ id: kept.id, [name]: kept[name] }).toEqual({ id: kept.id, [name]: added.value });
+    delete kept[name];
+  }
+  return kept;
+});
 const referencingRows = (sqlite: Database) => ({
   runs: sqlite.query('SELECT id, dispatched_by, leased_by FROM agent_runs ORDER BY id').all(),
   contacts: sqlite.query('SELECT credential_id FROM worker_contacts ORDER BY credential_id').all(),
@@ -196,16 +216,19 @@ describe('migrateOnly across step 48 (#1416)', () => {
   });
 
   it('re-applied by hand over a volume already at 48, changes nothing', () => {
+    // The volume is taken to 48 itself: the step rebuilds the table in its own shape, so a column a later step adds is
+    // not one a re-run of 48 keeps, and the runner never re-runs a step below the version a volume is stamped at.
     const path = join(scratch(), 'myco.sqlite');
     const v47 = migrateTo(path, 47);
     seedCredentials(v47);
     v47.close();
-    migrateOnly(path);
+    const step48 = SCHEMA_STEPS.find((s) => s.version === 48)!.statements;
     const sqlite = new Database(path);
     sqlite.exec('PRAGMA foreign_keys = ON');
+    sqlite.transaction(() => { for (const sql of step48) sqlite.exec(sql); })();
     const rows = credentialRows(sqlite);
     const shape = credentialShape(sqlite, false);
-    sqlite.transaction(() => { for (const sql of SCHEMA_STEPS.find((s) => s.version === 48)!.statements) sqlite.exec(sql); })();
+    sqlite.transaction(() => { for (const sql of step48) sqlite.exec(sql); })();
     expect(credentialRows(sqlite)).toEqual(rows);
     expect(credentialShape(sqlite, false)).toEqual(shape);
     sqlite.close();

@@ -315,3 +315,68 @@ describe('member token rotation', () => {
     expect(refreshDue({ expiresAt: undefined, refreshAfter: undefined, refreshTerminal: undefined, refreshTerminalBy: undefined }, now)).toBe(true);
   });
 });
+
+/** A rig whose credential its issuer minted not to rotate, issued `ageMs` ago. */
+const nonRotatingRig = (ageMs: number): Promise<MemberRig> => memberRig({ now: Date.now() - ageMs, rotates: false });
+
+describe('a credential minted not to rotate (#1420)', () => {
+  it('in a registry: the first hook inside the window learns it does not rotate, records that without a terminal state, and delivers; nothing dials the refresh route again, not even a forced renewal', async () => {
+    const rig = await nonRotatingRig(6.5 * DAY_MS);
+    registerTestMember({ mycoHome, token: rig.token, tokenId: rig.tokenId, projectId: PROJECT, expiresAt: rig.expiresAt, serverUrl: SERVER_URL });
+    const spy = recordingFetch(rig.fetch);
+
+    const first = await prompt(spy.fetch, 'first');
+    expect(refreshCalls(spy)).toBe(1);
+    const entry = readRegistryEntry(root, mycoHome)!;
+    expect({ token: entry.token, nonRotating: entry.nonRotating, refreshTerminal: entry.refreshTerminal }).toEqual({ token: rig.token, nonRotating: true, refreshTerminal: undefined });
+    expect(first.stderr).toContain('does not rotate');
+    expect(first.stderr).not.toContain('Myco capture is not being delivered');
+    expect(rig.rows('prompt_batches')).toBe(1);
+
+    const second = await prompt(spy.fetch, 'second');
+    expect(second.stderr).toBe('');
+    expect(rig.rows('prompt_batches')).toBe(2);
+    expect((await refreshMemberCredential(root, { mycoHome, fetch: spy.fetch, budget: budget(), force: true })).status).toBe('non-rotating');
+    expect(refreshCalls(spy)).toBe(1);
+    expect(rig.rows('member_credentials')).toBe(1);
+
+    const out: string[] = [];
+    await runMemberCli(['refresh'], { mycoHome, fetch: spy.fetch, stdout: (l) => out.push(l), stderr: () => undefined });
+    expect(out.join('\n')).toContain('proj_1: this credential does not rotate');
+    expect(refreshCalls(spy)).toBe(1);
+  });
+
+  it('in a registry, past its expiry: the refused capture asks once, learns it does not rotate, and says it expired — no terminal state, and no further dial', async () => {
+    const rig = await nonRotatingRig(7 * DAY_MS + DAY_MS);
+    registerTestMember({ mycoHome, token: rig.token, tokenId: rig.tokenId, projectId: PROJECT, expiresAt: rig.expiresAt, serverUrl: SERVER_URL });
+    const spy = recordingFetch(rig.fetch);
+
+    const first = await prompt(spy.fetch, 'after expiry');
+    expect(refreshCalls(spy)).toBe(1);
+    const entry = readRegistryEntry(root, mycoHome)!;
+    expect({ nonRotating: entry.nonRotating, refreshTerminal: entry.refreshTerminal }).toEqual({ nonRotating: true, refreshTerminal: undefined });
+    expect(first.stderr).toContain('does not rotate and expired at');
+    expect(rig.rows('prompt_batches')).toBe(0);
+    expect(new MemberSpool(PROJECT, { mycoHome }).depth(session)).toBeGreaterThan(0);
+
+    await prompt(spy.fetch, 'again');
+    expect(refreshCalls(spy)).toBe(1);
+    expect(rig.rows('member_credentials')).toBe(1);
+  });
+
+  it('from the environment: a live one delivers and a lapsed one is refused and stays spooled, and neither ever dials the refresh route', async () => {
+    for (const [ageMs, delivered] of [[6.5 * DAY_MS, 1], [7 * DAY_MS + DAY_MS, 0]] as const) {
+      const rig = await nonRotatingRig(ageMs);
+      process.env[ENV_SERVER_URL] = SERVER_URL;
+      process.env[ENV_MEMBER_TOKEN] = rig.token;
+      process.env[ENV_PROJECT] = PROJECT;
+      const spy = recordingFetch(rig.fetch);
+
+      const out = await runHook('user-prompt-submit', { session_id: session, hook_event_name: 'UserPromptSubmit', transcript_path: transcriptFile(), prompt: 'hello' }, { fetch: spy.fetch, credential: 'env', symbiont: 'copilot' });
+
+      expect({ ageMs, delivered: rig.rows('prompt_batches'), refreshes: refreshCalls(spy), sends: eventCalls(spy) > 0, refused: out.stderr.includes('member token refused'), rotation: /rotat|renew/.test(out.stderr) })
+        .toEqual({ ageMs, delivered, refreshes: 0, sends: true, refused: delivered === 0, rotation: false });
+      expect(rig.rows('member_credentials')).toBe(1);
+    }
+  });
+});

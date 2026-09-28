@@ -1,7 +1,8 @@
 /**
  * What the member tells the person when its capture can no longer reach the
  * Deployment on its own: the credential's rotation was refused for good, so
- * delivery stops at the token's expiry — or already has.
+ * delivery stops at the token's expiry — or already has — or a credential that
+ * does not rotate has expired.
  *
  * Capture keeps spooling either way; the notice says so and names the one act
  * that resumes delivery. Every hook that dials prints it to stderr, and the
@@ -14,8 +15,12 @@ import type { CredentialRecord } from './credential.js';
 /** The act that replaces a credential the Deployment no longer rotates. */
 export const REJOIN_HINT = 'ask a Deployment admin for an invite link and run `myco login <link>`';
 
-/** The notice for a credential, or null while it is still rotating. */
-export function deliveryNotice(credential: Pick<CredentialRecord, 'serverUrl' | 'expiresAt' | 'refreshTerminal' | 'refreshTerminalReason'>, now: number): string | null {
+/** The notice for a credential, or null while it is still rotating, or does not rotate and has not expired. */
+export function deliveryNotice(credential: Pick<CredentialRecord, 'serverUrl' | 'expiresAt' | 'refreshTerminal' | 'refreshTerminalReason' | 'nonRotating'>, now: number): string | null {
+  if (credential.nonRotating === true && credential.refreshTerminal !== true) {
+    if (credential.expiresAt === undefined || credential.expiresAt > now) return null;
+    return `Myco capture is not being delivered: this machine's credential for ${credential.serverUrl} does not rotate and expired at ${new Date(credential.expiresAt).toISOString()}. What is captured stays on this machine and is delivered once you ${REJOIN_HINT}.`;
+  }
   if (credential.refreshTerminal !== true) return null;
   if (credential.refreshTerminalReason === 'replayed') {
     return `Myco capture is not being delivered: this machine's credential for ${credential.serverUrl} was used from two places and has been revoked for safety. What is captured stays on this machine and is delivered once you ${REJOIN_HINT}.`;

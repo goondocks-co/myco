@@ -75,7 +75,7 @@ export async function handleJoin(env: ServerEnv, request: Request, now: number):
     runtimeLabel: typeof runtimeLabel === 'string' ? runtimeLabel : null,
     runtimeKind: typeof runtimeKind === 'string' ? runtimeKind : null,
   };
-  const { statement: credential, issued } = await mintInsert(env.db, { memberId, machineId }, now, null, runtime, admitted);
+  const { statement: credential, issued } = await mintInsert(env.db, { memberId, machineId }, now, null, runtime, { gate: admitted });
   const minted: Fragment = { sql: `EXISTS (SELECT 1 FROM member_credentials WHERE id = ?)`, params: [issued.tokenId] };
   const roleRead = roleBehindCredentialStatement(env.db, issued.tokenId);
 

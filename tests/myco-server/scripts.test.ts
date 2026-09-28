@@ -41,6 +41,18 @@ describe('operator scripts', () => {
     expect(token).toMatch(MEMBER_TOKEN_PATTERN);
   });
 
+  it('mint records a rotating credential by default, and one that never rotates with --non-rotating', () => {
+    const rotatesAfter = (args: string[]): number => {
+      const { code, out } = run('mint-local.ts', ['mem_s', 'machine_s', ...args]);
+      expect(code).toBe(0);
+      const sqlite = new Database(':memory:');
+      for (const f of renderMigrationFiles()) sqlite.exec(f.sql);
+      sqlite.exec(out);
+      return (sqlite.query(`SELECT rotates FROM member_credentials`).get() as { rotates: number }).rotates;
+    };
+    expect({ default: rotatesAfter([]), nonRotating: rotatesAfter(['--non-rotating']) }).toEqual({ default: 1, nonRotating: 0 });
+  });
+
   it('mint refuses to run without a machine id', () => {
     const { code, err } = run('mint-local.ts', ['proj_s']);
     expect(code).toBe(2);

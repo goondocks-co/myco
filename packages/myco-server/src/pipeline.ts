@@ -148,6 +148,8 @@ export const NO_PROJECT = 'project header required';
 export const NOT_ADMIN = 'this route serves an administrator of the Deployment';
 /** What a run's credential is told on a member route that is not its run's surface. */
 export const RUN_SCOPE = 'a run credential reaches only its run\'s surface';
+/** What a credential its issuer minted not to rotate is told on the refresh route. */
+export const NON_ROTATING = 'this credential does not rotate; mint another when it expires';
 /** What a run's credential is told when no live run names it. */
 export const NO_LIVE_RUN = 'credential holds no live run';
 /** What a run's credential is told when the Project header names a Project other than the run's. */
@@ -454,6 +456,12 @@ export function createServer(deps: ServerDeps) {
       if (servesRun(route)) return asRun(request, env, auth, route, now);
       if (route.legacyRunRoute !== true) return refuse(auth, shapeOf(route), RUN_SCOPE, 'run_scope');
     }
+    // A credential its issuer minted not to rotate is one an orchestrator hands to every
+    // sandbox it starts through the environment. It is refused the refresh route before
+    // its body is read, whether live or lapsed, so no holder of a copy can mint a successor
+    // and fork its lineage, and no holder can revoke it under the others. It lives out its
+    // TTL or a Stop, and is renewed by minting another.
+    if (asksToRotate(route) && !auth.rotates) return refuse(auth, shapeOf(route), NON_ROTATING, 'non_rotating');
     if (auth.machineId === null) return refuse(auth, shapeOf(route), NO_MACHINE_IDENTITY, 'no_machine_identity');
 
     // #1151 — worker mode. A Deployment-scoped route names no Project, so it is

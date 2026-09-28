@@ -1,17 +1,19 @@
 #!/usr/bin/env bun
 import { ensureMember } from '../src/auth/enrollment.ts';
 import { issueExternalGrant } from '../src/auth/grants.ts';
-import { issueMemberToken } from '../src/auth/tokens.ts';
+import { issueMemberToken, NO_RUNTIME_CLAIMS } from '../src/auth/tokens.ts';
 import { sqlCapture } from './sql-capture.ts';
 
 const USAGE = [
-  'usage: bun scripts/mint-local.ts <member_id> <machine_id> [--print-token]',
+  'usage: bun scripts/mint-local.ts <member_id> <machine_id> [--non-rotating] [--print-token]',
+  '       (--non-rotating: a credential for MYCO_MEMBER_TOKEN, shared by every runtime handed it; it never rotates, and is renewed by minting another)',
   '       bun scripts/mint-local.ts --grant <project_id> [--label <text>] [--by <member_id>] [--print-token]',
   '       (a grant names a Project the Deployment already holds; the emitted SQL is refused otherwise)',
 ].join('\n');
 
 const args = process.argv.slice(2);
 const printToken = args.includes('--print-token');
+const nonRotating = args.includes('--non-rotating');
 /** The value after `flag`, or undefined when the flag is absent; a flag followed by another flag or nothing is a usage error. */
 const valueOf = (flag: string): string | undefined => {
   const at = args.indexOf(flag);
@@ -34,14 +36,14 @@ if (args.includes('--grant')) {
   if (printToken) console.error(`MYCO_EXTERNAL_KEY=${issued.key}`);
   else console.error(`-- grant_id ${issued.id} minted; rerun with --print-token to print the raw key to stderr`);
 } else {
-  const [memberId, machineId] = args.filter((a) => a !== '--print-token');
+  const [memberId, machineId] = args.filter((a) => a !== '--print-token' && a !== '--non-rotating');
   if (!memberId || !machineId) {
     console.error(USAGE);
     process.exit(2);
   }
   await ensureMember(db, memberId, now, 'admin');
-  const issued = await issueMemberToken(db, { memberId, machineId }, now);
-  console.log(`-- token_id ${issued.tokenId} expires_at ${issued.expiresAt}`);
+  const issued = await issueMemberToken(db, { memberId, machineId }, now, null, NO_RUNTIME_CLAIMS, { rotates: !nonRotating });
+  console.log(`-- token_id ${issued.tokenId} expires_at ${issued.expiresAt}${nonRotating ? ' non-rotating' : ''}`);
   for (const statement of statements) console.log(`${statement};`);
   if (printToken) console.error(`MYCO_MEMBER_TOKEN=${issued.token}`);
   else console.error(`-- token_id ${issued.tokenId} minted; rerun with --print-token to print the raw token to stderr`);

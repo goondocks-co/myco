@@ -19,6 +19,11 @@
  * it and nothing dials again until a new credential replaces the token
  * (`myco login`, `myco member join`), which clears it.
  *
+ * A token its issuer minted not to rotate — one meant for a runtime's
+ * environment, put into a registry — is answered `non_rotating`. The entry
+ * records it and nothing dials the refresh route again for that token; it is
+ * not terminal, and it delivers until it expires.
+ *
  * A token past its own expiry still rotates: the server admits a lapsed token
  * on this route alone, so a machine offline longer than the TTL renews on its
  * first hook back. A lineage never ends for age; only a machine silent long
@@ -40,7 +45,7 @@ import { refreshCredential, type ClientRecord, type FetchLike } from './transpor
 
 export type RefreshStatus =
   | 'refreshed' | 'not-due' | 'busy' | 'no-entry'
-  | 'too-early' | 'lineage-expired' | 'terminal' | 'unauthorized' | 'route-missing' | 'retry' | 'protocol';
+  | 'too-early' | 'lineage-expired' | 'terminal' | 'unauthorized' | 'route-missing' | 'retry' | 'protocol' | 'non-rotating';
 
 export interface RefreshReport {
   status: RefreshStatus;
@@ -64,7 +69,7 @@ export interface RefreshOptions {
 const RETRYABLE_REFUSALS: readonly MemberCode[] = ['no_project'];
 
 /** What `refreshDue` reads: the window the server announced, the expiry, whether rotation is already terminal and which build said so, and when each build last asked about it again. */
-export type RefreshWindow = Pick<RegistryEntry, 'expiresAt' | 'refreshAfter' | 'refreshTerminal' | 'refreshTerminalBy' | 'refreshRetries'>;
+export type RefreshWindow = Pick<RegistryEntry, 'expiresAt' | 'refreshAfter' | 'refreshTerminal' | 'refreshTerminalBy' | 'refreshRetries' | 'nonRotating'>;
 
 /**
  * The identity of the running build: its version, and the program file it runs
@@ -95,12 +100,13 @@ const terminalRetryDue = (entry: RefreshWindow, now: number, build: string): boo
 const stderr = (line: string): void => { process.stderr.write(`[myco] member: ${line}\n`); };
 
 /**
- * True when the token's refresh window is open: after a terminal refusal, only
+ * True when the token's refresh window is open: never for a token the Deployment said does not rotate; after a terminal refusal, only
  * as `terminalRetryDue` allows; the announced `refreshAfter` when there is one;
  * otherwise the last quarter of the TTL before `expiresAt`. An entry that
  * knows neither is due — one dial teaches it the window the server keeps.
  */
 export function refreshDue(entry: RefreshWindow, now: number, build: string = buildIdentity()): boolean {
+  if (entry.nonRotating === true) return false;
   if (entry.refreshTerminal) return terminalRetryDue(entry, now, build);
   if (entry.refreshAfter !== undefined) return now >= entry.refreshAfter;
   if (entry.expiresAt !== undefined) return entry.expiresAt - now <= MEMBER_TOKEN_REFRESH_WINDOW_MS;
@@ -135,6 +141,8 @@ export async function refreshMembership(serverUrl: string, opts: RefreshOptions)
   const due = (held: RefreshWindow): boolean => (opts.force === true && held.refreshTerminal !== true) || refreshDue(held, now(), build);
   const before = readDeploymentMembership(serverUrl, mycoHome);
   if (!before) return { status: 'no-entry', membership: null };
+  // Not even `force` dials for a token the Deployment said does not rotate: no answer to it can differ.
+  if (before.nonRotating === true) return { status: 'non-rotating', membership: before };
   if (!due(before)) return { status: 'not-due', membership: before };
 
   const lock = acquireRegistryLock(mycoHome);
@@ -143,6 +151,7 @@ export async function refreshMembership(serverUrl: string, opts: RefreshOptions)
     // Re-read inside the lock: the winner of a race has already written the successor this membership would have asked for.
     let held = readDeploymentMembership(serverUrl, mycoHome);
     if (!held) return { status: 'no-entry', membership: null };
+    if (held.token === before.token && held.nonRotating === true) return { status: 'non-rotating', membership: held };
     if (held.token !== before.token || !due(held)) return { status: 'not-due', membership: held };
 
     // Asking again about another build's terminal refusal is recorded before the dial, so whatever answers it, this build asks once per interval.
@@ -174,6 +183,11 @@ export async function refreshMembership(serverUrl: string, opts: RefreshOptions)
         if (RETRYABLE_REFUSALS.includes(outcome.code)) {
           // A membership no project is bound to can never name one, so it waits before it asks again.
           return { status: 'retry', membership: opts.projectId === undefined ? write({ refreshAfter: now() + REFRESH_NO_PROJECT_BACKOFF_MS }) : held };
+        }
+        if (outcome.code === 'non_rotating') {
+          // A credential minted for an environment: it delivers until it expires, and is never asked about again.
+          stderr(`this machine's credential for ${held.serverUrl} does not rotate — capture reaches the server until ${new Date(held.expiresAt ?? now()).toISOString()}; before then, ${REJOIN_HINT}`);
+          return { status: 'non-rotating', membership: write({ nonRotating: true }) };
         }
         if (outcome.refreshAfter !== undefined) {
           // A window announced is a token that still rotates: any terminal refusal recorded against it no longer holds.
