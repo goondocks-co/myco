@@ -2,6 +2,7 @@ import { describe, expect, it } from 'bun:test';
 import { cloudflareBlobReader, cloudflareObjectStore, type CloudflareFetch } from '@myco/server/cloudflare.js';
 import { transientReadFailure } from '@myco/server/object-read.js';
 import type { CommandRunner } from '@myco/server/runner.js';
+import { brotliCompressSync, gzipSync, zstdCompressSync } from 'node:zlib';
 
 const options = { accountId: 'fixture-account', bucketName: 'fixture-bucket', configDir: '/operator' };
 
@@ -21,6 +22,8 @@ it('shares one operator login across object streams, pins the API origin and dis
     expect(new Headers(init?.headers).get('authorization')).toBe('Bearer fixture-token');
     expect(init?.redirect).toBe('error');
     expect(init?.signal).toBeInstanceOf(AbortSignal);
+    // R2 honours this and sends the stored bytes, so no decode stands between the connection and the digest check.
+    expect(new Headers(init?.headers).get('accept-encoding')).toBe('identity');
     return new Response(new Uint8Array([0, 127, 255]));
   } });
   const bodies = await Promise.all(['project/a', 'project/b', 'project/key?#'].map(async (key) => new Uint8Array(await new Response(await read(key)).arrayBuffer())));
@@ -255,6 +258,24 @@ describe('the failures a read may try again', () => {
     const login: CommandRunner = { async run() { return { code: 0, stdout: JSON.stringify({ type: 'oauth', token: 'fixture' }), stderr: '' }; } };
     const read = cloudflareBlobReader({ ...options, runner: login, fetch: (_url, init) => fetch('http://127.0.0.1:1/', init) });
     expect(transientReadFailure(await settled(read('project/key')))).toBe(true);
+  });
+
+  it('tries again after a compressed body cut short, as the runtime reports it for each encoding', async () => {
+    const whole = new Uint8Array(64 * 1024).map((_, index) => (index * 7919) % 251);
+    for (const [encoding, compressed] of [['gzip', gzipSync(whole)], ['br', brotliCompressSync(whole)], ['zstd', zstdCompressSync(whole)]] as const) {
+      const server = Bun.serve({ port: 0, fetch: () => new Response(new ReadableStream<Uint8Array>({ start(controller) {
+        controller.enqueue(compressed.subarray(0, Math.floor(compressed.length / 2)));
+        controller.close();
+      } }), { headers: { 'content-encoding': encoding } }) });
+      try {
+        const failure = await settled(fetch(`http://127.0.0.1:${server.port}/`).then((response) => response.arrayBuffer()));
+        expect(failure).not.toBeNull();
+        expect(transientReadFailure(failure)).toBe(true);
+      } finally { server.stop(true); }
+    }
+    const zlib = (code: string) => new TypeError('terminated', { cause: Object.assign(new Error('unexpected end of file'), { code }) });
+    expect(transientReadFailure(zlib('Z_BUF_ERROR'))).toBe(true);
+    expect(transientReadFailure(zlib('Z_DATA_ERROR'))).toBe(true);
   });
 
   it('judges a failure by the cause it carries, as Node reports a lost socket', () => {
