@@ -44,7 +44,8 @@ export const MAX_DOWNLOAD_BYTES = 256 * 1024 * 1024; // 256 MiB
 async function download(
   url: string,
   destPath: string,
-  headers: Record<string, string> = {},
+  headers: Record<string, string>,
+  maxBytes: number,
 ): Promise<void> {
   const res = await fetch(url, { headers, redirect: 'follow' });
   if (!res.ok) {
@@ -57,9 +58,9 @@ async function download(
   const contentLength = res.headers.get('content-length');
   if (contentLength !== null) {
     const declared = Number(contentLength);
-    if (!Number.isNaN(declared) && declared > MAX_DOWNLOAD_BYTES) {
+    if (!Number.isNaN(declared) && declared > maxBytes) {
       throw new Error(
-        `download refused: Content-Length ${declared} exceeds cap of ${MAX_DOWNLOAD_BYTES} bytes (${url})`,
+        `download refused: Content-Length ${declared} exceeds cap of ${maxBytes} bytes (${url})`,
       );
     }
   }
@@ -71,10 +72,10 @@ async function download(
   fs.mkdirSync(path.dirname(destPath), { recursive: true });
 
   // Stream response body to disk with a running byte counter. If the counter
-  // exceeds MAX_DOWNLOAD_BYTES the stream is aborted, the partial file is
-  // deleted, and a clear error is thrown — the caller's temp-cleanup path
-  // handles the rest. This prevents an oversized (or malicious) CDN response
-  // from OOM-ing the orchestrator even when Content-Length is absent or lying.
+  // exceeds the cap the stream is aborted, the partial file is deleted, and a
+  // clear error is thrown — the caller's temp-cleanup path handles the rest.
+  // This prevents an oversized (or malicious) CDN response from OOM-ing the
+  // orchestrator even when Content-Length is absent or lying.
   let received = 0;
   const fileStream = fs.createWriteStream(destPath);
   const reader = res.body.getReader();
@@ -84,12 +85,12 @@ async function download(
       const { done, value } = await reader.read();
       if (done) break;
       received += value.byteLength;
-      if (received > MAX_DOWNLOAD_BYTES) {
+      if (received > maxBytes) {
         reader.cancel().catch(() => { /* best-effort cancel */ });
         fileStream.destroy();
         rmSafe(destPath);
         throw new Error(
-          `download exceeded ${MAX_DOWNLOAD_BYTES} bytes (cap) — aborting to prevent OOM (${url})`,
+          `download exceeded ${maxBytes} bytes (cap) — aborting to prevent OOM (${url})`,
         );
       }
       await new Promise<void>((resolve, reject) => {
@@ -118,11 +119,23 @@ function computeSha256(filePath: string): Promise<string> {
   });
 }
 
-/** The real download and hash for `stageBinary`. */
-export const DEFAULT_BINARY_UPDATE_DEPS: StageBinaryDeps = {
-  download,
-  computeSha256,
-};
+/** Options for `createBinaryUpdateDeps`. */
+export interface BinaryUpdateDepsOptions {
+  /** Byte cap on one download. Defaults to `MAX_DOWNLOAD_BYTES`. */
+  maxDownloadBytes?: number;
+}
+
+/** The real download and hash for `stageBinary`, with the download capped at `maxDownloadBytes`. */
+export function createBinaryUpdateDeps(options: BinaryUpdateDepsOptions = {}): StageBinaryDeps {
+  const maxBytes = options.maxDownloadBytes ?? MAX_DOWNLOAD_BYTES;
+  return {
+    download: (url, destPath, headers = {}) => download(url, destPath, headers, maxBytes),
+    computeSha256,
+  };
+}
+
+/** The real download and hash for `stageBinary`, capped at `MAX_DOWNLOAD_BYTES`. */
+export const DEFAULT_BINARY_UPDATE_DEPS: StageBinaryDeps = createBinaryUpdateDeps();
 
 // ---------------------------------------------------------------------------
 // Filesystem helpers (cross-platform — no shell)

@@ -29,6 +29,7 @@ import {
   pruneVersions,
   MAX_DOWNLOAD_BYTES,
   DEFAULT_BINARY_UPDATE_DEPS,
+  createBinaryUpdateDeps,
   type StageBinaryDeps,
   type StageBinaryResult,
 } from '@myco/upgrade/apply-binary.js';
@@ -723,38 +724,38 @@ describe('restoreVersion — chmod-failure propagation (T4)', () => {
 // ===========================================================================
 // download() — byte-cap DoS guard (E1)
 //
-// Tests exercise the real DEFAULT_BINARY_UPDATE_DEPS.download() by injecting
-// a fake globalThis.fetch. No real network is used.
-//
-// The cap is MAX_DOWNLOAD_BYTES (256 MiB). To keep tests fast, we use a tiny
-// TEST_CAP and override it in the test — but since MAX_DOWNLOAD_BYTES is a
-// module-level constant we instead supply a body that genuinely exceeds the
-// real cap is impractical, so we test with a body that is just-under and
-// just-over a count that the real streaming counter accumulates.
-//
-// Strategy: construct a fake ReadableStream that yields chunks summing to
-// exactly MAX_DOWNLOAD_BYTES + 1, and verify the download is aborted.
+// Tests exercise the real download() by injecting a fake globalThis.fetch. No
+// real network is used. The guard cases run against a small injected cap
+// (TEST_CAP) through createBinaryUpdateDeps, so each moves kilobytes, not
+// hundreds of megabytes. The production cap is pinned separately against
+// DEFAULT_BINARY_UPDATE_DEPS with declared lengths only, which never stream.
 // ===========================================================================
 
-/** Build a fake Response whose body is a ReadableStream of `chunks`. */
+const TEST_CAP = 64 * 1024;
+const PRODUCTION_CAP = 256 * 1024 * 1024;
+
+/** Build a fake Response whose body is a ReadableStream of `chunks`, counting pulls. */
 function fakeResponse(
   chunks: Uint8Array[],
   headers: Record<string, string> = {},
-): Response {
+): { response: Response; pulls: () => number } {
   let i = 0;
+  let pulled = 0;
   const stream = new ReadableStream<Uint8Array>({
     pull(controller) {
+      pulled++;
       if (i < chunks.length) {
         controller.enqueue(chunks[i++]);
       } else {
         controller.close();
       }
     },
-  });
-  return new Response(stream, { status: 200, headers });
+  }, { highWaterMark: 0 });
+  return { response: new Response(stream, { status: 200, headers }), pulls: () => pulled };
 }
 
 describe('download() — byte-cap DoS guard (E1)', () => {
+  const capped = createBinaryUpdateDeps({ maxDownloadBytes: TEST_CAP });
   let savedFetch: typeof globalThis.fetch;
   let destPath: string;
 
@@ -771,50 +772,84 @@ describe('download() — byte-cap DoS guard (E1)', () => {
     try { fs.rmSync(destPath, { force: true }); } catch { /* best-effort */ }
   });
 
-  it('streams a response under the cap successfully to disk', async () => {
-    // 1 MiB of data — well under 256 MiB.
-    const oneMiB = 1024 * 1024;
-    const chunk = new Uint8Array(oneMiB).fill(0xab);
-    globalThis.fetch = globalFetchDouble(mock(async () => fakeResponse([chunk])));
+  it('streams a response of exactly the cap successfully to disk', async () => {
+    const half = TEST_CAP / 2;
+    const { response } = fakeResponse([
+      new Uint8Array(half).fill(0xaa),
+      new Uint8Array(half).fill(0xab),
+    ]);
+    globalThis.fetch = globalFetchDouble(mock(async () => response));
 
-    await DEFAULT_BINARY_UPDATE_DEPS.download('https://example.test/asset', destPath);
+    await capped.download('https://example.test/asset', destPath);
 
     expect(fs.existsSync(destPath)).toBe(true);
-    expect(fs.statSync(destPath).size).toBe(oneMiB);
+    expect(fs.statSync(destPath).size).toBe(TEST_CAP);
   });
 
-  it('rejects when cumulative bytes exceed MAX_DOWNLOAD_BYTES and cleans up the partial file', async () => {
-    // Construct two chunks that together exceed MAX_DOWNLOAD_BYTES by 1 byte.
-    // Each chunk is MAX_DOWNLOAD_BYTES/2 + 1 bytes, so after the second chunk
-    // the running total is MAX_DOWNLOAD_BYTES + 2 > MAX_DOWNLOAD_BYTES.
-    const halfCap = Math.floor(MAX_DOWNLOAD_BYTES / 2) + 1;
-    const chunk1 = new Uint8Array(halfCap).fill(0xcc);
-    const chunk2 = new Uint8Array(halfCap).fill(0xdd);
-    globalThis.fetch = globalFetchDouble(mock(async () => fakeResponse([chunk1, chunk2])));
+  it('rejects when cumulative bytes exceed the cap and cleans up the partial file', async () => {
+    // Two chunks of cap/2 + 1: the first is written to disk, the second takes
+    // the running total to cap + 2 and must abort and remove that partial file.
+    const halfCap = TEST_CAP / 2 + 1;
+    const { response } = fakeResponse([
+      new Uint8Array(halfCap).fill(0xcc),
+      new Uint8Array(halfCap).fill(0xdd),
+    ]);
+    globalThis.fetch = globalFetchDouble(mock(async () => response));
 
     await expect(
-      DEFAULT_BINARY_UPDATE_DEPS.download('https://example.test/asset', destPath),
-    ).rejects.toThrow(/exceeded.*bytes.*cap/i);
+      capped.download('https://example.test/asset', destPath),
+    ).rejects.toThrow(new RegExp(`exceeded ${TEST_CAP} bytes \\(cap\\)`));
 
-    // Partial temp file must be cleaned up.
     expect(fs.existsSync(destPath)).toBe(false);
   });
 
   it('rejects on a lying Content-Length (small header, large body still caught by streaming counter)', async () => {
-    // Content-Length lies small (1 byte), body is actually over the cap.
-    const halfCap = Math.floor(MAX_DOWNLOAD_BYTES / 2) + 1;
-    const chunk1 = new Uint8Array(halfCap).fill(0xee);
-    const chunk2 = new Uint8Array(halfCap).fill(0xff);
-    globalThis.fetch = globalFetchDouble(mock(async () =>
-      fakeResponse([chunk1, chunk2], { 'content-length': '1' }),
-    ));
+    // Content-Length lies small (1 byte) and passes the early check; the body
+    // is actually over the cap.
+    const halfCap = TEST_CAP / 2 + 1;
+    const { response } = fakeResponse(
+      [new Uint8Array(halfCap).fill(0xee), new Uint8Array(halfCap).fill(0xff)],
+      { 'content-length': '1' },
+    );
+    globalThis.fetch = globalFetchDouble(mock(async () => response));
 
     await expect(
-      DEFAULT_BINARY_UPDATE_DEPS.download('https://example.test/asset', destPath),
-    ).rejects.toThrow(/exceeded.*bytes.*cap/i);
+      capped.download('https://example.test/asset', destPath),
+    ).rejects.toThrow(new RegExp(`exceeded ${TEST_CAP} bytes \\(cap\\)`));
 
-    // Even though Content-Length was small (passed the early check), the
-    // streaming counter caught it and must have cleaned the partial file.
     expect(fs.existsSync(destPath)).toBe(false);
+  });
+
+  it('refuses a declared Content-Length over the cap before streaming a byte', async () => {
+    const { response, pulls } = fakeResponse(
+      [new Uint8Array(TEST_CAP + 1).fill(0x11)],
+      { 'content-length': String(TEST_CAP + 1) },
+    );
+    globalThis.fetch = globalFetchDouble(mock(async () => response));
+
+    await expect(
+      capped.download('https://example.test/asset', destPath),
+    ).rejects.toThrow(`download refused: Content-Length ${TEST_CAP + 1} exceeds cap of ${TEST_CAP} bytes`);
+
+    expect(pulls()).toBe(0);
+    expect(fs.existsSync(destPath)).toBe(false);
+  });
+
+  it('caps the production download at exactly 256 MiB', async () => {
+    expect(MAX_DOWNLOAD_BYTES).toBe(PRODUCTION_CAP);
+
+    // One byte over the production cap is refused on the declared length alone.
+    const over = fakeResponse([new Uint8Array(1)], { 'content-length': String(PRODUCTION_CAP + 1) });
+    globalThis.fetch = globalFetchDouble(mock(async () => over.response));
+    await expect(
+      DEFAULT_BINARY_UPDATE_DEPS.download('https://example.test/asset', destPath),
+    ).rejects.toThrow(`exceeds cap of ${PRODUCTION_CAP} bytes`);
+    expect(over.pulls()).toBe(0);
+
+    // Exactly the production cap passes the declared-length check.
+    const atCap = fakeResponse([new Uint8Array(4).fill(0x22)], { 'content-length': String(PRODUCTION_CAP) });
+    globalThis.fetch = globalFetchDouble(mock(async () => atCap.response));
+    await DEFAULT_BINARY_UPDATE_DEPS.download('https://example.test/asset', destPath);
+    expect(fs.statSync(destPath).size).toBe(4);
   });
 });
