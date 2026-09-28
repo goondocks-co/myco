@@ -210,6 +210,12 @@ describe('when a worker service belongs on this machine', () => {
     expect(none?.detail).toContain('installed: codex');
   });
 
+  it('refuses a machine whose only logged-in harness is one no worker offers, and names it', () => {
+    const refused = workerServiceRefusal(URL_, { ...pre, harnesses: [{ id: 'antigravity', installed: true, authenticated: true }] });
+    expect(refused?.reason).toBe('no_harness');
+    expect(refused?.detail).toContain('logged in but not offered: antigravity');
+  });
+
   const deps = (over: WorkerServiceDeps = {}): WorkerServiceDeps & { rec: ReturnType<typeof recordingPlatform> } => {
     const rec = recordingPlatform();
     return {

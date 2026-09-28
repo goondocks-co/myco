@@ -19,7 +19,7 @@ import { resolveMycoHome } from '../paths/home.js';
 import { deploymentUrl, listDeploymentMemberships, readDeploymentMembership } from '../member/registry.js';
 import { unboundedBudget } from '../member/budget.js';
 import { refreshMembership } from '../member/refresh.js';
-import { detectHarnesses } from '../runner/detect.js';
+import { detectHarnesses, offerOf, WITHHELD_REASON } from '../runner/detect.js';
 import { runWorker, sleep, type WorkerOptions } from '../runner/loop.js';
 import { clearWorkerRefusal, isTerminalRefusal, recordWorkerRefusal, type TerminalRefusal } from '../runner/refusal.js';
 import { programRuns, type ProgramProbe } from '../install/place-binary.js';
@@ -108,8 +108,11 @@ export async function run(args: string[], deps: WorkerServiceDeps = {}): Promise
   const only = harnessesNamed(args);
 
   if (flags.get('detect') === 'true') {
-    for (const found of detectHarnesses(only)) {
-      console.log(`${found.id.padEnd(14)} ${found.installed ? 'installed' : 'absent   '}  ${found.authenticated ? 'logged in' : 'not logged in'}`);
+    const detected = detectHarnesses(only);
+    const { withheld } = offerOf(detected);
+    for (const found of detected) {
+      const offered = withheld.includes(found.id) ? `  not offered: ${WITHHELD_REASON}` : '';
+      console.log(`${found.id.padEnd(14)} ${found.installed ? 'installed' : 'absent   '}  ${found.authenticated ? 'logged in' : 'not logged in'}${offered}`);
     }
     return true;
   }

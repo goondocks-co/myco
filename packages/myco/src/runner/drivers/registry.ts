@@ -5,13 +5,15 @@
  * a harness whose launch shape says it speaks the protocol gets the protocol
  * driver, and the two with native drivers name them. So a harness added to the
  * manifest is drivable, or fails a gate that enumerates from the manifest —
- * never silently absent.
+ * never silently absent. The one exception is a harness the manifest says no
+ * worker offers, which no driver serves.
  */
 import type { Driver } from '../events.js';
-import { HARNESSES } from '../harnesses.js';
-import { acpDriver } from './acp.js';
+import { HARNESSES, offerable } from '../harnesses.js';
+import { acpDriver, type RunHomeWriter } from './acp.js';
 import { claudeCodeDriver } from './claude-code.js';
 import { codexDriver } from './codex.js';
+import { writeCursorRunHome } from './cursor.js';
 
 /** The drivers written against a harness's own stream rather than the agent protocol. */
 const NATIVE: Readonly<Record<string, Driver>> = {
@@ -19,8 +21,18 @@ const NATIVE: Readonly<Record<string, Driver>> = {
   codex: codexDriver,
 };
 
+/** What a protocol harness that reads a configuration directory of the run's own finds in it, by harness. */
+export const RUN_HOMES: Readonly<Record<string, RunHomeWriter>> = {
+  cursor: (home) => { writeCursorRunHome(home); },
+};
+
+/**
+ * A driver for every harness a run can be held on. A harness no worker offers
+ * has none, so a run a Deployment hands out for one anyway is never started
+ * under the machine's own approvals.
+ */
 export const DRIVERS: Readonly<Record<string, Driver>> = Object.fromEntries(
-  HARNESSES.map((harness) => [harness.id, NATIVE[harness.id] ?? acpDriver(harness.id)]),
+  HARNESSES.filter(offerable).map((harness) => [harness.id, NATIVE[harness.id] ?? acpDriver(harness.id, RUN_HOMES[harness.id])]),
 );
 
 /** The driver for this harness, or null when the worker drives none by that name. */

@@ -141,7 +141,7 @@ export const LEAF_GROUPS: readonly LeafGroup[] = [
     label: 'Workers',
     note: 'Which harness a worker drives. A worker offers what it has logged in; this names what to prefer. Status shows what each attached worker last reported.',
     leaves: [
-      { leaf: 'worker.harness', label: 'Preferred harness', kind: 'text', note: 'claude-code, codex, opencode, cursor or antigravity.' },
+      { leaf: 'worker.harness', label: 'Preferred harness', kind: 'text', note: 'claude-code, codex, opencode or cursor.' },
       { leaf: 'worker.harness_fallback', label: 'Fallback order', kind: 'json', note: 'A JSON array of harness names, tried in order.' },
     ],
   },

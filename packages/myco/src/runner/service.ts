@@ -17,7 +17,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { deploymentUrl } from '../member/registry.js';
 import { HARNESSES } from './harnesses.js';
-import { locate, type DetectedHarness } from './detect.js';
+import { locate, offerOf, type DetectedHarness } from './detect.js';
 import { workerHolder, workerLockDir } from './instance.js';
 import {
   installService,
@@ -165,11 +165,13 @@ export function workerServiceRefusal(serverUrl: string, pre: WorkerServicePrecon
   if (pre.ownDeploymentUrls.some((own) => deploymentUrl(own) === url)) {
     return { reason: 'own_deployment', detail: `${url} is this machine's own Deployment, and \`myco server run\` already runs its worker.` };
   }
-  if (!pre.harnesses.some((h) => h.authenticated)) {
+  const offer = offerOf(pre.harnesses);
+  if (!offer.offered.some((h) => h.authenticated)) {
     const found = pre.harnesses.filter((h) => h.installed).map((h) => h.id);
+    const withheld = offer.withheld.length === 0 ? '' : `; logged in but not offered: ${offer.withheld.join(', ')}`;
     return {
       reason: 'no_harness',
-      detail: `no harness on this machine is logged in (installed: ${found.join(', ') || 'none'}). Log one in, then run \`myco worker install\`.`,
+      detail: `no harness a worker offers is logged in on this machine (installed: ${found.join(', ') || 'none'}${withheld}). Log one in, then run \`myco worker install\`.`,
     };
   }
   return null;
