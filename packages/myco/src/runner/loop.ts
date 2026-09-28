@@ -451,6 +451,10 @@ async function drive(
   // overran and changed hands belongs to whoever holds it now. Reporting the
   // overrun instead would have this worker account for a run it does not own.
   if (lost) return { status: 'lost', error: null };
+  // A harness driven to its end with the lease held: the machine stayed up for
+  // a whole run, and the settle returns to its base. A run that ended before
+  // its harness started says nothing about whether the machine stays up.
+  if (stream !== undefined) wake.ranThrough();
   // The budget is otherwise the outcome, whatever the harness wrote on its way
   // out: a child stopped for overrunning did not finish its turn, and a stop
   // reason it managed to emit as it died would otherwise read as one.
@@ -611,8 +615,6 @@ async function claimUntilStopped(options: WorkerOptions, wake: WakeWatch): Promi
     // The cadence and the lease are the Deployment's, carried on the claim it answered.
     requestMs = waitOf(claim.heartbeatMs, DEFAULT_HEARTBEAT_MS);
     const outcome = await drive(options, run, { heartbeatMs: requestMs, deadline: leaseDeadline(claimSentAt, claim.leaseMs) }, wake);
-    // A run the machine stayed up through returns the settle to its base.
-    if (outcome.status !== 'lost') wake.ranThrough();
     // A worker that lost its lease writes nothing: the run belongs to whoever
     // holds it now, and a late outcome would be one worker reporting on
     // another's run. The Deployment refuses such a write anyway; not making it

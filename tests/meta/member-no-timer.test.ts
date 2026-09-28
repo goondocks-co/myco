@@ -97,9 +97,15 @@ const GLOBAL_REACH = /globalThis\b\s+as\b|globalThis\b(?:\s+as\b[^[\n]{0,80})?\s
 const TIMER_CALL = /\b(setInterval|setTimeout|setImmediate)\s*\(|Bun\.sleep\s*\(|scheduler\.wait\s*\(/g;
 const TIMER_CLEARED = /\b(clearInterval|clearTimeout)\s*\(/g;
 const TIMER_AWAITED = /new Promise[\s\S]{0,160}?(set(Interval|Timeout)|Bun\.sleep)\s*\(/g;
-/** A deadline, whatever the spelling: a call through the property, or through a computed name. */
-const DEADLINE_IDENTIFIER = /\bAbortSignal\s*(?:\.\s*timeout\b|\[\s*['"`]timeout['"`]\s*\])/;
-const DEADLINE_CALL = /\bAbortSignal\s*(?:\.\s*timeout|\[\s*['"`]timeout['"`]\s*\])\s*\(/g;
+/**
+ * A deadline, in the spellings this gate reads: through the property, optional
+ * or not, or through a computed name. `AbortSignal` itself taken apart or handed
+ * on under another name (`DEADLINE_ALIAS`) is refused outright, so a deadline is
+ * only ever spelled where these patterns see it.
+ */
+const DEADLINE_IDENTIFIER = /\bAbortSignal\s*(?:\??\.\s*timeout\b|(?:\?\.)?\[\s*['"`]timeout['"`]\s*\])/;
+const DEADLINE_CALL = /\bAbortSignal\s*(?:\??\.\s*timeout|(?:\?\.)?\[\s*['"`]timeout['"`]\s*\])\s*(?:\?\.)?\(/g;
+const DEADLINE_ALIAS = /(?:=|:|\(|,|return)\s*AbortSignal\s*(?:[;,)\n]|$)|\}\s*=\s*AbortSignal\b/m;
 /** A deadline given to a call: joined to the caller's signal, or passed as a call's own `signal`. */
 const DEADLINE_BOUND = /AbortSignal\.any\(\s*\[[^\]]*?AbortSignal\.timeout\(|\bsignal\s*:[^,\n]*?AbortSignal\.timeout\(/g;
 
@@ -131,9 +137,24 @@ describe('the 2.0 member entry graph', () => {
     expect(naming.sort()).toEqual(Object.keys(BOUNDED_TIMERS).sort());
   });
 
-  it('holds a request deadline in no module but the allowlisted ones, whatever the spelling', () => {
+  it('holds a request deadline in no module but the allowlisted ones, in any spelling this gate reads', () => {
     const naming = [...CODE].filter(([, code]) => DEADLINE_IDENTIFIER.test(code)).map(([key]) => key);
     expect(naming.sort()).toEqual(Object.keys(REQUEST_DEADLINES).sort());
+  });
+
+  it('never takes `AbortSignal` apart or passes it on under another name, so no deadline escapes those spellings', () => {
+    const aliasing = [...CODE].filter(([, code]) => DEADLINE_ALIAS.test(code)).map(([key]) => key);
+    expect(aliasing).toEqual([]);
+  });
+
+  it('reads each spelling of a deadline, and each way of taking `AbortSignal` apart', () => {
+    for (const spelled of ['AbortSignal.timeout(5)', 'AbortSignal?.timeout(5)', "AbortSignal['timeout'](5)", 'AbortSignal?.["timeout"](5)']) {
+      expect({ spelled, named: DEADLINE_IDENTIFIER.test(spelled), calls: (spelled.match(DEADLINE_CALL) ?? []).length }).toEqual({ spelled, named: true, calls: 1 });
+    }
+    for (const aliased of ['const { timeout } = AbortSignal;', 'const S = AbortSignal;', 'use(AbortSignal)', 'return AbortSignal;']) {
+      expect({ aliased, refused: DEADLINE_ALIAS.test(aliased) }).toEqual({ aliased, refused: true });
+    }
+    expect(DEADLINE_ALIAS.test('AbortSignal.any([signal, AbortSignal.timeout(5)])')).toBe(false);
   });
 
   it('gives every request deadline to the call it bounds, at the count the allowlist declares', () => {

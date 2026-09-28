@@ -333,4 +333,37 @@ describe('two workers on a host that sleeps', () => {
       }
     });
   }, 60_000);
+
+  it('returns a lengthened settle to its base once the host stays up through a run', async () => {
+    const release = turnRelease();
+    release();
+    const h = await host();
+    const a = await h.member('mem_mac');
+    // Scaled: a base of 1 s, doubling to a ceiling far above anything this test reaches.
+    const settle = { baseMs: 1_000, maxMs: 60_000 };
+    await h.mcp(async () => {
+      try {
+        const { lines } = h.attach('mac', a.token, { wakeSettle: settle });
+        await wait(200);
+        await h.sleep(SLEEP_MS);
+        // Two wakes shorter than the settle lengthen it to 4 s.
+        for (const wake of [500, 1_500]) {
+          await wait(wake);
+          await h.sleep(SLEEP_MS);
+        }
+        await until('the settle to be said', () => lines.some((l) => l.includes('awake 4s')));
+        h.queueRun('run_through');
+        await until('the run to end', () => h.row('run_through').status !== 'queued' && h.row('run_through').status !== 'running', 15_000);
+        // The host stayed up through the run; the next wake waits out the base again.
+        const said = lines.length;
+        await wait(200);
+        await h.sleep(SLEEP_MS);
+        await until('the next wake to be said', () => lines.slice(said).some((l) => l.startsWith('this machine woke')));
+        expect(lines.slice(said).find((l) => l.startsWith('this machine woke')), h.report()).toContain('awake 1s');
+      } finally {
+        release();
+        await h.stop();
+      }
+    });
+  }, 60_000);
 });
