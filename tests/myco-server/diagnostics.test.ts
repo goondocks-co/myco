@@ -14,6 +14,7 @@ import { deploymentDiagnostics, declaredWork } from '@myco-server-worker/core/di
 import { issueMemberToken } from '@myco-server-worker/auth/tokens.js';
 import { ensureMember } from '@myco-server-worker/auth/enrollment.js';
 import { recordWorkerContact } from '@myco-server-worker/core/worker-contacts.js';
+import { VECTOR_LOST_MS, VECTOR_REWRITE_LIMIT } from '@myco-server-worker/core/embedding/provider.js';
 import { sqliteEnv, memberHeaders } from './helpers/fixtures.js';
 import { asOwner, OWNER_ENV } from './helpers/owner.js';
 
@@ -86,6 +87,22 @@ describe('the Deployment names what it is configured to do', () => {
       lastActivityAt: null, archivedAt: null, unavailableFields: [],
     });
     expect(document.ingestBacklog).toMatchObject({ pendingTranscripts: 0, pendingImportedTranscripts: 0 });
+    expect(document.missingSporeVectors).toEqual([]);
+  });
+
+  it('counts the spores left out of relevance calibration while the vector store does not return their vectors', async () => {
+    const r = await rig();
+    const receipt = (record: string, rewrites: number, updatedAt: number) => {
+      r.sqlite.run(`INSERT INTO spores (project_id, id, agent_id, content, observation_type, created_at) VALUES ('proj_1', ?, 'myco-agent', ?, 'decision', 1)`, [record, `spore ${record}`]);
+      r.sqlite.run(`INSERT INTO embedding_receipts (project_id, model_key, id, type, record_id, revision, ready, updated_at, rewrites)
+        SELECT project_id, 'm', ?, type, record_id, revision, 1, ?, ? FROM embedding_versions WHERE project_id = 'proj_1' AND type = 'spore' AND record_id = ?`,
+      [`v-${record}`, updatedAt, rewrites, record]);
+    };
+    receipt('calibrated', 0, NOW);
+    receipt('written-again', 1, NOW);
+    receipt('given-up', VECTOR_REWRITE_LIMIT, NOW - VECTOR_LOST_MS);
+    const document = await deploymentDiagnostics(r.serverEnv, NOW);
+    expect(document.missingSporeVectors).toEqual([{ projectId: 'proj_1', retrying: 1, abandoned: 1 }]);
   });
 
   it('labels a nonempty backlog as a transcript count', async () => {
@@ -249,6 +266,7 @@ describe('a store the handler could not question is not an empty Deployment', ()
     expect(document.schema).toMatchObject({ found: 43, matches: false });
     expect(document.workers).toBeNull();
     expect(document.ingestBacklog).toBeNull();
+    expect(document.missingSporeVectors).toBeNull();
   });
 
   it('answers a named state with nulls, never zero workers and no projects', async () => {
@@ -264,6 +282,7 @@ describe('a store the handler could not question is not an empty Deployment', ()
     expect(document.queuedRuns).toBeNull();
     expect(document.projects).toBeNull();
     expect(document.ingestBacklog).toBeNull();
+    expect(document.missingSporeVectors).toBeNull();
     // The platform's message never travels; the state names the condition.
     expect(JSON.stringify(document)).not.toContain('myco.sqlite');
     // What this server is configured to do is still answered.

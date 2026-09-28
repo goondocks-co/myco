@@ -3,9 +3,10 @@
  *
  * Every fact comes from a producer that already serves a surface: the schema
  * read, the platform's capability list, the worker liveness counts, the fleet
- * read, the claim queue, the project list, the transcript backlog and the job
- * registry. Nothing here queries for itself, so a diagnostics document and the
- * Status page cannot disagree about the same fact.
+ * read, the claim queue, the project list, the transcript backlog, the spores
+ * the embedding run reports left out of calibration and the job registry.
+ * Nothing here queries for itself, so a diagnostics document and the Status
+ * page cannot disagree about the same fact.
  *
  * The document is a fixed field set, and it carries no free text: a store this
  * handler could not question is reported by a named state, never by the error it
@@ -26,6 +27,7 @@ import { CONTACT_RECENT_MS, isContactOutcome, readWorkerFleet, type ContactOutco
 import { pendingImportedTranscripts, pendingTranscriptBytes as pendingTranscripts } from '../ingest/parse.js';
 import { DEFERRED_JOBS, SERVER_JOBS, WAKE_CONTINUATIONS } from './jobs.js';
 import { CLASSIFIERS } from '../telemetry.js';
+import { missingSporeVectors, type MissingSporeVectors } from './embedding/hubness.js';
 
 export const DEPLOYMENT_BUNDLE_VERSION = 1;
 
@@ -148,6 +150,11 @@ export interface DeploymentDiagnostics {
   projects: ProjectFacts[] | null;
   /** Null when the store could not be questioned. */
   ingestBacklog: { pendingTranscripts: number; pendingImportedTranscripts: number } | null;
+  /**
+   * Each Project with spores left out of relevance calibration while the vector store does not return their
+   * vectors, as the embedding run reports them. Null when the store could not be questioned.
+   */
+  missingSporeVectors: Array<{ projectId: string } & MissingSporeVectors> | null;
   /** Declared from the registry, so it is answered whether or not the store can be read. */
   declaredWork: DeclaredWorkFacts[];
   /** The closed vocabulary a refusal's code is drawn from, which is what joins this document to a member's refusal log. */
@@ -251,6 +258,7 @@ export async function deploymentDiagnostics(env: ServerEnv, now: number): Promis
         pendingTranscripts: await pendingTranscripts(env.db),
         pendingImportedTranscripts: await pendingImportedTranscripts(env.db),
       },
+      missingSporeVectors: await missingAcross(env, projects, now),
     };
   } catch {
     return {
@@ -261,6 +269,16 @@ export async function deploymentDiagnostics(env: ServerEnv, now: number): Promis
       queuedRuns: null,
       projects: null,
       ingestBacklog: null,
+      missingSporeVectors: null,
     };
   }
+}
+
+async function missingAcross(env: ServerEnv, projects: ProjectRow[], now: number): Promise<Array<{ projectId: string } & MissingSporeVectors>> {
+  const found: Array<{ projectId: string } & MissingSporeVectors> = [];
+  for (const { projectId } of projects) {
+    const missing = await missingSporeVectors(env.db, projectId, now);
+    if (missing.retrying + missing.abandoned > 0) found.push({ projectId, ...missing });
+  }
+  return found;
 }

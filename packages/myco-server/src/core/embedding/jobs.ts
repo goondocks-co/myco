@@ -3,7 +3,7 @@ import { AlreadyRunning, dispatchPrepared, prepareDispatch, hasTaskRuntime } fro
 import { hasLiveTaskRun, lastTaskEntryAt } from '../runs.js';
 import { leafValues } from '../settings.js';
 import { listProjects } from '../../read/sessions.js';
-import { CURRENT_SPORE_VECTORS, hubnessPending } from './hubness.js';
+import { SPORE_VECTORS, hubnessPending } from './hubness.js';
 import { resolveSemanticSearch } from '../search.js';
 import { DELETION_DUE, SOURCE_HELD, deletionDueBinds } from './reconcile.js';
 
@@ -16,8 +16,8 @@ export async function hasEmbeddingWork(db: RelationalStore, projectId: string, m
     OR EXISTS(SELECT 1 FROM embedding_receipts r WHERE r.project_id = ? AND ${DELETION_DUE}) AS pending`)
     .bind(projectId, model, projectId, ...deletionDueBinds(model, now)).first<{ pending: number }>();
   if (row?.pending === 1) return true;
-  const count = (await db.prepare(`SELECT COUNT(*) AS n FROM (${CURRENT_SPORE_VECTORS})`).bind(projectId, model).first<{ n: number }>())!.n;
-  return count >= 2 && hubnessPending(db, projectId, model);
+  const count = (await db.prepare(`SELECT COUNT(*) AS n FROM (${SPORE_VECTORS})`).bind(projectId, model).first<{ n: number }>())!.n;
+  return count >= 2 && hubnessPending(db, projectId, model, now);
 }
 
 export async function embeddingKeepsAwake(env: ServerEnv, now: number): Promise<boolean> {

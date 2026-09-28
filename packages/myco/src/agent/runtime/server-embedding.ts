@@ -12,9 +12,9 @@ export const embeddingTask: AgentTask = {
 
 /** The runtime drives bounded server operations and posts its report inside the run deadline. */
 export async function executeEmbeddingRun(ctx: ServerToolContext, signal: AbortSignal, deadline: number): Promise<{ usage: { totalTokens: number } }> {
-  const { processed, phase } = await runEmbeddingSteps(
+  const result = await runEmbeddingSteps(
     () => postRunControl(ctx.client, ctx.budget, '/runs/embedding-step', { runId: ctx.runId }), signal, deadline);
   signal.throwIfAborted();
-  await postRunReport(ctx.client, ctx.budget, { runId: ctx.runId, agentId: ctx.agentId, ...embeddingRunReport({ processed, phase }) });
+  await postRunReport(ctx.client, ctx.budget, { runId: ctx.runId, agentId: ctx.agentId, ...embeddingRunReport(result) });
   return { usage: { totalTokens: 0 } };
 }

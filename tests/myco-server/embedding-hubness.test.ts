@@ -5,8 +5,9 @@ import { configureSqliteLibrary } from '../../packages/myco-server/src/platform/
 import { sqliteVectorStore } from '../../packages/myco-server/src/platform/bun/vectors.js';
 import { cloudflareVectorStore } from '../../packages/myco-server/src/platform/cloudflare/vectors.js';
 import { reconcileEmbedding, type EmbeddingContext, type EmbeddingStep } from '../../packages/myco-server/src/core/embedding/reconcile.js';
-import { CURRENT_SPORE_VECTORS } from '../../packages/myco-server/src/core/embedding/hubness.js';
-import { VECTOR_DELETE_CONFIRM_MS as C, type EmbeddingProvider } from '../../packages/myco-server/src/core/embedding/provider.js';
+import { CURRENT_SPORE_VECTORS, missingSporeVectors } from '../../packages/myco-server/src/core/embedding/hubness.js';
+import { VECTOR_DELETE_CONFIRM_MS as C, VECTOR_LOST_MS as LOST, VECTOR_REWRITE_LIMIT, type EmbeddingProvider } from '../../packages/myco-server/src/core/embedding/provider.js';
+import { embeddingRunReport, runEmbeddingSteps } from '../../packages/myco-server/src/core/embedding/run.js';
 import { cosineSimilarity, type VectorStore } from '../../packages/myco-server/src/core/embedding/vectors.js';
 import { hasEmbeddingWork } from '../../packages/myco-server/src/core/embedding/jobs.js';
 import type { RelationalStore } from '../../packages/myco-server/src/core/adapters.js';
@@ -132,6 +133,21 @@ function fixture(target: Target) {
 }
 
 const hubnessSteps = (phases: EmbeddingStep['phase'][]) => phases.filter((p) => p === 'hubness').length;
+const MINUTE = 60_000;
+
+/** The vector store drops the first `lose` writes of one spore's vector, and returns only the vectors it holds; counts that spore's writes. */
+function losing(f: ReturnType<typeof fixture>, record: string, lose = Infinity) {
+  const inner = f.context.vectors;
+  let writes = 0;
+  f.context.vectors = { ...inner, upsert: async (scope, vectors) => {
+    const kept = vectors.filter((v) => v.metadata.record_id !== record || ++writes > lose);
+    if (kept.length > 0) await inner.upsert(scope, kept);
+  } };
+  return { get writes() { return writes; } };
+}
+
+const receiptOf = (f: ReturnType<typeof fixture>, record: string) =>
+  f.sqlite.query('SELECT id, ready, rewrites, neighbor_mean FROM embedding_receipts WHERE record_id = ?').get(record) as { id: string; ready: number; rewrites: number; neighbor_mean: number | null } | null;
 /** One operation's steps over a membership of `n`: one page of settled members per step. */
 const operationSteps = (n: number) => Math.max(1, Math.ceil(n / PAGE));
 
@@ -417,4 +433,136 @@ describe.each(TARGETS)('%s: spore calibration', (target) => {
     expect(f.repaired()).toBe(8);
     expect(await f.work(T)).toBe(false);
   });
+
+  test('a spore vector the store never returns is written again a bounded number of times, while calibration settles exactly over the others, then goes quiet', async () => {
+    const f = fixture(target);
+    for (let i = 0; i < 12; i++) f.spore(`s${String(i).padStart(2, '0')}`, `spore ${i}`);
+    await f.settle(T);
+    await f.expectExact();
+    const lost = losing(f, 'lost');
+    f.spore('lost', 'a spore whose vector write is lost');
+    f.spore('beside', 'a spore added beside it');
+    const missing = (now: number) => missingSporeVectors(f.db, 'p', now);
+    // Waited on until the bound: its write may still be applied, so no statistics publish over a set that lacks it.
+    await f.settle(T);
+    expect(lost.writes).toBe(1);
+    expect(receiptOf(f, 'beside')!.neighbor_mean).toBeNull();
+    expect(await f.work(T + LOST - 1)).toBe(true);
+    expect(await missing(T + LOST - 1)).toEqual({ retrying: 0, abandoned: 0 });
+    for (let attempt = 1; attempt <= VECTOR_REWRITE_LIMIT; attempt++) {
+      const now = T + attempt * LOST;
+      // Taken as lost: its receipt goes back through the write path, and the others' statistics publish without it.
+      const phases = await f.settle(now);
+      expect(receiptOf(f, 'beside')!.neighbor_mean).not.toBeNull();
+      expect({ attempt, steps: phases.length <= 5 }).toEqual({ attempt, steps: true });
+      expect(lost.writes).toBe(1 + attempt);
+      expect(receiptOf(f, 'lost')).toMatchObject({ ready: 1, rewrites: attempt, neighbor_mean: null });
+      expect(f.current()).not.toContain(receiptOf(f, 'lost')!.id);
+      await f.expectExact();
+      expect(await missing(now)).toEqual({ retrying: 1, abandoned: 0 });
+      // Each new write is looked for until the bound from that write.
+      expect(await f.work(now + LOST - 1)).toBe(true);
+    }
+    // The rewrite bound is spent: the vector is not written again, the spore is reported, and the job is quiet.
+    const spent = T + (VECTOR_REWRITE_LIMIT + 1) * LOST;
+    expect(await f.work(spent - 1)).toBe(true);
+    expect(await f.work(spent)).toBe(false);
+    expect((await f.settle(spent)).length).toBeLessThanOrEqual(2);
+    expect(await f.work(spent)).toBe(false);
+    await f.settle(spent + 100 * LOST);
+    expect(await f.work(spent + 100 * LOST)).toBe(false);
+    expect(lost.writes).toBe(1 + VECTOR_REWRITE_LIMIT);
+    expect(receiptOf(f, 'lost')).toMatchObject({ ready: 1, rewrites: VECTOR_REWRITE_LIMIT });
+    expect(await missing(spent)).toEqual({ retrying: 0, abandoned: 1 });
+    expect(embeddingRunReport({ processed: 0, phase: 'settled', missing: await missing(spent) }).summary).toBe(
+      `Processed 0 embedding records; settled. 1 spore is left out of relevance calibration: the vector store never returned its vector, even after it was written again ${VECTOR_REWRITE_LIMIT} times.`);
+    await f.expectExact();
+    expect(f.repaired()).toBe(0);
+  });
+
+  test('a lost spore vector that its rewrite makes visible joins incrementally, and calibration is exact over every spore', async () => {
+    const f = fixture(target);
+    for (let i = 0; i < 60; i++) f.spore(`s${String(i).padStart(2, '0')}`, `spore ${i}`);
+    await f.settle(T);
+    const lost = losing(f, 'lost', 1);
+    f.spore('lost', 'a spore whose first vector write is lost');
+    await f.settle(T);
+    expect(await f.work(T + LOST - 1)).toBe(true);
+    const phases = await f.settle(T + LOST);
+    expect(f.members().map((m) => m.id)).toContain(receiptOf(f, 'lost')!.id);
+    expect(lost.writes).toBe(2);
+    // One joining operation over the 60 settled members: no full recompute.
+    expect(hubnessSteps(phases)).toBe(operationSteps(60));
+    expect(receiptOf(f, 'lost')).toMatchObject({ ready: 1, rewrites: 0 });
+    expect(f.current()).toContain(receiptOf(f, 'lost')!.id);
+    await f.expectExact();
+    expect(f.repaired()).toBe(0);
+    expect(await f.work(T + LOST)).toBe(false);
+    expect(await missingSporeVectors(f.db, 'p', T + LOST)).toEqual({ retrying: 0, abandoned: 0 });
+  });
+
+  test('a spore vector the store returns three minutes after its write joins without being written again', async () => {
+    const f = fixture(target);
+    for (let i = 0; i < 12; i++) f.spore(`s${String(i).padStart(2, '0')}`, `spore ${i}`);
+    await f.settle(T);
+    const slow = losing(f, 'slow', 0);
+    let clock = T;
+    const inner = f.context.vectors;
+    f.context.vectors = { ...inner, get: async (scope, ids) => (await inner.get(scope, ids)).filter((v) => v.metadata.record_id !== 'slow' || clock >= T + 3 * MINUTE) };
+    f.spore('slow', 'a spore whose vector is slow to appear');
+    for (const minutes of [0, 1, 2]) {
+      clock = T + minutes * MINUTE;
+      await f.settle(clock);
+      expect(await f.work(clock)).toBe(true);
+    }
+    clock = T + 3 * MINUTE;
+    await f.settle(clock);
+    await f.expectExact();
+    expect(f.current()).toContain(receiptOf(f, 'slow')!.id);
+    expect(await f.work(clock)).toBe(false);
+    for (const later of [LOST, 2 * LOST, 10 * LOST]) {
+      clock = T + later;
+      await f.settle(clock);
+      expect(await f.work(clock)).toBe(false);
+    }
+    expect(slow.writes).toBe(1);
+    expect(receiptOf(f, 'slow')).toMatchObject({ ready: 1, rewrites: 0 });
+    await f.expectExact();
+    expect(f.repaired()).toBe(0);
+  });
+
+  test('a left-out spore that is removed has its vector deleted and is never written again', async () => {
+    const f = fixture(target);
+    for (let i = 0; i < 12; i++) f.spore(`s${String(i).padStart(2, '0')}`, `spore ${i}`);
+    await f.settle(T);
+    const lost = losing(f, 'lost');
+    f.spore('lost', 'a spore whose vector write is lost');
+    await f.settle(T);
+    await f.settle(T + LOST);
+    expect(receiptOf(f, 'lost')).toMatchObject({ ready: 1, rewrites: 1 });
+    f.sqlite.run("DELETE FROM spores WHERE project_id = 'p' AND id = 'lost'");
+    await f.settle(T + LOST + 1);
+    expect(receiptOf(f, 'lost')).toMatchObject({ ready: -1, rewrites: 1 });
+    await f.settle(T + 3 * LOST);
+    expect(receiptOf(f, 'lost')).toBeNull();
+    expect(lost.writes).toBe(2);
+    expect(await f.work(T + 3 * LOST)).toBe(false);
+    expect(await missingSporeVectors(f.db, 'p', T + 3 * LOST)).toEqual({ retrying: 0, abandoned: 0 });
+    await f.expectExact();
+    expect(f.repaired()).toBe(0);
+  });
+});
+
+test('an embedding run reports the spores its last step found left out of relevance calibration', async () => {
+  const steps = [
+    { held: true, phase: 'missing', processed: 1, missing: { retrying: 1, abandoned: 0 } },
+    { held: true, phase: 'settled', processed: 0, missing: { retrying: 1, abandoned: 2 } },
+  ];
+  const result = await runEmbeddingSteps(async () => steps.shift()!, new AbortController().signal, Date.now() + 10 * MINUTE);
+  expect(result).toEqual({ processed: 1, phase: 'settled', missing: { retrying: 1, abandoned: 2 } });
+  expect(embeddingRunReport(result).summary).toBe('Processed 1 embedding records; settled.'
+    + ' 1 spore is left out of relevance calibration: the vector store has not returned its vector, so it is being written again.'
+    + ` 2 spores are left out of relevance calibration: the vector store never returned their vectors, even after they were written again ${VECTOR_REWRITE_LIMIT} times.`);
+  const quiet = await runEmbeddingSteps(async () => ({ held: true, phase: 'settled', processed: 0, missing: { retrying: 0, abandoned: 0 } }), new AbortController().signal, Date.now() + 10 * MINUTE);
+  expect(embeddingRunReport(quiet).summary).toBe('Processed 0 embedding records; settled.');
 });
