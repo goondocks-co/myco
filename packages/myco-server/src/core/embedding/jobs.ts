@@ -3,23 +3,21 @@ import { AlreadyRunning, dispatchPrepared, prepareDispatch, hasTaskRuntime } fro
 import { hasLiveTaskRun, lastTaskEntryAt } from '../runs.js';
 import { leafValues } from '../settings.js';
 import { listProjects } from '../../read/sessions.js';
-import { CURRENT_SPORE_VECTORS } from './hubness.js';
+import { CURRENT_SPORE_VECTORS, hubnessPending } from './hubness.js';
 import { resolveSemanticSearch } from '../search.js';
 import { DELETION_DUE, SOURCE_HELD, deletionDueBinds } from './reconcile.js';
 
 const EMBEDDING_RETRY_MS = 60_000;
 export const EMBEDDING_TASK = 'embedding-reconcile';
 
-/** The backlog includes sources awaiting a write, deletions that are due and an incomplete hubness pass. */
+/** The backlog includes sources awaiting a write, deletions that are due and pending spore calibration. */
 export async function hasEmbeddingWork(db: RelationalStore, projectId: string, model: string, now: number): Promise<boolean> {
   const row = await db.prepare(`SELECT EXISTS(SELECT 1 FROM embedding_sources s WHERE s.project_id = ? AND NOT ${SOURCE_HELD})
     OR EXISTS(SELECT 1 FROM embedding_receipts r WHERE r.project_id = ? AND ${DELETION_DUE}) AS pending`)
     .bind(projectId, model, projectId, ...deletionDueBinds(model, now)).first<{ pending: number }>();
   if (row?.pending === 1) return true;
   const count = (await db.prepare(`SELECT COUNT(*) AS n FROM (${CURRENT_SPORE_VECTORS})`).bind(projectId, model).first<{ n: number }>())!.n;
-  if (count < 2) return false;
-  return (await db.prepare('SELECT 1 AS current FROM embedding_cursors WHERE project_id = ? AND hubness_model = ? AND hubness_count = ?')
-    .bind(projectId, model, count).first()) === null;
+  return count >= 2 && hubnessPending(db, projectId, model);
 }
 
 export async function embeddingKeepsAwake(env: ServerEnv, now: number): Promise<boolean> {
