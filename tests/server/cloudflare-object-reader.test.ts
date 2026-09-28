@@ -310,6 +310,8 @@ describe('the provider command failures a read may try again', () => {
       apiError('Authentication error [code: 10000]'),
       apiError('near "SELEC": syntax error at offset 0 [code: 7500]'),
       failed('', '✘ [ERROR] Couldn\'t find a D1 DB with the name or binding \'myco-server\'\n'),
+      // Only Wrangler's own failure line and its notes are judged, not the progress it printed before them.
+      failed('Downloading SQL to /backups/after fetch failed [code: 10001]/d1.sql\n', '✘ [ERROR] ENOSPC: no space left on device, write\n'),
     ]) expect(transientReadFailure(failure)).toBe(false);
   });
 

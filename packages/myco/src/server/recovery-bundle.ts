@@ -379,8 +379,9 @@ export interface RetryBound { attempts: number; backoffMs: readonly number[] }
  *   source answered a token this backup is opening absent. An opening round writes the same token again, which the
  *   source opens at most once, so a retry never takes a second hold; a resume's round only reads.
  * - `snapshots`: the whole database snapshot, captured again from an emptied work directory, only on a transient
- *   failure (`transientReadFailure`). One count spans every step of the capture and is never reset by a restart. The
- *   waits add up to a little over three minutes, so a provider API outage of a few minutes is ridden out inside one run.
+ *   failure (`transientReadFailure`). Within one run, one count spans every step of the capture, and capturing again
+ *   does not reset it; a later run starts its own count. The waits add up to a little over three minutes, so a provider
+ *   API outage of a few minutes is ridden out inside one run.
  */
 export interface RecoveryRetryPolicy { objectReads: RetryBound; holdReads: RetryBound; holdRounds: RetryBound; snapshots: RetryBound }
 export const RECOVERY_RETRY: RecoveryRetryPolicy = {

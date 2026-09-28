@@ -44,10 +44,11 @@ export const transientStatus = (status: number): boolean => status === 429 || (s
 
 /**
  * Cloudflare API error codes, as Wrangler prints them (`[code: NNNN]`), that answer a request which may succeed when sent
- * again. Cloudflare documents 10001 (internal error), 10002 (unexpected internal error), 10043 (service unavailable) and
- * 10058 (too many requests) as retryable. 7403 refuses the account, and D1 also answers it for an account it accepts
- * minutes later, so it is retried inside the same bound and reported as a possible credential fault when it persists.
- * 10000 (authentication error) is not here: it fails at once.
+ * again. R2's error table lists 10001 (internal error), 10043 (service unavailable) and 10058 (too many requests) with
+ * "retry"; 10002 is Cloudflare's generic unexpected internal error. 7403 refuses the account, and D1 also answers it
+ * for an account and credential that other requests succeed with (cloudflare/workers-sdk#15774), so it is retried inside
+ * the same bound and reported as a possible credential fault when it persists. 10000 (authentication error) is not
+ * here: it fails at once.
  */
 const TRANSIENT_API_CODES = new Set(['7403', '10001', '10002', '10043', '10058']);
 /** Cloudflare API error codes that refuse the account or its credential. */
@@ -76,12 +77,25 @@ const TRANSIENT_OUTPUT: readonly RegExp[] = [
 ];
 const NETWORK_CODE_IN_TEXT = new RegExp(`\\b(?:${[...TRANSIENT_NETWORK_CODES].join('|')})\\b`);
 
-/** Every Cloudflare API error code a provider command printed. */
-const apiCodes = (output: string): string[] => [...output.matchAll(API_CODE)].map((match) => match[1]!);
+/** The marker Wrangler opens its failure with (`✘ [ERROR] …`); the notes it prints follow that line. */
+const WRANGLER_ERROR = '[ERROR]';
 
-/** Whether what a failed provider command printed names a failure that may pass when the command runs again. */
+/**
+ * The part of a failed provider command's output that states its failure: from Wrangler's `[ERROR]` line through the
+ * notes after it, or the whole output when no such line was printed, as a `--json` command's error document is.
+ */
+const failureText = (output: string): string => {
+  const at = output.indexOf(WRANGLER_ERROR);
+  return at === -1 ? output : output.slice(at);
+};
+
+/** Every Cloudflare API error code a provider command's failure names. */
+const apiCodes = (output: string): string[] => [...failureText(output).matchAll(API_CODE)].map((match) => match[1]!);
+
+/** Whether the failure a provider command printed may pass when the command runs again. */
 export function transientProviderOutput(output: string): boolean {
-  return TRANSIENT_OUTPUT.some((pattern) => pattern.test(output)) || NETWORK_CODE_IN_TEXT.test(output)
+  const failure = failureText(output);
+  return TRANSIENT_OUTPUT.some((pattern) => pattern.test(failure)) || NETWORK_CODE_IN_TEXT.test(failure)
     || apiCodes(output).some((code) => TRANSIENT_API_CODES.has(code));
 }
 

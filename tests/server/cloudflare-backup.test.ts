@@ -9,7 +9,7 @@ import { backupCloudflareDeployment } from '@myco/server/cloudflare-backup.js';
 import * as cloudflare from '@myco/server/cloudflare.js';
 import { writeDeploymentRecord, type CloudflareFetch, type OperatorObjectTimeouts } from '@myco/server/cloudflare.js';
 import { RECOVERY_RETRY, verifyRecoveryBundle, type RecoveryRetryPolicy } from '@myco/server/recovery-bundle.js';
-import type { CommandRunner } from '@myco/server/runner.js';
+import { CommandTimedOut, type CommandRunner } from '@myco/server/runner.js';
 import { sqliteEnv } from '../myco-server/helpers/fixtures.js';
 import { SCHEMA_QUERY } from '@myco/server/recovery-schema.js';
 import { recoveryConfigurationOf } from '@myco/server/cloudflare-resources.js';
@@ -247,7 +247,7 @@ it('bounds every hold statement it sends, so no hold waits on a provider command
 const apiRefusal = (note: string) => ({ code: 1, stderr: '', stdout: JSON.stringify({ error: {
   text: 'A request to the Cloudflare API (/accounts/fixture-account/d1/database/fixture-database/query) failed.', notes: [{ text: note }],
 } }) });
-/** The account refusal D1 answered transiently for an account it accepted minutes later. */
+/** The account refusal D1 answers for an account and credential that other requests succeed with. */
 const accountRefused = apiRefusal('The given account is not valid or is not authorized to access this service [code: 7403]');
 const authenticationError = apiRefusal('Authentication error [code: 10000]');
 /** What Wrangler prints when a request loses its connection or its name lookup. */
@@ -280,6 +280,25 @@ it('retries an object read that times out, and completes a verified artifact', a
     ]);
     expect((await verifyRecoveryBundle(f.destination)).status).toBe('complete');
     expect(new Uint8Array(fs.readFileSync(path.join(f.destination, 'blobs', 'proj_1', f.digest)))).toEqual(f.bytes);
+  } finally { f.cleanup(); }
+});
+
+it('logs in again after a login that timed out, and completes the object read on a later attempt', async () => {
+  const f = fixture();
+  try {
+    let logins = 0;
+    const runner: CommandRunner = { run: async (command, args, options) => {
+      if (args.includes('auth') && ++logins === 1) throw new CommandTimedOut(command, args, options?.timeoutMs ?? 0, 'ended');
+      return f.runner.run(command, args, options);
+    } };
+    const reports: string[] = [];
+    const result = await f.backup({ runner, report: (line) => reports.push(line) });
+    expect(result.status).toBe('complete');
+    expect(logins).toBe(2);
+    expect(reports.filter((line) => line.includes('answered nothing in'))).toEqual([
+      expect.stringContaining(`(attempt 2 of ${RECOVERY_RETRY.objectReads.attempts})`),
+    ]);
+    expect((await verifyRecoveryBundle(f.destination)).status).toBe('complete');
   } finally { f.cleanup(); }
 });
 
@@ -622,6 +641,28 @@ describe('a transient Cloudflare failure during the snapshot', () => {
       expect(captured(f)).toEqual([{ id: 3, body: f.body }]);
       expect((await verifyRecoveryBundle(f.destination)).status).toBe('complete');
     } finally { f.cleanup(); }
+  });
+
+  it('waits the bound\'s backoff before each capture after the first', async () => {
+    const f = fixture();
+    try {
+      const at: number[] = [];
+      const runner = failing(f, (args) => {
+        if (!isExport(args)) return null;
+        at.push(performance.now());
+        return at.length < 3 ? downloadLost(f, args) : null;
+      });
+      const retry = { ...IMMEDIATE_RETRY, snapshots: { attempts: 3, backoffMs: [60, 90] } };
+      const reports: string[] = [];
+      expect((await f.backup({ runner, retry, report: (line) => reports.push(line) })).status).toBe('complete');
+      expect(at).toHaveLength(3);
+      expect(at[1]! - at[0]!).toBeGreaterThanOrEqual(55);
+      expect(at[2]! - at[1]!).toBeGreaterThanOrEqual(85);
+    } finally { f.cleanup(); }
+  });
+
+  it('keeps the production snapshot bound: four captures, waiting 15 s, 60 s and 120 s between them', () => {
+    expect(RECOVERY_RETRY.snapshots).toEqual({ attempts: 4, backoffMs: [15_000, 60_000, 120_000] });
   });
 
   it('compares the schema reads of one attempt only, never one attempt\'s with another\'s', async () => {
