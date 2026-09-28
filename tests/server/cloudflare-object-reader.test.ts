@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'bun:test';
 import { cloudflareBlobReader, cloudflareObjectStore, type CloudflareFetch } from '@myco/server/cloudflare.js';
-import { transientReadFailure } from '@myco/server/object-read.js';
-import type { CommandRunner } from '@myco/server/runner.js';
+import { refusedAccountCode, transientReadFailure } from '@myco/server/object-read.js';
+import { CommandFailed, CommandTimedOut, type CommandRunner } from '@myco/server/runner.js';
 import { brotliCompressSync, gzipSync, zstdCompressSync } from 'node:zlib';
 
 const options = { accountId: 'fixture-account', bucketName: 'fixture-bucket', configDir: '/operator' };
@@ -284,5 +284,39 @@ describe('the failures a read may try again', () => {
     expect(transientReadFailure(socket('ECONNRESET'))).toBe(true);
     expect(transientReadFailure(socket('ENOSPC'))).toBe(false);
     expect(transientReadFailure(new TypeError('fetch failed'))).toBe(false);
+  });
+});
+
+describe('the provider command failures a read may try again', () => {
+  const failed = (stdout: string, stderr = '') => new CommandFailed('npx', ['--no-install', 'wrangler', 'd1'], { code: 1, stdout, stderr });
+  /** What `wrangler d1 execute --json` prints when the API refuses a request with `code`. */
+  const apiError = (note: string) => failed(JSON.stringify({ error: { text: 'A request to the Cloudflare API (/accounts/a/d1/database/d/query) failed.', notes: [{ text: note }] } }));
+
+  it('tries again after the failures Wrangler prints for a lost connection, a timeout, a server error or a transient API code', () => {
+    for (const failure of [
+      failed('Downloading SQL to /tmp/d1.sql\n', '✘ [ERROR] fetch failed\n'),
+      failed('', '✘ [ERROR] getaddrinfo ENOTFOUND api.cloudflare.com\n'),
+      failed('', '✘ [ERROR] There was an error while downloading from the presigned URL with status code: 503\n'),
+      failed('', '✘ [ERROR] Received a malformed response from the API\n\n  GET /accounts/a/d1/database -> 502 Bad Gateway\n'),
+      apiError('The given account is not valid or is not authorized to access this service [code: 7403]'),
+      apiError('Internal error [code: 10001]'),
+      apiError('D1_ERROR: Network connection lost.'),
+      new CommandTimedOut('npx', ['wrangler'], 60_000, 'ended'),
+    ]) expect(transientReadFailure(failure)).toBe(true);
+  });
+
+  it('fails at once on an authentication error, a bad statement, or output that names no transient failure', () => {
+    for (const failure of [
+      apiError('Authentication error [code: 10000]'),
+      apiError('near "SELEC": syntax error at offset 0 [code: 7500]'),
+      failed('', '✘ [ERROR] Couldn\'t find a D1 DB with the name or binding \'myco-server\'\n'),
+    ]) expect(transientReadFailure(failure)).toBe(false);
+  });
+
+  it('names the code a refusal of the account carries, whether it is retried or not', () => {
+    expect(refusedAccountCode(apiError('The given account is not valid or is not authorized to access this service [code: 7403]'))).toBe('7403');
+    expect(refusedAccountCode(new Error('wrapped', { cause: apiError('Authentication error [code: 10000]') }))).toBe('10000');
+    expect(refusedAccountCode(apiError('Internal error [code: 10001]'))).toBeNull();
+    expect(refusedAccountCode(new CommandTimedOut('npx', ['wrangler'], 60_000, 'ended'))).toBeNull();
   });
 });

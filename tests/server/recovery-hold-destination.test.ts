@@ -29,6 +29,7 @@ const IMMEDIATE: RecoveryRetryPolicy = {
   objectReads: { ...RECOVERY_RETRY.objectReads, backoffMs: [0] },
   holdReads: { ...RECOVERY_RETRY.holdReads, backoffMs: [0] },
   holdRounds: { ...RECOVERY_RETRY.holdRounds, backoffMs: [0] },
+  snapshots: { ...RECOVERY_RETRY.snapshots, backoffMs: [0] },
 };
 
 /** A native Deployment on disk: one blob registered under its own generation, and the volume the backup will read. */
