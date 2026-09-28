@@ -46,10 +46,10 @@ export function queuedWords(run: { position: number | null; heldBy: string | nul
 }
 
 /** Which worker a run names: the machine where the worker record holds an observation of that credential, else the credential. Whether it still holds the run is `leaseStanding`. */
-export function workerWords(leasedBy: string | null, fleet: WorkerStatus | undefined): string {
+export function workerWords(leasedBy: string | null, fleet: WorkerStatus | undefined, machineId: string | null = null): string {
   if (leasedBy === null) return 'not recorded';
   const lookup = workerFor(fleet, leasedBy);
-  return lookup.known ? workerName(lookup.worker) : leasedBy;
+  return lookup.known ? workerName(lookup.worker) : machineId ?? leasedBy;
 }
 
 /** A held lease, by when it ends. One already past says so rather than counting down to nothing. */
@@ -260,7 +260,9 @@ function RunBody({ run, phases, reports, toolCalls, agentName, fleet }: { run: R
         <dl className="grid gap-x-6 gap-y-1 font-sans text-sm sm:grid-cols-2">
           <Fact label="Agent" value={agentName ?? run.agentId} />
           <Fact label="Model" value={run.provider === null && run.model === null ? null : `${run.provider ?? ''}${run.provider && run.model ? ' · ' : ''}${run.model ?? ''}`} />
-          <Fact label={standing === 'lapsed' ? 'Last worker' : 'Worker'} value={workerWords(run.leasedBy, fleet)} />
+          {run.leasedBy === null && run.worker
+            ? <Fact label="Ran on" value={workerWords(run.worker.credentialId, fleet, run.worker.machineId)} />
+            : <Fact label={standing === 'lapsed' ? 'Last worker' : 'Worker'} value={workerWords(run.leasedBy, fleet, run.worker?.machineId ?? null)} />}
           <Fact label="Harness" value={run.harness === null ? null : harnessLabel(run.harness)} />
           {run.leaseExpiresAt !== null && <Fact label="Lease" value={leaseWords(run.leaseExpiresAt, now)} />}
           <Fact label="Run credential" value={run.dispatchedBy} />

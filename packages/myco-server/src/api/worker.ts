@@ -98,7 +98,10 @@ export async function handleWorkerLease(env: ServerEnv, ctx: DeploymentContext):
   if (asked === null) return unreadable();
   const run = named(asked);
   if (run === null) return ok({ persisted: true, held: false, reason: 'lease names a projectId and a runId' });
-  const outcome = await renewLease(env, { tokenId: ctx.tokenId, now: ctx.now }, run);
+  // A worker names the attempt it drives, so a renewal left over from an
+  // earlier attempt of the same run never renews the attempt that replaced it.
+  const attemptId = typeof asked.attemptId === 'string' && RUN_ID_SHAPE.test(asked.attemptId) ? asked.attemptId : undefined;
+  const outcome = await renewLease(env, { tokenId: ctx.tokenId, now: ctx.now }, { ...run, ...(attemptId === undefined ? {} : { attemptId }) });
   // A worker driving a run stops polling the claim, so the renewal is the only
   // contact it makes. It names no offer and no outcome of its own: the stored
   // report keeps its liveness refreshed.

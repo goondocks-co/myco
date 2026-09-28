@@ -12,6 +12,12 @@ import { parseWorkerUsage, type WorkerUsage } from '@goondocks/myco-shared/worke
  * a timer while a run is driven, and a renewal the Deployment declines says
  * another worker holds the run now: the child is stopped and nothing is written,
  * so two workers never both report an outcome for one run.
+ *
+ * A machine that sleeps is a worker that disappears for as long as it sleeps,
+ * so a worker claims only once its machine has stayed awake (`wake.ts`), holds
+ * the machine awake while it drives a run where the platform allows
+ * (`keep-awake.ts`), and on waking from a sleep that outlasted its lease stops
+ * the harness at once rather than spend a session on a run it no longer holds.
  */
 import { mkdirSync } from 'node:fs';
 import { detectHarnesses, offerOf, WITHHELD_REASON } from './detect.js';
@@ -27,6 +33,8 @@ import { prepareWorkerCheckout } from './repository.js';
 import { holdWorkerInstance } from './instance.js';
 import { MAP_TASK } from '@goondocks/myco-shared/canopy';
 import type { RepositoryCheckout } from './repository-checkout.js';
+import { WAKE_SETTLE_MS, watchWake, type WakeWatch } from './wake.js';
+import type { KeepAwake } from './keep-awake.js';
 
 /** What a claim answers: the run, the harness chosen for it, and what it runs under. */
 interface ClaimedRun {
@@ -43,6 +51,8 @@ interface ClaimedRun {
   credentialEnv: Record<string, string>;
   /** The run's own budget, as the Deployment decided it. The worker records it; the Deployment enforces it through the sweep. */
   timeoutSeconds: number;
+  /** When the lease the claim granted lapses unless renewed, on the Deployment's clock; absent from a Deployment that does not say. */
+  leaseExpiresAt?: number;
 }
 
 export interface WorkerOptions {
@@ -86,6 +96,12 @@ export interface WorkerOptions {
    * each claim. False ends the worker, so the service starts the new one.
    */
   stillCurrent?: () => boolean;
+  /** The wall clock a lease's expiry is read against and a sleep is noticed on. Defaults to `Date.now`. */
+  clock?: () => number;
+  /** How long the machine must have been awake since it last slept before this worker claims. Defaults to `WAKE_SETTLE_MS`. */
+  wakeSettleMs?: number;
+  /** Held while a run is driven, so the machine does not sleep under it. Nothing is held when omitted. */
+  keepAwake?: KeepAwake;
 }
 
 /** What a request needs of a worker: where, as whom, and when to give up. */
@@ -250,7 +266,7 @@ const asRun = (value: unknown): ClaimedRun | null => {
  * writes it can see; nothing here reads the harness's own account of its
  * success.
  */
-async function drive(options: WorkerOptions, run: ClaimedRun, heartbeatMs: number): Promise<{ status: 'completed' | 'failed' | 'lost'; error: string | null; usage?: WorkerUsage | null }> {
+async function drive(options: WorkerOptions, run: ClaimedRun, heartbeatMs: number, wake: WakeWatch): Promise<{ status: 'completed' | 'failed' | 'lost'; error: string | null; usage?: WorkerUsage | null }> {
   // A run that fails before its harness starts has no event to log it by, so it is said here.
   const failedBeforeStart = (error: string): { status: 'failed'; error: string } => {
     options.log(`run ${run.id} failed before its harness started: ${error}`);
@@ -296,8 +312,26 @@ async function drive(options: WorkerOptions, run: ClaimedRun, heartbeatMs: numbe
     stopping.abort();
     budgetReached();
   }, run.timeoutSeconds * 1000 + RUN_OVERRUN_GRACE_MS);
-  const heartbeat = setInterval(() => {
-    void post(options, '/worker/lease', { projectId: run.projectId, runId: run.id }).then((answer) => {
+  /** When the lease this worker holds lapses unless renewed, as the Deployment last said. Unknown when it said nothing. */
+  let leaseExpiresAt = typeof run.leaseExpiresAt === 'number' ? run.leaseExpiresAt : Number.POSITIVE_INFINITY;
+  /** Ended with the drive, so an answer that arrives after it says nothing about a run this worker has let go. */
+  const renewals = new AbortController();
+  const losing = (line: string): void => {
+    if (lost) return;
+    lost = true;
+    options.log(line);
+    stopping.abort();
+  };
+  const renew = (): void => {
+    if (lost || renewals.signal.aborted) return;
+    // A renewal is bounded by the cadence: one sent on a connection that died
+    // under it — a laptop that slept, a network that changed — would otherwise
+    // wait on it without end, and the next renewal is due by then anyway.
+    const bounded = AbortSignal.any([renewals.signal, AbortSignal.timeout(heartbeatMs)]);
+    void post({ ...options, signal: bounded }, '/worker/lease', {
+      projectId: run.projectId, runId: run.id, ...(run.attemptId === undefined ? {} : { attemptId: run.attemptId }),
+    }).then((answer) => {
+      if (renewals.signal.aborted) return;
       // A renewal that never arrived is not a renewal declined. The Deployment's
       // own sweep gives the run to another worker once the lease runs out, and
       // it refuses an outcome from a worker that no longer holds it, so a
@@ -307,14 +341,30 @@ async function drive(options: WorkerOptions, run: ClaimedRun, heartbeatMs: numbe
         return;
       }
       unreachable = false;
-      if (answer.kind === 'answered' && answer.body.held === true) return;
-      lost = true;
-      options.log(answer.kind === 'refused'
+      if (answer.kind === 'answered' && answer.body.held === true) {
+        const until = answer.body.expiresAt;
+        if (typeof until === 'number' && Number.isFinite(until) && until > 0) leaseExpiresAt = until;
+        return;
+      }
+      losing(answer.kind === 'refused'
         ? `the Deployment refused the lease on ${run.id}: ${answer.code}`
-        : `lease lost on ${run.id}; another worker holds it`);
-      stopping.abort();
+        : `lease lost on ${run.id}: ${typeof answer.body.reason === 'string' ? answer.body.reason : 'the Deployment no longer holds it for this worker'}`);
     });
+  };
+  const clock = options.clock ?? Date.now;
+  let beat = wake.begin(heartbeatMs);
+  const heartbeat = setInterval(() => {
+    const slept = beat();
+    beat = wake.begin(heartbeatMs);
+    // A machine that slept knows on waking whether its lease outlived the
+    // sleep: the expiry is the Deployment's own word, on a clock both machines
+    // keep through a sleep. One that lapsed is another worker's to take, so the
+    // harness is stopped now rather than left spending a session until a
+    // renewal is answered, which on a network still coming back may be never.
+    if (slept && clock() >= leaseExpiresAt) losing(`this machine slept past its lease on ${run.id}; stopping the harness`);
+    else renew();
   }, heartbeatMs);
+  const releaseAwake = options.keepAwake?.() ?? (() => {});
 
   const events: RunEvent[] = [];
   let usage: WorkerUsage | null = null;
@@ -352,6 +402,8 @@ async function drive(options: WorkerOptions, run: ClaimedRun, heartbeatMs: numbe
     failure = error instanceof Error ? error.message : String(error);
   } finally {
     clearInterval(heartbeat);
+    renewals.abort();
+    releaseAwake();
     clearTimeout(budget);
     options.signal.removeEventListener('abort', onAbort);
     // Closing the stream runs the driver's own cleanup, which stops the child.
@@ -417,7 +469,7 @@ export async function runWorker(options: WorkerOptions): Promise<WorkerOutcome> 
   const instance = await becomeInstance(options);
   if (instance === null) return { driven: 0, refused: null };
   try {
-    return await claimUntilStopped(options);
+    return await claimUntilStopped(options, watchWake(options.clock));
   } finally {
     instance.release();
   }
@@ -448,7 +500,7 @@ async function becomeInstance(options: WorkerOptions): Promise<{ release: () => 
   return null;
 }
 
-async function claimUntilStopped(options: WorkerOptions): Promise<WorkerOutcome> {
+async function claimUntilStopped(options: WorkerOptions, wake: WakeWatch): Promise<WorkerOutcome> {
   const { offered: harnesses, withheld } = offerOf(detectHarnesses(options.only));
   for (const id of withheld) options.log(`not offering ${id}: ${WITHHELD_REASON}`);
   const ready = harnesses.filter((h) => h.authenticated).map((h) => h.id);
@@ -461,11 +513,30 @@ async function claimUntilStopped(options: WorkerOptions): Promise<WorkerOutcome>
   let attached = false;
   /** The reason the last claim answered nothing, so a change in it is said once and a repeat is not. */
   let waiting: string | null = null;
+  const settleMs = options.wakeSettleMs ?? WAKE_SETTLE_MS;
+  /** Whether the wait for a woken machine to settle has been said. */
+  let settling = false;
+  /** Every wait between claims is also where a sleep is noticed: a wait the wall clock says lasted far longer than asked. */
+  const pause = async (ms: number): Promise<void> => {
+    const woke = wake.begin(ms);
+    await sleep(ms, options.signal);
+    woke();
+  };
   while (!options.signal.aborted) {
     if (options.stillCurrent !== undefined && !options.stillCurrent()) {
       options.log('the myco program on disk changed; stopping so the new one starts');
       return { driven, refused: null, replaced: true };
     }
+    // A machine that has only just woken may be about to sleep again — a closed
+    // laptop wakes for seconds at a time — and a run claimed now would lapse
+    // under it. It claims once it has stayed awake.
+    const awake = wake.awakeFor();
+    if (awake < settleMs) {
+      if (!settling) { settling = true; options.log(`this machine woke ${Math.max(0, Math.round(awake / 1000))}s ago; claiming once it has been awake ${Math.round(settleMs / 1000)}s`); }
+      await pause(Math.min(settleMs - awake, Math.max(options.pollIdleMs, 1)));
+      continue;
+    }
+    settling = false;
     const answer = await post(options, '/worker/claim', { harnesses, capabilities: [REPOSITORY_CHECKOUT_CAPABILITY] });
     if (answer.kind === 'refused') {
       options.log(`the Deployment refused the claim: ${answer.code}${answer.detail === '' ? '' : ` — ${answer.detail}`}`);
@@ -476,7 +547,7 @@ async function claimUntilStopped(options: WorkerOptions): Promise<WorkerOutcome>
       // outage would otherwise fill a log with one line per poll, and the
       // recovery — the line that says claiming resumed — would be lost in it.
       if (!unreachable && !options.signal.aborted) { unreachable = true; options.log(`cannot reach ${options.serverUrl}: ${answer.detail}; still polling`); }
-      await sleep(options.pollIdleMs, options.signal);
+      await pause(options.pollIdleMs);
       continue;
     }
     if (unreachable) { unreachable = false; options.log(`reached ${options.serverUrl} again`); }
@@ -489,7 +560,7 @@ async function claimUntilStopped(options: WorkerOptions): Promise<WorkerOutcome>
       // indistinguishable from idleness to anyone reading an unlabelled silence.
       const reason = typeof claim.reason === 'string' ? claim.reason : 'unexplained';
       if (reason !== waiting) { waiting = reason; options.log(`nothing claimed: ${reason}`); }
-      await sleep(waitOf(claim.pollAfterMs, options.pollIdleMs), options.signal);
+      await pause(waitOf(claim.pollAfterMs, options.pollIdleMs));
       continue;
     }
     waiting = null;
@@ -501,7 +572,7 @@ async function claimUntilStopped(options: WorkerOptions): Promise<WorkerOutcome>
     }
     options.log(`claimed ${run.id} (${run.task}) on ${run.harness}, budget ${run.timeoutSeconds}s`);
     // The cadence is the Deployment's, carried on the claim it answered.
-    const outcome = await drive(options, run, waitOf(claim.heartbeatMs, DEFAULT_HEARTBEAT_MS));
+    const outcome = await drive(options, run, waitOf(claim.heartbeatMs, DEFAULT_HEARTBEAT_MS), wake);
     // A worker that lost its lease writes nothing: the run belongs to whoever
     // holds it now, and a late outcome would be one worker reporting on
     // another's run. The Deployment refuses such a write anyway; not making it
@@ -522,6 +593,9 @@ async function claimUntilStopped(options: WorkerOptions): Promise<WorkerOutcome>
       // task actually left behind, and the two differ whenever a harness ends its
       // turn having done none of the work. A worker that logged only its own
       // report would show a clean drive against a run the Deployment failed.
+      if (ended.kind === 'answered' && ended.body.ended === false) {
+        options.log(`the Deployment did not record the outcome of ${run.id}: ${typeof ended.body.reason === 'string' ? ended.body.reason : 'no reason given'}`);
+      }
       if (ended.kind === 'answered') {
         const recorded = ended.body.status;
         if (typeof recorded === 'string' && recorded !== outcome.status) {

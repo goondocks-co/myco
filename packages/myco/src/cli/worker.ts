@@ -21,6 +21,8 @@ import { unboundedBudget } from '../member/budget.js';
 import { refreshMembership } from '../member/refresh.js';
 import { detectHarnesses, offerOf, WITHHELD_REASON } from '../runner/detect.js';
 import { runWorker, sleep, type WorkerOptions } from '../runner/loop.js';
+import { workerLogLine } from '../runner/log.js';
+import { keepMachineAwake } from '../runner/keep-awake.js';
 import { clearWorkerRefusal, isTerminalRefusal, recordWorkerRefusal, type TerminalRefusal } from '../runner/refusal.js';
 import { programRuns, type ProgramProbe } from '../install/place-binary.js';
 import { workerLockDir } from '../runner/instance.js';
@@ -134,10 +136,10 @@ export async function run(args: string[], deps: WorkerServiceDeps = {}): Promise
     ...(only.length === 0 ? {} : { only }),
     ...(flags.get('once') === 'true' ? { once: true } : {}),
     pollIdleMs: POLL_IDLE_MS,
-    log: (line) => { console.log(`worker: ${line}`); },
+    log: (line) => { console.log(workerLogLine(line)); },
     signal: stopping.signal,
   });
-  console.log(`worker: drove ${outcome.driven} run${outcome.driven === 1 ? '' : 's'}`);
+  console.log(workerLogLine(`drove ${outcome.driven} run${outcome.driven === 1 ? '' : 's'}`));
   if (outcome.replaced === true) return endReplacedWorker(serverUrl, mycoHome, stopping.signal);
   if (outcome.refused === null) return true;
   if (isTerminalRefusal(outcome.refused)) return endRefused(serverUrl, mycoHome, outcome.refused);
@@ -228,14 +230,14 @@ export async function endReplacedWorker(serverUrl: string, mycoHome: string, sto
   const spec = workerServiceSpec({ serverUrl, mycoHome, binaryPath: process.execPath, home: deps.home ?? os.homedir(), platform }, []);
   const reload = deps.reload ?? ((s: ServiceSpec, replacing: number) => reloadServiceDetached(s, { platform, replacing }));
   if (!reload(spec, process.pid)) return false;
-  console.log('worker: asked the login service to start the new program');
+  console.log(workerLogLine('asked the login service to start the new program'));
   await sleep(deps.waitMs ?? SERVICE_RELOAD_WAIT_MS, stopped);
   return stopped.aborted;
 }
 
 /** Where a worker attached from this terminal or a login service claims from, and how it knows it is alone. */
 /** `program` is the file this process runs, whose replacement ends the worker once the new one runs. */
-export function attachOptions(serverUrl: string, mycoHome: string, fetchImpl?: typeof fetch, program: string = process.execPath): Pick<WorkerOptions, 'serverUrl' | 'token' | 'renew' | 'lockDir' | 'runRoot' | 'onAttached' | 'stillCurrent'> {
+export function attachOptions(serverUrl: string, mycoHome: string, fetchImpl?: typeof fetch, program: string = process.execPath): Pick<WorkerOptions, 'serverUrl' | 'token' | 'renew' | 'lockDir' | 'runRoot' | 'onAttached' | 'stillCurrent' | 'keepAwake'> {
   return {
     serverUrl,
     token: () => readDeploymentMembership(serverUrl, mycoHome)?.token ?? null,
@@ -244,6 +246,7 @@ export function attachOptions(serverUrl: string, mycoHome: string, fetchImpl?: t
     lockDir: workerLockDir(),
     runRoot: path.join(mycoHome, 'worker', 'runs'),
     onAttached: () => { clearWorkerRefusal(mycoHome, serverUrl); },
-    stillCurrent: sameProgram(program, executableIdentity, programRuns, (line) => { console.log(`worker: ${line}`); }),
+    stillCurrent: sameProgram(program, executableIdentity, programRuns, (line) => { console.log(workerLogLine(line)); }),
+    keepAwake: keepMachineAwake,
   };
 }

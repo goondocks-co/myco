@@ -296,6 +296,27 @@ describe('the worker behind a run', () => {
     expect(screen.queryByText(/no worker ran/i)).toBeNull();
   });
 
+  it('names the machine a finished run ran on, from the worker record or the machine its credential names', async () => {
+    for (const [worker, name] of [
+      [{ credentialId: 'mt_worker', machineId: 'sirkirby-mbp' }, 'sirkirby-mbp'],
+      [{ credentialId: 'mt_rotated_away', machineId: 'local_vm' }, 'local_vm'],
+    ] as const) {
+      const closed = { status: 'completed', harness: 'codex', leasedBy: null, leaseExpiresAt: null, worker };
+      server(base({
+        '/api/status': statusWith(),
+        '/api/projects/x/runs': () => Response.json({ rows: [run(closed)], cursor: null }),
+        '/api/projects/x/runs/r1': () => Response.json(detail(closed)),
+      }));
+      mount('/p/x/runs/r1');
+      expect(await screen.findByText(name)).toBeTruthy();
+      expect(screen.getByText('Ran on')).toBeTruthy();
+      expect(screen.queryByText('not recorded')).toBeNull();
+      // A run that has ended holds no lease, so no holder record claims one.
+      expect(screen.queryByText('The worker holding this run')).toBeNull();
+      cleanup();
+    }
+  });
+
   it('names the holder\'s last contact and what it reports now, without reading it as this run\'s record', async () => {
     const held = { status: 'running', completedAt: null, harness: 'codex', leasedBy: 'mt_worker', leaseExpiresAt: NOW + 62_000 };
     server(base({
