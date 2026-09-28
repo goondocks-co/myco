@@ -14,7 +14,7 @@ export async function resetEmbeddingIndex(db: RelationalStore, projectId: string
   await db.batch([
     db.prepare('DELETE FROM embedding_receipts WHERE project_id = ?').bind(projectId),
     db.prepare('DELETE FROM embedding_cursors WHERE project_id = ?').bind(projectId),
-    db.prepare('DELETE FROM embedding_hubness_work WHERE project_id = ?').bind(projectId),
+    db.prepare('DELETE FROM embedding_hubness_members WHERE project_id = ?').bind(projectId),
     db.prepare('UPDATE embedding_versions SET attempted_at = 0 WHERE project_id = ?').bind(projectId),
   ]);
 }

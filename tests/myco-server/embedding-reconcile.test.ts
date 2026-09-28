@@ -140,7 +140,7 @@ test('journals interrupted writes and advances fairly to the next namespace befo
   expect((await f.search('decision')).results.map((r) => r.type).sort()).toEqual(['session', 'spore']);
 });
 
-test('resumes paginated hubness work, waits for vector visibility, and restarts when the corpus grows', async () => {
+test('calibrates in bounded operations, waits for vector visibility, and takes a new spore in without recomputing every pair', async () => {
   const f = fixture();
   for (let i = 0; i < 52; i++) f.spore(`spore-${i}`, i < 26 ? 'architecture' : 'unrelated');
   for (let i = 0; i < 52; i++) expect((await f.step()).phase).toBe('missing');
@@ -148,26 +148,34 @@ test('resumes paginated hubness work, waits for vector visibility, and restarts 
   const native = f.context.vectors;
   f.context.vectors = { ...native, get: async () => [] };
   expect(await f.step()).toEqual({ phase: 'visibility', processed: 0 });
-  expect(f.sqlite.query('SELECT * FROM embedding_hubness_work').all()).toEqual([]);
+  expect(f.sqlite.query('SELECT * FROM embedding_hubness_members').all()).toEqual([]);
   f.context.vectors = native;
-  expect((await f.step()).phase).toBe('hubness');
-  expect(f.sqlite.query('SELECT count FROM embedding_hubness_work').get()).toEqual({ count: expect.any(Number) });
-  let settled = false;
-  for (let i = 0; i < 110; i++) {
-    if ((await f.step()).phase === 'settled') { settled = true; break; }
-  }
-  expect(settled).toBe(true);
-  const receipts = f.sqlite.query('SELECT neighbor_mean, neighbor_std FROM embedding_receipts WHERE ready = 1').all() as Array<{ neighbor_mean: number; neighbor_std: number }>;
-  expect(receipts).toHaveLength(52);
-  const mean = 26 / 51;
-  for (const r of receipts) {
-    expect(r.neighbor_mean).toBeCloseTo(mean, 6);
-    expect(r.neighbor_std).toBeCloseTo(Math.sqrt(mean * (1 - mean)), 6);
+  // Operations of 20 spores join over 0, 20 and 40 settled members: one page each.
+  expect(await f.step()).toEqual({ phase: 'hubness', processed: 1 });
+  expect(f.sqlite.query('SELECT state, COUNT(*) AS n FROM embedding_hubness_members GROUP BY state').all()).toEqual([{ state: 0, n: 20 }]);
+  expect(await f.step()).toEqual({ phase: 'hubness', processed: 1 });
+  expect(await f.step()).toEqual({ phase: 'hubness', processed: 1 });
+  expect(await f.step()).toEqual({ phase: 'settled', processed: 0 });
+  const stats = () => f.sqlite.query(`SELECT r.neighbor_mean, r.neighbor_std, s.content FROM embedding_receipts r
+    JOIN spores s ON s.project_id = r.project_id AND s.id = r.record_id WHERE r.ready = 1`).all() as Array<{ neighbor_mean: number; neighbor_std: number; content: string }>;
+  expect(stats()).toHaveLength(52);
+  for (const r of stats()) {
+    expect(r.neighbor_mean).toBeCloseTo(26 / 51, 9);
+    expect(r.neighbor_std).toBeCloseTo(Math.sqrt((26 / 51) * (25 / 51)), 9);
   }
   expect(await hasEmbeddingWork(f.db, 'p', f.provider.modelKey, 1000)).toBe(false);
   f.spore('new-spore', 'architecture');
-  await f.step();
+  expect((await f.step()).phase).toBe('missing');
   expect(await hasEmbeddingWork(f.db, 'p', f.provider.modelKey, 1000)).toBe(true);
-  expect((await f.step()).phase).toBe('hubness');
-  expect(f.sqlite.query('SELECT hubness_count, hubness_target_count FROM embedding_cursors').get()).toEqual({ hubness_count: null, hubness_target_count: 53 });
+  expect(await f.step()).toEqual({ phase: 'hubness', processed: 1 });
+  expect(f.sqlite.query('SELECT hubness_count, hubness_cursor FROM embedding_cursors').get()).toEqual({ hubness_count: 52, hubness_cursor: expect.any(String) });
+  expect(await f.step()).toEqual({ phase: 'hubness', processed: 1 });
+  expect(await f.step()).toEqual({ phase: 'settled', processed: 0 });
+  expect(f.sqlite.query('SELECT hubness_count, hubness_cursor FROM embedding_cursors').get()).toEqual({ hubness_count: 53, hubness_cursor: null });
+  for (const r of stats()) {
+    const mean = r.content === 'architecture' ? 26 / 52 : 27 / 52;
+    expect(r.neighbor_mean).toBeCloseTo(mean, 9);
+    expect(r.neighbor_std).toBeCloseTo(Math.sqrt(mean * (1 - mean)), 9);
+  }
+  expect(await hasEmbeddingWork(f.db, 'p', f.provider.modelKey, 1000)).toBe(false);
 });
