@@ -21,6 +21,7 @@ import { BUNDLED_WORKER_WRANGLER } from '../worker-bundle.generated.js';
 import { VECTOR_INDEX_DIMENSIONS, VECTOR_METADATA_FIELDS } from './vector-config.js';
 import { withCloudflareOperation } from './cloudflare-operation.js';
 import { atomicWriteFileSync } from '@myco/utils/atomic-write.js';
+import { ObjectReadError, transientStatus } from './object-read.js';
 
 /** Wrangler refuses to guess between accounts, and guessing is what must not happen. */
 export class AccountNotSelected extends Error {
@@ -390,7 +391,16 @@ export async function queryCloudflareDatabase(
   return answer[0].results;
 }
 
-const OPERATOR_OBJECT_TIMEOUT_MS = 120_000;
+/**
+ * How long an object read may wait, as two windows rather than one over the whole transfer: the response must begin
+ * inside `responseMs`, and each read of its body must bring bytes inside `stallMs`. A large object on a slow link keeps
+ * going for as long as bytes keep arriving, and a stalled one ends within one window wherever it stalls. Only time
+ * spent waiting on Cloudflare counts: a body nobody is reading yet is not stalled.
+ */
+export interface OperatorObjectTimeouts { responseMs: number; stallMs: number }
+const OPERATOR_OBJECT_TIMEOUTS: OperatorObjectTimeouts = { responseMs: 60_000, stallMs: 60_000 };
+/** An upload's progress is not observable from here, so one window bounds its whole request and acknowledgement. */
+const OPERATOR_UPLOAD_TIMEOUT_MS = 120_000;
 const OPERATOR_AUTH_TIMEOUT_MS = 30_000;
 const OPERATOR_UPLOAD_MAX_BYTES = 300_000_000;
 export type CloudflareFetch = (url: string, init: RequestInit) => Promise<Response>;
@@ -401,12 +411,47 @@ const operatorCredentials = z.discriminatedUnion('type', [
   z.object({ type: z.literal('api_key'), key: headerValue, email: headerValue }),
 ]);
 
+const seconds = (ms: number): string => `${ms / 1000} s`;
+
+/**
+ * `body`, failing any read that waits on the source longer than `stallMs` with a transient `ObjectReadError`, and
+ * ending the request through `abort` so its connection is not left open. A read is only timed while one is asked for.
+ */
+function stallBounded(
+  body: ReadableStream<Uint8Array>, stallMs: number, abort: (reason: Error) => void, key: string,
+): ReadableStream<Uint8Array> {
+  const reader = body.getReader();
+  return new ReadableStream<Uint8Array>({
+    async pull(controller) {
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const stalled = new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new ObjectReadError(`Cloudflare object read for ${key} stalled: no bytes arrived for ${seconds(stallMs)}`, { transient: true })), stallMs);
+      });
+      try {
+        const chunk = await Promise.race([reader.read(), stalled]);
+        if (chunk.done) controller.close();
+        else controller.enqueue(chunk.value);
+      } catch (error) {
+        const reason = error instanceof Error ? error : new Error(String(error));
+        abort(reason);
+        await reader.cancel(reason).catch(() => {});
+        throw reason;
+      } finally { clearTimeout(timer); }
+    },
+    async cancel(reason) {
+      abort(reason instanceof Error ? reason : new Error('the object read was cancelled'));
+      await reader.cancel(reason).catch(() => {});
+    },
+  }, { highWaterMark: 0 });
+}
+
 /** Stream R2 transfers through one origin and one in-memory operator credential. */
 export function cloudflareObjectStore(
-  options: CloudflareOptions & { bucketName: string; fetch?: CloudflareFetch },
+  options: CloudflareOptions & { bucketName: string; fetch?: CloudflareFetch; timeouts?: OperatorObjectTimeouts },
 ): { get(key: string): Promise<ReadableStream | null>; put(key: string, body: () => Blob): Promise<void> } {
   const { runner, env } = resolved(options);
   const fetchObject = options.fetch ?? globalThis.fetch;
+  const timeouts = options.timeouts ?? OPERATOR_OBJECT_TIMEOUTS;
   let credentials: Promise<Headers> | undefined;
   const authenticate = async (): Promise<Headers> => {
     const result = await runner.run('npx', wrangler('auth', 'token', '--json'), {
@@ -421,7 +466,11 @@ export function cloudflareObjectStore(
       ? new Headers({ 'X-Auth-Key': parsed.data.key, 'X-Auth-Email': parsed.data.email })
       : new Headers({ Authorization: `Bearer ${parsed.data.token}` });
   };
-  const request = async (key: string, method: 'GET' | 'PUT', body?: () => Blob): Promise<Response> => {
+  /**
+   * One request, with the credential refreshed once on a 401 or 403. A read's window closes when its response begins,
+   * and `abort` ends the request afterwards; an upload's window covers the request and its acknowledgement.
+   */
+  const request = async (key: string, method: 'GET' | 'PUT', body?: () => Blob): Promise<{ response: Response; abort: (reason: Error) => void }> => {
     const segment = (value: string): string => {
       if (value === '' || value === '.' || value === '..') throw new Error('Cloudflare object path has an invalid segment');
       return encodeURIComponent(value);
@@ -438,31 +487,41 @@ export function cloudflareObjectStore(
         headers.set('content-type', 'application/octet-stream');
         headers.set('content-length', String(content.size));
       }
-      const response = await fetchObject(url, {
-        method, headers, ...(content === undefined ? {} : { body: content }), redirect: 'error',
-        signal: AbortSignal.timeout(OPERATOR_OBJECT_TIMEOUT_MS),
-      });
+      const ending = new AbortController();
+      const abort = (reason: Error): void => { ending.abort(reason); };
+      let response: Response;
+      if (method === 'GET') {
+        const timer = setTimeout(() => abort(new ObjectReadError(`Cloudflare did not begin answering the read of ${key} within ${seconds(timeouts.responseMs)}`, { transient: true })), timeouts.responseMs);
+        try {
+          response = await fetchObject(url, { method, headers, redirect: 'error', signal: ending.signal });
+        } finally { clearTimeout(timer); }
+      } else {
+        response = await fetchObject(url, {
+          method, headers, ...(content === undefined ? {} : { body: content }), redirect: 'error',
+          signal: AbortSignal.timeout(OPERATOR_UPLOAD_TIMEOUT_MS),
+        });
+      }
       if ((response.status === 401 || response.status === 403) && attempt === 0) {
         await response.body?.cancel();
         if (credentials === used) credentials = undefined;
         continue;
       }
-      return response;
+      return { response, abort };
     }
     throw new Error('Cloudflare refused the refreshed operator credential');
   };
   return {
     async get(key) {
-      const response = await request(key, 'GET');
+      const { response, abort } = await request(key, 'GET');
       if (response.status === 404) { await response.body?.cancel(); return null; }
       if (response.status !== 200 || response.body === null) {
         await response.body?.cancel();
-        throw new Error(`Cloudflare object read failed for ${key} (HTTP ${response.status})`);
+        throw new ObjectReadError(`Cloudflare object read failed for ${key} (HTTP ${response.status})`, { transient: transientStatus(response.status) });
       }
-      return response.body;
+      return stallBounded(response.body, timeouts.stallMs, abort, key);
     },
     async put(key, body) {
-      const response = await request(key, 'PUT', body);
+      const { response } = await request(key, 'PUT', body);
       if (response.status !== 200) {
         await response.body?.cancel();
         throw new Error(`Cloudflare object write failed for ${key} (HTTP ${response.status})`);
@@ -475,12 +534,12 @@ export function cloudflareObjectStore(
 
 /** Required backup objects must exist; a missing source is a failed backup. */
 export function cloudflareBlobReader(
-  options: CloudflareOptions & { bucketName: string; fetch?: CloudflareFetch },
+  options: CloudflareOptions & { bucketName: string; fetch?: CloudflareFetch; timeouts?: OperatorObjectTimeouts },
 ): (key: string) => Promise<ReadableStream> {
   const store = cloudflareObjectStore(options);
   return async (key) => {
     const body = await store.get(key);
-    if (body === null) throw new Error(`Cloudflare object read failed for ${key} (HTTP 404); retry the backup after resolving the source failure`);
+    if (body === null) throw new ObjectReadError(`Cloudflare object read failed for ${key} (HTTP 404); retry the backup after resolving the source failure`, { transient: false });
     return body;
   };
 }

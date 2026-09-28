@@ -1,5 +1,6 @@
-import { expect, it } from 'bun:test';
-import { cloudflareBlobReader, cloudflareObjectStore } from '@myco/server/cloudflare.js';
+import { describe, expect, it } from 'bun:test';
+import { cloudflareBlobReader, cloudflareObjectStore, type CloudflareFetch } from '@myco/server/cloudflare.js';
+import { transientReadFailure } from '@myco/server/object-read.js';
 import type { CommandRunner } from '@myco/server/runner.js';
 
 const options = { accountId: 'fixture-account', bucketName: 'fixture-bucket', configDir: '/operator' };
@@ -134,4 +135,133 @@ it('refuses oversized uploads and malformed acknowledgements without exposing re
   await expect(store.put('project/key', () => oversized)).rejects.toThrow('300 MB');
   expect(requests).toBe(0);
   await expect(store.put('project/key', () => new Blob())).rejects.toThrow('did not confirm object write');
+});
+
+describe('the windows an object read waits in', () => {
+  const login: CommandRunner = { async run() { return { code: 0, stdout: JSON.stringify({ type: 'oauth', token: 'fixture' }), stderr: '' }; } };
+  const timeouts = { responseMs: 150, stallMs: 150 };
+  const reader = (fetch: CloudflareFetch) => cloudflareBlobReader({ ...options, runner: login, fetch, timeouts });
+  const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+  /** A request that answers only by honouring its signal, as a connection that never responds does. */
+  const unanswered: CloudflareFetch = (_url, init) => new Promise((_, reject) => {
+    init.signal!.addEventListener('abort', () => reject(init.signal!.reason));
+  });
+  const settled = async (read: Promise<unknown>) => read.then(() => null, (error: unknown) => error);
+
+  /**
+   * A body that sends one byte every `gapMs`, as a connection does: it errors with the request's abort reason the
+   * moment the request is aborted, so a window that closes over a live transfer ends it here as it would on the wire.
+   */
+  const trickle = (chunks: number, gapMs: number): { fetch: CloudflareFetch; signal: () => AbortSignal | undefined } => {
+    let signal: AbortSignal | undefined;
+    return {
+      signal: () => signal,
+      fetch: async (_url, init) => {
+        signal = init.signal ?? undefined;
+        return new Response(new ReadableStream<Uint8Array>({
+          async start(controller) {
+            for (let index = 0; index < chunks; index += 1) {
+              await sleep(gapMs);
+              if (signal?.aborted) { controller.error(signal.reason); return; }
+              controller.enqueue(new Uint8Array([index]));
+            }
+            controller.close();
+          },
+        }));
+      },
+    };
+  };
+
+  it('keeps a slow body going for as long as bytes keep arriving', async () => {
+    const chunks = 8;
+    const source = trickle(chunks, 70);
+    const started = Date.now();
+    const body = await reader(source.fetch)('project/slow');
+    expect(new Uint8Array(await new Response(body).arrayBuffer())).toEqual(Uint8Array.from({ length: chunks }, (_, index) => index));
+    // The whole transfer outlasted both windows several times over, and neither closed over it.
+    expect(Date.now() - started).toBeGreaterThan(Math.max(timeouts.responseMs, timeouts.stallMs) * 3);
+    expect(source.signal()?.aborted).toBe(false);
+  });
+
+  it('leaves no window running once a read has finished', async () => {
+    // Windows are told apart from every other timer by their lengths, which nothing else in this read uses.
+    const windows = { responseMs: 173, stallMs: 157 };
+    const running = new Set<unknown>();
+    const { setTimeout: set, clearTimeout: clear } = globalThis;
+    globalThis.setTimeout = ((handler: () => void, ms?: number, ...rest: unknown[]) => {
+      const timer = set(() => { running.delete(timer); handler(); }, ms, ...rest);
+      if (ms === windows.responseMs || ms === windows.stallMs) running.add(timer);
+      return timer;
+    }) as typeof setTimeout;
+    globalThis.clearTimeout = ((timer: Parameters<typeof clearTimeout>[0]) => { running.delete(timer); clear(timer); }) as typeof clearTimeout;
+    try {
+      const source = trickle(4, 20);
+      const body = await cloudflareBlobReader({ ...options, runner: login, fetch: source.fetch, timeouts: windows })('project/finished');
+      expect(new Uint8Array(await new Response(body).arrayBuffer())).toEqual(new Uint8Array([0, 1, 2, 3]));
+      expect(running.size).toBe(0);
+    } finally {
+      globalThis.setTimeout = set;
+      globalThis.clearTimeout = clear;
+    }
+  });
+
+  it('does not count the time its reader spends away from the body', async () => {
+    const body = (await reader(async () => new Response(new Uint8Array([1, 2, 3])))('project/idle')).getReader();
+    await sleep(timeouts.stallMs * 2);
+    expect((await body.read()).value).toEqual(new Uint8Array([1, 2, 3]));
+  });
+
+  it('ends a body that stops sending, within one window, as a failure worth retrying', async () => {
+    let signal: AbortSignal | undefined;
+    const body = await reader(async (_url, init) => {
+      signal = init.signal ?? undefined;
+      return new Response(new ReadableStream<Uint8Array>({ start(controller) { controller.enqueue(new Uint8Array([1])); } }));
+    })('project/stalled');
+    const started = Date.now();
+    const failure = await settled(new Response(body).arrayBuffer());
+    expect(String(failure)).toContain('stalled: no bytes arrived for 0.15 s');
+    expect(transientReadFailure(failure)).toBe(true);
+    expect(Date.now() - started).toBeLessThan(timeouts.stallMs * 10);
+    // The request itself is ended, so its connection is not held open.
+    expect(signal?.aborted).toBe(true);
+  }, 5_000);
+
+  it('ends a request whose response never begins, as a failure worth retrying', async () => {
+    const started = Date.now();
+    const failure = await settled(reader(unanswered)('project/silent'));
+    expect(String(failure)).toContain('did not begin answering the read of project/silent');
+    expect(transientReadFailure(failure)).toBe(true);
+    expect(Date.now() - started).toBeLessThan(timeouts.responseMs * 10);
+  }, 5_000);
+
+  it('classifies a server error as worth retrying, and an absent object or refused credential as final', async () => {
+    const answering = (status: number) => settled(reader(async () => new Response(null, { status }))('project/key'));
+    for (const status of [500, 502, 503, 429]) expect(transientReadFailure(await answering(status))).toBe(true);
+    for (const status of [404, 403, 400]) expect(transientReadFailure(await answering(status))).toBe(false);
+  });
+});
+
+describe('the failures a read may try again', () => {
+  const settled = async (read: Promise<unknown>) => read.then(() => null, (error: unknown) => error);
+
+  it('tries again after a refused connection and an unresolvable name, as the runtime reports them', async () => {
+    const refused = await settled(fetch('http://127.0.0.1:1/'));
+    expect(refused).not.toBeNull();
+    expect(transientReadFailure(refused)).toBe(true);
+    const unresolved = await settled(fetch('http://myco-recovery-fixture.invalid/'));
+    expect(unresolved).not.toBeNull();
+    expect(transientReadFailure(unresolved)).toBe(true);
+    // The same failure reaches a backup through the object reader unchanged.
+    const login: CommandRunner = { async run() { return { code: 0, stdout: JSON.stringify({ type: 'oauth', token: 'fixture' }), stderr: '' }; } };
+    const read = cloudflareBlobReader({ ...options, runner: login, fetch: (_url, init) => fetch('http://127.0.0.1:1/', init) });
+    expect(transientReadFailure(await settled(read('project/key')))).toBe(true);
+  });
+
+  it('judges a failure by the cause it carries, as Node reports a lost socket', () => {
+    const socket = (code: string) => new TypeError('fetch failed', { cause: Object.assign(new Error('other side closed'), { code }) });
+    expect(transientReadFailure(socket('UND_ERR_SOCKET'))).toBe(true);
+    expect(transientReadFailure(socket('ECONNRESET'))).toBe(true);
+    expect(transientReadFailure(socket('ENOSPC'))).toBe(false);
+    expect(transientReadFailure(new TypeError('fetch failed'))).toBe(false);
+  });
 });

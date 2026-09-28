@@ -1,4 +1,4 @@
-import { expect, it, spyOn } from 'bun:test';
+import { describe, expect, it, spyOn } from 'bun:test';
 import { Database } from 'bun:sqlite';
 import { createHash } from 'node:crypto';
 import fs from 'node:fs';
@@ -6,11 +6,20 @@ import os from 'node:os';
 import path from 'node:path';
 import { backupCloudflareDeployment } from '@myco/server/cloudflare-backup.js';
 import * as cloudflare from '@myco/server/cloudflare.js';
-import { writeDeploymentRecord, type CloudflareFetch } from '@myco/server/cloudflare.js';
+import { writeDeploymentRecord, type CloudflareFetch, type OperatorObjectTimeouts } from '@myco/server/cloudflare.js';
+import { RECOVERY_RETRY, verifyRecoveryBundle, type RecoveryRetryPolicy } from '@myco/server/recovery-bundle.js';
 import type { CommandRunner } from '@myco/server/runner.js';
 import { sqliteEnv } from '../myco-server/helpers/fixtures.js';
 import { recoveryConfigurationOf } from '@myco/server/cloudflare-resources.js';
 import { RECOVERY_CREDENTIAL_NAMES } from '@myco-server-worker/core/recovery-staging.js';
+import * as blobs from '@myco-server-worker/platform/bun/blobs.js';
+
+/** The production attempt bounds with no waits between attempts, so a test exercises the bound without sleeping. */
+const IMMEDIATE_RETRY: RecoveryRetryPolicy = {
+  objectReads: { ...RECOVERY_RETRY.objectReads, backoffMs: [0] },
+  holdReads: { ...RECOVERY_RETRY.holdReads, backoffMs: [0] },
+  holdRounds: { ...RECOVERY_RETRY.holdRounds, backoffMs: [0] },
+};
 
 const quote = (value: string) => '"' + value.replaceAll('"', '""') + '"';
 const literal = (value: unknown): string => {
@@ -94,8 +103,13 @@ function fixture() {
     return downloadFails ? new Response('object unavailable', { status: 503 }) : new Response(key === backupKey ? backupBody : bytes);
   };
   return { source, root, mycoHome, destination, record, runner, calls, statements, body, bytes, digest, backupKey, backupBody,
+    /** The key R2 holds the registered blob's bytes under. */
+    blobSource: `proj_1/${digest}~${generation}`,
+    fetchObject,
     drift: () => { drift = true; }, downloadFails: (value: boolean) => { downloadFails = value; },
-    backup: () => backupCloudflareDeployment({ accountId: record.accountId, mycoHome, destination, runner, fetch: fetchObject }),
+    backup: (use: { fetch?: CloudflareFetch; runner?: CommandRunner; timeouts?: OperatorObjectTimeouts; report?: (line: string) => void; retry?: RecoveryRetryPolicy } = {}) =>
+      backupCloudflareDeployment({ accountId: record.accountId, mycoHome, destination, runner: use.runner ?? runner,
+        fetch: use.fetch ?? fetchObject, retry: use.retry ?? IMMEDIATE_RETRY, timeouts: use.timeouts, report: use.report }),
     cleanup: () => { source.sqlite.close(); fs.rmSync(root, { recursive: true, force: true }); },
   };
 }
@@ -218,4 +232,266 @@ it('bounds every hold statement it sends, so no hold waits on a provider command
     expect(holdStatements.length).toBeGreaterThanOrEqual(5);
     expect(holdStatements.every((sent) => typeof sent.timeoutMs === 'number' && sent.timeoutMs > 0)).toBe(true);
   } finally { f.cleanup(); }
+});
+
+/** What Bun's fetch throws when its signal's timeout fires. */
+const timedOut = () => new DOMException('The operation timed out.', 'TimeoutError');
+/** The files a resume would accept or sweep: every regular file under the artifact's blob directory. */
+const storedFiles = (destination: string): string[] => {
+  const root = path.join(destination, 'blobs');
+  return fs.existsSync(root) ? (fs.readdirSync(root, { recursive: true, encoding: 'utf8' }) as string[]).filter((name) => fs.statSync(path.join(root, name)).isFile()).sort() : [];
+};
+
+it('retries an object read that times out, and completes a verified artifact', async () => {
+  const f = fixture();
+  try {
+    let reads = 0;
+    const reports: string[] = [];
+    const fetch: CloudflareFetch = async (input, init) => {
+      if (String(input).endsWith(f.blobSource) && ++reads <= 2) throw timedOut();
+      return f.fetchObject(input, init);
+    };
+    const result = await f.backup({ fetch, report: (line) => reports.push(line) });
+    expect(result.status).toBe('complete');
+    expect(reads).toBe(3);
+    expect(reports.filter((line) => line.includes('The operation timed out.'))).toEqual([
+      expect.stringContaining(`(attempt 2 of ${RECOVERY_RETRY.objectReads.attempts})`),
+      expect.stringContaining(`(attempt 3 of ${RECOVERY_RETRY.objectReads.attempts})`),
+    ]);
+    expect((await verifyRecoveryBundle(f.destination)).status).toBe('complete');
+    expect(new Uint8Array(fs.readFileSync(path.join(f.destination, 'blobs', 'proj_1', f.digest)))).toEqual(f.bytes);
+  } finally { f.cleanup(); }
+});
+
+it('fails at once on a missing object, without retrying it', async () => {
+  const f = fixture();
+  try {
+    let reads = 0;
+    const fetch: CloudflareFetch = async (input, init) => {
+      if (!String(input).endsWith(f.blobSource)) return f.fetchObject(input, init);
+      reads += 1;
+      return new Response(null, { status: 404 });
+    };
+    const failure = await f.backup({ fetch }).then(() => null, (error: Error) => error.message);
+    expect(failure).toContain('HTTP 404');
+    expect(failure).not.toContain('attempts');
+    expect(reads).toBe(1);
+  } finally { f.cleanup(); }
+});
+
+it('fails at once on a credential refused after its refresh, without retrying it', async () => {
+  const f = fixture();
+  try {
+    let reads = 0;
+    const fetch: CloudflareFetch = async (input, init) => {
+      if (!String(input).endsWith(f.blobSource)) return f.fetchObject(input, init);
+      reads += 1;
+      return new Response(null, { status: 403 });
+    };
+    await expect(f.backup({ fetch })).rejects.toThrow('HTTP 403');
+    // The one refresh the object store makes, and nothing after it.
+    expect(reads).toBe(2);
+  } finally { f.cleanup(); }
+});
+
+it('gives up on an object whose every read times out, naming how many attempts it made', async () => {
+  const f = fixture();
+  try {
+    let reads = 0;
+    const fetch: CloudflareFetch = async (input, init) => {
+      if (String(input).endsWith(f.blobSource)) { reads += 1; throw timedOut(); }
+      return f.fetchObject(input, init);
+    };
+    const { attempts } = RECOVERY_RETRY.objectReads;
+    await expect(f.backup({ fetch })).rejects.toThrow(`was not stored after ${attempts} attempts: The operation timed out.`);
+    expect(reads).toBe(attempts);
+    expect(JSON.parse(fs.readFileSync(path.join(f.destination, 'recovery.json'), 'utf8')).status).toBe('content');
+  } finally { f.cleanup(); }
+});
+
+it('retries a server error and a reset connection, and leaves no partial file behind any failed attempt', async () => {
+  const f = fixture();
+  try {
+    // Every read of the blob sends its first bytes and then loses the connection.
+    const reset = () => Object.assign(new Error('The socket connection was closed unexpectedly.'), { code: 'ECONNRESET' });
+    let reads = 0;
+    const partial: CloudflareFetch = async (input, init) => {
+      if (!String(input).endsWith(f.blobSource)) return f.fetchObject(input, init);
+      reads += 1;
+      if (reads === 1) return new Response('unavailable', { status: 503 });
+      return new Response(new ReadableStream<Uint8Array>({
+        start(controller) { controller.enqueue(f.bytes.slice(0, 2)); },
+        pull(controller) { controller.error(reset()); },
+      }));
+    };
+    const { attempts } = RECOVERY_RETRY.objectReads;
+    await expect(f.backup({ fetch: partial })).rejects.toThrow(`was not stored after ${attempts} attempts`);
+    expect(reads).toBe(attempts);
+    // No attempt left bytes under the object's name or a partial file beside it.
+    expect(storedFiles(f.destination).filter((name) => name.startsWith('proj_1'))).toEqual([]);
+    // A later run resumes the same snapshot and copies the object whole.
+    const result = await f.backup();
+    expect(result.status).toBe('complete');
+    expect(new Uint8Array(fs.readFileSync(path.join(f.destination, 'blobs', 'proj_1', f.digest)))).toEqual(f.bytes);
+    expect((await verifyRecoveryBundle(f.destination)).status).toBe('complete');
+  } finally { f.cleanup(); }
+});
+
+describe('a recovery hold write that does not answer', () => {
+  const holds = (f: ReturnType<typeof fixture>) => f.source.sqlite.query('SELECT token, holder, released_at IS NOT NULL AS released FROM recovery_holds').all();
+  const isAcquire = (args: readonly string[]) => args.includes('execute') && args[args.indexOf('--command') + 1]!.trimStart().startsWith('INSERT INTO recovery_holds');
+
+  it('asks for the same token again when the write never reached the source, and proceeds under one hold', async () => {
+    const f = fixture();
+    try {
+      let acquires = 0;
+      const runner: CommandRunner = { run: async (command, args, options) => {
+        if (isAcquire(args) && ++acquires === 1) return { code: 1, stdout: '', stderr: 'fetch failed' };
+        return f.runner.run(command, args, options);
+      } };
+      const reports: string[] = [];
+      const result = await f.backup({ runner, report: (line) => reports.push(line) });
+      expect(result.status).toBe('complete');
+      expect(acquires).toBe(2);
+      expect(holds(f)).toEqual([{ token: expect.any(String), holder: 'operator', released: 1 }]);
+      expect(reports.some((line) => line.includes('The recovery hold write did not answer') && line.includes('fetch failed'))).toBe(true);
+    } finally { f.cleanup(); }
+  });
+
+  it('opens one hold when the lost write lands after the source answered it absent', async () => {
+    const f = fixture();
+    try {
+      let acquires = 0;
+      let late: string | null = null;
+      const runner: CommandRunner = { run: async (command, args, options) => {
+        if (isAcquire(args) && ++acquires === 1) {
+          late = args[args.indexOf('--command') + 1]!;
+          return { code: 1, stdout: '', stderr: 'fetch failed' };
+        }
+        const answer = await f.runner.run(command, args, options);
+        // The read back answered absent; the write the provider accepted lands now.
+        if (late !== null && args.includes('execute')) { f.source.sqlite.run(late); late = null; }
+        return answer;
+      } };
+      expect((await f.backup({ runner })).status).toBe('complete');
+      expect(acquires).toBe(2);
+      expect(holds(f)).toEqual([{ token: expect.any(String), holder: 'operator', released: 1 }]);
+    } finally { f.cleanup(); }
+  });
+
+  /** A runner whose next `count` D1 statements fail as wrangler reports a lost connection, and then answer. */
+  const blip = (f: ReturnType<typeof fixture>, count: number) => {
+    const failed: string[] = [];
+    const at: number[] = [];
+    const runner: CommandRunner = { run: async (command, args, options) => {
+      if (args.includes('execute') && failed.length < count) {
+        at.push(performance.now());
+        failed.push(args[args.indexOf('--command') + 1]!.trimStart().split(/\s+/)[0]!);
+        return { code: 1, stdout: '', stderr: 'fetch failed' };
+      }
+      return f.runner.run(command, args, options);
+    } };
+    return { runner, failed, at };
+  };
+
+  it('rides out a blip that loses the write and every read back, and opens one hold', async () => {
+    const f = fixture();
+    try {
+      const { runner, failed } = blip(f, 4);
+      const reports: string[] = [];
+      const result = await f.backup({ runner, report: (line) => reports.push(line) });
+      expect(result.status).toBe('complete');
+      // The write, then the three reads of its first round; the second round writes the same token and is answered.
+      expect(failed).toEqual(['INSERT', 'SELECT', 'SELECT', 'SELECT']);
+      expect(holds(f)).toEqual([{ token: expect.any(String), holder: 'operator', released: 1 }]);
+      expect(reports.some((line) => line.includes(`by the same token`) && line.includes(`(attempt 2 of ${RECOVERY_RETRY.holdRounds.attempts})`))).toBe(true);
+    } finally { f.cleanup(); }
+  });
+
+  it('rides out a blip that loses every read of a resume, and resumes under the hold it already took', async () => {
+    const f = fixture();
+    try {
+      f.downloadFails(true);
+      await expect(f.backup()).rejects.toThrow('HTTP 503');
+      f.downloadFails(false);
+      const token = JSON.parse(fs.readFileSync(path.join(f.destination, '.recovery-hold.json'), 'utf8')).token;
+      const { runner, failed } = blip(f, 3);
+      expect((await f.backup({ runner })).status).toBe('complete');
+      expect(failed).toEqual(['SELECT', 'SELECT', 'SELECT']);
+      expect(holds(f)).toEqual([{ token, holder: 'operator', released: 1 }]);
+    } finally { f.cleanup(); }
+  });
+
+  it('waits between the reads that settle a hold, rather than spending them in one instant', async () => {
+    const f = fixture();
+    try {
+      f.downloadFails(true);
+      await expect(f.backup()).rejects.toThrow('HTTP 503');
+      f.downloadFails(false);
+      const { runner, at } = blip(f, 3);
+      const retry = { ...IMMEDIATE_RETRY, holdReads: { attempts: 3, backoffMs: [60, 90] } };
+      expect((await f.backup({ runner, retry })).status).toBe('complete');
+      expect(at).toHaveLength(3);
+      expect(at[1]! - at[0]!).toBeGreaterThanOrEqual(55);
+      expect(at[2]! - at[1]!).toBeGreaterThanOrEqual(85);
+    } finally { f.cleanup(); }
+  });
+
+  it('names another backup\'s open hold at once instead of waiting on a token that cannot open', async () => {
+    const f = fixture();
+    try {
+      const other = crypto.randomUUID();
+      f.source.sqlite.run("INSERT INTO recovery_holds(token, acquired_at, holder) VALUES (?, 1790000000000, 'operator')", [other]);
+      let acquires = 0;
+      const runner: CommandRunner = { run: async (command, args, options) => {
+        if (isAcquire(args)) acquires += 1;
+        return f.runner.run(command, args, options);
+      } };
+      await expect(f.backup({ runner })).rejects.toThrow(`another backup's recovery hold ${other} has been open on the source since 2026-09-21T`);
+      await expect(f.backup({ runner })).rejects.toThrow(`myco server recovery-hold --token ${other} --abandon --target cloudflare`);
+      expect(acquires).toBe(2);
+      expect(holds(f)).toEqual([{ token: other, holder: 'operator', released: 0 }]);
+    } finally { f.cleanup(); }
+  });
+
+  it('refuses after its bound when the source never opens the token, naming the attempts', async () => {
+    const f = fixture();
+    try {
+      let acquires = 0;
+      const runner: CommandRunner = { run: async (command, args, options) => {
+        if (isAcquire(args)) { acquires += 1; return { code: 1, stdout: '', stderr: 'fetch failed' }; }
+        return f.runner.run(command, args, options);
+      } };
+      const { attempts } = RECOVERY_RETRY.holdRounds;
+      await expect(f.backup({ runner })).rejects.toThrow(`recovery hold was not opened on the source (absent) after ${attempts} attempts; nothing was captured`);
+      expect(acquires).toBe(attempts);
+      expect(holds(f)).toEqual([]);
+      expect(fs.existsSync(path.join(f.destination, 'myco.sqlite'))).toBe(false);
+    } finally { f.cleanup(); }
+  });
+});
+
+it('ends the source read when the destination fails to store its bytes', async () => {
+  const f = fixture();
+  const original = blobs.diskBlobStore;
+  // The destination volume fills after taking the first bytes of the object, while the store still holds its body.
+  const full = spyOn(blobs, 'diskBlobStore').mockImplementation((root) => {
+    const store = original(root);
+    return { ...store, put: async (key, body, options) => {
+      if (!key.startsWith('proj_1/') || body === null) return store.put(key, body, options);
+      await body.getReader().read();
+      throw Object.assign(new Error('no space left on device'), { code: 'ENOSPC' });
+    } };
+  });
+  try {
+    let signal: AbortSignal | undefined;
+    const fetch: CloudflareFetch = async (input, init) => {
+      if (!String(input).endsWith(f.blobSource)) return f.fetchObject(input, init);
+      signal = init.signal ?? undefined;
+      // A body that sends its first bytes and then waits on the connection for the rest.
+      return new Response(new ReadableStream<Uint8Array>({ start(controller) { controller.enqueue(f.bytes.slice(0, 2)); } }));
+    };
+    await expect(f.backup({ fetch })).rejects.toThrow('was not stored: no space left on device');
+    expect(signal?.aborted).toBe(true);
+  } finally { full.mockRestore(); f.cleanup(); }
 });
