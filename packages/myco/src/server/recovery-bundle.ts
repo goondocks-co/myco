@@ -12,7 +12,7 @@ import { blobArtifactKey, snapshotBlobObject } from '@myco-server-worker/core/bl
 import { RECOVERY_CREDENTIAL_NAMES, recordedFleet } from '@myco-server-worker/core/recovery-staging.js';
 import { atomicWriteFileSync, syncDirectoryForDurability as syncDirectory } from '@myco/utils/atomic-write.js';
 import { LifecycleLock } from '@myco/utils/lifecycle-lock.js';
-import { transientReadFailure } from './object-read.js';
+import { refusedAccountCode, transientReadFailure } from './object-read.js';
 import { fingerprintSchema, STAGING_FORMAT } from './recovery-contract.js';
 import { quoteIdentifier } from './recovery-schema.js';
 
@@ -378,12 +378,17 @@ export interface RetryBound { attempts: number; backoffMs: readonly number[] }
  * - `holdRounds`: how many times a hold question is asked again after its reads all went unanswered, or after the
  *   source answered a token this backup is opening absent. An opening round writes the same token again, which the
  *   source opens at most once, so a retry never takes a second hold; a resume's round only reads.
+ * - `snapshots`: the whole database snapshot, captured again from an emptied work directory, only on a transient
+ *   failure (`transientReadFailure`). Within one run, one count spans every step of the capture, and capturing again
+ *   does not reset it; a later run starts its own count. The waits add up to a little over three minutes, so a provider
+ *   API outage of a few minutes is ridden out inside one run.
  */
-export interface RecoveryRetryPolicy { objectReads: RetryBound; holdReads: RetryBound; holdRounds: RetryBound }
+export interface RecoveryRetryPolicy { objectReads: RetryBound; holdReads: RetryBound; holdRounds: RetryBound; snapshots: RetryBound }
 export const RECOVERY_RETRY: RecoveryRetryPolicy = {
   objectReads: { attempts: 6, backoffMs: [2_000, 5_000, 15_000, 30_000, 60_000] },
   holdReads: { attempts: 3, backoffMs: [2_000, 5_000] },
   holdRounds: { attempts: 3, backoffMs: [5_000, 15_000] },
+  snapshots: { attempts: 4, backoffMs: [15_000, 60_000, 120_000] },
 };
 
 const backoff = (bound: RetryBound, attempt: number): number => bound.backoffMs[Math.min(attempt - 1, bound.backoffMs.length - 1)] ?? 0;
@@ -394,6 +399,11 @@ const briefly = (error: unknown): string => {
   return text.length > 240 ? `${text.slice(0, 80)} ... ${text.slice(-155)}` : text;
 };
 const described = (error: unknown): string => error instanceof Error ? error.message : String(error);
+/** What a refusal adds when the source refused the account or its credential on the last attempt, or nothing. */
+const accountRefusal = (error: unknown): string => {
+  const code = refusedAccountCode(error);
+  return code === null ? '' : `; the source refused this account (code ${code}), so the credential or the account may be wrong`;
+};
 
 /**
  * How long the reads of one round may take together.
@@ -421,15 +431,19 @@ async function reconcile(owner: RecoveryHoldOwner, token: string, report: (line:
       return await owner.inspect(token);
     } catch (error) {
       last = error;
-      report(`The source did not answer about this backup's recovery hold (read ${attempt} of ${reads.attempts})`);
+      report(`The source did not answer about this backup's recovery hold (read ${attempt} of ${reads.attempts}): ${briefly(error)}`);
     }
   }
   throw new HoldUnanswered(`the source did not answer about this backup's recovery hold: ${described(last)}`, { cause: last });
 }
 
 /** The refusal for a hold question no round answered, naming how many rounds were asked. */
-const unanswered = (error: unknown, rounds: number): Error => rounds === 1 ? error as Error
-  : new Error(`the source did not answer about this backup's recovery hold after ${rounds} attempts: ${described((error as Error).cause ?? error)}`, { cause: error });
+const unanswered = (error: unknown, rounds: number): Error => {
+  const refused = accountRefusal(error);
+  if (rounds === 1 && refused === '') return error as Error;
+  const tries = rounds === 1 ? '' : ` after ${rounds} attempts`;
+  return new Error(`the source did not answer about this backup's recovery hold${tries}: ${described((error as Error).cause ?? error)}${refused}`, { cause: error });
+};
 
 /** What the source holds for `token`, read again in later rounds while no read of a round is answered. */
 async function readHold(owner: RecoveryHoldOwner, token: string, report: (line: string) => void, retry: RecoveryRetryPolicy): Promise<RecoveryHoldReading> {
@@ -693,6 +707,33 @@ function readerKept(body: ReadableStream<Uint8Array>): { stream: ReadableStream<
   return { stream, end: (reason) => reader.cancel(reason).catch(() => {}) };
 }
 
+/**
+ * The database snapshot, captured into `incoming` inside a work directory emptied before every attempt, so no attempt
+ * reads a file an earlier one left behind. An attempt is the adapter's whole capture, so whatever it compares is read
+ * inside that one attempt. A transient failure is captured again after `bound`'s wait, up to its attempts; any other
+ * failure ends the capture at once.
+ */
+async function captureSnapshot(
+  adapter: RecoveryAdapter, incoming: string, workDir: string, report: (line: string) => void, bound: RetryBound,
+): Promise<RecoverySnapshot> {
+  for (let attempt = 1; ; attempt += 1) {
+    fs.rmSync(workDir, { recursive: true, force: true });
+    fs.mkdirSync(workDir, { mode: OWNER_DIRECTORY_MODE });
+    try {
+      return await adapter.snapshot(incoming, workDir);
+    } catch (error) {
+      if (!transientReadFailure(error) || attempt >= bound.attempts) {
+        if (attempt === 1 && accountRefusal(error) === '') throw error;
+        const tries = attempt === 1 ? '' : ` after ${attempt} attempts`;
+        throw new Error(`the database snapshot was not captured${tries}: ${described(error)}${accountRefusal(error)}`, { cause: error });
+      }
+      const wait = backoff(bound, attempt);
+      report(`Capturing the database snapshot failed (${briefly(error)}); starting it again in ${Math.round(wait / 1000)} s (attempt ${attempt + 1} of ${bound.attempts})`);
+      await pause(wait);
+    }
+  }
+}
+
 /** One writer owns snapshot publication, content verification and the final completion manifest on both targets. */
 async function writeRecoveryBundle(
   destination: string, adapter: RecoveryAdapter, report: (line: string) => void, seed?: RecoveryManifest, retry: RecoveryRetryPolicy = RECOVERY_RETRY,
@@ -732,10 +773,8 @@ async function writeRecoveryBundle(
       : await heldForSnapshot(root, adapter.hold, manifest.status !== 'snapshot', manifest.status === 'complete', report, retry, adapter.source.target);
     if (manifest.status === 'snapshot') {
       report('Capturing the database snapshot');
-      fs.rmSync(workDir, { recursive: true, force: true });
-      fs.mkdirSync(workDir, { mode: OWNER_DIRECTORY_MODE });
       const incoming = path.join(workDir, DATABASE_FILE);
-      const captured = await adapter.snapshot(incoming, workDir);
+      const captured = await captureSnapshot(adapter, incoming, workDir, report, retry.snapshots);
       const db = openSnapshot(incoming);
       let facts;
       try {
