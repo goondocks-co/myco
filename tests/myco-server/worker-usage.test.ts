@@ -59,7 +59,8 @@ describe('worker accounting on the Deployment', () => {
       expect(JSON.parse(detail!.run.usageData!)).toEqual(usage);
       expect(await r.end({ usage: { ...usage, estimatedCostUsd: 9 } })).toMatchObject({ ended: false });
       expect((await r.detail())?.run.costUsd).toBe(0.25);
-      expect(r.e.sqlite.query('SELECT leased_by, lease_expires_at FROM agent_runs WHERE id=?').get('run_usage')).toEqual({ leased_by: null, lease_expires_at: null });
+      // The lease ends with the run; the worker that ran it stays named.
+      expect(r.e.sqlite.query('SELECT leased_by IS NOT NULL AS named, lease_expires_at FROM agent_runs WHERE id=?').get('run_usage')).toEqual({ named: 1, lease_expires_at: null });
     } finally { r.e.sqlite.close(); }
   });
 

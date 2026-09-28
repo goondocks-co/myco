@@ -31,6 +31,8 @@ import path from 'node:path';
 import { resolveMycoHome } from '../paths/home.js';
 import { readDeploymentMembership } from '../member/registry.js';
 import { runWorker, type WorkerOptions } from '../runner/loop.js';
+import { workerLogLine } from '../runner/log.js';
+import { keepMachineAwake } from '../runner/keep-awake.js';
 import { workerLockDir } from '../runner/instance.js';
 
 /** What a worker waits before its first answer tells it the Deployment's own cadence. */
@@ -269,7 +271,8 @@ async function startLocalWorker(record: Pick<LocalDeploymentRecord, 'port' | 'or
   void runWorker({
     ...target,
     pollIdleMs: WORKER_POLL_IDLE_MS,
-    log: (line) => { console.log(`worker: ${line}`); },
+    log: (line) => { console.log(workerLogLine(line)); },
+    keepAwake: keepMachineAwake,
     signal: stopping.signal,
   }).then(({ refused }) => {
     if (refused !== null) console.log(`This Deployment refused the worker on this machine (${refused}); serving without one.`);

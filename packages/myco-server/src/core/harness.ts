@@ -989,10 +989,10 @@ export async function claimNextRun(
   };
 }
 
-/** Extend a lease this worker still holds. `held: false` says the lease is gone, and the worker stops driving a run it no longer owns. */
-export async function renewLease(env: ServerEnv, worker: { tokenId: string; now: number }, run: { projectId: string; runId: string }): Promise<{ held: boolean; expiresAt: number }> {
+/** Extend a lease this worker still holds, on the attempt it names when it names one. `held: false` says the lease is gone, and the worker stops driving a run it no longer owns. */
+export async function renewLease(env: ServerEnv, worker: { tokenId: string; now: number }, run: { projectId: string; runId: string; attemptId?: string }): Promise<{ held: boolean; expiresAt: number }> {
   const expiresAt = worker.now + WORKER_LEASE_MS;
-  const held = await renewRunLease(env.db, { projectId: run.projectId }, run.runId, worker.tokenId, expiresAt, worker.now);
+  const held = await renewRunLease(env.db, { projectId: run.projectId }, run.runId, worker.tokenId, expiresAt, worker.now, run.attemptId);
   return { held, expiresAt };
 }
 

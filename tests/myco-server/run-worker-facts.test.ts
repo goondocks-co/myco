@@ -53,7 +53,7 @@ describe('a run names the worker holding it', () => {
     expect(detail?.run.dispatchedBy).not.toBe(r.workerCredential.tokenId);
   });
 
-  it('stops naming a holder when the run ends, and keeps the harness it ran on', async () => {
+  it('stops naming a holder when the run ends, and keeps the harness and the worker it ran on', async () => {
     const r = await rig();
     await r.claim();
     const changed = await applyRunUpdate(r.db, SCOPE, 'run_1', { status: 'completed', completed_at: NOW + 1_000 },
@@ -61,17 +61,21 @@ describe('a run names the worker holding it', () => {
     expect(changed).toBe(1);
 
     const detail = await getRunDetail(r.db, SCOPE, 'run_1');
-    expect(detail?.run).toMatchObject({ status: 'completed', harness: 'codex', leasedBy: null, leaseExpiresAt: null });
+    expect(detail?.run).toMatchObject({
+      status: 'completed', harness: 'codex', leasedBy: null, leaseExpiresAt: null,
+      worker: { credentialId: r.workerCredential.tokenId, machineId: 'sirkirby-mbp' },
+    });
   });
 
-  it('stops naming a holder when the server ends the run without the worker\'s lease', async () => {
+  it('ends the lease, and keeps the worker it ran on, when the server ends the run without the worker\'s lease', async () => {
     const r = await rig();
     await r.claim();
     // A launch failure and the owner's own close both end a run with no lease argument.
     expect(await applyRunUpdate(r.db, SCOPE, 'run_1', { status: 'failed', completed_at: NOW + 500, error: 'the runtime refused to start' })).toBe(1);
 
     const row = r.sqlite.query(`SELECT leased_by, lease_expires_at FROM agent_runs WHERE id = 'run_1'`).get() as Record<string, unknown>;
-    expect(row).toMatchObject({ leased_by: null, lease_expires_at: null });
+    expect(row).toMatchObject({ leased_by: r.workerCredential.tokenId, lease_expires_at: null });
+    expect((await getRunDetail(r.db, SCOPE, 'run_1'))?.run).toMatchObject({ leasedBy: null, leaseExpiresAt: null });
     // The sweep takes running rows only, so a terminal row keeping a lease would never be swept.
     expect(await lapsedLeases(r.db, LEASE_UNTIL + 1, 10)).toEqual([]);
   });
@@ -96,7 +100,7 @@ describe('a run names the worker holding it', () => {
     expect(await requeueLapsedLease(r.db, SCOPE, 'run_1', r.workerCredential.tokenId, LEASE_UNTIL + 1)).toBe(true);
 
     const detail = await getRunDetail(r.db, SCOPE, 'run_1');
-    expect(detail?.run).toMatchObject({ status: 'queued', leasedBy: null, leaseExpiresAt: null, dispatchedBy: null });
+    expect(detail?.run).toMatchObject({ status: 'queued', leasedBy: null, leaseExpiresAt: null, dispatchedBy: null, worker: null });
   });
 
   it('serves the same three facts through the product surface', async () => {
