@@ -11,7 +11,7 @@
  */
 import { execFileSync } from 'node:child_process';
 import { existsSync, readFileSync } from 'node:fs';
-import { credentialFile, HARNESSES, type Harness } from './harnesses.js';
+import { credentialFile, harnessById, HARNESSES, offerable, type Harness } from './harnesses.js';
 
 export interface DetectedHarness {
   id: string;
@@ -83,3 +83,21 @@ export function detectHarnesses(only?: readonly string[]): DetectedHarness[] {
   }
   return out;
 }
+
+/**
+ * What a worker offers of what it detected: each logged-in harness a run can be
+ * held on, and the rest named with why they are not offered, for the operator.
+ */
+export function offerOf(detected: readonly DetectedHarness[]): { offered: DetectedHarness[]; withheld: string[] } {
+  const holdable = (found: DetectedHarness): boolean => {
+    const harness = harnessById(found.id);
+    return harness !== null && offerable(harness);
+  };
+  return {
+    offered: detected.filter(holdable),
+    withheld: detected.filter((found) => found.authenticated && !holdable(found)).map((found) => found.id),
+  };
+}
+
+/** Why a logged-in harness is not offered, in the operator's words. */
+export const WITHHELD_REASON = 'its own configuration would approve a run\'s calls unasked, and a run cannot be given one of its own';

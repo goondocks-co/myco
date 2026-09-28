@@ -14,9 +14,10 @@ import { describe, expect, it } from 'bun:test';
 import { mkdtempSync, readFileSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { HARNESSES } from '@myco/runner/harnesses.js';
-import { DRIVERS, driverFor } from '@myco/runner/drivers/registry.js';
-import { reachedEnd, type RunEvent } from '@myco/runner/events.js';
+import { HARNESSES, offerable } from '@myco/runner/harnesses.js';
+import { DRIVERS, driverFor, RUN_HOMES } from '@myco/runner/drivers/registry.js';
+import { offerOf } from '@myco/runner/detect.js';
+import { failedCallsNote, reachedEnd, type RunEvent } from '@myco/runner/events.js';
 import { discardRunDir, mcpConfigOf, MCP_SERVER_NAME, RUN_INSTRUCTIONS_FILES, writeRunDir } from '@myco/runner/mcp-config.js';
 import { PROJECT_HEADER, PROTOCOL_HEADER } from '@myco/member/constants.js';
 import { HARNESS_CREDENTIALS } from '@goondocks/myco-shared/harness-providers';
@@ -24,14 +25,15 @@ import { HARNESS_CREDENTIALS } from '@goondocks/myco-shared/harness-providers';
 const CONNECTION = { serverUrl: 'https://deployment.example', projectId: 'proj_1', runToken: 'tok_run_secret_value' };
 
 describe('the harness manifest', () => {
-  it('gives every harness a driver, an isolation mechanism and a credential probe', () => {
+  it('gives every harness a run can be held on a driver, and every harness an isolation mechanism and a credential probe', () => {
     for (const harness of HARNESSES) {
-      expect({ id: harness.id, driven: driverFor(harness.id) !== null }).toEqual({ id: harness.id, driven: true });
+      // A harness no worker offers has no driver, so no run is started on it.
+      expect({ id: harness.id, driven: driverFor(harness.id) !== null }).toEqual({ id: harness.id, driven: offerable(harness) });
       expect(['flag', 'home', 'additive']).toContain(harness.isolation.kind);
       expect(['file', 'command', 'file-or-command']).toContain(harness.credential.kind);
       expect(harness.binary.length).toBeGreaterThan(0);
     }
-    expect(Object.keys(DRIVERS).sort()).toEqual(HARNESSES.map((h) => h.id).sort());
+    expect(Object.keys(DRIVERS).sort()).toEqual(HARNESSES.filter(offerable).map((h) => h.id).sort());
   });
 
   it('names the same harnesses the Deployment opens a credential for, and each its own provider', () => {
@@ -62,13 +64,39 @@ describe('the harness manifest', () => {
     });
   });
 
-  it('says how each harness is made to ask before a call, so a protocol run\'s grant decides each one', () => {
+  it('says how each harness is made to ask before a call, or what bounds a run on one that never asks', () => {
     // OpenCode allows every tool under its default configuration, so its runs
-    // start in an agent of their own that asks for everything.
+    // start in an agent of their own that asks for everything, with no plugin
+    // loaded that could answer for the driver. Cursor asks for what its own
+    // configuration has not approved, so its runs read a configuration of their
+    // own. Codex never asks, and its sandbox is the run's bound. Antigravity's
+    // approvals cannot be kept from a run.
     expect(Object.fromEntries(HARNESSES.map((h) => [h.id, h.asking]))).toEqual({
-      'claude-code': { kind: 'native' }, codex: { kind: 'native' },
-      opencode: { kind: 'run-agent', env: 'OPENCODE_CONFIG_CONTENT' }, cursor: { kind: 'default' }, antigravity: { kind: 'default' },
+      'claude-code': { kind: 'native' },
+      codex: { kind: 'sandbox' },
+      opencode: { kind: 'run-agent', env: 'OPENCODE_CONFIG_CONTENT', extensionsOff: { OPENCODE_PURE: '1' } },
+      cursor: { kind: 'run-home', env: 'CURSOR_CONFIG_DIR' },
+      antigravity: { kind: 'unheld' },
     });
+  });
+
+  it('gives every harness that reads a configuration of the run\'s own a writer for it', () => {
+    // A run-home harness with no writer would read the machine's configuration,
+    // whose approvals are exactly what the home keeps from the run.
+    const homed = HARNESSES.filter((h) => h.asking.kind === 'run-home').map((h) => h.id).sort();
+    expect(Object.keys(RUN_HOMES).sort()).toEqual(homed);
+  });
+
+  it('offers no harness a run cannot be held on, whatever detection finds logged in', () => {
+    const detected = HARNESSES.map((h) => ({ id: h.id, installed: true, authenticated: true }));
+    const offer = offerOf(detected);
+    expect({ offered: offer.offered.map((h) => h.id), withheld: offer.withheld }).toEqual({
+      offered: ['claude-code', 'codex', 'opencode', 'cursor'],
+      withheld: ['antigravity'],
+    });
+    expect(HARNESSES.filter((h) => !offerable(h)).map((h) => h.id)).toEqual(['antigravity']);
+    // A harness that is not logged in is not offered, and is not reported as withheld either.
+    expect(offerOf([{ id: 'antigravity', installed: true, authenticated: false }]).withheld).toEqual([]);
   });
 });
 
@@ -143,3 +171,33 @@ describe('the stop reasons every driver answers in', () => {
     expect(reachedEnd([{ kind: 'message', role: 'assistant', text: 'hello' }])).toBe(false);
   });
 });
+
+describe('what a run\'s record says of the calls that failed in it', () => {
+  const failed = (name: string, detail?: string): RunEvent => ({ kind: 'tool_call', name, status: 'error', ...(detail === undefined ? {} : { detail }) });
+  const ended: RunEvent = { kind: 'ended', stop: 'end_turn', detail: null };
+
+  it('says nothing where no call failed', () => {
+    expect(failedCallsNote([{ kind: 'tool_call', name: 'Read', status: 'ok' }, ended])).toBeNull();
+  });
+
+  it('names a refused call, why, and that the turn ended right after it', () => {
+    expect(failedCallsNote([{ kind: 'message', role: 'assistant', text: 'listing' }, failed('ls -la', 'outside the run\'s grant'), ended]))
+      .toBe('a call failed or was refused: ls -la (outside the run\'s grant); the turn ended right after the last of them');
+  });
+
+  it('counts a call that failed more than once, and does not say the turn ended on it where the agent went on', () => {
+    expect(failedCallsNote([
+      failed('myco_run_sessions'), failed('myco_run_sessions'),
+      { kind: 'tool_call', name: 'myco_run', status: 'ok' }, ended,
+    ])).toBe('2 calls failed or were refused: myco_run_sessions ×2');
+    // A thought is not the agent going on; a message to the user is.
+    expect(failedCallsNote([failed('x'), { kind: 'message', role: 'thought', text: 'hm' }, ended])).toContain('the turn ended right after');
+    expect(failedCallsNote([failed('x'), { kind: 'message', role: 'assistant', text: 'I could not.' }, ended])).toBe('a call failed or was refused: x');
+  });
+
+  it('names five kinds of failed call and counts the rest', () => {
+    const events = ['a', 'b', 'c', 'd', 'e', 'f', 'g'].map((name) => failed(name));
+    expect(failedCallsNote(events)).toBe('7 calls failed or were refused: a; b; c; d; e, and 2 more; the turn ended right after the last of them');
+  });
+});
+

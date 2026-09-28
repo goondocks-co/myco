@@ -11,8 +11,14 @@
  * are added to whatever the harness already has, and a client cannot make its
  * own the only ones from outside. The airtight forms belong to the two harnesses
  * with native drivers.
+ *
+ * Asking is not best effort. Each harness is started so that its own
+ * configuration approves nothing in advance, as the manifest's `asking` says for
+ * it: a run agent of the run's own, or a configuration directory of the run's
+ * own. The run's grant then answers every call the harness makes.
  */
 import { spawn } from 'node:child_process';
+import { randomBytes } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { harnessById, type Harness } from '../harnesses.js';
 import type { Driver, RunEvent, RunSpec, StopReason } from '../events.js';
@@ -21,6 +27,7 @@ import { AcpEvents } from './acp-events.js';
 import { answerPermission, ToolCalls } from './acp-permission.js';
 import { runGrant, type RunGrant } from './grant.js';
 import { listRunTools, type RunServer, type RunTools } from './run-tools.js';
+import { freshRunHome } from './run-home.js';
 import { recordOf, stringOf } from './stream.js';
 
 const STOP: readonly StopReason[] = ['end_turn', 'max_tokens', 'max_turn_requests', 'refusal', 'cancelled'];
@@ -133,30 +140,53 @@ export class Connection {
   }
 }
 
-/** The agent a run starts in on a harness that asks only where its configuration says to. */
-export const RUN_AGENT = 'myco-run';
+/** What the agent a run starts in is named by, on a harness that asks only where its configuration says to. */
+export const RUN_AGENT_PREFIX = 'myco-run';
+
+/**
+ * A name for a run's own agent that no other configuration can know in
+ * advance. A harness merges configuration it fetches or finds after the run's,
+ * and an agent it defines under the run's agent's name is merged into it; a
+ * name drawn for this run alone is one nothing else defines.
+ */
+export function runAgentName(): string {
+  return `${RUN_AGENT_PREFIX}-${randomBytes(8).toString('hex')}`;
+}
 
 /** The shell a run's commands run under: one that reads no startup file, so the run's environment is the one its commands see. */
 const RUN_SHELL = '/bin/sh';
 
 /**
  * The configuration a run-agent harness is given: an agent of the run's own,
- * the default, under which every call asks, and a shell that reads no user
- * startup file. Its permission comes after every rule the harness's other
- * configuration holds, and the last rule that matches a call decides it.
+ * named `agent`, the default, under which every call asks, and a shell that
+ * reads no user startup file. Its permission comes after every rule the
+ * harness's other configuration holds, and the last rule that matches a call
+ * decides it. A refused call is that call's failure and not the end of the
+ * agent's turn, so the agent goes on with the rest of its work.
  */
-export function runAgentConfig(platform: NodeJS.Platform = process.platform): Record<string, unknown> {
+export function runAgentConfig(agent: string, platform: NodeJS.Platform = process.platform): Record<string, unknown> {
   return {
-    default_agent: RUN_AGENT,
+    default_agent: agent,
     ...(platform === 'win32' ? {} : { shell: RUN_SHELL }),
-    agent: { [RUN_AGENT]: { mode: 'primary', description: 'A Myco run: every call is asked, and answered from the run\'s grant.', permission: { '*': 'ask' } } },
+    experimental: { continue_loop_on_deny: true },
+    agent: { [agent]: { mode: 'primary', description: 'A Myco run: every call is asked, and answered from the run\'s grant.', permission: { '*': 'ask' } } },
   };
 }
 
-/** The environment that makes this harness ask before every call, and the session mode that shows it will. */
-function askingOf(harness: Harness | null): { env: Record<string, string>; mode: string | null } {
+/** The environment that makes a harness ask before every call, and the session mode that shows it will. */
+export interface RunAsking {
+  env: Record<string, string>;
+  mode: string | null;
+}
+
+/**
+ * How a run on this harness is made to ask: for a run-agent harness, the
+ * run's own agent under a name drawn for it and the environment that keeps the
+ * machine's extensions out. Every other harness needs nothing here.
+ */
+export function runAsking(harness: Harness | null, agent: string = runAgentName()): RunAsking {
   if (harness?.asking.kind !== 'run-agent') return { env: {}, mode: null };
-  return { env: { [harness.asking.env]: JSON.stringify(runAgentConfig()) }, mode: RUN_AGENT };
+  return { env: { ...harness.asking.extensionsOff, [harness.asking.env]: JSON.stringify(runAgentConfig(agent)) }, mode: agent };
 }
 
 /** The mode a session reports it started in: a configuration option named `mode`, or the protocol's own current mode. */
@@ -196,13 +226,13 @@ export async function* turnOver(
   spec: RunSpec,
   detailOnFailure: () => string,
   listTools: (server: RunServer, signal: AbortSignal) => Promise<RunTools> = listRunTools,
-  options: { grant?: RunGrant; signal?: AbortSignal } = {},
+  options: { grant?: RunGrant; signal?: AbortSignal; asking?: RunAsking } = {},
 ): AsyncIterable<RunEvent> {
   const harness = harnessById(id);
   const grant = options.grant ?? runGrant(spec, harness ?? { sourceGit: 'none' });
   const signal = options.signal ?? new AbortController().signal;
   const server = runServerOf(spec);
-  const asking = askingOf(harness);
+  const asking = options.asking ?? runAsking(harness);
   let tools: ReadonlySet<string> = new Set();
   let events: AcpEvents | undefined;
   let sessionId: string | null = null;
@@ -281,16 +311,39 @@ function acpServerOf(server: RunServer): Record<string, unknown> {
   };
 }
 
-export function acpDriver(id: string): Driver {
+/** Writes what a harness that reads a configuration directory of the run's own finds there. */
+export type RunHomeWriter = (home: string) => void;
+
+/**
+ * The environment a run-home harness reads its configuration directory from,
+ * with the directory written; nothing for any other harness. A run-home harness
+ * whose driver was given no writer fails here, before the harness is started,
+ * rather than being started over the machine's own configuration.
+ */
+function runHomeOf(harness: Harness, spec: RunSpec, writeHome: RunHomeWriter | undefined): Record<string, string> {
+  if (harness.asking.kind !== 'run-home') return {};
+  if (writeHome === undefined) throw new Error(`no run configuration is written for ${harness.id}, so its own would decide the run's calls`);
+  const home = freshRunHome(spec.scratchDir, `${harness.id}-home`);
+  writeHome(home);
+  return { [harness.asking.env]: home };
+}
+
+export function acpDriver(id: string, writeHome?: RunHomeWriter): Driver {
   return {
     id,
     async *run(spec: RunSpec, signal: AbortSignal): AsyncIterable<RunEvent> {
       const harness = harnessById(id)!;
       const { command, args } = commandOf(harness);
       const grant = runGrant(spec, harness);
+      const asking = runAsking(harness);
+      let home: Record<string, string>;
+      try { home = runHomeOf(harness, spec, writeHome); } catch (error) {
+        yield { kind: 'ended', stop: 'error', detail: error instanceof Error ? error.message : String(error) };
+        return;
+      }
       const child = spawn(command, [...args], {
         cwd: spec.scratchDir,
-        env: { ...process.env, ...spec.credentialEnv, ...grant.env, ...askingOf(harness).env },
+        env: { ...process.env, ...spec.credentialEnv, ...grant.env, ...asking.env, ...home },
         stdio: ['pipe', 'pipe', 'pipe'],
       });
       let errors = '';
@@ -308,7 +361,7 @@ export function acpDriver(id: string): Driver {
         onClose: (closed) => { child.once('close', closed); child.once('error', closed); },
       };
       try {
-        yield* turnOver(channel, id, spec, () => errors.slice(0, 2000), listRunTools, { grant, signal });
+        yield* turnOver(channel, id, spec, () => errors.slice(0, 2000), listRunTools, { grant, signal, asking });
       } finally {
         signal.removeEventListener('abort', stop);
         child.kill('SIGTERM');
