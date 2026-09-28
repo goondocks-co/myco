@@ -11,8 +11,13 @@ import { lit, MACHINE_ID, MEMBER_ID, type ParityScenario, type ParityTarget, wai
 const ATTACH_BOUND_MS = 45_000;
 /** How far ahead another scenario's queued run is parked while this one claims, and back again afterwards. */
 const PARK_MS = 3_600_000;
-/** The renewal cadence the claim's answer is rewritten to, so a held turn renews several times inside the scenario. The lease the Deployment grants is its own. */
-const HEARTBEAT_MS = 300;
+/**
+ * The renewal cadence the claim's answer is rewritten to, so a held turn renews
+ * several times inside the scenario. The lease the Deployment grants is its own.
+ * The worker bounds its claim and end by the same cadence, so it is kept well
+ * above what an end takes on a loaded runner.
+ */
+const HEARTBEAT_MS = 1_000;
 /** How many renewals, each answered held, the run must see while it is driven. */
 const RENEWALS = 3;
 
@@ -156,7 +161,10 @@ export const workerWire: ParityScenario = {
       expect(lines.some((l) => l.startsWith(`claimed ${runId}`))).toBe(true);
 
       // `/worker/end` is what moves the row off running, and the credential the
-      // claim minted for THIS run is retired as the row stops naming it.
+      // claim minted for THIS run is retired as the row stops naming it. An end
+      // whose answer the worker's deadline cut short is still the Deployment's
+      // to finish, so the row is waited for rather than read once.
+      await waitFor(row, (r) => r?.status !== 'running', 20_000);
       expect(await target.sql(`SELECT tokens_used, cost_usd, actual_cost_usd, estimated_cost_usd, cost_source, usage_data
         FROM agent_runs WHERE id = ${lit(runId)}`)).toEqual([{
         tokens_used: null, cost_usd: null, actual_cost_usd: null, estimated_cost_usd: null, cost_source: 'unavailable', usage_data: null,

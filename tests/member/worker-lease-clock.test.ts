@@ -304,3 +304,68 @@ describe('the lease a worker holds', () => {
   }, 20_000);
 });
 
+/**
+ * An answer cut short by the worker's own request deadline.
+ *
+ * When a deadline fires after an answer's status line arrived and before its
+ * body did, Bun's fetch resolves the body as empty rather than rejecting: a 200
+ * with nothing to read. `truncatedAt` answers that way, deterministically: the
+ * headers now, declaring the body the Deployment sent, and the body ending empty
+ * the moment the request's signal aborts.
+ */
+function truncatedAt(signal: AbortSignal | undefined, sent: Record<string, unknown>): Response {
+  const body = JSON.stringify(sent);
+  const stream = new ReadableStream<Uint8Array>({
+    start(controller) {
+      if (signal === undefined) { controller.enqueue(new TextEncoder().encode(body)); controller.close(); return; }
+      signal.addEventListener('abort', () => { controller.close(); }, { once: true });
+    },
+  });
+  return new Response(stream, { status: 200, headers: { 'content-type': 'application/json', 'content-length': String(new TextEncoder().encode(body).byteLength) } });
+}
+
+describe('an answer cut short by the worker\'s own deadline', () => {
+  it('is an end that did not arrive, not a Deployment refusing the worker', async () => {
+    const r = rig({ end: (body, signal) => truncatedAt(signal, { persisted: true, ended: true, status: body.status }) });
+    try {
+      r.release();
+      expect(await r.start(), r.report()).toEqual({ driven: 1, refused: null });
+      expect(r.lines.some((l) => l.startsWith('could not report the outcome of run_1')), r.report()).toBe(true);
+      expect(r.lines.some((l) => l.includes('refused the outcome')), r.report()).toBe(false);
+    } finally { r.release(); r.stopping.abort(); }
+  }, 20_000);
+
+  it('is a renewal that did not arrive, which leaves the harness running', async () => {
+    const r = rig({ lease: (_body, signal) => truncatedAt(signal, { persisted: true, held: true, expiresAt: 0, leaseMs: LEASE_MS }) });
+    try {
+      const outcome = r.start();
+      await until('several renewals', () => r.sent.filter((s) => s.path === '/worker/lease').length >= 4);
+      r.release();
+      expect(await outcome, r.report()).toEqual({ driven: 1, refused: null });
+      expect({ refused: r.lines.some((l) => l.includes('refused the lease')), ended: r.ended().map((s) => s.body.status) }, r.report())
+        .toEqual({ refused: false, ended: ['completed'] });
+    } finally { r.release(); r.stopping.abort(); }
+  }, 20_000);
+
+  it('is a claim that did not arrive, and the worker keeps polling', async () => {
+    let claims = 0;
+    let r: ReturnType<typeof rig>;
+    r = rig({
+      once: false,
+      claim: (_body, signal) => {
+        claims += 1;
+        // The first claim takes a run, which sets the cadence the next claim is bounded by.
+        if (claims === 1) return Response.json({ persisted: true, claimed: true, heartbeatMs: HEARTBEAT_MS, leaseMs: LEASE_MS, run: r.run });
+        if (claims === 2) return truncatedAt(signal, { persisted: true, claimed: false, reason: 'no_work', pollAfterMs: 50 });
+        r.stopping.abort();
+        return Response.json({ persisted: true, claimed: false, reason: 'no_work', pollAfterMs: 50 });
+      },
+    });
+    try {
+      r.release();
+      expect(await r.start(), r.report()).toEqual({ driven: 1, refused: null });
+      expect(claims).toBe(3);
+    } finally { r.release(); r.stopping.abort(); }
+  }, 20_000);
+});
+

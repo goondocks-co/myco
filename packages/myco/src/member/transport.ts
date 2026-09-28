@@ -61,6 +61,12 @@ const CODE_SET = new Set<string>(MEMBER_CODES);
 const memberCode = (value: unknown): MemberCode | null => (typeof value === 'string' && CODE_SET.has(value) ? (value as MemberCode) : null);
 const reasonOf = (body: Record<string, unknown> | null): string => (typeof body?.reason === 'string' ? body.reason : '');
 
+/** Whether `text` is all of the body `res` declared; a body that declares no length cannot be shown whole. */
+function bodyComplete(res: Response, text: string): boolean {
+  const declared = res.headers.get('content-length');
+  return declared !== null && /^\d+$/.test(declared) && new TextEncoder().encode(text).byteLength === Number(declared);
+}
+
 /**
  * A response read into the shape every classifier decides on: the status line,
  * whether the server disclosed its protocol, the wait it asked for, and its
@@ -68,8 +74,17 @@ const reasonOf = (body: Record<string, unknown> | null): string => (typeof body?
  * caller from deciding on `res.json()` alone, which makes a 409 refusal and a
  * 200 answer indistinguishable.
  */
-export async function rawAnswerOf(res: Response): Promise<RawAnswer> {
+export async function rawAnswerOf(res: Response, signal?: AbortSignal): Promise<RawAnswer> {
   const text = await res.text();
+  // A request aborted after its status line arrived and before its body did —
+  // its deadline firing as the answer lands — reads under Bun as a body that
+  // ended early, often empty, rather than as an abort. That is an answer that
+  // did not arrive, and it is raised as the abort it is: read as a 200, it
+  // would classify as a Deployment answering in the wrong shape. A body the
+  // abort did not cut, all the bytes its length declared, is the answer.
+  if (signal?.aborted === true && !bodyComplete(res, text)) {
+    throw signal.reason instanceof Error ? signal.reason : new Error('the request was aborted before its answer was read');
+  }
   let json: Record<string, unknown> | null = null;
   try {
     const parsed: unknown = JSON.parse(text);
@@ -139,7 +154,7 @@ export class ServerClient {
         redirect: 'error',
         signal: controller.signal,
       });
-      return await rawAnswerOf(res);
+      return await rawAnswerOf(res, controller.signal);
     } catch (err) {
       if (timedOut) return { kind: 'timeout', phase: 'request' };
       return { kind: 'transport', detail: err instanceof Error ? err.message : String(err) };
