@@ -165,6 +165,12 @@ mock.module('../../packages/myco/ui/src/hooks/use-daemon', () => ({
   }),
 }));
 
+// Force the debounced search through immediately so the filter test asserts
+// the filtered render rather than racing the debounce timer.
+mock.module('../../packages/myco/ui/src/hooks/use-debounce', () => ({
+  useDebounce: <T,>(value: T) => value,
+}));
+
 // PlanCaptureCard fetches symbiont plan dirs; BackupCard fetches /backups.
 mock.module('../../packages/myco/ui/src/lib/api', () => ({
   fetchJson: vi.fn().mockImplementation(async (path: string) => {
@@ -301,15 +307,15 @@ describe('Unified Settings page', () => {
   it('search filter narrows visible fields', async () => {
     renderPage();
     const searchInput = screen.getByPlaceholderText('Search settings...');
+    expect(document.getElementById('skills')).not.toBeNull();
     fireEvent.change(searchInput, { target: { value: 'log level' } });
 
-    // Wait for the 150ms debounce to settle.
     await waitFor(() => {
       const sections = Array.from(document.querySelectorAll('section[id]'));
       const visibleIds = sections.map((s) => s.id);
       expect(visibleIds).toContain('logging');
       expect(visibleIds).not.toContain('skills');
-    }, { timeout: 500 });
+    });
   });
 
   it('TOC scrolls to a group on click', () => {
