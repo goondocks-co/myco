@@ -87,22 +87,28 @@ describe('the Deployment names what it is configured to do', () => {
       lastActivityAt: null, archivedAt: null, unavailableFields: [],
     });
     expect(document.ingestBacklog).toMatchObject({ pendingTranscripts: 0, pendingImportedTranscripts: 0 });
-    expect(document.missingSporeVectors).toEqual([]);
+    // No embedding model is configured, so nothing is calibrated and nothing is counted.
+    expect(document.missingSporeVectors).toBeNull();
   });
 
-  it('counts the spores left out of relevance calibration while the vector store does not return their vectors', async () => {
+  it('counts the spores left out of relevance calibration under the configured model while the vector store does not return their vectors', async () => {
     const r = await rig();
-    const receipt = (record: string, rewrites: number, updatedAt: number) => {
-      r.sqlite.run(`INSERT INTO spores (project_id, id, agent_id, content, observation_type, created_at) VALUES ('proj_1', ?, 'myco-agent', ?, 'decision', 1)`, [record, `spore ${record}`]);
+    const receipt = (record: string, model: string, ready: number, rewrites: number, updatedAt: number) => {
+      r.sqlite.run(`INSERT OR IGNORE INTO spores (project_id, id, agent_id, content, observation_type, created_at) VALUES ('proj_1', ?, 'myco-agent', ?, 'decision', 1)`, [record, `spore ${record}`]);
       r.sqlite.run(`INSERT INTO embedding_receipts (project_id, model_key, id, type, record_id, revision, ready, updated_at, rewrites)
-        SELECT project_id, 'm', ?, type, record_id, revision, 1, ?, ? FROM embedding_versions WHERE project_id = 'proj_1' AND type = 'spore' AND record_id = ?`,
-      [`v-${record}`, updatedAt, rewrites, record]);
+        SELECT project_id, ?, ?, type, record_id, revision, ?, ?, ? FROM embedding_versions WHERE project_id = 'proj_1' AND type = 'spore' AND record_id = ?`,
+      [model, `${model}-${record}`, ready, updatedAt, rewrites, record]);
     };
-    receipt('calibrated', 0, NOW);
-    receipt('written-again', 1, NOW);
-    receipt('given-up', VECTOR_REWRITE_LIMIT, NOW - VECTOR_LOST_MS);
-    const document = await deploymentDiagnostics(r.serverEnv, NOW);
-    expect(document.missingSporeVectors).toEqual([{ projectId: 'proj_1', retrying: 1, abandoned: 1 }]);
+    receipt('calibrated', 'm', 1, 0, NOW);
+    receipt('queued-again', 'm', 0, 1, NOW);
+    receipt('due-again', 'm', 1, 1, NOW - VECTOR_LOST_MS);
+    receipt('waited-on', 'm', 1, 1, NOW);
+    receipt('given-up', 'm', 1, VECTOR_REWRITE_LIMIT, NOW - VECTOR_LOST_MS);
+    receipt('claimed', 'm', -1, 1, NOW);
+    receipt('given-up', 'old-model', 1, VECTOR_REWRITE_LIMIT, NOW - VECTOR_LOST_MS);
+    const env = { ...r.serverEnv, vectors: {} as never, embeddingProvider: async () => ({ modelKey: 'm', embed: async () => [1] }) };
+    const document = await deploymentDiagnostics(env, NOW);
+    expect(document.missingSporeVectors).toEqual([{ projectId: 'proj_1', rewriting: 2, waiting: 1, abandoned: 1 }]);
   });
 
   it('labels a nonempty backlog as a transcript count', async () => {

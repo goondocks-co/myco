@@ -14,14 +14,16 @@ export interface EmbeddingRunResult { processed: number; phase: string; missing?
 
 /** The left-out spores in the reader's words; nothing when there are none. */
 function missingWords(missing: MissingSporeVectors | undefined): string[] {
-  const words: string[] = [];
-  const said = (n: number, rest: [string, string]) => `${n} spore${n === 1 ? ' is' : 's are'} left out of relevance calibration: ${rest[n === 1 ? 0 : 1]}`;
-  if (missing !== undefined && missing.retrying > 0) words.push(said(missing.retrying,
-    ['the vector store has not returned its vector, so it is being written again.', 'the vector store has not returned their vectors, so they are being written again.']));
-  if (missing !== undefined && missing.abandoned > 0) words.push(said(missing.abandoned,
-    [`the vector store never returned its vector, even after it was written again ${VECTOR_REWRITE_LIMIT} times.`,
-      `the vector store never returned their vectors, even after they were written again ${VECTOR_REWRITE_LIMIT} times.`]));
-  return words;
+  const said = (n: number, one: string, many: string) => `${n} spore${n === 1 ? ' is' : 's are'} left out of relevance calibration: ${n === 1 ? one : many}`;
+  if (missing === undefined) return [];
+  return [
+    missing.rewriting > 0 ? said(missing.rewriting, 'the vector store has not returned its vector, so it is being written again.',
+      'the vector store has not returned their vectors, so they are being written again.') : '',
+    missing.waiting > 0 ? said(missing.waiting, 'its vector has been written again, and the vector store has not returned it yet.',
+      'their vectors have been written again, and the vector store has not returned them yet.') : '',
+    missing.abandoned > 0 ? said(missing.abandoned, `the vector store never returned its vector, even after it was written again ${VECTOR_REWRITE_LIMIT} times.`,
+      `the vector store never returned their vectors, even after they were written again ${VECTOR_REWRITE_LIMIT} times.`) : '',
+  ].filter((w) => w !== '');
 }
 
 export function embeddingRunReport(result: EmbeddingRunResult) {
@@ -30,7 +32,7 @@ export function embeddingRunReport(result: EmbeddingRunResult) {
 }
 
 const isMissing = (value: unknown): value is MissingSporeVectors => value !== null && typeof value === 'object'
-  && Number.isInteger((value as MissingSporeVectors).retrying) && Number.isInteger((value as MissingSporeVectors).abandoned);
+  && (['rewriting', 'waiting', 'abandoned'] as const).every((k) => Number.isInteger((value as MissingSporeVectors)[k]));
 
 /** Advance bounded embedding steps while retaining time to close the run. */
 export async function runEmbeddingSteps(step: () => Promise<Record<string, unknown>>, signal: AbortSignal, deadline: number, closeReserveMs = CLOSE_RESERVE_MS): Promise<EmbeddingRunResult> {
@@ -46,11 +48,11 @@ export async function runEmbeddingSteps(step: () => Promise<Record<string, unkno
     if (typeof result.phase !== 'string' || typeof result.processed !== 'number') throw new Error('embedding step returned an invalid result');
     phase = result.phase;
     processed += result.processed;
-    if (isMissing(result.missing)) missing = { retrying: result.missing.retrying, abandoned: result.missing.abandoned };
+    if (isMissing(result.missing)) missing = { rewriting: result.missing.rewriting, waiting: result.missing.waiting, abandoned: result.missing.abandoned };
     if (result.processed === 0) break;
   }
   signal.throwIfAborted();
-  return missing === undefined || missing.retrying + missing.abandoned === 0 ? { processed, phase } : { processed, phase, missing };
+  return missing === undefined || missing.rewriting + missing.waiting + missing.abandoned === 0 ? { processed, phase } : { processed, phase, missing };
 }
 
 export type EmbeddingLaunch = Parameters<NonNullable<ServerEnv['harnessLaunch']>>[0];

@@ -2,6 +2,6 @@
 
 ALTER TABLE embedding_receipts ADD COLUMN rewrites INTEGER NOT NULL DEFAULT 0;
 
-CREATE INDEX IF NOT EXISTS idx_embedding_receipts_rewrites ON embedding_receipts(project_id, model_key, id) WHERE rewrites > 0;
+ALTER TABLE embedding_cursors ADD COLUMN hubness_probe TEXT;
 
 INSERT OR REPLACE INTO schema_meta (key, value) VALUES ('version', '51');

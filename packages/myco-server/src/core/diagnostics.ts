@@ -28,6 +28,7 @@ import { pendingImportedTranscripts, pendingTranscriptBytes as pendingTranscript
 import { DEFERRED_JOBS, SERVER_JOBS, WAKE_CONTINUATIONS } from './jobs.js';
 import { CLASSIFIERS } from '../telemetry.js';
 import { missingSporeVectors, type MissingSporeVectors } from './embedding/hubness.js';
+import { resolveSemanticSearch } from './search.js';
 
 export const DEPLOYMENT_BUNDLE_VERSION = 1;
 
@@ -151,8 +152,9 @@ export interface DeploymentDiagnostics {
   /** Null when the store could not be questioned. */
   ingestBacklog: { pendingTranscripts: number; pendingImportedTranscripts: number } | null;
   /**
-   * Each Project with spores left out of relevance calibration while the vector store does not return their
-   * vectors, as the embedding run reports them. Null when the store could not be questioned.
+   * Each Project with spores left out of relevance calibration under the configured embedding model while the vector
+   * store does not return their vectors, as the embedding run reports them. Null when the store could not be
+   * questioned or no embedding model is configured.
    */
   missingSporeVectors: Array<{ projectId: string } & MissingSporeVectors> | null;
   /** Declared from the registry, so it is answered whether or not the store can be read. */
@@ -274,11 +276,13 @@ export async function deploymentDiagnostics(env: ServerEnv, now: number): Promis
   }
 }
 
-async function missingAcross(env: ServerEnv, projects: ProjectRow[], now: number): Promise<Array<{ projectId: string } & MissingSporeVectors>> {
+async function missingAcross(env: ServerEnv, projects: ProjectRow[], now: number): Promise<Array<{ projectId: string } & MissingSporeVectors> | null> {
+  const semantic = await resolveSemanticSearch(env).catch(() => null);
+  if (semantic === null) return null;
   const found: Array<{ projectId: string } & MissingSporeVectors> = [];
   for (const { projectId } of projects) {
-    const missing = await missingSporeVectors(env.db, projectId, now);
-    if (missing.retrying + missing.abandoned > 0) found.push({ projectId, ...missing });
+    const missing = await missingSporeVectors(env.db, projectId, semantic.provider.modelKey, now);
+    if (missing.rewriting + missing.waiting + missing.abandoned > 0) found.push({ projectId, ...missing });
   }
   return found;
 }

@@ -105,7 +105,7 @@ try {
   now += VECTOR_LOST_MS;
   await settle();
   check('the rewrite bound spent: exact, counted, quiet', await exact(), { spores: 121, withinTolerance: true, hubnessCount: 121, pending: false });
-  check('reported as no longer written again', await missingSporeVectors(db, 'p', now), { retrying: 0, abandoned: 1 });
+  check('reported as no longer written again', await missingSporeVectors(db, 'p', 'm', now), { rewriting: 0, waiting: 0, abandoned: 1 });
 } finally {
   await mf.dispose();
   fs.writeFileSync(EVIDENCE, JSON.stringify({ checks }, null, 2));

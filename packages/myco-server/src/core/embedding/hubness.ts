@@ -103,21 +103,25 @@ function decodeVector(encoded: string): Float32Array {
   return new Float32Array(bytes.buffer);
 }
 
-/** A Project's spore vectors left out of calibration while the vector store does not return them. */
+/** A Project's spore vectors under one model left out of calibration while the vector store does not return them. */
 export interface MissingSporeVectors {
-  /** Being written again, or looked for after a write. */
-  retrying: number;
+  /** Being written again, or due to be. */
+  rewriting: number;
+  /** Written again, and waited on for `VECTOR_LOST_MS` from that write. */
+  waiting: number;
   /** Written again `VECTOR_REWRITE_LIMIT` times and still not returned; no longer written again. */
   abandoned: number;
 }
 
-export async function missingSporeVectors(db: RelationalStore, projectId: string, now: number): Promise<MissingSporeVectors> {
-  const row = await db.prepare(`SELECT COALESCE(SUM(NOT (r.ready = 1 AND ${ABANDONED})), 0) AS retrying, COALESCE(SUM(r.ready = 1 AND ${ABANDONED}), 0) AS abandoned
+export async function missingSporeVectors(db: RelationalStore, projectId: string, model: string, now: number): Promise<MissingSporeVectors> {
+  const row = await db.prepare(`SELECT COALESCE(SUM(r.ready = 0 OR (r.updated_at <= ? AND r.rewrites < ${VECTOR_REWRITE_LIMIT})), 0) AS rewriting,
+      COALESCE(SUM(r.ready = 1 AND r.updated_at > ?), 0) AS waiting,
+      COALESCE(SUM(r.ready = 1 AND r.updated_at <= ? AND r.rewrites >= ${VECTOR_REWRITE_LIMIT}), 0) AS abandoned
     FROM embedding_receipts r JOIN embedding_sources s
       ON s.project_id = r.project_id AND s.type = r.type AND s.record_id = r.record_id AND s.revision = r.revision
-    WHERE r.project_id = ? AND r.type = 'spore' AND r.rewrites > 0 AND r.ready >= 0`)
-    .bind(now - VECTOR_LOST_MS, now - VECTOR_LOST_MS, projectId).first<MissingSporeVectors>();
-  return { retrying: row?.retrying ?? 0, abandoned: row?.abandoned ?? 0 };
+    WHERE r.project_id = ? AND r.model_key = ? AND r.rewrites > 0 AND r.ready >= 0 AND r.type = 'spore'`)
+    .bind(now - VECTOR_LOST_MS, now - VECTOR_LOST_MS, now - VECTOR_LOST_MS, projectId, model).first<MissingSporeVectors>();
+  return { rewriting: row?.rewriting ?? 0, waiting: row?.waiting ?? 0, abandoned: row?.abandoned ?? 0 };
 }
 
 /**
@@ -182,8 +186,7 @@ export async function reconcileHubness(context: EmbeddingContext, projectId: str
     } else {
       const lostBefore = now - VECTOR_LOST_MS;
       const joining = (await db.prepare(`${UNCOVERED} ORDER BY r.id LIMIT ?`).bind(projectId, model, HUBNESS_SUBJECTS).all<Candidate>()).results;
-      const asked = joining.length > 0 ? joining
-        : (await db.prepare(`${MISSING} ORDER BY ${ABANDONED}, r.id LIMIT ?`).bind(projectId, model, lostBefore, HUBNESS_SUBJECTS).all<Candidate>()).results;
+      const asked = joining.length > 0 ? joining : await leftOut(db, projectId, model, lostBefore);
       const visible = asked.length === 0 ? [] : await vectors.get({ projectId, modelKey: model }, asked.map((r) => r.id));
       const seen = new Set(visible.map((v) => v.id));
       const unseen = asked.filter((r) => !seen.has(r.id));
@@ -270,6 +273,20 @@ export async function reconcileHubness(context: EmbeddingContext, projectId: str
     done = await commit(statements, ', hubness_cursor = ?', [targets[targets.length - 1]!.id]);
   }
   return { phase: 'hubness', processed: done || started ? 1 : 0 };
+}
+
+/**
+ * Left-out spore vectors to look for: those still written again first, then those no longer written again from the
+ * probe cursor on, wrapping, so each one is looked for in turn. Moves the probe cursor past the last one taken.
+ */
+async function leftOut(db: RelationalStore, projectId: string, model: string, lostBefore: number): Promise<Candidate[]> {
+  const probe = (await db.prepare('SELECT hubness_probe FROM embedding_cursors WHERE project_id = ?').bind(projectId)
+    .first<{ hubness_probe: string | null }>())?.hubness_probe ?? '';
+  const rows = (await db.prepare(`${MISSING} ORDER BY ${ABANDONED}, ${ABANDONED} AND r.id <= ?, r.id LIMIT ?`)
+    .bind(projectId, model, lostBefore, lostBefore, probe, HUBNESS_SUBJECTS).all<Candidate>()).results;
+  const next = rows.filter((r) => r.rewrites >= VECTOR_REWRITE_LIMIT && r.updated_at <= lostBefore).at(-1)?.id;
+  if (next !== undefined) await db.prepare('UPDATE embedding_cursors SET hubness_probe = ? WHERE project_id = ?').bind(next, projectId).run();
+  return rows;
 }
 
 /** The calibration's commit token, minted when the cursor has none. */
