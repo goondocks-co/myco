@@ -5,15 +5,19 @@ import { issueMemberToken, NO_RUNTIME_CLAIMS } from '../src/auth/tokens.ts';
 import { sqlCapture } from './sql-capture.ts';
 
 const USAGE = [
-  'usage: bun scripts/mint-local.ts <member_id> <machine_id> [--non-rotating] [--print-token]',
-  '       (--non-rotating: a credential for MYCO_MEMBER_TOKEN, shared by every runtime handed it; it never rotates, and is renewed by minting another)',
+  'usage: bun scripts/mint-local.ts <member_id> <machine_id> (--rotating | --non-rotating) [--print-token]',
   '       bun scripts/mint-local.ts --grant <project_id> [--label <text>] [--by <member_id>] [--print-token]',
   '       (a grant names a Project the Deployment already holds; the emitted SQL is refused otherwise)',
 ].join('\n');
 
 const args = process.argv.slice(2);
 const printToken = args.includes('--print-token');
-const nonRotating = args.includes('--non-rotating');
+/** Which credential to mint is the operator's to say: each choice is wrong for the other's holder. */
+const ROTATION_CHOICE = [
+  'say how the credential is held — one of:',
+  '  --rotating      for `myco member join … --token-env|--token-stdin`: a registry on one machine renews it every week and it never expires while in use',
+  '  --non-rotating  for MYCO_MEMBER_TOKEN, a sandbox or any `--credential env` runtime: every holder shares it, nothing renews it, and it expires 7 days after mint — mint another to renew',
+].join('\n');
 /** The value after `flag`, or undefined when the flag is absent; a flag followed by another flag or nothing is a usage error. */
 const valueOf = (flag: string): string | undefined => {
   const at = args.indexOf(flag);
@@ -36,9 +40,15 @@ if (args.includes('--grant')) {
   if (printToken) console.error(`MYCO_EXTERNAL_KEY=${issued.key}`);
   else console.error(`-- grant_id ${issued.id} minted; rerun with --print-token to print the raw key to stderr`);
 } else {
-  const [memberId, machineId] = args.filter((a) => a !== '--print-token' && a !== '--non-rotating');
+  const [memberId, machineId] = args.filter((a) => a !== '--print-token' && a !== '--rotating' && a !== '--non-rotating');
   if (!memberId || !machineId) {
     console.error(USAGE);
+    process.exit(2);
+  }
+  const rotating = args.includes('--rotating');
+  const nonRotating = args.includes('--non-rotating');
+  if (rotating === nonRotating) {
+    console.error(`${ROTATION_CHOICE}\n${USAGE}`);
     process.exit(2);
   }
   await ensureMember(db, memberId, now, 'admin');

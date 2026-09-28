@@ -14,7 +14,13 @@ import worker from '@myco-server-worker/index.js';
 import {
   issueMemberToken, LINEAGE_REPLAY_REVOKER, MEMBER_TOKEN_TTL_MS, NO_RUNTIME_CLAIMS, refreshMemberToken, activateSuccessor,
 } from '@myco-server-worker/auth/tokens.js';
-import { NON_ROTATING } from '@myco-server-worker/pipeline.js';
+import { NON_ROTATING, NON_ROTATING_AUTHORITY } from '@myco-server-worker/pipeline.js';
+import { ROUTES } from '@myco-server-worker/routes.js';
+import { readdirSync, readFileSync, statSync } from 'node:fs';
+import { join, relative } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { memberHeaders } from './helpers/fixtures.js';
+import { OWNER_ENV } from './helpers/owner.js';
 import { PROJECT_HEADER, PROTOCOL_HEADER, SERVER_PROTOCOL } from '@myco-server-worker/constants.js';
 import { TokenRevokedError } from '@myco-server-worker/telemetry.js';
 import { envelope, sqliteEnv, uuid } from './helpers/fixtures.js';
@@ -146,5 +152,57 @@ describe('a credential that rotates, beside it', () => {
     expect(res.status).toBe(401);
     expect(await jsonBody(res)).toEqual({ error: 'unauthorized', code: 'lineage_replayed' });
     expect(liveRows(e)).toEqual([]);
+  });
+});
+
+describe('every route that mints an authority able to outlive the credential (#1420)', () => {
+  const SRC = fileURLToPath(new URL('../../packages/myco-server/src/', import.meta.url));
+  const linkRequest = (token: string) => new Request('https://s/members/link-github', { method: 'POST', headers: memberHeaders(token), body: '{}' });
+  const linkKeys = (e: Env) => (e.sqlite.query(`SELECT COUNT(*) c FROM identity_link_authorities`).get() as { c: number }).c;
+
+  it('is declared in the route table: the refresh and the GitHub link, and no other member route', () => {
+    const declared = ROUTES.filter((r) => r.auth === 'member' && 'mintsAuthority' in r && r.mintsAuthority === true).map((r) => `${r.method} ${r.path}`);
+    expect(declared).toEqual(['POST /tokens/refresh', 'POST /members/link-github']);
+  });
+
+  it('is the only member route that reaches an authority minter: every other caller is an owner route, the join, or a run credential minted not to rotate', () => {
+    // A minter is anything that answers with a new token or key. Each file that calls one is named here with the door
+    // that reaches it, so a member route that starts minting fails this gate until it is declared `mintsAuthority`.
+    const MINTERS = /\b(issueIdentityLinkAuthority|issueEnrollmentAuthority|issueExternalGrant|rotateExternalGrant|mintInsert|issueMemberToken)\(/;
+    const callers: string[] = [];
+    const walk = (dir: string): void => {
+      for (const name of readdirSync(dir)) {
+        const file = join(dir, name);
+        if (statSync(file).isDirectory()) walk(file);
+        else if (file.endsWith('.ts') && readFileSync(file, 'utf8').split('\n').some((line) => MINTERS.test(line) && !/^\s*(export\s+)?(async\s+)?function\b/.test(line))) callers.push(relative(SRC, file));
+      }
+    };
+    walk(SRC);
+    expect(callers.sort()).toEqual([
+      'api/access.ts', // POST /api/enrollment — owner session
+      'api/grants.ts', // grant mint and rotate — owner session
+      'auth/join.ts', // POST /members/join — an enrollment key, no member credential
+      'auth/members.ts', // POST /members/link-github — mintsAuthority
+      'auth/tokens.ts', // the insert itself, and the refresh — mintsAuthority
+      'core/harness.ts', // run credentials, minted not to rotate
+    ].sort());
+    const harness = readFileSync(join(SRC, 'core', 'harness.ts'), 'utf8').split('\n').filter((line) => /issueMemberToken\(/.test(line) && !/^import/.test(line));
+    expect(harness.length).toBe(2);
+    for (const line of harness) expect(line).toContain('{ rotates: false }');
+  });
+
+  it('refuses a GitHub link key to a credential that does not rotate, live, and mints no key', async () => {
+    const { e, issued } = await envCredential(DAY_MS);
+    const res = await worker.fetch(linkRequest(issued.token), { ...e.env, ...OWNER_ENV });
+    expect(await jsonBody(res)).toEqual({ persisted: false, code: 'non_rotating', reason: NON_ROTATING_AUTHORITY });
+    expect(linkKeys(e)).toBe(0);
+  });
+
+  it('still answers a GitHub link key to a credential that rotates', async () => {
+    const e = sqliteEnv();
+    const rotating = await issueMemberToken(e.db, MEMBER, Date.now());
+    const res = await worker.fetch(linkRequest(rotating.token), { ...e.env, ...OWNER_ENV });
+    expect(await jsonBody(res)).toMatchObject({ persisted: true });
+    expect(linkKeys(e)).toBe(1);
   });
 });

@@ -19,7 +19,7 @@ export const REJOIN_HINT = 'ask a Deployment admin for an invite link and run `m
 export function deliveryNotice(credential: Pick<CredentialRecord, 'serverUrl' | 'expiresAt' | 'refreshTerminal' | 'refreshTerminalReason' | 'nonRotating'>, now: number): string | null {
   if (credential.nonRotating === true && credential.refreshTerminal !== true) {
     if (credential.expiresAt === undefined || credential.expiresAt > now) return null;
-    return `Myco capture is not being delivered: this machine's credential for ${credential.serverUrl} does not rotate and expired at ${new Date(credential.expiresAt).toISOString()}. What is captured stays on this machine and is delivered once you ${REJOIN_HINT}.`;
+    return `Myco capture is not being delivered: this machine's credential for ${credential.serverUrl} does not rotate, and the server stopped accepting it at ${new Date(credential.expiresAt).toISOString()} (it expired, or was stopped). What is captured stays on this machine and is delivered once you ${REJOIN_HINT}.`;
   }
   if (credential.refreshTerminal !== true) return null;
   if (credential.refreshTerminalReason === 'replayed') {

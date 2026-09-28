@@ -17,7 +17,7 @@ function run(script: string, args: string[]) {
 
 describe('operator scripts', () => {
   it('mint prints a members row and the credential insert, applicable to a fresh database, without the raw token', () => {
-    const { code, out, err } = run('mint-local.ts', ['mem_s', 'machine_s']);
+    const { code, out, err } = run('mint-local.ts', ['mem_s', 'machine_s', '--rotating']);
     expect(code).toBe(0);
     const statements = out.split('\n').filter((l) => l && !l.startsWith('--')).join('\n').split(';').map((s) => s.trim()).filter(Boolean);
     expect(statements[0]).toMatch(/^INSERT OR IGNORE INTO members/);
@@ -35,13 +35,23 @@ describe('operator scripts', () => {
   });
 
   it('mint prints the raw token to stderr only when asked, and it matches the admission shape', () => {
-    const { err } = run('mint-local.ts', ['mem_s', 'machine_s', '--print-token']);
+    const { err } = run('mint-local.ts', ['mem_s', 'machine_s', '--rotating', '--print-token']);
     const token = /MYCO_MEMBER_TOKEN=(\S+)/.exec(err)?.[1];
     expect(token).toBeDefined();
     expect(token).toMatch(MEMBER_TOKEN_PATTERN);
   });
 
-  it('mint records a rotating credential by default, and one that never rotates with --non-rotating', () => {
+  it('mint refuses to choose for the operator: neither or both rotation flags exit 2 with no SQL, naming which to use for a registry and which for the environment', () => {
+    for (const args of [[], ['--print-token'], ['--rotating', '--non-rotating']]) {
+      const { code, out, err } = run('mint-local.ts', ['mem_s', 'machine_s', ...args]);
+      expect({ args, code, out }).toEqual({ args, code: 2, out: '' });
+      expect(err).toContain('--rotating      for `myco member join');
+      expect(err).toContain('--non-rotating  for MYCO_MEMBER_TOKEN, a sandbox or any `--credential env` runtime');
+      expect(err).not.toMatch(/MYCO_MEMBER_TOKEN=/);
+    }
+  });
+
+  it('mint records a rotating credential with --rotating, and one that never rotates with --non-rotating', () => {
     const rotatesAfter = (args: string[]): number => {
       const { code, out } = run('mint-local.ts', ['mem_s', 'machine_s', ...args]);
       expect(code).toBe(0);
@@ -50,7 +60,7 @@ describe('operator scripts', () => {
       sqlite.exec(out);
       return (sqlite.query(`SELECT rotates FROM member_credentials`).get() as { rotates: number }).rotates;
     };
-    expect({ default: rotatesAfter([]), nonRotating: rotatesAfter(['--non-rotating']) }).toEqual({ default: 1, nonRotating: 0 });
+    expect({ rotating: rotatesAfter(['--rotating']), nonRotating: rotatesAfter(['--non-rotating']) }).toEqual({ rotating: 1, nonRotating: 0 });
   });
 
   it('mint refuses to run without a machine id', () => {

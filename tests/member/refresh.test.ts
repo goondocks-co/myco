@@ -19,6 +19,7 @@ import { ENV_MEMBER_TOKEN, ENV_PROJECT, ENV_SERVER_URL, resolveMemberProjectRoot
 import { buildIdentity, refreshDue, refreshMemberCredential, refreshMembership, refreshableRoot } from '@myco/member/refresh.js';
 import { readDeploymentMembership, readRegistryEntry, writeDeploymentMembership, writeRegistryEntry, type RegistryEntry } from '@myco/member/registry.js';
 import { MemberSpool } from '@myco/member/spool.js';
+import { deliveryNotice } from '@myco/member/delivery-notice.js';
 import { ServerClient, type FetchLike } from '@myco/member/transport.js';
 import { memberRig, tempMycoHome, type MemberRig } from './helpers/server.js';
 import { recordingFetch, registerTestMember, runHook } from './helpers/hooks.js';
@@ -320,7 +321,7 @@ describe('member token rotation', () => {
 const nonRotatingRig = (ageMs: number): Promise<MemberRig> => memberRig({ now: Date.now() - ageMs, rotates: false });
 
 describe('a credential minted not to rotate (#1420)', () => {
-  it('in a registry: the first hook inside the window learns it does not rotate, records that without a terminal state, and delivers; nothing dials the refresh route again, not even a forced renewal', async () => {
+  it('in a registry: the first hook inside the window learns it does not rotate, records that without a terminal state, and delivers; nothing dials the refresh route again', async () => {
     const rig = await nonRotatingRig(6.5 * DAY_MS);
     registerTestMember({ mycoHome, token: rig.token, tokenId: rig.tokenId, projectId: PROJECT, expiresAt: rig.expiresAt, serverUrl: SERVER_URL });
     const spy = recordingFetch(rig.fetch);
@@ -328,7 +329,7 @@ describe('a credential minted not to rotate (#1420)', () => {
     const first = await prompt(spy.fetch, 'first');
     expect(refreshCalls(spy)).toBe(1);
     const entry = readRegistryEntry(root, mycoHome)!;
-    expect({ token: entry.token, nonRotating: entry.nonRotating, refreshTerminal: entry.refreshTerminal }).toEqual({ token: rig.token, nonRotating: true, refreshTerminal: undefined });
+    expect({ token: entry.token, nonRotating: entry.nonRotating, refreshTerminal: entry.refreshTerminal }).toEqual({ token: rig.token, nonRotating: true, refreshTerminal: false });
     expect(first.stderr).toContain('does not rotate');
     expect(first.stderr).not.toContain('Myco capture is not being delivered');
     expect(rig.rows('prompt_batches')).toBe(1);
@@ -336,7 +337,7 @@ describe('a credential minted not to rotate (#1420)', () => {
     const second = await prompt(spy.fetch, 'second');
     expect(second.stderr).toBe('');
     expect(rig.rows('prompt_batches')).toBe(2);
-    expect((await refreshMemberCredential(root, { mycoHome, fetch: spy.fetch, budget: budget(), force: true })).status).toBe('non-rotating');
+    expect((await refreshMemberCredential(root, { mycoHome, fetch: spy.fetch, budget: budget() })).status).toBe('non-rotating');
     expect(refreshCalls(spy)).toBe(1);
     expect(rig.rows('member_credentials')).toBe(1);
 
@@ -354,14 +355,73 @@ describe('a credential minted not to rotate (#1420)', () => {
     const first = await prompt(spy.fetch, 'after expiry');
     expect(refreshCalls(spy)).toBe(1);
     const entry = readRegistryEntry(root, mycoHome)!;
-    expect({ nonRotating: entry.nonRotating, refreshTerminal: entry.refreshTerminal }).toEqual({ nonRotating: true, refreshTerminal: undefined });
-    expect(first.stderr).toContain('does not rotate and expired at');
+    expect({ nonRotating: entry.nonRotating, refreshTerminal: entry.refreshTerminal }).toEqual({ nonRotating: true, refreshTerminal: false });
+    expect(first.stderr).toContain('does not rotate, and the server stopped accepting it');
     expect(rig.rows('prompt_batches')).toBe(0);
     expect(new MemberSpool(PROJECT, { mycoHome }).depth(session)).toBeGreaterThan(0);
 
     await prompt(spy.fetch, 'again');
     expect(refreshCalls(spy)).toBe(1);
     expect(rig.rows('member_credentials')).toBe(1);
+  });
+
+  it('in a registry, stopped from the dashboard: the refused capture ends the token\'s life now without a dial, and the notice says capture is not delivered', async () => {
+    const rig = await nonRotatingRig(6.5 * DAY_MS);
+    registerTestMember({ mycoHome, token: rig.token, tokenId: rig.tokenId, projectId: PROJECT, expiresAt: rig.expiresAt, serverUrl: SERVER_URL });
+    const spy = recordingFetch(rig.fetch);
+    await prompt(spy.fetch, 'before the stop');
+    expect(readRegistryEntry(root, mycoHome)!.nonRotating).toBe(true);
+    rig.env.sqlite.query(`UPDATE member_credentials SET revoked_at = ?, revoked_by = 'mem_admin' WHERE id = ?`).run(Date.now(), rig.tokenId);
+
+    const stopped = await prompt(spy.fetch, 'after the stop');
+
+    expect(refreshCalls(spy)).toBe(1);
+    const entry = readRegistryEntry(root, mycoHome)!;
+    expect({ nonRotating: entry.nonRotating, refreshTerminal: entry.refreshTerminal, ended: entry.expiresAt! <= Date.now() }).toEqual({ nonRotating: true, refreshTerminal: false, ended: true });
+    expect(stopped.stderr).toContain('Myco capture is not being delivered');
+    expect(stopped.stderr).toContain('does not rotate, and the server stopped accepting it');
+    expect(new MemberSpool(PROJECT, { mycoHome }).depth(session)).toBeGreaterThan(0);
+  });
+
+  it('answered `non_rotating` over a terminal state an older build recorded, clears it, and says so without inventing an expiry', async () => {
+    const rig = await nonRotatingRig(6.5 * DAY_MS);
+    writeDeploymentMembership({
+      serverUrl: SERVER_URL, token: rig.token, tokenId: rig.tokenId, machineId: 'machine_1', joinedAt: 1, updatedAt: 1,
+      refreshTerminal: true, refreshTerminalBy: 'an-older-build', refreshTerminalReason: 'refused',
+    }, { mycoHome });
+    const lines: string[] = [];
+    const write = process.stderr.write;
+    process.stderr.write = ((chunk: string | Uint8Array) => { lines.push(String(chunk)); return true; }) as typeof process.stderr.write;
+    let status: string;
+    try {
+      status = (await refreshMembership(SERVER_URL, { mycoHome, fetch: rig.fetch, budget: budget() })).status;
+    } finally {
+      process.stderr.write = write;
+    }
+    expect(status).toBe('non-rotating');
+    const held = readDeploymentMembership(SERVER_URL, mycoHome)!;
+    expect({ nonRotating: held.nonRotating, refreshTerminal: held.refreshTerminal }).toEqual({ nonRotating: true, refreshTerminal: false });
+    expect(deliveryNotice({ ...held, refreshTerminalReason: held.refreshTerminalReason }, Date.now())).toBeNull();
+    expect(lines.join('')).toContain('capture reaches the server until it expires');
+  });
+
+  it('a new token clears the mark: a re-join after a non-rotating token rotates again', async () => {
+    const fixed = await nonRotatingRig(6.5 * DAY_MS);
+    registerTestMember({ mycoHome, token: fixed.token, tokenId: fixed.tokenId, projectId: PROJECT, expiresAt: fixed.expiresAt, serverUrl: SERVER_URL });
+    await prompt(recordingFetch(fixed.fetch).fetch, 'on the fixed token');
+    expect(readRegistryEntry(root, mycoHome)!.nonRotating).toBe(true);
+
+    const rotating = await nearExpiryRig();
+    registerTestMember({ mycoHome, token: rotating.token, tokenId: rotating.tokenId, projectId: PROJECT, expiresAt: rotating.expiresAt, serverUrl: SERVER_URL });
+    const entry = readRegistryEntry(root, mycoHome)!;
+    expect({ token: entry.token, nonRotating: entry.nonRotating }).toEqual({ token: rotating.token, nonRotating: undefined });
+    expect(refreshDue(entry, Date.now())).toBe(true);
+
+    const spy = recordingFetch(rotating.fetch);
+    await prompt(spy.fetch, 'on the rejoined token');
+    expect(refreshCalls(spy)).toBe(1);
+    const successor = readRegistryEntry(root, mycoHome)!;
+    expect({ rotated: successor.token !== rotating.token, nonRotating: successor.nonRotating }).toEqual({ rotated: true, nonRotating: undefined });
   });
 
   it('from the environment: a live one delivers and a lapsed one is refused and stays spooled, and neither ever dials the refresh route', async () => {

@@ -80,7 +80,7 @@ export async function bootCloudflare(): Promise<ParityTarget> {
     await wrangler(['secrets-store', 'secret', 'create', 'parity-store', '--name', 'parity-wrap-key', '--scopes', 'workers', '--value', btoa('p'.repeat(32)), '-c', configName, '--persist-to', persistDir]);
     await wrangler(['d1', 'migrations', 'apply', 'myco-server', '--local', '-c', configName, '--persist-to', persistDir]);
 
-    const mint = Bun.spawn(['bun', 'scripts/mint-local.ts', MEMBER_ID, MACHINE_ID, '--print-token'], { cwd: SERVER_DIR, stdout: 'pipe', stderr: 'pipe' });
+    const mint = Bun.spawn(['bun', 'scripts/mint-local.ts', MEMBER_ID, MACHINE_ID, '--rotating', '--print-token'], { cwd: SERVER_DIR, stdout: 'pipe', stderr: 'pipe' });
     const [mintCode, mintSql, mintEnv] = await Promise.all([mint.exited, new Response(mint.stdout).text(), new Response(mint.stderr).text()]);
     if (mintCode !== 0) throw new Error(`mint-local exited ${mintCode}: ${mintEnv}`);
     const token = /MYCO_MEMBER_TOKEN=(\S+)/.exec(mintEnv)?.[1];

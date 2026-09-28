@@ -141,8 +141,7 @@ export async function refreshMembership(serverUrl: string, opts: RefreshOptions)
   const due = (held: RefreshWindow): boolean => (opts.force === true && held.refreshTerminal !== true) || refreshDue(held, now(), build);
   const before = readDeploymentMembership(serverUrl, mycoHome);
   if (!before) return { status: 'no-entry', membership: null };
-  // Not even `force` dials for a token the Deployment said does not rotate: no answer to it can differ.
-  if (before.nonRotating === true) return { status: 'non-rotating', membership: before };
+  if (before.nonRotating === true) return endNonRotating(serverUrl, before, mycoHome, now, opts.force === true);
   if (!due(before)) return { status: 'not-due', membership: before };
 
   const lock = acquireRegistryLock(mycoHome);
@@ -185,9 +184,11 @@ export async function refreshMembership(serverUrl: string, opts: RefreshOptions)
           return { status: 'retry', membership: opts.projectId === undefined ? write({ refreshAfter: now() + REFRESH_NO_PROJECT_BACKOFF_MS }) : held };
         }
         if (outcome.code === 'non_rotating') {
-          // A credential minted for an environment: it delivers until it expires, and is never asked about again.
-          stderr(`this machine's credential for ${held.serverUrl} does not rotate — capture reaches the server until ${new Date(held.expiresAt ?? now()).toISOString()}; before then, ${REJOIN_HINT}`);
-          return { status: 'non-rotating', membership: write({ nonRotating: true }) };
+          // A credential minted for an environment: it delivers until it expires, and is never asked about again. It is
+          // not a terminal refusal, so one an older build recorded against this token no longer holds.
+          const until = held.expiresAt === undefined ? 'until it expires' : `until ${new Date(held.expiresAt).toISOString()}`;
+          stderr(`this machine's credential for ${held.serverUrl} does not rotate — capture reaches the server ${until}; before then, ${REJOIN_HINT}`);
+          return { status: 'non-rotating', membership: write({ nonRotating: true, refreshTerminal: false }) };
         }
         if (outcome.refreshAfter !== undefined) {
           // A window announced is a token that still rotates: any terminal refusal recorded against it no longer holds.
@@ -218,6 +219,26 @@ export async function refreshMembership(serverUrl: string, opts: RefreshOptions)
       default:
         return { status: 'retry', membership: held };
     }
+  } finally {
+    lock.lock.release();
+  }
+}
+
+/**
+ * A token the Deployment said does not rotate: nothing dials, since no answer to it can differ. A forced renewal
+ * follows a refusal of that token, so its life ended now whatever expiry it was issued with; the entry records that
+ * under the registry lock, and the delivery notice reads it. A token another process replaced meanwhile is left as it is.
+ */
+function endNonRotating(serverUrl: string, before: DeploymentMembership, mycoHome: string, now: () => number, refused: boolean): MembershipRefreshReport {
+  if (!refused || (before.expiresAt !== undefined && before.expiresAt <= now())) return { status: 'non-rotating', membership: before };
+  const lock = acquireRegistryLock(mycoHome);
+  if (!lock.acquired) return { status: 'busy', membership: before };
+  try {
+    const held = readDeploymentMembership(serverUrl, mycoHome);
+    if (!held) return { status: 'no-entry', membership: null };
+    if (held.token !== before.token || held.nonRotating !== true) return { status: 'not-due', membership: held };
+    writeDeploymentMembership({ ...held, expiresAt: Math.min(held.expiresAt ?? now(), now()), updatedAt: now() }, { mycoHome, locked: true });
+    return { status: 'non-rotating', membership: readDeploymentMembership(serverUrl, mycoHome) };
   } finally {
     lock.lock.release();
   }
