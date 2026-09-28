@@ -278,4 +278,29 @@ describe('the lease a worker holds', () => {
       expect(r.lines.some((l) => l.startsWith('could not report the outcome of run_1'))).toBe(true);
     } finally { r.release(); r.stopping.abort(); }
   }, 20_000);
+
+  it('notices a sleep with a claim in flight, and waits out the settle before claiming again', async () => {
+    let claims = 0;
+    let r: ReturnType<typeof rig>;
+    r = rig({
+      once: false,
+      claim: () => {
+        claims += 1;
+        // The machine sleeps while the first claim is in flight.
+        if (claims === 1) r.sleep(10 * 60_000);
+        return Response.json({ persisted: true, claimed: false, reason: 'no_work', pollAfterMs: 50 });
+      },
+    });
+    try {
+      const outcome = r.start();
+      await until('the wake to be said', () => r.lines.some((l) => l.startsWith('this machine woke')), 3_000)
+        .catch((error: Error) => { throw new Error(`${error.message}\n${r.report()}`); });
+      await wait(300);
+      // It waits out the settle rather than claiming again at once.
+      expect({ claims, said: r.lines.find((l) => l.startsWith('this machine woke')) }).toEqual({ claims: 1, said: expect.stringContaining('awake 180s') });
+      r.stopping.abort();
+      await outcome;
+    } finally { r.release(); r.stopping.abort(); }
+  }, 20_000);
 });
+

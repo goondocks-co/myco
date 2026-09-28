@@ -554,13 +554,22 @@ async function claimUntilStopped(options: WorkerOptions, wake: WakeWatch): Promi
   let requestMs = DEFAULT_HEARTBEAT_MS;
   /** Whether the wait for a woken machine to settle has been said. */
   let settling = false;
-  /** Every wait between claims is also where a sleep is noticed: a wait the wall clock says lasted far longer than asked. */
-  const pause = async (ms: number): Promise<void> => {
+  /**
+   * Every wait the loop makes is also where a sleep is noticed: one the wall
+   * clock says lasted far longer than `ms`, the most it can take awake. A
+   * request is bounded by `ms`, so a sleep with a claim or an end in flight is
+   * seen as surely as one between polls.
+   */
+  const noticing = async <T>(ms: number, wait: () => Promise<T>): Promise<T> => {
     const woke = wake.begin(ms);
-    await sleep(ms, options.signal);
-    // Each wake is said, with the settle it now has to stay awake for.
-    if (woke()) settling = false;
+    try {
+      return await wait();
+    } finally {
+      // Each wake is said, with the settle it now has to stay awake for.
+      if (woke()) settling = false;
+    }
   };
+  const pause = (ms: number): Promise<void> => noticing(ms, () => sleep(ms, options.signal));
   while (!options.signal.aborted) {
     if (options.stillCurrent !== undefined && !options.stillCurrent()) {
       options.log('the myco program on disk changed; stopping so the new one starts');
@@ -578,7 +587,7 @@ async function claimUntilStopped(options: WorkerOptions, wake: WakeWatch): Promi
     }
     settling = false;
     const claimSentAt = (options.clock ?? Date.now)();
-    const answer = await post({ ...options, signal: within(options.signal, requestMs) }, '/worker/claim', { harnesses, capabilities: [REPOSITORY_CHECKOUT_CAPABILITY] });
+    const answer = await noticing(requestMs, () => post({ ...options, signal: within(options.signal, requestMs) }, '/worker/claim', { harnesses, capabilities: [REPOSITORY_CHECKOUT_CAPABILITY] }));
     if (answer.kind === 'refused') {
       options.log(`the Deployment refused the claim: ${answer.code}${answer.detail === '' ? '' : ` — ${answer.detail}`}`);
       return { driven, refused: answer.code };
@@ -620,9 +629,9 @@ async function claimUntilStopped(options: WorkerOptions, wake: WakeWatch): Promi
     // another's run. The Deployment refuses such a write anyway; not making it
     // is what keeps the two accounts of a run from disagreeing.
     if (outcome.status !== 'lost') {
-      const ended = await post({ ...options, signal: within(options.signal, requestMs) }, '/worker/end', { projectId: run.projectId, runId: run.id, status: outcome.status, error: outcome.error,
+      const ended = await noticing(requestMs, () => post({ ...options, signal: within(options.signal, requestMs) }, '/worker/end', { projectId: run.projectId, runId: run.id, status: outcome.status, error: outcome.error,
         ...(run.attemptId === undefined ? {} : { attemptId: run.attemptId, usage: outcome.usage ?? null }),
-      });
+      }));
       if (ended.kind === 'refused') {
         options.log(`the Deployment refused the outcome of ${run.id}: ${ended.code}`);
         return { driven, refused: ended.code };

@@ -152,8 +152,11 @@ function heldTurn() {
   const dir = mkdtempSync(join(tmpdir(), 'myco-sleep-release-'));
   const release = join(dir, 'release');
   const pidFile = join(dir, 'peer.pid');
-  expect(stubAcpHarness({ holdUntil: release, pidFile })).toEqual(STUB_DETECTED);
+  const spawnedFile = join(dir, 'spawned');
+  expect(stubAcpHarness({ holdUntil: release, pidFile, spawnedFile })).toEqual(STUB_DETECTED);
   return {
+    /** How many harness processes a worker has started: each is a session spent. */
+    spawned: (): number => (existsSync(spawnedFile) ? readFileSync(spawnedFile, 'utf8').trim().split('\n').length : 0),
     release: () => { if (!existsSync(release)) writeFileSync(release, ''); },
     pid: (): number | null => (existsSync(pidFile) ? Number(readFileSync(pidFile, 'utf8')) : null),
   };
@@ -169,8 +172,9 @@ function turnRelease() {
 }
 
 describe('two workers on a host that sleeps', () => {
-  it('claims nothing in wakes too short to finish a run, then runs it once when the host stays up', async () => {
-    const release = turnRelease();
+  it('starts no harness in wakes too short to finish a run, then runs it once when the host stays up', async () => {
+    const turn = heldTurn();
+    const release = turn.release;
     const h = await host();
     const [a, b] = [await h.member('mem_mac'), await h.member('mem_vm')];
     await h.mcp(async () => {
@@ -188,12 +192,16 @@ describe('two workers on a host that sleeps', () => {
         }
         // The host stays up. Exactly one worker takes the run once it has been
         // awake long enough, and the other takes nothing.
-        await until('the run to be claimed once the host stayed up', () => h.claims().length > 0 || h.row('run_sleepy').status !== 'queued', SETTLE_MS * 4);
+        expect({ harnesses: turn.spawned() }, h.report()).toEqual({ harnesses: 0 });
+        await until('a harness to start once the host stayed up', () => turn.spawned() > 0, SETTLE_MS * 4);
         await wait(300);
         release();
         await until('the run to end', () => !['queued', 'running'].includes(h.row('run_sleepy').status));
         await wait(200);
-        expect({ claims: h.claims(), lost: h.lost() }, h.report()).toEqual({ claims: [expect.stringContaining('claimed run_sleepy')], lost: [] });
+        // A claim with a sleep in flight may still be answered; its lease has
+        // lapsed by then, so it starts nothing. Exactly one harness ran, once.
+        expect({ harnesses: turn.spawned(), lost: h.lost(), ended: h.sent.filter((s) => s.path === '/worker/end').length }, h.report())
+          .toEqual({ harnesses: 1, lost: [], ended: 1 });
       } finally {
         release();
         await h.stop();
@@ -268,8 +276,9 @@ describe('two workers on a host that sleeps', () => {
     });
   }, 30_000);
 
-  it('lengthens the settle each time the host sleeps before it settled, so a longer wake after short ones claims nothing', async () => {
-    const release = turnRelease();
+  it('lengthens the settle each time the host sleeps before it settled, so a longer wake after short ones starts nothing', async () => {
+    const turn = heldTurn();
+    const release = turn.release;
     const h = await host();
     const a = await h.member('mem_mac');
     // Scaled: a base of 600 ms that doubles to a ceiling of 4.8 s.
@@ -285,14 +294,15 @@ describe('two workers on a host that sleeps', () => {
           await wait(wake);
           await h.sleep(SLEEP_MS);
         }
-        expect({ claims: h.claims() }, h.report()).toEqual({ claims: [] });
+        expect({ harnesses: turn.spawned() }, h.report()).toEqual({ harnesses: 0 });
         // The settle it now waits out is the ceiling, and it says so.
         expect(lines.filter((l) => l.startsWith('this machine woke')).at(-1)).toContain('awake 5s');
         // Awake past the ceiling, it takes the run.
-        await until('the run to be claimed once the host stayed up', () => h.claims().length > 0, 10_000);
+        await until('a harness to start once the host stayed up', () => turn.spawned() > 0, 10_000);
         release();
         await until('the run to end', () => !['queued', 'running'].includes(h.row('run_cycling').status));
-        expect({ claims: h.claims().length, lost: h.lost() }, h.report()).toEqual({ claims: 1, lost: [] });
+        expect({ harnesses: turn.spawned(), lost: h.lost(), ended: h.sent.filter((s) => s.path === '/worker/end').length }, h.report())
+          .toEqual({ harnesses: 1, lost: [], ended: 1 });
       } finally {
         release();
         await h.stop();
