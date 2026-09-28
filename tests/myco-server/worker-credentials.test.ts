@@ -46,6 +46,22 @@ async function fixture() {
   return { e, env, secrets, claimUnder };
 }
 
+describe('the run credential a claim mints (#1420)', () => {
+  it('does not rotate: the worker hands it to the harness child through its environment', async () => {
+    const f = await fixture();
+    f.e.sqlite.run(
+      `INSERT INTO agent_runs (project_id, id, agent_id, task, status, queued_at, held_by, dispatch_spec, run_context, instruction)
+       VALUES ('proj_1', 'run_rot', 'myco-agent', 'extract-curate', 'queued', ?, 'worker', ?, ?, 'do it')`,
+      [NOW, JSON.stringify({ serverUrl: 'https://s', actor: 'deployment', timeoutSeconds: 300 }), JSON.stringify({ timeoutSeconds: 300 })],
+    );
+    const worker = (f.e.sqlite.query(`SELECT id FROM member_credentials WHERE member_id = 'mem_w'`).get() as { id: string }).id;
+    const outcome = await claimNextRun(f.env, { tokenId: worker, machineId: 'm1', harnesses: [{ id: 'claude-code', authenticated: true }], now: NOW + 1 });
+    expect(outcome.claimed).toBe(true);
+    const dispatchedBy = (f.e.sqlite.query(`SELECT dispatched_by FROM agent_runs WHERE id = 'run_rot'`).get() as { dispatched_by: string }).dispatched_by;
+    expect(f.e.sqlite.query(`SELECT member_id, rotates FROM member_credentials WHERE id = ?`).get(dispatchedBy)).toEqual({ member_id: HARNESS_MEMBER_ID, rotates: 0 });
+  });
+});
+
 describe('the credential a claim hands a worker', () => {
   it('opens the chosen harness\'s own provider and no other, whatever else the Deployment holds', async () => {
     const f = await fixture();

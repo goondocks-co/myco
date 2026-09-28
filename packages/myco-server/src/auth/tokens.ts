@@ -33,6 +33,8 @@ export interface MemberAuth {
   firstUsedAt: number | null;
   /** How the runtime described itself at issue. Read-only here; nothing admits or refuses on it. */
   runtime: RuntimeClaims;
+  /** Whether the issuer minted this credential to rotate. Set by the insert that minted the row; nothing the runtime sends changes it. */
+  rotates: boolean;
 }
 
 export interface IssuedMemberToken {
@@ -78,6 +80,7 @@ interface AuthRow {
   first_used_at: number | null;
   runtime_label: string | null;
   runtime_kind: string | null;
+  rotates: number | null;
   /** The credential's member, present only while that member is live. */
   member_live: string | null;
 }
@@ -94,39 +97,59 @@ export interface RuntimeClaims {
 
 export const NO_RUNTIME_CLAIMS: RuntimeClaims = { runtimeLabel: null, runtimeKind: null };
 
-/** The one INSERT into member_credentials, prepared and unrun: a fresh token and id, the digest stored, `bytes_written` at 0, the runtime claims as given, and the lineage columns — its own id and `nowMs` for a root, the inherited chain for a successor. The row expires one TTL from now. A successor's row is written only while its predecessor is still live at the instant of the insert (the statement's change count says whether it was); a root has no predecessor. Both obey the optional admission gate. */
+/**
+ * What an issuer decides about a credential it mints, beyond the member and machine. `rotates: false` mints a
+ * credential for a runtime that reads it from its environment: an orchestrator hands the same token to every
+ * sandbox it starts, so a rotation by any one holder would revoke it under the rest, and a copy that could rotate
+ * could fork the lineage. Such a credential is refused on the refresh route, lives out its TTL or a Stop, and is
+ * renewed by minting another. A credential that rotates is the default; a successor always rotates.
+ */
+export interface MintOptions {
+  rotates?: boolean;
+  /** A condition the insert must also meet; a caller batching it decides the outcome from the statement's change count. */
+  gate?: { sql: string; params: unknown[] };
+}
+
+/** A successor is minted only from a live row whose issuer let it rotate. */
+const ROTATING_PREDECESSOR = 'EXISTS (SELECT 1 FROM member_credentials WHERE id = ? AND rotates = 1)';
+
+/** The one INSERT into member_credentials, prepared and unrun: a fresh token and id, the digest stored, `bytes_written` at 0, the runtime claims as given, whether it rotates, and the lineage columns — its own id and `nowMs` for a root, the inherited chain for a successor. The row expires one TTL from now. A successor's row always rotates, and is written only while its predecessor is still live and rotates at the instant of the insert (the statement's change count says whether it was); a root has no predecessor. Both obey the optional admission gate. */
 function memberTokenInsert(
   db: RelationalStore, member: { memberId: string; machineId: string | null }, nowMs: number, lineage: TokenLineage | null, tokenId: string, digest: string, runtime: RuntimeClaims,
-  gate?: { sql: string; params: unknown[] },
+  options: MintOptions,
 ): { statement: PreparedStatement; expiresAt: number } {
+  const { gate } = options;
   const predecessorId = lineage === null ? null : lineage.predecessorId;
   const lineageRoot = lineage === null ? tokenId : lineage.lineageRoot;
   const lineageStartedAt = lineage === null ? nowMs : lineage.lineageStartedAt;
+  const rotates = lineage !== null || options.rotates !== false ? 1 : 0;
   const expiresAt = nowMs + MEMBER_TOKEN_TTL_MS;
   const statement = db
-    .prepare(`INSERT INTO member_credentials (id, member_id, machine_id, token_hash, issued_at, expires_at, revoked_at, bytes_written, predecessor_id, lineage_root, lineage_started_at, first_used_at, runtime_label, runtime_kind)
-              SELECT ?, ?, ?, ?, ?, ?, NULL, 0, ?, ?, ?, NULL, ?, ?
-               WHERE (? IS NULL OR ${TOKEN_LIVE})${gate === undefined ? '' : ` AND (${gate.sql})`}`)
-    .bind(tokenId, member.memberId, member.machineId, digest, nowMs, expiresAt, predecessorId, lineageRoot, lineageStartedAt, runtime.runtimeLabel, runtime.runtimeKind, predecessorId, predecessorId, ...(gate?.params ?? []));
+    .prepare(`INSERT INTO member_credentials (id, member_id, machine_id, token_hash, issued_at, expires_at, revoked_at, bytes_written, predecessor_id, lineage_root, lineage_started_at, first_used_at, runtime_label, runtime_kind, rotates)
+              SELECT ?, ?, ?, ?, ?, ?, NULL, 0, ?, ?, ?, NULL, ?, ?, ?
+               WHERE (? IS NULL OR (${TOKEN_LIVE} AND ${ROTATING_PREDECESSOR}))${gate === undefined ? '' : ` AND (${gate.sql})`}`)
+    .bind(tokenId, member.memberId, member.machineId, digest, nowMs, expiresAt, predecessorId, lineageRoot, lineageStartedAt, runtime.runtimeLabel, runtime.runtimeKind, rotates,
+      predecessorId, predecessorId, predecessorId, ...(gate?.params ?? []));
   return { statement, expiresAt };
 }
 
-/** A fresh raw token and its id, with the insert that stores the digest. `gate` conjoins a condition the insert must meet; a caller batching it decides the outcome from the statement's change count. */
+/** A fresh raw token and its id, with the insert that stores the digest. `options.gate` conjoins a condition the insert must meet; `options.rotates: false` mints a root that never rotates. */
 export async function mintInsert(
   db: RelationalStore, member: { memberId: string; machineId: string | null }, nowMs: number, lineage: TokenLineage | null, runtime: RuntimeClaims,
-  gate?: { sql: string; params: unknown[] },
+  options: MintOptions = {},
 ): Promise<{ statement: PreparedStatement; issued: IssuedMemberToken }> {
   const token = mintMemberToken();
   const tokenId = `${TOKEN_ID_PREFIX}${toBase64Url(crypto.getRandomValues(new Uint8Array(TOKEN_ID_BYTES)))}`;
-  const { statement, expiresAt } = memberTokenInsert(db, member, nowMs, lineage, tokenId, await sha256Hex(token), runtime, gate);
+  const { statement, expiresAt } = memberTokenInsert(db, member, nowMs, lineage, tokenId, await sha256Hex(token), runtime, options);
   return { statement, issued: { token, tokenId, expiresAt } };
 }
 
-/** Sole inserter of member_credentials rows. Stores the digest; returns the raw token once. Without `lineage` the token roots a lineage of its own; with it, the token succeeds `lineage.predecessorId`. Either way it expires one TTL from `nowMs`. */
+/** Sole inserter of member_credentials rows. Stores the digest; returns the raw token once. Without `lineage` the token roots a lineage of its own, rotating unless `options.rotates` is false; with it, the token succeeds `lineage.predecessorId` and rotates. Either way it expires one TTL from `nowMs`. */
 export async function issueMemberToken(
   db: RelationalStore, member: { memberId: string; machineId: string | null }, nowMs: number, lineage: TokenLineage | null = null, runtime: RuntimeClaims = NO_RUNTIME_CLAIMS,
+  options: Pick<MintOptions, 'rotates'> = {},
 ): Promise<IssuedMemberToken> {
-  const { statement, issued } = await mintInsert(db, member, nowMs, lineage, runtime);
+  const { statement, issued } = await mintInsert(db, member, nowMs, lineage, runtime, options);
   await statement.run();
   return issued;
 }
@@ -255,7 +278,7 @@ export async function authenticateServerMemberToken(
     .prepare(`SELECT s.value AS schema_version,
                      t.id, t.member_id, t.machine_id, t.expires_at, t.revoked_at,
                      t.lineage_root, t.lineage_started_at, t.predecessor_id, t.first_used_at,
-                     t.runtime_label, t.runtime_kind, m.id AS member_live
+                     t.runtime_label, t.runtime_kind, t.rotates, m.id AS member_live
                 FROM schema_meta s
                 LEFT JOIN member_credentials t ON t.token_hash = ?
                 LEFT JOIN members m ON m.id = t.member_id AND m.revoked_at IS NULL
@@ -275,6 +298,7 @@ export async function authenticateServerMemberToken(
     expiresAt: row.expires_at, lineageRoot: row.lineage_root, lineageStartedAt: row.lineage_started_at,
     predecessorId: row.predecessor_id, firstUsedAt: row.first_used_at,
     runtime: { runtimeLabel: row.runtime_label, runtimeKind: row.runtime_kind },
+    rotates: row.rotates === 1,
   };
 }
 

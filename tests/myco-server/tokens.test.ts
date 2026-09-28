@@ -46,18 +46,18 @@ describe('member tokens', () => {
     expect(issued.expiresAt - 5_000).toBe(MEMBER_TOKEN_TTL_MS);
     expect(issued.tokenId.startsWith(TOKEN_ID_PREFIX)).toBe(true);
     expect(calls).toHaveLength(1);
-    expect(calls[0].sql).toMatch(/INSERT INTO member_credentials \(id, member_id, machine_id, token_hash, issued_at, expires_at, revoked_at, bytes_written, predecessor_id, lineage_root, lineage_started_at, first_used_at, runtime_label, runtime_kind\)/);
-    // The optional admission gate applies to root credentials as well as successors.
-    expect(calls[0].sql).toMatch(/SELECT \?, \?, \?, \?, \?, \?, NULL, 0, \?, \?, \?, NULL, \?, \?\s+WHERE \(\? IS NULL OR EXISTS \(SELECT 1 FROM member_credentials WHERE id = \? AND revoked_at IS NULL\)\)/);
-    expect(calls[0].params).toEqual([issued.tokenId, 'mem_machine_1', 'machine_1', await sha256Hex(issued.token), 5_000, issued.expiresAt, null, issued.tokenId, 5_000, null, null, null, null]);
+    expect(calls[0].sql).toMatch(/INSERT INTO member_credentials \(id, member_id, machine_id, token_hash, issued_at, expires_at, revoked_at, bytes_written, predecessor_id, lineage_root, lineage_started_at, first_used_at, runtime_label, runtime_kind, rotates\)/);
+    // The optional admission gate applies to root credentials as well as successors; a successor needs a live predecessor that rotates.
+    expect(calls[0].sql).toMatch(/SELECT \?, \?, \?, \?, \?, \?, NULL, 0, \?, \?, \?, NULL, \?, \?, \?\s+WHERE \(\? IS NULL OR \(EXISTS \(SELECT 1 FROM member_credentials WHERE id = \? AND revoked_at IS NULL\) AND EXISTS \(SELECT 1 FROM member_credentials WHERE id = \? AND rotates = 1\)\)\)/);
+    expect(calls[0].params).toEqual([issued.tokenId, 'mem_machine_1', 'machine_1', await sha256Hex(issued.token), 5_000, issued.expiresAt, null, issued.tokenId, 5_000, null, null, 1, null, null, null]);
     expect(calls[0].params).not.toContain(issued.token);
   });
 
-  it('issues a successor into its predecessor\'s lineage, only while the predecessor is live, expiring one TTL from now however long ago the lineage started', async () => {
+  it('issues a successor into its predecessor\'s lineage, only while the predecessor is live and rotates, rotating itself, expiring one TTL from now however long ago the lineage started', async () => {
     const { db, calls } = recordingDb();
     const inside = await issueMemberToken(db, { memberId: 'mem_machine_1', machineId: 'machine_1' }, 5_000, { predecessorId: 'mt_pred', lineageRoot: 'mt_root', lineageStartedAt: 1_000 });
     expect(inside.expiresAt).toBe(5_000 + MEMBER_TOKEN_TTL_MS);
-    expect(calls[0].params).toEqual([inside.tokenId, 'mem_machine_1', 'machine_1', await sha256Hex(inside.token), 5_000, inside.expiresAt, 'mt_pred', 'mt_root', 1_000, null, null, 'mt_pred', 'mt_pred']);
+    expect(calls[0].params).toEqual([inside.tokenId, 'mem_machine_1', 'machine_1', await sha256Hex(inside.token), 5_000, inside.expiresAt, 'mt_pred', 'mt_root', 1_000, null, null, 1, 'mt_pred', 'mt_pred', 'mt_pred']);
     const old = await issueMemberToken(db, { memberId: 'mem_machine_1', machineId: 'machine_1' }, 5_000, { predecessorId: 'mt_pred', lineageRoot: 'mt_root', lineageStartedAt: 5_000 - 4 * MEMBER_LINEAGE_IDLE_MS });
     expect(old.expiresAt).toBe(5_000 + MEMBER_TOKEN_TTL_MS);
   });
@@ -89,7 +89,7 @@ describe('member tokens', () => {
   it('authenticates a live token digest and returns its bound machine, lifetime, lineage, predecessor and first use', async () => {
     const digest = await sha256Hex(mintMemberToken());
     expect(await authenticateServerMemberToken(fakeDb(authRow()), digest, 1_000))
-      .toEqual({ memberId: 'mem_1', tokenId: 'mt_1', machineId: 'machine_1', expiresAt: 2_000, lineageRoot: 'mt_1', lineageStartedAt: 1_000, predecessorId: null, firstUsedAt: null, runtime: { runtimeLabel: null, runtimeKind: null } });
+      .toEqual({ memberId: 'mem_1', tokenId: 'mt_1', machineId: 'machine_1', expiresAt: 2_000, lineageRoot: 'mt_1', lineageStartedAt: 1_000, predecessorId: null, firstUsedAt: null, runtime: { runtimeLabel: null, runtimeKind: null }, rotates: true });
     expect(await authenticateServerMemberToken(fakeDb(authRow({ predecessor_id: 'mt_0', lineage_root: 'mt_0', lineage_started_at: 500, first_used_at: 900 })), digest, 1_000))
       .toMatchObject({ predecessorId: 'mt_0', lineageRoot: 'mt_0', lineageStartedAt: 500, firstUsedAt: 900 });
   });

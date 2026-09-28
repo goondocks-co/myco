@@ -8,7 +8,7 @@ import os from 'node:os';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import worker from '@myco-server-worker/index.js';
-import { issueMemberToken } from '@myco-server-worker/auth/tokens.js';
+import { issueMemberToken, NO_RUNTIME_CLAIMS } from '@myco-server-worker/auth/tokens.js';
 import { PROJECT_HEADER, PROTOCOL_HEADER, SERVER_PROTOCOL } from '@myco-server-worker/constants.js';
 import { sqliteEnv, count } from '../../myco-server/helpers/fixtures.js';
 import type { BlobSource, BlobStager, MemberEnvelope } from '@myco/member/envelope.js';
@@ -57,13 +57,13 @@ export function unjoinedRig(): {
   return { env, fetch: fetchImpl, rows: (table: string) => count(env.sqlite, table) };
 }
 
-/** A fresh worker environment with one member of `machine_1` in `proj_1`. */
-export async function memberRig(opts: { now?: number; projectId?: string; machineId?: string } = {}): Promise<MemberRig> {
+/** A fresh worker environment with one member of `machine_1` in `proj_1`; `rotates: false` mints its credential as an issuer mints one for an environment. */
+export async function memberRig(opts: { now?: number; projectId?: string; machineId?: string; rotates?: boolean } = {}): Promise<MemberRig> {
   const env = sqliteEnv();
   const now = opts.now ?? Date.now();
   const projectId = opts.projectId ?? TEST_PROJECT_ID;
   const machineId = opts.machineId ?? TEST_MACHINE_ID;
-  const issued = await issueMemberToken(env.db, { memberId: `mem_${machineId}`, machineId }, now);
+  const issued = await issueMemberToken(env.db, { memberId: `mem_${machineId}`, machineId }, now, null, NO_RUNTIME_CLAIMS, { rotates: opts.rotates !== false });
   // The edge supplies the source identity header; the member transport never sets it.
   const fetch = (input: string | URL | Request, init?: RequestInit) => {
     const req = new Request(input, init);

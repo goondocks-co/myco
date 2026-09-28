@@ -79,6 +79,16 @@ describe('what holds a dispatch', () => {
   });
 });
 
+describe('the credential a launch mints for its run (#1420)', () => {
+  it('does not rotate: the container reads it from MYCO_MEMBER_TOKEN, so its issuer marks it so at mint', async () => {
+    const f = fixture();
+    const launched = (await f.dispatch()) as { runId: string };
+    const dispatchedBy = f.run(launched.runId)!.dispatchedBy as string;
+    expect(f.sqlite.query(`SELECT member_id, rotates FROM member_credentials WHERE id = ?`).get(dispatchedBy)).toEqual({ member_id: HARNESS_MEMBER_ID, rotates: 0 });
+    expect(f.launches[0]!.envVars.MYCO_MEMBER_TOKEN).toBeString();
+  });
+});
+
 describe('a dispatch past a limit', () => {
   it('is a run row that waits — no credential, no start, the limit by name — and wakes the Deployment', async () => {
     const f = fixture();

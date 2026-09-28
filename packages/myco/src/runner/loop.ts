@@ -149,7 +149,7 @@ async function post(options: Requester, path: string, body: unknown): Promise<Wo
 }
 
 /** Renewal answers that say the refused credential is finished: nothing a later renewal asks can change it. */
-const RENEWAL_FINAL: readonly RefreshStatus[] = ['unauthorized', 'terminal', 'lineage-expired', 'route-missing', 'not-due'];
+const RENEWAL_FINAL: readonly RefreshStatus[] = ['unauthorized', 'terminal', 'lineage-expired', 'route-missing', 'not-due', 'non-rotating'];
 /** How long a worker waits for another process holding the registry — most often a hook rotating this very credential — and how often it looks. */
 export const RENEW_BUSY_WAIT_MS = 250;
 export const RENEW_BUSY_ATTEMPTS = 20;

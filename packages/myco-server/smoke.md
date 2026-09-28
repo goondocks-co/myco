@@ -35,9 +35,9 @@ export CLOUDFLARE_ACCOUNT_ID=<account>
 sql() { npx wrangler d1 execute myco-server-smoke<N> --remote -c wrangler.smoke.toml --command "$1"; }
 sql "INSERT INTO projects (project_id,name,created_at) VALUES ('proj_1','one',0),('proj_2','two',0)"
 umask 077; D=$(mktemp -d)
-npm run -s token:mint -- proj_1 machine_1 --print-token > $D/m1.sql 2> $D/m1.env
-npm run -s token:mint -- proj_1 machine_2 --print-token > $D/m2.sql 2> $D/m2.env
-npm run -s token:mint -- proj_2 machine_9 --print-token > $D/m9.sql 2> $D/m9.env
+npm run -s token:mint -- proj_1 machine_1 --rotating --print-token > $D/m1.sql 2> $D/m1.env
+npm run -s token:mint -- proj_1 machine_2 --rotating --print-token > $D/m2.sql 2> $D/m2.env
+npm run -s token:mint -- proj_2 machine_9 --rotating --print-token > $D/m9.sql 2> $D/m9.env
 for f in m1 m2 m9; do sql "$(grep -v '^--' $D/$f.sql)"; done
 T1=$(sed -n 's/^MYCO_MEMBER_TOKEN=//p' $D/m1.env); T2=$(sed -n 's/^MYCO_MEMBER_TOKEN=//p' $D/m2.env)
 ```

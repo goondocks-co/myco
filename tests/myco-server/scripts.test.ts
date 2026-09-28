@@ -17,7 +17,7 @@ function run(script: string, args: string[]) {
 
 describe('operator scripts', () => {
   it('mint prints a members row and the credential insert, applicable to a fresh database, without the raw token', () => {
-    const { code, out, err } = run('mint-local.ts', ['mem_s', 'machine_s']);
+    const { code, out, err } = run('mint-local.ts', ['mem_s', 'machine_s', '--rotating']);
     expect(code).toBe(0);
     const statements = out.split('\n').filter((l) => l && !l.startsWith('--')).join('\n').split(';').map((s) => s.trim()).filter(Boolean);
     expect(statements[0]).toMatch(/^INSERT OR IGNORE INTO members/);
@@ -35,10 +35,62 @@ describe('operator scripts', () => {
   });
 
   it('mint prints the raw token to stderr only when asked, and it matches the admission shape', () => {
-    const { err } = run('mint-local.ts', ['mem_s', 'machine_s', '--print-token']);
+    const { err } = run('mint-local.ts', ['mem_s', 'machine_s', '--rotating', '--print-token']);
     const token = /MYCO_MEMBER_TOKEN=(\S+)/.exec(err)?.[1];
     expect(token).toBeDefined();
     expect(token).toMatch(MEMBER_TOKEN_PATTERN);
+  });
+
+  it('mint refuses to choose for the operator: neither or both rotation flags exit 2 with no SQL, naming which to use for a registry and which for the environment', () => {
+    for (const args of [[], ['--print-token'], ['--rotating', '--non-rotating']]) {
+      const { code, out, err } = run('mint-local.ts', ['mem_s', 'machine_s', ...args]);
+      expect({ args, code, out }).toEqual({ args, code: 2, out: '' });
+      expect(err).toContain('--rotating      for `myco member join');
+      expect(err).toContain('--non-rotating  for MYCO_MEMBER_TOKEN, a sandbox or any `--credential env` runtime');
+      expect(err).not.toMatch(/MYCO_MEMBER_TOKEN=/);
+    }
+  });
+
+  it('mint records a rotating credential with --rotating, and one that never rotates with --non-rotating', () => {
+    const rotatesAfter = (args: string[]): number => {
+      const { code, out } = run('mint-local.ts', ['mem_s', 'machine_s', ...args]);
+      expect(code).toBe(0);
+      const sqlite = new Database(':memory:');
+      for (const f of renderMigrationFiles()) sqlite.exec(f.sql);
+      sqlite.exec(out);
+      return (sqlite.query(`SELECT rotates FROM member_credentials`).get() as { rotates: number }).rotates;
+    };
+    expect({ rotating: rotatesAfter(['--rotating']), nonRotating: rotatesAfter(['--non-rotating']) }).toEqual({ rotating: 1, nonRotating: 0 });
+  });
+
+  it('mint --non-rotating creates its member as a plain member, and --rotating as an administrator', () => {
+    const applied = (args: string[]) => {
+      const { code, out } = run('mint-local.ts', ['mem_s', 'machine_s', ...args]);
+      expect(code).toBe(0);
+      const sqlite = new Database(':memory:');
+      for (const f of renderMigrationFiles()) sqlite.exec(f.sql);
+      sqlite.exec(out);
+      return sqlite.query(`SELECT m.role, c.rotates FROM members m JOIN member_credentials c ON c.member_id = m.id`).get();
+    };
+    expect(applied(['--non-rotating'])).toEqual({ role: 'member', rotates: 0 });
+    expect(applied(['--rotating'])).toEqual({ role: 'admin', rotates: 1 });
+  });
+
+  it('mint --non-rotating never hands a shared credential to a member that administers the Deployment: applied there, it fails by name, writes no credential and leaves the role as it was', () => {
+    const { code, out } = run('mint-local.ts', ['mem_s', 'machine_s', '--non-rotating']);
+    expect(code).toBe(0);
+    const sqlite = new Database(':memory:');
+    for (const f of renderMigrationFiles()) sqlite.exec(f.sql);
+    sqlite.exec(`INSERT INTO members (id, label, created_at, revoked_at, role) VALUES ('mem_s', 'mem_s', 1, NULL, 'admin')`);
+    // Applied statement by statement, as `wrangler d1 execute` reports each: the guard is the one that fails.
+    const statements = out.split('\n').filter((l) => !l.startsWith('--')).join('\n').split(';').map((x) => x.trim()).filter(Boolean);
+    const failed: string[] = [];
+    for (const statement of statements) {
+      try { sqlite.run(statement); } catch (error) { failed.push(`${statement.split('(')[0]!.trim()} — ${(error as Error).message}`); }
+    }
+    expect(failed).toEqual(['INSERT INTO _mint_refused_member_administers_deployment — CHECK constraint failed: ok = 1']);
+    expect(sqlite.query(`SELECT COUNT(*) c FROM member_credentials`).get()).toEqual({ c: 0 });
+    expect(sqlite.query(`SELECT role FROM members WHERE id = 'mem_s'`).get()).toEqual({ role: 'admin' });
   });
 
   it('mint refuses to run without a machine id', () => {

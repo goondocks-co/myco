@@ -54,7 +54,7 @@ export function memberSource(args: readonly string[], deps: MemberVerbDeps = {})
 }
 
 /** Renewal answers that leave nothing to retry: the credential is finished until a new one is issued. */
-const RENEWAL_TERMINAL: readonly RefreshStatus[] = ['unauthorized', 'terminal', 'lineage-expired'];
+const RENEWAL_TERMINAL: readonly RefreshStatus[] = ['unauthorized', 'terminal', 'lineage-expired', 'non-rotating'];
 
 /** The code of a member route the Deployment does not serve: an older Deployment answers it after authenticating the credential, so no renewal follows. */
 export const ROUTE_MISSING = 'route_missing';
