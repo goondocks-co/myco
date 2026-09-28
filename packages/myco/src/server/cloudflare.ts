@@ -491,6 +491,8 @@ export function cloudflareObjectStore(
       const abort = (reason: Error): void => { ending.abort(reason); };
       let response: Response;
       if (method === 'GET') {
+        // R2 otherwise gzips the object in transit; asking for its stored bytes avoids a decode a lost connection can cut short.
+        headers.set('accept-encoding', 'identity');
         const timer = setTimeout(() => abort(new ObjectReadError(`Cloudflare did not begin answering the read of ${key} within ${seconds(timeouts.responseMs)}`, { transient: true })), timeouts.responseMs);
         try {
           response = await fetchObject(url, { method, headers, redirect: 'error', signal: ending.signal });

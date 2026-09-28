@@ -1,6 +1,7 @@
 import { describe, expect, it, spyOn } from 'bun:test';
 import { Database } from 'bun:sqlite';
 import { createHash } from 'node:crypto';
+import { gzipSync } from 'node:zlib';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -335,6 +336,52 @@ it('retries a server error and a reset connection, and leaves no partial file be
     expect(new Uint8Array(fs.readFileSync(path.join(f.destination, 'blobs', 'proj_1', f.digest)))).toEqual(f.bytes);
     expect((await verifyRecoveryBundle(f.destination)).status).toBe('complete');
   } finally { f.cleanup(); }
+});
+
+/**
+ * A server that answers each read of the blob with the body `answer` gives it, sent `content-encoding: gzip` whatever
+ * the request asks for, and a fetch that sends the blob's reads to it. Bun decodes the body as it would R2's.
+ */
+function gzipServer(f: ReturnType<typeof fixture>, answer: (read: number) => Uint8Array) {
+  let reads = 0;
+  const server = Bun.serve({ port: 0, fetch() {
+    const body = answer(++reads);
+    // The body arrives and then the response ends, however much of the gzip stream it held.
+    return new Response(new ReadableStream<Uint8Array>({ start(controller) { controller.enqueue(body); controller.close(); } }),
+      { headers: { 'content-encoding': 'gzip', 'content-type': 'application/octet-stream' } });
+  } });
+  const fetch: CloudflareFetch = async (input, init) => String(input).endsWith(f.blobSource)
+    ? globalThis.fetch(`http://127.0.0.1:${server.port}/`, init) : f.fetchObject(input, init);
+  return { fetch, reads: () => reads, stop: () => server.stop(true) };
+}
+
+it('retries a read whose gzip body was cut short, as Bun reports it, and completes a verified artifact', async () => {
+  const f = fixture();
+  const whole = gzipSync(f.bytes);
+  const source = gzipServer(f, (read) => read === 1 ? whole.subarray(0, Math.floor(whole.length / 2)) : whole);
+  try {
+    const reports: string[] = [];
+    const result = await f.backup({ fetch: source.fetch, report: (line) => reports.push(line) });
+    expect(result.status).toBe('complete');
+    expect(source.reads()).toBe(2);
+    expect(reports.filter((line) => line.includes('ZlibError'))).toEqual([
+      expect.stringContaining(`(attempt 2 of ${RECOVERY_RETRY.objectReads.attempts})`),
+    ]);
+    expect(new Uint8Array(fs.readFileSync(path.join(f.destination, 'blobs', 'proj_1', f.digest)))).toEqual(f.bytes);
+    expect((await verifyRecoveryBundle(f.destination)).status).toBe('complete');
+  } finally { source.stop(); f.cleanup(); }
+});
+
+it('fails at once on a gzip body that decodes whole but does not match its digest', async () => {
+  const f = fixture();
+  const wrong = f.bytes.map((byte) => byte ^ 0xff);
+  const source = gzipServer(f, () => gzipSync(wrong));
+  try {
+    const failure = await f.backup({ fetch: source.fetch }).then(() => null, (error: Error) => error.message);
+    expect(failure).toMatch(/was not stored: stored bytes do not match the declared sha256 digest$/);
+    expect(source.reads()).toBe(1);
+    expect(storedFiles(f.destination).filter((name) => name.startsWith('proj_1'))).toEqual([]);
+  } finally { source.stop(); f.cleanup(); }
 });
 
 describe('a recovery hold write that does not answer', () => {
