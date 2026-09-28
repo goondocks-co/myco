@@ -1127,9 +1127,8 @@ function slowHarness(ms: number): string {
 }
 
 describe('the cadence a worker keeps', () => {
-  // A fallback far above the answered wait but well under the test's own bound,
-  // so ignoring the answer fails on elapsed time with a message rather than on
-  // a timeout with none.
+  // A fallback far above the answered wait, so a worker that kept its own
+  // cadence would schedule it where the answered one belongs.
   const FALLBACK_MS = 3_000;
   const ANSWERED_POLL_MS = 20;
 
@@ -1148,16 +1147,27 @@ describe('the cadence a worker keeps', () => {
       return new Response(JSON.stringify({ persisted: true }), { status: 200 });
     }) as unknown as typeof fetch;
 
-    const started = Date.now();
-    await runWorker({
-      serverUrl: 'https://deployment.example', token: 'tok', lockDir: null,
-      runRoot: mkdtempSync(join(tmpdir(), 'myco-worker-')),
-      pollIdleMs: FALLBACK_MS, log: () => {}, fetchImpl, signal: stopping.signal,
-    });
-    const elapsed = Date.now() - started;
+    // The waits are read from what the worker scheduled, not from how long it
+    // took: elapsed time also counts harness detection, which a loaded machine
+    // stretches past any bound that separates the two cadences.
+    const scheduled: number[] = [];
+    const nativeSetTimeout = globalThis.setTimeout;
+    globalThis.setTimeout = ((fn: (...args: unknown[]) => void, ms?: number, ...args: unknown[]) => {
+      scheduled.push(ms ?? 0);
+      return nativeSetTimeout(fn, ms, ...args);
+    }) as typeof setTimeout;
+    try {
+      await runWorker({
+        serverUrl: 'https://deployment.example', token: 'tok', lockDir: null,
+        runRoot: mkdtempSync(join(tmpdir(), 'myco-worker-')),
+        pollIdleMs: FALLBACK_MS, log: () => {}, fetchImpl, signal: stopping.signal,
+      });
+    } finally {
+      globalThis.setTimeout = nativeSetTimeout;
+    }
     expect(asked.filter((p) => p === '/worker/claim').length).toBe(3);
-    // Two waits at the answered cadence, against two at the fallback.
-    expect({ elapsed: elapsed < FALLBACK_MS, polls: 3 }).toEqual({ elapsed: true, polls: 3 });
+    // Two waits between three claims, each at the answered cadence and none at the fallback.
+    expect(scheduled.filter((ms) => ms === ANSWERED_POLL_MS || ms === FALLBACK_MS)).toEqual([ANSWERED_POLL_MS, ANSWERED_POLL_MS]);
   }, 15_000);
 
   it('renews at the cadence the claim answered, so a run is held while it is driven', async () => {

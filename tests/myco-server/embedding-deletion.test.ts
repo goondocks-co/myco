@@ -313,6 +313,8 @@ describe.each(['sqlite-vec', 'vectorize'] as const)('%s: vector calls are bounde
     f.context.vectorWriteTimeoutMs = 20;
     f.hang.upsert = true;
     await expect(f.step(T)).rejects.toThrow('vector write did not settle within 20 ms');
+    // The short bound is for the hung call only; the recovery below drives the real store.
+    delete f.context.vectorWriteTimeoutMs;
     expect(f.sqlite.query('SELECT ready FROM embedding_receipts WHERE id = ?').get(f.receiptOf('one'))).toEqual({ ready: RECEIPT.journaled });
     f.hang.upsert = false;
     expect(await f.work(T)).toBe(true);
@@ -347,6 +349,8 @@ describe.each(['sqlite-vec', 'vectorize'] as const)('%s: vector calls are bounde
     f.context.vectorWriteTimeoutMs = 20;
     f.hang.delete = true;
     await expect(f.step(T)).rejects.toThrow('vector delete did not settle within 20 ms');
+    // The short bound is for the hung call only; the recovery below drives the real store.
+    delete f.context.vectorWriteTimeoutMs;
     expect(f.receipts().filter((r) => r.ready < 0)).toEqual([{ record_id: 'one', ready: RECEIPT.deletionFailed, updated_at: T }]);
     f.hang.delete = false;
     expect(await f.calibrate(T)).toEqual(['hubness', 'hubness', 'settled']);
