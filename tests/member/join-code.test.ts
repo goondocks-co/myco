@@ -13,13 +13,14 @@ import os from 'node:os';
 import path from 'node:path';
 import { issueEnrollmentAuthority } from '@myco-server-worker/auth/enrollment.js';
 import { ENV_JOIN_CODE } from '@myco/member/constants.js';
-import { ensureJoinedFromCode, exchangeJoinCode, parseJoinCode, JOIN_CODE_REFUSALS } from '@myco/member/join-code.js';
+import { clearJoinRefusals, ensureJoinedFromCode, exchangeJoinCode, joinRefusalsDir, parseJoinCode, JOIN_CODE_REFUSALS } from '@myco/member/join-code.js';
 import { readDeploymentMembership, readRegistryEntry } from '@myco/member/registry.js';
 import { tempMycoHome, unjoinedRig } from './helpers/server.js';
 import { registerTestMember } from './helpers/hooks.js';
 import { parseTranscripts } from '@myco-server-worker/ingest/parse.js';
 import { runHook } from './helpers/hooks.js';
 import { resetMachineIdCache } from '@myco/machine-id.js';
+import { resolveMachineIdPath } from '@myco/paths/home.js';
 import { ENV_MEMBER_TOKEN, ENV_PROJECT, ENV_SERVER_URL, parseCredentialFlag, redeemsJoinCode, resolveCredential, resolveMemberProjectRoot, type CredentialSource } from '@myco/member/credential.js';
 import { issueMemberToken, NO_RUNTIME_CLAIMS } from '@myco-server-worker/auth/tokens.js';
 import { run as runSettings } from '@myco/cli/settings.js';
@@ -418,13 +419,37 @@ describe('the emitted sandbox settings with a join code', () => {
     }
     expect(joins).toBe(1);
     expect(stderrLines[0]).toContain("this machine's identity machine_shared already belongs to another member of https://s");
-    expect(stderrLines[0]).toContain(`distinct machine_id (${path.join(mycoHome, 'machine_id')})`);
+    expect(stderrLines[0]).toContain(`distinct machine_id (this process reads ${resolveMachineIdPath()})`);
+    expect(stderrLines[0]).toContain(`delete ${joinRefusalsDir(mycoHome)} (\`myco member leave --purge\` does too) and the next hook asks again`);
     expect(stderrLines.slice(1).every((l) => l.includes('not retried'))).toBe(true);
     expect(spent(second.id)).toBe(false);
 
     // A distinct identity is asked afresh, and joins.
     await ensureJoinedFromCode({ env: { [ENV_JOIN_CODE]: `https://s/join#${second.key}` }, mycoHome, root: '/work/b', fetch: counting, machineId: 'machine_own' });
     expect({ joins, spent: spent(second.id) }).toEqual({ joins: 2, spent: true });
+  });
+
+  it('records no refusal a retry could change: an unreachable Deployment or an answer it cannot read is asked again', async () => {
+    const answers: Array<[string, typeof fetch]> = [
+      ['unreachable', (() => Promise.reject(new Error('connect ECONNREFUSED'))) as unknown as typeof fetch],
+      ['unreadable', (() => Promise.resolve(new Response('', { status: 502 }))) as unknown as typeof fetch],
+    ];
+    for (const [name, answer] of answers) {
+      let dials = 0;
+      const counting = ((input: string | URL | Request, init?: RequestInit) => { dials += 1; return answer(input, init); }) as typeof fetch;
+      for (let hook = 0; hook < 2; hook += 1) {
+        await ensureJoinedFromCode({ env: { [ENV_JOIN_CODE]: `https://s/join#${KEY}` }, mycoHome, root: '/work/transient', fetch: counting, machineId: 'machine_transient' });
+      }
+      expect({ name, dials, recorded: fs.existsSync(joinRefusalsDir(mycoHome)) }).toEqual({ name, dials: 2, recorded: false });
+    }
+  });
+
+  it('forgets its recorded refusals on `member leave --purge`, so the next hook presents the code again', () => {
+    fs.mkdirSync(joinRefusalsDir(mycoHome), { recursive: true });
+    fs.writeFileSync(path.join(joinRefusalsDir(mycoHome), 'x.json'), '{}');
+    expect(clearJoinRefusals(mycoHome)).toBe(true);
+    expect(fs.existsSync(joinRefusalsDir(mycoHome))).toBe(false);
+    expect(clearJoinRefusals(mycoHome)).toBe(false);
   });
 
   it('decides whether a hook may spend the code from its declared source and the triplet alone', () => {

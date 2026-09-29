@@ -18,6 +18,7 @@ import { unboundedBudget } from '../member/budget.js';
 import { CREDENTIAL_FLAG, CREDENTIAL_SOURCES, deploymentScopedHeaders, isProjectId, memberHeaders, MEMBER_TOKEN_REFRESH_WINDOW_MS, SERVER_FLAG } from '../member/constants.js';
 import { isMemberTokenShape, parseCredentialFlag, resolveCredential, resolveMemberProjectRoot } from '../member/credential.js';
 import { admitMemberServerUrl, MEMBER_SERVER_URL_RULE } from '../member/server-url.js';
+import { clearJoinRefusals } from '../member/join-code.js';
 import { refreshMemberCredential, type RefreshReport } from '../member/refresh.js';
 import { runImport } from '../member/import.js';
 import { clearMissingMembership, listMissingMembershipsResult, pruneMissingMemberships, readMissingMembership, readMissingMembershipResult, type MissingMembershipRecord } from '../member/no-membership.js';
@@ -399,6 +400,7 @@ export function runLeave(args: readonly string[], deps: MemberCliDeps = {}): boo
   }
   fs.rmSync(new MemberSpool(entry.projectId, { mycoHome }).dir, { recursive: true, force: true });
   out('spool discarded');
+  if (clearJoinRefusals(mycoHome)) out('recorded join refusals cleared: a join code is presented again');
   for (const manifest of loadManifests()) {
     const installer = new SymbiontInstaller(manifest, root, deps.packageRoot ?? resolvePackageRoot(), false, undefined, null, 'member-project');
     if (installer.uninstallMemberHooks()) out(`removed ${manifest.displayName} hooks from ${root}`);

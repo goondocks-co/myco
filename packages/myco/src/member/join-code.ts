@@ -21,9 +21,10 @@
  * the membership it wrote and captures on that. Both land.
  */
 import crypto from 'node:crypto';
+import fs from 'node:fs';
 import path from 'node:path';
 import { getMachineId } from '../machine-id.js';
-import { resolveMycoHome } from '../paths/home.js';
+import { resolveMachineIdPath, resolveMycoHome } from '../paths/home.js';
 import { ENROLLMENT_KEY_PATTERN, ENV_JOIN_CODE, JOIN_PATH } from './constants.js';
 import { admitMemberServerUrl, MEMBER_SERVER_URL_RULE } from './server-url.js';
 import { acquireRegistryLock, deploymentUrl, readDeploymentMembership, readRegistryEntry, writeDeploymentMembership, writeRegistryEntry, REGISTRY_VERSION } from './registry.js';
@@ -298,10 +299,23 @@ export interface JoinRefusal {
 
 const JOIN_REFUSALS_DIRNAME = 'join-refusals';
 
+/** Where a home records the join refusals no retry can change. */
+export function joinRefusalsDir(mycoHome: string): string {
+  return path.join(memberRoot(mycoHome), JOIN_REFUSALS_DIRNAME);
+}
+
+/** Forget every recorded join refusal, so the next hook presents its code again. True when there was a record to forget. */
+export function clearJoinRefusals(mycoHome: string): boolean {
+  const dir = joinRefusalsDir(mycoHome);
+  if (!fs.existsSync(dir)) return false;
+  fs.rmSync(dir, { recursive: true, force: true });
+  return true;
+}
+
 /** The record for this code from this identity: a new identity, or a new code, is asked afresh. */
 function joinRefusalPath(code: JoinCode, machineId: string, mycoHome: string): string {
   const key = crypto.createHash('sha256').update(`${deploymentUrl(code.serverUrl)}\n${code.key}\n${machineId}`).digest('hex').slice(0, 32);
-  return path.join(memberRoot(mycoHome), JOIN_REFUSALS_DIRNAME, `${key}.json`);
+  return path.join(joinRefusalsDir(mycoHome), `${key}.json`);
 }
 
 export function readJoinRefusal(code: JoinCode, machineId: string, mycoHome: string): JoinRefusal | null {
@@ -319,7 +333,8 @@ function writeJoinRefusal(code: JoinCode, refusal: JoinRefusal, mycoHome: string
 function refusalLine(refusal: JoinRefusal, mycoHome: string): string {
   if (refusal.code === 'identity_claimed') {
     return `join code refused (identity_claimed): this machine's identity ${refusal.machineId} already belongs to another member of ${refusal.serverUrl}. `
-      + `A sandbox needs an identity of its own: run it with its own MYCO_HOME holding a distinct machine_id (${path.join(mycoHome, 'machine_id')}); no capture`;
+      + `A sandbox needs an identity of its own: run it with its own MYCO_HOME holding a distinct machine_id (this process reads ${resolveMachineIdPath()}). `
+      + `To use this identity once an administrator frees it on the Deployment, delete ${joinRefusalsDir(mycoHome)} (\`myco member leave --purge\` does too) and the next hook asks again; no capture`;
   }
   return `join code refused (${refusal.code}) — ${refusal.reason}; no capture`;
 }

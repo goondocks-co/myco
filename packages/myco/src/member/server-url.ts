@@ -33,16 +33,25 @@ function isLoopbackHost(hostname: string): boolean {
 }
 
 /**
- * Add `hosts` to `NO_PROXY` and `no_proxy`, when this process has a proxy
- * configured. A process with no proxy is left untouched.
+ * Add `hosts` to the proxy bypass, when this process has a proxy configured.
+ *
+ * `NO_PROXY` and `no_proxy` are one list read under two names, and runtimes
+ * disagree on which they prefer (Bun, curl and git read the lowercase one
+ * first), so both are written with the same value: the union of what either
+ * held and `hosts`. An exemption set under one name therefore survives the
+ * rewrite whichever name a reader takes. A bare `*` in either already exempts
+ * every host, and a list around it would not, so it is left as it stands. A
+ * process with no proxy is left untouched.
  */
 export function bypassProxyFor(hosts: readonly string[], env: NodeJS.ProcessEnv): void {
   if (!PROXY_VARS.some((name) => env[name]?.trim())) return;
+  if (NO_PROXY_VARS.some((name) => env[name]?.trim() === '*')) return;
+  const held: string[] = [];
   for (const name of NO_PROXY_VARS) {
-    const held = (env[name] ?? '').split(',').map((h) => h.trim()).filter((h) => h !== '');
-    const missing = hosts.filter((h) => !held.includes(h));
-    if (missing.length > 0 || env[name] === undefined) env[name] = [...held, ...missing].join(',');
+    for (const host of (env[name] ?? '').split(',').map((h) => h.trim())) if (host !== '' && !held.includes(host)) held.push(host);
   }
+  const value = [...held, ...hosts.filter((h) => !held.includes(h))].join(',');
+  for (const name of NO_PROXY_VARS) if (env[name] !== value) env[name] = value;
 }
 
 /**

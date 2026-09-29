@@ -7,6 +7,7 @@
  * without writing to the server and never takes a token on the command line;
  * `myco member leave --purge` removes what provisioning wrote.
  */
+import { joinRefusalsDir } from '@myco/member/join-code.js';
 import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -273,8 +274,11 @@ describe('myco member join / leave', () => {
     // Re-join, then purge: the spool and the provisioned hooks both go.
     await join(['https://server.example', '--project', PROJECT, '--token-env', 'JOIN_TOKEN', '--root', projectRoot], { env: { JOIN_TOKEN: rig.token } });
     out.length = 0;
+    fs.mkdirSync(joinRefusalsDir(mycoHome), { recursive: true });
+    fs.writeFileSync(path.join(joinRefusalsDir(mycoHome), 'refused.json'), '{}');
     expect(runLeave(['--purge'], deps)).toBe(true);
     expect(fs.existsSync(spool.dir)).toBe(false);
+    expect(fs.existsSync(joinRefusalsDir(mycoHome))).toBe(false);
     expect(fs.existsSync(path.join(projectRoot, MEMBER_TARGET))).toBe(false);
     expect(fs.existsSync(path.join(home, '.claude', 'settings.json'))).toBe(true);
   });
