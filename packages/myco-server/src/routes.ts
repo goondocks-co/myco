@@ -16,6 +16,7 @@ import { handleProjectSearch } from './api/search.js';
 import { handleWake } from './api/wake.js';
 import { handleMaintenanceStatus, handleRunMaintenance } from './api/maintenance.js';
 import { handleSetTitlingBackfill, handleTitlingBackfill } from './api/titling-backfill.js';
+import { handleRereadTranscripts } from './api/transcript-reread.js';
 import {
   handleDeleteSecret, handleProjectCapabilities, handleSecrets, handleSetProjectCapability,
   handleMemberSettings, handleSetSecret, handleSetSetting, handleSettings,
@@ -113,6 +114,7 @@ export const ROUTES: readonly Route[] = [
   { method: 'POST', path: '/api/maintenance/{check}/run', pattern: /^\/api\/maintenance\/(?<check>[a-z]{1,32})\/run$/, auth: 'owner', handler: handleRunMaintenance },
   { method: 'GET', path: '/api/titling-backfill', auth: 'owner', handler: handleTitlingBackfill },
   { method: 'PUT', path: '/api/titling-backfill', auth: 'owner', handler: handleSetTitlingBackfill },
+  { method: 'POST', path: '/api/transcripts/reread', auth: 'owner', handler: handleRereadTranscripts },
   { method: 'POST', path: '/events', auth: 'member', bodyMode: 'json', shape: 'persisted', handler: handleEvents },
   { method: 'POST', path: '/blobs/{sha256}', pattern: /^\/blobs\/(?<key>[0-9a-f]{64})$/, auth: 'member', bodyMode: 'stream', shape: 'stored', maxBodyBytes: MAX_BLOB_BYTES, handler: handleBlob },
   { method: 'POST', path: '/tokens/refresh', auth: 'member', bodyMode: 'json', shape: 'refreshed', capture: false, scope: 'credential', admitsLapsed: true, mintsAuthority: true, credential: handleRefresh },

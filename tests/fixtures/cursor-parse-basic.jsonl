@@ -1,2 +1,9 @@
-{"type": "user", "message": {"content": "why is the daemon restarting"}, "timestamp": "2026-09-01T10:00:01Z"}
-{"type": "assistant", "message": {"content": [{"type": "text", "text": "The lease expired."}]}, "timestamp": "2026-09-01T10:00:02Z"}
+{"role":"user","message":{"content":[{"type":"text","text":"<timestamp>Tuesday, Sep 1, 2026, 10:00 AM (UTC)</timestamp>\n<image_files>\n1. /tmp/fixture/screenshot.png\n</image_files>\n<user_query>\nwhy is the daemon restarting\n</user_query>"}]}}
+{"role":"assistant","message":{"content":[{"type":"text","text":"Checking the service log.\n\n[REDACTED]"},{"type":"tool_use","name":"Shell","input":{"command":"tail -n 50 daemon.log","description":"Read the log"}}]}}
+{"role":"assistant","message":{"content":[{"type":"text","text":"The lease expired."}]}}
+{"type":"turn_ended","status":"success"}
+{"role":"user","message":{"content":[{"type":"text","text":"<git_status>\nThis is the git status at the start of the conversation.\n</git_status>"}]}}
+{"role":"user","message":{"content":[{"type":"text","text":"and how do I stop it"}]}}
+{"role":"assistant","message":{"content":[{"type":"text","text":"[REDACTED]"},{"type":"tool_use","name":"Read","input":{"file_path":"/tmp/fixture/service.plist"}}]}}
+{"role":"assistant","message":{"content":[{"type":"text","text":"Renew the lease before it lapses."}]}}
+{"type":"turn_ended","status":"success"}

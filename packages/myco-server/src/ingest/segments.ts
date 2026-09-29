@@ -77,6 +77,10 @@ export const byteLength = (text: string): number => encoder.encode(text).length;
  * makes progress instead of stalling forever. `maxSegments` bounds the reads
  * themselves, which the byte budget alone does not: many small segments sit
  * inside it while costing one read each.
+ *
+ * The first segment must hold the byte at `from`. Nothing is returned when the
+ * held bytes begin after it: a reader handed a later segment would take its
+ * first byte for `from`, and every offset it names past that would be wrong.
  */
 export function segmentsToRead<T extends { baseOffset: number; length: number }>(
   segments: readonly T[], from: number, budget: number, maxSegments = Number.MAX_SAFE_INTEGER,
@@ -84,6 +88,7 @@ export function segmentsToRead<T extends { baseOffset: number; length: number }>
   const ordered = [...segments].filter((s) => s.baseOffset + s.length > from).sort((a, b) => a.baseOffset - b.baseOffset);
   const taken: T[] = [];
   let end = from;
+  if (ordered.length > 0 && ordered[0].baseOffset > from) return [];
   for (const segment of ordered) {
     // A gap means the bytes between are not held; the parse stops at the hole
     // rather than reading across it and inventing a line boundary.

@@ -402,7 +402,7 @@ describe('member hooks through the worker: cursor', () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-member-cursor-'));
     const tx = path.join(dir, 'agent-transcripts', session, `${session}.jsonl`);
     fs.mkdirSync(path.dirname(tx), { recursive: true });
-    fs.copyFileSync(path.join(FIXTURES, 'cursor-parse-basic.jsonl'), tx);
+    fs.copyFileSync(path.join(FIXTURES, 'cursor-agent-2026.09-redacted.jsonl'), tx);
     const cursor = (name: Parameters<typeof runHook>[0], raw: Record<string, unknown>) =>
       runHook(name, { conversation_id: session, transcript_path: tx, cwd: '/repo', ...raw }, { fetch: fetchSpy.fetch, symbiont: 'cursor' });
     await cursor('session-start', { hook_event_name: 'sessionStart' });
@@ -411,11 +411,12 @@ describe('member hooks through the worker: cursor', () => {
     expect(rig.rows('tool_calls')).toBe(2);
     // No prompt hook ran, and the parse derives its own prompt ids, so the calls name no turn.
     expect((rig.env.sqlite.query('SELECT prompt_id FROM tool_calls').all() as Array<{ prompt_id: string | null }>).every((r) => r.prompt_id === null)).toBe(true);
-    await cursor('stop', { hook_event_name: 'stop', last_assistant_message: 'The lease expired.' });
+    await cursor('stop', { hook_event_name: 'stop', last_assistant_message: 'Nothing was modified.' });
     expect(rig.rows('responses')).toBe(0);
     await parseAll();
-    expect(texts('prompt_batches')).toEqual(['why is the daemon restarting']);
-    expect(texts('responses')).toEqual(['The lease expired.']);
+    expect(texts('prompt_batches')).toEqual(['List the files in this directory and say how many there are. Do not modify anything.']);
+    expect(texts('responses')).toHaveLength(1);
+    expect(texts('responses')[0]).toEndWith('Nothing was modified.');
     await cursor('session-end', { hook_event_name: 'sessionEnd' });
     expect(memberKinds()).toEqual(['session.start', 'tool.use', 'tool.failure', 'transcript.segment', 'session.end']);
     assertNoRetired();
