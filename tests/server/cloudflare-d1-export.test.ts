@@ -13,7 +13,7 @@ import os from 'node:os';
 import path from 'node:path';
 import {
   D1_EXPORT_BOUND_MS, D1_EXPORT_CANCEL_MARGIN_MS, D1_EXPORT_DOWNLOAD_ATTEMPTS, D1_EXPORT_POLL_ATTEMPTS, D1ExportFailed, D1ExportRecordUnreadable, D1ExportUnfinished, D1ExportUnsettled,
-  exportD1, exportRecordPath, settleD1Export, type D1ExportOptions,
+  D1_QUERY_ATTEMPTS, exportD1, exportRecordPath, queryD1, settleD1Export, type D1ExportOptions,
 } from '@myco/server/cloudflare-d1-export.js';
 import { transientReadFailure } from '@myco/server/object-read.js';
 import { readD1ExportAnswer } from '@goondocks/myco-shared/d1-export';
@@ -79,6 +79,8 @@ afterEach(() => { fs.rmSync(dir, { recursive: true, force: true }); });
 /** The record this machine keeps of its running export, as a test writes or reads it. */
 const recordFile = () => exportRecordPath(dir, DATABASE);
 const recorded = () => JSON.parse(fs.readFileSync(recordFile(), 'utf8')) as Record<string, unknown>;
+/** Whether no export this machine recorded may still run: no record, or one whose result is downloaded and held. */
+const noExportRunning = () => !fs.existsSync(recordFile()) || recorded().downloaded === true;
 const record = (fields: Record<string, unknown>) => fs.writeFileSync(recordFile(), JSON.stringify({ databaseId: DATABASE, tables: ['sessions'], schema: 'schema-1', ...fields }));
 
 /** One export call, on a clock each pause moves on by a minute. */
@@ -140,7 +142,7 @@ describe('an export a retry resumes', () => {
     await run(flaky);
     expect(api.started()).toBe(1);
     expect(fs.readFileSync(path.join(dir, 'd1.sql'), 'utf8')).toBe('-- export bm-1\n');
-    expect(fs.existsSync(recordFile())).toBe(false);
+    expect(noExportRunning()).toBe(true);
   });
 
   it('takes the result of the export it resumed when that export completed inside the bound under the same schema', async () => {
@@ -211,7 +213,7 @@ describe('an export whose starting request had no answer that settles it (#1455 
       await run(api.fetch);
       expect(api.started()).toBe(2);
       expect(fs.readFileSync(path.join(dir, 'd1.sql'), 'utf8')).toBe('-- export bm-2\n');
-      expect(fs.existsSync(recordFile())).toBe(false);
+      expect(noExportRunning()).toBe(true);
     });
   }
 
@@ -254,7 +256,7 @@ describe('an export that completes on the request that starts it (#1455 finding 
       return lost(url, init);
     };
     await run(fetch);
-    expect({ bookmarks, requests: api.requests, output: fs.readFileSync(path.join(dir, 'd1.sql'), 'utf8'), kept: fs.existsSync(recordFile()) })
+    expect({ bookmarks, requests: api.requests, output: fs.readFileSync(path.join(dir, 'd1.sql'), 'utf8'), kept: !noExportRunning() })
       .toEqual({ bookmarks: ['bm-1', 'bm-1'], requests: [null, 'bm-1'], output: '-- export bm-1\n', kept: false });
   });
 
@@ -396,7 +398,7 @@ describe('a download that trickles, then stalls', () => {
     await run(fetch, { stallMs: 25, pollMs: 0 });
     expect({
       output: fs.readFileSync(path.join(dir, 'd1.sql'), 'utf8'), ranges, started: api.started(), requests: api.requests,
-      kept: fs.existsSync(recordFile()), part: fs.existsSync(path.join(dir, 'd1.sql.part')),
+      kept: !noExportRunning(), part: fs.existsSync(path.join(dir, 'd1.sql.part')),
     }).toEqual({ output: '-- export bm-1, the whole of it\n', ranges: [null, 'bytes=8-'], started: 1, requests: [null, 'bm-1'], kept: false, part: false });
   });
 
@@ -588,7 +590,7 @@ describe('a recorded export Cloudflare says nothing is exporting for', () => {
     const api = provider(() => 'complete');
     record({ bookmark: 'b-finished', startedAt: clock - 120_000, lastPolledAt: clock - 60_000 });
     await run(nothingExportingFor(new Set(['b-finished']), api.fetch), { pollMs: 0 });
-    expect({ requests: api.requests, started: api.started(), output: fs.readFileSync(path.join(dir, 'd1.sql'), 'utf8'), kept: fs.existsSync(recordFile()) })
+    expect({ requests: api.requests, started: api.started(), output: fs.readFileSync(path.join(dir, 'd1.sql'), 'utf8'), kept: !noExportRunning() })
       .toEqual({ requests: [null, 'bm-1'], started: 1, output: '-- export bm-1\n', kept: false });
   });
 });
@@ -625,7 +627,7 @@ describe('the one reading of an export answer (#1455 F7)', () => {
   });
 
   it('reads the answer that nothing is exporting as ended, where the result says it and where a refusal does', () => {
-    expect(readD1ExportAnswer(200, ok({ success: false, error: 'Not currently exporting anything.' }), 'b1')).toEqual({ kind: 'ended', bookmark: 'b1', detail: 'Not currently exporting anything.' });
+    expect(readD1ExportAnswer(200, ok({ success: false, error: 'Not currently exporting anything.' }), 'b1')).toEqual({ kind: 'ended', bookmark: 'b1', detail: 'Not currently exporting anything.', absent: true });
     expect(readD1ExportAnswer(400, { success: false, errors: [{ message: 'Not currently exporting anything.' }] }, 'b1')).toMatchObject({ kind: 'ended', bookmark: 'b1' });
     expect(readD1ExportAnswer(200, ok({ success: false, error: 'not currently exporting anything' }), 'b1')).toMatchObject({ kind: 'ended' });
     // Another refusal of the same shape stays unsettled, and so does one that says more than that.
@@ -662,8 +664,77 @@ describe('the operator backup\'s export, driven through every known answer (#148
       const act: Act = 'error' in outcome
         ? (outcome.error instanceof D1ExportUnfinished ? 'running' : 'unsettled')
         : outcome.settled !== null && downloads === 1 ? 'complete' : 'ended';
-      expect({ what: row.what, act, kept: act === 'unsettled' || act === 'running' ? fs.existsSync(recordFile()) : !fs.existsSync(recordFile()) })
+      expect({ what: row.what, act, kept: act === 'unsettled' || act === 'running' ? !noExportRunning() : noExportRunning() })
         .toEqual({ what: row.what, act: acts[readD1ExportAnswer(row.status, row.body, 'b1').kind], kept: true });
     }
+  });
+});
+
+describe('an export this machine already downloaded', () => {
+  const settle = (fetch: CloudflareFetch) => settleD1Export({
+    accountId: ACCOUNT, databaseId: DATABASE, output: path.join(dir, 'd1.sql'), recordDir: dir, login, fetch, now: () => clock, sleep: async () => {},
+  });
+  const unasked: CloudflareFetch = async () => { throw new Error('a downloaded export asks nothing of Cloudflare'); };
+
+  it('is taken again inside its bound, asking nothing of Cloudflare', async () => {
+    record({ bookmark: 'bm-kept', startedAt: clock - D1_EXPORT_BOUND_MS + 60_000, lastPolledAt: clock - 60_000, downloaded: true });
+    fs.writeFileSync(path.join(dir, 'd1.sql'), '-- kept\n');
+    expect(await settle(unasked)).toEqual({ schema: 'schema-1', startedAt: clock - D1_EXPORT_BOUND_MS + 60_000 });
+    expect(fs.readFileSync(path.join(dir, 'd1.sql'), 'utf8')).toBe('-- kept\n');
+  });
+
+  it('is discarded once past its bound, or once its result is gone, so the next snapshot exports afresh', async () => {
+    for (const [startedAt, kept] of [[clock - D1_EXPORT_BOUND_MS, true], [clock - 60_000, false]] as const) {
+      record({ bookmark: 'bm-old', startedAt, lastPolledAt: clock - 60_000, downloaded: true });
+      if (kept) fs.writeFileSync(path.join(dir, 'd1.sql'), '-- stale\n');
+      expect(await settle(unasked)).toBeNull();
+      expect([fs.existsSync(recordFile()), fs.existsSync(path.join(dir, 'd1.sql'))]).toEqual([false, false]);
+    }
+  });
+});
+
+describe('a read of the source database over the operator login', () => {
+  const QUERY = `https://api.cloudflare.com/client/v4/accounts/${ACCOUNT}/d1/database/${DATABASE}/query`;
+  const rows = (results: unknown[]) => Response.json({ success: true, errors: [], result: [{ success: true, results }] });
+  const refused = (code: number, status = 400) => Response.json({ success: false, errors: [{ code, message: 'refused' }], result: null }, { status });
+  const context = (fetch: CloudflareFetch, extra: { login?: OperatorLogin; pauses?: number[] } = {}) => ({
+    accountId: ACCOUNT, databaseId: DATABASE, output: path.join(dir, 'd1.sql'), recordDir: dir,
+    login: extra.login ?? login, fetch, sleep: async (ms: number) => { extra.pauses?.push(ms); },
+  });
+
+  it('reads through the query endpoint, and reads again past a 7403 inside its bound', async () => {
+    const sent: string[] = [];
+    const answers = [refused(7403), rows([{ name: 'sessions' }])];
+    const pauses: number[] = [];
+    const fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      expect(String(input)).toBe(QUERY);
+      sent.push((JSON.parse(String(init?.body)) as { sql: string }).sql);
+      return answers.shift()!;
+    }) as CloudflareFetch;
+    expect(await queryD1(context(fetch, { pauses }), 'SELECT name FROM sqlite_master')).toEqual([{ name: 'sessions' }]);
+    expect(sent).toEqual(['SELECT name FROM sqlite_master', 'SELECT name FROM sqlite_master']);
+    expect(pauses.length).toBe(1);
+  });
+
+  it('stops a 7403 that persists at its bound, naming the code, and never reads again past it', async () => {
+    let reads = 0;
+    const fetch = (async () => { reads += 1; return refused(7403); }) as CloudflareFetch;
+    const failure = await queryD1(context(fetch), 'SELECT 1').then(() => null, (error: unknown) => error as { transient: boolean; apiCodes: string[]; message: string });
+    expect(reads).toBe(D1_QUERY_ATTEMPTS);
+    expect({ transient: failure?.transient, codes: failure?.apiCodes }).toEqual({ transient: true, codes: ['7403'] });
+    expect(failure?.message).toContain('[code: 7403]');
+  });
+
+  it('refreshes a refused login once, and fails a refusal that is not transient at once', async () => {
+    const refreshedFrom: unknown[] = [];
+    const refreshing: OperatorLogin = { ...login, refused: (used) => { refreshedFrom.push(used); } };
+    const answers = [new Response('{}', { status: 401 }), rows([])];
+    expect(await queryD1(context((async () => answers.shift()!) as CloudflareFetch, { login: refreshing }), 'SELECT 1')).toEqual([]);
+    expect(refreshedFrom.length).toBe(1);
+
+    let reads = 0;
+    const fetch = (async () => { reads += 1; return refused(7500, 400); }) as CloudflareFetch;
+    await expect(queryD1(context(fetch), 'SELECT 1')).rejects.toMatchObject({ transient: false });
+    expect(reads).toBe(1);
   });
 });

@@ -12,10 +12,10 @@
  */
 import { DurableObject } from 'cloudflare:workers';
 import {
-  ADVANCING_STAGES_SQL, continueAttempt, exportWait, failAttempt, freshScan, HoldRetired, PRODUCER_LIMITS, PRODUCER_STALL_MS, publishAttempt, reconcileUnconfirmed, settlementOf, stagedSqlKey,
+  ADVANCING_STAGES, ADVANCING_STAGES_SQL, continueAttempt, exportWait, failAttempt, freshScan, HoldRetired, PRODUCER_LIMITS, PRODUCER_STALL_MS, publishAttempt, reconcileUnconfirmed, settlementOf, stagedSqlKey,
   type AttemptCheckpoint, type AttemptObject, type AttemptPart, type AttemptStage, type AttemptState, type ContinuationReport, type ExportWait, type HoldSettlement,
   type ProducerLimits, type RecoveryProducerStatus, type ScanProgress, type StagingPrunePolicy, type StagingPruneReport,
-  type StagingPruneRequest, type TableDefinitions,
+  type StagingPruneRequest, type TableDefinitions, type ForgetUnsettledOutcome,
 } from '../../core/recovery-producer.js';
 import { prunableStagings, type RetainedStaging } from '../../core/staging-retention.js';
 import {
@@ -36,7 +36,7 @@ import {
   type RecoveryAdmissionWire, type StagingBucket,
 } from './recovery-export.js';
 import type { CloudflareBindings } from './env.js';
-import { classify } from '../../telemetry.js';
+import { classify, emit } from '../../telemetry.js';
 import type { ErrorClass } from '../../core/adapters.js';
 
 /** Raised inside admission's transaction when another step already admitted an attempt carrying this token. */
@@ -438,6 +438,22 @@ export class RecoveryProducer extends DurableObject<CloudflareBindings> {
       this.ctx.storage.sql.exec('INSERT OR IGNORE INTO retired_hold_tokens (token, retired_at) VALUES (?, ?)', token, Date.now());
     }
     return settlement;
+  }
+
+  /**
+   * Forget every export an attempt requested and never saw settle, at an owner's word that none still runs: the next
+   * attempt then starts its own. Refused while an attempt advances, as that attempt may be following one.
+   */
+  async forgetUnsettledExport(): Promise<ForgetUnsettledOutcome> {
+    return this.gate.exclusive(async () => {
+      const latest = this.row('1 = 1');
+      if (latest !== null && (ADVANCING_STAGES as readonly string[]).includes(latest.stage)) return { refused: 'attempt_advancing' as const, attempt: latest.id };
+      const unsettled = this.checkpoint().unsettledExport();
+      if (unsettled === null) return { forgotten: null };
+      this.ctx.storage.sql.exec('UPDATE attempts SET export_requested_at = NULL WHERE export_requested_at IS NOT NULL');
+      emit({ kind: 'recovery_export_forgotten', attempt: unsettled.attempt, requestedAt: unsettled.requestedAt });
+      return { forgotten: { attempt: unsettled.attempt, requestedAt: unsettled.requestedAt } };
+    });
   }
 
   /** The attempt's progress, with no credential, no signed download and no claim of recoverability. */

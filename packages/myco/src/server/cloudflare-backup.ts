@@ -1,5 +1,5 @@
 import fs from 'node:fs';
-import { exportD1, settleD1Export, type D1ExportOptions } from './cloudflare-d1-export.js';
+import { exportD1, exportResultPath, queryD1, releaseD1Export, settleD1Export, type D1ExportOptions } from './cloudflare-d1-export.js';
 import path from 'node:path';
 import { z } from 'zod';
 import {
@@ -12,7 +12,7 @@ import { RECOVERY_CREDENTIAL_NAMES } from '@myco-server-worker/core/recovery-sta
 import { recoveryHoldOf, recoveryHoldSql } from '@myco-server-worker/core/object-release.js';
 import { recoveryConfigurationOf } from './cloudflare-resources.js';
 import {
-  createRecoveryBundle, type RecoveryHoldOwner, type RecoveryHoldReading, type RecoveryManifest, type RecoveryRetryPolicy,
+  CaptureRefusedBeforeSnapshot, createRecoveryBundle, type RecoveryHoldOwner, type RecoveryHoldReading, type RecoveryManifest, type RecoveryRetryPolicy,
 } from './recovery-bundle.js';
 import { assertRecoverableSchema, buildSnapshotDatabase, exportedTables } from './recovery-snapshot.js';
 import { schemaObjects, SCHEMA_QUERY } from './recovery-schema.js';
@@ -23,7 +23,7 @@ function recordedConfiguration(record: DeploymentRecord) {
 }
 
 /** The Deployment's own recovery producer is exporting the database this backup would export. */
-export class ProducerExporting extends Error {
+export class ProducerExporting extends CaptureRefusedBeforeSnapshot {
   constructor(since: number) {
     super(`an automatic backup of this Deployment has been running since ${new Date(since).toISOString()}, `
       + 'and two exports never run at once; run this backup again once it ends (the dashboard\'s Operations page shows it)');
@@ -113,11 +113,6 @@ export async function backupCloudflareDeployment(
   const operator = operatorLogin({ ...options, configDir });
   const readBlob = cloudflareBlobReader({ ...options, configDir, bucketName: record.bucketName, login: operator });
   const source = { target: 'cloudflare' as const, locator: `${record.accountId}/${record.databaseId}/${record.bucketName}` };
-  const bound = (workDir: string): CloudflareOptions => {
-    const configFile = path.join(workDir, 'wrangler.recovery.toml');
-    fs.writeFileSync(configFile, config, { mode: 0o600 });
-    return { ...options, configDir, configFile };
-  };
   // The hold's statements run before any snapshot work directory exists, so its configuration is staged beside this
   // machine's own Cloudflare state, with the same rendered bindings the snapshot uses.
   const holdConfigFile = path.join(configDir, 'wrangler.recovery-hold.toml');
@@ -125,29 +120,32 @@ export async function backupCloudflareDeployment(
   return createRecoveryBundle(options.destination, {
     source,
     hold: cloudflareRecoveryHold({ ...options, configDir, configFile: holdConfigFile, databaseName }, record),
-    snapshot: async (file, workDir) => {
-      const provider = { ...bound(workDir), databaseName };
-      const sqlPath = path.join(workDir, 'd1.sql');
+    snapshot: async (file) => {
+      // The export's SQL is kept beside its record rather than in the attempt's work directory: once it is downloaded,
+      // an attempt after a failed step takes it again instead of exporting again (`releaseD1Export` gives it up).
+      const sqlPath = exportResultPath(configDir, databaseId);
       const exportContext = { accountId: record.accountId, databaseId, output: sqlPath, recordDir: configDir, login: operator, fetch: options.fetch, report: options.report, ...options.d1Export };
+      // Every read here goes over the export's own API and login (`queryD1`), each retried inside its own bound.
+      const read = (sql: string) => queryD1(exportContext, sql);
       // Read after this backup's own hold is open: a producer that opened its hold first is found here, and one that
       // tries after is refused by the operator hold it finds in the same statement (`recoveryHoldSql.acquire`).
-      const producing = z.array(z.object({ token: z.string(), acquired_at: z.number() }))
-        .parse(await queryCloudflareDatabase({ ...provider, sql: recoveryHoldSql.open('producer'), timeoutMs: D1_STATEMENT_TIMEOUT_MS }));
+      const producing = z.array(z.object({ token: z.string(), acquired_at: z.number() })).parse(await read(recoveryHoldSql.open('producer')));
       if (producing.length > 0) throw new ProducerExporting(producing[0]!.acquired_at);
       // An export this machine left running pauses the schema read, so it is settled first.
       const settled = await settleD1Export(exportContext);
-      const before = schemaObjects.parse(await queryCloudflareDatabase({ ...provider, sql: SCHEMA_QUERY, timeoutMs: D1_STATEMENT_TIMEOUT_MS }));
+      const before = schemaObjects.parse(await read(SCHEMA_QUERY));
       const tables = exportedTables(before);
       if (tables.length === 0) throw new Error('D1 holds no ordinary tables to recover');
       assertRecoverableSchema(before);
       options.report?.('Exporting D1; Cloudflare temporarily pauses queries during the snapshot');
       await exportD1({ ...exportContext, tables, schema: JSON.stringify(before), settled });
-      const after = schemaObjects.parse(await queryCloudflareDatabase({ ...provider, sql: SCHEMA_QUERY, timeoutMs: D1_STATEMENT_TIMEOUT_MS }));
+      const after = schemaObjects.parse(await read(SCHEMA_QUERY));
       if (JSON.stringify(before) !== JSON.stringify(after)
         || JSON.stringify(record) !== JSON.stringify(readDeploymentRecord(options.mycoHome))) {
         throw new Error('Deployment schema or configuration changed during its snapshot; retry');
       }
       await buildSnapshotDatabase(file, sqlPath, before);
+      releaseD1Export(exportContext);
       return { configuration: { ...recorded }, credentialsRequired: [...RECOVERY_CREDENTIAL_NAMES] };
     },
     blob: async (blob) => readBlob(blob.source),

@@ -734,6 +734,38 @@ async function captureSnapshot(
   }
 }
 
+/**
+ * A capture refused before it read anything, so the hold opened for it protects nothing yet: its source said no
+ * snapshot may be taken now (another export holds the database, say). The hold is released as abandoned rather than
+ * left open, where it would defer the source's own backups and its deletions for nothing.
+ */
+export class CaptureRefusedBeforeSnapshot extends Error {}
+
+/** Whether `error`, or a failure it carries, is a capture refused before it read anything. */
+function refusedBeforeSnapshot(error: unknown): boolean {
+  for (let current: unknown = error, depth = 0; depth <= 3 && current instanceof Error; current = current.cause, depth += 1) {
+    if (current instanceof CaptureRefusedBeforeSnapshot) return true;
+  }
+  return false;
+}
+
+/**
+ * Give up the hold of a capture refused before its snapshot, and say so on the refusal. Released, the destination's
+ * hold records go too, so the next run opens a hold of its own; unreleased, the refusal names the command that gives
+ * the hold up.
+ */
+async function releaseRefusedHold(root: string, owner: RecoveryHoldOwner, report: (line: string) => void, target: RecoverySource['target'], error: Error): Promise<Error> {
+  const token = readHoldIntent(root)?.token ?? null;
+  const released = await abandonRecoveryHold(root, owner, report).then((answered) => answered.state === 'released', () => false);
+  if (released) {
+    for (const name of [HOLD_FILE, HOLD_BOUND_FILE, `${HOLD_BOUND_FILE}.staging`]) fs.rmSync(path.join(root, name), { force: true });
+    syncDirectory(root);
+    return new Error(`${error.message}; this backup's recovery hold was released, since it protected nothing yet`, { cause: error });
+  }
+  return new Error(`${error.message}; this backup's recovery hold${token === null ? '' : ` ${token}`} is still open, and defers the source's own backups while it is: `
+    + `give it up with \`myco server recovery-hold${token === null ? '' : ` --token ${token}`} --abandon --target ${target}\``, { cause: error });
+}
+
 /** One writer owns snapshot publication, content verification and the final completion manifest on both targets. */
 async function writeRecoveryBundle(
   destination: string, adapter: RecoveryAdapter, report: (line: string) => void, seed?: RecoveryManifest, retry: RecoveryRetryPolicy = RECOVERY_RETRY,
@@ -774,7 +806,15 @@ async function writeRecoveryBundle(
     if (manifest.status === 'snapshot') {
       report('Capturing the database snapshot');
       const incoming = path.join(workDir, DATABASE_FILE);
-      const captured = await captureSnapshot(adapter, incoming, workDir, report, retry.snapshots);
+      let captured: RecoverySnapshot;
+      try {
+        captured = await captureSnapshot(adapter, incoming, workDir, report, retry.snapshots);
+      } catch (error) {
+        if (held !== null && adapter.hold !== undefined && error instanceof Error && refusedBeforeSnapshot(error)) {
+          throw await releaseRefusedHold(root, adapter.hold, report, adapter.source.target, error);
+        }
+        throw error;
+      }
       const db = openSnapshot(incoming);
       let facts;
       try {

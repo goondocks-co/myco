@@ -454,6 +454,25 @@ it('starts the export again when the provider says one it holds ended, and ends 
   expect([exhausted.stage, exhausted.error]).toEqual(['failed', 'export_failed']);
 });
 
+it('keeps following an export Cloudflare says nothing is exporting for, asks again once the confirm window has passed, and only then starts another (#1497)', async () => {
+  let clock = 1_000_000;
+  const absent = (): ExportAnswer => ({ status: 'ended', bookmark: 'b1', absent: true });
+  // The export last said it ran at the clock's start.
+  const state = checkpoint({ stage: 'export', bookmark: 'b1', polls: 4, exportStartedAt: clock, exportRequestedAt: clock, exportAnsweredAt: clock });
+  state.signed = 'https://signed/one';
+  const { port, calls } = ports({ exports: [absent(), absent()], now: () => clock });
+  // A moment later the answer is that nothing is exporting: the export stays recorded and is asked after again.
+  clock += 1_000;
+  const held = await continueAttempt(state, port, PRODUCER_LIMITS);
+  expect([held.stage, held.sourcePaused, held.nextInMs]).toEqual(['export', true, PRODUCER_LIMITS.exportAbsentConfirmMs - 1_000]);
+  expect([state.state.bookmark, state.state.reExports, state.state.exportRequestedAt, state.signed]).toEqual(['b1', 0, 1_000_000, 'https://signed/one']);
+  // Asked again once the confirm window has passed from when the export last ran, the same answer is its end.
+  clock = 1_000_000 + PRODUCER_LIMITS.exportAbsentConfirmMs;
+  const restarted = await continueAttempt(state, port, PRODUCER_LIMITS);
+  expect([restarted.stage, state.state.bookmark, state.state.reExports, state.state.exportRequestedAt]).toEqual(['export', null, 1, null]);
+  expect(calls.polls).toBe(2);
+});
+
 it('follows an export it holds through a refusal that does not say it ended, and never starts another beside it (#1480)', async () => {
   for (const refusal of [
     { status: 'error', bookmark: 'b1', failure: failure('provider', 200, false) },

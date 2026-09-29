@@ -1,7 +1,7 @@
 import { Link } from 'react-router-dom';
 import { formatRelative, formatUntil } from '../../lib/format';
 import { Panel } from '../ui/panel';
-import { unsupported, useRecovery, type RecoveryAvailability, type RecoverySchedule, type RecoveryStatus } from '../../hooks/use-recovery';
+import { unsupported, useForgetUnsettledExport, useRecovery, type RecoveryAvailability, type RecoverySchedule, type RecoveryStatus } from '../../hooks/use-recovery';
 
 const dateLabel = (ms: number): string => new Date(ms).toLocaleString();
 
@@ -78,6 +78,30 @@ export type RecoveryForm = RecoveryStatus['form'];
  *
  * The complete-recovery surface, separate from the small additive Backup export above it.
  */
+/**
+ * The way out of an export that never settles: every later attempt waits on it and fails, so the owner, who can see
+ * in Cloudflare that it no longer runs, may have it forgotten. Offered only where the latest attempt failed that way.
+ */
+function ForgetUnsettledExport() {
+  const forget = useForgetUnsettledExport();
+  const words = forget.data !== undefined
+    ? (forget.data.forgotten === null ? 'No earlier export was recorded; the next attempt starts its own.' : `The export attempt ${forget.data.forgotten.attempt} requested is forgotten; the next attempt starts its own.`)
+    : forget.error !== null ? `It was not forgotten: ${forget.error.message}` : null;
+  return (
+    <div className="flex flex-col gap-1" data-testid="recovery-unsettled">
+      <p className="font-sans text-sm text-ochre">
+        The last attempt stopped because an export an earlier attempt started never said it ended, and every attempt waits on it.
+        If Cloudflare shows no export running for this database, forget it so the next attempt starts its own.
+      </p>
+      <div>
+        <button type="button" className="rounded-md border border-outline-variant/30 px-2.5 py-1 font-sans text-xs text-on-surface transition-colors hover:bg-surface-container-high"
+          disabled={forget.isPending} onClick={() => forget.mutate()}>Forget the earlier export</button>
+      </div>
+      {words !== null && <p className="font-sans text-xs text-on-surface-variant">{words}</p>}
+    </div>
+  );
+}
+
 export function RecoveryPanel() {
   const recovery = useRecovery();
   const now = Date.now();
@@ -109,6 +133,7 @@ export function RecoveryPanel() {
           <p className="font-sans text-sm text-on-surface-variant" data-testid="recovery-latest">{attemptWords(attempt, stage, form)}</p>
         </div>
       )}
+      {recovery.data?.error === 'export_unsettled' && <ForgetUnsettledExport />}
       {schedule !== null && (
         <div className="flex flex-col gap-2">
           <p className="font-sans text-sm text-on-surface" data-testid="recovery-cadence">{cadenceWords(schedule, now)}</p>

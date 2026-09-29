@@ -1,5 +1,5 @@
-import { useQuery } from '@tanstack/react-query';
-import { ApiError, fetchJson } from '../lib/api';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { ApiError, fetchJson, postJson } from '../lib/api';
 
 /** What the last recovery attempt did. */
 export interface LatestAttempt {
@@ -45,6 +45,8 @@ export interface RecoveryStatus {
   stage: string;
   /** What this Deployment's producer produces, which decides what a complete attempt may be called. */
   form: 'staging' | 'artifact';
+  /** Why the latest attempt failed, from the producer's closed set, or null. */
+  error?: string | null;
   /** The schedule, or that this Deployment's settings could not be read while an export pauses its database. */
   schedule: RecoverySchedule | { unreadable: string };
 }
@@ -70,5 +72,17 @@ export function useRecovery() {
     queryKey: ['recovery', 'exports'],
     queryFn: ({ signal }) => fetchJson<RecoveryStatus>('/api/recovery/exports', signal),
     retry: false,
+  });
+}
+
+/**
+ * Forget the export an earlier attempt requested and never saw settle, at the owner's word that it runs no longer:
+ * the next attempt then starts its own. The server refuses while an attempt still runs.
+ */
+export function useForgetUnsettledExport() {
+  const queries = useQueryClient();
+  return useMutation({
+    mutationFn: () => postJson<{ forgotten: { attempt: number; requestedAt: number } | null }>('/api/recovery/exports/forget-unsettled', {}),
+    onSuccess: () => { void queries.invalidateQueries({ queryKey: ['recovery'] }); },
   });
 }

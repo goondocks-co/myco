@@ -36,7 +36,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { z } from 'zod';
 import { readD1ExportAnswer, type D1ExportReading } from '@goondocks/myco-shared/d1-export';
-import { ObjectReadError } from './object-read.js';
+import { ObjectReadError, transientApiCode, transientStatus } from './object-read.js';
 import type { CloudflareFetch, OperatorLogin } from './cloudflare.js';
 
 /**
@@ -87,6 +87,11 @@ const recordSchema = z.object({
   lastPolledAt: z.number(),
   /** The schema the export started under; a retry reuses the export only while the schema is the same. */
   schema: z.string(),
+  /**
+   * The export ended and its SQL is whole at the output: nothing runs, and the result is kept until the snapshot built
+   * from it is saved (`releaseD1Export`), so a step that fails after the download is tried again without exporting.
+   */
+  downloaded: z.boolean().optional(),
 });
 type ExportRecord = z.infer<typeof recordSchema>;
 
@@ -173,6 +178,11 @@ export interface SettledExport { schema: string; startedAt: number }
 /** Where the export running against `databaseId` is recorded. */
 export function exportRecordPath(recordDir: string, databaseId: string): string {
   return path.join(recordDir, `d1-export-${databaseId.replace(/[^A-Za-z0-9_-]/g, '_')}.json`);
+}
+
+/** Where the SQL of the export against `databaseId` is kept beside its record, outlasting the attempt that downloaded it. */
+export function exportResultPath(recordDir: string, databaseId: string): string {
+  return exportRecordPath(recordDir, databaseId).replace(/\.json$/, '.sql');
 }
 
 function readRecord(file: string, marginMs: number): ExportRecord | null {
@@ -421,6 +431,17 @@ function exporter(context: D1ExportContext) {
   const settle = async (): Promise<SettledExport | null> => {
     let recorded = readRecord(file, marginMs);
     if (recorded === null) return null;
+    if (recorded.downloaded === true) {
+      // An export that ended with its SQL downloaded runs no longer: its result is taken again while it is recent enough
+      // to be this snapshot, and nothing is asked of Cloudflare.
+      if (fs.existsSync(context.output) && now() - recorded.startedAt < boundMs) {
+        context.report?.(`Taking the D1 export this machine downloaded ${iso(recorded.startedAt)} again rather than exporting another`);
+        return { schema: recorded.schema, startedAt: recorded.startedAt };
+      }
+      fs.rmSync(file, { force: true });
+      fs.rmSync(context.output, { force: true });
+      return null;
+    }
     if (now() - recorded.lastPolledAt >= marginMs) {
       // Asked after once more where it can be: one still running is followed, and only one Cloudflare says ended, or
       // no longer answers for, is taken to run no longer.
@@ -440,7 +461,7 @@ function exporter(context: D1ExportContext) {
     // Its result is a snapshot only while it is recent enough to be one; the caller holds it to the schema it reads.
     if (ended.kind === 'complete' && now() - record.startedAt < boundMs) {
       await download(record.tables, record.bookmark, ended.signedUrl);
-      fs.rmSync(file, { force: true });
+      writeRecord(file, { ...record, downloaded: true, lastPolledAt: now() });
       return { schema: record.schema, startedAt: record.startedAt };
     }
     context.report?.(ended.kind === 'ended'
@@ -491,10 +512,16 @@ function exporter(context: D1ExportContext) {
       throw new D1ExportFailed(ended.detail);
     }
     await download(tables, ended.bookmark, ended.signedUrl);
-    fs.rmSync(file, { force: true });
+    writeRecord(file, { ...intent, bookmark: ended.bookmark, downloaded: true, lastPolledAt: now() });
   };
 
-  return { settle, start, file };
+  /** Give up the result this machine holds: the record and the SQL it names. */
+  const release = (): void => {
+    fs.rmSync(file, { force: true });
+    fs.rmSync(context.output, { force: true });
+  };
+
+  return { settle, start, release, file };
 }
 
 /**
@@ -521,7 +548,67 @@ export async function exportD1(options: D1ExportOptions): Promise<void> {
   if (settled !== null) {
     if (settled.schema === options.schema) return;
     options.report?.('The resumed D1 export was taken under another schema, so it is discarded and a new one started');
-    fs.rmSync(options.output, { force: true });
+    steps.release();
   }
   await steps.start(options.tables, options.schema);
+}
+
+/**
+ * Give up the export result this machine holds for the database, once the snapshot built from it is saved: the record
+ * and the SQL. Until then a retry takes the result again rather than exporting.
+ */
+export function releaseD1Export(context: D1ExportContext): void {
+  exporter(context).release();
+}
+
+/** How many times one read of the database is sent, and the pause before each retry: `D1_QUERY_BACKOFF_MS[n]` precedes attempt n + 2. */
+export const D1_QUERY_ATTEMPTS = 3;
+export const D1_QUERY_BACKOFF_MS: readonly number[] = [2_000, 5_000];
+/** How long one read may wait for its answer. */
+const D1_QUERY_TIMEOUT_MS = 60_000;
+
+/**
+ * One read of the database, over the same API and the same operator login as the export, rather than a Wrangler
+ * command with a login of its own: a backup reads and exports under one credential, refreshed in one place.
+ *
+ * A read that Cloudflare answers with a transient code — `7403` among them, which D1 answers for an account other
+ * requests succeed with — is sent again, up to `D1_QUERY_ATTEMPTS`, and a refused login is refreshed once. What
+ * remains is thrown as an `ObjectReadError` naming the codes, transient where a later attempt may still pass.
+ */
+export async function queryD1(context: D1ExportContext, sql: string): Promise<unknown[]> {
+  const fetchApi = context.fetch ?? globalThis.fetch;
+  const sleep = context.sleep ?? ((ms: number) => new Promise<void>((resolve) => { setTimeout(resolve, ms); }));
+  const endpoint = `${API_ORIGIN}/client/v4/accounts/${encodeURIComponent(context.accountId)}/d1/database/${encodeURIComponent(context.databaseId)}/query`;
+  let refreshed = false;
+  for (let attempt = 1; ; attempt += 1) {
+    const used = context.login.current();
+    const headers = new Headers(await used);
+    headers.set('content-type', 'application/json');
+    let failure: ObjectReadError;
+    try {
+      const response = await fetchApi(endpoint, { method: 'POST', headers, redirect: 'error', signal: AbortSignal.timeout(D1_QUERY_TIMEOUT_MS), body: JSON.stringify({ sql }) });
+      const text = await response.text();
+      type Answer = { success?: unknown; errors?: unknown; result?: unknown };
+      const body = ((): Answer | null => { try { return JSON.parse(text) as Answer; } catch { return null; } })();
+      const codes = Array.isArray(body?.errors) ? body.errors.map((e) => String((e as { code?: unknown }).code ?? '')).filter((c) => c !== '') : [];
+      const said = Array.isArray(body?.errors) ? body.errors.map((e) => String((e as { message?: unknown }).message ?? '')).filter((m) => m !== '').join('; ') : '';
+      const first = Array.isArray(body?.result) ? body.result[0] as { success?: unknown; results?: unknown } | undefined : undefined;
+      if (response.ok && body?.success === true && first?.success === true && Array.isArray(first.results)) return first.results;
+      const refusedLogin = response.status === 401 || codes.includes('10000');
+      if (refusedLogin && !refreshed) {
+        refreshed = true;
+        context.login.refused(used);
+        attempt -= 1;
+        continue;
+      }
+      const transient = !refusedLogin && (transientStatus(response.status) || codes.some((code) => transientApiCode(code)));
+      failure = new ObjectReadError(`D1 did not answer the read (HTTP ${response.status}${codes.map((c) => ` [code: ${c}]`).join('')}${said === '' ? '' : `: ${redacted(said)}`})`,
+        { transient, apiCodes: codes });
+    } catch (error) {
+      failure = new ObjectReadError(`the read did not reach D1 (${redacted((error as Error).message)})`, { transient: true, cause: error });
+    }
+    if (!failure.transient || attempt >= D1_QUERY_ATTEMPTS) throw failure;
+    context.report?.(`${failure.message}; reading it again (attempt ${attempt + 1} of ${D1_QUERY_ATTEMPTS})`);
+    await sleep(D1_QUERY_BACKOFF_MS[Math.min(attempt - 1, D1_QUERY_BACKOFF_MS.length - 1)] ?? 0);
+  }
 }

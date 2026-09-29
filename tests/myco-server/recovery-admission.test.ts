@@ -4,8 +4,8 @@
  */
 import { registerBlob } from './helpers/d1.js';
 import { expect, it } from 'bun:test';
-import { handleRecoveryExportStatus, handleStartRecoveryExport } from '@myco-server-worker/api/recovery.js';
-import { settlementOf, type AttemptStage, type RecoveryAdmission, type RecoveryAdmissionReadiness, type RecoveryProducerStatus } from '@myco-server-worker/core/recovery-producer.js';
+import { handleForgetUnsettledExport, handleRecoveryExportStatus, handleStartRecoveryExport } from '@myco-server-worker/api/recovery.js';
+import { settlementOf, type AttemptStage, type RecoveryAdmission, type RecoveryAdmissionReadiness, type RecoveryProducerStatus, type ForgetUnsettledOutcome } from '@myco-server-worker/core/recovery-producer.js';
 import { drainObjectReleases, releaseBlobs } from '@myco-server-worker/core/object-release.js';
 import { acquireOperatorHold, recoveryHoldRelease, settleOperatorHold } from '@myco-server-worker/core/recovery-hold.js';
 import { sqliteEnv } from './helpers/fixtures.js';
@@ -281,4 +281,28 @@ it('reports an operator backup holding this Deployment, and what it defers', asy
   expect(await settleOperatorHold(env.serverEnv, 'op-status', 6_000, 'complete')).toBe(true);
   const after = await (await handleRecoveryExportStatus({ ...env.serverEnv, recovery: held.port } as never, OWNER)).json() as Record<string, any>;
   expect(after.operatorHold).toEqual({ open: false });
+});
+
+it('forgets an unsettled export through the producer at the owner\'s word, and says so when an attempt still runs (#1493 G3)', async () => {
+  const env = sqliteEnv();
+  const answers: ForgetUnsettledOutcome[] = [
+    { refused: 'attempt_advancing', attempt: 4 }, { forgotten: { attempt: 3, requestedAt: 900 } }, { forgotten: null },
+  ];
+  let asked = 0;
+  const held = producer();
+  const port = { ...held.port, forgetUnsettledExport: async () => answers[asked++]! };
+  const forget = () => handleForgetUnsettledExport({ ...env.serverEnv, recovery: port } as never, OWNER);
+
+  const running = await forget();
+  expect(running.status).toBe(409);
+  expect(await running.json() as Record<string, unknown>).toMatchObject({ error: 'recovery_attempt_running' });
+  const forgotten = await forget();
+  expect([forgotten.status, await forgotten.json() as unknown]).toEqual([200, { forgotten: { attempt: 3, requestedAt: 900 } }]);
+  expect(await (await forget()).json() as unknown).toEqual({ forgotten: null });
+  expect(asked).toBe(3);
+
+  // A producer with no record of exports, or no producer, forgets nothing.
+  expect((await handleForgetUnsettledExport({ ...env.serverEnv, recovery: held.port } as never, OWNER)).status).toBe(400);
+  expect((await handleForgetUnsettledExport({ ...env.serverEnv, recovery: undefined } as never, OWNER)).status).toBe(400);
+  env.sqlite.close();
 });

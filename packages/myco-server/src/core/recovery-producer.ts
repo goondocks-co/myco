@@ -188,7 +188,7 @@ export interface PortFailure {
 export type ExportAnswer =
   | { status: 'running'; bookmark: string }
   | { status: 'complete'; bookmark: string; signedUrl: string }
-  | { status: 'ended'; bookmark: string | null }
+  | { status: 'ended'; bookmark: string | null; absent?: true }
   | { status: 'refused'; failure: PortFailure }
   | { status: 'error'; bookmark: string | null; failure: PortFailure };
 
@@ -252,6 +252,12 @@ export interface ProducerLimits {
    * taken to run no longer. Until then no request starts another, from this attempt or the next.
    */
   exportStaleMs: number;
+  /**
+   * How long an export this attempt follows must go without saying it runs before an answer that nothing is exporting
+   * is taken as its end (#1497): the provider may give that answer for a moment while the export still runs, so the
+   * answer is asked for again once this has passed after the export last ran, and only then is another started.
+   */
+  exportAbsentConfirmMs: number;
   /** How long one call to the provider may take. The total an attempt may spend is `exportPollMs + requestMs`. */
   requestMs: number;
   /** How many times one continuation may poll before it returns for another. */
@@ -295,7 +301,7 @@ export const FAILURE_CLEANUP_MS = 30_000;
 export const PRODUCER_LIMITS: ProducerLimits = {
   // An export ends by completing, or by the provider cancelling it once nothing polls it, and either happens well
   // inside twice the time a polled export is allowed to run.
-  partBytes: 32 * 1024 * 1024, exportPollMs: 600_000, exportStaleMs: 1_200_000, requestMs: 30_000, maxPollsPerStep: 12, stepMs: 20_000,
+  partBytes: 32 * 1024 * 1024, exportPollMs: 600_000, exportStaleMs: 1_200_000, exportAbsentConfirmMs: 60_000, requestMs: 30_000, maxPollsPerStep: 12, stepMs: 20_000,
   maxTransient: 5, maxReExports: 3, maxPartsPerStep: 4, maxObjectsPerStep: 32, inventoryMs: 600_000, copyMs: 1_800_000,
   objectMs: 300_000, publishMs: 1_800_000,
 };
@@ -571,6 +577,18 @@ async function pollExportStage(
       if (bookmark !== null || (answer.status === 'error' && answer.failure.transient)) throw new TransientProducerFailure(answer.failure);
       // A fresh request refused: the attempt ends, and the export it may have started stays recorded as unsettled.
       return failAttempt(attempt, checkpoint, ports, EXPORT_REFUSAL[answer.failure.cause], { status: answer.failure.status ?? 0, polls });
+    }
+    if (answer.status === 'ended' && answer.absent === true && bookmark !== null) {
+      // The provider says nothing is exporting, which it may answer for a moment while the export this attempt follows
+      // still runs. That export stays recorded and is asked after again once `exportAbsentConfirmMs` has passed from
+      // when it last said it ran; an answer that nothing is exporting then is its end, and only then is another started.
+      const own = checkpoint.unsettledExport();
+      const lastRan = own !== null && own.attempt === attempt.id ? (own.answeredAt ?? own.requestedAt) : null;
+      if (lastRan !== null && ports.now() - lastRan < limits.exportAbsentConfirmMs) {
+        checkpoint.update(attempt.id, { bookmark, polls });
+        emit({ kind: 'recovery_export_absent', attempt: attempt.id, quietMs: ports.now() - lastRan });
+        return { attempt: attempt.id, stage: 'export', progressed: true, nextInMs: limits.exportAbsentConfirmMs - (ports.now() - lastRan), sourcePaused: true };
+      }
     }
     if (answer.status === 'ended') {
       requested = null;
@@ -1252,6 +1270,11 @@ export class HoldRetired extends Error {
 }
 
 /** Starting and inspecting this Deployment's producer, as a target supplies it. The credential stays in the target. */
+/** What forgetting an unsettled export did: which it forgot, or that none is recorded, or which attempt refused it. */
+export type ForgetUnsettledOutcome =
+  | { forgotten: { attempt: number; requestedAt: number } | null }
+  | { refused: 'attempt_advancing'; attempt: number };
+
 export interface RecoveryProducerPort {
   /** Whether a new attempt may be admitted. Status, hold settlement and an attempt already admitted do not depend on it. */
   admission: RecoveryAdmissionReadiness;
@@ -1265,6 +1288,12 @@ export interface RecoveryProducerPort {
   pendingStagingPrunes(policy: StagingPrunePolicy): Promise<number>;
   /** Release the staged payloads the policy lets go of, bounded by the request's budget. */
   pruneStagings(request: StagingPruneRequest): Promise<StagingPruneReport>;
+  /**
+   * Forget the export an earlier attempt requested and never saw settle, which an owner answers for: every later
+   * attempt waits on it, and fails `export_unsettled` once the wait bound passes, for as long as it stays recorded.
+   * Refused while an attempt advances, which may be following that export. Absent on a producer that records none.
+   */
+  forgetUnsettledExport?(): Promise<ForgetUnsettledOutcome>;
   /**
    * Make progress on the attempt already in flight, for a producer that has to be asked.
    *

@@ -253,6 +253,35 @@ describe('automatic recovery on the Operations page', () => {
     expect(screen.getByTestId('recovery-available').textContent).toContain('No recovery data exists yet');
   });
 
+  it('offers to forget an earlier export only where the last attempt failed waiting on it, and posts the owner\'s word (#1493 G3)', async () => {
+    const failed = (error: string) => ({
+      ...RECOVERY({ ...base, latest: { attempt: 4, stage: 'failed', startedAt: Date.parse('2026-09-18T09:00:00.000Z'), failure: error } }),
+      attempt: 4, stage: 'failed', error,
+    });
+    const routes = {
+      '/auth/me': () => Response.json(ME),
+      '/api/projects': () => Response.json(PROJECTS),
+      '/api/backups': () => Response.json({ backups: [] }),
+    };
+    server({ ...routes, '/api/recovery/exports': () => Response.json(failed('provider_refused')) });
+    mount('/operations');
+    await screen.findByTestId('recovery-latest');
+    expect(screen.queryByTestId('recovery-unsettled')).toBeNull();
+    cleanup();
+
+    const seen = server({
+      ...routes,
+      '/api/recovery/exports': () => Response.json(failed('export_unsettled')),
+      '/api/recovery/exports/forget-unsettled': () => Response.json({ forgotten: { attempt: 3, requestedAt: 900 } }),
+    });
+    mount('/operations');
+    const offered = await screen.findByTestId('recovery-unsettled');
+    expect(offered.textContent).toContain('never said it ended');
+    fireEvent.click(within(offered).getByRole('button', { name: 'Forget the earlier export' }));
+    expect((await within(offered).findByText(/attempt 3 requested is forgotten/)).textContent).toContain('the next attempt starts its own');
+    expect(seen.requested).toContain('POST /api/recovery/exports/forget-unsettled');
+  });
+
   it('tells an owner a read failed, rather than calling the Deployment unsupported', async () => {
     // A 503 says nothing about whether a producer exists. Claiming it does would tell an owner their backups are
     // impossible whenever the server was busy.

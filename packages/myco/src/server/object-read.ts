@@ -12,11 +12,14 @@ import { CommandFailed, CommandTimedOut, commandFailureDetail } from './runner.j
  */
 export class ObjectReadError extends Error {
   readonly transient: boolean;
+  /** The Cloudflare API error codes the answer carried, where it came from the API itself rather than a provider command. */
+  readonly apiCodes: readonly string[];
 
-  constructor(message: string, options: { transient: boolean; cause?: unknown }) {
+  constructor(message: string, options: { transient: boolean; cause?: unknown; apiCodes?: readonly string[] }) {
     super(message, options.cause === undefined ? undefined : { cause: options.cause });
     this.name = 'ObjectReadError';
     this.transient = options.transient;
+    this.apiCodes = options.apiCodes ?? [];
   }
 }
 
@@ -92,6 +95,9 @@ const failureText = (output: string): string => {
 /** Every Cloudflare API error code a provider command's failure names. */
 const apiCodes = (output: string): string[] => [...failureText(output).matchAll(API_CODE)].map((match) => match[1]!);
 
+/** Whether a Cloudflare API error code answers a request that may succeed when sent again (`TRANSIENT_API_CODES`). */
+export const transientApiCode = (code: string | number): boolean => TRANSIENT_API_CODES.has(String(code));
+
 /** Whether the failure a provider command printed may pass when the command runs again. */
 export function transientProviderOutput(output: string): boolean {
   const failure = failureText(output);
@@ -125,6 +131,7 @@ export function transientReadFailure(error: unknown): boolean {
 export function refusedAccountCode(error: unknown): string | null {
   for (const current of causes(error)) {
     if (current instanceof CommandFailed) return apiCodes(commandFailureDetail(current.result)).find((code) => ACCOUNT_REFUSAL_CODES.has(code)) ?? null;
+    if (current instanceof ObjectReadError && current.apiCodes.length > 0) return current.apiCodes.find((code) => ACCOUNT_REFUSAL_CODES.has(code)) ?? null;
   }
   return null;
 }

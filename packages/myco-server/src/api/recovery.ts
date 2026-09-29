@@ -119,6 +119,23 @@ export async function handleStartRecoveryExport(env: ServerEnv, ctx: OwnerContex
 }
 
 /**
+ * `POST /api/recovery/exports/forget-unsettled`: an owner's word that the export an earlier attempt requested and
+ * never saw settle runs no longer. Every later attempt waits on that export, and fails `export_unsettled` once its
+ * wait bound passes, for as long as it stays recorded; forgetting it lets the next attempt start its own. Refused
+ * while an attempt still runs, as that attempt may be following it.
+ */
+export async function handleForgetUnsettledExport(env: ServerEnv, ctx: OwnerContext): Promise<Response> {
+  if (env.recovery === undefined) return unavailable();
+  if (env.recovery.forgetUnsettledExport === undefined) return badRequest('this Deployment\'s recovery producer records no unsettled export');
+  const outcome = await env.recovery.forgetUnsettledExport();
+  if ('refused' in outcome) {
+    return Response.json({ error: 'recovery_attempt_running', message: `attempt ${outcome.attempt} is still running and may be following that export, so nothing was forgotten; try again once it ends` }, { status: 409 });
+  }
+  emit({ kind: 'recovery_export_forgotten_by_owner', actor: ctx.member.id, attempt: outcome.forgotten?.attempt ?? null });
+  return ok({ forgotten: outcome.forgotten });
+}
+
+/**
  * The attempt's progress, and what automatic recovery is doing. Nothing is re-read from the Deployment here:
  * whether the exported bytes match the schema the attempt captured is decided in the producer's own work, against
  * those bytes, and a later legitimate migration must never invalidate a snapshot that is whole as taken.

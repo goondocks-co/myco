@@ -6,7 +6,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { backupCloudflareDeployment } from '@myco/server/cloudflare-backup.js';
-import { D1_EXPORT_DOWNLOAD_ATTEMPTS } from '@myco/server/cloudflare-d1-export.js';
+import { D1_EXPORT_DOWNLOAD_ATTEMPTS, D1_QUERY_ATTEMPTS } from '@myco/server/cloudflare-d1-export.js';
 import * as cloudflare from '@myco/server/cloudflare.js';
 import { writeDeploymentRecord, type CloudflareFetch, type OperatorObjectTimeouts } from '@myco/server/cloudflare.js';
 import { RECOVERY_RETRY, verifyRecoveryBundle, type RecoveryRetryPolicy } from '@myco/server/recovery-bundle.js';
@@ -100,6 +100,10 @@ function fixture() {
     return sql.join('\n');
   };
   const exportEndpoint = `https://api.cloudflare.com/client/v4/accounts/${record.accountId}/d1/database/${record.databaseId}/export`;
+  const queryEndpoint = `https://api.cloudflare.com/client/v4/accounts/${record.accountId}/d1/database/${record.databaseId}/query`;
+  /** Every read sent over the API, in order; `queryFails` answers one in place of the database where it returns a response. */
+  const queries: string[] = [];
+  let queryFails: (sql: string, n: number) => Response | null = () => null;
   const signedPrefix = 'https://signed.fixture/d1/';
   /** Every export the provider started, by the bookmark it answered; a poll completes it unless `stays` says otherwise. */
   const exports: Array<{ bookmark: string; tables: string[]; polls: number }> = [];
@@ -109,6 +113,17 @@ function fixture() {
   let downloads = 0;
   const answer = (result: Record<string, unknown>) => Response.json({ success: true, errors: [], messages: [], result: { success: true, messages: [], ...result } });
   const fetchObject: CloudflareFetch = async (input, init) => {
+    if (String(input) === queryEndpoint) {
+      expect(init?.method).toBe('POST');
+      expect(new Headers(init?.headers).get('Authorization')).toBe('Bearer fixture-operator-token');
+      const { sql } = JSON.parse(String(init?.body)) as { sql: string };
+      queries.push(sql);
+      const failed = queryFails(sql, queries.length);
+      if (failed !== null) return failed;
+      // The drift lands between the snapshot's two schema reads.
+      if (drift && sql.includes('sqlite_master') && ++metadataReads === 2) source.sqlite.exec('CREATE TABLE changed_schema(id TEXT)');
+      return Response.json({ success: true, errors: [], messages: [], result: [{ success: true, results: source.sqlite.query(sql).all(), meta: {} }] });
+    }
     if (String(input) === exportEndpoint) {
       expect(init?.method).toBe('POST');
       expect(new Headers(init?.headers).get('Authorization')).toBe('Bearer fixture-operator-token');
@@ -148,6 +163,8 @@ function fixture() {
   return { source, root, mycoHome, destination, record, runner, calls, leftovers, statements, body, bytes, digest, backupKey, backupBody,
     /** Every export the provider was asked to start, and every request made of the export API. */
     exports: () => exports, exportCalls: () => exportCalls, downloads: () => downloads,
+    /** Every read sent over the D1 API; answer one with `fail` in place of the database. */
+    queries: () => queries, queryFailsWith: (fail: (sql: string, n: number) => Response | null) => { queryFails = fail; },
     /** Keep an export running for as long as `rule` says; lose a download where `lost` answers a response. */
     exportStays: (rule: (job: { bookmark: string; polls: number }) => boolean) => { stays = rule; },
     downloadFailsWith: (lost: (bookmark: string, attempt: number) => Response | null) => { download = lost; },
@@ -157,7 +174,7 @@ function fixture() {
     drift: () => { drift = true; }, downloadFails: (value: boolean) => { downloadFails = value; },
     backup: (use: { fetch?: CloudflareFetch; runner?: CommandRunner; timeouts?: OperatorObjectTimeouts; report?: (line: string) => void; retry?: RecoveryRetryPolicy; d1Export?: Parameters<typeof backupCloudflareDeployment>[0]['d1Export'] } = {}) =>
       backupCloudflareDeployment({ accountId: record.accountId, mycoHome, destination, runner: use.runner ?? runner,
-        fetch: use.fetch ?? fetchObject, retry: use.retry ?? IMMEDIATE_RETRY, timeouts: use.timeouts, report: use.report, d1Export: use.d1Export ?? { pollMs: 0 } }),
+        fetch: use.fetch ?? fetchObject, retry: use.retry ?? IMMEDIATE_RETRY, timeouts: use.timeouts, report: use.report, d1Export: use.d1Export ?? { pollMs: 0, sleep: async () => {} } }),
     cleanup: () => { source.sqlite.close(); fs.rmSync(root, { recursive: true, force: true }); },
   };
 }
@@ -171,6 +188,10 @@ it('reconstructs FTS and triggers, preserves sequence high-water and exact value
     f.downloadFails(false);
     const result = await f.backup();
     expect(result.status).toBe('complete');
+    // The producer's hold and both schema reads go over the operator login to the query endpoint, not a subprocess.
+    expect(f.queries().filter((sql) => sql.includes('sqlite_master')).length).toBeGreaterThanOrEqual(2);
+    expect(f.queries().some((sql) => sql.includes('recovery_holds'))).toBe(true);
+    expect(f.statements.filter((s) => s.sql.includes('sqlite_master'))).toEqual([]);
     expect(JSON.stringify(result)).not.toContain('fixture-private-value');
     // The backup records the record's resolved recovery configuration and the version it runs, and every credential name.
     expect(result.snapshot!.configuration).toEqual({ ...recoveryConfigurationOf(f.record), versionId: f.record.versionId, deployedAt: f.record.deployedAt });
@@ -203,9 +224,30 @@ it('refuses to export while this Deployment\'s own producer holds the database, 
     const failure = await f.backup().then(() => null, (error: Error) => error.message);
     expect(failure).toContain('an automatic backup of this Deployment has been running since 2026-09-21');
     expect(f.exportCalls()).toEqual([]);
+    // The hold it opened protected nothing: it is released as abandoned, not left open to defer the producer (#1493 G1).
+    expect(failure).toContain('recovery hold was released, since it protected nothing yet');
+    expect(f.source.sqlite.query("SELECT released_at IS NOT NULL AS released, release_reason FROM recovery_holds WHERE holder = 'operator'").all())
+      .toEqual([{ released: 1, release_reason: 'abandoned' }]);
+    expect(fs.existsSync(path.join(f.destination, '.recovery-hold.json'))).toBe(false);
     // Once the producer's attempt ends, the backup runs.
     f.source.sqlite.run("UPDATE recovery_holds SET released_at = 1790000001000, release_reason = 'complete' WHERE holder = 'producer'");
     expect((await f.backup()).status).toBe('complete');
+  } finally { f.cleanup(); }
+});
+
+it('names the command that gives its hold up where the release of a refused capture\'s hold goes unanswered (#1493 G1)', async () => {
+  const f = fixture();
+  try {
+    f.source.sqlite.run("INSERT INTO recovery_holds(token, acquired_at, holder) VALUES ('00000000-0000-4000-8000-00000000abce', 1790000000000, 'producer')");
+    // Every statement that would release the operator's hold fails; everything else answers.
+    const runner: CommandRunner = { run: async (command, args, options) => {
+      const statement = args.includes('--command') ? args[args.indexOf('--command') + 1]! : '';
+      if (/UPDATE recovery_holds/.test(statement) && /abandoned/.test(statement)) return { code: 1, stdout: '', stderr: '✘ [ERROR] fetch failed\n' };
+      return f.runner.run(command, args, options);
+    } };
+    const failure = await f.backup({ runner }).then(() => null, (error: Error) => error.message);
+    const token = (f.source.sqlite.query("SELECT token FROM recovery_holds WHERE holder = 'operator'").get() as { token: string }).token;
+    expect(failure).toContain(`is still open, and defers the source's own backups while it is: give it up with \`myco server recovery-hold --token ${token} --abandon --target cloudflare\``);
   } finally { f.cleanup(); }
 });
 
@@ -267,12 +309,13 @@ async function backupWhileRecordChanges(restore: boolean) {
     if (reads === 1) fs.writeFileSync(file, JSON.stringify({ ...JSON.parse(captured), fleet: 7 }));
     return value;
   });
+  // Every config rendered for a provider command, by the fleet it names: the hold's statements run under the one
+  // rendered from the record captured at the start.
   let renderedFleet: string | null = null;
   const runner: CommandRunner = { run: async (command, args, options) => {
-    // The snapshot's schema read runs under the config rendered for the export.
-    if (args.includes('execute') && args[args.indexOf('--command') + 1] === SCHEMA_QUERY) {
+    if (args.includes('execute') && args.includes('-c')) {
       const vars = (Bun.TOML.parse(fs.readFileSync(args[args.indexOf('-c') + 1]!, 'utf8')) as { vars: Record<string, string> }).vars;
-      renderedFleet = vars.MYCO_FLEET ?? null;
+      renderedFleet = vars.MYCO_FLEET ?? renderedFleet;
     }
     return f.runner.run(command, args, options);
   } };
@@ -672,11 +715,12 @@ describe('a recovery hold write that does not answer', () => {
 });
 
 describe('a transient Cloudflare failure during the snapshot', () => {
-  const isSchemaRead = (args: readonly string[]) => args.includes('execute') && args[args.indexOf('--command') + 1] === SCHEMA_QUERY;
-  /** A runner that answers `fail(args)` for the commands it names, and passes every other one to the fixture's. */
-  const failing = (f: ReturnType<typeof fixture>, fail: (args: readonly string[]) => ReturnType<CommandRunner['run']> | null): CommandRunner => ({
-    run: async (command, args, options) => (fail(args) ?? f.runner.run(command, args, options)),
-  });
+  /** What the D1 API answers when it refuses a read with `code`. */
+  const refusedRead = (code: number, message: string, status = 403) => Response.json({ success: false, errors: [{ code, message }], messages: [], result: null }, { status });
+  /** The account refusal D1 answers for an account and credential that other requests succeed with. */
+  const accountRefusedRead = () => refusedRead(7403, 'The given account is not valid or is not authorized to access this service');
+  const authenticationErrorRead = () => refusedRead(10000, 'Authentication error');
+  const unavailableRead = () => refusedRead(10001, 'Internal error', 503);
   /** An export download that loses its connection after sending part of the file. */
   const downloadLost = (): Response => new Response(new ReadableStream<Uint8Array>({
     start(controller) {
@@ -689,34 +733,39 @@ describe('a transient Cloudflare failure during the snapshot', () => {
     try { return recovered.query('SELECT id, body FROM recovery_fixture').all(); } finally { recovered.close(); }
   };
 
-  it('fetches a lost export download again from the one export, and captures again after a schema read that fails, starting one only once the first result reached disk', async () => {
+  it('takes a downloaded export again when the reads after it fail past their own bound, and never exports a second time', async () => {
     const f = fixture();
     try {
       let schemaReads = 0;
       f.downloadFailsWith((_bookmark, attempt) => attempt === 1 ? downloadLost() : null);
-      const runner = failing(f, (args) => {
-        // The first attempt's schema read after its export.
-        if (isSchemaRead(args) && ++schemaReads === 2) return Promise.resolve(accountRefused);
-        return null;
-      });
+      // The first attempt's read after its export is refused on every one of its tries.
+      f.queryFailsWith((sql) => sql === SCHEMA_QUERY && ++schemaReads >= 2 && schemaReads <= 1 + D1_QUERY_ATTEMPTS ? accountRefusedRead() : null);
       const reports: string[] = [];
-      const result = await f.backup({ runner, report: (line) => reports.push(line) });
+      const result = await f.backup({ report: (line) => reports.push(line) });
       expect(result.status).toBe('complete');
-      // The lost download is fetched again from its own export inside the attempt; only the attempt after that export's
-      // result reached disk starts another.
-      expect(f.exports().map((job) => job.bookmark)).toEqual(['bm-1', 'bm-2']);
-      expect(f.downloads()).toBe(3);
-      expect(schemaReads).toBe(4);
-      expect(reports.filter((line) => line.includes('asking after the same D1 export for its download again'))).toEqual([
-        expect.stringContaining(`fetch failed; asking after the same D1 export for its download again (attempt 2 of ${D1_EXPORT_DOWNLOAD_ATTEMPTS})`),
-      ]);
+      // One export: its lost download fetched again inside the attempt, and its result taken again by the next attempt.
+      expect({ exports: f.exports().map((job) => job.bookmark), downloads: f.downloads(), schemaReads }).toEqual({ exports: ['bm-1'], downloads: 2, schemaReads: 3 + D1_QUERY_ATTEMPTS });
       expect(reports.filter((line) => line.startsWith('Capturing the database snapshot failed'))).toEqual([
-        expect.stringContaining(`[code: 7403]); starting it again in 0 s (attempt 2 of ${RECOVERY_RETRY.snapshots.attempts})`),
+        expect.stringMatching(new RegExp(`\\[code: 7403\\].*starting it again in 0 s \\(attempt 2 of ${RECOVERY_RETRY.snapshots.attempts}\\)`)),
       ]);
-      // No attempt found what an earlier one left, and nothing of the partial download reached the artifact.
+      expect(reports.filter((line) => line.startsWith('Taking the D1 export this machine downloaded'))).toHaveLength(1);
+      // Nothing of the partial download reached the artifact, and nothing of the export is kept once the snapshot is.
       expect(f.leftovers).toEqual([]);
       expect(captured(f)).toEqual([{ id: 3, body: f.body }]);
+      expect(fs.readdirSync(path.join(f.mycoHome, 'server', 'cloudflare')).filter((name) => name.startsWith('d1-export-'))).toEqual([]);
       expect((await verifyRecoveryBundle(f.destination)).status).toBe('complete');
+    } finally { f.cleanup(); }
+  });
+
+  it('reads the schema again inside the read\'s own bound after one refusal, without failing the attempt', async () => {
+    const f = fixture();
+    try {
+      let schemaReads = 0;
+      f.queryFailsWith((sql) => sql === SCHEMA_QUERY && ++schemaReads === 2 ? accountRefusedRead() : null);
+      const reports: string[] = [];
+      expect((await f.backup({ report: (line) => reports.push(line) })).status).toBe('complete');
+      expect({ exports: f.exports().length, schemaReads, captures: reports.filter((line) => line.startsWith('Capturing the database snapshot failed')).length })
+        .toEqual({ exports: 1, schemaReads: 3, captures: 0 });
     } finally { f.cleanup(); }
   });
 
@@ -724,18 +773,18 @@ describe('a transient Cloudflare failure during the snapshot', () => {
     const f = fixture();
     try {
       const at: number[] = [];
-      // The first schema read of each of the first two captures fails; the third capture's goes through.
-      const runner = failing(f, (args) => {
-        if (!isSchemaRead(args)) return null;
+      // Every try of the first schema read of the first two captures fails; the third capture's goes through.
+      f.queryFailsWith((sql) => {
+        if (sql !== SCHEMA_QUERY) return null;
         at.push(performance.now());
-        return at.length < 3 ? Promise.resolve(connectionLost) : null;
+        return at.length <= 2 * D1_QUERY_ATTEMPTS ? unavailableRead() : null;
       });
       const retry = { ...IMMEDIATE_RETRY, snapshots: { attempts: 3, backoffMs: [60, 90] } };
-      expect((await f.backup({ retry, runner })).status).toBe('complete');
-      at.splice(3);
-      expect(at).toHaveLength(3);
-      expect(at[1]! - at[0]!).toBeGreaterThanOrEqual(55);
-      expect(at[2]! - at[1]!).toBeGreaterThanOrEqual(85);
+      expect((await f.backup({ retry })).status).toBe('complete');
+      // The first read of each capture, after the last of the one before it.
+      const [first, second] = [D1_QUERY_ATTEMPTS, 2 * D1_QUERY_ATTEMPTS];
+      expect(at[first]! - at[first - 1]!).toBeGreaterThanOrEqual(55);
+      expect(at[second]! - at[second - 1]!).toBeGreaterThanOrEqual(85);
     } finally { f.cleanup(); }
   });
 
@@ -747,16 +796,17 @@ describe('a transient Cloudflare failure during the snapshot', () => {
     const f = fixture();
     try {
       let schemaReads = 0;
-      const runner = failing(f, (args) => {
-        // The first attempt's read after its export fails, and a deploy changes the schema before the next attempt.
-        if (isSchemaRead(args) && ++schemaReads === 2) {
-          f.source.sqlite.exec('CREATE TABLE changed_schema(id TEXT)');
-          return Promise.resolve(connectionLost);
-        }
-        return null;
+      f.queryFailsWith((sql) => {
+        if (sql !== SCHEMA_QUERY) return null;
+        schemaReads += 1;
+        // Every try of the first attempt's read after its export fails, and a deploy changes the schema before the next attempt.
+        if (schemaReads === 2) f.source.sqlite.exec('CREATE TABLE changed_schema(id TEXT)');
+        return schemaReads >= 2 && schemaReads <= 1 + D1_QUERY_ATTEMPTS ? unavailableRead() : null;
       });
-      const result = await f.backup({ runner });
+      const result = await f.backup();
       expect(result.status).toBe('complete');
+      // The downloaded export carries the schema from before the deploy, so it is discarded and one taken again.
+      expect(f.exports()).toHaveLength(2);
       const recovered = new Database(path.join(f.destination, 'myco.sqlite'), { readonly: true });
       try {
         expect(recovered.query("SELECT name FROM sqlite_master WHERE name = 'changed_schema'").all()).toEqual([{ name: 'changed_schema' }]);
@@ -816,15 +866,13 @@ describe('a transient Cloudflare failure during the snapshot', () => {
       f.exportStays(() => false);
       // What the export API had been asked by the time the next backup first reads the schema.
       const askedAtSchemaRead: Array<Array<string | null>> = [];
-      const runner: CommandRunner = {
-        run: async (command, args, options) => {
-          if (isSchemaRead(args)) askedAtSchemaRead.push(f.exportCalls().map((call) => call.bookmark));
-          return f.runner.run(command, args, options);
-        },
-      };
+      f.queryFailsWith((sql) => {
+        if (sql === SCHEMA_QUERY) askedAtSchemaRead.push(f.exportCalls().map((call) => call.bookmark));
+        return null;
+      });
       const before = f.exportCalls().length;
       // A bound the first export completes inside, so its result is this snapshot.
-      expect((await f.backup({ runner, d1Export: { ...d1Export, boundMs: 60 * 60_000 } })).status).toBe('complete');
+      expect((await f.backup({ d1Export: { ...d1Export, boundMs: 60 * 60_000 } })).status).toBe('complete');
       expect(askedAtSchemaRead[0]!.slice(before)).toEqual(['bm-1']);
       expect(f.exports()).toHaveLength(1);
     } finally { f.cleanup(); }
@@ -834,8 +882,8 @@ describe('a transient Cloudflare failure during the snapshot', () => {
     const f = fixture();
     try {
       let schemaReads = 0;
-      const runner = failing(f, (args) => isSchemaRead(args) && ++schemaReads === 1 ? Promise.resolve(accountRefused) : null);
-      expect((await f.backup({ runner })).status).toBe('complete');
+      f.queryFailsWith((sql) => sql === SCHEMA_QUERY && ++schemaReads === 1 ? accountRefusedRead() : null);
+      expect((await f.backup()).status).toBe('complete');
       expect(schemaReads).toBe(3);
       expect(f.exports()).toHaveLength(1);
       expect((await verifyRecoveryBundle(f.destination)).status).toBe('complete');
@@ -846,12 +894,12 @@ describe('a transient Cloudflare failure during the snapshot', () => {
     const f = fixture();
     try {
       let schemaReads = 0;
-      const runner = failing(f, (args) => isSchemaRead(args) ? (schemaReads += 1, Promise.resolve(accountRefused)) : null);
+      f.queryFailsWith((sql) => sql === SCHEMA_QUERY ? (schemaReads += 1, accountRefusedRead()) : null);
       const { attempts } = RECOVERY_RETRY.snapshots;
-      const failure = await f.backup({ runner }).then(() => null, (error: Error) => error.message);
+      const failure = await f.backup().then(() => null, (error: Error) => error.message);
       expect(failure).toStartWith(`the database snapshot was not captured after ${attempts} attempts: `);
       expect(failure).toEndWith('; the source refused this account (code 7403), so the credential or the account may be wrong');
-      expect(schemaReads).toBe(attempts);
+      expect(schemaReads).toBe(attempts * D1_QUERY_ATTEMPTS);
       expect(f.exports()).toHaveLength(0);
     } finally { f.cleanup(); }
   });
@@ -860,11 +908,12 @@ describe('a transient Cloudflare failure during the snapshot', () => {
     const f = fixture();
     try {
       let schemaReads = 0;
-      const runner = failing(f, (args) => isSchemaRead(args) ? (schemaReads += 1, Promise.resolve(authenticationError)) : null);
-      const failure = await f.backup({ runner }).then(() => null, (error: Error) => error.message);
+      f.queryFailsWith((sql) => sql === SCHEMA_QUERY ? (schemaReads += 1, authenticationErrorRead()) : null);
+      const failure = await f.backup().then(() => null, (error: Error) => error.message);
       expect(failure).toStartWith('the database snapshot was not captured: ');
       expect(failure).toEndWith('; the source refused this account (code 10000), so the credential or the account may be wrong');
-      expect(schemaReads).toBe(1);
+      // The refused login is refreshed once, and the read is not sent again after that.
+      expect(schemaReads).toBe(2);
     } finally { f.cleanup(); }
   });
 });
