@@ -1,8 +1,9 @@
 import fs from 'node:fs';
+import { exportD1, settleD1Export, type D1ExportOptions } from './cloudflare-d1-export.js';
 import path from 'node:path';
 import { z } from 'zod';
 import {
-  cloudflareBlobReader, D1_STATEMENT_TIMEOUT_MS, ensureCommandDir, exportDatabase, queryCloudflareDatabase, runCloudflareStatement,
+  cloudflareBlobReader, D1_STATEMENT_TIMEOUT_MS, ensureCommandDir, operatorLogin, queryCloudflareDatabase, runCloudflareStatement,
   readDeploymentRecord, type CloudflareOptions, type CloudflareFetch, type DeploymentRecord, type OperatorObjectTimeouts,
 } from './cloudflare.js';
 import type { LifecycleOptions } from './cloudflare-lifecycle.js';
@@ -81,7 +82,11 @@ export function cloudflareRecoveryHoldOf(options: LifecycleOptions & { fetch?: C
 
 /** Capture provider SQL and all registered R2 bytes without changing the serving Deployment. */
 export async function backupCloudflareDeployment(
-  options: LifecycleOptions & { destination: string; fetch?: CloudflareFetch; timeouts?: OperatorObjectTimeouts; retry?: RecoveryRetryPolicy },
+  options: LifecycleOptions & {
+    destination: string; fetch?: CloudflareFetch; timeouts?: OperatorObjectTimeouts; retry?: RecoveryRetryPolicy;
+    /** Test-only: the export's clock, pause and bound. */
+    d1Export?: Pick<D1ExportOptions, 'now' | 'sleep' | 'boundMs' | 'marginMs' | 'pollMs'>;
+  },
 ): Promise<RecoveryManifest> {
   const record = readDeploymentRecord(options.mycoHome);
   if (record === null) throw new Error('No Cloudflare Deployment record exists on this machine');
@@ -92,9 +97,12 @@ export async function backupCloudflareDeployment(
   const bindings = z.object({ d1_databases: z.array(z.object({ binding: z.string(), database_id: z.string() })) })
     .parse(Bun.TOML.parse(config)).d1_databases.filter((binding) => binding.database_id === record.databaseId);
   if (bindings.length !== 1) throw new Error('recovery configuration must bind exactly the recorded D1 database');
+  const databaseId = bindings[0]!.database_id;
   const databaseName = bindings[0]!.binding;
   const configDir = ensureCommandDir(options.mycoHome);
-  const readBlob = cloudflareBlobReader({ ...options, configDir, bucketName: record.bucketName });
+  // One operator login serves the export and every object read.
+  const operator = operatorLogin({ ...options, configDir });
+  const readBlob = cloudflareBlobReader({ ...options, configDir, bucketName: record.bucketName, login: operator });
   const source = { target: 'cloudflare' as const, locator: `${record.accountId}/${record.databaseId}/${record.bucketName}` };
   const bound = (workDir: string): CloudflareOptions => {
     const configFile = path.join(workDir, 'wrangler.recovery.toml');
@@ -110,12 +118,16 @@ export async function backupCloudflareDeployment(
     hold: cloudflareRecoveryHold({ ...options, configDir, configFile: holdConfigFile, databaseName }, record),
     snapshot: async (file, workDir) => {
       const provider = { ...bound(workDir), databaseName };
+      const sqlPath = path.join(workDir, 'd1.sql');
+      const exportContext = { accountId: record.accountId, databaseId, output: sqlPath, recordDir: configDir, login: operator, fetch: options.fetch, report: options.report, ...options.d1Export };
+      // An export this machine left running pauses the schema read, so it is settled first.
+      const settled = await settleD1Export(exportContext);
       const before = schemaObjects.parse(await queryCloudflareDatabase({ ...provider, sql: SCHEMA_QUERY, timeoutMs: D1_STATEMENT_TIMEOUT_MS }));
       const tables = exportedTables(before);
       if (tables.length === 0) throw new Error('D1 holds no ordinary tables to recover');
       assertRecoverableSchema(before);
       options.report?.('Exporting D1; Cloudflare temporarily pauses queries during the snapshot');
-      const { sqlPath } = await exportDatabase({ ...provider, destination: workDir, tables });
+      await exportD1({ ...exportContext, tables, schema: JSON.stringify(before), settled });
       const after = schemaObjects.parse(await queryCloudflareDatabase({ ...provider, sql: SCHEMA_QUERY, timeoutMs: D1_STATEMENT_TIMEOUT_MS }));
       if (JSON.stringify(before) !== JSON.stringify(after)
         || JSON.stringify(record) !== JSON.stringify(readDeploymentRecord(options.mycoHome))) {
