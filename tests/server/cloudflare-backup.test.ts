@@ -194,6 +194,38 @@ it('reconstructs FTS and triggers, preserves sequence high-water and exact value
   } finally { f.cleanup(); }
 });
 
+it('refuses to export while this Deployment\'s own producer holds the database, and starts no export beside it (#1484)', async () => {
+  const f = fixture();
+  try {
+    f.source.sqlite.run("INSERT INTO recovery_holds(token, acquired_at, holder) VALUES ('00000000-0000-4000-8000-00000000abcd', 1790000000000, 'producer')");
+    const failure = await f.backup().then(() => null, (error: Error) => error.message);
+    expect(failure).toContain('an automatic backup of this Deployment has been running since 2026-09-21');
+    expect(f.exportCalls()).toEqual([]);
+    // Once the producer's attempt ends, the backup runs.
+    f.source.sqlite.run("UPDATE recovery_holds SET released_at = 1790000001000, release_reason = 'complete' WHERE holder = 'producer'");
+    expect((await f.backup()).status).toBe('complete');
+  } finally { f.cleanup(); }
+});
+
+it('opens its own hold before it reads for the producer\'s, so a producer that opens one in between is found (#1484)', async () => {
+  const f = fixture();
+  try {
+    // A producer opens its hold at the instant this backup opens its own: just before the operator's statement lands.
+    const racing: CommandRunner = {
+      run: async (command, args, options) => {
+        const sql = args.includes('--command') ? args[args.indexOf('--command') + 1]! : '';
+        if (sql.trimStart().startsWith('INSERT INTO recovery_holds') && sql.includes("'operator'")) {
+          f.source.sqlite.run("INSERT OR IGNORE INTO recovery_holds(token, acquired_at, holder) VALUES ('00000000-0000-4000-8000-0000000race1', 1790000000000, 'producer')");
+        }
+        return f.runner.run(command, args, options);
+      },
+    };
+    const failure = await f.backup({ runner: racing }).then(() => null, (error: Error) => error.message);
+    expect(failure).toContain('an automatic backup of this Deployment has been running since');
+    expect(f.exportCalls()).toEqual([]);
+  } finally { f.cleanup(); }
+});
+
 it('refuses schema drift and leaves the artifact incomplete', async () => {
   const f = fixture();
   try {

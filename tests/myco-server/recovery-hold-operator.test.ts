@@ -11,7 +11,7 @@ import { describe, expect, it } from 'bun:test';
 import { SERVER_SCHEMA_VERSION } from '@myco-server-worker/constants.js';
 import type { RecoveryProducerPort } from '@myco-server-worker/core/recovery-producer.js';
 import {
-  acquireRecoveryHold, drainObjectReleases, openRecoveryHold, readRecoveryHold, releaseBlobs, releaseOperatorHold, releaseRecoveryHold,
+  acquireRecoveryHold, drainObjectReleases, OPERATOR_HOLD_DEFERS_MS, openRecoveryHold, readRecoveryHold, releaseBlobs, releaseOperatorHold, releaseRecoveryHold,
 } from '@myco-server-worker/core/object-release.js';
 import {
   acquireOperatorHold, inspectOperatorHold, openOperatorHold, openHoldForAdmission, recoveryHoldRelease, settleOperatorHold, settleOpenHold,
@@ -39,11 +39,11 @@ const row = (e: ReturnType<typeof sqliteEnv>, token: string) =>
   e.sqlite.query('SELECT token, holder, released_at, release_reason, released_by FROM recovery_holds WHERE token = ?').get(token) as Record<string, unknown> | null;
 
 describe('the operator hold a full backup takes', () => {
-  it('opens beside a producer hold, and neither blocks the other', async () => {
+  it('opens beside a producer hold already open, and a producer opens none beside it for a day (#1484)', async () => {
     const e = sqliteEnv();
+    expect(await acquireRecoveryHold(e.db, 'prod-1', 5)).toBe(true);
     expect(await acquireOperatorHold(e.serverEnv, 'op-1', 10)).toBe(true);
     expect(await acquireOperatorHold(e.serverEnv, 'op-2', 11)).toBe(false);
-    expect(await acquireRecoveryHold(e.db, 'prod-1', 12)).toBe(true);
     expect(await acquireRecoveryHold(e.db, 'prod-2', 13)).toBe(false);
     expect((await openRecoveryHold(e.db, 'operator'))?.token).toBe('op-1');
     expect((await openRecoveryHold(e.db, 'producer'))?.token).toBe('prod-1');
@@ -97,9 +97,9 @@ describe('the operator hold a full backup takes', () => {
     expect(() => before43('op-1')).toThrow();
     expect(await releaseRecoveryHold(e.db, 'op-1', 99, 'attempt 1 complete')).toBe(false);
     expect(row(e, 'op-1')?.released_at).toBeNull();
-    // After each refused change, and beside a producer hold.
+    // After each refused change, and beside a producer hold (one a day on, which no longer defers to it).
     expect(() => e.sqlite.run("UPDATE recovery_holds SET released_by = 'operator' WHERE token = 'op-1'")).toThrow();
-    await acquireRecoveryHold(e.db, 'prod-1', 11);
+    expect(await acquireRecoveryHold(e.db, 'prod-1', 10 + OPERATOR_HOLD_DEFERS_MS + 1)).toBe(true);
     expect(() => before43('op-1')).toThrow();
     expect(row(e, 'op-1')?.released_at).toBeNull();
     // Released, and after replay.
@@ -114,8 +114,8 @@ describe('the operator hold a full backup takes', () => {
 
   it('is never settled against the producer, whichever open token settlement selects', async () => {
     const e = sqliteEnv();
+    await acquireRecoveryHold(e.db, 'prod-1', 9);
     await acquireOperatorHold(e.serverEnv, 'op-1', 10);
-    await acquireRecoveryHold(e.db, 'prod-1', 11);
     // The selection is unspecified: the statement has no ORDER BY, so both are exercised by narrowing it.
     for (const holder of ['operator', 'producer'] as const) {
       const narrowed = {
@@ -139,13 +139,28 @@ describe('the operator hold a full backup takes', () => {
     expect([asked, row(e, 'op-1')?.released_at]).toEqual([0, null]);
   });
 
-  it('lets an admission open its own hold while an operator backup holds this Deployment', async () => {
+  it('defers an admission while an operator backup opened in the last day holds this Deployment, and admits one after (#1484)', async () => {
     const e = sqliteEnv();
     await acquireOperatorHold(e.serverEnv, 'op-1', 10);
-    const admitted = await openHoldForAdmission({ ...e.serverEnv, recovery: producer([]) }, 11);
+    expect(await openHoldForAdmission({ ...e.serverEnv, recovery: producer([]) }, 11)).toEqual({ deferred: 10 });
+    expect(await openRecoveryHold(e.db, 'producer')).toBeNull();
+    // A day on, an operator hold never released no longer holds back this Deployment's own exports.
+    const admitted = await openHoldForAdmission({ ...e.serverEnv, recovery: producer([]) }, 10 + OPERATOR_HOLD_DEFERS_MS + 1);
     expect(admitted).toHaveProperty('token');
     expect(row(e, 'op-1')?.released_at).toBeNull();
     expect((await openRecoveryHold(e.db, 'producer'))?.token).toBe((admitted as { token: string }).token);
+  });
+
+  it('decides a race in the one statement that opens the producer\'s hold: of an operator and a producer, exactly one sees the other (#1484)', async () => {
+    // The operator opens its hold, then reads for the producer's. Whichever write lands second finds the first.
+    const operatorFirst = sqliteEnv();
+    expect(await acquireOperatorHold(operatorFirst.serverEnv, 'op-1', 10)).toBe(true);
+    expect(await acquireRecoveryHold(operatorFirst.db, 'prod-1', 11)).toBe(false);
+    expect(await openRecoveryHold(operatorFirst.db, 'producer')).toBeNull();
+    const producerFirst = sqliteEnv();
+    expect(await acquireRecoveryHold(producerFirst.db, 'prod-1', 10)).toBe(true);
+    expect(await acquireOperatorHold(producerFirst.serverEnv, 'op-1', 11)).toBe(true);
+    expect((await openRecoveryHold(producerFirst.db, 'producer'))?.token).toBe('prod-1');
   });
 
   it('defers every deletion while it is open, and the drain decides them once it is released', async () => {

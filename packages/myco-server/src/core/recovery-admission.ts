@@ -43,6 +43,8 @@ export type AdmissionOutcome =
   | { outcome: 'running'; status: RecoveryProducerStatus }
   | { outcome: 'unanswered' }
   | { outcome: 'hold-retired' }
+  /** An operator backup opened lately holds the database; this Deployment's own export waits for it. */
+  | { outcome: 'deferred'; since: number }
   | { outcome: 'admitted'; status: RecoveryProducerStatus };
 
 /** The schema an attempt is admitted against, or the refusal its own shape earns. */
@@ -76,6 +78,7 @@ export async function admitRecoveryExport(env: ServerEnv, now: number, actor: Ad
   // running is still answered.
   const readiness = env.recovery.admission;
   const hold = await openHoldForAdmission(env, now, readiness.ready);
+  if ('deferred' in hold) return { outcome: 'deferred', since: hold.deferred };
   if ('refused' in hold) {
     return { outcome: 'configuration-unavailable', message: readiness.ready ? 'the recovery configuration is unavailable' : readiness.reason };
   }

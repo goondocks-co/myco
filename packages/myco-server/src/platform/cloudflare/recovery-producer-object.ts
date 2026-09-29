@@ -12,8 +12,8 @@
  */
 import { DurableObject } from 'cloudflare:workers';
 import {
-  ADVANCING_STAGES_SQL, continueAttempt, failAttempt, freshScan, HoldRetired, PRODUCER_LIMITS, PRODUCER_STALL_MS, publishAttempt, reconcileUnconfirmed, settlementOf, stagedSqlKey,
-  type AttemptCheckpoint, type AttemptObject, type AttemptPart, type AttemptState, type ContinuationReport, type HoldSettlement,
+  ADVANCING_STAGES_SQL, continueAttempt, exportWait, failAttempt, freshScan, HoldRetired, PRODUCER_LIMITS, PRODUCER_STALL_MS, publishAttempt, reconcileUnconfirmed, settlementOf, stagedSqlKey,
+  type AttemptCheckpoint, type AttemptObject, type AttemptPart, type AttemptStage, type AttemptState, type ContinuationReport, type ExportWait, type HoldSettlement,
   type ProducerLimits, type RecoveryProducerStatus, type ScanProgress, type StagingPrunePolicy, type StagingPruneReport,
   type StagingPruneRequest, type TableDefinitions,
 } from '../../core/recovery-producer.js';
@@ -251,9 +251,14 @@ export class RecoveryProducer extends DurableObject<CloudflareBindings> {
       // Any attempt's, whatever its stage: an export a failed attempt requested may still run.
       unsettledExport: () => {
         const held = sql.exec(
-          'SELECT id, export_requested_at, export_answered_at FROM attempts WHERE export_requested_at IS NOT NULL ORDER BY id DESC LIMIT 1',
-        ).toArray()[0] as unknown as { id: number; export_requested_at: number; export_answered_at: number | null } | undefined;
-        return held === undefined ? null : { attempt: held.id, requestedAt: held.export_requested_at, answeredAt: held.export_answered_at };
+          'SELECT id, export_requested_at, export_answered_at, bookmark FROM attempts WHERE export_requested_at IS NOT NULL ORDER BY id DESC LIMIT 1',
+        ).toArray()[0] as unknown as { id: number; export_requested_at: number; export_answered_at: number | null; bookmark: string | null } | undefined;
+        return held === undefined ? null : { attempt: held.id, requestedAt: held.export_requested_at, answeredAt: held.export_answered_at, bookmark: held.bookmark };
+      },
+      // Written whatever the attempt's stage: the export an ended attempt requested is what these record.
+      noteUnsettled: (attempt, outcome) => {
+        if (outcome === 'settled') sql.exec('UPDATE attempts SET export_requested_at = NULL WHERE id = ?', attempt);
+        else sql.exec('UPDATE attempts SET export_answered_at = ? WHERE id = ? AND export_requested_at IS NOT NULL', outcome.running, attempt);
       },
       signedUrl: (id) => storage.get<string>(`signed:${id}`).then((held) => held ?? null),
       setSignedUrl: async (id, url) => {
@@ -441,6 +446,13 @@ export class RecoveryProducer extends DurableObject<CloudflareBindings> {
   }
 
   /** One attempt's progress, or idle where there is none. */
+  /** What an attempt at its export waits on, and from what instant, as the export stage decides it. */
+  private waitOf(row: AttemptRow): { waiting: ExportWait | null; waitingSince: number | null } {
+    const unsettled = this.checkpoint().unsettledExport();
+    const waiting = exportWait({ id: row.id, stage: row.stage as AttemptStage, bookmark: row.bookmark }, unsettled, Date.now(), PRODUCER_LIMITS);
+    return { waiting, waitingSince: waiting === null ? null : unsettled!.requestedAt };
+  }
+
   private statusOf(row: AttemptRow | null): RecoveryProducerStatus {
     if (row === null) {
       return { attempt: null, stage: 'idle', form: 'staging', startedAt: null, recoverable: false, staged: null, export: null, error: null, transientSpent: 0, stagedSchema: null };
@@ -462,7 +474,7 @@ export class RecoveryProducer extends DurableObject<CloudflareBindings> {
         prefix: row.prefix, sqlBytes: row.sql_bytes, downloadedBytes: row.download_offset, parts,
         objects: { registered: objects.registered, staged: objects.staged },
       },
-      export: { polls: row.polls, bookmark: row.bookmark !== null, reExports: row.re_exports },
+      export: { polls: row.polls, bookmark: row.bookmark !== null, reExports: row.re_exports, ...this.waitOf(row) },
       error: row.error as RecoveryProducerStatus['error'],
       transientSpent: row.attempts,
       stagedSchema: row.schema_sha256 === '' ? null : { sha256: row.schema_sha256, bytes: row.schema_bytes },
