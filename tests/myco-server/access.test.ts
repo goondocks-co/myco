@@ -48,7 +48,7 @@ describe('revoking a member', () => {
     const forThem = await issueEnrollmentAuthority(e.db, NOW, { role: 'member', memberId: 'mem_machine_2' });
     const byThem = await issueEnrollmentAuthority(e.db, NOW, { role: 'member', createdByMember: 'mem_machine_2' });
     const byThemForOther = await issueEnrollmentAuthority(e.db, NOW, { role: 'member', createdByMember: 'mem_machine_2', memberId: 'mem_machine_3' });
-    const link = await issueIdentityLinkAuthority(e.db, 'mem_machine_2', NOW);
+    const link = (await issueIdentityLinkAuthority(e.db, 'mem_machine_2', NOW, { issuedBy: PRINCIPAL.id }))!;
     e.sqlite.query(`INSERT INTO machine_claims (machine_id, member_id, claimed_at) VALUES ('machine_2', 'mem_machine_2', ?)`).run(NOW);
 
     const res = await worker.fetch(await asOwnerPost('/api/members/mem_machine_2/revoke'), env);

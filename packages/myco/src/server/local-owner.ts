@@ -45,6 +45,7 @@ export async function setupLocalOwner(paths: LocalDeploymentPaths, native: Nativ
           await db.prepare('INSERT INTO schema_meta (key, value) VALUES (?, ?)').bind(FIRST_MEMBER_KEY, memberId).run();
         }
         const link = await issueIdentityLinkAuthority(db, memberId, now, { replaceUnspent: true });
+        if (link === null) throw new Error('this Deployment already has a linked administrator; use its existing administrator and invitation flow');
         sqlite.exec('COMMIT');
         return { memberId, url: `${origin}/link#${link.key}`, expiresAt: link.expiresAt };
       } catch (error) {

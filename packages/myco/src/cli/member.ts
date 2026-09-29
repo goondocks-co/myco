@@ -724,6 +724,9 @@ function refreshLine(report: RefreshReport): string {
   }
 }
 
+/** What `link-github` prints once the Deployment has a linked admin: only an admin links a member's GitHub account from then on. */
+export const LINK_REQUIRES_ADMIN_HINT = 'this server already has an admin, so only an admin can link a GitHub account now — ask an admin to link yours in the dashboard\'s Members page';
+
 /** The URL a member opens to connect a GitHub account: the key rides the fragment, which never reaches the server or a log. */
 export function linkUrl(serverUrl: string, key: string): string {
   return `${serverUrl.replace(/\/+$/, '')}/link#${key}`;
@@ -764,7 +767,9 @@ export async function runLinkGithub(args: readonly string[], deps: MemberCliDeps
     case 'unauthorized': return fail(`the server refused this credential — ${REJOIN_HINT}`);
     case 'route_missing': return fail('this server does not link GitHub accounts');
     case 'protocol': return fail('the server refuses this build\'s member protocol — upgrade myco');
-    case 'refused': return fail(`the server refused: ${outcome.reason || outcome.code}`);
+    case 'refused':
+      if (outcome.code === 'link_requires_admin') return fail(LINK_REQUIRES_ADMIN_HINT);
+      return fail(`the server refused: ${outcome.reason || outcome.code}`);
     case 'retry': return fail(`the server did not answer: ${outcome.detail}`);
   }
 }
