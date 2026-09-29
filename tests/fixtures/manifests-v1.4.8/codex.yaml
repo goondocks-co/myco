@@ -1,0 +1,342 @@
+name: codex
+displayName: Codex
+binary: codex
+configDir: .codex
+detectionDir: ~/.codex
+pluginRootEnvVar: CODEX_PLUGIN_ROOT
+settingsPath: .codex/config.toml
+resumeCommand: "codex --resume {sessionId}"
+hookFields:
+  sessionId: session_id
+  transcriptPath: transcript_path
+  lastResponse: last_assistant_message
+capture:
+  # Rollout files are date-sharded: sessions/YYYY/MM/DD/rollout-<ts>-<sessionId>.jsonl
+  transcriptDiscovery:
+    roots: ["~/.codex/sessions"]
+    patterns:
+      - "*/*/*/rollout-*-{sessionId}.jsonl"
+    # The session_meta first line carries cwd under its payload.
+    transcriptCwdPath: "payload.cwd"
+    # Both the timestamp and the id are dash-delimited, so the boundary between
+    # `*` and `{sessionId}` is only recoverable from the id's shape.
+    sessionIdPattern: "[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"
+  planDirs: []
+  planTags:
+    # Codex Plan Mode emits the approved plan as assistant text wrapped in
+    # `<proposed_plan>...</proposed_plan>`. The `update_plan` function-call
+    # tool is only transient checklist/progress state and must not be
+    # persisted as a Myco plan.
+    - proposed_plan
+  # Sub-agent thread identity (dot-paths into session_meta.payload, the
+  # same object Layer 3's `transcript_meta_field_exists: source.subagent`
+  # reads). Verified against a real child rollout first line
+  # (rollout-2026-07-12T14-51-20-019f57ab-…jsonl):
+  #   payload.source.subagent.thread_spawn.parent_thread_id — parent thread
+  #   payload.id                                             — the child's
+  #     OWN thread id; confirmed equal to the UUID in the rollout filename.
+  #   payload.source.subagent.thread_spawn                   — object
+  #     carrying agent_nickname ("Peirce") and agent_path
+  #     ("/root/task_6_reviewer"); the resolver prefers agent_nickname,
+  #     else the last path segment of agent_path.
+  subagentParentPath: source.subagent.thread_spawn.parent_thread_id
+  subagentThreadIdPath: id
+  subagentLabelPath: source.subagent.thread_spawn
+  rules:
+    # Ephemeral sub-invocation filter (structural, two-layer defense).
+    #
+    # Codex spawns internal LLM sub-invocations for things like UI
+    # title generation. Those sub-invocations fire SessionStart and
+    # UserPromptSubmit with their own session_id but never write a
+    # rollout transcript file, so both events arrive with
+    # `transcript_path: null`. Real user-facing sessions always have a
+    # rollout file in ~/.codex/sessions/... and therefore a populated
+    # transcript_path.
+    #
+    # Dropping on `transcript_path_missing` is a deliberately
+    # pattern-based signal — robust across Codex and extension updates
+    # because it keys on the Codex protocol contract (transcript_path
+    # is populated iff a real transcript exists), not on any specific
+    # prompt text that could drift.
+    #
+    # Scope is `any_agent` for both rules because detection itself
+    # falls back to transcript_path → configDir matching; when that's
+    # missing the hook can't attribute the event, so the owning
+    # manifest has to opt into enforcing the rule regardless.
+
+    # Layer 1 — stop the phantom from ever being registered.
+    - event: session_start
+      scope: any_agent
+      when:
+        transcript_path_missing: true
+      action: drop
+      reason: ephemeral-sub-invocation
+
+    # Layer 2 — safety net. Deletes any phantom session row that did
+    # slip past SessionStart (e.g. because Codex's rollout file hadn't
+    # been flushed by the time SessionStart was queried).
+    - event: user_prompt
+      scope: any_agent
+      when:
+        transcript_path_missing: true
+      action: drop
+      reason: ephemeral-sub-invocation
+
+    # Layer 3 — sub-agent thread spawn filter (structural).
+    #
+    # Codex spawns sub-agents (thread_spawn) for code review, testing,
+    # etc. These write real transcript files but are NOT user-initiated
+    # sessions. Their session_meta has:
+    #   "source": {"subagent": {"thread_spawn": {...}}}
+    # while user sessions have "source": "vscode" or similar strings.
+    #
+    # This condition reads the transcript's first JSON line and checks
+    # the dot-path field — a structural signal that won't drift.
+    - event: session_start
+      scope: this_agent
+      when:
+        transcript_meta_field_exists: source.subagent
+      action: drop
+      reason: subagent-thread-spawn
+
+    # Layer 4 — safety net for sub-agent prompts that slip past
+    # SessionStart (e.g. transcript not yet flushed).
+    - event: user_prompt
+      scope: this_agent
+      when:
+        transcript_meta_field_exists: source.subagent
+      action: drop
+      reason: subagent-thread-spawn
+
+    # Layer 5 — non-interactive exec filter (structural).
+    #
+    # `codex exec` writes a real rollout transcript, but it is a
+    # programmatic validation/automation surface rather than the user's
+    # interactive Codex conversation. Those transcripts have:
+    #   "source": "exec"
+    # in session_meta. Treat them as junk capture for the interactive
+    # session archive and drop them before materializing a session row.
+    - event: session_start
+      scope: this_agent
+      when:
+        transcript_meta_field_equals:
+          path: source
+          value: exec
+      action: drop
+      reason: noninteractive-exec
+
+    # Layer 6 — safety net for exec prompts that slip past SessionStart.
+    - event: user_prompt
+      scope: this_agent
+      when:
+        transcript_meta_field_equals:
+          path: source
+          value: exec
+      action: drop
+      reason: noninteractive-exec
+
+    # Codex injects AGENTS.md + the Myco cortex session context as the
+    # first `response_item/message/user` in every rollout. Structurally
+    # identical to a real user prompt, so we filter by the prefix the
+    # injection always carries. This rule runs at both hook time and
+    # transcript-mining time via the shared evaluateUserPromptRules path.
+    - event: user_prompt
+      scope: this_agent
+      when:
+        prompt_starts_with: "# AGENTS.md instructions"
+      action: drop
+      reason: agents-md-context-injection
+
+    # The same injection when Codex prefixes it with a `<recommended_plugins>`
+    # envelope, which moves the marker off position 0.
+    #
+    # Both conditions are required. `drop` discards the message outright, so a
+    # bare substring match would destroy any real prompt quoting this marker;
+    # requiring the envelope as well confines the rule to the injection. A
+    # change to the envelope stops this rule matching, leaving the injection
+    # captured as noise rather than destroying user content.
+    - event: user_prompt
+      scope: this_agent
+      when:
+        prompt_envelope_tag_in: [recommended_plugins]
+        prompt_contains: "# AGENTS.md instructions"
+      action: drop
+      reason: agents-md-context-injection-enveloped
+
+    # Codex sub-agent completion notifications.
+    #
+    # Codex's analog to Claude Code's <task-notification>: when a parallel
+    # sub-agent invoked via the Agent tool finishes, the runtime injects a
+    # <subagent_notification> envelope into the parent transcript as a
+    # synthetic user-type entry. Capture but tag origin='agent_dispatch' —
+    # these are agent-to-agent communications, distinct from the model's
+    # own system-injected continuations. Structural (attribute-robust)
+    # tag-name match rather than a raw prefix.
+    - event: user_prompt
+      scope: this_agent
+      when:
+        prompt_envelope_tag_in: [subagent_notification]
+      action: classify
+      set_origin: agent_dispatch
+      reason: codex-agent-envelope
+
+    # Codex runtime/system envelopes: environment_context headers (shell,
+    # current_date, timezone, cwd refresh) and slash-skill expansions.
+    # Neither is user input.
+    - event: user_prompt
+      scope: this_agent
+      when:
+        prompt_envelope_tag_in: [environment_context, skill]
+      action: classify
+      set_origin: system
+      reason: codex-system-envelope
+
+    # Codex Desktop wraps user prompts with a file-mention preamble when
+    # screenshots or files are attached:
+    #   "# Files mentioned by the user:\n## <filename>: <path>\n## My request for Codex:\n<actual prompt>"
+    # Strip the preamble so the captured prompt contains only the user's text.
+    #
+    # NOTE: the VS Code Codex extension uses a different preamble
+    # (`# Context from my IDE setup:` … `## My request for Codex:`).
+    # Keying on the shared `## My request for Codex:` marker above
+    # should handle both Desktop and VS Code variants. If the VS Code
+    # preamble diverges, add a separate rule keyed on its specific marker.
+    - event: user_prompt
+      scope: this_agent
+      when:
+        prompt_contains: "## My request for Codex:"
+      action: rewrite_prompt
+      extract_after: "## My request for Codex:\n"
+      reason: codex-desktop-file-preamble
+
+    # Fail-safe: any other whole-message envelope is non-human (preserved,
+    # hidden). MUST be last, after every drop and the file-preamble unwrap
+    # above, so it never pre-empts a human-wrapper rewrite.
+    - event: user_prompt
+      scope: this_agent
+      when:
+        prompt_is_enclosing_envelope: true
+      action: classify
+      set_origin: system
+      reason: codex-unknown-envelope
+  prompts:
+    shapes:
+      # Image prompts are multipart: `<image …>` wrapper input_text tags and
+      # input_image blocks come FIRST, the user's real text is the LAST
+      # input_text part. joined_text_parts routes extraction through the
+      # canonical Codex routine (shared with the transcript parser): wrapper
+      # tags stripped, all remaining text parts joined. textAt points at the
+      # content ARRAY, not [0].text.
+      - name: user_message
+        match:
+          type: response_item
+          fieldEquals:
+            payload.type: message
+            payload.role: user
+        textAt: payload.content
+        textExtraction: joined_text_parts
+    resetBoundaries:
+      # Codex emits `turn_context` events whenever the agent enters a new
+      # turn. Reset only fires when `payload.turn_id` changes from the
+      # previously-seen value — consecutive `turn_context` events that
+      # share a turn_id are the same turn, not a boundary.
+      - match:
+          type: turn_context
+        changeOn: payload.turn_id
+    interruptMarker: "<turn_aborted>"
+registration:
+  hooksTarget: .codex/hooks.json
+  # Codex hooks live in a dedicated JSON file at both scopes. The plan's
+  # original "consolidate hooks + MCP into config.toml" left the installer
+  # writing JSON over a TOML file, corrupting the user's mcp_servers /
+  # profiles / etc. Hooks go to a separate JSON file; MCP keeps config.toml.
+  globalHooksTarget: ~/.codex/hooks.json
+  mcpTarget: .codex/config.toml
+  mcpFormat: toml
+  globalMcpTarget: ~/.codex/config.toml
+  skillsTarget: .agents/skills
+  globalSkillsTarget: ~/.agents/skills
+  retiredGlobalSkillsTargets:
+    - ~/.codex/skills
+  settingsTarget: .codex/config.toml
+  # Settings under global scope MUST land in config.toml (TOML) and
+  # NOT share a path with the JSON hooks file. Required because
+  # settingsFormat is `toml`; the manifest schema's TOML-vs-JSON
+  # refine() enforces this declaration.
+  globalSettingsTarget: ~/.codex/config.toml
+  settingsFormat: toml
+capabilities:
+  # Hook template registers a session-start hook that fetches Cortex context.
+  sessionStartInjection: true
+  # SubagentStart can inject additionalContext as extra developer context for
+  # the child agent.
+  subagentStartInjection: true
+  # HTTP MCP cannot carry per-project tenancy for Codex: its MCP config is global
+  # (one entry, many projects), it sends no tenancy headers and no MCP `roots`,
+  # and its MCP child runs at cwd=/ on Desktop — zero per-request project signal.
+  # Its SHELL tool DOES run in the workspace, so `myco tool call` resolves full
+  # tenancy from cwd. Declare the shell/CLI as Codex's tenancy-capable transport;
+  # the installer writes no MCP server and session-start injects a CLI directive.
+  toolTransport: cli
+  # Emit hookSpecificOutput envelope on PreToolUse so Canopy anatomy reaches
+  # the agent's context.
+  preToolUseInjection: true
+  # File reads come through Codex's canonical 'Bash' tool with the path
+  # embedded in the command string. The resolver shlex-parses and picks the
+  # last non-flag positional arg when the command name is in this allowlist.
+  canopyReadTools:
+    - tool: Bash
+      pathField: command
+      extract: shell-arg
+      readCommands:
+        - cat
+        - head
+        - tail
+        - less
+        - more
+        - bat
+        - wc
+        - file
+        - nl
+        - sed
+        - awk
+        - grep
+        - rg
+        - perl
+  # Codex's read surface flows through the Bash tool; its write surface is
+  # the dedicated `apply_patch` tool, which carries the whole patch envelope
+  # on `command` ("*** Begin Patch\n*** Update File: docs/x.md\n…") — the
+  # path lives in the `*** Add/Update/Delete File:` header, so the `patch`
+  # extractor pulls the first one (multi-file patches still register a
+  # single activity row). Shape confirmed from the dogfood vault's activity
+  # history (2,780 apply_patch rows, previously all file_path=NULL).
+  pathBearingTools:
+    - tool: Bash
+      pathField: command
+      extract: shell-arg
+      readCommands:
+        - cat
+        - head
+        - tail
+        - less
+        - more
+        - bat
+        - wc
+        - file
+        - nl
+        - sed
+        - awk
+        - grep
+        - rg
+        - perl
+    - tool: apply_patch
+      pathField: command
+      extract: patch
+      mutates: true
+
+hooks:
+  # Single-event turn-end: `Stop` carries both the inline response and the
+  # transcript path. The daemon's stop dispatcher runs both phases in
+  # sequence for this single event — matching pre-refactor behavior.
+  Stop:
+    phases: [response, transcript]

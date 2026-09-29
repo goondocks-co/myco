@@ -112,22 +112,9 @@ async function runGlobalRemove(opts: { purge: boolean; assumeYes: boolean }): Pr
   // --- Unregister the OS service (do this first so launchd/systemd
   //     doesn't relaunch the daemon mid-uninstall). ---
   try {
-    const { getServiceManager } = await import('../service/manager.js');
-    const { serviceLabel } = await import('../service/labels.js');
-    const mgr = getServiceManager();
-    if (mgr.supported) {
-      await mgr.uninstall(serviceLabel(mycoHome));
-      // §13.11: `myco remove` on a boot-scoped install must not leave the
-      // root LaunchDaemon behind. Guarded by OBSERVED state; the boot
-      // backend refuses under a sandboxed unit dir, so test runs never sudo.
-      const { resolveObservedScope, getScopedServiceManager } = await import('../service/scoped.js');
-      const observed = await resolveObservedScope(serviceLabel(mycoHome));
-      if (observed === 'boot' || observed === 'both') {
-        const bootMgr = getScopedServiceManager({ scope: { startAt: 'boot', runAs: 'invoking-user' } });
-        await bootMgr.uninstall(serviceLabel(mycoHome));
-      }
-      console.log('  ✓ Unregistered OS service');
-    }
+    const { unregisterHomeService } = await import('../service/home-daemon.js');
+    const stopped = await unregisterHomeService(mycoHome);
+    if (stopped.kind !== 'unsupported') console.log('  ✓ Unregistered OS service');
   } catch (err) {
     const { ExternalMcpHardKillBlockedError } = await import('../service/windows.js');
     if (err instanceof ExternalMcpHardKillBlockedError) throw err;
@@ -150,13 +137,8 @@ async function runGlobalRemove(opts: { purge: boolean; assumeYes: boolean }): Pr
   //     /delete leaves the spawned daemon running), where it keeps the home
   //     locked → EBUSY on purge. A cooperative shutdown releases those handles
   //     on every platform (no-op once the service stop already killed it). ---
-  try {
-    const { resolveGlobalDaemonPort } = await import('../daemon/service-state.js');
-    const { requestCooperativeShutdown } = await import('../service/cooperative-shutdown.js');
-    if (await requestCooperativeShutdown(resolveGlobalDaemonPort(mycoHome))) {
-      console.log('  ✓ Stopped running daemon');
-    }
-  } catch { /* no daemon answering — nothing to stop */ }
+  const { stopHomeDaemon } = await import('../service/home-daemon.js');
+  if (await stopHomeDaemon(mycoHome) === 'stopped') console.log('  ✓ Stopped running daemon');
 
   // --- Remove per-symbiont global config blocks. ---
   const allManifests = loadManifests();

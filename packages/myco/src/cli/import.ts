@@ -220,7 +220,7 @@ export async function run(args: readonly string[], deps: ImportCliDeps = {}): Pr
   });
   if (report.refused !== undefined) { err(`myco import: ${report.refused}`); return false; }
   for (const line of reportLines(report, dryRun)) out(line);
-  return legacyComplete;
+  return legacyComplete && transcriptImportComplete(report);
 }
 
 /**
@@ -229,6 +229,10 @@ export async function run(args: readonly string[], deps: ImportCliDeps = {}): Pr
  */
 export const legacyImportComplete = (report: LegacyImportReport): boolean =>
   report.projects.every((p) => p.endedBy === undefined && p.refusals.length === 0 && p.failures.length === 0 && p.deletedButHeld.length === 0);
+
+/** Whether a transcript import finished every Project it started, with nothing refused. */
+export const transcriptImportComplete = (report: ImportReport): boolean =>
+  report.refused === undefined && report.projects.every((p) => p.endedBy === undefined);
 
 /** What a 1.4 vault import came to, per project, in the order a person reads it. */
 export function legacyReportLines(report: LegacyImportReport, dryRun: boolean): string[] {

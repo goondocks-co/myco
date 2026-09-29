@@ -55,6 +55,17 @@ describe('config atomic writes', () => {
 });
 
 describe('atomicWriteFileSync mode option', () => {
+  test.skipIf(process.platform === 'win32')('a replaced file keeps its permission bits unless a mode is named', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'myco-atomic-mode-'));
+    const file = join(dir, 'settings.json');
+    writeFileSync(file, '{}');
+    fs.chmodSync(file, 0o600);
+    atomicWriteFileSync(file, '{"a":1}');
+    expect(statSync(file).mode & 0o777).toBe(0o600);
+    atomicWriteFileSync(file, '{"a":2}', { mode: 0o644 });
+    expect(statSync(file).mode & 0o777).toBe(0o644);
+  });
+
   test.skipIf(process.platform === 'win32')(
     'updateTierConfigRaw forwards durable publication to the atomic writer',
     () => {

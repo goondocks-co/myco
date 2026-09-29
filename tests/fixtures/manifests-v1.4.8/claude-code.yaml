@@ -1,0 +1,380 @@
+name: claude-code
+displayName: Claude Code
+binary: claude
+configDir: .claude
+detectionDir: ~/.claude
+pluginRootEnvVar: CLAUDE_PLUGIN_ROOT
+settingsPath: .claude/settings.json
+resumeCommand: "claude --resume {sessionId}"
+hookFields:
+  sessionId: session_id
+  transcriptPath: transcript_path
+  lastResponse: last_assistant_message
+capture:
+  # Claude Code continues one conversation under a new session id on both an
+  # auto-compact rollover and a fork. Either way it carries the transcript
+  # forward and rewrites camelCase `sessionId` on every line, leaving the
+  # predecessor id only in snake_case `session_id` on the records written
+  # before the switch. Declaring this enables the miner's lineage stitch for
+  # claude-code only.
+  sessionContinuation:
+    parentSessionIdPath: session_id
+    # A fork leaves no marker record — the id divergence is the only signal.
+    defaultReason: fork
+    markers:
+      # An auto-compact rollover opens the predecessor's run with a
+      # "session is being continued" record flagged `isCompactSummary`.
+      - recordFlagPath: isCompactSummary
+        reason: compact continuation
+  # One file per session under a slug of the project's absolute path.
+  transcriptDiscovery:
+    roots: ["~/.claude/projects"]
+    patterns:
+      - "*/{sessionId}.jsonl"
+    # Entries carry the session's working directory at top level.
+    transcriptCwdPath: "cwd"
+  planDirs:
+    # Claude Code's plan mode writes to ~/.claude/plans/ (global), not the project-local
+    # .claude/plans/. We watch both: home for plan-mode output, project-local for any
+    # user-committed plans in the repo.
+    - ~/.claude/plans/
+    - .claude/plans/
+  planTags:
+    # Ultraplan sends the approved cloud plan back to the terminal by injecting
+    # it into the next user prompt as <ultraplan>...</ultraplan>.
+    - ultraplan
+  rules:
+    # Non-interactive SDK-entrypoint filter (structural, Codex `source: exec`
+    # parity — see codex.yaml Layer 5/6).
+    #
+    # Claude Code >=2.1.x writes Agent-SDK-launched sessions (e.g. the
+    # security-review plugin's Python-SDK review agents) into the same
+    # ~/.claude/projects/<slug>/*.jsonl transcript tree as interactive
+    # sessions, as top-level files. sdk-py and sdk-ts runs never fire hooks,
+    # so only the reverse (disk-enumeration) sweep ever sees them. Their
+    # structural marker is `entrypoint: "sdk-py"` / `"sdk-ts"` (interactive
+    # sessions carry `entrypoint: "cli"`) — present on attachment/user
+    # records a few lines into the file, not on line 1, which is why
+    # transcript-meta.ts scans a bounded header window rather than only the
+    # first line.
+    #
+    # A third entrypoint value, `sdk-cli`, also exists — but that surface
+    # DOES fire hooks (hook_success observed), so it's already captured
+    # through the normal path. No rule targets it here: dropping an
+    # already-captured session would discard real data.
+    #
+    # Layer 1 — stop the phantom from ever being registered.
+    - event: session_start
+      scope: this_agent
+      when:
+        transcript_meta_field_equals:
+          path: entrypoint
+          value: sdk-py
+      action: drop
+      reason: noninteractive-sdk
+    - event: session_start
+      scope: this_agent
+      when:
+        transcript_meta_field_equals:
+          path: entrypoint
+          value: sdk-ts
+      action: drop
+      reason: noninteractive-sdk
+
+    # Layer 2 — safety net for SDK prompts that slip past SessionStart (e.g.
+    # transcript not yet flushed).
+    - event: user_prompt
+      scope: this_agent
+      when:
+        transcript_meta_field_equals:
+          path: entrypoint
+          value: sdk-py
+      action: drop
+      reason: noninteractive-sdk
+    - event: user_prompt
+      scope: this_agent
+      when:
+        transcript_meta_field_equals:
+          path: entrypoint
+          value: sdk-ts
+      action: drop
+      reason: noninteractive-sdk
+
+    # Slash-command dispatch envelope filter (structural).
+    #
+    # When the user runs `/name args`, Claude Code fires UserPromptSubmit with
+    # the raw `/name args` text — the hook captures it and stores it in a
+    # prompt_batch (buffer-backed if the daemon is down). The transcript then
+    # logs the dispatch as a pair of user entries sharing one promptId:
+    #   1. <command-message>name</command-message>
+    #      <command-name>/name</command-name>
+    #      <command-args>args</command-args>
+    #   2. the expanded command body (the rendered .claude/commands/<name>.md).
+    #
+    # Without this rule, transcript mining at Stop emits the XML-wrapped text
+    # as a record, reconcile can't match its prefix to the hook-stored
+    # `/name args` batch, and a duplicate batch is inserted. Dropping the
+    # wrapper entry also suppresses the expanded body via shape-level
+    # dedupeBy: promptId, so zero transcript records are emitted for the
+    # dispatch. The live hook capture is authoritative.
+    #
+    # The `<command-message>` prefix is Claude-synthesized — it only appears
+    # on real slash-command dispatches (prompts whose first token is a
+    # recognized `/name`). Plain prompts, mid-sentence `/` mentions, and
+    # queued_command attachments (which carry raw `/name args` text, not the
+    # XML envelope) are unaffected.
+    - event: user_prompt
+      scope: this_agent
+      when:
+        prompt_starts_with: "<command-message>"
+      action: drop
+      reason: claude-code-slash-command-dispatch
+    # Built-in CLI command dispatch envelope filter (structural).
+    #
+    # Twin of the rule above, targeting Claude Code's built-in CLI operations
+    # (`/exit`, `/compact`, `/clear`, `/mcp`, `/plugin`, `/reload-plugins`,
+    # `/extra-usage`). Unlike user-authored slash commands, these do NOT fire
+    # UserPromptSubmit — they're internal CLI ops. They land in the transcript
+    # as user-type entries whose content starts with `<command-name>` instead
+    # of `<command-message>`:
+    #   <command-name>/compact</command-name>
+    #   <command-message>compact</command-message>
+    #   <command-args></command-args>
+    #
+    # Because these entries share a promptId with their paired
+    # `<local-command-caveat>` meta entry and any follow-up synthesized summary
+    # ("This session is being continued..." from /compact), dedupeBy: promptId
+    # suppresses those once the dispatch is dropped — one rule handles the
+    # whole envelope group.
+    #
+    # The isMeta filter on the user_prompt shape doesn't catch these because
+    # Claude Code does not tag `<command-name>` dispatch entries with isMeta.
+    - event: user_prompt
+      scope: this_agent
+      when:
+        prompt_starts_with: "<command-name>"
+      action: drop
+      reason: claude-code-builtin-command-dispatch
+    # Built-in CLI command STDOUT capture (structural).
+    #
+    # Slash-command dispatches (`/exit`, `/model`, `/clear`, …) emit a third
+    # sibling entry holding the command's captured stdout:
+    #   <local-command-stdout>See ya!</local-command-stdout>
+    # It shares the dispatch group's promptId, so the `<command-name>` drop
+    # above already suppresses it via dedupeBy: promptId — BUT only when the
+    # `<command-name>` sibling is present and processed first. Dropping it
+    # explicitly removes that ordering dependency: command stdout is program
+    # output, never user input, so it must never become a prompt_batch
+    # regardless of how the dispatch group is structured. (Without this, a
+    # stdout entry that reached a prompt shape — e.g. via the now-fixed
+    # teamName-based teammate_message shape — leaked as a human prompt.)
+    - event: user_prompt
+      scope: this_agent
+      when:
+        prompt_starts_with: "<local-command-stdout>"
+      action: drop
+      reason: claude-code-builtin-command-stdout
+    # Autonomous-loop runtime self-prompts.
+    #
+    # The `/loop` skill's autonomous mode rewakes the agent by sending
+    # `<<autonomous-loop-dynamic>>` (or `<<autonomous-loop>>`) as the next
+    # user prompt. Runtime-synthesized, not human-typed. Not XML, so this
+    # stays a prefix match rather than an envelope-tag predicate.
+    - event: user_prompt
+      scope: this_agent
+      when:
+        prompt_starts_with: "<<autonomous-loop"
+      action: classify
+      set_origin: system
+      reason: claude-code-autonomous-loop
+    # Agent-to-agent report envelopes → agent_dispatch; matched by tag name so
+    # attributes like from="…" don't affect it.
+    - event: user_prompt
+      scope: this_agent
+      when:
+        prompt_envelope_tag_in: [agent-message, teammate-message]
+      action: classify
+      set_origin: agent_dispatch
+      reason: claude-code-agent-envelope
+    # Runtime/system envelopes → system (task-notification stays system, matching prior behavior).
+    - event: user_prompt
+      scope: this_agent
+      when:
+        prompt_envelope_tag_in: [task-notification, system-reminder, skill, environment_context, persisted-output, local-command-caveat]
+      action: classify
+      set_origin: system
+      reason: claude-code-system-envelope
+    # Auto-compact continuation summaries → system (preserved, hidden).
+    #
+    # When Claude Code auto-compacts at the context ceiling it synthesizes a
+    # `type: user` record carrying the continuation summary ("This session is
+    # being continued from a previous conversation…") with the structural
+    # marker `isCompactSummary: true`. Runtime-synthesized, never human-typed
+    # — but text-shaped like a real prompt, so without this rule it lands as
+    # an origin='human' initial batch. Keyed on the record field, not the
+    # text prefix: mining-path only, which is exactly where these records
+    # live (they never fire UserPromptSubmit). Manual `/compact` summaries
+    # share a promptId with the dropped `<command-name>` dispatch and are
+    # already suppressed by dedupeBy before rules run — unaffected here.
+    - event: user_prompt
+      scope: this_agent
+      when:
+        record_field_equals: { path: isCompactSummary, value: true }
+      action: classify
+      set_origin: system
+      reason: claude-code-compact-continuation-summary
+    # Fail-safe: any other whole-message envelope is non-human (preserved, hidden). MUST be last.
+    - event: user_prompt
+      scope: this_agent
+      when:
+        prompt_is_enclosing_envelope: true
+      action: classify
+      set_origin: system
+      reason: claude-code-unknown-envelope
+  prompts:
+    shapes:
+      # Agent-team teammate-message envelopes (Claude Code v2.1.32+).
+      #
+      # When a teammate sends a message to the lead, Claude Code injects a
+      # synthetic `type: user` entry into the lead's transcript carrying the
+      # `<teammate-message ...>` envelope. These entries share the LEAD's
+      # current turn `promptId`, so the generic `user_prompt` shape below
+      # would collapse all teammate-messages into the lead's prompt batch
+      # via its `dedupeBy: promptId`.
+      #
+      # The discriminator is the CONTENT, not a structural field: once a team
+      # exists in the session, `teamName` is stamped on the lead's own prompts
+      # and on `/exit` / `/model` command artifacts too — it is not unique to
+      # teammate-messages. `textStartsWith` keys on the envelope prefix so only
+      # real teammate-messages match here; everything else falls through to the
+      # generic shape and keeps its `dedupeBy: promptId` collapse (which the
+      # slash-command dispatch path relies on to suppress command artifacts).
+      #
+      # First-match-wins, so listing this shape above `user_prompt` ensures
+      # teammate-messages match here first with `dedupeBy: uuid` (one batch
+      # per discrete teammate dispatch). The `set_origin: agent_dispatch` rule
+      # above then tags the resulting batch correctly.
+      #
+      # `<agent-message from="…">` is the renamed successor to
+      # `<teammate-message>` (Claude Code's agent-team rename). Same envelope
+      # shape, same shared-promptId leak, so it needs its own `textStartsWith`
+      # entry ahead of `teammate_message` — listed first here (before the
+      # older tag) since it's the current name. `teammate_message` stays
+      # below for older transcripts still on record.
+      - name: agent_message
+        match:
+          type: user
+          fieldNotEquals:
+            isMeta: true
+        textAt: message.content
+        textStartsWith: "<agent-message"
+        dedupeBy: uuid
+      - name: teammate_message
+        match:
+          type: user
+          fieldNotEquals:
+            isMeta: true
+        textAt: message.content
+        textStartsWith: "<teammate-message"
+        dedupeBy: uuid
+      # Standard user prompts. Claude Code tags synthesized transcript entries
+      # (local-command caveats, skill-basedir injections, expanded command
+      # bodies, misc system notices) with `isMeta: true`. Filtering on that
+      # flag at the shape level avoids whack-a-mole prefix rules for each new
+      # synthesized wrapper the CLI invents. Real user prompts carrying
+      # attachments (screenshots, documents) are `isMeta: undefined` — the
+      # synthesized `[Image source: ...]` side-log entries are isMeta: true
+      # and paired with a real non-isMeta sibling via promptId, so they're
+      # safely skipped without losing image captures.
+      #
+      # Dispatch envelopes (`<command-message>...`) are NOT isMeta — the
+      # capture.rules drop above catches those.
+      #
+      # message.content is either a plain string or an array of typed blocks;
+      # the walker's path resolver handles both.
+      - name: user_prompt
+        match:
+          type: user
+          hasField: promptId
+          fieldNotEquals:
+            isMeta: true
+        dedupeBy: promptId
+        textAt: message.content
+      # Steering prompts queued via the Esc→queue UI. Claude Code does NOT
+      # fire UserPromptSubmit for these, so the transcript is the only
+      # capture path. No explicit kind — position in the event stream
+      # determines whether the walker classifies this as steering.
+      - name: queued_command
+        match:
+          type: attachment
+          fieldEquals:
+            attachment.type: queued_command
+        dedupeBy: uuid
+        textAt: attachment.prompt
+    resetBoundaries:
+      - match:
+          type: assistant
+          fieldEquals:
+            message.stop_reason: end_turn
+    interruptMarker: "[Request interrupted by user for tool use]"
+registration:
+  hooksTarget: .claude/settings.json
+  globalHooksTarget: ~/.claude/settings.json
+  mcpTarget: .mcp.json
+  globalMcpTarget: ~/.claude/settings.json
+  skillsTarget: .claude/skills
+  globalSkillsTarget: ~/.claude/skills
+  settingsTarget: .claude/settings.json
+  # Claude Code's ~/.claude/settings.json is a multi-key settings file:
+  # `hooks`, `permissions`, `mcpServers`, etc. all live at the root.
+  # Pointing globalSettingsTarget at the same path as globalHooksTarget
+  # opts the installer in to merging the settings template (`permissions`
+  # block) alongside the hooks block — Claude Code's schema accepts both.
+  # /code-review finding C9: this used to be a silent fallback; now it
+  # is an explicit declaration so future agents don't inherit the trap.
+  globalSettingsTarget: ~/.claude/settings.json
+  instructionsFile: CLAUDE.md
+capabilities:
+  # Claude Code threads PreToolUse hookSpecificOutput.additionalContext into
+  # the agent's context window before the tool fires. This unlocks Cortex's
+  # Canopy injection. Other symbionts flip this on as their hook surfaces
+  # gain equivalent pre-call injection.
+  preToolUseInjection: true
+  # Hook template registers a session-start hook that fetches Cortex context
+  # and emits it as additional system context.
+  sessionStartInjection: true
+  # SubagentStart can inject additionalContext into the child agent before
+  # its first prompt.
+  subagentStartInjection: true
+  # File-read tools this symbiont exposes for Canopy PreToolUse injection.
+  # Each entry tells the resolver how to recognize the tool and locate the
+  # file path on tool_input.
+  canopyReadTools:
+    - tool: Read
+      pathField: file_path
+  # Broader superset declaring every tool whose tool_input carries a file
+  # path. PostToolUse uses this list to stamp `activities.file_path` for
+  # write-side tools too, so the FTS index and per-activity file column
+  # stay accurate. Canopy entries above are repeated here.
+  pathBearingTools:
+    - tool: Read
+      pathField: file_path
+    - tool: Write
+      pathField: file_path
+      mutates: true
+    - tool: Edit
+      pathField: file_path
+      mutates: true
+    - tool: MultiEdit
+      pathField: file_path
+      mutates: true
+    - tool: NotebookEdit
+      pathField: notebook_path
+      mutates: true
+
+hooks:
+  # Single-event turn-end: `Stop` carries both the inline response and the
+  # transcript path. The daemon's stop dispatcher runs both phases in
+  # sequence for this single event — matching pre-refactor behavior.
+  Stop:
+    phases: [response, transcript]

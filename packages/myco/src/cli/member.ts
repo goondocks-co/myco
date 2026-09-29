@@ -295,26 +295,77 @@ function provisionAgent(
   out: (line: string) => void,
   fail: (line: string) => unknown,
 ): boolean {
-  const manifest = loadManifests().find((m) => m.name === agent);
-  if (!manifest) {
+  const outcome = provisionGlobally(agent, root, mycoHome, { packageRoot: deps.packageRoot });
+  if (outcome.kind === 'unknown') {
     fail(`unknown agent "${agent}" — the membership is recorded; provision it with \`myco member provision <agent>\``);
     return false;
   }
-  const packageRoot = deps.packageRoot ?? resolvePackageRoot();
-  const installer = new SymbiontInstaller(manifest, root, packageRoot, false, undefined, null, 'member-global', mycoHome);
+  if (outcome.kind === 'refused') {
+    fail(outcome.detail);
+    return false;
+  }
+  out(outcome.detail);
+  return true;
+}
+
+/** What provisioning one agent globally came to. */
+export type ProvisionOutcome =
+  | { kind: 'unknown' }
+  | { kind: 'refused'; detail: string }
+  | { kind: 'provisioned' | 'unchanged'; detail: string };
+
+/**
+ * Install an agent's member hooks (or plugin) and MCP entry globally, from the
+ * membership recorded for `root` in `mycoHome` — the one provisioning step
+ * `member join --provision`, `member provision` and `myco cutover` share.
+ * `legacyHomes` names 1.4 homes whose global registrations are replaced in
+ * place rather than refused.
+ */
+export function provisionGlobally(
+  agent: string, root: string, mycoHome: string, opts: { packageRoot?: string; legacyHomes?: readonly string[] } = {},
+): ProvisionOutcome {
+  const manifest = loadManifests().find((m) => m.name === agent);
+  if (!manifest) return { kind: 'unknown' };
+  const packageRoot = opts.packageRoot ?? resolvePackageRoot();
+  const installer = new SymbiontInstaller(manifest, root, packageRoot, false, undefined, null, 'member-global', mycoHome)
+    .replacingLegacy(opts.legacyHomes ?? []);
   let installed;
   try {
     installed = installer.install();
   } catch (error) {
     if (!(error instanceof MemberProvisionConflictError)) throw error;
-    fail(error.message);
-    return false;
+    return { kind: 'refused', detail: error.message };
   }
   const surface = installer.isMemberPluginFile() ? 'plugin' : 'hooks';
-  out(installed.hooks || installed.mcp
-    ? `provisioned ${manifest.displayName} globally${installed.mcp ? ` (${surface} and MCP)` : ''}`
-    : `no global registration changes for ${manifest.displayName}`);
-  return true;
+  return installed.hooks || installed.mcp
+    ? { kind: 'provisioned', detail: `provisioned ${manifest.displayName} globally${installed.mcp ? ` (${surface} and MCP)` : ''}` }
+    : { kind: 'unchanged', detail: `no global registration changes for ${manifest.displayName}` };
+}
+
+/**
+ * What provisioning one agent globally would find, without writing
+ * (`SymbiontInstaller.globalOwnership`): whether 2.0 captures the agent at
+ * all, the refusal provisioning would raise, the 1.4 homes it would replace,
+ * and every file it may write.
+ */
+export type OwnershipPreview =
+  | { kind: 'unknown' }
+  | { kind: 'uncaptured'; displayName: string }
+  | { kind: 'refused'; displayName: string; detail: string }
+  | { kind: 'ready'; displayName: string; replaces: string[]; targets: { hooks: string | null; mcp: string[]; all: string[] } };
+
+export function previewGlobalProvision(
+  agent: string, root: string, mycoHome: string, serverUrl: string, opts: { packageRoot?: string; legacyHomes?: readonly string[] } = {},
+): OwnershipPreview {
+  const manifest = loadManifests().find((m) => m.name === agent);
+  if (!manifest) return { kind: 'unknown' };
+  const installer = new SymbiontInstaller(manifest, root, opts.packageRoot ?? resolvePackageRoot(), false, undefined, null, 'member-global', mycoHome)
+    .replacingLegacy(opts.legacyHomes ?? []);
+  if (!installer.capturesAsMember()) return { kind: 'uncaptured', displayName: manifest.displayName };
+  const found = installer.globalOwnership(serverUrl);
+  return found.problem !== null
+    ? { kind: 'refused', displayName: manifest.displayName, detail: found.problem }
+    : { kind: 'ready', displayName: manifest.displayName, replaces: found.replaces, targets: installer.memberGlobalTargets() };
 }
 
 /** `myco member provision <agent> [--root <dir>]`: provision an agent for a project already joined; no token is supplied or changed. */
@@ -624,7 +675,7 @@ function reportPin(outcome: PinOutcome, mycoHome: string, out: (l: string) => vo
 }
 
 /** What `pinMachineHome` did. */
-type MachinePinOutcome = { kind: 'written'; pinPath: string } | { kind: 'settled' } | { kind: 'held'; pinPath: string; pinned: string } | { kind: 'unwritable'; pinPath: string };
+export type MachinePinOutcome = { kind: 'written'; pinPath: string } | { kind: 'settled' } | { kind: 'held'; pinPath: string; pinned: string } | { kind: 'unwritable'; pinPath: string };
 
 /**
  * Pin the MACHINE at this membership's home, when the home is not the default
@@ -637,7 +688,7 @@ type MachinePinOutcome = { kind: 'written'; pinPath: string } | { kind: 'settled
  * once: a machine pin naming another home is another install's choice and is
  * left standing, the way a project pin naming another home is.
  */
-function pinMachineHome(mycoHome: string, deps: MemberCliDeps): MachinePinOutcome {
+export function pinMachineHome(mycoHome: string, deps: Pick<MemberCliDeps, 'env'>): MachinePinOutcome {
   const home = path.resolve(mycoHome);
   const defaultHome = defaultMycoHome(deps.env?.HOME && deps.env.HOME.length > 0 ? deps.env.HOME : undefined);
   if (pathsEquivalentHome(home, defaultHome)) return { kind: 'settled' };
