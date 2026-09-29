@@ -1,3 +1,4 @@
+import { isMemberHome, memberHomeDaemonRefusal } from '../member/home-role.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import { spawn, type SpawnOptions } from 'node:child_process';
@@ -454,6 +455,7 @@ export class DaemonClient {
    * version-driven restarts.
    */
   async ensureRunning(opts?: { checkStale?: boolean }): Promise<boolean> {
+    if (this.memberHomeRefusal() !== null) return false;
     const checkStale = opts?.checkStale ?? true;
     const info = await this.getInfoAsync();
 
@@ -640,10 +642,22 @@ export class DaemonClient {
     return this.isHealthy();
   }
 
+  /** The home whose daemon this client talks to. */
+  get mycoHome(): string {
+    return path.dirname(this.daemonService.stateDir);
+  }
+
+  /** Why no 1.4 daemon runs for this client's home (`isMemberHome`), or null when one may. */
+  memberHomeRefusal(): string | null {
+    return isMemberHome(this.mycoHome) ? memberHomeDaemonRefusal(this.mycoHome) : null;
+  }
+
   async spawnDaemon(): Promise<void> {
     // Tests set MYCO_NO_AUTO_SPAWN=1 to suppress fork side effects when
     // exercising the "daemon down" path.
     if (process.env.MYCO_NO_AUTO_SPAWN === '1') return;
+    // Neither a raw spawn nor a supervisor start for a 2.0 member home.
+    if (this.memberHomeRefusal() !== null) return;
     // Coalesce concurrent spawns: if daemon state was written within the
     // coalesce window AND its pid is still alive, another spawn is already in
     // flight — defer to it instead of forking another process. Safe to call

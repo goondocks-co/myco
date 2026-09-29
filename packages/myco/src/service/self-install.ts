@@ -1,3 +1,4 @@
+import { isMemberHome, memberHomeDaemonRefusal } from '../member/home-role.js';
 import fs from 'node:fs';
 import { getServiceManager } from './manager.js';
 import { buildServiceSpec } from './spec-builder.js';
@@ -66,13 +67,17 @@ export async function ensureSelfInstalledAsService(
   opts: SelfInstallOptions = {},
 ): Promise<void> {
   try {
+    const mycoHome = opts.mycoHome ?? resolveMycoHome();
+    if (isMemberHome(mycoHome)) {
+      logger.info('daemon.service_install', `Skipping service install: ${memberHomeDaemonRefusal(mycoHome)}`);
+      return;
+    }
     const mgr = opts.manager ?? getServiceManager();
     if (!mgr.supported) {
       logger.info('daemon.service_install', `Skipping service install (${mgr.platformName})`);
       return;
     }
 
-    const mycoHome = opts.mycoHome ?? resolveMycoHome();
     const label = serviceLabel(mycoHome);
 
     // §13.5: the daemon is a READ-ONLY OBSERVER of boot scope on macOS —
