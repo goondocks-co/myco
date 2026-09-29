@@ -16,6 +16,17 @@ import { lit, type ParityScenario, type ParityTarget } from '../harness.ts';
 const jobReport = (changed: Record<string, number> = {}) =>
   SERVER_JOBS.filter((job) => job.wake === undefined).map((job) => ({ name: job.name, changed: changed[job.name] ?? 0, failed: null }));
 
+/** The two jobs this scenario seeds work for. */
+const SEEDED = new Set(['agent-run-retention', 'run-stale-sweep']);
+
+/**
+ * A wake's report as this scenario judges it: every job, in order, with its failure, and the changed count of
+ * the jobs it seeds. Any other job's count is the work the scenarios run ahead of this one on the same target
+ * left behind, which depends on the shard's order and the target's pace, not on the wake.
+ */
+const seededView = (jobs: Array<{ name: string; changed: number; failed: string | null }>) =>
+  jobs.map((job) => ({ name: job.name, changed: SEEDED.has(job.name) ? job.changed : 0, failed: job.failed }));
+
 export const tick: ParityScenario = {
   name: 'the wake: retention and the stale-run sweep, identical on both targets, idempotent',
   async run(target: ParityTarget) {
@@ -47,7 +58,7 @@ export const tick: ParityScenario = {
     // The scenarios before this one left fresh receipts, and a run start is activity too: the Deployment is awake, and housekeeping runs at every depth but deep sleep.
     expect(['active', 'idle']).toContain(first.state);
     // Retention removes the two runs past the window; the sweep fails the stale one.
-    expect(first.jobs).toEqual(jobReport({ 'agent-run-retention': 2, 'run-stale-sweep': 1 }));
+    expect(seededView(first.jobs)).toEqual(jobReport({ 'agent-run-retention': 2, 'run-stale-sweep': 1 }));
     expect(first.nextWakeMs).toBe(60_000);
     expect(await rows()).toEqual([
       { id: 'tick-live', status: 'running', error: null },
@@ -57,7 +68,7 @@ export const tick: ParityScenario = {
 
     const second = await wake();
     // Idempotent: the same wake again converges on the state it already reached.
-    expect(second.jobs).toEqual(jobReport());
+    expect(seededView(second.jobs)).toEqual(jobReport());
     expect(await rows()).toEqual([
       { id: 'tick-live', status: 'running', error: null },
       { id: 'tick-stale', status: 'failed', error: 'the runtime went away' },
@@ -67,6 +78,6 @@ export const tick: ParityScenario = {
     await target.sql(`UPDATE agent_runs SET status = 'completed', completed_at = ${now} WHERE id = 'tick-live'`);
     const third = await wake();
     expect(third.state).toBe('active');
-    expect(third.jobs).toEqual(jobReport());
+    expect(seededView(third.jobs)).toEqual(jobReport());
   },
 };
