@@ -62,9 +62,10 @@ export interface ParityScenario {
   run(target: ParityTarget): Promise<void>;
   /**
    * A scenario whose bindings or settings would change what the others observe runs against targets booted for it
-   * alone. On Cloudflare, `main` names the Worker entry that boot serves, relative to `packages/myco-server`.
+   * alone. On Cloudflare, `main` names the Worker entry that boot serves, relative to `packages/myco-server`;
+   * `sqliteVec` marks a scenario whose self-hosted run queries vectors, which needs an extension-enabled SQLite.
    */
-  dedicated?: { cloudflare?: { main: string }; timeoutMs: number };
+  dedicated?: { cloudflare?: { main: string }; sqliteVec?: boolean; timeoutMs: number };
 }
 
 export const MEMBER_ID = 'mem_parity';

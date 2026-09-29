@@ -48,3 +48,8 @@ The recall gold set (`scenarios/recall-gold.ts`, #1154) is the one today. It:
 After an intended change to what prompts are served, record the baseline again
 with `MYCO_EVAL_RECORD=1 npm run test:parity`. Recording regenerates only the
 baseline, and the KPI page's Recall quality reads it.
+
+Recording compares against the previous record first, and prints every case as
+regressed, improved, or changed at the same score. It refuses to write
+regressions unless `MYCO_EVAL_ACCEPT_REGRESSIONS=1` accepts them. Each case's
+pass and graded score sit in the baseline, so the PR diff shows them too.

@@ -3,7 +3,7 @@ import { sha256Hex } from '@myco-server-worker/hash.js';
 import { lit, memberHeadersFor, type ParityScenario, type ParityTarget } from '../harness.ts';
 import { loadRecallFixture, seedStatements } from '../recall/fixture.ts';
 import { startEmbeddingStub } from '../recall/embedding-stub.ts';
-import { compareToBaseline, withTarget, type Served } from '../recall/score.ts';
+import { compareToBaseline, describeComparison, withTarget, type Served } from '../recall/score.ts';
 import { readRecallBaseline, writeRecallBaseline } from '../recall/baseline-file.ts';
 
 /** Steps past which calibration is taken as stuck: one per source, then the hubness pages, with room to spare. */
@@ -27,7 +27,7 @@ const HOLDERS = 4;
  */
 export const recallGold: ParityScenario = {
   name: 'recall gold set: real prompts served through the shipped path hold to the recorded baseline',
-  dedicated: { cloudflare: { main: '../../tests/parity/recall/worker-entry.ts' }, timeoutMs: 600_000 },
+  dedicated: { cloudflare: { main: '../../tests/parity/recall/worker-entry.ts' }, sqliteVec: true, timeoutMs: 600_000 },
   async run(target: ParityTarget) {
     const { gold, corpus, lookup } = loadRecallFixture();
     const now = Date.now();
@@ -98,17 +98,24 @@ export const recallGold: ParityScenario = {
         measured[c.id] = { spores: part?.sporeIds ?? [], plans: part?.planIds ?? [] };
       }
 
+      // The comparison runs first in either mode, so recording shows a reviewer what it changes, case by case.
+      const door = FRONT_DOOR[target.name];
       const recorded = readRecallBaseline();
+      const previous = recorded?.targets[door];
+      const comparison = previous === undefined ? null : compareToBaseline(gold.cases, measured, previous);
       if (process.env.MYCO_EVAL_RECORD === '1') {
-        writeRecallBaseline(withTarget(gold.cases, recorded, FRONT_DOOR[target.name], measured));
+        console.log(comparison === null ? `recall gold set, ${door}: no previous record; recording ${gold.cases.length} cases` : describeComparison(door, comparison));
+        if (comparison !== null && comparison.regressions.length > 0 && process.env.MYCO_EVAL_ACCEPT_REGRESSIONS !== '1') {
+          throw new Error(`refusing to record ${comparison.regressions.length} regressed case(s) for ${door}; set MYCO_EVAL_ACCEPT_REGRESSIONS=1 to record them:\n${comparison.regressions.join('\n')}`);
+        }
+        writeRecallBaseline(withTarget(gold.cases, recorded, door, measured));
         return;
       }
-      const baseline = recorded?.targets[FRONT_DOOR[target.name]];
-      if (baseline === undefined) throw new Error(`no recall baseline is recorded for ${FRONT_DOOR[target.name]}; record one with MYCO_EVAL_RECORD=1 npm run test:parity`);
-      const { regressions, drift } = compareToBaseline(gold.cases, measured, baseline);
-      expect({ target: target.name, regressions }).toEqual({ target: target.name, regressions: [] });
-      // Anything else that moved leaves the committed baseline, and the Recall quality it reports, describing another release.
-      expect({ target: target.name, staleBaseline: drift }).toEqual({ target: target.name, staleBaseline: [] });
+      if (comparison === null) throw new Error(`no recall baseline is recorded for ${door}; record one with MYCO_EVAL_RECORD=1 npm run test:parity`);
+      expect({ target: door, regressions: comparison.regressions }).toEqual({ target: door, regressions: [] });
+      // Anything else that moved leaves the committed baseline, and the Recall quality it reports, describing another
+      // release: record it again, and the recording lists what changed.
+      expect({ target: door, staleBaseline: [...comparison.improvements, ...comparison.drift] }).toEqual({ target: door, staleBaseline: [] });
     } finally {
       stub?.stop();
     }

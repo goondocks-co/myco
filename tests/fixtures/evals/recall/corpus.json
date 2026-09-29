@@ -2725,10 +2725,10 @@
    "id": "gotcha-ea1915d6",
    "observationType": "gotcha",
    "status": "active",
-   "content": "When an agent runs several `op` (1Password CLI) commands, batch them in one persistent terminal session: each new shell re-prompts for biometrics.\n\nUnlocking the 1Password app does not authorize every terminal. CLI app-integration approval is tied to the terminal session and expires after 10 minutes of inactivity (https://www.1password.dev/cli/app-integration-security). SSH-key use through the 1Password agent is a separate approval again. In the September 16, 2026 hosted-producer setup (session 01a08ba3), the agent saved and verified a recovery token using several separate command sessions, and the user was asked for biometrics repeatedly (supporting prompts cabc59e3, f0daf811). Fix going forward: keep one long-lived shell for secret operations and do them in a batch.",
+   "content": "When an agent runs several `op` (1Password CLI) commands, batch them in one persistent terminal session: each new shell re-prompts for biometrics.\n\nUnlocking the 1Password app does not authorize every terminal. CLI app-integration approval is tied to the terminal session and expires after 10 minutes of inactivity (https://www.1password.dev/cli/app-integration-security). SSH-key use through the 1Password agent is a separate approval again. In the September 16, 2026 hosted-producer setup (session 01a08ba3), the agent ran several `op` operations in separate command sessions, and the user was asked for biometrics repeatedly (supporting prompts cabc59e3, f0daf811). Fix going forward: keep one long-lived shell for secret operations and do them in a batch.",
    "agentLine": "When an agent runs several `op` (1Password CLI) commands, batch them in one persistent terminal session: each new shell re-prompts for biometrics.",
    "createdAt": 1790605977783,
-   "embedKey": "2b7fd2a072916af6e769f0717135648654bad9b2743ec3796530a4ca68c3a52d"
+   "embedKey": "155f1d03a73c4871fec70dbec23e127448549308e9fc836f5e414973a931630c"
   },
   {
    "id": "gotcha-ea8bc225",
@@ -3420,7 +3420,8 @@
   "firstName": "the owner's first name replaced with 'the owner' in content and agentLine",
   "gotcha-91d22180": "sleep window, wake durations and run id removed",
   "gotcha-e95632f5": "recovery-key storage location (1Password) removed",
-  "vectors": "unchanged: production vectors of the unscrubbed text",
-  "gotcha-84b4659c": "container home path rewritten in words (the repository fixture gate forbids /home/<name>)"
- }
+  "gotcha-84b4659c": "container home path rewritten in words (the repository fixture gate forbids /home/<name>)",
+  "gotcha-ea1915d6": "recovery-token detail removed from content"
+ },
+ "vectors": "production vectors of the committed text wherever the committed text is what production embedded; every other row (redacted or scrubbed spores, plans with their body omitted, redacted prompts) re-embedded from its committed text with @cf/baai/bge-m3"
 }

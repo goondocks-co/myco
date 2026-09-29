@@ -13,7 +13,7 @@ import { EMBEDDING_TEXT_CHARS } from '@myco-server-worker/core/embedding/provide
 import { INJECTION_TARGET_ITEMS } from '@myco-server-worker/core/injection.js';
 import { loadRecallFixture } from '../parity/recall/fixture.ts';
 import { UnknownFixtureText } from '../parity/recall/lookup.ts';
-import { compareToBaseline, scoreCase, summarize, withTarget, type GoldCase, type RecallBaseline } from '../parity/recall/score.ts';
+import { compareToBaseline, describeComparison, scoreCase, summarize, withTarget, type GoldCase, type RecallBaseline } from '../parity/recall/score.ts';
 import { caseCount, recallBaseline, recallQuality } from '@myco-server-worker/evals/recall-baseline.js';
 import { RECALL_BASELINE_FILE, readRecallBaseline, renderRecallBaseline } from '../parity/recall/baseline-file.ts';
 import { readFileSync } from 'node:fs';
@@ -41,33 +41,70 @@ describe('the ratchet against a recorded baseline', () => {
   const gold = [positive, negative];
   const recorded = summarize(gold, { p: { spores: ['a', 'c'], plans: ['plan-1'] }, n: { spores: [], plans: ['plan-1'] } });
 
+  it('records each case with its pass and graded score beside what it served', () => {
+    expect(recorded.cases).toEqual({
+      p: { spores: ['a', 'c'], plans: ['plan-1'], pass: false, graded: 0.1667 },
+      n: { spores: [], plans: ['plan-1'], pass: false, graded: 0 },
+    });
+    expect({ recallQuality: recorded.recallQuality, passed: recorded.passed }).toEqual({ recallQuality: 0.0833, passed: 0 });
+  });
+
   it('holds an unchanged release', () => {
     expect(compareToBaseline(gold, { p: { spores: ['a', 'c'], plans: ['plan-1'] }, n: { spores: [], plans: ['plan-1'] } }, recorded))
-      .toEqual({ regressions: [], drift: [] });
+      .toEqual({ regressions: [], improvements: [], drift: [] });
   });
 
   it('fails a case that stops serving an expected spore it served at the baseline', () => {
     expect(compareToBaseline(gold, { p: { spores: ['c'], plans: ['plan-1'] }, n: { spores: [], plans: ['plan-1'] } }, recorded).regressions)
-      .toEqual(['p: no longer serves expected a']);
+      .toEqual(['p: no longer serves expected a; graded score fell 0.1667 → 0.0000']);
   });
 
-  it('fails a case that starts serving a must-not, a new plan, or for a negative anything new', () => {
+  it('fails a case that starts serving a must-not, more plans, or for a negative more spores', () => {
     expect(compareToBaseline(gold, { p: { spores: ['a', 'x'], plans: ['plan-1', 'plan-2'] }, n: { spores: ['c'], plans: ['plan-1'] } }, recorded).regressions)
-      .toEqual(['p: now serves unwanted x, plan-2', 'n: now serves unwanted c']);
+      .toEqual(['p: now serves must-not x; now serves 2 plans (was 1); graded score fell 0.1667 → 0.1250', 'n: now serves 1 spore (was 0)']);
   });
 
-  it('calls any other change a stale baseline, improvements included, so the recorded score always describes this release', () => {
-    const better = compareToBaseline(gold, { p: { spores: ['a', 'b'], plans: [] }, n: { spores: [], plans: [] } }, recorded);
-    expect(better.regressions).toEqual([]);
-    expect(better.drift.map((d) => d.split(':')[0])).toEqual(['p', 'n']);
+  it('fails a negative whose plans give way to spores, though it serves as many items as before', () => {
+    expect(compareToBaseline(gold, { p: { spores: ['a', 'c'], plans: ['plan-1'] }, n: { spores: ['c'], plans: [] } }, recorded).regressions)
+      .toEqual(['n: now serves 1 spore (was 0)']);
+  });
+
+  it('reads one unnamed unwanted item swapped for another as a change, not a regression', () => {
+    const swapped = compareToBaseline(gold, { p: { spores: ['a', 'c'], plans: ['plan-2'] }, n: { spores: [], plans: ['plan-3'] } }, recorded);
+    expect({ regressions: swapped.regressions, drift: swapped.drift.map((d) => d.split(':')[0]) }).toEqual({ regressions: [], drift: ['p', 'n'] });
+  });
+
+  it('fails a positive whose graded score falls to an extra spore nobody listed, which no other axis names', () => {
+    expect(compareToBaseline(gold, { p: { spores: ['a', 'c', 'd'], plans: ['plan-1'] }, n: { spores: [], plans: ['plan-1'] } }, recorded).regressions)
+      .toEqual(['p: graded score fell 0.1667 → 0.1250']);
+  });
+
+  it('sets improvements and same-score changes apart, and fails both as a stale baseline in the gate', () => {
+    const better = compareToBaseline(gold, { p: { spores: ['a', 'b'], plans: [] }, n: { spores: [], plans: ['plan-1'] } }, recorded);
+    expect(better).toEqual({ regressions: [], improvements: ['p: graded score rose 0.1667 → 1.0000, now passes'], drift: [] });
+    // A neutral spore swapped for another serves the same score: nothing better or worse, but not the recorded block.
+    const swapped = compareToBaseline(gold, { p: { spores: ['a', 'd'], plans: ['plan-1'] }, n: { spores: [], plans: ['plan-1'] } }, recorded);
+    expect({ regressions: swapped.regressions, improvements: swapped.improvements, drift: swapped.drift.map((d) => d.split(':')[0]) })
+      .toEqual({ regressions: [], improvements: [], drift: ['p'] });
+  });
+
+  it('describes a comparison case by case, so a recording shows what it changes', () => {
+    const text = describeComparison('self-hosted', compareToBaseline(gold, { p: { spores: ['c'], plans: ['plan-1'] }, n: { spores: [], plans: [] } }, recorded));
+    expect(text.split('\n')).toEqual([
+      'recall gold set, self-hosted: 1 regressed, 1 improved, 0 changed at the same score',
+      '  regressed (1):',
+      '    p: no longer serves expected a; graded score fell 0.1667 → 0.0000',
+      '  improved (1):',
+      '    n: graded score rose 0.0000 → 1.0000, now passes',
+    ]);
   });
 
   it('takes the lower target as the headline, so a front door that serves worse is the one reported', () => {
-    const one = withTarget(gold, null, 'selfhosted', { p: { spores: ['a', 'b'], plans: [] }, n: { spores: [], plans: [] } });
-    const both = withTarget(gold, one, 'cloudflare', { p: { spores: ['a'], plans: [] }, n: { spores: [], plans: [] } });
-    expect(Object.keys(both.targets)).toEqual(['cloudflare', 'selfhosted']);
-    expect(both.recallQuality).toBe(both.targets.cloudflare!.recallQuality);
-    expect(both.recallQuality).toBeLessThan(both.targets.selfhosted!.recallQuality);
+    const one = withTarget(gold, null, 'self-hosted', { p: { spores: ['a', 'b'], plans: [] }, n: { spores: [], plans: [] } });
+    const both = withTarget(gold, one, 'hosted', { p: { spores: ['a'], plans: [] }, n: { spores: [], plans: [] } });
+    expect(Object.keys(both.targets)).toEqual(['hosted', 'self-hosted']);
+    expect(both.recallQuality).toBe(both.targets.hosted!.recallQuality);
+    expect(both.recallQuality).toBeLessThan(both.targets['self-hosted']!.recallQuality);
   });
 });
 
@@ -111,7 +148,8 @@ describe('the committed baseline', () => {
     expect(baseline.caseCount).toBe(gold.cases.length);
     for (const [name, target] of Object.entries(baseline.targets)) {
       // The summary is derived, never written by hand: recomputing it from the recorded blocks gives it back.
-      expect({ name, summary: summarize(gold.cases, target.cases) }).toEqual({ name, summary: target });
+      const served = Object.fromEntries(Object.entries(target.cases).map(([id, c]) => [id, { spores: c.spores, plans: c.plans }]));
+      expect({ name, summary: summarize(gold.cases, served) }).toEqual({ name, summary: target });
     }
     expect(baseline.recallQuality).toBe(Math.min(...Object.values(baseline.targets).map((t) => t.recallQuality)));
     // The constants the Measures page imports are the record's own headline.

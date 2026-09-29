@@ -50,9 +50,11 @@ if (!process.env.MYCO_PARITY) {
     writeFileSync(process.env.MYCO_PARITY_PLAN_FILE, JSON.stringify(selected.map((scenario) => scenario.name)));
     test.skip('parity shard manifest', () => {});
   } else {
-    // The self-hosted target's vector store loads sqlite-vec, which needs an extension-enabled SQLite registered
-    // before the first connection opens; a no-op wherever the runtime's own library already loads extensions.
-    configureSqliteLibrary();
+    // A self-hosted scenario that queries vectors loads sqlite-vec, which needs an extension-enabled SQLite registered
+    // before the first connection in this process opens; a no-op wherever the runtime's own library already loads
+    // extensions. A host that has none fails only the scenarios that need one, and says why.
+    let sqliteVecRefusal: string | null = null;
+    try { configureSqliteLibrary(); } catch (error) { sqliteVecRefusal = error instanceof Error ? error.message : String(error); }
     const boots = [
       { name: 'selfhosted' as const, boot: (_scenario?: ParityScenario) => bootSelfhosted() },
       { name: 'cloudflare' as const, boot: (scenario?: ParityScenario) => bootCloudflare(scenario?.dedicated?.cloudflare ?? {}) },
@@ -88,6 +90,9 @@ if (!process.env.MYCO_PARITY) {
             await target?.stop();
           });
           it(scenario.name, async () => {
+            if (name === 'selfhosted' && scenario.dedicated!.sqliteVec === true && sqliteVecRefusal !== null) {
+              throw new Error(`this scenario needs sqlite-vec on the self-hosted target, which this host cannot load: ${sqliteVecRefusal}`);
+            }
             if (target === null) throw new Error(`${name} target never booted`);
             await runScenario(target, scenario);
           }, scenario.dedicated!.timeoutMs);

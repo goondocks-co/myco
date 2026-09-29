@@ -11,14 +11,16 @@
  *   items; none is ever expected).
  * - A **negative** case passes, and scores 1, only when nothing is injected.
  *
- * The release gate is a per-case ratchet on two axes against the baseline
- * recorded for the same target: a case may not stop serving an expected spore
- * it served at the baseline, and may not start serving an unwanted item — a
- * must-not spore, any plan, or for a negative anything — it did not serve at
- * the baseline. Any other change to what a case serves leaves the baseline
- * describing a release that no longer exists, so it fails too and asks for the
- * baseline to be recorded again: the committed baseline is always what this
- * code serves, which is what the Recall quality measure reports.
+ * The release gate is a per-case ratchet against the baseline recorded for
+ * the same target. A case regresses when it stops serving an expected spore it
+ * served at the baseline, when it starts serving a must-not spore it did not,
+ * when it serves more plans than it did (a negative, also more spores), or
+ * when its graded score falls (an extra spore nobody listed still
+ * dilutes the block). Any other change leaves the baseline describing a release
+ * that no longer exists, so it fails too and asks for the baseline to be
+ * recorded again: the committed baseline is always what this code serves,
+ * which is what the Recall quality measure reports. Recording compares first,
+ * and refuses to write a regression unless it is accepted by name.
  */
 export interface GoldCase {
   id: string;
@@ -53,11 +55,17 @@ export function scoreCase(gold: GoldCase, served: Served): CaseScore {
   return { pass, graded: recall * precision, expectedServed, unwanted };
 }
 
+/** One case as recorded: what it served, and what that scores, so a baseline diff shows each case moving. */
+export interface RecordedCase extends Served {
+  pass: boolean;
+  graded: number;
+}
+
 export interface TargetBaseline {
   /** The mean graded score over every case. */
   recallQuality: number;
   passed: number;
-  cases: Record<string, Served>;
+  cases: Record<string, RecordedCase>;
 }
 
 export interface RecallBaseline {
@@ -68,17 +76,20 @@ export interface RecallBaseline {
   targets: Record<string, TargetBaseline>;
 }
 
-/** A target's summary, derived from what each case served. */
+/** A target's record, every figure derived from what each case served. */
 export function summarize(gold: readonly GoldCase[], cases: Record<string, Served>): TargetBaseline {
-  const scores = gold.map((g) => {
+  const recorded: Record<string, RecordedCase> = {};
+  for (const g of gold) {
     const served = cases[g.id];
     if (served === undefined) throw new Error(`no served block recorded for ${g.id}`);
-    return scoreCase(g, served);
-  });
+    const score = scoreCase(g, served);
+    recorded[g.id] = { spores: served.spores, plans: served.plans, pass: score.pass, graded: round(score.graded) };
+  }
+  const all = Object.values(recorded);
   return {
-    recallQuality: round(scores.reduce((sum, s) => sum + s.graded, 0) / scores.length),
-    passed: scores.filter((s) => s.pass).length,
-    cases,
+    recallQuality: round(all.reduce((sum, c) => sum + c.graded, 0) / all.length),
+    passed: all.filter((c) => c.pass).length,
+    cases: recorded,
   };
 }
 
@@ -95,31 +106,65 @@ export function withTarget(gold: readonly GoldCase[], baseline: RecallBaseline |
 }
 
 export interface Comparison {
-  /** Changes that make a case worse on either axis. */
+  /** Cases worse on any axis: an expected spore lost, an unwanted item gained, or a lower graded score. */
   regressions: string[];
-  /** Any other change to a case's served block: the baseline no longer describes this release. */
+  /** Cases better and worse on none: the baseline undersells this release. */
+  improvements: string[];
+  /** Cases serving something else at the same score: the baseline no longer describes this release. */
   drift: string[];
 }
 
+const servedOf = (c: Served): Served => ({ spores: c.spores, plans: c.plans });
+const figure = (n: number): string => n.toFixed(4);
+
 export function compareToBaseline(gold: readonly GoldCase[], current: Record<string, Served>, baseline: TargetBaseline): Comparison {
   const regressions: string[] = [];
+  const improvements: string[] = [];
   const drift: string[] = [];
   for (const g of gold) {
-    const now = current[g.id];
-    const then = baseline.cases[g.id];
-    if (now === undefined) throw new Error(`no served block measured for ${g.id}`);
-    if (then === undefined) { drift.push(`${g.id}: not in the baseline`); continue; }
+    const measured = current[g.id];
+    const recorded = baseline.cases[g.id];
+    if (measured === undefined) throw new Error(`no served block measured for ${g.id}`);
+    if (recorded === undefined) { drift.push(`${g.id}: not in the baseline`); continue; }
+    const now = servedOf(measured);
+    const then = servedOf(recorded);
     const before = scoreCase(g, then);
     const after = scoreCase(g, now);
     const lost = before.expectedServed.filter((id) => !after.expectedServed.includes(id));
-    const gained = after.unwanted.filter((id) => !before.unwanted.includes(id));
-    if (lost.length > 0) regressions.push(`${g.id}: no longer serves expected ${lost.join(', ')}`);
-    if (gained.length > 0) regressions.push(`${g.id}: now serves unwanted ${gained.join(', ')}`);
-    if (lost.length === 0 && gained.length === 0 && JSON.stringify(now) !== JSON.stringify(then)) {
+    // A must-not is named, so gaining one is judged by identity. Plans, and on a negative its spores, are unwanted
+    // without being named: one swapped for another is the same failure, so only more of them is worse. The two are
+    // counted apart, so spores taking the places plans held on a negative still reads as worse.
+    const named = (served: Served) => served.spores.filter((id) => g.mustNot.includes(id));
+    const gainedNamed = named(now).filter((id) => !named(then).includes(id));
+    const plural = (n: number, noun: string) => `${n} ${noun}${n === 1 ? '' : 's'}`;
+    const worse: string[] = [];
+    if (lost.length > 0) worse.push(`no longer serves expected ${lost.join(', ')}`);
+    if (gainedNamed.length > 0) worse.push(`now serves must-not ${gainedNamed.join(', ')}`);
+    if (g.kind === 'negative' && now.spores.length > then.spores.length) {
+      worse.push(`now serves ${plural(now.spores.length, 'spore')} (was ${then.spores.length})`);
+    }
+    if (now.plans.length > then.plans.length) worse.push(`now serves ${plural(now.plans.length, 'plan')} (was ${then.plans.length})`);
+    if (round(after.graded) < round(before.graded)) worse.push(`graded score fell ${figure(before.graded)} → ${figure(after.graded)}`);
+    if (worse.length > 0) regressions.push(`${g.id}: ${worse.join('; ')}`);
+    else if (round(after.graded) > round(before.graded) || (after.pass && !before.pass)) {
+      improvements.push(`${g.id}: graded score rose ${figure(before.graded)} → ${figure(after.graded)}${after.pass && !before.pass ? ', now passes' : ''}`);
+    } else if (JSON.stringify(now) !== JSON.stringify(then)) {
       drift.push(`${g.id}: served ${JSON.stringify(now)}, baseline ${JSON.stringify(then)}`);
     }
   }
-  return { regressions, drift };
+  return { regressions, improvements, drift };
+}
+
+/** What recording would change, case by case, in the words a reviewer reads. */
+export function describeComparison(target: string, comparison: Comparison): string {
+  const section = (title: string, lines: string[]) => lines.length === 0 ? [] : [`  ${title} (${lines.length}):`, ...lines.map((l) => `    ${l}`)];
+  const { regressions, improvements, drift } = comparison;
+  return [
+    `recall gold set, ${target}: ${regressions.length} regressed, ${improvements.length} improved, ${drift.length} changed at the same score`,
+    ...section('regressed', regressions),
+    ...section('improved', improvements),
+    ...section('changed', drift),
+  ].join('\n');
 }
 
 const round = (n: number): number => Math.round(n * 10_000) / 10_000;

@@ -1817,10 +1817,10 @@
     "date": "2026-09-17",
     "sessionId": "28251391-e5a6-41fd-b270-c0f27951a744",
     "promptId": "5c4b1919-eaf6-5006-8e83-17c5bfa31725",
-    "redacted": false
+    "redacted": true
    },
-   "prompt": "One final source-grounded update guard before cloud: updateCloudflareDeployment ensures vector index and recovery bucket, then applyMigrations uses record.databaseName; current TARGET pins neither databaseName nor vectorIndexName. Include resolved resource names used by update in record guard (databaseName, vectorIndexName, wrapKeySecretName and store binding identity from preserved record, safe metadata only), and a read-only Vectorize existence/schema/filter preflight so update cannot silently create a missing resource. Recovery bucket existence is already proved by artifact reads. Use existing canonical read/provider commands, no cloud action yourself. Existing retained vector name is myco-producer-1316-20260916-vectors; do not open secret files. Freeze again after focused tests. Parent will continue independent local guard tests meanwhile.",
-   "embedKey": "d44c2368ac7e1bfe68bcbeb9caeaa3fa9073e083b9948e23434c97e62838559d",
+   "prompt": "One final source-grounded update guard before cloud: updateCloudflareDeployment ensures vector index and recovery bucket, then applyMigrations uses record.databaseName; current TARGET pins neither databaseName nor vectorIndexName. Include resolved resource names used by update in record guard (databaseName, vectorIndexName, wrapKeySecretName and store binding identity from preserved record, safe metadata only), and a read-only Vectorize existence/schema/filter preflight so update cannot silently create a missing resource. Recovery bucket existence is already proved by artifact reads. Use existing canonical read/provider commands, no cloud action yourself. Existing retained vector name is <vector-index>; do not open secret files. Freeze again after focused tests. Parent will continue independent local guard tests meanwhile.",
+   "embedKey": "d93968fe4f7504247eb8fa6dd66ace6d36bcd174c8fb0c9742fbb351325cd5c9",
    "expected": [
     "gotcha-ee798214",
     "architecture-3f7cbad0"
