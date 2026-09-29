@@ -48,6 +48,7 @@ export const PRODUCER_NAME = 'recovery';
 interface AttemptRow {
   id: number; stage: string; prefix: string; started_at: number; error: string | null; attempts: number;
   bookmark: string | null; polls: number; export_started_at: number | null; export_completed_at: number | null;
+  export_requested_at: number | null; export_answered_at: number | null;
   re_exports: number; sql_bytes: number | null; sql_etag: string | null; upload_id: string | null;
   download_offset: number; reconcile_offset: number; reconciled: number; locator: string; tables: string;
   schema_sha256: string; schema_bytes: number; captured: string; defined: string; scan: string; scan_bytes: string;
@@ -70,6 +71,7 @@ const objectOf = (row: ObjectRow): AttemptObject => ({
 const COLUMN: Record<keyof AttemptState, string> = {
   id: 'id', stage: 'stage', prefix: 'prefix', startedAt: 'started_at', error: 'error', attempts: 'attempts',
   bookmark: 'bookmark', polls: 'polls', exportStartedAt: 'export_started_at', exportCompletedAt: 'export_completed_at',
+  exportRequestedAt: 'export_requested_at', exportAnsweredAt: 'export_answered_at',
   reExports: 're_exports', sqlBytes: 'sql_bytes', sqlEtag: 'sql_etag', uploadId: 'upload_id',
   downloadOffset: 'download_offset', reconcileOffset: 'reconcile_offset', reconciled: 'reconciled',
   tables: 'tables', captured: 'captured', defined: 'defined', scan: 'scan', scanBytes: 'scan_bytes',
@@ -100,6 +102,8 @@ const ADDED_COLUMNS: readonly [string, string][] = [
   ['prune_started_at', 'INTEGER'],
   ['prune_cursor', 'INTEGER NOT NULL DEFAULT 0'],
   ['payload_pruned_at', 'INTEGER'],
+  ['export_requested_at', 'INTEGER'],
+  ['export_answered_at', 'INTEGER'],
 ];
 
 /** Columns holding a list or a record are written as JSON text, so one update path serves every field. */
@@ -111,6 +115,7 @@ const stateOf = (row: AttemptRow): AttemptState => ({
   id: row.id, stage: row.stage as AttemptState['stage'], prefix: row.prefix, startedAt: row.started_at,
   error: row.error as AttemptState['error'], attempts: row.attempts, bookmark: row.bookmark, polls: row.polls,
   exportStartedAt: row.export_started_at, exportCompletedAt: row.export_completed_at, reExports: row.re_exports,
+  exportRequestedAt: row.export_requested_at, exportAnsweredAt: row.export_answered_at,
   sqlBytes: row.sql_bytes, sqlEtag: row.sql_etag, uploadId: row.upload_id,
   downloadOffset: row.download_offset, reconcileOffset: row.reconcile_offset, reconciled: row.reconciled,
   tables: JSON.parse(row.tables) as string[], captured: JSON.parse(row.captured) as TableDefinitions,
@@ -242,6 +247,13 @@ export class RecoveryProducer extends DurableObject<CloudflareBindings> {
           `SELECT COUNT(*) AS registered, COUNT(staged_sha256) AS staged FROM objects WHERE attempt = ?`, id,
         ).one() as unknown as { registered: number; staged: number };
         return { registered: row.registered, staged: row.staged };
+      },
+      // Any attempt's, whatever its stage: an export a failed attempt requested may still run.
+      unsettledExport: () => {
+        const held = sql.exec(
+          'SELECT id, export_requested_at, export_answered_at FROM attempts WHERE export_requested_at IS NOT NULL ORDER BY id DESC LIMIT 1',
+        ).toArray()[0] as unknown as { id: number; export_requested_at: number; export_answered_at: number | null } | undefined;
+        return held === undefined ? null : { attempt: held.id, requestedAt: held.export_requested_at, answeredAt: held.export_answered_at };
       },
       signedUrl: (id) => storage.get<string>(`signed:${id}`).then((held) => held ?? null),
       setSignedUrl: async (id, url) => {

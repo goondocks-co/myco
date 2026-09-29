@@ -10,7 +10,8 @@ import {
   CLOUDFLARE_API_ORIGIN, cloudflareProducerPorts, exportApiOrigin, transientStatus,
 } from '@myco-server-worker/platform/cloudflare/recovery-export.js';
 import { WAKE_CONTINUATIONS } from '@myco-server-worker/core/jobs.js';
-import { TransientProducerFailure } from '@myco-server-worker/core/recovery-producer.js';
+import { TransientProducerFailure, type ExportAnswer } from '@myco-server-worker/core/recovery-producer.js';
+import { readD1ExportAnswer, type D1ExportReading } from '@goondocks/myco-shared/d1-export';
 
 const TOKEN = 'account-token-value-not-a-real-credential';
 
@@ -85,7 +86,7 @@ it('carries no credential in what a provider failure reports', async () => {
   try {
     const answer = await cloudflareProducerPorts(target(), bucket(), source()).pollExport(null);
     // A refusal answers classified facts: a cause, a status, and whether another attempt is worth spending.
-    expect(answer).toEqual({ status: 'error', bookmark: null, failure: { cause: 'http', status: 403, transient: false } });
+    expect(answer).toEqual({ status: 'refused', failure: { cause: 'http', status: 403, transient: false } });
     expect(JSON.stringify(answer)).not.toContain(TOKEN);
   } finally { globalThis.fetch = original; }
 });
@@ -348,4 +349,52 @@ it('stops streaming and releases the source when the caller stops waiting', asyn
   expect(held.cancelled).toBe(true);
   expect(held.delivered).toBeLessThan(64 * 1024 * 1024);
   expect(store.writes).toEqual([]);
+});
+
+it('puts every export answer in the producer\'s words as the one shared reading reads it (#1480)', async () => {
+  const ok = (result: unknown) => ({ success: true, errors: [], result });
+  const rows: Array<{ what: string; status: number; body: unknown; asked: string | null }> = [
+    { what: 'running', status: 200, body: ok({ success: true, status: 'active', at_bookmark: 'b2' }), asked: 'b1' },
+    { what: 'running with no status', status: 200, body: ok({ at_bookmark: 'b2' }), asked: 'b1' },
+    { what: 'nothing at all', status: 200, body: ok({}), asked: 'b1' },
+    { what: 'running with no bookmark on a fresh request', status: 200, body: ok({ status: 'active' }), asked: null },
+    { what: 'complete', status: 200, body: ok({ status: 'complete', at_bookmark: 'b3', result: { signed_url: 'https://signed.example/one' } }), asked: 'b1' },
+    { what: 'complete with no bookmark', status: 200, body: ok({ status: 'complete', result: { signed_url: 'https://signed.example/one' } }), asked: null },
+    { what: 'complete with no download', status: 200, body: ok({ status: 'complete', at_bookmark: 'b3' }), asked: 'b1' },
+    { what: 'ended', status: 200, body: ok({ status: 'error', error: 'reset' }), asked: 'b1' },
+    { what: 'a failed result', status: 200, body: ok({ success: false, error: 'busy' }), asked: 'b1' },
+    { what: 'an error with no status', status: 200, body: ok({ error: 'busy' }), asked: 'b1' },
+    { what: 'a null result', status: 200, body: { success: true, result: null }, asked: 'b1' },
+    { what: 'an outer refusal', status: 200, body: { success: false, errors: [{ code: 7500, message: 'internal' }] }, asked: 'b1' },
+    { what: 'a body that is not JSON', status: 200, body: undefined, asked: 'b1' },
+    { what: 'D1 internal error', status: 400, body: { success: false, errors: [{ code: 7500, message: 'internal' }] }, asked: 'b1' },
+    { what: 'a 403 that is not an authentication error', status: 403, body: { success: false, errors: [{ code: 7403, message: 'no' }] }, asked: 'b1' },
+    { what: 'an authentication error', status: 403, body: { success: false, errors: [{ code: 10000, message: 'Authentication error' }] }, asked: null },
+    { what: 'a 401', status: 401, body: undefined, asked: 'b1' },
+    { what: 'a 408', status: 408, body: undefined, asked: 'b1' },
+    { what: 'a 503', status: 503, body: undefined, asked: null },
+  ];
+  // The mapping the producer states: each reading, and the answer that carries it in the producer's words.
+  const expected = (read: D1ExportReading, asked: string | null): ExportAnswer => {
+    switch (read.kind) {
+      case 'running': return { status: 'running', bookmark: read.bookmark };
+      case 'complete': return read.bookmark === null
+        ? { status: 'error', bookmark: null, failure: { cause: 'protocol', status: null, transient: false } }
+        : { status: 'complete', bookmark: read.bookmark, signedUrl: read.signedUrl };
+      case 'ended': return { status: 'ended', bookmark: read.bookmark };
+      case 'refused-login': return { status: 'refused', failure: { cause: 'http', status: read.status, transient: false } };
+      case 'unknown': return { status: 'error', bookmark: read.bookmark ?? asked, failure: { cause: read.cause, status: read.status, transient: read.transient } };
+    }
+  };
+  const original = globalThis.fetch;
+  try {
+    for (const row of rows) {
+      globalThis.fetch = (async () => new Response(row.body === undefined ? '<html>not json</html>' : JSON.stringify(row.body), { status: row.status })) as unknown as typeof fetch;
+      const answer = await cloudflareProducerPorts(target(), bucket(), source()).pollExport(row.asked);
+      const read = readD1ExportAnswer(row.status, row.body, row.asked);
+      expect({ what: row.what, answer }).toEqual({ what: row.what, answer: expected(read, row.asked) });
+      // And no answer that names no status, or that refuses, reads as the export's end.
+      if (!['ended', 'complete'].includes(row.what)) expect({ what: row.what, ends: answer.status === 'ended' }).toEqual({ what: row.what, ends: false });
+    }
+  } finally { globalThis.fetch = original; }
 });
