@@ -8,14 +8,16 @@ You need a Deployment to move to, and an invite link for it. If your team alread
 
 ## Move a machine
 
+Run these one after another:
+
 ```bash
-curl -fsSL https://myco.sh/install.sh | sh
+curl --proto '=https' --tlsv1.2 -fsSL https://myco.sh/install.sh | sh -s -- --replace-1.4
 myco login <invite link>
 myco cutover --dry-run
 myco cutover
 ```
 
-The installer notices Myco 1.4 and says so. It puts the 2.0 binary in place and moves nothing; 1.4's hooks stop capturing from that moment until you finish, so run the rest straight away.
+On a machine with Myco 1.4 the installer installs nothing unless you pass `--replace-1.4`, because 2.0 takes 1.4's place and 1.4 stops capturing from that moment until the cutover finishes. Nothing of 1.4 is moved or deleted by the installer, so run the rest straight away.
 
 `myco login` signs this machine in to your Deployment.
 
