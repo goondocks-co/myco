@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { INVITE_CONTROLS, JOIN_PATH, REJOIN_FOR_ADMIN } from '@goondocks/myco-shared/member-protocol';
+import { INVITE_CONTROLS, JOIN_PATH, MEMBER_KEEPS_MACHINES, REJOIN_FOR_ADMIN } from '@goondocks/myco-shared/member-protocol';
 import { ConfirmDialog } from '../components/ui/confirm-dialog';
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '../components/ui/dialog';
 import { PageContainer } from '../components/ui/page-container';
@@ -169,7 +169,7 @@ export function Access() {
         title={target && isMe(target.id) ? 'Remove yourself?' : `Remove ${target?.label ?? target?.id ?? ''}?`}
         description={target && isMe(target.id)
           ? 'This is you. Your runtimes stop writing, your invitations are withdrawn, and you can no longer sign in. Your history stays.'
-          : 'Their runtimes stop writing at once, their open invitations are withdrawn, and they can no longer sign in. Their history stays.'}
+          : `Their runtimes stop writing at once, their open invitations are withdrawn, and they can no longer sign in. Their history stays. ${MEMBER_KEEPS_MACHINES}`}
         impact={target ? [{ label: 'runtimes', value: target.liveCredentials }] : undefined}
         confirmLabel="Remove"
         isPending={actions.revokeMember.isPending}

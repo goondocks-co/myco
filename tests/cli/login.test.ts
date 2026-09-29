@@ -5,7 +5,7 @@
  * that names a Project binds it, a link that names none signs in only, and every
  * refusal is named without the link appearing in the message.
  */
-import { REJOIN_HINT } from '@goondocks/myco-shared/member-protocol';
+import { MACHINE_IDENTITY_NOTE, REJOIN_HINT } from '@goondocks/myco-shared/member-protocol';
 import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
@@ -117,7 +117,7 @@ describe('myco login', () => {
     const fresh = await issueEnrollmentAuthority(rig.env.db, Date.now(), { role: 'member' });
     err.length = 0;
     expect(await run([`https://s/join#${fresh.key}`], deps(rig))).toBe(false);
-    expect(err.join('\n')).toContain(`this machine already belongs to a member of https://s (identity_claimed) — ${REJOIN_HINT}`);
+    expect(err.join('\n')).toContain(`this machine already belongs to a member of https://s (identity_claimed) — ${REJOIN_HINT}. ${MACHINE_IDENTITY_NOTE}.`);
 
     // The invitation the remedy names, for the member already here, signs it in.
     const memberId = (rig.env.sqlite.query('SELECT member_id FROM member_credentials').get() as { member_id: string }).member_id;
