@@ -357,6 +357,8 @@ export interface LegacyGrouping {
    * same session survives.
    */
   deleted: Set<string>;
+  /** Each deleted stored id left out, with every session id it may be held under: itself and each harness id it resolves to. */
+  deletedSessions: Map<string, string[]>;
   /** Stored ids deleted in 1.4 that no harness layout resolves a session for: reported, since a transcript of one could still be imported. */
   unmatchedDeletes: string[];
   /** Rows another machine captured, by that machine: this machine does not import them. */
@@ -399,22 +401,22 @@ export function groupLegacySessions(project: LegacyProject, aliases: ReadonlyMap
     const held = rowsBy.get(sessionId);
     if (held === undefined) rowsBy.set(sessionId, { agent: identity.agent, rows: [s] }); else held.rows.push(s);
   }
-  const deleted = new Set<string>();
+  const deletedSessions = new Map<string, string[]>();
   const unmatchedDeletes: string[] = [];
   for (const [storedId, sessionId] of deletedRows) {
     if (rowsBy.has(sessionId)) continue;
-    deleted.add(storedId);
-    deleted.add(sessionId);
+    deletedSessions.set(storedId, [...new Set([storedId, sessionId])]);
   }
   for (const storedId of project.deleted) {
     if (idOf.has(storedId)) continue;
     const resolved = resolveStoredId(storedId);
     if (LEGACY_MINTED_ID.test(storedId) && resolved.length === 1 && resolved[0] === storedId) unmatchedDeletes.push(storedId);
-    for (const id of [storedId, ...resolved]) deleted.add(id);
+    deletedSessions.set(storedId, [...new Set([storedId, ...resolved])]);
   }
+  const deleted = new Set([...deletedSessions.values()].flat());
   const groups = [...rowsBy.entries()].map(([sessionId, { agent, rows }]) => groupOf(sessionId, agent, rows, promptCount))
     .sort((a, b) => (a.winner.startedAt ?? 0) - (b.winner.startedAt ?? 0) || a.sessionId.localeCompare(b.sessionId));
-  return { groups, idOf, deleted, unmatchedDeletes: unmatchedDeletes.sort(), otherMachines };
+  return { groups, idOf, deleted, deletedSessions, unmatchedDeletes: unmatchedDeletes.sort(), otherMachines };
 }
 
 /** The id 1.4 minted for a session before it kept the harness's own: `sess_` and 32 hex digits. No harness names a session this way. */
@@ -477,7 +479,7 @@ export interface LegacyProjectReport {
   sessions: {
     /** Distinct sessions after rows naming one session are merged. */
     distinct: number;
-    /** Deleted in 1.4, or on the Deployment: not sent. */
+    /** Left out: deleted in 1.4 and not on the Deployment, or deleted on the Deployment. */
     deleted: number;
     /** Already on the Deployment: their facts and end are left as captured. */
     alreadyHeld: number;
@@ -493,6 +495,12 @@ export interface LegacyProjectReport {
   unaliased: string[];
   /** Stored ids deleted in 1.4 that no layout resolves a session for: a transcript of one could still be imported. */
   unmatchedDeletes: string[];
+  /** Sessions deleted in 1.4 that the Deployment already holds (a transcript import got there first): the owner deletes them. */
+  deletedButHeld: string[];
+  /** Sessions whose transcript is still being written: nothing is sent or decided for them, and a later run brings them. */
+  stillWriting: string[];
+  /** What a run that stopped early never reached. */
+  notAttempted?: { sessions: number; spores: number; lineage: number };
   /** Sessions another machine captured, by machine: that machine imports them. */
   otherMachines: Record<string, number>;
   prompts: number;
@@ -543,6 +551,9 @@ export interface LegacyImportDeps {
 /** Stops the whole import: the Deployment does not take what this build sends, so nothing more is sent to it. */
 class ServerTooOld extends Error {}
 
+/** Stops the whole import: one step waited `IMPORT_WAIT_CAP_MS` for a Deployment that never took it, so nothing after it is tried. */
+class WaitedOut extends Error {}
+
 type Probe = { held: Set<string>; withTranscript: Set<string>; tombstoned: Set<string>; vaultSourced: Set<string> };
 
 /** How a step ended: finished, stopped by a class the caller acts on, or failed (`detail` says why). */
@@ -553,7 +564,7 @@ const emptyProjectReport = (project: LegacyProject, root: string | null): Legacy
   root,
   vault: { sessions: project.sessions.length, prompts: project.prompts.length, plans: project.plans.length, spores: project.spores.length, lineage: project.resolutions.length },
   sessions: { distinct: 0, deleted: 0, alreadyHeld: 0, transcriptsShipped: 0, transcriptsHeld: 0, fromVault: 0, resumed: 0 },
-  aliases: [], unaliased: [], unmatchedDeletes: [], otherMachines: {},
+  aliases: [], unaliased: [], unmatchedDeletes: [], deletedButHeld: [], stillWriting: [], otherMachines: {},
   prompts: 0, responses: 0, plans: { sent: 0, empty: 0, unsent: 0 }, spores: { saved: 0, duplicate: 0, refused: 0 },
   lineage: { recorded: 0, duplicate: 0, refused: 0, malformed: 0 }, refusals: [], failures: [], malformed: [],
 });
@@ -627,7 +638,7 @@ export async function runLegacyImport(opts: LegacyImportOptions, deps: LegacyImp
   const startReport = (g: Prepared): LegacyProjectReport => {
     const r = emptyProjectReport(g.project, g.root);
     r.sessions.distinct = g.groups.length;
-    r.sessions.deleted = g.project.deleted.size;
+    r.sessions.deleted = g.deletedSessions.size;
     r.aliases = g.matched;
     r.unaliased = g.unmatched;
     r.unmatchedDeletes = g.unmatchedDeletes;
@@ -662,9 +673,10 @@ export async function runLegacyImport(opts: LegacyImportOptions, deps: LegacyImp
   /**
    * Run `step` until it ends on anything but `retry`. A rate limit, a
    * Deployment asking to be retried and a network fault are waited out, for
-   * up to `IMPORT_WAIT_CAP_MS` in all, saying so at every wait; another server
-   * error is retried `SERVER_FAULT_RETRIES` times; a status no retry changes
-   * fails the step at once. A failed step says why in `detail`.
+   * up to `IMPORT_WAIT_CAP_MS` in all, saying so at every wait, and past that
+   * stop the whole import (`WaitedOut`); another server error is retried
+   * `SERVER_FAULT_RETRIES` times; a status no retry changes fails the step at
+   * once. A failed step says why in `detail`.
    */
   const settle = async <T extends StepEnd>(step: () => Promise<T>): Promise<T | StepEnd> => {
     let faults = 0;
@@ -677,7 +689,7 @@ export async function runLegacyImport(opts: LegacyImportOptions, deps: LegacyImp
       if (verdict === 'fail') return { endedBy: 'failed', detail: `the Deployment answered ${status}` };
       if (verdict === 'fault' && ++faults > SERVER_FAULT_RETRIES) return { endedBy: 'failed', detail: `the Deployment kept failing (${status})` };
       const wait = retryWaitMs(verdict === 'fault' ? faults : attempt);
-      if (waited + wait > IMPORT_WAIT_CAP_MS) return { endedBy: 'failed', detail: `still unable to send after waiting ${Math.round(waited / 60_000)} min` };
+      if (waited + wait > IMPORT_WAIT_CAP_MS) throw new WaitedOut(`the Deployment ${status === undefined ? 'could not be reached' : `answered ${status}`} for ${Math.round(waited / 60_000)} min; nothing after this was attempted`);
       progress(`the Deployment ${status === undefined ? 'could not be reached' : `answered ${status}`}; trying again in ${Math.round(wait / 1000)} s`);
       await sleep(wait);
       waited += wait;
@@ -686,13 +698,24 @@ export async function runLegacyImport(opts: LegacyImportOptions, deps: LegacyImp
   };
   const failed = (what: string, end: StepEnd): string => `${what}: ${end.detail ?? 'could not be sent'}`;
 
+  const untouched = (g: Prepared) => ({ sessions: g.groups.length, spores: g.project.spores.length, lineage: g.project.resolutions.length });
   try {
-    for (const g of prepared) {
+    for (const [index, g] of prepared.entries()) {
       const r = startReport(g);
       report.projects.push(r);
       progress(`${g.project.projectId}: ${g.groups.length} sessions, ${g.project.spores.length} spores, ${g.project.plans.length} plans`);
-      const ended = await importProject(g, r);
-      if (ended !== undefined) r.endedBy = ended;
+      r.notAttempted = untouched(g);
+      try {
+        const ended = await importProject(g, r);
+        if (ended !== undefined) r.endedBy = ended;
+        else r.notAttempted = undefined;
+      } catch (error) {
+        if (!(error instanceof WaitedOut)) throw error;
+        r.failures.push(error.message);
+        r.endedBy = UNREACHABLE;
+        for (const rest of prepared.slice(index + 1)) report.projects.push({ ...startReport(rest), endedBy: UNREACHABLE, notAttempted: untouched(rest) });
+        break;
+      }
     }
   } catch (error) {
     if (!(error instanceof ServerTooOld)) throw error;
@@ -712,10 +735,19 @@ export async function runLegacyImport(opts: LegacyImportOptions, deps: LegacyImp
     const newlyDeleted = [...g.deleted].filter((id) => done.sources.get(id) !== 'deleted');
     ledger.append(...newlyDeleted.map((session) => ({ k: 'source' as const, session, from: 'deleted' as const })));
 
-    const probe = await settle(() => probeSessions(projectId, g.groups.filter((s) => !done.sessions.has(s.sessionId)).map((s) => s.sessionId)));
-    if (probe.endedBy === 'failed') { r.failures.push(failed('what the Deployment holds of these sessions', probe)); return undefined; }
+    const deletedIds = [...new Set([...g.deletedSessions.values()].flat())];
+    const probe = await settle(() => probeSessions(projectId, [...g.groups.filter((s) => !done.sessions.has(s.sessionId)).map((s) => s.sessionId), ...deletedIds]));
+    if (probe.endedBy === 'failed') { r.failures.push(failed('what the Deployment holds of these sessions', probe)); return 'failed'; }
     if (probe.endedBy !== undefined) return probe.endedBy;
     const held = (probe as { probe: Probe }).probe;
+    // A deletion is left out only where the Deployment does not hold the session already: a transcript import can get there first.
+    for (const ids of g.deletedSessions.values()) {
+      const onDeployment = ids.filter((id) => held.held.has(id));
+      if (onDeployment.length === 0) continue;
+      r.sessions.deleted -= 1;
+      r.deletedButHeld.push(...onDeployment);
+    }
+    r.deletedButHeld.sort();
     const promptsBy = groupBy(project.prompts, (p) => p.sessionId);
     const plansBy = groupBy(project.plans.filter((p) => p.sessionId !== null), (p) => g.idOf.get(p.sessionId as string) ?? (p.sessionId as string));
     /** Sessions whose prompts came from the vault: their prompt ids exist on the Deployment. */
@@ -723,10 +755,12 @@ export async function runLegacyImport(opts: LegacyImportOptions, deps: LegacyImp
     const present = new Set<string>(done.sessions);
 
     for (const group of g.groups) {
+      r.notAttempted!.sessions -= 1;
       if (done.sessions.has(group.sessionId)) { r.sessions.resumed += 1; continue; }
       if (held.tombstoned.has(group.sessionId)) { r.sessions.deleted += 1; continue; }
       const ended = await settle(() => importSession(group));
       if (ended.endedBy === 'failed') { r.failures.push(failed(`session ${group.sessionId}`, ended)); continue; }
+      if (ended.endedBy === STILL_WRITING) { r.stillWriting.push(group.sessionId); continue; }
       if (ended.endedBy === 'deleted' || ended.endedBy === REFUSED) continue;
       if (ended.endedBy !== undefined) return ended.endedBy;
       present.add(group.sessionId);
@@ -735,6 +769,7 @@ export async function runLegacyImport(opts: LegacyImportOptions, deps: LegacyImp
     r.plans.unsent = project.plans.length - r.plans.sent - r.plans.empty;
 
     for (const spore of project.spores) {
+      r.notAttempted!.spores -= 1;
       if (done.spores.has(spore.id)) { r.spores.duplicate += 1; continue; }
       const sessionId = spore.sessionId === null ? null : g.idOf.get(spore.sessionId) ?? null;
       const onDeployment = sessionId !== null && present.has(sessionId) ? sessionId : null;
@@ -755,6 +790,7 @@ export async function runLegacyImport(opts: LegacyImportOptions, deps: LegacyImp
 
     const finalStatus = new Map(project.spores.map((s) => [s.id, s.status]));
     for (const event of project.resolutions) {
+      r.notAttempted!.lineage -= 1;
       const malformed = malformedResolution(event);
       if (malformed !== null) { r.malformed.push(`history ${event.id}: ${malformed}`); continue; }
       if (done.lineage.has(event.id)) { r.lineage.duplicate += 1; continue; }
@@ -800,14 +836,16 @@ export async function runLegacyImport(opts: LegacyImportOptions, deps: LegacyImp
       const plan = planned as PlanDecision | null;
 
       // The Deployment's record of a vault-sourced session decides first; this
-      // machine's ledger only saves asking again. A transcript still being
-      // written is a session's source too: the hook capturing it, or a later
-      // transcript import, brings it.
+      // machine's ledger only saves asking again.
       let source: ContentSource | undefined = held.vaultSourced.has(group.sessionId) || plan?.decision === 'vault_sourced' ? 'vault' : ledger.read().sources.get(group.sessionId);
+      // A transcript still being written decides nothing and sends nothing
+      // until it settles, unless the Deployment already holds a transcript
+      // of it: a later run brings it from that transcript.
+      if (candidate === 'active' && source === undefined && !held.withTranscript.has(group.sessionId)) return { endedBy: STILL_WRITING };
       if (source === undefined) {
         source = plan?.decision === 'tombstoned' ? 'deleted'
           : plan !== null && plan.decision !== 'unoffered' ? 'transcript'
-          : candidate === 'active' || held.withTranscript.has(group.sessionId) ? 'transcript'
+          : held.withTranscript.has(group.sessionId) ? 'transcript'
           : 'vault';
         ledger.append({ k: 'source', session: group.sessionId, from: source });
       }
@@ -969,6 +1007,10 @@ type DrainEnd = { endedBy: string | undefined; refused: RefusedEntry[] };
 
 /** The end of a session step that met refusals: reported, and the session is not recorded as done. */
 const REFUSED = 'refused-events';
+/** A session step that ended before anything was sent: its transcript is still being written. */
+const STILL_WRITING = 'still-writing';
+/** A project the import stopped at, or never reached, once a step waited out its limit. */
+export const UNREACHABLE = 'unreachable';
 
 type Classified = { endedBy?: string; refusal?: string; duplicate?: boolean; body?: Record<string, unknown> };
 

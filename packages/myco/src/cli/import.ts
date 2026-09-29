@@ -146,6 +146,8 @@ const STOPPED_WORDS: Readonly<Record<string, string>> = {
   protocol: 'that Deployment expects a different version of Myco',
   retry: 'the Deployment could not be reached',
   refused: 'the Deployment refused the write',
+  unreachable: 'the Deployment could not be reached for too long; nothing after that was attempted',
+  failed: 'a step failed (above); nothing after it was attempted',
 };
 
 const skipWords = (reason: string, n: number): string => `${n} ${SKIP_WORDS[reason] ?? 'skipped'}`;
@@ -208,7 +210,7 @@ export async function run(args: readonly string[], deps: ImportCliDeps = {}): Pr
     );
     if (legacy.refused !== undefined) { err(`myco import: ${legacy.refused}`); return false; }
     for (const line of legacyReportLines(legacy, dryRun)) out(line);
-    legacyComplete = legacy.projects.every((p) => p.endedBy === undefined && p.refusals.length === 0 && p.failures.length === 0);
+    legacyComplete = legacyImportComplete(legacy);
     exclude = new Set(legacy.deleted);
   }
 
@@ -221,13 +223,20 @@ export async function run(args: readonly string[], deps: ImportCliDeps = {}): Pr
   return legacyComplete;
 }
 
+/**
+ * Whether a 1.4 vault import finished with nothing refused, failed, stopped
+ * short, or deleted in 1.4 yet already on the Deployment.
+ */
+export const legacyImportComplete = (report: LegacyImportReport): boolean =>
+  report.projects.every((p) => p.endedBy === undefined && p.refusals.length === 0 && p.failures.length === 0 && p.deletedButHeld.length === 0);
+
 /** What a 1.4 vault import came to, per project, in the order a person reads it. */
 export function legacyReportLines(report: LegacyImportReport, dryRun: boolean): string[] {
   const lines: string[] = [];
   for (const p of report.projects) {
     lines.push(`${p.projectId} (${p.root ?? 'no project root recorded'}) from 1.4: ${p.vault.sessions} sessions, ${p.vault.prompts} prompts, ${p.vault.plans} plans, ${p.vault.spores} spores, ${p.vault.lineage} spore history events`);
     if (dryRun) {
-      lines.push(`  would bring ${p.sessions.distinct} sessions (${p.sessions.deleted} deleted in 1.4 left out)`);
+      lines.push(`  would bring ${p.sessions.distinct} sessions (${p.sessions.deleted} deleted in 1.4 left out, unless the Deployment already holds them)`);
       if (p.unmatchedDeletes.length > 0) lines.push(`  ${p.unmatchedDeletes.length} sessions deleted in 1.4 could not be matched to a transcript: ${p.unmatchedDeletes.join(', ')}`);
       for (const [machine, n] of Object.entries(p.otherMachines)) lines.push(`  would leave ${n} sessions captured on ${machine} to that machine`);
       for (const alias of p.aliases) lines.push(`  matched by time: ${alias}`);
@@ -238,6 +247,8 @@ export function legacyReportLines(report: LegacyImportReport, dryRun: boolean): 
     const s = p.sessions;
     lines.push(`  sessions: ${s.distinct} distinct, ${s.deleted} deleted; ${s.transcriptsShipped} transcripts sent, ${s.transcriptsHeld} already here, ${s.fromVault} from the vault; ${s.alreadyHeld} were already here and kept what was captured; ${s.resumed} finished by an earlier run`);
     if (p.sessions.deleted > 0) lines.push(`  ${p.sessions.deleted} sessions deleted in 1.4 were left out, from the vault and from your agents' transcripts`);
+    if (p.deletedButHeld.length > 0) lines.push(`  ${p.deletedButHeld.length} sessions deleted in 1.4 are already on the Deployment; delete them from the dashboard: ${p.deletedButHeld.join(', ')}`);
+    if (p.stillWriting.length > 0) lines.push(`  ${p.stillWriting.length} sessions are still being written; run the import again later to bring them: ${p.stillWriting.join(', ')}`);
     if (p.unmatchedDeletes.length > 0) lines.push(`  ${p.unmatchedDeletes.length} sessions deleted in 1.4 could not be matched to a transcript; delete them from the dashboard if they reappear: ${p.unmatchedDeletes.join(', ')}`);
     for (const [machine, n] of Object.entries(p.otherMachines)) lines.push(`  ${n} sessions were captured on ${machine}, not this machine; run \`myco import --legacy <this vault>\` on ${machine} to bring them`);
     lines.push(`  sent ${p.prompts} prompts, ${p.responses} responses, ${p.plans.sent} plans (${p.plans.empty} empty, ${p.plans.unsent} of deleted or unknown sessions)`);
@@ -248,6 +259,7 @@ export function legacyReportLines(report: LegacyImportReport, dryRun: boolean): 
     for (const refusal of p.refusals) lines.push(`  refused ${refusal}`);
     for (const failure of p.failures) lines.push(`  failed ${failure}; run the import again to retry it`);
     if (p.endedBy !== undefined) lines.push(`  stopped — ${STOPPED_WORDS[p.endedBy] ?? 'the Deployment could not be reached'}`);
+    if (p.notAttempted !== undefined) lines.push(`  not attempted: ${p.notAttempted.sessions} sessions, ${p.notAttempted.spores} spores, ${p.notAttempted.lineage} spore history events; run the import again to bring them`);
   }
   if (report.projects.length === 0) lines.push('The 1.4 vault holds nothing to import.');
   return lines;

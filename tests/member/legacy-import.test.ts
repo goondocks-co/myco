@@ -29,16 +29,17 @@ import path from 'node:path';
 import { openDatabase } from '@myco/db/client.js';
 import { createSchema } from '@myco/db/schema.js';
 import {
-  groupLegacySessions, legacySessionId, legacyVaultFiles, readLegacyVault, runLegacyImport, LEGACY_PRODUCER,
+  groupLegacySessions, legacySessionId, legacyVaultFiles, readLegacyVault, runLegacyImport, LEGACY_PRODUCER, UNREACHABLE,
 } from '@myco/member/legacy-import.js';
-import { collectCandidates, importUntilSettled, paced, SERVER_FAULT_RETRIES } from '@myco/member/import.js';
+import { collectCandidates, importUntilSettled, paced, IMPORT_WAIT_CAP_MS, SERVER_FAULT_RETRIES } from '@myco/member/import.js';
+import { legacySessionsToLeaveOut } from '@myco/member/legacy-ledger.js';
 import { planKeyForPath } from '@myco/member/envelope.js';
 import { writeDeploymentMembership, writeRegistryEntry, REGISTRY_VERSION } from '@myco/member/registry.js';
 import { BUNDLED_MANIFESTS } from '@myco/symbionts/manifests.generated.js';
 import { enumerateTranscripts, sessionIdFromStoredId, sessionIdFromTranscriptPath } from '@myco/symbionts/transcript-discovery.js';
 import { rootSlug } from '@myco/symbionts/transcript-attribution.js';
 import { memberRig, tempMycoHome, TEST_MACHINE_ID, type MemberRig } from './helpers/server.js';
-import { run as runImportCli } from '@myco/cli/import.js';
+import { legacyImportComplete, legacyReportLines, run as runImportCli } from '@myco/cli/import.js';
 
 const SERVER = 'https://member-test.invalid';
 const PROJECT = 'proj_1';
@@ -74,7 +75,10 @@ interface Fixture {
   root: string;
   vault: string;
   liveEnd: number;
-  run: (opts?: { dryRun?: boolean; fetch?: MemberRig['fetch']; mycoHome?: string }) => ReturnType<typeof runLegacyImport>;
+  run: (opts?: { dryRun?: boolean; fetch?: MemberRig['fetch']; mycoHome?: string; sleep?: (ms: number) => Promise<void> }) => ReturnType<typeof runLegacyImport>;
+  /** `myco import --legacy <vault>`: whether it succeeded, and what it printed. */
+  cli: (opts?: { fetch?: MemberRig['fetch']; mycoHome?: string }) => Promise<{ ok: boolean; out: string[] }>;
+  bind: (mycoHome: string) => void;
   snapshot: () => Record<string, unknown>;
   cleanup: () => void;
 }
@@ -250,11 +254,29 @@ async function fixture(): Promise<Fixture> {
   return {
     rig, mycoHome, home, root, vault, liveEnd,
     run: (opts = {}) => runLegacyImport({ sources: [path.dirname(path.dirname(path.dirname(vault)))], serverUrl: SERVER, dryRun: opts.dryRun }, {
-      fetch: opts.fetch ?? rig.fetch, mycoHome: opts.mycoHome ?? mycoHome, machineId: TEST_MACHINE_ID, sleep: async () => {},
+      fetch: opts.fetch ?? rig.fetch, mycoHome: opts.mycoHome ?? mycoHome, machineId: TEST_MACHINE_ID, sleep: opts.sleep ?? (async () => {}),
     }),
+    cli: async (opts = {}) => {
+      const out: string[] = [];
+      const ok = await runImportCli(['--legacy', vault, '--days', '3650', '--max', '1000', '--server', SERVER], {
+        fetch: opts.fetch ?? rig.fetch, mycoHome: opts.mycoHome ?? mycoHome, machineId: TEST_MACHINE_ID, sleep: async () => {}, stdout: (l) => out.push(l), stderr: () => {},
+      });
+      return { ok, out };
+    },
+    bind: (home: string) => writeRegistryEntry({
+      version: REGISTRY_VERSION, projectId: PROJECT, serverUrl: SERVER, token: rig.token, tokenId: rig.tokenId,
+      root, machineId: TEST_MACHINE_ID, joinedAt: Date.now(), updatedAt: Date.now(),
+    }, { mycoHome: home }),
     snapshot,
     cleanup: () => { if (heldHome === undefined) delete process.env.HOME; else process.env.HOME = heldHome; },
   };
+}
+
+/** A home signed in to the fixture's Deployment that kept no record of an earlier import. */
+function tempMycoHomeWithMembership(f: Fixture): string {
+  const mycoHome = tempMycoHome();
+  writeDeploymentMembership({ serverUrl: SERVER, token: f.rig.token, tokenId: f.rig.tokenId, machineId: TEST_MACHINE_ID, joinedAt: Date.now(), updatedAt: Date.now() }, { mycoHome });
+  return mycoHome;
 }
 
 /** A fetch that counts every answer that was not a plain success, and every event the Deployment answered as refused. */
@@ -290,6 +312,9 @@ describe('importing a 1.4 vault', () => {
     expect(project.malformed).toEqual(['history res_bad: a supersede that names no successor']);
     expect(project.unmatchedDeletes).toEqual([UNMATCHED_DELETE]);
     expect(project.otherMachines).toEqual({ machine_2: 1 });
+    expect(project.sessions.deleted).toBe(2);
+    expect(project.deletedButHeld).toEqual([]);
+    expect(project.stillWriting).toEqual([SESSION_ACTIVE]);
     expect(watched.bad).toEqual([]);
 
     const sqlite = f.rig.env.sqlite;
@@ -298,7 +323,7 @@ describe('importing a 1.4 vault', () => {
     // two hashed Pi ids take the transcript written at their start; the deleted session is absent.
     expect(sessions.map((s) => s.session_id).sort()).toEqual([
       SESSION_ON_DISK, SESSION_PRUNED, SESSION_LIVE, SESSION_ADMIN, SESSION_CURSOR, SESSION_TWICE, CODEX_ROLLOUT, PI_UUID,
-      PI_SAME_SECOND, PI_RAN_THEN, 'sess_0000000000000000000000000000dddd', SESSION_ACTIVE,
+      PI_SAME_SECOND, PI_RAN_THEN, 'sess_0000000000000000000000000000dddd',
     ].sort());
     expect(project.aliases.length).toBe(2);
     expect(project.unaliased).toEqual(['sess_0000000000000000000000000000dddd (pi, no transcript)']);
@@ -329,7 +354,7 @@ describe('importing a 1.4 vault', () => {
     expect(promptTexts(SESSION_LIVE)).not.toContain('live prompt from vault');
     expect(promptTexts(CODEX_ROLLOUT)).not.toContain('codex prompt');
     expect(promptTexts(SESSION_CURSOR)).not.toContain('cursor prompt from vault');
-    // A transcript still being written is the session's source: its prompts are not taken from the vault.
+    // A session whose transcript is still being written is sent nothing yet.
     expect(promptTexts(SESSION_ACTIVE)).toEqual([]);
     // Neither a retired row nor another machine's row is imported from the vault.
     expect(promptTexts(SESSION_RETIRED)).toEqual([]);
@@ -446,7 +471,7 @@ describe('importing a 1.4 vault', () => {
     expect(f.rig.env.sqlite.query(`SELECT COUNT(*) AS n FROM spores`).get()).toEqual({ n: 6 });
     const again = await f.run();
     expect(again.projects[0].refusals.some((r) => r.startsWith(`session ${SESSION_LIVE}: `))).toBe(true);
-    expect(again.projects[0].sessions.resumed).toBe(11);
+    expect(again.projects[0].sessions.resumed).toBe(10);
   });
 
   it('refuses a Deployment that cannot say what it holds, before sending any session', async () => {
@@ -505,6 +530,123 @@ describe('importing a 1.4 vault', () => {
     expect(f.rig.rows('spores')).toBe(5);
   });
 
+  it('reports a session deleted in 1.4 that a transcript import already brought, and fails until the owner deletes it', async () => {
+    // Joining imports this machine's transcripts before any vault is named.
+    f.bind(f.mycoHome);
+    await importUntilSettled({ serverUrl: SERVER, windowDays: 3650, maxPerAgent: 1000 }, { fetch: f.rig.fetch, mycoHome: f.mycoHome, machineId: TEST_MACHINE_ID, sleep: async () => {} });
+    expect(f.rig.env.sqlite.query(`SELECT COUNT(*) AS n FROM transcripts WHERE session_id = ?`).get(SESSION_DELETED)).toEqual({ n: 1 });
+
+    const report = await f.run();
+    expect(report.projects[0].deletedButHeld).toEqual([SESSION_DELETED]);
+    expect(report.projects[0].sessions.deleted).toBe(1);
+    expect(legacyImportComplete(report)).toBe(false);
+
+    const { ok, out } = await f.cli();
+    expect(ok).toBe(false);
+    const said = out.join('\n');
+    expect(said).toContain(`1 sessions deleted in 1.4 are already on the Deployment; delete them from the dashboard: ${SESSION_DELETED}`);
+    expect(said).toContain('  1 sessions deleted in 1.4 were left out, from the vault and from your agents\' transcripts');
+  });
+
+  it('decides nothing for a session whose transcript is still being written, and brings it on a run after it settles', async () => {
+    const first = await f.run();
+    expect(first.projects[0].stillWriting).toEqual([SESSION_ACTIVE]);
+    expect(legacySessionsToLeaveOut(f.mycoHome, SERVER).has(SESSION_ACTIVE)).toBe(false);
+    expect(f.rig.env.sqlite.query(`SELECT COUNT(*) AS n FROM events WHERE session_id = ?`).get(SESSION_ACTIVE)).toEqual({ n: 0 });
+    expect(legacyReportLines(first, false).join('\n')).toContain(`1 sessions are still being written; run the import again later to bring them: ${SESSION_ACTIVE}`);
+
+    const active = path.join(f.home, '.claude', 'projects', `-${rootSlug(f.root)}`, `${SESSION_ACTIVE}.jsonl`);
+    const old = new Date(Date.now() - 60 * 60_000);
+    fs.utimesSync(active, old, old);
+    const again = await f.run();
+    expect(again.projects[0].stillWriting).toEqual([]);
+    expect(again.projects[0].sessions.transcriptsShipped).toBe(1);
+    expect(f.rig.env.sqlite.query(`SELECT COUNT(*) AS n FROM transcripts WHERE session_id = ?`).get(SESSION_ACTIVE)).toEqual({ n: 1 });
+    expect(f.rig.env.sqlite.query(`SELECT COUNT(*) AS n FROM prompt_batches WHERE session_id = ? AND text = 'active prompt from vault'`).get(SESSION_ACTIVE)).toEqual({ n: 0 });
+  });
+
+  it('stops once one step has waited out its limit, and reports the rest as not attempted', async () => {
+    let slept = 0;
+    let refusedEvents = 0;
+    const down = async (input: string | URL | Request, init?: RequestInit): Promise<Response> => {
+      if (new URL(new Request(input, init).url).pathname === '/events') { refusedEvents += 1; return new Response('down', { status: 503 }); }
+      return f.rig.fetch(input, init);
+    };
+    const report = await f.run({ fetch: down, sleep: async (ms) => { slept += ms; } });
+    const project = report.projects[0];
+    expect(slept).toBeLessThanOrEqual(IMPORT_WAIT_CAP_MS);
+    expect(project.endedBy).toBe(UNREACHABLE);
+    expect(project.failures).toHaveLength(1);
+    expect(project.failures[0]).toContain('nothing after this was attempted');
+    expect(project.notAttempted).toEqual({ sessions: 11, spores: 6, lineage: 3 });
+    expect(legacyImportComplete(report)).toBe(false);
+    expect(legacyReportLines(report, false).join('\n')).toContain('not attempted: 11 sessions, 6 spores, 3 spore history events');
+    expect(f.rig.rows('spores')).toBe(0);
+    expect(refusedEvents).toBeGreaterThan(1);
+  });
+
+  it('exits non-zero on any refusal and on any failure, and zero when neither happened', async () => {
+    const cleanHome = tempMycoHomeWithMembership(f);
+    f.bind(cleanHome);
+    const clean = await f.cli({ mycoHome: cleanHome });
+    expect(clean.ok).toBe(true);
+    const missing = async (input: string | URL | Request, init?: RequestInit): Promise<Response> => {
+      const req = new Request(input, init);
+      if (new URL(req.url).pathname === '/spores/save' && (await req.clone().text()).includes('"gotcha-part"')) return new Response('nope', { status: 404 });
+      return f.rig.fetch(req);
+    };
+    const failingHome = tempMycoHomeWithMembership(f);
+    f.bind(failingHome);
+    expect((await f.cli({ fetch: missing, mycoHome: failingHome })).ok).toBe(false);
+    f.rig.env.sqlite.run(`UPDATE sessions SET machine_id = 'machine_2' WHERE session_id = ?`, [SESSION_LIVE]);
+    const refusedHome = tempMycoHomeWithMembership(f);
+    f.bind(refusedHome);
+    expect((await f.cli({ mycoHome: refusedHome })).ok).toBe(false);
+
+    const report = await f.run({ dryRun: true });
+    const base = report.projects[0];
+    expect(legacyImportComplete({ ...report, projects: [base] })).toBe(true);
+    expect(legacyImportComplete({ ...report, projects: [{ ...base, refusals: ['session x: refused'] }] })).toBe(false);
+    expect(legacyImportComplete({ ...report, projects: [{ ...base, failures: ['spore x: the Deployment answered 404'] }] })).toBe(false);
+  });
+
+  it('leaves out nothing of a vault one machine captured, whether its rows name no machine or 1.4\'s own', () => {
+    const [project] = readLegacyVault(f.vault);
+    const local = project.sessions.find((s) => s.id === SESSION_PRUNED)!;
+    const unnamed = project.sessions.find((s) => s.id === SESSION_ON_DISK)!;
+    const rewritten = { ...project, sessions: project.sessions.map((s) => (s === local ? { ...s, machineId: 'local' } : s === unnamed ? { ...s, machineId: null } : s)) };
+    const grouping = groupLegacySessions(rewritten, new Map(), TEST_MACHINE_ID);
+    expect(Object.fromEntries(grouping.otherMachines)).toEqual({ machine_2: [SESSION_ELSEWHERE] });
+    expect(grouping.groups.map((g) => g.sessionId)).toEqual(expect.arrayContaining([SESSION_PRUNED, SESSION_ON_DISK]));
+  });
+
+  it('says what a dry run leaves unmatched and what another machine should run', async () => {
+    const dry = legacyReportLines(await f.run({ dryRun: true }), true).join('\n');
+    expect(dry).toContain(`  1 sessions deleted in 1.4 could not be matched to a transcript: ${UNMATCHED_DELETE}`);
+    const real = legacyReportLines(await f.run(), false).join('\n');
+    expect(real).toContain('  1 sessions were captured on machine_2, not this machine; run `myco import --legacy <this vault>` on machine_2 to bring them');
+  });
+
+  it('leaves out every session a deletion with no row may name, not only the id 1.4 stored', async () => {
+    const uuid = '019ef000-0000-7000-8000-00000000abcd';
+    const stored = `2026-06-17T10-00-00-000Z_${uuid}`;
+    const db = openDatabase(f.vault);
+    db.run(`INSERT INTO session_tombstones (session_id, project_id, deleted_at, source) VALUES (?, ?, ?, 'api_delete')`, [stored, PROJECT, at(10)]);
+    db.run('PRAGMA wal_checkpoint(TRUNCATE)');
+    db.close();
+    const file = path.join(f.home, '.pi', 'agent', 'sessions', `--${rootSlug(f.root)}--`, `${stored}.jsonl`);
+    fs.writeFileSync(file, line({ type: 'session', id: uuid, cwd: f.root, timestamp: '2026-06-17T10:00:00.000Z' }) + line({ type: 'message', timestamp: '2026-06-17T10:01:00.000Z', message: { role: 'user', content: `deleted pi ${'z'.repeat(5000)}` } }));
+    const old = new Date(Date.now() - 3 * 60 * 60_000);
+    fs.utimesSync(file, old, old);
+
+    const [project] = readLegacyVault(f.vault);
+    expect(groupLegacySessions(project, new Map(), TEST_MACHINE_ID).deleted.has(uuid)).toBe(true);
+    await f.run();
+    f.bind(f.mycoHome);
+    await importUntilSettled({ serverUrl: SERVER, windowDays: 3650, maxPerAgent: 1000 }, { fetch: f.rig.fetch, mycoHome: f.mycoHome, machineId: TEST_MACHINE_ID, sleep: async () => {} });
+    expect(f.rig.env.sqlite.query(`SELECT COUNT(*) AS n FROM transcripts WHERE session_id = ?`).get(uuid)).toEqual({ n: 0 });
+  });
+
   it('dates a resolution by the time it names on the import channel alone', async () => {
     await f.run();
     const resolve = (eventId: string, extra: Record<string, unknown>) => f.rig.fetch('https://s/spores/resolve', {
@@ -523,7 +665,7 @@ describe('importing a 1.4 vault', () => {
     let requests = 0;
     const counting = async (input: string | URL | Request, init?: RequestInit) => { requests += 1; return f.rig.fetch(input, init); };
     const again = await f.run({ fetch: counting });
-    expect(again.projects[0].sessions.resumed).toBe(12);
+    expect(again.projects[0].sessions.resumed).toBe(11);
     expect(requests).toBeLessThanOrEqual(2);
   });
 

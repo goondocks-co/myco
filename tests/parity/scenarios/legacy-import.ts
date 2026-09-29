@@ -4,8 +4,8 @@ import { LEGACY_IMPORT_ADAPTER } from '@goondocks/myco-shared/member-protocol';
 
 /**
  * A Myco 1.4 vault import, identical on both front doors (#1161): what the
- * import plan says of a session whose prompts the vault supplied, what the
- * session probe answers, a title-only import end that leaves the session's
+ * import plan says of a session whose prompts the vault supplied and of three
+ * that only look like one, what the session probe answers, a title-only import end that leaves the session's
  * end alone, and a spore resolution replayed with its own time.
  */
 export const legacyImportParity: ParityScenario = {
@@ -22,14 +22,33 @@ export const legacyImportParity: ParityScenario = {
     const vaultSession = `parity-legacy-vault-${stamp}`;
     await expectPersisted(await event(vaultSession, 'session.start', 'import', { agent: 'claude-code', startedAt: stamp - 60_000 }, stamp - 60_000), 'vault start');
     await expectPersisted(await event(vaultSession, 'prompt', 'import', { promptId: crypto.randomUUID(), text: 'from the vault', origin: 'user' }, stamp - 59_000), 'vault prompt');
+    // Three sessions that only look like it: an import-channel prompt another producer sent, the
+    // import producer's prompt on another channel, and the import producer's start with no prompt.
+    const otherProducer = `parity-legacy-other-producer-${stamp}`;
+    await expectPersisted(await event(otherProducer, 'session.start', 'import', { agent: 'claude-code', startedAt: stamp - 60_000 }, stamp - 60_000, 'parity'), 'other producer start');
+    await expectPersisted(await event(otherProducer, 'prompt', 'import', { promptId: crypto.randomUUID(), text: 'imported by another producer', origin: 'user' }, stamp - 59_000, 'parity'), 'other producer prompt');
+    const otherChannel = `parity-legacy-other-channel-${stamp}`;
+    await expectPersisted(await event(otherChannel, 'session.start', 'cli', { agent: 'claude-code', startedAt: stamp - 60_000 }, stamp - 60_000), 'other channel start');
+    await expectPersisted(await event(otherChannel, 'prompt', 'cli', { promptId: crypto.randomUUID(), text: 'captured live', origin: 'user' }, stamp - 59_000), 'other channel prompt');
+    const startOnly = `parity-legacy-start-only-${stamp}`;
+    await expectPersisted(await event(startOnly, 'session.start', 'import', { agent: 'claude-code', startedAt: stamp - 60_000 }, stamp - 60_000), 'start-only start');
+
+    const lookalikes = [otherProducer, otherChannel, startOnly];
+    const txOf = (n: number) => `tx_${String(n).repeat(32)}`;
     const transcriptId = `tx_${'e'.repeat(32)}`;
     const plan = await (await post('/import/plan', {
       windowDays: 3650,
-      sessions: [vaultSession],
-      candidates: [{ sessionId: vaultSession, transcriptId, agent: 'claude-code', sizeBytes: 10, modifiedAt: stamp, headHash: null }],
+      sessions: [vaultSession, ...lookalikes],
+      candidates: [
+        { sessionId: vaultSession, transcriptId, agent: 'claude-code', sizeBytes: 10, modifiedAt: stamp, headHash: null },
+        ...lookalikes.map((sessionId, i) => ({ sessionId, transcriptId: txOf(i + 1), agent: 'claude-code', sizeBytes: 10, modifiedAt: stamp, headHash: null })),
+      ],
     })).json() as { candidates: Array<Record<string, unknown>>; sessions: { held: string[]; vaultSourced: string[]; withTranscript: string[]; tombstoned: string[] } };
-    expect(plan.candidates).toEqual([{ transcriptId, take: 'none', reason: 'vault_sourced' }]);
-    expect(plan.sessions).toEqual({ held: [vaultSession], withTranscript: [], tombstoned: [], vaultSourced: [vaultSession] });
+    expect(plan.candidates).toEqual([
+      { transcriptId, take: 'none', reason: 'vault_sourced' },
+      ...lookalikes.map((_, i) => ({ transcriptId: txOf(i + 1), take: 'from', fromOffset: 0 })),
+    ]);
+    expect({ ...plan.sessions, held: [...plan.sessions.held].sort() }).toEqual({ held: [vaultSession, ...lookalikes].sort(), withTranscript: [], tombstoned: [], vaultSourced: [vaultSession] });
 
     // A title-only import end: the title lands, the session's end stays live capture's.
     const liveSession = `parity-legacy-live-${stamp}`;
