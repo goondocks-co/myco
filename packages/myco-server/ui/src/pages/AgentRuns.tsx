@@ -1,4 +1,5 @@
 import { heldByWords } from '@goondocks/myco-shared/run-holds';
+import { useIsAdmin } from '../hooks/use-me';
 import { useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import { MasterDetailSplit } from '../components/ui/master-detail-split';
@@ -98,12 +99,13 @@ export function AgentRuns() {
   const navigate = useNavigate();
   const [status, setStatus] = useState('all');
   const runs = useRuns(projectId, status === 'all' ? null : status);
+  const admin = useIsAdmin();
   const base = `/p/${encodeURIComponent(projectId)}/runs`;
 
   return (
     <PageContainer>
       <PageHeader title="Agent runs" subtitle="What this project's intelligence tasks did, run by run." />
-      <MemoryTaskAction key={projectId} projectId={projectId} />
+      {admin && <MemoryTaskAction key={projectId} projectId={projectId} />}
       <div className="mb-4">
         <SubtabPill tabs={STATUS_TABS} activeTab={status} onTabChange={setStatus} />
       </div>

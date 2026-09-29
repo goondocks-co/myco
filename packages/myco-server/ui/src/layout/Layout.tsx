@@ -4,7 +4,7 @@ import { NavLink, Outlet, useParams } from 'react-router-dom';
 import { ProjectSwitcher } from '../components/ProjectSwitcher';
 import { GlobalSearch } from '../components/GlobalSearch';
 import { PageLoading } from '../components/ui/page-loading';
-import { useMe } from '../hooks/use-me';
+import { useIsAdmin, useMe } from '../hooks/use-me';
 import { useProjects } from '../hooks/use-projects';
 import { cn } from '../lib/cn';
 import { NotAMember } from '../pages/NotAMember';
@@ -16,6 +16,8 @@ interface ProjectNavItem {
   icon: typeof LayoutDashboard;
   /** Path suffix under `/p/:projectId`, or null while the page is still to come. */
   suffix: string | null;
+  /** Shown only to an admin: every route behind the page is an admin's. */
+  admin?: true;
 }
 
 /** Pages under a Project. A null suffix is a page a later slice delivers; it is shown so the shape is visible, and it is not a route. */
@@ -25,16 +27,16 @@ const PROJECT_NAV: ProjectNavItem[] = [
   { label: 'Plans', icon: ListChecks, suffix: '/plans' },
   { label: 'Spores', icon: Sprout, suffix: '/spores' },
   { label: 'Agent runs', icon: Bot, suffix: '/runs' },
-  { label: 'Access', icon: KeyRound, suffix: '/access' },
+  { label: 'Access', icon: KeyRound, suffix: '/access', admin: true },
 ];
 
-const SERVER_NAV = [
+const SERVER_NAV: { label: string; icon: typeof LayoutDashboard; to: string; admin?: true }[] = [
   { label: 'Projects', icon: FolderTree, to: '/projects' },
   { label: 'Status', icon: Activity, to: '/status' },
   { label: 'Measures', icon: Gauge, to: '/measures' },
   { label: INVITE_CONTROLS.page, icon: Users, to: '/access' },
   { label: 'Settings', icon: Settings2, to: '/settings' },
-  { label: 'Operations', icon: Wrench, to: '/operations' },
+  { label: 'Operations', icon: Wrench, to: '/operations', admin: true },
   { label: 'Notifications', icon: Bell, to: '/notifications' },
 ];
 
@@ -49,6 +51,7 @@ export function Layout() {
   // Projects are read only for a member; a signed-in non-member sees the link instructions instead.
   const projects = useProjects({ enabled: me.data?.member != null });
   const params = useParams();
+  const admin = useIsAdmin();
 
   if (me.data && me.data.member === null) return <NotAMember login={me.data.login} />;
 
@@ -68,7 +71,7 @@ export function Layout() {
 
         {current && (
           <nav aria-label="Project" className="flex flex-col gap-0.5 px-3 pb-3">
-            {PROJECT_NAV.map((item) => {
+            {PROJECT_NAV.filter((item) => admin || item.admin !== true).map((item) => {
               const Icon = item.icon;
               if (item.suffix === null) {
                 return (
@@ -91,7 +94,7 @@ export function Layout() {
 
         <div className="px-3 pb-1 font-sans text-[10px] uppercase tracking-wide text-on-surface-variant">Server</div>
         <nav aria-label="Server" className="flex flex-col gap-0.5 px-3">
-          {SERVER_NAV.map((item) => {
+          {SERVER_NAV.filter((item) => admin || item.admin !== true).map((item) => {
             const Icon = item.icon;
             return (
               <NavLink key={item.to} to={item.to} className={linkClass}>

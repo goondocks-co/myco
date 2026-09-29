@@ -383,6 +383,15 @@ describe('read/credentials', () => {
     expect(rows[0].lineageRoot).toBe(rows[0].id);
     void sqlite; void env;
   });
+
+  it('lists one member\'s credentials alone where it is asked for them, and every member\'s where it is not (#1491)', async () => {
+    const { db } = sqliteEnv();
+    const { issueMemberToken } = await import('@myco-server-worker/auth/tokens.js');
+    await issueMemberToken(db, { memberId: 'mem_machine_1', machineId: 'machine_1' }, 1_000);
+    await issueMemberToken(db, { memberId: 'mem_machine_2', machineId: 'machine_2' }, 1_000);
+    const owners = async (opts: { memberId?: string }) => [...new Set((await listCredentials(db, 1_000, opts)).rows.map((r) => r.memberId))].sort();
+    expect({ one: await owners({ memberId: 'mem_machine_2' }), all: await owners({}) }).toEqual({ one: ['mem_machine_2'], all: ['mem_machine_1', 'mem_machine_2'] });
+  });
 });
 
 describe('read scope', () => {

@@ -12,6 +12,7 @@ import { AppearanceSection } from '../layout/AppearanceSection';
 import { ReleaseTracking } from '../components/release/ReleaseTracking';
 import { useMembers } from '../hooks/use-access';
 import { useProjects } from '../hooks/use-projects';
+import { useIsAdmin } from '../hooks/use-me';
 import { settingsRefusalText, useRepository, useRepositoryActions, type RepositoryRow, useCapabilities, useSecrets, useSettings, useSettingsActions, type LeafRow, type SecretRow } from '../hooks/use-settings';
 import { isArchived } from '../lib/api';
 import { formatRelative } from '../lib/format';
@@ -19,7 +20,7 @@ import { harnessLabel } from '../lib/harness';
 import { SECRET_SLOTS, slotUse } from '@goondocks/myco-shared/secret-slots';
 import { LEAF_GROUPS, type LeafField } from '../settings/catalogue';
 
-const TABS = [...LEAF_GROUPS.map((g) => ({ id: g.id, label: g.label })), { id: 'secrets', label: 'Credentials' }, { id: 'capabilities', label: 'Projects' }, { id: 'browser', label: 'This browser' }];
+const TABS: { id: string; label: string; admin?: true }[] = [...LEAF_GROUPS.map((g) => ({ id: g.id, label: g.label })), { id: 'secrets', label: 'Credentials', admin: true }, { id: 'capabilities', label: 'Projects', admin: true }, { id: 'browser', label: 'This browser' }];
 
 const button = 'rounded-md border border-outline-variant/30 px-2.5 py-1 font-sans text-xs text-on-surface transition-colors hover:bg-surface-container-high disabled:opacity-50';
 const primary = 'rounded-md bg-primary px-3 py-1.5 font-sans text-sm text-on-primary transition-opacity hover:opacity-90 disabled:opacity-50';
@@ -35,18 +36,23 @@ function useMemberName(): (id: string | null) => string | null {
 
 export function Settings() {
   const [params, setParams] = useSearchParams();
+  const admin = useIsAdmin();
+  // A member who is not an admin reads the server's settings and keeps this browser's; the tabs only an admin uses are not offered.
+  const tabs = TABS.filter((t) => admin || t.admin !== true);
   const requested = params.get('tab');
-  const tab = TABS.some((t) => t.id === requested) ? (requested as string) : LEAF_GROUPS[0]!.id;
+  const tab = tabs.some((t) => t.id === requested) ? (requested as string) : LEAF_GROUPS[0]!.id;
   const setTab = (id: string) => setParams(id === LEAF_GROUPS[0]!.id ? {} : { tab: id });
   return (
     <PageContainer>
-      <PageHeader title="Settings" subtitle="What this server holds for every member. Each change saves as you make it and names who made it." />
+      <PageHeader title="Settings" subtitle={admin
+        ? 'What this server holds for every member. Each change saves as you make it and names who made it.'
+        : 'What this server holds for every member. An admin changes these; this browser\'s appearance is yours.'} />
       <div className="mb-4">
-        <SubtabPill tabs={TABS} activeTab={tab} onTabChange={setTab} />
+        <SubtabPill tabs={tabs} activeTab={tab} onTabChange={setTab} />
       </div>
       {LEAF_GROUPS.map((g) => g.id === tab && <LeafGroupPanel key={g.id} groupId={g.id} />)}
-      {tab === 'secrets' && <Secrets />}
-      {tab === 'capabilities' && <ProjectCapabilities />}
+      {admin && tab === 'secrets' && <Secrets />}
+      {admin && tab === 'capabilities' && <ProjectCapabilities />}
       {tab === 'browser' && (
         <Panel title="This browser" eyebrow="Appearance">
           <p className="mb-3 font-sans text-sm text-on-surface-variant">Theme, mode, font and density are kept in this browser only.</p>
@@ -89,6 +95,9 @@ const textOf = (field: LeafField, value: unknown): string => {
  */
 export function LeafControl({ field, row }: { field: LeafField; row: LeafRow | undefined }) {
   const actions = useSettingsActions();
+  // Only an admin changes a server setting: every other member reads the leaf as a read-only one.
+  const admin = useIsAdmin();
+  const locked = field.readOnly === true || !admin;
   const nameOf = useMemberName();
   const [draft, setDraft] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -97,7 +106,7 @@ export function LeafControl({ field, row }: { field: LeafField; row: LeafRow | u
 
   const save = (next: unknown) => {
     setError(null);
-    if (field.readOnly) return;
+    if (locked) return;
     actions.setLeaf.mutate({ leaf: field.leaf, value: next }, {
       onError: (err) => setError(settingsRefusalText(err)),
       onSuccess: () => setDraft(null),
@@ -128,42 +137,42 @@ export function LeafControl({ field, row }: { field: LeafField; row: LeafRow | u
       </div>
       <div className="flex items-center gap-2 sm:w-1/2">
         {field.kind === 'patterns' && (Array.isArray(value) && value.every((item) => typeof item === 'string')
-          ? <PatternInput label={field.label} patterns={value} readOnly={field.readOnly} pending={actions.setLeaf.isPending} onSave={save} />
+          ? <PatternInput label={field.label} patterns={value} readOnly={locked} pending={actions.setLeaf.isPending} onSave={save} />
           : <span role="alert" className="text-tertiary">Stored patterns must be an array of strings.</span>)}
         {field.kind === 'toggle' && (
           <button type="button" id={`leaf-${field.leaf}`} role="switch" aria-checked={value === true} aria-label={field.label}
-            disabled={actions.setLeaf.isPending || field.readOnly === true}
+            disabled={actions.setLeaf.isPending || locked}
             onClick={() => save(value !== true)}
-            className={`${button} ${value === true ? 'bg-primary/15 text-primary' : ''} ${field.readOnly === true ? 'opacity-60' : ''}`}>
+            className={`${button} ${value === true ? 'bg-primary/15 text-primary' : ''} ${locked ? 'opacity-60' : ''}`}>
             {value === true ? 'On' : 'Off'}
           </button>
         )}
         {field.kind === 'select' && (
-          <select id={`leaf-${field.leaf}`} aria-label={field.label} className={`${inputClass} ${field.readOnly === true ? 'opacity-60' : ''}`}
-            value={value === null ? '' : String(value)} disabled={actions.setLeaf.isPending || field.readOnly === true}
+          <select id={`leaf-${field.leaf}`} aria-label={field.label} className={`${inputClass} ${locked ? 'opacity-60' : ''}`}
+            value={value === null ? '' : String(value)} disabled={actions.setLeaf.isPending || locked}
             onChange={(e) => { const raw = e.target.value; if (raw === '') return; const opt = (field.options ?? []).find((o) => String(o) === raw); save(opt ?? raw); }}>
             <option value="" disabled={row?.configured === true}>Server default</option>
             {(field.options ?? []).map((o) => <option key={String(o)} value={String(o)}>{String(o)}{field.unit ? ` ${field.unit}` : ''}</option>)}
           </select>
         )}
         {(field.kind === 'number' || field.kind === 'text') && (
-          <input id={`leaf-${field.leaf}`} aria-label={field.label} className={`${inputClass} w-full ${field.readOnly === true ? 'opacity-60' : ''}`} type={field.kind === 'number' ? 'number' : 'text'}
-            min={field.min} max={field.max} step={field.step} value={shown} readOnly={field.readOnly}
+          <input id={`leaf-${field.leaf}`} aria-label={field.label} className={`${inputClass} w-full ${locked ? 'opacity-60' : ''}`} type={field.kind === 'number' ? 'number' : 'text'}
+            min={field.min} max={field.max} step={field.step} value={shown} readOnly={locked}
             placeholder={field.readOnly === true ? 'Nothing stored' : 'Server default'}
             onChange={(e) => setDraft(e.target.value)} onBlur={commitText} onKeyDown={(e) => { if (e.key === 'Enter') commitText(); }} />
         )}
         {field.kind === 'textarea' && (
           <div className="flex w-full flex-col gap-1">
-            <textarea id={`leaf-${field.leaf}`} aria-label={field.label} className={`${inputClass} min-h-32 w-full`} value={shown} readOnly={field.readOnly}
+            <textarea id={`leaf-${field.leaf}`} aria-label={field.label} className={`${inputClass} min-h-32 w-full`} value={shown} readOnly={locked}
               maxLength={field.maxLength} placeholder={field.readOnly ? 'Nothing stored' : 'Server default'} onChange={(e) => setDraft(e.target.value)} />
-            {!field.readOnly && <button type="button" className={button} disabled={draft === null || actions.setLeaf.isPending} onClick={commitText}>Save</button>}
+            {!locked && <button type="button" className={button} disabled={draft === null || actions.setLeaf.isPending} onClick={commitText}>Save</button>}
           </div>
         )}
         {field.kind === 'json' && (
           <div className="flex w-full flex-col gap-1">
-            <textarea id={`leaf-${field.leaf}`} aria-label={field.label} className={`${inputClass} min-h-24 w-full font-mono text-xs`} value={shown} readOnly={field.readOnly}
+            <textarea id={`leaf-${field.leaf}`} aria-label={field.label} className={`${inputClass} min-h-24 w-full font-mono text-xs`} value={shown} readOnly={locked}
               placeholder={field.readOnly ? 'Nothing stored' : 'Server default'} onChange={(e) => setDraft(e.target.value)} />
-            {!field.readOnly && <button type="button" className={button} disabled={draft === null || actions.setLeaf.isPending} onClick={commitText}>Save</button>}
+            {!locked && <button type="button" className={button} disabled={draft === null || actions.setLeaf.isPending} onClick={commitText}>Save</button>}
           </div>
         )}
         {field.unit && field.kind !== 'select' && <span className="font-sans text-xs text-on-surface-variant">{field.unit}</span>}

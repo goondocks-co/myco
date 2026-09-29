@@ -75,8 +75,9 @@ export function useMembers() {
   return useQuery({ queryKey: ['members'], queryFn: ({ signal }) => fetchJson<{ members: MemberRow[] }>('/api/members', signal) });
 }
 
-export function useInvitations() {
-  return useQuery({ queryKey: ['invitations'], queryFn: ({ signal }) => fetchJson<{ invitations: InvitationRow[] }>('/api/enrollment', signal) });
+/** Open invitations; asked only where `enabled`, which a page sets for an admin, the only member the server answers them to. */
+export function useInvitations(options: { enabled?: boolean } = {}) {
+  return useQuery({ queryKey: ['invitations'], queryFn: ({ signal }) => fetchJson<{ invitations: InvitationRow[] }>('/api/enrollment', signal), enabled: options.enabled ?? true });
 }
 
 export function useGrants(projectId: string) {

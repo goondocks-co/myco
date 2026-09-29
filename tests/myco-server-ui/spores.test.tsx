@@ -7,7 +7,7 @@ import App from '../../packages/myco-server/ui/src/App';
 import { AppearanceProvider } from '../../packages/myco-server/ui/src/providers/appearance';
 import { sporePreview, sporeTags } from '../../packages/myco-server/ui/src/components/spores/labels';
 
-const ME = { sub: '583231', login: 'octocat', member: { id: 'mem_1', label: 'chris' } };
+const ME = { sub: '583231', login: 'octocat', member: { id: 'mem_1', label: 'chris', role: 'admin' as const } };
 const PROJECTS = { projects: [{ projectId: 'x', name: 'Project X', createdAt: 0, sessionCount: 1, lastActivityAt: null }] };
 const NOW = Date.now();
 

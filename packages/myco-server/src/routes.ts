@@ -78,7 +78,7 @@ export type DeploymentHandler = (env: ServerEnv, ctx: DeploymentContext) => Prom
 export type StreamHandler = (env: ServerEnv, request: Request, ctx: StreamContext) => Promise<Response>;
 /** Auth handlers require no credential but do need the owner configuration and outbound fetch. They receive a narrowed context and never an `ServerEnv`, so a credential-free route still cannot reach storage or bindings by type. */
 export type AuthHandler = (request: Request, ctx: AuthContext) => Promise<Response>;
-/** Owner handlers run only after a valid owner session; they receive the bindings and the resolved session. */
+/** Owner handlers run only after a valid session of a linked member the route's authority admits; they receive the bindings and the resolved session. */
 export type OwnerHandler = (env: ServerEnv, ctx: OwnerContext) => Promise<Response>;
 /** Session handlers run after a valid session whether or not its account is a member; exactly the routes that serve a signed-in non-member carry them. */
 export type SessionHandler = (env: ServerEnv, ctx: SessionContext) => Promise<Response>;
@@ -88,7 +88,7 @@ export type EnrollHandler = (env: ServerEnv, request: Request, now: number) => P
 /** The key a member route answers under: `{<shape>: true|false, …}` on every outcome after authentication, refusals and 503s included. */
 export type Shape = 'persisted' | 'stored' | 'refreshed' | 'answered';
 
-/** `capture: false` marks a member route that is not a member's capture: it is answered on an archived Project, where a capture route is refused. Absent, the route is capture. No route, capture or not, is refused for the bytes a credential has stored (#1416). `scope: 'credential'` marks a route answered on the presented credential alone: no Project is read from the request or resolved, whatever header it carries. Only such a route may declare `admitsLapsed: true`, the one place a credential past its own expiry still authenticates — the refresh, which decides against the lineage ceiling instead; every other route refuses an expired credential. `mintsAuthority: true` marks a member route whose answer is an authority that can outlive the presented credential — a successor token, a key that links a GitHub account and so opens the dashboard's owner surface, where invitations, runtimes and grants are minted, a claimed run's credential and the provider key its harness reads, or a leased run's repository credential; a credential its issuer minted not to rotate is refused on every such route. */
+/** `capture: false` marks a member route that is not a member's capture: it is answered on an archived Project, where a capture route is refused. Absent, the route is capture. No route, capture or not, is refused for the bytes a credential has stored (#1416). `scope: 'credential'` marks a route answered on the presented credential alone: no Project is read from the request or resolved, whatever header it carries. Only such a route may declare `admitsLapsed: true`, the one place a credential past its own expiry still authenticates — the refresh, which decides against the lineage ceiling instead; every other route refuses an expired credential. `mintsAuthority: true` marks a member route whose answer is an authority that can outlive the presented credential — a successor token, a key that links a GitHub account and so opens the dashboard's session routes, where invitations, runtimes and grants are minted, a claimed run's credential and the provider key its harness reads, or a leased run's repository credential; a credential its issuer minted not to rotate is refused on every such route. */
 export type Route =
   | { method: string; path: string; auth: 'public'; bodyMode: 'none'; handler: PublicHandler }
   | ({ method: string; path: string; auth: 'member'; bodyMode: 'json'; shape: Exclude<Shape, 'stored'>; capture?: boolean; mintsAuthority?: true; handler: MemberHandler; grant?: GrantHandler; run?: RunHandler; legacyRunRoute?: true }
@@ -98,24 +98,37 @@ export type Route =
   | { method: string; path: string; pattern: RegExp; auth: 'member'; bodyMode: 'stream'; shape: 'stored'; capture?: boolean; maxBodyBytes: number; handler: StreamHandler; legacyRunRoute?: true }
   | { method: string; path: string; auth: 'auth'; handler: AuthHandler }
   | { method: string; path: string; auth: 'enroll'; handler: EnrollHandler }
-  | { method: string; path: string; pattern?: RegExp; auth: 'owner'; membership?: never; maxBodyBytes?: number; handler: OwnerHandler }
-  | { method: string; path: string; pattern?: RegExp; auth: 'owner'; membership: 'optional'; handler: SessionHandler };
+  | { method: string; path: string; pattern?: RegExp; auth: 'session'; authority: 'admin' | 'member'; maxBodyBytes?: number; handler: OwnerHandler }
+  | { method: string; path: string; pattern?: RegExp; auth: 'session'; authority: 'account'; handler: SessionHandler };
+
+/**
+ * Who a dashboard session route admits, declared on the route and enforced by the pipeline alone:
+ * - `admin`: a linked member whose role is admin. Every route that writes Deployment-wide state, or reads
+ *   secrets, backups, maintenance or membership, is one.
+ * - `member`: any linked member. A route that answers a member's own resources scopes itself to them
+ *   inside its handler, as a credential revocation does.
+ * - `account`: a signed-in GitHub account whether or not a member is linked to it: the two routes that
+ *   link one, and the sign-out, so an account no member is linked to any longer can still clear its cookie.
+ * The pipeline admits a route declaring anything but `member` or `account` as `admin`.
+ */
+export const SESSION_AUTHORITIES = ['admin', 'member', 'account'] as const;
+export type SessionAuthority = (typeof SESSION_AUTHORITIES)[number];
 
 async function health(): Promise<Response> {
   return Response.json({ ok: true });
 }
 
 export const ROUTES: readonly Route[] = [
-  { method: 'GET', path: '/api/projects/{projectId}/canopy-map', pattern: /^\/api\/projects\/(?<projectId>[A-Za-z0-9._-]{1,64})\/canopy-map$/, auth: 'owner', handler: handleProjectMap },
-  { method: 'GET', path: '/api/projects/{projectId}/search', pattern: /^\/api\/projects\/(?<projectId>[A-Za-z0-9._-]{1,64})\/search$/, auth: 'owner', handler: handleProjectSearch },
+  { method: 'GET', path: '/api/projects/{projectId}/canopy-map', pattern: /^\/api\/projects\/(?<projectId>[A-Za-z0-9._-]{1,64})\/canopy-map$/, auth: 'session', authority: 'member', handler: handleProjectMap },
+  { method: 'GET', path: '/api/projects/{projectId}/search', pattern: /^\/api\/projects\/(?<projectId>[A-Za-z0-9._-]{1,64})\/search$/, auth: 'session', authority: 'member', handler: handleProjectSearch },
   { method: 'GET', path: '/health', auth: 'public', bodyMode: 'none', handler: health },
-  { method: 'POST', path: '/api/harness/dispatch', auth: 'owner', handler: handleHarnessDispatch },
-  { method: 'POST', path: '/api/wake', auth: 'owner', handler: handleWake },
-  { method: 'GET', path: '/api/maintenance', auth: 'owner', handler: handleMaintenanceStatus },
-  { method: 'POST', path: '/api/maintenance/{check}/run', pattern: /^\/api\/maintenance\/(?<check>[a-z]{1,32})\/run$/, auth: 'owner', handler: handleRunMaintenance },
-  { method: 'GET', path: '/api/titling-backfill', auth: 'owner', handler: handleTitlingBackfill },
-  { method: 'PUT', path: '/api/titling-backfill', auth: 'owner', handler: handleSetTitlingBackfill },
-  { method: 'POST', path: '/api/transcripts/reread', auth: 'owner', handler: handleRereadTranscripts },
+  { method: 'POST', path: '/api/harness/dispatch', auth: 'session', authority: 'admin', handler: handleHarnessDispatch },
+  { method: 'POST', path: '/api/wake', auth: 'session', authority: 'admin', handler: handleWake },
+  { method: 'GET', path: '/api/maintenance', auth: 'session', authority: 'admin', handler: handleMaintenanceStatus },
+  { method: 'POST', path: '/api/maintenance/{check}/run', pattern: /^\/api\/maintenance\/(?<check>[a-z]{1,32})\/run$/, auth: 'session', authority: 'admin', handler: handleRunMaintenance },
+  { method: 'GET', path: '/api/titling-backfill', auth: 'session', authority: 'admin', handler: handleTitlingBackfill },
+  { method: 'PUT', path: '/api/titling-backfill', auth: 'session', authority: 'admin', handler: handleSetTitlingBackfill },
+  { method: 'POST', path: '/api/transcripts/reread', auth: 'session', authority: 'admin', handler: handleRereadTranscripts },
   { method: 'POST', path: '/events', auth: 'member', bodyMode: 'json', shape: 'persisted', handler: handleEvents },
   { method: 'POST', path: '/blobs/{sha256}', pattern: /^\/blobs\/(?<key>[0-9a-f]{64})$/, auth: 'member', bodyMode: 'stream', shape: 'stored', maxBodyBytes: MAX_BLOB_BYTES, handler: handleBlob },
   { method: 'POST', path: '/tokens/refresh', auth: 'member', bodyMode: 'json', shape: 'refreshed', capture: false, scope: 'credential', admitsLapsed: true, mintsAuthority: true, credential: handleRefresh },
@@ -163,90 +176,91 @@ export const ROUTES: readonly Route[] = [
   { method: 'POST', path: '/mcp', auth: 'member', bodyMode: 'json', shape: 'answered', capture: false, handler: handleMcp, grant: handleGrantMcp, run: handleRunMcp, unbound: handleUnboundMcp },
   { method: 'POST', path: '/members/join', auth: 'enroll', handler: handleJoin },
   { method: 'POST', path: '/members/link-github', auth: 'member', bodyMode: 'json', shape: 'persisted', capture: false, mintsAuthority: true, handler: handleLinkGithub },
-  // Deployment Settings as a member's CLI reads them: Deployment-wide, so no Project is read or created; writes stay on the dashboard's owner routes.
+  // Deployment Settings as a member's CLI reads them: Deployment-wide, so no Project is read or created; writes stay on the dashboard's admin routes.
   { method: 'POST', path: '/members/settings', auth: 'member', bodyMode: 'json', shape: 'persisted', capture: false, scope: 'credential', credential: handleMemberSettings },
   // Deployment health as a member's `myco stats` reads it: Deployment-wide facts, the credential's own stored bytes and the transcript retention window, so no Project is read or created.
   { method: 'POST', path: '/members/status', auth: 'member', bodyMode: 'json', shape: 'persisted', capture: false, scope: 'credential', credential: handleMemberStatus },
-  { method: 'GET', path: '/auth/me', auth: 'owner', membership: 'optional', handler: handleMe },
-  { method: 'POST', path: '/auth/link', auth: 'owner', membership: 'optional', handler: handleLink },
-  { method: 'GET', path: '/api/status', auth: 'owner', handler: handleStatus },
-  { method: 'GET', path: '/api/diagnostics', auth: 'owner', handler: handleDiagnostics },
-  { method: 'GET', path: '/api/projects', auth: 'owner', handler: handleProjects },
-  { method: 'POST', path: '/api/projects', auth: 'owner', handler: handleCreateProject },
-  { method: 'POST', path: '/api/projects/{projectId}/archive', pattern: /^\/api\/projects\/(?<projectId>[A-Za-z0-9._-]{1,64})\/archive$/, auth: 'owner', handler: handleArchiveProject },
-  { method: 'POST', path: '/api/projects/{projectId}/unarchive', pattern: /^\/api\/projects\/(?<projectId>[A-Za-z0-9._-]{1,64})\/unarchive$/, auth: 'owner', handler: handleUnarchiveProject },
-  { method: 'PATCH', path: '/api/projects/{projectId}', pattern: /^\/api\/projects\/(?<projectId>[A-Za-z0-9._-]{1,64})$/, auth: 'owner', handler: handleRenameProject },
-  { method: 'GET', path: '/api/projects/{projectId}/activity', pattern: /^\/api\/projects\/(?<projectId>[A-Za-z0-9._-]{1,64})\/activity$/, auth: 'owner', handler: handleProjectActivity },
-  { method: 'GET', path: '/api/projects/{projectId}/sessions', pattern: /^\/api\/projects\/(?<projectId>[A-Za-z0-9._-]{1,64})\/sessions$/, auth: 'owner', handler: handleProjectSessions },
-  { method: 'GET', path: '/api/projects/{projectId}/sessions/{sessionId}', pattern: /^\/api\/projects\/(?<projectId>[A-Za-z0-9._-]{1,64})\/sessions\/(?<sessionId>[^/]{1,384})$/, auth: 'owner', handler: handleSession },
-  { method: 'GET', path: '/api/projects/{projectId}/sessions/{sessionId}/{child}', pattern: new RegExp(String.raw`^/api/projects/(?<projectId>[A-Za-z0-9._-]{1,64})/sessions/(?<sessionId>[^/]{1,384})/(?<child>${CHILD_SEGMENTS.join('|')})$`), auth: 'owner', handler: handleSessionChildren },
-  { method: 'GET', path: '/api/projects/{projectId}/sessions/{sessionId}/transcript', pattern: /^\/api\/projects\/(?<projectId>[A-Za-z0-9._-]{1,64})\/sessions\/(?<sessionId>[^/]{1,384})\/transcript$/, auth: 'owner', handler: handleTranscript },
-  { method: 'POST', path: '/api/projects/{projectId}/sessions/{sessionId}/plans/{planKey}/status', pattern: /^\/api\/projects\/(?<projectId>[A-Za-z0-9._-]{1,64})\/sessions\/(?<sessionId>[^/]{1,384})\/plans\/(?<planKey>[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\/status$/, auth: 'owner', handler: handleSetPlanStatus },
-  { method: 'POST', path: '/api/projects/{projectId}/sessions/{sessionId}/title', pattern: /^\/api\/projects\/(?<projectId>[A-Za-z0-9._-]{1,64})\/sessions\/(?<sessionId>[^/]{1,384})\/title$/, auth: 'owner', handler: handleTitleSession },
+  { method: 'GET', path: '/auth/me', auth: 'session', authority: 'account', handler: handleMe },
+  { method: 'POST', path: '/auth/link', auth: 'session', authority: 'account', handler: handleLink },
+  { method: 'GET', path: '/api/status', auth: 'session', authority: 'member', handler: handleStatus },
+  { method: 'GET', path: '/api/diagnostics', auth: 'session', authority: 'admin', handler: handleDiagnostics },
+  { method: 'GET', path: '/api/projects', auth: 'session', authority: 'member', handler: handleProjects },
+  { method: 'POST', path: '/api/projects', auth: 'session', authority: 'admin', handler: handleCreateProject },
+  { method: 'POST', path: '/api/projects/{projectId}/archive', pattern: /^\/api\/projects\/(?<projectId>[A-Za-z0-9._-]{1,64})\/archive$/, auth: 'session', authority: 'admin', handler: handleArchiveProject },
+  { method: 'POST', path: '/api/projects/{projectId}/unarchive', pattern: /^\/api\/projects\/(?<projectId>[A-Za-z0-9._-]{1,64})\/unarchive$/, auth: 'session', authority: 'admin', handler: handleUnarchiveProject },
+  { method: 'PATCH', path: '/api/projects/{projectId}', pattern: /^\/api\/projects\/(?<projectId>[A-Za-z0-9._-]{1,64})$/, auth: 'session', authority: 'admin', handler: handleRenameProject },
+  { method: 'GET', path: '/api/projects/{projectId}/activity', pattern: /^\/api\/projects\/(?<projectId>[A-Za-z0-9._-]{1,64})\/activity$/, auth: 'session', authority: 'member', handler: handleProjectActivity },
+  { method: 'GET', path: '/api/projects/{projectId}/sessions', pattern: /^\/api\/projects\/(?<projectId>[A-Za-z0-9._-]{1,64})\/sessions$/, auth: 'session', authority: 'member', handler: handleProjectSessions },
+  { method: 'GET', path: '/api/projects/{projectId}/sessions/{sessionId}', pattern: /^\/api\/projects\/(?<projectId>[A-Za-z0-9._-]{1,64})\/sessions\/(?<sessionId>[^/]{1,384})$/, auth: 'session', authority: 'member', handler: handleSession },
+  { method: 'GET', path: '/api/projects/{projectId}/sessions/{sessionId}/{child}', pattern: new RegExp(String.raw`^/api/projects/(?<projectId>[A-Za-z0-9._-]{1,64})/sessions/(?<sessionId>[^/]{1,384})/(?<child>${CHILD_SEGMENTS.join('|')})$`), auth: 'session', authority: 'member', handler: handleSessionChildren },
+  { method: 'GET', path: '/api/projects/{projectId}/sessions/{sessionId}/transcript', pattern: /^\/api\/projects\/(?<projectId>[A-Za-z0-9._-]{1,64})\/sessions\/(?<sessionId>[^/]{1,384})\/transcript$/, auth: 'session', authority: 'member', handler: handleTranscript },
+  { method: 'POST', path: '/api/projects/{projectId}/sessions/{sessionId}/plans/{planKey}/status', pattern: /^\/api\/projects\/(?<projectId>[A-Za-z0-9._-]{1,64})\/sessions\/(?<sessionId>[^/]{1,384})\/plans\/(?<planKey>[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\/status$/, auth: 'session', authority: 'admin', handler: handleSetPlanStatus },
+  { method: 'POST', path: '/api/projects/{projectId}/sessions/{sessionId}/title', pattern: /^\/api\/projects\/(?<projectId>[A-Za-z0-9._-]{1,64})\/sessions\/(?<sessionId>[^/]{1,384})\/title$/, auth: 'session', authority: 'admin', handler: handleTitleSession },
   // #1147 — transcript-first ingest
-  { method: 'POST', path: '/api/projects/{projectId}/sessions/{sessionId}/tombstone', pattern: /^\/api\/projects\/(?<projectId>[A-Za-z0-9._-]{1,64})\/sessions\/(?<sessionId>[^/]{1,384})\/tombstone$/, auth: 'owner', handler: handleTombstoneSession },
-  { method: 'POST', path: '/api/projects/{projectId}/sessions/{sessionId}/end', pattern: /^\/api\/projects\/(?<projectId>[A-Za-z0-9._-]{1,64})\/sessions\/(?<sessionId>[^/]{1,384})\/end$/, auth: 'owner', handler: handleEndSession },
+  { method: 'POST', path: '/api/projects/{projectId}/sessions/{sessionId}/tombstone', pattern: /^\/api\/projects\/(?<projectId>[A-Za-z0-9._-]{1,64})\/sessions\/(?<sessionId>[^/]{1,384})\/tombstone$/, auth: 'session', authority: 'admin', handler: handleTombstoneSession },
+  { method: 'POST', path: '/api/projects/{projectId}/sessions/{sessionId}/end', pattern: /^\/api\/projects\/(?<projectId>[A-Za-z0-9._-]{1,64})\/sessions\/(?<sessionId>[^/]{1,384})\/end$/, auth: 'session', authority: 'admin', handler: handleEndSession },
   // A session as turns: the list, one turn's body, and one turn's tool calls. A prompt id is member-minted under the envelope's id grammar.
-  { method: 'GET', path: '/api/projects/{projectId}/sessions/{sessionId}/turns', pattern: /^\/api\/projects\/(?<projectId>[A-Za-z0-9._-]{1,64})\/sessions\/(?<sessionId>[^/]{1,384})\/turns$/, auth: 'owner', handler: handleSessionTurns },
-  { method: 'GET', path: '/api/projects/{projectId}/sessions/{sessionId}/turns/{promptId}', pattern: /^\/api\/projects\/(?<projectId>[A-Za-z0-9._-]{1,64})\/sessions\/(?<sessionId>[^/]{1,384})\/turns\/(?<promptId>[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/, auth: 'owner', handler: handleSessionTurn },
-  { method: 'GET', path: '/api/projects/{projectId}/sessions/{sessionId}/turns/{promptId}/tool-calls', pattern: /^\/api\/projects\/(?<projectId>[A-Za-z0-9._-]{1,64})\/sessions\/(?<sessionId>[^/]{1,384})\/turns\/(?<promptId>[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\/tool-calls$/, auth: 'owner', handler: handleSessionTurnToolCalls },
-  { method: 'GET', path: '/api/projects/{projectId}/blobs/{key}', pattern: /^\/api\/projects\/(?<projectId>[A-Za-z0-9._-]{1,64})\/blobs\/(?<key>[0-9a-f]{64})$/, auth: 'owner', handler: handleBlobRead },
-  { method: 'GET', path: '/api/members', auth: 'owner', handler: handleMembers },
-  { method: 'POST', path: '/api/members/{memberId}/revoke', pattern: new RegExp(`^\\/api\\/members\\/(?<memberId>${MEMBER_ID_SEGMENT})\\/revoke$`), auth: 'owner', handler: handleRevokeMember },
-  { method: 'POST', path: '/api/members/{memberId}/link-github', pattern: new RegExp(`^\\/api\\/members\\/(?<memberId>${MEMBER_ID_SEGMENT})\\/link-github$`), auth: 'owner', handler: handleIssueMemberLink },
-  { method: 'GET', path: '/api/enrollment', auth: 'owner', handler: handleInvitations },
-  { method: 'POST', path: '/api/enrollment', auth: 'owner', handler: handleMintInvitation },
-  { method: 'POST', path: '/api/enrollment/{id}/revoke', pattern: /^\/api\/enrollment\/(?<id>[A-Za-z0-9._-]{1,64})\/revoke$/, auth: 'owner', handler: handleRevokeInvitation },
-  { method: 'GET', path: '/api/credentials', auth: 'owner', handler: handleCredentials },
-  { method: 'POST', path: '/api/credentials/{id}/revoke', pattern: /^\/api\/credentials\/(?<id>[A-Za-z0-9._-]{1,64})\/revoke$/, auth: 'owner', handler: handleRevokeCredential },
-  { method: 'GET', path: '/api/credentials/{id}/activity', pattern: /^\/api\/credentials\/(?<id>[A-Za-z0-9._-]{1,64})\/activity$/, auth: 'owner', handler: handleCredentialActivity },
-  { method: 'GET', path: '/api/projects/{projectId}/grants', pattern: /^\/api\/projects\/(?<projectId>[A-Za-z0-9._-]{1,64})\/grants$/, auth: 'owner', handler: handleGrants },
-  { method: 'POST', path: '/api/projects/{projectId}/grants', pattern: /^\/api\/projects\/(?<projectId>[A-Za-z0-9._-]{1,64})\/grants$/, auth: 'owner', handler: handleMintGrant },
-  { method: 'POST', path: '/api/projects/{projectId}/grants/{grantId}/rotate', pattern: /^\/api\/projects\/(?<projectId>[A-Za-z0-9._-]{1,64})\/grants\/(?<grantId>[A-Za-z0-9._-]{1,64})\/rotate$/, auth: 'owner', handler: handleRotateGrant },
-  { method: 'POST', path: '/api/projects/{projectId}/grants/{grantId}/revoke', pattern: /^\/api\/projects\/(?<projectId>[A-Za-z0-9._-]{1,64})\/grants\/(?<grantId>[A-Za-z0-9._-]{1,64})\/revoke$/, auth: 'owner', handler: handleRevokeGrant },
-  { method: 'GET', path: '/api/agents', auth: 'owner', handler: handleAgents },
-  { method: 'PUT', path: '/api/agents/{agentId}', pattern: /^\/api\/agents\/(?<agentId>[A-Za-z0-9._-]{1,64})$/, auth: 'owner', handler: handleRegisterAgent },
-  { method: 'GET', path: '/api/projects/{projectId}/runs', pattern: /^\/api\/projects\/(?<projectId>[A-Za-z0-9._-]{1,64})\/runs$/, auth: 'owner', handler: handleProjectRuns },
-  { method: 'GET', path: '/api/projects/{projectId}/runs/{runId}', pattern: /^\/api\/projects\/(?<projectId>[A-Za-z0-9._-]{1,64})\/runs\/(?<runId>[^/]{1,384})$/, auth: 'owner', handler: handleProjectRun },
-  { method: 'GET', path: '/api/projects/{projectId}/cortex/instructions', pattern: /^\/api\/projects\/(?<projectId>[A-Za-z0-9._-]{1,64})\/cortex\/instructions$/, auth: 'owner', handler: handleProjectInstructions },
-  { method: 'GET', path: '/api/projects/{projectId}/plans', pattern: /^\/api\/projects\/(?<projectId>[A-Za-z0-9._-]{1,64})\/plans$/, auth: 'owner', handler: handleProjectPlans },
-  { method: 'GET', path: '/api/projects/{projectId}/spores', pattern: /^\/api\/projects\/(?<projectId>[A-Za-z0-9._-]{1,64})\/spores$/, auth: 'owner', handler: handleProjectSpores },
-  { method: 'GET', path: '/api/projects/{projectId}/spores/{sporeId}', pattern: /^\/api\/projects\/(?<projectId>[A-Za-z0-9._-]{1,64})\/spores\/(?<sporeId>[^/]{1,192})$/, auth: 'owner', handler: handleProjectSpore },
-  { method: 'GET', path: '/api/projects/{projectId}/skills', pattern: /^\/api\/projects\/(?<projectId>[A-Za-z0-9._-]{1,64})\/skills$/, auth: 'owner', handler: handleProjectSkills },
-  { method: 'GET', path: '/api/projects/{projectId}/skill-candidates', pattern: /^\/api\/projects\/(?<projectId>[A-Za-z0-9._-]{1,64})\/skill-candidates$/, auth: 'owner', handler: handleSkillCandidates },
-  { method: 'PATCH', path: '/api/projects/{projectId}/skill-candidates/{candidateId}', pattern: /^\/api\/projects\/(?<projectId>[A-Za-z0-9._-]{1,64})\/skill-candidates\/(?<candidateId>[^/]{1,192})$/, auth: 'owner', handler: handleReviewSkillCandidate },
-  { method: 'GET', path: '/api/projects/{projectId}/skills/{skillId}', pattern: /^\/api\/projects\/(?<projectId>[A-Za-z0-9._-]{1,64})\/skills\/(?<skillId>[^/]{1,192})$/, auth: 'owner', handler: handleProjectSkill },
-  { method: 'GET', path: '/api/projects/{projectId}/digests', pattern: /^\/api\/projects\/(?<projectId>[A-Za-z0-9._-]{1,64})\/digests$/, auth: 'owner', handler: handleProjectDigests },
-  { method: 'GET', path: '/api/projects/{projectId}/digests/{tier}/revisions', pattern: /^\/api\/projects\/(?<projectId>[A-Za-z0-9._-]{1,64})\/digests\/(?<tier>\d{1,6})\/revisions$/, auth: 'owner', handler: handleProjectDigestRevisions },
-  { method: 'GET', path: '/api/projects/{projectId}/release-states', pattern: /^\/api\/projects\/(?<projectId>[A-Za-z0-9._-]{1,64})\/release-states$/, auth: 'owner', handler: handleProjectReleaseStates },
-  { method: 'POST', path: '/api/recovery/exports', auth: 'owner', handler: handleStartRecoveryExport },
-  { method: 'GET', path: '/api/recovery/exports', auth: 'owner', handler: handleRecoveryExportStatus },
-  { method: 'POST', path: '/api/backups', auth: 'owner', handler: handleCreateBackup },
-  { method: 'GET', path: '/api/backups', auth: 'owner', handler: handleListBackups },
-  { method: 'POST', path: '/api/backups/{backupId}/restore-preview', pattern: /^\/api\/backups\/(?<backupId>[A-Za-z0-9._-]{1,64})\/restore-preview$/, auth: 'owner', handler: handleRestorePreview },
-  { method: 'POST', path: '/api/backups/{backupId}/restore', pattern: /^\/api\/backups\/(?<backupId>[A-Za-z0-9._-]{1,64})\/restore$/, auth: 'owner', handler: handleRestoreBackup },
-  { method: 'POST', path: '/api/backups/{backupId}/pin', pattern: /^\/api\/backups\/(?<backupId>[A-Za-z0-9._-]{1,64})\/pin$/, auth: 'owner', handler: handlePinBackup },
-  { method: 'GET', path: '/api/backups/{backupId}/artifact', pattern: /^\/api\/backups\/(?<backupId>[A-Za-z0-9._-]{1,64})\/artifact$/, auth: 'owner', handler: handleBackupArtifact },
-  { method: 'POST', path: '/api/backups/restore-upload', auth: 'owner', maxBodyBytes: MAX_UPLOAD_BODY_BYTES, handler: handleRestoreUpload },
-  { method: 'GET', path: '/api/kpis', auth: 'owner', handler: handleKpis },
-  { method: 'GET', path: '/api/settings', auth: 'owner', handler: handleSettings },
-  { method: 'PUT', path: '/api/settings/{leaf}', pattern: /^\/api\/settings\/(?<leaf>[A-Za-z0-9._]{1,96})$/, auth: 'owner', handler: handleSetSetting },
-  { method: 'GET', path: '/api/machines/{machineId}/settings', pattern: /^\/api\/machines\/(?<machineId>[A-Za-z0-9._-]{1,64})\/settings$/, auth: 'owner', handler: handleMachineSettings },
-  { method: 'PUT', path: '/api/machines/{machineId}/settings/{leaf}', pattern: /^\/api\/machines\/(?<machineId>[A-Za-z0-9._-]{1,64})\/settings\/(?<leaf>[A-Za-z0-9._]{1,96})$/, auth: 'owner', handler: handleSetMachineSetting },
-  { method: 'GET', path: '/api/secrets', auth: 'owner', handler: handleSecrets },
-  { method: 'PUT', path: '/api/secrets/{name}', pattern: /^\/api\/secrets\/(?<name>[a-z0-9_-]{1,32})$/, auth: 'owner', handler: handleSetSecret },
-  { method: 'DELETE', path: '/api/secrets/{name}', pattern: /^\/api\/secrets\/(?<name>[a-z0-9_-]{1,32})$/, auth: 'owner', handler: handleDeleteSecret },
-  { method: 'GET', path: '/api/projects/{projectId}/capabilities', pattern: /^\/api\/projects\/(?<projectId>[A-Za-z0-9._-]{1,64})\/capabilities$/, auth: 'owner', handler: handleProjectCapabilities },
-  { method: 'GET', path: '/api/projects/{projectId}/repository', pattern: /^\/api\/projects\/(?<projectId>[A-Za-z0-9._-]{1,64})\/repository$/, auth: 'owner', handler: handleRepository },
-  { method: 'PUT', path: '/api/projects/{projectId}/repository', pattern: /^\/api\/projects\/(?<projectId>[A-Za-z0-9._-]{1,64})\/repository$/, auth: 'owner', handler: handleSaveRepository },
-  { method: 'DELETE', path: '/api/projects/{projectId}/repository', pattern: /^\/api\/projects\/(?<projectId>[A-Za-z0-9._-]{1,64})\/repository$/, auth: 'owner', handler: handleRemoveRepository },
-  { method: 'GET', path: '/api/projects/{projectId}/release-provenance', pattern: /^\/api\/projects\/(?<projectId>[A-Za-z0-9._-]{1,64})\/release-provenance$/, auth: 'owner', handler: handleReleaseProvenance },
-  { method: 'PUT', path: '/api/projects/{projectId}/release-provenance', pattern: /^\/api\/projects\/(?<projectId>[A-Za-z0-9._-]{1,64})\/release-provenance$/, auth: 'owner', handler: handleSaveReleaseProvenance },
-  { method: 'POST', path: '/api/projects/{projectId}/release-provenance/check', pattern: /^\/api\/projects\/(?<projectId>[A-Za-z0-9._-]{1,64})\/release-provenance\/check$/, auth: 'owner', handler: handleRequestReleaseCheck },
-  { method: 'PUT', path: '/api/projects/{projectId}/capabilities/{capability}', pattern: /^\/api\/projects\/(?<projectId>[A-Za-z0-9._-]{1,64})\/capabilities\/(?<capability>[a-z_]{1,32})$/, auth: 'owner', handler: handleSetProjectCapability },
+  { method: 'GET', path: '/api/projects/{projectId}/sessions/{sessionId}/turns', pattern: /^\/api\/projects\/(?<projectId>[A-Za-z0-9._-]{1,64})\/sessions\/(?<sessionId>[^/]{1,384})\/turns$/, auth: 'session', authority: 'member', handler: handleSessionTurns },
+  { method: 'GET', path: '/api/projects/{projectId}/sessions/{sessionId}/turns/{promptId}', pattern: /^\/api\/projects\/(?<projectId>[A-Za-z0-9._-]{1,64})\/sessions\/(?<sessionId>[^/]{1,384})\/turns\/(?<promptId>[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/, auth: 'session', authority: 'member', handler: handleSessionTurn },
+  { method: 'GET', path: '/api/projects/{projectId}/sessions/{sessionId}/turns/{promptId}/tool-calls', pattern: /^\/api\/projects\/(?<projectId>[A-Za-z0-9._-]{1,64})\/sessions\/(?<sessionId>[^/]{1,384})\/turns\/(?<promptId>[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\/tool-calls$/, auth: 'session', authority: 'member', handler: handleSessionTurnToolCalls },
+  { method: 'GET', path: '/api/projects/{projectId}/blobs/{key}', pattern: /^\/api\/projects\/(?<projectId>[A-Za-z0-9._-]{1,64})\/blobs\/(?<key>[0-9a-f]{64})$/, auth: 'session', authority: 'member', handler: handleBlobRead },
+  { method: 'GET', path: '/api/members', auth: 'session', authority: 'member', handler: handleMembers },
+  { method: 'POST', path: '/api/members/{memberId}/revoke', pattern: new RegExp(`^\\/api\\/members\\/(?<memberId>${MEMBER_ID_SEGMENT})\\/revoke$`), auth: 'session', authority: 'admin', handler: handleRevokeMember },
+  { method: 'POST', path: '/api/members/{memberId}/link-github', pattern: new RegExp(`^\\/api\\/members\\/(?<memberId>${MEMBER_ID_SEGMENT})\\/link-github$`), auth: 'session', authority: 'admin', handler: handleIssueMemberLink },
+  { method: 'GET', path: '/api/enrollment', auth: 'session', authority: 'admin', handler: handleInvitations },
+  { method: 'POST', path: '/api/enrollment', auth: 'session', authority: 'admin', handler: handleMintInvitation },
+  { method: 'POST', path: '/api/enrollment/{id}/revoke', pattern: /^\/api\/enrollment\/(?<id>[A-Za-z0-9._-]{1,64})\/revoke$/, auth: 'session', authority: 'admin', handler: handleRevokeInvitation },
+  { method: 'GET', path: '/api/credentials', auth: 'session', authority: 'member', handler: handleCredentials },
+  { method: 'POST', path: '/api/credentials/{id}/revoke', pattern: /^\/api\/credentials\/(?<id>[A-Za-z0-9._-]{1,64})\/revoke$/, auth: 'session', authority: 'member', handler: handleRevokeCredential },
+  { method: 'GET', path: '/api/credentials/{id}/activity', pattern: /^\/api\/credentials\/(?<id>[A-Za-z0-9._-]{1,64})\/activity$/, auth: 'session', authority: 'member', handler: handleCredentialActivity },
+  { method: 'GET', path: '/api/projects/{projectId}/grants', pattern: /^\/api\/projects\/(?<projectId>[A-Za-z0-9._-]{1,64})\/grants$/, auth: 'session', authority: 'admin', handler: handleGrants },
+  { method: 'POST', path: '/api/projects/{projectId}/grants', pattern: /^\/api\/projects\/(?<projectId>[A-Za-z0-9._-]{1,64})\/grants$/, auth: 'session', authority: 'admin', handler: handleMintGrant },
+  { method: 'POST', path: '/api/projects/{projectId}/grants/{grantId}/rotate', pattern: /^\/api\/projects\/(?<projectId>[A-Za-z0-9._-]{1,64})\/grants\/(?<grantId>[A-Za-z0-9._-]{1,64})\/rotate$/, auth: 'session', authority: 'admin', handler: handleRotateGrant },
+  { method: 'POST', path: '/api/projects/{projectId}/grants/{grantId}/revoke', pattern: /^\/api\/projects\/(?<projectId>[A-Za-z0-9._-]{1,64})\/grants\/(?<grantId>[A-Za-z0-9._-]{1,64})\/revoke$/, auth: 'session', authority: 'admin', handler: handleRevokeGrant },
+  { method: 'GET', path: '/api/agents', auth: 'session', authority: 'member', handler: handleAgents },
+  { method: 'PUT', path: '/api/agents/{agentId}', pattern: /^\/api\/agents\/(?<agentId>[A-Za-z0-9._-]{1,64})$/, auth: 'session', authority: 'admin', handler: handleRegisterAgent },
+  { method: 'GET', path: '/api/projects/{projectId}/runs', pattern: /^\/api\/projects\/(?<projectId>[A-Za-z0-9._-]{1,64})\/runs$/, auth: 'session', authority: 'member', handler: handleProjectRuns },
+  { method: 'GET', path: '/api/projects/{projectId}/runs/{runId}', pattern: /^\/api\/projects\/(?<projectId>[A-Za-z0-9._-]{1,64})\/runs\/(?<runId>[^/]{1,384})$/, auth: 'session', authority: 'member', handler: handleProjectRun },
+  { method: 'GET', path: '/api/projects/{projectId}/cortex/instructions', pattern: /^\/api\/projects\/(?<projectId>[A-Za-z0-9._-]{1,64})\/cortex\/instructions$/, auth: 'session', authority: 'member', handler: handleProjectInstructions },
+  { method: 'GET', path: '/api/projects/{projectId}/plans', pattern: /^\/api\/projects\/(?<projectId>[A-Za-z0-9._-]{1,64})\/plans$/, auth: 'session', authority: 'member', handler: handleProjectPlans },
+  { method: 'GET', path: '/api/projects/{projectId}/spores', pattern: /^\/api\/projects\/(?<projectId>[A-Za-z0-9._-]{1,64})\/spores$/, auth: 'session', authority: 'member', handler: handleProjectSpores },
+  { method: 'GET', path: '/api/projects/{projectId}/spores/{sporeId}', pattern: /^\/api\/projects\/(?<projectId>[A-Za-z0-9._-]{1,64})\/spores\/(?<sporeId>[^/]{1,192})$/, auth: 'session', authority: 'member', handler: handleProjectSpore },
+  { method: 'GET', path: '/api/projects/{projectId}/skills', pattern: /^\/api\/projects\/(?<projectId>[A-Za-z0-9._-]{1,64})\/skills$/, auth: 'session', authority: 'member', handler: handleProjectSkills },
+  { method: 'GET', path: '/api/projects/{projectId}/skill-candidates', pattern: /^\/api\/projects\/(?<projectId>[A-Za-z0-9._-]{1,64})\/skill-candidates$/, auth: 'session', authority: 'member', handler: handleSkillCandidates },
+  { method: 'PATCH', path: '/api/projects/{projectId}/skill-candidates/{candidateId}', pattern: /^\/api\/projects\/(?<projectId>[A-Za-z0-9._-]{1,64})\/skill-candidates\/(?<candidateId>[^/]{1,192})$/, auth: 'session', authority: 'admin', handler: handleReviewSkillCandidate },
+  { method: 'GET', path: '/api/projects/{projectId}/skills/{skillId}', pattern: /^\/api\/projects\/(?<projectId>[A-Za-z0-9._-]{1,64})\/skills\/(?<skillId>[^/]{1,192})$/, auth: 'session', authority: 'member', handler: handleProjectSkill },
+  { method: 'GET', path: '/api/projects/{projectId}/digests', pattern: /^\/api\/projects\/(?<projectId>[A-Za-z0-9._-]{1,64})\/digests$/, auth: 'session', authority: 'member', handler: handleProjectDigests },
+  { method: 'GET', path: '/api/projects/{projectId}/digests/{tier}/revisions', pattern: /^\/api\/projects\/(?<projectId>[A-Za-z0-9._-]{1,64})\/digests\/(?<tier>\d{1,6})\/revisions$/, auth: 'session', authority: 'member', handler: handleProjectDigestRevisions },
+  { method: 'GET', path: '/api/projects/{projectId}/release-states', pattern: /^\/api\/projects\/(?<projectId>[A-Za-z0-9._-]{1,64})\/release-states$/, auth: 'session', authority: 'member', handler: handleProjectReleaseStates },
+  { method: 'POST', path: '/api/recovery/exports', auth: 'session', authority: 'admin', handler: handleStartRecoveryExport },
+  { method: 'GET', path: '/api/recovery/exports', auth: 'session', authority: 'admin', handler: handleRecoveryExportStatus },
+  { method: 'POST', path: '/api/backups', auth: 'session', authority: 'admin', handler: handleCreateBackup },
+  { method: 'GET', path: '/api/backups', auth: 'session', authority: 'admin', handler: handleListBackups },
+  { method: 'POST', path: '/api/backups/{backupId}/restore-preview', pattern: /^\/api\/backups\/(?<backupId>[A-Za-z0-9._-]{1,64})\/restore-preview$/, auth: 'session', authority: 'admin', handler: handleRestorePreview },
+  { method: 'POST', path: '/api/backups/{backupId}/restore', pattern: /^\/api\/backups\/(?<backupId>[A-Za-z0-9._-]{1,64})\/restore$/, auth: 'session', authority: 'admin', handler: handleRestoreBackup },
+  { method: 'POST', path: '/api/backups/{backupId}/pin', pattern: /^\/api\/backups\/(?<backupId>[A-Za-z0-9._-]{1,64})\/pin$/, auth: 'session', authority: 'admin', handler: handlePinBackup },
+  { method: 'GET', path: '/api/backups/{backupId}/artifact', pattern: /^\/api\/backups\/(?<backupId>[A-Za-z0-9._-]{1,64})\/artifact$/, auth: 'session', authority: 'admin', handler: handleBackupArtifact },
+  { method: 'POST', path: '/api/backups/restore-upload', auth: 'session', authority: 'admin', maxBodyBytes: MAX_UPLOAD_BODY_BYTES, handler: handleRestoreUpload },
+  { method: 'GET', path: '/api/kpis', auth: 'session', authority: 'member', handler: handleKpis },
+  { method: 'GET', path: '/api/settings', auth: 'session', authority: 'member', handler: handleSettings },
+  { method: 'PUT', path: '/api/settings/{leaf}', pattern: /^\/api\/settings\/(?<leaf>[A-Za-z0-9._]{1,96})$/, auth: 'session', authority: 'admin', handler: handleSetSetting },
+  { method: 'GET', path: '/api/secrets', auth: 'session', authority: 'admin', handler: handleSecrets },
+  { method: 'PUT', path: '/api/secrets/{name}', pattern: /^\/api\/secrets\/(?<name>[a-z0-9_-]{1,32})$/, auth: 'session', authority: 'admin', handler: handleSetSecret },
+  { method: 'DELETE', path: '/api/secrets/{name}', pattern: /^\/api\/secrets\/(?<name>[a-z0-9_-]{1,32})$/, auth: 'session', authority: 'admin', handler: handleDeleteSecret },
+  { method: 'GET', path: '/api/projects/{projectId}/capabilities', pattern: /^\/api\/projects\/(?<projectId>[A-Za-z0-9._-]{1,64})\/capabilities$/, auth: 'session', authority: 'admin', handler: handleProjectCapabilities },
+  { method: 'GET', path: '/api/projects/{projectId}/repository', pattern: /^\/api\/projects\/(?<projectId>[A-Za-z0-9._-]{1,64})\/repository$/, auth: 'session', authority: 'admin', handler: handleRepository },
+  { method: 'PUT', path: '/api/projects/{projectId}/repository', pattern: /^\/api\/projects\/(?<projectId>[A-Za-z0-9._-]{1,64})\/repository$/, auth: 'session', authority: 'admin', handler: handleSaveRepository },
+  { method: 'DELETE', path: '/api/projects/{projectId}/repository', pattern: /^\/api\/projects\/(?<projectId>[A-Za-z0-9._-]{1,64})\/repository$/, auth: 'session', authority: 'admin', handler: handleRemoveRepository },
+  { method: 'GET', path: '/api/projects/{projectId}/release-provenance', pattern: /^\/api\/projects\/(?<projectId>[A-Za-z0-9._-]{1,64})\/release-provenance$/, auth: 'session', authority: 'admin', handler: handleReleaseProvenance },
+  { method: 'PUT', path: '/api/projects/{projectId}/release-provenance', pattern: /^\/api\/projects\/(?<projectId>[A-Za-z0-9._-]{1,64})\/release-provenance$/, auth: 'session', authority: 'admin', handler: handleSaveReleaseProvenance },
+  { method: 'POST', path: '/api/projects/{projectId}/release-provenance/check', pattern: /^\/api\/projects\/(?<projectId>[A-Za-z0-9._-]{1,64})\/release-provenance\/check$/, auth: 'session', authority: 'admin', handler: handleRequestReleaseCheck },
+  { method: 'PUT', path: '/api/projects/{projectId}/capabilities/{capability}', pattern: /^\/api\/projects\/(?<projectId>[A-Za-z0-9._-]{1,64})\/capabilities\/(?<capability>[a-z_]{1,32})$/, auth: 'session', authority: 'admin', handler: handleSetProjectCapability },
+  // A machine's own settings (#1393): any member may ask, and the handlers answer only the member who claims the machine.
+  { method: 'GET', path: '/api/machines/{machineId}/settings', pattern: /^\/api\/machines\/(?<machineId>[A-Za-z0-9._-]{1,64})\/settings$/, auth: 'session', authority: 'member', handler: handleMachineSettings },
+  { method: 'PUT', path: '/api/machines/{machineId}/settings/{leaf}', pattern: /^\/api\/machines\/(?<machineId>[A-Za-z0-9._-]{1,64})\/settings\/(?<leaf>[A-Za-z0-9._]{1,96})$/, auth: 'session', authority: 'member', handler: handleSetMachineSetting },
   { method: 'GET', path: '/auth/login', auth: 'auth', handler: handleLogin },
   { method: 'GET', path: '/auth/callback', auth: 'auth', handler: handleCallback },
-  { method: 'POST', path: '/auth/logout', auth: 'owner', handler: async () => new Response(null, { status: 204, headers: { 'set-cookie': clearCookie() } }) },
+  { method: 'POST', path: '/auth/logout', auth: 'session', authority: 'account', handler: async () => new Response(null, { status: 204, headers: { 'set-cookie': clearCookie() } }) },
 ];
 
 /** A 1.4.x wire route the server does not serve; each names the event kinds (or the blob route) that carry the same capture in 2.0, or says what it carried is gone. A retired path is unmatched and answers 401 like any other absent path. */

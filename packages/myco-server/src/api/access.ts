@@ -4,7 +4,7 @@ import { ENROLLMENT_TTL_MS, issueEnrollmentAuthority, listInvitations, revokeEnr
 import { ADMIN_IDENTITY_LINK_TTL_MS, issueIdentityLinkAuthority, memberLinkState } from '../auth/identity-link.js';
 import { listMembers, memberState, revokeMember } from '../auth/members-admin.js';
 import { revokeCredentialAsMember } from '../auth/tokens.js';
-import { credentialActivity, listCredentials } from '../read/credentials.js';
+import { credentialActivity, credentialMember, listCredentials } from '../read/credentials.js';
 import { projectExists } from '../read/sessions.js';
 import { emit } from '../telemetry.js';
 import { badRequest, notFound, ok, readJsonObject } from './scope.js';
@@ -22,7 +22,6 @@ export async function handleMembers(env: ServerEnv, ctx: OwnerContext): Promise<
 
 /** `POST /api/members/{memberId}/revoke`: flat, attributed, and never the last linked member. */
 export async function handleRevokeMember(env: ServerEnv, ctx: OwnerContext): Promise<Response> {
-  if (!isAdmin(ctx.member.role)) return forbiddenToMember();
   const result = await revokeMember(env.db, ctx.params.memberId, ctx.member.id, ctx.now);
   if (result.ok) return ok({ revoked: true, revokedBy: ctx.member.id });
   if (result.reason === 'absent') return notFound();
@@ -38,7 +37,6 @@ export async function handleRevokeMember(env: ServerEnv, ctx: OwnerContext): Pro
  * member's earlier unspent keys.
  */
 export async function handleIssueMemberLink(env: ServerEnv, ctx: OwnerContext): Promise<Response> {
-  if (!isAdmin(ctx.member.role)) return forbiddenToMember();
   const memberId = ctx.params.memberId;
   if (memberId === HARNESS_MEMBER_ID) return Response.json({ error: 'member_is_runtime' }, { status: 409 });
   const state = await memberLinkState(env.db, memberId);
@@ -67,7 +65,6 @@ export async function handleInvitations(env: ServerEnv, ctx: OwnerContext): Prom
  * sandbox presenting it is refused rather than bound to a guess.
  */
 export async function handleMintInvitation(env: ServerEnv, ctx: OwnerContext): Promise<Response> {
-  if (!isAdmin(ctx.member.role)) return forbiddenToMember();
   const body = await readJsonObject(ctx.request);
   if (body === null) return badRequest('body must be a JSON object');
   let memberId: string | null = null;
@@ -101,28 +98,32 @@ export async function handleMintInvitation(env: ServerEnv, ctx: OwnerContext): P
 }
 
 export async function handleRevokeInvitation(env: ServerEnv, ctx: OwnerContext): Promise<Response> {
-  if (!isAdmin(ctx.member.role)) return forbiddenToMember();
   const result = await revokeEnrollmentAuthority(env.db, ctx.params.id, ctx.now, ctx.member.id);
   if (result.revoked) emit({ kind: 'invitation_revoked', invitationId: ctx.params.id, actor: ctx.member.id });
   return ok({ revoked: result.revoked, revokedBy: ctx.member.id });
 }
 
-/** The Deployment's credentials, paginated, optionally narrowed to one purpose. `token_hash` is never selected, so there is nothing here to redact. */
+/**
+ * The Deployment's credentials, paginated, optionally narrowed to one purpose: every one to an admin, and a
+ * member's own to a member. `token_hash` is never selected, so there is nothing here to redact.
+ */
 export async function handleCredentials(env: ServerEnv, ctx: OwnerContext): Promise<Response> {
   const page = paging(ctx.url);
   if (page instanceof Response) return page;
   const purpose = ctx.url.searchParams.get('purpose');
   if (purpose !== null && purpose !== 'run' && purpose !== 'member') return badRequest('purpose must be run or member');
-  return ok(await listCredentials(env.db, ctx.now, { ...page, ...(purpose === null ? {} : { purpose }) }));
+  const own = isAdmin(ctx.member.role) ? {} : { memberId: ctx.member.id };
+  return ok(await listCredentials(env.db, ctx.now, { ...page, ...(purpose === null ? {} : { purpose }), ...own }));
 }
 
 export async function handleRevokeCredential(env: ServerEnv, ctx: OwnerContext): Promise<Response> {
   return ok(await revokeCredentialAsMember(env.db, ctx.member, ctx.params.id, ctx.now));
 }
 
-/** What one credential wrote, across every Project. */
+/** What one credential wrote, across every Project: any credential's to an admin, and only a member's own to a member. */
 export async function handleCredentialActivity(env: ServerEnv, ctx: OwnerContext): Promise<Response> {
   const page = paging(ctx.url);
   if (page instanceof Response) return page;
+  if (!isAdmin(ctx.member.role) && (await credentialMember(env.db, ctx.params.id)) !== ctx.member.id) return notFound();
   return ok(await credentialActivity(env.db, ctx.params.id, page));
 }

@@ -4,6 +4,7 @@ import { Link } from 'react-router-dom';
 import { Badge } from '../ui/badge';
 import { useMembers } from '../../hooks/use-access';
 import { PLAN_STATUSES, useSetPlanStatus, type PlanCardRow, type PlanStatus } from '../../hooks/use-sessions';
+import { useIsAdmin } from '../../hooks/use-me';
 import { cn } from '../../lib/cn';
 import { formatDateTime, formatRelative } from '../../lib/format';
 import { TextOrBlob } from './stored-text';
@@ -102,6 +103,7 @@ export interface PlanCardProps {
  */
 export function PlanCard({ projectId, sessionId, plan, defaultOpen = false, inTurn = false, meta }: PlanCardProps) {
   const [open, setOpen] = useState(defaultOpen);
+  const admin = useIsAdmin();
   const checklist = progressParts(plan.progress);
   const pct = checklist !== null && checklist.total > 0 ? Math.round((checklist.checked / checklist.total) * 100) : 0;
   return (
@@ -116,7 +118,7 @@ export function PlanCard({ projectId, sessionId, plan, defaultOpen = false, inTu
           <code className="rounded-xs bg-surface-container-high px-1.5 py-0.5 font-mono text-[11px] text-on-surface">{plan.planKey}</code>
           <CopyKey planKey={plan.planKey} />
           {plan.originPath !== null && <code className="min-w-0 truncate font-mono text-[11px] text-on-surface-variant" title={plan.originPath}>{plan.originPath}</code>}
-          <StatusControl projectId={projectId} sessionId={sessionId} plan={plan} />
+          {admin && <StatusControl projectId={projectId} sessionId={sessionId} plan={plan} />}
           {plan.updatedBy !== null && <StatusSetBy memberId={plan.updatedBy} />}
           <span title={formatDateTime(plan.createdAt)}>Created {formatRelative(plan.createdAt)}</span>
           {plan.updatedAt !== plan.createdAt && <span title={formatDateTime(plan.updatedAt)}>Updated {formatRelative(plan.updatedAt)}</span>}

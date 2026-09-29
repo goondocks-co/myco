@@ -34,8 +34,8 @@ describe('route table', () => {
 
   it('declares an auth kind and a body mode for every route, a shape for every member route, and marks every member route capture but the named exceptions', () => {
     for (const r of ROUTES) {
-      expect(['public', 'member', 'auth', 'owner', 'enroll']).toContain(r.auth);
-      if (r.auth === 'auth' || r.auth === 'owner' || r.auth === 'enroll') continue;
+      expect(['public', 'member', 'auth', 'session', 'enroll']).toContain(r.auth);
+      if (r.auth === 'auth' || r.auth === 'session' || r.auth === 'enroll') continue;
       expect(['none', 'json', 'stream']).toContain(r.bodyMode);
       if (r.auth === 'public') expect(r.bodyMode).toBe('none');
       if (r.bodyMode === 'stream') expect(r.maxBodyBytes).toBe(MAX_BLOB_BYTES);

@@ -15,6 +15,7 @@ import { useCanopyMap, type CanopyMapRow } from '../hooks/use-canopy-map';
 import { useRuns, type RunListRow } from '../hooks/use-intelligence';
 import { planPath, useProjectPlans, type ProjectPlanRow } from '../hooks/use-plans';
 import { useProjectActions, useProjects } from '../hooks/use-projects';
+import { useIsAdmin } from '../hooks/use-me';
 import { useSettings, type LeafRow } from '../hooks/use-settings';
 import { refusalText } from '../hooks/use-access';
 import { useActivity, useSessions, type FeedItem, type ProjectStats, type SessionSummaryRow } from '../hooks/use-sessions';
@@ -142,9 +143,10 @@ function CaptureHealthPill({ stats }: { stats: ProjectStats }) {
 /** An archived project says so first: runtimes are refused until it is unarchived, and everything captured stays. */
 function ArchivedBanner({ projectId, archivedAt, archivedBy }: { projectId: string; archivedAt: number | null; archivedBy: string | null }) {
   const actions = useProjectActions();
+  const admin = useIsAdmin();
   const [error, setError] = useState<string | null>(null);
   return (
-    <Panel tone="terra" eyebrow="Archived" title="Runtimes are refused until you unarchive" data-testid="archived-banner" actions={
+    <Panel tone="terra" eyebrow="Archived" title={admin ? 'Runtimes are refused until you unarchive' : 'Runtimes are refused until an admin unarchives it'} data-testid="archived-banner" actions={admin &&
       <button type="button" className="rounded-md bg-primary px-3 py-1.5 font-sans text-sm text-on-primary transition-opacity hover:opacity-90" disabled={actions.unarchive.isPending} onClick={() => { setError(null); actions.unarchive.mutate(projectId, { onError: (err) => setError(refusalText(err)) }); }}>Unarchive</button>
     }>
       <p className="font-sans text-sm text-on-surface-variant">Archived {formatRelative(archivedAt)}{archivedBy ? ` by ${archivedBy}` : ''}. Everything captured before stays readable.</p>

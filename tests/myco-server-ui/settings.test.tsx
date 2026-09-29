@@ -8,7 +8,7 @@ import { AppearanceProvider } from '../../packages/myco-server/ui/src/providers/
 import { LEAF_FIELDS, LEAF_GROUPS } from '../../packages/myco-server/ui/src/settings/catalogue';
 import { LeafControl } from '../../packages/myco-server/ui/src/pages/Settings';
 
-const ME = { sub: '583231', login: 'octocat', member: { id: 'mem_1', label: 'chris' } };
+const ME = { sub: '583231', login: 'octocat', member: { id: 'mem_1', label: 'chris', role: 'admin' as const } };
 const PROJECTS = { projects: [{ projectId: 'x', name: 'Project X', createdAt: 0, sessionCount: 0, lastActivityAt: null, archivedAt: null, archivedBy: null }] };
 const NOW = Date.now();
 const SECRET = 'sk-full-secret-value-1234567890';

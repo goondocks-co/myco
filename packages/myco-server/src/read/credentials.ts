@@ -40,7 +40,7 @@ export interface ActivityRow {
 export async function listCredentials(
   db: RelationalStore,
   nowMs: number,
-  opts: { limit?: number; cursor?: string; purpose?: CredentialPurpose } = {},
+  opts: { limit?: number; cursor?: string; purpose?: CredentialPurpose; memberId?: string } = {},
 ): Promise<Page<CredentialRow>> {
   const k = keyset(opts, { order: 'lineage_started_at', id: 'id', direction: 'DESC' });
   if (k === null) return { rows: [], cursor: null };
@@ -51,6 +51,10 @@ export async function listCredentials(
   if (opts.purpose !== undefined) {
     conditions.push(opts.purpose === 'run' ? runCredential() : `NOT (${runCredential()})`);
     params.push(HARNESS_MEMBER_ID);
+  }
+  if (opts.memberId !== undefined) {
+    conditions.push('member_id = ?');
+    params.push(opts.memberId);
   }
   if (k.where !== '') conditions.push(k.where);
   const { results } = await db
@@ -76,6 +80,12 @@ export async function listCredentials(
     purpose: Number(r.run_credential) === 1 ? 'run' : 'member',
   }));
   return page(rows, limit, (r) => ({ createdAt: r.lineageStartedAt, id: r.id }));
+}
+
+/** The member a credential belongs to, or null when no credential has this id. */
+export async function credentialMember(db: RelationalStore, tokenId: string): Promise<string | null> {
+  const row = await db.prepare('SELECT member_id FROM member_credentials WHERE id = ?').bind(tokenId).first<{ member_id: string }>();
+  return row?.member_id ?? null;
 }
 
 /** What one credential wrote across every Project, newest first, over `idx_events_token_only (token_id, created_at, event_id)`. */

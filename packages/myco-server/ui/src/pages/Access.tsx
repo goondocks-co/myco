@@ -11,7 +11,7 @@ import { StatusDot } from '../components/ui/status-dot';
 import { KeyReveal } from '../components/access/KeyReveal';
 import { MachineSettingsDialog } from '../components/access/MachineSettings';
 import { LINEAGE_REPLAY_ACTOR, refusalText, runtimeDisplayName, useAccessActions, useInvitations, useMembers, usePaged, type ActivityRow, type CredentialRow } from '../hooks/use-access';
-import { useMe } from '../hooks/use-me';
+import { useIsAdmin, useMe } from '../hooks/use-me';
 import { useProjects } from '../hooks/use-projects';
 import { useWorkerFleet } from '../hooks/use-status';
 import { formatCount, formatDateTime, formatRelative, formatUntil } from '../lib/format';
@@ -42,8 +42,9 @@ const primary = 'rounded-md bg-primary px-3 py-1.5 font-sans text-sm text-on-pri
 /** `/access`: who is a member, who has been invited, and which runtimes write here. */
 export function Access() {
   const me = useMe();
+  const admin = useIsAdmin();
   const members = useMembers();
-  const invitations = useInvitations();
+  const invitations = useInvitations({ enabled: admin });
   // Each purpose is paged on its own.
   const credentials = usePaged<CredentialRow>(['credentials', 'member'], '/api/credentials?purpose=member&limit=50');
   const runCredentials = usePaged<CredentialRow>(['credentials', 'run'], '/api/credentials?purpose=run&limit=50');
@@ -77,10 +78,12 @@ export function Access() {
 
   return (
     <PageContainer>
-      <PageHeader title={INVITE_CONTROLS.page} subtitle="Who is a member of this server, who has been invited, and which runtimes write here. Everything is open to every member, and every change names who made it." />
+      <PageHeader title={INVITE_CONTROLS.page} subtitle={admin
+        ? 'Who is a member of this server, who has been invited, and which runtimes write here. Every change names who made it.'
+        : 'Who is a member of this server, and your own runtimes. An admin invites and removes members; every change names who made it.'} />
       <PageLoading isLoading={members.isPending} error={members.error ?? invitations.error ?? credentials.error ?? runCredentials.error}>
         <div className="flex flex-col gap-4">
-          <Panel padded title={INVITE_CONTROLS.page} actions={<button type="button" className={primary} onClick={() => { setInvited(null); setInviteError(null); setInviteFor(''); setInviteOpen(true); }}>{INVITE_CONTROLS.button}</button>}>
+          <Panel padded title={INVITE_CONTROLS.page} actions={admin ? <button type="button" className={primary} onClick={() => { setInvited(null); setInviteError(null); setInviteFor(''); setInviteOpen(true); }}>{INVITE_CONTROLS.button}</button> : undefined}>
             <ul className="flex flex-col divide-y divide-outline-variant/10" aria-label="Members">
               {list.map((m) => (
                 <li key={m.id} className="flex items-center gap-3 py-2 font-sans text-sm">
@@ -91,10 +94,10 @@ export function Access() {
                   </div>
                   <span className="text-xs text-on-surface-variant">{m.revokedAt !== null ? `removed ${formatRelative(m.revokedAt)}${nameOf(m.revokedBy) ? ` by ${nameOf(m.revokedBy)}` : ''}` : m.linked ? 'account connected' : 'no account yet'}</span>
                   <span className="text-xs text-on-surface-variant">{formatCount(m.liveCredentials, 'runtime')}</span>
-                  {m.revokedAt === null && !m.linked && (
+                  {admin && m.revokedAt === null && !m.linked && (
                     <button type="button" className={button} onClick={() => { setLinkIssued(null); setLinkError(null); actions.linkGithub.reset(); setLinkMemberId(m.id); }}>Connect GitHub</button>
                   )}
-                  {m.revokedAt === null && (
+                  {admin && m.revokedAt === null && (
                     <button type="button" className={button} onClick={() => { setRefusal(null); setRevokeMemberId(m.id); }}>Remove</button>
                   )}
                 </li>
@@ -102,7 +105,7 @@ export function Access() {
             </ul>
           </Panel>
 
-          <Panel padded title="Invitations">
+          {admin && <Panel padded title="Invitations">
             {(invitations.data?.invitations ?? []).length === 0 ? (
               <p className="font-sans text-sm text-on-surface-variant">No open invitations.</p>
             ) : (
@@ -119,7 +122,7 @@ export function Access() {
               </ul>
             )}
             {withdrawError && <p className="mt-2 font-sans text-xs text-tertiary">{withdrawError}</p>}
-          </Panel>
+          </Panel>}
 
           <Panel padded title="Runtimes">
             <p className="mb-2 font-sans text-xs text-on-surface-variant">

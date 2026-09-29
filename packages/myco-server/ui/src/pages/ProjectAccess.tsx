@@ -10,12 +10,26 @@ import { StatusDot } from '../components/ui/status-dot';
 import { KeyReveal } from '../components/access/KeyReveal';
 import { GRANT_EXPIRY_ACTOR, refusalText, useAccessActions, useGrants, useMembers, type GrantRow } from '../hooks/use-access';
 import { formatRelative } from '../lib/format';
+import { AdminOnly } from '../components/AdminOnly';
+import { useIsAdmin } from '../hooks/use-me';
 
 const button = 'rounded-md border border-outline-variant/30 px-2.5 py-1 font-sans text-xs text-on-surface transition-colors hover:bg-surface-container-high';
 const primary = 'rounded-md bg-primary px-3 py-1.5 font-sans text-sm text-on-primary transition-opacity hover:opacity-90';
 
-/** `/p/:projectId/access`: the external agents that may read this project. */
+const SUBTITLE = "External agents that may read this project and record what they find. They see this project's memory and nothing else, and every note they leave is signed with their own name.";
+
+/** `/p/:projectId/access`: the external agents that may read this project. Only an admin adds, rotates or revokes them. */
 export function ProjectAccess() {
+  if (useIsAdmin()) return <ExternalAgents />;
+  return (
+    <PageContainer>
+      <PageHeader title="Access" subtitle={SUBTITLE} />
+      <AdminOnly title="External agents">{null}</AdminOnly>
+    </PageContainer>
+  );
+}
+
+function ExternalAgents() {
   const { projectId = '' } = useParams();
   const grants = useGrants(projectId);
   const members = useMembers();
@@ -39,7 +53,7 @@ export function ProjectAccess() {
 
   return (
     <PageContainer>
-      <PageHeader title="Access" subtitle="External agents that may read this project and record what they find. They see this project's memory and nothing else, and every note they leave is signed with their own name." />
+      <PageHeader title="Access" subtitle={SUBTITLE} />
       <PageLoading isLoading={grants.isPending} error={grants.error}>
         <Panel padded title="External agents" actions={<button type="button" className={primary} onClick={() => { setLabel(''); setRevealed(null); setAddOpen(true); }}>Add external agent</button>}>
           {list.length === 0 ? (

@@ -6,7 +6,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import App from '../../packages/myco-server/ui/src/App';
 import { AppearanceProvider } from '../../packages/myco-server/ui/src/providers/appearance';
 
-const ME = { sub: '583231', login: 'octocat', member: { id: 'mem_1', label: 'chris' } };
+const ME = { sub: '583231', login: 'octocat', member: { id: 'mem_1', label: 'chris', role: 'admin' as const } };
 const NOW = Date.now();
 const LIVE = { projectId: 'live', name: 'Live', createdAt: 0, sessionCount: 3, lastActivityAt: NOW, archivedAt: null, archivedBy: null };
 const ARCH = { projectId: 'arch', name: 'Arch', createdAt: 0, sessionCount: 1, lastActivityAt: NOW - 1000, archivedAt: NOW - 500, archivedBy: 'mem_1' };
