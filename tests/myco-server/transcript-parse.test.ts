@@ -14,6 +14,7 @@
  *   - many passes and one pass produce the same rows.
  */
 import { registerBlob } from './helpers/d1.js';
+import type { PreparedStatement, RelationalStore } from '@myco-server-worker/core/adapters.js';
 import type { MemoryBlobStore } from './helpers/fixtures.js';
 import { drainObjectReleases } from '@myco-server-worker/core/object-release.js';
 import { describe, expect, it } from 'bun:test';
@@ -444,6 +445,33 @@ describe('parsing a held transcript', () => {
     expect(count(sqlite, 'plans')).toBe(2);
     const names = (sqlite.query(`SELECT input FROM tool_calls ORDER BY input`).all() as { input: string }[]).map((r) => r.input);
     expect(names).toEqual(['{"file_path":"/repo/a.ts"}', '{"file_path":"/repo/b.ts"}']);
+  });
+
+  it('reads a transcript in as few round trips as its events allow: the selection carries the segments, and the last batch carries the cursor', async () => {
+    const { sqlite, serverEnv } = await rig(body(40));
+    let trips = 0;
+    const alone: string[] = [];
+    const counted = (statement: PreparedStatement, sql: string): PreparedStatement => ({
+      ...statement,
+      bind: (...values: unknown[]) => counted(statement.bind(...values), sql),
+      run: () => { trips += 1; alone.push(sql); return statement.run(); },
+      all: <T,>() => { trips += 1; alone.push(sql); return statement.all<T>(); },
+      first: <T,>() => { trips += 1; alone.push(sql); return statement.first<T>(); },
+    });
+    let batches = 0;
+    const db: RelationalStore = {
+      prepare: (sql: string) => counted(serverEnv.db.prepare(sql), sql),
+      batch: (statements: PreparedStatement[]) => { trips += 1; batches += 1; return serverEnv.db.batch(statements); },
+    };
+    await parseTranscripts({ ...serverEnv, db }, NOW, { budget: { calls: 100, wallMs: 60_000 } });
+    expect(target(sqlite).parsed_offset).toBe(target(sqlite).size);
+    const events = count(sqlite, 'events');
+    // No read of the segments apart from the selection, and no advance of the cursor apart from the batch that wrote.
+    expect(alone.filter((sql) => /FROM transcript_segments s/.test(sql) && !/FROM transcripts/.test(sql))).toEqual([]);
+    expect(alone.filter((sql) => /UPDATE transcripts SET parse_segment_lines/.test(sql))).toEqual([]);
+    expect(batches).toBe(Math.ceil(events / TRANSCRIPT_PARSE_EVENTS_PER_BATCH));
+    // The live selection that found it and the two, one per half, that found none.
+    expect(trips).toBe(batches + 3);
   });
 
   it('stops the cursor where an event failed to land rather than advancing past it', async () => {

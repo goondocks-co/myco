@@ -111,7 +111,7 @@ describe('an imported transcript in the store', () => {
     const r = await rig();
     // A long import: far more turns than a few passes can read.
     let history = '';
-    for (let i = 0; i < 400; i += 1) history += body(2_000 + i);
+    for (let i = 0; i < 4_000; i += 1) history += body(20_000 + i);
     expect((await r.ship('s-history', tx('history'), history, 'import', NOW - 100_000)).persisted).toBe(true);
     const parsed = (id: string) => (r.sqlite.query(`SELECT parsed_offset FROM transcripts WHERE transcript_id = ?`).get(id) as { parsed_offset: number }).parsed_offset;
     const grown = [0, 0, 0];
@@ -140,14 +140,18 @@ describe('an imported transcript in the store', () => {
     await r.ship('s-long', tx('long'), long, 'import', NOW - 200_000);
     await r.ship('s-short', tx('short'), body(4_999), 'import', NOW - 100_000);
     const state = (id: string) => r.sqlite.query(`SELECT parsed_offset, size FROM transcripts WHERE transcript_id = ?`).get(id) as { parsed_offset: number; size: number };
+    // The selection names the import with least left first, and the pass that reads imports side by side finishes it.
+    const order = (r.sqlite.query(laneSelectionSql('imported', 2).replace('?', String(PARSER_VERSION))).all() as { transcript_id: string }[]).map((row) => row.transcript_id);
+    expect(order).toEqual([tx('short'), tx('long')]);
     await parseTranscripts(r.serverEnv, NOW, { budget: { calls: 4, wallMs: 60_000 } });
-    expect({ short: state(tx('short')).parsed_offset === state(tx('short')).size, long: state(tx('long')).parsed_offset }).toEqual({ short: true, long: 0 });
+    expect(state(tx('short')).parsed_offset).toBe(state(tx('short')).size);
+    expect(state(tx('long')).parsed_offset).toBeLessThan(state(tx('long')).size);
   });
 
   it('chains the next wake while a backlog remains, and returns to the cadence once it is read', async () => {
     const r = await rig();
     let history = '';
-    for (let i = 0; i < 60; i += 1) history += body(3_000 + i);
+    for (let i = 0; i < 600; i += 1) history += body(3_000 + i);
     await r.ship('s-history', tx('history'), history, 'import', NOW);
     const env = { ...r.serverEnv, platform: { ...r.serverEnv.platform, jobBudget: { calls: 6, wallMs: 60_000 } } };
     const first = await runTick(env, NOW);
