@@ -19,9 +19,9 @@ const SRC = path.join(ROOT, 'packages', 'myco', 'src');
 const CLI = fs.readFileSync(path.join(SRC, 'cli.ts'), 'utf8');
 
 /** The user-facing pages: the README and every guide the site publishes, architecture pages aside. */
-export const USER_DOCS = ['README.md', ...NAV.flatMap((g: { items: Array<{ slug: string }> }) => g.items.map((i) => i.slug))
-  .filter((slug: string) => !slug.startsWith('architecture/'))
-  .map((slug: string) => `docs/${slug}.md`)];
+export const USER_DOCS = ['README.md', ...NAV.flatMap((g) => g.items.map((i) => i.slug))
+  .filter((slug) => !slug.startsWith('architecture/'))
+  .map((slug) => `docs/${slug}.md`)];
 
 /** Each command `cli.ts` dispatches, with the source of every module its branch loads. */
 function commandModules(): Map<string, string> {

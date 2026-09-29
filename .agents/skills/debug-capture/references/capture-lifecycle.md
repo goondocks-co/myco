@@ -2,7 +2,7 @@
 
 Reference material for the `debug-capture` skill. The canonical layered view: every byte of session data passes through these layers in order, and every capture regression we've shipped has been a confused boundary between two of them. When investigating "why didn't this prompt land in the DB," the answer is in one of these layers, and the symptom-from-above is the diagnostic.
 
-For the end-user view of capture, see `docs/lifecycle.md`. This document is for the people on the other side of the contract.
+For the end-user view of capture, see `docs/agents.md`. This document is for the people on the other side of the contract.
 
 ## The layers, top to bottom
 

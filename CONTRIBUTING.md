@@ -1,6 +1,6 @@
 # Contributing to Myco
 
-Myco is a collective intelligence plugin for coding projects, supporting Claude Code, Cursor, Codex, Cline, Copilot, Google Antigravity, Devin Desktop, OpenCode, and Pi. This guide covers development setup and project conventions. For architecture details, see [Lifecycle docs](docs/lifecycle.md).
+Myco is a collective intelligence plugin for coding projects, supporting Claude Code, Cursor, Codex, Cline, Copilot, Google Antigravity, Devin Desktop, OpenCode, and Pi. This guide covers development setup and project conventions. For architecture details, see [the Myco 2.0 architecture](docs/architecture/myco-2.0.md).
 
 ## Installing Myco (End Users)
 
@@ -116,7 +116,7 @@ myco/
 
 ## Architecture
 
-See [docs/lifecycle.md](docs/lifecycle.md) for the full lifecycle with diagrams. Key points:
+See [docs/architecture/myco-2.0.md](docs/architecture/myco-2.0.md) for how Myco 2.0 fits together. Key points of the 1.4 local capture path:
 
 - **Hooks are thin** — they delegate to the daemon via HTTP. No business logic in hooks.
 - **The daemon is the authority** — all event processing, session recording, spore extraction, and embedding happen there.

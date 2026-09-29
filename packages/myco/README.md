@@ -1,45 +1,29 @@
 # @goondocks/myco
 
-`@goondocks/myco` is the main Myco package: the nervous system for AI-assisted software teams.
+`@goondocks/myco` is the main Myco package: the nervous system for AI-assisted software teams. Myco captures what your coding agents do, turns it into durable project knowledge, and hands that knowledge back to every agent on the team.
 
-Install it once to run the local dashboard and service, connect supported coding agents, capture project knowledge, and use the built-in intelligence pipeline.
-
-Myco is a self-contained native binary — **no Node runtime is required to run it**. The recommended install downloads the binary directly:
+Myco is a self-contained native binary, so **no Node runtime is required to run it**. The recommended install downloads the binary directly, on macOS or Linux:
 
 ```bash
-curl -fsSL https://myco.sh/install.sh | sh        # macOS / Linux
-irm https://myco.sh/install.ps1 | iex             # Windows x64 (PowerShell)
+curl --proto '=https' --tlsv1.2 -fsSL https://myco.sh/install.sh | sh
+myco login <invite link>
 ```
 
-This npm package is a thin bootstrap that converges to the same native binary, for people who prefer installing through npm (this path needs Node 22+):
-
-```bash
-npm install -g @goondocks/myco
-```
-
-Open a git project in any supported agent and Myco registers it automatically when the agent starts working there.
-
-macOS is the primary supported platform. Linux and Windows are in beta. On Windows, only **x64** is supported — Windows on ARM (which runs the x64 build under emulation) is not supported.
+This npm package is a thin bootstrap that converges to the same native binary, for people who prefer installing through npm (this path needs Node 22+).
 
 ## What you can do
 
-- Capture coding sessions into a local Myco vault
-- Run the local dashboard, service, and MCP server
-- Search sessions, spores, plans, and artifacts
-- Give agents shared project context without replacing their native memory or workflows
-- Share project intelligence by joining a Team Host, with no cloud account required
-- Connect multiple team workers to a Myco Collective
-
-## Upgrade
-
-Myco keeps itself up to date automatically — the local service self-updates from your release channel in the background while it's idle. You can also trigger an upgrade from the **Upgrade** section of the dashboard's **Settings** page, or run `myco upgrade` (with `--channel stable|beta`) for advanced or scripted use. No `npm update` is required.
+- Capture your coding agents' sessions to your team's Deployment, which you run on Cloudflare or on your own machine.
+- Give every agent on the team the project's spores, session-start instructions and repository map, without replacing its own memory or workflow.
+- Run a Deployment yourself with `myco server`.
+- Move a Myco 1.4 machine to 2.0 with `myco cutover`.
 
 ## Learn more
 
 - Project homepage: <https://github.com/goondocks-co/myco>
 - Quickstart: <https://github.com/goondocks-co/myco/blob/main/docs/quickstart.md>
-- Team Host: <https://github.com/goondocks-co/myco/blob/main/docs/team-host.md>
-- Collective: <https://github.com/goondocks-co/myco/blob/main/docs/collective.md>
+- Self-hosting: <https://github.com/goondocks-co/myco/blob/main/docs/self-hosting.md>
+- Upgrading from 1.4: <https://github.com/goondocks-co/myco/blob/main/docs/upgrade-from-v1.md>
 
 ## License
 

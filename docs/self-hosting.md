@@ -122,7 +122,7 @@ Either way your server stays where it is and keeps its data locally. Only the ad
 
 ## Keeping it current
 
-`myco update` replaces the binary. Then bring the server's storage up to date and restart it:
+Run the installer again to replace the binary. Then bring the server's storage up to date and restart it:
 
 ```bash
 myco server update --target local
@@ -134,8 +134,10 @@ It stops the server, brings its storage up to date, and starts it again. Running
 
 Everything the server holds is in one directory. Stop it, copy `~/.myco/server/local/`, and start it again. Restoring is the same in reverse.
 
-## What is proven, and what is not
+To take a backup without stopping it:
 
-A server started this way is verified end to end in the test suite: it comes up on a fresh directory, accepts a session, and serves its dashboard, all through the artifacts the binary carries rather than anything installed on the machine.
+```bash
+myco server backup --to <dir> --target local
+```
 
-Two things are not yet verified by an automated test. The released binary has not been run end to end as a compiled artifact, only built and exercised from source. And the path from a running server to a first piece of captured knowledge depends on work that has not landed, so this page stops at a running server.
+It snapshots the database and stored files into `<dir>` and checks every file it copied. The server's own keys are not in it; keep them somewhere safe of their own. Running the same command again resumes a copy that was interrupted. The Deployment also backs itself up on the schedule set in [Configuration](configuration.md).
