@@ -69,6 +69,14 @@ describe('spending a join code', () => {
     expect(r.rows('member_credentials')).toBe(0);
   });
 
+  it('reports an answer that is not a JSON object as unreadable, rather than throwing out of the hook', async () => {
+    for (const body of ['null', '[]', '', 'not json']) {
+      const answer = (() => Promise.resolve(new Response(body, { status: 421 }))) as unknown as typeof fetch;
+      const result = await exchangeJoinCode({ serverUrl: 'https://s', key: KEY }, { fetch: answer, machineId: 'm' });
+      expect({ body, result }).toMatchObject({ body, result: { ok: false, code: 'unreadable' } });
+    }
+  });
+
   it('reports an unreachable Deployment as unreachable, spending nothing', async () => {
     const dead = () => Promise.reject(new Error('connect ECONNREFUSED'));
     const result = await exchangeJoinCode({ serverUrl: 'https://s', key: KEY }, { fetch: dead as unknown as typeof fetch, machineId: 'm' });

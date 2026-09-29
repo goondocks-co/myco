@@ -131,21 +131,26 @@ export async function exchangeJoinCode(
     return { ok: false, code: 'unreachable', reason: (error as Error).message };
   }
 
-  let body: Record<string, unknown>;
+  let body: unknown;
   try {
-    body = (await response.json()) as Record<string, unknown>;
+    body = await response.json();
   } catch {
-    return { ok: false, code: 'unreadable', reason: `the Deployment answered ${response.status} with no JSON` };
+    body = undefined;
   }
-  if (body.joined !== true) {
-    return { ok: false, code: String(body.code ?? 'refused'), reason: String(body.reason ?? `the Deployment answered ${response.status}`) };
+  // A front that is not the Deployment — a proxy's refusal, an empty body — answers no object.
+  if (typeof body !== 'object' || body === null || Array.isArray(body)) {
+    return { ok: false, code: 'unreadable', reason: `the Deployment answered ${response.status} with no JSON object` };
+  }
+  const answer = body as Record<string, unknown>;
+  if (answer.joined !== true) {
+    return { ok: false, code: String(answer.code ?? 'refused'), reason: String(answer.reason ?? `the Deployment answered ${response.status}`) };
   }
   return {
     ok: true,
     answer: {
-      memberId: String(body.memberId), token: String(body.token), tokenId: String(body.tokenId),
-      expiresAt: Number(body.expiresAt), role: String(body.role),
-      projectId: typeof body.projectId === 'string' ? body.projectId : null,
+      memberId: String(answer.memberId), token: String(answer.token), tokenId: String(answer.tokenId),
+      expiresAt: Number(answer.expiresAt), role: String(answer.role),
+      projectId: typeof answer.projectId === 'string' ? answer.projectId : null,
     },
   };
 }
