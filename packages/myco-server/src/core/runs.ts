@@ -1483,6 +1483,13 @@ export async function successorsSince(db: RelationalStore, scope: ReadScope, tas
   return row?.c ?? 0;
 }
 
+/** Whether a run of `task` is queued or in flight in any Project: one existence read over the live statuses. */
+export async function hasLiveTaskRunAnywhere(db: RelationalStore, task: string): Promise<boolean> {
+  return (await db.prepare(
+    `SELECT 1 AS one FROM agent_runs WHERE ${IN_FLIGHT_RUN_STATUSES} AND task = ? LIMIT 1`,
+  ).bind(task).first<{ one: number }>()) !== null;
+}
+
 /** Whether a run of this task is live — pending, running or queued — in the Project. */
 export async function hasLiveTaskRun(db: RelationalStore, scope: ReadScope, task: string): Promise<boolean> {
   return (await db.prepare(

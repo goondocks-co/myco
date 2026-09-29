@@ -13,13 +13,14 @@
  *     one defect that would lose rows silently and in bulk.
  *   - many passes and one pass produce the same rows.
  */
-import { registerBlob } from './helpers/d1.js';
+import { D1_BOUND_PARAMETER_CEILING, registerBlob } from './helpers/d1.js';
+import type { PreparedStatement, RelationalStore } from '@myco-server-worker/core/adapters.js';
 import type { MemoryBlobStore } from './helpers/fixtures.js';
 import { drainObjectReleases } from '@myco-server-worker/core/object-release.js';
 import { describe, expect, it } from 'bun:test';
 import { Database } from 'bun:sqlite';
 import {
-  AWAITING_BYTES, PARSER_VERSION, parseOnce, parseTranscripts, pendingTranscripts, rereadTranscripts,
+  AWAITING_BYTES, eventGroups, PARSER_VERSION, TRANSCRIPT_PARSE_BATCH_PAYLOAD_BYTES, parseOnce, parseTranscripts, pendingTranscripts, rereadTranscripts,
   TRANSCRIPT_PARSE_EVENTS_PER_BATCH, TRANSCRIPT_PARSE_MALFORMED_LIMIT,
   TRANSCRIPT_PARSE_BYTES_PER_READ, TRANSCRIPT_PARSE_SEGMENTS_PER_READ, TRANSCRIPT_PARSE_RECORD_BYTES,
 } from '@myco-server-worker/ingest/parse.js';
@@ -444,6 +445,54 @@ describe('parsing a held transcript', () => {
     expect(count(sqlite, 'plans')).toBe(2);
     const names = (sqlite.query(`SELECT input FROM tool_calls ORDER BY input`).all() as { input: string }[]).map((r) => r.input);
     expect(names).toEqual(['{"file_path":"/repo/a.ts"}', '{"file_path":"/repo/b.ts"}']);
+  });
+
+  it('reads a transcript in as few round trips as its events allow: the selection carries the segments, and the last batch carries the cursor', async () => {
+    const { sqlite, serverEnv } = await rig(body(40));
+    let trips = 0;
+    const alone: string[] = [];
+    const counted = (statement: PreparedStatement, sql: string): PreparedStatement => ({
+      ...statement,
+      bind: (...values: unknown[]) => counted(statement.bind(...values), sql),
+      run: () => { trips += 1; alone.push(sql); return statement.run(); },
+      all: <T,>() => { trips += 1; alone.push(sql); return statement.all<T>(); },
+      first: <T,>() => { trips += 1; alone.push(sql); return statement.first<T>(); },
+    });
+    let batches = 0;
+    const db: RelationalStore = {
+      prepare: (sql: string) => counted(serverEnv.db.prepare(sql), sql),
+      batch: (statements: PreparedStatement[]) => { trips += 1; batches += 1; return serverEnv.db.batch(statements); },
+    };
+    await parseTranscripts({ ...serverEnv, db }, NOW, { budget: { calls: 100, wallMs: 60_000 } });
+    expect(target(sqlite).parsed_offset).toBe(target(sqlite).size);
+    const events = count(sqlite, 'events');
+    // No read of the segments apart from the selection, and no advance of the cursor apart from the batch that wrote.
+    expect(alone.filter((sql) => /FROM transcript_segments s/.test(sql) && !/FROM transcripts/.test(sql))).toEqual([]);
+    expect(alone.filter((sql) => /UPDATE transcripts SET parse_segment_lines/.test(sql))).toEqual([]);
+    expect(batches).toBe(Math.ceil(events / TRANSCRIPT_PARSE_EVENTS_PER_BATCH));
+    // The live selection that found it and the two, one per half, that found none.
+    expect(trips).toBe(batches + 3);
+  });
+
+  it('keeps the cursor advance under the hosted parameter ceiling when it rides a batch of the most events one may hold', async () => {
+    // Every turn derives the same events, so as many turns as a batch holds events fill the last batch exactly.
+    const { sqlite, serverEnv } = await rig(body(TRANSCRIPT_PARSE_EVENTS_PER_BATCH));
+    const advances: number[] = [];
+    const observed = (statement: PreparedStatement, sql: string): PreparedStatement => ({
+      ...statement,
+      bind: (...values: unknown[]) => {
+        if (/UPDATE transcripts SET parse_segment_lines/.test(sql)) advances.push(values.length);
+        return statement.bind(...values);
+      },
+    });
+    const db: RelationalStore = { prepare: (sql: string) => observed(serverEnv.db.prepare(sql), sql), batch: (statements) => serverEnv.db.batch(statements) };
+    await parseTranscripts({ ...serverEnv, db }, NOW, { budget: { calls: 100, wallMs: 60_000 } });
+    expect(count(sqlite, 'events') % TRANSCRIPT_PARSE_EVENTS_PER_BATCH).toBe(0);
+    // The one advance carries a guard on a full batch of event ids, and the store binds it: the cursor reaches the end.
+    expect(advances).toHaveLength(1);
+    expect(advances[0]).toBeGreaterThan(TRANSCRIPT_PARSE_EVENTS_PER_BATCH);
+    expect(advances[0]).toBeLessThanOrEqual(D1_BOUND_PARAMETER_CEILING);
+    expect(target(sqlite)).toMatchObject({ parsed_offset: target(sqlite).size, parse_error: null });
   });
 
   it('stops the cursor where an event failed to land rather than advancing past it', async () => {
@@ -1379,5 +1428,33 @@ describe('a turn whose reply is longer than one response holds', () => {
     const { sqlite, serverEnv } = await rig(tooLong, 1 << 20, { agent: 'codex' });
     await parseTranscripts(serverEnv, NOW);
     expect(target(sqlite)).toMatchObject({ parse_error: 'event_refused', parsed_offset: 0 });
+  });
+});
+
+describe('the groups a pass writes', () => {
+  const event = (offset: number, text: string) => ({ kind: 'response', offset, createdAt: 1, payload: { responseId: uuid(offset + 1), text } });
+  const bytes = (group: Array<{ payload: unknown }>) => group.reduce((n, e) => n + Buffer.byteLength(JSON.stringify(e.payload)), 0);
+
+  it('writes small events fifty to a call, in order', () => {
+    const events = Array.from({ length: 120 }, (_, i) => event(i, `reply ${i}`));
+    const groups = eventGroups(events);
+    expect(groups.map((g) => g.length)).toEqual([TRANSCRIPT_PARSE_EVENTS_PER_BATCH, TRANSCRIPT_PARSE_EVENTS_PER_BATCH, 20]);
+    expect(groups.flat()).toEqual(events);
+  });
+
+  it('never carries more payload in one call than twenty of the largest events could, and fills each call it can', () => {
+    const events = Array.from({ length: 60 }, (_, i) => event(i, 'x'.repeat(200_000)));
+    const groups = eventGroups(events);
+    expect(groups.flat()).toEqual(events);
+    for (const [n, group] of groups.entries()) {
+      expect(bytes(group)).toBeLessThanOrEqual(TRANSCRIPT_PARSE_BATCH_PAYLOAD_BYTES);
+      if (n < groups.length - 1) expect(bytes([...group, groups[n + 1][0]])).toBeGreaterThan(TRANSCRIPT_PARSE_BATCH_PAYLOAD_BYTES);
+    }
+    expect(TRANSCRIPT_PARSE_BATCH_PAYLOAD_BYTES).toBe(20 * 262_144);
+  });
+
+  it('writes an event larger than a call alone rather than dropping it', () => {
+    const events = [event(0, 'x'.repeat(TRANSCRIPT_PARSE_BATCH_PAYLOAD_BYTES)), event(1, 'small')];
+    expect(eventGroups(events).map((g) => g.length)).toEqual([1, 1]);
   });
 });
