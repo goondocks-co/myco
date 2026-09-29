@@ -14,6 +14,7 @@ import { serialGate } from '../../core/serial-gate.js';
 import { WAKE_CONTINUATIONS } from '../../core/jobs.js';
 import { classify, emit } from '../../telemetry.js';
 import { serverEnvFromBindings, type CloudflareBindings } from './env.js';
+import type { ServerEnv } from '../../core/adapters.js';
 import { PRODUCER_NAME } from './recovery-producer-object.js';
 
 /** The one clock a Deployment keeps. */
@@ -137,6 +138,36 @@ export async function wakeClock(bindings: CloudflareBindings): Promise<void> {
 export class DeploymentClock extends DurableObject<CloudflareBindings> {
   /** One wake at a time in this object: an alarm and a cron floor arriving together run back to back rather than doubling store calls. */
   private readonly gate = serialGate();
+  /** Work a tick launched that is still running: kept alive by this object, never by the wake that launched it. */
+  private readonly launched = new Set<Promise<void>>();
+
+  /**
+   * Keep work a tick launched (an embedding run, say) alive past that tick, without the tick waiting on it. A wake
+   * holds the clock's gate, so work awaited inside it would hold every later tick behind the whole run: parsing, live
+   * capture and every job would wait on it. The work carries its own deadline and closes its own run.
+   */
+  private keep(work: Promise<unknown>): void {
+    const settled: Promise<void> = work.then(() => undefined, (error: unknown) => {
+      emit({ kind: 'clock_work_failed', error_class: classify(error) });
+    }).finally(() => { this.launched.delete(settled); });
+    this.launched.add(settled);
+    this.ctx.waitUntil(settled);
+  }
+
+  /** How many launched pieces of work are still running. */
+  launchedInFlight(): number {
+    return this.launched.size;
+  }
+
+  /** The environment a tick runs over: clock-owned work it launches is kept by this object, not awaited. */
+  protected clockEnv(): ServerEnv {
+    return serverEnvFromBindings(this.env, { lifetime: 'clock', waitUntil: (promise) => { this.keep(promise); } });
+  }
+
+  /** One tick over this object's bindings. */
+  protected tick(now: number): Promise<TickReport> {
+    return runTick(this.clockEnv(), now, { wake: 'clock' });
+  }
 
   /** Run the tick now and arm the next alarm from its answer; deep sleep arms none. */
   async wake(): Promise<WakeOutcome> {
@@ -145,29 +176,26 @@ export class DeploymentClock extends DurableObject<CloudflareBindings> {
 
   private async wakeOnce(): Promise<WakeOutcome> {
     const now = Date.now();
-    const work: Promise<unknown>[] = [];
+    // Armed before anything that can throw: the continuation below can leave the Deployment's own database
+    // unreadable, which makes the tick throw, and an unarmed clock stays dark until the cron floor.
+    await armFloor(this.ctx.storage, this.env, now);
+    const continuation = await runContinuations(this.env);
+    if (continuation.sourcePaused) {
+      emit({ kind: 'tick_held', held_by: 'recovery_export', attempt: continuation.attempt, stage: continuation.stage });
+      await armNextWake(this.ctx.storage, this.env, Date.now(), soonestWake(CONTINUATION_FLOOR_MS, continuation.nextInMs));
+      return { ticked: false, heldBy: 'recovery_export', attempt: continuation.attempt, stage: continuation.stage };
+    }
     try {
-      // Armed before anything that can throw: the continuation below can leave the Deployment's own database
-      // unreadable, which makes the tick throw, and an unarmed clock stays dark until the cron floor.
-      await armFloor(this.ctx.storage, this.env, now);
-      const continuation = await runContinuations(this.env);
-      if (continuation.sourcePaused) {
-        emit({ kind: 'tick_held', held_by: 'recovery_export', attempt: continuation.attempt, stage: continuation.stage });
-        await armNextWake(this.ctx.storage, this.env, Date.now(), soonestWake(CONTINUATION_FLOOR_MS, continuation.nextInMs));
-        return { ticked: false, heldBy: 'recovery_export', attempt: continuation.attempt, stage: continuation.stage };
-      }
-      try {
-        const report = await runTick(serverEnvFromBindings(this.env, { lifetime: 'clock', waitUntil: (promise) => { work.push(promise); } }), now, { wake: 'clock' });
-        await armNextWake(this.ctx.storage, this.env, Date.now(), soonestWake(report.nextWakeMs, continuation.nextInMs));
-        return { ticked: true, report };
-      } catch (error) {
-        // The failure is the answer: the alarm stays armed at least at the floor, and the wake raises rather than
-        // answering a quiet empty tick. A failing tick must never leave the Deployment with no wake at all.
-        emit({ kind: 'wake_failed', error_class: classify(error) });
-        await armNextWake(this.ctx.storage, this.env, Date.now(), soonestWake(CONTINUATION_FLOOR_MS, continuation.nextInMs));
-        throw error;
-      }
-    } finally { await Promise.all(work); }
+      const report = await this.tick(now);
+      await armNextWake(this.ctx.storage, this.env, Date.now(), soonestWake(report.nextWakeMs, continuation.nextInMs));
+      return { ticked: true, report };
+    } catch (error) {
+      // The failure is the answer: the alarm stays armed at least at the floor, and the wake raises rather than
+      // answering a quiet empty tick. A failing tick must never leave the Deployment with no wake at all.
+      emit({ kind: 'wake_failed', error_class: classify(error) });
+      await armNextWake(this.ctx.storage, this.env, Date.now(), soonestWake(CONTINUATION_FLOOR_MS, continuation.nextInMs));
+      throw error;
+    }
   }
 
   /** Wake soon, unless an alarm is already set. */
