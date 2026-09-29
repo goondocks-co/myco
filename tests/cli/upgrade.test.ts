@@ -24,10 +24,11 @@ import { vi } from '../helpers/vi-shim.js';
 // Module mocks (must precede import of the module under test)
 // ---------------------------------------------------------------------------
 
-// Stub update-checker so writeProjectReleaseChannel doesn't touch real fs.
+// Stub update-checker so no channel read or write touches real fs; every write is recorded.
+const channelWrites: string[] = [];
 mock.module('@myco/daemon/update-checker.js', () => ({
   readProjectReleaseChannel: () => 'stable',
-  writeProjectReleaseChannel: (_vaultDir: string, _channel: string) => { /* no-op */ },
+  writeProjectReleaseChannel: (_vaultDir: string, channel: string) => { channelWrites.push(channel); },
 }));
 
 // Mock grove/paths so resolveMycoHome doesn't touch the real filesystem.
@@ -116,7 +117,6 @@ function makeDeps(overrides: Partial<UpgradeDeps> = {}): UpgradeDeps {
       version: '1.1.0',
     })),
     initiateAdopt: vi.fn(async (_opts) => {}),
-    writeChannel: vi.fn((_vaultDir, _channel) => {}),
     // checkFn stubbed so `--check` NEVER hits the real GitHub releases API —
     // resolveMycoPackageCheck defaults to `globalThis.fetch`, which hangs on CI.
     // Returns a deterministic up-to-date result (report-only path; no stage/adopt).
@@ -463,17 +463,12 @@ describe('myco upgrade --channel', () => {
     expect((deps.resolveRefs as ReturnType<typeof vi.fn>).mock.calls[0]![0]).toBe('beta');
   });
 
-  it('persists channel via writeChannel BEFORE calling resolveRefs (on actual-upgrade path)', async () => {
-    const callOrder: string[] = [];
-    const deps = makeDeps({
-      writeChannel: vi.fn((_vaultDir, channel) => { callOrder.push(`persist:${channel}`); }),
-      resolveRefs: vi.fn(async (channel) => { callOrder.push(`resolve:${channel}`); return makeRefs('1.1.0-beta.1'); }),
-    });
+  it('upgrades on a named channel for this run only, and saves nothing (#1393; the channel is a machine setting, #922)', async () => {
+    channelWrites.length = 0;
+    const deps = makeDeps({ resolveRefs: vi.fn(async () => makeRefs('1.1.0-beta.1')) });
     await run(['--channel', 'beta'], deps);
-    expect(deps.writeChannel).toHaveBeenCalledTimes(1);
-    expect((deps.writeChannel as ReturnType<typeof vi.fn>).mock.calls[0]![1]).toBe('beta');
-    // persist must come before resolve
-    expect(callOrder.indexOf('persist:beta')).toBeLessThan(callOrder.indexOf('resolve:beta'));
+    expect((deps.resolveRefs as ReturnType<typeof vi.fn>).mock.calls[0]![0]).toBe('beta');
+    expect(channelWrites).toEqual([]);
   });
 
   it('--check --channel beta does NOT persist (report-only, no side effects)', async () => {
@@ -486,7 +481,6 @@ describe('myco upgrade --channel', () => {
     const checkFn = vi.fn(async () => fakeCheckResult);
     const deps = makeDeps({ checkFn: checkFn as unknown as UpgradeDeps['checkFn'] });
     await run(['--check', '--channel', 'beta'], deps);
-    expect(deps.writeChannel).not.toHaveBeenCalled();
     expect(deps.stageBinary).not.toHaveBeenCalled();
     expect(deps.initiateAdopt).not.toHaveBeenCalled();
   });

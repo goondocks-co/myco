@@ -13,6 +13,7 @@
  * it closed on — or the contributor alone when it failed — so a caller reads an
  * empty block as a named decision rather than a silence.
  */
+import { machineBlockFor } from '../core/machine-settings.js';
 import type { ServerEnv } from '../core/adapters.js';
 import type { RouteContext } from '../context.js';
 import { composePromptContext, composeSessionContext, readRecallLeaves } from '../core/recall.js';
@@ -99,8 +100,10 @@ export async function handleSessionContext(env: ServerEnv, ctx: RouteContext): P
     readRecallLeaves(env.db),
     settingsWriter(env.db).capabilityEnabled(ctx.projectId, 'cortex'),
   ]);
-  const served = await composeSessionContext(env.db, { projectId: ctx.projectId }, leaves, capabilityOn, {
-    sessionId, ...identity, now: ctx.now,
-  });
-  return Response.json({ persisted: true, ...served });
+  const [served, machine] = await Promise.all([
+    composeSessionContext(env.db, { projectId: ctx.projectId }, leaves, capabilityOn, { sessionId, ...identity, now: ctx.now }),
+    // The machine's own settings, where the member asking claims it; a machine keeps them from its session start.
+    machineBlockFor(env.db, ctx.memberId, ctx.machineId),
+  ]);
+  return Response.json({ persisted: true, ...served, ...(machine === null ? {} : { machine }) });
 }

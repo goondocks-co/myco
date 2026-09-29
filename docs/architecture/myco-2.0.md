@@ -613,6 +613,7 @@ Disposition here is about the **data class**, and separately about **migration**
 | `worker_contacts` | KEEP | Core, W | Blk | One row per claiming credential holding what a worker last reported — offered harnesses and whether each is reported logged in, capabilities, the outcome its last claim answered, and when it was last heard from; written by the claim and the lease renewal through one owner, swept with the lease sweep at thirty days while a live lease holds its row, excluded from portable backups | #1273 |
 | `deployment_secrets` | KEEP | Core | Blk | One row per named Deployment credential, holding ciphertext, IV and wrapping-key version only, written by the settings surface with its actor | #965 |
 | `deployment_settings` | KEEP | Core | Blk | One row per Deployment config leaf (§7.8), each carrying the member and instant of its last write | #965 |
+| `machine_settings` | KEEP | Core | Blk | One row per machine setting leaf, keyed by the machine identity (`machine_claims`): set on the dashboard by the machine's own member and nobody else, an admin included, answered to that machine at session start, and excluded from artifacts with the other settings | #1393 |
 | `embedding_cursors` | KEEP | Core | Blk | One row per Project marking where the embedding reconciliation resumes, and its spore calibration's model, member count, page cursor and commit token. From schema step 50 every calibration write holds only while the token its step read is current, and replaces it. From schema step 51 it also names where calibration's look for left-out spores that are no longer written again resumes | #1126, #1429, #1436 |
 | `embedding_hubness_members` | KEEP | Core | Blk | From schema step 50, the spore vectors a Project's calibration covers under one model: each one's state (settled, joining, leaving), the count, mean and sum of squared deviations of its cosine distance to the other members, and a copy of its vector. A spore added or removed changes every member's moments by one sample, read from the copies, so calibration costs one pass over the members per change and a removed spore leaves after its vector is deleted. A receipt's neighbour statistics change only once its moments cover every other current spore, so a build or a change in progress never publishes statistics over part of the set | #1429 |
 | `embedding_hubness_work` | KEEP | Core | Blk | A Project's in-flight hubness statistics from the full-pass calibration: target model, cursor, and the running count, mean and sum of squared deviations. Nothing writes it from schema step 50, which clears it; `embedding_hubness_members` carries calibration | #1126, #1429 |
@@ -732,16 +733,16 @@ Four blocks hold dynamic children the schema cannot enumerate — `agent.tasks`,
 | `embedding.provider` | REPLACE | Deployment | Core | Self-hosted embedding provider; Cloudflare always uses Workers AI bge-m3 | #1124 |
 | `embedding.model` | REPLACE | Deployment | Core | Self-hosted embedding model; Cloudflare always uses Workers AI bge-m3 | #1124 |
 | `embedding.prevent_deep_sleep` | REPLACE | Deployment | Core | Wake policy for the embedding job; a Deployment-side scheduling concern | #915 |
-| `daemon.log_level` | KEEP | Member | M | Log verbosity of the member binary on this machine | C1 |
-| `daemon.log_retention_days` | KEEP | Member | M | Local log retention on this machine | C1 |
-| `daemon.stale_session_threshold_ms` | KEEP | Member | M | Local session-liveness heuristic for capture on this machine | C1 |
-| `capture.transcript_paths` | KEEP | Member | M | Where this machine's agents write transcripts | #915 |
-| `capture.plan_dirs` | KEEP | Member | M | Where this machine's agents write plans | #915 |
-| `capture.ignore_plan_dirs_in_git` | KEEP | Member | M | Local plan-capture filter | #915 |
-| `capture.artifact_extensions` | KEEP | Member | M | Local artifact filter | #915 |
-| `capture.buffer_max_events` | KEEP | Member | M | Local write-ahead buffer bound | #915 |
-| `capture.ignore.paths` | KEEP | Member | M | Local capture exclusion | #915 |
-| `capture.ignore.patterns` | KEEP | Member | M | Local capture exclusion | #915 |
+| `daemon.log_level` | KEEP | Member | M | Log verbosity of the member binary on this machine; no 2.0 logger has levels yet, so nothing reads it | C1 |
+| `daemon.log_retention_days` | KEEP | Member | M | Local log retention on this machine; deferred until 2.0 rotates its logs | C1 |
+| `daemon.stale_session_threshold_ms` | DROP | — | — | A 1.4 daemon mechanism with no 2.0 counterpart; not a setting a machine keeps | #1393 |
+| `capture.transcript_paths` | KEEP | Member | M | Where this machine's agents write transcripts, beyond what each manifest names; deferred, the manifests cover the supported agents | #915 |
+| `capture.plan_dirs` | KEEP | Member | M | Extra folders this machine's agents write plans to, beside each agent's own: one set per machine, held by the Deployment (`machine_settings`), set on the dashboard by that machine's member (Access › Runtimes › Settings); a folder that is, or resolves to, `/`, the home or the project root, or climbs with `..`, is refused; cached by the machine, in the home its hooks resolve, at session start | #1393 |
+| `capture.ignore_plan_dirs_in_git` | DROP | — | — | A 1.4 daemon mechanism with no 2.0 counterpart; not a setting a machine keeps | #1393 |
+| `capture.artifact_extensions` | DROP | — | — | A 1.4 daemon mechanism with no 2.0 counterpart; not a setting a machine keeps | #1393 |
+| `capture.buffer_max_events` | DROP | — | — | A 1.4 daemon mechanism with no 2.0 counterpart; not a setting a machine keeps | #1393 |
+| `capture.ignore.paths` | DROP | — | — | The #428 admission mechanism: a deliberate join replaces it, and it is not migrated, since a 1.4 config can name a repository its owner now captures | #1393 |
+| `capture.ignore.patterns` | DROP | — | — | The #428 admission mechanism: a deliberate join replaces it, and it is not migrated, since a 1.4 config can name a repository its owner now captures | #1393 |
 | `release_provenance.enabled` | REPLACE | Project | Core | Per-repository: whether this Project tracks provenance; held in `project_release_provenance` | #1274 |
 | `release_provenance.production_refs` | REPLACE | Project | Core | Git refs of one repository; held in `project_release_provenance` | #1274 |
 | `release_provenance.integration_refs` | REPLACE | Project | Core | Git refs of one repository; held in `project_release_provenance` | #1274 |
@@ -773,7 +774,7 @@ Four blocks hold dynamic children the schema cannot enumerate — `agent.tasks`,
 | `embedding.base_url` | REPLACE | Deployment | Core | Self-hosted embedding endpoint; Cloudflare uses its Workers AI binding | #1124 |
 | `backup.dir` | DROP | — | — | A member-writable server-side filesystem path is the #907 H5 family, and has no meaning on a Worker. Where a self-hosted Deployment writes backups is operator configuration, not a member setting | #923 |
 | `agent.tasks` | REPLACE | Deployment | Core | Per-task overrides the Deployment applies to its own harness runs; the `title-summary` block's `maxRunsPerDay`, `intervalSeconds` and `runIn` bound the titling convergence, and its `enabled` admits wholly imported sessions (#1203, #1381) | #919 |
-| `notifications.domains` | KEEP | Member | M | Per-viewer delivery preference for each notification domain | #915 |
+| `notifications.domains` | DROP | — | — | 1.4 daemon notification delivery; a 2.0 member delivers no notifications | #1393 |
 | `symbionts` | KEEP | Member | M | Which coding agents are installed on this machine; never server state | #917 |
 | `release_provenance.reconcile_interval_minutes` | REPLACE | Deployment | Core | The only Deployment-shaped leaf here; already split out as its own grove-homed entry | #915 |
 | `agent.summary_batch_interval` | REPLACE | Deployment | Core | Deployment-side task batching | #915 |
@@ -794,14 +795,14 @@ Four blocks hold dynamic children the schema cannot enumerate — `agent.tasks`,
 | `maintenance.auto_optimize_interval_hours` | REPLACE | Deployment | Core | Schedule for the above: 1–720 hours, counted from the last run's start | #1276 |
 | `maintenance.auto_integrity_check` | REPLACE | Deployment | Core | Turns `database-integrity-check` on, with the same unset, invalid and upgrade behavior as `maintenance.auto_optimize` | #1276 |
 | `maintenance.auto_integrity_check_interval_hours` | REPLACE | Deployment | Core | Schedule for the above: 1–8760 hours, counted from the last run's start | #1276 |
-| `update.channel` | KEEP | Member | M | Which build this machine installs | #915 |
+| `update.channel` | KEEP | Member | M | Which build this machine installs. Deferred to #922: `myco upgrade --channel` names a channel for one run and saves nothing | #922 |
 | `skills.enabled` | REPLACE | Project | Core | Capability master gate; per-Project admission, fail-closed when absent. **Planned DROP in #1170 (sweep)** per plan §2.4 D3: it gates a generation pipeline that goes, and hand-written skills need no admission gate. | #1170 |
 | `skills.confidence_threshold` | REPLACE | Deployment | Core | Advanced setting governed by the skills capability. **Planned DROP in #1170 (sweep)** per plan §2.4 D3: it scores candidates, of which there will be none. | #1170 |
 | `skills.usage_stale_days` | REPLACE | Deployment | Core | Advanced setting governed by the skills capability. **Planned DROP in #1170 (sweep)** per plan §2.4 D3: it ages a generated skill, of which there will be none. | #1170 |
 | `vault_evolution.enabled` | REPLACE | Project | Core | Capability master gate; per-Project admission, fail-closed when absent | #915 |
-| `notifications.enabled` | KEEP | Member | M | Per-viewer delivery preference | #915 |
-| `notifications.system_notifications` | KEEP | Member | M | Per-viewer OS notification preference | #915 |
-| `notifications.default_mode` | KEEP | Member | M | Per-viewer delivery preference | #915 |
+| `notifications.enabled` | DROP | — | — | 1.4 daemon notification delivery; a 2.0 member delivers no notifications | #1393 |
+| `notifications.system_notifications` | DROP | — | — | 1.4 daemon notification delivery; a 2.0 member delivers no notifications | #1393 |
+| `notifications.default_mode` | DROP | — | — | 1.4 daemon notification delivery; a 2.0 member delivers no notifications | #1393 |
 | `notifications.retention_days` | REPLACE | Deployment | Core | Prune window for Deployment-held notification records; no member owns it | #915 |
 | `retention.transcripts` | KEEP | Deployment | Core | New in 2.0: days a raw transcript segment is kept after the parse has read it, 0–3650. **0 means indefinitely**, and so does an absent value — `setLeaf` has no delete, so without an in-range off value a Deployment that once set a window could never return to keeping everything. Derived rows are never pruned by it. It is how a Deployment manages storage: capture is never refused for volume (#1416), and the default stays keep-forever | A3, #1416 |
 | `worker.harness` | KEEP | Deployment | Core | New in 2.0: the harness a worker prefers to drive. A worker offers what it has installed and logged in, the Deployment names what it wants, and the claim chooses the first of preference then fallback the worker actually has. An absent value means the fallback order alone decides | B1 |

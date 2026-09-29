@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it } from 'bun:test';
 import { INVITE_CONTROLS, MEMBER_KEEPS_MACHINES, REJOIN_FOR_ADMIN, REJOIN_HINT } from '@goondocks/myco-shared/member-protocol';
-import { fireEvent, render, screen } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 
@@ -38,6 +38,49 @@ function mount(path: string, seed?: (client: QueryClient) => void) {
 }
 
 describe('Deployment Access', () => {
+  it('offers a machine\'s settings once per machine, only on the viewer\'s own, never on a row that names none, and saves its plan folders (#1393)', async () => {
+    const puts: { path: string; body: unknown }[] = [];
+    const row = (id: string, machineId: string | null, purpose: 'member' | 'run' = 'member', memberId = 'mem_1', runtimeLabel: string | null = machineId === 'laptop' ? 'Chris MacBook' : null) => ({
+      id, memberId, machineId, runtimeLabel, expiresAt: Date.now() + 3_600_000, revokedAt: null, revokedBy: null, bytesWritten: 0, lineageStartedAt: 0, firstUsedAt: null, live: true, purpose,
+    });
+    let stored: string[] = [];
+    server({
+      '/auth/me': () => Response.json(ME),
+      '/api/projects': () => Response.json({ projects: [] }),
+      '/api/members': () => Response.json(MEMBERS),
+      '/api/enrollment': () => Response.json({ invitations: [] }),
+      '/api/credentials': (_init, url) => Response.json({
+        rows: url?.searchParams.get('purpose') === 'run' ? [row('mt_run', 'harness-runtime', 'run')] : [row('mt_1', 'laptop'), row('mt_2', 'laptop'), row('mt_3', null), row('mt_4', 'desk', 'member', 'mem_2')],
+        cursor: null,
+      }),
+      '/api/machines/laptop/settings': () => Response.json({ machineId: 'laptop', leaves: [{ leaf: 'capture.plan_dirs', configured: stored.length > 0, value: stored, updatedAt: null, updatedBy: null }] }),
+      '/api/machines/laptop/settings/capture.plan_dirs': (init) => {
+        const body = JSON.parse(String(init?.body)) as { value: string[] };
+        puts.push({ path: '/api/machines/laptop/settings/capture.plan_dirs', body });
+        stored = body.value;
+        return Response.json({ applied: true });
+      },
+    });
+    mount('/access');
+    expect(await screen.findByText('mt_1 · started', { exact: false })).toBeTruthy();
+    // Two runtimes of one machine, one of none, another member's machine and a run's credential: one Settings action.
+    expect(screen.getAllByRole('button', { name: 'Settings' })).toHaveLength(1);
+    fireEvent.click(screen.getByRole('button', { name: 'Settings' }));
+    const dialog = await screen.findByRole('dialog');
+    expect(within(dialog).getByText('Settings for Chris MacBook')).toBeTruthy();
+    // The machine's own set has arrived before anything is edited.
+    expect(await within(dialog).findByText('None: only each agent\'s own plan folder.')).toBeTruthy();
+    // A folder that names the whole home is refused before it is ever sent.
+    fireEvent.change(within(dialog).getByLabelText('Plan folder to add'), { target: { value: '~' } });
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Add' }));
+    expect((await within(dialog).findByRole('alert')).textContent).toContain('too broad');
+    expect(within(dialog).getByText('None: only each agent\'s own plan folder.')).toBeTruthy();
+    fireEvent.change(within(dialog).getByLabelText('Plan folder to add'), { target: { value: '~/notes/plans' } });
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Add' }));
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Save' }));
+    await waitFor(() => expect(puts).toEqual([{ path: '/api/machines/laptop/settings/capture.plan_dirs', body: { value: ['~/notes/plans'] } }]));
+  });
+
   it('lists members in user vocabulary, marks you, and the remove confirm says what stops', async () => {
     server({
       '/auth/me': () => Response.json(ME),

@@ -134,9 +134,9 @@ describe('a joined member with no 1.4 vault', () => {
     join(rig);
     const spy = recordingFetch(rig.fetch);
 
-    const get = await verb('config', ['get', 'capture.plan_dirs'], spy.fetch);
+    const get = await verb('config', ['get', 'daemon.log_level'], spy.fetch);
     expect(get.answered).toBe(false);
-    expect(get.stderr).toContain(`capture.plan_dirs is a Member setting, and the 2.0 member does not read Member settings yet (${MEMBER_SETTINGS_ISSUE})`);
+    expect(get.stderr).toContain(`daemon.log_level is a Member setting, and the 2.0 member does not read Member settings yet (${MEMBER_SETTINGS_ISSUE})`);
     const set = await verb('config', ['set', 'daemon.log_level', 'debug'], spy.fetch);
     expect(set.answered).toBe(false);
     expect(set.stderr).toContain('daemon.log_level is a Member setting');
@@ -147,6 +147,19 @@ describe('a joined member with no 1.4 vault', () => {
     expect(deploymentWrite.stderr).toContain(`Deployment Settings are written in the dashboard (${SERVER_URL}/settings)`);
     expect(rig.env.sqlite.query("SELECT COUNT(*) AS n FROM deployment_settings WHERE leaf = 'agent.limits.concurrent_runs'").get()).toEqual({ n: 0 });
     expect(legacyArtifacts()).toEqual([]);
+  });
+
+  it('config reads this machine\'s plan folders from the Deployment, and names the dashboard for a change (#1393)', async () => {
+    const rig = await memberRig();
+    join(rig);
+    rig.env.sqlite.run(`INSERT INTO machine_claims (machine_id, member_id, claimed_at) VALUES ('machine_1', 'mem_machine_1', 1)`);
+    rig.env.sqlite.run(`INSERT INTO machine_settings (machine_id, leaf, value, updated_at, updated_by) VALUES ('machine_1', 'capture.plan_dirs', '["docs/plans"]', 1, 'mem_machine_1')`);
+    const get = await verb('config', ['get', 'capture.plan_dirs'], rig.fetch);
+    expect({ answered: get.answered, stdout: get.stdout.trim() }).toEqual({ answered: true, stdout: JSON.stringify(['docs/plans'], null, 2) });
+    const set = await verb('config', ['set', 'capture.plan_dirs', '["x"]'], rig.fetch);
+    expect(set.answered).toBe(false);
+    expect(set.stderr).toContain('capture.plan_dirs is this machine\'s setting, set in the dashboard');
+    expect(rig.env.sqlite.query(`SELECT value FROM machine_settings`).all()).toEqual([{ value: '["docs/plans"]' }]);
   });
 
   it('config never carries a stored provider credential', async () => {

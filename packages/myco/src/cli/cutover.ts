@@ -27,7 +27,9 @@
  *      and ask each 1.4 home's own running daemon to exit;
  *   7. copy every 1.4 vault and verify the copy;
  *   8. import from the copies (`myco import --legacy`), then the agents'
- *      transcripts.
+ *      transcripts;
+ *   9. cache the settings the Deployment holds for this machine, and name the
+ *      plan folders 1.4 watched, which are set on the dashboard, never carried.
  *
  * Every run reads the vaults afresh: a copy is reused only while it holds the
  * very rows the vault holds now. What was imported is the Deployment's record,
@@ -36,6 +38,8 @@
  * Nothing 1.4 wrote as data is deleted or rewritten: the vaults stay where
  * they are, and the import reads the copies.
  */
+import { parse as parseYaml } from 'yaml';
+import { seedMachineSettings } from '../member/machine-settings.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import { getMachineId } from '../machine-id.js';
@@ -553,6 +557,27 @@ export async function run(args: readonly string[], deps: CutoverDeps = {}): Prom
     const why = transcripts.projects.filter((p) => p.endedBy !== undefined).map((p) => `${p.projectId}: ${STOPPED_WORDS[p.endedBy!] ?? p.endedBy}`);
     problem(`the transcript import stopped before it finished (${why.join('; ') || transcripts.refused || 'no reason given'}); run the cutover again to finish it`);
   }
+  // 9. This machine's settings: the Deployment's are cached for the hooks, and 1.4's plan folders are named, never
+  // carried: they are set on the dashboard, where each machine's settings are kept.
+  step(9, 'Name the plan folders 1.4 watched, which this machine sets on the dashboard');
+  await seedMachineSettings({ serverUrl, token: membership.token }, { mycoHome, fetch: deps.fetch });
+  const legacyPlanDirs = [...new Set(legacyHomes.flatMap(legacyPlanDirsOf))];
+  if (legacyPlanDirs.length === 0) out('   1.4 watched no extra plan folders on this machine');
+  else {
+    out(`   1.4 also watched these plan folders: ${legacyPlanDirs.join(', ')}`);
+    out(`   to keep any, add it under Access › Runtimes › Settings for this machine: ${deploymentUrl(serverUrl)}/access`);
+  }
   out(ok ? 'Cutover complete.' : 'Cutover finished with the problems above; run it again once they are settled.');
   return ok;
+}
+
+/** The extra plan folders a 1.4 home's machine configuration names, or none where it names none or cannot be read. */
+export function legacyPlanDirsOf(home: string): string[] {
+  try {
+    const parsed = parseYaml(fs.readFileSync(path.join(home, 'config.yaml'), 'utf8')) as { capture?: { plan_dirs?: unknown } } | null;
+    const dirs = parsed?.capture?.plan_dirs;
+    return Array.isArray(dirs) ? dirs.filter((d): d is string => typeof d === 'string' && d.length > 0) : [];
+  } catch {
+    return [];
+  }
 }

@@ -1,4 +1,5 @@
 import type { RelationalStore } from './adapters.js';
+import { planFolderRefusal } from '@goondocks/myco-shared/member-protocol';
 import { INSTRUCTIONS_TEMPLATE_MAX_BYTES, IMPORT_MAX_SESSIONS_MAX, IMPORT_WINDOW_DAYS_MAX } from '../constants.js';
 
 /**
@@ -42,7 +43,9 @@ export type LeafSpec =
   | Record<string, never>
   | { readonly type: 'integer'; readonly min: number; readonly max: number }
   | { readonly type: 'markdown'; readonly maxBytes: number }
-  | { readonly type: 'task-overrides' };
+  | { readonly type: 'task-overrides' }
+  /** A list of paths: each absolute, `~/`, or relative to wherever it is resolved, without control characters. */
+  | { readonly type: 'path-list'; readonly maxItems: number; readonly maxChars: number };
 
 /**
  * The leaves this tier owns, from §7.8 of the architecture ledger.
@@ -159,6 +162,19 @@ function taskOverridesViolation(value: unknown): string | null {
 /** A schedule count: a whole number of 0 or more that SQL binds exactly. */
 export const isScheduleCount = (v: unknown): v is number => typeof v === 'number' && Number.isSafeInteger(v) && v >= 0;
 
+function pathListViolation(spec: { maxItems: number; maxChars: number }, value: unknown): string | null {
+  if (!Array.isArray(value)) return 'expected a list of paths';
+  if (value.length > spec.maxItems) return `expected at most ${spec.maxItems} paths`;
+  for (const entry of value) {
+    if (typeof entry !== 'string' || entry.trim() === '') return 'expected each path to be non-empty text';
+    if (entry.length > spec.maxChars) return `expected each path to be at most ${spec.maxChars} characters`;
+    if (/[\u0000-\u001F\u007F]/.test(entry)) return 'expected each path without control characters';
+    const broad = planFolderRefusal(entry);
+    if (broad !== null) return broad;
+  }
+  return new Set(value).size === value.length ? null : 'expected each path once';
+}
+
 /** What the value violates, or null when it satisfies the leaf's rule. */
 export function leafRuleViolation(spec: LeafSpec, value: unknown): string | null {
   if (!('type' in spec)) return null;
@@ -168,6 +184,7 @@ export function leafRuleViolation(spec: LeafSpec, value: unknown): string | null
     return null;
   }
   if (spec.type === 'task-overrides') return taskOverridesViolation(value);
+  if (spec.type === 'path-list') return pathListViolation(spec, value);
   if (typeof value !== 'string') return 'expected Markdown text';
   if (CONTROL_CHARACTERS.test(value)) return 'expected Markdown text without control characters';
   const bytes = new TextEncoder().encode(value).length;

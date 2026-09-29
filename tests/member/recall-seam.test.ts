@@ -4,6 +4,8 @@
  * costs the served block alone, and the budget it spends leaves the drain room
  * to ship. The served block is then written in each symbiont's own shape.
  */
+import { machinePlanDirs } from '@myco/member/machine-settings.js';
+import { TEST_MACHINE_ID } from './helpers/server.js';
 import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -350,6 +352,18 @@ describe('the session-start hook', () => {
     { session_id: SESSION, hook_event_name: 'SessionStart', transcript_path: transcript(), cwd: '/work/repo', source },
     { fetch: fetchImpl },
   );
+
+  it('caches the settings the Deployment holds for this machine from its session-start answer, and keeps them through an answer without any (#1393)', async () => {
+    rig.env.sqlite.run(`INSERT INTO machine_claims (machine_id, member_id, claimed_at) VALUES (?, ?, ?)`, [TEST_MACHINE_ID, `mem_${TEST_MACHINE_ID}`, Date.now()]);
+    rig.env.sqlite.run(`INSERT INTO machine_settings (machine_id, leaf, value, updated_at, updated_by) VALUES (?, 'capture.plan_dirs', ?, ?, 'test')`, [TEST_MACHINE_ID, JSON.stringify(['docs/plans']), Date.now()]);
+    await start(rig.fetch);
+    expect(machinePlanDirs('https://member-test.invalid', mycoHome)).toEqual(['docs/plans']);
+    // The machine's claim gone, the answer names no settings: the cache stands.
+    rig.env.sqlite.run(`DELETE FROM machine_settings`);
+    rig.env.sqlite.run(`DELETE FROM machine_claims`);
+    await start(rig.fetch, 'compact');
+    expect(machinePlanDirs('https://member-test.invalid', mycoHome)).toEqual(['docs/plans']);
+  });
 
   it('restores context once for each compaction: the start the harness fires after compacting advances the ordinal itself', async () => {
     admit();
