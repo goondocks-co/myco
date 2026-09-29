@@ -6,7 +6,7 @@ import { heldRunOfCredential } from './api/run-admission.js';
 import { recordRunCall, type HeldRun } from './core/runs.js';
 import { HARNESS_MEMBER_ID } from './core/harness.js';
 import { memberRole } from './auth/members-admin.js';
-import { isAdmin } from './auth/roles.js';
+import { forbiddenToMember, isAdmin } from './auth/roles.js';
 import { authenticateGrant, GRANT_KEY_PATTERN, touchGrant } from './auth/grants.js';
 import { HSTS_MAX_AGE_SECONDS, LINEAGE_REPLAY_GRACE_MS, MIN_COMPAT_MEMBER_PROTOCOL, PROJECT_HEADER, PROTOCOL_HEADER, RETRY_AFTER_SECONDS, SERVER_PROTOCOL } from './constants.js';
 import { sha256Hex } from './hash.js';
@@ -277,8 +277,8 @@ export function createServer(deps: ServerDeps) {
     const anonymous = async () => ((await env.sourceLimit.limit({ key: source })).success ? unauthorized() : limited());
 
     // The human surface sits BELOW source identity so it is metered like any other
-    // credential-free traffic: an auth route makes an outbound call to GitHub, and an
-    // owner route without a valid cookie is as cheap to send as an anonymous member
+    // credential-free traffic: an auth route makes an outbound call to GitHub, and a
+    // session route without a valid cookie is as cheap to send as an anonymous member
     // request. Above this point neither would charge the bucket at all.
     // Enrollment sits with the other credential-free surfaces and is metered like them.
     // It is the one route that reaches storage without an authenticated member, and it
@@ -298,7 +298,7 @@ export function createServer(deps: ServerDeps) {
       }
     }
 
-    if (matched?.route.auth === 'auth' || matched?.route.auth === 'owner') {
+    if (matched?.route.auth === 'auth' || matched?.route.auth === 'session') {
       const config = ownerConfig(env);
       if (config === null) return anonymous();
       if (matched.route.auth === 'auth') {
@@ -317,13 +317,16 @@ export function createServer(deps: ServerDeps) {
         // the account is a member only while a live member row is linked to it.
         const member = await memberByGithubId(env.db, session.sub);
         const context = { request: bounded, session, config, params: matched.params, url, now };
-        if (matched.route.membership === 'optional') {
+        if (matched.route.authority === 'account') {
           // The two routes that serve an account ahead of membership meter a
           // non-member like credential-free traffic: a valid session is free to mint.
           if (member === null && !(await env.sourceLimit.limit({ key: source })).success) return limited();
           return await matched.route.handler(env, { ...context, member });
         }
         if (member === null) return anonymous();
+        // The route's declared authority decides who it admits, here and nowhere else:
+        // anything but `member` is an admin's.
+        if (matched.route.authority !== 'member' && !isAdmin(member.role)) return forbiddenToMember();
         await stampRequest(env.db, now);
         return await matched.route.handler(env, { ...context, member });
       } catch (err) {

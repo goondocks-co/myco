@@ -18,10 +18,9 @@ import {
  * rather than reaching the store itself — this module decides nothing about what
  * a setting means, only how it is asked for and answered.
  *
- * These are owner routes today, matching the one dashboard session the server
- * has. #915's model is that ALL members manage Deployment Settings; widening the
- * human surface from one owner to every member is #918's work, and the routes are
- * shaped so that is a change of who authenticates rather than of what is served.
+ * Any member reads the Deployment's settings, as a member's CLI does over
+ * `/members/settings`; only an admin writes one, or reads or writes a credential
+ * slot. The route table declares which (`routes.ts`), and the pipeline enforces it.
  */
 
 /** The credential slots this Deployment stores, each with the one use it serves (`secret-slots.ts`). */

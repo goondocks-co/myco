@@ -8,12 +8,14 @@
  * role its minter chose and never at one the joiner names.
  *
  * Admission is a function of the role alone. Nothing here reads a request, a
- * body or a session: a surface decides who may reach it by calling `isAdmin`
- * with the member the pipeline already resolved, so there is one answer per
- * member per request rather than one per call site.
+ * body or a session: a dashboard route declares the authority it needs in the
+ * route table, and the pipeline calls `isAdmin` with the member it already
+ * resolved, so there is one answer per member per request rather than one per
+ * call site. A route any member reaches narrows itself to that member's own
+ * rows with the same predicate.
  */
 
-/** Every role. An admin administers membership; a member does everything else. */
+/** Every role. An admin administers the Deployment; a member reads it and keeps their own machines and credentials. */
 export const MEMBER_ROLES = ['admin', 'member'] as const;
 
 export type MemberRole = (typeof MEMBER_ROLES)[number];
@@ -26,7 +28,7 @@ export function asMemberRole(value: unknown): MemberRole | null {
 /** The roles as a SQL list, so a statement that guards on the grammar and this module cannot drift apart. */
 export const MEMBER_ROLES_SQL = MEMBER_ROLES.map((r) => `'${r}'`).join(', ');
 
-/** Whether this role administers membership: minting and revoking invitations, revoking members, revoking any member's credential. */
+/** Whether this role administers the Deployment: its membership, settings, secrets, backups, maintenance and dispatch, and any member's credential. */
 export const isAdmin = (role: MemberRole): boolean => role === 'admin';
 
 /** The one refusal an admin-only surface answers. A member reaching one is authenticated and known, so this states what it lacks rather than denying it exists. */

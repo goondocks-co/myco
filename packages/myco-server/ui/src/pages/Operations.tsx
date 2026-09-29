@@ -7,6 +7,7 @@ import { RecoveryPanel } from '../components/operations/RecoveryPanel';
 import { WakePanel } from '../components/operations/WakePanel';
 import { MaintenancePanel } from '../components/operations/MaintenancePanel';
 import { TitlingBackfillPanel } from '../components/operations/TitlingBackfillPanel';
+import { AdminOnly } from '../components/AdminOnly';
 
 const button = 'rounded-md border border-outline-variant/30 px-2.5 py-1 font-sans text-xs text-on-surface transition-colors hover:bg-surface-container-high';
 
@@ -15,6 +16,7 @@ export function Operations() {
   return (
     <PageContainer>
       <PageHeader title="Operations" subtitle="Backups, diagnostics and what this server reports about itself." />
+      <AdminOnly title="Operations">
       <div className="flex flex-col gap-4">
         <Panel title="Health" eyebrow="Now">
           <p className="font-sans text-sm text-on-surface-variant">
@@ -40,6 +42,7 @@ export function Operations() {
           </a>
         </Panel>
       </div>
+      </AdminOnly>
     </PageContainer>
   );
 }

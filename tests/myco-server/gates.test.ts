@@ -4,7 +4,7 @@ import { Database } from 'bun:sqlite';
 import { readdirSync, readFileSync, statSync } from 'node:fs';
 import { join, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { RETIRED_ROUTES, ROUTES, grantRoutes, isOwnedPath, ownedPathPatterns, type Shape } from '@myco-server-worker/routes.js';
+import { RETIRED_ROUTES, ROUTES, SESSION_AUTHORITIES, grantRoutes, isOwnedPath, ownedPathPatterns, type Shape } from '@myco-server-worker/routes.js';
 import { issueExternalGrant } from '@myco-server-worker/auth/grants.js';
 import worker from '@myco-server-worker/index.js';
 import { createIngestThrottle } from './helpers/throttle.js';
@@ -719,8 +719,8 @@ describe('gates', () => {
     expect(ROUTES.filter((r) => r.auth === 'member').map((r) => `${r.method} ${r.path}`).sort()).toEqual(Object.keys(FIXTURES).sort());
     const machineless: Record<string, unknown>[] = [];
     for (const r of ROUTES) {
-      expect(['public', 'member', 'auth', 'owner', 'enroll']).toContain(r.auth);
-      if (r.auth === 'auth' || r.auth === 'owner' || r.auth === 'enroll') continue;
+      expect(['public', 'member', 'auth', 'session', 'enroll']).toContain(r.auth);
+      if (r.auth === 'auth' || r.auth === 'session' || r.auth === 'enroll') continue;
       expect(['none', 'json', 'stream']).toContain(r.bodyMode);
       if (r.auth === 'public') continue;
       const fixture = FIXTURES[`${r.method} ${r.path}`];
@@ -1014,13 +1014,51 @@ describe('gates', () => {
     expect(free).toEqual(['GET /auth/callback', 'GET /auth/login', 'GET /health']);
   });
 
-  it('serves a signed-in account ahead of membership on exactly the two routes that link it, and every other owner route runs for a member', () => {
-    const optional = ROUTES.filter((r) => r.auth === 'owner' && r.membership === 'optional').map((r) => `${r.method} ${r.path}`).sort();
+  it('serves a signed-in account ahead of membership on exactly the two routes that link it, and every other session route runs for a member', () => {
+    const optional = ROUTES.filter((r) => r.auth === 'session' && r.authority === 'account').map((r) => `${r.method} ${r.path}`).sort();
     expect(optional).toEqual(['GET /auth/me', 'POST /auth/link']);
     const context = readFileSync(join(SRC, 'context.ts'), 'utf8');
     expect(context).toMatch(/export interface OwnerContext \{[^}]*\n  member: DashboardMember;\n/);
     const importers = files(SRC).filter((f) => /\bSessionContext\b/.test(readFileSync(f, 'utf8'))).map((f) => f.slice(SRC.length + 1)).sort();
     expect(importers).toEqual(['api/identity.ts', 'context.ts', 'routes.ts']);
+  });
+
+  it('declares on every session route which of the three authorities it admits (#1491)', () => {
+    const session = ROUTES.filter((r) => r.auth === 'session');
+    expect(session.length).toBeGreaterThan(0);
+    for (const r of session) {
+      const route = `${r.method} ${r.path}`;
+      const declared = (r as { authority?: unknown }).authority;
+      expect({ route, declared: (SESSION_AUTHORITIES as readonly unknown[]).includes(declared) }).toEqual({ route, declared: true });
+    }
+  });
+
+  it('refuses a member who is not an admin on every admin route, before its handler, and on no other session route (#1491)', async () => {
+    const { MEMBER_SUB, OWNER_ENV, ownerCookie, seedMemberRoleAccount } = await import('./helpers/owner.js');
+    const now = Date.now();
+    const asMember = await ownerCookie(now, MEMBER_SUB);
+    const asAdmin = await ownerCookie(now);
+    const refused: string[] = [];
+    const admitted: string[] = [];
+    for (const r of ROUTES) {
+      if (r.auth !== 'session' || r.authority === 'account') continue;
+      const path = r.path.replace('{projectId}', 'proj_1').replace('{sessionId}', 's1').replace('{promptId}', '00000000-0000-7000-8000-000000000001').replace('{planKey}', '00000000-0000-5000-8000-000000000002').replace('{runId}', 'r1').replace('{memberId}', 'mem_machine_2').replace('{grantId}', 'eg_x').replace('{id}', 'x').replace('{child}', 'prompts').replace('{key}', 'a'.repeat(64)).replace(/\{[A-Za-z]+\}/g, 'x');
+      for (const [who, cookie] of [['member', asMember], ['admin', asAdmin]] as const) {
+        const e = sqliteEnv();
+        seedMemberRoleAccount(e.sqlite);
+        const res = await worker.fetch(
+          new Request(`https://s${path}`, { method: r.method, headers: { cookie, 'cf-connecting-ip': '1.2.3.4', origin: 'https://s' }, body: r.method === 'GET' ? undefined : '{}' }),
+          { ...e.env, ...OWNER_ENV },
+        );
+        const body = res.status === 403 ? await res.json() as { error?: string } : null;
+        const label = `${who} ${r.method} ${r.path}`;
+        (body?.error === 'not_admin' ? refused : admitted).push(label);
+      }
+    }
+    const adminRoutes = ROUTES.filter((r) => r.auth === 'session' && r.authority === 'admin').map((r) => `member ${r.method} ${r.path}`).sort();
+    expect(adminRoutes.length).toBeGreaterThan(0);
+    expect(refused.sort()).toEqual(adminRoutes);
+    expect(admitted.filter((l) => l.startsWith('admin ')).length).toBe(ROUTES.filter((r) => r.auth === 'session' && r.authority !== 'account').length);
   });
 
   it('compares no session to a configured owner: who may enter is a membership question', () => {
@@ -1045,8 +1083,8 @@ describe('gates', () => {
     expect(source).not.toMatch(/AuthHandler = \([^)]*Env/);
   });
 
-  it('answers every owner route without disclosing the protocol number', async () => {
-    const owner = ROUTES.filter((r) => r.auth === 'owner');
+  it('answers every session route without disclosing the protocol number', async () => {
+    const owner = ROUTES.filter((r) => r.auth === 'session');
     expect(owner.length).toBeGreaterThan(0);
     const { OWNER_ENV, ownerCookie } = await import('./helpers/owner.js');
     const cookie = await ownerCookie();
@@ -1090,7 +1128,7 @@ describe('gates', () => {
   });
 
   it('pins the full route table, so no route of any kind is added without a decision', () => {
-    expect(ROUTES.map((r) => `${r.auth} ${r.method} ${r.path}`).sort()).toEqual([
+    expect(ROUTES.map((r) => `${r.auth === 'session' ? `session:${r.authority}` : r.auth} ${r.method} ${r.path}`).sort()).toEqual([
       'auth GET /auth/callback',
       'auth GET /auth/login',
       'enroll POST /members/join',
@@ -1124,92 +1162,92 @@ describe('gates', () => {
       'member POST /worker/end',
       'member POST /worker/lease',
       'member POST /worker/repository',
-      'owner DELETE /api/projects/{projectId}/repository',
-      'owner DELETE /api/secrets/{name}',
-      'owner GET /api/agents',
-      'owner GET /api/backups',
-      'owner GET /api/backups/{backupId}/artifact',
-      'owner GET /api/credentials',
-      'owner GET /api/credentials/{id}/activity',
-      'owner GET /api/diagnostics',
-      'owner GET /api/enrollment',
-      'owner GET /api/kpis',
-      'owner GET /api/machines/{machineId}/settings',
-      'owner GET /api/maintenance',
-      'owner GET /api/members',
-      'owner GET /api/projects',
-      'owner GET /api/projects/{projectId}/activity',
-      'owner GET /api/projects/{projectId}/blobs/{key}',
-      'owner GET /api/projects/{projectId}/canopy-map',
-      'owner GET /api/projects/{projectId}/capabilities',
-      'owner GET /api/projects/{projectId}/cortex/instructions',
-      'owner GET /api/projects/{projectId}/digests',
-      'owner GET /api/projects/{projectId}/digests/{tier}/revisions',
-      'owner GET /api/projects/{projectId}/grants',
-      'owner GET /api/projects/{projectId}/plans',
-      'owner GET /api/projects/{projectId}/release-provenance',
-      'owner GET /api/projects/{projectId}/release-states',
-      'owner GET /api/projects/{projectId}/repository',
-      'owner GET /api/projects/{projectId}/runs',
-      'owner GET /api/projects/{projectId}/runs/{runId}',
-      'owner GET /api/projects/{projectId}/search',
-      'owner GET /api/projects/{projectId}/sessions',
-      'owner GET /api/projects/{projectId}/sessions/{sessionId}',
-      'owner GET /api/projects/{projectId}/sessions/{sessionId}/transcript',
-      'owner GET /api/projects/{projectId}/sessions/{sessionId}/turns',
-      'owner GET /api/projects/{projectId}/sessions/{sessionId}/turns/{promptId}',
-      'owner GET /api/projects/{projectId}/sessions/{sessionId}/turns/{promptId}/tool-calls',
-      'owner GET /api/projects/{projectId}/sessions/{sessionId}/{child}',
-      'owner GET /api/projects/{projectId}/skill-candidates',
-      'owner GET /api/projects/{projectId}/skills',
-      'owner GET /api/projects/{projectId}/skills/{skillId}',
-      'owner GET /api/projects/{projectId}/spores',
-      'owner GET /api/projects/{projectId}/spores/{sporeId}',
-      'owner GET /api/recovery/exports',
-      'owner GET /api/secrets',
-      'owner GET /api/settings',
-      'owner GET /api/status',
-      'owner GET /api/titling-backfill',
-      'owner GET /auth/me',
-      'owner PATCH /api/projects/{projectId}',
-      'owner PATCH /api/projects/{projectId}/skill-candidates/{candidateId}',
-      'owner POST /api/backups',
-      'owner POST /api/backups/restore-upload',
-      'owner POST /api/backups/{backupId}/pin',
-      'owner POST /api/backups/{backupId}/restore',
-      'owner POST /api/backups/{backupId}/restore-preview',
-      'owner POST /api/credentials/{id}/revoke',
-      'owner POST /api/enrollment',
-      'owner POST /api/enrollment/{id}/revoke',
-      'owner POST /api/harness/dispatch',
-      'owner POST /api/maintenance/{check}/run',
-      'owner POST /api/members/{memberId}/link-github',
-      'owner POST /api/members/{memberId}/revoke',
-      'owner POST /api/projects',
-      'owner POST /api/projects/{projectId}/archive',
-      'owner POST /api/projects/{projectId}/grants',
-      'owner POST /api/projects/{projectId}/grants/{grantId}/revoke',
-      'owner POST /api/projects/{projectId}/grants/{grantId}/rotate',
-      'owner POST /api/projects/{projectId}/release-provenance/check',
-      'owner POST /api/projects/{projectId}/sessions/{sessionId}/end',
-      'owner POST /api/projects/{projectId}/sessions/{sessionId}/plans/{planKey}/status',
-      'owner POST /api/projects/{projectId}/sessions/{sessionId}/title',
-      'owner POST /api/projects/{projectId}/sessions/{sessionId}/tombstone',
-      'owner POST /api/projects/{projectId}/unarchive',
-      'owner POST /api/recovery/exports',
-      'owner POST /api/transcripts/reread',
-      'owner POST /api/wake',
-      'owner POST /auth/link',
-      'owner POST /auth/logout',
-      'owner PUT /api/agents/{agentId}',
-      'owner PUT /api/machines/{machineId}/settings/{leaf}',
-      'owner PUT /api/projects/{projectId}/capabilities/{capability}',
-      'owner PUT /api/projects/{projectId}/release-provenance',
-      'owner PUT /api/projects/{projectId}/repository',
-      'owner PUT /api/secrets/{name}',
-      'owner PUT /api/settings/{leaf}',
-      'owner PUT /api/titling-backfill',
       'public GET /health',
+      'session:account GET /auth/me',
+      'session:account POST /auth/link',
+      'session:admin DELETE /api/projects/{projectId}/repository',
+      'session:admin DELETE /api/secrets/{name}',
+      'session:admin GET /api/backups',
+      'session:admin GET /api/backups/{backupId}/artifact',
+      'session:admin GET /api/diagnostics',
+      'session:admin GET /api/enrollment',
+      'session:admin GET /api/maintenance',
+      'session:admin GET /api/projects/{projectId}/capabilities',
+      'session:admin GET /api/projects/{projectId}/grants',
+      'session:admin GET /api/projects/{projectId}/release-provenance',
+      'session:admin GET /api/projects/{projectId}/repository',
+      'session:admin GET /api/recovery/exports',
+      'session:admin GET /api/secrets',
+      'session:admin GET /api/titling-backfill',
+      'session:admin PATCH /api/projects/{projectId}',
+      'session:admin PATCH /api/projects/{projectId}/skill-candidates/{candidateId}',
+      'session:admin POST /api/backups',
+      'session:admin POST /api/backups/restore-upload',
+      'session:admin POST /api/backups/{backupId}/pin',
+      'session:admin POST /api/backups/{backupId}/restore',
+      'session:admin POST /api/backups/{backupId}/restore-preview',
+      'session:admin POST /api/enrollment',
+      'session:admin POST /api/enrollment/{id}/revoke',
+      'session:admin POST /api/harness/dispatch',
+      'session:admin POST /api/maintenance/{check}/run',
+      'session:admin POST /api/members/{memberId}/link-github',
+      'session:admin POST /api/members/{memberId}/revoke',
+      'session:admin POST /api/projects',
+      'session:admin POST /api/projects/{projectId}/archive',
+      'session:admin POST /api/projects/{projectId}/grants',
+      'session:admin POST /api/projects/{projectId}/grants/{grantId}/revoke',
+      'session:admin POST /api/projects/{projectId}/grants/{grantId}/rotate',
+      'session:admin POST /api/projects/{projectId}/release-provenance/check',
+      'session:admin POST /api/projects/{projectId}/sessions/{sessionId}/end',
+      'session:admin POST /api/projects/{projectId}/sessions/{sessionId}/plans/{planKey}/status',
+      'session:admin POST /api/projects/{projectId}/sessions/{sessionId}/title',
+      'session:admin POST /api/projects/{projectId}/sessions/{sessionId}/tombstone',
+      'session:admin POST /api/projects/{projectId}/unarchive',
+      'session:admin POST /api/recovery/exports',
+      'session:admin POST /api/transcripts/reread',
+      'session:admin POST /api/wake',
+      'session:admin PUT /api/agents/{agentId}',
+      'session:admin PUT /api/projects/{projectId}/capabilities/{capability}',
+      'session:admin PUT /api/projects/{projectId}/release-provenance',
+      'session:admin PUT /api/projects/{projectId}/repository',
+      'session:admin PUT /api/secrets/{name}',
+      'session:admin PUT /api/settings/{leaf}',
+      'session:admin PUT /api/titling-backfill',
+      'session:member GET /api/agents',
+      'session:member GET /api/credentials',
+      'session:member GET /api/credentials/{id}/activity',
+      'session:member GET /api/kpis',
+      'session:member GET /api/machines/{machineId}/settings',
+      'session:member GET /api/members',
+      'session:member GET /api/projects',
+      'session:member GET /api/projects/{projectId}/activity',
+      'session:member GET /api/projects/{projectId}/blobs/{key}',
+      'session:member GET /api/projects/{projectId}/canopy-map',
+      'session:member GET /api/projects/{projectId}/cortex/instructions',
+      'session:member GET /api/projects/{projectId}/digests',
+      'session:member GET /api/projects/{projectId}/digests/{tier}/revisions',
+      'session:member GET /api/projects/{projectId}/plans',
+      'session:member GET /api/projects/{projectId}/release-states',
+      'session:member GET /api/projects/{projectId}/runs',
+      'session:member GET /api/projects/{projectId}/runs/{runId}',
+      'session:member GET /api/projects/{projectId}/search',
+      'session:member GET /api/projects/{projectId}/sessions',
+      'session:member GET /api/projects/{projectId}/sessions/{sessionId}',
+      'session:member GET /api/projects/{projectId}/sessions/{sessionId}/transcript',
+      'session:member GET /api/projects/{projectId}/sessions/{sessionId}/turns',
+      'session:member GET /api/projects/{projectId}/sessions/{sessionId}/turns/{promptId}',
+      'session:member GET /api/projects/{projectId}/sessions/{sessionId}/turns/{promptId}/tool-calls',
+      'session:member GET /api/projects/{projectId}/sessions/{sessionId}/{child}',
+      'session:member GET /api/projects/{projectId}/skill-candidates',
+      'session:member GET /api/projects/{projectId}/skills',
+      'session:member GET /api/projects/{projectId}/skills/{skillId}',
+      'session:member GET /api/projects/{projectId}/spores',
+      'session:member GET /api/projects/{projectId}/spores/{sporeId}',
+      'session:member GET /api/settings',
+      'session:member GET /api/status',
+      'session:member POST /api/credentials/{id}/revoke',
+      'session:member POST /auth/logout',
+      'session:member PUT /api/machines/{machineId}/settings/{leaf}',
     ]);
   });
 
