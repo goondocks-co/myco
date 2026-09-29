@@ -14,11 +14,11 @@ export interface AuthContext {
   origin: string;
 }
 
-/** Context for an owner route: the verified session, the member its account is linked to, and the request. */
+/** Context for a dashboard session route: the verified session, the member its account is linked to, and the request. */
 export interface OwnerContext {
   request: Request;
   session: OwnerSession;
-  /** The member the session's GitHub account is linked to. Every owner route runs for a member. */
+  /** The member the session's GitHub account is linked to, admitted at the authority the route declares. Every session route but the two that link an account runs for a member. */
   member: DashboardMember;
   config: OwnerConfig;
   params: Record<string, string>;

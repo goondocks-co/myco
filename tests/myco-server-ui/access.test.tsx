@@ -9,7 +9,7 @@ import { AppearanceProvider } from '../../packages/myco-server/ui/src/providers/
 import { formatRelative, formatUntil } from '../../packages/myco-server/ui/src/lib/format';
 import { invitationExpiry } from '../../packages/myco-server/ui/src/pages/Access';
 
-const ME = { sub: '583231', login: 'octocat', member: { id: 'mem_1', label: 'chris' } };
+const ME = { sub: '583231', login: 'octocat', member: { id: 'mem_1', label: 'chris', role: 'admin' as const } };
 const MEMBERS = { members: [
   { id: 'mem_1', label: 'chris', linked: true, createdAt: 0, revokedAt: null, revokedBy: null, liveCredentials: 2 },
   { id: 'mem_2', label: 'laptop', linked: false, createdAt: 0, revokedAt: null, revokedBy: null, liveCredentials: 0 },

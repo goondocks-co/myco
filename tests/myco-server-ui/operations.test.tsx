@@ -8,7 +8,7 @@ import { reportWords } from '../../packages/myco-server/ui/src/components/operat
 import { liftsAt, policyWords, progressWords, waitingWords } from '../../packages/myco-server/ui/src/components/operations/TitlingBackfillPanel';
 import { availableWords, cadenceWords, latestWords } from '../../packages/myco-server/ui/src/components/operations/RecoveryPanel';
 
-const ME = { sub: '583231', login: 'octocat', member: { id: 'mem_1', label: 'chris' } };
+const ME = { sub: '583231', login: 'octocat', member: { id: 'mem_1', label: 'chris', role: 'admin' as const } };
 const PROJECTS = { projects: [{ projectId: 'x', name: 'Project X', createdAt: 0, sessionCount: 2, lastActivityAt: null }] };
 
 const originalFetch = globalThis.fetch;

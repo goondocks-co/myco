@@ -7,6 +7,7 @@ import { PageHeader } from '../components/ui/page-header';
 import { Panel } from '../components/ui/panel';
 import { refusalText } from '../hooks/use-access';
 import { useProjectActions, useProjects } from '../hooks/use-projects';
+import { useIsAdmin } from '../hooks/use-me';
 import { isArchived, type ProjectSummary } from '../lib/api';
 import { formatCount, formatRelative } from '../lib/format';
 import { rememberProject } from '../lib/project-memory';
@@ -16,6 +17,7 @@ const button = 'rounded-md border border-outline-variant/30 px-2.5 py-1 font-san
 export function Projects() {
   const projects = useProjects();
   const actions = useProjectActions();
+  const admin = useIsAdmin();
   const [showArchived, setShowArchived] = useState(false);
   const [archiving, setArchiving] = useState<ProjectSummary | null>(null);
   const [renaming, setRenaming] = useState<ProjectSummary | null>(null);
@@ -49,7 +51,7 @@ export function Projects() {
             <ProjectCard
               key={p.projectId}
               project={p}
-              action={(
+              action={admin && (
                 <span className="flex gap-2">
                   <button type="button" className={button} onClick={() => { setError(null); setRenaming(p); }}>Rename</button>
                   <button type="button" className={button} onClick={() => { setError(null); setArchiving(p); }}>Archive</button>
@@ -68,7 +70,7 @@ export function Projects() {
                 key={p.projectId}
                 project={p}
                 note={`Archived ${formatRelative(p.archivedAt)}${p.archivedBy ? ` by ${p.archivedBy}` : ''}`}
-                action={<button type="button" className={button} disabled={actions.unarchive.isPending} onClick={() => { setError(null); actions.unarchive.mutate(p.projectId, { onError: (err) => setError(refusalText(err)) }); }}>Unarchive</button>}
+                action={admin && <button type="button" className={button} disabled={actions.unarchive.isPending} onClick={() => { setError(null); actions.unarchive.mutate(p.projectId, { onError: (err) => setError(refusalText(err)) }); }}>Unarchive</button>}
               />
             ))}
           </ul>

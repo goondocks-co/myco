@@ -3,6 +3,7 @@ import { machineBlockFor } from '../core/machine-settings.js';
 import type { CredentialContext } from '../context.js';
 import type { OwnerContext } from '../context.js';
 import { emptyBodyRoute } from '../auth/members.js';
+import { isAdmin } from '../auth/roles.js';
 import { badRequest, notFound, ok, readJsonObject, resolveProjectScope } from './scope.js';
 import { SecretValueError, deploymentSecretStore, type SecretDescription } from '../core/secrets.js';
 import { SECRET_SLOT_NAMES } from '@goondocks/myco-shared/secret-slots';
@@ -18,10 +19,9 @@ import {
  * rather than reaching the store itself — this module decides nothing about what
  * a setting means, only how it is asked for and answered.
  *
- * These are owner routes today, matching the one dashboard session the server
- * has. #915's model is that ALL members manage Deployment Settings; widening the
- * human surface from one owner to every member is #918's work, and the routes are
- * shaped so that is a change of who authenticates rather than of what is served.
+ * Any member reads the Deployment's settings, as a member's CLI does over
+ * `/members/settings`; only an admin writes one, or reads or writes a credential
+ * slot. The route table declares which (`routes.ts`), and the pipeline enforces it.
  */
 
 /** The credential slots this Deployment stores, each with the one use it serves (`secret-slots.ts`). */
@@ -59,21 +59,27 @@ const MAX_SECRET_CHARS = 4096;
 
 
 /**
- * Every Deployment leaf this server accepts, with whatever is stored for it. A leaf with no row is reported absent rather than defaulted — the reader layers its own defaults.
- * The dashboard reads it over an owner session and a member's CLI over its credential; it answers in the member routes' `persisted` shape for both. Provider credentials live in the secret store and never reach this answer.
+ * Every Deployment leaf this server accepts, with whatever is stored for it. A leaf with no row is reported absent
+ * rather than defaulted: the reader layers its own defaults. `redacted` answers every URL a string value holds, at any
+ * depth, without its userinfo, query and fragment (`withoutUrlSecrets`), which is how every reader but an admin gets
+ * them; an admin reads them raw to edit them. Provider credentials live in the secret store and never reach this.
  */
-export async function handleSettings(env: ServerEnv): Promise<Response> {
+async function deploymentLeaves(env: ServerEnv, redacted: boolean): Promise<unknown[]> {
   const stored = await settingsWriter(env.db).leaves();
-  return ok({
-    persisted: true,
-    leaves: DEPLOYMENT_LEAVES.map((leaf) => ({
-      leaf,
-      configured: leaf in stored,
-      value: stored[leaf]?.value ?? null,
-      updatedAt: stored[leaf]?.updatedAt ?? null,
-      updatedBy: stored[leaf]?.updatedBy ?? null,
-    })),
-  });
+  const leaves = DEPLOYMENT_LEAVES.map((leaf) => ({
+    leaf,
+    configured: leaf in stored,
+    value: stored[leaf]?.value ?? null,
+    updatedAt: stored[leaf]?.updatedAt ?? null,
+    updatedBy: stored[leaf]?.updatedBy ?? null,
+  }));
+  if (!redacted) return leaves;
+  return JSON.parse(JSON.stringify(leaves), (_key, value: unknown) => (typeof value === 'string' ? withoutUrlSecrets(value) : value)) as unknown[];
+}
+
+/** `GET /api/settings`: the Deployment's leaves on the dashboard, raw to an admin and redacted to every other member. */
+export async function handleSettings(env: ServerEnv, ctx: OwnerContext): Promise<Response> {
+  return ok({ persisted: true, leaves: await deploymentLeaves(env, !isAdmin(ctx.member.role)) });
 }
 
 /** A token that addresses a host: a scheme or `//` ahead of it, or `name:secret@host` followed by a port or a path. */
@@ -96,7 +102,7 @@ const withoutUrlSecrets = (value: string): string =>
  * fragment.
  */
 export const handleMemberSettings = emptyBodyRoute(async (env: ServerEnv, ctx: CredentialContext) => {
-  const deployment = JSON.parse(await (await handleSettings(env)).text(), (_key, value: unknown) => (typeof value === 'string' ? withoutUrlSecrets(value) : value)) as Record<string, unknown>;
+  const deployment = { persisted: true, leaves: await deploymentLeaves(env, true) };
   // The asking machine's own settings, where its member claims it: what `myco login`, `member join` and `cutover` cache.
   const machine = await machineBlockFor(env.db, ctx.memberId, ctx.machineId);
   return ok({ ...deployment, ...(machine === null ? {} : { machine }) });

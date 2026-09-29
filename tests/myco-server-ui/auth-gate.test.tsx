@@ -17,7 +17,7 @@ import App from '../../packages/myco-server/ui/src/App';
 import { createQueryClient } from '../../packages/myco-server/ui/src/lib/query-client';
 import { AppearanceProvider } from '../../packages/myco-server/ui/src/providers/appearance';
 
-const ME = { sub: '583231', login: 'octocat', member: { id: 'mem_1', label: 'machine_1' } };
+const ME = { sub: '583231', login: 'octocat', member: { id: 'mem_1', label: 'machine_1', role: 'admin' as const } };
 const never = () => new Promise<Response>(() => undefined);
 const originalFetch = globalThis.fetch;
 // Unmount after every test: a mounted client keeps its queries live, and a live query keeps the process up.

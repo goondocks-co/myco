@@ -28,6 +28,7 @@ import { promptPreview } from './TurnCard';
 import { TurnTimeline } from './TurnTimeline';
 import { DeleteSession } from './DeleteSession';
 import { EndSession } from './EndSession';
+import { useIsAdmin } from '../../hooks/use-me';
 
 const TABS = [
   { id: 'conversation', label: 'Conversation' },
@@ -46,6 +47,7 @@ const button = 'rounded-md border border-outline-variant/30 px-2.5 py-1 font-san
 
 export function SessionDetail({ projectId, sessionId, onDeleted }: { projectId: string; sessionId: string; onDeleted: () => void }) {
   const detail = useSession(projectId, sessionId);
+  const admin = useIsAdmin();
   const [params, setParams] = useSearchParams();
   const requested = params.get('tab');
   const tab = requested !== null && TAB_IDS.has(requested) ? requested : 'conversation';
@@ -60,9 +62,9 @@ export function SessionDetail({ projectId, sessionId, onDeleted }: { projectId: 
       {detail.data && (
         <div className="flex flex-col gap-5">
           <Header projectId={projectId} session={detail.data.session} release={detail.data.release} untitled={detail.data.untitled ?? null} />
-          <div className="flex justify-end">
+          {admin && <div className="flex justify-end">
             <DeleteSession projectId={projectId} session={detail.data.session} counts={detail.data.counts} onDeleted={onDeleted} />
-          </div>
+          </div>}
           <div className="grid grid-cols-3 gap-3 xl:grid-cols-5">
             <MetricCard label="Prompts" value={detail.data.counts.prompts.toLocaleString()} tone="sage" />
             <MetricCard label="Tool calls" value={detail.data.counts.toolCalls.toLocaleString()} tone="ochre" />
@@ -195,6 +197,7 @@ const isTerminal = (status: string): boolean => status === 'completed' || status
 /** The session's name, state and the facts that identify the run, in one glance. */
 function Header({ projectId, session, release, untitled }: { projectId: string; session: SessionRow; release?: ReleaseStatus | null; untitled: UntitledReason | null }) {
   const open = session.endedAt === null;
+  const admin = useIsAdmin();
   return (
     <div className="space-y-2">
       <div className="flex items-center gap-2">
@@ -206,8 +209,8 @@ function Header({ projectId, session, release, untitled }: { projectId: string; 
         {session.agent !== null && <Badge variant="outline" className="font-mono text-[10px] px-1.5 py-0">{session.agent}</Badge>}
         {session.branch !== null && <Badge variant="secondary" className="font-mono text-[10px] px-1.5 py-0">{session.branch}</Badge>}
         <ReleaseChip release={release} />
-        <GenerateSummary projectId={projectId} sessionId={session.sessionId} session={session} />
-        {open && <EndSession projectId={projectId} session={session} />}
+        {admin && <GenerateSummary projectId={projectId} sessionId={session.sessionId} session={session} />}
+        {admin && open && <EndSession projectId={projectId} session={session} />}
       </div>
       <div className="flex flex-wrap gap-4 font-sans text-sm text-on-surface-variant">
         <span>{memberName(session)}</span>

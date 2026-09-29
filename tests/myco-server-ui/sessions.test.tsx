@@ -8,7 +8,7 @@ import { AppearanceProvider } from '../../packages/myco-server/ui/src/providers/
 import { promptPreview, PROMPT_PREVIEW_CHARS } from '../../packages/myco-server/ui/src/components/sessions/TurnCard';
 import { progressParts } from '../../packages/myco-server/ui/src/components/sessions/PlanCard';
 
-const ME = { sub: '583231', login: 'octocat', member: { id: 'mem_1', label: 'chris' } };
+const ME = { sub: '583231', login: 'octocat', member: { id: 'mem_1', label: 'chris', role: 'admin' as const } };
 const PROJECTS = { projects: [{ projectId: 'x', name: 'Project X', createdAt: 0, sessionCount: 2, lastActivityAt: null }] };
 const NOW = Date.now();
 const KEY_TEXT = 'a'.repeat(64);
