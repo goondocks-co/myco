@@ -10,7 +10,7 @@
  */
 import path from 'node:path';
 import os from 'node:os';
-import { runGit } from './utils/git.js';
+import { runGitAnswer } from './utils/git.js';
 
 /**
  * Resolve the vault directory.
@@ -97,8 +97,8 @@ export function isSafeProjectRoot(projectRoot: string): boolean {
   if (process.env.MYCO_PROJECT_ROOT || process.env.MYCO_VAULT_DIR) return true;
   const resolved = path.resolve(projectRoot);
   try {
-    const gitCommon = runGit(['rev-parse', '--git-common-dir'], resolved);
-    return gitCommon.length > 0;
+    runGitAnswer(['rev-parse', '--git-common-dir'], resolved);
+    return true;
   } catch {
     return false;
   }
@@ -140,7 +140,7 @@ export function assertSafeProjectRoot(projectRoot: string): void {
  */
 function resolveRepoRoot(cwd: string): string {
   try {
-    const gitCommon = runGit(['rev-parse', '--git-common-dir'], cwd);
+    const gitCommon = runGitAnswer(['rev-parse', '--git-common-dir'], cwd);
     return path.resolve(cwd, gitCommon, '..');
   } catch {
     return cwd;
@@ -155,7 +155,7 @@ function resolveRepoRoot(cwd: string): string {
  */
 export function resolveWorktreeRoot(cwd: string = process.cwd()): string | null {
   try {
-    return runGit(['rev-parse', '--show-toplevel'], cwd);
+    return runGitAnswer(['rev-parse', '--show-toplevel'], cwd);
   } catch {
     return null;
   }
