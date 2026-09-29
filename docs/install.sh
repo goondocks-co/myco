@@ -1,27 +1,36 @@
 #!/bin/sh
-# Myco installer — https://myco.sh
+# Myco 2.0 installer — https://myco.sh
 # Usage: curl -fsSL https://myco.sh/install.sh | sh
-#        curl -fsSL https://myco.sh/install.sh | sh -s -- --serve
+#        curl -fsSL https://myco.sh/install.sh | sh -s -- --dry-run
+#
+# Installs the Myco binary and nothing else: no service is started and no
+# agent is changed. The next step it prints is `myco login <invite link>` to
+# join your team's Deployment, or the self-hosting guide to run your own.
+# On a machine with Myco 1.4 it says so and points to `myco cutover`; it never
+# moves 1.4 over by itself.
+#
+# Options:
+#   --dry-run          Say what it would install and where, and change nothing
+#   --help             Show this message
 #
 # Env overrides:
-#   MYCO_CHANNEL       — "stable" (default) or "beta"
-#   MYCO_BIN_DIR       — destination directory (default: ~/.myco/bin)
-#   GITHUB_TOKEN       — or GH_TOKEN — avoid GitHub API rate limits
-#   MYCO_TEAM_AGENT_KEY — optional, only consulted with --serve: the team's LLM
-#                         provider API key, stored in the served Grove's
-#                         secrets.env (never in YAML, never logged in full)
-#
-# --serve options (a serving box is a full Myco instance — nothing above is
-# skipped; --serve is additive: enable Team Host serving after install):
-#   --serve                 Stand up this machine as a Team Host after install.
-#                           The address members dial is published automatically
-#                           through this host's Tailscale Funnel — nothing to pass.
-#   --hostname <name>       Label for this host in teammates' dashboards (optional)
+#   MYCO_CHANNEL       "stable" (default) or "beta". Stable installs the newest
+#                      2.x release, or the newest 2.x prerelease while no 2.x
+#                      release exists; beta installs the newest 2.x of either.
+#   MYCO_HOME          Myco's home (default: ~/.myco)
+#   MYCO_BIN_DIR       Where the binary goes (default: $MYCO_HOME/bin)
+#   GITHUB_TOKEN       or GH_TOKEN: avoid GitHub API rate limits
+#   MYCO_INSTALL_FROM  A directory holding myco-<os>-<arch> and SHA256SUMS to
+#                      install from instead of a GitHub release (offline or test
+#                      installs); MYCO_INSTALL_VERSION names its version
 set -eu
 
 REPO="goondocks-co/myco"
 CHANNEL="${MYCO_CHANNEL:-stable}"
-BIN_DIR="${MYCO_BIN_DIR:-$HOME/.myco/bin}"
+MYCO_HOME_DIR="${MYCO_HOME:-$HOME/.myco}"
+BIN_DIR="${MYCO_BIN_DIR:-$MYCO_HOME_DIR/bin}"
+INSTALL_FROM="${MYCO_INSTALL_FROM:-}"
+MIN_MAJOR=2
 
 # ---------------------------------------------------------------------------
 # Color helpers
@@ -37,25 +46,26 @@ success() { printf "${GREEN}%s${NC}\n"  "$1"; }
 warn()    { printf "${YELLOW}%s${NC}\n" "$1"; }
 error()   { printf "${RED}%s${NC}\n"    "$1" >&2; }
 
-# ---------------------------------------------------------------------------
-# --serve flag parsing (additive — no effect on the default install path
-# below unless --serve is actually passed)
-# ---------------------------------------------------------------------------
-SERVE=0
-SERVE_HOSTNAME=""
+usage() {
+  cat <<'USAGE'
+Usage: curl -fsSL https://myco.sh/install.sh | sh [-s -- --dry-run]
+
+Installs the Myco 2.0 binary to $MYCO_HOME/bin (default ~/.myco/bin) and
+prints the next step. --dry-run says what it would install and changes nothing.
+Env: MYCO_CHANNEL=stable|beta, MYCO_HOME, MYCO_BIN_DIR, GITHUB_TOKEN,
+MYCO_INSTALL_FROM=<dir with myco-<os>-<arch> and SHA256SUMS>.
+USAGE
+}
+
+DRY_RUN=0
 while [ $# -gt 0 ]; do
   case "$1" in
-    --serve)
-      SERVE=1
-      shift
-      ;;
-    --hostname)
-      SERVE_HOSTNAME="${2:-}"
-      shift 2
-      ;;
-    --hostname=*)
-      SERVE_HOSTNAME="${1#--hostname=}"
-      shift
+    --dry-run) DRY_RUN=1; shift ;;
+    --help|-h) usage; exit 0 ;;
+    --serve|--hostname|--hostname=*)
+      error "$1 was the Myco 1.4 Team Host option. To run your own Myco 2.0 server, install and then follow"
+      printf "  https://github.com/%s/blob/main/docs/self-hosting.md\n" "$REPO" >&2
+      exit 1
       ;;
     *)
       error "Unknown option: $1"
@@ -64,14 +74,16 @@ while [ $# -gt 0 ]; do
   esac
 done
 
-# ---------------------------------------------------------------------------
-# Token helpers — DRY, no eval, token never echoed/logged
-# ---------------------------------------------------------------------------
+case "$CHANNEL" in
+  stable|beta) ;;
+  *) error "MYCO_CHANNEL must be stable or beta, and is ${CHANNEL}."; exit 1 ;;
+esac
 
-# Returns the effective GitHub token: GITHUB_TOKEN takes precedence over GH_TOKEN.
+# ---------------------------------------------------------------------------
+# Token helpers — no eval, the token is never echoed or logged
+# ---------------------------------------------------------------------------
 auth_token() { printf '%s' "${GITHUB_TOKEN:-${GH_TOKEN:-}}"; }
 
-# Token-aware curl wrapper.
 gh_curl() {
   _token="$(auth_token)"
   if [ -n "$_token" ]; then
@@ -86,8 +98,7 @@ gh_curl() {
   fi
 }
 
-# Same wrapper but writes HTTP status to a variable via a temp file.
-# Usage: gh_curl_status OUTFILE URL  — exits 0 even on HTTP error; caller checks $HTTP_STATUS
+# Writes the body to OUTFILE and the HTTP status to $HTTP_STATUS; never exits.
 gh_curl_status() {
   _out="$1"; shift
   _token="$(auth_token)"
@@ -107,6 +118,22 @@ gh_curl_status() {
       -o "$_out" \
       "$@" 2>/dev/null)" || true
   fi
+}
+
+# Run "$@" with a 30-second watchdog (macOS has no timeout(1)); its stdout goes to $PROBE_OUT.
+PROBE_OUT=""
+probe() {
+  _probe_file="$(mktemp)"
+  "$@" >"$_probe_file" 2>/dev/null &
+  _probe=$!
+  ( sleep 30; kill -9 "$_probe" 2>/dev/null ) &
+  _watchdog=$!
+  if wait "$_probe"; then _ok=0; else _ok=1; fi
+  kill "$_watchdog" 2>/dev/null || true
+  wait "$_watchdog" 2>/dev/null || true
+  PROBE_OUT="$(cat "$_probe_file")"
+  rm -f "$_probe_file"
+  return "$_ok"
 }
 
 # ---------------------------------------------------------------------------
@@ -142,14 +169,8 @@ TARGET="${os}-${arch}"
 ASSET="myco-${TARGET}"
 
 info "Myco installer — ${TARGET} / channel: ${CHANNEL}"
-if [ "$os" = "linux" ]; then
-  warn "Linux support is beta. Report issues at https://github.com/${REPO}/issues"
-fi
 echo ""
 
-# ---------------------------------------------------------------------------
-# Checksum tool (Linux: sha256sum; macOS: shasum -a 256)
-# ---------------------------------------------------------------------------
 if command -v sha256sum >/dev/null 2>&1; then
   SHA_CMD="sha256sum"
 elif command -v shasum >/dev/null 2>&1; then
@@ -160,138 +181,145 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# Resolve release tag for channel via GitHub Releases API
+# Myco 1.4 on this machine: vaults in its home, or a 1.x binary where 2.0 goes
 # ---------------------------------------------------------------------------
-info "Resolving ${CHANNEL} release..."
+LEGACY=""
+LEGACY_BINARY=0
+for vault in "$MYCO_HOME_DIR"/groves/*/myco.db; do
+  if [ -s "$vault" ]; then LEGACY="its vaults in ${MYCO_HOME_DIR}/groves"; break; fi
+done
+if [ -x "${BIN_DIR}/myco" ] && probe "${BIN_DIR}/myco" --version; then
+  case "$PROBE_OUT" in
+    1.*|*" 1."*)
+      LEGACY_BINARY=1
+      if [ -z "$LEGACY" ]; then LEGACY="its binary ${BIN_DIR}/myco, ${PROBE_OUT}"; fi
+      ;;
+  esac
+fi
 
-RELEASES_URL="https://api.github.com/repos/${REPO}/releases?per_page=100"
-RELEASES_FILE="$(mktemp)"
-HTTP_STATUS=""
-# shellcheck disable=SC2064
-trap 'rm -f "$RELEASES_FILE"' EXIT
-
-gh_curl_status "$RELEASES_FILE" "$RELEASES_URL"
-
-case "$HTTP_STATUS" in
-  200) ;;  # ok
-  403|429)
-    error "GitHub API rate limit hit (HTTP ${HTTP_STATUS})."
-    printf "  Set GITHUB_TOKEN (or GH_TOKEN) to a personal access token and retry:\n" >&2
-    printf "  GITHUB_TOKEN=ghp_... sh install.sh\n" >&2
-    exit 1
-    ;;
-  *)
-    error "GitHub Releases API returned HTTP ${HTTP_STATUS}."
-    exit 1
-    ;;
-esac
-
-# jq-based channel selection — mirrors Task 5 pickRelease semver ordering:
-#   stable: highest non-prerelease myco/v* tag
-#   beta:   max(stable, prerelease) — 1.4.0 beats 1.3.0-beta.1 (no-downgrade)
-if command -v jq >/dev/null 2>&1; then
-  TAG="$(jq -r --arg ch "$CHANNEL" '
-    [ .[]
-      | select(.tag_name | test("^myco/v"))
-      | (.tag_name | ltrimstr("myco/v")) as $v
-      | select($v | test("^[0-9]+\\.[0-9]+\\.[0-9]+"))
-      | { tag: .tag_name,
-          pre: ((.prerelease == true) or ($v | contains("-"))) }
-      | select($ch == "beta" or (.pre | not))
-      | ($v | gsub("\\+[^-]*";"")) as $vclean
-      | ($vclean | split("-")[0] | split(".") | map(tonumber)) as $core
-      | (if .pre then 0 else 1 end) as $rel
-      | (($vclean | split("-")[1]) // "" | split(".")
-           | map(if test("^[0-9]+$") then tonumber else . end)) as $preids
-      | . + { key: ($core + [$rel] + $preids) } ]
-    | sort_by(.key) | last | .tag // empty
-  ' "$RELEASES_FILE")" || TAG=""
+# ---------------------------------------------------------------------------
+# Resolve what to install: a local directory, or a GitHub release of Myco 2.x
+# ---------------------------------------------------------------------------
+if [ -n "$INSTALL_FROM" ]; then
+  VERSION="${MYCO_INSTALL_VERSION:-local}"
+  SOURCE="${INSTALL_FROM}"
 else
-  warn "jq not found — using sort -V fallback (prerelease ordering may be imprecise)."
+  info "Resolving the ${CHANNEL} release..."
+  RELEASES_FILE="$(mktemp)"
+  HTTP_STATUS=""
+  # shellcheck disable=SC2064
+  trap 'rm -f "$RELEASES_FILE"' EXIT
+  gh_curl_status "$RELEASES_FILE" "https://api.github.com/repos/${REPO}/releases?per_page=100"
+  case "$HTTP_STATUS" in
+    200) ;;
+    403|429)
+      error "GitHub API rate limit hit (HTTP ${HTTP_STATUS})."
+      printf "  Set GITHUB_TOKEN (or GH_TOKEN) to a personal access token and retry:\n" >&2
+      printf "  GITHUB_TOKEN=ghp_... sh install.sh\n" >&2
+      exit 1
+      ;;
+    *)
+      error "GitHub Releases API returned HTTP ${HTTP_STATUS}."
+      exit 1
+      ;;
+  esac
+
+  # The newest myco/v<MIN_MAJOR+>.x tag: releases only, or releases and prereleases.
+  pick() { # $1: "release" or "any"
+    if command -v jq >/dev/null 2>&1; then
+      jq -r --arg want "$1" --argjson min "$MIN_MAJOR" '
+        [ .[]
+          | select(.draft != true)
+          | select(.tag_name | test("^myco/v[0-9]+\\.[0-9]+\\.[0-9]+"))
+          | (.tag_name | ltrimstr("myco/v") | gsub("\\+.*$"; "")) as $v
+          | ($v | split("-")[0] | split(".") | map(tonumber)) as $core
+          | select($core[0] >= $min)
+          | { tag: .tag_name, pre: ((.prerelease == true) or ($v | contains("-"))) }
+          | select($want == "any" or (.pre | not))
+          | (($v | split("-")[1]) // "" | split(".") | map(if test("^[0-9]+$") then tonumber else . end)) as $preids
+          | . + { key: ($core + [(if .pre then 0 else 1 end)] + $preids) } ]
+        | sort_by(.key) | last | .tag // empty
+      ' "$RELEASES_FILE"
+    else
+      grep -o '"tag_name": *"myco/v[^"]*"' "$RELEASES_FILE" \
+        | sed 's/"tag_name": *"//;s/"//' \
+        | awk -F'[v.]' -v min="$MIN_MAJOR" '$2 + 0 >= min' \
+        | { if [ "$1" = "release" ]; then grep -vE 'v[0-9]+\.[0-9]+\.[0-9]+-' || true; else cat; fi; } \
+        | sort -rV | head -1
+    fi
+  }
   if [ "$CHANNEL" = "beta" ]; then
-    TAG="$(grep -o '"tag_name": *"myco/v[^"]*"' "$RELEASES_FILE" \
-           | sed 's/"tag_name": *"//;s/"//' \
-           | sort -rV \
-           | head -1)" || TAG=""
+    TAG="$(pick any)"
   else
-    TAG="$(grep -o '"tag_name": *"myco/v[^"]*"' "$RELEASES_FILE" \
-           | sed 's/"tag_name": *"//;s/"//' \
-           | grep -vE 'v[0-9]+\.[0-9]+\.[0-9]+-' \
-           | sort -rV \
-           | head -1)" || TAG=""
+    TAG="$(pick release)"
+    if [ -z "$TAG" ]; then
+      TAG="$(pick any)"
+      if [ -n "$TAG" ]; then warn "No Myco 2 release yet; installing the newest prerelease, ${TAG}."; fi
+    fi
   fi
+  if [ -z "$TAG" ]; then
+    error "No Myco ${MIN_MAJOR}.x release found. Check https://github.com/${REPO}/releases"
+    exit 1
+  fi
+  info "Found: ${TAG}"
+  VERSION="$(printf '%s' "$TAG" | sed 's|^myco/v||')"
+  SOURCE="https://github.com/${REPO}/releases/download/$(printf '%s' "$TAG" | sed 's|/|%2F|g')"
 fi
-
-if [ -z "$TAG" ]; then
-  error "No ${CHANNEL} release found for myco. Check https://github.com/${REPO}/releases"
-  exit 1
-fi
-
-info "Found: ${TAG}"
-
-# ---------------------------------------------------------------------------
-# Download binary + checksum, verify, place atomically
-# ---------------------------------------------------------------------------
-# TAG contains a slash (myco/v1.2.3) — must be URL-encoded for the DL path.
-# GitHub's releases download URL encodes the slash as %2F.
-ENCODED_TAG="$(printf '%s' "$TAG" | sed 's|/|%2F|g')"
-DL="https://github.com/${REPO}/releases/download/${ENCODED_TAG}"
-
-# Extract the bare semver (e.g. "1.2.3") from the tag (e.g. "myco/v1.2.3").
-# This is the dir name under versions/ — must match the daemon's versionBinaryPath().
-VERSION="$(printf '%s' "$TAG" | sed 's|^myco/v||')"
 VERSION_DIR="${BIN_DIR}/versions/${VERSION}"
 
+if [ "$DRY_RUN" = "1" ]; then
+  echo ""
+  info "Dry run: nothing was downloaded or changed."
+  echo "  Would install ${ASSET} (${VERSION}) from ${SOURCE}"
+  echo "  to ${BIN_DIR}/myco (and ${VERSION_DIR}/myco), after checking it against SHA256SUMS."
+  if [ -n "$LEGACY" ]; then
+    echo "  Myco 1.4 is on this machine (${LEGACY}); it would be replaced by 2.0 here, and nothing would be moved over."
+  fi
+  exit 0
+fi
+
+# ---------------------------------------------------------------------------
+# Fetch, verify, place atomically
+# ---------------------------------------------------------------------------
 mkdir -p "$BIN_DIR"
 TMP_DIR="$(mktemp -d "${BIN_DIR}/.myco-install-XXXXXX")"
 # shellcheck disable=SC2064
-trap 'rm -rf "$TMP_DIR"; rm -f "$RELEASES_FILE"' EXIT
+trap "rm -rf \"$TMP_DIR\"; rm -f \"${RELEASES_FILE:-}\"" EXIT
 
 info "Downloading ${ASSET}..."
-gh_curl "${DL}/${ASSET}"   -o "${TMP_DIR}/myco"
-gh_curl "${DL}/SHA256SUMS" -o "${TMP_DIR}/SHA256SUMS"
+if [ -n "$INSTALL_FROM" ]; then
+  cp "${INSTALL_FROM}/${ASSET}" "${TMP_DIR}/myco"
+  cp "${INSTALL_FROM}/SHA256SUMS" "${TMP_DIR}/SHA256SUMS"
+else
+  gh_curl "${SOURCE}/${ASSET}"   -o "${TMP_DIR}/myco"
+  gh_curl "${SOURCE}/SHA256SUMS" -o "${TMP_DIR}/SHA256SUMS"
+fi
 
 info "Verifying checksum..."
-# Parse SHA256SUMS: handle both "hash  filename" and "hash *filename" formats
 EXPECTED="$(awk -v a="$ASSET" '
   { hash=$1; rest=substr($0, index($0,$2)); gsub(/^\*/, "", rest);
     gsub(/^[[:space:]]+/, "", rest);
     if (rest == a) print hash }
 ' "${TMP_DIR}/SHA256SUMS")"
-
 if [ -z "$EXPECTED" ]; then
   error "Asset ${ASSET} not found in SHA256SUMS."
   exit 1
 fi
-
 ACTUAL="$(${SHA_CMD} "${TMP_DIR}/myco" | awk '{print $1}')"
-
 if [ "$EXPECTED" != "$ACTUAL" ]; then
   error "Checksum mismatch for ${ASSET}!"
   printf "  expected: %s\n" "$EXPECTED" >&2
   printf "  got:      %s\n" "$ACTUAL"   >&2
   exit 1
 fi
-
 success "Checksum verified."
 
-# ---------------------------------------------------------------------------
-# Versioned placement + atomic stable copy
-#
-# Layout (mirrors daemon's versionBinaryPath / managedBinaryPath):
-#   ~/.myco/bin/versions/<bare-semver>/myco   ← versioned slot
-#   ~/.myco/bin/myco                          ← stable (current) slot
-#
-# Sequence: chmod → place in version dir → temp+rename to stable path.
-# The temp file lives under $BIN_DIR (same filesystem) so the final rename
-# is atomic — a partial copy can never leave a broken stable binary.
-# ---------------------------------------------------------------------------
 chmod +x "${TMP_DIR}/myco"
 
 # The kernel must run it before anything is replaced: a Darwin build whose ad hoc
-# signature does not verify is killed at exec, hooks included. Only an ad hoc (or
-# absent) signature is made again, keeping entitlements and identifier as the build
-# does; a certificate's signature is never replaced, and one that verifies is kept.
+# signature does not verify is killed at exec. Only an ad hoc (or absent)
+# signature is made again, keeping entitlements and identifier as the build does;
+# a certificate's signature is never replaced, and one that verifies is kept.
 if [ "$os" = "darwin" ] && ! codesign --verify --strict "${TMP_DIR}/myco" 2>/dev/null; then
   if ! codesign -dv "${TMP_DIR}/myco" 2>&1 | grep -q -E '^Signature=adhoc$|not signed at all'; then
     error "The downloaded binary's signature does not verify, and it is not an ad hoc signature; nothing was installed."
@@ -305,55 +333,32 @@ if [ "$os" = "darwin" ] && ! codesign --verify --strict "${TMP_DIR}/myco" 2>/dev
   fi
 fi
 
-# `--version` within 30 seconds, or it does not run here. macOS has no timeout(1),
-# so a watchdog kills a probe that hangs.
-"${TMP_DIR}/myco" --version >/dev/null 2>&1 &
-_probe=$!
-( sleep 30; kill -9 "$_probe" 2>/dev/null ) &
-_watchdog=$!
-if wait "$_probe"; then _runs=1; else _runs=0; fi
-kill "$_watchdog" 2>/dev/null || true
-wait "$_watchdog" 2>/dev/null || true
-if [ "$_runs" -ne 1 ]; then
+if ! probe "${TMP_DIR}/myco" --version; then
   error "The downloaded binary does not run on this machine; nothing was installed."
   exit 1
 fi
 
-# Place verified binary in its versioned slot (atomic mv — TMP_DIR is under $BIN_DIR,
-# same filesystem, so this rename never produces a partial file under $VERSION_DIR).
+# Versioned slot, then the stable path by temp+rename on the same filesystem:
+#   <bin>/versions/<version>/myco   and   <bin>/myco
 mkdir -p "${VERSION_DIR}"
 mv "${TMP_DIR}/myco" "${VERSION_DIR}/myco"
-
-# Atomic stable copy via temp+rename (cp to a sibling temp, then rename over stable path)
 cp "${VERSION_DIR}/myco" "${TMP_DIR}/myco.stable"
 mv "${TMP_DIR}/myco.stable" "${BIN_DIR}/myco"
 
-# macOS Gatekeeper: strip quarantine attribute if present (best-effort)
 if [ "$os" = "darwin" ]; then
   xattr -d com.apple.quarantine "${VERSION_DIR}/myco" 2>/dev/null || true
   xattr -d com.apple.quarantine "${BIN_DIR}/myco" 2>/dev/null || true
 fi
 
-# ---------------------------------------------------------------------------
-# Write install marker
-# ---------------------------------------------------------------------------
-mkdir -p "$HOME/.myco"
+mkdir -p "$MYCO_HOME_DIR"
 printf '{\n  "channel": "%s",\n  "source": "curl",\n  "bin": "%s/myco"\n}\n' \
-  "$CHANNEL" "$BIN_DIR" > "$HOME/.myco/install.json"
+  "$CHANNEL" "$BIN_DIR" > "$MYCO_HOME_DIR/install.json"
 
 # ---------------------------------------------------------------------------
-# PATH — idempotent rc edits (human convenience; binary consumers resolve the
-# managed binary themselves and never rely on PATH)
-#
-# Per-file, not gated on the installer's own PATH: the inherited PATH proves
-# nothing about which rc files carry the entry (a re-run in a shell that
-# already has it must still repair the files). zsh reads `.zshenv` for every
-# shell and `.zshrc` only for interactive ones, so `.zshenv` is what reaches
-# non-interactive shells and is created when absent; `.zshrc` is still written
-# because macOS path_helper rebuilds login-shell PATH after `.zshenv` runs,
-# demoting its prepend. The rest are appended only when they already exist.
-# The emitted block is guarded so repeated sourcing cannot duplicate the
-# entry.
+# PATH — idempotent rc edits. zsh reads .zshenv for every shell, so it is
+# created when absent; .zshrc is written too because macOS path_helper demotes
+# a .zshenv prepend in login shells. The others are only appended to when they
+# exist. The block is guarded, so sourcing it twice adds nothing.
 # ---------------------------------------------------------------------------
 APPENDED_RC=0
 for rc in "$HOME/.zshenv" "$HOME/.zshrc" "$HOME/.bashrc" "$HOME/.profile"; do
@@ -370,66 +375,30 @@ for rc in "$HOME/.zshenv" "$HOME/.zshrc" "$HOME/.bashrc" "$HOME/.profile"; do
   } >> "$rc"
   APPENDED_RC=$((APPENDED_RC + 1))
 done
+
+echo ""
+success "Myco ${VERSION} installed to ${BIN_DIR}/myco"
 if [ "$APPENDED_RC" -gt 0 ]; then
-  warn "Added ${BIN_DIR} to PATH in ${APPENDED_RC} shell rc file(s)."
-  warn "Restart your shell or run: export PATH=\"${BIN_DIR}:\$PATH\""
-fi
-
-# ---------------------------------------------------------------------------
-# First run — install the managed service so the dashboard is reachable
-# ---------------------------------------------------------------------------
-if "${BIN_DIR}/myco" service install >/dev/null 2>&1; then
-  SERVICE_OK=1
-else
-  SERVICE_OK=0
-fi
-
-echo ""
-success "Myco installed to ${BIN_DIR}/myco"
-echo ""
-if [ "$SERVICE_OK" = "1" ]; then
-  echo "  Open the dashboard to confirm setup and configure intelligence providers:"
-  echo ""
-  echo "    myco open"
-  echo "    http://localhost:20915/"
-else
-  warn "Could not start the Myco service automatically. Bring it up with:"
-  echo ""
-  echo "    myco service install"
-  echo "    myco open"
+  warn "Added ${BIN_DIR} to PATH in ${APPENDED_RC} shell rc file(s); open a new shell, or run: export PATH=\"${BIN_DIR}:\$PATH\""
 fi
 echo ""
-
-# ---------------------------------------------------------------------------
-# --serve: run the composite enable on the just-installed myco binary
-#
-# A serving box is a full Myco instance — everything above already ran
-# unmodified (including `myco service install`). Host-serve operator ops
-# live in the one binary (decision-48174c9f) — no second fetch, no separate
-# package. This section is purely additive and only runs with --serve; a
-# failure here never fails the base install (myco itself is already usable —
-# re-run `myco host enable` manually to retry Team Host setup).
-# ---------------------------------------------------------------------------
-if [ "$SERVE" = "1" ]; then
-  info "Setting up Team Host serving (--serve)..."
-  echo ""
-
-  # --designate-default --emit-join: enable, designate this box's default
-  # Grove as the served Grove, mint a one-time setup key, and print the
-  # complete ready-to-paste `myco join …` command. MYCO_TEAM_AGENT_KEY (if
-  # set in the environment) flows through unchanged — the composite
-  # orchestrator reads it and stores it in the served Grove's secrets.env.
-  info "Running: myco host enable --designate-default --emit-join"
-  if [ -n "$SERVE_HOSTNAME" ]; then
-    if ! "${BIN_DIR}/myco" host enable --hostname "$SERVE_HOSTNAME" --designate-default --emit-join; then
-      warn "Team Host enable did not complete. Re-run manually:"
-      echo "    ${BIN_DIR}/myco host enable --hostname $SERVE_HOSTNAME --designate-default --emit-join"
-    fi
-  else
-    if ! "${BIN_DIR}/myco" host enable --designate-default --emit-join; then
-      warn "Team Host enable did not complete. Re-run manually:"
-      echo "    ${BIN_DIR}/myco host enable --designate-default --emit-join"
-    fi
+if [ -n "$LEGACY" ]; then
+  warn "Myco 1.4 is on this machine (${LEGACY})."
+  if [ "$LEGACY_BINARY" = "1" ]; then
+    echo "  2.0 replaced its binary, so its hooks capture nothing until you move over."
   fi
+  echo "  Nothing was moved over. To move it to 2.0:"
   echo ""
+  echo "    myco login <invite link>     # the link your Deployment's administrator sent you"
+  echo "    myco cutover --dry-run       # shows every change it would make; changes nothing"
+  echo "    myco cutover"
+  echo ""
+  echo "  The 1.4 vaults stay where they are; the cutover copies and imports them."
+else
+  echo "  Next, join your team's Deployment with the invite link its administrator sent you:"
+  echo ""
+  echo "    myco login <invite link>"
+  echo ""
+  echo "  Or run your own server: https://github.com/${REPO}/blob/main/docs/self-hosting.md"
 fi
+echo ""

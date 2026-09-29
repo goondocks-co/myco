@@ -658,8 +658,9 @@ jobs:
               --title "$RELEASE_TITLE"
               --notes-file release-notes.md
             )
+            # A prerelease never becomes the repository's latest release.
             if [ "$IS_PRERELEASE" = "true" ]; then
-              edit_args+=(--prerelease)
+              edit_args+=(--prerelease --latest=false)
             fi
             gh release edit "${edit_args[@]}"
             gh release upload "$TAG_NAME" "${assets[@]}" --clobber
@@ -672,7 +673,7 @@ jobs:
               --notes-file release-notes.md
             )
             if [ "$IS_PRERELEASE" = "true" ]; then
-              create_args+=(--prerelease)
+              create_args+=(--prerelease --latest=false)
             fi
             gh release create "${create_args[@]}"
           fi

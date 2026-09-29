@@ -26,15 +26,17 @@ When you're ready to enable intelligence features, you'll need:
 
 ```bash
 curl -fsSL https://myco.sh/install.sh | sh
-myco open
+myco login <invite link>
 ```
+
+The installer places the binary in `~/.myco/bin` and prints the next step: `myco login` with your Deployment's invite link, or [Self-hosting](self-hosting.md) to run your own. `MYCO_CHANNEL=beta` installs the newest prerelease; `--dry-run` shows what it would install. With Myco 1.4 on the machine, it points to `myco cutover --dry-run` and never moves 1.4 over by itself.
 
 On Windows x64 (PowerShell, beta):
 ```powershell
 irm https://myco.sh/install.ps1 | iex
 ```
 
-The installer downloads the native binary to `~/.myco/bin` (`%LOCALAPPDATA%\Myco\bin` on Windows), starts the managed local service, and connects supported coding agents — no Node runtime required.
+No Node runtime is required. On Windows, the PowerShell installer is still the Myco 1.4 one.
 
 If you already have Node, you can install with npm instead. This is a thin bootstrap that converges to the same native binary:
 ```bash
