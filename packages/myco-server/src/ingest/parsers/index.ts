@@ -16,8 +16,9 @@
  * shipped and the same prompt parsed out of the transcript are then one row
  * rather than two.
  */
-import { uuidv5 } from '../../hash.js';
-import type { Payload } from '../kinds.js';
+import { utf8, uuidv5 } from '../../hash.js';
+import { MAX_ID_CHARS, MAX_PAYLOAD_BYTES } from '../envelope.js';
+import { kindSpec, type Payload } from '../kinds.js';
 
 /**
  * What a parser can see in its agent's transcript.
@@ -170,6 +171,106 @@ export function ownedLines(lines: readonly ParsedLine[], sessionId: string, cont
   });
   if (boundary < 0) return [...lines];
   return lines.filter((line, index) => index > boundary || continuation.markerPaths.some((path) => atPath(line.value, path) === true));
+}
+
+/** One assistant message of a turn, with its transcript offset and time. */
+export interface ReplyPart {
+  text: string;
+  offset: number;
+  createdAt: number;
+}
+
+/** What separates the messages of one turn in its response text. */
+export const REPLY_SEPARATOR = '\n\n';
+
+/** What stands in for the end of a single message too long for one response. */
+export const truncationMarker = (dropped: number): string => `${REPLY_SEPARATOR}[${dropped} more characters not kept]`;
+
+/** The largest `response.text` the catalogue admits, in characters. */
+function responseTextChars(): number {
+  const bound = kindSpec('response')?.fields.text?.bound;
+  if (bound?.type !== 'string') throw new Error('the catalogue holds no string bound on response.text');
+  return bound.max;
+}
+
+/**
+ * The bytes a response's text may take in its payload: the envelope's payload
+ * bound, less the rest of a response payload with both ids at their longest.
+ */
+const RESPONSE_TEXT_BYTES = MAX_PAYLOAD_BYTES - utf8(JSON.stringify({ responseId: 'x'.repeat(MAX_ID_CHARS), promptId: 'x'.repeat(MAX_ID_CHARS), text: '' })).byteLength;
+
+/** The bytes `text` takes inside a JSON payload, escapes included and quotes not. */
+const payloadBytes = (text: string): number => utf8(JSON.stringify(text)).byteLength - 2;
+
+/** How far a response's text may run: both the catalogue's character bound and the payload's byte bound hold. */
+export interface ResponseBound {
+  chars: number;
+  bytes: number;
+}
+
+export const responseBound = (): ResponseBound => ({ chars: responseTextChars(), bytes: RESPONSE_TEXT_BYTES });
+
+const fits = (text: string, bound: ResponseBound): boolean => text.length <= bound.chars && payloadBytes(text) <= bound.bytes;
+
+/** The longest start of `text`, marker included, that fits the bound, never ending inside a surrogate pair. */
+function truncated(text: string, bound: ResponseBound): string {
+  let low = 0;
+  let high = text.length;
+  const withMarker = (n: number): string => {
+    const cut = n > 0 && /[\uD800-\uDBFF]/.test(text[n - 1]) ? n - 1 : n;
+    return text.slice(0, cut) + truncationMarker(text.length - cut);
+  };
+  while (low < high) {
+    const mid = Math.ceil((low + high) / 2);
+    if (fits(withMarker(mid), bound)) low = mid;
+    else high = mid - 1;
+  }
+  return withMarker(low);
+}
+
+/**
+ * One turn's assistant messages as the responses that hold them.
+ *
+ * The messages join into one response, as they always have. When the joined
+ * text would pass the catalogue's bound on `response.text` or the payload's
+ * byte bound, the reply is split at message boundaries instead: each response
+ * holds as many whole messages as fit and is named by its first message's
+ * offset, so a reply that fits keeps the id and text it has always had. The
+ * responses, joined by the separator, are the joined text exactly. A single
+ * message too long for any response is cut short with a marker saying how
+ * much it leaves out.
+ */
+export function replyChunks(parts: readonly ReplyPart[], bound: ResponseBound = responseBound()): ReplyPart[] {
+  const kept = parts.filter((p) => p.text.trim() !== '');
+  if (kept.length === 0) return [];
+  const last = kept.length - 1;
+  // JSON escapes character by character, so a joined text's payload bytes are
+  // the sum of its pieces' and the separators': each piece is measured once.
+  const pieces = kept.map((p, i) => {
+    const text = i === 0 && i === last ? p.text.trim() : i === 0 ? p.text.trimStart() : i === last ? p.text.trimEnd() : p.text;
+    return { part: { ...p, text }, chars: text.length, bytes: payloadBytes(text) };
+  });
+  const sep = { chars: REPLY_SEPARATOR.length, bytes: payloadBytes(REPLY_SEPARATOR) };
+  const within = (chars: number, bytes: number): boolean => chars <= bound.chars && bytes <= bound.bytes;
+  const chunks: ReplyPart[] = [];
+  let open: { texts: string[]; first: ReplyPart; chars: number; bytes: number } | null = null;
+  const close = (): void => {
+    if (open !== null) chunks.push({ ...open.first, text: open.texts.join(REPLY_SEPARATOR) });
+    open = null;
+  };
+  for (const { part, chars, bytes } of pieces) {
+    if (open !== null && within(open.chars + sep.chars + chars, open.bytes + sep.bytes + bytes)) {
+      open.texts.push(part.text);
+      open.chars += sep.chars + chars;
+      open.bytes += sep.bytes + bytes;
+      continue;
+    }
+    close();
+    const text = within(chars, bytes) ? part.text : truncated(part.text, bound);
+    open = { texts: [text], first: part, chars: text.length, bytes: payloadBytes(text) };
+  }
+  close();
+  return chunks;
 }
 
 /** How much of a tool's output is kept inline; the catalogue's own bound on `output`. */

@@ -20,8 +20,8 @@
  */
 import { uuidv5 } from '../../hash.js';
 import {
-  isBlock, lineTime, str, textOf,
-  type DerivedEvent, type ParserInput, type TranscriptParser,
+  isBlock, lineTime, replyChunks, str, textOf,
+  type DerivedEvent, type ParserInput, type ReplyPart, type TranscriptParser,
 } from './index.js';
 
 const promptIdAt = (sessionId: string, offset: number): Promise<string> => uuidv5('cursor-prompt', sessionId, String(offset));
@@ -74,20 +74,20 @@ export const cursorParser: TranscriptParser = {
   async parse({ lines, sessionId, now, openPromptId }: ParserInput): Promise<DerivedEvent[]> {
     const events: DerivedEvent[] = [];
     let promptId: string | undefined = openPromptId;
-    let reply: { text: string[]; offset: number; createdAt: number; promptId?: string } | null = null;
+    let reply: { parts: ReplyPart[]; promptId?: string } | null = null;
 
     const flushReply = async (): Promise<void> => {
       if (reply === null) return;
       const held = reply;
       reply = null;
-      const text = held.text.join('\n\n').trim();
-      if (text === '') return;
-      events.push({
-        kind: 'response',
-        payload: { responseId: await responseIdAt(sessionId, held.offset), promptId: held.promptId, text },
-        createdAt: held.createdAt,
-        offset: held.offset,
-      });
+      for (const chunk of replyChunks(held.parts)) {
+        events.push({
+          kind: 'response',
+          payload: { responseId: await responseIdAt(sessionId, chunk.offset), promptId: held.promptId, text: chunk.text },
+          createdAt: chunk.createdAt,
+          offset: chunk.offset,
+        });
+      }
     };
 
     for (const { value, offset, undatedAt } of lines) {
@@ -109,8 +109,8 @@ export const cursorParser: TranscriptParser = {
         events.push({ kind: 'prompt', payload: { promptId, text, origin: 'user', promptKind: 'user_query' }, createdAt, offset });
         continue;
       }
-      if (reply === null) reply = { text: [], offset, createdAt, promptId };
-      reply.text.push(text);
+      if (reply === null) reply = { parts: [], promptId };
+      reply.parts.push({ text, offset, createdAt });
     }
 
     await flushReply();
