@@ -1,7 +1,7 @@
 import { registeredObjectKeySql } from '../core/blob-objects.js';
 import type { RelationalStore } from '../core/adapters.js';
 import { PLAN_STATUSES } from '../ingest/kinds.js';
-import { clampLimit, type ReadScope } from './scope.js';
+import { clampLimit, encodeCursor, inListChunks, keyset, type Page, type ReadScope } from './scope.js';
 
 /** A plan as the project holds it: the projected row plus the tags the same event carried. `promptId` names the prompt the plan came from; `updatedBy` the member behind its last administrative edit, null when a capture event wrote last. */
 export interface ProjectPlanRow {
@@ -60,12 +60,14 @@ function toPlan(row: Record<string, unknown>, tags: string[]): ProjectPlanRow {
 /** The tags of each named plan, keyed by plan key; a plan with none maps to an empty list. */
 async function tagsOf(db: RelationalStore, scope: ReadScope, planKeys: readonly string[]): Promise<Map<string, string[]>> {
   const out = new Map<string, string[]>(planKeys.map((k) => [k, []]));
-  if (planKeys.length === 0) return out;
-  const { results } = await db
-    .prepare(`SELECT entity_id, tag FROM tags WHERE project_id = ? AND entity_kind = 'plan' AND entity_id IN (${planKeys.map(() => '?').join(', ')}) ORDER BY entity_id, tag`)
-    .bind(scope.projectId, ...planKeys)
-    .all<{ entity_id: string; tag: string }>();
-  for (const r of results) out.get(r.entity_id)?.push(r.tag);
+  // A page of plans names more keys than one statement may bind, so the keys are read in runs.
+  for (const run of inListChunks(planKeys)) {
+    const { results } = await db
+      .prepare(`SELECT entity_id, tag FROM tags WHERE project_id = ? AND entity_kind = 'plan' AND entity_id IN (${run.map(() => '?').join(', ')}) ORDER BY entity_id, tag`)
+      .bind(scope.projectId, ...run)
+      .all<{ entity_id: string; tag: string }>();
+    for (const r of results) out.get(r.entity_id)?.push(r.tag);
+  }
   return out;
 }
 
@@ -75,16 +77,34 @@ export async function listProjectPlans(
   scope: ReadScope,
   opts: { status?: string; sessionId?: string; limit?: number } = {},
 ): Promise<ProjectPlanRow[]> {
+  return [...(await pageProjectPlans(db, scope, opts)).rows];
+}
+
+/**
+ * One page of the project's plans, most recently updated first, and the cursor of the next. A plan edited while a
+ * reader pages moves to the head of the list, which that reader already holds; a refresh reads it there.
+ */
+export async function pageProjectPlans(
+  db: RelationalStore,
+  scope: ReadScope,
+  opts: { status?: string; sessionId?: string; limit?: number; cursor?: string } = {},
+): Promise<Page<ProjectPlanRow>> {
+  const k = keyset({ limit: clampLimit(opts.limit), cursor: opts.cursor }, { order: 'updated_at', id: 'plan_key', direction: 'DESC' });
+  if (k === null) return { rows: [], cursor: null };
   const conditions = ['project_id = ?'];
   const params: unknown[] = [scope.projectId];
   if (opts.status !== undefined) { conditions.push('status = ?'); params.push(opts.status); }
   if (opts.sessionId !== undefined) { conditions.push('session_id = ?'); params.push(opts.sessionId); }
+  if (k.where !== '') { conditions.push(k.where); params.push(...k.params); }
   const { results } = await db
     .prepare(`SELECT ${COLUMNS} FROM plans WHERE ${conditions.join(' AND ')} ORDER BY updated_at DESC, plan_key DESC LIMIT ?`)
-    .bind(...params, clampLimit(opts.limit))
+    .bind(...params, k.limit + 1)
     .all<Record<string, unknown>>();
-  const tags = await tagsOf(db, scope, results.map((r) => r.plan_key as string));
-  return results.map((r) => toPlan(r, tags.get(r.plan_key as string) ?? []));
+  const shown = results.slice(0, k.limit);
+  const tags = await tagsOf(db, scope, shown.map((r) => r.plan_key as string));
+  const rows = shown.map((r) => toPlan(r, tags.get(r.plan_key as string) ?? []));
+  const last = rows[rows.length - 1];
+  return { rows, cursor: results.length > k.limit && last !== undefined ? encodeCursor(last.updatedAt, last.planKey) : null };
 }
 
 /** One plan inside the scope, or null — including when the key exists under another project. */

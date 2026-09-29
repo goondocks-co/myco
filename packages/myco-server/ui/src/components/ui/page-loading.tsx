@@ -19,7 +19,7 @@ export function PageLoading({ isLoading, error, loadingText = 'Loading...', chil
 
   if (error) {
     return (
-      <div className="flex h-64 flex-col items-center justify-center gap-2 text-tertiary">
+      <div role="alert" className="flex h-64 flex-col items-center justify-center gap-2 text-tertiary">
         <AlertCircle className="h-5 w-5" />
         <span className="font-sans text-sm">Could not reach the server</span>
         <span className="font-sans text-xs text-on-surface-variant">{error.message}</span>

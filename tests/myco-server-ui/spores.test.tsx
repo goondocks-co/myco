@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it } from 'bun:test';
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
-import { MemoryRouter } from 'react-router-dom';
+import { MemoryRouter, useLocation } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 
 import App from '../../packages/myco-server/ui/src/App';
@@ -175,6 +175,30 @@ describe('Spores list', () => {
     mount('/p/x/spores?type=gotcha');
     await screen.findAllByRole('row');
     expect(screen.getByText('Select a spore to read it.')).toBeTruthy();
+  }));
+
+  it('keeps the spore a reader opened, and the filter, when the list is read again with a newer spore on top', async () => onWideScreen(async () => {
+    let rows = ROWS;
+    const { requested } = server(base({
+      '/api/projects/x/spores?limit=25&status=all': () => list(rows),
+      '/api/projects/x/spores?limit=25': () => list(rows),
+      '/api/projects/x/spores/sp1': () => Response.json({ spore: ROWS[0], supersededBy: [], supersedes: [] }),
+      '/api/projects/x/spores/sp2': () => Response.json({ spore: ROWS[1], supersededBy: [], supersedes: [] }),
+    }));
+    let where = '';
+    const Probe = () => { const location = useLocation(); where = location.pathname + location.search; return null; };
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    render(<AppearanceProvider><QueryClientProvider client={client}><MemoryRouter initialEntries={['/p/x/spores?status=all']}><App /><Probe /></MemoryRouter></QueryClientProvider></AppearanceProvider>);
+    await asked(requested, '/api/projects/x/spores/sp1');
+    fireEvent.click((await screen.findAllByRole('row'))[1]!);
+    expect(await screen.findByRole('heading', { name: 'Decision' })).toBeTruthy();
+    rows = [spore({ id: 'sp0', content: 'Newest' }), ...ROWS];
+    await client.refetchQueries();
+    await waitFor(() => expect(screen.getAllByRole('row').length).toBe(3));
+    expect(where).toBe('/p/x/spores/sp2?status=all');
+    expect(screen.getByRole('heading', { name: 'Decision' })).toBeTruthy();
+    expect(screen.getByRole('tab', { name: 'All', selected: true })).toBeTruthy();
+    expect(requested).not.toContain('/api/projects/x/spores/sp0');
   }));
 
   it('opens a spore from the rail and keeps the section active in the project nav', async () => {

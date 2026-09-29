@@ -1,4 +1,4 @@
-import { QueryCache, QueryClient } from '@tanstack/react-query';
+import { focusManager, QueryCache, QueryClient } from '@tanstack/react-query';
 import { ApiError, SignedOutError } from './api';
 
 /** The query key the auth gate reads; every other query's 401 hands the view back to it. */
@@ -14,11 +14,14 @@ export const ME_KEY = ['me'] as const;
  * A 4xx is the server's answer to the request as made — a missing session, a
  * refused write, a signed-out visitor — and is a state to render, never a
  * request to ask again. A 5xx or a connection that never answered is asked
- * twice more; a retry waits for the tab to be focused, so a definitive answer
- * that retried would leave a background tab on its loading state.
+ * twice more while the tab is in view. A retry waits for the tab to be in view,
+ * so one asked from a hidden tab would hold its page on the loading state for
+ * as long as the tab stays hidden: there the failure is rendered at once, and
+ * the refetch a returning tab makes asks again.
  */
 export function shouldRetry(count: number, error: unknown): boolean {
   if (error instanceof ApiError && error.status < 500) return false;
+  if (!focusManager.isFocused()) return false;
   return count < 2;
 }
 
