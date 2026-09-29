@@ -62,6 +62,13 @@ export async function armNextWake(
  */
 export const CONTINUATION_FLOOR_MS = 2_000;
 
+/**
+ * The longest a clock waits for its next wake while work a tick launched still runs. An object that receives no event
+ * for a while can be evicted, taking that work with it; a wake at least this often keeps events arriving until the
+ * work ends.
+ */
+export const LAUNCHED_WORK_WAKE_MS = 30_000;
+
 export async function armFloor(storage: AlarmStore, bindings: { CLOCK_MODE?: string }, now: number): Promise<void> {
   if (!clockArmsAlarms(bindings)) return;
   const held = await storage.getAlarm();
@@ -187,7 +194,8 @@ export class DeploymentClock extends DurableObject<CloudflareBindings> {
     }
     try {
       const report = await this.tick(now);
-      await armNextWake(this.ctx.storage, this.env, Date.now(), soonestWake(report.nextWakeMs, continuation.nextInMs));
+      const next = soonestWake(report.nextWakeMs, continuation.nextInMs);
+      await armNextWake(this.ctx.storage, this.env, Date.now(), this.launched.size > 0 ? soonestWake(next, LAUNCHED_WORK_WAKE_MS) : next);
       return { ticked: true, report };
     } catch (error) {
       // The failure is the answer: the alarm stays armed at least at the floor, and the wake raises rather than

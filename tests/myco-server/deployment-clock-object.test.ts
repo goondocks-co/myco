@@ -6,8 +6,8 @@
  * the launch never settles, and the next wake must still run on time and arm the chained wake.
  */
 import { expect, it } from 'bun:test';
-import { DeploymentClock } from '@myco-server-worker/platform/cloudflare/deployment-clock.js';
-import { CHAINED_WAKE_MS, type TickReport } from '@myco-server-worker/core/tick.js';
+import { DeploymentClock, LAUNCHED_WORK_WAKE_MS } from '@myco-server-worker/platform/cloudflare/deployment-clock.js';
+import { CHAINED_WAKE_MS, WAKE_INTERVALS, type TickReport } from '@myco-server-worker/core/tick.js';
 
 /** The alarm and waitUntil a Durable Object is given, held where a test can read them. */
 function state() {
@@ -81,4 +81,32 @@ it('keeps a launch that fails from reaching the wake, and forgets it once it set
   } finally { console.log = log; }
   expect(clock.launchedInFlight()).toBe(0);
   expect(logged.map((line) => (JSON.parse(line) as { kind: string }).kind)).toContain('clock_work_failed');
+});
+
+it('wakes at least every thirty seconds while launched work still runs, so the object is never idle long enough to be evicted', async () => {
+  const held = state();
+  const env = { MYCO_ORIGIN: 'https://myco.example' };
+  let release: () => void = () => {};
+  let launch = true;
+  class CadenceClock extends DeploymentClock {
+    protected override async tick(): Promise<TickReport> {
+      if (launch) this.clockEnv().afterResponse(() => new Promise<void>((resolve) => { release = resolve; }));
+      launch = false;
+      // The active cadence asks for a later wake than launched work allows.
+      return { nextWakeMs: WAKE_INTERVALS.activeMs, jobs: [] } as unknown as TickReport;
+    }
+  }
+  const clock = new CadenceClock(held.ctx as never, env as never);
+  Object.assign(clock, { ctx: held.ctx, env });
+  const realNow = Date.now;
+  const now = 5_000_000;
+  Date.now = () => now;
+  try {
+    await clock.alarm();
+    expect(held.alarm()).toBe(now + LAUNCHED_WORK_WAKE_MS);
+    release();
+    await Promise.all(held.kept);
+    await clock.alarm();
+    expect(held.alarm()).toBe(now + WAKE_INTERVALS.activeMs);
+  } finally { Date.now = realNow; }
 });

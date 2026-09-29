@@ -13,7 +13,7 @@
  *     one defect that would lose rows silently and in bulk.
  *   - many passes and one pass produce the same rows.
  */
-import { registerBlob } from './helpers/d1.js';
+import { D1_BOUND_PARAMETER_CEILING, registerBlob } from './helpers/d1.js';
 import type { PreparedStatement, RelationalStore } from '@myco-server-worker/core/adapters.js';
 import type { MemoryBlobStore } from './helpers/fixtures.js';
 import { drainObjectReleases } from '@myco-server-worker/core/object-release.js';
@@ -472,6 +472,27 @@ describe('parsing a held transcript', () => {
     expect(batches).toBe(Math.ceil(events / TRANSCRIPT_PARSE_EVENTS_PER_BATCH));
     // The live selection that found it and the two, one per half, that found none.
     expect(trips).toBe(batches + 3);
+  });
+
+  it('keeps the cursor advance under the hosted parameter ceiling when it rides a batch of the most events one may hold', async () => {
+    // Every turn derives the same events, so as many turns as a batch holds events fill the last batch exactly.
+    const { sqlite, serverEnv } = await rig(body(TRANSCRIPT_PARSE_EVENTS_PER_BATCH));
+    const advances: number[] = [];
+    const observed = (statement: PreparedStatement, sql: string): PreparedStatement => ({
+      ...statement,
+      bind: (...values: unknown[]) => {
+        if (/UPDATE transcripts SET parse_segment_lines/.test(sql)) advances.push(values.length);
+        return statement.bind(...values);
+      },
+    });
+    const db: RelationalStore = { prepare: (sql: string) => observed(serverEnv.db.prepare(sql), sql), batch: (statements) => serverEnv.db.batch(statements) };
+    await parseTranscripts({ ...serverEnv, db }, NOW, { budget: { calls: 100, wallMs: 60_000 } });
+    expect(count(sqlite, 'events') % TRANSCRIPT_PARSE_EVENTS_PER_BATCH).toBe(0);
+    // The one advance carries a guard on a full batch of event ids, and the store binds it: the cursor reaches the end.
+    expect(advances).toHaveLength(1);
+    expect(advances[0]).toBeGreaterThan(TRANSCRIPT_PARSE_EVENTS_PER_BATCH);
+    expect(advances[0]).toBeLessThanOrEqual(D1_BOUND_PARAMETER_CEILING);
+    expect(target(sqlite)).toMatchObject({ parsed_offset: target(sqlite).size, parse_error: null });
   });
 
   it('stops the cursor where an event failed to land rather than advancing past it', async () => {

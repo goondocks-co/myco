@@ -20,7 +20,7 @@
 import { registerBlob } from './helpers/d1.js';
 import { refused } from './helpers/outcomes.js';
 import { describe, expect, it } from 'bun:test';
-import { laneSelectionSql, PARSER_VERSION, parseTranscripts, pendingTranscripts, TRANSCRIPT_PARSE_IMPORTED_AT_ONCE } from '@myco-server-worker/ingest/parse.js';
+import { laneSelectionSql, PARSER_VERSION, parseTranscripts, pendingTranscripts, TRANSCRIPT_PARSE_CONCURRENT_BYTES, TRANSCRIPT_PARSE_IMPORTED_AT_ONCE, withinBytes } from '@myco-server-worker/ingest/parse.js';
 import type { PreparedStatement, RelationalStore } from '@myco-server-worker/core/adapters.js';
 import { CHAINED_WAKE_MS, engineAssertions, runTick, WAKE_INTERVALS } from '@myco-server-worker/core/tick.js';
 import { nextWakeDelayMs } from '@myco-server-worker/core/power.js';
@@ -396,5 +396,76 @@ describe('imports read side by side', () => {
     expect(state(together)).toEqual(state(alone));
     expect(state(together).every((row) => (row as { done: number }).done === 1)).toBe(true);
     expect(counts(together)).toEqual(counts(alone));
+  });
+});
+
+describe('imports read side by side within a byte budget', () => {
+  /** An import of `turns` turns whose replies are `replyChars` long, in one segment. */
+  const importOf = (name: string, turns: number, replyChars: number) => {
+    let text = '';
+    for (let i = 0; i < turns; i += 1) {
+      text += line({ type: 'user', promptId: uuid(900_000 + name.length * 1_000 + i), message: { content: `${name} prompt ${i}` }, timestamp: '2026-09-01T10:00:00Z' })
+        + line({ type: 'assistant', message: { content: [{ type: 'text', text: `${name} ${'r'.repeat(replyChars)}` }] }, timestamp: '2026-09-01T10:00:01Z' });
+    }
+    return text;
+  };
+  /** Every pass's start and end, and the most segment bytes and passes held at once. */
+  const watch = () => {
+    const held = new Map<string, number>();
+    const seen = { bytes: [] as number[], most: 0, together: 0 };
+    return {
+      seen,
+      passes: {
+        started: (id: string, bytes: number) => {
+          held.set(id, bytes);
+          seen.bytes.push(bytes);
+          seen.most = Math.max(seen.most, [...held.values()].reduce((n, b) => n + b, 0));
+          seen.together = Math.max(seen.together, held.size);
+        },
+        ended: (id: string) => { held.delete(id); },
+      },
+    };
+  };
+
+  it('reads full 8 MiB segments one at a time, holding no more than the budget at once', async () => {
+    const r = await rig();
+    const size = Buffer.byteLength(importOf('a', 40, 200_000));
+    expect(size).toBeGreaterThan(8_000_000);
+    for (const name of ['a', 'b', 'c', 'd']) await r.ship(`s-big-${name}`, tx(`big-${name}`), importOf(name, 40, 200_000), 'import', NOW - 1_000);
+    const w = watch();
+    await parseTranscripts(r.serverEnv, NOW, { budget: { calls: 200, wallMs: 600_000 }, passes: w.passes });
+    // Each pass is counted at the segment it reads, and no two full ones were held at once.
+    expect(w.seen.bytes.filter((b) => b === size).length).toBeGreaterThanOrEqual(TRANSCRIPT_PARSE_IMPORTED_AT_ONCE);
+    expect(w.seen.most).toBeLessThanOrEqual(TRANSCRIPT_PARSE_CONCURRENT_BYTES);
+    expect(w.seen.together).toBe(1);
+  }, 120_000);
+
+  it('still reads small imports together', async () => {
+    const r = await rig();
+    for (const name of ['p', 'q', 's', 't']) await r.ship(`s-small-${name}`, tx(`small-${name}`), importOf(name, 5, 100), 'import', NOW - 1_000);
+    const w = watch();
+    await parseTranscripts(r.serverEnv, NOW, { budget: { calls: 200, wallMs: 60_000 }, passes: w.passes });
+    expect(w.seen.together).toBe(TRANSCRIPT_PARSE_IMPORTED_AT_ONCE);
+    expect(w.seen.most).toBeLessThanOrEqual(TRANSCRIPT_PARSE_CONCURRENT_BYTES);
+  });
+
+  it('runs work side by side only while its bytes fit, in order, and alone where one is over the budget', async () => {
+    const log: string[] = [];
+    const gates = new Map<string, () => void>();
+    const work = (name: string) => new Promise<string>((resolve) => { log.push(`start ${name}`); gates.set(name, () => { log.push(`end ${name}`); resolve(name); }); });
+    const sizes: Record<string, number> = { a: 6, b: 6, c: 12, d: 2 };
+    const done = withinBytes(['a', 'b', 'c', 'd'], (n) => sizes[n]!, 10, work);
+    await Bun.sleep(0);
+    expect(log).toEqual(['start a']);
+    gates.get('a')!();
+    await Bun.sleep(0);
+    expect(log).toEqual(['start a', 'end a', 'start b']);
+    gates.get('b')!();
+    await Bun.sleep(0);
+    expect(log.slice(-2)).toEqual(['end b', 'start c']);
+    gates.get('c')!();
+    await Bun.sleep(0);
+    gates.get('d')!();
+    expect(await done).toEqual(['a', 'b', 'c', 'd']);
   });
 });
