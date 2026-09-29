@@ -15,7 +15,7 @@ import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, 
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { claudeCodeDriver } from '@myco/runner/drivers/claude-code.js';
-import { activeDeveloperDir, codexDriver, RUN_FEATURES_OFF, RUN_PERMISSIONS } from '@myco/runner/drivers/codex.js';
+import { activeDeveloperDir, codexDriver, codexDriverWith, RUN_FEATURES_OFF, RUN_PERMISSIONS, runFilesystem, type DeveloperDirProbe } from '@myco/runner/drivers/codex.js';
 import { jsonLines } from '@myco/runner/drivers/stream.js';
 import { RUN_REPOSITORY_DIGESTS_FILE, RUN_REPOSITORY_DIR } from '@goondocks/myco-shared/repository';
 import { discardRunDir, writeRunDir } from '@myco/runner/mcp-config.js';
@@ -56,6 +56,41 @@ async function collect(events: AsyncIterable<RunEvent>): Promise<RunEvent[]> {
 
 function runDir(): { scratchDir: string; mcpConfigPath: string } {
   return writeRunDir(mkdtempSync(join(tmpdir(), 'myco-run-')), 'run_1', CONNECTION);
+}
+
+/** Where a Mac's command line tools are, which is the developer directory `FAKE_MAC` selects. */
+const TOOLS = '/Library/Developer/CommandLineTools';
+
+/** One path a fake Mac holds: who owns it, its permission bits, and what it is. */
+interface FakePath { uid: number; mode: number; kind: 'dir' | 'file' }
+
+/**
+ * A Mac as `activeDeveloperDir` reads one, on any system: `selected` is what
+ * `xcode-select -p` names, `paths` what is on disk, `links` where a path
+ * physically is. Paths it does not hold are the machine's own, so a real run
+ * directory resolves as it does on disk.
+ */
+function fakeMac(options: { selected?: string | null; paths?: Record<string, FakePath>; links?: Record<string, string>; home?: string; platform?: NodeJS.Platform } = {}): DeveloperDirProbe {
+  const paths: Record<string, FakePath> = options.paths ?? {
+    [TOOLS]: { uid: 0, mode: 0o40755, kind: 'dir' },
+    [join(TOOLS, 'usr', 'bin', 'git')]: { uid: 0, mode: 0o100755, kind: 'file' },
+  };
+  const links = options.links ?? {};
+  const home = options.home ?? '/Users/member';
+  return {
+    platform: options.platform ?? 'darwin',
+    select: () => (options.selected === undefined ? TOOLS : options.selected),
+    stat: (path) => {
+      const found = paths[path];
+      return found === undefined ? null : { uid: found.uid, mode: found.mode, directory: found.kind === 'dir', file: found.kind === 'file' };
+    },
+    realpath: (path) => {
+      if (links[path] !== undefined) return links[path]!;
+      if (paths[path] !== undefined || path === home) return path;
+      return realpathSync(path);
+    },
+    home,
+  };
 }
 
 describe('reading a harness stream into run events', () => {
@@ -293,6 +328,68 @@ describe('the Claude Code driver', () => {
   });
 });
 
+describe('the developer directory a Codex source run may read (#1475)', () => {
+  // Outside the home, so each of the two ancestor checks is the only one a case meets.
+  const RUN = '/Volumes/work/runs/run_1';
+  const ROOT_DIR: FakePath = { uid: 0, mode: 0o40755, kind: 'dir' };
+  const ROOT_FILE: FakePath = { uid: 0, mode: 0o100755, kind: 'file' };
+  /** A Mac whose selected developer directory is `dir`, holding `usr/bin/git` as `git`. */
+  const selecting = (dir: string, owner: FakePath = ROOT_DIR, git: FakePath | null = ROOT_FILE, extra: Partial<Parameters<typeof fakeMac>[0]> = {}) =>
+    fakeMac({ selected: dir, paths: { [RUN]: { uid: 501, mode: 0o40700, kind: 'dir' }, [dir]: owner, ...(git === null ? {} : { [join(dir, 'usr', 'bin', 'git')]: git }) }, ...extra });
+
+  it('is the selected directory where it is a developer directory owned by root that nobody else can write', () => {
+    expect(activeDeveloperDir(RUN, selecting(TOOLS))).toBe(TOOLS);
+  });
+
+  it('is judged at the path the directory physically has, since that is the path the sandbox grants', () => {
+    // `xcode-select` may name a link; the grant and the checks are the target's.
+    expect(activeDeveloperDir(RUN, selecting(TOOLS, ROOT_DIR, ROOT_FILE, { selected: '/var/db/xcode_select_link', links: { '/var/db/xcode_select_link': TOOLS } }))).toBe(TOOLS);
+    expect(activeDeveloperDir(RUN, selecting('/Users', ROOT_DIR, ROOT_FILE, { selected: '/var/db/xcode_select_link', links: { '/var/db/xcode_select_link': '/Users' } }))).toBeNull();
+  });
+
+  it('is nothing wherever a check fails', () => {
+    const refused: Record<string, DeveloperDirProbe> = {
+      'another system': selecting(TOOLS, ROOT_DIR, ROOT_FILE, { platform: 'linux' }),
+      'none selected': selecting(TOOLS, ROOT_DIR, ROOT_FILE, { selected: null }),
+      'a selection that is not there': fakeMac({ selected: '/nowhere/at/all', links: {} }),
+      'owned by the user': selecting(TOOLS, { uid: 501, mode: 0o40755, kind: 'dir' }),
+      'writable by its group': selecting(TOOLS, { uid: 0, mode: 0o40775, kind: 'dir' }),
+      'writable by everyone': selecting(TOOLS, { uid: 0, mode: 0o41777, kind: 'dir' }),
+      'a file rather than a directory': selecting(TOOLS, { uid: 0, mode: 0o100755, kind: 'file' }),
+      'the root of the filesystem': selecting('/'),
+      'the home directory itself': selecting('/Users/member'),
+      'a directory above the home directory': selecting('/Users'),
+      'the run\'s own directory': selecting(RUN),
+      'a directory above the run\'s own directory': selecting('/Volumes/work/runs'),
+      'no git in it': selecting(TOOLS, ROOT_DIR, null),
+      'a git that is not a file': selecting(TOOLS, ROOT_DIR, { uid: 0, mode: 0o40755, kind: 'dir' }),
+    };
+    const granted = Object.fromEntries(Object.entries(refused).map(([why, probe]) => [why, activeDeveloperDir(RUN, probe)]));
+    expect(granted).toEqual(Object.fromEntries(Object.keys(refused).map((why) => [why, null])));
+  });
+
+  it('is read by a source run alone, whatever directory is handed to the profile', () => {
+    const run = runDir();
+    const home = mkdtempSync(join(tmpdir(), 'myco-codex-home-'));
+    const spec = { ...run, prompt: 'p', credentialEnv: {} };
+    const access = (filesystem: Record<string, string>): string | null => filesystem[TOOLS] ?? null;
+    expect({
+      source: access(runFilesystem({ ...spec, sourceReadOnly: true }, home, null, TOOLS)),
+      other: access(runFilesystem(spec, home, null, TOOLS)),
+      none: Object.keys(runFilesystem({ ...spec, sourceReadOnly: true }, home, null, null)).filter((path) => path.startsWith('/Library')),
+    }).toEqual({ source: 'read', other: null, none: [] });
+  });
+
+  it('on this machine, is nothing or a directory every check passes', () => {
+    const run = runDir();
+    const dir = activeDeveloperDir(run.scratchDir);
+    if (process.platform !== 'darwin') { expect(dir).toBeNull(); return; }
+    if (dir === null) return;
+    const found = statSync(dir);
+    expect({ root: found.uid, writable: found.mode & 0o022, git: statSync(join(dir, 'usr', 'bin', 'git')).isFile() }).toEqual({ root: 0, writable: 0, git: true });
+  });
+});
+
 describe('the Codex driver', () => {
   it('reads an error item as an item and completes the turn anyway', async () => {
     const dir = stubHarness('codex', [
@@ -347,12 +444,11 @@ describe('the Codex driver', () => {
   });
 
   it('holds a run to a sandbox of its own, since the harness never asks and the run\'s grant never reaches it', async () => {
-    const developerDir = activeDeveloperDir();
     const dir = stubHarness('codex', ['{"type":"turn.completed","usage":{}}']);
     process.env.PATH = `${dir}:${process.env.PATH ?? ''}`;
     for (const sourceReadOnly of [true, false]) {
       const run = runDir();
-      await collect(codexDriver.run({ ...run, sourceReadOnly, prompt: 'read source', credentialEnv: {} }, new AbortController().signal));
+      await collect(codexDriverWith(fakeMac()).run({ ...run, sourceReadOnly, prompt: 'read source', credentialEnv: {} }, new AbortController().signal));
       const home = join(run.scratchDir, 'codex-home');
       const config = parse(readFileSync(join(home, 'config.toml'), 'utf8')) as Record<string, unknown>;
       // Reads reach the system's minimal set and the run's own directory, and
@@ -378,7 +474,8 @@ describe('the Codex driver', () => {
               // The harness runs a helper of its own program in the sandbox, by the path PATH gave it.
               [dir]: 'read',
               [realpathSync(dir)]: 'read',
-              ...(developerDir === null ? {} : { [developerDir]: 'read' }),
+              // Only a source run runs `git`, so only a source run reads the developer directory.
+              ...(sourceReadOnly ? { [TOOLS]: 'read' } : {}),
               [realpathSync(run.scratchDir)]: sourceReadOnly ? 'read' : 'write',
               [realpathSync(home)]: 'deny',
               [realpathSync(run.mcpConfigPath)]: 'deny',
@@ -399,7 +496,7 @@ describe('the Codex driver', () => {
     mkdirSync(join(run.scratchDir, RUN_REPOSITORY_DIR, 'src'), { recursive: true });
     writeFileSync(join(run.scratchDir, RUN_REPOSITORY_DIR, 'src', 'a.ts'), 'x');
     writeFileSync(join(run.scratchDir, RUN_REPOSITORY_DIGESTS_FILE), 'ab  src/a.ts\n');
-    await collect(codexDriver.run({ ...run, sourceReadOnly: true, prompt: 'map the source', credentialEnv: {} }, new AbortController().signal));
+    await collect(codexDriverWith(fakeMac()).run({ ...run, sourceReadOnly: true, prompt: 'map the source', credentialEnv: {} }, new AbortController().signal));
     const config = parse(readFileSync(join(run.scratchDir, 'codex-home', 'config.toml'), 'utf8')) as Record<string, unknown>;
     const filesystem = objectAt(objectAt(objectAt(config, 'permissions'), RUN_PERMISSIONS), 'filesystem') as Record<string, string>;
     // The sandbox takes the most specific entry that holds a path.
@@ -410,10 +507,37 @@ describe('the Codex driver', () => {
       listing: access(join(scratch, RUN_REPOSITORY_DIGESTS_FILE)),
       source: access(join(scratch, RUN_REPOSITORY_DIR, 'src', 'a.ts')),
     }).toEqual({ listing: 'read', source: 'read' });
-    // Git runs from the developer directory on macOS, and must not stop at a global configuration the sandbox hides.
-    const developerDir = activeDeveloperDir();
-    if (developerDir !== null) expect(access(join(developerDir, 'usr', 'bin', 'git'))).toBe('read');
-    expect(objectAt(objectAt(config, 'shell_environment_policy'), 'set')).toEqual({ GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_NOSYSTEM: '1' });
+    // Git runs from the developer directory on macOS, the one the run reads, and
+    // must not stop at a global configuration the sandbox hides.
+    expect(access(join(TOOLS, 'usr', 'bin', 'git'))).toBe('read');
+    expect(objectAt(objectAt(config, 'shell_environment_policy'), 'set')).toEqual({ GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_NOSYSTEM: '1', DEVELOPER_DIR: TOOLS });
+  });
+
+  it('tells a run that reads no source nothing about Git, and grants it no developer directory', async () => {
+    const dir = stubHarness('codex', ['{"type":"turn.completed","usage":{}}']);
+    process.env.PATH = `${dir}:${process.env.PATH ?? ''}`;
+    const run = runDir();
+    const selections: string[] = [];
+    const mac = fakeMac();
+    await collect(codexDriverWith({ ...mac, select: () => { selections.push('asked'); return mac.select(); } })
+      .run({ ...run, prompt: 'extract', credentialEnv: {} }, new AbortController().signal));
+    const config = parse(readFileSync(join(run.scratchDir, 'codex-home', 'config.toml'), 'utf8')) as Record<string, unknown>;
+    const filesystem = objectAt(objectAt(objectAt(config, 'permissions'), RUN_PERMISSIONS), 'filesystem') as Record<string, string | undefined>;
+    expect({ developerDir: filesystem[TOOLS], policy: config.shell_environment_policy, selections })
+      .toEqual({ developerDir: undefined, policy: { inherit: 'all', ignore_default_excludes: false }, selections: [] });
+  });
+
+  it('grants a source run no developer directory, and tells it none, where the one selected fails a check', async () => {
+    const dir = stubHarness('codex', ['{"type":"turn.completed","usage":{}}']);
+    process.env.PATH = `${dir}:${process.env.PATH ?? ''}`;
+    const run = runDir();
+    // A developer directory the user owns is one they chose to show the run.
+    await collect(codexDriverWith(fakeMac({ paths: { [TOOLS]: { uid: 501, mode: 0o40755, kind: 'dir' }, [join(TOOLS, 'usr', 'bin', 'git')]: { uid: 0, mode: 0o100755, kind: 'file' } } }))
+      .run({ ...run, sourceReadOnly: true, prompt: 'map', credentialEnv: {} }, new AbortController().signal));
+    const config = parse(readFileSync(join(run.scratchDir, 'codex-home', 'config.toml'), 'utf8')) as Record<string, unknown>;
+    const filesystem = objectAt(objectAt(objectAt(config, 'permissions'), RUN_PERMISSIONS), 'filesystem') as Record<string, string | undefined>;
+    expect({ developerDir: filesystem[TOOLS], set: objectAt(objectAt(config, 'shell_environment_policy'), 'set') })
+      .toEqual({ developerDir: undefined, set: { GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_NOSYSTEM: '1' } });
   });
 
   it('holds a run to its own sandbox whatever sandbox, permission profile or web search the machine configured', async () => {
@@ -470,7 +594,7 @@ describe('the Codex driver', () => {
       expect(read.features).toEqual({ memories: true, ...Object.fromEntries(RUN_FEATURES_OFF.map((feature) => [feature, false])) });
       // Image viewing reads a file in the harness's own process, outside the sandbox (#1426).
       expect(RUN_FEATURES_OFF).toContain('view_image');
-      expect(read.shell_environment_policy).toEqual({ inherit: 'all', ignore_default_excludes: false, set: { GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_NOSYSTEM: '1' } });
+      expect(read.shell_environment_policy).toEqual({ inherit: 'all', ignore_default_excludes: false });
     } finally { machine.remove(); }
   });
 

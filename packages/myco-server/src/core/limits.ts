@@ -11,7 +11,7 @@
  * it is refused and reconsidered at the next wake (`scheduled-tasks.ts`).
  */
 import type { RelationalStore } from './adapters.js';
-import { HELD_BY_WORDS, type HeldBy } from '@goondocks/myco-shared/run-holds';
+import { HELD_BY_WORDS, type CapabilityHold, type HeldBy } from '@goondocks/myco-shared/run-holds';
 
 export { HELD_BY_WORDS, heldByWords, type HeldBy } from '@goondocks/myco-shared/run-holds';
 import { leafValues } from './settings.js';
@@ -21,14 +21,14 @@ import { leafValues } from './settings.js';
 export const DEPLOYMENT_WIDE_HOLDS: ReadonlySet<HeldBy> = new Set<HeldBy>(['fleet', 'concurrent_runs', 'runtime']);
 
 /** The three limits an owner sets in Settings. The fleet is the size of what the operator deployed; a runtime hold is not a limit at all. */
-export const LIMIT_LEAVES: Readonly<Record<Exclude<HeldBy, 'fleet' | 'runtime' | 'worker'>, string>> = {
+export const LIMIT_LEAVES: Readonly<Record<Exclude<HeldBy, 'fleet' | 'runtime' | 'worker' | CapabilityHold>, string>> = {
   concurrent_runs: 'agent.limits.concurrent_runs',
   task_concurrent_runs: 'agent.limits.task_concurrent_runs',
   task_runs_per_hour: 'agent.limits.task_runs_per_hour',
 };
 
 /** Each limit as set, or null where the Deployment sets none. A runtime hold has no number to compare against and is absent here. */
-export type DispatchLimits = Readonly<Record<Exclude<HeldBy, 'runtime' | 'worker'>, number | null>>;
+export type DispatchLimits = Readonly<Record<Exclude<HeldBy, 'runtime' | 'worker' | CapabilityHold>, number | null>>;
 
 /** What the Deployment is doing when a dispatch asks to run. */
 export interface DispatchLoad {
@@ -64,7 +64,7 @@ export async function readDispatchLimits(env: { db: RelationalStore; fleet?: num
  * is the order the row names it in — the fleet first, as the hardest bound.
  * A runtime hold is never decided here; it is what a launch answers.
  */
-export function heldBy(load: DispatchLoad, limits: DispatchLimits): Exclude<HeldBy, 'runtime' | 'worker'> | null {
+export function heldBy(load: DispatchLoad, limits: DispatchLimits): Exclude<HeldBy, 'runtime' | 'worker' | CapabilityHold> | null {
   if (limits.fleet !== null && load.liveRuns >= limits.fleet) return 'fleet';
   if (limits.concurrent_runs !== null && load.liveRuns >= limits.concurrent_runs) return 'concurrent_runs';
   if (limits.task_concurrent_runs !== null && load.liveTaskRuns >= limits.task_concurrent_runs) return 'task_concurrent_runs';

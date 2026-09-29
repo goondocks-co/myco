@@ -228,6 +228,13 @@ export async function readWorkerFleet(db: RelationalStore, now: number): Promise
   });
 }
 
+/** The capabilities every worker heard from within `CONTACT_RECENT_MS` of `now` reported, one list per worker. */
+export async function recentWorkerCapabilities(db: RelationalStore, now: number): Promise<string[][]> {
+  const { results } = await db.prepare(`SELECT capabilities FROM worker_contacts WHERE last_seen_at >= ?`)
+    .bind(now - CONTACT_RECENT_MS).all<{ capabilities: unknown }>();
+  return (results ?? []).map((row) => parseCapabilities(row.capabilities) ?? []);
+}
+
 /**
  * Forget workers not heard from for `olderThanMs`, keeping any that hold a live
  * lease. Bounded to `batch` rows per call, taken by the sweep that already ends

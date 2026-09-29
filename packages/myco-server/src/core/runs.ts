@@ -1234,6 +1234,17 @@ export async function claimQueuedRun(
   return results[0] ?? null;
 }
 
+/**
+ * Name `holder` as what every queued run of `tasks` waits on, where it names one of `from` now. A run a limit holds
+ * keeps that limit, and a run a worker has taken is not queued.
+ */
+export async function recordTaskHolder(db: RelationalStore, tasks: readonly string[], from: readonly string[], holder: string): Promise<void> {
+  if (tasks.length === 0 || from.length === 0) return;
+  const list = (values: readonly string[]) => values.map(() => '?').join(', ');
+  await db.prepare(`UPDATE agent_runs SET held_by = ? WHERE status = 'queued' AND dispatched_by IS NULL AND task IN (${list(tasks)}) AND held_by IN (${list(from)})`)
+    .bind(holder, ...tasks, ...from).run();
+}
+
 /** Record what holds a queued run, so an operator reads the wait on the run rather than inferring it. */
 export async function recordQueueHolder(db: RelationalStore, scope: ReadScope, runId: string, heldBy: string): Promise<void> {
   await db.prepare(`UPDATE agent_runs SET held_by = ? WHERE project_id = ? AND id = ? AND status = 'queued'`)
