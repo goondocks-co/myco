@@ -83,6 +83,7 @@ export function useGrants(projectId: string) {
 
 const REFUSALS: Record<string, string> = {
   last_member: 'This is the last member with a connected account; the server would be left with nobody who can sign in.',
+  last_admin: 'This is the only admin who can sign in; add or link another admin first.',
   already_revoked: 'Already removed.',
   member_revoked: 'That member has been removed.',
   member_linked: 'That member already has a GitHub account connected. Changing it needs the server operator.',

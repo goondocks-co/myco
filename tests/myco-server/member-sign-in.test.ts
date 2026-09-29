@@ -224,6 +224,27 @@ describe('bootstrap, then admin (#1448)', () => {
     expect(keyRows(e)).toBe(0);
   });
 
+  it('withdraws a member\'s earlier link when an admin creates another for them', async () => {
+    const e = sqliteEnv();
+    const env = { ...e.env, ...OWNER_ENV };
+    const first = await adminLink(e, 'mem_machine_3');
+    const second = await adminLink(e, 'mem_machine_3');
+    const stale = await worker.fetch(await post('/auth/link', '9003', { key: first }), env);
+    expect({ status: stale.status, body: await stale.json() }).toEqual({ status: 400, body: { error: 'link_denied' } });
+    expect((await worker.fetch(await post('/auth/link', '9003', { key: second }), env)).status).toBe(200);
+  });
+
+  it('refuses a plain member\'s self-link during bootstrap', async () => {
+    const e = sqliteEnv();
+    const env = { ...e.env, ...OWNER_ENV };
+    fresh(e);
+    e.sqlite.query(`UPDATE members SET role = 'member' WHERE id = 'mem_machine_2'`).run();
+    const token = (await issueMemberToken(e.db, { memberId: 'mem_machine_2', machineId: 'machine_2' }, Date.now())).token;
+    const res = await worker.fetch(linkRequest(token), env);
+    expect(await jsonBody(res)).toEqual({ persisted: false, code: 'link_requires_admin', reason: LINK_REQUIRES_ADMIN });
+    expect(keyRows(e)).toBe(0);
+  });
+
   it('names what an admin cannot link: a member already linked, one removed, one absent, and the runtime\'s own member', async () => {
     const e = sqliteEnv();
     const env = { ...e.env, ...OWNER_ENV };

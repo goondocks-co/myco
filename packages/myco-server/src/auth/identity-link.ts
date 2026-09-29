@@ -9,9 +9,9 @@
  * spent by one conditional update, expiring.
  *
  * Who may mint one is bootstrap, then admin. A member's own credential (and a
- * self-hosted first-owner setup) mints one only while the Deployment has no live
- * admin with a GitHub account linked, so the first sign-in on a fresh
- * Deployment is the only one a member credential can choose; after that, only an
+ * self-hosted first-owner setup) mints one only for an admin, and only while the
+ * Deployment has no live admin with a GitHub account linked, so the first
+ * sign-in on a fresh Deployment is the only one a member credential can choose; after that, only an
  * admin signed in to the dashboard mints one, for a member they name. The same
  * rule is composed into the mint and into the bind, so a key minted during
  * bootstrap binds nothing once bootstrap is over, and a key an admin minted binds
@@ -58,20 +58,28 @@ export interface DashboardMember {
   role: MemberRole;
 }
 
-/** A live admin with a GitHub account linked, as a predicate on the members row aliased `alias`: someone who can sign in to the dashboard and administer it. */
-const linkedAdmin = (alias: string): string =>
+/**
+ * A live admin with a GitHub account linked, as a predicate on the members row
+ * aliased `alias`: someone who can sign in to the dashboard and administer it.
+ * The Deployment keeps one from the first bind on (`revokeMember` refuses to
+ * remove the last), so bootstrap ends once.
+ */
+export const linkedAdmin = (alias: string): string =>
   `${alias}.role = '${ADMIN}' AND ${alias}.github_id IS NOT NULL AND ${alias}.revoked_at IS NULL`;
 
 /**
- * Whether a key issued by `issuer` — a SQL expression, NULL for a key a
- * member's own credential minted — may be minted or bind now: a self-issued key
- * while no live admin has a GitHub account linked, an admin-issued key while its
- * issuer is still a live, linked admin. The one statement of the rule; the mint
- * and the bind each compose it into their own write, so no read decides it
- * ahead of the write it guards.
+ * Whether a key issued by `issuer` for `member` — SQL expressions; a NULL
+ * issuer for a key a member's own credential minted — may be minted or bind
+ * now: a self-issued key only for an admin, while no live admin has a GitHub
+ * account linked, so the one bind it admits makes the Deployment's admin; an
+ * admin-issued key while its issuer is still a live, linked admin. The one
+ * statement of the rule; the mint and the bind each compose it into their own
+ * write, so no read decides it ahead of the write it guards.
  */
-const linkAdmitted = (issuer: string): string =>
-  `(((${issuer}) IS NULL AND NOT EXISTS (SELECT 1 FROM members la WHERE ${linkedAdmin('la')}))
+const linkAdmitted = (issuer: string, member: string): string =>
+  `(((${issuer}) IS NULL
+      AND EXISTS (SELECT 1 FROM members lt WHERE lt.id = (${member}) AND lt.role = '${ADMIN}')
+      AND NOT EXISTS (SELECT 1 FROM members la WHERE ${linkedAdmin('la')}))
     OR EXISTS (SELECT 1 FROM members la WHERE la.id = (${issuer}) AND ${linkedAdmin('la')}))`;
 
 /**
@@ -90,8 +98,8 @@ export async function issueIdentityLinkAuthority(
   const issuedBy = options.issuedBy ?? null;
   const insert = db
     .prepare(`INSERT INTO identity_link_authorities (id, key_hash, member_id, created_at, expires_at, used_at, used_by, revoked_at, issued_by)
-              SELECT ?, ?, ?, ?, ?, NULL, NULL, NULL, ? WHERE ${linkAdmitted('?')}`)
-    .bind(id, await sha256Hex(key), memberId, nowMs, expiresAt, issuedBy, issuedBy, issuedBy);
+              SELECT ?, ?, ?, ?, ?, NULL, NULL, NULL, ? WHERE ${linkAdmitted('?', '?')}`)
+    .bind(id, await sha256Hex(key), memberId, nowMs, expiresAt, issuedBy, issuedBy, memberId, issuedBy);
   const [written] = await db.batch([
     insert,
     ...(options.replaceUnspent
@@ -173,7 +181,7 @@ export async function spendIdentityLinkAuthority(
     const bind = await db
       .prepare(`UPDATE members SET github_id = ?
                  WHERE id = ? AND revoked_at IS NULL AND (github_id IS NULL OR github_id = ?)
-                   AND EXISTS (SELECT 1 FROM identity_link_authorities a WHERE a.key_hash = ? AND ${linkAdmitted('a.issued_by')})`)
+                   AND EXISTS (SELECT 1 FROM identity_link_authorities a WHERE a.key_hash = ? AND ${linkAdmitted('a.issued_by', 'a.member_id')})`)
       .bind(githubId, memberId, githubId, keyHash)
       .run();
     changes = bind.meta.changes;
@@ -220,7 +228,7 @@ export type IdentityLinkPreview =
 export async function previewIdentityLinkAuthority(db: RelationalStore, presentedKey: string, nowMs: number): Promise<IdentityLinkPreview> {
   if (!IDENTITY_LINK_KEY_PATTERN.test(presentedKey)) return { ok: false, reason: 'denied' };
   const row = await db
-    .prepare(`SELECT m.id, m.label, m.revoked_at, m.role, ${linkAdmitted('a.issued_by')} AS admitted
+    .prepare(`SELECT m.id, m.label, m.revoked_at, m.role, ${linkAdmitted('a.issued_by', 'a.member_id')} AS admitted
                 FROM identity_link_authorities a JOIN members m ON m.id = a.member_id
                WHERE a.key_hash = ? AND a.used_at IS NULL AND a.revoked_at IS NULL AND a.expires_at > ?`)
     .bind(await sha256Hex(presentedKey), nowMs)

@@ -6,9 +6,12 @@
 import type { InvitationRow } from '@myco-server-worker/auth/enrollment.js';
 import { jsonBody } from '../helpers/json-body.js';
 import { describe, expect, it } from 'bun:test';
+import { readdirSync, readFileSync, statSync } from 'node:fs';
+import { join, relative } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import worker from '@myco-server-worker/index.js';
 import { issueEnrollmentAuthority, spendEnrollmentAuthority } from '@myco-server-worker/auth/enrollment.js';
-import { issueIdentityLinkAuthority } from '@myco-server-worker/auth/identity-link.js';
+import { issueIdentityLinkAuthority, linkStatement } from '@myco-server-worker/auth/identity-link.js';
 import { revokeMember } from '@myco-server-worker/auth/members-admin.js';
 import { authenticateServerMemberToken, issueMemberToken } from '@myco-server-worker/auth/tokens.js';
 import { sha256Hex } from '@myco-server-worker/hash.js';
@@ -87,6 +90,30 @@ describe('revoking a member', () => {
     e.sqlite.run(`DROP TABLE identity_link_authorities`);
     await expect(revokeMember(e.db, 'mem_machine_2', 'mem_machine_1', NOW)).rejects.toThrow();
     expect(e.sqlite.query(`SELECT revoked_at FROM members WHERE id = 'mem_machine_2'`).get()).toEqual({ revoked_at: null });
+  });
+
+  it('refuses to remove the only admin who can sign in while a linked plain member remains, so a member credential can never link itself after (#1448)', async () => {
+    const e = sqliteEnv();
+    const env = { ...e.env, ...OWNER_ENV };
+    e.sqlite.query(`UPDATE members SET github_id = '9002', role = 'member' WHERE id = 'mem_machine_2'`).run();
+    const res = await worker.fetch(await asOwnerPost('/api/members/mem_machine_1/revoke'), env);
+    expect({ status: res.status, body: await res.json() }).toEqual({ status: 409, body: { error: 'last_admin' } });
+    expect(e.sqlite.query(`SELECT revoked_at FROM members WHERE id = 'mem_machine_1'`).get()).toEqual({ revoked_at: null });
+    expect(await revokeMember(e.db, 'mem_machine_1', 'mem_machine_2', NOW)).toEqual({ ok: false, reason: 'last_admin' });
+
+    const token = (await issueMemberToken(e.db, { memberId: 'mem_machine_3', machineId: 'machine_3' }, Date.now())).token;
+    const link = await worker.fetch(new Request('https://s/members/link-github', { method: 'POST', headers: memberHeaders(token), body: '{}' }), env);
+    expect(await link.json()).toMatchObject({ persisted: false, code: 'link_requires_admin' });
+    expect(e.sqlite.query(`SELECT COUNT(*) AS c FROM identity_link_authorities`).get()).toEqual({ c: 0 });
+  });
+
+  it('removes one of two linked admins, and then refuses the other as the only admin who can sign in', async () => {
+    const e = sqliteEnv();
+    e.sqlite.query(`UPDATE members SET github_id = '9002' WHERE id = 'mem_machine_2'`).run();
+    e.sqlite.query(`UPDATE members SET github_id = '9003', role = 'member' WHERE id = 'mem_machine_3'`).run();
+    expect(await revokeMember(e.db, 'mem_machine_2', 'mem_machine_1', NOW)).toEqual({ ok: true });
+    expect(await revokeMember(e.db, 'mem_machine_1', 'mem_machine_1', NOW)).toEqual({ ok: false, reason: 'last_admin' });
+    expect(await revokeMember(e.db, 'mem_machine_3', 'mem_machine_1', NOW)).toEqual({ ok: true });
   });
 
   it('answers 404 for an absent member and 409 for one already revoked', async () => {
@@ -173,5 +200,39 @@ describe('the old project-pathed token surface is gone', () => {
       const res = await worker.fetch(new Request(`https://s${path}`, { headers: { cookie: await ownerCookie(), 'cf-connecting-ip': '1.2.3.4' } }), { ...e.env, ...OWNER_ENV });
       expect({ path, status: res.status }).toEqual({ path, status: 401 });
     }
+  });
+});
+
+describe('the Deployment keeps a linked admin (#1448)', () => {
+  const ROOT = fileURLToPath(new URL('../../packages/myco-server/', import.meta.url));
+  const files = (dir: string): string[] => readdirSync(dir).flatMap((name) => {
+    const file = join(dir, name);
+    return statSync(file).isDirectory() ? files(file) : file.endsWith('.ts') ? [file] : [];
+  });
+
+  it('writes members.role, revoked_at and github_id only where the last linked admin cannot be removed, demoted or unlinked', () => {
+    // Every UPDATE of the members table under src and scripts, by file, with the columns it sets.
+    const writes: string[] = [];
+    for (const file of [...files(join(ROOT, 'src')), ...files(join(ROOT, 'scripts'))]) {
+      for (const m of readFileSync(file, 'utf8').matchAll(/UPDATE members SET ([^`]*)`/g)) {
+        writes.push(`${relative(ROOT, file)}: ${m[1]!.split(/\bWHERE\b/)[0]!.replace(/\s+/g, ' ').trim()}`);
+      }
+    }
+    expect(writes.sort()).toEqual([
+      'src/auth/identity-link.ts: github_id = ?', // the bind: only a NULL account, or the same one, and never to NULL
+      'src/auth/identity-link.ts: github_id = ?', // break-glass linkStatement: a validated account id, never NULL
+      'src/auth/members-admin.ts: revoked_at = ?, revoked_by = ?', // revokeMember: guarded below
+    ]);
+    const source = readFileSync(join(ROOT, 'src', 'auth', 'identity-link.ts'), 'utf8');
+    expect(source).toMatch(/UPDATE members SET github_id = \?\s+WHERE id = \? AND revoked_at IS NULL AND \(github_id IS NULL OR github_id = \?\)/);
+    expect(source).toMatch(/if \(!IDENTITY_LINK_KEY_PATTERN\.test\(presentedKey\) \|\| !GITHUB_ACCOUNT_ID\.test\(githubId\)\)/);
+    expect(readFileSync(join(ROOT, 'scripts', 'link-github.ts'), 'utf8')).toMatch(/!GITHUB_ACCOUNT_ID\.test\(githubId\)/);
+  });
+
+  it('changes the last admin\'s account through the break-glass statement and leaves the Deployment with a linked admin', async () => {
+    const e = sqliteEnv();
+    await linkStatement(e.db, 'mem_machine_1', '4040').run();
+    expect(e.sqlite.query(`SELECT id, role, github_id FROM members WHERE github_id IS NOT NULL`).all()).toEqual([{ id: 'mem_machine_1', role: 'admin', github_id: '4040' }]);
+    expect(await issueIdentityLinkAuthority(e.db, 'mem_machine_2', NOW)).toBeNull();
   });
 });

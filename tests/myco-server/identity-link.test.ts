@@ -146,6 +146,24 @@ describe('bootstrap, then admin (#1448)', () => {
     expect(await memberByGithubId(r.db, '583231')).toEqual({ id: ADMIN, label: 'machine_1', role: 'admin' });
   });
 
+  it('mints no key for a plain member\'s own credential, even on a fresh Deployment: only an admin\'s first sign-in ends bootstrap', async () => {
+    const r = rig();
+    fresh(r.sqlite);
+    r.sqlite.query(`UPDATE members SET role = 'member' WHERE id = 'mem_machine_3'`).run();
+    expect(await issueIdentityLinkAuthority(r.db, 'mem_machine_3', NOW)).toBeNull();
+    expect(keyRows(r.sqlite)).toBe(0);
+  });
+
+  it('binds nothing with a plain member\'s own key minted before the plain role', async () => {
+    const r = rig();
+    fresh(r.sqlite);
+    const own = (await issueIdentityLinkAuthority(r.db, 'mem_machine_3', NOW))!;
+    r.sqlite.query(`UPDATE members SET role = 'member' WHERE id = 'mem_machine_3'`).run();
+    expect(await previewIdentityLinkAuthority(r.db, own.key, NOW)).toEqual({ ok: false, reason: 'link_requires_admin' });
+    expect(await spendIdentityLinkAuthority(r.db, own.key, '9003', NOW)).toEqual({ ok: false, reason: 'link_requires_admin' });
+    expect(linked(r.sqlite)).toEqual([]);
+  });
+
   it('keeps bootstrap open while only a plain member is linked: the rule reads linked admins', async () => {
     const r = rig();
     fresh(r.sqlite);
