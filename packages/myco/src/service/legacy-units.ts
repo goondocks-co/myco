@@ -105,7 +105,9 @@ export async function stopUnit(unit: MycoUnit, platform: NodeJS.Platform = proce
   const dir = path.dirname(unit.file);
   if (unit.file.endsWith('.plist')) {
     await new LaunchdServiceManager({ agentsDir: dir, pruneOnUninstall: false, ...(runner ? { runner } : {}) }).uninstall(unit.label);
-    return;
+  } else if (platform === 'linux') {
+    await new SystemdUserServiceManager({ unitDir: dir }).uninstall(unit.label);
   }
-  if (platform === 'linux') await new SystemdUserServiceManager({ unitDir: dir }).uninstall(unit.label);
+  // The file read is the one removed, whatever its name says its label is.
+  fs.rmSync(unit.file, { force: true });
 }

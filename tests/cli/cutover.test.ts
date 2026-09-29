@@ -430,6 +430,14 @@ describe('myco cutover', () => {
     expect(again.ok).toBe(true);
   });
 
+  it('removes the unit file it read even when the file is named for another label', async () => {
+    fs.renameSync(path.join(m.agentsDir, `${DAEMON_LABEL}.plist`), path.join(m.agentsDir, 'co.goondocks.myco.renamed.plist'));
+    const result = await m.run();
+    expect(result.ok).toBe(true);
+    expect(bootouts()).toEqual([DAEMON_LABEL]);
+    expect(fs.existsSync(path.join(m.agentsDir, 'co.goondocks.myco.renamed.plist'))).toBe(false);
+  });
+
   it('refuses a 1.4 unit that starts at boot rather than stopping it as a user unit', async () => {
     const boot = path.join(m.home, 'LaunchDaemons');
     fs.mkdirSync(boot, { recursive: true });
