@@ -84,10 +84,12 @@ const redacted = (text: string): string => text.replace(/https?:\/\/\S+/g, '[URL
 
 /** An export that did not end inside its bound. It may still be running, so nothing starts another beside it. */
 export class D1ExportUnfinished extends Error {
-  constructor(readonly record: ExportRecord, readonly elapsedMs: number) {
+  constructor(readonly record: ExportRecord, readonly elapsedMs: number, file: string, marginMs: number) {
     super(`the D1 export started ${iso(record.startedAt)} did not finish within ${Math.round(D1_EXPORT_BOUND_MS / 60_000)} min `
       + `(Cloudflare still reports it running after ${Math.round(elapsedMs / 60_000)} min, at bookmark ${record.bookmark}); `
-      + 'it pauses the database\'s queries while it runs, so no second export was started, and the next backup resumes this one first');
+      + 'it pauses the database\'s queries while it runs, so no second export was started. '
+      + `Cloudflare cancels an export nothing polls: run no backup for ${Math.round(marginMs / 60_000)} min, until ${iso(record.lastPolledAt + marginMs)}, `
+      + `and the next backup after that finds it ended; each backup before then resumes it first. To start one sooner, once you know it has ended, delete ${file}`);
     this.name = 'D1ExportUnfinished';
   }
 }
@@ -259,7 +261,7 @@ function exporter(context: D1ExportContext) {
       writeRecord(file, current);
       if (read.kind !== 'running') return { record: current, ended: read };
       const elapsed = now() - current.startedAt;
-      if (elapsed >= boundMs) throw new D1ExportUnfinished(current, elapsed);
+      if (elapsed >= boundMs) throw new D1ExportUnfinished(current, elapsed, file, marginMs);
       await sleep(pollMs);
     }
   };
@@ -285,13 +287,20 @@ function exporter(context: D1ExportContext) {
 
   /** Resolve the export this machine has recorded, if any; see `settleD1Export`. */
   const settle = async (): Promise<SettledExport | null> => {
-    const recorded = readRecord(file, marginMs);
+    let recorded = readRecord(file, marginMs);
     if (recorded === null) return null;
     if (now() - recorded.lastPolledAt >= marginMs) {
-      context.report?.(`The D1 export this machine recorded ${iso(recorded.startedAt)} was last answered for ${iso(recorded.lastPolledAt)}, `
-        + `over ${Math.round(marginMs / 60_000)} min ago; Cloudflare no longer runs it, so its record is cleared`);
-      fs.rmSync(file, { force: true });
-      return null;
+      // Asked after once more where it can be: one still running is followed, and only one Cloudflare says ended, or
+      // no longer answers for, is taken to run no longer.
+      const read = recorded.bookmark === null ? null : await ask(recorded.tables, recorded.bookmark);
+      if (read?.kind !== 'running') {
+        context.report?.(`The D1 export this machine recorded ${iso(recorded.startedAt)} was last answered for ${iso(recorded.lastPolledAt)}, `
+          + `over ${Math.round(marginMs / 60_000)} min ago; Cloudflare no longer runs it, so its record is cleared`);
+        fs.rmSync(file, { force: true });
+        return null;
+      }
+      recorded = { ...recorded, bookmark: read.bookmark, lastPolledAt: now() };
+      writeRecord(file, recorded);
     }
     if (recorded.bookmark === null) throw new D1ExportUnsettled(recorded, 'the answer to that request was lost', marginMs);
     context.report?.(`Resuming the D1 export this machine started ${iso(recorded.startedAt)} before starting another`);
@@ -334,6 +343,10 @@ function exporter(context: D1ExportContext) {
     }
     let ended: Extract<D1ExportReading, { kind: 'complete' | 'ended' }>;
     if (first.kind === 'complete') {
+      // Recorded by its bookmark before its download, so a download that fails leaves an export the next backup
+      // resumes; one that answers no bookmark completed and runs no longer, and is recorded as nothing.
+      if (first.bookmark === null) fs.rmSync(file, { force: true });
+      else writeRecord(file, { ...intent, bookmark: first.bookmark, lastPolledAt: now() });
       ended = first;
     } else {
       const running: ExportRecord = { ...intent, bookmark: first.bookmark, lastPolledAt: now() };

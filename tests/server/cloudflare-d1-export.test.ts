@@ -91,6 +91,9 @@ describe('a D1 export that never completes', () => {
     expect((failure as Error).message).toContain(`did not finish within ${D1_EXPORT_BOUND_MS / 60_000} min`);
     expect((failure as Error).message).toContain('at bookmark bm-1');
     expect((failure as Error).message).toContain('no second export was started');
+    // What the operator does next: wait out the margin, or delete the record once the export is known to have ended.
+    expect((failure as Error).message).toContain(`run no backup for ${D1_EXPORT_CANCEL_MARGIN_MS / 60_000} min`);
+    expect((failure as Error).message).toContain(`delete ${recordFile()}`);
     expect(api.started()).toBe(1);
     expect(recorded()).toMatchObject({ bookmark: 'bm-1', databaseId: DATABASE });
   });
@@ -221,6 +224,44 @@ describe('an export whose starting request had no answer that settles it (#1455 
   });
 });
 
+describe('an export that completes on the request that starts it (#1455 finding 3)', () => {
+  const completingAtOnce = (api: ReturnType<typeof provider>, bookmark: boolean) => () => {
+    const job = api.jobs.at(-1)!;
+    job.state = 'complete';
+    return Response.json({ success: true, errors: [], result: { success: true, status: 'complete', ...(bookmark ? { at_bookmark: job.bookmark } : {}), result: { signed_url: `https://signed.fixture/${job.bookmark}` } } });
+  };
+  const downloadLostOnce = (api: ReturnType<typeof provider>) => {
+    let lost = false;
+    const fetch: CloudflareFetch = async (url, init) => {
+      if (!lost && url.startsWith('https://signed.fixture/')) { lost = true; throw new TypeError('fetch failed'); }
+      return api.fetch(url, init);
+    };
+    return fetch;
+  };
+
+  it('is recorded by its bookmark before its download, so a lost download is resumed rather than read as an unsettled start', async () => {
+    const api = provider(() => 'complete');
+    api.control.startAnswer = completingAtOnce(api, true);
+    const fetch = downloadLostOnce(api);
+    await expect(run(fetch)).rejects.toThrow('did not reach Cloudflare');
+    expect(recorded()).toMatchObject({ bookmark: 'bm-1' });
+    api.control.startAnswer = null;
+    await run(fetch);
+    expect({ requests: api.requests, output: fs.readFileSync(path.join(dir, 'd1.sql'), 'utf8') }).toEqual({ requests: [null, 'bm-1'], output: '-- export bm-1\n' });
+  });
+
+  it('is recorded as nothing where it answers no bookmark: it runs no longer, and the next backup starts one', async () => {
+    const api = provider(() => 'complete');
+    api.control.startAnswer = completingAtOnce(api, false);
+    const fetch = downloadLostOnce(api);
+    await expect(run(fetch)).rejects.toThrow('did not reach Cloudflare');
+    expect(fs.existsSync(recordFile())).toBe(false);
+    api.control.startAnswer = null;
+    await run(fetch);
+    expect(api.started()).toBe(2);
+  });
+});
+
 describe('a poll that does not say the export ended (#1455 F2)', () => {
   for (const [what, refusal] of [
     ['a D1 internal error', () => Response.json({ success: false, errors: [{ code: 7500, message: 'internal error' }] }, { status: 400 })],
@@ -244,13 +285,30 @@ describe('a poll that does not say the export ended (#1455 F2)', () => {
     });
   }
 
-  it('clears a record nothing has answered for past the margin without asking after it, and starts one', async () => {
+  it('asks once after a record nothing has answered for past the margin, clears it when Cloudflare no longer answers for it, and starts one', async () => {
     const api = provider(() => 'complete');
     record({ bookmark: 'bm-gone', startedAt: clock - D1_EXPORT_CANCEL_MARGIN_MS - 5 * 60_000, lastPolledAt: clock - D1_EXPORT_CANCEL_MARGIN_MS });
     const lines: string[] = [];
     await run(api.fetch, { report: (line) => lines.push(line) });
-    expect(api.requests).toEqual([null, 'bm-1']);
+    expect(api.requests).toEqual(['bm-gone', null, 'bm-1']);
     expect(lines.some((line) => line.includes('Cloudflare no longer runs it'))).toBe(true);
+  });
+
+  it('follows a record past the margin that Cloudflare still reports running, and starts nothing beside it', async () => {
+    const api = provider();
+    api.jobs.push({ bookmark: 'bm-live', state: 'active' });
+    record({ bookmark: 'bm-live', startedAt: clock - D1_EXPORT_CANCEL_MARGIN_MS - 5 * 60_000, lastPolledAt: clock - D1_EXPORT_CANCEL_MARGIN_MS });
+    await expect(run(api.fetch)).rejects.toBeInstanceOf(D1ExportUnfinished);
+    expect({ requests: api.requests, started: api.started(), record: recorded().bookmark }).toEqual({ requests: ['bm-live', 'bm-live'], started: 0, record: 'bm-live' });
+  });
+
+  it('judges a record stale by its last answer, never by its start (M5)', async () => {
+    const api = provider();
+    api.jobs.push({ bookmark: 'bm-long', state: 'active' });
+    // Started before the margin, answered for a minute ago: an export that may still run.
+    record({ bookmark: 'bm-long', startedAt: clock - D1_EXPORT_CANCEL_MARGIN_MS - 10 * 60_000, lastPolledAt: clock - 60_000 });
+    await expect(run(api.fetch)).rejects.toBeInstanceOf(D1ExportUnfinished);
+    expect({ requests: api.requests, record: recorded().bookmark }).toEqual({ requests: ['bm-long'], record: 'bm-long' });
   });
 });
 
@@ -309,6 +367,16 @@ describe('the one reading of an export answer (#1455 F7)', () => {
     ];
     expect(unsettled.map((reading) => reading.kind)).toEqual(Array(unsettled.length).fill('unknown'));
     expect([408, 429, 500, 503].map((status) => (readD1ExportAnswer(status, undefined, 'b') as { transient: boolean }).transient)).toEqual([true, true, true, true]);
+  });
+
+  it('reads an answer that names no status as running or unsettled, never as ended (M6b)', () => {
+    for (const [what, result] of [['a bookmark and no status', { at_bookmark: 'b' }], ['nothing at all', {}]] as const) {
+      for (const asked of ['b', null]) {
+        const kind = readD1ExportAnswer(200, ok(result), asked).kind;
+        expect({ what, asked, settles: kind === 'ended' || kind === 'complete' }).toEqual({ what, asked, settles: false });
+      }
+    }
+    expect(readD1ExportAnswer(200, ok({ at_bookmark: 'b' }), null)).toEqual({ kind: 'running', bookmark: 'b' });
   });
 
   it('reads a credential the API refused as a refusal that started nothing', () => {
