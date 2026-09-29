@@ -309,26 +309,27 @@ export function createServer(deps: ServerDeps) {
       const session = presented === null ? null : await verifySession(config.sessionSecret, presented, now);
       if (session === null) return anonymous();
       if (!sameOrigin(request, url)) return forbidden();
-      const bodyBound = (matched.route as { maxBodyBytes?: number }).maxBodyBytes ?? MAX_BODY_BYTES;
-      const bounded = await boundedRequest(request, bodyBound);
-      if (bounded === null) return refuseOversized(bodyBound);
       try {
         // Membership is decided per request: a session names a GitHub account, and
         // the account is a member only while a live member row is linked to it.
         const member = await memberByGithubId(env.db, session.sub);
-        const context = { request: bounded, session, config, params: matched.params, url, now };
         if (matched.route.authority === 'account') {
-          // The two routes that serve an account ahead of membership meter a
-          // non-member like credential-free traffic: a valid session is free to mint.
+          // The routes that serve an account ahead of membership meter a non-member
+          // like credential-free traffic: a valid session is free to mint.
           if (member === null && !(await env.sourceLimit.limit({ key: source })).success) return limited();
-          return await matched.route.handler(env, { ...context, member });
+        } else {
+          if (member === null) return anonymous();
+          // The route's declared authority decides who it admits, here and nowhere else,
+          // and before a byte of the body is read: anything but `member` is an admin's.
+          if (matched.route.authority !== 'member' && !isAdmin(member.role)) return forbiddenToMember();
         }
-        if (member === null) return anonymous();
-        // The route's declared authority decides who it admits, here and nowhere else:
-        // anything but `member` is an admin's.
-        if (matched.route.authority !== 'member' && !isAdmin(member.role)) return forbiddenToMember();
+        const bodyBound = (matched.route as { maxBodyBytes?: number }).maxBodyBytes ?? MAX_BODY_BYTES;
+        const bounded = await boundedRequest(request, bodyBound);
+        if (bounded === null) return refuseOversized(bodyBound);
+        const context = { request: bounded, session, config, params: matched.params, url, now };
+        if (matched.route.authority === 'account') return await matched.route.handler(env, { ...context, member });
         await stampRequest(env.db, now);
-        return await matched.route.handler(env, { ...context, member });
+        return await matched.route.handler(env, { ...context, member: member! });
       } catch (err) {
         emit({ kind: 'request_error', error_class: classify(err, errorClassifierOf(env)) });
         return unavailable();

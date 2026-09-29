@@ -76,6 +76,23 @@ export const sessionAuthority: ParityScenario = {
       // An admin reaches the routes the member is refused.
       expect((await call(admin, 'GET', '/api/secrets')).status).toBe(200);
       expect((await call(admin, 'GET', '/api/settings')).status).toBe(200);
+
+      // The Deployment settings reach the member with every URL's userinfo and query stripped, and the admin raw.
+      const leaf = 'embedding.base_url';
+      const before = await target.sql(`SELECT value, updated_at, updated_by FROM deployment_settings WHERE leaf = ${lit(leaf)}`);
+      const secretUrl = 'https://user:hunter2@embed.parity.example/v1?api-key=sk-live';
+      await target.sql(`INSERT INTO deployment_settings (leaf, value, updated_at, updated_by) VALUES (${lit(leaf)}, ${lit(JSON.stringify(secretUrl))}, ${Date.now()}, 'parity')
+                        ON CONFLICT (leaf) DO UPDATE SET value = excluded.value`);
+      try {
+        const valueFor = async (headers: Record<string, string>) =>
+          ((await (await call(headers, 'GET', '/api/settings')).json()) as { leaves: { leaf: string; value: unknown }[] }).leaves.find((l) => l.leaf === leaf)?.value;
+        expect({ member: await valueFor(member), admin: await valueFor(admin) }).toEqual({ member: 'https://embed.parity.example/v1', admin: secretUrl });
+      } finally {
+        const row = before[0] as { value: string; updated_at: number; updated_by: string } | undefined;
+        await target.sql(row === undefined
+          ? `DELETE FROM deployment_settings WHERE leaf = ${lit(leaf)}`
+          : `UPDATE deployment_settings SET value = ${lit(row.value)}, updated_at = ${row.updated_at}, updated_by = ${lit(row.updated_by)} WHERE leaf = ${lit(leaf)}`);
+      }
     } finally {
       await target.sql(`UPDATE member_credentials SET revoked_at = ${Date.now()} WHERE member_id = ${lit(joined.memberId)} AND revoked_at IS NULL`);
       await target.sql(`UPDATE members SET revoked_at = ${Date.now()}, github_id = NULL WHERE id = ${lit(joined.memberId)}`);

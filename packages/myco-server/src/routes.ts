@@ -107,8 +107,8 @@ export type Route =
  *   secrets, backups, maintenance or membership, is one.
  * - `member`: any linked member. A route that answers a member's own resources scopes itself to them
  *   inside its handler, as a credential revocation does.
- * - `account`: a signed-in GitHub account whether or not a member is linked to it; only the two routes
- *   that link one.
+ * - `account`: a signed-in GitHub account whether or not a member is linked to it: the two routes that
+ *   link one, and the sign-out, so an account no member is linked to any longer can still clear its cookie.
  * The pipeline admits a route declaring anything but `member` or `account` as `admin`.
  */
 export const SESSION_AUTHORITIES = ['admin', 'member', 'account'] as const;
@@ -260,7 +260,7 @@ export const ROUTES: readonly Route[] = [
   { method: 'PUT', path: '/api/machines/{machineId}/settings/{leaf}', pattern: /^\/api\/machines\/(?<machineId>[A-Za-z0-9._-]{1,64})\/settings\/(?<leaf>[A-Za-z0-9._]{1,96})$/, auth: 'session', authority: 'member', handler: handleSetMachineSetting },
   { method: 'GET', path: '/auth/login', auth: 'auth', handler: handleLogin },
   { method: 'GET', path: '/auth/callback', auth: 'auth', handler: handleCallback },
-  { method: 'POST', path: '/auth/logout', auth: 'session', authority: 'member', handler: async () => new Response(null, { status: 204, headers: { 'set-cookie': clearCookie() } }) },
+  { method: 'POST', path: '/auth/logout', auth: 'session', authority: 'account', handler: async () => new Response(null, { status: 204, headers: { 'set-cookie': clearCookie() } }) },
 ];
 
 /** A 1.4.x wire route the server does not serve; each names the event kinds (or the blob route) that carry the same capture in 2.0, or says what it carried is gone. A retired path is unmatched and answers 401 like any other absent path. */

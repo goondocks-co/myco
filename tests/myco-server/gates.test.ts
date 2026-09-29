@@ -1014,9 +1014,9 @@ describe('gates', () => {
     expect(free).toEqual(['GET /auth/callback', 'GET /auth/login', 'GET /health']);
   });
 
-  it('serves a signed-in account ahead of membership on exactly the two routes that link it, and every other session route runs for a member', () => {
+  it('serves a signed-in account ahead of membership on exactly the two routes that link it and the sign-out, and every other session route runs for a member', () => {
     const optional = ROUTES.filter((r) => r.auth === 'session' && r.authority === 'account').map((r) => `${r.method} ${r.path}`).sort();
-    expect(optional).toEqual(['GET /auth/me', 'POST /auth/link']);
+    expect(optional).toEqual(['GET /auth/me', 'POST /auth/link', 'POST /auth/logout']);
     const context = readFileSync(join(SRC, 'context.ts'), 'utf8');
     expect(context).toMatch(/export interface OwnerContext \{[^}]*\n  member: DashboardMember;\n/);
     const importers = files(SRC).filter((f) => /\bSessionContext\b/.test(readFileSync(f, 'utf8'))).map((f) => f.slice(SRC.length + 1)).sort();
@@ -1059,6 +1059,43 @@ describe('gates', () => {
     expect(adminRoutes.length).toBeGreaterThan(0);
     expect(refused.sort()).toEqual(adminRoutes);
     expect(admitted.filter((l) => l.startsWith('admin ')).length).toBe(ROUTES.filter((r) => r.auth === 'session' && r.authority !== 'account').length);
+  });
+
+  it('answers the Deployment settings to a member who is not an admin with every URL\'s userinfo and query stripped, and raw to an admin (#1491)', async () => {
+    const { MEMBER_SUB, OWNER_ENV, ownerCookie, seedMemberRoleAccount } = await import('./helpers/owner.js');
+    const e = sqliteEnv();
+    seedMemberRoleAccount(e.sqlite);
+    const secretUrl = 'https://user:hunter2@embed.example/v1?api-key=sk-live';
+    e.sqlite.run(`INSERT INTO deployment_settings (leaf, value, updated_at, updated_by) VALUES ('embedding.base_url', ?, 1, 'mem_machine_1')`, [JSON.stringify(secretUrl)]);
+    const read = async (sub?: string) => {
+      const res = await worker.fetch(new Request('https://s/api/settings', { headers: { cookie: await ownerCookie(Date.now(), sub), 'cf-connecting-ip': '1.2.3.4' } }), { ...e.env, ...OWNER_ENV });
+      return ((await res.json()) as { leaves: { leaf: string; value: unknown }[] }).leaves.find((l) => l.leaf === 'embedding.base_url')?.value;
+    };
+    expect({ member: await read(MEMBER_SUB), admin: await read() }).toEqual({ member: 'https://embed.example/v1', admin: secretUrl });
+  });
+
+  it('refuses a member who is not an admin on an admin route before reading a byte of its body (#1491)', async () => {
+    const { MEMBER_SUB, OWNER_ENV, ownerCookie, seedMemberRoleAccount } = await import('./helpers/owner.js');
+    const e = sqliteEnv();
+    seedMemberRoleAccount(e.sqlite);
+    let pulled = 0;
+    // Nothing is pulled until something reads it; a reader would take four chunks and the end.
+    const body = new ReadableStream<Uint8Array>({
+      pull(controller) { pulled += 1; if (pulled > 4) controller.close(); else controller.enqueue(new Uint8Array(64 * 1024)); },
+    }, { highWaterMark: 0 });
+    const res = await worker.fetch(new Request('https://s/api/backups/restore-upload', {
+      method: 'POST', body, duplex: 'half', headers: { cookie: await ownerCookie(Date.now(), MEMBER_SUB), 'cf-connecting-ip': '1.2.3.4', origin: 'https://s' },
+    } as RequestInit), { ...e.env, ...OWNER_ENV });
+    expect({ status: res.status, pulled }).toEqual({ status: 403, pulled: 0 });
+  });
+
+  it('signs out an account whose member was removed, so it can still clear its cookie (#1491)', async () => {
+    const { OWNER_ENV, ownerCookie } = await import('./helpers/owner.js');
+    const e = sqliteEnv();
+    const res = await worker.fetch(new Request('https://s/auth/logout', {
+      method: 'POST', headers: { cookie: await ownerCookie(Date.now(), '999999'), 'cf-connecting-ip': '1.2.3.4', origin: 'https://s' },
+    }), { ...e.env, ...OWNER_ENV });
+    expect({ status: res.status, clears: /Max-Age=0/i.test(res.headers.get('set-cookie') ?? '') }).toEqual({ status: 204, clears: true });
   });
 
   it('compares no session to a configured owner: who may enter is a membership question', () => {
@@ -1165,6 +1202,7 @@ describe('gates', () => {
       'public GET /health',
       'session:account GET /auth/me',
       'session:account POST /auth/link',
+      'session:account POST /auth/logout',
       'session:admin DELETE /api/projects/{projectId}/repository',
       'session:admin DELETE /api/secrets/{name}',
       'session:admin GET /api/backups',
@@ -1246,7 +1284,6 @@ describe('gates', () => {
       'session:member GET /api/settings',
       'session:member GET /api/status',
       'session:member POST /api/credentials/{id}/revoke',
-      'session:member POST /auth/logout',
       'session:member PUT /api/machines/{machineId}/settings/{leaf}',
     ]);
   });
