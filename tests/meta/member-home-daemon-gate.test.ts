@@ -49,7 +49,7 @@ describe('the 1.4 daemon paths read the member-home predicate', () => {
     expect(legacy).toBeLessThan(entry.indexOf('resolveDaemonServiceState('));
     const refusal = entry.slice(legacy, entry.indexOf('}', entry.indexOf('process.exit(', legacy)));
     expect(refusal).toContain('markAdoptFailed(mycoHome, process.platform, getPluginVersion()');
-    expect(refusal).toContain('process.exit(1)');
+    expect(refusal).toContain('process.exit(0)');
     expect(body(read('service/self-install.ts'), 'export async function ensureSelfInstalledAsService(')).toContain('isMemberHome(mycoHome)');
   });
 

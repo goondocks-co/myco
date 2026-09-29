@@ -35,7 +35,7 @@ set -eu
 
 REPO="goondocks-co/myco"
 MIN_MAJOR=2
-UPGRADE_GUIDE="https://github.com/${REPO}/blob/main/docs/upgrade.md"
+UPGRADE_GUIDE="https://github.com/${REPO}/blob/main/docs/upgrade-from-v1.md"
 SELF_HOSTING_GUIDE="https://github.com/${REPO}/blob/main/docs/self-hosting.md"
 ONE_LINER="curl --proto '=https' --tlsv1.2 -fsSL https://myco.sh/install.sh | sh"
 
@@ -115,7 +115,7 @@ probe() {
   _probe_file="$(mktemp)"
   "$@" >"$_probe_file" 2>/dev/null &
   _probe=$!
-  ( sleep 30; kill -9 "$_probe" 2>/dev/null ) &
+  ( sleep 30; kill -9 "$_probe" 2>/dev/null ) >/dev/null 2>&1 &
   _watchdog=$!
   if wait "$_probe"; then _ok=0; else _ok=1; fi
   kill "$_watchdog" 2>/dev/null || true
@@ -437,6 +437,13 @@ main() {
   mv "${TMP_DIR}/myco" "${VERSION_DIR}/myco"
   cp "${VERSION_DIR}/myco" "${TMP_DIR}/myco.stable"
   mv "${TMP_DIR}/myco.stable" "${BIN_DIR}/myco"
+
+  # A 1.4 daemon still running here adopts any newer versions/<v> slot that
+  # carries no adopt-failed marker, and would put 1.4 back at bin/myco before
+  # the cutover runs. The marker keeps it from adopting this one.
+  if [ "$BLOCKS_INSTALL" = "1" ]; then
+    date -u +%Y-%m-%dT%H:%M:%SZ > "${VERSION_DIR}/.adopt-failed"
+  fi
 
   if [ "$os" = "darwin" ]; then
     xattr -d com.apple.quarantine "${VERSION_DIR}/myco" 2>/dev/null || true

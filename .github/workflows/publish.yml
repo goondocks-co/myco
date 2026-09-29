@@ -578,14 +578,14 @@ jobs:
           myco login <invite link>
           ```
 
-          Moving a machine from Myco 1.4: see [Upgrading from 1.4](https://github.com/goondocks-co/myco/blob/main/docs/upgrade.md).'
+          Moving a machine from Myco 1.4: see [Upgrading from 1.4](https://github.com/goondocks-co/myco/blob/main/docs/upgrade-from-v1.md).'
             else
               INSTALL_BLOCK='```bash
           curl --proto '"'"'=https'"'"' --tlsv1.2 -fsSL https://myco.sh/install.sh | sh
           myco login <invite link>
           ```
 
-          Moving a machine from Myco 1.4: see [Upgrading from 1.4](https://github.com/goondocks-co/myco/blob/main/docs/upgrade.md).'
+          Moving a machine from Myco 1.4: see [Upgrading from 1.4](https://github.com/goondocks-co/myco/blob/main/docs/upgrade-from-v1.md).'
             fi
           else
             if [ "$IS_PRERELEASE" = "true" ]; then

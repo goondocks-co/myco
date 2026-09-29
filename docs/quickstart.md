@@ -29,7 +29,7 @@ curl --proto '=https' --tlsv1.2 -fsSL https://myco.sh/install.sh | sh
 myco login <invite link>
 ```
 
-The installer places the binary in `~/.myco/bin` and prints the next step: `myco login` with your Deployment's invite link, or [Self-hosting](self-hosting.md) to run your own. `MYCO_CHANNEL=beta` installs the newest prerelease; `--dry-run` shows what it would install. With Myco 1.4 on the machine it installs nothing unless you pass `--replace-1.4`, and never moves 1.4 over by itself; see [Upgrading from 1.4](upgrade.md).
+The installer places the binary in `~/.myco/bin` and prints the next step: `myco login` with your Deployment's invite link, or [Self-hosting](self-hosting.md) to run your own. `MYCO_CHANNEL=beta` installs the newest prerelease; `--dry-run` shows what it would install. With Myco 1.4 on the machine it installs nothing unless you pass `--replace-1.4`, and never moves 1.4 over by itself; see [Upgrading from 1.4](https://github.com/goondocks-co/myco/blob/main/docs/upgrade-from-v1.md).
 
 On Windows x64 (PowerShell, beta):
 ```powershell
