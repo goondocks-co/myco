@@ -83,8 +83,11 @@ export function useGrants(projectId: string) {
 
 const REFUSALS: Record<string, string> = {
   last_member: 'This is the last member with a connected account; the server would be left with nobody who can sign in.',
+  last_admin: 'This is the only admin who can sign in; add or link another admin first.',
   already_revoked: 'Already removed.',
   member_revoked: 'That member has been removed.',
+  member_linked: 'That member already has a GitHub account connected. Changing it needs the server operator.',
+  member_is_runtime: 'That member is this server\'s own runtime for agent runs; nobody signs in as it.',
   bad_request: 'The server could not accept that.',
   already_archived: 'Already archived.',
   not_archived: 'Not archived.',
@@ -110,6 +113,8 @@ export function useAccessActions() {
     revokeMember: useMutation({ mutationFn: (id: string) => postJson<{ revoked: boolean }>(`/api/members/${encodeURIComponent(id)}/revoke`), onSuccess: () => refresh('members', 'invitations', 'credentials') }),
     // A minted key lives only in the page's own state: the mutation keeps no copy once it has answered.
     mintInvitation: useMutation({ gcTime: 0, mutationFn: (body: { memberId?: string; ttlMinutes?: number }) => postJson<{ key: string; id: string; expiresAt: number }>('/api/enrollment', body), onSuccess: () => refresh('invitations') }),
+    // The link's key lives only in the page's own state, as an invitation's does.
+    linkGithub: useMutation({ gcTime: 0, mutationFn: (memberId: string) => postJson<{ key: string; expiresAt: number }>(`/api/members/${encodeURIComponent(memberId)}/link-github`) }),
     revokeInvitation: useMutation({ mutationFn: (id: string) => postJson<{ revoked: boolean }>(`/api/enrollment/${encodeURIComponent(id)}/revoke`), onSuccess: () => refresh('invitations') }),
     revokeCredential: useMutation({ mutationFn: (id: string) => postJson<{ revoked: boolean }>(`/api/credentials/${encodeURIComponent(id)}/revoke`), onSuccess: () => refresh('credentials', 'members') }),
     mintGrant: useMutation({ gcTime: 0, mutationFn: (v: { projectId: string; label?: string }) => postJson<{ key: string; id: string }>(`/api/projects/${encodeURIComponent(v.projectId)}/grants`, v.label === undefined ? {} : { label: v.label }), onSuccess: () => refresh('grants') }),

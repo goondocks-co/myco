@@ -131,6 +131,7 @@ describe('who administers membership', () => {
     ['mint an invitation', '/api/enrollment', {}],
     ['revoke an invitation', '/api/enrollment/en_x/revoke', undefined],
     ['revoke a member', '/api/members/mem_machine_2/revoke', undefined],
+    ['link a member\'s GitHub account', '/api/members/mem_machine_3/link-github', undefined],
   ];
 
   it('refuses every administrative act to a member, by name, and carries each out for an admin', async () => {
@@ -140,12 +141,14 @@ describe('who administers membership', () => {
       'mint an invitation': { status: 201, body: (b) => ({ role: b.role, projectId: b.projectId }) },
       'revoke an invitation': { status: 200, body: (b) => ({ revoked: b.revoked, revokedBy: b.revokedBy }) },
       'revoke a member': { status: 200, body: (b) => ({ revoked: b.revoked, revokedBy: b.revokedBy }) },
+      'link a member\'s GitHub account': { status: 201, body: (b) => ({ key: typeof b.key, expiresAt: typeof b.expiresAt }) },
     };
     const EXPECTED: Record<string, unknown> = {
       'mint an invitation': { role: 'member', projectId: null },
       // No invitation carries that id, so an admin is admitted and told nothing matched.
       'revoke an invitation': { revoked: false, revokedBy: PRINCIPAL.id },
       'revoke a member': { revoked: true, revokedBy: PRINCIPAL.id },
+      'link a member\'s GitHub account': { key: 'string', expiresAt: 'number' },
     };
     for (const [what, path, body] of ADMIN_ONLY) {
       const r = rig();

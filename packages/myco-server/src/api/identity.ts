@@ -8,8 +8,8 @@ export async function handleMe(_env: ServerEnv, ctx: SessionContext): Promise<Re
   return ok({ sub: ctx.session.sub, login: ctx.session.login, member: ctx.member });
 }
 
-const STATUS: Record<IdentityLinkRefusal, number> = { denied: 400, identity_taken: 409, member_linked: 409, member_revoked: 403 };
-const CODE: Record<IdentityLinkRefusal, string> = { denied: 'link_denied', identity_taken: 'identity_taken', member_linked: 'member_linked', member_revoked: 'member_revoked' };
+const STATUS: Record<IdentityLinkRefusal, number> = { denied: 400, identity_taken: 409, member_linked: 409, member_revoked: 403, link_requires_admin: 403 };
+const CODE: Record<IdentityLinkRefusal, string> = { denied: 'link_denied', identity_taken: 'identity_taken', member_linked: 'member_linked', member_revoked: 'member_revoked', link_requires_admin: 'link_requires_admin' };
 
 /**
  * `POST /auth/link {key[, confirm]}`: without `confirm`, the member a live key
@@ -22,8 +22,8 @@ export async function handleLink(env: ServerEnv, ctx: SessionContext): Promise<R
   if (body === null) return badRequest('body must be a JSON object');
   if (typeof body.key !== 'string' || !IDENTITY_LINK_KEY_PATTERN.test(body.key)) return badRequest('key must be a link key');
   if (body.confirm !== true) {
-    const member = await previewIdentityLinkAuthority(env.db, body.key, ctx.now);
-    return member === null ? Response.json({ error: CODE.denied }, { status: STATUS.denied }) : ok({ preview: { member } });
+    const preview = await previewIdentityLinkAuthority(env.db, body.key, ctx.now);
+    return preview.ok ? ok({ preview: { member: preview.member } }) : Response.json({ error: CODE[preview.reason] }, { status: STATUS[preview.reason] });
   }
   const result = await spendIdentityLinkAuthority(env.db, body.key, ctx.session.sub, ctx.now);
   if (result.ok) return ok({ linked: true, member: result.member });

@@ -40,7 +40,7 @@ import {
 } from './api/runs.js';
 import { handleEmbeddingStep } from './api/embedding-task.js';
 import {
-  handleCredentialActivity, handleCredentials, handleInvitations, handleMembers, handleMintInvitation,
+  handleCredentialActivity, handleCredentials, handleInvitations, handleIssueMemberLink, handleMembers, handleMintInvitation,
   handleRevokeCredential, handleRevokeInvitation, handleRevokeMember,
 } from './api/access.js';
 import { handleGrants, handleMintGrant, handleRevokeGrant, handleRotateGrant } from './api/grants.js';
@@ -190,6 +190,7 @@ export const ROUTES: readonly Route[] = [
   { method: 'GET', path: '/api/projects/{projectId}/blobs/{key}', pattern: /^\/api\/projects\/(?<projectId>[A-Za-z0-9._-]{1,64})\/blobs\/(?<key>[0-9a-f]{64})$/, auth: 'owner', handler: handleBlobRead },
   { method: 'GET', path: '/api/members', auth: 'owner', handler: handleMembers },
   { method: 'POST', path: '/api/members/{memberId}/revoke', pattern: new RegExp(`^\\/api\\/members\\/(?<memberId>${MEMBER_ID_SEGMENT})\\/revoke$`), auth: 'owner', handler: handleRevokeMember },
+  { method: 'POST', path: '/api/members/{memberId}/link-github', pattern: new RegExp(`^\\/api\\/members\\/(?<memberId>${MEMBER_ID_SEGMENT})\\/link-github$`), auth: 'owner', handler: handleIssueMemberLink },
   { method: 'GET', path: '/api/enrollment', auth: 'owner', handler: handleInvitations },
   { method: 'POST', path: '/api/enrollment', auth: 'owner', handler: handleMintInvitation },
   { method: 'POST', path: '/api/enrollment/{id}/revoke', pattern: /^\/api\/enrollment\/(?<id>[A-Za-z0-9._-]{1,64})\/revoke$/, auth: 'owner', handler: handleRevokeInvitation },

@@ -5,7 +5,7 @@
  */
 import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
 import { resetMachineIdCache } from '@myco/machine-id.js';
-import { linkUrl, runLinkGithub } from '@myco/cli/member.js';
+import { LINK_REQUIRES_ADMIN_HINT, linkUrl, runLinkGithub } from '@myco/cli/member.js';
 import { classifyLinkAnswer, type FetchLike } from '@myco/member/transport.js';
 import { ENV_MEMBER_TOKEN, resolveMemberProjectRoot } from '@myco/member/credential.js';
 import { tempMycoHome } from './helpers/server.js';
@@ -75,6 +75,21 @@ describe('myco member link-github', () => {
     expect(await runLinkGithub(['--bogus=secret'], { mycoHome, cwd: root, fetch: answering({}), stdout: () => {}, stderr: (l) => errs.push(l) })).toBeNull();
     expect(errs.join('\n')).toContain('unknown option --bogus');
     expect(errs.join('\n')).not.toContain('secret');
+    process.exitCode = 0;
+  });
+});
+
+describe('myco member link-github once the server has an admin (#1448)', () => {
+  it('says only an admin can link the account now, and where they do it, with no link printed', async () => {
+    registerTestMember({ mycoHome, token: 'mt_' + 'a'.repeat(40), projectId: 'proj_1', serverUrl: SERVER_URL, root });
+    const out: string[] = [];
+    const errs: string[] = [];
+    const answer = { persisted: false, code: 'link_requires_admin', reason: 'this server already has an admin; ask an admin to link your GitHub account from the dashboard\'s Members page' };
+    expect(await runLinkGithub([], { mycoHome, cwd: root, fetch: answering(answer), stdout: (l) => out.push(l), stderr: (l) => errs.push(l) })).toBeNull();
+    expect(errs).toEqual([`myco member link-github: ${LINK_REQUIRES_ADMIN_HINT}`]);
+    expect(LINK_REQUIRES_ADMIN_HINT).toContain('ask an admin to link yours in the dashboard\'s Members page');
+    expect(out).toEqual([]);
+    expect(process.exitCode).toBe(2);
     process.exitCode = 0;
   });
 });

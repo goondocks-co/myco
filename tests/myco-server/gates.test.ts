@@ -50,7 +50,7 @@ const sharedFiles = () =>
     !f.includes(`${join(SRC, 'platform')}/`) && !f.includes(`${join(SRC, 'entry')}/`) && f !== join(SRC, 'index.ts'));
 
 /** Every `emit` call across src; a call removed or added moves the total. */
-const EMIT_CALLS = 130;
+const EMIT_CALLS = 131;
 /** The one migrations directory: the emit script writes it, the rendered-steps gate verifies it, and wrangler.toml applies from it. */
 const MIGRATIONS_DIR = 'migrations';
 const K = SyntaxKind as unknown as Record<string, number>;
@@ -539,6 +539,8 @@ describe('gates', () => {
     const issuedAt = Date.now() - (MEMBER_TOKEN_TTL_MS - MEMBER_TOKEN_REFRESH_WINDOW_MS / 2);
     const t1 = await issueMemberToken(db, { memberId: 'mem_machine_1', machineId: 'machine_1' }, issuedAt);
     const anonymous = await issueMemberToken(db, { memberId: 'mem_anon', machineId: null }, issuedAt);
+    // A fresh Deployment: no admin has a GitHub account linked, so a member credential is answered a link key.
+    sqlite.query(`UPDATE members SET github_id = NULL`).run();
     const KEY = 'a'.repeat(64);
     // The run routes reference an agent identity and a project, both of which a
     // Deployment declares before any run is claimed.
@@ -1180,6 +1182,7 @@ describe('gates', () => {
       'owner POST /api/enrollment/{id}/revoke',
       'owner POST /api/harness/dispatch',
       'owner POST /api/maintenance/{check}/run',
+      'owner POST /api/members/{memberId}/link-github',
       'owner POST /api/members/{memberId}/revoke',
       'owner POST /api/projects',
       'owner POST /api/projects/{projectId}/archive',

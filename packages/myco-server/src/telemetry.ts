@@ -60,6 +60,8 @@ export const CLASSIFIERS = [
   'refresh_too_early', 'lineage_expired',
   // #1420 — a credential minted not to rotate asked to
   'non_rotating',
+  // #1448 — a member credential asked to link GitHub once the Deployment has a linked admin
+  'link_requires_admin',
   'enrollment_unknown', 'enrollment_used', 'enrollment_expired', 'enrollment_revoked', 'identity_claimed',
   // #1158 join UX
   'enrollment_no_project',

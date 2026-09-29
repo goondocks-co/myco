@@ -59,9 +59,14 @@ export function Access() {
   const [stopError, setStopError] = useState<string | null>(null);
   const [revokeCredentialId, setRevokeCredentialId] = useState<string | null>(null);
   const [refusal, setRefusal] = useState<string | null>(null);
+  const [linkMemberId, setLinkMemberId] = useState<string | null>(null);
+  const [linkIssued, setLinkIssued] = useState<{ url: string; expiresAt: number } | null>(null);
+  const [linkError, setLinkError] = useState<string | null>(null);
 
   const list = members.data?.members ?? [];
   const target = list.find((m) => m.id === revokeMemberId);
+  const linkTarget = list.find((m) => m.id === linkMemberId);
+  const linkTargetName = linkTarget?.label ?? linkTarget?.id ?? '';
   const isMe = (id: string) => me.data?.member?.id === id;
   const nameOf = (id: string | null) => (id === null ? null : list.find((m) => m.id === id)?.label ?? id);
   const openCredential = [...credentials.rows, ...runCredentials.rows].find((c) => c.id === openCredentialId) ?? null;
@@ -83,6 +88,9 @@ export function Access() {
                   </div>
                   <span className="text-xs text-on-surface-variant">{m.revokedAt !== null ? `removed ${formatRelative(m.revokedAt)}${nameOf(m.revokedBy) ? ` by ${nameOf(m.revokedBy)}` : ''}` : m.linked ? 'account connected' : 'no account yet'}</span>
                   <span className="text-xs text-on-surface-variant">{formatCount(m.liveCredentials, 'runtime')}</span>
+                  {m.revokedAt === null && !m.linked && (
+                    <button type="button" className={button} onClick={() => { setLinkIssued(null); setLinkError(null); actions.linkGithub.reset(); setLinkMemberId(m.id); }}>Connect GitHub</button>
+                  )}
                   {m.revokedAt === null && (
                     <button type="button" className={button} onClick={() => { setRefusal(null); setRevokeMemberId(m.id); }}>Remove</button>
                   )}
@@ -219,6 +227,34 @@ export function Access() {
               {inviteError && <p className="font-sans text-xs text-tertiary">{inviteError}</p>}
               <button type="submit" className={primary} disabled={actions.mintInvitation.isPending}>Create invitation</button>
             </form>
+          )}
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={linkTarget !== undefined} onOpenChange={(open) => { if (!open) { setLinkMemberId(null); setLinkIssued(null); actions.linkGithub.reset(); } }}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>{linkIssued ? 'Link ready' : `Connect a GitHub account to ${linkTargetName}`}</DialogTitle>
+            <DialogDescription>
+              {linkIssued
+                ? `Send this link to ${linkTargetName}. They open it, sign in with GitHub, and confirm; that account is how they sign in here from then on.`
+                : `Creates a one-time link for ${linkTargetName}. Whoever opens it and signs in with GitHub connects that account to this member, so send it only to them. An earlier link for them stops working.`}
+            </DialogDescription>
+          </DialogHeader>
+          {linkIssued ? (
+            <KeyReveal label="Sign-in link" value={linkIssued.url} hint={`Works once and expires ${formatDateTime(linkIssued.expiresAt)}. Keep it private until ${linkTargetName} has used it.`} />
+          ) : (
+            <div className="flex flex-col gap-3">
+              {linkError && <p className="font-sans text-xs text-tertiary">{linkError}</p>}
+              <button type="button" className={primary} disabled={actions.linkGithub.isPending} onClick={() => {
+                if (linkMemberId === null) return;
+                setLinkError(null);
+                actions.linkGithub.mutate(linkMemberId, {
+                  onSuccess: (r) => setLinkIssued({ url: `${window.location.origin}/link#${r.key}`, expiresAt: r.expiresAt }),
+                  onError: (err) => setLinkError(refusalText(err)),
+                });
+              }}>Create link</button>
+            </div>
           )}
         </DialogContent>
       </Dialog>

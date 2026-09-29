@@ -197,6 +197,7 @@ describe('every route that mints an authority able to outlive the credential (#1
     };
     walk(SRC);
     expect([...new Set(sites)].sort()).toEqual([
+      'api/access.ts handleIssueMemberLink -> issueIdentityLinkAuthority', // owner session, an admin's
       'api/access.ts handleMintInvitation -> issueEnrollmentAuthority', // owner session
       'api/grants.ts handleMintGrant -> issueExternalGrant', // owner session
       'api/grants.ts handleRotateGrant -> rotateExternalGrant', // owner session
@@ -218,15 +219,17 @@ describe('every route that mints an authority able to outlive the credential (#1
     for (const line of harness) expect(line).toContain('{ rotates: false }');
   });
 
-  it('refuses a GitHub link key to a credential that does not rotate, live, and mints no key', async () => {
+  it('refuses a GitHub link key to a credential that does not rotate, live, and mints no key, on a Deployment with no linked admin', async () => {
     const { e, issued } = await envCredential(DAY_MS);
+    e.sqlite.query(`UPDATE members SET github_id = NULL`).run();
     const res = await worker.fetch(linkRequest(issued.token), { ...e.env, ...OWNER_ENV });
     expect(await jsonBody(res)).toEqual({ persisted: false, code: 'non_rotating', reason: NON_ROTATING_AUTHORITY });
     expect(linkKeys(e)).toBe(0);
   });
 
-  it('still answers a GitHub link key to a credential that rotates', async () => {
+  it('still answers a GitHub link key to a credential that rotates, on a Deployment with no linked admin', async () => {
     const e = sqliteEnv();
+    e.sqlite.query(`UPDATE members SET github_id = NULL`).run();
     const rotating = await issueMemberToken(e.db, MEMBER, Date.now());
     const res = await worker.fetch(linkRequest(rotating.token), { ...e.env, ...OWNER_ENV });
     expect(await jsonBody(res)).toMatchObject({ persisted: true });

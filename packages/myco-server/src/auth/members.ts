@@ -1,5 +1,6 @@
 import type { ServerEnv } from '../core/adapters.js';
 import type { RouteContext } from '../context.js';
+import { refused } from '../ingest/events.js';
 import { refusal, type Refusal } from '../telemetry.js';
 import { issueIdentityLinkAuthority } from './identity-link.js';
 
@@ -23,12 +24,18 @@ export const emptyBodyRoute = <C extends Pick<RouteContext, 'body'>>(handler: (e
     return malformed === null ? handler(env, ctx) : Response.json({ persisted: false, code: malformed.classifier, reason: malformed.reason });
   };
 
+/** What a member credential is told when the Deployment already has a linked admin: its GitHub account is linked by an admin now. */
+export const LINK_REQUIRES_ADMIN = 'this server already has an admin; ask an admin to link your GitHub account from the dashboard\'s Members page';
+
 /**
  * `POST /members/link-github`: the presented credential asks for a one-time key
- * that links a GitHub account to its member. Answered once; the key is never
- * shown again and only its digest is stored.
+ * that links a GitHub account to its member. Answered only while the Deployment
+ * has no live admin with a GitHub account linked — the first sign-in on a fresh
+ * Deployment — and refused `link_requires_admin` after, with no key written.
+ * Answered once; the key is never shown again and only its digest is stored.
  */
 export const handleLinkGithub = emptyBodyRoute(async (env: ServerEnv, ctx: RouteContext) => {
   const issued = await issueIdentityLinkAuthority(env.db, ctx.memberId, ctx.now);
+  if (issued === null) return Response.json(refused(ctx, refusal(LINK_REQUIRES_ADMIN, 'link_requires_admin')));
   return Response.json({ persisted: true, key: issued.key, expiresAt: issued.expiresAt });
 });

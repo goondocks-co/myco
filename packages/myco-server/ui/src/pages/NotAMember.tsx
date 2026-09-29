@@ -18,7 +18,7 @@ export function NotAMember({ login }: { login: string }) {
     <PageContainer variant="narrow" className="flex min-h-screen flex-col items-center justify-center gap-4 text-center">
       <h1 className="font-serif text-2xl text-on-surface">{login ? `@${login}` : 'This account'} isn&rsquo;t connected to a member yet</h1>
       <p className="max-w-md font-sans text-sm text-on-surface-variant">
-        On a machine that has joined this server, run <code className="font-mono">myco member link-github</code> and open the link it prints.
+        Ask an admin of this server to connect your GitHub account from the Members page, then open the link they send you. Setting up a new server? On a machine that has joined it, run <code className="font-mono">myco member link-github</code> and open the link it prints.
       </p>
       {pending && (
         <Link to="/link" className="rounded-md bg-primary px-4 py-2 font-sans text-sm text-on-primary transition-opacity hover:opacity-90">
