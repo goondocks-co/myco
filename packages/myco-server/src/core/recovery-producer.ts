@@ -74,6 +74,12 @@ export interface AttemptState {
   exportRequestedAt: number | null;
   /** When the provider last answered for that export: the last time it is known to have been running. */
   exportAnsweredAt: number | null;
+  /**
+   * When the provider first answered that nothing is exporting for the export this attempt follows, after it last said
+   * it ran; null while no such answer stands. The export is taken to have ended only once that answer has held for
+   * `exportAbsentConfirmMs`.
+   */
+  exportAbsentAt?: number | null;
   exportCompletedAt: number | null;
   reExports: number;
   sqlBytes: number | null;
@@ -580,19 +586,18 @@ async function pollExportStage(
     }
     if (answer.status === 'ended' && answer.absent === true && bookmark !== null) {
       // The provider says nothing is exporting, which it may answer for a moment while the export this attempt follows
-      // still runs. That export stays recorded and is asked after again once `exportAbsentConfirmMs` has passed from
-      // when it last said it ran; an answer that nothing is exporting then is its end, and only then is another started.
-      const own = checkpoint.unsettledExport();
-      const lastRan = own !== null && own.attempt === attempt.id ? (own.answeredAt ?? own.requestedAt) : null;
-      if (lastRan !== null && ports.now() - lastRan < limits.exportAbsentConfirmMs) {
-        checkpoint.update(attempt.id, { bookmark, polls });
-        emit({ kind: 'recovery_export_absent', attempt: attempt.id, quietMs: ports.now() - lastRan });
-        return { attempt: attempt.id, stage: 'export', progressed: true, nextInMs: limits.exportAbsentConfirmMs - (ports.now() - lastRan), sourcePaused: true };
+      // still runs. That export stays recorded and is asked after again until the first such answer has held for
+      // `exportAbsentConfirmMs`; an answer that nothing is exporting then is its end, and only then is another started.
+      const absentSince = attempt.exportAbsentAt ?? ports.now();
+      if (ports.now() - absentSince < limits.exportAbsentConfirmMs) {
+        checkpoint.update(attempt.id, { bookmark, polls, exportAbsentAt: absentSince });
+        emit({ kind: 'recovery_export_absent', attempt: attempt.id, quietMs: ports.now() - absentSince });
+        return { attempt: attempt.id, stage: 'export', progressed: true, nextInMs: limits.exportAbsentConfirmMs - (ports.now() - absentSince), sourcePaused: true };
       }
     }
     if (answer.status === 'ended') {
       requested = null;
-      checkpoint.update(attempt.id, { polls, exportRequestedAt: null, exportAnsweredAt: ports.now() });
+      checkpoint.update(attempt.id, { polls, exportRequestedAt: null, exportAnsweredAt: ports.now(), exportAbsentAt: null });
       // An export this attempt held ended without a result: it asks for another inside its bound. A fresh request
       // that ended at once ends the attempt: there is no earlier export to return to.
       if (bookmark !== null) return restartExport({ ...attempt, bookmark, polls }, checkpoint, ports, limits, 'export_failed');
@@ -601,13 +606,13 @@ async function pollExportStage(
     bookmark = answer.bookmark;
     if (answer.status === 'complete') {
       await checkpoint.setSignedUrl(attempt.id, answer.signedUrl);
-      checkpoint.update(attempt.id, { stage: 'download', bookmark, polls, exportCompletedAt: ports.now(), exportRequestedAt: null, exportAnsweredAt: ports.now() });
+      checkpoint.update(attempt.id, { stage: 'download', bookmark, polls, exportCompletedAt: ports.now(), exportRequestedAt: null, exportAnsweredAt: ports.now(), exportAbsentAt: null });
       return { attempt: attempt.id, stage: 'download', progressed: true, nextInMs: 0, sourcePaused: false };
     }
     // An export followed without a recorded request (a deploy mid-export) records one now, so it is never
     // taken as settled while it runs.
     if (requested === null) requested = exportStartedAt ?? ports.now();
-    checkpoint.update(attempt.id, { bookmark, polls, exportRequestedAt: requested, exportAnsweredAt: ports.now() });
+    checkpoint.update(attempt.id, { bookmark, polls, exportRequestedAt: requested, exportAnsweredAt: ports.now(), exportAbsentAt: null });
     // An export still running past the budget ends the attempt; a completion a poll inside the budget answered
     // stands.
     if (stalled(ports.now())) {
@@ -1193,6 +1198,8 @@ export interface RecoveryProducerStatus {
   holdRetired?: true;
   /** Set once retention began releasing this attempt's staged payload: `staged` answers none from then on. */
   stagingPruned?: true;
+  /** An export an attempt requested and never saw settle, and when an owner may have it forgotten (`forgettableAt`). */
+  unsettledExport?: { attempt: number; forgettableAt: number };
 }
 
 /** Which staged payloads a Deployment keeps. The producer holds the attempts; the policy comes from the Deployment. */
@@ -1273,7 +1280,15 @@ export class HoldRetired extends Error {
 /** What forgetting an unsettled export did: which it forgot, or that none is recorded, or which attempt refused it. */
 export type ForgetUnsettledOutcome =
   | { forgotten: { attempt: number; requestedAt: number } | null }
-  | { refused: 'attempt_advancing'; attempt: number };
+  | { refused: 'attempt_advancing'; attempt: number }
+  | { refused: 'export_recent'; attempt: number; forgettableAt: number };
+
+/**
+ * When an export an attempt requested and never saw settle may be forgotten: once the provider has said nothing of it
+ * for `exportStaleMs`. Before then it may still run, and a new export beside it would be a second.
+ */
+export const forgettableAt = (unsettled: Pick<UnsettledExport, 'requestedAt' | 'answeredAt'>, limits: Pick<ProducerLimits, 'exportStaleMs'>): number =>
+  (unsettled.answeredAt ?? unsettled.requestedAt) + limits.exportStaleMs;
 
 export interface RecoveryProducerPort {
   /** Whether a new attempt may be admitted. Status, hold settlement and an attempt already admitted do not depend on it. */

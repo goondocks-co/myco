@@ -254,9 +254,9 @@ describe('automatic recovery on the Operations page', () => {
   });
 
   it('offers to forget an earlier export only where the last attempt failed waiting on it, and posts the owner\'s word (#1493 G3)', async () => {
-    const failed = (error: string) => ({
+    const failed = (error: string, unsettledExport?: { attempt: number; forgettableAt: number }) => ({
       ...RECOVERY({ ...base, latest: { attempt: 4, stage: 'failed', startedAt: Date.parse('2026-09-18T09:00:00.000Z'), failure: error } }),
-      attempt: 4, stage: 'failed', error,
+      attempt: 4, stage: 'failed', error, ...(unsettledExport === undefined ? {} : { unsettledExport }),
     });
     const routes = {
       '/auth/me': () => Response.json(ME),
@@ -269,14 +269,23 @@ describe('automatic recovery on the Operations page', () => {
     expect(screen.queryByTestId('recovery-unsettled')).toBeNull();
     cleanup();
 
+    // Reported running too recently: the control says from when, and offers nothing to press until then.
+    server({ ...routes, '/api/recovery/exports': () => Response.json(failed('export_unsettled', { attempt: 3, forgettableAt: Date.now() + 15 * 60_000 })) });
+    mount('/operations');
+    const waiting = await screen.findByTestId('recovery-unsettled');
+    expect(waiting.textContent).toContain('it can be forgotten in 1');
+    expect((within(waiting).getByRole('button', { name: 'Forget the earlier export' }) as HTMLButtonElement).disabled).toBe(true);
+    cleanup();
+
     const seen = server({
       ...routes,
-      '/api/recovery/exports': () => Response.json(failed('export_unsettled')),
+      '/api/recovery/exports': () => Response.json(failed('export_unsettled', { attempt: 3, forgettableAt: Date.now() - 1 })),
       '/api/recovery/exports/forget-unsettled': () => Response.json({ forgotten: { attempt: 3, requestedAt: 900 } }),
     });
     mount('/operations');
     const offered = await screen.findByTestId('recovery-unsettled');
     expect(offered.textContent).toContain('never said it ended');
+    expect(offered.textContent).toContain('long enough to take it as ended');
     fireEvent.click(within(offered).getByRole('button', { name: 'Forget the earlier export' }));
     expect((await within(offered).findByText(/attempt 3 requested is forgotten/)).textContent).toContain('the next attempt starts its own');
     expect(seen.requested).toContain('POST /api/recovery/exports/forget-unsettled');

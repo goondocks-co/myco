@@ -126,8 +126,11 @@ export function snapshotObjectFacts(file: string): Map<string, { bytes: number; 
 
 export interface RecoveryAdapter {
   source: RecoverySource;
-  /** Write a closed standalone database at databasePath, using workDir for intermediate files. */
-  snapshot(databasePath: string, workDir: string): Promise<RecoverySnapshot>;
+  /**
+   * Write a closed standalone database at databasePath, using workDir for intermediate files, captured under the
+   * recovery hold `holdToken` names (null for a source that keeps none).
+   */
+  snapshot(databasePath: string, workDir: string, holdToken?: string | null): Promise<RecoverySnapshot>;
   /** Stream a registered blob or catalogued backup from this source, read at its `source` key, or throw on absence. */
   blob(object: RecoverySourceObject, workDir: string): Promise<ReadableStream>;
   /**
@@ -714,13 +717,13 @@ function readerKept(body: ReadableStream<Uint8Array>): { stream: ReadableStream<
  * failure ends the capture at once.
  */
 async function captureSnapshot(
-  adapter: RecoveryAdapter, incoming: string, workDir: string, report: (line: string) => void, bound: RetryBound,
+  adapter: RecoveryAdapter, incoming: string, workDir: string, report: (line: string) => void, bound: RetryBound, holdToken: string | null,
 ): Promise<RecoverySnapshot> {
   for (let attempt = 1; ; attempt += 1) {
     fs.rmSync(workDir, { recursive: true, force: true });
     fs.mkdirSync(workDir, { mode: OWNER_DIRECTORY_MODE });
     try {
-      return await adapter.snapshot(incoming, workDir);
+      return await adapter.snapshot(incoming, workDir, holdToken);
     } catch (error) {
       if (!transientReadFailure(error) || attempt >= bound.attempts) {
         if (attempt === 1 && accountRefusal(error) === '') throw error;
@@ -808,7 +811,7 @@ async function writeRecoveryBundle(
       const incoming = path.join(workDir, DATABASE_FILE);
       let captured: RecoverySnapshot;
       try {
-        captured = await captureSnapshot(adapter, incoming, workDir, report, retry.snapshots);
+        captured = await captureSnapshot(adapter, incoming, workDir, report, retry.snapshots, held?.token ?? null);
       } catch (error) {
         if (held !== null && adapter.hold !== undefined && error instanceof Error && refusedBeforeSnapshot(error)) {
           throw await releaseRefusedHold(root, adapter.hold, report, adapter.source.target, error);

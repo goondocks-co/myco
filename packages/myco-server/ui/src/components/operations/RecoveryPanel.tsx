@@ -79,11 +79,13 @@ export type RecoveryForm = RecoveryStatus['form'];
  * The complete-recovery surface, separate from the small additive Backup export above it.
  */
 /**
- * The way out of an export that never settles: every later attempt waits on it and fails, so the owner, who can see
- * in Cloudflare that it no longer runs, may have it forgotten. Offered only where the latest attempt failed that way.
+ * The way out of an export that never settles: every later attempt waits on it and fails. Once the provider has said
+ * nothing of it for long enough to take it as ended, an admin may have it forgotten; until then the control says when.
+ * Offered only where the latest attempt failed that way.
  */
-function ForgetUnsettledExport() {
+function ForgetUnsettledExport({ forgettableAt, now }: { forgettableAt: number | null; now: number }) {
   const forget = useForgetUnsettledExport();
+  const early = forgettableAt !== null && forgettableAt > now;
   const words = forget.data !== undefined
     ? (forget.data.forgotten === null ? 'No earlier export was recorded; the next attempt starts its own.' : `The export attempt ${forget.data.forgotten.attempt} requested is forgotten; the next attempt starts its own.`)
     : forget.error !== null ? `It was not forgotten: ${forget.error.message}` : null;
@@ -91,11 +93,13 @@ function ForgetUnsettledExport() {
     <div className="flex flex-col gap-1" data-testid="recovery-unsettled">
       <p className="font-sans text-sm text-ochre">
         The last attempt stopped because an export an earlier attempt started never said it ended, and every attempt waits on it.
-        If Cloudflare shows no export running for this database, forget it so the next attempt starts its own.
+        {early
+          ? ` It was reported running too recently to be taken as ended; it can be forgotten ${whenLabel(forgettableAt!, now)}.`
+          : ' Nothing has been heard of it for long enough to take it as ended: forget it so the next attempt starts its own.'}
       </p>
       <div>
-        <button type="button" className="rounded-md border border-outline-variant/30 px-2.5 py-1 font-sans text-xs text-on-surface transition-colors hover:bg-surface-container-high"
-          disabled={forget.isPending} onClick={() => forget.mutate()}>Forget the earlier export</button>
+        <button type="button" className="rounded-md border border-outline-variant/30 px-2.5 py-1 font-sans text-xs text-on-surface transition-colors hover:bg-surface-container-high disabled:opacity-50"
+          disabled={forget.isPending || early} onClick={() => forget.mutate()}>Forget the earlier export</button>
       </div>
       {words !== null && <p className="font-sans text-xs text-on-surface-variant">{words}</p>}
     </div>
@@ -133,7 +137,7 @@ export function RecoveryPanel() {
           <p className="font-sans text-sm text-on-surface-variant" data-testid="recovery-latest">{attemptWords(attempt, stage, form)}</p>
         </div>
       )}
-      {recovery.data?.error === 'export_unsettled' && <ForgetUnsettledExport />}
+      {recovery.data?.error === 'export_unsettled' && <ForgetUnsettledExport forgettableAt={recovery.data.unsettledExport?.forgettableAt ?? null} now={now} />}
       {schedule !== null && (
         <div className="flex flex-col gap-2">
           <p className="font-sans text-sm text-on-surface" data-testid="recovery-cadence">{cadenceWords(schedule, now)}</p>

@@ -286,7 +286,8 @@ it('reports an operator backup holding this Deployment, and what it defers', asy
 it('forgets an unsettled export through the producer at the owner\'s word, and says so when an attempt still runs (#1493 G3)', async () => {
   const env = sqliteEnv();
   const answers: ForgetUnsettledOutcome[] = [
-    { refused: 'attempt_advancing', attempt: 4 }, { forgotten: { attempt: 3, requestedAt: 900 } }, { forgotten: null },
+    { refused: 'attempt_advancing', attempt: 4 }, { refused: 'export_recent', attempt: 3, forgettableAt: 1_200_900 },
+    { forgotten: { attempt: 3, requestedAt: 900 } }, { forgotten: null },
   ];
   let asked = 0;
   const held = producer();
@@ -296,10 +297,16 @@ it('forgets an unsettled export through the producer at the owner\'s word, and s
   const running = await forget();
   expect(running.status).toBe(409);
   expect(await running.json() as Record<string, unknown>).toMatchObject({ error: 'recovery_attempt_running' });
+  // An export reported running inside the stale window is never forgotten, and the answer says from when it may be.
+  const recent = await forget();
+  expect(recent.status).toBe(409);
+  const said = await recent.json() as { error: string; forgettableAt: number; message: string };
+  expect([said.error, said.forgettableAt]).toEqual(['recovery_export_recent', 1_200_900]);
+  expect(said.message).toContain(new Date(1_200_900).toISOString());
   const forgotten = await forget();
   expect([forgotten.status, await forgotten.json() as unknown]).toEqual([200, { forgotten: { attempt: 3, requestedAt: 900 } }]);
   expect(await (await forget()).json() as unknown).toEqual({ forgotten: null });
-  expect(asked).toBe(3);
+  expect(asked).toBe(4);
 
   // A producer with no record of exports, or no producer, forgets nothing.
   expect((await handleForgetUnsettledExport({ ...env.serverEnv, recovery: held.port } as never, OWNER)).status).toBe(400);

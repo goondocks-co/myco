@@ -47,6 +47,8 @@ export interface RecoveryStatus {
   form: 'staging' | 'artifact';
   /** Why the latest attempt failed, from the producer's closed set, or null. */
   error?: string | null;
+  /** An export an attempt requested and never saw settle, and from when it may be forgotten. */
+  unsettledExport?: { attempt: number; forgettableAt: number };
   /** The schedule, or that this Deployment's settings could not be read while an export pauses its database. */
   schedule: RecoverySchedule | { unreadable: string };
 }

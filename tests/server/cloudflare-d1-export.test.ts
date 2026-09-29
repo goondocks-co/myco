@@ -7,13 +7,14 @@
  * run forever: past `POLL_CEILING` requests it throws, so an unbounded loop
  * fails by name rather than hanging the suite.
  */
-import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
+import { afterEach, beforeEach, describe, expect, it, spyOn } from 'bun:test';
+import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import {
   D1_EXPORT_BOUND_MS, D1_EXPORT_CANCEL_MARGIN_MS, D1_EXPORT_DOWNLOAD_ATTEMPTS, D1_EXPORT_POLL_ATTEMPTS, D1ExportFailed, D1ExportRecordUnreadable, D1ExportUnfinished, D1ExportUnsettled,
-  D1_QUERY_ATTEMPTS, exportD1, exportRecordPath, queryD1, settleD1Export, type D1ExportOptions,
+  D1_QUERY_ATTEMPTS, exportD1, exportRecordPath, exportResultPath, queryD1, releaseKeptD1Export, settleD1Export, type D1ExportOptions,
 } from '@myco/server/cloudflare-d1-export.js';
 import { transientReadFailure } from '@myco/server/object-read.js';
 import { readD1ExportAnswer } from '@goondocks/myco-shared/d1-export';
@@ -671,25 +672,91 @@ describe('the operator backup\'s export, driven through every known answer (#148
 });
 
 describe('an export this machine already downloaded', () => {
+  const sqlFile = () => path.join(dir, 'd1.sql');
   const settle = (fetch: CloudflareFetch) => settleD1Export({
-    accountId: ACCOUNT, databaseId: DATABASE, output: path.join(dir, 'd1.sql'), recordDir: dir, login, fetch, now: () => clock, sleep: async () => {},
+    accountId: ACCOUNT, databaseId: DATABASE, output: sqlFile(), recordDir: dir, login, fetch, now: () => clock, sleep: async () => {},
   });
   const unasked: CloudflareFetch = async () => { throw new Error('a downloaded export asks nothing of Cloudflare'); };
+  const resultOf = (text: string) => ({ bytes: Buffer.byteLength(text), sha256: createHash('sha256').update(text).digest('hex') });
 
-  it('is taken again inside its bound, asking nothing of Cloudflare', async () => {
-    record({ bookmark: 'bm-kept', startedAt: clock - D1_EXPORT_BOUND_MS + 60_000, lastPolledAt: clock - 60_000, downloaded: true });
-    fs.writeFileSync(path.join(dir, 'd1.sql'), '-- kept\n');
-    expect(await settle(unasked)).toEqual({ schema: 'schema-1', startedAt: clock - D1_EXPORT_BOUND_MS + 60_000 });
-    expect(fs.readFileSync(path.join(dir, 'd1.sql'), 'utf8')).toBe('-- kept\n');
+  it('records the size and digest of the SQL it downloaded, and the hold it was taken under, once its bytes are on disk', async () => {
+    const p = provider(() => 'complete');
+    const opened = new Map<number, string>();
+    const seen: string[] = [];
+    const [openFile, syncFile, renameFile] = [fs.openSync.bind(fs), fs.fsyncSync.bind(fs), fs.renameSync.bind(fs)];
+    const open = spyOn(fs, 'openSync').mockImplementation(((...args: Parameters<typeof fs.openSync>) => {
+      const fd = openFile(...args);
+      opened.set(fd, String(args[0]));
+      return fd;
+    }) as typeof fs.openSync);
+    const sync = spyOn(fs, 'fsyncSync').mockImplementation((fd: number) => { seen.push(`sync ${opened.get(fd)}`); syncFile(fd); });
+    const rename = spyOn(fs, 'renameSync').mockImplementation((from: fs.PathLike, to: fs.PathLike) => { seen.push(`rename ${String(from)}`); renameFile(from, to); });
+    try {
+      await run(p.fetch, { holdToken: 'hold-1' });
+    } finally { open.mockRestore(); sync.mockRestore(); rename.mockRestore(); }
+    // The downloaded bytes are flushed before the rename publishes them, and the rename before the record says so.
+    const part = `${sqlFile()}.part`;
+    expect(seen.indexOf(`sync ${part}`)).toBeGreaterThanOrEqual(0);
+    expect(seen.indexOf(`sync ${part}`)).toBeLessThan(seen.indexOf(`rename ${part}`));
+    expect(seen[seen.indexOf(`rename ${part}`) + 1]).toBe(`sync ${dir}`);
+    expect(recorded()).toMatchObject({ downloaded: true, result: resultOf('-- export bm-1\n'), holdToken: 'hold-1' });
+    expect(fs.existsSync(`${sqlFile()}.part`)).toBe(false);
+  });
+
+  it('is taken again inside its bound while its SQL is whole as downloaded, asking nothing of Cloudflare', async () => {
+    record({ bookmark: 'bm-kept', startedAt: clock - D1_EXPORT_BOUND_MS + 60_000, lastPolledAt: clock - 60_000, downloaded: true, result: resultOf('-- kept\n'), holdToken: 'hold-1' });
+    fs.writeFileSync(sqlFile(), '-- kept\n');
+    expect(await settle(unasked)).toEqual({ schema: 'schema-1', startedAt: clock - D1_EXPORT_BOUND_MS + 60_000, holdToken: 'hold-1' });
+    expect(fs.readFileSync(sqlFile(), 'utf8')).toBe('-- kept\n');
+  });
+
+  it('is discarded when its SQL is torn, changed or unrecorded, never built into a snapshot', async () => {
+    for (const [what, written, result] of [
+      ['torn', '-- ke', resultOf('-- kept\n')],
+      ['changed at the same size', '-- kepT\n', resultOf('-- kept\n')],
+      ['downloaded before its digest was recorded', '-- kept\n', undefined],
+    ] as const) {
+      const reports: string[] = [];
+      record({ bookmark: 'bm-kept', startedAt: clock - 60_000, lastPolledAt: clock - 60_000, downloaded: true, ...(result === undefined ? {} : { result }) });
+      fs.writeFileSync(sqlFile(), written);
+      const settled = await settleD1Export({ accountId: ACCOUNT, databaseId: DATABASE, output: sqlFile(), recordDir: dir, login, fetch: unasked, now: () => clock, sleep: async () => {}, report: (line) => reports.push(line) });
+      expect({ what, settled, record: fs.existsSync(recordFile()), sql: fs.existsSync(sqlFile()) }).toEqual({ what, settled: null, record: false, sql: false });
+      expect(reports.join('\n')).toContain('no longer whole as downloaded');
+    }
   });
 
   it('is discarded once past its bound, or once its result is gone, so the next snapshot exports afresh', async () => {
     for (const [startedAt, kept] of [[clock - D1_EXPORT_BOUND_MS, true], [clock - 60_000, false]] as const) {
-      record({ bookmark: 'bm-old', startedAt, lastPolledAt: clock - 60_000, downloaded: true });
-      if (kept) fs.writeFileSync(path.join(dir, 'd1.sql'), '-- stale\n');
+      record({ bookmark: 'bm-old', startedAt, lastPolledAt: clock - 60_000, downloaded: true, result: resultOf('-- stale\n') });
+      if (kept) fs.writeFileSync(sqlFile(), '-- stale\n');
       expect(await settle(unasked)).toBeNull();
-      expect([fs.existsSync(recordFile()), fs.existsSync(path.join(dir, 'd1.sql'))]).toEqual([false, false]);
+      expect([fs.existsSync(recordFile()), fs.existsSync(sqlFile())]).toEqual([false, false]);
     }
+  });
+
+  it('is taken only by a capture under the hold it was taken under; another hold exports afresh', async () => {
+    record({ bookmark: 'bm-kept', startedAt: clock - 60_000, lastPolledAt: clock - 60_000, downloaded: true, result: resultOf('-- kept\n'), holdToken: 'hold-old' });
+    fs.writeFileSync(sqlFile(), '-- kept\n');
+    const p = provider(() => 'complete');
+    const reports: string[] = [];
+    await run(p.fetch, { holdToken: 'hold-new', report: (line) => reports.push(line) });
+    expect(p.started()).toBe(1);
+    expect(reports.join('\n')).toContain('taken under another recovery hold');
+    expect(recorded()).toMatchObject({ holdToken: 'hold-new', result: resultOf('-- export bm-1\n') });
+  });
+
+  it('goes with its hold when that hold is released, and stays for any other hold', () => {
+    record({ bookmark: 'bm-kept', startedAt: clock, lastPolledAt: clock, downloaded: true, result: resultOf('-- kept\n'), holdToken: 'hold-1' });
+    fs.writeFileSync(sqlFile(), '-- kept\n');
+    releaseKeptD1Export(dir, DATABASE, 'hold-2');
+    expect([fs.existsSync(recordFile()), fs.existsSync(exportResultPath(dir, DATABASE))]).toEqual([true, false]);
+    fs.writeFileSync(exportResultPath(dir, DATABASE), '-- kept\n');
+    releaseKeptD1Export(dir, DATABASE, 'hold-1');
+    expect([fs.existsSync(recordFile()), fs.existsSync(exportResultPath(dir, DATABASE))]).toEqual([false, false]);
+    // An export still running is never released with a hold.
+    record({ bookmark: 'bm-live', startedAt: clock, lastPolledAt: clock, holdToken: 'hold-1' });
+    releaseKeptD1Export(dir, DATABASE, 'hold-1');
+    expect(fs.existsSync(recordFile())).toBe(true);
   });
 });
 

@@ -5,13 +5,14 @@ import { gzipSync } from 'node:zlib';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { backupCloudflareDeployment } from '@myco/server/cloudflare-backup.js';
+import { backupCloudflareDeployment, cloudflareRecoveryHoldOf } from '@myco/server/cloudflare-backup.js';
 import { D1_EXPORT_DOWNLOAD_ATTEMPTS, D1_QUERY_ATTEMPTS } from '@myco/server/cloudflare-d1-export.js';
 import * as cloudflare from '@myco/server/cloudflare.js';
 import { writeDeploymentRecord, type CloudflareFetch, type OperatorObjectTimeouts } from '@myco/server/cloudflare.js';
-import { RECOVERY_RETRY, verifyRecoveryBundle, type RecoveryRetryPolicy } from '@myco/server/recovery-bundle.js';
+import { abandonRecoveryHold, RECOVERY_RETRY, verifyRecoveryBundle, type RecoveryRetryPolicy } from '@myco/server/recovery-bundle.js';
 import { CommandTimedOut, type CommandRunner } from '@myco/server/runner.js';
 import { sqliteEnv } from '../myco-server/helpers/fixtures.js';
+import { recoveryHoldSql } from '@myco-server-worker/core/object-release.js';
 import { SCHEMA_QUERY } from '@myco/server/recovery-schema.js';
 import { recoveryConfigurationOf } from '@myco/server/cloudflare-resources.js';
 import { RECOVERY_CREDENTIAL_NAMES } from '@myco-server-worker/core/recovery-staging.js';
@@ -172,8 +173,8 @@ function fixture() {
     blobSource: `proj_1/${digest}~${generation}`,
     fetchObject,
     drift: () => { drift = true; }, downloadFails: (value: boolean) => { downloadFails = value; },
-    backup: (use: { fetch?: CloudflareFetch; runner?: CommandRunner; timeouts?: OperatorObjectTimeouts; report?: (line: string) => void; retry?: RecoveryRetryPolicy; d1Export?: Parameters<typeof backupCloudflareDeployment>[0]['d1Export'] } = {}) =>
-      backupCloudflareDeployment({ accountId: record.accountId, mycoHome, destination, runner: use.runner ?? runner,
+    backup: (use: { fetch?: CloudflareFetch; runner?: CommandRunner; timeouts?: OperatorObjectTimeouts; report?: (line: string) => void; retry?: RecoveryRetryPolicy; d1Export?: Parameters<typeof backupCloudflareDeployment>[0]['d1Export']; destination?: string } = {}) =>
+      backupCloudflareDeployment({ accountId: record.accountId, mycoHome, destination: use.destination ?? destination, runner: use.runner ?? runner,
         fetch: use.fetch ?? fetchObject, retry: use.retry ?? IMMEDIATE_RETRY, timeouts: use.timeouts, report: use.report, d1Export: use.d1Export ?? { pollMs: 0, sleep: async () => {} } }),
     cleanup: () => { source.sqlite.close(); fs.rmSync(root, { recursive: true, force: true }); },
   };
@@ -755,6 +756,37 @@ describe('a transient Cloudflare failure during the snapshot', () => {
       expect(fs.readdirSync(path.join(f.mycoHome, 'server', 'cloudflare')).filter((name) => name.startsWith('d1-export-'))).toEqual([]);
       expect((await verifyRecoveryBundle(f.destination)).status).toBe('complete');
     } finally { f.cleanup(); }
+  });
+
+  it('takes a kept export only under the hold it was taken under, and gives it up with that hold', async () => {
+    for (const next of ['another directory', 'abandon'] as const) {
+      const f = fixture();
+      try {
+        let schemaReads = 0;
+        // Every read after the export is refused past each capture's bound: the backup fails holding the export it downloaded.
+        f.queryFailsWith((sql) => sql === SCHEMA_QUERY && ++schemaReads >= 2 ? accountRefusedRead() : null);
+        await expect(f.backup()).rejects.toThrow();
+        const kept = () => fs.readdirSync(path.join(f.mycoHome, 'server', 'cloudflare')).filter((name) => name.startsWith('d1-export-')).length;
+        expect({ next, kept: kept(), exports: f.exports().length }).toEqual({ next, kept: 2, exports: 1 });
+        f.queryFailsWith(() => null);
+        if (next === 'abandon') {
+          // Giving the hold up gives up what was kept under it.
+          const owner = cloudflareRecoveryHoldOf({ accountId: f.record.accountId, mycoHome: f.mycoHome, runner: f.runner, fetch: f.fetchObject });
+          expect((await abandonRecoveryHold(f.destination, owner)).state).toBe('released');
+          expect(kept()).toBe(0);
+          continue;
+        }
+        // That hold given up elsewhere, where nothing here heard of it: a backup into another directory captures under a
+        // hold of its own, and the kept export is not its snapshot.
+        const open = f.source.sqlite.query("SELECT token FROM recovery_holds WHERE holder = 'operator' AND released_at IS NULL").get() as { token: string };
+        f.source.sqlite.exec(recoveryHoldSql.releaseOperator(open.token, Date.now(), 'abandoned'));
+        const reports: string[] = [];
+        const result = await f.backup({ destination: path.join(f.root, 'second'), report: (line) => reports.push(line) });
+        expect({ status: result.status, exports: f.exports().length }).toEqual({ status: 'complete', exports: 2 });
+        expect(reports.filter((line) => line.includes('taken under another recovery hold'))).toHaveLength(1);
+        expect(kept()).toBe(0);
+      } finally { f.cleanup(); }
+    }
   });
 
   it('reads the schema again inside the read\'s own bound after one refusal, without failing the attempt', async () => {
