@@ -5,9 +5,10 @@
  * alone, and credential-less `myco tool` and `myco mcp` refuse with the
  * credential-backed alternative. A home with no membership keeps 1.4's
  * behaviour, except that a home still holding 1.4 vaults never starts this
- * binary's daemon: it exits non-zero without opening them and marks its
- * version slot adopt-failed, which is what lets a 1.4 updater that swapped
- * this binary in restore 1.4 and leave it be.
+ * binary's daemon: it exits 0, which a supervisor leaves down, without
+ * opening them, so a 1.4 updater that swapped this binary in never sees it
+ * healthy and restores 1.4; the adopt-failed mark on its version slot keeps
+ * that updater from adopting it again.
  */
 import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
 import { spawnSync } from 'node:child_process';
@@ -140,7 +141,7 @@ describe('a 2.0 member home and the 1.4 daemon', () => {
     const before = (fs.readdirSync(mycoHome, { recursive: true }) as string[]).sort();
 
     const daemon = spawnSync(process.execPath, [CLI, 'daemon'], { cwd: home, env: { ...process.env, HOME: home, MYCO_HOME: mycoHome }, encoding: 'utf8', timeout: 60_000 });
-    expect(daemon.status).toBe(1);
+    expect(daemon.status).toBe(0);
     expect(daemon.stderr).toContain(`${mycoHome} holds Myco 1.4 vaults (${path.join(mycoHome, 'groves')}) that no cutover has moved to Myco 2.0`);
     expect(fs.readFileSync(vault, 'utf8')).toBe('a 1.4 vault');
     expect(fs.statSync(vault).mtimeMs).toBe(stamp);

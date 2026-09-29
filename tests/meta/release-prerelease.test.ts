@@ -62,7 +62,7 @@ describe('a Myco 2.0 prerelease', () => {
     const notes = step('create-release', 'Generate release notes');
     expect(notes).toContain("curl --proto '\"'\"'=https'\"'\"' --tlsv1.2 -fsSL https://myco.sh/install.sh | MYCO_CHANNEL=beta sh");
     expect(notes).toContain('myco login <invite link>');
-    expect(notes).toContain('docs/upgrade.md');
+    expect(notes).toContain('docs/upgrade-from-v1.md');
     for (const oneFour of ['Operations page', 'myco open', 'npm update -g @goondocks/myco', '@goondocks/myco@beta']) expect(notes).not.toContain(oneFour);
   });
 

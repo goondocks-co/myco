@@ -33,7 +33,7 @@ const HAS_CC = spawnSync('sh', ['-c', 'command -v cc'], { encoding: 'utf8' }).st
 /** The tools the installer uses, linked into one directory: a PATH with exactly these on it. */
 function toolbox(dir: string, opts: { jq: boolean; curl?: string }): string {
   fs.mkdirSync(dir, { recursive: true });
-  const tools = ['sh', 'uname', 'mktemp', 'sed', 'grep', 'awk', 'sort', 'head', 'tail', 'cut', 'tr', 'cat', 'rm', 'mkdir', 'mv', 'cp', 'chmod', 'sleep', 'kill',
+  const tools = ['sh', 'uname', 'mktemp', 'sed', 'grep', 'awk', 'sort', 'head', 'tail', 'cut', 'tr', 'cat', 'rm', 'mkdir', 'mv', 'cp', 'chmod', 'sleep', 'kill', 'date',
     'sha256sum', 'shasum', 'codesign', 'xattr', 'perl', ...(opts.jq ? ['jq'] : []), ...(opts.curl ? [] : ['curl'])];
   for (const tool of tools) {
     const found = spawnSync('sh', ['-c', `command -v ${tool}`], { encoding: 'utf8' }).stdout.trim();
@@ -148,13 +148,13 @@ describe('the Myco 2.0 installer', () => {
           : `Myco 1.4 is on this machine (its vaults in ${path.join(legacy.home, '.myco', 'groves')}). Nothing was installed.`);
         expect(run.out).toContain("curl --proto '=https' --tlsv1.2 -fsSL https://myco.sh/install.sh | sh -s -- --replace-1.4");
         expect(run.out).toContain('myco cutover --dry-run');
-        expect(run.out).toContain('docs/upgrade.md');
+        expect(run.out).toContain('docs/upgrade-from-v1.md');
         expect(files(legacy.home)).toEqual(before);
         if (binary) expect(fs.readFileSync(legacy.binary, 'utf8')).toBe('#!/bin/sh\necho 1.4.8\n');
       }
     });
 
-    it.skipIf(!HAS_CC)('takes 1.4\'s place when asked, by flag or by env, and moves nothing of 1.4', () => {
+    it.skipIf(!HAS_CC)('takes 1.4\'s place when asked, by flag or by env, marks the slot so a running 1.4 does not adopt it, and moves nothing of 1.4', () => {
       for (const [env, args] of [[{}, ['--replace-1.4']], [{ MYCO_REPLACE_LEGACY: '1' }, []]] as const) {
         const legacy = legacyHome({ binary: true });
         const run = install(legacy.home, { ...FROM(), ...env }, [...args]);
@@ -164,6 +164,8 @@ describe('the Myco 2.0 installer', () => {
         expect(run.out).toContain('myco cutover --dry-run');
         expect(fs.readFileSync(legacy.vault, 'utf8')).toBe('a 1.4 vault');
         expect(files(path.join(legacy.home, '.myco')).filter((f) => !f.startsWith('bin/') && f !== 'install.json')).toEqual(['groves/grove_a/myco.db']);
+        // 1.4.8's idle adopt skips a versions/<v> slot holding this marker.
+        expect(files(path.join(legacy.home, '.myco', 'bin'))).toEqual(['myco', 'versions/2.0.0-beta.1/.adopt-failed', 'versions/2.0.0-beta.1/myco']);
       }
     });
 
@@ -174,6 +176,7 @@ describe('the Myco 2.0 installer', () => {
       const run = install(legacy.home, FROM());
       expect(run.status).toBe(0);
       expect(run.out).toContain('Myco 2.0.0-beta.1 installed to');
+      expect(files(path.join(legacy.home, '.myco', 'bin'))).toEqual(['myco', 'versions/2.0.0-beta.1/myco']);
     });
 
     it('says on a dry run which of the two it would do, and changes nothing', () => {

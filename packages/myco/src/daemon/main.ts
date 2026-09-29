@@ -780,15 +780,16 @@ export async function main(): Promise<void> {
     process.exit(0);
   }
 
-  // A home Myco 1.4 still serves never runs this daemon: it exits non-zero
-  // before opening a vault, so it never reports healthy and a 1.4 updater that
-  // swapped this binary in restores 1.4. Marking this version's slot
-  // adopt-failed keeps that updater from adopting it again.
+  // A home Myco 1.4 still serves never runs this daemon: it exits before
+  // opening a vault, so it never reports healthy and a 1.4 updater that
+  // swapped this binary in restores 1.4. Exit 0 so a supervisor's on-failure
+  // respawn leaves it down. Marking this version's slot adopt-failed keeps
+  // that updater from adopting it again.
   if (unmovedLegacyVaults(mycoHome).length > 0) {
     process.stderr.write(`myco daemon: ${legacyHomeDaemonRefusal(mycoHome)}\n`);
     const { markAdoptFailed } = await import('../upgrade/auto-check.js');
     markAdoptFailed(mycoHome, process.platform, getPluginVersion(), process.env.LOCALAPPDATA);
-    process.exit(1);
+    process.exit(0);
   }
 
   // Stamp the harness redirect epoch at boot rather than on first harness use.
