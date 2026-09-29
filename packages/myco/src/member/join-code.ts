@@ -20,11 +20,14 @@
  * no credential and no capture. Here the second waits for the first, then reads
  * the membership it wrote and captures on that. Both land.
  */
+import crypto from 'node:crypto';
+import path from 'node:path';
 import { getMachineId } from '../machine-id.js';
 import { resolveMycoHome } from '../paths/home.js';
 import { ENROLLMENT_KEY_PATTERN, ENV_JOIN_CODE, JOIN_PATH } from './constants.js';
-import { isMemberServerUrl, MEMBER_SERVER_URL_RULE } from './server-url.js';
-import { acquireRegistryLock, readDeploymentMembership, readRegistryEntry, writeDeploymentMembership, writeRegistryEntry, REGISTRY_VERSION } from './registry.js';
+import { admitMemberServerUrl, MEMBER_SERVER_URL_RULE } from './server-url.js';
+import { acquireRegistryLock, deploymentUrl, readDeploymentMembership, readRegistryEntry, writeDeploymentMembership, writeRegistryEntry, REGISTRY_VERSION } from './registry.js';
+import { ensureMemberDir, memberRoot, readPrivateJson, writePrivateFileAtomic } from './store.js';
 import { clippedRequestBudget, remainingMs, type HookBudget } from './budget.js';
 
 /**
@@ -77,7 +80,7 @@ export function parseJoinCode(value: string): JoinCode | { error: JoinCodeRefusa
   } catch {
     return { error: 'not_a_url' };
   }
-  if (!isMemberServerUrl(url.href)) return { error: 'not_https' };
+  if (!admitMemberServerUrl(url.href)) return { error: 'not_https' };
   if (url.pathname.replace(/\/+$/, '') !== JOIN_PATH) return { error: 'wrong_path' };
   const key = url.hash.startsWith('#') ? url.hash.slice(1) : '';
   if (key.length === 0) return { error: 'no_key' };
@@ -185,6 +188,15 @@ export function recordJoinAnswer(
  * leave one of them holding a refusal and no credential. Here the second waits
  * for the first, then finds what it wrote and captures on that. Both land.
  *
+ * A root this home already binds to ANOTHER Deployment is left as it is and the
+ * code is not presented: redeeming it would rebind the root, and every other
+ * process sharing this home — a laptop whose `~/.myco` a devcontainer mounts —
+ * would then capture to the code's Deployment instead of its own.
+ *
+ * A refusal the code cannot recover from (the invitation spent, expired,
+ * revoked or unknown, or this machine's identity held by another member) is
+ * recorded under the home, and later hooks name it rather than dial again.
+ *
  * Everything here is spent from the hook's own budget. The exchange carries a
  * deadline and the wait is clipped to what the hook has left, so neither
  * outlives the process the harness is about to kill — a wait that outlives its
@@ -205,44 +217,111 @@ export async function ensureJoinedFromCode(
     return;
   }
   const mycoHome = opts.mycoHome ?? resolveMycoHome();
-  if (joined(parsed.serverUrl, mycoHome, opts.root)) return;
+  if (settled(parsed, mycoHome, opts.root)) return;
+  const machineId = opts.machineId ?? getMachineId();
+  const refused = readJoinRefusal(parsed, machineId, mycoHome);
+  if (refused !== null) {
+    stderr(`${refusalLine(refused, mycoHome)} (recorded ${new Date(refused.refusedAt).toISOString()}; not retried)`);
+    return;
+  }
 
   const lock = acquireRegistryLock(mycoHome);
   if (!lock.acquired) {
-    await awaitJoin(parsed.serverUrl, mycoHome, opts);
+    await awaitJoin(parsed, mycoHome, opts);
     return;
   }
   try {
     // Re-read inside the lock: a hook that held it before this one may already have joined.
-    if (joined(parsed.serverUrl, mycoHome, opts.root)) return;
+    if (settled(parsed, mycoHome, opts.root)) return;
     const exchange = await exchangeJoinCode(parsed, {
-      fetch: opts.fetch, machineId: opts.machineId, runtimeKind: 'sandbox', forProject: true,
+      fetch: opts.fetch, machineId, runtimeKind: 'sandbox', forProject: true,
       timeoutMs: opts.budget === undefined ? undefined : clippedRequestBudget(opts.budget).requestTimeoutMs,
     });
     if (!exchange.ok) {
-      stderr(`join code refused (${exchange.code}) — ${exchange.reason}; no capture`);
+      const refusal: JoinRefusal = { code: exchange.code, reason: exchange.reason, serverUrl: parsed.serverUrl, machineId, refusedAt: opts.now?.() ?? Date.now() };
+      if (TERMINAL_JOIN_REFUSALS.has(exchange.code)) writeJoinRefusal(parsed, refusal, mycoHome);
+      stderr(refusalLine(refusal, mycoHome));
       return;
     }
     recordJoinAnswer(parsed, exchange.answer, {
-      mycoHome, root: opts.root, now: opts.now?.() ?? Date.now(), machineId: opts.machineId, locked: true,
+      mycoHome, root: opts.root, now: opts.now?.() ?? Date.now(), machineId, locked: true,
     });
   } finally {
     lock.lock.release();
   }
 }
 
+/** Where this home stands for a join code at `root`. */
+type JoinState = { state: 'joined' } | { state: 'absent' } | { state: 'elsewhere'; boundTo: string };
+
 /**
- * Whether this machine already holds what a hook at `root` needs.
+ * Whether this machine already holds what a hook at `root` needs, from the
+ * Deployment the code names.
  *
  * A project binding is what `resolveCredential` reads, and `writeRegistryEntry`
  * writes the membership and the binding as two separate renames — so a reader
  * that stops at the membership can return between them and find no binding. When
  * a root is known this asks for the binding; the membership alone answers only
- * where there is no project to bind.
+ * where there is no project to bind. A binding to another Deployment is not
+ * this code's membership, and is named as such.
  */
-function joined(serverUrl: string, mycoHome: string, root: string | undefined): boolean {
-  if (root !== undefined) return readRegistryEntry(root, mycoHome) !== null;
-  return readDeploymentMembership(serverUrl, mycoHome) !== null;
+function joinState(code: JoinCode, mycoHome: string, root: string | undefined): JoinState {
+  if (root === undefined) return readDeploymentMembership(code.serverUrl, mycoHome) !== null ? { state: 'joined' } : { state: 'absent' };
+  const entry = readRegistryEntry(root, mycoHome);
+  if (entry === null) return { state: 'absent' };
+  return deploymentUrl(entry.serverUrl) === deploymentUrl(code.serverUrl) ? { state: 'joined' } : { state: 'elsewhere', boundTo: entry.serverUrl };
+}
+
+/** True when nothing is left to redeem: the root is joined to the code's Deployment, or to another one, which is said and left alone. */
+function settled(code: JoinCode, mycoHome: string, root: string | undefined): boolean {
+  const held = joinState(code, mycoHome, root);
+  if (held.state === 'elsewhere') {
+    stderr(`${ENV_JOIN_CODE} names ${code.serverUrl}, but ${root} is joined to ${held.boundTo} under ${mycoHome}; the code is not redeemed. `
+      + 'Give the sandbox a MYCO_HOME of its own');
+  }
+  return held.state !== 'absent';
+}
+
+/** The Deployment's refusals a retry of the same code, from the same identity, cannot turn into a membership. */
+const TERMINAL_JOIN_REFUSALS: ReadonlySet<string> = new Set([
+  'identity_claimed', 'enrollment_unknown', 'enrollment_used', 'enrollment_expired', 'enrollment_revoked',
+]);
+
+/** A refusal recorded so later hooks do not dial the Deployment with the same code again. */
+export interface JoinRefusal {
+  code: string;
+  reason: string;
+  serverUrl: string;
+  machineId: string;
+  refusedAt: number;
+}
+
+const JOIN_REFUSALS_DIRNAME = 'join-refusals';
+
+/** The record for this code from this identity: a new identity, or a new code, is asked afresh. */
+function joinRefusalPath(code: JoinCode, machineId: string, mycoHome: string): string {
+  const key = crypto.createHash('sha256').update(`${deploymentUrl(code.serverUrl)}\n${code.key}\n${machineId}`).digest('hex').slice(0, 32);
+  return path.join(memberRoot(mycoHome), JOIN_REFUSALS_DIRNAME, `${key}.json`);
+}
+
+export function readJoinRefusal(code: JoinCode, machineId: string, mycoHome: string): JoinRefusal | null {
+  const read = readPrivateJson<JoinRefusal>(joinRefusalPath(code, machineId, mycoHome));
+  return read.ok ? read.value : null;
+}
+
+function writeJoinRefusal(code: JoinCode, refusal: JoinRefusal, mycoHome: string): void {
+  const file = joinRefusalPath(code, refusal.machineId, mycoHome);
+  ensureMemberDir(path.dirname(file), mycoHome);
+  writePrivateFileAtomic(file, `${JSON.stringify(refusal)}\n`);
+}
+
+/** The one line a refusal is told in, with the remedy where there is one. */
+function refusalLine(refusal: JoinRefusal, mycoHome: string): string {
+  if (refusal.code === 'identity_claimed') {
+    return `join code refused (identity_claimed): this machine's identity ${refusal.machineId} already belongs to another member of ${refusal.serverUrl}. `
+      + `A sandbox needs an identity of its own: run it with its own MYCO_HOME holding a distinct machine_id (${path.join(mycoHome, 'machine_id')}); no capture`;
+  }
+  return `join code refused (${refusal.code}) — ${refusal.reason}; no capture`;
 }
 
 /**
@@ -253,7 +332,7 @@ function joined(serverUrl: string, mycoHome: string, root: string | undefined): 
  * that stands still never ends.
  */
 async function awaitJoin(
-  serverUrl: string, mycoHome: string,
+  code: JoinCode, mycoHome: string,
   opts: { root?: string; waitMs?: number; budget?: HookBudget; sleep?: (ms: number) => Promise<void> },
 ): Promise<void> {
   const sleep = opts.sleep ?? ((ms: number) => new Promise<void>((resolve) => { setTimeout(resolve, ms); }));
@@ -262,7 +341,7 @@ async function awaitJoin(
   const deadline = Date.now() + window;
   while (Date.now() < deadline) {
     await sleep(JOIN_POLL_MS);
-    if (joined(serverUrl, mycoHome, opts.root)) return;
+    if (settled(code, mycoHome, opts.root)) return;
   }
   stderr('another hook is still redeeming the join code; no capture this time');
 }

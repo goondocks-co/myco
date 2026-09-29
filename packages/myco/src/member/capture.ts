@@ -171,9 +171,9 @@ export async function runMemberHook(
     // run. It sits under the budget: the exchange is a network call the harness will
     // kill this process for outrunning. The root is the one `resolveCredential`
     // reads, so the entry it writes is the entry that resolve looks for. The code is
-    // spent only when the declared source reads that entry (`redeemsJoinCode`): a
-    // single-use code spent on a hook that then resolves elsewhere is a code gone
-    // and a machine that never captures.
+    // presented, which spends it, only when the declared source reads that entry
+    // (`redeemsJoinCode`): a single-use code spent on a hook that then resolves
+    // elsewhere is a code gone and a machine that never captures.
     const env = opts.env ?? process.env;
     if (redeemsJoinCode(source, env)) {
       await ensureJoinedFromCode({

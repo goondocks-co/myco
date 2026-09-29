@@ -12,8 +12,9 @@ import { resolveProjectRoot, resolveVaultDir } from '../project-root.js';
 import { resolveMycoHome } from '../paths/home.js';
 import { CREDENTIAL_FLAG, CREDENTIAL_SOURCES, ENV_JOIN_CODE, MEMBER_TOKEN_PATTERN, type CredentialSource, type RefreshTerminalReason } from './constants.js';
 import { recordMissingMembership } from './no-membership.js';
-import { listRegistryEntries, readRegistryEntry, type RegistryEntry } from './registry.js';
-import { isMemberServerUrl, MEMBER_SERVER_URL_RULE } from './server-url.js';
+import { JOIN_CODE_REFUSALS, parseJoinCode } from './join-code.js';
+import { deploymentUrl, listRegistryEntries, readRegistryEntry, type RegistryEntry } from './registry.js';
+import { admitMemberServerUrl, MEMBER_SERVER_URL_RULE } from './server-url.js';
 
 export { CREDENTIAL_FLAG, type CredentialSource };
 
@@ -99,11 +100,8 @@ export function resolveCredential(
   const root = resolveMemberProjectRoot(cwd);
   const mycoHome = opts.mycoHome ?? resolveMycoHome({ cwd, env: opts.env });
   const entry = readRegistryEntry(root, mycoHome) ?? soleMembershipForMcp(mycoHome, opts.invokedBy);
+  if (source === 'env') return joinCodeCredential(env, entry, root, mycoHome);
   if (!entry) {
-    if (source === 'env') {
-      stderr(`${ENV_JOIN_CODE} has not been redeemed for ${root} — no capture`);
-      return null;
-    }
     // The hook still exits 0 — a non-zero hook breaks the harness — so the
     // miss is counted under the home this invocation resolved, where
     // `myco member status` reads it back.
@@ -111,7 +109,7 @@ export function resolveCredential(
     stderr(`no registry entry for ${root} — run \`myco member join <server-url> --project <id>\`; no capture`);
     return null;
   }
-  if (!isMemberServerUrl(entry.serverUrl)) {
+  if (!admitMemberServerUrl(entry.serverUrl)) {
     stderr(`registry entry for ${root} names a server that is not ${MEMBER_SERVER_URL_RULE} — no capture`);
     return null;
   }
@@ -138,14 +136,42 @@ function envCarriesJoinCode(env: NodeJS.ProcessEnv): boolean {
 
 /**
  * Whether a hook declaring `source` would capture on a credential redeemed
- * from `MYCO_JOIN_CODE`, and so may spend it. A join code is single-use: it is
- * spent only where the resolve that follows reads what it yields, never on a
- * hook with no declared source or one whose env triplet supplies the
- * credential instead.
+ * from `MYCO_JOIN_CODE`, and so may present it. A join code is single-use and
+ * presenting it spends it, so it is presented only where the resolve that
+ * follows reads what it yields: never on a hook with no declared source, or
+ * one whose env triplet supplies the credential instead.
  */
 export function redeemsJoinCode(source: CredentialSource | null, env: NodeJS.ProcessEnv = process.env): boolean {
   if (!env[ENV_JOIN_CODE]?.trim()) return false;
   return source === 'registry' || (source === 'env' && envCarriesJoinCode(env));
+}
+
+/**
+ * The env source's credential when the environment carries a join code: this
+ * machine's membership of the Deployment the CODE names, and nothing else. A
+ * binding the home holds for this root on another Deployment belongs to some
+ * other process sharing the home, and capturing on it would land these
+ * sessions somewhere the sandbox was never sent.
+ */
+function joinCodeCredential(env: NodeJS.ProcessEnv, entry: RegistryEntry | null, root: string, mycoHome: string): CredentialRecord | null {
+  const code = parseJoinCode(env[ENV_JOIN_CODE]!.trim());
+  if ('error' in code) {
+    stderr(`${ENV_JOIN_CODE} — ${JOIN_CODE_REFUSALS[code.error]}; no capture`);
+    return null;
+  }
+  if (!entry) {
+    stderr(`${ENV_JOIN_CODE} has not been redeemed for ${root} — no capture`);
+    return null;
+  }
+  if (deploymentUrl(entry.serverUrl) !== deploymentUrl(code.serverUrl)) {
+    stderr(`${ENV_JOIN_CODE} names ${code.serverUrl}, but ${entry.root} is joined to ${entry.serverUrl} under ${mycoHome} — no capture`);
+    return null;
+  }
+  if (!admitMemberServerUrl(entry.serverUrl)) {
+    stderr(`registry entry for ${entry.root} names a server that is not ${MEMBER_SERVER_URL_RULE} — no capture`);
+    return null;
+  }
+  return registryCredential(entry, root);
 }
 
 /** The credential a registry entry holds, for the project root it is keyed on. */
@@ -194,7 +220,7 @@ function envCredential(env: NodeJS.ProcessEnv): CredentialRecord | null {
     stderr(`${ENV_SERVER_URL} + ${ENV_MEMBER_TOKEN} + ${ENV_PROJECT} must all be set (all three or none) — no capture`);
     return null;
   }
-  if (!isMemberServerUrl(serverUrl!)) {
+  if (!admitMemberServerUrl(serverUrl!)) {
     stderr(`${ENV_SERVER_URL} must be ${MEMBER_SERVER_URL_RULE} — no capture`);
     return null;
   }

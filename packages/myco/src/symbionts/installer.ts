@@ -22,7 +22,7 @@ import { ensureAgentsMd, ensureSymlink, isMycoHookCommand, isMycoHookGroup, with
 import { hookCommands, memberHookTemplate } from './member-hooks.js';
 import { CREDENTIAL_FLAG, SERVER_FLAG, type CredentialSource } from '../member/constants.js';
 import { parseCredentialFlag } from '../member/credential.js';
-import { isMemberServerUrl } from '../member/server-url.js';
+import { admitMemberServerUrl } from '../member/server-url.js';
 import { deploymentUrl } from '../member/registry.js';
 import { MCP_PATH } from '../plugins/spec.js';
 import { MCP_HEADERS_ARGS, MEMBER_MCP_LEVERS, memberMcpTemplate, memberRemoteMcp } from './member-hooks.js';
@@ -2099,7 +2099,7 @@ export class SymbiontInstaller {
   private deploymentNamed(value: string | undefined): string | null {
     if (value === undefined) return null;
     const named = deploymentUrl(value);
-    return isMemberServerUrl(named) ? named : null;
+    return admitMemberServerUrl(named) ? named : null;
   }
 
   /** The Deployment a headers helper names, or null where it names none a member could use. */

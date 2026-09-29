@@ -5,7 +5,9 @@
  *
  * Every process here is the real CLI, spawned the way a harness or a person
  * runs it, against a real self-hosted Deployment at `http://127.0.0.1:<port>`.
- * No fetch is redirected: the URL the member holds is the URL it dials.
+ * No fetch is redirected: the URL the member holds is the URL it dials. Every
+ * process runs with `HTTP_PROXY` pointing at a capture proxy, which must receive
+ * nothing: a loopback dial carrying a bearer never goes through a proxy.
  *
  *   - registry: `myco login http://127.0.0.1:<port>/join#…`, then a hook
  *     declaring `--credential registry`, then `search` and `stats`;
@@ -29,6 +31,7 @@ import { callTool } from '@myco/mcp/client-call.js';
 import { deploymentTransport, resolveDeploymentUpstream } from '@myco/mcp/deployment-upstream.js';
 import { ENV_JOIN_CODE } from '@myco/member/constants.js';
 import { ENV_MEMBER_TOKEN, ENV_PROJECT, ENV_SERVER_URL } from '@myco/member/credential.js';
+import { deploymentPath, registryEntryPath } from '@myco/member/registry.js';
 import { tempMycoHome } from '../member/helpers/server.js';
 
 const CLI = path.resolve('packages/myco/src/cli.ts');
@@ -46,6 +49,9 @@ const tempDir = (prefix: string): string => {
 let loopback: string;
 let databasePath: string;
 let orchestratorToken: string;
+/** A proxy every spawned member process is configured with. A loopback Deployment is dialled directly, so it must see nothing. */
+let proxyUrl: string;
+const proxied: string[] = [];
 
 /** A Project-bound invitation, as an administrator mints one for a person or a sandbox. */
 async function invitation(): Promise<{ id: string; code: string }> {
@@ -71,6 +77,9 @@ const landed = (sessionId: string): boolean => query('SELECT 1 AS one FROM sessi
 const spent = (id: string): boolean => query<{ used_at: number | null }>('SELECT used_at FROM enrollment_authorities WHERE id = ?', id)?.used_at != null;
 
 beforeAll(async () => {
+  const proxy = Bun.serve({ port: 0, hostname: '127.0.0.1', fetch(req) { proxied.push(req.url); return new Response(null, { status: 502 }); } });
+  cleanup.push(() => { proxy.stop(true); });
+  proxyUrl = `http://127.0.0.1:${proxy.port}`;
   const root = tempDir('myco-loopback-deployment-');
   databasePath = path.join(root, 'myco.sqlite');
   const sqlite = new Database(databasePath);
@@ -108,8 +117,8 @@ function machine(env: Record<string, string> = {}): Machine {
 function cli(m: Machine, args: string[], stdin?: string): Promise<{ status: number | null; stdout: string; stderr: string }> {
   const env: Record<string, string> = {};
   for (const [key, value] of Object.entries(process.env)) if (typeof value === 'string') env[key] = value;
-  for (const key of [ENV_SERVER_URL, ENV_MEMBER_TOKEN, ENV_PROJECT, ENV_JOIN_CODE]) delete env[key];
-  Object.assign(env, { HOME: m.userHome, MYCO_HOME: m.home, MYCO_NO_AUTO_SPAWN: '1' }, m.env);
+  for (const key of [ENV_SERVER_URL, ENV_MEMBER_TOKEN, ENV_PROJECT, ENV_JOIN_CODE, 'NO_PROXY', 'no_proxy']) delete env[key];
+  Object.assign(env, { HOME: m.userHome, MYCO_HOME: m.home, MYCO_NO_AUTO_SPAWN: '1', HTTP_PROXY: proxyUrl, http_proxy: proxyUrl, HTTPS_PROXY: proxyUrl }, m.env);
   return new Promise((resolve) => {
     const child = spawn(process.execPath, [CLI, ...args], { cwd: m.checkout, env, stdio: [stdin === undefined ? 'ignore' : 'pipe', 'pipe', 'pipe'] });
     let stdout = '';
@@ -143,6 +152,11 @@ async function expectReads(m: Machine, source: 'registry' | 'env' | null): Promi
 }
 
 describe('a member of a loopback http native Deployment', () => {
+  afterAll(() => {
+    // Every process above ran with HTTP_PROXY set; not one request, bearer or join code reached it.
+    expect(proxied).toEqual([]);
+  });
+
   it('registry: joins with `myco login`, captures a session, and answers search and stats', async () => {
     const m = machine();
     const invite = await invitation();
@@ -155,6 +169,15 @@ describe('a member of a loopback http native Deployment', () => {
     expect(landed('sess-loopback-registry')).toBe(true);
     await expectReads(m, null);
     await expectReads(m, 'registry');
+
+    // A renewal dials the entry's URL straight from the registry, before any admission: the process-wide bypass carries it.
+    for (const file of [registryEntryPath(m.checkout, m.home), deploymentPath(loopback, m.home)]) {
+      if (fs.existsSync(file)) fs.writeFileSync(file, JSON.stringify({ ...JSON.parse(fs.readFileSync(file, 'utf8')), refreshAfter: 1 }));
+    }
+    const refresh = await cli(m, ['member', 'refresh']);
+    expect(refresh.status).toBe(0);
+    // The Deployment's own answer: it holds the window, so this dial reached it.
+    expect(refresh.stdout).toContain(`${PROJECT}: the server is not ready to rotate yet`);
   }, 90_000);
 
   it('env triplet: captures a session and answers search and stats', async () => {
