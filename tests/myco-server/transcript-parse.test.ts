@@ -19,7 +19,7 @@ import { drainObjectReleases } from '@myco-server-worker/core/object-release.js'
 import { describe, expect, it } from 'bun:test';
 import { Database } from 'bun:sqlite';
 import {
-  AWAITING_BYTES, parseOnce, parseTranscripts, pendingTranscripts, rereadTranscripts,
+  AWAITING_BYTES, PARSER_VERSION, parseOnce, parseTranscripts, pendingTranscripts, rereadTranscripts,
   TRANSCRIPT_PARSE_EVENTS_PER_BATCH, TRANSCRIPT_PARSE_MALFORMED_LIMIT,
   TRANSCRIPT_PARSE_BYTES_PER_READ, TRANSCRIPT_PARSE_SEGMENTS_PER_READ, TRANSCRIPT_PARSE_RECORD_BYTES,
 } from '@myco-server-worker/ingest/parse.js';
@@ -1119,7 +1119,7 @@ describe('reading a stored transcript again', () => {
   it('gives a Cursor session read before the fix its prompt and its reply', async () => {
     const { sqlite, serverEnv } = await rig(cursorBytes(), 1 << 20, { agent: 'cursor' });
     // What the old parser left behind: every byte read, nothing derived.
-    sqlite.run('UPDATE transcripts SET parsed_offset = size, parsed_at = ?, parser_version = 2', [NOW]);
+    sqlite.run('UPDATE transcripts SET parsed_offset = size, parsed_at = ?, parser_version = ?', [NOW, PARSER_VERSION]);
     expect(await pendingCount(serverEnv.db)).toBe(0);
 
     expect(await rereadTranscripts(serverEnv.db, { agent: 'cursor' })).toBe(1);
@@ -1148,7 +1148,7 @@ describe('reading a stored transcript again', () => {
 
   it('clears a recorded failure, so a transcript a parser stopped on is read again under the fixed one', async () => {
     const { sqlite, serverEnv } = await rig(cursorBytes(), 1 << 20, { agent: 'cursor' });
-    sqlite.run("UPDATE transcripts SET parse_error = 'parse', parse_failed_at = 1, parser_version = 2");
+    sqlite.run("UPDATE transcripts SET parse_error = 'parse', parse_failed_at = 1, parser_version = ?", [PARSER_VERSION]);
     expect(await pendingCount(serverEnv.db)).toBe(0);
     await rereadTranscripts(serverEnv.db, { agent: 'cursor' });
     await parseTranscripts(serverEnv, NOW);
@@ -1337,5 +1337,47 @@ describe('a transcript that cannot move yet', () => {
     await parseTranscripts(serverEnv, NOW + 2);
     expect(promptTexts(sqlite)).toEqual(['newer']);
     expect(target(sqlite)).toMatchObject({ parsed_offset: target(sqlite).size, parse_error: null });
+  });
+});
+
+describe('a turn whose reply is longer than one response holds', () => {
+  /** Twelve assistant messages of 25,000 characters: 300,000 in one turn, past the 262,144 a response holds. */
+  const replies = Array.from({ length: 12 }, (_, i) => `message ${i} ${(i % 2 === 0 ? 'é plain words ' : 'plain words ').repeat(2_500).slice(0, 25_000)}`);
+  const whole = replies.join('\n\n');
+  const codex = line({ type: 'response_item', payload: { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'summarize everything' }] } })
+    + replies.map((text) => line({ type: 'response_item', payload: { type: 'message', role: 'assistant', content: [{ type: 'output_text', text }] } })).join('');
+  const cursor = line({ role: 'user', message: { content: [{ type: 'text', text: '<user_query>\nsummarize everything\n</user_query>' }] } })
+    + replies.map((text) => line({ role: 'assistant', message: { content: [{ type: 'text', text }] } })).join('')
+    + line({ type: 'turn_ended', status: 'success' });
+  const responses = (sqlite: Database) => (sqlite.query('SELECT text FROM responses ORDER BY created_at, response_id').all() as Array<{ text: string }>).map((r) => r.text);
+
+  for (const [agent, text] of [['codex', codex], ['cursor', cursor]] as const) {
+    it(`${agent}: reads to the end with every part of the reply landed`, async () => {
+      expect(whole.length).toBeGreaterThan(262_144);
+      const { sqlite, serverEnv } = await rig(text, 1 << 20, { agent });
+      for (let pass = 0; pass < 10 && (await pendingCount(serverEnv.db)) > 0; pass += 1) await parseTranscripts(serverEnv, NOW);
+      expect(target(sqlite)).toMatchObject({ parse_error: null, parsed_offset: Buffer.byteLength(text) });
+      const landed = responses(sqlite);
+      expect(landed.length).toBeGreaterThan(1);
+      expect(new Set(landed).size).toBe(landed.length);
+      expect([...landed].sort((a, b) => whole.indexOf(a) - whole.indexOf(b)).join('\n\n')).toBe(whole);
+    });
+  }
+
+  it('reads again a transcript the parser before the split stopped on', async () => {
+    const { sqlite, serverEnv } = await rig(codex, 1 << 20, { agent: 'codex' });
+    // Version 2 stopped the Codex Desktop transcripts whose turns ran past one response.
+    sqlite.run("UPDATE transcripts SET parse_error = 'parse', parse_failed_at = 1, parser_version = 2");
+    expect(await pendingCount(serverEnv.db)).toBe(1);
+    await parseTranscripts(serverEnv, NOW);
+    expect(target(sqlite)).toMatchObject({ parse_error: null, parsed_offset: Buffer.byteLength(codex) });
+    expect(responses(sqlite).length).toBeGreaterThan(1);
+  });
+
+  it('stops with event_refused, not parse, when the catalogue refuses an event the parser derived', async () => {
+    const tooLong = line({ type: 'response_item', payload: { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'x'.repeat(300_000) }] } });
+    const { sqlite, serverEnv } = await rig(tooLong, 1 << 20, { agent: 'codex' });
+    await parseTranscripts(serverEnv, NOW);
+    expect(target(sqlite)).toMatchObject({ parse_error: 'event_refused', parsed_offset: 0 });
   });
 });

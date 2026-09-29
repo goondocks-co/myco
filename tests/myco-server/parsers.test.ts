@@ -12,7 +12,9 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createHash } from 'node:crypto';
 import { PARSERS, parserFor } from '@myco-server-worker/ingest/parsers/registry.js';
-import { FIDELITIES, type DerivedEvent, type ParsedLine } from '@myco-server-worker/ingest/parsers/index.js';
+import { FIDELITIES, REPLY_SEPARATOR, replyChunks, responseBound, truncationMarker, type DerivedEvent, type ParsedLine } from '@myco-server-worker/ingest/parsers/index.js';
+import { MAX_ID_CHARS, MAX_PAYLOAD_BYTES } from '@myco-server-worker/ingest/envelope.js';
+import { utf8 } from '@myco-server-worker/hash.js';
 import { kindSpec, parsePayload } from '@myco-server-worker/ingest/kinds.js';
 import { uuidv5 } from '@myco-server-worker/hash.js';
 import { promptTextOf, responseTextOf } from '@myco-server-worker/ingest/parsers/cursor.js';
@@ -36,7 +38,11 @@ const NOW = Date.parse('2027-01-01T00:00:00Z');
 
 /** Fixture bytes split into lines carrying their real byte offsets, exactly as the parse driver hands them over. */
 function linesOf(file: string): ParsedLine[] {
-  const raw = fs.readFileSync(path.join(FIXTURES, file), 'utf8');
+  return linesOfText(fs.readFileSync(path.join(FIXTURES, file), 'utf8'));
+}
+
+/** Transcript text split into lines carrying their real byte offsets. */
+function linesOfText(raw: string): ParsedLine[] {
   const out: ParsedLine[] = [];
   let offset = 0;
   for (const line of raw.split('\n')) {
@@ -364,6 +370,120 @@ describe('cursor parser', () => {
     expect(only(events, 'response').map((e) => ({ promptId: e.payload.promptId, text: e.payload.text }))).toEqual([
       { promptId: first.payload.promptId, text: 'Checking the service log.\n\nThe lease expired.' },
       { promptId: second.payload.promptId, text: 'Renew the lease before it lapses.' },
+    ]);
+  });
+});
+
+/**
+ * A turn's reply longer than one response holds (#1144 parse errors on chatty
+ * Codex Desktop turns). The joined reply is split at message boundaries into
+ * responses the catalogue and the payload bound both admit; a reply that fits
+ * keeps the id and text it always had.
+ */
+describe('a reply longer than one response holds', () => {
+  const TEXT_CHARS = (() => {
+    const bound = kindSpec('response')?.fields.text.bound;
+    if (bound?.type !== 'string') throw new Error('no string bound on response.text');
+    return bound.max;
+  })();
+  /** The same two bounds the parser applies, derived here from their sources rather than from the parser. */
+  const payloadFits = (payload: Record<string, unknown>) => utf8(JSON.stringify(payload)).byteLength <= MAX_PAYLOAD_BYTES;
+  const fitsOne = (text: string) => text.length <= TEXT_CHARS
+    && payloadFits({ responseId: 'x'.repeat(MAX_ID_CHARS), promptId: 'x'.repeat(MAX_ID_CHARS), text });
+
+  /** Assistant messages of about `size` characters each, several of them multibyte, so both the character and the byte bound decide a split. */
+  const messages = (count: number, size: number) => Array.from({ length: count }, (_, i) =>
+    `message ${i} ${(i % 3 === 0 ? 'é—' : i % 3 === 1 ? '🍄"\\' : 'plain ').repeat(Math.ceil(size / 6)).slice(0, size)}`);
+
+  const codexLines = (replies: string[]) => linesOfText([
+    JSON.stringify({ type: 'response_item', payload: { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'summarize everything' }] } }),
+    ...replies.map((text) => JSON.stringify({ type: 'response_item', payload: { type: 'message', role: 'assistant', content: [{ type: 'output_text', text }] } })),
+  ].join('\n') + '\n');
+  const cursorLines = (replies: string[]) => linesOfText([
+    JSON.stringify({ role: 'user', message: { content: [{ type: 'text', text: '<user_query>\nsummarize everything\n</user_query>' }] } }),
+    ...replies.map((text) => JSON.stringify({ role: 'assistant', message: { content: [{ type: 'text', text }] } })),
+    JSON.stringify({ type: 'turn_ended', status: 'success' }),
+  ].join('\n') + '\n');
+
+  for (const [agent, linesFor] of [['codex', codexLines], ['cursor', cursorLines]] as const) {
+    it(`${agent}: splits a 600,000-character turn at message boundaries into responses the catalogue admits`, async () => {
+      const replies = messages(24, 25_000);
+      const lines = linesFor(replies);
+      const events = await PARSERS[agent].parse({ lines, sessionId: SESSION, now: NOW });
+      const responses = only(events, 'response');
+      const whole = replies.join(REPLY_SEPARATOR);
+      expect(whole.length).toBeGreaterThan(TEXT_CHARS);
+      expect(responses.length).toBeGreaterThan(1);
+      // Every response lands: the kind's bounds and the envelope's payload bound both hold.
+      for (const r of responses) {
+        expect(parsePayload(kindSpec('response')!, r.payload, NOW).ok).toBe(true);
+        expect(payloadFits(r.payload)).toBe(true);
+      }
+      // The responses are the reply exactly, split only where a message begins.
+      const texts = responses.map((r) => r.payload.text as string);
+      expect(texts.join(REPLY_SEPARATOR)).toBe(whole);
+      const assistantOffsets = lines.slice(1).map((l) => l.offset);
+      expect(responses.every((r) => assistantOffsets.includes(r.offset))).toBe(true);
+      expect(responses[0].offset).toBe(assistantOffsets[0]);
+      // Each response is as full as it can be: the next message would not have fit.
+      for (let i = 0; i < responses.length - 1; i += 1) {
+        const nextFirst = replies[assistantOffsets.indexOf(responses[i + 1].offset)];
+        expect(fitsOne(texts[i] + REPLY_SEPARATOR + nextFirst)).toBe(false);
+      }
+      // Each is named by its own first message's offset, and all of them answer the same prompt.
+      for (const r of responses) expect(r.payload.responseId).toBe(await uuidv5('response', SESSION, String(r.offset)));
+      expect(new Set(responses.map((r) => r.payload.promptId)).size).toBe(1);
+    });
+
+    it(`${agent}: cuts a single message too long for any response short, and says how much it left out`, async () => {
+      const long = `start ${'🍄 over the bound '.repeat(40_000)}end`;
+      const events = await PARSERS[agent].parse({ lines: linesFor(['before', long, 'after']), sessionId: SESSION, now: NOW });
+      const texts = only(events, 'response').map((r) => r.payload.text as string);
+      expect(texts.length).toBe(3);
+      expect(texts[0]).toBe('before');
+      expect(texts[2]).toBe('after');
+      const cut = texts[1];
+      expect(fitsOne(cut)).toBe(true);
+      const at = cut.lastIndexOf(`${REPLY_SEPARATOR}[`);
+      const kept = cut.slice(0, at);
+      expect(long.startsWith(kept)).toBe(true);
+      expect(cut.slice(at)).toBe(truncationMarker(long.length - kept.length));
+      expect(kept.length).toBeGreaterThan(long.length / 4);
+    });
+  }
+
+  it('keeps every response a reply that fits has always had: id, offset, time, prompt and text', async () => {
+    const pinned: Array<[string, string, number, string]> = [
+      ['codex', 'codex-parse-basic.jsonl', 1, 'c828fd50ab8880c182b5dab339a9eaf01d5f61b9b7da72759ca24e19fa5ed9bb'],
+      ['codex', 'codex-context-redacted.jsonl', 1, 'a183b0c3a973b1dcc572d1740c96fe5383ccb1ccdc5843c64e7e7c7ea24936f1'],
+      ['codex', 'codex-0.153.4-redacted.jsonl', 1, 'b9b5485d9a812fe5645edc297ef36b0ba7ea82bdcaf8139e86b6f6f0d4ea612c'],
+      ['cursor', 'cursor-parse-basic.jsonl', 2, '693870a68ffa541359c742e715c90bd3a5a4ba8dc26c57ed86a26a5e9ad18778'],
+      ['cursor', 'cursor-agent-2026.09-redacted.jsonl', 1, 'ada97dd05035b9a07a309c184c8a25ae72423f5a5c621c4a1d33fcb908dfc21f'],
+    ];
+    const seen = [];
+    for (const [agent, file] of pinned) {
+      const events = await PARSERS[agent].parse({ lines: linesOf(file), sessionId: SESSION, now: NOW });
+      const rows = only(events, 'response').map((e) => [e.payload.responseId, e.offset, e.createdAt, e.payload.promptId ?? null, e.payload.text]);
+      seen.push([agent, file, rows.length, createHash('sha256').update(JSON.stringify(rows)).digest('hex')]);
+    }
+    expect(seen).toEqual(pinned);
+  });
+
+  it('reads its bounds from the catalogue and the envelope, and the parsers name no number of their own', () => {
+    expect(responseBound()).toEqual({
+      chars: TEXT_CHARS,
+      bytes: MAX_PAYLOAD_BYTES - utf8(JSON.stringify({ responseId: 'x'.repeat(MAX_ID_CHARS), promptId: 'x'.repeat(MAX_ID_CHARS), text: '' })).byteLength,
+    });
+    const dir = path.join(REPO_ROOT, 'packages', 'myco-server', 'src', 'ingest', 'parsers');
+    for (const file of fs.readdirSync(dir)) expect({ file, cap: /262[_,]?144|256 \* 1024/.test(fs.readFileSync(path.join(dir, file), 'utf8')) }).toEqual({ file, cap: false });
+  });
+
+  it('returns a reply that fits as one response named by its first message', () => {
+    const parts = [{ text: '  one ', offset: 10, createdAt: 1 }, { text: 'two', offset: 20, createdAt: 2 }, { text: ' three  ', offset: 30, createdAt: 3 }];
+    expect(replyChunks(parts)).toEqual([{ text: 'one \n\ntwo\n\n three', offset: 10, createdAt: 1 }]);
+    expect(replyChunks(parts, { chars: 12, bytes: 1000 })).toEqual([
+      { text: 'one \n\ntwo', offset: 10, createdAt: 1 },
+      { text: ' three', offset: 30, createdAt: 3 },
     ]);
   });
 });

@@ -56,7 +56,7 @@ export const TRANSCRIPT_PARSE_RECORD_BYTES = MAX_BLOB_BYTES;
  * be answered by a deploy — and a failure nothing can clear would mean one bad
  * line silences a transcript permanently, which no later fix could undo.
  */
-export const PARSER_VERSION = 2;
+export const PARSER_VERSION = 3;
 
 /**
  * Unreadable lines ONE WINDOW tolerates before the transcript is stopped.
@@ -132,7 +132,12 @@ function contextFromStored(raw: unknown): Record<string, unknown> | null {
  * than `TRANSCRIPT_PARSE_SEGMENTS_PER_READ` segments with no line end): the transcript stops there, visibly, rather
  * than reading on past a record it cannot read.
  */
-export type ParseFailure = Extract<Classifier, 'parse'> | 'blob_absent' | 'record_too_large';
+/**
+ * Why a transcript stopped. `event_refused` is an event the parser derived and
+ * the catalogue refused, a parser defect a deploy answers; `parse` is bytes
+ * that cannot be read as the agent's transcript.
+ */
+export type ParseFailure = Extract<Classifier, 'parse'> | 'event_refused' | 'blob_absent' | 'record_too_large';
 
 /** Which half of the queue a selection draws from: transcripts a hook shipped, or ones an import sent. */
 export type Lane = 'live' | 'imported';
@@ -207,12 +212,12 @@ async function finalizePass(db: RelationalStore, target: ParseTarget, statement:
 }
 
 /** Stop this transcript where it stands and say why. Its rows to this point are kept; later passes skip it until the failure is cleared. */
-async function stop(db: RelationalStore, target: ParseTarget, classifier: ParseFailure, now: number): Promise<void> {
+async function stop(db: RelationalStore, target: ParseTarget, classifier: ParseFailure, now: number, refused?: { eventKind: string; refusal: Classifier }): Promise<void> {
   const statement = db
     .prepare(`UPDATE transcripts SET parse_error = ?, parse_failed_at = ?, parser_version = ? WHERE project_id = ? AND transcript_id = ?`)
     .bind(classifier, now, PARSER_VERSION, target.projectId, target.transcriptId);
   await finalizePass(db, target, statement);
-  emit({ kind: 'transcript_parse_failed', projectId: target.projectId, transcriptId: target.transcriptId, failure: classifier, offset: target.parsedOffset });
+  emit({ kind: 'transcript_parse_failed', projectId: target.projectId, transcriptId: target.transcriptId, failure: classifier, offset: target.parsedOffset, ...(refused ?? {}) });
 }
 
 /**
@@ -557,8 +562,9 @@ export async function parseOnce(env: Pick<ServerEnv, 'db' | 'blobs'>, target: Pa
     for (const event of group) {
       const planned = await planEventWrite(env.db, ctx, await envelopeFor(target, event));
       if (!planned.ok) {
-        await stop(env.db, target, 'parse', now);
-        return { derived, calls: calls + 1, nextOffset: null, failure: 'parse' };
+        // The catalogue refused an event this parser derived: telemetry names its kind and the refusal's classifier.
+        await stop(env.db, target, 'event_refused', now, { eventKind: event.kind, refusal: planned.classifier });
+        return { derived, calls: calls + 1, nextOffset: null, failure: 'event_refused' };
       }
       writes.push(planned.write);
     }
