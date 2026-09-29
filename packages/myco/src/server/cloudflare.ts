@@ -328,26 +328,6 @@ export async function assertCloudflareWorkerAbsent(options: CloudflareOptions & 
   throw new CommandFailed('npx', args, result);
 }
 
-/** Export the selected ordinary tables through the operator login. */
-export async function exportDatabase(
-  options: CloudflareOptions & { databaseName: string; destination: string; tables: readonly string[] },
-): Promise<{ sqlPath: string }> {
-  const { runner, env } = resolved(options);
-  mkdirSync(options.destination, { recursive: true, mode: 0o700 });
-
-  const sqlPath = path.join(options.destination, 'd1.sql');
-  const args = wrangler('d1', 'export', options.databaseName, '--remote', '--output', sqlPath, '--skip-confirmation',
-    ...configArgs(options), ...options.tables.flatMap((table) => ['--table', table]));
-  const result = await runner.run('npx', args,
-    { cwd: options.configDir, env: { ...env, WRANGLER_LOG_PATH: path.join(options.destination, 'wrangler.log') } });
-  if (result.code !== 0) {
-    const redact = (text: string) => text.replace(/https:\/\/\S+/g, '[export URL omitted]');
-    throw new CommandFailed('npx', args, { ...result, stdout: redact(result.stdout), stderr: redact(result.stderr) });
-  }
-
-  return { sqlPath };
-}
-
 /**
  * How long one D1 statement may take.
  *
@@ -445,13 +425,18 @@ function stallBounded(
   }, { highWaterMark: 0 });
 }
 
-/** Stream R2 transfers through one origin and one in-memory operator credential. */
-export function cloudflareObjectStore(
-  options: CloudflareOptions & { bucketName: string; fetch?: CloudflareFetch; timeouts?: OperatorObjectTimeouts },
-): { get(key: string): Promise<ReadableStream | null>; put(key: string, body: () => Blob): Promise<void> } {
+/**
+ * The operator's own Wrangler login as request headers, asked for once and shared by every request while it holds.
+ * A login that failed is dropped, so the next request asks again; `refused` drops one the provider turned away.
+ */
+export interface OperatorLogin {
+  headers(): Promise<Headers>;
+  refused(used: Promise<Headers>): void;
+  current(): Promise<Headers>;
+}
+
+export function operatorLogin(options: CloudflareOptions): OperatorLogin {
   const { runner, env } = resolved(options);
-  const fetchObject = options.fetch ?? globalThis.fetch;
-  const timeouts = options.timeouts ?? OPERATOR_OBJECT_TIMEOUTS;
   let credentials: Promise<Headers> | undefined;
   const authenticate = async (): Promise<Headers> => {
     const result = await runner.run('npx', wrangler('auth', 'token', '--json'), {
@@ -466,7 +451,6 @@ export function cloudflareObjectStore(
       ? new Headers({ 'X-Auth-Key': parsed.data.key, 'X-Auth-Email': parsed.data.email })
       : new Headers({ Authorization: `Bearer ${parsed.data.token}` });
   };
-  /** One Wrangler login shared by every request while it holds; a login that failed is dropped, so the next request asks again. */
   const login = (): Promise<Headers> => {
     const pending: Promise<Headers> = authenticate().catch((error: unknown) => {
       if (credentials === pending) credentials = undefined;
@@ -474,6 +458,20 @@ export function cloudflareObjectStore(
     });
     return pending;
   };
+  return {
+    current() { credentials ??= login(); return credentials; },
+    async headers() { return new Headers(await this.current()); },
+    refused(used) { if (credentials === used) credentials = undefined; },
+  };
+}
+
+/** Stream R2 transfers through one origin and one in-memory operator credential. */
+export function cloudflareObjectStore(
+  options: CloudflareOptions & { bucketName: string; fetch?: CloudflareFetch; timeouts?: OperatorObjectTimeouts; login?: OperatorLogin },
+): { get(key: string): Promise<ReadableStream | null>; put(key: string, body: () => Blob): Promise<void> } {
+  const fetchObject = options.fetch ?? globalThis.fetch;
+  const timeouts = options.timeouts ?? OPERATOR_OBJECT_TIMEOUTS;
+  const operator = options.login ?? operatorLogin(options);
   /**
    * One request, with the credential refreshed once on a 401 or 403. A read's window closes when its response begins,
    * and `abort` ends the request afterwards; an upload's window covers the request and its acknowledgement.
@@ -486,8 +484,7 @@ export function cloudflareObjectStore(
     const objectPath = key.split('/').map(segment).join('/');
     const url = `https://api.cloudflare.com/client/v4/accounts/${segment(options.accountId)}/r2/buckets/${segment(options.bucketName)}/objects/${objectPath}`;
     for (let attempt = 0; attempt < 2; attempt += 1) {
-      credentials ??= login();
-      const used = credentials;
+      const used = operator.current();
       const headers = new Headers(await used);
       const content = body?.();
       if (content !== undefined) {
@@ -513,7 +510,7 @@ export function cloudflareObjectStore(
       }
       if ((response.status === 401 || response.status === 403) && attempt === 0) {
         await response.body?.cancel();
-        if (credentials === used) credentials = undefined;
+        operator.refused(used);
         continue;
       }
       return { response, abort };
@@ -544,7 +541,7 @@ export function cloudflareObjectStore(
 
 /** Required backup objects must exist; a missing source is a failed backup. */
 export function cloudflareBlobReader(
-  options: CloudflareOptions & { bucketName: string; fetch?: CloudflareFetch; timeouts?: OperatorObjectTimeouts },
+  options: CloudflareOptions & { bucketName: string; fetch?: CloudflareFetch; timeouts?: OperatorObjectTimeouts; login?: OperatorLogin },
 ): (key: string) => Promise<ReadableStream> {
   const store = cloudflareObjectStore(options);
   return async (key) => {

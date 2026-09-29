@@ -11,6 +11,7 @@ import { PRODUCER_LIMITS, stagedSqlKey, TransientProducerFailure, type RecoveryA
 import { readHostedRecoveryConfiguration, RECOVERY_CREDENTIAL_NAMES, STAGING_OBJECTS_DIRECTORY, stagingPath, type HostedRecoveryConfiguration } from '../../core/recovery-staging.js';
 import { discardStoredBody, streamStoredObject } from '../../core/stored-object.js';
 import { r2RefusedDigest } from './r2-digest.js';
+import { readD1ExportAnswer, transientExportStatus } from '@goondocks/myco-shared/d1-export';
 
 /** The one origin an account credential is sent to. */
 export const CLOUDFLARE_API_ORIGIN = 'https://api.cloudflare.com';
@@ -142,8 +143,8 @@ const digestOf = async (bytes: Uint8Array): Promise<string> => {
   return [...new Uint8Array(digest)].map((value) => value.toString(16).padStart(2, '0')).join('');
 };
 
-/** Whether a provider failure is worth another attempt rather than ending this one. */
-export const transientStatus = (status: number): boolean => status === 408 || status === 429 || status >= 500;
+/** Whether a provider failure is worth another attempt rather than ending this one: the export API's own rule. */
+export const transientStatus = transientExportStatus;
 
 /**
  * A failure as facts alone. The producer is told what kind of failure happened and with what status, and never a
@@ -216,37 +217,26 @@ export function cloudflareProducerPorts(
       } catch {
         return { status: 'error', bookmark, failure: TRANSPORT };
       }
-      type ExportBody = {
-        success?: boolean; errors?: unknown[];
-        result?: { success?: boolean; status?: string; at_bookmark?: string; error?: string; result?: { signed_url?: string } };
-      };
-      let body: ExportBody | null;
+      let body: unknown;
       try {
-        body = await response.json() as ExportBody;
+        body = await response.json();
       } catch (error) {
         // An answer that stopped mid-body never arrived; a body that is not JSON is an answer of the provider's own.
         if (interrupted(error)) return { status: 'error', bookmark, failure: TRANSPORT };
-        body = null;
+        body = undefined;
       }
-      if (!response.ok) return { status: 'error', bookmark, failure: failure('http', response.status, transientStatus(response.status)) };
-      if (body?.success !== true || body.result === undefined) {
-        return { status: 'error', bookmark, failure: failure('provider', response.status, false) };
+      // The one reading of an export answer (`readD1ExportAnswer`), put in the producer's words. Its wording is never
+      // read or carried.
+      const read = readD1ExportAnswer(response.status, body, bookmark);
+      switch (read.kind) {
+        case 'running': return { status: 'running', bookmark: read.bookmark };
+        case 'complete':
+          if (read.bookmark === null) return { status: 'error', bookmark: null, failure: failure('protocol', null, false) };
+          return { status: 'complete', bookmark: read.bookmark, signedUrl: read.signedUrl };
+        case 'ended': return { status: 'error', bookmark: read.bookmark, failure: failure('provider', null, false) };
+        case 'refused-login': return { status: 'error', bookmark, failure: failure('http', read.status, false) };
+        case 'unknown': return { status: 'error', bookmark: read.bookmark, failure: failure(read.cause, read.status, read.transient) };
       }
-      const held = body.result;
-      const at = held.at_bookmark ?? bookmark;
-      // A refusal inside a success envelope: the answer is 200 and the provider's own result did not serve the
-      // request. Its wording is never read or carried.
-      if (held.success === false || (held.status === undefined && held.error !== undefined)) {
-        return { status: 'error', bookmark, failure: failure('provider', response.status, false) };
-      }
-      if (held.status === 'error') return { status: 'error', bookmark: at, failure: failure('provider', null, false) };
-      if (held.status === 'complete') {
-        const signed = held.result?.signed_url;
-        if (signed === undefined || at === null) return { status: 'error', bookmark: at, failure: failure('protocol', null, false) };
-        return { status: 'complete', bookmark: at, signedUrl: signed };
-      }
-      if (at === null) return { status: 'error', bookmark: null, failure: failure('protocol', null, false) };
-      return { status: 'running', bookmark: at };
     },
     async readRange(url, offset, length) {
       // The signed URL is a capability of its own: it is fetched with no Authorization header.

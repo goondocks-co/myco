@@ -19,7 +19,8 @@
       "@goondocks/myco-shared/capture-rules-data": ["../myco-shared/src/capture-rules.generated.ts"],
       "@goondocks/myco-shared/dot-path": ["../myco-shared/src/dot-path.ts"],
       "@goondocks/myco-shared/member-protocol": ["../myco-shared/src/member-protocol.ts"],
-      "@goondocks/myco-shared/run-control": ["../myco-shared/src/run-control.ts"]
+      "@goondocks/myco-shared/run-control": ["../myco-shared/src/run-control.ts"],
+      "@goondocks/myco-shared/d1-export": ["../myco-shared/src/d1-export.ts"]
     },
     "lib": [
       "ES2022",

@@ -73,6 +73,10 @@
     "./run-control": {
       "import": "./dist/run-control.js",
       "types": "./dist/run-control.d.ts"
+    },
+    "./d1-export": {
+      "import": "./dist/d1-export.js",
+      "types": "./dist/d1-export.d.ts"
     }
   },
   "files": [
