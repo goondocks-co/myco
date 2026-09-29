@@ -2,7 +2,7 @@ import { repositories } from './scenarios/repositories.ts';
 import { canopy } from './scenarios/canopy.ts';
 import { skillCandidates } from './scenarios/skill-candidates.ts';
 import { afterAll, beforeAll, describe, it, test } from 'bun:test';
-import { runScenario, type ParityTarget } from './harness.ts';
+import { runScenario, type ParityScenario, type ParityTarget } from './harness.ts';
 import { bootSelfhosted } from './targets/selfhosted.ts';
 import { bootCloudflare } from './targets/cloudflare.ts';
 import { backupRestore, restoreContinuation } from './scenarios/backup-restore.ts';
@@ -32,11 +32,13 @@ import { memberSettings } from './scenarios/member-settings.ts';
 import { memberStatus } from './scenarios/member-status.ts';
 import { githubLink } from './scenarios/github-link.ts';
 import { embeddingRevisions } from './scenarios/embedding-revisions.ts';
+import { recallGold } from './scenarios/recall-gold.ts';
+import { configureSqliteLibrary } from '@myco-server-worker/platform/bun/sqlite-library.js';
 import { parseShard, selectShard } from '../../scripts/test-shards.mjs';
 import durations from '../../scripts/test-durations.json';
 import { writeFileSync } from 'node:fs';
 
-const scenarios = [restoreContinuation, repositories, canopy, skillCandidates, sessionsTitling, sessionTurns, plans, spores, recall, backupRestore, tick, dispatchQueue, scheduledTasks, cortex, replacedRun, search, grants, importParity, workerWire, codexRecording, toolBlobRetention, titlingBackfill, sessionEnd, projectCounts, objectLifecycle, tokenRefresh, captureVolume, memberSettings, memberStatus, embeddingRevisions, githubLink];
+const scenarios = [restoreContinuation, repositories, canopy, skillCandidates, sessionsTitling, sessionTurns, plans, spores, recall, backupRestore, tick, dispatchQueue, scheduledTasks, cortex, replacedRun, search, grants, importParity, workerWire, codexRecording, toolBlobRetention, titlingBackfill, sessionEnd, projectCounts, objectLifecycle, tokenRefresh, captureVolume, memberSettings, memberStatus, embeddingRevisions, githubLink, recallGold];
 const DEFAULT_SCENARIO_DURATION_MS = 15_000;
 
 if (!process.env.MYCO_PARITY) {
@@ -48,26 +50,49 @@ if (!process.env.MYCO_PARITY) {
     writeFileSync(process.env.MYCO_PARITY_PLAN_FILE, JSON.stringify(selected.map((scenario) => scenario.name)));
     test.skip('parity shard manifest', () => {});
   } else {
+    // The self-hosted target's vector store loads sqlite-vec, which needs an extension-enabled SQLite registered
+    // before the first connection opens; a no-op wherever the runtime's own library already loads extensions.
+    configureSqliteLibrary();
     const boots = [
-      { name: 'selfhosted' as const, boot: bootSelfhosted },
-      { name: 'cloudflare' as const, boot: bootCloudflare },
+      { name: 'selfhosted' as const, boot: (_scenario?: ParityScenario) => bootSelfhosted() },
+      { name: 'cloudflare' as const, boot: (scenario?: ParityScenario) => bootCloudflare(scenario?.dedicated?.cloudflare ?? {}) },
     ];
+    const shared = selected.filter((scenario) => scenario.dedicated === undefined);
+    const dedicated = selected.filter((scenario) => scenario.dedicated !== undefined);
     for (const { name, boot } of boots) {
-      describe(`[${name}]`, () => {
-        let target: ParityTarget | null = null;
-        beforeAll(async () => {
-          target = await boot();
-        }, 240_000);
-        afterAll(async () => {
-          await target?.stop();
+      if (shared.length > 0) {
+        describe(`[${name}]`, () => {
+          let target: ParityTarget | null = null;
+          beforeAll(async () => {
+            target = await boot();
+          }, 240_000);
+          afterAll(async () => {
+            await target?.stop();
+          });
+          for (const scenario of shared) {
+            it(scenario.name, async () => {
+              if (target === null) throw new Error(`${name} target never booted`);
+              await runScenario(target, scenario);
+            }, 180_000);
+          }
         });
-        for (const scenario of selected) {
+      }
+      // Each dedicated scenario boots its own target, so whatever it binds or configures reaches no other scenario.
+      for (const scenario of dedicated) {
+        describe(`[${name}] ${scenario.name}`, () => {
+          let target: ParityTarget | null = null;
+          beforeAll(async () => {
+            target = await boot(scenario);
+          }, 240_000);
+          afterAll(async () => {
+            await target?.stop();
+          });
           it(scenario.name, async () => {
             if (target === null) throw new Error(`${name} target never booted`);
             await runScenario(target, scenario);
-          }, 180_000);
-        }
-      });
+          }, scenario.dedicated!.timeoutMs);
+        });
+      }
     }
   }
 }

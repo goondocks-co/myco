@@ -14,6 +14,9 @@ import { renderMigrationFiles } from '@myco-server-worker/db/migrate.js';
 import { sqliteRelationalStore } from '@myco-server-worker/platform/bun/sqlite.js';
 import type { RelationalStore } from '@myco-server-worker/core/adapters.js';
 import { kpiWindow, median, readKpis, KPI_WINDOWS } from '@myco-server-worker/read/kpis.js';
+import { recallQuality, caseCount } from '@myco-server-worker/evals/recall-baseline.js';
+
+const baseline = { recallQuality, caseCount };
 
 const NOW = 1_700_000_000_000;
 const DAY = 86_400_000;
@@ -96,7 +99,6 @@ describe('the measures', () => {
       callsPerPrompt: report.callsPerPrompt,
       planReadsPerSession: report.planReadsPerSession,
       firstInjectionMs: report.firstInjectionMs,
-      evalPassRate: report.evalPassRate,
       byHarness: report.callsPerPromptByHarness,
     }).toEqual({
       contextPresent: { value: null, sampleSize: 0 },
@@ -104,7 +106,6 @@ describe('the measures', () => {
       callsPerPrompt: { value: null, sampleSize: 0 },
       planReadsPerSession: { value: null, sampleSize: 0 },
       firstInjectionMs: { value: null, sampleSize: 0 },
-      evalPassRate: { value: null, sampleSize: 0 },
       byHarness: [],
     });
   });
@@ -266,12 +267,15 @@ describe('the measures', () => {
     expect({ windowDays: week.windowDays, since: week.since }).toEqual({ windowDays: 7, since: NOW - 7 * DAY });
   });
 
-  it('reports no evaluation sample, the one measure with no feed behind it', async () => {
+  it('reports the recall quality this release recorded, whatever the Deployment holds or the window asked', async () => {
     const r = rig();
     r.session('s1');
     r.prompt('p1', 's1');
-    const report = await all(r.db);
-    expect(report.evalPassRate).toEqual({ value: null, sampleSize: 0 });
+    const recorded = { value: baseline.recallQuality, sampleSize: baseline.caseCount };
+    expect((await all(r.db)).recallQuality).toEqual(recorded);
+    expect((await all(rig().db)).recallQuality).toEqual(recorded);
+    expect((await readKpis(r.db, { windowDays: 7, now: NOW })).recallQuality).toEqual(recorded);
+    expect(baseline.caseCount).toBeGreaterThan(0);
   });
 });
 

@@ -218,6 +218,7 @@
     "titling backfill: off by default, started and stopped by the operator, one claim per imported session after its parse, idempotent": 18674,
     "session end: a person ends an open session, a newer live turn reopens it, an older end after that is left unapplied": 3586,
     "project counts: a deleted session is out of the project list count and latest activity while the project stays listed": 5060,
-    "object lifecycle: generation names, clock-owned deletion, expired authority, and a recovery hold": 25453
+    "object lifecycle: generation names, clock-owned deletion, expired authority, and a recovery hold": 25453,
+    "recall gold set: real prompts served through the shipped path hold to the recorded baseline": 60000
   }
 }

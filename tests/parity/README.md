@@ -31,3 +31,20 @@ interpolates into SQL goes through `lit()` from `harness.ts`.
 - Every non-health Cloudflare request must carry `cf-connecting-ip` (wrangler
   dev injects none; without a source identity the pipeline answers 503).
   `memberHeaders()`/`ownerHeaders()` already do.
+
+## Dedicated scenarios
+
+A scenario whose bindings or settings would change what the others observe
+sets `dedicated` and runs against targets booted for it alone. On Cloudflare it
+may name another Worker `main`.
+
+The recall gold set (`scenarios/recall-gold.ts`, #1154) is the one today. It:
+- configures a self-hosted embedding provider and adds `AI` and `VECTORIZE`
+  stand-ins to the Worker (`recall/worker-entry.ts`), which would otherwise
+  break the `provider_unavailable` assertions in `recall` and `search`;
+- holds each target's served blocks to
+  `packages/myco-server/src/evals/recall-baseline.ts`.
+
+After an intended change to what prompts are served, record the baseline again
+with `MYCO_EVAL_RECORD=1 npm run test:parity`. Recording regenerates only the
+baseline, and the KPI page's Recall quality reads it.
