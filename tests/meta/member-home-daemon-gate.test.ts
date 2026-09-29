@@ -54,8 +54,9 @@ describe('the 1.4 daemon paths read the member-home predicate', () => {
     expect(read('cli/tool.ts')).toContain('daemonClient.memberHomeRefusal()');
     expect(read('mcp/stdio-bridge.ts')).toContain('client.memberHomeRefusal()');
     const shared = read('cli/shared.ts');
-    expect(body(shared, 'export async function connectToDaemon(')).toContain('refuseForMemberHome(client)');
-    expect(body(shared, 'export async function connectToGlobalDaemon(')).toContain('refuseForMemberHome(client)');
+    expect(body(shared, 'export async function connectToDaemon(')).toContain('refuseForMemberHome()');
+    expect(body(shared, 'export async function connectToGlobalDaemon(')).toContain('refuseForMemberHome()');
+    expect(body(shared, 'function refuseForMemberHome(')).toContain('isMemberHome(mycoHome)');
   });
 
   it('with every place a `daemon` argv is built accounted for', () => {
