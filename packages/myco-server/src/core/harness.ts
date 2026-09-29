@@ -33,7 +33,7 @@ import { emit } from '../telemetry.js';
 import { claimQueuedRun, deploymentTaskEntriesSince, lapsedLeases, nextClaimable, recordClaimedInput, recordQueueHolder, recordTaskHolder, renewRunLease, requeueLapsedLease, UNATTRIBUTED_DISPATCH_ACTOR, type ActorCeiling, type ClaimedRunRow } from './runs.js';
 export type { ActorCeiling } from './runs.js';
 import { applyRunUpdate, ensureAgent, getDispatchActor, recordDispatch, dispatchLoad, failQueuedRun, hasSuccessorOf, INPUT_UNCHANGED, launchQueued, listQueuedAcrossProjects, recordQueued, getRun, hasLiveTaskRun, restoreDispatchCredential, returnToQueue, skipQueued, successorsSince, NO_LIMITS, type RunRow } from './runs.js';
-import { openProviderCredential } from './provider-credentials.js';
+import { openHarnessCredential, openProviderCredential } from './provider-credentials.js';
 import { leafValues } from './settings.js';
 import { HARNESS_CREDENTIALS } from '@goondocks/myco-shared/harness-providers';
 import { admissionForTask, runTimeoutForTask, UNLANDED_TASKS } from './task-catalogue.js';
@@ -890,11 +890,12 @@ async function harnessPreference(env: ServerEnv, task: string): Promise<{ prefer
 async function harnessCredentialEnv(env: ServerEnv, harness: string): Promise<Record<string, string>> {
   const declared = HARNESS_CREDENTIALS[harness];
   if (declared === undefined) return {};
-  // Only the chosen harness's own provider is opened. A claim answering every
+  // Only the chosen harness's own slot is opened. A claim answering every
   // key the Deployment holds would widen what one answer discloses to every
-  // provider at once, for keys the run cannot use.
-  if (declared.provider === 'google') return {};
-  const key = await openProviderCredential(env.db, env.wrappingKey, declared.provider);
+  // provider at once, for keys the run cannot use; and a slot another use reads
+  // (the embedding provider's) is never a run's login.
+  if (declared.slot === null) return {};
+  const key = await openHarnessCredential(env.db, env.wrappingKey, declared.slot);
   if (key === null) return {};
   // One rule decides the Anthropic variable on both paths: a subscription token
   // and an API key are the same slot under different names, and the value says

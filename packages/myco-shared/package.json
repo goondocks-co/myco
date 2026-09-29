@@ -77,6 +77,10 @@
     "./d1-export": {
       "import": "./dist/d1-export.js",
       "types": "./dist/d1-export.d.ts"
+    },
+    "./secret-slots": {
+      "import": "./dist/secret-slots.js",
+      "types": "./dist/secret-slots.d.ts"
     }
   },
   "files": [
