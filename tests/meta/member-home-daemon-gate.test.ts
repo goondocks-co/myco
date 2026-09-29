@@ -59,13 +59,32 @@ describe('the 1.4 daemon paths read the member-home predicate', () => {
     expect(body(shared, 'function refuseForMemberHome(')).toContain('isMemberHome(mycoHome)');
   });
 
+  it('in the service verbs, doctor\'s service reinstall and restart, none of which installs or starts the unit', () => {
+    const service = read('cli/service.ts');
+    const guard = body(service, 'export function assertSafeServiceMutation(');
+    expect(guard).toContain("new Set(['install', 'start', 'restart', 'reconcile'])");
+    expect(guard).toContain('isMemberHome(mycoHome)');
+    const run = body(service, 'export async function run(');
+    expect(run.indexOf('assertSafeServiceMutation(parsed')).toBeLessThan(run.indexOf("case 'install':"));
+    const reinstall = read('cli/doctor-fixes.ts');
+    const fix = reinstall.slice(reinstall.indexOf("'service-reinstall': async () => {"));
+    expect(fix.indexOf("assertSafeServiceMutation({ action: 'install' }")).toBeGreaterThan(-1);
+    expect(fix.indexOf("assertSafeServiceMutation({ action: 'install' }")).toBeLessThan(fix.indexOf('mgr.install('));
+    const restart = body(read('cli/restart.ts'), 'export async function run(');
+    expect(restart.indexOf('isMemberHome(mycoHome)')).toBeGreaterThan(-1);
+    expect(restart.indexOf('isMemberHome(mycoHome)')).toBeLessThan(restart.indexOf("client.post('/api/restart'"));
+    // Every place the service unit is built is one of the gated installs.
+    const building = sources(SRC).filter((rel) => read(rel).includes('buildServiceSpec(') && rel !== 'service/spec-builder.ts');
+    expect(building).toEqual(['cli/doctor-fixes.ts', 'cli/service.ts', 'service/self-install.ts']);
+  });
+
   it('with every place a `daemon` argv is built accounted for', () => {
     const building = sources(SRC).filter((rel) => /'daemon'\]/.test(read(rel)));
     expect(building).toEqual([
       'config/loader.ts', // a config path, not a process
       'daemon/api/restart.ts', // a running daemon re-executing itself; a member home's daemon never gets this far
       'daemon/client.ts', // spawnDaemon, gated above
-      'service/spec-builder.ts', // the service unit, installed only through ensureSelfInstalledAsService, gated above
+      'service/spec-builder.ts', // the unit's argv; every caller that installs it is gated (see 'in the service verbs')
       'upgrade/in-progress.ts', // a name for who started an update, not a process
       'upgrade/orchestrator.ts', // starts `myco daemon`, which exits at start for a member home
     ]);

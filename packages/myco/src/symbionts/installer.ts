@@ -2263,14 +2263,16 @@ export class SymbiontInstaller {
   }
 
   /**
-   * Every file global member provisioning may write or rewrite: the global
-   * hooks and MCP targets, and with them the settings target and the project
-   * member targets it retires (`all`).
+   * Every file global member provisioning writes or rewrites: the global
+   * hooks target, the one MCP file it writes (`memberMcpTargetPath`, the first
+   * of an agent's MCP targets), and with them the settings target and the
+   * project member targets it retires (`all`).
    */
   memberGlobalTargets(): { hooks: string | null; mcp: string[]; all: string[] } {
     const local = this.projectMemberInstaller();
     const hooks = this.resolveAbsoluteTarget('hooks');
-    const mcp = this.resolveAbsoluteMcpTargets().map((t) => t.path);
+    const written = this.memberMcpTargetPath();
+    const mcp = written === null ? [] : [written];
     const all = [hooks, ...mcp, this.resolveAbsoluteTarget('settings'), local.resolveAbsoluteTarget('hooks'), local.memberMcpTargetPath()];
     return { hooks, mcp, all: [...new Set(all.filter((file): file is string => file !== null))] };
   }

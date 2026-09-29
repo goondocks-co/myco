@@ -13,6 +13,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { DaemonClient } from '@myco/daemon/client.js';
 import { runSymbiontDetection } from '@myco/cli/bootstrap.js';
+import { assertSafeServiceMutation } from '@myco/cli/service.js';
 import { ensureSelfInstalledAsService } from '@myco/service/self-install.js';
 import { isMemberHome } from '@myco/member/home-role.js';
 import type { ServiceManager } from '@myco/service/types.js';
@@ -98,6 +99,23 @@ describe('a 2.0 member home and the 1.4 daemon', () => {
     expect(tool.status).toBe(1);
     expect(JSON.parse(tool.stdout).error.code).toBe('member_home');
     expect(fs.existsSync(path.join(mycoHome, 'service'))).toBe(false);
+  });
+
+  it('installs, starts and restarts no service unit through the service verbs, doctor\'s reinstall or restart', () => {
+    const project = path.join(home, 'proj');
+    fs.mkdirSync(path.join(project, '.myco'), { recursive: true });
+    fs.writeFileSync(path.join(project, '.myco', 'myco.yaml'), 'version: 12\n');
+    const agents = path.join(home, 'LaunchAgents');
+    const env = { ...process.env, HOME: home, MYCO_HOME: mycoHome, MYCO_LAUNCH_AGENTS_DIR: agents };
+    const run = (args: string[]) => spawnSync(process.execPath, [CLI, ...args], { cwd: project, env, encoding: 'utf8', timeout: 60_000, input: '' });
+    for (const args of [['service', 'install'], ['service', 'start'], ['service', 'restart'], ['service', 'reconcile'], ['restart']]) {
+      const result = run(args);
+      expect({ args, status: result.status }).toEqual({ args, status: 1 });
+      expect(result.stderr).toContain('is a Myco 2.0 member home');
+    }
+    expect(fs.existsSync(agents) ? fs.readdirSync(agents) : []).toEqual([]);
+    expect(assertSafeServiceMutation({ action: 'install' }, process.execPath, mycoHome)).toContain('is a Myco 2.0 member home');
+    expect(assertSafeServiceMutation({ action: 'stop' }, process.execPath, mycoHome)).toBeNull();
   });
 
   it('keeps 1.4 behaviour for a home with no membership', () => {

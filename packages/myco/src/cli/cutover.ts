@@ -55,9 +55,10 @@ import { stopHomeDaemon, type DaemonStop } from '../service/home-daemon.js';
 import { attributeLegacyUnits, stopUnit, unitDirectories } from '../service/legacy-units.js';
 import type { LaunchctlRunner } from '../service/launchd.js';
 import { detectMachineInstalledSymbionts, loadManifests } from '../symbionts/detect.js';
-import { removeLegacyRegistrations, scanLegacyRegistrations, type LegacyFinding } from '../symbionts/legacy-registrations.js';
+import { removeLegacyRegistrations, rewriteKeepingMode, scanLegacyRegistrations, type LegacyFinding } from '../symbionts/legacy-registrations.js';
 import { pinMachineHome, previewGlobalProvision, provisionGlobally, type ProvisionOutcome } from './member.js';
-import { legacyImportComplete, legacyReportLines, reportLines, transcriptImportComplete } from './import.js';
+import { legacyImportComplete, legacyReportLines, reportLines, STOPPED_WORDS, transcriptImportComplete } from './import.js';
+import { resolveManagedBinaryPath } from '../symbionts/installer.js';
 
 export const CUTOVER_HELP = `Usage: myco cutover [options]
 
@@ -319,6 +320,17 @@ export async function run(args: readonly string[], deps: CutoverDeps = {}): Prom
   const scanOptions = { homeDir, legacyHomes, ownHome: mycoHome, folders: roots };
   const scan = scanLegacyRegistrations(scanOptions);
   for (const { file, reason } of scan.unreadable) blockers.push(`${file} holds a Myco entry but could not be read (${reason}); fix or move it, then run again.`);
+  // A connected folder's runtime.command pin naming a 1.4 home's binary is pointed at the 2.0 binary.
+  const binary2 = resolveManagedBinaryPath(mycoHome);
+  const underHome = (file: string, home: string) => path.resolve(file).startsWith(`${path.resolve(home)}${path.sep}`);
+  const runtimePins = roots.flatMap((root) => {
+    const pin = path.join(root, '.myco', 'runtime.command');
+    let command: string;
+    try { command = fs.readFileSync(pin, 'utf8').trim(); } catch { return []; }
+    const first = command.split(/\s+/)[0] ?? '';
+    const legacy = legacyHomes.some((home) => underHome(first, home)) && !underHome(first, mycoHome);
+    return legacy ? [{ pin, command }] : [];
+  });
   const foreign = scan.findings.filter((f) => f.verdict === 'foreign');
   for (const file of [...new Set(foreign.map((f) => f.file))]) {
     const here = foreign.filter((f) => f.file === file);
@@ -371,13 +383,29 @@ export async function run(args: readonly string[], deps: CutoverDeps = {}): Prom
         return { lines: [outcome.detail], made: [`provision ${p.agent}`] };
       },
     })) },
-    { step: 4, title: 'Take 1.4 out of every other place it registered with an agent', actions: removalFiles.map((file): Action => {
+    { step: 4, title: 'Take 1.4 out of every other place it registered with an agent', actions: [...removalFiles.map((file): Action => {
       const here = removals.filter((f) => f.file === file);
       const agent = here[0].location.agent;
       const captured = Boolean(loadManifests().find((m) => m.name === agent)?.registration?.memberHooksTarget) || here[0].location.kind === 'skills';
       const why = captured ? '' : `; ${displayName(agent)} is no longer captured by Myco 2.0`;
       const hooks = here.filter((f) => f.location.kind === 'hooks').length;
-      const what = here[0].location.kind === 'skills' ? `the skill link (to ${here[0].linkTarget})` : [
+      const replacement = path.join(mycoHome, 'skills', path.basename(file));
+      if (here[0].location.kind === 'skills') {
+        const repoint = fs.existsSync(replacement);
+        return {
+          would: repoint
+            ? `${displayName(agent)}: would point the skill link ${file} (now to ${here[0].linkTarget}) at ${replacement}`
+            : `${displayName(agent)}: would remove the skill link ${file} (to ${here[0].linkTarget}); ${mycoHome} has no such skill`,
+          outcomes: here.map(removalOutcome),
+          run: async () => {
+            backup.link(file, here[0].linkTarget!);
+            const lines = removeLegacyRegistrations(file, here, legacyHomes, mycoHome).map((line) => `${displayName(agent)}: ${line}`);
+            const left = stillLegacy(here);
+            return { lines, made: here.map(removalOutcome).filter((o) => !left.has(o)) };
+          },
+        };
+      }
+      const what = [
         ...(hooks > 0 ? [`${hooks} 1.4 hook${hooks === 1 ? '' : 's'}`] : []),
         ...(here.some((f) => f.location.kind === 'mcp') ? [`the \`myco\` MCP entr${here.filter((f) => f.location.kind === 'mcp').length === 1 ? 'y' : 'ies'}`] : []),
         ...(here.some((f) => f.location.kind === 'plugin-file' || f.location.kind === 'plugin-manifest') ? ['the file'] : []),
@@ -386,13 +414,19 @@ export async function run(args: readonly string[], deps: CutoverDeps = {}): Prom
         would: `${displayName(agent)}: would remove ${what} from ${file}${why}`,
         outcomes: here.map(removalOutcome),
         run: async () => {
-          if (here[0].location.kind === 'skills') backup.link(file, here[0].linkTarget!);
           const lines = removeLegacyRegistrations(file, here, legacyHomes, mycoHome).map((line) => `${displayName(agent)}: ${line}${why}`);
           const left = stillLegacy(here);
           return { lines, made: here.map(removalOutcome).filter((o) => !left.has(o)) };
         },
       };
-    }) },
+    }), ...runtimePins.map(({ pin, command }): Action => ({
+      would: `would point ${pin} (now \`${command}\`, a 1.4 binary) at ${binary2}`, outcomes: [`runtime ${pin}`],
+      run: async () => {
+        if (!earlierCopyHolds(mycoHome, pin)) backup.take(pin);
+        rewriteKeepingMode(pin, `${binary2}\n`);
+        return { lines: [`pointed ${pin} at ${binary2}`], made: fs.readFileSync(pin, 'utf8').trim() === binary2 ? [`runtime ${pin}`] : [] };
+      },
+    }))] },
     { step: 5, title: 'Hand the agents\' settings to 2.0', actions: [
       ...claimsHomes.filter((h) => readClaim(SYMBIONT_CONFIG_SUBSYSTEM, h)?.owner !== mycoHome).map((claimsHome): Action => ({
         would: `would point the ${SYMBIONT_CONFIG_SUBSYSTEM} claim in ${path.join(claimsHome, 'claims')} at ${mycoHome}, so a 1.4 daemon that comes back leaves the agents alone`,
@@ -515,7 +549,10 @@ export async function run(args: readonly string[], deps: CutoverDeps = {}): Prom
   );
   if (transcripts.refused !== undefined) problem(transcripts.refused);
   for (const line of reportLines(transcripts, false)) out(`   ${line}`);
-  if (!transcriptImportComplete(transcripts)) problem('the transcript import stopped before it finished (above); run the cutover again to finish it');
+  if (!transcriptImportComplete(transcripts)) {
+    const why = transcripts.projects.filter((p) => p.endedBy !== undefined).map((p) => `${p.projectId}: ${STOPPED_WORDS[p.endedBy!] ?? p.endedBy}`);
+    problem(`the transcript import stopped before it finished (${why.join('; ') || transcripts.refused || 'no reason given'}); run the cutover again to finish it`);
+  }
   out(ok ? 'Cutover complete.' : 'Cutover finished with the problems above; run it again once they are settled.');
   return ok;
 }

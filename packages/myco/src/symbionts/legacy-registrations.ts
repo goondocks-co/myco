@@ -261,19 +261,30 @@ export function rewriteKeepingMode(file: string, content: string): void {
   atomicWriteFileSync(file, content, { mode });
 }
 
-/** Drop every hook entry whose command is a 1.4 one, and whatever the drop leaves empty. */
+const isRecord = (v: unknown): v is Record<string, unknown> => Boolean(v) && typeof v === 'object' && !Array.isArray(v);
+const isLegacyHook = (item: unknown, legacyHomes: readonly string[]): boolean =>
+  isRecord(item) && typeof item.command === 'string' && hookVerdict(item.command, legacyHomes) === 'legacy';
+
+/**
+ * Drop every hook entry whose command is a 1.4 one, then every group the drop
+ * left without hooks, then every event left without groups. Every other entry
+ * and key is kept as it was.
+ */
 function withoutLegacyHooks(node: unknown, legacyHomes: readonly string[]): unknown {
   if (Array.isArray(node)) {
-    return node
-      .filter((item) => !(item && typeof item === 'object' && typeof (item as Record<string, unknown>).command === 'string'
-        && hookVerdict((item as Record<string, unknown>).command as string, legacyHomes) === 'legacy'))
-      .map((item) => withoutLegacyHooks(item, legacyHomes))
-      .filter((item) => !(item && typeof item === 'object' && !Array.isArray(item) && Array.isArray((item as Record<string, unknown>).hooks)
-        && ((item as Record<string, unknown>).hooks as unknown[]).length === 0));
+    const out: unknown[] = [];
+    for (const item of node) {
+      if (isLegacyHook(item, legacyHomes)) continue;
+      const hadHooks = isRecord(item) && Array.isArray(item.hooks) && item.hooks.length > 0;
+      const kept = withoutLegacyHooks(item, legacyHomes);
+      if (hadHooks && !(isRecord(kept) && Array.isArray(kept.hooks) && kept.hooks.length > 0)) continue;
+      out.push(kept);
+    }
+    return out;
   }
-  if (!node || typeof node !== 'object') return node;
+  if (!isRecord(node)) return node;
   const out: Record<string, unknown> = {};
-  for (const [key, value] of Object.entries(node as Record<string, unknown>)) {
+  for (const [key, value] of Object.entries(node)) {
     const kept = withoutLegacyHooks(value, legacyHomes);
     if (Array.isArray(value) && Array.isArray(kept) && value.length > 0 && kept.length === 0) continue;
     out[key] = kept;

@@ -139,7 +139,7 @@ const SKIP_WORDS: Readonly<Record<string, string>> = {
 };
 
 /** What a person is told about a pass that stopped early, in the same vocabulary. */
-const STOPPED_WORDS: Readonly<Record<string, string>> = {
+export const STOPPED_WORDS: Readonly<Record<string, string>> = {
   parked: 'the Deployment refused it for its storage quota; update the Deployment',
   unauthorized: 'this machine is not signed in to that Deployment',
   route_missing: 'that Deployment does not offer import',

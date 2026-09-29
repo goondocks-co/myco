@@ -34,6 +34,7 @@ import { stopHomeDaemon } from '@myco/service/home-daemon.js';
 import type { LaunchctlRunner } from '@myco/service/launchd.js';
 import { resolvePackageRoot } from '@myco/symbionts/detect.js';
 import { hookCommands } from '@myco/symbionts/member-hooks.js';
+import { resolveManagedBinaryPath } from '@myco/symbionts/installer.js';
 import { rootSlug } from '@myco/symbionts/transcript-attribution.js';
 import { memberRig, tempMycoHome, TEST_MACHINE_ID, type MemberRig } from '../member/helpers/server.js';
 
@@ -370,6 +371,9 @@ describe('myco cutover', () => {
     fs.mkdirSync(skills, { recursive: true });
     for (const name of ['myco', 'myco-old']) fs.symlinkSync(path.join(m.legacyHome, 'skills', name), path.join(skills, name));
 
+    const dry = (await m.run(['--dry-run'])).out.join('\n');
+    expect(dry).toContain(`would point the skill link ${path.join(skills, 'myco')} (now to ${path.join(m.legacyHome, 'skills', 'myco')}) at ${path.join(m.mycoHome, 'skills', 'myco')}`);
+    expect(dry).toContain(`would remove the skill link ${path.join(skills, 'myco-old')} (to ${path.join(m.legacyHome, 'skills', 'myco-old')}); ${m.mycoHome} has no such skill`);
     const result = await m.run();
     expect(result.err).toEqual([]);
     expect(result.ok).toBe(true);
@@ -393,6 +397,57 @@ describe('myco cutover', () => {
     expect(restore).toContain(`rm -f '${path.join(m.legacyHome, 'runtime.home')}'`);
     expect(restore).toContain(`'${path.join(m.agentsDir, `${DAEMON_LABEL}.plist`)}'`);
     expect(result.out.join('\n')).toContain(`run the commands in ${path.join(dir, 'restore.md')}`);
+  });
+
+  it('plans a removal for every MCP file of an agent that provisioning does not write (Cline)', async () => {
+    const legacyBin = path.join(m.legacyHome, 'bin', 'myco');
+    const written = path.join(m.home, '.cline', 'data', 'settings', 'cline_mcp_settings.json');
+    const other = path.join(m.home, '.cline', 'mcp.json');
+    for (const file of [written, other]) writeJson(file, { mcpServers: { myco: { type: 'stdio', command: legacyBin, args: ['mcp'] }, mine: { command: 'mine' } } });
+    const result = await m.run([], { agents: ['claude-code', 'cline'] });
+    expect(result.err).toEqual([]);
+    expect(result.ok).toBe(true);
+    // Provisioning wrote the member's entry into the one file it writes; the other file's 1.4 entry was planned and removed.
+    const member = (readJson(written).mcpServers as Record<string, Record<string, unknown>>).myco;
+    expect(JSON.stringify(member)).toContain(CREDENTIAL_FLAG);
+    expect(readJson(other).mcpServers).toEqual({ mine: { command: 'mine' } });
+    expect(m.planned[0].some((o) => o.startsWith(`remove ${other} :: mcp`))).toBe(true);
+    expect(m.planned[0].some((o) => o.startsWith(`remove ${written} `))).toBe(false);
+    expect(m.done).toEqual(m.planned[0]);
+  });
+
+  it('leaves no empty hook group or event behind, and keeps every entry that is not Myco\'s', async () => {
+    const legacy = (event: string) => ({ type: 'command', command: `${path.join(m.legacyHome, 'bin', 'myco')} hook ${event} --symbiont claude-code --myco-managed` });
+    const projectSettings = path.join(m.root, '.claude', 'settings.json');
+    writeJson(projectSettings, {
+      permissions: { allow: ['Bash(ls)'] },
+      hooks: {
+        SessionStart: [{ hooks: [legacy('session-start')] }],
+        PreToolUse: [{ matcher: 'Bash', hooks: [legacy('pre-tool-use')] }, { matcher: 'Edit', hooks: [{ type: 'command', command: 'lint' }] }],
+        Stop: [{ hooks: [legacy('stop'), { type: 'command', command: 'echo mine' }] }],
+      },
+    });
+    const result = await m.run();
+    expect(result.ok).toBe(true);
+    expect(readJson(projectSettings)).toEqual({
+      permissions: { allow: ['Bash(ls)'] },
+      hooks: {
+        PreToolUse: [{ matcher: 'Edit', hooks: [{ type: 'command', command: 'lint' }] }],
+        Stop: [{ hooks: [{ type: 'command', command: 'echo mine' }] }],
+      },
+    });
+  });
+
+  it('points a connected folder\'s runtime pin at the 2.0 binary when it names a 1.4 binary, and backs it up', async () => {
+    const pin = path.join(m.root, '.myco', 'runtime.command');
+    fs.mkdirSync(path.dirname(pin), { recursive: true });
+    fs.writeFileSync(pin, `${path.join(m.legacyHome, 'bin', 'myco')}\n`, { mode: 0o644 });
+    const dry = await m.run(['--dry-run']);
+    expect(dry.out.join('\n')).toContain(`would point ${pin} (now \`${path.join(m.legacyHome, 'bin', 'myco')}\`, a 1.4 binary) at ${resolveManagedBinaryPath(m.mycoHome)}`);
+    const result = await m.run();
+    expect(result.ok).toBe(true);
+    expect(fs.readFileSync(pin, 'utf8').trim()).toBe(resolveManagedBinaryPath(m.mycoHome));
+    expect(backupsOf(pin)).toHaveLength(1);
   });
 
   it('fails when a 1.4 registration is still there once every change is made', async () => {
@@ -565,7 +620,7 @@ describe('myco cutover', () => {
     };
     const result = await m.run([], { fetch: refusing });
     expect(result.ok).toBe(false);
-    expect(result.err.join('\n')).toContain('the transcript import stopped before it finished');
+    expect(result.err.join('\n')).toMatch(/the transcript import stopped before it finished \(proj_1: [^)]+\)/);
   });
 
   /** Everything the cutover would change, byte for byte, to show a refused run changed none of it. */
