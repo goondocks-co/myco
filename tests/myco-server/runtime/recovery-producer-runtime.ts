@@ -79,7 +79,7 @@ EXPORT.set(HEAD, 0);
 EXPORT.fill(0x20, HEAD.byteLength);
 
 /** A loopback stand-in for the provider: an export that runs for a set number of polls, then a signed download. */
-function stubProvider(port: number, pollsBeforeComplete: number, options: { completeAfterMs?: number; pollDelayMs?: number; refuseInner?: boolean } = {}) {
+function stubProvider(port: number, pollsBeforeComplete: number, options: { completeAfterMs?: number; pollDelayMs?: number; refuseInner?: boolean; startAnswer?: number } = {}) {
   const state = {
     polls: 0, ranges: 0, tokens: [] as string[], signedAuth: [] as Array<string | null>, gone: false,
     /** Every bookmark a poll carried, in order; a fresh export carries none. */
@@ -98,6 +98,8 @@ function stubProvider(port: number, pollsBeforeComplete: number, options: { comp
         const carried = asked.current_bookmark ?? null;
         state.bookmarks.push(carried);
         if (carried === null) state.starts += 1;
+        // A request that starts an export, answered with a status that says nothing about whether it did.
+        if (carried === null && options.startAnswer !== undefined) return new Response('unavailable', { status: options.startAnswer });
         if (options.pollDelayMs !== undefined) await Bun.sleep(options.pollDelayMs);
         // HTTP 200 with an outer success and an inner refusal.
         if (options.refuseInner === true || state.refusing) {
@@ -672,16 +674,16 @@ try {
     await startWorker(refusingPort, 'manual', 'refusal-state');
     const admittedAgainstRefusal = await call('/admit');
     check('an attempt is admitted against a provider that will refuse', admittedAgainstRefusal.stage, 'export');
-    // An export that runs and saves a bookmark, then a refusal of that bookmark: the export starts again once,
-    // inside its bound.
+    // An export that runs and saves a bookmark, then a refusal of that bookmark that does not say it ended: the
+    // attempt follows that export on and never starts another beside it (#1480).
     const polled = await call(`/continue?limits=${encodeURIComponent(STEP)}`);
     const holding = await call('/status');
     check('the attempt holds a bookmark before the refusal', [polled.stage, holding.export.bookmark], ['export', true]);
     await refusing.refuse();
-    const restarted = await call(`/continue?limits=${encodeURIComponent(STEP)}`);
-    const afterRestart = await call('/status');
-    check('a refused bookmark restarts the export within its bound, and holds no signed download',
-      [restarted.stage, afterRestart.export.reExports, afterRestart.export.bookmark], ['export', 1, false]);
+    const followed = await call(`/continue?limits=${encodeURIComponent(STEP)}`);
+    const afterRefusal = await call('/status');
+    check('a refused bookmark is followed on, not restarted: the attempt keeps it and asks for no second export',
+      [followed.stage, afterRefusal.export.reExports, afterRefusal.export.bookmark], ['export', 0, true]);
     let refusalStage = admittedAgainstRefusal.stage;
     let drives = 0;
     while (refusalStage !== 'failed' && drives < 12) {
@@ -689,15 +691,32 @@ try {
       drives += 1;
     }
     const refusedStatus = await call('/status');
-    check('an inner refusal ends the attempt instead of polling it forever',
-      [refusalStage, refusedStatus.error, refusedStatus.stage], ['failed', 'export_failed', 'failed']);
+    check('an inner refusal ends the attempt within its transient bound instead of polling it forever',
+      [refusalStage, refusedStatus.error, refusedStatus.stage], ['failed', 'provider_unavailable', 'failed']);
     const seenByRefusal = await refusing.state();
     note('refusal provider calls', { polls: seenByRefusal.polls, drives, reExports: refusedStatus.export.reExports });
-    check('the refusal was answered within the re-export bound, not by endless polling',
-      [seenByRefusal.polls <= 8, refusedStatus.export.reExports <= 3], [true, true]);
+    check('the refusal never started a second export beside the one the attempt held', [seenByRefusal.starts, refusedStatus.export.reExports], [1, 0]);
     check('the source is not reported paused once the attempt is terminal', (await call('/continue')).sourcePaused, false);
     check('no provider text and no credential reached the owner status', /provider-controlled|Bearer/.test(JSON.stringify(refusedStatus)), false);
   } finally { refusing.server.stop(true); }
+  // A request that starts an export, answered 503 after it landed, on real workerd (#1480).
+  await stop(worker!, 'SIGTERM');
+  worker = null;
+  const lostPort = await freePort();
+  const lost = stubProvider(lostPort, 99, { startAnswer: 503 });
+  try {
+    await startWorker(lostPort, 'manual', 'lost-start-state');
+    check('an attempt is admitted against a provider whose first answer settles nothing', (await call('/admit')).stage, 'export');
+    const spent = await call(`/continue?limits=${encodeURIComponent(STEP)}`);
+    check('the unsettled start is spent as a transient failure', [spent.stage, spent.error], ['export', 'provider_unavailable']);
+    const waits: Array<{ stage: string; progressed: boolean; sourcePaused: boolean }> = [];
+    for (let drive = 0; drive < 3; drive += 1) {
+      const next = await call(`/continue?limits=${encodeURIComponent(STEP)}`);
+      waits.push({ stage: next.stage, progressed: next.progressed, sourcePaused: next.sourcePaused });
+    }
+    check('later continuations wait it out, sending nothing', waits, Array(3).fill({ stage: 'export', progressed: false, sourcePaused: false }));
+    check('the request that may have started an export was sent once', (await lost.state()).starts, 1);
+  } finally { lost.server.stop(true); }
 } catch (error) {
   failure = error;
   console.error(error);

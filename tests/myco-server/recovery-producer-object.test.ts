@@ -7,7 +7,7 @@
 import { expect, it } from 'bun:test';
 import { Database } from 'bun:sqlite';
 import { RecoveryProducer } from '@myco-server-worker/platform/cloudflare/recovery-producer-object.js';
-import { PRODUCER_STALL_MS, type RecoveryAdmission } from '@myco-server-worker/core/recovery-producer.js';
+import { PRODUCER_LIMITS, PRODUCER_STALL_MS, type RecoveryAdmission } from '@myco-server-worker/core/recovery-producer.js';
 import { settleOpenHold } from '@myco-server-worker/core/recovery-hold.js';
 import { Stalled } from '@myco-server-worker/core/recovery-inventory.js';
 import { acquireRecoveryHold } from '@myco-server-worker/core/object-release.js';
@@ -325,4 +325,38 @@ it.each([
     } finally { e.sqlite.close(); }
   }
   sql.close();
+});
+
+it('keeps an export whose start was never answered as one no attempt sends another beside, across a restart and the next admission (#1480)', async () => {
+  const sql = new Database(':memory:');
+  const bindings = { HARNESS_LAUNCH_MODE: 'record', MYCO_RECOVERY_API_ORIGIN: 'http://127.0.0.1:9' };
+  const producer = producerOver(sql, [], undefined, {}, bindings);
+  const first = await producer.admit(admission('token-lost'));
+  const sent: Array<string | null> = [];
+  let answer: () => Response = () => { throw new TypeError('fetch failed'); };
+  const original = globalThis.fetch;
+  globalThis.fetch = (async (_input: RequestInfo | URL, init?: RequestInit) => {
+    sent.push((JSON.parse(String(init?.body)) as { current_bookmark?: string }).current_bookmark ?? null);
+    return answer();
+  }) as typeof fetch;
+  const requested = (id: number) => (sql.query('SELECT export_requested_at AS at, bookmark FROM attempts WHERE id = ?').get(id) as { at: number | null; bookmark: string | null });
+  try {
+    // The request that starts the export lands and its answer is lost.
+    expect((await producer.continue()).error).toBe('provider_unavailable');
+    expect({ sent, recorded: requested(first.attempt!).at !== null }).toEqual({ sent: [null], recorded: true });
+    // After a restart of the object, and after that attempt ends and another is admitted, nothing asks again.
+    expect((await producerOver(sql, [], undefined, {}, bindings).continue()).progressed).toBe(false);
+    sql.run("UPDATE attempts SET stage = 'failed', error = 'provider_unavailable' WHERE id = ?", [first.attempt!]);
+    const second = await producer.admit(admission('token-next'));
+    expect(second.attempt).not.toBe(first.attempt);
+    expect((await producer.continue()).progressed).toBe(false);
+    expect(sent).toEqual([null]);
+    // Once the window after that request has passed, the next attempt starts its own.
+    sql.run('UPDATE attempts SET export_requested_at = ? WHERE id = ?', [Date.now() - PRODUCER_LIMITS.exportStaleMs - 1, first.attempt!]);
+    answer = () => Response.json({ success: true, errors: [], result: { success: true, status: 'active', at_bookmark: 'bm-2' } });
+    await producer.continue({ ...PRODUCER_LIMITS, maxPollsPerStep: 1 });
+    expect(sent).toEqual([null, null]);
+    expect(requested(second.attempt!)).toMatchObject({ bookmark: 'bm-2' });
+    expect(requested(second.attempt!).at).not.toBeNull();
+  } finally { globalThis.fetch = original; sql.close(); }
 });

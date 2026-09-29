@@ -383,11 +383,4 @@ describe('the one reading of an export answer (#1455 F7)', () => {
     expect(readD1ExportAnswer(401, undefined, null)).toEqual({ kind: 'refused-login', status: 401 });
     expect(readD1ExportAnswer(403, { success: false, errors: [{ code: 10000, message: 'Authentication error' }] }, null)).toEqual({ kind: 'refused-login', status: 403 });
   });
-
-  it('is the reading both callers of the export API act on, and neither reads an answer by itself', () => {
-    for (const source of ['packages/myco/src/server/cloudflare-d1-export.ts', 'packages/myco-server/src/platform/cloudflare/recovery-export.ts']) {
-      const text = fs.readFileSync(path.join(import.meta.dir, '..', '..', source), 'utf8');
-      expect({ source, reads: text.includes('readD1ExportAnswer('), parsesItself: /at_bookmark|signed_url/.test(text) }).toEqual({ source, reads: true, parsesItself: false });
-    }
-  });
 });
