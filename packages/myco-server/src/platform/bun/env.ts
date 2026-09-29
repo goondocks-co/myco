@@ -5,7 +5,7 @@
  * filesystem path or a container primitive.
  */
 import type { Database } from 'bun:sqlite';
-import type { BlobFailureClassifier, OwnerBindings, PlatformDescriptor, ServerEnv } from '../../core/adapters.js';
+import type { BlobFailureClassifier, JobBudget, OwnerBindings, PlatformDescriptor, ServerEnv } from '../../core/adapters.js';
 import { classifySqliteError, sqliteRelationalStore } from './sqlite.js';
 import { diskBlobStore, DIGEST_MISMATCH_MESSAGE } from './blobs.js';
 import { inProcessRateLimiter } from './limiter.js';
@@ -52,6 +52,12 @@ export interface BunServerConfig extends OwnerBindings {
 export const classifyBlobFailureOf: BlobFailureClassifier = (message) =>
   message.includes(DIGEST_MISMATCH_MESSAGE) ? 'digest' : null;
 
+/**
+ * One pass of a draining job on this target. Its store and blobs are local, so no platform caps the calls; the count
+ * bounds one pass's work so the wake loop answers between passes, and the wall time is the same as every target's.
+ */
+export const BUN_JOB_BUDGET: JobBudget = { calls: 2_000, wallMs: 15_000 };
+
 export function bunPlatform(config: BunServerConfig): PlatformDescriptor {
   // Usability, not merely presence: an open handle that cannot answer a trivial
   // query is as missing as no handle at all, and is the shape a detached volume
@@ -84,6 +90,7 @@ export function bunPlatform(config: BunServerConfig): PlatformDescriptor {
     ],
     classifyError: classifySqliteError,
     classifyBlobFailure: classifyBlobFailureOf,
+    jobBudget: BUN_JOB_BUDGET,
   };
 }
 

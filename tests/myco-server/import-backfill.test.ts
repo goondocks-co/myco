@@ -20,8 +20,9 @@
 import { registerBlob } from './helpers/d1.js';
 import { refused } from './helpers/outcomes.js';
 import { describe, expect, it } from 'bun:test';
-import { parseTranscripts, pendingImportedTranscripts, pendingTranscriptBytes, TRANSCRIPT_PARSE_CALLS_PER_PASS } from '@myco-server-worker/ingest/parse.js';
-import { engineAssertions } from '@myco-server-worker/core/tick.js';
+import { laneSelectionSql, PARSER_VERSION, parseTranscripts, pendingTranscripts } from '@myco-server-worker/ingest/parse.js';
+import { CHAINED_WAKE_MS, engineAssertions, runTick, WAKE_INTERVALS } from '@myco-server-worker/core/tick.js';
+import { nextWakeDelayMs } from '@myco-server-worker/core/power.js';
 import { ingestEvent } from '@myco-server-worker/ingest/events.js';
 import { listSessions } from '@myco-server-worker/read/sessions.js';
 import { settingsWriter } from '@myco-server-worker/core/settings.js';
@@ -91,33 +92,86 @@ async function rig() {
 }
 
 describe('an imported transcript in the store', () => {
-  it('is parsed behind live work, whatever their receipts, and a live backlog spends the whole budget first', async () => {
+  it('is read beside live work: while it waits, live reading takes at most half the budget, and it moves in the same pass', async () => {
     const r = await rig();
     // Received FIRST and oldest, so a receipt-ordered queue takes it first.
     expect((await r.ship('s-import', tx('tx_import'), body(1), 'import', NOW - 100_000)).persisted).toBe(true);
-    // More live transcripts than one tick's call budget can read. The lane is
-    // what keeps the backfill from taking a share of that budget while a live
-    // backlog is waiting.
-    for (let i = 0; i < TRANSCRIPT_PARSE_CALLS_PER_PASS; i += 1) {
+    // More live transcripts than one pass's calls can read.
+    for (let i = 0; i < 12; i += 1) {
       expect((await r.ship(`s-live-${i}`, tx(`live${i}`), body(i + 2), 'cli', NOW)).persisted).toBe(true);
     }
 
-    await parseTranscripts(r.serverEnv, NOW);
+    await parseTranscripts(r.serverEnv, NOW, { budget: { calls: 12, wallMs: 60_000 } });
     const parsed = (id: string) => (r.sqlite.query(`SELECT parsed_offset FROM transcripts WHERE transcript_id = ?`).get(id) as { parsed_offset: number }).parsed_offset;
     const liveParsed = (r.sqlite.query(`SELECT COUNT(*) AS n FROM transcripts WHERE imported_at IS NULL AND parsed_offset > 0`).get() as { n: number }).n;
-    expect({ importParsed: parsed(tx('tx_import')), liveParsed: liveParsed > 0 }).toEqual({ importParsed: 0, liveParsed: true });
+    expect({ importParsed: parsed(tx('tx_import')) > 0, liveParsed: liveParsed > 0 }).toEqual({ importParsed: true, liveParsed: true });
+  });
 
-    // Once the live backlog is drained the backfill is read; it is deferred,
-    // never abandoned.
-    for (let tick = 0; tick < 20; tick += 1) await parseTranscripts(r.serverEnv, NOW);
-    expect(parsed(tx('tx_import'))).toBeGreaterThan(0);
+  it('moves every pass while three live transcripts keep growing: live reading never starves an import', async () => {
+    const r = await rig();
+    // A long import: far more turns than a few passes can read.
+    let history = '';
+    for (let i = 0; i < 400; i += 1) history += body(2_000 + i);
+    expect((await r.ship('s-history', tx('history'), history, 'import', NOW - 100_000)).persisted).toBe(true);
+    const parsed = (id: string) => (r.sqlite.query(`SELECT parsed_offset FROM transcripts WHERE transcript_id = ?`).get(id) as { parsed_offset: number }).parsed_offset;
+    const grown = [0, 0, 0];
+    let imported = 0;
+    for (let pass = 0; pass < 5; pass += 1) {
+      // Each live session grows by more than one pass's whole budget can read.
+      for (let k = 0; k < 3; k += 1) {
+        let text = '';
+        for (let turn = 0; turn < 40; turn += 1) text += body(10_000 + pass * 1_000 + k * 100 + turn);
+        expect((await r.ship(`s-grow-${k}`, tx(`grow${k}`), text, 'cli', NOW + pass, grown[k])).persisted).toBe(true);
+        grown[k] += new TextEncoder().encode(text).length;
+      }
+      await parseTranscripts(r.serverEnv, NOW + pass, { budget: { calls: 24, wallMs: 60_000 } });
+      const now = parsed(tx('history'));
+      expect({ pass, moved: now > imported }).toEqual({ pass, moved: true });
+      imported = now;
+    }
+    // Live work moved too: the cap is a share, not a queue behind the import.
+    expect([0, 1, 2].some((k) => parsed(tx(`grow${k}`)) > 0)).toBe(true);
+  });
+
+  it('reads the import with least left to read first, whatever order they arrived in', async () => {
+    const r = await rig();
+    let long = '';
+    for (let i = 0; i < 200; i += 1) long += body(4_000 + i);
+    await r.ship('s-long', tx('long'), long, 'import', NOW - 200_000);
+    await r.ship('s-short', tx('short'), body(4_999), 'import', NOW - 100_000);
+    const state = (id: string) => r.sqlite.query(`SELECT parsed_offset, size FROM transcripts WHERE transcript_id = ?`).get(id) as { parsed_offset: number; size: number };
+    await parseTranscripts(r.serverEnv, NOW, { budget: { calls: 4, wallMs: 60_000 } });
+    expect({ short: state(tx('short')).parsed_offset === state(tx('short')).size, long: state(tx('long')).parsed_offset }).toEqual({ short: true, long: 0 });
+  });
+
+  it('chains the next wake while a backlog remains, and returns to the cadence once it is read', async () => {
+    const r = await rig();
+    let history = '';
+    for (let i = 0; i < 60; i += 1) history += body(3_000 + i);
+    await r.ship('s-history', tx('history'), history, 'import', NOW);
+    const env = { ...r.serverEnv, platform: { ...r.serverEnv.platform, jobBudget: { calls: 6, wallMs: 60_000 } } };
+    const first = await runTick(env, NOW);
+    expect({ more: first.jobs.find((j) => j.name === 'transcript-parse')?.more, next: first.nextWakeMs, waiting: first.backlog.imported.transcripts })
+      .toEqual({ more: true, next: CHAINED_WAKE_MS, waiting: 1 });
+    let last = first;
+    for (let tick = 1; tick < 200 && last.jobs.find((j) => j.name === 'transcript-parse')?.more === true; tick += 1) last = await runTick(env, NOW + tick);
+    expect({ more: last.jobs.find((j) => j.name === 'transcript-parse')?.more, next: last.nextWakeMs, waiting: last.backlog.transcripts })
+      .toEqual({ more: false, next: nextWakeDelayMs(last.state, WAKE_INTERVALS), waiting: 0 });
+    expect(last.nextWakeMs).toBeGreaterThan(CHAINED_WAKE_MS);
+  });
+
+  it('selects each half through the partial backlog index, so a store of finished transcripts is never scanned', () => {
+    const { sqlite } = sqliteEnv();
+    for (const lane of ['live', 'imported'] as const) {
+      const plan = (sqlite.query(`EXPLAIN QUERY PLAN ${laneSelectionSql(lane).replace('?', String(PARSER_VERSION))}`).all() as { detail: string }[]).map((r) => r.detail);
+      expect({ lane, indexed: plan.some((d) => /^SEARCH transcripts USING INDEX idx_transcripts_backlog \(imported_at/.test(d)) }).toEqual({ lane, indexed: true });
+    }
   });
 
   it('counts as pending work but holds the Deployment no deeper than idle', async () => {
     const r = await rig();
     await r.ship('s-import', tx('tx_import'), body(1), 'import', NOW);
-    expect(await pendingTranscriptBytes(r.serverEnv.db)).toBe(1);
-    expect(await pendingImportedTranscripts(r.serverEnv.db)).toBe(1);
+    expect(await pendingTranscripts(r.serverEnv.db)).toMatchObject({ transcripts: 1, imported: { transcripts: 1 } });
 
     const imported = await engineAssertions(r.serverEnv, NOW);
     expect(imported.find((a) => a.name === 'import:pending')).toEqual({ name: 'import:pending', maxDepth: 'idle' });

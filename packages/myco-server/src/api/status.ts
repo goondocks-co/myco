@@ -1,4 +1,5 @@
 import type { CapabilityStatus, ServerEnv } from '../core/adapters.js';
+import { pendingTranscripts, type TranscriptBacklog } from '../ingest/parse.js';
 import type { CredentialContext, OwnerContext } from '../context.js';
 import { SERVER_SCHEMA_VERSION } from '../constants.js';
 import { emptyBodyRoute } from '../auth/members.js';
@@ -62,8 +63,11 @@ export async function handleStatus(env: ServerEnv, ctx: OwnerContext): Promise<R
   } = { available: false, workersBusy: 0, runsQueued: 0, recentWithinMs: CONTACT_RECENT_MS, fleet: [] };
   let found: number | null = null;
   let projects: Awaited<ReturnType<typeof listVisibleProjects>> = [];
+  let transcriptBacklog: TranscriptBacklog | null = null;
   try {
     found = await schemaVersion(env.db);
+    // The same count the tick reads to decide how awake the Deployment stays.
+    transcriptBacklog = await pendingTranscripts(env.db);
     const counts = await workerLiveness(env.db, ctx.now);
     workers = { available: true, ...counts, recentWithinMs: CONTACT_RECENT_MS, fleet: await readWorkerFleet(env.db, ctx.now) };
     projects = await listVisibleProjects(env.db, ctx.member, { includeArchived: true });
@@ -79,6 +83,8 @@ export async function handleStatus(env: ServerEnv, ctx: OwnerContext): Promise<R
     // configuration; a worker attaches from elsewhere, and the two are reported
     // apart. `fleet` carries what each worker last reported about itself.
     workers,
+    // Transcripts stored and not yet read into sessions: how many, and the bytes they have left.
+    transcriptBacklog,
     projects: projects.map((p) => ({ projectId: p.projectId, lastActivityAt: p.lastActivityAt, sessionCount: p.sessionCount, archivedAt: p.archivedAt })),
   });
 }

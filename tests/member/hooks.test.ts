@@ -71,7 +71,7 @@ const run = (name: Parameters<typeof runHook>[0], raw: Record<string, unknown>, 
 /** The Deployment's parse over every transcript the hooks shipped, run to completion as the tick would. */
 async function parseAll(): Promise<void> {
   for (let pass = 0; pass < 20; pass += 1) {
-    if ((await parseTranscripts(rig.env.serverEnv, Date.now())) === 0) return;
+    if ((await parseTranscripts(rig.env.serverEnv, Date.now())).changed === 0) return;
   }
 }
 /** Kinds on the member's side of the wire, in arrival order. */

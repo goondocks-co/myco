@@ -19,7 +19,7 @@ export const AHEAD_OF_CLOCK = (field: string): string => `${field} is more than 
 /** The refusal a member sees when a payload is over the cap; it names the route that takes large content. */
 export const PAYLOAD_CAP_REASON = `payload exceeds ${MAX_PAYLOAD_BYTES} bytes; spill to POST /blobs/{sha256} and reference it`;
 
-/** How an event reached the Deployment. `import` is a member shipping bytes that already existed on its disk (#1148): the same kinds and the same path, marked so the parse orders it behind live work and no title is scheduled for a session that ended weeks ago. */
+/** How an event reached the Deployment. `import` is a member shipping bytes that already existed on its disk (#1148): the same kinds and the same path, marked so the parse reads it beside live work, never ahead of it, and no title is scheduled for a session that ended weeks ago. */
 export type Channel = 'cli' | 'http' | 'import';
 
 export interface Producer {

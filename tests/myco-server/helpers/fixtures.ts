@@ -66,6 +66,8 @@ export interface MemoryBlobStore extends BlobStore {
   puts: string[];
   heads: string[];
   deletes: string[];
+  /** Every read, with the byte it asked to start from. */
+  gets: Array<{ key: string; offset: number }>;
   /** When set, the next put throws an error with this message. */
   failNextPut: string | null;
   /**
@@ -85,20 +87,23 @@ export function memoryBlobStore(): MemoryBlobStore {
     puts: [],
     heads: [],
     deletes: [],
+    gets: [],
     failNextPut: null,
     async head(key) {
       store.heads.push(key);
       const o = store.objects.get(key);
       return o ? ({ size: o.size } satisfies StoredObject) : null;
     },
-    async get(key) {
+    async get(key, options) {
+      store.gets.push({ key, offset: options?.range?.offset ?? 0 });
       const o = store.objects.get(key);
       if (!o) return null;
+      const bytes = o.bytes.subarray(options?.range?.offset ?? 0);
       return {
         size: o.size,
         body: new ReadableStream({
           start(controller) {
-            controller.enqueue(o.bytes);
+            controller.enqueue(bytes);
             controller.close();
           },
         }),

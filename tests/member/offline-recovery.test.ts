@@ -73,7 +73,7 @@ async function session(fetchImpl: Parameters<typeof runHook>[2]['fetch'], sessio
 }
 
 async function parseAll(rig: MemberRig): Promise<void> {
-  for (let pass = 0; pass < 20; pass += 1) if ((await parseTranscripts(rig.env.serverEnv, Date.now())) === 0) return;
+  for (let pass = 0; pass < 20; pass += 1) if ((await parseTranscripts(rig.env.serverEnv, Date.now())).changed === 0) return;
 }
 
 const prompts = (rig: MemberRig): string[] =>

@@ -4,7 +4,7 @@ import { MemoryRouter } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import App from '../../packages/myco-server/ui/src/App';
 import { AppearanceProvider } from '../../packages/myco-server/ui/src/providers/appearance';
-import { reportWords } from '../../packages/myco-server/ui/src/components/operations/WakePanel';
+import { backlogWords, reportWords } from '../../packages/myco-server/ui/src/components/operations/WakePanel';
 import { liftsAt, policyWords, progressWords, waitingWords } from '../../packages/myco-server/ui/src/components/operations/TitlingBackfillPanel';
 import { availableWords, cadenceWords, latestWords } from '../../packages/myco-server/ui/src/components/operations/RecoveryPanel';
 
@@ -59,6 +59,24 @@ describe('housekeeping on the Operations page', () => {
     fireEvent.click(button);
     expect((await screen.findByText(/The server is asleep/)).textContent).toBe('The server is asleep. Removed 3 old run records; closed 1 run whose runtime went away. Next wake in 5 min.');
     expect(requested).toContain('POST /api/wake');
+  });
+
+  it('says how many transcripts, and how many bytes, are still waiting to be read, from the count the tick reads', async () => {
+    server({
+      '/auth/me': () => Response.json(ME),
+      '/api/projects': () => Response.json(PROJECTS),
+      '/api/status': () => Response.json({ transcriptBacklog: { transcripts: 470, bytes: 2_390_000_000, imported: { transcripts: 460, bytes: 2_380_000_000 } } }),
+    });
+    mount('/operations');
+    expect((await screen.findByTestId('transcript-backlog')).textContent).toBe('470 transcripts (2.2 GB) waiting to be read into sessions.');
+  });
+
+  it('says nothing is waiting where nothing is, and words a chained wake in seconds', () => {
+    expect(backlogWords({ transcripts: 0, bytes: 0, imported: { transcripts: 0, bytes: 0 } })).toBeNull();
+    expect(backlogWords(null)).toBeNull();
+    expect(backlogWords({ transcripts: 1, bytes: 2048, imported: { transcripts: 1, bytes: 2048 } })).toBe('1 transcript (2.0 KB) waiting to be read into sessions.');
+    expect(reportWords({ state: 'idle', heldBy: null, idleMs: 400_000, jobs: [{ name: 'transcript-parse', changed: 120, failed: null, more: true }], nextWakeMs: 2_000 }))
+      .toBe('The server is idle. Read 120 rows from transcripts, with more still to read. Next wake in 2 s.');
   });
 
   it('says when the server could not run its housekeeping', async () => {

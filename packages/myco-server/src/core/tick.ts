@@ -25,7 +25,7 @@ import { pendingSearchBlobs } from './search-index.js';
 import { recoveryAttemptDue } from './recovery-schedule.js';
 import { stagingPruneDue } from './staging-retention.js';
 import { holdSettlementDue } from './recovery-hold.js';
-import { pendingImportedTranscripts, pendingTranscriptBytes } from '../ingest/parse.js';
+import { pendingTranscripts, type TranscriptBacklog } from '../ingest/parse.js';
 import { embeddingKeepsAwake } from './embedding/jobs.js';
 import { anyMaintenanceDue } from './store-maintenance.js';
 
@@ -39,7 +39,15 @@ export interface JobReport {
   /** Rows the job changed, or the class of the failure that stopped it. */
   changed: number;
   failed: string | null;
+  /** Whether the job left work another pass would take, which chains the next wake. */
+  more: boolean;
 }
+
+/**
+ * How soon the next wake comes while a job reports work left, at any depth that schedules one: a backlog drains in
+ * back-to-back passes, each bounded by its own budget, rather than one pass per cadence.
+ */
+export const CHAINED_WAKE_MS = 2_000;
 
 export interface TickReport {
   state: PowerState;
@@ -53,6 +61,8 @@ export interface TickReport {
   jobs: JobReport[];
   /** Milliseconds until the next wake this tick asks for; null in deep sleep, where nothing is scheduled. */
   nextWakeMs: number | null;
+  /** The transcripts waiting to be read, as this wake counted them. */
+  backlog: TranscriptBacklog;
 }
 
 /** What the engine itself asserts about the Deployment's depth: a run inside its bound keeps it no deeper than idle. A run past its bound holds nothing — its runtime is gone, and the sweep is what it needs. One existence read, whatever the count. */
@@ -60,10 +70,9 @@ export async function engineAssertions(env: ServerEnv, now: number): Promise<Pow
   const [inside, queued] = await Promise.all([hasRunInsideBound(env.db, now, DEFAULT_DISPATCH_TIMEOUT_SECONDS, RUN_OVERRUN_MARGIN_MS), hasQueuedRun(env.db)]);
   const assertions: PowerAssertion[] = [];
   if (await pendingSearchBlobs(env.db) > 0) assertions.push({ name: 'search:pending', maxDepth: 'active' });
-  const pendingTranscripts = await pendingTranscriptBytes(env.db);
-  const pendingImported = await pendingImportedTranscripts(env.db);
-  if (pendingTranscripts - pendingImported > 0) assertions.push({ name: 'transcript:pending', maxDepth: 'active' });
-  if (pendingImported > 0) assertions.push({ name: 'import:pending', maxDepth: 'idle' });
+  const backlog = await pendingTranscripts(env.db);
+  if (backlog.transcripts - backlog.imported.transcripts > 0) assertions.push({ name: 'transcript:pending', maxDepth: 'active' });
+  if (backlog.imported.transcripts > 0) assertions.push({ name: 'import:pending', maxDepth: 'idle' });
   if (await embeddingKeepsAwake(env, now)) assertions.push({ name: 'embedding:pending', maxDepth: 'idle' });
   // Requested work that waits keeps the Deployment awake until it runs.
   if (queued) assertions.push({ name: 'queue:pending', maxDepth: 'active' });
@@ -98,17 +107,18 @@ export async function runTick(env: ServerEnv, now: number, options: { serverUrl?
   for (const job of jobsDueAt(resolved.state, options.wake ?? 'request')) {
     const run = JOB_IMPLEMENTATIONS[job.name];
     if (run === undefined) {
-      jobs.push({ name: job.name, changed: 0, failed: 'unimplemented' });
+      jobs.push({ name: job.name, changed: 0, failed: 'unimplemented', more: false });
       continue;
     }
     try {
-      const changed = await run(env, now, resolved.state);
-      emit({ kind: 'job_ran', job: job.name, state: resolved.state, changed });
-      jobs.push({ name: job.name, changed, failed: null });
+      const answered = await run(env, now, resolved.state);
+      const { changed, more } = typeof answered === 'number' ? { changed: answered, more: false } : answered;
+      emit({ kind: 'job_ran', job: job.name, state: resolved.state, changed, more });
+      jobs.push({ name: job.name, changed, failed: null, more });
     } catch (err) {
       const failed = classify(err, env.platform?.classifyError);
       emit({ kind: 'job_failed', job: job.name, state: resolved.state, error_class: failed });
-      jobs.push({ name: job.name, changed: 0, failed });
+      jobs.push({ name: job.name, changed: 0, failed, more: false });
     }
   }
 
@@ -135,5 +145,9 @@ export async function runTick(env: ServerEnv, now: number, options: { serverUrl?
     emit({ kind: 'drain_failed', state: resolved.state, error_class: classify(err, env.platform?.classifyError) });
   }
 
-  return { state: resolved.state, heldBy: resolved.heldBy, drained, scheduled, idleMs, jobs, nextWakeMs: nextWakeDelayMs(resolved.state, WAKE_INTERVALS) };
+  // Work a job left is taken by a wake soon after this one; the cadence is the longest the next wake waits.
+  const cadence = nextWakeDelayMs(resolved.state, WAKE_INTERVALS);
+  const nextWakeMs = cadence !== null && jobs.some((j) => j.more) ? Math.min(cadence, CHAINED_WAKE_MS) : cadence;
+  const backlog = await pendingTranscripts(env.db);
+  return { state: resolved.state, heldBy: resolved.heldBy, drained, scheduled, idleMs, jobs, nextWakeMs, backlog };
 }

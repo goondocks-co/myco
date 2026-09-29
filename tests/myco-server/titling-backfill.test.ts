@@ -373,10 +373,10 @@ describe('the imported-session backfill', () => {
     expect(await (await request('PUT', { enabled: true })).json()).toMatchObject({ enabled: true, backfillEnabled: true, runsPerDay: 9 });
     expect(JSON.parse(stored()!)).toEqual({ 'extract-curate': { schedule: { maxRunsPerDay: 3 } }, [TITLING_TASK]: { model: 'small', schedule: { maxRunsPerDay: 9, enabled: true } } });
     const tick = await runTick(r.env, NOW);
-    expect(tick.jobs.find((j) => j.name === 'titling-backfill')).toEqual({ name: 'titling-backfill', changed: 1, failed: null });
+    expect(tick.jobs.find((j) => j.name === 'titling-backfill')).toEqual({ name: 'titling-backfill', changed: 1, failed: null, more: false });
     expect(await (await request('PUT', { enabled: false })).json()).toMatchObject({ enabled: false, backfillEnabled: false, inFlight: 1 });
     r.session('b');
-    expect((await runTick(r.env, NOW + 1)).jobs.find((j) => j.name === 'titling-backfill')).toEqual({ name: 'titling-backfill', changed: 0, failed: null });
+    expect((await runTick(r.env, NOW + 1)).jobs.find((j) => j.name === 'titling-backfill')).toEqual({ name: 'titling-backfill', changed: 0, failed: null, more: false });
     expect(r.runs().length).toBe(1);
   });
 });
