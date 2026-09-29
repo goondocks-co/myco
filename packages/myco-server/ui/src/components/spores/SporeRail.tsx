@@ -104,7 +104,7 @@ export function SporeRail({ projectId, selectedId, filters, filterInputRef, onSe
     return (
       <div>
         {header}
-        <div className="mt-4 flex h-40 flex-col items-center justify-center gap-2 text-tertiary">
+        <div role="alert" className="mt-4 flex h-40 flex-col items-center justify-center gap-2 text-tertiary">
           <AlertCircle className="h-5 w-5" />
           <span className="font-sans text-sm">The spores could not be read</span>
           <span className="font-sans text-xs text-on-surface-variant">{spores.error.message}</span>

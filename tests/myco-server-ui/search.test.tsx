@@ -92,3 +92,28 @@ it('links captured plans and responses to the corresponding session detail, and 
   // A skill is read from the catalogue Myco ships rather than from a page here, so the hit shows and does not link.
   expect(searchResultPath('p', hit({ type: 'skill', id: 'skill' }))).toBeNull();
 });
+
+it('opens on ⌘K and Ctrl K from every page, a server page searching the project last opened (or the first)', async () => {
+  const { default: App } = await import('../../packages/myco-server/ui/src/App');
+  const { AppearanceProvider } = await import('../../packages/myco-server/ui/src/providers/appearance');
+  const { rememberProject, forgetProject } = await import('../../packages/myco-server/ui/src/lib/project-memory');
+  const ME = { sub: '583231', login: 'octocat', member: { id: 'mem_1', label: 'chris', role: 'admin' as const } };
+  const PROJECTS = { projects: ['one', 'two'].map((id) => ({ projectId: id, name: `Project ${id}`, createdAt: 0, sessionCount: 0, lastActivityAt: null, archivedAt: null, archivedBy: null })) };
+  globalThis.fetch = (async (input: RequestInfo | URL) => {
+    const url = new URL(typeof input === 'string' ? input : input instanceof URL ? input.href : input.url, 'https://s');
+    if (url.pathname === '/auth/me') return Response.json(ME);
+    if (url.pathname === '/api/projects') return Response.json(PROJECTS);
+    return Response.json({ error: 'not_found' }, { status: 404 });
+  }) as typeof fetch;
+  try {
+    for (const [remembered, expected, key] of [['two', 'Search Project two', { metaKey: true }], [null, 'Search Project one', { ctrlKey: true }]] as const) {
+      if (remembered === null) forgetProject(); else rememberProject(remembered);
+      const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+      render(<AppearanceProvider><QueryClientProvider client={client}><MemoryRouter initialEntries={['/measures']}><App /></MemoryRouter></QueryClientProvider></AppearanceProvider>);
+      await screen.findByRole('button', { name: /Search/ });
+      fireEvent.keyDown(document, { key: 'k', ...key });
+      expect((await screen.findByRole('dialog')).textContent).toContain(expected);
+      cleanup();
+    }
+  } finally { forgetProject(); }
+});

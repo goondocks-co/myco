@@ -64,6 +64,44 @@ describe('a Project\'s plans', () => {
   });
 });
 
+describe('a Project\'s plans at the size a real Project reaches', () => {
+  it('answers a full page past the hosted store\'s parameter ceiling, each plan with its tags, and pages through every plan once', async () => {
+    const { get, plan, sqlite } = await harness();
+    const count = 230;
+    const key = (i: number) => `k_${String(i).padStart(3, '0')}`;
+    // Five plans to each edit instant: a tie is ordered by key, newest key first, and a page boundary inside a tie loses
+    // and repeats nothing.
+    for (let i = 0; i < count; i += 1) {
+      plan(key(i), { at: NOW + Math.floor(i / 5) });
+      sqlite.query(`INSERT INTO tags (project_id, entity_kind, entity_id, tag) VALUES ('proj_1', 'plan', ?, ?)`).run(key(i), `t${i % 3}`);
+    }
+    for (const limit of [100, 200]) {
+      const page = await get(`/api/projects/proj_1/plans?limit=${limit}`);
+      const rows = page.body.plans as Array<{ planKey: string; tags: string[] }>;
+      expect({ limit, status: page.status, rows: rows.length, tagged: rows.every((r) => r.tags.length === 1) }).toEqual({ limit, status: 200, rows: limit, tagged: true });
+      expect(typeof page.body.cursor).toBe('string');
+    }
+    const seen: string[] = [];
+    let cursor: unknown = null;
+    for (let pages = 0; pages < 40; pages += 1) {
+      const page = await get(`/api/projects/proj_1/plans?limit=7${cursor === null ? '' : `&cursor=${encodeURIComponent(String(cursor))}`}`);
+      seen.push(...(page.body.plans as Array<{ planKey: string }>).map((r) => r.planKey));
+      cursor = page.body.cursor;
+      if (cursor === null) break;
+    }
+    expect(cursor).toBeNull();
+    expect(seen).toEqual(Array.from({ length: count }, (_, i) => key(count - 1 - i)));
+    expect((await get('/api/projects/proj_1/plans?cursor=nonsense')).status).toBe(400);
+  });
+
+  it('holds the store it runs on to the hosted ceiling: a statement binding more than 100 parameters is refused', () => {
+    const { db } = sqliteEnv();
+    const bind = (n: number) => () => db.prepare(`SELECT ${Array.from({ length: n }, () => '?').join(', ')}`).bind(...Array.from({ length: n }, (_, i) => i));
+    expect(bind(100)).not.toThrow();
+    expect(bind(101)).toThrow('too many SQL variables');
+  });
+});
+
 describe('the measures route', () => {
   it('answers every measure with its sample, and carries the window it was read over', async () => {
     const { get } = await harness();
@@ -84,5 +122,19 @@ describe('the measures route', () => {
     const { get } = await harness();
     const { body } = await get('/api/kpis?window=4000');
     expect({ windowDays: body.windowDays, since: body.since }).toEqual({ windowDays: null, since: null });
+  });
+});
+
+describe('spores named by id at the size a page of recall reaches', () => {
+  it('hydrates more spores than one statement may bind on the hosted store', async () => {
+    const { db, sqlite } = sqliteEnv();
+    sqlite.query(`INSERT OR IGNORE INTO agents (id, name, source, enabled, created_at) VALUES ('agent_1', 'a', 'built-in', 1, ?)`).run(NOW);
+    const { insertSpore, listSporesByIds, MAX_SPORE_LIMIT } = await import('@myco-server-worker/core/spores.js');
+    const scope = { projectId: 'proj_1' };
+    const ids = Array.from({ length: MAX_SPORE_LIMIT }, (_, i) => `sp_${i}`);
+    for (const id of ids) {
+      await insertSpore(db, scope, { id, agentId: 'agent_1', sessionId: null, promptId: null, observationType: 'gotcha', content: `content of ${id}`, context: null, filePath: null, tags: null, contentHash: null, properties: null, author: null, createdAt: NOW });
+    }
+    expect((await listSporesByIds(db, scope, ids)).map((row) => row.id).sort()).toEqual([...ids].sort());
   });
 });

@@ -1,4 +1,5 @@
-import { useQuery } from '@tanstack/react-query';
+import { useMemo } from 'react';
+import { useInfiniteQuery } from '@tanstack/react-query';
 import { fetchJson } from '../lib/api';
 import type { PlanCardRow } from './use-sessions';
 
@@ -32,15 +33,25 @@ export const PLAN_FILTERS = [
 
 export const PLAN_PAGE_SIZE = 100;
 
-/** Every plan this Project holds, newest edit first; one status, or all of them. */
+/** The plans this Project holds, newest edit first, a page at a time; one status, or all of them. */
 export function useProjectPlans(projectId: string, status: string) {
   const query = status === 'all' ? '' : `&status=${encodeURIComponent(status)}`;
-  return useQuery({
+  const path = `/api/projects/${encodeURIComponent(projectId)}/plans?limit=${PLAN_PAGE_SIZE}${query}`;
+  const plans = useInfiniteQuery({
     queryKey: ['project-plans', projectId, status],
-    queryFn: ({ signal }) =>
-      fetchJson<{ plans: ProjectPlanRow[]; maxPage: number }>(
-        `/api/projects/${encodeURIComponent(projectId)}/plans?limit=${PLAN_PAGE_SIZE}${query}`,
-        signal,
-      ),
+    initialPageParam: null as string | null,
+    queryFn: ({ pageParam, signal }) =>
+      fetchJson<{ plans: ProjectPlanRow[]; cursor?: string | null; maxPage: number }>(pageParam === null ? path : `${path}&cursor=${encodeURIComponent(pageParam)}`, signal),
+    getNextPageParam: (last) => last.cursor ?? undefined,
   });
+  // A plan edited between two pages is listed once, where it was first read.
+  const rows = useMemo(() => [...new Map((plans.data?.pages.flatMap((p) => p.plans) ?? []).map((plan) => [plan.planKey, plan])).values()], [plans.data]);
+  return {
+    rows,
+    isPending: plans.isPending,
+    error: plans.error,
+    hasMore: plans.hasNextPage,
+    isFetchingMore: plans.isFetchingNextPage,
+    more: () => { void plans.fetchNextPage(); },
+  };
 }

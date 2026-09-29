@@ -61,6 +61,26 @@ describe('the plans page', () => {
     expect(within(list).getByRole('link', { name: 'Open its session' }).getAttribute('href')).toBe('/p/x/sessions/sess_1');
   });
 
+  it('reads the list a page at a time and loads the next page on request, keeping the filter across a refetch', async () => {
+    const first = Array.from({ length: 3 }, (_, i) => plan({ planKey: `p-${i}`, title: `Plan ${i}` }));
+    const { requested } = server(base({
+      '/api/projects/x/plans?limit=100&status=in_progress': () => Response.json({ plans: first, cursor: `${NOW}:p-2`, maxPage: 200 }),
+      [`/api/projects/x/plans?limit=100&status=in_progress&cursor=${encodeURIComponent(`${NOW}:p-2`)}`]: () => Response.json({ plans: [plan({ planKey: 'p-3', title: 'Plan 3' })], cursor: null, maxPage: 200 }),
+    }));
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    render(<AppearanceProvider><QueryClientProvider client={client}><MemoryRouter initialEntries={['/p/x/plans?status=in_progress']}><App /></MemoryRouter></QueryClientProvider></AppearanceProvider>);
+    const list = await screen.findByLabelText('Plans');
+    expect(within(list).getAllByRole('listitem').length).toBe(3);
+    fireEvent.click(screen.getByRole('button', { name: 'Load more' }));
+    await waitFor(() => expect(within(screen.getByLabelText('Plans')).getAllByRole('listitem').length).toBe(4));
+    expect(screen.queryByRole('button', { name: 'Load more' })).toBeNull();
+    // A refetch re-reads the pages it holds under the same filter, and leaves the filter where it was.
+    await client.refetchQueries({ queryKey: ['project-plans', 'x'] });
+    expect(within(screen.getByLabelText('Plans')).getAllByRole('listitem').length).toBe(4);
+    expect(screen.getByRole('tab', { name: 'In progress', selected: true })).toBeTruthy();
+    expect(requested.filter((r) => r.startsWith('/api/projects/x/plans')).every((r) => r.includes('status=in_progress'))).toBe(true);
+  });
+
   it('shows a project with no plans as empty, not as missing', async () => {
     server(base({ '/api/projects/x/plans?limit=100': () => Response.json({ plans: [], maxPage: 200 }) }));
     mount('/p/x/plans');

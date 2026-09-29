@@ -235,6 +235,30 @@ describe('Sessions list', () => {
     expect(document.activeElement).toBe(screen.getByLabelText('Filter sessions'));
   }));
 
+  it('keeps the session a reader opened, and the filter, when the list is read again with a newer session on top', async () => onWideScreen(async () => {
+    let rows = ROWS;
+    const { requested } = server(base({
+      '/api/projects/x/sessions?limit=50': () => page(rows),
+      '/api/projects/x/sessions/s1': () => Response.json({ session: ROWS[0], counts, projectId: 'x' }),
+      '/api/projects/x/sessions/s1/turns?origins=user&limit=200': () => page([]),
+      '/api/projects/x/sessions/s3': () => Response.json({ session: ROWS[2], counts, projectId: 'x' }),
+      '/api/projects/x/sessions/s3/turns?origins=user&limit=200': () => page([]),
+      '/api/projects/x/activity': () => Response.json(ACTIVITY),
+    }));
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    render(<AppearanceProvider><QueryClientProvider client={client}><MemoryRouter initialEntries={['/p/x/sessions']}><App /><LocationProbe /></MemoryRouter></QueryClientProvider></AppearanceProvider>);
+    await asked(requested, '/api/projects/x/sessions/s1');
+    fireEvent.click(screen.getAllByRole('row')[2]!);
+    await waitFor(() => expect(screen.getByRole('heading', { level: 2 }).textContent).toBe('An older one'));
+    // A newer session arrives and the list is read again: the reader's session stays open, nothing is opened for them.
+    rows = [session({ sessionId: 's0', label: 'Newest', title: 'Newest' }), ...ROWS];
+    await client.refetchQueries();
+    await waitFor(() => expect(screen.getAllByRole('row').length).toBe(4));
+    expect(screen.getByTestId('location').textContent).toBe('/p/x/sessions/s3');
+    expect(screen.getByRole('heading', { level: 2 }).textContent).toBe('An older one');
+    expect(requested).not.toContain('/api/projects/x/sessions/s0');
+  }));
+
   it('shows a project with no sessions as empty, not missing', async () => {
     server(base({ '/api/projects/x/sessions?limit=50': () => page([]), '/api/projects/x/activity': () => Response.json(ACTIVITY) }));
     mount('/p/x/sessions');

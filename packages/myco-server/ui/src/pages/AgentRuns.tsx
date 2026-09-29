@@ -1,7 +1,7 @@
 import { heldByWords } from '@goondocks/myco-shared/run-holds';
 import { useIsAdmin } from '../hooks/use-me';
 import { useState } from 'react';
-import { Link, useNavigate, useParams } from 'react-router-dom';
+import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { MasterDetailSplit } from '../components/ui/master-detail-split';
 import { PageContainer } from '../components/ui/page-container';
 import { PageHeader } from '../components/ui/page-header';
@@ -93,14 +93,26 @@ function usageScopeText(raw: string | null): string | null {
   }
 }
 
-/** `/p/:projectId/runs` and `/p/:projectId/runs/:runId`: what this project's intelligence tasks did, run by run. */
+const isStatus = (value: string | null): value is string => value !== null && value !== 'all' && STATUS_TABS.some((tab) => tab.id === value);
+
+/**
+ * `/p/:projectId/runs` and `/p/:projectId/runs/:runId`: what this project's intelligence tasks did, run by run. The
+ * run open and the status filter live in the URL, so opening a run, a refetch or a reload keeps both.
+ */
 export function AgentRuns() {
   const { projectId = '', runId } = useParams();
   const navigate = useNavigate();
-  const [status, setStatus] = useState('all');
+  const [params, setParams] = useSearchParams();
+  const status = isStatus(params.get('status')) ? params.get('status')! : 'all';
   const runs = useRuns(projectId, status === 'all' ? null : status);
   const admin = useIsAdmin();
   const base = `/p/${encodeURIComponent(projectId)}/runs`;
+  const search = params.toString() === '' ? '' : `?${params.toString()}`;
+  const setStatus = (next: string) => setParams((prev) => {
+    const kept = new URLSearchParams(prev);
+    if (next === 'all') kept.delete('status'); else kept.set('status', next);
+    return kept;
+  }, { replace: true });
 
   return (
     <PageContainer>
@@ -113,7 +125,7 @@ export function AgentRuns() {
         <div className="min-h-[60vh] rounded-lg border border-outline-variant/20">
           <MasterDetailSplit
             hasSelection={runId !== undefined}
-            onCloseMobileDetail={() => navigate(base)}
+            onCloseMobileDetail={() => navigate(`${base}${search}`)}
             masterAriaLabel="Runs"
             detailAriaLabel="Run"
             master={
@@ -124,7 +136,7 @@ export function AgentRuns() {
               ) : (
                 <div role="table" aria-label="Runs">
                   {runs.rows.map((run) => (
-                    <RunRow key={run.id} run={run} active={run.id === runId} onOpen={() => navigate(`${base}/${encodeURIComponent(run.id)}`)} />
+                    <RunRow key={run.id} run={run} active={run.id === runId} onOpen={() => navigate(`${base}/${encodeURIComponent(run.id)}${search}`)} />
                   ))}
                   {runs.hasMore && (
                     <div className="p-3">

@@ -118,7 +118,7 @@ function Home({ project }: { project: ProjectSummary }) {
             <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
               <AgentRunsPanel base={base} runs={runs.rows} pending={runs.isPending} error={runs.error} unconfigured={unconfigured} />
               <div className="flex flex-col gap-6">
-                <PlansPanel projectId={project.projectId} base={base} plans={plans.data?.plans ?? []} pending={plans.isPending} error={plans.error} />
+                <PlansPanel projectId={project.projectId} base={base} plans={plans.rows} pending={plans.isPending} error={plans.error} />
                 <ActivityFeed base={base} items={activity.data.items} />
               </div>
             </div>

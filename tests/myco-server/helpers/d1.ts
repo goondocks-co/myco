@@ -5,6 +5,12 @@ import { renderMigrationFiles } from '@myco-server-worker/db/migrate.js';
 import { registeredObjectKeySql } from '@myco-server-worker/core/blob-objects.js';
 
 /**
+ * The most parameters one statement may bind on the hosted store, as its platform limits state it. Written here as
+ * the platform's number, never read from the server's own chunk size, so a server that binds past it fails here.
+ */
+export const D1_BOUND_PARAMETER_CEILING = 100;
+
+/**
  * The shipped self-hosted relational store, with test observation hooks wrapped
  * around it. The store itself is never reimplemented here: a semantics fix in the
  * production adapter must reach the store the suite exercises, which it cannot do
@@ -20,7 +26,11 @@ export function sqliteD1(
   // store puts on its own statements, and an observed statement must still carry them.
   const observe = (sql: string, statement: PreparedStatement): PreparedStatement => ({
     ...statement,
-    bind: (...values: unknown[]) => observe(sql, statement.bind(...values)),
+    bind: (...values: unknown[]) => {
+      // The hosted store refuses a statement binding more parameters than its ceiling; the local store would run it.
+      if (values.length > D1_BOUND_PARAMETER_CEILING) throw new Error(`D1_ERROR: too many SQL variables (${values.length} bound, the ceiling is ${D1_BOUND_PARAMETER_CEILING})`);
+      return observe(sql, statement.bind(...values));
+    },
     run: async () => { options.onSql?.(sql); return statement.run(); },
     all: async <T = Record<string, unknown>>(): Promise<{ results: T[] }> => { options.onSql?.(sql); return statement.all<T>(); },
     first: async <T,>() => {

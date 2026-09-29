@@ -21,7 +21,7 @@
  * repair; a batch is atomic by contract, so the pair commits or neither does.
  */
 import type { RelationalStore } from './adapters.js';
-import type { ReadScope } from '../read/scope.js';
+import { inListChunks, type ReadScope } from '../read/scope.js';
 
 export const SPORE_STATUSES = ['active', 'superseded', 'consolidated', 'obsolete'] as const;
 export type SporeStatus = (typeof SPORE_STATUSES)[number];
@@ -192,11 +192,15 @@ export async function listSpores(db: RelationalStore, scope: ReadScope, o: ListS
  */
 export async function listSporesByIds(db: RelationalStore, scope: ReadScope, ids: readonly string[]): Promise<SporeRow[]> {
   const wanted = [...new Set(ids)].slice(0, MAX_SPORE_LIMIT);
-  if (wanted.length === 0) return [];
-  const { results } = await db
-    .prepare(`SELECT ${COLUMNS} FROM spores WHERE project_id = ? AND id IN (${wanted.map(() => '?').join(', ')})`)
-    .bind(scope.projectId, ...wanted).all<SporeRow>();
-  return results;
+  const out: SporeRow[] = [];
+  // More ids than one statement may bind are read in runs.
+  for (const run of inListChunks(wanted)) {
+    const { results } = await db
+      .prepare(`SELECT ${COLUMNS} FROM spores WHERE project_id = ? AND id IN (${run.map(() => '?').join(', ')})`)
+      .bind(scope.projectId, ...run).all<SporeRow>();
+    out.push(...results);
+  }
+  return out;
 }
 
 export async function countSpores(db: RelationalStore, scope: ReadScope, o: ListSporesOptions = {}): Promise<number> {

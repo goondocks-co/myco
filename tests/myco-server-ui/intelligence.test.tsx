@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it } from 'bun:test';
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
-import { MemoryRouter } from 'react-router-dom';
+import { MemoryRouter, useLocation } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 
 import App from '../../packages/myco-server/ui/src/App';
@@ -50,6 +50,45 @@ function mount(path: string, seed?: (client: QueryClient) => void) {
 }
 
 describe('Agent runs', () => {
+  it('keeps the status filter and the open run in the URL across opening a run, a refetch and a reload', async () => {
+    const original = window.matchMedia;
+    window.matchMedia = ((query: string) => ({ matches: query.includes('min-width'), media: query, onchange: null, addEventListener: () => {}, removeEventListener: () => {}, addListener: () => {}, removeListener: () => {}, dispatchEvent: () => false })) as typeof window.matchMedia;
+    const asked: string[] = [];
+    globalThis.fetch = (async (input: RequestInfo | URL) => {
+      const url = new URL(typeof input === 'string' ? input : input instanceof URL ? input.href : input.url, 'https://s');
+      asked.push(url.pathname + url.search);
+      const routes = base({
+        '/api/projects/x/runs': () => Response.json({ rows: url.searchParams.get('status') === 'failed' ? [run({ id: 'r2', task: 'canopy-map', status: 'failed', failed: true })] : [run()], cursor: null }),
+        '/api/projects/x/runs/r2': () => Response.json(detail({ id: 'r2', task: 'canopy-map', status: 'failed', failed: true, error: 'the runtime went away' })),
+      }) as Record<string, Endpoint>;
+      return routes[url.pathname]?.() ?? new Response(null, { status: 404 });
+    }) as typeof fetch;
+    let where = '';
+    const Probe = () => { const location = useLocation(); where = location.pathname + location.search; return null; };
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const tree = (path: string) => <AppearanceProvider><QueryClientProvider client={client}><MemoryRouter initialEntries={[path]}><App /><Probe /></MemoryRouter></QueryClientProvider></AppearanceProvider>;
+    try {
+      render(tree('/p/x/runs'));
+      fireEvent.click(await screen.findByRole('tab', { name: 'Failed' }));
+      await waitFor(() => expect(where).toBe('/p/x/runs?status=failed'));
+      fireEvent.click(await screen.findByRole('row', { name: /canopy-map/ }));
+      await screen.findByText('This run failed');
+      expect(where).toBe('/p/x/runs/r2?status=failed');
+      expect(screen.getByRole('tab', { name: 'Failed', selected: true })).toBeTruthy();
+      // A refetch of every read leaves the filter and the open run where they were.
+      await client.refetchQueries();
+      expect(screen.getByRole('tab', { name: 'Failed', selected: true })).toBeTruthy();
+      expect(screen.getByText('This run failed')).toBeTruthy();
+      expect(where).toBe('/p/x/runs/r2?status=failed');
+      // A reload of that URL opens the same run under the same filter.
+      cleanup();
+      render(tree(where));
+      expect(await screen.findByText('This run failed')).toBeTruthy();
+      expect(screen.getByRole('tab', { name: 'Failed', selected: true })).toBeTruthy();
+      expect(asked.filter((path) => path.startsWith('/api/projects/x/runs?')).at(-1)).toContain('status=failed');
+    } finally { window.matchMedia = original; }
+  });
+
   it('labels partial ACP token evidence while leaving the run total unavailable', async () => {
     server(base({
       '/api/projects/x/runs': () => Response.json({ rows: [run({ tokensUsed: null })], cursor: null }),

@@ -7,6 +7,7 @@ import { PageLoading } from '../components/ui/page-loading';
 import { useIsAdmin, useMe } from '../hooks/use-me';
 import { useProjects } from '../hooks/use-projects';
 import { cn } from '../lib/cn';
+import { readLastProject } from '../lib/project-memory';
 import { NotAMember } from '../pages/NotAMember';
 import { AppearanceSection } from './AppearanceSection';
 import { Topbar } from './Topbar';
@@ -57,6 +58,9 @@ export function Layout() {
 
   const all = projects.data?.projects ?? [];
   const current = params.projectId ? all.find((p) => p.projectId === params.projectId) : undefined;
+  // Search, and its ⌘K, reach a project from every page: the one open, else the one this viewer last opened, else the first.
+  const remembered = readLastProject();
+  const searched = current ?? all.find((p) => p.projectId === remembered) ?? all[0];
 
   return (
     <div className="flex min-h-screen bg-background text-foreground">
@@ -66,7 +70,7 @@ export function Layout() {
         <div className="px-2 pb-2">
           <div className="px-2 pb-1 font-sans text-[10px] uppercase tracking-wide text-on-surface-variant">Project</div>
           <ProjectSwitcher projects={all} current={current} />
-          {current && <GlobalSearch key={current.projectId} projectId={current.projectId} projectName={current.name} />}
+          {searched && <GlobalSearch key={searched.projectId} projectId={searched.projectId} projectName={searched.name} />}
         </div>
 
         {current && (

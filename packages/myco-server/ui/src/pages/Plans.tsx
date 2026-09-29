@@ -11,7 +11,7 @@ const DEFAULT_FILTER = 'all';
 const isFilter = (value: string | null): boolean => value !== null && PLAN_FILTERS.some((f) => f.id === value);
 
 /**
- * `/p/:projectId/plans`: every plan this project holds, newest edit first.
+ * `/p/:projectId/plans`: every plan this project holds, newest edit first, a page at a time.
  *
  * The card is the session timeline's own, so a plan reads the same here as it does
  * under the turn that wrote it, and its status is set through the one route that
@@ -22,7 +22,7 @@ export function Plans() {
   const [params, setParams] = useSearchParams();
   const status = isFilter(params.get('status')) ? params.get('status')! : DEFAULT_FILTER;
   const plans = useProjectPlans(projectId, status);
-  const rows = plans.data?.plans ?? [];
+  const rows = plans.rows;
 
   return (
     <PageContainer>
@@ -66,6 +66,13 @@ export function Plans() {
               </li>
             ))}
           </ul>
+        )}
+        {plans.hasMore && (
+          <div className="mt-3">
+            <button type="button" disabled={plans.isFetchingMore} onClick={plans.more} className="rounded-md border border-outline-variant/30 px-2.5 py-1 font-sans text-xs text-on-surface transition-colors hover:bg-surface-container-high disabled:opacity-50">
+              {plans.isFetchingMore ? 'Loading more…' : 'Load more'}
+            </button>
+          </div>
         )}
       </PageLoading>
     </PageContainer>
