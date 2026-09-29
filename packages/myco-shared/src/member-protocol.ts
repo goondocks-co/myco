@@ -107,6 +107,22 @@ export const REJOIN_HINT = `ask a Deployment admin for an invitation for your ex
   + `(dashboard: ${INVITE_CONTROLS.page} → ${INVITE_CONTROLS.button} → ${INVITE_CONTROLS.field}: "${INVITE_CONTROLS.existingMemberOption} <your member>"), `
   + 'then run `myco login <link>` with the link it gives; an invitation for a new member is refused on this machine';
 
+/**
+ * Why an invitation for a new member is refused on a machine that already
+ * joined (#1209). A machine's identity (`machine_id`) is derived from the
+ * machine itself, so every home on it signs in with the same identity unless
+ * that home holds a `machine_id` file of its own; and the identity stays with
+ * the member it first joined as, including after that member is removed. So one
+ * machine holds one membership of a Deployment, and nothing moves it to
+ * another member.
+ */
+export const MACHINE_IDENTITY_NOTE = 'A machine belongs to one member of a Deployment: every home on it signs in as the same machine '
+  + 'unless that home holds a machine_id file of its own, and it stays that member\'s after the member is removed. '
+  + 'Nothing moves a machine to another member';
+
+/** The same fact as an administrator reads it, when removing a member. */
+export const MEMBER_KEEPS_MACHINES = 'Their machines stay theirs: none of them can join this Deployment as another member, and none can be moved to one.';
+
 /** The same act as an administrator reads it, for a runtime they stopped or whose credential ended. */
 export const REJOIN_FOR_ADMIN = `To write again, the machine needs an invitation for its member `
   + `(${INVITE_CONTROLS.button} → ${INVITE_CONTROLS.field}: "${INVITE_CONTROLS.existingMemberOption} …"), redeemed with \`myco login <link>\`; `

@@ -6,6 +6,8 @@ import { describe, expect, it } from 'bun:test';
 import worker from '@myco-server-worker/index.js';
 import { ENROLLMENT_RETENTION_MS, ENROLLMENT_TTL_MS, issueEnrollmentAuthority, revokeEnrollmentAuthority } from '@myco-server-worker/auth/enrollment.js';
 import { handleJoin } from '@myco-server-worker/auth/join.js';
+import { revokeMember } from '@myco-server-worker/auth/members-admin.js';
+import { MACHINE_IDENTITY_NOTE } from '@goondocks/myco-shared/member-protocol';
 import { MEMBER_TOKEN_PATTERN } from '@myco-server-worker/auth/tokens.js';
 import { PROJECT_HEADER, PROTOCOL_HEADER, SERVER_PROTOCOL } from '@myco-server-worker/constants.js';
 import { envelope, sqliteEnv, uuid } from './helpers/fixtures.js';
@@ -224,6 +226,19 @@ describe('a refused join leaves no trace', () => {
     const second = await json(await r.join({ key: contested.key, machineId: 'other_machine' }));
     expect(second.joined).toBe(true);
     expect(r.members()).toBe(before.members + 1);
+  });
+
+  it('keeps a machine with the member it joined as after that member is removed, as MACHINE_IDENTITY_NOTE says (#1209)', async () => {
+    const r = await rig();
+    const joined = await json(await r.join({ key: (await r.key()).key, machineId: 'machine_kept' }));
+    expect(joined.joined).toBe(true);
+    // One admin besides the removed member, so the removal is admitted.
+    await revokeMember(r.e.db, joined.memberId as string, 'mem_machine_1', r.now);
+    const before = counts(r.e);
+    // A new-member invitation is refused on that machine, and writes nothing.
+    expect(await json(await r.join({ key: (await r.key()).key, machineId: 'machine_kept' }))).toMatchObject({ joined: false, code: 'identity_claimed' });
+    expect(counts(r.e)).toEqual(before);
+    expect(MACHINE_IDENTITY_NOTE).toContain('stays that member\'s after the member is removed');
   });
 
   it('adds a runtime when the invitation names the member that already holds the identity', async () => {

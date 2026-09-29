@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from 'bun:test';
-import { INVITE_CONTROLS, REJOIN_FOR_ADMIN, REJOIN_HINT } from '@goondocks/myco-shared/member-protocol';
+import { INVITE_CONTROLS, MEMBER_KEEPS_MACHINES, REJOIN_FOR_ADMIN, REJOIN_HINT } from '@goondocks/myco-shared/member-protocol';
 import { fireEvent, render, screen } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
@@ -53,6 +53,11 @@ describe('Deployment Access', () => {
     fireEvent.click(screen.getAllByText('Remove')[0]!);
     expect(await screen.findByText('Remove yourself?')).toBeTruthy();
     expect(screen.getByText(/can no longer sign in/)).toBeTruthy();
+    fireEvent.keyDown(document.activeElement ?? document.body, { key: 'Escape' });
+    // Removing another member says their machines stay theirs (#1209).
+    fireEvent.click(screen.getAllByText('Remove')[1]!);
+    expect(await screen.findByText('Remove laptop?')).toBeTruthy();
+    expect(document.body.textContent).toContain(MEMBER_KEEPS_MACHINES);
   });
 
   it('mints an invitation and shows the link `myco login` takes, once', async () => {
