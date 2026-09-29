@@ -233,8 +233,8 @@ export function cloudflareProducerPorts(
         case 'complete':
           if (read.bookmark === null) return { status: 'error', bookmark: null, failure: failure('protocol', null, false) };
           return { status: 'complete', bookmark: read.bookmark, signedUrl: read.signedUrl };
-        case 'ended': return { status: 'error', bookmark: read.bookmark, failure: failure('provider', null, false) };
-        case 'refused-login': return { status: 'error', bookmark, failure: failure('http', read.status, false) };
+        case 'ended': return { status: 'ended', bookmark: read.bookmark };
+        case 'refused-login': return { status: 'refused', failure: failure('http', read.status, false) };
         case 'unknown': return { status: 'error', bookmark: read.bookmark, failure: failure(read.cause, read.status, read.transient) };
       }
     },
