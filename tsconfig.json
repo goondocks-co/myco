@@ -37,6 +37,7 @@
       "@goondocks/myco-shared/member-protocol": ["./packages/myco-shared/src/member-protocol.ts"],
       "@goondocks/myco-shared/run-control": ["./packages/myco-shared/src/run-control.ts"],
       "@goondocks/myco-shared/d1-export": ["./packages/myco-shared/src/d1-export.ts"],
+      "@goondocks/myco-shared/secret-slots": ["./packages/myco-shared/src/secret-slots.ts"],
       "react": ["./node_modules/react"],
       "react-dom": ["./node_modules/react-dom"],
       "react/jsx-runtime": ["./node_modules/react/jsx-runtime.js"],
