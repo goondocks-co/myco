@@ -27,9 +27,10 @@ import { issueMemberToken, NO_RUNTIME_CLAIMS, revokeCredentialOfMember } from '.
 import { projectExists } from '../read/sessions.js';
 import { HARNESS_MEMBER_ID, WORKER_LEASE_MS, MAX_RUN_ERROR_CHARS } from '../constants.js';
 export { HARNESS_MEMBER_ID };
-import { pruneWorkerContacts, WORKER_CONTACT_RETENTION_MS } from './worker-contacts.js';
+import { pruneWorkerContacts, recentWorkerCapabilities, WORKER_CONTACT_RETENTION_MS } from './worker-contacts.js';
+import { CAPABILITY_HOLDS, type CapabilityHold } from '@goondocks/myco-shared/run-holds';
 import { emit } from '../telemetry.js';
-import { claimQueuedRun, deploymentTaskEntriesSince, lapsedLeases, nextClaimable, recordClaimedInput, recordQueueHolder, renewRunLease, requeueLapsedLease, UNATTRIBUTED_DISPATCH_ACTOR, type ActorCeiling, type ClaimedRunRow } from './runs.js';
+import { claimQueuedRun, deploymentTaskEntriesSince, lapsedLeases, nextClaimable, recordClaimedInput, recordQueueHolder, recordTaskHolder, renewRunLease, requeueLapsedLease, UNATTRIBUTED_DISPATCH_ACTOR, type ActorCeiling, type ClaimedRunRow } from './runs.js';
 export type { ActorCeiling } from './runs.js';
 import { applyRunUpdate, ensureAgent, getDispatchActor, recordDispatch, dispatchLoad, failQueuedRun, hasSuccessorOf, INPUT_UNCHANGED, launchQueued, listQueuedAcrossProjects, recordQueued, getRun, hasLiveTaskRun, restoreDispatchCredential, returnToQueue, skipQueued, successorsSince, NO_LIMITS, type RunRow } from './runs.js';
 import { openProviderCredential } from './provider-credentials.js';
@@ -905,6 +906,27 @@ async function harnessCredentialEnv(env: ServerEnv, harness: string): Promise<Re
 }
 
 /**
+ * Name on each queued repository run the worker capability it waits for, while no worker heard from lately
+ * (`CONTACT_RECENT_MS`) reports what it needs, so the dashboard says why no worker takes it; and put back the
+ * ordinary wait for a worker once one does. `unmet` is the repository tasks the asking worker cannot take. Only the
+ * ordinary wait and a capability's are rewritten: a run a limit holds keeps its limit.
+ */
+async function recordCapabilityHolds(env: ServerEnv, reported: readonly string[], unmet: readonly string[], now: number): Promise<void> {
+  const recent = unmet.length === 0 ? [] : [reported, ...await recentWorkerCapabilities(env.db, now)];
+  const held = new Map<CapabilityHold, string[]>();
+  const served: string[] = [];
+  for (const task of REPOSITORY_TASKS) {
+    const required = capabilitiesRequiredBy(task);
+    const takenBySomeone = !unmet.includes(task) || recent.some((capabilities) => required.every((c) => capabilities.includes(c)));
+    const missing = takenBySomeone ? undefined : CAPABILITY_HOLDS.find((hold) => required.includes(hold) && !reported.includes(hold));
+    if (missing === undefined) served.push(task);
+    else held.set(missing, [...(held.get(missing) ?? []), task]);
+  }
+  await recordTaskHolder(env.db, served, CAPABILITY_HOLDS, 'worker');
+  for (const [hold, tasks] of held) await recordTaskHolder(env.db, tasks, ['worker', ...CAPABILITY_HOLDS.filter((other) => other !== hold)], hold);
+}
+
+/**
  * Take the oldest queued run this worker can run.
  *
  * The queue is peeked before anything is minted, so an idle poll costs no
@@ -919,7 +941,9 @@ export async function claimNextRun(
 ): Promise<ClaimOutcome> {
   // A task is offered only to a worker that reports everything it needs.
   const reported = worker.capabilities ?? [];
-  const excluded = [...RUNTIME_SERVED_TASKS, ...REPOSITORY_TASKS.filter((task) => !capabilitiesRequiredBy(task).every((c) => reported.includes(c)))];
+  const unmet = REPOSITORY_TASKS.filter((task) => !capabilitiesRequiredBy(task).every((c) => reported.includes(c)));
+  await recordCapabilityHolds(env, reported, unmet, worker.now);
+  const excluded = [...RUNTIME_SERVED_TASKS, ...unmet];
   const candidate = await nextClaimable(env.db, excluded);
   if (candidate === null) return { claimed: false, reason: 'no_work' };
 

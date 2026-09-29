@@ -17,8 +17,9 @@
  * 401 from the model's API on a machine that is signed in.
  */
 import { execFileSync } from 'node:child_process';
-import { existsSync, readFileSync, realpathSync, symlinkSync, writeFileSync } from 'node:fs';
-import { dirname, join } from 'node:path';
+import { existsSync, readFileSync, realpathSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
+import { homedir } from 'node:os';
+import { dirname, join, sep } from 'node:path';
 import { parse, stringify, type TomlTableWithoutBigInt } from 'smol-toml';
 import { HARNESS_CREDENTIALS } from '@goondocks/myco-shared/harness-providers';
 import { locate } from '../detect.js';
@@ -61,19 +62,87 @@ function carryLogin(home: string, spec: RunSpec, harness: Harness): void {
 }
 
 /**
- * The developer directory macOS runs `git` from: `/usr/bin/git` is a shim that
- * finds the real program under the active developer directory, and fails
- * before it reads anything when the sandbox hides that directory. Null on any
- * other system, or where none is selected.
+ * What `activeDeveloperDir` reads of the machine: the system it runs on, the
+ * directory `xcode-select` names, what a path is and who owns it, and the
+ * user's home. A test hands one of its own, so the checks below run on every
+ * system rather than on macOS alone.
  */
-export function activeDeveloperDir(): string | null {
-  if (process.platform !== 'darwin') return null;
+export interface DeveloperDirProbe {
+  platform: NodeJS.Platform;
+  /** The directory the system names as the active developer directory, or null where it names none. */
+  select(): string | null;
+  /** A path's owner, permission bits and kind, or null where there is nothing at it. */
+  stat(path: string): { uid: number; mode: number; directory: boolean; file: boolean } | null;
+  /** The physical path of a path, which throws where there is nothing at it. */
+  realpath(path: string): string;
+  home: string;
+}
+
+/** The machine itself, as `activeDeveloperDir` reads it. */
+export const SYSTEM_DEVELOPER_DIR_PROBE: DeveloperDirProbe = {
+  platform: process.platform,
+  select() {
+    try {
+      const selected = execFileSync('/usr/bin/xcode-select', ['-p'], { encoding: 'utf8', timeout: 5_000, stdio: ['ignore', 'pipe', 'ignore'] }).trim();
+      return selected === '' ? null : selected;
+    } catch {
+      return null;
+    }
+  },
+  stat(path) {
+    try {
+      const found = statSync(path);
+      return { uid: found.uid, mode: found.mode, directory: found.isDirectory(), file: found.isFile() };
+    } catch {
+      return null;
+    }
+  },
+  realpath: (path) => realpathSync(path),
+  get home() { return homedir(); },
+};
+
+/** The permission bits that let a group or everyone write a path. */
+const WRITABLE_BY_OTHERS = 0o022;
+
+/** Whether `path` is `root` or lies beneath it. */
+function within(path: string, root: string): boolean {
+  return path === root || path.startsWith(root.endsWith(sep) ? root : `${root}${sep}`);
+}
+
+/**
+ * The developer directory macOS runs `git` from, when it is safe to let a
+ * source run read: `/usr/bin/git` is a shim that finds the real program under
+ * the active developer directory, and fails before it reads anything when the
+ * sandbox hides that directory.
+ *
+ * Which directory that is, is the user's to choose (`xcode-select -s`,
+ * `DEVELOPER_DIR`), and whatever it names the run's commands may read. So the
+ * directory is granted only where it is a developer directory and nothing
+ * more: a directory owned by root that nobody else can write, holding
+ * `usr/bin/git`, that is neither the root of the filesystem nor the user's
+ * home, the run's own directory or a directory above either — a grant of any
+ * of those reads what the rest of the profile closes. Null on any other
+ * system, where none is selected, or where the one selected fails a check.
+ */
+export function activeDeveloperDir(runDir: string, probe: DeveloperDirProbe = SYSTEM_DEVELOPER_DIR_PROBE): string | null {
+  if (probe.platform !== 'darwin') return null;
+  const selected = probe.select();
+  if (selected === null) return null;
+  let dir: string;
+  let home: string;
+  let run: string;
   try {
-    const selected = execFileSync('/usr/bin/xcode-select', ['-p'], { encoding: 'utf8', timeout: 5_000, stdio: ['ignore', 'pipe', 'ignore'] }).trim();
-    return selected === '' ? null : realpathSync(selected);
+    dir = probe.realpath(selected);
+    home = probe.realpath(probe.home);
+    run = probe.realpath(runDir);
   } catch {
     return null;
   }
+  const found = probe.stat(dir);
+  if (found === null || !found.directory || found.uid !== 0 || (found.mode & WRITABLE_BY_OTHERS) !== 0) return null;
+  if (dir === sep || within(home, dir) || within(run, dir)) return null;
+  const git = probe.stat(join(dir, 'usr', 'bin', 'git'));
+  return git !== null && git.file ? dir : null;
 }
 
 /** The permission profile a run's commands run under, and the only one its configuration defines. */
@@ -92,19 +161,21 @@ export const RUN_PERMISSIONS = 'myco_run';
  * commands'. The harness's own program is readable, in the directory PATH
  * finds it in and the one it is installed in, since the harness runs a helper
  * of its own inside the same sandbox, by the path PATH gave it, to read the
- * run's instructions. On macOS the active developer directory is readable as
- * well, since the system's `git` runs from it (`activeDeveloperDir`). A
- * command reaches no network. Paths are physical, since
- * the sandbox judges the path a file really has.
+ * run's instructions. A source run on macOS reads the active developer
+ * directory as well, since the system's `git` runs from it
+ * (`activeDeveloperDir`); no other run runs `git`, so no other run is given it.
+ * A command reaches no network. Paths are physical, since the sandbox judges
+ * the path a file really has.
  */
-export function runFilesystem(spec: RunSpec, home: string, installed: string | null, developerDir: string | null = activeDeveloperDir()): Record<string, string> {
+export function runFilesystem(spec: RunSpec, home: string, installed: string | null, developerDir: string | null): Record<string, string> {
+  const source = spec.sourceReadOnly === true;
   return {
     ':minimal': 'read',
     ':slash_tmp': 'deny',
     ':tmpdir': 'deny',
     ...(installed === null ? {} : { [dirname(installed)]: 'read', [dirname(realpathSync(installed))]: 'read' }),
-    ...(developerDir === null ? {} : { [developerDir]: 'read' }),
-    [realpathSync(spec.scratchDir)]: spec.sourceReadOnly === true ? 'read' : 'write',
+    ...(source && developerDir !== null ? { [developerDir]: 'read' } : {}),
+    [realpathSync(spec.scratchDir)]: source ? 'read' : 'write',
     [realpathSync(home)]: 'deny',
     [realpathSync(spec.mcpConfigPath)]: 'deny',
   };
@@ -143,14 +214,20 @@ export const RUN_FEATURES_OFF = [
  * environment holds the run's credential where the Deployment handed one, and
  * a machine policy that keeps those variables would hand it to every command.
  */
-export const RUN_SHELL_ENVIRONMENT = {
-  inherit: 'all',
-  ignore_default_excludes: false,
-  // The sandbox hides the user's home, and Git stops at a global configuration it
-  // cannot open rather than reading on without it: a run's Git reads the
-  // checkout's own configuration and nothing of the machine's.
-  set: { GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_NOSYSTEM: '1' },
-} as const;
+export const RUN_SHELL_ENVIRONMENT = { inherit: 'all', ignore_default_excludes: false } as const;
+
+/**
+ * What a source run's commands are told besides, so its `git` runs in the
+ * sandbox: the sandbox hides the user's home, and Git stops at a global
+ * configuration it cannot open rather than reading on without it, so a run's
+ * Git reads the checkout's own configuration and nothing of the machine's. On
+ * macOS the shim is pointed at the developer directory the run was granted,
+ * so the directory it runs from is the one `activeDeveloperDir` checked. No
+ * other run runs `git`, so no other run is told any of it.
+ */
+export function sourceGitEnvironment(developerDir: string | null): Record<string, string> {
+  return { GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_NOSYSTEM: '1', ...(developerDir === null ? {} : { DEVELOPER_DIR: developerDir }) };
+}
 
 /**
  * The configuration the run reads: the machine's own, with the run's MCP server
@@ -176,7 +253,7 @@ export const RUN_SHELL_ENVIRONMENT = {
  * scan for the lines that look like server declarations mistakes a multi-line
  * string that contains one for the real thing.
  */
-function runConfig(spec: RunSpec, harness: Harness, home: string): string {
+function runConfig(spec: RunSpec, harness: Harness, home: string, probe: DeveloperDirProbe): string {
   const login = credentialFile(harness);
   // A harness keeps its login inside its configuration home, so the directory
   // holding the declared login file is the home this run is additive over.
@@ -190,10 +267,12 @@ function runConfig(spec: RunSpec, harness: Harness, home: string): string {
   delete machine.sandbox_mode;
   delete machine.sandbox_workspace_write;
   machine.default_permissions = RUN_PERMISSIONS;
-  machine.permissions = { [RUN_PERMISSIONS]: { filesystem: runFilesystem(spec, home, locate(harness.binary)) } };
+  const source = spec.sourceReadOnly === true;
+  const developerDir = source ? activeDeveloperDir(spec.scratchDir, probe) : null;
+  machine.permissions = { [RUN_PERMISSIONS]: { filesystem: runFilesystem(spec, home, locate(harness.binary), developerDir) } };
   machine.web_search = 'disabled';
   machine.features = { ...recordOf(machine.features), ...Object.fromEntries(RUN_FEATURES_OFF.map((feature) => [feature, false])) };
-  machine.shell_environment_policy = { ...RUN_SHELL_ENVIRONMENT, set: { ...RUN_SHELL_ENVIRONMENT.set } };
+  machine.shell_environment_policy = { ...RUN_SHELL_ENVIRONMENT, ...(source ? { set: sourceGitEnvironment(developerDir) } : {}) };
 
   // The run's connection is authored once, in `mcp-config.ts`. This reads that
   // file and restates it in the language this harness configures servers in,
@@ -207,10 +286,10 @@ function runConfig(spec: RunSpec, harness: Harness, home: string): string {
 }
 
 /** The configuration home a run reads, built where the run's own files are (`run-home.ts`). */
-function runHome(spec: RunSpec, harness: Harness): string {
+function runHome(spec: RunSpec, harness: Harness, probe: DeveloperDirProbe): string {
   const home = freshRunHome(spec.scratchDir, 'codex-home');
   carryLogin(home, spec, harness);
-  writeFileSync(join(home, 'config.toml'), runConfig(spec, harness, home), { mode: 0o600 });
+  writeFileSync(join(home, 'config.toml'), runConfig(spec, harness, home, probe), { mode: 0o600 });
   return home;
 }
 
@@ -219,43 +298,50 @@ function toolStatus(status: string | null): 'started' | 'ok' | 'error' {
   return status === 'completed' ? 'ok' : status === 'failed' ? 'error' : 'started';
 }
 
-export const codexDriver: Driver = {
-  id: 'codex',
-  async *run(spec: RunSpec, signal: AbortSignal): AsyncIterable<RunEvent> {
-    const harness = harnessById('codex')!;
-    const home = runHome(spec, harness);
-    const env = { ...spec.credentialEnv, ...(harness.isolation.kind === 'home' ? { [harness.isolation.env]: home } : {}) };
-    const started = startHarness(harness.binary, ['exec', '--json', '--skip-git-repo-check', spec.prompt], { cwd: spec.scratchDir, env, signal });
+/** The driver, reading the machine through `probe` for the developer directory a source run's `git` needs. */
+export function codexDriverWith(probe: DeveloperDirProbe): Driver {
+  return {
+    id: 'codex',
+    run: (spec, signal) => runCodex(spec, signal, probe),
+  };
+}
 
-    let ended = false;
-    for await (const line of jsonLines(started.lines)) {
-      const type = stringOf(line.type);
-      if (type === 'thread.started') {
-        yield { kind: 'started', harness: harness.id, sessionId: stringOf(line.thread_id) };
-      } else if (type === 'item.completed') {
-        const item = recordOf(line.item);
-        const itemType = item === null ? null : stringOf(item.type);
-        // An error item is one item among many, never the end of the turn and
-        // never a call: only a tool's own item is a call, named by its tool.
-        if (itemType === 'agent_message') yield { kind: 'message', role: 'assistant', text: stringOf(item?.text) ?? '' };
-        else if (itemType === 'mcp_tool_call') yield { kind: 'tool_call', name: stringOf(item?.tool) ?? 'mcp', status: toolStatus(stringOf(item?.status)) };
-      } else if (type === 'turn.completed') {
-        const usage = recordOf(line.usage);
-        yield {
-          kind: 'usage',
-          inputTokens: usage === null ? null : numberOf(usage.input_tokens),
-          outputTokens: usage === null ? null : numberOf(usage.output_tokens),
-          cachedTokens: usage === null ? null : numberOf(usage.cached_input_tokens),
-          costUsd: null,
-        };
-        ended = true;
-        yield { kind: 'ended', stop: 'end_turn', detail: null };
-      } else if (type === 'turn.failed') {
-        ended = true;
-        yield { kind: 'ended', stop: 'error', detail: stringOf(recordOf(line.error)?.message) };
-      }
+export const codexDriver: Driver = codexDriverWith(SYSTEM_DEVELOPER_DIR_PROBE);
+
+async function* runCodex(spec: RunSpec, signal: AbortSignal, probe: DeveloperDirProbe): AsyncIterable<RunEvent> {
+  const harness = harnessById('codex')!;
+  const home = runHome(spec, harness, probe);
+  const env = { ...spec.credentialEnv, ...(harness.isolation.kind === 'home' ? { [harness.isolation.env]: home } : {}) };
+  const started = startHarness(harness.binary, ['exec', '--json', '--skip-git-repo-check', spec.prompt], { cwd: spec.scratchDir, env, signal });
+
+  let ended = false;
+  for await (const line of jsonLines(started.lines)) {
+    const type = stringOf(line.type);
+    if (type === 'thread.started') {
+      yield { kind: 'started', harness: harness.id, sessionId: stringOf(line.thread_id) };
+    } else if (type === 'item.completed') {
+      const item = recordOf(line.item);
+      const itemType = item === null ? null : stringOf(item.type);
+      // An error item is one item among many, never the end of the turn and
+      // never a call: only a tool's own item is a call, named by its tool.
+      if (itemType === 'agent_message') yield { kind: 'message', role: 'assistant', text: stringOf(item?.text) ?? '' };
+      else if (itemType === 'mcp_tool_call') yield { kind: 'tool_call', name: stringOf(item?.tool) ?? 'mcp', status: toolStatus(stringOf(item?.status)) };
+    } else if (type === 'turn.completed') {
+      const usage = recordOf(line.usage);
+      yield {
+        kind: 'usage',
+        inputTokens: usage === null ? null : numberOf(usage.input_tokens),
+        outputTokens: usage === null ? null : numberOf(usage.output_tokens),
+        cachedTokens: usage === null ? null : numberOf(usage.cached_input_tokens),
+        costUsd: null,
+      };
+      ended = true;
+      yield { kind: 'ended', stop: 'end_turn', detail: null };
+    } else if (type === 'turn.failed') {
+      ended = true;
+      yield { kind: 'ended', stop: 'error', detail: stringOf(recordOf(line.error)?.message) };
     }
-    const code = await started.exit;
-    if (!ended) yield { kind: 'ended', stop: 'error', detail: `the harness completed no turn and exited ${code}: ${started.errorText().slice(0, 2000)}` };
-  },
-};
+  }
+  const code = await started.exit;
+  if (!ended) yield { kind: 'ended', stop: 'error', detail: `the harness completed no turn and exited ${code}: ${started.errorText().slice(0, 2000)}` };
+}

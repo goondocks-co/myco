@@ -27,6 +27,8 @@ import { prepareWorkerRepository } from '@myco-server-worker/core/worker-reposit
 import { MAP_SOURCE_UNPINNED } from '@myco-server-worker/mcp/tools/run-map.js';
 import { NO_MAP_MESSAGE } from '@myco-server-worker/mcp/tools/cortex.js';
 import { PROJECT_HEADER } from '@myco-server-worker/constants.js';
+import { recordWorkerContact } from '@myco-server-worker/core/worker-contacts.js';
+import { heldByWords } from '@goondocks/myco-shared/run-holds';
 import { memberHeaders, sqliteEnv } from './helpers/fixtures.js';
 
 const ORIGIN = 'https://s';
@@ -106,7 +108,43 @@ describe('a map run a worker claimed', () => {
     expect(taken.claimed && taken.run.task).toBe(MAP_TASK);
     // This build's worker reports the listing, and writes it for exactly the tasks that need it.
     expect(WORKER_CAPABILITIES).toContain(REPOSITORY_DIGESTS_CAPABILITY);
-    expect(REPOSITORY_DIGEST_TASKS).toEqual([MAP_TASK]);
+    // Which tasks those are is held to the instructions that name the listing (`tests/myco-server/task-inputs.test.ts`).
+    expect(REPOSITORY_DIGEST_TASKS).toContain(MAP_TASK);
+  });
+
+  it('names the capability a map run waits for while no worker heard from lately reports it, and waits for a worker again once one does (#1475)', async () => {
+    const r = await rig();
+    await r.repositories.save('proj_1', { ...SOURCE, revision: null }, 'mem_worker', r.clock());
+    r.advance(10);
+    const dispatched = await dispatchTask(r.e.serverEnv, MAP_TASK, 'proj_1', { serverUrl: ORIGIN, actor: 'mem_worker' }, r.clock());
+    if (!dispatched.dispatched) throw new Error('the map run was not dispatched');
+    const holder = () => (r.e.sqlite.query(`SELECT held_by AS heldBy FROM agent_runs WHERE id = ?`).get(dispatched.runId) as { heldBy: string | null }).heldBy;
+    const claim = (capabilities: readonly string[]) => claimNextRun(r.e.serverEnv, { tokenId: r.workerCredential.tokenId, machineId: 'm1', harnesses: OFFERED, capabilities, now: r.clock() + 1 });
+    expect(holder()).toBe('worker');
+
+    // A worker built before the listing asks, and no worker that writes one has been heard from.
+    expect(await claim([REPOSITORY_CHECKOUT_CAPABILITY])).toEqual({ claimed: false, reason: 'no_work' });
+    expect({ holder: holder(), words: heldByWords(holder()) }).toEqual({ holder: REPOSITORY_DIGESTS_CAPABILITY, words: expect.stringContaining('too old to run it') });
+    // A worker that checks nothing out waits on the checkout first.
+    expect(await claim([])).toEqual({ claimed: false, reason: 'no_work' });
+    expect(holder()).toBe(REPOSITORY_CHECKOUT_CAPABILITY);
+
+    // Once a worker that can take it has been heard from, the run waits on the ordinary queue again, whoever asks.
+    const current = await issueMemberToken(r.e.db, { memberId: 'mem_worker', machineId: 'm2' }, r.clock());
+    await recordWorkerContact(r.e.db, { credentialId: current.tokenId, machineId: 'm2', offers: OFFERED, capabilities: WORKER_CAPABILITIES, now: r.clock() });
+    expect(await claim([REPOSITORY_CHECKOUT_CAPABILITY])).toEqual({ claimed: false, reason: 'no_work' });
+    expect(holder()).toBe('worker');
+
+    // A run a limit holds keeps its limit.
+    r.e.sqlite.run(`UPDATE agent_runs SET held_by = 'fleet' WHERE id = ?`, [dispatched.runId]);
+    r.e.sqlite.run(`DELETE FROM worker_contacts`);
+    await claim([REPOSITORY_CHECKOUT_CAPABILITY]);
+    expect(holder()).toBe('fleet');
+
+    // And the worker that can take it takes it.
+    r.e.sqlite.run(`UPDATE agent_runs SET held_by = ? WHERE id = ?`, [REPOSITORY_DIGESTS_CAPABILITY, dispatched.runId]);
+    const taken = await claim(WORKER_CAPABILITIES);
+    expect({ claimed: taken.claimed, holder: holder() }).toEqual({ claimed: true, holder: null });
   });
 
   it('carries a Deployment-built prompt and a checkout, and pins its map input with its commit', async () => {

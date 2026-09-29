@@ -1,4 +1,4 @@
-import { MAX_REPOSITORY_HISTORY_DEPTH, WORKER_CAPABILITIES } from '@goondocks/myco-shared/repository';
+import { MAX_REPOSITORY_HISTORY_DEPTH, REPOSITORY_DIGEST_TASKS, RUN_REPOSITORY_DIGESTS_FILE, WORKER_CAPABILITIES } from '@goondocks/myco-shared/repository';
 /**
  * What a run is told, and what happens to one nobody can instruct.
  *
@@ -166,6 +166,19 @@ describe('every instruction the Deployment builds', () => {
       // having ended without its report, however faithfully it followed the prompt.
       expect({ task, named: actions.length > 0, unaccepted: actions.filter((a) => !accepted.includes(a)) }).toEqual({ task, named: true, unaccepted: [] });
     }
+  });
+
+  it('names the digest listing for exactly the tasks a worker writes one for (#1475)', async () => {
+    // A worker writes the listing only for `REPOSITORY_DIGEST_TASKS`, and hashes a checkout for nothing else, so a
+    // task whose instruction sends the run to the listing and is not in the set reads a file that is not there.
+    const r = await rig();
+    const naming: string[] = [];
+    for (const task of Object.keys(INPUT_BUILDERS)) {
+      const built = await buildTaskInput(r.e.serverEnv, task, 'proj_1', NOW, { params: PARAMS });
+      if (built === null || built.unchanged) throw new Error(`${task} built nothing`);
+      if (`${built.input.instruction}\n${built.input.instructions ?? ''}`.includes(RUN_REPOSITORY_DIGESTS_FILE)) naming.push(task);
+    }
+    expect(naming.sort()).toEqual([...REPOSITORY_DIGEST_TASKS].sort());
   });
 
   it('is built for exactly the three outcomes', () => {
