@@ -15,6 +15,7 @@
  * An invitation that names no Project admits a person to the Deployment; they
  * bind their first project afterwards with `myco member join --project`.
  */
+import { REJOIN_HINT } from '@goondocks/myco-shared/member-protocol';
 import { getMachineId } from '../machine-id.js';
 import { resolveMycoHome } from '../paths/home.js';
 import { isSafeProjectRoot } from '../project-root.js';
@@ -110,7 +111,11 @@ export async function run(args: readonly string[], deps: LoginDeps = {}): Promis
 
   const machineId = deps.machineId ?? getMachineId();
   const exchange = await exchangeJoinCode(code, { fetch: deps.fetch, machineId, runtimeKind: 'persistent' });
-  if (!exchange.ok) return fail(`${exchange.reason} (${exchange.code})`);
+  if (!exchange.ok) {
+    // This machine's identity is its member's for as long as that member stands, whatever became of its credential.
+    if (exchange.code === 'identity_claimed') return fail(`this machine already belongs to a member of ${code.serverUrl} (identity_claimed) — ${REJOIN_HINT}`);
+    return fail(`${exchange.reason} (${exchange.code})`);
+  }
 
   const answer = exchange.answer;
   let root: string | undefined;

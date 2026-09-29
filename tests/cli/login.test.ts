@@ -5,6 +5,7 @@
  * that names a Project binds it, a link that names none signs in only, and every
  * refusal is named without the link appearing in the message.
  */
+import { REJOIN_HINT } from '@goondocks/myco-shared/member-protocol';
 import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
@@ -105,6 +106,23 @@ describe('myco login', () => {
     out.length = 0;
     expect(await run([`https://s/join#${issued.key}`], deps(rig))).toBe(false);
     expect(err.join('\n')).toContain('enrollment_used');
+  });
+
+  it('tells a machine its member already holds to ask for an invitation for that member, never a new one (#1382)', async () => {
+    const rig = unjoinedRig();
+    const first = await issueEnrollmentAuthority(rig.env.db, Date.now(), { role: 'member' });
+    expect(await run([`https://s/join#${first.key}`], deps(rig))).toBe(true);
+
+    // A second invitation for a new member: this machine's identity is the first member's.
+    const fresh = await issueEnrollmentAuthority(rig.env.db, Date.now(), { role: 'member' });
+    err.length = 0;
+    expect(await run([`https://s/join#${fresh.key}`], deps(rig))).toBe(false);
+    expect(err.join('\n')).toContain(`this machine already belongs to a member of https://s (identity_claimed) — ${REJOIN_HINT}`);
+
+    // The invitation the remedy names, for the member already here, signs it in.
+    const memberId = (rig.env.sqlite.query('SELECT member_id FROM member_credentials').get() as { member_id: string }).member_id;
+    const forMember = await issueEnrollmentAuthority(rig.env.db, Date.now(), { role: 'member', memberId });
+    expect(await run([`https://s/join#${forMember.key}`], deps(rig))).toBe(true);
   });
 
   it('names every refusal it can make on the link alone, without reaching the Deployment', async () => {

@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { INVITE_CONTROLS, JOIN_PATH, REJOIN_FOR_ADMIN } from '@goondocks/myco-shared/member-protocol';
 import { ConfirmDialog } from '../components/ui/confirm-dialog';
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '../components/ui/dialog';
 import { PageContainer } from '../components/ui/page-container';
@@ -74,10 +75,10 @@ export function Access() {
 
   return (
     <PageContainer>
-      <PageHeader title="Members" subtitle="Who is a member of this server, who has been invited, and which runtimes write here. Everything is open to every member, and every change names who made it." />
+      <PageHeader title={INVITE_CONTROLS.page} subtitle="Who is a member of this server, who has been invited, and which runtimes write here. Everything is open to every member, and every change names who made it." />
       <PageLoading isLoading={members.isPending} error={members.error ?? invitations.error ?? credentials.error ?? runCredentials.error}>
         <div className="flex flex-col gap-4">
-          <Panel padded title="Members" actions={<button type="button" className={primary} onClick={() => { setInvited(null); setInviteError(null); setInviteFor(''); setInviteOpen(true); }}>Invite</button>}>
+          <Panel padded title={INVITE_CONTROLS.page} actions={<button type="button" className={primary} onClick={() => { setInvited(null); setInviteError(null); setInviteFor(''); setInviteOpen(true); }}>{INVITE_CONTROLS.button}</button>}>
             <ul className="flex flex-col divide-y divide-outline-variant/10" aria-label="Members">
               {list.map((m) => (
                 <li key={m.id} className="flex items-center gap-3 py-2 font-sans text-sm">
@@ -107,7 +108,7 @@ export function Access() {
                 {invitations.data!.invitations.map((i) => (
                   <li key={i.id} className="flex items-center gap-3 py-2 font-sans text-sm">
                     <div className="min-w-0 flex-1">
-                      <div className="text-on-surface">{i.memberId === null ? 'A new member' : `Another runtime for ${nameOf(i.memberId)}`}</div>
+                      <div className="text-on-surface">{i.memberId === null ? INVITE_CONTROLS.newMemberOption : `${INVITE_CONTROLS.existingMemberOption} ${nameOf(i.memberId)}`}</div>
                       <div className="text-xs text-on-surface-variant">{nameOf(i.createdBy) ? `by ${nameOf(i.createdBy)} · ` : ''}{invitationExpiry(i.expiresAt, Date.now())}</div>
                     </div>
                     <button type="button" className={button} onClick={() => { setWithdrawError(null); actions.revokeInvitation.mutate(i.id, { onError: (err) => setWithdrawError(refusalText(err)) }); }}>Withdraw</button>
@@ -186,7 +187,7 @@ export function Access() {
         open={revokeCredentialId !== null}
         onOpenChange={(open) => { if (!open) setRevokeCredentialId(null); }}
         title="Stop this runtime?"
-        description="It stops writing at once, and the machine has to sign in again (`myco login <link>`) to write any more. What it already wrote stays, attributed to it."
+        description={`It stops writing at once. ${REJOIN_FOR_ADMIN} What it already wrote stays, attributed to it.`}
         confirmLabel="Stop"
         isPending={actions.revokeCredential.isPending}
         errorMessage={stopError}
@@ -199,11 +200,11 @@ export function Access() {
       <Dialog open={inviteOpen} onOpenChange={(open) => { setInviteOpen(open); if (!open) { setInvited(null); actions.mintInvitation.reset(); } }}>
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>{invited ? 'Invitation ready' : 'Invite'}</DialogTitle>
-            <DialogDescription>{invited ? 'Give this key to the person joining. It works once and expires on its own.' : 'An invitation joins a new member, or adds another runtime to a member already here.'}</DialogDescription>
+            <DialogTitle>{invited ? 'Invitation ready' : INVITE_CONTROLS.button}</DialogTitle>
+            <DialogDescription>{invited ? 'Give this link to the person joining; they run `myco login <link>` with it. It works once and expires on its own.' : 'An invitation joins a new member, or signs in another runtime of a member already here, including a machine of theirs whose credential ended.'}</DialogDescription>
           </DialogHeader>
           {invited ? (
-            <KeyReveal label="Invitation key" value={invited.key} hint={`Expires ${formatDateTime(invited.expiresAt)}. The person joining exchanges it for their own credential when they set up; until then, keep it private.`} />
+            <KeyReveal label="Invitation link" value={`${window.location.origin}${JOIN_PATH}#${invited.key}`} hint={`Expires ${formatDateTime(invited.expiresAt)}. The person joining exchanges it for their own credential when they set up; until then, keep it private.`} />
           ) : (
             <form className="flex flex-col gap-3" onSubmit={(e) => {
               e.preventDefault();
@@ -214,10 +215,10 @@ export function Access() {
               });
             }}>
               <label className="flex flex-col gap-1 font-sans text-xs text-on-surface-variant">
-                For
+                {INVITE_CONTROLS.field}
                 <select value={inviteFor} onChange={(e) => setInviteFor(e.target.value)} className="rounded-md border border-outline-variant/30 bg-surface-container px-2 py-1.5 text-sm text-on-surface">
-                  <option value="">A new member</option>
-                  {list.filter((m) => m.revokedAt === null).map((m) => <option key={m.id} value={m.id}>Another runtime for {m.label ?? m.id}</option>)}
+                  <option value="">{INVITE_CONTROLS.newMemberOption}</option>
+                  {list.filter((m) => m.revokedAt === null).map((m) => <option key={m.id} value={m.id}>{INVITE_CONTROLS.existingMemberOption} {m.label ?? m.id}</option>)}
                 </select>
               </label>
               <label className="flex flex-col gap-1 font-sans text-xs text-on-surface-variant">

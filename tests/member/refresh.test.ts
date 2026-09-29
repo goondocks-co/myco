@@ -7,6 +7,7 @@
  * obeyed until the announced instant; a 401 on a live send re-reads the
  * registry and retries once.
  */
+import { REJOIN_HINT } from '@goondocks/myco-shared/member-protocol';
 import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -283,7 +284,7 @@ describe('member token rotation', () => {
     } finally {
       process.stderr.write = write;
     }
-    expect(out.join('\n')).toContain('proj_1: this machine was inactive too long, or its credential ended — ask a Deployment admin for an invite link');
+    expect(out.join('\n')).toContain(`proj_1: this machine was inactive too long, or its credential ended — ${REJOIN_HINT}`);
   });
 
   it('`myco member refresh` rotates the entry and says what happened', async () => {

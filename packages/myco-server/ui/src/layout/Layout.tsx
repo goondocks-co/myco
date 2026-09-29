@@ -1,4 +1,5 @@
 import { Activity, Bell, Bot, FolderTree, Gauge, KeyRound, LayoutDashboard, ListChecks, MessageSquare, Settings2, Sprout, Users, Wrench } from 'lucide-react';
+import { INVITE_CONTROLS } from '@goondocks/myco-shared/member-protocol';
 import { NavLink, Outlet, useParams } from 'react-router-dom';
 import { ProjectSwitcher } from '../components/ProjectSwitcher';
 import { GlobalSearch } from '../components/GlobalSearch';
@@ -31,7 +32,7 @@ const SERVER_NAV = [
   { label: 'Projects', icon: FolderTree, to: '/projects' },
   { label: 'Status', icon: Activity, to: '/status' },
   { label: 'Measures', icon: Gauge, to: '/measures' },
-  { label: 'Members', icon: Users, to: '/access' },
+  { label: INVITE_CONTROLS.page, icon: Users, to: '/access' },
   { label: 'Settings', icon: Settings2, to: '/settings' },
   { label: 'Operations', icon: Wrench, to: '/operations' },
   { label: 'Notifications', icon: Bell, to: '/notifications' },

@@ -6,6 +6,7 @@
  * `member status`, `myco remove` and `myco doctor` all go through here, so each
  * says the same thing about the same unit.
  */
+import { REJOIN_HINT } from '../member/delivery-notice.js';
 import { resolveHomeDir, resolveMycoHome } from '../paths/home.js';
 import { isDefaultMycoHome } from '../grove/paths.js';
 import { deploymentUrl, listDeploymentMemberships, readDeploymentMembership, readDeploymentMembershipResult } from '../member/registry.js';
@@ -103,7 +104,7 @@ export type EnsureWorkerOutcome =
 
 const ROLE_REFUSALS: Readonly<Record<'not_admin' | 'unauthorized', string>> = {
   not_admin: 'this membership is not an administrator\'s, and only an administrator\'s machine can run work for the Deployment.',
-  unauthorized: 'the Deployment does not accept this machine\'s credential. Sign in again with `myco login`, then run `myco worker install`.',
+  unauthorized: `the Deployment does not accept this machine's credential: ${REJOIN_HINT}, then run \`myco worker install\`.`,
 };
 
 /**
@@ -251,7 +252,7 @@ export function describeWorkerService(serverUrl: string, deps: WorkerServiceDeps
 /** What a recorded refusal means for a person, and whether anything is theirs to fix. */
 const REFUSAL_WORDS: Readonly<Record<TerminalRefusal, { status: 'ok' | 'warn'; line: string }>> = {
   not_admin: { status: 'ok', line: 'no worker: this membership is not an administrator\'s, so it cannot run work for this Deployment' },
-  unauthorized: { status: 'warn', line: 'no worker: the Deployment does not accept this machine\'s credential. Sign in again with `myco login`, then run `myco worker install`' },
+  unauthorized: { status: 'warn', line: `no worker: the Deployment does not accept this machine's credential: ${REJOIN_HINT}, then run \`myco worker install\`` },
   no_membership: { status: 'warn', line: 'no worker: the last one stopped because this home held no membership of the Deployment. Sign in with `myco login`, then run `myco worker install`' },
 };
 

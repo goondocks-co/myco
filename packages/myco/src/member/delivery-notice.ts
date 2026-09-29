@@ -11,9 +11,10 @@
  */
 import type { HookResponse } from '../hooks/response.js';
 import type { CredentialRecord } from './credential.js';
+import { REJOIN_HINT } from '@goondocks/myco-shared/member-protocol';
 
-/** The act that replaces a credential the Deployment no longer rotates. */
-export const REJOIN_HINT = 'ask a Deployment admin for an invite link and run `myco login <link>`';
+/** The act that replaces a credential the Deployment no longer rotates; one text, shared with the dashboard's own labels. */
+export { REJOIN_HINT } from '@goondocks/myco-shared/member-protocol';
 
 /** The notice for a credential, or null while it is still rotating, or does not rotate and has not expired. */
 export function deliveryNotice(credential: Pick<CredentialRecord, 'serverUrl' | 'expiresAt' | 'refreshTerminal' | 'refreshTerminalReason' | 'nonRotating' | 'refusedAt'>, now: number): string | null {

@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it } from 'bun:test';
+import { INVITE_CONTROLS, REJOIN_FOR_ADMIN, REJOIN_HINT } from '@goondocks/myco-shared/member-protocol';
 import { fireEvent, render, screen } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
@@ -54,7 +55,7 @@ describe('Deployment Access', () => {
     expect(screen.getByText(/can no longer sign in/)).toBeTruthy();
   });
 
-  it('mints an invitation and shows the key once', async () => {
+  it('mints an invitation and shows the link `myco login` takes, once', async () => {
     const { posts } = server({
       '/auth/me': () => Response.json(ME),
       '/api/projects': () => Response.json({ projects: [] }),
@@ -65,7 +66,7 @@ describe('Deployment Access', () => {
     mount('/access');
     fireEvent.click(await screen.findByText('Invite'));
     fireEvent.click(await screen.findByText('Create invitation'));
-    expect((await screen.findByTestId('key-reveal')).textContent).toBe('k'.repeat(43));
+    expect((await screen.findByTestId('key-reveal')).textContent).toBe(`${window.location.origin}/join#${'k'.repeat(43)}`);
     expect(screen.getByText(/shown once/)).toBeTruthy();
     expect(posts).toEqual([{ path: '/api/enrollment', body: { ttlMinutes: 60 } }]);
     fireEvent.keyDown(document.activeElement ?? document.body, { key: 'Escape' });
@@ -235,11 +236,22 @@ describe('a runtime and the worker record beside it', () => {
     expect(screen.queryByText('writing')).toBeNull();
   });
 
-  it('says, before a runtime is stopped, that its machine has to sign in again to write', async () => {
+  it('says, before a runtime is stopped, that its machine writes again only with an invitation for its member', async () => {
     accessServer({ member: [credential()] });
     mount('/access');
     fireEvent.click(await screen.findByText('Stop'));
-    expect(await screen.findByText(/has to sign in again \(`myco login <link>`\)/)).toBeTruthy();
+    expect(await screen.findByText((text) => text.includes(REJOIN_FOR_ADMIN))).toBeTruthy();
+  });
+
+  it('offers an invitation for another runtime of each member, in the words the member\'s rejoin notice quotes', async () => {
+    accessServer({});
+    mount('/access');
+    fireEvent.click(await screen.findByText(INVITE_CONTROLS.button));
+    const options = Array.from((await screen.findByRole('dialog')).querySelectorAll('option')).map((o) => o.textContent);
+    expect(options[0]).toBe(INVITE_CONTROLS.newMemberOption);
+    expect(options.slice(1).every((o) => o?.startsWith(`${INVITE_CONTROLS.existingMemberOption} `))).toBe(true);
+    expect(options.length).toBeGreaterThan(1);
+    expect(REJOIN_HINT).toContain(INVITE_CONTROLS.existingMemberOption);
   });
 
   it('says a credential the Deployment ended on replay was used from two places, not who stopped it', async () => {
