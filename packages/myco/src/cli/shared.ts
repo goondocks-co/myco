@@ -1,3 +1,5 @@
+import { isMemberHome, memberHomeDaemonRefusal } from '../member/home-role.js';
+import { resolveMycoHome } from '../paths/home.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
@@ -60,11 +62,20 @@ export async function initVaultDb(vaultDir: string): Promise<() => void> {
   return closeDatabase;
 }
 
+/** Exit with the reason when this home is a 2.0 member home, where no 1.4 daemon runs. */
+function refuseForMemberHome(): void {
+  const mycoHome = resolveMycoHome({ env: process.env });
+  if (!isMemberHome(mycoHome)) return;
+  console.error(memberHomeDaemonRefusal(mycoHome));
+  process.exit(1);
+}
+
 /** Connect to the daemon, ensuring it's running. Exits on failure. */
 export async function connectToDaemon(vaultDir: string): Promise<DaemonClient> {
   const client = new DaemonClient(vaultDir, {
     requestContext: requestContextFromEnvironment(process.env, vaultDir),
   });
+  refuseForMemberHome();
   const healthy = await client.ensureRunning();
   if (!healthy) {
     console.error('Failed to connect to daemon');
@@ -87,6 +98,7 @@ export async function connectToDaemon(vaultDir: string): Promise<DaemonClient> {
  */
 export async function connectToGlobalDaemon(vaultDir: string): Promise<DaemonClient> {
   const client = new DaemonClient(vaultDir);
+  refuseForMemberHome();
   const healthy = await client.ensureRunning();
   if (!healthy) {
     console.error('Failed to connect to daemon');

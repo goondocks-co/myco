@@ -569,6 +569,26 @@ const emptyProjectReport = (project: LegacyProject, root: string | null): Legacy
   lineage: { recorded: 0, duplicate: 0, refused: 0, malformed: 0 }, refusals: [], failures: [], malformed: [],
 });
 
+/** Every project the sources hold, with the root its newest session names; null where none names one. */
+export function legacyProjectRoots(sources: readonly string[]): Array<{ projectId: string; root: string | null; vault: string }> {
+  return [...new Set(sources.flatMap(legacyVaultFiles))].flatMap(readLegacyVault).map((p) => ({ projectId: p.projectId, root: rootOf(p), vault: p.vault }));
+}
+
+/**
+ * How the sources' sessions split between this machine and the machines they
+ * record: the sessions a vault import on `machineId` would take, and, by
+ * machine id, the ones it leaves for another machine.
+ */
+export function legacySessionSplit(sources: readonly string[], machineId: string): { thisMachine: number; otherMachines: Record<string, number> } {
+  const split = { thisMachine: 0, otherMachines: {} as Record<string, number> };
+  for (const project of [...new Set(sources.flatMap(legacyVaultFiles))].flatMap(readLegacyVault)) {
+    const grouping = groupLegacySessions(project, new Map(), machineId);
+    split.thisMachine += grouping.groups.length;
+    for (const [machine, ids] of grouping.otherMachines) split.otherMachines[machine] = (split.otherMachines[machine] ?? 0) + ids.length;
+  }
+  return split;
+}
+
 /** The project root the vault's newest session names, as the filesystem spells it. */
 function rootOf(project: LegacyProject): string | null {
   const named = [...project.sessions].reverse().find((s) => s.projectRoot !== null)?.projectRoot ?? null;
@@ -843,6 +863,8 @@ export async function runLegacyImport(opts: LegacyImportOptions, deps: LegacyImp
       // of it: a later run brings it from that transcript.
       if (candidate === 'active' && source === undefined && !held.withTranscript.has(group.sessionId)) return { endedBy: STILL_WRITING };
       if (source === undefined) {
+        // A transcript still being written is the session's source too: the hook
+        // capturing it, or a later transcript import, brings it.
         source = plan?.decision === 'tombstoned' ? 'deleted'
           : plan !== null && plan.decision !== 'unoffered' ? 'transcript'
           : held.withTranscript.has(group.sessionId) ? 'transcript'

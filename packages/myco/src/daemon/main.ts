@@ -6,6 +6,7 @@
  * project work.
  */
 
+import { isMemberHome, memberHomeDaemonRefusal } from '../member/home-role.js';
 import { DaemonServer } from './server.js';
 import { resolveHostServeConfig } from './host-serve.js';
 import { EXTERNAL_MCP_PATH, ExternalMcpListener, defaultFunnelOffRunner, defaultFunnelOnRunner, resolveExternalMcpSocketPath } from './external-listener.js';
@@ -773,6 +774,13 @@ export async function main(): Promise<void> {
   const processGuards = installProcessGuards();
 
   const mycoHome = resolveMycoHome();
+
+  // A 2.0 member home never runs the 1.4 daemon. Exit 0 so a supervisor's
+  // on-failure respawn leaves it down.
+  if (isMemberHome(mycoHome)) {
+    process.stderr.write(`myco daemon: ${memberHomeDaemonRefusal(mycoHome)}\n`);
+    process.exit(0);
+  }
 
   // Stamp the harness redirect epoch at boot rather than on first harness use.
   // Redirection is in effect for every harness run this process will start, so

@@ -153,6 +153,8 @@ async function transportFor(vaultDir: string, source: CredentialSource | null): 
     return { ok: true, transport: deploymentTransport(upstream) };
   }
   const daemonClient = new DaemonClient(vaultDir);
+  const refusal = daemonClient.memberHomeRefusal();
+  if (refusal !== null) return { ok: false, error: { code: 'member_home', message: refusal } };
   const ready = await daemonClient.ensureRunning();
   const info = daemonClient.getInfo();
   if (!ready || !info) return { ok: false, error: { code: 'daemon_unavailable', message: DAEMON_UNAVAILABLE_MESSAGE } };

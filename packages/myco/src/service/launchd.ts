@@ -328,9 +328,9 @@ function isLaunchdJobAbsent(stdout: string): boolean {
     || /(?:could not find|not found|unknown) service/i.test(stdout);
 }
 
-type PlistValue = string | number | boolean | PlistValue[] | { [key: string]: PlistValue };
+export type PlistValue = string | number | boolean | PlistValue[] | { [key: string]: PlistValue };
 
-function parsePlistDocument(plist: string): { [key: string]: PlistValue } | null {
+export function parsePlistDocument(plist: string): { [key: string]: PlistValue } | null {
   const xml = plist
     .replace(/^\s*<\?xml[^>]*\?>/, '')
     .replace(/^\s*<!DOCTYPE[^>]*>/, '');
