@@ -18,7 +18,7 @@ import { emit } from '../telemetry.js';
 import { HARNESS_MEMBER_ID } from '../constants.js';
 import { credentialLive, runCredential } from '../db/liveness.js';
 import { revokeInvitationsOfMember } from './enrollment.js';
-import { revokeLinkKeysOfMember } from './identity-link.js';
+import { linkedAdmin, revokeLinkKeysOfMember } from './identity-link.js';
 import { revokeCredentialsOfMember } from './tokens.js';
 import { asMemberRole, type MemberRole } from './roles.js';
 
@@ -76,23 +76,28 @@ export async function memberState(db: RelationalStore, memberId: string): Promis
   return row.revoked_at === null ? 'live' : 'revoked';
 }
 
-export type RevokeMemberRefusal = 'absent' | 'already_revoked' | 'last_member';
+export type RevokeMemberRefusal = 'absent' | 'already_revoked' | 'last_member' | 'last_admin';
 export type RevokeMemberResult = { ok: true } | { ok: false; reason: RevokeMemberRefusal };
 
 /**
  * Revokes a member and everything live that is theirs, in one transaction.
  *
  * The member statement runs first and refuses to leave the Deployment with no
- * live linked member; every later statement matches rows only when that first
- * one changed the member row. A refused revocation therefore changes nothing,
- * and the read afterwards only names which refusal it was.
+ * live linked member, or with no live linked admin: the admin who can sign in
+ * is who links every later member, and a Deployment left without one would
+ * reopen the bootstrap a member credential links itself through. Every later
+ * statement matches rows only when that first one changed the member row. A
+ * refused revocation therefore changes nothing, and the read afterwards only
+ * names which refusal it was.
  */
 export async function revokeMember(db: RelationalStore, memberId: string, actor: string, nowMs: number): Promise<RevokeMemberResult> {
   const results = await db.batch([
     db.prepare(`UPDATE members SET revoked_at = ?, revoked_by = ?
                  WHERE id = ? AND revoked_at IS NULL
-                   AND (SELECT COUNT(*) FROM members WHERE revoked_at IS NULL AND github_id IS NOT NULL AND id <> ?) >= 1`)
-      .bind(nowMs, actor, memberId, memberId),
+                   AND (SELECT COUNT(*) FROM members WHERE revoked_at IS NULL AND github_id IS NOT NULL AND id <> ?) >= 1
+                   AND (NOT (${linkedAdmin('members')})
+                        OR EXISTS (SELECT 1 FROM members other WHERE other.id <> ? AND ${linkedAdmin('other')}))`)
+      .bind(nowMs, actor, memberId, memberId, memberId),
     revokeCredentialsOfMember(db, memberId, actor, nowMs),
     revokeInvitationsOfMember(db, memberId, actor, nowMs),
     revokeLinkKeysOfMember(db, memberId, actor, nowMs),
@@ -102,5 +107,10 @@ export async function revokeMember(db: RelationalStore, memberId: string, actor:
     return { ok: true };
   }
   const state = await memberState(db, memberId);
-  return { ok: false, reason: state === 'absent' ? 'absent' : state === 'revoked' ? 'already_revoked' : 'last_member' };
+  if (state !== 'live') return { ok: false, reason: state === 'absent' ? 'absent' : 'already_revoked' };
+  const others = await db
+    .prepare(`SELECT COUNT(*) AS linked FROM members WHERE revoked_at IS NULL AND github_id IS NOT NULL AND id <> ?`)
+    .bind(memberId)
+    .first<{ linked: number }>();
+  return { ok: false, reason: Number(others?.linked) === 0 ? 'last_member' : 'last_admin' };
 }

@@ -40,7 +40,7 @@ it('retries one pending administrator and connects it through the ordinary ident
   const sqlite = new Database(paths.databasePath);
   try {
     const db = sqliteRelationalStore(sqlite);
-    expect(await previewIdentityLinkAuthority(db, new URL(first.url).hash.slice(1), Date.now())).toBeNull();
+    expect(await previewIdentityLinkAuthority(db, new URL(first.url).hash.slice(1), Date.now())).toEqual({ ok: false, reason: 'denied' });
     expect(await spendIdentityLinkAuthority(db, new URL(second.url).hash.slice(1), '12345', Date.now()))
       .toMatchObject({ ok: true, member: { id: first.memberId, role: 'admin' } });
     await expect(setupLocalOwner(paths, native)).rejects.toThrow(/already has members/);

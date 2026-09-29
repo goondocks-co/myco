@@ -2,8 +2,9 @@
 /**
  * Break-glass: bind a GitHub account to a member directly in the store.
  *
- * The steady-state path is `myco member link-github`, which proves the account
- * through GitHub. This one proves nothing and connects to nothing: it renders
+ * The steady-state paths prove the account through GitHub: `myco member
+ * link-github` for the first member of a fresh Deployment, and an admin's
+ * Members → Connect GitHub link after. This one proves nothing and connects to nothing: it renders
  * the UPDATE for an operator to apply with their own database access, exactly
  * as mint-enrollment.ts does. It also clears any earlier account, which is how
  * a member's account is changed once linked.

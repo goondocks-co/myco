@@ -159,6 +159,8 @@ const DRIVERS: Record<Classifier, (r: Rig) => Promise<Response>> = {
     r.e.sqlite.query(`UPDATE member_credentials SET issued_at = ?, expires_at = ? WHERE id = ?`).run(issuedAt, issuedAt + MEMBER_TOKEN_TTL_MS, r.windowed.tokenId);
     return r.fetch(memberPost(r.windowed.token, '{}', '/tokens/refresh'));
   },
+  // A member credential asking to link GitHub on a Deployment whose admin is already linked.
+  link_requires_admin: (r) => r.fetch(memberPost(r.t1.token, '{}', '/members/link-github')),
   // A credential its issuer minted for an environment, asking to rotate.
   non_rotating: async (r) => {
     const fixed = await issueMemberToken(r.e.db, { memberId: 'mem_machine_1', machineId: 'machine_1' }, r.now, null, NO_RUNTIME_CLAIMS, { rotates: false });

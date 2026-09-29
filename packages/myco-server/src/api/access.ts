@@ -1,13 +1,14 @@
 import type { ServerEnv } from '../core/adapters.js';
 import type { OwnerContext } from '../context.js';
 import { ENROLLMENT_TTL_MS, issueEnrollmentAuthority, listInvitations, revokeEnrollmentAuthority } from '../auth/enrollment.js';
+import { ADMIN_IDENTITY_LINK_TTL_MS, issueIdentityLinkAuthority, memberLinkState } from '../auth/identity-link.js';
 import { listMembers, memberState, revokeMember } from '../auth/members-admin.js';
 import { revokeCredentialAsMember } from '../auth/tokens.js';
 import { credentialActivity, listCredentials } from '../read/credentials.js';
 import { projectExists } from '../read/sessions.js';
 import { emit } from '../telemetry.js';
 import { badRequest, notFound, ok, readJsonObject } from './scope.js';
-import { MEMBER_ID, MINUTE_MS } from '../constants.js';
+import { HARNESS_MEMBER_ID, MEMBER_ID, MINUTE_MS } from '../constants.js';
 import { asMemberRole, forbiddenToMember, isAdmin } from '../auth/roles.js';
 import { isProjectId } from '../pipeline.js';
 import { paging } from './sessions.js';
@@ -26,6 +27,28 @@ export async function handleRevokeMember(env: ServerEnv, ctx: OwnerContext): Pro
   if (result.ok) return ok({ revoked: true, revokedBy: ctx.member.id });
   if (result.reason === 'absent') return notFound();
   return Response.json({ error: result.reason }, { status: 409 });
+}
+
+/**
+ * `POST /api/members/{memberId}/link-github`: an admin creates a one-time key
+ * that links a GitHub account to the member they name. The member opens it,
+ * signs in with GitHub, and confirms; the admin's act authorises the link and
+ * the member's sign-in proves the account. Answered once. The key binds only
+ * while its issuer is still a live, linked admin, and creating one withdraws the
+ * member's earlier unspent keys.
+ */
+export async function handleIssueMemberLink(env: ServerEnv, ctx: OwnerContext): Promise<Response> {
+  if (!isAdmin(ctx.member.role)) return forbiddenToMember();
+  const memberId = ctx.params.memberId;
+  if (memberId === HARNESS_MEMBER_ID) return Response.json({ error: 'member_is_runtime' }, { status: 409 });
+  const state = await memberLinkState(env.db, memberId);
+  if (state === 'absent') return notFound();
+  if (state === 'revoked') return Response.json({ error: 'member_revoked' }, { status: 409 });
+  if (state === 'linked') return Response.json({ error: 'member_linked' }, { status: 409 });
+  const issued = await issueIdentityLinkAuthority(env.db, memberId, ctx.now, { issuedBy: ctx.member.id, ttlMs: ADMIN_IDENTITY_LINK_TTL_MS, replaceUnspent: true });
+  if (issued === null) return forbiddenToMember();
+  emit({ kind: 'identity_link_issued', memberId, issuedBy: ctx.member.id });
+  return Response.json({ key: issued.key, expiresAt: issued.expiresAt }, { status: 201 });
 }
 
 export async function handleInvitations(env: ServerEnv, ctx: OwnerContext): Promise<Response> {

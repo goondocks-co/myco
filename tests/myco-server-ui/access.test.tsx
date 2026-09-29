@@ -97,6 +97,57 @@ describe('Deployment Access', () => {
     fireEvent.click(await screen.findByRole('button', { name: 'Remove' }));
     expect(await screen.findByText(/nobody who can sign in/)).toBeTruthy();
   });
+
+  it('offers Connect GitHub only for a member with no account yet, and shows the one-time link the admin sends them', async () => {
+    const { posts } = server({
+      '/auth/me': () => Response.json(ME),
+      '/api/projects': () => Response.json({ projects: [] }),
+      '/api/members': () => Response.json(MEMBERS),
+      '/api/members/mem_2/link-github': () => Response.json({ key: 'k'.repeat(43), expiresAt: Date.now() + 3_600_000 }, { status: 201 }),
+      '/api/enrollment': () => Response.json({ invitations: [] }),
+      '/api/credentials': () => Response.json({ rows: [], cursor: null }),
+    });
+    mount('/access');
+    expect(await screen.findByText('laptop')).toBeTruthy();
+    expect(screen.getAllByText('Connect GitHub')).toHaveLength(1);
+    fireEvent.click(screen.getByText('Connect GitHub'));
+    expect(await screen.findByText('Connect a GitHub account to laptop')).toBeTruthy();
+    expect(screen.getByText(/send it only to them/)).toBeTruthy();
+    fireEvent.click(screen.getByText('Create link'));
+    expect((await screen.findByTestId('key-reveal')).textContent).toBe(`${window.location.origin}/link#${'k'.repeat(43)}`);
+    expect(screen.getByText('Link ready')).toBeTruthy();
+    expect(screen.getByText(/Send this link to laptop/)).toBeTruthy();
+    expect(posts).toEqual([{ path: '/api/members/mem_2/link-github', body: undefined }]);
+  });
+
+  it('says why a link was not created, in the person\'s words', async () => {
+    server({
+      '/auth/me': () => Response.json(ME),
+      '/api/projects': () => Response.json({ projects: [] }),
+      '/api/members': () => Response.json(MEMBERS),
+      '/api/members/mem_2/link-github': () => Response.json({ error: 'member_linked' }, { status: 409 }),
+      '/api/enrollment': () => Response.json({ invitations: [] }),
+      '/api/credentials': () => Response.json({ rows: [], cursor: null }),
+    });
+    mount('/access');
+    fireEvent.click(await screen.findByText('Connect GitHub'));
+    fireEvent.click(await screen.findByText('Create link'));
+    expect(await screen.findByText(/already has a GitHub account connected/)).toBeTruthy();
+    expect(screen.queryByTestId('key-reveal')).toBeNull();
+  });
+});
+
+describe('Connecting a GitHub account', () => {
+  it('says a link from before the server had an admin can no longer connect, and whom to ask', async () => {
+    window.history.replaceState(null, '', `/link#${'k'.repeat(43)}`);
+    server({
+      '/auth/me': () => Response.json({ sub: '9002', login: 'newcomer', member: null }),
+      '/auth/link': () => Response.json({ error: 'link_requires_admin' }, { status: 403 }),
+    });
+    mount('/link');
+    expect(await screen.findByText(/this server already has an admin/)).toBeTruthy();
+    expect(screen.getByText(/Ask an admin to connect your GitHub account from the Members page/)).toBeTruthy();
+  });
 });
 
 describe('Project Access', () => {
