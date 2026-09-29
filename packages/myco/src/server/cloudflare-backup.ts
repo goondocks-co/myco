@@ -1,5 +1,5 @@
 import fs from 'node:fs';
-import { exportD1, type D1ExportOptions } from './cloudflare-d1-export.js';
+import { exportD1, settleD1Export, type D1ExportOptions } from './cloudflare-d1-export.js';
 import path from 'node:path';
 import { z } from 'zod';
 import {
@@ -85,7 +85,7 @@ export async function backupCloudflareDeployment(
   options: LifecycleOptions & {
     destination: string; fetch?: CloudflareFetch; timeouts?: OperatorObjectTimeouts; retry?: RecoveryRetryPolicy;
     /** Test-only: the export's clock, pause and bound. */
-    d1Export?: Pick<D1ExportOptions, 'now' | 'sleep' | 'boundMs' | 'pollMs'>;
+    d1Export?: Pick<D1ExportOptions, 'now' | 'sleep' | 'boundMs' | 'marginMs' | 'pollMs'>;
   },
 ): Promise<RecoveryManifest> {
   const record = readDeploymentRecord(options.mycoHome);
@@ -118,16 +118,16 @@ export async function backupCloudflareDeployment(
     hold: cloudflareRecoveryHold({ ...options, configDir, configFile: holdConfigFile, databaseName }, record),
     snapshot: async (file, workDir) => {
       const provider = { ...bound(workDir), databaseName };
+      const sqlPath = path.join(workDir, 'd1.sql');
+      const exportContext = { accountId: record.accountId, databaseId, output: sqlPath, recordDir: configDir, login: operator, fetch: options.fetch, report: options.report, ...options.d1Export };
+      // An export this machine left running pauses the schema read, so it is settled first.
+      const settled = await settleD1Export(exportContext);
       const before = schemaObjects.parse(await queryCloudflareDatabase({ ...provider, sql: SCHEMA_QUERY, timeoutMs: D1_STATEMENT_TIMEOUT_MS }));
       const tables = exportedTables(before);
       if (tables.length === 0) throw new Error('D1 holds no ordinary tables to recover');
       assertRecoverableSchema(before);
       options.report?.('Exporting D1; Cloudflare temporarily pauses queries during the snapshot');
-      const sqlPath = path.join(workDir, 'd1.sql');
-      await exportD1({
-        accountId: record.accountId, databaseId, tables, output: sqlPath, recordDir: configDir,
-        schema: JSON.stringify(before), login: operator, fetch: options.fetch, report: options.report, ...options.d1Export,
-      });
+      await exportD1({ ...exportContext, tables, schema: JSON.stringify(before), settled });
       const after = schemaObjects.parse(await queryCloudflareDatabase({ ...provider, sql: SCHEMA_QUERY, timeoutMs: D1_STATEMENT_TIMEOUT_MS }));
       if (JSON.stringify(before) !== JSON.stringify(after)
         || JSON.stringify(record) !== JSON.stringify(readDeploymentRecord(options.mycoHome))) {

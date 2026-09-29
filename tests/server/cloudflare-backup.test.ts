@@ -766,6 +766,30 @@ describe('a transient Cloudflare failure during the snapshot', () => {
     } finally { f.cleanup(); }
   });
 
+  it('settles the export a backup left running before it reads the schema, which that export pauses (#1455 F5)', async () => {
+    const f = fixture();
+    try {
+      f.exportStays(() => true);
+      let clock = 0;
+      const d1Export = { pollMs: 0, boundMs: 30 * 60_000, now: () => clock, sleep: async () => { clock += 60_000; } };
+      await expect(f.backup({ d1Export })).rejects.toThrow('did not finish within 30 min');
+      f.exportStays(() => false);
+      // What the export API had been asked by the time the next backup first reads the schema.
+      const askedAtSchemaRead: Array<Array<string | null>> = [];
+      const runner: CommandRunner = {
+        run: async (command, args, options) => {
+          if (isSchemaRead(args)) askedAtSchemaRead.push(f.exportCalls().map((call) => call.bookmark));
+          return f.runner.run(command, args, options);
+        },
+      };
+      const before = f.exportCalls().length;
+      // A bound the first export completes inside, so its result is this snapshot.
+      expect((await f.backup({ runner, d1Export: { ...d1Export, boundMs: 60 * 60_000 } })).status).toBe('complete');
+      expect(askedAtSchemaRead[0]!.slice(before)).toEqual(['bm-1']);
+      expect(f.exports()).toHaveLength(1);
+    } finally { f.cleanup(); }
+  });
+
   it('completes after a single account refusal on its schema read', async () => {
     const f = fixture();
     try {
