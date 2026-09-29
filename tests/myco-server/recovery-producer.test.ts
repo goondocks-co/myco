@@ -5,7 +5,7 @@
  */
 import { expect, it } from 'bun:test';
 import {
-  ADVANCING_STAGES, continueAttempt, freshScan, PRODUCER_LIMITS, TransientProducerFailure,
+  ADVANCING_STAGES, continueAttempt, exportWait, exportWaitBoundMs, freshScan, PRODUCER_LIMITS, TransientProducerFailure,
   type AttemptCheckpoint, type AttemptObject, type AttemptPart, type AttemptState, type CopyAnswer,
   type ExportAnswer, type PortFailure, type ProducerPorts, type RangeAnswer, type ScanProgress, type UnsettledExport,
 } from '@myco-server-worker/core/recovery-producer.js';
@@ -73,7 +73,14 @@ function checkpoint(initial: Partial<AttemptState> = {}): AttemptCheckpoint & {
     earlier: null as UnsettledExport | null,
     unsettledExport: (): UnsettledExport | null => (store.state.exportRequestedAt === null
       ? store.earlier
-      : { attempt: store.state.id, requestedAt: store.state.exportRequestedAt, answeredAt: store.state.exportAnsweredAt }),
+      : { attempt: store.state.id, requestedAt: store.state.exportRequestedAt, answeredAt: store.state.exportAnsweredAt, bookmark: store.state.bookmark }),
+    noteUnsettled: (attempt: number, outcome: { running: number } | 'settled') => {
+      if (attempt === store.state.id) {
+        Object.assign(store.state, outcome === 'settled' ? { exportRequestedAt: null } : { exportAnsweredAt: outcome.running });
+      } else if (store.earlier !== null && store.earlier.attempt === attempt) {
+        store.earlier = outcome === 'settled' ? null : { ...store.earlier, answeredAt: outcome.running };
+      }
+    },
   };
   return store;
 }
@@ -335,7 +342,7 @@ it('carries neither provider text nor an exception message into a status or a lo
   expect(logged.join('\n')).not.toContain(marker);
   // Every value a log carries is a number, a boolean, or one of the fixed names the producer may report.
   const fixed = new Set([
-    'recovery_attempt_failed', 'recovery_attempt_transient', 'recovery_attempt_interrupted', 'recovery_export_unsettled',
+    'recovery_attempt_failed', 'recovery_attempt_transient', 'recovery_attempt_interrupted', 'recovery_export_unsettled', 'export_unsettled', 'export_unanswered',
     'recovery_inventory_read', 'recovery_staging_completed',
     'export', 'download', 'inventory', 'copy', 'downloaded', 'complete', 'failed',
     'provider_unavailable', 'provider_refused', 'export_failed', 'export_not_offered', 'export_unparsable',
@@ -512,7 +519,7 @@ it('leaves an export a failed attempt may have started as one the next attempt w
 
   // The next attempt finds it, whichever attempt asked, and measures the wait from its last answer at 300, not its request at 100.
   const next = checkpoint({ id: 2 });
-  next.earlier = { attempt: 1, requestedAt: 100, answeredAt: 300 };
+  next.earlier = { attempt: 1, requestedAt: 100, answeredAt: 300, bookmark: null };
   let clock = 300 + PRODUCER_LIMITS.exportStaleMs - 1;
   const { port, calls } = ports({ exports: [{ status: 'running', bookmark: 'b3' }], now: () => clock });
   expect((await continueAttempt(next, port, PRODUCER_LIMITS)).progressed).toBe(false);
@@ -605,4 +612,95 @@ it('clears what it can when an attempt ends, and says which clearing up failed',
   expect([state.state.stage, state.state.error, state.signed]).toEqual(['failed', 'download_unranged', null]);
   const failure = logged.find((event) => event.kind === 'recovery_attempt_failed')!;
   expect([failure.refusal, failure.uploadAborted, failure.signedUrlCleared]).toEqual(['download_unranged', false, true]);
+});
+
+it('asks once after an earlier attempt\'s export past the window before it starts another, and waits while it still runs (#1484)', async () => {
+  const stale = PRODUCER_LIMITS.exportStaleMs;
+  for (const [what, probe, posts] of [
+    ['still running', { status: 'running', bookmark: 'b-old' }, 0],
+    ['ended', { status: 'ended', bookmark: 'b-old' }, 1],
+    ['answered with nothing that settles it', { status: 'error', bookmark: 'b-old', failure: failure('http', 400, false) }, 1],
+  ] as const) {
+    const state = checkpoint({ id: 2 });
+    state.earlier = { attempt: 1, requestedAt: 0, answeredAt: 10, bookmark: 'b-old' };
+    const clock = 10 + stale;
+    const asked: Array<string | null> = [];
+    const { port } = ports({ exports: [probe as ExportAnswer, { status: 'running', bookmark: 'b-new' }], now: () => clock });
+    const polled = port.pollExport;
+    port.pollExport = async (bookmark) => { asked.push(bookmark); return polled(bookmark); };
+    const report = await continueAttempt(state, port, { ...PRODUCER_LIMITS, maxPollsPerStep: 2 });
+    expect({ what, asked: asked.slice(0, 1), fresh: asked.filter((b) => b === null).length }).toEqual({ what, asked: ['b-old'], fresh: posts });
+    if (posts === 0) {
+      // Waited on, and its window starts again from this answer.
+      expect({ what, stage: report.stage, progressed: report.progressed, earlier: state.earlier }).toEqual({ what, stage: 'export', progressed: false, earlier: { attempt: 1, requestedAt: 0, answeredAt: clock, bookmark: 'b-old' } });
+    } else {
+      expect({ what, earlier: state.earlier as unknown, bookmark: state.state.bookmark }).toEqual({ what, earlier: null, bookmark: 'b-new' });
+    }
+  }
+});
+
+it('ends an attempt whose own request was never answered as export_unanswered, never as a stalled export (#1484)', async () => {
+  const state = checkpoint();
+  let clock = 0;
+  const limits = { ...PRODUCER_LIMITS, exportPollMs: 60_000, maxPollsPerStep: 1 };
+  const { port } = ports({ exports: [{ status: 'error', bookmark: null, failure: failure('transport', null, true) }], now: () => clock });
+  await continueAttempt(state, port, limits);
+  expect(exportWait(state.state, state.unsettledExport(), clock, limits)).toBe('own_request');
+  clock = limits.exportPollMs + 1;
+  const over = await continueAttempt(state, port, limits);
+  expect([over.stage, over.error]).toEqual(['failed', 'export_unanswered']);
+});
+
+it('names the wait an attempt is in: its own unanswered request, or an earlier attempt\'s export (#1484)', () => {
+  const unsettled = { attempt: 1, requestedAt: 0, answeredAt: 100, bookmark: 'b1' };
+  const at = (id: number, bookmark: string | null = null, stage: 'export' | 'download' = 'export') => ({ id, stage, bookmark });
+  expect([
+    exportWait(at(1), unsettled, 200, PRODUCER_LIMITS),
+    exportWait(at(2), unsettled, 200, PRODUCER_LIMITS),
+    exportWait(at(2), unsettled, 100 + PRODUCER_LIMITS.exportStaleMs, PRODUCER_LIMITS),
+    exportWait(at(2, 'b2'), unsettled, 200, PRODUCER_LIMITS),
+    exportWait(at(2, null, 'download'), unsettled, 200, PRODUCER_LIMITS),
+    exportWait(at(2), null, 200, PRODUCER_LIMITS),
+  ]).toEqual(['own_request', 'earlier_export', null, null, null, null]);
+});
+
+it('records an export it follows whose request was never recorded, so it is never taken as settled while it runs (#1484)', async () => {
+  // A Worker from before requests were recorded left an attempt following a bookmark.
+  const state = checkpoint({ stage: 'export', bookmark: 'b1', exportStartedAt: 5, exportRequestedAt: null });
+  const { port } = ports({ exports: [{ status: 'running', bookmark: 'b1' }], now: () => 20 });
+  await continueAttempt(state, port, { ...PRODUCER_LIMITS, maxPollsPerStep: 1 });
+  expect({ requested: state.state.exportRequestedAt, answered: state.state.exportAnsweredAt }).toEqual({ requested: 5, answered: 20 });
+});
+
+it('ends a wait on an earlier export that answers running without end, naming why and sending nothing (#1484 F1)', async () => {
+  const state = checkpoint({ id: 2 });
+  state.earlier = { attempt: 1, requestedAt: 0, answeredAt: 0, bookmark: 'b-old' };
+  let clock = 0;
+  const asked: Array<string | null> = [];
+  const port: ProducerPorts = { ...ports({ now: () => clock }).port, async pollExport(bookmark) { asked.push(bookmark); return { status: 'running', bookmark: 'b-old' }; } };
+  let report = await continueAttempt(state, port, PRODUCER_LIMITS);
+  // Seven days of a provider answering running: the attempt must end long before.
+  while (report.stage === 'export' && clock < 7 * 24 * 3_600_000) {
+    clock += 60_000;
+    report = await continueAttempt(state, port, PRODUCER_LIMITS);
+  }
+  expect({ stage: report.stage, error: report.error, fresh: asked.filter((b) => b === null).length }).toEqual({ stage: 'failed', error: 'export_unsettled', fresh: 0 });
+  expect(clock).toBeLessThanOrEqual(exportWaitBoundMs(PRODUCER_LIMITS) + PRODUCER_LIMITS.exportStaleMs + 60_000);
+});
+
+it('spends a transient answer to the probe of an earlier export, and neither settles it nor starts another (#1484 F2)', async () => {
+  const state = checkpoint({ id: 2 });
+  state.earlier = { attempt: 1, requestedAt: 0, answeredAt: 0, bookmark: 'b-old' };
+  const clock = PRODUCER_LIMITS.exportStaleMs;
+  const asked: Array<string | null> = [];
+  const port: ProducerPorts = { ...ports({ now: () => clock }).port, async pollExport(bookmark) { asked.push(bookmark); return { status: 'error', bookmark, failure: failure('transport', null, true) }; } };
+  const report = await continueAttempt(state, port, { ...PRODUCER_LIMITS, maxPollsPerStep: 4 });
+  expect({ error: report.error, spent: state.state.attempts, asked, earlier: state.earlier?.attempt }).toEqual({ error: 'provider_unavailable', spent: 1, asked: ['b-old'], earlier: 1 });
+});
+
+it('records the request of an export it follows before it asks anything, so a failed first poll leaves it recorded (#1484 F6)', async () => {
+  const state = checkpoint({ stage: 'export', bookmark: 'b1', exportStartedAt: 5, exportRequestedAt: null });
+  const { port } = ports({ exports: [{ status: 'error', bookmark: 'b1', failure: failure('transport', null, true) }], now: () => 20 });
+  await continueAttempt(state, port, { ...PRODUCER_LIMITS, maxPollsPerStep: 1 });
+  expect(state.state.exportRequestedAt).toBe(5);
 });

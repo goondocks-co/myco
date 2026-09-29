@@ -13,10 +13,11 @@ import os from 'node:os';
 import path from 'node:path';
 import {
   D1_EXPORT_BOUND_MS, D1_EXPORT_CANCEL_MARGIN_MS, D1_EXPORT_POLL_ATTEMPTS, D1ExportFailed, D1ExportRecordUnreadable, D1ExportUnfinished, D1ExportUnsettled,
-  exportD1, exportRecordPath, type D1ExportOptions,
+  exportD1, exportRecordPath, settleD1Export, type D1ExportOptions,
 } from '@myco/server/cloudflare-d1-export.js';
 import { transientReadFailure } from '@myco/server/object-read.js';
 import { readD1ExportAnswer } from '@goondocks/myco-shared/d1-export';
+import { D1_EXPORT_ANSWERS } from '../helpers/d1-export-answers.ts';
 import type { CloudflareFetch, OperatorLogin } from '@myco/server/cloudflare.js';
 
 const POLL_CEILING = 5_000;
@@ -382,5 +383,33 @@ describe('the one reading of an export answer (#1455 F7)', () => {
   it('reads a credential the API refused as a refusal that started nothing', () => {
     expect(readD1ExportAnswer(401, undefined, null)).toEqual({ kind: 'refused-login', status: 401 });
     expect(readD1ExportAnswer(403, { success: false, errors: [{ code: 10000, message: 'Authentication error' }] }, null)).toEqual({ kind: 'refused-login', status: 403 });
+  });
+});
+
+describe('the operator backup\'s export, driven through every known answer (#1484)', () => {
+  it('acts on each answer as the one shared reading reads it', async () => {
+    type Act = 'running' | 'complete' | 'ended' | 'unsettled';
+    // What each reading makes the operator do with an export it has recorded.
+    const acts: Record<ReturnType<typeof readD1ExportAnswer>['kind'], Act> = {
+      running: 'running', complete: 'complete', ended: 'ended', 'refused-login': 'unsettled', unknown: 'unsettled',
+    };
+    for (const row of D1_EXPORT_ANSWERS) {
+      fs.rmSync(recordFile(), { force: true });
+      record({ bookmark: 'b1', startedAt: clock, lastPolledAt: clock });
+      let downloads = 0;
+      const fetch: CloudflareFetch = async (url) => {
+        if (url.startsWith('https://signed.example/')) { downloads += 1; return new Response('-- export\n'); }
+        return new Response(row.body === undefined ? '<html>not json</html>' : JSON.stringify(row.body), { status: row.status });
+      };
+      const outcome = await settleD1Export({
+        accountId: ACCOUNT, databaseId: DATABASE, output: path.join(dir, 'd1.sql'), recordDir: dir, login, fetch,
+        now: () => clock, sleep: async () => { clock += 1; }, boundMs: 1, pollMs: 0,
+      }).then((settled) => ({ settled }), (error: unknown) => ({ error }));
+      const act: Act = 'error' in outcome
+        ? (outcome.error instanceof D1ExportUnfinished ? 'running' : 'unsettled')
+        : outcome.settled !== null && downloads === 1 ? 'complete' : 'ended';
+      expect({ what: row.what, act, kept: act === 'unsettled' || act === 'running' ? fs.existsSync(recordFile()) : !fs.existsSync(recordFile()) })
+        .toEqual({ what: row.what, act: acts[readD1ExportAnswer(row.status, row.body, 'b1').kind], kept: true });
+    }
   });
 });

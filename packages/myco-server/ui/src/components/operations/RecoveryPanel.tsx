@@ -1,5 +1,5 @@
 import { Link } from 'react-router-dom';
-import { formatUntil } from '../../lib/format';
+import { formatRelative, formatUntil } from '../../lib/format';
 import { Panel } from '../ui/panel';
 import { unsupported, useRecovery, type RecoveryAvailability, type RecoverySchedule, type RecoveryStatus } from '../../hooks/use-recovery';
 
@@ -33,7 +33,12 @@ export function latestWords(schedule: RecoverySchedule, form: RecoveryForm = 'st
   if (latest === null) return 'No attempt has run yet.';
   const which = form === 'artifact' ? 'The last attempt' : `Attempt ${latest.attempt}`;
   const when = latest.startedAt === null ? '' : ` started ${dateLabel(latest.startedAt)}`;
-  if (latest.failure !== null) return `${which}${when} failed: ${latest.failure.replace(/_/g, ' ')}.`;
+  // A waiting attempt is still advancing: what it waits on, and for how long, is what an owner reads.
+  const since = latest.waitingSince == null ? '' : ` (requested ${formatRelative(latest.waitingSince)})`;
+  if (latest.waiting === 'earlier_export') return `${which}${when} is waiting for an earlier export to end before it starts its own${since}.`;
+  if (latest.waiting === 'own_request') return `${which}${when} is waiting to learn whether the export it asked for started${since}.`;
+  // A refusal is the attempt's outcome only once it failed; an advancing attempt's is a transient it spent.
+  if (latest.stage === 'failed' && latest.failure !== null) return `${which}${when} failed: ${latest.failure.replace(/_/g, ' ')}.`;
   if (latest.stage === 'complete') {
     return form === 'artifact'
       ? `${which}${when} wrote a complete artifact.`

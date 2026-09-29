@@ -8,6 +8,10 @@ export interface LatestAttempt {
   startedAt: number | null;
   /** The producer's own refusal classifier, where the attempt failed: a fixed word, not a message. */
   failure: string | null;
+  /** Why an attempt at its export sends nothing now: an earlier attempt's export may still run, or its own request got no answer. */
+  waiting?: 'earlier_export' | 'own_request' | null;
+  /** The request instant of the export it waits on. */
+  waitingSince?: number | null;
 }
 
 /**

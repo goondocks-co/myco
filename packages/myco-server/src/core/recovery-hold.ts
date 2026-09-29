@@ -8,7 +8,7 @@
  * answer that never comes keeps the hold, and says so.
  */
 import type { ServerEnv } from './adapters.js';
-import { acquireRecoveryHold, openRecoveryHold, readRecoveryHold, releaseOperatorHold, releaseRecoveryHold, type OperatorHoldRelease, type RecoveryHoldSource } from './object-release.js';
+import { acquireRecoveryHold, deferringOperatorHold, openRecoveryHold, readRecoveryHold, releaseOperatorHold, releaseRecoveryHold, type OperatorHoldRelease, type RecoveryHoldSource } from './object-release.js';
 import type { HoldSettlement } from './recovery-producer.js';
 import { classify, emit } from '../telemetry.js';
 import { within } from './recovery-inventory.js';
@@ -54,9 +54,14 @@ export async function settleOpenHold(env: Pick<ServerEnv, 'db' | 'recovery'>, no
  */
 export async function openHoldForAdmission(
   env: Pick<ServerEnv, 'db' | 'recovery'>, now: number, mayOpen = true,
-): Promise<{ token: string } | { held: HoldSettlement | 'unverified' } | { refused: true }> {
+): Promise<{ token: string } | { held: HoldSettlement | 'unverified' } | { refused: true } | { deferred: number }> {
   const token = crypto.randomUUID();
   if (mayOpen && await acquireRecoveryHold(env.db, token, now)) return { token };
+  // An operator backup opened lately holds the database: this Deployment's own export waits for it. The statement
+  // that opens the hold already decided that; this read only names it, and one the paused database refuses names
+  // nothing.
+  const operator = await deferringOperatorHold(env.db, now).catch(() => null);
+  if (operator !== null) return { deferred: operator.acquiredAt };
   const settled = await settleOpenHold(env, now);
   if (settled !== null && settled !== 'unverified' && settled.state === 'open') return { held: settled };
   if (settled === 'unverified') return { held: settled };
@@ -86,8 +91,8 @@ export async function recoveryHoldRelease(env: ServerEnv, now: number): Promise<
 /**
  * An operator's full backup holds every object its snapshot names until its artifact completes. The hold is the
  * backup's own: nothing settles it against a producer, no age releases it, and the operator releases it when its
- * artifact completes or when it gives the attempt up. While it is open, deletion defers and this Deployment still
- * admits its own exports.
+ * artifact completes or when it gives the attempt up. While it is open, deletion defers, and for its first day
+ * (`OPERATOR_HOLD_DEFERS_MS`) this Deployment admits none of its own exports.
  */
 export type OperatorHoldState = 'open' | 'released' | 'absent' | 'producer';
 

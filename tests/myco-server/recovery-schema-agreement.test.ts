@@ -43,6 +43,7 @@ function checkpoint(initial: Partial<AttemptState>): AttemptCheckpoint & { state
     signedUrl: async () => store.signed,
     setSignedUrl: async (_id: number, url: string | null) => { store.signed = url; },
     unsettledExport: () => null,
+    noteUnsettled: () => {},
   };
   return store;
 }

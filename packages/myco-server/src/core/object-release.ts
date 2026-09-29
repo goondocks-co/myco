@@ -218,6 +218,19 @@ export interface RecoveryHoldRow {
 }
 
 /**
+ * How long an open operator hold defers this Deployment's own exports. An operator backup runs for minutes to hours;
+ * one open longer than a day has been abandoned without its release, and automatic backups do not wait on it for ever.
+ * Deletion still defers to it until it is released.
+ */
+export const OPERATOR_HOLD_DEFERS_MS = 24 * 60 * 60 * 1000;
+
+/** The open operator hold this Deployment's exports defer to now, or null. */
+export async function deferringOperatorHold(db: RelationalStore, now: number): Promise<{ token: string; acquiredAt: number } | null> {
+  const row = await db.prepare(recoveryHoldSql.deferringOperator(now)).first<{ token: string; acquired_at: number }>();
+  return row === null ? null : { token: row.token, acquiredAt: Number(row.acquired_at) };
+}
+
+/**
  * Every statement of a hold's lifecycle, rendered here and nowhere else, so both targets and both holders transition a
  * hold the same way. A hosted operator sends these through the provider's own command path, which binds no parameters,
  * so the values are rendered into the statement: a token is a UUID, a holder and a reason are from closed sets, and an
@@ -225,10 +238,20 @@ export interface RecoveryHoldRow {
  */
 export const recoveryHoldSql = {
   acquire(held: string, now: number, holder: RecoveryHoldHolder): string {
+    // A producer defers to an operator backup opened in the last day, decided in the same statement that opens its
+    // hold. The operator opens its hold first and then reads for the producer's, and writes are serialized, so of two
+    // that race exactly one sees the other and neither exports beside it.
+    const deferring = holder === 'producer'
+      ? ` AND NOT EXISTS (SELECT 1 FROM recovery_holds WHERE released_at IS NULL AND holder = 'operator' AND acquired_at > ${instant(Math.max(0, now - OPERATOR_HOLD_DEFERS_MS))})`
+      : '';
     return `INSERT INTO recovery_holds (token, acquired_at, holder)
               SELECT ${token(held)}, ${instant(now)}, '${holder}'
-               WHERE NOT EXISTS (SELECT 1 FROM recovery_holds WHERE released_at IS NULL AND holder = '${holder}')
+               WHERE NOT EXISTS (SELECT 1 FROM recovery_holds WHERE released_at IS NULL AND holder = '${holder}')${deferring}
               ON CONFLICT DO NOTHING`;
+  },
+  /** The open operator hold a producer defers to now, if any. */
+  deferringOperator(now: number): string {
+    return `SELECT token, acquired_at FROM recovery_holds WHERE released_at IS NULL AND holder = 'operator' AND acquired_at > ${instant(Math.max(0, now - OPERATOR_HOLD_DEFERS_MS))}`;
   },
   releaseProducer(held: string, now: number, why: string): string {
     return `UPDATE recovery_holds SET released_at = ${instant(now)}, release_reason = ${reason(why)}, released_by = 'producer'

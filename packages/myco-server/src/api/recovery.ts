@@ -94,6 +94,8 @@ function responseFor(outcome: AdmissionOutcome): Response | null {
       return Response.json({ error: 'recovery_hold_unverified', message: 'a recovery hold is open and its attempt could not be read; try again shortly' }, { status: 503 });
     case 'unanswered':
       return Response.json({ error: 'recovery_admission_unanswered', message: 'the export admission failed or did not answer in time; its hold is settled by a later wake, and a status read shows whether it was admitted' }, { status: 503 });
+    case 'deferred':
+      return Response.json({ error: 'recovery_deferred_to_operator', message: `an operator backup has held this Deployment since ${new Date(outcome.since).toISOString()}; its own export starts once that backup ends` }, { status: 409 });
     case 'hold-retired':
       return Response.json({ error: 'recovery_hold_retired', message: 'the recovery hold for this admission was already settled; start the export again' }, { status: 409 });
     // An attempt already running, or one just admitted, is answered with its own status.

@@ -715,6 +715,7 @@ try {
       waits.push({ stage: next.stage, progressed: next.progressed, sourcePaused: next.sourcePaused });
     }
     check('later continuations wait it out, sending nothing', waits, Array(3).fill({ stage: 'export', progressed: false, sourcePaused: false }));
+    check('the status says it waits on its own unanswered request, not that a step stalled (#1484)', (await call('/status')).export.waiting, 'own_request');
     check('the request that may have started an export was sent once', (await lost.state()).starts, 1);
   } finally { lost.server.stop(true); }
 } catch (error) {
