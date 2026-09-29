@@ -46,6 +46,7 @@ macOS is the primary supported platform. Linux and Windows are in beta. On Windo
 
 ```bash
 curl -fsSL https://myco.sh/install.sh | sh
+myco login <invite link>
 ```
 
 On Windows x64 (PowerShell):
@@ -54,9 +55,7 @@ On Windows x64 (PowerShell):
 irm https://myco.sh/install.ps1 | iex
 ```
 
-Myco is a self-contained native binary — **no Node runtime required**. The installer downloads the binary to `~/.myco/bin` (`%LOCALAPPDATA%\Myco\bin` on Windows), starts the managed local service, and connects supported coding agents. Once a project has joined a Deployment, `myco open` opens that Deployment's dashboard. Open any git project in a supported coding agent and Myco auto-registers it into your default Grove when the agent starts working there.
-
-The dashboard is served by your Deployment, not by the local install: open it at the Deployment's address, or run `myco open` inside a project that has joined it.
+Myco is a self-contained native binary — **no Node runtime required**. The installer downloads the binary to `~/.myco/bin` and changes nothing else. `myco login` with the invite link your Deployment's administrator sent you signs this machine in and connects your coding agents; to run your own Deployment instead, see [Self-hosting](docs/self-hosting.md). On a machine that has Myco 1.4, the installer says so: `myco cutover --dry-run` shows how 1.4 would move over, and `myco cutover` moves it.
 
 Already have Node? `npm install -g @goondocks/myco` also works — it's a thin bootstrap that converges to the same native binary.
 
