@@ -81,3 +81,40 @@ export function filesNamedByToolInput(toolInput: unknown): string[] | undefined 
   }
   return files.length > 0 ? files.slice(0, MAX_FILES_AFFECTED) : undefined;
 }
+
+/**
+ * The dashboard controls an administrator uses to let a machine that already
+ * belongs to a member sign in again: Members → Invite → For, and the option
+ * naming that member. The dashboard renders these words and the member's
+ * notices quote them, so the two cannot drift apart.
+ */
+export const INVITE_CONTROLS = {
+  page: 'Members',
+  button: 'Invite',
+  field: 'For',
+  newMemberOption: 'A new member',
+  existingMemberOption: 'Another runtime for',
+} as const;
+
+/**
+ * The one act that restores a machine whose credential the Deployment will no
+ * longer renew. The machine's identity stays claimed by its member, so an
+ * invitation for a new member is refused (`identity_claimed`); only one for
+ * that member signs the machine in again, and its captured backlog is
+ * delivered with it.
+ */
+export const REJOIN_HINT = `ask a Deployment admin for an invitation for your existing member `
+  + `(dashboard: ${INVITE_CONTROLS.page} → ${INVITE_CONTROLS.button} → ${INVITE_CONTROLS.field}: "${INVITE_CONTROLS.existingMemberOption} <your member>"), `
+  + 'then run `myco login <link>` with the link it gives; an invitation for a new member is refused on this machine';
+
+/** The same act as an administrator reads it, for a runtime they stopped or whose credential ended. */
+export const REJOIN_FOR_ADMIN = `To write again, the machine needs an invitation for its member `
+  + `(${INVITE_CONTROLS.button} → ${INVITE_CONTROLS.field}: "${INVITE_CONTROLS.existingMemberOption} …"), redeemed with \`myco login <link>\`; `
+  + 'an invitation for a new member is refused on that machine.';
+
+/**
+ * The path an invite link carries: `<origin>/join#<key>`. The dashboard builds
+ * the link from it and `myco login` reads the same shape; the key rides in the
+ * fragment, which no browser puts on the wire.
+ */
+export const JOIN_PATH = '/join';

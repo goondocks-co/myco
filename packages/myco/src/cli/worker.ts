@@ -12,6 +12,7 @@
  * reports it. Joining a Deployment installs it (`member join`), and leaving the
  * last project on a Deployment removes it (`member leave`).
  */
+import { REJOIN_HINT } from '../member/delivery-notice.js';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -149,7 +150,7 @@ export async function run(args: string[], deps: WorkerServiceDeps = {}): Promise
 /** What a terminal refusal means for a person. */
 const TERMINAL_WORDS: Readonly<Record<TerminalRefusal, string>> = {
   not_admin: 'this membership is not an administrator\'s, so it cannot run work for the Deployment. No worker runs here until an administrator\'s machine installs one.',
-  unauthorized: 'the Deployment does not accept this machine\'s credential. Sign in again with `myco login`, then run `myco worker install`.',
+  unauthorized: `the Deployment does not accept this machine's credential: ${REJOIN_HINT}, then run \`myco worker install\`.`,
   no_membership: 'this home holds no membership of the Deployment. Run `myco login`, then `myco worker install`.',
 };
 
