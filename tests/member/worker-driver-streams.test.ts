@@ -15,8 +15,9 @@ import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, 
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { claudeCodeDriver } from '@myco/runner/drivers/claude-code.js';
-import { codexDriver, RUN_FEATURES_OFF, RUN_PERMISSIONS } from '@myco/runner/drivers/codex.js';
+import { activeDeveloperDir, codexDriver, RUN_FEATURES_OFF, RUN_PERMISSIONS } from '@myco/runner/drivers/codex.js';
 import { jsonLines } from '@myco/runner/drivers/stream.js';
+import { RUN_REPOSITORY_DIGESTS_FILE, RUN_REPOSITORY_DIR } from '@goondocks/myco-shared/repository';
 import { discardRunDir, writeRunDir } from '@myco/runner/mcp-config.js';
 import { credentialFile, harnessById } from '@myco/runner/harnesses.js';
 import { detectHarnesses, WITHHELD_REASON } from '@myco/runner/detect.js';
@@ -346,6 +347,7 @@ describe('the Codex driver', () => {
   });
 
   it('holds a run to a sandbox of its own, since the harness never asks and the run\'s grant never reaches it', async () => {
+    const developerDir = activeDeveloperDir();
     const dir = stubHarness('codex', ['{"type":"turn.completed","usage":{}}']);
     process.env.PATH = `${dir}:${process.env.PATH ?? ''}`;
     for (const sourceReadOnly of [true, false]) {
@@ -376,6 +378,7 @@ describe('the Codex driver', () => {
               // The harness runs a helper of its own program in the sandbox, by the path PATH gave it.
               [dir]: 'read',
               [realpathSync(dir)]: 'read',
+              ...(developerDir === null ? {} : { [developerDir]: 'read' }),
               [realpathSync(run.scratchDir)]: sourceReadOnly ? 'read' : 'write',
               [realpathSync(home)]: 'deny',
               [realpathSync(run.mcpConfigPath)]: 'deny',
@@ -386,6 +389,31 @@ describe('the Codex driver', () => {
         search: 'disabled',
       });
     }
+  });
+
+  it('lets a source run read the digest listing and the checkout, and run Git on them, under the profile it is given (#1462)', async () => {
+    const dir = stubHarness('codex', ['{"type":"turn.completed","usage":{}}']);
+    process.env.PATH = `${dir}:${process.env.PATH ?? ''}`;
+    const run = runDir();
+    // What the worker stages for a map run: the checkout, and the listing beside it.
+    mkdirSync(join(run.scratchDir, RUN_REPOSITORY_DIR, 'src'), { recursive: true });
+    writeFileSync(join(run.scratchDir, RUN_REPOSITORY_DIR, 'src', 'a.ts'), 'x');
+    writeFileSync(join(run.scratchDir, RUN_REPOSITORY_DIGESTS_FILE), 'ab  src/a.ts\n');
+    await collect(codexDriver.run({ ...run, sourceReadOnly: true, prompt: 'map the source', credentialEnv: {} }, new AbortController().signal));
+    const config = parse(readFileSync(join(run.scratchDir, 'codex-home', 'config.toml'), 'utf8')) as Record<string, unknown>;
+    const filesystem = objectAt(objectAt(objectAt(config, 'permissions'), RUN_PERMISSIONS), 'filesystem') as Record<string, string>;
+    // The sandbox takes the most specific entry that holds a path.
+    const access = (path: string) => Object.entries(filesystem).filter(([root]) => !root.startsWith(':') && (path === root || path.startsWith(`${root}/`)))
+      .sort(([a], [b]) => b.length - a.length)[0]?.[1];
+    const scratch = realpathSync(run.scratchDir);
+    expect({
+      listing: access(join(scratch, RUN_REPOSITORY_DIGESTS_FILE)),
+      source: access(join(scratch, RUN_REPOSITORY_DIR, 'src', 'a.ts')),
+    }).toEqual({ listing: 'read', source: 'read' });
+    // Git runs from the developer directory on macOS, and must not stop at a global configuration the sandbox hides.
+    const developerDir = activeDeveloperDir();
+    if (developerDir !== null) expect(access(join(developerDir, 'usr', 'bin', 'git'))).toBe('read');
+    expect(objectAt(objectAt(config, 'shell_environment_policy'), 'set')).toEqual({ GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_NOSYSTEM: '1' });
   });
 
   it('holds a run to its own sandbox whatever sandbox, permission profile or web search the machine configured', async () => {
@@ -442,7 +470,7 @@ describe('the Codex driver', () => {
       expect(read.features).toEqual({ memories: true, ...Object.fromEntries(RUN_FEATURES_OFF.map((feature) => [feature, false])) });
       // Image viewing reads a file in the harness's own process, outside the sandbox (#1426).
       expect(RUN_FEATURES_OFF).toContain('view_image');
-      expect(read.shell_environment_policy).toEqual({ inherit: 'all', ignore_default_excludes: false });
+      expect(read.shell_environment_policy).toEqual({ inherit: 'all', ignore_default_excludes: false, set: { GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_NOSYSTEM: '1' } });
     } finally { machine.remove(); }
   });
 

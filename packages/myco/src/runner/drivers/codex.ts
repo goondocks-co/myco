@@ -16,6 +16,7 @@
  * the run's server is a run with no login, and the harness fails its turn on a
  * 401 from the model's API on a machine that is signed in.
  */
+import { execFileSync } from 'node:child_process';
 import { existsSync, readFileSync, realpathSync, symlinkSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { parse, stringify, type TomlTableWithoutBigInt } from 'smol-toml';
@@ -59,6 +60,22 @@ function carryLogin(home: string, spec: RunSpec, harness: Harness): void {
   if (login !== null && existsSync(login)) symlinkSync(login, join(home, 'auth.json'));
 }
 
+/**
+ * The developer directory macOS runs `git` from: `/usr/bin/git` is a shim that
+ * finds the real program under the active developer directory, and fails
+ * before it reads anything when the sandbox hides that directory. Null on any
+ * other system, or where none is selected.
+ */
+export function activeDeveloperDir(): string | null {
+  if (process.platform !== 'darwin') return null;
+  try {
+    const selected = execFileSync('/usr/bin/xcode-select', ['-p'], { encoding: 'utf8', timeout: 5_000, stdio: ['ignore', 'pipe', 'ignore'] }).trim();
+    return selected === '' ? null : realpathSync(selected);
+  } catch {
+    return null;
+  }
+}
+
 /** The permission profile a run's commands run under, and the only one its configuration defines. */
 export const RUN_PERMISSIONS = 'myco_run';
 
@@ -75,15 +92,18 @@ export const RUN_PERMISSIONS = 'myco_run';
  * commands'. The harness's own program is readable, in the directory PATH
  * finds it in and the one it is installed in, since the harness runs a helper
  * of its own inside the same sandbox, by the path PATH gave it, to read the
- * run's instructions. A command reaches no network. Paths are physical, since
+ * run's instructions. On macOS the active developer directory is readable as
+ * well, since the system's `git` runs from it (`activeDeveloperDir`). A
+ * command reaches no network. Paths are physical, since
  * the sandbox judges the path a file really has.
  */
-export function runFilesystem(spec: RunSpec, home: string, installed: string | null): Record<string, string> {
+export function runFilesystem(spec: RunSpec, home: string, installed: string | null, developerDir: string | null = activeDeveloperDir()): Record<string, string> {
   return {
     ':minimal': 'read',
     ':slash_tmp': 'deny',
     ':tmpdir': 'deny',
     ...(installed === null ? {} : { [dirname(installed)]: 'read', [dirname(realpathSync(installed))]: 'read' }),
+    ...(developerDir === null ? {} : { [developerDir]: 'read' }),
     [realpathSync(spec.scratchDir)]: spec.sourceReadOnly === true ? 'read' : 'write',
     [realpathSync(home)]: 'deny',
     [realpathSync(spec.mcpConfigPath)]: 'deny',
@@ -123,7 +143,14 @@ export const RUN_FEATURES_OFF = [
  * environment holds the run's credential where the Deployment handed one, and
  * a machine policy that keeps those variables would hand it to every command.
  */
-export const RUN_SHELL_ENVIRONMENT = { inherit: 'all', ignore_default_excludes: false } as const;
+export const RUN_SHELL_ENVIRONMENT = {
+  inherit: 'all',
+  ignore_default_excludes: false,
+  // The sandbox hides the user's home, and Git stops at a global configuration it
+  // cannot open rather than reading on without it: a run's Git reads the
+  // checkout's own configuration and nothing of the machine's.
+  set: { GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_NOSYSTEM: '1' },
+} as const;
 
 /**
  * The configuration the run reads: the machine's own, with the run's MCP server
@@ -166,7 +193,7 @@ function runConfig(spec: RunSpec, harness: Harness, home: string): string {
   machine.permissions = { [RUN_PERMISSIONS]: { filesystem: runFilesystem(spec, home, locate(harness.binary)) } };
   machine.web_search = 'disabled';
   machine.features = { ...recordOf(machine.features), ...Object.fromEntries(RUN_FEATURES_OFF.map((feature) => [feature, false])) };
-  machine.shell_environment_policy = { ...RUN_SHELL_ENVIRONMENT };
+  machine.shell_environment_policy = { ...RUN_SHELL_ENVIRONMENT, set: { ...RUN_SHELL_ENVIRONMENT.set } };
 
   // The run's connection is authored once, in `mcp-config.ts`. This reads that
   // file and restates it in the language this harness configures servers in,

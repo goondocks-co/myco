@@ -28,10 +28,9 @@ import { deploymentScopedHeaders, MEMBER_PROTOCOL } from '../member/constants.js
 import type { RefreshStatus } from '../member/refresh.js';
 import { classifyEventAnswer, rawAnswerOf, type RawAnswer } from '../member/transport.js';
 import { failedCallsNote, type RunEvent } from './events.js';
-import { parseRepositoryCheckoutSpec, REPOSITORY_CHECKOUT_CAPABILITY, type RepositoryCheckoutSpec } from '@goondocks/myco-shared/repository';
+import { parseRepositoryCheckoutSpec, REPOSITORY_DIGEST_TASKS, WORKER_CAPABILITIES, type RepositoryCheckoutSpec } from '@goondocks/myco-shared/repository';
 import { prepareWorkerCheckout } from './repository.js';
 import { holdWorkerInstance } from './instance.js';
-import { MAP_TASK } from '@goondocks/myco-shared/canopy';
 import type { RepositoryCheckout } from './repository-checkout.js';
 import { watchWake, type WakeSettle, type WakeWatch } from './wake.js';
 import type { KeepAwake } from './keep-awake.js';
@@ -409,7 +408,7 @@ async function drive(
         if (answer.body.held !== true) { lost = true; stopping.abort(); throw new Error('The repository lease is no longer held.'); }
         if (typeof answer.body.error === 'string') throw new Error(answer.body.error);
         return answer.body;
-      }, { gitPath: options.repositoryGitPath, digests: run.task === MAP_TASK });
+      }, { gitPath: options.repositoryGitPath, digests: REPOSITORY_DIGEST_TASKS.includes(run.task) });
     }
     stopping.signal.throwIfAborted();
     if (clock() >= deadline) losing(`the lease on ${run.id} lapsed before its harness started; leaving the run to the Deployment`);
@@ -587,7 +586,7 @@ async function claimUntilStopped(options: WorkerOptions, wake: WakeWatch): Promi
     }
     settling = false;
     const claimSentAt = (options.clock ?? Date.now)();
-    const answer = await noticing(requestMs, () => post({ ...options, signal: within(options.signal, requestMs) }, '/worker/claim', { harnesses, capabilities: [REPOSITORY_CHECKOUT_CAPABILITY] }));
+    const answer = await noticing(requestMs, () => post({ ...options, signal: within(options.signal, requestMs) }, '/worker/claim', { harnesses, capabilities: [...WORKER_CAPABILITIES] }));
     if (answer.kind === 'refused') {
       options.log(`the Deployment refused the claim: ${answer.code}${answer.detail === '' ? '' : ` — ${answer.detail}`}`);
       return { driven, refused: answer.code };

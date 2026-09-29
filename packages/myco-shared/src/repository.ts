@@ -1,3 +1,4 @@
+import { MAP_TASK } from './canopy.js';
 export class RepositoryInputError extends Error {}
 export const REPOSITORY_COMMIT_PATTERN = /^[a-f0-9]{40}(?:[a-f0-9]{24})?$/;
 export const REPOSITORY_TASKS: readonly string[] = ['canopy-map', 'skill-generate', 'skill-evolve', 'vault-seed'];
@@ -31,8 +32,25 @@ export interface RepositoryAccess extends RepositoryIdentity {
 
 /** Worker support for preparing source before starting a harness. */
 export const REPOSITORY_CHECKOUT_CAPABILITY = 'repository-checkout';
+/** Worker support for writing the digest listing (`RUN_REPOSITORY_DIGESTS_FILE`) beside the checkout it prepares. */
+export const REPOSITORY_DIGESTS_CAPABILITY = 'repository-digests';
 /** Every capability a worker may report that this Deployment knows. A worker reports what it has, so a name outside this set is a worker's own text. */
-export const KNOWN_WORKER_CAPABILITIES: readonly string[] = [REPOSITORY_CHECKOUT_CAPABILITY];
+export const KNOWN_WORKER_CAPABILITIES: readonly string[] = [REPOSITORY_CHECKOUT_CAPABILITY, REPOSITORY_DIGESTS_CAPABILITY];
+/** What this build's worker does, reported on every claim. */
+export const WORKER_CAPABILITIES: readonly string[] = [REPOSITORY_CHECKOUT_CAPABILITY, REPOSITORY_DIGESTS_CAPABILITY];
+/** The tasks whose instructions read the digest listing: a worker writes it for these, and only one that reports it can take them. */
+export const REPOSITORY_DIGEST_TASKS: readonly string[] = [MAP_TASK];
+
+/**
+ * What a worker must report to take a task. A source-reading task needs its
+ * source checked out; one whose instructions read the digest listing needs the
+ * listing too, since a worker built before the listing checks the source out
+ * without it, and the run then reports the file absent and writes nothing.
+ */
+export function capabilitiesRequiredBy(task: string): readonly string[] {
+  if (!REPOSITORY_TASKS.includes(task)) return [];
+  return REPOSITORY_DIGEST_TASKS.includes(task) ? [REPOSITORY_CHECKOUT_CAPABILITY, REPOSITORY_DIGESTS_CAPABILITY] : [REPOSITORY_CHECKOUT_CAPABILITY];
+}
 /** Whether a reported capability is one this Deployment knows. */
 export const isKnownWorkerCapability = (value: string): boolean => KNOWN_WORKER_CAPABILITIES.includes(value);
 /** Source lives beside the run's own instructions and MCP configuration. */

@@ -10,7 +10,7 @@
  */
 import { afterEach, describe, expect, it } from 'bun:test';
 import { MAP_ACTION, MAP_TASK, MAP_UNCHANGED_ACTION, type MapArtifact } from '@goondocks/myco-shared/canopy';
-import { REPOSITORY_CHECKOUT_CAPABILITY, RUN_REPOSITORY_DIGESTS_FILE } from '@goondocks/myco-shared/repository';
+import { capabilitiesRequiredBy, REPOSITORY_CHECKOUT_CAPABILITY, REPOSITORY_DIGEST_TASKS, REPOSITORY_DIGESTS_CAPABILITY, RUN_REPOSITORY_DIGESTS_FILE, WORKER_CAPABILITIES } from '@goondocks/myco-shared/repository';
 import worker from '@myco-server-worker/entry/cloudflare.js';
 import { ensureMember } from '@myco-server-worker/auth/enrollment.js';
 import { issueMemberToken } from '@myco-server-worker/auth/tokens.js';
@@ -73,7 +73,7 @@ async function rig() {
     now += 10;
     expect(await dispatchTask(e.serverEnv, MAP_TASK, 'proj_1', { serverUrl: ORIGIN, actor: 'mem_worker' }, now))
       .toMatchObject({ dispatched: true, queued: true });
-    const claimed = await claimNextRun(e.serverEnv, { tokenId: workerCredential.tokenId, machineId: 'm1', harnesses: OFFERED, capabilities: [REPOSITORY_CHECKOUT_CAPABILITY], now: now + 1 });
+    const claimed = await claimNextRun(e.serverEnv, { tokenId: workerCredential.tokenId, machineId: 'm1', harnesses: OFFERED, capabilities: WORKER_CAPABILITIES, now: now + 1 });
     if (!claimed.claimed) throw new Error(`the map run was not claimed: ${claimed.reason}`);
     return claimed.run;
   };
@@ -90,6 +90,23 @@ describe('a map run a worker claimed', () => {
     expect(await prepareDispatch(r.e.serverEnv, MAP_TASK, 'proj_1')).toEqual({ ok: false, refusal: 'repository_missing' });
     await r.repositories.save('proj_1', { ...SOURCE, revision: null }, 'mem_worker', r.clock());
     expect(await prepareDispatch(r.e.serverEnv, MAP_TASK, 'proj_1')).toMatchObject({ ok: true, prepared: { servedBy: 'worker' } });
+  });
+
+  it('goes only to a worker that writes the digest listing its instructions read, never to one built before it (#1462)', async () => {
+    const r = await rig();
+    await r.repositories.save('proj_1', { ...SOURCE, revision: null }, 'mem_worker', r.clock());
+    r.advance(10);
+    expect(await dispatchTask(r.e.serverEnv, MAP_TASK, 'proj_1', { serverUrl: ORIGIN, actor: 'mem_worker' }, r.clock())).toMatchObject({ dispatched: true, queued: true });
+    const claim = (capabilities: readonly string[]) => claimNextRun(r.e.serverEnv, { tokenId: r.workerCredential.tokenId, machineId: 'm1', harnesses: OFFERED, capabilities, now: r.clock() + 1 });
+    // A worker that checks source out but writes no listing: the run would report the listing absent and write nothing.
+    expect(capabilitiesRequiredBy(MAP_TASK)).toEqual([REPOSITORY_CHECKOUT_CAPABILITY, REPOSITORY_DIGESTS_CAPABILITY]);
+    expect(await claim([REPOSITORY_CHECKOUT_CAPABILITY])).toEqual({ claimed: false, reason: 'no_work' });
+    expect(await claim([])).toEqual({ claimed: false, reason: 'no_work' });
+    const taken = await claim(WORKER_CAPABILITIES);
+    expect(taken.claimed && taken.run.task).toBe(MAP_TASK);
+    // This build's worker reports the listing, and writes it for exactly the tasks that need it.
+    expect(WORKER_CAPABILITIES).toContain(REPOSITORY_DIGESTS_CAPABILITY);
+    expect(REPOSITORY_DIGEST_TASKS).toEqual([MAP_TASK]);
   });
 
   it('carries a Deployment-built prompt and a checkout, and pins its map input with its commit', async () => {
