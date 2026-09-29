@@ -8,8 +8,9 @@ import { expectPersisted, lit, MEMBER_ID, type ParityScenario, type ParityTarget
  * diverged before, so each is exercised here rather than only in-process:
  *
  *   - the plan route's answers, which read the transcripts a Project holds;
- *   - the parse order, which rests on a partial index and on NULLs sorting
- *     first in an ascending key;
+ *   - the parse order: live transcripts and imported ones are selected apart,
+ *     each by its own order over a partial index, and an import is read beside
+ *     live work rather than behind it;
  *   - the leaf that turns import off, which is an admission fragment composed
  *     into the write path rather than a check in a handler.
  *
@@ -18,7 +19,7 @@ import { expectPersisted, lit, MEMBER_ID, type ParityScenario, type ParityTarget
  * plan says about each candidate.
  */
 export const importParity: ParityScenario = {
-  name: 'bounded import: the plan\'s answers, live-before-imported parse order, and the off switch',
+  name: 'bounded import: the plan\'s answers, imports read beside live work, and the off switch',
   async run(target: ParityTarget) {
     const tx = (c: string) => `tx_${c.repeat(32)}`;
     const body = (n: number) => `${JSON.stringify({ type: 'user', promptId: `00000000-0000-7000-8000-${String(n).padStart(12, '0')}`, message: { content: `prompt ${n}` }, timestamp: '2026-09-01T10:00:00Z' })}\n`;
@@ -77,24 +78,14 @@ export const importParity: ParityScenario = {
     // A caller may ask past the Deployment's window.
     expect((await plan([candidate('parity-old', tx('d'), { modifiedAt: Date.now() - 90 * 86_400_000 })], { windowDays: 180 })).candidates?.[0].take).toBe('from');
 
-    // The tick reads live transcripts before imported ones, on both stores. The
-    // order rests on NULLs sorting first in an ascending key over a partial
-    // index, which is exactly the kind of thing the two stores have differed on.
-    //
-    // Asserted as the invariant rather than as "the live one is parsed after
-    // one wake": this database is shared with every other scenario, so what a
-    // single tick reaches is not a property of this feature. What IS a property
-    // of it is that no imported transcript is ever read while live work waits.
+    // The tick reads an import beside live work, on both stores: while imports wait, live reading takes at most
+    // half a pass's budget, so an import is read within a few wakes however much live work stands. This database is
+    // shared with every other scenario, so what one wake reaches is not asserted; that both are read soon is.
     const parsed = async (id: string) => Number((await target.sql(`SELECT parsed_offset FROM transcripts WHERE transcript_id=${lit(id)}`))[0].parsed_offset);
-    const livePending = async () => Number((await target.sql(`SELECT COUNT(*) AS n FROM transcripts WHERE imported_at IS NULL AND parsed_offset < size AND parse_error IS NULL`))[0].n);
-    for (let wake = 0; wake < 8; wake += 1) {
-      await fetch(`${target.url}/api/wake`, { method: 'POST', headers: target.ownerHeaders() });
-      expect({ wake, jumpedTheQueue: (await parsed(tx('a'))) > 0 && (await livePending()) > 0 }).toEqual({ wake, jumpedTheQueue: false });
+    for (let wake = 0; wake < 8 && ((await parsed(tx('a'))) === 0 || (await parsed(tx('b'))) === 0); wake += 1) {
+      expect((await fetch(`${target.url}/api/wake`, { method: 'POST', headers: { ...target.ownerHeaders(), origin: target.url } })).status).toBe(200);
     }
-    // That a deferred backfill is eventually READ is a claim about throughput
-    // rather than about parity, and this database is shared with every other
-    // scenario — so it is asserted where the fixture is controlled, in
-    // `tests/myco-server/import-backfill.test.ts`.
+    expect({ imported: (await parsed(tx('a'))) > 0, live: (await parsed(tx('b'))) > 0 }).toEqual({ imported: true, live: true });
 
     // The switch is an admission on the write path, not a check in a handler:
     // with it off, an import-channel write stores nothing and the plan refuses.

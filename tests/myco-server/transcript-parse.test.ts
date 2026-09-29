@@ -14,12 +14,13 @@
  *   - many passes and one pass produce the same rows.
  */
 import { registerBlob } from './helpers/d1.js';
+import type { MemoryBlobStore } from './helpers/fixtures.js';
 import { drainObjectReleases } from '@myco-server-worker/core/object-release.js';
 import { describe, expect, it } from 'bun:test';
 import { Database } from 'bun:sqlite';
 import {
-  AWAITING_BYTES, parseOnce, parseTranscripts, pendingTranscriptBytes, rereadTranscripts,
-  TRANSCRIPT_PARSE_CALLS_PER_PASS, TRANSCRIPT_PARSE_EVENTS_PER_BATCH, TRANSCRIPT_PARSE_MALFORMED_LIMIT,
+  AWAITING_BYTES, parseOnce, parseTranscripts, pendingTranscripts, rereadTranscripts,
+  TRANSCRIPT_PARSE_EVENTS_PER_BATCH, TRANSCRIPT_PARSE_MALFORMED_LIMIT,
   TRANSCRIPT_PARSE_BYTES_PER_READ, TRANSCRIPT_PARSE_SEGMENTS_PER_READ, TRANSCRIPT_PARSE_RECORD_BYTES,
 } from '@myco-server-worker/ingest/parse.js';
 import { settingsWriter } from '@myco-server-worker/core/settings.js';
@@ -95,6 +96,12 @@ const target = (sqlite: Database) => {
   return row;
 };
 
+/** The calls one direct pass may spend in these cases, and no deadline: what `parseTranscripts` hands a pass from its budget. */
+const PASS_CALLS = 12;
+const LIMITS = { calls: PASS_CALLS, deadline: Number.POSITIVE_INFINITY, clock: () => 0 };
+/** How many transcripts still owe a pass. */
+const pendingCount = async (db: Parameters<typeof pendingTranscripts>[0]): Promise<number> => (await pendingTranscripts(db)).transcripts;
+
 /** Drives passes to completion, counting database calls so the bound can be asserted. */
 async function drain(env: { db: unknown; blobs: unknown }, sqlite: Database, max = 50): Promise<number> {
   let passes = 0;
@@ -108,7 +115,7 @@ async function drain(env: { db: unknown; blobs: unknown }, sqlite: Database, max
       openPromptId: (t.open_prompt_id as string | null) ?? null,
       parserContext: typeof t.parser_context === 'string' ? JSON.parse(t.parser_context) : null,
       imported: t.imported_at !== null && t.imported_at !== undefined,
-    }, NOW);
+    }, NOW, LIMITS);
     passes += 1;
     if (target(sqlite).parsed_offset === before) break;
   }
@@ -168,7 +175,7 @@ describe('parsing a held transcript', () => {
     await parseTranscripts(serverEnv, NOW);
     expect(target(sqlite)).toMatchObject({ parsed_offset: 0, parse_error: AWAITING_BYTES });
     expect(count(sqlite, 'prompt_batches')).toBe(0);
-    expect(await pendingTranscriptBytes(serverEnv.db)).toBe(0);
+    expect(await pendingCount(serverEnv.db)).toBe(0);
   });
 
   it('surfaces a record that exceeds the bounded segment lookahead', async () => {
@@ -176,7 +183,7 @@ describe('parsing a held transcript', () => {
     const text = codexMessage('user', 'x'.repeat(segmentBytes * (TRANSCRIPT_PARSE_SEGMENTS_PER_READ + 1)));
     const { sqlite, env } = await rig(text, segmentBytes, { agent: 'codex' });
     await drain(env, sqlite);
-    expect(target(sqlite)).toMatchObject({ parsed_offset: 0, parse_error: 'parse' });
+    expect(target(sqlite)).toMatchObject({ parsed_offset: 0, parse_error: 'record_too_large' });
     expect(count(sqlite, 'prompt_batches')).toBe(0);
   });
 
@@ -184,7 +191,7 @@ describe('parsing a held transcript', () => {
     const text = codexMessage('user', 'x'.repeat(TRANSCRIPT_PARSE_RECORD_BYTES));
     const { sqlite, env } = await rig(text, TRANSCRIPT_PARSE_RECORD_BYTES / 2, { agent: 'codex' });
     await drain(env, sqlite);
-    expect(target(sqlite)).toMatchObject({ parsed_offset: 0, parse_error: 'parse' });
+    expect(target(sqlite)).toMatchObject({ parsed_offset: 0, parse_error: 'record_too_large' });
     expect(count(sqlite, 'prompt_batches')).toBe(0);
   });
 
@@ -296,7 +303,7 @@ describe('parsing a held transcript', () => {
   it('clears an older parse failure on successful progress so later windows remain eligible', async () => {
     const { sqlite, serverEnv } = await rig(body(100), 2048);
     sqlite.run("UPDATE transcripts SET parse_error = 'parse', parse_failed_at = 1, parser_version = 1");
-    await parseTranscripts(serverEnv, NOW);
+    await parseTranscripts(serverEnv, NOW, { budget: { calls: PASS_CALLS, wallMs: 60_000 } });
     expect(target(sqlite).parse_error).toBeNull();
     expect(target(sqlite).parsed_offset).toBeGreaterThan(0);
     expect(target(sqlite).parsed_offset).toBeLessThan(target(sqlite).size);
@@ -340,8 +347,8 @@ describe('parsing a held transcript', () => {
     const report = await parseOnce(env as never, {
       projectId: PROJECT, transcriptId: TRANSCRIPT, sessionId: SESSION, machineId: MACHINE,
       tokenId: t.token_id as string, agent: 'claude-code', size: t.size as number, parsedOffset: 0, fidelity: null, openPromptId: null, imported: false,
-    }, NOW);
-    expect(report.calls).toBeLessThanOrEqual(TRANSCRIPT_PARSE_CALLS_PER_PASS + 2);
+    }, NOW, LIMITS);
+    expect(report.calls).toBeLessThanOrEqual(PASS_CALLS + 2);
     expect(report.derived).toBeGreaterThan(TRANSCRIPT_PARSE_EVENTS_PER_BATCH);
   });
 
@@ -361,8 +368,8 @@ describe('parsing a held transcript', () => {
     const report = await parseOnce(env as never, {
       projectId: PROJECT, transcriptId: TRANSCRIPT, sessionId: SESSION, machineId: MACHINE,
       tokenId: t.token_id as string, agent: 'claude-code', size: t.size as number, parsedOffset: 0, fidelity: null, openPromptId: null, imported: false,
-    }, NOW);
-    expect(report.calls).toBeLessThanOrEqual(TRANSCRIPT_PARSE_CALLS_PER_PASS + 2);
+    }, NOW, LIMITS);
+    expect(report.calls).toBeLessThanOrEqual(PASS_CALLS + 2);
   });
 
   it('finishes a single agentic turn across passes, attributing every call to the one prompt', async () => {
@@ -397,7 +404,7 @@ describe('parsing a held transcript', () => {
     await parseOnce(env as never, {
       projectId: PROJECT, transcriptId: TRANSCRIPT, sessionId: SESSION, machineId: MACHINE,
       tokenId: t.token_id as string, agent: 'claude-code', size: t.size as number, parsedOffset: 0, fidelity: null, openPromptId: null, imported: false,
-    }, NOW);
+    }, NOW, LIMITS);
     const mid = sqlite.query(`SELECT parsed_offset, size, open_prompt_id FROM transcripts`).get() as { parsed_offset: number; size: number; open_prompt_id: string | null };
     expect(mid.parsed_offset).toBeLessThan(mid.size);
     expect(mid.open_prompt_id).not.toBeNull();
@@ -480,7 +487,7 @@ describe('parsing a held transcript', () => {
     const first = await parseOnce(env as never, {
       projectId: PROJECT, transcriptId: TRANSCRIPT, sessionId: SESSION, machineId: MACHINE,
       tokenId: t.token_id as string, agent: 'claude-code', size: t.size as number, parsedOffset: 0, fidelity: null, openPromptId: null, imported: false,
-    }, NOW);
+    }, NOW, LIMITS);
     expect(first.nextOffset).toBeGreaterThan(0);
     expect(first.nextOffset).toBeLessThan(t.size as number);
 
@@ -560,9 +567,9 @@ describe('parsing a held transcript', () => {
     expect(target(sqlite).parse_error).toBe('parse');
     // A failure is recorded against the parser that hit it; a later parser is
     // offered the transcript again rather than inheriting its silence.
-    expect(await pendingTranscriptBytes(serverEnv.db)).toBe(0);
+    expect(await pendingCount(serverEnv.db)).toBe(0);
     sqlite.run(`UPDATE transcripts SET parser_version = parser_version - 1`);
-    expect(await pendingTranscriptBytes(serverEnv.db)).toBe(1);
+    expect(await pendingCount(serverEnv.db)).toBe(1);
   });
 
   it('stops when the store no longer holds a segment, rather than reading past the hole', async () => {
@@ -584,16 +591,16 @@ describe('parsing a held transcript', () => {
   it('skips a transcript belonging to a deleted session', async () => {
     const { sqlite, env, serverEnv } = await rig(body(1));
     sqlite.run(`INSERT INTO session_tombstones (project_id, session_id, reason, created_at, created_by) VALUES (?, ?, NULL, ?, 'm')`, [PROJECT, SESSION, NOW]);
-    expect(await parseTranscripts(serverEnv, NOW)).toBe(0);
+    expect((await parseTranscripts(serverEnv, NOW)).changed).toBe(0);
     expect(count(sqlite, 'prompt_batches')).toBe(0);
     void env;
   });
 
   it('reports unread bytes so a Deployment with a backlog stays awake', async () => {
     const { sqlite, env } = await rig(body(1));
-    expect(await pendingTranscriptBytes(env.db as never)).toBe(1);
+    expect(await pendingCount(env.db as never)).toBe(1);
     await drain(env, sqlite);
-    expect(await pendingTranscriptBytes(env.db as never)).toBe(0);
+    expect(await pendingCount(env.db as never)).toBe(0);
   });
 });
 
@@ -618,8 +625,8 @@ describe('both jobs on a Deployment holding no transcripts', () => {
     const report = await runTick(serverEnv, NOW);
     const mine = report.jobs.filter((j) => j.name.startsWith('transcript-'));
     expect(mine).toEqual([
-      { name: 'transcript-parse', changed: 0, failed: null },
-      { name: 'transcript-retention', changed: 0, failed: null },
+      { name: 'transcript-parse', changed: 0, failed: null, more: false },
+      { name: 'transcript-retention', changed: 0, failed: null, more: false },
     ]);
     expect(count(sqlite, 'prompt_batches')).toBe(0);
   });
@@ -930,6 +937,181 @@ async function appendSegment(sqlite: Database, serverEnv: ReturnType<typeof sqli
  * and reading it again under a parser that knows its format gives the session
  * its prompts.
  */
+/** A Cursor transcript of `turns` turns: every line undated, so each is dated by its place in its segment. */
+function cursorTurns(turns: number): string {
+  let out = '';
+  for (let i = 0; i < turns; i += 1) {
+    out += line({ role: 'user', message: { content: [{ type: 'text', text: `<user_query>\nquestion ${i}\n</user_query>` }] } });
+    out += line({ role: 'assistant', message: { content: [{ type: 'text', text: `looking ${i}` }, { type: 'tool_use', name: 'Shell', input: { command: `echo ${i}` } }] } });
+    out += line({ role: 'assistant', message: { content: [{ type: 'text', text: `answer ${i}` }] } });
+    out += line({ type: 'turn_ended', status: 'success' });
+  }
+  return out;
+}
+
+describe('a pass under the platform\'s budget (transcript parse throughput)', () => {
+  const dated = (sqlite: Database) => sqlite.query('SELECT event_id, kind, created_at FROM events ORDER BY event_id').all();
+
+  it('reads on from the cursor with a ranged read, and dates every undated line exactly as one whole read does', async () => {
+    const text = cursorTurns(60);
+    // Sent an hour before the pass, so every line's place in its segment shows in its date rather than being held at `now`.
+    const sentAt = (r: { sqlite: Database }) => r.sqlite.run('UPDATE transcript_segments SET created_at = ?', [NOW - 3_600_000]);
+    const whole = await rig(text, 1 << 20, { agent: 'cursor' });
+    sentAt(whole);
+    await parseTranscripts(whole.serverEnv, NOW, { budget: { calls: 10_000, wallMs: 60_000 } });
+    expect(target(whole.sqlite).parsed_offset).toBe(target(whole.sqlite).size);
+    const dates = (whole.sqlite.query('SELECT created_at FROM events').all() as { created_at: number }[]).map((r) => r.created_at);
+    expect(new Set(dates).size).toBeGreaterThan(100);
+
+    const inPasses = await rig(text, 1 << 20, { agent: 'cursor' });
+    sentAt(inPasses);
+    const bucket = inPasses.serverEnv.blobs as unknown as MemoryBlobStore;
+    for (let pass = 0; pass < 200 && target(inPasses.sqlite).parsed_offset < target(inPasses.sqlite).size; pass += 1) {
+      await parseTranscripts(inPasses.serverEnv, NOW, { budget: { calls: 4, wallMs: 60_000 } });
+    }
+    expect(target(inPasses.sqlite)).toMatchObject({ parse_error: null, parsed_offset: target(inPasses.sqlite).size });
+    // Some pass read its one segment from the cursor rather than from its first byte.
+    expect(bucket.gets.some((g) => g.offset > 0)).toBe(true);
+    expect(dated(inPasses.sqlite)).toEqual(dated(whole.sqlite));
+  });
+
+  it('reads the whole segment where the lines behind the cursor are not counted, and counts them from there', async () => {
+    const text = cursorTurns(40);
+    const { sqlite, serverEnv } = await rig(text, 1 << 20, { agent: 'cursor' });
+    const bucket = serverEnv.blobs as unknown as MemoryBlobStore;
+    await parseTranscripts(serverEnv, NOW, { budget: { calls: 4, wallMs: 60_000 } });
+    const stood = target(sqlite).parsed_offset;
+    expect(stood).toBeGreaterThan(0);
+    expect(stood).toBeLessThan(target(sqlite).size);
+    sqlite.run('UPDATE transcripts SET parse_segment_lines = NULL');
+    bucket.gets.length = 0;
+    await parseTranscripts(serverEnv, NOW, { budget: { calls: 4, wallMs: 60_000 } });
+    expect(bucket.gets.map((g) => g.offset)).toEqual([0]);
+    expect((sqlite.query('SELECT parse_segment_lines AS n FROM transcripts').get() as { n: number | null }).n).not.toBeNull();
+  });
+
+  it('spends no more store and blob calls than its budget, beyond the one group a pass always lands', async () => {
+    const { serverEnv } = await rig(cursorTurns(1_000), 1 << 20, { agent: 'cursor' });
+    // Every store and blob call the pass makes, counted where it is made: one per read, write, batch and blob read.
+    let calls = 0;
+    let inBatch = false;
+    type Statement = { first: (...a: unknown[]) => unknown; all: (...a: unknown[]) => unknown; run: (...a: unknown[]) => unknown; bind: (...a: unknown[]) => Statement };
+    const counting = (statement: Statement): Statement => {
+      for (const method of ['first', 'all', 'run'] as const) {
+        const call = statement[method].bind(statement);
+        statement[method] = (...args: unknown[]) => { if (!inBatch) calls += 1; return call(...args); };
+      }
+      const bind = statement.bind.bind(statement);
+      statement.bind = (...args: unknown[]) => counting(bind(...args));
+      return statement;
+    };
+    const db = serverEnv.db as unknown as { prepare: (sql: string) => Statement; batch: (s: unknown[]) => Promise<unknown> };
+    const prepare = db.prepare.bind(db);
+    const batch = db.batch.bind(db);
+    db.prepare = (sql: string) => counting(prepare(sql));
+    db.batch = async (statements: unknown[]) => { calls += 1; inBatch = true; try { return await batch(statements); } finally { inBatch = false; } };
+    const get = serverEnv.blobs.get.bind(serverEnv.blobs);
+    serverEnv.blobs.get = (...args: Parameters<typeof get>) => { calls += 1; return get(...args); };
+    const outcome = await parseTranscripts(serverEnv, NOW, { budget: { calls: 30, wallMs: 60_000 } });
+    expect(outcome.more).toBe(true);
+    // The last pass may land the group it started before it counts past the budget, and ends with its own advance.
+    expect(calls).toBeLessThanOrEqual(30 + 4);
+    expect(calls).toBeGreaterThan(20);
+  });
+
+  it('starts no pass past its wall time, and says work remains', async () => {
+    const { sqlite, serverEnv } = await rig(cursorTurns(1_000), 1 << 20, { agent: 'cursor' });
+    let t = 0;
+    const clock = () => (t += 1_000);
+    const outcome = await parseTranscripts(serverEnv, NOW, { budget: { calls: 10_000, wallMs: 5_000 }, clock });
+    expect(outcome.more).toBe(true);
+    expect(target(sqlite).parsed_offset).toBeLessThan(target(sqlite).size);
+    expect(t).toBeLessThan(20_000);
+  });
+
+  it('takes the platform\'s declared budget when a run names none, and reads far past the fixed cap it replaced', async () => {
+    const { sqlite, serverEnv } = await rig(cursorTurns(200), 1 << 20, { agent: 'cursor' });
+    expect(serverEnv.platform.jobBudget.calls).toBeGreaterThanOrEqual(500);
+    const outcome = await parseTranscripts(serverEnv, NOW);
+    expect({ parsed: target(sqlite).parsed_offset === target(sqlite).size, more: outcome.more }).toEqual({ parsed: true, more: false });
+  });
+
+  it('counts what is waiting in bytes left to read, and never a deleted session\'s transcript', async () => {
+    const { sqlite, serverEnv } = await rig(cursorTurns(10), 1 << 20, { agent: 'cursor' });
+    const size = target(sqlite).size;
+    expect(await pendingTranscripts(serverEnv.db)).toEqual({ transcripts: 1, bytes: size, imported: { transcripts: 0, bytes: 0 } });
+    sqlite.run(`INSERT INTO session_tombstones (project_id, session_id, reason, created_at, created_by) VALUES (?, ?, NULL, ?, 'm')`, [PROJECT, SESSION, NOW]);
+    expect(await pendingTranscripts(serverEnv.db)).toEqual({ transcripts: 0, bytes: 0, imported: { transcripts: 0, bytes: 0 } });
+  });
+
+  it('stops at a record too long to hold with a named reason, and says so to the tick', async () => {
+    const text = line({ type: 'response_item', payload: { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'x'.repeat(TRANSCRIPT_PARSE_RECORD_BYTES) }] } });
+    const { sqlite, serverEnv } = await rig(text, TRANSCRIPT_PARSE_RECORD_BYTES / 2, { agent: 'codex' });
+    const outcome = await parseTranscripts(serverEnv, NOW, { budget: { calls: 50, wallMs: 60_000 } });
+    expect({ error: target(sqlite).parse_error, more: outcome.more }).toEqual({ error: 'record_too_large', more: false });
+  });
+});
+
+describe('ranged reads across segment boundaries (transcript parse throughput)', () => {
+  const dated = (sqlite: Database) => sqlite.query('SELECT event_id, created_at FROM events ORDER BY event_id').all() as { event_id: string; created_at: number }[];
+  // Each segment sent a millisecond per byte of offset earlier, so a line's segment shows in its date as well as its place.
+  const sentAt = (r: { sqlite: Database }) => r.sqlite.run('UPDATE transcript_segments SET created_at = ? - base_offset', [NOW - 3_600_000]);
+  for (const slice of [2048, 3001, 777, 1 << 20]) {
+    it(`dates every row read in small passes over segments of ${slice} bytes as one whole read dates it`, async () => {
+      const text = cursorTurns(80);
+      const whole = await rig(text, slice, { agent: 'cursor' });
+      sentAt(whole);
+      for (let pass = 0; pass < 500 && target(whole.sqlite).parsed_offset < target(whole.sqlite).size; pass += 1) {
+        await parseTranscripts(whole.serverEnv, NOW, { budget: { calls: 10_000, wallMs: 60_000 } });
+      }
+      const inPasses = await rig(text, slice, { agent: 'cursor' });
+      sentAt(inPasses);
+      const bucket = inPasses.serverEnv.blobs as unknown as MemoryBlobStore;
+      for (let pass = 0; pass < 2000 && target(inPasses.sqlite).parsed_offset < target(inPasses.sqlite).size; pass += 1) {
+        await parseTranscripts(inPasses.serverEnv, NOW, { budget: { calls: 3, wallMs: 60_000 } });
+      }
+      expect(target(inPasses.sqlite)).toMatchObject({ parse_error: null, parsed_offset: target(inPasses.sqlite).size });
+      expect(bucket.gets.some((g) => g.offset > 0)).toBe(true);
+      const w = new Map(dated(whole.sqlite).map((r) => [r.event_id, r.created_at]));
+      const p = dated(inPasses.sqlite);
+      expect(p.length).toBeGreaterThan(150);
+      expect(p.filter((r) => w.has(r.event_id) && w.get(r.event_id) !== r.created_at)).toEqual([]);
+    });
+  }
+
+  it('keeps the count and the open turn of a further cursor when a slower pass beside it lands behind it', async () => {
+    const text = cursorTurns(40);
+    const { sqlite, serverEnv } = await rig(text, 1 << 20, { agent: 'cursor' });
+    sentAt({ sqlite });
+    const row = () => sqlite.query('SELECT parsed_offset, parse_segment_lines, open_prompt_id FROM transcripts').get() as { parsed_offset: number; parse_segment_lines: number | null; open_prompt_id: string | null };
+    const t = sqlite.query('SELECT token_id, size FROM transcripts').get() as { token_id: string; size: number };
+    // Both passes took the transcript at its first byte: an owner's wake beside the clock's.
+    const stale = {
+      projectId: PROJECT, transcriptId: TRANSCRIPT, sessionId: SESSION, machineId: MACHINE, tokenId: t.token_id, agent: 'cursor',
+      size: t.size, parsedOffset: 0, fidelity: null, openPromptId: null, imported: false, segmentLines: 0,
+    };
+    const env = { db: serverEnv.db, blobs: serverEnv.blobs };
+    await parseOnce(env as never, stale, NOW, { calls: 8, deadline: Number.POSITIVE_INFINITY, clock: () => 0 });
+    const further = row();
+    await parseOnce(env as never, stale, NOW, { calls: 4, deadline: Number.POSITIVE_INFINITY, clock: () => 0 });
+    // The slower pass stopped behind the further cursor: it moves nothing, and names no count or turn of its own there.
+    const after = row();
+    expect(after.parsed_offset).toBe(further.parsed_offset);
+    expect({ lines: after.parse_segment_lines === null || after.parse_segment_lines === further.parse_segment_lines, turn: after.open_prompt_id })
+      .toEqual({ lines: true, turn: further.open_prompt_id });
+
+    // Read on to the end, every row is dated as one whole read dates it.
+    for (let pass = 0; pass < 200 && target(sqlite).parsed_offset < target(sqlite).size; pass += 1) {
+      await parseTranscripts(serverEnv, NOW, { budget: { calls: 3, wallMs: 60_000 } });
+    }
+    const whole = await rig(text, 1 << 20, { agent: 'cursor' });
+    sentAt(whole);
+    await parseTranscripts(whole.serverEnv, NOW, { budget: { calls: 10_000, wallMs: 60_000 } });
+    const w = new Map(dated(whole.sqlite).map((r) => [r.event_id, r.created_at]));
+    expect(dated(sqlite).filter((r) => w.get(r.event_id) !== r.created_at)).toEqual([]);
+  });
+});
+
 describe('reading a stored transcript again', () => {
   const cursorBytes = () => fs.readFileSync(path.join(FIXTURES, 'cursor-agent-2026.09-redacted.jsonl'), 'utf8');
   const rowCounts = (sqlite: Database) => Object.fromEntries(['events', 'prompt_batches', 'responses', 'tool_calls'].map((t) => [t, count(sqlite, t)]));
@@ -938,10 +1120,10 @@ describe('reading a stored transcript again', () => {
     const { sqlite, serverEnv } = await rig(cursorBytes(), 1 << 20, { agent: 'cursor' });
     // What the old parser left behind: every byte read, nothing derived.
     sqlite.run('UPDATE transcripts SET parsed_offset = size, parsed_at = ?, parser_version = 2', [NOW]);
-    expect(await pendingTranscriptBytes(serverEnv.db)).toBe(0);
+    expect(await pendingCount(serverEnv.db)).toBe(0);
 
     expect(await rereadTranscripts(serverEnv.db, { agent: 'cursor' })).toBe(1);
-    expect(await pendingTranscriptBytes(serverEnv.db)).toBe(1);
+    expect(await pendingCount(serverEnv.db)).toBe(1);
     await parseTranscripts(serverEnv, NOW);
 
     expect(sqlite.query('SELECT text FROM prompt_batches').all()).toEqual([
@@ -958,7 +1140,7 @@ describe('reading a stored transcript again', () => {
     expect(before.prompt_batches).toBe(3);
 
     expect(await rereadTranscripts(serverEnv.db, { projectId: PROJECT, sessionId: SESSION })).toBe(1);
-    for (let pass = 0; pass < 10 && (await pendingTranscriptBytes(serverEnv.db)) > 0; pass += 1) await parseTranscripts(serverEnv, NOW);
+    for (let pass = 0; pass < 10 && (await pendingCount(serverEnv.db)) > 0; pass += 1) await parseTranscripts(serverEnv, NOW);
 
     expect(rowCounts(sqlite)).toEqual(before);
     expect(target(sqlite)).toMatchObject({ parse_error: null, parsed_offset: target(sqlite).size });
@@ -967,7 +1149,7 @@ describe('reading a stored transcript again', () => {
   it('clears a recorded failure, so a transcript a parser stopped on is read again under the fixed one', async () => {
     const { sqlite, serverEnv } = await rig(cursorBytes(), 1 << 20, { agent: 'cursor' });
     sqlite.run("UPDATE transcripts SET parse_error = 'parse', parse_failed_at = 1, parser_version = 2");
-    expect(await pendingTranscriptBytes(serverEnv.db)).toBe(0);
+    expect(await pendingCount(serverEnv.db)).toBe(0);
     await rereadTranscripts(serverEnv.db, { agent: 'cursor' });
     await parseTranscripts(serverEnv, NOW);
     expect(count(sqlite, 'prompt_batches')).toBe(1);
@@ -984,7 +1166,7 @@ describe('reading a stored transcript again', () => {
     // One segment per turn, and one cut across lines: both must name every row at its own offset.
     for (const slice of [pair, 100]) {
       const { sqlite, serverEnv } = await rig(text, slice, { agent: 'cursor' });
-      for (let pass = 0; pass < 20 && (await pendingTranscriptBytes(serverEnv.db)) > 0; pass += 1) await parseTranscripts(serverEnv, NOW);
+      for (let pass = 0; pass < 20 && (await pendingCount(serverEnv.db)) > 0; pass += 1) await parseTranscripts(serverEnv, NOW);
       expect({ slice, prompts: texts(sqlite, 'prompt_batches') }).toEqual({ slice, prompts: ['q1', 'q2', 'q3', 'q4'] });
       // Retention prunes read segments oldest first.
       const firstKept = slice === pair ? pair * 2 : 300;
@@ -993,7 +1175,7 @@ describe('reading a stored transcript again', () => {
 
       expect(await rereadTranscripts(serverEnv.db, { projectId: PROJECT, sessionId: SESSION })).toBe(1);
       expect(target(sqlite).parsed_offset).toBe(heldFrom);
-      for (let pass = 0; pass < 20 && (await pendingTranscriptBytes(serverEnv.db)) > 0; pass += 1) await parseTranscripts(serverEnv, NOW + 1000);
+      for (let pass = 0; pass < 20 && (await pendingCount(serverEnv.db)) > 0; pass += 1) await parseTranscripts(serverEnv, NOW + 1000);
       expect({ slice, prompts: texts(sqlite, 'prompt_batches'), responses: texts(sqlite, 'responses') })
         .toEqual({ slice, prompts: ['q1', 'q2', 'q3', 'q4'], responses: ['a1', 'a2', 'a3', 'a4'] });
       expect(target(sqlite)).toMatchObject({ parsed_offset: Buffer.byteLength(text), parse_error: null });
@@ -1009,7 +1191,7 @@ describe('reading a stored transcript again', () => {
     expect(target(sqlite)).toMatchObject({ parsed_offset: target(sqlite).size, parse_error: null });
 
     await appendSegment(sqlite, serverEnv, tokenId, TRANSCRIPT, cursorTurns(3).slice(Buffer.byteLength(cursorTurns(2))), NOW + 2000);
-    expect(await pendingTranscriptBytes(serverEnv.db)).toBe(1);
+    expect(await pendingCount(serverEnv.db)).toBe(1);
     await parseTranscripts(serverEnv, NOW + 3000);
     expect(texts(sqlite, 'prompt_batches')).toEqual(['q1', 'q2', 'q3']);
     expect(target(sqlite)).toMatchObject({ parsed_offset: target(sqlite).size, parse_error: null });
@@ -1091,12 +1273,12 @@ describe('a transcript that cannot move yet', () => {
     expect(promptTexts(sqlite)).toEqual(['newer', 'older']);
     expect(sqlite.query('SELECT parse_error FROM transcripts WHERE transcript_id = ?').get(TRANSCRIPT)).toEqual({ parse_error: AWAITING_BYTES });
     // Waiting keeps nothing awake.
-    expect(await pendingTranscriptBytes(serverEnv.db)).toBe(0);
+    expect(await pendingCount(serverEnv.db)).toBe(0);
 
     // The rest of the record arrives, and the transcript is back in the queue and read to its end.
     const rest = cursorLine('assistant', 'half').slice(20);
     await appendSegment(sqlite, serverEnv, tokenId, TRANSCRIPT, rest, NOW + 4);
-    expect(await pendingTranscriptBytes(serverEnv.db)).toBe(1);
+    expect(await pendingCount(serverEnv.db)).toBe(1);
     await parseTranscripts(serverEnv, NOW + 5);
     expect(target(sqlite)).toMatchObject({ parsed_offset: target(sqlite).size, parse_error: null });
     expect(count(sqlite, 'responses')).toBe(2);
@@ -1123,10 +1305,10 @@ describe('a transcript that cannot move yet', () => {
     const whole = cursorLine('assistant', 'finished in the same millisecond');
     const { sqlite, serverEnv, tokenId } = await rig(whole.slice(0, 20), 1 << 20, { agent: 'cursor' });
     await parseTranscripts(serverEnv, NOW);
-    expect(await pendingTranscriptBytes(serverEnv.db)).toBe(0);
+    expect(await pendingCount(serverEnv.db)).toBe(0);
     // Received at the same instant the wait began, and from a clock behind it.
     await appendSegment(sqlite, serverEnv, tokenId, TRANSCRIPT, `${whole.slice(20)}\n`, NOW - 5_000);
-    expect(await pendingTranscriptBytes(serverEnv.db)).toBe(1);
+    expect(await pendingCount(serverEnv.db)).toBe(1);
     await parseTranscripts(serverEnv, NOW);
     expect(count(sqlite, 'responses')).toBe(1);
   });

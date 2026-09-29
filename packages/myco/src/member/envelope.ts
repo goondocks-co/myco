@@ -50,7 +50,7 @@ export interface OutboundEvent {
 /** Writes bytes somewhere the drain can read them back and returns the reference; the member spool supplies this. */
 export type BlobStager = (bytes: Uint8Array, mediaType: string) => BlobSource;
 
-/** How an event reaches the Deployment. `import` marks bytes that already existed on this machine's disk (#1148); the Deployment orders their parse behind live work and schedules no title for a session that ended weeks ago. */
+/** How an event reaches the Deployment. `import` marks bytes that already existed on this machine's disk (#1148); the Deployment reads them beside live work, never ahead of it, and schedules no title for a session that ended weeks ago. */
 export const OUTBOUND_CHANNELS = ['cli', 'import'] as const;
 export type OutboundChannel = (typeof OUTBOUND_CHANNELS)[number];
 

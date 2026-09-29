@@ -118,7 +118,7 @@ describe('the Deployment names what it is configured to do', () => {
     r.sqlite.run(`INSERT INTO transcripts(project_id,transcript_id,session_id,machine_id,size,first_received_at,last_received_at,token_id)
       VALUES ('proj_1','tx_pending','session_pending','machine',2048,?,?,?)`, [NOW, NOW, credential.tokenId]);
     const document = await deploymentDiagnostics(r.serverEnv, NOW);
-    expect(document.ingestBacklog).toEqual({ pendingTranscripts: 1, pendingImportedTranscripts: 0 });
+    expect(document.ingestBacklog).toMatchObject({ pendingTranscripts: 1, pendingImportedTranscripts: 0, pendingImportedBytes: 0 });
   });
 
   it('counts a stored claim reason outside the vocabulary rather than carrying its text', async () => {

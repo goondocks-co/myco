@@ -19,6 +19,8 @@ import { cloudflareResources, recoveryConfigurationOf } from './cloudflare-resou
 export const FREE_TIER_SURFACES = [
   '[observability]',
   '[observability.logs]',
+  // The CPU an invocation may spend. A paid plan honours it; the free plan keeps its own allowance.
+  '[limits]',
   '[[d1_databases]]',
   '[[r2_buckets]]',
   '[[ratelimits]]',

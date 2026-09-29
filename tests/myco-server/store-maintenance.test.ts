@@ -177,8 +177,8 @@ it('the engine runs a due check on its own clock alone, holds an idle Deployment
   expect(gated.calls).toEqual([]);
   const clocked = await runTick(env, t0, { wake: 'clock' });
   expect(clocked.state).toBe('sleep');
-  expect(clocked.jobs.find((j) => j.name === 'database-optimize')).toEqual({ name: 'database-optimize', changed: 1, failed: null });
-  expect(clocked.jobs.find((j) => j.name === 'database-integrity-check')).toEqual({ name: 'database-integrity-check', changed: 0, failed: null });
+  expect(clocked.jobs.find((j) => j.name === 'database-optimize')).toEqual({ name: 'database-optimize', changed: 1, failed: null, more: false });
+  expect(clocked.jobs.find((j) => j.name === 'database-integrity-check')).toEqual({ name: 'database-integrity-check', changed: 0, failed: null, more: false });
   expect((await engineAssertions(env, t0 + HOUR)).map((a) => a.name)).not.toContain('maintenance:due');
   expect((await runTick(env, t0 + HOUR, { wake: 'clock' })).state).toBe('deep_sleep');
   expect(gated.calls).toEqual(['optimize']);
@@ -336,12 +336,12 @@ it('on the self-hosted clock, a scheduled integrity check is claimed and handed 
   const t0 = 1_000 * HOUR;
   await stampRequest(env.db, t0 - 31 * 60_000);
   const first = await runTick(env, t0, { wake: 'clock' });
-  expect(first.jobs.find((j) => j.name === 'database-integrity-check')).toEqual({ name: 'database-integrity-check', changed: 1, failed: null });
+  expect(first.jobs.find((j) => j.name === 'database-integrity-check')).toEqual({ name: 'database-integrity-check', changed: 1, failed: null, more: false });
   expect(pending.calls).toEqual(['integrity']);
   expect(await latestOutcome(env, 'integrity')).toMatchObject({ state: 'running', trigger: 'schedule', holder: 'this-process' });
 
   const next = await runTick(env, t0 + 60_000, { wake: 'clock' });
-  expect(next.jobs.find((j) => j.name === 'worker-lease-sweep')).toEqual({ name: 'worker-lease-sweep', changed: 0, failed: null });
+  expect(next.jobs.find((j) => j.name === 'worker-lease-sweep')).toEqual({ name: 'worker-lease-sweep', changed: 0, failed: null, more: false });
   expect(next.jobs.every((j) => j.failed === null)).toBe(true);
   expect(next.jobs.find((j) => j.name === 'database-integrity-check')?.changed).toBe(0);
   expect(await runMaintenance(env, 'integrity', 'owner', t0 + 60_000)).toMatchObject({ outcome: 'refused', refusal: 'already_running' });
@@ -378,7 +378,7 @@ it('an unreadable maintenance record is reported by name without stopping the ti
   const log = spyOn(console, 'log').mockImplementation((...args: unknown[]) => { logged.push(args.map(String).join(' ')); });
   try {
     const report = await runTick(env, 1_000 * HOUR, { wake: 'clock' });
-    expect(report.jobs.find((j) => j.name === 'worker-lease-sweep')).toEqual({ name: 'worker-lease-sweep', changed: 0, failed: null });
+    expect(report.jobs.find((j) => j.name === 'worker-lease-sweep')).toEqual({ name: 'worker-lease-sweep', changed: 0, failed: null, more: false });
     expect(report.jobs.filter((j) => j.failed !== null).map((j) => j.name)).toEqual(['database-optimize']);
   } finally {
     log.mockRestore();

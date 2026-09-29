@@ -11,7 +11,7 @@ import { createHash } from 'node:crypto';
 import type { Stats } from 'node:fs';
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import type { BlobPutOptions, BlobStore, StoredObject, StoredObjectBody } from '../../core/adapters.js';
+import type { BlobGetOptions, BlobPutOptions, BlobStore, StoredObject, StoredObjectBody } from '../../core/adapters.js';
 
 /** The message a digest rejection carries. This store's own platform recognises it; shared code matches no message text. */
 export const DIGEST_MISMATCH_MESSAGE = 'stored bytes do not match the declared sha256 digest';
@@ -81,7 +81,7 @@ export function diskBlobStore(root: string): BlobStore {
       return stat === null ? null : { size: stat.size };
     },
 
-    async get(key): Promise<StoredObjectBody | null> {
+    async get(key, options?: BlobGetOptions): Promise<StoredObjectBody | null> {
       const file = pathFor(key);
       const stat = await statObject(file);
       if (stat === null) return null;
@@ -90,7 +90,8 @@ export function diskBlobStore(root: string): BlobStore {
       // whether the body is drained, cancelled, or abandoned unread. A handle
       // opened here and closed only at end-of-stream leaks one per response the
       // reader never consumes, which an owner navigating away produces routinely.
-      return { size, body: Bun.file(file).stream() };
+      const offset = options?.range?.offset ?? 0;
+      return { size, body: (offset > 0 ? Bun.file(file).slice(offset) : Bun.file(file)).stream() };
     },
 
     async put(key, value, options?: BlobPutOptions): Promise<StoredObject> {

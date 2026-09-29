@@ -1,8 +1,10 @@
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { Panel } from '../ui/panel';
-import { postJson } from '../../lib/api';
+import { postJson, type StatusResponse } from '../../lib/api';
+import { useStatus } from '../../hooks/use-status';
+import { formatBytes, formatCount } from '../../lib/format';
 
-interface JobReport { name: string; changed: number; failed: string | null }
+interface JobReport { name: string; changed: number; failed: string | null; more?: boolean }
 interface TickReport { state: string; heldBy: string | null; idleMs: number | null; jobs: JobReport[]; nextWakeMs: number | null }
 
 const STATE_WORDS: Record<string, string> = { active: 'in use', idle: 'idle', sleep: 'asleep', deep_sleep: 'in deep sleep' };
@@ -14,6 +16,7 @@ function jobWords(job: JobReport): string {
   const plural = n === 1 ? '' : 's';
   if (job.name === 'agent-run-retention') return `removed ${n} old run record${plural}`;
   if (job.name === 'run-stale-sweep') return `closed ${n} run${plural} whose runtime went away`;
+  if (job.name === 'transcript-parse') return `read ${n} row${plural} from transcripts${job.more === true ? ', with more still to read' : ''}`;
   return `${job.name} changed ${n} row${plural}`;
 }
 
@@ -21,18 +24,27 @@ export function reportWords(report: TickReport): string {
   const state = STATE_WORDS[report.state] ?? report.state;
   const held = report.heldBy === 'run:live' ? ' while a run is live' : '';
   const jobs = report.jobs.length === 0 ? 'Nothing was due.' : `${report.jobs.map(jobWords).join('; ')}.`;
-  const next = report.nextWakeMs === null ? 'No wake is scheduled while it sleeps this deeply.' : `Next wake in ${Math.max(1, Math.round(report.nextWakeMs / 60_000))} min.`;
+  const next = report.nextWakeMs === null ? 'No wake is scheduled while it sleeps this deeply.'
+    : report.nextWakeMs < 60_000 ? `Next wake in ${Math.max(1, Math.round(report.nextWakeMs / 1_000))} s.`
+    : `Next wake in ${Math.max(1, Math.round(report.nextWakeMs / 60_000))} min.`;
   return `The server is ${state}${held}. ${jobs.charAt(0).toUpperCase()}${jobs.slice(1)} ${next}`;
 }
 
 const button = 'rounded-md border border-outline-variant/30 px-2.5 py-1 font-sans text-xs text-on-surface transition-colors hover:bg-surface-container-high aria-busy:opacity-60';
 
-/** Run the server's housekeeping now — the same tick its clock runs — and say what it did. */
+/** The transcripts waiting to be read, in the reader's words; null when there are none or the count is not known. */
+export function backlogWords(backlog: StatusResponse['transcriptBacklog']): string | null {
+  if (backlog === undefined || backlog === null || backlog.transcripts === 0) return null;
+  return `${formatCount(backlog.transcripts, 'transcript')} (${formatBytes(backlog.bytes)}) waiting to be read into sessions.`;
+}
+
+/** Run the server's housekeeping now — the same tick its clock runs — and say what it did, and what is still waiting to be read. */
 export function WakePanel() {
   const queries = useQueryClient();
+  const waiting = backlogWords(useStatus().data?.transcriptBacklog);
   const wake = useMutation({
     mutationFn: () => postJson<TickReport>('/api/wake'),
-    onSuccess: () => { void queries.invalidateQueries({ queryKey: ['runs'] }); },
+    onSuccess: () => { void queries.invalidateQueries({ queryKey: ['runs'] }); void queries.invalidateQueries({ queryKey: ['status'] }); },
   });
   return (
     <Panel title="Housekeeping" eyebrow="Now" actions={
@@ -47,6 +59,7 @@ export function WakePanel() {
             ? 'The server could not run its housekeeping right now.'
             : 'Old run records are removed and runs whose runtime went away are closed on the server\'s own clock. Run it now to see the state it is in.'}
       </p>
+      {waiting !== null && <p className="mt-2 mb-0 font-sans text-sm text-on-surface" data-testid="transcript-backlog">{waiting}</p>}
     </Panel>
   );
 }

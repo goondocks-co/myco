@@ -14,7 +14,7 @@ import { classify, emit } from '../telemetry.js';
 import { failStaleRun, listLiveRunsAcrossProjects, listQueuedAcrossProjects, pruneRevokedCredentials, pruneTerminalRuns } from './runs.js';
 import { leafValues } from './settings.js';
 import { releaseRun } from './release.js';
-import { reconcileSearchIndex } from './search-index.js';
+import { pendingSearchBlobs, reconcileSearchIndex } from './search-index.js';
 import { dispatchEmbeddingWork } from './embedding/jobs.js';
 import { reclaimEnrollmentAuthorities } from '../auth/enrollment.js';
 import { parseTranscripts } from '../ingest/parse.js';
@@ -37,8 +37,18 @@ const DAY_MS = 86_400_000;
 /** How many rows one pass of a job touches before it yields; the next tick continues. */
 export const JOB_BATCH = 500;
 
-/** A job answers how many rows it changed; the tick reports that per job. It is told the power state the wake resolved, for a job whose block names the states it dispatches in. */
-export type JobRun = (env: ServerEnv, now: number, state: PowerState) => Promise<number>;
+/**
+ * A job answers how many rows it changed, or that with `more`: work remains that another pass would take, so the
+ * tick asks for its next wake soon rather than at the depth's cadence. The tick reports both per job. It is told the
+ * power state the wake resolved, for a job whose block names the states it dispatches in.
+ */
+export type JobRun = (env: ServerEnv, now: number, state: PowerState) => Promise<number | JobOutcome>;
+
+/** What a draining job answers: rows it changed, and whether work remains for another pass. */
+export interface JobOutcome {
+  changed: number;
+  more: boolean;
+}
 
 /**
  * Admits one recovery attempt once the owner's interval has passed, and admits none at any other time.
@@ -203,7 +213,10 @@ const scheduledMaintenance = (check: MaintenanceCheck): JobRun => async (env, no
 /** Every declared job's implementation, by name. A declared job absent here is refused by a gate, never skipped in silence. */
 export const JOB_IMPLEMENTATIONS: Readonly<Record<string, JobRun>> = {
   'embedding-reconcile': dispatchEmbeddingWork,
-  'search-index': (env, now) => reconcileSearchIndex(env.db, env.blobs, now),
+  'search-index': async (env, now) => {
+    const changed = await reconcileSearchIndex(env.db, env.blobs, now);
+    return { changed, more: changed > 0 && (await pendingSearchBlobs(env.db)) > 0 };
+  },
   'agent-run-retention': agentRunRetention,
   'run-stale-sweep': runStaleSweep,
   // #1158 join UX

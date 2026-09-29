@@ -73,7 +73,7 @@ async function replay(file: string, sessionId = SESSION, prompt = 'add the reten
   await runHook('stop', { ...common, hook_event_name: 'Stop', last_assistant_message: 'Tests pass.' }, { fetch: spy.fetch });
   await runHook('session-end', { ...common, hook_event_name: 'SessionEnd' }, { fetch: spy.fetch });
   for (let pass = 0; pass < 20; pass += 1) {
-    if ((await parseTranscripts(rig.env.serverEnv, Date.now())) === 0) break;
+    if ((await parseTranscripts(rig.env.serverEnv, Date.now())).changed === 0) break;
   }
 }
 

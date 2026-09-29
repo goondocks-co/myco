@@ -119,12 +119,12 @@ describe('agent-run-retention', () => {
     f.seedSession('s1', NOW - POWER_THRESHOLDS.sleepMs);
     const report = await runTick(f.env, NOW);
     expect(report.state).toBe('sleep');
-    expect(report.jobs.find((j) => j.name === 'agent-run-retention')).toEqual({ name: 'agent-run-retention', changed: 3, failed: null });
+    expect(report.jobs.find((j) => j.name === 'agent-run-retention')).toEqual({ name: 'agent-run-retention', changed: 3, failed: null, more: false });
     expect(f.sqlite.query(`SELECT id FROM agent_runs ORDER BY id`).all().map((r) => (r as { id: string }).id)).toEqual(['kept-fresh', 'kept-live', 'kept-pending', 'kept-resumable']);
     expect(f.count('agent_turns')).toBe(0);
     expect(f.count('agent_reports')).toBe(0);
     // The second wake on the same clock finds nothing left to do.
-    expect((await runTick(f.env, NOW)).jobs.find((j) => j.name === 'agent-run-retention')).toEqual({ name: 'agent-run-retention', changed: 0, failed: null });
+    expect((await runTick(f.env, NOW)).jobs.find((j) => j.name === 'agent-run-retention')).toEqual({ name: 'agent-run-retention', changed: 0, failed: null, more: false });
   });
 
   it('reads the window from the Deployment leaf, clamped to the leaf\'s own bounds', async () => {
@@ -146,8 +146,8 @@ describe('agent-run-retention', () => {
     const f = fixture();
     for (let i = 0; i < JOB_BATCH + 5; i++) f.seedRun({ id: `r${String(i).padStart(4, '0')}`, completedAt: NOW - 40 * DAY });
     f.seedSession('s1', NOW - POWER_THRESHOLDS.sleepMs);
-    expect((await runTick(f.env, NOW)).jobs[0]).toEqual({ name: 'agent-run-retention', changed: JOB_BATCH, failed: null });
-    expect((await runTick(f.env, NOW)).jobs[0]).toEqual({ name: 'agent-run-retention', changed: 5, failed: null });
+    expect((await runTick(f.env, NOW)).jobs[0]).toEqual({ name: 'agent-run-retention', changed: JOB_BATCH, failed: null, more: false });
+    expect((await runTick(f.env, NOW)).jobs[0]).toEqual({ name: 'agent-run-retention', changed: 5, failed: null, more: false });
     expect(f.count('agent_runs')).toBe(0);
   });
 });
@@ -163,13 +163,13 @@ describe('run-stale-sweep', () => {
     f.seedRun({ id: 'default-bound', status: 'running', startedAt: NOW - DEFAULT_DISPATCH_TIMEOUT_SECONDS * 1000 - RUN_OVERRUN_MARGIN_MS + 1_000, completedAt: null, runContext: null });
     f.seedSession('s1', NOW - POWER_THRESHOLDS.sleepMs);
     const report = await runTick(f.env, NOW);
-    expect(report.jobs.find((j) => j.name === 'run-stale-sweep')).toEqual({ name: 'run-stale-sweep', changed: 2, failed: null });
+    expect(report.jobs.find((j) => j.name === 'run-stale-sweep')).toEqual({ name: 'run-stale-sweep', changed: 2, failed: null, more: false });
     expect(f.runRow('stale')).toEqual({ status: 'failed', error: STALE_RUN_ERROR, completedAt: NOW });
     expect(f.runRow('stale-pending')).toEqual({ status: 'failed', error: STALE_RUN_ERROR, completedAt: NOW });
     expect(f.runRow('inside')?.status).toBe('running');
     expect(f.runRow('default-bound')?.status).toBe('running');
     expect((f.sqlite.query(`SELECT revoked_at FROM member_credentials WHERE id = ?`).get(credential) as { revoked_at: number | null }).revoked_at).toBe(NOW);
-    expect((await runTick(f.env, NOW)).jobs.find((j) => j.name === 'run-stale-sweep')).toEqual({ name: 'run-stale-sweep', changed: 0, failed: null });
+    expect((await runTick(f.env, NOW)).jobs.find((j) => j.name === 'run-stale-sweep')).toEqual({ name: 'run-stale-sweep', changed: 0, failed: null, more: false });
   });
 
   it('never ends a credential that is a person\'s own: a run claimed under it is failed, the credential stays live', async () => {
@@ -177,7 +177,7 @@ describe('run-stale-sweep', () => {
     const own = seedCredential(f.sqlite, { id: 'mt_person', memberId: 'mem_machine_2', machineId: 'machine_2' });
     f.seedRun({ id: 'stale-own', status: 'running', startedAt: NOW - 10 * DAY, completedAt: null, dispatchedBy: own });
     f.seedSession('s1', NOW - POWER_THRESHOLDS.sleepMs);
-    expect((await runTick(f.env, NOW)).jobs.find((j) => j.name === 'run-stale-sweep')).toEqual({ name: 'run-stale-sweep', changed: 1, failed: null });
+    expect((await runTick(f.env, NOW)).jobs.find((j) => j.name === 'run-stale-sweep')).toEqual({ name: 'run-stale-sweep', changed: 1, failed: null, more: false });
     expect(f.runRow('stale-own')?.status).toBe('failed');
     expect((f.sqlite.query(`SELECT revoked_at FROM member_credentials WHERE id = ?`).get(own) as { revoked_at: number | null }).revoked_at).toBeNull();
   });
@@ -190,7 +190,7 @@ describe('run-stale-sweep', () => {
       if (sql.includes(`SET status = 'failed'`)) f.sqlite.query(`UPDATE agent_runs SET status = 'completed', completed_at = ? WHERE id = 'racing'`).run(NOW - 1);
       return f.env.db.prepare(sql);
     } } };
-    expect((await runTick(racing, NOW)).jobs.find((j) => j.name === 'run-stale-sweep')).toEqual({ name: 'run-stale-sweep', changed: 0, failed: null });
+    expect((await runTick(racing, NOW)).jobs.find((j) => j.name === 'run-stale-sweep')).toEqual({ name: 'run-stale-sweep', changed: 0, failed: null, more: false });
     expect(f.runRow('racing')).toEqual({ status: 'completed', error: null, completedAt: NOW - 1 });
   });
 
@@ -209,7 +209,7 @@ describe('run-stale-sweep', () => {
     const report = await runTick(broken, NOW);
     expect(report.jobs.map((j) => j.name)).toEqual(SERVER_JOBS.filter((j) => j.runsThrough !== 'idle' && j.wake === undefined).map((j) => j.name));
     expect(report.jobs.find((j) => j.name === 'agent-run-retention')).toMatchObject({ name: 'agent-run-retention', failed: expect.any(String) });
-    expect(report.jobs.find((j) => j.name === 'run-stale-sweep')).toEqual({ name: 'run-stale-sweep', changed: 0, failed: null });
+    expect(report.jobs.find((j) => j.name === 'run-stale-sweep')).toEqual({ name: 'run-stale-sweep', changed: 0, failed: null, more: false });
   });
 });
 
