@@ -23,15 +23,22 @@ const step = (job: string, name: string): string => {
   return found;
 };
 
-/** What the validate-tag step writes to GITHUB_OUTPUT for `tag`. */
-function classify(tag: string): Record<string, string> {
+/** Run the validate-tag step for `tag`: its exit status and what it writes to GITHUB_OUTPUT. */
+function runClassify(tag: string): { status: number | null; outputs: Record<string, string>; stderr: string } {
   const out = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'myco-release-')), 'output');
   fs.writeFileSync(out, '');
   const result = spawnSync('bash', ['-c', step('validate-tag', 'Extract package and version from tag')], {
     env: { PATH: process.env.PATH, TAG_NAME: tag, GITHUB_OUTPUT: out }, encoding: 'utf8',
   });
+  const text = fs.readFileSync(out, 'utf8').trim();
+  return { status: result.status, stderr: result.stderr, outputs: Object.fromEntries(text ? text.split('\n').map((line) => line.split('=') as [string, string]) : []) };
+}
+
+/** What the validate-tag step writes to GITHUB_OUTPUT for a tag it accepts. */
+function classify(tag: string): Record<string, string> {
+  const result = runClassify(tag);
   expect(result.status).toBe(0);
-  return Object.fromEntries(fs.readFileSync(out, 'utf8').trim().split('\n').map((line) => line.split('=') as [string, string]));
+  return result.outputs;
 }
 
 describe('a Myco 2.0 prerelease', () => {
@@ -39,6 +46,24 @@ describe('a Myco 2.0 prerelease', () => {
     expect(workflow.on.push.tags).toContain('myco/v*.*.*-*');
     expect(classify('myco/v2.0.0-beta.1')).toMatchObject({ version: '2.0.0-beta.1', is_prerelease: 'true', npm_tag: 'beta', package_name: '@goondocks/myco' });
     expect(classify('myco/v2.0.0')).toMatchObject({ is_prerelease: 'false', npm_tag: 'latest' });
+  });
+
+  it('is any hyphenated version, under its own dist-tag and never latest; an unknown or malformed one fails the run', () => {
+    expect(classify('myco/v2.0.0-alpha.3')).toMatchObject({ is_prerelease: 'true', npm_tag: 'alpha' });
+    expect(classify('myco/v2.0.0-rc.1')).toMatchObject({ is_prerelease: 'true', npm_tag: 'next' });
+    expect(classify('myco-shared/v2.0.0-beta.2')).toMatchObject({ is_prerelease: 'true', npm_tag: 'beta' });
+    for (const tag of ['myco/v2.0.0-dev.1', 'myco/v2.0.0-preview', 'myco/v2.0.0-beta.1+build', 'myco/v2.0', 'myco/v2.0.0.1', 'myco/v2.0.0garbage']) {
+      const result = runClassify(tag);
+      expect({ tag, status: result.status, npm_tag: result.outputs.npm_tag ?? 'none' }).toEqual({ tag, status: 1, npm_tag: 'none' });
+    }
+  });
+
+  it('carries release notes that install Myco 2.0, not 1.4', () => {
+    const notes = step('create-release', 'Generate release notes');
+    expect(notes).toContain("curl --proto '\"'\"'=https'\"'\"' --tlsv1.2 -fsSL https://myco.sh/install.sh | MYCO_CHANNEL=beta sh");
+    expect(notes).toContain('myco login <invite link>');
+    expect(notes).toContain('docs/upgrade.md');
+    for (const oneFour of ['Operations page', 'myco open', 'npm update -g @goondocks/myco', '@goondocks/myco@beta']) expect(notes).not.toContain(oneFour);
   });
 
   it('is a GitHub prerelease that is never marked latest', () => {

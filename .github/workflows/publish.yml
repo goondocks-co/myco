@@ -59,19 +59,26 @@ jobs:
           echo "package_dir=$PACKAGE_DIR" >> "$GITHUB_OUTPUT"
           echo "tarball_prefix=$TARBALL_PREFIX" >> "$GITHUB_OUTPUT"
 
-          if [[ "$VERSION" =~ -alpha\. ]]; then
-            echo "is_prerelease=true" >> "$GITHUB_OUTPUT"
-            echo "npm_tag=alpha" >> "$GITHUB_OUTPUT"
-          elif [[ "$VERSION" =~ -beta\. ]]; then
-            echo "is_prerelease=true" >> "$GITHUB_OUTPUT"
-            echo "npm_tag=beta" >> "$GITHUB_OUTPUT"
-          elif [[ "$VERSION" =~ -rc\. ]]; then
-            echo "is_prerelease=true" >> "$GITHUB_OUTPUT"
-            echo "npm_tag=next" >> "$GITHUB_OUTPUT"
-          else
-            echo "is_prerelease=false" >> "$GITHUB_OUTPUT"
-            echo "npm_tag=latest" >> "$GITHUB_OUTPUT"
+          # A version is <major>.<minor>.<patch>, or that with a -alpha.N,
+          # -beta.N or -rc.N prerelease. Every hyphenated version is a
+          # prerelease under its own npm dist-tag, never latest; any other
+          # shape fails here, before anything is built or published.
+          if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$ ]]; then
+            echo "Malformed version in release tag: $TAG_NAME" >&2
+            exit 1
           fi
+          case "$VERSION" in
+            *-alpha.*) IS_PRERELEASE=true; NPM_TAG=alpha ;;
+            *-beta.*)  IS_PRERELEASE=true; NPM_TAG=beta ;;
+            *-rc.*)    IS_PRERELEASE=true; NPM_TAG=next ;;
+            *-*)
+              echo "Unsupported prerelease in release tag: $TAG_NAME (use -alpha.N, -beta.N or -rc.N)" >&2
+              exit 1
+              ;;
+            *) IS_PRERELEASE=false; NPM_TAG=latest ;;
+          esac
+          echo "is_prerelease=$IS_PRERELEASE" >> "$GITHUB_OUTPUT"
+          echo "npm_tag=$NPM_TAG" >> "$GITHUB_OUTPUT"
 
   # Per-target libsqlite3 compile, gated on myco tags only.
   # Runner OS per target:
@@ -567,15 +574,18 @@ jobs:
           if [ "$TAG_PREFIX" = "myco" ]; then
             if [ "$IS_PRERELEASE" = "true" ]; then
               INSTALL_BLOCK='```bash
-          npm install -g @goondocks/myco@beta
-          myco open
-          ```'
+          curl --proto '"'"'=https'"'"' --tlsv1.2 -fsSL https://myco.sh/install.sh | MYCO_CHANNEL=beta sh
+          myco login <invite link>
+          ```
+
+          Moving a machine from Myco 1.4: see [Upgrading from 1.4](https://github.com/goondocks-co/myco/blob/main/docs/upgrade.md).'
             else
               INSTALL_BLOCK='```bash
-          curl -fsSL https://myco.sh/install.sh | sh  # fresh install
-          npm update -g @goondocks/myco              # upgrade existing
-          myco open
-          ```'
+          curl --proto '"'"'=https'"'"' --tlsv1.2 -fsSL https://myco.sh/install.sh | sh
+          myco login <invite link>
+          ```
+
+          Moving a machine from Myco 1.4: see [Upgrading from 1.4](https://github.com/goondocks-co/myco/blob/main/docs/upgrade.md).'
             fi
           else
             if [ "$IS_PRERELEASE" = "true" ]; then
@@ -595,7 +605,7 @@ jobs:
             cat > release-notes.md <<NOTES_EOF
           \`${PACKAGE_NAME}\` · ${RANGE_BLURB} · **Pre-release**
 
-          > Pre-release. May contain bugs or incomplete features. Opt into the Beta channel per project from the Operations page.
+          > Pre-release. May contain bugs or incomplete features. The installer picks it on the beta channel (\`MYCO_CHANNEL=beta\`), and on the stable channel only while no 2.x release exists.
 
           ## Install
 

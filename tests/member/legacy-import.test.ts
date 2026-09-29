@@ -29,8 +29,9 @@ import path from 'node:path';
 import { openDatabase } from '@myco/db/client.js';
 import { createSchema } from '@myco/db/schema.js';
 import {
-  groupLegacySessions, legacySessionId, legacyVaultFiles, readLegacyVault, runLegacyImport, LEGACY_PRODUCER, UNREACHABLE,
+  groupLegacySessions, legacySessionId, readLegacyVault, runLegacyImport, LEGACY_PRODUCER, UNREACHABLE,
 } from '@myco/member/legacy-import.js';
+import { legacyVaultFiles } from '@myco/member/home-role.js';
 import { collectCandidates, importUntilSettled, paced, IMPORT_WAIT_CAP_MS, SERVER_FAULT_RETRIES } from '@myco/member/import.js';
 import { legacySessionsToLeaveOut } from '@myco/member/legacy-ledger.js';
 import { planKeyForPath } from '@myco/member/envelope.js';
