@@ -7,7 +7,7 @@
  * and that is not an instruction to forget what this machine was told before.
  */
 import fs from 'node:fs';
-import { resolveMycoHome } from '../paths/home.js';
+import { planFolderRefusal } from '@goondocks/myco-shared/member-protocol';
 import { deploymentsDir, machineSettingsPath } from './registry.js';
 import { ensureMemberDir, readPrivateJson, writePrivateFileAtomic } from './store.js';
 import { CONNECT_TIMEOUT_CAP_MS } from './constants.js';
@@ -23,8 +23,12 @@ export function machineBlockOf(value: unknown): { leaves: Record<string, unknown
   return typeof leaves === 'object' && leaves !== null && !Array.isArray(leaves) ? { leaves: leaves as Record<string, unknown> } : null;
 }
 
-/** Record the settings `serverUrl` answered for this machine. Any other value changes nothing. */
-export function cacheMachineSettings(serverUrl: string, answered: unknown, mycoHome: string = resolveMycoHome()): boolean {
+/**
+ * Record the settings `serverUrl` answered for this machine, in the home the membership is held under: the caller
+ * names it, as the hook resolves it from its own directory, so a pinned project's settings land beside its own
+ * membership. Written whole or not at all. Any other value changes nothing.
+ */
+export function cacheMachineSettings(serverUrl: string, answered: unknown, mycoHome: string): boolean {
   const block = machineBlockOf(answered);
   if (block === null) return false;
   ensureMemberDir(deploymentsDir(mycoHome), mycoHome);
@@ -32,14 +36,15 @@ export function cacheMachineSettings(serverUrl: string, answered: unknown, mycoH
   return true;
 }
 
-/** The extra plan folders `serverUrl` holds for this machine: `~/`, absolute, or relative to each project root. */
-export function machinePlanDirs(serverUrl: string, mycoHome: string = resolveMycoHome()): string[] {
+/** The extra plan folders `serverUrl` holds for this machine, read from the home `mycoHome` names: `~/`, absolute, or relative to each project root. */
+export function machinePlanDirs(serverUrl: string, mycoHome: string): string[] {
   const file = machineSettingsPath(serverUrl, mycoHome);
   if (!fs.existsSync(file)) return [];
   const read = readPrivateJson<unknown>(file);
   const block = read.ok ? machineBlockOf(read.value) : null;
   const dirs = block?.leaves[PLAN_DIRS_LEAF];
-  return Array.isArray(dirs) ? dirs.filter((d): d is string => typeof d === 'string' && d.length > 0) : [];
+  // The Deployment refuses a folder that names too much; the same rule here keeps one out whatever wrote the file.
+  return Array.isArray(dirs) ? dirs.filter((d): d is string => typeof d === 'string' && d.length > 0 && planFolderRefusal(d) === null) : [];
 }
 
 /** Where a Deployment answers its settings, with this machine's own among them. */
@@ -51,7 +56,7 @@ export const SETTINGS_READ_PATH = '/members/settings';
  * next session start asks again.
  */
 export async function seedMachineSettings(
-  record: { serverUrl: string; token: string }, opts: { mycoHome?: string; fetch?: FetchLike } = {},
+  record: { serverUrl: string; token: string }, opts: { mycoHome: string; fetch?: FetchLike },
 ): Promise<boolean> {
   try {
     const client = new ServerClient({ serverUrl: record.serverUrl, token: record.token }, opts.fetch ?? globalThis.fetch);

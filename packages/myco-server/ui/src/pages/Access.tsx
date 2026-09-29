@@ -10,7 +10,7 @@ import { SlideoutDetailPanel } from '../components/ui/slideout-detail-panel';
 import { StatusDot } from '../components/ui/status-dot';
 import { KeyReveal } from '../components/access/KeyReveal';
 import { MachineSettingsDialog } from '../components/access/MachineSettings';
-import { LINEAGE_REPLAY_ACTOR, refusalText, useAccessActions, useInvitations, useMembers, usePaged, type ActivityRow, type CredentialRow } from '../hooks/use-access';
+import { LINEAGE_REPLAY_ACTOR, refusalText, runtimeDisplayName, useAccessActions, useInvitations, useMembers, usePaged, type ActivityRow, type CredentialRow } from '../hooks/use-access';
 import { useMe } from '../hooks/use-me';
 import { useProjects } from '../hooks/use-projects';
 import { useWorkerFleet } from '../hooks/use-status';
@@ -59,7 +59,7 @@ export function Access() {
   const [openCredentialId, setOpenCredentialId] = useState<string | null>(null);
   const [withdrawError, setWithdrawError] = useState<string | null>(null);
   const [stopError, setStopError] = useState<string | null>(null);
-  const [settingsMachineId, setSettingsMachineId] = useState<string | null>(null);
+  const [settingsMachine, setSettingsMachine] = useState<{ id: string; name: string } | null>(null);
   const [revokeCredentialId, setRevokeCredentialId] = useState<string | null>(null);
   const [refusal, setRefusal] = useState<string | null>(null);
   const [linkMemberId, setLinkMemberId] = useState<string | null>(null);
@@ -136,8 +136,8 @@ export function Access() {
                   onOpen={() => setOpenCredentialId(c.id)}
                   onStop={() => { setStopError(null); setRevokeCredentialId(c.id); }}
                   // One Settings action per machine: on its first listed runtime, and never for a row that names none.
-                  onSettings={c.purpose === 'member' && c.machineId !== null && runtimes.findIndex((r) => r.machineId === c.machineId) === i
-                    ? () => setSettingsMachineId(c.machineId) : undefined}
+                  onSettings={c.purpose === 'member' && c.machineId !== null && isMe(c.memberId) && runtimes.findIndex((r) => r.machineId === c.machineId) === i
+                    ? () => setSettingsMachine({ id: c.machineId!, name: runtimeDisplayName(c) }) : undefined}
                 />
               ))}
             </ul>
@@ -168,7 +168,7 @@ export function Access() {
         </div>
       </PageLoading>
 
-      <MachineSettingsDialog machineId={settingsMachineId} onClose={() => setSettingsMachineId(null)} nameOf={nameOf} />
+      <MachineSettingsDialog machine={settingsMachine} onClose={() => setSettingsMachine(null)} nameOf={nameOf} />
 
       <ConfirmDialog
         open={target !== undefined}
@@ -290,7 +290,7 @@ function RuntimeRow({ credential, memberName, revokedByName, lookup, onOpen, onS
       <div className="flex items-center gap-3">
         <StatusDot tone={state?.tone ?? (credential.live ? 'sage' : 'outline')} />
         <button type="button" className="min-w-0 flex-1 text-left" onClick={onOpen}>
-          <div className="text-on-surface">{credential.machineId ?? credential.id}{memberName === null ? '' : <span className="text-xs text-on-surface-variant"> · {memberName}</span>}</div>
+          <div className="text-on-surface">{runtimeDisplayName(credential)}{memberName === null ? '' : <span className="text-xs text-on-surface-variant"> · {memberName}</span>}</div>
           <div className="font-mono text-[11px] text-on-surface-variant">{credential.id} · started {formatRelative(credential.lineageStartedAt)}</div>
         </button>
         <span className="text-xs text-on-surface-variant">{credentialWords(credential, revokedByName)}</span>
@@ -321,7 +321,7 @@ function CredentialActivity({ credential, memberName }: { credential: Credential
   return (
     <div className="flex flex-col gap-3 p-4">
       <div>
-        <div className="font-serif text-lg text-on-surface">{credential.machineId ?? credential.id}</div>
+        <div className="font-serif text-lg text-on-surface">{runtimeDisplayName(credential)}</div>
         <div className="font-sans text-xs text-on-surface-variant">{memberName} · {credentialWords(credential, null)} · {(credential.bytesWritten / 1_048_576).toFixed(1)} MB written</div>
       </div>
       <PageLoading isLoading={activity.isPending} error={activity.error}>

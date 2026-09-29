@@ -22,10 +22,15 @@ export interface InvitationRow {
   expiresAt: number;
 }
 
+/** What a runtime is called on the page: the name it gave itself at join, else its machine, else the credential. */
+export const runtimeDisplayName = (c: Pick<CredentialRow, 'runtimeLabel' | 'machineId' | 'id'>): string => c.runtimeLabel ?? c.machineId ?? c.id;
+
 export interface CredentialRow {
   id: string;
   memberId: string;
   machineId: string | null;
+  /** The name the runtime gave itself when it joined, or null when it gave none. */
+  runtimeLabel: string | null;
   expiresAt: number;
   revokedAt: number | null;
   revokedBy: string | null;

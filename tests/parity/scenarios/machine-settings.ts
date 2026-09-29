@@ -10,7 +10,7 @@ import { lit, MACHINE_ID, MEMBER_ID, memberHeadersFor, SESSION_SECRET, type Pari
 const LEAF = 'capture.plan_dirs';
 
 /**
- * A machine's settings on both targets (#1393): set on the dashboard by an admin or the machine's own member, and
+ * A machine's settings on both targets (#1393): set on the dashboard by the machine's own member and nobody else, and
  * answered to that machine, and only that machine, at session start and on `/members/settings`, where the machine
  * caches them one file per Deployment.
  */
@@ -34,7 +34,7 @@ export const machineSettings: ParityScenario = {
     const claimed = (await target.sql(`SELECT COUNT(*) AS n FROM machine_claims WHERE machine_id = ${lit(MACHINE_ID)}`))[0]!.n === 0;
     if (claimed) await target.sql(`INSERT INTO machine_claims (machine_id, member_id, claimed_at) VALUES (${lit(MACHINE_ID)}, ${lit(MEMBER_ID)}, ${now})`);
     try {
-      // An admin sets this machine's plan folders; the machine is answered them on both of its reads.
+      // The parity member, who claims this machine, sets its plan folders; the machine is answered them on both of its reads.
       expect((await put(owner, MACHINE_ID, ['~/notes/plans', 'docs/plans'])).status).toBe(200);
       expect(await settingsOf(target.memberHeaders())).toEqual({ leaves: { [LEAF]: ['~/notes/plans', 'docs/plans'] } });
       const session = await fetch(`${target.url}/context/session`, {
@@ -61,6 +61,15 @@ export const machineSettings: ParityScenario = {
       expect((await put(asOther, MACHINE_ID, ['~/elsewhere'])).status).toBe(403);
       expect((await put(asOther, otherMachine, ['plans'])).status).toBe(200);
       expect(await settingsOf(otherHeaders)).toEqual({ leaves: { [LEAF]: ['plans'] } });
+
+      // An admin who does not own that machine reads and writes none of it.
+      expect((await fetch(`${target.url}/api/machines/${otherMachine}/settings`, { headers: owner })).status).toBe(403);
+      expect((await put(owner, otherMachine, ['~/admin-was-here'])).status).toBe(403);
+      expect((await put(owner, otherMachine, [])).status).toBe(403);
+      expect(await settingsOf(otherHeaders)).toEqual({ leaves: { [LEAF]: ['plans'] } });
+
+      // A folder that names the whole home, the filesystem root or the project, or climbs out, is refused.
+      for (const broad of ['~', '~/', '/', '.', '../plans']) expect((await put(asOther, otherMachine, [broad])).status).toBe(400);
 
       // Refused values and machines no member claims.
       expect((await put(owner, MACHINE_ID, 'not a list')).status).toBe(400);

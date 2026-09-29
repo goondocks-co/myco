@@ -31,7 +31,9 @@ import { RUNTIME_HOME_FILENAME } from '@myco/paths/home.js';
 import { resolvePackageRoot } from '@myco/symbionts/detect.js';
 import { spoolDirFor } from '@myco/member/spool.js';
 import { mintMemberToken } from '@myco-server-worker/auth/tokens.js';
-import { memberRig, tempMycoHome } from './helpers/server.js';
+import { memberRig, tempMycoHome, TEST_MACHINE_ID } from './helpers/server.js';
+import { machinePlanDirs } from '@myco/member/machine-settings.js';
+import { machineSettingsPath } from '@myco/member/registry.js';
 import { recordingFetch, registerTestMember, runHook } from './helpers/hooks.js';
 
 const tmpDirs: string[] = [];
@@ -183,6 +185,34 @@ describe('a hook launched with no MYCO_HOME', () => {
     expect(rig.rows('events')).toBe(1);
     // The spool is under the pinned home, not under `~/.myco`.
     expect(fs.existsSync(spoolDirFor('proj_1', home))).toBe(true);
+  });
+
+  it('caches this machine\'s settings in the home the project pin names, and reads its plan folders back from there (#1393)', async () => {
+    const home = tempMycoHome();
+    tmpDirs.push(home);
+    const project = pinnedProject(home);
+    process.chdir(tmpdir('myco-elsewhere-'));
+    const root = resolveMemberProjectRoot(project);
+    const rig = await memberRig();
+    registerTestMember({ mycoHome: home, token: rig.token, tokenId: rig.tokenId, expiresAt: rig.expiresAt, projectId: 'proj_1', root });
+    rig.env.sqlite.run(`INSERT INTO machine_claims (machine_id, member_id, claimed_at) VALUES (?, ?, ?)`, [TEST_MACHINE_ID, `mem_${TEST_MACHINE_ID}`, Date.now()]);
+    rig.env.sqlite.run(`INSERT INTO machine_settings (machine_id, leaf, value, updated_at, updated_by) VALUES (?, 'capture.plan_dirs', ?, ?, 'test')`, [TEST_MACHINE_ID, JSON.stringify(['notes/plans']), Date.now()]);
+    const { fetch, requests } = recordingFetch(rig.fetch);
+
+    const transcriptPath = path.join(tmpdir('myco-pinned-tx-'), 'sess-pinned-settings.jsonl');
+    fs.writeFileSync(transcriptPath, JSON.stringify({ type: 'user', message: { role: 'user', content: 'hello' }, uuid: 'u1', timestamp: '2026-01-01T00:00:00Z' }) + '\n');
+    await runHook('session-start', { session_id: 'sess-pinned-settings', hook_event_name: 'SessionStart', cwd: project, source: 'startup', transcript_path: transcriptPath }, { fetch, credential: 'registry', symbiont: 'claude-code' });
+    const serverUrl = 'https://member-test.invalid';
+    expect({ pinned: machinePlanDirs(serverUrl, home), fallback: fs.existsSync(machineSettingsPath(serverUrl, defaultMycoHome(homeDir))) })
+      .toEqual({ pinned: ['notes/plans'], fallback: false });
+
+    // A write into that folder, from the same project, is captured as a plan: the hook read the folder from the pinned home.
+    const plan = path.join(project, 'notes', 'plans', 'next.md');
+    fs.mkdirSync(path.dirname(plan), { recursive: true });
+    fs.writeFileSync(plan, '# Next\n\n- [ ] one\n');
+    await runHook('post-tool-use', { session_id: 'sess-pinned-settings', cwd: project, tool_name: 'Write', tool_input: { file_path: plan, content: '# Next' }, transcript_path: transcriptPath }, { fetch, credential: 'registry', symbiont: 'claude-code' });
+    const kinds = requests.filter((r) => r.path === '/events').map((r) => (JSON.parse(r.body ?? '{}') as { kind?: string }).kind);
+    expect(kinds).toContain('plan');
   });
 
   it('ignores an untrusted pin, captures nothing, and counts the loss under the home it did resolve', async () => {

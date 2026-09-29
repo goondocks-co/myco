@@ -53,7 +53,7 @@ async function ask(run: HookRun, path: string, body: Record<string, unknown>): P
   run.spool.clearLatch();
   // The settings the Deployment holds for this machine ride the answer; a cache that cannot be written leaves the
   // last one standing, and never costs the hook its answer.
-  try { cacheMachineSettings(run.credential.serverUrl, answer.body.machine); } catch { /* the last cache stands */ }
+  try { cacheMachineSettings(run.credential.serverUrl, answer.body.machine, run.mycoHome); } catch { /* the last cache stands */ }
   return {
     context: typeof answer.body.context === 'string' ? answer.body.context : '',
     skipped: Array.isArray(answer.body.skipped) ? answer.body.skipped.filter((s): s is string => typeof s === 'string') : [],

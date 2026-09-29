@@ -1,4 +1,5 @@
 import type { RelationalStore } from './adapters.js';
+import { planFolderRefusal } from '@goondocks/myco-shared/member-protocol';
 import { INSTRUCTIONS_TEMPLATE_MAX_BYTES, IMPORT_MAX_SESSIONS_MAX, IMPORT_WINDOW_DAYS_MAX } from '../constants.js';
 
 /**
@@ -168,6 +169,8 @@ function pathListViolation(spec: { maxItems: number; maxChars: number }, value: 
     if (typeof entry !== 'string' || entry.trim() === '') return 'expected each path to be non-empty text';
     if (entry.length > spec.maxChars) return `expected each path to be at most ${spec.maxChars} characters`;
     if (/[\u0000-\u001F\u007F]/.test(entry)) return 'expected each path without control characters';
+    const broad = planFolderRefusal(entry);
+    if (broad !== null) return broad;
   }
   return new Set(value).size === value.length ? null : 'expected each path once';
 }
