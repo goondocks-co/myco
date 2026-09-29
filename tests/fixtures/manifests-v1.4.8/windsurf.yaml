@@ -1,0 +1,102 @@
+name: windsurf
+displayName: Windsurf
+binary: windsurf
+configDir: .windsurf
+detectionDir: ~/.codeium/windsurf
+pluginRootEnvVar: WINDSURF_PLUGIN_ROOT
+hookFields:
+  # Windsurf hook payloads wrap event-specific data in a `tool_info` bag.
+  # The session identity is top-level (`trajectory_id`), but prompt text,
+  # response text, transcript path, and tool input live under `tool_info.*`.
+  # Schema: https://docs.windsurf.com/windsurf/cascade/hooks
+  sessionId: trajectory_id
+  transcriptPath: tool_info.transcript_path
+  lastResponse: tool_info.response
+  # `agent_action_name` IS the hook event name (e.g. "post_run_command") —
+  # Windsurf uses one shape per event rather than a generic tool_name field.
+  toolName: agent_action_name
+  toolInput: tool_info
+  prompt: tool_info.user_prompt
+capture:
+  # Windsurf stores transcripts flat, keyed by trajectory id.
+  transcriptDiscovery:
+    roots: ["~/.windsurf/transcripts"]
+    patterns:
+      - "{sessionId}.jsonl"
+  planDirs:
+    - ~/.windsurf/plans/
+registration:
+  hooksTarget: .windsurf/hooks.json
+  globalHooksTarget: ~/.codeium/windsurf/hooks.json
+  # Cascade reads `~/.codeium/windsurf/hooks.json` and requires the
+  # documented `{ "hooks": { "<event_name>": [...] } }` envelope — see
+  # https://docs.windsurf.com/windsurf/cascade/hooks#basic-structure.
+  # The installer's default writer (`settings.hooks = ...`) matches that
+  # shape; do not add `hooksRootKey` overrides here. `show_output` is
+  # optional per the docs (the field surfaces stdout to the user) and is
+  # NOT required for the hook command to execute — confirmed live on a
+  # wrapped file with no `show_output`.
+  # New capability — Windsurf MCP only available at the user-global location
+  # under ~/.codeium/windsurf/mcp_config.json. No project-local equivalent;
+  # mcpTarget omitted on purpose.
+  globalMcpTarget: ~/.codeium/windsurf/mcp_config.json
+  skillsTarget: .agents/skills
+  globalSkillsTarget: ~/.agents/skills
+  retiredGlobalSkillsTargets:
+    - ~/.codeium/windsurf/skills
+  settingsTarget: .windsurf/settings.json
+  # Cascade's `windsurf.cascadeCommandsAllowList` is an IDE user-settings
+  # key, not a hooks-file key. The installer's default global fallback
+  # would write it into the hooks file (line 338 in installer.ts), which
+  # poisons Cascade's hooks schema with an unknown root key and silently
+  # disables every hook. Explicit `null` opts Windsurf out of global
+  # settings installation entirely — capture works without the allowlist,
+  # and the right surface for that key is the Windsurf IDE settings file
+  # (a future, separate concern).
+  globalSettingsTarget: null
+capabilities:
+  # Global-only MCP config, one shared server set, non-workspace spawn cwd,
+  # no project-dir env, no roots. Shell carries tenancy.
+  toolTransport: cli
+  # Windsurf's bundled hook template does not currently register a
+  # session-start hook. Cortex falls back to inline delivery via
+  # `myco_cortex` and to the AGENTS.md managed-guidance bullet.
+  sessionStartInjection: false
+  subagentStartInjection: false
+  # Tools whose tool_input carries a file path. Windsurf's hook payload puts
+  # event data in `tool_info` (mapped via hookFields.toolInput above), and
+  # `post_write_code` carries the path at the top level of that bag:
+  # `{ edits: [...], file_path: "..." }` — confirmed from the live buffer of
+  # smoke session 028329ac… (2026-06-11).
+  #
+  # READ-HOOK ABSENCE (app-side limitation): Cascade file views fire NO hook
+  # at all. The same smoke session read README.md (the assistant response
+  # even says "*Viewed file:…README.md*") yet the buffer contains only
+  # pre_user_prompt, post_write_code, and the cascade-response events.
+  # Windsurf's hook surface has no read/view event, so read activities
+  # cannot be captured — nothing to declare here until the app ships one.
+  # `post_run_command` IS registered in our hook template and documented
+  # (docs.windsurf.com/windsurf/cascade/hooks) to carry `tool_info.command`,
+  # so cat-style shell reads are the one read signal we can extract.
+  pathBearingTools:
+    - tool: post_write_code
+      pathField: file_path
+      mutates: true
+    - tool: post_run_command
+      pathField: command
+      extract: shell-arg
+      readCommands: [cat, head, tail, less, more, bat, wc, file, nl, sed, awk, grep, rg, perl]
+hooks:
+  # Windsurf splits turn-end across two events. `post_cascade_response`
+  # fires immediately with `tool_info.response` (inline text). The
+  # daemon runs the response phase: close open batches, set
+  # response_summary on the latest batch. `post_cascade_response_with_transcript`
+  # fires later, after Cascade finalizes the transcript file. The daemon
+  # runs the transcript phase: mine the transcript, populate batch
+  # responses, extract plan tags, capture images, materialize aggregates.
+  # Both events route through the same `stop` subcommand; the daemon
+  # dispatches by phase, not by subcommand.
+  post_cascade_response:
+    phases: [response]
+  post_cascade_response_with_transcript:
+    phases: [transcript]

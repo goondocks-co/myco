@@ -27,6 +27,7 @@
  * is the structural enforcement; this module reports.
  */
 
+import { isMemberHome } from '../member/home-role.js';
 import { loadManifests, resolvePackageRoot } from '../symbionts/detect.js';
 import { SymbiontInstaller, type InstallResult } from '../symbionts/installer.js';
 import {
@@ -118,6 +119,9 @@ export function shouldRunGlobalBootstrap(
 export function runSymbiontDetection(
   packageRoot: string = resolvePackageRoot(),
 ): DetectionResult[] {
+  // A 2.0 member home's agents are provisioned by `myco member provision`;
+  // the 1.4 global install never rewrites them.
+  if (isMemberHome(resolveMycoHome())) return [];
   // Seed the managed skills dir (`<mycoHome>/skills`) from the binary-embedded
   // bundle before linking, so global skill symlinks resolve to a stable managed
   // target instead of a checkout. This is the chokepoint every global-install

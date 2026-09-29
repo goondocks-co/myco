@@ -46,6 +46,7 @@ Commands:
   host <subcommand>        Serve your team from this machine (enable|disable|status|rotate-key|members|revoke)
   login <invite-link>      Redeem an invite link and sign this machine in
   import                   Bring this machine's existing agent history to its Deployment
+  cutover                  Move this machine from Myco 1.4 to its Deployment (--dry-run first)
   member <op>              2.0 member: join | leave | drain | status | export | refresh
   settings                 Print harness settings for a sandboxed agent (--harness <name> --project <id>)
   version                  Show plugin version
@@ -266,6 +267,15 @@ async function main(): Promise<void> {
   if (cmd === 'import') {
     // The verb reports its outcome; the exit status is the dispatcher's to set.
     if (!await (await import('./cli/import.js')).run(args)) process.exitCode = 2;
+    return;
+  }
+
+  // The cutover reads 1.4 homes and writes the member registry and the
+  // agents' global config, never a project vault, so it sits above the
+  // myco.yaml gate and runs from any cwd.
+  if (cmd === 'cutover') {
+    // The verb reports its outcome; the exit status is the dispatcher's to set.
+    if (!await (await import('./cli/cutover.js')).run(args)) process.exitCode = 2;
     return;
   }
 

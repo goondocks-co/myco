@@ -535,6 +535,7 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
     },
     "registration": {
       "hooksTarget": ".cline/plugins/myco.ts",
+      "memberHooksTarget": ".cline/plugins/myco.ts",
       "globalHooksTarget": "~/.cline/plugins/myco.ts",
       "globalMcpTarget": [
         {

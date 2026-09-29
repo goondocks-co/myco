@@ -11,8 +11,8 @@ import { SymbiontInstaller } from '@myco/symbionts/installer.js';
 import { tempMycoHome } from './helpers/server.js';
 
 const TOKEN = 'A'.repeat(43);
-const TARGETS = { opencode: '.opencode/plugins/myco.ts', pi: '.pi/extensions/myco/index.ts' } as const;
-const GLOBALS = { opencode: '.config/opencode/plugins/myco.ts', pi: '.pi/agent/extensions/myco/index.ts' } as const;
+const TARGETS = { opencode: '.opencode/plugins/myco.ts', pi: '.pi/extensions/myco/index.ts', cline: '.cline/plugins/myco.ts' } as const;
+const GLOBALS = { opencode: '.config/opencode/plugins/myco.ts', pi: '.pi/agent/extensions/myco/index.ts', cline: '.cline/plugins/myco.ts' } as const;
 type Agent = keyof typeof TARGETS;
 
 let mycoHome: string;
@@ -57,7 +57,7 @@ async function member(args: string[]): Promise<{ out: string[]; err: string[] }>
 }
 
 describe('member plugins for plugin-file agents', () => {
-  for (const agent of ['opencode', 'pi'] as const) {
+  for (const agent of ['opencode', 'pi', 'cline'] as const) {
     it(`${agent}: provision writes the global member plugin without project files, and a repeat changes nothing`, async () => {
       join();
       const before = readRegistryEntry(root, mycoHome);

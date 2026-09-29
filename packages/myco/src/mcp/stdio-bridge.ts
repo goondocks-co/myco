@@ -331,6 +331,8 @@ function daemonUpstreamSource(vaultDir: string): UpstreamSource {
     describe: 'local daemon',
     async first() {
       const client = new DaemonClient(vaultDir);
+      const refusal = client.memberHomeRefusal();
+      if (refusal !== null) { logErr(refusal); return null; }
       const ready = await client.ensureRunning();
       if (!ready) return null;
       return resolve();

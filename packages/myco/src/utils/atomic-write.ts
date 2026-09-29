@@ -42,9 +42,9 @@ export interface AtomicWriteOptions {
  *      The new path opens with the requested mode atomically.
  *
  * The third argument is either a `BufferEncoding` string (legacy form,
- * equivalent to `{ encoding }`) or an options object. Mode preservation
- * (`{ mode }`) is opt-in because most callers don't need owner-only
- * permissions and would pay a redundant strict-create syscall.
+ * equivalent to `{ encoding }`) or an options object. A file that already
+ * exists keeps its permission bits; `{ mode }` names others, and sets the
+ * mode of a new file.
  */
 export function atomicWriteFileSync(
   filePath: string,
@@ -57,6 +57,11 @@ export function atomicWriteFileSync(
   atomicWriteFileSyncWithPublisher(filePath, contents, encodingOrOptions, publish);
 }
 
+/** The permission bits of the file at `filePath`, or undefined when there is none. */
+function existingMode(filePath: string): number | undefined {
+  try { return fs.statSync(filePath).mode & 0o7777; } catch { return undefined; }
+}
+
 function atomicWriteFileSyncWithPublisher(
   filePath: string,
   contents: string | Buffer,
@@ -67,7 +72,8 @@ function atomicWriteFileSyncWithPublisher(
     ? { encoding: encodingOrOptions }
     : encodingOrOptions;
   const encoding: BufferEncoding = options.encoding ?? 'utf-8';
-  const { mode } = options;
+  // A replaced file keeps its permissions unless the caller names others.
+  const mode = options.mode ?? existingMode(filePath);
 
   // pid is still included so a forensic `ls .tmp-*` shows which process
   // is responsible; randomness is what actually defeats prediction.

@@ -1,0 +1,61 @@
+name: pi
+displayName: Pi
+binary: pi
+configDir: .pi
+detectionDir: ~/.pi
+pluginRootEnvVar: PI_PLUGIN_ROOT
+hookFields:
+  sessionId: session_id
+  transcriptPath: transcript_path
+  lastResponse: last_assistant_message
+capture:
+  planDirs:
+    - .pi/plans/
+registration:
+  # Pi uses an extension file, not JSON hook entries
+  hooksTarget: .pi/extensions/myco/index.ts
+  # Pi's user-global agent extensions live under ~/.pi/agent/extensions/
+  globalHooksTarget: ~/.pi/agent/extensions/myco/index.ts
+  hooksFormat: plugin-file
+  # package.json for the extension's deps
+  pluginPackageTarget: .pi/extensions/myco/package.json
+  # Pi has no native MCP — Myco tools are registered via pi.registerTool()
+  # mcpTarget is omitted; tools are wired in the extension itself.
+  globalMcpTarget: null
+  skillsTarget: .agents/skills
+  globalSkillsTarget: ~/.agents/skills
+  retiredGlobalSkillsTargets:
+    - ~/.pi/agent/skills
+  # No instructionsFile — pi reads AGENTS.md natively via context files
+capabilities:
+  # Tool transport: neither `mcp` nor the session-start `cli` directive. Pi's
+  # Myco tools are registered natively in the extension via pi.registerTool()
+  # and dispatched in-process to the Myco CLI (`myco tool call`) with the
+  # project cwd carrying tenancy. Pi therefore intentionally leaves
+  # `toolTransport` unset: the default (`mcp`) injects no CLI directive, which
+  # is correct here — the agent uses the natively registered tools and the
+  # extension handles dispatch. (No mcpTarget/globalMcpTarget, so the
+  # installer's MCP gate is a no-op regardless.)
+  sessionStartInjection: true
+  # Pi can inject at before_agent_start, but spawned-subagent lifecycle needs
+  # runtime proof before enabling direct child injection.
+  subagentStartInjection: false
+  # Tools whose tool_input carries a file path. Pi's lowercase tools put it
+  # at `path` (relative or absolute) — confirmed from the live buffer of
+  # smoke session 2026-06-11T21-06-03…: `read`/`write` with
+  # `{ path, offset?, limit? }` / `{ path, content }`; the dogfood vault's
+  # activity history shows `edit` uses `{ path, edits: [...] }` and `bash`
+  # uses `{ command, timeout }`.
+  pathBearingTools:
+    - tool: read
+      pathField: path
+    - tool: write
+      pathField: path
+      mutates: true
+    - tool: edit
+      pathField: path
+      mutates: true
+    - tool: bash
+      pathField: command
+      extract: shell-arg
+      readCommands: [cat, head, tail, less, more, bat, wc, file, nl, sed, awk, grep, rg, perl]

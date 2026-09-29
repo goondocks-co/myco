@@ -1,4 +1,5 @@
 import fs from 'node:fs';
+import { isMemberHome, memberHomeDaemonRefusal } from '../member/home-role.js';
 import path from 'node:path';
 import { getServiceManager } from '../service/manager.js';
 import { buildServiceSpec, looksLikeDevBuildExecutable } from '../service/spec-builder.js';
@@ -77,6 +78,9 @@ export function assertSafeServiceMutation(
   execPath: string,
   mycoHome: string = resolveMycoHome(),
 ): string | null {
+  // A 2.0 member home runs no 1.4 daemon, so nothing installs, starts or restarts its unit.
+  const starting: ReadonlySet<ServiceAction> = new Set(['install', 'start', 'restart', 'reconcile']);
+  if (starting.has(parsed.action) && isMemberHome(mycoHome)) return memberHomeDaemonRefusal(mycoHome);
   const mutating: ReadonlySet<ServiceAction> = new Set(['install', 'uninstall', 'start', 'stop', 'restart', 'reconcile']);
   if (!isDefaultMycoHome(mycoHome)) return null;
   if (!mutating.has(parsed.action)) return null;

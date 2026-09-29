@@ -141,10 +141,10 @@ describe('the member-project install scope', () => {
     expect(fs.readFileSync(path.join(projectRoot, '.git', 'info', 'exclude'), 'utf-8')).toBe(exclude);
   });
 
-  it('declares a member plugin target only for OpenCode and Pi, and installs nothing for any other plugin-file symbiont', () => {
-    // OpenCode and Pi load a project plugin that the global Myco plugin steps aside for (tests/member/member-plugins.test.ts).
+  it('declares a member plugin target only for Cline, OpenCode and Pi, and installs nothing for any other plugin-file symbiont', () => {
+    // Cline, OpenCode and Pi load a project plugin that the global Myco plugin steps aside for (tests/member/member-plugins.test.ts).
     const pluginFile = loadManifests().filter((m) => m.registration?.hooksFormat === 'plugin-file');
-    expect(pluginFile.filter((m) => m.registration?.memberHooksTarget).map((m) => m.name).sort()).toEqual(['opencode', 'pi']);
+    expect(pluginFile.filter((m) => m.registration?.memberHooksTarget).map((m) => m.name).sort()).toEqual(['cline', 'opencode', 'pi']);
     const others = pluginFile.filter((m) => !m.registration?.memberHooksTarget);
     expect(others.length).toBeGreaterThan(0);
     for (const manifest of others) {

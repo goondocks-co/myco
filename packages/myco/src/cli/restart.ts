@@ -1,4 +1,5 @@
 import path from 'node:path';
+import { isMemberHome, memberHomeDaemonRefusal } from '../member/home-role.js';
 import { resolveDaemonServiceState } from '../daemon/service-state.js';
 import { writeRestartIntent } from '../daemon/intent.js';
 import { DaemonClient } from '../daemon/client.js';
@@ -24,6 +25,11 @@ const RESTART_POLL_INTERVAL_MS = 500;
 export async function run(args: string[], vaultDir: string): Promise<void> {
   const force = args.includes('--force');
   const daemonService = resolveDaemonServiceState(vaultDir);
+  const mycoHome = path.dirname(daemonService.stateDir);
+  if (isMemberHome(mycoHome)) {
+    console.error(memberHomeDaemonRefusal(mycoHome));
+    process.exit(1);
+  }
   const client = new DaemonClient(vaultDir);
   const before = await client.getInfoAsync();
 

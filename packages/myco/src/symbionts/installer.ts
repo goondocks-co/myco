@@ -5,7 +5,8 @@ import path from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 import { parse as parseToml } from 'smol-toml';
 import { expandHome, resolveMycoHome } from '../grove/paths.js';
-import { isClaimedByPeer, resolveClaimsHome, shouldDeferSubsystem, SYMBIONT_CONFIG_SUBSYSTEM } from '../grove/subsystem-claim.js';
+import { isClaimedByPeer, readClaim, resolveClaimsHome, shouldDeferSubsystem, SYMBIONT_CONFIG_SUBSYSTEM } from '../grove/subsystem-claim.js';
+import { commandVerdict, mcpVerdict, MEMBER_PLUGIN_MARKER, MYCO_PLUGIN_FILE_MARKER, pluginFileVerdict } from './legacy-verdict.js';
 import { atomicWriteFileSync } from '../utils/atomic-write.js';
 import { assertSafeProjectRoot } from '../project-root.js';
 import { findTomlSectionEnd, buildTomlMcpSection, upsertTomlSection, upsertTomlSectionKeys, removeTomlSectionKeys, readTomlSectionKey } from './toml-helpers.js';
@@ -155,7 +156,7 @@ const KNOWN_MCP_SERVERS_KEYS = ['mcpServers', 'servers', 'mcp'] as const;
  * Uninstall only deletes plugin files whose content contains this marker, so
  * contributors who hand-edit a plugin file without removing the marker are protected.
  */
-const MYCO_PLUGIN_FILE_MARKER = 'myco:plugin-marker';
+export { MYCO_PLUGIN_FILE_MARKER } from './legacy-verdict.js';
 
 /**
  * The comment line only a member plugin carries: the one `member leave` may
@@ -163,7 +164,7 @@ const MYCO_PLUGIN_FILE_MARKER = 'myco:plugin-marker';
  * comment prefix, never the bare word, so a plugin that names it in its own
  * code does not match itself.
  */
-const MEMBER_PLUGIN_MARKER = '// myco:member-plugin';
+export { MEMBER_PLUGIN_MARKER } from './legacy-verdict.js';
 
 /** The comment line a global Myco plugin carries when it steps aside for a project's member plugin. */
 const MEMBER_PLUGIN_COMPAT_MARKER = '// myco:defers-to-member-plugin';
@@ -325,7 +326,7 @@ function assertSafeBinaryPathForUnquoted(binaryPath: string): void {
  * TOML-footer hooks.json, antigravity's JSON plugin-file) where a structured
  * group walk isn't possible.
  */
-function rawHasMycoOwnershipSignal(raw: string): boolean {
+export function rawHasMycoOwnershipSignal(raw: string): boolean {
   return hasMycoManagedMarker(raw) || containsMycoLauncherReference(raw);
 }
 
@@ -1837,12 +1838,12 @@ export class SymbiontInstaller {
     const reg = this.manifest.registration;
     if (!reg?.mcpTarget) return null;
     if (reg.memberMcpHeadersHelperKey) {
-      const entry = readRegistryEntry(this.projectRoot, this.memberHomeDir());
-      if (entry === null) return null;
+      const serverUrl = readRegistryEntry(this.projectRoot, this.memberHomeDir())?.serverUrl ?? this.expectedServerUrl;
+      if (serverUrl === undefined) return null;
       const binaryPath = this.binaryPath();
       assertSafeBinaryPathForUnquoted(binaryPath);
       // A JSON host reads `type` and the levers; a TOML host drops them (`tomlMemberServers`).
-      const remote = memberRemoteMcp(entry.serverUrl, reg.memberMcpHeadersHelperKey, binaryPath, source);
+      const remote = memberRemoteMcp(serverUrl, reg.memberMcpHeadersHelperKey, binaryPath, source);
       return { [MYCO_MCP_SERVER_NAME]: { type: REMOTE_MCP_TYPE, ...remote, ...MEMBER_MCP_LEVERS } };
     }
     const template = this.loadMcpTemplate();
@@ -2228,10 +2229,79 @@ export class SymbiontInstaller {
     return { ...result, hooks: hooks || result.hooks, mcp: mcp || result.mcp };
   }
 
+  /** 1.4 homes whose global registrations member provisioning may replace in place (`replacingLegacy`). */
+  private legacyHomes: readonly string[] = [];
+  /** The Deployment a preflight judges the MCP entry against, before any folder is connected. */
+  private expectedServerUrl: string | undefined;
+
+  /**
+   * Let member-global provisioning replace, in place, the registrations a 1.4
+   * installation at one of `homes` wrote (`legacy-verdict.ts`), and take over
+   * a `symbiont-config` claim one of them holds. A registration or claim of
+   * any other installation still refuses.
+   */
+  replacingLegacy(homes: readonly string[]): this {
+    this.legacyHomes = homes.map((home) => path.resolve(home));
+    return this;
+  }
+
+  /** Whether `text` names a path under one of the replaceable 1.4 homes. */
+  private namesLegacyHome(text: string): boolean {
+    return this.legacyHomes.some((home) => text.includes(`${home}${path.sep}`));
+  }
+
+  /** Whether the `symbiont-config` claim this install reads is held by a replaceable 1.4 home. */
+  private claimHeldByLegacyHome(): boolean {
+    const memberHome = this.memberHomeDir();
+    const claim = readClaim(SYMBIONT_CONFIG_SUBSYSTEM, resolveClaimsHome(memberHome));
+    return claim !== null && this.legacyHomes.includes(path.resolve(claim.owner));
+  }
+
+  /** Whether this agent is captured by a 2.0 member at all: its manifest declares a member hooks target. */
+  capturesAsMember(): boolean {
+    return Boolean(this.manifest.registration?.memberHooksTarget);
+  }
+
+  /**
+   * Every file global member provisioning writes or rewrites: the global
+   * hooks target, the one MCP file it writes (`memberMcpTargetPath`, the first
+   * of an agent's MCP targets), and with them the settings target and the
+   * project member targets it retires (`all`).
+   */
+  memberGlobalTargets(): { hooks: string | null; mcp: string[]; all: string[] } {
+    const local = this.projectMemberInstaller();
+    const hooks = this.resolveAbsoluteTarget('hooks');
+    const written = this.memberMcpTargetPath();
+    const mcp = written === null ? [] : [written];
+    const all = [hooks, ...mcp, this.resolveAbsoluteTarget('settings'), local.resolveAbsoluteTarget('hooks'), local.memberMcpTargetPath()];
+    return { hooks, mcp, all: [...new Set(all.filter((file): file is string => file !== null))] };
+  }
+
+  /**
+   * What global provisioning would find, without writing: the refusal it would
+   * raise, else the 1.4 homes whose registrations it would replace. The MCP
+   * entry is judged against the one provisioning would write for
+   * `serverUrl`, whether or not the folder is connected yet.
+   */
+  globalOwnership(serverUrl: string): { problem: string | null; replaces: string[] } {
+    this.expectedServerUrl = serverUrl;
+    try {
+      this.assertGlobalMemberOwnership();
+    } catch (error) {
+      if (error instanceof MemberProvisionConflictError) return { problem: error.message, replaces: [] };
+      throw error;
+    } finally {
+      this.expectedServerUrl = undefined;
+    }
+    const texts = [this.resolveAbsoluteTarget('hooks'), this.memberMcpTargetPath()]
+      .flatMap((file) => { try { return file === null ? [] : [fs.readFileSync(file, 'utf8')]; } catch { return []; } });
+    return { problem: null, replaces: this.legacyHomes.filter((home) => texts.some((text) => text.includes(`${home}${path.sep}`))) };
+  }
+
   /** Global member provisioning cannot take another installation's capture or Deployment. */
   private assertGlobalMemberOwnership(): void {
     const memberHome = this.memberHomeDir();
-    if (isClaimedByPeer(SYMBIONT_CONFIG_SUBSYSTEM, memberHome, { claimsHome: resolveClaimsHome(memberHome) })) {
+    if (isClaimedByPeer(SYMBIONT_CONFIG_SUBSYSTEM, memberHome, { claimsHome: resolveClaimsHome(memberHome) }) && !this.claimHeldByLegacyHome()) {
       throw new MemberProvisionConflictError('Global symbiont configuration is claimed by another installation. Release its symbiont-config claim before provisioning globally.');
     }
     assertSafeProjectRoot(this.projectRoot);
@@ -2247,14 +2317,18 @@ export class SymbiontInstaller {
         try { content = fs.readFileSync(target, 'utf8'); } catch (error) {
           throw new MemberProvisionConflictError(`could not read ${target} (${firstLine(error)}), so nothing was written.`);
         }
-        if (!content.includes(MEMBER_PLUGIN_MARKER)) {
+        const verdict = pluginFileVerdict(content, this.legacyHomes, memberHome);
+        const replaceable = verdict === 'member' || (verdict === 'legacy' && this.legacyHomes.length > 0);
+        if (!replaceable) {
           throw new MemberProvisionConflictError(`Global hooks at ${target} belong to another installation. Complete its capture cutover before provisioning globally.`);
         }
       } else {
         const settings = this.readMcpFile(target, false);
-        const commands = hookCommands(settings?.hooks).filter((command) => rawHasMycoOwnershipSignal(command));
-        if (commands.some((command) => !command.includes(CREDENTIAL_FLAG) || !command.includes(this.binaryPath()))) {
-          throw new MemberProvisionConflictError(`Global hooks at ${target} belong to another installation. Complete its capture cutover before provisioning globally.`);
+        const commands = hookCommands(settings?.hooks)
+          .filter((command) => rawHasMycoOwnershipSignal(command) && !(this.legacyHomes.length > 0 && commandVerdict(command, this.legacyHomes) === 'legacy'));
+        const foreign = commands.find((command) => !command.includes(CREDENTIAL_FLAG) || !command.includes(this.binaryPath()));
+        if (foreign !== undefined) {
+          throw new MemberProvisionConflictError(`Global hooks at ${target} belong to another installation (\`${foreign}\`). Complete its capture cutover before provisioning globally.`);
         }
       }
     }
@@ -2268,7 +2342,8 @@ export class SymbiontInstaller {
     const sameCredentialSource = helperKey
       ? existing[helperKey] === desired?.[helperKey]
       : isDeepStrictEqual(existing.command, desired?.command) && isDeepStrictEqual(existing.args, desired?.args);
-    if (!this.isMemberMcpServer(existing) || existing.url !== desired?.url || !sameCredentialSource) {
+    const legacy = this.legacyHomes.length > 0 && mcpVerdict(existing, this.legacyHomes) === 'legacy';
+    if (!legacy && (!this.isMemberMcpServer(existing) || existing.url !== desired?.url || !sameCredentialSource)) {
       throw this.memberMcpConflict(`the global Myco MCP entry in ${mcpTarget} belongs to another installation or Deployment`, 'Complete its capture cutover before replacing the global entry');
     }
   }
