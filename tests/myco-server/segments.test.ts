@@ -103,6 +103,12 @@ describe('segmentsToRead', () => {
     expect(segmentsToRead(segments, 0, 1_000)).toEqual([seg(0, 10)]);
   });
 
+  it('answers nothing when the held bytes begin after the cursor, so no reader takes a later segment for the cursor\'s byte', () => {
+    expect(segmentsToRead([seg(40, 10), seg(50, 10)], 0, 1_000)).toEqual([]);
+    expect(segmentsToRead([seg(40, 10)], 39, 1_000)).toEqual([]);
+    expect(segmentsToRead([seg(40, 10)], 45, 1_000)).toEqual([seg(40, 10)]);
+  });
+
   it('answers nothing when the cursor is past everything held', () => {
     expect(segmentsToRead([seg(0, 10)], 10, 100)).toEqual([]);
   });

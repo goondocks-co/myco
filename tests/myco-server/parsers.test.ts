@@ -15,6 +15,7 @@ import { PARSERS, parserFor } from '@myco-server-worker/ingest/parsers/registry.
 import { FIDELITIES, type DerivedEvent, type ParsedLine } from '@myco-server-worker/ingest/parsers/index.js';
 import { kindSpec, parsePayload } from '@myco-server-worker/ingest/kinds.js';
 import { uuidv5 } from '@myco-server-worker/hash.js';
+import { promptTextOf, responseTextOf } from '@myco-server-worker/ingest/parsers/cursor.js';
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 const FIXTURES = path.join(REPO_ROOT, 'tests', 'fixtures');
@@ -69,7 +70,7 @@ describe('parser registry', () => {
     'claude-code': { prompt: 2, response: 2, 'tool.use': 1, 'tool.failure': 1, plan: 1 },
     cline: { prompt: 1, response: 1, 'tool.use': 1, 'tool.failure': 1 },
     codex: { prompt: 1, response: 1, 'tool.use': 1 },
-    cursor: { prompt: 1, response: 1 },
+    cursor: { prompt: 2, response: 2 },
     opencode: { prompt: 1, response: 1, 'tool.use': 1, 'tool.failure': 1 },
     pi: { prompt: 1, response: 1, 'tool.use': 1 },
   };
@@ -315,15 +316,54 @@ describe('codex parser', () => {
 });
 
 describe('cursor parser', () => {
+  it('keeps what the person typed: every <user_query> in a line, and tag-like text in a line without one', () => {
+    expect(promptTextOf('<timestamp>t</timestamp>\n<user_query>\none\n</user_query>\n<user_query>\ntwo\n</user_query>')).toBe('one\n\ntwo');
+    expect(promptTextOf('please look at <b>this</b> code')).toBe('please look at <b>this</b> code');
+    expect(promptTextOf('explain the <user_info>x</user_info> block')).toBe('explain the <user_info>x</user_info> block');
+    expect(promptTextOf('why is the daemon restarting')).toBe('why is the daemon restarting');
+  });
+
+  it('reads a line that is only blocks the agent injected as no prompt at all', () => {
+    expect(promptTextOf('<git_status>\nclean\n</git_status>')).toBe('');
+    expect(promptTextOf('<available_subagent_types>\nx\n</available_subagent_types>\n<timestamp>t</timestamp>')).toBe('');
+  });
+
+  it('drops a [REDACTED] mask wherever it stands in a reply', () => {
+    expect(responseTextOf('I will [REDACTED] check.\n[REDACTED] more')).toBe('I will check.\nmore');
+    expect(responseTextOf('Checking the service log.\n\n[REDACTED]')).toBe('Checking the service log.');
+    expect(responseTextOf('[REDACTED]')).toBe('');
+    expect(responseTextOf('first\n[REDACTED]\n\nsecond')).toBe('first\n\nsecond');
+  });
+
   it('declares the fidelity its format can support and derives no tool calls', async () => {
     expect(PARSERS.cursor.fidelity).toBe('no_tool_results');
     const events = await parseFixture('cursor');
-    expect(kinds(events)).toEqual(['prompt', 'response']);
+    expect(kinds(events)).toEqual(['prompt', 'response', 'prompt', 'response']);
   });
 
-  it('reads content in both the string and the block-array form', async () => {
+  it('reads a recorded cursor-agent transcript into its prompt and its reply (#1461)', async () => {
+    const events = await PARSERS.cursor.parse({ lines: linesOf('cursor-agent-2026.09-redacted.jsonl'), sessionId: SESSION, now: NOW });
+    expect(only(events, 'prompt').map((e) => e.payload.text)).toEqual([
+      'List the files in this directory and say how many there are. Do not modify anything.',
+    ]);
+    const responses = only(events, 'response');
+    expect(responses).toHaveLength(1);
+    expect(responses[0].payload.promptId).toBe(only(events, 'prompt')[0].payload.promptId);
+    expect(responses[0].payload.text).toStartWith('Listing the directory contents without changing anything.\n\nTrying a simpler listing approach:');
+    expect(responses[0].payload.text).toEndWith('7. `AGENTS.md`\n\nNothing was modified.');
+  });
+
+  it('takes what the person typed out of its <user_query> wrapper, and skips a line of injected context', async () => {
     const events = await parseFixture('cursor');
-    expect(only(events, 'prompt')[0].payload.text).toBe('why is the daemon restarting');
-    expect(only(events, 'response')[0].payload.text).toBe('The lease expired.');
+    expect(only(events, 'prompt').map((e) => e.payload.text)).toEqual(['why is the daemon restarting', 'and how do I stop it']);
+  });
+
+  it('drops the [REDACTED] reasoning masks and closes a reply at the end of its turn', async () => {
+    const events = await parseFixture('cursor');
+    const [first, second] = only(events, 'prompt');
+    expect(only(events, 'response').map((e) => ({ promptId: e.payload.promptId, text: e.payload.text }))).toEqual([
+      { promptId: first.payload.promptId, text: 'Checking the service log.\n\nThe lease expired.' },
+      { promptId: second.payload.promptId, text: 'Renew the lease before it lapses.' },
+    ]);
   });
 });
