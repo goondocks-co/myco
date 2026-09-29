@@ -17,7 +17,8 @@
 import type { ServerEnv } from '../core/adapters.js';
 import type { OwnerContext } from '../context.js';
 import { notFound, ok, resolveProjectScope } from './scope.js';
-import { listProjectPlans, PLAN_STATUS_MESSAGE, WRITABLE_PLAN_STATUSES } from '../read/plans.js';
+import { pageProjectPlans, PLAN_STATUS_MESSAGE, WRITABLE_PLAN_STATUSES } from '../read/plans.js';
+import { decodeCursor } from '../read/scope.js';
 import { MAX_PAGE } from './intelligence.js';
 
 const clampLimit = (raw: string | null): number => {
@@ -26,7 +27,7 @@ const clampLimit = (raw: string | null): number => {
 };
 
 /**
- * Every plan this Project holds, newest edit first, optionally one status.
+ * The plans this Project holds, newest edit first, a page at a time (`cursor` names the next), optionally one status.
  *
  * A status outside the catalogue is refused rather than answered empty: a filter
  * nothing matches and a filter nothing could match read the same on a page, and
@@ -40,9 +41,12 @@ export async function handleProjectPlans(env: ServerEnv, ctx: OwnerContext): Pro
   const status = ctx.url.searchParams.get('status');
   if (status !== null && !WRITABLE_PLAN_STATUSES.has(status)) return Response.json({ error: 'bad_request', reason: PLAN_STATUS_MESSAGE }, { status: 400 });
 
-  const plans = await listProjectPlans(env.db, scope, {
+  const cursor = ctx.url.searchParams.get('cursor');
+  if (cursor !== null && decodeCursor(cursor) === null) return Response.json({ error: 'bad_request', reason: 'malformed cursor' }, { status: 400 });
+  const page = await pageProjectPlans(env.db, scope, {
     ...(status === null ? {} : { status }),
     limit: clampLimit(ctx.url.searchParams.get('limit')),
+    ...(cursor === null ? {} : { cursor }),
   });
-  return ok({ plans, maxPage: MAX_PAGE });
+  return ok({ plans: page.rows, cursor: page.cursor, maxPage: MAX_PAGE });
 }
