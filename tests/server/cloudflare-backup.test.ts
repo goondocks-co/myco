@@ -135,7 +135,8 @@ function fixture() {
       downloads += 1;
       if (fs.existsSync(path.join(destination, '.snapshot', 'd1.sql'))) leftovers.push(bookmark);
       const job = exports.find((j) => j.bookmark === bookmark)!;
-      return download(bookmark, downloads) ?? new Response(exportSql(job.tables));
+      const sql = exportSql(job.tables);
+      return download(bookmark, downloads) ?? new Response(sql, { headers: { 'content-length': String(new TextEncoder().encode(sql).byteLength) } });
     }
     const prefix = `https://api.cloudflare.com/client/v4/accounts/${record.accountId}/r2/buckets/${record.bucketName}/objects/`;
     expect(String(input).startsWith(prefix)).toBe(true);
@@ -682,7 +683,7 @@ describe('a transient Cloudflare failure during the snapshot', () => {
       controller.enqueue(new TextEncoder().encode('PRAGMA defer_foreign_keys=TRUE;\nINSERT INTO "recovery_fixture" ("id","body","bytes") VALUES (999,\'partial\',NULL);\nINSERT INTO "sess'));
       controller.error(new TypeError('fetch failed'));
     },
-  }));
+  }), { headers: { 'content-length': '1000000' } });
   const captured = (f: ReturnType<typeof fixture>) => {
     const recovered = new Database(path.join(f.destination, 'myco.sqlite'), { readonly: true });
     try { return recovered.query('SELECT id, body FROM recovery_fixture').all(); } finally { recovered.close(); }

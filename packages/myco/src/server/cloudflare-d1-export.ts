@@ -281,10 +281,11 @@ function exporter(context: D1ExportContext) {
 
   /**
    * One attempt at the download, streamed to `part` and bounded by a stall rather than a total: it ends only where no
-   * byte arrives for `stallMs`. Bytes already in `part` are resumed from where the download serves a range, and
-   * rewritten from the start where it does not. Null once the whole result is in `part`.
+   * byte arrives for `stallMs`. Bytes already in `part` are resumed where the download serves exactly the range asked
+   * for, of the object the first answer described (`served`: its ETag and length, sent back as `If-Range`), and
+   * rewritten from the start otherwise, never spliced. Null once the whole result is in `part`.
    */
-  const downloadOnce = async (signedUrl: string, part: string): Promise<null | { error: ObjectReadError; gone: boolean }> => {
+  const downloadOnce = async (signedUrl: string, part: string, served: { etag: string | null; total: number | null }): Promise<null | { error: ObjectReadError; gone: boolean }> => {
     const offset = fs.existsSync(part) ? fs.statSync(part).size : 0;
     const controller = new AbortController();
     let timer: ReturnType<typeof setTimeout> | undefined;
@@ -307,7 +308,10 @@ function exporter(context: D1ExportContext) {
       try {
         // Asked for as stored, so a length and a range count the bytes written here.
         const headers = new Headers({ 'accept-encoding': 'identity' });
-        if (offset > 0) headers.set('range', `bytes=${offset}-`);
+        if (offset > 0) {
+          headers.set('range', `bytes=${offset}-`);
+          if (served.etag !== null) headers.set('if-range', served.etag);
+        }
         response = await Promise.race([fetchApi(signedUrl, { method: 'GET', redirect: 'follow', signal: controller.signal, headers }), stalled]);
       } catch (error) {
         return failed(`the D1 export download did not reach Cloudflare (${redacted((error as Error).message)})`);
@@ -320,17 +324,34 @@ function exporter(context: D1ExportContext) {
         await response.body?.cancel().catch(() => {});
         return failed(`the D1 export download failed (HTTP ${response.status})`, false, response.status === 408 || response.status === 429 || response.status >= 500);
       }
+      // An answer served encoded anyway counts its length and ranges in bytes this side never sees: it is taken whole,
+      // with no length to hold it to, and never resumed or appended to.
+      const encoded = !['identity', ''].includes((response.headers.get('content-encoding') ?? '').trim().toLowerCase());
       const range = /^bytes (\d+)-\d+\/(\d+)$/.exec(response.headers.get('content-range') ?? '');
-      const resumed = response.status === 206 && range !== null && Number(range[1]) === offset;
-      if (response.status === 206 && !resumed) {
+      const etag = response.headers.get('etag');
+      let resumed = false;
+      if (response.status === 206) {
+        const same = !encoded && range !== null && Number(range[1]) === offset
+          && (served.total === null || Number(range[2]) === served.total)
+          && (served.etag === null || etag === null || etag === served.etag);
+        if (!same) {
+          await response.body.cancel().catch(() => {});
+          fs.rmSync(part, { force: true });
+          return failed('the D1 export download answered a range other than the one asked for, or of another object; it starts again from its first byte');
+        }
+        resumed = true;
+      }
+      const declared = encoded ? Number.NaN : resumed ? Number(range![2]) : Number(response.headers.get('content-length') ?? Number.NaN);
+      // A whole answer is told from a cut one by the length it declares; one that declares none is never taken.
+      if (!encoded && !Number.isFinite(declared)) {
         await response.body.cancel().catch(() => {});
         fs.rmSync(part, { force: true });
-        return failed('the D1 export download answered a range other than the one asked for');
+        return failed('the D1 export download declared no length, so a whole answer cannot be told from a cut one');
       }
-      // An answer served encoded anyway counts its length and ranges in bytes this side never sees: it is taken whole,
-      // with no length to hold it to, and never resumed.
-      const encoded = !['identity', ''].includes((response.headers.get('content-encoding') ?? '').trim().toLowerCase());
-      const declared = encoded ? Number.NaN : resumed ? Number(range![2]) : Number(response.headers.get('content-length') ?? Number.NaN);
+      if (!resumed) {
+        served.etag = etag;
+        served.total = encoded ? null : declared;
+      }
       const handle = fs.openSync(part, resumed ? 'a' : 'w', 0o600);
       let written = resumed ? offset : 0;
       const reader = response.body.getReader();
@@ -366,8 +387,9 @@ function exporter(context: D1ExportContext) {
     const part = `${context.output}.part`;
     fs.rmSync(part, { force: true });
     let url = signedUrl;
+    const served: { etag: string | null; total: number | null } = { etag: null, total: null };
     for (let attempt = 1; ; attempt += 1) {
-      const outcome = await downloadOnce(url, part);
+      const outcome = await downloadOnce(url, part, served);
       if (outcome === null) {
         fs.renameSync(part, context.output);
         return;
@@ -379,7 +401,13 @@ function exporter(context: D1ExportContext) {
       context.report?.(`${outcome.error.message}; asking after the same D1 export for its download again (attempt ${attempt + 1} of ${D1_EXPORT_DOWNLOAD_ATTEMPTS})`);
       const read = bookmark === null ? null : await ask(tables, bookmark);
       if (read?.kind === 'complete') url = read.signedUrl;
-      else if (outcome.gone) {
+      else if (outcome.gone && (read?.kind === 'running' || read?.kind === 'refused-login')) {
+        // The export is reported running, or the answer settles nothing about it: it stays recorded, and nothing
+        // starts another beside it; the next attempt resumes it.
+        fs.rmSync(part, { force: true });
+        throw new ObjectReadError(`the D1 export's download is no longer served, and Cloudflare ${read.kind === 'running' ? 'reports that export still running' : 'refused the operator\'s login when asked after it'}; `
+          + 'it stays recorded, and the next attempt resumes it rather than starting another', { transient: true });
+      } else if (outcome.gone) {
         fs.rmSync(part, { force: true });
         fs.rmSync(file, { force: true });
         throw new ObjectReadError(`the D1 export's result is no longer served and Cloudflare names no other (${redacted(read === null ? 'the export answered no bookmark' : read.kind === 'ended' ? read.detail : read.kind)}); `

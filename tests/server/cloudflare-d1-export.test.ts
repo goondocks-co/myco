@@ -21,6 +21,9 @@ import { D1_EXPORT_ANSWERS } from '../helpers/d1-export-answers.ts';
 import type { CloudflareFetch, OperatorLogin } from '@myco/server/cloudflare.js';
 
 const POLL_CEILING = 5_000;
+
+/** A download as the signed URL serves one: its body and the length it declares. */
+const sized = (body: string): Response => new Response(body, { headers: { 'content-length': String(new TextEncoder().encode(body).byteLength) } });
 const ACCOUNT = 'acct';
 const DATABASE = 'db-1';
 const ENDPOINT = `https://api.cloudflare.com/client/v4/accounts/${ACCOUNT}/d1/database/${DATABASE}/export`;
@@ -37,7 +40,7 @@ function provider(next: (job: Job) => Job['state'] = () => 'active') {
   const requests: Array<string | null> = [];
   const control: { startAnswer: (() => Response) | null; seen: (bookmark: string | null) => void } = { startAnswer: null, seen: () => {} };
   const fetch: CloudflareFetch = async (url, init) => {
-    if (url.startsWith('https://signed.fixture/')) return new Response(`-- export ${url.slice('https://signed.fixture/'.length)}\n`);
+    if (url.startsWith('https://signed.fixture/')) return sized(`-- export ${url.slice('https://signed.fixture/'.length)}\n`);
     expect(url).toBe(ENDPOINT);
     if (requests.length >= POLL_CEILING) throw new Error('the export was polled without end');
     const body = JSON.parse(String(init.body)) as { current_bookmark?: string };
@@ -419,7 +422,7 @@ describe('a download that trickles, then stalls', () => {
           controller.enqueue(bytes.slice(at, at + 1));
           at += 1;
         },
-      }), { status: 200 });
+      }), { status: 200, headers: { 'content-length': String(bytes.byteLength) } });
     };
     await run(fetch, { stallMs: 40, pollMs: 0 });
     expect({ output: fs.readFileSync(path.join(dir, 'd1.sql'), 'utf8'), started: api.started(), requests: api.requests })
@@ -477,6 +480,91 @@ describe('a download served encoded anyway', () => {
     };
     await run(fetch, { pollMs: 0 });
     expect({ output: fs.readFileSync(path.join(dir, 'd1.sql'), 'utf8'), asked }).toEqual({ output: '-- export bm-1, decoded\n', asked: ['identity'] });
+  });
+});
+
+/** A download fake: `answers[n]` serves the n-th request, and every request's range and If-Range are recorded. */
+function servedInTurn(api: ReturnType<typeof provider>, answers: Array<(range: string | null) => Response>) {
+  const asked: Array<{ range: string | null; ifRange: string | null }> = [];
+  const fetch: CloudflareFetch = async (url, init) => {
+    if (!url.startsWith('https://signed.fixture/')) return api.fetch(url, init);
+    const headers = new Headers(init.headers);
+    asked.push({ range: headers.get('range'), ifRange: headers.get('if-range') });
+    return answers[Math.min(asked.length - 1, answers.length - 1)]!(headers.get('range'));
+  };
+  return { fetch, asked };
+}
+const WHOLE = new TextEncoder().encode('-- export bm-1, twenty\n');
+/** The first `n` bytes of the whole, then a clean close short of the declared length. */
+const cutAt = (n: number, headers: Record<string, string> = {}) => () =>
+  new Response(new ReadableStream({ start(c) { c.enqueue(WHOLE.slice(0, n)); c.close(); } }), { headers: { 'content-length': String(WHOLE.byteLength), ...headers } });
+const whole = (headers: Record<string, string> = {}) => () => new Response(WHOLE, { headers: { 'content-length': String(WHOLE.byteLength), ...headers } });
+const ranged = (start: number, total: number, headers: Record<string, string> = {}) => () =>
+  new Response(WHOLE.slice(start), { status: 206, headers: { 'content-range': `bytes ${start}-${WHOLE.byteLength - 1}/${total}`, ...headers } });
+
+describe('a resumed download that does not match what it resumes', () => {
+  const output = () => fs.readFileSync(path.join(dir, 'd1.sql'), 'utf8');
+
+  it('refuses a range that starts anywhere but where its bytes stopped, and starts again from the first byte rather than splicing', async () => {
+    const api = provider(() => 'complete');
+    const served = servedInTurn(api, [cutAt(8), ranged(5, WHOLE.byteLength), whole()]);
+    await run(served.fetch, { pollMs: 0 });
+    expect({ output: output(), ranges: served.asked.map((a) => a.range) }).toEqual({ output: '-- export bm-1, twenty\n', ranges: [null, 'bytes=8-', null] });
+  });
+
+  it('sends back the first answer\'s ETag, and starts again where the range comes from another object', async () => {
+    const api = provider(() => 'complete');
+    const served = servedInTurn(api, [cutAt(8, { etag: '"v1"' }), ranged(8, WHOLE.byteLength, { etag: '"v2"' }), whole({ etag: '"v2"' })]);
+    await run(served.fetch, { pollMs: 0 });
+    expect({ output: output(), asked: served.asked }).toEqual({
+      output: '-- export bm-1, twenty\n',
+      asked: [{ range: null, ifRange: null }, { range: 'bytes=8-', ifRange: '"v1"' }, { range: null, ifRange: null }],
+    });
+  });
+
+  it('starts again where the range comes from an object of another length', async () => {
+    const api = provider(() => 'complete');
+    const served = servedInTurn(api, [cutAt(8, { etag: '"v1"' }), ranged(8, WHOLE.byteLength + 5, { etag: '"v1"' }), whole({ etag: '"v1"' })]);
+    await run(served.fetch, { pollMs: 0 });
+    expect({ output: output(), ranges: served.asked.map((a) => a.range) }).toEqual({ output: '-- export bm-1, twenty\n', ranges: [null, 'bytes=8-', null] });
+  });
+
+  it('never appends a range to an encoded answer, and drops an encoded partial file its stream broke off', async () => {
+    const api = provider(() => 'complete');
+    // Its first bytes are written before the connection breaks off.
+    const broken = () => new Response(new ReadableStream({ start(c) { c.enqueue(WHOLE.slice(0, 4)); }, pull(c) { c.error(new TypeError('fetch failed')); } }), { headers: { 'content-encoding': 'gzip' } });
+    const served = servedInTurn(api, [cutAt(8), ranged(8, WHOLE.byteLength, { 'content-encoding': 'gzip' }), broken, whole()]);
+    await run(served.fetch, { pollMs: 0 });
+    expect({ output: output(), ranges: served.asked.map((a) => a.range) }).toEqual({ output: '-- export bm-1, twenty\n', ranges: [null, 'bytes=8-', null, null] });
+  });
+
+  it('never takes an answer that declares no length as whole', async () => {
+    const api = provider(() => 'complete');
+    const served = servedInTurn(api, [() => new Response(WHOLE.slice(0, 8)), whole()]);
+    await run(served.fetch, { pollMs: 0 });
+    expect({ output: output(), requests: served.asked.length }).toEqual({ output: '-- export bm-1, twenty\n', requests: 2 });
+  });
+});
+
+describe('a download no longer served while its export is reported running', () => {
+  it('keeps the export recorded and starts no second one', async () => {
+    const api = provider(() => 'complete');
+    let asked = 0;
+    const fetch: CloudflareFetch = async (url, init) => {
+      if (url === ENDPOINT) {
+        asked += 1;
+        // Asked after once more for its download, the export answers that it is running.
+        if (asked === 3) {
+          api.requests.push((JSON.parse(String(init.body)) as { current_bookmark?: string }).current_bookmark ?? null);
+          return Response.json({ success: true, errors: [], result: { success: true, status: 'active', at_bookmark: 'bm-1' } });
+        }
+        return api.fetch(url, init);
+      }
+      return new Response(null, { status: 403 });
+    };
+    const failure = await run(fetch, { pollMs: 0 }).then(() => null, (error: unknown) => error as Error);
+    expect({ transient: transientReadFailure(failure), kept: fs.existsSync(recordFile()) ? recorded().bookmark : null, requests: api.requests, started: api.started() })
+      .toEqual({ transient: true, kept: 'bm-1', requests: [null, 'bm-1', 'bm-1'], started: 1 });
   });
 });
 
@@ -539,8 +627,11 @@ describe('the one reading of an export answer (#1455 F7)', () => {
   it('reads the answer that nothing is exporting as ended, where the result says it and where a refusal does', () => {
     expect(readD1ExportAnswer(200, ok({ success: false, error: 'Not currently exporting anything.' }), 'b1')).toEqual({ kind: 'ended', bookmark: 'b1', detail: 'Not currently exporting anything.' });
     expect(readD1ExportAnswer(400, { success: false, errors: [{ message: 'Not currently exporting anything.' }] }, 'b1')).toMatchObject({ kind: 'ended', bookmark: 'b1' });
-    // Another refusal of the same shape stays unsettled.
+    expect(readD1ExportAnswer(200, ok({ success: false, error: 'not currently exporting anything' }), 'b1')).toMatchObject({ kind: 'ended' });
+    // Another refusal of the same shape stays unsettled, and so does one that says more than that.
     expect(readD1ExportAnswer(200, ok({ success: false, error: 'busy' }), 'b1')).toMatchObject({ kind: 'unknown' });
+    expect(readD1ExportAnswer(200, ok({ success: false, error: 'Not currently exporting anything. Try again after the reset.' }), 'b1')).toMatchObject({ kind: 'unknown' });
+    expect(readD1ExportAnswer(200, ok({ success: false, error: 'Error: Not currently exporting anything.' }), 'b1')).toMatchObject({ kind: 'unknown' });
   });
 
   it('reads a credential the API refused as a refusal that started nothing', () => {
@@ -561,7 +652,7 @@ describe('the operator backup\'s export, driven through every known answer (#148
       record({ bookmark: 'b1', startedAt: clock, lastPolledAt: clock });
       let downloads = 0;
       const fetch: CloudflareFetch = async (url) => {
-        if (url.startsWith('https://signed.example/')) { downloads += 1; return new Response('-- export\n'); }
+        if (url.startsWith('https://signed.example/')) { downloads += 1; return sized('-- export\n'); }
         return new Response(row.body === undefined ? '<html>not json</html>' : JSON.stringify(row.body), { status: row.status });
       };
       const outcome = await settleD1Export({
