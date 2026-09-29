@@ -10,6 +10,9 @@ export const MAX_DURATION_MS = 2_592_000_000;
 export const MAX_TOKEN_COUNT = 100_000_000;
 export const MAX_TRANSCRIPT_BYTES = 1_099_511_627_776;
 export const MAX_ARRAY_ITEMS = 1_000;
+/** The longest session title and summary an import carries: wider than a titling run writes, so a carried title keeps its stored length. */
+export const SESSION_TITLE_MAX_CHARS = 256;
+export const SESSION_SUMMARY_MAX_CHARS = 4096;
 
 /** A blob key: the lowercase hex SHA-256 of the bytes. */
 export const BLOB_KEY_GRAMMAR = /^[0-9a-f]{64}$/;
@@ -100,7 +103,17 @@ export const KINDS: readonly KindSpec[] = [
     },
     projection: 'sessions',
   },
-  { name: 'session.end', fields: { endedAt: time('ended_at'), headSha: str(40), dirty: { bound: { type: 'bool' } } }, projection: 'sessions' },
+  {
+    name: 'session.end',
+    fields: {
+      endedAt: time('ended_at'),
+      headSha: str(40),
+      dirty: { bound: { type: 'bool' } },
+      title: str(SESSION_TITLE_MAX_CHARS, 'title'),
+      summary: str(SESSION_SUMMARY_MAX_CHARS, 'summary'),
+    },
+    projection: 'sessions',
+  },
   {
     name: 'prompt',
     fields: {

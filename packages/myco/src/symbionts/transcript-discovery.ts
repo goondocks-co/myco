@@ -250,3 +250,47 @@ export function enumerateTranscripts(
   }
   return [...seen.values()];
 }
+
+/**
+ * The session id this agent's transcript layout names for a file, or null
+ * when the path sits under none of the declared roots or matches none of the
+ * declared patterns. The segments are the ones enumeration compiles, so the
+ * id is the one enumeration yields for the same file.
+ */
+export function sessionIdFromTranscriptPath(
+  discovery: TranscriptDiscovery | undefined,
+  filePath: string,
+  env: NodeJS.ProcessEnv = process.env,
+): string | null {
+  if (!discovery) return null;
+  const idPattern = discovery.sessionIdPattern ?? DEFAULT_SESSION_ID_PATTERN;
+  for (const pattern of discovery.patterns) {
+    for (const root of discovery.roots) {
+      const relative = path.relative(expandRoot(root, env), filePath);
+      if (relative === '' || relative.startsWith('..') || path.isAbsolute(relative)) continue;
+      const names = relative.split(path.sep);
+      const segments = patternSegments(pattern, null, idPattern);
+      if (names.length !== segments.length) continue;
+      let captured: string | null = null;
+      let matched = true;
+      for (let i = 0; i < names.length; i++) {
+        if (!segments[i].test(names[i])) { matched = false; break; }
+        if (segments[i].capturesSessionId) captured = segments[i].extractSessionId(names[i]);
+      }
+      if (matched && captured) return captured;
+    }
+  }
+  return null;
+}
+
+/**
+ * The session id this agent's declared id shape finds at the end of a stored
+ * id, or null when the agent declares no shape of its own or the id does not
+ * end in one. A store that kept a file's whole name as the id (Pi's
+ * `<timestamp>_<uuid>`) yields the id the layout names.
+ */
+export function sessionIdFromStoredId(discovery: TranscriptDiscovery | undefined, storedId: string): string | null {
+  if (!discovery?.sessionIdPattern) return null;
+  const match = new RegExp(`(?:^|[^0-9A-Za-z])(${discovery.sessionIdPattern})$`).exec(storedId);
+  return match?.[1] ?? null;
+}

@@ -92,9 +92,9 @@ async function resolve(
   newSporeId: string | null, reason: string | null, sessionId: string | null, provenance: SporeProvenance | null,
 ): Promise<boolean> {
   const by = writerOf(ctx, TOOL);
-  return resolveSpore(ctx.env.db, scope, status, {
+  return (await resolveSpore(ctx.env.db, scope, status, {
     id: crypto.randomUUID(), agentId: by.agentId, author: by.author, sporeId, action, newSporeId, reason, sessionId, provenance, createdAt: ctx.now,
-  }, ctx.now);
+  }, ctx.now)) !== false;
 }
 
 export async function handleSpores(input: ToolInput, ctx: ToolContext): Promise<unknown> {

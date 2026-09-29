@@ -63,6 +63,8 @@ export interface EnvelopeContext {
   version?: string;
   /** How these events reach the Deployment; `cli` where a caller names none. */
   channel?: OutboundChannel;
+  /** The producer every envelope names, where a caller fixes one rather than naming this build's. */
+  producer?: { adapter: string; version: string };
 }
 
 export const TEXT_MEDIA_TYPE = 'text/plain; charset=utf-8';
@@ -72,7 +74,7 @@ export const JSON_MEDIA_TYPE = 'application/json';
 export const BOUNDS = {
   agent: 64, branch: 256, originPath: 1024, parentReason: 64, toolName: 64, output: 4096, errorMessage: 4096,
   mycoTool: 64, mycoOp: 64, agentType: 64, trigger: 64, message: 4096, level: 64, threadLabel: 256, title: 256,
-  description: 4096, fileItem: 1024, tagItem: 64,
+  description: 4096, fileItem: 1024, tagItem: 64, sessionTitle: 256, sessionSummary: 4096,
 } as const;
 const MAX_PLAN_TAGS = 32;
 
@@ -181,7 +183,7 @@ function envelope(ctx: EnvelopeContext, kind: MemberKind, payload: Record<string
     kind,
     createdAt: (ctx.now ?? Date.now)(),
     channel: ctx.channel ?? 'cli',
-    producer: { adapter: producerIdentifier(ctx.agent), version: producerIdentifier(ctx.version ?? getPluginVersion()) },
+    producer: ctx.producer ?? { adapter: producerIdentifier(ctx.agent), version: producerIdentifier(ctx.version ?? getPluginVersion()) },
     payload: compact(payload),
   };
   return blobSource ? { envelope: env, blobSource } : { envelope: env };
@@ -250,8 +252,20 @@ export function sessionStartEvent(ctx: EnvelopeContext, facts: {
   });
 }
 
-export function sessionEndEvent(ctx: EnvelopeContext, facts: { endedAt?: number; headSha?: string; dirty?: boolean } = {}): OutboundEvent {
-  return envelope(ctx, 'session.end', { endedAt: facts.endedAt ?? (ctx.now ?? Date.now)(), headSha: facts.headSha, dirty: facts.headSha === undefined ? undefined : facts.dirty });
+/** A session's end. `title` and `summary` are carried by an import alone: the Deployment stores them only from the import channel. */
+export function sessionEndEvent(ctx: EnvelopeContext, facts: { endedAt?: number; headSha?: string; dirty?: boolean; title?: string; summary?: string } = {}): OutboundEvent {
+  return envelope(ctx, 'session.end', {
+    endedAt: facts.endedAt ?? (ctx.now ?? Date.now)(),
+    headSha: facts.headSha,
+    dirty: facts.headSha === undefined ? undefined : facts.dirty,
+    title: trunc(facts.title, BOUNDS.sessionTitle),
+    summary: trunc(facts.summary, BOUNDS.sessionSummary),
+  });
+}
+
+/** An import's title for a session whose lifecycle it leaves alone: a `session.end` naming no instant, which the Deployment reads as the title alone. */
+export function sessionTitleEvent(ctx: EnvelopeContext, facts: { title: string; summary?: string }): OutboundEvent {
+  return envelope(ctx, 'session.end', { title: trunc(facts.title, BOUNDS.sessionTitle), summary: trunc(facts.summary, BOUNDS.sessionSummary) });
 }
 
 export function promptEvent(ctx: EnvelopeContext, facts: {

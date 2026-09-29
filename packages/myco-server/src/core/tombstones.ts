@@ -7,7 +7,7 @@
 import type { RelationalStore, ServerEnv } from './adapters.js';
 import { recordBlobCandidates, releaseBlobs } from './object-release.js';
 import { BLOB_REFERENCES, kindFilter, type BlobReference } from './blob-references.js';
-import type { ReadScope } from '../read/scope.js';
+import { inListChunks, type ReadScope } from '../read/scope.js';
 import { emit } from '../telemetry.js';
 
 /** The tables a session's derived rows live in, each carrying `session_id` itself. */
@@ -48,12 +48,15 @@ export const NOT_TOMBSTONED_PARAMS = `NOT EXISTS (SELECT 1 FROM session_tombston
 
 /** Which of these sessions this Project has deleted. The set an import checks before it offers anything: a tombstoned session is never held again. */
 export async function tombstonedAmong(db: RelationalStore, projectId: string, sessionIds: readonly string[]): Promise<Set<string>> {
-  if (sessionIds.length === 0) return new Set();
-  const { results } = await db
-    .prepare(`SELECT session_id FROM session_tombstones WHERE project_id = ? AND session_id IN (${sessionIds.map(() => '?').join(', ')})`)
-    .bind(projectId, ...sessionIds)
-    .all<{ session_id: string }>();
-  return new Set(results.map((r) => r.session_id));
+  const out = new Set<string>();
+  for (const run of inListChunks(sessionIds)) {
+    const { results } = await db
+      .prepare(`SELECT session_id FROM session_tombstones WHERE project_id = ? AND session_id IN (${run.map(() => '?').join(', ')})`)
+      .bind(projectId, ...run)
+      .all<{ session_id: string }>();
+    for (const r of results) out.add(r.session_id);
+  }
+  return out;
 }
 
 export interface TombstoneOutcome {

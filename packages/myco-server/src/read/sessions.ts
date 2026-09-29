@@ -572,3 +572,30 @@ export async function createProject(db: RelationalStore, projectId: string, name
     .run();
   return result.meta.changes === 1;
 }
+
+/** Which of these sessions the Project holds a row for, whatever their state. */
+export async function heldSessionIds(db: RelationalStore, scope: ReadScope, sessionIds: readonly string[]): Promise<Set<string>> {
+  const out = new Set<string>();
+  for (const run of inListChunks(sessionIds)) {
+    const { results } = await db
+      .prepare(`SELECT session_id FROM sessions WHERE project_id = ? AND session_id IN (${run.map(() => '?').join(', ')})`)
+      .bind(scope.projectId, ...run)
+      .all<{ session_id: string }>();
+    for (const r of results) out.add(r.session_id);
+  }
+  return out;
+}
+
+/** Which of these sessions hold a prompt `producer` sent on the import channel. */
+export async function sessionsWithImportedPrompts(db: RelationalStore, scope: ReadScope, sessionIds: readonly string[], producer: string): Promise<Set<string>> {
+  const out = new Set<string>();
+  for (const run of inListChunks(sessionIds)) {
+    const { results } = await db
+      .prepare(`SELECT DISTINCT session_id FROM events
+                 WHERE project_id = ? AND session_id IN (${run.map(() => '?').join(', ')}) AND kind = 'prompt' AND channel = 'import' AND producer_adapter = ?`)
+      .bind(scope.projectId, ...run, producer)
+      .all<{ session_id: string }>();
+    for (const r of results) out.add(r.session_id);
+  }
+  return out;
+}

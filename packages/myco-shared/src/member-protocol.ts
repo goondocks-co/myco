@@ -46,6 +46,14 @@ export const PROMPT_ORIGINS = ['user', 'system', 'agent_dispatch', 'hook_injecte
 export type WirePromptOrigin = (typeof PROMPT_ORIGINS)[number];
 
 export const PLAN_STATUSES = ['active', 'in_progress', 'completed', 'abandoned'] as const;
+
+/**
+ * The producer a Myco 1.4 vault import names on every event it sends. A prompt
+ * a Deployment holds from this producer is a session whose content came from a
+ * vault rather than a transcript, which the import plan never admits a
+ * transcript for.
+ */
+export const LEGACY_IMPORT_ADAPTER = 'legacy-import';
 export type PlanStatus = (typeof PLAN_STATUSES)[number];
 
 /** The channel a plan version arrived through. A row written before the column, or by a member that names none, reads NULL — which means "inferred from the key shape", the honest value rather than a guessed default. */

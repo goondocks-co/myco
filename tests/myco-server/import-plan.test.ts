@@ -17,6 +17,7 @@
 import { jsonBody, objectAt } from '../helpers/json-body.js';
 import { describe, expect, it } from 'bun:test';
 import { handleImportPlan } from '@myco-server-worker/api/import.js';
+import { LEGACY_IMPORT_ADAPTER } from '@goondocks/myco-shared/member-protocol';
 import { IMPORT_MAX_SESSIONS_DEFAULT, IMPORT_WINDOW_DAYS_DEFAULT } from '@myco-server-worker/core/import-policy.js';
 import { RETIRED_BYTE_CEILING } from './helpers/fixtures.js';
 import { issueMemberToken } from '@myco-server-worker/auth/tokens.js';
@@ -39,7 +40,7 @@ interface Offer {
 }
 
 async function rig() {
-  const { sqlite, serverEnv } = sqliteEnv();
+  const { sqlite, serverEnv, executed } = sqliteEnv();
   const issued = await issueMemberToken(serverEnv.db, { memberId: 'mem_machine_1', machineId: MACHINE }, NOW);
 
   /** A transcript the Deployment already holds. */
@@ -86,7 +87,7 @@ async function rig() {
     return new Map(list.map((a) => [a.transcriptId, a]));
   };
 
-  return { sqlite, serverEnv, hold, tombstone, leaf, spend, plan, answers, tokenId: issued.tokenId };
+  return { sqlite, serverEnv, executed, hold, tombstone, leaf, spend, plan, answers, tokenId: issued.tokenId };
 }
 
 describe('the import plan', () => {
@@ -229,5 +230,46 @@ describe('the import plan', () => {
     expect((await r.plan([])).policy).toEqual({ enabled: true, windowDays: IMPORT_WINDOW_DAYS_DEFAULT, maxPerAgent: IMPORT_MAX_SESSIONS_DEFAULT });
     await r.leaf('import.window_days', 7);
     expect((objectAt(await r.plan([]), 'policy')).windowDays).toBe(7);
+  });
+});
+
+describe('what a Project holds of named sessions', () => {
+  it('answers, per probed session, a row, a transcript and a tombstone', async () => {
+    const r = await rig();
+    r.hold('s-transcript', 'tx_1', 100, null);
+    r.sqlite.run(`INSERT INTO sessions (project_id, session_id, machine_id, created_by_token_id, first_received_at, last_received_at) VALUES (?, 's-row', ?, ?, ?, ?)`, [PROJECT, MACHINE, r.tokenId, NOW, NOW]);
+    r.tombstone('s-dead');
+    r.sqlite.run(`INSERT INTO events (project_id, event_id, session_id, token_id, kind, channel, payload, envelope_hash, created_at, received_at, producer_adapter, producer_version, payload_bytes, ingest_nonce)
+                  VALUES (?, 'e-vault', 's-row', ?, 'prompt', 'import', '{}', 'h', ?, ?, ?, '1', 2, 'n')`, [PROJECT, r.tokenId, NOW, NOW, LEGACY_IMPORT_ADAPTER]);
+    const body = await r.plan([], { sessions: ['s-transcript', 's-row', 's-dead', 's-none'] });
+    expect(body.sessions).toEqual({ held: ['s-dead', 's-row', 's-transcript'], withTranscript: ['s-transcript'], tombstoned: ['s-dead'], vaultSourced: ['s-row'] });
+    expect((await r.plan([])).sessions).toBeUndefined();
+    expect((await r.plan([], { sessions: [''] })).code).toBe('parse');
+  });
+
+  it('names every id in statements under the hosted store\'s bound-parameter ceiling', async () => {
+    const r = await rig();
+    const many = Array.from({ length: 250 }, (_, i) => `s-${i}`);
+    for (const id of many.slice(0, 5)) r.hold(id, `tx_${id}`, 10, null);
+    r.executed.length = 0;
+    const body = await r.plan(many.map((id) => ({ sessionId: id, transcriptId: `tx_${id}` })), { sessions: many, windowDays: 3650, maxPerAgent: 1000 });
+    expect((body.candidates as unknown[]).length).toBe(250);
+    expect((body.sessions as { held: string[] }).held.length).toBe(5);
+    const params = r.executed.map((sql) => (sql.match(/\?/g) ?? []).length);
+    expect(Math.max(...params)).toBeLessThan(100);
+  });
+});
+
+
+describe('a session whose prompts a vault import sent', () => {
+  it('takes no transcript, whichever machine offers one', async () => {
+    const r = await rig();
+    r.sqlite.run(`INSERT INTO sessions (project_id, session_id, machine_id, created_by_token_id, first_received_at, last_received_at) VALUES (?, 's-vault', ?, ?, ?, ?)`, [PROJECT, MACHINE, r.tokenId, NOW, NOW]);
+    const prompt = (producer: string, eventId: string) => r.sqlite.run(`INSERT INTO events (project_id, event_id, session_id, token_id, kind, channel, payload, envelope_hash, created_at, received_at, producer_adapter, producer_version, payload_bytes, ingest_nonce)
+                  VALUES (?, ?, 's-vault', ?, 'prompt', 'import', '{}', 'h', ?, ?, ?, '1', 2, ?)`, [PROJECT, eventId, r.tokenId, NOW, NOW, producer, eventId]);
+    prompt('claude-code', 'e-transcript-import');
+    expect((await r.answers([{ sessionId: 's-vault', transcriptId: 'tx_v' }])).get('tx_v')?.take).toBe('from');
+    prompt(LEGACY_IMPORT_ADAPTER, 'e-vault');
+    expect((await r.answers([{ sessionId: 's-vault', transcriptId: 'tx_v' }])).get('tx_v')).toEqual({ transcriptId: 'tx_v', take: 'none', reason: 'vault_sourced' });
   });
 });
