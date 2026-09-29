@@ -9,7 +9,7 @@
  */
 import { d1StoreMaintenance } from './store-maintenance.js';
 import type {
-  BlobFailureClassifier, BlobStore, ErrorClassifier, OwnerBindings,
+  BlobFailureClassifier, BlobStore, ErrorClassifier, JobBudget, OwnerBindings,
   PlatformDescriptor, RateLimiter, RelationalStore, ServerEnv,
 } from '../../core/adapters.js';
 import { cloudflareSourceOf } from './source.js';
@@ -95,6 +95,14 @@ export const classifyD1Error: ErrorClassifier = (message) => {
 
 export { classifyR2BlobFailure, R2_BAD_DIGEST_CODE } from './r2-digest.js';
 
+/**
+ * One pass of a draining job on this target. A Worker invocation may make 1,000 calls to the platform's own services
+ * on the free plan and 10,000 on a paid one; half the free cap leaves the rest of a tick room on either, and it is
+ * the free plan's CPU allowance, not this count, that bounds a pass there. Fifteen seconds of wall time sits well
+ * inside the CPU the Worker declares (`[limits] cpu_ms` in wrangler.toml).
+ */
+export const CLOUDFLARE_JOB_BUDGET: JobBudget = { calls: 500, wallMs: 15_000 };
+
 export function cloudflarePlatform(bindings: CloudflareBindings, embeddingRuntime = false): PlatformDescriptor {
   const absent = (name: string): boolean =>
     (bindings as unknown as Record<string, unknown>)[name] === undefined;
@@ -121,6 +129,7 @@ export function cloudflarePlatform(bindings: CloudflareBindings, embeddingRuntim
     ],
     classifyError: classifyD1Error,
     classifyBlobFailure: classifyR2BlobFailure,
+    jobBudget: CLOUDFLARE_JOB_BUDGET,
   };
 }
 

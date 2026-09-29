@@ -55,6 +55,11 @@ export interface StoredObjectBody extends StoredObject {
   body: ReadableStream;
 }
 
+/** What a read of a stored object asks for: the bytes from `offset` on, where a range is named. */
+export interface BlobGetOptions {
+  range?: { offset: number };
+}
+
 export interface BlobPutOptions {
   /** Hex digest the store verifies against the streamed bytes, rejecting a mismatch. */
   sha256?: string;
@@ -64,7 +69,8 @@ export interface BlobPutOptions {
 /** Content-addressed objects under project-prefixed keys. */
 export interface BlobStore {
   head(key: string): Promise<StoredObject | null>;
-  get(key: string): Promise<StoredObjectBody | null>;
+  /** The object's bytes, from `range.offset` when one is named; `size` is the whole object's either way. */
+  get(key: string, options?: BlobGetOptions): Promise<StoredObjectBody | null>;
   put(key: string, value: ReadableStream | null, options?: BlobPutOptions): Promise<StoredObject>;
   delete(key: string): Promise<void>;
 }
@@ -201,6 +207,19 @@ export interface PlatformDescriptor {
   classifyError: ErrorClassifier;
   /** Recognises this platform's blob digest rejection. */
   classifyBlobFailure: BlobFailureClassifier;
+  /** What one pass of a draining job may spend on this platform: store and blob calls, and wall-clock time. */
+  jobBudget: JobBudget;
+}
+
+/**
+ * What one pass of a draining job may spend: `calls` store and blob calls, and `wallMs` of wall-clock time,
+ * whichever runs out first. The calls fit inside the tightest per-invocation cap the platform imposes with room for
+ * the other jobs one tick runs; the wall time keeps a pass short enough that the next is chained rather than one
+ * pass holding the invocation.
+ */
+export interface JobBudget {
+  calls: number;
+  wallMs: number;
 }
 
 /**

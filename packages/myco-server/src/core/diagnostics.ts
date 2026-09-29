@@ -24,7 +24,7 @@ import { RETAINED_TASKS } from './task-catalogue.js';
 import { HELD_BY_WORDS } from '@goondocks/myco-shared/run-holds';
 import { declared } from './declared.js';
 import { CONTACT_RECENT_MS, isContactOutcome, readWorkerFleet, type ContactOutcome, type WorkerFleetRow } from './worker-contacts.js';
-import { pendingImportedTranscripts, pendingTranscriptBytes as pendingTranscripts } from '../ingest/parse.js';
+import { pendingTranscripts } from '../ingest/parse.js';
 import { DEFERRED_JOBS, SERVER_JOBS, WAKE_CONTINUATIONS } from './jobs.js';
 import { CLASSIFIERS } from '../telemetry.js';
 import { missingSporeVectors, type MissingSporeVectors } from './embedding/hubness.js';
@@ -150,7 +150,7 @@ export interface DeploymentDiagnostics {
   /** Null when the store could not be questioned. */
   projects: ProjectFacts[] | null;
   /** Null when the store could not be questioned. */
-  ingestBacklog: { pendingTranscripts: number; pendingImportedTranscripts: number } | null;
+  ingestBacklog: { pendingTranscripts: number; pendingImportedTranscripts: number; pendingBytes: number; pendingImportedBytes: number } | null;
   /**
    * Each Project with spores left out of relevance calibration under the configured embedding model while the vector
    * store does not return their vectors, as the embedding run reports them. Null when the store could not be
@@ -256,10 +256,10 @@ export async function deploymentDiagnostics(env: ServerEnv, now: number): Promis
       workers: { workersBusy: counts.workersBusy, runsQueued: counts.runsQueued, recentWithinMs: CONTACT_RECENT_MS, fleet: fleet.map(workerFacts) },
       queuedRuns: queued.map(queuedFacts),
       projects: projects.map(projectFacts),
-      ingestBacklog: {
-        pendingTranscripts: await pendingTranscripts(env.db),
-        pendingImportedTranscripts: await pendingImportedTranscripts(env.db),
-      },
+      ingestBacklog: await (async () => {
+        const backlog = await pendingTranscripts(env.db);
+        return { pendingTranscripts: backlog.transcripts, pendingImportedTranscripts: backlog.imported.transcripts, pendingBytes: backlog.bytes, pendingImportedBytes: backlog.imported.bytes };
+      })(),
       missingSporeVectors: await missingAcross(env, projects, now),
     };
   } catch {

@@ -72,6 +72,8 @@ export interface StatusResponse {
   target: string | null;
   capabilities: Capability[];
   workers: WorkerStatus;
+  /** Transcripts stored and not yet read into sessions, or null where the store could not be read. */
+  transcriptBacklog?: { transcripts: number; bytes: number; imported: { transcripts: number; bytes: number } } | null;
   projects: ProjectReceipt[];
 }
 
