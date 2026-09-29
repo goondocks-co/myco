@@ -28,7 +28,7 @@ const report = (over: Record<string, unknown> = {}) => ({
   callsPerPromptByHarness: [],
   planReadsPerSession: { value: null, sampleSize: 0 },
   firstInjectionMs: { value: null, sampleSize: 0 },
-  evalPassRate: { value: null, sampleSize: 0 },
+  recallQuality: { value: null, sampleSize: 0 },
   ...over,
 });
 
@@ -160,14 +160,23 @@ describe('the measures page', () => {
     expect(byLabel.get('Plan reads per session')!.value).toBe('0.50');
   });
 
-  it('says there are no evaluations rather than showing a pass rate of zero', async () => {
+  it('shows the recall quality of this release over the prompts it was scored on', async () => {
+    server(base({ '/api/kpis?window=30': () => Response.json(report({ recallQuality: { value: 0.19, sampleSize: 48 } })) }));
+    mount('/measures');
+    const byLabel = new Map((await tiles()).map((t) => [t.label, t]));
+    expect(byLabel.get('Recall quality')).toEqual({
+      label: 'Recall quality', value: '19%', sample: 'n = 48 prompts', sampleVisible: true, noSample: false,
+    });
+  });
+
+  it('says no recall score was recorded rather than showing zero', async () => {
     server(base({ '/api/kpis?window=30': () => Response.json(report({ contextPresent: { value: 1, sampleSize: 3 } })) }));
     mount('/measures');
     const byLabel = new Map((await tiles()).map((t) => [t.label, t]));
-    const evals = byLabel.get('Evaluation pass rate')!;
-    expect({ value: evals.value, sample: evals.sample, visible: evals.sampleVisible, noSample: evals.noSample })
-      .toEqual({ value: null, sample: 'n = 0 checks', visible: true, noSample: true });
-    expect(screen.getByText(/No evaluations recorded/)).toBeTruthy();
+    const recall = byLabel.get('Recall quality')!;
+    expect({ value: recall.value, sample: recall.sample, visible: recall.sampleVisible, noSample: recall.noSample })
+      .toEqual({ value: null, sample: 'n = 0 prompts', visible: true, noSample: true });
+    expect(screen.getByText(/No recall score was recorded/)).toBeTruthy();
   });
 
   it('splits the diagnostic by agent, each split carrying its own sample', async () => {

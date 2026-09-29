@@ -28,7 +28,7 @@ export interface KpiReport {
   callsPerPromptByHarness: HarnessMeasure[];
   planReadsPerSession: Measure;
   firstInjectionMs: Measure;
-  evalPassRate: Measure;
+  recallQuality: Measure;
 }
 
 /** The windows the page offers, and the label each carries. */

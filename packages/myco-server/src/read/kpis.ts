@@ -15,12 +15,13 @@
  * render one half of it.
  *
  * Measures are Deployment-wide rather than per Project. Two of the six — the time
- * from a machine joining to its first served context, and the evaluation pass
- * rate — are properties of the Deployment and of a credential lineage, not of one
- * Project, and splitting the page by Project would leave those two answering a
+ * from a machine joining to its first served context, and recall quality — are
+ * properties of the Deployment's credential lineages and of the release it runs,
+ * not of one Project, and splitting the page by Project would leave those two answering a
  * different question from the other four.
  */
 import type { RelationalStore } from '../core/adapters.js';
+import { recallQuality, caseCount } from '../evals/recall-baseline.js';
 
 /** A measured value and the number of rows behind it. A sample of zero carries a null value. */
 export interface Measure {
@@ -58,8 +59,12 @@ export interface KpiReport {
   planReadsPerSession: Measure;
   /** Median milliseconds from a machine's credential lineage starting to the first context served into one of its sessions. */
   firstInjectionMs: Measure;
-  /** The share of recorded evaluations that passed. No evaluation feed exists, so the sample is empty. */
-  evalPassRate: Measure;
+  /**
+   * Recall quality: how well this release's prompt-time injection serves the recall gold set, the mean over its
+   * cases of a graded score. Recorded by CI against real prompts on both front doors and committed with the release
+   * (`evals/recall-baseline.ts`, #1154); the window does not apply, and the sample is the number of cases.
+   */
+  recallQuality: Measure;
 }
 
 /** The windows the surface offers. `null` is every row the Deployment holds. */
@@ -252,6 +257,6 @@ export async function readKpis(db: RelationalStore, opts: { windowDays: number |
     callsPerPromptByHarness: byHarness,
     planReadsPerSession: rate(planReads, sessions),
     firstInjectionMs: { value: median(firstInjections), sampleSize: firstInjections.length },
-    evalPassRate: { value: null, sampleSize: 0 },
+    recallQuality: { value: recallQuality, sampleSize: caseCount },
   };
 }
