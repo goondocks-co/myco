@@ -19,7 +19,9 @@ import { tempMycoHome, unjoinedRig } from './helpers/server.js';
 import { parseTranscripts } from '@myco-server-worker/ingest/parse.js';
 import { runHook } from './helpers/hooks.js';
 import { resetMachineIdCache } from '@myco/machine-id.js';
-import { resolveMemberProjectRoot } from '@myco/member/credential.js';
+import { ENV_MEMBER_TOKEN, ENV_PROJECT, ENV_SERVER_URL, parseCredentialFlag, redeemsJoinCode, resolveCredential, resolveMemberProjectRoot, type CredentialSource } from '@myco/member/credential.js';
+import { issueMemberToken, NO_RUNTIME_CLAIMS } from '@myco-server-worker/auth/tokens.js';
+import { run as runSettings } from '@myco/cli/settings.js';
 
 const KEY = 'k'.repeat(43);
 
@@ -247,3 +249,130 @@ describe('a hook on a machine holding only a join code', () => {
     fs.rmSync(path.dirname(tx), { recursive: true, force: true });
   });
 });
+
+/**
+ * The documented sandbox (#1460): the hooks `myco settings` emits, which
+ * declare `--credential env`, and a `MYCO_JOIN_CODE` — with none of the env
+ * triplet set. The first hook redeems the code and captures on it; the second
+ * captures on the same credential.
+ *
+ * And the rule the code's single use imposes: a hook spends the code only when
+ * it will capture on what the code yields. Spent and not captured is the
+ * failure this gates — a code gone and a machine that never captures.
+ */
+describe('the emitted sandbox settings with a join code', () => {
+  let mycoHome: string;
+  let rig: ReturnType<typeof unjoinedRig>;
+  const KEYS = ['MYCO_HOME', ENV_JOIN_CODE, ENV_SERVER_URL, ENV_MEMBER_TOKEN, ENV_PROJECT] as const;
+  const saved: Record<string, string | undefined> = {};
+
+  /** The credential source the emitted SessionStart hook command declares. */
+  const emittedSource = (): CredentialSource | null => {
+    const out: string[] = [];
+    runSettings(['--harness', 'claude-code', '--project', 'proj_1'], { stdout: (l) => out.push(l), stderr: () => {} });
+    const settings = JSON.parse(out.join('\n')) as { hooks: Record<string, Array<{ hooks: Array<{ command: string }> }>> };
+    return parseCredentialFlag(settings.hooks.SessionStart[0].hooks[0].command.split(/\s+/));
+  };
+
+  /** A session's hook input, with the transcript a real session-start names. */
+  const sessionInput = (sessionId: string): Record<string, unknown> => {
+    const file = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'myco-join-env-tx-')), `${sessionId}.jsonl`);
+    fs.writeFileSync(file, `${JSON.stringify({ type: 'user', uuid: 'u1', timestamp: '2026-01-01T00:00:00Z', message: { role: 'user', content: [{ type: 'text', text: 'typed prompt' }] } })}\n`);
+    return { session_id: sessionId, transcript_path: file, cwd: '/work/repo' };
+  };
+
+  const spent = (id: string): boolean =>
+    (rig.env.sqlite.query(`SELECT used_at FROM enrollment_authorities WHERE id = ?`).get(id) as { used_at: number | null }).used_at !== null;
+  const landed = (session: string): boolean =>
+    rig.env.sqlite.query(`SELECT 1 FROM sessions WHERE session_id = ?`).get(session) !== null;
+
+  beforeEach(async () => {
+    for (const k of KEYS) { saved[k] = process.env[k]; delete process.env[k]; }
+    mycoHome = tempMycoHome();
+    process.env.MYCO_HOME = mycoHome;
+    resetMachineIdCache();
+    rig = unjoinedRig();
+  });
+  afterEach(() => {
+    for (const k of KEYS) { if (saved[k] === undefined) delete process.env[k]; else process.env[k] = saved[k]; }
+    resetMachineIdCache();
+  });
+
+  it('delivers a session on the first hook, and a second session on the same credential', async () => {
+    const source = emittedSource();
+    expect(source).toBe('env');
+    const issued = await issueEnrollmentAuthority(rig.env.db, Date.now(), { role: 'member', projectId: 'proj_1' });
+    process.env[ENV_JOIN_CODE] = `https://s/join#${issued.key}`;
+
+    const first = await runHook('session-start', sessionInput('sess-env-code-1'), { fetch: rig.fetch, credential: source });
+    expect(first.stderr).not.toContain('no capture');
+    expect({ landed: landed('sess-env-code-1'), spent: spent(issued.id) }).toEqual({ landed: true, spent: true });
+    const credential = readRegistryEntry(resolveMemberProjectRoot(), mycoHome);
+    expect(credential?.projectId).toBe('proj_1');
+
+    const second = await runHook('session-start', sessionInput('sess-env-code-2'), { fetch: rig.fetch, credential: source });
+    expect(second.stderr).not.toContain('no capture');
+    expect(landed('sess-env-code-2')).toBe(true);
+    expect(rig.rows('member_credentials')).toBe(1);
+    expect(readRegistryEntry(resolveMemberProjectRoot(), mycoHome)?.token).toBe(credential?.token);
+  });
+
+  it('resolves the redeemed membership as a registry credential, which rotates, and never as the orchestrator\'s non-rotating token', async () => {
+    const issued = await issueEnrollmentAuthority(rig.env.db, Date.now(), { role: 'member', projectId: 'proj_1' });
+    process.env[ENV_JOIN_CODE] = `https://s/join#${issued.key}`;
+    await runHook('session-start', sessionInput('sess-env-code-rot'), { fetch: rig.fetch, credential: 'env' });
+    const record = resolveCredential('env', { mycoHome });
+    expect({ source: record?.source, root: record?.root, projectId: record?.projectId }).toEqual({ source: 'registry', root: resolveMemberProjectRoot(), projectId: 'proj_1' });
+  });
+
+  it('never spends the code on a hook that would not then capture on it', async () => {
+    const other = await memberRigToken(rig);
+    const cases: Array<{ name: string; source: CredentialSource | null; env: Record<string, string> }> = [
+      { name: 'no declared source', source: null, env: {} },
+      { name: 'the env triplet supplies the credential', source: 'env', env: { [ENV_SERVER_URL]: 'https://s', [ENV_MEMBER_TOKEN]: other, [ENV_PROJECT]: 'proj_1' } },
+      { name: 'a partial env triplet', source: 'env', env: { [ENV_SERVER_URL]: 'https://s' } },
+      { name: 'the env source with only the code', source: 'env', env: {} },
+      { name: 'the registry source with only the code', source: 'registry', env: {} },
+    ];
+    const outcomes: Array<{ name: string; spent: boolean; landed: boolean }> = [];
+    for (const [i, c] of cases.entries()) {
+      // A fresh machine per case, so an earlier case's membership answers nothing here.
+      process.env.MYCO_HOME = tempMycoHome();
+      fs.writeFileSync(path.join(process.env.MYCO_HOME, 'machine_id'), `machine_case_${i}`, 'utf-8');
+      resetMachineIdCache();
+      for (const k of [ENV_SERVER_URL, ENV_MEMBER_TOKEN, ENV_PROJECT]) delete process.env[k];
+      Object.assign(process.env, c.env);
+      const issued = await issueEnrollmentAuthority(rig.env.db, Date.now(), { role: 'member', projectId: 'proj_1' });
+      process.env[ENV_JOIN_CODE] = `https://s/join#${issued.key}`;
+      const session = `sess-spend-${i}`;
+      await runHook('session-start', sessionInput(session), { fetch: rig.fetch, credential: c.source });
+      outcomes.push({ name: c.name, spent: spent(issued.id), landed: landed(session) });
+    }
+    // Spent implies landed, in every case; and the code is spent exactly where it is the credential.
+    expect(outcomes.filter((o) => o.spent && !o.landed)).toEqual([]);
+    expect(outcomes).toEqual([
+      { name: 'no declared source', spent: false, landed: false },
+      { name: 'the env triplet supplies the credential', spent: false, landed: true },
+      { name: 'a partial env triplet', spent: false, landed: false },
+      { name: 'the env source with only the code', spent: true, landed: true },
+      { name: 'the registry source with only the code', spent: true, landed: true },
+    ]);
+  });
+
+  it('decides whether a hook may spend the code from its declared source and the triplet alone', () => {
+    const code = { [ENV_JOIN_CODE]: `https://s/join#${KEY}` };
+    expect(redeemsJoinCode('env', code)).toBe(true);
+    expect(redeemsJoinCode('registry', code)).toBe(true);
+    expect(redeemsJoinCode(null, code)).toBe(false);
+    expect(redeemsJoinCode('env', { ...code, [ENV_PROJECT]: 'proj_1' })).toBe(false);
+    expect(redeemsJoinCode('env', {})).toBe(false);
+    expect(redeemsJoinCode('registry', { [ENV_JOIN_CODE]: '  ' })).toBe(false);
+  });
+});
+
+/** A member token on the rig's Deployment for `proj_1`, as an orchestrator mints one for the env triplet. */
+async function memberRigToken(rig: ReturnType<typeof unjoinedRig>): Promise<string> {
+  rig.env.sqlite.query(`INSERT OR IGNORE INTO members (id,label,created_at,revoked_at) VALUES ('mem_orchestrated','orchestrated',0,NULL)`).run();
+  const { token } = await issueMemberToken(rig.env.db, { memberId: 'mem_orchestrated', machineId: 'machine_orchestrated' }, Date.now(), null, NO_RUNTIME_CLAIMS, { rotates: false });
+  return token;
+}

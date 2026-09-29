@@ -244,14 +244,14 @@ describe('myco member join / leave', () => {
     process.exitCode = 0;
   });
 
-  it('refuses a non-https server, a bad token, both token sources, and neither', async () => {
+  it('refuses plain http off this machine\'s loopback, a bad token, both token sources, and neither', async () => {
     const err: string[] = [];
     const deps = { stderr: (l: string) => err.push(l) };
     expect(await join(['http://server.example', '--project', PROJECT, '--token-stdin'], { ...deps, stdin: () => rig.token })).toBeNull();
     expect(await join(['https://server.example', '--project', PROJECT, '--token-stdin'], { ...deps, stdin: () => 'not-a-token' })).toBeNull();
     expect(await join(['https://server.example', '--project', PROJECT, '--token-stdin', '--token-env', 'X'], { ...deps, stdin: () => rig.token })).toBeNull();
     expect(await join(['https://server.example', '--project', PROJECT], deps)).toBeNull();
-    expect(err.join('\n')).toContain('is not an https server URL');
+    expect(err.join('\n')).toContain("http://server.example is not a server URL a member accepts (https, or http on this machine's loopback)");
     expect(err.join('\n')).toContain('that is not a member token');
     expect(err.join('\n')).toContain('exactly one of --token-stdin or --token-env');
     expect(readRegistryEntry(projectRoot, mycoHome)).toBeNull();

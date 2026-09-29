@@ -2,7 +2,8 @@
  * Join codes — the one string that carries a Deployment and an invitation
  * together, and the exchange that turns it into a member credential.
  *
- * The shape is `https://<deployment>/join#<key>`. The key rides in the URL
+ * The shape is `https://<deployment>/join#<key>` (or `http://` on this
+ * machine's loopback, where a laptop serves itself). The key rides in the URL
  * fragment, which a browser never puts on the wire: a link pasted into an
  * address bar reaches the Deployment with the secret still on the clipboard and
  * not in an access log. The origin and the credential travel together, so a
@@ -22,7 +23,7 @@
 import { getMachineId } from '../machine-id.js';
 import { resolveMycoHome } from '../paths/home.js';
 import { ENROLLMENT_KEY_PATTERN, ENV_JOIN_CODE, JOIN_PATH } from './constants.js';
-import { isHttpsUrl, isLoopbackHttpUrl } from './credential.js';
+import { isMemberServerUrl, MEMBER_SERVER_URL_RULE } from './server-url.js';
 import { acquireRegistryLock, readDeploymentMembership, readRegistryEntry, writeDeploymentMembership, writeRegistryEntry, REGISTRY_VERSION } from './registry.js';
 import { clippedRequestBudget, remainingMs, type HookBudget } from './budget.js';
 
@@ -76,7 +77,7 @@ export function parseJoinCode(value: string): JoinCode | { error: JoinCodeRefusa
   } catch {
     return { error: 'not_a_url' };
   }
-  if (!isHttpsUrl(url.href) && !isLoopbackHttpUrl(url.href)) return { error: 'not_https' };
+  if (!isMemberServerUrl(url.href)) return { error: 'not_https' };
   if (url.pathname.replace(/\/+$/, '') !== JOIN_PATH) return { error: 'wrong_path' };
   const key = url.hash.startsWith('#') ? url.hash.slice(1) : '';
   if (key.length === 0) return { error: 'no_key' };
@@ -87,14 +88,11 @@ export function parseJoinCode(value: string): JoinCode | { error: JoinCodeRefusa
 /** How a join code names its refusals to a person reading a terminal. */
 export const JOIN_CODE_REFUSALS: Record<JoinCodeRefusal, string> = {
   not_a_url: 'that is not a URL',
-  not_https: 'a join link must be https',
+  not_https: `a join link must be ${MEMBER_SERVER_URL_RULE}`,
   wrong_path: `a join link path must be ${JOIN_PATH}`,
   no_key: 'that link carries no invitation',
   key_grammar: 'that link does not carry an invitation key',
 };
-
-/** Whether this runtime carries a join code at all. The one read an ordinary run makes: no code, no filesystem work, no exchange. */
-export const joinCodePresent = (env: NodeJS.ProcessEnv = process.env): boolean => Boolean(env[ENV_JOIN_CODE]?.trim());
 
 export type ExchangeResult =
   | { ok: true; answer: JoinAnswer }
