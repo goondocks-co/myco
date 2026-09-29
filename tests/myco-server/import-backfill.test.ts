@@ -20,7 +20,8 @@
 import { registerBlob } from './helpers/d1.js';
 import { refused } from './helpers/outcomes.js';
 import { describe, expect, it } from 'bun:test';
-import { laneSelectionSql, PARSER_VERSION, parseTranscripts, pendingTranscripts } from '@myco-server-worker/ingest/parse.js';
+import { laneSelectionSql, PARSER_VERSION, parseTranscripts, pendingTranscripts, TRANSCRIPT_PARSE_CONCURRENT_BYTES, TRANSCRIPT_PARSE_IMPORTED_AT_ONCE, withinBytes } from '@myco-server-worker/ingest/parse.js';
+import type { PreparedStatement, RelationalStore } from '@myco-server-worker/core/adapters.js';
 import { CHAINED_WAKE_MS, engineAssertions, runTick, WAKE_INTERVALS } from '@myco-server-worker/core/tick.js';
 import { nextWakeDelayMs } from '@myco-server-worker/core/power.js';
 import { ingestEvent } from '@myco-server-worker/ingest/events.js';
@@ -111,7 +112,7 @@ describe('an imported transcript in the store', () => {
     const r = await rig();
     // A long import: far more turns than a few passes can read.
     let history = '';
-    for (let i = 0; i < 400; i += 1) history += body(2_000 + i);
+    for (let i = 0; i < 4_000; i += 1) history += body(20_000 + i);
     expect((await r.ship('s-history', tx('history'), history, 'import', NOW - 100_000)).persisted).toBe(true);
     const parsed = (id: string) => (r.sqlite.query(`SELECT parsed_offset FROM transcripts WHERE transcript_id = ?`).get(id) as { parsed_offset: number }).parsed_offset;
     const grown = [0, 0, 0];
@@ -140,14 +141,18 @@ describe('an imported transcript in the store', () => {
     await r.ship('s-long', tx('long'), long, 'import', NOW - 200_000);
     await r.ship('s-short', tx('short'), body(4_999), 'import', NOW - 100_000);
     const state = (id: string) => r.sqlite.query(`SELECT parsed_offset, size FROM transcripts WHERE transcript_id = ?`).get(id) as { parsed_offset: number; size: number };
+    // The selection names the import with least left first, and the pass that reads imports side by side finishes it.
+    const order = (r.sqlite.query(laneSelectionSql('imported', 2).replace('?', String(PARSER_VERSION))).all() as { transcript_id: string }[]).map((row) => row.transcript_id);
+    expect(order).toEqual([tx('short'), tx('long')]);
     await parseTranscripts(r.serverEnv, NOW, { budget: { calls: 4, wallMs: 60_000 } });
-    expect({ short: state(tx('short')).parsed_offset === state(tx('short')).size, long: state(tx('long')).parsed_offset }).toEqual({ short: true, long: 0 });
+    expect(state(tx('short')).parsed_offset).toBe(state(tx('short')).size);
+    expect(state(tx('long')).parsed_offset).toBeLessThan(state(tx('long')).size);
   });
 
   it('chains the next wake while a backlog remains, and returns to the cadence once it is read', async () => {
     const r = await rig();
     let history = '';
-    for (let i = 0; i < 60; i += 1) history += body(3_000 + i);
+    for (let i = 0; i < 600; i += 1) history += body(3_000 + i);
     await r.ship('s-history', tx('history'), history, 'import', NOW);
     const env = { ...r.serverEnv, platform: { ...r.serverEnv.platform, jobBudget: { calls: 6, wallMs: 60_000 } } };
     const first = await runTick(env, NOW);
@@ -336,5 +341,131 @@ describe('an imported transcript in the store', () => {
     // page one rather than failing an ordering assertion.
     expect(seen.sort()).toEqual(['a', 'b', 'c', 'd']);
     expect(seen.length).toBe(4);
+  });
+});
+
+describe('imports read side by side', () => {
+  /** Imports whose turns each name their own prompt, so every row they derive is told apart. */
+  const imports = async (r: Awaited<ReturnType<typeof rig>>, count: number, turns: number) => {
+    for (let t = 0; t < count; t += 1) {
+      let text = '';
+      for (let i = 0; i < turns; i += 1) text += body(50_000 + t * 1_000 + i);
+      expect((await r.ship(`s-side-${t}`, tx(`side${t}`), text, 'import', NOW - 1_000 * (t + 1))).persisted).toBe(true);
+    }
+  };
+  const state = (r: Awaited<ReturnType<typeof rig>>) => r.sqlite.query(`SELECT transcript_id, parsed_offset = size AS done, parse_error FROM transcripts ORDER BY transcript_id`).all();
+  const counts = (r: Awaited<ReturnType<typeof rig>>) => Object.fromEntries(['events', 'prompt_batches', 'responses'].map((t) => [t, (r.sqlite.query(`SELECT COUNT(*) AS n FROM ${t}`).get() as { n: number }).n]));
+
+  it('takes several distinct imports in one selection and reads each once to its end', async () => {
+    const r = await rig();
+    await imports(r, TRANSCRIPT_PARSE_IMPORTED_AT_ONCE, 5);
+    const selected: number[] = [];
+    const spy = (statement: PreparedStatement, sql: string): PreparedStatement => ({
+      ...statement,
+      bind: (...values: unknown[]) => spy(statement.bind(...values), sql),
+      all: async <T,>() => {
+        const answer = await statement.all<T>();
+        if (/FROM transcripts\s/.test(sql) && /json_group_array/.test(sql)) selected.push(answer.results.length);
+        return answer;
+      },
+    });
+    const db: RelationalStore = { prepare: (sql: string) => spy(r.serverEnv.db.prepare(sql), sql), batch: (statements) => r.serverEnv.db.batch(statements) };
+    await parseTranscripts({ ...r.serverEnv, db }, NOW, { budget: { calls: 200, wallMs: 60_000 } });
+    // One selection named every import, and one more found none left.
+    expect(selected.filter((n) => n > 0)).toEqual([TRANSCRIPT_PARSE_IMPORTED_AT_ONCE]);
+    expect(state(r)).toEqual(Array.from({ length: TRANSCRIPT_PARSE_IMPORTED_AT_ONCE }, (_, t) => ({ transcript_id: tx(`side${t}`), done: 1, parse_error: null }))
+      .sort((a, b) => a.transcript_id.localeCompare(b.transcript_id)));
+    expect(counts(r)).toMatchObject({ prompt_batches: TRANSCRIPT_PARSE_IMPORTED_AT_ONCE * 5, responses: TRANSCRIPT_PARSE_IMPORTED_AT_ONCE * 5 });
+  });
+
+  it('lands every row once when two wakes read the same imports at once', async () => {
+    const alone = await rig();
+    await imports(alone, 6, 40);
+    for (let pass = 0; pass < 20 && (await pendingTranscripts(alone.serverEnv.db)).transcripts > 0; pass += 1) {
+      await parseTranscripts(alone.serverEnv, NOW, { budget: { calls: 12, wallMs: 60_000 } });
+    }
+    const together = await rig();
+    await imports(together, 6, 40);
+    for (let pass = 0; pass < 20 && (await pendingTranscripts(together.serverEnv.db)).transcripts > 0; pass += 1) {
+      // A clock wake and an owner's wake at once: each selects the same imports and reads them side by side.
+      await Promise.all([
+        parseTranscripts(together.serverEnv, NOW, { budget: { calls: 12, wallMs: 60_000 } }),
+        parseTranscripts(together.serverEnv, NOW, { budget: { calls: 12, wallMs: 60_000 } }),
+      ]);
+    }
+    expect(state(together)).toEqual(state(alone));
+    expect(state(together).every((row) => (row as { done: number }).done === 1)).toBe(true);
+    expect(counts(together)).toEqual(counts(alone));
+  });
+});
+
+describe('imports read side by side within a byte budget', () => {
+  /** An import of `turns` turns whose replies are `replyChars` long, in one segment. */
+  const importOf = (name: string, turns: number, replyChars: number) => {
+    let text = '';
+    for (let i = 0; i < turns; i += 1) {
+      text += line({ type: 'user', promptId: uuid(900_000 + name.length * 1_000 + i), message: { content: `${name} prompt ${i}` }, timestamp: '2026-09-01T10:00:00Z' })
+        + line({ type: 'assistant', message: { content: [{ type: 'text', text: `${name} ${'r'.repeat(replyChars)}` }] }, timestamp: '2026-09-01T10:00:01Z' });
+    }
+    return text;
+  };
+  /** Every pass's start and end, and the most segment bytes and passes held at once. */
+  const watch = () => {
+    const held = new Map<string, number>();
+    const seen = { bytes: [] as number[], most: 0, together: 0 };
+    return {
+      seen,
+      passes: {
+        started: (id: string, bytes: number) => {
+          held.set(id, bytes);
+          seen.bytes.push(bytes);
+          seen.most = Math.max(seen.most, [...held.values()].reduce((n, b) => n + b, 0));
+          seen.together = Math.max(seen.together, held.size);
+        },
+        ended: (id: string) => { held.delete(id); },
+      },
+    };
+  };
+
+  it('reads full 8 MiB segments one at a time, holding no more than the budget at once', async () => {
+    const r = await rig();
+    const size = Buffer.byteLength(importOf('a', 40, 200_000));
+    expect(size).toBeGreaterThan(8_000_000);
+    for (const name of ['a', 'b', 'c', 'd']) await r.ship(`s-big-${name}`, tx(`big-${name}`), importOf(name, 40, 200_000), 'import', NOW - 1_000);
+    const w = watch();
+    await parseTranscripts(r.serverEnv, NOW, { budget: { calls: 200, wallMs: 600_000 }, passes: w.passes });
+    // Each pass is counted at the segment it reads, and no two full ones were held at once.
+    expect(w.seen.bytes.filter((b) => b === size).length).toBeGreaterThanOrEqual(TRANSCRIPT_PARSE_IMPORTED_AT_ONCE);
+    expect(w.seen.most).toBeLessThanOrEqual(TRANSCRIPT_PARSE_CONCURRENT_BYTES);
+    expect(w.seen.together).toBe(1);
+  }, 120_000);
+
+  it('still reads small imports together', async () => {
+    const r = await rig();
+    for (const name of ['p', 'q', 's', 't']) await r.ship(`s-small-${name}`, tx(`small-${name}`), importOf(name, 5, 100), 'import', NOW - 1_000);
+    const w = watch();
+    await parseTranscripts(r.serverEnv, NOW, { budget: { calls: 200, wallMs: 60_000 }, passes: w.passes });
+    expect(w.seen.together).toBe(TRANSCRIPT_PARSE_IMPORTED_AT_ONCE);
+    expect(w.seen.most).toBeLessThanOrEqual(TRANSCRIPT_PARSE_CONCURRENT_BYTES);
+  });
+
+  it('runs work side by side only while its bytes fit, in order, and alone where one is over the budget', async () => {
+    const log: string[] = [];
+    const gates = new Map<string, () => void>();
+    const work = (name: string) => new Promise<string>((resolve) => { log.push(`start ${name}`); gates.set(name, () => { log.push(`end ${name}`); resolve(name); }); });
+    const sizes: Record<string, number> = { a: 6, b: 6, c: 12, d: 2 };
+    const done = withinBytes(['a', 'b', 'c', 'd'], (n) => sizes[n]!, 10, work);
+    await Bun.sleep(0);
+    expect(log).toEqual(['start a']);
+    gates.get('a')!();
+    await Bun.sleep(0);
+    expect(log).toEqual(['start a', 'end a', 'start b']);
+    gates.get('b')!();
+    await Bun.sleep(0);
+    expect(log.slice(-2)).toEqual(['end b', 'start c']);
+    gates.get('c')!();
+    await Bun.sleep(0);
+    gates.get('d')!();
+    expect(await done).toEqual(['a', 'b', 'c', 'd']);
   });
 });

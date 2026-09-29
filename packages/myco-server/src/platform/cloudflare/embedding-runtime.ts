@@ -6,7 +6,7 @@ import { classify, emit } from '../../telemetry.js';
 
 export type HostedRunLifetime = 'response' | 'clock';
 
-/** Response-deferred work fits thirty seconds; clock-owned work is awaited within its alarm invocation. */
+/** Response-deferred work fits thirty seconds; clock-owned work is kept alive by the clock object, never awaited by a tick. */
 const HOSTED_RUN_BUDGET_MS: Readonly<Record<HostedRunLifetime, number>> = { response: 25_000, clock: 5 * 60_000 };
 const CLOSE_RESERVE_MS = 5_000;
 
