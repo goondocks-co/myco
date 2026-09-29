@@ -57,14 +57,15 @@ export async function openHoldForAdmission(
 ): Promise<{ token: string } | { held: HoldSettlement | 'unverified' } | { refused: true } | { deferred: number }> {
   const token = crypto.randomUUID();
   if (mayOpen && await acquireRecoveryHold(env.db, token, now)) return { token };
-  // An operator backup opened lately holds the database: this Deployment's own export waits for it. The statement
-  // that opens the hold already decided that; this read only names it, and one the paused database refuses names
-  // nothing.
-  const operator = await deferringOperatorHold(env.db, now).catch(() => null);
-  if (operator !== null) return { deferred: operator.acquiredAt };
+  // A hold still open is this Deployment's own attempt, which is answered first: its progress is what the caller reads.
   const settled = await settleOpenHold(env, now);
   if (settled !== null && settled !== 'unverified' && settled.state === 'open') return { held: settled };
   if (settled === 'unverified') return { held: settled };
+  // With none of its own open, an operator backup opened lately holds the database: this Deployment's own export
+  // waits for it. The statement that opens the hold already decided that; this read only names it, and one the paused
+  // database refuses names nothing.
+  const operator = await deferringOperatorHold(env.db, now).catch(() => null);
+  if (operator !== null) return { deferred: operator.acquiredAt };
   if (!mayOpen) return { refused: true };
   if (await acquireRecoveryHold(env.db, token, now)) return { token };
   return { held: 'unverified' };

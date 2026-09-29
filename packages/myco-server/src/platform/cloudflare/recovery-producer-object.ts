@@ -12,10 +12,10 @@
  */
 import { DurableObject } from 'cloudflare:workers';
 import {
-  ADVANCING_STAGES_SQL, continueAttempt, exportWait, failAttempt, freshScan, HoldRetired, PRODUCER_LIMITS, PRODUCER_STALL_MS, publishAttempt, reconcileUnconfirmed, settlementOf, stagedSqlKey,
+  ADVANCING_STAGES, ADVANCING_STAGES_SQL, continueAttempt, exportWait, failAttempt, forgettableAt, freshScan, HoldRetired, PRODUCER_LIMITS, PRODUCER_STALL_MS, publishAttempt, reconcileUnconfirmed, settlementOf, stagedSqlKey,
   type AttemptCheckpoint, type AttemptObject, type AttemptPart, type AttemptStage, type AttemptState, type ContinuationReport, type ExportWait, type HoldSettlement,
   type ProducerLimits, type RecoveryProducerStatus, type ScanProgress, type StagingPrunePolicy, type StagingPruneReport,
-  type StagingPruneRequest, type TableDefinitions,
+  type StagingPruneRequest, type TableDefinitions, type ForgetUnsettledOutcome,
 } from '../../core/recovery-producer.js';
 import { prunableStagings, type RetainedStaging } from '../../core/staging-retention.js';
 import {
@@ -36,7 +36,7 @@ import {
   type RecoveryAdmissionWire, type StagingBucket,
 } from './recovery-export.js';
 import type { CloudflareBindings } from './env.js';
-import { classify } from '../../telemetry.js';
+import { classify, emit } from '../../telemetry.js';
 import type { ErrorClass } from '../../core/adapters.js';
 
 /** Raised inside admission's transaction when another step already admitted an attempt carrying this token. */
@@ -48,7 +48,7 @@ export const PRODUCER_NAME = 'recovery';
 interface AttemptRow {
   id: number; stage: string; prefix: string; started_at: number; error: string | null; attempts: number;
   bookmark: string | null; polls: number; export_started_at: number | null; export_completed_at: number | null;
-  export_requested_at: number | null; export_answered_at: number | null;
+  export_requested_at: number | null; export_answered_at: number | null; export_absent_at: number | null;
   re_exports: number; sql_bytes: number | null; sql_etag: string | null; upload_id: string | null;
   download_offset: number; reconcile_offset: number; reconciled: number; locator: string; tables: string;
   schema_sha256: string; schema_bytes: number; captured: string; defined: string; scan: string; scan_bytes: string;
@@ -71,7 +71,7 @@ const objectOf = (row: ObjectRow): AttemptObject => ({
 const COLUMN: Record<keyof AttemptState, string> = {
   id: 'id', stage: 'stage', prefix: 'prefix', startedAt: 'started_at', error: 'error', attempts: 'attempts',
   bookmark: 'bookmark', polls: 'polls', exportStartedAt: 'export_started_at', exportCompletedAt: 'export_completed_at',
-  exportRequestedAt: 'export_requested_at', exportAnsweredAt: 'export_answered_at',
+  exportRequestedAt: 'export_requested_at', exportAnsweredAt: 'export_answered_at', exportAbsentAt: 'export_absent_at',
   reExports: 're_exports', sqlBytes: 'sql_bytes', sqlEtag: 'sql_etag', uploadId: 'upload_id',
   downloadOffset: 'download_offset', reconcileOffset: 'reconcile_offset', reconciled: 'reconciled',
   tables: 'tables', captured: 'captured', defined: 'defined', scan: 'scan', scanBytes: 'scan_bytes',
@@ -104,6 +104,7 @@ const ADDED_COLUMNS: readonly [string, string][] = [
   ['payload_pruned_at', 'INTEGER'],
   ['export_requested_at', 'INTEGER'],
   ['export_answered_at', 'INTEGER'],
+  ['export_absent_at', 'INTEGER'],
 ];
 
 /** Columns holding a list or a record are written as JSON text, so one update path serves every field. */
@@ -115,7 +116,7 @@ const stateOf = (row: AttemptRow): AttemptState => ({
   id: row.id, stage: row.stage as AttemptState['stage'], prefix: row.prefix, startedAt: row.started_at,
   error: row.error as AttemptState['error'], attempts: row.attempts, bookmark: row.bookmark, polls: row.polls,
   exportStartedAt: row.export_started_at, exportCompletedAt: row.export_completed_at, reExports: row.re_exports,
-  exportRequestedAt: row.export_requested_at, exportAnsweredAt: row.export_answered_at,
+  exportRequestedAt: row.export_requested_at, exportAnsweredAt: row.export_answered_at, exportAbsentAt: row.export_absent_at,
   sqlBytes: row.sql_bytes, sqlEtag: row.sql_etag, uploadId: row.upload_id,
   downloadOffset: row.download_offset, reconcileOffset: row.reconcile_offset, reconciled: row.reconciled,
   tables: JSON.parse(row.tables) as string[], captured: JSON.parse(row.captured) as TableDefinitions,
@@ -440,12 +441,37 @@ export class RecoveryProducer extends DurableObject<CloudflareBindings> {
     return settlement;
   }
 
+  /**
+   * Forget every export an attempt requested and never saw settle, at an owner's word: the next attempt then starts its
+   * own. Refused while an attempt advances, as that attempt may be following one, and until the provider has said
+   * nothing of the export for `exportStaleMs` (`forgettableAt`): one it answered for lately may still run, and a new
+   * export beside it would be a second.
+   */
+  async forgetUnsettledExport(): Promise<ForgetUnsettledOutcome> {
+    return this.gate.exclusive(async () => {
+      const latest = this.row('1 = 1');
+      if (latest !== null && (ADVANCING_STAGES as readonly string[]).includes(latest.stage)) return { refused: 'attempt_advancing' as const, attempt: latest.id };
+      const unsettled = this.checkpoint().unsettledExport();
+      if (unsettled === null) return { forgotten: null };
+      const from = forgettableAt(unsettled, PRODUCER_LIMITS);
+      if (Date.now() < from) return { refused: 'export_recent' as const, attempt: unsettled.attempt, forgettableAt: from };
+      this.ctx.storage.sql.exec('UPDATE attempts SET export_requested_at = NULL WHERE export_requested_at IS NOT NULL');
+      emit({ kind: 'recovery_export_forgotten', attempt: unsettled.attempt, requestedAt: unsettled.requestedAt });
+      return { forgotten: { attempt: unsettled.attempt, requestedAt: unsettled.requestedAt } };
+    });
+  }
+
   /** The attempt's progress, with no credential, no signed download and no claim of recoverability. */
   async status(): Promise<RecoveryProducerStatus> {
     return this.statusOf(this.row('1 = 1'));
   }
 
-  /** One attempt's progress, or idle where there is none. */
+  /** The export an attempt requested and never saw settle, and when an owner may have it forgotten; nothing where none is. */
+  private unsettledOf(): { unsettledExport?: { attempt: number; forgettableAt: number } } {
+    const unsettled = this.checkpoint().unsettledExport();
+    return unsettled === null ? {} : { unsettledExport: { attempt: unsettled.attempt, forgettableAt: forgettableAt(unsettled, PRODUCER_LIMITS) } };
+  }
+
   /** What an attempt at its export waits on, and from what instant, as the export stage decides it. */
   private waitOf(row: AttemptRow): { waiting: ExportWait | null; waitingSince: number | null } {
     const unsettled = this.checkpoint().unsettledExport();
@@ -476,6 +502,7 @@ export class RecoveryProducer extends DurableObject<CloudflareBindings> {
       },
       export: { polls: row.polls, bookmark: row.bookmark !== null, reExports: row.re_exports, ...this.waitOf(row) },
       error: row.error as RecoveryProducerStatus['error'],
+      ...this.unsettledOf(),
       transientSpent: row.attempts,
       stagedSchema: row.schema_sha256 === '' ? null : { sha256: row.schema_sha256, bytes: row.schema_bytes },
     };

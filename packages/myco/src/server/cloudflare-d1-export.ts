@@ -32,11 +32,12 @@
  * What an answer says is read once for every caller of this API
  * (`readD1ExportAnswer`): only `complete` or `error` for the export ends it.
  */
+import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { z } from 'zod';
 import { readD1ExportAnswer, type D1ExportReading } from '@goondocks/myco-shared/d1-export';
-import { ObjectReadError } from './object-read.js';
+import { ObjectReadError, transientApiCode, transientStatus } from './object-read.js';
 import type { CloudflareFetch, OperatorLogin } from './cloudflare.js';
 
 /**
@@ -87,6 +88,15 @@ const recordSchema = z.object({
   lastPolledAt: z.number(),
   /** The schema the export started under; a retry reuses the export only while the schema is the same. */
   schema: z.string(),
+  /**
+   * The export ended and its SQL is whole at the output: nothing runs, and the result is kept until the snapshot built
+   * from it is saved (`releaseD1Export`), so a step that fails after the download is tried again without exporting.
+   */
+  downloaded: z.boolean().optional(),
+  /** The size and SHA-256 of the SQL as it was downloaded; a kept result is taken again only while it still matches. */
+  result: z.object({ bytes: z.number(), sha256: z.string() }).optional(),
+  /** The recovery hold the export was taken under: its SQL is a snapshot only for a capture under that same hold. */
+  holdToken: z.string().nullable().optional(),
 });
 type ExportRecord = z.infer<typeof recordSchema>;
 
@@ -154,6 +164,8 @@ export interface D1ExportContext {
   pollMs?: number;
   stallMs?: number;
   report?: (line: string) => void;
+  /** The recovery hold the capture runs under, which a kept result must have been taken under to be taken again. */
+  holdToken?: string | null;
 }
 
 export interface D1ExportOptions extends D1ExportContext {
@@ -168,11 +180,16 @@ export interface D1ExportOptions extends D1ExportContext {
 }
 
 /** A recorded export that completed inside its bound, its SQL already at the output. */
-export interface SettledExport { schema: string; startedAt: number }
+export interface SettledExport { schema: string; startedAt: number; holdToken: string | null }
 
 /** Where the export running against `databaseId` is recorded. */
 export function exportRecordPath(recordDir: string, databaseId: string): string {
   return path.join(recordDir, `d1-export-${databaseId.replace(/[^A-Za-z0-9_-]/g, '_')}.json`);
+}
+
+/** Where the SQL of the export against `databaseId` is kept beside its record, outlasting the attempt that downloaded it. */
+export function exportResultPath(recordDir: string, databaseId: string): string {
+  return exportRecordPath(recordDir, databaseId).replace(/\.json$/, '.sql');
 }
 
 function readRecord(file: string, marginMs: number): ExportRecord | null {
@@ -203,6 +220,23 @@ function writeRecord(file: string, record: ExportRecord): void {
   fs.renameSync(temporary, file);
   const directory = fs.openSync(path.dirname(file), 'r');
   try { fs.fsyncSync(directory); } finally { fs.closeSync(directory); }
+}
+
+/** The size and SHA-256 of a file, read through once. */
+async function digestOf(file: string): Promise<{ bytes: number; sha256: string }> {
+  const hash = createHash('sha256');
+  let bytes = 0;
+  for await (const chunk of fs.createReadStream(file)) {
+    bytes += (chunk as Buffer).length;
+    hash.update(chunk as Buffer);
+  }
+  return { bytes, sha256: hash.digest('hex') };
+}
+
+/** Flush `file` and the directory that names it, so a rename that follows publishes whole bytes. */
+function syncPath(file: string): void {
+  const handle = fs.openSync(file, 'r');
+  try { fs.fsyncSync(handle); } finally { fs.closeSync(handle); }
 }
 
 /** The steps of one export, over one context. */
@@ -383,7 +417,7 @@ function exporter(context: D1ExportContext) {
    * replaced: never by a new export. A download Cloudflare no longer serves, for an export that names no other, is the
    * result lost: the export ended, so its record is cleared and the next backup starts one.
    */
-  const download = async (tables: readonly string[], bookmark: string | null, signedUrl: string): Promise<void> => {
+  const download = async (tables: readonly string[], bookmark: string | null, signedUrl: string): Promise<{ bytes: number; sha256: string }> => {
     const part = `${context.output}.part`;
     fs.rmSync(part, { force: true });
     let url = signedUrl;
@@ -391,8 +425,10 @@ function exporter(context: D1ExportContext) {
     for (let attempt = 1; ; attempt += 1) {
       const outcome = await downloadOnce(url, part, served);
       if (outcome === null) {
+        syncPath(part);
         fs.renameSync(part, context.output);
-        return;
+        syncPath(path.dirname(context.output));
+        return digestOf(context.output);
       }
       if (!outcome.error.transient || attempt >= D1_EXPORT_DOWNLOAD_ATTEMPTS) {
         fs.rmSync(part, { force: true });
@@ -421,6 +457,21 @@ function exporter(context: D1ExportContext) {
   const settle = async (): Promise<SettledExport | null> => {
     let recorded = readRecord(file, marginMs);
     if (recorded === null) return null;
+    if (recorded.downloaded === true) {
+      // An export that ended with its SQL downloaded runs no longer: its result is taken again while it is recent enough
+      // to be this snapshot, and nothing is asked of Cloudflare.
+      if (now() - recorded.startedAt < boundMs) {
+        const held = fs.existsSync(context.output) ? await digestOf(context.output) : null;
+        if (held !== null && recorded.result !== undefined && held.bytes === recorded.result.bytes && held.sha256 === recorded.result.sha256) {
+          context.report?.(`Taking the D1 export this machine downloaded ${iso(recorded.startedAt)} again rather than exporting another`);
+          return { schema: recorded.schema, startedAt: recorded.startedAt, holdToken: recorded.holdToken ?? null };
+        }
+        context.report?.(`The D1 export this machine downloaded ${iso(recorded.startedAt)} is no longer whole as downloaded, so it is discarded`);
+      }
+      fs.rmSync(file, { force: true });
+      fs.rmSync(context.output, { force: true });
+      return null;
+    }
     if (now() - recorded.lastPolledAt >= marginMs) {
       // Asked after once more where it can be: one still running is followed, and only one Cloudflare says ended, or
       // no longer answers for, is taken to run no longer.
@@ -439,9 +490,9 @@ function exporter(context: D1ExportContext) {
     const { record, ended } = await follow(recorded);
     // Its result is a snapshot only while it is recent enough to be one; the caller holds it to the schema it reads.
     if (ended.kind === 'complete' && now() - record.startedAt < boundMs) {
-      await download(record.tables, record.bookmark, ended.signedUrl);
-      fs.rmSync(file, { force: true });
-      return { schema: record.schema, startedAt: record.startedAt };
+      const result = await download(record.tables, record.bookmark, ended.signedUrl);
+      writeRecord(file, { ...record, downloaded: true, result, lastPolledAt: now() });
+      return { schema: record.schema, startedAt: record.startedAt, holdToken: record.holdToken ?? null };
     }
     context.report?.(ended.kind === 'ended'
       ? `The D1 export this machine started ${iso(record.startedAt)} ended without a result (${redacted(ended.detail)})`
@@ -453,7 +504,7 @@ function exporter(context: D1ExportContext) {
   /** Start one export and drive it to its result, recorded before its request is sent. */
   const start = async (tables: readonly string[], schema: string): Promise<void> => {
     if (fs.existsSync(file)) throw new Error(`a D1 export is still recorded at ${file}; it is settled before another starts`);
-    let intent: ExportRecord = { databaseId: context.databaseId, tables: [...tables], bookmark: null, startedAt: now(), lastPolledAt: now(), schema };
+    let intent: ExportRecord = { databaseId: context.databaseId, tables: [...tables], bookmark: null, startedAt: now(), lastPolledAt: now(), schema, holdToken: context.holdToken ?? null };
     writeRecord(file, intent);
     // A refused credential started nothing, so the refreshed request is a new start with its own record.
     let first: D1ExportReading;
@@ -490,11 +541,17 @@ function exporter(context: D1ExportContext) {
       fs.rmSync(file, { force: true });
       throw new D1ExportFailed(ended.detail);
     }
-    await download(tables, ended.bookmark, ended.signedUrl);
-    fs.rmSync(file, { force: true });
+    const result = await download(tables, ended.bookmark, ended.signedUrl);
+    writeRecord(file, { ...intent, bookmark: ended.bookmark, downloaded: true, result, lastPolledAt: now() });
   };
 
-  return { settle, start, file };
+  /** Give up the result this machine holds: the record and the SQL it names. */
+  const release = (): void => {
+    fs.rmSync(file, { force: true });
+    fs.rmSync(context.output, { force: true });
+  };
+
+  return { settle, start, release, file };
 }
 
 /**
@@ -519,9 +576,85 @@ export async function exportD1(options: D1ExportOptions): Promise<void> {
   const steps = exporter(options);
   const settled = options.settled !== undefined ? options.settled : await steps.settle();
   if (settled !== null) {
-    if (settled.schema === options.schema) return;
-    options.report?.('The resumed D1 export was taken under another schema, so it is discarded and a new one started');
-    fs.rmSync(options.output, { force: true });
+    const otherHold = options.holdToken !== undefined && settled.holdToken !== options.holdToken;
+    if (settled.schema === options.schema && !otherHold) return;
+    options.report?.(otherHold
+      ? 'The D1 export this machine holds was taken under another recovery hold, so it is discarded and a new one started under this one'
+      : 'The resumed D1 export was taken under another schema, so it is discarded and a new one started');
+    steps.release();
   }
   await steps.start(options.tables, options.schema);
+}
+
+/**
+ * Give up the export result this machine holds for the database, once the snapshot built from it is saved: the record
+ * and the SQL. Until then a retry takes the result again rather than exporting.
+ */
+export function releaseD1Export(context: D1ExportContext): void {
+  exporter(context).release();
+}
+
+/**
+ * Give up the result this machine kept for the database under `holdToken`, once that hold is released: no capture
+ * under it can use the result any longer. A result kept under another hold, and an export still running, stay.
+ */
+export function releaseKeptD1Export(recordDir: string, databaseId: string, holdToken: string): void {
+  const file = exportRecordPath(recordDir, databaseId);
+  let recorded: ExportRecord | null;
+  try { recorded = readRecord(file, D1_EXPORT_CANCEL_MARGIN_MS); } catch { return; }
+  if (recorded === null || recorded.downloaded !== true || recorded.holdToken !== holdToken) return;
+  fs.rmSync(file, { force: true });
+  fs.rmSync(exportResultPath(recordDir, databaseId), { force: true });
+}
+
+/** How many times one read of the database is sent, and the pause before each retry: `D1_QUERY_BACKOFF_MS[n]` precedes attempt n + 2. */
+export const D1_QUERY_ATTEMPTS = 3;
+export const D1_QUERY_BACKOFF_MS: readonly number[] = [2_000, 5_000];
+/** How long one read may wait for its answer. */
+const D1_QUERY_TIMEOUT_MS = 60_000;
+
+/**
+ * One read of the database, over the same API and the same operator login as the export, rather than a Wrangler
+ * command with a login of its own: a backup reads and exports under one credential, refreshed in one place.
+ *
+ * A read that Cloudflare answers with a transient code — `7403` among them, which D1 answers for an account other
+ * requests succeed with — is sent again, up to `D1_QUERY_ATTEMPTS`, and a refused login is refreshed once. What
+ * remains is thrown as an `ObjectReadError` naming the codes, transient where a later attempt may still pass.
+ */
+export async function queryD1(context: D1ExportContext, sql: string): Promise<unknown[]> {
+  const fetchApi = context.fetch ?? globalThis.fetch;
+  const sleep = context.sleep ?? ((ms: number) => new Promise<void>((resolve) => { setTimeout(resolve, ms); }));
+  const endpoint = `${API_ORIGIN}/client/v4/accounts/${encodeURIComponent(context.accountId)}/d1/database/${encodeURIComponent(context.databaseId)}/query`;
+  let refreshed = false;
+  for (let attempt = 1; ; attempt += 1) {
+    const used = context.login.current();
+    const headers = new Headers(await used);
+    headers.set('content-type', 'application/json');
+    let failure: ObjectReadError;
+    try {
+      const response = await fetchApi(endpoint, { method: 'POST', headers, redirect: 'error', signal: AbortSignal.timeout(D1_QUERY_TIMEOUT_MS), body: JSON.stringify({ sql }) });
+      const text = await response.text();
+      type Answer = { success?: unknown; errors?: unknown; result?: unknown };
+      const body = ((): Answer | null => { try { return JSON.parse(text) as Answer; } catch { return null; } })();
+      const codes = Array.isArray(body?.errors) ? body.errors.map((e) => String((e as { code?: unknown }).code ?? '')).filter((c) => c !== '') : [];
+      const said = Array.isArray(body?.errors) ? body.errors.map((e) => String((e as { message?: unknown }).message ?? '')).filter((m) => m !== '').join('; ') : '';
+      const first = Array.isArray(body?.result) ? body.result[0] as { success?: unknown; results?: unknown } | undefined : undefined;
+      if (response.ok && body?.success === true && first?.success === true && Array.isArray(first.results)) return first.results;
+      const refusedLogin = response.status === 401 || codes.includes('10000');
+      if (refusedLogin && !refreshed) {
+        refreshed = true;
+        context.login.refused(used);
+        attempt -= 1;
+        continue;
+      }
+      const transient = !refusedLogin && (transientStatus(response.status) || codes.some((code) => transientApiCode(code)));
+      failure = new ObjectReadError(`D1 did not answer the read (HTTP ${response.status}${codes.map((c) => ` [code: ${c}]`).join('')}${said === '' ? '' : `: ${redacted(said)}`})`,
+        { transient, apiCodes: codes });
+    } catch (error) {
+      failure = new ObjectReadError(`the read did not reach D1 (${redacted((error as Error).message)})`, { transient: true, cause: error });
+    }
+    if (!failure.transient || attempt >= D1_QUERY_ATTEMPTS) throw failure;
+    context.report?.(`${failure.message}; reading it again (attempt ${attempt + 1} of ${D1_QUERY_ATTEMPTS})`);
+    await sleep(D1_QUERY_BACKOFF_MS[Math.min(attempt - 1, D1_QUERY_BACKOFF_MS.length - 1)] ?? 0);
+  }
 }
