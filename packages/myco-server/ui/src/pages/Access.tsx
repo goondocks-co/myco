@@ -9,6 +9,7 @@ import { Panel } from '../components/ui/panel';
 import { SlideoutDetailPanel } from '../components/ui/slideout-detail-panel';
 import { StatusDot } from '../components/ui/status-dot';
 import { KeyReveal } from '../components/access/KeyReveal';
+import { MachineSettingsDialog } from '../components/access/MachineSettings';
 import { LINEAGE_REPLAY_ACTOR, refusalText, useAccessActions, useInvitations, useMembers, usePaged, type ActivityRow, type CredentialRow } from '../hooks/use-access';
 import { useMe } from '../hooks/use-me';
 import { useProjects } from '../hooks/use-projects';
@@ -58,6 +59,7 @@ export function Access() {
   const [openCredentialId, setOpenCredentialId] = useState<string | null>(null);
   const [withdrawError, setWithdrawError] = useState<string | null>(null);
   const [stopError, setStopError] = useState<string | null>(null);
+  const [settingsMachineId, setSettingsMachineId] = useState<string | null>(null);
   const [revokeCredentialId, setRevokeCredentialId] = useState<string | null>(null);
   const [refusal, setRefusal] = useState<string | null>(null);
   const [linkMemberId, setLinkMemberId] = useState<string | null>(null);
@@ -124,7 +126,7 @@ export function Access() {
               One machine, one runtime. What each is allowed to do, and what this server last heard from it. Select one to see what it wrote.
             </p>
             <ul className="flex flex-col divide-y divide-outline-variant/10" aria-label="Runtimes">
-              {runtimes.map((c) => (
+              {runtimes.map((c, i) => (
                 <RuntimeRow
                   key={c.id}
                   credential={c}
@@ -133,6 +135,9 @@ export function Access() {
                   lookup={workerFor(fleet, c.id)}
                   onOpen={() => setOpenCredentialId(c.id)}
                   onStop={() => { setStopError(null); setRevokeCredentialId(c.id); }}
+                  // One Settings action per machine: on its first listed runtime, and never for a row that names none.
+                  onSettings={c.purpose === 'member' && c.machineId !== null && runtimes.findIndex((r) => r.machineId === c.machineId) === i
+                    ? () => setSettingsMachineId(c.machineId) : undefined}
                 />
               ))}
             </ul>
@@ -162,6 +167,8 @@ export function Access() {
           </Panel>
         </div>
       </PageLoading>
+
+      <MachineSettingsDialog machineId={settingsMachineId} onClose={() => setSettingsMachineId(null)} nameOf={nameOf} />
 
       <ConfirmDialog
         open={target !== undefined}
@@ -268,13 +275,14 @@ export function Access() {
 }
 
 /** One machine's runtime: what its credential allows, and what this server last heard from it as a worker. */
-function RuntimeRow({ credential, memberName, revokedByName, lookup, onOpen, onStop }: {
+function RuntimeRow({ credential, memberName, revokedByName, lookup, onOpen, onStop, onSettings }: {
   credential: CredentialRow;
   memberName: string | null;
   revokedByName: string | null;
   lookup: FleetLookup;
   onOpen: () => void;
   onStop: () => void;
+  onSettings?: () => void;
 }) {
   const state = lookup.known ? workerState(lookup.worker, Date.now()) : null;
   return (
@@ -286,6 +294,7 @@ function RuntimeRow({ credential, memberName, revokedByName, lookup, onOpen, onS
           <div className="font-mono text-[11px] text-on-surface-variant">{credential.id} · started {formatRelative(credential.lineageStartedAt)}</div>
         </button>
         <span className="text-xs text-on-surface-variant">{credentialWords(credential, revokedByName)}</span>
+        {onSettings && <button type="button" className={button} onClick={onSettings}>Settings</button>}
         {credential.live && <button type="button" className={button} onClick={onStop}>Stop</button>}
       </div>
       {lookup.known ? (

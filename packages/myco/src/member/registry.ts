@@ -127,6 +127,14 @@ export function deploymentPath(serverUrl: string, mycoHome: string = resolveMyco
   return path.join(deploymentsDir(mycoHome), `${deploymentKeyFor(serverUrl)}.json`);
 }
 
+/**
+ * Where this machine keeps the settings a Deployment holds for it (`machine-settings.ts`), beside that Deployment's
+ * membership. Named apart from `.json` so no reader of memberships ever takes it for one.
+ */
+export function machineSettingsPath(serverUrl: string, mycoHome: string = resolveMycoHome()): string {
+  return path.join(deploymentsDir(mycoHome), `${deploymentKeyFor(serverUrl)}.machine-settings`);
+}
+
 export function registryKeyFor(root: string): string {
   return crypto.createHash('sha256').update(path.resolve(root)).digest('hex').slice(0, KEY_HEX_CHARS);
 }

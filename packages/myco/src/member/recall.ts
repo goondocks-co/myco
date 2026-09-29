@@ -14,6 +14,7 @@
  * has already checked the latch before the seam runs; this keeps it current for
  * the pass behind it.
  */
+import { cacheMachineSettings } from './machine-settings.js';
 import { canStartRequest, subRequestBudget } from './budget.js';
 import type { HookRun } from './capture.js';
 import { readSessionState, updateSessionState } from './session-state.js';
@@ -50,6 +51,9 @@ async function ask(run: HookRun, path: string, body: Record<string, unknown>): P
     return undefined;
   }
   run.spool.clearLatch();
+  // The settings the Deployment holds for this machine ride the answer; a cache that cannot be written leaves the
+  // last one standing, and never costs the hook its answer.
+  try { cacheMachineSettings(run.credential.serverUrl, answer.body.machine); } catch { /* the last cache stands */ }
   return {
     context: typeof answer.body.context === 'string' ? answer.body.context : '',
     skipped: Array.isArray(answer.body.skipped) ? answer.body.skipped.filter((s): s is string => typeof s === 'string') : [],

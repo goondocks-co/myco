@@ -2,6 +2,7 @@ import { getMachineId } from '../machine-id.js';
 import { runMemberHook, type HookMainOptions, type HookRun } from '../member/capture.js';
 import { responseEvent, type OutboundEvent } from '../member/envelope.js';
 import { planBackstop, planFilesWritten, planRootFor, planWritesInLines } from '../member/plan-files.js';
+import { machinePlanDirs } from '../member/machine-settings.js';
 import { readSessionState, type SessionState, type TranscriptPointer } from '../member/session-state.js';
 import {
   deriveTranscriptCapture, pointerReplaced, shipSessionTranscripts, siblingTranscripts, transcriptPointerFor, unreadTranscriptLines, type DerivedCapture,
@@ -52,10 +53,11 @@ interface ReadTranscript {
 function derivePlanWrites(run: HookRun, transcripts: readonly ReadTranscript[], state: SessionState, root: string): DerivedCapture & { captured: string[] } {
   const written: string[] = [];
   const advances: Array<[ReadTranscript, number]> = [];
+  const machineDirs = machinePlanDirs(run.credential.serverUrl);
   for (const transcript of transcripts) {
     const unread = unreadTranscriptLines(transcript.path, transcript.pointer);
     if (unread === null) continue;
-    for (const file of planWritesInLines(run.agent, unread.lines, root)) if (!written.includes(file)) written.push(file);
+    for (const file of planWritesInLines(run.agent, unread.lines, root, machineDirs)) if (!written.includes(file)) written.push(file);
     advances.push([transcript, unread.size]);
   }
   const plans = planFilesWritten(run.ctx, state, run.credential.projectId, root, written);

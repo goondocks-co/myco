@@ -1,4 +1,6 @@
 import type { ServerEnv } from '../core/adapters.js';
+import { machineBlockFor } from '../core/machine-settings.js';
+import type { CredentialContext } from '../context.js';
 import type { OwnerContext } from '../context.js';
 import { emptyBodyRoute } from '../auth/members.js';
 import { badRequest, notFound, ok, readJsonObject, resolveProjectScope } from './scope.js';
@@ -93,8 +95,12 @@ const withoutUrlSecrets = (value: string): string =>
  * depth and anywhere in the string, leaves without its userinfo, query and
  * fragment.
  */
-export const handleMemberSettings = emptyBodyRoute(async (env: ServerEnv) =>
-  ok(JSON.parse(await (await handleSettings(env)).text(), (_key, value: unknown) => (typeof value === 'string' ? withoutUrlSecrets(value) : value))));
+export const handleMemberSettings = emptyBodyRoute(async (env: ServerEnv, ctx: CredentialContext) => {
+  const deployment = JSON.parse(await (await handleSettings(env)).text(), (_key, value: unknown) => (typeof value === 'string' ? withoutUrlSecrets(value) : value)) as Record<string, unknown>;
+  // The asking machine's own settings, where its member claims it: what `myco login`, `member join` and `cutover` cache.
+  const machine = await machineBlockFor(env.db, ctx.memberId, ctx.machineId);
+  return ok({ ...deployment, ...(machine === null ? {} : { machine }) });
+});
 
 /** Set one Deployment leaf. */
 export async function handleSetSetting(env: ServerEnv, ctx: OwnerContext): Promise<Response> {

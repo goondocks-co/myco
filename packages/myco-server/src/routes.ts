@@ -1,6 +1,7 @@
 import { handleReleaseProvenance, handleRequestReleaseCheck, handleSaveReleaseProvenance } from './api/release-provenance.js';
 import { handleRepository, handleSaveRepository, handleRemoveRepository, handleRunRepository } from './api/repositories.js';
 import { handleProjectMap, handleRunMap } from './api/canopy.js';
+import { handleMachineSettings, handleSetMachineSetting } from './api/machine-settings.js';
 import { handleSkillCandidates, handleReviewSkillCandidate } from './api/skill-candidates.js';
 import type { ServerEnv } from './core/adapters.js';
 import type { CredentialContext, UnboundMemberContext } from './context.js';
@@ -230,6 +231,8 @@ export const ROUTES: readonly Route[] = [
   { method: 'GET', path: '/api/kpis', auth: 'owner', handler: handleKpis },
   { method: 'GET', path: '/api/settings', auth: 'owner', handler: handleSettings },
   { method: 'PUT', path: '/api/settings/{leaf}', pattern: /^\/api\/settings\/(?<leaf>[A-Za-z0-9._]{1,96})$/, auth: 'owner', handler: handleSetSetting },
+  { method: 'GET', path: '/api/machines/{machineId}/settings', pattern: /^\/api\/machines\/(?<machineId>[A-Za-z0-9._-]{1,64})\/settings$/, auth: 'owner', handler: handleMachineSettings },
+  { method: 'PUT', path: '/api/machines/{machineId}/settings/{leaf}', pattern: /^\/api\/machines\/(?<machineId>[A-Za-z0-9._-]{1,64})\/settings\/(?<leaf>[A-Za-z0-9._]{1,96})$/, auth: 'owner', handler: handleSetMachineSetting },
   { method: 'GET', path: '/api/secrets', auth: 'owner', handler: handleSecrets },
   { method: 'PUT', path: '/api/secrets/{name}', pattern: /^\/api\/secrets\/(?<name>[a-z0-9_-]{1,32})$/, auth: 'owner', handler: handleSetSecret },
   { method: 'DELETE', path: '/api/secrets/{name}', pattern: /^\/api\/secrets\/(?<name>[a-z0-9_-]{1,32})$/, auth: 'owner', handler: handleDeleteSecret },

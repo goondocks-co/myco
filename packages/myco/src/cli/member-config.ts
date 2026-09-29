@@ -6,23 +6,35 @@
  * the same leaves the dashboard's Settings page reads, each URL value without
  * its userinfo, query and fragment); provider credentials live in the
  * Deployment's secret store and never reach that answer. They are
- * written in the dashboard, not here. **Member Settings** have no owner the 2.0
- * member reads yet (#1393), so `get` says so and `set` refuses rather than
- * writing a value nothing honours; the 1.4 tiers are never written from here.
+ * written in the dashboard, not here. **Machine Settings** (`MACHINE_SETTING_LEAVES`)
+ * are held by the Deployment for this machine and set on the dashboard (#1393):
+ * `get` reads them from the same answer, and `set` names the dashboard. The other
+ * **Member Settings** have no owner the 2.0 member reads yet, so `get` says so and
+ * `set` refuses rather than writing a value nothing honours; the 1.4 tiers are
+ * never written from here.
  */
+import { machineBlockOf } from '../member/machine-settings.js';
 import { withoutCredentialFlag } from '../mcp/deployment-upstream.js';
 import type { CredentialSource } from '../member/constants.js';
 import { membershipProblem, openDeployment, type DeploymentHandle, type MemberVerbDeps } from './deployment-reader.js';
 
 /** The §7.8 leaves whose tier is Member; `tests/cli/member-config.test.ts` holds this equal to the ledger. */
 export const MEMBER_TIER_LEAVES = [
-  'daemon.log_level', 'daemon.log_retention_days', 'daemon.stale_session_threshold_ms',
-  'capture.transcript_paths', 'capture.plan_dirs', 'capture.ignore_plan_dirs_in_git', 'capture.artifact_extensions',
-  'capture.buffer_max_events', 'capture.ignore.paths', 'capture.ignore.patterns',
-  'notifications.domains', 'notifications.enabled', 'notifications.system_notifications', 'notifications.default_mode',
+  'daemon.log_level', 'daemon.log_retention_days',
+  'capture.transcript_paths', 'capture.plan_dirs',
   'symbionts', 'update.channel',
   'appearance.theme', 'appearance.mode', 'appearance.font', 'appearance.density',
 ] as const;
+
+/**
+ * The Member leaves a machine honours today: held by the Deployment per machine, set on the dashboard (Access ›
+ * Runtimes › Settings), and cached by the machine at each session start (`member/machine-settings.ts`).
+ */
+export const MACHINE_SETTING_LEAVES: readonly string[] = ['capture.plan_dirs'];
+
+/** Where a machine's settings are set: the dashboard's Access page, on this machine's runtime. */
+const machineSettingsAt = (serverUrl: string | null): string =>
+  `the dashboard${serverUrl === null ? '' : ` (${serverUrl}/access)`}, under Runtimes › Settings for this machine`;
 
 /** The issue that gives Member Settings an owner the member reads. */
 export const MEMBER_SETTINGS_ISSUE = '#1393';
@@ -47,7 +59,7 @@ export interface SettingsLeaf {
 const notHonoured = (leaf: string): string =>
   `${leaf} is a Member setting, and the 2.0 member does not read Member settings yet (${MEMBER_SETTINGS_ISSUE}); nothing is written for a joined project`;
 
-async function readLeaves(deployment: DeploymentHandle, err: (line: string) => void): Promise<SettingsLeaf[] | null> {
+async function readLeaves(deployment: DeploymentHandle, err: (line: string) => void): Promise<{ leaves: SettingsLeaf[]; machine: { leaves: Record<string, unknown> } | null } | null> {
   const answer = await deployment.post(SETTINGS_READ_PATH, {});
   if (!answer.ok) {
     err(`myco config: ${deployment.serverUrl} did not answer its settings (${answer.error.code}): ${answer.error.message}`);
@@ -58,7 +70,7 @@ async function readLeaves(deployment: DeploymentHandle, err: (line: string) => v
     err(`myco config: ${deployment.serverUrl} answered its settings with no leaves`);
     return null;
   }
-  return leaves as SettingsLeaf[];
+  return { leaves: leaves as SettingsLeaf[], machine: machineBlockOf(answer.value.machine) };
 }
 
 const render = (value: unknown): string => (typeof value === 'string' ? value : JSON.stringify(value, null, 2));
@@ -71,6 +83,11 @@ export async function run(args: readonly string[], source: CredentialSource, dep
 
   if (sub === 'set') {
     if (leaf === undefined || rest.length !== 1) { err(USAGE); return false; }
+    if (MACHINE_SETTING_LEAVES.includes(leaf)) {
+      const deployment = await openDeployment(source, deps);
+      err(`myco config: ${leaf} is this machine's setting, set in ${machineSettingsAt(deployment?.serverUrl ?? null)}; this command only reads it. Nothing was changed.`);
+      return false;
+    }
     if (isMemberLeaf(leaf)) { err(`myco config: ${notHonoured(leaf)}`); return false; }
     const deployment = await openDeployment(source, deps);
     const where = deployment === null ? 'the dashboard' : `the dashboard (${deployment.serverUrl}/settings)`;
@@ -78,7 +95,7 @@ export async function run(args: readonly string[], source: CredentialSource, dep
     return false;
   }
   if (sub !== 'get' || rest.length > 0) { err(USAGE); return false; }
-  if (leaf !== undefined && isMemberLeaf(leaf)) { err(`myco config: ${notHonoured(leaf)}`); return false; }
+  if (leaf !== undefined && isMemberLeaf(leaf) && !MACHINE_SETTING_LEAVES.includes(leaf)) { err(`myco config: ${notHonoured(leaf)}`); return false; }
 
   const problem = source === 'registry' ? membershipProblem(deps) : null;
   if (problem !== null) { err(`myco config: ${problem}`); return false; }
@@ -87,9 +104,14 @@ export async function run(args: readonly string[], source: CredentialSource, dep
     err(`myco config: no member credential resolves for this project (--credential ${source}); the reason is above`);
     return false;
   }
-  const leaves = await readLeaves(deployment, err);
-  if (leaves === null) return false;
+  const answered = await readLeaves(deployment, err);
+  if (answered === null) return false;
+  const { leaves, machine } = answered;
 
+  if (leaf !== undefined && MACHINE_SETTING_LEAVES.includes(leaf)) {
+    out(machine === null ? '(this credential names no machine of its own)' : render(machine.leaves[leaf] ?? []));
+    return true;
+  }
   if (leaf !== undefined) {
     const found = leaves.find((l) => l.leaf === leaf);
     if (found === undefined) {
@@ -103,8 +125,11 @@ export async function run(args: readonly string[], source: CredentialSource, dep
   out(`=== Deployment Settings (${deployment.serverUrl}) ===`);
   for (const l of leaves) out(`${l.leaf} = ${l.configured ? JSON.stringify(l.value) : '(default)'}`);
   out('');
+  out(`=== Machine Settings (this machine; set in ${machineSettingsAt(deployment.serverUrl)}) ===`);
+  for (const machineLeaf of MACHINE_SETTING_LEAVES) out(`  ${machineLeaf} = ${machine === null ? '(no machine of its own)' : JSON.stringify(machine.leaves[machineLeaf] ?? [])}`);
+  out('');
   out(`=== Member Settings (this machine) ===`);
   out(`Not read by the 2.0 member yet (${MEMBER_SETTINGS_ISSUE}); these leaves have no effect for a joined project:`);
-  for (const member of MEMBER_TIER_LEAVES) out(`  ${member}`);
+  for (const member of MEMBER_TIER_LEAVES) if (!MACHINE_SETTING_LEAVES.includes(member)) out(`  ${member}`);
   return true;
 }

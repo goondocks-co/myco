@@ -5,6 +5,8 @@
  * that names a Project binds it, a link that names none signs in only, and every
  * refusal is named without the link appearing in the message.
  */
+import { machinePlanDirs } from '@myco/member/machine-settings.js';
+import { machineSettingsPath } from '@myco/member/registry.js';
 import { MACHINE_IDENTITY_NOTE, REJOIN_HINT } from '@goondocks/myco-shared/member-protocol';
 import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
 import { execFileSync } from 'node:child_process';
@@ -65,6 +67,18 @@ describe('myco login', () => {
     expect(readRegistryEntry(root, home)?.projectId).toBe('proj_1');
     expect(out.join('\n')).toContain('(admin)');
     expect(out.join('\n')).toContain('proj_1');
+  });
+
+  it('caches the settings the Deployment holds for this machine as it signs in (#1393)', async () => {
+    const rig = unjoinedRig();
+    const issued = await issueEnrollmentAuthority(rig.env.db, Date.now(), { role: 'member', projectId: 'proj_1' });
+    expect(await run([`https://s/join#${issued.key}`, '--root', root], deps(rig))).toBe(true);
+    // An admin sets this machine's plan folders; the next sign-in on it caches them before any session asks.
+    rig.env.sqlite.run(`INSERT INTO machine_settings (machine_id, leaf, value, updated_at, updated_by) VALUES ('machine_person', 'capture.plan_dirs', '["docs/plans"]', 1, 'mem_admin')`);
+    fs.rmSync(machineSettingsPath('https://s', home), { force: true });
+    const again = await issueEnrollmentAuthority(rig.env.db, Date.now(), { role: 'member', projectId: 'proj_1', memberId: readDeploymentMembership('https://s', home)!.memberId! });
+    expect(await run([`https://s/join#${again.key}`, '--root', root], deps(rig))).toBe(true);
+    expect(machinePlanDirs('https://s', home)).toEqual(['docs/plans']);
   });
 
   it('signs in on a link that names no Project, writing the membership and NO binding', async () => {

@@ -15,6 +15,7 @@
  * An invitation that names no Project admits a person to the Deployment; they
  * bind their first project afterwards with `myco member join --project`.
  */
+import { seedMachineSettings } from '../member/machine-settings.js';
 import { MACHINE_IDENTITY_NOTE, REJOIN_HINT } from '@goondocks/myco-shared/member-protocol';
 import { getMachineId } from '../machine-id.js';
 import { resolveMycoHome } from '../paths/home.js';
@@ -126,6 +127,8 @@ export async function run(args: readonly string[], deps: LoginDeps = {}): Promis
 
   const mycoHome = deps.mycoHome ?? resolveMycoHome();
   recordJoinAnswer(code, answer, { mycoHome, root, now: deps.now?.() ?? Date.now(), machineId });
+  // The settings the Deployment holds for this machine, cached before the first session reads them.
+  await seedMachineSettings({ serverUrl: code.serverUrl, token: answer.token }, { mycoHome, fetch: deps.fetch });
 
   out(`Signed in to ${code.serverUrl} as ${answer.memberId} (${answer.role}).`);
   // An administrator's machine runs the Deployment's work; a sign-in keeps its worker running at login.
