@@ -11,6 +11,8 @@ export interface CredentialRow {
   /** The member this credential belongs to. */
   memberId: string;
   machineId: string | null;
+  /** The name the runtime gave itself when it joined, or null when it gave none. */
+  runtimeLabel: string | null;
   expiresAt: number;
   revokedAt: number | null;
   revokedBy: string | null;
@@ -52,7 +54,7 @@ export async function listCredentials(
   }
   if (k.where !== '') conditions.push(k.where);
   const { results } = await db
-    .prepare(`SELECT id, member_id, machine_id, expires_at, revoked_at, revoked_by, bytes_written, predecessor_id, lineage_root, lineage_started_at, first_used_at,
+    .prepare(`SELECT id, member_id, machine_id, runtime_label, expires_at, revoked_at, revoked_by, bytes_written, predecessor_id, lineage_root, lineage_started_at, first_used_at,
                      (${credentialLive()}) AS live, (${runCredential()}) AS run_credential
                 FROM member_credentials ${conditions.length === 0 ? '' : `WHERE ${conditions.join(' AND ')}`} ORDER BY lineage_started_at DESC, id DESC LIMIT ?`)
     .bind(nowMs, HARNESS_MEMBER_ID, ...params, ...k.params, limit + 1)
@@ -61,6 +63,7 @@ export async function listCredentials(
     id: r.id as string,
     memberId: r.member_id as string,
     machineId: (r.machine_id as string | null) ?? null,
+    runtimeLabel: (r.runtime_label as string | null) ?? null,
     expiresAt: r.expires_at as number,
     revokedAt: (r.revoked_at as number | null) ?? null,
     revokedBy: (r.revoked_by as string | null) ?? null,

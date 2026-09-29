@@ -17,9 +17,11 @@
  *                          the daemon copy.
  *
  *   --channel <stable|beta>
- *                          Persist the channel first, then resolve against it.
- *                          Switching to `stable` while running a beta adopts the
- *                          stable target (the beta→stable revert path).
+ *                          Resolve against this channel for this run only; it is
+ *                          not saved (a machine's channel is a setting its
+ *                          Deployment will hold, #922). Switching to `stable`
+ *                          while running a beta adopts the stable target (the
+ *                          beta→stable revert path).
  *
  * CLI path for adopt (via `initiateAdopt`):
  *   POSIX — inline orchestration (this process is not the image being replaced)
@@ -52,10 +54,7 @@ import {
   SchemaGapDowngradeError,
 } from '../upgrade/schema-gap.js';
 import { resolveMycoPackageCheck } from '../upgrade/checker.js';
-import {
-  readProjectReleaseChannel,
-  writeProjectReleaseChannel,
-} from '../daemon/update-checker.js';
+import { readProjectReleaseChannel } from '../daemon/update-checker.js';
 import { resolveMycoHome } from '../grove/paths.js';
 import { managedBinaryPath } from '../install/managed-binary.js';
 import { resolveGlobalDaemonPort } from '../daemon/service-state.js';
@@ -74,7 +73,7 @@ Options:
   --now                        Upgrade immediately (identical to bare \`myco upgrade\`)
   --check                      Report available upgrades only — never adopt
   --target-version <version>   Upgrade to this exact version (flag form)
-  --channel <stable|beta>      Switch channel, then upgrade on it
+  --channel <stable|beta>      Upgrade on this channel, this run only
   -h, --help                   Show this help
 `;
 
@@ -107,8 +106,6 @@ export interface UpgradeDeps {
   mycoBinary?: string;
   /** Override the project root (for adopt's restart cwd). */
   projectRoot?: string;
-  /** Inject the channel-persist function (for testing side-effect ordering). */
-  writeChannel?: typeof writeProjectReleaseChannel;
   /** Inject the update-check function (for positive --check tests). */
   checkFn?: typeof resolveMycoPackageCheck;
   /** Resolve this machine's target triple (process.platform/arch by default). */
@@ -196,13 +193,8 @@ export async function run(args: string[], deps: UpgradeDeps = {}): Promise<void>
     return;
   }
 
-  // Persist channel change now that we are on the actual-upgrade path.
-  // This keeps the side effect out of --check and dev-build-refused paths.
-  if (channelArg) {
-    const persistChannel = deps.writeChannel ?? writeProjectReleaseChannel;
-    persistChannel(undefined, channelArg as ReleaseChannel);
-    console.log(`Channel set to '${channelArg}'.`);
-  }
+  // A channel named here is this run's: nothing is saved, so the next upgrade uses the machine's own again.
+  if (channelArg) console.log(`Upgrading on the '${channelArg}' channel for this run; it is not saved.`);
 
   // Resolve the asset refs for the upgrade target.
   const refs = await resolveAssetRefsForTarget(targetVersionArg, channel, deps);

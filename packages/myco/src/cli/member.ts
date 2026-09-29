@@ -8,6 +8,7 @@
  * attempts found no membership at all; `mcp-headers` prints the member
  * headers a remote MCP entry asks for.
  */
+import { seedMachineSettings } from '../member/machine-settings.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import type { DoctorCheck } from './doctor.js';
@@ -258,6 +259,8 @@ export async function runJoin(args: readonly string[], deps: MemberCliDeps = {})
   if (missed) out(`${missed.count} earlier capture attempt(s) here found no membership; new sessions are captured from now on`);
   out('connect your GitHub account for the dashboard: myco member link-github');
 
+  // The settings the Deployment holds for this machine, cached before the first session reads them.
+  await seedMachineSettings({ serverUrl: parsed.serverUrl, token }, { mycoHome, fetch: deps.fetch });
   if (parsed.provision && !provisionAgent(parsed.provision, root, mycoHome, deps, out, fail)) return null;
   if (!parsed.noWorker) await joinWorker(parsed.serverUrl, mycoHome, deps, out);
 

@@ -8,6 +8,7 @@
  * to serve it, capture is already on disk when the call goes out, so nothing a
  * server says or fails to say can cost a record.
  */
+import { machinePlanDirs } from './machine-settings.js';
 import fs from 'node:fs';
 import { readHookInput } from '../hooks/input.js';
 import type { NormalizedHookInput } from '../hooks/normalize.js';
@@ -52,6 +53,10 @@ export interface HookRun {
   client: ServerClient;
   now: () => number;
   argv: readonly string[];
+  /** The home this run's membership is held under, resolved from the hook's own directory: every file the run reads or writes for that membership lives here. */
+  mycoHome: string;
+  /** The extra plan folders the Deployment holds for this machine, read from this run's own home; each reader asks here rather than naming a home. */
+  machinePlanDirs: () => string[];
 }
 
 export interface HookOutcome {
@@ -186,7 +191,10 @@ export async function runMemberHook(
     const spool = new MemberSpool(credential.projectId, { mycoHome });
     const ctx: EnvelopeContext = { agent: input.agent, sessionId, stage: spool.stagerFor(sessionId), now };
     const client = new ServerClient(credential, opts.fetch ?? globalThis.fetch);
-    const run: HookRun = { hookName, input, sessionId, agent: input.agent, credential, spool, ctx, budget, client, now, argv };
+    const run: HookRun = {
+      hookName, input, sessionId, agent: input.agent, credential, spool, ctx, budget, client, now, argv, mycoHome,
+      machinePlanDirs: () => machinePlanDirs(credential.serverUrl, mycoHome),
+    };
 
     const outcome = await handle(run);
     response = outcome.response ?? {};

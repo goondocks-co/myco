@@ -52,10 +52,11 @@ interface ReadTranscript {
 function derivePlanWrites(run: HookRun, transcripts: readonly ReadTranscript[], state: SessionState, root: string): DerivedCapture & { captured: string[] } {
   const written: string[] = [];
   const advances: Array<[ReadTranscript, number]> = [];
+  const machineDirs = run.machinePlanDirs();
   for (const transcript of transcripts) {
     const unread = unreadTranscriptLines(transcript.path, transcript.pointer);
     if (unread === null) continue;
-    for (const file of planWritesInLines(run.agent, unread.lines, root)) if (!written.includes(file)) written.push(file);
+    for (const file of planWritesInLines(run.agent, unread.lines, root, machineDirs)) if (!written.includes(file)) written.push(file);
     advances.push([transcript, unread.size]);
   }
   const plans = planFilesWritten(run.ctx, state, run.credential.projectId, root, written);

@@ -120,6 +120,8 @@ describe('read layer', () => {
     //                     and holds the only decrypt in the codebase
     //   core/settings.ts  the one validated settings write path — it OWNS
     //                     deployment_settings and project_capabilities
+    //   core/machine-settings.ts  a machine's settings — it OWNS machine_settings,
+    //                     and reads machine_claims to decide who reaches them
     //   core/runs.ts      the agent run control plane — it OWNS agent_runs and
     //                     agent_state, and holds the two operations whose
     //                     atomicity lives in a WHERE clause rather than a caller
@@ -184,7 +186,7 @@ describe('read layer', () => {
     //   platform/cloudflare/store-maintenance.ts the hosted checks — it sends the
     //                     maintenance statements D1 documents, which only it knows
     //   pipeline.ts   one quota re-read on the ingest admission path
-    const ALLOWED = [/^read\//, /^ingest\//, /^db\//, /^auth\/tokens\.ts$/, /^auth\/refresh\.ts$/, /^auth\/enrollment\.ts$/, /^auth\/identity-link\.ts$/, /^auth\/grants\.ts$/, /^auth\/members-admin\.ts$/, /^core\/secrets\.ts$/, /^core\/settings\.ts$/, /^core\/repositories\.ts$/, /^core\/canopy\.ts$/, /^core\/runs\.ts$/, /^core\/activity\.ts$/, /^core\/backup\.ts$/, /^core\/digests\.ts$/, /^core\/injection\.ts$/, /^core\/provenance\.ts$/, /^core\/recall\.ts$/, /^core\/remotes\.ts$/, /^core\/resume\.ts$/, /^core\/skills\.ts$/, /^core\/search-index\.ts$/, /^core\/embedding\/(reconcile|hubness|jobs)\.ts$/, /^core\/spores\.ts$/, /^core\/tombstones\.ts$/, /^core\/blob-references\.ts$/, /^core\/recovery-schema\.ts$/, /^core\/object-release\.ts$/, /^core\/recovery-hold\.ts$/, /^core\/backup-retention\.ts$/, /^core\/worker-contacts\.ts$/, /^core\/store-maintenance\.ts$/, /^platform\/cloudflare\/store-maintenance\.ts$/, /^core\/release-provenance\.ts$/, /^pipeline\.ts$/];
+    const ALLOWED = [/^read\//, /^ingest\//, /^db\//, /^auth\/tokens\.ts$/, /^auth\/refresh\.ts$/, /^auth\/enrollment\.ts$/, /^auth\/identity-link\.ts$/, /^auth\/grants\.ts$/, /^auth\/members-admin\.ts$/, /^core\/secrets\.ts$/, /^core\/settings\.ts$/, /^core\/machine-settings\.ts$/, /^core\/repositories\.ts$/, /^core\/canopy\.ts$/, /^core\/runs\.ts$/, /^core\/activity\.ts$/, /^core\/backup\.ts$/, /^core\/digests\.ts$/, /^core\/injection\.ts$/, /^core\/provenance\.ts$/, /^core\/recall\.ts$/, /^core\/remotes\.ts$/, /^core\/resume\.ts$/, /^core\/skills\.ts$/, /^core\/search-index\.ts$/, /^core\/embedding\/(reconcile|hubness|jobs)\.ts$/, /^core\/spores\.ts$/, /^core\/tombstones\.ts$/, /^core\/blob-references\.ts$/, /^core\/recovery-schema\.ts$/, /^core\/object-release\.ts$/, /^core\/recovery-hold\.ts$/, /^core\/backup-retention\.ts$/, /^core\/worker-contacts\.ts$/, /^core\/store-maintenance\.ts$/, /^platform\/cloudflare\/store-maintenance\.ts$/, /^core\/release-provenance\.ts$/, /^pipeline\.ts$/];
     const offenders: string[] = [];
     for (const file of tsFiles(SRC)) {
       const rel = file.slice(SRC.length);

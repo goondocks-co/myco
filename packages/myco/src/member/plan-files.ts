@@ -46,13 +46,17 @@ export function isInPlanDirectory(filePath: string, dirs: readonly string[], pro
   });
 }
 
-/** The absolute path of the plan file a tool call wrote, or null when the call is not a write of a plan file into the runtime's plan directories. */
-export function planWritePath(agent: string, toolName: string | undefined, toolInput: unknown, projectRoot: string): string | null {
+/**
+ * The absolute path of the plan file a tool call wrote, or null when the call is not a write of a plan file into the
+ * runtime's plan directories: the ones the agent's manifest names, and the extra ones this machine's settings name
+ * (`machine-settings.ts`), each `~/`, absolute or relative to the project root.
+ */
+export function planWritePath(agent: string, toolName: string | undefined, toolInput: unknown, projectRoot: string, machineDirs: readonly string[] = []): string | null {
   if (typeof toolName !== 'string' || !FILE_WRITE_TOOLS.has(toolName)) return null;
   const input = (toolInput !== null && typeof toolInput === 'object' ? toolInput : {}) as Record<string, unknown>;
   const filePath = input.file_path ?? input.path ?? input.filePath;
   if (typeof filePath !== 'string' || filePath.length === 0) return null;
-  const dirs = HOOK_CONFIG[agent]?.planDirs ?? [];
+  const dirs = [...(HOOK_CONFIG[agent]?.planDirs ?? []), ...machineDirs];
   if (dirs.length === 0) return null;
   if (!PLAN_FILE_EXTENSIONS.includes(path.extname(filePath).toLowerCase())) return null;
   if (!isInPlanDirectory(filePath, dirs, projectRoot)) return null;
@@ -179,11 +183,11 @@ export function toolCallsInLine(line: Record<string, unknown>): RecordedToolCall
 }
 
 /** The plan files the given transcript lines record a write into, each once, in first-write order. */
-export function planWritesInLines(agent: string, lines: ReadonlyArray<Record<string, unknown>>, projectRoot: string): string[] {
+export function planWritesInLines(agent: string, lines: ReadonlyArray<Record<string, unknown>>, projectRoot: string, machineDirs: readonly string[] = []): string[] {
   const paths: string[] = [];
   for (const line of lines) {
     for (const call of toolCallsInLine(line)) {
-      const written = planWritePath(agent, call.name, call.input, projectRoot);
+      const written = planWritePath(agent, call.name, call.input, projectRoot, machineDirs);
       if (written !== null && !paths.includes(written)) paths.push(written);
     }
   }

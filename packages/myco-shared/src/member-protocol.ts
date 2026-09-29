@@ -134,3 +134,18 @@ export const REJOIN_FOR_ADMIN = `To write again, the machine needs an invitation
  * fragment, which no browser puts on the wire.
  */
 export const JOIN_PATH = '/join';
+
+/**
+ * Why a machine's plan folder names too much to watch (#1393), or null when it names one folder: a folder is
+ * captured whole, so an entry that is, or resolves to, the filesystem root (`/`), the home (`~`, `~/`) or the
+ * project root (`.`) would capture every Markdown file beneath it, and one that climbs with `..` reaches past
+ * where it starts. A `~` not followed by `/` names another account's home, and is refused with them.
+ */
+export function planFolderRefusal(entry: string): string | null {
+  const segments = entry.split(/[\\/]+/);
+  if (segments.includes('..')) return 'expected each path without a ".." segment';
+  if (entry.startsWith('~') && !/^~[\\/]/.test(entry)) return entry === '~' ? 'expected a folder under the home, not the home itself' : 'expected a home path to start with ~/';
+  const rooted = entry.startsWith('~') ? 'the home' : /^[\\/]/.test(entry) ? 'the filesystem root' : 'the project root';
+  const named = segments.slice(entry.startsWith('~') ? 1 : 0).filter((s) => s !== '' && s !== '.');
+  return named.length === 0 ? `expected a folder under ${rooted}, not ${rooted} itself` : null;
+}

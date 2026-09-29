@@ -106,3 +106,21 @@ describe('plan file capture', () => {
     expect(planBackstop(ctx(), state, root, spent, () => 10_000).events).toEqual([]);
   });
 });
+
+describe('the plan folders a machine adds (#1393)', () => {
+  it('captures a write into a folder this machine names, beside each agent\'s own, and for an agent that names none', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-machine-plans-'));
+    const machine = ['docs/plans', '~/notes/plans', path.join(root, 'abs-plans')];
+    // Relative to the project, `~/`, and absolute, each honoured.
+    expect(planWritePath('claude-code', 'Write', { file_path: 'docs/plans/a.md' }, root, machine)).toBe(path.join(root, 'docs/plans/a.md'));
+    expect(planWritePath('claude-code', 'Write', { file_path: path.join(os.homedir(), 'notes/plans/b.md') }, root, machine)).toBe(path.join(os.homedir(), 'notes/plans/b.md'));
+    expect(planWritePath('claude-code', 'Write', { file_path: path.join(root, 'abs-plans/c.md') }, root, machine)).toBe(path.join(root, 'abs-plans/c.md'));
+    // The agent's own folder still counts: the machine's are added, never put in its place.
+    expect(planWritePath('claude-code', 'Write', { file_path: '.claude/plans/d.md' }, root, machine)).toBe(path.join(root, '.claude/plans/d.md'));
+    // An agent whose manifest names no plan folder still captures into the machine's.
+    expect(planWritePath('codex', 'Write', { file_path: 'docs/plans/e.md' }, root)).toBeNull();
+    expect(planWritePath('codex', 'Write', { file_path: 'docs/plans/e.md' }, root, machine)).toBe(path.join(root, 'docs/plans/e.md'));
+    expect(planWritePath('claude-code', 'Write', { file_path: 'docs/other/f.md' }, root, machine)).toBeNull();
+  });
+});
+
