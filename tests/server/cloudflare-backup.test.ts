@@ -84,24 +84,58 @@ function fixture() {
       const rows = source.sqlite.query(statement).all();
       return { code: 0, stdout: JSON.stringify([{ success: true, results: rows }]), stderr: '' };
     }
-    if (args.includes('export')) {
-      const tables = args.flatMap((arg, i) => arg === '--table' ? [args[i + 1]!] : []);
-      const sql = ['PRAGMA defer_foreign_keys=TRUE;'];
-      for (const table of tables) {
-        if (table === 'sqlite_sequence') sql.push('DELETE FROM sqlite_sequence;');
-        else sql.push(source.sqlite.query<{ sql: string }, [string]>("SELECT sql FROM sqlite_master WHERE type='table' AND name=?").get(table)!.sql + ';');
-        for (const row of source.sqlite.query<Record<string, unknown>, []>(`SELECT * FROM ${quote(table)}`).all()) {
-          sql.push(`INSERT INTO ${quote(table)} (${Object.keys(row).map(quote).join(',')}) VALUES (${Object.values(row).map(literal).join(',')});`);
-        }
-      }
-      const output = args[args.indexOf('--output') + 1]!;
-      if (fs.existsSync(output)) leftovers.push(output);
-      fs.writeFileSync(output, sql.join('\n'));
-      return { code: 0, stdout: '', stderr: '' };
-    }
     throw new Error(`unexpected provider command ${args.join(' ')}`);
   } };
+  /** The export SQL of `tables`, as the provider writes it. */
+  const exportSql = (tables: readonly string[]): string => {
+    const sql = ['PRAGMA defer_foreign_keys=TRUE;'];
+    for (const table of tables) {
+      if (table === 'sqlite_sequence') sql.push('DELETE FROM sqlite_sequence;');
+      else sql.push(source.sqlite.query<{ sql: string }, [string]>("SELECT sql FROM sqlite_master WHERE type='table' AND name=?").get(table)!.sql + ';');
+      for (const row of source.sqlite.query<Record<string, unknown>, []>(`SELECT * FROM ${quote(table)}`).all()) {
+        sql.push(`INSERT INTO ${quote(table)} (${Object.keys(row).map(quote).join(',')}) VALUES (${Object.values(row).map(literal).join(',')});`);
+      }
+    }
+    return sql.join('\n');
+  };
+  const exportEndpoint = `https://api.cloudflare.com/client/v4/accounts/${record.accountId}/d1/database/${record.databaseId}/export`;
+  const signedPrefix = 'https://signed.fixture/d1/';
+  /** Every export the provider started, by the bookmark it answered; a poll completes it unless `stays` says otherwise. */
+  const exports: Array<{ bookmark: string; tables: string[]; polls: number }> = [];
+  const exportCalls: Array<{ bookmark: string | null }> = [];
+  let stays: (job: { bookmark: string; polls: number }) => boolean = () => false;
+  let download: (bookmark: string, attempt: number) => Response | null = () => null;
+  let downloads = 0;
+  const answer = (result: Record<string, unknown>) => Response.json({ success: true, errors: [], messages: [], result: { success: true, messages: [], ...result } });
   const fetchObject: CloudflareFetch = async (input, init) => {
+    if (String(input) === exportEndpoint) {
+      expect(init?.method).toBe('POST');
+      expect(new Headers(init?.headers).get('Authorization')).toBe('Bearer fixture-operator-token');
+      const body = JSON.parse(String(init?.body)) as { output_format: string; dump_options: { tables: string[] }; current_bookmark?: string };
+      expect(body.output_format).toBe('polling');
+      // A fake that answers without end would hide an unbounded poll behind a hung suite.
+      if (exportCalls.length >= 5_000) throw new Error('the export was polled without end');
+      exportCalls.push({ bookmark: body.current_bookmark ?? null });
+      if (body.current_bookmark === undefined) {
+        const job = { bookmark: `bm-${exports.length + 1}`, tables: body.dump_options.tables, polls: 0 };
+        exports.push(job);
+        return answer({ type: 'export', status: 'active', at_bookmark: job.bookmark });
+      }
+      const job = exports.find((j) => j.bookmark === body.current_bookmark);
+      if (job === undefined) return Response.json({ success: false, errors: [{ code: 7500, message: 'unknown bookmark' }] }, { status: 400 });
+      job.polls += 1;
+      if (stays(job)) return answer({ type: 'export', status: 'active', at_bookmark: job.bookmark });
+      return answer({ type: 'export', status: 'complete', at_bookmark: job.bookmark, result: { filename: 'd1.sql', signed_url: `${signedPrefix}${job.bookmark}` } });
+    }
+    if (String(input).startsWith(signedPrefix)) {
+      // The signed download is a capability of its own, fetched without the operator's credential.
+      expect(new Headers(init?.headers).get('Authorization')).toBeNull();
+      const bookmark = String(input).slice(signedPrefix.length);
+      downloads += 1;
+      if (fs.existsSync(path.join(destination, '.snapshot', 'd1.sql'))) leftovers.push(bookmark);
+      const job = exports.find((j) => j.bookmark === bookmark)!;
+      return download(bookmark, downloads) ?? new Response(exportSql(job.tables));
+    }
     const prefix = `https://api.cloudflare.com/client/v4/accounts/${record.accountId}/r2/buckets/${record.bucketName}/objects/`;
     expect(String(input).startsWith(prefix)).toBe(true);
     const key = String(input).slice(prefix.length);
@@ -110,13 +144,18 @@ function fixture() {
     return downloadFails ? new Response('object unavailable', { status: 503 }) : new Response(key === backupKey ? backupBody : bytes);
   };
   return { source, root, mycoHome, destination, record, runner, calls, leftovers, statements, body, bytes, digest, backupKey, backupBody,
+    /** Every export the provider was asked to start, and every request made of the export API. */
+    exports: () => exports, exportCalls: () => exportCalls, downloads: () => downloads,
+    /** Keep an export running for as long as `rule` says; lose a download where `lost` answers a response. */
+    exportStays: (rule: (job: { bookmark: string; polls: number }) => boolean) => { stays = rule; },
+    downloadFailsWith: (lost: (bookmark: string, attempt: number) => Response | null) => { download = lost; },
     /** The key R2 holds the registered blob's bytes under. */
     blobSource: `proj_1/${digest}~${generation}`,
     fetchObject,
     drift: () => { drift = true; }, downloadFails: (value: boolean) => { downloadFails = value; },
-    backup: (use: { fetch?: CloudflareFetch; runner?: CommandRunner; timeouts?: OperatorObjectTimeouts; report?: (line: string) => void; retry?: RecoveryRetryPolicy } = {}) =>
+    backup: (use: { fetch?: CloudflareFetch; runner?: CommandRunner; timeouts?: OperatorObjectTimeouts; report?: (line: string) => void; retry?: RecoveryRetryPolicy; d1Export?: Parameters<typeof backupCloudflareDeployment>[0]['d1Export'] } = {}) =>
       backupCloudflareDeployment({ accountId: record.accountId, mycoHome, destination, runner: use.runner ?? runner,
-        fetch: use.fetch ?? fetchObject, retry: use.retry ?? IMMEDIATE_RETRY, timeouts: use.timeouts, report: use.report }),
+        fetch: use.fetch ?? fetchObject, retry: use.retry ?? IMMEDIATE_RETRY, timeouts: use.timeouts, report: use.report, d1Export: use.d1Export ?? { pollMs: 0 } }),
     cleanup: () => { source.sqlite.close(); fs.rmSync(root, { recursive: true, force: true }); },
   };
 }
@@ -138,8 +177,8 @@ it('reconstructs FTS and triggers, preserves sequence high-water and exact value
     // The operator's provider token and the record's unrecognised private field are secret sentinels no manifest carries.
     const manifestText = fs.readFileSync(path.join(f.destination, 'recovery.json'), 'utf8');
     for (const sentinel of ['fixture-private-value', 'fixture-operator-token']) expect(manifestText).not.toContain(sentinel);
-    expect(f.calls.filter((call) => call.includes('export'))).toHaveLength(1);
-    expect(f.calls.find((call) => call.includes('export'))).toContain('sqlite_sequence');
+    expect(f.exports()).toHaveLength(1);
+    expect(f.exports()[0]!.tables).toContain('sqlite_sequence');
     expect(new Uint8Array(fs.readFileSync(path.join(f.destination, 'blobs', 'proj_1', f.digest)))).toEqual(f.bytes);
     expect(fs.readFileSync(path.join(f.destination, 'blobs', f.backupKey), 'utf8')).toBe(f.backupBody);
     const recovered = new Database(path.join(f.destination, 'myco.sqlite'));
@@ -163,7 +202,7 @@ it('refuses schema drift and leaves the artifact incomplete', async () => {
     expect(fs.existsSync(path.join(f.destination, 'myco.sqlite'))).toBe(false);
     expect(f.calls.some((call) => call.includes('get'))).toBe(false);
     // A snapshot that saw its source change is not a transient failure, so it is not captured again.
-    expect(f.calls.filter((call) => call.includes('export'))).toHaveLength(1);
+    expect(f.exports()).toHaveLength(1);
   } finally { f.cleanup(); }
 });
 
@@ -196,14 +235,15 @@ async function backupWhileRecordChanges(restore: boolean) {
   });
   let renderedFleet: string | null = null;
   const runner: CommandRunner = { run: async (command, args, options) => {
-    if (args.includes('export')) {
+    // The snapshot's schema read runs under the config rendered for the export.
+    if (args.includes('execute') && args[args.indexOf('--command') + 1] === SCHEMA_QUERY) {
       const vars = (Bun.TOML.parse(fs.readFileSync(args[args.indexOf('-c') + 1]!, 'utf8')) as { vars: Record<string, string> }).vars;
       renderedFleet = vars.MYCO_FLEET ?? null;
     }
     return f.runner.run(command, args, options);
   } };
-  const fetch: CloudflareFetch = async (input) => new Response(String(input).endsWith(f.backupKey) ? f.backupBody : f.bytes);
-  const outcome = await backupCloudflareDeployment({ accountId: f.record.accountId, mycoHome: f.mycoHome, destination: f.destination, runner, fetch })
+  const fetch: CloudflareFetch = f.fetchObject;
+  const outcome = await backupCloudflareDeployment({ accountId: f.record.accountId, mycoHome: f.mycoHome, destination: f.destination, runner, fetch, d1Export: { pollMs: 0 } })
     .then((result) => ({ result }), (error: unknown) => ({ error: String(error) }));
   spy.mockRestore();
   return { f, reads, renderedFleet, outcome };
@@ -253,7 +293,6 @@ const authenticationError = apiRefusal('Authentication error [code: 10000]');
 /** What Wrangler prints when a request loses its connection or its name lookup. */
 const connectionLost = { code: 1, stdout: '', stderr: '✘ [ERROR] fetch failed\n' };
 /** What `wrangler d1 export` prints when its SQL download loses its connection. */
-const exportLost = { code: 1, stdout: '🌀 Executing on remote database myco-server (fixture-database):\nDownloading SQL to d1.sql\n', stderr: '✘ [ERROR] fetch failed\n' };
 /** What Bun's fetch throws when its signal's timeout fires. */
 const timedOut = () => new DOMException('The operation timed out.', 'TimeoutError');
 /** The files a resume would accept or sweep: every regular file under the artifact's blob directory. */
@@ -283,7 +322,7 @@ it('retries an object read that times out, and completes a verified artifact', a
   } finally { f.cleanup(); }
 });
 
-it('logs in again after a login that timed out, and completes the object read on a later attempt', async () => {
+it('logs in again after a login that timed out, and completes the backup on a later attempt', async () => {
   const f = fixture();
   try {
     let logins = 0;
@@ -295,8 +334,9 @@ it('logs in again after a login that timed out, and completes the object read on
     const result = await f.backup({ runner, report: (line) => reports.push(line) });
     expect(result.status).toBe('complete');
     expect(logins).toBe(2);
+    // The export is the first to need the operator's login, and its snapshot is captured again with a fresh one.
     expect(reports.filter((line) => line.includes('answered nothing in'))).toEqual([
-      expect.stringContaining(`(attempt 2 of ${RECOVERY_RETRY.objectReads.attempts})`),
+      expect.stringContaining(`(attempt 2 of ${RECOVERY_RETRY.snapshots.attempts})`),
     ]);
     expect((await verifyRecoveryBundle(f.destination)).status).toBe('complete');
   } finally { f.cleanup(); }
@@ -599,30 +639,28 @@ describe('a recovery hold write that does not answer', () => {
 
 describe('a transient Cloudflare failure during the snapshot', () => {
   const isSchemaRead = (args: readonly string[]) => args.includes('execute') && args[args.indexOf('--command') + 1] === SCHEMA_QUERY;
-  const isExport = (args: readonly string[]) => args.includes('export');
   /** A runner that answers `fail(args)` for the commands it names, and passes every other one to the fixture's. */
   const failing = (f: ReturnType<typeof fixture>, fail: (args: readonly string[]) => ReturnType<CommandRunner['run']> | null): CommandRunner => ({
     run: async (command, args, options) => (fail(args) ?? f.runner.run(command, args, options)),
   });
-  /** An export whose SQL download loses its connection after writing part of the file. */
-  const downloadLost = async (f: ReturnType<typeof fixture>, args: readonly string[]) => {
-    const output = args[args.indexOf('--output') + 1]!;
-    if (fs.existsSync(output)) f.leftovers.push(output);
-    fs.writeFileSync(output, 'PRAGMA defer_foreign_keys=TRUE;\nINSERT INTO "recovery_fixture" ("id","body","bytes") VALUES (999,\'partial\',NULL);\nINSERT INTO "sess');
-    return exportLost;
-  };
+  /** An export download that loses its connection after sending part of the file. */
+  const downloadLost = (): Response => new Response(new ReadableStream<Uint8Array>({
+    start(controller) {
+      controller.enqueue(new TextEncoder().encode('PRAGMA defer_foreign_keys=TRUE;\nINSERT INTO "recovery_fixture" ("id","body","bytes") VALUES (999,\'partial\',NULL);\nINSERT INTO "sess'));
+      controller.error(new TypeError('fetch failed'));
+    },
+  }));
   const captured = (f: ReturnType<typeof fixture>) => {
     const recovered = new Database(path.join(f.destination, 'myco.sqlite'), { readonly: true });
     try { return recovered.query('SELECT id, body FROM recovery_fixture').all(); } finally { recovered.close(); }
   };
 
-  it('captures again after an export download and a schema read that each fail once, and completes a verified artifact', async () => {
+  it('captures again after an export download and a schema read that each fail once, resuming the one export rather than starting another', async () => {
     const f = fixture();
     try {
-      let exports = 0;
       let schemaReads = 0;
+      f.downloadFailsWith((_bookmark, attempt) => attempt === 1 ? downloadLost() : null);
       const runner = failing(f, (args) => {
-        if (isExport(args) && ++exports === 1) return downloadLost(f, args);
         // The second attempt's schema read after its export.
         if (isSchemaRead(args) && ++schemaReads === 3) return Promise.resolve(accountRefused);
         return null;
@@ -630,7 +668,9 @@ describe('a transient Cloudflare failure during the snapshot', () => {
       const reports: string[] = [];
       const result = await f.backup({ runner, report: (line) => reports.push(line) });
       expect(result.status).toBe('complete');
-      expect(exports).toBe(3);
+      // The lost download's export is resumed by its bookmark; only the attempt after its result reached disk starts one.
+      expect(f.exports().map((job) => job.bookmark)).toEqual(['bm-1', 'bm-2']);
+      expect(f.downloads()).toBe(3);
       expect(schemaReads).toBe(5);
       expect(reports.filter((line) => line.startsWith('Capturing the database snapshot failed'))).toEqual([
         expect.stringContaining(`fetch failed); starting it again in 0 s (attempt 2 of ${RECOVERY_RETRY.snapshots.attempts})`),
@@ -647,14 +687,12 @@ describe('a transient Cloudflare failure during the snapshot', () => {
     const f = fixture();
     try {
       const at: number[] = [];
-      const runner = failing(f, (args) => {
-        if (!isExport(args)) return null;
+      f.downloadFailsWith(() => {
         at.push(performance.now());
-        return at.length < 3 ? downloadLost(f, args) : null;
+        return at.length < 3 ? downloadLost() : null;
       });
       const retry = { ...IMMEDIATE_RETRY, snapshots: { attempts: 3, backoffMs: [60, 90] } };
-      const reports: string[] = [];
-      expect((await f.backup({ runner, retry, report: (line) => reports.push(line) })).status).toBe('complete');
+      expect((await f.backup({ retry })).status).toBe('complete');
       expect(at).toHaveLength(3);
       expect(at[1]! - at[0]!).toBeGreaterThanOrEqual(55);
       expect(at[2]! - at[1]!).toBeGreaterThanOrEqual(85);
@@ -689,22 +727,42 @@ describe('a transient Cloudflare failure during the snapshot', () => {
   it('gives up after its bound when every export download fails, naming the attempts, and a later run never uses the partial file', async () => {
     const f = fixture();
     try {
-      let exports = 0;
-      const runner = failing(f, (args) => isExport(args) ? (exports += 1, downloadLost(f, args)) : null);
+      f.downloadFailsWith(() => downloadLost());
       const { attempts } = RECOVERY_RETRY.snapshots;
-      const failure = await f.backup({ runner }).then(() => null, (error: Error) => error.message);
+      const failure = await f.backup().then(() => null, (error: Error) => error.message);
       expect(failure).toStartWith(`the database snapshot was not captured after ${attempts} attempts: `);
-      expect(failure).toContain('fetch failed');
+      expect(failure).toContain('stopped before it arrived');
       expect(failure).not.toContain('refused this account');
-      expect(exports).toBe(attempts);
+      // Every attempt downloads the one export it started; none starts a second.
+      expect({ exports: f.exports().length, downloads: f.downloads() }).toEqual({ exports: 1, downloads: attempts });
       expect(JSON.parse(fs.readFileSync(path.join(f.destination, 'recovery.json'), 'utf8')).status).toBe('snapshot');
       expect(fs.existsSync(path.join(f.destination, 'myco.sqlite'))).toBe(false);
-      // The last attempt's partial download is still on disk; the next run starts from an empty work directory.
-      expect(fs.existsSync(path.join(f.destination, '.snapshot', 'd1.sql'))).toBe(true);
+      // The last attempt's partial download is gone with its work directory's next emptying; the next run resumes the export.
+      f.downloadFailsWith(() => null);
       expect((await f.backup()).status).toBe('complete');
+      expect(f.exports()).toHaveLength(1);
       expect(f.leftovers).toEqual([]);
       expect(captured(f)).toEqual([{ id: 3, body: f.body }]);
       expect((await verifyRecoveryBundle(f.destination)).status).toBe('complete');
+    } finally { f.cleanup(); }
+  });
+
+  it('stops an export that never completes at its bound, names why, and never starts a second one in a retry (#1455)', async () => {
+    const f = fixture();
+    try {
+      f.exportStays(() => true);
+      let clock = 0;
+      const d1Export = { pollMs: 0, boundMs: 30 * 60_000, now: () => clock, sleep: async () => { clock += 60_000; } };
+      const failure = await f.backup({ d1Export }).then(() => null, (error: Error) => error.message);
+      expect(failure).toStartWith('the D1 export started ');
+      expect(failure).toContain('did not finish within 30 min');
+      expect(failure).toContain('no second export was started');
+      // An export that may still be live is not a transient failure: the #1452 retry does not start another.
+      expect(f.exports()).toHaveLength(1);
+      // The next backup asks after the same export, and still starts none while it runs.
+      await expect(f.backup({ d1Export })).rejects.toThrow('did not finish within 30 min');
+      expect(f.exports()).toHaveLength(1);
+      expect(f.exportCalls().at(-1)).toEqual({ bookmark: 'bm-1' });
     } finally { f.cleanup(); }
   });
 
@@ -715,7 +773,7 @@ describe('a transient Cloudflare failure during the snapshot', () => {
       const runner = failing(f, (args) => isSchemaRead(args) && ++schemaReads === 1 ? Promise.resolve(accountRefused) : null);
       expect((await f.backup({ runner })).status).toBe('complete');
       expect(schemaReads).toBe(3);
-      expect(f.calls.filter(isExport)).toHaveLength(1);
+      expect(f.exports()).toHaveLength(1);
       expect((await verifyRecoveryBundle(f.destination)).status).toBe('complete');
     } finally { f.cleanup(); }
   });
@@ -730,7 +788,7 @@ describe('a transient Cloudflare failure during the snapshot', () => {
       expect(failure).toStartWith(`the database snapshot was not captured after ${attempts} attempts: `);
       expect(failure).toEndWith('; the source refused this account (code 7403), so the credential or the account may be wrong');
       expect(schemaReads).toBe(attempts);
-      expect(f.calls.filter(isExport)).toHaveLength(0);
+      expect(f.exports()).toHaveLength(0);
     } finally { f.cleanup(); }
   });
 
