@@ -25,7 +25,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { getMachineId } from '../machine-id.js';
 import { resolveMachineIdPath, resolveMycoHome } from '../paths/home.js';
-import { REJOIN_HINT } from '@goondocks/myco-shared/member-protocol';
+import { MACHINE_IDENTITY_NOTE, REJOIN_HINT } from '@goondocks/myco-shared/member-protocol';
 import { ENROLLMENT_KEY_PATTERN, ENV_JOIN_CODE, JOIN_PATH } from './constants.js';
 import { admitMemberServerUrl, MEMBER_SERVER_URL_RULE } from './server-url.js';
 import { acquireRegistryLock, deploymentUrl, readDeploymentMembership, readRegistryEntry, writeDeploymentMembership, writeRegistryEntry, REGISTRY_VERSION } from './registry.js';
@@ -335,7 +335,7 @@ function refusalLine(refusal: JoinRefusal, mycoHome: string): string {
   if (refusal.code === 'identity_claimed') {
     return `join code refused (identity_claimed): this machine's identity ${refusal.machineId} already belongs to another member of ${refusal.serverUrl}. `
       + `A sandbox needs an identity of its own: run it with its own MYCO_HOME holding a distinct machine_id (this process reads ${resolveMachineIdPath()}). `
-      + `If this machine is that member's, ${REJOIN_HINT}. `
+      + `If this machine is that member's, ${REJOIN_HINT}. ${MACHINE_IDENTITY_NOTE}. `
       + `To present this code again, delete ${joinRefusalsDir(mycoHome)} (\`myco member leave --purge\` does too) and the next hook asks again; no capture`;
   }
   return `join code refused (${refusal.code}) — ${refusal.reason}; no capture`;
