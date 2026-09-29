@@ -7,6 +7,7 @@
  * without writing to the server and never takes a token on the command line;
  * `myco member leave --purge` removes what provisioning wrote.
  */
+import { joinRefusalsDir } from '@myco/member/join-code.js';
 import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -244,14 +245,14 @@ describe('myco member join / leave', () => {
     process.exitCode = 0;
   });
 
-  it('refuses a non-https server, a bad token, both token sources, and neither', async () => {
+  it('refuses plain http off this machine\'s loopback, a bad token, both token sources, and neither', async () => {
     const err: string[] = [];
     const deps = { stderr: (l: string) => err.push(l) };
     expect(await join(['http://server.example', '--project', PROJECT, '--token-stdin'], { ...deps, stdin: () => rig.token })).toBeNull();
     expect(await join(['https://server.example', '--project', PROJECT, '--token-stdin'], { ...deps, stdin: () => 'not-a-token' })).toBeNull();
     expect(await join(['https://server.example', '--project', PROJECT, '--token-stdin', '--token-env', 'X'], { ...deps, stdin: () => rig.token })).toBeNull();
     expect(await join(['https://server.example', '--project', PROJECT], deps)).toBeNull();
-    expect(err.join('\n')).toContain('is not an https server URL');
+    expect(err.join('\n')).toContain("http://server.example is not a server URL a member accepts (https, or http on this machine's loopback)");
     expect(err.join('\n')).toContain('that is not a member token');
     expect(err.join('\n')).toContain('exactly one of --token-stdin or --token-env');
     expect(readRegistryEntry(projectRoot, mycoHome)).toBeNull();
@@ -273,8 +274,11 @@ describe('myco member join / leave', () => {
     // Re-join, then purge: the spool and the provisioned hooks both go.
     await join(['https://server.example', '--project', PROJECT, '--token-env', 'JOIN_TOKEN', '--root', projectRoot], { env: { JOIN_TOKEN: rig.token } });
     out.length = 0;
+    fs.mkdirSync(joinRefusalsDir(mycoHome), { recursive: true });
+    fs.writeFileSync(path.join(joinRefusalsDir(mycoHome), 'refused.json'), '{}');
     expect(runLeave(['--purge'], deps)).toBe(true);
     expect(fs.existsSync(spool.dir)).toBe(false);
+    expect(fs.existsSync(joinRefusalsDir(mycoHome))).toBe(false);
     expect(fs.existsSync(path.join(projectRoot, MEMBER_TARGET))).toBe(false);
     expect(fs.existsSync(path.join(home, '.claude', 'settings.json'))).toBe(true);
   });

@@ -2,15 +2,19 @@
  * The credential record a member hook runs under. The SOURCE is declared by
  * the hook command (`--credential registry|env`) and never inferred: the
  * registry source reads the entry for the resolved project root and nothing
- * else; the env source reads the `MYCO_SERVER_URL` + `MYCO_MEMBER_TOKEN` +
- * `MYCO_PROJECT` triplet, all three or none. Every record's server URL must
- * be `https:`.
+ * else. The env source reads what this process's environment carries: the
+ * `MYCO_SERVER_URL` + `MYCO_MEMBER_TOKEN` + `MYCO_PROJECT` triplet, all three
+ * or none, or — when no part of the triplet is set — a `MYCO_JOIN_CODE`,
+ * whose redemption is this machine's own registry membership. Every record's
+ * server URL passes the one member rule (`server-url.ts`).
  */
 import { resolveProjectRoot, resolveVaultDir } from '../project-root.js';
 import { resolveMycoHome } from '../paths/home.js';
-import { CREDENTIAL_FLAG, CREDENTIAL_SOURCES, MEMBER_TOKEN_PATTERN, type CredentialSource, type RefreshTerminalReason } from './constants.js';
+import { CREDENTIAL_FLAG, CREDENTIAL_SOURCES, ENV_JOIN_CODE, MEMBER_TOKEN_PATTERN, type CredentialSource, type RefreshTerminalReason } from './constants.js';
 import { recordMissingMembership } from './no-membership.js';
-import { listRegistryEntries, readRegistryEntry, type RegistryEntry } from './registry.js';
+import { JOIN_CODE_REFUSALS, parseJoinCode } from './join-code.js';
+import { deploymentUrl, listRegistryEntries, readRegistryEntry, type RegistryEntry } from './registry.js';
+import { admitMemberServerUrl, MEMBER_SERVER_URL_RULE } from './server-url.js';
 
 export { CREDENTIAL_FLAG, type CredentialSource };
 
@@ -48,27 +52,6 @@ export function parseCredentialFlag(argv: readonly string[]): CredentialSource |
   return null;
 }
 
-export function isHttpsUrl(value: string): boolean {
-  try {
-    return new URL(value).protocol === 'https:';
-  } catch {
-    return false;
-  }
-}
-
-/** A host on this machine's own loopback, where the self-hosted C-local transport listens: the IPv4 loopback block, the IPv6 loopback, or its name. */
-const isLoopbackHost = (hostname: string): boolean => hostname === 'localhost' || hostname === '[::1]' || /^127(\.\d{1,3}){3}$/.test(hostname);
-
-/** True for `http://` on a loopback host — the one plain-http shape an injected credential may name; a registry entry never does. */
-export function isLoopbackHttpUrl(value: string): boolean {
-  try {
-    const url = new URL(value);
-    return url.protocol === 'http:' && isLoopbackHost(url.hostname);
-  } catch {
-    return false;
-  }
-}
-
 export function isMemberTokenShape(value: string): boolean {
   return MEMBER_TOKEN_PATTERN.test(value);
 }
@@ -92,12 +75,16 @@ export interface CredentialOptions {
 /**
  * The record for the declared source, or null with one stderr line when the
  * source is missing, the entry is absent, the triplet is partial, or the URL
- * is not https. Nothing here reads a source the command did not declare.
+ * breaks the member rule. Nothing here reads a source the command did not declare.
  *
  * The home is resolved from the SAME directory the project root is resolved
  * from, so a project pinned to a non-default home reads the registry that
  * holds its membership even when nothing set `MYCO_HOME` (see
  * `paths/home.ts`).
+ *
+ * Synchronous by design: redeeming a join code is a network call, made before
+ * this by the one caller that may spend it (`capture.ts`, gated on
+ * {@link redeemsJoinCode}); this only reads what that redemption wrote.
  */
 export function resolveCredential(
   source: CredentialSource | null,
@@ -107,11 +94,13 @@ export function resolveCredential(
     stderr(`hook command must declare ${CREDENTIAL_FLAG} registry|env — no capture`);
     return null;
   }
-  if (source === 'env') return envCredential(opts.env ?? process.env);
+  const env = opts.env ?? process.env;
+  if (source === 'env' && !envCarriesJoinCode(env)) return envCredential(env);
   const cwd = opts.cwd ?? process.cwd();
   const root = resolveMemberProjectRoot(cwd);
   const mycoHome = opts.mycoHome ?? resolveMycoHome({ cwd, env: opts.env });
   const entry = readRegistryEntry(root, mycoHome) ?? soleMembershipForMcp(mycoHome, opts.invokedBy);
+  if (source === 'env') return joinCodeCredential(env, entry, root, mycoHome);
   if (!entry) {
     // The hook still exits 0 — a non-zero hook breaks the harness — so the
     // miss is counted under the home this invocation resolved, where
@@ -120,8 +109,66 @@ export function resolveCredential(
     stderr(`no registry entry for ${root} — run \`myco member join <server-url> --project <id>\`; no capture`);
     return null;
   }
-  if (!isHttpsUrl(entry.serverUrl)) {
-    stderr(`registry entry for ${root} names a non-https server — no capture`);
+  if (!admitMemberServerUrl(entry.serverUrl)) {
+    stderr(`registry entry for ${root} names a server that is not ${MEMBER_SERVER_URL_RULE} — no capture`);
+    return null;
+  }
+  return registryCredential(entry, root);
+}
+
+/**
+ * Whether the env source takes its credential from a join code: a
+ * `MYCO_JOIN_CODE` is set and no part of the triplet is. A triplet the
+ * orchestrator handed over wins, and a partial one is refused as partial —
+ * neither spends the code.
+ *
+ * A redeemed code is not an orchestrator's token. `/members/join` mints this
+ * machine a rotating credential of its own and it is kept in the registry,
+ * under the registry lock, like any other membership; so the record it
+ * resolves to is a registry record, which rotates. The non-rotating rule for
+ * env credentials covers the triplet only: a token copied into many
+ * sandboxes, which no one of them may rotate.
+ */
+function envCarriesJoinCode(env: NodeJS.ProcessEnv): boolean {
+  if (!env[ENV_JOIN_CODE]?.trim()) return false;
+  return [ENV_SERVER_URL, ENV_MEMBER_TOKEN, ENV_PROJECT].every((key) => !env[key]?.trim());
+}
+
+/**
+ * Whether a hook declaring `source` would capture on a credential redeemed
+ * from `MYCO_JOIN_CODE`, and so may present it. A join code is single-use and
+ * presenting it spends it, so it is presented only where the resolve that
+ * follows reads what it yields: never on a hook with no declared source, or
+ * one whose env triplet supplies the credential instead.
+ */
+export function redeemsJoinCode(source: CredentialSource | null, env: NodeJS.ProcessEnv = process.env): boolean {
+  if (!env[ENV_JOIN_CODE]?.trim()) return false;
+  return source === 'registry' || (source === 'env' && envCarriesJoinCode(env));
+}
+
+/**
+ * The env source's credential when the environment carries a join code: this
+ * machine's membership of the Deployment the CODE names, and nothing else. A
+ * binding the home holds for this root on another Deployment belongs to some
+ * other process sharing the home, and capturing on it would land these
+ * sessions somewhere the sandbox was never sent.
+ */
+function joinCodeCredential(env: NodeJS.ProcessEnv, entry: RegistryEntry | null, root: string, mycoHome: string): CredentialRecord | null {
+  const code = parseJoinCode(env[ENV_JOIN_CODE]!.trim());
+  if ('error' in code) {
+    stderr(`${ENV_JOIN_CODE} — ${JOIN_CODE_REFUSALS[code.error]}; no capture`);
+    return null;
+  }
+  if (!entry) {
+    stderr(`${ENV_JOIN_CODE} has not been redeemed for ${root} — no capture`);
+    return null;
+  }
+  if (deploymentUrl(entry.serverUrl) !== deploymentUrl(code.serverUrl)) {
+    stderr(`${ENV_JOIN_CODE} names ${code.serverUrl}, but ${entry.root} is joined to ${entry.serverUrl} under ${mycoHome} — no capture`);
+    return null;
+  }
+  if (!admitMemberServerUrl(entry.serverUrl)) {
+    stderr(`registry entry for ${entry.root} names a server that is not ${MEMBER_SERVER_URL_RULE} — no capture`);
     return null;
   }
   return registryCredential(entry, root);
@@ -166,15 +213,15 @@ function envCredential(env: NodeJS.ProcessEnv): CredentialRecord | null {
   const projectId = env[ENV_PROJECT]?.trim() || undefined;
   const present = [serverUrl, token, projectId].filter((v) => v !== undefined).length;
   if (present === 0) {
-    stderr(`${ENV_SERVER_URL}, ${ENV_MEMBER_TOKEN}, ${ENV_PROJECT} are not set — no capture`);
+    stderr(`${ENV_SERVER_URL}, ${ENV_MEMBER_TOKEN}, ${ENV_PROJECT} are not set, and neither is ${ENV_JOIN_CODE} — no capture`);
     return null;
   }
   if (present < 3) {
     stderr(`${ENV_SERVER_URL} + ${ENV_MEMBER_TOKEN} + ${ENV_PROJECT} must all be set (all three or none) — no capture`);
     return null;
   }
-  if (!isHttpsUrl(serverUrl!) && !isLoopbackHttpUrl(serverUrl!)) {
-    stderr(`${ENV_SERVER_URL} must be https, or http on this machine's loopback — no capture`);
+  if (!admitMemberServerUrl(serverUrl!)) {
+    stderr(`${ENV_SERVER_URL} must be ${MEMBER_SERVER_URL_RULE} — no capture`);
     return null;
   }
   return { serverUrl: serverUrl!, token: token!, projectId: projectId!, source: 'env' };
