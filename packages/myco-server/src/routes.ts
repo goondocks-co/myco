@@ -26,7 +26,7 @@ import {
   handleBackupArtifact, handleCreateBackup, handleListBackups, handlePinBackup,
   handleRestoreBackup, handleRestorePreview, handleRestoreUpload,
 } from './api/backups.js';
-import { handleRecoveryExportStatus, handleStartRecoveryExport } from './api/recovery.js';
+import { handleForgetUnsettledExport, handleRecoveryExportStatus, handleStartRecoveryExport } from './api/recovery.js';
 import { MAX_UPLOAD_BODY_BYTES } from './core/backup.js';
 import { handleBlobRead } from './api/blobs.js';
 import { handleGetSpore, handleListSpores, handleResolveSpore, handleSaveSpore } from './api/spores.js';
@@ -234,6 +234,7 @@ export const ROUTES: readonly Route[] = [
   { method: 'GET', path: '/api/projects/{projectId}/release-states', pattern: /^\/api\/projects\/(?<projectId>[A-Za-z0-9._-]{1,64})\/release-states$/, auth: 'session', authority: 'member', handler: handleProjectReleaseStates },
   { method: 'POST', path: '/api/recovery/exports', auth: 'session', authority: 'admin', handler: handleStartRecoveryExport },
   { method: 'GET', path: '/api/recovery/exports', auth: 'session', authority: 'admin', handler: handleRecoveryExportStatus },
+  { method: 'POST', path: '/api/recovery/exports/forget-unsettled', auth: 'session', authority: 'admin', handler: handleForgetUnsettledExport },
   { method: 'POST', path: '/api/backups', auth: 'session', authority: 'admin', handler: handleCreateBackup },
   { method: 'GET', path: '/api/backups', auth: 'session', authority: 'admin', handler: handleListBackups },
   { method: 'POST', path: '/api/backups/{backupId}/restore-preview', pattern: /^\/api\/backups\/(?<backupId>[A-Za-z0-9._-]{1,64})\/restore-preview$/, auth: 'session', authority: 'admin', handler: handleRestorePreview },

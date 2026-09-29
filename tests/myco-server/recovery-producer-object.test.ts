@@ -414,3 +414,85 @@ it('reports the wait on an unsettled export in its status, and asks once after a
     expect((sql.query('SELECT bookmark FROM attempts WHERE id = ?').get(second.attempt!) as { bookmark: string }).bookmark).toBe('bm-2');
   } finally { globalThis.fetch = original; sql.close(); }
 });
+
+it('forgets an unsettled export at the owner\'s word once no attempt advances, and the next attempt starts its own (#1493 G3)', async () => {
+  const sql = new Database(':memory:');
+  const bindings = { HARNESS_LAUNCH_MODE: 'record', MYCO_RECOVERY_API_ORIGIN: 'http://127.0.0.1:9' };
+  const producer = producerOver(sql, [], undefined, {}, bindings);
+  const first = await producer.admit(admission('token-lost'));
+  const sent: Array<string | null> = [];
+  let answer: () => Response = () => { throw new TypeError('fetch failed'); };
+  const original = globalThis.fetch;
+  globalThis.fetch = (async (_input: RequestInfo | URL, init?: RequestInit) => {
+    sent.push((JSON.parse(String(init?.body)) as { current_bookmark?: string }).current_bookmark ?? null);
+    return answer();
+  }) as typeof fetch;
+  const recorded = () => sql.query('SELECT COUNT(*) AS n FROM attempts WHERE export_requested_at IS NOT NULL').get();
+  try {
+    // The first attempt's start is lost, and the attempt after it waits on that export.
+    await producer.continue();
+    sql.run("UPDATE attempts SET stage = 'failed', error = 'provider_unavailable' WHERE id = ?", [first.attempt!]);
+    const second = await producer.admit(admission('token-waiting'));
+    expect((await producer.continue()).progressed).toBe(false);
+    expect(sent).toEqual([null]);
+
+    // While that attempt advances, nothing is forgotten.
+    expect(await producer.forgetUnsettledExport()).toEqual({ refused: 'attempt_advancing', attempt: second.attempt! });
+    expect(recorded()).toEqual({ n: 1 });
+
+    // Once it fails on the wait, the export is still refused while its request or last answer falls inside the stale
+    // window, when it may still run; the status and the refusal say from when it may be forgotten.
+    sql.run("UPDATE attempts SET stage = 'failed', error = 'export_unsettled' WHERE id = ?", [second.attempt!]);
+    const requestedAt = (sql.query('SELECT export_requested_at AS at FROM attempts WHERE id = ?').get(first.attempt!) as { at: number }).at;
+    const from = requestedAt + PRODUCER_LIMITS.exportStaleMs;
+    expect((await producer.status()).unsettledExport).toEqual({ attempt: first.attempt!, forgettableAt: from });
+    expect(await producer.forgetUnsettledExport()).toEqual({ refused: 'export_recent', attempt: first.attempt!, forgettableAt: from });
+    // Requested long ago but answered for lately: the window runs from its last word.
+    sql.run('UPDATE attempts SET export_requested_at = ?, export_answered_at = ? WHERE id = ?', [Date.now() - 2 * PRODUCER_LIMITS.exportStaleMs, Date.now() - PRODUCER_LIMITS.exportStaleMs + 60_000, first.attempt!]);
+    expect(await producer.forgetUnsettledExport()).toMatchObject({ refused: 'export_recent' });
+    expect(recorded()).toEqual({ n: 1 });
+    // Past the window from its last word, the owner's word forgets it, once.
+    sql.run('UPDATE attempts SET export_requested_at = ?, export_answered_at = ? WHERE id = ?', [Date.now() - 2 * PRODUCER_LIMITS.exportStaleMs, Date.now() - PRODUCER_LIMITS.exportStaleMs - 1, first.attempt!]);
+    const logged: string[] = [];
+    const log = console.log;
+    console.log = (line: unknown) => { logged.push(String(line)); };
+    try {
+      expect(await producer.forgetUnsettledExport()).toMatchObject({ forgotten: { attempt: first.attempt! } });
+    } finally { console.log = log; }
+    expect(logged.map((line) => (JSON.parse(line) as { kind: string }).kind)).toContain('recovery_export_forgotten');
+    expect(recorded()).toEqual({ n: 0 });
+    expect(await producer.forgetUnsettledExport()).toEqual({ forgotten: null });
+    expect((await producer.status()).unsettledExport).toBeUndefined();
+
+    // The next attempt starts its own export straight away.
+    await producer.admit(admission('token-after'));
+    answer = () => Response.json({ success: true, errors: [], result: { success: true, status: 'active', at_bookmark: 'bm-own' } });
+    await producer.continue({ ...PRODUCER_LIMITS, maxPollsPerStep: 1 });
+    expect(sent).toEqual([null, null]);
+  } finally { globalThis.fetch = original; sql.close(); }
+});
+
+it('keeps the first answer that nothing is exporting on the attempt itself, apart from when the export last ran (#1497)', async () => {
+  const sql = new Database(':memory:');
+  const bindings = { HARNESS_LAUNCH_MODE: 'record', MYCO_RECOVERY_API_ORIGIN: 'http://127.0.0.1:9' };
+  const producer = producerOver(sql, [], undefined, {}, bindings);
+  const first = await producer.admit(admission('token-absent'));
+  let answer: () => Response = () => Response.json({ success: true, errors: [], result: { success: true, status: 'active', at_bookmark: 'bm-1' } });
+  const original = globalThis.fetch;
+  globalThis.fetch = (async () => answer()) as unknown as typeof fetch;
+  const row = () => sql.query('SELECT bookmark, export_answered_at AS answered, export_absent_at AS absent, re_exports AS reExports FROM attempts WHERE id = ?').get(first.attempt!) as { bookmark: string | null; answered: number | null; absent: number | null; reExports: number };
+  try {
+    await producer.continue({ ...PRODUCER_LIMITS, maxPollsPerStep: 1 });
+    const ran = row();
+    expect([ran.bookmark, ran.absent]).toEqual(['bm-1', null]);
+    answer = () => Response.json({ success: true, errors: [], result: { success: false, error: 'Not currently exporting anything.' } });
+    await producer.continue({ ...PRODUCER_LIMITS, maxPollsPerStep: 1 });
+    const absent = row();
+    // The window is recorded where it began, and the export's last word stays what it was.
+    expect({ bookmark: absent.bookmark, answered: absent.answered, reExports: absent.reExports }).toEqual({ bookmark: 'bm-1', answered: ran.answered, reExports: 0 });
+    expect(absent.absent).not.toBeNull();
+    // Across a restart of the object the same window holds: the export is still followed.
+    await producerOver(sql, [], undefined, {}, bindings).continue({ ...PRODUCER_LIMITS, maxPollsPerStep: 1 });
+    expect({ ...row(), absent: row().absent === absent.absent }).toEqual({ ...absent, absent: true });
+  } finally { globalThis.fetch = original; sql.close(); }
+});

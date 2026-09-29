@@ -34,8 +34,12 @@ export type D1ExportReading =
   | { kind: 'running'; bookmark: string }
   /** The export completed; its SQL is at `signedUrl`. */
   | { kind: 'complete'; bookmark: string | null; signedUrl: string }
-  /** Cloudflare ended the export without a result. */
-  | { kind: 'ended'; bookmark: string | null; detail: string }
+  /**
+   * Cloudflare ended the export without a result. `absent` marks the answer that nothing is exporting at all, rather
+   * than one that says this export failed: a caller that may start another weighs it against how lately the export
+   * answered that it ran.
+   */
+  | { kind: 'ended'; bookmark: string | null; detail: string; absent?: true }
   /** The API refused the credential before the request did anything: nothing was started, and nothing was asked. */
   | { kind: 'refused-login'; status: number }
   /** An answer that does not settle the export's state; it may still be running. */
@@ -66,7 +70,7 @@ export function readD1ExportAnswer(status: number, body: unknown, asked: string 
   const said = errors.map((e) => text(e.message)).filter((m): m is string => m !== undefined).join('; ');
   const resultError = text(envelope?.result?.error);
   const notExporting = [resultError, ...errors.map((e) => text(e.message))].find((m) => m !== undefined && NOT_EXPORTING.test(m));
-  if (notExporting !== undefined && status !== 401) return { kind: 'ended', bookmark: asked, detail: notExporting };
+  if (notExporting !== undefined && status !== 401) return { kind: 'ended', bookmark: asked, detail: notExporting, absent: true };
   if (status < 200 || status > 299) {
     if (status === 401 || (status === 403 && errors.some((e) => e.code === AUTHENTICATION_ERROR))) return { kind: 'refused-login', status };
     return { kind: 'unknown', bookmark: asked, cause: 'http', status, transient: transientExportStatus(status), detail: `HTTP ${status}${said === '' ? '' : `: ${said}`}` };

@@ -126,8 +126,11 @@ export function snapshotObjectFacts(file: string): Map<string, { bytes: number; 
 
 export interface RecoveryAdapter {
   source: RecoverySource;
-  /** Write a closed standalone database at databasePath, using workDir for intermediate files. */
-  snapshot(databasePath: string, workDir: string): Promise<RecoverySnapshot>;
+  /**
+   * Write a closed standalone database at databasePath, using workDir for intermediate files, captured under the
+   * recovery hold `holdToken` names (null for a source that keeps none).
+   */
+  snapshot(databasePath: string, workDir: string, holdToken?: string | null): Promise<RecoverySnapshot>;
   /** Stream a registered blob or catalogued backup from this source, read at its `source` key, or throw on absence. */
   blob(object: RecoverySourceObject, workDir: string): Promise<ReadableStream>;
   /**
@@ -714,13 +717,13 @@ function readerKept(body: ReadableStream<Uint8Array>): { stream: ReadableStream<
  * failure ends the capture at once.
  */
 async function captureSnapshot(
-  adapter: RecoveryAdapter, incoming: string, workDir: string, report: (line: string) => void, bound: RetryBound,
+  adapter: RecoveryAdapter, incoming: string, workDir: string, report: (line: string) => void, bound: RetryBound, holdToken: string | null,
 ): Promise<RecoverySnapshot> {
   for (let attempt = 1; ; attempt += 1) {
     fs.rmSync(workDir, { recursive: true, force: true });
     fs.mkdirSync(workDir, { mode: OWNER_DIRECTORY_MODE });
     try {
-      return await adapter.snapshot(incoming, workDir);
+      return await adapter.snapshot(incoming, workDir, holdToken);
     } catch (error) {
       if (!transientReadFailure(error) || attempt >= bound.attempts) {
         if (attempt === 1 && accountRefusal(error) === '') throw error;
@@ -732,6 +735,38 @@ async function captureSnapshot(
       await pause(wait);
     }
   }
+}
+
+/**
+ * A capture refused before it read anything, so the hold opened for it protects nothing yet: its source said no
+ * snapshot may be taken now (another export holds the database, say). The hold is released as abandoned rather than
+ * left open, where it would defer the source's own backups and its deletions for nothing.
+ */
+export class CaptureRefusedBeforeSnapshot extends Error {}
+
+/** Whether `error`, or a failure it carries, is a capture refused before it read anything. */
+function refusedBeforeSnapshot(error: unknown): boolean {
+  for (let current: unknown = error, depth = 0; depth <= 3 && current instanceof Error; current = current.cause, depth += 1) {
+    if (current instanceof CaptureRefusedBeforeSnapshot) return true;
+  }
+  return false;
+}
+
+/**
+ * Give up the hold of a capture refused before its snapshot, and say so on the refusal. Released, the destination's
+ * hold records go too, so the next run opens a hold of its own; unreleased, the refusal names the command that gives
+ * the hold up.
+ */
+async function releaseRefusedHold(root: string, owner: RecoveryHoldOwner, report: (line: string) => void, target: RecoverySource['target'], error: Error): Promise<Error> {
+  const token = readHoldIntent(root)?.token ?? null;
+  const released = await abandonRecoveryHold(root, owner, report).then((answered) => answered.state === 'released', () => false);
+  if (released) {
+    for (const name of [HOLD_FILE, HOLD_BOUND_FILE, `${HOLD_BOUND_FILE}.staging`]) fs.rmSync(path.join(root, name), { force: true });
+    syncDirectory(root);
+    return new Error(`${error.message}; this backup's recovery hold was released, since it protected nothing yet`, { cause: error });
+  }
+  return new Error(`${error.message}; this backup's recovery hold${token === null ? '' : ` ${token}`} is still open, and defers the source's own backups while it is: `
+    + `give it up with \`myco server recovery-hold${token === null ? '' : ` --token ${token}`} --abandon --target ${target}\``, { cause: error });
 }
 
 /** One writer owns snapshot publication, content verification and the final completion manifest on both targets. */
@@ -774,7 +809,15 @@ async function writeRecoveryBundle(
     if (manifest.status === 'snapshot') {
       report('Capturing the database snapshot');
       const incoming = path.join(workDir, DATABASE_FILE);
-      const captured = await captureSnapshot(adapter, incoming, workDir, report, retry.snapshots);
+      let captured: RecoverySnapshot;
+      try {
+        captured = await captureSnapshot(adapter, incoming, workDir, report, retry.snapshots, held?.token ?? null);
+      } catch (error) {
+        if (held !== null && adapter.hold !== undefined && error instanceof Error && refusedBeforeSnapshot(error)) {
+          throw await releaseRefusedHold(root, adapter.hold, report, adapter.source.target, error);
+        }
+        throw error;
+      }
       const db = openSnapshot(incoming);
       let facts;
       try {

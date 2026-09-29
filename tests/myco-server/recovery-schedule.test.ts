@@ -14,6 +14,7 @@ import { jobRunsAt, SERVER_JOBS } from '@myco-server-worker/core/jobs.js';
 import { recoveryAttemptDue } from '@myco-server-worker/core/recovery-schedule.js';
 import { handleRecoveryExportStatus } from '@myco-server-worker/api/recovery.js';
 import { availabilityOf, recoveryScheduleOf, scheduledIntervalHours, SCHEDULE_JOB } from '@myco-server-worker/core/recovery-schedule.js';
+import { acquireOperatorHold, settleOperatorHold } from '@myco-server-worker/core/recovery-hold.js';
 import { SCHEDULED_BY } from '@myco-server-worker/core/recovery-admission.js';
 import { settlementOf, type AttemptStage, type RecoveryAdmission, type RecoveryAdmissionReadiness, type RecoveryProducerStatus } from '@myco-server-worker/core/recovery-producer.js';
 import { stampRequest } from '@myco-server-worker/core/activity.js';
@@ -174,6 +175,26 @@ it('admits nothing again in the same window, and nothing while that attempt stil
     expect(during.idleBecause).toContain('still export');
     expect(await runSchedule(d.env as never, d.now + 48 * HOUR)).toBe(0);
     expect(d.held.seen.length).toBe(1);
+  } finally { d.close(); }
+});
+
+it('says an operator backup defers the next attempt, naming when it opened, and names a running attempt ahead of it (#1493 G2)', async () => {
+  const d = await deployment({ intervalHours: 6 });
+  try {
+    // With no attempt of its own running, an operator backup holding the database is why nothing is due.
+    await acquireOperatorHold(d.fixture.serverEnv, 'op-1', d.now - HOUR);
+    const deferred = await recoveryScheduleOf(d.env as never, d.now);
+    expect({ due: deferred.due, idleBecause: deferred.idleBecause }).toEqual({
+      due: false,
+      idleBecause: `an operator backup has held this Deployment since ${new Date(d.now - HOUR).toISOString()}; the next automatic backup waits for it to end`,
+    });
+    // With its own attempt running, that attempt is what the status names.
+    await settleOperatorHold(d.fixture.serverEnv, 'op-1', d.now, 'complete');
+    expect(await runSchedule(d.env as never, d.now)).toBe(1);
+    await acquireOperatorHold(d.fixture.serverEnv, 'op-2', d.now + 1_000);
+    const running = await recoveryScheduleOf(d.env as never, d.now + 2_000);
+    expect(running.idleBecause).toContain('still export');
+    expect(running.idleBecause).not.toContain('operator backup');
   } finally { d.close(); }
 });
 

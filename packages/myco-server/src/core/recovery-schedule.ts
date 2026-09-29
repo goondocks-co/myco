@@ -184,14 +184,15 @@ export async function recoveryScheduleOf(env: ServerEnv, now: number, held?: Rec
     return { ...idle, configured: true, idleBecause: `automatic recovery cannot run: ${readiness.ready ? '' : readiness.reason}` };
   }
 
-  // An operator backup holding the database defers the next attempt, whatever its due time.
-  const operator = await deferringOperatorHold(env.db, now).catch(() => null);
-  if (operator !== null) {
-    return { ...idle, configured: true, idleBecause: `an operator backup has held this Deployment since ${new Date(operator.acquiredAt).toISOString()}; the next automatic backup waits for it to end` };
-  }
+  // An attempt still running is what the owner reads first: it is the Deployment's own backup in progress.
   const advancing = attemptAdvancing({ ...idle, configured: true, idleBecause: null });
   if (advancing) {
     return { ...idle, configured: true, idleBecause: `attempt ${latest!.attempt} is still ${latest!.stage}; the next one is due an interval after it starts` };
+  }
+  // With none running, an operator backup holding the database defers the next attempt, whatever its due time.
+  const operator = await deferringOperatorHold(env.db, now).catch(() => null);
+  if (operator !== null) {
+    return { ...idle, configured: true, idleBecause: `an operator backup has held this Deployment since ${new Date(operator.acquiredAt).toISOString()}; the next automatic backup waits for it to end` };
   }
   const startedAt = latest?.startedAt ?? null;
   const dueAt = startedAt === null ? now : startedAt + intervalHours * HOUR_MS;

@@ -139,6 +139,14 @@ describe('the operator hold a full backup takes', () => {
     expect([asked, row(e, 'op-1')?.released_at]).toEqual([0, null]);
   });
 
+  it('answers this Deployment\'s own attempt still advancing ahead of an operator backup\'s hold (#1493 G2)', async () => {
+    const e = sqliteEnv();
+    expect(await acquireRecoveryHold(e.db, 'prod-1', 5)).toBe(true);
+    await acquireOperatorHold(e.serverEnv, 'op-1', 10);
+    const advancing: RecoveryProducerPort = { ...producer([]), settleHold: async () => ({ state: 'open' as const, attempt: 3, stage: 'export' as const }) };
+    expect(await openHoldForAdmission({ ...e.serverEnv, recovery: advancing }, 11)).toEqual({ held: { state: 'open', attempt: 3, stage: 'export' } });
+  });
+
   it('defers an admission while an operator backup opened in the last day holds this Deployment, and admits one after (#1484)', async () => {
     const e = sqliteEnv();
     await acquireOperatorHold(e.serverEnv, 'op-1', 10);

@@ -356,7 +356,7 @@ it('reads a bookmark Cloudflare says nothing is exporting for as ended, so the p
   const original = globalThis.fetch;
   try {
     globalThis.fetch = (async () => Response.json({ success: true, errors: [], result: { success: false, error: 'Not currently exporting anything.' } })) as unknown as typeof fetch;
-    expect(await cloudflareProducerPorts(target(), bucket(), source()).pollExport('b-lost')).toEqual({ status: 'ended', bookmark: 'b-lost' });
+    expect(await cloudflareProducerPorts(target(), bucket(), source()).pollExport('b-lost')).toEqual({ status: 'ended', bookmark: 'b-lost', absent: true });
   } finally { globalThis.fetch = original; }
 });
 
@@ -369,7 +369,7 @@ it('puts every export answer in the producer\'s words as the one shared reading 
       case 'complete': return read.bookmark === null
         ? { status: 'error', bookmark: null, failure: { cause: 'protocol', status: null, transient: false } }
         : { status: 'complete', bookmark: read.bookmark, signedUrl: read.signedUrl };
-      case 'ended': return { status: 'ended', bookmark: read.bookmark };
+      case 'ended': return { status: 'ended', bookmark: read.bookmark, ...(read.absent === true ? { absent: true as const } : {}) };
       case 'refused-login': return { status: 'refused', failure: { cause: 'http', status: read.status, transient: false } };
       case 'unknown': return { status: 'error', bookmark: read.bookmark ?? asked, failure: { cause: read.cause, status: read.status, transient: read.transient } };
     }
