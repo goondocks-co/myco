@@ -13,7 +13,7 @@
 import { DurableObject } from 'cloudflare:workers';
 import {
   ADVANCING_STAGES_SQL, continueAttempt, exportWait, failAttempt, freshScan, HoldRetired, PRODUCER_LIMITS, PRODUCER_STALL_MS, publishAttempt, reconcileUnconfirmed, settlementOf, stagedSqlKey,
-  type AttemptCheckpoint, type AttemptObject, type AttemptPart, type AttemptStage, type AttemptState, type ContinuationReport, type HoldSettlement,
+  type AttemptCheckpoint, type AttemptObject, type AttemptPart, type AttemptStage, type AttemptState, type ContinuationReport, type ExportWait, type HoldSettlement,
   type ProducerLimits, type RecoveryProducerStatus, type ScanProgress, type StagingPrunePolicy, type StagingPruneReport,
   type StagingPruneRequest, type TableDefinitions,
 } from '../../core/recovery-producer.js';
@@ -446,6 +446,13 @@ export class RecoveryProducer extends DurableObject<CloudflareBindings> {
   }
 
   /** One attempt's progress, or idle where there is none. */
+  /** What an attempt at its export waits on, and from what instant, as the export stage decides it. */
+  private waitOf(row: AttemptRow): { waiting: ExportWait | null; waitingSince: number | null } {
+    const unsettled = this.checkpoint().unsettledExport();
+    const waiting = exportWait({ id: row.id, stage: row.stage as AttemptStage, bookmark: row.bookmark }, unsettled, Date.now(), PRODUCER_LIMITS);
+    return { waiting, waitingSince: waiting === null ? null : unsettled!.requestedAt };
+  }
+
   private statusOf(row: AttemptRow | null): RecoveryProducerStatus {
     if (row === null) {
       return { attempt: null, stage: 'idle', form: 'staging', startedAt: null, recoverable: false, staged: null, export: null, error: null, transientSpent: 0, stagedSchema: null };
@@ -467,10 +474,7 @@ export class RecoveryProducer extends DurableObject<CloudflareBindings> {
         prefix: row.prefix, sqlBytes: row.sql_bytes, downloadedBytes: row.download_offset, parts,
         objects: { registered: objects.registered, staged: objects.staged },
       },
-      export: {
-        polls: row.polls, bookmark: row.bookmark !== null, reExports: row.re_exports,
-        waiting: exportWait({ id: row.id, stage: row.stage as AttemptStage, bookmark: row.bookmark }, this.checkpoint().unsettledExport(), Date.now(), PRODUCER_LIMITS),
-      },
+      export: { polls: row.polls, bookmark: row.bookmark !== null, reExports: row.re_exports, ...this.waitOf(row) },
       error: row.error as RecoveryProducerStatus['error'],
       transientSpent: row.attempts,
       stagedSchema: row.schema_sha256 === '' ? null : { sha256: row.schema_sha256, bytes: row.schema_bytes },

@@ -11,6 +11,7 @@
  */
 import type { ServerEnv } from './adapters.js';
 import { leafValues } from './settings.js';
+import { deferringOperatorHold } from './object-release.js';
 import type { ExportWait, ProducerRefusal, RecoveryProducerStatus } from './recovery-producer.js';
 
 /** The setting an owner edits as "Back up every", in hours. */
@@ -52,6 +53,8 @@ export interface LatestAttempt {
   failure: ProducerRefusal | null;
   /** Why an attempt at its export sends nothing now (`exportWait`), or null. */
   waiting: ExportWait | null;
+  /** The request instant of the export it waits on, or null. */
+  waitingSince: number | null;
 }
 
 /** Everything an owner is told about automatic recovery. */
@@ -119,6 +122,7 @@ export function latestOf(status: RecoveryProducerStatus): LatestAttempt | null {
     startedAt: status.startedAt ?? null,
     failure: status.error,
     waiting: status.export?.waiting ?? null,
+    waitingSince: status.export?.waitingSince ?? null,
   };
 }
 
@@ -180,6 +184,11 @@ export async function recoveryScheduleOf(env: ServerEnv, now: number, held?: Rec
     return { ...idle, configured: true, idleBecause: `automatic recovery cannot run: ${readiness.ready ? '' : readiness.reason}` };
   }
 
+  // An operator backup holding the database defers the next attempt, whatever its due time.
+  const operator = await deferringOperatorHold(env.db, now).catch(() => null);
+  if (operator !== null) {
+    return { ...idle, configured: true, idleBecause: `an operator backup has held this Deployment since ${new Date(operator.acquiredAt).toISOString()}; the next automatic backup waits for it to end` };
+  }
   const advancing = attemptAdvancing({ ...idle, configured: true, idleBecause: null });
   if (advancing) {
     return { ...idle, configured: true, idleBecause: `attempt ${latest!.attempt} is still ${latest!.stage}; the next one is due an interval after it starts` };

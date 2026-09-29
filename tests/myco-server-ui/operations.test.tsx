@@ -361,6 +361,14 @@ describe('automatic recovery on the Operations page', () => {
     expect(own).toBe('Attempt 3 is waiting to learn whether the export it asked for started.');
     expect(latestWords({ ...base, latest: { ...waiting, stage: 'failed', failure: 'export_unanswered', waiting: null } } as never)).toContain('failed: export unanswered');
   });
+
+  it('names a failure only once the attempt failed, and says how long a wait has lasted (#1484 F7, F1)', () => {
+    const advancing = { attempt: 3, stage: 'export', startedAt: null, failure: 'provider_unavailable', waiting: null };
+    expect(latestWords({ ...base, latest: advancing } as never)).toBe('Attempt 3 is export.');
+    const since = Date.now() - 35 * 60_000;
+    expect(latestWords({ ...base, latest: { ...advancing, waiting: 'earlier_export', waitingSince: since } } as never))
+      .toContain('(requested 35m ago)');
+  });
 });
 
 describe('store maintenance on the Operations page', () => {

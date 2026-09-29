@@ -388,6 +388,9 @@ it('reports the wait on an unsettled export in its status, and asks once after a
     const second = await producer.admit(admission('token-second'));
     await producer.continue();
     expect((await producer.status()).export?.waiting).toBe('earlier_export');
+    // The wait is shown with the request instant of the export it waits on, which bounds it.
+    const requestedAt = (sql.query('SELECT export_requested_at AS at FROM attempts WHERE id = ?').get(first.attempt!) as { at: number }).at;
+    expect((await producer.status()).export?.waitingSince).toBe(requestedAt);
 
     // Past the window, it asks after that export once: still running, so it waits again and starts nothing.
     sql.run('UPDATE attempts SET export_answered_at = ? WHERE id = ?', [Date.now() - PRODUCER_LIMITS.exportStaleMs - 1, first.attempt!]);
@@ -402,6 +405,9 @@ it('reports the wait on an unsettled export in its status, and asks once after a
       ? Response.json({ success: true, errors: [], result: { success: true, status: 'error', error: 'gone' } })
       : running('bm-2'));
     const again = sent.length;
+    // It settles that export, then reads the list again before starting its own (#1484 F3).
+    await producer.continue({ ...PRODUCER_LIMITS, maxPollsPerStep: 1 });
+    expect(sent.slice(again)).toEqual(['bm-1']);
     await producer.continue({ ...PRODUCER_LIMITS, maxPollsPerStep: 1 });
     expect(sent.slice(again)).toEqual(['bm-1', null]);
     expect(sql.query('SELECT export_requested_at AS at FROM attempts WHERE id = ?').get(first.attempt!)).toEqual({ at: null });

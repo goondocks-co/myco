@@ -201,7 +201,7 @@ it('waits the same interval after a failure, and keeps the failure visible', asy
 
     const soon = await recoveryScheduleOf(d.env as never, d.now + HOUR);
     expect(soon.due).toBe(false);
-    expect(soon.latest).toEqual({ attempt: 4, stage: 'failed', startedAt: d.now, failure: 'provider_refused', waiting: null });
+    expect(soon.latest).toEqual({ attempt: 4, stage: 'failed', startedAt: d.now, failure: 'provider_refused', waiting: null, waitingSince: null });
     // A failure is not retried at every wake: the interval bounds it.
     expect(await runSchedule(d.env as never, d.now + HOUR)).toBe(0);
     expect(await runSchedule(d.env as never, d.now + 6 * HOUR)).toBe(1);

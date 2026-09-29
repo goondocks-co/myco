@@ -25,8 +25,8 @@ function recordedConfiguration(record: DeploymentRecord) {
 /** The Deployment's own recovery producer is exporting the database this backup would export. */
 export class ProducerExporting extends Error {
   constructor(since: number) {
-    super(`this Deployment's own automatic backup has been exporting its database since ${new Date(since).toISOString()}, `
-      + 'and two exports never run at once; run this backup again once that attempt ends (the dashboard\'s Operations page shows it)');
+    super(`an automatic backup of this Deployment has been running since ${new Date(since).toISOString()}, `
+      + 'and two exports never run at once; run this backup again once it ends (the dashboard\'s Operations page shows it)');
     this.name = 'ProducerExporting';
   }
 }
@@ -129,8 +129,8 @@ export async function backupCloudflareDeployment(
       const provider = { ...bound(workDir), databaseName };
       const sqlPath = path.join(workDir, 'd1.sql');
       const exportContext = { accountId: record.accountId, databaseId, output: sqlPath, recordDir: configDir, login: operator, fetch: options.fetch, report: options.report, ...options.d1Export };
-      // The Deployment's own producer exports the same database while its hold is open, so this backup starts no export
-      // while one is. A producer admitted after this check is not held back by this backup's hold.
+      // Read after this backup's own hold is open: a producer that opened its hold first is found here, and one that
+      // tries after is refused by the operator hold it finds in the same statement (`recoveryHoldSql.acquire`).
       const producing = z.array(z.object({ token: z.string(), acquired_at: z.number() }))
         .parse(await queryCloudflareDatabase({ ...provider, sql: recoveryHoldSql.open('producer'), timeoutMs: D1_STATEMENT_TIMEOUT_MS }));
       if (producing.length > 0) throw new ProducerExporting(producing[0]!.acquired_at);
