@@ -13,13 +13,17 @@ import os from 'node:os';
 import path from 'node:path';
 import { issueEnrollmentAuthority } from '@myco-server-worker/auth/enrollment.js';
 import { ENV_JOIN_CODE } from '@myco/member/constants.js';
-import { ensureJoinedFromCode, exchangeJoinCode, parseJoinCode, JOIN_CODE_REFUSALS } from '@myco/member/join-code.js';
+import { clearJoinRefusals, ensureJoinedFromCode, exchangeJoinCode, joinRefusalsDir, parseJoinCode, JOIN_CODE_REFUSALS } from '@myco/member/join-code.js';
 import { readDeploymentMembership, readRegistryEntry } from '@myco/member/registry.js';
 import { tempMycoHome, unjoinedRig } from './helpers/server.js';
+import { registerTestMember } from './helpers/hooks.js';
 import { parseTranscripts } from '@myco-server-worker/ingest/parse.js';
 import { runHook } from './helpers/hooks.js';
 import { resetMachineIdCache } from '@myco/machine-id.js';
-import { resolveMemberProjectRoot } from '@myco/member/credential.js';
+import { resolveMachineIdPath } from '@myco/paths/home.js';
+import { ENV_MEMBER_TOKEN, ENV_PROJECT, ENV_SERVER_URL, parseCredentialFlag, redeemsJoinCode, resolveCredential, resolveMemberProjectRoot, type CredentialSource } from '@myco/member/credential.js';
+import { issueMemberToken, NO_RUNTIME_CLAIMS } from '@myco-server-worker/auth/tokens.js';
+import { run as runSettings } from '@myco/cli/settings.js';
 
 const KEY = 'k'.repeat(43);
 
@@ -65,6 +69,14 @@ describe('spending a join code', () => {
     const refused = await exchangeJoinCode(code, { fetch: r.fetch as typeof fetch, machineId: 'machine_np', forProject: true });
     expect(refused).toMatchObject({ ok: false, code: 'enrollment_no_project' });
     expect(r.rows('member_credentials')).toBe(0);
+  });
+
+  it('reports an answer that is not a JSON object as unreadable, rather than throwing out of the hook', async () => {
+    for (const body of ['null', '[]', '', 'not json']) {
+      const answer = (() => Promise.resolve(new Response(body, { status: 421 }))) as unknown as typeof fetch;
+      const result = await exchangeJoinCode({ serverUrl: 'https://s', key: KEY }, { fetch: answer, machineId: 'm' });
+      expect({ body, result }).toMatchObject({ body, result: { ok: false, code: 'unreadable' } });
+    }
   });
 
   it('reports an unreachable Deployment as unreachable, spending nothing', async () => {
@@ -247,3 +259,213 @@ describe('a hook on a machine holding only a join code', () => {
     fs.rmSync(path.dirname(tx), { recursive: true, force: true });
   });
 });
+
+/**
+ * The documented sandbox (#1460): the hooks `myco settings` emits, which
+ * declare `--credential env`, and a `MYCO_JOIN_CODE` — with none of the env
+ * triplet set. The first hook redeems the code and captures on it; the second
+ * captures on the same credential.
+ *
+ * And the rule the code's single use imposes: a hook spends the code only when
+ * it will capture on what the code yields. Spent and not captured is the
+ * failure this gates — a code gone and a machine that never captures.
+ */
+describe('the emitted sandbox settings with a join code', () => {
+  let mycoHome: string;
+  let rig: ReturnType<typeof unjoinedRig>;
+  const KEYS = ['MYCO_HOME', ENV_JOIN_CODE, ENV_SERVER_URL, ENV_MEMBER_TOKEN, ENV_PROJECT] as const;
+  const saved: Record<string, string | undefined> = {};
+
+  /** The credential source the emitted SessionStart hook command declares. */
+  const emittedSource = (): CredentialSource | null => {
+    const out: string[] = [];
+    runSettings(['--harness', 'claude-code', '--project', 'proj_1'], { stdout: (l) => out.push(l), stderr: () => {} });
+    const settings = JSON.parse(out.join('\n')) as { hooks: Record<string, Array<{ hooks: Array<{ command: string }> }>> };
+    return parseCredentialFlag(settings.hooks.SessionStart[0].hooks[0].command.split(/\s+/));
+  };
+
+  /** A session's hook input, with the transcript a real session-start names. */
+  const sessionInput = (sessionId: string): Record<string, unknown> => {
+    const file = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'myco-join-env-tx-')), `${sessionId}.jsonl`);
+    fs.writeFileSync(file, `${JSON.stringify({ type: 'user', uuid: 'u1', timestamp: '2026-01-01T00:00:00Z', message: { role: 'user', content: [{ type: 'text', text: 'typed prompt' }] } })}\n`);
+    return { session_id: sessionId, transcript_path: file, cwd: '/work/repo' };
+  };
+
+  const spent = (id: string): boolean =>
+    (rig.env.sqlite.query(`SELECT used_at FROM enrollment_authorities WHERE id = ?`).get(id) as { used_at: number | null }).used_at !== null;
+  const landed = (session: string): boolean =>
+    rig.env.sqlite.query(`SELECT 1 FROM sessions WHERE session_id = ?`).get(session) !== null;
+
+  beforeEach(async () => {
+    for (const k of KEYS) { saved[k] = process.env[k]; delete process.env[k]; }
+    mycoHome = tempMycoHome();
+    process.env.MYCO_HOME = mycoHome;
+    resetMachineIdCache();
+    rig = unjoinedRig();
+  });
+  afterEach(() => {
+    for (const k of KEYS) { if (saved[k] === undefined) delete process.env[k]; else process.env[k] = saved[k]; }
+    resetMachineIdCache();
+  });
+
+  it('delivers a session on the first hook, and a second session on the same credential', async () => {
+    const source = emittedSource();
+    expect(source).toBe('env');
+    const issued = await issueEnrollmentAuthority(rig.env.db, Date.now(), { role: 'member', projectId: 'proj_1' });
+    process.env[ENV_JOIN_CODE] = `https://s/join#${issued.key}`;
+
+    const first = await runHook('session-start', sessionInput('sess-env-code-1'), { fetch: rig.fetch, credential: source });
+    expect(first.stderr).not.toContain('no capture');
+    expect({ landed: landed('sess-env-code-1'), spent: spent(issued.id) }).toEqual({ landed: true, spent: true });
+    const credential = readRegistryEntry(resolveMemberProjectRoot(), mycoHome);
+    expect(credential?.projectId).toBe('proj_1');
+
+    const second = await runHook('session-start', sessionInput('sess-env-code-2'), { fetch: rig.fetch, credential: source });
+    expect(second.stderr).not.toContain('no capture');
+    expect(landed('sess-env-code-2')).toBe(true);
+    expect(rig.rows('member_credentials')).toBe(1);
+    expect(readRegistryEntry(resolveMemberProjectRoot(), mycoHome)?.token).toBe(credential?.token);
+  });
+
+  it('resolves the redeemed membership as a registry credential, which rotates, and never as the orchestrator\'s non-rotating token', async () => {
+    const issued = await issueEnrollmentAuthority(rig.env.db, Date.now(), { role: 'member', projectId: 'proj_1' });
+    process.env[ENV_JOIN_CODE] = `https://s/join#${issued.key}`;
+    await runHook('session-start', sessionInput('sess-env-code-rot'), { fetch: rig.fetch, credential: 'env' });
+    const record = resolveCredential('env', { mycoHome });
+    expect({ source: record?.source, root: record?.root, projectId: record?.projectId }).toEqual({ source: 'registry', root: resolveMemberProjectRoot(), projectId: 'proj_1' });
+  });
+
+  it('never spends the code on a hook that would not then capture on it', async () => {
+    const other = await memberRigToken(rig);
+    const cases: Array<{ name: string; source: CredentialSource | null; env: Record<string, string> }> = [
+      { name: 'no declared source', source: null, env: {} },
+      { name: 'the env triplet supplies the credential', source: 'env', env: { [ENV_SERVER_URL]: 'https://s', [ENV_MEMBER_TOKEN]: other, [ENV_PROJECT]: 'proj_1' } },
+      { name: 'a partial env triplet', source: 'env', env: { [ENV_SERVER_URL]: 'https://s' } },
+      { name: 'the env source with only the code', source: 'env', env: {} },
+      { name: 'the registry source with only the code', source: 'registry', env: {} },
+    ];
+    const outcomes: Array<{ name: string; spent: boolean; landed: boolean }> = [];
+    for (const [i, c] of cases.entries()) {
+      // A fresh machine per case, so an earlier case's membership answers nothing here.
+      process.env.MYCO_HOME = tempMycoHome();
+      fs.writeFileSync(path.join(process.env.MYCO_HOME, 'machine_id'), `machine_case_${i}`, 'utf-8');
+      resetMachineIdCache();
+      for (const k of [ENV_SERVER_URL, ENV_MEMBER_TOKEN, ENV_PROJECT]) delete process.env[k];
+      Object.assign(process.env, c.env);
+      const issued = await issueEnrollmentAuthority(rig.env.db, Date.now(), { role: 'member', projectId: 'proj_1' });
+      process.env[ENV_JOIN_CODE] = `https://s/join#${issued.key}`;
+      const session = `sess-spend-${i}`;
+      await runHook('session-start', sessionInput(session), { fetch: rig.fetch, credential: c.source });
+      outcomes.push({ name: c.name, spent: spent(issued.id), landed: landed(session) });
+    }
+    // Spent implies landed, in every case; and the code is spent exactly where it is the credential.
+    expect(outcomes.filter((o) => o.spent && !o.landed)).toEqual([]);
+    expect(outcomes).toEqual([
+      { name: 'no declared source', spent: false, landed: false },
+      { name: 'the env triplet supplies the credential', spent: false, landed: true },
+      { name: 'a partial env triplet', spent: false, landed: false },
+      { name: 'the env source with only the code', spent: true, landed: true },
+      { name: 'the registry source with only the code', spent: true, landed: true },
+    ]);
+  });
+
+  it('never captures on a binding the home holds for another Deployment, and leaves that binding and the code alone', async () => {
+    // The home already binds this root to Deployment A — a laptop's, or one a devcontainer mounts.
+    const laptopToken = await memberRigToken(rig);
+    const bound = registerTestMember({ mycoHome, token: laptopToken, projectId: 'proj_1', serverUrl: 'https://a.example' });
+    const issued = await issueEnrollmentAuthority(rig.env.db, Date.now(), { role: 'member', projectId: 'proj_1' });
+    process.env[ENV_JOIN_CODE] = `https://s/join#${issued.key}`;
+    const dialled: string[] = [];
+    const watching = ((input: string | URL | Request, init?: RequestInit) => {
+      dialled.push(new URL(input instanceof Request ? input.url : String(input)).origin);
+      return rig.fetch(input, init);
+    }) as typeof fetch;
+
+    const ran = await runHook('session-start', sessionInput('sess-env-code-elsewhere'), { fetch: watching, credential: 'env' });
+
+    expect(dialled).toEqual([]);
+    expect(ran.stderr).toContain('MYCO_JOIN_CODE names https://s, but');
+    expect(ran.stderr).toContain('is joined to https://a.example');
+    expect(ran.stderr).toContain('the code is not redeemed. Give the sandbox a MYCO_HOME of its own');
+    expect({ landed: landed('sess-env-code-elsewhere'), spent: spent(issued.id) }).toEqual({ landed: false, spent: false });
+    expect(readRegistryEntry(bound.root, mycoHome)?.serverUrl).toBe('https://a.example');
+    expect(resolveCredential('env', { mycoHome })).toBeNull();
+
+    // A registry hook reads the binding it declares, and says it is leaving the code alone.
+    const registry = await runHook('session-start', sessionInput('sess-registry-elsewhere'), { fetch: watching, credential: 'registry' });
+    expect(registry.stderr).toContain('the code is not redeemed');
+    expect(dialled.every((origin) => origin === 'https://a.example')).toBe(true);
+    expect(spent(issued.id)).toBe(false);
+  });
+
+  it('names the remedy for a machine identity another member holds, and does not dial again with it', async () => {
+    const first = await issueEnrollmentAuthority(rig.env.db, Date.now(), { role: 'member', projectId: 'proj_1' });
+    const firstHome = tempMycoHome();
+    await ensureJoinedFromCode({ env: { [ENV_JOIN_CODE]: `https://s/join#${first.key}` }, mycoHome: firstHome, root: '/work/a', fetch: rig.fetch as typeof fetch, machineId: 'machine_shared' });
+    expect(spent(first.id)).toBe(true);
+
+    const second = await issueEnrollmentAuthority(rig.env.db, Date.now(), { role: 'member', projectId: 'proj_1' });
+    let joins = 0;
+    const counting = ((input: string | URL | Request, init?: RequestInit) => { joins += 1; return rig.fetch(input, init); }) as typeof fetch;
+    const stderrLines: string[] = [];
+    const origErr = process.stderr.write.bind(process.stderr);
+    (process.stderr as unknown as { write: (c: unknown) => boolean }).write = ((c: unknown) => { stderrLines.push(String(c)); return true; }) as never;
+    try {
+      for (let hook = 0; hook < 3; hook += 1) {
+        await ensureJoinedFromCode({ env: { [ENV_JOIN_CODE]: `https://s/join#${second.key}` }, mycoHome, root: '/work/b', fetch: counting, machineId: 'machine_shared' });
+      }
+    } finally {
+      (process.stderr as unknown as { write: unknown }).write = origErr;
+    }
+    expect(joins).toBe(1);
+    expect(stderrLines[0]).toContain("this machine's identity machine_shared already belongs to another member of https://s");
+    expect(stderrLines[0]).toContain(`distinct machine_id (this process reads ${resolveMachineIdPath()})`);
+    expect(stderrLines[0]).toContain(`delete ${joinRefusalsDir(mycoHome)} (\`myco member leave --purge\` does too) and the next hook asks again`);
+    expect(stderrLines.slice(1).every((l) => l.includes('not retried'))).toBe(true);
+    expect(spent(second.id)).toBe(false);
+
+    // A distinct identity is asked afresh, and joins.
+    await ensureJoinedFromCode({ env: { [ENV_JOIN_CODE]: `https://s/join#${second.key}` }, mycoHome, root: '/work/b', fetch: counting, machineId: 'machine_own' });
+    expect({ joins, spent: spent(second.id) }).toEqual({ joins: 2, spent: true });
+  });
+
+  it('records no refusal a retry could change: an unreachable Deployment or an answer it cannot read is asked again', async () => {
+    const answers: Array<[string, typeof fetch]> = [
+      ['unreachable', (() => Promise.reject(new Error('connect ECONNREFUSED'))) as unknown as typeof fetch],
+      ['unreadable', (() => Promise.resolve(new Response('', { status: 502 }))) as unknown as typeof fetch],
+    ];
+    for (const [name, answer] of answers) {
+      let dials = 0;
+      const counting = ((input: string | URL | Request, init?: RequestInit) => { dials += 1; return answer(input, init); }) as typeof fetch;
+      for (let hook = 0; hook < 2; hook += 1) {
+        await ensureJoinedFromCode({ env: { [ENV_JOIN_CODE]: `https://s/join#${KEY}` }, mycoHome, root: '/work/transient', fetch: counting, machineId: 'machine_transient' });
+      }
+      expect({ name, dials, recorded: fs.existsSync(joinRefusalsDir(mycoHome)) }).toEqual({ name, dials: 2, recorded: false });
+    }
+  });
+
+  it('forgets its recorded refusals on `member leave --purge`, so the next hook presents the code again', () => {
+    fs.mkdirSync(joinRefusalsDir(mycoHome), { recursive: true });
+    fs.writeFileSync(path.join(joinRefusalsDir(mycoHome), 'x.json'), '{}');
+    expect(clearJoinRefusals(mycoHome)).toBe(true);
+    expect(fs.existsSync(joinRefusalsDir(mycoHome))).toBe(false);
+    expect(clearJoinRefusals(mycoHome)).toBe(false);
+  });
+
+  it('decides whether a hook may spend the code from its declared source and the triplet alone', () => {
+    const code = { [ENV_JOIN_CODE]: `https://s/join#${KEY}` };
+    expect(redeemsJoinCode('env', code)).toBe(true);
+    expect(redeemsJoinCode('registry', code)).toBe(true);
+    expect(redeemsJoinCode(null, code)).toBe(false);
+    expect(redeemsJoinCode('env', { ...code, [ENV_PROJECT]: 'proj_1' })).toBe(false);
+    expect(redeemsJoinCode('env', {})).toBe(false);
+    expect(redeemsJoinCode('registry', { [ENV_JOIN_CODE]: '  ' })).toBe(false);
+  });
+});
+
+/** A member token on the rig's Deployment for `proj_1`, as an orchestrator mints one for the env triplet. */
+async function memberRigToken(rig: ReturnType<typeof unjoinedRig>): Promise<string> {
+  rig.env.sqlite.query(`INSERT OR IGNORE INTO members (id,label,created_at,revoked_at) VALUES ('mem_orchestrated','orchestrated',0,NULL)`).run();
+  const { token } = await issueMemberToken(rig.env.db, { memberId: 'mem_orchestrated', machineId: 'machine_orchestrated' }, Date.now(), null, NO_RUNTIME_CLAIMS, { rotates: false });
+  return token;
+}

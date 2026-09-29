@@ -7,7 +7,8 @@
  *
  * Nothing is written and no token is read: the sandbox supplies
  * `MYCO_SERVER_URL` + `MYCO_MEMBER_TOKEN` + `MYCO_PROJECT` in the environment
- * of the process it launches.
+ * of the process it launches, or a `MYCO_JOIN_CODE` its first hook redeems
+ * (`member/credential.ts`).
  */
 import { isProjectId } from '../member/constants.js';
 import { loadManifests, resolvePackageRoot } from '../symbionts/detect.js';
@@ -16,8 +17,9 @@ import { SymbiontInstaller } from '../symbionts/installer.js';
 export const SETTINGS_HELP = `Usage: myco settings --harness <name> --project <id>
 
 Prints the harness settings for a sandboxed agent that reports to a Myco server.
-Pass it to the agent's own settings flag, and give the process MYCO_SERVER_URL,
-MYCO_MEMBER_TOKEN and MYCO_PROJECT — the settings carry no credential.
+Pass it to the agent's own settings flag, and give the process either
+MYCO_SERVER_URL, MYCO_MEMBER_TOKEN and MYCO_PROJECT, or a MYCO_JOIN_CODE that
+its first hook redeems — the settings carry no credential.
 
 Options:
   --harness <name>   The agent to emit settings for (e.g. claude-code).

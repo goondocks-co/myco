@@ -3,7 +3,8 @@
  * `--credential registry` hook reads the registry entry for its root and
  * nothing else, even when a repository's settings relocate `MYCO_HOME` and set
  * the full env triplet; `--credential env` reads the triplet, all three or
- * none; every record must be https.
+ * none, or a join code when none of the three is set; every record's server
+ * URL passes the one member rule: https, or http on this machine's loopback.
  */
 import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
 import fs from 'node:fs';
@@ -89,11 +90,11 @@ describe('credential source', () => {
     });
   });
 
-  it('registry: an http entry is refused', () => {
+  it('registry: an http entry off this machine\'s loopback is refused', () => {
     captureStderr();
     registerTestMember({ mycoHome, token: mintMemberToken(), projectId: 'proj_1', serverUrl: 'http://srv.example' });
     expect(resolveCredential('registry', { mycoHome })).toBeNull();
-    expect(stderrLines.join('')).toContain('non-https');
+    expect(stderrLines.join('')).toContain("names a server that is not https, or http on this machine's loopback");
   });
 
   it('env: the triplet all three or none, https required', () => {
@@ -105,22 +106,26 @@ describe('credential source', () => {
     expect(resolveCredential('env', { env: { [ENV_SERVER_URL]: 'https://env.example', [ENV_PROJECT]: 'p' } })).toBeNull();
     expect(stderrLines.pop()).toContain('all three or none');
     expect(resolveCredential('env', { env: { ...env, [ENV_SERVER_URL]: 'http://env.example' } })).toBeNull();
-    expect(stderrLines.pop()).toContain('must be https');
+    expect(stderrLines.pop()).toContain("must be https, or http on this machine's loopback");
   });
 
-  it('env: plain http is admitted on this machine\'s loopback only — the self-hosted C-local transport — and a registry entry never is', () => {
+  it('plain http is admitted on this machine\'s loopback only, by the registry and the env source alike', () => {
     captureStderr();
     const triplet = (url: string) => ({ [ENV_SERVER_URL]: url, [ENV_MEMBER_TOKEN]: 't', [ENV_PROJECT]: 'proj_env' });
-    for (const url of ['http://127.0.0.1:18787', 'http://localhost:8787', 'http://[::1]:8787']) {
+    const loopback = ['http://127.0.0.1:18787', 'http://127.8.9.10:18787', 'http://localhost:8787', 'http://[::1]:8787'];
+    const offMachine = ['http://127.0.0.1.example', 'http://10.0.0.5:8787', 'http://host.docker.internal:8787', 'http://[::2]:8787'];
+    for (const url of loopback) {
       expect({ url, record: resolveCredential('env', { env: triplet(url) }) }).toEqual({ url, record: { serverUrl: url, token: 't', projectId: 'proj_env', source: 'env' } });
+      registerTestMember({ mycoHome, token: mintMemberToken(), projectId: 'proj_1', serverUrl: url });
+      expect({ url, served: resolveCredential('registry', { mycoHome })?.serverUrl }).toEqual({ url, served: url });
     }
-    for (const url of ['http://127.0.0.1.example', 'http://10.0.0.5:8787', 'http://host.docker.internal:8787']) {
+    for (const url of offMachine) {
       expect({ url, record: resolveCredential('env', { env: triplet(url) }) }).toEqual({ url, record: null });
-      expect(stderrLines.pop()).toContain('must be https');
+      expect(stderrLines.pop()).toContain("must be https, or http on this machine's loopback");
+      registerTestMember({ mycoHome, token: mintMemberToken(), projectId: 'proj_1', serverUrl: url });
+      expect({ url, record: resolveCredential('registry', { mycoHome }) }).toEqual({ url, record: null });
+      expect(stderrLines.pop()).toContain("names a server that is not https, or http on this machine's loopback");
     }
-    registerTestMember({ mycoHome, token: mintMemberToken(), projectId: 'proj_1', serverUrl: 'http://127.0.0.1:18787' });
-    expect(resolveCredential('registry', { mycoHome })).toBeNull();
-    expect(stderrLines.pop()).toContain('non-https');
   });
 
   it('a --credential registry hook under a repo-settings MYCO_HOME relocation plus the env triplet sends nothing to the env URL', async () => {

@@ -16,9 +16,9 @@ import { canStartRequest, clippedRequestBudget, resolveHookBudget, type HookBudg
 import { resolveMycoHome } from '../paths/home.js';
 import { getMachineId } from '../machine-id.js';
 import { drainBacklog, sessionHeld, sessionTried } from './backlog.js';
-import { parseCredentialFlag, registryCredential, resolveCredential, resolveMemberProjectRoot, type CredentialRecord, type CredentialSource } from './credential.js';
+import { parseCredentialFlag, redeemsJoinCode, registryCredential, resolveCredential, resolveMemberProjectRoot, type CredentialRecord, type CredentialSource } from './credential.js';
 import { deliveryNotice } from './delivery-notice.js';
-import { ensureJoinedFromCode, joinCodePresent } from './join-code.js';
+import { ensureJoinedFromCode } from './join-code.js';
 import type { EnvelopeContext, OutboundEvent } from './envelope.js';
 import { refreshDue, refreshMemberCredential, refreshableRoot, rotatedCredential, clearNonRotatingRefusal } from './refresh.js';
 import { readRegistryEntry } from './registry.js';
@@ -170,14 +170,17 @@ export async function runMemberHook(
     // registry entry on disk so the resolve below finds a credential like any other
     // run. It sits under the budget: the exchange is a network call the harness will
     // kill this process for outrunning. The root is the one `resolveCredential`
-    // reads, so the entry it writes is the entry that resolve looks for — and it is
-    // resolved only when there is a code to redeem, which is never on an ordinary run.
-    if (joinCodePresent(opts.env)) {
+    // reads, so the entry it writes is the entry that resolve looks for. The code is
+    // presented, which spends it, only when the declared source reads that entry
+    // (`redeemsJoinCode`): a single-use code spent on a hook that then resolves
+    // elsewhere is a code gone and a machine that never captures.
+    const env = opts.env ?? process.env;
+    if (redeemsJoinCode(source, env)) {
       await ensureJoinedFromCode({
-        env: opts.env, fetch: opts.fetch as typeof fetch | undefined, root: resolveMemberProjectRoot(cwd), mycoHome, budget,
+        env, fetch: opts.fetch as typeof fetch | undefined, root: resolveMemberProjectRoot(cwd), mycoHome, budget,
       });
     }
-    const credential = resolveCredential(source, { cwd, mycoHome, invokedBy: `hook ${hookName}` });
+    const credential = resolveCredential(source, { cwd, env, mycoHome, invokedBy: `hook ${hookName}` });
     if (!credential) return;
 
     const spool = new MemberSpool(credential.projectId, { mycoHome });

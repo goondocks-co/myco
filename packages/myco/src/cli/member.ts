@@ -16,7 +16,9 @@ import { isSafeProjectRoot } from '../project-root.js';
 import { RUNTIME_HOME_FILENAME, defaultMycoHome, readHomePin, resolveMycoHome } from '../paths/home.js';
 import { unboundedBudget } from '../member/budget.js';
 import { CREDENTIAL_FLAG, CREDENTIAL_SOURCES, deploymentScopedHeaders, isProjectId, memberHeaders, MEMBER_TOKEN_REFRESH_WINDOW_MS, SERVER_FLAG } from '../member/constants.js';
-import { isHttpsUrl, isMemberTokenShape, parseCredentialFlag, resolveCredential, resolveMemberProjectRoot } from '../member/credential.js';
+import { isMemberTokenShape, parseCredentialFlag, resolveCredential, resolveMemberProjectRoot } from '../member/credential.js';
+import { admitMemberServerUrl, MEMBER_SERVER_URL_RULE } from '../member/server-url.js';
+import { clearJoinRefusals } from '../member/join-code.js';
 import { refreshMemberCredential, type RefreshReport } from '../member/refresh.js';
 import { runImport } from '../member/import.js';
 import { clearMissingMembership, listMissingMembershipsResult, pruneMissingMemberships, readMissingMembership, readMissingMembershipResult, type MissingMembershipRecord } from '../member/no-membership.js';
@@ -215,7 +217,7 @@ export async function runJoin(args: readonly string[], deps: MemberCliDeps = {})
   const parsed = parseJoin(args);
   if (parsed.error) return fail(parsed.error);
   if (!parsed.serverUrl || !parsed.project) { err(MEMBER_HELP.trimEnd()); process.exitCode = 2; return null; }
-  if (!isHttpsUrl(parsed.serverUrl)) return fail(`${parsed.serverUrl} is not an https server URL`);
+  if (!admitMemberServerUrl(parsed.serverUrl)) return fail(`${parsed.serverUrl} is not a server URL a member accepts (${MEMBER_SERVER_URL_RULE})`);
   if (!isProjectId(parsed.project)) return fail(`${parsed.project} is not a project id`);
   if (parsed.tokenStdin === (parsed.tokenEnv !== undefined)) return fail('pass the token with exactly one of --token-stdin or --token-env <NAME>');
 
@@ -398,6 +400,7 @@ export function runLeave(args: readonly string[], deps: MemberCliDeps = {}): boo
   }
   fs.rmSync(new MemberSpool(entry.projectId, { mycoHome }).dir, { recursive: true, force: true });
   out('spool discarded');
+  if (clearJoinRefusals(mycoHome)) out('recorded join refusals cleared: a join code is presented again');
   for (const manifest of loadManifests()) {
     const installer = new SymbiontInstaller(manifest, root, deps.packageRoot ?? resolvePackageRoot(), false, undefined, null, 'member-project');
     if (installer.uninstallMemberHooks()) out(`removed ${manifest.displayName} hooks from ${root}`);
@@ -797,7 +800,7 @@ export function runMcpHeaders(args: readonly string[], deps: MemberCliDeps = {})
     const binding = readRegistryEntry(resolveMemberProjectRoot(deps.cwd), home);
     if (binding === null) {
       const membership = readDeploymentMembership(expected, home);
-      if (!membership || deploymentUrl(membership.serverUrl) !== deploymentUrl(expected) || !isHttpsUrl(membership.serverUrl) || !isMemberTokenShape(membership.token)) {
+      if (!membership || deploymentUrl(membership.serverUrl) !== deploymentUrl(expected) || !admitMemberServerUrl(membership.serverUrl) || !isMemberTokenShape(membership.token)) {
         return fail('no valid membership for the configured Deployment', 1);
       }
       out(JSON.stringify(deploymentScopedHeaders(membership)));

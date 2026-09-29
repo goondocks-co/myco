@@ -3,6 +3,7 @@ import { isHelpRequest, loadEnv } from './cli/shared.js';
 import { resolveVaultDir } from './vault/resolve.js';
 import { runLaunchPreamble } from './cli/launch-preamble.js';
 import { isMemberVerb } from './cli/member-verbs.js';
+import { keepLoopbackOffProxy } from './cli/loopback-proxy.js';
 import fs from 'node:fs';
 import path from 'node:path';
 
@@ -137,6 +138,8 @@ async function helpForCommand(command: string, args: readonly string[] = []): Pr
 }
 
 async function main(): Promise<void> {
+  // Before anything dials: a member's loopback Deployment is never reached through a proxy (`member/server-url.ts`).
+  keepLoopbackOffProxy();
   const [cmd, ...args] = process.argv.slice(2);
   if (!cmd || cmd === '--help' || cmd === '-h') {
     process.stdout.write((await import('./cli/member-dispatch.js')).helpText(USAGE));
