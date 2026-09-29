@@ -13,30 +13,37 @@
  * transcript layout names for the same session (`legacySessionId`), so a
  * session the vault holds and a transcript on disk records land as one.
  *
- * **One content source per session.** Its transcript, where a file is on disk
- * and ships or the Deployment already holds one; the vault's prompts and
- * responses only where neither is true. A session the Deployment already
- * holds keeps the facts live capture recorded: no start is sent for it.
+ * **One content source per session, decided once.** Its transcript, where a
+ * file is on disk under any harness's layout or the Deployment already holds
+ * one; the vault's prompts and responses only where neither is true. The
+ * decision is recorded before anything is sent (`LegacyLedger`), so a rerun
+ * and every later transcript import honour it. A session the Deployment
+ * already holds keeps the facts and the end live capture recorded: it gets
+ * the vault's title alone.
  *
  * **Every write is idempotent.** Event ids derive from the vault row, the
  * producer is fixed, and every instant is the vault's, so a second run sends
  * byte-identical envelopes the Deployment answers as duplicates. Spores and
- * lineage keep their 1.4 ids.
+ * lineage keep their 1.4 ids and times. A session 1.4 deleted becomes a
+ * tombstone on the Deployment, which no later import on any machine brings
+ * back.
  *
  * The vault is opened read-only and is never written.
  */
 import { Database } from 'bun:sqlite';
 import fs from 'node:fs';
 import path from 'node:path';
-import { manifestTranscriptDiscovery, findTranscriptFor, sessionIdFromStoredId, sessionIdFromTranscriptPath } from '../symbionts/transcript-discovery.js';
-import { canonicalPath } from '../symbionts/transcript-attribution.js';
+import { enumerateTranscripts, manifestTranscriptDiscovery, findTranscriptFor, sessionIdFromStoredId, sessionIdFromTranscriptPath } from '../symbionts/transcript-discovery.js';
+import { canonicalPath, transcriptPlacer, transcriptTimeSpan } from '../symbionts/transcript-attribution.js';
+import { HOOK_CONFIG } from '../hooks/hook-config.generated.js';
 import { resolveMycoHome } from '../paths/home.js';
 import { unboundedBudget } from './budget.js';
 import {
-  deriveId, planEvent, planKeyForPath, promptEvent, responseEvent, sessionEndEvent, sessionStartEvent,
+  deriveId, planEvent, planKeyForPath, promptEvent, responseEvent, sessionEndEvent, sessionStartEvent, sessionTitleEvent,
   type EnvelopeContext, type OutboundEvent,
 } from './envelope.js';
-import { pause, retryWaitMs, IMPORT_MAX_PASSES, shipSession, transcriptCandidate, type Candidate } from './import.js';
+import { paced, pause, retryWaitMs, IMPORT_MAX_PASSES, shipSession, transcriptCandidate, type Candidate } from './import.js';
+import { LegacyLedger, type ContentSource } from './legacy-ledger.js';
 import { normalizePlanPath } from './plan-files.js';
 import { deploymentUrl, listDeploymentMemberships, type DeploymentMembership } from './registry.js';
 import { MemberSpool } from './spool.js';
@@ -56,6 +63,11 @@ const PROBE_CHUNK = 1000;
 const MS_FLOOR = 100_000_000_000;
 const SPORES_SAVE_PATH = '/spores/save';
 const SPORES_RESOLVE_PATH = '/spores/resolve';
+const IMPORT_TOMBSTONES_PATH = '/import/tombstones';
+/** Tries a step makes after the Deployment answers a server fault before the step is recorded as failed and the import moves on. */
+export const SERVER_FAULT_RETRIES = 3;
+/** HTTP statuses a step waits out however often they come: the rate limit, and a Deployment that asks to be retried. */
+const WAIT_STATUSES: ReadonlySet<number> = new Set([429, 503]);
 const VAULT_FILE = 'myco.db';
 const GROVES_DIR = 'groves';
 
@@ -237,15 +249,42 @@ export function readLegacyVault(file: string): LegacyProject[] {
   }
 }
 
+/** Every harness whose layout names transcripts, the one given first. */
+const harnessesFrom = (first: string): string[] => [first, ...Object.keys(HOOK_CONFIG).filter((a) => a !== first && manifestTranscriptDiscovery(a) !== undefined).sort()];
+
 /**
- * The id the harness's transcript layout names for a vault session: the one
- * its recorded transcript path yields, else the one the layout's id shape
- * finds in the stored id, else the stored id itself.
+ * The harness session a vault row names, and the harness that wrote it: the
+ * one a recorded transcript path's layout yields (any harness's layout, the
+ * recorded agent's first, since 1.4 recorded some sessions under another
+ * harness's name), else the one the recorded agent's id shape finds in the
+ * stored id, else the stored id under the recorded agent.
  */
-export function legacySessionId(agent: string, storedId: string, transcriptPath: string | null): string {
-  const discovery = manifestTranscriptDiscovery(agent);
-  const byPath = transcriptPath === null ? null : sessionIdFromTranscriptPath(discovery, transcriptPath);
-  return byPath ?? sessionIdFromStoredId(discovery, storedId) ?? storedId;
+export function legacyIdentity(agent: string, storedId: string, transcriptPath: string | null): { sessionId: string; agent: string } {
+  if (transcriptPath !== null) {
+    for (const harness of harnessesFrom(agent)) {
+      const byPath = sessionIdFromTranscriptPath(manifestTranscriptDiscovery(harness), transcriptPath);
+      if (byPath !== null) return { sessionId: byPath, agent: harness };
+    }
+  }
+  return { sessionId: sessionIdFromStoredId(manifestTranscriptDiscovery(agent), storedId) ?? storedId, agent };
+}
+
+/** The harness session id alone; see `legacyIdentity`. */
+export const legacySessionId = (agent: string, storedId: string, transcriptPath: string | null): string =>
+  legacyIdentity(agent, storedId, transcriptPath).sessionId;
+
+/** The transcript on disk for a session, under the harness that wrote it: the recorded path when it names this session, else wherever any harness's layout puts it. */
+export function locateTranscript(agent: string, sessionId: string, recordedPath: string | null): { agent: string; file: string } | null {
+  if (recordedPath !== null && fs.existsSync(recordedPath)) {
+    for (const harness of harnessesFrom(agent)) {
+      if (sessionIdFromTranscriptPath(manifestTranscriptDiscovery(harness), recordedPath) === sessionId) return { agent: harness, file: recordedPath };
+    }
+  }
+  for (const harness of harnessesFrom(agent)) {
+    const file = findTranscriptFor(harness, sessionId);
+    if (file !== null) return { agent: harness, file };
+  }
+  return null;
 }
 
 /** The ids one vault row's derived events and rows take, all under this Project. */
@@ -263,31 +302,108 @@ export function legacyPlanKey(projectId: string, root: string | null, plan: Lega
   return { planKey: legacyId(projectId, 'plan', plan.id) };
 }
 
-/** A vault session with every row that names the same harness session: the later-started row is the one whose facts and content stand. */
-interface SessionGroup {
+/**
+ * A harness session and every vault row that names it. The later-started row
+ * supplies the facts; the title, summary and prompts are the first row's, in
+ * that order, that has them, so no row's record is dropped for another's gap.
+ */
+export interface SessionGroup {
   sessionId: string;
+  agent: string;
   winner: LegacySession;
   storedIds: string[];
+  title: string | null;
+  summary: string | null;
+  /** The stored id whose prompt rows are the session's. */
+  promptsFrom: string;
 }
 
-/** Vault sessions grouped by the session id each takes, deleted ones left out. */
-export function groupLegacySessions(project: LegacyProject): { groups: SessionGroup[]; idOf: Map<string, string>; deleted: Set<string> } {
+/** Order rows latest-started first: the order a group's fields are taken in. */
+const byStartDesc = (a: LegacySession, b: LegacySession): number => (b.startedAt ?? 0) - (a.startedAt ?? 0);
+
+function groupOf(sessionId: string, agent: string, rows: LegacySession[], promptCount: Map<string, number>): SessionGroup {
+  const ordered = [...rows].sort(byStartDesc);
+  return {
+    sessionId, agent, winner: ordered[0], storedIds: ordered.map((r) => r.id),
+    title: ordered.find((r) => r.title !== null)?.title ?? null,
+    summary: ordered.find((r) => r.summary !== null)?.summary ?? null,
+    promptsFrom: ordered.find((r) => (promptCount.get(r.id) ?? 0) > 0)?.id ?? ordered[0].id,
+  };
+}
+
+/** Vault sessions grouped by the session id each takes, deleted ones left out. `aliases` maps a stored id onto a harness id found another way. */
+export function groupLegacySessions(project: LegacyProject, aliases: ReadonlyMap<string, string> = new Map()): { groups: SessionGroup[]; idOf: Map<string, string>; deleted: Set<string> } {
   const idOf = new Map<string, string>();
-  const byId = new Map<string, SessionGroup>();
+  const rowsBy = new Map<string, { agent: string; rows: LegacySession[] }>();
   const deleted = new Set<string>();
+  const promptCount = new Map<string, number>();
+  for (const p of project.prompts) promptCount.set(p.sessionId, (promptCount.get(p.sessionId) ?? 0) + 1);
   for (const s of project.sessions) {
-    const sessionId = legacySessionId(s.agent, s.id, s.transcriptPath);
+    const identity = legacyIdentity(s.agent, s.id, s.transcriptPath);
+    const sessionId = aliases.get(s.id) ?? identity.sessionId;
     idOf.set(s.id, sessionId);
     if (project.deleted.has(s.id)) { deleted.add(sessionId); continue; }
-    const held = byId.get(sessionId);
-    if (held === undefined) { byId.set(sessionId, { sessionId, winner: s, storedIds: [s.id] }); continue; }
-    held.storedIds.push(s.id);
-    if ((s.startedAt ?? 0) > (held.winner.startedAt ?? 0)) held.winner = s;
+    const held = rowsBy.get(sessionId);
+    if (held === undefined) rowsBy.set(sessionId, { agent: identity.agent, rows: [s] }); else held.rows.push(s);
   }
   for (const id of project.deleted) if (!idOf.has(id)) deleted.add(id);
-  for (const id of deleted) byId.delete(id);
-  const groups = [...byId.values()].sort((a, b) => (a.winner.startedAt ?? 0) - (b.winner.startedAt ?? 0) || a.sessionId.localeCompare(b.sessionId));
+  for (const id of deleted) rowsBy.delete(id);
+  const groups = [...rowsBy.entries()].map(([sessionId, { agent, rows }]) => groupOf(sessionId, agent, rows, promptCount))
+    .sort((a, b) => (a.winner.startedAt ?? 0) - (b.winner.startedAt ?? 0) || a.sessionId.localeCompare(b.sessionId));
   return { groups, idOf, deleted };
+}
+
+/** The id 1.4 minted for a session before it kept the harness's own: `sess_` and 32 hex digits. No harness names a session this way. */
+const LEGACY_MINTED_ID = /^sess_[0-9a-f]{32}$/;
+
+/**
+ * Stored ids 1.4 minted (`LEGACY_MINTED_ID`) that the layout could not name a
+ * harness session for (no transcript path, no id shape in the id), tied to
+ * the one transcript on disk that the
+ * same harness wrote in the same project root while the session ran: the one
+ * whose first record falls in the second 1.4 recorded the start, else the one
+ * whose records span that instant. A stored id with no such transcript, or
+ * with more than one, is reported and keeps its id: a guess would merge two
+ * sessions.
+ */
+export function aliasByTranscriptTime(project: LegacyProject, root: string | null): { aliases: Map<string, string>; matched: string[]; unmatched: string[] } {
+  const aliases = new Map<string, string>();
+  const matched: string[] = [];
+  const unmatched: string[] = [];
+  if (root === null) return { aliases, matched, unmatched };
+  const place = transcriptPlacer([root]);
+  const claimed = new Set(project.sessions.map((s) => legacyIdentity(s.agent, s.id, s.transcriptPath).sessionId));
+  const indexes = new Map<string, Array<{ sessionId: string; first: number; last: number }>>();
+  const indexFor = (agent: string) => {
+    let index = indexes.get(agent);
+    if (index !== undefined) return index;
+    index = [];
+    for (const t of enumerateTranscripts(manifestTranscriptDiscovery(agent), 100_000)) {
+      if (claimed.has(t.sessionId)) continue;
+      const placed = place(agent, t.filePath);
+      if (placed.kind !== 'bound') continue;
+      const span = transcriptTimeSpan(t.filePath);
+      if (span !== null) index.push({ sessionId: t.sessionId, ...span });
+    }
+    indexes.set(agent, index);
+    return index;
+  };
+  for (const s of project.sessions) {
+    if (project.deleted.has(s.id) || s.startedAt === null || !LEGACY_MINTED_ID.test(s.id)) continue;
+    const identity = legacyIdentity(s.agent, s.id, s.transcriptPath);
+    if (identity.sessionId !== s.id || s.transcriptPath !== null || manifestTranscriptDiscovery(s.agent) === undefined) continue;
+    if (locateTranscript(s.agent, s.id, null) !== null) continue;
+    const index = indexFor(s.agent);
+    const second = Math.floor(s.startedAt / 1000);
+    const exact = index.filter((t) => Math.floor(t.first / 1000) === second);
+    const within = index.filter((t) => t.first <= s.startedAt! && s.startedAt! <= t.last + 999);
+    const pick = exact.length === 1 ? exact[0] : exact.length === 0 && within.length === 1 ? within[0] : null;
+    if (pick === null) { unmatched.push(`${s.id} (${s.agent}, ${exact.length + within.length === 0 ? 'no transcript' : 'several transcripts'})`); continue; }
+    aliases.set(s.id, pick.sessionId);
+    claimed.add(pick.sessionId);
+    matched.push(`${s.id} → ${pick.sessionId} (${s.agent}, ${exact.length === 1 ? 'same start second' : 'ran at that time'})`);
+  }
+  return { aliases, matched, unmatched };
 }
 
 export interface LegacyProjectReport {
@@ -299,21 +415,32 @@ export interface LegacyProjectReport {
     distinct: number;
     /** Deleted in 1.4, or on the Deployment: not sent. */
     deleted: number;
-    /** Already on the Deployment: their facts are left as captured. */
+    /** Already on the Deployment: their facts and end are left as captured. */
     alreadyHeld: number;
     transcriptsShipped: number;
     transcriptsHeld: number;
     /** Sessions whose prompts and responses came from the vault. */
     fromVault: number;
+    /** Finished by an earlier run, per this machine's ledger. */
+    resumed: number;
   };
+  /** Stored ids tied to a transcript by the time it was written; stored ids that could not be. */
+  aliases: string[];
+  unaliased: string[];
+  /** Sessions 1.4 deleted, recorded as tombstones; and those the Deployment already holds, left as they are. */
+  tombstones: { recorded: number; held: string[] };
   prompts: number;
   responses: number;
   /** Plans sent; plans with no content; plans whose session is deleted or not in the vault. */
   plans: { sent: number; empty: number; unsent: number };
   spores: { saved: number; duplicate: number; refused: number };
-  lineage: { recorded: number; refused: number };
+  lineage: { recorded: number; duplicate: number; refused: number; malformed: number };
   /** Ids the Deployment refused, with its reason. */
   refusals: string[];
+  /** Steps the Deployment kept failing with a server fault: left for a later run. */
+  failures: string[];
+  /** History events 1.4 recorded in a shape no Deployment takes: skipped. */
+  malformed: string[];
   endedBy?: string;
 }
 
@@ -342,6 +469,8 @@ export interface LegacyImportDeps {
   machineId: string;
   sleep?: (ms: number) => Promise<void>;
   maxPasses?: number;
+  /** Requests a minute the import stays under (`paced`); unpaced when absent. */
+  pace?: number;
   progress?: (line: string) => void;
 }
 
@@ -350,12 +479,17 @@ class ServerTooOld extends Error {}
 
 type Probe = { held: Set<string>; withTranscript: Set<string>; tombstoned: Set<string> };
 
+/** How a step ended: finished, stopped by a class the caller acts on, or failed after its server-fault retries. */
+type StepEnd = { endedBy?: string };
+
 const emptyProjectReport = (project: LegacyProject, root: string | null): LegacyProjectReport => ({
   projectId: project.projectId,
   root,
   vault: { sessions: project.sessions.length, prompts: project.prompts.length, plans: project.plans.length, spores: project.spores.length, lineage: project.resolutions.length },
-  sessions: { distinct: 0, deleted: 0, alreadyHeld: 0, transcriptsShipped: 0, transcriptsHeld: 0, fromVault: 0 },
-  prompts: 0, responses: 0, plans: { sent: 0, empty: 0, unsent: 0 }, spores: { saved: 0, duplicate: 0, refused: 0 }, lineage: { recorded: 0, refused: 0 }, refusals: [],
+  sessions: { distinct: 0, deleted: 0, alreadyHeld: 0, transcriptsShipped: 0, transcriptsHeld: 0, fromVault: 0, resumed: 0 },
+  aliases: [], unaliased: [], tombstones: { recorded: 0, held: [] },
+  prompts: 0, responses: 0, plans: { sent: 0, empty: 0, unsent: 0 }, spores: { saved: 0, duplicate: 0, refused: 0 },
+  lineage: { recorded: 0, duplicate: 0, refused: 0, malformed: 0 }, refusals: [], failures: [], malformed: [],
 });
 
 /** The project root the vault's newest session names, as the filesystem spells it. */
@@ -380,11 +514,40 @@ function membershipFor(mycoHome: string, serverUrl: string | undefined): Deploym
   return memberships.length === 0 ? 'no Deployment membership on this machine' : `this machine belongs to ${memberships.length} Deployments; name one with --server`;
 }
 
+/** Why a history event cannot be recorded as 1.4 stored it, or null when it can. */
+const malformedResolution = (event: LegacyResolution): string | null =>
+  event.action === 'supersede' && event.newSporeId === null ? 'a supersede that names no successor' : null;
+
+interface Prepared {
+  project: LegacyProject;
+  root: string | null;
+  groups: SessionGroup[];
+  idOf: Map<string, string>;
+  deleted: Set<string>;
+  matched: string[];
+  unmatched: string[];
+}
+
+/** Read, identify and group every project the sources hold. */
+function prepare(opts: LegacyImportOptions): Prepared[] | string {
+  const files = [...new Set(opts.sources.flatMap(legacyVaultFiles))];
+  if (files.length === 0) return `no 1.4 vault found in ${opts.sources.join(', ')}`;
+  return files.flatMap(readLegacyVault)
+    .filter((p) => opts.project === undefined || p.projectId === opts.project)
+    .map((project) => {
+      const root = rootOf(project);
+      const { aliases, matched, unmatched } = aliasByTranscriptTime(project, root);
+      return { project, root, matched, unmatched, ...groupLegacySessions(project, aliases) };
+    });
+}
+
 /**
  * Import every project the sources hold. Each is sent whole before the next:
- * sessions (facts, transcript, content, plans, end), then spores, then their
- * lineage. A pass stopped by a rate limit or a transport fault waits and
- * resumes; nothing it already sent is sent differently.
+ * its deletions as tombstones, then sessions (facts, transcript, content,
+ * plans, end), then spores, then their lineage. A step stopped by a rate
+ * limit or a transport fault waits and resumes; a step the Deployment keeps
+ * failing with a server fault is recorded and skipped. What finished is
+ * recorded in this machine's ledger and not sent again.
  */
 export async function runLegacyImport(opts: LegacyImportOptions, deps: LegacyImportDeps): Promise<LegacyImportReport> {
   const mycoHome = deps.mycoHome ?? resolveMycoHome();
@@ -393,33 +556,43 @@ export async function runLegacyImport(opts: LegacyImportOptions, deps: LegacyImp
   const maxPasses = deps.maxPasses ?? IMPORT_MAX_PASSES;
   const progress = deps.progress ?? (() => {});
 
-  const files = [...new Set(opts.sources.flatMap(legacyVaultFiles))];
-  if (files.length === 0) return { serverUrl: null, projects: [], deleted: [], refused: `no 1.4 vault found in ${opts.sources.join(', ')}` };
-  const projects = files.flatMap(readLegacyVault).filter((p) => opts.project === undefined || p.projectId === opts.project);
+  const prepared = prepare(opts);
+  if (typeof prepared === 'string') return { serverUrl: null, projects: [], deleted: [], refused: prepared };
+  const report: LegacyImportReport = { serverUrl: null, projects: [], deleted: [...new Set(prepared.flatMap((g) => [...g.deleted]))].sort() };
 
-  const deleted = new Set<string>();
-  const report: LegacyImportReport = { serverUrl: null, projects: [], deleted: [] };
-  const grouped = projects.map((project) => ({ project, root: rootOf(project), ...groupLegacySessions(project) }));
-  for (const g of grouped) for (const id of g.deleted) deleted.add(id);
-  report.deleted = [...deleted].sort();
-
+  const startReport = (g: Prepared): LegacyProjectReport => {
+    const r = emptyProjectReport(g.project, g.root);
+    r.sessions.distinct = g.groups.length;
+    r.sessions.deleted = g.deleted.size;
+    r.aliases = g.matched;
+    r.unaliased = g.unmatched;
+    r.lineage.malformed = g.project.resolutions.filter((e) => malformedResolution(e) !== null).length;
+    return r;
+  };
   if (opts.dryRun === true) {
-    for (const g of grouped) {
-      const r = emptyProjectReport(g.project, g.root);
-      r.sessions.distinct = g.groups.length;
-      r.sessions.deleted = g.deleted.size;
-      report.projects.push(r);
-    }
+    report.projects = prepared.map(startReport);
     return report;
   }
 
   const membership = membershipFor(mycoHome, opts.serverUrl);
   if (typeof membership === 'string') return { ...report, refused: membership };
-  report.serverUrl = membership.serverUrl;
-  const fetchImpl = deps.fetch ?? globalThis.fetch;
+  const serverUrl = membership.serverUrl;
+  report.serverUrl = serverUrl;
+  /** Sessions whose transcript this run shipped, so a retried step that finds it held still reports it shipped. */
+  const shippedThisRun = new Set<string>();
+
+  /** The status of the last response any step received; undefined for a request that got none. */
+  let lastStatus: number | undefined;
+  const observed: FetchLike = async (input, init) => {
+    lastStatus = undefined;
+    const res = await (deps.fetch ?? globalThis.fetch)(input, init);
+    lastStatus = res.status;
+    return res;
+  };
+  const fetchImpl = paced(observed, deps.pace, sleep, now);
   /** A client on the credential as it is now: a hook may rotate it during a long import. */
   const clientFor = (projectId: string): ServerClient => {
-    const fresh = membershipFor(mycoHome, membership.serverUrl);
+    const fresh = membershipFor(mycoHome, serverUrl);
     const record = typeof fresh === 'string' ? membership : fresh;
     return new ServerClient({ serverUrl: record.serverUrl, token: record.token, projectId }, fetchImpl);
   };
@@ -427,22 +600,27 @@ export async function runLegacyImport(opts: LegacyImportOptions, deps: LegacyImp
   /** Session phases already appended this run, so a retried drain never appends them twice. */
   const appended = new Set<string>();
 
-  /** Run `step` until it ends on anything but `retry`, waiting between tries. */
-  const settle = async <T extends { endedBy?: string }>(step: () => Promise<T>): Promise<T> => {
-    let result = await step();
-    for (let attempt = 1; attempt < maxPasses && result.endedBy === 'retry'; attempt++) {
-      await sleep(retryWaitMs(attempt));
-      result = await step();
+  /**
+   * Run `step` until it ends on anything but `retry`. A rate limit or a
+   * transport fault is waited out; a server fault is retried
+   * `SERVER_FAULT_RETRIES` times, then the step ends `failed`.
+   */
+  const settle = async <T extends StepEnd>(step: () => Promise<T>): Promise<T | StepEnd> => {
+    let faults = 0;
+    for (let attempt = 1; attempt <= maxPasses; attempt++) {
+      const result = await step();
+      if (result.endedBy !== 'retry') return result;
+      const fault = lastStatus !== undefined && lastStatus >= 500 && !WAIT_STATUSES.has(lastStatus);
+      if (fault && ++faults > SERVER_FAULT_RETRIES) return { endedBy: 'failed' };
+      await sleep(retryWaitMs(fault ? faults : attempt));
     }
-    return result;
+    return { endedBy: 'retry' };
   };
 
   try {
-    for (const g of grouped) {
-      const r = emptyProjectReport(g.project, g.root);
+    for (const g of prepared) {
+      const r = startReport(g);
       report.projects.push(r);
-      r.sessions.distinct = g.groups.length;
-      r.sessions.deleted = g.deleted.size;
       progress(`${g.project.projectId}: ${g.groups.length} sessions, ${g.project.spores.length} spores, ${g.project.plans.length} plans`);
       const ended = await importProject(g, r);
       if (ended !== undefined) r.endedBy = ended;
@@ -453,34 +631,53 @@ export async function runLegacyImport(opts: LegacyImportOptions, deps: LegacyImp
   }
   return report;
 
-  /** One project. Answers the class a pass could not get past, or undefined when it finished. */
-  async function importProject(
-    g: { project: LegacyProject; root: string | null; groups: SessionGroup[]; idOf: Map<string, string>; deleted: Set<string> },
-    r: LegacyProjectReport,
-  ): Promise<string | undefined> {
+  /** One project. Answers the class a step could not get past, or undefined when it finished. */
+  async function importProject(g: Prepared, r: LegacyProjectReport): Promise<string | undefined> {
     const { project, root } = g;
     const projectId = project.projectId;
-    const probe = await settle(() => probeSessions(projectId, g.groups.map((s) => s.sessionId)));
-    if (probe.endedBy !== undefined) return probe.endedBy;
-    const held = probe.probe;
+    const ledger = new LegacyLedger(mycoHome, serverUrl, projectId);
+    const done = ledger.read();
     const spool = new MemberSpool(projectId, { mycoHome });
+
+    // Deletions first: once a tombstone stands, no write of that session is admitted anywhere.
+    const forbidden = [...g.deleted].filter((id) => done.sources.get(id) !== 'deleted');
+    for (let i = 0; i < forbidden.length; i += PROBE_CHUNK) {
+      const run = forbidden.slice(i, i + PROBE_CHUNK);
+      const outcome = await settle(async () => classified(await clientFor(projectId).postPersisted(IMPORT_TOMBSTONES_PATH, { sessions: run, reason: 'deleted in Myco 1.4' }, unboundedBudget())));
+      if (outcome.endedBy === 'failed') { r.failures.push(`tombstones for ${run.length} deleted sessions: server error`); continue; }
+      if (outcome.endedBy !== undefined) return outcome.endedBy;
+      const { body } = outcome as Classified;
+      if (body === undefined) { r.refusals.push(`tombstones: ${(outcome as Classified).refusal ?? 'refused'}`); continue; }
+      const held = Array.isArray(body.held) ? body.held.filter((id): id is string => typeof id === 'string') : [];
+      r.tombstones.recorded += Array.isArray(body.recorded) ? body.recorded.length : 0;
+      r.tombstones.held.push(...held);
+      ledger.append(...run.map((session) => ({ k: 'source' as const, session, from: 'deleted' as const })));
+    }
+
+    const probe = await settle(() => probeSessions(projectId, g.groups.filter((s) => !done.sessions.has(s.sessionId)).map((s) => s.sessionId)));
+    if (probe.endedBy === 'failed') { r.failures.push('what the Deployment holds of these sessions: server error'); return undefined; }
+    if (probe.endedBy !== undefined) return probe.endedBy;
+    const held = (probe as { probe: Probe }).probe;
     const promptsBy = groupBy(project.prompts, (p) => p.sessionId);
     const plansBy = groupBy(project.plans.filter((p) => p.sessionId !== null), (p) => g.idOf.get(p.sessionId as string) ?? (p.sessionId as string));
     /** Sessions whose prompts came from the vault: their prompt ids exist on the Deployment. */
-    const vaultContent = new Set<string>();
-    /** Sessions whose transcript this run shipped, so a retried pass that finds it held still reports it shipped. */
-    const shippedThisRun = new Set<string>();
-    const present = new Set<string>();
+    const vaultContent = new Set([...done.sources].filter(([, from]) => from === 'vault').map(([id]) => id));
+    const present = new Set<string>(done.sessions);
 
     for (const group of g.groups) {
+      if (done.sessions.has(group.sessionId)) { r.sessions.resumed += 1; continue; }
       if (held.tombstoned.has(group.sessionId)) { r.sessions.deleted += 1; continue; }
       const ended = await settle(() => importSession(group));
+      if (ended.endedBy === 'failed') { r.failures.push(`session ${group.sessionId}: server error`); continue; }
+      if (ended.endedBy === 'deleted') continue;
       if (ended.endedBy !== undefined) return ended.endedBy;
       present.add(group.sessionId);
+      ledger.append({ k: 'session', session: group.sessionId });
     }
     r.plans.unsent = project.plans.length - r.plans.sent - r.plans.empty;
 
     for (const spore of project.spores) {
+      if (done.spores.has(spore.id)) { r.spores.duplicate += 1; continue; }
       const sessionId = spore.sessionId === null ? null : g.idOf.get(spore.sessionId) ?? null;
       const onDeployment = sessionId !== null && present.has(sessionId) ? sessionId : null;
       const promptId = onDeployment !== null && vaultContent.has(onDeployment) && spore.promptId !== null ? legacyPromptId(projectId, spore.promptId) : null;
@@ -490,38 +687,66 @@ export async function runLegacyImport(opts: LegacyImportOptions, deps: LegacyImp
         importance: spore.importance ?? undefined, filePath: spore.filePath, tags: spore.tags, contentHash: spore.contentHash,
         properties: spore.properties, createdAt: spore.createdAt ?? undefined,
       }, unboundedBudget())));
+      if (outcome.endedBy === 'failed') { r.failures.push(`spore ${spore.id}: server error`); continue; }
       if (outcome.endedBy !== undefined) return outcome.endedBy;
-      if (outcome.refusal !== undefined) { r.spores.refused += 1; r.refusals.push(`spore ${spore.id}: ${outcome.refusal}`); continue; }
-      if (outcome.duplicate) r.spores.duplicate += 1; else r.spores.saved += 1;
+      const answer = outcome as Classified;
+      if (answer.refusal !== undefined) { r.spores.refused += 1; r.refusals.push(`spore ${spore.id}: ${answer.refusal}`); continue; }
+      if (answer.duplicate) r.spores.duplicate += 1; else r.spores.saved += 1;
+      ledger.append({ k: 'spore', id: spore.id });
     }
 
     const finalStatus = new Map(project.spores.map((s) => [s.id, s.status]));
     for (const event of project.resolutions) {
+      const malformed = malformedResolution(event);
+      if (malformed !== null) { r.malformed.push(`history ${event.id}: ${malformed}`); continue; }
+      if (done.lineage.has(event.id)) { r.lineage.duplicate += 1; continue; }
       const status = finalStatus.get(event.sporeId);
-      if (status === undefined) { r.lineage.refused += 1; r.refusals.push(`lineage ${event.id}: its spore ${event.sporeId} is not in the vault`); continue; }
+      if (status === undefined) { r.lineage.refused += 1; r.refusals.push(`history ${event.id}: its spore ${event.sporeId} is not in the vault`); continue; }
       const sessionId = event.sessionId === null ? null : g.idOf.get(event.sessionId) ?? null;
       const outcome = await settle(async () => classified(await clientFor(projectId).postPersisted(SPORES_RESOLVE_PATH, {
         eventId: event.id, agentId: event.agentId, sporeId: event.sporeId, action: event.action, status,
         newSporeId: event.newSporeId, reason: event.reason, sessionId: sessionId !== null && present.has(sessionId) ? sessionId : null,
+        channel: 'import', createdAt: event.createdAt ?? undefined,
       }, unboundedBudget())));
+      if (outcome.endedBy === 'failed') { r.failures.push(`history ${event.id}: server error`); continue; }
       if (outcome.endedBy !== undefined) return outcome.endedBy;
-      if (outcome.refusal !== undefined) { r.lineage.refused += 1; r.refusals.push(`lineage ${event.id}: ${outcome.refusal}`); continue; }
-      if (outcome.body?.resolved === false) { r.lineage.refused += 1; r.refusals.push(`lineage ${event.id}: its spore ${event.sporeId} is not on the Deployment`); continue; }
-      r.lineage.recorded += 1;
+      const answer = outcome as Classified;
+      if (answer.refusal !== undefined) { r.lineage.refused += 1; r.refusals.push(`history ${event.id}: ${answer.refusal}`); continue; }
+      if (answer.body?.resolved === false) { r.lineage.refused += 1; r.refusals.push(`history ${event.id}: its spore ${event.sporeId} is not on the Deployment`); continue; }
+      if (answer.duplicate) r.lineage.duplicate += 1; else r.lineage.recorded += 1;
+      ledger.append({ k: 'lineage', id: event.id });
     }
     return undefined;
 
     /**
-     * One session: facts, transcript, content, plans and end, sent and drained.
-     * Its counts reach the report once, when every event reached the
-     * Deployment; a pass a retry repeats counts nothing twice.
+     * One session. Its content source is decided before anything is sent and
+     * recorded; facts, transcript, content, plans and end follow, sent and
+     * drained. Its counts reach the report once, when every event reached the
+     * Deployment.
      */
-    async function importSession(group: SessionGroup): Promise<{ endedBy?: string }> {
+    async function importSession(group: SessionGroup): Promise<StepEnd> {
       const s = group.winner;
       const client = clientFor(projectId);
+      const located = locateTranscript(group.agent, group.sessionId, s.transcriptPath);
+      const agent = located?.agent ?? group.agent;
+      const candidate = located === null ? null : transcriptCandidate(agent, group.sessionId, located.file, root ?? '', deps.machineId, now());
+      const planned = candidate === null || candidate === 'active' ? null : await planTranscript(candidate, client);
+      if (planned !== null && 'endedBy' in planned) return planned;
+      const plan = planned as PlanDecision | null;
+
+      let source = ledger.read().sources.get(group.sessionId);
+      if (source === undefined) {
+        source = plan?.decision === 'tombstoned' ? 'deleted'
+          : plan !== null && plan.decision !== 'unoffered' ? 'transcript'
+          : held.withTranscript.has(group.sessionId) ? 'transcript'
+          : 'vault';
+        ledger.append({ k: 'source', session: group.sessionId, from: source });
+      }
+      if (source === 'deleted') { r.sessions.deleted += 1; return { endedBy: 'deleted' }; }
+
       const at = (instant: number | null) => () => instant ?? s.startedAt ?? s.endedAt ?? 0;
       const ctx = (instant: number | null): EnvelopeContext => ({
-        agent: s.agent, sessionId: group.sessionId, stage: spool.stagerFor(group.sessionId), now: at(instant), channel: 'import', producer: LEGACY_PRODUCER,
+        agent, sessionId: group.sessionId, stage: spool.stagerFor(group.sessionId), now: at(instant), channel: 'import', producer: LEGACY_PRODUCER,
       });
       const withId = (out: OutboundEvent, ...key: string[]): OutboundEvent => ({ ...out, envelope: { ...out.envelope, eventId: legacyId(projectId, ...key) } });
       const alreadyHeld = held.held.has(group.sessionId);
@@ -538,24 +763,19 @@ export async function runLegacyImport(opts: LegacyImportOptions, deps: LegacyImp
       const drainedFacts = await drain(spool, group.sessionId, client);
       if (drainedFacts !== undefined) return { endedBy: drainedFacts };
 
-      // The transcript, where one is on disk: shipped under this Project whatever directory it records.
-      let transcript: 'shipped' | 'held' | null = held.withTranscript.has(group.sessionId) ? 'held' : null;
-      const file = transcriptFileFor(s, group.sessionId);
-      const candidate = file === null ? null : transcriptCandidate(s.agent, group.sessionId, file, root ?? '', deps.machineId, now());
-      if (candidate !== null && candidate !== 'active') {
-        const shipped = await shipTranscript(candidate, client, spool);
-        if (shipped === 'tombstoned') { r.sessions.deleted += 1; return {}; }
-        if (shipped === 'shipped') { shippedThisRun.add(group.sessionId); transcript = 'shipped'; }
-        else if (shipped === 'held') transcript = shippedThisRun.has(group.sessionId) ? 'shipped' : 'held';
+      let transcript: 'shipped' | 'held' | null = source === 'transcript' ? 'held' : null;
+      if (plan !== null && plan.decision === 'take' && candidate !== null && candidate !== 'active') {
+        const shipped = await shipSession(candidate, plan.fromOffset, client, spool, deps.machineId, now, { facts: false });
+        if (shipped === 'done') { shippedThisRun.add(group.sessionId); transcript = 'shipped'; }
         else if (shipped !== 'absent') return { endedBy: shipped };
       }
+      if (transcript === 'held' && shippedThisRun.has(group.sessionId)) transcript = 'shipped';
 
-      // Content comes from the vault only where no transcript holds it.
-      const fromVault = transcript === null;
+      const fromVault = source === 'vault';
       if (fromVault) vaultContent.add(group.sessionId);
       const events: OutboundEvent[] = [];
       if (fromVault) {
-        for (const p of promptsBy.get(s.id) ?? []) {
+        for (const p of promptsBy.get(group.promptsFrom) ?? []) {
           const promptId = legacyPromptId(projectId, p.id);
           if (p.text !== null) {
             events.push(withId(promptEvent(ctx(p.startedAt), {
@@ -582,9 +802,13 @@ export async function runLegacyImport(opts: LegacyImportOptions, deps: LegacyImp
           promptId: plan.promptId !== null && fromVault ? legacyPromptId(projectId, plan.promptId) : undefined,
         }), 'plan', plan.id));
       }
-      events.push(withId(sessionEndEvent(ctx(s.endedAt), {
-        endedAt: s.endedAt ?? s.startedAt ?? undefined, title: s.title ?? undefined, summary: s.summary ?? undefined,
-      }), 'session.end', group.sessionId));
+      // A held session's end is live capture's; the title travels on its own, the same event whether or not the end was sent.
+      if (!alreadyHeld) {
+        events.push(withId(sessionEndEvent(ctx(s.endedAt), { endedAt: s.endedAt ?? s.startedAt ?? undefined }), 'session.end', group.sessionId));
+      }
+      if (group.title !== null) {
+        events.push(withId(sessionTitleEvent(ctx(s.endedAt), { title: group.title, summary: group.summary ?? undefined }), 'session.title', group.sessionId));
+      }
       appendOnce(spool, group.sessionId, 'rows', events);
       const drainedRows = await drain(spool, group.sessionId, client);
       if (drainedRows !== undefined) return { endedBy: drainedRows };
@@ -600,31 +824,20 @@ export async function runLegacyImport(opts: LegacyImportOptions, deps: LegacyImp
       r.plans.empty += emptyPlans;
       return {};
     }
+  }
 
-    /** The transcript on disk for a vault session: the path it recorded when that names this session, else where the layout puts it. */
-    function transcriptFileFor(s: LegacySession, sessionId: string): string | null {
-      const discovery = manifestTranscriptDiscovery(s.agent);
-      if (s.transcriptPath !== null && fs.existsSync(s.transcriptPath) && sessionIdFromTranscriptPath(discovery, s.transcriptPath) === sessionId) return s.transcriptPath;
-      return discovery === undefined ? null : findTranscriptFor(s.agent, sessionId);
-    }
-
-    /** Plan one transcript and ship it from the byte the Deployment names. */
-    async function shipTranscript(candidate: Candidate, client: ServerClient, spool: MemberSpool): Promise<'shipped' | 'held' | 'tombstoned' | 'absent' | string> {
-      const answer = await client.importPlan({
-        windowDays: LEGACY_WINDOW_DAYS, maxPerAgent: LEGACY_MAX_PER_AGENT,
-        candidates: [{ sessionId: candidate.sessionId, transcriptId: candidate.transcriptId, agent: candidate.agent, sizeBytes: candidate.sizeBytes, modifiedAt: candidate.modifiedAt, headHash: candidate.headHash }],
-      }, unboundedBudget());
-      if (answer.class !== 'acked') return answer.class;
-      const decision = (Array.isArray(answer.body.candidates) ? answer.body.candidates : [])[0] as Record<string, unknown> | undefined;
-      if (decision === undefined) return 'absent';
-      if (decision.take !== 'from') {
-        if (decision.reason === 'tombstoned') return 'tombstoned';
-        return decision.reason === 'window' || decision.reason === 'cap' ? 'absent' : 'held';
-      }
-      const shipped = await shipSession(candidate, Number(decision.fromOffset ?? 0), client, spool, deps.machineId, now, { facts: false });
-      if (shipped === 'done') return 'shipped';
-      return shipped;
-    }
+  /** Plan one transcript: where to ship it from, or why it is not shipped. */
+  async function planTranscript(candidate: Candidate, client: ServerClient): Promise<PlanDecision | StepEnd> {
+    const answer = await client.importPlan({
+      windowDays: LEGACY_WINDOW_DAYS, maxPerAgent: LEGACY_MAX_PER_AGENT,
+      candidates: [{ sessionId: candidate.sessionId, transcriptId: candidate.transcriptId, agent: candidate.agent, sizeBytes: candidate.sizeBytes, modifiedAt: candidate.modifiedAt, headHash: candidate.headHash }],
+    }, unboundedBudget());
+    if (answer.class !== 'acked') return { endedBy: answer.class };
+    const decision = (Array.isArray(answer.body.candidates) ? answer.body.candidates : [])[0] as Record<string, unknown> | undefined;
+    if (decision === undefined) return { decision: 'unoffered' };
+    if (decision.take === 'from') return { decision: 'take', fromOffset: Number(decision.fromOffset ?? 0) };
+    if (decision.reason === 'tombstoned') return { decision: 'tombstoned' };
+    return { decision: decision.reason === 'window' || decision.reason === 'cap' ? 'unoffered' : 'held' };
   }
 
   /** What the Deployment holds of these sessions, asked in runs under the route's ceiling. */
@@ -637,17 +850,13 @@ export async function runLegacyImport(opts: LegacyImportOptions, deps: LegacyImp
       if (answer.class !== 'acked') return { probe, endedBy: answer.class };
       if (run.length === 0) break;
       const sessions = answer.body.sessions as { held?: unknown; withTranscript?: unknown; tombstoned?: unknown } | undefined;
-      if (sessions === undefined) throw new ServerTooOld(`${membershipUrl()} does not answer what it holds of a session; update the Deployment before importing a 1.4 vault`);
+      if (sessions === undefined) throw new ServerTooOld(`${report.serverUrl} does not answer what it holds of a session; update the Deployment before importing a 1.4 vault`);
       for (const [key, into] of [['held', probe.held], ['withTranscript', probe.withTranscript], ['tombstoned', probe.tombstoned]] as const) {
         const list = sessions[key];
         if (Array.isArray(list)) for (const id of list) if (typeof id === 'string') into.add(id);
       }
     }
     return { probe };
-  }
-
-  function membershipUrl(): string {
-    return report.serverUrl ?? 'the Deployment';
   }
 
   /** Append a session's events once per run, however many passes its drain takes. */
@@ -666,15 +875,20 @@ export async function runLegacyImport(opts: LegacyImportOptions, deps: LegacyImp
       const refused = spool.readRefused().entries.filter((e) => e.sessionId === sessionId);
       const last = refused[refused.length - 1];
       if (last !== undefined && REFUSAL_SUBJECT[last.code] === 'server-version') {
-        throw new ServerTooOld(`${membershipUrl()} refused ${last.kind} (${last.code}: ${last.reason}); update the Deployment before importing a 1.4 vault`);
+        throw new ServerTooOld(`${report.serverUrl} refused ${last.kind} (${last.code}: ${last.reason}); update the Deployment before importing a 1.4 vault`);
       }
     }
     return drained.endedBy;
   }
 }
 
-/** An answer to a spore route: stopped (retryable or not), refused with a reason, or recorded. */
-function classified(outcome: Outcome): { endedBy?: string; refusal?: string; duplicate?: boolean; body?: Record<string, unknown> } {
+/** What the Deployment answers for one transcript: ship it from a byte, or why not. */
+type PlanDecision = { decision: 'take'; fromOffset: number } | { decision: 'held' | 'tombstoned' | 'unoffered' };
+
+type Classified = { endedBy?: string; refusal?: string; duplicate?: boolean; body?: Record<string, unknown> };
+
+/** An answer to a persisted route: stopped (retryable or not), refused with a reason, or recorded. */
+function classified(outcome: Outcome): Classified {
   if (outcome.class === 'acked') return { duplicate: outcome.duplicate === true || outcome.body.duplicate === true, body: outcome.body };
   if (outcome.class === 'refused') return { refusal: `${outcome.code}: ${outcome.reason}` };
   return { endedBy: outcome.class };

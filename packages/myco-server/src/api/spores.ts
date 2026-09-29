@@ -35,6 +35,8 @@ function parseBody(body: string): Record<string, unknown> | null {
 }
 
 const BAD_BODY = refusal('body is not an object', 'parse');
+/** The channel an import names on a write that carries the time it happened. */
+const IMPORT_CHANNEL = 'import';
 
 /** The agent row a write attributed to Myco's own agent names, made present before the write, which can precede the Deployment's first dispatch. */
 async function ensureNamedAgent(env: ServerEnv, agentId: string, now: number): Promise<void> {
@@ -116,7 +118,10 @@ export async function handleGetSpore(env: ServerEnv, ctx: RouteContext): Promise
  * Move a spore's status and record why, in one call.
  *
  * `resolved: false` means the spore is not in this Project — nothing moved and
- * no event exists for it, which a caller must not read as a resolution.
+ * no event exists for it, which a caller must not read as a resolution. An
+ * event id already recorded changes nothing and answers `duplicate`. On the
+ * `import` channel the event keeps the time it names (`createdAt`); every other
+ * resolution is dated when it arrives.
  */
 export async function handleResolveSpore(env: ServerEnv, ctx: RouteContext): Promise<Response> {
   const body = parseBody(ctx.body);
@@ -141,9 +146,10 @@ export async function handleResolveSpore(env: ServerEnv, ctx: RouteContext): Pro
     return Response.json(refused(ctx, refusal('a supersede resolution requires newSporeId', 'refused')));
   }
 
+  const at = body.channel === IMPORT_CHANNEL ? int(body.createdAt) ?? ctx.now : ctx.now;
   await ensureNamedAgent(env, agentId, ctx.now);
-  const resolved = await resolveSpore(env.db, { projectId: ctx.projectId }, status, {
-    id: eventId, agentId, sporeId, action, newSporeId, reason, sessionId, author: ctx.memberId, createdAt: ctx.now,
-  }, ctx.now);
-  return Response.json({ persisted: true, resolved });
+  const outcome = await resolveSpore(env.db, { projectId: ctx.projectId }, status, {
+    id: eventId, agentId, sporeId, action, newSporeId, reason, sessionId, author: ctx.memberId, createdAt: at,
+  }, at);
+  return Response.json({ persisted: true, resolved: outcome !== false, ...(outcome === 'duplicate' ? { duplicate: true } : {}) });
 }

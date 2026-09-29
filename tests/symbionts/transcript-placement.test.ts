@@ -54,6 +54,15 @@ describe('placing a transcript', () => {
     expect(family('claude-code', claudeTranscript(store, path.join(base, 'Repos', 'other')))).toEqual({ kind: 'elsewhere', directory: path.join(base, 'Repos', 'other') });
   });
 
+  it('never maps a directory that is still a repository of its own', () => {
+    const other = path.join(base, 'Repos', 'myco-unrelated');
+    fs.mkdirSync(other, { recursive: true });
+    expect(Bun.spawnSync(['git', 'init', '-q', other], { stdout: 'ignore', stderr: 'ignore' }).exitCode).toBe(0);
+    const family = transcriptPlacer([root], { mappings: [{ from: `${path.join(base, 'Repos', 'myco-')}*`, to: root }] });
+    expect(family('claude-code', claudeTranscript(store, other))).toEqual({ kind: 'elsewhere', directory: other });
+    expect(family('claude-code', claudeTranscript(store, path.join(base, 'Repos', 'myco-gone')))).toEqual({ kind: 'bound', root });
+  });
+
   it('places a removed worktree by the remote its transcript records', () => {
     const git: PlacementGit = { mainCheckout: () => null, remoteOf: (r) => (r === root ? 'git@github.com:goondocks-co/myco.git' : null) };
     const place = transcriptPlacer([root], { git });

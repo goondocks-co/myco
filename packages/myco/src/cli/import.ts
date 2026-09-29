@@ -13,7 +13,7 @@
  * to three both report three found, which is the truth in each case.
  */
 import { getMachineId } from '../machine-id.js';
-import { importUntilSettled, type ImportOptions, type ImportReport } from '../member/import.js';
+import { importUntilSettled, IMPORT_PACE_PER_MINUTE, type ImportOptions, type ImportReport } from '../member/import.js';
 import { runLegacyImport, type LegacyImportReport } from '../member/legacy-import.js';
 import { parseDirectoryMapping, type DirectoryMapping } from '../symbionts/transcript-attribution.js';
 import type { FetchLike } from '../member/transport.js';
@@ -203,16 +203,16 @@ export async function run(args: readonly string[], deps: ImportCliDeps = {}): Pr
   if (parsed.legacy !== undefined) {
     const legacy = await runLegacyImport(
       { sources: parsed.legacy, serverUrl: parsed.options.serverUrl, dryRun, project: parsed.options.project },
-      { fetch: deps.fetch, now: deps.now, mycoHome: deps.mycoHome, machineId, sleep: deps.sleep, progress: (l) => err(`myco import: ${l}`) },
+      { fetch: deps.fetch, now: deps.now, mycoHome: deps.mycoHome, machineId, sleep: deps.sleep, pace: IMPORT_PACE_PER_MINUTE, progress: (l) => err(`myco import: ${l}`) },
     );
     if (legacy.refused !== undefined) { err(`myco import: ${legacy.refused}`); return false; }
     for (const line of legacyReportLines(legacy, dryRun)) out(line);
-    legacyComplete = legacy.projects.every((p) => p.endedBy === undefined && p.refusals.length === 0);
+    legacyComplete = legacy.projects.every((p) => p.endedBy === undefined && p.refusals.length === 0 && p.failures.length === 0);
     exclude = new Set(legacy.deleted);
   }
 
   const report = await importUntilSettled({ ...parsed.options, ...(exclude === undefined ? {} : { exclude }) }, {
-    fetch: deps.fetch, now: deps.now, cwd: deps.cwd, mycoHome: deps.mycoHome, machineId, sleep: deps.sleep,
+    fetch: deps.fetch, now: deps.now, cwd: deps.cwd, mycoHome: deps.mycoHome, machineId, sleep: deps.sleep, pace: IMPORT_PACE_PER_MINUTE,
     onRetry: (attempt, waitMs) => err(`myco import: the Deployment asked to wait; pass ${attempt + 1} in ${Math.round(waitMs / 1000)} s`),
   });
   if (report.refused !== undefined) { err(`myco import: ${report.refused}`); return false; }
@@ -227,13 +227,21 @@ export function legacyReportLines(report: LegacyImportReport, dryRun: boolean): 
     lines.push(`${p.projectId} (${p.root ?? 'no project root recorded'}) from 1.4: ${p.vault.sessions} sessions, ${p.vault.prompts} prompts, ${p.vault.plans} plans, ${p.vault.spores} spores, ${p.vault.lineage} spore history events`);
     if (dryRun) {
       lines.push(`  would bring ${p.sessions.distinct} sessions (${p.sessions.deleted} deleted in 1.4 left out)`);
+      for (const alias of p.aliases) lines.push(`  matched by time: ${alias}`);
+      for (const stored of p.unaliased) lines.push(`  no transcript matched: ${stored}`);
+      if (p.lineage.malformed > 0) lines.push(`  would skip ${p.lineage.malformed} spore history events in a shape no Deployment takes`);
       continue;
     }
     const s = p.sessions;
-    lines.push(`  sessions: ${s.distinct} distinct, ${s.deleted} deleted; ${s.transcriptsShipped} transcripts sent, ${s.transcriptsHeld} already here, ${s.fromVault} from the vault; ${s.alreadyHeld} were already here and kept what was captured`);
+    lines.push(`  sessions: ${s.distinct} distinct, ${s.deleted} deleted; ${s.transcriptsShipped} transcripts sent, ${s.transcriptsHeld} already here, ${s.fromVault} from the vault; ${s.alreadyHeld} were already here and kept what was captured; ${s.resumed} finished by an earlier run`);
+    lines.push(`  sessions deleted in 1.4: ${p.tombstones.recorded} kept from ever being imported${p.tombstones.held.length === 0 ? '' : `; already here, left for you to delete: ${p.tombstones.held.join(', ')}`}`);
     lines.push(`  sent ${p.prompts} prompts, ${p.responses} responses, ${p.plans.sent} plans (${p.plans.empty} empty, ${p.plans.unsent} of deleted or unknown sessions)`);
-    lines.push(`  spores: ${p.spores.saved} saved, ${p.spores.duplicate} already here, ${p.spores.refused} refused; history: ${p.lineage.recorded} recorded, ${p.lineage.refused} refused`);
+    lines.push(`  spores: ${p.spores.saved} saved, ${p.spores.duplicate} already here, ${p.spores.refused} refused; history: ${p.lineage.recorded} recorded, ${p.lineage.duplicate} already here, ${p.lineage.refused} refused`);
+    for (const alias of p.aliases) lines.push(`  matched by time: ${alias}`);
+    for (const stored of p.unaliased) lines.push(`  no transcript matched, imported under its 1.4 id: ${stored}`);
+    for (const malformed of p.malformed) lines.push(`  skipped ${malformed}`);
     for (const refusal of p.refusals) lines.push(`  refused ${refusal}`);
+    for (const failure of p.failures) lines.push(`  failed ${failure}; run the import again to retry it`);
     if (p.endedBy !== undefined) lines.push(`  stopped — ${STOPPED_WORDS[p.endedBy] ?? 'the Deployment could not be reached'}`);
   }
   if (report.projects.length === 0) lines.push('The 1.4 vault holds nothing to import.');

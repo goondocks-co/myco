@@ -44,6 +44,7 @@ import { resolveMemberProjectRoot } from './credential.js';
 import { sessionEndEvent, sessionStartEvent, type EnvelopeContext } from './envelope.js';
 import { listRegistryEntries, type RegistryEntry } from './registry.js';
 import { MemberSpool } from './spool.js';
+import { legacySessionsToLeaveOut } from './legacy-ledger.js';
 import { readSessionState } from './session-state.js';
 import { shipTranscriptSegments, transcriptHeadHash, transcriptPointerFor } from './transcript.js';
 import { ServerClient, type FetchLike } from './transport.js';
@@ -108,7 +109,11 @@ export interface ImportOptions {
 }
 
 export interface ImportDeps {
+  /** How a paced import waits for its next request slot; the default really waits. */
+  sleep?: (ms: number) => Promise<void>;
   fetch?: FetchLike;
+  /** Requests a minute this import stays under, leaving the rest of the credential's rate budget to the hooks capturing live. Unpaced when absent. */
+  pace?: number;
   now?: () => number;
   cwd?: string;
   mycoHome?: string;
@@ -306,7 +311,7 @@ const refusedReport = (refused: string): ImportReport =>
 export async function runImport(opts: ImportOptions, deps: ImportDeps): Promise<ImportReport> {
   const now = deps.now ?? Date.now;
   const mycoHome = deps.mycoHome ?? resolveMycoHome({ cwd: deps.cwd ?? process.cwd() });
-  const fetchImpl = deps.fetch ?? globalThis.fetch;
+  const fetchImpl = paced(deps.fetch ?? globalThis.fetch, deps.pace, deps.sleep ?? pause);
 
   const entries = listRegistryEntries(mycoHome);
   if (entries.length === 0) return refusedReport('no Deployment membership on this machine');
@@ -323,7 +328,8 @@ export async function runImport(opts: ImportOptions, deps: ImportDeps): Promise<
   if (bound.size === 0) return refusedReport(`no project on this machine is bound to ${named}`);
 
   const agents = agentsWithStores(opts.agent);
-  const collected = collectCandidates(agents, bound.keys(), deps.machineId, mycoHome, now(), { mappings: opts.mappings, exclude: opts.exclude });
+  const exclude = new Set([...(opts.exclude ?? []), ...legacySessionsToLeaveOut(mycoHome, named)]);
+  const collected = collectCandidates(agents, bound.keys(), deps.machineId, mycoHome, now(), { mappings: opts.mappings, exclude });
   const { candidates, unattributable, active } = collected;
 
   const byProject = new Map<string, Candidate[]>();
@@ -474,6 +480,25 @@ export const retryWaitMs = (attempt: number): number =>
 /** Wait `ms` between import passes; a caller that must not wait passes its own. */
 export const pause = (ms: number): Promise<void> => new Promise<void>((resolve) => setTimeout(resolve, ms));
 
+/** The requests a minute an import run by hand stays under: two thirds of a credential's rate budget, the rest left to live capture. */
+export const IMPORT_PACE_PER_MINUTE = 200;
+
+/**
+ * A fetch that starts at most `perMinute` requests a minute, one at a time,
+ * spacing them evenly; `fetch` itself when `perMinute` is absent.
+ */
+export function paced(fetchImpl: FetchLike, perMinute: number | undefined, sleep: (ms: number) => Promise<void>, now: () => number = Date.now): FetchLike {
+  if (perMinute === undefined || perMinute <= 0) return fetchImpl;
+  const spacing = 60_000 / perMinute;
+  let next = 0;
+  return async (input, init) => {
+    const at = now();
+    if (next > at) await sleep(next - at);
+    next = Math.max(now(), next) + spacing;
+    return fetchImpl(input, init);
+  };
+}
+
 /** Whether a pass stopped on an answer that a later pass can get past. */
 export const endedOnRetry = (report: ImportReport): boolean => report.projects.some((p) => p.endedBy === 'retry');
 
@@ -485,7 +510,7 @@ export const endedOnRetry = (report: ImportReport): boolean => report.projects.s
  * by `retry` after the pass limit says so.
  */
 export async function importUntilSettled(
-  opts: ImportOptions, deps: ImportDeps & { sleep?: (ms: number) => Promise<void>; maxPasses?: number; onRetry?: (attempt: number, waitMs: number) => void },
+  opts: ImportOptions, deps: ImportDeps & { maxPasses?: number; onRetry?: (attempt: number, waitMs: number) => void },
 ): Promise<ImportReport> {
   const sleep = deps.sleep ?? pause;
   const maxPasses = deps.maxPasses ?? IMPORT_MAX_PASSES;

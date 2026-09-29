@@ -231,7 +231,8 @@ export interface ResolutionEventInsert {
  *
  * Returns false when the spore is not in this scope — the batch changed
  * nothing, and a caller must not read that as a resolution it did not make.
- * An event id already recorded keeps its first record; the status still moves.
+ * An event id already recorded moves nothing and records nothing, and answers
+ * `duplicate`: replaying a resolution never undoes a later one.
  */
 export async function resolveSpore(
   db: RelationalStore,
@@ -239,10 +240,12 @@ export async function resolveSpore(
   status: SporeStatus,
   event: ResolutionEventInsert,
   now: number,
-): Promise<boolean> {
-  const [moved] = await db.batch([
-    db.prepare(`UPDATE spores SET status = ?, updated_at = ? WHERE project_id = ? AND id = ? RETURNING id`)
-      .bind(status, now, scope.projectId, event.sporeId),
+): Promise<boolean | 'duplicate'> {
+  const [held, moved] = await db.batch([
+    db.prepare(`SELECT 1 AS held FROM resolution_events WHERE project_id = ? AND id = ?`).bind(scope.projectId, event.id),
+    db.prepare(`UPDATE spores SET status = ?, updated_at = ? WHERE project_id = ? AND id = ?
+        AND NOT EXISTS (SELECT 1 FROM resolution_events WHERE project_id = ? AND id = ?) RETURNING id`)
+      .bind(status, now, scope.projectId, event.sporeId, scope.projectId, event.id),
     db.prepare(`INSERT INTO resolution_events
         (project_id, id, agent_id, spore_id, action, new_spore_id, reason, session_id, author, provenance_kind, provenance_ref, created_at)
         SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
@@ -253,6 +256,7 @@ export async function resolveSpore(
         event.provenance?.kind ?? null, event.provenance?.ref ?? null, event.createdAt,
         scope.projectId, event.sporeId),
   ]);
+  if (held.results.length === 1) return 'duplicate';
   return moved.results.length === 1;
 }
 

@@ -16,7 +16,7 @@
  */
 import { jsonBody, objectAt } from '../helpers/json-body.js';
 import { describe, expect, it } from 'bun:test';
-import { handleImportPlan } from '@myco-server-worker/api/import.js';
+import { handleImportPlan, handleImportTombstones } from '@myco-server-worker/api/import.js';
 import { IMPORT_MAX_SESSIONS_DEFAULT, IMPORT_WINDOW_DAYS_DEFAULT } from '@myco-server-worker/core/import-policy.js';
 import { RETIRED_BYTE_CEILING } from './helpers/fixtures.js';
 import { issueMemberToken } from '@myco-server-worker/auth/tokens.js';
@@ -254,5 +254,20 @@ describe('what a Project holds of named sessions', () => {
     expect((body.sessions as { held: string[] }).held.length).toBe(5);
     const params = r.executed.map((sql) => (sql.match(/\?/g) ?? []).length);
     expect(Math.max(...params)).toBeLessThan(100);
+  });
+});
+
+describe('sessions an import must never bring', () => {
+  it('records a tombstone for a session the Project does not hold, and leaves a held one as it is', async () => {
+    const r = await rig();
+    r.hold('s-held', 'tx_1', 100, null);
+    const body = JSON.stringify({ sessions: ['s-gone', 's-held', 's-gone'], reason: 'deleted in Myco 1.4' });
+    const ctx = { projectId: PROJECT, machineId: MACHINE, tokenId: r.tokenId, memberId: 'mem_machine_1', bodyBytes: body.length, now: NOW, body, origin: null } as never;
+    const answer = await jsonBody<Record<string, unknown>>(await handleImportTombstones(r.serverEnv, ctx));
+    expect(answer).toEqual({ persisted: true, recorded: ['s-gone'], held: ['s-held'] });
+    expect(r.sqlite.query(`SELECT session_id FROM session_tombstones`).all()).toEqual([{ session_id: 's-gone' }]);
+    expect(r.sqlite.query(`SELECT COUNT(*) AS n FROM transcripts WHERE session_id = 's-held'`).get()).toEqual({ n: 1 });
+    // The plan refuses the recorded one from then on.
+    expect((await r.answers([{ sessionId: 's-gone', transcriptId: 'tx_new' }])).get('tx_new')?.reason).toBe('tombstoned');
   });
 });

@@ -263,6 +263,11 @@ export function sessionEndEvent(ctx: EnvelopeContext, facts: { endedAt?: number;
   });
 }
 
+/** An import's title for a session whose lifecycle it leaves alone: a `session.end` naming no instant, which the Deployment reads as the title alone. */
+export function sessionTitleEvent(ctx: EnvelopeContext, facts: { title: string; summary?: string }): OutboundEvent {
+  return envelope(ctx, 'session.end', { title: trunc(facts.title, BOUNDS.sessionTitle), summary: trunc(facts.summary, BOUNDS.sessionSummary) });
+}
+
 export function promptEvent(ctx: EnvelopeContext, facts: {
   promptId: string; text: string; origin?: PromptOrigin; parentPromptId?: string; threadId?: string; threadLabel?: string;
 }): OutboundEvent {

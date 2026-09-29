@@ -29,7 +29,7 @@ import type { ServerEnv } from '../core/adapters.js';
 import type { RouteContext } from '../context.js';
 import { IMPORT_PLAN_MAX_CANDIDATES } from '../constants.js';
 import { importPolicy, IMPORT_DISABLED } from '../core/import-policy.js';
-import { tombstonedAmong } from '../core/tombstones.js';
+import { forbidSessions, tombstonedAmong } from '../core/tombstones.js';
 import { heldTranscriptsFor, type HeldTranscript } from '../read/transcript.js';
 import { heldSessionIds } from '../read/sessions.js';
 import { refused } from '../ingest/events.js';
@@ -207,4 +207,27 @@ async function sessionsHeld(env: ServerEnv, projectId: string, sessionIds: reado
     tombstonedAmong(env.db, projectId, sessionIds),
   ]);
   return { held: [...held].sort(), withTranscript: [...new Set(transcripts.map((t) => t.sessionId))].sort(), tombstoned: [...tombstoned].sort() };
+}
+
+/** The longest reason a forbidden session records. */
+const MAX_FORBID_REASON_CHARS = 200;
+
+/**
+ * Record sessions an import must never bring: sessions a record the member
+ * holds (a 1.4 vault) says were deleted. Each becomes a tombstone the import
+ * plan and every write path refuse, on any machine. A session the Project
+ * already holds is answered `held` and left as it is: deleting captured
+ * history is the owner's, on the owner's route.
+ */
+export async function handleImportTombstones(env: ServerEnv, ctx: RouteContext): Promise<Response> {
+  let body: unknown;
+  try { body = JSON.parse(ctx.body); } catch { return Response.json(refused(ctx, BAD_BODY)); }
+  if (!isRecord(body)) return Response.json(refused(ctx, BAD_BODY));
+  const sessionIds = parseProbe(body.sessions);
+  if (sessionIds === null || sessionIds.length === 0) return Response.json(refused(ctx, BAD_BODY));
+  if (sessionIds.length > IMPORT_PLAN_MAX_CANDIDATES) return Response.json(refused(ctx, TOO_MANY));
+  const reason = typeof body.reason === 'string' && body.reason.length > 0 ? body.reason.slice(0, MAX_FORBID_REASON_CHARS) : null;
+  const outcome = await forbidSessions(env.db, ctx.projectId, sessionIds, ctx.memberId, ctx.now, reason);
+  emit({ kind: 'import_sessions_forbidden', projectId: ctx.projectId, recorded: outcome.recorded.length, held: outcome.held.length });
+  return Response.json({ persisted: true, recorded: outcome.recorded.sort(), held: outcome.held.sort() });
 }

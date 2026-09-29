@@ -50,7 +50,7 @@ const sharedFiles = () =>
     !f.includes(`${join(SRC, 'platform')}/`) && !f.includes(`${join(SRC, 'entry')}/`) && f !== join(SRC, 'index.ts'));
 
 /** Every `emit` call across src; a call removed or added moves the total. */
-const EMIT_CALLS = 131;
+const EMIT_CALLS = 132;
 /** The one migrations directory: the emit script writes it, the rendered-steps gate verifies it, and wrangler.toml applies from it. */
 const MIGRATIONS_DIR = 'migrations';
 const K = SyntaxKind as unknown as Record<string, number>;
@@ -578,6 +578,11 @@ describe('gates', () => {
         malformed: (token) => new Request('https://s/import/plan', { method: 'POST', headers: memberHeaders(token), body: 'not json' }),
         wellFormed: (token) => new Request('https://s/import/plan', { method: 'POST', headers: memberHeaders(token), body: JSON.stringify({ candidates: [] }) }),
       },
+      'POST /import/tombstones': {
+        shape: 'persisted',
+        malformed: (token) => new Request('https://s/import/tombstones', { method: 'POST', headers: memberHeaders(token), body: JSON.stringify({ sessions: [] }) }),
+        wellFormed: (token) => new Request('https://s/import/tombstones', { method: 'POST', headers: memberHeaders(token), body: JSON.stringify({ sessions: [`gate-${runSeq++}`] }) }),
+      },
       'POST /runs/claim': {
         shape: 'persisted',
         malformed: (token) => new Request('https://s/runs/claim', { method: 'POST', headers: memberHeaders(token), body: '{}' }),
@@ -1099,6 +1104,7 @@ describe('gates', () => {
       'member POST /context/session',
       'member POST /events',
       'member POST /import/plan',
+      'member POST /import/tombstones',
       'member POST /mcp',
       'member POST /members/link-github',
       'member POST /members/settings',

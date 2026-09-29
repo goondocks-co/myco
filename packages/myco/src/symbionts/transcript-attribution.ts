@@ -68,6 +68,41 @@ export function transcriptHeadField(filePath: string, dotPath: string): string |
   }
 }
 
+/** Parse an instant a transcript line records: an ISO string or epoch milliseconds. */
+const instantOf = (value: unknown): number | null => {
+  if (typeof value === 'number' && Number.isFinite(value) && value > 0) return value;
+  if (typeof value !== 'string') return null;
+  const parsed = Date.parse(value);
+  return Number.isNaN(parsed) ? null : parsed;
+};
+
+/**
+ * The first and last instants a transcript's lines record in a top-level
+ * `timestamp`, read from its head and its tail only; null when neither holds
+ * one.
+ */
+export function transcriptTimeSpan(filePath: string): { first: number; last: number } | null {
+  let handle: number;
+  try { handle = fs.openSync(filePath, 'r'); } catch { return null; }
+  try {
+    const size = fs.fstatSync(handle).size;
+    const readAt = (offset: number, length: number): string[] => {
+      const buffer = Buffer.alloc(length);
+      const read = fs.readSync(handle, buffer, 0, length, offset);
+      return buffer.subarray(0, read).toString('utf8').split('\n');
+    };
+    const instants = (lines: string[]): number[] => lines.flatMap((line) => {
+      try { const at = instantOf((JSON.parse(line) as Record<string, unknown>).timestamp); return at === null ? [] : [at]; } catch { return []; }
+    });
+    const head = instants(readAt(0, Math.min(size, HEAD_BYTES)).slice(0, MAX_HEADER_LINES));
+    const tail = instants(readAt(Math.max(0, size - HEAD_BYTES), Math.min(size, HEAD_BYTES)).slice(size > HEAD_BYTES ? 1 : 0));
+    const all = [...head, ...tail];
+    return all.length === 0 ? null : { first: head[0] ?? Math.min(...all), last: Math.max(...all) };
+  } finally {
+    fs.closeSync(handle);
+  }
+}
+
 /** The working directory a transcript records, or null. */
 export const transcriptCwd = (filePath: string, cwdPath: string): string | null => transcriptHeadField(filePath, cwdPath);
 
@@ -208,8 +243,9 @@ export interface PlacementOptions {
  *
  * A recorded directory is placed, in order: under a root by its canonical
  * path; under the root that is its repository's main checkout, when the
- * directory still exists; under a root an explicit mapping names; under the
- * root whose remote the transcript records. Anything else is `elsewhere`. The
+ * directory still exists; under a root an explicit mapping names, when the
+ * directory is gone or in no repository; under the root whose remote the
+ * transcript records. Anything else is `elsewhere`. The
  * answers git gives are asked once per directory and once per root.
  */
 export function transcriptPlacer(roots: Iterable<string>, opts: PlacementOptions = {}): (agent: string, filePath: string) => Attribution {
@@ -228,11 +264,15 @@ export function transcriptPlacer(roots: Iterable<string>, opts: PlacementOptions
   const placeDirectory = (recorded: string): string | null => {
     if (placed.has(recorded)) return placed.get(recorded) ?? null;
     let root = rootFor(recorded);
+    // A directory still on disk inside a repository belongs to that repository
+    // alone: a mapping never moves another checkout's history into a root.
+    let inRepository = false;
     if (root === null && fs.existsSync(recorded)) {
       const main = ask.mainCheckout(recorded);
+      inRepository = main !== null;
       if (main !== null) root = rootFor(main);
     }
-    if (root === null) {
+    if (root === null && !inRepository) {
       const mapping = mappings.find((m) => mappingCovers(m, recorded) || mappingCovers(m, canonicalPath(recorded)));
       if (mapping !== undefined) root = rootFor(mapping.to);
     }

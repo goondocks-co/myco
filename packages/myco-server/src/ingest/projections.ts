@@ -280,10 +280,11 @@ const reopensSession = (db: RelationalStore, ctx: WriteContext, e: CaptureEnvelo
 export const eventOrderingTimeSql = (alias: string, field: string): string =>
   `COALESCE(CASE WHEN json_valid(${alias}.payload) THEN json_extract(${alias}.payload, '$.${field}') END, ${alias}.created_at)`;
 
-/** The first import end, ordered by creation time and event id. */
+/** The first import end that names an instant, ordered by creation time and event id; a title-only end is none. */
 const IMPORT_END_SQL = `(SELECT ${eventOrderingTimeSql('ie', 'endedAt')} FROM events ie
    WHERE ie.project_id = sessions.project_id AND ie.session_id = sessions.session_id
      AND ie.kind = 'session.end' AND ie.channel = 'import'
+     AND NOT (json_valid(ie.payload) AND json_type(ie.payload, '$.endedAt') IS NULL AND json_type(ie.payload, '$.title') IS NOT NULL)
    ORDER BY ie.created_at, ie.event_id LIMIT 1)`;
 
 /**
@@ -355,7 +356,13 @@ const importedTitle = (db: RelationalStore, ctx: WriteContext, e: CaptureEnvelop
       .bind(p.title, typeof p.summary === 'string' ? p.summary : null, ctx.now, ctx.projectId, e.sessionId, ...rawGateParams(ctx, e)),
   ];
 
+/** An import end that names no instant and carries a title: it stores the title and nothing of the session's lifecycle. */
+const titleOnly = (e: CaptureEnvelope, p: Payload): boolean => e.channel === 'import' && p.endedAt === undefined && typeof p.title === 'string';
+
 const sessionEnd = ({ db, ctx, e, p, spec }: Inputs): KindPlan => {
+  if (titleOnly(e, p)) {
+    return { identities: [], admission: [], projections: importedTitle(db, ctx, e, p), reads: [], refusal: () => NOT_STORED };
+  }
   const endedAt = orderingTime(spec, p, 'endedAt', e.createdAt);
   const requestedAt = e.channel === 'import' ? null : endedAt;
   return {

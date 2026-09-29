@@ -4,17 +4,18 @@
  * The properties this is judged by:
  *
  *   - every vault session lands once, under the id its harness names, whether
- *     the vault stored that id, a hashed id with the transcript's path, or the
- *     transcript's whole file name;
- *   - its prompts come from exactly one source: the transcript where one is on
- *     disk or already held, the vault only where neither is;
+ *     the vault stored that id, a hashed id with the transcript's path, the
+ *     transcript's whole file name, another harness's path, or no path at all
+ *     but a start time a transcript on disk shares;
+ *   - its prompts come from exactly one source, decided once: the transcript
+ *     where one is on disk or already held, the vault only where neither is;
  *   - its 1.4 title and summary land, and never over a title an administrator
- *     set; a session live capture already recorded keeps the facts it was
- *     captured with;
- *   - spores keep their ids, status and history; plans keep the key live
- *     capture gives the same file;
- *   - a session 1.4 deleted is not imported, from the vault or from disk;
- *   - running it again changes nothing.
+ *     set; a session live capture already recorded keeps its facts and end;
+ *   - spores keep their ids, status and time; their history keeps its time,
+ *     and replaying it changes nothing;
+ *   - a session 1.4 deleted is a tombstone no later import brings back;
+ *   - running it again changes nothing, and sends nothing a Deployment refuses
+ *     or retries.
  */
 import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
 import fs from 'node:fs';
@@ -23,11 +24,11 @@ import path from 'node:path';
 import { openDatabase } from '@myco/db/client.js';
 import { createSchema } from '@myco/db/schema.js';
 import {
-  groupLegacySessions, legacySessionId, legacyVaultFiles, readLegacyVault, runLegacyImport, LEGACY_PRODUCER,
+  groupLegacySessions, legacySessionId, legacyVaultFiles, readLegacyVault, runLegacyImport, LEGACY_PRODUCER, SERVER_FAULT_RETRIES,
 } from '@myco/member/legacy-import.js';
-import { collectCandidates } from '@myco/member/import.js';
+import { collectCandidates, importUntilSettled, paced } from '@myco/member/import.js';
 import { planKeyForPath } from '@myco/member/envelope.js';
-import { writeDeploymentMembership } from '@myco/member/registry.js';
+import { writeDeploymentMembership, writeRegistryEntry, REGISTRY_VERSION } from '@myco/member/registry.js';
 import { BUNDLED_MANIFESTS } from '@myco/symbionts/manifests.generated.js';
 import { enumerateTranscripts, sessionIdFromStoredId, sessionIdFromTranscriptPath } from '@myco/symbionts/transcript-discovery.js';
 import { rootSlug } from '@myco/symbionts/transcript-attribution.js';
@@ -38,6 +39,7 @@ const PROJECT = 'proj_1';
 const DAY_S = 86_400;
 const NOW_S = Math.floor(Date.now() / 1000);
 const at = (daysAgo: number) => NOW_S - daysAgo * DAY_S;
+const iso = (seconds: number, ms = 0) => new Date(seconds * 1000 + ms).toISOString();
 
 const UUID = (n: number) => `00000000-0000-4000-8000-${String(n).padStart(12, '0')}`;
 const SESSION_ON_DISK = UUID(1);
@@ -48,6 +50,10 @@ const PI_STORED = `2026-06-16T18-04-51-070Z_${PI_UUID}`;
 const SESSION_DELETED = UUID(5);
 const SESSION_LIVE = UUID(6);
 const SESSION_ADMIN = UUID(7);
+const SESSION_CURSOR = UUID(8);
+const SESSION_TWICE = UUID(9);
+const PI_SAME_SECOND = '019da14f-4dc1-73c8-845a-b1af6b207dba';
+const PI_RAN_THEN = '019de5b4-cd62-76bf-8430-8f37da948654';
 
 const line = (o: Record<string, unknown>): string => `${JSON.stringify(o)}\n`;
 
@@ -57,7 +63,8 @@ interface Fixture {
   home: string;
   root: string;
   vault: string;
-  run: (opts?: { dryRun?: boolean }) => ReturnType<typeof runLegacyImport>;
+  liveEnd: number;
+  run: (opts?: { dryRun?: boolean; fetch?: MemberRig['fetch']; mycoHome?: string }) => ReturnType<typeof runLegacyImport>;
   snapshot: () => Record<string, unknown>;
   cleanup: () => void;
 }
@@ -70,39 +77,53 @@ function buildVault(dir: string, root: string, home: string): string {
   createSchema(db);
   // The rows stand alone: the agents and entities a real vault's foreign keys name are not what this reads.
   db.run('PRAGMA foreign_keys = OFF');
-  const session = (id: string, agent: string, startedDaysAgo: number, extra: Record<string, unknown> = {}) => {
+  const session = (id: string, agent: string, startedAt: number, extra: Record<string, unknown> = {}) => {
     const row = {
-      id, agent, project_root: root, project_id: PROJECT, branch: 'feat/x', started_at: at(startedDaysAgo), ended_at: at(startedDaysAgo) + 600,
-      status: 'completed', title: `Title of ${id}`, summary: `Summary of ${id}`, transcript_path: null, created_at: at(startedDaysAgo), ...extra,
+      id, agent, project_root: root, project_id: PROJECT, branch: 'feat/x', started_at: startedAt, ended_at: startedAt + 600,
+      status: 'completed', title: `Title of ${id}`, summary: `Summary of ${id}`, transcript_path: null, created_at: startedAt, ...extra,
     };
     const cols = Object.keys(row);
     db.run(`INSERT INTO sessions (${cols.join(', ')}) VALUES (${cols.map(() => '?').join(', ')})`, Object.values(row) as never[]);
   };
-  const prompt = (id: number, sessionId: string, text: string, response: string | null, startedDaysAgo: number) => {
+  const prompt = (id: number, sessionId: string, text: string, response: string | null, startedAt: number) => {
     db.run(`INSERT INTO prompt_batches (id, project_id, session_id, prompt_number, user_prompt, response_summary, origin, kind, started_at, ended_at, created_at)
             VALUES (?, ?, ?, ?, ?, ?, 'human', 'initial', ?, ?, ?)`,
-      [id, PROJECT, sessionId, id, text, response, at(startedDaysAgo), at(startedDaysAgo) + 30, at(startedDaysAgo)]);
+      [id, PROJECT, sessionId, id, text, response, startedAt, startedAt + 30, startedAt]);
   };
+  const claudePath = (id: string) => path.join(home, '.claude', 'projects', `-${rootSlug(root)}`, `${id}.jsonl`);
 
-  session(SESSION_ON_DISK, 'claude-code', 40, { transcript_path: path.join(home, '.claude', 'projects', `-${rootSlug(root)}`, `${SESSION_ON_DISK}.jsonl`) });
-  prompt(1, SESSION_ON_DISK, 'on disk prompt', 'on disk reply', 40);
-  session(SESSION_PRUNED, 'claude-code', 39, { transcript_path: path.join(home, '.claude', 'projects', `-${rootSlug(root)}`, `${SESSION_PRUNED}.jsonl`) });
-  prompt(2, SESSION_PRUNED, 'pruned prompt one', 'pruned reply one', 39);
-  prompt(3, SESSION_PRUNED, 'pruned prompt two', null, 39);
+  session(SESSION_ON_DISK, 'claude-code', at(40), { transcript_path: claudePath(SESSION_ON_DISK) });
+  prompt(1, SESSION_ON_DISK, 'on disk prompt', 'on disk reply', at(40));
+  session(SESSION_PRUNED, 'claude-code', at(39), { transcript_path: claudePath(SESSION_PRUNED) });
+  prompt(2, SESSION_PRUNED, 'pruned prompt one', 'pruned reply one', at(39));
+  prompt(3, SESSION_PRUNED, 'pruned prompt two', null, at(39));
   // One Codex rollout stored twice: a hashed id with the rollout's path, and the rollout id itself, later.
   const rollout = path.join(home, '.codex', 'sessions', '2026', '04', '30', `rollout-2026-04-30T10-00-00-${CODEX_ROLLOUT}.jsonl`);
-  session('sess_5cd3531754d0313a2b88b7faa4f4b574', 'codex', 38, { transcript_path: rollout, title: 'Older codex title' });
-  session(CODEX_ROLLOUT, 'codex', 37, { transcript_path: rollout, title: 'Codex title' });
-  prompt(4, 'sess_5cd3531754d0313a2b88b7faa4f4b574', 'older codex prompt', null, 38);
-  prompt(5, CODEX_ROLLOUT, 'codex prompt', 'codex reply', 37);
-  session(PI_STORED, 'pi', 36);
-  prompt(6, PI_STORED, 'pi prompt', null, 36);
-  session(SESSION_DELETED, 'claude-code', 35, { transcript_path: path.join(home, '.claude', 'projects', `-${rootSlug(root)}`, `${SESSION_DELETED}.jsonl`) });
-  prompt(7, SESSION_DELETED, 'deleted prompt', null, 35);
+  session('sess_5cd3531754d0313a2b88b7faa4f4b574', 'codex', at(38), { transcript_path: rollout, title: 'Older codex title' });
+  session(CODEX_ROLLOUT, 'codex', at(37), { transcript_path: rollout, title: 'Codex title' });
+  prompt(4, 'sess_5cd3531754d0313a2b88b7faa4f4b574', 'older codex prompt', null, at(38));
+  prompt(5, CODEX_ROLLOUT, 'codex prompt', 'codex reply', at(37));
+  session(PI_STORED, 'pi', at(36));
+  prompt(6, PI_STORED, 'pi prompt', null, at(36));
+  session(SESSION_DELETED, 'claude-code', at(35), { transcript_path: claudePath(SESSION_DELETED) });
+  prompt(7, SESSION_DELETED, 'deleted prompt', null, at(35));
   db.run(`INSERT INTO session_tombstones (session_id, project_id, deleted_at, source) VALUES (?, ?, ?, 'user')`, [SESSION_DELETED, PROJECT, at(34)]);
-  session(SESSION_LIVE, 'claude-code', 33, { title: 'Vault title for live', branch: 'vault-branch' });
-  prompt(8, SESSION_LIVE, 'live prompt from vault', null, 33);
-  session(SESSION_ADMIN, 'claude-code', 32, { title: 'Vault title for admin' });
+  session(SESSION_LIVE, 'claude-code', at(33), { title: 'Vault title for live', branch: 'vault-branch' });
+  prompt(8, SESSION_LIVE, 'live prompt from vault', null, at(33));
+  session(SESSION_ADMIN, 'claude-code', at(32), { title: 'Vault title for admin' });
+  // Recorded as Claude Code, but the transcript it names is Cursor's.
+  session(SESSION_CURSOR, 'claude-code', at(31), { transcript_path: path.join(home, '.cursor', 'projects', 'p', 'agent-transcripts', SESSION_CURSOR, `${SESSION_CURSOR}.jsonl`) });
+  prompt(9, SESSION_CURSOR, 'cursor prompt from vault', null, at(31));
+  // One pruned Claude session stored twice: the earlier row holds the title and the prompts, the later row neither.
+  session('sess_0000000000000000000000000000aaaa', 'claude-code', at(30), { transcript_path: claudePath(SESSION_TWICE), title: 'Earlier title', summary: 'Earlier summary' });
+  session(SESSION_TWICE, 'claude-code', at(30) + 60, { title: null, summary: null });
+  prompt(10, 'sess_0000000000000000000000000000aaaa', 'earlier prompt', null, at(30));
+  // Pi sessions 1.4 stored under a hashed id with no path: one whose transcript starts in the same second,
+  // one whose transcript was being written at that time, one with no transcript at all.
+  session('sess_0000000000000000000000000000bbbb', 'pi', at(20));
+  session('sess_0000000000000000000000000000cccc', 'pi', at(19));
+  session('sess_0000000000000000000000000000dddd', 'pi', at(18));
+  prompt(11, 'sess_0000000000000000000000000000dddd', 'orphan pi prompt', null, at(18));
 
   db.run(`INSERT INTO plans (id, project_id, logical_key, status, title, content, source_path, tags, session_id, created_at, updated_at)
           VALUES (?, ?, ?, 'completed', 'File plan', '# File plan', '.claude/plans/p.md', 'a, b', ?, ?, ?)`,
@@ -123,33 +144,40 @@ function buildVault(dir: string, root: string, home: string): string {
   spore('gotcha-part', 'myco-agent', 'consolidated', CODEX_ROLLOUT, null);
   spore('wisdom-whole', 'myco-agent', 'active', null, null);
   spore('gotcha-of-deleted', 'myco-agent', 'active', SESSION_DELETED, 7);
-  db.run(`INSERT INTO resolution_events (id, project_id, agent_id, spore_id, action, new_spore_id, reason, created_at) VALUES (?, ?, 'myco-agent', ?, ?, ?, ?, ?)`,
-    ['res_1', PROJECT, 'gotcha-old', 'supersede', 'gotcha-new', 'newer', at(29)]);
-  db.run(`INSERT INTO resolution_events (id, project_id, agent_id, spore_id, action, new_spore_id, reason, created_at) VALUES (?, ?, 'myco-agent', ?, ?, ?, ?, ?)`,
-    ['res_2', PROJECT, 'gotcha-part', 'consolidate', 'wisdom-whole', 'merged', at(28)]);
+  const resolution = (id: string, sporeId: string, action: string, newSporeId: string | null, daysAgo: number) =>
+    db.run(`INSERT INTO resolution_events (id, project_id, agent_id, spore_id, action, new_spore_id, reason, created_at) VALUES (?, ?, 'myco-agent', ?, ?, ?, 'why', ?)`,
+      [id, PROJECT, sporeId, action, newSporeId, at(daysAgo)]);
+  resolution('res_1', 'gotcha-old', 'supersede', 'gotcha-new', 29);
+  resolution('res_2', 'gotcha-part', 'consolidate', 'wisdom-whole', 28);
+  resolution('res_bad', 'decision-user', 'supersede', null, 27);
   db.close();
   return file;
 }
 
-/** The transcripts still on disk: the Claude session, the Codex rollout, the Pi session, and the deleted session's. */
-function buildTranscripts(home: string, root: string): void {
+/** The transcripts still on disk. */
+function buildTranscripts(home: string, root: string): string[] {
+  const files: string[] = [];
+  const write = (file: string, content: string) => { fs.mkdirSync(path.dirname(file), { recursive: true }); fs.writeFileSync(file, content); files.push(file); };
   const claudeDir = path.join(home, '.claude', 'projects', `-${rootSlug(root)}`);
-  fs.mkdirSync(claudeDir, { recursive: true });
   const claude = (id: string, prompt: string) => line({ type: 'user', cwd: root, sessionId: id, promptId: UUID(900), message: { content: `${prompt} ${'x'.repeat(5000)}` }, timestamp: '2026-08-01T10:00:00Z' })
     + line({ type: 'assistant', cwd: root, message: { content: [{ type: 'text', text: 'reply from disk' }] }, timestamp: '2026-08-01T10:00:01Z' });
-  fs.writeFileSync(path.join(claudeDir, `${SESSION_ON_DISK}.jsonl`), claude(SESSION_ON_DISK, 'transcript prompt'));
-  fs.writeFileSync(path.join(claudeDir, `${SESSION_DELETED}.jsonl`), claude(SESSION_DELETED, 'deleted transcript prompt'));
-  const codexDir = path.join(home, '.codex', 'sessions', '2026', '04', '30');
-  fs.mkdirSync(codexDir, { recursive: true });
-  fs.writeFileSync(path.join(codexDir, `rollout-2026-04-30T10-00-00-${CODEX_ROLLOUT}.jsonl`),
+  write(path.join(claudeDir, `${SESSION_ON_DISK}.jsonl`), claude(SESSION_ON_DISK, 'transcript prompt'));
+  write(path.join(claudeDir, `${SESSION_DELETED}.jsonl`), claude(SESSION_DELETED, 'deleted transcript prompt'));
+  write(path.join(home, '.codex', 'sessions', '2026', '04', '30', `rollout-2026-04-30T10-00-00-${CODEX_ROLLOUT}.jsonl`),
     line({ type: 'session_meta', payload: { id: CODEX_ROLLOUT, cwd: root, source: 'cli', originator: 'codex-tui' } }) + line({ type: 'event_msg', payload: { type: 'user_message', message: `codex from disk ${'y'.repeat(5000)}` } }));
+  write(path.join(home, '.cursor', 'projects', 'p', 'agent-transcripts', SESSION_CURSOR, `${SESSION_CURSOR}.jsonl`),
+    line({ role: 'user', message: { content: [{ type: 'text', text: `cursor from disk ${'c'.repeat(5000)}` }] } }));
   const piDir = path.join(home, '.pi', 'agent', 'sessions', `--${rootSlug(root)}--`);
-  fs.mkdirSync(piDir, { recursive: true });
-  fs.writeFileSync(path.join(piDir, `${PI_STORED}.jsonl`), line({ type: 'session', id: PI_UUID, cwd: root, timestamp: '2026-06-16T18:04:51.070Z' }) + line({ type: 'message', message: { role: 'user', content: `pi from disk ${'z'.repeat(5000)}` } }));
-  for (const file of [path.join(claudeDir, `${SESSION_ON_DISK}.jsonl`), path.join(claudeDir, `${SESSION_DELETED}.jsonl`), path.join(codexDir, `rollout-2026-04-30T10-00-00-${CODEX_ROLLOUT}.jsonl`), path.join(piDir, `${PI_STORED}.jsonl`)]) {
+  const pi = (id: string, first: string, last: string) =>
+    line({ type: 'session', id, cwd: root, timestamp: first }) + line({ type: 'message', timestamp: last, message: { role: 'user', content: `pi from disk ${'z'.repeat(5000)}` } });
+  write(path.join(piDir, `${PI_STORED}.jsonl`), pi(PI_UUID, '2026-06-16T18:04:51.070Z', '2026-06-16T18:05:51.070Z'));
+  write(path.join(piDir, `x_${PI_SAME_SECOND}.jsonl`), pi(PI_SAME_SECOND, iso(at(20), 273), iso(at(20) + 900)));
+  write(path.join(piDir, `x_${PI_RAN_THEN}.jsonl`), pi(PI_RAN_THEN, iso(at(19) - 432), iso(at(19) + 300)));
+  for (const file of files) {
     const old = new Date(Date.now() - 3 * 60 * 60_000);
     fs.utimesSync(file, old, old);
   }
+  return files;
 }
 
 async function fixture(): Promise<Fixture> {
@@ -166,11 +194,12 @@ async function fixture(): Promise<Fixture> {
   const vault = buildVault(path.join(base, 'myco-14'), root, home);
   writeDeploymentMembership({ serverUrl: SERVER, token: rig.token, tokenId: rig.tokenId, machineId: TEST_MACHINE_ID, joinedAt: Date.now(), updatedAt: Date.now() }, { mycoHome });
 
-  // Live capture already holds one vault session, with a transcript, its own facts and an automatic title,
+  // Live capture already holds one vault session, with a transcript, its own facts, an end and an automatic title,
   // and another whose title an administrator set.
   const sqlite = rig.env.sqlite;
   sqlite.run(`INSERT OR IGNORE INTO projects (project_id, name, created_at) VALUES (?, ?, ?)`, [PROJECT, PROJECT, Date.now()]);
   const liveStart = (at(33) + 5) * 1000 + 123;
+  const liveEnd = liveStart + 60_456;
   for (const [sessionId, branch] of [[SESSION_LIVE, 'live-branch'], [SESSION_ADMIN, 'admin-branch']] as const) {
     const answer = await rig.postEvent({
       eventId: crypto.randomUUID(), sessionId, kind: 'session.start', createdAt: liveStart, channel: 'cli',
@@ -178,21 +207,46 @@ async function fixture(): Promise<Fixture> {
     } as never);
     expect(answer.persisted).toBe(true);
   }
+  expect((await rig.postEvent({
+    eventId: crypto.randomUUID(), sessionId: SESSION_LIVE, kind: 'session.end', createdAt: liveEnd, channel: 'cli',
+    producer: { adapter: 'claude-code', version: '2.0.0' }, payload: { endedAt: liveEnd },
+  } as never)).persisted).toBe(true);
   sqlite.run(`INSERT INTO transcripts (project_id, transcript_id, session_id, machine_id, agent, role, head_hash, size, segment_count, first_received_at, last_received_at, token_id)
               VALUES (?, 'tx_00000000000000000000000000000001', ?, ?, 'claude-code', 'primary', NULL, 10, 1, ?, ?, ?)`, [PROJECT, SESSION_LIVE, TEST_MACHINE_ID, Date.now(), Date.now(), rig.tokenId]);
   sqlite.run(`UPDATE sessions SET title = 'Automatic title', titled_at = 1 WHERE project_id = ? AND session_id = ?`, [PROJECT, SESSION_LIVE]);
   sqlite.run(`UPDATE sessions SET title = 'Admin title', titled_at = 1, titled_by = 'mem_admin' WHERE project_id = ? AND session_id = ?`, [PROJECT, SESSION_ADMIN]);
 
-  const tables = ['sessions', 'prompt_batches', 'responses', 'plans', 'spores', 'resolution_events', 'events', 'transcripts', 'blobs'];
-  const snapshot = () => Object.fromEntries(tables.map((t) => [t, rig.rows(t)]));
+  const tables = ['sessions', 'prompt_batches', 'responses', 'plans', 'spores', 'resolution_events', 'events', 'transcripts', 'blobs', 'session_tombstones'];
+  const snapshot = () => ({
+    ...Object.fromEntries(tables.map((t) => [t, rig.rows(t)])),
+    spores: rig.env.sqlite.query(`SELECT id, status, updated_at FROM spores ORDER BY id`).all(),
+    sessions: rig.env.sqlite.query(`SELECT session_id, title, started_at, ended_at, branch FROM sessions ORDER BY session_id`).all(),
+  });
   return {
-    rig, mycoHome, home, root, vault,
-    run: (opts = {}) => runLegacyImport({ sources: [path.dirname(path.dirname(path.dirname(vault)))], serverUrl: SERVER, ...opts }, {
-      fetch: rig.fetch, mycoHome, machineId: TEST_MACHINE_ID, sleep: async () => {},
+    rig, mycoHome, home, root, vault, liveEnd,
+    run: (opts = {}) => runLegacyImport({ sources: [path.dirname(path.dirname(path.dirname(vault)))], serverUrl: SERVER, dryRun: opts.dryRun }, {
+      fetch: opts.fetch ?? rig.fetch, mycoHome: opts.mycoHome ?? mycoHome, machineId: TEST_MACHINE_ID, sleep: async () => {},
     }),
     snapshot,
     cleanup: () => { if (heldHome === undefined) delete process.env.HOME; else process.env.HOME = heldHome; },
   };
+}
+
+/** A fetch that counts every answer that was not a plain success, and every event the Deployment answered as refused. */
+function watchedFetch(inner: MemberRig['fetch']) {
+  const bad: string[] = [];
+  const fetch = async (input: string | URL | Request, init?: RequestInit): Promise<Response> => {
+    const req = new Request(input, init);
+    const res = await inner(req);
+    const pathname = new URL(req.url).pathname;
+    if (res.status !== 200) bad.push(`${pathname} ${res.status}`);
+    else {
+      const body = await res.clone().json().catch(() => null) as Record<string, unknown> | null;
+      if (body !== null && body.persisted === false) bad.push(`${pathname} refused ${String(body.code)}`);
+    }
+    return res;
+  };
+  return { fetch, bad };
 }
 
 describe('importing a 1.4 vault', () => {
@@ -201,29 +255,40 @@ describe('importing a 1.4 vault', () => {
   afterEach(() => f.cleanup());
 
   it('lands every session once under its harness id, with one content source, its 1.4 title, and nothing deleted', async () => {
-    const report = await f.run();
+    const watched = watchedFetch(f.rig.fetch);
+    const report = await f.run({ fetch: watched.fetch });
     expect(report.refused).toBeUndefined();
     const project = report.projects[0];
     expect(project.endedBy).toBeUndefined();
     expect(project.refusals).toEqual([]);
+    expect(project.failures).toEqual([]);
+    expect(project.malformed).toEqual(['history res_bad: a supersede that names no successor']);
+    expect(watched.bad).toEqual([]);
 
     const sqlite = f.rig.env.sqlite;
-    const sessions = sqlite.query(`SELECT session_id, title, summary, titled_by, branch, started_at FROM sessions WHERE project_id = ? ORDER BY session_id`).all(PROJECT) as Array<Record<string, unknown>>;
-    const ids = sessions.map((s) => s.session_id);
-    // The Codex rollout stored twice is one session; the Pi file name is its uuid; the deleted session is absent.
-    expect(ids.sort()).toEqual([SESSION_ON_DISK, SESSION_PRUNED, SESSION_LIVE, SESSION_ADMIN, CODEX_ROLLOUT, PI_UUID].sort());
+    const sessions = sqlite.query(`SELECT session_id, title, summary, titled_by, branch, started_at, ended_at FROM sessions WHERE project_id = ? ORDER BY session_id`).all(PROJECT) as Array<Record<string, unknown>>;
+    // The Codex rollout and the Claude session stored twice are one session each; the Pi file name is its uuid;
+    // two hashed Pi ids take the transcript written at their start; the deleted session is absent.
+    expect(sessions.map((s) => s.session_id).sort()).toEqual([
+      SESSION_ON_DISK, SESSION_PRUNED, SESSION_LIVE, SESSION_ADMIN, SESSION_CURSOR, SESSION_TWICE, CODEX_ROLLOUT, PI_UUID,
+      PI_SAME_SECOND, PI_RAN_THEN, 'sess_0000000000000000000000000000dddd',
+    ].sort());
+    expect(project.aliases.length).toBe(2);
+    expect(project.unaliased).toEqual(['sess_0000000000000000000000000000dddd (pi, no transcript)']);
     const byId = new Map(sessions.map((s) => [s.session_id as string, s]));
 
-    // Titles: the vault's, over an automatic one; never over an administrator's.
+    // Titles: the vault's, over an automatic one; never over an administrator's; the earlier row's when the later has none.
     expect(byId.get(SESSION_PRUNED)?.title).toBe(`Title of ${SESSION_PRUNED}`);
     expect(byId.get(SESSION_PRUNED)?.summary).toBe(`Summary of ${SESSION_PRUNED}`);
     expect(byId.get(CODEX_ROLLOUT)?.title).toBe('Codex title');
     expect(byId.get(SESSION_LIVE)?.title).toBe('Vault title for live');
     expect(byId.get(SESSION_ADMIN)?.title).toBe('Admin title');
+    expect(byId.get(SESSION_TWICE)?.title).toBe('Earlier title');
 
-    // A session live capture held keeps its facts.
+    // A session live capture held keeps its facts and its end.
     expect(byId.get(SESSION_LIVE)?.branch).toBe('live-branch');
     expect(byId.get(SESSION_LIVE)?.started_at).toBe((at(33) + 5) * 1000 + 123);
+    expect(byId.get(SESSION_LIVE)?.ended_at).toBe(f.liveEnd);
     // A session the vault alone recorded takes the vault's facts.
     expect(byId.get(SESSION_PRUNED)?.branch).toBe('feat/x');
     expect(byId.get(SESSION_PRUNED)?.started_at).toBe(at(39) * 1000);
@@ -232,17 +297,18 @@ describe('importing a 1.4 vault', () => {
     const promptTexts = (sessionId: string) =>
       (sqlite.query(`SELECT text FROM prompt_batches WHERE project_id = ? AND session_id = ? ORDER BY created_at`).all(PROJECT, sessionId) as Array<{ text: string | null }>).map((p) => p.text);
     expect(promptTexts(SESSION_PRUNED)).toEqual(['pruned prompt one', 'pruned prompt two']);
+    expect(promptTexts(SESSION_TWICE)).toEqual(['earlier prompt']);
     expect(promptTexts(SESSION_ON_DISK).every((t) => t !== 'on disk prompt')).toBe(true);
     expect(promptTexts(SESSION_LIVE)).not.toContain('live prompt from vault');
     expect(promptTexts(CODEX_ROLLOUT)).not.toContain('codex prompt');
-    expect(project.sessions.transcriptsShipped).toBe(3);
-    expect(project.sessions.fromVault).toBe(2);
+    expect(promptTexts(SESSION_CURSOR)).not.toContain('cursor prompt from vault');
 
-    // Every transcript on disk for a vault session reached the Deployment under that session.
-    const transcripts = (sqlite.query(`SELECT session_id FROM transcripts WHERE project_id = ? ORDER BY session_id`).all(PROJECT) as Array<{ session_id: string }>).map((t) => t.session_id);
-    expect(transcripts.sort()).toEqual([SESSION_ON_DISK, SESSION_LIVE, CODEX_ROLLOUT, PI_UUID].sort());
+    // Every transcript on disk for a vault session reached the Deployment under that session, under the harness that wrote it.
+    const transcripts = sqlite.query(`SELECT session_id, agent FROM transcripts WHERE project_id = ? ORDER BY session_id`).all(PROJECT) as Array<{ session_id: string; agent: string }>;
+    expect(transcripts.map((t) => t.session_id).sort()).toEqual([SESSION_ON_DISK, SESSION_LIVE, CODEX_ROLLOUT, PI_UUID, SESSION_CURSOR, PI_SAME_SECOND, PI_RAN_THEN].sort());
+    expect(transcripts.find((t) => t.session_id === SESSION_CURSOR)?.agent).toBe('cursor');
 
-    // Spores keep id, status and author agent; lineage is recorded.
+    // Spores keep id, status and author agent; history keeps its 1.4 time.
     const spores = sqlite.query(`SELECT id, status, agent_id, session_id, prompt_id FROM spores WHERE project_id = ? ORDER BY id`).all(PROJECT) as Array<Record<string, unknown>>;
     expect(spores.map((s) => [s.id, s.status, s.agent_id])).toEqual([
       ['decision-user', 'active', 'user'], ['gotcha-new', 'active', 'myco-agent'], ['gotcha-of-deleted', 'active', 'myco-agent'],
@@ -251,30 +317,63 @@ describe('importing a 1.4 vault', () => {
     expect(spores.find((s) => s.id === 'gotcha-new')?.session_id).toBe(SESSION_PRUNED);
     expect(spores.find((s) => s.id === 'gotcha-new')?.prompt_id).not.toBeNull();
     expect(spores.find((s) => s.id === 'gotcha-of-deleted')?.session_id).toBeNull();
-    expect(f.rig.rows('resolution_events')).toBe(2);
+    const history = sqlite.query(`SELECT id, created_at FROM resolution_events WHERE project_id = ? ORDER BY id`).all(PROJECT);
+    expect(history).toEqual([{ id: 'res_1', created_at: at(29) * 1000 }, { id: 'res_2', created_at: at(28) * 1000 }]);
 
     // Plans: the file plan under the key live capture gives the same file; the deleted session's plan is not sent.
     const plans = sqlite.query(`SELECT plan_key, session_id, status, title FROM plans WHERE project_id = ? ORDER BY title`).all(PROJECT) as Array<Record<string, unknown>>;
     expect(plans.map((p) => p.title)).toEqual(['File plan', 'Key plan']);
     expect(plans[0].plan_key).toBe(planKeyForPath(PROJECT, '.claude/plans/p.md'));
-    expect(plans[0].status).toBe('completed');
     expect(project.plans).toEqual({ sent: 2, empty: 0, unsent: 1 });
+
+    // The session 1.4 deleted is a tombstone on the Deployment.
+    expect(sqlite.query(`SELECT session_id FROM session_tombstones WHERE project_id = ?`).all(PROJECT)).toEqual([{ session_id: SESSION_DELETED }]);
 
     // Every event this import sent names the fixed producer.
     const producers = sqlite.query(`SELECT DISTINCT producer_adapter, producer_version FROM events WHERE project_id = ? AND channel = 'import' AND kind IN ('session.start', 'session.end', 'prompt', 'response', 'plan')`).all(PROJECT) as Array<Record<string, unknown>>;
     expect(producers).toEqual([{ producer_adapter: LEGACY_PRODUCER.adapter, producer_version: LEGACY_PRODUCER.version }]);
   });
 
-  it('changes nothing when run again', async () => {
+  it('changes nothing when run again, from this machine and from one that kept no record of the first run', async () => {
     await f.run();
     const first = f.snapshot();
-    const again = await f.run();
-    expect(again.projects[0].refusals).toEqual([]);
-    expect(again.projects[0].spores.duplicate).toBe(6);
-    expect(f.snapshot()).toEqual(first);
+    for (const mycoHome of [f.mycoHome, tempMycoHome()]) {
+      if (mycoHome !== f.mycoHome) writeDeploymentMembership({ serverUrl: SERVER, token: f.rig.token, tokenId: f.rig.tokenId, machineId: TEST_MACHINE_ID, joinedAt: Date.now(), updatedAt: Date.now() }, { mycoHome });
+      const watched = watchedFetch(f.rig.fetch);
+      const again = await f.run({ fetch: watched.fetch, mycoHome });
+      const project = again.projects[0];
+      expect({ endedBy: project.endedBy, refusals: project.refusals, failures: project.failures }).toEqual({ endedBy: undefined, refusals: [], failures: [] });
+      expect(watched.bad).toEqual([]);
+      expect(project.spores.duplicate).toBe(6);
+      expect(project.lineage.duplicate).toBe(2);
+      expect(f.snapshot()).toEqual(first);
+    }
   });
 
-  it('refuses a Deployment that cannot say what it holds, before sending anything', async () => {
+  it('never brings back a session 1.4 deleted, in a later transcript import from any machine', async () => {
+    await f.run();
+    const elsewhere = tempMycoHome();
+    writeRegistryEntry({
+      version: REGISTRY_VERSION, projectId: PROJECT, serverUrl: SERVER, token: f.rig.token, tokenId: f.rig.tokenId,
+      root: f.root, machineId: TEST_MACHINE_ID, joinedAt: Date.now(), updatedAt: Date.now(),
+    }, { mycoHome: elsewhere });
+    const report = await importUntilSettled({ serverUrl: SERVER, windowDays: 3650, maxPerAgent: 1000 }, { fetch: f.rig.fetch, mycoHome: elsewhere, machineId: TEST_MACHINE_ID, sleep: async () => {} });
+    expect(report.projects[0].agents.find((a) => a.agent === 'claude-code')?.skipped.tombstoned).toBe(1);
+    expect(f.rig.env.sqlite.query(`SELECT 1 FROM transcripts WHERE session_id = ?`).all(SESSION_DELETED)).toEqual([]);
+  });
+
+  it('leaves the sessions it took from the vault out of a wide transcript import, so none lands twice', async () => {
+    await f.run();
+    writeRegistryEntry({
+      version: REGISTRY_VERSION, projectId: PROJECT, serverUrl: SERVER, token: f.rig.token, tokenId: f.rig.tokenId,
+      root: f.root, machineId: TEST_MACHINE_ID, joinedAt: Date.now(), updatedAt: Date.now(),
+    }, { mycoHome: f.mycoHome });
+    const before = f.rig.env.sqlite.query(`SELECT session_id FROM sessions WHERE project_id = ? ORDER BY session_id`).all(PROJECT);
+    await importUntilSettled({ serverUrl: SERVER, windowDays: 3650, maxPerAgent: 1000 }, { fetch: f.rig.fetch, mycoHome: f.mycoHome, machineId: TEST_MACHINE_ID, sleep: async () => {} });
+    expect(f.rig.env.sqlite.query(`SELECT session_id FROM sessions WHERE project_id = ? ORDER BY session_id`).all(PROJECT)).toEqual(before);
+  });
+
+  it('refuses a Deployment that cannot say what it holds, before sending any session', async () => {
     const eventsBefore = f.rig.rows('events');
     const olderServer = async (input: string | URL | Request, init?: RequestInit): Promise<Response> => {
       const res = await f.rig.fetch(input, init);
@@ -283,7 +382,7 @@ describe('importing a 1.4 vault', () => {
       delete body.sessions;
       return Response.json(body, { headers: res.headers });
     };
-    const report = await runLegacyImport({ sources: [f.vault], serverUrl: SERVER }, { fetch: olderServer, mycoHome: f.mycoHome, machineId: TEST_MACHINE_ID, sleep: async () => {} });
+    const report = await f.run({ fetch: olderServer });
     expect(report.refused).toContain('update the Deployment');
     expect(f.rig.rows('events')).toBe(eventsBefore);
   });
@@ -294,11 +393,61 @@ describe('importing a 1.4 vault', () => {
       if (limited > 0 && new URL(new Request(input, init).url).pathname === '/events') { limited -= 1; return new Response('slow down', { status: 429 }); }
       return f.rig.fetch(input, init);
     };
-    const waits: number[] = [];
-    const report = await runLegacyImport({ sources: [f.vault], serverUrl: SERVER }, { fetch: limitedFetch, mycoHome: f.mycoHome, machineId: TEST_MACHINE_ID, sleep: async (ms) => { waits.push(ms); } });
+    const report = await f.run({ fetch: limitedFetch });
     expect(report.projects[0].endedBy).toBeUndefined();
-    expect(waits.length).toBeGreaterThan(0);
+    expect(report.projects[0].failures).toEqual([]);
     expect(f.rig.rows('spores')).toBe(6);
+  });
+
+  it('gives up on a step the Deployment keeps failing, records it, and finishes the rest', async () => {
+    let failed = 0;
+    const faulty = async (input: string | URL | Request, init?: RequestInit): Promise<Response> => {
+      const req = new Request(input, init);
+      if (new URL(req.url).pathname === '/spores/save' && (await req.clone().text()).includes('"gotcha-part"')) { failed += 1; return new Response('boom', { status: 500 }); }
+      return f.rig.fetch(req);
+    };
+    const report = await f.run({ fetch: faulty });
+    expect(failed).toBe(SERVER_FAULT_RETRIES + 1);
+    expect(report.projects[0].endedBy).toBeUndefined();
+    expect(report.projects[0].failures).toEqual(['spore gotcha-part: server error']);
+    expect(f.rig.rows('spores')).toBe(5);
+    // A later run sends what failed.
+    await f.run();
+    expect(f.rig.rows('spores')).toBe(6);
+  });
+
+  it('resumes from its record without asking again for what finished', async () => {
+    await f.run();
+    let requests = 0;
+    const counting = async (input: string | URL | Request, init?: RequestInit) => { requests += 1; return f.rig.fetch(input, init); };
+    const again = await f.run({ fetch: counting });
+    expect(again.projects[0].sessions.resumed).toBe(11);
+    expect(requests).toBeLessThanOrEqual(2);
+  });
+
+  it('stores a title an end carries only from the import channel, and a title-only end moves no end', async () => {
+    const sessionId = UUID(50);
+    const post = (channel: string, payload: Record<string, unknown>) => f.rig.postEvent({
+      eventId: crypto.randomUUID(), sessionId, kind: 'session.end', createdAt: Date.now() - 1000, channel,
+      producer: { adapter: 'claude-code', version: '2.0.0' }, payload,
+    } as never);
+    const endedAt = Date.now() - 5000;
+    expect((await post('cli', { endedAt, title: 'From a hook' })).persisted).toBe(true);
+    const row = () => (f.rig.env.sqlite.query(`SELECT title, titled_at, ended_at FROM sessions WHERE project_id = ? AND session_id = ?`).get(PROJECT, sessionId) as { title: string | null; titled_at: number | null; ended_at: number | null });
+    expect(row().title).toBeNull();
+    expect((await post('import', { title: 'From an import' })).persisted).toBe(true);
+    expect(row().title).toBe('From an import');
+    expect(row().titled_at).not.toBeNull();
+    expect(row().ended_at).toBe(endedAt);
+  });
+
+  it('counts from the vault alone on a dry run', async () => {
+    const before = f.snapshot();
+    const report = await f.run({ dryRun: true });
+    expect(report.projects[0].sessions.distinct).toBe(11);
+    expect(report.projects[0].sessions.deleted).toBe(1);
+    expect(report.projects[0].lineage.malformed).toBe(1);
+    expect(f.snapshot()).toEqual(before);
   });
 
   it('leaves a session deleted in 1.4 out of the transcript import too', () => {
@@ -308,28 +457,6 @@ describe('importing a 1.4 vault', () => {
     const collected = collectCandidates(['claude-code'], [f.root], TEST_MACHINE_ID, f.mycoHome, Date.now(), { exclude: deleted });
     expect(collected.excluded).toBe(1);
     expect(collected.candidates.map((c) => c.sessionId)).toEqual([SESSION_ON_DISK]);
-  });
-
-  it('stores a title an end carries only from the import channel', async () => {
-    const sessionId = UUID(50);
-    const post = (channel: string, title: string) => f.rig.postEvent({
-      eventId: crypto.randomUUID(), sessionId, kind: 'session.end', createdAt: Date.now() - 1000, channel,
-      producer: { adapter: 'claude-code', version: '2.0.0' }, payload: { endedAt: Date.now() - 1000, title },
-    } as never);
-    expect((await post('cli', 'From a hook')).persisted).toBe(true);
-    const title = () => (f.rig.env.sqlite.query(`SELECT title, titled_at FROM sessions WHERE project_id = ? AND session_id = ?`).get(PROJECT, sessionId) as { title: string | null; titled_at: number | null });
-    expect(title()).toEqual({ title: null, titled_at: null });
-    expect((await post('import', 'From an import')).persisted).toBe(true);
-    expect(title().title).toBe('From an import');
-    expect(title().titled_at).not.toBeNull();
-  });
-
-  it('counts from the vault alone on a dry run', async () => {
-    const before = f.snapshot();
-    const report = await f.run({ dryRun: true });
-    expect(report.projects[0].sessions.distinct).toBe(6);
-    expect(report.projects[0].sessions.deleted).toBe(1);
-    expect(f.snapshot()).toEqual(before);
   });
 });
 
@@ -385,5 +512,15 @@ describe('finding a 1.4 vault', () => {
     expect(legacyVaultFiles(grove).map((f) => fs.realpathSync.native(f))).toEqual([file]);
     expect(legacyVaultFiles(path.join(grove, 'myco.db')).map((f) => fs.realpathSync.native(f))).toEqual([file]);
     expect(legacyVaultFiles(empty)).toEqual([]);
+  });
+});
+
+describe('pacing an import', () => {
+  it('starts no more requests a minute than asked', async () => {
+    let clock = 0;
+    const started: number[] = [];
+    const fetch = paced(async () => { started.push(clock); return new Response('{}'); }, 200, async (ms) => { clock += ms; }, () => clock);
+    for (let i = 0; i < 5; i += 1) await fetch('https://s/x');
+    expect(started).toEqual([0, 300, 600, 900, 1200]);
   });
 });

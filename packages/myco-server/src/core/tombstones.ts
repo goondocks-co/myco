@@ -132,6 +132,35 @@ export async function tombstoneSession(
   return { applied: true, removed, blobsFreed, blobsLeft: released.deferred };
 }
 
+/**
+ * Record, for sessions this Project holds nothing of, that none may ever be
+ * captured: the tombstone every write path and the import plan already refuse.
+ * A session the Project holds is left as it is and answered as held; deleting
+ * captured history is `tombstoneSession`'s, on the owner's route. Idempotent:
+ * a tombstone already recorded is kept.
+ */
+export async function forbidSessions(
+  db: RelationalStore, projectId: string, sessionIds: readonly string[], by: string, nowMs: number, reason: string | null,
+): Promise<{ recorded: string[]; held: string[] }> {
+  const recorded: string[] = [];
+  const held: string[] = [];
+  for (const run of inListChunks(sessionIds)) {
+    const statements = run.map((sessionId) => db
+      .prepare(`INSERT INTO session_tombstones (project_id, session_id, reason, created_at, created_by)
+        SELECT ?, ?, ?, ?, ? WHERE NOT EXISTS (SELECT 1 FROM sessions WHERE project_id = ? AND session_id = ?)
+        ON CONFLICT (project_id, session_id) DO NOTHING`)
+      .bind(projectId, sessionId, reason, nowMs, by, projectId, sessionId));
+    await db.batch(statements);
+    const present = await db
+      .prepare(`SELECT s.session_id FROM sessions s WHERE s.project_id = ? AND s.session_id IN (${run.map(() => '?').join(', ')}) AND ${notTombstonedSql('s')}`)
+      .bind(projectId, ...run)
+      .all<{ session_id: string }>();
+    const heldHere = new Set(present.results.map((r) => r.session_id));
+    for (const id of run) (heldHere.has(id) ? held : recorded).push(id);
+  }
+  return { recorded, held };
+}
+
 /** Whether this session carries a tombstone. */
 export async function isTombstoned(db: RelationalStore, projectId: string, sessionId: string): Promise<boolean> {
   const row = await db.prepare(`SELECT 1 AS present FROM session_tombstones WHERE project_id = ? AND session_id = ?`).bind(projectId, sessionId).first<{ present: number }>();
