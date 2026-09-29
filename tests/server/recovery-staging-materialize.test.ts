@@ -26,7 +26,7 @@ function checkpoint(initial: Partial<AttemptState>) {
   const fresh = newInventoryProgress();
   const state: AttemptState = {
     id: 1, stage: 'inventory', prefix: 'staging', startedAt: 1_789_590_000_000, error: null, attempts: 0,
-    bookmark: '00000004-00015960-000050e7-fixture', polls: 1, exportStartedAt: 0, exportCompletedAt: 0, reExports: 0,
+    bookmark: '00000004-00015960-000050e7-fixture', polls: 1, exportStartedAt: 0, exportCompletedAt: 0, exportRequestedAt: null, exportAnsweredAt: null, reExports: 0,
     sqlBytes: null, sqlEtag: null, uploadId: null, downloadOffset: 0, reconcileOffset: 0, reconciled: 1,
     tables: [], captured: {},
     inventoryStartedAt: null, inventoryParts: 0, inventoryBytes: 0, inventoryScan: fresh.scan, inventoryScanBytes: '',

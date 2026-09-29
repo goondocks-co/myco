@@ -7,7 +7,7 @@ import { expect, it } from 'bun:test';
 import {
   ADVANCING_STAGES, continueAttempt, freshScan, PRODUCER_LIMITS, TransientProducerFailure,
   type AttemptCheckpoint, type AttemptObject, type AttemptPart, type AttemptState, type CopyAnswer,
-  type ExportAnswer, type PortFailure, type ProducerPorts, type RangeAnswer, type ScanProgress,
+  type ExportAnswer, type PortFailure, type ProducerPorts, type RangeAnswer, type ScanProgress, type UnsettledExport,
 } from '@myco-server-worker/core/recovery-producer.js';
 import { newInventoryProgress, type InventoryObject, type InventoryProgress } from '@myco-server-worker/core/recovery-inventory.js';
 
@@ -18,12 +18,12 @@ const digestOf = async (bytes: Uint8Array): Promise<string> => {
 
 /** A checkpoint in memory, with the same durability rules the hosted object's storage gives the real one. */
 function checkpoint(initial: Partial<AttemptState> = {}): AttemptCheckpoint & {
-  state: AttemptState; held: AttemptPart[]; signed: string | null; staged: AttemptObject[];
+  state: AttemptState; held: AttemptPart[]; signed: string | null; staged: AttemptObject[]; earlier: UnsettledExport | null;
 } {
   const fresh = newInventoryProgress();
   const state: AttemptState = {
     id: 1, stage: 'export', prefix: 'staging/1', startedAt: 0, error: null, attempts: 0, bookmark: null, polls: 0,
-    exportStartedAt: null, exportCompletedAt: null, reExports: 0, sqlBytes: null, sqlEtag: null, uploadId: null,
+    exportStartedAt: null, exportCompletedAt: null, exportRequestedAt: null, exportAnsweredAt: null, reExports: 0, sqlBytes: null, sqlEtag: null, uploadId: null,
     downloadOffset: 0, reconcileOffset: 0, reconciled: 0, tables: ['sessions'], captured: {},
     inventoryStartedAt: null, inventoryParts: 0, inventoryBytes: 0, inventoryScan: fresh.scan, inventoryScanBytes: '',
     inventoryDigest: null, databaseSha256: null, databaseBytes: null, copyStartedAt: null, completedAt: null,
@@ -69,6 +69,11 @@ function checkpoint(initial: Partial<AttemptState> = {}): AttemptCheckpoint & {
     }),
     signedUrl: async () => store.signed,
     setSignedUrl: async (_id: number, url: string | null) => { store.signed = url; },
+    // An earlier attempt's export whose end none of its answers showed, as the hosted checkpoint's other rows hold one.
+    earlier: null as UnsettledExport | null,
+    unsettledExport: (): UnsettledExport | null => (store.state.exportRequestedAt === null
+      ? store.earlier
+      : { attempt: store.state.id, requestedAt: store.state.exportRequestedAt, answeredAt: store.state.exportAnsweredAt }),
   };
   return store;
 }
@@ -284,7 +289,7 @@ it('refuses an export whose bytes changed between ranged reads', async () => {
 });
 
 it('retries a provider outage during an export rather than ending the attempt, then fails within its bound', async () => {
-  const state = checkpoint();
+  const state = checkpoint({ bookmark: 'b1', exportStartedAt: 0, exportRequestedAt: 0 });
   const outage: ExportAnswer = { status: 'error', bookmark: 'b1', failure: failure('http', 503, true) };
   const { port } = ports({ exports: [outage, outage] });
   const limits = { ...PRODUCER_LIMITS, maxTransient: 2 };
@@ -330,7 +335,7 @@ it('carries neither provider text nor an exception message into a status or a lo
   expect(logged.join('\n')).not.toContain(marker);
   // Every value a log carries is a number, a boolean, or one of the fixed names the producer may report.
   const fixed = new Set([
-    'recovery_attempt_failed', 'recovery_attempt_transient', 'recovery_attempt_interrupted',
+    'recovery_attempt_failed', 'recovery_attempt_transient', 'recovery_attempt_interrupted', 'recovery_export_unsettled',
     'recovery_inventory_read', 'recovery_staging_completed',
     'export', 'download', 'inventory', 'copy', 'downloaded', 'complete', 'failed',
     'provider_unavailable', 'provider_refused', 'export_failed', 'export_not_offered', 'export_unparsable',
@@ -416,29 +421,117 @@ it('ends an export nothing completes, and stops holding the source back', async 
   expect(polls).toBeLessThanOrEqual(steps * limits.maxPollsPerStep);
 });
 
-it('starts the export again when the provider refuses a bookmark it holds, and ends when that bound is spent', async () => {
-  const inner = (): ExportAnswer => ({ status: 'error', bookmark: 'b1', failure: failure('provider', 200, false) });
-  // A refusal of a bookmark this attempt holds: the export restarts, within the same bound as a lost download.
-  const state = checkpoint({ stage: 'export', bookmark: 'b1', polls: 4, exportStartedAt: 0 });
+it('starts the export again when the provider says one it holds ended, and ends when that bound is spent', async () => {
+  const ended = (): ExportAnswer => ({ status: 'ended', bookmark: 'b1' });
+  // An export this attempt holds that the provider says ended: the export restarts, within the same bound as a lost download.
+  const state = checkpoint({ stage: 'export', bookmark: 'b1', polls: 4, exportStartedAt: 0, exportRequestedAt: 0 });
   state.signed = 'https://signed/one';
-  const { port } = ports({ exports: [inner()] });
+  const { port } = ports({ exports: [ended()] });
   const restarted = await continueAttempt(state, port, PRODUCER_LIMITS);
   expect([restarted.stage, restarted.sourcePaused, restarted.nextInMs]).toEqual(['export', false, 0]);
-  // The origin stands through a restart: the budget belongs to the attempt, not to each export it asks for.
-  expect([state.state.bookmark, state.state.reExports, state.state.exportStartedAt]).toEqual([null, 1, 0]);
+  // The origin stands through a restart: the budget belongs to the attempt, not to each export it asks for. The export
+  // that ended is no longer one that may run.
+  expect([state.state.bookmark, state.state.reExports, state.state.exportStartedAt, state.state.exportRequestedAt]).toEqual([null, 1, 0, null]);
   expect(state.signed).toBeNull();
 
-  // A refusal of a fresh request ends the attempt: there is no earlier export to return to.
+  // A fresh request that ends at once ends the attempt: there is no earlier export to return to.
   const fresh = checkpoint({ stage: 'export', bookmark: null });
-  const { port: refusing } = ports({ exports: [{ status: 'error', bookmark: null, failure: failure('provider', 200, false) }] });
-  const ended = await continueAttempt(fresh, refusing, PRODUCER_LIMITS);
-  expect([ended.stage, ended.error]).toEqual(['failed', 'export_failed']);
+  const { port: refusing } = ports({ exports: [{ status: 'ended', bookmark: null }] });
+  const over = await continueAttempt(fresh, refusing, PRODUCER_LIMITS);
+  expect([over.stage, over.error, fresh.state.exportRequestedAt]).toEqual(['failed', 'export_failed', null]);
 
-  // And once the re-export bound is spent, a refusal ends the attempt rather than restarting again.
+  // And once the re-export bound is spent, an ended export ends the attempt rather than restarting again.
   const spent = checkpoint({ stage: 'export', bookmark: 'b9', reExports: 3 });
-  const { port: last } = ports({ exports: [inner()] });
+  const { port: last } = ports({ exports: [ended()] });
   const exhausted = await continueAttempt(spent, last, { ...PRODUCER_LIMITS, maxReExports: 3 });
   expect([exhausted.stage, exhausted.error]).toEqual(['failed', 'export_failed']);
+});
+
+it('follows an export it holds through a refusal that does not say it ended, and never starts another beside it (#1480)', async () => {
+  for (const refusal of [
+    { status: 'error', bookmark: 'b1', failure: failure('provider', 200, false) },
+    { status: 'error', bookmark: 'b1', failure: failure('http', 400, false) },
+    { status: 'error', bookmark: 'b1', failure: failure('protocol', null, false) },
+    { status: 'refused', failure: failure('http', 403, false) },
+  ] as ExportAnswer[]) {
+    const state = checkpoint({ stage: 'export', bookmark: 'b1', polls: 1, exportStartedAt: 0, exportRequestedAt: 0, exportAnsweredAt: 0 });
+    const asked: Array<string | null> = [];
+    const { port } = ports({ exports: [refusal, refusal] });
+    const polled = port.pollExport;
+    port.pollExport = async (bookmark) => { asked.push(bookmark); return polled(bookmark); };
+    const limits = { ...PRODUCER_LIMITS, maxTransient: 2 };
+    const first = await continueAttempt(state, port, limits);
+    // Spent from the attempt's transient bound; the export stays followed by its bookmark.
+    expect([first.stage, first.error, state.state.bookmark, state.state.reExports, state.state.attempts]).toEqual(['export', 'provider_unavailable', 'b1', 0, 1]);
+    const second = await continueAttempt(state, port, limits);
+    expect([second.stage, second.error]).toEqual(['failed', 'provider_unavailable']);
+    // Never a fresh request, and the export stays recorded as one that may still run.
+    expect({ asked, requested: state.state.exportRequestedAt }).toEqual({ asked: ['b1', 'b1'], requested: 0 });
+  }
+});
+
+it('records the request that starts an export before it is sent (#1480)', async () => {
+  const state = checkpoint();
+  const seen: Array<number | null> = [];
+  const { port } = ports({ exports: [{ status: 'running', bookmark: 'b1' }], now: () => 5 });
+  const polled = port.pollExport;
+  port.pollExport = async (bookmark) => { seen.push(state.state.exportRequestedAt); return polled(bookmark); };
+  await continueAttempt(state, port, { ...PRODUCER_LIMITS, maxPollsPerStep: 1 });
+  expect({ seen, answered: state.state.exportAnsweredAt, started: state.state.exportStartedAt }).toEqual({ seen: [5], answered: 5, started: 5 });
+});
+
+it('sends no second request while one whose answer never settled may have started an export, and one once that window has passed (#1480)', async () => {
+  for (const [what, first] of [
+    ['an answer that never arrived', { status: 'error', bookmark: null, failure: failure('transport', null, true) }],
+    ['a 503 after the request landed', { status: 'error', bookmark: null, failure: failure('http', 503, true) }],
+  ] as const) {
+    const state = checkpoint();
+    let clock = 0;
+    const { port, calls } = ports({ exports: [first as ExportAnswer, { status: 'running', bookmark: 'b2' }], now: () => clock });
+    const limits = { ...PRODUCER_LIMITS, maxPollsPerStep: 1, exportPollMs: 10 * PRODUCER_LIMITS.exportStaleMs };
+    const lost = await continueAttempt(state, port, limits);
+    expect([what, lost.stage, lost.error, calls.polls, state.state.exportRequestedAt]).toEqual([what, 'export', 'provider_unavailable', 1, 0]);
+
+    clock = limits.exportStaleMs - 1;
+    const waiting = await continueAttempt(state, port, limits);
+    // No request is sent; the attempt looks again within the recheck interval, and does not claim the source paused.
+    expect([what, waiting.stage, waiting.progressed, waiting.nextInMs, waiting.sourcePaused, calls.polls]).toEqual([what, 'export', false, 1, false, 1]);
+
+    clock = limits.exportStaleMs;
+    const again = await continueAttempt(state, port, limits);
+    expect([what, again.stage, calls.polls, state.state.bookmark, state.state.exportRequestedAt]).toEqual([what, 'export', 2, 'b2', limits.exportStaleMs]);
+  }
+});
+
+it('leaves an export a failed attempt may have started as one the next attempt waits out, and measures the wait from its last answer (#1480)', async () => {
+  // A fresh request the provider refused in a way that does not say nothing started: the attempt ends, the export stays recorded.
+  const failed = checkpoint();
+  const { port: refusing } = ports({ exports: [{ status: 'error', bookmark: null, failure: failure('http', 400, false) }], now: () => 100 });
+  const over = await continueAttempt(failed, refusing, PRODUCER_LIMITS);
+  expect([over.stage, over.error, failed.state.exportRequestedAt]).toEqual(['failed', 'provider_refused', 100]);
+
+  // The next attempt finds it, whichever attempt asked, and measures the wait from its last answer at 300, not its request at 100.
+  const next = checkpoint({ id: 2 });
+  next.earlier = { attempt: 1, requestedAt: 100, answeredAt: 300 };
+  let clock = 300 + PRODUCER_LIMITS.exportStaleMs - 1;
+  const { port, calls } = ports({ exports: [{ status: 'running', bookmark: 'b3' }], now: () => clock });
+  expect((await continueAttempt(next, port, PRODUCER_LIMITS)).progressed).toBe(false);
+  expect(calls.polls).toBe(0);
+  clock += 1;
+  await continueAttempt(next, port, { ...PRODUCER_LIMITS, maxPollsPerStep: 1 });
+  expect([calls.polls, next.state.bookmark]).toEqual([1, 'b3']);
+});
+
+it('clears the recorded request on an answer that says nothing started, or that the export ended (#1480)', async () => {
+  const refused = checkpoint();
+  const { port: login } = ports({ exports: [{ status: 'refused', failure: failure('http', 401, false) }] });
+  const over = await continueAttempt(refused, login, PRODUCER_LIMITS);
+  expect([over.stage, over.error, refused.state.exportRequestedAt]).toEqual(['failed', 'provider_refused', null]);
+
+  const completing = checkpoint();
+  const { port: done } = ports({ exports: [{ status: 'complete', bookmark: 'b1', signedUrl: 'https://signed/one' }] });
+  const complete = await continueAttempt(completing, done, PRODUCER_LIMITS);
+  expect([complete.stage, completing.state.exportRequestedAt, completing.state.bookmark]).toEqual(['download', null, 'b1']);
 });
 
 it('announces a terminal refusal only after it is durable, and keeps it when clearing up fails', async () => {
@@ -463,7 +556,7 @@ it('announces a terminal refusal only after it is durable, and keeps it when cle
 it('keeps one export budget across restarts, and spends it once', async () => {
   const state = checkpoint({ stage: 'export', bookmark: 'b1', exportStartedAt: 0, polls: 1 });
   let clock = 95;
-  const refusal: ExportAnswer = { status: 'error', bookmark: 'b1', failure: failure('provider', 200, false) };
+  const refusal: ExportAnswer = { status: 'ended', bookmark: 'b1' };
   const running: ExportAnswer = { status: 'running', bookmark: 'b2' };
   const { port } = ports({ exports: [refusal, running], now: () => clock });
   const limits = { ...PRODUCER_LIMITS, exportPollMs: 100, maxPollsPerStep: 1 };

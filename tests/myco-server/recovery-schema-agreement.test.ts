@@ -16,7 +16,7 @@ const SESSIONS = 'CREATE TABLE sessions (id TEXT PRIMARY KEY, title TEXT)';
 function checkpoint(initial: Partial<AttemptState>): AttemptCheckpoint & { state: AttemptState; signed: string | null } {
   const state: AttemptState = {
     id: 1, stage: 'download', prefix: 'staging/1', startedAt: 0, error: null, attempts: 0, bookmark: 'b1', polls: 1,
-    exportStartedAt: 0, exportCompletedAt: 0, reExports: 0, sqlBytes: null, sqlEtag: null, uploadId: 'upload-1',
+    exportStartedAt: 0, exportCompletedAt: 0, exportRequestedAt: null, exportAnsweredAt: null, reExports: 0, sqlBytes: null, sqlEtag: null, uploadId: 'upload-1',
     downloadOffset: 0, reconcileOffset: 0, reconciled: 0, tables: ['sessions'], captured: {},
     inventoryStartedAt: null, inventoryParts: 0, inventoryBytes: 0, inventoryScan: newInventoryProgress().scan,
     inventoryScanBytes: '', inventoryDigest: null, databaseSha256: null, databaseBytes: null, copyStartedAt: null,
@@ -42,6 +42,7 @@ function checkpoint(initial: Partial<AttemptState>): AttemptCheckpoint & { state
     objectCounts: () => ({ registered: 0, staged: 0 }),
     signedUrl: async () => store.signed,
     setSignedUrl: async (_id: number, url: string | null) => { store.signed = url; },
+    unsettledExport: () => null,
   };
   return store;
 }
