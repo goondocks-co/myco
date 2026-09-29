@@ -16,7 +16,7 @@
  */
 import fs from 'node:fs';
 import path from 'node:path';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 
 let cachedGitBinary: string | undefined;
 
@@ -99,4 +99,39 @@ export function runGit(args: string[], cwd: string): string {
     encoding: 'utf-8',
     stdio: ['pipe', 'pipe', 'pipe'],
   }).trim();
+}
+
+/** How many times a git query that always answers something is asked before an empty answer counts as a failure. */
+export const GIT_ANSWER_ATTEMPTS = 3;
+
+/**
+ * Run a git query whose success always prints something — a path, a ref, a
+ * commit, a URL — and return its trimmed answer.
+ *
+ * Bun's `execFileSync` drops a child's stdout under heavy load: git prints its
+ * answer and exits 0, and the call returns an empty string without throwing
+ * (oven-sh/bun#34069, a pipe-reader race on macOS). The loss is all or
+ * nothing — the whole answer, never part of one — so an empty answer to a
+ * query that always prints is a lost one. Taken as data, an empty
+ * `--git-common-dir` resolves a repository root to the checkout's parent,
+ * which holds no membership. Here the query is asked again, and throws once
+ * every attempt came back empty, which callers already treat as git unable to
+ * say.
+ */
+export function runGitAnswer(args: string[], cwd: string, run: (args: string[], cwd: string) => string = runGit): string {
+  for (let attempt = 1; attempt <= GIT_ANSWER_ATTEMPTS; attempt++) {
+    const answer = run(args, cwd);
+    if (answer.length > 0) return answer;
+  }
+  throw new Error(`git ${args.join(' ')} answered nothing in ${cwd} after ${GIT_ANSWER_ATTEMPTS} attempts`);
+}
+
+/**
+ * Run `git <args>` in `cwd` for its exit status alone, with no output read:
+ * the status survives what drops a child's stdout (see `runGitAnswer`). Null
+ * when git could not be run or ended on a signal.
+ */
+export function gitExitStatus(args: string[], cwd: string): number | null {
+  const result = spawnSync(resolveGitBinary(), args, { cwd, stdio: 'ignore' });
+  return result.error === undefined ? result.status : null;
 }

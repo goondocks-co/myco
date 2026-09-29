@@ -26,7 +26,7 @@ import { deploymentUrl } from '../member/registry.js';
 import { MCP_PATH } from '../plugins/spec.js';
 import { MCP_HEADERS_ARGS, MEMBER_MCP_LEVERS, memberMcpTemplate, memberRemoteMcp } from './member-hooks.js';
 import { readRegistryEntry } from '../member/registry.js';
-import { runGit } from '../utils/git.js';
+import { runGit, runGitAnswer } from '../utils/git.js';
 import { resolveRuntimeCommand, resolveRuntimeHome } from '../daemon/update-checker.js';
 import { managedBinaryPath, managedSkillsDir } from '../install/managed-binary.js';
 import { resolveBinary } from '../runtime/binary-resolution.js';
@@ -2407,7 +2407,7 @@ export class SymbiontInstaller {
     }
     let gitDir: string;
     try {
-      gitDir = path.resolve(this.projectRoot, runGit(['rev-parse', '--git-dir'], this.projectRoot));
+      gitDir = path.resolve(this.projectRoot, runGitAnswer(['rev-parse', '--git-dir'], this.projectRoot));
     } catch {
       return;
     }
