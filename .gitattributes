@@ -4,3 +4,6 @@
 # -p) and collapsed on GitHub, instead of megabytes of base64 diff noise.
 # Display-only — checkout content, builds, and CI are unaffected.
 packages/myco/src/ui-assets.generated.ts -diff linguist-generated=true
+
+# The recall gold set's frozen embeddings (#1154): raw float32 rows, never text.
+tests/fixtures/evals/recall/vectors.bin binary

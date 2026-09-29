@@ -97,12 +97,12 @@ export function Measures() {
                 noSample="No machine has been served context yet."
               />
               <MeasureTile
-                label="Evaluation pass rate"
-                note="The share of recorded checks that passed."
-                measure={report.evalPassRate}
+                label="Recall quality"
+                note="How closely the memory this release injects matches what should come back, over a fixed set of real prompts from past sessions. Scored before release; this server's own traffic does not change it."
+                measure={report.recallQuality}
                 format={percent}
-                unit="check"
-                noSample="No evaluations recorded. Nothing here runs checks yet, so there is no rate to show."
+                unit="prompt"
+                noSample="No recall score was recorded for this release."
                 tone="terra"
               />
             </div>

@@ -31,6 +31,14 @@ async function wrangler(args: string[], env: Record<string, string | undefined> 
   return out;
 }
 
+/** The derived config with its `main` pointed at another entry; the shipped entry when none is named. */
+export function entryConfig(config: string, main: string | undefined): string {
+  if (main === undefined) return config;
+  const pattern = /^main = ".*"$/m;
+  if (!pattern.test(config)) throw new Error('the derived wrangler config names no main entry to replace');
+  return config.replace(pattern, `main = ${JSON.stringify(main)}`);
+}
+
 /** How many times a `d1 execute` refused by the file lock is asked again. */
 export const LOCKED_RETRIES = 5;
 /** The first backoff; each retry waits twice the last. */
@@ -49,13 +57,19 @@ export function lockedRetryWaitMs(said: string, attempt: number): number | null 
   return LOCKED_BACKOFF_MS * 2 ** attempt;
 }
 
+/** What a scenario that needs its own boot may change about the Worker it runs against. */
+export interface CloudflareBootOptions {
+  /** The Worker entry, relative to `packages/myco-server`, in place of the shipped `src/index.ts`. */
+  main?: string;
+}
+
 /** The shipped Worker under wrangler dev: real workerd, real migrations, local D1/R2, a throwaway state dir. */
-export async function bootCloudflare(): Promise<ParityTarget> {
+export async function bootCloudflare(options: CloudflareBootOptions = {}): Promise<ParityTarget> {
   const tag = Math.random().toString(36).slice(2, 8);
   const configName = `wrangler.parity-${tag}.toml`;
   const configPath = path.join(SERVER_DIR, configName);
   const persistDir = path.join(SERVER_DIR, '.wrangler', `parity-state-${tag}`);
-  fs.writeFileSync(configPath, parityWranglerConfig() + '\n[[secrets_store_secrets]]\nbinding = "SECRET_WRAP_KEY"\nstore_id = "parity-store"\nsecret_name = "parity-wrap-key"\n');
+  fs.writeFileSync(configPath, entryConfig(parityWranglerConfig(), options.main) + '\n[[secrets_store_secrets]]\nbinding = "SECRET_WRAP_KEY"\nstore_id = "parity-store"\nsecret_name = "parity-wrap-key"\n');
 
   const d1 = async (command: string): Promise<string> => {
     const args = ['d1', 'execute', 'myco-server', '--local', '-c', configName, '--persist-to', persistDir, '--json', '--command', command];

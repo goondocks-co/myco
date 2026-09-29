@@ -1,0 +1,1891 @@
+{
+ "version": 1,
+ "snapshot": "2026-09-29",
+ "maxPerPrompt": 7,
+ "scoring": {
+  "unit": "case",
+  "surface": "POST /context/prompt, fresh session per case, whole injected block (spores and plans)",
+  "positive": "every expected id served and no mustNot id served",
+  "negative": "nothing injected at all (no spore, no plan)",
+  "plans": "no plan is expected in any case; every served plan counts as unwanted",
+  "ratchet": "per case and target: no expected id served at baseline may drop; no unwanted id absent at baseline may appear; pass count may not drop"
+ },
+ "cases": [
+  {
+   "id": "rp-01",
+   "kind": "positive",
+   "class": "technical",
+   "verdict": "partly",
+   "why": "1.4-era capture question (is the image stored, not the transcript). The blob-image spore is adjacent; the VACUUM INTO backup spore is unrelated.",
+   "provenance": {
+    "source": "1.4 vault (myco-dogfood grove)",
+    "harness": "claude-code",
+    "date": "2026-03-26",
+    "sessionId": "sess_6fc66cd808de65a21262f1e13b4e8eab",
+    "promptId": "pbat_4e4024bc08b5f7f34558de50dcaf52f1",
+    "redacted": false
+   },
+   "prompt": "Okay, to be clear, the image actually comes from the database, right? We're storing it in the database, so once we capture it and store it, we have no dependency on the transcript.",
+   "embedKey": "4aad0319bfa9e5631b3a654e1b216c7e4310ca1fb3136bfa5dd1b954e7156bbd",
+   "expected": [
+    "pattern-951fc175"
+   ],
+   "mustNot": [
+    "decision-3235fecb"
+   ],
+   "reviewedServed": {
+    "spores": [
+     "decision-3235fecb",
+     "pattern-951fc175"
+    ],
+    "plans": [
+     "36b535d5-0ea3-5aba-b1ca-161c276727de",
+     "d2c222be-93dd-5c33-8140-6792f695d4b2",
+     "be8dfe7c-4a4c-5ed7-8d78-21ab983f56e1",
+     "6a353fdf-499a-5d8b-80d0-bcb387d46d66",
+     "ca757980-619d-5bb0-973a-460f4112eda7"
+    ]
+   },
+   "ownerReview": {
+    "call": "agree",
+    "note": ""
+   }
+  },
+  {
+   "id": "rp-02",
+   "kind": "negative",
+   "class": "off-topic",
+   "verdict": "partly",
+   "why": "A UI feature request (click-to-expand screenshots). The only spore served is about how 2.0 renders session image blobs: adjacent, not needed.",
+   "provenance": {
+    "source": "1.4 vault (myco-dogfood grove)",
+    "harness": "claude-code",
+    "date": "2026-03-26",
+    "sessionId": "sess_6fc66cd808de65a21262f1e13b4e8eab",
+    "promptId": "pbat_2070e6c54c8e27ac3097716c60b02d63",
+    "redacted": false
+   },
+   "prompt": "[Image #42]Okay, screenshots are finally there. Although when I click them, we should do like an image expansion, so you click it and you get sort of a full screen version, and then it collapses back down when you close it.",
+   "embedKey": "243d9b9512e8d7e0114420a49b06dd59383b2b77565d5e1f881cc6270300bb97",
+   "expected": [],
+   "mustNot": [],
+   "reviewedServed": {
+    "spores": [
+     "pattern-951fc175"
+    ],
+    "plans": [
+     "ca757980-619d-5bb0-973a-460f4112eda7",
+     "36b535d5-0ea3-5aba-b1ca-161c276727de",
+     "ce5c0870-3df3-5d2e-a4e5-085ddca95280",
+     "be8dfe7c-4a4c-5ed7-8d78-21ab983f56e1",
+     "39bada96-2647-57b1-9b87-9396a597ec1f",
+     "d2c222be-93dd-5c33-8140-6792f695d4b2"
+    ]
+   },
+   "ownerReview": {
+    "call": "agree",
+    "note": ""
+   }
+  },
+  {
+   "id": "rp-03",
+   "kind": "positive",
+   "class": "technical",
+   "verdict": "partly",
+   "why": "1.4-era: Codex just shipped hooks, let's support them. Two Codex-hook gotchas are relevant; notification scope, the hook dependency gate, join hooks and Dockerfile arch are noise.",
+   "provenance": {
+    "source": "1.4 vault (myco-dogfood grove)",
+    "harness": "claude-code",
+    "date": "2026-03-28",
+    "sessionId": "sess_4c259af097aa3c07b86fed43d6e14ceb",
+    "promptId": "pbat_336f2c03e2c7d38093dbbd5636c53954",
+    "redacted": false
+   },
+   "prompt": "1. We're going to fix the skipped items.\n2. This is great news, we can now support Codex. They just released Hooks a couple of days ago, so we can look at how Oak did it for other configurations. It was using Open Telemetry, thankfully we don't have to do a complicated Open Telemetry and notification system. We can just use lifecycle hooks, so we're going to do that too as part of this. Add support for Codex https://developers.openai.com/codex/hooks",
+   "embedKey": "40b04b3c7ec50b1467dfadf4e2df52f6cc5ff94010afe9a6a4295e586de24e4c",
+   "expected": [
+    "gotcha-b6ac3ff4",
+    "gotcha-993a341d"
+   ],
+   "mustNot": [
+    "decision-5e140083",
+    "gotcha-7a7dfc75",
+    "gotcha-61b34f87",
+    "pattern-70522f4f"
+   ],
+   "reviewedServed": {
+    "spores": [
+     "gotcha-b6ac3ff4",
+     "decision-5e140083",
+     "gotcha-7a7dfc75",
+     "gotcha-61b34f87",
+     "gotcha-993a341d",
+     "pattern-70522f4f"
+    ],
+    "plans": []
+   },
+   "ownerReview": {
+    "call": "agree",
+    "note": ""
+   }
+  },
+  {
+   "id": "rp-04",
+   "kind": "negative",
+   "class": "off-topic",
+   "verdict": "should-be-empty",
+   "why": "A request to write docs about the agent system. No stored memory helps. Six unrelated spores served, including the uncalibrated-at-the-time cutover decision.",
+   "provenance": {
+    "source": "1.4 vault (myco-dogfood grove)",
+    "harness": "claude-code",
+    "date": "2026-03-28",
+    "sessionId": "sess_51b0967041d6531ef8af2cb12a964aa5",
+    "promptId": "pbat_b90e5f401493715dadef369aabc235bb",
+    "redacted": false
+   },
+   "prompt": "I want to generate some new documentation. I want to give our agent system, which is awesome. We talk about it on the read me, but give it a full breakdown document with visuals. How everything breaks down, and then I'm gonna take a screenshot of it from the UI too, and I'll add that after you're done. The other minor thing I want to do is make the fav icon distinct, similar but distinct, for the documentation site than it is for the daemon site. It's a little confusing in the browser, so let's just make it distinct enough so we can tell the difference.",
+   "embedKey": "ca995c24433a8c034e0e9ece1be653d2f5ec1e280af160e6bdce2162e2c12824",
+   "expected": [],
+   "mustNot": [],
+   "reviewedServed": {
+    "spores": [
+     "gotcha-ab095250",
+     "decision-941cfb9a",
+     "decision-efda0a7f",
+     "gotcha-77e66874",
+     "pattern-f9df6f2b",
+     "decision-2d352d4a"
+    ],
+    "plans": []
+   },
+   "ownerReview": {
+    "call": "agree",
+    "note": ""
+   }
+  },
+  {
+   "id": "rp-05",
+   "kind": "negative",
+   "class": "technical",
+   "verdict": "should-be-empty",
+   "why": "Antigravity session on the 1.4 graph UI (the focus button does nothing). A retired UI; all five served spores are unrelated dashboard/backup notes.",
+   "provenance": {
+    "source": "1.4 vault (myco-dogfood grove)",
+    "harness": "antigravity",
+    "date": "2026-04-14",
+    "sessionId": "sess_4b0d3a69f45f2c8342703f8bd0eabc2d",
+    "promptId": "pbat_d566c3ec4b3ad382f549e72bc49abc28",
+    "redacted": true
+   },
+   "prompt": "All good improvements, but I think we can do better. First, I like the global and focused, and then we have a little info that says, \"Hey, large graph detected. Try focusing.\" That looks good. When I try to click focus, it doesn't do anything. [screenshot] When I do select a node and then click the focus in on graph on the slide out, it looks awful. I lose all connections; it just looks like a tic-tac-toe grid or something like that, or basically just a uniform grid. So unfortunately, these changes were a regression to the functionality we had, although I like the concepts you mentioned. None of it's working as it was intended, it seems. Plus, I want to discuss a plan before you start making changes. So let's analyze what's there, what actually needs to change, and how could we actually improve this? If we did start in a focused mode, perhaps some recent edges of the graph. But then how could we walk the graph intelligently, and could it automatically focus? After we selected a node and the slide-out came, and you started selecting some of the connections, the graph to the left should be automatically navigating, in my opinion. That would be a much better UX.\n--- Content from referenced files ---\n--- End of content ---",
+   "embedKey": "4ad2b0bb99dd15e69550d9e7f80107f3b1a60388211d2854e2dcffe520803bc9",
+   "expected": [],
+   "mustNot": [],
+   "reviewedServed": {
+    "spores": [
+     "decision-9cc38702",
+     "decision-1af798e2",
+     "wisdom-0ae9c566",
+     "decision-99ff3f2a",
+     "gotcha-4e22ff90"
+    ],
+    "plans": []
+   },
+   "ownerReview": {
+    "call": "agree",
+    "note": ""
+   }
+  },
+  {
+   "id": "rp-06",
+   "kind": "positive",
+   "class": "technical",
+   "verdict": "partly",
+   "why": "Daemon crash vs. in-memory transcript persistence. The member transcript-progress compare-and-set and the durable live-turn guard are on topic; container dispatch env, reboot checks and GitHub App secrets are not.",
+   "provenance": {
+    "source": "1.4 vault (myco-dogfood grove)",
+    "harness": "codex",
+    "date": "2026-04-16",
+    "sessionId": "sess_25eab1594dd56e67c3d3ef6bc51922b4",
+    "promptId": "pbat_e23ca81b1683f284704934682a72cafb",
+    "redacted": false
+   },
+   "prompt": "Okay, if we're adding in-memory persistence, which is how I think I'm understanding the transcript preservation, what happens if the daemon crashes or restarts and does this persist to the buffer? So, just walk me through the lifecycle here of what we did in the new pattern that's been introduced. \n",
+   "embedKey": "a3cddc07c912892ee6b4a693a36dd83e0c0572a2f29596ae973b837f4ccd0c9a",
+   "expected": [
+    "bug_fix-c1537c4d",
+    "gotcha-348b2516"
+   ],
+   "mustNot": [
+    "gotcha-0c86e21a",
+    "bug_fix-baa434d4",
+    "architecture-d57cea09"
+   ],
+   "reviewedServed": {
+    "spores": [
+     "gotcha-348b2516",
+     "gotcha-0c86e21a",
+     "bug_fix-baa434d4",
+     "bug_fix-c1537c4d",
+     "architecture-d57cea09"
+    ],
+    "plans": [
+     "d2c222be-93dd-5c33-8140-6792f695d4b2"
+    ]
+   },
+   "ownerReview": {
+    "call": "agree",
+    "note": ""
+   }
+  },
+  {
+   "id": "rp-07",
+   "kind": "negative",
+   "class": "technical",
+   "verdict": "should-be-empty",
+   "why": "1.4 team-upgrade vector re-index timeout; team sync is retired in 2.0. Served a log-ID migration decision.",
+   "provenance": {
+    "source": "1.4 vault (myco-dogfood grove)",
+    "harness": "opencode",
+    "date": "2026-04-19",
+    "sessionId": "sess_8229d6447ea1f68d96d7f614c5d3c5cc",
+    "promptId": "pbat_0d8cf7cf1cabf4e6003e200a9666ce7d",
+    "redacted": false
+   },
+   "prompt": "[Image 1] i ran team upgrade again, but it timed out of vector re-index .. would that also happen with the cli command alone?",
+   "embedKey": "0da6c4c0f8a760d1b9c764d5a19230ad636ad714ee413a6838d77ab219544070",
+   "expected": [],
+   "mustNot": [],
+   "reviewedServed": {
+    "spores": [
+     "decision-2246739a"
+    ],
+    "plans": [
+     "36b535d5-0ea3-5aba-b1ca-161c276727de",
+     "c3371e4a-446e-5c4f-a5e5-2ad3049a937d",
+     "ce5c0870-3df3-5d2e-a4e5-085ddca95280",
+     "990011c5-7c9f-5d5b-a862-adda9dc25fcd",
+     "d2c222be-93dd-5c33-8140-6792f695d4b2",
+     "a3b1e332-96a2-56e0-9afa-01876916c3a3"
+    ]
+   },
+   "ownerReview": {
+    "call": "agree",
+    "note": ""
+   }
+  },
+  {
+   "id": "rp-08",
+   "kind": "positive",
+   "class": "technical",
+   "verdict": "partly",
+   "why": "Hook timeouts (Cursor's five-second default). HOOK_CONFIG per symbiont and the hook context-fetch budget are right; task limits and run budgeting are wrong (the word 'budget').",
+   "provenance": {
+    "source": "1.4 vault (myco-dogfood grove)",
+    "harness": "pi",
+    "date": "2026-04-21",
+    "sessionId": "sess_0023571498b70540351bddeeab869792",
+    "promptId": "pbat_8ead4442cb8ef73349e28178f914d74d",
+    "redacted": false
+   },
+   "prompt": "Yeah, we shouldn't block the hook, and we should return as quickly as possible, but this seems ridiculous to set it that low. Also, hook configurations have their own timeouts, which I think the default is five seconds for many of the hooks for Cursor. So we're likely just dropping it. I'm not sure why we need to time out there at all, as long as we're not blocking.",
+   "embedKey": "51d9594a546383ed83141734066a10d32b9a6db850f3fb502c4da62fcdc64869",
+   "expected": [
+    "gotcha-05b29309",
+    "gotcha-511712b9"
+   ],
+   "mustNot": [
+    "trade_off-a0713aa2",
+    "trade_off-8d1a35ee"
+   ],
+   "reviewedServed": {
+    "spores": [
+     "gotcha-05b29309",
+     "gotcha-511712b9",
+     "trade_off-a0713aa2",
+     "trade_off-8d1a35ee",
+     "bug_fix-43b24e4d"
+    ],
+    "plans": [
+     "d2c222be-93dd-5c33-8140-6792f695d4b2"
+    ]
+   },
+   "ownerReview": {
+    "call": "agree",
+    "note": ""
+   }
+  },
+  {
+   "id": "rp-09",
+   "kind": "positive",
+   "class": "technical",
+   "verdict": "partly",
+   "why": "Cursor capture: wrong prompts and duplicates. The capture-ownership doubled-rows gotcha is exactly right, but it ranks third behind the 1Password-op gotcha (MP 0.94), which is noise here.",
+   "provenance": {
+    "source": "1.4 vault (myco-dogfood grove)",
+    "harness": "pi",
+    "date": "2026-04-21",
+    "sessionId": "sess_0023571498b70540351bddeeab869792",
+    "promptId": "pbat_ca903bae4b6b6a9a8c72f3bfd4800e49",
+    "redacted": false
+   },
+   "prompt": "Ok, I did exactly that and did another hello session. We got some captures this time; none of it was my prompt, and we got some duplicates. So we're actually getting activity; none of it is correct, though.",
+   "embedKey": "ba6f229226480d331ca72ca1b32132b34e3216362921b00e2f5d41485849f591",
+   "expected": [
+    "gotcha-26e00b05",
+    "architecture-95bccc39"
+   ],
+   "mustNot": [
+    "gotcha-ea1915d6",
+    "gotcha-582cfdc6",
+    "gotcha-61b34f87",
+    "wisdom-b4f88d04"
+   ],
+   "reviewedServed": {
+    "spores": [
+     "gotcha-ea1915d6",
+     "gotcha-582cfdc6",
+     "gotcha-26e00b05",
+     "architecture-95bccc39",
+     "gotcha-61b34f87",
+     "wisdom-b4f88d04"
+    ],
+    "plans": []
+   },
+   "ownerReview": {
+    "call": "agree",
+    "note": ""
+   }
+  },
+  {
+   "id": "rp-10",
+   "kind": "positive",
+   "class": "technical",
+   "verdict": "partly",
+   "why": "Hooks never registered with Cursor, so nothing captured. The dev-link hook gotcha and HOOK_CONFIG are adjacent; the Herdr env gotcha is noise.",
+   "provenance": {
+    "source": "1.4 vault (myco-dogfood grove)",
+    "harness": "claude-code",
+    "date": "2026-04-21",
+    "sessionId": "sess_978e8e3ab399370f747dad508a438a8b",
+    "promptId": "pbat_fd27a871bbda7219db21bf7e0c580fe8",
+    "redacted": false
+   },
+   "prompt": "[Image #14] [Image #15]Seems our hooks aren't even registered with Cursor. So no session was captured because no hook was fired. This is definitely a new problem. I'm not sure what's going on. Our configuration looks correct.",
+   "embedKey": "28a01c1068c09181a97537c8920132d0f0f0c77c66c9345d6a709dce2cf52511",
+   "expected": [
+    "gotcha-0b64daeb",
+    "gotcha-05b29309"
+   ],
+   "mustNot": [
+    "gotcha-6668d672",
+    "gotcha-077d59de"
+   ],
+   "reviewedServed": {
+    "spores": [
+     "gotcha-0b64daeb",
+     "gotcha-6668d672",
+     "gotcha-05b29309",
+     "gotcha-7f12b7a8",
+     "gotcha-077d59de",
+     "gotcha-993a341d"
+    ],
+    "plans": []
+   },
+   "ownerReview": {
+    "call": "agree",
+    "note": ""
+   }
+  },
+  {
+   "id": "rp-11",
+   "kind": "positive",
+   "class": "technical",
+   "verdict": "partly",
+   "why": "Cursor 'hello' session not captured. The silent-capture-stop and HOOK_CONFIG spores are adjacent; session-page rendering and endSession attribution are noise.",
+   "provenance": {
+    "source": "1.4 vault (myco-dogfood grove)",
+    "harness": "pi",
+    "date": "2026-04-21",
+    "sessionId": "sess_0023571498b70540351bddeeab869792",
+    "promptId": "pbat_c8cfaecefc2df7dc091f04fff54b3d42",
+    "redacted": false
+   },
+   "prompt": "Okay, loaded Cursor, started a new session with a simple prompt called \"hello.\" It was not captured.",
+   "embedKey": "0608cf4c270aabd12c5166a81eb85aea53fe0b5149d6c4a3591a2deaa12d74f5",
+   "expected": [
+    "gotcha-7f12b7a8",
+    "gotcha-05b29309"
+   ],
+   "mustNot": [
+    "decision-99ff3f2a",
+    "gotcha-582cfdc6"
+   ],
+   "reviewedServed": {
+    "spores": [
+     "gotcha-7f12b7a8",
+     "gotcha-05b29309",
+     "decision-99ff3f2a",
+     "gotcha-582cfdc6"
+    ],
+    "plans": [
+     "be8dfe7c-4a4c-5ed7-8d78-21ab983f56e1",
+     "d2c222be-93dd-5c33-8140-6792f695d4b2",
+     "36b535d5-0ea3-5aba-b1ca-161c276727de"
+    ]
+   },
+   "ownerReview": {
+    "call": "agree",
+    "note": ""
+   }
+  },
+  {
+   "id": "rp-12",
+   "kind": "negative",
+   "class": "technical",
+   "verdict": "wrong",
+   "why": "Make the plan budget-aware and run it on a dedicated worktree. Six spores matched 'budget' and 'plan' lexically (join-hook budgets, PowerManager, run budgeting, issue hygiene); none says how to inject a token budget into a plan.",
+   "provenance": {
+    "source": "1.4 vault (myco-dogfood grove)",
+    "harness": "cursor",
+    "date": "2026-04-22",
+    "sessionId": "sess_9662748514f5d26fed7c105141758003",
+    "promptId": "pbat_74716298942f7139f01a64e350ffa1b5",
+    "redacted": false
+   },
+   "prompt": "Good, the plan is shaping up. Regarding the term budget, make sure we're injecting that budget so the model is budget-aware. We have a current injection pattern, so let's make sure it's being applied here. We should also instruct via the plan that this happens on a dedicated worktree, so we're not disrupting other agent work.",
+   "embedKey": "8bb8b2a088990133b5b160d8d9d65164dcc415ea40438dc7a5fc509142c5bc57",
+   "expected": [],
+   "mustNot": [],
+   "reviewedServed": {
+    "spores": [
+     "gotcha-61b34f87",
+     "architecture-dbdb80a8",
+     "pattern-95c3e7c3",
+     "trade_off-8d1a35ee",
+     "gotcha-104287ae",
+     "pattern-55f78337"
+    ],
+    "plans": []
+   },
+   "ownerReview": {
+    "call": "agree",
+    "note": ""
+   }
+  },
+  {
+   "id": "rp-13",
+   "kind": "positive",
+   "class": "technical",
+   "verdict": "partly",
+   "why": "Daemon crashed; is another agent's worktree corrupting ours? 'Signal only PIDs you recorded; worktree make build doesn't restart dogfood' is right; reboot checks and reviewer idling are noise.",
+   "provenance": {
+    "source": "1.4 vault (myco-dogfood grove)",
+    "harness": "cursor",
+    "date": "2026-04-22",
+    "sessionId": "sess_9662748514f5d26fed7c105141758003",
+    "promptId": "pbat_eb17cef8497156a1fa88bcad12936247",
+    "redacted": false
+   },
+   "prompt": "The daemon crashed again during a re-run of the failed task, and now I can't get it to build or restart in a healthy state. I don't know what's going on. There are other agents working, but they're working in their own worktrees. They must be somehow causing corruption in our main worktree feature branch.",
+   "embedKey": "c3a2750306ac41c04cd34284ea171f2723f2784e8a961b9931462ace76acad96",
+   "expected": [
+    "gotcha-9e60325f",
+    "gotcha-e5bf1d75"
+   ],
+   "mustNot": [
+    "gotcha-0c86e21a",
+    "gotcha-777597e9"
+   ],
+   "reviewedServed": {
+    "spores": [
+     "gotcha-0c86e21a",
+     "gotcha-e5bf1d75",
+     "gotcha-777597e9",
+     "gotcha-9e60325f"
+    ],
+    "plans": [
+     "c3a9a201-7915-5fb9-9fe4-d83eeac49e3d",
+     "36b535d5-0ea3-5aba-b1ca-161c276727de"
+    ]
+   },
+   "ownerReview": {
+    "call": "agree",
+    "note": ""
+   }
+  },
+  {
+   "id": "rp-14",
+   "kind": "positive",
+   "class": "technical",
+   "verdict": "partly",
+   "why": "Never render an absolute path in hook configuration. 'Favor global hook config' is right, but the top item (MP 0.948) is the dashboard auth-gate decision, which is unrelated.",
+   "provenance": {
+    "source": "1.4 vault (myco-dogfood grove)",
+    "harness": "claude-code",
+    "date": "2026-04-25",
+    "sessionId": "sess_4868d9cf293d85c45a13dfdc1035b2e7",
+    "promptId": "pbat_87f9ee9a45ace770b6bf57d09f0f7901",
+    "redacted": false
+   },
+   "prompt": "don't need a quick fix, need the fix, then we can run update to apply it. and we'll never render an absolute path in hook configuration, so neither if i'm understnding correctly",
+   "embedKey": "07a46f3d1a60d5a2d70a8a1ca23d70d76a0954249b1886f481efc10501a0cde2",
+   "expected": [
+    "decision-164b9ec6",
+    "gotcha-b6ac3ff4"
+   ],
+   "mustNot": [
+    "decision-1af798e2",
+    "gotcha-73456cc3",
+    "gotcha-511712b9"
+   ],
+   "reviewedServed": {
+    "spores": [
+     "decision-1af798e2",
+     "decision-164b9ec6",
+     "gotcha-b6ac3ff4",
+     "gotcha-73456cc3",
+     "gotcha-0b64daeb",
+     "gotcha-511712b9"
+    ],
+    "plans": []
+   },
+   "ownerReview": {
+    "call": "agree",
+    "note": ""
+   }
+  },
+  {
+   "id": "rp-15",
+   "kind": "positive",
+   "class": "technical",
+   "verdict": "partly",
+   "why": "Why a 1.4 Canopy schedule ticks every 900 s. The 2.0 'schedule leaves override TASK_SCHEDULE' gotcha is on topic; the tool-overhead discovery and test-loop gotcha are noise.",
+   "provenance": {
+    "source": "1.4 vault (myco-dogfood grove)",
+    "harness": "claude-code",
+    "date": "2026-04-28",
+    "sessionId": "sess_3afb4d83867ae991c9386fdbdb685da0",
+    "promptId": "pbat_feb587562417eb153d90fc722b6f31e4",
+    "redacted": false
+   },
+   "prompt": "How often will Canopy describe run on a schedule? It looks like the last run was 6 minutes ago, and I still haven't seen another run since. I even increased the batch size. I overwrote it from 10 to 20. But it should be ticking along faster than this, right? Oh, I see it's 900 seconds. Wow, at this rate it would take a very, very long time. Do we have our defaults tuned correctly? Batch size is probably tuned fine. We already did some tuning there, but how about how often it's running?",
+   "embedKey": "9dc2b5a5aeb9f5375023786e5297eff39a8feb8009930019ca4650252a5ee06b",
+   "expected": [
+    "gotcha-7df77408"
+   ],
+   "mustNot": [
+    "discovery-86f54e2e",
+    "gotcha-a860dd00"
+   ],
+   "reviewedServed": {
+    "spores": [
+     "gotcha-7df77408",
+     "discovery-86f54e2e",
+     "trade_off-8d1a35ee",
+     "gotcha-a860dd00",
+     "trade_off-a0713aa2"
+    ],
+    "plans": [
+     "36b535d5-0ea3-5aba-b1ca-161c276727de"
+    ]
+   },
+   "ownerReview": {
+    "call": "agree",
+    "note": ""
+   }
+  },
+  {
+   "id": "rp-16",
+   "kind": "negative",
+   "class": "ack",
+   "verdict": "should-be-empty",
+   "why": "Pure acknowledgement. Served one spore (skill approval) and six completed plans.",
+   "provenance": {
+    "source": "1.4 vault (myco-dogfood grove)",
+    "harness": "codex",
+    "date": "2026-05-05",
+    "sessionId": "019dea98-5347-7f62-9d6f-3642db11931e",
+    "promptId": "pbat_ce95587da646be5524d4ad777c9f89de",
+    "redacted": false
+   },
+   "prompt": "got it, lets keep going then\n",
+   "embedKey": "c22137776b6381fce1d1598c4fbd5602c049779aceed6386ef8627d04562f3f5",
+   "expected": [],
+   "mustNot": [],
+   "reviewedServed": {
+    "spores": [
+     "pattern-1b1b5bdd"
+    ],
+    "plans": [
+     "c3a9a201-7915-5fb9-9fe4-d83eeac49e3d",
+     "36b535d5-0ea3-5aba-b1ca-161c276727de",
+     "d2c222be-93dd-5c33-8140-6792f695d4b2",
+     "39bada96-2647-57b1-9b87-9396a597ec1f",
+     "6a353fdf-499a-5d8b-80d0-bcb387d46d66",
+     "be8dfe7c-4a4c-5ed7-8d78-21ab983f56e1"
+    ]
+   },
+   "ownerReview": {
+    "call": "agree",
+    "note": ""
+   }
+  },
+  {
+   "id": "rp-17",
+   "kind": "negative",
+   "class": "ack",
+   "verdict": "should-be-empty",
+   "why": "'ok, proceed to phase 4'. Served the 1.4→2.0 cutover decision and six plans.",
+   "provenance": {
+    "source": "1.4 vault (myco-dogfood grove)",
+    "harness": "cursor",
+    "date": "2026-05-07",
+    "sessionId": "b3d7d715-c9c2-4104-8ee0-4b316892d8c5",
+    "promptId": "pbat_d6f912e3e34f8516425a4e6b2aed60f9",
+    "redacted": false
+   },
+   "prompt": "ok, proceed to phase 4",
+   "embedKey": "340afc3b45b10962b22e8ad143655a55886de6a63f425d63cea0ffb42d334f73",
+   "expected": [],
+   "mustNot": [],
+   "reviewedServed": {
+    "spores": [
+     "decision-2d352d4a"
+    ],
+    "plans": [
+     "be8dfe7c-4a4c-5ed7-8d78-21ab983f56e1",
+     "d2c222be-93dd-5c33-8140-6792f695d4b2",
+     "6a353fdf-499a-5d8b-80d0-bcb387d46d66",
+     "36b535d5-0ea3-5aba-b1ca-161c276727de",
+     "a3b1e332-96a2-56e0-9afa-01876916c3a3",
+     "39bada96-2647-57b1-9b87-9396a597ec1f"
+    ]
+   },
+   "ownerReview": {
+    "call": "agree",
+    "note": ""
+   }
+  },
+  {
+   "id": "rp-18",
+   "kind": "positive",
+   "class": "technical",
+   "verdict": "wrong",
+   "why": "1.4: how to update when the daemon is down. The top item is the 2.0 cutover decision; only the self-hosted stop-migrate-restart pattern is adjacent.",
+   "provenance": {
+    "source": "1.4 vault (myco-dogfood grove)",
+    "harness": "claude-code",
+    "date": "2026-05-18",
+    "sessionId": "5f3a8a89-f1da-42c7-a97f-70d8965f6746",
+    "promptId": "pbat_96e869f699496a701f15c363764550bc",
+    "redacted": false
+   },
+   "prompt": "ok, its merged and released. How do you recommend I actually update it with the daemon down and the UI not available? The normal update path for me on this machine is no longer available. What's the right way to go about this?",
+   "embedKey": "e90dd8a6c9015611ad881e134a571c359f2f5880015f43650e6c2b8f3655eef8",
+   "expected": [
+    "pattern-bca367e0"
+   ],
+   "mustNot": [
+    "decision-2d352d4a",
+    "gotcha-47345f8f",
+    "bug_fix-274c91ec",
+    "gotcha-8c0e5692"
+   ],
+   "reviewedServed": {
+    "spores": [
+     "decision-2d352d4a",
+     "gotcha-47345f8f",
+     "bug_fix-274c91ec",
+     "pattern-bca367e0",
+     "gotcha-8c0e5692"
+    ],
+    "plans": [
+     "a3b1e332-96a2-56e0-9afa-01876916c3a3"
+    ]
+   },
+   "ownerReview": {
+    "call": "agree",
+    "note": ""
+   }
+  },
+  {
+   "id": "rp-19",
+   "kind": "positive",
+   "class": "technical",
+   "verdict": "wrong",
+   "why": "'Why do tests take so long; the agent loop times out.' The top item (MP 0.992) is a tool-overhead analytics discovery. The test-runner spores that answer this (npm test stalls, ad hoc bun batches) were not served.",
+   "provenance": {
+    "source": "1.4 vault (myco-dogfood grove)",
+    "harness": "codex",
+    "date": "2026-05-19",
+    "sessionId": "019e41df-f79e-71a3-9de4-5f9acb676f07",
+    "promptId": "pbat_7c4b9ca0de35a0293dd7366b3cc5b68f",
+    "redacted": false
+   },
+   "prompt": "❯ why do the tests take so damn long to run.. its by far the slowest part of the devx. the test from my point of view are hurting more than helpingyou can see this typical loop:\n1. The agent will try, then test times out or fails, then runs a test. It fails or times out. That could take 10 minutes. Didn't see what actually failed.\n2. Then it runs it again and again.\nIt's just that it should take 20 to 30 minutes to get to a single test that failed. What the hell is going on and how do we fix this? This is not how the local dev loop should be working. It's far too slow, far too problematic, and agents need a better way to work with the test suite than this.",
+   "embedKey": "a4a56f7ca7132ea82b8858d64bfa7e0dce1bbc757aad2864229495ac20d5ecf4",
+   "expected": [
+    "decision-b998c2d8",
+    "wisdom-b4f88d04",
+    "gotcha-2524ccec"
+   ],
+   "mustNot": [
+    "discovery-86f54e2e",
+    "gotcha-b89e5f5a",
+    "gotcha-4c67faaa"
+   ],
+   "reviewedServed": {
+    "spores": [
+     "discovery-86f54e2e",
+     "pattern-7f45f303",
+     "decision-b998c2d8",
+     "gotcha-b89e5f5a",
+     "gotcha-4c67faaa"
+    ],
+    "plans": []
+   },
+   "ownerReview": {
+    "call": "agree",
+    "note": ""
+   }
+  },
+  {
+   "id": "rp-20",
+   "kind": "negative",
+   "class": "ack",
+   "verdict": "right",
+   "why": "Acknowledgement: no spores. The seven completed plans served beside it are still wrong (see the plan pattern).",
+   "provenance": {
+    "source": "1.4 vault (myco-dogfood grove)",
+    "harness": "pi",
+    "date": "2026-05-26",
+    "sessionId": "2026-05-26T19-30-49-344Z_019e65c4-af80-70e8-bfc1-628b639201f0",
+    "promptId": "pbat_73584d076d057682e01eeb1bca7a2d6c",
+    "redacted": false
+   },
+   "prompt": "1. yes. 2. yes, good idea",
+   "embedKey": "ad1bade3c90cdeed9f76761213dbbb3293e87fb2b56e8532fb0b22df302d4b32",
+   "expected": [],
+   "mustNot": [],
+   "reviewedServed": {
+    "spores": [],
+    "plans": [
+     "d2c222be-93dd-5c33-8140-6792f695d4b2",
+     "be8dfe7c-4a4c-5ed7-8d78-21ab983f56e1",
+     "36b535d5-0ea3-5aba-b1ca-161c276727de",
+     "6a353fdf-499a-5d8b-80d0-bcb387d46d66",
+     "39bada96-2647-57b1-9b87-9396a597ec1f",
+     "c3a9a201-7915-5fb9-9fe4-d83eeac49e3d",
+     "c3371e4a-446e-5c4f-a5e5-2ad3049a937d"
+    ]
+   },
+   "ownerReview": {
+    "call": "agree",
+    "note": ""
+   }
+  },
+  {
+   "id": "rp-21",
+   "kind": "positive",
+   "class": "technical",
+   "verdict": "partly",
+   "why": "Don't fall back from semantic to FTS. The 'distinguish no matches from provider failure' search gotcha is exactly right; subagent-model and blob rendering are noise.",
+   "provenance": {
+    "source": "1.4 vault (myco-dogfood grove)",
+    "harness": "claude-code",
+    "date": "2026-06-02",
+    "sessionId": "ae9ac5e1-31aa-443e-8aaf-aca5e0215a30",
+    "promptId": "pbat_f6fd1db344c481428be089aeb906c5de",
+    "redacted": false
+   },
+   "prompt": "I definitely don't want to fall back to FTS. FTS is a selected option. Semantic is semantic and FTS is FTS . but yes, clearly issues",
+   "embedKey": "258d48e8cd7cae0205f601eca144e77ac644f1e9b41327c50598a706bdd7ebb9",
+   "expected": [
+    "gotcha-00fffb04"
+   ],
+   "mustNot": [
+    "decision-941cfb9a",
+    "pattern-951fc175",
+    "discovery-6c072e31"
+   ],
+   "reviewedServed": {
+    "spores": [
+     "gotcha-00fffb04",
+     "decision-941cfb9a",
+     "pattern-951fc175",
+     "discovery-6c072e31"
+    ],
+    "plans": [
+     "ce5c0870-3df3-5d2e-a4e5-085ddca95280",
+     "990011c5-7c9f-5d5b-a862-adda9dc25fcd",
+     "d2c222be-93dd-5c33-8140-6792f695d4b2"
+    ]
+   },
+   "ownerReview": {
+    "call": "agree",
+    "note": ""
+   }
+  },
+  {
+   "id": "rp-22",
+   "kind": "positive",
+   "class": "technical",
+   "verdict": "partly",
+   "why": "PowerManager / pills firing every five seconds; does it stop sleep? PowerManager/WakeScheduler and the runIn sleep trade-off are right; the top item (1Password op, MP 0.918) is noise.",
+   "provenance": {
+    "source": "1.4 vault (myco-dogfood grove)",
+    "harness": "claude-code",
+    "date": "2026-06-05",
+    "sessionId": "407b04ed-d430-45a3-b51d-746621397dea",
+    "promptId": "pbat_a9cd9840e7402a03e5cf725824f029ea",
+    "redacted": false
+   },
+   "prompt": "yes, file that second follow-up. That's kinda why we have Power Manager and Auto Refresh ticks. We shouldn't have independent pills firing every five seconds. Wouldn't that keep the daemon active or does that affect the computer's ability to sleep? I'm mostly curious about that. So I want to get it behaving correctly and then also not calling the endpoint when it doesn't have the necessary context",
+   "embedKey": "39bf78d34f7e4ebaf97d3199a524523ddfa87197dfe68d80b07896d577b7fe0e",
+   "expected": [
+    "architecture-dbdb80a8",
+    "trade_off-eb979ed9",
+    "architecture-11db18c6"
+   ],
+   "mustNot": [
+    "gotcha-ea1915d6",
+    "gotcha-a860dd00",
+    "trade_off-8d1a35ee"
+   ],
+   "reviewedServed": {
+    "spores": [
+     "gotcha-ea1915d6",
+     "architecture-dbdb80a8",
+     "gotcha-a860dd00",
+     "trade_off-8d1a35ee",
+     "trade_off-eb979ed9",
+     "architecture-11db18c6"
+    ],
+    "plans": []
+   },
+   "ownerReview": {
+    "call": "agree",
+    "note": ""
+   }
+  },
+  {
+   "id": "rp-23",
+   "kind": "positive",
+   "class": "technical",
+   "verdict": "partly",
+   "why": "CI still running after nine minutes, not progressing. 'Verify completed/success via gh run list; a run sat queued 56 minutes' is the answer and was MISSED (MP 0.429, below the 0.5 floor). The CI sharding decision served instead.",
+   "provenance": {
+    "source": "1.4 vault (myco-dogfood grove)",
+    "harness": "codex",
+    "date": "2026-06-06",
+    "sessionId": "019e9921-7bf6-7291-bc16-ed5a683be67f",
+    "promptId": "pbat_c953350f2d32858a26d4a355df83cf5d",
+    "redacted": false
+   },
+   "prompt": "CI does not seem to be passing, still running after 9 mins,but not progressing",
+   "embedKey": "a462e7431f646985afb196b612bf92fd1d33a1fef8e72c4b2bc95425bb57d514",
+   "expected": [
+    "decision-b998c2d8",
+    "wisdom-b4f88d04",
+    "gotcha-0ac58ea7"
+   ],
+   "mustNot": [
+    "gotcha-b89e5f5a"
+   ],
+   "reviewedServed": {
+    "spores": [
+     "decision-b998c2d8",
+     "gotcha-b89e5f5a",
+     "gotcha-6f593485",
+     "wisdom-b4f88d04"
+    ],
+    "plans": [
+     "36b535d5-0ea3-5aba-b1ca-161c276727de",
+     "c3a9a201-7915-5fb9-9fe4-d83eeac49e3d"
+    ]
+   },
+   "ownerReview": {
+    "call": "agree",
+    "note": ""
+   }
+  },
+  {
+   "id": "rp-24",
+   "kind": "positive",
+   "class": "technical",
+   "verdict": "partly",
+   "why": "Get off the worktree, dev build, restart, live dogfood. The 'worktree make build doesn't restart dogfood' and 'restart the dogfood worker each deploy' gotchas are right; the data-repair procedure (top) and OAuth login are noise.",
+   "provenance": {
+    "source": "1.4 vault (myco-dogfood grove)",
+    "harness": "codex",
+    "date": "2026-06-14",
+    "sessionId": "019ec6f6-7bf2-7fc0-8ace-746bf906774a",
+    "promptId": "pbat_ff579759bee06f4ad8e0e14aebdaf410",
+    "redacted": false
+   },
+   "prompt": "In dogfooding properly let's get off the worktree and onto a feature branch off the root tree. Then we'll do a dev build and restart, which should run the migration, and then we'll do a live dogfooding test to verify everything landed correctly, including playwright browser verification\n",
+   "embedKey": "d21fa653983ef39e65dd06d97dd2cefa3767a2766871f405b93fd59e257cc5be",
+   "expected": [
+    "gotcha-9e60325f",
+    "gotcha-c3919ebd"
+   ],
+   "mustNot": [
+    "pattern-4c6f6ae9",
+    "gotcha-36b3fda3",
+    "decision-1af798e2"
+   ],
+   "reviewedServed": {
+    "spores": [
+     "pattern-4c6f6ae9",
+     "gotcha-b6ac3ff4",
+     "gotcha-9e60325f",
+     "gotcha-36b3fda3",
+     "decision-1af798e2",
+     "gotcha-c3919ebd"
+    ],
+    "plans": []
+   },
+   "ownerReview": {
+    "call": "agree",
+    "note": ""
+   }
+  },
+  {
+   "id": "rp-25",
+   "kind": "positive",
+   "class": "technical",
+   "verdict": "wrong",
+   "why": "Shouldn't cross-platform restart go through an interface, not conditionals? The top item is the subagent-model decision (MP 0.988), which is unrelated; the platform-adapter-seam pattern is the one relevant spore.",
+   "provenance": {
+    "source": "1.4 vault (myco-dogfood grove)",
+    "harness": "claude-code",
+    "date": "2026-06-16",
+    "sessionId": "dbb59992-bf8b-4e37-96a3-b9540bf30d6c",
+    "promptId": "pbat_9459316ea1f5953cd2953b64b1a65b85",
+    "redacted": false
+   },
+   "prompt": "Aren't we using an interface or some other abstraction so we can have cross-platform restart support? instead of fragile conditionals?",
+   "embedKey": "613ae3d39505f95ecf89309ffcd2a72d57c66e8e89c32c74b6f791218984a577",
+   "expected": [
+    "pattern-f9df6f2b"
+   ],
+   "mustNot": [
+    "decision-941cfb9a",
+    "gotcha-05b29309",
+    "decision-56ec66c9",
+    "gotcha-182949e0"
+   ],
+   "reviewedServed": {
+    "spores": [
+     "decision-941cfb9a",
+     "gotcha-05b29309",
+     "pattern-f9df6f2b",
+     "decision-56ec66c9",
+     "gotcha-182949e0"
+    ],
+    "plans": [
+     "c3371e4a-446e-5c4f-a5e5-2ad3049a937d"
+    ]
+   },
+   "ownerReview": {
+    "call": "agree",
+    "note": ""
+   }
+  },
+  {
+   "id": "rp-26",
+   "kind": "negative",
+   "class": "ack",
+   "verdict": "right",
+   "why": "Acknowledgement: no spores. Seven completed plans still served.",
+   "provenance": {
+    "source": "1.4 vault (myco-dogfood grove)",
+    "harness": "claude-code",
+    "date": "2026-06-25",
+    "sessionId": "6038b2b0-e0cb-4174-8e44-858e1b4c3993",
+    "promptId": "pbat_ba08baafb5c5d2d820807906cd7d8c80",
+    "redacted": false
+   },
+   "prompt": "yes, please proceed",
+   "embedKey": "6fe5844dc33103d74675587eaca1522c1f13d7515d63e12e21bc206cc8acd6d1",
+   "expected": [],
+   "mustNot": [],
+   "reviewedServed": {
+    "spores": [],
+    "plans": [
+     "d2c222be-93dd-5c33-8140-6792f695d4b2",
+     "c3a9a201-7915-5fb9-9fe4-d83eeac49e3d",
+     "6a353fdf-499a-5d8b-80d0-bcb387d46d66",
+     "be8dfe7c-4a4c-5ed7-8d78-21ab983f56e1",
+     "36b535d5-0ea3-5aba-b1ca-161c276727de",
+     "c3371e4a-446e-5c4f-a5e5-2ad3049a937d",
+     "a3b1e332-96a2-56e0-9afa-01876916c3a3"
+    ]
+   },
+   "ownerReview": {
+    "call": "agree",
+    "note": ""
+   }
+  },
+  {
+   "id": "rp-27",
+   "kind": "positive",
+   "class": "technical",
+   "verdict": "wrong",
+   "why": "'We don't carry project/team tenancy with requests.' The tenancy spores (resolveSessionScope, scopeOf, header project) rank 26–68 and were missed; the dispatcher-contract pattern served instead.",
+   "provenance": {
+    "source": "1.4 vault (myco-dogfood grove)",
+    "harness": "claude-code",
+    "date": "2026-06-26",
+    "sessionId": "623e540f-f822-4fa3-828c-cedc93a37bb1",
+    "promptId": "pbat_050038b95b6beb70b89984930f619fdf",
+    "redacted": false
+   },
+   "prompt": "It also seems we have a tenanancy problem. You've mentioned before project and team ID. We don't seem to be carrying that tennancy with our requests. That seems to be a fundamental design flaw. Is that going to continue to hurt us with these patterns?",
+   "embedKey": "0108f1a6ca77ff71533e2c2b369d170c0ef9c6c635df85e1fdf645590b1d1515",
+   "expected": [
+    "gotcha-5aca3e37",
+    "architecture-d8a8b371",
+    "architecture-47d47fba"
+   ],
+   "mustNot": [
+    "pattern-b4690499"
+   ],
+   "reviewedServed": {
+    "spores": [
+     "pattern-b4690499",
+     "gotcha-5aca3e37"
+    ],
+    "plans": [
+     "c3a9a201-7915-5fb9-9fe4-d83eeac49e3d",
+     "be8dfe7c-4a4c-5ed7-8d78-21ab983f56e1",
+     "d2c222be-93dd-5c33-8140-6792f695d4b2",
+     "36b535d5-0ea3-5aba-b1ca-161c276727de",
+     "6a353fdf-499a-5d8b-80d0-bcb387d46d66"
+    ]
+   },
+   "ownerReview": {
+    "call": "agree",
+    "note": ""
+   }
+  },
+  {
+   "id": "rp-28",
+   "kind": "negative",
+   "class": "technical",
+   "verdict": "wrong",
+   "why": "Tie the feature to the Cortex capability gate like Canopy/Digest. Served container keying, parity renames, Cursor isolation, 2.0 scope: none about the capability gate.",
+   "provenance": {
+    "source": "1.4 vault (myco-dogfood grove)",
+    "harness": "codex",
+    "date": "2026-07-01",
+    "sessionId": "019f1dd6-0041-7432-98b5-378cb24e78b1",
+    "promptId": "pbat_fa49a668e1bd8b6221c3ef09cc48f230",
+    "redacted": false
+   },
+   "prompt": "If we're considering this a new Cortex feature, also this should be tied to the Cortex capability gate as well, just like Canopy is, and Digest, and all the other Cortex features. It's also where the UX would sit \n",
+   "embedKey": "6902b89aee3d5f9f2d71023bcfeb42c784c24eade6d2c197fedd42dd88304673",
+   "expected": [],
+   "mustNot": [],
+   "reviewedServed": {
+    "spores": [
+     "architecture-9b116da2",
+     "gotcha-2db458a1",
+     "gotcha-efaf7da0",
+     "decision-16748312"
+    ],
+    "plans": [
+     "c3a9a201-7915-5fb9-9fe4-d83eeac49e3d",
+     "ce5c0870-3df3-5d2e-a4e5-085ddca95280"
+    ]
+   },
+   "ownerReview": {
+    "call": "agree",
+    "note": ""
+   }
+  },
+  {
+   "id": "rp-29",
+   "kind": "negative",
+   "class": "ack",
+   "verdict": "right",
+   "why": "'how is the progress?': no spores. The seven plans served are all completed, not the in-progress one a progress question wants.",
+   "provenance": {
+    "source": "1.4 vault (myco-dogfood grove)",
+    "harness": "codex",
+    "date": "2026-07-24",
+    "sessionId": "019f91f6-6a0e-7e83-94da-e5921b30b625",
+    "promptId": "pbat_64dd86dc2cfc2e191e1d3d577d08fe30",
+    "redacted": false
+   },
+   "prompt": "how is the progress?\n",
+   "embedKey": "7eb2f6ccb53bc74404321030a7cafc785de812a525c8bebfd81710bf8c610db7",
+   "expected": [],
+   "mustNot": [],
+   "reviewedServed": {
+    "spores": [],
+    "plans": [
+     "c3a9a201-7915-5fb9-9fe4-d83eeac49e3d",
+     "be8dfe7c-4a4c-5ed7-8d78-21ab983f56e1",
+     "36b535d5-0ea3-5aba-b1ca-161c276727de",
+     "6a353fdf-499a-5d8b-80d0-bcb387d46d66",
+     "990011c5-7c9f-5d5b-a862-adda9dc25fcd",
+     "d2c222be-93dd-5c33-8140-6792f695d4b2",
+     "ce5c0870-3df3-5d2e-a4e5-085ddca95280"
+    ]
+   },
+   "ownerReview": {
+    "call": "agree",
+    "note": ""
+   }
+  },
+  {
+   "id": "rp-30",
+   "kind": "positive",
+   "class": "technical",
+   "verdict": "wrong",
+   "why": "'make build puts the binary in the wrong location.' Served capability reporting, task claims and exitCode; the relevant dogfood-binary gotchas rank 19 and 35.",
+   "provenance": {
+    "source": "1.4 vault (myco-dogfood grove)",
+    "harness": "claude-code",
+    "date": "2026-07-27",
+    "sessionId": "e98654c5-efbd-43c3-9207-e90dc7aafae6",
+    "promptId": "pbat_6a8f8061a6f393cd599705126ea46983",
+    "redacted": false
+   },
+   "prompt": "Okay, I'll state this again. So, right, we have a makeBuild command that isn't putting the build in the correct location. It's putting it in an old location. We shouldn't be having commands that do not work. What good is a build without a deploy? We're building locally. The expectation is when we build it, the binary is running where it will actually be executed.I don't want to have to know which command to run. We also have a dev-link command. Now we have a different deploy command. Then we have a build command. Then we have a build-only command. This all needs to land the executable in the correct place.",
+   "embedKey": "92bce6f8592bb2643409f546d06bb55409b198e8a09640630203ed7c45c1baf7",
+   "expected": [
+    "gotcha-bb66cfc3",
+    "gotcha-9e60325f",
+    "gotcha-e3685b42",
+    "gotcha-c3919ebd"
+   ],
+   "mustNot": [
+    "decision-88ebab9d",
+    "gotcha-a045ca07",
+    "discovery-6c072e31",
+    "gotcha-4c67faaa"
+   ],
+   "reviewedServed": {
+    "spores": [
+     "decision-88ebab9d",
+     "gotcha-bb66cfc3",
+     "gotcha-9e60325f",
+     "gotcha-a045ca07",
+     "discovery-6c072e31",
+     "gotcha-4c67faaa"
+    ],
+    "plans": []
+   },
+   "ownerReview": {
+    "call": "agree",
+    "note": ""
+   }
+  },
+  {
+   "id": "rp-31",
+   "kind": "positive",
+   "class": "ack",
+   "verdict": "right",
+   "why": "A steering prompt with a topic ('merge it when green'). The squash-merge rule, the Copilot-review/final-head CI rule and 'verify the run, not CLEAN' are exactly what an agent should see.",
+   "provenance": {
+    "source": "1.4 vault (myco-dogfood grove)",
+    "harness": "claude-code",
+    "date": "2026-07-27",
+    "sessionId": "e98654c5-efbd-43c3-9207-e90dc7aafae6",
+    "promptId": "pbat_7b4f1d885a72b9f2e57f6a11065cc847",
+    "redacted": false
+   },
+   "prompt": "merge it when green",
+   "embedKey": "d98d4206e61bacfcc6a289c2da2a7ea422f9a83f3fce9a8aa0b97351c4e507d3",
+   "expected": [
+    "decision-c0b31bb6",
+    "decision-30ad1abc",
+    "gotcha-0ac58ea7",
+    "decision-1d95cf73"
+   ],
+   "mustNot": [
+    "pattern-01feebae"
+   ],
+   "reviewedServed": {
+    "spores": [
+     "decision-c0b31bb6",
+     "decision-30ad1abc",
+     "decision-1d95cf73",
+     "pattern-01feebae",
+     "gotcha-0ac58ea7"
+    ],
+    "plans": [
+     "c3a9a201-7915-5fb9-9fe4-d83eeac49e3d"
+    ]
+   },
+   "ownerReview": {
+    "call": "agree",
+    "note": ""
+   }
+  },
+  {
+   "id": "rp-32",
+   "kind": "negative",
+   "class": "technical",
+   "verdict": "wrong",
+   "why": "Choose 8443 over 443 for the (1.4) team host. Served loopback-binding and proxy-identity gotchas; none is about port choice.",
+   "provenance": {
+    "source": "1.4 vault (myco-dogfood grove)",
+    "harness": "claude-code",
+    "date": "2026-08-03",
+    "sessionId": "ac9a56d4-80e9-4842-9120-0f891c1b28eb",
+    "promptId": "pbat_929f27c4ae34cd95d3fbef5c16db6dab",
+    "redacted": false
+   },
+   "prompt": "I would say using 443 as our port is probably less ideal since we'd likely block other services hosting on that port. So 8443 is probably right or even a custom one if we can get away with it. So I'll go with your recommendation on that. Otherwise, let's begin.",
+   "embedKey": "5242686434b8038b2f6ecece8e5b6b0382caf4de39f35217f6f488fc66f97158",
+   "expected": [],
+   "mustNot": [],
+   "reviewedServed": {
+    "spores": [
+     "bug_fix-b7a0b15d",
+     "gotcha-25b5948d",
+     "gotcha-5c06ba4c",
+     "decision-ccf7d50a"
+    ],
+    "plans": [
+     "c3a9a201-7915-5fb9-9fe4-d83eeac49e3d",
+     "36b535d5-0ea3-5aba-b1ca-161c276727de"
+    ]
+   },
+   "ownerReview": {
+    "call": "agree",
+    "note": ""
+   }
+  },
+  {
+   "id": "rp-33",
+   "kind": "positive",
+   "class": "off-topic",
+   "verdict": "right",
+   "why": "'Switch the teammate over to Opus as well.' The subagent-model decision is exactly right.",
+   "provenance": {
+    "source": "2.0 Deployment D1",
+    "harness": "claude-code",
+    "date": "2026-08-21",
+    "sessionId": "10d85ba2-0a62-4bf1-b1e7-196bf474931a",
+    "promptId": "2d0ef0db-1fdb-5e18-808f-519c30dec689",
+    "redacted": false
+   },
+   "prompt": "i've already switched models, so may have to switch the teammate over as well to opus",
+   "embedKey": "5321bb65c7dbfcfc129ee5ca1b1d821bc4617a0a55914cf8b5d16ae4e76d476b",
+   "expected": [
+    "decision-941cfb9a",
+    "pattern-55f78337"
+   ],
+   "mustNot": [
+    "decision-30ad1abc"
+   ],
+   "reviewedServed": {
+    "spores": [
+     "decision-941cfb9a",
+     "pattern-55f78337",
+     "decision-30ad1abc"
+    ],
+    "plans": [
+     "36b535d5-0ea3-5aba-b1ca-161c276727de",
+     "39bada96-2647-57b1-9b87-9396a597ec1f",
+     "c3a9a201-7915-5fb9-9fe4-d83eeac49e3d",
+     "c3371e4a-446e-5c4f-a5e5-2ad3049a937d"
+    ]
+   },
+   "ownerReview": {
+    "call": "agree",
+    "note": ""
+   }
+  },
+  {
+   "id": "rp-34",
+   "kind": "positive",
+   "class": "technical",
+   "verdict": "right",
+   "why": "'Don't put conversation state in an issue; issues are tactical.' The top three are the recorded rules.",
+   "provenance": {
+    "source": "2.0 Deployment D1",
+    "harness": "claude-code",
+    "date": "2026-08-23",
+    "sessionId": "9c9cba21-7676-424d-acb1-c56341faddc4",
+    "promptId": "c85b8df3-4e47-59ce-b63c-c50236b3e5cf",
+    "redacted": false
+   },
+   "prompt": "for 912: 1. a for now is fine, we may want that to be an admin layer later at some point\n2. b\n3. c \n\nand please don't put conversation state in an issue, issues are tactical. this session is for conversation, things like what you decided, and the myco plan state can also be used to tie it all together, as you've been doing",
+   "embedKey": "1f02b241bbe393f684d82c4bb5531d109c6170e11aa3075c8ce8b98aef42a44b",
+   "expected": [
+    "pattern-95c3e7c3",
+    "pattern-78fa6e80",
+    "decision-48a78b54"
+   ],
+   "mustNot": [
+    "decision-c0b31bb6",
+    "wisdom-0ae9c566",
+    "architecture-0605a2b5"
+   ],
+   "reviewedServed": {
+    "spores": [
+     "pattern-95c3e7c3",
+     "pattern-78fa6e80",
+     "decision-c0b31bb6",
+     "decision-48a78b54",
+     "wisdom-0ae9c566",
+     "architecture-0605a2b5"
+    ],
+    "plans": []
+   },
+   "ownerReview": {
+    "call": "agree",
+    "note": ""
+   }
+  },
+  {
+   "id": "rp-35",
+   "kind": "positive",
+   "class": "technical",
+   "verdict": "wrong",
+   "why": "Why not accept a project id from an external (cloud) agent; archive; migrations. The grant/scopeOf spores were missed (rank 51+); package retirement, issue trees and planning rules were served.",
+   "provenance": {
+    "source": "2.0 Deployment D1",
+    "harness": "claude-code",
+    "date": "2026-08-29",
+    "sessionId": "9f3b3c1e-a416-4d74-a0d8-de05f1f138db",
+    "promptId": "01a04f04-a3f5-7000-8b9a-f6d41489257c",
+    "redacted": false
+   },
+   "prompt": "1. why wouldn't we accpet a project id from an external agent? and by external i'm assuming you mean a cloud agent that is reading myco data, like copilot doing a PR review on github. 2. we should do what we are supposed to do. 3. i'm ok with the recommendation as long as state isn't lost, we need to do the migrations, but fine if slated for forthcoming work. 4. I suppose that is why archive exists, though i'm still not sure we need it in myco, but since we have it, yes, keep read",
+   "embedKey": "34a3875b66cdd2b34e73308787d537837c8dde4cdbfc938fcafee885f2b5eade",
+   "expected": [
+    "decision-bc755ab1",
+    "decision-f885e1e9"
+   ],
+   "mustNot": [
+    "decision-efda0a7f",
+    "pattern-78fa6e80",
+    "decision-48a78b54",
+    "architecture-a95609ec"
+   ],
+   "reviewedServed": {
+    "spores": [
+     "decision-efda0a7f",
+     "pattern-78fa6e80",
+     "decision-48a78b54",
+     "decision-bc755ab1",
+     "architecture-a95609ec"
+    ],
+    "plans": []
+   },
+   "ownerReview": {
+    "call": "agree",
+    "note": ""
+   }
+  },
+  {
+   "id": "rp-36",
+   "kind": "negative",
+   "class": "ack",
+   "verdict": "should-be-empty",
+   "why": "'ok, we are aligned on the recommendations'. Served the Copilot-review merge rule and six plans.",
+   "provenance": {
+    "source": "2.0 Deployment D1",
+    "harness": "claude-code",
+    "date": "2026-08-29",
+    "sessionId": "9f3b3c1e-a416-4d74-a0d8-de05f1f138db",
+    "promptId": "01a04f7d-9a5f-7000-ad45-8c5e9b750963",
+    "redacted": false
+   },
+   "prompt": "ok, we are aligned on the recommendations",
+   "embedKey": "212fba9f42616c2a7d6b970034e026f2a721b60923103bb5a4fa128b21271205",
+   "expected": [],
+   "mustNot": [],
+   "reviewedServed": {
+    "spores": [
+     "decision-30ad1abc"
+    ],
+    "plans": [
+     "d2c222be-93dd-5c33-8140-6792f695d4b2",
+     "6a353fdf-499a-5d8b-80d0-bcb387d46d66",
+     "c3371e4a-446e-5c4f-a5e5-2ad3049a937d",
+     "39bada96-2647-57b1-9b87-9396a597ec1f",
+     "c3a9a201-7915-5fb9-9fe4-d83eeac49e3d",
+     "a91df0a7-c4d7-5273-a7b6-2b068b4a96a6"
+    ]
+   },
+   "ownerReview": {
+    "call": "agree",
+    "note": ""
+   }
+  },
+  {
+   "id": "rp-37",
+   "kind": "positive",
+   "class": "off-topic",
+   "verdict": "partly",
+   "why": "A context-less fragment ('the auth screen not off-screen'). Five auth spores served. Only 'resolve auth before painting' is plausibly about the auth screen; the rest are noise. Arguably should be empty.",
+   "provenance": {
+    "source": "2.0 Deployment D1",
+    "harness": "claude-code",
+    "date": "2026-08-29",
+    "sessionId": "9f3b3c1e-a416-4d74-a0d8-de05f1f138db",
+    "promptId": "01a04f74-efbb-7000-b3b6-b7ec50762c43",
+    "redacted": false
+   },
+   "prompt": "the auth screen not off-screen",
+   "embedKey": "1f6277a204cbb16177104b66b453677a39b1a4ac1dc62a90745fc7b1c4109313",
+   "expected": [
+    "decision-1af798e2"
+   ],
+   "mustNot": [
+    "architecture-78a3bf84",
+    "gotcha-d5abdac1",
+    "gotcha-36b3fda3"
+   ],
+   "reviewedServed": {
+    "spores": [
+     "architecture-78a3bf84",
+     "gotcha-d5abdac1",
+     "decision-1af798e2",
+     "pattern-e751aa7c",
+     "gotcha-36b3fda3"
+    ],
+    "plans": []
+   },
+   "ownerReview": {
+    "call": "agree",
+    "note": ""
+   }
+  },
+  {
+   "id": "rp-38",
+   "kind": "negative",
+   "class": "technical",
+   "verdict": "should-be-empty",
+   "why": "'We already have that secret in the repo, just add the scope?' Served the SecretStore encryption decision (unrelated) and six plans.",
+   "provenance": {
+    "source": "1.4 vault (myco-dogfood grove)",
+    "harness": "claude-code",
+    "date": "2026-09-01",
+    "sessionId": "3ddc04a4-4f98-4497-b351-c23bffbee944",
+    "promptId": "pbat_5bdf9d16fd8ed3f6e96a6cbe51993fae",
+    "redacted": false
+   },
+   "prompt": "we already have that secret in the repo, so we just need to add the additional scop right?",
+   "embedKey": "07e37ce4f10e91ca52c94a18d5f8b8234002dce2147a6407ff9e8f213fc90450",
+   "expected": [],
+   "mustNot": [],
+   "reviewedServed": {
+    "spores": [
+     "decision-915db719"
+    ],
+    "plans": [
+     "ca757980-619d-5bb0-973a-460f4112eda7",
+     "c3371e4a-446e-5c4f-a5e5-2ad3049a937d",
+     "be8dfe7c-4a4c-5ed7-8d78-21ab983f56e1",
+     "d2c222be-93dd-5c33-8140-6792f695d4b2",
+     "c3a9a201-7915-5fb9-9fe4-d83eeac49e3d",
+     "990011c5-7c9f-5d5b-a862-adda9dc25fcd"
+    ]
+   },
+   "ownerReview": {
+    "call": "agree",
+    "note": ""
+   }
+  },
+  {
+   "id": "rp-39",
+   "kind": "negative",
+   "class": "off-topic",
+   "verdict": "right",
+   "why": "The Chrome extension is connected: no spores. Seven plans served.",
+   "provenance": {
+    "source": "1.4 vault (myco-dogfood grove)",
+    "harness": "claude-code",
+    "date": "2026-09-02",
+    "sessionId": "beae87b1-c9cd-4e13-8ddf-cbf4342c48b9",
+    "promptId": "pbat_ed9d41733e1e6422d4a874c55f35604a",
+    "redacted": false
+   },
+   "prompt": "the chrome extension is connected. i just had to open the browser under the correct profile",
+   "embedKey": "4925d8ede5a40f9d720d9012d21dea71a43ecb64f065cfa1b6e3afccd07c7e35",
+   "expected": [],
+   "mustNot": [],
+   "reviewedServed": {
+    "spores": [],
+    "plans": [
+     "ca757980-619d-5bb0-973a-460f4112eda7",
+     "c3371e4a-446e-5c4f-a5e5-2ad3049a937d",
+     "c3a9a201-7915-5fb9-9fe4-d83eeac49e3d",
+     "d2c222be-93dd-5c33-8140-6792f695d4b2",
+     "ce5c0870-3df3-5d2e-a4e5-085ddca95280",
+     "6a353fdf-499a-5d8b-80d0-bcb387d46d66",
+     "a91df0a7-c4d7-5273-a7b6-2b068b4a96a6"
+    ]
+   },
+   "ownerReview": {
+    "call": "agree",
+    "note": ""
+   }
+  },
+  {
+   "id": "rp-40",
+   "kind": "negative",
+   "class": "ack",
+   "verdict": "right",
+   "why": "Acknowledgement: no spores. Seven plans served.",
+   "provenance": {
+    "source": "2.0 Deployment D1",
+    "harness": "claude-code",
+    "date": "2026-09-04",
+    "sessionId": "be1bffbe-9ed5-467e-8406-66772e7643be",
+    "promptId": "ea41ee22-436a-5a34-86b1-1ff308b45720",
+    "redacted": false
+   },
+   "prompt": "Sounds good. Let’s proceed.",
+   "embedKey": "7227f55d96d970740441a9b8b10948f6bb00c2478466da81727348474493c19a",
+   "expected": [],
+   "mustNot": [],
+   "reviewedServed": {
+    "spores": [],
+    "plans": [
+     "d2c222be-93dd-5c33-8140-6792f695d4b2",
+     "c3a9a201-7915-5fb9-9fe4-d83eeac49e3d",
+     "6a353fdf-499a-5d8b-80d0-bcb387d46d66",
+     "36b535d5-0ea3-5aba-b1ca-161c276727de",
+     "39bada96-2647-57b1-9b87-9396a597ec1f",
+     "be8dfe7c-4a4c-5ed7-8d78-21ab983f56e1",
+     "ce5c0870-3df3-5d2e-a4e5-085ddca95280"
+    ]
+   },
+   "ownerReview": {
+    "call": "agree",
+    "note": ""
+   }
+  },
+  {
+   "id": "rp-41",
+   "kind": "positive",
+   "class": "technical",
+   "verdict": "right",
+   "why": "Parallels VM plus 1Password SSH biometric approvals. The 1Password-op and Keychain-over-SSH gotchas are right; Dockerfile arch and proxy identity are noise.",
+   "provenance": {
+    "source": "2.0 Deployment D1",
+    "harness": "codex",
+    "date": "2026-09-10",
+    "sessionId": "01a08ba3-b51f-70b1-8cf6-5e232c0ed6e3",
+    "promptId": "01a08bf5-fc8a-7000-bc49-08dd07af0d12",
+    "redacted": false
+   },
+   "prompt": "> For the later hook smoke tests, is the Parallels VM available, and are you able to approve its 1Password SSH prompt when needed?\n\nyes, i can approve it.. perhaps we just use a new no password key that you can generate and manage/install to make this easier. for now, i can do the bimetric approve, but ideally, i'm out of the loop. this vm is just for testing, there is nothing sensitive",
+   "embedKey": "16f7230a58e14e8d41b743ab2d1d9cea0de1aa4f60465a32b1f1ed0961394482",
+   "expected": [
+    "gotcha-ea1915d6",
+    "gotcha-d5abdac1",
+    "gotcha-7f12b7a8"
+   ],
+   "mustNot": [
+    "pattern-70522f4f",
+    "gotcha-25b5948d",
+    "gotcha-0fe1edb5"
+   ],
+   "reviewedServed": {
+    "spores": [
+     "gotcha-ea1915d6",
+     "gotcha-d5abdac1",
+     "pattern-70522f4f",
+     "gotcha-7f12b7a8",
+     "gotcha-25b5948d",
+     "gotcha-0fe1edb5"
+    ],
+    "plans": []
+   },
+   "ownerReview": {
+    "call": "agree",
+    "note": ""
+   }
+  },
+  {
+   "id": "rp-42",
+   "kind": "negative",
+   "class": "off-topic",
+   "verdict": "should-be-empty",
+   "why": "An OpenCode capture smoke ('read AGENTS.md, reply with its first heading'). Served AGENTS.md-managed-block and plan-contradiction spores.",
+   "provenance": {
+    "source": "2.0 Deployment D1",
+    "harness": "opencode",
+    "date": "2026-09-10",
+    "sessionId": "ses_f76696c89ffeg7TSg4z2VDAZ74",
+    "promptId": "01a08996-9730-7000-8a6e-9efadad79402",
+    "redacted": false
+   },
+   "prompt": "\"Read AGENTS.md and reply with its first heading only.\"",
+   "embedKey": "a6d78979819accfba8c039e297dd680d6be0e48e4434618ead173c32cf969962",
+   "expected": [],
+   "mustNot": [],
+   "reviewedServed": {
+    "spores": [
+     "gotcha-47345f8f",
+     "decision-32c5111a",
+     "gotcha-8a800920",
+     "gotcha-777597e9"
+    ],
+    "plans": [
+     "d2c222be-93dd-5c33-8140-6792f695d4b2",
+     "36b535d5-0ea3-5aba-b1ca-161c276727de",
+     "6a353fdf-499a-5d8b-80d0-bcb387d46d66"
+    ]
+   },
+   "ownerReview": {
+    "call": "agree",
+    "note": ""
+   }
+  },
+  {
+   "id": "rp-43",
+   "kind": "positive",
+   "class": "technical",
+   "verdict": "right",
+   "why": "Where are we on the 2.0 plan? The scope reset, re-baseline rule and planning-state decision are the right grounding.",
+   "provenance": {
+    "source": "2.0 Deployment D1",
+    "harness": "codex",
+    "date": "2026-09-11",
+    "sessionId": "01a08ba3-b51f-70b1-8cf6-5e232c0ed6e3",
+    "promptId": "ec1154eb-a1e2-53ca-8b2c-513b7a9e04f4",
+    "redacted": false
+   },
+   "prompt": "how is the current state of our plan and issues as we wrap this lates round of work? where does that put us in terms of progress on our path to completing the 2.0 work?",
+   "embedKey": "20aa8ee5f6212af325288bf083f7b1d1deff53e98005a9e18fd2e256d9c469c4",
+   "expected": [
+    "decision-16748312",
+    "decision-a7d1bf51",
+    "decision-48a78b54",
+    "pattern-55f78337"
+   ],
+   "mustNot": [
+    "decision-01a1ec19"
+   ],
+   "reviewedServed": {
+    "spores": [
+     "pattern-55f78337",
+     "decision-16748312",
+     "decision-a7d1bf51",
+     "decision-48a78b54",
+     "pattern-95c3e7c3",
+     "decision-01a1ec19"
+    ],
+    "plans": []
+   },
+   "ownerReview": {
+    "call": "agree",
+    "note": ""
+   }
+  },
+  {
+   "id": "rp-44",
+   "kind": "positive",
+   "class": "technical",
+   "verdict": "right",
+   "why": "#1239: keep the 12-run cap with reserved slots, ad-hoc still allowed? The #1239 trade-off is served at MP 1.0; the daily-ceiling trade-off is right too. The rest is noise.",
+   "provenance": {
+    "source": "2.0 Deployment D1",
+    "harness": "codex",
+    "date": "2026-09-11",
+    "sessionId": "01a08ba3-b51f-70b1-8cf6-5e232c0ed6e3",
+    "promptId": "93976759-bb32-52fa-a204-30125b07a6ef",
+    "redacted": false
+   },
+   "prompt": "> For #1239, I recommend keeping the 12-run daily cap and reserving 3 slots for recently completed live sessions. That slows historical-only processing but leaves capacity for normal coding work. Does that tradeoff fit your intent?\n\nthe reservation is fine.. but we'll still allow ad-hoc regardless of cap right?",
+   "embedKey": "e366e0efb0323a031a5fcb06ef98e89d18616270109f3f1655ca8bef42ad8d0f",
+   "expected": [
+    "trade_off-8d1a35ee",
+    "trade_off-a0713aa2"
+   ],
+   "mustNot": [
+    "gotcha-104287ae",
+    "bug_fix-9d4bcb06",
+    "gotcha-348b2516"
+   ],
+   "reviewedServed": {
+    "spores": [
+     "trade_off-8d1a35ee",
+     "trade_off-a0713aa2",
+     "gotcha-104287ae",
+     "decision-491969db",
+     "bug_fix-9d4bcb06",
+     "gotcha-348b2516"
+    ],
+    "plans": []
+   },
+   "ownerReview": {
+    "call": "agree",
+    "note": ""
+   }
+  },
+  {
+   "id": "rp-45",
+   "kind": "positive",
+   "class": "technical",
+   "verdict": "partly",
+   "why": "A capture smoke ('find the SQL in projections.ts that preserves the session agent'). Six ingest/projection spores served; none answers the question, all are topic-adjacent. For a scripted smoke, arguably should be empty.",
+   "provenance": {
+    "source": "2.0 Deployment D1",
+    "harness": "codex",
+    "date": "2026-09-11",
+    "sessionId": "01a08e1a-60cd-7982-b879-971b56cdc874",
+    "promptId": "48b6d269-1bab-56af-bf87-0cd6a63c6e47",
+    "redacted": false
+   },
+   "prompt": "Read packages/myco-server/src/ingest/projections.ts and identify the SQL expression that preserves an existing session agent when a transcript segment arrives. Do not edit any file. Answer in one sentence.",
+   "embedKey": "de57b5774f01b5b9f81379eb92d244a265f13c188aa0c9b57bfb265ed3dbc101",
+   "expected": [
+    "gotcha-348b2516"
+   ],
+   "mustNot": [
+    "gotcha-3da46fc2",
+    "decision-4e185ae3"
+   ],
+   "reviewedServed": {
+    "spores": [
+     "gotcha-89a50d19",
+     "decision-358cba44",
+     "gotcha-3da46fc2",
+     "pattern-e6b83287",
+     "gotcha-348b2516",
+     "decision-4e185ae3"
+    ],
+    "plans": []
+   },
+   "ownerReview": {
+    "call": "agree",
+    "note": ""
+   }
+  },
+  {
+   "id": "rp-46",
+   "kind": "positive",
+   "class": "technical",
+   "verdict": "partly",
+   "why": "Bun SQLite has no setAuthorizer; use prepared statements to parse trigger bodies. MP saturates (0.92–0.999 for all six), so the band admits everything; SCHEMA_STEPS and RelationalStore.batch are adjacent, the cross-lane-hunk pattern and self-hosted update are not.",
+   "provenance": {
+    "source": "2.0 Deployment D1",
+    "harness": "claude-code",
+    "date": "2026-09-16",
+    "sessionId": "28251391-e5a6-41fd-b270-c0f27951a744",
+    "promptId": "7a62b13e-0126-5f8c-bbac-bdd829548100",
+    "redacted": false
+   },
+   "prompt": "Parent checked the local bun-types SQLite API: no public setAuthorizer API. Avoid FFI/native internals for this bounded slice. A useful verified primitive: db.prepare(\"CREATE TABLE one(x); CREATE TABLE two(y)\").run() creates only one, not two. A prepared statement lets SQLite own trigger-body parsing while schema equality can reject trailing schema garbage; it avoids db.exec multi-statement side effects in schema.json. The existing splitter already isolates ordinary dump statements, so constrain allowed statement forms there rather than adding another parser. Retain tests for comments/literals, NUL rewrite and required sqlite_sequence/PRAGMA handling. For schema entries, validate the declared kind/storage and actual CREATE statement kind, then prepare/run one statement; prove injected ATTACH/UPDATE tail cannot execute. This is guidance from local verification, not a mandated implementation if you find a smaller safe existing pattern.",
+   "embedKey": "86eeb1621e33f118a206f99df1faf701781bd3c74395c71d12bbad61a87a4889",
+   "expected": [
+    "gotcha-8a800920",
+    "gotcha-6699d14a"
+   ],
+   "mustNot": [
+    "pattern-5c2725ae",
+    "pattern-bca367e0"
+   ],
+   "reviewedServed": {
+    "spores": [
+     "pattern-5c2725ae",
+     "gotcha-0ce73b33",
+     "pattern-bca367e0",
+     "gotcha-8a800920",
+     "gotcha-6699d14a",
+     "decision-099a9b1e"
+    ],
+    "plans": []
+   },
+   "ownerReview": {
+    "call": "agree",
+    "note": ""
+   }
+  },
+  {
+   "id": "rp-47",
+   "kind": "positive",
+   "class": "technical",
+   "verdict": "partly",
+   "why": "updateCloudflareDeployment should pin the database and vector-index names. The D1 lifecycle-upgrade and hosted-recovery spores are adjacent; the top item is the SecretStore encryption decision (unrelated).",
+   "provenance": {
+    "source": "2.0 Deployment D1",
+    "harness": "claude-code",
+    "date": "2026-09-17",
+    "sessionId": "28251391-e5a6-41fd-b270-c0f27951a744",
+    "promptId": "5c4b1919-eaf6-5006-8e83-17c5bfa31725",
+    "redacted": true
+   },
+   "prompt": "One final source-grounded update guard before cloud: updateCloudflareDeployment ensures vector index and recovery bucket, then applyMigrations uses record.databaseName; current TARGET pins neither databaseName nor vectorIndexName. Include resolved resource names used by update in record guard (databaseName, vectorIndexName, wrapKeySecretName and store binding identity from preserved record, safe metadata only), and a read-only Vectorize existence/schema/filter preflight so update cannot silently create a missing resource. Recovery bucket existence is already proved by artifact reads. Use existing canonical read/provider commands, no cloud action yourself. Existing retained vector name is <vector-index>; do not open secret files. Freeze again after focused tests. Parent will continue independent local guard tests meanwhile.",
+   "embedKey": "d93968fe4f7504247eb8fa6dd66ace6d36bcd174c8fb0c9742fbb351325cd5c9",
+   "expected": [
+    "gotcha-ee798214",
+    "architecture-3f7cbad0"
+   ],
+   "mustNot": [
+    "decision-915db719",
+    "pattern-4c6f6ae9",
+    "decision-e7a2c3a4"
+   ],
+   "reviewedServed": {
+    "spores": [
+     "decision-915db719",
+     "gotcha-ee798214",
+     "pattern-4c6f6ae9",
+     "architecture-3f7cbad0",
+     "pattern-bca367e0",
+     "decision-e7a2c3a4"
+    ],
+    "plans": []
+   },
+   "ownerReview": {
+    "call": "agree",
+    "note": ""
+   }
+  },
+  {
+   "id": "rp-48",
+   "kind": "positive",
+   "class": "technical",
+   "verdict": "partly",
+   "why": "Retention default stays keep-forever. The '2.0 retention: keep 1.4's guards' gotcha is right and the capture-volume decision adjacent; backup, embedding receipts and writeOrigin are noise.",
+   "provenance": {
+    "source": "2.0 Deployment D1",
+    "harness": "claude-code",
+    "date": "2026-09-26",
+    "sessionId": "7d564b5b-011e-4cf1-9e64-e918300f07ba",
+    "promptId": "f587d3d8-5718-522a-ac80-61caab746e06",
+    "redacted": false
+   },
+   "prompt": "Correction from the product owner on the retention addition: the DEFAULT stays keep-forever (unset). Don't add a 90-day default. Retention stays configurable through `retention.transcripts` as it is today. Keep the rest of the addition:\n(b) `myco stats` shows the retention window next to the storage facts, e.g. \"Transcripts: raw bytes kept forever (no retention set)\" or \"kept N days after processing\".\n(c) The ledger records the decision: capture is never refused for volume; storage is managed by the owner-configurable retention of processed raw transcript bytes (default keep forever).\n(d) Tests: unset means nothing is pruned; with N days set, a processed segment older than N is pruned, an unprocessed one is kept, and derived rows survive.\nMake sure the Settings description of `retention.transcripts` says plainly what it prunes (processed raw transcript bytes only; everything derived is kept) and that unset means keep forever.",
+   "embedKey": "641ae1550068697d982b1ca33f74be0154774cb3a99f5429a4d9b3f2e8096712",
+   "expected": [
+    "gotcha-ea8bc225",
+    "decision-3d502b35"
+   ],
+   "mustNot": [
+    "decision-3235fecb",
+    "decision-7750ee22",
+    "decision-358cba44"
+   ],
+   "reviewedServed": {
+    "spores": [
+     "decision-3d502b35",
+     "gotcha-ea8bc225",
+     "decision-3235fecb",
+     "decision-7750ee22",
+     "decision-358cba44",
+     "gotcha-348b2516"
+    ],
+    "plans": []
+   },
+   "ownerReview": {
+    "call": "agree",
+    "note": ""
+   }
+  }
+ ]
+}
