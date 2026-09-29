@@ -1,3 +1,4 @@
+import { INVITE_CONTROLS } from '@goondocks/myco-shared/member-protocol';
 import { LogOut } from 'lucide-react';
 import { useLocation, useParams } from 'react-router-dom';
 import { Badge } from '../components/ui/badge';
@@ -8,7 +9,7 @@ const SERVER_PAGES: Record<string, string> = {
   '/projects': 'Projects',
   '/status': 'Status',
   '/measures': 'Measures',
-  '/access': 'Members',
+  '/access': INVITE_CONTROLS.page,
   '/settings': 'Settings',
   '/operations': 'Operations',
   '/notifications': 'Notifications',

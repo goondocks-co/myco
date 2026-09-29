@@ -62,12 +62,8 @@ export const IMPORT_MAX_SESSIONS_MAX = 1000;
 /** Candidates one plan request may carry; the member trims to its newest this many before asking. */
 export const IMPORT_PLAN_MAX_CANDIDATES = 1000;
 
-/**
- * The path an invite link carries. The dashboard builds `<origin>/join#<key>`
- * from it and `myco login` reads the same shape; the key rides in the fragment,
- * which no browser puts on the wire.
- */
-export const JOIN_PATH = '/join';
+/** The path an invite link carries, shared with the dashboard and the member. */
+export { JOIN_PATH } from '@goondocks/myco-shared/member-protocol';
 
 /** The prefix of a server-named member id, minted when a join enrolls a new person. */
 export const MEMBER_ID_PREFIX = 'mem_';
