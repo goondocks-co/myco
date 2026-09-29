@@ -15,7 +15,7 @@ import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, 
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { claudeCodeDriver } from '@myco/runner/drivers/claude-code.js';
-import { activeDeveloperDir, codexDriver, codexDriverWith, RUN_FEATURES_OFF, RUN_PERMISSIONS, runFilesystem, type DeveloperDirProbe } from '@myco/runner/drivers/codex.js';
+import { activeDeveloperDir, codexDriver, codexDriverWith, developerDirVerdict, RUN_FEATURES_OFF, RUN_PERMISSIONS, runFilesystem, sourceGitEnvironment, type DeveloperDirProbe } from '@myco/runner/drivers/codex.js';
 import { jsonLines } from '@myco/runner/drivers/stream.js';
 import { RUN_REPOSITORY_DIGESTS_FILE, RUN_REPOSITORY_DIR } from '@goondocks/myco-shared/repository';
 import { discardRunDir, writeRunDir } from '@myco/runner/mcp-config.js';
@@ -61,6 +61,9 @@ function runDir(): { scratchDir: string; mcpConfigPath: string } {
 /** Where a Mac's command line tools are, which is the developer directory `FAKE_MAC` selects. */
 const TOOLS = '/Library/Developer/CommandLineTools';
 
+/** The user a fake Mac's worker runs as. */
+const WORKER_UID = 501;
+
 /** One path a fake Mac holds: who owns it, its permission bits, and what it is. */
 interface FakePath { uid: number; mode: number; kind: 'dir' | 'file' }
 
@@ -70,7 +73,7 @@ interface FakePath { uid: number; mode: number; kind: 'dir' | 'file' }
  * physically is. Paths it does not hold are the machine's own, so a real run
  * directory resolves as it does on disk.
  */
-function fakeMac(options: { selected?: string | null; paths?: Record<string, FakePath>; links?: Record<string, string>; home?: string; platform?: NodeJS.Platform } = {}): DeveloperDirProbe {
+function fakeMac(options: { selected?: string | null; paths?: Record<string, FakePath>; links?: Record<string, string>; home?: string; platform?: NodeJS.Platform; uid?: number } = {}): DeveloperDirProbe {
   const paths: Record<string, FakePath> = options.paths ?? {
     [TOOLS]: { uid: 0, mode: 0o40755, kind: 'dir' },
     [join(TOOLS, 'usr', 'bin', 'git')]: { uid: 0, mode: 0o100755, kind: 'file' },
@@ -90,6 +93,7 @@ function fakeMac(options: { selected?: string | null; paths?: Record<string, Fak
       return realpathSync(path);
     },
     home,
+    uid: options.uid ?? WORKER_UID,
   };
 }
 
@@ -341,6 +345,14 @@ describe('the developer directory a Codex source run may read (#1475)', () => {
     expect(activeDeveloperDir(RUN, selecting(TOOLS))).toBe(TOOLS);
   });
 
+  it('is an Xcode the worker\'s own user installed, a `.xip` or a disk image, owned by that user and held to every other check (#1481)', () => {
+    const XCODE = '/Applications/Xcode.app/Contents/Developer';
+    expect(activeDeveloperDir(RUN, selecting(XCODE, { uid: WORKER_UID, mode: 0o40755, kind: 'dir' }))).toBe(XCODE);
+    expect(activeDeveloperDir(RUN, selecting(XCODE, { uid: WORKER_UID, mode: 0o40775, kind: 'dir' }))).toBeNull();
+    expect(activeDeveloperDir(RUN, selecting('/Users/member', { uid: WORKER_UID, mode: 0o40755, kind: 'dir' }))).toBeNull();
+    expect(activeDeveloperDir(RUN, selecting(XCODE, { uid: WORKER_UID, mode: 0o40755, kind: 'dir' }, null))).toBeNull();
+  });
+
   it('is judged at the path the directory physically has, since that is the path the sandbox grants', () => {
     // `xcode-select` may name a link; the grant and the checks are the target's.
     expect(activeDeveloperDir(RUN, selecting(TOOLS, ROOT_DIR, ROOT_FILE, { selected: '/var/db/xcode_select_link', links: { '/var/db/xcode_select_link': TOOLS } }))).toBe(TOOLS);
@@ -352,7 +364,8 @@ describe('the developer directory a Codex source run may read (#1475)', () => {
       'another system': selecting(TOOLS, ROOT_DIR, ROOT_FILE, { platform: 'linux' }),
       'none selected': selecting(TOOLS, ROOT_DIR, ROOT_FILE, { selected: null }),
       'a selection that is not there': fakeMac({ selected: '/nowhere/at/all', links: {} }),
-      'owned by the user': selecting(TOOLS, { uid: 501, mode: 0o40755, kind: 'dir' }),
+      'owned by another user': selecting(TOOLS, { uid: 502, mode: 0o40755, kind: 'dir' }),
+      'a directory above the home the home links to': selecting('/Users', ROOT_DIR, ROOT_FILE, { home: '/var/home-link', links: { '/var/home-link': '/Users/member' } }),
       'writable by its group': selecting(TOOLS, { uid: 0, mode: 0o40775, kind: 'dir' }),
       'writable by everyone': selecting(TOOLS, { uid: 0, mode: 0o41777, kind: 'dir' }),
       'a file rather than a directory': selecting(TOOLS, { uid: 0, mode: 0o100755, kind: 'file' }),
@@ -366,6 +379,35 @@ describe('the developer directory a Codex source run may read (#1475)', () => {
     };
     const granted = Object.fromEntries(Object.entries(refused).map(([why, probe]) => [why, activeDeveloperDir(RUN, probe)]));
     expect(granted).toEqual(Object.fromEntries(Object.keys(refused).map((why) => [why, null])));
+    // Each names the check it failed, except where no directory was there to check.
+    const named = Object.fromEntries(Object.entries(refused).map(([why, probe]) => {
+      const verdict = developerDirVerdict(RUN, probe);
+      return [why, verdict.dir === null ? verdict.refused : 'granted'];
+    }));
+    expect(named).toEqual({
+      'another system': null,
+      'none selected': null,
+      'a selection that is not there': '/nowhere/at/all, or the home or run directory, has no physical path',
+      'owned by another user': `${TOOLS} is owned by neither root nor the user this worker runs as`,
+      'a directory above the home the home links to': '/Users is the filesystem root or holds the home or the run\'s directory',
+      'writable by its group': `${TOOLS} is writable by its group or others`,
+      'writable by everyone': `${TOOLS} is writable by its group or others`,
+      'a file rather than a directory': `${TOOLS} is not a directory`,
+      'the root of the filesystem': '/ is the filesystem root or holds the home or the run\'s directory',
+      'the home directory itself': '/Users/member is the filesystem root or holds the home or the run\'s directory',
+      'a directory above the home directory': '/Users is the filesystem root or holds the home or the run\'s directory',
+      'the run\'s own directory': `${RUN} is the filesystem root or holds the home or the run's directory`,
+      'a directory above the run\'s own directory': '/Volumes/work/runs is the filesystem root or holds the home or the run\'s directory',
+      'no git in it': `${TOOLS} holds no usr/bin/git`,
+      'a git that is not a file': `${TOOLS} holds no usr/bin/git`,
+    });
+  });
+
+  it('puts the developer directory\'s own `git` first on a source run\'s PATH, ahead of the xcrun shim (#1481)', () => {
+    expect(sourceGitEnvironment(TOOLS, '/usr/bin:/bin')).toEqual({
+      GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_NOSYSTEM: '1', DEVELOPER_DIR: TOOLS, PATH: `${TOOLS}/usr/bin:/usr/bin:/bin`,
+    });
+    expect(sourceGitEnvironment(null, '/usr/bin:/bin')).toEqual({ GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_NOSYSTEM: '1' });
   });
 
   it('is read by a source run alone, whatever directory is handed to the profile', () => {
@@ -386,7 +428,7 @@ describe('the developer directory a Codex source run may read (#1475)', () => {
     if (process.platform !== 'darwin') { expect(dir).toBeNull(); return; }
     if (dir === null) return;
     const found = statSync(dir);
-    expect({ root: found.uid, writable: found.mode & 0o022, git: statSync(join(dir, 'usr', 'bin', 'git')).isFile() }).toEqual({ root: 0, writable: 0, git: true });
+    expect({ owner: found.uid === 0 || found.uid === process.getuid?.(), writable: found.mode & 0o022, git: statSync(join(dir, 'usr', 'bin', 'git')).isFile() }).toEqual({ owner: true, writable: 0, git: true });
   });
 });
 
@@ -510,7 +552,7 @@ describe('the Codex driver', () => {
     // Git runs from the developer directory on macOS, the one the run reads, and
     // must not stop at a global configuration the sandbox hides.
     expect(access(join(TOOLS, 'usr', 'bin', 'git'))).toBe('read');
-    expect(objectAt(objectAt(config, 'shell_environment_policy'), 'set')).toEqual({ GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_NOSYSTEM: '1', DEVELOPER_DIR: TOOLS });
+    expect(objectAt(objectAt(config, 'shell_environment_policy'), 'set')).toEqual({ GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_NOSYSTEM: '1', DEVELOPER_DIR: TOOLS, PATH: `${TOOLS}/usr/bin:${process.env.PATH}` });
   });
 
   it('tells a run that reads no source nothing about Git, and grants it no developer directory', async () => {
@@ -531,9 +573,12 @@ describe('the Codex driver', () => {
     const dir = stubHarness('codex', ['{"type":"turn.completed","usage":{}}']);
     process.env.PATH = `${dir}:${process.env.PATH ?? ''}`;
     const run = runDir();
-    // A developer directory the user owns is one they chose to show the run.
-    await collect(codexDriverWith(fakeMac({ paths: { [TOOLS]: { uid: 501, mode: 0o40755, kind: 'dir' }, [join(TOOLS, 'usr', 'bin', 'git')]: { uid: 0, mode: 0o100755, kind: 'file' } } }))
+    // A developer directory another user owns is one nobody here chose to show the run.
+    const logged: string[] = [];
+    await collect(codexDriverWith(fakeMac({ paths: { [TOOLS]: { uid: 502, mode: 0o40755, kind: 'dir' }, [join(TOOLS, 'usr', 'bin', 'git')]: { uid: 0, mode: 0o100755, kind: 'file' } } }), (line) => { logged.push(line); })
       .run({ ...run, sourceReadOnly: true, prompt: 'map', credentialEnv: {} }, new AbortController().signal));
+    // The worker says once which check failed, rather than letting the map lose its history in silence.
+    expect(logged).toEqual([`a source run's git cannot run here, so the run reads no git history: ${TOOLS} is owned by neither root nor the user this worker runs as`]);
     const config = parse(readFileSync(join(run.scratchDir, 'codex-home', 'config.toml'), 'utf8')) as Record<string, unknown>;
     const filesystem = objectAt(objectAt(objectAt(config, 'permissions'), RUN_PERMISSIONS), 'filesystem') as Record<string, string | undefined>;
     expect({ developerDir: filesystem[TOOLS], set: objectAt(objectAt(config, 'shell_environment_policy'), 'set') })

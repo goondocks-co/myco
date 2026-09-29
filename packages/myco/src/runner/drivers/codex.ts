@@ -19,13 +19,14 @@
 import { execFileSync } from 'node:child_process';
 import { existsSync, readFileSync, realpathSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { dirname, join, sep } from 'node:path';
+import { delimiter, dirname, join, sep } from 'node:path';
 import { parse, stringify, type TomlTableWithoutBigInt } from 'smol-toml';
 import { HARNESS_CREDENTIALS } from '@goondocks/myco-shared/harness-providers';
 import { locate } from '../detect.js';
 import { credentialFile, harnessById, type Harness } from '../harnesses.js';
 import type { Driver, RunEvent, RunSpec } from '../events.js';
 import { MCP_SERVER_NAME } from '../mcp-config.js';
+import { workerLogLine } from '../log.js';
 import { freshRunHome } from './run-home.js';
 import { jsonLines, numberOf, recordOf, startHarness, stringOf } from './stream.js';
 
@@ -76,6 +77,8 @@ export interface DeveloperDirProbe {
   /** The physical path of a path, which throws where there is nothing at it. */
   realpath(path: string): string;
   home: string;
+  /** The user the worker runs as, who may own a developer directory it installed itself. */
+  uid: number;
 }
 
 /** The machine itself, as `activeDeveloperDir` reads it. */
@@ -99,6 +102,7 @@ export const SYSTEM_DEVELOPER_DIR_PROBE: DeveloperDirProbe = {
   },
   realpath: (path) => realpathSync(path),
   get home() { return homedir(); },
+  uid: process.getuid?.() ?? -1,
 };
 
 /** The permission bits that let a group or everyone write a path. */
@@ -111,23 +115,25 @@ function within(path: string, root: string): boolean {
 
 /**
  * The developer directory macOS runs `git` from, when it is safe to let a
- * source run read: `/usr/bin/git` is a shim that finds the real program under
- * the active developer directory, and fails before it reads anything when the
- * sandbox hides that directory.
+ * source run read, or which check it failed: `/usr/bin/git` is a shim that
+ * finds the real program under the active developer directory, and fails
+ * before it reads anything when the sandbox hides that directory.
  *
  * Which directory that is, is the user's to choose (`xcode-select -s`,
  * `DEVELOPER_DIR`), and whatever it names the run's commands may read. So the
  * directory is granted only where it is a developer directory and nothing
- * more: a directory owned by root that nobody else can write, holding
- * `usr/bin/git`, that is neither the root of the filesystem nor the user's
- * home, the run's own directory or a directory above either — a grant of any
- * of those reads what the rest of the profile closes. Null on any other
- * system, where none is selected, or where the one selected fails a check.
+ * more: a directory owned by root or by the user the worker runs as (an Xcode
+ * installed from a `.xip`, a disk image or `xcodes` is the user's), that
+ * nobody else can write, holding `usr/bin/git`, that is neither the root of
+ * the filesystem nor the user's home, the run's own directory or a directory
+ * above either — a grant of any of those reads what the rest of the profile
+ * closes. `refused` is null on any other system and where none is selected,
+ * which fail no check.
  */
-export function activeDeveloperDir(runDir: string, probe: DeveloperDirProbe = SYSTEM_DEVELOPER_DIR_PROBE): string | null {
-  if (probe.platform !== 'darwin') return null;
+export function developerDirVerdict(runDir: string, probe: DeveloperDirProbe = SYSTEM_DEVELOPER_DIR_PROBE): { dir: string } | { dir: null; refused: string | null } {
+  if (probe.platform !== 'darwin') return { dir: null, refused: null };
   const selected = probe.select();
-  if (selected === null) return null;
+  if (selected === null) return { dir: null, refused: null };
   let dir: string;
   let home: string;
   let run: string;
@@ -136,13 +142,20 @@ export function activeDeveloperDir(runDir: string, probe: DeveloperDirProbe = SY
     home = probe.realpath(probe.home);
     run = probe.realpath(runDir);
   } catch {
-    return null;
+    return { dir: null, refused: `${selected}, or the home or run directory, has no physical path` };
   }
   const found = probe.stat(dir);
-  if (found === null || !found.directory || found.uid !== 0 || (found.mode & WRITABLE_BY_OTHERS) !== 0) return null;
-  if (dir === sep || within(home, dir) || within(run, dir)) return null;
+  if (found === null || !found.directory) return { dir: null, refused: `${dir} is not a directory` };
+  if (found.uid !== 0 && found.uid !== probe.uid) return { dir: null, refused: `${dir} is owned by neither root nor the user this worker runs as` };
+  if ((found.mode & WRITABLE_BY_OTHERS) !== 0) return { dir: null, refused: `${dir} is writable by its group or others` };
+  if (dir === sep || within(home, dir) || within(run, dir)) return { dir: null, refused: `${dir} is the filesystem root or holds the home or the run's directory` };
   const git = probe.stat(join(dir, 'usr', 'bin', 'git'));
-  return git !== null && git.file ? dir : null;
+  return git !== null && git.file ? { dir } : { dir: null, refused: `${dir} holds no usr/bin/git` };
+}
+
+/** The developer directory a source run may read, or null (`developerDirVerdict`). */
+export function activeDeveloperDir(runDir: string, probe: DeveloperDirProbe = SYSTEM_DEVELOPER_DIR_PROBE): string | null {
+  return developerDirVerdict(runDir, probe).dir;
 }
 
 /** The permission profile a run's commands run under, and the only one its configuration defines. */
@@ -222,11 +235,20 @@ export const RUN_SHELL_ENVIRONMENT = { inherit: 'all', ignore_default_excludes: 
  * configuration it cannot open rather than reading on without it, so a run's
  * Git reads the checkout's own configuration and nothing of the machine's. On
  * macOS the shim is pointed at the developer directory the run was granted,
- * so the directory it runs from is the one `activeDeveloperDir` checked. No
- * other run runs `git`, so no other run is told any of it.
+ * so the directory it runs from is the one `activeDeveloperDir` checked, and
+ * that directory's own `git` comes first on PATH. No other run runs `git`, so
+ * no other run is told any of it.
  */
-export function sourceGitEnvironment(developerDir: string | null): Record<string, string> {
-  return { GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_NOSYSTEM: '1', ...(developerDir === null ? {} : { DEVELOPER_DIR: developerDir }) };
+export function sourceGitEnvironment(developerDir: string | null, path: string = process.env.PATH ?? ''): Record<string, string> {
+  return {
+    GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_NOSYSTEM: '1',
+    ...(developerDir === null ? {} : {
+      DEVELOPER_DIR: developerDir,
+      // Its own `git` first: the `/usr/bin` shim runs xcrun, which warns on every call that it cannot write its cache
+      // in the temporary directory the sandbox closes.
+      PATH: path === '' ? join(developerDir, 'usr', 'bin') : `${join(developerDir, 'usr', 'bin')}${delimiter}${path}`,
+    }),
+  };
 }
 
 /**
@@ -253,7 +275,7 @@ export function sourceGitEnvironment(developerDir: string | null): Record<string
  * scan for the lines that look like server declarations mistakes a multi-line
  * string that contains one for the real thing.
  */
-function runConfig(spec: RunSpec, harness: Harness, home: string, probe: DeveloperDirProbe): string {
+function runConfig(spec: RunSpec, harness: Harness, home: string, probe: DeveloperDirProbe, log: (line: string) => void): string {
   const login = credentialFile(harness);
   // A harness keeps its login inside its configuration home, so the directory
   // holding the declared login file is the home this run is additive over.
@@ -268,7 +290,9 @@ function runConfig(spec: RunSpec, harness: Harness, home: string, probe: Develop
   delete machine.sandbox_workspace_write;
   machine.default_permissions = RUN_PERMISSIONS;
   const source = spec.sourceReadOnly === true;
-  const developerDir = source ? activeDeveloperDir(spec.scratchDir, probe) : null;
+  const verdict = source ? developerDirVerdict(spec.scratchDir, probe) : { dir: null, refused: null };
+  if (verdict.dir === null && verdict.refused !== null) log(`a source run's git cannot run here, so the run reads no git history: ${verdict.refused}`);
+  const developerDir = verdict.dir;
   machine.permissions = { [RUN_PERMISSIONS]: { filesystem: runFilesystem(spec, home, locate(harness.binary), developerDir) } };
   machine.web_search = 'disabled';
   machine.features = { ...recordOf(machine.features), ...Object.fromEntries(RUN_FEATURES_OFF.map((feature) => [feature, false])) };
@@ -286,10 +310,10 @@ function runConfig(spec: RunSpec, harness: Harness, home: string, probe: Develop
 }
 
 /** The configuration home a run reads, built where the run's own files are (`run-home.ts`). */
-function runHome(spec: RunSpec, harness: Harness, probe: DeveloperDirProbe): string {
+function runHome(spec: RunSpec, harness: Harness, probe: DeveloperDirProbe, log: (line: string) => void): string {
   const home = freshRunHome(spec.scratchDir, 'codex-home');
   carryLogin(home, spec, harness);
-  writeFileSync(join(home, 'config.toml'), runConfig(spec, harness, home, probe), { mode: 0o600 });
+  writeFileSync(join(home, 'config.toml'), runConfig(spec, harness, home, probe, log), { mode: 0o600 });
   return home;
 }
 
@@ -298,19 +322,22 @@ function toolStatus(status: string | null): 'started' | 'ok' | 'error' {
   return status === 'completed' ? 'ok' : status === 'failed' ? 'error' : 'started';
 }
 
-/** The driver, reading the machine through `probe` for the developer directory a source run's `git` needs. */
-export function codexDriverWith(probe: DeveloperDirProbe): Driver {
+/**
+ * The driver, reading the machine through `probe` for the developer directory a source run's `git` needs, and
+ * saying in the worker's log which check a refused one failed.
+ */
+export function codexDriverWith(probe: DeveloperDirProbe, log: (line: string) => void = (line) => { console.log(workerLogLine(line)); }): Driver {
   return {
     id: 'codex',
-    run: (spec, signal) => runCodex(spec, signal, probe),
+    run: (spec, signal) => runCodex(spec, signal, probe, log),
   };
 }
 
 export const codexDriver: Driver = codexDriverWith(SYSTEM_DEVELOPER_DIR_PROBE);
 
-async function* runCodex(spec: RunSpec, signal: AbortSignal, probe: DeveloperDirProbe): AsyncIterable<RunEvent> {
+async function* runCodex(spec: RunSpec, signal: AbortSignal, probe: DeveloperDirProbe, log: (line: string) => void): AsyncIterable<RunEvent> {
   const harness = harnessById('codex')!;
-  const home = runHome(spec, harness, probe);
+  const home = runHome(spec, harness, probe, log);
   const env = { ...spec.credentialEnv, ...(harness.isolation.kind === 'home' ? { [harness.isolation.env]: home } : {}) };
   const started = startHarness(harness.binary, ['exec', '--json', '--skip-git-repo-check', spec.prompt], { cwd: spec.scratchDir, env, signal });
 

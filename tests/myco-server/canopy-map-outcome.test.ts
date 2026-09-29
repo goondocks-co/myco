@@ -30,6 +30,7 @@ import { PROJECT_HEADER } from '@myco-server-worker/constants.js';
 import { recordWorkerContact } from '@myco-server-worker/core/worker-contacts.js';
 import { heldByWords } from '@goondocks/myco-shared/run-holds';
 import { memberHeaders, sqliteEnv } from './helpers/fixtures.js';
+import type { PreparedStatement, RelationalStore } from '@myco-server-worker/core/adapters.js';
 
 const ORIGIN = 'https://s';
 const SOURCE = { url: 'https://example.test/team/source', branch: 'main' };
@@ -145,6 +146,45 @@ describe('a map run a worker claimed', () => {
     r.e.sqlite.run(`UPDATE agent_runs SET held_by = ? WHERE id = ?`, [REPOSITORY_DIGESTS_CAPABILITY, dispatched.runId]);
     const taken = await claim(WORKER_CAPABILITIES);
     expect({ claimed: taken.claimed, holder: holder() }).toEqual({ claimed: true, holder: null });
+  });
+
+  it('names the same capability whichever worker of a mixed fleet asks, and rewrites no row a poll leaves as it was (#1481)', async () => {
+    const r = await rig();
+    await r.repositories.save('proj_1', { ...SOURCE, revision: null }, 'mem_worker', r.clock());
+    r.advance(10);
+    const dispatched = await dispatchTask(r.e.serverEnv, MAP_TASK, 'proj_1', { serverUrl: ORIGIN, actor: 'mem_worker' }, r.clock());
+    if (!dispatched.dispatched) throw new Error('the map run was not dispatched');
+    const holder = () => (r.e.sqlite.query(`SELECT held_by AS heldBy FROM agent_runs WHERE id = ?`).get(dispatched.runId) as { heldBy: string | null }).heldBy;
+    // Rows each holder write changes, by claim.
+    let rewritten = 0;
+    const counted = (statement: PreparedStatement, sql: string): PreparedStatement => ({
+      ...statement,
+      bind: (...values: unknown[]) => counted(statement.bind(...values), sql),
+      run: async () => {
+        const result = await statement.run();
+        if (/^UPDATE agent_runs SET held_by/.test(sql.trim())) rewritten += result.meta.changes;
+        return result;
+      },
+    });
+    const db: RelationalStore = { prepare: (sql: string) => counted(r.e.serverEnv.db.prepare(sql), sql), batch: (statements) => r.e.serverEnv.db.batch(statements) };
+    const claim = async (capabilities: readonly string[]) => {
+      rewritten = 0;
+      await claimNextRun({ ...r.e.serverEnv, db }, { tokenId: r.workerCredential.tokenId, machineId: 'm1', harnesses: OFFERED, capabilities, now: r.clock() + 1 });
+      return { holder: holder(), rewritten };
+    };
+
+    // Two workers heard from lately: one checks source out but writes no listing, one checks nothing out.
+    const older = await issueMemberToken(r.e.db, { memberId: 'mem_worker', machineId: 'm2' }, r.clock());
+    const bare = await issueMemberToken(r.e.db, { memberId: 'mem_worker', machineId: 'm3' }, r.clock());
+    await recordWorkerContact(r.e.db, { credentialId: older.tokenId, machineId: 'm2', offers: OFFERED, capabilities: [REPOSITORY_CHECKOUT_CAPABILITY], now: r.clock() });
+    await recordWorkerContact(r.e.db, { credentialId: bare.tokenId, machineId: 'm3', offers: OFFERED, capabilities: [], now: r.clock() });
+
+    // Whichever of them asks, the run names the fleet's gap: no worker heard from lately writes the listing. The
+    // first poll moves the row off the ordinary wait; every poll after it finds it named and rewrites nothing.
+    expect(await claim([REPOSITORY_CHECKOUT_CAPABILITY])).toEqual({ holder: REPOSITORY_DIGESTS_CAPABILITY, rewritten: 1 });
+    expect(await claim([])).toEqual({ holder: REPOSITORY_DIGESTS_CAPABILITY, rewritten: 0 });
+    expect(await claim([REPOSITORY_CHECKOUT_CAPABILITY])).toEqual({ holder: REPOSITORY_DIGESTS_CAPABILITY, rewritten: 0 });
+    expect(await claim([])).toEqual({ holder: REPOSITORY_DIGESTS_CAPABILITY, rewritten: 0 });
   });
 
   it('carries a Deployment-built prompt and a checkout, and pins its map input with its commit', async () => {
