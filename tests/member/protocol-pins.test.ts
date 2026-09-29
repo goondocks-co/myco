@@ -44,6 +44,8 @@ const BOUND_FIELDS: Record<keyof typeof BOUNDS, [string, string] | [string, stri
   level: ['notification', 'level'],
   threadLabel: ['prompt', 'threadLabel'],
   title: ['plan', 'title'],
+  sessionTitle: ['session.end', 'title'],
+  sessionSummary: ['session.end', 'summary'],
   description: ['attachment', 'description'],
   fileItem: ['tool.use', 'filesAffected', 'item'],
   tagItem: ['plan', 'tags', 'item'],

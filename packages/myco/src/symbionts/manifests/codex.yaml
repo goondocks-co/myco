@@ -18,6 +18,7 @@ capture:
       - "*/*/*/rollout-*-{sessionId}.jsonl"
     # The session_meta first line carries cwd under its payload.
     transcriptCwdPath: "payload.cwd"
+    transcriptRepositoryPath: "payload.git.repository_url"
     # Both the timestamp and the id are dash-delimited, so the boundary between
     # `*` and `{sessionId}` is only recoverable from the id's shape.
     sessionIdPattern: "[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"

@@ -122,7 +122,8 @@ const COLUMNS = `id, agent_id AS agentId, session_id AS sessionId, prompt_id AS 
   created_at AS createdAt, updated_at AS updatedAt, embedded`;
 
 /**
- * Writes one spore and returns it.
+ * Writes one spore and returns it, or null when the Project already holds a
+ * spore under that id, which is left as it is.
  *
  * `RETURNING` rather than a read-back: 1.4 selects the row again after
  * inserting it, which is free against a local file and a second round trip
@@ -133,6 +134,7 @@ export async function insertSpore(db: RelationalStore, scope: ReadScope, row: Sp
       (project_id, id, agent_id, session_id, prompt_id, observation_type, status, content, context,
        importance, file_path, tags, content_hash, properties, author, provenance_kind, provenance_ref, agent_line, created_at, embedded)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
+      ON CONFLICT (project_id, id) DO NOTHING
       RETURNING ${COLUMNS}`)
     .bind(scope.projectId, row.id, row.agentId, row.sessionId, row.promptId, row.observationType,
       row.status ?? 'active', row.content, row.context, row.importance ?? 5, row.filePath,
@@ -229,6 +231,8 @@ export interface ResolutionEventInsert {
  *
  * Returns false when the spore is not in this scope — the batch changed
  * nothing, and a caller must not read that as a resolution it did not make.
+ * An event id already recorded moves nothing and records nothing, and answers
+ * `duplicate`: replaying a resolution never undoes a later one.
  */
 export async function resolveSpore(
   db: RelationalStore,
@@ -236,19 +240,23 @@ export async function resolveSpore(
   status: SporeStatus,
   event: ResolutionEventInsert,
   now: number,
-): Promise<boolean> {
-  const [moved] = await db.batch([
-    db.prepare(`UPDATE spores SET status = ?, updated_at = ? WHERE project_id = ? AND id = ? RETURNING id`)
-      .bind(status, now, scope.projectId, event.sporeId),
+): Promise<boolean | 'duplicate'> {
+  const [held, moved] = await db.batch([
+    db.prepare(`SELECT 1 AS held FROM resolution_events WHERE project_id = ? AND id = ?`).bind(scope.projectId, event.id),
+    db.prepare(`UPDATE spores SET status = ?, updated_at = ? WHERE project_id = ? AND id = ?
+        AND NOT EXISTS (SELECT 1 FROM resolution_events WHERE project_id = ? AND id = ?) RETURNING id`)
+      .bind(status, now, scope.projectId, event.sporeId, scope.projectId, event.id),
     db.prepare(`INSERT INTO resolution_events
         (project_id, id, agent_id, spore_id, action, new_spore_id, reason, session_id, author, provenance_kind, provenance_ref, created_at)
         SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
-         WHERE EXISTS (SELECT 1 FROM spores WHERE project_id = ? AND id = ?)`)
+         WHERE EXISTS (SELECT 1 FROM spores WHERE project_id = ? AND id = ?)
+        ON CONFLICT (project_id, id) DO NOTHING`)
       .bind(scope.projectId, event.id, event.agentId, event.sporeId, event.action,
         event.newSporeId, event.reason, event.sessionId, event.author,
         event.provenance?.kind ?? null, event.provenance?.ref ?? null, event.createdAt,
         scope.projectId, event.sporeId),
   ]);
+  if (held.results.length === 1) return 'duplicate';
   return moved.results.length === 1;
 }
 

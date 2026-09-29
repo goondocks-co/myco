@@ -175,3 +175,17 @@ describe('cortex instructions through the product surface', () => {
       .toEqual([['agent_2', '# other', null], [AGENT, '# current', 'run_2']]);
   });
 });
+
+describe('replaying a spore resolution', () => {
+  it('moves nothing when the event is already recorded, so a later change stands', async () => {
+    const { db, sqlite, scope } = await harness();
+    await insertSpore(db, scope, spore('old'));
+    await insertSpore(db, scope, spore('new'));
+    const event = { id: 're1', agentId: AGENT, sporeId: 'old', action: 'supersede' as const, newSporeId: 'new', reason: null, sessionId: null, author: null, createdAt: NOW - 5 };
+    expect(await resolveSpore(db, scope, 'superseded', event, NOW - 5)).toBe(true);
+    sqlite.run(`UPDATE spores SET status = 'active', updated_at = ? WHERE id = 'old'`, [NOW]);
+    expect(await resolveSpore(db, scope, 'superseded', event, NOW + 5)).toBe('duplicate');
+    expect(sqlite.query(`SELECT status, updated_at FROM spores WHERE id = 'old'`).get()).toEqual({ status: 'active', updated_at: NOW });
+    expect(sqlite.query(`SELECT COUNT(*) AS n, MAX(created_at) AS at FROM resolution_events`).get()).toEqual({ n: 1, at: NOW - 5 });
+  });
+});

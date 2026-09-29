@@ -33,15 +33,18 @@
  * server acknowledged.
  */
 import fs from 'node:fs';
-import { attributeTranscript } from '../symbionts/transcript-attribution.js';
+import { transcriptPlacer, type DirectoryMapping } from '../symbionts/transcript-attribution.js';
 import { enumerateTranscripts, manifestTranscriptDiscovery } from '../symbionts/transcript-discovery.js';
 import { HOOK_CONFIG } from '../hooks/hook-config.generated.js';
+import { evaluateSessionCaptureRules } from '../hooks/capture-rules.js';
+import { readTranscriptMeta } from '../hooks/transcript-meta.js';
 import { resolveMycoHome } from '../paths/home.js';
 import { unboundedBudget } from './budget.js';
 import { resolveMemberProjectRoot } from './credential.js';
 import { sessionEndEvent, sessionStartEvent, type EnvelopeContext } from './envelope.js';
 import { listRegistryEntries, type RegistryEntry } from './registry.js';
 import { MemberSpool } from './spool.js';
+import { legacySessionsToLeaveOut } from './legacy-ledger.js';
 import { readSessionState } from './session-state.js';
 import { shipTranscriptSegments, transcriptHeadHash, transcriptPointerFor } from './transcript.js';
 import { ServerClient, type FetchLike } from './transport.js';
@@ -99,10 +102,18 @@ export interface ImportOptions {
   dryRun?: boolean;
   /** Candidates one plan request carries. The Deployment's cap by default; a test lowers it to reach the trim without writing a thousand files. */
   offerLimit?: number;
+  /** Recorded working directories mapped onto a bound root, for the directories no checkout on disk still answers for. */
+  mappings?: readonly DirectoryMapping[];
+  /** Session ids never offered: sessions deleted in a record this import does not read. */
+  exclude?: ReadonlySet<string>;
 }
 
 export interface ImportDeps {
+  /** How a paced import waits for its next request slot; the default really waits. */
+  sleep?: (ms: number) => Promise<void>;
   fetch?: FetchLike;
+  /** Requests a minute this import stays under, leaving the rest of the credential's rate budget to the hooks capturing live. Unpaced when absent. */
+  pace?: number;
   now?: () => number;
   cwd?: string;
   mycoHome?: string;
@@ -139,10 +150,18 @@ export interface ImportReport {
   active: number;
   /** Projects `--project` excluded that this machine holds history for. */
   narrowed?: string[];
+  /** Transcripts the agent's capture rules drop from live capture, left out the same way. */
+  dropped: number;
+  /** Transcripts of sessions the caller excluded. */
+  excluded: number;
+  /** The recorded directories of the unbound transcripts, with how many each holds. */
+  unboundDirectories: Record<string, number>;
   refused?: string;
+  /** Why a pass that ended on a retryable answer was not tried again. */
+  stoppedBy?: string;
 }
 
-interface Candidate {
+export interface Candidate {
   sessionId: string;
   transcriptId: string;
   agent: string;
@@ -193,23 +212,59 @@ function bindingsFor(serverUrl: string, mycoHome: string): Map<string, RegistryE
   return bound;
 }
 
+/** What the walk found, placed and counted. */
+export interface CollectedCandidates {
+  candidates: Candidate[];
+  found: Record<string, number>;
+  unattributable: number;
+  unbound: number;
+  unboundDirectories: Record<string, number>;
+  active: number;
+  dropped: number;
+  excluded: number;
+}
+
 /**
- * Every transcript on disk this machine can place, and the two counts for what
- * it cannot.
+ * The candidate a transcript file makes, or null when it is empty, gone, or
+ * written too recently to be history. Written too recently is left for the
+ * hook that is capturing it rather than imported and declared over.
+ */
+export function transcriptCandidate(
+  agent: string, sessionId: string, filePath: string, root: string, machineId: string, now: number,
+): Candidate | 'active' | null {
+  let stat: fs.Stats;
+  try { stat = fs.statSync(filePath); } catch { return null; }
+  if (!stat.isFile() || stat.size === 0) return null;
+  if (now - stat.mtimeMs < IMPORT_ACTIVE_FLOOR_MS) return 'active';
+  const pointer = transcriptPointerFor(filePath, machineId);
+  if (pointer === null) return null;
+  return {
+    sessionId, transcriptId: pointer.transcriptId, agent, filePath,
+    sizeBytes: stat.size, modifiedAt: Math.trunc(stat.mtimeMs), headHash: transcriptHeadHash(filePath), root,
+  };
+}
+
+/** Whether live capture would drop this transcript's session: the agent's session rules, read against the transcript's own head. */
+export function droppedByCaptureRules(agent: string, filePath: string): boolean {
+  const transcriptMeta = readTranscriptMeta(filePath) ?? undefined;
+  return evaluateSessionCaptureRules(agent, { transcriptPath: filePath, transcriptMeta }).action === 'drop';
+}
+
+/**
+ * Every transcript on disk this machine can place, and the counts for what it
+ * cannot.
  *
  * Attribution runs here rather than after the plan request, so a candidate is
- * never offered under a Project it does not belong to.
+ * never offered under a Project it does not belong to. A transcript live
+ * capture would drop is dropped here too, and a session the caller excludes is
+ * never offered.
  */
 export function collectCandidates(
   agents: readonly string[], roots: Iterable<string>, machineId: string, mycoHome: string,
-  now: number = Date.now(),
-): { candidates: Candidate[]; found: Record<string, number>; unattributable: number; unbound: number; active: number } {
-  const rootList = [...roots];
-  const candidates: Candidate[] = [];
-  const found: Record<string, number> = {};
-  let unattributable = 0;
-  let unbound = 0;
-  let active = 0;
+  now: number = Date.now(), opts: { mappings?: readonly DirectoryMapping[]; exclude?: ReadonlySet<string> } = {},
+): CollectedCandidates {
+  const place = transcriptPlacer(roots, { mappings: opts.mappings });
+  const out: CollectedCandidates = { candidates: [], found: {}, unattributable: 0, unbound: 0, unboundDirectories: {}, active: 0, dropped: 0, excluded: 0 };
 
   for (const agent of agents) {
     const discovery = manifestTranscriptDiscovery(agent);
@@ -220,41 +275,34 @@ export function collectCandidates(
     // nor anything a person could predict.
     for (const discovered of enumerateTranscripts(discovery, ENUMERATION_CEILING)) {
       if (isMemberStatePath(discovered.filePath, mycoHome)) continue;
-      found[agent] = (found[agent] ?? 0) + 1;
-      const placed = attributeTranscript(agent, discovered.filePath, rootList);
+      out.found[agent] = (out.found[agent] ?? 0) + 1;
+      if (opts.exclude?.has(discovered.sessionId)) { out.excluded += 1; continue; }
+      const placed = place(agent, discovered.filePath);
       // Three outcomes, three counts. A transcript naming a directory this
       // Deployment holds no Project for is a different thing from one naming
       // nowhere, and only the first is something a person can connect.
-      if (placed.kind === 'elsewhere') { unbound += 1; continue; }
-      if (placed.kind === 'unknown') { unattributable += 1; continue; }
-      const root = placed.root;
-      let stat: fs.Stats;
-      try { stat = fs.statSync(discovered.filePath); } catch { continue; }
-      if (stat.size === 0) continue;
-      // Written too recently to be history. Left for the hook that is capturing
-      // it rather than imported and declared over.
-      if (now - stat.mtimeMs < IMPORT_ACTIVE_FLOOR_MS) { active += 1; continue; }
-      const pointer = transcriptPointerFor(discovered.filePath, machineId);
-      if (pointer === null) continue;
-      candidates.push({
-        sessionId: discovered.sessionId,
-        transcriptId: pointer.transcriptId,
-        agent,
-        filePath: discovered.filePath,
-        sizeBytes: stat.size,
-        modifiedAt: Math.trunc(stat.mtimeMs),
-        headHash: transcriptHeadHash(discovered.filePath),
-        root,
-      });
+      if (placed.kind === 'elsewhere') {
+        out.unbound += 1;
+        out.unboundDirectories[placed.directory] = (out.unboundDirectories[placed.directory] ?? 0) + 1;
+        continue;
+      }
+      if (placed.kind === 'unknown') { out.unattributable += 1; continue; }
+      if (droppedByCaptureRules(agent, discovered.filePath)) { out.dropped += 1; continue; }
+      const candidate = transcriptCandidate(agent, discovered.sessionId, discovered.filePath, placed.root, machineId, now);
+      if (candidate === 'active') { out.active += 1; continue; }
+      if (candidate !== null) out.candidates.push(candidate);
     }
   }
   // Newest first: the plan spends the per-agent cap in the order it is
   // offered, so the most recent history is what an import brings.
-  candidates.sort((a, b) => b.modifiedAt - a.modifiedAt);
-  return { candidates, found, unattributable, unbound, active };
+  out.candidates.sort((a, b) => b.modifiedAt - a.modifiedAt);
+  return out;
 }
 
 const emptyTally = (agent: string): AgentTally => ({ agent, found: 0, imported: 0, vanished: 0, trimmed: 0, skipped: {} });
+
+const refusedReport = (refused: string): ImportReport =>
+  ({ projects: [], unbound: 0, unattributable: 0, active: 0, dropped: 0, excluded: 0, unboundDirectories: {}, refused });
 
 /**
  * Import one machine's history into every Project it can be placed in.
@@ -265,10 +313,10 @@ const emptyTally = (agent: string): AgentTally => ({ agent, found: 0, imported: 
 export async function runImport(opts: ImportOptions, deps: ImportDeps): Promise<ImportReport> {
   const now = deps.now ?? Date.now;
   const mycoHome = deps.mycoHome ?? resolveMycoHome({ cwd: deps.cwd ?? process.cwd() });
-  const fetchImpl = deps.fetch ?? globalThis.fetch;
+  const fetchImpl = paced(deps.fetch ?? globalThis.fetch, deps.pace, deps.sleep ?? pause);
 
   const entries = listRegistryEntries(mycoHome);
-  if (entries.length === 0) return { projects: [], unbound: 0, unattributable: 0, active: 0, refused: 'no Deployment membership on this machine' };
+  if (entries.length === 0) return refusedReport('no Deployment membership on this machine');
 
   // Which Deployment. Never the first entry: the registry is one file per
   // project root named by `sha256(root)`, so its order is a hash, and picking
@@ -277,21 +325,21 @@ export async function runImport(opts: ImportOptions, deps: ImportDeps): Promise<
   // joined, and report every transcript as belonging to no Project.
   const deployments = [...new Set(entries.map((e) => e.serverUrl))];
   const named = opts.serverUrl ?? (deployments.length === 1 ? deployments[0] : deploymentForRoot(entries, deps.cwd));
-  if (named === null) {
-    return { projects: [], unbound: 0, unattributable: 0, active: 0, refused: `this machine belongs to ${deployments.length} Deployments; name one with --server` };
-  }
+  if (named === null) return refusedReport(`this machine belongs to ${deployments.length} Deployments; name one with --server`);
   const bound = bindingsFor(named, mycoHome);
-  if (bound.size === 0) return { projects: [], unbound: 0, unattributable: 0, active: 0, refused: `no project on this machine is bound to ${named}` };
+  if (bound.size === 0) return refusedReport(`no project on this machine is bound to ${named}`);
 
   const agents = agentsWithStores(opts.agent);
-  const { candidates, found, unattributable, unbound: elsewhere, active } = collectCandidates(agents, bound.keys(), deps.machineId, mycoHome, now());
+  const exclude = new Set([...(opts.exclude ?? []), ...legacySessionsToLeaveOut(mycoHome, named)]);
+  const collected = collectCandidates(agents, bound.keys(), deps.machineId, mycoHome, now(), { mappings: opts.mappings, exclude });
+  const { candidates, unattributable, active } = collected;
 
   const byProject = new Map<string, Candidate[]>();
   // Projects this machine holds history for that `--project` excluded. Named
   // rather than dropped: "nothing to import" and "you asked for one of three"
   // are different answers.
   const narrowed = new Set<string>();
-  let unbound = elsewhere;
+  let unbound = collected.unbound;
   for (const candidate of candidates) {
     const entry = bound.get(candidate.root);
     // A transcript that names a checkout this Deployment holds no Project for.
@@ -303,7 +351,10 @@ export async function runImport(opts: ImportOptions, deps: ImportDeps): Promise<
     if (list === undefined) byProject.set(entry.projectId, [candidate]); else list.push(candidate);
   }
 
-  const report: ImportReport = { projects: [], unbound, unattributable, active, ...(narrowed.size > 0 ? { narrowed: [...narrowed].sort() } : {}) };
+  const report: ImportReport = {
+    projects: [], unbound, unattributable, active, dropped: collected.dropped, excluded: collected.excluded,
+    unboundDirectories: collected.unboundDirectories, ...(narrowed.size > 0 ? { narrowed: [...narrowed].sort() } : {}),
+  };
   for (const [projectId, forProject] of byProject) {
     const entry = [...bound.values()].find((e) => e.projectId === projectId);
     if (entry === undefined) continue;
@@ -355,7 +406,7 @@ export async function runImport(opts: ImportOptions, deps: ImportDeps): Promise<
       }
       if (opts.dryRun === true) { held.imported += 1; continue; }
 
-      const shipped = await shipSession(candidate, Number(decision.fromOffset ?? 0), entry, client, spool, deps.machineId, now);
+      const shipped = await shipSession(candidate, Number(decision.fromOffset ?? 0), client, spool, deps.machineId, now);
       if (shipped === 'done') { held.imported += 1; continue; }
       // Gone from the disk between the plan that admitted it and the ship that
       // would have read it. Nothing was sent, so it is not imported — and it is
@@ -374,9 +425,14 @@ export async function runImport(opts: ImportOptions, deps: ImportDeps): Promise<
   return report;
 }
 
-/** One session: its facts, its bytes from the byte the Deployment named, and the end that closes it. */
-async function shipSession(
-  candidate: Candidate, fromOffset: number, entry: RegistryEntry, client: ServerClient, spool: MemberSpool, machineId: string, now: () => number,
+/**
+ * One session: its facts, its bytes from the byte the Deployment named, and the
+ * end that closes it. `facts: false` ships the bytes alone, for a caller that
+ * sends the session's facts from a record of its own.
+ */
+export async function shipSession(
+  candidate: Candidate, fromOffset: number, client: ServerClient, spool: MemberSpool, machineId: string, now: () => number,
+  opts: { facts?: boolean } = {},
 ): Promise<string> {
   const { sessionId, filePath } = candidate;
   // Imported events are dated when the work happened, not when it was fetched:
@@ -393,7 +449,7 @@ async function shipSession(
   // are minted, so a repeat is two more rows in the event log for a session
   // that has not changed. The receipt is the pointer this pass already commits:
   // a session whose transcript is known is a session whose facts were sent.
-  const known = readSessionState(spool.dir, sessionId).transcript?.transcriptId === pointer.transcriptId;
+  const known = opts.facts === false || readSessionState(spool.dir, sessionId).transcript?.transcriptId === pointer.transcriptId;
   const facts = known ? [] : [
     sessionStartEvent(ctx, { startedAt: candidate.modifiedAt, originPath: filePath }),
     sessionEndEvent(ctx, { endedAt: candidate.modifiedAt }),
@@ -411,3 +467,106 @@ async function shipSession(
   const result = await shipTranscriptSegments(ctx, spool, client, unboundedBudget(), { now, headHash: candidate.headHash ?? undefined });
   return result.endedBy;
 }
+
+/** The longest one wait between passes lasts, whatever the Deployment asks. */
+export const IMPORT_RETRY_MAX_WAIT_MS = 60_000;
+/** The wait before the first retry when the Deployment names none; each later one doubles, up to the cap. */
+export const IMPORT_RETRY_BASE_WAIT_MS = 2_000;
+/** Passes an import makes before it reports the retry it could not get past. */
+export const IMPORT_MAX_PASSES = 200;
+
+/** The wait before pass `attempt` (1-based) of a retried import. */
+export const retryWaitMs = (attempt: number): number =>
+  Math.min(IMPORT_RETRY_MAX_WAIT_MS, IMPORT_RETRY_BASE_WAIT_MS * 2 ** Math.min(attempt - 1, 16));
+
+/** Wait `ms` between import passes; a caller that must not wait passes its own. */
+export const pause = (ms: number): Promise<void> => new Promise<void>((resolve) => setTimeout(resolve, ms));
+
+/** The requests a minute an import run by hand stays under: two thirds of a credential's rate budget, the rest left to live capture. */
+export const IMPORT_PACE_PER_MINUTE = 200;
+
+/**
+ * A fetch that starts at most `perMinute` requests a minute, one at a time,
+ * spacing them evenly; `fetch` itself when `perMinute` is absent.
+ */
+export function paced(fetchImpl: FetchLike, perMinute: number | undefined, sleep: (ms: number) => Promise<void>, now: () => number = Date.now): FetchLike {
+  if (perMinute === undefined || perMinute <= 0) return fetchImpl;
+  const spacing = 60_000 / perMinute;
+  let next = 0;
+  return async (input, init) => {
+    const at = now();
+    if (next > at) await sleep(next - at);
+    next = Math.max(now(), next) + spacing;
+    return fetchImpl(input, init);
+  };
+}
+
+/** The longest a step of an import waits out rate limits and unreachable Deployments, in all, before it is recorded as failed. */
+export const IMPORT_WAIT_CAP_MS = 30 * 60_000;
+/** HTTP statuses waited out however often they come: the rate limit, and a Deployment that asks to be retried. */
+const WAIT_STATUSES: ReadonlySet<number> = new Set([429, 503]);
+
+/**
+ * What a retryable answer calls for, by the HTTP status it carried: `wait` for
+ * a rate limit, a Deployment asking to be retried, or no answer at all (a
+ * network fault); `fault` for any other server error, retried a few times;
+ * `fail` for a status no retry changes (a request the Deployment rejects).
+ */
+export function retryVerdict(status: number | undefined): 'wait' | 'fault' | 'fail' {
+  if (status === undefined || WAIT_STATUSES.has(status)) return 'wait';
+  return status >= 500 ? 'fault' : 'fail';
+}
+
+/** A fetch that records the status of the last response it received, undefined for a request that got none. */
+export function observedFetch(fetchImpl: FetchLike): { fetch: FetchLike; lastStatus: () => number | undefined } {
+  let last: number | undefined;
+  return {
+    fetch: async (input, init) => {
+      last = undefined;
+      const res = await fetchImpl(input, init);
+      last = res.status;
+      return res;
+    },
+    lastStatus: () => last,
+  };
+}
+
+/** Whether a pass stopped on an answer that a later pass can get past. */
+export const endedOnRetry = (report: ImportReport): boolean => report.projects.some((p) => p.endedBy === 'retry');
+
+/**
+ * Run passes until none stops on a retryable answer, waiting between them.
+ * Every pass re-plans from what the Deployment holds, so a session a pass
+ * finished is not sent again and reads as already held in the next pass's
+ * report. A rate limit or an unreachable Deployment is waited out for up to
+ * `IMPORT_WAIT_CAP_MS` in all; another server error is retried a few times; a
+ * status no retry changes stops at once. The last report is answered, with
+ * `stoppedBy` naming why a pass still ended on a retryable answer.
+ */
+export async function importUntilSettled(
+  opts: ImportOptions, deps: ImportDeps & { maxPasses?: number; onRetry?: (attempt: number, waitMs: number) => void },
+): Promise<ImportReport> {
+  const sleep = deps.sleep ?? pause;
+  const maxPasses = deps.maxPasses ?? IMPORT_MAX_PASSES;
+  const observed = observedFetch(deps.fetch ?? globalThis.fetch);
+  const pass = () => runImport(opts, { ...deps, fetch: observed.fetch });
+  let report = await pass();
+  let waited = 0;
+  let faults = 0;
+  for (let attempt = 1; report.refused === undefined && endedOnRetry(report); attempt++) {
+    const status = observed.lastStatus();
+    const verdict = retryVerdict(status);
+    if (verdict === 'fail') return { ...report, stoppedBy: `the Deployment answered ${status}` };
+    if (verdict === 'fault' && ++faults > SERVER_FAULT_RETRIES) return { ...report, stoppedBy: `the Deployment kept failing (${status})` };
+    const wait = retryWaitMs(verdict === 'fault' ? faults : attempt);
+    if (attempt >= maxPasses || waited + wait > IMPORT_WAIT_CAP_MS) return { ...report, stoppedBy: 'the Deployment kept asking to wait' };
+    deps.onRetry?.(attempt, wait);
+    await sleep(wait);
+    waited += wait;
+    report = await pass();
+  }
+  return report;
+}
+
+/** Tries a step makes after the Deployment answers a server error before the step is recorded as failed. */
+export const SERVER_FAULT_RETRIES = 3;

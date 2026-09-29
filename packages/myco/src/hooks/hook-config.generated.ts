@@ -533,6 +533,7 @@ export const HOOK_CONFIG: Readonly<Record<string, HookConfigEntry>> = {
       ],
       "sessionIdPattern": "[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}",
       "transcriptCwdPath": "payload.cwd",
+      "transcriptRepositoryPath": "payload.git.repository_url",
       "retention": "harness"
     },
     "capturePrompts": {
