@@ -7,9 +7,10 @@
  *
  * A person's words arrive wrapped: `<user_query>` holds what they typed, beside
  * blocks the agent adds (`<timestamp>`, `<image_files>`, `<attached_files>`).
- * A user line that is nothing but such a block (`<git_status>`, the subagent
- * catalogue) is context the agent injected, not a prompt. Cursor masks its
- * reasoning in assistant text with a literal `[REDACTED]`, which is dropped.
+ * A user line that is nothing but such blocks (`<git_status>`, the subagent
+ * catalogue) is context the agent injected, not a prompt; any other user line
+ * with no `<user_query>` keeps its text as typed. Cursor masks its reasoning
+ * in assistant text with a literal `[REDACTED]`, dropped wherever it stands.
  *
  * Cursor's transcript carries NO tool results. That is a property of the
  * format, not of any one file, so this parser declares `no_tool_results` and a
@@ -30,21 +31,37 @@ const responseIdAt = (sessionId: string, offset: number): Promise<string> => uui
 const TURN_ENDED = 'turn_ended';
 
 /**
- * What the person typed: the `<user_query>` block when the line carries one,
- * else the text left once every wrapped block is removed — nothing, for a line
- * that is only injected context.
+ * A block the agent adds around or instead of what a person typed. Cursor
+ * names every one in snake_case (`<git_status>`, `<image_files>`,
+ * `<available_subagent_types>`), besides `<timestamp>`; a tag a person types,
+ * such as `<b>`, is neither.
+ */
+const AGENT_BLOCK = String.raw`<((?:[a-z]+_)+[a-z]+|timestamp)>[\s\S]*?</\1>`;
+const ONLY_AGENT_BLOCKS = new RegExp(`^(?:\\s*${AGENT_BLOCK})+\\s*$`);
+
+/**
+ * What the person typed: every `<user_query>` block the line carries, in
+ * order; else, for a line with none, its text as typed — or nothing, when the
+ * line is only blocks the agent injected.
  */
 export function promptTextOf(text: string): string {
-  const query = /<user_query>\s*([\s\S]*?)\s*<\/user_query>/.exec(text);
-  if (query !== null) return query[1].trim();
-  return text.replace(/<([a-z_]+)>[\s\S]*?<\/\1>/g, '').trim();
+  const queries = [...text.matchAll(/<user_query>\s*([\s\S]*?)\s*<\/user_query>/g)].map((m) => m[1].trim()).filter((q) => q !== '');
+  if (queries.length > 0) return queries.join('\n\n');
+  return ONLY_AGENT_BLOCKS.test(text) ? '' : text.trim();
 }
 
-/** Assistant text with Cursor's `[REDACTED]` reasoning masks removed. */
+const REDACTED = /[ \t]*\[REDACTED\][ \t]*/g;
+
+/** Assistant text with Cursor's `[REDACTED]` reasoning masks removed wherever they stand. */
 export function responseTextOf(text: string): string {
   return text
-    .replace(/(^|\n)\s*\[REDACTED\]\s*(?=\n|$)/g, '$1')
-    .replace(/\s*\[REDACTED\]\s*$/g, '')
+    .split('\n')
+    .flatMap((line) => {
+      if (!line.includes('[REDACTED]')) return [line];
+      const kept = line.replace(REDACTED, ' ').trim();
+      return kept === '' ? [] : [kept];
+    })
+    .join('\n')
     .replace(/\n{3,}/g, '\n\n')
     .trim();
 }

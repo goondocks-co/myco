@@ -2,7 +2,8 @@
  * An owner's request to read stored transcripts again, after a parser fix.
  *
  * `POST /api/transcripts/reread` with `{ agent }` rereads every transcript that
- * agent's parser reads; with `{ projectId, sessionId }`, one session's. It
+ * agent's parser reads; with `{ projectId, sessionId }`, one session's, in a
+ * Project the owner can see (an unknown Project answers 404). It
  * rewinds the parse (`rereadTranscripts`), wakes the Deployment so the tick
  * starts on it, and answers how many transcripts it rewound. The parse itself
  * runs in the tick under its ordinary budget, not in this request.
@@ -12,7 +13,7 @@ import type { OwnerContext } from '../context.js';
 import { rereadTranscripts, type RereadSelector } from '../ingest/parse.js';
 import { parserFor } from '../ingest/parsers/registry.js';
 import { emit } from '../telemetry.js';
-import { badRequest, ok, readJsonObject } from './scope.js';
+import { badRequest, notFound, ok, readJsonObject, resolveProjectScope } from './scope.js';
 
 const ID = /^[A-Za-z0-9._:-]{1,128}$/;
 
@@ -33,6 +34,12 @@ function selectorOf(body: Record<string, unknown> | null): RereadSelector | stri
 export async function handleRereadTranscripts(env: ServerEnv, ctx: OwnerContext): Promise<Response> {
   const selector = selectorOf(await readJsonObject(ctx.request));
   if (typeof selector === 'string') return badRequest(selector);
+  // A session is named inside a Project, and the Project is resolved as every project-scoped owner route resolves it.
+  if ('projectId' in selector) {
+    const scope = await resolveProjectScope(env.db, ctx.member, selector.projectId);
+    if (scope === null) return notFound();
+    selector.projectId = scope.projectId;
+  }
   const reread = await rereadTranscripts(env.db, selector);
   emit({ kind: 'transcripts_reread_requested', actor: ctx.member.id, transcripts: reread });
   try { await env.wake?.(); } catch { /* the clock's floor still wakes the Deployment */ }

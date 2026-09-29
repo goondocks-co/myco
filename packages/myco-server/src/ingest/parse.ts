@@ -80,15 +80,15 @@ export const TRANSCRIPT_PRODUCER = { adapter: TRANSCRIPT_PARSE_ADAPTER, version:
  * still being written. It is not a fault: the transcript leaves the queue, so
  * it neither holds back the transcripts behind it nor keeps the Deployment
  * awake, and the next segment to arrive puts it back (`PENDING_TRANSCRIPTS`).
- * `parse_failed_at` then holds the receipt time of the last bytes the wait
- * saw, so any later receipt is later than it.
+ * `parse_awaited_size` holds the size that pass read, so the wait is keyed on
+ * bytes rather than on a clock.
  */
 export const AWAITING_BYTES = 'awaiting_bytes';
 
 /**
  * Which transcripts still owe a pass: bytes unread, and either no failure, a
- * failure recorded against an older parser, or a wait on bytes that arrived
- * after the wait began (`AWAITING_BYTES`).
+ * failure recorded against an older parser, or a wait (`AWAITING_BYTES`) on a
+ * transcript that has grown past the size it waited at.
  *
  * Live transcripts are read before imported ones. `imported_at` is NULL for a
  * transcript a hook shipped, and SQLite orders NULLs first ascending, so
@@ -101,7 +101,7 @@ export const AWAITING_BYTES = 'awaiting_bytes';
  * than it takes leaves a transcript a newer parser has reopened unread until
  * something else wakes the tick.
  */
-export const PENDING_TRANSCRIPTS = `parsed_offset < size AND (parse_error IS NULL OR parser_version < ? OR (parse_error = '${AWAITING_BYTES}' AND last_received_at > parse_failed_at))`;
+export const PENDING_TRANSCRIPTS = `parsed_offset < size AND (parse_error IS NULL OR parser_version < ? OR (parse_error = '${AWAITING_BYTES}' AND size > COALESCE(parse_awaited_size, -1)))`;
 
 /** The transcript a pass works on. */
 interface ParseTarget {
@@ -193,16 +193,75 @@ async function stop(db: RelationalStore, target: ParseTarget, classifier: ParseF
 }
 
 /**
- * Take a transcript out of the queue until more of it arrives: only while it
- * still holds exactly the bytes this pass read, so a segment landing during
- * the pass keeps it queued.
+ * Take a transcript out of the queue until it grows past the size this pass
+ * read. A segment that lands while the pass runs has already grown it past
+ * that size, so the transcript stays queued.
  */
-async function awaitBytes(db: RelationalStore, target: ParseTarget): Promise<void> {
+async function awaitBytes(db: RelationalStore, target: ParseTarget, now: number): Promise<void> {
   const statement = db
-    .prepare(`UPDATE transcripts SET parse_error = ?, parse_failed_at = last_received_at, parser_version = ? WHERE project_id = ? AND transcript_id = ? AND size = ?`)
-    .bind(AWAITING_BYTES, PARSER_VERSION, target.projectId, target.transcriptId, target.size);
+    .prepare(`UPDATE transcripts SET parse_error = ?, parse_awaited_size = ?, parse_failed_at = ?, parser_version = ? WHERE project_id = ? AND transcript_id = ?`)
+    .bind(AWAITING_BYTES, target.size, now, PARSER_VERSION, target.projectId, target.transcriptId);
   await finalizePass(db, target, statement);
   emit({ kind: 'transcript_awaiting_bytes', projectId: target.projectId, transcriptId: target.transcriptId, offset: target.parsedOffset });
+}
+
+/** A segment a pass read: where it starts, when its bytes were sent, and the bytes themselves. */
+interface HeldSegment {
+  baseOffset: number;
+  createdAt: number;
+  bytes: Uint8Array;
+}
+
+/**
+ * Each line with the time its format leaves undated: the time its segment was
+ * sent (the segment event's own date, which the segment row copies), plus its
+ * position among the segment's lines in milliseconds.
+ *
+ * A line is written before the segment that carries it is sent, so the
+ * segment's time is the nearest one the Deployment holds, on every channel.
+ * The position keeps the lines of one segment in their order under the
+ * `created_at, id` order every read of turns sorts by; the same line gets the
+ * same position whichever pass reads it: it is counted from the segment's
+ * first byte, not from where a pass began. Lines of two
+ * segments keep their order while a segment holds fewer lines than the
+ * milliseconds between it and the next. A line that carries its own time
+ * keeps it (`lineTime`).
+ */
+function datedByPosition(lines: readonly ParsedLine[], held: readonly HeldSegment[]): ParsedLine[] {
+  return lines.map((line) => {
+    const segment = held.find((s) => line.offset >= s.baseOffset && line.offset < s.baseOffset + s.bytes.length);
+    if (segment === undefined) return line;
+    let position = 0;
+    const before = segment.bytes.subarray(0, line.offset - segment.baseOffset);
+    for (let at = before.indexOf(0x0a); at >= 0; at = before.indexOf(0x0a, at + 1)) position += 1;
+    return { ...line, undatedAt: segment.createdAt + position };
+  });
+}
+
+/**
+ * Move a cursor no held segment covers to the first byte that is still held,
+ * or to the end when none is. The bytes between are gone and nothing can read
+ * them; stopping would leave the transcript unable to take the segments that
+ * arrive after it. A header those bytes held is recorded as absent, so the
+ * pass after this one reads on without it.
+ */
+async function skipUnheld(
+  db: RelationalStore, target: ParseTarget, parser: NonNullable<ReturnType<typeof parserFor>>, nextHeld: number | null,
+  recoveringHeader: boolean, now: number, calls: number,
+): Promise<PassReport> {
+  if (recoveringHeader) {
+    await db.prepare('UPDATE transcripts SET parser_context = ? WHERE project_id = ? AND transcript_id = ?')
+      .bind(JSON.stringify(parser.headerContext?.([]) ?? {}), target.projectId, target.transcriptId).run();
+    return { derived: 0, calls: calls + 1, nextOffset: null, failure: null };
+  }
+  const to = Math.max(nextHeld ?? target.size, target.parsedOffset);
+  const statement = db
+    .prepare(`UPDATE transcripts SET parsed_offset = MAX(parsed_offset, ?), parsed_at = ?, open_prompt_id = NULL, parse_error = NULL, parse_failed_at = NULL, parse_awaited_size = NULL
+               WHERE project_id = ? AND transcript_id = ?`)
+    .bind(to, now, target.projectId, target.transcriptId);
+  await finalizePass(db, target, statement);
+  emit({ kind: 'transcript_bytes_unheld', projectId: target.projectId, transcriptId: target.transcriptId, from: target.parsedOffset, to });
+  return { derived: 0, calls: calls + 1, nextOffset: to, failure: null };
 }
 
 /**
@@ -333,29 +392,25 @@ export async function parseOnce(env: Pick<ServerEnv, 'db' | 'blobs'>, target: Pa
   const recoveringHeader = needsHeader && target.parsedOffset > 0;
   const readOffset = recoveringHeader ? 0 : target.parsedOffset;
   const { results: segments } = await env.db
-    .prepare(`SELECT s.base_offset, s.length, s.blob_key, e.channel, e.created_at, ${registeredObjectKeySql('s.project_id', 's.blob_key')} AS object_key
+    .prepare(`SELECT s.base_offset, s.length, s.blob_key, COALESCE(e.created_at, s.created_at) AS created_at, ${registeredObjectKeySql('s.project_id', 's.blob_key')} AS object_key
                 FROM transcript_segments s
                 LEFT JOIN events e ON e.project_id = s.project_id AND e.event_id = s.event_id
                WHERE s.project_id = ? AND s.transcript_id = ? AND s.base_offset + s.length > ?
                ORDER BY s.base_offset`)
     .bind(target.projectId, target.transcriptId, readOffset)
-    .all<{ base_offset: number; length: number; blob_key: string; object_key: string | null; channel: string | null; created_at: number | null }>();
+    .all<{ base_offset: number; length: number; blob_key: string; object_key: string | null; created_at: number }>();
   calls += 1;
 
   const taken = segmentsToRead(
-    segments.map((s) => ({ baseOffset: s.base_offset, length: s.length, blobKey: s.blob_key, objectKey: s.object_key })),
+    segments.map((s) => ({ baseOffset: s.base_offset, length: s.length, blobKey: s.blob_key, objectKey: s.object_key, createdAt: s.created_at })),
     readOffset, Number.POSITIVE_INFINITY, TRANSCRIPT_PARSE_SEGMENTS_PER_READ,
   );
-  if (taken.length === 0) {
-    // Nothing held covers the cursor: the bytes it names are gone, and waiting would hold every later transcript back.
-    await stop(env.db, target, 'blob_absent', now);
-    return { derived: 0, calls: calls + 1, nextOffset: null, failure: 'blob_absent' };
-  }
+  if (taken.length === 0) return skipUnheld(env.db, target, parser, segments[0]?.base_offset ?? null, recoveringHeader, now, calls);
 
   const chunks: Uint8Array[] = [];
   let unreadBytes = 0;
   let hasCompleteLine = false;
-  let readEnd = readOffset;
+  const held: HeldSegment[] = [];
   for (const segment of taken) {
     const bytes = await segmentBytes(env, segment.objectKey);
     calls += 1;
@@ -374,8 +429,8 @@ export async function parseOnce(env: Pick<ServerEnv, 'db' | 'blobs'>, target: Pa
       return { derived: 0, calls: calls + 1, nextOffset: null, failure: 'parse' };
     }
     chunks.push(unread);
+    held.push({ baseOffset: segment.baseOffset, createdAt: segment.createdAt, bytes });
     hasCompleteLine ||= unread.includes(0x0a);
-    readEnd = segment.baseOffset + segment.length;
     if (unreadBytes >= TRANSCRIPT_PARSE_BYTES_PER_READ && hasCompleteLine) break;
   }
 
@@ -406,7 +461,7 @@ export async function parseOnce(env: Pick<ServerEnv, 'db' | 'blobs'>, target: Pa
       return { derived: 0, calls: calls + 1, nextOffset: null, failure: 'parse' };
     }
     // Everything past the cursor is one record still being written.
-    await awaitBytes(env.db, target);
+    await awaitBytes(env.db, target, now);
     return { derived: 0, calls: calls + 1, nextOffset: null, failure: AWAITING_BYTES };
   }
 
@@ -420,13 +475,7 @@ export async function parseOnce(env: Pick<ServerEnv, 'db' | 'blobs'>, target: Pa
       .bind(JSON.stringify(transcriptMeta), target.projectId, target.transcriptId).run();
     return { derived: 0, calls: calls + 1, nextOffset: null, failure: null };
   }
-  // Undated imported lines use the timestamp of the segment containing their first byte.
-  const imported = segments.filter((segment) => segment.channel === 'import'
-    && segment.base_offset < readEnd && segment.base_offset + segment.length > readOffset);
-  const lines = windowLines.map((line) => {
-    const segment = imported.find((s) => line.offset >= s.base_offset && line.offset < s.base_offset + s.length);
-    return segment?.created_at == null ? line : { ...line, undatedAt: segment.created_at };
-  });
+  const lines = datedByPosition(windowLines, held);
   const events = await parser.parse({ lines, sessionId: target.sessionId, now, openPromptId: target.openPromptId ?? undefined, transcriptMeta });
   const ctx = { projectId: target.projectId, machineId: target.machineId, tokenId: target.tokenId, bodyBytes: 0, now, writeOrigin: 'server' as const };
 
@@ -490,7 +539,7 @@ export async function parseOnce(env: Pick<ServerEnv, 'db' | 'blobs'>, target: Pa
 
   const advance = env.db
     .prepare(`UPDATE transcripts SET parsed_offset = MAX(parsed_offset, ?), parsed_at = ?, parser_version = ?, fidelity = COALESCE(fidelity, ?), open_prompt_id = ?,
-                 parser_context = COALESCE(parser_context, ?), parse_error = NULL, parse_failed_at = NULL
+                 parser_context = COALESCE(parser_context, ?), parse_error = NULL, parse_failed_at = NULL, parse_awaited_size = NULL
                WHERE project_id = ? AND transcript_id = ?`)
     .bind(cursor, now, PARSER_VERSION, parser.fidelity, openPrompt, transcriptMeta === undefined ? null : JSON.stringify(transcriptMeta), target.projectId, target.transcriptId);
   await finalizePass(env.db, target, advance);
@@ -500,16 +549,24 @@ export async function parseOnce(env: Pick<ServerEnv, 'db' | 'blobs'>, target: Pa
   return { derived, calls, nextOffset: cursor, failure: null };
 }
 
+/** The first byte of a transcript still held in a segment, for a statement over `transcripts`. */
+const FIRST_HELD_BYTE = `SELECT MIN(s.base_offset) FROM transcript_segments s WHERE s.project_id = transcripts.project_id AND s.transcript_id = transcripts.transcript_id`;
+
 /** Which stored transcripts to read again: every one an agent's parser reads, or one session's. */
 export type RereadSelector = { agent: string } | { projectId: string; sessionId: string };
 
 /**
- * Offer stored transcripts to the parse again from their first byte.
+ * Offer stored transcripts to the parse again from the first byte still held.
  *
  * A parser fix reaches only bytes read after it unless the sessions it already
- * read are read again; the raw bytes are kept for exactly this. The cursor, the
- * open turn, the header context and any recorded failure are cleared, and the
- * tick's own parse job does the rest under its ordinary call budget.
+ * read are read again; the raw bytes are kept for exactly this, until retention
+ * prunes the segments already read. The cursor moves back to the first segment
+ * retention left, never before it: bytes read from a later segment as if they
+ * began earlier would name every row at the wrong offset, and each would land a
+ * second time. A transcript that holds no segment is left where it stands. The
+ * open turn and any recorded failure or wait are cleared, the header context is
+ * kept (it describes the file, not the cursor), and the tick's own parse job
+ * does the rest under its ordinary call budget.
  *
  * Reading again is idempotent. Every derived event is named by its transcript
  * and the row it produces (`envelopeFor`), so a row an earlier pass landed is
@@ -523,8 +580,8 @@ export async function rereadTranscripts(db: RelationalStore, selector: RereadSel
     ? { sql: 'agent = ?', params: [selector.agent] }
     : { sql: 'project_id = ? AND session_id = ?', params: [selector.projectId, selector.sessionId] };
   const result = await db
-    .prepare(`UPDATE transcripts SET parsed_offset = 0, open_prompt_id = NULL, parser_context = NULL, parse_error = NULL, parse_failed_at = NULL
-               WHERE ${where.sql} AND size > 0`)
+    .prepare(`UPDATE transcripts SET parsed_offset = (${FIRST_HELD_BYTE}), open_prompt_id = NULL, parse_error = NULL, parse_failed_at = NULL, parse_awaited_size = NULL
+               WHERE ${where.sql} AND (${FIRST_HELD_BYTE}) IS NOT NULL`)
     .bind(...where.params)
     .run();
   const reread = result.meta.changes;

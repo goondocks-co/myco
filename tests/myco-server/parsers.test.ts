@@ -15,6 +15,7 @@ import { PARSERS, parserFor } from '@myco-server-worker/ingest/parsers/registry.
 import { FIDELITIES, type DerivedEvent, type ParsedLine } from '@myco-server-worker/ingest/parsers/index.js';
 import { kindSpec, parsePayload } from '@myco-server-worker/ingest/kinds.js';
 import { uuidv5 } from '@myco-server-worker/hash.js';
+import { promptTextOf, responseTextOf } from '@myco-server-worker/ingest/parsers/cursor.js';
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 const FIXTURES = path.join(REPO_ROOT, 'tests', 'fixtures');
@@ -315,6 +316,25 @@ describe('codex parser', () => {
 });
 
 describe('cursor parser', () => {
+  it('keeps what the person typed: every <user_query> in a line, and tag-like text in a line without one', () => {
+    expect(promptTextOf('<timestamp>t</timestamp>\n<user_query>\none\n</user_query>\n<user_query>\ntwo\n</user_query>')).toBe('one\n\ntwo');
+    expect(promptTextOf('please look at <b>this</b> code')).toBe('please look at <b>this</b> code');
+    expect(promptTextOf('explain the <user_info>x</user_info> block')).toBe('explain the <user_info>x</user_info> block');
+    expect(promptTextOf('why is the daemon restarting')).toBe('why is the daemon restarting');
+  });
+
+  it('reads a line that is only blocks the agent injected as no prompt at all', () => {
+    expect(promptTextOf('<git_status>\nclean\n</git_status>')).toBe('');
+    expect(promptTextOf('<available_subagent_types>\nx\n</available_subagent_types>\n<timestamp>t</timestamp>')).toBe('');
+  });
+
+  it('drops a [REDACTED] mask wherever it stands in a reply', () => {
+    expect(responseTextOf('I will [REDACTED] check.\n[REDACTED] more')).toBe('I will check.\nmore');
+    expect(responseTextOf('Checking the service log.\n\n[REDACTED]')).toBe('Checking the service log.');
+    expect(responseTextOf('[REDACTED]')).toBe('');
+    expect(responseTextOf('first\n[REDACTED]\n\nsecond')).toBe('first\n\nsecond');
+  });
+
   it('declares the fidelity its format can support and derives no tool calls', async () => {
     expect(PARSERS.cursor.fidelity).toBe('no_tool_results');
     const events = await parseFixture('cursor');

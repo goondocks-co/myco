@@ -22,6 +22,7 @@ import { search } from './scenarios/search.ts';
 import { grants } from './scenarios/grants.ts';
 import { workerWire } from './scenarios/worker-wire.ts';
 import { codexRecording } from './scenarios/codex-recording.ts';
+import { transcriptReread } from './scenarios/transcript-reread.ts';
 import { toolBlobRetention } from './scenarios/tool-blob-retention.ts';
 import { titlingBackfill } from './scenarios/titling-backfill.ts';
 import { sessionEnd } from './scenarios/session-end.ts';
@@ -39,7 +40,7 @@ import { parseShard, selectShard } from '../../scripts/test-shards.mjs';
 import durations from '../../scripts/test-durations.json';
 import { writeFileSync } from 'node:fs';
 
-const scenarios = [restoreContinuation, repositories, canopy, skillCandidates, sessionsTitling, sessionTurns, plans, spores, recall, backupRestore, tick, dispatchQueue, scheduledTasks, cortex, replacedRun, search, grants, importParity, legacyImportParity, workerWire, codexRecording, toolBlobRetention, titlingBackfill, sessionEnd, projectCounts, objectLifecycle, tokenRefresh, captureVolume, memberSettings, memberStatus, embeddingRevisions, githubLink, recallGold];
+const scenarios = [restoreContinuation, repositories, canopy, skillCandidates, sessionsTitling, sessionTurns, plans, spores, recall, backupRestore, tick, dispatchQueue, scheduledTasks, cortex, replacedRun, search, grants, importParity, legacyImportParity, workerWire, codexRecording, transcriptReread, toolBlobRetention, titlingBackfill, sessionEnd, projectCounts, objectLifecycle, tokenRefresh, captureVolume, memberSettings, memberStatus, embeddingRevisions, githubLink, recallGold];
 const DEFAULT_SCENARIO_DURATION_MS = 15_000;
 
 if (!process.env.MYCO_PARITY) {
