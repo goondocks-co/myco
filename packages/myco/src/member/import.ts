@@ -157,6 +157,8 @@ export interface ImportReport {
   /** The recorded directories of the unbound transcripts, with how many each holds. */
   unboundDirectories: Record<string, number>;
   refused?: string;
+  /** Why a pass that ended on a retryable answer was not tried again. */
+  stoppedBy?: string;
 }
 
 export interface Candidate {
@@ -499,27 +501,72 @@ export function paced(fetchImpl: FetchLike, perMinute: number | undefined, sleep
   };
 }
 
+/** The longest a step of an import waits out rate limits and unreachable Deployments, in all, before it is recorded as failed. */
+export const IMPORT_WAIT_CAP_MS = 30 * 60_000;
+/** HTTP statuses waited out however often they come: the rate limit, and a Deployment that asks to be retried. */
+const WAIT_STATUSES: ReadonlySet<number> = new Set([429, 503]);
+
+/**
+ * What a retryable answer calls for, by the HTTP status it carried: `wait` for
+ * a rate limit, a Deployment asking to be retried, or no answer at all (a
+ * network fault); `fault` for any other server error, retried a few times;
+ * `fail` for a status no retry changes (a request the Deployment rejects).
+ */
+export function retryVerdict(status: number | undefined): 'wait' | 'fault' | 'fail' {
+  if (status === undefined || WAIT_STATUSES.has(status)) return 'wait';
+  return status >= 500 ? 'fault' : 'fail';
+}
+
+/** A fetch that records the status of the last response it received, undefined for a request that got none. */
+export function observedFetch(fetchImpl: FetchLike): { fetch: FetchLike; lastStatus: () => number | undefined } {
+  let last: number | undefined;
+  return {
+    fetch: async (input, init) => {
+      last = undefined;
+      const res = await fetchImpl(input, init);
+      last = res.status;
+      return res;
+    },
+    lastStatus: () => last,
+  };
+}
+
 /** Whether a pass stopped on an answer that a later pass can get past. */
 export const endedOnRetry = (report: ImportReport): boolean => report.projects.some((p) => p.endedBy === 'retry');
 
 /**
- * Run passes until none stops on a retryable answer (a rate limit, a transport
- * fault), waiting between them. Every pass re-plans from what the Deployment
- * holds, so a session a pass finished is not sent again and reads as already
- * held in the next pass's report. The last report is answered; one still ended
- * by `retry` after the pass limit says so.
+ * Run passes until none stops on a retryable answer, waiting between them.
+ * Every pass re-plans from what the Deployment holds, so a session a pass
+ * finished is not sent again and reads as already held in the next pass's
+ * report. A rate limit or an unreachable Deployment is waited out for up to
+ * `IMPORT_WAIT_CAP_MS` in all; another server error is retried a few times; a
+ * status no retry changes stops at once. The last report is answered, with
+ * `stoppedBy` naming why a pass still ended on a retryable answer.
  */
 export async function importUntilSettled(
   opts: ImportOptions, deps: ImportDeps & { maxPasses?: number; onRetry?: (attempt: number, waitMs: number) => void },
 ): Promise<ImportReport> {
   const sleep = deps.sleep ?? pause;
   const maxPasses = deps.maxPasses ?? IMPORT_MAX_PASSES;
-  let report = await runImport(opts, deps);
-  for (let attempt = 1; attempt < maxPasses && report.refused === undefined && endedOnRetry(report); attempt++) {
-    const wait = retryWaitMs(attempt);
+  const observed = observedFetch(deps.fetch ?? globalThis.fetch);
+  const pass = () => runImport(opts, { ...deps, fetch: observed.fetch });
+  let report = await pass();
+  let waited = 0;
+  let faults = 0;
+  for (let attempt = 1; report.refused === undefined && endedOnRetry(report); attempt++) {
+    const status = observed.lastStatus();
+    const verdict = retryVerdict(status);
+    if (verdict === 'fail') return { ...report, stoppedBy: `the Deployment answered ${status}` };
+    if (verdict === 'fault' && ++faults > SERVER_FAULT_RETRIES) return { ...report, stoppedBy: `the Deployment kept failing (${status})` };
+    const wait = retryWaitMs(verdict === 'fault' ? faults : attempt);
+    if (attempt >= maxPasses || waited + wait > IMPORT_WAIT_CAP_MS) return { ...report, stoppedBy: 'the Deployment kept asking to wait' };
     deps.onRetry?.(attempt, wait);
     await sleep(wait);
-    report = await runImport(opts, deps);
+    waited += wait;
+    report = await pass();
   }
   return report;
 }
+
+/** Tries a step makes after the Deployment answers a server error before the step is recorded as failed. */
+export const SERVER_FAULT_RETRIES = 3;

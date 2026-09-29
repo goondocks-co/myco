@@ -14,11 +14,14 @@
  * the bounds this Deployment sets, the sessions it refuses, and the bytes it
  * holds.
  *
- * **Nothing here is an authority.** Every rule it applies is applied again by
- * the admission the write path already carries — tenancy, tombstones and
- * the import switch — so a member that skipped this route writes exactly
- * what a member that used it would. It exists to stop bytes being spent on
- * writes that will be refused, not to decide whether they may be.
+ * **Nothing here is an authority but one rule.** Every other rule it applies
+ * is applied again by the admission the write path already carries — tenancy,
+ * tombstones and the import switch — so a member that skipped this route
+ * writes exactly what a member that used it would. It exists to stop bytes
+ * being spent on writes that will be refused, not to decide whether they may
+ * be. The one rule of its own: a session whose prompts a Myco 1.4 vault import
+ * sent (`vault_sourced`) takes no transcript, whichever machine offers one:
+ * the transcript would hold the same conversation a second time.
  *
  * Two of the three bounds cannot be re-derived from a single write. A window
  * and a per-harness count are properties of a whole pass, so they are applied
@@ -29,16 +32,17 @@ import type { ServerEnv } from '../core/adapters.js';
 import type { RouteContext } from '../context.js';
 import { IMPORT_PLAN_MAX_CANDIDATES } from '../constants.js';
 import { importPolicy, IMPORT_DISABLED } from '../core/import-policy.js';
-import { forbidSessions, tombstonedAmong } from '../core/tombstones.js';
+import { tombstonedAmong } from '../core/tombstones.js';
 import { heldTranscriptsFor, type HeldTranscript } from '../read/transcript.js';
-import { heldSessionIds } from '../read/sessions.js';
+import { heldSessionIds, sessionsWithImportedPrompts } from '../read/sessions.js';
+import { LEGACY_IMPORT_ADAPTER } from '@goondocks/myco-shared/member-protocol';
 import { refused } from '../ingest/events.js';
 import { emit, refusal } from '../telemetry.js';
 
 const DAY_MS = 86_400_000;
 
 /** Why a candidate is not being shipped. Each is a stable name an operator and a report read; none is a caller's text. Exported as a value so a reader can enumerate them rather than restate them. */
-export const SKIP_REASONS = ['held', 'tombstoned', 'replaced', 'session_held', 'window', 'cap'] as const;
+export const SKIP_REASONS = ['held', 'tombstoned', 'vault_sourced', 'replaced', 'session_held', 'window', 'cap'] as const;
 export type SkipReason = (typeof SKIP_REASONS)[number];
 
 /** What the member offers: an identity it minted, the file's size and age, and the digest of its first bytes. */
@@ -81,7 +85,7 @@ function parseCandidate(value: unknown): Candidate | null {
  * spent in that order, and this walks the offer as given. No candidate is
  * skipped for the bytes it would store: capture is never refused for volume.
  */
-function planCandidates(candidates: readonly Candidate[], held: readonly HeldTranscript[], tombstoned: ReadonlySet<string>, now: number, windowDays: number, maxPerAgent: number): {
+function planCandidates(candidates: readonly Candidate[], held: readonly HeldTranscript[], tombstoned: ReadonlySet<string>, vaultSourced: ReadonlySet<string>, now: number, windowDays: number, maxPerAgent: number): {
   answers: CandidateAnswer[];
   counts: Record<string, number>;
   /** Candidates admitted against a held transcript that carries no digest to compare them with. */
@@ -110,6 +114,8 @@ function planCandidates(candidates: readonly Candidate[], held: readonly HeldTra
 
   for (const c of candidates) {
     if (tombstoned.has(c.sessionId)) { skip(c, 'tombstoned'); continue; }
+    // A session whose prompts a vault import sent has its content: a transcript would hold it twice.
+    if (vaultSourced.has(c.sessionId)) { skip(c, 'vault_sourced'); continue; }
     if (c.modifiedAt < cutoff) { skip(c, 'window'); continue; }
 
     const mine = byIdentity.get(c.transcriptId);
@@ -179,8 +185,9 @@ export async function handleImportPlan(env: ServerEnv, ctx: RouteContext): Promi
   // holds and the sessions it has deleted.
   const held = await heldTranscriptsFor(env.db, { projectId: ctx.projectId }, sessionIds, identities);
   const tombstoned = await tombstonedAmong(env.db, ctx.projectId, sessionIds);
+  const vaultSourced = await sessionsWithImportedPrompts(env.db, { projectId: ctx.projectId }, sessionIds, LEGACY_IMPORT_ADAPTER);
 
-  const { answers, counts, uncompared } = planCandidates(candidates, held, tombstoned, ctx.now, policy.windowDays, policy.maxPerAgent);
+  const { answers, counts, uncompared } = planCandidates(candidates, held, tombstoned, vaultSourced, ctx.now, policy.windowDays, policy.maxPerAgent);
   emit({ kind: 'import_planned', projectId: ctx.projectId, offered: candidates.length, admitted: counts.take ?? 0 });
   if (uncompared > 0) emit({ kind: 'import_identity_uncompared', projectId: ctx.projectId, pairs: uncompared });
   return Response.json({ persisted: true, policy, candidates: answers, counts, ...sessions });
@@ -195,39 +202,22 @@ function parseProbe(value: unknown): string[] | null {
 
 /**
  * What the Project holds of each probed session: a row, a transcript, a
- * tombstone. A caller importing from a record of its own asks this before
+ * tombstone, prompts a vault import sent. A caller importing from a record of
+ * its own asks this before
  * sending a session's facts or content, so a session already captured keeps
  * what live capture recorded and none is held twice.
  */
-async function sessionsHeld(env: ServerEnv, projectId: string, sessionIds: readonly string[]): Promise<{ held: string[]; withTranscript: string[]; tombstoned: string[] }> {
+async function sessionsHeld(env: ServerEnv, projectId: string, sessionIds: readonly string[]): Promise<{ held: string[]; withTranscript: string[]; tombstoned: string[]; vaultSourced: string[] }> {
   const scope = { projectId };
-  const [held, transcripts, tombstoned] = await Promise.all([
+  const [held, transcripts, tombstoned, vaultSourced] = await Promise.all([
     heldSessionIds(env.db, scope, sessionIds),
     heldTranscriptsFor(env.db, scope, sessionIds, []),
     tombstonedAmong(env.db, projectId, sessionIds),
+    sessionsWithImportedPrompts(env.db, scope, sessionIds, LEGACY_IMPORT_ADAPTER),
   ]);
-  return { held: [...held].sort(), withTranscript: [...new Set(transcripts.map((t) => t.sessionId))].sort(), tombstoned: [...tombstoned].sort() };
+  return {
+    held: [...held].sort(), withTranscript: [...new Set(transcripts.map((t) => t.sessionId))].sort(),
+    tombstoned: [...tombstoned].sort(), vaultSourced: [...vaultSourced].sort(),
+  };
 }
 
-/** The longest reason a forbidden session records. */
-const MAX_FORBID_REASON_CHARS = 200;
-
-/**
- * Record sessions an import must never bring: sessions a record the member
- * holds (a 1.4 vault) says were deleted. Each becomes a tombstone the import
- * plan and every write path refuse, on any machine. A session the Project
- * already holds is answered `held` and left as it is: deleting captured
- * history is the owner's, on the owner's route.
- */
-export async function handleImportTombstones(env: ServerEnv, ctx: RouteContext): Promise<Response> {
-  let body: unknown;
-  try { body = JSON.parse(ctx.body); } catch { return Response.json(refused(ctx, BAD_BODY)); }
-  if (!isRecord(body)) return Response.json(refused(ctx, BAD_BODY));
-  const sessionIds = parseProbe(body.sessions);
-  if (sessionIds === null || sessionIds.length === 0) return Response.json(refused(ctx, BAD_BODY));
-  if (sessionIds.length > IMPORT_PLAN_MAX_CANDIDATES) return Response.json(refused(ctx, TOO_MANY));
-  const reason = typeof body.reason === 'string' && body.reason.length > 0 ? body.reason.slice(0, MAX_FORBID_REASON_CHARS) : null;
-  const outcome = await forbidSessions(env.db, ctx.projectId, sessionIds, ctx.memberId, ctx.now, reason);
-  emit({ kind: 'import_sessions_forbidden', projectId: ctx.projectId, recorded: outcome.recorded.length, held: outcome.held.length });
-  return Response.json({ persisted: true, recorded: outcome.recorded.sort(), held: outcome.held.sort() });
-}

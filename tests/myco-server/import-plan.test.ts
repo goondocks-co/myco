@@ -16,7 +16,8 @@
  */
 import { jsonBody, objectAt } from '../helpers/json-body.js';
 import { describe, expect, it } from 'bun:test';
-import { handleImportPlan, handleImportTombstones } from '@myco-server-worker/api/import.js';
+import { handleImportPlan } from '@myco-server-worker/api/import.js';
+import { LEGACY_IMPORT_ADAPTER } from '@goondocks/myco-shared/member-protocol';
 import { IMPORT_MAX_SESSIONS_DEFAULT, IMPORT_WINDOW_DAYS_DEFAULT } from '@myco-server-worker/core/import-policy.js';
 import { RETIRED_BYTE_CEILING } from './helpers/fixtures.js';
 import { issueMemberToken } from '@myco-server-worker/auth/tokens.js';
@@ -238,8 +239,10 @@ describe('what a Project holds of named sessions', () => {
     r.hold('s-transcript', 'tx_1', 100, null);
     r.sqlite.run(`INSERT INTO sessions (project_id, session_id, machine_id, created_by_token_id, first_received_at, last_received_at) VALUES (?, 's-row', ?, ?, ?, ?)`, [PROJECT, MACHINE, r.tokenId, NOW, NOW]);
     r.tombstone('s-dead');
+    r.sqlite.run(`INSERT INTO events (project_id, event_id, session_id, token_id, kind, channel, payload, envelope_hash, created_at, received_at, producer_adapter, producer_version, payload_bytes, ingest_nonce)
+                  VALUES (?, 'e-vault', 's-row', ?, 'prompt', 'import', '{}', 'h', ?, ?, ?, '1', 2, 'n')`, [PROJECT, r.tokenId, NOW, NOW, LEGACY_IMPORT_ADAPTER]);
     const body = await r.plan([], { sessions: ['s-transcript', 's-row', 's-dead', 's-none'] });
-    expect(body.sessions).toEqual({ held: ['s-dead', 's-row', 's-transcript'], withTranscript: ['s-transcript'], tombstoned: ['s-dead'] });
+    expect(body.sessions).toEqual({ held: ['s-dead', 's-row', 's-transcript'], withTranscript: ['s-transcript'], tombstoned: ['s-dead'], vaultSourced: ['s-row'] });
     expect((await r.plan([])).sessions).toBeUndefined();
     expect((await r.plan([], { sessions: [''] })).code).toBe('parse');
   });
@@ -257,17 +260,16 @@ describe('what a Project holds of named sessions', () => {
   });
 });
 
-describe('sessions an import must never bring', () => {
-  it('records a tombstone for a session the Project does not hold, and leaves a held one as it is', async () => {
+
+describe('a session whose prompts a vault import sent', () => {
+  it('takes no transcript, whichever machine offers one', async () => {
     const r = await rig();
-    r.hold('s-held', 'tx_1', 100, null);
-    const body = JSON.stringify({ sessions: ['s-gone', 's-held', 's-gone'], reason: 'deleted in Myco 1.4' });
-    const ctx = { projectId: PROJECT, machineId: MACHINE, tokenId: r.tokenId, memberId: 'mem_machine_1', bodyBytes: body.length, now: NOW, body, origin: null } as never;
-    const answer = await jsonBody<Record<string, unknown>>(await handleImportTombstones(r.serverEnv, ctx));
-    expect(answer).toEqual({ persisted: true, recorded: ['s-gone'], held: ['s-held'] });
-    expect(r.sqlite.query(`SELECT session_id FROM session_tombstones`).all()).toEqual([{ session_id: 's-gone' }]);
-    expect(r.sqlite.query(`SELECT COUNT(*) AS n FROM transcripts WHERE session_id = 's-held'`).get()).toEqual({ n: 1 });
-    // The plan refuses the recorded one from then on.
-    expect((await r.answers([{ sessionId: 's-gone', transcriptId: 'tx_new' }])).get('tx_new')?.reason).toBe('tombstoned');
+    r.sqlite.run(`INSERT INTO sessions (project_id, session_id, machine_id, created_by_token_id, first_received_at, last_received_at) VALUES (?, 's-vault', ?, ?, ?, ?)`, [PROJECT, MACHINE, r.tokenId, NOW, NOW]);
+    const prompt = (producer: string, eventId: string) => r.sqlite.run(`INSERT INTO events (project_id, event_id, session_id, token_id, kind, channel, payload, envelope_hash, created_at, received_at, producer_adapter, producer_version, payload_bytes, ingest_nonce)
+                  VALUES (?, ?, 's-vault', ?, 'prompt', 'import', '{}', 'h', ?, ?, ?, '1', 2, ?)`, [PROJECT, eventId, r.tokenId, NOW, NOW, producer, eventId]);
+    prompt('claude-code', 'e-transcript-import');
+    expect((await r.answers([{ sessionId: 's-vault', transcriptId: 'tx_v' }])).get('tx_v')?.take).toBe('from');
+    prompt(LEGACY_IMPORT_ADAPTER, 'e-vault');
+    expect((await r.answers([{ sessionId: 's-vault', transcriptId: 'tx_v' }])).get('tx_v')).toEqual({ transcriptId: 'tx_v', take: 'none', reason: 'vault_sourced' });
   });
 });
