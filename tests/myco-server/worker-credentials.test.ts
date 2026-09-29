@@ -14,12 +14,15 @@ import { issueMemberToken } from '@myco-server-worker/auth/tokens.js';
 import { ensureMember } from '@myco-server-worker/auth/enrollment.js';
 import { claimNextRun, HARNESS_MEMBER_ID } from '@myco-server-worker/core/harness.js';
 import { sqliteEnv } from './helpers/fixtures.js';
+import { HARNESS_CREDENTIALS } from '@goondocks/myco-shared/harness-providers';
+import { harnessesReading, isSecretSlotName, SECRET_SLOTS } from '@goondocks/myco-shared/secret-slots';
 
 const NOW = 1_800_000_000_000;
 const WRAP_KEY = btoa(String.fromCharCode(...crypto.getRandomValues(new Uint8Array(32))));
 const API_KEY = 'sk-ant-TEST-API-KEY-VALUE-0001';
 const OAT = 'sk-ant-oat01-TEST-SUBSCRIPTION-TOKEN';
 const OPENAI_KEY = 'sk-openai-TEST-KEY-VALUE-0002';
+const CODEX_KEY = 'sk-codex-TEST-KEY-VALUE-0003';
 
 async function fixture() {
   const e = sqliteEnv();
@@ -66,15 +69,30 @@ describe('the credential a claim hands a worker', () => {
   it('opens the chosen harness\'s own provider and no other, whatever else the Deployment holds', async () => {
     const f = await fixture();
     await f.secrets.put('anthropic', API_KEY, 'mem_w', NOW);
+    await f.secrets.put('codex', CODEX_KEY, 'mem_w', NOW);
     await f.secrets.put('openai', OPENAI_KEY, 'mem_w', NOW);
     await f.secrets.put('openrouter', 'sk-or-TEST-KEY', 'mem_w', NOW);
 
-    // A harness gets its provider's key alone. A claim answering every slot the
-    // Deployment holds would put three providers' keys in one answer.
+    // A harness gets its own slot's key alone. A claim answering every slot the
+    // Deployment holds would put every provider's key in one answer.
     expect(await f.claimUnder('claude-code', NOW + 1)).toEqual({ ANTHROPIC_API_KEY: API_KEY });
-    expect(await f.claimUnder('codex', NOW + 2)).toEqual({ OPENAI_API_KEY: OPENAI_KEY });
+    expect(await f.claimUnder('codex', NOW + 2)).toEqual({ OPENAI_API_KEY: CODEX_KEY });
     expect(await f.claimUnder('opencode', NOW + 3)).toEqual({ ANTHROPIC_API_KEY: API_KEY });
     expect(await f.claimUnder('cursor', NOW + 4)).toEqual({ ANTHROPIC_API_KEY: API_KEY });
+  });
+
+  it('never hands a Codex run the key stored for embeddings, and hands it the key stored for Codex runs (#1212)', async () => {
+    const f = await fixture();
+    expect(await f.claimUnder('codex', NOW + 1)).toEqual({});
+    // An OpenAI key stored for embeddings changes nothing a Codex claim answers: the run keeps the worker's own login.
+    await f.secrets.put('openai', OPENAI_KEY, 'mem_w', NOW);
+    expect(await f.claimUnder('codex', NOW + 2)).toEqual({});
+    // The key stored for Codex runs is the one a Codex run reads.
+    await f.secrets.put('codex', CODEX_KEY, 'mem_w', NOW);
+    expect(await f.claimUnder('codex', NOW + 3)).toEqual({ OPENAI_API_KEY: CODEX_KEY });
+    // And removing it hands the run back to the worker's own login, not to the embedding key.
+    await f.secrets.delete('codex', 'mem_w', NOW);
+    expect(await f.claimUnder('codex', NOW + 4)).toEqual({});
   });
 
   it('hands a harness on a provider the Deployment does not store nothing at all', async () => {
@@ -122,5 +140,15 @@ describe('the credential a claim hands a worker', () => {
     await f.secrets.put('anthropic', API_KEY, 'mem_w', NOW);
     await f.claimUnder('codex', NOW + 1);
     expect(f.e.sqlite.query(`SELECT harness FROM agent_runs WHERE id = 'run_codex_${NOW + 1}'`).get()).toEqual({ harness: 'codex' });
+  });
+});
+
+describe('the slots a Deployment stores keys in (#1212)', () => {
+  it('gives every slot a harness reads a row of its own, and lets no harness read a slot the embedding provider reads', () => {
+    const read = Object.values(HARNESS_CREDENTIALS).map((declared) => declared.slot).filter((slot) => slot !== null);
+    expect(read.filter((slot) => !isSecretSlotName(slot!))).toEqual([]);
+    // `configured-provider.ts` opens these for embeddings; a key stored for that is nobody's login.
+    expect({ openai: harnessesReading('openai'), openrouter: harnessesReading('openrouter') }).toEqual({ openai: [], openrouter: [] });
+    expect(SECRET_SLOTS.find((slot) => slot.name === 'openai')?.alsoUsedFor).toContain('embeddings');
   });
 });

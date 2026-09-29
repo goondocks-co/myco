@@ -21,6 +21,7 @@ const leaves = (over: Record<string, Partial<{ value: unknown; updatedBy: string
 });
 const secrets = (anthropicConfigured: boolean) => ({ secrets: [
   { name: 'anthropic', configured: anthropicConfigured, readable: true, maskedValue: anthropicConfigured ? 's…c' : null, updatedAt: anthropicConfigured ? NOW : null, updatedBy: anthropicConfigured ? 'mem_1' : null },
+  { name: 'codex', configured: false, readable: true, maskedValue: null, updatedAt: null, updatedBy: null },
   { name: 'openai', configured: false, readable: true, maskedValue: null, updatedAt: null, updatedBy: null },
   { name: 'openrouter', configured: false, readable: true, maskedValue: null, updatedAt: null, updatedBy: null },
   { name: 'github', configured: false, readable: true, maskedValue: null, updatedAt: null, updatedBy: null },
@@ -146,6 +147,18 @@ describe('Deployment Settings', () => {
     fireEvent.click(within(dialog).getByRole('button', { name: 'Remove' }));
     await waitFor(() => expect(sent).toHaveLength(2));
     expect(sent[1]).toMatchObject({ method: 'DELETE', path: '/api/secrets/anthropic' });
+  });
+
+  it('names what each credential is used for, so a key stored for embeddings is not mistaken for a run\'s login (#1212)', async () => {
+    server(base({}));
+    mount('/settings');
+    await tab('Credentials');
+    const rows = await screen.findByRole('list', { name: 'Credentials' });
+    const row = (label: string) => within(rows).getByText(label).closest('li')!.textContent ?? '';
+    expect(row('Codex (OpenAI)')).toContain('Runs of Codex use this key in place of the worker\'s own login');
+    expect(row('OpenAI')).toContain('Used for embeddings, when the embedding provider is OpenAI.');
+    expect(row('OpenAI')).not.toContain('Codex');
+    expect(row('Anthropic')).toContain('Runs of Claude Code, OpenCode and Cursor');
   });
 
   it('saves a numeric select as a number, and lands on the tab a link names', async () => {

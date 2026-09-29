@@ -15,6 +15,8 @@ import { useProjects } from '../hooks/use-projects';
 import { settingsRefusalText, useRepository, useRepositoryActions, type RepositoryRow, useCapabilities, useSecrets, useSettings, useSettingsActions, type LeafRow, type SecretRow } from '../hooks/use-settings';
 import { isArchived } from '../lib/api';
 import { formatRelative } from '../lib/format';
+import { harnessLabel } from '../lib/harness';
+import { SECRET_SLOTS, slotUse } from '@goondocks/myco-shared/secret-slots';
 import { LEAF_GROUPS, type LeafField } from '../settings/catalogue';
 
 const TABS = [...LEAF_GROUPS.map((g) => ({ id: g.id, label: g.label })), { id: 'secrets', label: 'Credentials' }, { id: 'capabilities', label: 'Projects' }, { id: 'browser', label: 'This browser' }];
@@ -179,16 +181,18 @@ function Secrets() {
   const [draft, setDraft] = useState('');
   const [error, setError] = useState<string | null>(null);
   const close = () => { setEditing(null); setDraft(''); setError(null); actions.setSecret.reset(); };
-  const LABEL: Record<string, string> = { anthropic: 'Anthropic', openai: 'OpenAI', openrouter: 'OpenRouter', github: 'GitHub' };
+  const LABEL: Record<string, string> = Object.fromEntries(SECRET_SLOTS.map((slot) => [slot.name, slot.label]));
+  const USE: Record<string, string> = Object.fromEntries(SECRET_SLOTS.map((slot) => [slot.name, slotUse(slot, harnessLabel)]));
   return (
     <PageLoading isLoading={secrets.isPending} error={secrets.error}>
       <Panel title="Provider credentials" eyebrow="Server">
-        <p className="mb-3 font-sans text-sm text-on-surface-variant">Stored once, shown masked, never sent back. Runs bill to whichever account a credential belongs to, and every change names who made it.</p>
+        <p className="mb-3 font-sans text-sm text-on-surface-variant">Stored once, shown masked, never sent back. Each key is used only for what its row says. Runs bill to whichever account a credential belongs to, and every change names who made it.</p>
         <ul className="flex flex-col divide-y divide-outline-variant/10" aria-label="Credentials">
           {(secrets.data?.secrets ?? []).map((s) => (
             <li key={s.name} className="flex items-center gap-3 py-2 font-sans text-sm">
               <div className="min-w-0 flex-1">
                 <div className="text-on-surface">{LABEL[s.name] ?? s.name}</div>
+                {USE[s.name] !== undefined && <div className="text-xs text-on-surface-variant">{USE[s.name]}</div>}
                 <div className="font-mono text-xs text-on-surface-variant">{s.configured ? (s.readable ? s.maskedValue ?? 'set' : 'stored under a key this server can no longer open — enter it again') : 'not set'}</div>
                 {s.configured && <div className="text-xs text-on-surface-variant">updated {formatRelative(s.updatedAt)}{s.updatedBy ? ` by ${nameOf(s.updatedBy)}` : ''}</div>}
               </div>

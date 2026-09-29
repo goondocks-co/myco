@@ -3,6 +3,7 @@ import type { OwnerContext } from '../context.js';
 import { emptyBodyRoute } from '../auth/members.js';
 import { badRequest, notFound, ok, readJsonObject, resolveProjectScope } from './scope.js';
 import { SecretValueError, deploymentSecretStore, type SecretDescription } from '../core/secrets.js';
+import { SECRET_SLOT_NAMES } from '@goondocks/myco-shared/secret-slots';
 import {
   DEPLOYMENT_LEAVES, PROJECT_CAPABILITIES, settingsWriter,
   type ProjectCapability, type SettingsRefusal,
@@ -21,8 +22,8 @@ import {
  * shaped so that is a change of who authenticates rather than of what is served.
  */
 
-/** The provider credential slots this Deployment stores, matching the shipped member surface. */
-const SECRET_SLOTS = ['anthropic', 'openai', 'openrouter', 'github'] as const;
+/** The credential slots this Deployment stores, each with the one use it serves (`secret-slots.ts`). */
+const SECRET_SLOTS = SECRET_SLOT_NAMES;
 
 const refusalStatus = (r: SettingsRefusal): number => (r.reason === 'unauthorized' ? 403 : 400);
 

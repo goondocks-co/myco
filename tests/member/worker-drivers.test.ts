@@ -46,6 +46,10 @@ describe('the harness manifest', () => {
     for (const [id, declared] of Object.entries(HARNESS_CREDENTIALS)) {
       expect({ id, variables: declared.variables.length > 0 }).toEqual({ id, variables: true });
     }
+    // Each harness reads a slot of its own use: Codex never reads the embedding provider's `openai` slot (#1212).
+    expect(Object.fromEntries(Object.entries(HARNESS_CREDENTIALS).map(([id, c]) => [id, c.slot]))).toEqual({
+      'claude-code': 'anthropic', codex: 'codex', opencode: 'anthropic', cursor: 'anthropic', antigravity: null,
+    });
   });
 
   it('names three launch shapes, and the two harnesses with native drivers speak no protocol of their own', () => {

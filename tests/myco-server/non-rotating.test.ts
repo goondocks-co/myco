@@ -172,7 +172,7 @@ describe('every route that mints an authority able to outlive the credential (#1
   it('is the only member route that reaches a minter or a secret opener: every call site is pinned by the function that makes it, and the door that reaches it', () => {
     // A minter answers a new token or key; an opener answers a decrypted secret. Each call site is named here by the
     // function that makes it, with the door that reaches it, so a new caller fails this gate until it is placed.
-    const MINTERS = new Set(['issueIdentityLinkAuthority', 'issueEnrollmentAuthority', 'issueExternalGrant', 'rotateExternalGrant', 'mintInsert', 'issueMemberToken', 'openProviderCredential']);
+    const MINTERS = new Set(['issueIdentityLinkAuthority', 'issueEnrollmentAuthority', 'issueExternalGrant', 'rotateExternalGrant', 'mintInsert', 'issueMemberToken', 'openProviderCredential', 'openHarnessCredential']);
     const OPENERS = new Set(['secrets.get', 'repositories.access']);
     const sites: string[] = [];
     const walk = (dir: string): void => {
@@ -207,7 +207,7 @@ describe('every route that mints an authority able to outlive the credential (#1
       'auth/tokens.ts refreshMemberToken -> mintInsert', // POST /tokens/refresh — mintsAuthority
       'core/embedding/configured-provider.ts configuredEmbeddingProvider -> openProviderCredential', // the Deployment's own embedding job
       'core/harness.ts claimNextRun -> issueMemberToken', // POST /worker/claim — mintsAuthority; a run credential minted not to rotate
-      'core/harness.ts harnessCredentialEnv -> openProviderCredential', // a launch or a claim — POST /worker/claim is mintsAuthority
+      'core/harness.ts harnessCredentialEnv -> openHarnessCredential', // a launch or a claim — POST /worker/claim is mintsAuthority
       'core/harness.ts launchDispatch -> issueMemberToken', // an owner dispatch or the tick; a run credential minted not to rotate
       'core/harness.ts prepareDispatch -> openProviderCredential', // an owner dispatch or the tick
       'core/release-provenance.ts checkProject -> secrets.get', // the Deployment's own release job

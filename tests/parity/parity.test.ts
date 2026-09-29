@@ -31,6 +31,7 @@ import { objectLifecycle } from './scenarios/object-lifecycle.ts';
 import { tokenRefresh } from './scenarios/token-refresh.ts';
 import { captureVolume } from './scenarios/capture-volume.ts';
 import { memberSettings } from './scenarios/member-settings.ts';
+import { harnessCredentialSlots } from './scenarios/harness-credential-slots.ts';
 import { memberStatus } from './scenarios/member-status.ts';
 import { githubLink } from './scenarios/github-link.ts';
 import { embeddingRevisions } from './scenarios/embedding-revisions.ts';
@@ -40,7 +41,7 @@ import { parseShard, selectShard } from '../../scripts/test-shards.mjs';
 import durations from '../../scripts/test-durations.json';
 import { writeFileSync } from 'node:fs';
 
-const scenarios = [restoreContinuation, repositories, canopy, skillCandidates, sessionsTitling, sessionTurns, plans, spores, recall, backupRestore, tick, dispatchQueue, scheduledTasks, cortex, replacedRun, search, grants, importParity, legacyImportParity, workerWire, codexRecording, transcriptReread, toolBlobRetention, titlingBackfill, sessionEnd, projectCounts, objectLifecycle, tokenRefresh, captureVolume, memberSettings, memberStatus, embeddingRevisions, githubLink, recallGold];
+const scenarios = [restoreContinuation, repositories, canopy, skillCandidates, sessionsTitling, sessionTurns, plans, spores, recall, backupRestore, tick, dispatchQueue, scheduledTasks, cortex, replacedRun, search, grants, importParity, legacyImportParity, workerWire, codexRecording, transcriptReread, toolBlobRetention, titlingBackfill, sessionEnd, projectCounts, objectLifecycle, tokenRefresh, captureVolume, memberSettings, harnessCredentialSlots, memberStatus, embeddingRevisions, githubLink, recallGold];
 const DEFAULT_SCENARIO_DURATION_MS = 15_000;
 
 if (!process.env.MYCO_PARITY) {
