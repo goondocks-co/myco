@@ -31,6 +31,7 @@ import { IMPORT_PLAN_MAX_CANDIDATES } from '../constants.js';
 import { importPolicy, IMPORT_DISABLED } from '../core/import-policy.js';
 import { tombstonedAmong } from '../core/tombstones.js';
 import { heldTranscriptsFor, type HeldTranscript } from '../read/transcript.js';
+import { heldSessionIds } from '../read/sessions.js';
 import { refused } from '../ingest/events.js';
 import { emit, refusal } from '../telemetry.js';
 
@@ -153,6 +154,9 @@ export async function handleImportPlan(env: ServerEnv, ctx: RouteContext): Promi
   const offered = Array.isArray(body.candidates) ? body.candidates : null;
   if (offered === null) return Response.json(refused(ctx, BAD_BODY));
   if (offered.length > IMPORT_PLAN_MAX_CANDIDATES) return Response.json(refused(ctx, TOO_MANY));
+  const probed = parseProbe(body.sessions);
+  if (probed === null) return Response.json(refused(ctx, BAD_BODY));
+  if (probed.length > IMPORT_PLAN_MAX_CANDIDATES) return Response.json(refused(ctx, TOO_MANY));
   const candidates: Candidate[] = [];
   for (const value of offered) {
     const parsed = parseCandidate(value);
@@ -165,7 +169,8 @@ export async function handleImportPlan(env: ServerEnv, ctx: RouteContext): Promi
     emit({ kind: 'import_plan_refused', projectId: ctx.projectId, reason: 'import_disabled' });
     return Response.json(refused(ctx, IMPORT_DISABLED));
   }
-  if (candidates.length === 0) return Response.json({ persisted: true, policy, candidates: [] });
+  const sessions = probed.length === 0 ? {} : { sessions: await sessionsHeld(env, ctx.projectId, probed) };
+  if (candidates.length === 0) return Response.json({ persisted: true, policy, candidates: [], ...sessions });
 
   const sessionIds = [...new Set(candidates.map((c) => c.sessionId))];
   const identities = [...new Set(candidates.map((c) => c.transcriptId))];
@@ -178,5 +183,28 @@ export async function handleImportPlan(env: ServerEnv, ctx: RouteContext): Promi
   const { answers, counts, uncompared } = planCandidates(candidates, held, tombstoned, ctx.now, policy.windowDays, policy.maxPerAgent);
   emit({ kind: 'import_planned', projectId: ctx.projectId, offered: candidates.length, admitted: counts.take ?? 0 });
   if (uncompared > 0) emit({ kind: 'import_identity_uncompared', projectId: ctx.projectId, pairs: uncompared });
-  return Response.json({ persisted: true, policy, candidates: answers, counts });
+  return Response.json({ persisted: true, policy, candidates: answers, counts, ...sessions });
+}
+
+/** The session ids a caller asks about, or null for a value that is not a list of non-empty strings. Absent is an empty list. */
+function parseProbe(value: unknown): string[] | null {
+  if (value === undefined) return [];
+  if (!Array.isArray(value) || !value.every((v) => typeof v === 'string' && v !== '')) return null;
+  return [...new Set(value as string[])];
+}
+
+/**
+ * What the Project holds of each probed session: a row, a transcript, a
+ * tombstone. A caller importing from a record of its own asks this before
+ * sending a session's facts or content, so a session already captured keeps
+ * what live capture recorded and none is held twice.
+ */
+async function sessionsHeld(env: ServerEnv, projectId: string, sessionIds: readonly string[]): Promise<{ held: string[]; withTranscript: string[]; tombstoned: string[] }> {
+  const scope = { projectId };
+  const [held, transcripts, tombstoned] = await Promise.all([
+    heldSessionIds(env.db, scope, sessionIds),
+    heldTranscriptsFor(env.db, scope, sessionIds, []),
+    tombstonedAmong(env.db, projectId, sessionIds),
+  ]);
+  return { held: [...held].sort(), withTranscript: [...new Set(transcripts.map((t) => t.sessionId))].sort(), tombstoned: [...tombstoned].sort() };
 }

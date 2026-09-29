@@ -33,9 +33,11 @@
  * server acknowledged.
  */
 import fs from 'node:fs';
-import { attributeTranscript } from '../symbionts/transcript-attribution.js';
+import { transcriptPlacer, type DirectoryMapping } from '../symbionts/transcript-attribution.js';
 import { enumerateTranscripts, manifestTranscriptDiscovery } from '../symbionts/transcript-discovery.js';
 import { HOOK_CONFIG } from '../hooks/hook-config.generated.js';
+import { evaluateSessionCaptureRules } from '../hooks/capture-rules.js';
+import { readTranscriptMeta } from '../hooks/transcript-meta.js';
 import { resolveMycoHome } from '../paths/home.js';
 import { unboundedBudget } from './budget.js';
 import { resolveMemberProjectRoot } from './credential.js';
@@ -99,6 +101,10 @@ export interface ImportOptions {
   dryRun?: boolean;
   /** Candidates one plan request carries. The Deployment's cap by default; a test lowers it to reach the trim without writing a thousand files. */
   offerLimit?: number;
+  /** Recorded working directories mapped onto a bound root, for the directories no checkout on disk still answers for. */
+  mappings?: readonly DirectoryMapping[];
+  /** Session ids never offered: sessions deleted in a record this import does not read. */
+  exclude?: ReadonlySet<string>;
 }
 
 export interface ImportDeps {
@@ -139,10 +145,16 @@ export interface ImportReport {
   active: number;
   /** Projects `--project` excluded that this machine holds history for. */
   narrowed?: string[];
+  /** Transcripts the agent's capture rules drop from live capture, left out the same way. */
+  dropped: number;
+  /** Transcripts of sessions the caller excluded. */
+  excluded: number;
+  /** The recorded directories of the unbound transcripts, with how many each holds. */
+  unboundDirectories: Record<string, number>;
   refused?: string;
 }
 
-interface Candidate {
+export interface Candidate {
   sessionId: string;
   transcriptId: string;
   agent: string;
@@ -193,23 +205,59 @@ function bindingsFor(serverUrl: string, mycoHome: string): Map<string, RegistryE
   return bound;
 }
 
+/** What the walk found, placed and counted. */
+export interface CollectedCandidates {
+  candidates: Candidate[];
+  found: Record<string, number>;
+  unattributable: number;
+  unbound: number;
+  unboundDirectories: Record<string, number>;
+  active: number;
+  dropped: number;
+  excluded: number;
+}
+
 /**
- * Every transcript on disk this machine can place, and the two counts for what
- * it cannot.
+ * The candidate a transcript file makes, or null when it is empty, gone, or
+ * written too recently to be history. Written too recently is left for the
+ * hook that is capturing it rather than imported and declared over.
+ */
+export function transcriptCandidate(
+  agent: string, sessionId: string, filePath: string, root: string, machineId: string, now: number,
+): Candidate | 'active' | null {
+  let stat: fs.Stats;
+  try { stat = fs.statSync(filePath); } catch { return null; }
+  if (!stat.isFile() || stat.size === 0) return null;
+  if (now - stat.mtimeMs < IMPORT_ACTIVE_FLOOR_MS) return 'active';
+  const pointer = transcriptPointerFor(filePath, machineId);
+  if (pointer === null) return null;
+  return {
+    sessionId, transcriptId: pointer.transcriptId, agent, filePath,
+    sizeBytes: stat.size, modifiedAt: Math.trunc(stat.mtimeMs), headHash: transcriptHeadHash(filePath), root,
+  };
+}
+
+/** Whether live capture would drop this transcript's session: the agent's session rules, read against the transcript's own head. */
+export function droppedByCaptureRules(agent: string, filePath: string): boolean {
+  const transcriptMeta = readTranscriptMeta(filePath) ?? undefined;
+  return evaluateSessionCaptureRules(agent, { transcriptPath: filePath, transcriptMeta }).action === 'drop';
+}
+
+/**
+ * Every transcript on disk this machine can place, and the counts for what it
+ * cannot.
  *
  * Attribution runs here rather than after the plan request, so a candidate is
- * never offered under a Project it does not belong to.
+ * never offered under a Project it does not belong to. A transcript live
+ * capture would drop is dropped here too, and a session the caller excludes is
+ * never offered.
  */
 export function collectCandidates(
   agents: readonly string[], roots: Iterable<string>, machineId: string, mycoHome: string,
-  now: number = Date.now(),
-): { candidates: Candidate[]; found: Record<string, number>; unattributable: number; unbound: number; active: number } {
-  const rootList = [...roots];
-  const candidates: Candidate[] = [];
-  const found: Record<string, number> = {};
-  let unattributable = 0;
-  let unbound = 0;
-  let active = 0;
+  now: number = Date.now(), opts: { mappings?: readonly DirectoryMapping[]; exclude?: ReadonlySet<string> } = {},
+): CollectedCandidates {
+  const place = transcriptPlacer(roots, { mappings: opts.mappings });
+  const out: CollectedCandidates = { candidates: [], found: {}, unattributable: 0, unbound: 0, unboundDirectories: {}, active: 0, dropped: 0, excluded: 0 };
 
   for (const agent of agents) {
     const discovery = manifestTranscriptDiscovery(agent);
@@ -220,41 +268,34 @@ export function collectCandidates(
     // nor anything a person could predict.
     for (const discovered of enumerateTranscripts(discovery, ENUMERATION_CEILING)) {
       if (isMemberStatePath(discovered.filePath, mycoHome)) continue;
-      found[agent] = (found[agent] ?? 0) + 1;
-      const placed = attributeTranscript(agent, discovered.filePath, rootList);
+      out.found[agent] = (out.found[agent] ?? 0) + 1;
+      if (opts.exclude?.has(discovered.sessionId)) { out.excluded += 1; continue; }
+      const placed = place(agent, discovered.filePath);
       // Three outcomes, three counts. A transcript naming a directory this
       // Deployment holds no Project for is a different thing from one naming
       // nowhere, and only the first is something a person can connect.
-      if (placed.kind === 'elsewhere') { unbound += 1; continue; }
-      if (placed.kind === 'unknown') { unattributable += 1; continue; }
-      const root = placed.root;
-      let stat: fs.Stats;
-      try { stat = fs.statSync(discovered.filePath); } catch { continue; }
-      if (stat.size === 0) continue;
-      // Written too recently to be history. Left for the hook that is capturing
-      // it rather than imported and declared over.
-      if (now - stat.mtimeMs < IMPORT_ACTIVE_FLOOR_MS) { active += 1; continue; }
-      const pointer = transcriptPointerFor(discovered.filePath, machineId);
-      if (pointer === null) continue;
-      candidates.push({
-        sessionId: discovered.sessionId,
-        transcriptId: pointer.transcriptId,
-        agent,
-        filePath: discovered.filePath,
-        sizeBytes: stat.size,
-        modifiedAt: Math.trunc(stat.mtimeMs),
-        headHash: transcriptHeadHash(discovered.filePath),
-        root,
-      });
+      if (placed.kind === 'elsewhere') {
+        out.unbound += 1;
+        out.unboundDirectories[placed.directory] = (out.unboundDirectories[placed.directory] ?? 0) + 1;
+        continue;
+      }
+      if (placed.kind === 'unknown') { out.unattributable += 1; continue; }
+      if (droppedByCaptureRules(agent, discovered.filePath)) { out.dropped += 1; continue; }
+      const candidate = transcriptCandidate(agent, discovered.sessionId, discovered.filePath, placed.root, machineId, now);
+      if (candidate === 'active') { out.active += 1; continue; }
+      if (candidate !== null) out.candidates.push(candidate);
     }
   }
   // Newest first: the plan spends the per-agent cap in the order it is
   // offered, so the most recent history is what an import brings.
-  candidates.sort((a, b) => b.modifiedAt - a.modifiedAt);
-  return { candidates, found, unattributable, unbound, active };
+  out.candidates.sort((a, b) => b.modifiedAt - a.modifiedAt);
+  return out;
 }
 
 const emptyTally = (agent: string): AgentTally => ({ agent, found: 0, imported: 0, vanished: 0, trimmed: 0, skipped: {} });
+
+const refusedReport = (refused: string): ImportReport =>
+  ({ projects: [], unbound: 0, unattributable: 0, active: 0, dropped: 0, excluded: 0, unboundDirectories: {}, refused });
 
 /**
  * Import one machine's history into every Project it can be placed in.
@@ -268,7 +309,7 @@ export async function runImport(opts: ImportOptions, deps: ImportDeps): Promise<
   const fetchImpl = deps.fetch ?? globalThis.fetch;
 
   const entries = listRegistryEntries(mycoHome);
-  if (entries.length === 0) return { projects: [], unbound: 0, unattributable: 0, active: 0, refused: 'no Deployment membership on this machine' };
+  if (entries.length === 0) return refusedReport('no Deployment membership on this machine');
 
   // Which Deployment. Never the first entry: the registry is one file per
   // project root named by `sha256(root)`, so its order is a hash, and picking
@@ -277,21 +318,20 @@ export async function runImport(opts: ImportOptions, deps: ImportDeps): Promise<
   // joined, and report every transcript as belonging to no Project.
   const deployments = [...new Set(entries.map((e) => e.serverUrl))];
   const named = opts.serverUrl ?? (deployments.length === 1 ? deployments[0] : deploymentForRoot(entries, deps.cwd));
-  if (named === null) {
-    return { projects: [], unbound: 0, unattributable: 0, active: 0, refused: `this machine belongs to ${deployments.length} Deployments; name one with --server` };
-  }
+  if (named === null) return refusedReport(`this machine belongs to ${deployments.length} Deployments; name one with --server`);
   const bound = bindingsFor(named, mycoHome);
-  if (bound.size === 0) return { projects: [], unbound: 0, unattributable: 0, active: 0, refused: `no project on this machine is bound to ${named}` };
+  if (bound.size === 0) return refusedReport(`no project on this machine is bound to ${named}`);
 
   const agents = agentsWithStores(opts.agent);
-  const { candidates, found, unattributable, unbound: elsewhere, active } = collectCandidates(agents, bound.keys(), deps.machineId, mycoHome, now());
+  const collected = collectCandidates(agents, bound.keys(), deps.machineId, mycoHome, now(), { mappings: opts.mappings, exclude: opts.exclude });
+  const { candidates, unattributable, active } = collected;
 
   const byProject = new Map<string, Candidate[]>();
   // Projects this machine holds history for that `--project` excluded. Named
   // rather than dropped: "nothing to import" and "you asked for one of three"
   // are different answers.
   const narrowed = new Set<string>();
-  let unbound = elsewhere;
+  let unbound = collected.unbound;
   for (const candidate of candidates) {
     const entry = bound.get(candidate.root);
     // A transcript that names a checkout this Deployment holds no Project for.
@@ -303,7 +343,10 @@ export async function runImport(opts: ImportOptions, deps: ImportDeps): Promise<
     if (list === undefined) byProject.set(entry.projectId, [candidate]); else list.push(candidate);
   }
 
-  const report: ImportReport = { projects: [], unbound, unattributable, active, ...(narrowed.size > 0 ? { narrowed: [...narrowed].sort() } : {}) };
+  const report: ImportReport = {
+    projects: [], unbound, unattributable, active, dropped: collected.dropped, excluded: collected.excluded,
+    unboundDirectories: collected.unboundDirectories, ...(narrowed.size > 0 ? { narrowed: [...narrowed].sort() } : {}),
+  };
   for (const [projectId, forProject] of byProject) {
     const entry = [...bound.values()].find((e) => e.projectId === projectId);
     if (entry === undefined) continue;
@@ -355,7 +398,7 @@ export async function runImport(opts: ImportOptions, deps: ImportDeps): Promise<
       }
       if (opts.dryRun === true) { held.imported += 1; continue; }
 
-      const shipped = await shipSession(candidate, Number(decision.fromOffset ?? 0), entry, client, spool, deps.machineId, now);
+      const shipped = await shipSession(candidate, Number(decision.fromOffset ?? 0), client, spool, deps.machineId, now);
       if (shipped === 'done') { held.imported += 1; continue; }
       // Gone from the disk between the plan that admitted it and the ship that
       // would have read it. Nothing was sent, so it is not imported — and it is
@@ -374,9 +417,14 @@ export async function runImport(opts: ImportOptions, deps: ImportDeps): Promise<
   return report;
 }
 
-/** One session: its facts, its bytes from the byte the Deployment named, and the end that closes it. */
-async function shipSession(
-  candidate: Candidate, fromOffset: number, entry: RegistryEntry, client: ServerClient, spool: MemberSpool, machineId: string, now: () => number,
+/**
+ * One session: its facts, its bytes from the byte the Deployment named, and the
+ * end that closes it. `facts: false` ships the bytes alone, for a caller that
+ * sends the session's facts from a record of its own.
+ */
+export async function shipSession(
+  candidate: Candidate, fromOffset: number, client: ServerClient, spool: MemberSpool, machineId: string, now: () => number,
+  opts: { facts?: boolean } = {},
 ): Promise<string> {
   const { sessionId, filePath } = candidate;
   // Imported events are dated when the work happened, not when it was fetched:
@@ -393,7 +441,7 @@ async function shipSession(
   // are minted, so a repeat is two more rows in the event log for a session
   // that has not changed. The receipt is the pointer this pass already commits:
   // a session whose transcript is known is a session whose facts were sent.
-  const known = readSessionState(spool.dir, sessionId).transcript?.transcriptId === pointer.transcriptId;
+  const known = opts.facts === false || readSessionState(spool.dir, sessionId).transcript?.transcriptId === pointer.transcriptId;
   const facts = known ? [] : [
     sessionStartEvent(ctx, { startedAt: candidate.modifiedAt, originPath: filePath }),
     sessionEndEvent(ctx, { endedAt: candidate.modifiedAt }),
@@ -410,4 +458,43 @@ async function shipSession(
 
   const result = await shipTranscriptSegments(ctx, spool, client, unboundedBudget(), { now, headHash: candidate.headHash ?? undefined });
   return result.endedBy;
+}
+
+/** The longest one wait between passes lasts, whatever the Deployment asks. */
+export const IMPORT_RETRY_MAX_WAIT_MS = 60_000;
+/** The wait before the first retry when the Deployment names none; each later one doubles, up to the cap. */
+export const IMPORT_RETRY_BASE_WAIT_MS = 2_000;
+/** Passes an import makes before it reports the retry it could not get past. */
+export const IMPORT_MAX_PASSES = 200;
+
+/** The wait before pass `attempt` (1-based) of a retried import. */
+export const retryWaitMs = (attempt: number): number =>
+  Math.min(IMPORT_RETRY_MAX_WAIT_MS, IMPORT_RETRY_BASE_WAIT_MS * 2 ** Math.min(attempt - 1, 16));
+
+/** Wait `ms` between import passes; a caller that must not wait passes its own. */
+export const pause = (ms: number): Promise<void> => new Promise<void>((resolve) => setTimeout(resolve, ms));
+
+/** Whether a pass stopped on an answer that a later pass can get past. */
+export const endedOnRetry = (report: ImportReport): boolean => report.projects.some((p) => p.endedBy === 'retry');
+
+/**
+ * Run passes until none stops on a retryable answer (a rate limit, a transport
+ * fault), waiting between them. Every pass re-plans from what the Deployment
+ * holds, so a session a pass finished is not sent again and reads as already
+ * held in the next pass's report. The last report is answered; one still ended
+ * by `retry` after the pass limit says so.
+ */
+export async function importUntilSettled(
+  opts: ImportOptions, deps: ImportDeps & { sleep?: (ms: number) => Promise<void>; maxPasses?: number; onRetry?: (attempt: number, waitMs: number) => void },
+): Promise<ImportReport> {
+  const sleep = deps.sleep ?? pause;
+  const maxPasses = deps.maxPasses ?? IMPORT_MAX_PASSES;
+  let report = await runImport(opts, deps);
+  for (let attempt = 1; attempt < maxPasses && report.refused === undefined && endedOnRetry(report); attempt++) {
+    const wait = retryWaitMs(attempt);
+    deps.onRetry?.(attempt, wait);
+    await sleep(wait);
+    report = await runImport(opts, deps);
+  }
+  return report;
 }

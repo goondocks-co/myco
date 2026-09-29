@@ -39,7 +39,7 @@ interface Offer {
 }
 
 async function rig() {
-  const { sqlite, serverEnv } = sqliteEnv();
+  const { sqlite, serverEnv, executed } = sqliteEnv();
   const issued = await issueMemberToken(serverEnv.db, { memberId: 'mem_machine_1', machineId: MACHINE }, NOW);
 
   /** A transcript the Deployment already holds. */
@@ -86,7 +86,7 @@ async function rig() {
     return new Map(list.map((a) => [a.transcriptId, a]));
   };
 
-  return { sqlite, serverEnv, hold, tombstone, leaf, spend, plan, answers, tokenId: issued.tokenId };
+  return { sqlite, serverEnv, executed, hold, tombstone, leaf, spend, plan, answers, tokenId: issued.tokenId };
 }
 
 describe('the import plan', () => {
@@ -229,5 +229,30 @@ describe('the import plan', () => {
     expect((await r.plan([])).policy).toEqual({ enabled: true, windowDays: IMPORT_WINDOW_DAYS_DEFAULT, maxPerAgent: IMPORT_MAX_SESSIONS_DEFAULT });
     await r.leaf('import.window_days', 7);
     expect((objectAt(await r.plan([]), 'policy')).windowDays).toBe(7);
+  });
+});
+
+describe('what a Project holds of named sessions', () => {
+  it('answers, per probed session, a row, a transcript and a tombstone', async () => {
+    const r = await rig();
+    r.hold('s-transcript', 'tx_1', 100, null);
+    r.sqlite.run(`INSERT INTO sessions (project_id, session_id, machine_id, created_by_token_id, first_received_at, last_received_at) VALUES (?, 's-row', ?, ?, ?, ?)`, [PROJECT, MACHINE, r.tokenId, NOW, NOW]);
+    r.tombstone('s-dead');
+    const body = await r.plan([], { sessions: ['s-transcript', 's-row', 's-dead', 's-none'] });
+    expect(body.sessions).toEqual({ held: ['s-dead', 's-row', 's-transcript'], withTranscript: ['s-transcript'], tombstoned: ['s-dead'] });
+    expect((await r.plan([])).sessions).toBeUndefined();
+    expect((await r.plan([], { sessions: [''] })).code).toBe('parse');
+  });
+
+  it('names every id in statements under the hosted store\'s bound-parameter ceiling', async () => {
+    const r = await rig();
+    const many = Array.from({ length: 250 }, (_, i) => `s-${i}`);
+    for (const id of many.slice(0, 5)) r.hold(id, `tx_${id}`, 10, null);
+    r.executed.length = 0;
+    const body = await r.plan(many.map((id) => ({ sessionId: id, transcriptId: `tx_${id}` })), { sessions: many, windowDays: 3650, maxPerAgent: 1000 });
+    expect((body.candidates as unknown[]).length).toBe(250);
+    expect((body.sessions as { held: string[] }).held.length).toBe(5);
+    const params = r.executed.map((sql) => (sql.match(/\?/g) ?? []).length);
+    expect(Math.max(...params)).toBeLessThan(100);
   });
 });

@@ -23,7 +23,7 @@ import { describe, expect, it } from 'bun:test';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { runImport, isMemberStatePath, type ImportOptions } from '@myco/member/import.js';
+import { runImport, importUntilSettled, isMemberStatePath, type ImportOptions } from '@myco/member/import.js';
 import { attributeByPathSlug, attributeTranscript, rootSlug } from '@myco/symbionts/transcript-attribution.js';
 import { BUNDLED_MANIFESTS } from '@myco/symbionts/manifests.generated.js';
 import { expandRoot, manifestTranscriptDiscovery } from '@myco/symbionts/transcript-discovery.js';
@@ -570,5 +570,28 @@ describe('attributing a transcript to a checkout', () => {
     fs.writeFileSync(file, transcript(1).replace('"cwd":"/PLACEHOLDER",', ''));
     expect(attributeTranscript('claude-code', file, [root])).toEqual({ kind: 'bound', root });
     expect(attributeTranscript('claude-code', file, [])).toEqual({ kind: 'unknown' });
+  });
+});
+
+describe('an import the Deployment rate-limits', () => {
+  it('waits and runs another pass until every session is sent', async () => {
+    const cwd = path.join(os.tmpdir(), 'myco-import-limited');
+    const r = await rig([cwd], 3);
+    try {
+      let limited = 2;
+      const limitedFetch = async (input: string | URL | Request, init?: RequestInit): Promise<Response> => {
+        if (limited > 0 && new URL(new Request(input, init).url).pathname === '/events') { limited -= 1; return new Response('slow down', { status: 429 }); }
+        return r.env.fetch(input, init);
+      };
+      const waits: number[] = [];
+      const report = await importUntilSettled({ serverUrl: 'https://member-test.invalid' }, {
+        fetch: limitedFetch, mycoHome: r.mycoHome, machineId: TEST_MACHINE_ID, now: () => Date.now(), sleep: async (ms) => { waits.push(ms); },
+      });
+      expect(waits.length).toBeGreaterThan(0);
+      expect(report.projects.every((p) => p.endedBy === undefined)).toBe(true);
+      expect(r.env.rows('transcripts')).toBe(3);
+    } finally {
+      r.restore();
+    }
   });
 });

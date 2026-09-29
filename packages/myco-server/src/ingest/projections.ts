@@ -342,6 +342,19 @@ export const resolvePresentedDates = (db: RelationalStore, projectId: string, se
      WHERE project_id = ? AND session_id = ?${gate === undefined ? '' : ` AND ${gate.sql}`}`)
     .bind(...derivedBoundParams(projectId, sessionId), ...derivedBoundParams(projectId, sessionId), projectId, sessionId, ...(gate?.params ?? []));
 
+/**
+ * The title and summary an import end carries, stored as the session's one
+ * titling attempt so neither automatic titling nor a backfill replaces them. A
+ * title an administrator set or asked for (`titled_by`) is never replaced; an
+ * end on any other channel carries none that is stored.
+ */
+const importedTitle = (db: RelationalStore, ctx: WriteContext, e: CaptureEnvelope, p: Payload): PreparedStatement[] =>
+  e.channel !== 'import' || typeof p.title !== 'string' ? [] : [
+    db.prepare(`UPDATE sessions SET title = ?, summary = ?, titled_at = ?
+        WHERE project_id = ? AND session_id = ? AND titled_by IS NULL AND ${RAW_ROW_GATE}`)
+      .bind(p.title, typeof p.summary === 'string' ? p.summary : null, ctx.now, ctx.projectId, e.sessionId, ...rawGateParams(ctx, e)),
+  ];
+
 const sessionEnd = ({ db, ctx, e, p, spec }: Inputs): KindPlan => {
   const endedAt = orderingTime(spec, p, 'endedAt', e.createdAt);
   const requestedAt = e.channel === 'import' ? null : endedAt;
@@ -355,6 +368,7 @@ const sessionEnd = ({ db, ctx, e, p, spec }: Inputs): KindPlan => {
             ELSE MIN(COALESCE(titling_requested_at, ?), ?) END
         WHERE project_id = ? AND session_id = ? AND ${RAW_ROW_GATE}`)
         .bind(...endAppliesParams(endedAt), endedAt, ...endAppliesParams(endedAt), ctx.actor, requestedAt, ...endAppliesParams(endedAt), requestedAt, requestedAt, ctx.projectId, e.sessionId, ...rawGateParams(ctx, e)),
+      ...importedTitle(db, ctx, e, p),
       ...sessionCommit(db, ctx, e, p, 'session_end', endedAt),
     ],
     incidental: [resolvePresentedDates(db, ctx.projectId, e.sessionId, { sql: RAW_ROW_GATE, params: rawGateParams(ctx, e) })],

@@ -14,6 +14,8 @@ import {
 } from '../core/spores.js';
 import { refusal } from '../telemetry.js';
 import { refused } from '../ingest/events.js';
+import { ensureAgent } from '../core/runs.js';
+import { HARNESS_AGENT_ID } from '../core/harness.js';
 
 export { MAX_SPORE_CONTENT_BYTES };
 const MAX_ID_CHARS = 192;
@@ -33,6 +35,12 @@ function parseBody(body: string): Record<string, unknown> | null {
 }
 
 const BAD_BODY = refusal('body is not an object', 'parse');
+
+/** The agent row a write attributed to Myco's own agent names, made present before the write, which can precede the Deployment's first dispatch. */
+async function ensureNamedAgent(env: ServerEnv, agentId: string, now: number): Promise<void> {
+  if (agentId !== HARNESS_AGENT_ID) return;
+  await ensureAgent(env.db, { id: HARNESS_AGENT_ID, name: HARNESS_AGENT_ID, provider: null, model: null, enabled: true }, now);
+}
 
 export async function handleSaveSpore(env: ServerEnv, ctx: RouteContext): Promise<Response> {
   const body = parseBody(ctx.body);
@@ -57,12 +65,16 @@ export async function handleSaveSpore(env: ServerEnv, ctx: RouteContext): Promis
     return Response.json(refused(ctx, refusal('a spore requires id, agentId, observationType and content, and a known status when given', 'parse')));
   }
 
-  const spore = await insertSpore(env.db, { projectId: ctx.projectId }, {
+  await ensureNamedAgent(env, agentId, ctx.now);
+  const scope = { projectId: ctx.projectId };
+  const spore = await insertSpore(env.db, scope, {
     id, agentId, sessionId, promptId, observationType, status, content, context,
     importance: int(body.importance) ?? 5, filePath, tags, contentHash, properties, author: ctx.memberId,
     createdAt: int(body.createdAt) ?? ctx.now,
   });
-  return Response.json({ persisted: true, spore });
+  if (spore !== null) return Response.json({ persisted: true, spore });
+  // An id already held answers the row as it stands and writes nothing.
+  return Response.json({ persisted: true, duplicate: true, spore: await getSpore(env.db, scope, id) });
 }
 
 export async function handleListSpores(env: ServerEnv, ctx: RouteContext): Promise<Response> {
@@ -129,6 +141,7 @@ export async function handleResolveSpore(env: ServerEnv, ctx: RouteContext): Pro
     return Response.json(refused(ctx, refusal('a supersede resolution requires newSporeId', 'refused')));
   }
 
+  await ensureNamedAgent(env, agentId, ctx.now);
   const resolved = await resolveSpore(env.db, { projectId: ctx.projectId }, status, {
     id: eventId, agentId, sporeId, action, newSporeId, reason, sessionId, author: ctx.memberId, createdAt: ctx.now,
   }, ctx.now);

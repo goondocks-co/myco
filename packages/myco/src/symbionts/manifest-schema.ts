@@ -145,6 +145,15 @@ export const TranscriptDiscoverySchema = z.object({
    */
   transcriptCwdPath: z.string().optional(),
   /**
+   * Dot-path to the repository remote recorded inside the transcript, used to
+   * attribute a transcript whose working directory no longer exists — a
+   * removed worktree — to the checkout that has the same remote.
+   *
+   * Absent means the format records no remote, and such a transcript is
+   * attributed by its working directory alone.
+   */
+  transcriptRepositoryPath: z.string().optional(),
+  /**
    * Who prunes this store.
    *
    * `harness` — the agent writes and ages its own transcripts, and Myco only

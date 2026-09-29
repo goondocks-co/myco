@@ -1,5 +1,5 @@
 import type { RelationalStore } from '../core/adapters.js';
-import type { ReadScope } from './scope.js';
+import { inListChunks, type ReadScope } from './scope.js';
 
 export interface TranscriptRow {
   transcriptId: string;
@@ -51,14 +51,15 @@ export async function heldTranscriptsFor(
   // empty answer.
   const rows = new Map<string, HeldTranscript>();
   for (const [column, keys] of [['session_id', sessionIds], ['transcript_id', transcriptIds]] as const) {
-    if (keys.length === 0) continue;
-    const { results } = await db
-      .prepare(`SELECT transcript_id, session_id, size, head_hash, role FROM transcripts
-                 WHERE project_id = ? AND ${column} IN (${keys.map(() => '?').join(', ')})`)
-      .bind(scope.projectId, ...keys)
-      .all<{ transcript_id: string; session_id: string; size: number; head_hash: string | null; role: string }>();
-    for (const r of results) {
-      rows.set(r.transcript_id, { transcriptId: r.transcript_id, sessionId: r.session_id, size: r.size, headHash: r.head_hash, role: r.role });
+    for (const run of inListChunks(keys)) {
+      const { results } = await db
+        .prepare(`SELECT transcript_id, session_id, size, head_hash, role FROM transcripts
+                   WHERE project_id = ? AND ${column} IN (${run.map(() => '?').join(', ')})`)
+        .bind(scope.projectId, ...run)
+        .all<{ transcript_id: string; session_id: string; size: number; head_hash: string | null; role: string }>();
+      for (const r of results) {
+        rows.set(r.transcript_id, { transcriptId: r.transcript_id, sessionId: r.session_id, size: r.size, headHash: r.head_hash, role: r.role });
+      }
     }
   }
   return [...rows.values()];

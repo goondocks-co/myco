@@ -18,7 +18,7 @@ const report = (over: Partial<ImportReport> = {}): ImportReport => ({
     projectId: 'proj_1', root: '/w/repo',
     agents: [{ agent: 'claude-code', found: 7, imported: 3, vanished: 0, trimmed: 0, skipped: { held: 4 } }],
   }],
-  unbound: 0, unattributable: 0, active: 0, ...over,
+  unbound: 0, unattributable: 0, active: 0, dropped: 0, excluded: 0, unboundDirectories: {}, ...over,
 });
 
 describe('the import verb', () => {
@@ -45,7 +45,8 @@ describe('the import verb', () => {
     // Every flag any refusal names is a flag that works. Read from both the
     // verb and the pass it drives, since either may tell someone what to type.
     const importSource = readFileSync(new URL('../../packages/myco/src/member/import.ts', import.meta.url), 'utf8');
-    for (const source of [parserSource, importSource]) {
+    const legacySource = readFileSync(new URL('../../packages/myco/src/member/legacy-import.ts', import.meta.url), 'utf8');
+    for (const source of [parserSource, importSource, legacySource]) {
       for (const literal of source.matchAll(/`[^`]*`|'[^']*'/g)) {
         for (const flag of literal[0].matchAll(/--[a-z-]+/g)) {
           expect({ flag: flag[0], accepted: accepted(flag[0]) }).toEqual({ flag: flag[0], accepted: true });
@@ -53,6 +54,11 @@ describe('the import verb', () => {
       }
     }
 
+    expect(parseArgs(['--legacy', '/home/u/.myco', '--legacy', '/v/myco.db', '--map', '/r/myco-*=/r/myco'])).toEqual({
+      options: { mappings: [{ from: '/r/myco-*', to: '/r/myco' }] }, legacy: ['/home/u/.myco', '/v/myco.db'],
+    });
+    expect(parseArgs(['--map', 'relative=/r']).error).toBe('--map needs <dir>=<root>, both absolute');
+    expect(parseArgs(['--legacy']).error).toBe('--legacy needs a path');
     expect(parseArgs(['--days', 'soon']).error).toBe('--days needs a whole number of at least 1');
     expect(parseArgs(['--days', '0']).error).toBe('--days needs a whole number of at least 1');
     // The value is never echoed: a mistyped flag must not print what followed it.
@@ -80,7 +86,7 @@ describe('the import verb', () => {
       '  claude-code: 7 found, 3 imported (4 already here)',
     ]);
     expect(reportLines(report(), true)[1]).toContain('would import');
-    expect(reportLines({ projects: [], unbound: 0, unattributable: 0, active: 0 }, false)).toEqual(['Nothing to import.']);
+    expect(reportLines({ projects: [], unbound: 0, unattributable: 0, active: 0, dropped: 0, excluded: 0, unboundDirectories: {} }, false)).toEqual(['Nothing to import.']);
   });
 
   it('names what it left alone rather than passing over it in silence', () => {

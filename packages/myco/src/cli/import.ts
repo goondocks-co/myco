@@ -13,7 +13,9 @@
  * to three both report three found, which is the truth in each case.
  */
 import { getMachineId } from '../machine-id.js';
-import { runImport, type ImportOptions, type ImportReport } from '../member/import.js';
+import { importUntilSettled, type ImportOptions, type ImportReport } from '../member/import.js';
+import { runLegacyImport, type LegacyImportReport } from '../member/legacy-import.js';
+import { parseDirectoryMapping, type DirectoryMapping } from '../symbionts/transcript-attribution.js';
 import type { FetchLike } from '../member/transport.js';
 
 export const IMPORT_HELP = `Usage: myco import [options]
@@ -23,25 +25,37 @@ automatically when you join; run it again with a wider window to reach further
 back.
 
 Options:
-  --days <n>       How far back to look, in days (default: the Deployment's)
-  --max <n>        Most sessions per agent (default: the Deployment's)
-  --agent <name>   Only this agent's transcripts
-  --project <id>   Only this project's
-  --server <url>   Which Deployment, when this machine belongs to several
-  --dry-run        Report what would be imported, and import nothing
-  --help           Show this message
+  --days <n>         How far back to look, in days (default: the Deployment's)
+  --max <n>          Most sessions per agent (default: the Deployment's)
+  --agent <name>     Only this agent's transcripts
+  --project <id>     Only this project's
+  --server <url>     Which Deployment, when this machine belongs to several
+  --legacy <path>    Also bring a Myco 1.4 vault: its sessions, their titles,
+                     prompts, plans, spores and spore history, each into the
+                     project of the same id. <path> is a 1.4 home (~/.myco), a
+                     grove directory, or a myco.db file; repeat for several.
+                     The vault is read, never written.
+  --map <dir>=<root> Import transcripts recorded in <dir> (or, with a trailing
+                     *, in every sibling directory named like it) into the
+                     project connected at <root>. For worktrees that no longer
+                     exist; repeat for several.
+  --dry-run          Report what would be imported, and import nothing
+  --help             Show this message
 `;
 
 interface Parsed {
   error?: string;
   help?: true;
   options: ImportOptions;
+  legacy?: string[];
 }
 
 const POSITIVE = /^[1-9][0-9]{0,6}$/;
 
 export function parseArgs(args: readonly string[]): Parsed {
   const options: ImportOptions = {};
+  const legacy: string[] = [];
+  const mappings: DirectoryMapping[] = [];
   for (let i = 0; i < args.length; i += 1) {
     const arg = args[i];
     const value = (): string | undefined => args[i + 1];
@@ -69,16 +83,33 @@ export function parseArgs(args: readonly string[]): Parsed {
         i += 1;
         break;
       }
+      case '--legacy': {
+        const raw = value();
+        if (raw === undefined || raw.startsWith('--')) return { error: `${arg} needs a path`, options };
+        legacy.push(raw);
+        i += 1;
+        break;
+      }
+      case '--map': {
+        const raw = value();
+        const mapping = raw === undefined ? null : parseDirectoryMapping(raw);
+        if (mapping === null) return { error: `${arg} needs <dir>=<root>, both absolute`, options };
+        mappings.push(mapping);
+        i += 1;
+        break;
+      }
       default:
         return { error: `unknown option ${arg}`, options };
     }
   }
-  return { options };
+  if (mappings.length > 0) options.mappings = mappings;
+  return legacy.length > 0 ? { options, legacy } : { options };
 }
 
 export interface ImportCliDeps {
   fetch?: FetchLike;
   now?: () => number;
+  sleep?: (ms: number) => Promise<void>;
   cwd?: string;
   mycoHome?: string;
   machineId?: string;
@@ -118,6 +149,9 @@ const STOPPED_WORDS: Readonly<Record<string, string>> = {
 
 const skipWords = (reason: string, n: number): string => `${n} ${SKIP_WORDS[reason] ?? 'skipped'}`;
 
+/** The unbound directories a report names, busiest first. */
+const UNBOUND_DIRECTORIES_SHOWN = 20;
+
 /** Every line the report is worth printing as, in the order a person reads them. */
 export function reportLines(report: ImportReport, dryRun: boolean): string[] {
   const lines: string[] = [];
@@ -134,7 +168,14 @@ export function reportLines(report: ImportReport, dryRun: boolean): string[] {
   }
   if (report.active > 0) lines.push(`${report.active} transcripts are still being written and were left to the agent writing them.`);
   if (report.unattributable > 0) lines.push(`${report.unattributable} transcripts name no project and were left alone.`);
-  if (report.unbound > 0) lines.push(`${report.unbound} transcripts belong to projects this Deployment does not hold.`);
+  if (report.dropped > 0) lines.push(`${report.dropped} transcripts are sub-agent or automation runs that capture leaves out, and were left out here too.`);
+  if (report.excluded > 0) lines.push(`${report.excluded} transcripts belong to sessions deleted in Myco 1.4 and were left out.`);
+  if (report.unbound > 0) {
+    lines.push(`${report.unbound} transcripts belong to projects this Deployment does not hold:`);
+    const dirs = Object.entries(report.unboundDirectories).sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
+    for (const [dir, n] of dirs.slice(0, UNBOUND_DIRECTORIES_SHOWN)) lines.push(`  ${n} in ${dir}`);
+    if (dirs.length > UNBOUND_DIRECTORIES_SHOWN) lines.push(`  and ${dirs.length - UNBOUND_DIRECTORIES_SHOWN} more directories`);
+  }
   if (report.narrowed !== undefined) lines.push(`Skipped by --project: ${report.narrowed.join(', ')}.`);
   if (lines.length === 0) lines.push('Nothing to import.');
   return lines;
@@ -155,11 +196,46 @@ export async function run(args: readonly string[], deps: ImportCliDeps = {}): Pr
   if (parsed.error !== undefined) { err(`myco import: ${parsed.error}`); return false; }
   if (parsed.help === true) { out(IMPORT_HELP.trimEnd()); return true; }
 
-  const report = await runImport(parsed.options, {
-    fetch: deps.fetch, now: deps.now, cwd: deps.cwd, mycoHome: deps.mycoHome,
-    machineId: deps.machineId ?? getMachineId(),
+  const machineId = deps.machineId ?? getMachineId();
+  const dryRun = parsed.options.dryRun === true;
+  let exclude: ReadonlySet<string> | undefined;
+  let legacyComplete = true;
+  if (parsed.legacy !== undefined) {
+    const legacy = await runLegacyImport(
+      { sources: parsed.legacy, serverUrl: parsed.options.serverUrl, dryRun, project: parsed.options.project },
+      { fetch: deps.fetch, now: deps.now, mycoHome: deps.mycoHome, machineId, sleep: deps.sleep, progress: (l) => err(`myco import: ${l}`) },
+    );
+    if (legacy.refused !== undefined) { err(`myco import: ${legacy.refused}`); return false; }
+    for (const line of legacyReportLines(legacy, dryRun)) out(line);
+    legacyComplete = legacy.projects.every((p) => p.endedBy === undefined && p.refusals.length === 0);
+    exclude = new Set(legacy.deleted);
+  }
+
+  const report = await importUntilSettled({ ...parsed.options, ...(exclude === undefined ? {} : { exclude }) }, {
+    fetch: deps.fetch, now: deps.now, cwd: deps.cwd, mycoHome: deps.mycoHome, machineId, sleep: deps.sleep,
+    onRetry: (attempt, waitMs) => err(`myco import: the Deployment asked to wait; pass ${attempt + 1} in ${Math.round(waitMs / 1000)} s`),
   });
   if (report.refused !== undefined) { err(`myco import: ${report.refused}`); return false; }
-  for (const line of reportLines(report, parsed.options.dryRun === true)) out(line);
-  return true;
+  for (const line of reportLines(report, dryRun)) out(line);
+  return legacyComplete;
+}
+
+/** What a 1.4 vault import came to, per project, in the order a person reads it. */
+export function legacyReportLines(report: LegacyImportReport, dryRun: boolean): string[] {
+  const lines: string[] = [];
+  for (const p of report.projects) {
+    lines.push(`${p.projectId} (${p.root ?? 'no project root recorded'}) from 1.4: ${p.vault.sessions} sessions, ${p.vault.prompts} prompts, ${p.vault.plans} plans, ${p.vault.spores} spores, ${p.vault.lineage} spore history events`);
+    if (dryRun) {
+      lines.push(`  would bring ${p.sessions.distinct} sessions (${p.sessions.deleted} deleted in 1.4 left out)`);
+      continue;
+    }
+    const s = p.sessions;
+    lines.push(`  sessions: ${s.distinct} distinct, ${s.deleted} deleted; ${s.transcriptsShipped} transcripts sent, ${s.transcriptsHeld} already here, ${s.fromVault} from the vault; ${s.alreadyHeld} were already here and kept what was captured`);
+    lines.push(`  sent ${p.prompts} prompts, ${p.responses} responses, ${p.plans.sent} plans (${p.plans.empty} empty, ${p.plans.unsent} of deleted or unknown sessions)`);
+    lines.push(`  spores: ${p.spores.saved} saved, ${p.spores.duplicate} already here, ${p.spores.refused} refused; history: ${p.lineage.recorded} recorded, ${p.lineage.refused} refused`);
+    for (const refusal of p.refusals) lines.push(`  refused ${refusal}`);
+    if (p.endedBy !== undefined) lines.push(`  stopped — ${STOPPED_WORDS[p.endedBy] ?? 'the Deployment could not be reached'}`);
+  }
+  if (report.projects.length === 0) lines.push('The 1.4 vault holds nothing to import.');
+  return lines;
 }

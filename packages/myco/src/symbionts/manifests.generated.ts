@@ -834,6 +834,7 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
         ],
         "sessionIdPattern": "[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}",
         "transcriptCwdPath": "payload.cwd",
+        "transcriptRepositoryPath": "payload.git.repository_url",
         "retention": "harness"
       },
       "subagentParentPath": "source.subagent.thread_spawn.parent_thread_id",

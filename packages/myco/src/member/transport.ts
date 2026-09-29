@@ -191,7 +191,12 @@ export class ServerClient {
 
   /** Ask what to ship for an import. The answer is advice — every rule it applies the write path applies again — so it is classified like any other answer and a refusal ends the pass. */
   async importPlan(request: unknown, budget: RequestBudget): Promise<Outcome> {
-    const raw = await this.request('POST', IMPORT_PLAN_PATH, { body: JSON.stringify(request), headers: { 'content-type': JSON_CONTENT_TYPE }, budget });
+    return this.postPersisted(IMPORT_PLAN_PATH, request, budget);
+  }
+
+  /** POST a JSON body to a Project route that answers `persisted`, classified like an event answer. */
+  async postPersisted(routePath: string, request: unknown, budget: RequestBudget): Promise<Outcome> {
+    const raw = await this.request('POST', routePath, { body: JSON.stringify(request), headers: { 'content-type': JSON_CONTENT_TYPE }, budget });
     return classifyEventAnswer(raw);
   }
 
