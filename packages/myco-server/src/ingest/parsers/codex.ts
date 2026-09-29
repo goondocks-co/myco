@@ -13,8 +13,8 @@ import { uuidv5 } from '../../hash.js';
 import { evaluatePromptRules } from '@goondocks/myco-shared/capture-rules';
 import { CAPTURE_RULE_BUNDLES } from '@goondocks/myco-shared/capture-rules-data';
 import {
-  blocksOf, isBlock, lineTime, plansInText, str, TOOL_OUTPUT_PREVIEW_CHARS,
-  type DerivedEvent, type ParsedLine, type ParserInput, type TranscriptParser,
+  blocksOf, isBlock, lineTime, plansInText, replyChunks, str, TOOL_OUTPUT_PREVIEW_CHARS,
+  type DerivedEvent, type ParsedLine, type ParserInput, type ReplyPart, type TranscriptParser,
 } from './index.js';
 
 const TOOL_NAME_CHARS = 64;
@@ -68,7 +68,7 @@ export const codexParser: TranscriptParser = {
     const events: DerivedEvent[] = [];
     const pending = new Map<string, PendingCall>();
     let promptId: string | undefined = openPromptId;
-    let reply: { text: string[]; offset: number; createdAt: number; promptId?: string } | null = null;
+    let reply: { parts: ReplyPart[]; promptId?: string } | null = null;
     let planPosition = 0;
     const metadata = transcriptMeta ?? codexHeaderContext(lines);
 
@@ -76,14 +76,14 @@ export const codexParser: TranscriptParser = {
       if (reply === null) return;
       const held = reply;
       reply = null;
-      const text = held.text.join('\n\n').trim();
-      if (text === '') return;
-      events.push({
-        kind: 'response',
-        payload: { responseId: await responseIdAt(sessionId, held.offset), promptId: held.promptId, text },
-        createdAt: held.createdAt,
-        offset: held.offset,
-      });
+      for (const chunk of replyChunks(held.parts)) {
+        events.push({
+          kind: 'response',
+          payload: { responseId: await responseIdAt(sessionId, chunk.offset), promptId: held.promptId, text: chunk.text },
+          createdAt: chunk.createdAt,
+          offset: chunk.offset,
+        });
+      }
     };
 
     for (const { value, offset, undatedAt } of lines) {
@@ -108,8 +108,8 @@ export const codexParser: TranscriptParser = {
           continue;
         }
         if (str(payload.role) !== 'assistant') continue;
-        if (reply === null) reply = { text: [], offset, createdAt, promptId };
-        reply.text.push(text);
+        if (reply === null) reply = { parts: [], promptId };
+        reply.parts.push({ text, offset, createdAt });
         const plans = await plansInText(text, codexParser.planTags, sessionId, { promptId, offset, createdAt }, planPosition);
         events.push(...plans.events);
         planPosition = plans.next;
