@@ -1,6 +1,6 @@
 import { prepareWorkerEnd } from './worker-end.js';
 import type { WorkerUsage } from '@goondocks/myco-shared/worker-usage';
-import { REPOSITORY_TASKS, REPOSITORY_CHECKOUT_CAPABILITY, type RepositoryCheckoutSpec } from '@goondocks/myco-shared/repository';
+import { REPOSITORY_TASKS, capabilitiesRequiredBy, type RepositoryCheckoutSpec } from '@goondocks/myco-shared/repository';
 import { repositoryIdentity } from './repositories.js';
 /**
  * The one dispatcher: every agent task a Deployment runs goes through here,
@@ -917,8 +917,9 @@ export async function claimNextRun(
   env: ServerEnv,
   worker: { tokenId: string; machineId: string; harnesses: readonly OfferedHarness[]; capabilities?: readonly string[]; now: number },
 ): Promise<ClaimOutcome> {
-  const excluded = worker.capabilities?.includes(REPOSITORY_CHECKOUT_CAPABILITY)
-    ? RUNTIME_SERVED_TASKS : [...new Set([...RUNTIME_SERVED_TASKS, ...REPOSITORY_TASKS])];
+  // A task is offered only to a worker that reports everything it needs.
+  const reported = worker.capabilities ?? [];
+  const excluded = [...RUNTIME_SERVED_TASKS, ...REPOSITORY_TASKS.filter((task) => !capabilitiesRequiredBy(task).every((c) => reported.includes(c)))];
   const candidate = await nextClaimable(env.db, excluded);
   if (candidate === null) return { claimed: false, reason: 'no_work' };
 

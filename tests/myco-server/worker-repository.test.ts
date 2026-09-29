@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from 'bun:test';
-import { REPOSITORY_CHECKOUT_CAPABILITY, MAX_REPOSITORY_HISTORY_DEPTH } from '@goondocks/myco-shared/repository';
+import { REPOSITORY_CHECKOUT_CAPABILITY, MAX_REPOSITORY_HISTORY_DEPTH, WORKER_CAPABILITIES } from '@goondocks/myco-shared/repository';
 import worker from '@myco-server-worker/entry/cloudflare.js';
 import { ensureMember } from '@myco-server-worker/auth/enrollment.js';
 import { issueMemberToken } from '@myco-server-worker/auth/tokens.js';

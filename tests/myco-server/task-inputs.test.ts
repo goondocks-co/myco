@@ -1,4 +1,4 @@
-import { REPOSITORY_CHECKOUT_CAPABILITY, MAX_REPOSITORY_HISTORY_DEPTH } from '@goondocks/myco-shared/repository';
+import { MAX_REPOSITORY_HISTORY_DEPTH, WORKER_CAPABILITIES } from '@goondocks/myco-shared/repository';
 /**
  * What a run is told, and what happens to one nobody can instruct.
  *
@@ -47,7 +47,7 @@ async function rig() {
   };
   const row = (id: string) => e.sqlite.query(`SELECT status, error, instruction FROM agent_runs WHERE id = ?`).get(id) as { status: string; error: string | null; instruction: string | null };
   const credentials = () => (e.sqlite.query(`SELECT COUNT(*) AS n FROM member_credentials`).get() as { n: number }).n;
-  const claim = (now: number) => claimNextRun(e.serverEnv, { tokenId: workerToken, machineId: 'm1', harnesses: OFFERED, capabilities: [REPOSITORY_CHECKOUT_CAPABILITY], now });
+  const claim = (now: number) => claimNextRun(e.serverEnv, { tokenId: workerToken, machineId: 'm1', harnesses: OFFERED, capabilities: WORKER_CAPABILITIES, now });
   const endedSession = (sessionId: string) => {
     e.sqlite.run(`INSERT INTO sessions (project_id, session_id, machine_id, created_by_token_id, first_received_at, last_received_at, agent, branch, started_at, ended_at) VALUES ('proj_1', ?, 'm1', 'tok_1', ?, ?, 'claude-code', 'main', ?, ?)`, [sessionId, NOW - 10_000, NOW, NOW - 10_000, NOW]);
     e.sqlite.run(`INSERT INTO prompt_batches (project_id, session_id, prompt_id, event_id, text, origin, content_hash, created_at, updated_at, token_id, received_at) VALUES ('proj_1', ?, ?, ?, 'add a retry to the runner', 'user', ?, ?, ?, 'tok_1', ?)`, [sessionId, `p_${sessionId}`, `e_${sessionId}`, `h_${sessionId}`, NOW - 5000, NOW - 5000, NOW - 5000]);
