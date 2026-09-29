@@ -57,8 +57,19 @@ export const D1_EXPORT_POLL_MS = 2_000;
  * is retried at once rather than after the snapshot's backoff: an export nothing polls is cancelled.
  */
 export const D1_EXPORT_POLL_ATTEMPTS = 5;
-/** How long one poll or the download may wait for Cloudflare to begin answering. */
+/** How long one poll may wait for Cloudflare to begin answering. */
 const D1_EXPORT_REQUEST_MS = 60_000;
+/**
+ * How long the download may go without a byte arriving before this attempt at it ends. It bounds a stall, never the
+ * download's length: an export's SQL runs to hundreds of megabytes, and a total bound fails a large one that is still
+ * arriving.
+ */
+export const D1_EXPORT_STALL_MS = 60_000;
+/**
+ * How many times one export's result is fetched before the backup gives it up. Each attempt after the first asks after
+ * the same export for its download again, and resumes the bytes already on disk where the download serves a range.
+ */
+export const D1_EXPORT_DOWNLOAD_ATTEMPTS = 4;
 
 /** The provider's origin, and the only one an operator credential is sent to. */
 const API_ORIGIN = 'https://api.cloudflare.com';
@@ -137,10 +148,11 @@ export interface D1ExportContext {
   fetch?: CloudflareFetch;
   now?: () => number;
   sleep?: (ms: number) => Promise<void>;
-  /** Test-only overrides of the bound, the cancel margin and the pause between polls. */
+  /** Test-only overrides of the bound, the cancel margin, the pause between polls and the download's stall. */
   boundMs?: number;
   marginMs?: number;
   pollMs?: number;
+  stallMs?: number;
   report?: (line: string) => void;
 }
 
@@ -201,6 +213,7 @@ function exporter(context: D1ExportContext) {
   const boundMs = context.boundMs ?? D1_EXPORT_BOUND_MS;
   const marginMs = context.marginMs ?? D1_EXPORT_CANCEL_MARGIN_MS;
   const pollMs = context.pollMs ?? D1_EXPORT_POLL_MS;
+  const stallMs = context.stallMs ?? D1_EXPORT_STALL_MS;
   const file = exportRecordPath(context.recordDir, context.databaseId);
   const endpoint = `${API_ORIGIN}/client/v4/accounts/${encodeURIComponent(context.accountId)}/d1/database/${encodeURIComponent(context.databaseId)}/export`;
 
@@ -266,22 +279,113 @@ function exporter(context: D1ExportContext) {
     }
   };
 
-  const download = async (signedUrl: string): Promise<void> => {
-    // The signed URL is a capability of its own, fetched with no operator credential, and never written to a message.
-    let response: Response;
+  /**
+   * One attempt at the download, streamed to `part` and bounded by a stall rather than a total: it ends only where no
+   * byte arrives for `stallMs`. Bytes already in `part` are resumed from where the download serves a range, and
+   * rewritten from the start where it does not. Null once the whole result is in `part`.
+   */
+  const downloadOnce = async (signedUrl: string, part: string): Promise<null | { error: ObjectReadError; gone: boolean }> => {
+    const offset = fs.existsSync(part) ? fs.statSync(part).size : 0;
+    const controller = new AbortController();
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let arm = (): void => {};
+    const stalled = new Promise<never>((_, reject) => {
+      arm = () => {
+        clearTimeout(timer);
+        timer = setTimeout(() => {
+          reject(new Error(`no bytes arrived for ${Math.round(stallMs / 1000)} s`));
+          controller.abort();
+        }, stallMs);
+      };
+    });
+    stalled.catch(() => {});
+    arm();
+    const failed = (message: string, gone = false, transient = true) => ({ error: new ObjectReadError(message, { transient }), gone });
     try {
-      response = await fetchApi(signedUrl, { method: 'GET', redirect: 'follow', signal: AbortSignal.timeout(D1_EXPORT_REQUEST_MS * 10) });
-    } catch (error) {
-      throw new ObjectReadError(`the D1 export download did not reach Cloudflare (${redacted((error as Error).message)})`, { transient: true, cause: error });
+      // The signed URL is a capability of its own, fetched with no operator credential, and never written to a message.
+      let response: Response;
+      try {
+        // Asked for as stored, so a length and a range count the bytes written here.
+        const headers = new Headers({ 'accept-encoding': 'identity' });
+        if (offset > 0) headers.set('range', `bytes=${offset}-`);
+        response = await Promise.race([fetchApi(signedUrl, { method: 'GET', redirect: 'follow', signal: controller.signal, headers }), stalled]);
+      } catch (error) {
+        return failed(`the D1 export download did not reach Cloudflare (${redacted((error as Error).message)})`);
+      }
+      if ([401, 403, 404, 410].includes(response.status)) {
+        await response.body?.cancel().catch(() => {});
+        return failed(`the D1 export download is no longer served (HTTP ${response.status})`, true);
+      }
+      if (!response.ok || response.body === null) {
+        await response.body?.cancel().catch(() => {});
+        return failed(`the D1 export download failed (HTTP ${response.status})`, false, response.status === 408 || response.status === 429 || response.status >= 500);
+      }
+      const range = /^bytes (\d+)-\d+\/(\d+)$/.exec(response.headers.get('content-range') ?? '');
+      const resumed = response.status === 206 && range !== null && Number(range[1]) === offset;
+      if (response.status === 206 && !resumed) {
+        await response.body.cancel().catch(() => {});
+        fs.rmSync(part, { force: true });
+        return failed('the D1 export download answered a range other than the one asked for');
+      }
+      // An answer served encoded anyway counts its length and ranges in bytes this side never sees: it is taken whole,
+      // with no length to hold it to, and never resumed.
+      const encoded = !['identity', ''].includes((response.headers.get('content-encoding') ?? '').trim().toLowerCase());
+      const declared = encoded ? Number.NaN : resumed ? Number(range![2]) : Number(response.headers.get('content-length') ?? Number.NaN);
+      const handle = fs.openSync(part, resumed ? 'a' : 'w', 0o600);
+      let written = resumed ? offset : 0;
+      const reader = response.body.getReader();
+      try {
+        for (;;) {
+          const chunk = await Promise.race([reader.read(), stalled]);
+          if (chunk.done) break;
+          arm();
+          fs.writeSync(handle, chunk.value);
+          written += chunk.value.byteLength;
+        }
+      } catch (error) {
+        await reader.cancel().catch(() => {});
+        if (encoded) fs.rmSync(part, { force: true });
+        return failed(`the D1 export download stopped before it arrived: ${redacted((error as Error).message)}`);
+      } finally {
+        fs.closeSync(handle);
+      }
+      if (Number.isFinite(declared) && written !== declared) return failed(`the D1 export download ended at ${written} of ${declared} bytes`);
+      return null;
+    } finally {
+      clearTimeout(timer);
     }
-    if (!response.ok || response.body === null) {
-      await response.body?.cancel();
-      throw new ObjectReadError(`the D1 export download failed (HTTP ${response.status})`, { transient: response.status === 408 || response.status === 429 || response.status >= 500 || [403, 404, 410].includes(response.status) });
-    }
-    try {
-      fs.writeFileSync(context.output, new Uint8Array(await response.arrayBuffer()), { mode: 0o600 });
-    } catch (error) {
-      throw new ObjectReadError(`the D1 export download stopped before it arrived: ${redacted((error as Error).message)}`, { transient: true, cause: error });
+  };
+
+  /**
+   * Fetch the result of the export `bookmark` names to the output. A download that stops is fetched again, resuming its
+   * bytes, and before each retry the same export is asked after for its download, so a signed URL that lapsed is
+   * replaced: never by a new export. A download Cloudflare no longer serves, for an export that names no other, is the
+   * result lost: the export ended, so its record is cleared and the next backup starts one.
+   */
+  const download = async (tables: readonly string[], bookmark: string | null, signedUrl: string): Promise<void> => {
+    const part = `${context.output}.part`;
+    fs.rmSync(part, { force: true });
+    let url = signedUrl;
+    for (let attempt = 1; ; attempt += 1) {
+      const outcome = await downloadOnce(url, part);
+      if (outcome === null) {
+        fs.renameSync(part, context.output);
+        return;
+      }
+      if (!outcome.error.transient || attempt >= D1_EXPORT_DOWNLOAD_ATTEMPTS) {
+        fs.rmSync(part, { force: true });
+        throw outcome.error;
+      }
+      context.report?.(`${outcome.error.message}; asking after the same D1 export for its download again (attempt ${attempt + 1} of ${D1_EXPORT_DOWNLOAD_ATTEMPTS})`);
+      const read = bookmark === null ? null : await ask(tables, bookmark);
+      if (read?.kind === 'complete') url = read.signedUrl;
+      else if (outcome.gone) {
+        fs.rmSync(part, { force: true });
+        fs.rmSync(file, { force: true });
+        throw new ObjectReadError(`the D1 export's result is no longer served and Cloudflare names no other (${redacted(read === null ? 'the export answered no bookmark' : read.kind === 'ended' ? read.detail : read.kind)}); `
+          + 'the export ended, so its record is cleared and the next attempt starts one', { transient: true });
+      }
+      await sleep(pollMs);
     }
   };
 
@@ -307,7 +411,7 @@ function exporter(context: D1ExportContext) {
     const { record, ended } = await follow(recorded);
     // Its result is a snapshot only while it is recent enough to be one; the caller holds it to the schema it reads.
     if (ended.kind === 'complete' && now() - record.startedAt < boundMs) {
-      await download(ended.signedUrl);
+      await download(record.tables, record.bookmark, ended.signedUrl);
       fs.rmSync(file, { force: true });
       return { schema: record.schema, startedAt: record.startedAt };
     }
@@ -358,7 +462,7 @@ function exporter(context: D1ExportContext) {
       fs.rmSync(file, { force: true });
       throw new D1ExportFailed(ended.detail);
     }
-    await download(ended.signedUrl);
+    await download(tables, ended.bookmark, ended.signedUrl);
     fs.rmSync(file, { force: true });
   };
 

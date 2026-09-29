@@ -14,6 +14,9 @@ export const D1_EXPORT_ANSWERS: ReadonlyArray<{ what: string; status: number; bo
   { what: 'complete with no bookmark', status: 200, body: ok({ status: 'complete', result: { signed_url: 'https://signed.example/one' } }), asked: null },
   { what: 'complete with no download', status: 200, body: ok({ status: 'complete', at_bookmark: 'b3' }), asked: 'b1' },
   { what: 'ended', status: 200, body: ok({ status: 'error', error: 'reset' }), asked: 'b1' },
+  // A bookmark whose export finished, lost its result or was reset: Cloudflare says nothing is exporting.
+  { what: 'nothing exporting', status: 200, body: ok({ success: false, error: 'Not currently exporting anything.' }), asked: 'b1' },
+  { what: 'nothing exporting, as a refusal', status: 400, body: { success: false, errors: [{ message: 'Not currently exporting anything.' }] }, asked: 'b1' },
   { what: 'a failed result', status: 200, body: ok({ success: false, error: 'busy' }), asked: 'b1' },
   { what: 'an error with no status', status: 200, body: ok({ error: 'busy' }), asked: 'b1' },
   { what: 'a null result', status: 200, body: { success: true, result: null }, asked: 'b1' },

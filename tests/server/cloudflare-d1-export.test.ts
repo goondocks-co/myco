@@ -12,7 +12,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import {
-  D1_EXPORT_BOUND_MS, D1_EXPORT_CANCEL_MARGIN_MS, D1_EXPORT_POLL_ATTEMPTS, D1ExportFailed, D1ExportRecordUnreadable, D1ExportUnfinished, D1ExportUnsettled,
+  D1_EXPORT_BOUND_MS, D1_EXPORT_CANCEL_MARGIN_MS, D1_EXPORT_DOWNLOAD_ATTEMPTS, D1_EXPORT_POLL_ATTEMPTS, D1ExportFailed, D1ExportRecordUnreadable, D1ExportUnfinished, D1ExportUnsettled,
   exportD1, exportRecordPath, settleD1Export, type D1ExportOptions,
 } from '@myco/server/cloudflare-d1-export.js';
 import { transientReadFailure } from '@myco/server/object-read.js';
@@ -148,7 +148,8 @@ describe('an export a retry resumes', () => {
     };
     await expect(run(lost)).rejects.toThrow('did not reach Cloudflare');
     await run(api.fetch);
-    expect(api.requests).toEqual([null, 'bm-1', 'bm-1']);
+    // The download is fetched again from the same export before this backup gives it up; the next one resumes that export.
+    expect(api.requests).toEqual([null, 'bm-1', ...Array(D1_EXPORT_DOWNLOAD_ATTEMPTS - 1).fill('bm-1'), 'bm-1']);
     expect(fs.readFileSync(path.join(dir, 'd1.sql'), 'utf8')).toBe('-- export bm-1\n');
   });
 
@@ -160,7 +161,7 @@ describe('an export a retry resumes', () => {
     };
     await expect(run(lost)).rejects.toThrow('did not reach Cloudflare');
     await run(api.fetch, { schema: 'schema-2' });
-    expect(api.requests).toEqual([null, 'bm-1', 'bm-1', null, 'bm-2']);
+    expect(api.requests).toEqual([null, 'bm-1', ...Array(D1_EXPORT_DOWNLOAD_ATTEMPTS - 1).fill('bm-1'), 'bm-1', null, 'bm-2']);
     expect(fs.readFileSync(path.join(dir, 'd1.sql'), 'utf8')).toBe('-- export bm-2\n');
   });
 
@@ -240,26 +241,32 @@ describe('an export that completes on the request that starts it (#1455 finding 
     return fetch;
   };
 
-  it('is recorded by its bookmark before its download, so a lost download is resumed rather than read as an unsettled start', async () => {
+  it('is recorded by its bookmark before its download, so a lost download is fetched again from that export rather than read as an unsettled start', async () => {
     const api = provider(() => 'complete');
     api.control.startAnswer = completingAtOnce(api, true);
-    const fetch = downloadLostOnce(api);
-    await expect(run(fetch)).rejects.toThrow('did not reach Cloudflare');
-    expect(recorded()).toMatchObject({ bookmark: 'bm-1' });
-    api.control.startAnswer = null;
+    const lost = downloadLostOnce(api);
+    const bookmarks: unknown[] = [];
+    const fetch: CloudflareFetch = async (url, init) => {
+      if (url.startsWith('https://signed.fixture/')) bookmarks.push(recorded().bookmark);
+      return lost(url, init);
+    };
     await run(fetch);
-    expect({ requests: api.requests, output: fs.readFileSync(path.join(dir, 'd1.sql'), 'utf8') }).toEqual({ requests: [null, 'bm-1'], output: '-- export bm-1\n' });
+    expect({ bookmarks, requests: api.requests, output: fs.readFileSync(path.join(dir, 'd1.sql'), 'utf8'), kept: fs.existsSync(recordFile()) })
+      .toEqual({ bookmarks: ['bm-1', 'bm-1'], requests: [null, 'bm-1'], output: '-- export bm-1\n', kept: false });
   });
 
-  it('is recorded as nothing where it answers no bookmark: it runs no longer, and the next backup starts one', async () => {
+  it('is recorded as nothing where it answers no bookmark: it runs no longer, and its download is fetched again from the same URL', async () => {
     const api = provider(() => 'complete');
     api.control.startAnswer = completingAtOnce(api, false);
-    const fetch = downloadLostOnce(api);
-    await expect(run(fetch)).rejects.toThrow('did not reach Cloudflare');
-    expect(fs.existsSync(recordFile())).toBe(false);
-    api.control.startAnswer = null;
+    const lost = downloadLostOnce(api);
+    const recordedDuring: boolean[] = [];
+    const fetch: CloudflareFetch = async (url, init) => {
+      if (url.startsWith('https://signed.fixture/')) recordedDuring.push(fs.existsSync(recordFile()));
+      return lost(url, init);
+    };
     await run(fetch);
-    expect(api.started()).toBe(2);
+    expect({ recordedDuring, started: api.started(), requests: api.requests, output: fs.readFileSync(path.join(dir, 'd1.sql'), 'utf8') })
+      .toEqual({ recordedDuring: [false, false], started: 1, requests: [null], output: '-- export bm-1\n' });
   });
 });
 
@@ -349,6 +356,155 @@ describe('a download that fails', () => {
   });
 });
 
+/** An answer that nothing is exporting, as Cloudflare gives it for a bookmark whose export is no longer running. */
+const NOTHING_EXPORTING = () => Response.json({ success: true, errors: [], messages: [], result: { success: false, error: 'Not currently exporting anything.' } });
+
+/** `inner`, except that a poll of any bookmark in `gone` is answered that nothing is exporting. */
+const nothingExportingFor = (gone: Set<string>, inner: CloudflareFetch): CloudflareFetch => async (url, init) => {
+  if (url === ENDPOINT) {
+    const bookmark = (JSON.parse(String(init.body)) as { current_bookmark?: string }).current_bookmark;
+    if (bookmark !== undefined && gone.has(bookmark)) return NOTHING_EXPORTING();
+  }
+  return inner(url, init);
+};
+
+describe('a download that trickles, then stalls', () => {
+  it('ends that attempt on the stall, asks after the same export, and resumes its bytes: no second export, no failure', async () => {
+    const api = provider(() => 'complete');
+    const whole = new TextEncoder().encode('-- export bm-1, the whole of it\n');
+    const ranges: Array<string | null> = [];
+    const gone = new Set<string>();
+    const fetch = nothingExportingFor(gone, async (url, init) => {
+      if (!url.startsWith('https://signed.fixture/')) return api.fetch(url, init);
+      const range = new Headers(init.headers).get('range');
+      ranges.push(range);
+      // Once its result is served, Cloudflare answers the export's bookmark that nothing is exporting.
+      gone.add('bm-1');
+      if (range === null) {
+        // The first bytes arrive, then nothing more: the connection stays open with no byte on it.
+        return new Response(new ReadableStream({
+          start(controller) { controller.enqueue(whole.slice(0, 8)); },
+          pull() { return new Promise(() => {}); },
+        }), { status: 200, headers: { 'content-length': String(whole.byteLength) } });
+      }
+      const from = Number(/^bytes=(\d+)-$/.exec(range)![1]);
+      return new Response(whole.slice(from), { status: 206, headers: { 'content-range': `bytes ${from}-${whole.byteLength - 1}/${whole.byteLength}` } });
+    });
+    await run(fetch, { stallMs: 25, pollMs: 0 });
+    expect({
+      output: fs.readFileSync(path.join(dir, 'd1.sql'), 'utf8'), ranges, started: api.started(), requests: api.requests,
+      kept: fs.existsSync(recordFile()), part: fs.existsSync(path.join(dir, 'd1.sql.part')),
+    }).toEqual({ output: '-- export bm-1, the whole of it\n', ranges: [null, 'bytes=8-'], started: 1, requests: [null, 'bm-1'], kept: false, part: false });
+  });
+
+  it('takes a fresh download from the same export where it answers one, and never counts a total time against the download', async () => {
+    const api = provider(() => 'complete');
+    let asked = 0;
+    const fetch: CloudflareFetch = async (url, init) => {
+      if (url === ENDPOINT) {
+        // Asked after again once its first download lapsed, the export answers a fresh one.
+        const answer = await api.fetch(url, init);
+        asked += 1;
+        if (asked < 3) return answer;
+        return Response.json({ success: true, errors: [], result: { success: true, status: 'complete', at_bookmark: 'bm-1', result: { signed_url: 'https://signed.fixture/bm-1?fresh' } } });
+      }
+      if (!url.endsWith('?fresh')) return new Response(null, { status: 403 });
+      // Slow but never stalled: each byte arrives inside the stall, the whole takes several stalls' time.
+      const bytes = new TextEncoder().encode('-- slow\n');
+      let at = 0;
+      return new Response(new ReadableStream({
+        async pull(controller) {
+          await new Promise((resolve) => setTimeout(resolve, 10));
+          if (at >= bytes.byteLength) { controller.close(); return; }
+          controller.enqueue(bytes.slice(at, at + 1));
+          at += 1;
+        },
+      }), { status: 200 });
+    };
+    await run(fetch, { stallMs: 40, pollMs: 0 });
+    expect({ output: fs.readFileSync(path.join(dir, 'd1.sql'), 'utf8'), started: api.started(), requests: api.requests })
+      .toEqual({ output: '-- slow\n', started: 1, requests: [null, 'bm-1', 'bm-1'] });
+  });
+
+  it('clears the record where the download is no longer served and nothing names another, so the next backup starts one', async () => {
+    const api = provider(() => 'complete');
+    const gone = new Set<string>();
+    const fetch = nothingExportingFor(gone, async (url, init) => {
+      if (!url.startsWith('https://signed.fixture/')) return api.fetch(url, init);
+      gone.add('bm-1');
+      return new Response(null, { status: 410 });
+    });
+    const failure = await run(fetch, { pollMs: 0 }).then(() => null, (error: unknown) => error as Error);
+    expect({ transient: transientReadFailure(failure), said: failure?.message.includes('no longer served'), kept: fs.existsSync(recordFile()), started: api.started() })
+      .toEqual({ transient: true, said: true, kept: false, started: 1 });
+    await run(api.fetch, { pollMs: 0 });
+    expect(api.started()).toBe(2);
+  });
+});
+
+describe('a download that closes before its length', () => {
+  it('is never taken as the result: the rest is fetched from where it stopped', async () => {
+    const api = provider(() => 'complete');
+    const whole = new TextEncoder().encode('-- export bm-1, closed early\n');
+    const ranges: Array<string | null> = [];
+    const fetch: CloudflareFetch = async (url, init) => {
+      if (!url.startsWith('https://signed.fixture/')) return api.fetch(url, init);
+      const range = new Headers(init.headers).get('range');
+      ranges.push(range);
+      if (range === null) {
+        // The connection closes cleanly after the first bytes, short of the length the answer declared.
+        return new Response(new ReadableStream({ start(controller) { controller.enqueue(whole.slice(0, 10)); controller.close(); } }),
+          { status: 200, headers: { 'content-length': String(whole.byteLength) } });
+      }
+      const from = Number(/^bytes=(\d+)-$/.exec(range)![1]);
+      return new Response(whole.slice(from), { status: 206, headers: { 'content-range': `bytes ${from}-${whole.byteLength - 1}/${whole.byteLength}` } });
+    };
+    await run(fetch, { pollMs: 0 });
+    expect({ output: fs.readFileSync(path.join(dir, 'd1.sql'), 'utf8'), ranges, started: api.started() })
+      .toEqual({ output: '-- export bm-1, closed early\n', ranges: [null, 'bytes=10-'], started: 1 });
+  });
+});
+
+describe('a download served encoded anyway', () => {
+  it('is asked for as stored, and taken whole where it comes encoded, its declared length counting bytes never seen here', async () => {
+    const api = provider(() => 'complete');
+    const asked: Array<string | null> = [];
+    const fetch: CloudflareFetch = async (url, init) => {
+      if (!url.startsWith('https://signed.fixture/')) return api.fetch(url, init);
+      asked.push(new Headers(init.headers).get('accept-encoding'));
+      // What a decoding fetch hands over: the whole SQL, under the encoded length.
+      return new Response('-- export bm-1, decoded\n', { status: 200, headers: { 'content-encoding': 'gzip', 'content-length': '7' } });
+    };
+    await run(fetch, { pollMs: 0 });
+    expect({ output: fs.readFileSync(path.join(dir, 'd1.sql'), 'utf8'), asked }).toEqual({ output: '-- export bm-1, decoded\n', asked: ['identity'] });
+  });
+});
+
+describe('a download whose answer never begins', () => {
+  it('ends that attempt on the stall and fetches it again from the same export', async () => {
+    const api = provider(() => 'complete');
+    let served = 0;
+    const fetch: CloudflareFetch = async (url, init) => {
+      if (!url.startsWith('https://signed.fixture/')) return api.fetch(url, init);
+      served += 1;
+      if (served === 1) return new Promise<Response>(() => {});
+      return api.fetch(url, init);
+    };
+    await run(fetch, { stallMs: 25, pollMs: 0 });
+    expect({ served, started: api.started(), output: fs.readFileSync(path.join(dir, 'd1.sql'), 'utf8') }).toEqual({ served: 2, started: 1, output: '-- export bm-1\n' });
+  });
+});
+
+describe('a recorded export Cloudflare says nothing is exporting for', () => {
+  it('is settled as ended, its record cleared, and a new export started after it', async () => {
+    const api = provider(() => 'complete');
+    record({ bookmark: 'b-finished', startedAt: clock - 120_000, lastPolledAt: clock - 60_000 });
+    await run(nothingExportingFor(new Set(['b-finished']), api.fetch), { pollMs: 0 });
+    expect({ requests: api.requests, started: api.started(), output: fs.readFileSync(path.join(dir, 'd1.sql'), 'utf8'), kept: fs.existsSync(recordFile()) })
+      .toEqual({ requests: [null, 'bm-1'], started: 1, output: '-- export bm-1\n', kept: false });
+  });
+});
+
 describe('the one reading of an export answer (#1455 F7)', () => {
   const ok = (result: Record<string, unknown>) => ({ success: true, errors: [], result });
   it('ends an export only on an answer that says so for it', () => {
@@ -378,6 +534,13 @@ describe('the one reading of an export answer (#1455 F7)', () => {
       }
     }
     expect(readD1ExportAnswer(200, ok({ at_bookmark: 'b' }), null)).toEqual({ kind: 'running', bookmark: 'b' });
+  });
+
+  it('reads the answer that nothing is exporting as ended, where the result says it and where a refusal does', () => {
+    expect(readD1ExportAnswer(200, ok({ success: false, error: 'Not currently exporting anything.' }), 'b1')).toEqual({ kind: 'ended', bookmark: 'b1', detail: 'Not currently exporting anything.' });
+    expect(readD1ExportAnswer(400, { success: false, errors: [{ message: 'Not currently exporting anything.' }] }, 'b1')).toMatchObject({ kind: 'ended', bookmark: 'b1' });
+    // Another refusal of the same shape stays unsettled.
+    expect(readD1ExportAnswer(200, ok({ success: false, error: 'busy' }), 'b1')).toMatchObject({ kind: 'unknown' });
   });
 
   it('reads a credential the API refused as a refusal that started nothing', () => {

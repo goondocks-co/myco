@@ -6,6 +6,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { backupCloudflareDeployment } from '@myco/server/cloudflare-backup.js';
+import { D1_EXPORT_DOWNLOAD_ATTEMPTS } from '@myco/server/cloudflare-d1-export.js';
 import * as cloudflare from '@myco/server/cloudflare.js';
 import { writeDeploymentRecord, type CloudflareFetch, type OperatorObjectTimeouts } from '@myco/server/cloudflare.js';
 import { RECOVERY_RETRY, verifyRecoveryBundle, type RecoveryRetryPolicy } from '@myco/server/recovery-bundle.js';
@@ -687,26 +688,29 @@ describe('a transient Cloudflare failure during the snapshot', () => {
     try { return recovered.query('SELECT id, body FROM recovery_fixture').all(); } finally { recovered.close(); }
   };
 
-  it('captures again after an export download and a schema read that each fail once, resuming the one export rather than starting another', async () => {
+  it('fetches a lost export download again from the one export, and captures again after a schema read that fails, starting one only once the first result reached disk', async () => {
     const f = fixture();
     try {
       let schemaReads = 0;
       f.downloadFailsWith((_bookmark, attempt) => attempt === 1 ? downloadLost() : null);
       const runner = failing(f, (args) => {
-        // The second attempt's schema read after its export.
-        if (isSchemaRead(args) && ++schemaReads === 3) return Promise.resolve(accountRefused);
+        // The first attempt's schema read after its export.
+        if (isSchemaRead(args) && ++schemaReads === 2) return Promise.resolve(accountRefused);
         return null;
       });
       const reports: string[] = [];
       const result = await f.backup({ runner, report: (line) => reports.push(line) });
       expect(result.status).toBe('complete');
-      // The lost download's export is resumed by its bookmark; only the attempt after its result reached disk starts one.
+      // The lost download is fetched again from its own export inside the attempt; only the attempt after that export's
+      // result reached disk starts another.
       expect(f.exports().map((job) => job.bookmark)).toEqual(['bm-1', 'bm-2']);
       expect(f.downloads()).toBe(3);
-      expect(schemaReads).toBe(5);
+      expect(schemaReads).toBe(4);
+      expect(reports.filter((line) => line.includes('asking after the same D1 export for its download again'))).toEqual([
+        expect.stringContaining(`fetch failed; asking after the same D1 export for its download again (attempt 2 of ${D1_EXPORT_DOWNLOAD_ATTEMPTS})`),
+      ]);
       expect(reports.filter((line) => line.startsWith('Capturing the database snapshot failed'))).toEqual([
-        expect.stringContaining(`fetch failed); starting it again in 0 s (attempt 2 of ${RECOVERY_RETRY.snapshots.attempts})`),
-        expect.stringContaining(`[code: 7403]); starting it again in 0 s (attempt 3 of ${RECOVERY_RETRY.snapshots.attempts})`),
+        expect.stringContaining(`[code: 7403]); starting it again in 0 s (attempt 2 of ${RECOVERY_RETRY.snapshots.attempts})`),
       ]);
       // No attempt found what an earlier one left, and nothing of the partial download reached the artifact.
       expect(f.leftovers).toEqual([]);
@@ -719,12 +723,15 @@ describe('a transient Cloudflare failure during the snapshot', () => {
     const f = fixture();
     try {
       const at: number[] = [];
-      f.downloadFailsWith(() => {
+      // The first schema read of each of the first two captures fails; the third capture's goes through.
+      const runner = failing(f, (args) => {
+        if (!isSchemaRead(args)) return null;
         at.push(performance.now());
-        return at.length < 3 ? downloadLost() : null;
+        return at.length < 3 ? Promise.resolve(connectionLost) : null;
       });
       const retry = { ...IMMEDIATE_RETRY, snapshots: { attempts: 3, backoffMs: [60, 90] } };
-      expect((await f.backup({ retry })).status).toBe('complete');
+      expect((await f.backup({ retry, runner })).status).toBe('complete');
+      at.splice(3);
       expect(at).toHaveLength(3);
       expect(at[1]! - at[0]!).toBeGreaterThanOrEqual(55);
       expect(at[2]! - at[1]!).toBeGreaterThanOrEqual(85);
@@ -765,8 +772,8 @@ describe('a transient Cloudflare failure during the snapshot', () => {
       expect(failure).toStartWith(`the database snapshot was not captured after ${attempts} attempts: `);
       expect(failure).toContain('stopped before it arrived');
       expect(failure).not.toContain('refused this account');
-      // Every attempt downloads the one export it started; none starts a second.
-      expect({ exports: f.exports().length, downloads: f.downloads() }).toEqual({ exports: 1, downloads: attempts });
+      // Every attempt fetches the one export's result, each as many times as the download allows; none starts a second.
+      expect({ exports: f.exports().length, downloads: f.downloads() }).toEqual({ exports: 1, downloads: attempts * D1_EXPORT_DOWNLOAD_ATTEMPTS });
       expect(JSON.parse(fs.readFileSync(path.join(f.destination, 'recovery.json'), 'utf8')).status).toBe('snapshot');
       expect(fs.existsSync(path.join(f.destination, 'myco.sqlite'))).toBe(false);
       // The last attempt's partial download is gone with its work directory's next emptying; the next run resumes the export.
