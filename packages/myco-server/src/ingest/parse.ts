@@ -591,13 +591,15 @@ export async function parseOnce(env: Pick<ServerEnv, 'db' | 'blobs'>, target: Pa
   // Uploaded bytes may end mid-turn; later segments continue the same prompt.
   const openPrompt = lastTurn;
 
-  // The lines of its segment behind the new cursor go with it, so the next pass reads on from the cursor alone. A
-  // cursor another pass moved further keeps no count, and the pass after reads that segment from its first byte.
+  // The lines of its segment behind the new cursor, and the turn open there, go with it, so the next pass reads on from
+  // the cursor alone. A cursor another pass moved further keeps its own turn and no count: the pass after reads that
+  // segment from its first byte.
   const advance = env.db
     .prepare(`UPDATE transcripts SET parse_segment_lines = CASE WHEN ? >= parsed_offset THEN ? ELSE NULL END, parsed_offset = MAX(parsed_offset, ?), parsed_at = ?, parser_version = ?,
-                 fidelity = COALESCE(fidelity, ?), open_prompt_id = ?, parser_context = COALESCE(parser_context, ?), parse_error = NULL, parse_failed_at = NULL, parse_awaited_size = NULL
+                 fidelity = COALESCE(fidelity, ?), open_prompt_id = CASE WHEN ? >= parsed_offset THEN ? ELSE open_prompt_id END, parser_context = COALESCE(parser_context, ?),
+                 parse_error = NULL, parse_failed_at = NULL, parse_awaited_size = NULL
                WHERE project_id = ? AND transcript_id = ?`)
-    .bind(cursor, segmentLinesAt(cursor, held), cursor, now, PARSER_VERSION, parser.fidelity, openPrompt, transcriptMeta === undefined ? null : JSON.stringify(transcriptMeta), target.projectId, target.transcriptId);
+    .bind(cursor, segmentLinesAt(cursor, held), cursor, now, PARSER_VERSION, parser.fidelity, cursor, openPrompt, transcriptMeta === undefined ? null : JSON.stringify(transcriptMeta), target.projectId, target.transcriptId);
   await finalizePass(env.db, target, advance);
   calls += 1;
 
