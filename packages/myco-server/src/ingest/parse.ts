@@ -28,7 +28,8 @@
 import type { JobBudget, PreparedStatement, RelationalStore, ServerEnv } from '../core/adapters.js';
 import type { JobOutcome } from '../core/jobs-run.js';
 import { emit, type Classifier } from '../telemetry.js';
-import { uuidv5 } from '../hash.js';
+import { utf8, uuidv5 } from '../hash.js';
+import { MAX_PAYLOAD_BYTES } from './envelope.js';
 import { planEventWrite, type EventWrite, type IngestResult } from './events.js';
 import { idFields, kindSpec } from './kinds.js';
 import { parserFor } from './parsers/registry.js';
@@ -40,6 +41,34 @@ import { MAX_BLOB_BYTES, SERVER_PROTOCOL, TRANSCRIPT_PARSE_ADAPTER } from '../co
 
 /** Derived events collapsed into one database call. */
 export const TRANSCRIPT_PARSE_EVENTS_PER_BATCH = 50;
+/**
+ * The payload bytes one database call may carry: what the twenty events a call held before could carry at most. More
+ * events share a call only while their payloads are small, so a call never carries more than it ever has.
+ */
+export const TRANSCRIPT_PARSE_BATCH_PAYLOAD_BYTES = 20 * MAX_PAYLOAD_BYTES;
+
+/**
+ * A pass's derived events as the groups it writes, one database call each, in order: at most
+ * `TRANSCRIPT_PARSE_EVENTS_PER_BATCH` events and `TRANSCRIPT_PARSE_BATCH_PAYLOAD_BYTES` of payload per group, and
+ * never an empty group.
+ */
+export function eventGroups(events: readonly DerivedEvent[]): DerivedEvent[][] {
+  const groups: DerivedEvent[][] = [];
+  let open: DerivedEvent[] = [];
+  let bytes = 0;
+  for (const event of events) {
+    const size = utf8(JSON.stringify(event.payload)).byteLength;
+    if (open.length > 0 && (open.length >= TRANSCRIPT_PARSE_EVENTS_PER_BATCH || bytes + size > TRANSCRIPT_PARSE_BATCH_PAYLOAD_BYTES)) {
+      groups.push(open);
+      open = [];
+      bytes = 0;
+    }
+    open.push(event);
+    bytes += size;
+  }
+  if (open.length > 0) groups.push(open);
+  return groups;
+}
 /** Normal read floor; an unfinished first record may use the bounded segment lookahead. */
 export const TRANSCRIPT_PARSE_BYTES_PER_READ = 524_288;
 /** Segments read in one pass. Bytes alone do not bound the READS: a transcript shipped in many small segments sits inside the byte budget while costing one read each. */
@@ -125,7 +154,7 @@ interface ParseTarget {
   segments?: SegmentRow[];
 }
 
-/** A segment row as a pass reads it: where it sits in the transcript, its bytes' stored object, and when it was sent. */
+/** A segment row as a pass reads it: where it sits in the transcript, its bytes' stored object, and the time its event carries. */
 interface SegmentRow { base_offset: number; length: number; blob_key: string; object_key: string | null; created_at: number }
 
 /** The columns of a segment a pass reads, over `transcript_segments s` joined to the event that sent it as `e`. */
@@ -598,20 +627,23 @@ export async function parseOnce(env: Pick<ServerEnv, 'db' | 'blobs'>, target: Pa
   };
   // Whether the cursor's advance rode the last group's batch and applied there.
   let advanced = false;
-  for (let i = 0; i < events.length; i += TRANSCRIPT_PARSE_EVENTS_PER_BATCH) {
+  const groups = eventGroups(events);
+  for (const [g, group] of groups.entries()) {
     // The first group always runs, whatever the reads already cost, and the
     // budget ends a pass anywhere the cursor can actually move. A resumed pass
     // is handed the turn open at its start, so an event derived after a break
     // is identical to the same event derived without one; only the cursor
     // needs to advance, or the transcript would be re-read forever.
-    if (i > 0 && spentAll(limits, calls) && events[i].offset > target.parsedOffset) {
-      cursor = events[i].offset;
+    if (g > 0 && spentAll(limits, calls) && group[0].offset > target.parsedOffset) {
+      cursor = group[0].offset;
       break;
     }
-    const group = events.slice(i, i + TRANSCRIPT_PARSE_EVENTS_PER_BATCH);
     const writes: EventWrite[] = [];
+    const eventIds = new Set<string>();
     for (const event of group) {
-      const planned = await planEventWrite(env.db, ctx, await envelopeFor(target, event));
+      const envelope = await envelopeFor(target, event);
+      eventIds.add(envelope.eventId as string);
+      const planned = await planEventWrite(env.db, ctx, envelope);
       if (!planned.ok) {
         // The catalogue refused an event this parser derived: telemetry names its kind and the refusal's classifier.
         await stop(env.db, target, 'event_refused', now, { eventKind: event.kind, refusal: planned.classifier });
@@ -620,8 +652,8 @@ export async function parseOnce(env: Pick<ServerEnv, 'db' | 'blobs'>, target: Pa
       writes.push(planned.write);
     }
     // The last group carries the cursor's advance past the window, guarded on every event of the group being stored.
-    const last = i + TRANSCRIPT_PARSE_EVENTS_PER_BATCH >= events.length && cursor > target.parsedOffset;
-    const envelopes = last ? [...new Set(await Promise.all(group.map(async (event) => (await envelopeFor(target, event)).eventId as string)))] : [];
+    const last = g === groups.length - 1 && cursor > target.parsedOffset;
+    const envelopes = last ? [...eventIds] : [];
     const turnAfter = group.reduce<string | null>((turn, event) => turnOf(event) ?? turn, lastTurn);
     const tail = last ? [advanceTo(cursor, turnAfter, envelopes), ...(target.imported ? [resolvePresentedDates(env.db, target.projectId, target.sessionId)] : [])] : [];
     const results = await env.db.batch([...writes.flatMap((w) => w.statements), ...tail]);

@@ -20,7 +20,8 @@
 import { registerBlob } from './helpers/d1.js';
 import { refused } from './helpers/outcomes.js';
 import { describe, expect, it } from 'bun:test';
-import { laneSelectionSql, PARSER_VERSION, parseTranscripts, pendingTranscripts } from '@myco-server-worker/ingest/parse.js';
+import { laneSelectionSql, PARSER_VERSION, parseTranscripts, pendingTranscripts, TRANSCRIPT_PARSE_IMPORTED_AT_ONCE } from '@myco-server-worker/ingest/parse.js';
+import type { PreparedStatement, RelationalStore } from '@myco-server-worker/core/adapters.js';
 import { CHAINED_WAKE_MS, engineAssertions, runTick, WAKE_INTERVALS } from '@myco-server-worker/core/tick.js';
 import { nextWakeDelayMs } from '@myco-server-worker/core/power.js';
 import { ingestEvent } from '@myco-server-worker/ingest/events.js';
@@ -340,5 +341,60 @@ describe('an imported transcript in the store', () => {
     // page one rather than failing an ordering assertion.
     expect(seen.sort()).toEqual(['a', 'b', 'c', 'd']);
     expect(seen.length).toBe(4);
+  });
+});
+
+describe('imports read side by side', () => {
+  /** Imports whose turns each name their own prompt, so every row they derive is told apart. */
+  const imports = async (r: Awaited<ReturnType<typeof rig>>, count: number, turns: number) => {
+    for (let t = 0; t < count; t += 1) {
+      let text = '';
+      for (let i = 0; i < turns; i += 1) text += body(50_000 + t * 1_000 + i);
+      expect((await r.ship(`s-side-${t}`, tx(`side${t}`), text, 'import', NOW - 1_000 * (t + 1))).persisted).toBe(true);
+    }
+  };
+  const state = (r: Awaited<ReturnType<typeof rig>>) => r.sqlite.query(`SELECT transcript_id, parsed_offset = size AS done, parse_error FROM transcripts ORDER BY transcript_id`).all();
+  const counts = (r: Awaited<ReturnType<typeof rig>>) => Object.fromEntries(['events', 'prompt_batches', 'responses'].map((t) => [t, (r.sqlite.query(`SELECT COUNT(*) AS n FROM ${t}`).get() as { n: number }).n]));
+
+  it('takes several distinct imports in one selection and reads each once to its end', async () => {
+    const r = await rig();
+    await imports(r, TRANSCRIPT_PARSE_IMPORTED_AT_ONCE, 5);
+    const selected: number[] = [];
+    const spy = (statement: PreparedStatement, sql: string): PreparedStatement => ({
+      ...statement,
+      bind: (...values: unknown[]) => spy(statement.bind(...values), sql),
+      all: async <T,>() => {
+        const answer = await statement.all<T>();
+        if (/FROM transcripts\s/.test(sql) && /json_group_array/.test(sql)) selected.push(answer.results.length);
+        return answer;
+      },
+    });
+    const db: RelationalStore = { prepare: (sql: string) => spy(r.serverEnv.db.prepare(sql), sql), batch: (statements) => r.serverEnv.db.batch(statements) };
+    await parseTranscripts({ ...r.serverEnv, db }, NOW, { budget: { calls: 200, wallMs: 60_000 } });
+    // One selection named every import, and one more found none left.
+    expect(selected.filter((n) => n > 0)).toEqual([TRANSCRIPT_PARSE_IMPORTED_AT_ONCE]);
+    expect(state(r)).toEqual(Array.from({ length: TRANSCRIPT_PARSE_IMPORTED_AT_ONCE }, (_, t) => ({ transcript_id: tx(`side${t}`), done: 1, parse_error: null }))
+      .sort((a, b) => a.transcript_id.localeCompare(b.transcript_id)));
+    expect(counts(r)).toMatchObject({ prompt_batches: TRANSCRIPT_PARSE_IMPORTED_AT_ONCE * 5, responses: TRANSCRIPT_PARSE_IMPORTED_AT_ONCE * 5 });
+  });
+
+  it('lands every row once when two wakes read the same imports at once', async () => {
+    const alone = await rig();
+    await imports(alone, 6, 40);
+    for (let pass = 0; pass < 20 && (await pendingTranscripts(alone.serverEnv.db)).transcripts > 0; pass += 1) {
+      await parseTranscripts(alone.serverEnv, NOW, { budget: { calls: 12, wallMs: 60_000 } });
+    }
+    const together = await rig();
+    await imports(together, 6, 40);
+    for (let pass = 0; pass < 20 && (await pendingTranscripts(together.serverEnv.db)).transcripts > 0; pass += 1) {
+      // A clock wake and an owner's wake at once: each selects the same imports and reads them side by side.
+      await Promise.all([
+        parseTranscripts(together.serverEnv, NOW, { budget: { calls: 12, wallMs: 60_000 } }),
+        parseTranscripts(together.serverEnv, NOW, { budget: { calls: 12, wallMs: 60_000 } }),
+      ]);
+    }
+    expect(state(together)).toEqual(state(alone));
+    expect(state(together).every((row) => (row as { done: number }).done === 1)).toBe(true);
+    expect(counts(together)).toEqual(counts(alone));
   });
 });

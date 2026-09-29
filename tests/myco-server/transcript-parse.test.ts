@@ -20,7 +20,7 @@ import { drainObjectReleases } from '@myco-server-worker/core/object-release.js'
 import { describe, expect, it } from 'bun:test';
 import { Database } from 'bun:sqlite';
 import {
-  AWAITING_BYTES, PARSER_VERSION, parseOnce, parseTranscripts, pendingTranscripts, rereadTranscripts,
+  AWAITING_BYTES, eventGroups, PARSER_VERSION, TRANSCRIPT_PARSE_BATCH_PAYLOAD_BYTES, parseOnce, parseTranscripts, pendingTranscripts, rereadTranscripts,
   TRANSCRIPT_PARSE_EVENTS_PER_BATCH, TRANSCRIPT_PARSE_MALFORMED_LIMIT,
   TRANSCRIPT_PARSE_BYTES_PER_READ, TRANSCRIPT_PARSE_SEGMENTS_PER_READ, TRANSCRIPT_PARSE_RECORD_BYTES,
 } from '@myco-server-worker/ingest/parse.js';
@@ -1407,5 +1407,33 @@ describe('a turn whose reply is longer than one response holds', () => {
     const { sqlite, serverEnv } = await rig(tooLong, 1 << 20, { agent: 'codex' });
     await parseTranscripts(serverEnv, NOW);
     expect(target(sqlite)).toMatchObject({ parse_error: 'event_refused', parsed_offset: 0 });
+  });
+});
+
+describe('the groups a pass writes', () => {
+  const event = (offset: number, text: string) => ({ kind: 'response', offset, createdAt: 1, payload: { responseId: uuid(offset + 1), text } });
+  const bytes = (group: Array<{ payload: unknown }>) => group.reduce((n, e) => n + Buffer.byteLength(JSON.stringify(e.payload)), 0);
+
+  it('writes small events fifty to a call, in order', () => {
+    const events = Array.from({ length: 120 }, (_, i) => event(i, `reply ${i}`));
+    const groups = eventGroups(events);
+    expect(groups.map((g) => g.length)).toEqual([TRANSCRIPT_PARSE_EVENTS_PER_BATCH, TRANSCRIPT_PARSE_EVENTS_PER_BATCH, 20]);
+    expect(groups.flat()).toEqual(events);
+  });
+
+  it('never carries more payload in one call than twenty of the largest events could, and fills each call it can', () => {
+    const events = Array.from({ length: 60 }, (_, i) => event(i, 'x'.repeat(200_000)));
+    const groups = eventGroups(events);
+    expect(groups.flat()).toEqual(events);
+    for (const [n, group] of groups.entries()) {
+      expect(bytes(group)).toBeLessThanOrEqual(TRANSCRIPT_PARSE_BATCH_PAYLOAD_BYTES);
+      if (n < groups.length - 1) expect(bytes([...group, groups[n + 1][0]])).toBeGreaterThan(TRANSCRIPT_PARSE_BATCH_PAYLOAD_BYTES);
+    }
+    expect(TRANSCRIPT_PARSE_BATCH_PAYLOAD_BYTES).toBe(20 * 262_144);
+  });
+
+  it('writes an event larger than a call alone rather than dropping it', () => {
+    const events = [event(0, 'x'.repeat(TRANSCRIPT_PARSE_BATCH_PAYLOAD_BYTES)), event(1, 'small')];
+    expect(eventGroups(events).map((g) => g.length)).toEqual([1, 1]);
   });
 });
