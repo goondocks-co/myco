@@ -352,6 +352,14 @@ it('stops streaming and releases the source when the caller stops waiting', asyn
   expect(store.writes).toEqual([]);
 });
 
+it('reads a bookmark Cloudflare says nothing is exporting for as ended, so the producer settles it and may start another', async () => {
+  const original = globalThis.fetch;
+  try {
+    globalThis.fetch = (async () => Response.json({ success: true, errors: [], result: { success: false, error: 'Not currently exporting anything.' } })) as unknown as typeof fetch;
+    expect(await cloudflareProducerPorts(target(), bucket(), source()).pollExport('b-lost')).toEqual({ status: 'ended', bookmark: 'b-lost' });
+  } finally { globalThis.fetch = original; }
+});
+
 it('puts every export answer in the producer\'s words as the one shared reading reads it (#1480)', async () => {
   const rows = D1_EXPORT_ANSWERS;
   // The mapping the producer states: each reading, and the answer that carries it in the producer's words.
@@ -374,7 +382,7 @@ it('puts every export answer in the producer\'s words as the one shared reading 
       const read = readD1ExportAnswer(row.status, row.body, row.asked);
       expect({ what: row.what, answer }).toEqual({ what: row.what, answer: expected(read, row.asked) });
       // And no answer that names no status, or that refuses, reads as the export's end.
-      if (!['ended', 'complete'].includes(row.what)) expect({ what: row.what, ends: answer.status === 'ended' }).toEqual({ what: row.what, ends: false });
+      if (!['ended', 'complete', 'nothing exporting', 'nothing exporting, as a refusal'].includes(row.what)) expect({ what: row.what, ends: answer.status === 'ended' }).toEqual({ what: row.what, ends: false });
     }
   } finally { globalThis.fetch = original; }
 });

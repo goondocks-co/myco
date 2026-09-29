@@ -8,7 +8,7 @@
  * database's queries while it runs, so what matters most is telling an export
  * that has ended from one whose state this answer does not settle. An export
  * has ended only where the answer says so for it — `complete` with its
- * download, or `error`. Every other answer, a refusal, an HTTP failure, a
+ * download, `error`, or the answer that nothing is exporting at all. Every other answer, a refusal, an HTTP failure, a
  * body that is not the API's envelope, leaves the export's state unknown: it
  * may still be running, and a caller that started another beside it would run
  * two.
@@ -19,6 +19,14 @@ export const transientExportStatus = (status: number): boolean => status === 408
 
 /** Cloudflare's code for a request its API refused to authenticate, which it refuses before the request does anything. */
 const AUTHENTICATION_ERROR = 10000;
+
+/**
+ * The answer Cloudflare gives a bookmark whose export is no longer running: finished, its result expired, or reset.
+ * It carries no code of its own (Wrangler reads it as the result's `error` text alone), so its words are what it is
+ * known by. It says no export is running, which is what `ended` means to every caller: nothing runs that a new
+ * export would run beside.
+ */
+const NOT_EXPORTING = /^\s*not currently exporting anything\.?\s*$/i;
 
 /** How one answer from the export API reads. */
 export type D1ExportReading =
@@ -56,6 +64,9 @@ export function readD1ExportAnswer(status: number, body: unknown, asked: string 
   const envelope = typeof body === 'object' && body !== null ? body as Envelope : null;
   const errors = errorsOf(envelope);
   const said = errors.map((e) => text(e.message)).filter((m): m is string => m !== undefined).join('; ');
+  const resultError = text(envelope?.result?.error);
+  const notExporting = [resultError, ...errors.map((e) => text(e.message))].find((m) => m !== undefined && NOT_EXPORTING.test(m));
+  if (notExporting !== undefined && status !== 401) return { kind: 'ended', bookmark: asked, detail: notExporting };
   if (status < 200 || status > 299) {
     if (status === 401 || (status === 403 && errors.some((e) => e.code === AUTHENTICATION_ERROR))) return { kind: 'refused-login', status };
     return { kind: 'unknown', bookmark: asked, cause: 'http', status, transient: transientExportStatus(status), detail: `HTTP ${status}${said === '' ? '' : `: ${said}`}` };
