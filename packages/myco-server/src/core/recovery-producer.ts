@@ -116,8 +116,8 @@ export interface AttemptState {
 
 export interface AttemptPart { part: number; bytes: number; sha256: string; etag: string }
 
-/** An export some attempt asked for and never saw end, as the checkpoint holds it. */
-export interface UnsettledExport { attempt: number; requestedAt: number; answeredAt: number | null }
+/** An export some attempt asked for and never saw end, as the checkpoint holds it, with the bookmark that follows it. */
+export interface UnsettledExport { attempt: number; requestedAt: number; answeredAt: number | null; bookmark: string | null }
 
 /** One object the staged export's own rows name, and what a staged copy of it records. */
 export interface AttemptObject {
@@ -158,6 +158,11 @@ export interface AttemptCheckpoint {
    * stage, or null where every export requested has been seen to end.
    */
   unsettledExport(): UnsettledExport | null;
+  /**
+   * Record, on attempt `attempt`'s row whatever its stage, that the provider answered for its unsettled export at
+   * `at` (`running`), or that its export no longer runs (`settled`).
+   */
+  noteUnsettled(attempt: number, outcome: { running: number } | 'settled'): void;
   /** The signed download URL never leaves the checkpoint: it is not returned, reported or staged. */
   signedUrl(id: number): Promise<string | null>;
   setSignedUrl(id: number, url: string | null): Promise<void>;
@@ -295,6 +300,21 @@ export const PRODUCER_LIMITS: ProducerLimits = {
   objectMs: 300_000, publishMs: 1_800_000,
 };
 
+/**
+ * Why an attempt at `export` sends no request now: an export an earlier attempt requested may still run
+ * (`earlier_export`), or its own request got no answer that says whether it started (`own_request`).
+ */
+export type ExportWait = 'earlier_export' | 'own_request';
+
+/** Whether `attempt` waits on an unsettled export now, and on whose, as the export stage decides it. */
+export function exportWait(
+  attempt: { id: number; stage: AttemptStage; bookmark: string | null }, unsettled: UnsettledExport | null, now: number, limits: Pick<ProducerLimits, 'exportStaleMs'>,
+): ExportWait | null {
+  if (attempt.stage !== 'export' || attempt.bookmark !== null || unsettled === null) return null;
+  if (now - (unsettled.answeredAt ?? unsettled.requestedAt) >= limits.exportStaleMs) return null;
+  return unsettled.attempt === attempt.id ? 'own_request' : 'earlier_export';
+}
+
 /** What a continuation did, and when the attempt next needs one. `null` means nothing is open. */
 export interface ContinuationReport {
   attempt: number | null;
@@ -321,6 +341,8 @@ export class TransientProducerFailure extends Error {
 export type ProducerRefusal =
   | 'provider_unavailable' | 'provider_refused' | 'export_failed' | 'export_not_offered' | 'export_unparsable'
   | 'export_stalled'
+  /** The attempt's own request to start an export got no answer that says whether it started, inside its budget. */
+  | 'export_unanswered'
   /** A native producer's own child refused the artifact, or its caller withdrew it. */
   | 'artifact_refused' | 'artifact_cancelled'
   | 'download_unranged' | 'download_changed' | 'download_lost' | 'staging_unreconciled'
@@ -462,30 +484,50 @@ async function pollExportStage(
   // The attempt's export origin, held in the checkpoint from its first request: one budget covers every continuation
   // and restart.
   let exportStartedAt = attempt.exportStartedAt;
+  // Whether this attempt holds a request of its own that no answer has settled.
+  let requested = attempt.exportRequestedAt;
   const stalled = (at: number): boolean => exportStartedAt !== null && at - exportStartedAt > limits.exportPollMs;
+  /** The attempt waits, sending nothing, while an export an attempt requested may still run. */
+  const waiting = (unsettled: UnsettledExport, quietMs: number): ContinuationReport => {
+    checkpoint.update(attempt.id, { polls });
+    emit({ kind: 'recovery_export_unsettled', attempt: attempt.id, requestedBy: unsettled.attempt, quietMs });
+    // Whether that export still runs is not known, so the source is not reported paused: the tick reads on, and
+    // an unreadable Deployment is what it already tolerates.
+    return { attempt: attempt.id, stage: 'export', progressed: false, nextInMs: Math.min(limits.exportStaleMs - quietMs, UNSETTLED_RECHECK_MS), sourcePaused: false };
+  };
   for (let step = 0; step < limits.maxPollsPerStep && ports.now() - started < limits.stepMs; step += 1) {
     if (stalled(ports.now())) {
       checkpoint.update(attempt.id, { polls });
-      return failAttempt(attempt, checkpoint, ports, 'export_stalled', { elapsedMs: ports.now() - exportStartedAt!, polls });
+      // An attempt whose own start got no answer did not stall on an export it followed: it never learned of one.
+      const refusal = bookmark === null && requested !== null ? 'export_unanswered' : 'export_stalled';
+      return failAttempt(attempt, checkpoint, ports, refusal, { elapsedMs: ports.now() - exportStartedAt!, polls });
     }
     if (bookmark === null) {
       const unsettled = checkpoint.unsettledExport();
       const quietMs = unsettled === null ? null : ports.now() - (unsettled.answeredAt ?? unsettled.requestedAt);
-      if (quietMs !== null && quietMs < limits.exportStaleMs) {
-        checkpoint.update(attempt.id, { polls });
-        emit({ kind: 'recovery_export_unsettled', attempt: attempt.id, requestedBy: unsettled!.attempt, quietMs });
-        // Whether that export still runs is not known, so the source is not reported paused: the tick reads on, and
-        // an unreadable Deployment is what it already tolerates.
-        return { attempt: attempt.id, stage: 'export', progressed: false, nextInMs: Math.min(limits.exportStaleMs - quietMs, UNSETTLED_RECHECK_MS), sourcePaused: false };
+      if (quietMs !== null && quietMs < limits.exportStaleMs) return waiting(unsettled!, quietMs);
+      // An earlier attempt's export past the window that is followed by a bookmark is asked after once before
+      // another starts: one still running is waited on, and only an answer that it ended, or none that settles it,
+      // lets it go.
+      if (unsettled !== null && unsettled.attempt !== attempt.id && unsettled.bookmark !== null) {
+        const probe = await ports.pollExport(unsettled.bookmark);
+        polls += 1;
+        if (probe.status === 'running') {
+          checkpoint.noteUnsettled(unsettled.attempt, { running: ports.now() });
+          return waiting({ ...unsettled, answeredAt: ports.now() }, 0);
+        }
+        checkpoint.noteUnsettled(unsettled.attempt, 'settled');
       }
       const now = ports.now();
       if (exportStartedAt === null) exportStartedAt = now;
+      requested = now;
       checkpoint.update(attempt.id, { exportStartedAt, exportRequestedAt: now, exportAnsweredAt: null, polls });
     }
     const answer = await ports.pollExport(bookmark);
     polls += 1;
     if (answer.status === 'refused' && bookmark === null) {
       // A refused credential started nothing.
+      requested = null;
       checkpoint.update(attempt.id, { polls, exportRequestedAt: null });
       return failAttempt(attempt, checkpoint, ports, 'provider_refused', { status: answer.failure.status ?? 0, polls });
     }
@@ -498,6 +540,7 @@ async function pollExportStage(
       return failAttempt(attempt, checkpoint, ports, EXPORT_REFUSAL[answer.failure.cause], { status: answer.failure.status ?? 0, polls });
     }
     if (answer.status === 'ended') {
+      requested = null;
       checkpoint.update(attempt.id, { polls, exportRequestedAt: null, exportAnsweredAt: ports.now() });
       // An export this attempt held ended without a result: it asks for another inside its bound. A fresh request
       // that ended at once ends the attempt: there is no earlier export to return to.
@@ -510,7 +553,10 @@ async function pollExportStage(
       checkpoint.update(attempt.id, { stage: 'download', bookmark, polls, exportCompletedAt: ports.now(), exportRequestedAt: null, exportAnsweredAt: ports.now() });
       return { attempt: attempt.id, stage: 'download', progressed: true, nextInMs: 0, sourcePaused: false };
     }
-    checkpoint.update(attempt.id, { bookmark, polls, exportAnsweredAt: ports.now() });
+    // An export followed without a recorded request (a deploy mid-export) records one now, so it is never
+    // taken as settled while it runs.
+    if (requested === null) requested = exportStartedAt ?? ports.now();
+    checkpoint.update(attempt.id, { bookmark, polls, exportRequestedAt: requested, exportAnsweredAt: ports.now() });
     // An export still running past the budget ends the attempt; a completion a poll inside the budget answered
     // stands.
     if (stalled(ports.now())) {
@@ -1080,7 +1126,7 @@ export interface RecoveryProducerStatus {
     /** The objects the export's own rows registered, and how many of them have a verified staged copy. */
     objects: { registered: number; staged: number };
   } | null;
-  export: { polls: number; bookmark: boolean; reExports: number } | null;
+  export: { polls: number; bookmark: boolean; reExports: number; waiting: ExportWait | null } | null;
   error: ProducerRefusal | null;
   transientSpent: number;
   /** The schema capture this attempt staged, so a later read can tell whether the Deployment has moved on. */

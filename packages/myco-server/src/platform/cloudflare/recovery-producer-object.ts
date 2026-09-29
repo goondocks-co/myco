@@ -12,8 +12,8 @@
  */
 import { DurableObject } from 'cloudflare:workers';
 import {
-  ADVANCING_STAGES_SQL, continueAttempt, failAttempt, freshScan, HoldRetired, PRODUCER_LIMITS, PRODUCER_STALL_MS, publishAttempt, reconcileUnconfirmed, settlementOf, stagedSqlKey,
-  type AttemptCheckpoint, type AttemptObject, type AttemptPart, type AttemptState, type ContinuationReport, type HoldSettlement,
+  ADVANCING_STAGES_SQL, continueAttempt, exportWait, failAttempt, freshScan, HoldRetired, PRODUCER_LIMITS, PRODUCER_STALL_MS, publishAttempt, reconcileUnconfirmed, settlementOf, stagedSqlKey,
+  type AttemptCheckpoint, type AttemptObject, type AttemptPart, type AttemptStage, type AttemptState, type ContinuationReport, type HoldSettlement,
   type ProducerLimits, type RecoveryProducerStatus, type ScanProgress, type StagingPrunePolicy, type StagingPruneReport,
   type StagingPruneRequest, type TableDefinitions,
 } from '../../core/recovery-producer.js';
@@ -251,9 +251,14 @@ export class RecoveryProducer extends DurableObject<CloudflareBindings> {
       // Any attempt's, whatever its stage: an export a failed attempt requested may still run.
       unsettledExport: () => {
         const held = sql.exec(
-          'SELECT id, export_requested_at, export_answered_at FROM attempts WHERE export_requested_at IS NOT NULL ORDER BY id DESC LIMIT 1',
-        ).toArray()[0] as unknown as { id: number; export_requested_at: number; export_answered_at: number | null } | undefined;
-        return held === undefined ? null : { attempt: held.id, requestedAt: held.export_requested_at, answeredAt: held.export_answered_at };
+          'SELECT id, export_requested_at, export_answered_at, bookmark FROM attempts WHERE export_requested_at IS NOT NULL ORDER BY id DESC LIMIT 1',
+        ).toArray()[0] as unknown as { id: number; export_requested_at: number; export_answered_at: number | null; bookmark: string | null } | undefined;
+        return held === undefined ? null : { attempt: held.id, requestedAt: held.export_requested_at, answeredAt: held.export_answered_at, bookmark: held.bookmark };
+      },
+      // Written whatever the attempt's stage: the export an ended attempt requested is what these record.
+      noteUnsettled: (attempt, outcome) => {
+        if (outcome === 'settled') sql.exec('UPDATE attempts SET export_requested_at = NULL WHERE id = ?', attempt);
+        else sql.exec('UPDATE attempts SET export_answered_at = ? WHERE id = ? AND export_requested_at IS NOT NULL', outcome.running, attempt);
       },
       signedUrl: (id) => storage.get<string>(`signed:${id}`).then((held) => held ?? null),
       setSignedUrl: async (id, url) => {
@@ -462,7 +467,10 @@ export class RecoveryProducer extends DurableObject<CloudflareBindings> {
         prefix: row.prefix, sqlBytes: row.sql_bytes, downloadedBytes: row.download_offset, parts,
         objects: { registered: objects.registered, staged: objects.staged },
       },
-      export: { polls: row.polls, bookmark: row.bookmark !== null, reExports: row.re_exports },
+      export: {
+        polls: row.polls, bookmark: row.bookmark !== null, reExports: row.re_exports,
+        waiting: exportWait({ id: row.id, stage: row.stage as AttemptStage, bookmark: row.bookmark }, this.checkpoint().unsettledExport(), Date.now(), PRODUCER_LIMITS),
+      },
       error: row.error as RecoveryProducerStatus['error'],
       transientSpent: row.attempts,
       stagedSchema: row.schema_sha256 === '' ? null : { sha256: row.schema_sha256, bytes: row.schema_bytes },

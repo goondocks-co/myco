@@ -11,7 +11,7 @@
  */
 import type { ServerEnv } from './adapters.js';
 import { leafValues } from './settings.js';
-import type { ProducerRefusal, RecoveryProducerStatus } from './recovery-producer.js';
+import type { ExportWait, ProducerRefusal, RecoveryProducerStatus } from './recovery-producer.js';
 
 /** The setting an owner edits as "Back up every", in hours. */
 export const INTERVAL_SETTING = 'backup.auto_interval_hours';
@@ -50,6 +50,8 @@ export interface LatestAttempt {
   startedAt: number | null;
   /** The producer's own refusal classifier, where the attempt failed. */
   failure: ProducerRefusal | null;
+  /** Why an attempt at its export sends nothing now (`exportWait`), or null. */
+  waiting: ExportWait | null;
 }
 
 /** Everything an owner is told about automatic recovery. */
@@ -116,6 +118,7 @@ export function latestOf(status: RecoveryProducerStatus): LatestAttempt | null {
     stage: status.stage,
     startedAt: status.startedAt ?? null,
     failure: status.error,
+    waiting: status.export?.waiting ?? null,
   };
 }
 

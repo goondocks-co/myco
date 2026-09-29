@@ -22,6 +22,15 @@ function recordedConfiguration(record: DeploymentRecord) {
   return { ...recoveryConfigurationOf(record), versionId: record.versionId, deployedAt: record.deployedAt };
 }
 
+/** The Deployment's own recovery producer is exporting the database this backup would export. */
+export class ProducerExporting extends Error {
+  constructor(since: number) {
+    super(`this Deployment's own automatic backup has been exporting its database since ${new Date(since).toISOString()}, `
+      + 'and two exports never run at once; run this backup again once that attempt ends (the dashboard\'s Operations page shows it)');
+    this.name = 'ProducerExporting';
+  }
+}
+
 /**
  * The recovery hold a hosted backup takes on the Deployment it is copying.
  *
@@ -120,6 +129,11 @@ export async function backupCloudflareDeployment(
       const provider = { ...bound(workDir), databaseName };
       const sqlPath = path.join(workDir, 'd1.sql');
       const exportContext = { accountId: record.accountId, databaseId, output: sqlPath, recordDir: configDir, login: operator, fetch: options.fetch, report: options.report, ...options.d1Export };
+      // The Deployment's own producer exports the same database while its hold is open, so this backup starts no export
+      // while one is. A producer admitted after this check is not held back by this backup's hold.
+      const producing = z.array(z.object({ token: z.string(), acquired_at: z.number() }))
+        .parse(await queryCloudflareDatabase({ ...provider, sql: recoveryHoldSql.open('producer'), timeoutMs: D1_STATEMENT_TIMEOUT_MS }));
+      if (producing.length > 0) throw new ProducerExporting(producing[0]!.acquired_at);
       // An export this machine left running pauses the schema read, so it is settled first.
       const settled = await settleD1Export(exportContext);
       const before = schemaObjects.parse(await queryCloudflareDatabase({ ...provider, sql: SCHEMA_QUERY, timeoutMs: D1_STATEMENT_TIMEOUT_MS }));

@@ -352,6 +352,15 @@ describe('automatic recovery on the Operations page', () => {
     expect(latestWords({ ...base, latest: { ...latest, attempt: 7 } } as never)).toContain('Attempt 7');
     expect(latestWords({ ...base, latest: { ...latest, attempt: 7 } } as never)).toContain('staged everything it named');
   });
+
+  it('says an attempt waits on an unsettled export, never that a transient it spent failed it (#1484)', () => {
+    const waiting = { attempt: 3, stage: 'export', startedAt: null, failure: 'provider_unavailable' };
+    const earlier = latestWords({ ...base, latest: { ...waiting, waiting: 'earlier_export' } } as never);
+    expect(earlier).toBe('Attempt 3 is waiting for an earlier export to end before it starts its own.');
+    const own = latestWords({ ...base, latest: { ...waiting, waiting: 'own_request' } } as never);
+    expect(own).toBe('Attempt 3 is waiting to learn whether the export it asked for started.');
+    expect(latestWords({ ...base, latest: { ...waiting, stage: 'failed', failure: 'export_unanswered', waiting: null } } as never)).toContain('failed: export unanswered');
+  });
 });
 
 describe('store maintenance on the Operations page', () => {

@@ -360,3 +360,51 @@ it('keeps an export whose start was never answered as one no attempt sends anoth
     expect(requested(second.attempt!).at).not.toBeNull();
   } finally { globalThis.fetch = original; sql.close(); }
 });
+
+it('reports the wait on an unsettled export in its status, and asks once after an earlier attempt\'s stale export before starting another (#1484)', async () => {
+  const sql = new Database(':memory:');
+  const bindings = { HARNESS_LAUNCH_MODE: 'record', MYCO_RECOVERY_API_ORIGIN: 'http://127.0.0.1:9' };
+  const producer = producerOver(sql, [], undefined, {}, bindings);
+  const first = await producer.admit(admission('token-first'));
+  const sent: Array<string | null> = [];
+  let answer: (bookmark: string | null) => Response = () => { throw new TypeError('fetch failed'); };
+  const original = globalThis.fetch;
+  globalThis.fetch = (async (_input: RequestInfo | URL, init?: RequestInit) => {
+    const bookmark = (JSON.parse(String(init?.body)) as { current_bookmark?: string }).current_bookmark ?? null;
+    sent.push(bookmark);
+    return answer(bookmark);
+  }) as typeof fetch;
+  const running = (bookmark: string) => Response.json({ success: true, errors: [], result: { success: true, status: 'active', at_bookmark: bookmark } });
+  try {
+    // Its own start unanswered: the status says it waits on its own request, not that a step stalled.
+    await producer.continue();
+    expect((await producer.status()).export?.waiting).toBe('own_request');
+
+    // That attempt learns of its export and follows it, then ends; the next attempt waits on it by name.
+    sql.run('UPDATE attempts SET export_requested_at = NULL WHERE id = ?', [first.attempt!]);
+    answer = () => running('bm-1');
+    await producer.continue({ ...PRODUCER_LIMITS, maxPollsPerStep: 1 });
+    sql.run("UPDATE attempts SET stage = 'failed', error = 'export_stalled' WHERE id = ?", [first.attempt!]);
+    const second = await producer.admit(admission('token-second'));
+    await producer.continue();
+    expect((await producer.status()).export?.waiting).toBe('earlier_export');
+
+    // Past the window, it asks after that export once: still running, so it waits again and starts nothing.
+    sql.run('UPDATE attempts SET export_answered_at = ? WHERE id = ?', [Date.now() - PRODUCER_LIMITS.exportStaleMs - 1, first.attempt!]);
+    const before = sent.length;
+    await producer.continue();
+    expect(sent.slice(before)).toEqual(['bm-1']);
+    expect((await producer.status()).export?.waiting).toBe('earlier_export');
+
+    // Once it no longer runs, the next attempt starts its own.
+    sql.run('UPDATE attempts SET export_answered_at = ? WHERE id = ?', [Date.now() - PRODUCER_LIMITS.exportStaleMs - 1, first.attempt!]);
+    answer = (bookmark) => (bookmark === 'bm-1'
+      ? Response.json({ success: true, errors: [], result: { success: true, status: 'error', error: 'gone' } })
+      : running('bm-2'));
+    const again = sent.length;
+    await producer.continue({ ...PRODUCER_LIMITS, maxPollsPerStep: 1 });
+    expect(sent.slice(again)).toEqual(['bm-1', null]);
+    expect(sql.query('SELECT export_requested_at AS at FROM attempts WHERE id = ?').get(first.attempt!)).toEqual({ at: null });
+    expect((sql.query('SELECT bookmark FROM attempts WHERE id = ?').get(second.attempt!) as { bookmark: string }).bookmark).toBe('bm-2');
+  } finally { globalThis.fetch = original; sql.close(); }
+});

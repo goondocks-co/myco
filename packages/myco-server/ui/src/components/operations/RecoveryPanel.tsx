@@ -33,6 +33,9 @@ export function latestWords(schedule: RecoverySchedule, form: RecoveryForm = 'st
   if (latest === null) return 'No attempt has run yet.';
   const which = form === 'artifact' ? 'The last attempt' : `Attempt ${latest.attempt}`;
   const when = latest.startedAt === null ? '' : ` started ${dateLabel(latest.startedAt)}`;
+  // A waiting attempt is still advancing: what it waits on is what an owner reads, never an earlier spent failure.
+  if (latest.waiting === 'earlier_export') return `${which}${when} is waiting for an earlier export to end before it starts its own.`;
+  if (latest.waiting === 'own_request') return `${which}${when} is waiting to learn whether the export it asked for started.`;
   if (latest.failure !== null) return `${which}${when} failed: ${latest.failure.replace(/_/g, ' ')}.`;
   if (latest.stage === 'complete') {
     return form === 'artifact'
