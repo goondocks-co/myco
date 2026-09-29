@@ -45,8 +45,8 @@ import { claimSubsystem, readClaim, resolveClaimsHome, SYMBIONT_CONFIG_SUBSYSTEM
 import { IMPORT_PACE_PER_MINUTE, importUntilSettled, type ImportReport } from '../member/import.js';
 import { legacyProjectRoots, legacySessionSplit, legacyVaultFiles, runLegacyImport, LEGACY_MAX_PER_AGENT, LEGACY_WINDOW_DAYS, type LegacyImportReport } from '../member/legacy-import.js';
 import { backupVault, copyProblem, readVaultContent, type TableCounts } from '../member/legacy-backup.js';
-import { CutoverBackup, cutoverBackupDir, earlierCopyHolds, MANIFEST_FILE } from '../member/cutover-backup.js';
-import { deploymentUrl, listDeploymentMemberships, readRegistryEntry, writeRegistryEntry, REGISTRY_VERSION, type DeploymentMembership } from '../member/registry.js';
+import { CutoverBackup, cutoverBackupDir, earlierCopyHolds, MANIFEST_FILE, RESTORE_FILE } from '../member/cutover-backup.js';
+import { deploymentUrl, listDeploymentMemberships, readRegistryEntry, registryEntryPath, writeRegistryEntry, REGISTRY_VERSION, type DeploymentMembership } from '../member/registry.js';
 import { ensureMemberDir, memberRoot, readPrivateJson, writePrivateFileAtomic } from '../member/store.js';
 import type { FetchLike } from '../member/transport.js';
 
@@ -137,10 +137,12 @@ export interface CutoverDeps {
   /** launchctl, for a caller observing how units are stopped; the real one by default. */
   launchctl?: LaunchctlRunner;
   platform?: NodeJS.Platform;
-  /** Every change the run plans, dry run or not, by key. */
-  onPlan?: (keys: string[]) => void;
-  /** Each change the run makes, by the same key, as it is made. */
-  onAction?: (key: string) => void;
+  /** The unit folders read for 1.4 daemon units; the platform's user and boot folders by default. */
+  unitDirs?: Array<{ dir: string; scope: 'user' | 'boot' }>;
+  /** Every change the run plans, dry run or not: each file or entry it changes. */
+  onPlan?: (outcomes: string[]) => void;
+  /** Each planned change as the run makes it. */
+  onAction?: (outcome: string) => void;
   /** How one agent is provisioned globally; `provisionGlobally` by default. */
   provision?: typeof provisionGlobally;
   packageRoot?: string;
@@ -212,12 +214,12 @@ function bindingFor(project: { projectId: string; root: string | null }, mycoHom
 
 /** One change the cutover makes, planned before any is made. */
 interface Action {
-  /** Stable identity: the same in a dry run's plan and the real run's record. */
-  key: string;
   /** What a dry run says it would do. */
   would: string;
-  /** Do it; answer what was done. */
-  run: () => Promise<string[]>;
+  /** The outcomes it plans, each a file or entry it changes; a real run reports each one it made. */
+  outcomes: string[];
+  /** Do it; answer what it says and the planned outcomes it made. */
+  run: () => Promise<{ lines: string[]; made: string[] }>;
 }
 
 /** The home a foreign registration names, for a `--legacy-home` suggestion. */
@@ -235,11 +237,14 @@ const suggestion = (subject: string): string => {
 function backupAction(file: string, backup: CutoverBackup, mycoHome: string): Action | null {
   if (earlierCopyHolds(mycoHome, file)) return null;
   return {
-    key: `backup ${file}`,
     would: `would back up ${file} to ${backup.pathFor(file)}, and keep the copy if the cutover changes the file`,
-    run: async () => { backup.take(file); return []; },
+    outcomes: [],
+    run: async () => { backup.take(file); return { lines: [], made: [] }; },
   };
 }
+
+/** The outcome a 1.4 registration's removal is known by. */
+const removalOutcome = (f: LegacyFinding): string => `remove ${f.file} :: ${f.location.kind} :: ${(f.serversPath ?? []).join('/')} :: ${f.subject}`;
 
 /**
  * Run the cutover and report it. The outcome is RETURNED, never written to
@@ -300,7 +305,7 @@ export async function run(args: readonly string[], deps: CutoverDeps = {}): Prom
   if (split.thisMachine === 0 && elsewhere.length > 0) {
     blockers.push(`every session in the 1.4 vaults was captured under another machine id (${elsewhere.map(([m, n]) => `${m}: ${n}`).join(', ')}), not this machine's (${machineId}), so none would be imported. Run the cutover on the machine that captured them.`);
   }
-  const units = attributeLegacyUnits(unitDirectories(env, homeDir, platform), legacyHomes);
+  const units = attributeLegacyUnits(deps.unitDirs ?? unitDirectories(env, homeDir, platform), legacyHomes);
   for (const unit of units.unattributable) blockers.push(`${unit.file} runs \`myco daemon\` but names no home (no MYCO_HOME, no working directory), so it cannot be told apart from another installation's. Remove it if it is 1.4's, then run again.`);
   for (const unit of units.boot) blockers.push(`${unit.file} starts ${unit.home}'s 1.4 daemon at boot; remove it as an administrator (\`sudo launchctl bootout system/${unit.label}\` and delete the file), then run again.`);
 
@@ -311,12 +316,13 @@ export async function run(args: readonly string[], deps: CutoverDeps = {}): Prom
     else if (preview.kind === 'refused') blockers.push(`${agent}: ${preview.detail}${suggestion(preview.detail)}`);
   }
   const provisioned = previews.flatMap(({ agent, preview }) => (preview.kind === 'ready' ? [{ agent, ...preview }] : []));
-  const scan = scanLegacyRegistrations(homeDir, legacyHomes);
+  const scanOptions = { homeDir, legacyHomes, ownHome: mycoHome, folders: roots };
+  const scan = scanLegacyRegistrations(scanOptions);
   for (const { file, reason } of scan.unreadable) blockers.push(`${file} holds a Myco entry but could not be read (${reason}); fix or move it, then run again.`);
   const foreign = scan.findings.filter((f) => f.verdict === 'foreign');
   for (const file of [...new Set(foreign.map((f) => f.file))]) {
     const here = foreign.filter((f) => f.file === file);
-    const what = here.length === 1 ? `a Myco ${here[0].location.kind === 'mcp' ? 'MCP entry' : 'hook'}` : `${here.length} Myco hooks and entries`;
+    const what = here.length === 1 ? `a Myco ${here[0].location.kind === 'mcp' ? 'MCP entry' : here[0].location.kind === 'hooks' ? 'hook' : 'plugin'}` : `${here.length} Myco hooks and entries`;
     blockers.push(`${file} holds ${what} of another installation (\`${here[0].subject}\`${here.length > 1 ? ' and more' : ''}).${suggestion(here[0].subject)}`);
   }
   if (blockers.length > 0) {
@@ -332,83 +338,103 @@ export async function run(args: readonly string[], deps: CutoverDeps = {}): Prom
   // The plan: every change, decided now, in the order it is made.
   const stamp = new Date(now()).toISOString().replace(/[:.]/g, '-');
   const handledByProvisioning = (finding: LegacyFinding) => provisioned.some((p) => p.agent === finding.location.agent
-    && (finding.location.kind === 'mcp' ? p.targets.mcp.includes(finding.file) : p.targets.hooks === finding.file));
+    && (finding.location.kind === 'mcp' ? p.targets.mcp.includes(finding.file) && (finding.serversPath ?? []).length === 1 : p.targets.hooks === finding.file));
   const removals = scan.findings.filter((f) => f.verdict === 'legacy' && !handledByProvisioning(f));
   const removalFiles = [...new Set(removals.map((f) => f.file))];
   const displayName = (agent: string) => loadManifests().find((m) => m.name === agent)?.displayName ?? agent;
-  const touched = [...new Set([...provisioned.flatMap((p) => p.targets.all), ...removalFiles])].filter((file) => fs.existsSync(file));
+  const regular = (file: string) => { try { return fs.lstatSync(file).isFile(); } catch { return false; } };
+  const touched = [...new Set([...provisioned.flatMap((p) => p.targets.all), ...removalFiles])].filter(regular);
   const backup = new CutoverBackup(cutoverBackupDir(mycoHome, stamp));
+  const stillLegacy = (planned: readonly LegacyFinding[]): Set<string> => {
+    const current = scanLegacyRegistrations(scanOptions).findings.filter((f) => f.verdict === 'legacy').map(removalOutcome);
+    return new Set(planned.map(removalOutcome).filter((o) => current.includes(o)));
+  };
+  const claimFile = (claimsHome: string) => path.join(claimsHome, 'claims', `${SYMBIONT_CONFIG_SUBSYSTEM}.json`);
   const plan: Array<{ step: number; title: string; actions: Action[] }> = [
     { step: 1, title: 'Back up every agent settings file the cutover changes', actions: touched.flatMap((file) => backupAction(file, backup, mycoHome) ?? []) },
     { step: 2, title: 'Connect every folder a 1.4 project names', actions: bindings.flatMap((b): Action[] => (b.kind !== 'connect' ? [] : [{
-      key: `connect ${b.root}`, would: `${b.projectId}: would connect ${b.root}`,
+      would: `${b.projectId}: would connect ${b.root}`, outcomes: [`connect ${b.root}`],
       run: async () => {
+        const entryFile = registryEntryPath(b.root, mycoHome);
+        if (fs.existsSync(entryFile)) backup.take(entryFile); else backup.created(entryFile);
         writeRegistryEntry({ ...membership, version: REGISTRY_VERSION, projectId: b.projectId, root: b.root, joinedAt: now(), updatedAt: now() }, { mycoHome });
-        return [`${b.projectId}: connected ${b.root}`];
+        return { lines: [`${b.projectId}: connected ${b.root}`], made: readRegistryEntry(b.root, mycoHome)?.projectId === b.projectId ? [`connect ${b.root}`] : [] };
       },
     }])) },
     { step: 3, title: 'Point the agents 2.0 captures at 2.0', actions: provisioned.map((p): Action => ({
-      key: `provision ${p.agent}`,
       would: `would point ${p.displayName} at ${mycoHome}${p.replaces.length > 0 ? `, replacing the 1.4 hooks and MCP entry of ${p.replaces.join(', ')}` : ''}`,
+      outcomes: [`provision ${p.agent}`],
       run: async () => {
         const outcome: ProvisionOutcome = (deps.provision ?? provisionGlobally)(p.agent, roots[0], mycoHome, { packageRoot: deps.packageRoot, legacyHomes });
         if (outcome.kind === 'refused') throw new Error(`${p.agent}: ${outcome.detail}`);
         if (outcome.kind === 'unknown') throw new Error(`${p.agent}: no such agent`);
-        return [outcome.detail];
+        return { lines: [outcome.detail], made: [`provision ${p.agent}`] };
       },
     })) },
     { step: 4, title: 'Take 1.4 out of every other place it registered with an agent', actions: removalFiles.map((file): Action => {
       const here = removals.filter((f) => f.file === file);
       const agent = here[0].location.agent;
-      const captured = provisioned.some((p) => p.agent === agent);
+      const captured = Boolean(loadManifests().find((m) => m.name === agent)?.registration?.memberHooksTarget) || here[0].location.kind === 'skills';
       const why = captured ? '' : `; ${displayName(agent)} is no longer captured by Myco 2.0`;
       const hooks = here.filter((f) => f.location.kind === 'hooks').length;
-      const what = [
+      const what = here[0].location.kind === 'skills' ? `the skill link (to ${here[0].linkTarget})` : [
         ...(hooks > 0 ? [`${hooks} 1.4 hook${hooks === 1 ? '' : 's'}`] : []),
-        ...(here.some((f) => f.location.kind === 'mcp') ? ['the `myco` MCP entry'] : []),
+        ...(here.some((f) => f.location.kind === 'mcp') ? [`the \`myco\` MCP entr${here.filter((f) => f.location.kind === 'mcp').length === 1 ? 'y' : 'ies'}`] : []),
         ...(here.some((f) => f.location.kind === 'plugin-file' || f.location.kind === 'plugin-manifest') ? ['the file'] : []),
       ].join(' and ');
       return {
-        key: `remove ${file}`, would: `${displayName(agent)}: would remove ${what} from ${file}${why}`,
-        run: async () => removeLegacyRegistrations(file, scanLegacyRegistrations(homeDir, legacyHomes).findings, legacyHomes).map((line) => `${displayName(agent)}: ${line}${why}`),
+        would: `${displayName(agent)}: would remove ${what} from ${file}${why}`,
+        outcomes: here.map(removalOutcome),
+        run: async () => {
+          if (here[0].location.kind === 'skills') backup.link(file, here[0].linkTarget!);
+          const lines = removeLegacyRegistrations(file, here, legacyHomes, mycoHome).map((line) => `${displayName(agent)}: ${line}${why}`);
+          const left = stillLegacy(here);
+          return { lines, made: here.map(removalOutcome).filter((o) => !left.has(o)) };
+        },
       };
     }) },
     { step: 5, title: 'Hand the agents\' settings to 2.0', actions: [
       ...claimsHomes.filter((h) => readClaim(SYMBIONT_CONFIG_SUBSYSTEM, h)?.owner !== mycoHome).map((claimsHome): Action => ({
-        key: `claim ${claimsHome}`,
         would: `would point the ${SYMBIONT_CONFIG_SUBSYSTEM} claim in ${path.join(claimsHome, 'claims')} at ${mycoHome}, so a 1.4 daemon that comes back leaves the agents alone`,
+        outcomes: [`claim ${claimsHome}`],
         run: async () => {
+          if (fs.existsSync(claimFile(claimsHome))) backup.take(claimFile(claimsHome)); else backup.created(claimFile(claimsHome));
           claimSubsystem(SYMBIONT_CONFIG_SUBSYSTEM, mycoHome, { claimsHome });
           if (readClaim(SYMBIONT_CONFIG_SUBSYSTEM, claimsHome)?.owner !== mycoHome) throw new Error(`could not write the ${SYMBIONT_CONFIG_SUBSYSTEM} claim in ${path.join(claimsHome, 'claims')}`);
-          return [`pointed the ${SYMBIONT_CONFIG_SUBSYSTEM} claim in ${path.join(claimsHome, 'claims')} at ${mycoHome}`];
+          return { lines: [`pointed the ${SYMBIONT_CONFIG_SUBSYSTEM} claim in ${path.join(claimsHome, 'claims')} at ${mycoHome}`], made: [`claim ${claimsHome}`] };
         },
       })),
       ...(pinned === null && canonicalPath(mycoHome) !== canonicalPath(defaultMycoHome(homeDir)) ? [{
-        key: `pin ${pinPath}`, would: `would pin this machine to ${mycoHome} (${pinPath})`,
+        would: `would pin this machine to ${mycoHome} (${pinPath})`, outcomes: [`pin ${pinPath}`],
         run: async () => {
+          backup.created(pinPath);
           const machinePin = pinMachineHome(mycoHome, { env });
           if (machinePin.kind === 'held' || machinePin.kind === 'unwritable') throw new Error(`could not pin this machine to ${mycoHome} (${pinPath})`);
-          return [`pinned this machine to ${mycoHome} (${pinPath})`];
+          return { lines: [`pinned this machine to ${mycoHome} (${pinPath})`], made: [`pin ${pinPath}`] };
         },
       }] : []),
     ] },
     { step: 6, title: 'Stop the 1.4 service', actions: [
       ...units.stop.map((unit): Action => ({
-        key: `unit ${unit.file}`, would: `would stop and remove ${unit.label} (${unit.file}), the 1.4 daemon of ${unit.home}`,
-        run: async () => { await stopUnit(unit, platform, deps.launchctl); return [`stopped and removed ${unit.label} (${unit.file})`]; },
+        would: `would stop and remove ${unit.label} (${unit.file}), the 1.4 daemon of ${unit.home}`, outcomes: [`unit ${unit.file}`],
+        run: async () => {
+          backup.take(unit.file);
+          await stopUnit(unit, platform, deps.launchctl);
+          return { lines: [`stopped and removed ${unit.label} (${unit.file})`], made: fs.existsSync(unit.file) ? [] : [`unit ${unit.file}`] };
+        },
       })),
       ...legacyHomes.map((home): Action => ({
-        key: `daemon ${home}`, would: `would ask ${home}'s running daemon, if any, to exit`,
+        would: `would ask ${home}'s running daemon, if any, to exit`, outcomes: [],
         run: async () => {
           const stopped: DaemonStop = await (deps.stopDaemon ?? stopHomeDaemon)(home);
-          return [stopped === 'stopped' ? `${home}: its running daemon exited`
+          return { lines: [stopped === 'stopped' ? `${home}: its running daemon exited`
             : stopped === 'none' ? `${home}: no daemon running`
-            : `${home}: the daemon answering on its port is not ${home}'s; it was left running`];
+            : `${home}: the daemon answering on its port is not ${home}'s; it was left running`], made: [] };
         },
       })),
     ] },
   ];
-  deps.onPlan?.(plan.flatMap((s) => s.actions.map((a) => a.key)));
+  deps.onPlan?.(plan.flatMap((s) => s.actions.flatMap((a) => a.outcomes)));
 
   for (const { step: n, title, actions } of plan) {
     step(n, title);
@@ -416,8 +442,11 @@ export async function run(args: readonly string[], deps: CutoverDeps = {}): Prom
     for (const action of actions) {
       if (dry) { out(`   ${action.would}`); continue; }
       try {
-        for (const line of await action.run()) out(`   ${line}`);
-        deps.onAction?.(action.key);
+        const { lines, made } = await action.run();
+        for (const line of lines) out(`   ${line}`);
+        for (const outcome of made) deps.onAction?.(outcome);
+        const missed = action.outcomes.filter((o) => !made.includes(o));
+        if (missed.length > 0) throw new Error(`the cutover planned changes it did not make: ${missed.join('; ')}`);
       } catch (error) {
         problem(error instanceof Error ? error.message : String(error));
         err(n < 6 ? '   The 1.4 service is left running, and nothing was imported; run the cutover again once this is settled.' : '   Nothing was imported; run the cutover again once this is settled.');
@@ -425,18 +454,21 @@ export async function run(args: readonly string[], deps: CutoverDeps = {}): Prom
       }
     }
     if (!dry && n === 4) {
-      const kept = backup.pruneUnchanged();
+      const kept = backup.pruneUnchanged().filter((e) => 'backup' in e);
       if (kept.length > 0) {
         out(`   backed up ${kept.length} settings file${kept.length === 1 ? '' : 's'} the cutover changed to ${backup.dir} (${MANIFEST_FILE} lists each original and its copy):`);
         for (const entry of kept) out(`     ${entry.original}`);
       }
-      const left = scanLegacyRegistrations(homeDir, legacyHomes).findings.filter((f) => f.verdict === 'legacy');
+      const left = scanLegacyRegistrations(scanOptions).findings.filter((f) => f.verdict === 'legacy');
       if (left.length > 0) {
         for (const f of left) problem(`${f.file} still holds a 1.4 registration (\`${f.subject}\`)`);
         err('   The 1.4 service is left running, and nothing was imported; run the cutover again once this is settled.');
         return false;
       }
     }
+  }
+  if (!dry && backup.all.length > 0) {
+    out(`   To undo these changes by hand, run the commands in ${path.join(backup.dir, RESTORE_FILE)}; ${MANIFEST_FILE} beside it lists every file, entry and link.`);
   }
 
   // 7. The copies, reused only while they hold what the vault holds now.

@@ -22,56 +22,125 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { parse as parseToml, stringify as stringifyToml } from 'smol-toml';
 import { atomicWriteFileSync } from '../utils/atomic-write.js';
-import { MEMBER_PLUGIN_MARKER, MYCO_MCP_SERVER_NAME, MYCO_PLUGIN_FILE_MARKER, rawHasMycoOwnershipSignal } from './installer.js';
-import { commandVerdict, mcpVerdict, type Verdict } from './legacy-verdict.js';
+import { MYCO_MCP_SERVER_NAME, rawHasMycoOwnershipSignal } from './installer.js';
+import { commandVerdict, mcpVerdict, pluginFileVerdict, type Verdict } from './legacy-verdict.js';
 
 export { mcpVerdict, type Verdict };
 
-export type LegacyLocationKind = 'hooks' | 'mcp' | 'plugin-file' | 'plugin-manifest';
+export type LegacyLocationKind = 'hooks' | 'mcp' | 'plugin-file' | 'plugin-manifest' | 'skills';
 
 export interface LegacyLocation {
   agent: string;
   kind: LegacyLocationKind;
-  /** `~`-relative, as the 1.4.8 manifest spells it. */
+  /** `global`: `~`-relative, as the 1.4.8 manifest spells it; `project`: relative to each connected folder. */
+  scope: 'global' | 'project';
   path: string;
   /** For `mcp`: the key holding the servers map, and the file's format. */
   serversKey?: string;
   format?: 'json' | 'toml';
 }
 
+const g = (agent: string, kind: LegacyLocationKind, p: string, mcp: Pick<LegacyLocation, 'serversKey' | 'format'> = {}): LegacyLocation => ({ agent, kind, scope: 'global', path: p, ...mcp });
+const pr = (agent: string, kind: LegacyLocationKind, p: string, mcp: Pick<LegacyLocation, 'serversKey' | 'format'> = {}): LegacyLocation => ({ agent, kind, scope: 'project', path: p, ...mcp });
+const JSON_SERVERS = { serversKey: 'mcpServers', format: 'json' } as const;
+
 export const LEGACY_REGISTRATIONS: readonly LegacyLocation[] = [
-  { agent: 'antigravity', kind: 'plugin-file', path: '~/.gemini/config/plugins/myco/hooks.json' },
-  { agent: 'antigravity', kind: 'mcp', path: '~/.gemini/config/plugins/myco/mcp_config.json', serversKey: 'mcpServers', format: 'json' },
-  { agent: 'antigravity', kind: 'plugin-manifest', path: '~/.gemini/config/plugins/myco/plugin.json' },
-  { agent: 'claude-code', kind: 'hooks', path: '~/.claude/settings.json' },
-  { agent: 'claude-code', kind: 'mcp', path: '~/.claude/settings.json', serversKey: 'mcpServers', format: 'json' },
-  { agent: 'cline', kind: 'plugin-file', path: '~/.cline/plugins/myco.ts' },
-  { agent: 'cline', kind: 'mcp', path: '~/.cline/data/settings/cline_mcp_settings.json', serversKey: 'mcpServers', format: 'json' },
-  { agent: 'cline', kind: 'mcp', path: '~/.cline/mcp.json', serversKey: 'mcpServers', format: 'json' },
-  { agent: 'codex', kind: 'hooks', path: '~/.codex/hooks.json' },
-  { agent: 'codex', kind: 'mcp', path: '~/.codex/config.toml', serversKey: 'mcp_servers', format: 'toml' },
-  { agent: 'copilot', kind: 'hooks', path: '~/.copilot/hooks/myco-hooks.json' },
-  { agent: 'copilot', kind: 'mcp', path: '~/.copilot/mcp-config.json', serversKey: 'mcpServers', format: 'json' },
-  { agent: 'copilot', kind: 'mcp', path: '~/Library/Application Support/Code/User/mcp.json', serversKey: 'servers', format: 'json' },
-  { agent: 'cursor', kind: 'hooks', path: '~/.cursor/hooks.json' },
-  { agent: 'cursor', kind: 'mcp', path: '~/.cursor/mcp.json', serversKey: 'mcpServers', format: 'json' },
-  { agent: 'opencode', kind: 'plugin-file', path: '~/.config/opencode/plugins/myco.ts' },
-  { agent: 'opencode', kind: 'mcp', path: '~/.config/opencode/opencode.json', serversKey: 'mcp', format: 'json' },
-  { agent: 'pi', kind: 'plugin-file', path: '~/.pi/agent/extensions/myco/index.ts' },
-  { agent: 'windsurf', kind: 'hooks', path: '~/.codeium/windsurf/hooks.json' },
-  { agent: 'windsurf', kind: 'mcp', path: '~/.codeium/windsurf/mcp_config.json', serversKey: 'mcpServers', format: 'json' },
+  g('antigravity', 'plugin-file', '~/.gemini/config/plugins/myco/hooks.json'),
+  g('antigravity', 'mcp', '~/.gemini/config/plugins/myco/mcp_config.json', JSON_SERVERS),
+  g('antigravity', 'plugin-manifest', '~/.gemini/config/plugins/myco/plugin.json'),
+  g('antigravity', 'skills', '~/.agents/skills'),
+  g('antigravity', 'skills', '~/.gemini/antigravity/skills'),
+  pr('antigravity', 'plugin-file', '.agents/plugins/myco/hooks.json'),
+  pr('antigravity', 'mcp', '.agents/plugins/myco/mcp_config.json', JSON_SERVERS),
+  pr('antigravity', 'plugin-manifest', '.agents/plugins/myco/plugin.json'),
+  g('claude-code', 'hooks', '~/.claude/settings.json'),
+  g('claude-code', 'mcp', '~/.claude/settings.json', JSON_SERVERS),
+  g('claude-code', 'skills', '~/.claude/skills'),
+  pr('claude-code', 'hooks', '.claude/settings.json'),
+  pr('claude-code', 'mcp', '.mcp.json', JSON_SERVERS),
+  g('cline', 'plugin-file', '~/.cline/plugins/myco.ts'),
+  g('cline', 'mcp', '~/.cline/data/settings/cline_mcp_settings.json', JSON_SERVERS),
+  g('cline', 'mcp', '~/.cline/mcp.json', JSON_SERVERS),
+  g('cline', 'skills', '~/.cline/skills'),
+  pr('cline', 'plugin-file', '.cline/plugins/myco.ts'),
+  pr('cline', 'mcp', '.cline/mcp.json', JSON_SERVERS),
+  g('codex', 'hooks', '~/.codex/hooks.json'),
+  g('codex', 'mcp', '~/.codex/config.toml', { serversKey: 'mcp_servers', format: 'toml' }),
+  g('codex', 'skills', '~/.agents/skills'),
+  g('codex', 'skills', '~/.codex/skills'),
+  pr('codex', 'hooks', '.codex/hooks.json'),
+  pr('codex', 'mcp', '.codex/config.toml', { serversKey: 'mcp_servers', format: 'toml' }),
+  g('copilot', 'hooks', '~/.copilot/hooks/myco-hooks.json'),
+  g('copilot', 'mcp', '~/.copilot/mcp-config.json', JSON_SERVERS),
+  g('copilot', 'mcp', '~/Library/Application Support/Code/User/mcp.json', { serversKey: 'servers', format: 'json' }),
+  g('copilot', 'skills', '~/.agents/skills'),
+  g('copilot', 'skills', '~/.copilot/skills'),
+  pr('copilot', 'hooks', '.github/hooks/myco-hooks.json'),
+  pr('copilot', 'mcp', '.vscode/mcp.json', JSON_SERVERS),
+  g('cursor', 'hooks', '~/.cursor/hooks.json'),
+  g('cursor', 'mcp', '~/.cursor/mcp.json', JSON_SERVERS),
+  g('cursor', 'skills', '~/.agents/skills'),
+  g('cursor', 'skills', '~/.cursor/skills'),
+  pr('cursor', 'hooks', '.cursor/hooks.json'),
+  pr('cursor', 'mcp', '.cursor/mcp.json', JSON_SERVERS),
+  g('opencode', 'plugin-file', '~/.config/opencode/plugins/myco.ts'),
+  g('opencode', 'mcp', '~/.config/opencode/opencode.json', { serversKey: 'mcp', format: 'json' }),
+  g('opencode', 'skills', '~/.agents/skills'),
+  g('opencode', 'skills', '~/.config/opencode/skills'),
+  pr('opencode', 'plugin-file', '.opencode/plugins/myco.ts'),
+  pr('opencode', 'mcp', 'opencode.json', { serversKey: 'mcp', format: 'json' }),
+  g('pi', 'plugin-file', '~/.pi/agent/extensions/myco/index.ts'),
+  g('pi', 'skills', '~/.agents/skills'),
+  g('pi', 'skills', '~/.pi/agent/skills'),
+  pr('pi', 'plugin-file', '.pi/extensions/myco/index.ts'),
+  g('windsurf', 'hooks', '~/.codeium/windsurf/hooks.json'),
+  g('windsurf', 'mcp', '~/.codeium/windsurf/mcp_config.json', JSON_SERVERS),
+  g('windsurf', 'skills', '~/.agents/skills'),
+  g('windsurf', 'skills', '~/.codeium/windsurf/skills'),
+  pr('windsurf', 'hooks', '.windsurf/hooks.json'),
 ];
 
-export const expandLegacyPath = (location: LegacyLocation, homeDir: string): string =>
-  path.join(homeDir, location.path.replace(/^~\/?/, ''));
+/**
+ * Claude Code's per-folder MCP entries, `projects[<folder>].mcpServers` in
+ * `~/.claude.json`: not a manifest target, so not in the list above, but a
+ * place a `myco` entry can sit for a connected folder.
+ */
+export const CLAUDE_PROJECT_MCP: LegacyLocation = g('claude-code', 'mcp', '~/.claude.json', { serversKey: 'projects/<folder>/mcpServers', format: 'json' });
+
+/** Every servers key a JSON MCP file is read under: an agent's own, whatever the manifest named. */
+const JSON_SERVERS_KEYS = ['mcpServers', 'servers', 'mcp'];
+
+/** One concrete place to read: a location at a file, and for MCP the key path to the servers map. */
+export interface LegacyTarget {
+  location: LegacyLocation;
+  file: string;
+  serversPaths: string[][];
+}
+
+/** Every file and key path the locations name on this machine, for the connected `folders`. */
+export function legacyTargets(homeDir: string, folders: readonly string[]): LegacyTarget[] {
+  const home = (p: string) => path.join(homeDir, p.replace(/^~\/?/, ''));
+  const serversPathsFor = (l: LegacyLocation): string[][] => (l.kind !== 'mcp' ? [] : l.format === 'toml' ? [[l.serversKey ?? 'mcp_servers']] : JSON_SERVERS_KEYS.map((k) => [k]));
+  const out: LegacyTarget[] = [];
+  for (const location of LEGACY_REGISTRATIONS) {
+    if (location.scope === 'global') out.push({ location, file: home(location.path), serversPaths: serversPathsFor(location) });
+    else for (const folder of folders) out.push({ location, file: path.join(folder, location.path), serversPaths: serversPathsFor(location) });
+  }
+  if (folders.length > 0) out.push({ location: CLAUDE_PROJECT_MCP, file: home(CLAUDE_PROJECT_MCP.path), serversPaths: folders.map((f) => ['projects', f, 'mcpServers']) });
+  return out;
+}
 
 /** One Myco registration found at a 1.4 location. */
 export interface LegacyFinding {
   location: LegacyLocation;
   file: string;
+  /** For an MCP entry, the key path of the servers map holding it. */
+  serversPath?: string[];
   verdict: Verdict;
-  /** The hook command, MCP entry or file this is about, as a person reads it. */
+  /** The hook command, MCP entry, file or skill link this is about, as a person reads it. */
   subject: string;
+  /** For a skill link: where it points. */
+  linkTarget?: string;
 }
 
 export interface LegacyScan {
@@ -85,9 +154,8 @@ export function hookVerdict(command: string, legacyHomes: readonly string[]): Ve
   return rawHasMycoOwnershipSignal(command) ? commandVerdict(command, legacyHomes) : null;
 }
 
-/** The verdict on a whole file a 1.4 install wrote as a plugin, or null when it is not Myco's. */
-export function pluginVerdict(content: string, legacyHomes: readonly string[]): Verdict | null {
-  if (content.includes(MEMBER_PLUGIN_MARKER)) return 'member';
+/** The verdict on a whole file a Myco install wrote as a plugin, or null when it is not Myco's. */
+export function pluginVerdict(content: string, legacyHomes: readonly string[], ownHome?: string): Verdict | null {
   let commands: string[] = [];
   try { commands = collectCommands(JSON.parse(content)); } catch { /* a module, not JSON */ }
   if (commands.length > 0) {
@@ -96,8 +164,7 @@ export function pluginVerdict(content: string, legacyHomes: readonly string[]): 
     if (verdicts.includes('legacy')) return 'legacy';
     return verdicts.includes('member') ? 'member' : null;
   }
-  if (content.includes(MYCO_PLUGIN_FILE_MARKER) || legacyHomes.some((home) => content.includes(`${home}${path.sep}`))) return 'legacy';
-  return rawHasMycoOwnershipSignal(content) ? 'foreign' : null;
+  return pluginFileVerdict(content, legacyHomes, ownHome) ?? (rawHasMycoOwnershipSignal(content) ? 'foreign' : null);
 }
 
 function collectCommands(node: unknown): string[] {
@@ -108,28 +175,57 @@ function collectCommands(node: unknown): string[] {
   return [...own, ...Object.entries(record).filter(([key]) => key !== 'command').flatMap(([, value]) => collectCommands(value))];
 }
 
-function readServers(raw: string, location: LegacyLocation): Record<string, unknown> | undefined {
-  const parsed = (location.format === 'toml' ? parseToml(raw) : JSON.parse(raw)) as Record<string, unknown>;
-  const servers = parsed[location.serversKey ?? 'mcpServers'];
-  return servers && typeof servers === 'object' && !Array.isArray(servers) ? servers as Record<string, unknown> : undefined;
+const at = (node: unknown, keys: readonly string[]): unknown =>
+  keys.reduce<unknown>((n, k) => (n && typeof n === 'object' && !Array.isArray(n) ? (n as Record<string, unknown>)[k] : undefined), node);
+
+/** Whether a link points into a 1.4 home's `skills/` (and not `ownHome`'s). */
+function skillLinkVerdict(link: string, legacyHomes: readonly string[], ownHome: string | undefined): { verdict: Verdict; target: string } | null {
+  let target: string;
+  try { target = path.resolve(path.dirname(link), fs.readlinkSync(link)); } catch { return null; }
+  const into = (home: string) => target.startsWith(`${path.join(path.resolve(home), 'skills')}${path.sep}`);
+  if (ownHome !== undefined && into(ownHome)) return { verdict: 'member', target };
+  return legacyHomes.some(into) ? { verdict: 'legacy', target } : null;
+}
+
+export interface ScanOptions {
+  homeDir: string;
+  legacyHomes: readonly string[];
+  /** The 2.0 home the run moves into: its own plugins, links and entries are the member's. */
+  ownHome?: string;
+  /** The folders connected to the Deployment, whose project-level locations are read too. */
+  folders?: readonly string[];
 }
 
 /** What every 1.4 location on this machine holds, read-only. */
-export function scanLegacyRegistrations(homeDir: string, legacyHomes: readonly string[], locations: readonly LegacyLocation[] = LEGACY_REGISTRATIONS): LegacyScan {
-  const homes = legacyHomes.map((home) => path.resolve(home));
+export function scanLegacyRegistrations(opts: ScanOptions): LegacyScan {
+  const homes = opts.legacyHomes.map((home) => path.resolve(home));
   const scan: LegacyScan = { findings: [], unreadable: [] };
   const pluginVerdicts = new Map<string, Verdict>();
-  for (const location of locations) {
+  const targets = legacyTargets(opts.homeDir, opts.folders ?? []);
+  const seenSkillDirs = new Set<string>();
+  for (const target of targets) {
+    const { location, file } = target;
     if (location.kind === 'plugin-manifest') continue;
-    const file = expandLegacyPath(location, homeDir);
+    if (location.kind === 'skills') {
+      if (seenSkillDirs.has(file)) continue;
+      seenSkillDirs.add(file);
+      let names: string[];
+      try { names = fs.readdirSync(file); } catch { continue; }
+      for (const name of names.sort()) {
+        const link = path.join(file, name);
+        const found = skillLinkVerdict(link, homes, opts.ownHome);
+        if (found !== null) scan.findings.push({ location, file: link, verdict: found.verdict, subject: link, linkTarget: found.target });
+      }
+      continue;
+    }
     let raw: string;
     try { raw = fs.readFileSync(file, 'utf8'); } catch { continue; }
-    const add = (verdict: Verdict, subject: string) => scan.findings.push({ location, file, verdict, subject });
+    const add = (verdict: Verdict, subject: string, serversPath?: string[]) => scan.findings.push({ location, file, verdict, subject, ...(serversPath ? { serversPath } : {}) });
     try {
       if (location.kind === 'plugin-file') {
-        const verdict = pluginVerdict(raw, homes);
+        const verdict = pluginVerdict(raw, homes, opts.ownHome);
         if (verdict === null) continue;
-        pluginVerdicts.set(`${location.agent}\0${path.dirname(file)}`, verdict);
+        pluginVerdicts.set(path.dirname(file), verdict);
         add(verdict, file);
       } else if (location.kind === 'hooks') {
         for (const command of collectCommands((JSON.parse(raw) as { hooks?: unknown }).hooks)) {
@@ -137,8 +233,11 @@ export function scanLegacyRegistrations(homeDir: string, legacyHomes: readonly s
           if (verdict !== null) add(verdict, command);
         }
       } else {
-        const entry = readServers(raw, location)?.[MYCO_MCP_SERVER_NAME];
-        if (entry !== undefined) add(mcpVerdict(entry, homes), JSON.stringify(entry));
+        const parsed = location.format === 'toml' ? parseToml(raw) : JSON.parse(raw);
+        for (const serversPath of target.serversPaths) {
+          const entry = at(parsed, [...serversPath, MYCO_MCP_SERVER_NAME]);
+          if (entry !== undefined) add(mcpVerdict(entry, homes), JSON.stringify(entry), serversPath);
+        }
       }
     } catch (error) {
       if (rawHasMycoOwnershipSignal(raw) || raw.includes(`"${MYCO_MCP_SERVER_NAME}"`) || raw.includes(`${MYCO_MCP_SERVER_NAME}]`)) {
@@ -146,13 +245,13 @@ export function scanLegacyRegistrations(homeDir: string, legacyHomes: readonly s
       }
     }
   }
-  for (const location of locations) {
-    if (location.kind !== 'plugin-manifest') continue;
-    const file = expandLegacyPath(location, homeDir);
-    if (!fs.existsSync(file)) continue;
-    const sibling = pluginVerdicts.get(`${location.agent}\0${path.dirname(file)}`);
-    if (sibling === 'legacy') scan.findings.push({ location, file, verdict: 'legacy', subject: file });
+  for (const { location, file } of targets) {
+    if (location.kind !== 'plugin-manifest' || !fs.existsSync(file)) continue;
+    if (pluginVerdicts.get(path.dirname(file)) === 'legacy') scan.findings.push({ location, file, verdict: 'legacy', subject: file });
   }
+  // A file two locations name (a skills folder several agents share, a settings file holding hooks and MCP) is reported once per entry.
+  const unique = new Map(scan.findings.map((f) => [`${f.file}\0${f.location.kind}\0${(f.serversPath ?? []).join('/')}\0${f.subject}`, f]));
+  scan.findings = [...unique.values()];
   return scan;
 }
 
@@ -183,14 +282,24 @@ function withoutLegacyHooks(node: unknown, legacyHomes: readonly string[]): unkn
 }
 
 /**
- * Remove every 1.4 registration a scan found in one file: its hook entries,
- * its `myco` MCP entry, or (a plugin file or its manifest) the file itself.
- * Answers one line for each removal. The caller backs the file up first.
+ * Remove the 1.4 registrations planned for one file: its hook entries, its
+ * `myco` MCP entries, the file itself (a plugin file or its manifest), or a
+ * skill link, repointed at `ownHome`'s own skill when that exists. Answers one
+ * line for each change. The caller backs the file up first.
  */
-export function removeLegacyRegistrations(file: string, findings: readonly LegacyFinding[], legacyHomes: readonly string[]): string[] {
+export function removeLegacyRegistrations(file: string, planned: readonly LegacyFinding[], legacyHomes: readonly string[], ownHome?: string): string[] {
   const homes = legacyHomes.map((home) => path.resolve(home));
-  const mine = findings.filter((f) => f.file === file && f.verdict === 'legacy');
+  const mine = planned.filter((f) => f.file === file && f.verdict === 'legacy');
   if (mine.length === 0) return [];
+  if (mine.some((f) => f.location.kind === 'skills')) {
+    const replacement = ownHome === undefined ? null : path.join(ownHome, 'skills', path.basename(file));
+    fs.unlinkSync(file);
+    if (replacement !== null && fs.existsSync(replacement)) {
+      fs.symlinkSync(replacement, file);
+      return [`pointed ${file} at ${replacement}`];
+    }
+    return [`removed the skill link ${file}`];
+  }
   if (mine.some((f) => f.location.kind === 'plugin-file' || f.location.kind === 'plugin-manifest')) {
     fs.unlinkSync(file);
     return [`removed ${file}`];
@@ -199,18 +308,17 @@ export function removeLegacyRegistrations(file: string, findings: readonly Legac
   const toml = mine.some((f) => f.location.format === 'toml');
   const parsed = (toml ? parseToml(raw) : JSON.parse(raw)) as Record<string, unknown>;
   const removed: string[] = [];
-  let next: Record<string, unknown> = parsed;
   if (mine.some((f) => f.location.kind === 'hooks') && parsed.hooks !== undefined) {
-    next = { ...next, hooks: withoutLegacyHooks(parsed.hooks, homes) };
-    removed.push(`removed ${mine.filter((f) => f.location.kind === 'hooks').length} 1.4 hooks from ${file}`);
+    parsed.hooks = withoutLegacyHooks(parsed.hooks, homes);
+    const n = mine.filter((f) => f.location.kind === 'hooks').length;
+    removed.push(`removed ${n} 1.4 hook${n === 1 ? '' : 's'} from ${file}`);
   }
-  for (const finding of mine.filter((f) => f.location.kind === 'mcp')) {
-    const key = finding.location.serversKey ?? 'mcpServers';
-    const servers = { ...(next[key] as Record<string, unknown>) };
-    delete servers[MYCO_MCP_SERVER_NAME];
-    next = { ...next, [key]: servers };
-    removed.push(`removed the 1.4 \`${MYCO_MCP_SERVER_NAME}\` MCP entry from ${file}`);
+  for (const finding of mine.filter((f) => f.location.kind === 'mcp' && f.serversPath !== undefined)) {
+    const servers = at(parsed, finding.serversPath!);
+    if (!servers || typeof servers !== 'object' || Array.isArray(servers)) continue;
+    delete (servers as Record<string, unknown>)[MYCO_MCP_SERVER_NAME];
+    removed.push(`removed the 1.4 \`${MYCO_MCP_SERVER_NAME}\` MCP entry${finding.serversPath!.length > 1 ? ` for ${finding.serversPath![1]}` : ''} from ${file}`);
   }
-  rewriteKeepingMode(file, toml ? `${stringifyToml(next)}\n` : `${JSON.stringify(next, null, 2)}\n`);
+  rewriteKeepingMode(file, toml ? `${stringifyToml(parsed)}\n` : `${JSON.stringify(parsed, null, 2)}\n`);
   return removed;
 }

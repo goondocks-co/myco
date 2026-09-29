@@ -6,7 +6,7 @@ import { isDeepStrictEqual } from 'node:util';
 import { parse as parseToml } from 'smol-toml';
 import { expandHome, resolveMycoHome } from '../grove/paths.js';
 import { isClaimedByPeer, readClaim, resolveClaimsHome, shouldDeferSubsystem, SYMBIONT_CONFIG_SUBSYSTEM } from '../grove/subsystem-claim.js';
-import { commandVerdict, mcpVerdict } from './legacy-verdict.js';
+import { commandVerdict, mcpVerdict, MEMBER_PLUGIN_MARKER, MYCO_PLUGIN_FILE_MARKER, pluginFileVerdict } from './legacy-verdict.js';
 import { atomicWriteFileSync } from '../utils/atomic-write.js';
 import { assertSafeProjectRoot } from '../project-root.js';
 import { findTomlSectionEnd, buildTomlMcpSection, upsertTomlSection, upsertTomlSectionKeys, removeTomlSectionKeys, readTomlSectionKey } from './toml-helpers.js';
@@ -156,7 +156,7 @@ const KNOWN_MCP_SERVERS_KEYS = ['mcpServers', 'servers', 'mcp'] as const;
  * Uninstall only deletes plugin files whose content contains this marker, so
  * contributors who hand-edit a plugin file without removing the marker are protected.
  */
-export const MYCO_PLUGIN_FILE_MARKER = 'myco:plugin-marker';
+export { MYCO_PLUGIN_FILE_MARKER } from './legacy-verdict.js';
 
 /**
  * The comment line only a member plugin carries: the one `member leave` may
@@ -164,7 +164,7 @@ export const MYCO_PLUGIN_FILE_MARKER = 'myco:plugin-marker';
  * comment prefix, never the bare word, so a plugin that names it in its own
  * code does not match itself.
  */
-export const MEMBER_PLUGIN_MARKER = '// myco:member-plugin';
+export { MEMBER_PLUGIN_MARKER } from './legacy-verdict.js';
 
 /** The comment line a global Myco plugin carries when it steps aside for a project's member plugin. */
 const MEMBER_PLUGIN_COMPAT_MARKER = '// myco:defers-to-member-plugin';
@@ -2315,8 +2315,9 @@ export class SymbiontInstaller {
         try { content = fs.readFileSync(target, 'utf8'); } catch (error) {
           throw new MemberProvisionConflictError(`could not read ${target} (${firstLine(error)}), so nothing was written.`);
         }
-        const legacyPlugin = this.legacyHomes.length > 0 && (content.includes(MYCO_PLUGIN_FILE_MARKER) || this.namesLegacyHome(content));
-        if (!content.includes(MEMBER_PLUGIN_MARKER) && !legacyPlugin) {
+        const verdict = pluginFileVerdict(content, this.legacyHomes, memberHome);
+        const replaceable = verdict === 'member' || (verdict === 'legacy' && this.legacyHomes.length > 0);
+        if (!replaceable) {
           throw new MemberProvisionConflictError(`Global hooks at ${target} belong to another installation. Complete its capture cutover before provisioning globally.`);
         }
       } else {

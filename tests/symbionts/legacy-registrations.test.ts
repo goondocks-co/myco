@@ -36,25 +36,32 @@ const TAG_BLOBS: Record<string, string> = {
 
 const gitBlobId = (bytes: Buffer): string => crypto.createHash('sha1').update(Buffer.concat([Buffer.from(`blob ${bytes.length}\0`), bytes])).digest('hex');
 
-/** The global locations one 1.4.8 manifest declares, as its installer read them. */
+/** The global and project locations one 1.4.8 manifest declares, as its installer read them. */
 function declaredLocations(manifest: { name: string; registration?: Record<string, unknown> }): LegacyLocation[] {
   const reg = manifest.registration ?? {};
   const out: LegacyLocation[] = [];
-  if (typeof reg.globalHooksTarget === 'string') {
-    out.push({ agent: manifest.name, kind: reg.hooksFormat === 'plugin-file' ? 'plugin-file' : 'hooks', path: reg.globalHooksTarget });
-  }
-  const mcpTargets = reg.globalMcpTarget === null || reg.globalMcpTarget === undefined ? [] : Array.isArray(reg.globalMcpTarget) ? reg.globalMcpTarget : [reg.globalMcpTarget];
+  const hooksKind = reg.hooksFormat === 'plugin-file' ? 'plugin-file' : 'hooks';
   const toml = reg.mcpFormat === 'toml';
+  const mcpOf = (target: string | { path: string; serversKey?: string }): Pick<LegacyLocation, 'serversKey' | 'format'> => ({
+    serversKey: typeof target === 'string' ? (toml ? 'mcp_servers' : (reg.mcpServersKey as string | undefined) ?? 'mcpServers') : target.serversKey ?? 'mcpServers',
+    format: toml ? 'toml' : 'json',
+  });
+  if (typeof reg.globalHooksTarget === 'string') out.push({ agent: manifest.name, kind: hooksKind, scope: 'global', path: reg.globalHooksTarget });
+  const mcpTargets = reg.globalMcpTarget === null || reg.globalMcpTarget === undefined ? [] : Array.isArray(reg.globalMcpTarget) ? reg.globalMcpTarget : [reg.globalMcpTarget];
   for (const target of mcpTargets as Array<string | { path: string; serversKey?: string }>) {
-    const file = typeof target === 'string' ? target : target.path;
-    const serversKey = typeof target === 'string' ? (toml ? 'mcp_servers' : (reg.mcpServersKey as string | undefined) ?? 'mcpServers') : target.serversKey ?? 'mcpServers';
-    out.push({ agent: manifest.name, kind: 'mcp', path: file, serversKey, format: toml ? 'toml' : 'json' });
+    out.push({ agent: manifest.name, kind: 'mcp', scope: 'global', path: typeof target === 'string' ? target : target.path, ...mcpOf(target) });
   }
-  if (typeof reg.globalPluginManifestTarget === 'string') out.push({ agent: manifest.name, kind: 'plugin-manifest', path: reg.globalPluginManifestTarget });
+  if (typeof reg.globalPluginManifestTarget === 'string') out.push({ agent: manifest.name, kind: 'plugin-manifest', scope: 'global', path: reg.globalPluginManifestTarget });
+  for (const skills of [reg.globalSkillsTarget, ...((reg.retiredGlobalSkillsTargets as string[] | undefined) ?? [])]) {
+    if (typeof skills === 'string') out.push({ agent: manifest.name, kind: 'skills', scope: 'global', path: skills });
+  }
+  if (typeof reg.hooksTarget === 'string') out.push({ agent: manifest.name, kind: hooksKind, scope: 'project', path: reg.hooksTarget });
+  if (typeof reg.mcpTarget === 'string') out.push({ agent: manifest.name, kind: 'mcp', scope: 'project', path: reg.mcpTarget, ...mcpOf(reg.mcpTarget) });
+  if (typeof reg.pluginManifestTarget === 'string') out.push({ agent: manifest.name, kind: 'plugin-manifest', scope: 'project', path: reg.pluginManifestTarget });
   return out;
 }
 
-const key = (l: LegacyLocation) => JSON.stringify([l.agent, l.kind, l.path, l.serversKey ?? null, l.format ?? null]);
+const key = (l: LegacyLocation) => JSON.stringify([l.agent, l.kind, l.scope, l.path, l.serversKey ?? null, l.format ?? null]);
 
 describe('the 1.4.8 registration locations', () => {
   it('are held byte for byte from the 1.4.8 manifests', () => {
@@ -68,7 +75,7 @@ describe('the 1.4.8 registration locations', () => {
     }
   });
 
-  it('match every global hook, plugin and MCP location those manifests declare', () => {
+  it('match every global and project hook, plugin, MCP and skills location those manifests declare', () => {
     const derived = fs.readdirSync(FIXTURES).flatMap((file) => declaredLocations(YAML.parse(fs.readFileSync(path.join(FIXTURES, file), 'utf8'))));
     expect(LEGACY_REGISTRATIONS.map(key).sort()).toEqual(derived.map(key).sort());
   });
@@ -97,7 +104,7 @@ describe('whose a registration is', () => {
     const toml = path.join(home, '.codex', 'config.toml');
     fs.mkdirSync(path.dirname(toml), { recursive: true });
     fs.writeFileSync(toml, '[features]\nhooks = true\n\n[mcp_servers.myco]\ncommand = "/Users/u/.myco-dev/bin/myco"\nargs = ["mcp"]\n\n[mcp_servers.mine]\ncommand = "mine"\n');
-    const scan = scanLegacyRegistrations(home, legacy);
+    const scan = scanLegacyRegistrations({ homeDir: home, legacyHomes: legacy });
     expect(scan.findings.map((f) => [f.location.agent, f.verdict])).toEqual([['codex', 'legacy']]);
     expect(removeLegacyRegistrations(toml, scan.findings, legacy)).toEqual([`removed the 1.4 \`myco\` MCP entry from ${toml}`]);
     const after = fs.readFileSync(toml, 'utf8');

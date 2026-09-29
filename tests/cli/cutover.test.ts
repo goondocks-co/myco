@@ -28,7 +28,8 @@ import { openDatabase } from '@myco/db/client.js';
 import { createSchema } from '@myco/db/schema.js';
 import { resolveServiceDaemonStatePath } from '@myco/grove/paths.js';
 import { CREDENTIAL_FLAG } from '@myco/member/constants.js';
-import { listRegistryEntries, writeDeploymentMembership } from '@myco/member/registry.js';
+import { listRegistryEntries, registryEntryPath, writeDeploymentMembership } from '@myco/member/registry.js';
+import { provisionGlobally } from '@myco/cli/member.js';
 import { stopHomeDaemon } from '@myco/service/home-daemon.js';
 import type { LaunchctlRunner } from '@myco/service/launchd.js';
 import { resolvePackageRoot } from '@myco/symbionts/detect.js';
@@ -43,7 +44,7 @@ const DAEMON_LABEL = 'co.goondocks.myco';
 const OTHER_DAEMON_LABEL = 'co.goondocks.myco.0ther000';
 const WORKER_LABEL = 'co.goondocks.myco-worker.0ther000';
 
-type RunOpts = { fetch?: MemberRig['fetch']; mycoHome?: string | null; env?: NodeJS.ProcessEnv; provision?: CutoverDeps['provision']; agents?: string[] };
+type RunOpts = { fetch?: MemberRig['fetch']; mycoHome?: string | null; env?: NodeJS.ProcessEnv; provision?: CutoverDeps['provision']; agents?: string[]; unitDirs?: CutoverDeps['unitDirs'] };
 interface Machine {
   rig: MemberRig;
   home: string;
@@ -144,6 +145,7 @@ async function machine(opts: { legacyHome?: string } = {}): Promise<Machine> {
       launchctl: fakeLaunchctl(launchctl.loaded, launchctl.calls),
       stopDaemon: async () => 'none',
       provision: o.provision,
+      unitDirs: o.unitDirs,
       onPlan: (keys) => planned.push(keys),
       onAction: (key) => done.push(key),
     });
@@ -259,6 +261,11 @@ describe('myco cutover', () => {
   });
 
   it('plans on a dry run exactly the changes the real run makes, and makes none of them', async () => {
+    // Antigravity's 1.4 plugin: its hooks file, and the manifest that goes with it.
+    const legacyBin = path.join(m.legacyHome, 'bin', 'myco');
+    const plugin = path.join(m.home, '.gemini', 'config', 'plugins', 'myco');
+    writeJson(path.join(plugin, 'hooks.json'), { myco: { Stop: [{ type: 'command', command: `${legacyBin} hook stop --symbiont antigravity --myco-managed` }] } });
+    writeJson(path.join(plugin, 'plugin.json'), { name: 'myco' });
     const settings = fs.readFileSync(settingsFile(), 'utf8');
     const vaultBytes = sha(m.vault);
     const events = m.rig.rows('events');
@@ -279,8 +286,11 @@ describe('myco cutover', () => {
     const real = await m.run();
     expect(real.ok).toBe(true);
     expect(m.planned[0].length).toBeGreaterThan(0);
+    expect(m.planned[0].filter((o) => o.includes(plugin))).toHaveLength(2);
     expect(m.done).toEqual(m.planned[0]);
     expect(m.planned[1]).toEqual(m.planned[0]);
+    expect(fs.existsSync(path.join(plugin, 'hooks.json'))).toBe(false);
+    expect(fs.existsSync(path.join(plugin, 'plugin.json'))).toBe(false);
   });
 
   it('removes 1.4 from agents 2.0 does not capture and from every place 1.4.8 wrote, keeping the person\'s own entries', async () => {
@@ -306,8 +316,9 @@ describe('myco cutover', () => {
     expect(result.err).toEqual([]);
     expect(result.ok).toBe(true);
     const said = result.out.join('\n');
-    expect(said).toContain(`GitHub Copilot: removed 1 1.4 hooks from ${copilotHooks}; GitHub Copilot is no longer captured by Myco 2.0`);
-    expect(said).toContain(`Cline: removed ${clinePlugin}; Cline is no longer captured by Myco 2.0`);
+    expect(said).toContain(`GitHub Copilot: removed 1 1.4 hook from ${copilotHooks}; GitHub Copilot is no longer captured by Myco 2.0`);
+    expect(said).toContain(`Cline: removed ${clinePlugin}`);
+    expect(said).not.toContain('Cline is no longer captured');
     expect(hookCommands(readJson(copilotHooks).hooks)).toEqual([]);
     expect(readJson(copilotMcp).mcpServers).toEqual({ mine: { command: 'mine' } });
     expect(fs.statSync(copilotMcp).mode & 0o777).toBe(0o640);
@@ -316,6 +327,118 @@ describe('myco cutover', () => {
     expect(fs.existsSync(clinePlugin)).toBe(false);
     expect(backupsOf(clinePlugin)).toHaveLength(1);
     expect(readJson(settingsFile()).mcpServers).toEqual({});
+  });
+
+  it('keeps a 2.0 member plugin, and refuses another home\'s plugin', async () => {
+    const clinePlugin = path.join(m.home, '.cline', 'plugins', 'myco.ts');
+    fs.mkdirSync(path.dirname(clinePlugin), { recursive: true });
+    const memberPlugin = `// myco:plugin-marker — Myco owns this file\nconst args = ["hook", verb, "--symbiont", "cline", "${CREDENTIAL_FLAG}", "registry"];\n`;
+    fs.writeFileSync(clinePlugin, memberPlugin);
+    const kept = await m.run();
+    expect(kept.err).toEqual([]);
+    expect(fs.readFileSync(clinePlugin, 'utf8')).toBe(memberPlugin);
+
+    const other = await machine();
+    try {
+      process.env.HOME = other.home;
+      process.env.MYCO_CLAIMS_HOME = other.legacyHome;
+      const foreignPlugin = path.join(other.home, '.cline', 'plugins', 'myco.ts');
+      fs.mkdirSync(path.dirname(foreignPlugin), { recursive: true });
+      fs.writeFileSync(foreignPlugin, '// myco:plugin-marker\nconst bin = "/elsewhere/other/bin/myco";\n');
+      const refused = await other.run();
+      expect(refused.ok).toBe(false);
+      expect(refused.err.join('\n')).toContain(`${foreignPlugin} holds a Myco plugin of another installation`);
+      expect(fs.existsSync(foreignPlugin)).toBe(true);
+    } finally {
+      process.env.HOME = m.home;
+      process.env.MYCO_CLAIMS_HOME = m.legacyHome;
+    }
+  });
+
+  it('takes 1.4 out of each connected folder, Claude Code\'s per-folder entries and the skill links', async () => {
+    const legacyBin = path.join(m.legacyHome, 'bin', 'myco');
+    const projectSettings = path.join(m.root, '.claude', 'settings.json');
+    const projectMcp = path.join(m.root, '.mcp.json');
+    writeJson(projectSettings, { hooks: { Stop: [{ hooks: [{ type: 'command', command: `${legacyBin} hook stop --symbiont claude-code --myco-managed` }, { type: 'command', command: 'echo mine' }] }] } });
+    writeJson(projectMcp, { mcpServers: { myco: { type: 'stdio', command: legacyBin, args: ['mcp'] }, mine: { command: 'mine' } } });
+    const claudeJson = path.join(m.home, '.claude.json');
+    writeJson(claudeJson, { ...readJson(claudeJson), projects: { [m.root]: { mcpServers: { myco: { command: legacyBin, args: ['mcp'] } }, allowedTools: ['x'] } } });
+    // A 1.4 skill link, where 2.0 has the same skill, and one where it has none.
+    for (const name of ['myco', 'myco-old']) fs.mkdirSync(path.join(m.legacyHome, 'skills', name), { recursive: true });
+    fs.mkdirSync(path.join(m.mycoHome, 'skills', 'myco'), { recursive: true });
+    const skills = path.join(m.home, '.claude', 'skills');
+    fs.mkdirSync(skills, { recursive: true });
+    for (const name of ['myco', 'myco-old']) fs.symlinkSync(path.join(m.legacyHome, 'skills', name), path.join(skills, name));
+
+    const result = await m.run();
+    expect(result.err).toEqual([]);
+    expect(result.ok).toBe(true);
+    expect(hookCommands(readJson(projectSettings).hooks)).toEqual(['echo mine']);
+    expect(readJson(projectMcp).mcpServers).toEqual({ mine: { command: 'mine' } });
+    const projects = readJson(claudeJson).projects as Record<string, Record<string, unknown>>;
+    expect(projects[m.root]).toEqual({ mcpServers: {}, allowedTools: ['x'] });
+    expect(fs.readlinkSync(path.join(skills, 'myco'))).toBe(path.join(m.mycoHome, 'skills', 'myco'));
+    expect(fs.existsSync(path.join(skills, 'myco-old'))).toBe(false);
+    // Every one of them, and the unit, the claim, the pin and the folder's registry entry, is in the manifest; restore.md undoes them.
+    const [folder] = fs.readdirSync(path.join(m.mycoHome, 'backups'));
+    const dir = path.join(m.mycoHome, 'backups', folder);
+    const entries = (readJson(path.join(dir, 'manifest.json')).entries as Array<Record<string, string>>);
+    const originals = entries.map((e) => e.original);
+    expect(originals).toEqual(expect.arrayContaining([projectSettings, projectMcp, claudeJson, path.join(skills, 'myco'), path.join(skills, 'myco-old'),
+      path.join(m.agentsDir, `${DAEMON_LABEL}.plist`), path.join(m.legacyHome, 'claims', 'symbiont-config.json'), path.join(m.legacyHome, 'runtime.home')]));
+    expect(entries.find((e) => e.original === path.join(skills, 'myco-old'))?.link).toBe(path.join(m.legacyHome, 'skills', 'myco-old'));
+    expect(fs.existsSync(entries.find((e) => e.original === path.join(m.agentsDir, `${DAEMON_LABEL}.plist`))!.backup)).toBe(true);
+    const restore = fs.readFileSync(path.join(dir, 'restore.md'), 'utf8');
+    expect(restore).toContain(`ln -sfn '${path.join(m.legacyHome, 'skills', 'myco-old')}' '${path.join(skills, 'myco-old')}'`);
+    expect(restore).toContain(`rm -f '${path.join(m.legacyHome, 'runtime.home')}'`);
+    expect(restore).toContain(`'${path.join(m.agentsDir, `${DAEMON_LABEL}.plist`)}'`);
+    expect(result.out.join('\n')).toContain(`run the commands in ${path.join(dir, 'restore.md')}`);
+  });
+
+  it('fails when a 1.4 registration is still there once every change is made', async () => {
+    const legacyBin = path.join(m.legacyHome, 'bin', 'myco');
+    const copilotMcp = path.join(m.home, '.copilot', 'mcp-config.json');
+    const provision: CutoverDeps['provision'] = (agent, root, home, opts) => {
+      const outcome = provisionGlobally(agent, root, home, opts);
+      writeJson(copilotMcp, { mcpServers: { myco: { command: legacyBin, args: ['mcp'] } } });
+      return outcome;
+    };
+    const result = await m.run([], { provision });
+    expect(result.ok).toBe(false);
+    expect(result.err.join('\n')).toContain(`${copilotMcp} still holds a 1.4 registration`);
+    expect(bootouts()).toEqual([]);
+  });
+
+  it('fails the run when the vault import is refused outright', async () => {
+    const olderServer: MemberRig['fetch'] = async (input, init) => {
+      const res = await m.rig.fetch(input, init);
+      if (!String(input).endsWith('/import/plan')) return res;
+      const body = await res.json() as Record<string, unknown>;
+      delete body.sessions;
+      return Response.json(body);
+    };
+    const result = await m.run([], { fetch: olderServer });
+    expect(result.ok).toBe(false);
+    expect(result.err.join('\n')).toContain('update the Deployment');
+  });
+
+  it('passes an MCP entry for its own Deployment before the folder is connected', async () => {
+    expect((await m.run()).ok).toBe(true);
+    for (const entry of listRegistryEntries(m.mycoHome)) fs.rmSync(registryEntryPath(entry.root!, m.mycoHome));
+    const again = await m.run(['--dry-run']);
+    expect(again.err).toEqual([]);
+    expect(again.ok).toBe(true);
+  });
+
+  it('refuses a 1.4 unit that starts at boot rather than stopping it as a user unit', async () => {
+    const boot = path.join(m.home, 'LaunchDaemons');
+    fs.mkdirSync(boot, { recursive: true });
+    fs.renameSync(path.join(m.agentsDir, `${DAEMON_LABEL}.plist`), path.join(boot, `${DAEMON_LABEL}.plist`));
+    const result = await m.run([], { unitDirs: [{ dir: m.agentsDir, scope: 'user' }, { dir: boot, scope: 'boot' }] });
+    expect(result.ok).toBe(false);
+    expect(result.err.join('\n')).toContain(`${path.join(boot, `${DAEMON_LABEL}.plist`)} starts ${m.legacyHome}'s 1.4 daemon at boot`);
+    expect(m.launchctl.calls).toEqual([]);
+    expect(fs.existsSync(path.join(boot, `${DAEMON_LABEL}.plist`))).toBe(true);
   });
 
   it('refuses a member MCP entry of another Deployment before its first change', async () => {

@@ -57,6 +57,8 @@ registration:
   hooksTarget: .cline/plugins/myco.ts
   globalHooksTarget: ~/.cline/plugins/myco.ts
   hooksFormat: plugin-file
+  # A member provisions the same plugin, bound to its credential source.
+  memberHooksTarget: .cline/plugins/myco.ts
   # Cline CLI reads global MCP JSON from its data/settings directory;
   # project-local overrides use the documented .cline/mcp.json path.
   mcpTarget: .cline/mcp.json
