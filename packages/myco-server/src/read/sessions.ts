@@ -42,7 +42,11 @@ export interface SessionRow {
    */
   runtimeLabel: string | null;
   runtimeKind: string | null;
-  /** When the session's open turn started, in the member's clock; null while no turn is open and once the session ends. */
+  /**
+   * When the session's open turn started, in the member's clock; null while no turn is open, and when the recorded end
+   * is newer than the turn. A turn newer than the recorded end is a session resumed after it: working again, with its
+   * recorded end left as it stands.
+   */
   workingSince: number | null;
   /**
    * Whether the session is working now: a turn open for less than `WORKING_CAP_MS`, however long it has gone without
@@ -143,7 +147,8 @@ const text = (value: unknown): string | null => (value as string | null) ?? null
 const num = (value: unknown): number | null => (value as number | null) ?? null;
 
 function toSession(row: Record<string, unknown>, nowMs?: number): SessionRow {
-  const workingSince = row.ended_at == null ? num(row.working_since) : null;
+  const open = num(row.working_since);
+  const workingSince = open !== null && (row.ended_at == null || open > (row.ended_at as number)) ? open : null;
   return {
     sessionId: row.session_id as string,
     machineId: text(row.machine_id),
@@ -334,8 +339,8 @@ async function selectSessions(
     if (opts.branch !== undefined) { conditions.push('s.branch = ?'); params.push(opts.branch); }
     if (opts.agent !== undefined) { conditions.push('s.agent = ?'); params.push(opts.agent); }
     if (window === 'working') {
-      // Working now: a turn opened within the cap and no end recorded.
-      conditions.push('s.working_since IS NOT NULL', 's.working_since > ?', `${PRESENTED_ENDED_AT} IS NULL`);
+      // Working now: a turn opened within the cap, with no end recorded or one older than the turn.
+      conditions.push('s.working_since IS NOT NULL', 's.working_since > ?', `(${PRESENTED_ENDED_AT} IS NULL OR ${PRESENTED_ENDED_AT} < s.working_since)`);
       params.push(opts.now! - WORKING_CAP_MS);
     } else if (active) {
       // Active in the window: a receipt at or after its start, and no end recorded before it.
@@ -346,8 +351,9 @@ async function selectSessions(
       conditions.push(`${SESSION_OCCURRED_AT} >= ?`); params.push(opts.since);
     }
     if (opts.until !== undefined) { conditions.push(`${SESSION_OCCURRED_AT} < ?`); params.push(opts.until); }
-    // Open and ended as the page shows them, so a session listed with an end is not also listed as open.
-    if (opts.state === 'open') conditions.push(`${PRESENTED_ENDED_AT} IS NULL`);
+    // Open and ended as the page shows them, so a session listed with an end is not also listed as open. A session working
+    // again after its recorded end is open while it works, in the working read.
+    if (opts.state === 'open' && window !== 'working') conditions.push(`${PRESENTED_ENDED_AT} IS NULL`);
     if (opts.state === 'ended') conditions.push(`${PRESENTED_ENDED_AT} IS NOT NULL`);
     if (opts.memberLabel !== undefined) { conditions.push('m.label = ?'); params.push(opts.memberLabel); }
     if (opts.sessionId !== undefined) { conditions.push('s.session_id = ?'); params.push(opts.sessionId); }

@@ -29,14 +29,15 @@ export function turnStartedAt(promptId: string, nowMs: number): number {
 }
 
 /**
- * Open a session's turn at `at`, on the machine that holds the session and while no end is recorded. A session the
+ * Open a session's turn at `at`, on the machine that holds the session, when no end is recorded or the recorded end is
+ * older than the turn: a session resumed after its end is working again, and its recorded end stands. A session the
  * Deployment does not hold yet is left alone: its first turn opens nothing.
  */
 export function startTurnStatement(db: RelationalStore, s: { projectId: string; sessionId: string; machineId: string; at: number }): PreparedStatement {
   return db.prepare(
     `UPDATE sessions SET working_since = ?
-      WHERE project_id = ? AND session_id = ? AND machine_id = ? AND ended_at IS NULL`,
-  ).bind(s.at, s.projectId, s.sessionId, s.machineId);
+      WHERE project_id = ? AND session_id = ? AND machine_id = ? AND (ended_at IS NULL OR ended_at < ?)`,
+  ).bind(s.at, s.projectId, s.sessionId, s.machineId, s.at);
 }
 
 /**

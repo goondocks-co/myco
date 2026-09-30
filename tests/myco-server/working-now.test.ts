@@ -84,12 +84,29 @@ describe('a session working now', () => {
     await r.event({ kind: 'response', sessionId: 'sess_1', createdAt: second + 1_000, payload: { responseId: uuid(32), promptId: uuid(2), text: 'done again' } });
     expect(r.workingSince('sess_1')).toBeNull();
 
-    // The session's end closes a turn too, and an ended session opens none.
+    // The session's end closes a turn too, and a prompt older than the end opens none.
     await r.prompt('sess_1', promptIdAt(r.now - 20_000));
     await r.event({ kind: 'session.end', sessionId: 'sess_1', createdAt: r.now - 10_000, payload: { endedAt: r.now - 10_000 } });
     expect(r.workingSince('sess_1')).toBeNull();
-    await r.prompt('sess_1', promptIdAt(r.now - 5_000));
+    await r.prompt('sess_1', promptIdAt(r.now - 15_000));
     expect(r.workingSince('sess_1')).toBeNull();
+  });
+
+  it('reads a session resumed after its recorded end as working and live while its turn is open, and leaves the end as recorded', async () => {
+    const r = await rig();
+    // `claude -p` ends its session as it exits; `--continue` or `--resume` runs the next turn in the same session.
+    await r.event({ kind: 'session.end', sessionId: 'sess_1', createdAt: r.now - 60_000, payload: { endedAt: r.now - 60_000 } });
+    const resumed = r.now - 30_000;
+    await r.prompt('sess_1', promptIdAt(resumed));
+    expect(r.workingSince('sess_1')).toBe(resumed);
+    expect((await r.get('/api/projects/proj_1/sessions/sess_1')).session).toMatchObject({ working: true, workingSince: resumed, endedAt: r.now - 60_000 });
+    r.e.sqlite.run(`UPDATE sessions SET last_received_at = ? WHERE session_id = 'sess_1'`, [r.now - 60 * 60_000]);
+    const live = await r.get(`/api/sessions?window=activity&since=${Date.now() - 15 * 60_000}&state=open`);
+    expect(live.rows.map((row: { sessionId: string; working: boolean }) => [row.sessionId, row.working])).toEqual([['sess_1', true]]);
+    // Its turn's end closes it, and the session reads ended again as recorded.
+    await r.event({ kind: 'response', sessionId: 'sess_1', createdAt: resumed + 5_000, payload: { responseId: uuid(40), promptId: uuid(2), text: 'done' } });
+    expect(r.workingSince('sess_1')).toBeNull();
+    expect((await r.get(`/api/sessions?window=activity&since=${Date.now() - 15 * 60_000}&state=open`)).rows).toEqual([]);
   });
 
   it('reads a turn open past the cap as working no longer, and leaves it off the live list', async () => {
