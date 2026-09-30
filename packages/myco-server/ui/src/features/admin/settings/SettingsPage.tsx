@@ -8,6 +8,7 @@ import { AccessPointers, PROJECTS_ANCHOR } from './AccessPointers';
 import { groupsOf, LEAF_GROUPS, type LeafGroup } from './catalogue';
 import { Credentials, CREDENTIALS_ANCHOR } from './Credentials';
 import { LeafControl } from './LeafControl';
+import { isRetired } from './retired';
 import { TitlingSwitch } from './TitlingSwitch';
 import type { LeafRow } from './wire';
 
@@ -59,17 +60,18 @@ export function SettingsPage({ section }: { section: SettingsSectionId }) {
 }
 
 /**
- * A section's groups, each showing the settings that still do something. A
- * group whose settings are all retired is left out; a retired setting with a
+ * A section's groups, each showing the settings that still do something, as
+ * the server marks them. A group whose settings are all retired is left out; a
+ * retired setting with a
  * value stored is listed, read-only, under "Older settings" at the section's
  * foot, so what an older Deployment stored stays visible.
  */
 function SectionGroups({ groups, rows }: { groups: readonly LeafGroup[]; rows: ReadonlyMap<string, LeafRow> }) {
-  const older = groups.flatMap((group) => group.leaves.filter((field) => field.retired === true && rows.get(field.leaf)?.configured === true));
+  const older = groups.flatMap((group) => group.leaves.filter((field) => isRetired(field, rows.get(field.leaf)) && rows.get(field.leaf)?.configured === true));
   return (
     <>
       {groups.map((group) => {
-        const live = group.leaves.filter((field) => field.retired !== true);
+        const live = group.leaves.filter((field) => !isRetired(field, rows.get(field.leaf)));
         return (
           <Fragment key={group.id}>
             {live.length > 0 && (

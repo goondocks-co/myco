@@ -1,5 +1,5 @@
 /**
- * The admin pages and My machines, at both viewports in both modes.
+ * The admin pages and My machines, at every viewport (desktop, tablet, phone) in both modes.
  *
  * Signed in as the owner: People & machines, Settings (its first section and
  * Models and keys), a project's settings and Health. Signed in as a member who
@@ -17,7 +17,7 @@
 import { expect, test, type Page } from '@playwright/test';
 import { INVITE_CONTROLS } from '../../packages/myco-shared/src/member-protocol.ts';
 import {
-  expectAxeClean, expectNoHorizontalOverflow, expectNoRawIds, expectQuiet, openPage, shoot, SHOT_MATRIX, type ViewportName,
+  expectAxeClean, expectFits, expectNoRawIds, expectQuiet, openPage, shoot, SHOT_MATRIX, type ViewportName,
 } from './checks.ts';
 import { SCREENS_ENV, screensEnv } from './env.ts';
 
@@ -76,6 +76,13 @@ async function expectModels(page: Page): Promise<void> {
   await expect(page.locator('#credentials')).toBeVisible();
 }
 
+/** A section of Settings past the first: its tab is the current one, and its first group is on the page. */
+async function expectSection(page: Page, tab: string, group: string): Promise<void> {
+  const tabs = page.getByRole('navigation', { name: 'Settings sections' });
+  await expect(tabs.getByRole('link', { name: tab })).toHaveAttribute('aria-current', 'page');
+  await expect(page.getByRole('heading', { name: group }).first()).toBeVisible();
+}
+
 async function expectProjectSettings(page: Page, name: string): Promise<void> {
   await expect(page.getByRole('heading', { level: 1, name: 'Project settings' })).toBeInViewport();
   await expect(page.getByText(name).first()).toBeInViewport();
@@ -108,6 +115,9 @@ const ADMIN_PAGES: ReadonlyArray<{ name: string; path: () => string; rendered: (
   { name: 'people', path: () => '/people', rendered: (page) => expectPeople(page) },
   { name: 'settings', path: () => '/settings', rendered: (page, viewport) => expectSettings(page, viewport) },
   { name: 'settings-models', path: () => '/settings/models', rendered: (page) => expectModels(page) },
+  { name: 'settings-capture', path: () => '/settings/capture', rendered: (page) => expectSection(page, 'Capture and retention', 'Importing past sessions') },
+  { name: 'settings-backups', path: () => '/settings/backups', rendered: (page) => expectSection(page, 'Backups', 'Store checks') },
+  { name: 'settings-access', path: () => '/settings/access', rendered: (page) => expectSection(page, 'Sign-in and access', 'Who can sign in') },
   { name: 'project-settings', path: () => `/p/${fixtureProject().projectId}/settings`, rendered: (page) => expectProjectSettings(page, fixtureProject().name) },
   { name: 'health', path: () => '/status/health', rendered: (page) => expectHealth(page) },
 ];
@@ -120,7 +130,7 @@ test.describe('admin pages, as the owner', () => {
         await expect(page.locator('main')).toHaveCount(1);
         await rendered(page, viewport);
         await page.waitForLoadState('networkidle');
-        await expectNoHorizontalOverflow(page);
+        await expectFits(page, viewport);
         await expectNoRawIds(page);
         await expectAxeClean(page);
         if (name === 'health' && onFixture()) {
@@ -145,7 +155,7 @@ test.describe('My machines and the admin pages, as a member', () => {
         await expect(page.locator('main')).toHaveCount(1);
         await expectMyMachines(page);
         await page.waitForLoadState('networkidle');
-        await expectNoHorizontalOverflow(page);
+        await expectFits(page, viewport);
         await expectNoRawIds(page);
         await expectAxeClean(page);
         expectQuiet(watch);

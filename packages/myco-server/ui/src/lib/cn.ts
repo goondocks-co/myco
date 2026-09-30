@@ -11,11 +11,11 @@ import { extendTailwindMerge } from 'tailwind-merge';
 const twMerge = extendTailwindMerge<'type-scale'>({
   extend: {
     theme: {
-      spacing: ['s1', 's2', 's3', 's4', 's5', 's6', 's8', 's10', 's12', 'gutter', 'control', 'control-sm', 'row', 'row-tight', 'measure'],
+      spacing: ['s1', 's2', 's3', 's4', 's5', 's6', 's8', 's10', 's12', 'gutter', 'control', 'control-sm', 'row', 'row-tight', 'tap', 'measure'],
       radius: ['chip', 'control', 'card', 'pill'],
     },
     classGroups: {
-      'type-scale': ['t-display', 't-h2', 't-h3', 't-body', 't-small', 't-meta', 't-kicker', 't-control', 't-mono'],
+      'type-scale': ['t-display', 't-h2', 't-h3', 't-headline', 't-body', 't-small', 't-meta', 't-kicker', 't-control', 't-mono'],
     },
     // A type-scale class sets the family, size and line height at once, so it replaces any of them given earlier.
     conflictingClassGroups: {

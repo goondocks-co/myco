@@ -163,8 +163,8 @@ export function skipWords(reason: string | null): string {
   if (reason === null || reason.trim() === '') return 'Myco didn’t need to run it';
   const known = SKIP_WORDS[reason];
   if (known !== undefined) return known;
-  // A reason recorded as a sentence is already in words; a code the page does not know reads plainly.
-  return /\s/.test(reason.trim()) ? reason.trim() : 'Myco didn’t need to run it';
+  // A reason the page has no words for reads plainly; the server's own sentence is never shown.
+  return 'Myco didn’t need to run it';
 }
 
 const SKIP_WORDS: Readonly<Record<string, string>> = {
@@ -306,7 +306,7 @@ export function deployWords(run: { replaced: boolean; replaces: string | null })
  * name ("you" for the viewer), or null.
  */
 export interface RanOn {
-  /** A line in a list: "Ada's studio Mac", "from Lin". */
+  /** A line in a list: "on Ada's studio Mac", "on your machine", "from Lin". */
   list: string;
   /** The panel's fact and a failure note: "Ada's studio Mac", "Lin's machine", "Your machine". */
   machine: string;
@@ -315,10 +315,12 @@ export interface RanOn {
 export function ranOn(worker: RunWorker | null, name: (id: string) => string | null): RanOn | null {
   if (worker === null) return null;
   const named = worker.machineName?.trim() ?? '';
-  if (named !== '') return { list: named, machine: named };
+  if (named !== '') return { list: `on ${named}`, machine: named };
   const member = worker.member ?? null;
   if (member === null) return null;
   const who = name(member.id) ?? memberLabel(member);
   if (who === null) return null;
-  return { list: `from ${who}`, machine: who === 'you' ? 'Your machine' : `${who}’s machine` };
+  // The viewer's own machine reads as theirs whether or not it has a name; only another member's reads "from" them.
+  if (who === 'you') return { list: 'on your machine', machine: 'Your machine' };
+  return { list: `from ${who}`, machine: `${who}’s machine` };
 }

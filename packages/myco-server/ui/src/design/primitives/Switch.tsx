@@ -13,7 +13,7 @@ export const Switch = forwardRef<ElementRef<typeof SwitchPrimitive.Root>, Switch
   <SwitchPrimitive.Root
     ref={ref}
     className={cn(
-      'peer inline-flex h-s5 w-[36px] shrink-0 cursor-pointer items-center rounded-pill border border-line-strong bg-surface-3 p-px transition-colors duration-120',
+      'peer tap-area inline-flex h-s5 w-[36px] shrink-0 cursor-pointer items-center rounded-pill border border-line-strong bg-surface-3 p-px transition-colors duration-120',
       'data-[state=checked]:border-primary data-[state=checked]:bg-primary disabled:cursor-not-allowed disabled:opacity-50',
       focusRing,
       className,

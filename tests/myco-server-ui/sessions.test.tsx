@@ -195,7 +195,7 @@ describe('the sessions table', () => {
     expect(document.querySelectorAll('[data-filter-bar]')).toHaveLength(1);
     // The closed controls show their short words; the lists say them in full.
     expect(within(bar).getByRole('button', { name: 'Agent: Any agent' }).textContent).toBe('Agent');
-    expect(within(bar).getAllByRole('combobox').map((c) => [c.getAttribute('aria-label'), c.textContent])).toEqual([['Member', 'Member'], ['State', 'State'], ['Active', 'Active']]);
+    expect(within(bar).getAllByRole('combobox').map((c) => [c.getAttribute('aria-label'), c.textContent])).toEqual([['Member', 'Member'], ['State', 'State'], ['Active', 'Active: any time']]);
 
     await pickAgent('Codex');
     await waitFor(() => expect(location()).toBe('/p/x/sessions?agent=codex'));

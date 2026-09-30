@@ -4,7 +4,7 @@
  *   MYCO_SHOTS_URL=https://… MYCO_SHOTS_COOKIE='__Host-myco_session=…' \
  *     npm run screens:shoot -- <label> /path [/path …]
  *
- * Each path is shot at 1280×820 and 390×844, dark and light, into
+ * Each path is shot at 1280×820, 768×1024 and 390×844, dark and light, into
  * `target/ui-screens/shots/<label>/<page>-<viewport>-<mode>.png`, where the
  * page name is the path with its slashes turned into dashes. The cookie is read
  * from the environment only and is never written anywhere.

@@ -29,9 +29,8 @@ const REFUSALS: Record<string, string> = {
 /** What to tell the person when the server refused, in their words. */
 export function refusalText(err: unknown): string {
   if (err instanceof ApiError) {
-    const body = err.body as { error?: unknown; reason?: unknown } | null;
-    const code = body?.error;
-    if (typeof code === 'string' && REFUSALS[code]) return typeof body?.reason === 'string' ? `${REFUSALS[code]} ${body.reason}.` : REFUSALS[code];
+    const code = err.code;
+    if (code !== undefined && REFUSALS[code]) return REFUSALS[code];
     if (err.status === 404) return 'That is no longer here.';
     return `The server refused (${err.status}).`;
   }

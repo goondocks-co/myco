@@ -116,7 +116,7 @@ export function WorkPage({ projectId, projectName, runId }: WorkPageProps) {
       {started !== null && projectId !== null && <StartedLine started={started} projectId={projectId} />}
       <FilterBar
         searchLabel="Search what Myco did"
-        placeholder="Narrow what’s on this page: spores, sessions, what went wrong"
+        placeholder="Search what’s on this page"
         query={draft.text}
         onQueryChange={draft.setText}
         filters={[WINDOW_FILTER, OUTCOME_FILTER]}

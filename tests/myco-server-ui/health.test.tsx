@@ -117,6 +117,18 @@ describe('Health', () => {
     expect(jumps.map((a) => [a.getAttribute('href'), a.textContent])).toEqual(PARTS.map(([id, name]) => [`/status/health#${id}`, name]));
   });
 
+  it('asks for its own reads at once, without waiting on the projects list', async () => {
+    // The projects list never answers. Health's reads start beside it, so the page never waits a round trip on it.
+    const { asked } = server(routes({ '/api/projects': () => new Promise<Response>(() => undefined) as unknown as Response }));
+    mount();
+    expect(await screen.findByRole('heading', { level: 1, name: 'Health' })).toBeTruthy();
+    await waitFor(() => {
+      const missing = ['/api/status', '/api/attention', '/api/backups', '/api/maintenance', '/api/kpis', '/api/recovery/exports']
+        .filter((path) => !asked.some((line) => line === `GET ${path}` || line.startsWith(`GET ${path}?`)));
+      expect(missing).toEqual([]);
+    });
+  });
+
   it('leads each address it replaced to its part, the query kept', async () => {
     server(routes());
     mount('/status');
@@ -180,7 +192,7 @@ describe('Health', () => {
     expect(rows[0]).toMatch(/^Ada’s studio Mac · Waiting for work · last checked in \d+s ago/);
     expect(rows[0]).toContain('Reports Claude Code signed in');
     expect(rows[0]).toContain('Last check for work: nothing it could take.');
-    expect(rows[1]).toMatch(/^Lin’s build box · Running learning in Myco · lease ends in /);
+    expect(rows[1]).toMatch(/^Lin’s build box · Running learning in Myco · due to check in within /);
     expect(rows[2]).toMatch(/^A machine · Not checking in now/);
     expect(within(workers).getByText(/^2 machines are running Myco’s work, 1 busy now\. 2 tasks are waiting\.$/)).toBeTruthy();
     for (const id of [STUDIO_CREDENTIAL, BUSY_CREDENTIAL, STRAY_CREDENTIAL, 'ada_5a2d54af', MYCO]) expect(workers.textContent).not.toContain(id);
@@ -190,7 +202,7 @@ describe('Health', () => {
     server(routes({ '/api/status': () => Response.json({ ...STATUS, workers: { available: false, workersBusy: 0, runsQueued: 0, recentWithinMs: 90_000, fleet: [] } }) }));
     mount();
     const workers = await screen.findByRole('region', { name: 'Workers' });
-    expect(await within(workers).findByText(/Worker status is unknown/)).toBeTruthy();
+    expect(await within(workers).findByText(/Whether machines are running Myco’s work is unknown/)).toBeTruthy();
     expect(workers.textContent).not.toContain('No machine is running');
   });
 
@@ -212,7 +224,7 @@ describe('Health', () => {
     fireEvent.click(within(await openMenu(/^More for the backup of /, list)).getByRole('menuitem', { name: 'Restore…' }));
     const dialog = await screen.findByRole('dialog', { name: /^Restore the backup from / });
     expect(dialog.textContent).toContain('It holds sessions 4 · spores 12');
-    expect(dialog.textContent).toContain('comes from another Deployment');
+    expect(dialog.textContent).toContain('comes from another server');
     fireEvent.click(within(dialog).getByRole('button', { name: 'Restore' }));
     expect((await within(dialog).findByRole('alert')).textContent).toContain('Turn on the switch');
     expect(posts.map((p) => p.path)).toEqual(['/api/backups/bk_7f3a9c0e21/restore-preview']);

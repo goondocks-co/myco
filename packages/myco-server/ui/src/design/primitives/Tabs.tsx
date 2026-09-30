@@ -25,7 +25,7 @@ export const TabsTrigger = forwardRef<ElementRef<typeof TabsPrimitive.Trigger>, 
     <TabsPrimitive.Trigger
       ref={ref}
       className={cn(
-        '-mb-px inline-flex shrink-0 items-center gap-s2 border-b-2 border-transparent pb-s3 pt-s2 t-control font-medium text-muted transition-colors duration-120',
+        '-mb-px inline-flex min-h-tap min-w-tap shrink-0 items-center justify-center gap-s2 border-b-2 border-transparent pb-s3 pt-s2 t-control font-medium text-muted transition-colors duration-120',
         'hover:text-ink-2 data-[state=active]:border-primary data-[state=active]:text-ink',
         focusRing,
         className,
@@ -91,7 +91,7 @@ export function TabLinks({ label, items, className }: { label: string; items: re
             to={item.to}
             aria-current={item.active ? 'page' : undefined}
             className={cn(
-              '-mb-px inline-flex shrink-0 items-center gap-s2 border-b-2 pb-s3 pt-s2 t-control font-medium transition-colors duration-120',
+              '-mb-px inline-flex min-h-tap min-w-tap shrink-0 items-center justify-center gap-s2 border-b-2 pb-s3 pt-s2 t-control font-medium transition-colors duration-120',
               item.active ? 'border-primary text-ink' : 'border-transparent text-muted hover:text-ink-2',
               focusRing,
             )}

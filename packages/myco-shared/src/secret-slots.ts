@@ -22,7 +22,7 @@ export interface SecretSlot {
 
 /** Every slot, in the order the settings page lists them. */
 export const SECRET_SLOTS: readonly SecretSlot[] = [
-  { name: 'anthropic', label: 'Anthropic', alsoUsedFor: 'the model runtime this Deployment starts itself, when its provider is Anthropic' },
+  { name: 'anthropic', label: 'Anthropic', alsoUsedFor: 'the work this server runs itself, when its model provider is Anthropic' },
   { name: 'codex', label: 'Codex (OpenAI)', alsoUsedFor: null },
   { name: 'openai', label: 'OpenAI', alsoUsedFor: 'embeddings, when the embedding provider is OpenAI' },
   { name: 'openrouter', label: 'OpenRouter', alsoUsedFor: 'embeddings, when the embedding provider is OpenRouter' },
@@ -46,10 +46,10 @@ export function harnessesReading(slot: SecretSlotName): string[] {
 export function slotUse(slot: SecretSlot, label: (harness: string) => string): string {
   const harnesses = harnessesReading(slot.name).map(label);
   const runs = harnesses.length === 0 ? null
-    : `Runs of ${list(harnesses)} use this key in place of the worker's own login; while it is empty they run under each worker's own login`;
+    : `${list(harnesses)} ${harnesses.length === 1 ? 'uses' : 'use'} this key for Myco’s work in place of the machine’s own sign-in; while it is empty ${harnesses.length === 1 ? 'it uses' : 'they use'} each machine’s own sign-in`;
   const other = slot.alsoUsedFor === null ? null : `${runs === null ? 'Used' : 'Also used'} for ${slot.alsoUsedFor}`;
   const parts = [runs, other].filter((part): part is string => part !== null);
-  return parts.length === 0 ? 'Nothing on this Deployment reads it.' : `${parts.join('. ')}.`;
+  return parts.length === 0 ? 'Nothing on this server reads it.' : `${parts.join('. ')}.`;
 }
 
 const list = (names: readonly string[]): string =>

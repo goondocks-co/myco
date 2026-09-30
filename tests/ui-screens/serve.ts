@@ -13,7 +13,8 @@
  *   {"url": ..., "ownerCookie": ..., "memberCookie": ..., "projects": [...], "now": ..., ...}
  *
  * Each cookie is a complete `name=value` pair signed with the fixture's session
- * secret: the owner's is an admin's, the member's a non-admin's. An owner POST
+ * secret: the owner's is an admin's, the member's a non-admin's, and the
+ * stranger's a GitHub account no member is linked to. An owner POST
  * carries an `origin` header equal to `url`. The process serves until SIGINT or
  * SIGTERM, then stops the server and removes every temporary directory.
  */
@@ -26,7 +27,7 @@ import { renderMigrationFiles } from '@myco-server-worker/db/migrate.js';
 import { signSession, SESSION_COOKIE } from '@myco-server-worker/auth/owner/cookie.js';
 import { serve } from '@myco-server-worker/entry/bun.js';
 import { fixtureNowAt } from './env.ts';
-import { OWNER, READER, seedIdentities, seedThroughServer, type FixtureMember } from './fixture.ts';
+import { OWNER, READER, seedIdentities, seedThroughServer, STRANGER, type FixtureMember } from './fixture.ts';
 
 /** The fixture's session secret. It signs only cookies for this throwaway volume. */
 export const SCREENS_SESSION_SECRET = 'screens-session-secret-0123456789abcdef';
@@ -55,7 +56,7 @@ function composeUiDir(root: string): { uiDir: string; specimen: boolean } {
   return { uiDir, specimen };
 }
 
-async function cookieFor(member: FixtureMember, now: number): Promise<string> {
+async function cookieFor(member: Pick<FixtureMember, 'githubSub' | 'login'>, now: number): Promise<string> {
   const value = await signSession(SCREENS_SESSION_SECRET, { sub: member.githubSub, login: member.login, iat: now, exp: now + 12 * 3_600_000 });
   return `${SESSION_COOKIE}=${value}`;
 }
@@ -92,6 +93,7 @@ async function main(): Promise<void> {
     const url = `http://127.0.0.1:${started.port}`;
     const ownerCookie = await cookieFor(OWNER, now);
     const memberCookie = await cookieFor(READER, now);
+    const strangerCookie = await cookieFor(STRANGER, now);
 
     let stopping = false;
     const stop = async () => {
@@ -106,7 +108,7 @@ async function main(): Promise<void> {
 
     const fixtureNow = fixtureNowAt(now);
     const seeded = await seedThroughServer({ url, ownerCookie, databasePath, tokens, now: fixtureNow });
-    process.stdout.write(`${JSON.stringify({ url, ownerCookie, memberCookie, specimen, now: fixtureNow, ...seeded })}\n`);
+    process.stdout.write(`${JSON.stringify({ url, ownerCookie, memberCookie, strangerCookie, specimen, now: fixtureNow, ...seeded })}\n`);
   } catch (error) {
     cleanup();
     throw error;

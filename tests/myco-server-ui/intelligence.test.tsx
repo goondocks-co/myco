@@ -366,7 +366,7 @@ describe('running a task by hand', () => {
     expect(sent).toEqual([]);
   });
 
-  it('words a fresh start refused to a member, and any other refusal the server explains', async () => {
+  it('words a fresh start refused to a member, and any other refusal by its status, never the server\'s sentence', async () => {
     let answer: Response = Response.json({ error: 'fresh_needs_admin' }, { status: 403 });
     server(routes({ who: MEMBER, dispatch: () => answer }));
     mount(`/p/${P}/work`);
@@ -376,10 +376,10 @@ describe('running a task by hand', () => {
     // A 403 that is not about starting fresh is not worded as one.
     answer = Response.json({ error: 'forbidden', reason: 'this account can’t start tasks here' }, { status: 403 });
     fireEvent.click(within(dialog).getByRole('button', { name: 'Learn from the code' }));
-    await waitFor(() => expect(within(dialog).getByRole('alert').textContent).toBe('this account can’t start tasks here'));
+    await waitFor(() => expect(within(dialog).getByRole('alert').textContent).toBe('The server couldn’t start it (403). Try again in a moment.'));
     answer = Response.json({ error: 'bad_request', reason: 'no agent is configured for this task' }, { status: 400 });
     fireEvent.click(within(dialog).getByRole('button', { name: 'Learn from the code' }));
-    await waitFor(() => expect(within(dialog).getByRole('alert').textContent).toBe('no agent is configured for this task'));
+    await waitFor(() => expect(within(dialog).getByRole('alert').textContent).toBe('The server couldn’t start it (400). Try again in a moment.'));
     // No run this week spent anything on it, so the confirmation says there is nothing to go by.
     expect(dialog.querySelector('[data-spend]')!.textContent).toBe('This spends model tokens. No runs over the code finished this week, so there’s no recent spend to go by.');
   });

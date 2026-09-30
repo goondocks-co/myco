@@ -1,6 +1,6 @@
 /**
  * Myco's work, signed in as the owner and as a member who is not an admin, at
- * both viewports in both modes: the page under the fixture's first project,
+ * every viewport (desktop, tablet, phone) in both modes: the page under the fixture's first project,
  * a run's panel, the "Run a task" confirmation, the page across every
  * project, and the old Agent runs address.
  *
@@ -16,7 +16,7 @@
  */
 import { expect, test, type Page } from '@playwright/test';
 import {
-  expectAxeClean, expectNoHorizontalOverflow, expectNoRawIds, expectQuiet, openPage, shoot, SHOT_MATRIX,
+  expectAxeClean, expectFits, expectNoRawIds, expectQuiet, openPage, shoot, SHOT_MATRIX,
 } from './checks.ts';
 import { SCREENS_ENV, screensEnv } from './env.ts';
 import { MACHINE_IDS } from './machine-ids.ts';
@@ -49,12 +49,14 @@ async function expectFixtureWeek(page: Page, role: 'admin' | 'member'): Promise<
   await expect(learn.getByRole('list', { name: 'Spores it wrote' }).getByRole('listitem')).toHaveCount(3);
   const runs = learn.getByRole('list', { name: 'Latest learning runs' });
   await expect(runs.locator('[data-run-line="held"]')).toContainText('Held off: it was switched off for this project');
-  await expect(runs).toContainText(role === 'member' ? 'by you' : 'by a member');
+  await expect(runs).toContainText(role === 'member' ? 'by you' : 'by Lin');
   // A machine is named only to the member it belongs to; to anyone else it reads as that member's, and never by its id.
   const main = page.locator('main');
   if (role === 'admin') {
     await expect(runs).toContainText('Ada’s studio Mac');
     await expect(main).not.toContainText('Lin’s build box');
+    // Lin's machine reads as hers: the map update that failed on it is "from Lin".
+    await expect(main).toContainText('from Lin');
   } else {
     await expect(runs).toContainText('from Ada');
     await expect(main).not.toContainText('Ada’s studio Mac');
@@ -68,9 +70,9 @@ async function expectFixtureWeek(page: Page, role: 'admin' | 'member'): Promise<
   const failure = map.locator('[data-failure="open"]');
   await expect(failure).toContainText('1 code map update failed this week');
   await expect(failure).toContainText('repo.sha256 is absent from this checkout');
-  // Lin's own machine is named to Lin; Lin joined without a name, so to Ada the failure says nothing of where it ran.
+  // Lin's own machine is named to Lin; to Ada it reads as Lin's, never by its name.
   if (role === 'member') await expect(failure).toContainText('On Lin’s build box: repo.sha256');
-  else await expect(failure).not.toContainText('On ');
+  else await expect(failure).toContainText('On Lin’s machine: repo.sha256');
   await expect(failure).toContainText('Open the run to see where it stopped.');
   await expect(failure.getByRole('link', { name: 'Open the latest attempt →' })).toBeVisible();
   await expect(map.getByRole('list', { name: 'Latest code map updates' })).toContainText(role === 'admin' ? 'by you' : 'by Ada');
@@ -104,7 +106,7 @@ test.describe('Myco’s work', () => {
           await expect(page.locator('[data-cost]')).toBeInViewport();
         }
         if (onFixture()) await expectFixtureWeek(page, role);
-        await expectNoHorizontalOverflow(page);
+        await expectFits(page, viewport);
         await expectNoRawIds(page);
         await expectAxeClean(page);
         await shoot(page, `work-${role}`, viewport, mode);
@@ -130,7 +132,7 @@ test.describe('Myco’s work', () => {
           await expect(panel.locator('[data-run-headline]')).toHaveText('Learned 4 spores from 1 session');
           // The run's own account of what it did leads, above what it read.
           await expect(panel.locator('[data-run-report]')).toHaveText('Read 1 session and saved 4 spores from it.');
-          await expect(panel.locator('[data-started-by]')).toHaveText(role === 'member' ? 'started by you' : 'started by a member');
+          await expect(panel.locator('[data-started-by]')).toHaveText(role === 'member' ? 'started by you' : 'started by Lin');
           await expect(panel.getByRole('region', { name: 'What it read' })).toContainText('Flaky test port collision fixed');
           await expect(panel.getByRole('list', { name: 'Spores it wrote' }).getByRole('listitem')).toHaveCount(4);
         }
@@ -147,7 +149,7 @@ test.describe('Myco’s work', () => {
           await expect(technical).toContainText('Not recorded for this run');
           await expect(technical).toContainText('The agent’s estimate, not a bill');
         }
-        await expectNoHorizontalOverflow(page);
+        await expectFits(page, viewport);
         await expectNoRawIds(page);
         await expectAxeClean(page, ['[data-slide-over]']);
         await shoot(page, `work-run-${role}`, viewport, mode);
@@ -178,7 +180,7 @@ test.describe('Myco’s work', () => {
         if (onFixture()) await expect(dialog.locator('[data-spend]')).toContainText('This week’s updates each used 24K tokens, about $0.48 by the agent’s estimate.');
         // Only an admin may start a task fresh; a member never sees the choice.
         await expect(dialog.getByRole('switch', { name: 'Start fresh' })).toHaveCount(role === 'admin' ? 1 : 0);
-        await expectNoHorizontalOverflow(page);
+        await expectFits(page, viewport);
         await expectNoRawIds(page);
         await expectAxeClean(page, ['[role="dialog"]']);
         await shoot(page, `work-run-a-task-${role}`, viewport, mode);
@@ -205,7 +207,7 @@ test.describe('Myco’s work', () => {
           await expect(page.locator('[data-lede]')).toContainText('This week, Myco learned 6 spores');
           await expect(card(page, 'learn').getByRole('list', { name: 'Latest learning runs' })).toContainText(fixtureProject().name);
         }
-        await expectNoHorizontalOverflow(page);
+        await expectFits(page, viewport);
         await expectNoRawIds(page);
         await expectAxeClean(page);
         await shoot(page, 'work-all', viewport, mode);

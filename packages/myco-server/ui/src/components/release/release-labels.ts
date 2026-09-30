@@ -8,7 +8,7 @@ export const RELEASE_STATE_LABEL: Record<string, string> = {
 };
 
 export const CHECK_FAILURE_LABEL: Record<string, string> = {
-  credential_rejected: 'GitHub refused the credential',
+  credential_rejected: 'GitHub refused the token',
   forbidden_without_credential: 'GitHub refused lookups made without a lookup token',
   rate_limited: 'GitHub rate limit reached',
   rate_limited_without_credential: 'GitHub rate limit reached without a lookup token',
@@ -17,7 +17,7 @@ export const CHECK_FAILURE_LABEL: Record<string, string> = {
   network: 'GitHub could not be reached',
   not_found: 'not found on GitHub',
   repository_not_found: 'repository not found on GitHub',
-  repository_not_found_without_credential: 'repository not found; a private repository needs a credential',
+  repository_not_found_without_credential: 'repository not found; a private repository needs a token',
   truncated: 'tag listing too long to read',
   unexpected_response: 'unexpected GitHub response',
 };

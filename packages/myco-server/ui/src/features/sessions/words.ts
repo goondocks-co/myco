@@ -29,7 +29,7 @@ export const WINDOW_FILTER: FilterDefinition = {
   key: 'window',
   label: 'Active',
   options: [
-    { value: 'all', label: 'Active any time', short: 'Active' },
+    { value: 'all', label: 'Active any time', short: 'Active: any time' },
     { value: 'today', label: 'Active today' },
     { value: 'week', label: 'Active in the past 7 days', short: 'Past 7 days' },
     { value: 'month', label: 'Active in the past 30 days', short: 'Past 30 days' },

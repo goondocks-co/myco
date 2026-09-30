@@ -45,12 +45,14 @@ export interface FixtureMember {
 
 /**
  * Member ids in the shape join mints: `mem_` and the base64url of twelve random
- * bytes. The owner has a display name; the reader joined without naming
- * themselves, so their label is their id, as join records it, and the dashboard
- * must name them by their GitHub login instead.
+ * bytes. Both members have display names, as a sign-in now gives a member with
+ * none their GitHub login, so the pages name Lin to Ada ("from Lin", "by Lin").
+ * A member whose label is only their id is covered by the jsdom suites.
  */
 export const OWNER: FixtureMember = { id: 'mem_q3Vb8xRk2LmT7wYz', label: 'Ada', githubSub: '1000001', login: 'ada', role: 'admin' };
-export const READER: FixtureMember = { id: 'mem_Hn5-pC0dJfA9sE_u', label: 'mem_Hn5-pC0dJfA9sE_u', githubSub: '1000002', login: 'lin', role: 'member' };
+export const READER: FixtureMember = { id: 'mem_Hn5-pC0dJfA9sE_u', label: 'Lin', githubSub: '1000002', login: 'lin', role: 'member' };
+/** A GitHub account that signs in with no member linked to it: it is shown how to become one. */
+export const STRANGER: Pick<FixtureMember, 'githubSub' | 'login'> = { githubSub: '1000009', login: 'sam' };
 
 /**
  * Two machines, each with a name the way `myco login` records one and an id in

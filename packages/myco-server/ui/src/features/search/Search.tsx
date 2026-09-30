@@ -133,7 +133,7 @@ function SearchBody({ scope, projectLabel, onScope, inputRef, onPicked, projectN
         ref={inputRef}
         large
         label={all ? 'Search every project' : 'Search this project'}
-        placeholder="Search decisions, plans and conversations"
+        placeholder="Search spores, plans and sessions"
         hint="Esc"
         maxLength={512}
         value={text}
@@ -142,16 +142,16 @@ function SearchBody({ scope, projectLabel, onScope, inputRef, onPicked, projectN
       />
       <div className="flex flex-wrap items-center gap-s2">
         {projectLabel !== null && (
-          <div role="group" aria-label="Search in" className="flex min-w-0 max-w-full rounded-control border border-line p-s1" data-search-scope="">
-            <Button size="sm" variant={all ? 'ghost' : 'secondary'} aria-pressed={!all} onClick={() => onScope(false)} className="min-w-0 truncate">
+          <div role="group" aria-label="Search in" className="flex w-full min-w-0 rounded-control border border-line p-s1 sm:w-auto" data-search-scope="">
+            <Button size="sm" variant={all ? 'ghost' : 'secondary'} aria-pressed={!all} onClick={() => onScope(false)} className="min-w-0 flex-1 truncate sm:flex-none">
               {projectLabel}
             </Button>
-            <Button size="sm" variant={all ? 'secondary' : 'ghost'} aria-pressed={all} onClick={() => onScope(true)} className="shrink-0">
+            <Button size="sm" variant={all ? 'secondary' : 'ghost'} aria-pressed={all} onClick={() => onScope(true)} className="shrink-0 max-sm:flex-1">
               Every project <span className="font-normal text-muted">· words only</span>
             </Button>
           </div>
         )}
-        <div className="grid min-w-0 flex-1 grid-cols-2 gap-s2 sm:flex sm:flex-wrap">
+        <div className="grid min-w-0 flex-1 basis-full grid-cols-2 gap-s2 sm:flex sm:basis-auto sm:flex-wrap">
           <Select label="Result type" value={type} onValueChange={(value) => { setType(value); setObservationType('all'); }} options={TYPE_OPTIONS} className="sm:w-select" />
           <Select
             label="Created within"

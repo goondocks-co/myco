@@ -37,9 +37,8 @@ export function useGrantActions(projectId: string) {
 /** What the server said when it refused a change to a key, in the person's words. */
 export function keyRefusal(err: unknown): string {
   if (err instanceof ApiError) {
-    const body = err.body as { error?: unknown; reason?: unknown } | null;
-    if (body?.error === 'already_revoked') return 'That key was already ended.';
-    if (typeof body?.reason === 'string') return body.reason;
+    if (err.code === 'already_revoked') return 'That key was already ended.';
+    if (err.status === 400 || err.status === 409) return 'The server could not make that change to the key.';
     if (err.status === 404) return 'That key is no longer here.';
     return `The server refused (${err.status}).`;
   }

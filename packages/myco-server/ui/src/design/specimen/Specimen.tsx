@@ -3,7 +3,7 @@ import { Play } from 'lucide-react';
 import { ApiError } from '../../lib/api';
 import {
   Avatar, Button, Card, CommandBlock, ConfirmDialog, CopyButton, DayGroup, Dialog, DialogContent, DialogFooter, DialogTrigger,
-  Disclosure, EmptyState, ErrorState, FactRow, FactsPanel, FilterBar, HealthDot, IconButton, Input, Kbd, Link, ListRow,
+  ActionLink, Disclosure, EmptyState, ErrorState, FactRow, FactsPanel, FilterBar, HealthDot, IconButton, Input, Kbd, Link, ListRow,
   LoadingState, MoreMenu, SearchableSelect, SearchInput, Select, ShowMore, Stat, StatusChip, Switch, Tabs, TabsContent,
   TabsList, TabsTrigger, Textarea, TypeChip,
 } from '../index';
@@ -342,7 +342,7 @@ export function Specimen() {
         </Section>
 
         <Section id="states" kicker="Patterns" title="Empty, failed and loading">
-          <EmptyState title="Nothing today" action={<Link to="/?day=yesterday">Yesterday's work →</Link>} />
+          <EmptyState title="Nothing today" action={<ActionLink to="/?day=yesterday">Yesterday's work →</ActionLink>} />
           <div className="grid gap-s4 sm:grid-cols-2">
             <ErrorState error={new ApiError(404, null)} back={{ to: '/', label: 'Back to Today' }} />
             <ErrorState error={new TypeError('Failed to fetch')} onRetry={() => undefined} />

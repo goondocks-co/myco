@@ -1,11 +1,9 @@
 import { useEffect, useRef, type ReactNode } from 'react';
-import { Link as RouterLink } from 'react-router-dom';
-import { Disclosure, ErrorState, ExternalLink, FactRow, FactsPanel, focusRing, LoadingState, ShowMore } from '../../design';
+import { ActionLink, Disclosure, ErrorState, ExternalLink, FactRow, FactsPanel, LoadingState, ShowMore } from '../../design';
 import {
   blobUrl, PROMPT_ORIGINS, RENDERABLE_IMAGE_TYPES, useSessionChildren, useTranscript, useTurns,
   type AttachmentRow, type ContextInjectionRow, type TranscriptRecord, type TurnRow,
 } from '../../hooks/use-sessions';
-import { cn } from '../../lib/cn';
 import { formatBytes } from '../../lib/format';
 import { promptPreview } from './Turn';
 import { count, dateTime } from './words';
@@ -168,7 +166,7 @@ function Attachments({ projectId, sessionId, now }: { projectId: string; session
           <div className="flex items-baseline justify-between gap-s3">
             <h4 className="min-w-0 truncate t-small font-medium text-ink-2">{group.label}</h4>
             {group.turn !== null && (
-              <RouterLink to={`?turn=${encodeURIComponent(group.turn)}`} className={cn('shrink-0 rounded-chip t-small font-medium text-primary hover:underline', focusRing)}>Open the prompt</RouterLink>
+              <ActionLink to={`?turn=${encodeURIComponent(group.turn)}`} className="shrink-0">Open the prompt</ActionLink>
             )}
           </div>
           <ul className="grid gap-s3 sm:grid-cols-2" aria-label={`Attachments of ${group.label}`}>

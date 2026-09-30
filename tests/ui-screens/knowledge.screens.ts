@@ -1,6 +1,6 @@
 /**
  * Knowledge, signed in as the owner and as a member who is not an admin, at
- * both viewports in both modes: the spore stream across every project, a
+ * every viewport (desktop, tablet, phone) in both modes: the spore stream across every project, a
  * replaced spore's article opened from it, the plans board and a plan's page
  * opened from it. A project's code map, ⌘K across every project, and the old
  * address of the spores list are checked on their own.
@@ -14,7 +14,7 @@
  */
 import { expect, test, type Page } from '@playwright/test';
 import {
-  expectAxeClean, expectNoHorizontalOverflow, expectNoRawIds, expectQuiet, openPage, shoot, SHOT_MATRIX, type ViewportName,
+  expectAxeClean, expectFits, pagesNav, expectNoRawIds, expectQuiet, openPage, shoot, SHOT_MATRIX, type ViewportName,
 } from './checks.ts';
 import { SCREENS_ENV, screensEnv } from './env.ts';
 
@@ -40,12 +40,12 @@ function fixtureProject(): { projectId: string; name: string } {
 /** Opens Knowledge across every project from the nav, the way a reader does from a page that names no project. */
 async function openKnowledge(page: Page, viewport: ViewportName): Promise<void> {
   await expect(page.locator('main')).toHaveCount(1);
-  const nav = viewport === 'desktop' ? page.getByRole('navigation', { name: 'Pages' }) : page.getByRole('navigation', { name: 'Main pages' });
-  const link = nav.getByRole('link', { name: 'Knowledge' });
+  const link = (await pagesNav(page, viewport)).getByRole('link', { name: 'Knowledge' });
   await expect(link).toHaveAttribute('href', '/knowledge');
   await link.click();
   await expect(page).toHaveURL(/\/knowledge$/);
-  await expect(link).toHaveAttribute('aria-current', 'page');
+  // A tablet's drawer closes as it navigates; the column and the bottom bar stay to show where the reader is.
+  if (viewport !== 'tablet') await expect(link).toHaveAttribute('aria-current', 'page');
 }
 
 const cards = (page: Page) => page.locator('[data-spore-stream] li[data-spore]');
@@ -162,7 +162,7 @@ async function expectPlanPage(page: Page, viewport: ViewportName, role: 'admin' 
 /** The page's own checks, then its screenshot. */
 async function settle(page: Page, name: string, viewport: ViewportName, mode: 'dark' | 'light'): Promise<void> {
   await page.waitForLoadState('networkidle');
-  await expectNoHorizontalOverflow(page);
+  await expectFits(page, viewport);
   await expectNoRawIds(page);
   await expectAxeClean(page);
   await page.evaluate(() => window.scrollTo(0, 0));
@@ -266,7 +266,7 @@ test.describe('Knowledge', () => {
         await expect(dialog.getByRole('heading', { level: 3 }).first()).toBeVisible();
         await input.press('ArrowDown');
         await expect(results.first()).toBeFocused();
-        await expectNoHorizontalOverflow(page);
+        await expectFits(page, viewport);
         await expectNoRawIds(page, '[role="dialog"]');
         await expectAxeClean(page, ['[role="dialog"]']);
         await shoot(page, 'knowledge-search', viewport, mode);

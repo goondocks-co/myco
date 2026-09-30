@@ -30,8 +30,8 @@ export function Disclosure({ summary, children, defaultOpen = false, onOpenChang
       <Collapsible.Trigger
         className={cn(
           wide
-            ? 'flex w-full min-w-0 items-start gap-s2 rounded-control text-left text-ink hover:bg-surface-2'
-            : 'inline-flex w-fit items-center gap-s1 rounded-chip t-small font-medium text-ink-2 hover:text-ink',
+            ? 'flex min-h-tap w-full min-w-0 items-start gap-s2 rounded-control text-left text-ink hover:bg-surface-2'
+            : 'inline-flex min-h-tap w-fit items-center gap-s1 rounded-chip t-small font-medium text-ink-2 hover:text-ink',
           focusRing,
           summaryClassName,
         )}

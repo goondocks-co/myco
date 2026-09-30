@@ -1,6 +1,5 @@
 import { memo, useEffect, useRef, useState, type RefObject } from 'react';
-import { Link as RouterLink } from 'react-router-dom';
-import { Button, Disclosure, ExternalLink, focusRing, Lightbox, Skeleton, StatusChip, TypeChip } from '../../design';
+import { Button, Disclosure, ExternalLink, ItemLink, Lightbox, Skeleton, StatusChip, TypeChip } from '../../design';
 import { blobUrl, RENDERABLE_IMAGE_TYPES, useTurnDetail, type AttachmentRow, type ResponseRow, type TurnChild, type TurnInjection, type TurnRow } from '../../hooks/use-sessions';
 import { cn } from '../../lib/cn';
 import { PlanLine } from '../knowledge/PlanLine';
@@ -57,7 +56,7 @@ function Attachments({ projectId, attachments }: { projectId: string; attachment
     <div className="flex flex-wrap items-start gap-s3" data-testid="turn-attachments">
       {images.map((a, i) => (
         <Button key={a.attachmentId} variant="ghost" onClick={() => setLightbox(i)} className="h-auto overflow-hidden rounded-control border-line p-0" aria-label={`Open ${a.description ?? 'image'}`}>
-          <img src={blobUrl(projectId, a.blobKey)} alt={a.description ?? 'An attached image'} loading="lazy" className="max-h-[140px] max-w-[200px] object-cover" />
+          <img src={blobUrl(projectId, a.blobKey)} alt={a.description ?? 'An attached image'} loading="lazy" className="max-h-thumb-h max-w-thumb object-cover" />
         </Button>
       ))}
       {files.map((a) => (
@@ -111,9 +110,9 @@ function Injection({ projectId, injection }: { projectId: string; injection: Tur
           {injection.spores.map((spore) => (
             <li key={spore.id} className="flex min-w-0 items-baseline gap-s2 t-small">
               <TypeChip>{sporeTypeWord(spore.observationType)}</TypeChip>
-              <RouterLink to={`/p/${encodeURIComponent(projectId)}/spores/${encodeURIComponent(spore.id)}`} className={cn('min-w-0 truncate rounded-chip text-ink-2 hover:text-ink hover:underline', focusRing)}>
+              <ItemLink to={`/p/${encodeURIComponent(projectId)}/spores/${encodeURIComponent(spore.id)}`} lines={1} className="text-ink-2 hover:text-ink">
                 {spore.preview}
-              </RouterLink>
+              </ItemLink>
             </li>
           ))}
           {missing > 0 && <li className="t-small text-muted">{count(missing, 'spore')} no longer kept</li>}

@@ -1,6 +1,6 @@
 /**
  * The dashboard shell, signed in as the owner and as a member who is not an
- * admin, at both viewports in both modes.
+ * admin, at every viewport (desktop, tablet, phone) in both modes.
  *
  * The shell is the nav column on a desktop, and the header, bottom bar and nav
  * drawer on a phone. Each check opens a project's Sessions page inside it and
@@ -16,7 +16,7 @@
 import { INVITE_CONTROLS } from '../../packages/myco-shared/src/member-protocol.ts';
 import { expect, test, type Page } from '@playwright/test';
 import {
-  expectAxeClean, expectNoHorizontalOverflow, expectNoRawIds, expectQuiet, expectUniformSearch, filterBarMetrics, openPage, shoot, SHOT_MATRIX,
+  expectAxeClean, expectFits, expectNoRawIds, expectQuiet, expectUniformSearch, filterBarMetrics, openPage, shoot, SHOT_MATRIX,
 } from './checks.ts';
 import { SCREENS_ENV, screensEnv } from './env.ts';
 
@@ -27,8 +27,7 @@ const SHELL = '[data-shell]';
 
 const ROLES = [
   { role: 'admin', cookie: 'ownerCookie', name: 'Ada' },
-  // The member's label is only their id, so the account block names them by their login.
-  { role: 'member', cookie: 'memberCookie', name: 'lin' },
+  { role: 'member', cookie: 'memberCookie', name: 'Lin' },
 ] as const;
 
 /** The admin foot. Health's name carries the count of what needs an admin, so it is matched by its start. */
@@ -104,25 +103,37 @@ test.describe('dashboard shell', () => {
         } else {
           await expect(page.getByRole('complementary', { name: 'Navigation' })).toHaveCount(0);
           await expect(page.getByRole('banner')).toContainText('Sessions');
-          const bar = page.getByRole('navigation', { name: 'Main pages' });
-          for (const label of ['Today', 'Sessions', 'Knowledge']) await expect(bar.getByRole('link', { name: label })).toBeInViewport();
-          await expect(bar.getByRole('link', { name: 'Sessions' })).toHaveAttribute('aria-current', 'page');
           await expect(page.getByRole('banner').getByRole('button', { name: 'Search' })).toBeVisible();
+          if (viewport === 'phone') {
+            const bar = page.getByRole('navigation', { name: 'Main pages' });
+            for (const label of ['Today', 'Sessions', 'Knowledge']) await expect(bar.getByRole('link', { name: label })).toBeInViewport();
+            await expect(bar.getByRole('link', { name: 'Sessions' })).toHaveAttribute('aria-current', 'page');
+          } else {
+            // A tablet has no bottom bar: the header opens the nav.
+            await expect(page.getByRole('navigation', { name: 'Main pages' })).toHaveCount(0);
+            await expect(page.getByRole('banner').getByRole('button', { name: 'Open navigation' })).toBeVisible();
+          }
         }
 
         await page.waitForLoadState('networkidle');
-        await expectNoHorizontalOverflow(page);
+        await expectFits(page, viewport);
         await expectNoRawIds(page, SHELL);
         await expectAxeClean(page, [SHELL]);
         await shoot(page, `shell-${role}`, viewport, mode);
 
-        if (viewport === 'phone') {
-          await page.getByRole('navigation', { name: 'Main pages' }).getByRole('button', { name: 'More' }).click();
+        if (viewport !== 'desktop') {
+          // The phone's More, and the tablet's header button, open the nav: Myco's work, and for an admin the admin pages.
+          const opener = viewport === 'phone'
+            ? page.getByRole('navigation', { name: 'Main pages' }).getByRole('button', { name: 'More' })
+            : page.getByRole('banner').getByRole('button', { name: 'Open navigation' });
+          await opener.click();
           const drawer = page.getByRole('dialog', { name: 'Navigation' });
           await expect(drawer).toBeVisible();
+          await expect(drawer.getByRole('link', { name: 'Myco’s work' })).toBeVisible();
+          for (const label of ADMIN_PAGES) await expect(drawer.getByRole('link', { name: label, exact: typeof label === 'string' })).toHaveCount(role === 'admin' ? 1 : 0);
           await expectNavInView(drawer, role);
           await expectProjectsListed(page, drawer);
-          await expectNoHorizontalOverflow(page);
+          await expectFits(page, viewport);
           await expectNoRawIds(page, SHELL);
           await expectAxeClean(page, [SHELL]);
           await shoot(page, `shell-${role}-drawer`, viewport, mode);
@@ -151,7 +162,7 @@ test.describe('dashboard shell', () => {
         if (viewport === 'desktop') expect(box!.width).toBeGreaterThanOrEqual(600);
         await input.fill('parity');
         if (onFixture()) await expect(dialog.locator('a[data-result]').first()).toBeVisible();
-        await expectNoHorizontalOverflow(page);
+        await expectFits(page, viewport);
         await expectNoRawIds(page, '[role="dialog"]');
         await expectAxeClean(page, ['[role="dialog"]']);
         await shoot(page, 'shell-search', viewport, mode);
@@ -173,7 +184,7 @@ test.describe('dashboard shell', () => {
         for (const label of ['Light', 'Dark', 'System', 'Compact', 'Normal', 'Comfy']) await expect(menu.getByRole('menuitemradio', { name: label })).toBeVisible();
         await expect(menu.getByRole('menuitem', { name: /Code font/ })).toBeVisible();
         await expect(menu.getByRole('menuitem', { name: 'Sign out' })).toBeVisible();
-        await expectNoHorizontalOverflow(page);
+        await expectFits(page, viewport);
         await expectAxeClean(page, ['[role="menu"]']);
         await shoot(page, 'shell-account', viewport, mode);
         expectQuiet(watch);
@@ -201,21 +212,56 @@ test.describe('dashboard shell', () => {
     }
   });
 
-  test('/join hands over the command without a sign-in', async ({ browser }) => {
-    const key = 'k'.repeat(43);
-    const { context, page, watch } = await openPage(browser, { path: `/join#${key}`, viewport: 'phone', mode: 'dark' });
-    try {
-      await expect(page.getByRole('heading', { name: 'Connect a machine to Myco' })).toBeVisible();
-      await expect(page.getByText(`myco login ${new URL(page.url()).origin}/join#${key}`)).toBeVisible();
-      await expect(page.getByRole('button', { name: 'Copy' })).toBeVisible();
-      await expectNoHorizontalOverflow(page);
-      await expectAxeClean(page);
-      await shoot(page, 'join', 'phone', 'dark');
-      expectQuiet(watch);
-    } finally {
-      await context.close();
-    }
-  });
+  for (const { viewport, mode } of SHOT_MATRIX) {
+    test(`/join hands over the command without a sign-in ${viewport} ${mode}`, async ({ browser }) => {
+      const key = 'k'.repeat(43);
+      const { context, page, watch } = await openPage(browser, { path: `/join#${key}`, viewport, mode });
+      try {
+        await expect(page.getByRole('heading', { name: 'Connect a machine to Myco' })).toBeInViewport();
+        await expect(page.getByText(`myco login ${new URL(page.url()).origin}/join#${key}`)).toBeVisible();
+        await expect(page.getByRole('button', { name: 'Copy' })).toBeVisible();
+        await expectFits(page, viewport);
+        await expectAxeClean(page);
+        await shoot(page, 'join', viewport, mode);
+        expectQuiet(watch);
+      } finally {
+        await context.close();
+      }
+    });
+
+    test(`signed out ${viewport} ${mode}`, async ({ browser }) => {
+      const { context, page, watch } = await openPage(browser, { path: '/', viewport, mode });
+      try {
+        await expect(page.getByRole('heading', { name: 'Sign in to Myco' })).toBeInViewport();
+        await expect(page.getByRole('link', { name: 'Sign in with GitHub' })).toBeInViewport();
+        await expectFits(page, viewport);
+        await expectAxeClean(page);
+        await shoot(page, 'signed-out', viewport, mode);
+        // The one refusal is the sign-in check itself, which is how the page knows no one is signed in.
+        expect(watch.failedRequests.filter((line) => !/GET \S+\/auth\/me: 401$/.test(line)), 'failed requests').toEqual([]);
+        expect(watch.consoleErrors.filter((line) => !line.includes('401')), 'console errors').toEqual([]);
+      } finally {
+        await context.close();
+      }
+    });
+
+    test(`not a member ${viewport} ${mode}`, async ({ browser }) => {
+      test.skip(!onFixture(), 'a sign-in no member is linked to is the fixture\'s');
+      const { context, page, watch } = await openPage(browser, { path: '/', viewport, mode, cookie: screensEnv('strangerCookie') });
+      try {
+        await expect(page.getByRole('heading', { level: 1 })).toBeInViewport();
+        await expect(page.getByText('myco login', { exact: false }).first()).toBeVisible();
+        await expect(page.getByRole('navigation', { name: 'Pages' })).toHaveCount(0);
+        await expectFits(page, viewport);
+        await expectNoRawIds(page);
+        await expectAxeClean(page);
+        await shoot(page, 'not-a-member', viewport, mode);
+        expectQuiet(watch);
+      } finally {
+        await context.close();
+      }
+    });
+  }
 });
 
 const PAGES: ReadonlyArray<{ name: string; path: string; rendered: (page: Page) => Promise<void> }> = [
@@ -240,7 +286,7 @@ test.describe('pages inside the shell', () => {
         await expect(page.locator('main')).toHaveCount(1);
         await rendered(page);
         await page.waitForLoadState('networkidle');
-        await expectNoHorizontalOverflow(page);
+        await expectFits(page, viewport);
         expectQuiet(watch);
         await shoot(page, name, viewport, mode);
       } finally {

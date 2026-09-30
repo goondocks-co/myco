@@ -3,15 +3,14 @@ import { ApiError, SignedOutError } from '../../packages/myco-server/ui/src/lib/
 import { shouldRetry } from '../../packages/myco-server/ui/src/lib/query-client';
 
 describe('dashboard query retry', () => {
-  it('preserves structured server details and status without exposing unstructured bodies', () => {
+  it('keeps the status, the server\'s error code and the body, and never carries the server\'s sentence as its message', () => {
     const body = { error: 'bad_request', reason: 'The backup exceeds the supported size.' };
     const error = new ApiError(400, body);
-    expect(error.message).toBe(body.reason);
-    expect(error.status).toBe(400);
+    expect({ message: error.message, code: error.code, status: error.status }).toEqual({ message: 'server answered 400', code: 'bad_request', status: 400 });
     expect(error.body).toBe(body);
-    expect(new ApiError(409, { message: 'Update the Deployment first.' }).message).toBe('Update the Deployment first.');
-    for (const raw of [null, '<html>proxy error</html>', { reason: 123 }, { reason: ' ', message: false }]) {
-      expect(new ApiError(503, raw).message).toBe('server answered 503');
+    expect(new ApiError(409, { message: 'Update the Deployment first.' }).message).toBe('server answered 409');
+    for (const raw of [null, '<html>proxy error</html>', { error: 123 }, { error: ' ' }]) {
+      expect({ message: new ApiError(503, raw).message, code: new ApiError(503, raw).code }).toEqual({ message: 'server answered 503', code: undefined });
     }
   });
 

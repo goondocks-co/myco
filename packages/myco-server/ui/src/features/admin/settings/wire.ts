@@ -14,6 +14,8 @@ export interface LeafRow {
   value: unknown;
   updatedAt: number | null;
   updatedBy: string | null;
+  /** Nothing on the server reads this leaf any more: the page shows it only where a value is stored, read-only. */
+  retired: boolean;
 }
 
 export interface SettingsAnswer {
@@ -30,6 +32,8 @@ export interface SecretRow {
   maskedValue: string | null;
   updatedAt: number | null;
   updatedBy: string | null;
+  /** Nothing on the server reads this key: the page lists it only while one is stored, under Older keys. */
+  retired: boolean;
 }
 
 export interface SecretsAnswer {

@@ -15,7 +15,7 @@ export { Tabs, TabsList, TabsTrigger, TabsContent, TabLinks, type TabsTriggerPro
 export { Dialog, DialogTrigger, DialogClose, DialogContent, DialogFooter, ConfirmDialog, type DialogContentProps, type ConfirmDialogProps } from './primitives/Dialog';
 export { MoreMenu, MenuItem, ActionMenu, type MoreMenuItem, type MoreMenuProps, type ActionMenuItem, type ActionMenuProps } from './primitives/MoreMenu';
 export { Disclosure, type DisclosureProps } from './primitives/Disclosure';
-export { Link, ExternalLink, type LinkProps, type ExternalLinkProps } from './primitives/Link';
+export { Link, ActionLink, ItemLink, ExternalLink, type LinkProps, type ItemLinkProps, type ExternalLinkProps } from './primitives/Link';
 export { StatusChip, TypeChip, Kbd, type Tone, type StatusChipProps, type TypeChipProps } from './primitives/Chip';
 export { HealthDot, type HealthTone, type HealthDotProps } from './primitives/HealthDot';
 export { Avatar, initialsOf, type AvatarProps } from './primitives/Avatar';
@@ -41,7 +41,8 @@ export { ErrorState, errorWords, type ErrorStateProps, type ErrorWords } from '.
 export { LoadingState, Skeleton, type LoadingStateProps } from './patterns/LoadingState';
 export { CommandBlock, type CommandBlockProps } from './patterns/CommandBlock';
 export { SlideOver, type SlideOverProps } from './patterns/SlideOver';
-export { focusRing } from './lib/classes';
+export { Breadcrumbs, type BreadcrumbsProps, type Crumb } from './patterns/Breadcrumbs';
+export { focusRing, tapTarget } from './lib/classes';
 
 export { AppShell, BottomBar, useShellMenu, COMPACT_QUERY, PHONE_QUERY, type AppShellProps, type BottomBarItem } from './shell/AppShell';
 export {

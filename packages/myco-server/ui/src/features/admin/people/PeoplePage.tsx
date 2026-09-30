@@ -107,7 +107,7 @@ export function PeoplePage() {
         />
       </AdminSection>
 
-      <AdminSection id={PEOPLE_ANCHORS.runs} title="Myco’s runs" description="Each task Myco runs signs in with a credential of its own, which stops when its run ends. These belong to runs, not to machines.">
+      <AdminSection id={PEOPLE_ANCHORS.runs} title="Myco’s runs" description="Each task Myco runs signs in on its own, and the sign-in stops when its run ends. These belong to runs, not to machines.">
         <RunCredentials />
       </AdminSection>
 
@@ -343,7 +343,7 @@ function RunCredentials() {
     <>
       <Disclosure summary={`${runs.rows.length.toLocaleString()} ${runs.rows.length === 1 ? 'run' : 'runs'}, ${liveCount.toLocaleString()} still signed in`}>
         <Card padding="flush">
-          <ul aria-label="Run credentials" className="flex flex-col divide-y divide-line">
+          <ul aria-label="Sign-ins of Myco’s runs" className="flex flex-col divide-y divide-line">
             {runs.rows.map((credential) => (
               <li key={credential.id} className="flex items-center gap-s3 px-s4 py-s2" data-run-credential="">
                 <span className="min-w-0 flex-1 t-small text-ink-2">

@@ -1,16 +1,19 @@
 import type { CaptureRow } from '../features/today/wire';
 
-/** A refusal or failure answered by the server, carrying the status and the parsed body when there was one. */
+/**
+ * A refusal or failure answered by the server, carrying the status, the
+ * server's error code when it sent one, and the parsed body. The dashboard
+ * words a refusal from its status and code; the server's own sentences are
+ * never shown, since they are written for an operator, not in the reader's
+ * words.
+ */
 export class ApiError extends Error {
-  readonly detail: string | undefined;
+  readonly code: string | undefined;
 
   constructor(public readonly status: number, public readonly body: unknown) {
-    const detail = typeof body === 'object' && body !== null
-      ? ['reason', 'message'].map((key) => Reflect.get(body, key))
-        .find((value): value is string => typeof value === 'string' && value.trim().length > 0)
-      : undefined;
-    super(detail ?? `server answered ${status}`);
-    this.detail = detail;
+    super(`server answered ${status}`);
+    const code = typeof body === 'object' && body !== null ? Reflect.get(body, 'error') : undefined;
+    this.code = typeof code === 'string' && code.trim() !== '' ? code : undefined;
     this.name = 'ApiError';
   }
 }

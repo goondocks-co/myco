@@ -440,7 +440,7 @@ describe('Myco\'s runs', () => {
     await waitFor(() => expect(machines.textContent).toContain('Ada’s MacBook'));
     expect(machines.textContent).not.toContain('A run started');
     fireEvent.click(await screen.findByRole('button', { name: /^1 run, 1 still signed in/ }));
-    const runs = await screen.findByRole('list', { name: 'Run credentials' });
+    const runs = await screen.findByRole('list', { name: 'Sign-ins of Myco’s runs' });
     expect(runs.textContent).toBe('A run started 5 min ago · allowed to write');
   });
 

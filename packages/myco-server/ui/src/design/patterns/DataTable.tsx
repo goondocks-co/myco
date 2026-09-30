@@ -3,7 +3,7 @@ import { Link as RouterLink } from 'react-router-dom';
 import { useMediaQuery } from '../../hooks/use-media-query';
 import { cn } from '../../lib/cn';
 import { focusRing } from '../lib/classes';
-import { PHONE_QUERY } from '../shell/AppShell';
+import { COMPACT_QUERY } from '../shell/AppShell';
 
 export interface DataTableColumn<T> {
   key: string;
@@ -35,7 +35,7 @@ export interface DataTableProps<T> {
   rowHref: (row: T) => string;
   /** A second line under the headline, such as a summary's first line. */
   detail?: (row: T) => ReactNode;
-  /** On a phone, the line under the headline and its detail that stands in for the other columns. */
+  /** On a phone or tablet, the line under the headline and its detail that stands in for the other columns. */
   phoneMeta?: (row: T) => ReactNode;
   /** Data attributes a row carries, for a state such as live. */
   rowData?: (row: T) => Readonly<Record<`data-${string}`, string | undefined>>;
@@ -53,13 +53,15 @@ const rowLink = cn('rounded-chip text-ink after:absolute after:inset-0 after:con
 /**
  * A table of records grouped under headings, each row a link to its record:
  * a column spec, a quiet header, a heading row per group, and whole-row
- * targets. On a phone the rows become two-line cards under the same headings.
+ * targets. On a phone or tablet the rows become two-line cards under the same
+ * headings.
  */
 export function DataTable<T>({ label, columns, groups, rowKey, rowHref, detail, phoneMeta, rowData }: DataTableProps<T>) {
-  const phone = useMediaQuery(PHONE_QUERY);
+  // Under 1024px the columns beside the headline would leave it too narrow to read, so rows become cards.
+  const narrow = useMediaQuery(COMPACT_QUERY);
   const [primary, ...rest] = columns;
   if (primary === undefined) return null;
-  if (phone) {
+  if (narrow) {
     return (
       <div data-table={label} className="overflow-hidden rounded-card border border-line bg-surface-1">
         {groups.map((group) => (
