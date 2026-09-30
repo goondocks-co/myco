@@ -1,16 +1,4 @@
 {
-  "components/GlobalSearch.tsx": {
-    "raw-button": 2,
-    "raw-input": 1,
-    "raw-select": 4,
-    "small-text": 3
-  },
-  "components/ProjectSwitcher.tsx": {
-    "raw-button": 4,
-    "raw-input": 1,
-    "inline-style": 1,
-    "small-text": 7
-  },
   "components/access/KeyReveal.tsx": {
     "raw-button": 1,
     "small-text": 3
@@ -123,10 +111,6 @@
   "components/ui/eyebrow.tsx": {
     "small-text": 3
   },
-  "components/ui/filter-pill.tsx": {
-    "raw-button": 1,
-    "small-text": 2
-  },
   "components/ui/inline-link.ts": {
     "small-text": 1
   },
@@ -136,10 +120,6 @@
   },
   "components/ui/lightbox.tsx": {
     "raw-button": 3,
-    "small-text": 1
-  },
-  "components/ui/list-filter-bar.tsx": {
-    "arbitrary-colour": 1,
     "small-text": 1
   },
   "components/ui/master-detail-split.tsx": {
@@ -159,24 +139,14 @@
   "components/ui/panel.tsx": {
     "arbitrary-colour": 1
   },
-  "components/ui/refresh-indicator.tsx": {
-    "raw-button": 1,
-    "small-text": 1
-  },
   "components/ui/row.tsx": {
     "arbitrary-colour": 4
-  },
-  "components/ui/select.tsx": {
-    "arbitrary-colour": 1
   },
   "components/ui/slideout-detail-panel.tsx": {
     "raw-button": 1,
     "inline-style": 1
   },
   "components/ui/status-dot.tsx": {
-    "inline-style": 1
-  },
-  "components/ui/step-circle.tsx": {
     "inline-style": 1
   },
   "components/ui/subtab-pill.tsx": {
@@ -187,30 +157,9 @@
   "components/ui/surface.tsx": {
     "arbitrary-colour": 2
   },
-  "components/ui/tile-tabs.tsx": {
-    "raw-button": 1,
-    "arbitrary-colour": 2,
-    "small-text": 1
-  },
   "index.css": {
     "colour-literal": 1,
     "small-text": 7
-  },
-  "layout/AppearanceSection.tsx": {
-    "raw-button": 3,
-    "raw-select": 1,
-    "inline-style": 1,
-    "colour-literal": 6,
-    "small-text": 1
-  },
-  "layout/Layout.tsx": {
-    "small-text": 4,
-    "retired-import": 1
-  },
-  "layout/Topbar.tsx": {
-    "raw-button": 1,
-    "small-text": 4,
-    "retired-import": 1
   },
   "lib/monogram.ts": {
     "colour-literal": 1
@@ -243,16 +192,8 @@
     "small-text": 3,
     "retired-import": 5
   },
-  "pages/NotAMember.tsx": {
-    "raw-button": 1,
-    "small-text": 1,
-    "retired-import": 1
-  },
   "pages/NotFound.tsx": {
     "retired-import": 2
-  },
-  "pages/Notifications.tsx": {
-    "retired-import": 3
   },
   "pages/Operations.tsx": {
     "small-text": 2,
@@ -280,8 +221,7 @@
     "retired-import": 5
   },
   "pages/Sessions.tsx": {
-    "raw-input": 1,
-    "retired-import": 4
+    "retired-import": 3
   },
   "pages/Settings.tsx": {
     "small-text": 16,
@@ -291,9 +231,7 @@
     "retired-import": 1
   },
   "pages/Spores.tsx": {
-    "raw-input": 1,
-    "raw-select": 1,
-    "retired-import": 4
+    "retired-import": 3
   },
   "pages/Status.tsx": {
     "raw-table": 1,

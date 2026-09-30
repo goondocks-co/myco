@@ -122,7 +122,7 @@ describe('the plans page', () => {
     server(base({ '/api/projects/x/plans?limit=100': () => Response.json({ plans: [], maxPage: 200 }) }));
     mount('/p/x/plans');
     await screen.findByText(/No plans yet/);
-    const nav = screen.getByRole('navigation', { name: 'Project' });
+    const nav = screen.getByRole('navigation', { name: 'Pages' });
     expect([...nav.querySelectorAll('a[aria-current="page"]')].map((a) => a.textContent)).toEqual(['Plans']);
   });
 });

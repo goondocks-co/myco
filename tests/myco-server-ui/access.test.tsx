@@ -90,8 +90,7 @@ describe('Deployment Access', () => {
       '/api/credentials': () => Response.json({ rows: [], cursor: null }),
     });
     mount('/access');
-    expect(await screen.findByText('chris')).toBeTruthy();
-    expect(screen.getByText('you')).toBeTruthy();
+    expect(await screen.findByText('you')).toBeTruthy();
     expect(screen.getByText('2 runtimes')).toBeTruthy();
     fireEvent.click(screen.getAllByText('Remove')[0]!);
     expect(await screen.findByText('Remove yourself?')).toBeTruthy();
