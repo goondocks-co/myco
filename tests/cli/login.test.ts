@@ -93,6 +93,20 @@ describe('myco login', () => {
     expect(out.join('\n')).toContain('myco member join');
   });
 
+  it('names the machine after its host, as the Deployment admits a name, and names none when nothing of the host is left', async () => {
+    const labelOf = (rig: ReturnType<typeof unjoinedRig>): unknown =>
+      (rig.env.sqlite.query(`SELECT runtime_label FROM member_credentials WHERE machine_id = 'machine_person' ORDER BY issued_at DESC, id DESC`).get() as { runtime_label: unknown }).runtime_label;
+    const named = unjoinedRig();
+    const first = await issueEnrollmentAuthority(named.env.db, Date.now(), { role: 'member' });
+    expect(await run([`https://s/join#${first.key}`, '--root', root], { ...deps(named), hostname: () => 'Chris’s MacBook Pro.local' })).toBe(true);
+    expect(labelOf(named)).toBe('Chriss-MacBook-Pro');
+
+    const unnamed = unjoinedRig();
+    const second = await issueEnrollmentAuthority(unnamed.env.db, Date.now(), { role: 'member' });
+    expect(await run([`https://s/join#${second.key}`, '--root', root], { ...deps(unnamed), hostname: () => '…' })).toBe(true);
+    expect(labelOf(unnamed)).toBe(null);
+  });
+
   it('keeps a worker running at login for an administrator who signs in, and installs none for a member', async () => {
     const admin = unjoinedRig();
     const platform = recordingPlatform();

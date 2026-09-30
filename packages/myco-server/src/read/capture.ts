@@ -41,23 +41,29 @@ export function machineNamesOf(rows: readonly unknown[]): Map<string, string> {
 }
 
 /** The latest receipt per machine and agent over the window, most recent first. */
-export async function captureRecency(db: RelationalStore, nowMs: number): Promise<CaptureRow[]> {
-  const [recent, names] = await db.batch([
-    // `project_id` is a bare column beside MAX(): SQLite takes it from the row that holds the maximum.
-    db.prepare(
-      `SELECT machine_id, agent, MAX(last_received_at) AS last_event_at, project_id FROM sessions
-        WHERE last_received_at >= ? AND machine_id IS NOT NULL
-        GROUP BY machine_id, agent
-        ORDER BY last_event_at DESC, machine_id, agent`,
-    ).bind(nowMs - CAPTURE_WINDOW_MS),
-    machineNamesStatement(db, nowMs),
-  ]);
-  const machineNames = machineNamesOf(names!.results);
-  return (recent.results as Record<string, unknown>[]).map((row) => ({
+export function captureRecencyStatement(db: RelationalStore, nowMs: number): PreparedStatement {
+  // `project_id` is a bare column beside MAX(): SQLite takes it from the row that holds the maximum.
+  return db.prepare(
+    `SELECT machine_id, agent, MAX(last_received_at) AS last_event_at, project_id FROM sessions
+      WHERE last_received_at >= ? AND machine_id IS NOT NULL
+      GROUP BY machine_id, agent
+      ORDER BY last_event_at DESC, machine_id, agent`,
+  ).bind(nowMs - CAPTURE_WINDOW_MS);
+}
+
+/** The rows `captureRecencyStatement` answers, each named from `machineNames`. */
+export function captureRowsOf(rows: readonly unknown[], machineNames: ReadonlyMap<string, string>): CaptureRow[] {
+  return (rows as Record<string, unknown>[]).map((row) => ({
     machineId: String(row.machine_id),
     machineName: machineNames.get(String(row.machine_id)) ?? null,
     agent: row.agent === null || row.agent === undefined ? null : String(row.agent),
     lastEventAt: Number(row.last_event_at),
     projectId: String(row.project_id),
   }));
+}
+
+/** The latest receipt per machine and agent over the window, most recent first. */
+export async function captureRecency(db: RelationalStore, nowMs: number): Promise<CaptureRow[]> {
+  const [recent, names] = await db.batch([captureRecencyStatement(db, nowMs), machineNamesStatement(db, nowMs)]);
+  return captureRowsOf(recent!.results, machineNamesOf(names!.results));
 }

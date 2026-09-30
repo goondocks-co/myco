@@ -3,7 +3,7 @@
  *
  * One row per machine and agent, its latest receipt and the Project that receipt landed in, over the last thirty
  * days, most recent first. A machine is named by the label its newest live credential carries. A member who is not an
- * admin reads it.
+ * admin reads their own machines' capture; an admin reads every machine's.
  */
 import { describe, expect, it } from 'bun:test';
 import { sqliteEnv } from './helpers/fixtures.js';
@@ -13,7 +13,7 @@ import worker from '@myco-server-worker/index.js';
 import { CAPTURE_WINDOW_MS } from '@myco-server-worker/read/capture.js';
 
 describe('capture recency', () => {
-  it('answers the latest receipt per machine and agent over the window, with its Project and the machine\'s name, to a member', async () => {
+  it('answers the latest receipt per machine and agent over the window, with its Project and the machine\'s name, a member their own machines alone', async () => {
     const now = Date.now();
     const fixture = sqliteEnv();
     const env = { ...fixture.env, ...OWNER_ENV };
@@ -27,6 +27,8 @@ describe('capture recency', () => {
     session('proj_1', 's3', 'laptop', 'codex', now - 3_600_000);
     session('proj_2', 's4', 'desktop', 'cursor', now - 7_200_000);
     session('proj_1', 's5', 'desktop', 'pi', now - CAPTURE_WINDOW_MS - 1);
+    session('proj_1', 's6', 'admin-box', 'codex', now - 5_000);
+    sqlite.run(`INSERT INTO machine_claims (machine_id, member_id, claimed_at) VALUES ('laptop', 'mem_machine_2', 0), ('desktop', 'mem_machine_2', 0), ('admin-box', 'mem_machine_1', 0)`);
     seedCredential(sqlite, { id: 'mt_old', machineId: 'laptop', memberId: 'mem_machine_2', issuedAt: 1, expiresAt: now + 60_000 });
     seedCredential(sqlite, { id: 'mt_new', machineId: 'laptop', memberId: 'mem_machine_2', issuedAt: 2, expiresAt: now + 60_000 });
     seedCredential(sqlite, { id: 'mt_gone', machineId: 'desktop', memberId: 'mem_machine_2', issuedAt: 3, expiresAt: now + 60_000, revokedAt: 4 });
@@ -43,6 +45,9 @@ describe('capture recency', () => {
       { machineId: 'laptop', machineName: 'studio', agent: 'codex', lastEventAt: now - 3_600_000, projectId: 'proj_1' },
       { machineId: 'desktop', machineName: null, agent: 'cursor', lastEventAt: now - 7_200_000, projectId: 'proj_2' },
     ]);
+    // The admin reads every machine's capture, another member's included.
+    const all = await worker.fetch(new Request('https://s/api/status', { headers: { cookie: await ownerCookie(), 'cf-connecting-ip': '1.2.3.4' } }), env);
+    expect(((await all.json()) as { capture: Array<{ machineId: string }> }).capture.map((row) => row.machineId)).toEqual(['admin-box', 'laptop', 'laptop', 'desktop']);
   });
 
   it('keeps every other status fact when capture recency cannot be read, and names it as unavailable', async () => {

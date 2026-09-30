@@ -133,6 +133,41 @@ export const DEPLOYMENT_LEAF_SPECS: Readonly<Record<string, LeafSpec>> = {
   'worker.harness_fallback': {},
 };
 
+/**
+ * Leaves the Deployment still holds that nothing reads: neither the server nor the member it serves them to. Most are
+ * the 1.4 daemon's, which read its own configuration file; a value set here changes nothing. The dashboard shows them
+ * retired. `tests/meta/retired-settings.test.ts` holds this set equal to the leaves no reader names.
+ */
+export const RETIRED_LEAVES: ReadonlySet<string> = new Set([
+  'agent.event_tasks_enabled',
+  'agent.harness',
+  'agent.provider.context_length',
+  'agent.provider.effort_map.default.effort',
+  'agent.provider.effort_map.default.verbosity',
+  'agent.provider.effort_map.high.effort',
+  'agent.provider.effort_map.high.verbosity',
+  'agent.provider.effort_map.low.effort',
+  'agent.provider.effort_map.low.verbosity',
+  'agent.provider.local_backend',
+  'agent.provider.reasoning_map.default',
+  'agent.provider.reasoning_map.high',
+  'agent.provider.reasoning_map.low',
+  'agent.provider.thinking_budget_map.default',
+  'agent.provider.thinking_budget_map.high',
+  'agent.provider.thinking_budget_map.low',
+  'agent.reasoningLevel',
+  'agent.semantic_write_check_enabled',
+  'agent.summary_batch_interval',
+  'cortex.canopy.exclude.default_patterns',
+  'cortex.digest.inject_on_session_start',
+  'notifications.retention_days',
+  'skills.confidence_threshold',
+  'skills.usage_stale_days',
+]);
+
+/** Secret slots the Deployment still stores that nothing reads. Held to its readers by the same gate as `RETIRED_LEAVES`. */
+export const RETIRED_SECRET_SLOTS: ReadonlySet<string> = new Set(['github']);
+
 /** The leaves this tier owns. Derived from the specs, so a leaf cannot be named in one and missing from the other. */
 export const DEPLOYMENT_LEAVES: readonly string[] = Object.keys(DEPLOYMENT_LEAF_SPECS);
 

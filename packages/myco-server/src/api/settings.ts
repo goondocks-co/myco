@@ -7,10 +7,7 @@ import { isAdmin } from '../auth/roles.js';
 import { badRequest, notFound, ok, readJsonObject, resolveProjectScope } from './scope.js';
 import { SecretValueError, deploymentSecretStore, type SecretDescription } from '../core/secrets.js';
 import { SECRET_SLOT_NAMES } from '@goondocks/myco-shared/secret-slots';
-import {
-  DEPLOYMENT_LEAVES, PROJECT_CAPABILITIES, settingsWriter,
-  type ProjectCapability, type SettingsRefusal,
-} from '../core/settings.js';
+import { DEPLOYMENT_LEAVES, PROJECT_CAPABILITIES, settingsWriter, type ProjectCapability, type SettingsRefusal, RETIRED_LEAVES, RETIRED_SECRET_SLOTS } from '../core/settings.js';
 
 /**
  * The Deployment Settings surface.
@@ -77,9 +74,13 @@ async function deploymentLeaves(env: ServerEnv, redacted: boolean): Promise<unkn
   return JSON.parse(JSON.stringify(leaves), (_key, value: unknown) => (typeof value === 'string' ? withoutUrlSecrets(value) : value)) as unknown[];
 }
 
-/** `GET /api/settings`: the Deployment's leaves on the dashboard, raw to an admin and redacted to every other member. */
+/**
+ * `GET /api/settings`: the Deployment's leaves on the dashboard, raw to an admin and redacted to every other member,
+ * each marked `retired` when nothing reads it.
+ */
 export async function handleSettings(env: ServerEnv, ctx: OwnerContext): Promise<Response> {
-  return ok({ persisted: true, leaves: await deploymentLeaves(env, !isAdmin(ctx.member.role)) });
+  const leaves = (await deploymentLeaves(env, !isAdmin(ctx.member.role))) as Array<{ leaf: string }>;
+  return ok({ persisted: true, leaves: leaves.map((row) => ({ ...row, retired: RETIRED_LEAVES.has(row.leaf) })) });
 }
 
 /** A token that addresses a host: a scheme or `//` ahead of it, or `name:secret@host` followed by a port or a path. */
@@ -145,7 +146,7 @@ export async function handleSetProjectCapability(env: ServerEnv, ctx: OwnerConte
  */
 export async function handleSecrets(env: ServerEnv, ctx: OwnerContext): Promise<Response> {
   const store = deploymentSecretStore(env.db, env.wrappingKey);
-  const described = await Promise.all(SECRET_SLOTS.map(async (name) => ({ name, ...(await store.describe(name)) })));
+  const described = await Promise.all(SECRET_SLOTS.map(async (name) => ({ name, ...(await store.describe(name)), retired: RETIRED_SECRET_SLOTS.has(name) })));
   return ok({ secrets: described });
 }
 

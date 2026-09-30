@@ -221,6 +221,7 @@ describe('the Deployment keeps a linked admin (#1448)', () => {
     expect(writes.sort()).toEqual([
       'src/auth/identity-link.ts: github_id = ?', // the bind: only a NULL account, or the same one, and never to NULL
       'src/auth/identity-link.ts: github_id = ?', // break-glass linkStatement: a validated account id, never NULL
+      'src/auth/members-admin.ts: label = ?', // nameMemberFromLogin: a name, only where none is held
       'src/auth/members-admin.ts: revoked_at = ?, revoked_by = ?', // revokeMember: guarded below
     ]);
     const source = readFileSync(join(ROOT, 'src', 'auth', 'identity-link.ts'), 'utf8');

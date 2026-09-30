@@ -82,13 +82,14 @@ it('refuses a schema this recovery cannot reconstruct, before an export pauses a
   env.sqlite.close();
 });
 
-it('says plainly that a Deployment with no producer runs none', async () => {
+it('says plainly that a Deployment with no producer runs none: an export is refused, and the status reports it unsupported', async () => {
   const env = sqliteEnv();
-  for (const handler of [handleStartRecoveryExport, handleRecoveryExportStatus]) {
-    const response = await handler({ ...env.serverEnv, recovery: undefined } as never, OWNER);
-    expect(response.status).toBe(400);
-    expect(String((await response.json() as { reason?: string }).reason)).toContain('runs no hosted recovery producer');
-  }
+  const start = await handleStartRecoveryExport({ ...env.serverEnv, recovery: undefined } as never, OWNER);
+  expect(start.status).toBe(400);
+  expect(String((await start.json() as { reason?: string }).reason)).toContain('runs no hosted recovery producer');
+  const status = await handleRecoveryExportStatus({ ...env.serverEnv, recovery: undefined } as never, OWNER);
+  expect(status.status).toBe(200);
+  expect(await status.json() as Record<string, unknown>).toMatchObject({ supported: false, reason: expect.stringContaining('runs no hosted recovery producer') });
   env.sqlite.close();
 });
 
