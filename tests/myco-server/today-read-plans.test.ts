@@ -11,8 +11,8 @@ import { Database } from 'bun:sqlite';
 import type { PreparedStatement, RelationalStore } from '@myco-server-worker/core/adapters.js';
 import { SCHEMA_DDL } from '@myco-server-worker/db/schema.js';
 import { encodeCursor, MAX_NAMED_PROJECTS, type ProjectSet } from '@myco-server-worker/read/scope.js';
-import { listSessionsAcross, type SessionFilters } from '@myco-server-worker/read/sessions.js';
-import { countSporesAcross, listSporesAcross, sporeFacets } from '@myco-server-worker/core/spores.js';
+import { listSessions, listSessionsAcross, type SessionFilters } from '@myco-server-worker/read/sessions.js';
+import { countSpores, countSporesAcross, listSpores, listSporesAcross, sporeFacets } from '@myco-server-worker/core/spores.js';
 import { pagePlansAcross } from '@myco-server-worker/read/plans.js';
 import { capabilityHolds, failingOutcomes, readWork, runsAwaitingWorker } from '@myco-server-worker/read/work.js';
 import { captureRecency } from '@myco-server-worker/read/capture.js';
@@ -84,7 +84,8 @@ const NAMED: ProjectSet = { all: false, projectIds: ['proj_0', 'proj_1'] };
 const CURSOR = encodeCursor(1_789_000_000_000, 'k');
 
 const SESSION_SHAPES: Record<string, SessionFilters & { cursor?: string }> = {
-  plain: {}, cursor: { cursor: CURSOR }, since: { since: 1_789_000_000_000 }, agent: { agent: 'codex' }, branch: { branch: 'main' },
+  plain: {}, cursor: { cursor: CURSOR }, since: { since: 1_789_000_000_000 }, until: { until: 1_789_500_000_000 },
+  window: { since: 1_789_000_000_000, until: 1_789_086_400_000 }, agent: { agent: 'codex' }, branch: { branch: 'main' },
   member: { memberLabel: 'member 1' }, open: { state: 'open' }, ended: { state: 'ended' }, text: { q: 'fix' },
 };
 
@@ -98,10 +99,22 @@ describe('the Today reads under the statistics a Deployment plans from', () => {
         }
       }
     }
-    // A cursor or a start seeks the walk: it never reads from the newest session on.
-    for (const opts of [{ cursor: CURSOR }, { since: 1_789_000_000_000 }]) {
+    // A cursor, a start or an end seeks the walk: it never reads from the newest session on, and a window is one range.
+    for (const opts of [{ cursor: CURSOR }, { since: 1_789_000_000_000 }, { until: 1_789_500_000_000 }]) {
       for (const { store, plan } of await plans((db) => listSessionsAcross(db, ALL, { limit: 50, fidelity: 'any', ...opts }))) {
         expect({ store, plan }).toEqual({ store, plan: expect.stringMatching(/SEARCH s USING INDEX idx_sessions_occurred_deployment \(<expr>[<>]\?\)/) });
+      }
+    }
+    for (const { store, plan } of await plans((db) => listSessionsAcross(db, ALL, { limit: 50, fidelity: 'any', since: 1_789_000_000_000, until: 1_789_086_400_000 }))) {
+      expect({ store, plan }).toEqual({ store, plan: expect.stringMatching(/SEARCH s USING INDEX idx_sessions_occurred_deployment \(<expr>>\? AND <expr><\?\)/) });
+    }
+  });
+
+  it('reads one Project\'s sessions in a window as one range of the Project\'s ordered index, with no sort', async () => {
+    for (const opts of [{ since: 1_789_000_000_000 }, { until: 1_789_500_000_000 }, { since: 1_789_000_000_000, until: 1_789_086_400_000 }]) {
+      for (const { store, plan } of await plans((db) => listSessions(db, { projectId: 'proj_0' }, { limit: 50, fidelity: 'any', ...opts }))) {
+        expect({ store, opts, walks: /\bs USING INDEX idx_sessions_occurred \(project_id=\? AND <expr>[<>]\?(?: AND <expr><\?)?\)/.test(plan), sorts: sortsRows(plan), plan })
+          .toEqual({ store, opts, walks: true, sorts: false, plan });
       }
     }
   });
@@ -112,6 +125,8 @@ describe('the Today reads under the statistics a Deployment plans from', () => {
         await listSporesAcross(db, set, { limit: 50 });
         await listSporesAcross(db, set, { observationType: 'gotcha', status: 'active', limit: 50, offset: 50 });
         await listSporesAcross(db, set, { createdFrom: 1_789_000_000_000, search: 'x', limit: 50 });
+        await listSporesAcross(db, set, { createdFrom: 1_789_000_000_000, createdTo: 1_789_086_400_000, limit: 50 });
+        await listSporesAcross(db, set, { createdTo: 1_789_086_400_000, limit: 50 });
       });
       for (const { store, sql, plan } of spores) {
         expect({ set: set.all, store, sql, walks: /USING INDEX idx_spores_created_deployment/.test(plan), sorts: sortsRows(plan), plan })
@@ -128,9 +143,29 @@ describe('the Today reads under the statistics a Deployment plans from', () => {
     }
   });
 
+  it('reads one Project\'s spores in a window by a seek, the Project\'s rows or the window\'s, scanning nothing', async () => {
+    // Unbounded, the list reads the Project's spores by a Project-led index. Bounded, the planner may instead take the
+    // window as a range of the ordered Deployment-wide index, which reads only the window's spores and skips the sort.
+    const window = { createdFrom: 1_789_000_000_000, createdTo: 1_789_086_400_000 };
+    const read = await plans(async (db) => {
+      await listSpores(db, { projectId: 'proj_0' }, { limit: 50 });
+      await listSpores(db, { projectId: 'proj_0' }, { ...window, limit: 50 });
+      await countSpores(db, { projectId: 'proj_0' }, window);
+    });
+    for (const { store, sql, plan } of read) {
+      const seeks = /SEARCH spores USING (?:COVERING )?INDEX (?:\w+ \(project_id=\?|idx_spores_created_deployment \(created_at>\? AND created_at<\?\))/.test(plan);
+      expect({ store, sql, scans: tableScans(plan), seeks, plan }).toEqual({ store, sql, scans: [], seeks: true, plan });
+    }
+  });
+
   it('counts spores for the total and the facets through Project-led indexes, and scans only to match text across every Project', async () => {
     for (const set of [ALL, NAMED]) {
-      for (const { store, sql, plan } of await plans(async (db) => { await countSporesAcross(db, set, { status: 'active' }); await sporeFacets(db, set, { observationType: 'gotcha' }); })) {
+      for (const { store, sql, plan } of await plans(async (db) => {
+        await countSporesAcross(db, set, { status: 'active' });
+        await sporeFacets(db, set, { observationType: 'gotcha' });
+        await countSporesAcross(db, set, { createdFrom: 1_789_000_000_000, createdTo: 1_789_086_400_000 });
+        await sporeFacets(db, set, { createdFrom: 1_789_000_000_000, createdTo: 1_789_086_400_000 });
+      })) {
         expect({ set: set.all, store, sql, scans: tableScans(plan), plan }).toEqual({ set: set.all, store, sql, scans: [], plan });
       }
     }
@@ -205,10 +240,10 @@ describe('the Today reads under the statistics a Deployment plans from', () => {
   it('binds at most the store\'s 100 values in any statement, with the most Projects a read may name and every filter it takes', async () => {
     const most: ProjectSet = { all: false, projectIds: Array.from({ length: MAX_NAMED_PROJECTS }, (_, i) => `proj_${i}`) };
     const statements = await captured(async (db) => {
-      await listSessionsAcross(db, most, { limit: 50, cursor: CURSOR, since: 1, branch: 'b', agent: 'a', memberLabel: 'm', sessionId: 's', q: 'q', state: 'open', fidelity: 'full' });
-      await listSporesAcross(db, most, { observationType: 't', status: 's', sessionId: 's', search: 'q', createdFrom: 1, limit: 50, offset: 50 });
-      await countSporesAcross(db, most, { observationType: 't', status: 's', sessionId: 's', search: 'q', createdFrom: 1 });
-      await sporeFacets(db, most, { observationType: 't', status: 's', sessionId: 's', search: 'q', createdFrom: 1 });
+      await listSessionsAcross(db, most, { limit: 50, cursor: CURSOR, since: 1, until: 2, branch: 'b', agent: 'a', memberLabel: 'm', sessionId: 's', q: 'q', state: 'open', fidelity: 'full' });
+      await listSporesAcross(db, most, { observationType: 't', status: 's', sessionId: 's', search: 'q', createdFrom: 1, createdTo: 2, limit: 50, offset: 50 });
+      await countSporesAcross(db, most, { observationType: 't', status: 's', sessionId: 's', search: 'q', createdFrom: 1, createdTo: 2 });
+      await sporeFacets(db, most, { observationType: 't', status: 's', sessionId: 's', search: 'q', createdFrom: 1, createdTo: 2 });
       await pagePlansAcross(db, most, { status: 'active', since: 1, limit: 50, cursor: CURSOR });
       await readWork(db, most, 0, 1);
     });

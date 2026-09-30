@@ -13,6 +13,7 @@ import { changePlanStatus } from '../core/plans.js';
 import { PLAN_STATUS_MESSAGE, planInSession, WRITABLE_PLAN_STATUSES } from '../read/plans.js';
 import { tombstoneSession } from '../core/tombstones.js';
 import { endSession } from '../core/session-end.js';
+import { sessionOutcome } from '../read/run-reads.js';
 
 /** Session child collections, each served by the same scoped and paginated handler. */
 const CHILDREN = {
@@ -55,17 +56,19 @@ export function paging(url: URL): { limit?: number; cursor?: string } | Response
   return { limit: rawLimit === null ? undefined : Number(rawLimit), cursor: rawCursor ?? undefined };
 }
 
-/** The list's filters as the query names them: state, branch, member, agent, text and a start instant. An unknown state, and a start that is not an instant, are refused. */
+/** The list's filters as the query names them: state, branch, member, agent, text, and a window of starts from a start instant (inclusive) to an end instant (exclusive). An unknown state, and a bound that is not an instant, are refused. */
 export function sessionFilters(url: URL): SessionFilters | Response {
   const state = url.searchParams.get('state');
   if (state !== null && state !== 'open' && state !== 'ended') return badRequest('state must be open or ended');
   const since = instantParam(url, 'since');
   if (since instanceof Response) return since;
+  const until = instantParam(url, 'until');
+  if (until instanceof Response) return until;
   const text = (name: string): string | undefined => {
     const value = url.searchParams.get(name);
     return value === null || value === '' ? undefined : value;
   };
-  return { state: state ?? undefined, branch: text('branch'), memberLabel: text('member'), agent: text('agent'), q: text('q'), since };
+  return { state: state ?? undefined, branch: text('branch'), memberLabel: text('member'), agent: text('agent'), q: text('q'), since, until };
 }
 
 export async function handleProjectSessions(env: ServerEnv, ctx: OwnerContext): Promise<Response> {
@@ -78,6 +81,7 @@ export async function handleProjectSessions(env: ServerEnv, ctx: OwnerContext): 
   return ok(await listSessionSummaries(env.db, scope, { ...page, ...filters }, ctx.now));
 }
 
+/** One session, with what came of it: the runs that read it or wrote from it, and the spores written from it. */
 export async function handleSession(env: ServerEnv, ctx: OwnerContext): Promise<Response> {
   const sessionId = sessionIdParam(ctx.params.sessionId);
   if (sessionId === null) return notFound();
@@ -85,7 +89,10 @@ export async function handleSession(env: ServerEnv, ctx: OwnerContext): Promise<
   if (scope === null) return notFound();
   const session = await getSession(env.db, scope, sessionId);
   if (session === null) return notFound();
-  return ok({ session, untitled: await untitledReason(env.db, scope.projectId, sessionId), counts: await sessionCounts(env.db, scope, sessionId), release: await getReleaseStatus(env.db, scope, 'session', sessionId), projectId: scope.projectId });
+  return ok({
+    session, untitled: await untitledReason(env.db, scope.projectId, sessionId), counts: await sessionCounts(env.db, scope, sessionId),
+    release: await getReleaseStatus(env.db, scope, 'session', sessionId), outcome: await sessionOutcome(env.db, scope, sessionId), projectId: scope.projectId,
+  });
 }
 
 export async function handleSessionChildren(env: ServerEnv, ctx: OwnerContext): Promise<Response> {

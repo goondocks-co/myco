@@ -10,6 +10,7 @@ import type { ServerEnv } from '../core/adapters.js';
 import type { OwnerContext } from '../context.js';
 import { listReports } from '../core/runs.js';
 import { getRunDetail, listRuns } from '../read/runs.js';
+import { runReads } from '../read/run-reads.js';
 import { badRequest, notFound, ok, resolveProjectScope } from './scope.js';
 import { paging } from './sessions.js';
 
@@ -52,7 +53,7 @@ export async function handleProjectRuns(env: ServerEnv, ctx: OwnerContext): Prom
   return ok(await listRuns(env.db, scope, { ...page, status, task }));
 }
 
-/** One run with its phases and reports. A run under another project answers 404, the same as one that never existed. */
+/** One run with its phases and reports, the sessions it read and the spores it wrote. A run under another project answers 404, the same as one that never existed. */
 export async function handleProjectRun(env: ServerEnv, ctx: OwnerContext): Promise<Response> {
   const scope = await resolveProjectScope(env.db, ctx.member, ctx.params.projectId);
   if (scope === null) return notFound();
@@ -60,5 +61,5 @@ export async function handleProjectRun(env: ServerEnv, ctx: OwnerContext): Promi
   if (runId === null) return notFound();
   const detail = await getRunDetail(env.db, scope, runId);
   if (detail === null) return notFound();
-  return ok({ ...detail, reports: await listReports(env.db, scope, runId), projectId: scope.projectId });
+  return ok({ ...detail, reports: await listReports(env.db, scope, runId), ...await runReads(env.db, scope, runId), projectId: scope.projectId });
 }

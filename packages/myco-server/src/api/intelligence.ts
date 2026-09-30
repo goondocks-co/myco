@@ -15,7 +15,7 @@
  */
 import type { ServerEnv } from '../core/adapters.js';
 import type { OwnerContext } from '../context.js';
-import { notFound, ok, resolveProjectScope } from './scope.js';
+import { instantParam, notFound, ok, resolveProjectScope } from './scope.js';
 import { countSpores, getSpore, listSpores, listSupersededSporeIds, listSupersedingSporeIds } from '../core/spores.js';
 import { getPublishedSkillContent, listLineageForSkill, listSkillRecords } from '../core/skills.js';
 import { listDigestRevisions, listDigests } from '../core/digests.js';
@@ -43,14 +43,21 @@ async function scopeOf(env: ServerEnv, ctx: OwnerContext) {
   return projectId === undefined ? null : await resolveProjectScope(env.db, ctx.member, projectId);
 }
 
+/** A Project's spores, newest first, paged by offset; a start instant (inclusive) and an end instant (exclusive) bound when they were written. */
 export async function handleProjectSpores(env: ServerEnv, ctx: OwnerContext): Promise<Response> {
   const scope = await scopeOf(env, ctx);
   if (scope === null) return notFound();
+  const since = instantParam(ctx.url, 'since');
+  if (since instanceof Response) return since;
+  const until = instantParam(ctx.url, 'until');
+  if (until instanceof Response) return until;
   const options = {
     observationType: ctx.url.searchParams.get('type') ?? undefined,
     status: ctx.url.searchParams.get('status') ?? undefined,
     sessionId: ctx.url.searchParams.get('session') ?? undefined,
     search: ctx.url.searchParams.get('q') ?? undefined,
+    createdFrom: since,
+    createdTo: until,
     limit: clampLimit(ctx.url.searchParams.get('limit')),
     offset: offsetOf(ctx.url.searchParams.get('offset')),
   };

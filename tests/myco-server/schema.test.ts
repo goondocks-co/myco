@@ -7,8 +7,8 @@ import { DEPLOYMENT_ACCESS_PATH_INDEXES } from './helpers/access-paths.js';
 
 const table = (name: string) => SCHEMA_DDL.find((s) => new RegExp(`CREATE TABLE IF NOT EXISTS ${name}\\b`).test(s))!;
 
-/** The tables schema v2 introduces; every one is project-scoped and attributed. */
-const V2_TABLES = ['blobs', 'prompt_batches', 'tool_calls', 'responses', 'plans', 'attachments', 'transcripts', 'transcript_segments', 'tags'];
+/** The tables schema v2 introduces, and the later tables held to its rules; every one is project-scoped and attributed. */
+const V2_TABLES = ['blobs', 'prompt_batches', 'tool_calls', 'responses', 'plans', 'attachments', 'transcripts', 'transcript_segments', 'tags', 'run_reads'];
 const CONTINUED_TABLES = ['plans', 'transcripts'];
 
 function applied(): Database {

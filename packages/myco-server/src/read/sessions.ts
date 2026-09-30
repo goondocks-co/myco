@@ -197,6 +197,8 @@ export interface SessionFilters {
   branch?: string;
   /** Sessions started at or after this instant (ms). */
   since?: number;
+  /** Sessions started before this instant (ms); a session started exactly at it is not listed. */
+  until?: number;
   /** `open` is a session with no end recorded; `ended` one with an end. */
   state?: 'open' | 'ended';
   /** The label of the member whose credential captured the session. */
@@ -288,6 +290,7 @@ async function selectSessions(
   if (opts.agent !== undefined) { conditions.push('s.agent = ?'); params.push(opts.agent); }
   // The instant the page is ordered by, so the filter admits what the order shows.
   if (opts.since !== undefined) { conditions.push(`${SESSION_OCCURRED_AT} >= ?`); params.push(opts.since); }
+  if (opts.until !== undefined) { conditions.push(`${SESSION_OCCURRED_AT} < ?`); params.push(opts.until); }
   // Open and ended as the page shows them, so a session listed with an end is not also listed as open.
   if (opts.state === 'open') conditions.push(`${PRESENTED_ENDED_AT} IS NULL`);
   if (opts.state === 'ended') conditions.push(`${PRESENTED_ENDED_AT} IS NOT NULL`);
