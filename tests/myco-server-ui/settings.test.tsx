@@ -11,8 +11,8 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 
 import App from '../../packages/myco-server/ui/src/App';
 import { AppearanceProvider } from '../../packages/myco-server/ui/src/providers/appearance';
-import { LEAF_FIELDS, LEAF_GROUPS, groupsOf } from '../../packages/myco-server/ui/src/features/admin/settings/catalogue';
-import { LeafControl, savedWords } from '../../packages/myco-server/ui/src/features/admin/settings/LeafControl';
+import { LEAF_FIELDS, LEAF_GROUPS, LIVE_FIELDS, groupsOf } from '../../packages/myco-server/ui/src/features/admin/settings/catalogue';
+import { agentListRefusal, LeafControl, savedWords, WORKER_AGENTS } from '../../packages/myco-server/ui/src/features/admin/settings/LeafControl';
 import { oldTabTarget } from '../../packages/myco-server/ui/src/features/admin/settings/SettingsPage';
 import { liftsAt, policyWords, progressWords, waitingWords } from '../../packages/myco-server/ui/src/features/admin/settings/titling';
 import { SETTINGS_SECTIONS } from '../../packages/myco-server/ui/src/routes/nav';
@@ -134,18 +134,25 @@ describe('Settings, in five sections', () => {
       if (groups.length === 0) continue;
       await section(s.label);
       for (const g of groups) {
+        const live = g.leaves.filter((f) => f.retired !== true);
+        if (live.length === 0) continue;
         const card = await group(g.label);
-        for (const f of g.leaves) {
+        for (const f of live) {
           expect({ leaf: f.leaf, present: within(card).queryByLabelText(f.label) !== null }).toEqual({ leaf: f.leaf, present: true });
           controls += 1;
         }
       }
     }
-    expect(controls).toBe(LEAF_FIELDS.length);
+    expect(controls).toBe(LIVE_FIELDS.length);
     await section('Myco’s work');
     await group('What sessions receive');
-    expect(statusOf('cortex.digest.inject_on_session_start')).toBe('Saved by Ada · 2 h ago');
-    expect(statusOf('cortex.digest.tier')).toBe('Server default');
+    // Nothing stored: the status says the server's default once, with what it is.
+    expect(statusOf('cortex.digest.tier')).toBe('Server default: 5000 tokens');
+    expect(statusOf('agent.scheduled_tasks_active_window_days')).toBe('Server default: 14 days');
+    expect(statusOf('agent.limits.concurrent_runs')).toBe('Server default: no limit');
+    // A retired setting with a value stored sits under Older settings, and says nothing reads it.
+    fireEvent.click(within(await screen.findByRole('region', { name: 'Older settings' })).getByRole('button', { name: /^Older settings/ }));
+    await waitFor(() => expect(statusOf('cortex.digest.inject_on_session_start')).toBe('Nothing on this server reads it any more.'));
     expect(rawIdsIn(document.body, ['[data-testid="location"]'])).toEqual([]);
   });
 
@@ -159,11 +166,12 @@ describe('Settings, in five sections', () => {
   it('saves a toggle on change and a text leaf on blur, each to its own leaf', async () => {
     const { sent } = server(base({ '/api/settings/cortex.spores.inject_on_prompt_submit': () => Response.json({ applied: true }), '/api/settings/agent.provider.model': () => Response.json({ applied: true }) }));
     mount('/settings');
-    // A setting the server no longer reads is shown and not offered.
-    expect(await screen.findByRole('switch', { name: 'Digest at session start' })).toBeDisabled();
-    fireEvent.click(await screen.findByRole('switch', { name: 'Spores on every prompt' }));
+    // The server serves spores unless told not to, so with nothing stored the switch reads on, and a flip turns it off.
+    const spores = await screen.findByRole('switch', { name: 'Spores on every prompt' });
+    expect(spores.getAttribute('aria-checked')).toBe('true');
+    fireEvent.click(spores);
     await waitFor(() => expect(sent).toHaveLength(1));
-    expect(sent[0]).toMatchObject({ method: 'PUT', path: '/api/settings/cortex.spores.inject_on_prompt_submit', body: { value: true } });
+    expect(sent[0]).toMatchObject({ method: 'PUT', path: '/api/settings/cortex.spores.inject_on_prompt_submit', body: { value: false } });
     await section('Models and keys');
     const model = await screen.findByLabelText('Model');
     fireEvent.change(model, { target: { value: 'claude-opus' } });
@@ -190,7 +198,7 @@ describe('Settings, in five sections', () => {
       '/api/settings/embedding.model': () => Response.json({ error: 'nope' }, { status: 503 }),
     }));
     mount('/settings');
-    await pick('Digest size', '5000 tokens');
+    await pick('Digest size', '10000 tokens');
     await waitFor(() => expect(statusOf('cortex.digest.tier')).toBe('That setting is not held by the server.'));
     const limit = await screen.findByLabelText('Items per prompt');
     fireEvent.change(limit, { target: { value: '11' } });
@@ -207,23 +215,74 @@ describe('Settings, in five sections', () => {
   it('saves a numeric select as a number', async () => {
     const { sent } = server(base({ '/api/settings/cortex.digest.tier': () => Response.json({ applied: true }) }));
     mount('/settings');
-    await pick('Digest size', '5000 tokens');
+    // The server's default, 5000, reads as picked while nothing is stored; another size is saved as a number.
+    expect((await screen.findByLabelText('Digest size')).textContent).toContain('5000 tokens');
+    await pick('Digest size', '10000 tokens');
     await waitFor(() => expect(sent).toHaveLength(1));
-    expect(sent[0]).toMatchObject({ method: 'PUT', path: '/api/settings/cortex.digest.tier', body: { value: 5000 } });
+    expect(sent[0]).toMatchObject({ method: 'PUT', path: '/api/settings/cortex.digest.tier', body: { value: 10000 } });
   });
 
-  it('saves a document on Save, and refuses one that is not JSON before it leaves', async () => {
-    const { sent } = server(base({ '/api/settings/worker.harness_fallback': () => Response.json({ applied: true }) }));
-    mount('/settings');
-    const doc = await screen.findByLabelText('Then try, in order');
+  it('saves the task overrides document on Save, and refuses one that is not JSON before it leaves', async () => {
+    const { sent } = server(base({ '/api/settings/agent.tasks': () => Response.json({ applied: true }) }));
+    mount('/settings/models');
+    const doc = await screen.findByLabelText('Task overrides');
     const row = doc.closest('[data-setting]') as HTMLElement;
-    fireEvent.change(doc, { target: { value: '["codex",' } });
+    fireEvent.change(doc, { target: { value: '{"title-summary":' } });
     fireEvent.click(within(row).getByRole('button', { name: 'Save' }));
-    await waitFor(() => expect(statusOf('worker.harness_fallback')).toBe('Enter valid JSON.'));
-    fireEvent.change(doc, { target: { value: '["codex", "cursor"]' } });
+    await waitFor(() => expect(statusOf('agent.tasks')).toBe('Enter valid JSON.'));
+    fireEvent.change(doc, { target: { value: '{"title-summary": {"harness": "codex"}}' } });
     fireEvent.click(within(row).getByRole('button', { name: 'Save' }));
     await waitFor(() => expect(sent).toHaveLength(1));
-    expect(sent[0]).toMatchObject({ path: '/api/settings/worker.harness_fallback', body: { value: ['codex', 'cursor'] } });
+    expect(sent[0]).toMatchObject({ path: '/api/settings/agent.tasks', body: { value: { 'title-summary': { harness: 'codex' } } } });
+  });
+
+  it('picks the preferred agent from the agents a machine can run, and clears it to no preference', async () => {
+    let held: unknown;
+    const { sent } = server(base({
+      '/api/settings': () => Response.json(leaves(held === undefined ? {} : { 'worker.harness': { value: held, updatedBy: ADA, updatedAt: NOW } })),
+      '/api/settings/worker.harness': (init) => { held = JSON.parse(String(init!.body)).value; return Response.json({ applied: true }); },
+    }));
+    mount('/settings');
+    await waitFor(() => expect(statusOf('worker.harness')).toBe('Server default: none'));
+    await pick('Preferred agent', 'Codex');
+    await waitFor(() => expect(sent).toHaveLength(1));
+    expect(sent[0]).toMatchObject({ path: '/api/settings/worker.harness', body: { value: 'codex' } });
+    await waitFor(() => expect(screen.getByLabelText('Preferred agent').textContent).toContain('Codex'));
+    await pick('Preferred agent', 'No preference');
+    await waitFor(() => expect(sent).toHaveLength(2));
+    expect(sent[1]).toMatchObject({ path: '/api/settings/worker.harness', body: { value: null } });
+  });
+
+  it('keeps the fallback agents in order, and saves a list only of agents a machine can run, each once', async () => {
+    const held = { value: ['bogus', 'codex'] as unknown[] };
+    const { sent } = server(base({
+      '/api/settings': () => Response.json(leaves({ 'worker.harness_fallback': { value: held.value, updatedBy: ADA, updatedAt: NOW } })),
+      '/api/settings/worker.harness_fallback': (init) => { held.value = JSON.parse(String(init!.body)).value; return Response.json({ applied: true }); },
+    }));
+    mount('/settings');
+    const list = await screen.findByRole('list', { name: 'Then try, in order' });
+    expect(within(list).getAllByRole('listitem').map((li) => li.getAttribute('data-agent'))).toEqual(['bogus', 'codex']);
+    expect(list.textContent).toContain('bogus (not an agent a machine can run)');
+    // A change that keeps the unknown entry is refused before it leaves.
+    fireEvent.click(screen.getByRole('button', { name: 'Move Codex up' }));
+    await waitFor(() => expect(statusOf('worker.harness_fallback')).toBe('Not an agent a machine can run: bogus.'));
+    expect(sent).toEqual([]);
+    fireEvent.click(screen.getByRole('button', { name: 'Remove bogus' }));
+    await waitFor(() => expect(sent).toHaveLength(1));
+    expect(sent[0]).toMatchObject({ path: '/api/settings/worker.harness_fallback', body: { value: ['codex'] } });
+    await pick('Add to then try, in order', 'Claude Code');
+    await waitFor(() => expect(sent).toHaveLength(2));
+    expect(sent[1]).toMatchObject({ body: { value: ['codex', 'claude-code'] } });
+    fireEvent.click(await screen.findByRole('button', { name: 'Move Claude Code up' }));
+    await waitFor(() => expect(sent).toHaveLength(3));
+    expect(sent[2]).toMatchObject({ body: { value: ['claude-code', 'codex'] } });
+  });
+
+  it('refuses a fallback list with an unknown agent or one listed twice, by the same agents the server opens a key for', () => {
+    expect(WORKER_AGENTS).toEqual(['claude-code', 'codex', 'opencode', 'cursor', 'antigravity']);
+    expect(agentListRefusal(['codex', 'cursor'])).toBeNull();
+    expect(agentListRefusal(['codex', 'codex'])).toBe('Each agent can be listed once.');
+    expect(agentListRefusal(['codex', 7])).toBe('Not an agent a machine can run: 7.');
   });
 
   it('adds and removes a path the code map leaves out, writing the whole list to its leaf', async () => {
@@ -284,7 +343,6 @@ describe('Settings, in five sections', () => {
     await waitFor(() => expect((screen.getByLabelText('Keep raw transcripts for') as HTMLInputElement).value).toBe('0'));
     for (const [sectionLabel, label, leaf] of [
       ['Myco’s work', 'Session-start instructions', 'instructions.template'],
-      ['Myco’s work', 'Preferred agent', 'worker.harness'],
       ['Capture and retention', 'Reach back at most', 'import.window_days'],
       ['Capture and retention', 'At most, per agent', 'import.max_sessions_per_harness'],
       ['Myco’s work', 'Runs of one task per hour', 'agent.limits.task_runs_per_hour'],
@@ -293,6 +351,8 @@ describe('Settings, in five sections', () => {
       const field = await screen.findByLabelText(label);
       expect({ leaf, value: (field as HTMLInputElement).value }).toEqual({ leaf, value: String(CONFIGURED[leaf]) });
     }
+    await section('Myco’s work');
+    expect((await screen.findByLabelText('Preferred agent')).textContent).toContain('Claude Code');
     expect(sent).toHaveLength(1);
   });
 
@@ -319,36 +379,65 @@ describe('Settings, in five sections', () => {
   });
 
   /**
-   * A setting nothing reads is shown and not offered, every kind of it, driven
-   * from the catalogue so a leaf that takes the flag later is covered the day it
-   * does. A value an older server stored stays visible.
+   * A setting nothing on the server reads any more is not offered. With no
+   * value stored it is not shown at all; with one stored, it is listed under
+   * "Older settings" at its section's foot, read-only, and never writes.
    */
-  it('shows every read-only setting without offering it, whatever kind of control it is', async () => {
-    const readOnly = LEAF_GROUPS.flatMap((g) => g.leaves.filter((f) => f.readOnly === true).map((f) => ({ group: g, field: f })));
-    expect(readOnly.length).toBeGreaterThan(0);
-    const { sent } = server(base({ '/api/settings': () => Response.json(leaves({ 'skills.usage_stale_days': { value: 45, updatedBy: ADA, updatedAt: NOW } })) }));
+  it('leaves out a retired setting with no value stored, and shows one with a value stored under Older settings, read-only', async () => {
+    const retired = LEAF_FIELDS.filter((f) => f.retired === true);
+    expect(retired.length).toBeGreaterThan(0);
+    server(base({ '/api/settings': () => Response.json(leaves()) }));
     mount('/settings');
-    expect((await screen.findByLabelText('Stale after') as HTMLInputElement).value).toBe('45');
-
-    for (const { group: g, field } of readOnly) {
-      await section(SECTION_LABEL[g.section]!);
-      const control = await within(await group(g.label)).findByLabelText(field.label);
-      const offered = control instanceof HTMLInputElement || control instanceof HTMLTextAreaElement
-        ? !control.readOnly && !control.disabled
-        : control instanceof HTMLButtonElement
-          ? !control.disabled
-          : screen.queryByLabelText(`Add to ${field.label.toLowerCase()}`) !== null
-            || within(control).queryAllByRole('button', { name: /^Remove / }).length > 0;
-      expect({ leaf: field.leaf, kind: field.kind, offered }).toEqual({ leaf: field.leaf, kind: field.kind, offered: false });
-      if (control instanceof HTMLInputElement || control instanceof HTMLTextAreaElement) {
-        fireEvent.change(control, { target: { value: '99' } });
-        fireEvent.blur(control);
-        fireEvent.keyDown(control, { key: 'Enter' });
-      } else {
-        fireEvent.click(control);
-      }
+    await group('When Myco works');
+    for (const s of SETTINGS_SECTIONS.filter((x) => x.id !== 'access')) {
+      await section(s.label);
+      await screen.findByRole('group', { name: groupsOf(s.id).find((g) => g.leaves.some((f) => f.retired !== true))!.label });
+      for (const f of retired) expect({ leaf: f.leaf, shown: document.querySelector(`[data-setting="${f.leaf}"]`) !== null }).toEqual({ leaf: f.leaf, shown: false });
+      // A boolean, not the element: a failed match would print the element's whole object graph.
+      expect({ section: s.id, older: document.querySelector('[data-older-settings]') !== null }).toEqual({ section: s.id, older: false });
     }
+    cleanup();
+
+    const { sent } = server(base({ '/api/settings': () => Response.json(leaves({
+      'skills.usage_stale_days': { value: 45, updatedBy: ADA, updatedAt: NOW },
+      'agent.event_tasks_enabled': { value: true, updatedBy: ADA, updatedAt: NOW },
+    })) }));
+    mount('/settings');
+    const older = await screen.findByRole('region', { name: 'Older settings' });
+    fireEvent.click(within(older).getByRole('button', { name: 'Older settings (2)' }));
+    const stale = await within(older).findByLabelText('Skills stale after') as HTMLInputElement;
+    expect(stale.value).toBe('45');
+    expect(stale.readOnly).toBe(true);
+    const arrive = within(older).getByRole('switch', { name: 'Work as sessions arrive' });
+    expect(arrive.getAttribute('aria-checked')).toBe('true');
+    expect((arrive as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.change(stale, { target: { value: '99' } });
+    fireEvent.blur(stale);
+    fireEvent.click(arrive);
     expect(sent).toEqual([]);
+  });
+
+  it('shows every switch at the value the server applies while nothing is stored', async () => {
+    server(base({ '/api/settings': () => Response.json(leaves()) }));
+    mount('/settings');
+    for (const [label, on] of [
+      ['Instructions at session start', true], ['Instructions when a subagent starts', true], ['Plan nudge on every prompt', true],
+      ['Spores on every prompt', true], ['Work on a schedule', false], ['Update the map on its own', false],
+    ] as const) {
+      const toggle = await screen.findByRole('switch', { name: label });
+      expect({ label, on: toggle.getAttribute('aria-checked') === 'true' }).toEqual({ label, on });
+    }
+    expect(statusOf('cortex.instructions.inject_on_session_start')).toBe('Server default: on');
+    expect(statusOf('agent.scheduled_tasks_enabled')).toBe('Server default: off');
+  });
+
+  it('says what the server said was wrong with a value it refused', async () => {
+    server(base({ '/api/settings/cortex.spores.max_per_prompt': () => Response.json({ applied: false, reason: 'invalid_value', leaf: 'cortex.spores.max_per_prompt', detail: 'expected a whole number' }, { status: 400 }) }));
+    mount('/settings');
+    const limit = await screen.findByLabelText('Items per prompt');
+    fireEvent.change(limit, { target: { value: '3' } });
+    fireEvent.blur(limit);
+    await waitFor(() => expect(statusOf('cortex.spores.max_per_prompt')).toBe('The server refused that value: expected a whole number'));
   });
 
   it('words where a value stands, naming a person only by a name', () => {
@@ -356,7 +445,7 @@ describe('Settings, in five sections', () => {
     expect(savedWords(row, 'Ada', NOW)).toBe('Saved by Ada · 2 h ago');
     expect(savedWords(row, null, NOW)).toBe('Saved 2 h ago');
     expect(savedWords({ ...row, configured: false }, 'Ada', NOW)).toBe('Server default');
-    expect(savedWords(undefined, null, NOW)).toBe('Server default');
+    expect(savedWords(undefined, null, NOW, '14 days')).toBe('Server default: 14 days');
   });
 });
 
@@ -436,6 +525,20 @@ describe('provider keys', () => {
     expect(row('OpenAI')).toContain('Used for embeddings, when the embedding provider is OpenAI.');
     expect(row('OpenAI')).not.toContain('Codex');
     expect(row('Anthropic')).toContain('Runs of Claude Code, OpenCode and Cursor');
+    // Nothing reads the GitHub key: with none stored it is not offered.
+    expect(within(keys).queryByText('GitHub')).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Older keys' })).toBeNull();
+  });
+
+  it('lists a stored GitHub key, which nothing reads, under Older keys with no control', async () => {
+    const stored = secrets(true);
+    stored.secrets[4] = { ...stored.secrets[4]!, configured: true, maskedValue: 'g…h', updatedAt: NOW, updatedBy: ADA };
+    server(base({ '/api/secrets': () => Response.json(stored) }));
+    mount('/settings/models');
+    fireEvent.click(await screen.findByRole('button', { name: 'Older keys' }));
+    const older = await screen.findByRole('group', { name: 'Older keys' });
+    expect(older.textContent).toContain('Nothing on this server reads this key any more.');
+    expect(within(older).queryAllByRole('button')).toEqual([]);
   });
 });
 
@@ -445,7 +548,8 @@ describe('Title imported sessions', () => {
     const { sent } = server(base({
       '/api/titling-backfill': (init) => {
         if (init?.method === 'PUT') {
-          progress = { ...progress, backfillEnabled: true, enabled: true, usedToday: 5, inFlight: 5, waiting: { reason: 'ceiling', until: Date.now() + 2 * 3_600_000 } as never };
+          const enabled = (JSON.parse(String(init.body)) as { enabled: boolean }).enabled;
+          progress = { ...progress, backfillEnabled: enabled, enabled, usedToday: 5, inFlight: 5, waiting: { reason: 'ceiling', until: Date.now() + 2 * 3_600_000 } as never };
         }
         return Response.json(progress);
       },
@@ -461,6 +565,10 @@ describe('Title imported sessions', () => {
     await waitFor(() => expect(screen.getByRole('switch', { name: 'Title imported sessions' }).getAttribute('aria-checked')).toBe('true'));
     expect(words()).toContain('Today’s limit of 24 is reached; the next title can start at ');
     expect(words()).toContain('Titles start while the server is in use or idle, at most once every 15 min. Today: 5 of 24 started, 5 in progress, 2 titled, 0 failed.');
+    // And back off: the value sent is the switch's new state, each way.
+    fireEvent.click(screen.getByRole('switch', { name: 'Title imported sessions' }));
+    await waitFor(() => expect(sent).toHaveLength(2));
+    expect(sent[1]).toMatchObject({ method: 'PUT', path: '/api/titling-backfill', body: { enabled: false } });
   });
 
   it('shows it on where the server has it on', async () => {

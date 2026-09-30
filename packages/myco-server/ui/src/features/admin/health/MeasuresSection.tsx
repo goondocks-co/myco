@@ -28,9 +28,10 @@ interface MeasureProps {
  */
 function MeasureStat({ label, note, measure, format, unit, noSample }: MeasureProps) {
   const measured = measure.sampleSize > 0 && measure.value !== null;
+  // With nothing measured the figure's slot holds a dash, never a zero, and the sentence under it says why.
   const value: ReactNode = measured
     ? <span data-testid="measure-value">{format(measure.value!)}</span>
-    : <span className="t-body not-italic text-muted" data-testid="measure-no-sample">{noSample}</span>;
+    : <span className="text-faint"><span aria-hidden>—</span><span className="sr-only">Not measured yet</span></span>;
   return (
     <div role="group" aria-label={label} data-testid="measure-tile" className="flex min-w-0">
       <Stat
@@ -40,6 +41,7 @@ function MeasureStat({ label, note, measure, format, unit, noSample }: MeasurePr
         context={(
           <span className="flex flex-col gap-s1">
             <span className="t-meta text-faint" data-testid="measure-sample">{sampleWords(measure.sampleSize, unit)}</span>
+            {!measured && <span className="text-ink-2" data-testid="measure-no-sample">{noSample}</span>}
             <span>{note}</span>
           </span>
         )}

@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { REJOIN_FOR_ADMIN } from '@goondocks/myco-shared/member-protocol';
 import { Card, ConfirmDialog, EmptyState, ErrorState, HealthDot, LoadingState, MoreMenu, ShowMore, type HealthTone, type MoreMenuItem } from '../../../design';
 import { refusalText, useAccessActions } from '../../../hooks/use-access';
+import { useMe } from '../../../hooks/use-me';
 import { useProjects } from '../../../hooks/use-projects';
 import { useWorkerFleet } from '../../../hooks/use-status';
 import type { WorkerRow, WorkerStatus } from '../../../lib/api';
@@ -16,6 +17,11 @@ export const FLEET_WORDS = {
   unavailable: 'Whether it runs Myco’s work is unknown: the server could not be asked.',
   absent: 'No record of it running Myco’s work lately.',
 } as const;
+
+/** A stop that did not finish, in words: how many sign-ins stopped of how many, that the machine can still write, and why. */
+export function stopWords(stopped: number, total: number, why: string): string {
+  return `Stopped ${stopped} of ${total} ${total === 1 ? 'sign-in' : 'sign-ins'}; this machine can still write. ${why} Try again.`;
+}
 
 const STANDING_TONE: Record<Machine['standing'], HealthTone> = { allowed: 'ok', stopped: 'faint', replayed: 'bad', expired: 'faint' };
 const STANDING_LABEL: Record<Machine['standing'], string> = { allowed: 'Allowed to write', stopped: 'Stopped', replayed: 'Stopped', expired: 'Expired' };
@@ -44,10 +50,15 @@ export function MachineList({ machines, viewerId, nameOf, showOwner, paging, emp
   // A server that could not read its own record answers an empty fleet, which says nothing: it is unknown, not empty.
   const fleet = answered?.available === true ? answered : undefined;
   const projects = useProjects();
+  const me = useMe();
+  // The viewer's own machine names them by the login they signed in with where their label is only their id.
+  const viewerName = me.data?.login !== undefined && me.data.login !== '' ? me.data.login : 'You';
   const stop = useAccessActions().revokeCredentials;
   const [settingsFor, setSettingsFor] = useState<{ id: string; name: string } | null>(null);
   const [activityFor, setActivityFor] = useState<ActivityTarget | null>(null);
   const [stopping, setStopping] = useState<Machine | null>(null);
+  /** The sign-ins still to stop: the machine's live ones, then, after a partial failure, only those that did not stop. */
+  const [toStop, setToStop] = useState<readonly string[]>([]);
   const [stopError, setStopError] = useState<string | null>(null);
   const projectName = (id: string) => projects.data?.projects.find((p) => p.projectId === id)?.name ?? null;
 
@@ -63,7 +74,7 @@ export function MachineList({ machines, viewerId, nameOf, showOwner, paging, emp
             <MachineItem
               key={machine.key}
               machine={machine}
-              owner={showOwner ? nameOf(machine.memberId) ?? (machine.memberId === viewerId ? 'You' : 'Unnamed member') : null}
+              owner={showOwner ? nameOf(machine.memberId) ?? (machine.memberId === viewerId ? viewerName : 'A teammate') : null}
               stoppedBy={nameOf(machine.stoppedBy)}
               fleet={fleet}
               projectName={projectName}
@@ -71,8 +82,8 @@ export function MachineList({ machines, viewerId, nameOf, showOwner, paging, emp
                 ...(machine.memberId === viewerId && machine.machineId !== null
                   ? [{ label: 'Its settings', onSelect: () => setSettingsFor({ id: machine.machineId!, name: machine.name }) }]
                   : []),
-                { label: 'What it wrote', onSelect: () => setActivityFor({ name: machine.name, credentialId: machine.credentials[0]!.id, bytesWritten: machine.credentials.reduce((n, c) => n + c.bytesWritten, 0) }) },
-                ...(machine.live.length > 0 ? [{ label: 'Stop', tone: 'danger' as const, onSelect: () => { setStopError(null); stop.reset(); setStopping(machine); } }] : []),
+                { label: 'What it wrote', onSelect: () => setActivityFor({ name: machine.name, credentialIds: machine.credentials.map((c) => c.id), bytesWritten: machine.credentials.reduce((n, c) => n + c.bytesWritten, 0) }) },
+                ...(machine.live.length > 0 ? [{ label: 'Stop', tone: 'danger' as const, onSelect: () => { setStopError(null); stop.reset(); setToStop(machine.live.map((c) => c.id)); setStopping(machine); } }] : []),
               ]}
             />
           ))}
@@ -93,7 +104,15 @@ export function MachineList({ machines, viewerId, nameOf, showOwner, paging, emp
         error={stopError}
         onConfirm={() => {
           if (stopping === null) return;
-          stop.mutate(stopping.live.map((c) => c.id), { onSuccess: () => setStopping(null), onError: (err) => setStopError(refusalText(err)) });
+          stop.mutate(toStop, {
+            onSuccess: (outcome) => {
+              if (outcome.failed.length === 0) { setStopping(null); return; }
+              const total = outcome.stopped.length + outcome.failed.length;
+              setToStop(outcome.failed.map((f) => f.id));
+              setStopError(stopWords(outcome.stopped.length, total, refusalText(outcome.failed[0]!.error)));
+            },
+            onError: (err) => setStopError(refusalText(err)),
+          });
         }}
       />
     </div>

@@ -107,6 +107,23 @@ describe('a project\'s settings', () => {
     expect(rawIdsIn(document.body, ['[data-testid="location"]'])).toEqual([]);
   });
 
+  it('leaves out the skills switch, which nothing reads, and shows it read-only under Older only while it is on', async () => {
+    server(base());
+    mount(`/p/${P}/settings`);
+    expect(await screen.findByRole('switch', { name: 'Learning' })).toBeTruthy();
+    expect(screen.queryByRole('switch', { name: 'Skills' })).toBeNull();
+    expect(within(sectionOf('capabilities')).queryByRole('button', { name: 'Older' })).toBeNull();
+    cleanup();
+    const { sent } = server(base({ [`${api}/capabilities`]: () => Response.json({ capabilities: { cortex: true, canopy: false, skills: true, vault_evolution: true } }) }));
+    mount(`/p/${P}/settings`);
+    await screen.findByRole('switch', { name: 'Learning' });
+    fireEvent.click(within(sectionOf('capabilities')).getByRole('button', { name: 'Older' }));
+    const skills = await screen.findByRole('switch', { name: 'Skills' });
+    expect((skills as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.click(skills);
+    expect(sent).toEqual([]);
+  });
+
   it('switches a capability through the project route, and says why when the server refuses', async () => {
     let refuse = false;
     const { sent } = server(base({ [`PUT ${api}/capabilities/canopy`]: () => (refuse ? Response.json({ error: 'nope' }, { status: 503 }) : Response.json({ applied: true })) }));

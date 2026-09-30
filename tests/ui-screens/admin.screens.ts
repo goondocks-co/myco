@@ -56,12 +56,17 @@ async function expectSettings(page: Page, viewport: ViewportName): Promise<void>
   const tabs = page.getByRole('navigation', { name: 'Settings sections' });
   await expect(tabs).toBeInViewport();
   await expect(tabs.getByRole('link', { name: 'Myco’s work' })).toHaveAttribute('aria-current', 'page');
-  // The five sections never wrap: on a phone the strip scrolls in its own box.
-  if (viewport === 'desktop') await expectOneLine(page, 'nav[aria-label="Settings sections"] a');
+  // The five sections never wrap: on a phone the strip scrolls in its own box, and fades at the edge where more wait.
+  await expectOneLine(page, 'nav[aria-label="Settings sections"] a');
+  await expect(page.locator('[data-more-tabs]')).toHaveCount(viewport === 'phone' ? 1 : 0);
   await expect(page.getByRole('switch').first()).toBeVisible();
   const titling = page.getByRole('switch', { name: 'Title imported sessions' });
   await expect(titling).toBeVisible();
   if (onFixture()) await expect(titling).toBeChecked();
+  // With nothing stored, a switch the server treats as on reads on.
+  if (onFixture()) await expect(page.getByRole('switch', { name: 'Instructions at session start' })).toBeChecked();
+  // A setting nothing reads any more is not offered.
+  await expect(page.locator('[data-setting="agent.event_tasks_enabled"]')).toHaveCount(0);
 }
 
 async function expectModels(page: Page): Promise<void> {

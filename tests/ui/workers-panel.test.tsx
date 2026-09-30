@@ -36,7 +36,7 @@ const names = { machine: 'Ada’s studio Mac', project: (id: string) => (id === 
 
 describe('a machine running Myco’s work, in words', () => {
   it('shows an idle machine as waiting, with the agents it reported and what that does not prove', () => {
-    expect(workerLine(worker(), NOW, names)).toEqual({ tone: 'ok', line: 'Ada’s studio Mac · Waiting for work · last contact 3s ago' });
+    expect(workerLine(worker(), NOW, names)).toEqual({ tone: 'ok', line: 'Ada’s studio Mac · Waiting for work · last checked in 3s ago' });
     expect(agentsWords(worker())).toBe('Reports Codex and Claude Code signed in; their providers aren’t tested here.');
   });
 
@@ -57,7 +57,7 @@ describe('a machine running Myco’s work, in words', () => {
 
   it('says a machine has not been heard from lately without claiming it stopped', () => {
     const { tone, line } = workerLine(worker({ recent: false, lastSeenAt: NOW - 14 * 60_000 }), NOW, names);
-    expect({ tone, line }).toEqual({ tone: 'faint', line: 'Ada’s studio Mac · Not heard from lately · last contact 14m ago' });
+    expect({ tone, line }).toEqual({ tone: 'faint', line: 'Ada’s studio Mac · Not checking in now · last checked in 14m ago' });
     for (const word of [/stopped/i, /terminated/i, /offline/i, /dead/i]) expect(line).not.toMatch(word);
   });
 
@@ -69,7 +69,7 @@ describe('a machine running Myco’s work, in words', () => {
 
   it('does not call a machine ready when it reported no agent signed in', () => {
     const w = worker({ offers: [{ id: 'codex', authenticated: false }] });
-    expect(workerLine(w, NOW, names)).toEqual({ tone: 'bad', line: 'Ada’s studio Mac · Waiting for work, but reported no agent signed in · last contact 3s ago' });
+    expect(workerLine(w, NOW, names)).toEqual({ tone: 'bad', line: 'Ada’s studio Mac · Waiting for work, but reported no agent signed in · last checked in 3s ago' });
     expect(agentsWords(w)).toBe('Reported no agent signed in.');
     expect(agentsWords(worker({ offers: [] }))).toBe('Reported no agents.');
   });
@@ -77,12 +77,12 @@ describe('a machine running Myco’s work, in words', () => {
   it('says the agents are unknown rather than none when there is no readable report, and never treats it as ready', () => {
     const w = worker({ offers: null, capabilities: null });
     expect(agentsWords(w)).toBe('Which agents it can run is unknown.');
-    expect(workerLine(w, NOW, names)).toEqual({ tone: 'bad', line: 'Ada’s studio Mac · Waiting for work, with no readable report of its agents · last contact 3s ago' });
+    expect(workerLine(w, NOW, names)).toEqual({ tone: 'bad', line: 'Ada’s studio Mac · Waiting for work, with no readable report of its agents · last checked in 3s ago' });
   });
 
   it('says a machine whose claims the server would refuse is not waiting for work', () => {
     const { line } = workerLine(worker({ eligible: false }), NOW, names);
-    expect(line).toBe('Ada’s studio Mac · Its claims would be refused now · last contact 3s ago');
+    expect(line).toBe('Ada’s studio Mac · Its claims would be refused now · last checked in 3s ago');
     expect(line).not.toContain('Waiting');
   });
 

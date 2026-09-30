@@ -177,11 +177,11 @@ describe('Health', () => {
       expect(found[0]).toContain('Ada’s studio Mac');
       return found;
     });
-    expect(rows[0]).toMatch(/^Ada’s studio Mac · Waiting for work · last contact \d+s ago/);
+    expect(rows[0]).toMatch(/^Ada’s studio Mac · Waiting for work · last checked in \d+s ago/);
     expect(rows[0]).toContain('Reports Claude Code signed in');
     expect(rows[0]).toContain('Last check for work: nothing it could take.');
     expect(rows[1]).toMatch(/^Lin’s build box · Running learning in Myco · lease ends in /);
-    expect(rows[2]).toMatch(/^A machine · Not heard from lately/);
+    expect(rows[2]).toMatch(/^A machine · Not checking in now/);
     expect(within(workers).getByText(/^2 machines are running Myco’s work, 1 busy now\. 2 tasks are waiting\.$/)).toBeTruthy();
     for (const id of [STUDIO_CREDENTIAL, BUSY_CREDENTIAL, STRAY_CREDENTIAL, 'ada_5a2d54af', MYCO]) expect(workers.textContent).not.toContain(id);
   });

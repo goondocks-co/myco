@@ -20,9 +20,23 @@ import { invitationExpiry, machinesCount, shortDate } from './words';
 /** Where each part of People & machines sits on its page. */
 export const PEOPLE_ANCHORS = { people: 'people', invitations: 'invitations', machines: 'machines', runs: 'runs' } as const;
 
-/** A person's name on this page: their label when it names them, "You" for the viewer, else a plain stand-in. Never an id. */
-export function personName(member: Pick<MemberRow, 'id' | 'label' | 'system'>, viewerId: string | null): string {
-  return memberName(member) ?? (member.id === viewerId ? 'You' : 'Unnamed member');
+/**
+ * A person's name on this page: their label when it names them; for the
+ * viewer, the GitHub login they signed in with; else "A teammate". Never an id.
+ */
+export function personName(member: Pick<MemberRow, 'id' | 'label' | 'system'>, viewerId: string | null, viewerLogin: string | null = null): string {
+  const named = memberName(member);
+  if (named !== null) return named;
+  if (member.id === viewerId) return viewerLogin !== null && viewerLogin !== '' ? viewerLogin : 'You';
+  return 'A teammate';
+}
+
+/** `personName` with the signed-in viewer filled in. */
+export function usePersonName(): (member: Pick<MemberRow, 'id' | 'label' | 'system'>) => string {
+  const me = useMe();
+  const viewerId = me.data?.member?.id ?? null;
+  const login = me.data?.login ?? null;
+  return (member) => personName(member, viewerId, login);
 }
 
 /**
@@ -38,6 +52,7 @@ export function PeoplePage() {
   const invitations = useInvitations();
   const machines = useMachines();
   const nameOf = useMemberNames();
+  const nameOfPerson = usePersonName();
   const [invite, setInvite] = useState<InviteTarget | null>(null);
   useAnchorScroll(members.isSuccess && !machines.isPending);
 
@@ -45,7 +60,7 @@ export function PeoplePage() {
   const people = peopleOf(all);
   const live = people.filter((m) => m.revokedAt === null);
   const removed = people.filter((m) => m.revokedAt !== null);
-  const choices = live.map((m) => ({ id: m.id, name: personName(m, viewerId) }));
+  const choices = live.map((m) => ({ id: m.id, name: nameOfPerson(m) }));
   // The viewer first, so adding a machine starts on their own.
   choices.sort((a, b) => Number(b.id === viewerId) - Number(a.id === viewerId));
   const machineCount = (memberId: string) => machines.machines.filter((m) => m.memberId === memberId && m.standing === 'allowed').length;
@@ -111,12 +126,13 @@ interface PeopleListProps {
 }
 
 function PeopleList({ live, removed, viewerId, nameOf, machineCount, onAddMachine }: PeopleListProps) {
+  const nameOfPerson = usePersonName();
   const actions = useAccessActions();
   const [removing, setRemoving] = useState<MemberRow | null>(null);
   const [removeError, setRemoveError] = useState<string | null>(null);
   const [linking, setLinking] = useState<MemberRow | null>(null);
   const self = removing !== null && removing.id === viewerId;
-  const removingName = removing === null ? '' : personName(removing, viewerId);
+  const removingName = removing === null ? '' : nameOfPerson(removing);
 
   return (
     <div className="flex flex-col gap-s3">
@@ -147,9 +163,9 @@ function PeopleList({ live, removed, viewerId, nameOf, machineCount, onAddMachin
                 const by = nameOf(member.revokedBy);
                 return (
                   <li key={member.id} className="flex items-center gap-s3 px-s4 py-s3">
-                    <Avatar name={personName(member, viewerId)} />
+                    <Avatar name={nameOfPerson(member)} />
                     <div className="flex min-w-0 flex-col">
-                      <span className="t-body text-ink-2">{personName(member, viewerId)}</span>
+                      <span className="t-body text-ink-2">{nameOfPerson(member)}</span>
                       <span className="t-small text-muted">Removed {ago(member.revokedAt!, Date.now())}{by === null ? '' : ` by ${by}`}</span>
                     </div>
                   </li>
@@ -179,13 +195,14 @@ function PeopleList({ live, removed, viewerId, nameOf, machineCount, onAddMachin
           });
         }}
       />
-      <ConnectGithubDialog member={linking} name={linking === null ? '' : personName(linking, viewerId)} onClose={() => setLinking(null)} />
+      <ConnectGithubDialog member={linking} name={linking === null ? '' : nameOfPerson(linking)} onClose={() => setLinking(null)} />
     </div>
   );
 }
 
 function PersonItem({ member, viewerId, machines, actions }: { member: MemberRow; viewerId: string | null; machines: number; actions: MoreMenuItem[] }) {
-  const name = personName(member, viewerId);
+  const nameOfPerson = usePersonName();
+  const name = nameOfPerson(member);
   return (
     <li className="flex items-center gap-s3 px-s4 py-s3" data-person="">
       <Avatar name={name} />
@@ -193,7 +210,7 @@ function PersonItem({ member, viewerId, machines, actions }: { member: MemberRow
         <span className="flex flex-wrap items-center gap-s2">
           <span className="t-body font-medium text-ink">{name}</span>
           {member.role === 'admin' && <StatusChip>Admin</StatusChip>}
-          {member.id === viewerId && memberName(member) !== null && <StatusChip>You</StatusChip>}
+          {member.id === viewerId && name !== 'You' && <StatusChip>You</StatusChip>}
         </span>
         <span className="t-small text-muted">
           {member.linked ? 'GitHub connected' : 'No GitHub account yet'} · {machinesCount(machines)} · joined {shortDate(member.createdAt)}
@@ -260,12 +277,15 @@ interface InvitationsProps {
 }
 
 function Invitations({ invitations, viewerId, nameOf, people }: InvitationsProps) {
+  const nameOfPerson = usePersonName();
   const withdraw = useAccessActions().revokeInvitation;
   const [withdrawing, setWithdrawing] = useState<InvitationRow | null>(null);
   const [error, setError] = useState<string | null>(null);
   const forName = (id: string) => {
     const member = people.find((m) => m.id === id);
-    return member === undefined ? 'a member' : personName(member, viewerId);
+    if (member === undefined) return 'a member';
+    const name = nameOfPerson(member);
+    return name === 'A teammate' ? 'a teammate' : name;
   };
   if (invitations.isPending) return <LoadingState label="Reading the invitations" count={1} />;
   if (invitations.isError) return <ErrorState error={invitations.error} onRetry={() => void invitations.refetch()} />;
@@ -316,7 +336,7 @@ function RunCredentials() {
   const [error, setError] = useState<string | null>(null);
   if (runs.isPending) return <LoadingState label="Reading Myco’s runs" count={1} />;
   if (runs.error !== null && runs.rows.length === 0) return <ErrorState error={runs.error} onRetry={runs.retry} />;
-  if (runs.rows.length === 0) return <EmptyState title="Myco hasn’t run a task yet." />;
+  if (runs.rows.length === 0) return <Card><EmptyState title="Myco hasn’t run a task yet." className="py-0" /></Card>;
   const liveCount = runs.rows.filter((c) => c.live).length;
   const now = Date.now();
   return (
@@ -348,7 +368,10 @@ function RunCredentials() {
         error={error}
         onConfirm={() => {
           if (stopping === null) return;
-          stop.mutate([stopping.id], { onSuccess: () => setStopping(null), onError: (err) => setError(refusalText(err)) });
+          stop.mutate([stopping.id], {
+            onSuccess: (outcome) => { if (outcome.failed.length === 0) setStopping(null); else setError(refusalText(outcome.failed[0]!.error)); },
+            onError: (err) => setError(refusalText(err)),
+          });
         }}
       />
     </>

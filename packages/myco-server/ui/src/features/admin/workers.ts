@@ -43,14 +43,14 @@ export function workerState(worker: WorkerRow, now: number, project: WorkerNames
     };
   }
   if (worker.lastSeenAt === 0) return { tone: 'faint', line: 'No contact recorded' };
-  if (!worker.recent) return { tone: 'faint', line: `Not heard from lately · last contact ${sinceWords(worker.lastSeenAt, now)}` };
-  if (!worker.eligible) return { tone: 'bad', line: `Its claims would be refused now · last contact ${sinceWords(worker.lastSeenAt, now)}` };
+  if (!worker.recent) return { tone: 'faint', line: `Not checking in now · last checked in ${sinceWords(worker.lastSeenAt, now)}` };
+  if (!worker.eligible) return { tone: 'bad', line: `Its claims would be refused now · last checked in ${sinceWords(worker.lastSeenAt, now)}` };
   // An unreadable report is not a report of nothing: it cannot make a worker read as ready.
   const ready = worker.offers?.some((o) => o.authenticated) === true;
   const polling = worker.offers === null
     ? 'Waiting for work, with no readable report of its agents'
     : ready ? 'Waiting for work' : 'Waiting for work, but reported no agent signed in';
-  return { tone: ready ? 'ok' : 'bad', line: `${polling} · last contact ${sinceWords(worker.lastSeenAt, now)}` };
+  return { tone: ready ? 'ok' : 'bad', line: `${polling} · last checked in ${sinceWords(worker.lastSeenAt, now)}` };
 }
 
 /** One worker's state in one line, led by its machine's name, and the tone of its dot. */

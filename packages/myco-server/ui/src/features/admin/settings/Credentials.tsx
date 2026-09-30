@@ -1,6 +1,6 @@
 import { useState } from 'react';
-import { SECRET_SLOTS, slotUse } from '@goondocks/myco-shared/secret-slots';
-import { Button, ConfirmDialog, Dialog, DialogContent, DialogFooter, ErrorState, Input, LoadingState, MoreMenu } from '../../../design';
+import { harnessesReading, SECRET_SLOTS, slotUse } from '@goondocks/myco-shared/secret-slots';
+import { Button, ConfirmDialog, Dialog, DialogContent, DialogFooter, Disclosure, ErrorState, Input, LoadingState, MoreMenu } from '../../../design';
 import { settingsRefusalText, useSecrets, useSettingsActions } from '../../../hooks/use-settings';
 import { harnessLabel } from '../../../lib/harness';
 import { ago } from '../../today/words';
@@ -14,6 +14,11 @@ export const CREDENTIALS_ANCHOR = 'credentials';
 const LABEL: Readonly<Record<string, string>> = Object.fromEntries(SECRET_SLOTS.map((slot) => [slot.name, slot.label]));
 const USE: Readonly<Record<string, string>> = Object.fromEntries(SECRET_SLOTS.map((slot) => [slot.name, slotUse(slot, harnessLabel)]));
 const labelOf = (name: string): string => LABEL[name] ?? name;
+
+/** The slots nothing on the server reads: no harness run opens them and nothing else uses them. By the shared slot table. */
+export const RETIRED_SLOTS: ReadonlySet<string> = new Set(
+  SECRET_SLOTS.filter((slot) => harnessesReading(slot.name).length === 0 && slot.alsoUsedFor === null).map((slot) => slot.name),
+);
 
 /** Where a key stands, in words: its masked form and who stored it when, or that none is stored. Never the key. */
 function keyStatus(secret: SecretRow, name: string | null, now: number): string {
@@ -52,8 +57,9 @@ export function Credentials() {
       {secrets.isPending ? <LoadingState label="Loading keys" count={3} />
         : secrets.isError ? <ErrorState error={secrets.error} onRetry={() => void secrets.refetch()} />
         : (
+          <>
           <RowCard label="Keys">
-            {secrets.data.secrets.map((secret) => (
+            {secrets.data.secrets.filter((secret) => !RETIRED_SLOTS.has(secret.name)).map((secret) => (
               <SettingRow
                 key={secret.name}
                 setting={`secret.${secret.name}`}
@@ -76,6 +82,23 @@ export function Credentials() {
               />
             ))}
           </RowCard>
+          {secrets.data.secrets.some((secret) => RETIRED_SLOTS.has(secret.name) && secret.configured) && (
+            <Disclosure summary="Older keys">
+              <RowCard label="Older keys">
+                {secrets.data.secrets.filter((secret) => RETIRED_SLOTS.has(secret.name) && secret.configured).map((secret) => (
+                  <SettingRow
+                    key={secret.name}
+                    setting={`secret.${secret.name}`}
+                    label={labelOf(secret.name)}
+                    note="Nothing on this server reads this key any more."
+                    status={keyStatus(secret, nameOf(secret.updatedBy), now)}
+                    control={null}
+                  />
+                ))}
+              </RowCard>
+            </Disclosure>
+          )}
+          </>
         )}
 
       <Dialog open={editing !== null} onOpenChange={(open) => { if (!open) close(); }}>

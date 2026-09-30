@@ -38,6 +38,12 @@ export function refusalText(err: unknown): string {
   return 'Could not reach the server.';
 }
 
+/** What stopping several credentials came to: those stopped, and each that was not with why. */
+export interface RevokeOutcome {
+  stopped: string[];
+  failed: Array<{ id: string; error: unknown }>;
+}
+
 /** One mutation per access act; each refreshes the lists it changes. */
 export function useAccessActions() {
   const client = useQueryClient();
@@ -49,10 +55,23 @@ export function useAccessActions() {
     // The link's key lives only in the page's own state, as an invitation's does.
     linkGithub: useMutation({ gcTime: 0, mutationFn: (memberId: string) => postJson<{ key: string; expiresAt: number }>(`/api/members/${encodeURIComponent(memberId)}/link-github`) }),
     revokeInvitation: useMutation({ mutationFn: (id: string) => postJson<{ revoked: boolean }>(`/api/enrollment/${encodeURIComponent(id)}/revoke`), onSuccess: () => refresh('invitations') }),
-    /** Stops every credential named: a machine's live runtimes, or one run's. */
+    /**
+     * Stops every credential named: a machine's live sign-ins, or one run's.
+     * Each is asked for on its own and every answer is kept, so a failure part
+     * way through says which stopped and which did not.
+     */
     revokeCredentials: useMutation({
-      mutationFn: async (ids: readonly string[]) => {
-        for (const id of ids) await postJson<{ revoked: boolean }>(`/api/credentials/${encodeURIComponent(id)}/revoke`);
+      mutationFn: async (ids: readonly string[]): Promise<RevokeOutcome> => {
+        const outcome: RevokeOutcome = { stopped: [], failed: [] };
+        for (const id of ids) {
+          try {
+            await postJson<{ revoked: boolean }>(`/api/credentials/${encodeURIComponent(id)}/revoke`);
+            outcome.stopped.push(id);
+          } catch (error) {
+            outcome.failed.push({ id, error });
+          }
+        }
+        return outcome;
       },
       onSettled: () => refresh('credentials', 'members'),
     }),

@@ -6,16 +6,18 @@
  * from here. A gate holds this list equal to the server's leaf list, so a leaf
  * added on one side without the other fails by name.
  */
-import { CANOPY_DEFAULT_EXCLUDE_PATTERNS } from '@goondocks/myco-shared/canopy';
 import type { SettingsSectionId } from '../../../routes/nav';
 
-export type LeafKind = 'toggle' | 'number' | 'text' | 'textarea' | 'select' | 'json' | 'patterns';
+/**
+ * How a setting is edited. `agent` is one of the agents a machine can run
+ * Myco's work with; `agents` is an ordered list of them.
+ */
+export type LeafKind = 'toggle' | 'number' | 'text' | 'textarea' | 'select' | 'json' | 'patterns' | 'agent' | 'agents';
 
 export interface LeafField {
   leaf: string;
   label: string;
   kind: LeafKind;
-  defaultValue?: unknown;
   options?: readonly (string | number)[];
   min?: number;
   max?: number;
@@ -31,6 +33,11 @@ export interface LeafField {
   note?: string;
   /** Shown, never edited. */
   readOnly?: boolean;
+  /**
+   * Nothing on the server reads it any more. It is shown only where a value is
+   * stored, read-only, under "Older settings" at the foot of its section.
+   */
+  retired?: true;
 }
 
 export interface LeafGroup {
@@ -49,10 +56,10 @@ const VERBOSITY = ['low', 'medium', 'high'] as const;
 
 const tierMaps = (): LeafField[] =>
   ['default', 'high', 'low'].flatMap((tier) => [
-    { leaf: `agent.provider.reasoning_map.${tier}`, label: `Model at the ${tier} tier`, kind: 'text' as const, note: 'The model this provider resolves the tier to.' },
-    { leaf: `agent.provider.effort_map.${tier}.effort`, label: `Effort at the ${tier} tier`, kind: 'select' as const, options: EFFORTS },
-    { leaf: `agent.provider.effort_map.${tier}.verbosity`, label: `Verbosity at the ${tier} tier`, kind: 'select' as const, options: VERBOSITY },
-    { leaf: `agent.provider.thinking_budget_map.${tier}`, label: `Thinking budget at the ${tier} tier`, kind: 'json' as const, note: '{"budgetTokens": 8192} or {"adaptive": true}.' },
+    { leaf: `agent.provider.reasoning_map.${tier}`, label: `Model at the ${tier} tier`, kind: 'text' as const, retired: true as const },
+    { leaf: `agent.provider.effort_map.${tier}.effort`, label: `Effort at the ${tier} tier`, kind: 'select' as const, options: EFFORTS, retired: true as const },
+    { leaf: `agent.provider.effort_map.${tier}.verbosity`, label: `Verbosity at the ${tier} tier`, kind: 'select' as const, options: VERBOSITY, retired: true as const },
+    { leaf: `agent.provider.thinking_budget_map.${tier}`, label: `Thinking budget at the ${tier} tier`, kind: 'json' as const, retired: true as const },
   ]);
 
 export const LEAF_GROUPS: readonly LeafGroup[] = [
@@ -63,10 +70,10 @@ export const LEAF_GROUPS: readonly LeafGroup[] = [
     note: 'When Myco learns, titles and maps on its own, without being asked.',
     leaves: [
       { leaf: 'agent.scheduled_tasks_enabled', label: 'Work on a schedule', kind: 'toggle' },
-      { leaf: 'agent.event_tasks_enabled', label: 'Work as sessions arrive', kind: 'toggle' },
+      { leaf: 'agent.event_tasks_enabled', label: 'Work as sessions arrive', kind: 'toggle', retired: true },
       { leaf: 'agent.scheduled_tasks_active_window_days', label: 'Treat a project as active for', kind: 'number', min: 0, max: 365, unit: 'days' },
       { leaf: 'agent.cold_project_threshold_days', label: 'Treat a project as quiet after', kind: 'number', min: 0, max: 365, unit: 'days' },
-      { leaf: 'agent.summary_batch_interval', label: 'Summary batch interval', kind: 'number', min: 0 },
+      { leaf: 'agent.summary_batch_interval', label: 'Summary batch interval', kind: 'number', min: 0, retired: true },
       { leaf: 'release_provenance.reconcile_interval_minutes', label: 'Check what has shipped every', kind: 'number', min: 1, max: 1440, unit: 'minutes', note: 'How often each project with release tracking on is checked against its release tags.' },
     ],
   },
@@ -87,8 +94,8 @@ export const LEAF_GROUPS: readonly LeafGroup[] = [
     label: 'Which agent does the work',
     note: 'The coding agent a machine uses when it runs Myco’s work. A machine offers the agents it is signed in to; this names which to prefer. Health shows what each machine last reported.',
     leaves: [
-      { leaf: 'worker.harness', label: 'Preferred agent', kind: 'text', note: 'claude-code, codex, opencode or cursor.' },
-      { leaf: 'worker.harness_fallback', label: 'Then try, in order', kind: 'json', note: 'A JSON array of agent names, tried in order.' },
+      { leaf: 'worker.harness', label: 'Preferred agent', kind: 'agent', note: 'The agent a machine tries first, when it is signed in to it.' },
+      { leaf: 'worker.harness_fallback', label: 'Then try, in order', kind: 'agents', note: 'The agents a machine tries next, top first.' },
     ],
   },
   {
@@ -97,7 +104,7 @@ export const LEAF_GROUPS: readonly LeafGroup[] = [
     label: 'Learning',
     note: 'How Myco checks what it learns before keeping it.',
     leaves: [
-      { leaf: 'agent.semantic_write_check_enabled', label: 'Check what Myco saves before it lands', kind: 'toggle' },
+      { leaf: 'agent.semantic_write_check_enabled', label: 'Check what Myco saves before it lands', kind: 'toggle', retired: true },
     ],
   },
   {
@@ -109,7 +116,7 @@ export const LEAF_GROUPS: readonly LeafGroup[] = [
       { leaf: 'instructions.template', label: 'Session-start instructions', kind: 'textarea', maxLength: 4096, note: 'Markdown every session is handed at start, beside its project. Up to 4 KB; anything longer is refused when you save.' },
       { leaf: 'cortex.instructions.inject_on_session_start', label: 'Instructions at session start', kind: 'toggle' },
       { leaf: 'cortex.instructions.inject_on_subagent_start', label: 'Instructions when a subagent starts', kind: 'toggle' },
-      { leaf: 'cortex.digest.inject_on_session_start', label: 'Digest at session start', kind: 'toggle', readOnly: true, note: 'Session start serves the instructions above and nothing generated; this setting changes nothing and goes with the digest.' },
+      { leaf: 'cortex.digest.inject_on_session_start', label: 'Digest at session start', kind: 'toggle', retired: true },
       { leaf: 'cortex.digest.tier', label: 'Digest size', kind: 'select', options: [1500, 5000, 10000], unit: 'tokens', note: 'Sizes the digest a scheduled task writes. It is no longer served at session start.' },
       { leaf: 'cortex.spores.inject_on_prompt_submit', label: 'Spores on every prompt', kind: 'toggle' },
       { leaf: 'cortex.spores.max_per_prompt', label: 'Items per prompt', kind: 'number', min: 0, max: 10, note: 'Spores and plans share this count; the 300-token budget may serve fewer.' },
@@ -122,20 +129,20 @@ export const LEAF_GROUPS: readonly LeafGroup[] = [
     label: 'Code map',
     note: 'How Myco keeps its map of each project’s code.',
     leaves: [
-      { leaf: 'cortex.canopy.refresh.background_enabled', label: 'Update the map on its own', kind: 'toggle', defaultValue: false, note: 'Needs work on a schedule and the project’s Code map switch in its project settings. Task limits also apply.' },
-      { leaf: 'cortex.canopy.refresh.background_period_minutes', label: 'Update every', kind: 'number', min: 1, unit: 'minutes', defaultValue: 360 },
-      { leaf: 'cortex.canopy.exclude.patterns', label: 'Paths left out', kind: 'patterns', defaultValue: [], note: 'Paths the map leaves out, beside the built-in ones. The map reads committed files only, so ignored files never reach it.' },
-      { leaf: 'cortex.canopy.exclude.default_patterns', label: 'Paths always left out', kind: 'patterns', defaultValue: CANOPY_DEFAULT_EXCLUDE_PATTERNS, readOnly: true, note: 'Kept by Myco. Add your own above.' },
+      { leaf: 'cortex.canopy.refresh.background_enabled', label: 'Update the map on its own', kind: 'toggle', note: 'Needs work on a schedule and the project’s Code map switch in its project settings. Task limits also apply.' },
+      { leaf: 'cortex.canopy.refresh.background_period_minutes', label: 'Update every', kind: 'number', min: 1, unit: 'minutes' },
+      { leaf: 'cortex.canopy.exclude.patterns', label: 'Paths left out', kind: 'patterns', note: 'Paths the map leaves out, beside the built-in ones. The map reads committed files only, so ignored files never reach it.' },
+      { leaf: 'cortex.canopy.exclude.default_patterns', label: 'Paths always left out', kind: 'patterns', readOnly: true, note: 'Kept by Myco. Add your own above.' },
     ],
   },
   {
     id: 'skills',
     section: 'work',
-    label: 'Retired skill thresholds',
-    note: 'Thresholds the server still holds for skills. Nothing reads them: skills ship with Myco, and these go with what once scored them.',
+    label: 'Skills',
+    note: 'Thresholds for skills Myco once scored. Skills ship with Myco now.',
     leaves: [
-      { leaf: 'skills.confidence_threshold', label: 'Promote at confidence', kind: 'number', min: 0, max: 1, step: 0.05, readOnly: true, note: 'Shown so a value stored earlier stays visible; it changes nothing.' },
-      { leaf: 'skills.usage_stale_days', label: 'Stale after', kind: 'number', min: 1, unit: 'days', readOnly: true, note: 'Shown so a value stored earlier stays visible; it changes nothing.' },
+      { leaf: 'skills.confidence_threshold', label: 'Promote skills at confidence', kind: 'number', min: 0, max: 1, step: 0.05, retired: true },
+      { leaf: 'skills.usage_stale_days', label: 'Skills stale after', kind: 'number', min: 1, unit: 'days', retired: true },
     ],
   },
   {
@@ -147,11 +154,11 @@ export const LEAF_GROUPS: readonly LeafGroup[] = [
       { leaf: 'agent.provider.type', label: 'Provider', kind: 'select', options: PROVIDERS, note: 'Which service does this server’s own thinking; its key is under Keys below.' },
       { leaf: 'agent.provider.model', label: 'Model', kind: 'text', note: 'The provider’s name for the model.' },
       { leaf: 'agent.provider.base_url', label: 'Provider endpoint', kind: 'text', note: 'For a self-hosted or compatible endpoint. No stored key is sent to a custom endpoint.' },
-      { leaf: 'agent.provider.context_length', label: 'Context length', kind: 'number', min: 1, unit: 'tokens' },
-      { leaf: 'agent.provider.local_backend', label: 'Local backend', kind: 'select', options: ['ollama', 'lmstudio'] },
-      { leaf: 'agent.reasoningLevel', label: 'Reasoning profile', kind: 'select', options: ['low', 'default', 'high'] },
+      { leaf: 'agent.provider.context_length', label: 'Context length', kind: 'number', min: 1, unit: 'tokens', retired: true },
+      { leaf: 'agent.provider.local_backend', label: 'Local backend', kind: 'select', options: ['ollama', 'lmstudio'], retired: true },
+      { leaf: 'agent.reasoningLevel', label: 'Reasoning profile', kind: 'select', options: ['low', 'default', 'high'], retired: true },
       { leaf: 'agent.model', label: 'Default model (advanced)', kind: 'text' },
-      { leaf: 'agent.harness', label: 'Runtime (retired)', kind: 'text', readOnly: true, note: 'This server runs no agent of its own. Shown so a stored value stays visible; it changes nothing. Which agent a machine uses is under Myco’s work.' },
+      { leaf: 'agent.harness', label: 'Runtime', kind: 'text', retired: true },
     ],
   },
   {
@@ -169,8 +176,8 @@ export const LEAF_GROUPS: readonly LeafGroup[] = [
   {
     id: 'advanced',
     section: 'models',
-    label: 'Per-tier and per-task documents',
-    note: 'The provider’s settings at each reasoning tier, and overrides for each task, as documents.',
+    label: 'Per-task overrides',
+    note: 'Overrides for each task, as one document.',
     leaves: [
       ...tierMaps(),
       { leaf: 'agent.tasks', label: 'Task overrides', kind: 'json', note: 'A JSON object keyed by task name. “Title imported sessions” under Myco’s work writes its switch here.' },
@@ -182,7 +189,7 @@ export const LEAF_GROUPS: readonly LeafGroup[] = [
     label: 'Importing past sessions',
     note: 'What a machine brings with it when someone joins. Their agents have kept transcripts all along; this is how much of that history arrives.',
     leaves: [
-      { leaf: 'import.enabled', label: 'Import past sessions on join', kind: 'toggle', defaultValue: true, note: 'Off means a machine brings nothing, and `myco import` is refused.' },
+      { leaf: 'import.enabled', label: 'Import past sessions on join', kind: 'toggle', note: 'Off means a machine brings nothing, and `myco import` is refused.' },
       { leaf: 'import.window_days', label: 'Reach back at most', kind: 'number', min: 1, max: 3650, unit: 'days', note: 'Most agents keep transcripts for about a month, so reaching further back finds more only on machines whose history survived longer.' },
       { leaf: 'import.max_sessions_per_harness', label: 'At most, per agent', kind: 'number', min: 1, max: 1000, unit: 'sessions' },
     ],
@@ -197,7 +204,7 @@ export const LEAF_GROUPS: readonly LeafGroup[] = [
       // 0 is how a server returns to keeping everything, and the minimum stays 0.
       { leaf: 'retention.transcripts', label: 'Keep raw transcripts for', kind: 'number', min: 0, max: 3650, unit: 'days', note: 'Removes raw transcript bytes already read into sessions once they are older than this. Bytes not yet read are kept whatever their age, and sessions, prompts, replies, tool calls and plans are never removed. Unset or 0 keeps raw transcripts forever. Capture is never refused for the space it takes.' },
       { leaf: 'agent.run_retention_days', label: 'Keep task records for', kind: 'number', min: 1, max: 365, unit: 'days', note: 'How long the record of each task Myco ran is kept.' },
-      { leaf: 'notifications.retention_days', label: 'Keep notifications for', kind: 'number', min: 0, max: 365, unit: 'days' },
+      { leaf: 'notifications.retention_days', label: 'Keep notifications for', kind: 'number', min: 0, max: 365, unit: 'days', retired: true },
     ],
   },
   {
@@ -227,6 +234,9 @@ export const LEAF_GROUPS: readonly LeafGroup[] = [
 ];
 
 export const LEAF_FIELDS: readonly LeafField[] = LEAF_GROUPS.flatMap((g) => g.leaves);
+
+/** The settings that still do something, which the page shows whatever is stored. */
+export const LIVE_FIELDS: readonly LeafField[] = LEAF_FIELDS.filter((f) => f.retired !== true);
 
 /** The groups of one section, in page order. */
 export const groupsOf = (section: SettingsSectionId): readonly LeafGroup[] => LEAF_GROUPS.filter((g) => g.section === section);

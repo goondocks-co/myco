@@ -5,7 +5,7 @@ import { formatCount } from '../../../lib/format';
 import { HEALTH_ANCHORS } from '../../../routes/nav';
 import { ago } from '../../today/words';
 import { AdminSection, RowCard } from '../AdminFrame';
-import { backlogWords } from './words';
+import { backlogWords, capabilityWords } from './words';
 
 export interface StatusSectionProps {
   status: ReturnType<typeof useStatus>;
@@ -59,7 +59,7 @@ function StatusBody({ data, now, projectName }: { data: StatusResponse; now: num
           <RowCard label="What this server runs itself">
             {data.capabilities.map((capability) => (
               <div key={capability.capability} className="flex min-h-row-tight items-center justify-between gap-s3 px-s4 py-s2">
-                <span className="min-w-0 t-body text-ink-2">{capability.label}</span>
+                <span className="min-w-0 t-body text-ink-2">{capabilityWords(capability)}</span>
                 <StatusChip tone={capability.present ? 'ok' : 'warn'}>{capability.present ? 'Set up' : 'Not set up'}</StatusChip>
               </div>
             ))}

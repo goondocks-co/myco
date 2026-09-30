@@ -8,7 +8,7 @@
  * machines with their names itself, `useMachines` reads that list instead and
  * every page above it stays as it is.
  */
-import { useMemo } from 'react';
+import { useEffect, useMemo } from 'react';
 import { usePaged } from '../../hooks/use-paged';
 import type { WorkerRow } from '../../lib/api';
 import type { CredentialRow } from './wire';
@@ -109,11 +109,17 @@ export const MACHINE_CREDENTIALS_KEY = ['credentials', 'member'] as const;
 
 /**
  * The machines the viewer may see: every member's to an admin, their own to a
- * member (the server answers a member only their own). Paged 50 credentials at
- * a time; `more()` reads the next page.
+ * member (the server answers a member only their own credentials). The
+ * credentials are read 50 at a time until the server says there are no more,
+ * since a machine's live sign-in can sit on any page; until then the read
+ * counts as pending, so no page lists machines from part of the list.
  */
 export function useMachines() {
   const paged = usePaged<CredentialRow>(MACHINE_CREDENTIALS_KEY, '/api/credentials?purpose=member&limit=50');
+  const { hasMore, isFetchingMore, error, more } = paged;
+  useEffect(() => {
+    if (hasMore && !isFetchingMore && error === null) more();
+  }, [hasMore, isFetchingMore, error, more, paged.rows.length]);
   const machines = useMemo(() => machinesFrom(paged.rows), [paged.rows]);
-  return { ...paged, machines };
+  return { ...paged, isPending: paged.isPending || (hasMore && error === null), machines };
 }

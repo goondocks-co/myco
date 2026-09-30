@@ -209,7 +209,7 @@ describe('the measures on Health', () => {
     // follow, and still names the calls it made, so the parts add up to the whole.
     expect(rows).toEqual([
       ['Claude Code', '3', '1.50', 'n = 2 prompts'],
-      ['Agent not recorded', '0', '0.00', 'n = 1 prompt'],
+      ['Unknown agent', '0', '0.00', 'n = 1 prompt'],
       ['Codex', '4', '—', 'n = 0 prompts'],
     ]);
   });

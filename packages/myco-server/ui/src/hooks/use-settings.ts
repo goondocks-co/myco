@@ -31,6 +31,8 @@ export function settingsRefusalText(err: unknown): string {
         return 'That setting is not held by the server.';
       case 'malformed':
         return typeof body?.detail === 'string' ? body.detail : 'The server could not read that value.';
+      case 'invalid_value':
+        return typeof body?.detail === 'string' && body.detail.trim() !== '' ? `The server refused that value: ${body.detail}` : 'The server refused that value.';
       case 'unknown_capability':
         return 'The server does not know that capability.';
       default:
@@ -48,7 +50,8 @@ export function useSettingsActions() {
     setLeaf: useMutation({
       gcTime: 0,
       mutationFn: (v: { leaf: string; value: unknown }) => putJson<{ applied: true }>(`/api/settings/${encodeURIComponent(v.leaf)}`, { value: v.value }),
-      onSuccess: () => refresh('settings'),
+      // Where titling stands reads the scheduling switch and the task overrides, so it is read again with the settings.
+      onSuccess: () => refresh('settings', 'titling-backfill'),
     }),
     setSecret: useMutation({
       gcTime: 0,

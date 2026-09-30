@@ -7,7 +7,7 @@ const HARNESS_LABEL: Record<string, string> = {
   antigravity: 'Antigravity',
   copilot: 'Copilot',
   windsurf: 'Windsurf',
-  unrecorded: 'Agent not recorded',
+  unrecorded: 'Unknown agent',
 };
 
 export function harnessLabel(id: string): string {

@@ -127,26 +127,26 @@ describe('People & machines', () => {
     ]);
     mount('/people');
     const people = await screen.findByRole('list', { name: 'Members' });
-    expect(within(people).getAllByRole('listitem').map((li) => li.querySelector('.font-medium')?.textContent)).toEqual(['Ada', 'Unnamed member']);
+    expect(within(people).getAllByRole('listitem').map((li) => li.querySelector('.font-medium')?.textContent)).toEqual(['Ada', 'A teammate']);
     expect(people.textContent).not.toMatch(/harness|Myco/);
     // Myco's account appears only by its name: who made an invitation, and who removed a member.
     expect(await screen.findByText(/^by Myco · expires in (59|60)m$/)).toBeTruthy();
-    expect(screen.getByText('A machine for Unnamed member')).toBeTruthy();
+    expect(screen.getByText('A machine for a teammate')).toBeTruthy();
     fireEvent.click(screen.getByRole('button', { name: 'Removed (1)' }));
     expect((await screen.findByRole('list', { name: 'Removed members' })).textContent).toMatch(/Roe.*Removed 2 days ago by Myco/);
     const machines = await screen.findByRole('list', { name: 'Machines' });
     await waitFor(() => expect(machines.textContent).toContain('A machine'));
-    expect(machines.textContent).toContain('Unnamed member · allowed to write');
+    expect(machines.textContent).toContain('A teammate · allowed to write');
     expect(rawIdsIn(document.body)).toEqual([]);
   });
 
   it('adds a machine for a member from their menu, with that member picked', async () => {
     deployment(me(ADA, 'Ada', 'admin'), [credential()]);
     mount('/people');
-    fireEvent.keyDown(await screen.findByRole('button', { name: 'More for Unnamed member' }), { key: 'Enter' });
+    fireEvent.keyDown(await screen.findByRole('button', { name: 'More for A teammate' }), { key: 'Enter' });
     fireEvent.click(within(await screen.findByRole('menu')).getByRole('menuitem', { name: `${INVITE_CONTROLS.button} for them` }));
     const dialog = await screen.findByRole('dialog', { name: INVITE_CONTROLS.button });
-    expect(within(dialog).getByRole('combobox', { name: INVITE_CONTROLS.field }).textContent).toContain('Unnamed member');
+    expect(within(dialog).getByRole('combobox', { name: INVITE_CONTROLS.field }).textContent).toContain('A teammate');
   });
 
   it('shows what a machine wrote: what, where and when, with its session linked and no id shown', async () => {

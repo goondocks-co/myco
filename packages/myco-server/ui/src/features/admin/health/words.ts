@@ -6,6 +6,7 @@
  * measure is never shown without its sample.
  */
 import { ApiError, type StatusResponse } from '../../../lib/api';
+import { clockTime } from '../../today/words';
 import { formatBytes, formatCount, formatRelative, formatUntil } from '../../../lib/format';
 import type { Cadence, MaintenanceCheck, MaintenanceOutcome, RecoveryAvailability, RecoverySchedule, RecoveryStatus, TickReport, JobReport } from './wire';
 
@@ -47,7 +48,12 @@ export function backlogWords(backlog: StatusResponse['transcriptBacklog']): stri
 
 // ---------- Automatic recovery ----------
 
-const dateLabel = (ms: number): string => new Date(ms).toLocaleString();
+/** An instant as every page writes one: "Sep 1, 12:00", with the year when it is not this one. */
+const dateLabel = (ms: number, now: number = Date.now()): string => {
+  const date = new Date(ms);
+  const sameYear = date.getFullYear() === new Date(now).getFullYear();
+  return `${date.toLocaleDateString(undefined, { month: 'short', day: 'numeric', ...(sameYear ? {} : { year: 'numeric' }) })}, ${clockTime(ms)}`;
+};
 
 /** How long until an instant, in the coarse words a cadence deserves. */
 export function whenLabel(at: number, now: number): string {
@@ -182,3 +188,16 @@ export const countOf = (n: number, unit: string): string => `${n.toLocaleString(
 export const perUnit = (n: number): string => n.toFixed(n >= 10 ? 0 : 2);
 /** The sample behind a measure, always said: "n = 1,234 prompts". */
 export const sampleWords = (sampleSize: number, unit: string): string => `n = ${countOf(sampleSize, unit)}`;
+
+/** What the server can run itself, in the reader's words, by the capability it reports. */
+const CAPABILITY_WORDS: Readonly<Record<string, string>> = {
+  'relational-store': 'Database for sessions and knowledge',
+  'blob-store': 'File storage for transcripts and attachments',
+  'rate-limiting': 'Limits on how fast machines may send',
+  'harness-runtime': 'Running Myco’s tasks on this server',
+};
+
+/** A capability as Health names it: its own words, else the server's label. */
+export function capabilityWords(capability: { capability: string; label: string }): string {
+  return CAPABILITY_WORDS[capability.capability] ?? capability.label;
+}

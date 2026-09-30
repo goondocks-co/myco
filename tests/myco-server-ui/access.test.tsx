@@ -14,6 +14,7 @@ import { AppearanceProvider } from '../../packages/myco-server/ui/src/providers/
 import { formatRelative, formatUntil } from '../../packages/myco-server/ui/src/lib/format';
 import { FLEET_WORDS } from '../../packages/myco-server/ui/src/features/admin/people/MachineList';
 import { invitationExpiry } from '../../packages/myco-server/ui/src/features/admin/people/words';
+import { rawIdsIn } from '../helpers/raw-ids';
 
 // jsdom lays nothing out, so it has no scrollIntoView; Radix's select calls it as it opens.
 (window.Element.prototype as unknown as { scrollIntoView?: () => void }).scrollIntoView ??= () => undefined;
@@ -316,7 +317,74 @@ describe('machines', () => {
     fireEvent.click(within(await openMenu('More for Ada’s MacBook')).getByRole('menuitem', { name: 'Stop' }));
     const dialog = await screen.findByRole('dialog', { name: 'Stop Ada’s MacBook?' });
     fireEvent.click(within(dialog).getByRole('button', { name: 'Stop' }));
-    expect((await within(dialog).findByRole('alert')).textContent).toBe('The server refused (503).');
+    expect((await within(dialog).findByRole('alert')).textContent).toBe('Stopped 0 of 1 sign-in; this machine can still write. The server refused (503). Try again.');
+  });
+
+  it('says exactly how far a stop got when a later sign-in fails, and tries again only the one that did not stop', async () => {
+    // Three live sign-ins on one machine; the second refuses.
+    const ids = ['mt_StopOne1aaaaaaaa', 'mt_StopTwo2bbbbbbbb', 'mt_StopThree3cccccc'];
+    const asked: string[] = [];
+    let secondFails = true;
+    const revoke = (id: string) => () => {
+      asked.push(id);
+      return id === ids[1] && secondFails ? new Response(null, { status: 503 }) : Response.json({ revoked: true });
+    };
+    accessServer(
+      { member: ids.map((id, i) => credential({ id, lineageRoot: id, lineageStartedAt: NOW_MS - (i + 1) * 60_000 })) },
+      Object.fromEntries(ids.map((id) => [`/api/credentials/${id}/revoke`, revoke(id)])),
+    );
+    mount('/people');
+    fireEvent.click(within(await openMenu('More for Ada’s MacBook')).getByRole('menuitem', { name: 'Stop' }));
+    const dialog = await screen.findByRole('dialog', { name: 'Stop Ada’s MacBook?' });
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Stop' }));
+    expect((await within(dialog).findByRole('alert')).textContent).toBe('Stopped 2 of 3 sign-ins; this machine can still write. The server refused (503). Try again.');
+    // Every sign-in was asked, the third after the second failed.
+    expect([...asked].sort()).toEqual([...ids].sort());
+    secondFails = false;
+    asked.length = 0;
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Stop' }));
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Stop Ada’s MacBook?' })).toBeNull());
+    expect(asked).toEqual([ids[1]]);
+  });
+
+  it('builds machines from every page of sign-ins, so a live one on a later page counts', async () => {
+    // Page one holds an expired sign-in of the machine; its live one is on page two.
+    const expired = credential({ id: 'mt_OldPage1xxxxxxx', lineageRoot: 'mt_OldPage1xxxxxxx', live: false, expiresAt: NOW_MS - 1_000 });
+    const live = credential({ id: 'mt_NewPage2yyyyyyy', lineageRoot: 'mt_NewPage2yyyyyyy', lineageStartedAt: NOW_MS - 90 * 86_400_000 });
+    const asked: string[] = [];
+    accessServer({}, {
+      '/api/credentials': (_init, url) => {
+        if (url?.searchParams.get('purpose') === 'run') return Response.json({ rows: [], cursor: null });
+        const cursor = url?.searchParams.get('cursor') ?? null;
+        asked.push(cursor ?? 'first');
+        return Response.json(cursor === null ? { rows: [expired], cursor: 'page-2' } : { rows: [live], cursor: null });
+      },
+    });
+    mount('/people');
+    const machines = await screen.findByRole('list', { name: 'Machines' });
+    await waitFor(() => expect(machines.textContent).toContain('allowed to write'));
+    expect(asked).toEqual(['first', 'page-2']);
+    expect(within(machines).getAllByRole('listitem')).toHaveLength(1);
+    expect(within(await openMenu('More for Ada’s MacBook')).getByRole('menuitem', { name: 'Stop' })).toBeTruthy();
+  });
+
+  it('lists what every sign-in of a machine wrote, merged newest first', async () => {
+    const first = credential({ id: 'mt_WroteOne1aaaaaa', lineageRoot: 'mt_WroteOne1aaaaaa', live: false, expiresAt: NOW_MS - 1_000, lineageStartedAt: NOW_MS - 10 * 86_400_000 });
+    const second = credential({ id: 'mt_WroteTwo2bbbbbb', lineageRoot: 'mt_WroteTwo2bbbbbb' });
+    const event = (eventId: string, kind: string, createdAt: number) => ({ eventId, projectId: 'proj_6d79636f3a3e1c0b8a2f4e7d9c150a11', sessionId: '0f3c2a1b-1111-4222-8333-444455556666', kind, createdAt, receivedAt: createdAt });
+    accessServer({ member: [second, first] }, {
+      '/api/projects': () => Response.json({ projects: [{ projectId: 'proj_6d79636f3a3e1c0b8a2f4e7d9c150a11', name: 'Myco', createdAt: 0, sessionCount: 1, lastActivityAt: NOW_MS, archivedAt: null, archivedBy: null }] }),
+      [`/api/credentials/${first.id}/activity`]: () => Response.json({ rows: [event('e-old', 'prompt', NOW_MS - 9 * 86_400_000)], cursor: null }),
+      [`/api/credentials/${second.id}/activity`]: () => Response.json({ rows: [event('e-new', 'session.start', NOW_MS - 60_000)], cursor: null }),
+    });
+    mount('/people');
+    fireEvent.click(within(await openMenu('More for Ada’s MacBook')).getByRole('menuitem', { name: 'What it wrote' }));
+    const dialog = await screen.findByRole('dialog');
+    await waitFor(() => expect(within(dialog).getAllByRole('listitem')).toHaveLength(2));
+    const rows = within(dialog).getAllByRole('listitem').map((li) => li.textContent ?? '');
+    expect(rows[0]).toContain('Session started');
+    expect(rows[1]).toContain('Prompt');
+    expect(rawIdsIn(dialog)).toEqual([]);
   });
 
   it('says a machine the Deployment ended on replay was used from two places, not who stopped it', async () => {
@@ -334,7 +402,7 @@ describe('machines', () => {
   it('shows what the machine last reported as a worker, in its own words', async () => {
     accessServer({ member: [credential()] });
     mount('/people');
-    expect(await screen.findByText(/^Waiting for work · last contact \d+s ago$/)).toBeTruthy();
+    expect(await screen.findByText(/^Waiting for work · last checked in \d+s ago$/)).toBeTruthy();
     expect(screen.getByText(/Reports Codex signed in; their providers aren’t tested here\./)).toBeTruthy();
     expect(screen.getByText('Last check for work: nothing it could take.')).toBeTruthy();
   });

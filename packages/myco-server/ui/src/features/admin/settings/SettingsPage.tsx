@@ -1,6 +1,6 @@
 import { Fragment, type ReactElement } from 'react';
 import { Navigate, useSearchParams } from 'react-router-dom';
-import { ErrorState, LoadingState, TabLinks } from '../../../design';
+import { Disclosure, ErrorState, LoadingState, TabLinks } from '../../../design';
 import { useSettings } from '../../../hooks/use-settings';
 import { SETTINGS_PATH, SETTINGS_SECTIONS, type SettingsSectionId } from '../../../routes/nav';
 import { AdminPage, AdminSection, RowCard, useAnchorScroll } from '../AdminFrame';
@@ -58,19 +58,41 @@ export function SettingsPage({ section }: { section: SettingsSectionId }) {
   );
 }
 
+/**
+ * A section's groups, each showing the settings that still do something. A
+ * group whose settings are all retired is left out; a retired setting with a
+ * value stored is listed, read-only, under "Older settings" at the section's
+ * foot, so what an older Deployment stored stays visible.
+ */
 function SectionGroups({ groups, rows }: { groups: readonly LeafGroup[]; rows: ReadonlyMap<string, LeafRow> }) {
+  const older = groups.flatMap((group) => group.leaves.filter((field) => field.retired === true && rows.get(field.leaf)?.configured === true));
   return (
     <>
-      {groups.map((group) => (
-        <Fragment key={group.id}>
-          <AdminSection id={group.id} title={group.label} description={group.note}>
-            <RowCard label={group.label}>
-              {group.leaves.map((field) => <LeafControl key={field.leaf} field={field} row={rows.get(field.leaf)} />)}
+      {groups.map((group) => {
+        const live = group.leaves.filter((field) => field.retired !== true);
+        return (
+          <Fragment key={group.id}>
+            {live.length > 0 && (
+              <AdminSection id={group.id} title={group.label} description={group.note}>
+                <RowCard label={group.label}>
+                  {live.map((field) => <LeafControl key={field.leaf} field={field} row={rows.get(field.leaf)} />)}
+                </RowCard>
+              </AdminSection>
+            )}
+            {AFTER_GROUP[group.id]?.()}
+          </Fragment>
+        );
+      })}
+      {older.length > 0 && (
+        <section aria-label="Older settings" data-older-settings="">
+          <Disclosure summary={`Older settings (${older.length})`}>
+            <p className="max-w-measure t-small text-muted">Values an earlier version of Myco stored. Nothing on this server reads them any more.</p>
+            <RowCard label="Older settings">
+              {older.map((field) => <LeafControl key={field.leaf} field={field} row={rows.get(field.leaf)} />)}
             </RowCard>
-          </AdminSection>
-          {AFTER_GROUP[group.id]?.()}
-        </Fragment>
-      ))}
+          </Disclosure>
+        </section>
+      )}
     </>
   );
 }
