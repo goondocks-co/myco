@@ -37,6 +37,9 @@ for r in alpha beta; do (cd "$U/code/$r" && git init -q && echo "# $r" > README.
 run() { env -i HOME="$U" PATH="$U/.myco/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin" MYCO_LAUNCH_AGENTS_DIR="$T/blocked-launch" "$@"; }
 
 echo "== install"; run MYCO_INSTALL_FROM="$REL" MYCO_INSTALL_VERSION=2.0.0-smoke sh "$REL/install.sh" | tail -3
+# An installer that ignores MYCO_INSTALL_FROM fetches a published release instead; nothing below may run on that.
+installed=$(shasum -a 256 "$U/.myco/bin/myco" | cut -d' ' -f1)
+grep -q "^$installed " "$REL/SHA256SUMS" || { echo "FAIL: $U/.myco/bin/myco is not the build in $REL" >&2; exit 1; }
 echo "== login"; (cd "$U/code/alpha" && run myco login "$INVITE")
 for r in alpha beta; do echo "== join --new ($r)"; (cd "$U/code/$r" && run myco member join --new); done
 
