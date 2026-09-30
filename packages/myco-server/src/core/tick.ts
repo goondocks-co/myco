@@ -63,6 +63,70 @@ export interface TickReport {
   nextWakeMs: number | null;
   /** The transcripts waiting to be read, as this wake counted them. */
   backlog: TranscriptBacklog;
+  /** Whether this wake ran only the jobs that left work (`TickPacer`), rather than every job due. */
+  drainOnly: boolean;
+}
+
+/**
+ * What a target's own clock keeps between its wakes: when it last ran every job due, at what depth and with what
+ * holding it there, and which jobs left work. A chained wake inside the cadence of the last full wake runs only the jobs
+ * that left work (a backlog draining in back-to-back passes), and everything else waits for the next full wake, which
+ * comes at the cadence as it would with no backlog at all. The sweeps, the leases, recovery, the schedule and every
+ * other job therefore run no later than they would on a quiet Deployment. It is held in memory: a clock that loses it
+ * runs every job on its next wake.
+ */
+export interface TickPacer {
+  fullAt: number | null;
+  state: PowerState | null;
+  heldBy: string | null;
+  idleMs: number | null;
+  /** The jobs the last wake ran that left work. */
+  draining: string[];
+}
+
+/** A clock's pacer before its first wake: that wake runs every job due. */
+export function tickPacer(): TickPacer {
+  return { fullAt: null, state: null, heldBy: null, idleMs: null, draining: [] };
+}
+
+/** Whether the wake at `now` runs only the jobs the pacer holds as draining. */
+function drainOnlyAt(pacer: TickPacer | undefined, now: number): pacer is TickPacer & { fullAt: number; state: PowerState } {
+  if (pacer === undefined || pacer.fullAt === null || pacer.state === null || pacer.draining.length === 0) return false;
+  const cadence = nextWakeDelayMs(pacer.state, WAKE_INTERVALS);
+  return cadence !== null && now - pacer.fullAt < cadence;
+}
+
+/** Runs `jobs` at `state`, reporting each as it ends. */
+async function runJobs(env: ServerEnv, now: number, state: PowerState, jobs: readonly string[]): Promise<JobReport[]> {
+  const reports: JobReport[] = [];
+  for (const name of jobs) {
+    const run = JOB_IMPLEMENTATIONS[name];
+    if (run === undefined) {
+      reports.push({ name, changed: 0, failed: 'unimplemented', more: false });
+      continue;
+    }
+    try {
+      const answered = await run(env, now, state);
+      const { changed, more } = typeof answered === 'number' ? { changed: answered, more: false } : answered;
+      emit({ kind: 'job_ran', job: name, state, changed, more });
+      reports.push({ name, changed, failed: null, more });
+    } catch (err) {
+      const failed = classify(err, env.platform?.classifyError);
+      emit({ kind: 'job_failed', job: name, state, error_class: failed });
+      reports.push({ name, changed: 0, failed, more: false });
+    }
+  }
+  return reports;
+}
+
+/** The queue's drain after the jobs: capacity the jobs freed is spent at once. */
+async function drainAfterJobs(env: ServerEnv, now: number, state: PowerState): Promise<number> {
+  try {
+    return await drainQueue(env, now);
+  } catch (err) {
+    emit({ kind: 'drain_failed', state, error_class: classify(err, env.platform?.classifyError) });
+    return 0;
+  }
 }
 
 /** What the engine itself asserts about the Deployment's depth: a run inside its bound keeps it no deeper than idle. A run past its bound holds nothing — its runtime is gone, and the sweep is what it needs. One existence read, whatever the count. */
@@ -96,31 +160,28 @@ export async function engineAssertions(env: ServerEnv, now: number): Promise<Pow
   return assertions;
 }
 
-/** `wake` names which wake this tick is: a target's own clock passes `'clock'`; a tick an owner requests is `'request'`. */
-export async function runTick(env: ServerEnv, now: number, options: { serverUrl?: string; wake?: TickWake } = {}): Promise<TickReport> {
+/**
+ * `wake` names which wake this tick is: a target's own clock passes `'clock'`; a tick an owner requests is `'request'`.
+ * A clock also passes its `pacer`, which this tick reads to decide whether it drains only, and updates.
+ */
+export async function runTick(env: ServerEnv, now: number, options: { serverUrl?: string; wake?: TickWake; pacer?: TickPacer } = {}): Promise<TickReport> {
+  const pacer = options.pacer;
+  if (drainOnlyAt(pacer, now)) {
+    const jobs = await runJobs(env, now, pacer.state, pacer.draining);
+    // A queued run waits on no cadence: an owner's dispatch during a drain starts as it would at any other wake.
+    const drained = await drainAfterJobs(env, now, pacer.state);
+    pacer.draining = jobs.filter((j) => j.more).map((j) => j.name);
+    const untilFull = Math.max(0, pacer.fullAt + nextWakeDelayMs(pacer.state, WAKE_INTERVALS)! - now);
+    const nextWakeMs = pacer.draining.length > 0 ? Math.min(untilFull, CHAINED_WAKE_MS) : untilFull;
+    const backlog = await pendingTranscripts(env.db);
+    return { state: pacer.state, heldBy: pacer.heldBy, drained, scheduled: { dispatched: 0, skipped: 0 }, idleMs: pacer.idleMs, jobs, nextWakeMs, backlog, drainOnly: true };
+  }
   const last = await lastActivityAt(env.db);
   const idleMs = last === null ? null : Math.max(0, now - last);
   const assertions = await engineAssertions(env, now);
   const resolved = resolvePowerState(idleMs ?? Number.POSITIVE_INFINITY, POWER_THRESHOLDS, assertions);
 
-  const jobs: JobReport[] = [];
-  for (const job of jobsDueAt(resolved.state, options.wake ?? 'request')) {
-    const run = JOB_IMPLEMENTATIONS[job.name];
-    if (run === undefined) {
-      jobs.push({ name: job.name, changed: 0, failed: 'unimplemented', more: false });
-      continue;
-    }
-    try {
-      const answered = await run(env, now, resolved.state);
-      const { changed, more } = typeof answered === 'number' ? { changed: answered, more: false } : answered;
-      emit({ kind: 'job_ran', job: job.name, state: resolved.state, changed, more });
-      jobs.push({ name: job.name, changed, failed: null, more });
-    } catch (err) {
-      const failed = classify(err, env.platform?.classifyError);
-      emit({ kind: 'job_failed', job: job.name, state: resolved.state, error_class: failed });
-      jobs.push({ name: job.name, changed: 0, failed, more: false });
-    }
-  }
+  const jobs = await runJobs(env, now, resolved.state, jobsDueAt(resolved.state, options.wake ?? 'request').map((job) => job.name));
 
   // The clock's own dispatches, then the drain: a scheduled task past a limit joins the queue this same wake.
   let scheduled: ScheduleReport = { dispatched: 0, skipped: 0 };
@@ -138,16 +199,12 @@ export async function runTick(env: ServerEnv, now: number, options: { serverUrl?
   }
 
   // Capacity the jobs freed is spent at once; a queue that stays held waits for the next wake.
-  let drained = 0;
-  try {
-    drained = await drainQueue(env, now);
-  } catch (err) {
-    emit({ kind: 'drain_failed', state: resolved.state, error_class: classify(err, env.platform?.classifyError) });
-  }
+  const drained = await drainAfterJobs(env, now, resolved.state);
 
   // Work a job left is taken by a wake soon after this one; the cadence is the longest the next wake waits.
   const cadence = nextWakeDelayMs(resolved.state, WAKE_INTERVALS);
   const nextWakeMs = cadence !== null && jobs.some((j) => j.more) ? Math.min(cadence, CHAINED_WAKE_MS) : cadence;
   const backlog = await pendingTranscripts(env.db);
-  return { state: resolved.state, heldBy: resolved.heldBy, drained, scheduled, idleMs, jobs, nextWakeMs, backlog };
+  if (pacer !== undefined) Object.assign(pacer, { fullAt: now, state: resolved.state, heldBy: resolved.heldBy, idleMs, draining: jobs.filter((j) => j.more).map((j) => j.name) });
+  return { state: resolved.state, heldBy: resolved.heldBy, drained, scheduled, idleMs, jobs, nextWakeMs, backlog, drainOnly: false };
 }

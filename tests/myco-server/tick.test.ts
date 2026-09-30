@@ -6,12 +6,12 @@
 import { describe, expect, it } from 'bun:test';
 import { armNextWake, armSoon, CLOCK_MANUAL, clockArmsAlarms } from '@myco-server-worker/platform/cloudflare/deployment-clock.js';
 import { serverEnvFromBindings } from '@myco-server-worker/platform/cloudflare/env.js';
-import type { ServerEnv } from '@myco-server-worker/core/adapters.js';
+import type { PreparedStatement, ServerEnv } from '@myco-server-worker/core/adapters.js';
 import { DEFAULT_DISPATCH_TIMEOUT_SECONDS, RUN_OVERRUN_MARGIN_MS } from '@myco-server-worker/core/harness.js';
 import { JOB_BATCH, RUN_RETENTION_DAYS_DEFAULT, STALE_RUN_ERROR, staleAfter, timeoutSecondsOf } from '@myco-server-worker/core/jobs-run.js';
 import { SERVER_JOBS } from '@myco-server-worker/core/jobs.js';
 import { lastActivityAt, REQUEST_STAMP_INTERVAL_MS, stampRequest } from '@myco-server-worker/core/activity.js';
-import { POWER_THRESHOLDS, runTick, WAKE_INTERVALS } from '@myco-server-worker/core/tick.js';
+import { CHAINED_WAKE_MS, POWER_THRESHOLDS, runTick, tickPacer, WAKE_INTERVALS } from '@myco-server-worker/core/tick.js';
 import { seedCredential } from './helpers/d1.js';
 import { sqliteEnv } from './helpers/fixtures.js';
 
@@ -274,3 +274,74 @@ describe('what a clock arms', () => {
       .not.toThrow();
   });
 });
+
+describe('a clock\'s chained wakes (#1510)', () => {
+  /** A pacer as a clock holds it `sinceFull` after a full wake at `state` that left `draining` with work. */
+  const paced = (sinceFull: number, draining: string[], state: 'active' | 'idle' = 'active') =>
+    ({ ...tickPacer(), fullAt: NOW - sinceFull, state, heldBy: null, idleMs: 0, draining });
+
+  /** A live run past its bound, which the stale sweep fails whenever it runs. */
+  const staleRun = (f: ReturnType<typeof fixture>) => f.seedRun({ id: 'run_stale', status: 'running', startedAt: NOW - DAY, completedAt: null, runContext: JSON.stringify({ timeoutSeconds: 60 }) });
+
+  it('runs only the jobs that left work while inside the cadence of the last full wake, and nothing else', async () => {
+    const f = fixture();
+    f.seedSession('s1', NOW - 60_000);
+    staleRun(f);
+    const pacer = paced(5_000, ['search-index']);
+    const report = await runTick(f.env, NOW, { wake: 'clock', pacer });
+    expect({ drainOnly: report.drainOnly, jobs: report.jobs.map((j) => j.name), scheduled: report.scheduled }).toEqual({ drainOnly: true, jobs: ['search-index'], scheduled: { dispatched: 0, skipped: 0 } });
+    // The sweep waits for the full wake; nothing about the run moved.
+    expect(f.runRow('run_stale')!.status).toBe('running');
+    // No job left work: the next wake is the full one, at the cadence of the last.
+    expect({ draining: pacer.draining, next: report.nextWakeMs }).toEqual({ draining: [], next: WAKE_INTERVALS.activeMs - 5_000 });
+  });
+
+  it('runs every job due once the cadence of the last full wake has passed, so nothing time-sensitive waits past its cadence', async () => {
+    const f = fixture();
+    f.seedSession('s1', NOW - 60_000);
+    staleRun(f);
+    const pacer = paced(WAKE_INTERVALS.activeMs, ['search-index']);
+    const report = await runTick(f.env, NOW, { wake: 'clock', pacer });
+    expect(report.drainOnly).toBe(false);
+    expect(report.jobs.length).toBeGreaterThan(SERVER_JOBS.length / 2);
+    expect(report.jobs.map((j) => j.name)).toContain('run-stale-sweep');
+    expect(f.runRow('run_stale')!.status).toBe('failed');
+    expect(pacer.fullAt).toBe(NOW);
+  });
+
+  it('runs every job on a clock\'s first wake, on a wake no job left work before, and on every wake an owner requests', async () => {
+    for (const [label, pacer] of [['first', tickPacer()], ['nothing draining', paced(5_000, [])], ['requested', undefined]] as const) {
+      const f = fixture();
+      f.seedSession('s1', NOW - 60_000);
+      staleRun(f);
+      const report = await runTick(f.env, NOW, pacer === undefined ? {} : { wake: 'clock', pacer });
+      expect({ label, drainOnly: report.drainOnly, swept: f.runRow('run_stale')!.status }).toEqual({ label, drainOnly: false, swept: 'failed' });
+    }
+  });
+
+  it('reads the store a handful of times on a draining wake, whatever the full wake reads', async () => {
+    const f = fixture();
+    f.seedSession('s1', NOW - 60_000);
+    let trips = 0;
+    const statement = (inner: PreparedStatement): PreparedStatement => ({
+      ...inner,
+      bind: (...values: unknown[]) => statement(inner.bind(...values)),
+      first: <T,>() => { trips += 1; return inner.first<T>(); },
+      all: <T,>() => { trips += 1; return inner.all<T>(); },
+      run: () => { trips += 1; return inner.run(); },
+    });
+    const env: ServerEnv = { ...f.env, db: { prepare: (sql) => statement(f.env.db.prepare(sql)), batch: (s) => { trips += 1; return f.env.db.batch(s); } } };
+    const pacer = tickPacer();
+    await runTick(env, NOW, { wake: 'clock', pacer });
+    const full = trips;
+    Object.assign(pacer, { draining: ['search-index'] });
+    trips = 0;
+    const report = await runTick(env, NOW + CHAINED_WAKE_MS, { wake: 'clock', pacer });
+    expect(report.drainOnly).toBe(true);
+    expect(trips).toBeLessThanOrEqual(DRAINING_WAKE_STORE_CALLS);
+    expect(full).toBeGreaterThan(DRAINING_WAKE_STORE_CALLS * 3);
+  });
+});
+
+/** The store calls a draining wake may make beyond its jobs' own: the queue's drain and the backlog count. */
+const DRAINING_WAKE_STORE_CALLS = 8;

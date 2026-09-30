@@ -17,8 +17,8 @@ import type { RelationalStore, ServerEnv } from './adapters.js';
 import { AlreadyRunning, dispatchPrepared, HARNESS_AGENT_ID, prepareDispatch, type LaunchSpec } from './harness.js';
 import { buildTaskInput } from './task-inputs.js';
 import type { PowerState } from './power.js';
-import { ensureAgent, hasLiveTaskRun, INPUT_UNCHANGED, lastTaskEntryAt, projectAdmission, recordSkipped, taskEntriesSince } from './runs.js';
-import { isScheduleCount, leafValues, type ProjectCapability } from './settings.js';
+import { ensureAgent, INPUT_UNCHANGED, recordSkipped, taskFactsKey, taskRunFacts, type TaskRunFacts } from './runs.js';
+import { enabledCapabilities, isScheduleCount, leafValues, type ProjectCapability } from './settings.js';
 import { TASK_SCHEDULE, type ScheduleState, type TaskSchedule } from './jobs.js';
 import { declared } from './declared.js';
 import { admissionForTask, runTimeoutForTask } from './task-catalogue.js';
@@ -119,24 +119,57 @@ export function scheduleFor(task: string, declared: TaskSchedule, overrides: Rec
 }
 
 /**
- * Decide one task for one Project at this wake. Answers the skip by name,
- * or null when the task should be dispatched. Pure over the reads it makes.
+ * What one wake's schedule reads of the Deployment's Projects before it decides anything: each Project's runs of each
+ * scheduled task, and the capabilities those tasks are admitted by. It is read once for every Project, in one round
+ * trip, so the clock's cost does not grow with the Projects it holds. A wake's own dispatches and skips change only
+ * the Project and task it decided, which it decides once, so one read serves the whole wake.
  */
-export async function decideTask(env: ServerEnv, projectId: string, lastReceivedAt: number | null, task: string, schedule: TaskSchedule, state: PowerState, leaves: ScheduleLeaves, now: number): Promise<ScheduleSkip | null> {
-  const scope = { projectId };
+export interface ScheduleFacts {
+  runs: Map<string, TaskRunFacts>;
+  /** `taskFactsKey(projectId, capability)` for every capability a Project has turned on. */
+  capabilities: Set<string>;
+}
+
+const NO_RUNS: TaskRunFacts = { live: false, lastEntryAt: null, entriesSince: 0 };
+
+/** The facts `decideTask` reads for `tasks`, for every Project or the one named. */
+export async function readScheduleFacts(env: ServerEnv, tasks: readonly string[], now: number, projectId?: string): Promise<ScheduleFacts> {
+  if (tasks.length === 0) return { runs: new Map(), capabilities: new Set() };
+  const gated = [...new Set(tasks.flatMap((task) => {
+    const gate = admissionForTask(task);
+    return gate?.kind === 'capability' ? [gate.capability as ProjectCapability] : [];
+  }))];
+  const runs = taskRunFacts(env.db, tasks, now - DAY_MS, CLOCK_ACTOR, projectId);
+  const capabilities = gated.length === 0 ? null : enabledCapabilities(env.db, gated, projectId);
+  const [runRows, capabilityRows] = await env.db.batch([runs.statement, ...(capabilities === null ? [] : [capabilities.statement])]);
+  return {
+    runs: runs.read(runRows!.results as ReadonlyArray<Record<string, unknown>>),
+    capabilities: new Set(capabilities === null ? [] : capabilities.read(capabilityRows!.results as ReadonlyArray<Record<string, unknown>>)
+      .map(({ projectId: held, capability }) => taskFactsKey(held, capability))),
+  };
+}
+
+/**
+ * Decide one task for one Project at this wake. Answers the skip by name,
+ * or null when the task should be dispatched. Pure over the facts it is handed
+ * (read for this Project alone where none are) and the named conditions it asks.
+ */
+export async function decideTask(env: ServerEnv, projectId: string, lastReceivedAt: number | null, task: string, schedule: TaskSchedule, state: PowerState, leaves: ScheduleLeaves, now: number, facts?: ScheduleFacts): Promise<ScheduleSkip | null> {
   if (schedule.enabled === false) return 'disabled';
   if (lastReceivedAt === null || now - lastReceivedAt > leaves.activeWindowDays * DAY_MS) return 'quiet';
   if (schedule.runWhenCold !== true && now - lastReceivedAt > leaves.coldThresholdDays * DAY_MS) return 'cold';
+  const held = facts ?? await readScheduleFacts(env, [task], now, projectId);
+  const runs = held.runs.get(taskFactsKey(projectId, task)) ?? NO_RUNS;
   const gate = admissionForTask(task);
-  if (gate?.kind === 'capability' && !(await projectAdmission(env.db, scope, gate.capability as ProjectCapability)).admitted) return 'capability_off';
-  if (schedule.overlap === 'skip' && (await hasLiveTaskRun(env.db, scope, task))) return 'already_running';
+  if (gate?.kind === 'capability' && !held.capabilities.has(taskFactsKey(projectId, gate.capability))) return 'capability_off';
+  if (schedule.overlap === 'skip' && runs.live) return 'already_running';
 
   const accelerator = schedule.accelerator === undefined ? undefined : declared(ACCELERATORS, schedule.accelerator.name);
   const count = schedule.accelerator !== undefined && accelerator !== undefined
     ? await accelerator({ db: env.db, projectId, limit: schedule.accelerator.thresholds.accelerated + 1 })
     : null;
   const intervalMs = effectiveIntervalSeconds(schedule.intervalSeconds, count, schedule.accelerator?.thresholds) * 1000;
-  const last = await lastTaskEntryAt(env.db, scope, task, CLOCK_ACTOR);
+  const last = runs.lastEntryAt;
   if (last !== null && now - last < intervalMs) return 'not_yet';
 
   if (!(schedule.runIn as readonly string[]).includes(state)) return 'not_in_state';
@@ -145,7 +178,7 @@ export async function decideTask(env: ServerEnv, projectId: string, lastReceived
     if (check === undefined || !(await check({ db: env.db, projectId, now }))) return 'precondition';
   }
   if (schedule.maxRunsPerDay !== undefined) {
-    const used = await taskEntriesSince(env.db, scope, task, now - DAY_MS, CLOCK_ACTOR);
+    const used = runs.entriesSince;
     if (used >= schedule.maxRunsPerDay) return 'max_runs_per_day';
     const reserve = schedule.reservedRunsPerDay;
     if (reserve !== undefined && used >= Math.max(0, schedule.maxRunsPerDay - reserve.count)) {
@@ -168,12 +201,13 @@ export async function runScheduledTasks(env: ServerEnv, state: PowerState, now: 
   if (!leaves.enabled) return report;
   const tasks = scheduledTasks(leaves.overrides);
   if (tasks.length === 0) return report;
+  const facts = await readScheduleFacts(env, tasks.map(({ task }) => task), now);
   for (const project of await listProjects(env.db)) {
     for (const { task, schedule } of tasks) {
-      const skip = await decideTask(env, project.projectId, project.lastActivityAt, task, schedule, state, leaves, now);
+      const skip = await decideTask(env, project.projectId, project.lastActivityAt, task, schedule, state, leaves, now, facts);
       if (skip === 'max_runs_per_day' || skip === 'reserved_runs_per_day') {
         // The entry that filled the window names the episode; it cannot move while the window stays full.
-        const filledAt = await lastTaskEntryAt(env.db, { projectId: project.projectId }, task, CLOCK_ACTOR);
+        const filledAt = facts.runs.get(taskFactsKey(project.projectId, task))?.lastEntryAt ?? null;
         await recordClockSkip(env, project.projectId, task, skip, ceilingSkipId(project.projectId, task, filledAt) + (skip === 'reserved_runs_per_day' ? '_reserved' : ''), now);
         emit({ kind: 'task_skipped', task, projectId: project.projectId, skip });
         report.skipped += 1;

@@ -5,12 +5,12 @@
  */
 import { describe, expect, it } from 'bun:test';
 import { serverEnvFromBindings } from '@myco-server-worker/platform/cloudflare/env.js';
-import type { ServerEnv } from '@myco-server-worker/core/adapters.js';
+import type { PreparedStatement, RelationalStore, ServerEnv } from '@myco-server-worker/core/adapters.js';
 import { HARNESS_AGENT_ID } from '@myco-server-worker/core/harness.js';
-import { ACTIVE_WINDOW_DAYS_DEFAULT, CLOCK_ACTOR, COLD_PROJECT_THRESHOLD_DAYS_DEFAULT, decideTask, effectiveIntervalSeconds, hasUnprocessedPrompts, PRE_CONDITIONS, resolveSchedule, runScheduledTasks, scheduledTasks, scheduleFor, scheduleLeaves } from '@myco-server-worker/core/scheduled-tasks.js';
+import { ACTIVE_WINDOW_DAYS_DEFAULT, CLOCK_ACTOR, COLD_PROJECT_THRESHOLD_DAYS_DEFAULT, decideTask, effectiveIntervalSeconds, hasUnprocessedPrompts, PRE_CONDITIONS, readScheduleFacts, resolveSchedule, runScheduledTasks, scheduledTasks, scheduleFor, scheduleLeaves } from '@myco-server-worker/core/scheduled-tasks.js';
 import { TASK_SCHEDULE, type TaskSchedule } from '@myco-server-worker/core/jobs.js';
 import { TASK_ADMISSION } from '@myco-server-worker/core/task-catalogue.js';
-import { lastTaskEntryAt, taskEntriesSince } from '@myco-server-worker/core/runs.js';
+import { hasLiveTaskRun, INPUT_UNCHANGED, lastTaskEntryAt, skipContext, taskEntriesSince, taskFactsKey, taskRunFacts } from '@myco-server-worker/core/runs.js';
 import { runTick } from '@myco-server-worker/core/tick.js';
 import { seedCredential } from './helpers/d1.js';
 import { sqliteEnv, withHarness } from './helpers/fixtures.js';
@@ -385,5 +385,115 @@ describe('automatic extraction reserves capacity for recent live sessions', () =
     expect(await decide()).toBeNull();
     expect(resolveSchedule(schedule, { reservedRunsPerDay: { count: 0, preCondition: 'has-recent-live-prompts' } }).reservedRunsPerDay?.count).toBe(0);
     expect(resolveSchedule(schedule, { reservedRunsPerDay: { count: -1, preCondition: 'has-recent-live-prompts' } }).reservedRunsPerDay?.count).toBe(3);
+  });
+});
+
+describe('one wake\'s scheduling across many Projects (#1510)', () => {
+  /** The store calls a wake's scheduling makes: each statement run alone, and each batch as one. */
+  function counted(f: ReturnType<typeof fixture>) {
+    let trips = 0;
+    const statement = (inner: PreparedStatement): PreparedStatement => ({
+      ...inner,
+      bind: (...values: unknown[]) => statement(inner.bind(...values)),
+      first: <T,>() => { trips += 1; return inner.first<T>(); },
+      all: <T,>() => { trips += 1; return inner.all<T>(); },
+      run: () => { trips += 1; return inner.run(); },
+    });
+    const db: RelationalStore = { prepare: (sql) => statement(f.env.db.prepare(sql)), batch: (statements) => { trips += 1; return f.env.db.batch(statements); } };
+    return { env: { ...f.env, db }, trips: () => trips };
+  }
+
+  /** A wake's store calls with `projects` live Projects, each with one of the scheduled tasks' capabilities on and one off. */
+  async function tripsWith(projects: number, state: 'active' | 'idle'): Promise<number> {
+    const f = fixture();
+    f.sqlite.run(`INSERT OR IGNORE INTO agents (id, name, source, enabled, created_at) VALUES ('myco-agent', 'myco-agent', 'built-in', 1, ?)`, [NOW]);
+    for (let n = 0; n < projects; n += 1) {
+      const projectId = `proj_many_${n}`;
+      f.sqlite.run(`INSERT OR IGNORE INTO projects (project_id, name, created_at) VALUES (?, ?, ?)`, [projectId, projectId, NOW]);
+      f.receipt(projectId, NOW - 60_000);
+      f.capability(projectId, 'cortex', true);
+      f.capability(projectId, 'vault_evolution', false);
+      // A clock-dispatched run of the probe a day old: the interval has passed, so the wake reads it and goes on.
+      f.sqlite.run(`INSERT INTO agent_runs (project_id, id, agent_id, task, status, started_at, completed_at, dispatch_spec) VALUES (?, ?, 'myco-agent', 'container-smoke', 'completed', ?, ?, ?)`,
+        [projectId, `run_old_${n}`, NOW - 2 * DAY, NOW - 2 * DAY, JSON.stringify({ actor: CLOCK_ACTOR })]);
+    }
+    const { env, trips } = counted(f);
+    expect(await runScheduledTasks(env, state, NOW, ORIGIN)).toEqual({ dispatched: 0, skipped: 0 });
+    return trips();
+  }
+
+  it('reads the same number of times whether it holds one Project or twelve', async () => {
+    // No scheduled task runs at `active`: every one is decided on what the wake read up front, and none reaches a
+    // condition of its own.
+    expect(scheduledTasks().filter(({ schedule }) => schedule.runIn.includes('active'))).toEqual([]);
+    const one = await tripsWith(1, 'active');
+    const twelve = await tripsWith(12, 'active');
+    expect({ one, twelve }).toEqual({ one, twelve: one });
+    expect(one).toBeLessThanOrEqual(4);
+  });
+
+  it('decides each Project and task on the same facts a read of that Project alone answers', async () => {
+    const f = fixture();
+    f.receipt('proj_1', NOW - 60_000);
+    f.receipt('proj_2', NOW - 60_000);
+    f.capability('proj_2', 'vault_evolution', true);
+    f.sqlite.run(`INSERT OR IGNORE INTO agents (id, name, source, enabled, created_at) VALUES ('myco-agent', 'myco-agent', 'built-in', 1, ?)`, [NOW]);
+    f.sqlite.run(`INSERT INTO agent_runs (project_id, id, agent_id, task, status, started_at, dispatch_spec) VALUES ('proj_1', 'run_live', 'myco-agent', 'container-smoke', 'running', ?, ?)`, [NOW - 1_000, JSON.stringify({ actor: CLOCK_ACTOR })]);
+    f.sqlite.run(`INSERT INTO agent_runs (project_id, id, agent_id, task, status, started_at, completed_at, dispatch_spec) VALUES ('proj_2', 'run_done', 'myco-agent', 'container-smoke', 'completed', ?, ?, ?)`, [NOW - 2 * DAY, NOW - 2 * DAY, JSON.stringify({ actor: CLOCK_ACTOR })]);
+    f.sqlite.run(`INSERT INTO agent_runs (project_id, id, agent_id, task, status, started_at, completed_at, dispatch_spec) VALUES ('proj_2', 'run_owner', 'myco-agent', 'container-smoke', 'completed', ?, ?, ?)`, [NOW - 1_000, NOW - 500, JSON.stringify({ actor: 'mem_owner' })]);
+    // Each live status alone in its Project and task, so a read that misses one answers a different fact.
+    f.sqlite.run(`INSERT OR IGNORE INTO projects (project_id, name, created_at) VALUES ('proj_3', 'proj_3', ?)`, [NOW]);
+    f.receipt('proj_3', NOW - 60_000);
+    f.sqlite.run(`INSERT INTO agent_runs (project_id, id, agent_id, task, status, dispatch_spec) VALUES ('proj_3', 'run_pending', 'myco-agent', 'container-smoke', 'pending', ?)`, [JSON.stringify({ actor: CLOCK_ACTOR })]);
+    f.sqlite.run(`INSERT INTO agent_runs (project_id, id, agent_id, task, status, queued_at, dispatch_spec) VALUES ('proj_1', 'run_queued', 'myco-agent', 'extract-curate', 'queued', ?, ?)`, [NOW - 2_000, JSON.stringify({ actor: CLOCK_ACTOR })]);
+    // The clock's entry the platform replaced: the interval reads it, the day's ceiling does not.
+    f.sqlite.run(`INSERT INTO agent_runs (project_id, id, agent_id, task, status, started_at, completed_at, dispatch_spec, run_context) VALUES ('proj_2', 'run_replaced', 'myco-agent', 'container-smoke', 'completed', ?, ?, ?, ?)`, [NOW - 3_000, NOW - 2_500, JSON.stringify({ actor: CLOCK_ACTOR }), JSON.stringify({ replaced: true })]);
+    // A skip for unchanged input is the interval's entry; a skip for any other reason is nobody's.
+    f.sqlite.run(`INSERT INTO agent_runs (project_id, id, agent_id, task, status, started_at, completed_at, run_context) VALUES ('proj_2', 'run_unchanged', 'myco-agent', 'extract-curate', 'skipped', ?, ?, ?)`, [NOW - 500, NOW - 500, skipContext(INPUT_UNCHANGED)]);
+    f.sqlite.run(`INSERT INTO agent_runs (project_id, id, agent_id, task, status, started_at, completed_at, run_context) VALUES ('proj_2', 'run_ceiling', 'myco-agent', 'extract-curate', 'skipped', ?, ?, ?)`, [NOW - 100, NOW - 100, skipContext('max_runs_per_day')]);
+    // Another actor's entries, newer than the clock's own and inside the day.
+    f.sqlite.run(`INSERT INTO agent_runs (project_id, id, agent_id, task, status, started_at, completed_at, dispatch_spec) VALUES ('proj_3', 'run_clock', 'myco-agent', 'extract-curate', 'completed', ?, ?, ?)`, [NOW - 4_000, NOW - 3_500, JSON.stringify({ actor: CLOCK_ACTOR })]);
+    f.sqlite.run(`INSERT INTO agent_runs (project_id, id, agent_id, task, status, started_at, completed_at, dispatch_spec) VALUES ('proj_3', 'run_other', 'myco-agent', 'extract-curate', 'completed', ?, ?, ?)`, [NOW - 1_000, NOW - 900, JSON.stringify({ actor: 'mem_owner' })]);
+    const tasks = scheduledTasks().map(({ task }) => task);
+    expect(tasks).toEqual(['container-smoke', 'extract-curate']);
+    const whole = await readScheduleFacts(f.env, tasks, NOW);
+    // The fixture holds each case the reads tell apart, so agreeing below is agreeing on each of them.
+    expect([
+      whole.runs.get(taskFactsKey('proj_3', 'container-smoke'))?.live,
+      whole.runs.get(taskFactsKey('proj_1', 'extract-curate'))?.live,
+      whole.runs.get(taskFactsKey('proj_2', 'container-smoke')),
+      whole.runs.get(taskFactsKey('proj_2', 'extract-curate')),
+      whole.runs.get(taskFactsKey('proj_3', 'extract-curate')),
+    ]).toEqual([
+      true,
+      true,
+      { live: false, lastEntryAt: NOW - 3_000, entriesSince: 0 },
+      { live: false, lastEntryAt: NOW - 500, entriesSince: 0 },
+      { live: false, lastEntryAt: NOW - 4_000, entriesSince: 1 },
+    ]);
+    for (const projectId of ['proj_1', 'proj_2', 'proj_3']) {
+      const alone = await readScheduleFacts(f.env, tasks, NOW, projectId);
+      for (const task of tasks) {
+        const key = taskFactsKey(projectId, task);
+        expect({ key, facts: whole.runs.get(key) ?? null }).toEqual({ key, facts: alone.runs.get(key) ?? null });
+        const perProject = {
+          lastEntryAt: await lastTaskEntryAt(f.env.db, { projectId }, task, CLOCK_ACTOR),
+          entriesSince: await taskEntriesSince(f.env.db, { projectId }, task, NOW - DAY, CLOCK_ACTOR),
+          live: await hasLiveTaskRun(f.env.db, { projectId }, task),
+        };
+        expect({ key, facts: whole.runs.get(key) ?? { live: false, lastEntryAt: null, entriesSince: 0 } }).toEqual({ key, facts: perProject });
+      }
+    }
+    expect([...whole.capabilities].sort()).toEqual([taskFactsKey('proj_1', 'cortex'), taskFactsKey('proj_2', 'cortex'), taskFactsKey('proj_2', 'vault_evolution')]);
+  });
+
+  it('reads every Project\'s runs through the Project-and-task index, never by scanning the runs', () => {
+    const f = fixture();
+    const facts = taskRunFacts(f.env.db, scheduledTasks().map(({ task }) => task), NOW - DAY, CLOCK_ACTOR);
+    const sql = (facts.statement as unknown as { sql?: string }).sql;
+    const text = sql ?? '';
+    const plan = f.sqlite.query(`EXPLAIN QUERY PLAN ${text}`).all(...(Array.from({ length: (text.match(/\?/g) ?? []).length }, () => null) as never[])) as Array<{ detail: string }>;
+    const details = plan.map((row) => row.detail);
+    expect({ index: details.some((d) => d.includes('idx_agent_runs_task')), scans: details.filter((d) => /^SCAN agent_runs/.test(d)) }).toEqual({ index: true, scans: [] });
   });
 });

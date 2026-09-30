@@ -9,7 +9,7 @@
  * nothing.
  */
 import { DurableObject } from 'cloudflare:workers';
-import { runTick, type TickReport } from '../../core/tick.js';
+import { runTick, tickPacer, type TickReport } from '../../core/tick.js';
 import { serialGate } from '../../core/serial-gate.js';
 import { WAKE_CONTINUATIONS } from '../../core/jobs.js';
 import { classify, emit } from '../../telemetry.js';
@@ -152,6 +152,8 @@ export async function wakeClock(bindings: CloudflareBindings): Promise<void> {
 export class DeploymentClock extends DurableObject<CloudflareBindings> {
   /** One wake at a time in this object: an alarm and a cron floor arriving together run back to back rather than doubling store calls. */
   private readonly gate = serialGate();
+  /** What this clock keeps between its wakes: which of them run every job, and which only drain (`TickPacer`). */
+  private readonly pacer = tickPacer();
   /** Work a tick launched that is still running: kept alive by this object, never by the wake that launched it. */
   private readonly launched = new Set<Promise<void>>();
 
@@ -178,9 +180,9 @@ export class DeploymentClock extends DurableObject<CloudflareBindings> {
     return serverEnvFromBindings(this.env, { lifetime: 'clock', waitUntil: (promise) => { this.keep(promise); } });
   }
 
-  /** One tick over this object's bindings. */
+  /** One tick over this object's bindings, paced by what this clock kept from its last wakes. */
   protected tick(now: number): Promise<TickReport> {
-    return runTick(this.clockEnv(), now, { wake: 'clock' });
+    return runTick(this.clockEnv(), now, { wake: 'clock', pacer: this.pacer });
   }
 
   /**
