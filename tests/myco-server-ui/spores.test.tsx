@@ -1,27 +1,67 @@
-import { afterEach, describe, expect, it } from 'bun:test';
+/**
+ * Knowledge's spores: the stream across every project and within one, its
+ * filter bar and facets, paging, the old addresses, and a spore's article with
+ * where it came from and how it changed.
+ *
+ * The clock is held at a fixed afternoon so every instant below sits on the day
+ * it names, whatever the machine's own time.
+ */
+import { afterEach, beforeEach, describe, expect, it, setSystemTime } from 'bun:test';
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { MemoryRouter, useLocation } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 
 import App from '../../packages/myco-server/ui/src/App';
 import { AppearanceProvider } from '../../packages/myco-server/ui/src/providers/appearance';
-import { sporePreview, sporeTags } from '../../packages/myco-server/ui/src/components/spores/labels';
+import { forgetProject } from '../../packages/myco-server/ui/src/lib/project-memory';
+import { sporeAuthor, sporeHeadline, sporeTags, typeFacetRows, windowSince } from '../../packages/myco-server/ui/src/features/knowledge/words';
 
-const ME = { sub: '583231', login: 'octocat', member: { id: 'mem_1', label: 'chris', role: 'admin' as const } };
-const PROJECTS = { projects: [{ projectId: 'x', name: 'Project X', createdAt: 0, sessionCount: 1, lastActivityAt: null }] };
-const NOW = Date.now();
+const MINUTE = 60_000;
+const HOUR = 60 * MINUTE;
+const DAY = 24 * HOUR;
+/** Tuesday, September 29 2026, 16:00 local. */
+const NOW = new Date(2026, 8, 29, 16, 0, 0).getTime();
+
+/** The raw ids a reader must never see, as the screens check defines them. */
+const RAW_ID = /\b(run|proj|mem|mt)_[\w-]{6,}/;
+
+const ADMIN = { sub: '1', login: 'ada', member: { id: 'mem_q3Vb8xRk2LmT7wYz', label: 'Ada', role: 'admin' as const } };
+const PROJECTS = { projects: [
+  { projectId: 'proj_6d79636f3a3e1c0b', name: 'Myco', createdAt: 0, sessionCount: 3, lastActivityAt: NOW },
+  { projectId: 'proj_a71a5c0e2b9d4f8e', name: 'Atlas web', createdAt: 0, sessionCount: 1, lastActivityAt: NOW - HOUR },
+] };
+const MYCO = 'proj_6d79636f3a3e1c0b';
+const ATLAS = 'proj_a71a5c0e2b9d4f8e';
+const MEMBERS = { members: [
+  { id: 'mem_q3Vb8xRk2LmT7wYz', label: 'Ada', role: 'admin', linked: true, createdAt: 0, revokedAt: null, revokedBy: null, liveCredentials: 1 },
+  { id: 'mem_harness', label: 'harness', role: 'admin', linked: false, createdAt: 0, revokedAt: null, revokedBy: null, liveCredentials: 0 },
+] };
 
 const spore = (over: Record<string, unknown> = {}) => ({
-  id: 'sp1', agentId: 'agent_1', sessionId: 's1', promptId: null, observationType: 'gotcha', status: 'active',
-  content: 'The cache lies after a rebase.', context: null, importance: 8, filePath: 'src/cache.ts',
-  tags: null, contentHash: null, properties: null, createdAt: NOW - 60_000, updatedAt: null, embedded: 0, ...over,
+  projectId: MYCO, id: 'sp1', agentId: 'agent_1', sessionId: 's1', promptId: null, observationType: 'gotcha', status: 'active',
+  content: 'The cache lies after a rebase.\n\nClear it on checkout.', context: null, importance: 8, filePath: 'src/cache.ts', tags: null,
+  contentHash: null, properties: null, author: 'run_4f1c9a2e7b', provenanceKind: null, provenanceRef: null,
+  agentLine: 'The cache lies after a rebase; clear it on checkout.', createdAt: NOW - HOUR, updatedAt: null, embedded: 0, ...over,
 });
-const list = (spores: unknown[], total = spores.length) => Response.json({ spores, total, maxPage: 200 });
+const FACETS = { type: { gotcha: 3, decision: 2, bug_fix: 1 }, project: { [MYCO]: 4, [ATLAS]: 2 } };
+const stream = (spores: unknown[], total = spores.length, facets: unknown = FACETS) => Response.json({ spores, total, maxPage: 200, ...(facets === null ? {} : { facets }) });
+
+const ROWS = [
+  spore(),
+  spore({ id: 'sp2', projectId: ATLAS, observationType: 'decision', agentLine: 'Validation messages name the field and the fix.', createdAt: NOW - 2 * HOUR }),
+  // Saved without its one line: headlined by its type and day, with the start of what it says beneath.
+  spore({ id: 'sp3', observationType: 'bug_fix', agentLine: null, content: '# Port race\n\nBind port 0.', createdAt: NOW - DAY - HOUR }),
+];
 
 const originalFetch = globalThis.fetch;
-afterEach(() => { cleanup(); globalThis.fetch = originalFetch; });
+(window.Element.prototype as unknown as { scrollIntoView?: () => void }).scrollIntoView ??= () => undefined;
+beforeEach(() => { setSystemTime(new Date(NOW)); });
+afterEach(() => { cleanup(); globalThis.fetch = originalFetch; setSystemTime(); forgetProject(); });
 
-function server(routes: Record<string, () => Response>): { requested: string[] } {
+type Routes = Record<string, () => Response | Promise<Response>>;
+
+/** Answers a path with its query first, then the path alone; anything else is 404. Records every request. */
+function server(routes: Routes): { requested: string[] } {
   const requested: string[] = [];
   globalThis.fetch = (async (input: RequestInfo | URL) => {
     const href = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
@@ -32,300 +72,268 @@ function server(routes: Record<string, () => Response>): { requested: string[] }
   return { requested };
 }
 
-/**
- * Wait until the mocked server has been asked for `url`.
- *
- * A keystroke reaches the list through the filter debounce, then a request,
- * then a render. Waiting for the rendered rows alone puts all three stages
- * under one budget. The request is the event that separates them: waiting for
- * it first, and for the rows second, gives each stage a whole budget of its
- * own and names which stage is stuck when one fails.
- */
-const asked = (requested: string[], url: string) =>
-  waitFor(() => expect(requested).toContain(url));
-
-const base = (extra: Record<string, () => Response> = {}) => ({
-  '/auth/me': () => Response.json(ME),
+const base = (extra: Routes = {}): Routes => ({
+  '/auth/me': () => Response.json(ADMIN),
   '/api/projects': () => Response.json(PROJECTS),
+  '/api/members': () => Response.json(MEMBERS),
   ...extra,
 });
 
-/** A wide screen for the duration of `fn`; the shim answers narrow otherwise. */
-async function onWideScreen(fn: () => Promise<void>): Promise<void> {
-  const original = window.matchMedia;
-  window.matchMedia = ((query: string) => ({ matches: query.includes('min-width'), media: query, onchange: null, addEventListener: () => {}, removeEventListener: () => {}, addListener: () => {}, removeListener: () => {}, dispatchEvent: () => false })) as typeof window.matchMedia;
-  try { await fn(); } finally { window.matchMedia = original; }
-}
-
-/** Opens a design-system select, found by the start of its name, and picks one option, the way a person does. */
-async function pick(label: string, option: string) {
-  const proto = window.Element.prototype as unknown as { scrollIntoView?: () => void };
-  proto.scrollIntoView ??= () => undefined;
-  const [trigger] = screen.queryAllByRole('combobox', { name: new RegExp(`^${label}`) }).concat(screen.queryAllByRole('button', { name: new RegExp(`^${label}:`) }));
-  fireEvent.click(trigger!);
-  fireEvent.click(await screen.findByRole('option', { name: option }));
-}
-
-/** What a design-system select shows as picked: the trigger's text for a short list, its name for a searchable one. */
-function picked(label: string): string {
-  const combobox = screen.queryByRole('combobox', { name: label });
-  if (combobox !== null) return combobox.textContent ?? '';
-  return screen.getByRole('button', { name: new RegExp(`^${label}:`) }).getAttribute('aria-label')!.slice(label.length + 2);
+function LocationProbe() {
+  const location = useLocation();
+  return <div data-testid="location">{location.pathname}{location.search}</div>;
 }
 
 function mount(path: string) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  return render(<AppearanceProvider><QueryClientProvider client={client}><MemoryRouter initialEntries={[path]}><App /></MemoryRouter></QueryClientProvider></AppearanceProvider>);
+  render(<AppearanceProvider><QueryClientProvider client={client}><MemoryRouter initialEntries={[path]}><App /><LocationProbe /></MemoryRouter></QueryClientProvider></AppearanceProvider>);
 }
 
-describe('Spores list', () => {
-  const ROWS = [
-    spore({ id: 'sp1', observationType: 'gotcha', content: 'The cache lies after a rebase.' }),
-    spore({ id: 'sp2', observationType: 'decision', status: 'superseded', content: '# Ship it\n\nWe page by offset.' }),
-  ];
+const location = () => screen.getByTestId('location').textContent;
+const asked = (requested: string[], url: string) => waitFor(() => expect(requested).toContain(url));
 
-  it('opens on what the project holds true, lists each spore by type and preview, and marks the ones no longer active', async () => {
-    const { requested } = server(base({ '/api/projects/x/spores?limit=25&status=active': () => list(ROWS) }));
-    mount('/p/x/spores');
-    const rows = await screen.findAllByRole('row');
-    expect(rows).toHaveLength(2);
-    expect(rows[0]!.textContent).toContain('Gotcha');
-    expect(rows[0]!.textContent).toContain('The cache lies after a rebase.');
-    expect(rows[1]!.textContent).toContain('Decision');
-    expect(rows[1]!.textContent).toContain('Superseded');
-    // The markdown heading reads as its text, not its marker.
-    expect(rows[1]!.textContent).toContain('Ship it');
-    expect(rows[0]!.textContent).not.toContain('Active');
-    expect(screen.getByTestId('spore-rail-counts').textContent).toBe('2 ACTIVE');
-    expect(requested).toContain('/api/projects/x/spores?limit=25&status=active');
+/** Opens a design-system select by its label and picks one option, the way a person does. */
+async function pick(label: string, option: string) {
+  fireEvent.click(await screen.findByRole('combobox', { name: label }));
+  fireEvent.click(await screen.findByRole('option', { name: option }));
+}
+
+function screenWidth(width: number): void {
+  window.matchMedia = ((query: string) => {
+    const max = /max-width:\s*(\d+)px/.exec(query);
+    const min = /min-width:\s*(\d+)px/.exec(query);
+    const matches = (max === null || width <= Number(max[1])) && (min === null || width >= Number(min[1]));
+    return { matches, media: query, onchange: null, addEventListener: () => {}, removeEventListener: () => {}, addListener: () => {}, removeListener: () => {}, dispatchEvent: () => false };
+  }) as typeof window.matchMedia;
+}
+const originalMatchMedia = window.matchMedia;
+afterEach(() => { window.matchMedia = originalMatchMedia; });
+
+/** Visible text carrying a raw id, outside the facts panel. */
+function rawIdsInPage(): string[] {
+  const hits: string[] = [];
+  const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+  for (let node = walker.nextNode(); node !== null; node = walker.nextNode()) {
+    const match = RAW_ID.exec(node.textContent ?? '');
+    if (match && node.parentElement?.closest('[data-facts]') === null && node.parentElement?.closest('[data-testid="location"]') === null) hits.push(match[0]);
+  }
+  return hits;
+}
+
+const cards = () => [...document.querySelectorAll<HTMLElement>('[data-spore-stream] li[data-spore]')];
+
+describe('the spore stream', () => {
+  it('lists current spores across every project, headlined by their one line, under the day each was saved', async () => {
+    const { requested } = server(base({ '/api/spores?status=active&limit=25': () => stream(ROWS, 6) }));
+    mount('/knowledge');
+    expect(await screen.findByRole('heading', { level: 1, name: 'Knowledge' })).toBeTruthy();
+    await waitFor(() => expect(cards()).toHaveLength(3));
+    expect(requested).toContain('/api/spores?status=active&limit=25');
+    const [first, second, third] = cards();
+    expect(within(first!).getByRole('link').textContent).toBe('The cache lies after a rebase; clear it on checkout.');
+    expect(first!.textContent).toContain('Gotcha');
+    expect(first!.textContent).toContain('Myco');
+    expect(second!.textContent).toContain('Atlas web');
+    expect(second!.textContent).toContain('Decision');
+    // No one line: the type and the day head it, and the start of what it says follows.
+    expect(within(third!).getByRole('link').textContent).toBe('Fix saved Sep 28');
+    expect(third!.textContent).toContain('Port race');
+    expect(third!.hasAttribute('data-unlined')).toBe(true);
+    const days = screen.getAllByRole('heading', { level: 2 }).map((h) => h.textContent).filter((t) => t === 'Today' || t === 'Yesterday');
+    expect(days).toEqual(['Today', 'Yesterday']);
+    expect(within(first!).getByRole('link').getAttribute('href')).toBe(`/p/${MYCO}/spores/sp1`);
+    expect(screen.getByText('6 current spores')).toBeTruthy();
+    expect(within(screen.getByRole('navigation', { name: 'Knowledge sections' })).getAllByRole('link').map((a) => a.textContent)).toEqual(['Spores', 'Plans']);
+    expect(within(screen.getByRole('navigation', { name: 'Pages' })).getByRole('link', { name: 'Knowledge' }).getAttribute('aria-current')).toBe('page');
+    expect(rawIdsInPage()).toEqual([]);
   });
 
-  it('asks the server to filter, by status and type from the filter bar and by text from its box, and says so when nothing matches', async () => {
+  it('marks a spore no longer current, and filters by status, period and words on the server, all in the URL', async () => {
+    const since = windowSince('week', NOW);
     const { requested } = server(base({
-      '/api/projects/x/spores?limit=25&status=active': () => list(ROWS),
-      '/api/projects/x/spores?limit=25': () => list([...ROWS, spore({ id: 'sp3', status: 'obsolete' })]),
-      '/api/projects/x/spores?limit=25&type=gotcha': () => list([ROWS[0]]),
-      '/api/projects/x/spores?limit=25&type=gotcha&q=nothing-here': () => list([]),
+      '/api/spores?status=active&limit=25': () => stream(ROWS),
+      '/api/spores?status=superseded&limit=25': () => stream([spore({ id: 'sp9', status: 'superseded', agentLine: 'The old port rule.' })]),
+      [`/api/spores?status=superseded&since=${since}&limit=25`]: () => stream([spore({ id: 'sp9', status: 'superseded', agentLine: 'The old port rule.' })]),
+      [`/api/spores?status=superseded&q=port&since=${since}&limit=25`]: () => stream([]),
     }));
-    mount('/p/x/spores');
-    await screen.findAllByRole('row');
-    await pick('Status', 'Every status');
-    await asked(requested, '/api/projects/x/spores?limit=25');
-    await waitFor(() => expect(screen.getAllByRole('row')).toHaveLength(3));
-    await pick('Type', 'Gotcha');
-    await asked(requested, '/api/projects/x/spores?limit=25&type=gotcha');
-    await waitFor(() => expect(screen.getAllByRole('row')).toHaveLength(1));
-    expect(screen.getByTestId('spore-rail-counts').textContent).toBe('1 MATCHING');
-    fireEvent.change(screen.getByLabelText('Filter spores'), { target: { value: 'nothing-here' } });
-    await asked(requested, '/api/projects/x/spores?limit=25&type=gotcha&q=nothing-here');
+    mount('/knowledge');
+    await waitFor(() => expect(cards()).toHaveLength(3));
+    await pick('Status', 'Replaced');
+    await asked(requested, '/api/spores?status=superseded&limit=25');
+    await waitFor(() => expect(cards()).toHaveLength(1));
+    expect(cards()[0]!.textContent).toContain('Replaced');
+    expect(cards()[0]!.getAttribute('data-spore')).toBe('superseded');
+    await pick('Saved', 'Saved in the past 7 days');
+    await asked(requested, `/api/spores?status=superseded&since=${since}&limit=25`);
+    fireEvent.change(screen.getByRole('searchbox', { name: 'Filter spores' }), { target: { value: 'port' } });
+    await asked(requested, `/api/spores?status=superseded&q=port&since=${since}&limit=25`);
     expect(await screen.findByText('No spores match.')).toBeTruthy();
-    expect(requested.filter((r) => r.startsWith('/api/projects/x/spores'))).toEqual([
-      '/api/projects/x/spores?limit=25&status=active',
-      '/api/projects/x/spores?limit=25',
-      '/api/projects/x/spores?limit=25&type=gotcha',
-      '/api/projects/x/spores?limit=25&type=gotcha&q=nothing-here',
-    ]);
-  });
-
-  it('carries a pasted link straight into the request — status, type, text and page', async () => {
-    const { requested } = server(base({ '/api/projects/x/spores?limit=25&status=obsolete&type=gotcha&q=cache&offset=25': () => list([ROWS[0]], 30) }));
-    mount('/p/x/spores?status=obsolete&type=gotcha&q=cache&offset=25');
-    await screen.findAllByRole('row');
-    expect(requested.filter((r) => r.startsWith('/api/projects/x/spores'))).toEqual([
-      '/api/projects/x/spores?limit=25&status=obsolete&type=gotcha&q=cache&offset=25',
-    ]);
-    // The pasted state is what the controls show.
-    expect(picked('Status')).toBe('Obsolete');
-    expect(picked('Type')).toBe('Gotcha');
-    expect((screen.getByLabelText('Filter spores') as HTMLInputElement).value).toBe('cache');
-  });
-
-  it('clears the query, status, type and page in one step, back to what the page opens on', async () => {
-    const { requested } = server(base({
-      '/api/projects/x/spores?limit=25&status=obsolete&type=gotcha&q=cache&offset=25': () => list([ROWS[0]], 30),
-      '/api/projects/x/spores?limit=25&status=active': () => list(ROWS),
-    }));
-    let where = '';
-    const Probe = () => { const location = useLocation(); where = location.pathname + location.search; return null; };
-    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-    render(<AppearanceProvider><QueryClientProvider client={client}><MemoryRouter initialEntries={['/p/x/spores?status=obsolete&type=gotcha&q=cache&offset=25']}><App /><Probe /></MemoryRouter></QueryClientProvider></AppearanceProvider>);
-    await screen.findAllByRole('row');
+    expect(location()).toBe('/knowledge?status=superseded&window=week&q=port');
     fireEvent.click(screen.getByRole('button', { name: 'Clear search and filters' }));
-    await waitFor(() => expect(where).toBe('/p/x/spores'));
-    await asked(requested, '/api/projects/x/spores?limit=25&status=active');
-    expect(picked('Status')).toBe('Active');
-    expect(picked('Type')).toBe('Every type');
-    expect((screen.getByLabelText('Filter spores') as HTMLInputElement).value).toBe('');
-    await new Promise((resolve) => setTimeout(resolve, 400));
-    expect(where).toBe('/p/x/spores');
+    await waitFor(() => expect(location()).toBe('/knowledge'));
+    await waitFor(() => expect(cards()).toHaveLength(3));
   });
 
-  it('pages the match, and a change of status starts the next match at its first page', async () => {
+  it('shows the type and project facets with the server’s counts; a type narrows in place, a project leads to its Knowledge with the filters kept', async () => {
     const { requested } = server(base({
-      '/api/projects/x/spores?limit=25&status=active': () => list(ROWS, 30),
-      '/api/projects/x/spores?limit=25&status=active&offset=25': () => list([ROWS[1]], 30),
-      '/api/projects/x/spores?limit=25&status=obsolete': () => list([], 0),
+      '/api/spores?status=active&limit=25': () => stream(ROWS),
+      '/api/spores?type=decision&status=active&limit=25': () => stream([ROWS[1]], 2, { ...FACETS, project: { [ATLAS]: 2 } }),
+      [`/api/spores?project=${ATLAS}&type=decision&status=active&limit=25`]: () => stream([ROWS[1]], 2),
     }));
-    mount('/p/x/spores');
-    await screen.findAllByRole('row');
-    fireEvent.click(screen.getByRole('button', { name: /Next/ }));
-    await waitFor(() => expect(screen.getAllByRole('row')).toHaveLength(1));
-    await pick('Status', 'Obsolete');
-    await screen.findByText('No spores match.');
-    expect(requested.filter((r) => r.startsWith('/api/projects/x/spores'))).toEqual([
-      '/api/projects/x/spores?limit=25&status=active',
-      '/api/projects/x/spores?limit=25&status=active&offset=25',
-      '/api/projects/x/spores?limit=25&status=obsolete',
+    mount('/knowledge');
+    await waitFor(() => expect(cards()).toHaveLength(3));
+    const types = screen.getByRole('region', { name: 'Type' });
+    const typeRows = within(types).getAllByRole('button');
+    expect(typeRows.map((b) => b.textContent)).toEqual(['Everything6', 'Decisions2', 'Gotchas3', 'Fixes1']);
+    expect(typeRows[0]!.getAttribute('aria-pressed')).toBe('true');
+    fireEvent.click(within(types).getByRole('button', { name: /Decisions/ }));
+    await asked(requested, '/api/spores?type=decision&status=active&limit=25');
+    await waitFor(() => expect(cards()).toHaveLength(1));
+    expect(location()).toBe('/knowledge?type=decision');
+    const projects = screen.getByRole('region', { name: 'Project' });
+    expect(within(projects).getAllByRole('link').map((a) => a.textContent)).toEqual(['All projects2', 'Atlas web2']);
+    fireEvent.click(within(projects).getByRole('link', { name: /Atlas web/ }));
+    await waitFor(() => expect(location()).toBe(`/p/${ATLAS}/knowledge?type=decision`));
+    await asked(requested, `/api/spores?project=${ATLAS}&type=decision&status=active&limit=25`);
+    // Within one project the cards leave the project out, and "All projects" leads back.
+    await waitFor(() => expect(cards()).toHaveLength(1));
+    expect(cards()[0]!.textContent).not.toContain('Atlas web');
+    expect(within(screen.getByRole('region', { name: 'Project' })).getByRole('link', { name: /All projects/ }).getAttribute('href')).toBe('/knowledge?type=decision');
+    expect(within(screen.getByRole('navigation', { name: 'Knowledge sections' })).getAllByRole('link').map((a) => a.textContent)).toEqual(['Spores', 'Plans', 'Code map']);
+  });
+
+  it('moves the type into the filter bar on a narrow screen', async () => {
+    screenWidth(390);
+    const { requested } = server(base({
+      '/api/spores?status=active&limit=25': () => stream(ROWS),
+      '/api/spores?type=gotcha&status=active&limit=25': () => stream([ROWS[0]], 1),
+    }));
+    mount('/knowledge');
+    await waitFor(() => expect(cards()).toHaveLength(3));
+    expect(screen.queryByRole('region', { name: 'Type' })).toBeNull();
+    await pick('Type', 'Gotchas (3)');
+    await asked(requested, '/api/spores?type=gotcha&status=active&limit=25');
+  });
+
+  it('reads the next page from where the loaded spores end, listing a repeated spore once', async () => {
+    const page = Array.from({ length: 25 }, (_, i) => spore({ id: `a${i}`, agentLine: `Spore number ${i}`, createdAt: NOW - (i + 1) * MINUTE }));
+    const { requested } = server(base({
+      '/api/spores?status=active&limit=25': () => stream(page, 27),
+      '/api/spores?status=active&limit=25&offset=25': () => stream([page[24], spore({ id: 'b1', agentLine: 'Spore after the page' })], 27, null),
+    }));
+    mount('/knowledge');
+    await waitFor(() => expect(cards()).toHaveLength(25));
+    expect(screen.getByText('Showing 25 of 27 spores')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Show more' }));
+    await asked(requested, '/api/spores?status=active&limit=25&offset=25');
+    await waitFor(() => expect(cards()).toHaveLength(26));
+    expect(screen.getByText('Spore after the page')).toBeTruthy();
+    // The facets came with the first page and still count the whole match.
+    expect(within(screen.getByRole('region', { name: 'Type' })).getAllByRole('button')[0]!.textContent).toBe('Everything6');
+  });
+
+  it('says there are none yet on a quiet deployment, and none match when filtered', async () => {
+    server(base({ '/api/spores?status=active&limit=25': () => stream([], 0, { type: {}, project: {} }) }));
+    mount('/knowledge');
+    expect(await screen.findByText('No spores yet. Myco writes them as it learns from your sessions.')).toBeTruthy();
+  });
+
+  it('sends the old spores list, with its filters, to Knowledge under the same project', async () => {
+    const { requested } = server(base({ [`/api/spores?project=${MYCO}&type=gotcha&status=superseded&limit=25`]: () => stream([spore({ status: 'superseded' })], 1) }));
+    mount(`/p/${MYCO}/spores?status=superseded&type=gotcha&offset=25`);
+    await waitFor(() => expect(location()).toBe(`/p/${MYCO}/knowledge?status=superseded&type=gotcha`));
+    await asked(requested, `/api/spores?project=${MYCO}&type=gotcha&status=superseded&limit=25`);
+  });
+
+  it('says not found for a project that does not exist', async () => {
+    server(base());
+    mount('/p/nope/knowledge');
+    expect(await screen.findByText('Not found')).toBeTruthy();
+  });
+});
+
+describe('a spore’s article', () => {
+  const article = (over: Record<string, unknown> = {}, extra: Record<string, unknown> = {}) => Response.json({
+    spore: { ...spore({ status: 'superseded', promptId: 'p1', context: 'Seen on **both** targets.', tags: '["cache","git"]', ...over }), sourceCreatedAt: NOW - 90 * MINUTE },
+    supersededBy: ['sp7'], supersedes: ['sp0'], ...extra,
+  });
+  const sessionAnswer = Response.json({
+    session: { projectId: MYCO, sessionId: 's1', agent: 'codex', title: 'Flaky test port collision fixed', label: 's1', summary: null, startedAt: NOW - 2 * HOUR, firstReceivedAt: NOW - 2 * HOUR, lastReceivedAt: NOW - HOUR, endedAt: NOW - HOUR, memberId: null, memberLabel: null, runtimeLabel: null, branch: null, originPath: null, parentSessionId: null, parentReason: null, endedBy: null, endedByLabel: null },
+    untitled: null, counts: { prompts: 2, toolCalls: 0, responses: 2, plans: 0, attachments: 0 }, release: null, outcome: { runs: [], spores: { total: 0, items: [] } }, projectId: MYCO,
+  });
+  const neighbour = (id: string, line: string) => () => Response.json({ spore: { ...spore({ id, agentLine: line }), sourceCreatedAt: null }, supersededBy: [], supersedes: [] });
+
+  it('reads as an article: the replacement first, the one line, the body, context, tags, how it changed, where it came from and the facts', async () => {
+    server(base({
+      [`/api/projects/${MYCO}/spores/sp1`]: () => article(),
+      [`/api/projects/${MYCO}/spores/sp7`]: neighbour('sp7', 'Clear the cache on every checkout, not only after a rebase.'),
+      [`/api/projects/${MYCO}/spores/sp0`]: () => new Response(null, { status: 404 }),
+      [`/api/projects/${MYCO}/sessions/s1`]: () => sessionAnswer,
+    }));
+    mount(`/p/${MYCO}/spores/sp1`);
+    const title = await screen.findByRole('heading', { level: 1 });
+    expect(title.textContent).toBe('The cache lies after a rebase; clear it on checkout.');
+    const page = document.querySelector('[data-spore-article]')!;
+    // The replacement leads, named by its line.
+    const replaced = page.querySelector('[data-spore-replaced]') as HTMLElement;
+    expect(replaced.textContent).toContain('This spore was replaced.');
+    const next = await within(replaced).findByRole('link', { name: 'Clear the cache on every checkout, not only after a rebase.' });
+    expect(next.getAttribute('href')).toBe(`/p/${MYCO}/spores/sp7`);
+    expect(within(page as HTMLElement).getByText('Replaced', { selector: '[data-spore-status]' })).toBeTruthy();
+    expect(page.querySelector('[data-spore-body]')!.textContent).toContain('Clear it on checkout.');
+    expect(page.querySelector('[data-spore-context]')!.textContent).toContain('Seen on both targets.');
+    expect(within(screen.getByRole('list', { name: 'Tags' })).getAllByRole('listitem').map((li) => li.textContent)).toEqual(['cache', 'git']);
+    // At its foot, what it replaced: here a spore the project no longer holds.
+    const lineage = page.querySelector('[data-spore-lineage]') as HTMLElement;
+    expect(within(lineage).getByRole('heading', { name: 'What it replaced' })).toBeTruthy();
+    expect(await within(lineage).findByText('A spore this project no longer holds')).toBeTruthy();
+    expect(within(lineage).queryByRole('link', { name: /Clear the cache on every checkout/ })).toBeNull();
+    // Where it came from: the session by its title, the turn, and the run that wrote it.
+    const origin = page.querySelector('[data-spore-origin]') as HTMLElement;
+    expect(await within(origin).findByText('Flaky test port collision fixed')).toBeTruthy();
+    expect(within(origin).getByRole('link', { name: 'Open the session →' }).getAttribute('href')).toBe(`/p/${MYCO}/sessions/s1`);
+    expect(within(origin).getByRole('link', { name: 'The turn it came from →' }).getAttribute('href')).toBe(`/p/${MYCO}/sessions/s1?turn=p1`);
+    expect(within(origin).getByRole('link', { name: 'The run that wrote it →' }).getAttribute('href')).toBe(`/p/${MYCO}/runs/run_4f1c9a2e7b`);
+    const facts = page.querySelector('[data-facts]') as HTMLElement;
+    expect(facts.textContent).toContain('Importance8 of 10');
+    expect(facts.textContent).toContain('src/cache.ts');
+    expect(within(facts).getByRole('button', { name: 'Copy spore id' })).toBeTruthy();
+    const crumbs = screen.getByRole('navigation', { name: 'Breadcrumb' });
+    expect(within(crumbs).getAllByRole('link').map((a) => [a.textContent, a.getAttribute('href')])).toEqual([['Knowledge', '/knowledge'], ['Myco', `/p/${MYCO}/knowledge`]]);
+    expect(within(screen.getByRole('navigation', { name: 'Pages' })).getByRole('link', { name: 'Knowledge' }).getAttribute('aria-current')).toBe('page');
+    expect(rawIdsInPage()).toEqual([]);
+  });
+
+  it('names a member who saved it by name, and a spore without its line by its type and day', async () => {
+    server(base({
+      [`/api/projects/${MYCO}/spores/sp1`]: () => article({ status: 'active', author: 'mem_q3Vb8xRk2LmT7wYz', agentLine: null, observationType: 'decision', context: null, tags: null }, { supersededBy: [], supersedes: [] }),
+      [`/api/projects/${MYCO}/sessions/s1`]: () => sessionAnswer,
+    }));
+    mount(`/p/${MYCO}/spores/sp1`);
+    expect((await screen.findByRole('heading', { level: 1 })).textContent).toBe('Decision saved Sep 29');
+    expect(await screen.findByText('Saved by Ada.')).toBeTruthy();
+    expect(document.querySelector('[data-spore-replaced]')).toBeNull();
+    expect(document.querySelector('[data-spore-lineage]')).toBeNull();
+    expect(rawIdsInPage()).toEqual([]);
+  });
+
+  it('says not found for a spore the project does not hold', async () => {
+    server(base());
+    mount(`/p/${MYCO}/spores/missing`);
+    expect(await screen.findByText('Not found')).toBeTruthy();
+  });
+});
+
+describe('the knowledge words', () => {
+  it('reads each author, headline, tag list, facet and period', () => {
+    expect([sporeAuthor('run_abc123'), sporeAuthor('mem_q3Vb8xRk2L'), sporeAuthor('eg_1'), sporeAuthor(null), sporeAuthor('agent')]).toEqual([
+      { kind: 'run', runId: 'run_abc123' }, { kind: 'member', memberId: 'mem_q3Vb8xRk2L' }, { kind: 'key' }, { kind: 'unknown' }, { kind: 'unknown' },
     ]);
-  });
-
-  it('says the spores could not be read when the server fails, and never reads that as an empty project', async () => {
-    server(base({ '/api/projects/x/spores?limit=25&status=active': () => new Response(null, { status: 500 }) }));
-    mount('/p/x/spores');
-    expect(await screen.findByText('The spores could not be read')).toBeTruthy();
-    expect(screen.queryByText('No spores yet')).toBeNull();
-    expect(screen.queryByText('No active spores.')).toBeNull();
-  });
-
-  it('tells a project whose spores have all been retired from one that has none, and says where the retired ones are', async () => {
-    server(base({
-      '/api/projects/x/spores?limit=25&status=active': () => list([], 0),
-      '/api/projects/x/spores?limit=1': () => list([spore({ status: 'obsolete' })], 3),
-    }));
-    mount('/p/x/spores');
-    expect(await screen.findByText('No active spores.')).toBeTruthy();
-    expect(await screen.findByText('3 retired spores are under All.')).toBeTruthy();
-    expect(screen.queryByText('No spores yet')).toBeNull();
-    expect(screen.getByTestId('spore-rail-counts').textContent).toBe('0 ACTIVE');
-  });
-
-  it('opens the top spore on its own on a wide screen when nothing is selected, and never while a filter is hunting', async () => onWideScreen(async () => {
-    server(base({
-      '/api/projects/x/spores?limit=25&status=active': () => list(ROWS),
-      '/api/projects/x/spores?limit=25&status=active&type=gotcha': () => list([ROWS[0]]),
-      '/api/projects/x/spores/sp1': () => Response.json({ spore: ROWS[0], supersededBy: [], supersedes: [] }),
-    }));
-    const opened = mount('/p/x/spores');
-    expect(await screen.findByRole('heading', { name: 'Gotcha' })).toBeTruthy();
-    opened.unmount();
-    mount('/p/x/spores?type=gotcha');
-    await screen.findAllByRole('row');
-    expect(screen.getByText('Select a spore to read it.')).toBeTruthy();
-  }));
-
-  it('keeps the spore a reader opened, and the filter, when the list is read again with a newer spore on top', async () => onWideScreen(async () => {
-    let rows = ROWS;
-    const { requested } = server(base({
-      '/api/projects/x/spores?limit=25&status=all': () => list(rows),
-      '/api/projects/x/spores?limit=25': () => list(rows),
-      '/api/projects/x/spores/sp1': () => Response.json({ spore: ROWS[0], supersededBy: [], supersedes: [] }),
-      '/api/projects/x/spores/sp2': () => Response.json({ spore: ROWS[1], supersededBy: [], supersedes: [] }),
-    }));
-    let where = '';
-    const Probe = () => { const location = useLocation(); where = location.pathname + location.search; return null; };
-    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-    render(<AppearanceProvider><QueryClientProvider client={client}><MemoryRouter initialEntries={['/p/x/spores?status=all']}><App /><Probe /></MemoryRouter></QueryClientProvider></AppearanceProvider>);
-    await asked(requested, '/api/projects/x/spores/sp1');
-    fireEvent.click((await screen.findAllByRole('row'))[1]!);
-    expect(await screen.findByRole('heading', { name: 'Decision' })).toBeTruthy();
-    rows = [spore({ id: 'sp0', content: 'Newest' }), ...ROWS];
-    await client.refetchQueries();
-    await waitFor(() => expect(screen.getAllByRole('row').length).toBe(3));
-    expect(where).toBe('/p/x/spores/sp2?status=all');
-    expect(screen.getByRole('heading', { name: 'Decision' })).toBeTruthy();
-    expect(picked('Status')).toBe('Every status');
-    expect(requested).not.toContain('/api/projects/x/spores/sp0');
-  }));
-
-  it('opens a spore from the rail and keeps the section active in the project nav', async () => {
-    server(base({
-      '/api/projects/x/spores?limit=25&status=active': () => list(ROWS),
-      '/api/projects/x/spores/sp1': () => Response.json({ spore: ROWS[0], supersededBy: [], supersedes: [] }),
-    }));
-    mount('/p/x/spores');
-    const rows = await screen.findAllByRole('row');
-    fireEvent.click(rows[0]!);
-    expect(await screen.findByRole('heading', { name: 'Gotcha' })).toBeTruthy();
-    const nav = screen.getByRole('navigation', { name: 'Pages' });
-    expect([...nav.querySelectorAll('a[aria-current="page"]')].map((a) => a.textContent)).toEqual(['Spores']);
-  });
-
-  it('shows a project with no spores at all as empty, not missing', async () => {
-    server(base({ '/api/projects/x/spores?limit=25': () => list([]) }));
-    mount('/p/x/spores?status=all');
-    expect(await screen.findByText('No spores yet')).toBeTruthy();
-    expect(screen.getByTestId('spore-rail-counts').textContent).toBe('0 TOTAL');
-    expect(screen.queryByText(/not found/i)).toBeNull();
-  });
-});
-
-describe('Spore detail', () => {
-  const SP = spore({
-    id: 'sp9', observationType: 'trade_off', status: 'superseded', importance: 7,
-    content: 'Paging by **offset** is what the owner route serves.',
-    context: 'Found while reading the rail.',
-    tags: '["paging","rail"]',
-    filePath: 'ui/src/hooks/use-intelligence.ts',
-  });
-
-  const routes = (over: Record<string, () => Response> = {}) => base({
-    '/api/projects/x/spores?limit=25&status=active': () => list([]),
-    '/api/projects/x/spores/sp9': () => Response.json({ spore: SP, supersededBy: ['sp10'], supersedes: ['01234567-89ab-cdef'] }),
-    ...over,
-  });
-
-  it('renders the observation, its context, tags, badges, the lineage in both directions and the session it came out of', async () => {
-    server(routes());
-    mount('/p/x/spores/sp9');
-    expect(await screen.findByRole('heading', { name: 'Trade Off' })).toBeTruthy();
-    expect(screen.getByTestId('spore-status').textContent).toBe('Superseded');
-    expect(screen.getByText('Importance 7 of 10')).toBeTruthy();
-    expect(screen.getByText('offset')).toBeTruthy();
-    expect(screen.getByText('Found while reading the rail.')).toBeTruthy();
-    const tags = screen.getByLabelText('Tags');
-    expect(within(tags).getByText('paging')).toBeTruthy();
-    expect(within(tags).getByText('rail')).toBeTruthy();
-    const predecessor = screen.getByRole('link', { name: '01234567' });
-    expect(predecessor.getAttribute('href')).toBe('/p/x/spores/01234567-89ab-cdef');
-    expect(predecessor.getAttribute('title')).toBe('01234567-89ab-cdef');
-    expect(screen.getByRole('link', { name: 'sp10' }).getAttribute('href')).toBe('/p/x/spores/sp10');
-    expect(screen.getByText('Replaces')).toBeTruthy();
-    expect(screen.getByText('Replaced by')).toBeTruthy();
-    expect(screen.getByRole('link', { name: 's1' }).getAttribute('href')).toBe('/p/x/sessions/s1');
-    expect(screen.getByText('ui/src/hooks/use-intelligence.ts')).toBeTruthy();
-  });
-
-  it('says a spore nothing has replaced still stands, and drops the context block when there is none', async () => {
-    server(routes({ '/api/projects/x/spores/sp9': () => Response.json({ spore: { ...SP, context: null, tags: 'paging, rail' }, supersededBy: [], supersedes: [] }) }));
-    mount('/p/x/spores/sp9');
-    expect(await screen.findByText('This spore still stands as written.')).toBeTruthy();
-    expect(screen.queryByText('Context')).toBeNull();
-    expect(within(screen.getByLabelText('Tags')).getByText('paging')).toBeTruthy();
-  });
-
-  it('links to the exact source turn and shows its capture date separately from spore creation', async () => {
-    server(routes({ '/api/projects/x/spores/sp9': () => Response.json({ spore: { ...SP, promptId: 'source-prompt', sourceCreatedAt: 1_700_000_000_000 }, supersededBy: [], supersedes: [] }) }));
-    mount('/p/x/spores/sp9');
-    const source = await screen.findByRole('link', { name: 'source-prompt' });
-    expect(source.getAttribute('href')).toBe('/p/x/sessions/s1?turn=source-prompt');
-    expect(screen.getByText('Captured').nextElementSibling?.textContent).toContain('2023');
-  });
-
-  it('answers a spore the server does not hold with not found, never forbidden', async () => {
-    server(routes({ '/api/projects/x/spores/gone': () => new Response(null, { status: 404 }) }));
-    mount('/p/x/spores/gone');
-    expect(await screen.findByText(/not found/i)).toBeTruthy();
-    expect(screen.queryByText(/forbidden/i)).toBeNull();
-  });
-});
-
-describe('Spore labels', () => {
-  it('reads tags from a JSON array or a comma list, and previews one line of an observation', () => {
+    expect(sporeHeadline({ agentLine: '  ', observationType: 'trade_off', createdAt: NOW }, NOW)).toEqual({ text: 'Trade-off saved Sep 29', lined: false });
+    expect(sporeTags('a, b')).toEqual(['a', 'b']);
     expect(sporeTags('["a","b"]')).toEqual(['a', 'b']);
-    expect(sporeTags('a, b ,')).toEqual(['a', 'b']);
-    expect(sporeTags('[not json')).toEqual(['[not json']);
-    expect(sporeTags(null)).toEqual([]);
-    expect(sporePreview('# Title\n\nbody')).toBe('Title');
-    expect(sporePreview('x'.repeat(200))).toBe(`${'x'.repeat(140)}…`);
+    expect(typeFacetRows({ gotcha: 2, novel: 1 }).map((row) => row.type).slice(-1)).toEqual(['novel']);
+    expect(windowSince('all', NOW)).toBeNull();
+    expect(windowSince('week', NOW)).toBe(new Date(2026, 8, 23).getTime());
   });
 });

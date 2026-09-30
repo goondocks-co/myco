@@ -4,7 +4,8 @@
  * Thirteen projects, as many as a busy owner keeps (six with work in them,
  * one named like a test project, and seven quiet), two members (an admin and a
  * member), two machines with names, five agents, two days of sessions with one
- * still live, spores of every type, plans in every status, Myco's runs (a
+ * still live, spores of every type (two saved without their one line, and one
+ * replaced by a newer spore), plans in every status, Myco's runs (a
  * failed learning run that still saved spores, a learning run that saved four,
  * two titling runs, a code map update that failed with its cause after one that
  * succeeded yesterday, an index update that failed and then succeeded, a
@@ -124,8 +125,8 @@ const SESSIONS: SessionSeed[] = [
   { project: 'myco', agent: 'claude-code', machine: 'studio', startedAgo: 40 * 60, minutes: 95, title: 'Work outcomes counted per task', summary: 'Grouped Myco’s runs by the outcome they produce so the work page can say what was learned rather than list every run.', prompts: ['List runs by what they produced', 'Fold the index upkeep into one line', 'Show the failures with their cause'] },
 ];
 
-/** Spores, one of every type, each headlined by its one-line form. */
-const SPORES: Array<{ project: ProjectKey; session: number; type: (typeof SPORE_TYPES)[number]; line: string; content: string }> = [
+/** Spores, one of every type, headlined by their one-line form; the last two were saved without one. */
+const SPORES: Array<{ project: ProjectKey; session: number; type: (typeof SPORE_TYPES)[number]; line: string | null; content: string }> = [
   { project: 'myco', session: 0, type: 'gotcha', line: 'Hosted and self-hosted order ties differently; sort the map read by path as well as rank.', content: 'The hosted store returned tied ranks in insertion order and the self-hosted store in rowid order. Adding the path as a second sort key makes both targets agree.' },
   { project: 'myco', session: 6, type: 'bug_fix', line: 'A test that reserves a fixed port races the server’s ephemeral fallback; ask the kernel for port 0.', content: 'The server falls back to an ephemeral port when its preferred one is taken, and the test’s reserved port could be that same number. Binding port 0 removes the race.' },
   { project: 'myco', session: 13, type: 'decision', line: 'Myco’s work page shows outcomes per task, and index upkeep folds into one line.', content: 'Owners want to know what was learned, not how many runs happened. Upkeep runs are thousands a week and belong in Health.' },
@@ -137,7 +138,14 @@ const SPORES: Array<{ project: ProjectKey; session: number; type: (typeof SPORE_
   { project: 'infra', session: 5, type: 'architecture', line: 'Backups run nightly to object storage and are verified by a restore preview each week.', content: 'The nightly job writes to the bucket; a weekly restore preview proves the newest backup opens.' },
   { project: 'myco', session: 0, type: 'decision', line: 'Canopy parity runs on both targets before a map change merges.', content: 'A map read that differs between targets is caught only by running the same scenario on both, so both run before merge.' },
   { project: 'myco', session: 6, type: 'gotcha', line: 'A port the kernel hands out can be reused at once; never cache it across test files.', content: 'Two test files cached the same ephemeral port and the second bound it after the first released it, which hid the collision.' },
+  { project: 'myco', session: 6, type: 'gotcha', line: 'Bind every test server to port 0 and read its port back from the server’s address; never share one across files.', content: 'Caching a kernel-assigned port only moved the race. Each server now binds port 0 and the test reads the address it got.\n\n- Bind port 0\n- Read the port from the server\n- Never pass a port between test files' },
+  { project: 'myco', session: 9, type: 'discovery', line: null, content: 'Opening a long session on its latest turns walks every page of turns first, because the turns read pages oldest first.' },
+  { project: 'ledger', session: 11, type: 'decision', line: null, content: 'Amounts round half-even at the ledger boundary and nowhere else, so reports and exports agree.' },
 ];
+
+/** Replacements, by place in SPORES: the newer spore replaced the older one, as an agent records it. */
+export const SUPERSEDED: ReadonlyArray<{ old: number; by: number }> = [{ old: 10, by: 11 }];
+
 
 /** The session whose reading page shows what came of it: runs that read it, wrote from it and titled it, and one with no record. */
 export const OUTCOME_SESSION = 6;
@@ -259,13 +267,27 @@ export async function seedThroughServer(ctx: SeedContext): Promise<SeededFixture
       method: 'POST',
       headers: memberHeaders(session.machine, spore.project),
       body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'myco_spores', arguments: {
-        op: 'save', type: spore.type, content: spore.content, agent_line: spore.line, session_id: sessionIds[spore.session], project: idOf(spore.project),
+        op: 'save', type: spore.type, content: spore.content, ...(spore.line === null ? {} : { agent_line: spore.line }), session_id: sessionIds[spore.session], project: idOf(spore.project),
       } } }),
     });
     const body = await expectOk(res, `spore ${spore.type}`) as { result?: { structuredContent?: { result?: { id?: string; error?: string } } } };
     const saved = body.result?.structuredContent?.result;
     if (!saved?.id) throw new Error(`spore ${spore.type}: ${JSON.stringify(body).slice(0, 300)}`);
     sporeIds.push(saved.id);
+  }
+
+  for (const { old, by } of SUPERSEDED) {
+    const replaced = SPORES[old]!;
+    const session = SESSIONS[replaced.session]!;
+    const res = await fetch(`${url}/mcp`, {
+      method: 'POST',
+      headers: memberHeaders(session.machine, replaced.project),
+      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'myco_spores', arguments: {
+        op: 'supersede', old_spore_id: sporeIds[old], new_spore_id: sporeIds[by], reason: 'The newer spore names the fix.', session_id: sessionIds[replaced.session], project: idOf(replaced.project),
+      } } }),
+    });
+    const body = await expectOk(res, `supersede spore ${old}`) as { result?: { structuredContent?: { result?: { status?: string; error?: string } } } };
+    if (body.result?.structuredContent?.result?.status === undefined) throw new Error(`supersede spore ${old}: ${JSON.stringify(body).slice(0, 300)}`);
   }
 
   for (const plan of PLANS) {

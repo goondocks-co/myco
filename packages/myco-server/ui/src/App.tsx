@@ -9,11 +9,9 @@ import { NotFound } from './pages/NotFound';
 import { Operations } from './pages/Operations';
 import { Settings } from './pages/Settings';
 import { Projects } from './pages/Projects';
-import { CodeMap } from './pages/CodeMap';
 import { Measures } from './pages/Measures';
-import { Plans } from './pages/Plans';
-import { Spores } from './pages/Spores';
 import { Status } from './pages/Status';
+import { knowledgeRoutes } from './routes/knowledge';
 import { sessionRoutes } from './routes/sessions';
 import { Shell } from './routes/Shell';
 import { ResumePendingLink, Today } from './routes/today';
@@ -31,10 +29,7 @@ export default function App() {
         <Route path="/projects" element={<Projects />} />
         <Route path="/p/:projectId" element={<Today />} />
         {sessionRoutes}
-        <Route path="/p/:projectId/plans" element={<Plans />} />
-        <Route path="/p/:projectId/knowledge/map" element={<CodeMap />} />
-        <Route path="/p/:projectId/spores" element={<Spores />} />
-        <Route path="/p/:projectId/spores/:sporeId" element={<Spores />} />
+        {knowledgeRoutes}
         <Route path="/p/:projectId/runs" element={<AgentRuns />} />
         <Route path="/p/:projectId/runs/:runId" element={<AgentRuns />} />
         <Route path="/p/:projectId/access" element={<ProjectAccess />} />

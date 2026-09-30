@@ -49,27 +49,8 @@
     "raw-textarea": 3,
     "small-text": 7
   },
-  "components/sessions/PlanCard.tsx": {
-    "raw-button": 2,
-    "raw-select": 1,
-    "inline-style": 1,
-    "arbitrary-colour": 4,
-    "small-text": 7
-  },
-  "components/spores/SporeDetail.tsx": {
-    "arbitrary-colour": 1,
-    "small-text": 7
-  },
-  "components/spores/SporeRail.tsx": {
-    "arbitrary-colour": 2,
-    "small-text": 9
-  },
   "components/status/WorkersPanel.tsx": {
     "small-text": 2
-  },
-  "components/ui/badge.tsx": {
-    "arbitrary-colour": 1,
-    "small-text": 1
   },
   "components/ui/button.tsx": {
     "raw-button": 1,
@@ -81,9 +62,6 @@
   },
   "components/ui/eyebrow.tsx": {
     "small-text": 3
-  },
-  "components/ui/inline-link.ts": {
-    "small-text": 1
   },
   "components/ui/input.tsx": {
     "raw-input": 1,
@@ -98,9 +76,6 @@
     "small-text": 1
   },
   "components/ui/page-loading.tsx": {
-    "small-text": 1
-  },
-  "components/ui/pagination.tsx": {
     "small-text": 1
   },
   "components/ui/panel.tsx": {
@@ -148,9 +123,6 @@
     "small-text": 28,
     "retired-import": 9
   },
-  "pages/CodeMap.tsx": {
-    "retired-import": 1
-  },
   "pages/Link.tsx": {
     "raw-button": 1,
     "small-text": 2,
@@ -169,11 +141,6 @@
     "small-text": 2,
     "retired-import": 3
   },
-  "pages/Plans.tsx": {
-    "raw-button": 1,
-    "small-text": 2,
-    "retired-import": 4
-  },
   "pages/ProjectAccess.tsx": {
     "raw-button": 4,
     "raw-input": 1,
@@ -190,9 +157,6 @@
   },
   "pages/SignedOut.tsx": {
     "retired-import": 1
-  },
-  "pages/Spores.tsx": {
-    "retired-import": 3
   },
   "pages/Status.tsx": {
     "raw-table": 1,

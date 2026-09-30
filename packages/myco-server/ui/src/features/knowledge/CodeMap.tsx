@@ -1,35 +1,17 @@
-import { useParams } from 'react-router-dom';
-import { Card, Link, Skeleton } from '../design';
-import { MarkdownContent } from '../components/ui/markdown-content';
-import { useCanopyMap, type CanopyMapRow } from '../hooks/use-canopy-map';
-import { MEMORY_TASKS } from '../hooks/use-intelligence';
-import { useProjects } from '../hooks/use-projects';
-import { ago } from '../features/today/words';
-import { projectPath } from '../routes/nav';
-import { NotFound } from './NotFound';
+import { Card, Link, Markdown, Skeleton } from '../../design';
+import { useCanopyMap, type CanopyMapRow } from '../../hooks/use-canopy-map';
+import { MEMORY_TASKS } from '../../hooks/use-intelligence';
+import { projectPath } from '../../routes/nav';
+import { ago } from './words';
 
 /** How much of a commit id the map names. */
 const SHORT_COMMIT_CHARS = 8;
 const MAP_TASK_LABEL = MEMORY_TASKS.find((task) => task.id === 'canopy-map')?.label ?? 'Update the code map';
 
-/**
- * A project's code map at `/p/:projectId/knowledge/map`: where things live, read from one commit. The map's markdown
- * renders through the shared renderer in `components/ui`, the one retired import this page holds in the ratchet baseline.
- */
-export function CodeMap() {
-  const { projectId = '' } = useParams();
-  const projects = useProjects();
+/** A project's code map: where things live, read from one commit. */
+export function CodeMap({ projectId }: { projectId: string }) {
   const map = useCanopyMap(projectId);
-  if (projects.data !== undefined && !projects.data.projects.some((p) => p.projectId === projectId)) return <NotFound />;
-  return (
-    <div className="flex w-full flex-col gap-s5">
-      <header className="flex flex-col gap-s2">
-        <h1 className="t-display text-ink">Code map</h1>
-        <p className="max-w-measure t-body text-muted">Where things live in this project’s code, and the files that carry each area.</p>
-      </header>
-      <CodeMapPanel base={projectPath(projectId)} map={map.data?.map ?? null} pending={map.isPending} error={map.error} />
-    </div>
-  );
+  return <CodeMapPanel base={projectPath(projectId)} map={map.data?.map ?? null} pending={map.isPending} error={map.error} />;
 }
 
 /** The map itself, or what stands in its place: loading, a failed read, or how a first map appears. */
@@ -61,7 +43,7 @@ export function CodeMapPanel({ base, map, pending, error, now = Date.now() }: { 
               <Link to={`${base}/runs/${encodeURIComponent(map.sourceRunId)}`}>The run that wrote it →</Link>
             </p>
           </div>
-          <MarkdownContent content={map.content} skipHtml className="max-w-measure" />
+          <Markdown content={map.content} skipHtml className="max-w-measure" />
         </>
       )}
     </Card>

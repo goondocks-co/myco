@@ -413,14 +413,13 @@ export function useDeleteSession() {
     onSuccess: async (_, { projectId }) => {
       await client.invalidateQueries({ predicate: (query) => query.queryKey[1] === projectId, refetchType: 'none' });
       await Promise.all([
-        ...['project-plans', 'search'].map((key) => client.invalidateQueries({ queryKey: [key, projectId] })),
-        ...['sessions', 'today', 'projects', 'status'].map((key) => client.invalidateQueries({ queryKey: [key] })),
+        ...['sessions', 'today', 'projects', 'status', 'plans', 'spore-stream', 'search'].map((key) => client.invalidateQueries({ queryKey: [key] })),
       ]);
     },
   });
 }
 
-/** Sets a plan's status as the signed-in member; on an answer, the session's plans, the turn that produced it, the session's counts and the project's plan list are read again. */
+/** Sets a plan's status as the signed-in member; on an answer, the session's plans, the turn that produced it, the session's counts, the plan's page and the plans board are read again. */
 export function useSetPlanStatus(projectId: string, sessionId: string) {
   const client = useQueryClient();
   return useMutation({
@@ -430,7 +429,9 @@ export function useSetPlanStatus(projectId: string, sessionId: string) {
       client.invalidateQueries({ queryKey: ['session-children', projectId, sessionId, 'plans'] }),
       client.invalidateQueries({ queryKey: ['turn', projectId, sessionId] }),
       client.invalidateQueries({ queryKey: ['session', projectId, sessionId] }),
-      client.invalidateQueries({ queryKey: ['project-plans', projectId] }),
+      client.invalidateQueries({ queryKey: ['plan', projectId] }),
+      client.invalidateQueries({ queryKey: ['plans'] }),
+      client.invalidateQueries({ queryKey: ['search'] }),
     ]),
   });
 }

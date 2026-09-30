@@ -19,7 +19,6 @@ import { sessionListPath } from '../../packages/myco-server/ui/src/hooks/use-ses
 import { promptPreview, PROMPT_PREVIEW_CHARS } from '../../packages/myco-server/ui/src/features/sessions/Turn';
 import { memberFilter, startedWords, windowBounds } from '../../packages/myco-server/ui/src/features/sessions/words';
 import { LIVE_WITHIN_MS } from '../../packages/myco-server/ui/src/features/today/timeline';
-import { progressParts } from '../../packages/myco-server/ui/src/components/sessions/PlanCard';
 
 const MINUTE = 60_000;
 const HOUR = 60 * MINUTE;
@@ -687,15 +686,20 @@ describe('the session reading page', () => {
     expect(screen.queryByText(/No spores were saved/)).toBeNull();
   });
 
-  it('lists the session’s plans on their tab, the one a link names open', async () => {
+  it('lists the session’s plans on their tab, each leading to its own page', async () => {
     server(routes({ '/api/projects/x/sessions/s1/plans': () => page([
-      { planKey: 'plan-1', promptId: P1, title: 'Ship the thing', status: 'active', content: '# Plan\n- [x] one\n- [ ] two', blobKey: null, originPath: '.claude/plans/ship.md', progress: '1/2', updatedBy: null, createdAt: NOW - 5000, updatedAt: NOW - 1000, orderedAt: NOW - 1000 },
+      { planKey: 'plan-1', promptId: P1, title: 'Ship the thing', status: 'in_progress', content: '# Plan\n- [x] one\n- [ ] two', blobKey: null, originPath: '.claude/plans/ship.md', progress: '1/2', updatedBy: null, createdAt: NOW - 5000, updatedAt: NOW - HOUR, orderedAt: NOW - 1000 },
     ]) }));
-    mount('/p/x/sessions/s1?tab=plans&plan=plan-1');
-    const card = await screen.findByTestId('plan-plan-1');
-    expect(card.textContent).toContain('Ship the thing');
-    expect(card.textContent).toContain('1/2 items');
-    expect([progressParts('2/3'), progressParts('N/A')]).toEqual([{ checked: 2, total: 3 }, null]);
+    mount('/p/x/sessions/s1?tab=plans');
+    const line = await waitFor(() => {
+      const found = document.querySelector<HTMLElement>('[data-plan-line="in_progress"]');
+      if (found === null) throw new Error('the plan is not listed yet');
+      return found;
+    });
+    expect(line.textContent).toContain('In progress');
+    expect(line.textContent).toContain('1 of 2 items done');
+    expect(line.textContent).toContain('updated 1 h ago');
+    expect(within(line).getByRole('link', { name: 'Ship the thing' }).getAttribute('href')).toBe('/p/x/plans/plan-1?session=s1');
   });
 
   it('folds the transcript, context and attachments into Raw data, links the transcript by piece, and never fetches its bytes', async () => {

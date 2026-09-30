@@ -32,7 +32,7 @@ const ROLES = [
 
 /** The admin foot; Measures and Operations fold under Status and show while its group is open. */
 const ADMIN_PAGES = ['Members', 'Settings', 'Status'];
-const PAGES_NAV = ['Today', 'Sessions', 'Spores', 'Plans', 'Code map', 'Agent runs'];
+const PAGES_NAV = ['Today', 'Sessions', 'Knowledge', 'Agent runs'];
 /** How many projects the filter lists before "N more". */
 const FILTER_LIMIT = 8;
 
@@ -104,7 +104,7 @@ test.describe('dashboard shell', () => {
           await expect(page.getByRole('complementary', { name: 'Navigation' })).toHaveCount(0);
           await expect(page.getByRole('banner')).toContainText('Sessions');
           const bar = page.getByRole('navigation', { name: 'Main pages' });
-          for (const label of ['Today', 'Sessions', 'Spores']) await expect(bar.getByRole('link', { name: label })).toBeInViewport();
+          for (const label of ['Today', 'Sessions', 'Knowledge']) await expect(bar.getByRole('link', { name: label })).toBeInViewport();
           await expect(bar.getByRole('link', { name: 'Sessions' })).toHaveAttribute('aria-current', 'page');
           await expect(page.getByRole('banner').getByRole('button', { name: 'Search' })).toBeVisible();
         }
@@ -141,14 +141,15 @@ test.describe('dashboard shell', () => {
         await page.keyboard.press('ControlOrMeta+k');
         const dialog = page.getByRole('dialog');
         await expect(dialog).toBeVisible();
-        const input = dialog.getByRole('searchbox', { name: 'Search this project' });
+        // A page that names no project searches every project.
+        const input = dialog.getByRole('searchbox', { name: 'Search every project' });
         await expect(input).toBeFocused();
         // The field runs the dialog's width: no short search box.
         const [field, box] = await Promise.all([input.boundingBox(), dialog.boundingBox()]);
         expect(field!.width).toBeGreaterThan(box!.width - 64);
         if (viewport === 'desktop') expect(box!.width).toBeGreaterThanOrEqual(600);
         await input.fill('parity');
-        if (onFixture()) await expect(dialog.getByRole('list', { name: 'Search results' }).getByRole('link').first()).toBeVisible();
+        if (onFixture()) await expect(dialog.locator('a[data-result]').first()).toBeVisible();
         await expectNoHorizontalOverflow(page);
         await expectNoRawIds(page, '[role="dialog"]');
         await expectAxeClean(page, ['[role="dialog"]']);
@@ -186,7 +187,8 @@ test.describe('dashboard shell', () => {
     try {
       const sessions = await sessionsPath(page);
       const measured = [];
-      for (const path of [sessions, sessions.replace(/\/sessions$/, '/spores')]) {
+      const project = sessions.replace(/\/sessions$/, '');
+      for (const path of [sessions, `${project}/knowledge`, `${project}/knowledge/plans`, '/sessions', '/knowledge', '/knowledge/plans']) {
         await page.goto(new URL(path, page.url()).href);
         await expect(page.locator('[data-filter-bar] input').first()).toBeVisible();
         measured.push({ page: path, metrics: await filterBarMetrics(page) });

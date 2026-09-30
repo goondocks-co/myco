@@ -1,6 +1,6 @@
 import { INVITE_CONTROLS } from '@goondocks/myco-shared/member-protocol';
 import {
-  Activity, Bot, KeyRound, ListChecks, Map as MapIcon, MessageSquare, Settings2, Sprout, Sun, Users, type LucideIcon,
+  Activity, Bot, KeyRound, MessageSquare, Settings2, Sprout, Sun, Users, type LucideIcon,
 } from 'lucide-react';
 
 /** A page under a project, reached at `/p/:project<suffix>`. */
@@ -11,21 +11,61 @@ export interface ProjectPage {
   suffix: string;
   /** Shown only to an admin: every route behind the page is an admin's. */
   admin?: true;
+  /** The other paths under a project that belong to this page: its sections and the records it lists. */
+  also?: readonly string[];
 }
 
-/** The code map's page under a project: where Knowledge will hold it. */
+/** Knowledge under a project: its spores. */
+export const KNOWLEDGE_SUFFIX = '/knowledge';
+/** Knowledge's plans board under a project. */
+export const PLANS_SUFFIX = '/knowledge/plans';
+/** Knowledge's code map under a project. */
 export const CODE_MAP_SUFFIX = '/knowledge/map';
+/** A spore's article under a project, as `/p/:project/spores/:sporeId`. */
+export const SPORE_SUFFIX = '/spores';
+/** A plan's page under a project, as `/p/:project/plans/:planKey`. */
+export const PLAN_SUFFIX = '/plans';
 
 /** The pages under a project, in nav order. */
 export const PROJECT_PAGES: readonly ProjectPage[] = [
   { label: 'Today', icon: Sun, suffix: '' },
   { label: 'Sessions', icon: MessageSquare, suffix: '/sessions' },
-  { label: 'Spores', icon: Sprout, suffix: '/spores' },
-  { label: 'Plans', icon: ListChecks, suffix: '/plans' },
-  { label: 'Code map', icon: MapIcon, suffix: CODE_MAP_SUFFIX },
+  { label: 'Knowledge', icon: Sprout, suffix: KNOWLEDGE_SUFFIX, also: [PLANS_SUFFIX, CODE_MAP_SUFFIX, SPORE_SUFFIX, PLAN_SUFFIX] },
   { label: 'Agent runs', icon: Bot, suffix: '/runs' },
   { label: 'Access', icon: KeyRound, suffix: '/access', admin: true },
 ];
+
+/** Whether a page's suffix, or one of the paths that belong to it, is this one. */
+function owns(page: ProjectPage, suffix: string): boolean {
+  return page.suffix === suffix || (page.also ?? []).includes(suffix);
+}
+
+/** The nav page a suffix belongs to. */
+export function pageOf(suffix: string): ProjectPage | undefined {
+  return PROJECT_PAGES.find((page) => owns(page, suffix));
+}
+
+/**
+ * Where a record's list lives: a spore's article belongs to the spores, a
+ * plan's page to the plans board. A switch or a clear of the project from a
+ * record leads to its list.
+ */
+const LIST_OF: Readonly<Record<string, string>> = { [SPORE_SUFFIX]: KNOWLEDGE_SUFFIX, [PLAN_SUFFIX]: PLANS_SUFFIX };
+
+function listSuffix(pathname: string): string {
+  const suffix = pageSuffix(pathname);
+  return LIST_OF[suffix] ?? suffix;
+}
+
+/**
+ * Whether a nav page is the one open: its own path or one of the paths that
+ * belong to it, under a project or in its all-projects form.
+ */
+export function pageIsOpen(page: ProjectPage, pathname: string, forms: Readonly<Record<string, string>> = ALL_PROJECTS_FORMS): boolean {
+  if (projectOf(pathname) !== null) return owns(page, pageSuffix(pathname));
+  const suffix = allProjectsSuffix(pathname, forms);
+  return suffix !== null && owns(page, suffix);
+}
 
 /** The pages on a phone's bottom bar; the rest are under More. */
 export const PHONE_PAGES: readonly ProjectPage[] = PROJECT_PAGES.slice(0, 3);
@@ -74,7 +114,12 @@ export const MY_MACHINES_PATH = '/access';
  * one. The project filter can be cleared only on one of these: until a page
  * has a form that spans every project, there is nothing to clear it to.
  */
-export const ALL_PROJECTS_FORMS: Readonly<Record<string, string>> = { '': '/', '/sessions': '/sessions' };
+export const ALL_PROJECTS_FORMS: Readonly<Record<string, string>> = {
+  '': '/',
+  '/sessions': '/sessions',
+  [KNOWLEDGE_SUFFIX]: KNOWLEDGE_SUFFIX,
+  [PLANS_SUFFIX]: PLANS_SUFFIX,
+};
 
 /** The suffix of the page whose all-projects form is at this path, or null when the path is no such form. */
 export function allProjectsSuffix(pathname: string, forms: Readonly<Record<string, string>> = ALL_PROJECTS_FORMS): string | null {
@@ -121,8 +166,9 @@ export function pageSuffix(pathname: string): string {
   const match = PROJECT_PATH.exec(pathname);
   if (match === null) return '';
   const rest = pathname.slice(`/p/${match[1]}`.length).replace(/\/+$/, '');
-  const page = PROJECT_PAGES.filter((p) => p.suffix.split('/').length > 2).find((p) => rest === p.suffix || rest.startsWith(`${p.suffix}/`));
-  if (page !== undefined) return page.suffix;
+  const long = PROJECT_PAGES.flatMap((p) => [p.suffix, ...(p.also ?? [])]).filter((suffix) => suffix.split('/').length > 2);
+  const whole = long.find((suffix) => rest === suffix || rest.startsWith(`${suffix}/`));
+  if (whole !== undefined) return whole;
   const section = match[2] ?? '';
   return section === '' ? '' : `/${section}`;
 }
@@ -152,7 +198,7 @@ export function switchProjectHref(location: { pathname: string; search: string }
     const suffix = allProjectsSuffix(location.pathname);
     return suffix === null ? projectPath(projectId) : `${projectPath(projectId, suffix)}${keptFilters(location.search)}`;
   }
-  return `${projectPath(projectId, pageSuffix(location.pathname))}${keptFilters(location.search)}`;
+  return `${projectPath(projectId, listSuffix(location.pathname))}${keptFilters(location.search)}`;
 }
 
 /** Where clearing the project filter leads: the page's all-projects form, or null when the page has none yet. */
@@ -161,12 +207,12 @@ export function clearProjectHref(
   forms: Readonly<Record<string, string>> = ALL_PROJECTS_FORMS,
 ): string | null {
   if (projectOf(location.pathname) === null) return null;
-  const all = forms[pageSuffix(location.pathname)];
+  const all = forms[listSuffix(location.pathname)];
   return all === undefined ? null : `${all}${keptFilters(location.search)}`;
 }
 
 const SERVER_TITLES: Readonly<Record<string, string>> = {
-  ...Object.fromEntries(Object.entries(ALL_PROJECTS_FORMS).map(([suffix, form]) => [form.replace(/\/+$/, ''), PROJECT_PAGES.find((page) => page.suffix === suffix)?.label ?? 'Not found'])),
+  ...Object.fromEntries(Object.entries(ALL_PROJECTS_FORMS).map(([suffix, form]) => [form.replace(/\/+$/, ''), pageOf(suffix)?.label ?? 'Not found'])),
   [PROJECTS_PATH]: 'Projects',
   ...Object.fromEntries(ADMIN_PAGES.flatMap((page) => [page, ...(page.children ?? [])]).map((page) => [page.to, page.label])),
 };
@@ -175,8 +221,7 @@ const SERVER_TITLES: Readonly<Record<string, string>> = {
 export function titleOf(pathname: string, role: 'admin' | 'member' = 'admin'): string {
   if (role === 'member' && pathname.replace(/\/+$/, '') === MY_MACHINES_PATH) return 'My machines';
   if (projectOf(pathname) !== null) {
-    const suffix = pageSuffix(pathname);
-    return PROJECT_PAGES.find((page) => page.suffix === suffix)?.label ?? 'Not found';
+    return pageOf(pageSuffix(pathname))?.label ?? 'Not found';
   }
   return SERVER_TITLES[pathname.replace(/\/+$/, '')] ?? 'Not found';
 }

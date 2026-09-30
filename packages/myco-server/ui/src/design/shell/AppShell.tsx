@@ -1,6 +1,6 @@
 import { createContext, useContext, useEffect, useRef, useState, type ReactNode } from 'react';
 import * as DialogPrimitive from '@radix-ui/react-dialog';
-import { NavLink, useLocation } from 'react-router-dom';
+import { Link, NavLink, useLocation } from 'react-router-dom';
 import { Menu as MenuIcon, MoreHorizontal, X, type LucideIcon } from 'lucide-react';
 import { useMediaQuery } from '../../hooks/use-media-query';
 import { cn } from '../../lib/cn';
@@ -129,6 +129,8 @@ export interface BottomBarItem {
   label: string;
   icon: LucideIcon;
   end?: boolean;
+  /** Marks the page open whatever the path says. */
+  active?: boolean;
 }
 
 /** The phone's bottom bar: the main pages, then More for the rest of the nav. */
@@ -142,12 +144,18 @@ export function BottomBar({ items }: { items: readonly BottomBarItem[] }) {
       className="fixed inset-x-0 bottom-0 z-30 grid h-[64px] border-t border-line bg-surface-1 pb-[env(safe-area-inset-bottom)]"
       style={{ gridTemplateColumns: `repeat(${items.length + 1}, minmax(0, 1fr))` }}
     >
-      {items.map(({ to, label, icon: Icon, end }) => (
-        <NavLink key={label} to={to} end={end} className={({ isActive }: { isActive: boolean }) => cn(cell, isActive ? 'text-primary' : 'text-muted hover:text-ink', focusRing, 'focus-visible:-outline-offset-2')}>
-          <Icon aria-hidden className="size-[20px]" strokeWidth={1.6} />
-          <span className="truncate">{label}</span>
-        </NavLink>
-      ))}
+      {items.map(({ to, label, icon: Icon, end, active }) => {
+        const body = (
+          <>
+            <Icon aria-hidden className="size-[20px]" strokeWidth={1.6} />
+            <span className="truncate">{label}</span>
+          </>
+        );
+        const tone = (on: boolean) => cn(cell, on ? 'text-primary' : 'text-muted hover:text-ink', focusRing, 'focus-visible:-outline-offset-2');
+        return active !== undefined
+          ? <Link key={label} to={to} aria-current={active ? 'page' : undefined} className={tone(active)}>{body}</Link>
+          : <NavLink key={label} to={to} end={end} className={({ isActive }: { isActive: boolean }) => tone(isActive)}>{body}</NavLink>;
+      })}
       <button type="button" onClick={(event) => openMenu(event.currentTarget)} aria-haspopup="dialog" aria-expanded={menuOpen} className={cn(cell, 'text-muted hover:text-ink', focusRing, 'focus-visible:-outline-offset-2')}>
         <MoreHorizontal aria-hidden className="size-[20px]" strokeWidth={1.6} />
         More
