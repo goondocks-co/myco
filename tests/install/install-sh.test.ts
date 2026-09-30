@@ -9,6 +9,8 @@
  *
  * What it is judged by: a first-time install places the binary, PATH and the
  * install marker, starts nothing, and points at `myco login`; on a machine
+ * already joined to a Deployment it refreshes the agents' Myco setup with the
+ * build it installed, and says how to do it by hand if that fails; on a machine
  * with Myco 1.4 it installs nothing unless asked with --replace-1.4, says how
  * to move over, and never moves or deletes anything of 1.4; a dry run says
  * which it would do and changes nothing; a binary that fails its checksum,
@@ -63,8 +65,12 @@ function install(home: string, env: Record<string, string>, args: string[] = [],
 const files = (dir: string): string[] => (fs.existsSync(dir) ? (fs.readdirSync(dir, { recursive: true }) as string[]).filter((f) => fs.statSync(path.join(dir, f)).isFile()).sort() : []);
 
 let artifacts: string;
-/** Install sources: a good build, one whose bytes no longer match SHA256SUMS, one SHA256SUMS does not list, and one that does not run. */
-const sources = { tampered: '', unlisted: '', broken: '' };
+/**
+ * Install sources: a good build, one whose bytes no longer match SHA256SUMS, one SHA256SUMS does not list, one that
+ * does not run, and two builds that record every other command they are given in `$MYCO_HOME/commands.log`, one
+ * answering it and one failing it.
+ */
+const sources = { tampered: '', unlisted: '', broken: '', recording: '', refusing: '' };
 beforeAll(() => {
   artifacts = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-install-artifacts-'));
   if (!HAS_CC) return;
@@ -90,6 +96,33 @@ beforeAll(() => {
   sums(build(sources.unlisted, 'puts("2.0.0-beta.1"); return 0;'), 'myco-plan9-x64');
   sources.broken = path.join(artifacts, 'broken');
   sums(build(sources.broken, 'return 1;'));
+  const recorder = (dir: string, exit: number): string => {
+    fs.mkdirSync(dir, { recursive: true });
+    const source = path.join(dir, 'recorder.c');
+    fs.writeFileSync(source, `#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+int main(int argc, char **argv) {
+  if (argc > 1 && strcmp(argv[1], "--version") == 0) { puts("2.0.0-beta.2"); return 0; }
+  const char *home = getenv("MYCO_HOME");
+  char file[4096];
+  snprintf(file, sizeof file, "%s/commands.log", home ? home : "/nonexistent");
+  FILE *log = fopen(file, "a");
+  if (log) { for (int i = 1; i < argc; i++) fprintf(log, "%s%s", i > 1 ? " " : "", argv[i]); fputc('\\n', log); fclose(log); }
+  if (${exit} != 0) { fputs("the Deployment could not be reached\\n", stderr); return ${exit}; }
+  puts("Refreshed Claude Code.");
+  return 0;
+}
+`);
+    const binary = path.join(dir, `myco-${TARGET}`);
+    expect(spawnSync('cc', ['-o', binary, source]).status).toBe(0);
+    fs.rmSync(source);
+    return binary;
+  };
+  sources.recording = path.join(artifacts, 'recording');
+  sums(recorder(sources.recording, 0));
+  sources.refusing = path.join(artifacts, 'refusing');
+  sums(recorder(sources.refusing, 3));
 });
 
 const freshHome = () => fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'myco-install-home-')));
@@ -127,6 +160,44 @@ describe('the Myco 2.0 installer', () => {
     const zshenv = fs.readFileSync(path.join(home, '.zshenv'), 'utf8');
     expect(install(home, FROM()).status).toBe(0);
     expect(fs.readFileSync(path.join(home, '.zshenv'), 'utf8')).toBe(zshenv);
+  });
+
+  describe('on a machine already joined to a Deployment', () => {
+    /** A home holding a Deployment membership, as `myco login` leaves one. */
+    const memberHome = (): string => {
+      const home = freshHome();
+      fs.mkdirSync(path.join(home, '.myco', 'member', 'deployments'), { recursive: true });
+      fs.writeFileSync(path.join(home, '.myco', 'member', 'deployments', 'dep_1.json'), '{}');
+      return home;
+    };
+    const from = (dir: string) => ({ MYCO_INSTALL_FROM: dir, MYCO_INSTALL_VERSION: '2.0.0-beta.2' });
+
+    it.skipIf(!HAS_CC)('refreshes the agents\' Myco setup with the build it installed, in that home, and asks for no login', () => {
+      const home = memberHome();
+      const run = install(home, from(sources.recording));
+      expect(run.status).toBe(0);
+      expect(fs.readFileSync(path.join(home, '.myco', 'commands.log'), 'utf8')).toBe('member provision --refresh\n');
+      expect(run.out).toContain('Refreshed Claude Code.');
+      expect(run.out).toContain('Your agents now use Myco 2.0.0-beta.2.');
+      expect(run.out).not.toContain('myco login <invite link>');
+    });
+
+    it.skipIf(!HAS_CC)('keeps the install and says how to refresh by hand when the refresh fails', () => {
+      const home = memberHome();
+      const run = install(home, from(sources.refusing));
+      expect(run.status).toBe(0);
+      expect(spawnSync(path.join(home, '.myco', 'bin', 'myco'), ['--version'], { encoding: 'utf8' }).stdout.trim()).toBe('2.0.0-beta.2');
+      expect(run.out).toContain('the Deployment could not be reached');
+      expect(run.out).toContain("Your agents' Myco setup was not refreshed. Run: myco member provision --refresh");
+    });
+
+    it.skipIf(!HAS_CC)('runs nothing but --version for a first-time machine', () => {
+      const home = freshHome();
+      const run = install(home, from(sources.recording));
+      expect(run.status).toBe(0);
+      expect(fs.existsSync(path.join(home, '.myco', 'commands.log'))).toBe(false);
+      expect(run.out).toContain('myco login <invite link>');
+    });
   });
 
   it.skipIf(!HAS_CC)('puts its bin directory on PATH in a .bash_profile that exists', () => {
