@@ -8,7 +8,7 @@
  * 1280×820 and 390×844 in dark and light.
  *
  * On the fixture, every page runs in a fixed time zone and locale with the
- * browser's clock held at `FIXTURE_NOW`, and any request that leaves the
+ * browser's clock held at the fixture's now, and any request that leaves the
  * launcher's origin is aborted, which the failed-request check then reports.
  */
 import { AxeBuilder } from '@axe-core/playwright';
@@ -16,7 +16,7 @@ import { expect, type Browser, type BrowserContext, type Page } from '@playwrigh
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { FIXTURE_LOCALE, FIXTURE_NOW, FIXTURE_TIMEZONE, SCREENS_ENV, screensEnv } from './env.ts';
+import { FIXTURE_LOCALE, FIXTURE_TIMEZONE, fixtureNow, SCREENS_ENV, screensEnv } from './env.ts';
 
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 export const SHOTS_DIR = path.join(REPO, 'target', 'ui-screens', 'shots');
@@ -201,7 +201,7 @@ export async function openPage(browser: Browser, options: { path: string; viewpo
   if (options.cookie) await signIn(context, options.cookie);
   await setAppearance(context, options.mode);
   const page = await context.newPage();
-  if (onFixture()) await page.clock.setFixedTime(FIXTURE_NOW);
+  if (onFixture()) await page.clock.setFixedTime(fixtureNow());
   const watch = watchPage(page);
   await page.goto(new URL(options.path, baseUrl()).href);
   return { context, page, watch };

@@ -29,6 +29,9 @@ const FLOOR_PX = 12;
 
 const COLOUR_PREFIX = '(?:text|bg|border(?:-[trblxy])?|ring(?:-offset)?|fill|stroke|from|via|to|outline|divide|decoration|accent|caret|placeholder|shadow)';
 
+/** A padding, margin, gap, offset or translation with a bracketed length: `mt-[7px]`, `before:left-[-5px]`, `-translate-y-[1px]`. */
+const ARBITRARY_SPACING = /(?<![\w-])-?(?:p[xytrblse]?|m[xytrblse]?|gap(?:-[xy])?|space-[xy]|top|left|right|bottom|start|end|inset(?:-[xy])?|translate-[xy])-\[[^\]\s]*\d(?:\.\d+)?(?:px|rem|em)[^\]\s]*\]/g;
+
 /** The raw elements a page builds with a design component instead. */
 const RAW_TAGS = ['button', 'input', 'select', 'textarea', 'table'];
 
@@ -62,6 +65,8 @@ export const RULES = [
   },
   { kind: 'palette-colour', count: (src) => matches(src, new RegExp(`\\b${COLOUR_PREFIX}-(?:black|white|(?:${PALETTE})-\\d{2,3})\\b`, 'g')) },
   { kind: 'small-text', count: smallText },
+  // Spacing set in pixels or rems instead of on the 4px scale (`p-s4`, `gap-s2`, `-left-s1`).
+  { kind: 'arbitrary-spacing', count: (src) => matches(src, ARBITRARY_SPACING) },
   {
     kind: 'retired-import',
     count: (src) => matches(src, /from\s+['"][^'"]*components\/ui\/[^'"]+['"]/g)

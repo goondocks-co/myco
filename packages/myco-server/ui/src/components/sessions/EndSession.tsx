@@ -3,6 +3,7 @@ import { CircleStop } from 'lucide-react';
 import { useEndSession, type SessionRow } from '../../hooks/use-sessions';
 import { ConfirmDialog } from '../ui/confirm-dialog';
 import { Button } from '../ui/button';
+import { sessionHeadingText } from '../../lib/session-text';
 
 /** End an open session now. Capture is not stopped: a newer captured turn from a person reopens it. */
 export function EndSession({ projectId, session }: { projectId: string; session: SessionRow }) {
@@ -19,7 +20,7 @@ export function EndSession({ projectId, session }: { projectId: string; session:
       ending.reset();
     }} title="End this session?"
       description="Mark this session as ended now. Capture is not stopped: a newer captured turn from a person reopens the session, and it shows as open again. Once ended, its title and summary are requested the way any ended session's are."
-      meta={[{ label: 'Session ID', value: session.sessionId }, { label: 'Session', value: session.label }]}
+      meta={[{ label: 'Session ID', value: session.sessionId }, { label: 'Session', value: sessionHeadingText(session) }]}
       confirmLabel="End session" isPending={ending.isPending}
       errorMessage={ending.error
         ? 'The session could not be ended. Retry to end it.'

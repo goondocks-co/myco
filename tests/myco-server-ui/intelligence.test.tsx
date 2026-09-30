@@ -266,7 +266,7 @@ describe('Agent runs', () => {
     expect(screen.queryByText(/forbidden/i)).toBeNull();
   });
 
-  it('keeps the section active while a run is open, and only Overview active on the project home', async () => {
+  it('keeps the section active while a run is open, and only Today active on the project\'s Today', async () => {
     server(base({ '/api/projects/x/runs': () => Response.json({ rows: [run()], cursor: null }), '/api/projects/x/runs/r1': () => Response.json(detail()) }));
     mount('/p/x/runs/r1');
     await screen.findByText('Facts');
@@ -275,12 +275,12 @@ describe('Agent runs', () => {
     expect(active).toEqual(['Agent runs']);
   });
 
-  it('marks Overview alone active on the project home', async () => {
+  it('marks Today alone active on the project\'s Today', async () => {
     server(base());
     mount('/p/x');
-    await screen.findByRole('heading', { name: 'Project X' });
+    await screen.findByRole('heading', { level: 1 });
     const nav = screen.getByRole('navigation', { name: 'Pages' });
-    expect([...nav.querySelectorAll('a[aria-current="page"]')].map((a) => a.textContent)).toEqual(['Overview']);
+    expect([...nav.querySelectorAll('a[aria-current="page"]')].map((a) => a.textContent)).toEqual(['Today']);
   });
 });
 

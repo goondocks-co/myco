@@ -24,7 +24,8 @@ const session = (over: Record<string, unknown> = {}) => ({
   sessionId: 's1', machineId: 'mac-1', createdByTokenId: 'tok_1', firstReceivedAt: NOW - 3_600_000, lastReceivedAt: NOW - 60_000,
   agent: 'claude-code', branch: 'main', startedAt: NOW - 3_600_000, endedAt: null, endedBy: null, endedByLabel: null, originPath: '/repo', parentSessionId: null, parentReason: null,
   memberId: 'mem_1', memberLabel: 'chris', runtimeLabel: 'laptop', runtimeKind: 'host',
-  title: null, summary: null, titledAt: null, label: (over.title as string | undefined) ?? (over.label as string | undefined) ?? (over.agent as string | undefined) ?? 'claude-code',
+  // A label given here stands for the session's title; a session given none is headed by its agent, as the server heads an untitled one.
+  title: (over.label as string | undefined) ?? null, summary: null, titledAt: null, label: (over.title as string | undefined) ?? (over.label as string | undefined) ?? (over.agent as string | undefined) ?? 'claude-code',
   promptCount: 2, toolCallCount: 3, activityBuckets: [1, 0, 0, 1, 0, 0, 0, 0], ...over,
 });
 const page = (rows: unknown[]) => Response.json({ rows, cursor: null });
@@ -616,10 +617,10 @@ describe('Session detail', () => {
     expect(await screen.findByText('This Deployment has no way to write summaries yet')).toBeTruthy();
   });
 
-  it('heads the detail with the label and shows a summary only once one is stored', async () => {
+  it('heads the detail with its title, never its agent, and shows a summary only once one is stored', async () => {
     server(detailRoutes());
     mount('/p/x/sessions/s1');
-    expect((await screen.findByRole('heading', { level: 2 })).textContent).toBe('claude-code');
+    expect((await screen.findByRole('heading', { level: 2 })).textContent).toBe('Untitled session');
     expect(screen.queryByText('Summary')).toBeNull();
     cleanup();
     server(detailRoutes({ '/api/projects/x/sessions/s1': () => Response.json({ session: session({ title: 'Wave-based executor', summary: 'Built the executor.\nTests pass.', titledAt: NOW }), counts, projectId: 'x' }) }));
@@ -917,95 +918,6 @@ describe('Session detail', () => {
     expect(promptPreview({ preview: 'line one\n\nline   two', textChars: 19, blobKey: null })).toBe('line one line two');
     expect(promptPreview({ preview: null, textChars: null, blobKey: KEY_TEXT })).toBe('Stored text');
     expect(promptPreview({ preview: null, textChars: null, blobKey: null })).toBe('(no prompt)');
-  });
-});
-
-describe('Project home', () => {
-  it('shows what the project holds and the recent activity, each item linking where it belongs', async () => {
-    server(base({
-      '/api/projects/x/activity': () => Response.json({
-        items: [
-          { type: 'spore', id: 'sp1', summary: 'gotcha: a thing', at: NOW - 1000, sessionId: 's1' },
-          { type: 'run', id: 'r1', summary: 'digest — completed', at: NOW - 2000, sessionId: null },
-          { type: 'session', id: 's1', summary: 'claude-code on main', at: NOW - 3000, sessionId: 's1' },
-        ],
-        stats: { sessions: 2, openSessions: 1, sessionsLast7d: 2, prompts: 9, toolCalls: 40, plans: 1, attachments: 2, lastActivityAt: NOW - 1000 },
-      }),
-    }));
-    mount('/p/x');
-    expect(await screen.findByText('gotcha: a thing')).toBeTruthy();
-    expect(screen.getByText('1 open')).toBeTruthy();
-    expect(screen.getByText('40')).toBeTruthy();
-    expect(screen.getByText('digest — completed').getAttribute('href')).toBe('/p/x/runs/r1');
-    expect(screen.getByText('claude-code on main').getAttribute('href')).toBe('/p/x/sessions/s1');
-    expect(screen.getByText('gotcha: a thing').getAttribute('href')).toBe('/p/x/sessions/s1');
-    expect(screen.getByRole('heading', { level: 1 }).textContent).toBe('Project X');
-    expect(screen.getByTestId('activity-line').textContent).toBe('1 open session');
-    expect(screen.getByTestId('capture-health').textContent).toBe('Capturing now');
-  });
-
-  it('composes the home in the 1.4 shape: the open sessions with their activity, recent runs running first, the plans still open', async () => {
-    server(base({
-      '/api/projects/x/activity': () => Response.json({ items: [], stats: { sessions: 3, openSessions: 1, sessionsLast7d: 3, prompts: 9, toolCalls: 40, plans: 0, attachments: 0, lastActivityAt: NOW - 1000 } }),
-      '/api/projects/x/sessions?limit=50&state=open': () => page([session({ label: 'Wave-based executor', promptCount: 12, toolCallCount: 40, activityBuckets: [1, 2, 0, 0, 3, 0, 0, 1] })]),
-      '/api/projects/x/runs?limit=50': () => page([
-        { id: 'run-newer-completed', agentId: 'a', task: 'digest', status: 'completed', provider: null, model: 'm1', startedAt: NOW - 2000, resumedAt: null, completedAt: NOW - 1000, tokensUsed: 12_000, costUsd: null, costSource: null, dryRun: false, resumable: false, resumeStatus: null, failed: false },
-        { id: 'run-older-running', agentId: 'a', task: 'title-summary', status: 'running', provider: null, model: null, startedAt: NOW - 20_000, resumedAt: null, completedAt: null, tokensUsed: null, costUsd: null, costSource: null, dryRun: true, resumable: false, resumeStatus: null, failed: false },
-      ]),
-      '/api/settings': () => Response.json({ leaves: [{ leaf: 'agent.provider.type', configured: true, value: 'anthropic', updatedAt: NOW, updatedBy: 'mem_1' }] }),
-      '/api/projects/x/plans?limit=100': () => Response.json({ plans: [
-        { planKey: 'plan_done', sessionId: 's1', promptId: null, title: 'Shipped already', status: 'completed', content: null, blobKey: null, originPath: null, progress: 'N/A', updatedBy: null, createdAt: NOW - 9000, updatedAt: NOW - 500, tags: [] },
-        { planKey: 'plan_open', sessionId: 's1', promptId: null, title: 'Rebuild the cache', status: 'in_progress', content: '- [x] a\n- [ ] b', blobKey: null, originPath: null, progress: '1/2', updatedBy: null, createdAt: NOW - 5000, updatedAt: NOW - 1000, tags: [] },
-      ], maxPage: 200 }),
-    }));
-    mount('/p/x');
-    const hero = await screen.findByRole('list', { name: 'Open sessions' });
-    expect(hero.textContent).toContain('Wave-based executor');
-    expect(hero.textContent).toContain('claude-code');
-    expect(hero.textContent).toContain('12p · 40t');
-    expect(within(hero).getByRole('img', { name: /7 prompts across this session/ })).toBeTruthy();
-    expect(screen.getByTestId('activity-line').textContent).toBe('1 open session · 1 run running');
-    const runs = within(screen.getByRole('list', { name: 'Recent runs' })).getAllByRole('listitem');
-    expect(runs.map((r) => r.textContent)).toEqual([expect.stringContaining('title-summary'), expect.stringContaining('digest')]);
-    expect(runs[0]!.textContent).toContain('dry');
-    expect(runs[1]!.textContent).toContain('12.0k tok');
-    // The panel is titled "Still open", so a finished plan is not in it, and each
-    // item opens its own plan rather than the whole list.
-    const plans = within(screen.getByRole('list', { name: 'Plans still open' })).getAllByRole('listitem');
-    expect(plans.map((p) => p.textContent)).toEqual([expect.stringContaining('Rebuild the cache')]);
-    expect(plans[0]!.textContent).toContain('1/2');
-    expect(within(plans[0]!).getByRole('link').getAttribute('href'))
-      .toBe('/p/x/sessions/s1?tab=plans&plan=plan_open');
-    expect(screen.getByRole('link', { name: /All sessions/ }).getAttribute('href')).toBe('/p/x/sessions');
-  });
-
-  it('keeps the name and the archived banner above the activity read, says why runs are empty without a provider, and says when a panel could not load', async () => {
-    server(base({
-      '/api/projects': () => Response.json({ projects: [{ ...PROJECTS.projects[0], archivedAt: NOW - 500, archivedBy: 'mem_1' }] }),
-      '/api/projects/x/activity': () => Response.json({ items: [], stats: { sessions: 1, openSessions: 0, sessionsLast7d: 0, prompts: 0, toolCalls: 0, plans: 0, attachments: 0, lastActivityAt: NOW - 1000 } }),
-      '/api/projects/x/sessions?limit=50&state=open': () => page([]),
-      '/api/projects/x/runs?limit=50': () => page([]),
-      '/api/projects/x/plans?limit=100': () => new Response(null, { status: 500 }),
-      '/api/settings': () => Response.json({ leaves: [{ leaf: 'agent.provider.type', configured: false, value: null, updatedAt: null, updatedBy: null }] }),
-    }));
-    mount('/p/x');
-    expect((await screen.findByRole('heading', { level: 1 })).textContent).toBe('Project X');
-    expect(await screen.findByTestId('archived-banner')).toBeTruthy();
-    expect((await screen.findByText(/No runs yet — no provider is configured/)).textContent).toContain('Configure one in Settings');
-    expect(await screen.findByText('Could not load the plans.')).toBeTruthy();
-  });
-
-  it('says the capture has gone quiet when the last session landed over a week ago', async () => {
-    server(base({ '/api/projects/x/activity': () => Response.json({ items: [], stats: { sessions: 2, openSessions: 0, sessionsLast7d: 0, prompts: 1, toolCalls: 1, plans: 0, attachments: 0, lastActivityAt: NOW - 9 * 24 * 3_600_000 } }) }));
-    mount('/p/x');
-    expect((await screen.findByTestId('capture-health')).textContent).toMatch(/^No capture in 7 days · last /);
-    expect(screen.getByTestId('activity-line').textContent).toBe('Quiet right now — nothing running.');
-  });
-
-  it('shows a project that has captured nothing as empty', async () => {
-    server(base({ '/api/projects/x/activity': () => Response.json({ items: [], stats: { sessions: 0, openSessions: 0, sessionsLast7d: 0, prompts: 0, toolCalls: 0, plans: 0, attachments: 0, lastActivityAt: null } }) }));
-    mount('/p/x');
-    expect(await screen.findByText('Nothing captured yet.')).toBeTruthy();
   });
 });
 

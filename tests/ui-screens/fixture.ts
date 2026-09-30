@@ -5,15 +5,17 @@
  * one named like a test project, and seven quiet), two members (an admin and a
  * member), two machines with names, five agents, two days of sessions with one
  * still live, spores of every type, plans in every status, Myco's runs (a
- * failed learning run that still saved spores, an index update that failed and
- * then succeeded, a skipped titling run, a map run) and a backup four weeks
+ * failed learning run that still saved spores, a learning run that saved four,
+ * two titling runs, a code map update that failed with its cause after one that
+ * succeeded yesterday, an index update that failed and then succeeded, and a
+ * skipped titling run), an access key about to expire, and a backup four weeks
  * old.
  *
  * Capture goes through the real `/events` ingest and spores through the real
  * `myco_spores` tool, so the pages read rows written the way production writes
  * them. Only what has no public write path is seeded in SQL: members, machine
- * claims and credentials before the server starts, and runs and the backup
- * after it.
+ * claims and credentials before the server starts, and runs, what they wrote
+ * and the backup after it.
  */
 import { Database } from 'bun:sqlite';
 import { issueMemberToken } from '@myco-server-worker/auth/tokens.js';
@@ -21,6 +23,8 @@ import { linkStatement } from '@myco-server-worker/auth/identity-link.js';
 import { sqliteRelationalStore } from '@myco-server-worker/platform/bun/sqlite.js';
 import { PROJECT_HEADER, PROTOCOL_HEADER, SERVER_PROTOCOL, SERVER_SCHEMA_VERSION } from '@myco-server-worker/constants.js';
 import { uuidv5 } from '@myco-server-worker/hash.js';
+import { MAP_WRITE_TOOL, TITLE_WRITE_TOOL } from '@myco-server-worker/core/tool-catalogue.js';
+import { RUN_WRITE_EVENT } from '@myco-server-worker/core/runs.js';
 
 const MINUTE = 60_000;
 const HOUR = 60 * MINUTE;
@@ -34,9 +38,14 @@ export interface FixtureMember {
   role: 'admin' | 'member';
 }
 
-/** Member ids in the shape join mints: `mem_` and the base64url of twelve random bytes. */
+/**
+ * Member ids in the shape join mints: `mem_` and the base64url of twelve random
+ * bytes. The owner has a display name; the reader joined without naming
+ * themselves, so their label is their id, as join records it, and the dashboard
+ * must name them by their GitHub login instead.
+ */
 export const OWNER: FixtureMember = { id: 'mem_q3Vb8xRk2LmT7wYz', label: 'Ada', githubSub: '1000001', login: 'ada', role: 'admin' };
-export const READER: FixtureMember = { id: 'mem_Hn5-pC0dJfA9sE_u', label: 'Lin', githubSub: '1000002', login: 'lin', role: 'member' };
+export const READER: FixtureMember = { id: 'mem_Hn5-pC0dJfA9sE_u', label: 'mem_Hn5-pC0dJfA9sE_u', githubSub: '1000002', login: 'lin', role: 'member' };
 
 /** Two machines, each with a name the way `myco login` records one. */
 export const MACHINES = [
@@ -93,6 +102,10 @@ interface SessionSeed {
   prompts: string[];
 }
 
+/**
+ * Today's sessions start within ten hours of the fixture's now (16:00 UTC), so
+ * they stay on one local day in the fixture's time zone in winter as in summer.
+ */
 const SESSIONS: SessionSeed[] = [
   { project: 'myco', agent: 'claude-code', machine: 'studio', startedAgo: 42, minutes: null, title: 'Canopy parity verified across both targets', summary: 'Ran the parity suite against the self-hosted and hosted targets and fixed the one ordering difference in the map reader.', prompts: ['Run the canopy parity scenarios on both targets', 'The hosted target orders ties differently; make the read stable', 'Good, now rerun and confirm'] },
   { project: 'myco', agent: 'codex', machine: 'studio', startedAgo: 3 * 60, minutes: 55, title: 'Search box height made uniform on list pages', summary: 'Moved the Sessions and Knowledge search inputs onto one filter bar so the boxes share a height and left edge.', prompts: ['The search boxes are different heights on each list page', 'Use one filter bar everywhere'] },
@@ -101,7 +114,7 @@ const SESSIONS: SessionSeed[] = [
   { project: 'ledger', agent: 'pi', machine: 'studio', startedAgo: 8 * 60, minutes: 64, title: 'Monthly close report query sped up', summary: 'Added a covering index for the close report and cut the query from 4.2 s to 180 ms on the staging copy.', prompts: ['The monthly close report takes four seconds', 'Try a covering index on entries by account and period'] },
   { project: 'infra', agent: 'claude-code', machine: 'studio', startedAgo: 9 * 60, minutes: 17, title: 'Backup schedule moved to nightly', summary: 'Changed the backup interval from weekly to nightly and confirmed the first run landed in the bucket.', prompts: ['Backups are weekly; make them nightly'] },
   { project: 'myco', agent: 'codex', machine: 'buildbox', startedAgo: 10 * 60, minutes: 41, title: 'Flaky test port collision fixed', summary: 'The test reserved a fixed port that the server’s ephemeral fallback could also pick; it now asks the kernel for one.', prompts: ['This test fails one run in twenty', 'Stop reserving a fixed port'] },
-  { project: 'sandbox', agent: 'pi', machine: 'buildbox', startedAgo: 11 * 60, minutes: 6, title: 'Trying the new login flow', summary: 'Signed in on a fresh machine to check the join link opens in a browser.', prompts: ['Try logging in from scratch'] },
+  { project: 'sandbox', agent: 'pi', machine: 'buildbox', startedAgo: 9 * 60 + 30, minutes: 6, title: 'Trying the new login flow', summary: 'Signed in on a fresh machine to check the join link opens in a browser.', prompts: ['Try logging in from scratch'] },
   { project: 'atlas-web', agent: 'claude-code', machine: 'studio', startedAgo: 26 * 60, minutes: 70, title: 'Image gallery lazy-loading added', summary: 'Gallery images now load as they scroll into view; the first paint on the product page dropped by 1.1 s.', prompts: ['The product page is slow on phones', 'Lazy-load the gallery images', 'Measure the first paint again'] },
   { project: 'myco', agent: 'cursor', machine: 'studio', startedAgo: 28 * 60, minutes: 33, title: 'Session reading page summary moved first', summary: 'The session page now opens with the summary and keeps the conversation at a readable width.', prompts: ['Put the summary at the top of the session page'] },
   { project: 'field-notes', agent: 'codex', machine: 'buildbox', startedAgo: 30 * 60, minutes: 48, title: 'Markdown export keeps attachments', summary: 'Exported notes now carry their images alongside the markdown file instead of dropping them.', prompts: ['Exported notes lose their images', 'Write the attachments next to the markdown'] },
@@ -121,6 +134,8 @@ const SPORES: Array<{ project: ProjectKey; session: number; type: (typeof SPORE_
   { project: 'atlas-web', session: 8, type: 'wisdom', line: 'Measure first paint on a throttled phone profile before and after any image change.', content: 'Desktop numbers hid a 1.1 s regression that only showed on a mid-range phone profile.' },
   { project: 'atlas-web', session: 2, type: 'pattern', line: 'Validation messages name the field and the fix, never just “invalid input”.', content: 'Each checkout field carries its own message saying what is wrong and what a valid value looks like.' },
   { project: 'infra', session: 5, type: 'architecture', line: 'Backups run nightly to object storage and are verified by a restore preview each week.', content: 'The nightly job writes to the bucket; a weekly restore preview proves the newest backup opens.' },
+  { project: 'myco', session: 0, type: 'decision', line: 'Canopy parity runs on both targets before a map change merges.', content: 'A map read that differs between targets is caught only by running the same scenario on both, so both run before merge.' },
+  { project: 'myco', session: 6, type: 'gotcha', line: 'A port the kernel hands out can be reused at once; never cache it across test files.', content: 'Two test files cached the same ephemeral port and the second bound it after the first released it, which hid the collision.' },
 ];
 
 const PLANS: Array<{ project: ProjectKey; session: number; status: (typeof PLAN_STATUSES)[number]; title: string; path: string; content: string }> = [
@@ -258,8 +273,15 @@ export async function seedThroughServer(ctx: SeedContext): Promise<SeededFixture
     }, at);
   }
 
+  // An access key that expires in three days, minted the way an admin mints one.
+  await expectOk(await fetch(`${url}/api/projects/${idOf('myco')}/grants`, {
+    method: 'POST', headers: ownerHeaders, body: JSON.stringify({ label: 'CI deploys', expires_in_days: 3 }),
+  }), 'mint an access key');
+
   settleReceiptTimes(ctx.databasePath, liveSessionId, now);
-  const runs = seedRuns(ctx.databasePath, now, sporeIds);
+  seedTitles(ctx.databasePath, sessionIds, now);
+  settleSporeTimes(ctx.databasePath, sporeIds, now);
+  const runs = seedRuns(ctx.databasePath, now, sporeIds, sessionIds);
   seedBackup(ctx.databasePath, now);
 
   return {
@@ -297,23 +319,74 @@ function settleReceiptTimes(databasePath: string, liveSessionId: string, now: nu
 }
 
 /**
- * Myco's runs on the `myco` project: a learning run that failed after saving
- * two spores (they carry its id as author), an index update that failed and a
- * later one that succeeded, a skipped titling run, a completed map run and a
- * completed learning run.
+ * Each ended session's title and summary, as Myco's titling writes them once a
+ * session ends. A capture's own end carries none the server stores, so they are
+ * set here; the live session stays untitled.
  */
-function seedRuns(databasePath: string, now: number, sporeIds: string[]): number {
+function seedTitles(databasePath: string, sessionIds: string[], now: number): void {
+  const sqlite = new Database(databasePath);
+  sqlite.exec('PRAGMA busy_timeout = 5000');
+  try {
+    for (const [index, seed] of SESSIONS.entries()) {
+      if (seed.minutes === null) continue;
+      const titledAt = now - (seed.startedAgo - seed.minutes - 2) * MINUTE;
+      sqlite.query('UPDATE sessions SET title = ?, summary = ?, titled_at = ? WHERE project_id = ? AND session_id = ?')
+        .run(seed.title, seed.summary, titledAt, idOf(seed.project), sessionIds[index]!);
+    }
+  } finally {
+    sqlite.close();
+  }
+}
+
+/**
+ * The tool that saves a spore stamps it with the server's own clock, which runs
+ * ahead of the fixture's now. Each spore is set to ten minutes into the session
+ * it came from, so it falls on the fixture's day as that session does; a spore
+ * a run wrote is set to the run's end in `seedRuns`.
+ */
+function settleSporeTimes(databasePath: string, sporeIds: string[], now: number): void {
+  const sqlite = new Database(databasePath);
+  sqlite.exec('PRAGMA busy_timeout = 5000');
+  try {
+    for (const [index, spore] of SPORES.entries()) {
+      const at = now - (SESSIONS[spore.session]!.startedAgo - 10) * MINUTE;
+      sqlite.query('UPDATE spores SET created_at = ?, updated_at = NULL WHERE project_id = ? AND id = ?').run(at, idOf(spore.project), sporeIds[index]!);
+    }
+  } finally {
+    sqlite.close();
+  }
+}
+
+/**
+ * Myco's runs on the `myco` project, each with what it wrote as the server
+ * records it: spores carry their run's id as author, and a title or a map
+ * written is a `run_write` event naming its tool.
+ *
+ * Today: a learning run that failed after saving two spores, a learning run
+ * that saved four, two titling runs, a map update that failed with its cause in
+ * its report, an index update that failed and a later one that succeeded, and a
+ * skipped titling run. Yesterday: a map update and a learning run.
+ */
+function seedRuns(databasePath: string, now: number, sporeIds: string[], sessionIds: string[]): number {
   const sqlite = new Database(databasePath);
   sqlite.exec('PRAGMA busy_timeout = 5000');
   sqlite.exec('PRAGMA foreign_keys = ON');
   try {
     sqlite.query(`INSERT OR IGNORE INTO agents (id, name, source, enabled, created_at) VALUES ('myco-agent', 'Myco', 'built-in', 1, ?)`).run(now - 60 * DAY);
-    const runs: Array<{ id: string; task: string; status: string; startedAgo: number; minutes: number; error?: string; context?: Record<string, unknown>; report?: string }> = [
+    const runs: Array<{
+      id: string; task: string; status: string; startedAgo: number; minutes: number; error?: string; context?: Record<string, unknown>; report?: string;
+      /** What the run recorded writing: a title names the session it titled. */
+      wrote?: { tool: string; session?: number };
+    }> = [
       { id: 'run_4f1c9a2e7b', task: 'extract-curate', status: 'failed', startedAgo: 2 * 60, minutes: 6, error: 'the run exceeded its turn budget', report: 'Saved 2 spores from 3 sessions before the turn budget ran out.' },
+      { id: 'run_a2c4e6f801', task: 'extract-curate', status: 'completed', startedAgo: 5 * 60, minutes: 8, report: 'Saved 4 spores from 4 sessions.' },
+      { id: 'run_7d1e2f3a40', task: 'title-summary', status: 'completed', startedAgo: 3 * 60, minutes: 1, report: 'Titled one session.', wrote: { tool: TITLE_WRITE_TOOL, session: 1 } },
+      { id: 'run_7d1e2f3b51', task: 'title-summary', status: 'completed', startedAgo: 3 * 60 + 4, minutes: 1, report: 'Titled one session.', wrote: { tool: TITLE_WRITE_TOOL, session: 6 } },
+      { id: 'run_5e0b1c2d3f', task: 'canopy-map', status: 'failed', startedAgo: 3 * 60 + 30, minutes: 15, error: 'the run ended without its artifact', report: 'repo.sha256 is absent from this checkout, so the map could not be verified; the previous map is kept.' },
       { id: 'run_8d20b6c1f3', task: 'embedding-reconcile', status: 'failed', startedAgo: 95, minutes: 1, error: 'the embedding provider answered 503' },
       { id: 'run_8d20b6c2a9', task: 'embedding-reconcile', status: 'completed', startedAgo: 80, minutes: 1 },
       { id: 'run_b73e05d4c8', task: 'title-summary', status: 'skipped', startedAgo: 60, minutes: 0, context: { reason: 'no session is waiting for a title' } },
-      { id: 'run_c19f7a0e55', task: 'canopy-map', status: 'completed', startedAgo: 20 * 60, minutes: 4, report: 'Mapped 412 files at the latest commit.' },
+      { id: 'run_c19f7a0e55', task: 'canopy-map', status: 'completed', startedAgo: 20 * 60, minutes: 4, report: 'Mapped 412 files at the latest commit.', wrote: { tool: MAP_WRITE_TOOL } },
       { id: 'run_e0a4d2b917', task: 'extract-curate', status: 'completed', startedAgo: 27 * 60, minutes: 9, report: 'Saved 3 spores from 4 sessions.' },
     ];
     for (const run of runs) {
@@ -327,9 +400,22 @@ function seedRuns(databasePath: string, now: number, sporeIds: string[]): number
         sqlite.query(`INSERT INTO agent_reports (project_id, run_id, agent_id, action, summary, created_at) VALUES (?, ?, 'myco-agent', 'summary', ?, ?)`)
           .run(idOf('myco'), run.id, run.report, startedAt + run.minutes * MINUTE);
       }
+      if (run.wrote) {
+        const payload = run.wrote.session === undefined ? {} : { session_id: sessionIds[run.wrote.session] };
+        sqlite.query(`INSERT INTO agent_run_events (project_id, run_id, event_type, tool_name, outcome, payload, recorded_at) VALUES (?, ?, ?, ?, 'ok', ?, ?)`)
+          .run(idOf('myco'), run.id, RUN_WRITE_EVENT, run.wrote.tool, JSON.stringify(payload), startedAt + run.minutes * MINUTE);
+      }
     }
-    const authored = sporeIds.slice(0, 2);
-    for (const id of authored) sqlite.query(`UPDATE spores SET author = 'run_4f1c9a2e7b' WHERE project_id = ? AND id = ?`).run(idOf('myco'), id);
+    // Each learning run's spores, by their place in SPORES: every one in the `myco` project, saved as the run ended.
+    const authored: Record<string, number[]> = { run_4f1c9a2e7b: [0, 1], run_a2c4e6f801: [2, 5, 9, 10] };
+    for (const [runId, indexes] of Object.entries(authored)) {
+      const run = runs.find((r) => r.id === runId)!;
+      const endedAt = now - (run.startedAgo - run.minutes) * MINUTE;
+      for (const [offset, index] of indexes.entries()) {
+        if (SPORES[index]?.project !== 'myco') throw new Error(`spore ${index} is not in the myco project`);
+        sqlite.query('UPDATE spores SET author = ?, created_at = ? WHERE project_id = ? AND id = ?').run(runId, endedAt - (indexes.length - offset), idOf('myco'), sporeIds[index]!);
+      }
+    }
     return runs.length;
   } finally {
     sqlite.close();
