@@ -8,6 +8,7 @@
  * attempts found no membership at all; `mcp-headers` prints the member
  * headers a remote MCP entry asks for.
  */
+import { INVITE_CONTROLS } from '@goondocks/myco-shared/member-protocol';
 import { seedMachineSettings } from '../member/machine-settings.js';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -1097,7 +1098,7 @@ function refreshLine(report: RefreshReport): string {
 }
 
 /** What `link-github` prints once the Deployment has a linked admin: only an admin links a member's GitHub account from then on. */
-export const LINK_REQUIRES_ADMIN_HINT = 'this server already has an admin, so only an admin can link a GitHub account now — ask an admin to link yours in the dashboard\'s Members page';
+export const LINK_REQUIRES_ADMIN_HINT = `this server already has an admin, so only an admin can link a GitHub account now — ask an admin to link yours in the dashboard's ${INVITE_CONTROLS.page} page`;
 
 /** The URL a member opens to connect a GitHub account: the key rides the fragment, which never reaches the server or a log. */
 export function linkUrl(serverUrl: string, key: string): string {

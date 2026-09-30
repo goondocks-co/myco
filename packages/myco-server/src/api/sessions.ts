@@ -1,4 +1,5 @@
 import { getReleaseStatus } from '../core/provenance.js';
+import { nameOwnMachines, ownMachineNames } from '../read/capture.js';
 import type { ServerEnv } from '../core/adapters.js';
 import type { OwnerContext } from '../context.js';
 import { getSession, listSessionSummaries, projectStats, sessionCounts, type SessionFilters } from '../read/sessions.js';
@@ -87,7 +88,8 @@ export async function handleProjectSessions(env: ServerEnv, ctx: OwnerContext): 
   if (page instanceof Response) return page;
   const filters = sessionFilters(ctx.url);
   if (filters instanceof Response) return filters;
-  return ok(await listSessionSummaries(env.db, scope, { ...page, ...filters }, ctx.now));
+  const listed = await listSessionSummaries(env.db, scope, { ...page, ...filters }, ctx.now);
+  return ok({ ...listed, rows: nameOwnMachines(listed.rows, await ownMachineNames(env.db, ctx.member.id, ctx.now)) });
 }
 
 /** One session, with what came of it (the runs that read it or wrote from it, and the spores written from it) and how to resume it in its agent: the command and the line to paste, or null. */
@@ -96,8 +98,9 @@ export async function handleSession(env: ServerEnv, ctx: OwnerContext): Promise<
   if (sessionId === null) return notFound();
   const scope = await resolveProjectScope(env.db, ctx.member, ctx.params.projectId);
   if (scope === null) return notFound();
-  const session = await getSession(env.db, scope, sessionId);
-  if (session === null) return notFound();
+  const read = await getSession(env.db, scope, sessionId);
+  if (read === null) return notFound();
+  const [session] = nameOwnMachines([read], await ownMachineNames(env.db, ctx.member.id, ctx.now));
   return ok({
     session, resume: resumeCommandFor(session.agent, session.sessionId, session.originPath), untitled: await untitledReason(env.db, scope.projectId, sessionId), counts: await sessionCounts(env.db, scope, sessionId),
     release: await getReleaseStatus(env.db, scope, 'session', sessionId), outcome: await sessionOutcome(env.db, scope, sessionId), projectId: scope.projectId,

@@ -1,4 +1,5 @@
 import type { ServerEnv } from '../core/adapters.js';
+import { INVITE_CONTROLS } from '@goondocks/myco-shared/member-protocol';
 import type { RouteContext } from '../context.js';
 import { refused } from '../ingest/events.js';
 import { refusal, type Refusal } from '../telemetry.js';
@@ -25,7 +26,7 @@ export const emptyBodyRoute = <C extends Pick<RouteContext, 'body'>>(handler: (e
   };
 
 /** What a member credential is told when the Deployment already has a linked admin: its GitHub account is linked by an admin now. */
-export const LINK_REQUIRES_ADMIN = 'this server already has an admin; ask an admin to link your GitHub account from the dashboard\'s Members page';
+export const LINK_REQUIRES_ADMIN = `this server already has an admin; ask an admin to link your GitHub account from the dashboard's ${INVITE_CONTROLS.page} page`;
 
 /**
  * `POST /members/link-github`: the presented credential asks for a one-time key

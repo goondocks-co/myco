@@ -54,12 +54,12 @@ const statements = (): Promise<Statement[]> => (captured ??= capture());
 async function capture(): Promise<Statement[]> {
   const { store, statements: seen } = recording(STORES.current);
   const scope = { projectId: 'proj_0' };
-  const page = await listRuns(store, scope, Date.now(), { limit: MAX_PAGE });
+  const page = await listRuns(store, scope, Date.now(), 'mem_1', { limit: MAX_PAGE });
   // The page holds runs with spores, with recorded reads, and with neither, so each count is read over real rows.
   expect({ full: page.rows.length, wrote: page.rows.some((r) => r.outcome.spores > 0), read: page.rows.some((r) => r.outcome.readsRecorded), unread: page.rows.some((r) => !r.outcome.readsRecorded) })
     .toEqual({ full: MAX_PAGE, wrote: true, read: true, unread: true });
   const author = STORES.current.query(`SELECT author FROM spores WHERE project_id = 'proj_0' AND author LIKE 'run_%' LIMIT 1`).get() as { author: string };
-  await getRunDetail(store, scope, author.author, Date.now());
+  await getRunDetail(store, scope, author.author, Date.now(), 'mem_1');
   await runReads(store, scope, author.author);
   await listSpores(store, scope, { author: author.author, limit: 50 });
   await countSpores(store, scope, { author: author.author });

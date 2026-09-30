@@ -61,16 +61,26 @@ async function expectFixtureDay(page: Page): Promise<void> {
   await expect(page.locator('[data-upkeep]')).toContainText('1 retry along the way');
 }
 
-/** Capture lists the machine that sent last agent by agent, and the other machine in one line, by name. */
-async function expectCapture(page: Page, viewport: ViewportName): Promise<void> {
+/**
+ * Capture lists the machine that sent last agent by agent, and the other machines in one line: every machine to an
+ * admin, and a member's own alone to a member. A machine is named to the member it belongs to alone.
+ */
+async function expectCapture(page: Page, viewport: ViewportName, role: 'admin' | 'member'): Promise<void> {
   const capture = page.locator('[data-capture]');
   if (viewport === 'desktop') await expect(capture).toBeInViewport();
   else await capture.scrollIntoViewIfNeeded();
   await expect(capture).toBeVisible();
   if (!onFixture()) return;
+  if (role === 'member') {
+    await expect(capture).toContainText('Lin’s build box');
+    await expect(capture).not.toContainText('Ada’s studio Mac');
+    return;
+  }
   await expect(capture).toContainText('Ada’s studio Mac');
   await expect(capture.getByRole('list', { name: 'Agents on Ada’s studio Mac' }).getByRole('img', { name: 'Sending now' })).toHaveCount(1);
-  await expect(capture.getByRole('list', { name: 'Other machines' })).toContainText('Lin’s build box');
+  // Another member's machine is listed, and never by its name: the server serves it only to its own member.
+  await expect(capture.getByRole('list', { name: 'Other machines' })).toBeVisible();
+  await expect(capture).not.toContainText('Lin’s build box');
 }
 
 test.describe('Today', () => {
@@ -121,7 +131,7 @@ test.describe('Today', () => {
           expect(named, 'an element named for Needs you').toEqual([]);
         }
 
-        await expectCapture(page, viewport);
+        await expectCapture(page, viewport, role);
         await page.waitForLoadState('networkidle');
         await expectNoHorizontalOverflow(page);
         await expectNoRawIds(page);

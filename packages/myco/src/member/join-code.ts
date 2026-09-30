@@ -23,6 +23,7 @@
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
+import { isIP } from 'node:net';
 import { getMachineId } from '../machine-id.js';
 import { resolveMachineIdPath } from '../paths/home.js';
 import { memberHomeFor } from './home-for-folder.js';
@@ -113,9 +114,24 @@ export type ExchangeResult =
  * and leaves it unspent so an operator can bind a Project and hand the same code
  * over.
  */
+/** The grammar the Deployment admits a runtime label in. */
+const RUNTIME_LABEL = /^[A-Za-z0-9._-]{1,64}$/;
+
+/**
+ * A host name as a runtime label: none for an IP address, else the first DNS label with accents folded to their base
+ * letters, each run of spaces a hyphen, characters outside the grammar dropped, and cut to 64. Undefined when no letter
+ * or digit is left, and the join then carries no label.
+ */
+export function runtimeLabelOf(hostname: string): string | undefined {
+  const host = hostname.trim();
+  if (isIP(host.replace(/^\[|\]$/g, '')) !== 0) return undefined;
+  const label = (host.split('.')[0] ?? '').normalize('NFKD').replace(/\p{M}/gu, '').replace(/\s+/g, '-').replace(/[^A-Za-z0-9._-]/g, '').slice(0, 64);
+  return RUNTIME_LABEL.test(label) && /[A-Za-z0-9]/.test(label) ? label : undefined;
+}
+
 export async function exchangeJoinCode(
   code: JoinCode,
-  opts: { fetch?: typeof fetch; machineId?: string; runtimeKind?: string; forProject?: boolean; timeoutMs?: number } = {},
+  opts: { fetch?: typeof fetch; machineId?: string; runtimeKind?: string; runtimeLabel?: string; forProject?: boolean; timeoutMs?: number } = {},
 ): Promise<ExchangeResult> {
   const fetchImpl = opts.fetch ?? globalThis.fetch;
   let response: Response;
@@ -130,6 +146,7 @@ export async function exchangeJoinCode(
         key: code.key,
         machineId: opts.machineId ?? getMachineId(),
         runtimeKind: opts.runtimeKind,
+        runtimeLabel: opts.runtimeLabel,
         forProject: opts.forProject === true ? true : undefined,
       }),
     });

@@ -34,6 +34,8 @@ export interface MemberRow {
   revokedBy: string | null;
   /** How many of this member's own runtimes authenticate now. Run credentials are counted under their purpose, not here. */
   liveCredentials: number;
+  /** Whether this member is the Deployment's own, the account the runs it starts sign in as, rather than a person. */
+  system: boolean;
 }
 
 export async function listMembers(db: RelationalStore, nowMs: number): Promise<MemberRow[]> {
@@ -52,7 +54,21 @@ export async function listMembers(db: RelationalStore, nowMs: number): Promise<M
     revokedAt: (r.revoked_at as number | null) ?? null,
     revokedBy: (r.revoked_by as string | null) ?? null,
     liveCredentials: Number(r.live_credentials),
+    system: r.id === HARNESS_MEMBER_ID,
   }));
+}
+
+/** A GitHub login as GitHub grants one: letters, digits and single hyphens, at most 39. */
+const GITHUB_LOGIN = /^[A-Za-z0-9](?:[A-Za-z0-9]|-(?=[A-Za-z0-9])){0,38}$/;
+
+/**
+ * Name a member after the GitHub login of the account linked to it, where the member has no name yet. A name an
+ * admin gave is never replaced. Answers the name written, or null when nothing was.
+ */
+export async function nameMemberFromLogin(db: RelationalStore, memberId: string, login: string): Promise<string | null> {
+  if (!GITHUB_LOGIN.test(login)) return null;
+  const row = await db.prepare(`UPDATE members SET label = ? WHERE id = ? AND label IS NULL RETURNING label`).bind(login, memberId).first<{ label: string }>();
+  return row?.label ?? null;
 }
 
 /** Reads the member role behind a credential within its caller's transaction. */

@@ -124,12 +124,9 @@ test.describe('admin pages, as the owner', () => {
         await expectNoRawIds(page);
         await expectAxeClean(page);
         if (name === 'health' && onFixture()) {
-          // A self-hosted server runs no automatic recovery and answers its read with 400, which the page reads as unavailable.
+          // A self-hosted server runs no automatic recovery and says so in its answer, which the page reads as unavailable
+          // without any request failing.
           await expect(page.getByTestId('recovery-unavailable')).toBeVisible();
-          const noRecovery = (line: string) => /\/api\/recovery\/exports: 400$/.test(line);
-          expect(watch.failedRequests.filter(noRecovery)).toHaveLength(1);
-          watch.failedRequests = watch.failedRequests.filter((line) => !noRecovery(line));
-          watch.consoleErrors = watch.consoleErrors.filter((line) => !line.includes('status of 400'));
         }
         expectQuiet(watch);
         await shoot(page, `admin-${name}`, viewport, mode);

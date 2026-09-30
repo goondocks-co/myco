@@ -1,7 +1,8 @@
 import type { RelationalStore } from '../core/adapters.js';
 import { keyset, page, type Page, type ReadScope } from './scope.js';
 import { DISPATCH_ACTOR_SQL, getRun, isTerminalRunStatus, RUN_CALL_FAILED, RUN_TOOL_EVENT, type RunCallFailure } from '../core/runs.js';
-import { machineNamesOf, machineNamesStatement } from './capture.js';
+import { ownMachineNames } from './capture.js';
+import { HARNESS_MEMBER_ID } from '../constants.js';
 import { runOutcomeCounts, type RunOutcomeCounts } from './run-reads.js';
 import { readRunCloseEvidence, type RunCloseEvidence } from '../core/run-postconditions.js';
 import { contextValue } from '../db/run-context.js';
@@ -42,11 +43,15 @@ export interface RunListRow {
   /** The worker credential holding the run now; null once the run ends or returns to the queue, and for a run no worker took. */
   leasedBy: string | null;
   /**
-   * The worker that ran the run: the credential that held it last and the
-   * machine that credential names. It stays once the run ends, so which
-   * machine ran a run is read off the run; null for a run no worker holds or held.
+   * The worker that ran the run: the credential that held it last, the
+   * machine that credential names, and the member the credential belongs to. It
+   * stays once the run ends, so which machine ran a run is read off the run;
+   * null for a run no worker holds or held. The member is served to every
+   * viewer: a run is attributed to the person whose machine ran it. The
+   * machine's name is served to that member alone. A run Myco's own runtime ran
+   * (`HARNESS_MEMBER_ID`, the member `/api/members` marks `system`) names Myco.
    */
-  worker: { credentialId: string; machineId: string | null; machineName: string | null } | null;
+  worker: { credentialId: string; machineId: string | null; machineName: string | null; member: { id: string; label: string | null } | null } | null;
   /** When the held lease ends; null whenever the row names no holder. */
   leaseExpiresAt: number | null;
   /** Who started the run: the member who asked for it by hand, or the process that started it on its own (`clock`, `backfill`); null where the run names no one. */
@@ -139,6 +144,8 @@ const LIST_COLUMNS = `id, agent_id, task, status, provider, model, started_at, r
   ${contextValue('replaced')} AS replaced, ${contextValue('replaces')} AS replaces,
   harness, leased_by, lease_expires_at,
   (SELECT c.machine_id FROM member_credentials c WHERE c.id = agent_runs.leased_by) AS leased_machine,
+  (SELECT c.member_id FROM member_credentials c WHERE c.id = agent_runs.leased_by) AS leased_member,
+  (SELECT m.label FROM member_credentials c CROSS JOIN members m ON m.id = c.member_id WHERE c.id = agent_runs.leased_by) AS leased_member_label,
   ${DISPATCH_ACTOR_SQL} AS started_by, ${contextValue('session_id')} AS target_session_id,
   CASE WHEN status = 'skipped' THEN ${contextValue('reason')} END AS skip_reason`;
 
@@ -149,7 +156,19 @@ const text = (value: unknown): string | null => (value as string | null) ?? null
 const num = (value: unknown): number | null => (value as number | null) ?? null;
 const flag = (value: unknown): boolean => Number(value) === 1;
 
-function toListRow(row: Record<string, unknown>, machineNames: ReadonlyMap<string, string>): RunListRow {
+/** The worker that held a run: its member to anyone, and its machine named from `ownNames`, the viewer's own machines alone. */
+function workerOf(row: Record<string, unknown>, ownNames: ReadonlyMap<string, string>): NonNullable<RunListRow['worker']> {
+  const machineId = text(row.leased_machine);
+  const memberId = text(row.leased_member);
+  return {
+    credentialId: row.leased_by as string,
+    machineId,
+    machineName: machineId === null ? null : ownNames.get(machineId) ?? null,
+    member: memberId === null ? null : { id: memberId, label: memberId === HARNESS_MEMBER_ID ? 'Myco' : text(row.leased_member_label) },
+  };
+}
+
+function toListRow(row: Record<string, unknown>, ownNames: ReadonlyMap<string, string>): RunListRow {
   // Terminal runs have no current worker lease.
   const ended = isTerminalRunStatus(row.status);
   return {
@@ -176,11 +195,7 @@ function toListRow(row: Record<string, unknown>, machineNames: ReadonlyMap<strin
     replaces: text(row.replaces),
     harness: text(row.harness),
     leasedBy: ended ? null : text(row.leased_by),
-    worker: row.leased_by == null ? null : {
-      credentialId: row.leased_by as string,
-      machineId: text(row.leased_machine),
-      machineName: row.leased_machine == null ? null : machineNames.get(row.leased_machine as string) ?? null,
-    },
+    worker: row.leased_by == null ? null : workerOf(row, ownNames),
     leaseExpiresAt: ended ? null : num(row.lease_expires_at),
     startedBy: text(row.started_by),
     targetSessionId: text(row.target_session_id),
@@ -188,9 +203,9 @@ function toListRow(row: Record<string, unknown>, machineNames: ReadonlyMap<strin
   };
 }
 
-function toDetailRow(row: Record<string, unknown>, machineNames: ReadonlyMap<string, string>): RunDetailRow {
+function toDetailRow(row: Record<string, unknown>, ownNames: ReadonlyMap<string, string>): RunDetailRow {
   return {
-    ...toListRow(row, machineNames),
+    ...toListRow(row, ownNames),
     instruction: text(row.instruction),
     sessionRef: text(row.session_ref),
     actualCostUsd: num(row.actual_cost_usd),
@@ -250,7 +265,7 @@ export function phasesOf(raw: string | null): PhaseRow[] | null {
  * A project's runs, newest first, one page at a time; `status` and `task` narrow the set before the cursor applies.
  * Each row carries what it came to, read for the page in one more round trip, and its machine's name as of `nowMs`.
  */
-export async function listRuns(db: RelationalStore, scope: ReadScope, nowMs: number, opts: RunFilters = {}): Promise<Page<RunPageRow>> {
+export async function listRuns(db: RelationalStore, scope: ReadScope, nowMs: number, viewerId: string, opts: RunFilters = {}): Promise<Page<RunPageRow>> {
   // A run that waited keeps the place it took when it queued, launched or not: the instant it entered the list never moves under a reader paging through it.
   const k = keyset(opts, { order: 'COALESCE(queued_at, started_at)', id: 'id', direction: 'DESC' });
   if (k === null) return { rows: [], cursor: null };
@@ -266,12 +281,11 @@ export async function listRuns(db: RelationalStore, scope: ReadScope, nowMs: num
     .all<Record<string, unknown>>();
   const listed = page(results, k.limit, (r) => ({ createdAt: num(r.queued_at) ?? num(r.started_at) ?? 0, id: r.id as string }));
   const outcome = runOutcomeCounts(db, scope, listed.rows.map((r) => r.id as string));
-  const [names, ...counts] = await db.batch([machineNamesStatement(db, nowMs), ...outcome.statements]);
-  const machineNames = machineNamesOf(names!.results);
+  const [counts, ownNames] = await Promise.all([db.batch(outcome.statements), ownMachineNames(db, viewerId, nowMs)]);
   const outcomes = outcome.read(counts);
   return {
     cursor: listed.cursor,
-    rows: listed.rows.map((r) => ({ ...toListRow(r, machineNames), outcome: outcomes.get(r.id as string)! })),
+    rows: listed.rows.map((r) => ({ ...toListRow(r, ownNames), outcome: outcomes.get(r.id as string)! })),
   };
 }
 
@@ -329,16 +343,15 @@ export async function runToolCalls(db: RelationalStore, scope: ReadScope, runId:
 }
 
 /** One run inside the scope with its phases and the calls it made, its machine named as of `nowMs`, or null — including when the run exists under another project. */
-export async function getRunDetail(db: RelationalStore, scope: ReadScope, runId: string, nowMs: number): Promise<RunDetail | null> {
-  const [found, names] = await db.batch([
+export async function getRunDetail(db: RelationalStore, scope: ReadScope, runId: string, nowMs: number, viewerId: string): Promise<RunDetail | null> {
+  const [[found], ownNames] = await Promise.all([db.batch([
     db.prepare(`SELECT ${DETAIL_COLUMNS} FROM agent_runs WHERE project_id = ? AND id = ?`).bind(scope.projectId, runId),
-    machineNamesStatement(db, nowMs),
-  ]);
+  ]), ownMachineNames(db, viewerId, nowMs)]);
   const row = (found!.results[0] ?? null) as Record<string, unknown> | null;
   if (row === null) return null;
   const run = await getRun(db, scope, runId);
   return {
-    run: toDetailRow(row, machineNamesOf(names!.results)), phases: phasesOf(text(row.checkpoints)), toolCalls: await runToolCalls(db, scope, runId),
+    run: toDetailRow(row, ownNames), phases: phasesOf(text(row.checkpoints)), toolCalls: await runToolCalls(db, scope, runId),
     outcomeEvidence: run === null ? null : await readRunCloseEvidence(db, scope, run),
   };
 }

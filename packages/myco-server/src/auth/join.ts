@@ -81,7 +81,7 @@ export async function handleJoin(env: ServerEnv, request: Request, now: number):
 
   const statements = [
     ensureMemberStatement(env.db, memberId, now, invitation?.role ?? 'member', admitted),
-    claimMachineIdentityStatement(env.db, machineId, memberId, now, admitted),
+    claimMachineIdentityStatement(env.db, machineId, memberId, now, admitted, runtime.runtimeLabel),
     credential,
     spendStatement(env.db, admission, now, machineId, minted),
     // Only a committed credential advances the activity clock.

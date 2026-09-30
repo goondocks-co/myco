@@ -3,8 +3,8 @@
  *
  * The one writer and the one reader of `worker_contacts`. The claim records
  * contact whatever it answers, a lease renewal refreshes the liveness of the
- * report already held, and the fleet read joins both against the leases that
- * decide busy.
+ * report already held, the fleet read joins both against the leases that
+ * decide busy, and the machine read takes each machine's newest report.
  *
  * It holds only what the claim already carries: the harnesses a worker reports,
  * whether it reports each logged in, the capabilities it names, and the outcome
@@ -15,7 +15,7 @@
  * into one worker, and stores no token, no credential environment and no part
  * of a request body beyond those parsed fields.
  */
-import type { RelationalStore } from './adapters.js';
+import type { PreparedStatement, RelationalStore } from './adapters.js';
 import { WORKER_HEARTBEAT_MS, WORKER_LEASE_MS } from '../constants.js';
 import { asMemberRole, isAdmin } from '../auth/roles.js';
 
@@ -226,6 +226,44 @@ export async function readWorkerFleet(db: RelationalStore, now: number): Promise
       recent: lastSeenAt > 0 && now - lastSeenAt <= CONTACT_RECENT_MS,
     };
   });
+}
+
+/** A machine's newest worker report, and the latest run its worker started. */
+export interface MachineContact {
+  /** The harnesses the newest report offered. */
+  offers: ReportedHarness[] | null;
+  lastSeenAt: number;
+  /** When a run leased by any credential the machine reported from last started; null when none has. */
+  lastRunAt: number | null;
+}
+
+/**
+ * Every worker report with the machine it came from, newest first: the machine the worker named, or else the one its
+ * credential joined as. Each carries the latest start of a run its credential leased, sought down the lease index by
+ * that one credential; the index is named, as statistics that see every run unleased would walk the runs instead.
+ */
+export function machineContactsStatement(db: RelationalStore): PreparedStatement {
+  return db.prepare(
+    `SELECT COALESCE(w.machine_id, c.machine_id) AS machine_id, w.offers, w.last_seen_at,
+            (SELECT MAX(r.started_at) FROM agent_runs r INDEXED BY idx_agent_runs_lease WHERE r.leased_by = w.credential_id) AS last_run_at
+       FROM worker_contacts w
+      CROSS JOIN member_credentials c ON c.id = w.credential_id
+      ORDER BY w.last_seen_at DESC`,
+  );
+}
+
+/** Each machine's newest report, and its latest run across every report, from what `machineContactsStatement` answers. */
+export function machineContactsOf(rows: readonly unknown[]): Map<string, MachineContact> {
+  const contacts = new Map<string, MachineContact>();
+  for (const row of rows as Record<string, unknown>[]) {
+    if (row.machine_id == null) continue;
+    const machineId = String(row.machine_id);
+    const run = row.last_run_at == null ? null : Number(row.last_run_at);
+    const held = contacts.get(machineId);
+    if (held === undefined) contacts.set(machineId, { offers: parseOffers(row.offers), lastSeenAt: Number(row.last_seen_at), lastRunAt: run });
+    else if (run !== null && (held.lastRunAt === null || run > held.lastRunAt)) held.lastRunAt = run;
+  }
+  return contacts;
 }
 
 /** The latest instant any worker reported in, or null when none ever has. */

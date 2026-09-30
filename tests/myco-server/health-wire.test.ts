@@ -15,6 +15,7 @@ import type { MaintenanceCheckStatus, MaintenanceOutcome } from '../../packages/
 import type { TickReport } from '../../packages/myco-server/src/core/tick.ts';
 import type { RecoverySchedule } from '../../packages/myco-server/src/core/recovery-schedule.ts';
 import type { RecoveryProducerStatus } from '../../packages/myco-server/src/core/recovery-producer.ts';
+import type { RecoveryUnsupportedAnswer } from '../../packages/myco-server/src/api/recovery.ts';
 
 /** True only when each type is assignable to the other. */
 type Same<A, B> = [A] extends [B] ? ([B] extends [A] ? true : false) : false;
@@ -25,8 +26,8 @@ type Reads<Server, Dashboard> = [Server] extends [Dashboard] ? true : false;
 type PreviewAnswer = NonNullable<Awaited<ReturnType<typeof previewRestore>>>;
 /** `POST /api/backups/{id}/restore`: the body `handleRestoreBackup` answers. */
 type RestoreAnswer = { applied: true } & RestoreOutcome;
-/** `GET /api/recovery/exports`: the producer's status with the schedule, or that it could not be read. */
-type RecoveryAnswer = RecoveryProducerStatus & { recoverable: false; schedule: RecoverySchedule | { unreadable: string } };
+/** `GET /api/recovery/exports`: the producer's status with the schedule, or that it could not be read; or that the Deployment runs no producer. */
+type RecoveryAnswer = (RecoveryProducerStatus & { supported: true; recoverable: false; schedule: RecoverySchedule | { unreadable: string } }) | RecoveryUnsupportedAnswer;
 
 const SAME: [
   Same<Ui.KpiReport, KpiReport>,
@@ -43,7 +44,8 @@ const READS: [
   Reads<TickReport, Ui.TickReport>,
   Reads<RecoverySchedule, Ui.RecoverySchedule>,
   Reads<RecoveryAnswer, Ui.RecoveryStatus>,
-] = [true, true, true, true, true, true, true, true, true, true];
+  Reads<RecoveryUnsupportedAnswer, Ui.RecoveryUnsupported>,
+] = [true, true, true, true, true, true, true, true, true, true, true];
 
 describe("Health's wire shapes", () => {
   it('are held to the server declarations by the tests typecheck', () => {

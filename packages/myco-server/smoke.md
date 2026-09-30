@@ -471,7 +471,7 @@ The shell is static build output carrying no vault data; every data path is Work
 
 | D8 | `GET /auth/me` (no cookie) | 401 |
 | D9 | sign in with a GitHub account no member is linked to | 302 `/`, session set; `/auth/me` → `member: null`; `/api/projects` → 401; the shell shows "isn't connected to a member yet" |
-| D10 | with the owner signed in: `myco member link-github` on another joined machine; then Members → Connect GitHub for that machine's member, open the link signed in as the D9 account, confirm | the CLI says only an admin can link it now and prints no link (`link_requires_admin`); the page names the member; after confirm `/auth/me` → the member; `/api/projects` → 200 |
+| D10 | with the owner signed in: `myco member link-github` on another joined machine; then People & machines → Connect GitHub for that machine's member, open the link signed in as the D9 account, confirm | the CLI says only an admin can link it now and prints no link (`link_requires_admin`); the page names the member; after confirm `/auth/me` → the member; `/api/projects` → 200 |
 | D10a | on a fresh Deployment (no admin linked): `myco member link-github`, open the link, confirm | the page names the member; after confirm that account signs in, and a second `myco member link-github` from any machine is refused |
 | D11 | the same link opened again | "expired or was already used" |
 

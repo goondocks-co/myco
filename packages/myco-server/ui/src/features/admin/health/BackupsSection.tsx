@@ -8,7 +8,7 @@ import { cn } from '../../../lib/cn';
 import { HEALTH_ANCHORS, SETTINGS_SECTIONS } from '../../../routes/nav';
 import { AdminSection, RowCard } from '../AdminFrame';
 import {
-  attemptWords, availableWords, backupDate, cadenceWords, countsWords, latestWords, RECOVERY_UNAVAILABLE_WORDS, sizeLabel, unsupported, whenLabel,
+  attemptWords, availableWords, backupDate, cadenceWords, countsWords, latestWords, RECOVERY_UNAVAILABLE_WORDS, sizeLabel, whenLabel,
 } from './words';
 
 const RECOVERY_PROCEDURE = 'https://github.com/goondocks-co/myco/blob/main/docs/architecture/deployment-recovery.md';
@@ -131,21 +131,24 @@ function RecoveryCard() {
   const recovery = useRecovery();
   // Read at each render: a deadline is weighed against the clock when the answer arrives, not when the page opened.
   const now = Date.now();
-  const held = recovery.data?.schedule ?? null;
+  // A Deployment with no producer says so in its answer, and nothing about attempts or a schedule follows.
+  const unsupportedHere = recovery.data?.supported === false;
+  const producer = recovery.data?.supported === true ? recovery.data : null;
+  const held = producer?.schedule ?? null;
   const schedule = held !== null && 'unreadable' in held ? null : held;
   const unreadable = held !== null && 'unreadable' in held ? held.unreadable : null;
   // The producer's answer stands on its own: an unreadable schedule hides the cadence, not the attempt.
-  const attempt = recovery.data?.attempt ?? null;
-  const stage = recovery.data?.stage ?? null;
-  const form = recovery.data?.form ?? 'staging';
+  const attempt = producer?.attempt ?? null;
+  const stage = producer?.stage ?? null;
+  const form = producer?.form ?? 'staging';
   return (
     <Card className="flex flex-col gap-s3" data-health-recovery="">
       <h3 className="t-h3 text-ink">Automatic recovery</h3>
       {recovery.isPending && <LoadingState label="Reading automatic recovery" count={1} />}
-      {recovery.error !== null && unsupported(recovery.error) && (
+      {unsupportedHere && (
         <p className="t-body text-muted" data-testid="recovery-unavailable">{RECOVERY_UNAVAILABLE_WORDS}</p>
       )}
-      {recovery.error !== null && !unsupported(recovery.error) && (
+      {recovery.error !== null && (
         <p className="t-body text-warn" data-testid="recovery-unreadable">Automatic recovery could not be read: {recovery.error.message}</p>
       )}
       {unreadable !== null && (
@@ -154,7 +157,7 @@ function RecoveryCard() {
           <p className="t-body text-muted" data-testid="recovery-latest">{attemptWords(attempt, stage, form)}</p>
         </>
       )}
-      {recovery.data?.error === 'export_unsettled' && <ForgetUnsettledExport forgettableAt={recovery.data.unsettledExport?.forgettableAt ?? null} now={now} />}
+      {producer?.error === 'export_unsettled' && <ForgetUnsettledExport forgettableAt={producer.unsettledExport?.forgettableAt ?? null} now={now} />}
       {schedule !== null && (
         <>
           <p className="t-body text-ink" data-testid="recovery-cadence">{cadenceWords(schedule, now)}</p>

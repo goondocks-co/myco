@@ -20,7 +20,7 @@
  * id, a run id or a grant id. `writerOf` answers both for the handlers that
  * write.
  */
-import { USER_AGENT_ID } from '../constants.js';
+import { HARNESS_MEMBER_ID, USER_AGENT_ID } from '../constants.js';
 import type { ServerEnv } from '../core/adapters.js';
 import type { GrantContext, RouteContext, RunContext } from '../context.js';
 import type { ReadScope } from '../read/scope.js';
@@ -168,6 +168,17 @@ export function principalFields(ctx: Pick<ToolContext, 'principal'>): Record<str
   if (p.kind === 'member') return { memberId: p.memberId, tokenId: p.tokenId };
   if (p.kind === 'run') return { runId: p.runId, tokenId: p.tokenId };
   return { grantId: p.grantId };
+}
+
+/**
+ * Whose machines a principal is shown by name: a member's own; a run's, which are Myco's (`HARNESS_MEMBER_ID`); and a
+ * grant's, which are none. Any other machine is shown as the member it belongs to.
+ */
+export function viewerOf(ctx: Pick<ToolContext, 'principal'>): string {
+  const p = ctx.principal;
+  if (p.kind === 'member') return p.memberId;
+  if (p.kind === 'run') return HARNESS_MEMBER_ID;
+  return `grant:${p.grantId}`;
 }
 
 /** The one Project a principal is bound to — a run's, a grant's — or null for a member, whose credential spans the Deployment. */

@@ -23,6 +23,7 @@ import { classify, emit } from '../telemetry.js';
  * what deletion would have freed until the operator's artifact completes or it gives the attempt up.
  */
 const answer = (status: RecoveryProducerStatus, operatorHold: OperatorHoldReport, schedule: ScheduleReport): Response => ok({
+  supported: true,
   ...status,
   recoverable: false,
   usable: status.form === 'artifact'
@@ -40,10 +41,17 @@ const answer = (status: RecoveryProducerStatus, operatorHold: OperatorHoldReport
  */
 type ScheduleReport = RecoverySchedule | { unreadable: string };
 
+/** `GET /api/recovery/exports` on a Deployment that runs no producer: that it runs none, beside the schedule. */
+export interface RecoveryUnsupportedAnswer {
+  supported: false;
+  reason: string;
+  schedule: ScheduleReport;
+}
+
 /** How long the schedule read may take before the answer says it is unreadable. */
 const SCHEDULE_MS = 5_000;
 
-const scheduleOf = async (env: ServerEnv, now: number, status: RecoveryProducerStatus): Promise<ScheduleReport> => {
+const scheduleOf = async (env: ServerEnv, now: number, status?: RecoveryProducerStatus): Promise<ScheduleReport> => {
   try {
     return await within(() => recoveryScheduleOf(env, now, status), SCHEDULE_MS, Date.now);
   } catch (error) {
@@ -148,7 +156,11 @@ export async function handleForgetUnsettledExport(env: ServerEnv, ctx: OwnerCont
  * those bytes, and a later legitimate migration must never invalidate a snapshot that is whole as taken.
  */
 export async function handleRecoveryExportStatus(env: ServerEnv, ctx: OwnerContext): Promise<Response> {
-  if (env.recovery === undefined) return unavailable();
+  // A Deployment with no producer is a fact the status reports, not a request refused: the schedule says the same.
+  if (env.recovery === undefined) {
+    const unsupported: RecoveryUnsupportedAnswer = { supported: false, reason: 'this Deployment runs no hosted recovery producer', schedule: await scheduleOf(env, ctx.now) };
+    return ok(unsupported);
+  }
   const status = await env.recovery.status();
   return answer(status, await operatorHoldOf(env), await scheduleOf(env, ctx.now, status));
 }

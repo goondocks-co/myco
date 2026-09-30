@@ -159,8 +159,12 @@ export interface RecoverySchedule {
   idleBecause: string | null;
 }
 
-/** `GET /api/recovery/exports`. */
-export interface RecoveryStatus {
+/** `GET /api/recovery/exports`: what the producer is doing, or that this Deployment runs none. */
+export type RecoveryStatus = RecoveryProducerStatus | RecoveryUnsupported;
+
+/** `GET /api/recovery/exports` on a Deployment that runs a producer. */
+export interface RecoveryProducerStatus {
+  supported: true;
   attempt: number | null;
   stage: string;
   /** What this Deployment's producer produces, which decides what a complete attempt may be called. */
@@ -170,6 +174,13 @@ export interface RecoveryStatus {
   /** An export an attempt requested and never saw settle, and from when it may be forgotten. */
   unsettledExport?: { attempt: number; forgettableAt: number };
   /** The schedule, or that this Deployment's settings could not be read while an export pauses its database. */
+  schedule: RecoverySchedule | { unreadable: string };
+}
+
+/** `GET /api/recovery/exports` on a Deployment that runs no producer: said plainly, beside the schedule. */
+export interface RecoveryUnsupported {
+  supported: false;
+  reason: string;
   schedule: RecoverySchedule | { unreadable: string };
 }
 

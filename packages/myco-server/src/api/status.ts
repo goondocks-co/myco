@@ -13,6 +13,8 @@ import { workerLiveness } from '../core/runs.js';
 import { CONTACT_RECENT_MS, readWorkerFleet, type WorkerFleetRow } from '../core/worker-contacts.js';
 import { ok } from './scope.js';
 import { captureRecency, type CaptureRow } from '../read/capture.js';
+import { machinesOf } from '../read/machines.js';
+import { isAdmin } from '../auth/roles.js';
 
 /**
  * What this Deployment can do, in the product's vocabulary.
@@ -65,12 +67,16 @@ export async function handleStatus(env: ServerEnv, ctx: OwnerContext): Promise<R
   let found: number | null = null;
   let projects: Awaited<ReturnType<typeof listVisibleProjects>> = [];
   let transcriptBacklog: TranscriptBacklog | null = null;
+  let own: Set<string> | null = null;
   try {
     found = await schemaVersion(env.db);
     // The same count the tick reads to decide how awake the Deployment stays.
     transcriptBacklog = await pendingTranscripts(env.db);
+    // A member reads their own machines alone; `own` is null for an admin, who reads every one.
+    own = isAdmin(ctx.member.role) ? null : await machinesOf(env.db, ctx.member.id);
     const counts = await workerLiveness(env.db, ctx.now);
-    workers = { available: true, ...counts, recentWithinMs: CONTACT_RECENT_MS, fleet: await readWorkerFleet(env.db, ctx.now) };
+    const fleet = await readWorkerFleet(env.db, ctx.now);
+    workers = { available: true, ...counts, recentWithinMs: CONTACT_RECENT_MS, fleet: own === null ? fleet : fleet.filter((row) => row.machineId !== null && own!.has(row.machineId)) };
     projects = await listVisibleProjects(env.db, ctx.member, { includeArchived: true });
   } catch {
     return ok({ schema: schemaCheck(null), target, capabilities, workers, projects: [], capture: [], unavailable: ['capture'] });
@@ -79,7 +85,8 @@ export async function handleStatus(env: ServerEnv, ctx: OwnerContext): Promise<R
   let capture: CaptureRow[] = [];
   const unavailable: string[] = [];
   try {
-    capture = await captureRecency(env.db, ctx.now);
+    const recent = await captureRecency(env.db, ctx.now, ctx.member.id);
+    capture = own === null ? recent : recent.filter((row) => own!.has(row.machineId));
   } catch {
     unavailable.push('capture');
   }
@@ -90,12 +97,15 @@ export async function handleStatus(env: ServerEnv, ctx: OwnerContext): Promise<R
     // What a capability list cannot answer: whether the queue is moving, and
     // which workers are attached. A capability is this server's own runtime
     // configuration; a worker attaches from elsewhere, and the two are reported
-    // apart. `fleet` carries what each worker last reported about itself.
+    // apart. `fleet` carries what each worker last reported about itself: every
+    // worker to an admin, and those on a member's own machines to a member.
     workers,
     // Transcripts stored and not yet read into sessions: how many, and the bytes they have left.
     transcriptBacklog,
     projects: projects.map((p) => ({ projectId: p.projectId, lastActivityAt: p.lastActivityAt, sessionCount: p.sessionCount, archivedAt: p.archivedAt })),
-    // When each machine's agents last sent anything, over the last `CAPTURE_WINDOW_MS`, most recent first.
+    // When each machine's agents last sent anything, over the last `CAPTURE_WINDOW_MS`, most recent first: every
+    // machine to an admin, and a member's own to a member. A machine is named to the member it belongs to alone, and
+    // shown to anyone else as that member.
     capture,
     // The facts above that could not be read, so their absence says nothing.
     unavailable,

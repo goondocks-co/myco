@@ -11,7 +11,7 @@ export interface CredentialRow {
   /** The member this credential belongs to. */
   memberId: string;
   machineId: string | null;
-  /** The name the runtime gave itself when it joined, or null when it gave none. */
+  /** The name of the machine the credential belongs to: the machine's own, else the name the runtime gave when it joined; null when neither holds one. */
   runtimeLabel: string | null;
   expiresAt: number;
   revokedAt: number | null;
@@ -58,7 +58,8 @@ export async function listCredentials(
   }
   if (k.where !== '') conditions.push(k.where);
   const { results } = await db
-    .prepare(`SELECT id, member_id, machine_id, runtime_label, expires_at, revoked_at, revoked_by, bytes_written, predecessor_id, lineage_root, lineage_started_at, first_used_at,
+    .prepare(`SELECT id, member_id, machine_id,
+                     COALESCE((SELECT mc.label FROM machine_claims mc WHERE mc.machine_id = member_credentials.machine_id), runtime_label) AS runtime_label, expires_at, revoked_at, revoked_by, bytes_written, predecessor_id, lineage_root, lineage_started_at, first_used_at,
                      (${credentialLive()}) AS live, (${runCredential()}) AS run_credential
                 FROM member_credentials ${conditions.length === 0 ? '' : `WHERE ${conditions.join(' AND ')}`} ORDER BY lineage_started_at DESC, id DESC LIMIT ?`)
     .bind(nowMs, HARNESS_MEMBER_ID, ...params, ...k.params, limit + 1)

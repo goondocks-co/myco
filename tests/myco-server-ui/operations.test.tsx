@@ -160,7 +160,7 @@ describe('housekeeping on Health', () => {
  */
 describe('automatic recovery on Health', () => {
   const RECOVERY = (schedule: Record<string, unknown>) => ({
-    attempt: schedule.latest === null ? null : 1, stage: 'idle', recoverable: false, schedule,
+    supported: true, attempt: schedule.latest === null ? null : 1, stage: 'idle', recoverable: false, schedule,
   });
   const recoveryBase = { supported: true, configured: true, ready: true, intervalHours: 6, dueAt: null, due: false, latest: null, available: { state: 'none' }, idleBecause: null };
 
@@ -191,9 +191,11 @@ describe('automatic recovery on Health', () => {
     expect((await screen.findByTestId('recovery-cadence')).textContent).toContain('Automatic recovery is off');
     cleanup();
 
-    server({ '/api/recovery/exports': () => Response.json({ error: 'bad_request', reason: 'this Deployment runs no hosted recovery producer' }, { status: 400 }) });
+    // A Deployment that runs no producer says so in a 200, and nothing about attempts or a schedule follows.
+    server({ '/api/recovery/exports': () => Response.json({ supported: false, reason: 'this Deployment runs no hosted recovery producer', schedule: { ...recoveryBase, supported: false, configured: false } }) });
     mount();
     expect((await screen.findByTestId('recovery-unavailable')).textContent).toContain('Automatic recovery doesn’t run on this server');
+    for (const id of ['recovery-cadence', 'recovery-latest', 'recovery-available', 'recovery-unreadable']) expect(screen.queryByTestId(id)).toBeNull();
   });
 
   it('shows a failed attempt as failed, with the producer\'s own reason', async () => {
@@ -261,7 +263,7 @@ describe('automatic recovery on Health', () => {
   it('shows an unreadable schedule beside the attempt the producer did answer', async () => {
     server({
       '/api/recovery/exports': () => Response.json({
-        attempt: 7, stage: 'export', recoverable: false,
+        supported: true, attempt: 7, stage: 'export', recoverable: false,
         schedule: { unreadable: 'whether automatic recovery is configured could not be read; a running export pauses its database' },
       }),
     });
@@ -304,7 +306,7 @@ describe('automatic recovery on Health', () => {
     const at = '/home/.myco/server/local-recovery/dep_1/1789750654766';
     server({
       '/api/recovery/exports': () => Response.json({
-        attempt: 1789750654766, stage: 'complete', form: 'artifact', recoverable: false,
+        supported: true, attempt: 1789750654766, stage: 'complete', form: 'artifact', recoverable: false,
         schedule: {
           ...recoveryBase, intervalHours: 24, dueAt: startedAt + 86_400_000,
           latest: { attempt: 1789750654766, stage: 'complete', startedAt, failure: null },

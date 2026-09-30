@@ -5,7 +5,7 @@
  */
 import { listReports } from '../../core/runs.js';
 import { getRunDetail, listRuns } from '../../read/runs.js';
-import { failure, scopeOf, type ToolContext } from '../context.js';
+import { failure, scopeOf, viewerOf, type ToolContext } from '../context.js';
 import { snake } from '../shape.js';
 import type { ToolInput } from '../validate.js';
 
@@ -20,7 +20,7 @@ export async function handleAgent(input: ToolInput, ctx: ToolContext): Promise<u
   if (op === 'run') {
     const id = str(input.id);
     if (id === undefined) return { ok: false, op, error: 'id is required for op: run' };
-    const detail = await getRunDetail(db, scope, id, ctx.now);
+    const detail = await getRunDetail(db, scope, id, ctx.now, viewerOf(ctx));
     if (detail === null) return { ok: false, op, error: 'run not found' };
     return { ok: true, op, data: {
       run: snake(detail.run), phases: detail.phases === null ? null : snake(detail.phases),
@@ -29,6 +29,6 @@ export async function handleAgent(input: ToolInput, ctx: ToolContext): Promise<u
     } };
   }
 
-  const page = await listRuns(db, scope, ctx.now, { task: str(input.task), agentId: str(input.agent_id), limit: typeof input.limit === 'number' ? input.limit : 50 });
+  const page = await listRuns(db, scope, ctx.now, viewerOf(ctx), { task: str(input.task), agentId: str(input.agent_id), limit: typeof input.limit === 'number' ? input.limit : 50 });
   return { ok: true, op, data: { runs: snake(page.rows), cursor: page.cursor } };
 }
