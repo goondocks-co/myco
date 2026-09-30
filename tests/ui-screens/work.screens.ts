@@ -49,7 +49,9 @@ async function expectFixtureWeek(page: Page, role: 'admin' | 'member'): Promise<
   const runs = learn.getByRole('list', { name: 'Latest learning runs' });
   await expect(runs.locator('[data-run-line="held"]')).toContainText('Held off: it was switched off for this project');
   await expect(runs).toContainText(role === 'member' ? 'by you' : 'by a member');
-  await expect(runs).toContainText('Ada’s studio Mac');
+  // A machine is named only to its own member and to an admin; an unnamed one is never guessed at.
+  if (role === 'admin') await expect(runs).toContainText('Ada’s studio Mac');
+  await expect(page.locator('main')).not.toContainText(/\bA machine\b/);
   await expect(learn.locator('[data-kept]')).toContainText('One run stopped early');
   await expect(learn.locator('[data-kept]')).toContainText('It kept the 2 spores it had saved, so there’s nothing to do.');
 
@@ -125,7 +127,7 @@ test.describe('Myco’s work', () => {
         await expect(technical.locator('[data-facts]')).toBeVisible();
         await expect(technical.getByRole('button', { name: 'Copy run id' })).toBeVisible();
         if (onFixture()) {
-          await expect(technical).toContainText('Ada’s studio Mac');
+          if (role === 'admin') await expect(technical).toContainText('Ada’s studio Mac');
           await expect(technical).toContainText('Codex');
           await expect(technical).toContainText('Not recorded for this run');
           await expect(technical).toContainText('The agent’s estimate, not a bill');

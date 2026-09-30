@@ -213,7 +213,8 @@ function TechnicalDetails({ answer, startedBy, took, now, reports }: {
   reports: RunDetailAnswer['reports'];
 }) {
   const { run, toolCalls } = answer;
-  const machine = run.worker === null ? null : run.worker.machineName ?? 'A machine';
+  // The server names a machine only to the member it belongs to (and to an admin); an unnamed one is never guessed at.
+  const machine = run.worker?.machineName ?? null;
   const agent = run.harness === null ? null : agentName(run.harness);
   const cost = run.costUsd ?? run.estimatedCostUsd ?? run.actualCostUsd;
   const tokens = run.tokensUsed === null ? null : `${tokenWords(run.tokensUsed)} tokens`;
@@ -224,7 +225,7 @@ function TechnicalDetails({ answer, startedBy, took, now, reports }: {
       <Disclosure summary={<span className="flex flex-wrap items-baseline gap-x-s3">Technical details{summary !== '' && <span className="t-meta font-normal text-muted">{summary}</span>}</span>}>
         <div className="flex flex-col gap-s4 pt-s2">
           <FactsPanel actions={<CopyButton value={run.id} label="Copy run id" variant="secondary" />}>
-            <FactRow term="Ran on">{machine ?? 'Not recorded'}</FactRow>
+            <FactRow term="Ran on">{machine ?? (run.worker === null ? 'Not recorded' : 'A member’s machine')}</FactRow>
             <FactRow term="Agent">{agent ?? 'Not recorded'}</FactRow>
             <FactRow term="Model">{run.model ?? 'Not recorded for this run'}</FactRow>
             <FactRow term="Started by">{startedBy === null ? 'Not recorded' : startedBy === 'On its schedule' ? 'Myco’s schedule' : capitalize(startedBy.replace(/^By /, ''))}</FactRow>

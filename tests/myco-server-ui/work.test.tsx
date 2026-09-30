@@ -204,6 +204,21 @@ describe('Myco’s work', () => {
     expect(rawIdsInPage()).toEqual([]);
   });
 
+  it('names a machine only when the server names it to this viewer, and never guesses at one it doesn’t', async () => {
+    const unnamed = Object.fromEntries(Object.entries(TASK_RUNS).map(([task, rows]) => [task, rows.map((row) => (row.worker === null ? row : { ...row, worker: { ...row.worker, machineName: null } }))]));
+    server(week({ who: MEMBER, taskRuns: unnamed }));
+    mount(`/p/${P}/work`);
+    const runs = await waitFor(() => within(card('learn')).getByRole('list', { name: 'Latest learning runs' }));
+    const lines = [...runs.querySelectorAll('li')];
+    await waitFor(() => expect(lines[2]!.textContent).toContain('by you'));
+    expect(lines[2]!.textContent).not.toContain('Ada’s studio Mac ·');
+    const failure = card('map').querySelector('[data-failure]') as HTMLElement;
+    expect(failure.textContent).toContain('repo.sha256 is absent from this checkout');
+    expect(failure.textContent).not.toContain('On ');
+    expect(document.querySelector('main')!.textContent).not.toMatch(/\bA machine\b|\ba machine\b/);
+    expect(rawIdsInPage()).toEqual([]);
+  });
+
   it('keeps the window, the outcome and the search in the URL, and reads the window it names', async () => {
     server(week());
     mount(`/p/${P}/work`);

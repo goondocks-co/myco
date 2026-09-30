@@ -126,6 +126,19 @@ describe('a run’s panel', () => {
     expect(rawIdsInPage()).toEqual([]);
   });
 
+  it('names the machine a run ran on only when the server names it to this viewer', async () => {
+    const run = { ...learning[2]!, worker: { credentialId: 'mt_studio01abcd', machineId: 'studio', machineName: null } };
+    server(routes({ who: MEMBER, detail: { [`/api/projects/${P}/runs/run_a2c4e6f801`]: () => Response.json({ ...READ_AND_WROTE, run: { ...READ_AND_WROTE.run, worker: run.worker } }) } }));
+    mount(`/p/${P}/work/runs/run_a2c4e6f801`);
+    const open = await panel();
+    await within(open).findByRole('heading', { level: 2 });
+    const technical = open.querySelector('[data-run-technical]') as HTMLElement;
+    expect(technical.textContent).toContain('Codex · 20K tokens · $0.50');
+    expect(technical.textContent).not.toContain('studio');
+    fireEvent.click(within(technical).getByRole('button', { name: /Technical details/ }));
+    expect(technical.querySelector('[data-facts]')!.textContent).toContain('Ran onA member’s machine');
+  });
+
   it('says a run with no record of its reads has none, never that it read nothing', async () => {
     server(routes({ detail: { [`/api/projects/${P}/runs/run_7d1e2f3a40`]: () => Response.json(runDetail(TASK_RUNS['title-summary']![0]!, {})) } }));
     mount(`/p/${P}/work/runs/run_7d1e2f3a40`);

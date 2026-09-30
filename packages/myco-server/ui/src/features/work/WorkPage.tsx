@@ -258,10 +258,8 @@ function KindCard({ summary, answer, projectId, projectName, window, bounds, liv
   const scopedRows = runs.data?.rows ?? [];
   const from = { from: `${location.pathname}${location.search}` };
   const headline = outcomeHeadline(kind, summary);
-  const machineOf = (id: string) => {
-    const row = scopedRows.find((candidate) => candidate.id === id);
-    return row?.worker === null || row === undefined ? null : row.worker.machineName ?? 'a machine';
-  };
+  // A machine is named only when the server names it to this viewer; otherwise the failure says nothing of where it ran.
+  const machineOf = (id: string) => scopedRows.find((candidate) => candidate.id === id)?.worker?.machineName ?? null;
   const lineItems: RunLineItem[] = projectId === null
     ? summary.listed.slice(0, RUNS_SHOWN).map((run) => workRunLine(run, now, projectName))
     : scopedRows.slice(0, RUNS_SHOWN).map((row) => pageRowLine(row, kind, projectId, now, name));
@@ -327,7 +325,7 @@ function workRunLine(run: WorkRun, now: number, projectName: (projectId: string)
   };
 }
 
-/** A run of the project's own list: when, what it came to, the machine it ran on and who started it. */
+/** A run of the project's own list: when, what it came to, the machine it ran on when the server names it to this viewer, and who started it. */
 function pageRowLine(row: RunPageRow, kind: OutcomeKind, projectId: string, now: number, name: (id: string) => string | null): RunLineItem {
   const at = row.completedAt ?? row.startedAt ?? row.queuedAt ?? now;
   const live = row.status === 'queued' || row.status === 'running' || row.status === 'claimed';
@@ -336,7 +334,7 @@ function pageRowLine(row: RunPageRow, kind: OutcomeKind, projectId: string, now:
     time: shortTime(at, now),
     at,
     words: runLineWords(kind, row, { ...row.outcome, maps: kind === 'map' && row.status === 'completed' ? 1 : 0 }),
-    where: row.worker === null ? null : row.worker.machineName ?? 'A machine',
+    where: row.worker?.machineName ?? null,
     by: startedByChip(row.startedBy, name),
     tone: row.status === 'failed' && row.outcome.spores === 0 ? 'bad' : row.status === 'skipped' ? 'held' : live ? 'live' : 'plain',
     to: runPath(projectId, row.id),
