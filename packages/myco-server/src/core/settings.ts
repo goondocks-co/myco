@@ -1,4 +1,4 @@
-import type { RelationalStore } from './adapters.js';
+import type { PreparedStatement, RelationalStore } from './adapters.js';
 import { planFolderRefusal } from '@goondocks/myco-shared/member-protocol';
 import { INSTRUCTIONS_TEMPLATE_MAX_BYTES, IMPORT_MAX_SESSIONS_MAX, IMPORT_WINDOW_DAYS_MAX } from '../constants.js';
 
@@ -320,6 +320,21 @@ export async function providerConfiguredFor(db: RelationalStore, taskName: strin
   } catch {
     return false;
   }
+}
+
+/**
+ * Every capability of `capabilities` a Project has turned on, for every Project or the one named, in one statement:
+ * the read `capabilityEnabled` makes of one Project, made once for the Deployment.
+ */
+export function enabledCapabilities(db: RelationalStore, capabilities: readonly ProjectCapability[], projectId?: string): {
+  statement: PreparedStatement;
+  read: (rows: ReadonlyArray<Record<string, unknown>>) => Array<{ projectId: string; capability: string }>;
+} {
+  const statement = db.prepare(
+    `SELECT project_id AS projectId, capability FROM project_capabilities
+      WHERE enabled = 1 AND capability IN (${capabilities.map(() => '?').join(', ')})${projectId === undefined ? '' : ' AND project_id = ?'}`,
+  ).bind(...capabilities, ...(projectId === undefined ? [] : [projectId]));
+  return { statement, read: (rows) => rows.map((row) => ({ projectId: String(row.projectId), capability: String(row.capability) })) };
 }
 
 export function settingsWriter(

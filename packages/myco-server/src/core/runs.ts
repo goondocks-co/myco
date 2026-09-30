@@ -26,7 +26,7 @@
 import { REPOSITORY_COMMIT_PATTERN, parseRepositoryCheckoutSpec, type RepositoryCheckoutSpec, type RepositoryPin } from '@goondocks/myco-shared/repository';
 import { parseMapSourcePin, type MapSourcePin } from '@goondocks/myco-shared/canopy';
 import type { DispatchLimits } from './limits.js';
-import type { RelationalStore } from './adapters.js';
+import type { PreparedStatement, RelationalStore } from './adapters.js';
 import { emit } from '../telemetry.js';
 import { inListChunks, type ReadScope } from '../read/scope.js';
 import { providerConfiguredFor, settingsWriter, type ProjectCapability } from './settings.js';
@@ -1356,8 +1356,51 @@ export async function markRecordedLaunch(db: RelationalStore, runId: string): Pr
 
 /** Unattributed legacy runs count conservatively against an actor's budget. */
 export const UNATTRIBUTED_DISPATCH_ACTOR = '';
-const ACTOR_FILTER_SQL = `AND (? IS NULL OR COALESCE(${DISPATCH_ACTOR_SQL}, ?) = ?)`;
+/** Whether an actor dispatched a run, or any actor where none is named. Bound as `actorParams`. */
+const ACTOR_MATCH_SQL = `(? IS NULL OR COALESCE(${DISPATCH_ACTOR_SQL}, ?) = ?)`;
+const ACTOR_FILTER_SQL = `AND ${ACTOR_MATCH_SQL}`;
 const actorParams = (actor?: string): Array<string | null> => [actor ?? null, actor ?? null, actor ?? null];
+
+/** What the clock's schedule reads of one Project's runs of one task. */
+export interface TaskRunFacts {
+  /** A run of the task is live: pending, running or queued, as `hasLiveTaskRun` reads it. */
+  live: boolean;
+  /** When the actor last entered one, as `lastTaskEntryAt` reads it. */
+  lastEntryAt: number | null;
+  /** The actor's entries from the window's start on, as `taskEntriesSince` counts them. */
+  entriesSince: number;
+}
+
+/** The key `taskRunFacts` answers a Project and task under. */
+export const taskFactsKey = (projectId: string, task: string): string => `${projectId}\u0000${task}`;
+
+/**
+ * `hasLiveTaskRun`, `lastTaskEntryAt` and `taskEntriesSince` for every Project (or the one named) and each of `tasks`,
+ * in one statement: the reads the clock's schedule makes of each Project, made once for the Deployment. It reads
+ * through the Project-and-task index by way of the Projects' own keys. A Project and task with no run answers no row,
+ * which reads as no live run and no entry at all.
+ */
+export function taskRunFacts(db: RelationalStore, tasks: readonly string[], sinceMs: number, actor: string, projectId?: string): {
+  statement: PreparedStatement;
+  read: (rows: ReadonlyArray<Record<string, unknown>>) => Map<string, TaskRunFacts>;
+} {
+  const statement = db.prepare(
+    `SELECT project_id AS projectId, task,
+            MAX(CASE WHEN ${IN_FLIGHT_RUN_STATUSES} THEN 1 ELSE 0 END) AS live,
+            MAX(CASE WHEN (status != 'skipped' OR run_context = ?) AND ${ACTOR_MATCH_SQL} THEN COALESCE(queued_at, started_at) END) AS lastEntryAt,
+            SUM(CASE WHEN status != 'skipped' AND COALESCE(${contextValue('replaced')}, 0) != 1
+                      AND COALESCE(queued_at, started_at) >= ? AND ${ACTOR_MATCH_SQL} THEN 1 ELSE 0 END) AS entriesSince
+       FROM agent_runs
+      WHERE project_id IN (SELECT project_id FROM projects${projectId === undefined ? '' : ' WHERE project_id = ?'})
+        AND task IN (${tasks.map(() => '?').join(', ')})
+      GROUP BY project_id, task`,
+  ).bind(skipContext(INPUT_UNCHANGED), ...actorParams(actor), sinceMs, ...actorParams(actor), ...(projectId === undefined ? [] : [projectId]), ...tasks);
+  const read = (rows: ReadonlyArray<Record<string, unknown>>): Map<string, TaskRunFacts> => new Map(rows.map((row) => [
+    taskFactsKey(String(row.projectId), String(row.task)),
+    { live: Number(row.live) === 1, lastEntryAt: row.lastEntryAt === null ? null : Number(row.lastEntryAt), entriesSince: Number(row.entriesSince ?? 0) },
+  ]));
+  return { statement, read };
+}
 
 /** The dispatch's persisted actor, including after the run leaves the queue. */
 export async function getDispatchActor(db: RelationalStore, scope: ReadScope, runId: string): Promise<string | null> {
