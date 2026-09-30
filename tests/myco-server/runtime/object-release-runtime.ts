@@ -48,7 +48,7 @@ const JOURNALED = 1600;
 
 /** A test entry around the product's own clock: it seeds rows and objects, wakes the clock, and reads state back. */
 const ENTRY = `
-import { DeploymentClock } from '${path.join(ROOT, 'packages/myco-server/src/platform/cloudflare/deployment-clock.ts')}';
+import { clockStub, DeploymentClock } from '${path.join(ROOT, 'packages/myco-server/src/platform/cloudflare/deployment-clock.ts')}';
 export { DeploymentClock };
 const json = (value) => Response.json(value);
 export default {
@@ -78,7 +78,7 @@ export default {
     if (url.pathname === '/wake') {
       // An owner's recent request is activity, so the wake runs at a depth where its jobs run.
       await env.MYCO_DB.prepare("INSERT OR REPLACE INTO schema_meta (key, value) VALUES ('last_request_at', ?)").bind(String(Date.now())).run();
-      const clock = env.CLOCK.get(env.CLOCK.idFromName('deployment'));
+      const clock = clockStub(env.CLOCK);
       // Wakes back to back, as a busy clock would, so a kill can land inside a drain pass.
       const times = Number(url.searchParams.get('times') ?? '1');
       const woke = [];

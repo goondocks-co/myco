@@ -15,6 +15,7 @@ import { SCHEMA_DDL } from '@myco-server-worker/db/schema.js';
 import { cloudflareSourceOf } from '@myco-server-worker/platform/cloudflare/source.js';
 import { sha256Hex } from '@myco-server-worker/hash.js';
 import { kindSpec } from '@myco-server-worker/ingest/kinds.js';
+import { CLOCK_NAME, RETIRED_CLOCK_NAMES } from '@myco-server-worker/platform/cloudflare/deployment-clock.js';
 import { createScanner, SyntaxKind } from 'typescript/unstable/ast';
 import { envelope as fixture, memberHeaders, sqliteEnv, uuid, PROTOCOL, count, RETIRED_BYTE_CEILING } from './helpers/fixtures.js';
 import { isDeploymentAccessPath } from './helpers/access-paths.js';
@@ -50,7 +51,7 @@ const sharedFiles = () =>
     !f.includes(`${join(SRC, 'platform')}/`) && !f.includes(`${join(SRC, 'entry')}/`) && f !== join(SRC, 'index.ts'));
 
 /** Every `emit` call across src; a call removed or added moves the total. */
-const EMIT_CALLS = 141;
+const EMIT_CALLS = 142;
 /** The one migrations directory: the emit script writes it, the rendered-steps gate verifies it, and wrangler.toml applies from it. */
 const MIGRATIONS_DIR = 'migrations';
 const K = SyntaxKind as unknown as Record<string, number>;
@@ -157,6 +158,25 @@ const withSource = (path: string, init: RequestInit = {}) =>
 
 const envelope = (over: Record<string, unknown> = {}) => JSON.stringify(fixture(over));
 const memberPost = (token: string, body: string) => new Request('https://s/events', { method: 'POST', headers: memberHeaders(token), body });
+
+describe('the clock is addressed by one name (#1510)', () => {
+  const CLOCK_MODULE = join(SRC, 'platform', 'cloudflare', 'deployment-clock.ts');
+  const NAME_MODULE = join(SRC, 'platform', 'cloudflare', 'clock-name.ts');
+  const clockNames = [CLOCK_NAME, ...RETIRED_CLOCK_NAMES];
+
+  it('names the clock nowhere but its own module, which alone addresses it', () => {
+    const naming = files(SRC).filter((f) => f !== CLOCK_MODULE && f !== NAME_MODULE && /\bCLOCK_NAME\b/.test(readFileSync(f, 'utf8')));
+    expect(naming).toEqual([]);
+    expect(readFileSync(CLOCK_MODULE, 'utf8').match(/idFromName\(CLOCK_NAME\)/g)?.length).toBe(2);
+  });
+
+  it('addresses no clock by a name written out, current or retired, in the source or its tests', () => {
+    const literal = /idFromName\(\s*(['"`])([^'"`]*)\1\s*\)/g;
+    const found = [...files(SRC), ...files(TESTS)].flatMap((f) =>
+      [...readFileSync(f, 'utf8').matchAll(literal)].filter((m) => clockNames.includes(m[2]!)).map((m) => `${f}: ${m[0]}`));
+    expect(found).toEqual([]);
+  });
+});
 
 describe('gates', () => {
   it('keeps the public set to exactly /health', () => {
