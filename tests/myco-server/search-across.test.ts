@@ -11,7 +11,7 @@ import { registerBlob } from './helpers/d1.js';
 import { MEMBER_SUB, OWNER_ENV, ownerCookie, seedMemberRoleAccount } from './helpers/owner.js';
 import worker from '@myco-server-worker/index.js';
 import { MAX_NAMED_PROJECTS } from '@myco-server-worker/read/scope.js';
-import { SEARCH_API_LIMIT, SEARCH_MAX_LIMIT } from '@myco-server-worker/read/search.js';
+import { SEARCH_API_LIMIT, SEARCH_MAX_LIMIT, searchAcross } from '@myco-server-worker/read/search.js';
 import { reconcileSearchIndex } from '@myco-server-worker/core/search-index.js';
 
 const NOW = 1_700_000_000_000;
@@ -143,6 +143,54 @@ describe('search across Projects', () => {
     expect(await h.hits('/api/search?q=deepneedle&project=proj_1')).toEqual([]);
     expect(await h.hits('/api/search?q=deepneedle&project=proj_3')).toEqual(['proj_3/prompt/pr_3']);
     expect((await h.get('/api/search?q=deepneedle')).body.coverage.pending_blobs).toBe(0);
+  });
+
+  it('previews each result from the text that matched it: an inline body, or the chunk of a spilled one', async () => {
+    const h = harness();
+    await h.blob('proj_1', 'body-1', `${'filler '.repeat(400)} spillneedle in the spilled body`);
+    h.prompt('proj_1', 'pr_spilled', null, 'body-1');
+    h.prompt('proj_2', 'pr_inline', 'spillneedle in an inline prompt');
+    while (await reconcileSearchIndex(h.fixture.db, h.fixture.bucket, 1000) > 0);
+    const byId = Object.fromEntries(((await h.get('/api/search?q=spillneedle&type=prompt')).body.results as any[]).map((r) => [r.id, r.preview]));
+    expect(byId.pr_spilled).toContain('spillneedle in the spilled body');
+    expect(byId.pr_inline).toContain('spillneedle in an inline prompt');
+  });
+
+  it('keeps each type\'s page in its statement, so snippets are read for that page alone', async () => {
+    const h = harness();
+    for (let i = 0; i < 30; i += 1) h.spore(i % 2 === 0 ? 'proj_1' : 'proj_2', `sp_${i}`, `cobalt ${i}`);
+    const returned: number[] = [];
+    const db = { ...h.fixture.db, prepare: (sql: string) => {
+      const statement = h.fixture.db.prepare(sql);
+      if (!/WITH candidates/.test(sql)) return statement;
+      const wrap = (st: typeof statement): typeof statement => ({ ...st, bind: (...v: unknown[]) => wrap(st.bind(...v)), all: async <T,>() => { const r = await st.all<T>(); returned.push(r.results.length); return r; } });
+      return wrap(statement);
+    } };
+    expect((await searchAcross(db, { all: true }, { query: 'cobalt', limit: 5 })).results).toHaveLength(5);
+    expect(returned.length).toBeGreaterThan(0);
+    expect(Math.max(...returned)).toBe(5);
+  });
+
+  it('breaks a tie of rank by Project: in the statement that keeps the page, and in the merge', async () => {
+    const h = harness();
+    h.session('proj_2', 's', 'cobalt tie');
+    h.session('proj_1', 's', 'cobalt tie');
+    const order = async (limit: number) => ((await h.get(`/api/search?q=cobalt&type=session&limit=${limit}`)).body.results as any[]).map((r) => [r.projectId, r.id, r.score]);
+    expect(await order(1)).toEqual([['proj_1', 's', 1]]);
+    expect(await order(2)).toEqual([['proj_1', 's', 1], ['proj_2', 's', 1]]);
+  });
+
+  it('refuses a query carrying a control character, across Projects and in one', async () => {
+    const h = harness();
+    h.spore('proj_1', 'sp_a', 'cobalt');
+    for (const q of ['cob%00alt', '%00', 'cobalt%1B', 'cobalt%7F']) {
+      for (const path of [`/api/search?q=${q}`, `/api/projects/proj_1/search?q=${q}`]) {
+        expect({ path, answer: await h.get(path) }).toEqual({ path, answer: { status: 400, body: { error: 'bad_request', reason: 'query must not contain control characters' } } });
+      }
+    }
+    // A tab or a line break is whitespace between terms.
+    expect((await h.get('/api/search?q=cobalt%09x%0Ay')).status).toBe(200);
+    expect((await h.get('/api/projects/proj_1/search?q=cobalt%0D%0A')).body.results.map((r: any) => r.id)).toEqual(['sp_a']);
   });
 
   it('is read by a member who is not an admin', async () => {

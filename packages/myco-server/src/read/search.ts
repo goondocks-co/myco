@@ -10,6 +10,8 @@ import { SEARCH_TYPES, SEARCH_API_LIMIT, SEARCH_MAX_LIMIT, SEARCH_PREVIEW_CHARS,
 import { getReleaseStatesAcross, getReleaseStatesForRecords, isReleaseNamespace, type ReleaseNamespace } from '../core/provenance.js';
 export * from './search-types.js';
 const SEARCH_MAX_TERMS = 16;
+/** Control characters a query may not carry: every C0 control but the tab and line breaks a pasted query splits on, and DEL. */
+const CONTROL_CHARACTERS = /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/;
 
 export class InvalidSearch extends Error {}
 
@@ -63,12 +65,13 @@ async function searchType(db: RelationalStore, reach: SearchReach, type: SearchT
   // The full-text match drives each branch, and `CROSS JOIN` holds that order: a planner free to choose may instead read
   // every row of the reach and evaluate the match once per row.
   const params: (string | number)[] = [terms[0], ...inReach.params];
-  const first = `SELECT d.rowid AS source_rowid, ${fts}.rank AS rank,
-    snippet(${fts}, -1, '', '', ' … ', 40) AS preview
+  // A candidate carries its rank, which branch matched it and the matched row, never its snippet: a snippet is read for
+  // the rows the page keeps, by matching that one row again.
+  const first = `SELECT d.rowid AS source_rowid, ${fts}.rank AS rank, 0 AS branch, ${fts}.rowid AS match_rowid
     FROM ${fts} CROSS JOIN ${s.table} d ON d.rowid = ${fts}.rowid
     WHERE ${fts} MATCH ? AND ${inReach.sql}`;
-  const blob = s.blob ? ` UNION ALL SELECT d.rowid AS source_rowid, search_blob_chunks_fts.rank AS rank,
-    snippet(search_blob_chunks_fts, 0, '', '', ' … ', 40) AS preview
+  const blob = s.blob ? ` UNION ALL SELECT d.rowid AS source_rowid, search_blob_chunks_fts.rank AS rank, 1 AS branch,
+    search_blob_chunks_fts.rowid AS match_rowid
     FROM search_blob_chunks_fts CROSS JOIN search_blob_chunks c ON c.rowid = search_blob_chunks_fts.rowid
     CROSS JOIN ${s.table} d ON d.project_id = c.project_id AND d.blob_key = c.blob_key
     WHERE search_blob_chunks_fts MATCH ? AND ${inReach.sql}` : '';
@@ -104,11 +107,21 @@ async function searchType(db: RelationalStore, reach: SearchReach, type: SearchT
     where.push(`EXISTS (SELECT 1 FROM knowledge_release_state k WHERE ${condition})`);
   }
   params.push(limit);
-  const rows = (await db.prepare(`WITH candidates AS MATERIALIZED (${first}${blob})
-    SELECT d.project_id, d.${s.id} AS id, ${s.title} AS title, candidates.preview, MIN(candidates.rank) AS rank,
+  // The page's snippets: each kept row's best match, matched again by its rowid in the branch that found it.
+  const ownSnippet = `(SELECT snippet(${fts}, -1, '', '', ' … ', 40) FROM ${fts} WHERE ${fts} MATCH ? AND ${fts}.rowid = kept.match_rowid)`;
+  const blobSnippet = `(SELECT snippet(search_blob_chunks_fts, 0, '', '', ' … ', 40) FROM search_blob_chunks_fts
+    WHERE search_blob_chunks_fts MATCH ? AND search_blob_chunks_fts.rowid = kept.match_rowid)`;
+  const preview = s.blob ? `CASE kept.branch WHEN 0 THEN ${ownSnippet} ELSE ${blobSnippet} END` : ownSnippet;
+  params.push(terms[0]);
+  if (s.blob) params.push(terms[0]);
+  const rows = (await db.prepare(`WITH candidates AS MATERIALIZED (${first}${blob}),
+    kept AS MATERIALIZED (SELECT d.project_id, d.${s.id} AS id, ${s.title} AS title, MIN(candidates.rank) AS rank,
+      candidates.branch, candidates.match_rowid,
       ${s.created} AS created_at, ${s.session} AS session_id, ${s.prompt} AS prompt_id
     FROM candidates CROSS JOIN ${s.table} d ON d.rowid = candidates.source_rowid
-    ${where.length === 0 ? '' : `WHERE ${where.join(' AND ')}`} GROUP BY d.rowid ORDER BY rank, created_at DESC, id, d.project_id LIMIT ?`).bind(...params).all<Hit>()).results;
+    ${where.length === 0 ? '' : `WHERE ${where.join(' AND ')}`} GROUP BY d.rowid ORDER BY rank, created_at DESC, id, d.project_id LIMIT ?)
+    SELECT kept.project_id, kept.id, kept.title, kept.rank, kept.created_at, kept.session_id, kept.prompt_id, ${preview} AS preview
+    FROM kept ORDER BY kept.rank, kept.created_at DESC, kept.id, kept.project_id`).bind(...params).all<Hit>()).results;
   const best = Math.max(...rows.map((r) => Math.abs(r.rank)), Number.MIN_VALUE);
   // No `skill` entry: `myco_skills` answers from the shipped catalogue, so a
   // hint naming a generated record's id would send a caller to a refusal. The
@@ -184,6 +197,7 @@ export async function searchAcross(db: RelationalStore, set: ProjectSet, opts: S
 function validated(opts: SearchOptions): { query: string; words: string[]; types: readonly SearchType[]; mode: string; limit: number } {
   const query = opts.query.trim();
   if (query.length === 0 || query.length > SEARCH_QUERY_MAX_CHARS) throw new InvalidSearch(`query must contain 1–${SEARCH_QUERY_MAX_CHARS} characters`);
+  if (CONTROL_CHARACTERS.test(query)) throw new InvalidSearch('query must not contain control characters');
   const words = query.split(/\s+/);
   if (words.length > SEARCH_MAX_TERMS) throw new InvalidSearch(`query may contain at most ${SEARCH_MAX_TERMS} terms`);
   const types = typesFor(opts.type);
