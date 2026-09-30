@@ -15,8 +15,9 @@ import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, 
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { claudeCodeDriver } from '@myco/runner/drivers/claude-code.js';
-import { activeDeveloperDir, codexDriver, codexDriverWith, developerDirVerdict, RUN_FEATURES_OFF, RUN_PERMISSIONS, runFilesystem, sourceGitEnvironment, type DeveloperDirProbe } from '@myco/runner/drivers/codex.js';
+import { activeDeveloperDir, codexDriver, codexDriverWith, developerDirVerdict, SYSTEM_DEVELOPER_DIR_PROBE, RUN_FEATURES_OFF, RUN_PERMISSIONS, runFilesystem, sourceGitEnvironment, type DeveloperDirProbe } from '@myco/runner/drivers/codex.js';
 import { jsonLines } from '@myco/runner/drivers/stream.js';
+import { resolveMycoHome } from '@myco/paths/home.js';
 import { RUN_REPOSITORY_DIGESTS_FILE, RUN_REPOSITORY_DIR } from '@goondocks/myco-shared/repository';
 import { discardRunDir, writeRunDir } from '@myco/runner/mcp-config.js';
 import { credentialFile, harnessById } from '@myco/runner/harnesses.js';
@@ -73,7 +74,7 @@ interface FakePath { uid: number; mode: number; kind: 'dir' | 'file' }
  * physically is. Paths it does not hold are the machine's own, so a real run
  * directory resolves as it does on disk.
  */
-function fakeMac(options: { selected?: string | null; paths?: Record<string, FakePath>; links?: Record<string, string>; home?: string; platform?: NodeJS.Platform; uid?: number } = {}): DeveloperDirProbe {
+function fakeMac(options: { selected?: string | null; paths?: Record<string, FakePath>; links?: Record<string, string>; home?: string; platform?: NodeJS.Platform; uid?: number; closed?: string[] } = {}): DeveloperDirProbe {
   const paths: Record<string, FakePath> = options.paths ?? {
     [TOOLS]: { uid: 0, mode: 0o40755, kind: 'dir' },
     [join(TOOLS, 'usr', 'bin', 'git')]: { uid: 0, mode: 0o100755, kind: 'file' },
@@ -94,8 +95,12 @@ function fakeMac(options: { selected?: string | null; paths?: Record<string, Fak
     },
     home,
     uid: options.uid ?? WORKER_UID,
+    closed: options.closed ?? [join(home, '.codex'), MYCO_HOME_ELSEWHERE],
   };
 }
+
+/** A Myco home outside the user's home, where a fake Mac's worker keeps its own. */
+const MYCO_HOME_ELSEWHERE = '/opt/myco/home';
 
 describe('reading a harness stream into run events', () => {
   it('reads whole lines from a stream that arrives in pieces, and skips what is not an object', async () => {
@@ -376,6 +381,10 @@ describe('the developer directory a Codex source run may read (#1475)', () => {
       'a directory above the run\'s own directory': selecting('/Volumes/work/runs'),
       'no git in it': selecting(TOOLS, ROOT_DIR, null),
       'a git that is not a file': selecting(TOOLS, ROOT_DIR, { uid: 0, mode: 0o40755, kind: 'dir' }),
+      // A user's own directory can sit in the home: the harness's login directory, with a `usr/bin/git` placed in it.
+      'the harness login\'s directory': selecting('/Users/member/.codex', { uid: WORKER_UID, mode: 0o40700, kind: 'dir' }),
+      'a directory holding the Myco home': selecting('/opt/myco', { uid: WORKER_UID, mode: 0o40755, kind: 'dir' }),
+      'the Myco home a link names': selecting('/opt/myco-link', { uid: WORKER_UID, mode: 0o40755, kind: 'dir' }, ROOT_FILE, { closed: ['/Users/member/.codex', '/var/myco-link'], links: { '/var/myco-link': '/opt/myco-link/home' } }),
     };
     const granted = Object.fromEntries(Object.entries(refused).map(([why, probe]) => [why, activeDeveloperDir(RUN, probe)]));
     expect(granted).toEqual(Object.fromEntries(Object.keys(refused).map((why) => [why, null])));
@@ -400,6 +409,9 @@ describe('the developer directory a Codex source run may read (#1475)', () => {
       'a directory above the run\'s own directory': '/Volumes/work/runs is the filesystem root or holds the home or the run\'s directory',
       'no git in it': `${TOOLS} holds no usr/bin/git`,
       'a git that is not a file': `${TOOLS} holds no usr/bin/git`,
+      'the harness login\'s directory': '/Users/member/.codex is or holds the harness login\'s directory or the Myco home',
+      'a directory holding the Myco home': '/opt/myco is or holds the harness login\'s directory or the Myco home',
+      'the Myco home a link names': '/opt/myco-link is or holds the harness login\'s directory or the Myco home',
     });
   });
 
@@ -420,6 +432,12 @@ describe('the developer directory a Codex source run may read (#1475)', () => {
       other: access(runFilesystem(spec, home, null, TOOLS)),
       none: Object.keys(runFilesystem({ ...spec, sourceReadOnly: true }, home, null, null)).filter((path) => path.startsWith('/Library')),
     }).toEqual({ source: 'read', other: null, none: [] });
+  });
+
+  it('on this machine, closes the Codex login\'s directory and the Myco home the worker runs with (#1481)', () => {
+    const login = credentialFile(harnessById('codex')!);
+    expect(SYSTEM_DEVELOPER_DIR_PROBE.closed).toEqual([...(login === null ? [] : [dirname(login)]), resolveMycoHome()]);
+    expect(SYSTEM_DEVELOPER_DIR_PROBE.closed.length).toBe(2);
   });
 
   it('on this machine, is nothing or a directory every check passes', () => {
@@ -504,6 +522,7 @@ describe('the Codex driver', () => {
         permissions: config.permissions,
         sandbox: config.sandbox_mode,
         search: config.web_search,
+        loginShell: config.allow_login_shell,
       }).toEqual({
         approval: 'never',
         profile: RUN_PERMISSIONS,
@@ -526,6 +545,8 @@ describe('the Codex driver', () => {
         },
         sandbox: undefined,
         search: 'disabled',
+        // A login shell reads the system's profile, which puts `/usr/bin` back ahead of the developer directory's git.
+        loginShell: sourceReadOnly ? false : undefined,
       });
     }
   });

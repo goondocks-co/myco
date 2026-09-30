@@ -28,6 +28,7 @@ import type { Driver, RunEvent, RunSpec } from '../events.js';
 import { MCP_SERVER_NAME } from '../mcp-config.js';
 import { workerLogLine } from '../log.js';
 import { freshRunHome } from './run-home.js';
+import { resolveMycoHome } from '../../paths/home.js';
 import { jsonLines, numberOf, recordOf, startHarness, stringOf } from './stream.js';
 
 /** The table every MCP server this harness reads is declared under. */
@@ -79,6 +80,8 @@ export interface DeveloperDirProbe {
   home: string;
   /** The user the worker runs as, who may own a developer directory it installed itself. */
   uid: number;
+  /** The directories holding a secret no run may read: this harness's login directory and the Myco home. */
+  closed: readonly string[];
 }
 
 /** The machine itself, as `activeDeveloperDir` reads it. */
@@ -103,6 +106,10 @@ export const SYSTEM_DEVELOPER_DIR_PROBE: DeveloperDirProbe = {
   realpath: (path) => realpathSync(path),
   get home() { return homedir(); },
   uid: process.getuid?.() ?? -1,
+  get closed() {
+    const login = credentialFile(harnessById('codex')!);
+    return [...(login === null ? [] : [dirname(login)]), resolveMycoHome()];
+  },
 };
 
 /** The permission bits that let a group or everyone write a path. */
@@ -127,7 +134,9 @@ function within(path: string, root: string): boolean {
  * nobody else can write, holding `usr/bin/git`, that is neither the root of
  * the filesystem nor the user's home, the run's own directory or a directory
  * above either — a grant of any of those reads what the rest of the profile
- * closes. `refused` is null on any other system and where none is selected,
+ * closes — and that neither is nor holds a directory in `closed`: a user's own
+ * directory can sit in the home, and a `usr/bin/git` placed in the harness's
+ * login directory would otherwise grant the run its login. `refused` is null on any other system and where none is selected,
  * which fail no check.
  */
 export function developerDirVerdict(runDir: string, probe: DeveloperDirProbe = SYSTEM_DEVELOPER_DIR_PROBE): { dir: string } | { dir: null; refused: string | null } {
@@ -149,6 +158,8 @@ export function developerDirVerdict(runDir: string, probe: DeveloperDirProbe = S
   if (found.uid !== 0 && found.uid !== probe.uid) return { dir: null, refused: `${dir} is owned by neither root nor the user this worker runs as` };
   if ((found.mode & WRITABLE_BY_OTHERS) !== 0) return { dir: null, refused: `${dir} is writable by its group or others` };
   if (dir === sep || within(home, dir) || within(run, dir)) return { dir: null, refused: `${dir} is the filesystem root or holds the home or the run's directory` };
+  const physical = (path: string): string => { try { return probe.realpath(path); } catch { return path; } };
+  if (probe.closed.some((closed) => within(physical(closed), dir))) return { dir: null, refused: `${dir} is or holds the harness login's directory or the Myco home` };
   const git = probe.stat(join(dir, 'usr', 'bin', 'git'));
   return git !== null && git.file ? { dir } : { dir: null, refused: `${dir} holds no usr/bin/git` };
 }
@@ -236,7 +247,8 @@ export const RUN_SHELL_ENVIRONMENT = { inherit: 'all', ignore_default_excludes: 
  * Git reads the checkout's own configuration and nothing of the machine's. On
  * macOS the shim is pointed at the developer directory the run was granted,
  * so the directory it runs from is the one `activeDeveloperDir` checked, and
- * that directory's own `git` comes first on PATH. No other run runs `git`, so
+ * that directory's own `git` comes first on PATH, which holds only in a shell
+ * that is not a login shell (`allow_login_shell`). No other run runs `git`, so
  * no other run is told any of it.
  */
 export function sourceGitEnvironment(developerDir: string | null, path: string = process.env.PATH ?? ''): Record<string, string> {
@@ -297,6 +309,8 @@ function runConfig(spec: RunSpec, harness: Harness, home: string, probe: Develop
   machine.web_search = 'disabled';
   machine.features = { ...recordOf(machine.features), ...Object.fromEntries(RUN_FEATURES_OFF.map((feature) => [feature, false])) };
   machine.shell_environment_policy = { ...RUN_SHELL_ENVIRONMENT, ...(source ? { set: sourceGitEnvironment(developerDir) } : {}) };
+  // A login shell reads the system's profile, and on macOS that puts `/usr/bin` back ahead of the PATH set above.
+  if (source) machine.allow_login_shell = false;
 
   // The run's connection is authored once, in `mcp-config.ts`. This reads that
   // file and restates it in the language this harness configures servers in,

@@ -913,8 +913,9 @@ async function harnessCredentialEnv(env: ServerEnv, harness: string): Promise<Re
  * ordinary wait and a capability's are rewritten: a run a limit holds keeps its limit.
  *
  * The capability named is the fleet's gap, not the asking worker's: the first the task needs that no worker heard
- * from lately (the asker included) reports, else the first that not every one of them reports. Every worker asking
- * in turn therefore names the same one, so the label holds still between polls in a mixed fleet.
+ * from lately (the asker included) reports. Every worker asking in turn therefore names the same one, so the label
+ * holds still between polls in a mixed fleet. A task whose every capability some worker reports waits for a worker:
+ * a worker that writes digests also checks out, so one of them takes it.
  */
 async function recordCapabilityHolds(env: ServerEnv, reported: readonly string[], unmet: readonly string[], now: number): Promise<void> {
   const recent = unmet.length === 0 ? [] : [reported, ...await recentWorkerCapabilities(env.db, now)];
@@ -925,8 +926,7 @@ async function recordCapabilityHolds(env: ServerEnv, reported: readonly string[]
     const takenBySomeone = !unmet.includes(task) || recent.some((capabilities) => required.every((c) => capabilities.includes(c)));
     const needed = CAPABILITY_HOLDS.filter((hold) => required.includes(hold));
     const missing = takenBySomeone ? undefined
-      : needed.find((hold) => !recent.some((capabilities) => capabilities.includes(hold)))
-        ?? needed.find((hold) => !recent.every((capabilities) => capabilities.includes(hold)));
+      : needed.find((hold) => !recent.some((capabilities) => capabilities.includes(hold)));
     if (missing === undefined) served.push(task);
     else held.set(missing, [...(held.get(missing) ?? []), task]);
   }
