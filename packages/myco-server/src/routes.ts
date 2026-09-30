@@ -12,6 +12,7 @@ import { clearCookie } from './auth/owner/cookie.js';
 import { handleCallback, handleLogin } from './auth/owner/routes.js';
 import { handleArchiveProject, handleCreateProject, handleProjects, handleUnarchiveProject, handleRenameProject } from './api/projects.js';
 import { handleMemberStatus, handleStatus } from './api/status.js';
+import { handleCreateMemberProject, handleMemberProjectList } from './api/member-projects.js';
 import { handleDiagnostics } from './api/diagnostics.js';
 import { handleProjectSearch } from './api/search.js';
 import { handleWake } from './api/wake.js';
@@ -177,6 +178,8 @@ export const ROUTES: readonly Route[] = [
   { method: 'POST', path: '/members/join', auth: 'enroll', handler: handleJoin },
   { method: 'POST', path: '/members/link-github', auth: 'member', bodyMode: 'json', shape: 'persisted', capture: false, mintsAuthority: true, handler: handleLinkGithub },
   // Deployment Settings as a member's CLI reads them: Deployment-wide, so no Project is read or created; writes stay on the dashboard's admin routes.
+  { method: 'POST', path: '/members/projects', auth: 'member', bodyMode: 'json', shape: 'persisted', capture: false, scope: 'credential', credential: handleCreateMemberProject },
+  { method: 'POST', path: '/members/projects/list', auth: 'member', bodyMode: 'json', shape: 'persisted', capture: false, scope: 'credential', credential: handleMemberProjectList },
   { method: 'POST', path: '/members/settings', auth: 'member', bodyMode: 'json', shape: 'persisted', capture: false, scope: 'credential', credential: handleMemberSettings },
   // Deployment health as a member's `myco stats` reads it: Deployment-wide facts, the credential's own stored bytes and the transcript retention window, so no Project is read or created.
   { method: 'POST', path: '/members/status', auth: 'member', bodyMode: 'json', shape: 'persisted', capture: false, scope: 'credential', credential: handleMemberStatus },

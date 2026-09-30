@@ -480,6 +480,23 @@ export function tomlMemberServers(block: Record<string, unknown>, projectRoot: s
   return out;
 }
 
+/**
+ * The file a path names, following a symbolic link: a dotfile a person keeps as a link into their own configuration
+ * repository is written where the link points, and the link stays a link. A path that is no link is answered as it is.
+ */
+export function throughLink(file: string): string {
+  try {
+    if (!fs.lstatSync(file).isSymbolicLink()) return file;
+  } catch {
+    return file;
+  }
+  try {
+    return fs.realpathSync(file);
+  } catch {
+    return path.resolve(path.dirname(file), fs.readlinkSync(file));
+  }
+}
+
 export class SymbiontInstaller {
   /**
    * `vaultDir` defaults to `<projectRoot>/.myco` for ordinary installs.
@@ -574,7 +591,7 @@ export class SymbiontInstaller {
         : field === 'skills' ? reg.globalSkillsTarget
         : (reg.globalSettingsTarget ?? null);
       if (!target) return null;
-      return expandHome(target);
+      return this.installScope === 'member-global' ? throughLink(expandHome(target)) : expandHome(target);
     }
     if (this.installScope === 'member-project') {
       // The member scope has exactly one surface. Anything else resolves to
@@ -1838,7 +1855,7 @@ export class SymbiontInstaller {
     const reg = this.manifest.registration;
     if (!reg?.mcpTarget) return null;
     if (reg.memberMcpHeadersHelperKey) {
-      const serverUrl = readRegistryEntry(this.projectRoot, this.memberHomeDir())?.serverUrl ?? this.expectedServerUrl;
+      const serverUrl = readRegistryEntry(this.projectRoot, this.memberHomeDir())?.serverUrl ?? this.expectedServerUrl ?? this.deploymentUrl;
       if (serverUrl === undefined) return null;
       const binaryPath = this.binaryPath();
       assertSafeBinaryPathForUnquoted(binaryPath);
@@ -1900,7 +1917,10 @@ export class SymbiontInstaller {
 
   /** The member's MCP file in the selected installation scope, or null. */
   private memberMcpTargetPath(): string | null {
-    if (this.isGlobalScope) return this.resolveAbsoluteMcpTargets()[0]?.path ?? null;
+    if (this.isGlobalScope) {
+      const target = this.resolveAbsoluteMcpTargets()[0]?.path ?? null;
+      return target !== null && this.installScope === 'member-global' ? throughLink(target) : target;
+    }
     const target = this.manifest.registration?.mcpTarget;
     return target ? path.join(this.projectRoot, target) : null;
   }
@@ -2222,7 +2242,7 @@ export class SymbiontInstaller {
 
   /** Retire this project's member registrations after their global replacements are written. */
   private finishMemberInstall(result: InstallResult): InstallResult {
-    if (this.installScope !== 'member-global') return result;
+    if (this.installScope !== 'member-global' || this.noProjectRoot) return result;
     const local = this.projectMemberInstaller();
     const hooks = local.uninstallMemberHooks();
     const mcp = local.uninstallMemberMcp();
@@ -2233,6 +2253,29 @@ export class SymbiontInstaller {
   private legacyHomes: readonly string[] = [];
   /** The Deployment a preflight judges the MCP entry against, before any folder is connected. */
   private expectedServerUrl: string | undefined;
+  /** The Deployment a member with no folder connected provisions for (`forDeployment`). */
+  private deploymentUrl: string | undefined;
+  /** Set where no folder is connected: global provisioning then reads, checks and retires no project's registrations. */
+  private noProjectRoot = false;
+
+  /**
+   * Provision globally with no project root: a member with no folder connected has no project registration to check
+   * or retire, and a path standing in for one is never treated as a project.
+   */
+  withoutProjectRoot(): this {
+    this.noProjectRoot = true;
+    return this;
+  }
+
+  /**
+   * Provision for `serverUrl` where the folder this installer names holds no binding: a member signed in with no project
+   * connected yet has its agents capture from its first `myco member join`, with the MCP entry already naming its
+   * Deployment. A folder's own binding still names the Deployment where it has one.
+   */
+  forDeployment(serverUrl: string): this {
+    this.deploymentUrl = serverUrl;
+    return this;
+  }
 
   /**
    * Let member-global provisioning replace, in place, the registrations a 1.4
@@ -2269,11 +2312,11 @@ export class SymbiontInstaller {
    * project member targets it retires (`all`).
    */
   memberGlobalTargets(): { hooks: string | null; mcp: string[]; all: string[] } {
-    const local = this.projectMemberInstaller();
+    const local = this.noProjectRoot ? null : this.projectMemberInstaller();
     const hooks = this.resolveAbsoluteTarget('hooks');
     const written = this.memberMcpTargetPath();
     const mcp = written === null ? [] : [written];
-    const all = [hooks, ...mcp, this.resolveAbsoluteTarget('settings'), local.resolveAbsoluteTarget('hooks'), local.memberMcpTargetPath()];
+    const all = [hooks, ...mcp, this.resolveAbsoluteTarget('settings'), local?.resolveAbsoluteTarget('hooks') ?? null, local?.memberMcpTargetPath() ?? null];
     return { hooks, mcp, all: [...new Set(all.filter((file): file is string => file !== null))] };
   }
 
@@ -2304,12 +2347,14 @@ export class SymbiontInstaller {
     if (isClaimedByPeer(SYMBIONT_CONFIG_SUBSYSTEM, memberHome, { claimsHome: resolveClaimsHome(memberHome) }) && !this.claimHeldByLegacyHome()) {
       throw new MemberProvisionConflictError('Global symbiont configuration is claimed by another installation. Release its symbiont-config claim before provisioning globally.');
     }
-    assertSafeProjectRoot(this.projectRoot);
-    const local = this.projectMemberInstaller();
-    local.readMemberMcpTarget();
-    const localHooks = local.resolveAbsoluteTarget('hooks');
-    if (localHooks && !this.isMemberPluginFile()) this.readMcpFile(localHooks, false);
-    if (localHooks && this.isMemberPluginFile()) local.assertMemberPluginTargetIsMyco(localHooks);
+    if (!this.noProjectRoot) {
+      assertSafeProjectRoot(this.projectRoot);
+      const local = this.projectMemberInstaller();
+      local.readMemberMcpTarget();
+      const localHooks = local.resolveAbsoluteTarget('hooks');
+      if (localHooks && !this.isMemberPluginFile()) this.readMcpFile(localHooks, false);
+      if (localHooks && this.isMemberPluginFile()) local.assertMemberPluginTargetIsMyco(localHooks);
+    }
     const target = this.resolveAbsoluteTarget('hooks');
     if (target && fs.existsSync(target)) {
       if (this.isMemberPluginFile()) {

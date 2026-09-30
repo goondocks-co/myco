@@ -50,7 +50,7 @@ const sharedFiles = () =>
     !f.includes(`${join(SRC, 'platform')}/`) && !f.includes(`${join(SRC, 'entry')}/`) && f !== join(SRC, 'index.ts'));
 
 /** Every `emit` call across src; a call removed or added moves the total. */
-const EMIT_CALLS = 140;
+const EMIT_CALLS = 141;
 /** The one migrations directory: the emit script writes it, the rendered-steps gate verifies it, and wrangler.toml applies from it. */
 const MIGRATIONS_DIR = 'migrations';
 const K = SyntaxKind as unknown as Record<string, number>;
@@ -698,6 +698,16 @@ describe('gates', () => {
         malformed: (token) => new Request('https://s/members/link-github', { method: 'POST', headers: memberHeaders(token), body: 'not json' }),
         wellFormed: (token) => new Request('https://s/members/link-github', { method: 'POST', headers: memberHeaders(token), body: '{}' }),
       },
+      'POST /members/projects': {
+        shape: 'persisted',
+        malformed: (token) => new Request('https://s/members/projects', { method: 'POST', headers: memberHeaders(token), body: JSON.stringify({ name: '' }) }),
+        wellFormed: (token) => new Request('https://s/members/projects', { method: 'POST', headers: memberHeaders(token), body: JSON.stringify({ name: 'gate project' }) }),
+      },
+      'POST /members/projects/list': {
+        shape: 'persisted',
+        malformed: (token) => new Request('https://s/members/projects/list', { method: 'POST', headers: memberHeaders(token), body: JSON.stringify({ project: 'x' }) }),
+        wellFormed: (token) => new Request('https://s/members/projects/list', { method: 'POST', headers: memberHeaders(token), body: '{}' }),
+      },
       'POST /members/settings': {
         shape: 'persisted',
         malformed: (token) => new Request('https://s/members/settings', { method: 'POST', headers: memberHeaders(token), body: JSON.stringify({ leaf: 'x' }) }),
@@ -1176,6 +1186,8 @@ describe('gates', () => {
       'member POST /import/plan',
       'member POST /mcp',
       'member POST /members/link-github',
+      'member POST /members/projects',
+      'member POST /members/projects/list',
       'member POST /members/settings',
       'member POST /members/status',
       'member POST /runs/canopy-map',

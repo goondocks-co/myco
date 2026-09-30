@@ -22,6 +22,8 @@ describe('route table', () => {
     '/tokens/refresh',        // mints a successor credential; the server's own bookkeeping
     '/mcp',                   // reads and tool writes
     '/members/link-github',   // identity, not capture
+    '/members/projects',      // a member names a project to connect a folder to, not capture
+    '/members/projects/list', // a read of the Deployment's projects
     '/members/settings',      // a read of Deployment Settings
     '/members/status',        // a read of Deployment health
     '/import/plan',           // advice on what to ship; stores nothing
@@ -44,7 +46,7 @@ describe('route table', () => {
         expect({ path: r.path, capture: r.capture }).toEqual({ path: r.path, capture: notCapture(r) ? false : undefined });
       }
     }
-    expect(ROUTES.filter((r) => r.auth === 'public' || r.auth === 'member').map((r) => `${r.method} ${r.path}`)).toEqual(['GET /health', 'POST /events', 'POST /blobs/{sha256}', 'POST /tokens/refresh', 'POST /import/plan', 'POST /runs/claim', 'POST /runs/get', 'POST /runs/update', 'POST /runs/failed', 'POST /runs/resume-admission', 'POST /runs/supersede', 'POST /runs/reports', 'POST /runs/report', 'POST /runs/events', 'POST /runs/embedding-step', 'POST /spores/save', 'POST /spores/list', 'POST /spores/get', 'POST /spores/resolve', 'POST /context/prompt', 'POST /context/session', 'POST /runs/repository', 'POST /runs/canopy-map', 'POST /worker/claim', 'POST /worker/lease', 'POST /worker/end', 'POST /worker/repository', 'POST /mcp', 'POST /members/link-github', 'POST /members/settings', 'POST /members/status']);
+    expect(ROUTES.filter((r) => r.auth === 'public' || r.auth === 'member').map((r) => `${r.method} ${r.path}`)).toEqual(['GET /health', 'POST /events', 'POST /blobs/{sha256}', 'POST /tokens/refresh', 'POST /import/plan', 'POST /runs/claim', 'POST /runs/get', 'POST /runs/update', 'POST /runs/failed', 'POST /runs/resume-admission', 'POST /runs/supersede', 'POST /runs/reports', 'POST /runs/report', 'POST /runs/events', 'POST /runs/embedding-step', 'POST /spores/save', 'POST /spores/list', 'POST /spores/get', 'POST /spores/resolve', 'POST /context/prompt', 'POST /context/session', 'POST /runs/repository', 'POST /runs/canopy-map', 'POST /worker/claim', 'POST /worker/lease', 'POST /worker/end', 'POST /worker/repository', 'POST /mcp', 'POST /members/link-github', 'POST /members/projects', 'POST /members/projects/list', 'POST /members/settings', 'POST /members/status']);
   });
 
   it('admits a run credential as a member on the run-control plane alone: every /runs/ route is flagged legacy, no other route is, and /mcp is the one route that serves the run principal', () => {
@@ -55,10 +57,10 @@ describe('route table', () => {
     }
   });
 
-  it('answers on the credential alone on the refresh, member-settings and member-status routes, and admits a credential past its expiry on the refresh route alone', () => {
+  it('answers on the credential alone on the refresh, member-projects, member-settings and member-status routes, and admits a credential past its expiry on the refresh route alone', () => {
     const scoped = ROUTES.filter((r) => 'scope' in r && r.scope === 'credential').map((r) => `${r.method} ${r.path}`);
     const lapsed = ROUTES.filter((r) => 'admitsLapsed' in r && r.admitsLapsed === true).map((r) => `${r.method} ${r.path}`);
-    expect({ scoped, lapsed }).toEqual({ scoped: ['POST /tokens/refresh', 'POST /members/settings', 'POST /members/status'], lapsed: ['POST /tokens/refresh'] });
+    expect({ scoped, lapsed }).toEqual({ scoped: ['POST /tokens/refresh', 'POST /members/projects', 'POST /members/projects/list', 'POST /members/settings', 'POST /members/status'], lapsed: ['POST /tokens/refresh'] });
   });
 
   it('routes exactly the child segments the handler serves', async () => {

@@ -49,13 +49,19 @@ export function earlierCopyHolds(mycoHome: string, file: string): boolean {
     .some((e) => 'sha256' in e && e.original === file && e.sha256 === digest && fs.existsSync(e.backup)));
 }
 
-/** The commands that undo a cutover's changes, newest first. */
-export function restoreRecipe(entries: readonly BackupEntry[]): string {
+/** What a backup folder undoes: a cutover from 1.4, or a member provisioning of this machine's agents. */
+export type BackupPurpose = 'cutover' | 'provision';
+
+/** The commands that undo a cutover's (or a provisioning's) changes, newest first. */
+export function restoreRecipe(entries: readonly BackupEntry[], purpose: BackupPurpose = 'cutover'): string {
   const lines = [...entries].reverse().map((e) => {
     if ('backup' in e) return `cp -p ${quote(e.backup)} ${quote(e.original)}`;
     if ('link' in e) return `ln -sfn ${quote(e.link)} ${quote(e.original)}`;
     return `rm -f ${quote(e.original)}`;
   });
+  if (purpose === 'provision') {
+    return ['# Undo a Myco agent setup', '', 'Run, from any directory:', '', '```sh', ...lines, '```', ''].join('\n');
+  }
   return [
     '# Undo a Myco cutover',
     '',
@@ -75,7 +81,7 @@ export function restoreRecipe(entries: readonly BackupEntry[]): string {
 export class CutoverBackup {
   private readonly entries: BackupEntry[] = [];
 
-  constructor(readonly dir: string) {}
+  constructor(readonly dir: string, private readonly purpose: BackupPurpose = 'cutover') {}
 
   /** The copy's path: the original's absolute path, mirrored under the folder. */
   pathFor(original: string): string {
@@ -130,6 +136,6 @@ export class CutoverBackup {
   private write(): void {
     fs.mkdirSync(this.dir, { recursive: true, mode: 0o700 });
     writePrivateFileAtomic(path.join(this.dir, MANIFEST_FILE), `${JSON.stringify({ entries: this.entries }, null, 2)}\n`);
-    writePrivateFileAtomic(path.join(this.dir, RESTORE_FILE), restoreRecipe(this.entries));
+    writePrivateFileAtomic(path.join(this.dir, RESTORE_FILE), restoreRecipe(this.entries, this.purpose));
   }
 }

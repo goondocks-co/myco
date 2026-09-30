@@ -22,6 +22,11 @@ import { projectDiagnostics } from '../member/diagnostics.js';
 import { readRegistryEntryResult } from '../member/registry.js';
 import { loadManifests, resolvePackageRoot } from '../symbionts/detect.js';
 import { SymbiontInstaller } from '../symbionts/installer.js';
+import { BUNDLED_SKILLS } from '../symbionts/skills.generated.js';
+import { managedSkillsDir } from '../install/managed-binary.js';
+import { readProvisionRecord } from '../symbionts/member-provision-record.js';
+import { skillsFolder } from '../symbionts/member-skill-links.js';
+import { getPluginVersion } from '../version.js';
 import { checkMemberMcpResolution, checkWorkerServices, formatCheck, type DoctorCheck } from './doctor-member.js';
 import { envOf, homeOf, membershipProblem, openDeployment, rootOf, type MemberVerbDeps } from './deployment-reader.js';
 import type { WorkerServiceDeps } from './worker-service.js';
@@ -94,6 +99,30 @@ function captureChecks(root: string, mycoHome: string, packageRoot: string): Doc
   return checks;
 }
 
+/**
+ * Whether the agents provisioning set up are this build's: the record it wrote (`member/provision-record.ts`) names the
+ * build, and each recorded agent's skills folder still links this home's skills. Drift names the one command that
+ * refreshes it.
+ */
+export function setupChecks(mycoHome: string, version: string = getPluginVersion()): DoctorCheck[] {
+  const record = readProvisionRecord(mycoHome);
+  if (record === null) return [row('Setup', 'warn', 'nothing records which agents Myco set up on this machine. Run `myco member provision`.')];
+  if (record.version !== version) {
+    return [row('Setup', 'warn', `your agents were set up by Myco ${record.version}; this is ${version}. Run \`myco member provision --refresh\`.`)];
+  }
+  const skills = managedSkillsDir(mycoHome);
+  const missing: string[] = [];
+  for (const manifest of loadManifests().filter((m) => record.agents.includes(m.name))) {
+    const target = manifest.registration?.globalSkillsTarget;
+    if (!target) continue;
+    const folder = skillsFolder(target);
+    const absent = Object.keys(BUNDLED_SKILLS).filter((name) => !fs.existsSync(path.join(folder, name)) || !fs.existsSync(path.join(skills, name)));
+    if (absent.length > 0) missing.push(`${manifest.displayName} (${absent.join(', ')})`);
+  }
+  if (missing.length > 0) return [row('Setup', 'warn', `skills are missing for ${missing.join('; ')}. Run \`myco member provision --refresh\`.`)];
+  return [row('Setup', 'ok', `${record.agents.length === 0 ? 'no agent' : record.agents.join(', ')} set up by this build for ${record.serverUrl}.`)];
+}
+
 /** Run the member checks for this joined project and print them. True when no row failed. */
 export async function run(args: readonly string[], source: CredentialSource, deps: MemberDoctorDeps = {}): Promise<boolean> {
   const out = deps.stdout ?? ((line: string) => process.stdout.write(`${line}\n`));
@@ -158,6 +187,7 @@ export async function run(args: readonly string[], source: CredentialSource, dep
 
   const packageRoot = deps.packageRoot ?? resolvePackageRoot();
   checks.push(...captureChecks(root, mycoHome, packageRoot));
+  checks.push(...setupChecks(mycoHome));
   const vaultDir = path.join(root, '.myco');
   checks.push(...await checkMemberMcpResolution(vaultDir, { ...envOf(deps), MYCO_HOME: mycoHome }, { registryRead: 'strict' }));
   checks.push(...await checkWorkerServices(vaultDir, { ...deps.worker, mycoHome }));

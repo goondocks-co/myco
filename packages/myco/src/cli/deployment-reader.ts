@@ -103,7 +103,7 @@ const budgetOf = (deps: MemberVerbDeps): RequestBudget => ({
 });
 
 /** A member json route's answer body, or the refusal it carries in the route's shape, under the member request deadline. */
-async function postRoute(client: ServerClient, budget: RequestBudget, path: string, body: Record<string, unknown>): Promise<DeploymentOutcome<Record<string, unknown>>> {
+export async function postRoute(client: ServerClient, budget: RequestBudget, path: string, body: Record<string, unknown>): Promise<DeploymentOutcome<Record<string, unknown>>> {
   const raw = await client.request('POST', path, { body: JSON.stringify(body), headers: { 'content-type': 'application/json' }, budget, scope: 'deployment' });
   if (raw.kind === 'timeout') return { ok: false, error: { code: 'timeout', message: `no answer within ${budget.requestTimeoutMs} ms` } };
   if (raw.kind === 'transport') return { ok: false, error: { code: 'unreachable', message: raw.detail } };
