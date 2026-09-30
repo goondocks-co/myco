@@ -5,8 +5,8 @@
  * every later tick behind the whole run, so parsing, live capture and every job would slow to the run's length. Here
  * the launch never settles, and the next wake must still run on time and arm the chained wake.
  */
-import { expect, it } from 'bun:test';
-import { DeploymentClock, LAUNCHED_WORK_WAKE_MS } from '@myco-server-worker/platform/cloudflare/deployment-clock.js';
+import { describe, expect, it } from 'bun:test';
+import { CLOCK_LOCATION_HINT, CLOCK_NAME, clockStub, DeploymentClock, LAUNCHED_WORK_WAKE_MS, RETIRED_CLOCK_NAMES } from '@myco-server-worker/platform/cloudflare/deployment-clock.js';
 import { CHAINED_WAKE_MS, WAKE_INTERVALS, type TickReport } from '@myco-server-worker/core/tick.js';
 
 /** The alarm and waitUntil a Durable Object is given, held where a test can read them. */
@@ -109,4 +109,68 @@ it('wakes at least every thirty seconds while launched work still runs, so the o
     await clock.alarm();
     expect(held.alarm()).toBe(now + WAKE_INTERVALS.activeMs);
   } finally { Date.now = realNow; }
+});
+
+/** A clock namespace as the platform hands one: an id per name, equal only to the id of the same name. */
+function clockNamespace() {
+  const idOf = (name: string) => ({ name, equals: (other: { name: string }) => other.name === name });
+  const placed: Array<{ name: string; locationHint: string | undefined }> = [];
+  return {
+    placed,
+    idOf,
+    namespace: {
+      idFromName: idOf,
+      get: (id: { name: string }, options?: { locationHint?: string }) => { placed.push({ name: id.name, locationHint: options?.locationHint }); return { id }; },
+    },
+  };
+}
+
+/** A clock recording every tick it runs. */
+class RecordingClock extends DeploymentClock {
+  readonly ticks: number[] = [];
+  protected override async tick(now: number): Promise<TickReport> {
+    this.ticks.push(now);
+    return { nextWakeMs: WAKE_INTERVALS.activeMs, jobs: [] } as unknown as TickReport;
+  }
+}
+
+describe('where the clock is kept (#1510)', () => {
+  it('addresses the clock by one name, placed beside the database primary', () => {
+    const clocks = clockNamespace();
+    clockStub(clocks.namespace as never);
+    expect(clocks.placed).toEqual([{ name: CLOCK_NAME, locationHint: CLOCK_LOCATION_HINT }]);
+    expect({ hint: CLOCK_LOCATION_HINT, retiredIncludesCurrent: RETIRED_CLOCK_NAMES.includes(CLOCK_NAME) }).toEqual({ hint: 'enam', retiredIncludesCurrent: false });
+  });
+
+  it('deletes the alarm a clock under a retired name still holds, and ticks nothing there', async () => {
+    for (const name of RETIRED_CLOCK_NAMES) {
+      const held = state();
+      const clocks = clockNamespace();
+      const ctx = { ...held.ctx, id: clocks.idOf(name) };
+      await ctx.storage.setAlarm(1_000);
+      const env = { MYCO_ORIGIN: 'https://myco.example', CLOCK: clocks.namespace };
+      const clock = new RecordingClock(ctx as never, env as never);
+      Object.assign(clock, { ctx, env });
+      const outcome = await clock.wake();
+      expect({ name, outcome, alarm: held.alarm(), ticks: clock.ticks }).toEqual({ name, outcome: { ticked: false, heldBy: 'retired_clock' }, alarm: null, ticks: [] });
+      // Asked to wake soon, it still arms nothing.
+      await clock.ensure();
+      expect(held.alarm()).toBeNull();
+    }
+  });
+
+  it('ticks and arms its next wake under the current name', async () => {
+    const held = state();
+    const clocks = clockNamespace();
+    const ctx = { ...held.ctx, id: clocks.idOf(CLOCK_NAME) };
+    const env = { MYCO_ORIGIN: 'https://myco.example', CLOCK: clocks.namespace };
+    const clock = new RecordingClock(ctx as never, env as never);
+    Object.assign(clock, { ctx, env });
+    const realNow = Date.now;
+    Date.now = () => 7_000_000;
+    try {
+      const outcome = await clock.wake();
+      expect({ ticked: outcome.ticked, ticks: clock.ticks, alarm: held.alarm() }).toEqual({ ticked: true, ticks: [7_000_000], alarm: 7_000_000 + WAKE_INTERVALS.activeMs });
+    } finally { Date.now = realNow; }
+  });
 });

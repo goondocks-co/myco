@@ -115,7 +115,7 @@ function stubProvider(port: number) {
  * method is the real binding's, so the refusal path runs the same code the Deployment does.
  */
 const entry = (src: string) => `
-import { DeploymentClock } from '${src}/platform/cloudflare/deployment-clock.ts';
+import { clockStub, DeploymentClock } from '${src}/platform/cloudflare/deployment-clock.ts';
 import { RecoveryProducer } from '${src}/platform/cloudflare/recovery-producer-object.ts';
 import { serverEnvFromBindings } from '${src}/platform/cloudflare/env.ts';
 import { recoveryScheduleOf } from '${src}/core/recovery-schedule.ts';
@@ -211,7 +211,7 @@ export default {
     if (url.pathname === '/wake') {
       if (q('stamp') === 'no') await env.MYCO_DB.prepare("DELETE FROM schema_meta WHERE key = 'last_request_at'").run();
       else await env.MYCO_DB.prepare("INSERT OR REPLACE INTO schema_meta (key, value) VALUES ('last_request_at', ?)").bind(String(Date.now())).run();
-      const clock = env.CLOCK.get(env.CLOCK.idFromName('deployment'));
+      const clock = clockStub(env.CLOCK);
       return json(await answered(async () => {
         const woke = await clock.wake();
         return {

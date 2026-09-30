@@ -1,36 +1,33 @@
 /**
- * Runtime proof that the Deployment's clock keeps its chained cadence while work a tick launched is still running,
- * on real workerd.
+ * Runtime proof that exactly one clock ticks once the clock is kept under a new name (#1510), on real workerd.
  *
- * `wrangler dev --local` runs the product's own `DeploymentClock` with its real alarms (no manual clock mode). A
- * subclass stands in for one tick: it records when it starts, answers the chained wake, and, on its first tick,
- * launches a slow piece of work through the same deferral a clock-owned embedding run is launched through. What it
- * proves cannot be proven in process: while that work runs, the next alarm fires and the next tick starts at most the
- * tick's own duration plus the chained wake after the one before; and the work, left running past the alarm that
- * launched it, still finishes.
+ * `wrangler dev --local` runs the product's own `DeploymentClock` with its real alarms. A clock placed in a region is
+ * a clock under a name, and an object under a retired name still holds the alarm it last armed. The
+ * scenario arms that alarm on every retired name, then wakes the clock the way the product does (`ensure`, and the
+ * cron floor's `wakeClock`), and reads both: the retired object's alarm fires, is deleted, and runs no tick, while
+ * the clock under `CLOCK_NAME` ticks and keeps its alarm. The tick is replaced by a recorder, so what is counted is
+ * which object ticked, not what a tick did.
  *
- * Every process it starts is stopped by its exact PID. Usage: bun tests/myco-server/runtime/transcript-drain-runtime.ts
+ * Every process it starts is stopped by its exact PID. Usage: bun tests/myco-server/runtime/clock-placement-runtime.ts
  */
 import fs from 'node:fs';
 import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
-import { CHAINED_WAKE_MS } from '../../../packages/myco-server/src/core/tick.js';
+import { RETIRED_CLOCK_NAMES } from '../../../packages/myco-server/src/platform/cloudflare/clock-name.js';
 
 const ROOT = path.resolve(import.meta.dir, '../../..');
 const WRANGLER = path.join(ROOT, 'node_modules/.bin/wrangler');
-const RUN = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-transcript-drain-runtime-'));
-const EVIDENCE = process.env.MYCO_TRANSCRIPT_DRAIN_EVIDENCE ?? path.join(RUN, 'result.json');
+const RUN = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-clock-placement-runtime-'));
+const EVIDENCE = process.env.MYCO_CLOCK_PLACEMENT_EVIDENCE ?? path.join(RUN, 'result.json');
 const STATE = path.join(RUN, 'state');
 const checks: Array<Record<string, unknown>> = [];
 const owned: Array<{ what: string; pid: number }> = [];
 
-/** How long the launched work runs: far longer than a chained wake, as a clock-owned embedding run is. */
-const WORK_MS = 20_000;
-/** How long a tick itself takes: a stand-in for its store round trips. */
-const TICK_MS = 300;
-/** Scheduling slack a local alarm is allowed on top of the bound. */
-const SLACK_MS = 750;
+/** How soon the retired object's leftover alarm fires. */
+const LEFTOVER_ALARM_MS = 1_500;
+/** How long the scenario watches both objects: past the leftover alarm and a few of the clock's own wakes. */
+const WATCH_MS = 8_000;
 
 function check(label: string, actual: unknown, expected: unknown): void {
   const ok = JSON.stringify(actual) === JSON.stringify(expected);
@@ -54,41 +51,34 @@ async function stop(proc: ReturnType<typeof Bun.spawn>, signal: 'SIGTERM' | 'SIG
 }
 
 /**
- * The product's clock, with its tick replaced by a recorder. Its first tick launches the slow work through the clock
- * environment's deferral, which is where a clock-owned embedding run's launch goes; every tick answers the chained
- * wake until told to stop.
+ * The product's clock, with its tick replaced by a recorder that answers a short next wake. `leaveAlarm` stands in for
+ * the alarm an object under a retired name still holds; nothing in the product calls it.
  */
 const ENTRY = `
-import { clockStub, DeploymentClock as ProductClock } from '${path.join(ROOT, 'packages/myco-server/src/platform/cloudflare/deployment-clock.ts')}';
-const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+import { clockStub, DeploymentClock as ProductClock, wakeClock } from '${path.join(ROOT, 'packages/myco-server/src/platform/cloudflare/deployment-clock.ts')}';
+const RETIRED = ${JSON.stringify(RETIRED_CLOCK_NAMES)};
 export class DeploymentClock extends ProductClock {
   async tick(now) {
-    const started = Date.now();
     const ticks = (await this.ctx.storage.get('ticks')) ?? [];
-    if (ticks.length === 0) {
-      this.clockEnv().afterResponse(async () => {
-        await this.ctx.storage.put('work', { started: Date.now() });
-        await sleep(${WORK_MS});
-        await this.ctx.storage.put('work', { started: (await this.ctx.storage.get('work')).started, ended: Date.now() });
-      });
-    }
-    await sleep(${TICK_MS});
-    ticks.push({ started, ended: Date.now() });
+    ticks.push(Date.now());
     await this.ctx.storage.put('ticks', ticks);
-    const stopped = (await this.ctx.storage.get('stop')) === true;
-    return { state: 'active', heldBy: null, drained: 0, scheduled: { dispatched: 0, skipped: 0 }, idleMs: 0, jobs: [], nextWakeMs: stopped ? null : ${CHAINED_WAKE_MS}, backlog: { transcripts: 0, bytes: 0, imported: { transcripts: 0, bytes: 0 } } };
+    return { state: 'active', heldBy: null, drained: 0, scheduled: { dispatched: 0, skipped: 0 }, idleMs: 0, jobs: [], nextWakeMs: 2000, backlog: { transcripts: 0, bytes: 0, imported: { transcripts: 0, bytes: 0 } } };
   }
-  async record() { return { ticks: (await this.ctx.storage.get('ticks')) ?? [], work: (await this.ctx.storage.get('work')) ?? null, alarm: await this.ctx.storage.getAlarm() }; }
-  async halt() { await this.ctx.storage.put('stop', true); }
+  async leaveAlarm(inMs) { await this.ctx.storage.setAlarm(Date.now() + inMs); return this.ctx.storage.getAlarm(); }
+  async record() { return { ticks: (await this.ctx.storage.get('ticks')) ?? [], alarm: await this.ctx.storage.getAlarm() }; }
 }
+const retired = (env, name) => env.CLOCK.get(env.CLOCK.idFromName(name));
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
-    const clock = clockStub(env.CLOCK);
     if (url.pathname === '/health') return Response.json({ ok: true });
-    if (url.pathname === '/start') { await clock.ensure(); return Response.json({ started: true }); }
-    if (url.pathname === '/record') return Response.json(await clock.record());
-    if (url.pathname === '/halt') { await clock.halt(); return Response.json({ halted: true }); }
+    if (url.pathname === '/leave-alarms') return Response.json(Object.fromEntries(await Promise.all(RETIRED.map(async (name) => [name, await retired(env, name).leaveAlarm(${LEFTOVER_ALARM_MS})]))));
+    if (url.pathname === '/start') { await clockStub(env.CLOCK).ensure(); return Response.json({ started: true }); }
+    if (url.pathname === '/cron') { await wakeClock(env); return Response.json({ woke: true }); }
+    if (url.pathname === '/record') return Response.json({
+      current: await clockStub(env.CLOCK).record(),
+      retired: Object.fromEntries(await Promise.all(RETIRED.map(async (name) => [name, await retired(env, name).record()]))),
+    });
     return new Response('not found', { status: 404 });
   },
 };
@@ -98,7 +88,7 @@ let worker: ReturnType<typeof Bun.spawn> | null = null;
 let port = 0;
 function writeConfig(): void {
   fs.writeFileSync(path.join(RUN, 'wrangler.toml'), [
-    'name = "myco-transcript-drain-runtime"',
+    'name = "myco-clock-placement-runtime"',
     'main = "entry.ts"',
     'compatibility_date = "2026-08-01"',
     '',
@@ -130,28 +120,17 @@ let failure: unknown = null;
 try {
   writeConfig();
   await startWorker();
+  const left = await call('/leave-alarms');
+  check('every retired name holds an alarm before the switch', RETIRED_CLOCK_NAMES.map((name) => typeof left[name] === 'number'), RETIRED_CLOCK_NAMES.map(() => true));
   await call('/start');
-
-  // Long enough for the work to finish and a few ticks after it.
-  let record = await call('/record');
-  const until = Date.now() + WORK_MS + 15_000;
-  while (Date.now() < until && !(record.work?.ended !== undefined && record.ticks.some((t: { started: number }) => t.started > record.work.ended))) {
-    await Bun.sleep(1_000);
-    record = await call('/record');
-  }
-  await call('/halt');
-  record = await call('/record');
-
-  const ticks: Array<{ started: number; ended: number }> = record.ticks;
-  const work: { started: number; ended?: number } | null = record.work;
-  check('the first tick launched the work', work !== null, true);
-  check('the work ran to its end although the alarm that launched it had returned', work?.ended !== undefined && work.ended - work.started >= WORK_MS, true);
-  const during = ticks.filter((t) => work !== null && t.started > work.started && t.started < (work.ended ?? Number.POSITIVE_INFINITY));
-  note('ticks while the work ran', during.length);
-  check('ticks kept starting while the work ran', during.length >= Math.floor(WORK_MS / (CHAINED_WAKE_MS + TICK_MS + SLACK_MS)) - 1, true);
-  const gaps = ticks.slice(1).map((t, i) => ({ gap: t.started - ticks[i].started, bound: (ticks[i].ended - ticks[i].started) + CHAINED_WAKE_MS + SLACK_MS }));
-  note('gaps between tick starts (ms)', gaps.map((g) => g.gap));
-  check('every gap between tick starts is at most the tick duration plus the chained wake', gaps.filter((g) => g.gap > g.bound), []);
+  await call('/cron');
+  await Bun.sleep(WATCH_MS);
+  const record = await call('/record');
+  note('current clock ticks', record.current.ticks.length);
+  check('the clock under the current name ticks', record.current.ticks.length >= 2, true);
+  check('the clock under the current name keeps its alarm', typeof record.current.alarm, 'number');
+  check('no retired clock ever ticks', RETIRED_CLOCK_NAMES.map((name) => record.retired[name].ticks.length), RETIRED_CLOCK_NAMES.map(() => 0));
+  check('every retired clock deleted the alarm it held once it fired', RETIRED_CLOCK_NAMES.map((name) => record.retired[name].alarm), RETIRED_CLOCK_NAMES.map(() => null));
 } catch (error) {
   failure = error;
   console.error(error);
