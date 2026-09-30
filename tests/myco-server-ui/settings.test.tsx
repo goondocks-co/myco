@@ -323,8 +323,8 @@ describe('Deployment Settings', () => {
   });
 });
 
-describe('Operations and Notifications', () => {
-  it('serves the live Backup and Diagnostics panels, and the nav carries the three entries', async () => {
+describe('Operations', () => {
+  it('serves the live Backup and Diagnostics panels, and the admin nav carries Settings and Operations', async () => {
     server(base({ '/api/backups': () => Response.json({ backups: [] }) }));
     mount('/operations');
     expect(await screen.findByText('No backups yet. The first one is a click away.')).toBeTruthy();
@@ -332,13 +332,9 @@ describe('Operations and Notifications', () => {
     // The diagnostics export is served, not pending: it downloads from the owner route.
     expect(screen.queryByTestId('pending-diagnostics')).toBeNull();
     expect(screen.getByTestId('download-diagnostics').getAttribute('href')).toBe('/api/diagnostics');
-    const nav = screen.getByRole('navigation', { name: 'Server' });
+    const nav = screen.getByRole('navigation', { name: 'Admin' });
     expect(within(nav).getByRole('link', { name: /Settings/ })).toBeTruthy();
     expect(within(nav).getByRole('link', { name: /Operations/ })).toBeTruthy();
-    expect(within(nav).getByRole('link', { name: /Notifications/ })).toBeTruthy();
-    cleanup();
-    server(base());
-    mount('/notifications');
-    expect(await screen.findByTestId('pending-notifications')).toBeTruthy();
+    expect(within(nav).queryByRole('link', { name: /Notifications/ })).toBeNull();
   });
 });

@@ -62,4 +62,5 @@ export default async function globalSetup(): Promise<void> {
   process.env[SCREENS_ENV.fixture] = '1';
   process.env[SCREENS_ENV.specimen] = info.specimen ? '1' : '0';
   process.env[SCREENS_ENV.projectNames] = JSON.stringify(info.projects.map((project) => project.name));
+  process.env[SCREENS_ENV.projects] = JSON.stringify(info.projects.map(({ projectId, name }) => ({ projectId, name })));
 }

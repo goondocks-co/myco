@@ -1,7 +1,8 @@
 /**
  * The screens fixture: a production-shaped Deployment with no production data.
  *
- * Six projects (one named like a test project), two members (an admin and a
+ * Thirteen projects, as many as a busy owner keeps (six with work in them,
+ * one named like a test project, and seven quiet), two members (an admin and a
  * member), two machines with names, five agents, two days of sessions with one
  * still live, spores of every type, plans in every status, Myco's runs (a
  * failed learning run that still saved spores, an index update that failed and
@@ -54,6 +55,13 @@ export const PROJECTS = [
   { key: 'ledger', projectId: 'proj_1ed9e40c5b6a7f8e9d0c1b2a3f4e5d44', name: 'Ledger service' },
   { key: 'infra', projectId: 'proj_2b3c4d5e6f708192a3b4c5d6e7f80955', name: 'Infrastructure' },
   { key: 'sandbox', projectId: 'proj_5a4db0c1d2e3f405162738495a6b7c66', name: 'Test project' },
+  { key: 'recipes', projectId: 'proj_7ec1be5a0b1c2d3e4f5a6b7c8d9e0f77', name: 'Recipes' },
+  { key: 'homelab', projectId: 'proj_40e1ab0c1d2e3f4a5b6c7d8e9f0a1b88', name: 'Homelab' },
+  { key: 'blog', projectId: 'proj_b10960c1d2e3f4a5b6c7d8e9f0a1b299', name: 'Blog' },
+  { key: 'docs-site', projectId: 'proj_d0c5a1e0b1c2d3e4f5a6b7c8d9e0f1aa', name: 'Docs site' },
+  { key: 'mobile', projectId: 'proj_30b11e0a1b2c3d4e5f6a7b8c9d0e1fbb', name: 'Mobile app' },
+  { key: 'pipeline', projectId: 'proj_9a7e11ae0b1c2d3e4f5a6b7c8d9e0fcc', name: 'Data pipeline' },
+  { key: 'scratch', projectId: 'proj_5c7a7c40b1c2d3e4f5a6b7c8d9e0f1dd', name: 'Scratch' },
 ] as const;
 
 type ProjectKey = (typeof PROJECTS)[number]['key'];

@@ -7,7 +7,7 @@ export interface PageContainerProps extends HTMLAttributes<HTMLDivElement> {
   variant?: PageContainerVariant;
 }
 
-// Do not add a max-width here — the sidebar/main flex is the width constraint.
+// No max-width or padding here: the shell's main landmark sets the width and the one page gutter.
 const VARIANT_CLASS: Record<PageContainerVariant, string> = {
   default: 'w-full',
   narrow: 'mx-auto w-full max-w-3xl',
@@ -19,7 +19,7 @@ export const PageContainer = forwardRef<HTMLDivElement, PageContainerProps>(
       <div
         ref={ref}
         className={cn(
-          'flex flex-col gap-6 p-6',
+          'flex flex-col gap-6',
           VARIANT_CLASS[variant],
           className,
         )}

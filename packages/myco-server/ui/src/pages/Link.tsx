@@ -60,7 +60,7 @@ export function LinkPage() {
   };
 
   return (
-    <PageContainer variant="narrow" className="flex min-h-screen flex-col items-center justify-center gap-4 text-center">
+    <PageContainer variant="narrow" className="flex min-h-screen flex-col items-center justify-center gap-4 p-gutter text-center">
       <h1 className="font-serif text-2xl text-on-surface">Connect your GitHub account</h1>
       {key === null && <p className="font-sans text-sm text-on-surface-variant">There is no link to complete here. Ask an admin of this server for a link from the Members page. Setting up a new server? Run <code className="font-mono">myco member link-github</code> on a machine that has joined it.</p>}
       {key !== null && signedOut && (

@@ -93,9 +93,11 @@ export function expectQuiet(watch: PageWatch): void {
   expect(watch.failedRequests, 'failed requests').toEqual([]);
 }
 
-/** axe-core over the page: no serious or critical violation. */
-export async function expectAxeClean(page: Page): Promise<void> {
-  const results = await new AxeBuilder({ page }).withTags(['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa']).analyze();
+/** axe-core over the page, or only the parts `include` selects: no serious or critical violation. */
+export async function expectAxeClean(page: Page, include: readonly string[] = []): Promise<void> {
+  let builder = new AxeBuilder({ page }).withTags(['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa']);
+  for (const selector of include) builder = builder.include(selector);
+  const results = await builder.analyze();
   const blocking = results.violations
     .filter((violation) => violation.impact === 'serious' || violation.impact === 'critical')
     .map((violation) => ({
@@ -107,53 +109,68 @@ export async function expectAxeClean(page: Page): Promise<void> {
   expect(blocking, 'serious or critical accessibility violations').toEqual([]);
 }
 
-/** Visible text nodes carrying a raw id, outside any `[data-facts]` panel. */
-export async function rawIdsInText(page: Page): Promise<string[]> {
-  return page.evaluate((source) => {
+/** Visible text nodes carrying a raw id, outside any `[data-facts]` panel; only under the elements `within` selects, when given. */
+export async function rawIdsInText(page: Page, within?: string): Promise<string[]> {
+  return page.evaluate(([source, scope]) => {
     const pattern = new RegExp(source);
     const hits: string[] = [];
-    const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
-    for (let node = walker.nextNode(); node !== null; node = walker.nextNode()) {
-      const text = node.textContent ?? '';
-      const match = pattern.exec(text);
-      if (!match) continue;
-      const parent = node.parentElement;
-      if (parent === null || parent.closest('[data-facts]') !== null) continue;
-      const style = window.getComputedStyle(parent);
-      if (style.display === 'none' || style.visibility === 'hidden' || parent.getClientRects().length === 0) continue;
-      hits.push(`${match[0]} in <${parent.tagName.toLowerCase()}>`);
+    const roots = scope === null ? [document.body] : [...document.querySelectorAll(scope)];
+    for (const root of roots) {
+      const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+      for (let node = walker.nextNode(); node !== null; node = walker.nextNode()) {
+        const text = node.textContent ?? '';
+        const match = pattern.exec(text);
+        if (!match) continue;
+        const parent = node.parentElement;
+        if (parent === null || parent.closest('[data-facts]') !== null) continue;
+        const style = window.getComputedStyle(parent);
+        if (style.display === 'none' || style.visibility === 'hidden' || parent.getClientRects().length === 0) continue;
+        hits.push(`${match[0]} in <${parent.tagName.toLowerCase()}>`);
+      }
     }
     return hits;
-  }, RAW_ID.source);
+  }, [RAW_ID.source, within ?? null] as const);
 }
 
-export async function expectNoRawIds(page: Page): Promise<void> {
-  expect(await rawIdsInText(page), 'raw ids in visible text').toEqual([]);
+export async function expectNoRawIds(page: Page, within?: string): Promise<void> {
+  expect(await rawIdsInText(page, within), 'raw ids in visible text').toEqual([]);
 }
 
 export interface FilterBarMetrics {
   /** How many filter bars the page renders. A list page has exactly one. */
   count: number;
   /** The search input's box, in CSS pixels, when there is exactly one bar. */
-  input: { height: number; left: number } | null;
+  input: { height: number; left: number; width: number } | null;
+  /** The bar's own width, in CSS pixels. */
+  barWidth: number | null;
 }
 
-/** The filter bar a list page renders, and its search input's height and left edge. */
+/** The filter bar a list page renders, its search input's height, left edge and width, and the bar's width. */
 export async function filterBarMetrics(page: Page): Promise<FilterBarMetrics> {
   const bars = page.locator('[data-filter-bar]');
   const count = await bars.count();
-  if (count !== 1) return { count, input: null };
-  const box = await bars.first().locator('input').first().boundingBox();
-  return { count, input: box === null ? null : { height: box.height, left: box.x } };
+  if (count !== 1) return { count, input: null, barWidth: null };
+  const [box, bar] = await Promise.all([bars.first().locator('input').first().boundingBox(), bars.first().boundingBox()]);
+  return { count, input: box === null ? null : { height: box.height, left: box.x, width: box.width }, barWidth: bar?.width ?? null };
 }
 
-/** Every list page's search box matches the first one's height and left edge within 1px. */
+/** The share of its bar a search box fills at the least: the search leads the bar, it is never a short box beside the filters. */
+export const SEARCH_MIN_SHARE = 0.55;
+
+/**
+ * Every list page's search box matches the first one's height and left edge
+ * within 1px, and fills at least `SEARCH_MIN_SHARE` of its bar.
+ */
 export function expectUniformSearch(metrics: Array<{ page: string; metrics: FilterBarMetrics }>): void {
   for (const { page, metrics: m } of metrics) expect({ page, count: m.count }).toEqual({ page, count: 1 });
   const [first, ...rest] = metrics;
   if (!first?.metrics.input) throw new Error('no search input measured');
-  for (const { page, metrics: m } of rest) {
+  for (const { page, metrics: m } of metrics) {
     expect(m.input, `${page} search input`).not.toBeNull();
+    expect(m.barWidth, `${page} filter bar`).not.toBeNull();
+    expect(m.input!.width / m.barWidth!, `${page} search width as a share of its bar`).toBeGreaterThanOrEqual(SEARCH_MIN_SHARE);
+  }
+  for (const { page, metrics: m } of rest) {
     expect(Math.abs(m.input!.height - first.metrics.input.height), `${page} search height`).toBeLessThanOrEqual(1);
     expect(Math.abs(m.input!.left - first.metrics.input.left), `${page} search left edge`).toBeLessThanOrEqual(1);
   }

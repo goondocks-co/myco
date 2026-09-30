@@ -5,6 +5,11 @@ import { SignedOutError } from '../lib/api';
 import { readPendingLink } from '../lib/pending-link';
 import { SignedOut } from '../pages/SignedOut';
 
+/** The paths rendered whether or not anyone is signed in. */
+const PUBLIC_PATHS: ReadonlySet<string> = new Set(['/link', '/join']);
+/** The public paths that show the same thing to everyone, so never ask who is signed in. */
+const SESSIONLESS_PATHS: ReadonlySet<string> = new Set(['/join']);
+
 /** A blank, theme-painted surface: nothing of the application is on it. */
 export function Splash() {
   return <div aria-busy="true" aria-label="Loading" className="min-h-screen bg-background" />;
@@ -28,15 +33,16 @@ export function Unreachable({ retry }: { retry: () => void }) {
  *
  * Nothing under it mounts until `GET /auth/me` has answered: no navigation, no
  * page, no data request. Signed out, the sign-in page is all there is; a
- * server that does not answer gets the unreachable state. `/link` is the one
- * path rendered whatever the answer — it holds an identity-link key that must
- * survive the sign-in the visitor is about to do, and it decides its own
- * states from the same query.
+ * server that does not answer gets the unreachable state. Two paths render
+ * whatever the answer: `/link` holds an identity-link key that must survive the
+ * sign-in the visitor is about to do, and decides its own states from the same
+ * query; `/join` hands an invitation to a machine, which needs no sign-in, so
+ * the session is not even asked there.
  */
 export function AuthGate({ children }: { children: ReactNode }) {
-  const me = useMe();
   const location = useLocation();
-  if (location.pathname === '/link' || (location.pathname === '/' && readPendingLink() !== null)) return <>{children}</>;
+  const me = useMe({ enabled: !SESSIONLESS_PATHS.has(location.pathname) });
+  if (PUBLIC_PATHS.has(location.pathname) || (location.pathname === '/' && readPendingLink() !== null)) return <>{children}</>;
   if (me.isPending) return <Splash />;
   if (me.error instanceof SignedOutError) return <SignedOut />;
   if (me.error) return <Unreachable retry={() => { void me.refetch(); }} />;

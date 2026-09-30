@@ -8,7 +8,6 @@ import { PageHeader } from '../components/ui/page-header';
 import { PageLoading } from '../components/ui/page-loading';
 import { Panel } from '../components/ui/panel';
 import { SubtabPill } from '../components/ui/subtab-pill';
-import { AppearanceSection } from '../layout/AppearanceSection';
 import { ReleaseTracking } from '../components/release/ReleaseTracking';
 import { useMembers } from '../hooks/use-access';
 import { useProjects } from '../hooks/use-projects';
@@ -21,7 +20,7 @@ import { SECRET_SLOTS, slotUse } from '@goondocks/myco-shared/secret-slots';
 import { LEAF_GROUPS, type LeafField } from '../settings/catalogue';
 import { Button, Input, Select, Switch, Textarea } from '../design';
 
-const TABS: { id: string; label: string; admin?: true }[] = [...LEAF_GROUPS.map((g) => ({ id: g.id, label: g.label })), { id: 'secrets', label: 'Credentials', admin: true }, { id: 'capabilities', label: 'Projects', admin: true }, { id: 'browser', label: 'This browser' }];
+const TABS: { id: string; label: string; admin?: true }[] = [...LEAF_GROUPS.map((g) => ({ id: g.id, label: g.label })), { id: 'secrets', label: 'Credentials', admin: true }, { id: 'capabilities', label: 'Projects', admin: true }];
 
 
 const CAPABILITY_LABEL: Record<string, string> = { cortex: 'Context at session start and on prompts', canopy: 'Code map', skills: 'Skills', vault_evolution: 'Memory upkeep' };
@@ -35,7 +34,7 @@ function useMemberName(): (id: string | null) => string | null {
 export function Settings() {
   const [params, setParams] = useSearchParams();
   const admin = useIsAdmin();
-  // A member who is not an admin reads the server's settings and keeps this browser's; the tabs only an admin uses are not offered.
+  // A member who is not an admin reads the server's settings; the tabs only an admin uses are not offered.
   const tabs = TABS.filter((t) => admin || t.admin !== true);
   const requested = params.get('tab');
   const tab = tabs.some((t) => t.id === requested) ? (requested as string) : LEAF_GROUPS[0]!.id;
@@ -44,19 +43,13 @@ export function Settings() {
     <PageContainer>
       <PageHeader title="Settings" subtitle={admin
         ? 'What this server holds for every member. Each change saves as you make it and names who made it.'
-        : 'What this server holds for every member. An admin changes these; this browser\'s appearance is yours.'} />
+        : 'What this server holds for every member. An admin changes these.'} />
       <div className="mb-4 max-w-full overflow-x-auto">
         <SubtabPill tabs={tabs} activeTab={tab} onTabChange={setTab} />
       </div>
       {LEAF_GROUPS.map((g) => g.id === tab && <LeafGroupPanel key={g.id} groupId={g.id} />)}
       {admin && tab === 'secrets' && <Secrets />}
       {admin && tab === 'capabilities' && <ProjectCapabilities />}
-      {tab === 'browser' && (
-        <Panel title="This browser" eyebrow="Appearance">
-          <p className="mb-3 font-sans text-sm text-on-surface-variant">Theme, mode, font and density are kept in this browser only.</p>
-          <AppearanceSection />
-        </Panel>
-      )}
     </PageContainer>
   );
 }

@@ -73,6 +73,14 @@ function LocationProbe() {
   return <div data-testid="location">{location.pathname}{location.search}</div>;
 }
 
+/** Opens a design-system select by its label and picks one option, the way a person does. */
+async function pick(label: string, option: string) {
+  const proto = window.Element.prototype as unknown as { scrollIntoView?: () => void };
+  proto.scrollIntoView ??= () => undefined;
+  fireEvent.click(await screen.findByLabelText(label));
+  fireEvent.click(await screen.findByRole('option', { name: option }));
+}
+
 function mount(path: string) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(<AppearanceProvider><QueryClientProvider client={client}><MemoryRouter initialEntries={[path]}><App /><LocationProbe /></MemoryRouter></QueryClientProvider></AppearanceProvider>);
@@ -114,7 +122,7 @@ describe('Sessions list', () => {
     expect((await screen.findByTestId('rail-counts')).textContent).toBe('12 TOTAL·1 OPEN·340 PROMPTS');
   });
 
-  it('asks the server to filter, by state from the tabs and by text from the box, and says so when nothing matches', async () => {
+  it('asks the server to filter, by state from the filter bar and by text from its box, and says so when nothing matches', async () => {
     const { requested } = server(base({
       '/api/projects/x/sessions?limit=50': () => page(ROWS),
       '/api/projects/x/sessions?limit=50&state=ended': () => page(ROWS.slice(1)),
@@ -124,12 +132,12 @@ describe('Sessions list', () => {
     }));
     mount('/p/x/sessions');
     await screen.findAllByRole('row');
-    fireEvent.click(screen.getByRole('tab', { name: 'Ended' }));
+    await pick('State', 'Ended');
     await asked(requested, '/api/projects/x/sessions?limit=50&state=ended');
     await waitFor(() => expect(screen.getAllByRole('row')).toHaveLength(2));
     expect(screen.getByTestId('rail-counts').textContent).toBe('2 SHOWN');
     expect(screen.getByTestId('location').textContent).toBe('/p/x/sessions?state=ended');
-    fireEvent.click(screen.getByRole('tab', { name: 'All' }));
+    await pick('State', 'Open and ended');
     // Three keystrokes inside the debounce make one read, for the text as it stands when the typing pauses.
     const box = screen.getByLabelText('Filter sessions');
     fireEvent.change(box, { target: { value: 'f' } });
@@ -148,6 +156,35 @@ describe('Sessions list', () => {
       '/api/projects/x/sessions?limit=50&q=fix',
       '/api/projects/x/sessions?limit=50&q=nothing-here',
     ]);
+  });
+
+  it('clears the query and the state in one step, keeping the filters the bar does not hold', async () => {
+    const { requested } = server(base({
+      '/api/projects/x/sessions': () => page(ROWS),
+      '/api/projects/x/activity': () => Response.json(ACTIVITY),
+    }));
+    mount('/p/x/sessions?q=fix&state=ended&branch=main');
+    await screen.findAllByRole('row');
+    expect((screen.getByLabelText('Filter sessions') as HTMLInputElement).value).toBe('fix');
+    fireEvent.click(screen.getByRole('button', { name: 'Clear search and filters' }));
+    await waitFor(() => expect(screen.getByTestId('location').textContent).toBe('/p/x/sessions?branch=main'));
+    expect((screen.getByLabelText('Filter sessions') as HTMLInputElement).value).toBe('');
+    expect(screen.getByLabelText('State').textContent).toContain('Open and ended');
+    await asked(requested, '/api/projects/x/sessions?limit=50&branch=main');
+    // Nothing written before the Clear comes back once the debounce would have fired.
+    await new Promise((resolve) => setTimeout(resolve, 400));
+    expect(screen.getByTestId('location').textContent).toBe('/p/x/sessions?branch=main');
+  });
+
+  it('forgets text still waiting to be written when Clear comes first', async () => {
+    server(base({ '/api/projects/x/sessions': () => page(ROWS), '/api/projects/x/activity': () => Response.json(ACTIVITY) }));
+    mount('/p/x/sessions?state=open');
+    await screen.findAllByRole('row');
+    fireEvent.change(screen.getByLabelText('Filter sessions'), { target: { value: 'half-typed' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Clear search and filters' }));
+    await new Promise((resolve) => setTimeout(resolve, 400));
+    expect(screen.getByTestId('location').textContent).toBe('/p/x/sessions');
+    expect((screen.getByLabelText('Filter sessions') as HTMLInputElement).value).toBe('');
   });
 
   it('adopts a filter that arrives from a link rather than overwriting it, and keeps the filter on the link to a session', async () => {
@@ -785,6 +822,16 @@ describe('Session detail', () => {
     fireEvent.change(select, { target: { value: 'abandoned' } });
     expect((await within(card).findByRole('status')).textContent).toBe('The status could not be saved');
     expect(select.value).toBe('active');
+  });
+
+  it('shows the whole session id on hover and keeps its copy control in the cell', async () => {
+    server(detailRoutes());
+    mount('/p/x/sessions/s1');
+    const copy = await screen.findByRole('button', { name: 'Copy session id' });
+    expect(copy.getAttribute('title')).toBe('s1');
+    // The control fills the truncating cell, so the value ellipsises beside its icon instead of pushing it out.
+    expect(copy.className.split(' ')).toContain('w-full');
+    expect(copy.querySelector('svg')).not.toBeNull();
   });
 
   it('links the transcript by segment and never fetches its bytes', async () => {

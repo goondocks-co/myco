@@ -1,9 +1,12 @@
 import { useQuery } from '@tanstack/react-query';
 import type { SearchAnswer, SearchResult } from '../../../src/read/search-types';
+import { SEARCH_TYPES } from '../../../src/read/search-types';
 import { fetchJson } from '../lib/api';
 import { planPath } from './use-plans';
 
 export type { SearchResult };
+/** The kinds of record a search answers with. */
+export { SEARCH_TYPES };
 export const SEARCH_DEBOUNCE_MS = 300;
 export const SEARCH_MIN_CHARS = 2;
 const SEARCH_INDEX_REFRESH_MS = 5000;

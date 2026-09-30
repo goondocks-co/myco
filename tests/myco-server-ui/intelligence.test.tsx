@@ -270,7 +270,7 @@ describe('Agent runs', () => {
     server(base({ '/api/projects/x/runs': () => Response.json({ rows: [run()], cursor: null }), '/api/projects/x/runs/r1': () => Response.json(detail()) }));
     mount('/p/x/runs/r1');
     await screen.findByText('Facts');
-    const nav = screen.getByRole('navigation', { name: 'Project' });
+    const nav = screen.getByRole('navigation', { name: 'Pages' });
     const active = [...nav.querySelectorAll('a[aria-current="page"]')].map((a) => a.textContent);
     expect(active).toEqual(['Agent runs']);
   });
@@ -279,7 +279,7 @@ describe('Agent runs', () => {
     server(base());
     mount('/p/x');
     await screen.findByRole('heading', { name: 'Project X' });
-    const nav = screen.getByRole('navigation', { name: 'Project' });
+    const nav = screen.getByRole('navigation', { name: 'Pages' });
     expect([...nav.querySelectorAll('a[aria-current="page"]')].map((a) => a.textContent)).toEqual(['Overview']);
   });
 });

@@ -1,14 +1,13 @@
 import { Navigate, Route, Routes } from 'react-router-dom';
 import { AuthGate } from './components/auth-gate';
-import { Layout } from './layout/Layout';
 import { readPendingLink } from './lib/pending-link';
 import { readLastProject } from './lib/project-memory';
 import { Access } from './pages/Access';
 import { AgentRuns } from './pages/AgentRuns';
+import { Join } from './pages/Join';
 import { LinkPage } from './pages/Link';
 import { ProjectAccess } from './pages/ProjectAccess';
 import { NotFound } from './pages/NotFound';
-import { Notifications } from './pages/Notifications';
 import { Operations } from './pages/Operations';
 import { Settings } from './pages/Settings';
 import { ProjectHome } from './pages/ProjectHome';
@@ -18,6 +17,7 @@ import { Plans } from './pages/Plans';
 import { Sessions } from './pages/Sessions';
 import { Spores } from './pages/Spores';
 import { Status } from './pages/Status';
+import { Shell } from './routes/Shell';
 
 /** `/` is where sign-in lands: a pending link resumes first, then the last project, then Projects. */
 function RootRedirect() {
@@ -32,7 +32,9 @@ export default function App() {
     <Routes>
       <Route path="/" element={<RootRedirect />} />
       <Route path="/link" element={<LinkPage />} />
-      <Route element={<Layout />}>
+      <Route path="/join" element={<Join />} />
+      <Route path="/notifications" element={<Navigate to="/" replace />} />
+      <Route element={<Shell />}>
         <Route path="/projects" element={<Projects />} />
         <Route path="/p/:projectId" element={<ProjectHome />} />
         <Route path="/p/:projectId/sessions" element={<Sessions />} />
@@ -48,7 +50,6 @@ export default function App() {
         <Route path="/measures" element={<Measures />} />
         <Route path="/settings" element={<Settings />} />
         <Route path="/operations" element={<Operations />} />
-        <Route path="/notifications" element={<Notifications />} />
         <Route path="*" element={<NotFound />} />
       </Route>
     </Routes>

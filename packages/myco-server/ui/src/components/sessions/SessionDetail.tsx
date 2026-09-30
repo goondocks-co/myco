@@ -236,10 +236,10 @@ function CopyValue({ value, label }: { value: string; label: string }) {
     <button
       type="button"
       onClick={copy}
-      title={state === 'failed' ? 'Copy failed — check clipboard permissions' : 'Click to copy'}
+      title={state === 'failed' ? 'Copy failed — check clipboard permissions' : value}
       aria-label={`Copy ${label}`}
       aria-live="polite"
-      className="flex min-w-0 items-center gap-1.5 text-left transition-colors hover:text-primary"
+      className="flex w-full min-w-0 items-center gap-1.5 text-left transition-colors hover:text-primary"
     >
       <span className="min-w-0 truncate font-mono text-xs text-on-surface">{value}</span>
       {state === 'copied' && <Check className="h-3 w-3 shrink-0 text-primary" />}

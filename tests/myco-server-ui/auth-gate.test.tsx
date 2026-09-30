@@ -107,7 +107,7 @@ describe('the auth gate', () => {
     mount('/projects');
     await waitFor(() => expect(screen.queryByLabelText('Loading')).toBeNull());
     expect(screen.queryByRole('navigation')).toBeNull();
-    expect(screen.getByText(/octocat/)).toBeTruthy();
+    expect(screen.getByRole('heading', { name: /octocat/ })).toBeTruthy();
   });
 
   it('/link renders signed out, so the identity-link key survives the sign-in ahead', async () => {
@@ -115,6 +115,17 @@ describe('the auth gate', () => {
     mount('/link');
     await waitFor(() => expect(screen.queryByLabelText('Loading')).toBeNull());
     expect(screen.queryByText('Sign in to Myco')).toBeNull();
+  });
+
+  it('/join renders whatever the session and asks the server nothing, not even who is signed in', async () => {
+    const { asked } = server({ '/auth/me': never });
+    mount('/join');
+    expect(await screen.findByRole('heading', { name: 'Connect a machine to Myco' })).toBeTruthy();
+    expect(screen.queryByLabelText('Loading')).toBeNull();
+    expect(screen.queryByText('Sign in with GitHub')).toBeNull();
+    expect(screen.queryByRole('navigation')).toBeNull();
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    expect(asked).toEqual([]);
   });
 });
 
@@ -137,8 +148,8 @@ describe('the gate is the one place signed-out is decided', () => {
     walk(UI);
     expect(importers).toEqual(['components/auth-gate.tsx']);
   });
-  it('the layout decides nothing about being signed out', () => {
-    const layout = readFileSync(`${UI}layout/Layout.tsx`, 'utf8');
+  it('the shell decides nothing about being signed out', () => {
+    const layout = readFileSync(`${UI}routes/Shell.tsx`, 'utf8');
     expect({ signedOutError: /SignedOutError/.test(layout), signIn: /sign in/i.test(layout) }).toEqual({ signedOutError: false, signIn: false });
   });
 });
