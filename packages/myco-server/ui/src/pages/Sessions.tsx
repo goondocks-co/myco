@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useRef } from 'react';
 import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { MasterDetailSplit } from '../components/ui/master-detail-split';
 import { PageContainer } from '../components/ui/page-container';
@@ -6,7 +6,7 @@ import { PageHeader } from '../components/ui/page-header';
 import { SessionDetail } from '../components/sessions/SessionDetail';
 import { SessionRail } from '../components/sessions/SessionRail';
 import type { SessionListFilters } from '../hooks/use-sessions';
-import { FilterBar, type FilterDefinition } from '../design';
+import { FilterBar, useFilterParams, useQueryDraft, type FilterDefinition } from '../design';
 
 /** Open means no end was recorded — a runtime that died never ends its session, so this is what the data says, not a liveness claim. */
 const STATE_FILTER: FilterDefinition = {
@@ -19,6 +19,9 @@ const STATE_FILTER: FilterDefinition = {
   ],
 };
 
+/** The filters the bar holds; `branch` and `member` ride the URL too, with no control yet, and Clear leaves them. */
+const FILTER_KEYS = ['state'] as const;
+
 /** How long the filter box waits after the last keystroke before the list is re-read. */
 const FILTER_DEBOUNCE_MS = 250;
 
@@ -30,35 +33,13 @@ function stateOf(tab: string): SessionListFilters['state'] {
 export function Sessions() {
   const { projectId = '', sessionId } = useParams();
   const navigate = useNavigate();
-  const [params, setParams] = useSearchParams();
-  const status = params.get('state') === 'open' || params.get('state') === 'ended' ? params.get('state')! : 'all';
-  const q = params.get('q') ?? '';
-  const [text, setText] = useState(q);
-  // The last `q` this page wrote. A `q` that arrives from elsewhere — Back, Forward, a link — is adopted into the box rather than overwritten by the box's own debounce.
-  const wroteQ = useRef(q);
+  const [params] = useSearchParams();
+  const filterParams = useFilterParams(FILTER_KEYS);
+  const status = filterParams.values.state === 'open' || filterParams.values.state === 'ended' ? filterParams.values.state : 'all';
+  const q = filterParams.query;
+  const draft = useQueryDraft(q, filterParams.setQuery, FILTER_DEBOUNCE_MS);
   const filterInputRef = useRef<HTMLInputElement>(null);
   const base = `/p/${encodeURIComponent(projectId)}/sessions`;
-
-  const setParam = useCallback((key: string, value: string) => {
-    if (key === 'q') wroteQ.current = value;
-    setParams((prev) => {
-      const next = new URLSearchParams(prev);
-      if (value === '' || value === 'all') next.delete(key); else next.set(key, value);
-      return next;
-    }, { replace: true });
-  }, [setParams]);
-
-  useEffect(() => {
-    if (q === wroteQ.current) return;
-    wroteQ.current = q;
-    setText(q);
-  }, [q]);
-
-  useEffect(() => {
-    if (text.trim() === wroteQ.current) return;
-    const handle = setTimeout(() => setParam('q', text.trim()), FILTER_DEBOUNCE_MS);
-    return () => clearTimeout(handle);
-  }, [text, setParam]);
 
   const select = useCallback((id: string, options?: { replace?: boolean }) => {
     const search = params.toString();
@@ -79,18 +60,18 @@ export function Sessions() {
 
   return (
     <PageContainer>
-      <PageHeader title="Sessions" subtitle="What each runtime captured for this project, session by session." />
+      <PageHeader className="pb-0" title="Sessions" subtitle="What each runtime captured for this project, session by session." />
       <FilterBar
         className="mb-4"
         searchLabel="Filter sessions"
         placeholder="Filter by title, agent or branch"
         inputRef={filterInputRef}
-        query={text}
-        onQueryChange={setText}
+        query={draft.text}
+        onQueryChange={draft.setText}
         filters={[STATE_FILTER]}
         values={{ state: status }}
-        onFilterChange={setParam}
-        onClear={() => { setText(''); setParam('q', ''); setParam('state', 'all'); }}
+        onFilterChange={filterParams.setFilter}
+        onClear={() => { draft.reset(); filterParams.clear(); }}
       />
       <div className="min-h-[60vh] rounded-lg border border-outline-variant/20">
         <MasterDetailSplit

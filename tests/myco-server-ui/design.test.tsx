@@ -170,3 +170,11 @@ describe('cn', () => {
     expect(classes).not.toContain('px-s4');
   });
 });
+
+describe('cn and the type scale', () => {
+  it('lets a type-scale class replace an earlier size, line height or family', async () => {
+    const { cn } = await import('../../packages/myco-server/ui/src/lib/cn');
+    expect(cn('text-sm leading-tight font-mono', 't-body')).toBe('t-body');
+    expect(cn('font-sans text-xs text-muted', 't-small')).toBe('text-muted t-small');
+  });
+});

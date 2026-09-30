@@ -63,6 +63,8 @@ function Segment({ value, children, label }: { value: string; children: ReactNod
     <Menu.RadioItem
       value={value}
       aria-label={label}
+      // The menu stays open, so one visit can set mode, accent and density together.
+      onSelect={(event) => event.preventDefault()}
       className={cn(
         'flex h-control-sm flex-1 cursor-default select-none items-center justify-center gap-s1 rounded-chip px-s2 t-small text-ink-2 outline-none',
         'data-[highlighted]:bg-surface-3 data-[highlighted]:text-ink data-[state=checked]:bg-primary-bg data-[state=checked]:text-ink',

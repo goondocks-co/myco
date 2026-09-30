@@ -4,7 +4,8 @@ import { extendTailwindMerge } from 'tailwind-merge';
 /**
  * The design system's own scales, so a class given later overrides one given
  * earlier in the same property: `px-0` after `px-s4`, `h-[44px]` after
- * `h-control`, `t-body` after `t-control`. Without them the merge keeps both,
+ * `h-control`, `t-body` after `t-control` or after `text-sm`, `leading-*` or
+ * `font-mono`. Without them the merge keeps both,
  * and whichever the stylesheet happens to emit last wins.
  */
 const twMerge = extendTailwindMerge<'type-scale'>({
@@ -15,6 +16,10 @@ const twMerge = extendTailwindMerge<'type-scale'>({
     },
     classGroups: {
       'type-scale': ['t-display', 't-h2', 't-h3', 't-body', 't-small', 't-meta', 't-kicker', 't-control', 't-mono'],
+    },
+    // A type-scale class sets the family, size and line height at once, so it replaces any of them given earlier.
+    conflictingClassGroups: {
+      'type-scale': ['font-size', 'leading', 'font-family'],
     },
   },
 });

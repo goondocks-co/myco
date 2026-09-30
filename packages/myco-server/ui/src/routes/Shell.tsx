@@ -2,7 +2,7 @@ import { useEffect, useState, type ReactNode } from 'react';
 import { Outlet, useLocation } from 'react-router-dom';
 import { Search } from 'lucide-react';
 import {
-  AccountMenu, AppShell, BottomBar, Brand, ErrorState, IconButton, LoadingState, NavItem, NavSection, ProjectFilter, SearchCommand, SearchTrigger,
+  AccountMenu, AppShell, BottomBar, Brand, ErrorState, IconButton, LoadingState, NavGroup, NavItem, NavSection, ProjectFilter, SearchCommand, SearchTrigger,
   Sidebar, useSearchShortcut, useShellMenu, type ProjectFilterItem,
 } from '../design';
 import { useIsAdmin, useMe } from '../hooks/use-me';
@@ -12,7 +12,7 @@ import { readLastProject, rememberProject } from '../lib/project-memory';
 import { signOut } from '../lib/session';
 import { NotAMember } from '../pages/NotAMember';
 import {
-  ADMIN_PAGES, MY_MACHINES_PATH, PHONE_PAGES, PROJECT_PAGES, PROJECTS_PATH, clearProjectHref, projectOf, projectPath, switchProjectHref, titleOf,
+  ADMIN_PAGES, MY_MACHINES_PATH, inGroup, PHONE_PAGES, PROJECT_PAGES, PROJECTS_PATH, clearProjectHref, projectOf, projectPath, switchProjectHref, titleOf,
 } from './nav';
 
 /** Most recent activity first; a project with none sorts last, then by name. */
@@ -85,7 +85,7 @@ export function Shell() {
   return (
     <AppShell
       sidebar={sidebar}
-      title={titleOf(location.pathname)}
+      title={titleOf(location.pathname, admin ? 'admin' : 'member')}
       headerActions={(
         <>
           <IconButton label="Search" onClick={() => setSearchOpen(true)}>
@@ -117,7 +117,7 @@ interface ShellSidebarProps {
   pages: ReadonlyArray<(typeof PROJECT_PAGES)[number] & { to: string }>;
   /** The project filter's rows, or null while the list is unread. */
   projects: ProjectFilterItem[] | null;
-  clearHref: string;
+  clearHref: string | null;
   admin: boolean;
   account: ReactNode;
   onSearch: () => void;
@@ -126,6 +126,7 @@ interface ShellSidebarProps {
 /** The nav column's contents, the same in the column and in the drawer. */
 function ShellSidebar({ pages, projects, clearHref, admin, account, onSearch }: ShellSidebarProps) {
   const { closeMenu } = useShellMenu();
+  const { pathname } = useLocation();
   return (
     <Sidebar
       top={(
@@ -144,7 +145,16 @@ function ShellSidebar({ pages, projects, clearHref, admin, account, onSearch }: 
       middle={projects === null ? undefined : <ProjectFilter items={projects} clearHref={clearHref} allHref={PROJECTS_PATH} onNavigate={closeMenu} />}
       foot={admin ? (
         <NavSection label="Admin">
-          {ADMIN_PAGES.map((page) => <NavItem key={page.to} to={page.to} label={page.label} icon={page.icon} onNavigate={closeMenu} />)}
+          {ADMIN_PAGES.map((page) => (page.children === undefined
+            ? <NavItem key={page.to} to={page.to} label={page.label} icon={page.icon} onNavigate={closeMenu} />
+            : (
+              <NavGroup
+                key={page.to}
+                item={{ to: page.to, label: page.label, icon: page.icon, onNavigate: closeMenu }}
+                items={page.children.map((child) => ({ ...child, icon: page.icon, onNavigate: closeMenu }))}
+                open={inGroup(page, pathname)}
+              />
+            )))}
         </NavSection>
       ) : undefined}
       account={account}

@@ -140,6 +140,26 @@ describe('Spores list', () => {
     expect((screen.getByLabelText('Filter spores') as HTMLInputElement).value).toBe('cache');
   });
 
+  it('clears the query, status, type and page in one step, back to what the page opens on', async () => {
+    const { requested } = server(base({
+      '/api/projects/x/spores?limit=25&status=obsolete&type=gotcha&q=cache&offset=25': () => list([ROWS[0]], 30),
+      '/api/projects/x/spores?limit=25&status=active': () => list(ROWS),
+    }));
+    let where = '';
+    const Probe = () => { const location = useLocation(); where = location.pathname + location.search; return null; };
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    render(<AppearanceProvider><QueryClientProvider client={client}><MemoryRouter initialEntries={['/p/x/spores?status=obsolete&type=gotcha&q=cache&offset=25']}><App /><Probe /></MemoryRouter></QueryClientProvider></AppearanceProvider>);
+    await screen.findAllByRole('row');
+    fireEvent.click(screen.getByRole('button', { name: 'Clear search and filters' }));
+    await waitFor(() => expect(where).toBe('/p/x/spores'));
+    await asked(requested, '/api/projects/x/spores?limit=25&status=active');
+    expect(picked('Status')).toBe('Active');
+    expect(picked('Type')).toBe('Every type');
+    expect((screen.getByLabelText('Filter spores') as HTMLInputElement).value).toBe('');
+    await new Promise((resolve) => setTimeout(resolve, 400));
+    expect(where).toBe('/p/x/spores');
+  });
+
   it('pages the match, and a change of status starts the next match at its first page', async () => {
     const { requested } = server(base({
       '/api/projects/x/spores?limit=25&status=active': () => list(ROWS, 30),

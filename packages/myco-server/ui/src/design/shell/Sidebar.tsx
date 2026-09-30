@@ -40,7 +40,7 @@ const itemClass = (active: boolean) => cn(
 /** One page in the nav; the page open now is marked current. */
 export function NavItem({ to, label, icon: Icon, end = false, badge, onNavigate }: NavItemProps) {
   return (
-    <NavLink to={to} end={end} onClick={onNavigate} className={({ isActive }) => itemClass(isActive)}>
+    <NavLink to={to} end={end} onClick={onNavigate} className={({ isActive }: { isActive: boolean }) => itemClass(isActive)}>
       <Icon aria-hidden className="size-[18px] shrink-0" strokeWidth={1.6} />
       <span className="min-w-0 flex-1 truncate">{label}</span>
       {badge != null && <span className="ml-auto shrink-0 t-meta text-faint">{badge}</span>}
@@ -91,9 +91,9 @@ export function SearchTrigger({ onOpen, label = 'Search' }: { onOpen: () => void
 export interface SidebarProps {
   /** The brand, the search field and the pages, top down. */
   top: ReactNode;
-  /** The project filter, between the pages and the foot. */
+  /** The project filter: the one part that scrolls when the column runs short. */
   middle?: ReactNode;
-  /** The admin pages, at the foot of the scrolling part; left out for a member. */
+  /** The admin pages, pinned under the project filter; left out for a member. */
   foot?: ReactNode;
   /** The account menu, pinned to the bottom. */
   account: ReactNode;
@@ -101,19 +101,54 @@ export interface SidebarProps {
 }
 
 /**
- * The nav column: brand, search and pages at the top, the project filter, then
- * the admin foot. The account stays pinned to the bottom while the rest
- * scrolls, so it is in reach on a short screen.
+ * The nav column: brand, search and pages at the top, the project filter, the
+ * admin foot, and the account at the bottom. The pages, the foot and the
+ * account stay in view on a laptop's screen; only the project list scrolls. On
+ * a screen too short for even that, the whole column scrolls.
  */
 export function Sidebar({ top, middle, foot, account, className }: SidebarProps) {
   return (
-    <div className={cn('flex h-full min-h-0 flex-col', className)}>
-      <div className="flex min-h-0 flex-1 flex-col gap-s4 overflow-y-auto px-s3 pb-s3 pt-s4">
-        <div className="flex flex-col gap-s3">{top}</div>
-        {middle}
-        {foot != null && <div className="mt-auto border-t border-line pt-s3">{foot}</div>}
-      </div>
+    <div className={cn('flex h-full min-h-0 flex-col overflow-y-auto', className)}>
+      <div className="flex shrink-0 flex-col gap-s3 px-s3 pb-s3 pt-s4">{top}</div>
+      <div className="flex min-h-[132px] flex-1 flex-col px-s3">{middle}</div>
+      {foot != null && <div className="shrink-0 border-t border-line px-s3 py-s2">{foot}</div>}
       <div className="shrink-0 border-t border-line px-s3 py-s2">{account}</div>
+    </div>
+  );
+}
+
+export interface NavGroupProps {
+  /** The group's own page, which heads it. */
+  item: NavItemProps;
+  /** The pages folded under it, listed while any page of the group is open. */
+  items: readonly NavItemProps[];
+  /** Whether a page of the group is open. */
+  open: boolean;
+}
+
+/** A page with the pages folded under it: the head always, the rest while the group is open. */
+export function NavGroup({ item, items, open }: NavGroupProps) {
+  return (
+    <div className="flex flex-col gap-[2px]" data-nav-group="">
+      <NavItem {...item} end />
+      {open && (
+        <div className="ml-[21px] flex flex-col gap-[2px] border-l border-line pl-s2">
+          {items.map((child) => (
+            <NavLink
+              key={child.to}
+              to={child.to}
+              onClick={child.onNavigate}
+              className={({ isActive }: { isActive: boolean }) => cn(
+                'flex h-control-sm items-center rounded-control px-s2 t-small transition-colors duration-120',
+                isActive ? 'bg-surface-3 font-medium text-ink' : 'text-muted hover:bg-surface-2 hover:text-ink',
+                focusRing,
+              )}
+            >
+              {child.label}
+            </NavLink>
+          ))}
+        </div>
+      )}
     </div>
   );
 }

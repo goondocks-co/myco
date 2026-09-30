@@ -158,6 +158,35 @@ describe('Sessions list', () => {
     ]);
   });
 
+  it('clears the query and the state in one step, keeping the filters the bar does not hold', async () => {
+    const { requested } = server(base({
+      '/api/projects/x/sessions': () => page(ROWS),
+      '/api/projects/x/activity': () => Response.json(ACTIVITY),
+    }));
+    mount('/p/x/sessions?q=fix&state=ended&branch=main');
+    await screen.findAllByRole('row');
+    expect((screen.getByLabelText('Filter sessions') as HTMLInputElement).value).toBe('fix');
+    fireEvent.click(screen.getByRole('button', { name: 'Clear search and filters' }));
+    await waitFor(() => expect(screen.getByTestId('location').textContent).toBe('/p/x/sessions?branch=main'));
+    expect((screen.getByLabelText('Filter sessions') as HTMLInputElement).value).toBe('');
+    expect(screen.getByLabelText('State').textContent).toContain('Open and ended');
+    await asked(requested, '/api/projects/x/sessions?limit=50&branch=main');
+    // Nothing written before the Clear comes back once the debounce would have fired.
+    await new Promise((resolve) => setTimeout(resolve, 400));
+    expect(screen.getByTestId('location').textContent).toBe('/p/x/sessions?branch=main');
+  });
+
+  it('forgets text still waiting to be written when Clear comes first', async () => {
+    server(base({ '/api/projects/x/sessions': () => page(ROWS), '/api/projects/x/activity': () => Response.json(ACTIVITY) }));
+    mount('/p/x/sessions?state=open');
+    await screen.findAllByRole('row');
+    fireEvent.change(screen.getByLabelText('Filter sessions'), { target: { value: 'half-typed' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Clear search and filters' }));
+    await new Promise((resolve) => setTimeout(resolve, 400));
+    expect(screen.getByTestId('location').textContent).toBe('/p/x/sessions');
+    expect((screen.getByLabelText('Filter sessions') as HTMLInputElement).value).toBe('');
+  });
+
   it('adopts a filter that arrives from a link rather than overwriting it, and keeps the filter on the link to a session', async () => {
     server(base({
       '/api/projects/x/sessions?limit=50&q=fix': () => page([ROWS[1]]),
@@ -793,6 +822,16 @@ describe('Session detail', () => {
     fireEvent.change(select, { target: { value: 'abandoned' } });
     expect((await within(card).findByRole('status')).textContent).toBe('The status could not be saved');
     expect(select.value).toBe('active');
+  });
+
+  it('shows the whole session id on hover and keeps its copy control in the cell', async () => {
+    server(detailRoutes());
+    mount('/p/x/sessions/s1');
+    const copy = await screen.findByRole('button', { name: 'Copy session id' });
+    expect(copy.getAttribute('title')).toBe('s1');
+    // The control fills the truncating cell, so the value ellipsises beside its icon instead of pushing it out.
+    expect(copy.className.split(' ')).toContain('w-full');
+    expect(copy.querySelector('svg')).not.toBeNull();
   });
 
   it('links the transcript by segment and never fetches its bytes', async () => {

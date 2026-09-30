@@ -29,7 +29,11 @@ const ROLES = [
   { role: 'member', cookie: 'memberCookie', name: 'Lin' },
 ] as const;
 
-const ADMIN_PAGES = ['Members', 'Settings', 'Status', 'Measures', 'Operations'];
+/** The admin foot; Measures and Operations fold under Status and show while its group is open. */
+const ADMIN_PAGES = ['Members', 'Settings', 'Status'];
+const PAGES_NAV = ['Overview', 'Sessions', 'Spores', 'Plans', 'Agent runs'];
+/** How many projects the filter lists before "N more". */
+const FILTER_LIMIT = 8;
 
 /** The project the checks open: the fixture's first, or on a real deployment the first the project filter lists. */
 function fixtureProject(): { projectId: string; name: string } | null {
@@ -48,13 +52,33 @@ async function sessionsPath(page: Page): Promise<string> {
   return `${href}/sessions`;
 }
 
-/** The fixture's project names, each listed in the project filter. */
+/**
+ * The project filter lists the most recent projects up to its limit, the rest
+ * behind "N more", and every row it lists is on screen or one scroll of the
+ * list away; the list itself starts on screen.
+ */
 async function expectProjectsListed(page: Page, scope: ReturnType<Page['locator']>): Promise<void> {
   const filter = scope.getByRole('navigation', { name: 'Projects' });
-  await expect(filter).toBeVisible();
-  if (!onFixture()) { await expect(filter.locator('[data-project-filter-item]').first()).toBeVisible(); return; }
+  await expect(filter).toBeInViewport();
+  const rows = filter.locator('[data-project-filter-item]');
+  await expect(rows.first()).toBeInViewport();
+  if (!onFixture()) return;
   const names = JSON.parse(screensEnv('projectNames')) as string[];
-  for (const name of names) await expect(filter.getByText(name, { exact: true })).toBeVisible();
+  expect(names.length).toBeGreaterThan(FILTER_LIMIT);
+  await expect(rows).toHaveCount(FILTER_LIMIT);
+  const more = filter.getByRole('link', { name: `${names.length - FILTER_LIMIT} more` });
+  await expect(more).toBeInViewport();
+}
+
+/** The pages, the admin foot (for an admin) and the account are all on screen, whatever the project list holds. */
+async function expectNavInView(scope: ReturnType<Page['locator']>, role: 'admin' | 'member'): Promise<void> {
+  const pages = scope.getByRole('navigation', { name: 'Pages' });
+  for (const label of PAGES_NAV) await expect(pages.getByRole('link', { name: label })).toBeInViewport();
+  await expect(pages.getByRole('link', { name: 'Access' })).toHaveCount(role === 'admin' ? 1 : 0);
+  const admin = scope.getByRole('navigation', { name: 'Admin' });
+  if (role === 'admin') for (const label of ADMIN_PAGES) await expect(admin.getByRole('link', { name: label })).toBeInViewport();
+  else await expect(admin).toHaveCount(0);
+  await expect(scope.getByRole('button', { name: /^Account and appearance for / })).toBeInViewport();
 }
 
 test.describe('dashboard shell', () => {
@@ -69,21 +93,17 @@ test.describe('dashboard shell', () => {
         if (viewport === 'desktop') {
           const nav = page.getByRole('complementary', { name: 'Navigation' });
           await expect(nav).toBeVisible();
-          const pages = nav.getByRole('navigation', { name: 'Pages' });
-          await expect(pages.getByRole('link', { name: 'Sessions' })).toHaveAttribute('aria-current', 'page');
-          await expect(pages.getByRole('link', { name: 'Access' })).toHaveCount(role === 'admin' ? 1 : 0);
+          await expect(nav.getByRole('navigation', { name: 'Pages' }).getByRole('link', { name: 'Sessions' })).toHaveAttribute('aria-current', 'page');
+          await expectNavInView(nav, role);
           await expectProjectsListed(page, nav);
           await expect(nav.locator('[data-project-filter-item][aria-current="true"]')).toHaveCount(1);
-          await expect(nav.getByRole('button', { name: /Search/ })).toBeVisible();
-          if (onFixture()) await expect(nav.getByRole('button', { name: `Account and appearance for ${name}` })).toBeVisible();
-          const admin = nav.getByRole('navigation', { name: 'Admin' });
-          if (role === 'admin') for (const label of ADMIN_PAGES) await expect(admin.getByRole('link', { name: label })).toBeVisible();
-          else await expect(admin).toHaveCount(0);
+          await expect(nav.getByRole('button', { name: /Search/ })).toBeInViewport();
+          if (onFixture()) await expect(nav.getByRole('button', { name: `Account and appearance for ${name}` })).toBeInViewport();
         } else {
           await expect(page.getByRole('complementary', { name: 'Navigation' })).toHaveCount(0);
           await expect(page.getByRole('banner')).toContainText('Sessions');
           const bar = page.getByRole('navigation', { name: 'Main pages' });
-          for (const label of ['Overview', 'Sessions', 'Spores']) await expect(bar.getByRole('link', { name: label })).toBeVisible();
+          for (const label of ['Overview', 'Sessions', 'Spores']) await expect(bar.getByRole('link', { name: label })).toBeInViewport();
           await expect(bar.getByRole('link', { name: 'Sessions' })).toHaveAttribute('aria-current', 'page');
           await expect(page.getByRole('banner').getByRole('button', { name: 'Search' })).toBeVisible();
         }
@@ -98,8 +118,8 @@ test.describe('dashboard shell', () => {
           await page.getByRole('navigation', { name: 'Main pages' }).getByRole('button', { name: 'More' }).click();
           const drawer = page.getByRole('dialog', { name: 'Navigation' });
           await expect(drawer).toBeVisible();
+          await expectNavInView(drawer, role);
           await expectProjectsListed(page, drawer);
-          await expect(drawer.getByRole('navigation', { name: 'Admin' })).toHaveCount(role === 'admin' ? 1 : 0);
           await expectNoHorizontalOverflow(page);
           await expectNoRawIds(page, SHELL);
           await expectAxeClean(page, [SHELL]);

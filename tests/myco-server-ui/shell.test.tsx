@@ -6,7 +6,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import App from '../../packages/myco-server/ui/src/App';
 import { AppearanceProvider } from '../../packages/myco-server/ui/src/providers/appearance';
 import { forgetProject } from '../../packages/myco-server/ui/src/lib/project-memory';
-import { recencyOf, shownProjects } from '../../packages/myco-server/ui/src/design';
+import { ProjectFilter, recencyOf, shownProjects } from '../../packages/myco-server/ui/src/design';
 import {
   clearProjectHref, keptFilters, pageSuffix, projectOf, switchProjectHref, titleOf,
 } from '../../packages/myco-server/ui/src/routes/nav';
@@ -78,6 +78,8 @@ function screenWidth(width: number): void {
 }
 
 const location = () => screen.getByTestId('location').textContent;
+/** An element in a few words, so a focus assertion that fails says where focus went. */
+const describeFocus = (el: Element | null) => (el === null ? 'nothing' : `${el.tagName.toLowerCase()} "${el.getAttribute('aria-label') ?? el.textContent?.trim().slice(0, 40)}"`);
 const filterItems = () => within(screen.getByRole('navigation', { name: 'Projects' })).getAllByRole('link').filter((a) => a.hasAttribute('data-project-filter-item'));
 
 describe('the dashboard shell', () => {
@@ -101,9 +103,10 @@ describe('the dashboard shell', () => {
       '/api/projects': () => Response.json({ projects: [{ projectId: 'proj_1', name: 'Alpha', createdAt: 0, sessionCount: 3, lastActivityAt: null }] }),
     });
     mount('/projects');
-    const card = within(await screen.findByRole('list', { name: 'Projects' })).getByRole('link', { name: /Alpha/ });
+    const list = await screen.findByRole('list', { name: 'Projects' });
+    const card = within(list).getByRole('link', { name: /Alpha/ });
     expect(card.getAttribute('href')).toBe('/p/proj_1');
-    expect(screen.getByText('3 sessions')).toBeTruthy();
+    expect(within(list).getByText('3 sessions')).toBeTruthy();
   });
 
   it('tells a signed-in account that no member is linked to it, naming each way in, and never shows the shell', async () => {
@@ -164,15 +167,37 @@ describe('the nav', () => {
     expect(filterItems().map((a) => a.textContent)).toEqual([expect.stringContaining('Alpha'), expect.stringContaining('Beta')]);
     expect(filterItems()[0]!.getAttribute('aria-current')).toBe('true');
     expect(filterItems()[1]!.textContent).toContain('194');
+    expect(within(filterItems()[1]!).getByText('194 sessions').className).toContain('sr-only');
     // The dot says recency in words, never by colour alone.
     expect(within(filterItems()[0]!).getByRole('img', { name: 'Active in the last hour' })).toBeTruthy();
     expect(within(filterItems()[1]!).getByRole('img', { name: 'No activity today' })).toBeTruthy();
     const admin = screen.getByRole('navigation', { name: 'Admin' });
-    expect(within(admin).getAllByRole('link').map((a) => a.textContent)).toEqual(['Members', 'Settings', 'Status', 'Measures', 'Operations']);
+    // Measures and Operations fold under Status, listed while a page of the group is open.
+    expect(within(admin).getAllByRole('link').map((a) => a.textContent)).toEqual(['Members', 'Settings', 'Status']);
     expect(screen.getByRole('button', { name: /Search/ })).toBeTruthy();
     expect(screen.getByRole('button', { name: 'Account and appearance for machine_1' })).toBeTruthy();
     expect(screen.getByRole('link', { name: 'Skip to content' }).getAttribute('href')).toBe('#main');
     expect(screen.getByRole('main').id).toBe('main');
+  });
+
+  it('folds Measures and Operations under Status, listed while a page of the group is open, and keeps their routes', async () => {
+    server({ ...signedIn(), '/api/kpis': () => Response.json({}) });
+    mount('/measures');
+    const admin = await screen.findByRole('navigation', { name: 'Admin' });
+    expect(within(admin).getAllByRole('link').map((a) => a.textContent)).toEqual(['Members', 'Settings', 'Status', 'Measures', 'Operations']);
+    expect(within(admin).getByRole('link', { name: 'Measures' }).getAttribute('aria-current')).toBe('page');
+    fireEvent.click(within(admin).getByRole('link', { name: 'Operations' }));
+    await waitFor(() => expect(location()).toBe('/operations'));
+    fireEvent.click(within(screen.getByRole('navigation', { name: 'Admin' })).getByRole('link', { name: 'Members' }));
+    await waitFor(() => expect(location()).toBe('/access'));
+    expect(within(screen.getByRole('navigation', { name: 'Admin' })).queryByRole('link', { name: 'Measures' })).toBeNull();
+  });
+
+  it('titles /access "My machines" in a member\'s compact header', async () => {
+    screenWidth(390);
+    server({ ...signedIn(MEMBER), '/api/members': () => Response.json({ members: [] }), '/api/credentials': () => Response.json({ rows: [], cursor: null }) });
+    mount('/access');
+    await waitFor(() => expect(screen.getByRole('banner').textContent).toContain('My machines'));
   });
 
   it('hides every admin page from a member: no Access, no Members, Settings, Status, Measures or Operations', async () => {
@@ -199,7 +224,7 @@ describe('the nav', () => {
 });
 
 describe('the project filter', () => {
-  it('narrows the page to a picked project, keeping the list filters and dropping the open record; picking it again clears', async () => {
+  it('narrows the page to a picked project, keeping the list filters and dropping the open record', async () => {
     server(signedIn());
     mount('/p/alpha/sessions?q=fix&state=ended&tab=plans&offset=25');
     await waitFor(() => expect(filterItems()).toHaveLength(2));
@@ -207,9 +232,27 @@ describe('the project filter', () => {
     await waitFor(() => expect(location()).toBe('/p/beta/sessions?q=fix&state=ended'));
     expect(filterItems()[1]!.getAttribute('aria-current')).toBe('true');
     await waitFor(() => expect(window.localStorage.getItem('myco-last-project')).toBe('beta'));
-    // Picked again, the filter clears; until a page has an all-projects form, that is the Projects list.
+    // No page has an all-projects form yet, so the picked project offers no clear and picking it again stays put.
+    expect(filterItems()[1]!.querySelector('[data-clear-filter]')).toBeNull();
+    expect(within(filterItems()[1]!).queryByText('Clear the filter')).toBeNull();
     fireEvent.click(filterItems()[1]!);
-    await waitFor(() => expect(location()).toBe('/projects'));
+    await waitFor(() => expect(location()).toBe('/p/beta/sessions?q=fix&state=ended'));
+  });
+
+  it('offers the clear on a page with an all-projects form, and leads it there with the list filters', () => {
+    const items = PROJECTS.map((p, i) => ({ ...p, href: `/p/${p.projectId}/sessions`, active: i === 0 }));
+    const clearTo = clearProjectHref({ pathname: '/p/alpha/sessions/s1', search: '?q=fix&tab=plans' }, { '/sessions': '/sessions' });
+    expect(clearTo).toBe('/sessions?q=fix');
+    render(<MemoryRouter><ProjectFilter items={items} clearHref={clearTo} allHref="/projects" now={NOW} /></MemoryRouter>);
+    const active = screen.getAllByRole('link').find((a) => a.getAttribute('aria-current') === 'true')!;
+    expect(active.getAttribute('href')).toBe('/sessions?q=fix');
+    expect(active.querySelector('[data-clear-filter]')).not.toBeNull();
+    expect(within(active).getByText('Clear the filter')).toBeTruthy();
+    cleanup();
+    render(<MemoryRouter><ProjectFilter items={items} clearHref={null} allHref="/projects" now={NOW} /></MemoryRouter>);
+    const kept = screen.getAllByRole('link').find((a) => a.getAttribute('aria-current') === 'true')!;
+    expect(kept.getAttribute('href')).toBe('/p/alpha/sessions');
+    expect(kept.querySelector('[data-clear-filter]')).toBeNull();
   });
 
   it('works out every link from the path and the query string', () => {
@@ -219,7 +262,8 @@ describe('the project filter', () => {
     expect(switchProjectHref({ pathname: '/p/x/spores/sp1', search: '?status=all&q=cache' }, 'y')).toBe('/p/y/spores?status=all&q=cache');
     expect(switchProjectHref({ pathname: '/p/x', search: '' }, 'a/b')).toBe('/p/a%2Fb');
     expect(switchProjectHref({ pathname: '/settings', search: '?tab=secrets' }, 'y')).toBe('/p/y');
-    expect(clearProjectHref({ pathname: '/p/x/sessions', search: '?q=fix' })).toBe('/projects');
+    expect(clearProjectHref({ pathname: '/p/x/sessions', search: '?q=fix' })).toBeNull();
+    expect(clearProjectHref({ pathname: '/settings', search: '' }, { '/sessions': '/sessions' })).toBeNull();
   });
 
   it('lists the eight most recent and keeps the picked one among them', () => {
@@ -251,6 +295,8 @@ describe('the page titles', () => {
       'Spores', 'Spores', 'Agent runs', 'Access', 'Not found',
       'Projects', 'Status', 'Measures', 'Members', 'Settings', 'Operations', 'Not found',
     ]);
+    // A member reads /access for their own machines.
+    expect([titleOf('/access', 'member'), titleOf('/access', 'admin'), titleOf('/status', 'member')]).toEqual(['My machines', 'Members', 'Status']);
   });
 });
 
@@ -276,12 +322,49 @@ describe('on a phone', () => {
     expect(location()).toBe('/p/alpha/plans');
   });
 
+  it('keeps Tab inside the open drawer, and returns focus to the button that opened it', async () => {
+    screenWidth(390);
+    server(signedIn());
+    mount('/p/alpha/sessions');
+    const more = within(await screen.findByRole('navigation', { name: 'Main pages' })).getByRole('button', { name: 'More' });
+    expect(more.getAttribute('aria-haspopup')).toBe('dialog');
+    expect(more.getAttribute('aria-expanded')).toBe('false');
+    more.focus();
+    fireEvent.click(more);
+    const drawer = await screen.findByRole('dialog', { name: 'Navigation' });
+    await waitFor(() => expect(drawer.contains(document.activeElement)).toBe(true));
+    expect(more.getAttribute('aria-expanded')).toBe('true');
+    await waitFor(() => expect(filterItems().length).toBeGreaterThan(0));
+    const tabbable = [...drawer.querySelectorAll<HTMLElement>('a[href], button:not([disabled])')];
+    const first = tabbable[0]!;
+    const last = tabbable.at(-1)!;
+    // Tab from the last control wraps to the first; Shift+Tab from the first wraps to the last.
+    const focused = () => describeFocus(document.activeElement);
+    last.focus();
+    fireEvent.keyDown(last, { key: 'Tab' });
+    expect(focused()).toBe(describeFocus(first));
+    fireEvent.keyDown(first, { key: 'Tab', shiftKey: true });
+    expect(focused()).toBe(describeFocus(last));
+    // Focus sent outside the drawer is pulled back in, and the page behind it is hidden from assistive technology.
+    const behind = document.getElementById('main')!;
+    behind.focus();
+    expect(drawer.contains(document.activeElement)).toBe(true);
+    expect(behind.closest('[aria-hidden="true"]')).not.toBeNull();
+    fireEvent.keyDown(document.activeElement!, { key: 'Escape' });
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Navigation' })).toBeNull());
+    await waitFor(() => expect(focused()).toBe(describeFocus(more)));
+    expect(more.getAttribute('aria-expanded')).toBe('false');
+  });
+
   it('opens the nav from a menu button on a tablet, where there is no bottom bar', async () => {
     screenWidth(800);
     server(signedIn());
     mount('/p/alpha');
-    fireEvent.click(await screen.findByRole('button', { name: 'Open navigation' }));
+    const opener = await screen.findByRole('button', { name: 'Open navigation' });
+    expect([opener.getAttribute('aria-haspopup'), opener.getAttribute('aria-expanded')]).toEqual(['dialog', 'false']);
+    fireEvent.click(opener);
     expect(await screen.findByRole('dialog', { name: 'Navigation' })).toBeTruthy();
+    expect(opener.getAttribute('aria-expanded')).toBe('true');
     expect(screen.queryByRole('navigation', { name: 'Main pages' })).toBeNull();
   });
 });
@@ -300,7 +383,13 @@ describe('the account menu', () => {
     expect(within(menu).getByRole('menuitem', { name: 'Sign out' })).toBeTruthy();
     fireEvent.click(within(menu).getByRole('menuitemradio', { name: 'Light' }));
     await waitFor(() => expect(document.documentElement.classList.contains('light')).toBe(true));
-    expect(JSON.parse(window.localStorage.getItem('myco-appearance')!).mode).toBe('light');
+    // The menu stays open, so mode, accent and density are set in one visit.
+    fireEvent.click(within(screen.getByRole('menu')).getByRole('menuitemradio', { name: 'Compact' }));
+    fireEvent.click(within(screen.getByRole('menu')).getByRole('menuitemradio', { name: 'Terracotta' }));
+    expect(screen.getByRole('menu')).toBeTruthy();
+    expect(JSON.parse(window.localStorage.getItem('myco-appearance')!)).toMatchObject({ mode: 'light', density: 'compact', theme: 'terracotta' });
+    document.documentElement.removeAttribute('data-density');
+    document.documentElement.setAttribute('data-theme', 'sage');
     document.documentElement.classList.remove('light');
     window.localStorage.removeItem('myco-appearance');
   });

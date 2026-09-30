@@ -1,6 +1,6 @@
 import { INVITE_CONTROLS } from '@goondocks/myco-shared/member-protocol';
 import {
-  Activity, Bot, Gauge, KeyRound, LayoutDashboard, ListChecks, MessageSquare, Settings2, Sprout, Users, Wrench, type LucideIcon,
+  Activity, Bot, KeyRound, LayoutDashboard, ListChecks, MessageSquare, Settings2, Sprout, Users, type LucideIcon,
 } from 'lucide-react';
 
 /** A page under a project, reached at `/p/:project<suffix>`. */
@@ -31,16 +31,33 @@ export interface ServerPage {
   label: string;
   icon: LucideIcon;
   to: string;
+  /** Pages folded under this one in the nav, listed while any of them is open. */
+  children?: ReadonlyArray<{ label: string; to: string }>;
 }
 
-/** The nav foot: the server's admin pages. A member who is not an admin sees none of them. */
+/**
+ * The nav foot: the server's admin pages. A member who is not an admin sees
+ * none of them. Measures and Operations fold under Status, where the one
+ * Health page will hold all three.
+ */
 export const ADMIN_PAGES: readonly ServerPage[] = [
   { label: INVITE_CONTROLS.page, icon: Users, to: '/access' },
   { label: 'Settings', icon: Settings2, to: '/settings' },
-  { label: 'Status', icon: Activity, to: '/status' },
-  { label: 'Measures', icon: Gauge, to: '/measures' },
-  { label: 'Operations', icon: Wrench, to: '/operations' },
+  {
+    label: 'Status',
+    icon: Activity,
+    to: '/status',
+    children: [
+      { label: 'Measures', to: '/measures' },
+      { label: 'Operations', to: '/operations' },
+    ],
+  },
 ];
+
+/** Whether a path is a page of a nav group: its head or one folded under it. */
+export function inGroup(page: ServerPage, pathname: string): boolean {
+  return [page.to, ...(page.children ?? []).map((child) => child.to)].includes(pathname.replace(/\/+$/, ''));
+}
 
 /** Every project, listed with its session count. */
 export const PROJECTS_PATH = '/projects';
@@ -50,10 +67,10 @@ export const MY_MACHINES_PATH = '/access';
 
 /**
  * The pages that have an all-projects form, by the suffix of their per-project
- * one. Clearing the project filter on one of these lands on its all-projects
- * form; on any other page it lands on the Projects list.
+ * one. The project filter can be cleared only on one of these: until a page
+ * has a form that spans every project, there is nothing to clear it to.
  */
-const ALL_PROJECTS_FORMS: Readonly<Record<string, string>> = {};
+export const ALL_PROJECTS_FORMS: Readonly<Record<string, string>> = {};
 
 /**
  * The query parameters that filter a list. They survive a change of project, so
@@ -104,19 +121,24 @@ export function switchProjectHref(location: { pathname: string; search: string }
   return `${projectPath(projectId, pageSuffix(location.pathname))}${keptFilters(location.search)}`;
 }
 
-/** Where clearing the project filter leads: the page's all-projects form, or the Projects list where there is none yet. */
-export function clearProjectHref(location: { pathname: string; search: string }): string {
-  const all = ALL_PROJECTS_FORMS[pageSuffix(location.pathname)];
-  return all === undefined ? PROJECTS_PATH : `${all}${keptFilters(location.search)}`;
+/** Where clearing the project filter leads: the page's all-projects form, or null when the page has none yet. */
+export function clearProjectHref(
+  location: { pathname: string; search: string },
+  forms: Readonly<Record<string, string>> = ALL_PROJECTS_FORMS,
+): string | null {
+  if (projectOf(location.pathname) === null) return null;
+  const all = forms[pageSuffix(location.pathname)];
+  return all === undefined ? null : `${all}${keptFilters(location.search)}`;
 }
 
 const SERVER_TITLES: Readonly<Record<string, string>> = {
   [PROJECTS_PATH]: 'Projects',
-  ...Object.fromEntries(ADMIN_PAGES.map((page) => [page.to, page.label])),
+  ...Object.fromEntries(ADMIN_PAGES.flatMap((page) => [page, ...(page.children ?? [])]).map((page) => [page.to, page.label])),
 };
 
-/** The page a path shows, in the words of the nav. */
-export function titleOf(pathname: string): string {
+/** The page a path shows, in the words of the nav. A member reads `/access` for their own machines. */
+export function titleOf(pathname: string, role: 'admin' | 'member' = 'admin'): string {
+  if (role === 'member' && pathname.replace(/\/+$/, '') === MY_MACHINES_PATH) return 'My machines';
   if (projectOf(pathname) !== null) {
     const suffix = pageSuffix(pathname);
     return PROJECT_PAGES.find((page) => page.suffix === suffix)?.label ?? 'Not found';
