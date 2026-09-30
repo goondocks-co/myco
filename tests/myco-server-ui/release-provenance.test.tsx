@@ -2,8 +2,7 @@ import { afterEach, describe, expect, it } from 'bun:test';
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 
-import { ReleaseChip } from '../../packages/myco-server/ui/src/components/release/ReleaseChip';
-import { ReleaseTracking, checkSummary } from '../../packages/myco-server/ui/src/components/release/ReleaseTracking';
+import { ReleaseTracking, checkSummary } from '../../packages/myco-server/ui/src/features/admin/project/ReleaseTracking';
 import { checkPending, RELEASE_CHECK_REFRESH_MS, type ReleaseProvenanceRow } from '../../packages/myco-server/ui/src/hooks/use-release-provenance';
 
 const NOW = Date.now();
@@ -27,33 +26,6 @@ function mount(node: React.ReactNode) {
   return render(<QueryClientProvider client={client}>{node}</QueryClientProvider>);
 }
 
-describe('the session release chip', () => {
-  it('names each state in fixed words, the ref people use, and nothing for a session without a state', () => {
-    const cases: Array<[string, string | null, string]> = [
-      ['released', 'refs/tags/myco/v2.0.3', 'Released· myco/v2.0.3'],
-      ['merged_unreleased', 'main', 'Merged, not released· main'],
-      ['not_on_release_line', null, 'Not on a release line'],
-      ['unknown', null, 'Release unknown'],
-    ];
-    for (const [state, ref, text] of cases) {
-      mount(<ReleaseChip release={{ state, confidence: 'high', ref, reason: 'r', checkedAt: NOW, latestCheck: null }} />);
-      expect(screen.getByTestId('release-chip').textContent).toBe(text);
-      cleanup();
-    }
-    mount(<ReleaseChip release={null} />);
-    expect(screen.queryByTestId('release-chip')).toBeNull();
-  });
-
-  it('says when the latest check failed after the state shown, and how old the state is', () => {
-    mount(<ReleaseChip release={{ state: 'merged_unreleased', confidence: 'medium', ref: 'main', reason: 'In main', checkedAt: NOW - 7_200_000,
-      latestCheck: { status: 'unavailable', failure: 'credential_rejected', finishedAt: NOW - 60_000 } }} />);
-    const chip = screen.getByTestId('release-chip');
-    expect(chip.textContent).toContain('latest check unavailable');
-    expect(chip.getAttribute('title')).toContain('GitHub refused the credential');
-    expect(chip.getAttribute('title')).toContain('Checked 2h ago');
-  });
-});
-
 describe('release tracking in project settings', () => {
   it('shows the configuration, whether a credential is configured and its purpose, never any of the token, and requests a check', async () => {
     const sent: Array<{ method: string; path: string }> = [];
@@ -66,7 +38,7 @@ describe('release tracking in project settings', () => {
     await waitFor(() => expect(screen.getByTestId('release-check')).toBeTruthy());
     expect(container.textContent).toContain('goondocks-co/myco');
     expect(container.textContent).toContain('packages/myco/ → refs/tags/myco/v*');
-    expect(container.textContent).toContain('Lookup credential: configured · Reads release tags and pull requests');
+    expect(screen.getByTestId('release-credential').textContent).toBe('Stored · Reads release tags and pull requests for this Project. It is not used for code tasks.');
     expect(container.textContent).not.toContain('ghp_');
     expect(container.textContent).not.toContain(TOKEN.slice(-4));
     expect(screen.getByTestId('release-check').textContent).toContain('48 checked · 3 changed · 2 unknown · 0 not reached');
@@ -147,7 +119,7 @@ describe('a lookup token, by the target this Deployment runs on', () => {
     await waitFor(() => expect(screen.getByTestId('release-check')).toBeTruthy());
     expect(await openForm().then((input) => input.getAttribute('placeholder'))).toBe('Optional for a public repository');
     expect(screen.getByText(/optional for a public one/)).toBeTruthy();
-    expect(screen.getByTestId('release-credential').textContent).toStartWith('Lookup credential: none · ');
+    expect(screen.getByTestId('release-credential').textContent).toStartWith('none · ');
     expect(document.body.textContent).not.toContain('Cloudflare');
   });
 
@@ -155,7 +127,7 @@ describe('a lookup token, by the target this Deployment runs on', () => {
     deployment(null);
     await waitFor(() => expect(screen.getByTestId('release-check')).toBeTruthy());
     expect((await openForm()).getAttribute('placeholder')).toBe('Needed for a private repository');
-    expect(screen.getByTestId('release-credential').textContent).toStartWith('Lookup credential: none · ');
+    expect(screen.getByTestId('release-credential').textContent).toStartWith('none · ');
     expect(document.body.textContent).not.toMatch(/public/);
   });
 

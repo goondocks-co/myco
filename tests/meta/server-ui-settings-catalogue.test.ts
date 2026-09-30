@@ -8,7 +8,7 @@ import { describe, expect, it } from 'bun:test';
 import { readFileSync, readdirSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { DEPLOYMENT_LEAVES } from '@myco-server-worker/core/settings.js';
-import { LEAF_FIELDS, LEAF_GROUPS } from '../../packages/myco-server/ui/src/settings/catalogue.js';
+import { LEAF_FIELDS, LEAF_GROUPS } from '../../packages/myco-server/ui/src/features/admin/settings/catalogue.js';
 
 function walkSources(root: string): string[] {
   if (statSync(root).isFile()) return [root];
@@ -52,12 +52,12 @@ describe('settings catalogue', () => {
 
   /**
    * A catalogue entry and a render arm are two halves of one control.
-   * `Settings.tsx` renders per `kind`, so a kind named here with no arm there
+   * `LeafControl.tsx` renders per `kind`, so a kind named here with no arm there
    * yields a leaf with a label, a note and no input — which reads as a rendered
    * control until someone tries to type in it.
    */
   it('gives every kind the catalogue uses a render arm on the Settings page', () => {
-    const page = readFileSync(join(import.meta.dir, '..', '..', 'packages', 'myco-server', 'ui', 'src', 'pages', 'Settings.tsx'), 'utf8');
+    const page = readFileSync(join(import.meta.dir, '..', '..', 'packages', 'myco-server', 'ui', 'src', 'features', 'admin', 'settings', 'LeafControl.tsx'), 'utf8');
     const used = [...new Set(LEAF_FIELDS.map((f) => f.kind))].sort();
     const unrendered = used.filter((kind) => !new RegExp(`field\\.kind === '${kind}'`).test(page));
     expect(unrendered).toEqual([]);
