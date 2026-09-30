@@ -15,6 +15,7 @@ import { writeDeploymentMembership } from '@myco/member/registry.js';
 import { readProvisionRecord, recordProvision } from '@myco/symbionts/member-provision-record.js';
 import { BUNDLED_SKILLS } from '@myco/symbionts/skills.generated.js';
 import { claimSubsystem, SYMBIONT_CONFIG_SUBSYSTEM } from '@myco/grove/subsystem-claim.js';
+import { linkMemberSkills } from '@myco/symbionts/member-skill-links.js';
 import { getPluginVersion } from '@myco/version.js';
 
 const SERVER = 'https://myco.example';
@@ -177,10 +178,18 @@ describe('a member\'s agent setup', () => {
     fs.mkdirSync(path.dirname(own), { recursive: true });
     fs.writeFileSync(own, 'written by 1.4');
     claimSubsystem(SYMBIONT_CONFIG_SUBSYSTEM, '/opt/other-install/.myco', { claimsHome: home });
+    // Provisioning refuses the agents themselves, and the skills link on their own holds them too.
     expect(provision()).toBe(true);
+    expect(out.join('\n')).toContain('Skipped Claude Code: Global symbiont configuration is claimed by another installation');
+    const folder = path.join(agentHome, '.claude', 'skills');
+    const links = linkMemberSkills(home, folder);
+    expect(links.held.map((h) => h.name)).toEqual(SKILLS);
+    expect(links.linked).toEqual([]);
     expect(fs.readFileSync(own, 'utf8')).toBe('written by 1.4');
     expect(fs.readdirSync(path.join(home, 'skills'))).toEqual([SKILLS[0]]);
-    expect(fs.existsSync(path.join(agentHome, '.claude', 'skills'))).toBe(false);
+    expect(fs.existsSync(folder)).toBe(false);
+    // A cutover taking that installation over links them.
+    expect(linkMemberSkills(home, folder, ['/opt/other-install/.myco']).linked).toEqual(SKILLS);
   });
 
   it('names drift in doctor: nothing recorded, another build, or a skill gone', () => {

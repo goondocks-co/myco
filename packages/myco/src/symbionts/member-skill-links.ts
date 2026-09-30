@@ -53,7 +53,7 @@ export function linkMemberSkills(mycoHome: string, folder: string, replacing: re
   // installation wrote them: nothing here seeds or links over them, and every skill is named as held. A claim a
   // cutover is taking over (`replacing`) does not hold them.
   const claim = readClaim(SYMBIONT_CONFIG_SUBSYSTEM, resolveClaimsHome(mycoHome));
-  if (isClaimedByPeer(SYMBIONT_CONFIG_SUBSYSTEM, mycoHome, { claimsHome: resolveClaimsHome(mycoHome) })
+  if (isClaimedByPeer(SYMBIONT_CONFIG_SUBSYSTEM, path.resolve(mycoHome), { claimsHome: resolveClaimsHome(mycoHome) })
     && !(claim !== null && replacing.some((home) => path.resolve(home) === path.resolve(claim.owner)))) {
     result.held.push(...Object.keys(BUNDLED_SKILLS).sort().map((name) => ({ name, by: `the installation that claims ${mycoHome}` })));
     return result;

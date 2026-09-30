@@ -108,6 +108,7 @@ describe('myco login sets up the agents on this machine', () => {
     // What `myco upgrade` and `myco update` run keeps the choice: no agent is set up on its own.
     expect(runProvision(['--refresh'], { mycoHome: home, cwd: root, stdout: (l) => out.push(l), stderr: (l) => err.push(l) })).toBe(true);
     expect(read(path.join(claudeDir, 'settings.json'))).toBeNull();
+    expect(out.at(-1)).toBe('No agent is set up for Myco on this machine; `myco member provision` sets them up.');
     out = [];
     expect(runProvision([], { mycoHome: home, cwd: root, stdout: (l) => out.push(l), stderr: (l) => err.push(l) })).toBe(true);
     expect(read(path.join(claudeDir, 'settings.json')) ?? '').toContain('--credential registry');
