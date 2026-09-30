@@ -19,11 +19,10 @@ import { formatRelative } from '../lib/format';
 import { harnessLabel } from '../lib/harness';
 import { SECRET_SLOTS, slotUse } from '@goondocks/myco-shared/secret-slots';
 import { LEAF_GROUPS, type LeafField } from '../settings/catalogue';
-import { Button, Input, Switch, Textarea } from '../design';
+import { Button, Input, Select, Switch, Textarea } from '../design';
 
 const TABS: { id: string; label: string; admin?: true }[] = [...LEAF_GROUPS.map((g) => ({ id: g.id, label: g.label })), { id: 'secrets', label: 'Credentials', admin: true }, { id: 'capabilities', label: 'Projects', admin: true }, { id: 'browser', label: 'This browser' }];
 
-const inputClass = 'rounded-md border border-outline-variant/30 bg-surface-container px-2 py-1 font-sans text-sm text-on-surface';
 
 const CAPABILITY_LABEL: Record<string, string> = { cortex: 'Context at session start and on prompts', canopy: 'Code map', skills: 'Skills', vault_evolution: 'Memory upkeep' };
 
@@ -46,7 +45,7 @@ export function Settings() {
       <PageHeader title="Settings" subtitle={admin
         ? 'What this server holds for every member. Each change saves as you make it and names who made it.'
         : 'What this server holds for every member. An admin changes these; this browser\'s appearance is yours.'} />
-      <div className="mb-4">
+      <div className="mb-4 max-w-full overflow-x-auto">
         <SubtabPill tabs={tabs} activeTab={tab} onTabChange={setTab} />
       </div>
       {LEAF_GROUPS.map((g) => g.id === tab && <LeafGroupPanel key={g.id} groupId={g.id} />)}
@@ -144,12 +143,10 @@ export function LeafControl({ field, row }: { field: LeafField; row: LeafRow | u
             onCheckedChange={(checked) => save(checked)} />
         )}
         {field.kind === 'select' && (
-          <select id={`leaf-${field.leaf}`} aria-label={field.label} className={`${inputClass} ${locked ? 'opacity-60' : ''}`}
-            value={value === null ? '' : String(value)} disabled={actions.setLeaf.isPending || locked}
-            onChange={(e) => { const raw = e.target.value; if (raw === '') return; const opt = (field.options ?? []).find((o) => String(o) === raw); save(opt ?? raw); }}>
-            <option value="" disabled={row?.configured === true}>Server default</option>
-            {(field.options ?? []).map((o) => <option key={String(o)} value={String(o)}>{String(o)}{field.unit ? ` ${field.unit}` : ''}</option>)}
-          </select>
+          <Select id={`leaf-${field.leaf}`} label={field.label} className={locked ? 'opacity-60' : undefined}
+            value={value === null ? '' : String(value)} placeholder="Server default" disabled={actions.setLeaf.isPending || locked}
+            options={(field.options ?? []).map((o) => ({ value: String(o), label: `${String(o)}${field.unit ? ` ${field.unit}` : ''}` }))}
+            onValueChange={(raw) => { const opt = (field.options ?? []).find((o) => String(o) === raw); save(opt ?? raw); }} />
         )}
         {(field.kind === 'number' || field.kind === 'text') && (
           <Input id={`leaf-${field.leaf}`} aria-label={field.label} className={locked ? 'opacity-60' : undefined} type={field.kind === 'number' ? 'number' : 'text'}
@@ -330,7 +327,7 @@ function RepositoryForm({ projectId, connection, onClose }: { projectId: string;
   }}>
     <label className="flex flex-col gap-1 font-sans text-xs text-on-surface-variant">HTTPS repository URL<Input type="url" required value={url} onChange={(event) => setUrl(event.target.value)} placeholder="https://github.com/example/repository.git" /></label>
     <label className="flex flex-col gap-1 font-sans text-xs text-on-surface-variant">Branch<Input required value={branch} onChange={(event) => setBranch(event.target.value)} /></label>
-    <label className="flex items-center gap-2 font-sans text-sm text-on-surface"><input type="checkbox" checked={publicAccess} onChange={(event) => { setPublicAccess(event.target.checked); setToken(''); }} />Use without a credential</label>
+    <label className="flex items-center gap-2 font-sans text-sm text-on-surface"><Switch checked={publicAccess} onCheckedChange={(checked) => { setPublicAccess(checked); setToken(''); }} />Use without a credential</label>
     {!publicAccess && <>
       <label className="flex flex-col gap-1 font-sans text-xs text-on-surface-variant">Git username<Input required value={username} autoComplete="off" onChange={(event) => setUsername(event.target.value)} /></label>
       <label className="flex flex-col gap-1 font-sans text-xs text-on-surface-variant">Read token<Input type="password" autoComplete="off" required={!canKeepCredential} value={token} onChange={(event) => setToken(event.target.value)} placeholder={canKeepCredential ? 'Leave blank to keep the current credential' : ''} /></label>

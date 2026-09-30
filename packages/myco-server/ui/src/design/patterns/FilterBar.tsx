@@ -99,14 +99,17 @@ export function useFilterParams(keys: readonly string[]): FilterParams {
     for (const key of keyList.split(',').filter(Boolean)) out[key] = params.get(key) ?? ANY;
     return out;
   }, [params, keyList]);
-  const write = useCallback((key: string, value: string) => {
+  // A filter at ANY and an empty query leave the URL; a query is kept whatever it says, "all" included.
+  const write = useCallback((key: string, value: string, unfiltered: readonly string[]) => {
     setParams((current) => {
       const next = new URLSearchParams(current);
-      if (value === '' || value === ANY) next.delete(key);
+      if (unfiltered.includes(value)) next.delete(key);
       else next.set(key, value);
       return next;
     }, { replace: true });
   }, [setParams]);
+  const setFilter = useCallback((key: string, value: string) => write(key, value, ['', ANY]), [write]);
+  const setQuery = useCallback((query: string) => write('q', query, ['']), [write]);
   const clear = useCallback(() => {
     setParams((current) => {
       const next = new URLSearchParams(current);
@@ -118,8 +121,8 @@ export function useFilterParams(keys: readonly string[]): FilterParams {
   return {
     query: params.get('q') ?? '',
     values,
-    setQuery: (query) => write('q', query),
-    setFilter: write,
+    setQuery,
+    setFilter,
     clear,
   };
 }

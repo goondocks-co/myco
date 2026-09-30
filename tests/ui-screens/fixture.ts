@@ -33,8 +33,9 @@ export interface FixtureMember {
   role: 'admin' | 'member';
 }
 
-export const OWNER: FixtureMember = { id: 'mem_ada', label: 'Ada', githubSub: '1000001', login: 'ada', role: 'admin' };
-export const READER: FixtureMember = { id: 'mem_lin', label: 'Lin', githubSub: '1000002', login: 'lin', role: 'member' };
+/** Member ids in the shape join mints: `mem_` and the base64url of twelve random bytes. */
+export const OWNER: FixtureMember = { id: 'mem_q3Vb8xRk2LmT7wYz', label: 'Ada', githubSub: '1000001', login: 'ada', role: 'admin' };
+export const READER: FixtureMember = { id: 'mem_Hn5-pC0dJfA9sE_u', label: 'Lin', githubSub: '1000002', login: 'lin', role: 'member' };
 
 /** Two machines, each with a name the way `myco login` records one. */
 export const MACHINES = [
@@ -42,14 +43,27 @@ export const MACHINES = [
   { id: 'buildbox', member: READER, label: 'Lin’s build box' },
 ] as const;
 
+/**
+ * Projects, each with the `proj_<32 hex>` id a named project gets and a short
+ * key the seed data below refers to it by.
+ */
 export const PROJECTS = [
-  { projectId: 'myco', name: 'Myco' },
-  { projectId: 'atlas-web', name: 'Atlas web' },
-  { projectId: 'field-notes', name: 'Field notes' },
-  { projectId: 'ledger', name: 'Ledger service' },
-  { projectId: 'infra', name: 'Infrastructure' },
-  { projectId: 'sandbox', name: 'Test project' },
+  { key: 'myco', projectId: 'proj_6d79636f3a3e1c0b8a2f4e7d9c150a11', name: 'Myco' },
+  { key: 'atlas-web', projectId: 'proj_a71a5c0e2b9d4f8e6c3a1b7d5e9f0c22', name: 'Atlas web' },
+  { key: 'field-notes', projectId: 'proj_f1e1d0c9b8a7968574635241300f1e33', name: 'Field notes' },
+  { key: 'ledger', projectId: 'proj_1ed9e40c5b6a7f8e9d0c1b2a3f4e5d44', name: 'Ledger service' },
+  { key: 'infra', projectId: 'proj_2b3c4d5e6f708192a3b4c5d6e7f80955', name: 'Infrastructure' },
+  { key: 'sandbox', projectId: 'proj_5a4db0c1d2e3f405162738495a6b7c66', name: 'Test project' },
 ] as const;
+
+type ProjectKey = (typeof PROJECTS)[number]['key'];
+
+/** The project id a seed key stands for. */
+export function idOf(key: ProjectKey): string {
+  const project = PROJECTS.find((p) => p.key === key);
+  if (project === undefined) throw new Error(`no fixture project keyed ${key}`);
+  return project.projectId;
+}
 
 export const AGENTS = ['claude-code', 'codex', 'cursor', 'opencode', 'pi'] as const;
 
@@ -59,7 +73,7 @@ export const PLAN_STATUSES = ['active', 'in_progress', 'completed', 'abandoned']
 
 /** One captured session: where it ran, when, and what the agent said it did. */
 interface SessionSeed {
-  project: string;
+  project: ProjectKey;
   agent: (typeof AGENTS)[number];
   machine: (typeof MACHINES)[number]['id'];
   /** Minutes before now the session started. */
@@ -89,7 +103,7 @@ const SESSIONS: SessionSeed[] = [
 ];
 
 /** Spores, one of every type, each headlined by its one-line form. */
-const SPORES: Array<{ project: string; session: number; type: (typeof SPORE_TYPES)[number]; line: string; content: string }> = [
+const SPORES: Array<{ project: ProjectKey; session: number; type: (typeof SPORE_TYPES)[number]; line: string; content: string }> = [
   { project: 'myco', session: 0, type: 'gotcha', line: 'Hosted and self-hosted order ties differently; sort the map read by path as well as rank.', content: 'The hosted store returned tied ranks in insertion order and the self-hosted store in rowid order. Adding the path as a second sort key makes both targets agree.' },
   { project: 'myco', session: 6, type: 'bug_fix', line: 'A test that reserves a fixed port races the server’s ephemeral fallback; ask the kernel for port 0.', content: 'The server falls back to an ephemeral port when its preferred one is taken, and the test’s reserved port could be that same number. Binding port 0 removes the race.' },
   { project: 'myco', session: 13, type: 'decision', line: 'Myco’s work page shows outcomes per task, and index upkeep folds into one line.', content: 'Owners want to know what was learned, not how many runs happened. Upkeep runs are thousands a week and belong in Health.' },
@@ -101,7 +115,7 @@ const SPORES: Array<{ project: string; session: number; type: (typeof SPORE_TYPE
   { project: 'infra', session: 5, type: 'architecture', line: 'Backups run nightly to object storage and are verified by a restore preview each week.', content: 'The nightly job writes to the bucket; a weekly restore preview proves the newest backup opens.' },
 ];
 
-const PLANS: Array<{ project: string; session: number; status: (typeof PLAN_STATUSES)[number]; title: string; path: string; content: string }> = [
+const PLANS: Array<{ project: ProjectKey; session: number; status: (typeof PLAN_STATUSES)[number]; title: string; path: string; content: string }> = [
   { project: 'myco', session: 13, status: 'in_progress', title: 'Myco’s work as outcomes', path: 'docs/plans/work-outcomes.md', content: '# Myco’s work as outcomes\n\n- [x] Group runs by task\n- [ ] Fold index upkeep into one line\n- [ ] Show failures with cause and next step' },
   { project: 'myco', session: 1, status: 'active', title: 'One filter bar on every list page', path: 'docs/plans/filter-bar.md', content: '# One filter bar\n\n- [ ] Sessions\n- [ ] Knowledge\n- [ ] Myco’s work' },
   { project: 'ledger', session: 4, status: 'completed', title: 'Speed up the monthly close report', path: 'docs/plans/close-report.md', content: '# Close report\n\n- [x] Find the scan\n- [x] Add the covering index\n- [x] Confirm on staging' },
@@ -163,9 +177,9 @@ export async function seedThroughServer(ctx: SeedContext): Promise<SeededFixture
   const { url, now } = ctx;
   const ownerHeaders = { cookie: ctx.ownerCookie, origin: url, 'content-type': 'application/json' };
 
-  const memberHeaders = (machine: string, project: string) => ({
+  const memberHeaders = (machine: string, project: ProjectKey) => ({
     authorization: `Bearer ${ctx.tokens[machine]!}`,
-    [PROJECT_HEADER]: project,
+    [PROJECT_HEADER]: idOf(project),
     [PROTOCOL_HEADER]: String(SERVER_PROTOCOL),
     'content-type': 'application/json',
   });
@@ -175,7 +189,7 @@ export async function seedThroughServer(ctx: SeedContext): Promise<SeededFixture
     await expectOk(await fetch(`${url}/api/projects/${project.projectId}`, { method: 'PATCH', headers: ownerHeaders, body: JSON.stringify({ name: project.name }) }), `rename ${project.projectId}`);
   }
 
-  const post = async (machine: string, project: string, sessionId: string, kind: string, payload: Record<string, unknown>, createdAt: number) => {
+  const post = async (machine: string, project: ProjectKey, sessionId: string, kind: string, payload: Record<string, unknown>, createdAt: number) => {
     const res = await fetch(`${url}/events`, {
       method: 'POST',
       headers: memberHeaders(machine, project),
@@ -188,8 +202,8 @@ export async function seedThroughServer(ctx: SeedContext): Promise<SeededFixture
   const sessionIds: string[] = [];
   const lastPrompt: string[] = [];
   let liveSessionId = '';
-  for (const seed of SESSIONS) {
-    const sessionId = crypto.randomUUID();
+  for (const [index, seed] of SESSIONS.entries()) {
+    const sessionId = await uuidv5('screens-session', seed.project, String(index));
     sessionIds.push(sessionId);
     const startedAt = now - seed.startedAgo * MINUTE;
     await post(seed.machine, seed.project, sessionId, 'session.start', { agent: seed.agent, branch: 'main', startedAt }, startedAt);
@@ -197,9 +211,9 @@ export async function seedThroughServer(ctx: SeedContext): Promise<SeededFixture
     let promptId = '';
     for (const [i, text] of seed.prompts.entries()) {
       const at = startedAt + Math.round(((i + 0.5) / seed.prompts.length) * span * MINUTE);
-      promptId = crypto.randomUUID();
+      promptId = await uuidv5('screens-prompt', sessionId, String(i));
       await post(seed.machine, seed.project, sessionId, 'prompt', { promptId, text, origin: 'user' }, at);
-      await post(seed.machine, seed.project, sessionId, 'response', { responseId: crypto.randomUUID(), promptId, text: `Done: ${text.toLowerCase()}.` }, at + 2 * MINUTE);
+      await post(seed.machine, seed.project, sessionId, 'response', { responseId: await uuidv5('screens-response', sessionId, String(i)), promptId, text: `Done: ${text.toLowerCase()}.` }, at + 2 * MINUTE);
     }
     lastPrompt.push(promptId);
     if (seed.minutes === null) {
@@ -218,7 +232,7 @@ export async function seedThroughServer(ctx: SeedContext): Promise<SeededFixture
       method: 'POST',
       headers: memberHeaders(session.machine, spore.project),
       body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'myco_spores', arguments: {
-        op: 'save', type: spore.type, content: spore.content, agent_line: spore.line, session_id: sessionIds[spore.session], project: spore.project,
+        op: 'save', type: spore.type, content: spore.content, agent_line: spore.line, session_id: sessionIds[spore.session], project: idOf(spore.project),
       } } }),
     });
     const body = await expectOk(res, `spore ${spore.type}`) as { result?: { structuredContent?: { result?: { id?: string; error?: string } } } };
@@ -229,7 +243,7 @@ export async function seedThroughServer(ctx: SeedContext): Promise<SeededFixture
 
   for (const plan of PLANS) {
     const session = SESSIONS[plan.session]!;
-    const planKey = await uuidv5('plan', plan.project, plan.path);
+    const planKey = await uuidv5('plan', idOf(plan.project), plan.path);
     const at = now - session.startedAgo * MINUTE + 5 * MINUTE;
     await post(session.machine, plan.project, sessionIds[plan.session]!, 'plan', {
       planKey, promptId: lastPrompt[plan.session], title: plan.title, content: plan.content, originPath: plan.path, status: plan.status,
@@ -241,7 +255,7 @@ export async function seedThroughServer(ctx: SeedContext): Promise<SeededFixture
   seedBackup(ctx.databasePath, now);
 
   return {
-    projects: PROJECTS.map((p) => ({ ...p })),
+    projects: PROJECTS.map((p) => ({ projectId: p.projectId, name: p.name })),
     sessions: SESSIONS.length,
     liveSessionId,
     spores: SPORES.length,
@@ -297,17 +311,17 @@ function seedRuns(databasePath: string, now: number, sporeIds: string[]): number
     for (const run of runs) {
       const startedAt = now - run.startedAgo * MINUTE;
       sqlite.query(`INSERT INTO agent_runs (project_id, id, agent_id, task, status, started_at, completed_at, resumable, error, run_context, tokens_used, estimated_cost_usd)
-        VALUES ('myco', ?, 'myco-agent', ?, ?, ?, ?, 0, ?, ?, ?, ?)`).run(
-        run.id, run.task, run.status, startedAt, startedAt + run.minutes * MINUTE, run.error ?? null,
+        VALUES (?, ?, 'myco-agent', ?, ?, ?, ?, 0, ?, ?, ?, ?)`).run(
+        idOf('myco'), run.id, run.task, run.status, startedAt, startedAt + run.minutes * MINUTE, run.error ?? null,
         run.context ? JSON.stringify(run.context) : null, run.status === 'skipped' ? null : 18_000 + run.minutes * 1_500, run.status === 'skipped' ? null : 0.12 * Math.max(1, run.minutes),
       );
       if (run.report) {
-        sqlite.query(`INSERT INTO agent_reports (project_id, run_id, agent_id, action, summary, created_at) VALUES ('myco', ?, 'myco-agent', 'summary', ?, ?)`)
-          .run(run.id, run.report, startedAt + run.minutes * MINUTE);
+        sqlite.query(`INSERT INTO agent_reports (project_id, run_id, agent_id, action, summary, created_at) VALUES (?, ?, 'myco-agent', 'summary', ?, ?)`)
+          .run(idOf('myco'), run.id, run.report, startedAt + run.minutes * MINUTE);
       }
     }
     const authored = sporeIds.slice(0, 2);
-    for (const id of authored) sqlite.query(`UPDATE spores SET author = 'run_4f1c9a2e7b' WHERE project_id = 'myco' AND id = ?`).run(id);
+    for (const id of authored) sqlite.query(`UPDATE spores SET author = 'run_4f1c9a2e7b' WHERE project_id = ? AND id = ?`).run(idOf('myco'), id);
     return runs.length;
   } finally {
     sqlite.close();

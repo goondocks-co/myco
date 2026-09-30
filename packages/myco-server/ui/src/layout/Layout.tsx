@@ -63,8 +63,8 @@ export function Layout() {
   const searched = current ?? all.find((p) => p.projectId === remembered) ?? all[0];
 
   return (
-    <div className="flex min-h-screen bg-background text-foreground">
-      <aside className="flex w-60 shrink-0 flex-col border-r border-outline-variant/20 bg-surface-container-low">
+    <div className="flex min-h-screen flex-col bg-background text-foreground sm:flex-row">
+      <aside className="flex w-full shrink-0 flex-col border-b border-outline-variant/20 bg-surface-container-low sm:w-60 sm:border-b-0 sm:border-r">
         <div className="flex h-12 items-center px-4 font-serif text-lg text-on-surface">Myco</div>
 
         <div className="px-2 pb-2">

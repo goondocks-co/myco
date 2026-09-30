@@ -10,6 +10,11 @@
  * defined in both modes, and the pairs it lists meet their WCAG ratio.
  */
 
+/* Tailwind's default palette is off: every colour class names a token below. */
+@theme {
+  --color-*: initial;
+}
+
 /* ---------- Colour, spacing, type, radius, motion (dark, the default) ---------- */
 
 :root {
@@ -26,7 +31,7 @@
   --ink: #e8ece3;
   --ink-2: #cdd5c7;
   --muted: #9ba696;
-  --faint: #7a8576;
+  --faint: #889284;
 
   /* Accent: the theme sets --primary and --on-primary; sage is the default. */
   --primary: #b8c6a0;
@@ -42,6 +47,8 @@
   --bad-bg: color-mix(in srgb, var(--bad) 12%, transparent);
 
   --focus: var(--primary);
+  /* Text on a project's swatch, whose hue is the same in both modes. */
+  --on-swatch: #ffffff;
   --scrim: color-mix(in srgb, #000000 62%, transparent);
   --shadow-overlay: 0 18px 48px -12px color-mix(in srgb, #000000 70%, transparent), 0 0 0 1px var(--line-strong);
 
@@ -101,17 +108,17 @@
   --ink: #131313;
   --ink-2: #2e332f;
   --muted: #4f5650;
-  --faint: #5f665f;
+  --faint: #5f655f;
 
-  --primary: #446553;
+  --primary: #41604f;
   --on-primary: #ffffff;
   --primary-bg: color-mix(in srgb, var(--primary) 12%, transparent);
 
-  --ok: #446553;
+  --ok: #426251;
   --ok-bg: color-mix(in srgb, var(--ok) 10%, transparent);
-  --warn: #8a5e15;
+  --warn: #7a5313;
   --warn-bg: color-mix(in srgb, var(--warn) 10%, transparent);
-  --bad: #8b5c44;
+  --bad: #7b513c;
   --bad-bg: color-mix(in srgb, var(--bad) 10%, transparent);
 
   --focus: var(--primary);
@@ -277,6 +284,7 @@
   --color-bad-bg: var(--bad-bg);
   --color-focus: var(--focus);
   --color-scrim: var(--scrim);
+  --color-on-swatch: var(--on-swatch);
 
   /* Spacing on the 4px base, the gutter, and the density heights. */
   --spacing-s1: var(--s-1);

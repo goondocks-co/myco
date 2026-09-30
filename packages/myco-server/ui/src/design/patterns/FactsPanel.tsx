@@ -33,7 +33,7 @@ export interface FactsPanelProps {
  */
 export function FactsPanel({ title, children, actions, className }: FactsPanelProps) {
   return (
-    <aside data-facts="" className={cn('flex flex-col gap-s2 rounded-card border border-line bg-surface-1 p-s4', className)}>
+    <aside data-facts="" className={cn('flex min-w-0 flex-col gap-s2 rounded-card border border-line bg-surface-1 p-s4', className)}>
       {title != null && <h3 className="t-h3 text-ink">{title}</h3>}
       <dl className="flex flex-col divide-y divide-line">{children}</dl>
       {actions != null && <div className="flex flex-wrap gap-s2 pt-s2">{actions}</div>}

@@ -292,7 +292,7 @@ export function Specimen() {
             <Stat label="Last backup" value="28 days" context="Backups run weekly." tone="warn" />
           </div>
           <div className="grid gap-s4 lg:grid-cols-[1fr_320px]">
-            <div className="flex flex-col gap-s4">
+            <div className="flex min-w-0 flex-col gap-s4">
               <CommandBlock caption="On the machine you want to connect, run" command="myco login https://myco.example.test/join#k3y" />
               <Disclosure summary="Technical details">
                 <p className="t-small text-muted">Queued at 4:12 PM, leased by the studio machine, finished in 38 seconds.</p>

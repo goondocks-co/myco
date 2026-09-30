@@ -85,7 +85,7 @@
   },
   "components/sessions/TurnCard.tsx": {
     "raw-button": 3,
-    "inline-style": 2,
+    "inline-style": 3,
     "arbitrary-colour": 3,
     "small-text": 16
   },
@@ -284,8 +284,6 @@
     "retired-import": 4
   },
   "pages/Settings.tsx": {
-    "raw-input": 1,
-    "raw-select": 1,
     "small-text": 16,
     "retired-import": 7
   },

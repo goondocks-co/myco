@@ -51,7 +51,7 @@ export function Projects() {
               key={p.projectId}
               project={p}
               action={admin && (
-                <span className="flex gap-2">
+                <span className="flex shrink-0 gap-2">
                   <Button size="sm" onClick={() => { setError(null); setRenaming(p); }}>Rename</Button>
                   <Button size="sm" onClick={() => { setError(null); setArchiving(p); }}>Archive</Button>
                 </span>
@@ -139,10 +139,10 @@ function ProjectCard({ project, note, action }: { project: ProjectSummary; note?
     <li className="flex flex-col rounded-xl border border-outline-variant/20 bg-surface-container-low p-4 transition-colors hover:border-outline-variant/40">
       <Link to={`/p/${encodeURIComponent(project.projectId)}`} onClick={() => rememberProject(project.projectId)} className="block">
         <div className="font-serif text-lg text-on-surface">{project.name}</div>
-        <div className="mt-1 font-mono text-[11px] text-on-surface-variant">{project.projectId}</div>
+        <div className="mt-1 break-all font-mono text-[11px] text-on-surface-variant">{project.projectId}</div>
       </Link>
-      <div className="mt-3 flex items-center justify-between gap-2 font-sans text-xs text-on-surface-variant">
-        {note !== undefined ? <span>{note}</span> : <span className="flex gap-2"><span>{formatCount(project.sessionCount, 'session')}</span><span>Last activity {formatRelative(project.lastActivityAt)}</span></span>}
+      <div className="mt-3 flex flex-wrap items-center justify-between gap-2 font-sans text-xs text-on-surface-variant">
+        {note !== undefined ? <span>{note}</span> : <span className="flex flex-wrap gap-x-2"><span className="whitespace-nowrap">{formatCount(project.sessionCount, 'session')}</span><span className="whitespace-nowrap">Last activity {formatRelative(project.lastActivityAt)}</span></span>}
         {action}
       </div>
     </li>

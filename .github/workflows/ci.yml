@@ -110,7 +110,16 @@ jobs:
       - uses: actions/checkout@v7
       - uses: ./.github/actions/ci-setup
       - run: npm ci --prefix packages/myco-server/ui
-      - run: npx playwright install --with-deps chromium
+      - name: Cache the Playwright browser
+        id: playwright-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
+      - if: steps.playwright-cache.outputs.cache-hit != 'true'
+        run: npx playwright install --with-deps chromium
+      - if: steps.playwright-cache.outputs.cache-hit == 'true'
+        run: npx playwright install-deps chromium
       - run: npm run build:ui -w @goondocks/myco-server
       - run: npm run build:specimen --prefix packages/myco-server/ui
       - run: npm run test:screens

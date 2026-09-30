@@ -54,23 +54,23 @@ export function Topbar({ projectName, login, className }: { projectName?: string
   return (
     <header
       className={cn(
-        'sticky top-0 z-20 flex h-12 items-center gap-3 border-b border-outline-variant/20 bg-surface-container/90 px-4 backdrop-blur',
+        'sticky top-0 z-20 flex h-12 min-w-0 items-center gap-3 border-b border-outline-variant/20 bg-surface-container/90 px-4 backdrop-blur',
         className,
       )}
     >
-      <nav aria-label="Breadcrumb" className="flex items-center gap-1 font-sans text-xs text-on-surface-variant">
+      <nav aria-label="Breadcrumb" className="flex min-w-0 items-center gap-1 truncate font-sans text-xs text-on-surface-variant">
         <span>{crumb}</span>
         <span className="mx-1">/</span>
         <span className="text-on-surface">{title}</span>
       </nav>
-      <Badge variant="outline" className="font-mono text-[10px] uppercase tracking-wide">
+      <Badge variant="outline" className="hidden font-mono text-[10px] uppercase tracking-wide sm:inline-flex">
         {scope === 'project' ? 'Project' : 'Server-wide'}
       </Badge>
-      {login && <span className="ml-auto font-mono text-xs text-on-surface-variant">@{login}</span>}
+      {login && <span className="ml-auto truncate font-mono text-xs text-on-surface-variant">@{login}</span>}
       <button
         type="button"
         onClick={() => void signOut()}
-        className={cn(login ? '' : 'ml-auto', 'inline-flex h-7 items-center gap-1.5 rounded-md px-2 font-sans text-xs text-on-surface-variant transition-colors hover:bg-surface-container-high hover:text-on-surface')}
+        className={cn(login ? '' : 'ml-auto', 'inline-flex h-7 shrink-0 items-center gap-1.5 rounded-md px-2 font-sans text-xs text-on-surface-variant transition-colors hover:bg-surface-container-high hover:text-on-surface')}
       >
         <LogOut className="h-3.5 w-3.5" />
         Sign out

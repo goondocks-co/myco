@@ -32,19 +32,33 @@ const SEMANTIC = [
   'focus', 'scrim', 'shadow-overlay',
 ] as const;
 
+/**
+ * Colour properties set on the root in dark only, each with the reason its
+ * value holds in light as well. Every other root colour property is set again
+ * under `:root.light`.
+ */
+const MODE_INVARIANT: Record<string, string> = {
+  '--on-swatch': 'text on a project swatch, whose hue is fixed and the same in both modes',
+  '--shadow-tint': 'the older pages\' ambient shadow is the same warm tint in both modes',
+};
+
+/** Every token set as text. Each one is legible on every surface, in every theme and mode. */
+const TEXT = ['ink', 'ink-2', 'muted', 'faint', 'primary', 'ok', 'warn', 'bad'] as const;
+/** Every opaque surface a component sits on. */
+const SURFACES = ['page', 'bg', 'surface-1', 'surface-2', 'surface-3'] as const;
+
 /** Text over ground, both tokens; a translucent ground is composited onto `over`. */
 interface Pair { text: string; ground: string; over?: string; min: number }
 const AA = 4.5;
 const PAIRS: Pair[] = [
-  ...['ink', 'ink-2', 'muted', 'faint'].flatMap((text) => ['bg', 'surface-1'].map((ground) => ({ text, ground, min: AA }))),
-  { text: 'muted', ground: 'surface-2', min: AA },
-  { text: 'ink-2', ground: 'surface-3', min: AA },
-  ...['ok', 'warn', 'bad'].flatMap((state) => ['bg', 'surface-1'].map((over) => ({ text: state, ground: `${state}-bg`, over, min: AA }))),
-  { text: 'primary', ground: 'bg', min: AA },
-  { text: 'primary', ground: 'surface-1', min: AA },
-  { text: 'primary', ground: 'primary-bg', over: 'bg', min: AA },
+  ...TEXT.flatMap((text) => SURFACES.map((ground) => ({ text, ground, min: AA }))),
+  ...['ok', 'warn', 'bad'].flatMap((state) => SURFACES.map((over) => ({ text: state, ground: `${state}-bg`, over, min: AA }))),
+  ...SURFACES.map((over) => ({ text: 'primary', ground: 'primary-bg', over, min: AA })),
   { text: 'on-primary', ground: 'primary', min: AA },
 ];
+
+/** Whether a declared value is a colour of its own rather than a reference to other tokens. */
+const COLOUR_LITERAL = /#[0-9a-f]{3,8}\b|\b(?:rgba?|hsla?|hwb|lab|lch|oklab|oklch)\(|^\s*\d+\s*,\s*\d+\s*,\s*\d+\s*$/i;
 
 interface Rule { selector: string; decls: Map<string, string>; order: number }
 
@@ -105,6 +119,19 @@ function tokensFor(light: boolean, theme: string): Map<string, string> {
     .sort((a, b) => specificity(a.selector) - specificity(b.selector) || a.order - b.order);
   for (const rule of matching) for (const [name, value] of rule.decls) out.set(name, value);
   return out;
+}
+
+/** Root colour properties set in dark with no light counterpart and no stated reason. */
+function colourGaps(rules: Rule[]): string[] {
+  const light = new Set(rules.filter((r) => r.selector === ':root.light').flatMap((r) => [...r.decls.keys()]));
+  const gaps: string[] = [];
+  for (const rule of rules.filter((r) => r.selector === ':root')) {
+    for (const [name, value] of rule.decls) {
+      if (!COLOUR_LITERAL.test(value) || light.has(name) || name in MODE_INVARIANT) continue;
+      gaps.push(`:root ${name}`);
+    }
+  }
+  return gaps;
 }
 
 type Rgba = [number, number, number, number];
@@ -177,14 +204,29 @@ describe('design tokens', () => {
     expect(missing).toEqual([]);
   });
 
-  it('sets the accent pair in both modes of every theme', () => {
+  it('sets every colour it gives the dark root again for light, or names why it holds in both', () => {
+    const darkOnly = colourGaps(RULES);
+    expect(darkOnly).toEqual([]);
+    for (const name of Object.keys(MODE_INVARIANT)) {
+      expect({ name, declared: RULES.some((r) => r.selector === ':root' && r.decls.has(name)) }).toEqual({ name, declared: true });
+    }
+  });
+
+  it('catches a colour set for dark alone', () => {
+    const planted = topLevelRules(':root { --planted: #123456; --derived: var(--bg); } :root.light { --derived: var(--bg); }', 0);
+    expect(colourGaps(planted)).toEqual([':root --planted']);
+  });
+
+  it('sets every colour of a theme in both modes, and the accent pair in each', () => {
     const missing: string[] = [];
     for (const theme of THEMES) {
-      for (const light of [false, true]) {
-        const selector = `:root[data-theme='${theme}']${light ? '.light' : ''}`;
-        const rule = RULES.find((r) => r.selector === selector);
-        for (const name of ['--primary', '--on-primary']) if (!rule?.decls.has(name)) missing.push(`${selector} ${name}`);
+      const dark = RULES.find((r) => r.selector === `:root[data-theme='${theme}']`);
+      const light = RULES.find((r) => r.selector === `:root[data-theme='${theme}'].light`);
+      for (const name of ['--primary', '--on-primary']) {
+        if (!dark?.decls.has(name)) missing.push(`${theme} dark ${name}`);
+        if (!light?.decls.has(name)) missing.push(`${theme} light ${name}`);
       }
+      for (const name of dark?.decls.keys() ?? []) if (!light?.decls.has(name)) missing.push(`${theme} light ${name}`);
     }
     expect(missing).toEqual([]);
   });

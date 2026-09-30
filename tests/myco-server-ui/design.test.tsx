@@ -101,6 +101,13 @@ describe('FilterBar with useFilterParams', () => {
     expect(screen.queryByRole('button', { name: 'Clear search and filters' })).toBeNull();
     expect(screen.getByText('34 sessions')).toBeTruthy();
   });
+
+  it('keeps a query that reads "all", the word that means no filter', () => {
+    render(<MemoryRouter initialEntries={['/sessions']}><Page /></MemoryRouter>);
+    fireEvent.change(screen.getByRole('searchbox', { name: 'Search sessions' }), { target: { value: 'all' } });
+    expect(screen.getByTestId('search').textContent).toBe('?q=all');
+    expect((screen.getByRole('searchbox', { name: 'Search sessions' }) as HTMLInputElement).value).toBe('all');
+  });
 });
 
 describe('ConfirmDialog', () => {

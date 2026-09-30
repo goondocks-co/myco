@@ -9,6 +9,9 @@
 //
 //   node scripts/ui-component-ratchet.mjs          report the current counts against the baseline
 //   node scripts/ui-component-ratchet.mjs --write  pin the current counts, refusing any that grew
+//   node scripts/ui-component-ratchet.mjs --write --recount
+//                                                  pin after the rules themselves change, when an unchanged
+//                                                  file can count higher; the baseline diff shows every rise
 //
 // `tests/meta/ui-component-only.test.ts` holds the same rule in CI.
 
@@ -26,22 +29,45 @@ const FLOOR_PX = 12;
 
 const COLOUR_PREFIX = '(?:text|bg|border(?:-[trblxy])?|ring(?:-offset)?|fill|stroke|from|via|to|outline|divide|decoration|accent|caret|placeholder|shadow)';
 
+/** The raw elements a page builds with a design component instead. */
+const RAW_TAGS = ['button', 'input', 'select', 'textarea', 'table'];
+
+/** CSS's named colours: a colour chosen by name is still a colour outside the tokens. */
+const NAMED_COLOURS = 'aliceblue|antiquewhite|aqua|aquamarine|azure|beige|bisque|black|blanchedalmond|blue|blueviolet|brown|burlywood|cadetblue|chartreuse|chocolate|coral|cornflowerblue|cornsilk|crimson|cyan|darkblue|darkcyan|darkgoldenrod|darkgray|darkgreen|darkgrey|darkkhaki|darkmagenta|darkolivegreen|darkorange|darkorchid|darkred|darksalmon|darkseagreen|darkslateblue|darkslategray|darkslategrey|darkturquoise|darkviolet|deeppink|deepskyblue|dimgray|dimgrey|dodgerblue|firebrick|floralwhite|forestgreen|fuchsia|gainsboro|ghostwhite|gold|goldenrod|gray|green|greenyellow|grey|honeydew|hotpink|indianred|indigo|ivory|khaki|lavender|lavenderblush|lawngreen|lemonchiffon|lightblue|lightcoral|lightcyan|lightgoldenrodyellow|lightgray|lightgreen|lightgrey|lightpink|lightsalmon|lightseagreen|lightskyblue|lightslategray|lightslategrey|lightsteelblue|lightyellow|lime|limegreen|linen|magenta|maroon|mediumaquamarine|mediumblue|mediumorchid|mediumpurple|mediumseagreen|mediumslateblue|mediumspringgreen|mediumturquoise|mediumvioletred|midnightblue|mintcream|mistyrose|moccasin|navajowhite|navy|oldlace|olive|olivedrab|orange|orangered|orchid|palegoldenrod|palegreen|paleturquoise|palevioletred|papayawhip|peachpuff|peru|pink|plum|powderblue|purple|rebeccapurple|red|rosybrown|royalblue|saddlebrown|salmon|sandybrown|seagreen|seashell|sienna|silver|skyblue|slateblue|slategray|slategrey|snow|springgreen|steelblue|tan|teal|thistle|tomato|turquoise|violet|wheat|white|whitesmoke|yellow|yellowgreen';
+
+/** Tailwind's default palette. It is switched off in tokens.css, so a class naming it paints nothing. */
+const PALETTE = 'slate|gray|zinc|neutral|stone|red|orange|amber|yellow|lime|green|emerald|teal|cyan|sky|blue|indigo|violet|purple|fuchsia|pink|rose';
+
+const COLOUR_FUNCTION = '(?:rgba?|hsla?|hwb|lab|lch|oklab|oklch)\\(';
+
+/** A raw element, written as JSX, through `createElement`, or held in a variable or prop as its tag name. */
+const rawTag = (tag) => (src) => matches(src, new RegExp(`<${tag}\\b`, 'g'))
+  + matches(src, new RegExp(`createElement\\(\\s*['"\`]${tag}['"\`]`, 'g'))
+  + matches(src, new RegExp(`(?<!\\b(?:type|role|variant|kind|mode|inputMode|name|key|id|size|data-[\\w-]+|aria-[\\w-]+)\\s*)(?:(?<![=!<>])=(?!=)|:|\\?|\\|\\||&&|\\breturn)\\s*\\{?\\s*['"\`]${tag}['"\`]`, 'g'));
+
 /** Each kind of violation: its name, and how to count it in a source file. */
 export const RULES = [
-  { kind: 'raw-button', count: (src) => matches(src, /<button\b/g) },
-  { kind: 'raw-input', count: (src) => matches(src, /<input\b/g) },
-  { kind: 'raw-select', count: (src) => matches(src, /<select\b/g) },
-  { kind: 'raw-textarea', count: (src) => matches(src, /<textarea\b/g) },
-  { kind: 'raw-table', count: (src) => matches(src, /<table\b/g) },
-  { kind: 'inline-style', count: (src) => matches(src, /style=\{\{/g) },
+  ...RAW_TAGS.map((tag) => ({ kind: `raw-${tag}`, count: rawTag(tag) })),
+  { kind: 'inline-style', count: (src) => matches(src, /\bstyle=\{/g) },
   {
     kind: 'colour-literal',
     count: (src) => matches(src, /(?<=[\s'"`(:,])#(?:[0-9a-fA-F]{8}|[0-9a-fA-F]{6}|[0-9a-fA-F]{3,4})\b/g)
-      + matches(src, /\b(?:rgba?|hsla?)\(/g),
+      + matches(src, new RegExp(`\\b${COLOUR_FUNCTION}`, 'g'))
+      + matches(src, new RegExp(`(?:\\b(?:color|background(?:-color)?|border(?:-[a-z]+)?-color|fill|stroke|outline-color)\\s*:\\s*|\\b(?:color|backgroundColor|borderColor|fill|stroke|outlineColor)\\s*:\\s*['"])(?:${NAMED_COLOURS})\\b`, 'gi')),
   },
-  { kind: 'arbitrary-colour', count: (src) => matches(src, new RegExp(`\\b${COLOUR_PREFIX}-\\[[^\\]\\s]*(?:#[0-9a-fA-F]{3}|rgba?\\(|hsla?\\(|color-mix|var\\(--)`, 'g')) },
+  {
+    kind: 'arbitrary-colour',
+    count: (src) => matches(src, new RegExp(`\\b${COLOUR_PREFIX}-\\[[^\\]\\s]*(?:#[0-9a-fA-F]{3}|${COLOUR_FUNCTION}|color-mix|var\\(--)`, 'g'))
+      + matches(src, new RegExp(`\\b${COLOUR_PREFIX}-\\[(?:${NAMED_COLOURS})\\]`, 'g')),
+  },
+  { kind: 'palette-colour', count: (src) => matches(src, new RegExp(`\\b${COLOUR_PREFIX}-(?:black|white|(?:${PALETTE})-\\d{2,3})\\b`, 'g')) },
   { kind: 'small-text', count: smallText },
-  { kind: 'retired-import', count: (src) => matches(src, /from\s+['"][^'"]*components\/ui\/[^'"]+['"]/g) },
+  {
+    kind: 'retired-import',
+    count: (src) => matches(src, /from\s+['"][^'"]*components\/ui\/[^'"]+['"]/g)
+      + matches(src, /\bimport\s*\(\s*['"`][^'"`]*components\/ui\//g)
+      + matches(src, /^\s*import\s+['"][^'"]*components\/ui\//gm),
+  },
 ];
 
 function matches(src, re) {
@@ -142,7 +168,7 @@ function main() {
   const write = process.argv.includes('--write');
   const baseline = fs.existsSync(BASELINE_PATH) ? readBaseline() : null;
   const { grew, stale } = baseline ? compare(current, baseline) : { grew: [], stale: [] };
-  if (grew.length > 0) {
+  if (grew.length > 0 && !(write && process.argv.includes('--recount'))) {
     console.error('Counts grew past the baseline; build these with the design system instead:');
     for (const line of grew) console.error(`  ${line}`);
     process.exitCode = 1;

@@ -10,7 +10,7 @@
   --on-primary: #161a10;
 }
 :root[data-theme='sage'].light {
-  --primary: #446553;
+  --primary: #41604f;
   --on-primary: #ffffff;
 }
 
@@ -19,16 +19,16 @@
   --on-primary: #1a1a0c;
 }
 :root[data-theme='moss'].light {
-  --primary: #55653e;
+  --primary: #4f5e3a;
   --on-primary: #ffffff;
 }
 
 :root[data-theme='terracotta'] {
-  --primary: #d28a73;
+  --primary: #d5927c;
   --on-primary: #44180e;
 }
 :root[data-theme='terracotta'].light {
-  --primary: #8b4c36;
+  --primary: #854934;
   --on-primary: #ffffff;
 }
 
@@ -55,6 +55,6 @@
   --on-primary: #161a1d;
 }
 :root[data-theme='slate'].light {
-  --primary: #525c65;
+  --primary: #515b63;
   --on-primary: #ffffff;
 }

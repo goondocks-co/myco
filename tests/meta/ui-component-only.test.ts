@@ -4,8 +4,11 @@
  *
  * Inside `packages/myco-server/ui/src` but outside `design/`, a file may not
  * gain a raw `<button>`, `<input>`, `<select>`, `<textarea>` or `<table>`, an
- * inline style, a colour literal, a Tailwind arbitrary colour, type under
- * 12px, or an import of a retired `components/ui/` file. Today's violations are
+ * inline style, a colour literal (hex, a colour function or a named colour), a
+ * Tailwind arbitrary colour, a class from Tailwind's default palette, type
+ * under 12px, or an import of a retired `components/ui/` file. A raw element
+ * counts whether it is written as JSX, through `createElement`, or as a tag
+ * name held in a variable or prop. Today's violations are
  * pinned per file in `ui-component-only.baseline.json`; a count may only go
  * down, and the baseline follows it down (`node scripts/ui-component-ratchet.mjs
  * --write`). A file not in the baseline starts at zero.
@@ -18,38 +21,82 @@ import { afterAll, describe, expect, it } from 'bun:test';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { compare, countSource, countTree, readBaseline, RULES, UI_SRC } from '../../scripts/ui-component-ratchet.mjs';
+import { compare, countSource, countTree, readBaseline, RULES, sourceFiles, UI_SRC } from '../../scripts/ui-component-ratchet.mjs';
 
+/** One of every violation, each form counted once, with what the counter must find. */
 const PLANTED = [
   '<button onClick={go}>Go</button>',
+  "createElement('button', null, 'Go');",
+  "const Tag = 'button';",
   '<input value={q} />',
   '<select value={v} />',
   '<textarea />',
   '<table><tbody /></table>',
   '<div style={{ width: 4 }} />',
+  '<div style={s} />',
+  '<div style={ { width: 4 } } />',
   "const tint = '#abcfb8';",
-  '<span className="bg-[var(--sage)] text-[10px] text-xs" />',
+  'const mixed = oklch(0.6 0.1 150);',
+  "const named = { color: 'rebeccapurple' };",
+  '<span className="bg-[var(--sage)] bg-[oklch(0.5_0.1_20)] text-[rebeccapurple]" />',
+  '<span className="bg-red-500 text-white" />',
+  '<span className="text-[10px] text-xs" />',
   "import { Panel } from '../components/ui/panel';",
+  "const lazy = import('../components/ui/panel');",
 ].join('\n');
+
+const PLANTED_COUNTS = {
+  'raw-button': 3,
+  'raw-input': 1,
+  'raw-select': 1,
+  'raw-textarea': 1,
+  'raw-table': 1,
+  'inline-style': 3,
+  'colour-literal': 4,
+  'arbitrary-colour': 3,
+  'palette-colour': 2,
+  'small-text': 2,
+  'retired-import': 2,
+};
+
+/** Every source file under the dashboard outside `design/`, found by a glob rather than by the script's own walk. */
+function globbed(): string[] {
+  return [...new Bun.Glob('**/*.{ts,tsx,css}').scanSync({ cwd: UI_SRC })]
+    .map((file) => file.split(path.sep).join('/'))
+    .filter((file) => !file.startsWith('design/'))
+    .sort();
+}
 
 const scratch = fs.mkdtempSync(path.join(os.tmpdir(), 'ui-component-only-'));
 afterAll(() => fs.rmSync(scratch, { recursive: true, force: true }));
 
 describe('the component-only ratchet', () => {
-  it('counts every kind it names in a planted source, so it cannot pass by matching nothing', () => {
-    const counts = countSource(PLANTED);
-    for (const rule of RULES) expect({ kind: rule.kind, found: (counts[rule.kind] ?? 0) > 0 }).toEqual({ kind: rule.kind, found: true });
-    expect(counts['small-text']).toBe(2);
+  it('counts every form of every kind in a planted source, so it cannot pass by matching nothing', () => {
+    expect(countSource(PLANTED)).toEqual(PLANTED_COUNTS);
+    expect(Object.keys(PLANTED_COUNTS).sort()).toEqual(RULES.map((rule) => rule.kind).sort());
   });
 
-  it('finds a planted file in a tree and exempts the design folder', () => {
+  it('leaves the words a type, role or comparison names alone', () => {
+    expect(countSource('<Button type="button" role="button" /> {kind === \'select\' && <Select />}')).toEqual({});
+  });
+
+  it('finds a planted file in a tree, exempts the design folder, and compares exactly', () => {
     fs.mkdirSync(path.join(scratch, 'pages'), { recursive: true });
     fs.mkdirSync(path.join(scratch, 'design'), { recursive: true });
-    fs.writeFileSync(path.join(scratch, 'pages', 'Planted.tsx'), PLANTED);
+    fs.writeFileSync(path.join(scratch, 'pages', 'Planted.tsx'), '<button />\n<button />');
     fs.writeFileSync(path.join(scratch, 'design', 'Button.tsx'), PLANTED);
     const tree = countTree(scratch);
-    expect(Object.keys(tree)).toEqual(['pages/Planted.tsx']);
-    expect(compare(tree, {}).grew.length).toBeGreaterThan(0);
+    expect(tree).toEqual({ 'pages/Planted.tsx': { 'raw-button': 2 } });
+    expect(compare(tree, tree)).toEqual({ grew: [], stale: [] });
+    expect(compare(tree, {})).toEqual({ grew: ['pages/Planted.tsx: raw-button 0 → 2'], stale: [] });
+    expect(compare(tree, { 'pages/Planted.tsx': { 'raw-button': 1 } })).toEqual({ grew: ['pages/Planted.tsx: raw-button 1 → 2'], stale: [] });
+    expect(compare(tree, { 'pages/Planted.tsx': { 'raw-button': 3 } })).toEqual({ grew: [], stale: ['pages/Planted.tsx: raw-button 3 → 2'] });
+  });
+
+  it('walks every source file outside design/, matching an independent glob', () => {
+    const walked = sourceFiles(UI_SRC);
+    expect(walked).toEqual(globbed());
+    expect(walked.length).toBeGreaterThan(50);
   });
 
   it('scans the real dashboard (guards against a silently empty scan)', () => {

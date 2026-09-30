@@ -7,7 +7,8 @@
  * It composes a temporary dashboard directory from `packages/myco-server/ui/dist`
  * and, when present, the design specimen build at `target/ui-screens/specimen`
  * (served under `/specimen/`). It then boots the server on a temporary volume,
- * seeds `fixture.ts`, and prints ONE JSON line on stdout:
+ * seeds `fixture.ts` with every time set back from `FIXTURE_NOW`, and prints
+ * ONE JSON line on stdout:
  *
  *   {"url": ..., "ownerCookie": ..., "memberCookie": ..., "projects": [...], ...}
  *
@@ -24,6 +25,7 @@ import { fileURLToPath } from 'node:url';
 import { renderMigrationFiles } from '@myco-server-worker/db/migrate.js';
 import { signSession, SESSION_COOKIE } from '@myco-server-worker/auth/owner/cookie.js';
 import { serve } from '@myco-server-worker/entry/bun.js';
+import { FIXTURE_NOW } from './env.ts';
 import { OWNER, READER, seedIdentities, seedThroughServer, type FixtureMember } from './fixture.ts';
 
 /** The fixture's session secret. It signs only cookies for this throwaway volume. */
@@ -102,7 +104,7 @@ async function main(): Promise<void> {
     process.on('SIGINT', () => void stop());
     process.on('SIGTERM', () => void stop());
 
-    const seeded = await seedThroughServer({ url, ownerCookie, databasePath, tokens, now });
+    const seeded = await seedThroughServer({ url, ownerCookie, databasePath, tokens, now: FIXTURE_NOW });
     process.stdout.write(`${JSON.stringify({ url, ownerCookie, memberCookie, specimen, ...seeded })}\n`);
   } catch (error) {
     cleanup();

@@ -4,15 +4,19 @@
  * Per page, on fixture data (build plan §5.1): landmarks render, no console
  * errors and no failed requests, axe-core finds nothing serious or critical,
  * no raw id reaches visible text outside a facts panel, a list page carries
- * exactly one filter bar, and screenshots land at 1280×820 and 390×844 in dark
- * and light.
+ * exactly one filter bar, nothing scrolls sideways, and screenshots land at
+ * 1280×820 and 390×844 in dark and light.
+ *
+ * On the fixture, every page runs in a fixed time zone and locale with the
+ * browser's clock held at `FIXTURE_NOW`, and any request that leaves the
+ * launcher's origin is aborted, which the failed-request check then reports.
  */
 import { AxeBuilder } from '@axe-core/playwright';
 import { expect, type Browser, type BrowserContext, type Page } from '@playwright/test';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { screensEnv } from './env.ts';
+import { FIXTURE_LOCALE, FIXTURE_NOW, FIXTURE_TIMEZONE, SCREENS_ENV, screensEnv } from './env.ts';
 
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 export const SHOTS_DIR = path.join(REPO, 'target', 'ui-screens', 'shots');
@@ -30,8 +34,8 @@ export type Mode = (typeof MODES)[number];
 export const SHOT_MATRIX: ReadonlyArray<{ viewport: ViewportName; mode: Mode }> = (Object.keys(VIEWPORTS) as ViewportName[])
   .flatMap((viewport) => MODES.map((mode) => ({ viewport, mode })));
 
-/** Ids a reader never needs to see: runs, projects, members and credentials. */
-export const RAW_ID = /\b(run|proj|mem|mt)_\w{6,}/;
+/** Ids a reader never needs to see: runs, projects, members and credentials, base64url included. */
+export const RAW_ID = /\b(run|proj|mem|mt)_[\w-]{6,}/;
 
 /** The appearance the dashboard reads before it paints, keyed as `lib/appearance-apply.ts` stores it. */
 export const APPEARANCE_KEY = 'myco-appearance';
@@ -166,15 +170,51 @@ export interface OpenedPage {
   watch: PageWatch;
 }
 
+const onFixture = (): boolean => process.env[SCREENS_ENV.fixture] === '1';
+
 /** A fresh context at one viewport and mode, signed in when a cookie is given, with the page watched from its first request. */
 export async function openPage(browser: Browser, options: { path: string; viewport: ViewportName; mode: Mode; cookie?: string }): Promise<OpenedPage> {
-  const context = await browser.newContext({ viewport: VIEWPORTS[options.viewport], colorScheme: options.mode });
+  const context = await browser.newContext({
+    viewport: VIEWPORTS[options.viewport],
+    colorScheme: options.mode,
+    ...(onFixture() ? { timezoneId: FIXTURE_TIMEZONE, locale: FIXTURE_LOCALE } : {}),
+  });
+  const origin = new URL(baseUrl()).origin;
+  await context.route((url) => url.protocol !== 'data:' && url.protocol !== 'blob:' && url.origin !== origin, (route) => route.abort('blockedbyclient'));
   if (options.cookie) await signIn(context, options.cookie);
   await setAppearance(context, options.mode);
   const page = await context.newPage();
+  if (onFixture()) await page.clock.setFixedTime(FIXTURE_NOW);
   const watch = watchPage(page);
   await page.goto(new URL(options.path, baseUrl()).href);
   return { context, page, watch };
+}
+
+/** How far the page, and each `main` landmark, reaches past its own width. */
+export async function horizontalOverflow(page: Page): Promise<string[]> {
+  return page.evaluate(() => {
+    const out: string[] = [];
+    const doc = document.documentElement;
+    if (doc.scrollWidth > window.innerWidth) {
+      out.push(`document ${doc.scrollWidth}px in a ${window.innerWidth}px window`);
+      // Name where the overflow starts: elements past the edge whose parent is not.
+      const past = (el: Element) => el.getBoundingClientRect().right > window.innerWidth + 1;
+      const origins = [...document.body.querySelectorAll('*')].filter((el) => past(el) && el.parentElement !== null && !past(el.parentElement));
+      for (const el of origins.slice(0, 5)) {
+        const cls = typeof el.className === 'string' ? el.className.split(/\s+/).slice(0, 6).join('.') : '';
+        out.push(`  starts at <${el.tagName.toLowerCase()}${cls ? `.${cls}` : ''}> right edge ${Math.round(el.getBoundingClientRect().right)}px`);
+      }
+    }
+    for (const main of document.querySelectorAll('main')) {
+      if (main.scrollWidth > main.clientWidth + 1) out.push(`main ${main.scrollWidth}px in ${main.clientWidth}px`);
+    }
+    return out;
+  });
+}
+
+/** Nothing on the page scrolls sideways: a wide element wraps or scrolls inside its own box. */
+export async function expectNoHorizontalOverflow(page: Page): Promise<void> {
+  expect(await horizontalOverflow(page), 'horizontal overflow').toEqual([]);
 }
 
 /** A full-page screenshot under `target/ui-screens/shots/<name>-<viewport>-<mode>.png`. */
