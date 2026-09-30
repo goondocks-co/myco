@@ -114,8 +114,8 @@ describe('search under the statistics a Deployment plans from', () => {
 
   it('needs the candidates to drive the join: under stale statistics a plain join walks the whole table', async () => {
     const [statement] = (await captured((db) => searchAcross(db, ALL, { query: 'title two', type: 'spore' }))).filter(({ sql }) => /WITH candidates/.test(sql));
-    expect(statement!.sql).toMatch(/FROM candidates CROSS JOIN spores d/);
-    const plain = { ...statement!, sql: statement!.sql.replace('CROSS JOIN', 'JOIN') };
+    expect(statement!.sql).toMatch(/FROM spores_fts CROSS JOIN spores d[\s\S]*FROM candidates CROSS JOIN spores d/);
+    const plain = { ...statement!, sql: statement!.sql.replace('FROM candidates CROSS JOIN', 'FROM candidates JOIN') };
     expect(tableScans(planOf(STORES.stale, plain))).toEqual(['SCAN d']);
   });
 

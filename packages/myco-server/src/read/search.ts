@@ -60,15 +60,17 @@ async function searchType(db: RelationalStore, reach: SearchReach, type: SearchT
   if (opts.session_id !== undefined && s.session === 'NULL') return [];
   const fts = `${s.table}_fts`;
   const inReach = reachOf(reach);
+  // The full-text match drives each branch, and `CROSS JOIN` holds that order: a planner free to choose may instead read
+  // every row of the reach and evaluate the match once per row.
   const params: (string | number)[] = [terms[0], ...inReach.params];
   const first = `SELECT d.rowid AS source_rowid, ${fts}.rank AS rank,
     snippet(${fts}, -1, '', '', ' … ', 40) AS preview
-    FROM ${fts} JOIN ${s.table} d ON d.rowid = ${fts}.rowid
+    FROM ${fts} CROSS JOIN ${s.table} d ON d.rowid = ${fts}.rowid
     WHERE ${fts} MATCH ? AND ${inReach.sql}`;
   const blob = s.blob ? ` UNION ALL SELECT d.rowid AS source_rowid, search_blob_chunks_fts.rank AS rank,
     snippet(search_blob_chunks_fts, 0, '', '', ' … ', 40) AS preview
-    FROM search_blob_chunks_fts JOIN search_blob_chunks c ON c.rowid = search_blob_chunks_fts.rowid
-    JOIN ${s.table} d ON d.project_id = c.project_id AND d.blob_key = c.blob_key
+    FROM search_blob_chunks_fts CROSS JOIN search_blob_chunks c ON c.rowid = search_blob_chunks_fts.rowid
+    CROSS JOIN ${s.table} d ON d.project_id = c.project_id AND d.blob_key = c.blob_key
     WHERE search_blob_chunks_fts MATCH ? AND ${inReach.sql}` : '';
   if (s.blob) params.push(terms[0], ...inReach.params);
   // Each candidate is already a row of the reach. The outer read walks the candidates and joins each one's row back by
