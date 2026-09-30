@@ -59,9 +59,12 @@ async function plans(read: (db: RelationalStore) => Promise<unknown>): Promise<A
   return Object.entries(STORES).flatMap(([store, db]) => statements.map((s) => ({ store, sql: s.sql.replace(/\s+/g, ' '), plan: planOf(db, s) })));
 }
 
-/** Steps that read a table whole. A full-text index's own search, the candidates and the named set's JSON are not tables. */
+/** Steps that read a table whole. A full-text index's own search, the candidates, the kept page and the named set's JSON are not tables. */
 const tableScans = (plan: string): string[] => plan.split('\n')
-  .filter((step) => /\bSCAN\b/.test(step) && !/\b(?:\w+_fts|candidates|json_each)\b/.test(step)).map((s) => s.trim());
+  .filter((step) => /\bSCAN\b/.test(step) && !/\b(?:\w+_fts|candidates|kept|json_each)\b/.test(step)).map((s) => s.trim());
+
+/** The steps that read the kept page's snippets: everything after the scan of `kept`. */
+const snippetSteps = (plan: string): string[] => plan.split('\n').slice(plan.split('\n').indexOf('SCAN kept') + 1);
 
 const ALL: ProjectSet = { all: true };
 const NAMED: ProjectSet = { all: false, projectIds: ['proj_0', 'proj_1'] };
@@ -87,12 +90,14 @@ describe('search under the statistics a Deployment plans from', () => {
         for (const { store, sql, plan } of read) {
           expect({
             reach, shape, store, sql,
-            byMatch: /^MATERIALIZE candidates\n(?:COMPOUND QUERY\nLEFT-MOST SUBQUERY\n)?SCAN \w+_fts VIRTUAL TABLE INDEX \d+:M/.test(plan),
+            byMatch: /^MATERIALIZE kept\nMATERIALIZE candidates\n(?:COMPOUND QUERY\nLEFT-MOST SUBQUERY\n)?SCAN \w+_fts VIRTUAL TABLE INDEX \d+:M/.test(plan),
+            // Each kept row's snippet is its own row matched again: a full-text lookup by rowid, never a second full match.
+            snippetsByRowid: plan.includes('\nSCAN kept') && snippetSteps(plan).filter((step) => /SCAN \w+_fts/.test(step)).every((step) => /INDEX \d+:=M/.test(step)),
             walksCandidates: /\nSCAN candidates\nSEARCH d USING INTEGER PRIMARY KEY \(rowid=\?\)/.test(plan),
             byProject: /SEARCH d USING (?:COVERING )?INDEX \w+ \(project_id=\?\)/.test(plan),
             scans: tableScans(plan),
             plan,
-          }).toEqual({ reach, shape, store, sql, byMatch: true, walksCandidates: true, byProject: false, scans: [], plan });
+          }).toEqual({ reach, shape, store, sql, byMatch: true, snippetsByRowid: true, walksCandidates: true, byProject: false, scans: [], plan });
         }
       }
     }
@@ -110,6 +115,18 @@ describe('search under the statistics a Deployment plans from', () => {
     const release = await plans((db) => getReleaseStatesAcross(db, [{ projectId: 'proj_0', namespace: 'spore', recordIds: ['a'] }, { projectId: 'proj_1', namespace: 'plan', recordIds: ['b'] }]));
     expect(release).toHaveLength(2 * 3);
     for (const { store, plan } of release) expect({ store, plan }).toEqual({ store, plan: expect.stringMatching(/SEARCH knowledge_release_state USING INDEX \w+ \(project_id=\?\)/) });
+  });
+
+  it('ranks every match without a snippet, and reads snippets for the kept page alone', async () => {
+    for (const [reach, search] of Object.entries(REACHES)) {
+      const read = (await captured((db) => search(db, SHAPES.terms!))).filter(({ sql }) => /WITH candidates/.test(sql));
+      expect(read.length).toBeGreaterThan(0);
+      for (const { sql } of read) {
+        const ranked = sql.slice(0, sql.indexOf('SELECT kept.project_id'));
+        expect({ reach, rankedSnippets: (ranked.match(/snippet\(/g) ?? []).length, pageSnippets: (sql.slice(ranked.length).match(/snippet\(/g) ?? []).length > 0 })
+          .toEqual({ reach, rankedSnippets: 0, pageSnippets: true });
+      }
+    }
   });
 
   it('needs the candidates to drive the join: under stale statistics a plain join walks the whole table', async () => {
