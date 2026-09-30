@@ -11,7 +11,7 @@ import { badRequest, instantParam, notFound, ok, projectSetParam, resolveProject
 import { paging, sessionFilters } from './sessions.js';
 import { listSessionSummariesAcross } from '../read/sessions.js';
 import { countSporesAcross, listSporesAcross, sporeFacets, type ListSporesOptions } from '../core/spores.js';
-import { pagePlansAcross, PLAN_STATUS_MESSAGE, WRITABLE_PLAN_STATUSES } from '../read/plans.js';
+import { pagePlansAcross, planTotals, PLAN_STATUS_MESSAGE, WRITABLE_PLAN_STATUSES } from '../read/plans.js';
 import { decodeCursor, type ProjectSet } from '../read/scope.js';
 import { MAX_PAGE } from './intelligence.js';
 
@@ -73,7 +73,11 @@ export async function handleSporesAcross(env: ServerEnv, ctx: OwnerContext): Pro
   return ok({ spores, total, maxPage: MAX_PAGE, ...(facets === undefined ? {} : { facets }) });
 }
 
-/** `GET /api/plans`: the plan list across Projects, newest edit first, a page at a time; `status` must be one the catalogue holds. */
+/**
+ * `GET /api/plans`: the plan list across Projects, newest edit first, a page at a time; `status` must be one the
+ * catalogue holds, and `q` matches a plan's title or inline body. The first page (no cursor) carries `totals`: how
+ * many plans of each status the other filters admit, so each status column can count its plans.
+ */
 export async function handlePlansAcross(env: ServerEnv, ctx: OwnerContext): Promise<Response> {
   const set = await projectSetOf(env, ctx);
   if (set instanceof Response) return set;
@@ -83,11 +87,16 @@ export async function handlePlansAcross(env: ServerEnv, ctx: OwnerContext): Prom
   if (since instanceof Response) return since;
   const cursor = ctx.url.searchParams.get('cursor');
   if (cursor !== null && decodeCursor(cursor) === null) return badRequest('malformed cursor');
-  const page = await pagePlansAcross(env.db, set, {
-    ...(status === null ? {} : { status }),
-    ...(since === undefined ? {} : { since }),
-    limit: clampLimit(ctx.url.searchParams.get('limit')),
-    ...(cursor === null ? {} : { cursor }),
-  });
-  return ok({ plans: page.rows, cursor: page.cursor, maxPage: MAX_PAGE });
+  const q = ctx.url.searchParams.get('q') ?? undefined;
+  const [page, totals] = await Promise.all([
+    pagePlansAcross(env.db, set, {
+      ...(status === null ? {} : { status }),
+      ...(since === undefined ? {} : { since }),
+      ...(q === undefined ? {} : { q }),
+      limit: clampLimit(ctx.url.searchParams.get('limit')),
+      ...(cursor === null ? {} : { cursor }),
+    }),
+    cursor === null ? planTotals(env.db, set, { since, q }) : Promise.resolve(undefined),
+  ]);
+  return ok({ plans: page.rows, cursor: page.cursor, maxPage: MAX_PAGE, ...(totals === undefined ? {} : { totals }) });
 }
