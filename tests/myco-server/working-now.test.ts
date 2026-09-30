@@ -17,6 +17,7 @@ import { handlePromptContext } from '@myco-server-worker/api/recall.js';
 import worker from '@myco-server-worker/index.js';
 import { issueMemberToken } from '@myco-server-worker/auth/tokens.js';
 import { turnStartedAt } from '@myco-server-worker/ingest/turns.js';
+import { parseTranscripts } from '@myco-server-worker/ingest/parse.js';
 import { WORKING_CAP_MS } from '@myco-server-worker/read/sessions.js';
 import { MAX_CLOCK_SKEW_MS } from '@myco-server-worker/constants.js';
 import { blobPost, envelope, memberHeaders, memberPost, recordingDeferred, sqliteEnv, uuid } from './helpers/fixtures.js';
@@ -61,13 +62,13 @@ async function rig() {
   await event({ sessionId: 'sess_1', createdAt: now - 110_000, payload: { promptId: uuid(2), text: 'hi', origin: 'user' } });
   /** A transcript segment of `sessionId`: sent by its own turn-end hook when `turnEnd`, and by any other pass when not. */
   const offsets = new Map<string, number>();
-  const segment = async (sessionId: string, createdAt: number, turnEnd: boolean, channel = 'cli') => {
-    const bytes = utf8(`{"at":${createdAt},"session":"${sessionId}"}\n`);
+  const segment = async (sessionId: string, createdAt: number, turnEnd: boolean, channel = 'cli', text?: string) => {
+    const bytes = utf8(text ?? `{"at":${createdAt},"session":"${sessionId}"}\n`);
     const baseOffset = offsets.get(sessionId) ?? 0;
     offsets.set(sessionId, baseOffset + bytes.byteLength);
     const key = await sha256HexOf(bytes);
     await worker.fetch(blobPost(token, key, bytes), e.env, e.deferred);
-    return event({ kind: 'transcript.segment', sessionId, createdAt, channel, payload: { transcriptId: `tx_${(await sha256HexOf(utf8(sessionId))).slice(0, 32)}`, baseOffset, length: bytes.byteLength, blob: key } },
+    return event({ kind: 'transcript.segment', sessionId, createdAt, channel, payload: { transcriptId: `tx_${(await sha256HexOf(utf8(sessionId))).slice(0, 32)}`, agent: 'claude-code', baseOffset, length: bytes.byteLength, blob: key } },
       token, turnEnd ? { [TURN_END_HEADER]: '1' } : {});
   };
   const workingRow = (sessionId: string) => e.sqlite.query(`SELECT working_since, last_turn_end_at FROM sessions WHERE project_id = 'proj_1' AND session_id = ?`).get(sessionId);
@@ -185,6 +186,22 @@ describe('a session working now', () => {
     // Session 1's own turn end does.
     await r.segment('sess_1', r.now - 1_000, true);
     expect(r.workingSince('sess_1')).toBeNull();
+  });
+
+  it('leaves a turn open while the parse reads its transcript: a reply the turn is still writing, shipped by another pass, ends nothing', async () => {
+    const r = await rig();
+    const at = r.now - 60_000;
+    await r.prompt('sess_1', promptIdAt(at));
+    const iso = (t: number) => new Date(t).toISOString();
+    // Session A's transcript as another session's backlog walk ships it mid-turn: the prompt, and a reply begun before a tool call.
+    const lines = [
+      { type: 'user', uuid: 'u1', promptId: 'p1', sessionId: 'sess_1', timestamp: iso(at), message: { role: 'user', content: 'run the long loop' } },
+      { type: 'assistant', uuid: 'a1', sessionId: 'sess_1', timestamp: iso(at + 5_000), message: { role: 'assistant', content: [{ type: 'text', text: 'Running the loop now.' }, { type: 'tool_use', id: 'toolu_1', name: 'Bash', input: { command: 'sleep 150' } }], stop_reason: 'tool_use' } },
+    ];
+    await r.segment('sess_1', at + 10_000, false, 'cli', lines.map((l) => JSON.stringify(l)).join('\n') + '\n');
+    for (let pass = 0; pass < 5; pass += 1) if ((await parseTranscripts(r.e.serverEnv, Date.now())).changed === 0) break;
+    expect(r.e.sqlite.query(`SELECT COUNT(*) AS n FROM responses WHERE session_id = 'sess_1'`).get()).toEqual({ n: 1 });
+    expect(r.workingSince('sess_1')).toBe(at);
   });
 
   it('opens nothing for a stamp arriving after its own turn\'s end, and closes a turn by an end at its exact start', async () => {

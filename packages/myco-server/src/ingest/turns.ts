@@ -4,7 +4,8 @@
  * A turn starts when the member's prompt hook asks the Deployment for context (`POST /context/prompt`), which it does
  * for every prompt it takes, and ends when the turn's end reaches the Deployment: the transcript the session's own
  * turn-end hook ships (sent with `TURN_END_HEADER`; a transcript any other pass ships, a backlog, a drain, an import,
- * ends nothing), a response, or the session's end. Both instants are the member's own clock, the prompt's from its
+ * ends nothing), a response the member sends, or the session's end. What the Deployment's parse derives from a
+ * transcript ends nothing: bytes shipped mid-turn hold a reply the turn is still writing. Both instants are the member's own clock, the prompt's from its
  * UUIDv7 id and the end's from the event's `createdAt`:
  *
  * - an end older than the turn's start leaves the turn open, so a turn end drained late from the spool never closes
@@ -18,7 +19,7 @@
  * A session with an open turn reads as working (`read/sessions.ts`, `WORKING_CAP_MS`).
  */
 import type { PreparedStatement, RelationalStore } from '../core/adapters.js';
-import { MAX_CLOCK_SKEW_MS } from '../constants.js';
+import { MAX_CLOCK_SKEW_MS, TRANSCRIPT_PARSE_ADAPTER } from '../constants.js';
 import { TURN_END_HEADER } from '@goondocks/myco-shared/member-protocol';
 
 /** The event kinds that end a turn: a response, and the session's end. A transcript segment ends one only when sent with `TURN_END_HEADER`. */
@@ -27,9 +28,13 @@ export const TURN_END_KINDS: ReadonlySet<string> = new Set(['response', 'session
 export const TURN_END_SEGMENT_KIND = 'transcript.segment';
 export { TURN_END_HEADER };
 
-/** Whether an event ends its session's turn: a response or an end, or the transcript its own turn-end hook sends. Nothing an import carries does. */
-export function endsTurn(e: { kind: string; channel: string }, turnEndHeader: boolean): boolean {
-  if (e.channel === 'import') return false;
+/**
+ * Whether an event ends its session's turn: a response or an end the member sends, or the transcript its own turn-end
+ * hook sends. Nothing an import carries does, and nothing the Deployment's parse derives: a transcript shipped mid-turn
+ * reads as a reply the turn is still writing.
+ */
+export function endsTurn(e: { kind: string; channel: string; producer: { adapter: string } }, turnEndHeader: boolean): boolean {
+  if (e.channel === 'import' || e.producer.adapter === TRANSCRIPT_PARSE_ADAPTER) return false;
   return TURN_END_KINDS.has(e.kind) || (e.kind === TURN_END_SEGMENT_KIND && turnEndHeader);
 }
 
