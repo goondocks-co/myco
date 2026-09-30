@@ -2,6 +2,8 @@
 
 ALTER TABLE sessions ADD COLUMN working_since INTEGER;
 
+ALTER TABLE sessions ADD COLUMN last_turn_end_at INTEGER;
+
 CREATE INDEX IF NOT EXISTS idx_sessions_working ON sessions (working_since) WHERE working_since IS NOT NULL;
 
 CREATE INDEX IF NOT EXISTS idx_agent_runs_actor_entry ON agent_runs (task, CASE WHEN json_valid(dispatch_spec) THEN CASE WHEN json_type(dispatch_spec, '$.actor') = 'text' THEN NULLIF(json_extract(dispatch_spec, '$.actor'), '') END END, COALESCE(queued_at, started_at));

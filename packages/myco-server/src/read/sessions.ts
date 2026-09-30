@@ -351,10 +351,17 @@ async function selectSessions(
       conditions.push(`${SESSION_OCCURRED_AT} >= ?`); params.push(opts.since);
     }
     if (opts.until !== undefined) { conditions.push(`${SESSION_OCCURRED_AT} < ?`); params.push(opts.until); }
-    // Open and ended as the page shows them, so a session listed with an end is not also listed as open. A session working
-    // again after its recorded end is open while it works, in the working read.
+    // Open and ended as the page shows them, each session under one. A session working again after its recorded end is
+    // open while it works: the working read lists it as open, and a read of ended sessions judged at an instant leaves it
+    // out.
     if (opts.state === 'open' && window !== 'working') conditions.push(`${PRESENTED_ENDED_AT} IS NULL`);
-    if (opts.state === 'ended') conditions.push(`${PRESENTED_ENDED_AT} IS NOT NULL`);
+    if (opts.state === 'ended') {
+      conditions.push(`${PRESENTED_ENDED_AT} IS NOT NULL`);
+      if (opts.now !== undefined) {
+        conditions.push(`NOT (s.working_since IS NOT NULL AND s.working_since > ${PRESENTED_ENDED_AT} AND s.working_since > ?)`);
+        params.push(opts.now - WORKING_CAP_MS);
+      }
+    }
     if (opts.memberLabel !== undefined) { conditions.push('m.label = ?'); params.push(opts.memberLabel); }
     if (opts.sessionId !== undefined) { conditions.push('s.session_id = ?'); params.push(opts.sessionId); }
     if (opts.q !== undefined && opts.q.trim() !== '') {

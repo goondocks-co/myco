@@ -7,11 +7,21 @@
  * Deployment does not hold yet has no turn to open.
  */
 import { describe, expect, it } from 'bun:test';
+import { Database } from 'bun:sqlite';
+import { mkdtempSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { serverEnvFromBunConfig } from '@myco-server-worker/platform/bun/env.js';
+import { renderMigrationFiles } from '@myco-server-worker/db/migrate.js';
+import { handlePromptContext } from '@myco-server-worker/api/recall.js';
 import worker from '@myco-server-worker/index.js';
 import { issueMemberToken } from '@myco-server-worker/auth/tokens.js';
 import { turnStartedAt } from '@myco-server-worker/ingest/turns.js';
 import { WORKING_CAP_MS } from '@myco-server-worker/read/sessions.js';
-import { envelope, memberHeaders, memberPost, recordingDeferred, sqliteEnv, uuid } from './helpers/fixtures.js';
+import { MAX_CLOCK_SKEW_MS } from '@myco-server-worker/constants.js';
+import { blobPost, envelope, memberHeaders, memberPost, recordingDeferred, sqliteEnv, uuid } from './helpers/fixtures.js';
+import { sha256HexOf, utf8 } from '@myco-server-worker/hash.js';
+import { TURN_END_HEADER } from '@goondocks/myco-shared/member-protocol';
 import { OWNER_ENV, ownerCookie } from './helpers/owner.js';
 
 /** A prompt id as the member mints one: a UUIDv7 whose timestamp is `at`. */
@@ -26,8 +36,8 @@ async function rig() {
   const { token } = await issueMemberToken(e.db, { memberId: 'mem_machine_1', machineId: 'machine_1' }, now);
   const other = await issueMemberToken(e.db, { memberId: 'mem_machine_2', machineId: 'machine_2' }, now);
   let next = 100;
-  const event = async (over: Record<string, unknown>, as = token) => {
-    const res = await worker.fetch(memberPost(as, envelope({ eventId: uuid(next += 1), ...over })), e.env, e.deferred);
+  const event = async (over: Record<string, unknown>, as = token, headers: Record<string, string> = {}) => {
+    const res = await worker.fetch(memberPost(as, envelope({ eventId: uuid(next += 1), ...over }), '/events', headers), e.env, e.deferred);
     await e.deferred.settle();
     return (await res.json()) as Record<string, unknown>;
   };
@@ -49,7 +59,19 @@ async function rig() {
   // A session the member registered, and a prompt of it a response can answer.
   await event({ kind: 'session.start', sessionId: 'sess_1', createdAt: now - 120_000, payload: { agent: 'claude-code', startedAt: now - 120_000 } });
   await event({ sessionId: 'sess_1', createdAt: now - 110_000, payload: { promptId: uuid(2), text: 'hi', origin: 'user' } });
-  return { e, now, token, other: other.token, event, prompt, workingSince, get };
+  /** A transcript segment of `sessionId`: sent by its own turn-end hook when `turnEnd`, and by any other pass when not. */
+  const offsets = new Map<string, number>();
+  const segment = async (sessionId: string, createdAt: number, turnEnd: boolean, channel = 'cli') => {
+    const bytes = utf8(`{"at":${createdAt},"session":"${sessionId}"}\n`);
+    const baseOffset = offsets.get(sessionId) ?? 0;
+    offsets.set(sessionId, baseOffset + bytes.byteLength);
+    const key = await sha256HexOf(bytes);
+    await worker.fetch(blobPost(token, key, bytes), e.env, e.deferred);
+    return event({ kind: 'transcript.segment', sessionId, createdAt, channel, payload: { transcriptId: `tx_${(await sha256HexOf(utf8(sessionId))).slice(0, 32)}`, baseOffset, length: bytes.byteLength, blob: key } },
+      token, turnEnd ? { [TURN_END_HEADER]: '1' } : {});
+  };
+  const workingRow = (sessionId: string) => e.sqlite.query(`SELECT working_since, last_turn_end_at FROM sessions WHERE project_id = 'proj_1' AND session_id = ?`).get(sessionId);
+  return { e, now, token, other: other.token, event, prompt, workingSince, get, segment, workingRow };
 }
 
 describe('a session working now', () => {
@@ -127,18 +149,122 @@ describe('a session working now', () => {
     expect(r.workingSince('sess_1')).toBeNull();
   });
 
-  it('takes the Deployment\'s clock for a prompt id that carries no instant it can trust', async () => {
+  it('opens no turn on a prompt id whose instant is not a v7\'s, or stands more than the skew bound from the Deployment\'s clock either way', async () => {
     const now = 1_800_000_000_000;
     expect(turnStartedAt(promptIdAt(now - 5_000), now)).toBe(now - 5_000);
-    expect(turnStartedAt('p1', now)).toBe(now);
-    expect(turnStartedAt(uuid(2), now)).toBe(now);
-    expect(turnStartedAt(promptIdAt(now - 2 * 24 * 60 * 60_000), now)).toBe(now);
-    expect(turnStartedAt(promptIdAt(now - 5_000).replace(/-7abc-/, '-4abc-'), now)).toBe(now);
+    expect(turnStartedAt(promptIdAt(now + MAX_CLOCK_SKEW_MS), now)).toBe(now + MAX_CLOCK_SKEW_MS);
+    expect(turnStartedAt(promptIdAt(now - MAX_CLOCK_SKEW_MS), now)).toBe(now - MAX_CLOCK_SKEW_MS);
+    for (const id of ['p1', uuid(2), promptIdAt(now + MAX_CLOCK_SKEW_MS + 1), promptIdAt(now - MAX_CLOCK_SKEW_MS - 1), promptIdAt(now - 5_000).replace(/-7abc-/, '-4abc-')]) {
+      expect({ id, at: turnStartedAt(id, now) }).toEqual({ id, at: null });
+    }
     const r = await rig();
-    const before = Date.now();
+    // A member clock far ahead or far behind opens nothing: the session reads as Live through its receipts alone.
+    await r.prompt('sess_1', promptIdAt(Date.now() + 2 * MAX_CLOCK_SKEW_MS));
+    expect(r.workingSince('sess_1')).toBeNull();
+    await r.prompt('sess_1', promptIdAt(Date.now() - 2 * 24 * 60 * 60_000));
+    expect(r.workingSince('sess_1')).toBeNull();
     await r.prompt('sess_1', 'not-a-uuid');
-    const stamped = r.workingSince('sess_1')!;
-    expect(stamped >= before && stamped <= Date.now()).toBe(true);
+    expect(r.workingSince('sess_1')).toBeNull();
+  });
+
+  it('closes a turn by its own session\'s turn-end transcript alone: another pass shipping a segment, of this session or another, closes nothing', async () => {
+    const r = await rig();
+    await r.event({ kind: 'session.start', sessionId: 'sess_2', createdAt: r.now - 120_000, payload: { agent: 'claude-code', startedAt: r.now - 120_000 } });
+    const a = r.now - 60_000;
+    await r.prompt('sess_1', promptIdAt(a));
+    await r.prompt('sess_2', promptIdAt(r.now - 50_000));
+    // Session 2's Stop ships its own transcript as its turn end, and walks session 1's backlog: that segment is shipped now.
+    await r.segment('sess_2', r.now - 20_000, true);
+    await r.segment('sess_1', r.now - 20_000, false);
+    expect(r.workingSince('sess_1')).toBe(a);
+    expect(r.workingSince('sess_2')).toBeNull();
+    // A drain or an import of session 1's transcript closes nothing either.
+    await r.segment('sess_1', r.now - 10_000, false);
+    await r.segment('sess_1', r.now - 5_000, true, 'import');
+    expect(r.workingSince('sess_1')).toBe(a);
+    // Session 1's own turn end does.
+    await r.segment('sess_1', r.now - 1_000, true);
+    expect(r.workingSince('sess_1')).toBeNull();
+  });
+
+  it('opens nothing for a stamp arriving after its own turn\'s end, and closes a turn by an end at its exact start', async () => {
+    const r = await rig();
+    const at = r.now - 30_000;
+    // The turn's end reaches the Deployment first; its own prompt's stamp, written later, opens nothing.
+    await r.event({ kind: 'response', sessionId: 'sess_1', createdAt: at + 1_000, payload: { responseId: uuid(50), promptId: uuid(2), text: 'done' } });
+    expect(r.workingRow('sess_1')).toEqual({ working_since: null, last_turn_end_at: at + 1_000 });
+    // An older end drained after it leaves the recorded end where it stands.
+    await r.event({ kind: 'response', sessionId: 'sess_1', createdAt: at - 5_000, payload: { responseId: uuid(53), promptId: uuid(2), text: 'earlier' } });
+    expect(r.workingRow('sess_1')).toEqual({ working_since: null, last_turn_end_at: at + 1_000 });
+    await r.prompt('sess_1', promptIdAt(at));
+    expect(r.workingSince('sess_1')).toBeNull();
+    // A later turn opens, and an end at its very instant closes it.
+    const next = r.now - 10_000;
+    await r.prompt('sess_1', promptIdAt(next));
+    expect(r.workingSince('sess_1')).toBe(next);
+    await r.event({ kind: 'response', sessionId: 'sess_1', createdAt: next, payload: { responseId: uuid(51), promptId: uuid(2), text: 'done' } });
+    expect(r.workingSince('sess_1')).toBeNull();
+  });
+
+  it('lists a session working after its recorded end as open alone, and as ended again once its turn ends', async () => {
+    const r = await rig();
+    await r.event({ kind: 'session.end', sessionId: 'sess_1', createdAt: r.now - 60_000, payload: { endedAt: r.now - 60_000 } });
+    await r.prompt('sess_1', promptIdAt(r.now - 30_000));
+    const since = Date.now() - 15 * 60_000;
+    const ids = async (state: string, window = '') => ((await r.get(`/api/sessions?state=${state}${window}`)).rows as Array<{ sessionId: string }>).map((row) => row.sessionId);
+    expect({ open: await ids('open', `&window=activity&since=${since}`), ended: await ids('ended', `&window=activity&since=${since}`), endedAll: await ids('ended') })
+      .toEqual({ open: ['sess_1'], ended: [], endedAll: [] });
+    await r.event({ kind: 'response', sessionId: 'sess_1', createdAt: r.now - 20_000, payload: { responseId: uuid(52), promptId: uuid(2), text: 'done' } });
+    expect({ open: await ids('open', `&window=activity&since=${since}`), ended: await ids('ended') }).toEqual({ open: [], ended: ['sess_1'] });
+  });
+
+  it('reads a turn older than the recorded end as no turn, on the row and the live list, whatever the column holds', async () => {
+    const r = await rig();
+    // A turn and an end the store holds out of order: the end is newer, so the session is not working.
+    r.e.sqlite.run(`UPDATE sessions SET working_since = ?, ended_at = ?, last_received_at = ? WHERE session_id = 'sess_1'`, [r.now - 30_000, r.now - 10_000, r.now - 60 * 60_000]);
+    expect((await r.get('/api/projects/proj_1/sessions/sess_1')).session).toMatchObject({ working: false, workingSince: null });
+    expect((await r.get(`/api/sessions?window=activity&since=${Date.now() - 15 * 60_000}`)).rows).toEqual([]);
+  });
+
+  it('merges the working sessions into the live page once each, in the page\'s order', async () => {
+    const r = await rig();
+    // Three sessions, all working, started in a known order: the oldest and newest receiving now, the middle one read
+    // through its open turn alone.
+    for (const [id, started] of [['sess_a', r.now - 300_000], ['sess_b', r.now - 200_000], ['sess_c', r.now - 100_000]] as const) {
+      await r.event({ kind: 'session.start', sessionId: id, createdAt: started, payload: { agent: 'claude-code', startedAt: started } });
+      await r.prompt(id, promptIdAt(r.now - 5_000));
+    }
+    r.e.sqlite.run(`UPDATE sessions SET last_received_at = ? WHERE session_id IN ('sess_b', 'sess_1')`, [r.now - 60 * 60_000]);
+    const live = await r.get(`/api/sessions?window=activity&since=${Date.now() - 15 * 60_000}&state=open`);
+    // sess_a and sess_c are in both reads, and listed once; sess_b falls between them, and the page reads newest start first.
+    expect((live.rows as Array<{ sessionId: string }>).map((row) => row.sessionId)).toEqual(['sess_c', 'sess_b', 'sess_a']);
+  });
+
+  it('on the self-hosted target, stamps the turn only after the prompt\'s answer is composed from its reads', async () => {
+    const sqlite = new Database(':memory:');
+    sqlite.exec('PRAGMA foreign_keys = ON');
+    for (const file of renderMigrationFiles()) sqlite.exec(file.sql);
+    const now = Date.now();
+    sqlite.run(`INSERT INTO projects (project_id, name, created_at) VALUES ('proj_1', 'p', 0)`);
+    sqlite.run(`INSERT INTO members (id, label, created_at) VALUES ('mem_1', 'm', 0)`);
+    sqlite.run(`INSERT INTO sessions (project_id, session_id, machine_id, created_by_token_id, first_received_at, last_received_at) VALUES ('proj_1', 'sess_1', 'machine_1', 'tok', ?, ?)`, [now, now]);
+    // Recall on, and a prompt with planning intent, so composing the answer runs statements of its own.
+    sqlite.run(`INSERT INTO project_capabilities (project_id, capability, enabled, updated_at, updated_by) VALUES ('proj_1', 'cortex', 1, ?, 'test')`, [now]);
+    const bun = serverEnvFromBunConfig({ sqlite, blobDir: mkdtempSync(join(tmpdir(), 'myco-blobs-')) });
+    const order: string[] = [];
+    const inner = bun.db;
+    const db = { ...inner, prepare: (sql: string) => { order.push(sql); return inner.prepare(sql); }, batch: inner.batch.bind(inner) };
+    const at = now - 1_000;
+    const answer = await handlePromptContext({ ...bun, db } as never, {
+      projectId: 'proj_1', memberId: 'mem_1', machineId: 'machine_1', tokenId: 'tok', expiresAt: now + 60_000, lineageRoot: 'tok', lineageStartedAt: now,
+      runtime: { runtimeLabel: null, runtimeKind: null }, body: JSON.stringify({ sessionId: 'sess_1', promptId: promptIdAt(at), text: 'draft the implementation plan' }), bodyBytes: 10, now, origin: 'https://s',
+    });
+    expect(answer.status).toBe(200);
+    await bun.settle();
+    const stamp = order.findIndex((sql) => /SET working_since = \?/.test(sql));
+    expect({ stamp, last: order.length - 1 }).toEqual({ stamp: order.length - 1, last: order.length - 1 });
+    expect(order.some((sql) => /session_injections/.test(sql))).toBe(true);
+    expect((sqlite.query(`SELECT working_since FROM sessions WHERE session_id = 'sess_1'`).get() as { working_since: number }).working_since).toBe(at);
   });
 
   it('answers the prompt without waiting on the stamp, which may never finish', async () => {

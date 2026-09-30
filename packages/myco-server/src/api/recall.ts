@@ -54,7 +54,8 @@ export function noteTurnStarted(env: ServerEnv, ctx: RouteContext, sessionId: st
   try {
     env.afterResponse(async () => {
       try {
-        await startTurnStatement(env.db, { projectId: ctx.projectId, sessionId, machineId: ctx.machineId, at: turnStartedAt(promptId, ctx.now) }).run();
+        const at = turnStartedAt(promptId, ctx.now);
+        if (at !== null) await startTurnStatement(env.db, { projectId: ctx.projectId, sessionId, machineId: ctx.machineId, at }).run();
       } catch (err) {
         unrecorded(err);
       }
@@ -75,7 +76,6 @@ export async function handlePromptContext(env: ServerEnv, ctx: RouteContext): Pr
     return Response.json(refused(ctx, refusal('prompt context requires sessionId, promptId and text', 'parse')));
   }
 
-  noteTurnStarted(env, ctx, sessionId, promptId);
   const [leaves, capabilityOn] = await Promise.all([
     readRecallLeaves(env.db),
     settingsWriter(env.db).capabilityEnabled(ctx.projectId, 'cortex'),
@@ -83,6 +83,8 @@ export async function handlePromptContext(env: ServerEnv, ctx: RouteContext): Pr
   const served = await composePromptContext(env.db, { projectId: ctx.projectId }, leaves, capabilityOn, {
     sessionId, promptId, text, now: ctx.now,
   }, () => resolveSemanticSearch(env));
+  // Written only once the answer is composed, so on no target does the stamp run ahead of the reads it answers from.
+  noteTurnStarted(env, ctx, sessionId, promptId);
   return Response.json({ persisted: true, ...served });
 }
 
