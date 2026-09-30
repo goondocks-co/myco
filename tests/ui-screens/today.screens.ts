@@ -170,11 +170,14 @@ test.describe('Today', () => {
       const window = bounds(sessions.url());
       expect(window.until - window.since).toBeGreaterThanOrEqual(23 * 3_600_000);
       expect(window.until).toBeLessThanOrEqual(fixtureNow());
-      const sessionRows = (await sessions.json() as { rows: Array<{ startedAt: number | null; firstReceivedAt: number }> }).rows;
+      // The day's sessions are those active in it: started before it ends, heard from since it began, not ended before it.
+      expect(new URL(sessions.url()).searchParams.get('window')).toBe('activity');
+      const sessionRows = (await sessions.json() as { rows: Array<{ startedAt: number | null; firstReceivedAt: number; lastReceivedAt: number; endedAt: number | null }> }).rows;
       expect(sessionRows.length).toBeGreaterThanOrEqual(4);
       for (const row of sessionRows) {
         const at = row.startedAt ?? row.firstReceivedAt;
-        expect(at >= window.since && at < window.until, `session at ${at} inside [${window.since}, ${window.until})`).toBe(true);
+        const active = at < window.until && row.lastReceivedAt >= window.since && (row.endedAt === null || row.endedAt >= window.since);
+        expect(active, `session started ${at}, last heard ${row.lastReceivedAt}, active in [${window.since}, ${window.until})`).toBe(true);
       }
       // The spores read is bounded the same, and its rows and total are the day's alone.
       expect(bounds(spores.url())).toEqual(window);

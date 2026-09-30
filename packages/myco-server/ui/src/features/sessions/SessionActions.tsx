@@ -24,7 +24,7 @@ export interface SessionActionsProps {
 }
 
 /**
- * An admin's actions on a session, in its ⋯ menu: write a new title, end it
+ * An admin's actions on a session, in its ⋯ menu beside the facts' copy action: write a new title, end it
  * while it is open, and delete it. Each passes through a confirmation that says
  * what it will do. After a new title is asked for, the page watches: it reads
  * the session again every few seconds until the title moves or the run ends.
@@ -50,10 +50,10 @@ export function SessionActions({ projectId, session, counts, onDeleted }: Sessio
   };
 
   return (
-    <div className="flex flex-col items-end gap-s1">
+    <>
       <MoreMenu items={items} label="Session actions" />
       {retitle.note !== null && (
-        <p role="status" className="max-w-[320px] text-right t-small text-muted">
+        <p role="status" className="w-full t-small text-muted">
           {retitle.note}
           {retitle.runHref !== null && <> · <Link to={retitle.runHref}>see the run</Link></>}
         </p>
@@ -105,7 +105,7 @@ export function SessionActions({ projectId, session, counts, onDeleted }: Sessio
           {[count(counts.prompts, 'prompt'), count(counts.toolCalls, 'tool call'), count(counts.plans, 'plan'), count(counts.attachments, 'attachment')].join(' · ')}
         </p>
       </ConfirmDialog>
-    </div>
+    </>
   );
 }
 

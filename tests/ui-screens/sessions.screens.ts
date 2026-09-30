@@ -49,7 +49,7 @@ async function expectTable(page: Page, viewport: ViewportName): Promise<void> {
   await expect(bar).toHaveCount(1);
   await expect(bar).toBeInViewport();
   await expect(bar.getByRole('searchbox', { name: 'Filter sessions' })).toBeVisible();
-  for (const name of ['Member', 'State', 'Started']) await expect(bar.getByRole('combobox', { name })).toBeVisible();
+  for (const name of ['Member', 'State', 'Active']) await expect(bar.getByRole('combobox', { name })).toBeVisible();
   await expect(bar.getByRole('button', { name: /^Agent: / })).toBeVisible();
   await expect(rows(page, viewport).first()).toBeInViewport();
   if (!onFixture()) return;
@@ -58,15 +58,18 @@ async function expectTable(page: Page, viewport: ViewportName): Promise<void> {
   await expect(live).toContainText('Live');
   await expect(live).toContainText(LIVE_HEADING);
   await expect(live).toContainText('Myco');
+  // The Live chip says it is live; the Started cell keeps the real start.
+  await expect(live.locator('time')).toHaveText(/^\d{2}:\d{2}$/);
   const titled = rows(page, viewport).filter({ hasText: OUTCOME_TITLE });
   await expect(titled).toHaveCount(1);
   await expect(titled).toContainText('Codex');
   await expect(rows(page, viewport).filter({ hasText: 'Checkout form validation messages rewritten' })).toContainText('Atlas web');
   if (viewport === 'desktop') {
     await expect(page.getByRole('table', { name: 'Sessions' }).locator('thead th')).toHaveText(['Session', 'Project', 'Agent', 'Size', 'Started']);
-    const days = page.getByRole('table', { name: 'Sessions' }).locator('tbody th');
-    await expect(days.nth(0)).toHaveText('Today');
-    await expect(days.nth(1)).toHaveText('Yesterday');
+    const groups = page.getByRole('table', { name: 'Sessions' }).locator('tbody th');
+    await expect(groups.nth(0)).toHaveText('Live now');
+    await expect(groups.nth(1)).toHaveText('Today');
+    await expect(groups.nth(2)).toHaveText('Yesterday');
   }
 }
 

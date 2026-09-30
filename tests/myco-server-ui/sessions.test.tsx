@@ -7,7 +7,7 @@
  * it names, whatever the machine's own time.
  */
 import { afterEach, beforeEach, describe, expect, it, setSystemTime } from 'bun:test';
-import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { MemoryRouter, useLocation } from 'react-router-dom';
 import { focusManager, QueryClient, QueryClientProvider } from '@tanstack/react-query';
 
@@ -17,7 +17,8 @@ import { forgetProject } from '../../packages/myco-server/ui/src/lib/project-mem
 import { LIVE_REFRESH_MS } from '../../packages/myco-server/ui/src/hooks/use-work';
 import { sessionListPath } from '../../packages/myco-server/ui/src/hooks/use-sessions';
 import { promptPreview, PROMPT_PREVIEW_CHARS } from '../../packages/myco-server/ui/src/features/sessions/Turn';
-import { memberFilter, windowSince } from '../../packages/myco-server/ui/src/features/sessions/words';
+import { memberFilter, startedWords, windowBounds } from '../../packages/myco-server/ui/src/features/sessions/words';
+import { LIVE_WITHIN_MS } from '../../packages/myco-server/ui/src/features/today/timeline';
 import { progressParts } from '../../packages/myco-server/ui/src/components/sessions/PlanCard';
 
 const MINUTE = 60_000;
@@ -140,61 +141,71 @@ function rawIdsInPage(): string[] {
 const listPath = (filters: Parameters<typeof sessionListPath>[0]) => sessionListPath(filters);
 
 describe('the sessions table', () => {
+  const LIVE = session({ sessionId: 's1', label: 'Run the parity scenarios', lastReceivedAt: NOW - MINUTE, startedAt: NOW - 42 * MINUTE });
+  /** Live now and started the evening before: live sessions older than the first page still show, on top. */
+  const LIVE_SINCE_YESTERDAY = session({ sessionId: 's0', projectId: 'y', title: 'Overnight migration', label: 'Overnight migration', startedAt: TODAY - 2 * HOUR - 20 * MINUTE, firstReceivedAt: TODAY - 2 * HOUR - 20 * MINUTE, lastReceivedAt: NOW - 2 * MINUTE });
   const ROWS = [
-    session({ sessionId: 's1', label: 'Run the parity scenarios', lastReceivedAt: NOW - MINUTE, startedAt: NOW - 42 * MINUTE }),
+    LIVE,
     session({ sessionId: 's2', projectId: 'y', agent: 'codex', title: 'Checkout errors name their field', summary: 'Replaced the generic errors.\nAdded tests.', label: 'Checkout errors name their field', startedAt: NOW - 5 * HOUR, endedAt: NOW - 4 * HOUR, promptCount: 12 }),
     session({ sessionId: 's3', agent: 'cursor', title: null, label: 's3', startedAt: NOW - DAY - HOUR, endedAt: NOW - DAY, memberId: 'mem_harness', memberLabel: 'harness', promptCount: 1 }),
   ];
+  /** The live group's read: open sessions heard from within the live span, under the same filters. */
+  const livePath = (filters: Omit<Parameters<typeof sessionListPath>[0], 'state' | 'active'>) => sessionListPath({ ...filters, state: 'open', active: { since: NOW - LIVE_WITHIN_MS } });
 
-  it('lists every project’s sessions at /sessions, grouped by the day each started, a row per session that opens it', async () => {
-    const { requested } = server(base({ [listPath({ projectId: null })]: () => page(ROWS) }));
+  it('lists every project’s sessions at /sessions: the live ones pinned on top, the rest under the day each started, each row opening its session', async () => {
+    const { requested } = server(base({
+      [listPath({ projectId: null })]: () => page(ROWS),
+      [livePath({ projectId: null })]: () => page([LIVE, LIVE_SINCE_YESTERDAY]),
+    }));
     mount('/sessions');
     const table = await screen.findByRole('table', { name: 'Sessions' });
     expect(screen.getByRole('heading', { level: 1 }).textContent).toBe('Sessions');
     expect(screen.getByText('Every session your agents ran, across all projects.')).toBeTruthy();
     expect(columnHeadings(table)).toEqual(['Session', 'Project', 'Agent', 'Size', 'Started']);
-    // Each day is a heading row over its sessions.
+    await waitFor(() => expect(within(table).getAllByRole('rowgroup').slice(1).map((g) => within(g).getAllByRole('row')[0]!.textContent)).toEqual(['Live now', 'Today', 'Yesterday']));
     const groups = within(table).getAllByRole('rowgroup').slice(1);
-    expect(groups.map((g) => within(g).getAllByRole('row')[0]!.textContent)).toEqual(['Today', 'Yesterday']);
-    const live = within(groups[0]!).getAllByRole('row')[1]!;
-    expect(live.getAttribute('data-live')).toBe('');
-    expect(live.textContent).toContain('Live');
-    // An untitled session reads its first prompt, marked, never its id or its agent.
-    expect(within(live).getByRole('link').textContent).toBe('LiveUntitledRun the parity scenarios');
-    expect(within(live).getByRole('link').getAttribute('href')).toBe('/p/x/sessions/s1');
-    expect(live.textContent).toContain('now');
-    const ended = within(groups[0]!).getAllByRole('row')[2]!;
+    const [live, overnight] = within(groups[0]!).getAllByRole('row').slice(1);
+    // Live rows carry the chip and their real start; one begun yesterday says since when.
+    expect(live!.getAttribute('data-live')).toBe('');
+    expect(within(live!).getByRole('link').textContent).toBe('LiveUntitledRun the parity scenarios');
+    expect(within(live!).getByRole('link').getAttribute('href')).toBe('/p/x/sessions/s1');
+    expect(within(live!).getByRole('time').textContent).toBe('15:18');
+    expect(within(overnight!).getByRole('time').textContent).toBe('since yesterday 21:40');
+    expect(within(table).getAllByRole('time').map((t) => t.textContent)).not.toContain('now');
+    // A live row is listed once, in the live group, even when the day's page holds it too.
+    expect(within(table).getAllByRole('link', { name: /Run the parity scenarios/ })).toHaveLength(1);
+    const ended = within(groups[1]!).getAllByRole('row')[1]!;
+    expect(ended.getAttribute('data-live')).toBeNull();
     expect(within(ended).getByRole('link').getAttribute('href')).toBe('/p/y/sessions/s2');
-    expect(ended.textContent).toContain('Atlas web');
-    expect(ended.textContent).toContain('Codex');
-    expect(ended.textContent).toContain('12 prompts');
-    expect(ended.textContent).toContain('11:00');
-    // The summary's first line sits under the title.
-    expect(ended.textContent).toContain('Replaced the generic errors. Added tests.');
-    const untitled = within(groups[1]!).getAllByRole('row')[1]!;
+    for (const words of ['Atlas web', 'Codex', '12 prompts', '11:00', 'Replaced the generic errors. Added tests.']) expect(ended.textContent).toContain(words);
+    const untitled = within(groups[2]!).getAllByRole('row')[1]!;
     expect(untitled.textContent).toContain('Untitled session');
     expect(untitled.textContent).toContain('Cursor');
-    expect(requested.filter((p) => p.startsWith('/api/sessions'))).toEqual([listPath({ projectId: null })]);
+    expect(screen.getByText('Showing 4 sessions')).toBeTruthy();
+    expect(requested).toContain(listPath({ projectId: null }));
+    expect(requested).toContain(livePath({ projectId: null }));
     expect(rawIdsInPage()).toEqual([]);
   });
 
   it('narrows to one project at /p/:project/sessions, without a Project column, and says which', async () => {
-    const { requested } = server(base({ [listPath({ projectId: 'x' })]: () => page([ROWS[0]]) }));
+    const { requested } = server(base({ '/api/sessions': () => page([ROWS[0]]) }));
     mount('/p/x/sessions');
     const table = await screen.findByRole('table', { name: 'Sessions' });
     expect(columnHeadings(table)).toEqual(['Session', 'Agent', 'Size', 'Started']);
     expect(screen.getByText('Every session your agents ran in Project X.')).toBeTruthy();
     expect(requested).toContain('/api/sessions?limit=50&project=x');
+    expect(requested).toContain(livePath({ projectId: 'x' }));
   });
 
   it('asks the server for each filter from the bar, holds them in the URL, and Clear drops them all at once', async () => {
     const { requested } = server(base({ '/api/sessions': () => page(ROWS) }));
     mount('/p/x/sessions');
     await screen.findByRole('table', { name: 'Sessions' });
-    const bar = document.querySelector('[data-filter-bar]')!;
+    const bar = document.querySelector('[data-filter-bar]') as HTMLElement;
     expect(document.querySelectorAll('[data-filter-bar]')).toHaveLength(1);
-    expect(within(bar as HTMLElement).getByRole('button', { name: 'Agent: Any agent' })).toBeTruthy();
-    expect(within(bar as HTMLElement).getAllByRole('combobox').map((c) => c.getAttribute('aria-label'))).toEqual(['Member', 'State', 'Started']);
+    // The closed controls show their short words; the lists say them in full.
+    expect(within(bar).getByRole('button', { name: 'Agent: Any agent' }).textContent).toBe('Agent');
+    expect(within(bar).getAllByRole('combobox').map((c) => [c.getAttribute('aria-label'), c.textContent])).toEqual([['Member', 'Member'], ['State', 'State'], ['Active', 'Active']]);
 
     await pickAgent('Codex');
     await waitFor(() => expect(location()).toBe('/p/x/sessions?agent=codex'));
@@ -202,16 +213,17 @@ describe('the sessions table', () => {
 
     // Members are offered by name; one known only by an id is left out, and Myco's own account reads "Myco".
     fireEvent.click(screen.getByRole('combobox', { name: 'Member' }));
-    const options = (await screen.findAllByRole('option')).map((o) => o.textContent);
-    expect(options).toEqual(['Any member', 'Ada', 'Myco']);
+    expect((await screen.findAllByRole('option')).map((o) => o.textContent)).toEqual(['Any member', 'Ada', 'Myco']);
     fireEvent.click(screen.getByRole('option', { name: 'Myco' }));
     await waitFor(() => expect(requested).toContain(listPath({ projectId: 'x', agent: 'codex', member: 'harness' })));
 
     await pick('State', 'Open');
-    await pick('Started', 'Today');
+    // Active today is the sessions running at some point today, whenever they started: the activity window, to tomorrow.
+    await pick('Active', 'Active today');
     fireEvent.change(screen.getByRole('searchbox', { name: 'Filter sessions' }), { target: { value: 'parity' } });
-    const everything = listPath({ projectId: 'x', state: 'open', q: 'parity', agent: 'codex', member: 'harness', since: TODAY });
+    const everything = listPath({ projectId: 'x', state: 'open', q: 'parity', agent: 'codex', member: 'harness', active: { since: TODAY, until: TODAY + DAY } });
     await waitFor(() => expect(requested).toContain(everything));
+    expect(new URL(everything, 'https://s').searchParams.get('window')).toBe('activity');
     expect(new URLSearchParams(location()!.split('?')[1]).toString()).toBe('agent=codex&member=harness&state=open&window=today&q=parity');
 
     fireEvent.click(screen.getByRole('button', { name: 'Clear search and filters' }));
@@ -219,16 +231,32 @@ describe('the sessions table', () => {
     expect((screen.getByRole('searchbox', { name: 'Filter sessions' }) as HTMLInputElement).value).toBe('');
   });
 
-  it('reads the filters a link carries into the bar and the request', async () => {
+  it('lists a session started yesterday and live now under Active today, saying since when it ran', async () => {
+    const path = listPath({ projectId: null, active: { since: TODAY, until: TODAY + DAY } });
+    const ENDED_SINCE_YESTERDAY = session({ sessionId: 's9', title: 'Late-night refactor', label: 'Late-night refactor', startedAt: TODAY - HOUR, firstReceivedAt: TODAY - HOUR, lastReceivedAt: TODAY + HOUR, endedAt: TODAY + HOUR });
+    server(base({ [path]: () => page([ENDED_SINCE_YESTERDAY, LIVE_SINCE_YESTERDAY]), [livePath({ projectId: null })]: () => page([LIVE_SINCE_YESTERDAY]) }));
+    mount('/sessions?window=today');
+    const table = await screen.findByRole('table', { name: 'Sessions' });
+    await waitFor(() => expect(table.querySelector('[data-live]')).not.toBeNull());
+    expect(within(table.querySelector('[data-live]') as HTMLElement).getByRole('time').textContent).toBe('since yesterday 21:40');
+    // Grouped by the day it started; the Started cell says it began before the period.
+    const ended = within(table).getByRole('link', { name: 'Late-night refactor' }).closest('tr')!;
+    expect(within(ended).getByRole('time').textContent).toBe('since yesterday 23:00');
+    expect(within(table).getAllByRole('rowgroup').slice(1).map((g) => within(g).getAllByRole('row')[0]!.textContent)).toEqual(['Live now', 'Yesterday']);
+  });
+
+  it('reads the filters a link carries, the branch among them, into the bar and the request', async () => {
     const { requested } = server(base({ '/api/sessions': () => page([]) }));
-    mount('/sessions?agent=cursor&state=ended&window=week&q=rounding');
+    mount('/sessions?agent=cursor&state=ended&window=week&q=rounding&branch=main');
     await screen.findByText('No sessions match.');
-    expect(requested).toContain(listPath({ projectId: null, state: 'ended', q: 'rounding', agent: 'cursor', since: TODAY - 6 * DAY }));
+    expect(requested).toContain(listPath({ projectId: null, state: 'ended', q: 'rounding', agent: 'cursor', branch: 'main', active: { since: TODAY - 6 * DAY, until: TODAY + DAY } }));
+    // An ended list has no live group to ask for.
+    expect(requested.some((p) => p.includes('state=open'))).toBe(false);
     expect(screen.getByRole('button', { name: 'Agent: Cursor' })).toBeTruthy();
-    expect(screen.getByRole('combobox', { name: 'State' }).textContent).toContain('Ended');
-    expect(screen.getByRole('combobox', { name: 'Started' }).textContent).toContain('Past 7 days');
+    expect(screen.getByRole('combobox', { name: 'State' }).textContent).toBe('Ended');
+    expect(screen.getByRole('combobox', { name: 'Active' }).textContent).toBe('Past 7 days');
+    expect(document.querySelector('[data-branch-filter]')!.textContent).toContain('main');
     expect((screen.getByRole('searchbox', { name: 'Filter sessions' }) as HTMLInputElement).value).toBe('rounding');
-    // A filtered list with nothing in it offers the way back.
     fireEvent.click(screen.getByRole('button', { name: 'Clear the search and filters' }));
     await waitFor(() => expect(location()).toBe('/sessions'));
   });
@@ -245,55 +273,54 @@ describe('the sessions table', () => {
     expect(await screen.findByText('Not found')).toBeTruthy();
   });
 
-  it('pages with Show more, listing a session the order revised onto two pages once', async () => {
+  it('pages with Show more, keeping the search and filters on the next page, and lists a session the order revised onto two pages once', async () => {
     const first = [session({ sessionId: 'a', title: 'session a', startedAt: NOW - 1000, endedAt: NOW }), session({ sessionId: 'b', title: 'session b', startedAt: NOW - 2000, endedAt: NOW })];
     const second = [session({ sessionId: 'b', title: 'session b refined', startedAt: NOW - 4000, endedAt: NOW }), session({ sessionId: 'c', title: 'session c', startedAt: NOW - 5000, endedAt: NOW })];
-    const path = listPath({ projectId: 'x' });
-    const { requested } = server(base({ [path]: () => page(first, 'c1'), [`${path}&cursor=c1`]: () => page(second) }));
-    mount('/p/x/sessions');
+    const path = listPath({ projectId: 'x', q: 'port', agent: 'codex' });
+    const { requested } = server(base({ [path]: () => page(first, 'c1'), [`${path}&cursor=c1`]: () => page(second), '/api/sessions': () => page([]) }));
+    mount('/p/x/sessions?q=port&agent=codex');
     expect(await screen.findByText('session a')).toBeTruthy();
     expect(screen.getByText('Showing 2 sessions')).toBeTruthy();
     fireEvent.click(screen.getByRole('button', { name: 'Show more' }));
     await waitFor(() => expect(screen.getByText('session c')).toBeTruthy());
+    // The next page is the same read with its cursor: the search and the agent ride along.
+    const cursorRead = new URL(requested.find((p) => p.includes('cursor=c1'))!, 'https://s').searchParams;
+    expect([cursorRead.get('q'), cursorRead.get('agent'), cursorRead.get('project')]).toEqual(['port', 'codex', 'x']);
     expect(screen.queryAllByText('session b')).toHaveLength(0);
     expect(screen.queryAllByText('session b refined')).toHaveLength(1);
     expect(screen.getByText('Showing 3 sessions')).toBeTruthy();
     expect(screen.queryByRole('button', { name: 'Show more' })).toBeNull();
-
-    // A refresh re-walks both pages, still listing each session once.
-    const before = requested.filter((p) => p === `${path}&cursor=c1`).length;
-    focusManager.setFocused(false);
-    try {
-      focusManager.setFocused(true);
-      await waitFor(() => expect(requested.filter((p) => p === `${path}&cursor=c1`).length).toBeGreaterThan(before));
-    } finally {
-      focusManager.setFocused(undefined);
-    }
-    expect(screen.queryAllByText('session b refined')).toHaveLength(1);
   });
 
-  it('reads the list again every 30 s while a row is live, never from a hidden tab, and not at all when none is live', async () => {
-    const path = listPath({ projectId: 'x' });
-    server(base({ [path]: () => page(ROWS) }));
+  it('reads only the live group again every 30 s while it holds a session, never from a hidden tab, and never the pages below', async () => {
+    server(base({ '/api/sessions': () => page(ROWS), [livePath({ projectId: 'x' })]: () => page([LIVE]) }));
     const client = mount('/p/x/sessions');
-    await screen.findByRole('table', { name: 'Sessions' });
-    const query = client.getQueryCache().findAll({ queryKey: ['sessions'] })[0]!;
-    const options = query.options as { refetchInterval: (q: typeof query) => number | false; refetchIntervalInBackground: boolean };
-    expect(options.refetchIntervalInBackground).toBe(false);
-    expect(options.refetchInterval(query)).toBe(LIVE_REFRESH_MS);
+    await waitFor(() => expect(document.querySelector('[data-live]')).not.toBeNull());
+    type Polled = { refetchInterval?: number | false | ((q: unknown) => number | false); refetchIntervalInBackground?: boolean };
+    const interval = (query: { options: unknown }) => {
+      const { refetchInterval } = query.options as Polled;
+      return typeof refetchInterval === 'function' ? refetchInterval(query) : refetchInterval ?? false;
+    };
+    const live = client.getQueryCache().findAll({ queryKey: ['sessions', 'live'] })[0]!;
+    expect((live.options as Polled).refetchIntervalInBackground).toBe(false);
+    expect(interval(live)).toBe(LIVE_REFRESH_MS);
+    const pages = client.getQueryCache().findAll({ queryKey: ['sessions', 'x'] })[0]!;
+    expect(interval(pages)).toBe(false);
     cleanup();
 
-    server(base({ [path]: () => page(ROWS.slice(1)) }));
+    server(base({ '/api/sessions': () => page(ROWS.slice(1)), [livePath({ projectId: 'x' })]: () => page([]) }));
     const quiet = mount('/p/x/sessions');
     await screen.findByRole('table', { name: 'Sessions' });
-    const still = quiet.getQueryCache().findAll({ queryKey: ['sessions'] })[0]!;
-    expect((still.options as typeof options).refetchInterval(still)).toBe(false);
+    await waitFor(() => expect(quiet.getQueryCache().findAll({ queryKey: ['sessions', 'live'] })[0]!.state.status).toBe('success'));
+    expect(interval(quiet.getQueryCache().findAll({ queryKey: ['sessions', 'live'] })[0]!)).toBe(false);
   });
 
-  it('starts each time window on a day boundary, so the request holds still while the day lasts', () => {
-    expect([windowSince('all', NOW), windowSince('today', NOW), windowSince('week', NOW), windowSince('month', NOW)])
-      .toEqual([undefined, TODAY, TODAY - 6 * DAY, TODAY - 29 * DAY]);
-    expect(windowSince('today', NOW + 3 * HOUR)).toBe(TODAY);
+  it('bounds each Active period by day boundaries, to the start of tomorrow, so the request holds still while the day lasts', () => {
+    expect([windowBounds('all', NOW), windowBounds('today', NOW), windowBounds('week', NOW), windowBounds('month', NOW)])
+      .toEqual([null, { since: TODAY, until: TODAY + DAY }, { since: TODAY - 6 * DAY, until: TODAY + DAY }, { since: TODAY - 29 * DAY, until: TODAY + DAY }]);
+    expect(windowBounds('today', NOW + 3 * HOUR)).toEqual({ since: TODAY, until: TODAY + DAY });
+    expect([startedWords(NOW - HOUR, TODAY, NOW), startedWords(TODAY - 2 * HOUR - 20 * MINUTE, TODAY, NOW), startedWords(TODAY - 3 * DAY, TODAY, NOW)])
+      .toEqual(['15:00', 'since yesterday 21:40', 'since Sep 26, 00:00']);
     // A member named in the URL whom the list does not know is kept, so the bar never drops the pick.
     expect(memberFilter([], 'lin').options.map((o) => o.label)).toEqual(['Any member', 'lin']);
   });
@@ -375,7 +402,7 @@ describe('the session reading page', () => {
     // The summary comes before the conversation, and the conversation sits in the reading column.
     const tabs = screen.getByRole('tablist', { name: 'What the session holds' });
     expect(summary.compareDocumentPosition(tabs) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-    expect(within(tabs).getAllByRole('tab').map((t) => t.textContent)).toEqual(['Conversation2', 'Spores12', 'Plans0']);
+    await waitFor(() => expect(within(tabs).getAllByRole('tab').map((t) => t.textContent)).toEqual(['Conversation2', 'Spores12', 'Plans0']));
     expect(screen.getByRole('navigation', { name: 'Breadcrumb' }).textContent).toBe('SessionsProject X');
     // The facts, in words; the id is only copied.
     const facts = screen.getByRole('complementary', { name: 'About this session' });
@@ -397,7 +424,7 @@ describe('the session reading page', () => {
     const spores = within(outcome).getByRole('list', { name: 'Spores from this session' });
     expect(within(spores).getAllByRole('listitem').map((li) => li.textContent)).toEqual([
       'GotchaA reserved test port races the ephemeral fallback.',
-      'FixA spore with no summary line',
+      'FixSep 29',
     ]);
     expect(within(spores).getAllByRole('link')[0]!.getAttribute('href')).toBe('/p/x/spores/sp1');
     // Ten are listed at the most; the rest are one link away, on the Spores tab.
@@ -450,7 +477,7 @@ describe('the session reading page', () => {
       },
       '/api/sessions': () => page([]),
     }));
-    mount('/p/x/sessions/s1');
+    const client = mount('/p/x/sessions/s1');
     const openMenu = async () => {
       fireEvent.keyDown(await screen.findByRole('button', { name: 'Session actions' }), { key: 'Enter' });
       return screen.findByRole('menu');
@@ -469,12 +496,16 @@ describe('the session reading page', () => {
     expect((await screen.findByText('The new title is in')).getAttribute('role')).toBe('status');
     await waitFor(() => expect(screen.getByRole('heading', { level: 1 }).textContent).toBe('Renamed the card'));
 
-    // End: offered while open, named, confirmed; once ended the menu no longer offers it.
+    // End: offered while open, named, confirmed; once ended the menu no longer offers it, and every list that shows the session is read again.
+    const lists = [['sessions', 'all', listPath({ projectId: null })], ['sessions', 'live', 'all', 'x'], ['today', 'sessions', 'all', TODAY]] as const;
+    for (const key of lists) client.setQueryData(key, { rows: [], cursor: null });
+    expect(lists.map((key) => client.getQueryState(key)?.isInvalidated)).toEqual([false, false, false]);
     fireEvent.click(within(await openMenu()).getByRole('menuitem', { name: 'End session' }));
     dialog = await screen.findByRole('dialog', { name: 'End this session?' });
     expect(dialog.textContent).toContain('Capture isn’t stopped');
     fireEvent.click(within(dialog).getByRole('button', { name: 'End session' }));
     await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    await waitFor(() => expect(lists.map((key) => client.getQueryState(key)?.isInvalidated)).toEqual([true, true, true]));
     await waitFor(() => expect(screen.getByRole('complementary', { name: 'About this session' }).textContent).toContain('by Ada'));
     expect(within(await openMenu()).queryByRole('menuitem', { name: 'End session' })).toBeNull();
 
@@ -508,32 +539,73 @@ describe('the session reading page', () => {
     expect((await within(dialog).findByRole('alert')).textContent).toBe('Myco couldn’t start writing a title. Try again.');
   });
 
-  it('shows the conversation a person typed, the last turn open, reading a turn’s body and stored text only when it opens', async () => {
-    const { requested } = server(routes());
+  it('shows each prompt a person typed with what followed it inline, reading a turn’s body only once it nears the screen', async () => {
+    // A stand-in for the browser's observer: nothing is on screen until a test says so.
+    const watched = new Map<Element, (entries: Array<{ isIntersecting: boolean }>) => void>();
+    const original = (globalThis as { IntersectionObserver?: unknown }).IntersectionObserver;
+    (globalThis as { IntersectionObserver?: unknown }).IntersectionObserver = class {
+      constructor(private readonly callback: (entries: Array<{ isIntersecting: boolean }>) => void) {}
+      observe(el: Element) { watched.set(el, this.callback); }
+      disconnect() { for (const [el, cb] of watched) if (cb === this.callback) watched.delete(el); }
+      unobserve() {}
+    };
+    const reach = (el: Element) => act(() => { watched.get(el)?.([{ isIntersecting: true }]); });
+    try {
+      const { requested } = server(routes());
+      mount('/p/x/sessions/s1');
+      const first = await screen.findByTestId(`turn-${P1}`);
+      const last = screen.getByTestId(`turn-${P3}`);
+      // Before its body is read a turn shows the prompt's opening from the list, and nothing is folded.
+      expect(first.textContent).toContain(`Please rename the project card ${'x'.repeat(PROMPT_PREVIEW_CHARS - 'Please rename the project card '.length)}…`);
+      expect(within(first).queryByRole('button', { expanded: false })).toBeNull();
+      expect(screen.getAllByTestId(/^turn-0000/).map((el) => el.getAttribute('data-testid'))).toEqual([`turn-${P1}`, `turn-${P3}`]);
+      expect(requested.filter((p) => p.includes('/turns/'))).toEqual([]);
+
+      await reach(last);
+      // A prompt kept as stored text is read only when asked for.
+      fireEvent.click(await within(last).findByRole('button', { name: 'Show the whole prompt' }));
+      expect(await within(last).findByText('{"a":1}')).toBeTruthy();
+      expect(within(last).getByTestId('turn-child').textContent).toContain('steer it left');
+      expect(within(last).getByTestId('turn-child').textContent).toContain('reviewer');
+      expect(requested.filter((p) => p.includes('/turns/'))).toEqual([`/api/projects/x/sessions/s1/turns/${P3}`]);
+
+      await reach(first);
+      // The whole prompt, its image and its reply sit inline.
+      await within(first).findByTestId('turn-response');
+      expect(within(first).getByTestId('turn-response').textContent).toContain('done');
+      expect(within(first).getByRole('img', { name: 'a screenshot' }).getAttribute('src')).toBe(BLOB(KEY_IMG));
+      expect(first.textContent).toContain('And the rest of a long prompt.');
+    } finally {
+      (globalThis as { IntersectionObserver?: unknown }).IntersectionObserver = original;
+    }
+  });
+
+  it('opens a long conversation on its latest turns, keeping the earlier ones a page at a time above them', async () => {
+    const many = Array.from({ length: 450 }, (_, i) => turn({ promptId: `00000000-0000-7000-8000-${String(i).padStart(12, '0')}`, preview: `prompt ${i}`, createdAt: NOW - (450 - i) * MINUTE, toolCallCount: 0, responseCount: 0 }));
+    const path = '/api/projects/x/sessions/s1/turns?origins=user&limit=200';
+    const { requested } = server(routes({
+      [path]: () => page(many.slice(0, 200), 'p2'),
+      [`${path}&cursor=p2`]: () => page(many.slice(200, 400), 'p3'),
+      [`${path}&cursor=p3`]: () => page(many.slice(400)),
+    }));
     mount('/p/x/sessions/s1');
-    const first = await screen.findByTestId(`turn-${P1}`);
-    const folded = within(first).getByRole('button', { expanded: false }).textContent ?? '';
-    expect(folded).toContain(`Please rename the project card ${'x'.repeat(PROMPT_PREVIEW_CHARS - 'Please rename the project card '.length)}…`);
-    expect(folded).not.toContain('And the rest');
-    expect(folded).toContain('1 tool call');
-    expect(screen.getAllByTestId(/^turn-0000/).map((el) => el.getAttribute('data-testid'))).toEqual([`turn-${P1}`, `turn-${P3}`]);
-    const last = screen.getByTestId(`turn-${P3}`);
-    expect(await within(last).findByText('{"a":1}')).toBeTruthy();
-    expect(within(last).getByTestId('turn-child').textContent).toContain('steer it left');
-    expect(within(last).getByTestId('turn-child').textContent).toContain('reviewer');
-    expect(within(first).queryByTestId('turn-body')).toBeNull();
-    expect(requested.filter((p) => p.includes('/turns/'))).toEqual([`/api/projects/x/sessions/s1/turns/${P3}`]);
-    fireEvent.click(within(first).getByRole('button', { expanded: false }));
-    expect((await within(first).findByTestId('turn-body')).textContent).toContain('And the rest of a long prompt.');
-    expect(within(first).getByTestId('turn-response').textContent).toContain('done');
-    expect(within(first).getByRole('img', { name: 'a screenshot' }).getAttribute('src')).toBe(BLOB(KEY_IMG));
+    // The pages are walked to the end, and the latest 200 turns are shown, newest last.
+    await waitFor(() => expect(screen.getAllByTestId(/^turn-0000/)).toHaveLength(200));
+    expect(requested.filter((p) => p.startsWith(path))).toHaveLength(3);
+    expect(screen.getAllByTestId(/^turn-0000/).at(-1)!.textContent).toContain('prompt 449');
+    expect(screen.getAllByTestId(/^turn-0000/)[0]!.textContent).toContain('prompt 250');
+    expect(within(screen.getByRole('tablist')).getByRole('tab', { name: /Conversation/ }).textContent).toBe('Conversation450');
+    fireEvent.click(screen.getByRole('button', { name: 'Show 200 earlier turns' }));
+    await waitFor(() => expect(screen.getAllByTestId(/^turn-0000/)).toHaveLength(400));
+    fireEvent.click(screen.getByRole('button', { name: 'Show 50 earlier turns' }));
+    await waitFor(() => expect(screen.getAllByTestId(/^turn-0000/)).toHaveLength(450));
+    expect(screen.queryByRole('button', { name: /earlier turn/ })).toBeNull();
   });
 
   it('reads a turn’s tool calls only when they open, then shows how each went', async () => {
     const { requested } = server(routes());
     mount('/p/x/sessions/s1');
     const first = await screen.findByTestId(`turn-${P1}`);
-    fireEvent.click(within(first).getByRole('button', { expanded: false }));
     const toggle = await within(first).findByTestId('tool-calls-toggle');
     expect(requested.some((p) => p.includes('/tool-calls'))).toBe(false);
     fireEvent.click(toggle);
@@ -562,8 +634,7 @@ describe('the session reading page', () => {
       cleanup();
 
       mount(`/p/x/sessions/s1?turn=${P1}`);
-      const first = await screen.findByTestId(`turn-${P1}`);
-      expect(within(first).getByRole('button', { expanded: true })).toBeTruthy();
+      await screen.findByTestId(`turn-${P1}`);
       await waitFor(() => expect(scrolled).toContain(`turn-${P1}`));
       cleanup();
 

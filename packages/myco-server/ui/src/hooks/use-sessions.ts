@@ -1,9 +1,10 @@
 import type { ReleaseStatus } from './use-release-provenance';
+import { useEffect } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { ApiError, fetchJson, postJson, SignedOutError } from '../lib/api';
 import { usePaged } from './use-paged';
-import type { SessionListRow, SessionOutcome } from '../features/sessions/wire';
-import { isLive } from '../features/today/timeline';
+import type { SessionListPage, SessionListRow, SessionOutcome } from '../features/sessions/wire';
+import { isLive, LIVE_WITHIN_MS } from '../features/today/timeline';
 import { LIVE_REFRESH_MS } from './use-work';
 
 export interface SessionRow {
@@ -261,8 +262,9 @@ export interface SessionListFilters {
   agent?: string;
   /** A member's label, as the server matches it. */
   member?: string;
-  /** Sessions started at or after this instant. */
-  since?: number;
+  branch?: string;
+  /** The sessions active in `[since, until)`: started before `until`, heard from since `since`, and not ended before it. */
+  active?: { since: number; until?: number };
 }
 
 /** How many sessions one page of the table holds. */
@@ -276,27 +278,65 @@ export function sessionListPath(filters: SessionListFilters): string {
   if (filters.q !== undefined && filters.q.trim() !== '') params.set('q', filters.q.trim());
   if (filters.agent !== undefined && filters.agent !== '') params.set('agent', filters.agent);
   if (filters.member !== undefined && filters.member !== '') params.set('member', filters.member);
-  if (filters.since !== undefined) params.set('since', String(filters.since));
+  if (filters.branch !== undefined && filters.branch !== '') params.set('branch', filters.branch);
+  if (filters.active !== undefined) {
+    params.set('window', 'activity');
+    params.set('since', String(filters.active.since));
+    if (filters.active.until !== undefined) params.set('until', String(filters.active.until));
+  }
   return `/api/sessions?${params}`;
 }
 
-/**
- * The sessions the table lists, newest first, a page at a time. While a listed
- * session is live the list is read again every 30 s; a hidden tab never reads.
- */
+/** The sessions the table lists, newest start first, a page at a time. It is read again on focus and on a change, never on a timer. */
 export function useSessionList(filters: SessionListFilters) {
   const path = sessionListPath(filters);
   // Sessions order by a date the parse revises, so one session can reach two pages.
   return usePaged<SessionListRow>(['sessions', filters.projectId ?? 'all', path], path, {
     rowKey: (row) => `${row.projectId}/${row.sessionId}`,
-    refresh: (rows) => (rows.some((row) => isLive(row, Date.now())) ? LIVE_REFRESH_MS : false),
   });
 }
+
+/**
+ * The sessions live now under the table's filters: open, and heard from within
+ * the live span, read as one page. While it holds any, it is read again every
+ * 30 s, never from a hidden tab; the span is taken at each read.
+ */
+export function useLiveSessions(filters: Omit<SessionListFilters, 'state' | 'active'>, enabled: boolean) {
+  const scope = sessionListPath({ ...filters, state: 'open' });
+  return useQuery({
+    queryKey: ['sessions', 'live', filters.projectId ?? 'all', scope],
+    enabled,
+    queryFn: ({ signal }) => fetchJson<SessionListPage>(sessionListPath({ ...filters, state: 'open', active: { since: Date.now() - LIVE_WITHIN_MS } }), signal),
+    refetchInterval: (query) => ((query.state.data?.rows.length ?? 0) > 0 ? LIVE_REFRESH_MS : false),
+    refetchIntervalInBackground: false,
+  });
+}
+
+/** The most pages of turns a conversation reads to reach its latest turn: 25 pages of 200. */
+export const MAX_TURN_PAGES = 25;
+
+/**
+ * A session's turns of the named origins, every page read, oldest first, so a
+ * conversation can open on its latest turns. The server pages oldest first, so
+ * the pages are walked to the end, up to `MAX_TURN_PAGES`; the rows are light,
+ * a turn's body is read on its own. `complete` is false while pages remain.
+ */
+export function useAllTurns(projectId: string, sessionId: string, origins: readonly PromptOrigin[]) {
+  const turns = useTurns(projectId, sessionId, origins);
+  const pages = Math.ceil(turns.rows.length / TURN_PAGE);
+  const walking = turns.hasMore && pages < MAX_TURN_PAGES;
+  const { more, isPending, isFetchingMore } = turns;
+  useEffect(() => { if (walking && !isPending && !isFetchingMore) more(); }, [walking, isPending, isFetchingMore, more]);
+  return { ...turns, complete: !turns.hasMore, walking };
+}
+
+/** How many turns one page of the conversation's read holds. */
+export const TURN_PAGE = 200;
 
 /** A session's turns of the named origins, oldest first. One page holds every turn a person typed in any session seen so far; the origins sit in the key so a toggle never shows the other list's pages. */
 export function useTurns(projectId: string, sessionId: string, origins: readonly PromptOrigin[]) {
   const named = [...origins].sort().join(',');
-  return usePaged<TurnRow>(['turns', projectId, sessionId, named], `${project(projectId)}/sessions/${seg(sessionId)}/turns?origins=${encodeURIComponent(named)}&limit=200`);
+  return usePaged<TurnRow>(['turns', projectId, sessionId, named], `${project(projectId)}/sessions/${seg(sessionId)}/turns?origins=${encodeURIComponent(named)}&limit=${TURN_PAGE}`);
 }
 
 /** One turn's body, read when its card opens. */
@@ -395,8 +435,14 @@ export function useSetPlanStatus(projectId: string, sessionId: string) {
   });
 }
 
+/** One session and what came of it. While the session is live it is read again every 30 s, never from a hidden tab. */
 export function useSession(projectId: string, sessionId: string) {
-  return useQuery({ queryKey: ['session', projectId, sessionId], queryFn: ({ signal }) => fetchJson<SessionResponse>(`${project(projectId)}/sessions/${seg(sessionId)}`, signal) });
+  return useQuery({
+    queryKey: ['session', projectId, sessionId],
+    queryFn: ({ signal }) => fetchJson<SessionResponse>(`${project(projectId)}/sessions/${seg(sessionId)}`, signal),
+    refetchInterval: (query) => (query.state.data !== undefined && isLive(query.state.data.session, Date.now()) ? LIVE_REFRESH_MS : false),
+    refetchIntervalInBackground: false,
+  });
 }
 
 export function useSessionChildren<T>(projectId: string, sessionId: string, child: SessionChild) {

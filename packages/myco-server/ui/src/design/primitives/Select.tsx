@@ -68,6 +68,8 @@ SelectItem.displayName = 'SelectItem';
 export interface SelectOption {
   value: string;
   label: string;
+  /** What the closed control shows for this option, when the list's words are longer than the control has room for. */
+  short?: string;
   /** Extra words a searchable list matches against. */
   searchText?: string;
 }
@@ -106,10 +108,11 @@ export function Select({ label, value, onValueChange, options, placeholder, disa
       />
     );
   }
+  const selected = options.find((option) => option.value === value);
   return (
     <SelectRoot value={value} onValueChange={onValueChange} disabled={disabled}>
       <SelectTrigger id={id} aria-label={label} className={className}>
-        <SelectValue placeholder={placeholder ?? label} />
+        <SelectValue placeholder={placeholder ?? label}>{selected === undefined ? undefined : selected.short ?? selected.label}</SelectValue>
       </SelectTrigger>
       <SelectContent>
         {options.map((option) => (

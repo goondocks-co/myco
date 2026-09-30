@@ -12,6 +12,8 @@ export interface SearchableSelectOption {
   label: string;
   /** Extra words the option matches against, such as a project's path. */
   searchText?: string;
+  /** What the closed control shows for this option, when the list's words are longer than it has room for. */
+  short?: string;
 }
 
 const normalize = (value: string): string => value.trim().toLowerCase();
@@ -143,7 +145,7 @@ export function SearchableSelect({
         onKeyDown={(event) => { if (event.key === 'ArrowDown' && !open) { event.preventDefault(); setOpen(true); } }}
         className={cn(fieldFrame, focusRing, 'flex items-center justify-between gap-s2 text-left')}
       >
-        <span className={cn('truncate', !selected && 'text-muted')}>{selected?.label ?? placeholder ?? label}</span>
+        <span className={cn('truncate', !selected && 'text-muted')}>{selected?.short ?? selected?.label ?? placeholder ?? label}</span>
         <ChevronDown aria-hidden className="size-s4 shrink-0 text-muted" />
       </button>
 

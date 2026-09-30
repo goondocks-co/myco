@@ -1,7 +1,7 @@
 import { Link as RouterLink } from 'react-router-dom';
 import { Card, focusRing, StatusChip, TypeChip } from '../../design';
 import { cn } from '../../lib/cn';
-import { when } from '../today/words';
+import { shortDay, whenWithTime } from '../today/words';
 import type { SessionOutcome, SessionRun } from './wire';
 import { count, readWords, runHeadline, runProgress, sporeLine, sporeTypeWord } from './words';
 
@@ -42,9 +42,20 @@ export function WhatCameOfIt({ projectId, outcome, open, now, sporesHref }: What
           {spores.items.map((spore) => (
             <li key={spore.id} className="flex min-w-0 items-baseline gap-s2 t-small">
               <TypeChip>{sporeTypeWord(spore.observationType)}</TypeChip>
-              <RouterLink to={`${project}/spores/${encodeURIComponent(spore.id)}`} className={cn(itemLink, 'line-clamp-2 min-w-0')}>
-                {sporeLine({ agentLine: spore.agentLine, content: '' }) || 'A spore with no summary line'}
-              </RouterLink>
+              {spore.agentLine !== null && spore.agentLine.trim() !== '' ? (
+                <RouterLink to={`${project}/spores/${encodeURIComponent(spore.id)}`} className={cn(itemLink, 'line-clamp-2 min-w-0')}>
+                  {sporeLine({ agentLine: spore.agentLine, content: '' })}
+                </RouterLink>
+              ) : (
+                // A spore written without its one line is named by its type and the day it was saved.
+                <RouterLink
+                  to={`${project}/spores/${encodeURIComponent(spore.id)}`}
+                  aria-label={`${sporeTypeWord(spore.observationType)} from ${shortDay(spore.createdAt, now)}`}
+                  className={cn(itemLink, 'min-w-0')}
+                >
+                  {shortDay(spore.createdAt, now)}
+                </RouterLink>
+              )}
             </li>
           ))}
         </ul>
@@ -75,9 +86,10 @@ function RunLine({ run, project, now }: { run: SessionRun; project: string; now:
         {progress !== null && <StatusChip tone="warn">{progress}</StatusChip>}
       </span>
       <span className="t-meta text-muted">
-        {readWords(run, (readAt) => when(readAt, now))}
-        {at !== null && <><span aria-hidden className="mx-s1">·</span>{run.completedAt !== null ? 'finished' : 'started'} {when(at, now)}</>}
+        {readWords(run, (readAt) => whenWithTime(readAt, now))}
+        {at !== null && <><span aria-hidden className="mx-s1">·</span>{run.completedAt !== null ? 'finished' : 'started'} {whenWithTime(at, now)}</>}
       </span>
     </li>
   );
 }
+

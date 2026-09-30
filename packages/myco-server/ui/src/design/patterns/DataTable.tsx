@@ -64,7 +64,7 @@ export function DataTable<T>({ label, columns, groups, rowKey, rowHref, detail, 
       <div data-table={label} className="overflow-hidden rounded-card border border-line bg-surface-1">
         {groups.map((group) => (
           <section key={group.key} aria-label={group.label}>
-            <h3 className="border-b border-line bg-surface-2 px-s4 py-s2 t-small font-medium text-muted">{group.label}</h3>
+            <h2 className="border-b border-line bg-surface-2 px-s4 py-s2 t-small font-medium text-muted">{group.label}</h2>
             <ul className="flex flex-col">
               {group.rows.map((row) => (
                 <li key={rowKey(row)} {...rowData?.(row)} className="relative flex flex-col gap-s1 border-b border-line px-s4 py-s3 last:border-b-0 hover:bg-surface-2">
@@ -102,7 +102,7 @@ export function DataTable<T>({ label, columns, groups, rowKey, rowHref, detail, 
         {groups.map((group) => (
           <tbody key={group.key}>
             <tr>
-              <th scope="colgroup" colSpan={columns.length} className="border-b border-line bg-surface-2 px-s4 py-s2 text-left t-small font-medium text-muted">
+              <th scope="rowgroup" colSpan={columns.length} className="border-b border-line bg-surface-2 px-s4 py-s2 text-left t-small font-medium text-muted">
                 {group.label}
               </th>
             </tr>

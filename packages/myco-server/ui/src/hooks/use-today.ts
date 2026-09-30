@@ -61,9 +61,14 @@ const projectParam = (projectId: string | null): string => (projectId === null ?
 /** The `since` and `until` bounds of a day, its end excluded. */
 const dayBounds = (window: DayWindow): string => `since=${window.start}&until=${window.end}`;
 
-/** The day's sessions, read page by page between its bounds; `truncated` when the day holds more than the pages read. */
+/**
+ * The sessions active on the day, read page by page between its bounds: those
+ * running at some point in it, whenever they started, so a session begun the
+ * day before and live now is today's too. `truncated` when the day holds more
+ * than the pages read.
+ */
 async function readDaySessions(projectId: string | null, window: DayWindow, signal: AbortSignal): Promise<{ rows: TodaySession[]; truncated: boolean }> {
-  const base = `/api/sessions?${dayBounds(window)}&limit=${SESSION_PAGE}${projectParam(projectId)}`;
+  const base = `/api/sessions?${dayBounds(window)}&window=activity&limit=${SESSION_PAGE}${projectParam(projectId)}`;
   const rows: TodaySession[] = [];
   let cursor: string | null = null;
   for (let page = 0; page < MAX_SESSION_PAGES; page += 1) {

@@ -37,32 +37,22 @@ export interface FilterBarProps {
   className?: string;
 }
 
-/** The most filters that share the search field's line; with more, they take a line of their own under it. */
-export const FILTERS_BESIDE_SEARCH = 2;
+/** With more filters than this the selects size to their words, so the search keeps most of the row. */
+export const FIXED_WIDTH_FILTERS = 2;
 
 /**
- * The one search-and-filter bar. The search field fills the row; every select
- * is the same width; the count sits at the end. With more filters than fit
- * beside a long search field, the search keeps its line and the selects sit on
- * the line below. On a phone the search takes the first line and the selects
- * share the lines below it, two to a line when there are more than two.
+ * The one search-and-filter bar, on one row. The search field leads and fills
+ * what the selects leave, never less than 55% of the row; the count sits at
+ * the end. Up to two selects share one width; with more, each sizes to the
+ * words it shows (an option's `short` form) and truncates past a bound. On a
+ * phone the search takes the first line and the selects share the lines below
+ * it, two to a line when there are more than two.
  */
 export function FilterBar({
   searchLabel, placeholder, query, onQueryChange, filters = [], values = {}, onFilterChange, onClear, count, inputRef, hint, className,
 }: FilterBarProps) {
   const active = query.trim() !== '' || filters.some((filter) => (values[filter.key] ?? defaultOf(filter)) !== defaultOf(filter));
-  const stacked = filters.length > FILTERS_BESIDE_SEARCH;
-  const search = (
-    <SearchInput
-      ref={inputRef}
-      label={searchLabel}
-      placeholder={placeholder}
-      value={query}
-      hint={hint}
-      onChange={(event) => onQueryChange(event.target.value)}
-      className={stacked ? undefined : 'basis-full sm:basis-auto'}
-    />
-  );
+  const sized = filters.length > FIXED_WIDTH_FILTERS;
   const selects = filters.map((filter) => (
     <Select
       key={filter.key}
@@ -70,35 +60,27 @@ export function FilterBar({
       value={values[filter.key] ?? defaultOf(filter)}
       onValueChange={(value) => onFilterChange?.(filter.key, value)}
       options={filter.options}
-      className={stacked ? 'min-w-0 sm:w-[176px]' : 'min-w-0 flex-1 basis-0 sm:w-[176px] sm:flex-none sm:basis-auto'}
+      className={sized ? 'min-w-0 sm:w-auto sm:max-w-[168px]' : 'min-w-0 flex-1 basis-0 sm:w-[176px] sm:flex-none sm:basis-auto'}
     />
   ));
-  const clear = onClear && active && (
-    <Button variant="ghost" onClick={onClear} icon={<X aria-hidden className="size-s4" />} aria-label="Clear search and filters">
-      Clear
-    </Button>
-  );
-  const counted = count != null && <span className="ml-auto shrink-0 whitespace-nowrap pl-s2 t-small text-muted" aria-live="polite">{count}</span>;
-  if (stacked) {
-    return (
-      <div data-filter-bar="" role="search" className={cn('flex flex-col gap-s2', className)}>
-        <div className="flex items-center gap-s2">
-          {search}
-          {clear}
-        </div>
-        <div className="grid grid-cols-2 items-center gap-s2 sm:flex sm:flex-wrap">
-          {selects}
-          {counted}
-        </div>
-      </div>
-    );
-  }
   return (
     <div data-filter-bar="" role="search" className={cn('flex flex-wrap items-center gap-s2 sm:flex-nowrap', className)}>
-      {search}
-      {selects}
-      {clear}
-      {counted}
+      <SearchInput
+        ref={inputRef}
+        label={searchLabel}
+        placeholder={placeholder}
+        value={query}
+        hint={hint}
+        onChange={(event) => onQueryChange(event.target.value)}
+        className="basis-full sm:min-w-[55%] sm:basis-auto"
+      />
+      {sized ? <div className="grid w-full grid-cols-2 gap-s2 sm:flex sm:w-auto sm:min-w-0 sm:shrink">{selects}</div> : selects}
+      {onClear && active && (
+        <Button variant="ghost" onClick={onClear} icon={<X aria-hidden className="size-s4" />} aria-label="Clear search and filters">
+          Clear
+        </Button>
+      )}
+      {count != null && <span className="ml-auto shrink-0 whitespace-nowrap pl-s2 t-small text-muted" aria-live="polite">{count}</span>}
     </div>
   );
 }

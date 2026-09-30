@@ -1,4 +1,5 @@
-import { type ReactNode } from 'react';
+import { useEffect, useRef, type ReactNode } from 'react';
+import { useQueryClient } from '@tanstack/react-query';
 import { Link as RouterLink, useNavigate, useSearchParams } from 'react-router-dom';
 import { ChevronRight } from 'lucide-react';
 import {
@@ -8,7 +9,7 @@ import { PlanCard } from '../../components/sessions/PlanCard';
 import { releaseStateLabel, shortRef } from '../../components/release/release-labels';
 import { useSpores } from '../../hooks/use-intelligence';
 import { useIsAdmin } from '../../hooks/use-me';
-import { UNTITLED_REASON_TEXT, useSession, useSessionChildren, type PlanRow, type SessionResponse, type SessionRow } from '../../hooks/use-sessions';
+import { UNTITLED_REASON_TEXT, useAllTurns, useSession, useSessionChildren, type PlanRow, type SessionResponse, type SessionRow } from '../../hooks/use-sessions';
 import { useNow } from '../../hooks/use-today';
 import { ApiError } from '../../lib/api';
 import { cn } from '../../lib/cn';
@@ -18,7 +19,7 @@ import { NotFound } from '../../pages/NotFound';
 import { projectPath } from '../../routes/nav';
 import { isLive } from '../today/timeline';
 import { ago, dayHeading } from '../today/words';
-import { Conversation } from './Conversation';
+import { Conversation, PERSON_ONLY } from './Conversation';
 import { RawData, isRawSection } from './RawData';
 import { SessionActions } from './SessionActions';
 import { WhatCameOfIt } from './WhatCameOfIt';
@@ -64,6 +65,19 @@ export function SessionPage({ projectId, sessionId, projectName }: SessionPagePr
   );
 }
 
+/** While a live session is read again, what arrived since is read too: its turns, and the bodies of turns already read. */
+function useFollowLive(projectId: string, session: SessionRow) {
+  const client = useQueryClient();
+  const heard = session.lastReceivedAt;
+  const seen = useRef(heard);
+  useEffect(() => {
+    if (seen.current === heard) return;
+    seen.current = heard;
+    void client.invalidateQueries({ queryKey: ['turns', projectId, session.sessionId] });
+    void client.invalidateQueries({ queryKey: ['turn', projectId, session.sessionId] });
+  }, [client, projectId, session.sessionId, heard]);
+}
+
 function Reading({ answer, projectId, projectName, now, actions }: { answer: SessionResponse; projectId: string; projectName: string | null; now: number; actions: ReactNode }) {
   const { session, counts, outcome } = answer;
   const [params, setParams] = useSearchParams();
@@ -81,19 +95,18 @@ function Reading({ answer, projectId, projectName, now, actions }: { answer: Ses
   const started = session.startedAt ?? session.firstReceivedAt;
   const name = projectName ?? 'A project';
   const sporesHref = `?${new URLSearchParams({ tab: 'spores' })}`;
+  const typed = useAllTurns(projectId, session.sessionId, PERSON_ONLY);
+  useFollowLive(projectId, session);
 
   return (
     <article data-session-page="" className="flex w-full flex-col gap-s5">
-      <div className="flex items-start justify-between gap-s3">
-        <nav aria-label="Breadcrumb">
-          <ol className="flex flex-wrap items-center gap-s1 t-small text-muted">
-            <li><Crumb to="/sessions">Sessions</Crumb></li>
-            <li aria-hidden><ChevronRight className="size-s4" /></li>
-            <li><Crumb to={projectPath(projectId, '/sessions')}>{name}</Crumb></li>
-          </ol>
-        </nav>
-        {actions}
-      </div>
+      <nav aria-label="Breadcrumb">
+        <ol className="flex flex-wrap items-center gap-s1 t-small text-muted">
+          <li><Crumb to="/sessions">Sessions</Crumb></li>
+          <li aria-hidden><ChevronRight className="size-s4" /></li>
+          <li><Crumb to={projectPath(projectId, '/sessions')}>{name}</Crumb></li>
+        </ol>
+      </nav>
 
       <div className="grid items-start gap-s6 lg:grid-cols-[minmax(0,1fr)_300px] lg:grid-rows-[auto_1fr] lg:gap-x-s10">
         <header className="flex min-w-0 max-w-measure flex-col gap-s3 lg:col-start-1 lg:row-start-1">
@@ -124,21 +137,15 @@ function Reading({ answer, projectId, projectName, now, actions }: { answer: Ses
           <Summary session={session} untitled={answer.untitled ?? null} live={live} />
         </header>
 
-        <aside aria-label="About this session" className="flex min-w-0 flex-col gap-s4 lg:col-start-2 lg:row-span-2 lg:row-start-1">
-          {/* Beside the conversation the facts lead; stacked above it on a narrow screen, what came of the session does. */}
-          <div className="order-2 lg:order-1"><Facts answer={answer} projectName={name} projectId={projectId} now={now} live={live} /></div>
-          <div className="order-1 lg:order-2"><WhatCameOfIt projectId={projectId} outcome={outcome} open={session.endedAt === null} now={now} sporesHref={sporesHref} /></div>
-        </aside>
-
         <div className="flex min-w-0 max-w-measure flex-col gap-s8 lg:col-start-1 lg:row-start-2">
           <Tabs value={tab} onValueChange={setTab}>
             <TabsList aria-label="What the session holds">
-              <TabsTrigger value="conversation" count={counts.prompts}>Conversation</TabsTrigger>
+              <TabsTrigger value="conversation" count={typed.walking || typed.isPending ? undefined : typed.rows.length}>Conversation</TabsTrigger>
               <TabsTrigger value="spores" count={outcome.spores.total}>Spores</TabsTrigger>
               <TabsTrigger value="plans" count={counts.plans}>Plans</TabsTrigger>
             </TabsList>
             <TabsContent value="conversation">
-              <Conversation projectId={projectId} sessionId={session.sessionId} promptCount={counts.prompts} />
+              <Conversation projectId={projectId} sessionId={session.sessionId} />
             </TabsContent>
             <TabsContent value="spores">
               <SessionSpores projectId={projectId} sessionId={session.sessionId} now={now} />
@@ -149,6 +156,11 @@ function Reading({ answer, projectId, projectName, now, actions }: { answer: Ses
           </Tabs>
           <RawData projectId={projectId} sessionId={session.sessionId} open={isRawSection(raw) ? raw : null} now={now} />
         </div>
+        {/* After the conversation in reading order; beside it from the desktop width. */}
+        <aside aria-label="About this session" className="flex min-w-0 flex-col gap-s4 lg:col-start-2 lg:row-span-2 lg:row-start-1">
+          <Facts answer={answer} projectName={name} projectId={projectId} now={now} live={live} actions={actions} />
+          <WhatCameOfIt projectId={projectId} outcome={outcome} open={session.endedAt === null} now={now} sporesHref={sporesHref} />
+        </aside>
       </div>
     </article>
   );
@@ -175,14 +187,14 @@ function Summary({ session, untitled, live }: { session: SessionRow; untitled: S
 }
 
 /** The facts a reader checks or copies. The session's id is only ever copied, never shown. */
-function Facts({ answer, projectId, projectName, now, live }: { answer: SessionResponse; projectId: string; projectName: string; now: number; live: boolean }) {
+function Facts({ answer, projectId, projectName, now, live, actions }: { answer: SessionResponse; projectId: string; projectName: string; now: number; live: boolean; actions: ReactNode }) {
   const { session, counts, release } = answer;
   const who = memberName(session);
   const endedBy = session.endedBy === null ? null : memberLabel({ id: session.endedBy, label: session.endedByLabel }) ?? 'a member';
   return (
     <FactsPanel
       title="Facts"
-      actions={<CopyButton value={session.sessionId} label="Copy session id" variant="secondary" />}
+      actions={<><CopyButton value={session.sessionId} label="Copy session id" variant="secondary" />{actions}</>}
     >
       <FactRow term="Project">{projectName}</FactRow>
       <FactRow term="Agent">{agentName(session.agent)}</FactRow>

@@ -25,7 +25,7 @@ export { CopyButton, type CopyButtonProps } from './primitives/CopyButton';
 export { Lightbox, type LightboxProps } from './primitives/Lightbox';
 
 export {
-  FilterBar, useFilterParams, useQueryDraft, ANY, FILTERS_BESIDE_SEARCH, type FilterBarProps, type FilterDefinition, type FilterParams, type FilterParamsOptions, type QueryDraft,
+  FilterBar, useFilterParams, useQueryDraft, ANY, FIXED_WIDTH_FILTERS, type FilterBarProps, type FilterDefinition, type FilterParams, type FilterParamsOptions, type QueryDraft,
 } from './patterns/FilterBar';
 export { ListRow, type ListRowProps } from './patterns/ListRow';
 export { DataTable, type DataTableProps, type DataTableColumn, type DataTableGroup } from './patterns/DataTable';

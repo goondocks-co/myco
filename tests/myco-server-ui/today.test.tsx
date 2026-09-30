@@ -203,12 +203,34 @@ describe('Today', () => {
       const read = asked.find((url) => url.pathname === path)!;
       expect([path, read.searchParams.get('since'), read.searchParams.get('until')]).toEqual([path, String(DAY_START), String(DAY_START + 24 * HOUR)]);
     }
+    // The day's sessions are those active on it, whenever they started.
+    expect(asked.find((url) => url.pathname === '/api/sessions')!.searchParams.get('window')).toBe('activity');
     // Each <time> carries the instant it names.
     expect(items(list)[1]!.querySelector('time')!.getAttribute('dateTime')).toBe(new Date(NOW - 2 * HOUR).toISOString());
     // Myco's items lead with the outcome and name the project after it; sessions lead with the project.
     expect(items(list)[1]!.querySelector('div > div')!.textContent).toBe('Myco learned 2 spores from 3 sessions·in Myco');
     expect(items(list)[3]!.querySelector('div > div')!.textContent!.startsWith('Atlas web')).toBe(true);
     expect(asked.some((url) => url.searchParams.has('project'))).toBe(false);
+  });
+
+  it('lists a session started yesterday and live now on today, says since when, and counts it in the lede', async () => {
+    const overnight = session({ sessionId: '4fad4d99-ce7a-5142-b05f-af5b4b7d6e55', projectId: P_ATLAS, title: 'Overnight migration', label: 'Overnight migration', startedAt: DAY_START - 2 * HOUR - 20 * MINUTE, firstReceivedAt: DAY_START - 2 * HOUR - 20 * MINUTE, lastReceivedAt: NOW - 2 * MINUTE, endedAt: null });
+    const endedToday = session({ sessionId: '5abe5eaa-df8b-5253-a16a-b06c5c8e7f66', projectId: P_MYCO, title: 'Late-night refactor', label: 'Late-night refactor', startedAt: DAY_START - HOUR, firstReceivedAt: DAY_START - HOUR, lastReceivedAt: DAY_START + HOUR, endedAt: DAY_START + HOUR });
+    // An open session last heard from yesterday is not live, and was not active today.
+    const idle = session({ sessionId: '6bcf6fbb-e09c-5364-b27d-c17d6d9f8077', projectId: P_MYCO, title: 'Left open last week', label: 'Left open last week', startedAt: DAY_START - 5 * 24 * HOUR, firstReceivedAt: DAY_START - 5 * 24 * HOUR, lastReceivedAt: DAY_START - 3 * HOUR, endedAt: null });
+    server(day({ sessions: { rows: [SESSIONS[1], overnight, endedToday, idle], cursor: null } }));
+    mount('/');
+    const list = await screen.findByRole('list', { name: 'What happened' });
+    await waitFor(() => expect(within(list).getByText('Overnight migration')).toBeTruthy());
+    const live = within(list).getByText('Overnight migration').closest('li')!;
+    expect(live.getAttribute('data-timeline-item')).toBe('live');
+    expect(live.querySelector('[data-started-earlier]')!.textContent).toBe('since yesterday 21:40');
+    const ended = within(list).getByText('Late-night refactor').closest('li')!;
+    expect(ended.querySelector('time')!.textContent).toBe('Sep 28');
+    expect(ended.querySelector('[data-started-earlier]')!.textContent).toBe('since yesterday 23:00');
+    expect(within(list).queryByText('Left open last week')).toBeNull();
+    expect(screen.getByText(/An agent is working/)).toBeTruthy();
+    expect(document.querySelector('[data-lede]')!.textContent).toContain('3 sessions');
   });
 
   it('carries a learning run\'s spores inline, the rest as "and N more", and never the spores agents saved themselves', async () => {

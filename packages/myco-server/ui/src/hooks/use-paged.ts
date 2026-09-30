@@ -1,5 +1,5 @@
 import { useMemo } from 'react';
-import { useInfiniteQuery, type InfiniteData } from '@tanstack/react-query';
+import { useInfiniteQuery } from '@tanstack/react-query';
 import { fetchJson } from '../lib/api';
 
 export interface Page<T> { rows: T[]; cursor: string | null }
@@ -9,19 +9,13 @@ export interface Page<T> { rows: T[]; cursor: string | null }
  * remains. A read with `enabled: false` waits, pending, until it is wanted.
  *
  * `rowKey` lists a row once: its first position, its latest payload. A refresh
- * re-walks the loaded pages. `refresh`, given the rows read so far, answers how
- * often to read them again, or false for never; a hidden tab never reads again.
+ * re-walks the loaded pages.
  */
-export function usePaged<T>(key: readonly unknown[], path: string, opts: { enabled?: boolean; rowKey?: (row: T) => string; refresh?: (rows: readonly T[]) => number | false } = {}) {
-  const refresh = opts.refresh;
+export function usePaged<T>(key: readonly unknown[], path: string, opts: { enabled?: boolean; rowKey?: (row: T) => string } = {}) {
   const query = useInfiniteQuery({
     queryKey: [...key],
     initialPageParam: null as string | null,
     enabled: opts.enabled ?? true,
-    ...(refresh === undefined ? {} : {
-      refetchInterval: (q: { state: { data: InfiniteData<Page<T>> | undefined } }) => refresh(q.state.data?.pages.flatMap((p) => p.rows) ?? []),
-      refetchIntervalInBackground: false,
-    }),
     queryFn: ({ pageParam, signal }) =>
       fetchJson<Page<T>>(pageParam === null ? path : `${path}${path.includes('?') ? '&' : '?'}cursor=${encodeURIComponent(pageParam)}`, signal),
     getNextPageParam: (last) => last.cursor ?? undefined,
@@ -38,7 +32,8 @@ export function usePaged<T>(key: readonly unknown[], path: string, opts: { enabl
     error: query.error,
     hasMore: query.hasNextPage,
     isFetchingMore: query.isFetchingNextPage,
-    more: () => { void query.fetchNextPage(); },
+    // A page already on its way is joined, never asked for again.
+    more: () => { void query.fetchNextPage({ cancelRefetch: false }); },
     retry: () => { void query.refetch(); },
   };
 }

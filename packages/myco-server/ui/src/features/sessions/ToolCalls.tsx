@@ -15,7 +15,7 @@ function firstFile(row: ToolCallRow): string | null {
   }
 }
 
-const block = 'max-h-[256px] overflow-auto whitespace-pre-wrap break-all rounded-control border border-line bg-page px-s3 py-s2 t-mono text-ink-2';
+const block = 'max-h-[256px] overflow-auto whitespace-pre-wrap break-words rounded-control border border-line bg-page px-s3 py-s2 t-mono text-ink-2';
 
 function ToolCallItem({ projectId, row }: { projectId: string; row: ToolCallRow }) {
   const file = firstFile(row);

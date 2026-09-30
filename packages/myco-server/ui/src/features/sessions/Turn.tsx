@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { memo, useEffect, useRef, useState, type RefObject } from 'react';
 import { Link as RouterLink } from 'react-router-dom';
 import { Button, Disclosure, ExternalLink, focusRing, Lightbox, Skeleton, StatusChip, TypeChip } from '../../design';
 import { blobUrl, RENDERABLE_IMAGE_TYPES, useTurnDetail, type AttachmentRow, type ResponseRow, type TurnChild, type TurnInjection, type TurnRow } from '../../hooks/use-sessions';
@@ -8,8 +8,12 @@ import { TextOrBlob } from './StoredText';
 import { ToolCalls } from './ToolCalls';
 import { clockTime, count, sporeTypeWord } from './words';
 
-/** How much of a prompt a folded turn shows. */
+/** How much of a prompt the list row carries, and so what a turn shows before its body is read. */
 export const PROMPT_PREVIEW_CHARS = 120;
+/** A prompt longer than this shows its opening, with the rest a click away. */
+const LONG_PROMPT_CHARS = 600;
+/** How far ahead of the viewport a turn starts reading its body. */
+const READ_AHEAD = '800px';
 
 /** What a turn calls a prompt a person did not type, in the reader's words rather than the wire's. */
 const ORIGIN_LABEL: Record<string, string> = {
@@ -18,12 +22,30 @@ const ORIGIN_LABEL: Record<string, string> = {
   hook_injected: 'Added by a hook',
 };
 
-/** The one line a folded turn shows for its prompt. */
+/** A prompt's opening on one line, as the list row carries it. */
 export function promptPreview(turn: Pick<TurnRow, 'preview' | 'textChars' | 'blobKey'>): string {
   if (turn.preview === null || turn.preview === '') return turn.blobKey !== null ? 'Stored text' : '(no prompt)';
   const line = turn.preview.replace(/\s+/g, ' ').trim();
   const cut = line.length > PROMPT_PREVIEW_CHARS ? `${line.slice(0, PROMPT_PREVIEW_CHARS)}…` : line;
   return cut.length < line.length || (turn.textChars !== null && turn.textChars > turn.preview.length) ? (cut.endsWith('…') ? cut : `${cut}…`) : cut;
+}
+
+/**
+ * Whether an element has come within `READ_AHEAD` of the viewport; once true it
+ * stays true. Where there is no IntersectionObserver it is true at once.
+ */
+function useSeen<T extends Element>(): [RefObject<T | null>, boolean] {
+  const ref = useRef<T>(null);
+  const [seen, setSeen] = useState(() => typeof IntersectionObserver === 'undefined');
+  useEffect(() => {
+    if (seen || ref.current === null || typeof IntersectionObserver === 'undefined') return undefined;
+    const observer = new IntersectionObserver((entries) => {
+      if (entries.some((entry) => entry.isIntersecting)) { setSeen(true); observer.disconnect(); }
+    }, { rootMargin: READ_AHEAD });
+    observer.observe(ref.current);
+    return () => observer.disconnect();
+  }, [seen]);
+  return [ref, seen];
 }
 
 function Attachments({ projectId, attachments }: { projectId: string; attachments: AttachmentRow[] }) {
@@ -35,7 +57,7 @@ function Attachments({ projectId, attachments }: { projectId: string; attachment
     <div className="flex flex-wrap items-start gap-s3" data-testid="turn-attachments">
       {images.map((a, i) => (
         <Button key={a.attachmentId} variant="ghost" onClick={() => setLightbox(i)} className="h-auto overflow-hidden rounded-control border-line p-0" aria-label={`Open ${a.description ?? 'image'}`}>
-          <img src={blobUrl(projectId, a.blobKey)} alt={a.description ?? 'An attached image'} loading="eager" className="max-h-[140px] max-w-[200px] object-cover" />
+          <img src={blobUrl(projectId, a.blobKey)} alt={a.description ?? 'An attached image'} loading="lazy" className="max-h-[140px] max-w-[200px] object-cover" />
         </Button>
       ))}
       {files.map((a) => (
@@ -48,7 +70,7 @@ function Attachments({ projectId, attachments }: { projectId: string; attachment
   );
 }
 
-function Responses({ projectId, responses }: { projectId: string; responses: ResponseRow[] }) {
+function Replies({ projectId, responses }: { projectId: string; responses: ResponseRow[] }) {
   if (responses.length === 0) return null;
   return (
     <div className="flex flex-col gap-s4">
@@ -70,9 +92,9 @@ function SteeringChild({ projectId, sessionId, child }: { projectId: string; ses
         <span className="font-medium text-ink-2">Steered while it ran{child.prompt.threadLabel !== null ? ` · ${child.prompt.threadLabel}` : ''}</span>
         <time dateTime={new Date(child.prompt.createdAt).toISOString()}>{clockTime(child.prompt.createdAt)}</time>
       </div>
-      <TextOrBlob projectId={projectId} text={child.prompt.text} blobKey={child.prompt.blobKey} markdown />
+      <TextOrBlob projectId={projectId} text={child.prompt.text} blobKey={child.prompt.blobKey} />
       <ToolCalls projectId={projectId} sessionId={sessionId} promptId={child.prompt.promptId} total={child.toolCallCount} />
-      <Responses projectId={projectId} responses={child.responses} />
+      <Replies projectId={projectId} responses={child.responses} />
     </div>
   );
 }
@@ -101,75 +123,74 @@ function Injection({ projectId, injection }: { projectId: string; injection: Tur
   );
 }
 
-function TurnBody({ projectId, sessionId, turn }: { projectId: string; sessionId: string; turn: TurnRow }) {
-  const detail = useTurnDetail(projectId, sessionId, turn.promptId, true);
-  if (detail.isPending) return <div role="status" aria-label="Loading the turn" className="flex flex-col gap-s2 py-s3"><Skeleton className="h-s4 w-3/4" /><Skeleton className="h-s4 w-1/2" /></div>;
-  if (detail.error) return <p className="py-s3 t-small text-bad">This turn could not be read.</p>;
-  const body = detail.data;
-  // A short prompt is already whole in its summary; the body repeats it only when there is more to read.
-  const promptAlreadyShown = body.prompt.text !== null && body.prompt.text.replace(/\s+/g, ' ').trim().length <= PROMPT_PREVIEW_CHARS;
-  return (
-    <div data-testid="turn-body" className="flex flex-col gap-s4 pb-s2 pl-s6 pt-s4">
-      {!promptAlreadyShown && (
-        <div className="rounded-card border border-line bg-surface-1 px-s4 py-s3">
-          <TextOrBlob projectId={projectId} text={body.prompt.text} blobKey={body.prompt.blobKey} markdown />
-        </div>
-      )}
-      <Attachments projectId={projectId} attachments={body.attachments} />
-      {body.injection !== null && <Injection projectId={projectId} injection={body.injection} />}
-      {body.plans.length > 0 && (
-        <div className="flex flex-col gap-s2" data-testid="turn-plans">
-          {body.plans.map((plan) => <PlanCard key={plan.planKey} projectId={projectId} sessionId={sessionId} plan={plan} inTurn />)}
-        </div>
-      )}
-      <ToolCalls projectId={projectId} sessionId={sessionId} promptId={turn.promptId} total={turn.toolCallCount} />
-      {body.children.map((child) => <SteeringChild key={child.prompt.promptId} projectId={projectId} sessionId={sessionId} child={child} />)}
-      <Responses projectId={projectId} responses={body.responses} />
-    </div>
-  );
+/** The prompt itself: its whole text once the body is read, its opening before; a long one shows its opening until asked. */
+function PromptText({ projectId, turn, text, blobKey }: { projectId: string; turn: TurnRow; text: string | null | undefined; blobKey: string | null | undefined }) {
+  const [whole, setWhole] = useState(false);
+  if (text === undefined) return <p className="whitespace-pre-wrap break-words t-body font-medium text-ink">{promptPreview(turn)}</p>;
+  const stored = text === null && blobKey != null;
+  if (!whole && (stored || (text?.length ?? 0) > LONG_PROMPT_CHARS)) {
+    return (
+      <div className="flex flex-col items-start gap-s1">
+        <p className="line-clamp-6 whitespace-pre-wrap break-words t-body font-medium text-ink">{text ?? promptPreview(turn)}</p>
+        <Button variant="ghost" size="sm" className="-ml-s3" onClick={() => setWhole(true)}>Show the whole prompt</Button>
+      </div>
+    );
+  }
+  return <div className="font-medium text-ink"><TextOrBlob projectId={projectId} text={text} blobKey={blobKey ?? null} /></div>;
 }
 
 export interface TurnProps {
   projectId: string;
   sessionId: string;
   turn: TurnRow;
-  defaultOpen?: boolean;
   /** A link named this turn: bring it into view once it mounts. */
   scrollTo?: boolean;
 }
 
-/** One turn of the conversation: the prompt as a bubble with what followed it counted, opening on the prompt in full, the work it led to and the replies. */
-export function Turn({ projectId, sessionId, turn, defaultOpen = false, scrollTo = false }: TurnProps) {
+/**
+ * One turn of the conversation, read inline: the prompt as a bubble, then what
+ * followed it and the replies. Only the tool calls fold away. The turn's body
+ * is read once the turn comes near the viewport, so a long conversation reads
+ * only what the reader reaches.
+ */
+export const Turn = memo(function Turn({ projectId, sessionId, turn, scrollTo = false }: TurnProps) {
   const injected = turn.origin !== 'user';
-  const el = useRef<HTMLLIElement>(null);
+  const [ref, seen] = useSeen<HTMLLIElement>();
+  const detail = useTurnDetail(projectId, sessionId, turn.promptId, seen || scrollTo);
   useEffect(() => {
-    if (scrollTo && typeof el.current?.scrollIntoView === 'function') el.current.scrollIntoView({ block: 'start' });
-  }, [scrollTo]);
-  const facts = [
-    turn.toolCallCount > 0 ? count(turn.toolCallCount, 'tool call') : null,
-    turn.planCount > 0 ? count(turn.planCount, 'plan') : null,
-    turn.attachmentCount > 0 ? count(turn.attachmentCount, 'attachment') : null,
-  ].filter((fact): fact is string => fact !== null);
+    if (scrollTo && typeof ref.current?.scrollIntoView === 'function') ref.current.scrollIntoView({ block: 'start' });
+  }, [scrollTo, ref]);
+  const body = detail.data;
   return (
-    <li ref={el} data-testid={`turn-${turn.promptId}`} data-origin={turn.origin}>
-      <Disclosure
-        wide
-        defaultOpen={defaultOpen}
-        summaryClassName={cn('rounded-card border px-s4 py-s3', injected ? 'border-dashed border-line-strong bg-transparent' : 'border-line bg-surface-2')}
-        summary={(
+    <li ref={ref} data-testid={`turn-${turn.promptId}`} data-origin={turn.origin} className="flex flex-col gap-s3">
+      <div className={cn('flex flex-col gap-s1 rounded-card border px-s4 py-s3', injected ? 'border-dashed border-line-strong' : 'border-line bg-surface-2')}>
+        <span className="flex flex-wrap items-center gap-x-s2 gap-y-s1 t-meta text-muted">
+          {injected && <StatusChip>{ORIGIN_LABEL[turn.origin] ?? 'Added'}</StatusChip>}
+          {turn.threadLabel !== null && <StatusChip>{turn.threadLabel}</StatusChip>}
+          <time dateTime={new Date(turn.createdAt).toISOString()}>{clockTime(turn.createdAt)}</time>
+        </span>
+        <PromptText projectId={projectId} turn={turn} text={body === undefined ? undefined : body.prompt.text} blobKey={body?.prompt.blobKey} />
+      </div>
+      <div data-testid="turn-body" className="flex flex-col gap-s4 pl-s6">
+        {body === undefined ? (
+          detail.error
+            ? <p className="t-small text-bad">This turn could not be read.</p>
+            : (turn.responseCount > 0 || turn.toolCallCount > 0) && <div role="status" aria-label="Loading the turn" className="flex flex-col gap-s2"><Skeleton className="h-s4 w-3/4" /><Skeleton className="h-s4 w-1/2" /></div>
+        ) : (
           <>
-            <span className="line-clamp-2 t-body font-medium text-ink">{promptPreview(turn)}</span>
-            <span className="mt-s1 flex flex-wrap items-center gap-x-s2 gap-y-s1 t-meta text-muted">
-              {injected && <StatusChip>{ORIGIN_LABEL[turn.origin] ?? 'Added'}</StatusChip>}
-              {turn.threadLabel !== null && <StatusChip>{turn.threadLabel}</StatusChip>}
-              <time dateTime={new Date(turn.createdAt).toISOString()}>{clockTime(turn.createdAt)}</time>
-              {facts.map((fact) => <span key={fact}><span aria-hidden className="mr-s2">·</span>{fact}</span>)}
-            </span>
+            <Attachments projectId={projectId} attachments={body.attachments} />
+            {body.injection !== null && <Injection projectId={projectId} injection={body.injection} />}
+            {body.plans.length > 0 && (
+              <div className="flex flex-col gap-s2" data-testid="turn-plans">
+                {body.plans.map((plan) => <PlanCard key={plan.planKey} projectId={projectId} sessionId={sessionId} plan={plan} inTurn />)}
+              </div>
+            )}
+            <ToolCalls projectId={projectId} sessionId={sessionId} promptId={turn.promptId} total={turn.toolCallCount} />
+            {body.children.map((child) => <SteeringChild key={child.prompt.promptId} projectId={projectId} sessionId={sessionId} child={child} />)}
+            <Replies projectId={projectId} responses={body.responses} />
           </>
         )}
-      >
-        <TurnBody projectId={projectId} sessionId={sessionId} turn={turn} />
-      </Disclosure>
+      </div>
     </li>
   );
-}
+});
