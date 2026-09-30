@@ -1,4 +1,4 @@
-import { Navigate, Route, Routes } from 'react-router-dom';
+import { Route, Routes } from 'react-router-dom';
 import { AuthGate } from './components/auth-gate';
 import { Join } from './pages/Join';
 import { LinkPage } from './pages/Link';
@@ -6,6 +6,7 @@ import { NotFound } from './pages/NotFound';
 import { Projects } from './pages/Projects';
 import { adminRoutes } from './routes/admin';
 import { knowledgeRoutes } from './routes/knowledge';
+import { movedRoutes } from './routes/moved';
 import { sessionRoutes } from './routes/sessions';
 import { Shell } from './routes/Shell';
 import { ResumePendingLink, Today } from './routes/today';
@@ -17,7 +18,7 @@ export default function App() {
     <Routes>
       <Route path="/link" element={<LinkPage />} />
       <Route path="/join" element={<Join />} />
-      <Route path="/notifications" element={<Navigate to="/" replace />} />
+      {movedRoutes}
       <Route element={<ResumePendingLink />}>
       <Route element={<Shell />}>
         <Route path="/" element={<Today />} />

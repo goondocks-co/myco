@@ -60,7 +60,7 @@ export function Projects() {
       {error !== null && <p role="alert" className="t-small text-bad">{error}</p>}
       {live.length === 0 && archived.length === 0 ? (
         <div className="flex flex-col gap-s3">
-          <EmptyState title="No projects yet" className="py-0" />
+          <EmptyState title="No projects yet." className="py-0" />
           <CommandBlock caption="In a repository on your machine, run this, and its sessions arrive here:" command="myco setup" className="max-w-measure" />
         </div>
       ) : (
@@ -110,7 +110,7 @@ export function Projects() {
         open={archiving !== null}
         onOpenChange={(open) => { if (!open) { setArchiving(null); actions.archive.reset(); } }}
         title={`Archive ${archiving?.name ?? ''}?`}
-        description="Capture from every runtime stops until you unarchive. Everything already captured stays."
+        description="Capture from every agent stops until you unarchive. Everything already captured stays."
         confirmLabel="Archive"
         pending={actions.archive.isPending}
         error={actions.archive.error ? refusalText(actions.archive.error) : null}
@@ -135,7 +135,7 @@ function ProjectRow({ project, now, note, menu, action }: {
       <RouterLink
         to={projectPath(project.projectId)}
         onClick={() => rememberProject(project.projectId)}
-        className={cn('flex min-w-0 flex-1 flex-col rounded-chip', focusRing)}
+        className={cn('flex min-w-0 flex-1 flex-col justify-center self-stretch rounded-chip', focusRing)}
       >
         <span className="truncate t-body font-medium text-ink">{project.name}</span>
         <span className="flex flex-wrap gap-x-s2 t-small text-muted">

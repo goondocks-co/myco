@@ -507,7 +507,7 @@ describe('a runtime that is not taking runs', () => {
     await dispatchPrepared(f.env, prepared(preparedOutcome), { serverUrl: ORIGIN, actor: 'mem_1', runId: 'run_worded' }, NOW);
     expect(f.run('run_worded')?.heldBy).toBe('runtime');
     // A reader is told the runtime is not taking a run, never that a bound is full.
-    expect(HELD_BY_WORDS.runtime).toBe('the runtime is not taking a run right now');
+    expect(HELD_BY_WORDS.runtime).toBe('this server is not taking a run right now');
     expect(HELD_BY_WORDS.runtime).not.toBe(HELD_BY_WORDS.fleet);
   });
 

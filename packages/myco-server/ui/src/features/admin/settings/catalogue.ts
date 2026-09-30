@@ -33,11 +33,6 @@ export interface LeafField {
   note?: string;
   /** Shown, never edited. */
   readOnly?: boolean;
-  /**
-   * Nothing on the server reads it any more. It is shown only where a value is
-   * stored, read-only, under "Older settings" at the foot of its section.
-   */
-  retired?: true;
 }
 
 export interface LeafGroup {
@@ -56,10 +51,10 @@ const VERBOSITY = ['low', 'medium', 'high'] as const;
 
 const tierMaps = (): LeafField[] =>
   ['default', 'high', 'low'].flatMap((tier) => [
-    { leaf: `agent.provider.reasoning_map.${tier}`, label: `Model at the ${tier} tier`, kind: 'text' as const, retired: true as const },
-    { leaf: `agent.provider.effort_map.${tier}.effort`, label: `Effort at the ${tier} tier`, kind: 'select' as const, options: EFFORTS, retired: true as const },
-    { leaf: `agent.provider.effort_map.${tier}.verbosity`, label: `Verbosity at the ${tier} tier`, kind: 'select' as const, options: VERBOSITY, retired: true as const },
-    { leaf: `agent.provider.thinking_budget_map.${tier}`, label: `Thinking budget at the ${tier} tier`, kind: 'json' as const, retired: true as const },
+    { leaf: `agent.provider.reasoning_map.${tier}`, label: `Model at the ${tier} tier`, kind: 'text' as const },
+    { leaf: `agent.provider.effort_map.${tier}.effort`, label: `Effort at the ${tier} tier`, kind: 'select' as const, options: EFFORTS },
+    { leaf: `agent.provider.effort_map.${tier}.verbosity`, label: `Verbosity at the ${tier} tier`, kind: 'select' as const, options: VERBOSITY },
+    { leaf: `agent.provider.thinking_budget_map.${tier}`, label: `Thinking budget at the ${tier} tier`, kind: 'json' as const },
   ]);
 
 export const LEAF_GROUPS: readonly LeafGroup[] = [
@@ -70,10 +65,10 @@ export const LEAF_GROUPS: readonly LeafGroup[] = [
     note: 'When Myco learns, titles and maps on its own, without being asked.',
     leaves: [
       { leaf: 'agent.scheduled_tasks_enabled', label: 'Work on a schedule', kind: 'toggle' },
-      { leaf: 'agent.event_tasks_enabled', label: 'Work as sessions arrive', kind: 'toggle', retired: true },
+      { leaf: 'agent.event_tasks_enabled', label: 'Work as sessions arrive', kind: 'toggle' },
       { leaf: 'agent.scheduled_tasks_active_window_days', label: 'Treat a project as active for', kind: 'number', min: 0, max: 365, unit: 'days' },
       { leaf: 'agent.cold_project_threshold_days', label: 'Treat a project as quiet after', kind: 'number', min: 0, max: 365, unit: 'days' },
-      { leaf: 'agent.summary_batch_interval', label: 'Summary batch interval', kind: 'number', min: 0, retired: true },
+      { leaf: 'agent.summary_batch_interval', label: 'Summary batch interval', kind: 'number', min: 0 },
       { leaf: 'release_provenance.reconcile_interval_minutes', label: 'Check what has shipped every', kind: 'number', min: 1, max: 1440, unit: 'minutes', note: 'How often each project with release tracking on is checked against its release tags.' },
     ],
   },
@@ -104,7 +99,7 @@ export const LEAF_GROUPS: readonly LeafGroup[] = [
     label: 'Learning',
     note: 'How Myco checks what it learns before keeping it.',
     leaves: [
-      { leaf: 'agent.semantic_write_check_enabled', label: 'Check what Myco saves before it lands', kind: 'toggle', retired: true },
+      { leaf: 'agent.semantic_write_check_enabled', label: 'Check what Myco saves before it lands', kind: 'toggle' },
     ],
   },
   {
@@ -116,7 +111,7 @@ export const LEAF_GROUPS: readonly LeafGroup[] = [
       { leaf: 'instructions.template', label: 'Session-start instructions', kind: 'textarea', maxLength: 4096, note: 'Markdown every session is handed at start, beside its project. Up to 4 KB; anything longer is refused when you save.' },
       { leaf: 'cortex.instructions.inject_on_session_start', label: 'Instructions at session start', kind: 'toggle' },
       { leaf: 'cortex.instructions.inject_on_subagent_start', label: 'Instructions when a subagent starts', kind: 'toggle' },
-      { leaf: 'cortex.digest.inject_on_session_start', label: 'Digest at session start', kind: 'toggle', retired: true },
+      { leaf: 'cortex.digest.inject_on_session_start', label: 'Digest at session start', kind: 'toggle' },
       { leaf: 'cortex.digest.tier', label: 'Digest size', kind: 'select', options: [1500, 5000, 10000], unit: 'tokens', note: 'Sizes the digest a scheduled task writes. It is no longer served at session start.' },
       { leaf: 'cortex.spores.inject_on_prompt_submit', label: 'Spores on every prompt', kind: 'toggle' },
       { leaf: 'cortex.spores.max_per_prompt', label: 'Items per prompt', kind: 'number', min: 0, max: 10, note: 'Spores and plans share this count; the 300-token budget may serve fewer.' },
@@ -141,8 +136,8 @@ export const LEAF_GROUPS: readonly LeafGroup[] = [
     label: 'Skills',
     note: 'Thresholds for skills Myco once scored. Skills ship with Myco now.',
     leaves: [
-      { leaf: 'skills.confidence_threshold', label: 'Promote skills at confidence', kind: 'number', min: 0, max: 1, step: 0.05, retired: true },
-      { leaf: 'skills.usage_stale_days', label: 'Skills stale after', kind: 'number', min: 1, unit: 'days', retired: true },
+      { leaf: 'skills.confidence_threshold', label: 'Promote skills at confidence', kind: 'number', min: 0, max: 1, step: 0.05 },
+      { leaf: 'skills.usage_stale_days', label: 'Skills stale after', kind: 'number', min: 1, unit: 'days' },
     ],
   },
   {
@@ -154,11 +149,11 @@ export const LEAF_GROUPS: readonly LeafGroup[] = [
       { leaf: 'agent.provider.type', label: 'Provider', kind: 'select', options: PROVIDERS, note: 'Which service does this server’s own thinking; its key is under Keys below.' },
       { leaf: 'agent.provider.model', label: 'Model', kind: 'text', note: 'The provider’s name for the model.' },
       { leaf: 'agent.provider.base_url', label: 'Provider endpoint', kind: 'text', note: 'For a self-hosted or compatible endpoint. No stored key is sent to a custom endpoint.' },
-      { leaf: 'agent.provider.context_length', label: 'Context length', kind: 'number', min: 1, unit: 'tokens', retired: true },
-      { leaf: 'agent.provider.local_backend', label: 'Local backend', kind: 'select', options: ['ollama', 'lmstudio'], retired: true },
-      { leaf: 'agent.reasoningLevel', label: 'Reasoning profile', kind: 'select', options: ['low', 'default', 'high'], retired: true },
+      { leaf: 'agent.provider.context_length', label: 'Context length', kind: 'number', min: 1, unit: 'tokens' },
+      { leaf: 'agent.provider.local_backend', label: 'Local backend', kind: 'select', options: ['ollama', 'lmstudio'] },
+      { leaf: 'agent.reasoningLevel', label: 'Reasoning profile', kind: 'select', options: ['low', 'default', 'high'] },
       { leaf: 'agent.model', label: 'Default model (advanced)', kind: 'text' },
-      { leaf: 'agent.harness', label: 'Runtime', kind: 'text', retired: true },
+      { leaf: 'agent.harness', label: 'Agent for Myco’s work', kind: 'text' },
     ],
   },
   {
@@ -204,7 +199,7 @@ export const LEAF_GROUPS: readonly LeafGroup[] = [
       // 0 is how a server returns to keeping everything, and the minimum stays 0.
       { leaf: 'retention.transcripts', label: 'Keep raw transcripts for', kind: 'number', min: 0, max: 3650, unit: 'days', note: 'Removes raw transcript bytes already read into sessions once they are older than this. Bytes not yet read are kept whatever their age, and sessions, prompts, replies, tool calls and plans are never removed. Unset or 0 keeps raw transcripts forever. Capture is never refused for the space it takes.' },
       { leaf: 'agent.run_retention_days', label: 'Keep task records for', kind: 'number', min: 1, max: 365, unit: 'days', note: 'How long the record of each task Myco ran is kept.' },
-      { leaf: 'notifications.retention_days', label: 'Keep notifications for', kind: 'number', min: 0, max: 365, unit: 'days', retired: true },
+      { leaf: 'notifications.retention_days', label: 'Keep notifications for', kind: 'number', min: 0, max: 365, unit: 'days' },
     ],
   },
   {
@@ -234,9 +229,6 @@ export const LEAF_GROUPS: readonly LeafGroup[] = [
 ];
 
 export const LEAF_FIELDS: readonly LeafField[] = LEAF_GROUPS.flatMap((g) => g.leaves);
-
-/** The settings that still do something, which the page shows whatever is stored. */
-export const LIVE_FIELDS: readonly LeafField[] = LEAF_FIELDS.filter((f) => f.retired !== true);
 
 /** The groups of one section, in page order. */
 export const groupsOf = (section: SettingsSectionId): readonly LeafGroup[] => LEAF_GROUPS.filter((g) => g.section === section);

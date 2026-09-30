@@ -1,10 +1,8 @@
-import { Link as RouterLink } from 'react-router-dom';
 import { INVITE_CONTROLS } from '@goondocks/myco-shared/member-protocol';
-import { Card, ErrorState, focusRing, LoadingState } from '../../../design';
+import { ActionLink, Card, EmptyState, ErrorState, LoadingState } from '../../../design';
 import { useMembers } from '../../../hooks/use-access';
 import { useProjects } from '../../../hooks/use-projects';
 import { isArchived } from '../../../lib/api';
-import { cn } from '../../../lib/cn';
 import { MY_MACHINES_PATH, PEOPLE_PATH, PROJECT_SETTINGS_ANCHORS, PROJECT_SETTINGS_SUFFIX, projectPath } from '../../../routes/nav';
 import { AdminSection, RowCard } from '../AdminFrame';
 import { peopleOf } from '../members';
@@ -12,7 +10,6 @@ import { peopleOf } from '../members';
 /** The projects list's anchor, where an older `?tab=capabilities` link lands. */
 export const PROJECTS_ANCHOR = 'projects';
 
-const linkClass = cn('shrink-0 rounded-chip t-small font-medium text-primary hover:underline', focusRing);
 
 /** A row of words with one link at its end. */
 function PointerRow({ title, detail, to, action, data }: { title: string; detail: string; to: string; action: string; data?: string }) {
@@ -22,7 +19,7 @@ function PointerRow({ title, detail, to, action, data }: { title: string; detail
         <span className="t-body font-medium text-ink">{title}</span>
         <span className="t-small text-muted">{detail}</span>
       </div>
-      <RouterLink to={to} className={linkClass}>{action} →</RouterLink>
+      <ActionLink to={to} className="shrink-0">{action} →</ActionLink>
     </div>
   );
 }
@@ -68,7 +65,7 @@ export function AccessPointers() {
       <AdminSection id={PROJECTS_ANCHOR} title="Access keys by project" description="An access key lets an agent outside this server read one project and record what it finds. Each project keeps its own, beside what Myco does there and its repository.">
         {projects.isPending ? <LoadingState label="Loading projects" count={3} />
           : projects.isError ? <ErrorState error={projects.error} onRetry={() => void projects.refetch()} />
-          : live.length === 0 ? <Card><p className="t-body text-muted">No project accepts capture yet.</p></Card>
+          : live.length === 0 ? <Card><EmptyState title="No project accepts capture yet." className="py-0" /></Card>
           : (
             <RowCard label="Projects">
               {live.map((project) => (

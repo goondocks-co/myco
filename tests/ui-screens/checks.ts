@@ -4,15 +4,16 @@
  * Per page, on fixture data (build plan §5.1): landmarks render, no console
  * errors and no failed requests, axe-core finds nothing serious or critical,
  * no raw id reaches visible text outside a facts panel, a list page carries
- * exactly one filter bar, nothing scrolls sideways, and screenshots land at
- * 1280×820 and 390×844 in dark and light.
+ * exactly one filter bar, nothing scrolls sideways, every tap target on a
+ * phone or tablet is at least 44px each way, and screenshots land at 1280×820,
+ * 768×1024 and 390×844 in dark and light.
  *
  * On the fixture, every page runs in a fixed time zone and locale with the
  * browser's clock held at the fixture's now, and any request that leaves the
  * launcher's origin is aborted, which the failed-request check then reports.
  */
 import { AxeBuilder } from '@axe-core/playwright';
-import { expect, type Browser, type BrowserContext, type Page } from '@playwright/test';
+import { expect, type Browser, type BrowserContext, type Locator, type Page } from '@playwright/test';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -24,6 +25,7 @@ export const SHOTS_DIR = path.join(REPO, 'target', 'ui-screens', 'shots');
 
 export const VIEWPORTS = {
   desktop: { width: 1280, height: 820 },
+  tablet: { width: 768, height: 1024 },
   phone: { width: 390, height: 844 },
 } as const;
 export type ViewportName = keyof typeof VIEWPORTS;
@@ -233,6 +235,124 @@ export async function horizontalOverflow(page: Page): Promise<string[]> {
 /** Nothing on the page scrolls sideways: a wide element wraps or scrolls inside its own box. */
 export async function expectNoHorizontalOverflow(page: Page): Promise<void> {
   expect(await horizontalOverflow(page), 'horizontal overflow').toEqual([]);
+}
+
+/** The least a tap target measures each way on a touch-sized screen, in CSS pixels. */
+export const TAP_MIN = 44;
+
+/**
+ * Every control and link on the page whose hit area is under `TAP_MIN` either
+ * way, with what it is and how big it measured.
+ *
+ * A target's hit area is probed where a finger lands, not read from its box:
+ * each control is scrolled to the middle of the screen, and the browser is
+ * asked what it hits at the control's centre and then pixel by pixel outwards
+ * along both axes. A point counts when it hits the control, something inside
+ * it, or a label that names it; the run across and the run down through the
+ * centre must each reach `TAP_MIN`. So a row whose whole surface is its link, a
+ * switch whose words are its label, and a control padded out past its drawn
+ * edge all pass, and a link whose centre falls between its wrapped lines, or
+ * two targets crowded closer than `TAP_MIN`, fail.
+ *
+ * Left out, as WCAG 2.5.5 leaves them out: a link inside a sentence (its block
+ * holds words that are not themselves controls), a disabled control, and one
+ * visually hidden until focused, such as the skip link. While a dialog, menu or
+ * list is open, only the controls inside it are measured.
+ */
+export async function smallTapTargets(page: Page): Promise<string[]> {
+  return page.evaluate((min) => {
+    const TARGETS = 'a[href], button, [role=button], [role=tab], [role=switch], [role=combobox], [role=checkbox], [role=menuitem], [role=option], [role=link], input:not([type=hidden]), select, textarea, summary';
+    const visible = (el: Element): boolean => {
+      const rect = el.getBoundingClientRect();
+      if (rect.width <= 1 || rect.height <= 1) return false;
+      for (let at: Element | null = el; at !== null; at = at.parentElement) {
+        const style = window.getComputedStyle(at);
+        if (style.display === 'none' || style.visibility === 'hidden' || Number(style.opacity) === 0) return false;
+      }
+      return el.closest('[aria-hidden="true"], [inert]') === null;
+    };
+    /** How many words an element holds that are not the words of a control inside it. */
+    const ownWords = (el: Element): number => {
+      let words = '';
+      const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT);
+      for (let node = walker.nextNode(); node !== null; node = walker.nextNode()) {
+        if (node.parentElement?.closest(TARGETS) !== null && node.parentElement?.closest(TARGETS) !== el) continue;
+        words += ` ${node.textContent ?? ''}`;
+      }
+      return words.match(/[\p{L}\p{N}]+/gu)?.length ?? 0;
+    };
+    /** A link set inside a sentence: the nearest block around it holds words of its own, more than a chip's one. */
+    const inSentence = (el: Element): boolean => {
+      if (el.tagName !== 'A') return false;
+      let block = el.parentElement;
+      while (block !== null && window.getComputedStyle(block).display.startsWith('inline')) block = block.parentElement;
+      return block !== null && ownWords(block) >= 2;
+    };
+    const hits = (el: Element, x: number, y: number): boolean => {
+      const at = document.elementFromPoint(x, y);
+      if (at === null) return false;
+      if (at === el || el.contains(at)) return true;
+      const label = at.closest('label');
+      return label !== null && (label.control === el || (label.htmlFor !== '' && label.htmlFor === el.id));
+    };
+    const out: string[] = [];
+    const seen = new Set<Element>();
+    // With a dialog, menu or list open on top, only its own controls can be reached: the page under it is out of play.
+    const layers = [...document.querySelectorAll('[role=dialog], [role=alertdialog], [role=menu], [role=listbox]')].filter(visible);
+    const targets = layers.length === 0 ? [...document.querySelectorAll(TARGETS)] : layers.flatMap((layer) => [...layer.querySelectorAll(TARGETS)]);
+    for (const el of targets) {
+      if (seen.has(el)) continue;
+      seen.add(el);
+      if ((el as HTMLButtonElement).disabled || el.getAttribute('aria-disabled') === 'true') continue;
+      if (!visible(el) || inSentence(el)) continue;
+      el.scrollIntoView({ block: 'center', inline: 'center' });
+      const rect = el.getBoundingClientRect();
+      const cx = Math.round(rect.left + rect.width / 2);
+      const cy = Math.round(rect.top + rect.height / 2);
+      const inView = (x: number, y: number) => x >= 0 && y >= 0 && x < window.innerWidth && y < window.innerHeight;
+      /** How far the hit area runs from the centre in one direction, up to `min`. */
+      const reach = (dx: number, dy: number): number => {
+        let far = 0;
+        for (let d = 1; d <= min; d += 1) {
+          const x = cx + dx * d;
+          const y = cy + dy * d;
+          if (!inView(x, y) || !hits(el, x, y)) break;
+          far = d;
+        }
+        return far;
+      };
+      const across = hits(el, cx, cy) ? reach(-1, 0) + reach(1, 0) + 1 : 0;
+      const down = across === 0 ? 0 : reach(0, -1) + reach(0, 1) + 1;
+      if (across >= min && down >= min) continue;
+      const name = (el.getAttribute('aria-label') ?? el.textContent ?? (el as HTMLInputElement).placeholder ?? '').trim().replace(/\s+/g, ' ').slice(0, 48);
+      const role = el.getAttribute('role');
+      out.push(`<${el.tagName.toLowerCase()}${role ? ` role=${role}` : ''}> "${name}" hits ${across}×${down} (drawn ${Math.round(rect.width)}×${Math.round(rect.height)})`);
+    }
+    window.scrollTo(0, 0);
+    return out;
+  }, TAP_MIN);
+}
+
+/** Every tap target on the page is at least `TAP_MIN` each way: for the phone and tablet viewports. */
+export async function expectTapTargets(page: Page): Promise<void> {
+  expect(await smallTapTargets(page), `tap targets under ${TAP_MIN}px`).toEqual([]);
+}
+
+/**
+ * The nav that lists the main pages at a viewport: the column on a desktop,
+ * the bottom bar on a phone, and on a tablet the drawer, which this opens.
+ */
+export async function pagesNav(page: Page, viewport: ViewportName): Promise<Locator> {
+  if (viewport === 'desktop') return page.getByRole('navigation', { name: 'Pages' });
+  if (viewport === 'phone') return page.getByRole('navigation', { name: 'Main pages' });
+  await page.getByRole('banner').getByRole('button', { name: 'Open navigation' }).click();
+  return page.getByRole('dialog', { name: 'Navigation' }).getByRole('navigation', { name: 'Pages' });
+}
+
+/** Nothing on the page scrolls sideways, and on a phone or tablet every tap target is at least `TAP_MIN` each way. */
+export async function expectFits(page: Page, viewport: ViewportName): Promise<void> {
+  await expectNoHorizontalOverflow(page);
+  if (viewport !== 'desktop') await expectTapTargets(page);
 }
 
 /** A full-page screenshot under `target/ui-screens/shots/<name>-<viewport>-<mode>.png`. */

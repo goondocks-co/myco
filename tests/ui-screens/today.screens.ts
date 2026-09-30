@@ -13,7 +13,7 @@
  */
 import { expect, test, type Page } from '@playwright/test';
 import {
-  expectAxeClean, expectNoHorizontalOverflow, expectNoRawIds, expectQuiet, openPage, shoot, SHOT_MATRIX, type ViewportName,
+  expectAxeClean, expectFits, expectNoRawIds, expectQuiet, openPage, shoot, SHOT_MATRIX, type ViewportName,
 } from './checks.ts';
 import { FIXTURE_TIMEZONE, fixtureNow, SCREENS_ENV, screensEnv } from './env.ts';
 
@@ -78,8 +78,8 @@ async function expectCapture(page: Page, viewport: ViewportName, role: 'admin' |
   }
   await expect(capture).toContainText('Ada’s studio Mac');
   await expect(capture.getByRole('list', { name: 'Agents on Ada’s studio Mac' }).getByRole('img', { name: 'Sending now' })).toHaveCount(1);
-  // Another member's machine is listed, and never by its name: the server serves it only to its own member.
-  await expect(capture.getByRole('list', { name: 'Other machines' })).toBeVisible();
+  // Another member's machine is listed by its member, never by its name: the server serves the name only to its own member.
+  await expect(capture.getByRole('list', { name: 'Other machines' })).toContainText('Lin');
   await expect(capture).not.toContainText('Lin’s build box');
 }
 
@@ -101,7 +101,7 @@ test.describe('Today', () => {
         }
 
         if (role === 'admin') {
-          if (viewport === 'desktop') {
+          if (viewport !== 'phone') {
             const panel = page.locator('[data-needs-you]');
             await expect(panel).toBeInViewport();
             if (onFixture()) {
@@ -133,7 +133,7 @@ test.describe('Today', () => {
 
         await expectCapture(page, viewport, role);
         await page.waitForLoadState('networkidle');
-        await expectNoHorizontalOverflow(page);
+        await expectFits(page, viewport);
         await expectNoRawIds(page);
         await expectAxeClean(page);
         await page.evaluate(() => window.scrollTo(0, 0));
@@ -156,7 +156,7 @@ test.describe('Today', () => {
         await expect(empty.getByRole('link', { name: 'The day before →' })).toHaveAttribute('href', `/?day=${dayBefore(6)}`);
         await expect(page.getByRole('link', { name: 'Back to today' })).toHaveAttribute('href', '/');
         await page.waitForLoadState('networkidle');
-        await expectNoHorizontalOverflow(page);
+        await expectFits(page, viewport);
         await expectNoRawIds(page);
         await expectAxeClean(page);
         await shoot(page, 'today-quiet', viewport, mode);
@@ -234,7 +234,7 @@ test.describe('Today', () => {
       await expect(page.getByRole('navigation', { name: 'Pages' }).getByRole('link', { name: 'Today' })).toHaveAttribute('aria-current', 'page');
       await expect(page.locator(`[data-project-filter-item][aria-current="true"]`)).toContainText(project.name);
       await page.waitForLoadState('networkidle');
-      await expectNoHorizontalOverflow(page);
+      await expectFits(page, 'desktop');
       await expectNoRawIds(page);
       await expectAxeClean(page);
       await shoot(page, 'today-project', 'desktop', 'dark');

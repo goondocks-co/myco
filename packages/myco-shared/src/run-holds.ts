@@ -29,7 +29,7 @@ export const HELD_BY_WORDS: Readonly<Record<HeldBy, string>> = {
   task_concurrent_runs: 'the limit on runs of this task at once',
   task_runs_per_hour: 'the limit on runs of this task per hour',
   fleet: 'the size of the fleet',
-  runtime: 'the runtime is not taking a run right now',
+  runtime: 'this server is not taking a run right now',
   worker: 'waiting for a worker to claim it',
   [REPOSITORY_CHECKOUT_CAPABILITY]: 'waiting for a worker that can read the repository; none heard from lately can',
   [REPOSITORY_DIGESTS_CAPABILITY]: 'waiting for an up-to-date worker; the workers heard from lately are too old to run it',

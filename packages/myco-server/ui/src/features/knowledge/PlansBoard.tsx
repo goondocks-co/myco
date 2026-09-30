@@ -1,6 +1,6 @@
 import { Link as RouterLink } from 'react-router-dom';
 import { ArrowUpRight } from 'lucide-react';
-import { EmptyState, ErrorState, FilterBar, focusRing, Progress, ShowMore, Skeleton, useFilterParams, useQueryDraft } from '../../design';
+import { tapTarget, EmptyState, ErrorState, FilterBar, focusRing, Progress, ShowMore, Skeleton, useFilterParams, useQueryDraft } from '../../design';
 import { planPagePath, usePlanColumn } from '../../hooks/use-knowledge';
 import { SEARCH_MIN_CHARS } from '../../hooks/use-search';
 import { useNow } from '../../hooks/use-today';
@@ -40,14 +40,8 @@ export function PlansBoard({ projectId, projectName }: PlansBoardProps) {
         onClear={() => { draft.reset(); filterParams.clear(); }}
       />
       {q.length > 0 && !searching && <p className="t-small text-muted">Type at least two characters to search.</p>}
-      {/* Side by side on a wide screen; below it the columns keep their width and the row scrolls. */}
-      <div
-        tabIndex={0}
-        role="region"
-        aria-label="Plans by status"
-        className={cn('-mx-s1 flex snap-x items-start gap-s4 overflow-x-auto px-s1 pb-s2 xl:grid xl:grid-cols-4 xl:overflow-visible', focusRing)}
-        data-board=""
-      >
+      {/* One column under another on a phone, two by two on a tablet, and side by side on a wide screen: nothing scrolls sideways. */}
+      <div className="grid items-start gap-s4 md:grid-cols-2 xl:grid-cols-4" data-board="">
         {PLAN_COLUMNS.map((status) => (
           <Column key={status} status={status} projectId={projectId} projectName={projectName} q={searching ? q : null} now={now} />
         ))}
@@ -70,7 +64,7 @@ function Column({ status, projectId, projectName, q, now }: ColumnProps) {
   const id = `plans-${status}`;
   const column = usePlanColumn(projectId, status, q);
   return (
-    <section aria-labelledby={id} className="flex w-board-column min-w-0 shrink-0 snap-start flex-col gap-s3 rounded-card border border-line bg-surface-1 p-s4 xl:w-auto" data-plan-column={status}>
+    <section aria-labelledby={id} className="flex min-w-0 flex-col gap-s3 rounded-card border border-line bg-surface-1 p-s4" data-plan-column={status}>
       <div className="flex items-center gap-s2">
         <h2 id={id} className="flex items-center gap-s2 t-control font-semibold text-ink">
           <span aria-hidden className={cn('size-s2 rounded-pill', status === 'in_progress' ? 'bg-ok' : status === 'active' ? 'bg-primary' : 'bg-line-strong')} />
@@ -155,7 +149,7 @@ function PlanCard({ projectId, planKey, sessionId, title, meta, progress }: Plan
       {sessionId !== null && (
         <RouterLink
           to={projectPath(projectId, `/sessions/${encodeURIComponent(sessionId)}`)}
-          className={cn('relative z-10 inline-flex w-fit items-center gap-s1 rounded-chip t-meta font-medium text-primary hover:underline', focusRing)}
+          className={cn(tapTarget, 'relative z-10 w-fit gap-s1 rounded-chip t-meta font-medium text-primary hover:underline', focusRing)}
           aria-label={`The session that wrote “${title}”`}
         >
           Its session

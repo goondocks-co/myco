@@ -11,7 +11,11 @@
  * - every `var(--…)` the dashboard reads is defined somewhere it can reach;
  * - every pair in PAIRS meets WCAG AA (4.5:1) in every theme and mode,
  *   computed from the token values, with translucent tints composited onto
- *   the surface they sit on.
+ *   the surface they sit on;
+ * - every colour class the dashboard writes (`bg-…`, `text-…`, `border-…`)
+ *   names a colour the theme defines. The older token names and their alias
+ *   block are gone, and Tailwind drops a class it cannot resolve without a
+ *   word, so a page still using one would silently lose its colour.
  */
 import { describe, expect, it } from 'bun:test';
 import fs from 'node:fs';
@@ -37,10 +41,7 @@ const SEMANTIC = [
  * value holds in light as well. Every other root colour property is set again
  * under `:root.light`.
  */
-const MODE_INVARIANT: Record<string, string> = {
-  '--on-swatch': 'text on a project swatch, whose hue is fixed and the same in both modes',
-  '--shadow-tint': 'the older pages\' ambient shadow is the same warm tint in both modes',
-};
+const MODE_INVARIANT: Record<string, string> = {};
 
 /** Every token set as text. Each one is legible on every surface, in every theme and mode. */
 const TEXT = ['ink', 'ink-2', 'muted', 'faint', 'primary', 'ok', 'warn', 'bad'] as const;
@@ -298,5 +299,82 @@ describe('every token the dashboard reads', () => {
     }
     expect(files.length).toBeGreaterThan(20);
     expect(undefinedReads).toEqual([]);
+  });
+});
+
+/** Utilities whose value names a colour: `bg-surface-2`, `hover:text-ink`, `ring-offset-surface-2`, `from-bg`. */
+const COLOUR_UTILITY = /^(?:[\w-]+(?:-\[[^\]]*\])?:)*!?(bg|text|border(?:-[trblxyse])?|ring-offset|ring|fill|stroke|outline|divide|from|via|to|decoration|accent|caret|shadow)-([a-z0-9][a-z0-9-]*)(?:\/\d+)?$/;
+
+/** What each colour prefix also takes that is not a colour: a side, a width, a style, an alignment, a size. */
+const NOT_A_COLOUR: Readonly<Record<string, RegExp>> = {
+  bg: /^(transparent|current|inherit|none|fixed|local|scroll|clip-\w+|origin-\w+|no-repeat|repeat(-\w+)?|cover|contain|auto|center|top|bottom|left|right|linear-to-\w+|radial|conic|blend-\w+)$/,
+  text: /^(left|right|center|justify|start|end|ellipsis|clip|wrap|nowrap|balance|pretty|xs|sm|base|lg|[2-9]?xl|transparent|current|inherit)$/,
+  border: /^(\d+|[xytrblse](-\d+)?|solid|dashed|dotted|double|hidden|none|collapse|separate|transparent|current|inherit)$/,
+  ring: /^(\d+|inset|transparent|current|inherit)$/,
+  'ring-offset': /^(\d+)$/,
+  outline: /^(\d+|none|hidden|solid|dashed|dotted|double|offset-\d+|transparent|current)$/,
+  divide: /^([xy](-\d+)?|[xy]-reverse|solid|dashed|dotted|double|none|transparent|current)$/,
+  from: /^(transparent|current|\d+%)$/,
+  via: /^(transparent|current|\d+%)$/,
+  to: /^(transparent|current|\d+%)$/,
+  decoration: /^(\d+|solid|double|dotted|dashed|wavy|auto|from-font|clone|slice|transparent|current)$/,
+  fill: /^(none|current|transparent)$/,
+  stroke: /^(\d+|none|current|transparent)$/,
+  accent: /^(auto|current|transparent)$/,
+  caret: /^(current|transparent)$/,
+  shadow: /^(none|xs|sm|md|lg|xl|2xl|inner)$/,
+};
+
+/** The colours the theme defines as utilities: every `--color-<name>` under `@theme`. */
+function themeColours(): Set<string> {
+  const css = CSS_FILES.map((file) => fs.readFileSync(file, 'utf8')).join('\n');
+  return new Set([...css.matchAll(/--color-([a-z][a-z0-9-]*)\s*:/g)].map((m) => m[1]!));
+}
+
+/** Every colour utility in a text, and those whose colour the theme does not define: a class that would render nothing. */
+function colourClasses(text: string, colours: ReadonlySet<string>): { checked: number; unknown: string[] } {
+  const out: string[] = [];
+  let checked = 0;
+  for (const literal of text.matchAll(/(['"`])((?:(?!\1)[^\\\n])*)\1/g)) {
+    const body = literal[2]!;
+    // A class list: lowercase utility tokens, with no sentence in it.
+    if (!/\b(bg|text|border|ring|fill|stroke|outline|divide|from|via|to|decoration|accent|caret|shadow)-/.test(body) || /[A-Z]|[.?!]\s/.test(body.replace(/\[[^\]]*\]/g, ''))) continue;
+    for (const token of body.split(/\s+/)) {
+      const m = COLOUR_UTILITY.exec(token.replace(/\$\{[^}]*\}/g, ''));
+      if (m === null) continue;
+      checked += 1;
+      const [, prefix, value] = m;
+      const family = prefix!.startsWith('border-') ? 'border' : prefix!;
+      if (colours.has(value!) || NOT_A_COLOUR[family]?.test(value!)) continue;
+      out.push(token);
+    }
+  }
+  return { checked, unknown: out };
+}
+
+describe('every colour class the dashboard writes', () => {
+  it('finds a class naming a colour the theme does not define, and passes the ones it does', () => {
+    const colours = themeColours();
+    const planted = `<div className="bg-surface-container text-on-surface-variant border-outline-variant hover:text-sage text-left border-b-2 bg-surface-2 text-ink" />`;
+    expect(colourClasses(planted, colours)).toEqual({ checked: 8, unknown: ['bg-surface-container', 'text-on-surface-variant', 'border-outline-variant', 'hover:text-sage'] });
+  });
+
+  it('names only colours the theme defines, so none of the retired token names is left', () => {
+    const colours = themeColours();
+    // The older names the alias block mapped are gone from the theme, and nothing defines them again.
+    for (const retired of ['surface-container', 'on-surface', 'on-surface-variant', 'outline-variant', 'sage', 'ochre', 'terracotta', 'terra', 'error', 'card', 'muted-foreground', 'secondary', 'tertiary']) {
+      expect({ retired, defined: colours.has(retired) }).toEqual({ retired, defined: false });
+    }
+    const css = CSS_FILES.map((file) => fs.readFileSync(file, 'utf8')).join('\n');
+    expect(css.match(/--(surface-container[\w-]*|on-surface[\w-]*|outline-variant|ghost-border|shadow-tint|sage|ochre|terracotta)\s*:/g) ?? []).toEqual([]);
+    const hits: string[] = [];
+    let checked = 0;
+    for (const file of sources(UI_SRC).filter((f) => /\.tsx?$/.test(f))) {
+      const found = colourClasses(fs.readFileSync(file, 'utf8'), colours);
+      checked += found.checked;
+      for (const token of found.unknown) hits.push(`${path.relative(UI_SRC, file)} ${token}`);
+    }
+    expect(checked, 'the scan found the dashboard\'s colour classes').toBeGreaterThan(300);
+    expect(hits, 'a colour class must name a token in design/tokens.css').toEqual([]);
   });
 });

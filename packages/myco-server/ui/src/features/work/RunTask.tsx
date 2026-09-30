@@ -1,6 +1,6 @@
 import { useRef, useState } from 'react';
 import { Play } from 'lucide-react';
-import { ActionMenu, Button, Dialog, DialogContent, DialogFooter, Link, Switch } from '../../design';
+import { ActionLink, ActionMenu, Button, Dialog, DialogContent, DialogFooter, Switch } from '../../design';
 import { useCapabilities } from '../../hooks/use-settings';
 import { useDispatchTask } from '../../hooks/use-work';
 import { ApiError } from '../../lib/api';
@@ -125,7 +125,7 @@ export function RunTaskConfirm({ projectId, projectName, task, onOpenChange, wee
           <p role="alert" className="flex flex-col gap-s1 t-small text-ink-2" data-capability-off="">
             <span className="font-medium text-bad">{capabilityOffWords(offCapability)}</span>
             {admin
-              ? <Link to={`${projectPath(projectId, PROJECT_SETTINGS_SUFFIX)}#${PROJECT_SETTINGS_ANCHORS.capabilities}`} className="w-fit">Turn it on in Project settings →</Link>
+              ? <ActionLink to={`${projectPath(projectId, PROJECT_SETTINGS_SUFFIX)}#${PROJECT_SETTINGS_ANCHORS.capabilities}`} >Turn it on in Project settings →</ActionLink>
               : <span>An admin can turn it on in the project’s settings.</span>}
           </p>
         ) : (

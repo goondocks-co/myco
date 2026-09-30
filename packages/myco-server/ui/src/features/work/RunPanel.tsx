@@ -1,6 +1,4 @@
-import {
-  CopyButton, Disclosure, ErrorState, FactRow, FactsPanel, LoadingState, SlideOver, TypeChip,
-} from '../../design';
+import { CopyButton, Disclosure, ErrorState, FactRow, FactsPanel, ItemLink, LoadingState, SlideOver, TypeChip } from '../../design';
 import { useStarterNames } from './names';
 import { useRunDetail } from '../../hooks/use-work';
 import { ApiError } from '../../lib/api';
@@ -105,9 +103,7 @@ function RunBody({ answer, projectId, now }: { answer: RunDetailAnswer; projectI
                 const from = sporesFrom(session.sessionId);
                 return (
                   <li key={session.sessionId} className="flex flex-col t-small">
-                    <span className="line-clamp-2 text-ink-2">
-                      <InkLink to={projectPath(projectId, `/sessions/${encodeURIComponent(session.sessionId)}`)}>{session.title?.trim() || 'Untitled session'}</InkLink>
-                    </span>
+                    <ItemLink to={projectPath(projectId, `/sessions/${encodeURIComponent(session.sessionId)}`)} className="text-ink-2">{session.title?.trim() || 'Untitled session'}</ItemLink>
                     <span className="t-meta text-muted">
                       {from > 0 ? `${count(from, 'spore')} came from it` : session.readAt === null ? 'Worked from it' : `Read ${atWords(session.readAt, now)}`}
                     </span>
@@ -176,9 +172,7 @@ function Produced({ answer, projectId }: { answer: RunDetailAnswer; projectId: s
           {spores.items.map((spore) => (
             <li key={spore.id} className="flex min-w-0 items-baseline gap-s3 t-small text-ink-2">
               <TypeChip className="shrink-0">{sporeTypeWord(spore.observationType)}</TypeChip>
-              <span className="line-clamp-2 min-w-0">
-                <InkLink to={projectPath(projectId, `/spores/${encodeURIComponent(spore.id)}`)}>{sporeLine({ agentLine: spore.agentLine, content: '' }) || `A ${sporeTypeWord(spore.observationType).toLowerCase()}`}</InkLink>
-              </span>
+              <ItemLink to={projectPath(projectId, `/spores/${encodeURIComponent(spore.id)}`)}>{sporeLine({ agentLine: spore.agentLine, content: '' }) || `A ${sporeTypeWord(spore.observationType).toLowerCase()}`}</ItemLink>
             </li>
           ))}
           {spores.total > spores.items.length && <li className="t-small text-muted">and {(spores.total - spores.items.length).toLocaleString()} more</li>}

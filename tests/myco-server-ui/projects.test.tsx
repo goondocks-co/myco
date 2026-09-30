@@ -69,7 +69,7 @@ describe('Projects', () => {
     mount('/projects');
     fireEvent.click(within(await openMenu('Live')).getByRole('menuitem', { name: 'Archive' }));
     expect(await screen.findByText('Archive Live?')).toBeTruthy();
-    expect(screen.getByText(/Capture from every runtime stops until you unarchive/)).toBeTruthy();
+    expect(screen.getByText(/Capture from every agent stops until you unarchive/)).toBeTruthy();
     expect(posts).toEqual([]);
     fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Archive' }));
     await screen.findByRole('list', { name: 'Projects' });

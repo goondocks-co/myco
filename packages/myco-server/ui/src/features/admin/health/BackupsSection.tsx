@@ -4,6 +4,7 @@ import {
 } from '../../../design';
 import { useBackups, type BackupRow, type RestoreOutcome, type RestorePreview } from '../../../hooks/use-backups';
 import { useForgetUnsettledExport, useRecovery } from '../../../hooks/use-recovery';
+import type { RecoveryProducerStatus, RecoveryStatus } from './wire';
 import { cn } from '../../../lib/cn';
 import { HEALTH_ANCHORS, SETTINGS_SECTIONS } from '../../../routes/nav';
 import { AdminSection, RowCard } from '../AdminFrame';
@@ -96,7 +97,7 @@ export function BackupsSection() {
         tone="primary"
         pending={backups.restore.isPending}
         error={backups.restore.error !== null ? failure(backups.restore.error)
-          : adoptAsked && !adopt ? 'Turn on the switch above to restore a backup from another Deployment.' : null}
+          : adoptAsked && !adopt ? 'Turn on the switch above to restore a backup from another server.' : null}
         onConfirm={() => {
           if (confirming === null) return;
           if (confirming.preview.foreignLineage && !adopt) { setAdoptAsked(true); return; }
@@ -110,7 +111,7 @@ export function BackupsSection() {
               <div className="flex items-start gap-s3 rounded-control bg-warn-bg p-s3">
                 <Switch id="restore-adopt" checked={adopt} onCheckedChange={setAdopt} />
                 <label htmlFor="restore-adopt" className="t-small text-ink">
-                  This backup comes from another Deployment. Restoring it makes that Deployment’s members, and their sign-in credentials, live here.
+                  This backup comes from another server. Restoring it makes that server’s members, and their sign-ins, live here.
                 </label>
               </div>
             )}
@@ -127,13 +128,19 @@ export function BackupsSection() {
  * next attempt is due, what the last one did, and what data exists. Read only,
  * but for forgetting an export that never settled.
  */
+/** Whether the recovery answer is a producer's, which says what it is doing, rather than that this server runs none. */
+function runsAProducer(answer: RecoveryStatus | undefined): answer is RecoveryProducerStatus {
+  return answer?.supported === true;
+}
+
 function RecoveryCard() {
   const recovery = useRecovery();
   // Read at each render: a deadline is weighed against the clock when the answer arrives, not when the page opened.
   const now = Date.now();
   // A Deployment with no producer says so in its answer, and nothing about attempts or a schedule follows.
-  const unsupportedHere = recovery.data?.supported === false;
-  const producer = recovery.data?.supported === true ? recovery.data : null;
+  const answer = recovery.data;
+  const unsupportedHere = answer?.supported === false;
+  const producer = runsAProducer(answer) ? answer : null;
   const held = producer?.schedule ?? null;
   const schedule = held !== null && 'unreadable' in held ? null : held;
   const unreadable = held !== null && 'unreadable' in held ? held.unreadable : null;

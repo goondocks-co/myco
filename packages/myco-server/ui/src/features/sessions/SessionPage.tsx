@@ -1,9 +1,8 @@
 import { useEffect, useRef, type ReactNode } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
-import { Link as RouterLink, useNavigate, useSearchParams } from 'react-router-dom';
-import { ChevronRight } from 'lucide-react';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import {
-  CopyButton, EmptyState, ErrorState, FactRow, FactsPanel, focusRing, Link, LoadingState, ShowMore, StatusChip, Tabs, TabsContent, TabsList, TabsTrigger, TypeChip,
+  Breadcrumbs, CopyButton, EmptyState, ErrorState, FactRow, FactsPanel, ItemLink, Link, LoadingState, ShowMore, StatusChip, Tabs, TabsContent, TabsList, TabsTrigger, TypeChip,
 } from '../../design';
 import { PlanLine } from '../knowledge/PlanLine';
 import { releaseStateLabel, shortRef } from '../../components/release/release-labels';
@@ -12,7 +11,6 @@ import { useIsAdmin } from '../../hooks/use-me';
 import { UNTITLED_REASON_TEXT, useAllTurns, useSession, useSessionChildren, type PlanRow, type SessionResponse, type SessionRow } from '../../hooks/use-sessions';
 import { useNow } from '../../hooks/use-today';
 import { ApiError } from '../../lib/api';
-import { cn } from '../../lib/cn';
 import { memberLabel } from '../../lib/member-name';
 import { sessionHeading } from '../../lib/session-text';
 import { NotFound } from '../../pages/NotFound';
@@ -100,15 +98,9 @@ function Reading({ answer, projectId, projectName, now, actions }: { answer: Ses
 
   return (
     <article data-session-page="" className="flex w-full flex-col gap-s5">
-      <nav aria-label="Breadcrumb">
-        <ol className="flex flex-wrap items-center gap-s1 t-small text-muted">
-          <li><Crumb to="/sessions">Sessions</Crumb></li>
-          <li aria-hidden><ChevronRight className="size-s4" /></li>
-          <li><Crumb to={projectPath(projectId, '/sessions')}>{name}</Crumb></li>
-        </ol>
-      </nav>
+      <Breadcrumbs items={[{ label: 'Sessions', to: '/sessions' }, { label: name, to: projectPath(projectId, '/sessions') }]} />
 
-      <div className="grid items-start gap-s6 lg:grid-cols-[minmax(0,1fr)_300px] lg:grid-rows-[auto_1fr] lg:gap-x-s10">
+      <div className="grid items-start gap-s6 lg:grid-reading lg:grid-rows-lead lg:gap-x-s10">
         <header className="flex min-w-0 max-w-measure flex-col gap-s3 lg:col-start-1 lg:row-start-1">
           <h1 className="t-display text-ink" data-session-title="">
             {heading.titled ? heading.title : (
@@ -170,9 +162,6 @@ function Sep() {
   return <span aria-hidden>·</span>;
 }
 
-function Crumb({ to, children }: { to: string; children: ReactNode }) {
-  return <RouterLink to={to} className={cn('rounded-chip hover:text-ink hover:underline', focusRing)}>{children}</RouterLink>;
-}
 
 /** The summary as the page's lead, or why there is none yet. */
 function Summary({ session, untitled, live }: { session: SessionRow; untitled: SessionResponse['untitled'] | null; live: boolean }) {
@@ -243,9 +232,9 @@ function SessionSpores({ projectId, sessionId, now }: { projectId: string; sessi
               {spore.status !== 'active' && <StatusChip tone={spore.status === 'superseded' ? 'warn' : 'neutral'}>{sporeTypeWord(spore.status)}</StatusChip>}
               <time dateTime={new Date(spore.createdAt).toISOString()}>{dateTime(spore.createdAt, now)}</time>
             </span>
-            <Link to={projectPath(projectId, `/spores/${encodeURIComponent(spore.id)}`)} className="w-fit t-body text-ink no-underline hover:underline">
+            <ItemLink to={projectPath(projectId, `/spores/${encodeURIComponent(spore.id)}`)} className="w-fit t-body text-ink">
               {sporeLine({ agentLine: spore.agentLine ?? null, content: spore.content })}
-            </Link>
+            </ItemLink>
           </li>
         ))}
       </ul>

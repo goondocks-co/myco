@@ -75,7 +75,7 @@ function Housekeeping() {
               ? reportWords(wake.data)
               : wake.isError
                 ? 'The server could not run its housekeeping right now.'
-                : 'Old run records are removed and runs whose runtime went away are closed on the server\'s own clock. Run it now to see the state it is in.'}
+                : 'Old run records are removed and runs whose machine stopped answering are closed on the server\'s own clock. Run it now to see the state it is in.'}
           </p>
         </div>
         <Button size="sm" pending={wake.isPending} onClick={() => wake.mutate()}>Run housekeeping now</Button>

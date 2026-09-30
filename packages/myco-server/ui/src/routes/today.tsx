@@ -1,8 +1,6 @@
 import { useEffect, type ReactNode } from 'react';
-import { Link as RouterLink, Navigate, Outlet, useLocation, useParams, useSearchParams } from 'react-router-dom';
-import {
-  COMPACT_QUERY, EmptyState, ErrorState, focusRing, LoadingState, PHONE_QUERY, Skeleton, StatusChip,
-} from '../design';
+import { Navigate, Outlet, useLocation, useParams, useSearchParams } from 'react-router-dom';
+import { ActionLink, COMPACT_QUERY, EmptyState, ErrorState, LoadingState, PHONE_QUERY, Skeleton, StatusChip } from '../design';
 import { ArchivedNotice } from '../features/today/ArchivedNotice';
 import { CapturePanel } from '../features/today/CapturePanel';
 import { NeedsYouPanel, NeedsYouSummary, type NeedsYouProps } from '../features/today/NeedsYou';
@@ -93,7 +91,7 @@ function TodayPage({ projectId }: { projectId: string | null }) {
           : today.isPending ? <Skeleton className="h-s5 w-3/5" /> : null}
         {!window.isToday && <DayLink to={dayHref(null)}>Back to today</DayLink>}
       </header>
-      <div className="grid items-start gap-s6 lg:grid-cols-[minmax(0,1fr)_330px]">
+      <div className="grid items-start gap-s6 lg:grid-rail">
         {/* The rail comes first in reading order, so Needs you is reached before the day's timeline; the grid places it to the right. */}
         <div className="order-2 flex min-w-0 flex-col gap-s4 lg:col-start-2 lg:row-start-1">
           {admin && !compact && <NeedsYouPanel {...needsYou} />}
@@ -132,7 +130,7 @@ function TodayPage({ projectId }: { projectId: string | null }) {
 }
 
 function DayLink({ to, children }: { to: string; children: ReactNode }) {
-  return <RouterLink to={to} className={cn('w-fit rounded-chip t-small font-medium text-primary hover:underline', focusRing)}>{children}</RouterLink>;
+  return <ActionLink to={to}>{children}</ActionLink>;
 }
 
 interface TimelineProps {
@@ -262,8 +260,8 @@ function WorkItem({ entry, scoped, projectName, work }: { entry: WorkEntry; scop
         // Myco's items lead with the outcome, the project after it; one run of text, so a long headline wraps as a sentence.
         <span className="min-w-0">
           <span className={cn('font-medium', tone === 'bad' ? 'text-ink' : 'text-ink-2')}>
-            {mapLinked ? <TitleLink to={`${projectPath(entry.projectId)}${CODE_MAP_SUFFIX}`}>{headline}</TitleLink>
-              : single !== null ? <TitleLink to={runAt(single.id)}>{headline}</TitleLink> : headline}
+            {mapLinked ? <TitleLink inline to={`${projectPath(entry.projectId)}${CODE_MAP_SUFFIX}`}>{headline}</TitleLink>
+              : single !== null ? <TitleLink inline to={runAt(single.id)}>{headline}</TitleLink> : headline}
           </span>
           {map !== null && <span><span aria-hidden className="mx-s2">·</span>now at {map.branch} @ {map.commit.slice(0, 7)}</span>}
           {!scoped && <span><span aria-hidden className="mx-s2">·</span>in {projectName(entry.projectId) ?? 'a project'}</span>}

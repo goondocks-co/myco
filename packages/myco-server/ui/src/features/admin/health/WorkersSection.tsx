@@ -34,7 +34,7 @@ function Fleet({ workers, machines, now, projectName }: { workers: WorkerStatus;
     return (
       <Card className="flex items-start gap-s2" data-health-fleet="unknown">
         <span className="flex h-lh shrink-0 items-center t-body"><HealthDot tone="warn" label="Unknown" /></span>
-        <p className="t-body text-ink-2">Worker status is unknown: this server could not read its own database, so nothing here is known.</p>
+        <p className="t-body text-ink-2">Whether machines are running Myco’s work is unknown: this server could not read its own database.</p>
       </Card>
     );
   }

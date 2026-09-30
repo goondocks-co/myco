@@ -12,7 +12,7 @@ export function Brand({ to = '/', compact = false, onNavigate }: { to?: string; 
       to={to}
       onClick={onNavigate}
       aria-label="Myco home"
-      className={cn('inline-flex min-w-0 items-center gap-s3 rounded-control px-s2 py-s1 text-ink', focusRing)}
+      className={cn('inline-flex min-h-tap min-w-0 items-center gap-s3 rounded-control px-s2 py-s1 text-ink', focusRing)}
     >
       <span aria-hidden className="grid size-[26px] shrink-0 place-items-center rounded-[7px] bg-primary-bg t-small font-semibold not-italic text-primary">M</span>
       {!compact && <span aria-hidden className="font-serif text-[22px] font-semibold italic leading-none">Myco</span>}

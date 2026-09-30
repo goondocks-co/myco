@@ -18,13 +18,13 @@ const STATE_WORDS: Record<string, string> = { active: 'in use', idle: 'idle', sl
 function jobWords(job: JobReport): string {
   if (job.failed !== null) {
     if (job.name === 'agent-run-retention') return 'old run records could not be removed';
-    if (job.name === 'run-stale-sweep') return 'runs whose runtime went away could not be closed';
+    if (job.name === 'run-stale-sweep') return 'runs whose machine stopped answering could not be closed';
     return `${job.name} did not finish`;
   }
   const n = job.changed;
   const plural = n === 1 ? '' : 's';
   if (job.name === 'agent-run-retention') return `removed ${n} old run record${plural}`;
-  if (job.name === 'run-stale-sweep') return `closed ${n} run${plural} whose runtime went away`;
+  if (job.name === 'run-stale-sweep') return `closed ${n} run${plural} whose machine stopped answering`;
   if (job.name === 'transcript-parse') return `read ${n} row${plural} from transcripts${job.more === true ? ', with more still to read' : ''}`;
   return `${job.name} changed ${n} row${plural}`;
 }
@@ -69,7 +69,7 @@ export function cadenceWords(schedule: RecoverySchedule, now: number): string {
   if (!schedule.supported) return RECOVERY_UNAVAILABLE_WORDS;
   if (!schedule.configured) return 'Automatic recovery is off. Set “Back up every” in Settings to schedule it.';
   const every = `Every ${schedule.intervalHours} h.`;
-  if (!schedule.ready) return `${every} It cannot run yet: ${schedule.idleBecause ?? 'this Deployment cannot admit an attempt'}.`;
+  if (!schedule.ready) return `${every} It cannot run yet: ${schedule.idleBecause ?? 'this server can’t start one yet'}.`;
   if (schedule.idleBecause !== null) return `${every} ${schedule.idleBecause.charAt(0).toUpperCase()}${schedule.idleBecause.slice(1)}.`;
   if (schedule.dueAt === null) return every;
   return schedule.due ? `${every} Due now, at the next wake.` : `${every} Next due ${whenLabel(schedule.dueAt, now)}.`;

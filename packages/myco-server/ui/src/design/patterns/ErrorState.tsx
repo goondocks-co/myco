@@ -3,7 +3,7 @@ import { AlertCircle } from 'lucide-react';
 import { ApiError } from '../../lib/api';
 import { cn } from '../../lib/cn';
 import { Button } from '../primitives/Button';
-import { Link } from '../primitives/Link';
+import { ActionLink } from '../primitives/Link';
 
 export interface ErrorWords {
   title: string;
@@ -49,7 +49,7 @@ export function ErrorState({ error, onRetry, back, children, className }: ErrorS
       {children}
       <div className="flex gap-s2">
         {words.retry && onRetry && <Button onClick={onRetry}>Retry</Button>}
-        {back && <Link to={back.to} className="t-small">{back.label}</Link>}
+        {back && <ActionLink to={back.to}>{back.label}</ActionLink>}
       </div>
     </div>
   );

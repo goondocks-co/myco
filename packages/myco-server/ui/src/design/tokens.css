@@ -47,8 +47,6 @@
   --bad-bg: color-mix(in srgb, var(--bad) 12%, transparent);
 
   --focus: var(--primary);
-  /* Text on a project's swatch, whose hue is the same in both modes. */
-  --on-swatch: #ffffff;
   --scrim: color-mix(in srgb, #000000 62%, transparent);
   --shadow-overlay: 0 18px 48px -12px color-mix(in srgb, #000000 70%, transparent), 0 0 0 1px var(--line-strong);
 
@@ -85,6 +83,9 @@
   --row-tight: 44px;
   --control-h: 36px;
   --control-h-sm: 28px;
+  /* The least a link standing on its own measures each way: nothing extra with a
+     pointer, 44px on a touch-sized screen (below). */
+  --tap: 0px;
 
   /* Motion */
   --dur-press: 120ms;
@@ -146,117 +147,19 @@
   }
 }
 
-/* ---------- Aliases: the older token names, mapped onto the semantic ones ----------
- *
- * Pages not rebuilt on the design system still read these names. Each maps to
- * one semantic token, so both kinds of page share one palette in every theme
- * and mode.
- */
-
-:root {
-  --surface: var(--bg);
-  --surface-dim: var(--page);
-  --surface-bright: var(--surface-3);
-  --surface-container-lowest: var(--page);
-  --surface-container-low: var(--surface-1);
-  --surface-container: var(--surface-2);
-  --surface-container-high: var(--surface-3);
-  --surface-container-highest: color-mix(in srgb, var(--surface-3) 88%, var(--ink));
-  --surface-variant: var(--surface-3);
-
-  --on-surface: var(--ink);
-  --on-surface-variant: var(--ink-2);
-  --outline: var(--faint);
-  --outline-variant: var(--line-strong);
-  --ghost-border: var(--line);
-
-  --primary-container: color-mix(in srgb, var(--primary) 72%, var(--bg));
-  --on-primary-container: var(--ink);
-  --secondary: var(--warn);
-  --on-secondary: var(--bg);
-  --secondary-container: var(--warn-bg);
-  --tertiary: var(--bad);
-  --on-tertiary: var(--bg);
-  --tertiary-container: var(--bad-bg);
-
-  --sage: var(--ok);
-  --sage-dim: color-mix(in srgb, var(--ok) 70%, var(--bg));
-  --ochre: var(--warn);
-  --terracotta: var(--bad);
-
-  --inverse-surface: var(--ink);
-  --inverse-on-surface: var(--bg);
-  --inverse-primary: var(--primary);
-  --shadow-tint: 96, 65, 11;
-
-  --background: var(--bg);
-  --foreground: var(--ink);
-  --card: var(--surface-1);
-  --card-foreground: var(--ink);
-  --muted-foreground: var(--ink-2);
-  --accent: var(--surface-3);
-  --accent-foreground: var(--ink);
-  --border: var(--line-strong);
-  --input: var(--line-strong);
-  --ring: var(--focus);
-  --destructive: var(--bad);
-  --primary-foreground: var(--on-primary);
-  --secondary-foreground: var(--ink);
-
-  --radius: 0.375rem;
+/* A touch-sized screen (phone and tablet): every control, and every link that
+   stands on its own, is at least 44px each way, whatever the density. */
+@media (max-width: 1023px) {
+  :root,
+  :root[data-density] {
+    --control-h: 44px;
+    --control-h-sm: 44px;
+    --tap: 44px;
+  }
 }
 
 @theme inline {
-  /* Older names, for pages not rebuilt on the design system. */
-  --color-surface: var(--surface);
-  --color-surface-dim: var(--surface-dim);
-  --color-surface-bright: var(--surface-bright);
-  --color-surface-container-lowest: var(--surface-container-lowest);
-  --color-surface-container-low: var(--surface-container-low);
-  --color-surface-container: var(--surface-container);
-  --color-surface-container-high: var(--surface-container-high);
-  --color-surface-container-highest: var(--surface-container-highest);
-  --color-surface-variant: var(--surface-variant);
-  --color-on-surface: var(--on-surface);
-  --color-on-surface-variant: var(--on-surface-variant);
-  --color-outline: var(--outline);
-  --color-outline-variant: var(--outline-variant);
-  --color-primary-container: var(--primary-container);
-  --color-primary-foreground: var(--primary-foreground);
-  --color-on-primary-container: var(--on-primary-container);
-  --color-secondary: var(--secondary);
-  --color-secondary-container: var(--secondary-container);
-  --color-secondary-foreground: var(--secondary-foreground);
-  --color-tertiary: var(--tertiary);
-  --color-tertiary-container: var(--tertiary-container);
-  --color-destructive: var(--destructive);
-  --color-sage: var(--sage);
-  --color-sage-dim: var(--sage-dim);
-  --color-ochre: var(--ochre);
-  --color-terracotta: var(--terracotta);
-  --color-terra: var(--bad);
-  --color-error: var(--bad);
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
-  --color-card: var(--card);
-  --color-card-foreground: var(--card-foreground);
-  --color-muted-foreground: var(--muted-foreground);
-  --color-accent: var(--accent);
-  --color-accent-foreground: var(--accent-foreground);
-  --color-border: var(--border);
-  --color-input: var(--input);
-  --color-ring: var(--ring);
-
-  --radius-lg: 0.5rem;
-  --radius-md: var(--radius);
-  --radius-sm: 0.25rem;
-
-  --shadow-ambient: 0 24px 48px rgba(var(--shadow-tint), 0.06);
-  --shadow-sage-glow: 0 0 8px var(--sage);
-  --shadow-ochre-glow: 0 0 8px var(--ochre);
-  --shadow-terracotta-glow: 0 0 8px var(--terracotta);
-
-  /* Type families for both kinds of page. */
+  /* Type families. */
   --font-serif: var(--font-serif-stack);
   --font-sans: var(--font-sans-stack);
   --font-mono: var(--font-mono-stack);
@@ -284,7 +187,6 @@
   --color-bad-bg: var(--bad-bg);
   --color-focus: var(--focus);
   --color-scrim: var(--scrim);
-  --color-on-swatch: var(--on-swatch);
 
   /* Spacing on the 4px base, the gutter, and the density heights. */
   --spacing-s1: var(--s-1);
@@ -301,18 +203,22 @@
   --spacing-control-sm: var(--control-h-sm);
   --spacing-row: var(--row);
   --spacing-row-tight: var(--row-tight);
+  --spacing-tap: var(--tap);
   --spacing-measure: var(--measure);
   /* A select sized to its words beside a search, and a wider one for longer choices. */
   --spacing-select: 140px;
   --spacing-select-wide: 168px;
   /* The time column of a list of runs: "Mon 09:09" on one line. */
   --spacing-time-col: 76px;
-  /* One column of a board. */
-  --spacing-board-column: 272px;
   /* A wide card of reference text, such as the code map. */
   --container-reference: 960px;
   /* A progress bar beside a title. */
   --container-progress: 360px;
+  /* A page that stands on its own, outside the shell: joining, or not yet a member. */
+  --container-narrow: 600px;
+  /* An image shown small in a conversation, opened full size on a click. */
+  --container-thumb: 200px;
+  --spacing-thumb-h: 140px;
   /* The panel a record opens in beside its list. */
   --container-slide-over: 560px;
 
@@ -413,9 +319,45 @@
   grid-template-columns: minmax(0, 1fr) 330px;
 }
 
+/* A reading page's first row holds its heading, the next the rest, so the facts column starts beside the heading. */
+@utility grid-rows-lead {
+  grid-template-rows: auto 1fr;
+}
+
+/* A timeline: the time column, then what happened. */
+@utility grid-timeline {
+  grid-template-columns: 44px minmax(0, 1fr);
+}
+
+@utility grid-timeline-wide {
+  grid-template-columns: 62px minmax(0, 1fr);
+}
+
 /* A list with its facets beside it. */
 @utility grid-faceted {
   grid-template-columns: 208px minmax(0, 1fr);
+}
+
+/* A control drawn smaller than a fingertip, such as a switch: its hit area
+   reaches `--tap` each way, centred on it, and nothing around it moves. */
+@utility tap-area {
+  position: relative;
+  &::after {
+    content: '';
+    position: absolute;
+    left: 50%;
+    top: 50%;
+    width: max(100%, var(--tap));
+    height: max(100%, var(--tap));
+    transform: translate(-50%, -50%);
+  }
+}
+
+/* A link set in a run of text, such as a headline that wraps as a sentence:
+   on a touch-sized screen its padding reaches --tap tall, which an inline box
+   draws without moving a line. */
+@utility tap-inline {
+  padding-block: max(0px, calc((var(--tap) - 1lh) / 2));
 }
 
 @utility prose-measure {

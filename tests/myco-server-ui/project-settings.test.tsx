@@ -94,7 +94,8 @@ describe('a project\'s settings', () => {
     server(base());
     mount(`/p/${P}/settings`);
     expect(await screen.findByRole('heading', { level: 1, name: 'Project settings' })).toBeTruthy();
-    expect(document.body.textContent).toContain('How Myco works in Myco:');
+    // The page reads its project's name beside its own reads, and names it once the projects arrive.
+    await waitFor(() => expect(document.body.textContent).toContain('How Myco works in Myco:'));
     const headings = await waitFor(() => {
       const found = [...document.querySelectorAll('[data-admin-page="project-settings"] h2')].map((h) => h.textContent);
       expect(found).toHaveLength(4);
@@ -157,12 +158,12 @@ describe('the repository', () => {
     const { sent } = server(base({ [`PUT ${api}/repository`]: () => Response.json({ repository: REPOSITORY }) }));
     mount(`/p/${P}/settings`);
     const section = await waitFor(() => { const s = sectionOf('repository'); expect(s.textContent).toContain('main'); return s; });
-    expect(section.textContent).toContain('With a read credential');
+    expect(section.textContent).toContain('With a read-only token');
     expect(section.textContent).toContain('1 h ago by Ada');
     expect(section.textContent).not.toContain('g…x');
     fireEvent.click(within(section).getByRole('button', { name: 'Edit repository' }));
     const dialog = await screen.findByRole('dialog');
-    expect((within(dialog).getByLabelText('Read token') as HTMLInputElement).placeholder).toBe('Leave blank to keep the current credential');
+    expect((within(dialog).getByLabelText('Read token') as HTMLInputElement).placeholder).toBe('Leave blank to keep the current token');
     fireEvent.click(within(dialog).getByRole('button', { name: 'Save repository' }));
     await waitFor(() => expect(sent).toHaveLength(1));
     expect(sent[0]).toEqual({ method: 'PUT', path: `${api}/repository`, body: { url: REPOSITORY.url, branch: 'main', revision: 'rev_7' } });
@@ -178,7 +179,7 @@ describe('the repository', () => {
     fireEvent.click(within(sectionOf('repository')).getByRole('button', { name: 'Connect repository' }));
     const dialog = await screen.findByRole('dialog');
     fireEvent.change(within(dialog).getByLabelText('HTTPS repository address'), { target: { value: 'https://github.com/example/app.git' } });
-    expect(within(dialog).getByRole('switch', { name: 'Use without a credential' }).getAttribute('aria-checked')).toBe('true');
+    expect(within(dialog).getByRole('switch', { name: 'Use without a token' }).getAttribute('aria-checked')).toBe('true');
     fireEvent.click(within(dialog).getByRole('button', { name: 'Save repository' }));
     await waitFor(() => expect(sent).toHaveLength(1));
     expect(sent[0]!.body).toEqual({ url: 'https://github.com/example/app.git', branch: 'main', revision: null, credential: null });

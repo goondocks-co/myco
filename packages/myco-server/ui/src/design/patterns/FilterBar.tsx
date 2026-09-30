@@ -40,13 +40,19 @@ export interface FilterBarProps {
 /** With more filters than this the selects size to their words, so the search keeps most of the row. */
 export const FIXED_WIDTH_FILTERS = 2;
 
+/** Under 1024px the selects share the lines below the search: three on a line, else two on a phone and all four on a tablet. */
+const SELECT_GRID: Record<number, string> = {
+  3: 'grid-cols-3',
+  4: 'grid-cols-2 md:grid-cols-4',
+};
+
 /**
  * The one search-and-filter bar, on one row. The search field leads and fills
  * what the selects leave; the count sits at the end. Up to two selects share
  * one width; with more, each sizes to the words it shows (an option's `short`
- * form) and truncates past a bound, and the search keeps 55% of the row. On a
- * phone the search takes the first line and the selects share the lines below
- * it: three on one line, else two to a line.
+ * form) and truncates past a bound, and the search keeps 55% of the row. Under
+ * 1024px the search takes the first line and the selects share the lines below
+ * it, so neither is squeezed to a stub.
  */
 export function FilterBar({
   searchLabel, placeholder, query, onQueryChange, filters = [], values = {}, onFilterChange, onClear, count, inputRef, hint, className,
@@ -60,11 +66,11 @@ export function FilterBar({
       value={values[filter.key] ?? defaultOf(filter)}
       onValueChange={(value) => onFilterChange?.(filter.key, value)}
       options={filter.options}
-      className={sized ? 'min-w-0 sm:w-auto sm:max-w-[168px]' : 'min-w-0 flex-1 basis-0 sm:w-[176px] sm:flex-none sm:basis-auto'}
+      className={sized ? 'min-w-0 lg:w-auto lg:max-w-[168px]' : 'min-w-0 flex-1 basis-0 lg:w-[176px] lg:flex-none lg:basis-auto'}
     />
   ));
   return (
-    <div data-filter-bar="" role="search" className={cn('flex flex-wrap items-center gap-s2 sm:flex-nowrap', className)}>
+    <div data-filter-bar="" role="search" className={cn('flex flex-wrap items-center gap-s2 lg:flex-nowrap', className)}>
       <SearchInput
         ref={inputRef}
         label={searchLabel}
@@ -72,9 +78,9 @@ export function FilterBar({
         value={query}
         hint={hint}
         onChange={(event) => onQueryChange(event.target.value)}
-        className={cn('basis-full sm:basis-auto', sized && 'sm:min-w-[55%]')}
+        className={cn('basis-full lg:basis-auto', sized && 'lg:min-w-[55%]')}
       />
-      {sized ? <div className={cn('grid w-full gap-s2 sm:flex sm:w-auto sm:min-w-0 sm:shrink', filters.length === 3 ? 'grid-cols-3' : 'grid-cols-2')}>{selects}</div> : selects}
+      {sized ? <div className={cn('grid w-full gap-s2 lg:flex lg:w-auto lg:min-w-0 lg:shrink', SELECT_GRID[Math.min(filters.length, 4)])}>{selects}</div> : selects}
       {onClear && active && (
         <Button variant="ghost" onClick={onClear} icon={<X aria-hidden className="size-s4" />} aria-label="Clear search and filters">
           Clear

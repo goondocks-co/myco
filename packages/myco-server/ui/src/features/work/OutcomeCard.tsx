@@ -1,6 +1,6 @@
 import { type ReactNode } from 'react';
 import { Link as RouterLink } from 'react-router-dom';
-import { focusRing, StatusChip, TypeChip } from '../../design';
+import { ActionLink, focusRing, ItemLink, StatusChip, TypeChip } from '../../design';
 import { cn } from '../../lib/cn';
 import { causeSentence, count, failureNextStep } from '../today/words';
 import type { FailureGroup, KindSummary } from './outcomes';
@@ -64,9 +64,7 @@ export function EvidenceLines({ label, lines, more }: { label: string; lines: re
         <li key={line.key} className="flex min-w-0 items-baseline gap-s3 t-small text-ink-2">
           {line.chip !== undefined && <TypeChip className="shrink-0">{line.chip}</TypeChip>}
           <span className="flex min-w-0 flex-col">
-            <span className="line-clamp-2">
-              {line.to === undefined ? line.text : <InkLink to={line.to}>{line.text}</InkLink>}
-            </span>
+            {line.to === undefined ? <span className="line-clamp-2">{line.text}</span> : <ItemLink to={line.to}>{line.text}</ItemLink>}
             {line.detail !== undefined && <span className="t-meta text-muted">{line.detail}</span>}
           </span>
         </li>
@@ -88,9 +86,9 @@ export function InkLink({ to, children }: { to: string; children: ReactNode }) {
 /** A link onward, in the link colour with an arrow: "See all 180 spores →". */
 export function OnwardLink({ to, children }: { to: string; children: ReactNode }) {
   return (
-    <RouterLink to={to} className={cn('w-fit rounded-chip t-small font-medium text-primary hover:underline', focusRing)}>
+    <ActionLink to={to}>
       {children} →
-    </RouterLink>
+    </ActionLink>
   );
 }
 

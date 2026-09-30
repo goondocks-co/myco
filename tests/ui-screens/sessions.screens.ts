@@ -15,7 +15,7 @@
  */
 import { expect, test, type Page } from '@playwright/test';
 import {
-  expectAxeClean, expectNoHorizontalOverflow, expectNoRawIds, expectQuiet, openPage, shoot, SHOT_MATRIX, type ViewportName,
+  expectAxeClean, expectFits, pagesNav, expectNoRawIds, expectQuiet, openPage, shoot, SHOT_MATRIX, type ViewportName,
 } from './checks.ts';
 import { SCREENS_ENV, screensEnv } from './env.ts';
 
@@ -37,7 +37,7 @@ function fixtureProject(): { projectId: string; name: string } {
   return projects[0]!;
 }
 
-/** The rows of the table on a desktop, or its cards on a phone. */
+/** The rows of the table on a desktop, or its cards on a phone or tablet. */
 function rows(page: Page, viewport: ViewportName) {
   const list = page.locator('[data-table="Sessions"]');
   return viewport === 'desktop' ? list.locator('tbody tr:has(td)') : list.locator('li');
@@ -80,8 +80,7 @@ async function expectTable(page: Page, viewport: ViewportName): Promise<void> {
  */
 async function openTable(page: Page, viewport: ViewportName): Promise<void> {
   await expect(page.locator('main')).toHaveCount(1);
-  const nav = viewport === 'desktop' ? page.getByRole('navigation', { name: 'Pages' }) : page.getByRole('navigation', { name: 'Main pages' });
-  const link = nav.getByRole('link', { name: 'Sessions' });
+  const link = (await pagesNav(page, viewport)).getByRole('link', { name: 'Sessions' });
   await expect(link).toHaveAttribute('href', '/sessions');
   await link.click();
   await expect(page).toHaveURL(/\/sessions$/);
@@ -136,7 +135,7 @@ test.describe('Sessions', () => {
         await openTable(page, viewport);
         await expectTable(page, viewport);
         await page.waitForLoadState('networkidle');
-        await expectNoHorizontalOverflow(page);
+        await expectFits(page, viewport);
         await expectNoRawIds(page);
         await expectAxeClean(page);
         await shoot(page, `sessions-${role}`, viewport, mode);
@@ -157,7 +156,7 @@ test.describe('Sessions', () => {
         await expect(page.getByRole('heading', { level: 1 })).toHaveText(OUTCOME_TITLE);
         await expectReadingPage(page, viewport, role);
         await page.waitForLoadState('networkidle');
-        await expectNoHorizontalOverflow(page);
+        await expectFits(page, viewport);
         await expectNoRawIds(page);
         await expectAxeClean(page);
         await page.evaluate(() => window.scrollTo(0, 0));
@@ -171,7 +170,7 @@ test.describe('Sessions', () => {
         await expect(page.getByRole('region', { name: 'Transcript files' })).toContainText('No transcript captured.');
         await expect(page.getByRole('region', { name: 'Context Myco prepared' })).toBeVisible();
         await page.waitForLoadState('networkidle');
-        await expectNoHorizontalOverflow(page);
+        await expectFits(page, viewport);
         await expectAxeClean(page, ['[data-raw-data]']);
         const noTranscript = (line: string) => /\/transcript: 404$/.test(line);
         expect(watch.failedRequests.filter(noTranscript)).toHaveLength(1);
@@ -215,7 +214,7 @@ test.describe('Sessions', () => {
       await expect(page).toHaveURL(new RegExp(`/p/${project.projectId}/sessions$`));
       await expect(rows(page, 'desktop').first()).toBeVisible();
       await page.waitForLoadState('networkidle');
-      await expectNoHorizontalOverflow(page);
+      await expectFits(page, 'desktop');
       await expectNoRawIds(page);
       await expectAxeClean(page);
       await shoot(page, 'sessions-project', 'desktop', 'dark');
@@ -240,7 +239,7 @@ test.describe('Sessions', () => {
         const dialog = page.getByRole('dialog', { name: 'Delete this session?' });
         await expect(dialog).toContainText(OUTCOME_TITLE);
         await expect(dialog.getByRole('button', { name: 'Delete permanently' })).toBeInViewport();
-        await expectNoHorizontalOverflow(page);
+        await expectFits(page, viewport);
         await expectNoRawIds(page, '[role="dialog"]');
         await expectAxeClean(page, ['[role="dialog"]']);
         await shoot(page, 'session-delete', viewport, 'dark');

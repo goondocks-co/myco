@@ -114,7 +114,7 @@ describe('housekeeping on Health', () => {
     const button = await screen.findByRole('button', { name: 'Run housekeeping now' });
     expect(screen.getByText(/Old run records are removed/).textContent).toContain('on the server\'s own clock');
     fireEvent.click(button);
-    expect((await screen.findByText(/The server is asleep/)).textContent).toBe('The server is asleep. Removed 3 old run records; closed 1 run whose runtime went away. Next wake in 5 min.');
+    expect((await screen.findByText(/The server is asleep/)).textContent).toBe('The server is asleep. Removed 3 old run records; closed 1 run whose machine stopped answering. Next wake in 5 min.');
     expect(requested).toContain('POST /api/wake');
   });
 
@@ -143,7 +143,7 @@ describe('housekeeping on Health', () => {
     expect(reportWords({ state: 'idle', heldBy: 'run:live', idleMs: 1, jobs: [], nextWakeMs: 60_000 })).toBe('The server is idle while a run is live. Nothing was due. Next wake in 1 min.');
     expect(reportWords({ state: 'deep_sleep', heldBy: null, idleMs: null, jobs: [], nextWakeMs: null })).toBe('The server is in deep sleep. Nothing was due. No wake is scheduled while it sleeps this deeply.');
     expect(reportWords({ state: 'active', heldBy: null, idleMs: 0, jobs: [{ name: 'agent-run-retention', changed: 0, failed: 'db' }, { name: 'run-stale-sweep', changed: 0, failed: null }], nextWakeMs: 60_000 }))
-      .toBe('The server is in use. Old run records could not be removed; closed 0 runs whose runtime went away. Next wake in 1 min.');
+      .toBe('The server is in use. Old run records could not be removed; closed 0 runs whose machine stopped answering. Next wake in 1 min.');
   });
 
   it('offers the diagnostics file from the admin route', async () => {

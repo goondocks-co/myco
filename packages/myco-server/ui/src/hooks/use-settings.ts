@@ -34,7 +34,7 @@ export function settingsRefusalText(err: unknown): string {
       case 'invalid_value':
         return typeof body?.detail === 'string' && body.detail.trim() !== '' ? `The server refused that value: ${body.detail}` : 'The server refused that value.';
       case 'unknown_capability':
-        return 'The server does not know that capability.';
+        return 'The server does not offer that here.';
       default:
         return `The server refused (${err.status}).`;
     }

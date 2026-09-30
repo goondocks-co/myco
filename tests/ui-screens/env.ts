@@ -3,6 +3,8 @@ export const SCREENS_ENV = {
   url: 'MYCO_SCREENS_URL',
   ownerCookie: 'MYCO_SCREENS_OWNER_COOKIE',
   memberCookie: 'MYCO_SCREENS_MEMBER_COOKIE',
+  /** A GitHub sign-in no member is linked to: it reaches the not-a-member page. */
+  strangerCookie: 'MYCO_SCREENS_STRANGER_COOKIE',
   /** `1` when the checks run against the seeded fixture, `0` against a real deployment. */
   fixture: 'MYCO_SCREENS_FIXTURE',
   /** `1` when the launcher served the design specimen under `/specimen/`. */
@@ -21,6 +23,7 @@ export interface LaunchInfo {
   url: string;
   ownerCookie: string;
   memberCookie: string;
+  strangerCookie: string;
   specimen: boolean;
   projects: Array<{ projectId: string; name: string }>;
   now: number;

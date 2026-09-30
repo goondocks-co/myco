@@ -1,4 +1,4 @@
-import { Card, Link, Markdown, Skeleton } from '../../design';
+import { ActionLink, Card, Markdown, Skeleton } from '../../design';
 import { useCanopyMap, type CanopyMapRow } from '../../hooks/use-canopy-map';
 import { projectPath } from '../../routes/nav';
 import { STARTABLE_TASKS } from '../work/RunTask';
@@ -40,7 +40,7 @@ export function CodeMapPanel({ base, map, pending, error, now = Date.now() }: { 
             <p className="t-small text-muted">
               <span title={map.repository.commit}>{map.repository.branch} @ {map.repository.commit.slice(0, SHORT_COMMIT_CHARS)}</span>
               {' · '}{ago(map.generatedAt, now)}{' · '}
-              <Link to={`${base}/work/runs/${encodeURIComponent(map.sourceRunId)}`}>The run that wrote it →</Link>
+              <ActionLink to={`${base}/work/runs/${encodeURIComponent(map.sourceRunId)}`}>The run that wrote it →</ActionLink>
             </p>
           </div>
           <Markdown content={map.content} skipHtml className="max-w-measure" />

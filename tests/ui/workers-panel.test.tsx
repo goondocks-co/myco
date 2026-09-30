@@ -43,7 +43,7 @@ describe('a machine running Myco’s work, in words', () => {
   it('shows a busy machine by its lease and the project by name, without promising the lease will be renewed', () => {
     const busy = worker({ busy: { runId: 'run_4f1c9a2e7b', projectId: MYCO, task: 'title-summary', leaseExpiresAt: NOW + 62_000 } });
     const { line } = workerLine(busy, NOW, names);
-    expect(line).toBe('Ada’s studio Mac · Running titling in Myco · lease ends in 62s');
+    expect(line).toBe('Ada’s studio Mac · Running titling in Myco · due to check in within 62s');
     expect(line).not.toMatch(/renew/i);
     expect(line).not.toContain(MYCO);
     expect(lastClaimWords(busy)).toBeNull();
@@ -51,7 +51,7 @@ describe('a machine running Myco’s work, in words', () => {
 
   it('leaves out a project it cannot name rather than showing its id', () => {
     const busy = worker({ busy: { runId: 'run_1', projectId: 'proj_ffffffffffffffffffffffffffffffff', task: null, leaseExpiresAt: NOW + 30_000 } });
-    expect(workerLine(busy, NOW, names).line).toBe('Ada’s studio Mac · Running a task · lease ends in 30s');
+    expect(workerLine(busy, NOW, names).line).toBe('Ada’s studio Mac · Running a task · due to check in within 30s');
     expect(taskWords('something-new')).toBe('a task');
   });
 
@@ -62,7 +62,7 @@ describe('a machine running Myco’s work, in words', () => {
   });
 
   it('reports the last check for work as that machine’s, never the queue’s verdict, with no age it does not have', () => {
-    expect(lastClaimWords(worker({ lastReason: 'no_harness' }))).toBe('Last check for work: no matching harness.');
+    expect(lastClaimWords(worker({ lastReason: 'no_harness' }))).toBe('Last check for work: the work waiting needs an agent it doesn’t have.');
     expect(lastClaimWords(worker({ lastReason: null }))).toBeNull();
     expect(lastClaimWords(worker({ lastSeenAt: 0 }))).toBeNull();
   });
@@ -82,13 +82,13 @@ describe('a machine running Myco’s work, in words', () => {
 
   it('says a machine whose claims the server would refuse is not waiting for work', () => {
     const { line } = workerLine(worker({ eligible: false }), NOW, names);
-    expect(line).toBe('Ada’s studio Mac · Its claims would be refused now · last checked in 3s ago');
+    expect(line).toBe('Ada’s studio Mac · It can’t take work now · last checked in 3s ago');
     expect(line).not.toContain('Waiting');
   });
 
   it('shows a lease holder from before contacts were kept as busy, with no invented contact time', () => {
     const w = worker({ lastSeenAt: 0, lastReason: null, recent: false, busy: { runId: 'run_9', projectId: MYCO, task: null, leaseExpiresAt: NOW + 30_000 } });
-    expect(workerLine(w, NOW, names).line).toBe('Ada’s studio Mac · Running a task in Myco · lease ends in 30s');
+    expect(workerLine(w, NOW, names).line).toBe('Ada’s studio Mac · Running a task in Myco · due to check in within 30s');
   });
 });
 

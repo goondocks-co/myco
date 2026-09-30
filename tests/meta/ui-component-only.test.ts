@@ -10,10 +10,9 @@
  * template set in brackets rather than from the tokens, or an import of a
  * retired `components/ui/` file. A raw element
  * counts whether it is written as JSX, through `createElement`, or as a tag
- * name held in a variable or prop. Today's violations are
- * pinned per file in `ui-component-only.baseline.json`; a count may only go
- * down, and the baseline follows it down (`node scripts/ui-component-ratchet.mjs
- * --write`). A file not in the baseline starts at zero.
+ * name held in a variable or prop. Every kind is at zero in every file, and
+ * `ui-component-only.baseline.json` is empty: the ratchet that took each kind
+ * down to zero now holds it there, so any new violation fails.
  *
  * Inside `design/`, components size on the 4px tokens: Tailwind's numeric
  * spacing and its rem text sizes resolve against the 14px root, so neither
@@ -107,11 +106,11 @@ describe('the component-only ratchet', () => {
     expect(walked.length).toBeGreaterThan(50);
   });
 
-  it('scans the real dashboard (guards against a silently empty scan)', () => {
-    // The files still carrying a violation are found by the scan, each one the baseline pins.
-    const found = Object.keys(countTree()).sort();
-    expect(found.length).toBeGreaterThan(0);
-    expect(found).toEqual(Object.keys(readBaseline()).sort());
+  it('finds no violation anywhere in the dashboard, and pins none', () => {
+    // Every kind is at zero in every file: the baseline is empty and stays empty. The planted source and planted tree
+    // above prove the scan finds a violation, so an empty result here is the dashboard, not a scan that matched nothing.
+    expect(countTree()).toEqual({});
+    expect(readBaseline()).toEqual({});
   });
 
   it('holds every file at or under its pinned count, and a new file at zero', () => {

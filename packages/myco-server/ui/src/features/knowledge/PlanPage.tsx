@@ -1,9 +1,5 @@
-import { useEffect, useState, type ReactNode } from 'react';
-import { Link as RouterLink } from 'react-router-dom';
-import { ChevronRight } from 'lucide-react';
-import {
-  Button, Card, CopyButton, ErrorState, FactRow, FactsPanel, focusRing, Link, LoadingState, Progress, Select, StatusChip, TypeChip,
-} from '../../design';
+import { useEffect, useState } from 'react';
+import { ActionLink, Breadcrumbs, Button, Card, CopyButton, ErrorState, FactRow, FactsPanel, LoadingState, Progress, Select, StatusChip, TypeChip } from '../../design';
 import { useMembers } from '../../hooks/use-access';
 import { usePlan } from '../../hooks/use-knowledge';
 import { useIsAdmin } from '../../hooks/use-me';
@@ -49,15 +45,7 @@ function Reading({ plan, projectId, projectName, now }: { plan: PlanFields; proj
   const setBy = plan.updatedBy === null ? null : authorName(plan.updatedBy, members.data?.members);
   return (
     <article data-plan-page="" className="flex w-full flex-col gap-s5">
-      <nav aria-label="Breadcrumb">
-        <ol className="flex flex-wrap items-center gap-s1 t-small text-muted">
-          <li><Crumb to={projectPath(projectId, KNOWLEDGE_SUFFIX)}>Knowledge</Crumb></li>
-          <li aria-hidden><ChevronRight className="size-s4" /></li>
-          <li><Crumb to={projectPath(projectId, PLANS_SUFFIX)}>Plans</Crumb></li>
-          <li aria-hidden><ChevronRight className="size-s4" /></li>
-          <li><Crumb to={projectPath(projectId)}>{projectName}</Crumb></li>
-        </ol>
-      </nav>
+      <Breadcrumbs items={[{ label: 'Knowledge', to: projectPath(projectId, KNOWLEDGE_SUFFIX) }, { label: 'Plans', to: projectPath(projectId, PLANS_SUFFIX) }, { label: projectName, to: projectPath(projectId) }]} />
 
       <div className="grid items-start gap-s6 lg:grid-reading lg:gap-x-s10">
         <div className="flex min-w-0 max-w-measure flex-col gap-s5">
@@ -112,9 +100,6 @@ export function withoutTitle(content: string, title: string | null): string {
   return same(match[1]!) === same(title) ? content.slice(match[0].length).replace(/^\s*\n/, '') : content;
 }
 
-function Crumb({ to, children }: { to: string; children: ReactNode }) {
-  return <RouterLink to={to} className={cn('rounded-chip hover:text-ink hover:underline', focusRing)}>{children}</RouterLink>;
-}
 
 /** The session that wrote the plan, by its title, and the turn it came from. */
 function WrittenIn({ projectId, sessionId, promptId }: { projectId: string; sessionId: string; promptId: string | null }) {
@@ -131,8 +116,8 @@ function WrittenIn({ projectId, sessionId, promptId }: { projectId: string; sess
             ? <span className="t-small text-muted">{session.isPending ? 'Loading the session…' : 'A session'}</span>
             : <span className="t-small font-medium text-ink">{sessionHeadingText(session.data.session)}</span>}
           <span className="flex flex-wrap gap-x-s4 gap-y-s1 t-small">
-            <Link to={base}>Open the session →</Link>
-            {turn !== null && <Link to={turn}>The turn it came from →</Link>}
+            <ActionLink to={base}>Open the session →</ActionLink>
+            {turn !== null && <ActionLink to={turn}>The turn it came from →</ActionLink>}
           </span>
         </>
       )}

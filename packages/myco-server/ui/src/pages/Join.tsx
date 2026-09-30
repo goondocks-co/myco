@@ -18,7 +18,7 @@ export function Join() {
   const link = `${window.location.origin}${JOIN_PATH}#${key}`;
   return (
     <div className="min-h-screen bg-bg text-ink">
-      <main className="mx-auto flex w-full max-w-[600px] flex-col gap-s6 p-gutter pt-s12">
+      <main className="mx-auto flex w-full max-w-narrow flex-col gap-s6 p-gutter pt-s12">
         <span aria-hidden className="grid size-s10 place-items-center rounded-control bg-primary-bg t-body font-semibold text-primary">M</span>
         <div className="flex flex-col gap-s2">
           <h1 className="t-display text-ink">Connect a machine to Myco</h1>
