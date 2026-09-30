@@ -272,6 +272,16 @@ describe('an activity window: the sessions active in it, however long ago they s
     expect(await ids(`/api/sessions?${today}`)).toEqual(['s_starts_last']);
   });
 
+  it('judges an end by the transcript\'s own end: a transcript that ended 30 days ago is out, though the lifecycle ended it today', async () => {
+    const { ran, ids, sqlite } = await activity();
+    ran('proj_1', 's_transcript_ended', TODAY, TODAY + 60_000, TODAY + 60_000);
+    ran('proj_1', 's_transcript_open', TODAY - DAY, TODAY + 60_000, TODAY + 60_000);
+    sqlite.run(`UPDATE sessions SET occurred_started_at = ?, occurred_ended_at = ? WHERE session_id = 's_transcript_ended'`, [TODAY - 30 * DAY, TODAY - 30 * DAY + 3_600_000]);
+    sqlite.run(`UPDATE sessions SET occurred_started_at = ? WHERE session_id = 's_transcript_open'`, [TODAY - 2 * DAY]);
+    expect(await ids(`/api/sessions?${today}`)).toEqual(['s_transcript_open']);
+    expect(await ids(`/api/sessions?since=${TODAY - 30 * DAY}&until=${TODAY - 29 * DAY}&window=activity`)).toEqual(['s_transcript_ended']);
+  });
+
   it('orders by start, newest first, and pages across Projects with every session exactly once', async () => {
     const { ran, ids, get } = await activity();
     ran('proj_1', 's_a', TODAY - 2 * DAY, TODAY + 1);
