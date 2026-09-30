@@ -17,6 +17,8 @@ import { LIVE_REFRESH_MS } from '../../packages/myco-server/ui/src/hooks/use-wor
 import { dayParam, dayWindow } from '../../packages/myco-server/ui/src/hooks/use-today';
 import { buildTimeline, ledeCounts } from '../../packages/myco-server/ui/src/features/today/timeline';
 import { attentionWords, machineNames } from '../../packages/myco-server/ui/src/features/today/words';
+import { cleanSessionText, sessionHeading } from '../../packages/myco-server/ui/src/lib/session-text';
+import { memberDisplayName, memberLabel } from '../../packages/myco-server/ui/src/lib/member-name';
 import type {
   AttentionAnswer, AttentionItem, CaptureRow, TodaySession, TodaySpore, WorkAnswer, WorkRun,
 } from '../../packages/myco-server/ui/src/features/today/wire';
@@ -50,9 +52,9 @@ const session = (over: Partial<TodaySession> & Pick<TodaySession, 'sessionId' | 
 
 const SESSIONS = [
   session({ sessionId: '0b6f0f55-8a36-5d0e-9c1b-6b1d0d3f2a11', projectId: P_MYCO, label: 'Canopy parity verified', summary: 'Ran the parity suite on both targets.', startedAt: NOW - 42 * MINUTE, firstReceivedAt: NOW - 42 * MINUTE, lastReceivedAt: NOW - MINUTE, endedAt: null, promptCount: 317 }),
-  session({ sessionId: '1c7a1a66-9b47-5e1f-8d2c-7c2e1e4a3b22', projectId: P_ATLAS, label: 'Checkout errors rewritten', startedAt: NOW - 5 * HOUR, agent: 'cursor', runtimeLabel: null, memberLabel: 'Lin', memberId: MEMBER.member.id, promptCount: 1 }),
+  session({ sessionId: '1c7a1a66-9b47-5e1f-8d2c-7c2e1e4a3b22', projectId: P_ATLAS, title: 'Checkout errors rewritten', label: 'Checkout errors rewritten', startedAt: NOW - 5 * HOUR, agent: 'cursor', runtimeLabel: null, memberLabel: 'Lin', memberId: MEMBER.member.id, promptCount: 1 }),
   session({ sessionId: '2d8b2b77-ac58-5f20-9e3d-8d3f2f5b4c33', projectId: P_MYCO, label: '2d8b2b77-ac58-5f20-9e3d-8d3f2f5b4c33', startedAt: NOW - 9 * HOUR, agent: 'pi', runtimeLabel: null, memberId: 'mem_harness', memberLabel: 'mem_harness' }),
-  session({ sessionId: '3e9c3c88-bd69-5031-af4e-9e4a3a6c5d44', projectId: P_GONE, label: 'A session in a project this viewer has no name for', startedAt: NOW - 10 * HOUR }),
+  session({ sessionId: '3e9c3c88-bd69-5031-af4e-9e4a3a6c5d44', projectId: P_GONE, title: 'A session in a project this viewer has no name for', label: 'A session in a project this viewer has no name for', startedAt: NOW - 10 * HOUR }),
 ];
 
 const run = (over: Partial<WorkRun> & Pick<WorkRun, 'id' | 'kind' | 'task'>): WorkRun => ({
@@ -266,7 +268,8 @@ describe('Today', () => {
     await screen.findByRole('list', { name: /Agents on/ });
     expect(document.body.textContent).not.toMatch(RAW_ID);
     expect(within(list).getByText('A project')).toBeTruthy();
-    expect(within(list).getByText('Untitled session')).toBeTruthy();
+    // The live session has no title yet, and the one headed only by its id shows no id.
+    expect(within(list).getAllByText('Untitled session')).toHaveLength(2);
     const kickers = items(list).map((li) => li.querySelector('div > div')!.textContent);
     expect(kickers.filter((k) => k!.includes('Pi · Myco'))).toHaveLength(1);
     expect(kickers.filter((k) => k!.includes('Cursor · Lin'))).toHaveLength(1);
@@ -287,6 +290,47 @@ describe('Today', () => {
       spores: [], window, now: NOW,
     });
     expect(entries.map((e) => (e.type === 'session' ? 'session' : `${e.projectId === P_MYCO ? 'myco' : 'atlas'}:${e.runs.length}`))).toEqual(['myco:2', 'atlas:1', 'session', 'myco:1']);
+  });
+
+  it('heads a session by its title without capture markup, and an untitled one as "Untitled session" with its first line, never its agent', async () => {
+    screenWidth(1280);
+    const at = (h: number) => ({ startedAt: NOW - h * HOUR, firstReceivedAt: NOW - h * HOUR });
+    server(day({ sessions: { cursor: null, rows: [
+      session({ sessionId: 'a0000000-0000-5000-8000-000000000001', projectId: P_MYCO, ...at(1), title: '<timestamp>Monday 09:12</timestamp> <user_query>Fix the release build</user_query>', label: 'x' }),
+      session({ sessionId: 'a0000000-0000-5000-8000-000000000002', projectId: P_MYCO, ...at(2), title: null, label: 'claude-code', agent: 'claude-code' }),
+      session({ sessionId: 'a0000000-0000-5000-8000-000000000003', projectId: P_MYCO, ...at(3), title: null, label: '<pasted_content id="df5c">Why does the map read differ', summary: '<user_query>Compared both targets.</user_query>' }),
+      session({ sessionId: 'a0000000-0000-5000-8000-000000000004', projectId: P_MYCO, ...at(4), title: 'Named by id', memberId: 'mem_sirkirby_5a2d54af', memberLabel: 'sirkirby_5a2d54af', runtimeLabel: null }),
+    ] }, work: { ...WORK, runs: [] } }));
+    mount('/');
+    const list = await timeline();
+    await waitFor(() => expect(items(list)).toHaveLength(4));
+    const [titled, agentOnly, pasted, byId] = items(list).map((li) => li.querySelector('a')!);
+    expect(titled!.textContent).toBe('Fix the release build');
+    expect(agentOnly!.textContent).toBe('Untitled session');
+    expect(pasted!.textContent).toBe('Untitled session·Why does the map read differ');
+    expect(within(pasted!).getByText('Untitled session').className).toContain('text-muted');
+    expect(list.textContent).toContain('Compared both targets.');
+    expect(list.textContent).not.toMatch(/<\/?(timestamp|user_query|pasted_content)|claude-code|sirkirby_5a2d54af/);
+    expect(byId!.closest('li')!.textContent).toContain('Claude Code');
+  });
+
+  it('strips capture markup and reads a label that is only an id as no name', () => {
+    expect(cleanSessionText('<timestamp>Tue</timestamp>\n<user_query>\n  Ship it\n</user_query>')).toBe('Ship it');
+    expect(cleanSessionText('<pasted_content id="a1">   ')).toBeNull();
+    expect(sessionHeading({ sessionId: 's1', title: null, label: 's1', agent: null })).toEqual({ titled: false, firstPrompt: null });
+    expect(memberLabel({ id: 'mem_sirkirby_5a2d54af', label: 'sirkirby_5a2d54af' })).toBeNull();
+    expect(memberLabel({ id: 'mem_Hn5-pC0dJfA9sE_u', label: 'mem_Hn5-pC0dJfA9sE_u' })).toBeNull();
+    expect(memberLabel({ id: 'mem_1', label: 'Ada' })).toBe('Ada');
+    expect(memberDisplayName({ id: 'mem_sirkirby_5a2d54af', label: 'sirkirby_5a2d54af' }, 'sirkirby')).toBe('sirkirby');
+    expect(memberDisplayName({ id: 'mem_x', label: null }, undefined)).toBe('You');
+  });
+
+  it('names the signed-in member in the account block by their login when their label is only their id', async () => {
+    screenWidth(1280);
+    server(day({}, { sub: '9', login: 'sirkirby', member: { id: 'mem_sirkirby_5a2d54af', label: 'sirkirby_5a2d54af', role: 'admin' } }));
+    mount('/');
+    expect(await screen.findByRole('button', { name: 'Account and appearance for sirkirby' })).toBeTruthy();
+    expect(screen.getByRole('complementary', { name: 'Navigation' }).textContent).not.toContain('sirkirby_5a2d54af');
   });
 
   it('names machines by name, and an unnamed one as a machine plus its agent', () => {

@@ -6,6 +6,7 @@
  */
 import { REPOSITORY_CHECKOUT_CAPABILITY, REPOSITORY_DIGESTS_CAPABILITY } from '@goondocks/myco-shared/repository';
 import { harnessLabel } from '../../lib/harness';
+import { memberLabel } from '../../lib/member-name';
 import type { AttentionItem, AttentionKind, CaptureRow, OutcomeKind, TodaySession, TodaySpore, WorkRun } from './wire';
 
 const MINUTE = 60_000;
@@ -65,10 +66,11 @@ export function agentName(agent: string | null): string {
 /** Agents the harness table does not name. */
 const AGENT_NAMES: Readonly<Record<string, string>> = { pi: 'Pi' };
 
-/** Who ran a session: Myco for its own runs, else the member's name, else nobody named. */
+/** Who ran a session: Myco for its own runs, else the member's name, else nobody named; never a member's id. */
 export function memberName(session: Pick<TodaySession, 'memberId' | 'memberLabel'>): string | null {
   if (session.memberId === MYCO_MEMBER_ID) return 'Myco';
-  return session.memberLabel;
+  if (session.memberId === null) return null;
+  return memberLabel({ id: session.memberId, label: session.memberLabel });
 }
 
 /** A spore's type in one word, as its chip reads. */

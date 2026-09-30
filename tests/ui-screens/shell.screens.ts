@@ -26,7 +26,8 @@ const SHELL = '[data-shell]';
 
 const ROLES = [
   { role: 'admin', cookie: 'ownerCookie', name: 'Ada' },
-  { role: 'member', cookie: 'memberCookie', name: 'Lin' },
+  // The member's label is only their id, so the account block names them by their login.
+  { role: 'member', cookie: 'memberCookie', name: 'lin' },
 ] as const;
 
 /** The admin foot; Measures and Operations fold under Status and show while its group is open. */

@@ -9,6 +9,7 @@ import { useIsAdmin, useMe } from '../hooks/use-me';
 import { useProjects } from '../hooks/use-projects';
 import { isArchived, type ProjectSummary } from '../lib/api';
 import { readLastProject, rememberProject } from '../lib/project-memory';
+import { memberDisplayName } from '../lib/member-name';
 import { signOut } from '../lib/session';
 import { NotAMember } from '../pages/NotAMember';
 import {
@@ -48,7 +49,7 @@ export function Shell() {
   const remembered = readLastProject();
   const scope = current ?? listed.find((p) => p.projectId === remembered) ?? listed[0];
   const pages = PROJECT_PAGES.filter((page) => admin || page.admin !== true);
-  const name = member?.label ?? me.data?.login ?? '';
+  const name = memberDisplayName(member, me.data?.login);
 
   const filterItems: ProjectFilterItem[] = listed.map((p) => ({
     projectId: p.projectId,

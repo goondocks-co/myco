@@ -22,6 +22,7 @@ import { useNow, useToday } from '../hooks/use-today';
 import { freshness } from '../hooks/use-work';
 import { isArchived } from '../lib/api';
 import { cn } from '../lib/cn';
+import { cleanSessionText, sessionHeading, type SessionHeading } from '../lib/session-text';
 import { readPendingLink } from '../lib/pending-link';
 import { forgetProject } from '../lib/project-memory';
 import { NotFound } from '../pages/NotFound';
@@ -172,7 +173,7 @@ function ProjectKicker({ scoped, projectId, projectName }: { scoped: boolean; pr
 function SessionItem({ entry, scoped, projectName }: { entry: SessionEntry; scoped: boolean; projectName: (projectId: string) => string | null }) {
   const { session } = entry;
   const who = session.runtimeLabel !== null && session.runtimeLabel.trim() !== '' ? ` on ${session.runtimeLabel}` : memberName(session) === null ? '' : ` · ${memberName(session)}`;
-  const label = session.label === session.sessionId || session.label.trim() === '' ? 'Untitled session' : session.label;
+  const heading = sessionHeading(session);
   return (
     <TimelineItem
       time={entry.live ? 'now' : clockTime(entry.at)}
@@ -195,10 +196,35 @@ function SessionItem({ entry, scoped, projectName }: { entry: SessionEntry; scop
           )}
         </>
       )}
-      title={<TitleLink to={`${projectPath(entry.projectId)}/sessions/${encodeURIComponent(session.sessionId)}`}>{label}</TitleLink>}
-      summary={session.summary ?? undefined}
+      title={(
+        <TitleLink to={`${projectPath(entry.projectId)}/sessions/${encodeURIComponent(session.sessionId)}`}>
+          {heading.titled ? heading.title : <UntitledHeading firstPrompt={heading.firstPrompt} />}
+        </TitleLink>
+      )}
+      summary={cleanSessionText(session.summary) ?? undefined}
     />
   );
+}
+
+/** An untitled session: the word "Untitled" as secondary text, then the first line the person typed. */
+function UntitledHeading({ firstPrompt }: { firstPrompt: string | null }) {
+  return (
+    <>
+      <span className="font-normal text-muted">Untitled session</span>
+      {firstPrompt !== null && (
+        <>
+          <span aria-hidden className="mx-s2 font-normal text-muted">·</span>
+          <span className="font-normal text-ink-2">{firstPrompt}</span>
+        </>
+      )}
+    </>
+  );
+}
+
+/** A session heading as one line of text. */
+function headingText(heading: SessionHeading): string {
+  if (heading.titled) return heading.title;
+  return heading.firstPrompt === null ? 'Untitled session' : `Untitled session · ${heading.firstPrompt}`;
 }
 
 function WorkItem({ entry, scoped, projectName, work }: { entry: WorkEntry; scoped: boolean; projectName: (projectId: string) => string | null; work: WorkAnswer | undefined }) {
@@ -246,7 +272,7 @@ function WorkItem({ entry, scoped, projectName, work }: { entry: WorkEntry; scop
           total={entry.runs.length}
           lines={entry.titled.slice(0, NESTED_SHOWN).map((session) => ({
             key: session.sessionId,
-            text: session.label,
+            text: headingText(sessionHeading(session)),
             to: `${projectPath(session.projectId)}/sessions/${encodeURIComponent(session.sessionId)}`,
           }))}
         />
