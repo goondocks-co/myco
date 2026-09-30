@@ -35,6 +35,7 @@
  * The vault is opened read-only and is never written.
  */
 import { Database } from 'bun:sqlite';
+import { LEGACY_MINTED_ID } from '@goondocks/myco-shared/session-ids';
 import fs from 'node:fs';
 import path from 'node:path';
 import { enumerateTranscripts, manifestTranscriptDiscovery, findTranscriptFor, sessionIdFromStoredId, sessionIdFromTranscriptPath } from '../symbionts/transcript-discovery.js';
@@ -418,9 +419,6 @@ export function groupLegacySessions(project: LegacyProject, aliases: ReadonlyMap
     .sort((a, b) => (a.winner.startedAt ?? 0) - (b.winner.startedAt ?? 0) || a.sessionId.localeCompare(b.sessionId));
   return { groups, idOf, deleted, deletedSessions, unmatchedDeletes: unmatchedDeletes.sort(), otherMachines };
 }
-
-/** The id 1.4 minted for a session before it kept the harness's own: `sess_` and 32 hex digits. No harness names a session this way. */
-const LEGACY_MINTED_ID = /^sess_[0-9a-f]{32}$/;
 
 /**
  * Stored ids 1.4 minted (`LEGACY_MINTED_ID`) that the layout could not name a

@@ -62,6 +62,10 @@
       "import": "./dist/capture-rules.generated.js",
       "types": "./dist/capture-rules.generated.d.ts"
     },
+    "./session-ids": {
+      "import": "./dist/session-ids.js",
+      "types": "./dist/session-ids.d.ts"
+    },
     "./resume-commands-data": {
       "import": "./dist/resume-commands.generated.js",
       "types": "./dist/resume-commands.generated.d.ts"
