@@ -302,6 +302,15 @@
   --spacing-row: var(--row);
   --spacing-row-tight: var(--row-tight);
   --spacing-measure: var(--measure);
+  /* A select sized to its words beside a search, and a wider one for longer choices. */
+  --spacing-select: 140px;
+  --spacing-select-wide: 168px;
+  /* One column of a board. */
+  --spacing-board-column: 272px;
+  /* A wide card of reference text, such as the code map. */
+  --container-reference: 960px;
+  /* A progress bar beside a title. */
+  --container-progress: 360px;
 
   --radius-chip: var(--r-chip);
   --radius-control: var(--r-control);
@@ -334,6 +343,15 @@
   font-weight: 600;
   font-size: 16px;
   line-height: 1.3;
+}
+
+/* A sentence as a page's title: a spore's line, which runs longer than a name. */
+@utility t-headline {
+  font-family: var(--font-sans-stack);
+  font-weight: 600;
+  font-size: 22px;
+  line-height: 1.4;
+  letter-spacing: -0.005em;
 }
 
 @utility t-body {
@@ -379,6 +397,16 @@
 @utility focus-ring {
   outline: 2px solid var(--focus);
   outline-offset: 2px;
+}
+
+/* A reading page: the text, then a facts column beside it. */
+@utility grid-reading {
+  grid-template-columns: minmax(0, 1fr) 300px;
+}
+
+/* A list with its facets beside it. */
+@utility grid-faceted {
+  grid-template-columns: 208px minmax(0, 1fr);
 }
 
 @utility prose-measure {
@@ -428,6 +456,19 @@
 .prose-read ul { list-style: disc; }
 .prose-read ol { list-style: decimal; }
 .prose-read li + li { margin-top: var(--s-1); }
+/* A task list reads as its boxes, not as bullets; a done item is checked and quieter. */
+.prose-read ul.contains-task-list { list-style: none; padding-left: var(--s-1); }
+.prose-read .task-box {
+  display: inline-block;
+  width: 14px;
+  height: 14px;
+  margin-right: var(--s-2);
+  vertical-align: -2px;
+  border: 1.5px solid var(--line-strong);
+  border-radius: 3px;
+}
+.prose-read .task-box-done { border: 0; color: var(--ok); }
+.prose-read li.task-done { color: var(--muted); }
 .prose-read a { color: var(--primary); text-decoration: underline; text-underline-offset: 3px; }
 .prose-read code {
   font-family: var(--font-mono-stack);

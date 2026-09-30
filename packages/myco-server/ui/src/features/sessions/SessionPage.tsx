@@ -5,7 +5,7 @@ import { ChevronRight } from 'lucide-react';
 import {
   CopyButton, EmptyState, ErrorState, FactRow, FactsPanel, focusRing, Link, LoadingState, ShowMore, StatusChip, Tabs, TabsContent, TabsList, TabsTrigger, TypeChip,
 } from '../../design';
-import { PlanCard } from '../../components/sessions/PlanCard';
+import { PlanLine } from '../knowledge/PlanLine';
 import { releaseStateLabel, shortRef } from '../../components/release/release-labels';
 import { useSpores } from '../../hooks/use-intelligence';
 import { useIsAdmin } from '../../hooks/use-me';
@@ -151,7 +151,7 @@ function Reading({ answer, projectId, projectName, now, actions }: { answer: Ses
               <SessionSpores projectId={projectId} sessionId={session.sessionId} now={now} />
             </TabsContent>
             <TabsContent value="plans">
-              <SessionPlans projectId={projectId} sessionId={session.sessionId} wanted={params.get('plan')} />
+              <SessionPlans projectId={projectId} sessionId={session.sessionId} now={now} />
             </TabsContent>
           </Tabs>
           <RawData projectId={projectId} sessionId={session.sessionId} open={isRawSection(raw) ? raw : null} now={now} />
@@ -247,15 +247,15 @@ function SessionSpores({ projectId, sessionId, now }: { projectId: string; sessi
   );
 }
 
-/** The session's plans; one in progress, or the one a link names with `?plan=`, opens on arrival. */
-function SessionPlans({ projectId, sessionId, wanted }: { projectId: string; sessionId: string; wanted: string | null }) {
+/** The session's plans, each leading to its own page. */
+function SessionPlans({ projectId, sessionId, now }: { projectId: string; sessionId: string; now: number }) {
   const plans = useSessionChildren<PlanRow>(projectId, sessionId, 'plans');
   if (plans.isPending) return <LoadingState label="Loading the plans" count={2} />;
   if (plans.error) return <ErrorState error={plans.error} onRetry={plans.retry} />;
   if (plans.rows.length === 0) return <EmptyState title="No plans were captured in this session." />;
   return (
     <div className="flex flex-col gap-s3">
-      {plans.rows.map((plan) => <PlanCard key={plan.planKey} projectId={projectId} sessionId={sessionId} plan={plan} defaultOpen={plan.status === 'in_progress' || plan.planKey === wanted} />)}
+      {plans.rows.map((plan) => <PlanLine key={plan.planKey} projectId={projectId} sessionId={sessionId} plan={plan} now={now} />)}
       {plans.hasMore && <ShowMore shown={plans.rows.length} noun="plans" onMore={plans.more} pending={plans.isFetchingMore} hasMore />}
     </div>
   );

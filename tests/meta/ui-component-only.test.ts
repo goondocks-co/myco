@@ -6,7 +6,8 @@
  * gain a raw `<button>`, `<input>`, `<select>`, `<textarea>` or `<table>`, an
  * inline style, a colour literal (hex, a colour function or a named colour), a
  * Tailwind arbitrary colour, a class from Tailwind's default palette, type
- * under 12px, spacing set in pixels or rems off the 4px scale, or an import of a
+ * under 12px, spacing set in pixels or rems off the 4px scale, a width or grid
+ * template set in brackets rather than from the tokens, or an import of a
  * retired `components/ui/` file. A raw element
  * counts whether it is written as JSX, through `createElement`, or as a tag
  * name held in a variable or prop. Today's violations are
@@ -43,6 +44,7 @@ const PLANTED = [
   '<span className="bg-red-500 text-white" />',
   '<span className="text-[10px] text-xs" />',
   '<span className="mt-[7px] before:left-[-5px] gap-[2px] -translate-y-[1px] mx-auto min-h-[60vh] max-w-[600px] underline-offset-[3px] p-s4" />',
+  '<div className="w-[152px] lg:grid-cols-[208px_minmax(0,1fr)] grid-rows-[auto_1fr]" />',
   "import { Panel } from '../components/ui/panel';",
   "const lazy = import('../components/ui/panel');",
 ].join('\n');
@@ -59,6 +61,7 @@ const PLANTED_COUNTS = {
   'palette-colour': 2,
   'small-text': 2,
   'arbitrary-spacing': 4,
+  'arbitrary-layout': 4,
   'retired-import': 2,
 };
 

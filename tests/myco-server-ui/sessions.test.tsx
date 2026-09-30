@@ -19,7 +19,7 @@ import { sessionListPath } from '../../packages/myco-server/ui/src/hooks/use-ses
 import { promptPreview, PROMPT_PREVIEW_CHARS } from '../../packages/myco-server/ui/src/features/sessions/Turn';
 import { memberFilter, startedWords, windowBounds } from '../../packages/myco-server/ui/src/features/sessions/words';
 import { LIVE_WITHIN_MS } from '../../packages/myco-server/ui/src/features/today/timeline';
-import { progressParts } from '../../packages/myco-server/ui/src/components/sessions/PlanCard';
+import { rawIdsIn } from '../helpers/raw-ids';
 
 const MINUTE = 60_000;
 const HOUR = 60 * MINUTE;
@@ -28,8 +28,6 @@ const DAY = 24 * HOUR;
 const NOW = new Date(2026, 8, 29, 16, 0, 0).getTime();
 const TODAY = new Date(2026, 8, 29).getTime();
 
-/** The raw ids a reader must never see, as the screens check defines them. */
-const RAW_ID = /\b(run|proj|mem|mt)_[\w-]{6,}/;
 
 const ADMIN = { sub: '1', login: 'ada', member: { id: 'mem_q3Vb8xRk2LmT7wYz', label: 'Ada', role: 'admin' as const } };
 const MEMBER = { sub: '2', login: 'lin', member: { id: 'mem_Hn5pC0dJfA9sEu', label: 'Lin', role: 'member' as const } };
@@ -127,16 +125,8 @@ async function pickAgent(option: string) {
 /** The table's column headings, without the day headings that head each group. */
 const columnHeadings = (table: HTMLElement) => within(within(table).getAllByRole('rowgroup')[0]!).getAllByRole('columnheader').map((th) => th.textContent);
 
-/** Visible text carrying a raw id, outside the facts panel. */
-function rawIdsInPage(): string[] {
-  const hits: string[] = [];
-  const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
-  for (let node = walker.nextNode(); node !== null; node = walker.nextNode()) {
-    const match = RAW_ID.exec(node.textContent ?? '');
-    if (match && node.parentElement?.closest('[data-facts]') === null) hits.push(match[0]);
-  }
-  return hits;
-}
+/** Visible text carrying a raw id, outside the facts panel and the test's own location probe. */
+const rawIdsInPage = (): string[] => rawIdsIn(document.body, ['[data-testid="location"]']);
 
 const listPath = (filters: Parameters<typeof sessionListPath>[0]) => sessionListPath(filters);
 
@@ -687,15 +677,20 @@ describe('the session reading page', () => {
     expect(screen.queryByText(/No spores were saved/)).toBeNull();
   });
 
-  it('lists the session’s plans on their tab, the one a link names open', async () => {
+  it('lists the session’s plans on their tab, each leading to its own page', async () => {
     server(routes({ '/api/projects/x/sessions/s1/plans': () => page([
-      { planKey: 'plan-1', promptId: P1, title: 'Ship the thing', status: 'active', content: '# Plan\n- [x] one\n- [ ] two', blobKey: null, originPath: '.claude/plans/ship.md', progress: '1/2', updatedBy: null, createdAt: NOW - 5000, updatedAt: NOW - 1000, orderedAt: NOW - 1000 },
+      { planKey: 'plan-1', promptId: P1, title: 'Ship the thing', status: 'in_progress', content: '# Plan\n- [x] one\n- [ ] two', blobKey: null, originPath: '.claude/plans/ship.md', progress: '1/2', updatedBy: null, createdAt: NOW - 5000, updatedAt: NOW - HOUR, orderedAt: NOW - 1000 },
     ]) }));
-    mount('/p/x/sessions/s1?tab=plans&plan=plan-1');
-    const card = await screen.findByTestId('plan-plan-1');
-    expect(card.textContent).toContain('Ship the thing');
-    expect(card.textContent).toContain('1/2 items');
-    expect([progressParts('2/3'), progressParts('N/A')]).toEqual([{ checked: 2, total: 3 }, null]);
+    mount('/p/x/sessions/s1?tab=plans');
+    const line = await waitFor(() => {
+      const found = document.querySelector<HTMLElement>('[data-plan-line="in_progress"]');
+      if (found === null) throw new Error('the plan is not listed yet');
+      return found;
+    });
+    expect(line.textContent).toContain('In progress');
+    expect(line.textContent).toContain('1 of 2 items done');
+    expect(line.textContent).toContain('updated 1 h ago');
+    expect(within(line).getByRole('link', { name: 'Ship the thing' }).getAttribute('href')).toBe('/p/x/plans/plan-1?session=s1');
   });
 
   it('folds the transcript, context and attachments into Raw data, links the transcript by piece, and never fetches its bytes', async () => {

@@ -29,11 +29,13 @@ export interface SearchInputProps extends Omit<InputHTMLAttributes<HTMLInputElem
   label: string;
   /** A keyboard hint at the right edge, such as "/" or "⌘K". */
   hint?: ReactNode;
+  /** The command's own field: taller, with body-size type. */
+  large?: boolean;
 }
 
 /** A search field that fills its row: a leading glass, the query, and an optional keyboard hint. */
 export const SearchInput = forwardRef<HTMLInputElement, SearchInputProps>(
-  ({ label, hint, className, placeholder, ...props }, ref) => (
+  ({ label, hint, large = false, className, placeholder, ...props }, ref) => (
     <div className={cn('relative flex min-w-0 flex-1 items-center', className)}>
       <Search aria-hidden className="pointer-events-none absolute left-s3 size-s4 text-muted" />
       <input
@@ -42,7 +44,7 @@ export const SearchInput = forwardRef<HTMLInputElement, SearchInputProps>(
         aria-label={label}
         placeholder={placeholder ?? label}
         data-filter-input=""
-        className={cn(fieldFrame, focusRing, 'pl-[calc(var(--s-3)+24px)]', hint != null && 'pr-s12', '[&::-webkit-search-cancel-button]:hidden')}
+        className={cn(fieldFrame, focusRing, 'pl-[calc(var(--s-3)+24px)]', hint != null && 'pr-s12', large && 'h-[44px] t-body', '[&::-webkit-search-cancel-button]:hidden')}
         {...props}
       />
       {hint != null && (

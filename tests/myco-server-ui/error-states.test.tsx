@@ -18,7 +18,8 @@ const PROJECTS = { projects: [{ projectId: 'x', name: 'Project X', createdAt: 0,
 
 /** Every page under the project list, with the master/detail pages both bare and with a row named. */
 export const PAGES = [
-  '/p/x', '/p/x/sessions', '/p/x/sessions/s1', '/p/x/plans', '/p/x/spores', '/p/x/spores/sp1', '/p/x/runs', '/p/x/runs/r1',
+  '/p/x', '/p/x/sessions', '/p/x/sessions/s1', '/knowledge', '/knowledge/plans', '/p/x/knowledge', '/p/x/knowledge/plans', '/p/x/knowledge/map',
+  '/p/x/spores/sp1', '/p/x/plans/11111111-2222-4333-8444-555555555555', '/p/x/runs', '/p/x/runs/r1',
   '/p/x/access', '/access', '/status', '/measures', '/settings', '/operations',
 ];
 
@@ -43,7 +44,8 @@ async function saysItFailed(path: string): Promise<void> {
   await waitFor(() => {
     expect(screen.getAllByRole('alert').length).toBeGreaterThan(0);
     expect(document.body.textContent ?? '').not.toMatch(/Loading/);
-    expect(screen.queryAllByRole('status', { name: /Loading/ })).toEqual([]);
+    // A count, not the elements: a failed match would print each element's whole object graph.
+    expect(screen.queryAllByRole('status', { name: /Loading/ }).map((el) => el.getAttribute('aria-label'))).toEqual([]);
   }, { timeout: 3000 });
 }
 
