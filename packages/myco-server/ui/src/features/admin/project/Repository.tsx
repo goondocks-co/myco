@@ -11,8 +11,8 @@ import type { RepositoryRow } from './wire';
 
 /** How code tasks reach the repository, in words; never the credential. */
 function accessWords(connection: RepositoryRow): string {
-  if (connection.credential === null) return 'Public, with no credential';
-  return connection.credential.readable ? 'With a read credential' : 'Its read credential can no longer be opened; enter it again';
+  if (connection.credential === null) return 'Public, with no token';
+  return connection.credential.readable ? 'With a read-only token' : 'Its token can no longer be opened; enter it again';
 }
 
 /**
@@ -42,7 +42,7 @@ export function Repository({ projectId }: { projectId: string }) {
     <AdminSection
       id={PROJECT_SETTINGS_ANCHORS.repository}
       title="Repository"
-      description="Code tasks, such as the code map, read a committed snapshot of this repository. A public repository needs no credential."
+      description="Code tasks, such as the code map, read a committed snapshot of this repository. A public repository needs no token."
       actions={sectionActions}
     >
       {query.isPending ? <LoadingState label="Loading the repository" count={2} />
@@ -62,7 +62,7 @@ export function Repository({ projectId }: { projectId: string }) {
       <Dialog open={editing} onOpenChange={setEditing}>
         <DialogContent
           title={connection === null ? 'Connect a repository' : 'Edit the repository'}
-          description="Choose the repository and branch code tasks should read. For a private repository, give a credential limited to reading it."
+          description="Choose the repository and branch code tasks should read. For a private repository, give a token that can only read it."
         >
           {editing && <RepositoryForm projectId={projectId} connection={connection} onClose={() => setEditing(false)} />}
         </DialogContent>
@@ -108,7 +108,7 @@ function RepositoryForm({ projectId, connection, onClose }: { projectId: string;
       <label htmlFor="repository-branch" className="t-small text-muted">Branch</label>
       <Input id="repository-branch" required value={branch} onChange={(e) => setBranch(e.target.value)} />
       <div className="flex items-center justify-between gap-s3 py-s1">
-        <label htmlFor="repository-public" className="t-body text-ink">Use without a credential</label>
+        <label htmlFor="repository-public" className="t-body text-ink">Use without a token</label>
         <Switch id="repository-public" checked={publicAccess} onCheckedChange={(checked) => { setPublicAccess(checked); setToken(''); }} />
       </div>
       {!publicAccess && (
@@ -123,7 +123,7 @@ function RepositoryForm({ projectId, connection, onClose }: { projectId: string;
             required={!canKeepCredential}
             value={token}
             onChange={(e) => setToken(e.target.value)}
-            placeholder={canKeepCredential ? 'Leave blank to keep the current credential' : ''}
+            placeholder={canKeepCredential ? 'Leave blank to keep the current token' : ''}
           />
         </>
       )}

@@ -24,13 +24,13 @@ type Same<A, B> = [A] extends [B] ? ([B] extends [A] ? true : false) : false;
 type Reads<Server, Dashboard> = [Server] extends [Dashboard] ? true : false;
 
 /** `GET /api/settings`: one leaf as `deploymentLeaves` builds it. */
-type ServerLeaf = { leaf: string; configured: boolean; value: unknown; updatedAt: number | null; updatedBy: string | null };
+type ServerLeaf = { leaf: string; configured: boolean; value: unknown; updatedAt: number | null; updatedBy: string | null; retired: boolean };
 /** `GET /api/secrets`: each slot named and described, as `handleSecrets` answers. */
-type ServerSecret = { name: string } & SecretDescription;
+type ServerSecret = { name: string; retired: boolean } & SecretDescription;
 
 const SAME: [
   Same<Settings.LeafRow, ServerLeaf>,
-  Same<Omit<Settings.SecretRow, 'name'>, SecretDescription>,
+  Same<Omit<Settings.SecretRow, 'name' | 'retired'>, SecretDescription>,
   Same<Project.KeyDescription, SecretDescription>,
   Same<Project.ReleaseCheck, ReleaseCheck>,
 ] = [true, true, true, true];

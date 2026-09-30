@@ -1,9 +1,4 @@
-import { type ReactNode } from 'react';
-import { Link as RouterLink } from 'react-router-dom';
-import { ChevronRight } from 'lucide-react';
-import {
-  Card, CopyButton, ErrorState, FactRow, FactsPanel, focusRing, Link, LoadingState, Markdown, StatusChip, TypeChip,
-} from '../../design';
+import { ActionLink, Breadcrumbs, Card, CopyButton, ErrorState, FactRow, FactsPanel, ItemLink, LoadingState, Markdown, StatusChip, TypeChip } from '../../design';
 import { useMembers } from '../../hooks/use-access';
 import { useSporeArticle, useSporeNeighbours } from '../../hooks/use-knowledge';
 import { useSession } from '../../hooks/use-sessions';
@@ -54,15 +49,7 @@ function Article({ answer, projectId, projectName, now }: { answer: SporeArticle
   const current = spore.status === DEFAULT_SPORE_STATUS;
   return (
     <article data-spore-article="" className="flex w-full flex-col gap-s5">
-      <nav aria-label="Breadcrumb">
-        <ol className="flex flex-wrap items-center gap-s1 t-small text-muted">
-          <li><Crumb to={projectPath(projectId, KNOWLEDGE_SUFFIX)}>Knowledge</Crumb></li>
-          <li aria-hidden><ChevronRight className="size-s4" /></li>
-          <li><Crumb to={projectPath(projectId, KNOWLEDGE_SUFFIX)}>Spores</Crumb></li>
-          <li aria-hidden><ChevronRight className="size-s4" /></li>
-          <li><Crumb to={projectPath(projectId)}>{projectName}</Crumb></li>
-        </ol>
-      </nav>
+      <Breadcrumbs items={[{ label: 'Knowledge', to: projectPath(projectId, KNOWLEDGE_SUFFIX) }, { label: 'Spores', to: projectPath(projectId, KNOWLEDGE_SUFFIX) }, { label: projectName, to: projectPath(projectId) }]} />
 
       <div className="grid items-start gap-s6 lg:grid-reading lg:gap-x-s10">
         <div className="flex min-w-0 max-w-measure flex-col gap-s5">
@@ -114,9 +101,6 @@ function Article({ answer, projectId, projectName, now }: { answer: SporeArticle
   );
 }
 
-function Crumb({ to, children }: { to: string; children: ReactNode }) {
-  return <RouterLink to={to} className={cn('rounded-chip hover:text-ink hover:underline', focusRing)}>{children}</RouterLink>;
-}
 
 /** A replaced spore says so before anything else, and leads to what replaced it. */
 function Replaced({ projectId, ids, now }: { projectId: string; ids: readonly string[]; now: number }) {
@@ -146,9 +130,9 @@ function Neighbours({ projectId, ids, label, now }: { projectId: string; ids: re
               ) : (
                 <>
                   <TypeChip>{sporeTypeWord(spore.observationType)}</TypeChip>
-                  <Link to={projectPath(projectId, `/spores/${encodeURIComponent(id)}`)} className="line-clamp-2 min-w-0">
+                  <ItemLink to={projectPath(projectId, `/spores/${encodeURIComponent(id)}`)} className="text-primary">
                     {sporeHeadline(spore, now).text}
-                  </Link>
+                  </ItemLink>
                   <span className="shrink-0 t-meta text-muted">{shortDay(spore.createdAt, now)}</span>
                 </>
               )}
@@ -174,7 +158,7 @@ function Origin({ answer, projectId, now }: { answer: SporeArticleAnswer; projec
       {author.kind === 'run' && (
         <p className="flex flex-col gap-s1 t-small text-ink-2" data-spore-author="run">
           Myco wrote it while learning from your sessions.
-          <Link to={runPath(projectId, author.runId)} className="w-fit">The run that wrote it →</Link>
+          <ActionLink to={runPath(projectId, author.runId)}>The run that wrote it →</ActionLink>
         </p>
       )}
       {author.kind === 'member' && (
@@ -206,8 +190,8 @@ function FromSession({ projectId, sessionId, promptId }: { projectId: string; se
         ? <span className="t-small text-muted">{session.isPending ? 'Loading the session…' : 'A session'}</span>
         : <span className="t-small font-medium text-ink">{sessionHeadingText(session.data.session)}</span>}
       <span className="flex flex-wrap gap-x-s4 gap-y-s1 t-small">
-        <Link to={base}>Open the session →</Link>
-        {turn !== null && <Link to={turn}>The turn it came from →</Link>}
+        <ActionLink to={base}>Open the session →</ActionLink>
+        {turn !== null && <ActionLink to={turn}>The turn it came from →</ActionLink>}
       </span>
     </div>
   );

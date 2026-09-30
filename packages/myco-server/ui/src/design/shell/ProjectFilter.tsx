@@ -79,7 +79,7 @@ export function ProjectFilter({ items, clearHref, allHref, onNavigate, now = Dat
                 title={clears ? 'Show every project' : item.active ? `Showing only ${item.name}` : `Show only ${item.name}`}
                 data-project-filter-item=""
                 className={cn(
-                  'group flex h-s8 items-center gap-s3 rounded-control px-s3 t-control transition-colors duration-120',
+                  'group flex h-s8 min-h-tap items-center gap-s3 rounded-control px-s3 t-control transition-colors duration-120',
                   item.active ? 'bg-primary-bg font-medium text-ink' : 'text-ink-2 hover:bg-surface-2 hover:text-ink',
                   focusRing,
                 )}
@@ -103,7 +103,7 @@ export function ProjectFilter({ items, clearHref, allHref, onNavigate, now = Dat
         <RouterLink
           to={allHref}
           onClick={onNavigate}
-          className={cn('flex h-s8 shrink-0 items-center rounded-control px-s3 t-small text-muted transition-colors duration-120 hover:bg-surface-2 hover:text-ink', focusRing)}
+          className={cn('flex h-s8 min-h-tap shrink-0 items-center rounded-control px-s3 t-small text-muted transition-colors duration-120 hover:bg-surface-2 hover:text-ink', focusRing)}
         >
           {hidden > 0 ? `${hidden} more` : 'All projects'}
         </RouterLink>

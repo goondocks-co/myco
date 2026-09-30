@@ -11,8 +11,10 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 
 import App from '../../packages/myco-server/ui/src/App';
 import { AppearanceProvider } from '../../packages/myco-server/ui/src/providers/appearance';
-import { LEAF_FIELDS, LEAF_GROUPS, LIVE_FIELDS, groupsOf } from '../../packages/myco-server/ui/src/features/admin/settings/catalogue';
+import { LEAF_FIELDS, LEAF_GROUPS, groupsOf } from '../../packages/myco-server/ui/src/features/admin/settings/catalogue';
 import { agentListRefusal, LeafControl, savedWords, WORKER_AGENTS } from '../../packages/myco-server/ui/src/features/admin/settings/LeafControl';
+import { isRetired } from '../../packages/myco-server/ui/src/features/admin/settings/retired';
+import { RETIRED_LEAVES, RETIRED_SECRET_SLOTS } from '../../packages/myco-server/src/core/settings';
 import { oldTabTarget } from '../../packages/myco-server/ui/src/features/admin/settings/SettingsPage';
 import { liftsAt, policyWords, progressWords, waitingWords } from '../../packages/myco-server/ui/src/features/admin/settings/titling';
 import { SETTINGS_SECTIONS } from '../../packages/myco-server/ui/src/routes/nav';
@@ -36,18 +38,23 @@ const MEMBERS = { members: [
 const NOW = Date.now();
 const SECRET = 'sk-full-secret-value-1234567890';
 
-const leaves = (over: Record<string, Partial<{ value: unknown; updatedBy: string; updatedAt: number }>> = {}) => ({
+/** One leaf as the server answers it, marked retired as the server marks it (`RETIRED_LEAVES`). */
+const rowFor = (leaf: string) => ({ leaf, configured: false, value: null as unknown, updatedAt: null as number | null, updatedBy: null as string | null, retired: RETIRED_LEAVES.has(leaf) });
+/** The settings the page offers, and those it keeps under Older settings, as the server's flags decide. */
+const LIVE_FIELDS = LEAF_FIELDS.filter((f) => !isRetired(f, rowFor(f.leaf)));
+const RETIRED_FIELDS = LEAF_FIELDS.filter((f) => isRetired(f, rowFor(f.leaf)));
+const leaves = (over: Record<string, Partial<{ value: unknown; updatedBy: string; updatedAt: number; retired: boolean }>> = {}) => ({
   leaves: LEAF_FIELDS.map((f) => {
     const o = over[f.leaf];
-    return { leaf: f.leaf, configured: o !== undefined, value: o?.value ?? null, updatedAt: o?.updatedAt ?? null, updatedBy: o?.updatedBy ?? null };
+    return { ...rowFor(f.leaf), configured: o?.value !== undefined, value: o?.value ?? null, updatedAt: o?.updatedAt ?? null, updatedBy: o?.updatedBy ?? null, retired: o?.retired ?? RETIRED_LEAVES.has(f.leaf) };
   }),
 });
 const secrets = (anthropicConfigured: boolean) => ({ secrets: [
-  { name: 'anthropic', configured: anthropicConfigured, readable: true, maskedValue: anthropicConfigured ? 's…c' : null, updatedAt: anthropicConfigured ? NOW : null, updatedBy: anthropicConfigured ? ADA : null },
-  { name: 'codex', configured: false, readable: true, maskedValue: null, updatedAt: null, updatedBy: null },
-  { name: 'openai', configured: false, readable: true, maskedValue: null, updatedAt: null, updatedBy: null },
-  { name: 'openrouter', configured: false, readable: true, maskedValue: null, updatedAt: null, updatedBy: null },
-  { name: 'github', configured: false, readable: true, maskedValue: null, updatedAt: null, updatedBy: null },
+  { name: 'anthropic', retired: RETIRED_SECRET_SLOTS.has('anthropic'), configured: anthropicConfigured, readable: true, maskedValue: anthropicConfigured ? 's…c' : null, updatedAt: anthropicConfigured ? NOW : null, updatedBy: anthropicConfigured ? ADA : null },
+  { name: 'codex', retired: RETIRED_SECRET_SLOTS.has('codex'), configured: false, readable: true, maskedValue: null, updatedAt: null, updatedBy: null },
+  { name: 'openai', retired: RETIRED_SECRET_SLOTS.has('openai'), configured: false, readable: true, maskedValue: null, updatedAt: null, updatedBy: null },
+  { name: 'openrouter', retired: RETIRED_SECRET_SLOTS.has('openrouter'), configured: false, readable: true, maskedValue: null, updatedAt: null, updatedBy: null },
+  { name: 'github', retired: RETIRED_SECRET_SLOTS.has('github'), configured: false, readable: true, maskedValue: null, updatedAt: null, updatedBy: null },
 ] });
 const TITLING = { scheduledTasksEnabled: true, backfillEnabled: true, runsPerDay: 24, intervalSeconds: 900, runIn: ['active', 'idle'], overlap: 'queue', enabled: true, remaining: 12, owed: 0, usedToday: 3, inFlight: 1, completedToday: 2, failedToday: 0, waiting: null };
 
@@ -134,7 +141,7 @@ describe('Settings, in five sections', () => {
       if (groups.length === 0) continue;
       await section(s.label);
       for (const g of groups) {
-        const live = g.leaves.filter((f) => f.retired !== true);
+        const live = g.leaves.filter((f) => LIVE_FIELDS.includes(f));
         if (live.length === 0) continue;
         const card = await group(g.label);
         for (const f of live) {
@@ -146,10 +153,11 @@ describe('Settings, in five sections', () => {
     expect(controls).toBe(LIVE_FIELDS.length);
     await section('Myco’s work');
     await group('What sessions receive');
-    // Nothing stored: the status says the server's default once, with what it is.
-    expect(statusOf('cortex.digest.tier')).toBe('Server default: 5000 tokens');
-    expect(statusOf('agent.scheduled_tasks_active_window_days')).toBe('Server default: 14 days');
-    expect(statusOf('agent.limits.concurrent_runs')).toBe('Server default: no limit');
+    // Nothing stored: the field shows the server's default in words, so the status says only that it is the default.
+    expect(statusOf('cortex.digest.tier')).toBe('Server default');
+    expect(statusOf('agent.scheduled_tasks_active_window_days')).toBe('Server default');
+    expect(statusOf('agent.limits.concurrent_runs')).toBe('Server default');
+    expect((screen.getByLabelText('Tasks at once') as HTMLInputElement).placeholder).toBe('No limit');
     // A retired setting with a value stored sits under Older settings, and says nothing reads it.
     fireEvent.click(within(await screen.findByRole('region', { name: 'Older settings' })).getByRole('button', { name: /^Older settings/ }));
     await waitFor(() => expect(statusOf('cortex.digest.inject_on_session_start')).toBe('Nothing on this server reads it any more.'));
@@ -243,7 +251,7 @@ describe('Settings, in five sections', () => {
       '/api/settings/worker.harness': (init) => { held = JSON.parse(String(init!.body)).value; return Response.json({ applied: true }); },
     }));
     mount('/settings');
-    await waitFor(() => expect(statusOf('worker.harness')).toBe('Server default: none'));
+    await waitFor(() => expect(statusOf('worker.harness')).toBe('Server default'));
     await pick('Preferred agent', 'Codex');
     await waitFor(() => expect(sent).toHaveLength(1));
     expect(sent[0]).toMatchObject({ path: '/api/settings/worker.harness', body: { value: 'codex' } });
@@ -384,14 +392,14 @@ describe('Settings, in five sections', () => {
    * "Older settings" at its section's foot, read-only, and never writes.
    */
   it('leaves out a retired setting with no value stored, and shows one with a value stored under Older settings, read-only', async () => {
-    const retired = LEAF_FIELDS.filter((f) => f.retired === true);
+    const retired = RETIRED_FIELDS;
     expect(retired.length).toBeGreaterThan(0);
     server(base({ '/api/settings': () => Response.json(leaves()) }));
     mount('/settings');
     await group('When Myco works');
     for (const s of SETTINGS_SECTIONS.filter((x) => x.id !== 'access')) {
       await section(s.label);
-      await screen.findByRole('group', { name: groupsOf(s.id).find((g) => g.leaves.some((f) => f.retired !== true))!.label });
+      await screen.findByRole('group', { name: groupsOf(s.id).find((g) => g.leaves.some((f) => LIVE_FIELDS.includes(f)))!.label });
       for (const f of retired) expect({ leaf: f.leaf, shown: document.querySelector(`[data-setting="${f.leaf}"]`) !== null }).toEqual({ leaf: f.leaf, shown: false });
       // A boolean, not the element: a failed match would print the element's whole object graph.
       expect({ section: s.id, older: document.querySelector('[data-older-settings]') !== null }).toEqual({ section: s.id, older: false });
@@ -417,6 +425,34 @@ describe('Settings, in five sections', () => {
     expect(sent).toEqual([]);
   });
 
+  it('takes which settings and keys are retired from the server\'s answer, not from a list of its own', async () => {
+    // The server says the digest's size is read no more, and that the skills' stale-after is read again.
+    server(base({
+      '/api/settings': () => Response.json(leaves({
+        'cortex.digest.tier': { value: 8000, updatedBy: ADA, updatedAt: NOW, retired: true },
+        'skills.usage_stale_days': { retired: false },
+      })),
+      '/api/secrets': () => {
+        const answer = secrets(false);
+        answer.secrets[1] = { ...answer.secrets[1]!, retired: true, configured: true, maskedValue: 'c…x', updatedAt: NOW, updatedBy: ADA };
+        return Response.json(answer);
+      },
+    }));
+    mount('/settings');
+    const older = await screen.findByRole('region', { name: 'Older settings' });
+    expect(within(await group('What sessions receive')).queryByLabelText('Digest size')).toBeNull();
+    fireEvent.click(within(older).getByRole('button', { name: 'Older settings (1)' }));
+    const digest = await within(older).findByLabelText('Digest size') as HTMLButtonElement;
+    expect({ locked: digest.disabled || digest.getAttribute('aria-disabled') === 'true' || digest.getAttribute('data-disabled') !== null }).toEqual({ locked: true });
+    await section('Myco’s work');
+    expect(document.querySelector('[data-setting="skills.usage_stale_days"]') !== null).toBe(true);
+
+    await section('Models and keys');
+    const keys = await group('Keys');
+    expect(within(keys).queryByText('Codex (OpenAI)')).toBeNull();
+    expect(await screen.findByRole('button', { name: 'Older keys' })).toBeTruthy();
+  });
+
   it('shows every switch at the value the server applies while nothing is stored', async () => {
     server(base({ '/api/settings': () => Response.json(leaves()) }));
     mount('/settings');
@@ -437,7 +473,7 @@ describe('Settings, in five sections', () => {
     const limit = await screen.findByLabelText('Items per prompt');
     fireEvent.change(limit, { target: { value: '3' } });
     fireEvent.blur(limit);
-    await waitFor(() => expect(statusOf('cortex.spores.max_per_prompt')).toBe('The server refused that value: expected a whole number'));
+    await waitFor(() => expect(statusOf('cortex.spores.max_per_prompt')).toBe('The server refused that value.'));
   });
 
   it('words where a value stands, naming a person only by a name', () => {
@@ -479,7 +515,7 @@ describe('older links to a Settings tab', () => {
 
 describe('provider keys', () => {
   it('stores a key from the session alone and never shows it afterwards, and removes one from its menu behind a confirm', async () => {
-    const { sent } = server(base({ '/api/secrets/anthropic': (init) => (init?.method === 'DELETE' ? Response.json({ deleted: true }) : Response.json({ name: 'anthropic', configured: true, readable: true, maskedValue: 's…0', updatedAt: NOW, updatedBy: ADA })) }));
+    const { sent } = server(base({ '/api/secrets/anthropic': (init) => (init?.method === 'DELETE' ? Response.json({ deleted: true }) : Response.json({ name: 'anthropic', retired: RETIRED_SECRET_SLOTS.has('anthropic'), configured: true, readable: true, maskedValue: 's…0', updatedAt: NOW, updatedBy: ADA })) }));
     mount('/settings/models');
     const keys = await group('Keys');
     await waitFor(() => expect(within(keys).getByText(/s…c/)).toBeTruthy());
@@ -512,7 +548,7 @@ describe('provider keys', () => {
     fireEvent.click(within(within(keys).getByText('Codex (OpenAI)').closest('[data-setting]') as HTMLElement).getByRole('button', { name: 'Set' }));
     fireEvent.change(await screen.findByLabelText('Key'), { target: { value: 'x\ny' } });
     fireEvent.click(screen.getByRole('button', { name: 'Save key' }));
-    expect((await screen.findByRole('alert')).textContent).toBe('a key carries no line breaks');
+    expect((await screen.findByRole('alert')).textContent).toBe('The server could not accept that.');
     expect(screen.getByRole('dialog')).toBeTruthy();
   });
 
@@ -521,10 +557,10 @@ describe('provider keys', () => {
     mount('/settings/models');
     const keys = await group('Keys');
     const row = (label: string) => within(keys).getByText(label).closest('[data-setting]')!.textContent ?? '';
-    expect(row('Codex (OpenAI)')).toContain('Runs of Codex use this key in place of the worker\'s own login');
+    expect(row('Codex (OpenAI)')).toContain('Codex uses this key for Myco’s work in place of the machine’s own sign-in');
     expect(row('OpenAI')).toContain('Used for embeddings, when the embedding provider is OpenAI.');
     expect(row('OpenAI')).not.toContain('Codex');
-    expect(row('Anthropic')).toContain('Runs of Claude Code, OpenCode and Cursor');
+    expect(row('Anthropic')).toContain('Claude Code, OpenCode and Cursor use this key');
     // Nothing reads the GitHub key: with none stored it is not offered.
     expect(within(keys).queryByText('GitHub')).toBeNull();
     expect(screen.queryByRole('button', { name: 'Older keys' })).toBeNull();

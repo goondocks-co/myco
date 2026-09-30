@@ -14,7 +14,7 @@ export function NotAMember({ login }: { login: string }) {
   const pending = readPendingLink();
   return (
     <div className="min-h-screen bg-bg text-ink">
-      <main className="mx-auto flex w-full max-w-[600px] flex-col gap-s6 p-gutter pt-s12">
+      <main className="mx-auto flex w-full max-w-narrow flex-col gap-s6 p-gutter pt-s12">
         <h1 className="t-display text-ink">{login ? `@${login}` : 'This account'} isn&rsquo;t connected to a member yet</h1>
         <p className="t-body text-ink-2">The dashboard shows a member&rsquo;s projects, and a member joins from a machine. To connect this account:</p>
         <ol className="flex list-decimal flex-col gap-s3 pl-s5 t-body text-ink-2">

@@ -120,7 +120,7 @@ export const MACHINE_IDENTITY_NOTE = 'A machine belongs to one member of a Deplo
   + 'Nothing moves a machine to another member';
 
 /** The same fact as an administrator reads it, when removing a member. */
-export const MEMBER_KEEPS_MACHINES = 'Their machines stay theirs: none of them can join this Deployment as another member, and none can be moved to one.';
+export const MEMBER_KEEPS_MACHINES = 'Their machines stay theirs: none of them can join this server as another member, and none can be moved to one.';
 
 /** The same act as an administrator reads it, for a machine they stopped or whose credential ended. */
 export const REJOIN_FOR_ADMIN = `To write again, the machine needs an invitation for its member `

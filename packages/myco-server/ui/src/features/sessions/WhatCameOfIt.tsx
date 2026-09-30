@@ -1,6 +1,4 @@
-import { Link as RouterLink } from 'react-router-dom';
-import { Card, focusRing, StatusChip, TypeChip } from '../../design';
-import { cn } from '../../lib/cn';
+import { ActionLink, Card, ItemLink, StatusChip, TypeChip } from '../../design';
 import { shortDay, whenWithTime } from '../today/words';
 import type { SessionOutcome, SessionRun } from './wire';
 import { count, readWords, runHeadline, runProgress, sporeLine, sporeTypeWord } from './words';
@@ -15,7 +13,6 @@ export interface WhatCameOfItProps {
   sporesHref: string;
 }
 
-const itemLink = cn('rounded-chip text-ink-2 hover:text-ink hover:underline', focusRing);
 
 /**
  * What came of a session: the spores written from it and the runs of Myco's
@@ -43,27 +40,27 @@ export function WhatCameOfIt({ projectId, outcome, open, now, sporesHref }: What
             <li key={spore.id} className="flex min-w-0 items-baseline gap-s2 t-small">
               <TypeChip>{sporeTypeWord(spore.observationType)}</TypeChip>
               {spore.agentLine !== null && spore.agentLine.trim() !== '' ? (
-                <RouterLink to={`${project}/spores/${encodeURIComponent(spore.id)}`} className={cn(itemLink, 'line-clamp-2 min-w-0')}>
+                <ItemLink to={`${project}/spores/${encodeURIComponent(spore.id)}`} className="text-ink-2 hover:text-ink">
                   {sporeLine({ agentLine: spore.agentLine, content: '' })}
-                </RouterLink>
+                </ItemLink>
               ) : (
                 // A spore written without its one line is named by its type and the day it was saved.
-                <RouterLink
+                <ItemLink
                   to={`${project}/spores/${encodeURIComponent(spore.id)}`}
                   aria-label={`${sporeTypeWord(spore.observationType)} from ${shortDay(spore.createdAt, now)}`}
-                  className={cn(itemLink, 'min-w-0')}
+                  className="text-ink-2 hover:text-ink"
                 >
                   {shortDay(spore.createdAt, now)}
-                </RouterLink>
+                </ItemLink>
               )}
             </li>
           ))}
         </ul>
       )}
       {spores.total > spores.items.length && (
-        <RouterLink to={sporesHref} className={cn('w-fit rounded-chip t-small font-medium text-primary hover:underline', focusRing)}>
+        <ActionLink to={sporesHref}>
           All {count(spores.total, 'spore')} →
-        </RouterLink>
+        </ActionLink>
       )}
       {runs.length > 0 && (
         <ul aria-label="Myco’s work on this session" className="flex flex-col gap-s3 border-t border-line pt-s3">
@@ -81,7 +78,7 @@ function RunLine({ run, project, now }: { run: SessionRun; project: string; now:
   return (
     <li className="flex flex-col gap-s1" data-outcome-run={run.readAt === null ? 'unrecorded' : 'read'}>
       <span className="flex min-w-0 flex-wrap items-baseline gap-x-s2 t-small font-medium">
-        <RouterLink to={`${project}/work/runs/${encodeURIComponent(run.runId)}`} className={itemLink}>{runHeadline(run)}</RouterLink>
+        <ItemLink to={`${project}/work/runs/${encodeURIComponent(run.runId)}`} className="text-ink-2 hover:text-ink">{runHeadline(run)}</ItemLink>
         {failed && <StatusChip tone="bad">Failed</StatusChip>}
         {progress !== null && <StatusChip tone="warn">{progress}</StatusChip>}
       </span>

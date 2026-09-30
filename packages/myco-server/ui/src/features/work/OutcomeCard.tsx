@@ -1,6 +1,6 @@
 import { type ReactNode } from 'react';
 import { Link as RouterLink } from 'react-router-dom';
-import { focusRing, StatusChip, TypeChip } from '../../design';
+import { ActionLink, focusRing, ItemLink, StatusChip, TypeChip } from '../../design';
 import { cn } from '../../lib/cn';
 import { causeSentence, count, failureNextStep } from '../today/words';
 import type { FailureGroup, KindSummary } from './outcomes';
@@ -64,9 +64,7 @@ export function EvidenceLines({ label, lines, more }: { label: string; lines: re
         <li key={line.key} className="flex min-w-0 items-baseline gap-s3 t-small text-ink-2">
           {line.chip !== undefined && <TypeChip className="shrink-0">{line.chip}</TypeChip>}
           <span className="flex min-w-0 flex-col">
-            <span className="line-clamp-2">
-              {line.to === undefined ? line.text : <InkLink to={line.to}>{line.text}</InkLink>}
-            </span>
+            {line.to === undefined ? <span className="line-clamp-2">{line.text}</span> : <ItemLink to={line.to}>{line.text}</ItemLink>}
             {line.detail !== undefined && <span className="t-meta text-muted">{line.detail}</span>}
           </span>
         </li>
@@ -88,9 +86,9 @@ export function InkLink({ to, children }: { to: string; children: ReactNode }) {
 /** A link onward, in the link colour with an arrow: "See all 180 spores →". */
 export function OnwardLink({ to, children }: { to: string; children: ReactNode }) {
   return (
-    <RouterLink to={to} className={cn('w-fit rounded-chip t-small font-medium text-primary hover:underline', focusRing)}>
+    <ActionLink to={to}>
       {children} →
-    </RouterLink>
+    </ActionLink>
   );
 }
 
@@ -112,7 +110,8 @@ export interface RunLineItem {
 const TONE_CHIP: Readonly<Record<RunLineItem['tone'], { tone: 'ok' | 'warn' | 'bad' | 'neutral'; word: string } | null>> = {
   plain: null,
   bad: { tone: 'bad', word: 'Failed' },
-  held: { tone: 'neutral', word: 'Held off' },
+  // A held-off run's own words start "Held off:", so a chip would say it twice.
+  held: null,
   live: { tone: 'ok', word: 'Now' },
 };
 
@@ -125,12 +124,15 @@ export function RunLines({ label, items, state }: { label: string; items: readon
         const chip = TONE_CHIP[item.tone];
         return (
           <li key={item.key} className="relative flex min-h-row-tight items-center gap-s3 px-s3 py-s2 transition-colors duration-120 hover:bg-surface-2" data-run-line={item.tone}>
-            <time dateTime={new Date(item.at).toISOString()} className="w-time-col shrink-0 whitespace-nowrap t-small tabular-nums text-faint">{item.time}</time>
+            {/* On a phone the day sits above the time, so the column stays narrow and the words get the room. */}
+            <time dateTime={new Date(item.at).toISOString()} className="flex w-s12 shrink-0 flex-col t-small tabular-nums text-faint sm:w-time-col sm:flex-row sm:gap-s1">
+              {item.time.split(' ').map((part) => <span key={part} className="whitespace-nowrap">{part}</span>)}
+            </time>
             <span className="flex min-w-0 flex-1 flex-col sm:flex-row sm:items-baseline sm:gap-s3">
               <RouterLink
                 to={item.to}
                 state={state}
-                className={cn('line-clamp-2 min-w-0 rounded-chip t-small text-ink-2 after:absolute after:inset-0 sm:line-clamp-none sm:truncate', item.tone === 'held' && 'text-muted', focusRing)}
+                className={cn('min-w-0 break-words rounded-chip t-small text-ink-2 after:absolute after:inset-0', item.tone === 'held' && 'text-muted', focusRing)}
               >
                 {item.words}
               </RouterLink>

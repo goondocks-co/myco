@@ -1,6 +1,4 @@
-import { Link as RouterLink } from 'react-router-dom';
-import { Button, Card, Disclosure, errorWords, focusRing, HealthDot, Skeleton } from '../../design';
-import { cn } from '../../lib/cn';
+import { ActionLink, Button, Card, Disclosure, HealthDot, errorWords, Skeleton } from '../../design';
 import type { AttentionAnswer, AttentionItem } from './wire';
 import { ATTENTION_CHECKS, attentionWords, listed, type NeedsYouWords } from './words';
 
@@ -15,9 +13,9 @@ export function NeedsYouItem({ tone, words }: { tone: AttentionItem['tone']; wor
         <p className="t-body font-medium text-ink">{words.title}</p>
         <p className="t-small text-muted">{words.detail}</p>
         {words.action !== null && (
-          <RouterLink to={words.action.to} className={cn('w-fit rounded-chip t-small font-medium text-primary hover:underline', focusRing)}>
+          <ActionLink to={words.action.to}>
             {words.action.label} →
-          </RouterLink>
+          </ActionLink>
         )}
       </div>
     </li>

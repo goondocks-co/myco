@@ -1,8 +1,6 @@
-import { useEffect, type ReactNode } from 'react';
-import { Link as RouterLink, Navigate, Outlet, useLocation, useParams, useSearchParams } from 'react-router-dom';
-import {
-  COMPACT_QUERY, EmptyState, ErrorState, focusRing, LoadingState, PHONE_QUERY, Skeleton, StatusChip,
-} from '../design';
+import { type ReactNode } from 'react';
+import { Navigate, Outlet, useLocation, useSearchParams } from 'react-router-dom';
+import { ActionLink, COMPACT_QUERY, EmptyState, ErrorState, LoadingState, PHONE_QUERY, Skeleton, StatusChip } from '../design';
 import { ArchivedNotice } from '../features/today/ArchivedNotice';
 import { CapturePanel } from '../features/today/CapturePanel';
 import { NeedsYouPanel, NeedsYouSummary, type NeedsYouProps } from '../features/today/NeedsYou';
@@ -11,10 +9,10 @@ import { sporesWritten, type SessionEntry, type TimelineEntry, type WorkEntry } 
 import { FailureNote, KickerProject, KickerSep, NestedLines, TimelineItem, TitleLink, type TimelineTone } from '../features/today/TimelineItem';
 import type { WorkAnswer } from '../features/today/wire';
 import {
-  agentName, causeSentence, clockTime, count, dayHeading, failureNextStep, memberName, shortDay, sinceWords, sporeLine, sporeTypeWord, workHeadline,
+  agentName, causeSentence, clockTime, count, dayHeading, failureNextStep, shortDay, sinceWords, sporeLine, sporeTypeWord, workHeadline, workPlace,
 } from '../features/today/words';
 import { useAttention } from '../hooks/use-attention';
-import { useIsAdmin } from '../hooks/use-me';
+import { useIsAdmin, useMe } from '../hooks/use-me';
 import { useMediaQuery } from '../hooks/use-media-query';
 import { useProjects } from '../hooks/use-projects';
 import { useStatus } from '../hooks/use-status';
@@ -24,8 +22,7 @@ import { isArchived } from '../lib/api';
 import { cn } from '../lib/cn';
 import { cleanSessionText, sessionHeading, sessionHeadingText } from '../lib/session-text';
 import { readPendingLink } from '../lib/pending-link';
-import { forgetProject } from '../lib/project-memory';
-import { NotFound } from '../pages/NotFound';
+import { useRouteProject } from './route-project';
 import { CODE_MAP_SUFFIX, HEALTH_ANCHORS, HEALTH_PATH, projectPath, runPath } from './nav';
 
 /** How many of a run's spores, or of the sessions it titled, an item lists before "and N more". */
@@ -44,17 +41,16 @@ export function ResumePendingLink() {
 
 /** Today at `/`, across every project, and at `/p/:projectId`, narrowed to one. */
 export function Today() {
-  const { projectId } = useParams();
+  const { projectId, standIn } = useRouteProject();
   const projects = useProjects();
-  const known = projectId === undefined || projects.data === undefined || projects.data.projects.some((p) => p.projectId === projectId);
-  useEffect(() => { if (!known) forgetProject(); }, [known]);
-  if (!known) return <NotFound />;
-  // A Deployment with no project yet has no day to show; the Projects page says how to add one.
-  if (projectId === undefined && projects.data?.projects.length === 0) return <Navigate to="/projects" replace />;
-  return <TodayPage projectId={projectId ?? null} />;
+  if (standIn !== null) return standIn;
+  // A server with no project yet has no day to show; the Projects page says how to add one.
+  if (projectId === null && projects.data?.projects.length === 0) return <Navigate to="/projects" replace />;
+  // Across every project the day's reads start beside the projects' read; the page shows once the list has answered.
+  return <TodayPage projectId={projectId} waiting={projects.isPending} />;
 }
 
-function TodayPage({ projectId }: { projectId: string | null }) {
+function TodayPage({ projectId, waiting }: { projectId: string | null; waiting: boolean }) {
   const [search] = useSearchParams();
   const location = useLocation();
   const now = useNow();
@@ -82,6 +78,7 @@ function TodayPage({ projectId }: { projectId: string | null }) {
     projectName,
   };
 
+  if (waiting) return <LoadingState label="Loading today" count={4} />;
   return (
     <div className="flex w-full flex-col gap-s5" data-today="">
       {project !== undefined && isArchived(project) && <ArchivedNotice projectId={project.projectId} archivedAt={project.archivedAt} now={now} />}
@@ -93,7 +90,7 @@ function TodayPage({ projectId }: { projectId: string | null }) {
           : today.isPending ? <Skeleton className="h-s5 w-3/5" /> : null}
         {!window.isToday && <DayLink to={dayHref(null)}>Back to today</DayLink>}
       </header>
-      <div className="grid items-start gap-s6 lg:grid-cols-[minmax(0,1fr)_330px]">
+      <div className="grid items-start gap-s6 lg:grid-rail">
         {/* The rail comes first in reading order, so Needs you is reached before the day's timeline; the grid places it to the right. */}
         <div className="order-2 flex min-w-0 flex-col gap-s4 lg:col-start-2 lg:row-start-1">
           {admin && !compact && <NeedsYouPanel {...needsYou} />}
@@ -132,7 +129,7 @@ function TodayPage({ projectId }: { projectId: string | null }) {
 }
 
 function DayLink({ to, children }: { to: string; children: ReactNode }) {
-  return <RouterLink to={to} className={cn('w-fit rounded-chip t-small font-medium text-primary hover:underline', focusRing)}>{children}</RouterLink>;
+  return <ActionLink to={to}>{children}</ActionLink>;
 }
 
 interface TimelineProps {
@@ -184,7 +181,9 @@ function ProjectKicker({ scoped, projectId, projectName }: { scoped: boolean; pr
 
 function SessionItem({ entry, scoped, projectName, now }: { entry: SessionEntry; scoped: boolean; projectName: (projectId: string) => string | null; now: number }) {
   const { session } = entry;
-  const who = session.runtimeLabel !== null && session.runtimeLabel.trim() !== '' ? ` on ${session.runtimeLabel}` : memberName(session) === null ? '' : ` · ${memberName(session)}`;
+  const viewerId = useMe().data?.member?.id ?? null;
+  const place = workPlace(session.runtimeLabel, session.memberId === null ? null : { id: session.memberId, label: session.memberLabel }, viewerId);
+  const who = place === null ? '' : ` ${place.line}`;
   const heading = sessionHeading(session);
   return (
     <TimelineItem
@@ -262,11 +261,11 @@ function WorkItem({ entry, scoped, projectName, work }: { entry: WorkEntry; scop
         // Myco's items lead with the outcome, the project after it; one run of text, so a long headline wraps as a sentence.
         <span className="min-w-0">
           <span className={cn('font-medium', tone === 'bad' ? 'text-ink' : 'text-ink-2')}>
-            {mapLinked ? <TitleLink to={`${projectPath(entry.projectId)}${CODE_MAP_SUFFIX}`}>{headline}</TitleLink>
-              : single !== null ? <TitleLink to={runAt(single.id)}>{headline}</TitleLink> : headline}
+            {mapLinked ? <TitleLink inline to={`${projectPath(entry.projectId)}${CODE_MAP_SUFFIX}`}>{headline}</TitleLink>
+              : single !== null ? <TitleLink inline to={runAt(single.id)}>{headline}</TitleLink> : headline}
           </span>
           {map !== null && <span><span aria-hidden className="mx-s2">·</span>now at {map.branch} @ {map.commit.slice(0, 7)}</span>}
-          {!scoped && <span><span aria-hidden className="mx-s2">·</span>in {projectName(entry.projectId) ?? 'a project'}</span>}
+          {!scoped && <span><span aria-hidden className="mx-s2">·</span><span className="whitespace-nowrap" data-in-project="">in {projectName(entry.projectId) ?? 'a project'}</span></span>}
         </span>
       )}
     >

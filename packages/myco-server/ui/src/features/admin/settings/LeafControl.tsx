@@ -10,6 +10,7 @@ import { SettingRow } from '../AdminFrame';
 import { useMemberNames } from '../members';
 import type { LeafField } from './catalogue';
 import { LEAF_DEFAULTS } from './defaults';
+import { isRetired } from './retired';
 import type { LeafRow } from './wire';
 
 /** The agents a machine can run Myco's work with: the harnesses the server opens a credential for, by the same table. */
@@ -83,7 +84,8 @@ const STACKED: ReadonlySet<LeafField['kind']> = new Set(['text', 'textarea', 'js
 export function LeafControl({ field, row }: { field: LeafField; row: LeafRow | undefined }) {
   const actions = useSettingsActions();
   const admin = useIsAdmin();
-  const locked = field.readOnly === true || field.retired === true || !admin;
+  const retired = isRetired(field, row);
+  const locked = field.readOnly === true || retired || !admin;
   const nameOf = useMemberNames();
   const [draft, setDraft] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -218,10 +220,11 @@ export function LeafControl({ field, row }: { field: LeafField; row: LeafRow | u
       label={field.label}
       htmlFor={field.kind === 'patterns' ? undefined : id}
       note={field.note}
-      status={error ?? (field.retired === true ? 'Nothing on this server reads it any more.'
+      status={error ?? (retired ? 'Nothing on this server reads it any more.'
         // A setting Myco keeps shows its value in full; a status would only repeat it.
         : field.readOnly === true ? undefined
-        : savedWords(row, row?.configured ? nameOf(row.updatedBy) : null, Date.now(), defaultWords(field)))}
+        // An empty field or select already shows the default in words, so the status names it only for a switch.
+        : savedWords(row, row?.configured ? nameOf(row.updatedBy) : null, Date.now(), field.kind === 'toggle' ? defaultWords(field) : null))}
       refused={error !== null}
       stacked={STACKED.has(field.kind)}
       inline={field.kind === 'toggle'}

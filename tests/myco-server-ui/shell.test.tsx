@@ -87,7 +87,7 @@ describe('the dashboard shell', () => {
   it('hands a member with no projects to myco setup', async () => {
     server({ '/auth/me': me(), '/api/projects': () => Response.json({ projects: [] }) });
     mount('/projects');
-    expect(await screen.findByText('No projects yet')).toBeTruthy();
+    expect(await within(await screen.findByRole('main')).findByText('No projects yet.')).toBeTruthy();
     expect(await screen.findByText('myco setup')).toBeTruthy();
   });
 
@@ -216,7 +216,8 @@ describe('the nav', () => {
     screenWidth(390);
     server({ ...signedIn(MEMBER), '/api/members': () => Response.json({ members: [] }), '/api/credentials': () => Response.json({ rows: [], cursor: null }) });
     mount('/me/machines');
-    await waitFor(() => expect(screen.getByRole('banner').textContent).toContain('My machines'));
+    // The shell's own header: the page's header renders beside it at once, and jsdom reads that as a banner too.
+    await waitFor(() => expect(document.querySelector('header[data-shell]')?.textContent).toContain('My machines'));
   });
 
   it('hides every admin page from a member: no Project settings, People & machines, Settings or Health', async () => {
@@ -345,7 +346,7 @@ describe('on a phone', () => {
     expect(within(bar).getAllByRole('link').map((a) => a.textContent)).toEqual(['Today', 'Sessions', 'Knowledge']);
     expect(within(bar).getByRole('link', { name: 'Sessions' }).getAttribute('aria-current')).toBe('page');
     expect(screen.queryByRole('complementary', { name: 'Navigation' })).toBeNull();
-    expect(screen.getByRole('banner').textContent).toContain('Sessions');
+    expect(document.querySelector('header[data-shell]')?.textContent).toContain('Sessions');
     expect(screen.getByRole('button', { name: 'Search' })).toBeTruthy();
     expect(screen.queryByRole('navigation', { name: 'Admin' })).toBeNull();
     fireEvent.click(within(bar).getByRole('button', { name: 'More' }));

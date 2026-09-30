@@ -22,17 +22,18 @@ export const sessionRoutes = (
 );
 
 function SessionsRoute() {
-  const { projectId, known, projectName } = useRouteProject();
-  if (!known) return <NotFound />;
+  const { projectId, standIn, projectName } = useRouteProject();
+  if (standIn !== null) return standIn;
   return <SessionsPage key={projectId ?? ''} projectId={projectId} projectName={projectName} />;
 }
 
 function SessionRoute() {
   const { sessionId = '' } = useParams();
-  const { projectId, known, projectName } = useRouteProject();
+  const { projectId, standIn, projectName } = useRouteProject();
   const [params] = useSearchParams();
   const { pathname } = useLocation();
-  if (!known || projectId === null) return <NotFound />;
+  if (standIn !== null) return standIn;
+  if (projectId === null) return <NotFound />;
   const tab = params.get('tab');
   const plan = params.get('plan');
   if (tab === 'plans' && plan !== null && plan !== '') return <Navigate to={planPagePath(projectId, { planKey: plan })} replace />;

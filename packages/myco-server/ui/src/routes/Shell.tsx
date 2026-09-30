@@ -2,7 +2,7 @@ import { useEffect, useState, type ReactNode } from 'react';
 import { Outlet, useLocation } from 'react-router-dom';
 import { Search } from 'lucide-react';
 import {
-  AccountMenu, AppShell, BottomBar, Brand, ErrorState, IconButton, LoadingState, NavItem, NavSection, ProjectFilter, SearchTrigger,
+  AccountMenu, AppShell, BottomBar, Brand, ErrorState, IconButton, NavItem, NavSection, ProjectFilter, SearchTrigger,
   Sidebar, StatusChip, useSearchShortcut, useShellMenu, type ProjectFilterItem,
 } from '../design';
 import { Search as SearchPanel } from '../features/search/Search';
@@ -111,9 +111,9 @@ export function Shell() {
         />
       )}
     >
-      {projects.isPending ? <LoadingState label="Loading projects" />
-        : projects.isError ? <ErrorState error={projects.error} onRetry={() => void projects.refetch()} />
-        : <Outlet />}
+      {/* The page starts its own reads at once, beside the projects' read, rather than after it: a page that needs a
+          project's name shows it when the list arrives, and one whose project the list lacks says not found then. */}
+      {projects.isError ? <ErrorState error={projects.error} onRetry={() => void projects.refetch()} /> : <Outlet />}
     </AppShell>
   );
 }

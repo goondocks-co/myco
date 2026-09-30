@@ -89,7 +89,7 @@ export function AccountMenu({ name, login, role, machinesHref, onSignOut, compac
         aria-label={`Account and appearance for ${name}`}
         className={cn(
           'flex min-w-0 items-center gap-s3 rounded-control text-left text-ink-2 transition-colors duration-120 hover:bg-surface-2 hover:text-ink data-[state=open]:bg-surface-2',
-          compact ? 'p-s1' : 'h-[44px] w-full px-s2',
+          compact ? 'size-control justify-center' : 'h-[44px] w-full px-s2',
           focusRing,
         )}
       >

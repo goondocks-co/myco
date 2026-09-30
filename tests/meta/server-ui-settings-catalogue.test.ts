@@ -8,8 +8,14 @@ import { describe, expect, it } from 'bun:test';
 import { readFileSync, readdirSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { DEPLOYMENT_LEAVES, RETIRED_LEAVES } from '@myco-server-worker/core/settings.js';
-import { LEAF_FIELDS, LEAF_GROUPS, LIVE_FIELDS } from '../../packages/myco-server/ui/src/features/admin/settings/catalogue.js';
+import { LEAF_FIELDS, LEAF_GROUPS } from '../../packages/myco-server/ui/src/features/admin/settings/catalogue.js';
+import { isRetired } from '../../packages/myco-server/ui/src/features/admin/settings/retired.js';
 import { LEAF_DEFAULTS } from '../../packages/myco-server/ui/src/features/admin/settings/defaults.js';
+
+/** A leaf as the server answers it, with the server's own retired flag. */
+const served = (leaf: string) => ({ leaf, configured: false, value: null, updatedAt: null, updatedBy: null, retired: RETIRED_LEAVES.has(leaf) });
+/** The settings the page offers, by the flags the server sends: the page holds no retired list of its own. */
+const LIVE_FIELDS = LEAF_FIELDS.filter((f) => !isRetired(f, served(f.leaf)));
 
 function walkSources(root: string): string[] {
   if (statSync(root).isFile()) return [root];
@@ -83,15 +89,18 @@ describe('settings catalogue', () => {
   });
 
   /**
-   * The catalogue retires exactly the leaves the server marks retired (`RETIRED_LEAVES`), which
-   * `retired-settings.test.ts` holds to the leaves nothing reads, so the dashboard and the server
-   * never disagree about a setting.
+   * The page reads which settings are retired from the server's answer
+   * (`retired`, from `RETIRED_LEAVES`), which `retired-settings.test.ts` holds
+   * to the leaves nothing reads. The two meet here: the catalogue carries no
+   * retired flag of its own, and every leaf the server retires is one the page
+   * shows as retired, but for the one whose value Myco keeps and shows from the
+   * shared constant the code map reads.
    */
-  it('retires exactly the settings the server marks retired', () => {
-    // Myco's own built-in exclusions are shown from the shared constant the map itself uses, not from the leaf.
-    const shownFromShared = new Set(['cortex.canopy.exclude.default_patterns']);
-    const wrong = LEAF_FIELDS.filter((f) => !shownFromShared.has(f.leaf) && (f.retired === true) !== RETIRED_LEAVES.has(f.leaf))
-      .map((f) => `${f.leaf}: ${f.retired === true ? 'retired here, live on the server' : 'offered here, retired on the server'}`);
-    expect(wrong).toEqual([]);
+  it('takes retired from the server, and differs from it only where Myco keeps the value', () => {
+    const catalogue = readFileSync(join(import.meta.dir, '..', '..', 'packages', 'myco-server', 'ui', 'src', 'features', 'admin', 'settings', 'catalogue.ts'), 'utf8');
+    expect(/\bretired\b/.test(catalogue), 'the catalogue names no retired setting: the server\'s answer does').toBe(false);
+    const keptByMyco = LEAF_FIELDS.filter((f) => RETIRED_LEAVES.has(f.leaf) && !isRetired(f, served(f.leaf))).map((f) => f.leaf);
+    expect(keptByMyco).toEqual(['cortex.canopy.exclude.default_patterns']);
+    expect(LEAF_FIELDS.filter((f) => !RETIRED_LEAVES.has(f.leaf) && isRetired(f, served(f.leaf))).map((f) => f.leaf)).toEqual([]);
   });
 });

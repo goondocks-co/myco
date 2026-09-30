@@ -134,7 +134,7 @@ describe('words, not colours', () => {
   it('words a failed read by its status', () => {
     expect(errorWords(new ApiError(403, null)).title).toBe('This page is for an admin.');
     expect(errorWords(new ApiError(404, null)).title).toBe('Not found');
-    expect(errorWords(new ApiError(503, { reason: 'busy' }))).toEqual({ title: 'The server had a problem', detail: 'busy', retry: true });
+    expect(errorWords(new ApiError(503, { reason: 'busy' }))).toEqual({ title: 'The server had a problem', retry: true });
     expect(errorWords(new TypeError('Failed to fetch')).title).toBe('Could not reach the server');
   });
 

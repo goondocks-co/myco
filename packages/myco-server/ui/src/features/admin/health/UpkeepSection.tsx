@@ -1,8 +1,8 @@
 import { useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Button, buttonVariants, Card, ErrorState, LoadingState } from '../../../design';
+import { Button, buttonVariants, Card, ErrorState, LoadingState, errorWords } from '../../../design';
 import { useWork } from '../../../hooks/use-work';
-import { fetchJson, postJson } from '../../../lib/api';
+import { ApiError, fetchJson, postJson } from '../../../lib/api';
 import { cn } from '../../../lib/cn';
 import { formatBytes } from '../../../lib/format';
 import { HEALTH_ANCHORS } from '../../../routes/nav';
@@ -75,7 +75,7 @@ function Housekeeping() {
               ? reportWords(wake.data)
               : wake.isError
                 ? 'The server could not run its housekeeping right now.'
-                : 'Old run records are removed and runs whose runtime went away are closed on the server\'s own clock. Run it now to see the state it is in.'}
+                : 'Old run records are removed and runs whose machine stopped answering are closed on the server\'s own clock. Run it now to see the state it is in.'}
           </p>
         </div>
         <Button size="sm" pending={wake.isPending} onClick={() => wake.mutate()}>Run housekeeping now</Button>
@@ -106,6 +106,19 @@ function Maintenance() {
   );
 }
 
+/** Why a check was not run, from the server's refusal code, in words. */
+const MAINTENANCE_REFUSALS: Readonly<Record<string, string>> = {
+  unsupported: 'This server can’t run that check.',
+  not_configured: 'That check has no schedule set.',
+  already_running: 'That check is already running.',
+  not_due: 'That check is not due yet.',
+};
+
+function maintenanceRefusal(error: unknown): string {
+  const refusal = error instanceof ApiError ? Reflect.get(Object(error.body), 'refusal') : undefined;
+  return (typeof refusal === 'string' ? MAINTENANCE_REFUSALS[refusal] : undefined) ?? `${errorWords(error).title}.`;
+}
+
 function CheckRow({ status }: { status: CheckStatus }) {
   const queries = useQueryClient();
   const run = useMutation({
@@ -123,7 +136,7 @@ function CheckRow({ status }: { status: CheckStatus }) {
         )}
       </div>
       {!status.support.supported ? (
-        <p className="t-small text-muted">Not available on this server: {status.support.reason}.</p>
+        <p className="t-small text-muted">Not available on this server.</p>
       ) : (
         <>
           <p className="t-small text-muted">{status.support.label}. {checkCadenceWords(status.cadence)}</p>
@@ -141,12 +154,12 @@ function CheckRow({ status }: { status: CheckStatus }) {
               {latest.measurements.map((m) => (
                 <div key={m.name} className="flex flex-wrap gap-x-s3">
                   <dt className="text-muted">{measurementName(m.name)}</dt>
-                  <dd className="text-ink-2">{m.state === 'measured' ? formatBytes(m.value) : `Unavailable — ${m.reason}`}</dd>
+                  <dd className="text-ink-2">{m.state === 'measured' ? formatBytes(m.value) : 'Unavailable'}</dd>
                 </div>
               ))}
             </dl>
           )}
-          {run.isError && <p role="alert" className="t-small text-bad">{run.error.message}</p>}
+          {run.isError && <p role="alert" className="t-small text-bad">{maintenanceRefusal(run.error)}</p>}
         </>
       )}
     </div>

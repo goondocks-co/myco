@@ -18,13 +18,13 @@ const STATE_WORDS: Record<string, string> = { active: 'in use', idle: 'idle', sl
 function jobWords(job: JobReport): string {
   if (job.failed !== null) {
     if (job.name === 'agent-run-retention') return 'old run records could not be removed';
-    if (job.name === 'run-stale-sweep') return 'runs whose runtime went away could not be closed';
+    if (job.name === 'run-stale-sweep') return 'runs whose machine stopped answering could not be closed';
     return `${job.name} did not finish`;
   }
   const n = job.changed;
   const plural = n === 1 ? '' : 's';
   if (job.name === 'agent-run-retention') return `removed ${n} old run record${plural}`;
-  if (job.name === 'run-stale-sweep') return `closed ${n} run${plural} whose runtime went away`;
+  if (job.name === 'run-stale-sweep') return `closed ${n} run${plural} whose machine stopped answering`;
   if (job.name === 'transcript-parse') return `read ${n} row${plural} from transcripts${job.more === true ? ', with more still to read' : ''}`;
   return `${job.name} changed ${n} row${plural}`;
 }
@@ -69,8 +69,8 @@ export function cadenceWords(schedule: RecoverySchedule, now: number): string {
   if (!schedule.supported) return RECOVERY_UNAVAILABLE_WORDS;
   if (!schedule.configured) return 'Automatic recovery is off. Set “Back up every” in Settings to schedule it.';
   const every = `Every ${schedule.intervalHours} h.`;
-  if (!schedule.ready) return `${every} It cannot run yet: ${schedule.idleBecause ?? 'this Deployment cannot admit an attempt'}.`;
-  if (schedule.idleBecause !== null) return `${every} ${schedule.idleBecause.charAt(0).toUpperCase()}${schedule.idleBecause.slice(1)}.`;
+  if (!schedule.ready) return `${every} It can’t run yet: this server is missing something it needs.`;
+  if (schedule.idleBecause !== null) return `${every} The next one waits for the attempt or backup in progress to end.`;
   if (schedule.dueAt === null) return every;
   return schedule.due ? `${every} Due now, at the next wake.` : `${every} Next due ${whenLabel(schedule.dueAt, now)}.`;
 }
@@ -93,17 +93,62 @@ export function latestWords(schedule: RecoverySchedule, form: RecoveryForm = 'st
   if (latest.waiting === 'earlier_export') return `${which}${when} is waiting for an earlier export to end before it starts its own${since}.`;
   if (latest.waiting === 'own_request') return `${which}${when} is waiting to learn whether the export it asked for started${since}.`;
   // A refusal is the attempt's outcome only once it failed; an advancing attempt's is a transient it spent.
-  if (latest.stage === 'failed' && latest.failure !== null) return `${which}${when} failed: ${latest.failure.replace(/_/g, ' ')}.`;
+  if (latest.stage === 'failed') return `${which}${when} failed${latest.failure === null ? '' : `: ${PRODUCER_FAILURE_WORDS[latest.failure] ?? 'the operator log names why'}`}.`;
   if (latest.stage === 'complete') {
     return form === 'artifact' ? `${which}${when} wrote a complete artifact.` : `${which}${when} staged everything it named.`;
   }
-  return `${which}${when} is ${latest.stage}.`;
+  return `${which}${when} is ${stageWords(latest.stage)}.`;
+}
+
+/** Why an attempt failed, from the producer's closed set of refusals, in words. */
+const PRODUCER_FAILURE_WORDS: Readonly<Record<string, string>> = {
+  provider_unavailable: 'the storage provider could not be reached',
+  provider_refused: 'the storage provider refused',
+  export_failed: 'the database export failed',
+  export_not_offered: 'the database offers no export',
+  export_unparsable: 'the export could not be read',
+  export_stalled: 'the export stopped making progress',
+  export_unanswered: 'the export it asked for never answered',
+  export_unsettled: 'an earlier export never finished',
+  artifact_refused: 'the backup was refused',
+  artifact_cancelled: 'the backup was cancelled',
+  download_unranged: 'the download could not resume',
+  download_changed: 'the export changed while it downloaded',
+  download_lost: 'the download was lost',
+  staging_unreconciled: 'what it saved could not be checked',
+  staging_changed: 'what it saved changed underneath it',
+  inventory_disagrees: 'what it saved does not match the export',
+  inventory_unreadable: 'what it saved could not be listed',
+  inventory_oversize: 'the export is larger than it can hold',
+  object_missing: 'a stored file was missing',
+  object_changed: 'a stored file changed while it copied',
+  copy_stalled: 'copying stopped making progress',
+  staging_incomplete: 'what it saved is incomplete',
+  schema_disagrees: 'the database version does not match',
+  producer_stalled: 'it stopped making progress',
+  internal: 'the server had a problem',
+};
+
+/** An attempt's stage, from the producer's closed set, in words. */
+const STAGE_WORDS: Readonly<Record<string, string>> = {
+  export: 'exporting the database',
+  download: 'downloading the export',
+  inventory: 'checking what it downloaded',
+  copy: 'copying the files',
+  downloaded: 'downloaded',
+  complete: 'complete',
+  unconfirmed: 'waiting to be confirmed',
+  failed: 'failed',
+};
+
+function stageWords(stage: string): string {
+  return STAGE_WORDS[stage] ?? 'in progress';
 }
 
 /** The attempt the producer answered, for a reading whose schedule is unavailable. */
 export function attemptWords(attempt: number | null, stage: string | null, form: RecoveryForm = 'staging'): string {
   if (attempt === null || stage === null) return 'No attempt has run yet.';
-  return form === 'artifact' ? `The last attempt is ${stage}.` : `Attempt ${attempt} is ${stage}.`;
+  return form === 'artifact' ? `The last attempt is ${stageWords(stage)}.` : `Attempt ${attempt} is ${stageWords(stage)}.`;
 }
 
 /**
@@ -114,9 +159,9 @@ export function attemptWords(attempt: number | null, stage: string | null, form:
  */
 export function availableWords(available: RecoveryAvailability): string {
   if (available.state === 'none') return 'No recovery data exists yet.';
-  if (available.state === 'incomplete') return `Attempt ${available.attempt} is ${available.stage}: nothing it has written can be recovered from yet.`;
+  if (available.state === 'incomplete') return `Attempt ${available.attempt} is ${stageWords(available.stage)}: nothing it has written can be recovered from yet.`;
   if (available.state === 'artifact') {
-    return `A complete, verified recovery artifact is ready at ${available.at}. ${available.needs.charAt(0).toUpperCase()}${available.needs.slice(1)}.`;
+    return `A complete, verified recovery artifact is ready at ${available.at}. Restoring it also needs the key this server keeps its stored secrets under, which is kept apart from it.`;
   }
   return `Attempt ${available.attempt} holds a complete staging. It is not a recovery artifact yet — an operator materializes and verifies it into one.`;
 }
@@ -140,7 +185,7 @@ export const measurementName = (name: string): string => MEASUREMENT_WORDS[name]
 export function checkCadenceWords(cadence: Cadence): string {
   if (cadence.state === 'on') return `Runs automatically every ${cadence.intervalHours} hours.`;
   if (cadence.state === 'off') return 'Automatic runs are off.';
-  if (cadence.state === 'invalid') return `Automatic runs are not scheduled: the saved setting is invalid (${cadence.reason}).`;
+  if (cadence.state === 'invalid') return 'Automatic runs are not scheduled: the saved setting is invalid.';
   return 'Automatic runs are not set up. Turn them on and choose an interval under Settings · Backups.';
 }
 
@@ -155,7 +200,7 @@ export function outcomeWords(outcome: MaintenanceOutcome, running: boolean): str
   }
   if (outcome.state === 'healthy') return `No problems found ${when} (${by}).`;
   if (outcome.state === 'findings') return `Problems found ${when} (${by}):`;
-  return `Did not finish ${when} (${by}): ${FAILURE_WORDS[outcome.errorClass ?? ''] ?? `failed (${outcome.errorClass ?? 'unknown'})`}.`;
+  return `Did not finish ${when} (${by}): ${FAILURE_WORDS[outcome.errorClass ?? ''] ?? 'it failed'}.`;
 }
 
 // ---------- Backups ----------

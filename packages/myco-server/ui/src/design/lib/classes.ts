@@ -6,3 +6,10 @@ export const fieldFrame = 'h-control w-full min-w-0 rounded-control border borde
 
 /** A floating layer: menus, select lists and popovers. */
 export const overlaySurface = 'rounded-control border border-line-strong bg-surface-2 text-ink shadow-[var(--shadow-overlay)]';
+
+/**
+ * A link or small control that stands on its own, not inside a sentence: at
+ * least `--tap` each way on a touch-sized screen, its own size with a pointer.
+ * It grows the target; use `tap-area` instead where the layout must not move.
+ */
+export const tapTarget = 'inline-flex min-h-tap min-w-tap items-center';

@@ -1,6 +1,6 @@
 import { type ReactNode } from 'react';
 import { Link as RouterLink } from 'react-router-dom';
-import { focusRing, TypeChip } from '../../design';
+import { ActionLink, tapTarget, focusRing, TypeChip } from '../../design';
 import { cn } from '../../lib/cn';
 
 /** What an item's node on the line marks: something live, Myco's learning, a failure, or anything else. */
@@ -32,7 +32,7 @@ export interface TimelineItemProps {
 /** One moment of the day on the timeline: its time, a node on the line, and what happened. */
 export function TimelineItem({ time, at, tone, kicker, title, summary, children }: TimelineItemProps) {
   return (
-    <li className="grid grid-cols-[44px_minmax(0,1fr)] gap-s2 sm:grid-cols-[62px_minmax(0,1fr)] sm:gap-s3" data-timeline-item={tone}>
+    <li className="grid grid-timeline gap-s2 sm:grid-timeline-wide sm:gap-s3" data-timeline-item={tone}>
       <time dateTime={new Date(at).toISOString()} className="pt-s4 text-right t-small tabular-nums text-faint">{time}</time>
       <div
         className={cn(
@@ -60,10 +60,14 @@ export function KickerSep() {
   return <span aria-hidden>·</span>;
 }
 
-/** A headline that opens its record: ink, underlined on hover, never the link colour. */
-export function TitleLink({ to, children }: { to: string; children: ReactNode }) {
+/**
+ * A headline that opens its record: ink, underlined on hover, never the link
+ * colour. `inline` keeps it in a run of text, so a long headline wraps as a
+ * sentence; either way it is a fingertip tall on a touch-sized screen.
+ */
+export function TitleLink({ to, children, className, inline = false }: { to: string; children: ReactNode; className?: string; inline?: boolean }) {
   return (
-    <RouterLink to={to} className={cn('rounded-chip hover:underline hover:decoration-line-strong hover:underline-offset-3', focusRing)}>
+    <RouterLink to={to} className={cn(inline ? 'tap-inline' : tapTarget, 'rounded-chip hover:underline hover:decoration-line-strong hover:underline-offset-3', focusRing, className)}>
       {children}
     </RouterLink>
   );
@@ -86,9 +90,9 @@ export function NestedLines({ lines, total, label }: { lines: readonly NestedLin
       {lines.map((line) => (
         <li key={line.key} className="flex min-w-0 items-baseline gap-s3 t-small text-ink-2">
           {line.chip !== undefined && <TypeChip>{line.chip}</TypeChip>}
-          <span className="line-clamp-2 min-w-0 sm:line-clamp-1">
-            {line.to === undefined ? line.text : <TitleLink to={line.to}>{line.text}</TitleLink>}
-          </span>
+          {line.to === undefined
+            ? <span className="line-clamp-2 min-w-0 sm:line-clamp-1">{line.text}</span>
+            : <TitleLink to={line.to} className="min-w-0"><span className="line-clamp-2 sm:line-clamp-1">{line.text}</span></TitleLink>}
         </li>
       ))}
       {more > 0 && <li className="t-small text-muted">and {more.toLocaleString()} more</li>}
@@ -103,9 +107,7 @@ export function FailureNote({ tone, cause, next, action }: { tone: 'bad' | 'quie
       <p><span className={cn('font-medium', tone === 'bad' ? 'text-bad' : 'text-ink')}>{tone === 'bad' ? 'Why: ' : 'Stopped early: '}</span>{cause}</p>
       <p>{next}</p>
       {action !== undefined && (
-        <RouterLink to={action.to} className={cn('w-fit rounded-chip font-medium text-primary hover:underline', focusRing)}>
-          {action.label} →
-        </RouterLink>
+        <ActionLink to={action.to}>{action.label} →</ActionLink>
       )}
     </div>
   );

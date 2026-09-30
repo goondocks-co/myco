@@ -1,6 +1,7 @@
 import { Button, Card, errorWords, HealthDot, Skeleton, type HealthTone } from '../../design';
 import { LIVE_WITHIN_MS } from './timeline';
 import type { CaptureRow } from './wire';
+import { useMe } from '../../hooks/use-me';
 import { agentName, ago, machineNames } from './words';
 
 const DAY = 24 * 60 * 60_000;
@@ -21,9 +22,9 @@ interface MachineGroup {
 }
 
 /** The rows by machine, each machine in the order of its most recent capture. */
-export function byMachine(rows: readonly CaptureRow[]): MachineGroup[] {
+export function byMachine(rows: readonly CaptureRow[], viewerId: string | null = null): MachineGroup[] {
   const sorted = [...rows].sort((a, b) => b.lastEventAt - a.lastEventAt);
-  const names = machineNames(sorted);
+  const names = machineNames(sorted, viewerId);
   const groups = new Map<string, MachineGroup>();
   for (const row of sorted) {
     const group = groups.get(row.machineId) ?? { machineId: row.machineId, name: names.get(row.machineId)!, rows: [] };
@@ -48,7 +49,8 @@ export interface CapturePanelProps {
  * sent last is listed agent by agent; each other machine gets one line.
  */
 export function CapturePanel({ rows, unavailable, pending, error, onRetry, now }: CapturePanelProps) {
-  const groups = rows === undefined ? [] : byMachine(rows);
+  const viewerId = useMe().data?.member?.id ?? null;
+  const groups = rows === undefined ? [] : byMachine(rows, viewerId);
   const [first, ...others] = groups;
   return (
     <Card className="flex flex-col gap-s3" data-capture="">
