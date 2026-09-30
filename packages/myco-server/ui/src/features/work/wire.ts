@@ -22,8 +22,8 @@ export interface RunWorker {
   credentialId: string;
   machineId: string | null;
   machineName: string | null;
-  /** The member the machine belongs to; null where the server holds none. Optional until every server sends it. */
-  member?: { id: string; label: string | null } | null;
+  /** The member the machine belongs to, served to every viewer; Myco's own runtime is named Myco. Null where the server holds none. */
+  member: { id: string; label: string | null } | null;
 }
 
 /** The fields Myco's work reads of a run, on a page of the list and on its detail. */

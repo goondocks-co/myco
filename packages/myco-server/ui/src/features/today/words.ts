@@ -164,18 +164,28 @@ export function causeSentence(cause: string): string {
 }
 
 /**
- * A machine as the capture panel names it: its name, else "A machine" when it is
- * the only one without a name, else "Machine 1", "Machine 2" and so on, numbered
- * in the order the rows are given, which is the order the panel shows them.
+ * A machine as the capture panel names it. The server names a machine only to
+ * the member it belongs to; to anyone else a machine reads as its member's
+ * name ("Lin", and Myco's own runtime "Myco"). A second unnamed machine of the
+ * same member reads "Lin, another machine". Only a machine with neither a name
+ * nor a member that has a name reads "A machine" (numbered when there are more).
+ * Never the machine's id.
  */
-export function machineNames(rows: readonly Pick<CaptureRow, 'machineId' | 'machineName'>[]): Map<string, string> {
+export function machineNames(rows: readonly Pick<CaptureRow, 'machineId' | 'machineName' | 'member'>[]): Map<string, string> {
   const named = (row: Pick<CaptureRow, 'machineName'>) => row.machineName !== null && row.machineName.trim() !== '';
-  const unnamedIds = [...new Set(rows.filter((row) => !named(row)).map((row) => row.machineId))];
+  const owner = (row: Pick<CaptureRow, 'member'>) => (row.member === null ? null : memberLabel(row.member));
+  const anonymous = [...new Set(rows.filter((row) => !named(row) && owner(row) === null).map((row) => row.machineId))];
   const names = new Map<string, string>();
+  const perMember = new Map<string, number>();
   for (const row of rows) {
     if (names.has(row.machineId)) continue;
+    const who = owner(row);
     if (named(row)) names.set(row.machineId, row.machineName!.trim());
-    else names.set(row.machineId, unnamedIds.length === 1 ? 'A machine' : `Machine ${unnamedIds.indexOf(row.machineId) + 1}`);
+    else if (who !== null) {
+      const seen = perMember.get(who) ?? 0;
+      perMember.set(who, seen + 1);
+      names.set(row.machineId, seen === 0 ? who : `${who}, another machine`);
+    } else names.set(row.machineId, anonymous.length === 1 ? 'A machine' : `Machine ${anonymous.indexOf(row.machineId) + 1}`);
   }
   return names;
 }

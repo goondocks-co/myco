@@ -103,10 +103,11 @@ const ATTENTION: AttentionAnswer = {
   unavailable: [],
 };
 
+/** Capture as Ada reads it: her own machine by its name, and Lin's, whose name is served to Lin alone, as Lin's. */
 const CAPTURE: CaptureRow[] = [
-  { machineId: 'mt_studio_machine', machineName: null, agent: 'claude-code', lastEventAt: NOW - MINUTE, projectId: P_MYCO },
-  { machineId: 'mt_studio_machine', machineName: null, agent: 'codex', lastEventAt: NOW - 4 * HOUR, projectId: P_MYCO },
-  { machineId: 'mt_buildbox_mach', machineName: null, agent: 'cursor', lastEventAt: NOW - 17 * HOUR, projectId: P_ATLAS },
+  { machineId: 'mt_studio_machine', machineName: 'Ada’s studio Mac', member: { id: ADMIN.member.id, label: 'Ada' }, agent: 'claude-code', lastEventAt: NOW - MINUTE, projectId: P_MYCO },
+  { machineId: 'mt_studio_machine', machineName: 'Ada’s studio Mac', member: { id: ADMIN.member.id, label: 'Ada' }, agent: 'codex', lastEventAt: NOW - 4 * HOUR, projectId: P_MYCO },
+  { machineId: 'mt_buildbox_mach', machineName: null, member: { id: MEMBER.member.id, label: 'Lin' }, agent: 'cursor', lastEventAt: NOW - 17 * HOUR, projectId: P_ATLAS },
 ];
 
 type Routes = Record<string, (url: URL) => Response>;
@@ -312,8 +313,10 @@ describe('Today', () => {
     expect(kickers.filter((k) => k!.includes('Cursor · Lin'))).toHaveLength(1);
     expect(kickers.filter((k) => k!.includes('Claude Code on Ada’s studio Mac'))).toHaveLength(2);
     const capture = document.querySelector('[data-capture]')!;
-    expect(capture.textContent).toContain('Machine 1');
-    expect(capture.textContent).toContain('Machine 2 · Cursor, 17 h ago');
+    // Another member's machine reads as that member's, never "A machine" and never its host name or id.
+    expect(within(capture as HTMLElement).getByRole('list', { name: 'Agents on Ada’s studio Mac' })).toBeTruthy();
+    expect(within(capture as HTMLElement).getByRole('list', { name: 'Other machines' }).textContent).toBe('Lin · Cursor, 17 h ago');
+    expect(capture.textContent).not.toMatch(/\b[Aa] machine\b|Machine \d/);
     expect(within(capture as HTMLElement).getByRole('img', { name: 'Sending now' })).toBeTruthy();
   });
 
@@ -383,14 +386,19 @@ describe('Today', () => {
     expect(screen.getByRole('complementary', { name: 'Navigation' }).textContent).not.toContain('sirkirby_5a2d54af');
   });
 
-  it('names machines by name, and an unnamed one as a machine plus its agent', () => {
+  it('names a machine by its name to its own member, by its member to anyone else, and "A machine" only when it has neither', () => {
+    const lin = { id: 'mem_Hn5pC0dJfA9sEu', label: 'Lin' };
     const names = machineNames([
-      { machineId: 'a', machineName: null },
-      { machineId: 'b', machineName: 'Lin’s build box' },
-      { machineId: 'c', machineName: '  ' },
+      { machineId: 'a', machineName: null, member: lin },
+      { machineId: 'b', machineName: 'Ada’s studio Mac', member: { id: 'mem_q3Vb8xRk2LmT7wYz', label: 'Ada' } },
+      { machineId: 'c', machineName: '  ', member: lin },
+      { machineId: 'd', machineName: null, member: { id: 'mem_harness', label: 'Myco' } },
+      // A member who joined without a name has only their id as a label, which is never shown.
+      { machineId: 'e', machineName: null, member: { id: 'mem_Qz81', label: 'mem_Qz81' } },
+      { machineId: 'f', machineName: null, member: null },
     ]);
-    expect([...names.values()]).toEqual(['Machine 1', 'Lin’s build box', 'Machine 2']);
-    expect([...machineNames([{ machineId: 'a', machineName: null }, { machineId: 'b', machineName: 'Box' }]).values()]).toEqual(['A machine', 'Box']);
+    expect([...names.values()]).toEqual(['Lin', 'Ada’s studio Mac', 'Lin, another machine', 'Myco', 'Machine 1', 'Machine 2']);
+    expect([...machineNames([{ machineId: 'a', machineName: null, member: null }, { machineId: 'b', machineName: 'Box', member: null }]).values()]).toEqual(['A machine', 'Box']);
   });
 
   it('gives an admin "Needs you", each item with its problem, detail and one action', async () => {
