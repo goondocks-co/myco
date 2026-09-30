@@ -31,7 +31,7 @@ const ROLES = [
 
 /** The admin foot; Measures and Operations fold under Status and show while its group is open. */
 const ADMIN_PAGES = ['Members', 'Settings', 'Status'];
-const PAGES_NAV = ['Overview', 'Sessions', 'Spores', 'Plans', 'Agent runs'];
+const PAGES_NAV = ['Today', 'Sessions', 'Spores', 'Plans', 'Agent runs'];
 /** How many projects the filter lists before "N more". */
 const FILTER_LIMIT = 8;
 
@@ -103,7 +103,7 @@ test.describe('dashboard shell', () => {
           await expect(page.getByRole('complementary', { name: 'Navigation' })).toHaveCount(0);
           await expect(page.getByRole('banner')).toContainText('Sessions');
           const bar = page.getByRole('navigation', { name: 'Main pages' });
-          for (const label of ['Overview', 'Sessions', 'Spores']) await expect(bar.getByRole('link', { name: label })).toBeInViewport();
+          for (const label of ['Today', 'Sessions', 'Spores']) await expect(bar.getByRole('link', { name: label })).toBeInViewport();
           await expect(bar.getByRole('link', { name: 'Sessions' })).toHaveAttribute('aria-current', 'page');
           await expect(page.getByRole('banner').getByRole('button', { name: 'Search' })).toBeVisible();
         }

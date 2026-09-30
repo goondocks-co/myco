@@ -210,12 +210,6 @@
     "small-text": 4,
     "retired-import": 7
   },
-  "pages/ProjectHome.tsx": {
-    "raw-button": 3,
-    "arbitrary-colour": 4,
-    "small-text": 17,
-    "retired-import": 10
-  },
   "pages/Projects.tsx": {
     "small-text": 7,
     "retired-import": 5

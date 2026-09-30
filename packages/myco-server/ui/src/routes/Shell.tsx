@@ -12,7 +12,7 @@ import { readLastProject, rememberProject } from '../lib/project-memory';
 import { signOut } from '../lib/session';
 import { NotAMember } from '../pages/NotAMember';
 import {
-  ADMIN_PAGES, MY_MACHINES_PATH, inGroup, PHONE_PAGES, PROJECT_PAGES, PROJECTS_PATH, clearProjectHref, projectOf, projectPath, switchProjectHref, titleOf,
+  ADMIN_PAGES, MY_MACHINES_PATH, inGroup, pageHref, PHONE_PAGES, PROJECT_PAGES, PROJECTS_PATH, clearProjectHref, projectOf, switchProjectHref, titleOf,
 } from './nav';
 
 /** Most recent activity first; a project with none sorts last, then by name. */
@@ -73,7 +73,7 @@ export function Shell() {
 
   const sidebar = (
     <ShellSidebar
-      pages={scope === undefined ? [] : pages.map((page) => ({ ...page, to: projectPath(scope.projectId, page.suffix) }))}
+      pages={scope === undefined ? [] : pages.map((page) => ({ ...page, to: pageHref(page, location.pathname, scope.projectId) }))}
       projects={projects.isSuccess ? filterItems : null}
       clearHref={clearProjectHref(location)}
       admin={admin}
@@ -95,7 +95,7 @@ export function Shell() {
         </>
       )}
       bottomBar={scope === undefined ? undefined : (
-        <BottomBar items={PHONE_PAGES.map((page) => ({ label: page.label, icon: page.icon, to: projectPath(scope.projectId, page.suffix), end: page.suffix === '' }))} />
+        <BottomBar items={PHONE_PAGES.map((page) => ({ label: page.label, icon: page.icon, to: pageHref(page, location.pathname, scope.projectId), end: page.suffix === '' }))} />
       )}
       overlay={(
         <SearchCommand

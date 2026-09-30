@@ -161,7 +161,7 @@ describe('the nav', () => {
     server(signedIn());
     mount('/p/alpha/sessions');
     const pages = await screen.findByRole('navigation', { name: 'Pages' });
-    expect(within(pages).getAllByRole('link').map((a) => a.textContent)).toEqual(['Overview', 'Sessions', 'Spores', 'Plans', 'Agent runs', 'Access']);
+    expect(within(pages).getAllByRole('link').map((a) => a.textContent)).toEqual(['Today', 'Sessions', 'Spores', 'Plans', 'Agent runs', 'Access']);
     expect(within(pages).getByRole('link', { name: 'Sessions' }).getAttribute('aria-current')).toBe('page');
     await waitFor(() => expect(filterItems()).toHaveLength(2));
     expect(filterItems().map((a) => a.textContent)).toEqual([expect.stringContaining('Alpha'), expect.stringContaining('Beta')]);
@@ -204,7 +204,7 @@ describe('the nav', () => {
     server(signedIn(MEMBER));
     mount('/p/alpha');
     const pages = await screen.findByRole('navigation', { name: 'Pages' });
-    expect(within(pages).getAllByRole('link').map((a) => a.textContent)).toEqual(['Overview', 'Sessions', 'Spores', 'Plans', 'Agent runs']);
+    expect(within(pages).getAllByRole('link').map((a) => a.textContent)).toEqual(['Today', 'Sessions', 'Spores', 'Plans', 'Agent runs']);
     await waitFor(() => expect(filterItems()).toHaveLength(2));
     expect(screen.queryByRole('navigation', { name: 'Admin' })).toBeNull();
     const nav = screen.getByRole('complementary', { name: 'Navigation' });
@@ -289,11 +289,11 @@ describe('the page titles', () => {
     expect([
       titleOf('/p/x'), titleOf('/p/x/'), titleOf('/p/x/sessions'), titleOf('/p/x/sessions/abc'), titleOf('/p/x/plans'),
       titleOf('/p/x/spores'), titleOf('/p/x/spores/sp1'), titleOf('/p/x/runs/r1'), titleOf('/p/x/access'), titleOf('/p/x/nope'),
-      titleOf('/projects'), titleOf('/status'), titleOf('/measures'), titleOf('/access'), titleOf('/settings'), titleOf('/operations'), titleOf('/nope'),
+      titleOf('/'), titleOf('/projects'), titleOf('/status'), titleOf('/measures'), titleOf('/access'), titleOf('/settings'), titleOf('/operations'), titleOf('/nope'),
     ]).toEqual([
-      'Overview', 'Overview', 'Sessions', 'Sessions', 'Plans',
+      'Today', 'Today', 'Sessions', 'Sessions', 'Plans',
       'Spores', 'Spores', 'Agent runs', 'Access', 'Not found',
-      'Projects', 'Status', 'Measures', 'Members', 'Settings', 'Operations', 'Not found',
+      'Today', 'Projects', 'Status', 'Measures', 'Members', 'Settings', 'Operations', 'Not found',
     ]);
     // A member reads /access for their own machines.
     expect([titleOf('/access', 'member'), titleOf('/access', 'admin'), titleOf('/status', 'member')]).toEqual(['My machines', 'Members', 'Status']);
@@ -306,7 +306,7 @@ describe('on a phone', () => {
     server(signedIn());
     mount('/p/alpha/sessions');
     const bar = await screen.findByRole('navigation', { name: 'Main pages' });
-    expect(within(bar).getAllByRole('link').map((a) => a.textContent)).toEqual(['Overview', 'Sessions', 'Spores']);
+    expect(within(bar).getAllByRole('link').map((a) => a.textContent)).toEqual(['Today', 'Sessions', 'Spores']);
     expect(within(bar).getByRole('link', { name: 'Sessions' }).getAttribute('aria-current')).toBe('page');
     expect(screen.queryByRole('complementary', { name: 'Navigation' })).toBeNull();
     expect(screen.getByRole('banner').textContent).toContain('Sessions');
@@ -396,10 +396,11 @@ describe('the account menu', () => {
 });
 
 describe('/notifications', () => {
-  it('redirects to the start, which lands on the last project or the Projects list', async () => {
+  it('redirects to the start, which is Today across every project', async () => {
     server(signedIn());
     mount('/notifications');
-    await waitFor(() => expect(location()).toBe('/projects'));
+    await waitFor(() => expect(location()).toBe('/'));
+    expect(await screen.findByRole('heading', { level: 1 })).toBeTruthy();
     expect(screen.queryByText(/Notifications/)).toBeNull();
   });
 });

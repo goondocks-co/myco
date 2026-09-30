@@ -1,0 +1,266 @@
+/**
+ * Today's words: every sentence the page shows, built from the numbers the
+ * server answers. Nothing here names a mechanism or shows an id; a run reads
+ * as what it produced, a machine by its name, and the account Myco's own work
+ * signs in as reads "Myco".
+ */
+import { REPOSITORY_CHECKOUT_CAPABILITY, REPOSITORY_DIGESTS_CAPABILITY } from '@goondocks/myco-shared/repository';
+import { harnessLabel } from '../../lib/harness';
+import type { AttentionItem, AttentionKind, CaptureRow, OutcomeKind, TodaySession, TodaySpore, WorkRun } from './wire';
+
+const MINUTE = 60_000;
+const HOUR = 60 * MINUTE;
+const DAY = 24 * HOUR;
+
+/** The member every run Myco dispatches signs in as. It is Myco, never a person. */
+export const MYCO_MEMBER_ID: typeof import('../../../../src/constants').HARNESS_MEMBER_ID = 'mem_harness';
+
+/** "1 spore", "3 spores". */
+export function count(n: number, singular: string, plural = `${singular}s`): string {
+  return `${n.toLocaleString()} ${n === 1 ? singular : plural}`;
+}
+
+/** A list in prose: "A", "A and B", "A, B and C". */
+export function listed(items: readonly string[]): string {
+  if (items.length <= 1) return items[0] ?? '';
+  return `${items.slice(0, -1).join(', ')} and ${items[items.length - 1]}`;
+}
+
+/** The time of day on the 24-hour clock: "09:39". */
+export function clockTime(at: number): string {
+  return new Date(at).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit', hourCycle: 'h23' });
+}
+
+/** A day as its heading reads: "Tuesday, September 29", with the year when it is not this one. */
+export function dayHeading(at: number, now: number): string {
+  const sameYear = new Date(at).getFullYear() === new Date(now).getFullYear();
+  return new Date(at).toLocaleDateString(undefined, { weekday: 'long', month: 'long', day: 'numeric', ...(sameYear ? {} : { year: 'numeric' }) });
+}
+
+/** How long ago, in words a person says: "just now", "4 min ago", "4 h ago", "yesterday", "3 days ago". */
+export function ago(at: number, now: number): string {
+  const delta = Math.max(0, now - at);
+  if (delta < MINUTE) return 'just now';
+  if (delta < HOUR) return `${Math.floor(delta / MINUTE)} min ago`;
+  if (delta < DAY) return `${Math.floor(delta / HOUR)} h ago`;
+  const days = Math.floor(delta / DAY);
+  return days === 1 ? 'yesterday' : `${days} days ago`;
+}
+
+/** An instant as "at 09:39" today, "yesterday at 23:05", else "on Sep 24". */
+export function when(at: number, now: number): string {
+  const startOfToday = new Date(now);
+  startOfToday.setHours(0, 0, 0, 0);
+  if (at >= startOfToday.getTime()) return `at ${clockTime(at)}`;
+  if (at >= startOfToday.getTime() - DAY) return `yesterday at ${clockTime(at)}`;
+  return `on ${new Date(at).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}`;
+}
+
+/** An agent as a person reads it; a session that names none reads "An agent". */
+export function agentName(agent: string | null): string {
+  if (agent === null || agent === '') return 'An agent';
+  return AGENT_NAMES[agent] ?? harnessLabel(agent);
+}
+
+/** Agents the harness table does not name. */
+const AGENT_NAMES: Readonly<Record<string, string>> = { pi: 'Pi' };
+
+/** Who ran a session: Myco for its own runs, else the member's name, else nobody named. */
+export function memberName(session: Pick<TodaySession, 'memberId' | 'memberLabel'>): string | null {
+  if (session.memberId === MYCO_MEMBER_ID) return 'Myco';
+  return session.memberLabel;
+}
+
+/** A spore's type in one word, as its chip reads. */
+export function sporeTypeWord(type: string): string {
+  return SPORE_TYPE_WORDS[type] ?? type.replace(/[_-]+/g, ' ').replace(/^\w/, (c) => c.toUpperCase());
+}
+
+const SPORE_TYPE_WORDS: Readonly<Record<string, string>> = {
+  gotcha: 'Gotcha',
+  bug_fix: 'Fix',
+  decision: 'Decision',
+  discovery: 'Discovery',
+  trade_off: 'Trade-off',
+  'cross-cutting': 'Cross-cutting',
+  wisdom: 'Wisdom',
+  pattern: 'Pattern',
+  architecture: 'Architecture',
+};
+
+/** A spore's one line: the line written for agents, else the first line of its body. */
+export function sporeLine(spore: Pick<TodaySpore, 'agentLine' | 'content'>): string {
+  if (spore.agentLine !== null && spore.agentLine.trim() !== '') return spore.agentLine.trim();
+  const first = spore.content.split('\n').map((line) => line.trim()).find((line) => line.length > 0) ?? '';
+  return first.replace(/^[#>\-*\s]+/, '');
+}
+
+/** What a group of Myco's runs produced, as the timeline item's headline. */
+export function workHeadline(kind: OutcomeKind, runs: readonly WorkRun[]): string {
+  const produced = runs.filter((run) => run.result !== 'failed');
+  if (produced.length === 0) return FAILED_HEADLINE[kind](runs.length);
+  const spores = produced.reduce((sum, run) => sum + run.outcome.spores, 0);
+  const sessions = produced.reduce((sum, run) => sum + run.outcome.sessions, 0);
+  switch (kind) {
+    case 'learn': return `Myco learned ${count(spores, 'spore')}${sessions > 0 ? ` from ${count(sessions, 'session')}` : ''}`;
+    case 'seed': return `Myco learned ${count(spores, 'spore')} from the project’s code and history`;
+    case 'title': return `Myco titled ${count(Math.max(sessions, produced.length), 'session')}`;
+    case 'map': return 'Myco updated the code map';
+  }
+}
+
+const FAILED_HEADLINE: Readonly<Record<OutcomeKind, (runs: number) => string>> = {
+  learn: () => 'Myco couldn’t learn from recent sessions',
+  seed: () => 'Myco couldn’t learn from the project’s code',
+  title: (runs) => (runs === 1 ? 'Myco couldn’t title a session' : `Myco couldn’t title ${count(runs, 'session')}`),
+  map: () => 'Myco couldn’t update the code map',
+};
+
+/** What to do about a run that failed, by what it was for and whether it kept anything. */
+export function failureNextStep(kind: OutcomeKind, keptOutput: boolean): string {
+  if (keptOutput) return 'What it saved is kept, so there’s nothing to do.';
+  return NEXT_STEP[kind];
+}
+
+const NEXT_STEP: Readonly<Record<OutcomeKind, string>> = {
+  learn: 'Myco tries again with the next sessions. If this keeps happening, open the run to see where it stopped.',
+  seed: 'Nothing was saved. Open the run to see where it stopped, then run it again.',
+  title: 'The session keeps its first prompt as its name, and Myco tries again later.',
+  map: 'The previous map is kept. Open the run to see where it stopped.',
+};
+
+/** The cause of a failure as the rest of a sentence after "Why:", ending in a full stop. */
+export function causeSentence(cause: string): string {
+  const trimmed = cause.trim().replace(/\s+/g, ' ');
+  if (trimmed === '') return 'no cause was recorded.';
+  return /[.!?]$/.test(trimmed) ? trimmed : `${trimmed}.`;
+}
+
+/** A machine as the capture panel names it: its name, else "A machine" and then "Another machine" for each further unnamed one. */
+export function machineNames(rows: readonly Pick<CaptureRow, 'machineId' | 'machineName'>[]): Map<string, string> {
+  const names = new Map<string, string>();
+  let unnamed = 0;
+  for (const row of rows) {
+    if (names.has(row.machineId)) continue;
+    if (row.machineName !== null && row.machineName.trim() !== '') names.set(row.machineId, row.machineName.trim());
+    else names.set(row.machineId, unnamed++ === 0 ? 'A machine' : 'Another machine');
+  }
+  return names;
+}
+
+/** The words of one "Needs you" item. `projectName` names a Project by id, or null when the dashboard does not know it. */
+export interface NeedsYouWords {
+  title: string;
+  detail: string;
+  action: { label: string; to: string } | null;
+}
+
+export function attentionWords(item: AttentionItem, now: number, projectName: (projectId: string) => string | null): NeedsYouWords {
+  const inProject = (projectId: string) => {
+    const name = projectName(projectId);
+    return name === null ? 'In a project you can’t see here.' : `In ${name}.`;
+  };
+  switch (item.kind) {
+    case 'backup_overdue':
+      return {
+        title: item.lastBackupAt === null ? 'No backup has completed yet' : `Last backup was ${ago(item.lastBackupAt, now)}`,
+        detail: `Backups are set to run ${everyHours(item.intervalHours)}${item.lastBackupAt === null ? '.' : `; none has completed since ${new Date(item.lastBackupAt).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}.`}`,
+        action: { label: 'Open backups', to: '/operations' },
+      };
+    case 'outcome_failed':
+      return {
+        title: item.failures === 1 ? `${OUTCOME_NOUN[item.outcome]} failed` : `${count(item.failures, OUTCOME_UPDATE[item.outcome])} failed`,
+        detail: `${inProject(item.projectId)} Nothing has succeeded since the first failure ${when(item.since, now)}.`,
+        action: { label: 'See the last attempt', to: `/p/${encodeURIComponent(item.projectId)}/runs/${encodeURIComponent(item.runId)}` },
+      };
+    case 'search_index_behind': {
+      const since = item.pendingSince ?? item.failingSince;
+      return {
+        title: 'Search is falling behind',
+        detail: item.pendingBlobs > 0
+          ? `${count(item.pendingBlobs, 'item')} ${item.pendingBlobs === 1 ? 'is' : 'are'} waiting to be searchable${since === null ? '' : ` since ${clockOrDay(since, now)}`}. Search still answers; new work takes longer to appear.`
+          : `Its updates have failed${since === null ? '' : ` since ${clockOrDay(since, now)}`}. Search still answers; new work takes longer to appear.`,
+        action: { label: 'Open Status', to: '/status' },
+      };
+    }
+    case 'transcripts_stopped':
+      return {
+        title: `${count(item.transcripts, 'transcript')} couldn’t be read`,
+        detail: `${inProject(item.projectId)} Their sessions are missing what the transcript held.`,
+        action: { label: 'Open Status', to: '/status' },
+      };
+    case 'runs_held_for_capability':
+      return {
+        title: `${count(item.runs, 'task')} ${item.runs === 1 ? 'is' : 'are'} waiting for a machine`,
+        detail: `${HOLD_WORDS[item.capability] ?? 'No machine heard from lately can run them.'} Waiting since ${clockOrDay(item.since, now)}.`,
+        action: { label: 'Open Status', to: '/status' },
+      };
+    case 'no_worker':
+      return {
+        title: 'No machine is running Myco’s work',
+        detail: `${count(item.runs, 'task')} ${item.runs === 1 ? 'is' : 'are'} waiting${item.since === null ? '' : ` since ${clockOrDay(item.since, now)}`}. ${item.lastContactAt === null ? 'No machine has checked in yet.' : `A machine last checked in ${ago(item.lastContactAt, now)}.`}`,
+        action: { label: 'Open Status', to: '/status' },
+      };
+    case 'access_key_expiring':
+      return {
+        title: `${item.label === null ? 'An access key' : `Access key “${item.label}”`} expires ${inDays(item.expiresAt, now)}`,
+        detail: `${inProject(item.projectId)} Whatever uses it stops working then.`,
+        action: { label: 'Open access keys', to: `/p/${encodeURIComponent(item.projectId)}/access` },
+      };
+    case 'schema_mismatch':
+      return {
+        title: 'The server and its database disagree',
+        detail: item.found === null
+          ? 'The database doesn’t say which version it holds, so some pages may fail.'
+          : `The database holds version ${item.found}; this server expects ${item.expected}. Some pages may fail until they match.`,
+        action: { label: 'Open Status', to: '/status' },
+      };
+  }
+}
+
+/** What each attention check reads, for the line naming the checks that could not be read. */
+export const ATTENTION_CHECKS: Readonly<Record<AttentionKind, string>> = {
+  backup_overdue: 'backups',
+  outcome_failed: 'Myco’s work',
+  search_index_behind: 'search',
+  transcripts_stopped: 'transcripts',
+  runs_held_for_capability: 'waiting tasks',
+  no_worker: 'machines',
+  access_key_expiring: 'access keys',
+  schema_mismatch: 'the database',
+};
+
+const OUTCOME_NOUN: Readonly<Record<OutcomeKind, string>> = {
+  learn: 'Learning from sessions',
+  seed: 'Learning from the code',
+  title: 'Titling a session',
+  map: 'A code map update',
+};
+
+const OUTCOME_UPDATE: Readonly<Record<OutcomeKind, string>> = {
+  learn: 'learning attempt',
+  seed: 'attempt to learn from the code',
+  title: 'titling attempt',
+  map: 'code map update',
+};
+
+const HOLD_WORDS: Readonly<Record<string, string>> = {
+  [REPOSITORY_CHECKOUT_CAPABILITY]: 'They need a machine that can read the repository, and none heard from lately can.',
+  [REPOSITORY_DIGESTS_CAPABILITY]: 'They need an up-to-date machine; the machines heard from lately are too old to run them.',
+};
+
+function everyHours(hours: number): string {
+  if (hours % 24 === 0) return hours === 24 ? 'every day' : `every ${hours / 24} days`;
+  return hours === 1 ? 'every hour' : `every ${hours} hours`;
+}
+
+function clockOrDay(at: number, now: number): string {
+  return when(at, now).replace(/^at /, '');
+}
+
+function inDays(at: number, now: number): string {
+  const days = Math.ceil((at - now) / DAY);
+  if (days <= 0) return 'today';
+  if (days === 1) return 'tomorrow';
+  return `in ${days} days`;
+}

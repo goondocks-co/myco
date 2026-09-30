@@ -5,15 +5,17 @@
  * one named like a test project, and seven quiet), two members (an admin and a
  * member), two machines with names, five agents, two days of sessions with one
  * still live, spores of every type, plans in every status, Myco's runs (a
- * failed learning run that still saved spores, an index update that failed and
- * then succeeded, a skipped titling run, a map run) and a backup four weeks
+ * failed learning run that still saved spores, a learning run that saved four,
+ * two titling runs, a code map update that failed with its cause after one that
+ * succeeded yesterday, an index update that failed and then succeeded, and a
+ * skipped titling run), an access key about to expire, and a backup four weeks
  * old.
  *
  * Capture goes through the real `/events` ingest and spores through the real
  * `myco_spores` tool, so the pages read rows written the way production writes
  * them. Only what has no public write path is seeded in SQL: members, machine
- * claims and credentials before the server starts, and runs and the backup
- * after it.
+ * claims and credentials before the server starts, and runs, what they wrote
+ * and the backup after it.
  */
 import { Database } from 'bun:sqlite';
 import { issueMemberToken } from '@myco-server-worker/auth/tokens.js';
@@ -21,6 +23,8 @@ import { linkStatement } from '@myco-server-worker/auth/identity-link.js';
 import { sqliteRelationalStore } from '@myco-server-worker/platform/bun/sqlite.js';
 import { PROJECT_HEADER, PROTOCOL_HEADER, SERVER_PROTOCOL, SERVER_SCHEMA_VERSION } from '@myco-server-worker/constants.js';
 import { uuidv5 } from '@myco-server-worker/hash.js';
+import { MAP_WRITE_TOOL, TITLE_WRITE_TOOL } from '@myco-server-worker/core/tool-catalogue.js';
+import { RUN_WRITE_EVENT } from '@myco-server-worker/core/runs.js';
 
 const MINUTE = 60_000;
 const HOUR = 60 * MINUTE;
@@ -121,6 +125,8 @@ const SPORES: Array<{ project: ProjectKey; session: number; type: (typeof SPORE_
   { project: 'atlas-web', session: 8, type: 'wisdom', line: 'Measure first paint on a throttled phone profile before and after any image change.', content: 'Desktop numbers hid a 1.1 s regression that only showed on a mid-range phone profile.' },
   { project: 'atlas-web', session: 2, type: 'pattern', line: 'Validation messages name the field and the fix, never just “invalid input”.', content: 'Each checkout field carries its own message saying what is wrong and what a valid value looks like.' },
   { project: 'infra', session: 5, type: 'architecture', line: 'Backups run nightly to object storage and are verified by a restore preview each week.', content: 'The nightly job writes to the bucket; a weekly restore preview proves the newest backup opens.' },
+  { project: 'myco', session: 0, type: 'decision', line: 'Canopy parity runs on both targets before a map change merges.', content: 'A map read that differs between targets is caught only by running the same scenario on both, so both run before merge.' },
+  { project: 'myco', session: 6, type: 'gotcha', line: 'A port the kernel hands out can be reused at once; never cache it across test files.', content: 'Two test files cached the same ephemeral port and the second bound it after the first released it, which hid the collision.' },
 ];
 
 const PLANS: Array<{ project: ProjectKey; session: number; status: (typeof PLAN_STATUSES)[number]; title: string; path: string; content: string }> = [
@@ -258,8 +264,14 @@ export async function seedThroughServer(ctx: SeedContext): Promise<SeededFixture
     }, at);
   }
 
+  // An access key that expires in three days, minted the way an admin mints one.
+  await expectOk(await fetch(`${url}/api/projects/${idOf('myco')}/grants`, {
+    method: 'POST', headers: ownerHeaders, body: JSON.stringify({ label: 'CI deploys', expires_in_days: 3 }),
+  }), 'mint an access key');
+
   settleReceiptTimes(ctx.databasePath, liveSessionId, now);
-  const runs = seedRuns(ctx.databasePath, now, sporeIds);
+  seedTitles(ctx.databasePath, sessionIds, now);
+  const runs = seedRuns(ctx.databasePath, now, sporeIds, sessionIds);
   seedBackup(ctx.databasePath, now);
 
   return {
@@ -297,23 +309,55 @@ function settleReceiptTimes(databasePath: string, liveSessionId: string, now: nu
 }
 
 /**
- * Myco's runs on the `myco` project: a learning run that failed after saving
- * two spores (they carry its id as author), an index update that failed and a
- * later one that succeeded, a skipped titling run, a completed map run and a
- * completed learning run.
+ * Each ended session's title and summary, as Myco's titling writes them once a
+ * session ends. A capture's own end carries none the server stores, so they are
+ * set here; the live session stays untitled.
  */
-function seedRuns(databasePath: string, now: number, sporeIds: string[]): number {
+function seedTitles(databasePath: string, sessionIds: string[], now: number): void {
+  const sqlite = new Database(databasePath);
+  sqlite.exec('PRAGMA busy_timeout = 5000');
+  try {
+    for (const [index, seed] of SESSIONS.entries()) {
+      if (seed.minutes === null) continue;
+      const titledAt = now - (seed.startedAgo - seed.minutes - 2) * MINUTE;
+      sqlite.query('UPDATE sessions SET title = ?, summary = ?, titled_at = ? WHERE project_id = ? AND session_id = ?')
+        .run(seed.title, seed.summary, titledAt, idOf(seed.project), sessionIds[index]!);
+    }
+  } finally {
+    sqlite.close();
+  }
+}
+
+/**
+ * Myco's runs on the `myco` project, each with what it wrote as the server
+ * records it: spores carry their run's id as author, and a title or a map
+ * written is a `run_write` event naming its tool.
+ *
+ * Today: a learning run that failed after saving two spores, a learning run
+ * that saved four, two titling runs, a map update that failed with its cause in
+ * its report, an index update that failed and a later one that succeeded, and a
+ * skipped titling run. Yesterday: a map update and a learning run.
+ */
+function seedRuns(databasePath: string, now: number, sporeIds: string[], sessionIds: string[]): number {
   const sqlite = new Database(databasePath);
   sqlite.exec('PRAGMA busy_timeout = 5000');
   sqlite.exec('PRAGMA foreign_keys = ON');
   try {
     sqlite.query(`INSERT OR IGNORE INTO agents (id, name, source, enabled, created_at) VALUES ('myco-agent', 'Myco', 'built-in', 1, ?)`).run(now - 60 * DAY);
-    const runs: Array<{ id: string; task: string; status: string; startedAgo: number; minutes: number; error?: string; context?: Record<string, unknown>; report?: string }> = [
+    const runs: Array<{
+      id: string; task: string; status: string; startedAgo: number; minutes: number; error?: string; context?: Record<string, unknown>; report?: string;
+      /** What the run recorded writing: a title names the session it titled. */
+      wrote?: { tool: string; session?: number };
+    }> = [
       { id: 'run_4f1c9a2e7b', task: 'extract-curate', status: 'failed', startedAgo: 2 * 60, minutes: 6, error: 'the run exceeded its turn budget', report: 'Saved 2 spores from 3 sessions before the turn budget ran out.' },
+      { id: 'run_a2c4e6f801', task: 'extract-curate', status: 'completed', startedAgo: 5 * 60, minutes: 8, report: 'Saved 4 spores from 4 sessions.' },
+      { id: 'run_7d1e2f3a40', task: 'title-summary', status: 'completed', startedAgo: 3 * 60, minutes: 1, report: 'Titled one session.', wrote: { tool: TITLE_WRITE_TOOL, session: 1 } },
+      { id: 'run_7d1e2f3b51', task: 'title-summary', status: 'completed', startedAgo: 3 * 60 + 4, minutes: 1, report: 'Titled one session.', wrote: { tool: TITLE_WRITE_TOOL, session: 6 } },
+      { id: 'run_5e0b1c2d3f', task: 'canopy-map', status: 'failed', startedAgo: 3 * 60 + 30, minutes: 15, error: 'the run ended without its artifact', report: 'repo.sha256 is absent from this checkout, so the map could not be verified; the previous map is kept.' },
       { id: 'run_8d20b6c1f3', task: 'embedding-reconcile', status: 'failed', startedAgo: 95, minutes: 1, error: 'the embedding provider answered 503' },
       { id: 'run_8d20b6c2a9', task: 'embedding-reconcile', status: 'completed', startedAgo: 80, minutes: 1 },
       { id: 'run_b73e05d4c8', task: 'title-summary', status: 'skipped', startedAgo: 60, minutes: 0, context: { reason: 'no session is waiting for a title' } },
-      { id: 'run_c19f7a0e55', task: 'canopy-map', status: 'completed', startedAgo: 20 * 60, minutes: 4, report: 'Mapped 412 files at the latest commit.' },
+      { id: 'run_c19f7a0e55', task: 'canopy-map', status: 'completed', startedAgo: 20 * 60, minutes: 4, report: 'Mapped 412 files at the latest commit.', wrote: { tool: MAP_WRITE_TOOL } },
       { id: 'run_e0a4d2b917', task: 'extract-curate', status: 'completed', startedAgo: 27 * 60, minutes: 9, report: 'Saved 3 spores from 4 sessions.' },
     ];
     for (const run of runs) {
@@ -327,9 +371,20 @@ function seedRuns(databasePath: string, now: number, sporeIds: string[]): number
         sqlite.query(`INSERT INTO agent_reports (project_id, run_id, agent_id, action, summary, created_at) VALUES (?, ?, 'myco-agent', 'summary', ?, ?)`)
           .run(idOf('myco'), run.id, run.report, startedAt + run.minutes * MINUTE);
       }
+      if (run.wrote) {
+        const payload = run.wrote.session === undefined ? {} : { session_id: sessionIds[run.wrote.session] };
+        sqlite.query(`INSERT INTO agent_run_events (project_id, run_id, event_type, tool_name, outcome, payload, recorded_at) VALUES (?, ?, ?, ?, 'ok', ?, ?)`)
+          .run(idOf('myco'), run.id, RUN_WRITE_EVENT, run.wrote.tool, JSON.stringify(payload), startedAt + run.minutes * MINUTE);
+      }
     }
-    const authored = sporeIds.slice(0, 2);
-    for (const id of authored) sqlite.query(`UPDATE spores SET author = 'run_4f1c9a2e7b' WHERE project_id = ? AND id = ?`).run(idOf('myco'), id);
+    // Each learning run's spores, by their place in SPORES: every one in the `myco` project.
+    const authored: Record<string, number[]> = { run_4f1c9a2e7b: [0, 1], run_a2c4e6f801: [2, 5, 9, 10] };
+    for (const [runId, indexes] of Object.entries(authored)) {
+      for (const index of indexes) {
+        if (SPORES[index]?.project !== 'myco') throw new Error(`spore ${index} is not in the myco project`);
+        sqlite.query('UPDATE spores SET author = ? WHERE project_id = ? AND id = ?').run(runId, idOf('myco'), sporeIds[index]!);
+      }
+    }
     return runs.length;
   } finally {
     sqlite.close();
