@@ -23,7 +23,7 @@ import { serverEnvFromBindings } from '@myco-server-worker/platform/cloudflare/e
 import { deploymentSecretStore } from '@myco-server-worker/core/secrets.js';
 import { join, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { memberHeaders } from './helpers/fixtures.js';
+import { memberHeaders, turnOnGatedCapabilities } from './helpers/fixtures.js';
 import { OWNER_ENV } from './helpers/owner.js';
 import { PROJECT_HEADER, PROTOCOL_HEADER, SERVER_PROTOCOL } from '@myco-server-worker/constants.js';
 import { TokenRevokedError } from '@myco-server-worker/telemetry.js';
@@ -52,6 +52,7 @@ const liveRows = (e: Env) => e.sqlite.query(`SELECT id FROM member_credentials W
 /** A non-rotating credential issued `ageMs` ago. */
 async function envCredential(ageMs: number) {
   const e = sqliteEnv();
+  turnOnGatedCapabilities(e.sqlite);
   const issued = await issueMemberToken(e.db, MEMBER, Date.now() - ageMs, null, NO_RUNTIME_CLAIMS, { rotates: false });
   return { e, issued };
 }
@@ -59,6 +60,7 @@ async function envCredential(ageMs: number) {
 describe('a credential minted not to rotate', () => {
   it('is recorded non-rotating by its issuer; a default mint, a join and a successor rotate', async () => {
     const e = sqliteEnv();
+    turnOnGatedCapabilities(e.sqlite);
     const fixed = await issueMemberToken(e.db, MEMBER, Date.now(), null, NO_RUNTIME_CLAIMS, { rotates: false });
     const rotating = await issueMemberToken(e.db, { memberId: 'mem_machine_2', machineId: 'machine_2' }, Date.now());
     const rotatesOf = (id: string) => (e.sqlite.query(`SELECT rotates FROM member_credentials WHERE id = ?`).get(id) as { rotates: number }).rotates;
@@ -133,6 +135,7 @@ describe('a credential minted not to rotate', () => {
 describe('a credential that rotates, beside it', () => {
   it('still rotates on the refresh route, and its successor rotates too', async () => {
     const e = sqliteEnv();
+    turnOnGatedCapabilities(e.sqlite);
     const root = await issueMemberToken(e.db, MEMBER, Date.now() - 6 * DAY_MS);
     const res = await worker.fetch(refreshRequest(root.token), e.env);
     const body = await res.json() as { refreshed: boolean; tokenId: string };
@@ -142,6 +145,7 @@ describe('a credential that rotates, beside it', () => {
 
   it('is still replay-revoked when a superseded token of it asks to rotate', async () => {
     const e = sqliteEnv();
+    turnOnGatedCapabilities(e.sqlite);
     const now = Date.now();
     const root = await issueMemberToken(e.db, MEMBER, now - 6 * DAY_MS);
     const successor = await refreshMemberToken(e.db, {
@@ -229,6 +233,7 @@ describe('every route that mints an authority able to outlive the credential (#1
 
   it('still answers a GitHub link key to a credential that rotates, on a Deployment with no linked admin', async () => {
     const e = sqliteEnv();
+    turnOnGatedCapabilities(e.sqlite);
     e.sqlite.query(`UPDATE members SET github_id = NULL`).run();
     const rotating = await issueMemberToken(e.db, MEMBER, Date.now());
     const res = await worker.fetch(linkRequest(rotating.token), { ...e.env, ...OWNER_ENV });
@@ -248,6 +253,7 @@ describe('a worker claim from a credential minted not to rotate (#1420)', () => 
   /** An administrator's credential, rotating or not, a queued run a worker can take, and the provider key its harness would read. */
   async function queued(rotates: boolean) {
     const e = sqliteEnv();
+    turnOnGatedCapabilities(e.sqlite);
     const bindings = { ...e.env, SECRET_WRAP_KEY: { get: async () => WRAP_KEY } };
     const env = serverEnvFromBindings(bindings as never);
     await deploymentSecretStore(env.db, env.wrappingKey).put('anthropic', API_KEY, 'mem_admin', NOW);

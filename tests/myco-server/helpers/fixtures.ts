@@ -212,3 +212,15 @@ export function recordingDeferred() {
 
 export const count = (sqlite: Database, table: string): number => (sqlite.query(`SELECT COUNT(*) c FROM ${table}`).get() as { c: number }).c;
 export const bytesWritten = (sqlite: Database, tokenId: string): number => (sqlite.query(`SELECT bytes_written b FROM member_credentials WHERE id = ?`).get(tokenId) as { b: number }).b;
+
+/**
+ * Turn on, for each Project named, every capability a task is gated by, as an admin would in Settings. A run of a gated
+ * task is dispatched and claimed only where its Project has turned the capability on.
+ */
+export function turnOnGatedCapabilities(sqlite: Database, projects: readonly string[] = ['proj_1', 'proj_2']): void {
+  for (const project of projects) {
+    for (const capability of ['vault_evolution', 'canopy', 'cortex']) {
+      sqlite.run(`INSERT OR REPLACE INTO project_capabilities (project_id, capability, enabled, updated_at, updated_by) VALUES (?, ?, 1, 0, 'test')`, [project, capability]);
+    }
+  }
+}

@@ -6,7 +6,7 @@
  * before it.
  */
 import { describe, expect, it } from 'bun:test';
-import { sqliteEnv } from './helpers/fixtures.js';
+import { sqliteEnv, turnOnGatedCapabilities } from './helpers/fixtures.js';
 import { issueMemberToken } from '@myco-server-worker/auth/tokens.js';
 import { ensureMember } from '@myco-server-worker/auth/enrollment.js';
 import { HARNESS_MEMBER_ID } from '@myco-server-worker/core/harness.js';
@@ -25,6 +25,7 @@ const WRAP_KEY = btoa(String.fromCharCode(...crypto.getRandomValues(new Uint8Arr
 
 function fixture(task = 'extract-curate') {
   const e = sqliteEnv();
+  turnOnGatedCapabilities(e.sqlite);
   e.sqlite.run(`INSERT OR IGNORE INTO agents (id, name, source, enabled, created_at) VALUES ('myco-agent', 'a', 'built-in', 1, ?)`, [NOW]);
   e.sqlite.run(`INSERT OR IGNORE INTO members (id, label, created_at, role) VALUES (?, 'harness runtime', ?, 'member')`, [HARNESS_MEMBER_ID, NOW]);
   const queue = (id: string, at: number, over: Record<string, unknown> = {}) => {

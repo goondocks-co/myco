@@ -24,7 +24,7 @@ import { EXTRACTION_TASK, SEEDING_TASK } from '@myco-server-worker/core/task-cat
 import { AGENT_LINE_MAX_CHARS } from '@myco-server-worker/core/injection.js';
 import { getRunDetail } from '@myco-server-worker/read/runs.js';
 import { titleSession } from '@myco-server-worker/core/titling.js';
-import { memberHeaders, sqliteEnv } from './helpers/fixtures.js';
+import { memberHeaders, sqliteEnv, turnOnGatedCapabilities } from './helpers/fixtures.js';
 import { PROJECT_HEADER } from '@myco-server-worker/constants.js';
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
 import { verifyWorkerOutcome } from '../helpers/worker-smoke-evidence.js';
@@ -35,6 +35,7 @@ const OFFERED = [{ id: 'claude-code', authenticated: true }];
 
 async function rig() {
   const e = sqliteEnv();
+  turnOnGatedCapabilities(e.sqlite);
   e.sqlite.run(`INSERT OR IGNORE INTO agents (id, name, source, enabled, created_at) VALUES ('myco-agent', 'a', 'built-in', 1, ?)`, [NOW]);
   e.sqlite.run(`INSERT OR IGNORE INTO members (id, label, created_at, role) VALUES (?, 'harness runtime', ?, 'member')`, [HARNESS_MEMBER_ID, NOW]);
   await ensureMember(e.db, 'mem_worker', NOW, 'admin', 'a worker');
@@ -378,7 +379,7 @@ describe('the record of what a run called', () => {
       .toEqual(['myco_run_sessions success', 'myco_run success']);
 
     // The same record is what a person opening the run reads.
-    const detail = await getRunDetail(r.e.db, { projectId: 'proj_1' }, run.id);
+    const detail = await getRunDetail(r.e.db, { projectId: 'proj_1' }, run.id, Date.now());
     expect(detail?.toolCalls.map((c) => `${c.tool} ${c.op ?? ''}`))
       .toEqual(['myco_run_sessions material', 'myco_run report']);
   });
@@ -388,7 +389,7 @@ describe('the record of what a run called', () => {
     const run = await r.claimedTitling(NOW + 1);
     await r.workerEnds(run.id, 'completed', NOW + 3);
 
-    const detail = await getRunDetail(r.e.db, { projectId: 'proj_1' }, run.id);
+    const detail = await getRunDetail(r.e.db, { projectId: 'proj_1' }, run.id, Date.now());
     expect({ status: detail?.run.status, calls: detail?.toolCalls, error: detail?.run.error })
       .toEqual({ status: 'failed', calls: [], error: RUN_CLOSE_ERROR });
   });

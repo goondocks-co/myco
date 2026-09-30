@@ -29,7 +29,7 @@ import { createServer } from '@myco-server-worker/pipeline.js';
 import { issueMemberToken } from '@myco-server-worker/auth/tokens.js';
 import { ensureMember } from '@myco-server-worker/auth/enrollment.js';
 import { RUN_CLOSE_ERROR } from '@myco-server-worker/core/run-postconditions.js';
-import { sqliteEnv } from '../myco-server/helpers/fixtures.ts';
+import { sqliteEnv, turnOnGatedCapabilities } from '../myco-server/helpers/fixtures.ts';
 import { stubAcpHarness, STUB_DETECTED, STUB_HARNESS } from '../helpers/stub-acp-harness.ts';
 import { withRunMcp } from '../helpers/run-mcp-fetch.ts';
 
@@ -40,6 +40,7 @@ const ATTACH_BOUND_MS = 10_000;
 
 async function rig(before: (path: string, n: number) => Response | null = () => null) {
   const e = sqliteEnv();
+  turnOnGatedCapabilities(e.sqlite, [PROJECT_ID]);
   // `createServer` takes the source identity as a dependency, so the edge header
   // a deployed Worker reads is supplied here instead of stamped on the worker's
   // own requests: nothing a worker sends is invented by this fixture.

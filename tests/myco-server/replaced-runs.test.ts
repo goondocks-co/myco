@@ -15,7 +15,7 @@ import { getRun, markRunReplaced, recordDispatch, taskEntriesSince } from '@myco
 import { ensureMember } from '@myco-server-worker/auth/enrollment.js';
 import { issueMemberToken } from '@myco-server-worker/auth/tokens.js';
 import worker from '@myco-server-worker/index.js';
-import { memberPost, sqliteEnv, withHarness } from './helpers/fixtures.js';
+import { memberPost, sqliteEnv, withHarness, turnOnGatedCapabilities } from './helpers/fixtures.js';
 
 const NOW = 1_800_000_000_000;
 const DAY = 86_400_000;
@@ -25,6 +25,7 @@ type Launch = { runId: string; timeoutSeconds: number; envVars: Record<string, s
 
 function fixture() {
   const e = sqliteEnv();
+  turnOnGatedCapabilities(e.sqlite);
   const launches: Launch[] = [];
   // The entry maps its own deployment, so a launch reaches it only as the
   // recording runtime: the successor is queued and marked, and starts nothing.

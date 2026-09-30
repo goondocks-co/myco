@@ -29,7 +29,7 @@ import type { DispatchLimits } from './limits.js';
 import type { PreparedStatement, RelationalStore } from './adapters.js';
 import { emit } from '../telemetry.js';
 import { inListChunks, type ReadScope } from '../read/scope.js';
-import { providerConfiguredFor, settingsWriter, type ProjectCapability } from './settings.js';
+import { CAPABILITY_ON_SQL, providerConfiguredFor, settingsWriter, type ProjectCapability } from './settings.js';
 import { TITLING_TASK } from './task-catalogue.js';
 import { NOT_TOMBSTONED_PARAMS } from './tombstones.js';
 import { contextValue } from '../db/run-context.js';
@@ -174,7 +174,7 @@ export const titleRunInFlightSql = (session: string): string => `EXISTS (SELECT 
 
 
 /** The actor a dispatch spec names, and null for a spec that names none. A spec the store did not write is not read as JSON at all. */
-const DISPATCH_ACTOR_SQL = `CASE WHEN json_valid(dispatch_spec) THEN CASE WHEN json_type(dispatch_spec, '$.actor') = 'text' THEN NULLIF(json_extract(dispatch_spec, '$.actor'), '') END END`;
+export const DISPATCH_ACTOR_SQL = `CASE WHEN json_valid(dispatch_spec) THEN CASE WHEN json_type(dispatch_spec, '$.actor') = 'text' THEN NULLIF(json_extract(dispatch_spec, '$.actor'), '') END END`;
 /** A run row that counts as an actor's entry of a task from an instant on: not skipped, not replaced, dispatched by that actor. Bound as: task, window start, actor. */
 const ACTOR_ENTRY_SQL = `task = ? AND status != 'skipped' AND COALESCE(${contextValue('replaced')}, 0) != 1
        AND COALESCE(queued_at, started_at) >= ? AND ${DISPATCH_ACTOR_SQL} = ?`;
@@ -213,20 +213,24 @@ const ADMISSION_WHERE = `
    AND (? IS NULL OR (SELECT COUNT(*) FROM agent_runs WHERE ${LIVE_RUN_STATUSES} AND ${NOT_THE_RUN_ADMITTED}) < ?)
    AND (? IS NULL OR (SELECT COUNT(*) FROM agent_runs WHERE ${LIVE_RUN_STATUSES} AND task = ? AND ${NOT_THE_RUN_ADMITTED}) < ?)
    AND (? IS NULL OR (SELECT COUNT(*) FROM agent_runs WHERE task = ? AND ${NOT_THE_RUN_ADMITTED} AND started_at IS NOT NULL AND started_at >= ?) < ?)
-   AND (? IS NULL OR NOT EXISTS (SELECT 1 FROM agent_runs WHERE project_id = ? AND task = ? AND ${IN_FLIGHT_RUN_STATUSES} AND id != ?))${ACTOR_CEILING_WHERE}`;
+   AND (? IS NULL OR NOT EXISTS (SELECT 1 FROM agent_runs WHERE project_id = ? AND task = ? AND ${IN_FLIGHT_RUN_STATUSES} AND id != ?))${ACTOR_CEILING_WHERE}
+   AND (? IS NULL OR ${CAPABILITY_ON_SQL})`;
 
 /**
  * What a write is admitted against, or none: an unguarded write is a claim the
  * dispatcher already decided elsewhere. `singleFlight` names a task that runs
  * once at a time in a Project: the write refuses while another run of it is
  * live, in the same statement, so two wakes deciding at once write one row.
- * `ceiling` names an actor's Deployment-wide window the write refuses past.
+ * `ceiling` names an actor's Deployment-wide window the write refuses past. `capability` names one the Project must
+ * have turned on.
  */
 export interface WriteAdmission {
   limits: DispatchLimits;
   now: number;
   singleFlight?: boolean;
   ceiling?: ActorCeiling;
+  /** A capability the Project must have turned on for the write to land. */
+  capability?: string;
 }
 
 export const NO_LIMITS: DispatchLimits = { concurrent_runs: null, task_concurrent_runs: null, task_runs_per_hour: null, fleet: null };
@@ -242,6 +246,7 @@ function admissionParams(scope: ReadScope, task: string | null, runId: string, a
     l.task_runs_per_hour, task, runId, runId, hourStart, l.task_runs_per_hour,
     single, scope.projectId, task, runId,
     ...actorCeilingParams(runId, admission?.ceiling),
+    admission?.capability ?? null, scope.projectId, admission?.capability ?? null,
   ];
 }
 

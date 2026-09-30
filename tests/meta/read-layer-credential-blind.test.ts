@@ -100,7 +100,7 @@ describe('read layer', () => {
       expect({ module, reader: /from '\.\.\/db\/run-context\.js'/.test(source) }).toEqual({ module, reader: true });
       keys.push(...[...source.matchAll(/contextValue\('([a-z_]+)'\)/g)].map((m) => m[1]!));
     }
-    expect([...new Set(keys)].sort()).toEqual(['replaced', 'replaces', 'session_id']);
+    expect([...new Set(keys)].sort()).toEqual(['reason', 'replaced', 'replaces', 'session_id']);
   });
 
   it('names no Request type and takes no full Env', () => {

@@ -9,7 +9,7 @@ import { deploymentSecretStore } from '@myco-server-worker/core/secrets.js';
 import { prepareWorkerRepository } from '@myco-server-worker/core/worker-repository.js';
 import { withLeasedRun } from '@myco-server-worker/core/worker-run.js';
 import { WORKER_LEASE_MS } from '@myco-server-worker/constants.js';
-import { memberHeaders, sqliteEnv } from './helpers/fixtures.js';
+import { memberHeaders, sqliteEnv, turnOnGatedCapabilities } from './helpers/fixtures.js';
 import { jsonBody } from '../helpers/json-body.js';
 
 const SOURCE = { url: 'https://example.test/team/source', branch: 'main' };
@@ -21,6 +21,7 @@ afterEach(() => { for (const close of cleanups.splice(0)) close(); });
 
 async function rig() {
   const e = sqliteEnv();
+  turnOnGatedCapabilities(e.sqlite);
   cleanups.push(() => e.sqlite.close());
   e.env.SECRET_WRAP_KEY = { get: async () => btoa('r'.repeat(32)) };
   const now = Date.now();

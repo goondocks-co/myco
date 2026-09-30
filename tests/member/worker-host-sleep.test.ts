@@ -27,7 +27,7 @@ import { issueMemberToken } from '@myco-server-worker/auth/tokens.js';
 import { ensureMember } from '@myco-server-worker/auth/enrollment.js';
 import { expireLeases } from '@myco-server-worker/core/harness.js';
 import { WORKER_LEASE_MS } from '@myco-server-worker/constants.js';
-import { sqliteEnv } from '../myco-server/helpers/fixtures.ts';
+import { sqliteEnv, turnOnGatedCapabilities } from '../myco-server/helpers/fixtures.ts';
 import { stubAcpHarness, STUB_DETECTED, STUB_HARNESS } from '../helpers/stub-acp-harness.ts';
 import { withRunMcp } from '../helpers/run-mcp-fetch.ts';
 
@@ -61,6 +61,7 @@ async function until(what: string, pred: () => boolean, ms = 10_000): Promise<vo
  */
 async function host(options: { heartbeatMs?: number } = {}) {
   const e = sqliteEnv();
+  turnOnGatedCapabilities(e.sqlite, [PROJECT_ID]);
   let offset = 0;
   /** While set, a renewal reaches nothing and is answered never: a network still coming back after a wake. */
   let offline = false;
