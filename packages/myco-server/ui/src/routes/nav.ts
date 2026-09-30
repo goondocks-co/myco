@@ -1,6 +1,6 @@
 import { INVITE_CONTROLS } from '@goondocks/myco-shared/member-protocol';
 import {
-  Activity, Bot, KeyRound, MessageSquare, Settings2, Sprout, Sun, Users, type LucideIcon,
+  Activity, Bot, MessageSquare, Settings2, SlidersHorizontal, Sprout, Sun, Users, type LucideIcon,
 } from 'lucide-react';
 
 /** A page under a project, reached at `/p/:project<suffix>`. */
@@ -25,6 +25,16 @@ export const CODE_MAP_SUFFIX = '/knowledge/map';
 export const SPORE_SUFFIX = '/spores';
 /** A plan's page under a project, as `/p/:project/plans/:planKey`. */
 export const PLAN_SUFFIX = '/plans';
+/** A project's settings: what Myco does there, its repository, its access keys and release tracking. */
+export const PROJECT_SETTINGS_SUFFIX = '/settings';
+
+/** Where each part of a project's settings sits on its page. */
+export const PROJECT_SETTINGS_ANCHORS = {
+  capabilities: 'capabilities',
+  repository: 'repository',
+  accessKeys: 'access-keys',
+  releases: 'release-tracking',
+} as const;
 
 /** The pages under a project, in nav order. */
 export const PROJECT_PAGES: readonly ProjectPage[] = [
@@ -32,7 +42,7 @@ export const PROJECT_PAGES: readonly ProjectPage[] = [
   { label: 'Sessions', icon: MessageSquare, suffix: '/sessions' },
   { label: 'Knowledge', icon: Sprout, suffix: KNOWLEDGE_SUFFIX, also: [PLANS_SUFFIX, CODE_MAP_SUFFIX, SPORE_SUFFIX, PLAN_SUFFIX] },
   { label: 'Agent runs', icon: Bot, suffix: '/runs' },
-  { label: 'Access', icon: KeyRound, suffix: '/access', admin: true },
+  { label: 'Project settings', icon: SlidersHorizontal, suffix: PROJECT_SETTINGS_SUFFIX, admin: true },
 ];
 
 /** Whether a page's suffix, or one of the paths that belong to it, is this one. */
@@ -75,39 +85,54 @@ export interface ServerPage {
   label: string;
   icon: LucideIcon;
   to: string;
-  /** Pages folded under this one in the nav, listed while any of them is open. */
-  children?: ReadonlyArray<{ label: string; to: string }>;
 }
+
+/** Who is a member, and the machines that write here. */
+export const PEOPLE_PATH = '/people';
+/** The server's settings, in five sections. */
+export const SETTINGS_PATH = '/settings';
+/**
+ * The one page on the server's health. `/health` is the server's own liveness
+ * route on both targets, so the page lives under `/status`.
+ */
+export const HEALTH_PATH = '/status/health';
+
+/** Where each part of Health sits on its page. */
+export const HEALTH_ANCHORS = {
+  needsYou: 'needs-you',
+  status: 'status',
+  workers: 'workers',
+  backups: 'backups',
+  upkeep: 'upkeep',
+  measures: 'measures',
+} as const;
+
+/** The five sections of Settings, each at its own address; the first is Settings itself. */
+export const SETTINGS_SECTIONS = [
+  { id: 'work', label: 'Myco’s work', to: SETTINGS_PATH },
+  { id: 'models', label: 'Models and keys', to: `${SETTINGS_PATH}/models` },
+  { id: 'capture', label: 'Capture and retention', to: `${SETTINGS_PATH}/capture` },
+  { id: 'backups', label: 'Backups', to: `${SETTINGS_PATH}/backups` },
+  { id: 'access', label: 'Sign-in and access', to: `${SETTINGS_PATH}/access` },
+] as const;
+
+export type SettingsSectionId = (typeof SETTINGS_SECTIONS)[number]['id'];
 
 /**
  * The nav foot: the server's admin pages. A member who is not an admin sees
- * none of them. Measures and Operations fold under Status, where the one
- * Health page will hold all three.
+ * none of them. Health carries the count of what needs an admin.
  */
 export const ADMIN_PAGES: readonly ServerPage[] = [
-  { label: INVITE_CONTROLS.page, icon: Users, to: '/access' },
-  { label: 'Settings', icon: Settings2, to: '/settings' },
-  {
-    label: 'Status',
-    icon: Activity,
-    to: '/status',
-    children: [
-      { label: 'Measures', to: '/measures' },
-      { label: 'Operations', to: '/operations' },
-    ],
-  },
+  { label: INVITE_CONTROLS.page, icon: Users, to: PEOPLE_PATH },
+  { label: 'Settings', icon: Settings2, to: SETTINGS_PATH },
+  { label: 'Health', icon: Activity, to: HEALTH_PATH },
 ];
-
-/** Whether a path is a page of a nav group: its head or one folded under it. */
-export function inGroup(page: ServerPage, pathname: string): boolean {
-  return [page.to, ...(page.children ?? []).map((child) => child.to)].includes(pathname.replace(/\/+$/, ''));
-}
 
 /** Every project, listed with its session count. */
 export const PROJECTS_PATH = '/projects';
 
-/** The page a member's own machines are listed on. */
-export const MY_MACHINES_PATH = '/access';
+/** The page every member's own machines are listed on. */
+export const MY_MACHINES_PATH = '/me/machines';
 
 /**
  * The pages that have an all-projects form, by the suffix of their per-project
@@ -214,12 +239,13 @@ export function clearProjectHref(
 const SERVER_TITLES: Readonly<Record<string, string>> = {
   ...Object.fromEntries(Object.entries(ALL_PROJECTS_FORMS).map(([suffix, form]) => [form.replace(/\/+$/, ''), pageOf(suffix)?.label ?? 'Not found'])),
   [PROJECTS_PATH]: 'Projects',
-  ...Object.fromEntries(ADMIN_PAGES.flatMap((page) => [page, ...(page.children ?? [])]).map((page) => [page.to, page.label])),
+  [MY_MACHINES_PATH]: 'My machines',
+  ...Object.fromEntries(ADMIN_PAGES.map((page) => [page.to, page.label])),
+  ...Object.fromEntries(SETTINGS_SECTIONS.map((section) => [section.to, 'Settings'])),
 };
 
-/** The page a path shows, in the words of the nav. A member reads `/access` for their own machines. */
-export function titleOf(pathname: string, role: 'admin' | 'member' = 'admin'): string {
-  if (role === 'member' && pathname.replace(/\/+$/, '') === MY_MACHINES_PATH) return 'My machines';
+/** The page a path shows, in the words of the nav. */
+export function titleOf(pathname: string): string {
   if (projectOf(pathname) !== null) {
     return pageOf(pageSuffix(pathname))?.label ?? 'Not found';
   }

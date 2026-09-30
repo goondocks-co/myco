@@ -3,7 +3,8 @@
  *
  * Thirteen projects, as many as a busy owner keeps (six with work in them,
  * one named like a test project, and seven quiet), two members (an admin and a
- * member), two machines with names, five agents, two days of sessions with one
+ * member), two machines with names and one without, a worker contact from the
+ * owner's machine, two open invitations, five agents, two days of sessions with one
  * still live, spores of every type (two saved without their one line, and one
  * replaced by a newer spore), plans in every status, Myco's runs (a
  * failed learning run that still saved spores, a learning run that saved four,
@@ -16,8 +17,8 @@
  * Capture goes through the real `/events` ingest and spores through the real
  * `myco_spores` tool, so the pages read rows written the way production writes
  * them. Only what has no public write path is seeded in SQL: members, machine
- * claims and credentials before the server starts, and runs, what they wrote
- * and the backup after it.
+ * claims and credentials before the server starts, and runs, what they wrote,
+ * a worker contact and the backup after it.
  */
 import { Database } from 'bun:sqlite';
 import { issueMemberToken } from '@myco-server-worker/auth/tokens.js';
@@ -54,6 +55,13 @@ export const MACHINES = [
   { id: 'studio', member: OWNER, label: 'Ada’s studio Mac' },
   { id: 'buildbox', member: READER, label: 'Lin’s build box' },
 ] as const;
+
+/**
+ * A third machine of the owner's whose runtime joined without a name, as every
+ * `myco login` did before it sent one. Its id has the shape a machine's id
+ * takes (`<login>_<8 hex>`); the pages call it "A machine", never by the id.
+ */
+export const UNNAMED_MACHINE = { id: 'ada_7c1e9f02', member: OWNER } as const;
 
 /**
  * Projects, each with the `proj_<32 hex>` id a named project gets and a short
@@ -185,6 +193,8 @@ export async function seedIdentities(databasePath: string, now: number): Promise
       const issued = await issueMemberToken(db, { memberId: machine.member.id, machineId: machine.id }, now, null, { runtimeLabel: machine.label, runtimeKind: 'cli' });
       tokens[machine.id] = issued.token;
     }
+    sqlite.query('INSERT INTO machine_claims (machine_id, member_id, claimed_at) VALUES (?, ?, ?)').run(UNNAMED_MACHINE.id, UNNAMED_MACHINE.member.id, now - 40 * DAY);
+    await issueMemberToken(db, { memberId: UNNAMED_MACHINE.member.id, machineId: UNNAMED_MACHINE.id }, now - 2 * DAY);
     return tokens;
   } finally {
     sqlite.close();
@@ -304,7 +314,14 @@ export async function seedThroughServer(ctx: SeedContext): Promise<SeededFixture
     method: 'POST', headers: ownerHeaders, body: JSON.stringify({ label: 'CI deploys', expires_in_days: 3 }),
   }), 'mint an access key');
 
+  // Two open invitations, minted the way an admin mints them: one for a new teammate, one to add a machine for Lin.
+  await expectOk(await fetch(`${url}/api/enrollment`, { method: 'POST', headers: ownerHeaders, body: JSON.stringify({ ttlMinutes: 1440 }) }), 'invite a teammate');
+  await expectOk(await fetch(`${url}/api/enrollment`, { method: 'POST', headers: ownerHeaders, body: JSON.stringify({ memberId: READER.id, ttlMinutes: 60 }) }), 'add a machine for Lin');
+  // Imported sessions are titled, as production has it.
+  await expectOk(await fetch(`${url}/api/titling-backfill`, { method: 'PUT', headers: ownerHeaders, body: JSON.stringify({ enabled: true }) }), 'title imported sessions');
+
   settleReceiptTimes(ctx.databasePath, liveSessionId, now);
+  seedWorkerContact(ctx.databasePath, now);
   seedTitles(ctx.databasePath, sessionIds, now);
   settleSporeTimes(ctx.databasePath, sporeIds, now);
   const runs = seedRuns(ctx.databasePath, now, sporeIds, sessionIds);
@@ -458,6 +475,26 @@ function seedRuns(databasePath: string, now: number, sporeIds: string[], session
         .run(idOf('myco'), reader.id, sessionIds[OUTCOME_SESSION]!, 'fixture-run-credential', now - reader.startedAgo * MINUTE + 30_000);
     }
     return runs.length;
+  } finally {
+    sqlite.close();
+  }
+}
+
+/**
+ * The owner's studio Mac as a worker: it checked in three minutes before the
+ * fixture's now, reported Claude Code and Codex signed in, and found nothing
+ * it could take. The server reads recency by its own clock, so the contact is
+ * not recent there: Health lists the machine as not heard from lately.
+ */
+function seedWorkerContact(databasePath: string, now: number): void {
+  const sqlite = new Database(databasePath);
+  sqlite.exec('PRAGMA busy_timeout = 5000');
+  try {
+    const credential = sqlite.query(`SELECT id FROM member_credentials WHERE machine_id = 'studio' ORDER BY lineage_started_at DESC LIMIT 1`).get() as { id: string } | null;
+    if (credential === null) throw new Error('the studio machine holds no credential');
+    const seenAt = now - 3 * MINUTE;
+    sqlite.query(`INSERT INTO worker_contacts (credential_id, machine_id, offers, capabilities, last_reason, last_seen_at, updated_at) VALUES (?, 'studio', ?, '[]', 'no_work', ?, ?)`)
+      .run(credential.id, JSON.stringify([{ id: 'claude-code', authenticated: true }, { id: 'codex', authenticated: true }]), seenAt, seenAt);
   } finally {
     sqlite.close();
   }

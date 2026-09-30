@@ -1,5 +1,6 @@
 import { useLocation } from 'react-router-dom';
 import type { ReactNode } from 'react';
+import { Button } from '../design';
 import { useMe } from '../hooks/use-me';
 import { SignedOutError } from '../lib/api';
 import { readPendingLink } from '../lib/pending-link';
@@ -12,19 +13,17 @@ const SESSIONLESS_PATHS: ReadonlySet<string> = new Set(['/join']);
 
 /** A blank, theme-painted surface: nothing of the application is on it. */
 export function Splash() {
-  return <div aria-busy="true" aria-label="Loading" className="min-h-screen bg-background" />;
+  return <div aria-busy="true" aria-label="Loading" className="min-h-screen bg-bg" />;
 }
 
 /** The server did not answer `/auth/me` with a session state at all; nothing is shown but a way to try again. */
 export function Unreachable({ retry }: { retry: () => void }) {
   return (
-    <div className="flex min-h-screen flex-col items-center justify-center gap-4 bg-background text-center">
-      <h1 className="font-serif text-2xl text-on-surface">This server is not answering</h1>
-      <p className="max-w-md font-sans text-sm text-on-surface-variant">The dashboard could not find out whether you are signed in.</p>
-      <button type="button" onClick={retry} className="rounded-md bg-primary px-4 py-2 font-sans text-sm text-on-primary transition-opacity hover:opacity-90">
-        Try again
-      </button>
-    </div>
+    <main className="flex min-h-screen flex-col items-center justify-center gap-s4 bg-bg p-gutter text-center">
+      <h1 className="t-display text-ink">This server is not answering</h1>
+      <p className="max-w-measure t-body text-muted">The dashboard could not find out whether you are signed in.</p>
+      <Button variant="primary" onClick={retry}>Try again</Button>
+    </main>
   );
 }
 

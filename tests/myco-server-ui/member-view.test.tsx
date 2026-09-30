@@ -10,12 +10,13 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import App from '../../packages/myco-server/ui/src/App';
 import { AppearanceProvider } from '../../packages/myco-server/ui/src/providers/appearance';
 import { matchRoute } from '@myco-server-worker/routes.js';
+import { INVITE_CONTROLS } from '@goondocks/myco-shared/member-protocol';
 
 const MEMBER = { sub: '770001', login: 'teammate', member: { id: 'mem_2', label: 'teammate', role: 'member' as const } };
 const NOW = Date.now();
 const PROJECT = { projectId: 'live', name: 'Live', createdAt: 0, sessionCount: 1, lastActivityAt: NOW, archivedAt: null, archivedBy: null };
 const EMPTY_ACTIVITY = { items: [], stats: { sessions: 0, openSessions: 0, sessionsLast7d: 0, prompts: 0, toolCalls: 0, plans: 0, attachments: 0, lastActivityAt: null } };
-const CREDENTIAL = { id: 'mt_own', memberId: 'mem_2', machineId: 'laptop', expiresAt: NOW + 3_600_000, revokedAt: null, revokedBy: null, bytesWritten: 0, lineageStartedAt: 0, firstUsedAt: null, live: true, purpose: 'member' };
+const CREDENTIAL = { id: 'mt_own', memberId: 'mem_2', machineId: 'laptop', runtimeLabel: null, lineageRoot: 'mt_own', expiresAt: NOW + 3_600_000, revokedAt: null, revokedBy: null, bytesWritten: 0, lineageStartedAt: 0, firstUsedAt: null, live: true, purpose: 'member' };
 
 const originalFetch = globalThis.fetch;
 afterEach(() => { cleanup(); globalThis.fetch = originalFetch; });
@@ -54,7 +55,12 @@ const adminRequests = (asked: readonly string[]): string[] => asked.filter((line
 });
 
 describe('the dashboard for a member who is not an admin', () => {
-  const PAGES = ['/projects', '/p/live', '/sessions', '/p/live/sessions', '/p/live/sessions/s1', '/p/live/sessions/s1?raw=transcript', '/knowledge', '/knowledge/plans', '/p/live/knowledge', '/p/live/knowledge/plans', '/p/live/knowledge/map', '/p/live/spores/sp1', '/p/live/plans/k1', '/p/live/runs', '/p/live/access', '/access', '/status', '/measures', '/settings', '/settings?tab=secrets', '/settings?tab=capabilities', '/operations', '/notifications'];
+  const PAGES = [
+    '/projects', '/p/live', '/sessions', '/p/live/sessions', '/p/live/sessions/s1', '/p/live/sessions/s1?raw=transcript', '/knowledge', '/knowledge/plans',
+    '/p/live/knowledge', '/p/live/knowledge/plans', '/p/live/knowledge/map', '/p/live/spores/sp1', '/p/live/plans/k1', '/p/live/runs',
+    '/me/machines', '/people', '/settings', '/settings/models', '/settings/capture', '/settings/backups', '/settings/access', '/p/live/settings', '/status/health',
+    '/p/live/access', '/access', '/status', '/measures', '/settings?tab=secrets', '/operations', '/notifications',
+  ];
 
   it('reads the route table: a request to an admin route is caught, and one to a read view is not', () => {
     expect(adminRequests(['GET /api/secrets', 'POST /api/backups', 'GET /api/projects', 'GET /api/projects/live/sessions'])).toEqual(['GET /api/secrets', 'POST /api/backups']);
@@ -74,43 +80,32 @@ describe('the dashboard for a member who is not an admin', () => {
 
   it('offers no admin page in the navigation, and says what an admin-only page is instead of showing its controls', async () => {
     server(ROUTES_ANSWERED);
-    mount('/p/live/access');
+    mount('/p/live/settings');
     const pages = await screen.findByRole('navigation', { name: 'Pages' });
-    expect(pages.textContent).not.toContain('Access');
-    // The nav foot of admin pages is absent, not greyed out: Members, Settings and the health pages alike.
+    expect(pages.textContent).not.toContain('Project settings');
+    // The nav foot of admin pages is absent, not greyed out.
     expect(screen.queryByRole('navigation', { name: 'Admin' })).toBeNull();
     const nav = screen.getByRole('complementary', { name: 'Navigation' });
-    for (const name of ['Members', 'Settings', 'Status', 'Measures', 'Operations']) expect(within(nav).queryByRole('link', { name })).toBeNull();
+    for (const name of [INVITE_CONTROLS.page, 'Settings', 'Health', 'Project settings']) expect(within(nav).queryByRole('link', { name })).toBeNull();
     expect(await screen.findByTestId('admin-only')).toBeTruthy();
-    expect(screen.queryByRole('button', { name: 'Add external agent' })).toBeNull();
+    for (const path of ['/people', '/settings', '/settings/models', '/status/health']) {
+      cleanup();
+      server(ROUTES_ANSWERED);
+      mount(path);
+      expect(await screen.findByTestId('admin-only')).toBeTruthy();
+      expect(screen.queryAllByRole('switch')).toEqual([]);
+    }
   });
 
-  it('lists members and the member\'s own runtimes on Access, with no invitation or removal', async () => {
+  it('lists the member\'s own machines on My machines, with no invitation or removal, and the member\'s own Stop', async () => {
     server(ROUTES_ANSWERED);
-    mount('/access');
-    expect((await screen.findAllByText('laptop', { exact: false })).length).toBeGreaterThan(0);
+    mount('/me/machines');
+    expect(await screen.findByRole('heading', { level: 1, name: 'My machines' })).toBeTruthy();
+    expect((await screen.findAllByText('A machine')).length).toBeGreaterThan(0);
     expect(screen.queryByText('Invitations')).toBeNull();
-    expect(screen.queryByRole('button', { name: 'Remove' })).toBeNull();
-    expect(screen.queryByRole('button', { name: 'Connect GitHub' })).toBeNull();
-    // The member stops their own runtime: that control stays.
-    expect(screen.getAllByRole('button', { name: 'Stop' }).length).toBeGreaterThan(0);
-  });
-
-  it('shows the server\'s settings read-only, and no credential or project tab', async () => {
-    server(ROUTES_ANSWERED);
-    mount('/settings');
-    await screen.findByRole('tablist');
-    const tabs = screen.getAllByRole('tab').map((t) => t.textContent);
-    expect(tabs).not.toContain('Credentials');
-    expect(tabs).not.toContain('Projects');
-    expect(tabs).not.toContain('This browser');
-    const page = screen.getByRole('main');
-    await waitFor(() => expect(within(page).queryAllByRole('switch').length + within(page).queryAllByRole('textbox').length + within(page).queryAllByRole('combobox').length).toBeGreaterThan(0));
-    const enabled = [...within(page).queryAllByRole('switch'), ...within(page).queryAllByRole('combobox')]
-      .filter((control) => !(control as HTMLButtonElement).disabled).map((control) => control.getAttribute('aria-label'));
-    expect(enabled).toEqual([]);
-    const writable = within(page).queryAllByRole('textbox').filter((box) => !(box as HTMLInputElement).readOnly).map((box) => box.getAttribute('aria-label'));
-    expect(writable).toEqual([]);
+    expect(screen.queryByRole('button', { name: INVITE_CONTROLS.button })).toBeNull();
+    expect(screen.queryByRole('button', { name: INVITE_CONTROLS.invite })).toBeNull();
+    expect(document.body.textContent).not.toContain('laptop');
   });
 
   it('offers no rename or archive on Projects', async () => {

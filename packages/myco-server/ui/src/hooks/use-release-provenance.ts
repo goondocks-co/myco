@@ -1,35 +1,8 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { fetchJson, postJson, putJson } from '../lib/api';
 
-export interface PackageTagMapping { pathGlob: string; tagPattern: string }
-
-export interface ReleaseCheck {
-  requestedAt: number | null;
-  startedAt: number | null;
-  finishedAt: number | null;
-  status: 'complete' | 'partial' | 'unavailable' | null;
-  failure: string | null;
-  counts: { checked: number; changed: number; unchanged: number; unknown: number; unavailable: number; deferred: number } | null;
-  lookups: number | null;
-  lastCompleteAt: number | null;
-}
-
-export interface ReleaseProvenanceRow {
-  enabled: boolean;
-  githubRepo: string | null;
-  productionRefs: string[];
-  integrationRefs: string[];
-  packageMap: PackageTagMapping[];
-  includeUnknown: boolean;
-  maxLookups: number;
-  revision: string | null;
-  updatedAt: number | null;
-  updatedBy: string | null;
-  credential: { configured: boolean; purpose: string };
-  suggestedRepo: string | null;
-  check: ReleaseCheck | null;
-  problem: 'stored_settings_unreadable' | null;
-}
+import type { ReleaseCheck, ReleaseProvenanceAnswer, ReleaseProvenanceRow } from '../features/admin/project/wire';
+export type { PackageTagMapping, ReleaseCheck, ReleaseProvenanceRow } from '../features/admin/project/wire';
 
 export type ReleaseProvenanceWrite = Pick<ReleaseProvenanceRow, 'enabled' | 'githubRepo' | 'productionRefs' | 'integrationRefs' | 'packageMap' | 'includeUnknown' | 'maxLookups' | 'revision'>
   & { credential?: { token: string } | null };
@@ -60,7 +33,7 @@ export function checkPending(check: ReleaseCheck | null | undefined): boolean {
 export function useReleaseProvenance(projectId: string) {
   return useQuery({
     queryKey: key(projectId),
-    queryFn: ({ signal }) => fetchJson<{ releaseProvenance: ReleaseProvenanceRow }>(path(projectId), signal),
+    queryFn: ({ signal }) => fetchJson<ReleaseProvenanceAnswer>(path(projectId), signal),
     refetchInterval: (query) => (checkPending(query.state.data?.releaseProvenance.check) ? RELEASE_CHECK_REFRESH_MS : false),
   });
 }
@@ -71,7 +44,7 @@ export function useReleaseProvenanceActions(projectId: string) {
   return {
     save: useMutation({
       gcTime: 0,
-      mutationFn: (input: ReleaseProvenanceWrite) => putJson<{ releaseProvenance: ReleaseProvenanceRow }>(path(projectId), input),
+      mutationFn: (input: ReleaseProvenanceWrite) => putJson<ReleaseProvenanceAnswer>(path(projectId), input),
       onSuccess: refresh,
     }),
     check: useMutation({

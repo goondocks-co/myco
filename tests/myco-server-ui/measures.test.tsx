@@ -1,5 +1,5 @@
 /**
- * The measures page: no figure without its sample.
+ * Health's measures: no figure without its sample.
  *
  * The gate is the first test. It collects every measure the page renders and
  * asserts each one carries a sample line, and that a measure with no rows shows
@@ -49,8 +49,20 @@ function server(routes: Record<string, () => Response>): { requested: string[] }
 const base = (extra: Record<string, () => Response> = {}) => ({
   '/auth/me': () => Response.json(ME),
   '/api/projects': () => Response.json(PROJECTS),
+  '/api/attention': () => Response.json({ items: [], unavailable: [] }),
+  '/api/backups': () => Response.json({ backups: [] }),
+  '/api/maintenance': () => Response.json({ checks: [] }),
+  '/api/credentials': () => Response.json({ rows: [], cursor: null }),
   ...extra,
 });
+
+/** Opens a design-system select by its label and picks one option, the way a person does. */
+async function pick(label: string, option: string) {
+  const proto = window.HTMLElement.prototype as unknown as { scrollIntoView?: () => void };
+  proto.scrollIntoView ??= () => undefined;
+  fireEvent.click(await screen.findByLabelText(label));
+  fireEvent.click(await screen.findByRole('option', { name: option }));
+}
 
 function mount(path: string) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
@@ -114,7 +126,7 @@ async function tiles(): Promise<Array<{ label: string; value: string | null; sam
   });
 }
 
-describe('the measures page', () => {
+describe('the measures on Health', () => {
   it('renders no measure without its sample, whatever the report holds', async () => {
     server(base({
       '/api/kpis?window=30': () => Response.json(report({
@@ -191,13 +203,13 @@ describe('the measures page', () => {
       })),
     }));
     mount('/measures');
-    const body = await screen.findByLabelText('Calls per prompt by agent');
-    const rows = [...body.querySelectorAll('tr')].map((tr) => [...tr.querySelectorAll('td')].map((td) => td.textContent));
-    // A split with no prompts behind it shows no rate, the same rule the tiles
-    // follow — and still names the calls it made, so the parts add up to the whole.
+    const list = await screen.findByLabelText('Calls per prompt by agent');
+    const rows = [...list.querySelectorAll('[data-agent-split]')].map((row) => ['agent', 'calls', 'rate', 'sample'].map((cell) => row.querySelector(`[data-cell="${cell}"]`)?.textContent));
+    // A split with no prompts behind it shows no rate, the same rule the figures
+    // follow, and still names the calls it made, so the parts add up to the whole.
     expect(rows).toEqual([
       ['Claude Code', '3', '1.50', 'n = 2 prompts'],
-      ['Agent not recorded', '0', '0.00', 'n = 1 prompt'],
+      ['Unknown agent', '0', '0.00', 'n = 1 prompt'],
       ['Codex', '4', '—', 'n = 0 prompts'],
     ]);
   });
@@ -212,19 +224,30 @@ describe('the measures page', () => {
     const { requested } = server(base({
       '/api/kpis?window=30': () => Response.json(report()),
       '/api/kpis?window=7': () => Response.json(report({ windowDays: 7, contextPresent: { value: 1, sampleSize: 2 } })),
+      '/api/kpis?window=90': () => Response.json(report({ windowDays: 90, contextPresent: { value: 1, sampleSize: 9 } })),
     }));
     mount('/measures');
     await screen.findAllByTestId('measure-tile');
-    fireEvent.click(screen.getByRole('tab', { name: 'Last 7 days' }));
+    await pick('Window', 'Last 7 days');
     await waitFor(() => expect(requested).toContain('/api/kpis?window=7'));
+    await waitFor(async () => expect(new Map((await tiles()).map((t) => [t.label, t])).get('Prompts that arrived with context')!.sample).toBe('n = 2 prompts'));
+    cleanup();
+
+    // A link carries its window: the old address with one lands on it.
+    const again = server(base({ '/api/kpis?window=90': () => Response.json(report({ windowDays: 90, contextPresent: { value: 1, sampleSize: 9 } })) }));
+    mount('/measures?window=90');
     const byLabel = new Map((await tiles()).map((t) => [t.label, t]));
-    expect(byLabel.get('Prompts that arrived with context')!.sample).toBe('n = 2 prompts');
+    expect(byLabel.get('Prompts that arrived with context')!.sample).toBe('n = 9 prompts');
+    expect(again.requested).toContain('/api/kpis?window=90');
+    expect(again.requested).not.toContain('/api/kpis?window=30');
   });
 
-  it('says the server could not be reached rather than rendering empty measures', async () => {
+  it('says the server failed, with a retry, rather than rendering empty measures', async () => {
     server(base({ '/api/kpis?window=30': () => new Response(null, { status: 503 }) }));
     mount('/measures');
-    expect(await screen.findByText(/Could not reach the server/)).toBeTruthy();
+    const measures = await screen.findByRole('region', { name: 'Measures' });
+    expect(await within(measures).findByText(/The server had a problem/)).toBeTruthy();
+    expect(within(measures).getByRole('button', { name: 'Retry' })).toBeTruthy();
     expect(screen.queryAllByTestId('measure-tile')).toEqual([]);
   });
 });

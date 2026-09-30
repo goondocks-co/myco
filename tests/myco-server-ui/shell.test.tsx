@@ -7,6 +7,7 @@ import App from '../../packages/myco-server/ui/src/App';
 import { AppearanceProvider } from '../../packages/myco-server/ui/src/providers/appearance';
 import { forgetProject } from '../../packages/myco-server/ui/src/lib/project-memory';
 import { ProjectFilter, recencyOf, shownProjects } from '../../packages/myco-server/ui/src/design';
+import { INVITE_CONTROLS } from '@goondocks/myco-shared/member-protocol';
 import {
   clearProjectHref, keptFilters, pageSuffix, projectOf, switchProjectHref, titleOf,
 } from '../../packages/myco-server/ui/src/routes/nav';
@@ -115,7 +116,7 @@ describe('the dashboard shell', () => {
     expect(await screen.findByText(/isn.t connected to a member yet/)).toBeTruthy();
     // A member exists once a machine joins, so the first step is an invitation redeemed by myco login.
     expect(screen.getByText('myco login <link>')).toBeTruthy();
-    expect(document.body.textContent).toContain('connect your GitHub account from the Members page');
+    expect(document.body.textContent).toContain(`connect your GitHub account from the ${INVITE_CONTROLS.page} page`);
     expect(screen.getByText('myco member link-github')).toBeTruthy();
     expect(screen.getByRole('button', { name: 'Sign out' })).toBeTruthy();
     expect(screen.queryByRole('navigation')).toBeNull();
@@ -161,8 +162,9 @@ describe('the nav', () => {
     server(signedIn());
     mount('/p/alpha/sessions');
     const pages = await screen.findByRole('navigation', { name: 'Pages' });
-    expect(within(pages).getAllByRole('link').map((a) => a.textContent)).toEqual(['Today', 'Sessions', 'Knowledge', 'Agent runs', 'Access']);
+    expect(within(pages).getAllByRole('link').map((a) => a.textContent)).toEqual(['Today', 'Sessions', 'Knowledge', 'Agent runs', 'Project settings']);
     expect(within(pages).getByRole('link', { name: 'Sessions' }).getAttribute('aria-current')).toBe('page');
+    expect(within(pages).getByRole('link', { name: 'Project settings' }).getAttribute('href')).toBe('/p/alpha/settings');
     await waitFor(() => expect(filterItems()).toHaveLength(2));
     expect(filterItems().map((a) => a.textContent)).toEqual([expect.stringContaining('Alpha'), expect.stringContaining('Beta')]);
     expect(filterItems()[0]!.getAttribute('aria-current')).toBe('true');
@@ -172,35 +174,52 @@ describe('the nav', () => {
     expect(within(filterItems()[0]!).getByRole('img', { name: 'Active in the last hour' })).toBeTruthy();
     expect(within(filterItems()[1]!).getByRole('img', { name: 'No activity today' })).toBeTruthy();
     const admin = screen.getByRole('navigation', { name: 'Admin' });
-    // Measures and Operations fold under Status, listed while a page of the group is open.
-    expect(within(admin).getAllByRole('link').map((a) => a.textContent)).toEqual(['Members', 'Settings', 'Status']);
+    expect(within(admin).getAllByRole('link').map((a) => [a.textContent, a.getAttribute('href')])).toEqual([
+      [INVITE_CONTROLS.page, '/people'], ['Settings', '/settings'], ['Health', '/status/health'],
+    ]);
     expect(screen.getByRole('button', { name: /Search/ })).toBeTruthy();
     expect(screen.getByRole('button', { name: 'Account and appearance for machine_1' })).toBeTruthy();
     expect(screen.getByRole('link', { name: 'Skip to content' }).getAttribute('href')).toBe('#main');
     expect(screen.getByRole('main').id).toBe('main');
   });
 
-  it('folds Measures and Operations under Status, listed while a page of the group is open, and keeps their routes', async () => {
-    server({ ...signedIn(), '/api/kpis': () => Response.json({}) });
-    mount('/measures');
+  it('carries the count of what needs an admin beside Health, and nothing when nothing does', async () => {
+    const item = { kind: 'backup_overdue', tone: 'warn', lastBackupAt: null, intervalHours: 24 };
+    server({ ...signedIn(), '/api/attention': () => Response.json({ items: [item, { ...item }], unavailable: [] }) });
+    mount('/p/alpha/sessions');
     const admin = await screen.findByRole('navigation', { name: 'Admin' });
-    expect(within(admin).getAllByRole('link').map((a) => a.textContent)).toEqual(['Members', 'Settings', 'Status', 'Measures', 'Operations']);
-    expect(within(admin).getByRole('link', { name: 'Measures' }).getAttribute('aria-current')).toBe('page');
-    fireEvent.click(within(admin).getByRole('link', { name: 'Operations' }));
-    await waitFor(() => expect(location()).toBe('/operations'));
-    fireEvent.click(within(screen.getByRole('navigation', { name: 'Admin' })).getByRole('link', { name: 'Members' }));
-    await waitFor(() => expect(location()).toBe('/access'));
-    expect(within(screen.getByRole('navigation', { name: 'Admin' })).queryByRole('link', { name: 'Measures' })).toBeNull();
+    expect(await within(admin).findByRole('link', { name: 'Health, 2 things need you' })).toBeTruthy();
+    cleanup();
+    server({ ...signedIn(), '/api/attention': () => Response.json({ items: [], unavailable: [] }) });
+    mount('/p/alpha/sessions');
+    const quiet = await screen.findByRole('navigation', { name: 'Admin' });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(within(quiet).getByRole('link', { name: 'Health' })).toBeTruthy();
   });
 
-  it('titles /access "My machines" in a member\'s compact header', async () => {
+  it('leads the old addresses to the pages that hold them now, keeping a measures window', async () => {
+    for (const [from, to] of [
+      ['/status', '/status/health'], ['/measures?window=7', '/status/health?window=7'], ['/operations', '/status/health'],
+      ['/access', '/people'], ['/p/alpha/access', '/p/alpha/settings'],
+    ] as const) {
+      server(signedIn());
+      mount(from);
+      await waitFor(() => expect(location()).toBe(to));
+      cleanup();
+    }
+    server(signedIn(MEMBER));
+    mount('/access');
+    await waitFor(() => expect(location()).toBe('/me/machines'));
+  });
+
+  it('titles My machines in a member\'s compact header', async () => {
     screenWidth(390);
     server({ ...signedIn(MEMBER), '/api/members': () => Response.json({ members: [] }), '/api/credentials': () => Response.json({ rows: [], cursor: null }) });
-    mount('/access');
+    mount('/me/machines');
     await waitFor(() => expect(screen.getByRole('banner').textContent).toContain('My machines'));
   });
 
-  it('hides every admin page from a member: no Access, no Members, Settings, Status, Measures or Operations', async () => {
+  it('hides every admin page from a member: no Project settings, People & machines, Settings or Health', async () => {
     server(signedIn(MEMBER));
     mount('/p/alpha');
     const pages = await screen.findByRole('navigation', { name: 'Pages' });
@@ -208,13 +227,13 @@ describe('the nav', () => {
     await waitFor(() => expect(filterItems()).toHaveLength(2));
     expect(screen.queryByRole('navigation', { name: 'Admin' })).toBeNull();
     const nav = screen.getByRole('complementary', { name: 'Navigation' });
-    for (const name of ['Access', 'Members', 'Settings', 'Status', 'Measures', 'Operations']) expect(within(nav).queryByRole('link', { name })).toBeNull();
+    for (const name of ['Project settings', INVITE_CONTROLS.page, 'Settings', 'Health']) expect(within(nav).queryByRole('link', { name })).toBeNull();
   });
 
   it('keeps the last project in the page links on a page that spans the server, and marks none of the filter picked', async () => {
     server(signedIn());
     window.localStorage.setItem('myco-last-project', 'beta');
-    mount('/status');
+    mount('/settings');
     const pages = await screen.findByRole('navigation', { name: 'Pages' });
     expect(within(pages).getByRole('link', { name: 'Agent runs' }).getAttribute('href')).toBe('/p/beta/runs');
     // A page with a form across every project leads there while the path names no project.
@@ -287,7 +306,7 @@ describe('the project filter', () => {
   it('says "N more" past eight projects and links to the list of every project', async () => {
     const many = Array.from({ length: 11 }, (_, i) => project(`p${i}`, `Project ${String(i).padStart(2, '0')}`, i, NOW - i * 60_000));
     server({ '/auth/me': me(), '/api/projects': () => Response.json({ projects: many }) });
-    mount('/status');
+    mount('/settings');
     await waitFor(() => expect(filterItems()).toHaveLength(8));
     const more = within(screen.getByRole('navigation', { name: 'Projects' })).getByRole('link', { name: '3 more' });
     expect(more.getAttribute('href')).toBe('/projects');
@@ -298,21 +317,19 @@ describe('the page titles', () => {
   it('names every page under a project and every server page, and says not found for the rest', () => {
     expect([
       titleOf('/p/x'), titleOf('/p/x/'), titleOf('/p/x/sessions'), titleOf('/p/x/sessions/abc'), titleOf('/p/x/plans/k1'),
-      titleOf('/p/x/knowledge'), titleOf('/p/x/spores/sp1'), titleOf('/p/x/runs/r1'), titleOf('/p/x/access'), titleOf('/p/x/nope'),
-      titleOf('/'), titleOf('/projects'), titleOf('/status'), titleOf('/measures'), titleOf('/access'), titleOf('/settings'), titleOf('/operations'), titleOf('/nope'),
+      titleOf('/p/x/knowledge'), titleOf('/p/x/spores/sp1'), titleOf('/p/x/runs/r1'), titleOf('/p/x/settings'), titleOf('/p/x/nope'),
+      titleOf('/'), titleOf('/projects'), titleOf('/status/health'), titleOf('/people'), titleOf('/me/machines'), titleOf('/settings'), titleOf('/settings/models'), titleOf('/nope'),
       titleOf('/knowledge'), titleOf('/knowledge/plans'),
     ]).toEqual([
       'Today', 'Today', 'Sessions', 'Sessions', 'Knowledge',
-      'Knowledge', 'Knowledge', 'Agent runs', 'Access', 'Not found',
-      'Today', 'Projects', 'Status', 'Measures', 'Members', 'Settings', 'Operations', 'Not found',
+      'Knowledge', 'Knowledge', 'Agent runs', 'Project settings', 'Not found',
+      'Today', 'Projects', 'Health', INVITE_CONTROLS.page, 'My machines', 'Settings', 'Settings', 'Not found',
       'Knowledge', 'Knowledge',
     ]);
     // A page whose suffix runs over two segments is found whole, and a project switch keeps it.
     expect([pageSuffix('/p/x/knowledge/map'), pageSuffix('/p/x/knowledge/map/'), titleOf('/p/x/knowledge/map'), pageSuffix('/p/x/knowledge'), pageSuffix('/p/x/knowledge/plans')])
       .toEqual(['/knowledge/map', '/knowledge/map', 'Knowledge', '/knowledge', '/knowledge/plans']);
     expect(switchProjectHref({ pathname: '/p/x/knowledge/map', search: '' }, 'y')).toBe('/p/y/knowledge/map');
-    // A member reads /access for their own machines.
-    expect([titleOf('/access', 'member'), titleOf('/access', 'admin'), titleOf('/status', 'member')]).toEqual(['My machines', 'Members', 'Status']);
   });
 });
 

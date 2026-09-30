@@ -7,6 +7,7 @@
 import { REPOSITORY_CHECKOUT_CAPABILITY, REPOSITORY_DIGESTS_CAPABILITY } from '@goondocks/myco-shared/repository';
 import { harnessLabel } from '../../lib/harness';
 import { memberLabel } from '../../lib/member-name';
+import { HEALTH_ANCHORS, HEALTH_PATH, PROJECT_SETTINGS_ANCHORS, PROJECT_SETTINGS_SUFFIX, projectPath } from '../../routes/nav';
 import type { AttentionItem, AttentionKind, CaptureRow, OutcomeKind, TodaySession, TodaySpore, WorkRun } from './wire';
 
 const MINUTE = 60_000;
@@ -186,6 +187,9 @@ export interface NeedsYouWords {
   action: { label: string; to: string } | null;
 }
 
+/** A part of Health, by its anchor. */
+const healthAt = (anchor: string): string => `${HEALTH_PATH}#${anchor}`;
+
 export function attentionWords(item: AttentionItem, now: number, projectName: (projectId: string) => string | null): NeedsYouWords {
   const inProject = (projectId: string) => {
     const name = projectName(projectId);
@@ -196,7 +200,7 @@ export function attentionWords(item: AttentionItem, now: number, projectName: (p
       return {
         title: item.lastBackupAt === null ? 'No backup has completed yet' : `Last backup was ${ago(item.lastBackupAt, now)}`,
         detail: `Backups are set to run ${everyHours(item.intervalHours)}${item.lastBackupAt === null ? '.' : `; none has completed since ${new Date(item.lastBackupAt).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}.`}`,
-        action: { label: 'Open backups', to: '/operations' },
+        action: { label: 'Open backups', to: healthAt(HEALTH_ANCHORS.backups) },
       };
     case 'outcome_failed':
       return {
@@ -211,32 +215,32 @@ export function attentionWords(item: AttentionItem, now: number, projectName: (p
         detail: item.pendingBlobs > 0
           ? `${count(item.pendingBlobs, 'item')} ${item.pendingBlobs === 1 ? 'is' : 'are'} waiting to be searchable${since === null ? '' : ` since ${clockOrDay(since, now)}`}. Search still answers; new work takes longer to appear.`
           : `Its updates have failed${since === null ? '' : ` since ${clockOrDay(since, now)}`}. Search still answers; new work takes longer to appear.`,
-        action: { label: 'Open Status', to: '/status' },
+        action: { label: 'Open Health', to: healthAt(HEALTH_ANCHORS.upkeep) },
       };
     }
     case 'transcripts_stopped':
       return {
         title: `${count(item.transcripts, 'transcript')} couldn’t be read`,
         detail: `${inProject(item.projectId)} Their sessions are missing what the transcript held.`,
-        action: { label: 'Open Status', to: '/status' },
+        action: { label: 'Open Health', to: healthAt(HEALTH_ANCHORS.status) },
       };
     case 'runs_held_for_capability':
       return {
         title: `${count(item.runs, 'task')} ${item.runs === 1 ? 'is' : 'are'} waiting for a machine`,
         detail: `${HOLD_WORDS[item.capability] ?? 'No machine heard from lately can run them.'} Waiting since ${clockOrDay(item.since, now)}.`,
-        action: { label: 'Open Status', to: '/status' },
+        action: { label: 'Open Health', to: healthAt(HEALTH_ANCHORS.workers) },
       };
     case 'no_worker':
       return {
         title: 'No machine is running Myco’s work',
         detail: `${count(item.runs, 'task')} ${item.runs === 1 ? 'is' : 'are'} waiting${item.since === null ? '' : ` since ${clockOrDay(item.since, now)}`}. ${item.lastContactAt === null ? 'No machine has checked in yet.' : `A machine last checked in ${ago(item.lastContactAt, now)}.`}`,
-        action: { label: 'Open Status', to: '/status' },
+        action: { label: 'Open Health', to: healthAt(HEALTH_ANCHORS.workers) },
       };
     case 'access_key_expiring':
       return {
         title: `${item.label === null ? 'An access key' : `Access key “${item.label}”`} expires ${inDays(item.expiresAt, now)}`,
         detail: `${inProject(item.projectId)} Whatever uses it stops working then.`,
-        action: { label: 'Open access keys', to: `/p/${encodeURIComponent(item.projectId)}/access` },
+        action: { label: 'Open access keys', to: `${projectPath(item.projectId, PROJECT_SETTINGS_SUFFIX)}#${PROJECT_SETTINGS_ANCHORS.accessKeys}` },
       };
     case 'schema_mismatch':
       return {
@@ -244,7 +248,7 @@ export function attentionWords(item: AttentionItem, now: number, projectName: (p
         detail: item.found === null
           ? 'The database doesn’t say which version it holds, so some pages may fail.'
           : `The database holds version ${item.found}; this server expects ${item.expected}. Some pages may fail until they match.`,
-        action: { label: 'Open Status', to: '/status' },
+        action: { label: 'Open Health', to: healthAt(HEALTH_ANCHORS.status) },
       };
   }
 }

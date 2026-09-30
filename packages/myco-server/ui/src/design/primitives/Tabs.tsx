@@ -1,4 +1,4 @@
-import { forwardRef, type ComponentPropsWithoutRef, type ElementRef } from 'react';
+import { forwardRef, useEffect, useRef, useState, type ComponentPropsWithoutRef, type ElementRef } from 'react';
 import * as TabsPrimitive from '@radix-ui/react-tabs';
 import { Link } from 'react-router-dom';
 import { cn } from '../../lib/cn';
@@ -55,28 +55,53 @@ export interface TabLinkItem {
 }
 
 /**
+ * Whether a row that scrolls sideways has more past its right edge: true while
+ * its end is out of view, so the row can fade there and read as scrollable.
+ */
+function useMoreToTheRight<T extends HTMLElement>() {
+  const ref = useRef<T>(null);
+  const [more, setMore] = useState(false);
+  useEffect(() => {
+    const el = ref.current;
+    if (el === null) return undefined;
+    const measure = () => setMore(el.scrollLeft + el.clientWidth < el.scrollWidth - 1);
+    measure();
+    el.addEventListener('scroll', measure, { passive: true });
+    const observer = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(measure);
+    observer?.observe(el);
+    return () => { el.removeEventListener('scroll', measure); observer?.disconnect(); };
+  }, []);
+  return { ref, more };
+}
+
+/**
  * Underline tabs whose tabs are pages: each is a link, and the page open is
  * marked current. They read as the Tabs do, for sections that each have their
- * own address.
+ * own address. On a screen too narrow for every tab the row scrolls in its own
+ * box, and fades at its right edge while more tabs wait past it.
  */
 export function TabLinks({ label, items, className }: { label: string; items: readonly TabLinkItem[]; className?: string }) {
+  const { ref, more } = useMoreToTheRight<HTMLElement>();
   return (
-    <nav aria-label={label} className={cn('flex gap-s6 overflow-x-auto border-b border-line', className)}>
-      {items.map((item) => (
-        <Link
-          key={item.to}
-          to={item.to}
-          aria-current={item.active ? 'page' : undefined}
-          className={cn(
-            '-mb-px inline-flex shrink-0 items-center gap-s2 border-b-2 pb-s3 pt-s2 t-control font-medium transition-colors duration-120',
-            item.active ? 'border-primary text-ink' : 'border-transparent text-muted hover:text-ink-2',
-            focusRing,
-          )}
-        >
-          {item.label}
-          {item.count != null && <span className="t-meta font-normal text-faint">{item.count.toLocaleString()}</span>}
-        </Link>
-      ))}
-    </nav>
+    <div className={cn('relative', className)} data-tab-links="">
+      <nav ref={ref} aria-label={label} className="flex gap-s6 overflow-x-auto border-b border-line">
+        {items.map((item) => (
+          <Link
+            key={item.to}
+            to={item.to}
+            aria-current={item.active ? 'page' : undefined}
+            className={cn(
+              '-mb-px inline-flex shrink-0 items-center gap-s2 border-b-2 pb-s3 pt-s2 t-control font-medium transition-colors duration-120',
+              item.active ? 'border-primary text-ink' : 'border-transparent text-muted hover:text-ink-2',
+              focusRing,
+            )}
+          >
+            {item.label}
+            {item.count != null && <span className="t-meta font-normal text-faint">{item.count.toLocaleString()}</span>}
+          </Link>
+        ))}
+      </nav>
+      {more && <span aria-hidden data-more-tabs="" className="pointer-events-none absolute inset-y-0 right-0 w-s10 bg-linear-to-l from-bg to-transparent" />}
+    </div>
   );
 }

@@ -18,7 +18,7 @@
  */
 import { describe, expect, it } from 'bun:test';
 import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
-import { join } from 'node:path';
+import { dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const ROOT = fileURLToPath(new URL('../../', import.meta.url));
@@ -65,10 +65,11 @@ describe('a dashboard reaches only what its build carries', () => {
         for (const spec of imports(readFileSync(file, 'utf8'))) {
           // A type-only import is erased before the bundler resolves it.
           if (spec.typeOnly) continue;
-          // A relative import that climbs out of the dashboard's own tree.
+          // A relative import that climbs out of the dashboard's own tree, read from where the importing file sits.
           if (!spec.from.startsWith('.')) continue;
-          if (!spec.from.startsWith('../../../')) continue;
-          const reached = `packages/${dashboard.split('/')[1]}/src/${spec.from.replace('../../../src/', '')}`;
+          const target = resolve(dirname(file), spec.from);
+          if (!relative(join(ROOT, dashboard), target).startsWith('..')) continue;
+          const reached = relative(ROOT, target);
           if (CARRIED_BY_NAME.some((carried) => carried === `${reached}.ts` || carried === reached)) continue;
           offenders.push(`${file.slice(ROOT.length)} imports ${spec.from} at runtime`);
         }

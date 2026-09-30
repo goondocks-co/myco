@@ -2,10 +2,11 @@ import { useEffect, useState, type ReactNode } from 'react';
 import { Outlet, useLocation } from 'react-router-dom';
 import { Search } from 'lucide-react';
 import {
-  AccountMenu, AppShell, BottomBar, Brand, ErrorState, IconButton, LoadingState, NavGroup, NavItem, NavSection, ProjectFilter, SearchTrigger,
-  Sidebar, useSearchShortcut, useShellMenu, type ProjectFilterItem,
+  AccountMenu, AppShell, BottomBar, Brand, ErrorState, IconButton, LoadingState, NavItem, NavSection, ProjectFilter, SearchTrigger,
+  Sidebar, StatusChip, useSearchShortcut, useShellMenu, type ProjectFilterItem,
 } from '../design';
 import { Search as SearchPanel } from '../features/search/Search';
+import { useAttention } from '../hooks/use-attention';
 import { useIsAdmin, useMe } from '../hooks/use-me';
 import { useProjects } from '../hooks/use-projects';
 import { isArchived, type ProjectSummary } from '../lib/api';
@@ -14,7 +15,7 @@ import { memberDisplayName } from '../lib/member-name';
 import { signOut } from '../lib/session';
 import { NotAMember } from '../pages/NotAMember';
 import {
-  ADMIN_PAGES, MY_MACHINES_PATH, inGroup, pageHref, pageIsOpen, PHONE_PAGES, PROJECT_PAGES, PROJECTS_PATH, clearProjectHref, projectOf, switchProjectHref, titleOf,
+  ADMIN_PAGES, HEALTH_PATH, MY_MACHINES_PATH, pageHref, pageIsOpen, PHONE_PAGES, PROJECT_PAGES, PROJECTS_PATH, clearProjectHref, projectOf, switchProjectHref, titleOf,
 } from './nav';
 
 /** Most recent activity first; a project with none sorts last, then by name. */
@@ -87,7 +88,7 @@ export function Shell() {
   return (
     <AppShell
       sidebar={sidebar}
-      title={titleOf(location.pathname, admin ? 'admin' : 'member')}
+      title={titleOf(location.pathname)}
       headerActions={(
         <>
           <IconButton label="Search" onClick={() => setSearchOpen(true)}>
@@ -130,7 +131,6 @@ interface ShellSidebarProps {
 /** The nav column's contents, the same in the column and in the drawer. */
 function ShellSidebar({ pages, projects, clearHref, admin, account, onSearch }: ShellSidebarProps) {
   const { closeMenu } = useShellMenu();
-  const { pathname } = useLocation();
   return (
     <Sidebar
       top={(
@@ -149,19 +149,36 @@ function ShellSidebar({ pages, projects, clearHref, admin, account, onSearch }: 
       middle={projects === null ? undefined : <ProjectFilter items={projects} clearHref={clearHref} allHref={PROJECTS_PATH} onNavigate={closeMenu} />}
       foot={admin ? (
         <NavSection label="Admin">
-          {ADMIN_PAGES.map((page) => (page.children === undefined
-            ? <NavItem key={page.to} to={page.to} label={page.label} icon={page.icon} onNavigate={closeMenu} />
-            : (
-              <NavGroup
-                key={page.to}
-                item={{ to: page.to, label: page.label, icon: page.icon, onNavigate: closeMenu }}
-                items={page.children.map((child) => ({ ...child, icon: page.icon, onNavigate: closeMenu }))}
-                open={inGroup(page, pathname)}
-              />
-            )))}
+          {ADMIN_PAGES.map((page) => (
+            <NavItem
+              key={page.to}
+              to={page.to}
+              label={page.label}
+              icon={page.icon}
+              badge={page.to === HEALTH_PATH ? <NeedsYouCount /> : undefined}
+              onNavigate={closeMenu}
+            />
+          ))}
         </NavSection>
       ) : undefined}
       account={account}
     />
+  );
+}
+
+/**
+ * How many things need an admin, beside Health in the nav: nothing while the
+ * answer is unread or empty. Only an admin's nav renders it, so a member's
+ * browser never asks.
+ */
+function NeedsYouCount() {
+  const attention = useAttention({ enabled: true });
+  const count = attention.data?.items.length ?? 0;
+  if (count === 0) return null;
+  return (
+    <>
+      <StatusChip tone="warn" data-needs-you-count="" aria-hidden>{count}</StatusChip>
+      <span className="sr-only">, {count} {count === 1 ? 'thing needs' : 'things need'} you</span>
+    </>
   );
 }

@@ -1,73 +1,13 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { ApiError, fetchJson, postJson } from '../lib/api';
+import { fetchJson, postJson } from '../lib/api';
+import type { ForgetAnswer, RecoveryStatus } from '../features/admin/health/wire';
 
-/** What the last recovery attempt did. */
-export interface LatestAttempt {
-  attempt: number;
-  stage: string;
-  startedAt: number | null;
-  /** The producer's own refusal classifier, where the attempt failed: a fixed word, not a message. */
-  failure: string | null;
-  /** Why an attempt at its export sends nothing now: an earlier attempt's export may still run, or its own request got no answer. */
-  waiting?: 'earlier_export' | 'own_request' | null;
-  /** The request instant of the export it waits on. */
-  waitingSince?: number | null;
-}
+export type { LatestAttempt, RecoveryAvailability, RecoverySchedule, RecoveryStatus } from '../features/admin/health/wire';
 
 /**
- * What recovery data the Deployment holds.
- *
- * `staged` is deliberately not "recoverable": a staging becomes a recovery artifact only once an operator
- * materializes and verifies it, and the panel says so rather than implying a finished backup exists.
- */
-export type RecoveryAvailability =
-  | { state: 'none' }
-  | { state: 'incomplete'; attempt: number; stage: string }
-  | { state: 'staged'; attempt: number; prefix: string; needs: string }
-  /** A verified artifact, which is what a Deployment producing artifacts rather than stagings has. */
-  | { state: 'artifact'; attempt: number; at: string; needs: string };
-
-export interface RecoverySchedule {
-  supported: boolean;
-  configured: boolean;
-  /** False when a binding or credential this Deployment's recovery needs is absent; `idleBecause` says which. */
-  ready: boolean;
-  intervalHours: number | null;
-  dueAt: number | null;
-  due: boolean;
-  latest: LatestAttempt | null;
-  available: RecoveryAvailability;
-  idleBecause: string | null;
-}
-
-export interface RecoveryStatus {
-  attempt: number | null;
-  stage: string;
-  /** What this Deployment's producer produces, which decides what a complete attempt may be called. */
-  form: 'staging' | 'artifact';
-  /** Why the latest attempt failed, from the producer's closed set, or null. */
-  error?: string | null;
-  /** An export an attempt requested and never saw settle, and from when it may be forgotten. */
-  unsettledExport?: { attempt: number; forgettableAt: number };
-  /** The schedule, or that this Deployment's settings could not be read while an export pauses its database. */
-  schedule: RecoverySchedule | { unreadable: string };
-}
-
-/**
- * Whether a failed read means this Deployment runs no producer at all.
- *
- * Only the route's own refusal says that. A 401, a 503, a 7500 while an export pauses the database, and a network
- * failure each say nothing about whether a producer exists.
- */
-export function unsupported(error: unknown): boolean {
-  return error instanceof ApiError && error.status === 400 && (error.detail ?? '').includes('no hosted recovery producer');
-}
-
-/**
- * The Deployment's recovery state, read only.
- *
- * A Deployment that runs no producer answers 400 for this route, which is not a dashboard error: the panel shows
- * automatic recovery as unavailable here, so the query does not retry it.
+ * The Deployment's recovery state, read only. A Deployment that runs no
+ * producer answers 400 for this route, which is not a dashboard error: Health
+ * says automatic recovery is unavailable here, so the query does not retry it.
  */
 export function useRecovery() {
   return useQuery({
@@ -78,13 +18,14 @@ export function useRecovery() {
 }
 
 /**
- * Forget the export an earlier attempt requested and never saw settle, at the owner's word that it runs no longer:
- * the next attempt then starts its own. The server refuses while an attempt still runs.
+ * Forget the export an earlier attempt requested and never saw settle, at the
+ * owner's word that it runs no longer: the next attempt then starts its own.
+ * The server refuses while an attempt still runs.
  */
 export function useForgetUnsettledExport() {
   const queries = useQueryClient();
   return useMutation({
-    mutationFn: () => postJson<{ forgotten: { attempt: number; requestedAt: number } | null }>('/api/recovery/exports/forget-unsettled', {}),
+    mutationFn: () => postJson<ForgetAnswer>('/api/recovery/exports/forget-unsettled', {}),
     onSuccess: () => { void queries.invalidateQueries({ queryKey: ['recovery'] }); },
   });
 }

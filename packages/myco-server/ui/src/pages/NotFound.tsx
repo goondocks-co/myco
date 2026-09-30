@@ -1,14 +1,13 @@
-import { Link } from 'react-router-dom';
-import { PageContainer } from '../components/ui/page-container';
-import { PageHeader } from '../components/ui/page-header';
+import { Link } from '../design';
+import { PROJECTS_PATH } from '../routes/nav';
 
+/** An address that names nothing: says so, and leads back to the projects. */
 export function NotFound() {
   return (
-    <PageContainer variant="narrow">
-      <PageHeader title="Not found" subtitle="There is nothing at this address." />
-      <Link to="/projects" className="font-sans text-sm text-primary underline-offset-2 hover:underline">
-        Back to Projects
-      </Link>
-    </PageContainer>
+    <div className="flex max-w-measure flex-col gap-s3" data-not-found="">
+      <h1 className="t-display text-ink">Not found</h1>
+      <p className="t-body text-muted">There is nothing at this address.</p>
+      <Link to={PROJECTS_PATH} className="w-fit t-small">Back to Projects</Link>
+    </div>
   );
 }

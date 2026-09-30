@@ -22,12 +22,16 @@ import { deliveryNotice } from '@myco/member/delivery-notice.js';
 const REPO = fileURLToPath(new URL('../../', import.meta.url));
 const RULE = 'packages/myco-shared/src/member-protocol.ts';
 const TREES = ['packages/myco/src', 'packages/myco-server/src', 'packages/myco-server/ui/src'];
-const ACCESS_PAGE = 'packages/myco-server/ui/src/pages/Access.tsx';
+const PEOPLE_PAGE = 'packages/myco-server/ui/src/features/admin/people/PeoplePage.tsx';
+/** The dialog that makes the invitation, whose controls the remedy names. */
+const INVITE_DIALOG = 'packages/myco-server/ui/src/features/admin/people/InviteDialog.tsx';
+/** Where the page states the remedy to an admin who stops a machine. */
+const MACHINES_LIST = 'packages/myco-server/ui/src/features/admin/people/MachineList.tsx';
 
 /** Ways to word the remedy that belong to the constant alone. */
 const REMEDY_WORDING = [
   /\bsigns? (this machine |it )?in again\b/i,
-  new RegExp(INVITE_CONTROLS.existingMemberOption, 'i'),
+  new RegExp(`${INVITE_CONTROLS.button}\\s*→\\s*${INVITE_CONTROLS.field}`, 'i'),
   /invitation for (your|its|their) (existing )?member/i,
   /for an invite link and run/i,
 ];
@@ -55,13 +59,14 @@ describe('the rejoin remedy', () => {
   });
 
   it('quotes the dashboard controls, which the dashboard renders from the same constant', () => {
-    for (const control of [INVITE_CONTROLS.page, INVITE_CONTROLS.button, INVITE_CONTROLS.field, INVITE_CONTROLS.existingMemberOption]) expect(REJOIN_HINT).toContain(control);
-    for (const control of [INVITE_CONTROLS.button, INVITE_CONTROLS.field, INVITE_CONTROLS.existingMemberOption]) expect(REJOIN_FOR_ADMIN).toContain(control);
-    expect(readFileSync(join(REPO, ACCESS_PAGE), 'utf8')).toContain('${REJOIN_FOR_ADMIN}');
-    const page = readFileSync(join(REPO, ACCESS_PAGE), 'utf8');
-    for (const name of ['page', 'button', 'field', 'newMemberOption', 'existingMemberOption']) expect({ name, used: page.includes(`INVITE_CONTROLS.${name}`) }).toEqual({ name, used: true });
-    for (const literal of [`'${INVITE_CONTROLS.newMemberOption}'`, `>${INVITE_CONTROLS.newMemberOption}<`, `>${INVITE_CONTROLS.button}<`, `title="${INVITE_CONTROLS.page}"`, `'${INVITE_CONTROLS.button}'`]) {
-      expect({ literal, present: page.includes(literal) }).toEqual({ literal, present: false });
+    for (const control of [INVITE_CONTROLS.page, INVITE_CONTROLS.button, INVITE_CONTROLS.field]) expect(REJOIN_HINT).toContain(control);
+    for (const control of [INVITE_CONTROLS.button, INVITE_CONTROLS.field]) expect(REJOIN_FOR_ADMIN).toContain(control);
+    expect(readFileSync(join(REPO, MACHINES_LIST), 'utf8')).toContain('${REJOIN_FOR_ADMIN}');
+    const source = [PEOPLE_PAGE, INVITE_DIALOG].map((file) => readFileSync(join(REPO, file), 'utf8')).join('\n');
+    for (const name of ['page', 'invite', 'button', 'field']) expect({ name, used: source.includes(`INVITE_CONTROLS.${name}`) }).toEqual({ name, used: true });
+    // Each control's words come from the constant alone: none is written out as a literal beside it.
+    for (const words of Object.values(INVITE_CONTROLS)) {
+      for (const literal of [`'${words}'`, `"${words}"`, `>${words}<`]) expect({ literal, present: source.includes(literal) }).toEqual({ literal, present: false });
     }
   });
 
