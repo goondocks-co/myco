@@ -32,7 +32,7 @@ import { inListChunks, type ReadScope } from '../read/scope.js';
 import { CAPABILITY_ON_SQL, providerConfiguredFor, settingsWriter, type ProjectCapability } from './settings.js';
 import { TITLING_TASK } from './task-catalogue.js';
 import { NOT_TOMBSTONED_PARAMS } from './tombstones.js';
-import { contextValue } from '../db/run-context.js';
+import { contextValue, DISPATCH_ACTOR_SQL } from '../db/run-context.js';
 
 /** The name a dispatch is left alone under when the Project has not moved past the artifact its task already wrote. */
 export const INPUT_UNCHANGED = 'input_unchanged';
@@ -174,7 +174,7 @@ export const titleRunInFlightSql = (session: string): string => `EXISTS (SELECT 
 
 
 /** The actor a dispatch spec names, and null for a spec that names none. A spec the store did not write is not read as JSON at all. */
-export const DISPATCH_ACTOR_SQL = `CASE WHEN json_valid(dispatch_spec) THEN CASE WHEN json_type(dispatch_spec, '$.actor') = 'text' THEN NULLIF(json_extract(dispatch_spec, '$.actor'), '') END END`;
+export { DISPATCH_ACTOR_SQL };
 /** A run row that counts as an actor's entry of a task from an instant on: not skipped, not replaced, dispatched by that actor. Bound as: task, window start, actor. */
 const ACTOR_ENTRY_SQL = `task = ? AND status != 'skipped' AND COALESCE(${contextValue('replaced')}, 0) != 1
        AND COALESCE(queued_at, started_at) >= ? AND ${DISPATCH_ACTOR_SQL} = ?`;

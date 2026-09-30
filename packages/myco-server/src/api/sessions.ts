@@ -98,7 +98,7 @@ export async function handleSession(env: ServerEnv, ctx: OwnerContext): Promise<
   if (sessionId === null) return notFound();
   const scope = await resolveProjectScope(env.db, ctx.member, ctx.params.projectId);
   if (scope === null) return notFound();
-  const read = await getSession(env.db, scope, sessionId);
+  const read = await getSession(env.db, scope, sessionId, ctx.now);
   if (read === null) return notFound();
   const [session] = nameOwnMachines([read], await ownMachineNames(env.db, ctx.member.id, ctx.now));
   return ok({
