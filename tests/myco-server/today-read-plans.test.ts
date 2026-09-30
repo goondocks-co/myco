@@ -75,8 +75,8 @@ function reading<T extends { sql: string }>(read: readonly T[], table: string): 
   return matched;
 }
 
-/** Steps that read a table whole: a SCAN of anything but the handful of Projects. */
-const tableScans = (plan: string): string[] => plan.split('\n').filter((step) => /\bSCAN\b/.test(step) && !/\bprojects\b/.test(step)).map((s) => s.trim());
+/** Steps that read a table whole: a SCAN of anything but the handful of Projects, by name or by the `p` a Project filter reads it as. */
+const tableScans = (plan: string): string[] => plan.split('\n').filter((step) => /\bSCAN\b/.test(step) && !/\bSCAN (?:projects|p)\b/.test(step)).map((s) => s.trim());
 const sortsRows = (plan: string): boolean => /TEMP B-TREE FOR (?:RIGHT PART OF |LAST TERM OF )?ORDER BY/.test(plan);
 
 const ALL: ProjectSet = { all: true };
@@ -107,6 +107,28 @@ describe('the Today reads under the statistics a Deployment plans from', () => {
     }
     for (const { store, plan } of await plans((db) => listSessionsAcross(db, ALL, { limit: 50, fidelity: 'any', since: 1_789_000_000_000, until: 1_789_086_400_000 }))) {
       expect({ store, plan }).toEqual({ store, plan: expect.stringMatching(/SEARCH s USING INDEX idx_sessions_occurred_deployment \(<expr>>\? AND <expr><\?\)/) });
+    }
+  });
+
+  it('reads an activity window as one range of the capture index, across Projects and within one, scanning nothing', async () => {
+    // The window seeks the sessions received from its start on, however long ago they started, and sorts that set alone.
+    const shapes: Record<string, SessionFilters & { cursor?: string }> = {
+      since: { since: 1_789_000_000_000 }, window: { since: 1_789_000_000_000, until: 1_789_086_400_000 },
+      cursor: { since: 1_789_000_000_000, cursor: CURSOR }, agent: { since: 1_789_000_000_000, agent: 'codex' },
+      open: { since: 1_789_000_000_000, state: 'open' }, text: { since: 1_789_000_000_000, q: 'fix' },
+    };
+    const reads: Record<string, (db: RelationalStore, opts: SessionFilters & { cursor?: string }) => Promise<unknown>> = {
+      all: (db, opts) => listSessionsAcross(db, ALL, { limit: 50, fidelity: 'any', window: 'activity', ...opts }),
+      named: (db, opts) => listSessionsAcross(db, NAMED, { limit: 50, fidelity: 'any', window: 'activity', ...opts }),
+      project: (db, opts) => listSessions(db, { projectId: 'proj_0' }, { limit: 50, fidelity: 'any', window: 'activity', ...opts }),
+    };
+    for (const [reach, read] of Object.entries(reads)) {
+      for (const [shape, opts] of Object.entries(shapes)) {
+        for (const { store, sql, plan } of await plans((db) => read(db, opts))) {
+          expect({ reach, shape, store, sql, sql_names: / INDEXED BY idx_sessions_capture /.test(sql), seeks: /SEARCH s USING INDEX idx_sessions_capture \(last_received_at>\?\)/.test(plan), scans: tableScans(plan), plan })
+            .toEqual({ reach, shape, store, sql, sql_names: true, seeks: true, scans: [], plan });
+        }
+      }
     }
   });
 
@@ -227,6 +249,14 @@ describe('the Today reads under the statistics a Deployment plans from', () => {
     }
   });
 
+  it('needs the capture index named for an activity window: unnamed, the planner walks every session by its start', async () => {
+    const unnamed = (st: Statement): Statement => ({ ...st, sql: st.sql.replace(/ INDEXED BY \w+/g, '') });
+    const [across] = await captured((db) => listSessionsAcross(db, ALL, { limit: 50, fidelity: 'any', window: 'activity', since: 1_789_000_000_000, agent: 'codex' }));
+    const [one] = await captured((db) => listSessions(db, { projectId: 'proj_0' }, { limit: 50, fidelity: 'any', window: 'activity', since: 1_789_000_000_000 }));
+    expect(planOf(STORES.current, unnamed(across!))).toMatch(/SCAN s USING INDEX idx_sessions_occurred_deployment/);
+    expect(planOf(STORES.current, unnamed(one!))).toMatch(/SEARCH s USING INDEX idx_sessions_occurred \(project_id=\?\)\n/);
+  });
+
   it('needs the index named in the session and plan lists: under stale statistics the planner reads every row and sorts without it', async () => {
     const unnamed = (s: Statement): Statement => ({ ...s, sql: s.sql.replace(/ INDEXED BY \w+/g, '') });
     const [sessions] = await captured((db) => listSessionsAcross(db, ALL, { limit: 50, agent: 'codex', fidelity: 'any' }));
@@ -241,6 +271,7 @@ describe('the Today reads under the statistics a Deployment plans from', () => {
     const most: ProjectSet = { all: false, projectIds: Array.from({ length: MAX_NAMED_PROJECTS }, (_, i) => `proj_${i}`) };
     const statements = await captured(async (db) => {
       await listSessionsAcross(db, most, { limit: 50, cursor: CURSOR, since: 1, until: 2, branch: 'b', agent: 'a', memberLabel: 'm', sessionId: 's', q: 'q', state: 'open', fidelity: 'full' });
+      await listSessionsAcross(db, most, { limit: 50, cursor: CURSOR, since: 1, until: 2, window: 'activity', branch: 'b', agent: 'a', memberLabel: 'm', sessionId: 's', q: 'q', state: 'open', fidelity: 'full' });
       await listSporesAcross(db, most, { observationType: 't', status: 's', sessionId: 's', search: 'q', createdFrom: 1, createdTo: 2, limit: 50, offset: 50 });
       await countSporesAcross(db, most, { observationType: 't', status: 's', sessionId: 's', search: 'q', createdFrom: 1, createdTo: 2 });
       await sporeFacets(db, most, { observationType: 't', status: 's', sessionId: 's', search: 'q', createdFrom: 1, createdTo: 2 });

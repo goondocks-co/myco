@@ -56,7 +56,12 @@ export function paging(url: URL): { limit?: number; cursor?: string } | Response
   return { limit: rawLimit === null ? undefined : Number(rawLimit), cursor: rawCursor ?? undefined };
 }
 
-/** The list's filters as the query names them: state, branch, member, agent, text, and a window of starts from a start instant (inclusive) to an end instant (exclusive). An unknown state, and a bound that is not an instant, are refused. */
+/**
+ * The list's filters as the query names them: state, branch, member, agent, text, and a window from a start instant
+ * (inclusive) to an end instant (exclusive). `window=start` (the default) bounds when a session started;
+ * `window=activity` lists the sessions active in the window, and needs the start instant. An unknown state or window, and a
+ * bound that is not an instant, are refused.
+ */
 export function sessionFilters(url: URL): SessionFilters | Response {
   const state = url.searchParams.get('state');
   if (state !== null && state !== 'open' && state !== 'ended') return badRequest('state must be open or ended');
@@ -68,7 +73,10 @@ export function sessionFilters(url: URL): SessionFilters | Response {
     const value = url.searchParams.get(name);
     return value === null || value === '' ? undefined : value;
   };
-  return { state: state ?? undefined, branch: text('branch'), memberLabel: text('member'), agent: text('agent'), q: text('q'), since, until };
+  const window = url.searchParams.get('window');
+  if (window !== null && window !== 'start' && window !== 'activity') return badRequest('window must be start or activity');
+  if (window === 'activity' && since === undefined) return badRequest('an activity window needs since');
+  return { state: state ?? undefined, branch: text('branch'), memberLabel: text('member'), agent: text('agent'), q: text('q'), since, until, window: window ?? undefined };
 }
 
 export async function handleProjectSessions(env: ServerEnv, ctx: OwnerContext): Promise<Response> {

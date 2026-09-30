@@ -7,9 +7,10 @@ const MEMBER_ROLE_SUB = '1518001';
 const DAY_MS = 86_400_000;
 
 /**
- * Today's reads on both targets (#1518): the session, spore and plan lists across Projects, Myco's work over a window,
- * capture recency on the status, and Needs you. A member who is not an admin reads every one of them but Needs you,
- * which answers an admin alone; and every rule Needs you composes reads on the target's own store.
+ * Today's reads on both targets (#1518): the session, spore and plan lists across Projects (sessions by start and by
+ * activity), Myco's work over a window, capture recency on the status, and Needs you. A member who is not an admin
+ * reads every one of them but Needs you, which answers an admin alone; and every rule Needs you composes reads on the
+ * target's own store.
  */
 export const today: ParityScenario = {
   name: 'today: the lists across Projects, Myco\'s work, capture recency and Needs you, read by a member and an admin',
@@ -49,6 +50,15 @@ export const today: ParityScenario = {
       const sessions = await read(member, `/api/sessions?since=${stamp}&agent=claude-code`);
       expect(sessions.status).toBe(200);
       expect(sessions.body.rows.find((r: any) => r.sessionId === sessionId)).toMatchObject({ projectId: target.projectId, agent: 'claude-code' });
+
+      // A session that started days ago and is still receiving is in today's activity window, not in today's starts.
+      await target.sql(`UPDATE sessions SET started_at = ${stamp - 2 * DAY_MS} WHERE project_id = ${lit(target.projectId)} AND session_id = ${lit(sessionId)}`);
+      const listed = async (path: string) => ((await read(member, path)).body.rows as any[]).some((r) => r.sessionId === sessionId);
+      const since = stamp - 60_000;
+      const until = Date.now() + 60_000;
+      expect(await listed(`/api/sessions?since=${since}&until=${until}&window=activity`)).toBe(true);
+      expect(await listed(`/api/projects/${target.projectId}/sessions?since=${since}&until=${until}&window=activity`)).toBe(true);
+      expect(await listed(`/api/sessions?since=${since}&until=${until}`)).toBe(false);
 
       const spores = await read(member, `/api/spores?project=${target.projectId}&since=${at}`);
       expect(spores.status).toBe(200);
