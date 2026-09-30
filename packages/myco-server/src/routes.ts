@@ -302,8 +302,10 @@ export const RETIRED_ROUTES: readonly RetiredRoute[] = [
 
 /**
  * Every path prefix the server answers itself, live and retired. An exact path
- * stays exact; a path with further segments becomes `/<first>/*`. A static
- * shell served beside the server hands these paths to it and answers the rest.
+ * stays exact; a path with further segments becomes `/<first>/*`, which owns the
+ * paths under `/<first>/` and never `/<first>` itself. A static shell served
+ * beside the server hands these paths to it and answers the rest, so a
+ * dashboard page may sit at `/sessions` while the server keeps `/sessions/…`.
  */
 export function ownedPathPatterns(): string[] {
   const out = new Set<string>();
@@ -314,9 +316,13 @@ export function ownedPathPatterns(): string[] {
   return [...out].sort();
 }
 
-/** True when a pattern from `ownedPathPatterns()` covers this path. */
+/**
+ * True when a pattern from `ownedPathPatterns()` covers this path, read as the
+ * edge reads `run_worker_first`: `*` matches any run of characters and the
+ * pattern spans the whole path, so `/x/*` covers `/x/` and below but not `/x`.
+ */
 export function isOwnedPath(pathname: string, patterns: readonly string[] = ownedPathPatterns()): boolean {
-  return patterns.some((p) => (p.endsWith('/*') ? pathname === p.slice(0, -2) || pathname.startsWith(p.slice(0, -1)) : pathname === p));
+  return patterns.some((p) => (p.endsWith('/*') ? pathname.startsWith(p.slice(0, -1)) : pathname === p));
 }
 
 /** Every route that admits an External Agent grant, as `METHOD path`. */
