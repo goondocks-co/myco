@@ -1,72 +1,6 @@
 {
-  "components/access/KeyReveal.tsx": {
-    "raw-button": 1,
-    "small-text": 3
-  },
-  "components/access/MachineSettings.tsx": {
-    "raw-button": 3,
-    "raw-input": 1,
-    "small-text": 8
-  },
-  "components/auth-gate.tsx": {
-    "raw-button": 1
-  },
-  "components/config/PatternInput.tsx": {
-    "raw-button": 2,
-    "raw-input": 1,
-    "small-text": 3
-  },
-  "components/measures/MeasureTile.tsx": {
-    "small-text": 2
-  },
-  "components/operations/BackupPanel.tsx": {
-    "raw-button": 5,
-    "raw-input": 1,
-    "small-text": 7
-  },
-  "components/operations/MaintenancePanel.tsx": {
-    "raw-button": 1,
-    "small-text": 4,
-    "arbitrary-layout": 1
-  },
-  "components/operations/RecoveryPanel.tsx": {
-    "raw-button": 1,
-    "small-text": 3
-  },
-  "components/operations/TitlingBackfillPanel.tsx": {
-    "raw-button": 3,
-    "small-text": 1
-  },
-  "components/operations/WakePanel.tsx": {
-    "raw-button": 1,
-    "small-text": 1
-  },
-  "components/release/ReleaseChip.tsx": {
-    "small-text": 1
-  },
-  "components/release/ReleaseTracking.tsx": {
-    "raw-button": 3,
-    "raw-input": 6,
-    "raw-textarea": 3,
-    "small-text": 7
-  },
-  "components/status/WorkersPanel.tsx": {
-    "small-text": 2
-  },
-  "components/ui/button.tsx": {
-    "raw-button": 1,
-    "arbitrary-colour": 3,
-    "small-text": 1
-  },
-  "components/ui/confirm-dialog.tsx": {
-    "small-text": 2
-  },
   "components/ui/eyebrow.tsx": {
     "small-text": 3
-  },
-  "components/ui/input.tsx": {
-    "raw-input": 1,
-    "arbitrary-colour": 1
   },
   "components/ui/master-detail-split.tsx": {
     "raw-button": 1,
@@ -85,11 +19,6 @@
   "components/ui/row.tsx": {
     "arbitrary-colour": 4
   },
-  "components/ui/slideout-detail-panel.tsx": {
-    "raw-button": 1,
-    "inline-style": 1,
-    "arbitrary-layout": 1
-  },
   "components/ui/status-dot.tsx": {
     "inline-style": 1
   },
@@ -97,9 +26,6 @@
     "raw-button": 1,
     "arbitrary-colour": 2,
     "small-text": 1
-  },
-  "components/ui/surface.tsx": {
-    "arbitrary-colour": 2
   },
   "features/sessions/SessionPage.tsx": {
     "arbitrary-layout": 2
@@ -117,17 +43,6 @@
   "lib/monogram.ts": {
     "colour-literal": 1
   },
-  "lib/worker-state.ts": {
-    "retired-import": 1
-  },
-  "pages/Access.tsx": {
-    "raw-button": 14,
-    "raw-input": 1,
-    "raw-select": 1,
-    "raw-table": 1,
-    "small-text": 27,
-    "retired-import": 8
-  },
   "pages/AgentRuns.tsx": {
     "raw-button": 2,
     "raw-select": 1,
@@ -137,53 +52,10 @@
   "pages/Join.tsx": {
     "arbitrary-layout": 1
   },
-  "pages/Link.tsx": {
-    "raw-button": 1,
-    "small-text": 2,
-    "retired-import": 1
-  },
-  "pages/Measures.tsx": {
-    "raw-table": 1,
-    "arbitrary-colour": 1,
-    "small-text": 3,
-    "retired-import": 5
-  },
   "pages/NotAMember.tsx": {
     "arbitrary-layout": 1
   },
-  "pages/NotFound.tsx": {
-    "retired-import": 2
-  },
-  "pages/Operations.tsx": {
-    "small-text": 2,
-    "retired-import": 3
-  },
-  "pages/ProjectAccess.tsx": {
-    "raw-button": 4,
-    "raw-input": 1,
-    "small-text": 4,
-    "retired-import": 7
-  },
-  "pages/Projects.tsx": {
-    "small-text": 7,
-    "retired-import": 5
-  },
-  "pages/Settings.tsx": {
-    "small-text": 16,
-    "retired-import": 7
-  },
-  "pages/SignedOut.tsx": {
-    "retired-import": 1
-  },
-  "pages/Status.tsx": {
-    "raw-table": 1,
-    "small-text": 5,
-    "retired-import": 5
-  },
   "routes/today.tsx": {
     "arbitrary-layout": 1
-  },
-  "settings/catalogue.ts": {
-    "colour-literal": 2
   }
 }

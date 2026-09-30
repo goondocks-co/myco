@@ -176,9 +176,9 @@ function NeedsYouCount() {
   const count = attention.data?.items.length ?? 0;
   if (count === 0) return null;
   return (
-    <StatusChip tone="warn" data-needs-you-count="">
-      {count}
-      <span className="sr-only"> {count === 1 ? 'thing needs' : 'things need'} you</span>
-    </StatusChip>
+    <>
+      <StatusChip tone="warn" data-needs-you-count="" aria-hidden>{count}</StatusChip>
+      <span className="sr-only">, {count} {count === 1 ? 'thing needs' : 'things need'} you</span>
+    </>
   );
 }

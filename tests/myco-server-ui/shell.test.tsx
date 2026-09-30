@@ -188,13 +188,13 @@ describe('the nav', () => {
     server({ ...signedIn(), '/api/attention': () => Response.json({ items: [item, { ...item }], unavailable: [] }) });
     mount('/p/alpha/sessions');
     const admin = await screen.findByRole('navigation', { name: 'Admin' });
-    await waitFor(() => expect(within(admin).getByRole('link', { name: /^Health/ }).textContent).toBe('Health2 things need you'));
+    expect(await within(admin).findByRole('link', { name: 'Health, 2 things need you' })).toBeTruthy();
     cleanup();
     server({ ...signedIn(), '/api/attention': () => Response.json({ items: [], unavailable: [] }) });
     mount('/p/alpha/sessions');
     const quiet = await screen.findByRole('navigation', { name: 'Admin' });
     await new Promise((resolve) => setTimeout(resolve, 20));
-    expect(within(quiet).getByRole('link', { name: /^Health/ }).textContent).toBe('Health');
+    expect(within(quiet).getByRole('link', { name: 'Health' })).toBeTruthy();
   });
 
   it('leads the old addresses to the pages that hold them now, keeping a measures window', async () => {

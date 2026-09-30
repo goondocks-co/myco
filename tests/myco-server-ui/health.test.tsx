@@ -139,8 +139,7 @@ describe('Health', () => {
     expect(await within(needsYou).findByText(/^Last backup was /)).toBeTruthy();
     expect(within(needsYou).getByRole('link', { name: /Open backups/ }).getAttribute('href')).toBe('/status/health#backups');
     const admin = screen.getByRole('navigation', { name: 'Admin' });
-    const health = within(admin).getByRole('link', { name: /^Health/ });
-    await waitFor(() => expect(health.querySelector('[data-needs-you-count]')?.textContent).toBe('1 thing needs you'));
+    expect(await within(admin).findByRole('link', { name: 'Health, 1 thing needs you' })).toBeTruthy();
   });
 
   it('says what the server holds and received, by project name, with the transcripts still waiting', async () => {
