@@ -8,11 +8,12 @@
  *
  * A prompt's body is opt-in. Server text may live in a blob, so a page without
  * it reads no bodies at all, and grouping a session's prompts costs nothing.
+ * A page with bodies is recorded as the run's read of each session it carries.
  */
 import { listUnprocessedPrompts, markPromptProcessed } from '../../read/prompts.js';
 import { recordRunWrite } from '../../core/runs.js';
 import { PROMPT_MARK_TOOL } from '../../core/tool-catalogue.js';
-import { failure, runOf, type ToolContext } from '../context.js';
+import { failure, noteRunReads, runOf, type ToolContext } from '../context.js';
 import type { ToolInput } from '../validate.js';
 
 const MAX_ID_CHARS = 192;
@@ -47,6 +48,8 @@ export async function handleRunPrompts(input: ToolInput, ctx: ToolContext): Prom
     includeActive: input.include_active === true,
     includeText: input.include_text === true,
   });
+  // A page with bodies is the run reading those sessions; a page of ids alone reads none of them.
+  if (input.include_text === true) noteRunReads(ctx, page.rows.map((row) => row.sessionId));
   return {
     prompts: page.rows.map((row) => ({
       prompt_id: row.promptId,

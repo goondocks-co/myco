@@ -24,8 +24,8 @@ import type { ServerEnv } from '../core/adapters.js';
 import type { GrantContext, RouteContext, RunContext } from '../context.js';
 import type { ReadScope } from '../read/scope.js';
 import { resolveTenancyArgument } from '../api/scope.js';
-import { recordRunCall, sessionNamedByRun, type RunCallFailure } from '../core/runs.js';
-import { emit } from '../telemetry.js';
+import { recordRunCall, recordRunReads, sessionNamedByRun, type RunCallFailure } from '../core/runs.js';
+import { classify, emit } from '../telemetry.js';
 import { taskTools } from '../core/task-catalogue.js';
 import { readWindowFor, type ReadWindow } from '../core/read-window.js';
 import { PROJECT_PIVOT } from '../core/tool-catalogue.js';
@@ -131,6 +131,31 @@ export async function recordRunToolCall(
     runId: p.runId, toolName: call.tool, op: call.op, durationMs: call.durationMs, recordedAt: ctx.now,
     ...(call.failure === undefined ? {} : { failure: call.failure }),
   });
+}
+
+/**
+ * Note the sessions served to a run's call, to be recorded against the run once the answer is sent.
+ *
+ * Only a run principal is noted: a member's and a grant's reads are no run's work. The record is written after the
+ * answer and settles its own failure, so a read is answered whether or not its record lands, and never waits on it;
+ * a record that fails is named in telemetry and the run's record lacks that read.
+ */
+export function noteRunReads(ctx: ToolContext, sessionIds: readonly string[]): void {
+  const p = ctx.principal;
+  if (p.kind !== 'run' || sessionIds.length === 0) return;
+  const { env, projectId, now } = ctx;
+  const unrecorded = (err: unknown) => emit({ kind: 'run_reads_unrecorded', runId: p.runId, projectId, error: classify(err) });
+  try {
+    env.afterResponse(async () => {
+      try {
+        await recordRunReads(env.db, { projectId }, { runId: p.runId, tokenId: p.tokenId, sessionIds, receivedAt: now });
+      } catch (err) {
+        unrecorded(err);
+      }
+    });
+  } catch (err) {
+    unrecorded(err);
+  }
 }
 
 /** Whether a tool's answer is the failure it returned rather than threw. */
