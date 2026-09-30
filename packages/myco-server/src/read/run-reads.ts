@@ -17,7 +17,7 @@
  *
  * Every statement names the Project, and every list is bounded; the totals count past the bound.
  */
-import type { RelationalStore } from '../core/adapters.js';
+import type { PreparedStatement, RelationalStore } from '../core/adapters.js';
 import { RUN_WRITE_EVENT } from '../core/runs.js';
 import { TITLE_WRITE_TOOL } from '../core/tool-catalogue.js';
 import { notTombstonedSql } from '../core/tombstones.js';
@@ -121,23 +121,37 @@ const RUN_READS_SQL = `SELECT rr.session_id AS sessionId, s.title, rr.received_a
   JOIN sessions s ON s.project_id = rr.project_id AND s.session_id = rr.session_id
   WHERE rr.project_id = ? AND rr.run_id = ? AND ${notTombstonedSql('s')}
   ORDER BY rr.received_at ASC, rr.session_id ASC LIMIT ?`;
-const RUN_READ_TOTAL_SQL = `SELECT COUNT(*) AS n FROM run_reads rr
-  JOIN sessions s ON s.project_id = rr.project_id AND s.session_id = rr.session_id
-  WHERE rr.project_id = ? AND rr.run_id = ? AND ${notTombstonedSql('s')}`;
+/** One run (`= ?`, bound to its id) or a page of them (bound to a JSON array of ids): the run predicate the counts below are written over. */
+const ONE_RUN = '= ?';
+const RUNS_IN = 'IN (SELECT value FROM json_each(?))';
 
-/** The sessions a run with no recorded read worked from: its dispatch's session and those of the spores it wrote, undeleted. Bound as: Project, run, Project, run, then the Project the sessions are joined in. */
-const WORKED_FROM = `(SELECT session_id AS sessionId, created_at AS at FROM spores WHERE project_id = ? AND author = ? AND session_id IS NOT NULL
+/** A run's recorded reads of sessions the Project still holds undeleted, counted per run. Bound as: Project, run(s). */
+const recordedReads = (runs: string): string => `SELECT rr.run_id AS runId, COUNT(*) AS n FROM run_reads rr
+  JOIN sessions s ON s.project_id = rr.project_id AND s.session_id = rr.session_id
+  WHERE rr.project_id = ? AND rr.run_id ${runs} AND ${notTombstonedSql('s')} GROUP BY rr.run_id`;
+const RUN_READ_TOTAL_SQL = recordedReads(ONE_RUN);
+
+/**
+ * The sessions a run with no recorded read worked from: its dispatch's session and those of the spores it wrote,
+ * undeleted. The spores are found by their author: `+session_id` keeps the session index, which would read every spore
+ * of the Project that has a session, out of the planner's reach. Bound as: Project, run(s), Project, run(s), then the
+ * Project the sessions are joined in.
+ */
+const workedFrom = (runs: string): string => `(SELECT author AS runId, session_id AS sessionId, created_at AS at FROM spores WHERE project_id = ? AND author ${runs} AND +session_id IS NOT NULL
     UNION ALL
-    SELECT ${contextValue('session_id')} AS sessionId, COALESCE(started_at, queued_at, 0) AS at FROM agent_runs WHERE project_id = ? AND id = ?) x
+    SELECT id AS runId, ${contextValue('session_id')} AS sessionId, COALESCE(started_at, queued_at, 0) AS at FROM agent_runs WHERE project_id = ? AND id ${runs}) x
   JOIN sessions s ON s.project_id = ? AND s.session_id = x.sessionId
   WHERE ${notTombstonedSql('s')}`;
-const WORKED_FROM_SQL = `SELECT x.sessionId, s.title, NULL AS readAt, MIN(x.at) AS firstAt FROM ${WORKED_FROM}
+const WORKED_FROM_SQL = `SELECT x.sessionId, s.title, NULL AS readAt, MIN(x.at) AS firstAt FROM ${workedFrom(ONE_RUN)}
   GROUP BY x.sessionId ORDER BY firstAt ASC, x.sessionId ASC LIMIT ?`;
-const WORKED_FROM_TOTAL_SQL = `SELECT COUNT(DISTINCT x.sessionId) AS n FROM ${WORKED_FROM}`;
+const workedFromTotal = (runs: string): string => `SELECT x.runId, COUNT(DISTINCT x.sessionId) AS n FROM ${workedFrom(runs)} GROUP BY x.runId`;
+const WORKED_FROM_TOTAL_SQL = workedFromTotal(ONE_RUN);
 
 const RUN_SPORES_SQL = `SELECT ${SPORE_COLUMNS} FROM spores sp WHERE sp.project_id = ? AND sp.author = ?
   ORDER BY sp.created_at DESC, sp.id DESC LIMIT ?`;
-const RUN_SPORE_TOTAL_SQL = `SELECT COUNT(*) AS n FROM spores WHERE project_id = ? AND author = ?`;
+/** The spores a run wrote, counted per run. Bound as: Project, run(s). */
+const sporesWritten = (runs: string): string => `SELECT author AS runId, COUNT(*) AS n FROM spores WHERE project_id = ? AND author ${runs} GROUP BY author`;
+const RUN_SPORE_TOTAL_SQL = sporesWritten(ONE_RUN);
 
 const countOf = (rows: unknown[]): number => Number((rows[0] as { n?: number } | undefined)?.n ?? 0);
 
@@ -164,6 +178,43 @@ export async function sessionOutcome(db: RelationalStore, scope: ReadScope, sess
     })),
     spores: { total: countOf(total!.results), items: spores!.results as OutcomeSpore[] },
   };
+}
+
+/** What a run in a list came to: the spores it wrote, and the sessions it read, counted as its detail's `read.total` counts them. */
+export interface RunOutcomeCounts {
+  spores: number;
+  /** The sessions `read.sessions` lists on the run's detail: its recorded reads, or where it recorded none, the sessions it worked from. */
+  sessions: number;
+  /** Whether `sessions` counts recorded reads; as `read.recorded` on the detail. */
+  readsRecorded: boolean;
+}
+
+/**
+ * The outcome counts of a page of runs: three statements over the page's ids, each grouped by run, for the caller to
+ * send in the batch it already makes, and the reading of their answers. A run absent from every answer wrote nothing
+ * and read nothing the Deployment holds.
+ */
+export function runOutcomeCounts(db: RelationalStore, scope: ReadScope, runIds: readonly string[]): {
+  statements: PreparedStatement[];
+  read: (answers: ReadonlyArray<{ results: unknown[] }>) => Map<string, RunOutcomeCounts>;
+} {
+  const { projectId } = scope;
+  const ids = JSON.stringify([...new Set(runIds)]);
+  const statements = [
+    db.prepare(recordedReads(RUNS_IN)).bind(projectId, ids),
+    db.prepare(sporesWritten(RUNS_IN)).bind(projectId, ids),
+    db.prepare(workedFromTotal(RUNS_IN)).bind(projectId, ids, projectId, ids, projectId),
+  ];
+  const byRun = (result: { results: unknown[] } | undefined): Map<string, number> =>
+    new Map((result?.results ?? []).map((row) => [String((row as { runId: unknown }).runId), Number((row as { n: unknown }).n)]));
+  const read = (answers: ReadonlyArray<{ results: unknown[] }>): Map<string, RunOutcomeCounts> => {
+    const [recordedBy, sporesBy, workedBy] = [byRun(answers[0]), byRun(answers[1]), byRun(answers[2])];
+    return new Map(runIds.map((id) => {
+      const reads = recordedBy.get(id) ?? 0;
+      return [id, { spores: sporesBy.get(id) ?? 0, sessions: reads > 0 ? reads : workedBy.get(id) ?? 0, readsRecorded: reads > 0 }];
+    }));
+  };
+  return { statements, read };
 }
 
 /** What one run read and what it produced. The caller has found the run in the scope. */

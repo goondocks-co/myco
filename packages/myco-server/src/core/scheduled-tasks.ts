@@ -113,6 +113,23 @@ export async function scheduleLeaves(env: ServerEnv): Promise<ScheduleLeaves> {
   };
 }
 
+/** How many runs of a task a member who is not an admin may start by hand in a rolling day, where nothing else names a number. */
+export const MEMBER_RUNS_PER_DAY_DEFAULT = 4;
+
+/**
+ * How many runs of `task` one member who is not an admin may start by hand in a rolling day, across every Project:
+ * the owner's `memberRunsPerDay` for the task under `agent.tasks`, else the task's daily ceiling as the clock reads it
+ * (`maxRunsPerDay`, overridden or declared), else `MEMBER_RUNS_PER_DAY_DEFAULT`. Runs the clock starts are never
+ * counted against it, and a member's runs are never counted against the clock's.
+ */
+export async function memberRunsPerDay(env: ServerEnv, task: string): Promise<number> {
+  const override = scheduleOverride(task, (await scheduleLeaves(env)).overrides);
+  const given = override !== null && typeof override === 'object' && !Array.isArray(override) ? override as Record<string, unknown> : {};
+  if (isScheduleCount(given.memberRunsPerDay)) return given.memberRunsPerDay;
+  if (isScheduleCount(given.maxRunsPerDay)) return given.maxRunsPerDay;
+  return TASK_SCHEDULE[task]?.maxRunsPerDay ?? MEMBER_RUNS_PER_DAY_DEFAULT;
+}
+
 /** The schedule a task runs on for this Deployment: the declared block under the owner's override. */
 export function scheduleFor(task: string, declared: TaskSchedule, overrides: Record<string, unknown>): TaskSchedule {
   return resolveSchedule(declared, scheduleOverride(task, overrides));

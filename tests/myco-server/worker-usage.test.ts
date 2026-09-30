@@ -32,7 +32,7 @@ async function rig() {
     }), e.serverEnv);
     return response.json();
   };
-  const detail = () => getRunDetail(e.db, scope, 'run_usage');
+  const detail = () => getRunDetail(e.db, scope, 'run_usage', Date.now());
   return { e, token, claimed, claim, end, detail, advance: (value: number) => { now = value; } };
 }
 

@@ -43,7 +43,7 @@ async function scopeOf(env: ServerEnv, ctx: OwnerContext) {
   return projectId === undefined ? null : await resolveProjectScope(env.db, ctx.member, projectId);
 }
 
-/** A Project's spores, newest first, paged by offset; a start instant (inclusive) and an end instant (exclusive) bound when they were written. */
+/** A Project's spores, newest first, paged by offset; a start instant (inclusive) and an end instant (exclusive) bound when they were written, and `author` names who wrote them, as a run's id. */
 export async function handleProjectSpores(env: ServerEnv, ctx: OwnerContext): Promise<Response> {
   const scope = await scopeOf(env, ctx);
   if (scope === null) return notFound();
@@ -55,6 +55,7 @@ export async function handleProjectSpores(env: ServerEnv, ctx: OwnerContext): Pr
     observationType: ctx.url.searchParams.get('type') ?? undefined,
     status: ctx.url.searchParams.get('status') ?? undefined,
     sessionId: ctx.url.searchParams.get('session') ?? undefined,
+    author: ctx.url.searchParams.get('author') ?? undefined,
     search: ctx.url.searchParams.get('q') ?? undefined,
     createdFrom: since,
     createdTo: until,

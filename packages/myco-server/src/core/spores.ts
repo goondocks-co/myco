@@ -104,6 +104,8 @@ export interface SporeRow {
 
 export interface ListSporesOptions {
   agentId?: string;
+  /** The principal instance that wrote the spores: a run's id, a member's or a grant's. */
+  author?: string;
   observationType?: string;
   status?: string;
   sessionId?: string;
@@ -165,6 +167,7 @@ function filtersOver(projects: { sql: string; params: readonly unknown[] }, o: L
   const add = (sql: string, value: unknown): void => { conditions.push(sql); params.push(value); };
 
   if (o.agentId !== undefined) add('agent_id = ?', o.agentId);
+  if (o.author !== undefined) add('author = ?', o.author);
   if (o.observationType !== undefined) add('observation_type = ?', o.observationType);
   if (o.status !== undefined) add('status = ?', o.status);
   if (o.sessionId !== undefined) add('session_id = ?', o.sessionId);

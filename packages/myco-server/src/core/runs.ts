@@ -174,7 +174,7 @@ export const titleRunInFlightSql = (session: string): string => `EXISTS (SELECT 
 
 
 /** The actor a dispatch spec names, and null for a spec that names none. A spec the store did not write is not read as JSON at all. */
-const DISPATCH_ACTOR_SQL = `CASE WHEN json_valid(dispatch_spec) THEN CASE WHEN json_type(dispatch_spec, '$.actor') = 'text' THEN NULLIF(json_extract(dispatch_spec, '$.actor'), '') END END`;
+export const DISPATCH_ACTOR_SQL = `CASE WHEN json_valid(dispatch_spec) THEN CASE WHEN json_type(dispatch_spec, '$.actor') = 'text' THEN NULLIF(json_extract(dispatch_spec, '$.actor'), '') END END`;
 /** A run row that counts as an actor's entry of a task from an instant on: not skipped, not replaced, dispatched by that actor. Bound as: task, window start, actor. */
 const ACTOR_ENTRY_SQL = `task = ? AND status != 'skipped' AND COALESCE(${contextValue('replaced')}, 0) != 1
        AND COALESCE(queued_at, started_at) >= ? AND ${DISPATCH_ACTOR_SQL} = ?`;

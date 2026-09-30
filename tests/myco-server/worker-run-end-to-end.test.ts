@@ -378,7 +378,7 @@ describe('the record of what a run called', () => {
       .toEqual(['myco_run_sessions success', 'myco_run success']);
 
     // The same record is what a person opening the run reads.
-    const detail = await getRunDetail(r.e.db, { projectId: 'proj_1' }, run.id);
+    const detail = await getRunDetail(r.e.db, { projectId: 'proj_1' }, run.id, Date.now());
     expect(detail?.toolCalls.map((c) => `${c.tool} ${c.op ?? ''}`))
       .toEqual(['myco_run_sessions material', 'myco_run report']);
   });
@@ -388,7 +388,7 @@ describe('the record of what a run called', () => {
     const run = await r.claimedTitling(NOW + 1);
     await r.workerEnds(run.id, 'completed', NOW + 3);
 
-    const detail = await getRunDetail(r.e.db, { projectId: 'proj_1' }, run.id);
+    const detail = await getRunDetail(r.e.db, { projectId: 'proj_1' }, run.id, Date.now());
     expect({ status: detail?.run.status, calls: detail?.toolCalls, error: detail?.run.error })
       .toEqual({ status: 'failed', calls: [], error: RUN_CLOSE_ERROR });
   });

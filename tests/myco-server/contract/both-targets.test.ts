@@ -354,16 +354,16 @@ describe('agent runs read the same on both stores', () => {
           VALUES ('proj_1', 'run_c', NULL, 'run_tool', ?, 'success', ?, ?, ?)`)
           .bind(ev[0], (i + 1) * 5, ev[1] === null ? null : JSON.stringify({ op: ev[1] }), 1500 + i).run();
       }
-      const listed = await listRuns(t.env.db, { projectId: 'proj_1' });
-      const detail = await getRunDetail(t.env.db, { projectId: 'proj_1' }, 'run_c');
-      const foreign = await getRunDetail(t.env.db, { projectId: 'proj_2' }, 'run_c');
+      const listed = await listRuns(t.env.db, { projectId: 'proj_1' }, Date.now());
+      const detail = await getRunDetail(t.env.db, { projectId: 'proj_1' }, 'run_c', Date.now());
+      const foreign = await getRunDetail(t.env.db, { projectId: 'proj_2' }, 'run_c', Date.now());
       outcomes.push({ listed, detail, foreign, leaks: /sk-canary|providerConfig/.test(JSON.stringify({ listed, detail })) });
     }
     expect(outcomes[0]).toEqual({
-      listed: { rows: [{ id: 'run_c', agentId: 'agent_c', task: 'digest', status: 'failed', provider: null, model: null, startedAt: 1000, resumedAt: null, completedAt: 2000, tokensUsed: null, costUsd: null, costSource: null, dryRun: false, resumable: true, resumeStatus: 'session_expired', failed: true, queuedAt: null, heldBy: null, position: null, replaced: false, replaces: null, harness: null, leasedBy: null, worker: null, leaseExpiresAt: null }], cursor: null },
+      listed: { rows: [{ id: 'run_c', agentId: 'agent_c', task: 'digest', status: 'failed', provider: null, model: null, startedAt: 1000, resumedAt: null, completedAt: 2000, tokensUsed: null, costUsd: null, costSource: null, dryRun: false, resumable: true, resumeStatus: 'session_expired', failed: true, queuedAt: null, heldBy: null, position: null, replaced: false, replaces: null, harness: null, leasedBy: null, worker: null, leaseExpiresAt: null, startedBy: null, targetSessionId: null, skipReason: null, outcome: { spores: 0, sessions: 0, readsRecorded: false } }], cursor: null },
       detail: {
         outcomeEvidence: null,
-        run: { id: 'run_c', agentId: 'agent_c', task: 'digest', status: 'failed', provider: null, model: null, startedAt: 1000, resumedAt: null, completedAt: 2000, tokensUsed: null, costUsd: null, costSource: null, dryRun: false, resumable: true, resumeStatus: 'session_expired', failed: true, queuedAt: null, heldBy: null, position: null, replaced: false, replaces: null, harness: null, leasedBy: null, worker: null, leaseExpiresAt: null, instruction: null, sessionRef: null, actualCostUsd: null, estimatedCostUsd: null, reasoningLevel: null, resumeMode: null, resumeAttempts: 0, error: 'boom', dispatchedBy: null, usageData: null, actionsTaken: null },
+        run: { id: 'run_c', agentId: 'agent_c', task: 'digest', status: 'failed', provider: null, model: null, startedAt: 1000, resumedAt: null, completedAt: 2000, tokensUsed: null, costUsd: null, costSource: null, dryRun: false, resumable: true, resumeStatus: 'session_expired', failed: true, queuedAt: null, heldBy: null, position: null, replaced: false, replaces: null, harness: null, leasedBy: null, worker: null, leaseExpiresAt: null, startedBy: null, targetSessionId: null, skipReason: null, instruction: null, sessionRef: null, actualCostUsd: null, estimatedCostUsd: null, reasoningLevel: null, resumeMode: null, resumeAttempts: 0, error: 'boom', dispatchedBy: null, usageData: null, actionsTaken: null },
         phases: [
           { name: 'prepare', status: 'completed', updatedAt: 5, summary: null, turnsUsed: 2, allowedMaxTurns: null, tokensUsed: null, costUsd: null, costSource: null, capHit: false, semanticCheckBlocked: false, postConditionFailed: false },
           { name: 'write', status: 'failed', updatedAt: 6, summary: 'ran out of turns', turnsUsed: null, allowedMaxTurns: null, tokensUsed: null, costUsd: null, costSource: null, capHit: true, semanticCheckBlocked: false, postConditionFailed: false },

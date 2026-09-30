@@ -705,10 +705,10 @@ export async function launchDispatch(env: ServerEnv, prepared: PreparedDispatch,
 }
 
 /** Prepare and launch in one call, for a caller with no claim of its own to make between them. */
-export async function dispatchTask(env: ServerEnv, task: string, projectId: string, spec: LaunchSpec, now: number): Promise<DispatchOutcome> {
+export async function dispatchTask(env: ServerEnv, task: string, projectId: string, spec: LaunchSpec, now: number, options: { ceiling?: ActorCeiling } = {}): Promise<DispatchOutcome> {
   const prepared = await prepareDispatch(env, task, projectId);
   if (!prepared.ok) return { dispatched: false, refusal: prepared.refusal, ...(prepared.providerType === undefined ? {} : { providerType: prepared.providerType }) };
-  return { dispatched: true, ...(await dispatchPrepared(env, prepared.prepared, spec, now)) };
+  return { dispatched: true, ...(await dispatchPrepared(env, prepared.prepared, spec, now, options)) };
 }
 
 /** The run the platform replaced, with everything a fresh dispatch of it needs that the row does not carry. */

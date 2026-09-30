@@ -143,8 +143,11 @@ const CONTROL_CHARACTERS = /[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/;
 
 const isRecord = (v: unknown): v is Record<string, unknown> => v !== null && typeof v === 'object' && !Array.isArray(v);
 
-/** The schedule counts a task override carries, each a whole number of 0 or more when given. */
-export const SCHEDULE_COUNT_FIELDS = ['maxRunsPerDay'] as const;
+/**
+ * The schedule counts a task override carries, each a whole number of 0 or more when given: the clock's own daily
+ * ceiling, and how many runs of the task a member who is not an admin may start by hand in a day.
+ */
+export const SCHEDULE_COUNT_FIELDS = ['maxRunsPerDay', 'memberRunsPerDay'] as const;
 
 /** What a per-task override violates, naming the field; null when every schedule count it gives is a whole number of 0 or more. */
 function taskOverridesViolation(value: unknown): string | null {
