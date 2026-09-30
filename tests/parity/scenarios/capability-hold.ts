@@ -1,7 +1,7 @@
 import { expect } from 'bun:test';
 import { lit, MEMBER_ID, type ParityScenario, type ParityTarget } from '../harness.ts';
 
-/** How far other queued runs, and other workers' last contact, are moved back while this scenario asks, and forward again afterwards. */
+/** How far other workers' last contact is moved back while this scenario asks, and forward again afterwards. */
 const PARK_MS = 86_400_000;
 
 /**
@@ -15,12 +15,19 @@ export const capabilityHold: ParityScenario = {
     const runId = `run_parity_capability_${now}`;
     await target.sql(`INSERT OR IGNORE INTO projects(project_id, name, created_at) VALUES (${lit(target.projectId)}, 'Capability parity', ${now})`);
     await target.sql(`INSERT OR IGNORE INTO agents (id, name, source, enabled, created_at) VALUES ('myco-agent', 'myco-agent', 'built-in', 1, ${now})`);
-    const parked = (await target.sql(`SELECT id FROM agent_runs WHERE status = 'queued' AND dispatched_by IS NULL AND task IS NOT NULL`))
-      .map((r) => String((r as { id: string }).id));
+    // Every other claimable run leaves the claim queue while this scenario asks, whatever task it is: a run of a task the
+    // asking worker can take would be claimed in place of the answer asked for. A run the claim queue offers names its
+    // task, so a parked run names none until it is put back.
+    const parked = (await target.sql(`SELECT project_id AS projectId, id, task FROM agent_runs WHERE status = 'queued' AND dispatched_by IS NULL AND task IS NOT NULL`))
+      .map((r) => r as { projectId: string; id: string; task: string });
     const others = (await target.sql(`SELECT credential_id AS id FROM worker_contacts`)).map((r) => String((r as { id: string }).id));
-    const shift = async (by: number) => {
-      if (parked.length > 0) await target.sql(`UPDATE agent_runs SET queued_at = queued_at + (${by}) WHERE id IN (${parked.map(lit).join(', ')})`);
-      if (others.length > 0) await target.sql(`UPDATE worker_contacts SET last_seen_at = last_seen_at - (${by}) WHERE credential_id IN (${others.map(lit).join(', ')})`);
+    const park = async () => {
+      for (const run of parked) await target.sql(`UPDATE agent_runs SET task = NULL WHERE project_id = ${lit(run.projectId)} AND id = ${lit(run.id)}`);
+      if (others.length > 0) await target.sql(`UPDATE worker_contacts SET last_seen_at = last_seen_at - ${PARK_MS} WHERE credential_id IN (${others.map(lit).join(', ')})`);
+    };
+    const unpark = async () => {
+      for (const run of parked) await target.sql(`UPDATE agent_runs SET task = ${lit(run.task)} WHERE project_id = ${lit(run.projectId)} AND id = ${lit(run.id)}`);
+      if (others.length > 0) await target.sql(`UPDATE worker_contacts SET last_seen_at = last_seen_at + ${PARK_MS} WHERE credential_id IN (${others.map(lit).join(', ')})`);
     };
     const claim = async (capabilities: string[]) => {
       const res = await fetch(`${target.url}/worker/claim`, {
@@ -32,7 +39,7 @@ export const capabilityHold: ParityScenario = {
     };
     const holder = async () => (await target.sql(`SELECT held_by AS heldBy FROM agent_runs WHERE id = ${lit(runId)}`))[0];
 
-    await shift(PARK_MS);
+    await park();
     try {
       await target.sql(
         `INSERT INTO agent_runs (project_id, id, agent_id, task, status, queued_at, held_by, dispatch_spec, run_context)
@@ -47,7 +54,7 @@ export const capabilityHold: ParityScenario = {
       expect(await holder()).toEqual({ heldBy: 'repository-digests' });
     } finally {
       await target.sql(`DELETE FROM agent_runs WHERE id = ${lit(runId)}`);
-      await shift(-PARK_MS);
+      await unpark();
     }
   },
 };
