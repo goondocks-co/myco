@@ -12,7 +12,7 @@ import { MEMBER_SUB, OWNER_ENV, ownerCookie, seedMemberRoleAccount } from './hel
 import worker from '@myco-server-worker/index.js';
 import { MAX_NAMED_PROJECTS } from '@myco-server-worker/read/scope.js';
 import { SEARCH_API_LIMIT, SEARCH_MAX_LIMIT, searchAcross } from '@myco-server-worker/read/search.js';
-import { reconcileSearchIndex } from '@myco-server-worker/core/search-index.js';
+import { reconcileSearchIndex, SEARCH_CHUNK_CHARS } from '@myco-server-worker/core/search-index.js';
 
 const NOW = 1_700_000_000_000;
 const opened: ReturnType<typeof sqliteEnv>[] = [];
@@ -154,6 +154,31 @@ describe('search across Projects', () => {
     const byId = Object.fromEntries(((await h.get('/api/search?q=spillneedle&type=prompt')).body.results as any[]).map((r) => [r.id, r.preview]));
     expect(byId.pr_spilled).toContain('spillneedle in the spilled body');
     expect(byId.pr_inline).toContain('spillneedle in an inline prompt');
+  });
+
+  it('previews a spilled body from its best-ranked chunk, not its first or its last', async () => {
+    const h = harness();
+    // Each part fills one chunk and ends on a space, so no word runs across a part.
+    const pad = (text: string) => `${`${text} ${'filler '.repeat(Math.ceil(SEARCH_CHUNK_CHARS / 7))}`.slice(0, SEARCH_CHUNK_CHARS - 1)} `;
+    const body = pad('rankneedle opening') + pad('rankneedle middlemarker '.repeat(200)) + pad('rankneedle closing');
+    await h.blob('proj_1', 'body-3', body);
+    h.prompt('proj_1', 'pr_three', null, 'body-3');
+    while (await reconcileSearchIndex(h.fixture.db, h.fixture.bucket, 1000) > 0);
+    // The opening, the middle and the closing each match in a chunk of their own; the middle matches most.
+    const matched = h.sqlite.query(`SELECT rowid FROM search_blob_chunks_fts WHERE search_blob_chunks_fts MATCH 'rankneedle' ORDER BY rank`).all() as { rowid: number }[];
+    expect(matched.length).toBe(3);
+    const best = matched[0]!.rowid;
+    expect({ best, notFirst: best !== Math.min(...matched.map((m) => m.rowid)), notLast: best !== Math.max(...matched.map((m) => m.rowid)) }).toEqual({ best, notFirst: true, notLast: true });
+    const [hit] = (await h.get('/api/search?q=rankneedle&type=prompt')).body.results as any[];
+    expect({ id: hit.id, fromMiddle: hit.preview.includes('middlemarker') }).toEqual({ id: 'pr_three', fromMiddle: true });
+  });
+
+  it('previews each inline row from its own text, when several rows match', async () => {
+    const h = harness();
+    h.spore('proj_1', 'sp_first', 'pinneedle alphatext only here');
+    h.spore('proj_1', 'sp_second', 'pinneedle betatext only here');
+    const previews = Object.fromEntries(((await h.get('/api/search?q=pinneedle&type=spore')).body.results as any[]).map((r) => [r.id, r.preview]));
+    expect({ first: /alphatext/.test(previews.sp_first), second: /betatext/.test(previews.sp_second) }).toEqual({ first: true, second: true });
   });
 
   it('keeps each type\'s page in its statement, so snippets are read for that page alone', async () => {
