@@ -122,6 +122,8 @@ const REFUSAL_OUTCOME: Readonly<Record<DispatchRefusal, TitlingOutcome>> = {
   no_credential: 'no_credential',
   no_endpoint: 'no_endpoint',
   unsupported_provider: 'unsupported_provider',
+  // No capability gates titling, so a titling dispatch is never refused for one.
+  capability_off: 'error',
   // A titling dispatch names a catalogued task and a session the scope already resolved; neither refusal has a path here.
   unknown_task: 'error',
   unknown_project: 'error',

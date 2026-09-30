@@ -13,7 +13,7 @@ import { deploymentSecretStore } from '@myco-server-worker/core/secrets.js';
 import { issueMemberToken } from '@myco-server-worker/auth/tokens.js';
 import { ensureMember } from '@myco-server-worker/auth/enrollment.js';
 import { claimNextRun, HARNESS_MEMBER_ID } from '@myco-server-worker/core/harness.js';
-import { sqliteEnv } from './helpers/fixtures.js';
+import { sqliteEnv, turnOnGatedCapabilities } from './helpers/fixtures.js';
 import { HARNESS_CREDENTIALS } from '@goondocks/myco-shared/harness-providers';
 import { harnessesReading, isSecretSlotName, SECRET_SLOTS } from '@goondocks/myco-shared/secret-slots';
 
@@ -26,6 +26,7 @@ const CODEX_KEY = 'sk-codex-TEST-KEY-VALUE-0003';
 
 async function fixture() {
   const e = sqliteEnv();
+  turnOnGatedCapabilities(e.sqlite);
   const env = serverEnvFromBindings({ ...e.env, SECRET_WRAP_KEY: { get: async () => WRAP_KEY } } as never);
   e.sqlite.run(`INSERT OR IGNORE INTO agents (id, name, source, enabled, created_at) VALUES ('myco-agent', 'a', 'built-in', 1, ?)`, [NOW]);
   e.sqlite.run(`INSERT OR IGNORE INTO members (id, label, created_at, role) VALUES (?, 'harness runtime', ?, 'member')`, [HARNESS_MEMBER_ID, NOW]);

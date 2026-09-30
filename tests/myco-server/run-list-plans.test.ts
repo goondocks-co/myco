@@ -89,6 +89,13 @@ describe('the run list, a run\'s detail and a run\'s spores, under the statistic
       // The spores a run worked from are found by their author, never by walking the Project's spores by session.
       expect({ store, plan: planOf(db, worked[0]!) }).toEqual({ store, plan: expect.stringMatching(/SEARCH spores USING INDEX idx_spores_author \(project_id=\? AND author=\?\)/) });
       expect({ store, bySession: /idx_spores_session/.test(planOf(db, worked[0]!)) }).toEqual({ store, bySession: false });
+      // The spores and the dispatch drive, and each session is looked up by its key after them: never a walk of the
+      // Project's sessions with the spores looked up per session.
+      const steps = planOf(db, worked[0]!).split('\n');
+      const spores = steps.findIndex((step) => /SEARCH spores USING INDEX idx_spores_author/.test(step));
+      const sessions = steps.findIndex((step) => /SEARCH s USING (?:COVERING )?INDEX sqlite_autoindex_sessions_1 \(project_id=\? AND session_id=\?\)/.test(step));
+      expect({ store, spores: spores >= 0, sessionsByKey: sessions >= 0, order: sessions > spores, sessionWalk: steps.some((step) => /SEARCH s USING (?:COVERING )?INDEX \w+ \(project_id=\?\)$/.test(step.trim())) })
+        .toEqual({ store, spores: true, sessionsByKey: true, order: true, sessionWalk: false });
     }
   });
 

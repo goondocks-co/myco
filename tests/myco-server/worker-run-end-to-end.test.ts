@@ -24,7 +24,7 @@ import { EXTRACTION_TASK, SEEDING_TASK } from '@myco-server-worker/core/task-cat
 import { AGENT_LINE_MAX_CHARS } from '@myco-server-worker/core/injection.js';
 import { getRunDetail } from '@myco-server-worker/read/runs.js';
 import { titleSession } from '@myco-server-worker/core/titling.js';
-import { memberHeaders, sqliteEnv } from './helpers/fixtures.js';
+import { memberHeaders, sqliteEnv, turnOnGatedCapabilities } from './helpers/fixtures.js';
 import { PROJECT_HEADER } from '@myco-server-worker/constants.js';
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
 import { verifyWorkerOutcome } from '../helpers/worker-smoke-evidence.js';
@@ -35,6 +35,7 @@ const OFFERED = [{ id: 'claude-code', authenticated: true }];
 
 async function rig() {
   const e = sqliteEnv();
+  turnOnGatedCapabilities(e.sqlite);
   e.sqlite.run(`INSERT OR IGNORE INTO agents (id, name, source, enabled, created_at) VALUES ('myco-agent', 'a', 'built-in', 1, ?)`, [NOW]);
   e.sqlite.run(`INSERT OR IGNORE INTO members (id, label, created_at, role) VALUES (?, 'harness runtime', ?, 'member')`, [HARNESS_MEMBER_ID, NOW]);
   await ensureMember(e.db, 'mem_worker', NOW, 'admin', 'a worker');

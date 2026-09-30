@@ -20,6 +20,8 @@ export const dispatchQueue: ParityScenario = {
       ['agent.provider.base_url', 'http://models.internal/v1'],
     ] as const) await leaf(name, value);
     await target.sql(`INSERT OR REPLACE INTO project_capabilities (project_id, capability, enabled, updated_at, updated_by) VALUES (${lit(target.projectId)}, 'cortex', 1, ${now}, ${lit(MEMBER_ID)})`);
+    // An outcome task is queued only where the Project has turned its capability on.
+    await target.sql(`INSERT OR REPLACE INTO project_capabilities (project_id, capability, enabled, updated_at, updated_by) VALUES (${lit(target.projectId)}, 'vault_evolution', 1, ${now}, ${lit(MEMBER_ID)})`);
     // A clean queue: nothing another scenario launched under the recorder still holds a place.
     await target.sql(`UPDATE agent_runs SET status = 'completed', completed_at = ${now} WHERE status IN ('pending', 'running', 'queued')`);
     await leaf('agent.limits.concurrent_runs', 1);
@@ -30,8 +32,9 @@ export const dispatchQueue: ParityScenario = {
         headers: { ...target.ownerHeaders(), origin: target.url, 'content-type': 'application/json' },
         body: JSON.stringify({ task, projectId: target.projectId, timeoutSeconds: 120 }),
       });
-      expect(res.status).toBe(200);
-      return (await res.json()) as { runId: string; queued?: boolean; heldBy?: string };
+      const answer = await res.json() as { runId: string; queued?: boolean; heldBy?: string };
+      expect({ status: res.status, answer }).toMatchObject({ status: 200 });
+      return answer;
     };
     const wake = async () => {
       const res = await fetch(`${target.url}/api/wake`, { method: 'POST', headers: { ...target.ownerHeaders(), origin: target.url } });

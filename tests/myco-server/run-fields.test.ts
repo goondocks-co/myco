@@ -68,10 +68,12 @@ describe('the fields a run carries beyond its status', () => {
     h.run('proj_1', 'run_title', { context: { session_id: 's_target', mode: 'claim' }, actor: 'mem_machine_2' });
     h.run('proj_1', 'run_skipped', { status: 'skipped', context: { reason: 'max_runs_per_day' } });
     h.run('proj_1', 'run_reason_not_skipped', { context: { reason: 'stray' }, actor: 'clock' });
+    h.run('proj_1', 'run_blank_actor', { actor: '' });
     const rows = await h.listed();
     expect(rows.run_title).toMatchObject({ startedBy: 'mem_machine_2', targetSessionId: 's_target', skipReason: null });
     expect(rows.run_skipped).toMatchObject({ startedBy: null, targetSessionId: null, skipReason: 'max_runs_per_day' });
     expect(rows.run_reason_not_skipped).toMatchObject({ startedBy: 'clock', skipReason: null });
+    expect(rows.run_blank_actor.startedBy).toBeNull();
     expect((await h.get('/api/projects/proj_1/runs/run_title')).body.run).toMatchObject({ startedBy: 'mem_machine_2', targetSessionId: 's_target' });
   });
 

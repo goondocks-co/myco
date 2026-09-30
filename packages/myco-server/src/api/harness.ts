@@ -49,10 +49,14 @@ export async function handleHarnessDispatch(env: ServerEnv, ctx: OwnerContext): 
   const task = typeof body.task === 'string' && body.task.length > 0 && body.task.length <= 128 ? body.task : null;
   const projectId = typeof body.projectId === 'string' && PROJECT_ID_SHAPE.test(body.projectId) ? body.projectId : null;
   if (task === null || projectId === null) return badRequest('dispatch requires task and projectId');
-  // The caller's bound, else the task's own budget, else the flat default.
-  const timeoutSeconds = typeof body.timeoutSeconds === 'number' && body.timeoutSeconds > 0 && body.timeoutSeconds <= 3600
+  // An admin's bound, else the task's own budget, else the flat default. A member runs a task on its own budget.
+  const timeoutSeconds = isAdmin(ctx.member.role) && typeof body.timeoutSeconds === 'number' && body.timeoutSeconds > 0 && body.timeoutSeconds <= 3600
     ? body.timeoutSeconds
     : runTimeoutForTask(task) ?? DEFAULT_DISPATCH_TIMEOUT_SECONDS;
+  // A switch that decides what a run spends is a boolean or absent; anything else is refused rather than read as off.
+  for (const key of ['dryRun', 'fresh'] as const) {
+    if (body[key] !== undefined && typeof body[key] !== 'boolean') return badRequest(`${key} must be true or false`);
+  }
   // A task the launch seam serves cannot be dispatched without one, and an
   // operator reads that as the Deployment lacking a capability rather than as a
   // bad ask. A worker-served task is never refused here: it queues.
@@ -82,6 +86,9 @@ export async function handleHarnessDispatch(env: ServerEnv, ctx: OwnerContext): 
     throw error;
   }
   if (!outcome.dispatched) {
+    if (outcome.refusal === 'capability_off') {
+      return Response.json({ error: 'capability_off', capability: outcome.capability, message: DISPATCH_REFUSAL_MESSAGE.capability_off }, { status: 409 });
+    }
     return badRequest(outcome.refusal === 'unsupported_provider'
       ? `${DISPATCH_REFUSAL_MESSAGE.unsupported_provider}, and the configured provider is ${outcome.providerType ?? 'another'}`
       : DISPATCH_REFUSAL_MESSAGE[outcome.refusal]);

@@ -6,7 +6,7 @@ import { applyRunUpdate, getRun } from '@myco-server-worker/core/runs.js';
 import { claimNextRun, endLeasedRun, expireLeases } from '@myco-server-worker/core/harness.js';
 import { getRunDetail } from '@myco-server-worker/read/runs.js';
 import { WORKER_LEASE_MS } from '@myco-server-worker/constants.js';
-import { memberHeaders, sqliteEnv } from './helpers/fixtures.js';
+import { memberHeaders, sqliteEnv, turnOnGatedCapabilities } from './helpers/fixtures.js';
 
 const NOW = 1_800_000_000_000;
 const scope = { projectId: 'proj_1' };
@@ -14,6 +14,7 @@ const usage = { inputTokens: 100, outputTokens: 20, cachedTokens: 40, costUsd: n
 
 async function rig() {
   const e = sqliteEnv();
+  turnOnGatedCapabilities(e.sqlite);
   let now = NOW;
   const server = createServer({ now: () => now, sourceOf: () => '1.2.3.4', fetchImpl: fetch });
   await ensureMember(e.db, 'mem_worker', NOW, 'admin', 'worker');

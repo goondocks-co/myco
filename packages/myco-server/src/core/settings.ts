@@ -329,6 +329,9 @@ export async function providerConfiguredFor(db: RelationalStore, taskName: strin
  * Every capability of `capabilities` a Project has turned on, for every Project or the one named, in one statement:
  * the read `capabilityEnabled` makes of one Project, made once for the Deployment.
  */
+/** A capability turned on for a Project, as a condition a write carries. Bound as: Project, capability. */
+export const CAPABILITY_ON_SQL = `EXISTS (SELECT 1 FROM project_capabilities pc WHERE pc.project_id = ? AND pc.capability = ? AND pc.enabled = 1)`;
+
 export function enabledCapabilities(db: RelationalStore, capabilities: readonly ProjectCapability[], projectId?: string): {
   statement: PreparedStatement;
   read: (rows: ReadonlyArray<Record<string, unknown>>) => Array<{ projectId: string; capability: string }>;

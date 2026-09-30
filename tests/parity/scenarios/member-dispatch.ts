@@ -10,7 +10,7 @@ const TASK = 'title-summary';
  * A member who is not an admin starting a task by hand, on both targets (#1518 A10): it reads which tasks a Project
  * has turned on and may not change them; it starts runs, each recorded as its own, up to its daily ceiling, past which
  * the dispatch answers 429 with when the ceiling resets and writes no run; a fresh run is refused to it. An admin is
- * never capped.
+ * never capped, and a task a capability gates is refused to both where the Project has it off.
  */
 export const memberDispatch: ParityScenario = {
   name: 'member dispatch: a member starts tasks up to its daily ceiling, reads capabilities, and is refused what an admin alone does',
@@ -60,6 +60,16 @@ export const memberDispatch: ParityScenario = {
 
       // An admin is never capped.
       expect((await dispatch(admin, {})).status).toBe(200);
+
+      // A task a capability gates is refused, to a member and an admin alike, where the Project has it off.
+      const gated = `parity-member-gate-${Date.now()}`;
+      await target.sql(`INSERT INTO projects (project_id, name, created_at) VALUES (${lit(gated)}, ${lit(gated)}, ${Date.now()})`);
+      for (const headers of [member, admin]) {
+        const res = await fetch(`${target.url}/api/harness/dispatch`, { method: 'POST', headers, body: JSON.stringify({ task: 'extract-curate', projectId: gated }) });
+        expect({ status: res.status, body: await res.json() }).toMatchObject({ status: 409, body: { error: 'capability_off', capability: 'vault_evolution' } });
+      }
+      const rows = await target.sql(`SELECT COUNT(*) AS n FROM agent_runs WHERE project_id = ${lit(gated)}`) as Array<{ n: number }>;
+      expect(Number(rows[0]!.n)).toBe(0);
     } finally {
       if (started.length > 0) await target.sql(`DELETE FROM agent_runs WHERE project_id = ${lit(target.projectId)} AND id IN (${started.map(lit).join(', ')})`);
     }

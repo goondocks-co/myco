@@ -134,13 +134,14 @@ const RUN_READ_TOTAL_SQL = recordedReads(ONE_RUN);
 /**
  * The sessions a run with no recorded read worked from: its dispatch's session and those of the spores it wrote,
  * undeleted. The spores are found by their author: `+session_id` keeps the session index, which would read every spore
- * of the Project that has a session, out of the planner's reach. Bound as: Project, run(s), Project, run(s), then the
- * Project the sessions are joined in.
+ * of the Project that has a session, out of the planner's reach. The spores and the dispatch drive and each session is
+ * looked up by its key after them (`CROSS JOIN`), never the Project's sessions walked. Bound as: Project, run(s),
+ * Project, run(s), then the Project the sessions are joined in.
  */
 const workedFrom = (runs: string): string => `(SELECT author AS runId, session_id AS sessionId, created_at AS at FROM spores WHERE project_id = ? AND author ${runs} AND +session_id IS NOT NULL
     UNION ALL
     SELECT id AS runId, ${contextValue('session_id')} AS sessionId, COALESCE(started_at, queued_at, 0) AS at FROM agent_runs WHERE project_id = ? AND id ${runs}) x
-  JOIN sessions s ON s.project_id = ? AND s.session_id = x.sessionId
+  CROSS JOIN sessions s ON s.project_id = ? AND s.session_id = x.sessionId
   WHERE ${notTombstonedSql('s')}`;
 const WORKED_FROM_SQL = `SELECT x.sessionId, s.title, NULL AS readAt, MIN(x.at) AS firstAt FROM ${workedFrom(ONE_RUN)}
   GROUP BY x.sessionId ORDER BY firstAt ASC, x.sessionId ASC LIMIT ?`;
