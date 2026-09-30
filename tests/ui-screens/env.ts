@@ -10,6 +10,8 @@ export const SCREENS_ENV = {
   pid: 'MYCO_SCREENS_PID',
   /** The fixture's project names, as JSON, for the checks that assert the fixture rendered. */
   projectNames: 'MYCO_SCREENS_PROJECT_NAMES',
+  /** The fixture's projects, as JSON `{ projectId, name }` pairs, for the checks that open a project's pages. */
+  projects: 'MYCO_SCREENS_PROJECTS',
 } as const;
 
 /** The line the launcher prints once the fixture is seeded. */

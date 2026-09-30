@@ -3,19 +3,34 @@ import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { MasterDetailSplit } from '../components/ui/master-detail-split';
 import { PageContainer } from '../components/ui/page-container';
 import { PageHeader } from '../components/ui/page-header';
-import { SubtabPill } from '../components/ui/subtab-pill';
 import { SporeDetail } from '../components/spores/SporeDetail';
 import { SporeRail } from '../components/spores/SporeRail';
 import { formatLabel, OBSERVATION_TYPES, SPORE_STATUSES } from '../components/spores/labels';
 import { SPORE_PAGE_SIZE, type SporeFilters } from '../hooks/use-intelligence';
+import { FilterBar, type FilterDefinition } from '../design';
 
 /** The status the page opens on: what this project currently holds true. */
 const DEFAULT_STATUS = 'active';
 
-const STATUS_TABS = [
-  { id: 'all', label: 'All' },
-  ...SPORE_STATUSES.map((status) => ({ id: status, label: formatLabel(status) })),
-];
+/** The status filter opens on what the project holds true now; every status is one pick away. */
+const STATUS_FILTER: FilterDefinition = {
+  key: 'status',
+  label: 'Status',
+  options: [
+    { value: DEFAULT_STATUS, label: formatLabel(DEFAULT_STATUS) },
+    ...SPORE_STATUSES.filter((status) => status !== DEFAULT_STATUS).map((status) => ({ value: status, label: formatLabel(status) })),
+    { value: 'all', label: 'Every status' },
+  ],
+};
+
+const TYPE_FILTER: FilterDefinition = {
+  key: 'type',
+  label: 'Type',
+  options: [{ value: 'all', label: 'Every type' }, ...OBSERVATION_TYPES.map((type) => ({ value: type, label: formatLabel(type) }))],
+};
+
+/** The value each filter holds when it filters nothing more than the page opens on. */
+const FILTER_DEFAULTS: Readonly<Record<string, string>> = { status: DEFAULT_STATUS, type: 'all' };
 
 /** How long the filter box waits after the last keystroke before the list is re-read. */
 const FILTER_DEBOUNCE_MS = 250;
@@ -82,27 +97,18 @@ export function Spores() {
   return (
     <PageContainer>
       <PageHeader title="Spores" subtitle="What this project learned, one observation at a time." />
-      <div className="mb-4 flex flex-wrap items-center gap-3">
-        <SubtabPill tabs={STATUS_TABS} activeTab={status} onTabChange={(tab) => setParam('status', tab, DEFAULT_STATUS)} />
-        <select
-          aria-label="Filter by type"
-          value={type}
-          onChange={(e) => setParam('type', e.target.value, 'all')}
-          className="rounded-md border border-outline-variant/30 bg-surface-container px-2 py-1 font-sans text-sm text-on-surface"
-        >
-          <option value="all">All types</option>
-          {OBSERVATION_TYPES.map((t) => <option key={t} value={t}>{formatLabel(t)}</option>)}
-        </select>
-        <input
-          ref={filterInputRef}
-          type="search"
-          aria-label="Filter spores"
-          placeholder="Filter by text or type…"
-          value={text}
-          onChange={(e) => setText(e.target.value)}
-          className="rounded-md border border-outline-variant/30 bg-surface-container px-2 py-1 font-sans text-sm text-on-surface"
-        />
-      </div>
+      <FilterBar
+        className="mb-4"
+        searchLabel="Filter spores"
+        placeholder="Filter by text"
+        inputRef={filterInputRef}
+        query={text}
+        onQueryChange={setText}
+        filters={[STATUS_FILTER, TYPE_FILTER]}
+        values={{ status, type }}
+        onFilterChange={(key, value) => setParam(key, value, FILTER_DEFAULTS[key] ?? 'all')}
+        onClear={() => { setText(''); setParam('q', '', ''); setParam('status', DEFAULT_STATUS, DEFAULT_STATUS); setParam('type', 'all', 'all'); }}
+      />
       <div className="min-h-[60vh] rounded-lg border border-outline-variant/20">
         <MasterDetailSplit
           hasSelection={sporeId !== undefined}

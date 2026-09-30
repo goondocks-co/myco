@@ -4,7 +4,7 @@ import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/re
 import { MemoryRouter, useLocation } from 'react-router-dom';
 
 import {
-  ConfirmDialog, dayLabel, errorWords, FilterBar, HealthDot, SearchableSelect, searchableSelectRank, Select, SEARCHABLE_AFTER,
+  ConfirmDialog, dayLabel, errorWords, FilterBar, HealthDot, IconButton, SearchableSelect, searchableSelectRank, Select, SEARCHABLE_AFTER,
   ShowMore, Switch, useFilterParams,
 } from '../../packages/myco-server/ui/src/design';
 import { ApiError } from '../../packages/myco-server/ui/src/lib/api';
@@ -151,5 +151,22 @@ describe('words, not colours', () => {
     expect(screen.getByRole('button', { name: 'Show more' })).toBeTruthy();
     rerender(<ShowMore shown={34} total={34} noun="sessions" onMore={() => undefined} />);
     expect(screen.queryByRole('button', { name: 'Show more' })).toBeNull();
+  });
+});
+
+describe('cn', () => {
+  it('lets a later class override an earlier one on the design system\'s own scales', async () => {
+    const { cn } = await import('../../packages/myco-server/ui/src/lib/cn');
+    expect(cn('h-control px-s4 t-control rounded-control', 'w-control px-0 h-[44px] t-body rounded-card')).toBe('w-control px-0 h-[44px] t-body rounded-card');
+    expect(cn('gap-s4 p-s6', 'gap-s3 p-s5')).toBe('gap-s3 p-s5');
+    // Different properties stay side by side.
+    expect(cn('px-s4 py-s2 t-small text-muted')).toBe('px-s4 py-s2 t-small text-muted');
+  });
+
+  it('keeps an icon button square, its icon at full size', () => {
+    render(<IconButton label="Search"><span data-testid="glyph" /></IconButton>);
+    const classes = screen.getByRole('button', { name: 'Search' }).className.split(' ');
+    expect(classes).toContain('px-0');
+    expect(classes).not.toContain('px-s4');
   });
 });

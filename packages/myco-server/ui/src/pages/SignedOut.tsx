@@ -3,7 +3,7 @@ import { PageContainer } from '../components/ui/page-container';
 /** Shown when the server answers 401: there is no dashboard session. */
 export function SignedOut() {
   return (
-    <PageContainer variant="narrow" className="flex min-h-screen flex-col items-center justify-center gap-4 text-center">
+    <PageContainer variant="narrow" className="flex min-h-screen flex-col items-center justify-center gap-4 p-gutter text-center">
       <h1 className="font-serif text-2xl text-on-surface">Sign in to Myco</h1>
       <p className="max-w-md font-sans text-sm text-on-surface-variant">
         This server keeps your projects&rsquo; memory. Sign in with the GitHub account linked to your membership to see it.

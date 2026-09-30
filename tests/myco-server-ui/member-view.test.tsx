@@ -64,7 +64,7 @@ describe('the dashboard for a member who is not an admin', () => {
     it(`asks no admin route on ${page}`, async () => {
       const asked = server(ROUTES_ANSWERED);
       mount(page);
-      await screen.findByRole('navigation', { name: 'Server' });
+      await screen.findByRole('navigation', { name: 'Pages' });
       // Let every query the page mounts go out before reading what it asked.
       await new Promise((resolve) => setTimeout(resolve, 50));
       expect(asked.length).toBeGreaterThan(1);
@@ -75,10 +75,12 @@ describe('the dashboard for a member who is not an admin', () => {
   it('offers no admin page in the navigation, and says what an admin-only page is instead of showing its controls', async () => {
     server(ROUTES_ANSWERED);
     mount('/p/live/access');
-    const server_ = await screen.findByRole('navigation', { name: 'Server' });
-    expect(server_.textContent).not.toContain('Operations');
-    expect(server_.textContent).toContain('Settings');
-    expect((await screen.findByRole('navigation', { name: 'Project' })).textContent).not.toContain('Access');
+    const pages = await screen.findByRole('navigation', { name: 'Pages' });
+    expect(pages.textContent).not.toContain('Access');
+    // The nav foot of admin pages is absent, not greyed out: Members, Settings and the health pages alike.
+    expect(screen.queryByRole('navigation', { name: 'Admin' })).toBeNull();
+    const nav = screen.getByRole('complementary', { name: 'Navigation' });
+    for (const name of ['Members', 'Settings', 'Status', 'Measures', 'Operations']) expect(within(nav).queryByRole('link', { name })).toBeNull();
     expect(await screen.findByTestId('admin-only')).toBeTruthy();
     expect(screen.queryByRole('button', { name: 'Add external agent' })).toBeNull();
   });
@@ -101,7 +103,7 @@ describe('the dashboard for a member who is not an admin', () => {
     const tabs = screen.getAllByRole('tab').map((t) => t.textContent);
     expect(tabs).not.toContain('Credentials');
     expect(tabs).not.toContain('Projects');
-    expect(tabs).toContain('This browser');
+    expect(tabs).not.toContain('This browser');
     const page = screen.getByRole('main');
     await waitFor(() => expect(within(page).queryAllByRole('switch').length + within(page).queryAllByRole('textbox').length + within(page).queryAllByRole('combobox').length).toBeGreaterThan(0));
     const enabled = [...within(page).queryAllByRole('switch'), ...within(page).queryAllByRole('combobox')]
@@ -114,7 +116,7 @@ describe('the dashboard for a member who is not an admin', () => {
   it('offers no rename or archive on Projects', async () => {
     server(ROUTES_ANSWERED);
     mount('/projects');
-    expect(await screen.findByText('Live')).toBeTruthy();
+    expect(within(await screen.findByRole('list', { name: 'Projects' })).getByText('Live')).toBeTruthy();
     expect(screen.queryByRole('button', { name: 'Rename' })).toBeNull();
     expect(screen.queryByRole('button', { name: 'Archive' })).toBeNull();
   });

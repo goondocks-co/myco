@@ -57,6 +57,22 @@ async function onWideScreen(fn: () => Promise<void>): Promise<void> {
   try { await fn(); } finally { window.matchMedia = original; }
 }
 
+/** Opens a design-system select, found by the start of its name, and picks one option, the way a person does. */
+async function pick(label: string, option: string) {
+  const proto = window.Element.prototype as unknown as { scrollIntoView?: () => void };
+  proto.scrollIntoView ??= () => undefined;
+  const [trigger] = screen.queryAllByRole('combobox', { name: new RegExp(`^${label}`) }).concat(screen.queryAllByRole('button', { name: new RegExp(`^${label}:`) }));
+  fireEvent.click(trigger!);
+  fireEvent.click(await screen.findByRole('option', { name: option }));
+}
+
+/** What a design-system select shows as picked: the trigger's text for a short list, its name for a searchable one. */
+function picked(label: string): string {
+  const combobox = screen.queryByRole('combobox', { name: label });
+  if (combobox !== null) return combobox.textContent ?? '';
+  return screen.getByRole('button', { name: new RegExp(`^${label}:`) }).getAttribute('aria-label')!.slice(label.length + 2);
+}
+
 function mount(path: string) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(<AppearanceProvider><QueryClientProvider client={client}><MemoryRouter initialEntries={[path]}><App /></MemoryRouter></QueryClientProvider></AppearanceProvider>);
@@ -84,7 +100,7 @@ describe('Spores list', () => {
     expect(requested).toContain('/api/projects/x/spores?limit=25&status=active');
   });
 
-  it('asks the server to filter, by status from the tabs, by type from the picker and by text from the box, and says so when nothing matches', async () => {
+  it('asks the server to filter, by status and type from the filter bar and by text from its box, and says so when nothing matches', async () => {
     const { requested } = server(base({
       '/api/projects/x/spores?limit=25&status=active': () => list(ROWS),
       '/api/projects/x/spores?limit=25': () => list([...ROWS, spore({ id: 'sp3', status: 'obsolete' })]),
@@ -93,10 +109,10 @@ describe('Spores list', () => {
     }));
     mount('/p/x/spores');
     await screen.findAllByRole('row');
-    fireEvent.click(screen.getByRole('tab', { name: 'All' }));
+    await pick('Status', 'Every status');
     await asked(requested, '/api/projects/x/spores?limit=25');
     await waitFor(() => expect(screen.getAllByRole('row')).toHaveLength(3));
-    fireEvent.change(screen.getByLabelText('Filter by type'), { target: { value: 'gotcha' } });
+    await pick('Type', 'Gotcha');
     await asked(requested, '/api/projects/x/spores?limit=25&type=gotcha');
     await waitFor(() => expect(screen.getAllByRole('row')).toHaveLength(1));
     expect(screen.getByTestId('spore-rail-counts').textContent).toBe('1 MATCHING');
@@ -119,8 +135,8 @@ describe('Spores list', () => {
       '/api/projects/x/spores?limit=25&status=obsolete&type=gotcha&q=cache&offset=25',
     ]);
     // The pasted state is what the controls show.
-    expect(screen.getByRole('tab', { name: 'Obsolete' }).getAttribute('aria-selected')).toBe('true');
-    expect((screen.getByLabelText('Filter by type') as HTMLSelectElement).value).toBe('gotcha');
+    expect(picked('Status')).toBe('Obsolete');
+    expect(picked('Type')).toBe('Gotcha');
     expect((screen.getByLabelText('Filter spores') as HTMLInputElement).value).toBe('cache');
   });
 
@@ -134,7 +150,7 @@ describe('Spores list', () => {
     await screen.findAllByRole('row');
     fireEvent.click(screen.getByRole('button', { name: /Next/ }));
     await waitFor(() => expect(screen.getAllByRole('row')).toHaveLength(1));
-    fireEvent.click(screen.getByRole('tab', { name: 'Obsolete' }));
+    await pick('Status', 'Obsolete');
     await screen.findByText('No spores match.');
     expect(requested.filter((r) => r.startsWith('/api/projects/x/spores'))).toEqual([
       '/api/projects/x/spores?limit=25&status=active',
@@ -197,7 +213,7 @@ describe('Spores list', () => {
     await waitFor(() => expect(screen.getAllByRole('row').length).toBe(3));
     expect(where).toBe('/p/x/spores/sp2?status=all');
     expect(screen.getByRole('heading', { name: 'Decision' })).toBeTruthy();
-    expect(screen.getByRole('tab', { name: 'All', selected: true })).toBeTruthy();
+    expect(picked('Status')).toBe('Every status');
     expect(requested).not.toContain('/api/projects/x/spores/sp0');
   }));
 
@@ -210,7 +226,7 @@ describe('Spores list', () => {
     const rows = await screen.findAllByRole('row');
     fireEvent.click(rows[0]!);
     expect(await screen.findByRole('heading', { name: 'Gotcha' })).toBeTruthy();
-    const nav = screen.getByRole('navigation', { name: 'Project' });
+    const nav = screen.getByRole('navigation', { name: 'Pages' });
     expect([...nav.querySelectorAll('a[aria-current="page"]')].map((a) => a.textContent)).toEqual(['Spores']);
   });
 

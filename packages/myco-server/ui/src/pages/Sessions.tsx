@@ -3,17 +3,21 @@ import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { MasterDetailSplit } from '../components/ui/master-detail-split';
 import { PageContainer } from '../components/ui/page-container';
 import { PageHeader } from '../components/ui/page-header';
-import { SubtabPill } from '../components/ui/subtab-pill';
 import { SessionDetail } from '../components/sessions/SessionDetail';
 import { SessionRail } from '../components/sessions/SessionRail';
 import type { SessionListFilters } from '../hooks/use-sessions';
+import { FilterBar, type FilterDefinition } from '../design';
 
 /** Open means no end was recorded — a runtime that died never ends its session, so this is what the data says, not a liveness claim. */
-const STATUS_TABS = [
-  { id: 'all', label: 'All' },
-  { id: 'open', label: 'Open' },
-  { id: 'ended', label: 'Ended' },
-];
+const STATE_FILTER: FilterDefinition = {
+  key: 'state',
+  label: 'State',
+  options: [
+    { value: 'all', label: 'Open and ended' },
+    { value: 'open', label: 'Open' },
+    { value: 'ended', label: 'Ended' },
+  ],
+};
 
 /** How long the filter box waits after the last keystroke before the list is re-read. */
 const FILTER_DEBOUNCE_MS = 250;
@@ -76,18 +80,18 @@ export function Sessions() {
   return (
     <PageContainer>
       <PageHeader title="Sessions" subtitle="What each runtime captured for this project, session by session." />
-      <div className="mb-4 flex flex-wrap items-center gap-3">
-        <SubtabPill tabs={STATUS_TABS} activeTab={status} onTabChange={(tab) => setParam('state', tab)} />
-        <input
-          ref={filterInputRef}
-          type="search"
-          aria-label="Filter sessions"
-          placeholder="Filter by title, agent, branch…"
-          value={text}
-          onChange={(e) => setText(e.target.value)}
-          className="rounded-md border border-outline-variant/30 bg-surface-container px-2 py-1 font-sans text-sm text-on-surface"
-        />
-      </div>
+      <FilterBar
+        className="mb-4"
+        searchLabel="Filter sessions"
+        placeholder="Filter by title, agent or branch"
+        inputRef={filterInputRef}
+        query={text}
+        onQueryChange={setText}
+        filters={[STATE_FILTER]}
+        values={{ state: status }}
+        onFilterChange={setParam}
+        onClear={() => { setText(''); setParam('q', ''); setParam('state', 'all'); }}
+      />
       <div className="min-h-[60vh] rounded-lg border border-outline-variant/20">
         <MasterDetailSplit
           hasSelection={sessionId !== undefined}

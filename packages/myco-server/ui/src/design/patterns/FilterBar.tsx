@@ -20,6 +20,8 @@ export interface FilterDefinition {
 export interface FilterBarProps {
   /** Names the search field and fills it when empty, as in "Search sessions". */
   searchLabel: string;
+  /** Says what the search matches, as in "Filter by title, agent or branch"; defaults to the label. */
+  placeholder?: string;
   query: string;
   onQueryChange: (query: string) => void;
   filters?: readonly FilterDefinition[];
@@ -41,7 +43,7 @@ export interface FilterBarProps {
  * first line and the selects wrap below it.
  */
 export function FilterBar({
-  searchLabel, query, onQueryChange, filters = [], values = {}, onFilterChange, onClear, count, inputRef, hint, className,
+  searchLabel, placeholder, query, onQueryChange, filters = [], values = {}, onFilterChange, onClear, count, inputRef, hint, className,
 }: FilterBarProps) {
   const active = query.trim() !== '' || filters.some((filter) => (values[filter.key] ?? defaultOf(filter)) !== defaultOf(filter));
   return (
@@ -49,6 +51,7 @@ export function FilterBar({
       <SearchInput
         ref={inputRef}
         label={searchLabel}
+        placeholder={placeholder}
         value={query}
         hint={hint}
         onChange={(event) => onQueryChange(event.target.value)}

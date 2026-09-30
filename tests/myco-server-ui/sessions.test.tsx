@@ -73,6 +73,14 @@ function LocationProbe() {
   return <div data-testid="location">{location.pathname}{location.search}</div>;
 }
 
+/** Opens a design-system select by its label and picks one option, the way a person does. */
+async function pick(label: string, option: string) {
+  const proto = window.Element.prototype as unknown as { scrollIntoView?: () => void };
+  proto.scrollIntoView ??= () => undefined;
+  fireEvent.click(await screen.findByLabelText(label));
+  fireEvent.click(await screen.findByRole('option', { name: option }));
+}
+
 function mount(path: string) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(<AppearanceProvider><QueryClientProvider client={client}><MemoryRouter initialEntries={[path]}><App /><LocationProbe /></MemoryRouter></QueryClientProvider></AppearanceProvider>);
@@ -114,7 +122,7 @@ describe('Sessions list', () => {
     expect((await screen.findByTestId('rail-counts')).textContent).toBe('12 TOTAL·1 OPEN·340 PROMPTS');
   });
 
-  it('asks the server to filter, by state from the tabs and by text from the box, and says so when nothing matches', async () => {
+  it('asks the server to filter, by state from the filter bar and by text from its box, and says so when nothing matches', async () => {
     const { requested } = server(base({
       '/api/projects/x/sessions?limit=50': () => page(ROWS),
       '/api/projects/x/sessions?limit=50&state=ended': () => page(ROWS.slice(1)),
@@ -124,12 +132,12 @@ describe('Sessions list', () => {
     }));
     mount('/p/x/sessions');
     await screen.findAllByRole('row');
-    fireEvent.click(screen.getByRole('tab', { name: 'Ended' }));
+    await pick('State', 'Ended');
     await asked(requested, '/api/projects/x/sessions?limit=50&state=ended');
     await waitFor(() => expect(screen.getAllByRole('row')).toHaveLength(2));
     expect(screen.getByTestId('rail-counts').textContent).toBe('2 SHOWN');
     expect(screen.getByTestId('location').textContent).toBe('/p/x/sessions?state=ended');
-    fireEvent.click(screen.getByRole('tab', { name: 'All' }));
+    await pick('State', 'Open and ended');
     // Three keystrokes inside the debounce make one read, for the text as it stands when the typing pauses.
     const box = screen.getByLabelText('Filter sessions');
     fireEvent.change(box, { target: { value: 'f' } });

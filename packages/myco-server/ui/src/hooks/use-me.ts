@@ -9,8 +9,9 @@ export interface Me {
   member: { id: string; label: string | null; role: 'admin' | 'member' } | null;
 }
 
-export function useMe() {
-  return useQuery({ queryKey: [...ME_KEY], queryFn: ({ signal }) => fetchJson<Me>('/auth/me', signal) });
+/** `enabled: false` leaves the session unasked, for a page that shows the same thing to everyone. */
+export function useMe(options: { enabled?: boolean } = {}) {
+  return useQuery({ queryKey: [...ME_KEY], queryFn: ({ signal }) => fetchJson<Me>('/auth/me', signal), enabled: options.enabled ?? true });
 }
 
 /** Whether the signed-in member administers the Deployment. The server refuses a member every admin route; this only keeps the controls that reach one out of their view. */
