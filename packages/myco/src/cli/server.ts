@@ -22,9 +22,9 @@ import {
 import { CommandFailed } from '../server/runner.js';
 import { ComposeFilesUnreadable, HarnessLeftStopped, RestoreLeftIncomplete, UpdateRolledBack, UpdateRollbackFailed } from '../server/deployment.js';
 import { registerGitHubApp, RegistrationRefused, resolveSignInTarget } from '../server/github-app.js';
-import { WranglerNotReady, deploymentRecordPath, readDeploymentRecord, writeDeploymentRecord } from '../server/cloudflare.js';
+import { WranglerNotReady, deploymentRecordPath, peekDeploymentRecord, readDeploymentRecord, writeDeploymentRecord } from '../server/cloudflare.js';
 import { DeployConfigIncomplete, renderDeployConfig } from '../server/deploy-config.js';
-import { cloudflareDeploymentStatus, createCloudflareDeployment, destroyCloudflareDeployment, rollbackCloudflareDeployment, updateCloudflareDeployment } from '../server/cloudflare-lifecycle.js';
+import { type CreatePlan, cloudflareDeploymentStatus, createCloudflareDeployment, destroyCloudflareDeployment, planCloudflareDeployment, rollbackCloudflareDeployment, updateCloudflareDeployment } from '../server/cloudflare-lifecycle.js';
 import { existsSync } from 'node:fs';
 import { parseFlags } from './shared.js';
 import path from 'node:path';
@@ -54,6 +54,7 @@ import { keptArtifacts } from '../server/local-artifacts.js';
 import { schemaMetaValue } from '@myco-server-worker/platform/bun/server-main.js';
 import { carriedNative, runLocalDeployment } from '../server/local-run.js';
 import { setupLocalOwner } from '../server/local-owner.js';
+import { setupCloudflareOwner } from '../server/cloudflare-owner.js';
 import { backupLocalDeployment, localRecoveryHold } from '../server/local-backup.js';
 import { backupCloudflareDeployment, cloudflareRecoveryHoldOf } from '../server/cloudflare-backup.js';
 import { materializeRecoveryStaging } from '../server/recovery-materialize.js';
@@ -78,6 +79,9 @@ Commands (--target local runs the Deployment from this binary; --target cloudfla
   setup-owner --target local             Create the first administrator on a stopped, fresh Deployment.
                                           Prints a private, expiring GitHub account-link URL.
                                           Retry replaces a pending link; existing members are preserved.
+  setup-owner --target cloudflare         The same for the hosted Deployment this machine created, over
+                                          its database with your Cloudflare login; it keeps serving.
+                                          Needs its GitHub sign-in (\`myco server github-app\`) first.
   create --target local [--port <n>]      Provision a Deployment this machine runs itself: a data
                                           directory, generated secrets, and a migrated volume.
   run --target local                      Serve it in the foreground. This is what the service runs.
@@ -88,12 +92,14 @@ Commands (--target local runs the Deployment from this binary; --target cloudfla
                                           Provision and start the Deployment. --fleet sets how many
                                           runtimes may run at once (default 4); --origin is the
                                           address members reach it at when a proxy fronts it.
-  create --target cloudflare --account-id <id> [--url <https://…>]
+  create --target cloudflare --account-id <id> [--url <https://…>] [--dry-run]
                                           Provision D1/R2/Vectorize/secrets store, install generated
                                           secrets, migrate, deploy, and write the deployment record.
                                           Needs Node and a wrangler login on this machine and nothing
                                           else: the Worker, its dashboard and its migrations all
                                           travel in this binary. --url puts it on a domain you own.
+                                          --dry-run lists what it would create, keep and bind, and
+                                          changes nothing. Then: github-app, then setup-owner.
   status                                  Report what is provisioned and running.
                                           With --target cloudflare: the record and the deployed version.
   update [--version <tag>] [--no-rollback] [--no-drain] [--no-pull]
@@ -281,6 +287,27 @@ async function startLocalWorker(record: Pick<LocalDeploymentRecord, 'port' | 'or
   });
 }
 
+/** What `create --target cloudflare --dry-run` prints: each step with what it would do, the bindings, and the address. */
+export function createPlanLines(plan: CreatePlan): string[] {
+  const width = Math.max(...plan.steps.map((s) => s.action.length));
+  return [
+    `\nCloudflare Deployment plan for account ${plan.accountId}. Nothing was created or changed.`,
+    ...plan.steps.map((s) => `  ${s.action.padEnd(width)}  ${s.kind} ${s.name}`),
+    `  Bindings:  ${plan.bindings.join(', ')}`,
+    `  URL:       ${plan.url}`,
+    '\nRun the same command without --dry-run to carry it out.',
+  ];
+}
+
+/** The two commands after a hosted create, in order: its GitHub sign-in, then its first administrator. */
+export function hostedNextSteps(url: string | undefined): string[] {
+  return [
+    '\nNext:',
+    `  1. myco server github-app --target cloudflare --url ${url ?? '<the Deployment\'s https address>'}`,
+    '  2. myco server setup-owner --target cloudflare',
+  ];
+}
+
 export async function run(args: string[]): Promise<void> {
   const [command, ...rest] = args;
   if (command === undefined || command === '--help' || command === '-h') {
@@ -312,7 +339,8 @@ export async function run(args: string[]): Promise<void> {
     // when the flag beside it does not apply here at all.
     if (flags.has('dir')) fail('--dir is not a flag for this target: the Worker, its dashboard and its migrations all travel in this binary, so a deploy reads no checkout.');
     if (flags.has('no-drain')) fail('--no-drain is not a flag for this target: a deploy replaces no runtime, so it waits for nothing.');
-    const record = readDeploymentRecord();
+    // A plan reads the record where it lies; every other verb reads it through the layout move.
+    const record = flags.has('dry-run') ? peekDeploymentRecord() : readDeploymentRecord();
     const accountId = flags.get('account-id') ?? record?.accountId;
     if (accountId === undefined || accountId === '' || accountId === 'true') fail('pass --account-id <id> (npx wrangler whoami lists the accounts this login reaches).');
     return { accountId, report: (line: string) => { console.log(line); } };
@@ -323,8 +351,17 @@ export async function run(args: string[]): Promise<void> {
 
 
   try {
+    if (command === 'setup-owner' && target() === 'cloudflare') {
+      const result = await setupCloudflareOwner(cloudflareOptions());
+      console.log(`First administrator: ${result.memberId}`);
+      console.log('Open this private link, sign in with GitHub and connect your account; that account becomes the administrator:');
+      console.log(result.url);
+      console.log(`Expires: ${new Date(result.expiresAt).toISOString()}. Keep this link private.`);
+      console.log('If it expires, run setup-owner again. After linking, use Members to invite this machine.');
+      return;
+    }
     if (command === 'setup-owner') {
-      if (target() !== 'local') fail('setup-owner requires --target local');
+      if (target() !== 'local') fail('setup-owner requires --target local or --target cloudflare');
       const result = await setupLocalOwner(resolveLocalPaths(), carriedNative());
       console.log(`First administrator: ${result.memberId}`);
       console.log('Start the Deployment, then open this private link and connect your GitHub account:');
@@ -446,6 +483,11 @@ export async function run(args: string[]): Promise<void> {
     if (command === 'create' && target() === 'cloudflare') {
       const urlFlag = flags.get('url');
       if (urlFlag === '' || urlFlag === 'true') fail('--url needs the address members reach this Deployment at, e.g. --url https://myco.example.com');
+      if (flags.has('dry-run')) {
+        const plan = await planCloudflareDeployment({ ...cloudflareOptions(), ...(urlFlag === undefined ? {} : { url: urlFlag }) });
+        for (const line of createPlanLines(plan)) console.log(line);
+        return;
+      }
       const created = await createCloudflareDeployment({ ...cloudflareOptions(), ...(urlFlag === undefined ? {} : { url: urlFlag }) });
       console.log('\nCloudflare Deployment deployed.');
       if (created.createdResources.length > 0) console.log(`  Provisioned: ${created.createdResources.join(', ')}`);
@@ -454,6 +496,7 @@ export async function run(args: string[]): Promise<void> {
       // makes a literal a file the operator will not find.
       console.log(`  Record:      ${deploymentRecordPath()}`);
       if (created.record.url !== undefined) console.log(`  URL:         ${created.record.url}`);
+      for (const line of hostedNextSteps(created.record.url)) console.log(line);
       return;
     }
 

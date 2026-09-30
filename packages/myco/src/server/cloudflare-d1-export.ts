@@ -621,7 +621,18 @@ const D1_QUERY_TIMEOUT_MS = 60_000;
  * requests succeed with — is sent again, up to `D1_QUERY_ATTEMPTS`, and a refused login is refreshed once. What
  * remains is thrown as an `ObjectReadError` naming the codes, transient where a later attempt may still pass.
  */
-export async function queryD1(context: D1ExportContext, sql: string): Promise<unknown[]> {
+/** What a read or statement over the D1 API needs from an export's context. */
+export type D1QueryContext = Pick<D1ExportContext, 'accountId' | 'databaseId' | 'login' | 'fetch' | 'sleep' | 'report'>;
+
+export async function queryD1(context: D1QueryContext, sql: string): Promise<unknown[]> {
+  return (await queryD1Answer(context, sql)).results;
+}
+
+/** What one statement over the D1 API answered: its rows, and how many rows it changed. */
+export interface D1Answer { results: unknown[]; changes: number }
+
+/** One statement over the D1 API with its bound parameters (`queryD1`'s path, login and bounded retry), with its changed-row count. */
+export async function queryD1Answer(context: D1QueryContext, sql: string, params: readonly unknown[] = []): Promise<D1Answer> {
   const fetchApi = context.fetch ?? globalThis.fetch;
   const sleep = context.sleep ?? ((ms: number) => new Promise<void>((resolve) => { setTimeout(resolve, ms); }));
   const endpoint = `${API_ORIGIN}/client/v4/accounts/${encodeURIComponent(context.accountId)}/d1/database/${encodeURIComponent(context.databaseId)}/query`;
@@ -632,14 +643,16 @@ export async function queryD1(context: D1ExportContext, sql: string): Promise<un
     headers.set('content-type', 'application/json');
     let failure: ObjectReadError;
     try {
-      const response = await fetchApi(endpoint, { method: 'POST', headers, redirect: 'error', signal: AbortSignal.timeout(D1_QUERY_TIMEOUT_MS), body: JSON.stringify({ sql }) });
+      const response = await fetchApi(endpoint, { method: 'POST', headers, redirect: 'error', signal: AbortSignal.timeout(D1_QUERY_TIMEOUT_MS), body: JSON.stringify(params.length === 0 ? { sql } : { sql, params }) });
       const text = await response.text();
       type Answer = { success?: unknown; errors?: unknown; result?: unknown };
       const body = ((): Answer | null => { try { return JSON.parse(text) as Answer; } catch { return null; } })();
       const codes = Array.isArray(body?.errors) ? body.errors.map((e) => String((e as { code?: unknown }).code ?? '')).filter((c) => c !== '') : [];
       const said = Array.isArray(body?.errors) ? body.errors.map((e) => String((e as { message?: unknown }).message ?? '')).filter((m) => m !== '').join('; ') : '';
-      const first = Array.isArray(body?.result) ? body.result[0] as { success?: unknown; results?: unknown } | undefined : undefined;
-      if (response.ok && body?.success === true && first?.success === true && Array.isArray(first.results)) return first.results;
+      const first = Array.isArray(body?.result) ? body.result[0] as { success?: unknown; results?: unknown; meta?: { changes?: unknown } } | undefined : undefined;
+      if (response.ok && body?.success === true && first?.success === true && Array.isArray(first.results)) {
+        return { results: first.results, changes: typeof first.meta?.changes === 'number' ? first.meta.changes : 0 };
+      }
       const refusedLogin = response.status === 401 || codes.includes('10000');
       if (refusedLogin && !refreshed) {
         refreshed = true;
