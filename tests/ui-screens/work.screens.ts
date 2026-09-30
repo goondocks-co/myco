@@ -19,6 +19,7 @@ import {
   expectAxeClean, expectNoHorizontalOverflow, expectNoRawIds, expectQuiet, openPage, shoot, SHOT_MATRIX,
 } from './checks.ts';
 import { SCREENS_ENV, screensEnv } from './env.ts';
+import { MACHINE_IDS } from './machine-ids.ts';
 
 const onFixture = (): boolean => process.env[SCREENS_ENV.fixture] === '1';
 
@@ -49,17 +50,28 @@ async function expectFixtureWeek(page: Page, role: 'admin' | 'member'): Promise<
   const runs = learn.getByRole('list', { name: 'Latest learning runs' });
   await expect(runs.locator('[data-run-line="held"]')).toContainText('Held off: it was switched off for this project');
   await expect(runs).toContainText(role === 'member' ? 'by you' : 'by a member');
-  // A machine is named only to its own member and to an admin; an unnamed one is never guessed at.
-  if (role === 'admin') await expect(runs).toContainText('Ada’s studio Mac');
-  await expect(page.locator('main')).not.toContainText(/\bA machine\b/);
+  // A machine is named only to the member it belongs to; to anyone else it reads as that member's, and never by its id.
+  const main = page.locator('main');
+  if (role === 'admin') {
+    await expect(runs).toContainText('Ada’s studio Mac');
+    await expect(main).not.toContainText('Lin’s build box');
+  } else {
+    await expect(runs).toContainText('from Ada');
+    await expect(main).not.toContainText('Ada’s studio Mac');
+  }
+  for (const machine of Object.values(MACHINE_IDS)) await expect(main).not.toContainText(machine);
+  await expect(main).not.toContainText(/\b[Aa] machine\b/);
   await expect(learn.locator('[data-kept]')).toContainText('One run stopped early');
   await expect(learn.locator('[data-kept]')).toContainText('It kept the 2 spores it had saved, so there’s nothing to do.');
 
   const map = card(page, 'map');
   const failure = map.locator('[data-failure="open"]');
   await expect(failure).toContainText('1 code map update failed this week');
-  await expect(failure).toContainText('On Lin’s build box: repo.sha256 is absent from this checkout');
-  await expect(failure).toContainText('Myco kept the previous map.');
+  await expect(failure).toContainText('repo.sha256 is absent from this checkout');
+  // Lin's own machine is named to Lin; Lin joined without a name, so to Ada the failure says nothing of where it ran.
+  if (role === 'member') await expect(failure).toContainText('On Lin’s build box: repo.sha256');
+  else await expect(failure).not.toContainText('On ');
+  await expect(failure).toContainText('Open the run to see where it stopped.');
   await expect(failure.getByRole('link', { name: 'Open the latest attempt →' })).toBeVisible();
   await expect(map.getByRole('list', { name: 'Latest code map updates' })).toContainText(role === 'admin' ? 'by you' : 'by Ada');
 
@@ -116,6 +128,8 @@ test.describe('Myco’s work', () => {
         await expect(panel.locator('[data-run-headline]')).toBeInViewport();
         if (onFixture()) {
           await expect(panel.locator('[data-run-headline]')).toHaveText('Learned 4 spores from 1 session');
+          // The run's own account of what it did leads, above what it read.
+          await expect(panel.locator('[data-run-report]')).toHaveText('Read 1 session and saved 4 spores from it.');
           await expect(panel.locator('[data-started-by]')).toHaveText(role === 'member' ? 'started by you' : 'started by a member');
           await expect(panel.getByRole('region', { name: 'What it read' })).toContainText('Flaky test port collision fixed');
           await expect(panel.getByRole('list', { name: 'Spores it wrote' }).getByRole('listitem')).toHaveCount(4);
@@ -127,7 +141,8 @@ test.describe('Myco’s work', () => {
         await expect(technical.locator('[data-facts]')).toBeVisible();
         await expect(technical.getByRole('button', { name: 'Copy run id' })).toBeVisible();
         if (onFixture()) {
-          if (role === 'admin') await expect(technical).toContainText('Ada’s studio Mac');
+          await expect(technical).toContainText(role === 'admin' ? 'Ada’s studio Mac' : 'Ada’s machine');
+          if (role === 'member') await expect(technical).not.toContainText('Ada’s studio Mac');
           await expect(technical).toContainText('Codex');
           await expect(technical).toContainText('Not recorded for this run');
           await expect(technical).toContainText('The agent’s estimate, not a bill');

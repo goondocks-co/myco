@@ -28,10 +28,39 @@ export interface KindSummary extends OutcomeCounts {
   listed: WorkRun[];
   /** Listed runs that failed and kept nothing, newest first. */
   failures: WorkRun[];
+  /** The same failures by project, each with whether that project's work has recovered since. */
+  failureGroups: FailureGroup[];
   /** Listed runs that failed but kept what they produced, newest first. */
   kept: WorkRun[];
-  /** Listed runs that produced something after the latest failure. */
+}
+
+/**
+ * One project's failures of one kind of work. A failure is answered only by a
+ * later run of the same kind in the same project that produced something: a
+ * map that worked in another project leaves this one's failure open.
+ */
+export interface FailureGroup {
+  projectId: string;
+  /** Newest first. */
+  failures: WorkRun[];
+  /** Runs in this project that produced something after its latest failure. */
   producedSince: number;
+}
+
+/** Whether every project's failures of a kind have been answered by a later run there. */
+export function recovered(groups: readonly FailureGroup[]): boolean {
+  return groups.length > 0 && groups.every((group) => group.producedSince > 0);
+}
+
+/** A kind's failures grouped by project, newest group first. */
+export function failureGroups(listed: readonly WorkRun[]): FailureGroup[] {
+  const byProject = new Map<string, WorkRun[]>();
+  for (const run of listed) if (run.result === 'failed') byProject.set(run.projectId, [...(byProject.get(run.projectId) ?? []), run]);
+  return [...byProject.entries()].map(([projectId, failures]) => {
+    const last = failures[0]?.at ?? null;
+    const producedSince = last === null ? 0 : listed.filter((run) => run.projectId === projectId && run.result === 'produced' && run.at !== null && run.at > last).length;
+    return { projectId, failures, producedSince };
+  });
 }
 
 const merge = (a: Range, b: Range): Range => (a === null ? b : b === null ? a : [Math.min(a[0], b[0]), Math.max(a[1], b[1])]);
@@ -47,7 +76,7 @@ export function summarize(answer: WorkAnswer): KindSummary[] {
       entry = {
         kind: outcome.kind, projects: [], runs: {}, started: 0, spores: 0, sessions: 0, maps: 0, produced: 0, failed: 0, finished: 0,
         failedWithOutput: 0, latestAt: null, tokens: 0, costUsd: 0, runsWithoutCost: 0,
-        spend: { tokens: null, costUsd: null, durationMs: null }, currentMaps: [], listed: [], failures: [], kept: [], producedSince: 0,
+        spend: { tokens: null, costUsd: null, durationMs: null }, currentMaps: [], listed: [], failures: [], failureGroups: [], kept: [],
       };
       byKind.set(outcome.kind, entry);
     }
@@ -76,8 +105,7 @@ export function summarize(answer: WorkAnswer): KindSummary[] {
     entry.listed = answer.runs.filter((run) => run.kind === entry.kind);
     entry.failures = entry.listed.filter((run) => run.result === 'failed');
     entry.kept = entry.listed.filter((run) => run.result === 'failed_with_output');
-    const lastFailure = entry.failures[0]?.at ?? null;
-    entry.producedSince = lastFailure === null ? 0 : entry.listed.filter((run) => run.result === 'produced' && run.at !== null && run.at > lastFailure).length;
+    entry.failureGroups = failureGroups(entry.listed);
   }
   return KIND_ORDER.flatMap((kind) => byKind.get(kind) ?? []);
 }

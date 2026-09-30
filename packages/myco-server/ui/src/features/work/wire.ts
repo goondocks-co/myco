@@ -12,11 +12,18 @@
  * outside the dashboard.
  */
 
-/** The machine a run ran on: its credential, the machine that credential names, and the machine's name when it has one. */
+/**
+ * The machine a run ran on: its credential, the machine that credential
+ * names, the machine's name, and the member whose machine it is. The server
+ * names a machine only to the member it belongs to; to anyone else
+ * `machineName` is null and the run reads as that member's.
+ */
 export interface RunWorker {
   credentialId: string;
   machineId: string | null;
   machineName: string | null;
+  /** The member the machine belongs to; null where the server holds none. Optional until every server sends it. */
+  member?: { id: string; label: string | null } | null;
 }
 
 /** The fields Myco's work reads of a run, on a page of the list and on its detail. */

@@ -6,11 +6,11 @@ import { useRunDetail } from '../../hooks/use-work';
 import { ApiError } from '../../lib/api';
 import { cn } from '../../lib/cn';
 import { CODE_MAP_SUFFIX, projectPath } from '../../routes/nav';
-import { agentName, causeSentence, count, sporeLine, sporeTypeWord } from '../today/words';
+import { agentName, causeSentence, count, failureNextStep, sporeLine, sporeTypeWord } from '../today/words';
 import type { RunDetailAnswer } from './wire';
 import { InkLink, OnwardLink, PartLabel } from './OutcomeCard';
 import {
-  atWords, deployWords, dollars, FAILURE_NEXT, kindOf, queuedWords, runNoun, skipWords, startedByWords, tokenWords,
+  atWords, deployWords, dollars, kindOf, queuedWords, ranOn, runNoun, skipWords, startedByWords, tokenWords,
 } from './words';
 
 export interface RunPanelProps {
@@ -64,6 +64,8 @@ function RunBody({ answer, projectId, now }: { answer: RunDetailAnswer; projectI
   const cause = failed ? causeOf(answer) : null;
   const deploy = deployWords(run);
   const sporesFrom = (sessionId: string) => spores.items.filter((spore) => spore.sessionId === sessionId).length;
+  // What the run said it did, in its own words, leads the panel; a failed run's report is its cause instead.
+  const report = failed ? null : latestReport(reports);
   return (
     <article className="flex flex-col gap-s6" data-run-panel={run.status}>
       <header className="flex flex-col gap-s2">
@@ -76,18 +78,20 @@ function RunBody({ answer, projectId, now }: { answer: RunDetailAnswer; projectI
         </p>
         {run.status === 'queued' && <p className="t-small text-ink-2" data-queued="">{capitalize(queuedWords(run))}.</p>}
         {run.status === 'skipped' && <p className="t-small text-ink-2">Myco held off: {skipWords(run.skipReason)}. Nothing ran, and nothing was spent.</p>}
+        {report !== null && <p className="max-w-measure t-body text-ink-2" data-run-report="">{report}</p>}
       </header>
 
       {cause !== null && (
         <div className="flex flex-col gap-s1 rounded-control border border-line bg-bad-bg px-s3 py-s2 t-small text-ink-2" data-run-failure="">
           <p><span className="font-medium text-bad">Why: </span>{cause}</p>
-          <p>{spores.total > 0 ? 'What it saved is kept, so there’s nothing to do.' : kind === null ? 'Open the technical details below to see where it stopped.' : FAILURE_NEXT[kind]}</p>
+          <p>{kind === null ? (spores.total > 0 ? 'What it saved is kept, so there’s nothing to do.' : 'Open the technical details below to see where it stopped.') : failureNextStep(kind, spores.total > 0)}</p>
         </div>
       )}
 
       {(finished || read.total > 0) && (
         <section aria-label="What it read" className="flex flex-col gap-s3" data-run-read="">
           <PartLabel end={read.total > 0 ? count(read.total, 'session') : undefined}>What it read</PartLabel>
+          {read.recorded && read.total === 0 && <p className="t-small text-muted" data-read-none="">It didn’t need any sessions.</p>}
           {!read.recorded && (
             <p className="t-small text-muted" data-no-record="">
               {read.total === 0
@@ -152,8 +156,13 @@ function headlineOf({ run, read, produced }: RunDetailAnswer): string {
 
 /** Why a failed run failed: its last report, which names the cause the stored error hides, else the error. */
 function causeOf({ run, reports }: RunDetailAnswer): string {
+  return causeSentence(latestReport(reports) ?? run.error ?? '');
+}
+
+/** The run's latest report in its own words, or null when it filed none. */
+function latestReport(reports: RunDetailAnswer['reports']): string | null {
   const report = [...reports].sort((a, b) => b.createdAt - a.createdAt).find((r) => r.summary.trim() !== '');
-  return causeSentence(report?.summary ?? run.error ?? '');
+  return report === undefined ? null : report.summary.trim();
 }
 
 function Produced({ answer, projectId }: { answer: RunDetailAnswer; projectId: string }) {
@@ -213,8 +222,9 @@ function TechnicalDetails({ answer, startedBy, took, now, reports }: {
   reports: RunDetailAnswer['reports'];
 }) {
   const { run, toolCalls } = answer;
-  // The server names a machine only to the member it belongs to (and to an admin); an unnamed one is never guessed at.
-  const machine = run.worker?.machineName ?? null;
+  const name = useStarterNames();
+  // A machine by its name only when the server names it to this viewer, else as its member's; never by its id.
+  const machine = ranOn(run.worker, name)?.machine ?? null;
   const agent = run.harness === null ? null : agentName(run.harness);
   const cost = run.costUsd ?? run.estimatedCostUsd ?? run.actualCostUsd;
   const tokens = run.tokensUsed === null ? null : `${tokenWords(run.tokensUsed)} tokens`;
@@ -225,7 +235,7 @@ function TechnicalDetails({ answer, startedBy, took, now, reports }: {
       <Disclosure summary={<span className="flex flex-wrap items-baseline gap-x-s3">Technical details{summary !== '' && <span className="t-meta font-normal text-muted">{summary}</span>}</span>}>
         <div className="flex flex-col gap-s4 pt-s2">
           <FactsPanel actions={<CopyButton value={run.id} label="Copy run id" variant="secondary" />}>
-            <FactRow term="Ran on">{machine ?? (run.worker === null ? 'Not recorded' : 'A member’s machine')}</FactRow>
+            {machine !== null && <FactRow term="Ran on">{machine}</FactRow>}
             <FactRow term="Agent">{agent ?? 'Not recorded'}</FactRow>
             <FactRow term="Model">{run.model ?? 'Not recorded for this run'}</FactRow>
             <FactRow term="Started by">{startedBy === null ? 'Not recorded' : startedBy === 'On its schedule' ? 'Myco’s schedule' : capitalize(startedBy.replace(/^By /, ''))}</FactRow>
@@ -235,9 +245,9 @@ function TechnicalDetails({ answer, startedBy, took, now, reports }: {
             <FactRow term="Cost">{cost === null ? 'None reported' : <>{dollars(cost)}<span className="block t-meta text-muted">The agent’s estimate, not a bill</span></>}</FactRow>
             <FactRow term="Steps">{toolCalls.length === 0 ? 'No calls to Myco' : `${count(toolCalls.length, 'call')} to Myco${failedCalls > 0 ? `, ${failedCalls} refused` : ''}`}</FactRow>
           </FactsPanel>
-          {reports.length > 0 && (
+          {reports.length > 1 && (
             <div className="flex flex-col gap-s2">
-              <PartLabel>What it reported</PartLabel>
+              <PartLabel>Everything it reported</PartLabel>
               <ul className="flex flex-col gap-s2">
                 {reports.map((report, i) => (
                   <li key={`${report.createdAt}-${i}`} className="flex flex-col t-small text-ink-2">

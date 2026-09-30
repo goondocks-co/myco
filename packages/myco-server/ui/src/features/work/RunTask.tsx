@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import { Play } from 'lucide-react';
 import { ActionMenu, Button, Dialog, DialogContent, DialogFooter, Link, Switch } from '../../design';
 import { useCapabilities } from '../../hooks/use-settings';
@@ -7,7 +7,7 @@ import { ApiError } from '../../lib/api';
 import { PROJECT_SETTINGS_ANCHORS, PROJECT_SETTINGS_SUFFIX, projectPath } from '../../routes/nav';
 import type { WorkOutcome } from '../today/wire';
 import type { DispatchAnswer } from './wire';
-import { atWords, capabilityOffWords, dailyLimitWords, isCapabilityOff, isDailyLimit, spendWords, TASK_CAPABILITY } from './words';
+import { atWords, capabilityOffWords, dailyLimitWords, isCapabilityOff, isDailyLimit, isFreshNeedsAdmin, spendWords, TASK_CAPABILITY } from './words';
 
 /** A task a member can start by hand, and what its confirmation says. */
 export interface StartableTask {
@@ -104,6 +104,8 @@ export function RunTaskConfirm({ projectId, projectName, task, onOpenChange, wee
   const dispatch = useDispatchTask(projectId);
   const capabilities = useCapabilities(projectId);
   const [fresh, setFresh] = useState(false);
+  // One ask at a time: set before the dispatch goes out, so a second click in the same tick sends nothing.
+  const asking = useRef(false);
   const close = (open: boolean) => {
     if (dispatch.isPending) return;
     if (!open) { dispatch.reset(); setFresh(false); }
@@ -152,9 +154,14 @@ export function RunTaskConfirm({ projectId, projectName, task, onOpenChange, wee
               variant="primary"
               pending={dispatch.isPending}
               disabled={refusal?.final === true}
-              onClick={() => dispatch.mutate({ task: entry.task, fresh: admin && fresh }, {
-                onSuccess: (answer) => { onStarted(entry.task, answer); close(false); },
-              })}
+              onClick={() => {
+                if (asking.current) return;
+                asking.current = true;
+                dispatch.mutate({ task: entry.task, fresh: admin && fresh }, {
+                  onSuccess: (answer) => { onStarted(entry.task, answer); close(false); },
+                  onSettled: () => { asking.current = false; },
+                });
+              }}
             >
               {entry.confirm}
             </Button>
@@ -170,7 +177,7 @@ function refusalOf(error: Error, now: number): { words: string; capability: stri
   if (error instanceof ApiError) {
     if (error.status === 429 && isDailyLimit(error.body)) return { words: dailyLimitWords(error.body, now), capability: null, final: true };
     if (error.status === 409 && isCapabilityOff(error.body)) return { words: capabilityOffWords(error.body.capability), capability: error.body.capability, final: true };
-    if (error.status === 403) return { words: 'Only an admin can start a task fresh.', capability: null, final: false };
+    if (error.status === 403 && isFreshNeedsAdmin(error.body)) return { words: 'Only an admin can start a task fresh.', capability: null, final: false };
     return { words: error.detail ?? `The server couldn’t start it (${error.status}). Try again in a moment.`, capability: null, final: false };
   }
   return { words: 'Couldn’t reach the server. Try again in a moment.', capability: null, final: false };

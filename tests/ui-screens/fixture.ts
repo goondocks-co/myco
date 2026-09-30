@@ -29,6 +29,7 @@ import { PROJECT_HEADER, PROTOCOL_HEADER, SERVER_PROTOCOL, SERVER_SCHEMA_VERSION
 import { uuidv5 } from '@myco-server-worker/hash.js';
 import { MAP_WRITE_TOOL, TITLE_WRITE_TOOL } from '@myco-server-worker/core/tool-catalogue.js';
 import { RUN_WRITE_EVENT } from '@myco-server-worker/core/runs.js';
+import { MACHINE_IDS } from './machine-ids.ts';
 
 const MINUTE = 60_000;
 const HOUR = 60 * MINUTE;
@@ -51,18 +52,29 @@ export interface FixtureMember {
 export const OWNER: FixtureMember = { id: 'mem_q3Vb8xRk2LmT7wYz', label: 'Ada', githubSub: '1000001', login: 'ada', role: 'admin' };
 export const READER: FixtureMember = { id: 'mem_Hn5-pC0dJfA9sE_u', label: 'mem_Hn5-pC0dJfA9sE_u', githubSub: '1000002', login: 'lin', role: 'member' };
 
-/** Two machines, each with a name the way `myco login` records one. */
+/**
+ * Two machines, each with a name the way `myco login` records one and an id in
+ * the shape a machine's id takes (`<login>_<8 hex>`). `key` is how the seed data
+ * below refers to each; the pages never show the id.
+ */
 export const MACHINES = [
-  { id: 'studio', member: OWNER, label: 'Ada’s studio Mac' },
-  { id: 'buildbox', member: READER, label: 'Lin’s build box' },
+  { key: 'studio', id: MACHINE_IDS.studio, member: OWNER, label: 'Ada’s studio Mac' },
+  { key: 'buildbox', id: MACHINE_IDS.buildbox, member: READER, label: 'Lin’s build box' },
 ] as const;
+
+type MachineKey = (typeof MACHINES)[number]['key'];
+
+/** The machine a seed key stands for. */
+function machineOf(key: MachineKey): (typeof MACHINES)[number] {
+  return MACHINES.find((machine) => machine.key === key)!;
+}
 
 /**
  * A third machine of the owner's whose runtime joined without a name, as every
  * `myco login` did before it sent one. Its id has the shape a machine's id
  * takes (`<login>_<8 hex>`); the pages call it "A machine", never by the id.
  */
-export const UNNAMED_MACHINE = { id: 'ada_7c1e9f02', member: OWNER } as const;
+export const UNNAMED_MACHINE = { id: MACHINE_IDS.unnamed, member: OWNER } as const;
 
 /**
  * Projects, each with the `proj_<32 hex>` id a named project gets and a short
@@ -103,7 +115,7 @@ export const PLAN_STATUSES = ['active', 'in_progress', 'completed', 'abandoned']
 interface SessionSeed {
   project: ProjectKey;
   agent: (typeof AGENTS)[number];
-  machine: (typeof MACHINES)[number]['id'];
+  machine: MachineKey;
   /** Minutes before now the session started. */
   startedAgo: number;
   /** Minutes it ran for; null leaves it live, still receiving events. */
@@ -192,7 +204,7 @@ export async function seedIdentities(databasePath: string, now: number): Promise
     for (const machine of MACHINES) {
       sqlite.query('INSERT INTO machine_claims (machine_id, member_id, claimed_at) VALUES (?, ?, ?)').run(machine.id, machine.member.id, now - 50 * DAY);
       const issued = await issueMemberToken(db, { memberId: machine.member.id, machineId: machine.id }, now, null, { runtimeLabel: machine.label, runtimeKind: 'cli' });
-      tokens[machine.id] = issued.token;
+      tokens[machine.key] = issued.token;
     }
     sqlite.query('INSERT INTO machine_claims (machine_id, member_id, claimed_at) VALUES (?, ?, ?)').run(UNNAMED_MACHINE.id, UNNAMED_MACHINE.member.id, now - 40 * DAY);
     await issueMemberToken(db, { memberId: UNNAMED_MACHINE.member.id, machineId: UNNAMED_MACHINE.id }, now - 2 * DAY);
@@ -445,14 +457,14 @@ function seedRuns(databasePath: string, now: number, sporeIds: string[], session
       /** Who started it: a member by hand, else Myco's schedule. */
       by?: FixtureMember;
       /** The machine it ran on; the studio Mac when left out. */
-      machine?: (typeof MACHINES)[number]['id'];
+      machine?: MachineKey;
       /** The agent it ran in; Claude Code when left out. */
       agent?: string;
       /** Whether it reported what it cost. */
       costless?: true;
     }> = [
       { id: 'run_4f1c9a2e7b', task: 'extract-curate', status: 'failed', startedAgo: 2 * 60, minutes: 6, error: 'the run exceeded its turn budget', report: 'Saved 2 spores from 3 sessions before the turn budget ran out.' },
-      { id: 'run_a2c4e6f801', task: 'extract-curate', status: 'completed', startedAgo: 5 * 60, minutes: 8, report: 'Saved 4 spores from 4 sessions.', by: READER, agent: 'codex' },
+      { id: 'run_a2c4e6f801', task: 'extract-curate', status: 'completed', startedAgo: 5 * 60, minutes: 8, report: 'Read 1 session and saved 4 spores from it.', by: READER, agent: 'codex' },
       { id: 'run_7d1e2f3a40', task: 'title-summary', status: 'completed', startedAgo: 3 * 60, minutes: 1, report: 'Titled one session.', target: 1, wrote: { tool: TITLE_WRITE_TOOL, session: 1 }, costless: true },
       { id: 'run_7d1e2f3b51', task: 'title-summary', status: 'completed', startedAgo: 3 * 60 + 4, minutes: 1, report: 'Titled one session.', target: OUTCOME_SESSION, wrote: { tool: TITLE_WRITE_TOOL, session: OUTCOME_SESSION }, costless: true },
       { id: 'run_0b5e7c1d2a', task: 'title-summary', status: 'completed', startedAgo: 9 * 60, minutes: 1, target: OUTCOME_SESSION },
@@ -465,8 +477,8 @@ function seedRuns(databasePath: string, now: number, sporeIds: string[], session
       { id: 'run_e0a4d2b917', task: 'extract-curate', status: 'completed', startedAgo: 27 * 60, minutes: 9, report: 'Saved 3 spores from 4 sessions.' },
     ];
     // The credential each machine's worker holds a run with: the newest one the machine was issued.
-    const credentialOf = (machine: string): string => {
-      const row = sqlite.query('SELECT id FROM member_credentials WHERE machine_id = ? ORDER BY lineage_started_at DESC LIMIT 1').get(machine) as { id: string } | null;
+    const credentialOf = (machine: MachineKey): string => {
+      const row = sqlite.query('SELECT id FROM member_credentials WHERE machine_id = ? ORDER BY lineage_started_at DESC LIMIT 1').get(machineOf(machine).id) as { id: string } | null;
       if (row === null) throw new Error(`machine ${machine} holds no credential`);
       return row.id;
     };
@@ -524,11 +536,12 @@ function seedWorkerContact(databasePath: string, now: number): void {
   const sqlite = new Database(databasePath);
   sqlite.exec('PRAGMA busy_timeout = 5000');
   try {
-    const credential = sqlite.query(`SELECT id FROM member_credentials WHERE machine_id = 'studio' ORDER BY lineage_started_at DESC LIMIT 1`).get() as { id: string } | null;
+    const studio = machineOf('studio').id;
+    const credential = sqlite.query('SELECT id FROM member_credentials WHERE machine_id = ? ORDER BY lineage_started_at DESC LIMIT 1').get(studio) as { id: string } | null;
     if (credential === null) throw new Error('the studio machine holds no credential');
     const seenAt = now - 3 * MINUTE;
-    sqlite.query(`INSERT INTO worker_contacts (credential_id, machine_id, offers, capabilities, last_reason, last_seen_at, updated_at) VALUES (?, 'studio', ?, '[]', 'no_work', ?, ?)`)
-      .run(credential.id, JSON.stringify([{ id: 'claude-code', authenticated: true }, { id: 'codex', authenticated: true }]), seenAt, seenAt);
+    sqlite.query(`INSERT INTO worker_contacts (credential_id, machine_id, offers, capabilities, last_reason, last_seen_at, updated_at) VALUES (?, ?, ?, '[]', 'no_work', ?, ?)`)
+      .run(credential.id, studio, JSON.stringify([{ id: 'claude-code', authenticated: true }, { id: 'codex', authenticated: true }]), seenAt, seenAt);
   } finally {
     sqlite.close();
   }

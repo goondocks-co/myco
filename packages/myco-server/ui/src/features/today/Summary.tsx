@@ -62,36 +62,32 @@ export function Lede({ parts }: { parts: readonly Part[] }) {
   );
 }
 
-/** The search index's upkeep in one quiet line, or nothing when it has never run. */
+/** The search index's upkeep in one quiet line, or nothing when it has never run; Health, for an admin, ends the line. */
 export function UpkeepLine({ upkeep, now, statusHref }: { upkeep: Upkeep; now: number; statusHref: string | null }) {
-  let content: ReactNode;
+  let dot: ReactNode;
+  let words: string;
   if (upkeep.unrecovered !== null) {
-    content = (
-      <>
-        <span className="flex h-lh shrink-0 items-center"><HealthDot tone="warn" label="Falling behind" /></span>
-        <span>Search updates have failed since {when(upkeep.unrecovered.since, now).replace(/^at /, '')}; search still answers.</span>
-      </>
-    );
+    dot = <HealthDot tone="warn" label="Falling behind" />;
+    words = `Search updates have failed since ${when(upkeep.unrecovered.since, now).replace(/^at /, '')}; search still answers.`;
   } else if (upkeep.lastSuccessAt !== null) {
     const retries = upkeep.failedInWindow;
-    content = (
-      <>
-        <span className="flex h-lh shrink-0 items-center"><HealthDot tone="ok" label="Up to date" /></span>
-        <span>
-          Search kept up to date · {ago(upkeep.lastSuccessAt, now)}
-          {retries > 0 && ` · ${count(retries, 'retry', 'retries')} along the way`}
-        </span>
-      </>
-    );
+    dot = <HealthDot tone="ok" label="Up to date" />;
+    words = `Search kept up to date · ${ago(upkeep.lastSuccessAt, now)}${retries > 0 ? ` · ${count(retries, 'retry', 'retries')} along the way` : ''}`;
   } else {
     return null;
   }
   return (
     <p className="flex items-start gap-s2 t-small text-muted" data-upkeep="">
-      {content}
-      {statusHref !== null && (
-        <RouterLink to={statusHref} className={cn('shrink-0 rounded-chip font-medium text-primary hover:underline', focusRing)}>Health →</RouterLink>
-      )}
+      <span className="flex h-lh shrink-0 items-center">{dot}</span>
+      <span>
+        {words}
+        {statusHref !== null && (
+          <>
+            {' · '}
+            <RouterLink to={statusHref} className={cn('whitespace-nowrap rounded-chip font-medium text-primary hover:underline', focusRing)}>Health →</RouterLink>
+          </>
+        )}
+      </span>
     </p>
   );
 }

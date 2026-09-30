@@ -2,7 +2,8 @@ import { useMutation, useQueries, useQuery, useQueryClient } from '@tanstack/rea
 import { fetchJson, postJson } from '../lib/api';
 import type { TodaySporePage, WorkAnswer } from '../features/today/wire';
 import type { SessionResponse } from './use-sessions';
-import type { DispatchAnswer, RunDetailAnswer, RunPage } from '../features/work/wire';
+import type { DispatchAnswer, RunDetailAnswer, RunPage, RunPageRow } from '../features/work/wire';
+import { usePaged } from './use-paged';
 
 export type { WorkAnswer, WorkOutcome, WorkRun, Upkeep, OutcomeKind, RunResult } from '../features/today/wire';
 
@@ -130,4 +131,13 @@ export function useWorkWhileRunning(query: Omit<WorkQuery, 'live'>, options: { e
 /** Whether any run the window counts is still to finish: queued or running. */
 export function workHasLiveRun(answer: WorkAnswer | undefined): boolean {
   return (answer?.outcomes ?? []).some((outcome) => ['queued', 'running', 'claimed'].some((status) => (outcome.runs[status] ?? 0) > 0));
+}
+
+/** How many of a task's runs one page of "Show all" reads. */
+export const TASK_RUN_PAGE = 20;
+
+/** Every run of one task in a project, newest first, a page at a time on the server's cursor, read once it is wanted. */
+export function useAllTaskRuns(projectId: string, task: string, enabled: boolean) {
+  const path = `/api/projects/${seg(projectId)}/runs?${new URLSearchParams({ task, limit: String(TASK_RUN_PAGE) })}`;
+  return usePaged<RunPageRow>(['runs', projectId, 'all', task], path, { enabled, rowKey: (row) => row.id });
 }

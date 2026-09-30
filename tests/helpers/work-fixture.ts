@@ -72,34 +72,51 @@ export const WEEK_WORK: WorkAnswer = {
   upkeep: { task: 'embedding-reconcile', lastSuccessAt: NOW - 80 * MINUTE, failedInWindow: 1, unrecovered: null },
 };
 
-const STUDIO = { credentialId: 'mt_studio01abcd', machineId: 'studio', machineName: 'Ada’s studio Mac' };
-const BUILDBOX = { credentialId: 'mt_buildbox0abc', machineId: 'buildbox', machineName: 'Lin’s build box' };
+/** Ada's and Lin's machines, with ids in the shape a machine's id takes (`<login>_<8 hex>`). */
+export const STUDIO_ID = 'ada_3f9e21c4';
+export const BUILDBOX_ID = 'lin_8b02d6aa';
+
+/**
+ * The machine a run ran on, as the server serves it to `viewer`: the machine's
+ * name only to the member it belongs to, and to everyone the member it belongs to.
+ */
+const machine = (viewer: string, owner: { id: string; label: string }, credentialId: string, machineId: string, name: string) => ({
+  credentialId, machineId, machineName: viewer === owner.id ? name : null, member: { id: owner.id, label: owner.label },
+});
 
 /** A run on a page of the project's list; it started five minutes before it ended unless it says otherwise. */
-export const pageRow = (over: Partial<RunPageRow> & Pick<RunPageRow, 'id' | 'task'>): RunPageRow & Record<string, unknown> => ({
+export const runRow = (over: Partial<RunPageRow> & Pick<RunPageRow, 'id' | 'task'>): RunPageRow & Record<string, unknown> => ({
   agentId: 'myco-agent', status: 'completed', model: null, startedAt: (over.completedAt ?? NOW - HOUR) - 5 * MINUTE, completedAt: NOW - HOUR, tokensUsed: 20_000, costUsd: 0.5,
-  costSource: 'estimated', failed: false, queuedAt: null, heldBy: null, position: null, replaced: false, replaces: null, harness: 'claude-code', worker: STUDIO,
+  costSource: 'estimated', failed: false, queuedAt: null, heldBy: null, position: null, replaced: false, replaces: null, harness: 'claude-code', worker: null,
   startedBy: 'clock', targetSessionId: null, skipReason: null, outcome: { spores: 0, sessions: 0, readsRecorded: false },
   provider: null, resumedAt: null, dryRun: false, resumable: false, resumeStatus: null, leasedBy: null, leaseExpiresAt: null, ...over,
 });
 
-/** Each task's latest runs in the project, as `GET /api/projects/{p}/runs?task=` answers. */
-export const TASK_RUNS: Record<string, RunPageRow[]> = {
-  'extract-curate': [
-    pageRow({ id: 'run_d4e5f6a7b8', task: 'extract-curate', status: 'skipped', skipReason: 'capability_off', startedAt: NOW - 30 * MINUTE, completedAt: NOW - 30 * MINUTE, worker: null, tokensUsed: null, costUsd: null, harness: null }),
-    pageRow({ id: 'run_4f1c9a2e7b', task: 'extract-curate', status: 'failed', failed: true, completedAt: NOW - 2 * HOUR, outcome: { spores: 2, sessions: 3, readsRecorded: false } }),
-    pageRow({ id: 'run_a2c4e6f801', task: 'extract-curate', completedAt: NOW - 5 * HOUR, startedBy: MEMBER.member.id, harness: 'codex', outcome: { spores: 4, sessions: 1, readsRecorded: true } }),
-  ],
-  'title-summary': [
-    pageRow({ id: 'run_7d1e2f3a40', task: 'title-summary', completedAt: NOW - 3 * HOUR, targetSessionId: S1, outcome: { spores: 0, sessions: 1, readsRecorded: true } }),
-    pageRow({ id: 'run_7d1e2f3b51', task: 'title-summary', completedAt: NOW - 3 * HOUR - 4 * MINUTE, targetSessionId: S2, outcome: { spores: 0, sessions: 1, readsRecorded: true } }),
-  ],
-  'canopy-map': [
-    pageRow({ id: 'run_5e0b1c2d3f', task: 'canopy-map', status: 'failed', failed: true, completedAt: NOW - 3.5 * HOUR, worker: BUILDBOX, harness: 'codex' }),
-    pageRow({ id: 'run_c19f7a0e55', task: 'canopy-map', completedAt: NOW - 20 * HOUR, startedBy: ADMIN.member.id }),
-  ],
-  'vault-seed': [],
-};
+/** Each task's latest runs in the project, as `GET /api/projects/{p}/runs?task=` answers `viewer`. */
+export function taskRunsFor(viewer: string): Record<string, RunPageRow[]> {
+  const STUDIO = machine(viewer, { id: ADMIN.member.id, label: 'Ada' }, 'mt_studio01abcd', STUDIO_ID, 'Ada’s studio Mac');
+  const BUILDBOX = machine(viewer, { id: MEMBER.member.id, label: 'Lin' }, 'mt_buildbox0abc', BUILDBOX_ID, 'Lin’s build box');
+  const pageRow = (over: Partial<RunPageRow> & Pick<RunPageRow, 'id' | 'task'>) => runRow({ worker: STUDIO, ...over });
+  return {
+    'extract-curate': [
+      pageRow({ id: 'run_d4e5f6a7b8', task: 'extract-curate', status: 'skipped', skipReason: 'capability_off', startedAt: NOW - 30 * MINUTE, completedAt: NOW - 30 * MINUTE, worker: null, tokensUsed: null, costUsd: null, harness: null }),
+      pageRow({ id: 'run_4f1c9a2e7b', task: 'extract-curate', status: 'failed', failed: true, completedAt: NOW - 2 * HOUR, outcome: { spores: 2, sessions: 3, readsRecorded: false } }),
+      pageRow({ id: 'run_a2c4e6f801', task: 'extract-curate', completedAt: NOW - 5 * HOUR, startedBy: MEMBER.member.id, harness: 'codex', outcome: { spores: 4, sessions: 1, readsRecorded: true } }),
+    ],
+    'title-summary': [
+      pageRow({ id: 'run_7d1e2f3a40', task: 'title-summary', completedAt: NOW - 3 * HOUR, targetSessionId: S1, outcome: { spores: 0, sessions: 1, readsRecorded: true } }),
+      pageRow({ id: 'run_7d1e2f3b51', task: 'title-summary', completedAt: NOW - 3 * HOUR - 4 * MINUTE, targetSessionId: S2, outcome: { spores: 0, sessions: 1, readsRecorded: true } }),
+    ],
+    'canopy-map': [
+      pageRow({ id: 'run_5e0b1c2d3f', task: 'canopy-map', status: 'failed', failed: true, completedAt: NOW - 3.5 * HOUR, worker: BUILDBOX, harness: 'codex' }),
+      pageRow({ id: 'run_c19f7a0e55', task: 'canopy-map', completedAt: NOW - 20 * HOUR, startedBy: ADMIN.member.id }),
+    ],
+    'vault-seed': [],
+  };
+}
+
+/** The runs as the admin, Ada, reads them. */
+export const TASK_RUNS = taskRunsFor(ADMIN.member.id);
 
 export const spore = (id: string, author: string, type: string, line: string, sessionId: string | null = S1) => ({
   projectId: P, id, observationType: type, status: 'active', content: `${line}\n\nMore.`, agentLine: line, author, createdAt: NOW - 2 * HOUR,

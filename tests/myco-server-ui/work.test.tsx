@@ -20,7 +20,7 @@ import { outcomeHeadline, skipWords, spendWords, startedByWords } from '../../pa
 import { workBounds } from '../../packages/myco-server/ui/src/features/work/WorkPage';
 import { rawIdsIn } from '../helpers/raw-ids';
 import {
-  ADMIN, HOUR, MEMBER, MEMBERS, MINUTE, NOW, outcome, P, P2, PROJECTS, S1, S2, sessionAnswer, TASK_RUNS, TODAY, WEEK, WEEK_SPORES, WEEK_WORK, workRun,
+  ADMIN, BUILDBOX_ID, HOUR, MEMBER, MEMBERS, MINUTE, NOW, outcome, P, P2, PROJECTS, runRow, S1, S2, sessionAnswer, STUDIO_ID, TASK_RUNS, taskRunsFor, TODAY, WEEK, WEEK_SPORES, WEEK_WORK, workRun,
 } from '../helpers/work-fixture';
 import type { WorkAnswer } from '../../packages/myco-server/ui/src/features/today/wire';
 
@@ -56,7 +56,7 @@ const week = (over: { work?: WorkAnswer; who?: unknown; taskRuns?: typeof TASK_R
   '/api/members': () => Response.json(MEMBERS),
   '/api/work': () => Response.json(over.work ?? WEEK_WORK),
   '/api/spores': () => Response.json({ spores: WEEK_SPORES, total: WEEK_SPORES.length, maxPage: 200 }),
-  [`/api/projects/${P}/runs`]: (url) => Response.json({ rows: (over.taskRuns ?? TASK_RUNS)[url.searchParams.get('task') ?? ''] ?? [], cursor: null }),
+  [`/api/projects/${P}/runs`]: (url) => Response.json({ rows: (over.taskRuns ?? taskRunsFor(((over.who ?? ADMIN) as typeof ADMIN).member.id))[url.searchParams.get('task') ?? ''] ?? [], cursor: null }),
   [`/api/projects/${P}/capabilities`]: () => Response.json({ capabilities: { vault_evolution: true, canopy: true, cortex: true } }),
   [`/api/projects/${P}/sessions/${S1}`]: () => Response.json(sessionAnswer(S1, 'Search box height made uniform on list pages')),
   [`/api/projects/${P}/sessions/${S2}`]: () => Response.json(sessionAnswer(S2, 'Flaky test port collision fixed')),
@@ -82,6 +82,8 @@ function mount(path: string) {
 }
 
 const card = (kind: string) => document.querySelector(`article[data-outcome="${kind}"]`) as HTMLElement;
+/** The card once it renders. */
+const findCard = (kind: string) => waitFor(() => { const found = card(kind); if (found === null) throw new Error(`no ${kind} card yet`); return found; });
 const location = () => screen.getByTestId('location').textContent;
 /** Visible text carrying a raw id, outside a facts panel and the test's own location probe. */
 const rawIdsInPage = (): string[] => rawIdsIn(document.body, ['[data-testid="location"]']);
@@ -105,7 +107,7 @@ describe('what Myco’s work came to', () => {
     expect(learn!.failures).toEqual([]);
     // A map update that failed and was followed by one that worked has recovered.
     expect(map!.failures.map((run) => run.id)).toEqual(['run_5e0b1c2d3f']);
-    expect(map!.producedSince).toBe(1);
+    expect(map!.failureGroups).toEqual([{ projectId: P, failures: [map!.failures[0]!], producedSince: 1 }]);
     expect(costOf([learn!, title!, map!])).toEqual({ costUsd: 1.75 + 0 + 2.1, tokens: 70_000 + 4_000 + 1_600_000, runs: 4 + 2 + 2, runsWithoutCost: 3 });
     // The headline is the outcome, never the status: a failed run that kept spores still learned them.
     expect(outcomeHeadline('learn', learn!)).toBe('Learned 9 spores from 6 sessions');
@@ -136,7 +138,7 @@ describe('Myco’s work', () => {
     expect((await screen.findByRole('heading', { level: 1 })).textContent).toBe('Myco’s work');
     await waitFor(() => expect(document.querySelector('[data-lede]')).not.toBeNull());
     expect(document.querySelector('[data-lede]')!.textContent).toBe(
-      'This week in Myco, Myco learned 6 spores from 4 sessions, titled 2 sessions and updated the code map once. 1 code map update failed, and none has worked since.',
+      'This week in Myco, it learned 6 spores from 4 sessions, titled 2 sessions and updated the code map once. 1 code map update failed, and none has worked since.',
     );
     const work = asked.find((url) => url.pathname === '/api/work')!;
     expect([work.searchParams.get('project'), Number(work.searchParams.get('since')), Number(work.searchParams.get('until'))]).toEqual([P, WEEK.since, WEEK.until]);
@@ -172,9 +174,12 @@ describe('Myco’s work', () => {
     expect(map.textContent).toContain('Now at main @ 8194811, yesterday at 20:00');
     const failure = map.querySelector('[data-failure="open"]') as HTMLElement;
     expect(failure.closest('article')).toBe(map);
-    await waitFor(() => expect(failure.textContent).toContain('On Lin’s build box: repo.sha256 is absent from this checkout, so the previous map is kept.'));
+    // Lin's machine is named to Lin alone: Ada reads it as Lin's.
+    await waitFor(() => expect(failure.textContent).toContain('On Lin’s machine: repo.sha256 is absent from this checkout, so the previous map is kept.'));
     expect(failure.textContent).toContain('1 code map update failed this week');
-    expect(failure.textContent).toContain('Myco kept the previous map. Open the run to see where it stopped.');
+    // The next step never repeats what the cause already says.
+    expect(failure.textContent).toContain('the previous map is kept.Open the run to see where it stopped.');
+    expect(failure.textContent!.match(/previous map/g)).toHaveLength(1);
     expect(within(failure).getByRole('link', { name: 'Open the latest attempt →' }).getAttribute('href')).toBe(`/p/${P}/work/runs/run_5e0b1c2d3f`);
     expect(within(map).getByRole('list', { name: 'Latest code map updates' }).textContent).toContain('by you');
 
@@ -204,19 +209,83 @@ describe('Myco’s work', () => {
     expect(rawIdsInPage()).toEqual([]);
   });
 
-  it('names a machine only when the server names it to this viewer, and never guesses at one it doesn’t', async () => {
-    const unnamed = Object.fromEntries(Object.entries(TASK_RUNS).map(([task, rows]) => [task, rows.map((row) => (row.worker === null ? row : { ...row, worker: { ...row.worker, machineName: null } }))]));
-    server(week({ who: MEMBER, taskRuns: unnamed }));
+  it('names a machine only to the member it belongs to, and to anyone else as that member’s; never by its id', async () => {
+    const lineOf = async (text: string) => {
+      const runs = await waitFor(() => within(card('learn')).getByRole('list', { name: 'Latest learning runs' }));
+      return waitFor(() => { const li = [...runs.querySelectorAll('li')].find((l) => l.textContent!.includes(text)); if (li === undefined) throw new Error('not yet'); return li; });
+    };
+    const page = () => document.querySelector('main')!.textContent!;
+    // Lin reads Ada's studio Mac as Ada's, and her own build box by its name.
+    server(week({ who: MEMBER }));
     mount(`/p/${P}/work`);
-    const runs = await waitFor(() => within(card('learn')).getByRole('list', { name: 'Latest learning runs' }));
-    const lines = [...runs.querySelectorAll('li')];
-    await waitFor(() => expect(lines[2]!.textContent).toContain('by you'));
-    expect(lines[2]!.textContent).not.toContain('Ada’s studio Mac ·');
-    const failure = card('map').querySelector('[data-failure]') as HTMLElement;
-    expect(failure.textContent).toContain('repo.sha256 is absent from this checkout');
-    expect(failure.textContent).not.toContain('On ');
-    expect(document.querySelector('main')!.textContent).not.toMatch(/\bA machine\b|\ba machine\b/);
+    expect((await lineOf('4 spores from 1 session')).textContent).toContain('from Ada · by you');
+    await waitFor(() => expect(card('map').querySelector('[data-failure]')!.textContent).toContain('On Lin’s build box: repo.sha256'));
+    expect(page()).not.toContain('Ada’s studio Mac');
+    for (const id of [STUDIO_ID, BUILDBOX_ID]) expect(page()).not.toContain(id);
+    expect(page()).not.toMatch(/\b[Aa] machine\b/);
     expect(rawIdsInPage()).toEqual([]);
+    cleanup();
+    client.clear();
+    // Ada reads her own by its name, and Lin's as Lin's.
+    server(week());
+    mount(`/p/${P}/work`);
+    expect((await lineOf('4 spores from 1 session')).textContent).toContain('Ada’s studio Mac · by Lin');
+    await waitFor(() => expect(card('map').querySelector('[data-failure]')!.textContent).toContain('On Lin’s machine: repo.sha256'));
+    expect(within(card('map')).getByRole('list', { name: 'Latest code map updates' }).textContent).toContain('from Lin');
+    expect(page()).not.toContain('Lin’s build box');
+    for (const id of [STUDIO_ID, BUILDBOX_ID]) expect(page()).not.toContain(id);
+    expect(rawIdsInPage()).toEqual([]);
+  });
+
+  it('keeps a map failure in one project open when the map worked in another', async () => {
+    const answer: WorkAnswer = {
+      ...WEEK_WORK,
+      outcomes: [...WEEK_WORK.outcomes, outcome({ projectId: P2, kind: 'map', task: 'canopy-map', runs: { completed: 1 }, outcome: { spores: 0, sessions: 0, maps: 1 } })],
+      runs: [...WEEK_WORK.runs, workRun({ id: 'run_atlasmap01', projectId: P2, kind: 'map', task: 'canopy-map', at: NOW - HOUR, outcome: { spores: 0, sessions: 0, maps: 1 } })],
+    };
+    const [, , map] = summarize(answer);
+    expect(map!.failureGroups.map((group) => [group.projectId, group.failures.length, group.producedSince])).toEqual([[P, 1, 0]]);
+    server(week({ work: answer }));
+    mount('/work');
+    await waitFor(() => expect(card('map')).not.toBeNull());
+    const failure = card('map').querySelector('[data-failure]') as HTMLElement;
+    expect(failure.getAttribute('data-failure')).toBe('open');
+    expect(failure.textContent).toContain('1 code map update failed this week in Myco');
+    expect(document.querySelector('[data-lede]')!.textContent).toContain('1 code map update failed, and none has worked since.');
+  });
+
+  it('shows every run of a task on "Show all", a page at a time, and links each project’s from the page across projects', async () => {
+    const many = Array.from({ length: 6 }, (_, i) => runRow({ id: `run_many0000${i}`, task: 'extract-curate', completedAt: NOW - (i + 1) * HOUR, outcome: { spores: 1, sessions: 1, readsRecorded: true } }));
+    const older = runRow({ id: 'run_older00001', task: 'extract-curate', completedAt: NOW - 30 * HOUR, outcome: { spores: 2, sessions: 2, readsRecorded: true } });
+    const asked = server({
+      ...week({ taskRuns: { 'extract-curate': many, 'title-summary': [], 'canopy-map': [], 'vault-seed': [] } }),
+      [`/api/projects/${P}/runs`]: (url) => {
+        if (url.searchParams.get('limit') === '6') return Response.json({ rows: url.searchParams.get('task') === 'extract-curate' ? many : [], cursor: null });
+        return url.searchParams.get('cursor') === 'c1' ? Response.json({ rows: [older], cursor: null }) : Response.json({ rows: many, cursor: 'c1' });
+      },
+    });
+    mount(`/p/${P}/work`);
+    const runs = await within(await findCard('learn')).findByRole('list', { name: 'Latest learning runs' });
+    await waitFor(() => expect(runs.querySelectorAll('li')).toHaveLength(5));
+    fireEvent.click(within(card('learn')).getByRole('button', { name: 'Show all' }));
+    await waitFor(() => expect(within(card('learn')).getByRole('list', { name: 'Latest learning runs' }).querySelectorAll('li')).toHaveLength(6));
+    fireEvent.click(within(card('learn')).getByRole('button', { name: 'Show more' }));
+    await waitFor(() => expect(within(card('learn')).getByRole('list', { name: 'Latest learning runs' }).querySelectorAll('li')).toHaveLength(7));
+    const pages = asked.filter((url) => url.pathname === `/api/projects/${P}/runs` && url.searchParams.get('limit') === '20');
+    expect(pages.map((url) => [url.searchParams.get('task'), url.searchParams.get('cursor')])).toEqual([['extract-curate', null], ['extract-curate', 'c1']]);
+    cleanup();
+    client.clear();
+    server(week());
+    mount('/work');
+    const links = await waitFor(() => { const found = card('learn')?.querySelector('[data-all-runs]'); if (found == null) throw new Error('not yet'); return found as HTMLElement; });
+    expect(within(links).getByRole('link', { name: 'All runs in Myco →' }).getAttribute('href')).toBe(`/p/${P}/work?outcome=learn&runs=all`);
+  });
+
+  it('links a learning card and a titles card to the window’s sessions', async () => {
+    server(week());
+    mount(`/p/${P}/work`);
+    expect((await within(await findCard('learn')).findByRole('link', { name: 'This week’s sessions →' })).getAttribute('href')).toBe(`/p/${P}/sessions?window=week`);
+    expect((await within(card('title')).findByRole('link', { name: 'See this week’s sessions →' })).getAttribute('href')).toBe(`/p/${P}/sessions?window=week`);
   });
 
   it('keeps the window, the outcome and the search in the URL, and reads the window it names', async () => {
@@ -245,7 +314,7 @@ describe('Myco’s work', () => {
   it('reads again every 30 s only while a run is queued or running, never from a hidden tab', async () => {
     const live: WorkAnswer = { ...WEEK_WORK, outcomes: WEEK_WORK.outcomes.map((o) => (o.kind === 'learn' ? { ...o, runs: { ...o.runs, queued: 1 } } : o)) };
     type Polled = { refetchInterval?: number | false | ((q: unknown) => number | false); refetchIntervalInBackground?: boolean };
-    const intervals = (key: string) => client.getQueryCache().findAll({ queryKey: [key] }).flatMap((query) => query.observers.map((observer) => {
+    const intervals = (key: string) => client.getQueryCache().findAll({ queryKey: key === 'runs' ? ['runs', P, 'task'] : [key] }).flatMap((query) => query.observers.map((observer) => {
       const { refetchInterval, refetchIntervalInBackground } = observer.options as Polled;
       return { interval: typeof refetchInterval === 'function' ? refetchInterval(query) : refetchInterval ?? false, background: refetchIntervalInBackground };
     }));

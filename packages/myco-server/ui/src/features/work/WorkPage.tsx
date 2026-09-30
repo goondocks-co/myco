@@ -1,11 +1,11 @@
 import { Fragment, useState, type ReactNode } from 'react';
-import { useLocation, useNavigate } from 'react-router-dom';
+import { useLocation, useNavigate, useSearchParams } from 'react-router-dom';
 import {
-  Button, Card, EmptyState, ErrorState, FilterBar, LoadingState, Skeleton, useFilterParams, useQueryDraft, type FilterDefinition,
+  Button, Card, EmptyState, ErrorState, FilterBar, LoadingState, ShowMore, Skeleton, useFilterParams, useQueryDraft, type FilterDefinition,
 } from '../../design';
 import { useIsAdmin } from '../../hooks/use-me';
 import { useNow } from '../../hooks/use-today';
-import { useSessionsById, useTaskRuns, useWindowSpores, useWorkWhileRunning, workHasLiveRun } from '../../hooks/use-work';
+import { useAllTaskRuns, useSessionsById, useTaskRuns, useWindowSpores, useWorkWhileRunning, workHasLiveRun } from '../../hooks/use-work';
 import { sessionHeadingText } from '../../lib/session-text';
 import {
   CODE_MAP_SUFFIX, HEALTH_ANCHORS, HEALTH_PATH, KNOWLEDGE_SUFFIX, PROJECT_SETTINGS_ANCHORS, PROJECT_SETTINGS_SUFFIX, projectPath, runPath, WORK_SUFFIX,
@@ -14,7 +14,7 @@ import { UpkeepLine } from '../today/Summary';
 import type { OutcomeKind, TodaySpore, WorkAnswer, WorkRun } from '../today/wire';
 import { agentName, count, sporeLine, sporeTypeWord } from '../today/words';
 import { useStarterNames } from './names';
-import { costOf, summarize, type KindSummary } from './outcomes';
+import { costOf, recovered, summarize, type KindSummary } from './outcomes';
 import {
   EvidenceLines, FailureBlock, KeptNote, OnwardLink, OutcomeCard, PartLabel, RunLines, type EvidenceLine, type RunLineItem,
 } from './OutcomeCard';
@@ -22,7 +22,7 @@ import { RunPanel } from './RunPanel';
 import { RunTaskConfirm, RunTaskMenu, STARTABLE_TASKS } from './RunTask';
 import type { DispatchAnswer, RunPageRow } from './wire';
 import {
-  atWords, dollars, KIND_ORDER, KIND_TASKS, KIND_WORDS, ledeClause, outcomeHeadline, runLineWords, runNoun, shortTime, startedByChip, times, tokenWords,
+  atWords, dollars, KIND_ORDER, KIND_TASKS, KIND_WORDS, ledeClause, outcomeHeadline, ranOn, runLineWords, runNoun, shortTime, startedByChip, times, tokenWords,
   WINDOW_WORDS, type WorkWindow,
 } from './words';
 
@@ -116,7 +116,7 @@ export function WorkPage({ projectId, projectName, runId }: WorkPageProps) {
       {started !== null && projectId !== null && <StartedLine started={started} projectId={projectId} />}
       <FilterBar
         searchLabel="Search what Myco did"
-        placeholder="Search what Myco did: spores, sessions, what went wrong"
+        placeholder="Narrow what’s on this page: spores, sessions, what went wrong"
         query={draft.text}
         onQueryChange={draft.setText}
         filters={[WINDOW_FILTER, OUTCOME_FILTER]}
@@ -208,15 +208,17 @@ function WorkLede({ kinds, window, name, projectCount }: { kinds: readonly KindS
   const clauses = kinds.map((kind) => ledeClause(kind.kind, kind)).filter((clause): clause is string => clause !== null);
   const where = name === null ? (projectCount > 1 ? ` across ${count(projectCount, 'project')}` : '') : '';
   const lead = name === null ? WINDOW_WORDS[window].lead : `${WINDOW_WORDS[window].lead} in ${name}`;
+  // Under one project the project is named in the lead, so Myco is "it".
+  const subject = name === null ? 'Myco' : 'it';
   const failures = kinds.filter((kind) => kind.failures.length > 0).map((kind) => {
     const n = count(kind.failures.length, runNoun(kind.kind), runNoun(kind.kind, 2));
-    return kind.producedSince > 0 ? `${capitalize(n)} failed; the ones since have worked.` : `${capitalize(n)} failed, and none has worked since.`;
+    return recovered(kind.failureGroups) ? `${capitalize(n)} failed; the ones since have worked.` : `${capitalize(n)} failed, and none has worked since.`;
   });
   return (
     <p className="max-w-measure t-body text-ink-2" data-lede="">
       {clauses.length === 0
         ? <>{lead}, Myco’s runs haven’t produced anything yet.</>
-        : <>{lead}, Myco {joinStrong(clauses)}{where}.</>}
+        : <>{lead}, {subject} {joinStrong(clauses)}{where}.</>}
       {failures.map((sentence) => <Fragment key={sentence}> {sentence}</Fragment>)}
     </p>
   );
@@ -252,21 +254,31 @@ interface KindCardProps {
 /** One kind of work: its outcome, its evidence, its latest runs, and any failure. */
 function KindCard({ summary, answer, projectId, projectName, window, bounds, live, now, matches, searching, onUpdateMap }: KindCardProps) {
   const location = useLocation();
+  const [params] = useSearchParams();
   const name = useStarterNames();
   const { kind } = summary;
+  // "Show all" opens the task's every run under a project; a link from the page across projects arrives with it open.
+  const [all, setAll] = useState(projectId !== null && params.get('runs') === 'all' && params.get('outcome') === kind);
   const runs = useTaskRuns(projectId ?? '', KIND_TASKS[kind], live, projectId !== null);
-  const scopedRows = runs.data?.rows ?? [];
+  const every = useAllTaskRuns(projectId ?? '', KIND_TASKS[kind], projectId !== null && all);
+  const scopedRows = all ? every.rows : runs.data?.rows ?? [];
   const from = { from: `${location.pathname}${location.search}` };
   const headline = outcomeHeadline(kind, summary);
-  // A machine is named only when the server names it to this viewer; otherwise the failure says nothing of where it ran.
-  const machineOf = (id: string) => scopedRows.find((candidate) => candidate.id === id)?.worker?.machineName ?? null;
+  const machineOf = (id: string) => {
+    const row = [...every.rows, ...(runs.data?.rows ?? [])].find((candidate) => candidate.id === id);
+    return row === undefined ? null : ranOn(row.worker, name)?.machine ?? null;
+  };
   const lineItems: RunLineItem[] = projectId === null
     ? summary.listed.slice(0, RUNS_SHOWN).map((run) => workRunLine(run, now, projectName))
-    : scopedRows.slice(0, RUNS_SHOWN).map((row) => pageRowLine(row, kind, projectId, now, name));
+    : (all ? scopedRows : scopedRows.slice(0, RUNS_SHOWN)).map((row) => pageRowLine(row, kind, projectId, now, name));
   const lines = lineItems.filter((item) => matches(item.words) || matches(item.where ?? ''));
-  const failures = { ...summary, failures: summary.failures.filter((run) => matches(run.failure?.cause ?? '')) };
+  const groups = summary.failureGroups
+    .map((group) => ({ ...group, failures: group.failures.filter((run) => matches(run.failure?.cause ?? '')) }))
+    .filter((group) => group.failures.length > 0);
   const whole = matches(headline);
   const failed = summary.produced === 0 && summary.failed > 0 && summary.spores === 0;
+  const loading = projectId !== null && (all ? every.isPending : runs.isPending);
+  const more = projectId !== null && !all && (runs.data?.rows.length ?? 0) > RUNS_SHOWN;
   return (
     <OutcomeCard
       kind={kind}
@@ -276,22 +288,38 @@ function KindCard({ summary, answer, projectId, projectName, window, bounds, liv
       action={kind === 'map' && onUpdateMap !== null ? <Button size="sm" onClick={onUpdateMap}>Update now</Button> : undefined}
     >
       <Evidence summary={summary} answer={answer} projectId={projectId} bounds={bounds} window={window} now={now} matches={whole ? () => true : matches} />
-      {(lines.length > 0 || runs.isPending) && (
+      {(lines.length > 0 || loading) && (
         <div className="flex flex-col gap-s2">
-          <PartLabel>{window === 'today' ? 'Today’s runs' : 'Latest runs'}</PartLabel>
-          {projectId !== null && runs.isPending ? <Skeleton className="h-s12 w-full rounded-control" /> : <RunLines items={lines} label={`Latest ${runNoun(kind, 2)}`} state={from} />}
+          <PartLabel end={more ? <Button variant="ghost" size="sm" onClick={() => setAll(true)}>Show all</Button> : undefined}>
+            {all ? `Every ${runNoun(kind)}` : window === 'today' ? 'Today’s runs' : 'Latest runs'}
+          </PartLabel>
+          {loading ? <Skeleton className="h-s12 w-full rounded-control" /> : <RunLines items={lines} label={`Latest ${runNoun(kind, 2)}`} state={from} />}
+          {all && every.hasMore && <ShowMore shown={every.rows.length} noun={runNoun(kind, 2)} onMore={every.more} pending={every.isFetchingMore} hasMore />}
+          {projectId === null && (
+            <p className="flex flex-wrap gap-x-s4 gap-y-s1" data-all-runs="">
+              {summary.projects.map((id) => (
+                <OnwardLink key={id} to={`${projectPath(id, WORK_SUFFIX)}?${new URLSearchParams({ outcome: kind, runs: 'all' })}`}>
+                  All runs in {projectName(id) ?? 'a project'}
+                </OnwardLink>
+              ))}
+            </p>
+          )}
         </div>
       )}
-      <FailureBlock
-        kind={kind}
-        summary={failures}
-        window={WINDOW_WORDS[window].noun}
-        when={(at) => (at === null ? 'Earlier' : shortTime(at, now))}
-        machineOf={machineOf}
-        openTo={(runId) => runPath(summary.failures.find((run) => run.id === runId)?.projectId ?? projectId ?? '', runId)}
-      />
+      {groups.map((group) => (
+        <FailureBlock
+          key={group.projectId}
+          kind={kind}
+          group={group}
+          window={WINDOW_WORDS[window].noun}
+          where={projectId === null ? projectName(group.projectId) ?? 'a project' : null}
+          when={(at) => (at === null ? 'Earlier' : shortTime(at, now))}
+          machineOf={machineOf}
+          openTo={runPath}
+        />
+      ))}
       <KeptNote summary={summary} cause={summary.kept[0]?.failure?.cause ?? null} />
-      {searching && !whole && lines.length === 0 && failures.failures.length === 0 && <p className="t-small text-muted">Nothing here matches your search.</p>}
+      {searching && !whole && lines.length === 0 && groups.length === 0 && <p className="t-small text-muted">Nothing here matches your search.</p>}
     </OutcomeCard>
   );
 }
@@ -325,7 +353,7 @@ function workRunLine(run: WorkRun, now: number, projectName: (projectId: string)
   };
 }
 
-/** A run of the project's own list: when, what it came to, the machine it ran on when the server names it to this viewer, and who started it. */
+/** A run of the project's own list: when, what it came to, where it ran as the page may say it, and who started it. */
 function pageRowLine(row: RunPageRow, kind: OutcomeKind, projectId: string, now: number, name: (id: string) => string | null): RunLineItem {
   const at = row.completedAt ?? row.startedAt ?? row.queuedAt ?? now;
   const live = row.status === 'queued' || row.status === 'running' || row.status === 'claimed';
@@ -334,7 +362,7 @@ function pageRowLine(row: RunPageRow, kind: OutcomeKind, projectId: string, now:
     time: shortTime(at, now),
     at,
     words: runLineWords(kind, row, { ...row.outcome, maps: kind === 'map' && row.status === 'completed' ? 1 : 0 }),
-    where: row.worker?.machineName ?? null,
+    where: ranOn(row.worker, name)?.list ?? null,
     by: startedByChip(row.startedBy, name),
     tone: row.status === 'failed' && row.outcome.spores === 0 ? 'bad' : row.status === 'skipped' ? 'held' : live ? 'live' : 'plain',
     to: runPath(projectId, row.id),
@@ -385,7 +413,10 @@ function SporeEvidence({ summary, answer, projectId, bounds, window, matches }: 
         </p>
       )}
       <EvidenceLines label="Spores it wrote" lines={lines} more={0} />
-      <OnwardLink to={knowledge}>See {summary.spores === 1 ? 'it' : `all ${summary.spores.toLocaleString()}`} in Knowledge</OnwardLink>
+      <p className="flex flex-wrap gap-x-s4 gap-y-s1">
+        <OnwardLink to={knowledge}>See {summary.spores === 1 ? 'it' : `all ${summary.spores.toLocaleString()}`} in Knowledge</OnwardLink>
+        {summary.kind === 'learn' && <OnwardLink to={sessionsOf(projectId, window)}>{WINDOW_WORDS[window].lead}’s sessions</OnwardLink>}
+      </p>
     </div>
   );
 }
@@ -397,7 +428,7 @@ function pluralType(type: string): string {
   return `${word}s`;
 }
 
-function TitleEvidence({ summary, now, matches }: EvidenceProps) {
+function TitleEvidence({ summary, projectId, window, now, matches }: EvidenceProps) {
   const titled = summary.listed.filter((run) => run.result === 'produced' && run.sessionId !== null).slice(0, SHOWN);
   const reads = useSessionsById(titled.map((run) => ({ projectId: run.projectId, sessionId: run.sessionId! })));
   const lines: EvidenceLine[] = titled.flatMap((run, i) => {
@@ -412,7 +443,20 @@ function TitleEvidence({ summary, now, matches }: EvidenceProps) {
     }] : [];
   });
   if (reads.some((read) => read.isPending) && lines.length === 0) return <Skeleton className="h-s12 w-full rounded-control" />;
-  return <EvidenceLines label="Sessions it titled" lines={lines} more={Math.max(0, summary.sessions - lines.length)} />;
+  return (
+    <div className="flex flex-col gap-s3">
+      <EvidenceLines label="Sessions it titled" lines={lines} more={Math.max(0, summary.sessions - lines.length)} />
+      <OnwardLink to={sessionsOf(projectId, window)}>See {WINDOW_WORDS[window].noun === 'today' ? 'today’s' : 'this week’s'} sessions</OnwardLink>
+    </div>
+  );
+}
+
+/**
+ * The Sessions list over the page's window. No read lists the sessions a set
+ * of runs read or titled, so the link names the window, not a count.
+ */
+function sessionsOf(projectId: string | null, window: WorkWindow): string {
+  return `${projectId === null ? '/sessions' : projectPath(projectId, '/sessions')}?window=${window}`;
 }
 
 function MapEvidence({ summary, projectId, now }: EvidenceProps) {

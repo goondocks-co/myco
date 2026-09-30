@@ -19,7 +19,7 @@ import { LIVE_REFRESH_MS } from '../../packages/myco-server/ui/src/hooks/use-wor
 import { dailyLimitWords } from '../../packages/myco-server/ui/src/features/work/words';
 import { rawIdsIn } from '../helpers/raw-ids';
 import {
-  ADMIN, HOUR, MEMBER, MEMBERS, MINUTE, NOW, P, PROJECTS, runDetail, S1, S2, sessionAnswer, TASK_RUNS, WEEK_SPORES, WEEK_WORK,
+  ADMIN, BUILDBOX_ID, HOUR, MEMBER, MEMBERS, MINUTE, NOW, P, PROJECTS, runDetail, S1, S2, sessionAnswer, STUDIO_ID, TASK_RUNS, taskRunsFor, WEEK_SPORES, WEEK_WORK,
 } from '../helpers/work-fixture';
 import type { WorkAnswer } from '../../packages/myco-server/ui/src/features/today/wire';
 
@@ -100,6 +100,10 @@ describe('a run’s panel', () => {
     expect((await within(open).findByRole('heading', { level: 2 })).textContent).toBe('Learned 4 spores from 1 session');
     expect((await within(open).findByText('started by Lin')).getAttribute('data-started-by')).toBe('');
     expect(open.textContent).toContain('Learning run · Myco');
+    // What the run said it did leads, in its own words, right under the headline.
+    const report = open.querySelector('[data-run-report]') as HTMLElement;
+    expect(report.textContent).toBe('Saved 4 spores from 1 session.');
+    expect(report.closest('header')).not.toBeNull();
     expect(open.textContent).toContain('took 5 min');
     const read = within(open).getByRole('region', { name: 'What it read' });
     expect(within(read).getByRole('link', { name: 'Flaky test port collision fixed' }).getAttribute('href')).toBe(`/p/${P}/sessions/${S2}`);
@@ -121,22 +125,24 @@ describe('a run’s panel', () => {
       expect(facts.textContent).toContain(words);
     }
     expect(within(facts).getByRole('button', { name: 'Copy run id' })).toBeTruthy();
-    expect(technical.textContent).toContain('Saved 4 spores from 1 session.');
+    expect(technical.textContent).not.toContain('Saved 4 spores from 1 session.');
     // The id is only ever copied: nothing outside the facts shows it.
     expect(rawIdsInPage()).toEqual([]);
   });
 
-  it('names the machine a run ran on only when the server names it to this viewer', async () => {
-    const run = { ...learning[2]!, worker: { credentialId: 'mt_studio01abcd', machineId: 'studio', machineName: null } };
-    server(routes({ who: MEMBER, detail: { [`/api/projects/${P}/runs/run_a2c4e6f801`]: () => Response.json({ ...READ_AND_WROTE, run: { ...READ_AND_WROTE.run, worker: run.worker } }) } }));
+  it('names the machine a run ran on to the member it belongs to, and to anyone else as that member’s, never by its id', async () => {
+    const linRun = taskRunsFor(MEMBER.member.id)['extract-curate']![2]!;
+    server(routes({ who: MEMBER, detail: { [`/api/projects/${P}/runs/run_a2c4e6f801`]: () => Response.json({ ...READ_AND_WROTE, run: { ...READ_AND_WROTE.run, worker: linRun.worker } }) } }));
     mount(`/p/${P}/work/runs/run_a2c4e6f801`);
     const open = await panel();
     await within(open).findByRole('heading', { level: 2 });
     const technical = open.querySelector('[data-run-technical]') as HTMLElement;
-    expect(technical.textContent).toContain('Codex · 20K tokens · $0.50');
-    expect(technical.textContent).not.toContain('studio');
+    expect(technical.textContent).toContain('Ada’s machine · Codex · 20K tokens · $0.50');
     fireEvent.click(within(technical).getByRole('button', { name: /Technical details/ }));
-    expect(technical.querySelector('[data-facts]')!.textContent).toContain('Ran onA member’s machine');
+    const facts = technical.querySelector('[data-facts]')!.textContent!;
+    expect(facts).toContain('Ran onAda’s machine');
+    expect(open.textContent).not.toContain('Ada’s studio Mac');
+    for (const id of [STUDIO_ID, BUILDBOX_ID]) expect(open.textContent).not.toContain(id);
   });
 
   it('says a run with no record of its reads has none, never that it read nothing', async () => {
@@ -147,6 +153,16 @@ describe('a run’s panel', () => {
     const read = within(open).getByRole('region', { name: 'What it read' });
     expect(read.querySelector('[data-no-record]')!.textContent).toBe('No record of what it read. Myco didn’t record the sessions this run read, which doesn’t mean it read none.');
     expect(open.textContent).not.toMatch(/read nothing|read no sessions/i);
+  });
+
+  it('says a run that recorded its reads and read none didn’t need any sessions', async () => {
+    server(routes({ detail: { [`/api/projects/${P}/runs/run_c19f7a0e55`]: () => Response.json(runDetail(mapRuns[1]!, { read: { sessions: [], total: 0, recorded: true } })) } }));
+    mount(`/p/${P}/work/runs/run_c19f7a0e55`);
+    const open = await panel();
+    await within(open).findByRole('heading', { level: 2 });
+    const read = within(open).getByRole('region', { name: 'What it read' });
+    expect(read.querySelector('[data-read-none]')!.textContent).toBe('It didn’t need any sessions.');
+    expect(read.querySelector('[data-no-record]')).toBeNull();
   });
 
   it('lists the sessions a run worked from when it recorded no reads, and says they are not a record', async () => {
@@ -176,7 +192,9 @@ describe('a run’s panel', () => {
     expect((await within(open).findByRole('heading', { level: 2 })).textContent).toBe('Couldn’t update the code map');
     const failure = open.querySelector('[data-run-failure]') as HTMLElement;
     expect(failure.textContent).toContain('Why: repo.sha256 is absent from this checkout, so the previous map is kept.');
-    expect(failure.textContent).toContain('Myco kept the previous map. Open the run to see where it stopped.');
+    expect(failure.textContent).toContain('Open the run to see where it stopped.');
+    // The next step never repeats what the cause already says.
+    expect(failure.textContent!.match(/previous map/g)).toHaveLength(1);
     expect(failure.textContent).not.toContain('without its artifact');
     expect(within(open).getByRole('region', { name: 'What it produced' }).textContent).toContain('Nothing; it stopped before writing anything.');
   });
@@ -271,6 +289,22 @@ describe('running a task by hand', () => {
     expect(rawIdsInPage()).toEqual([]);
   });
 
+  it('sends one dispatch however fast the confirming button is clicked', async () => {
+    let answer: (value: Response) => void = () => undefined;
+    const { sent } = server(routes({ dispatch: () => new Promise<Response>((resolve) => { answer = resolve; }) as unknown as Response }));
+    mount(`/p/${P}/work`);
+    const dialog = await startFromMenu(/Learn from new sessions now/);
+    const confirm = within(dialog).getByRole('button', { name: 'Learn now' });
+    // Two clicks in one tick, before the page can render the pending state.
+    confirm.click();
+    confirm.click();
+    await waitFor(() => expect(sent).toHaveLength(1));
+    answer(Response.json({ runId: 'run_new0000001', projectId: P, queued: true }));
+    await waitFor(() => expect(document.querySelector('[data-started]')).not.toBeNull());
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    expect(sent).toHaveLength(1);
+  });
+
   it('lets an admin start a task fresh', async () => {
     const { sent } = server(routes());
     mount(`/p/${P}/work`);
@@ -339,6 +373,10 @@ describe('running a task by hand', () => {
     const dialog = await startFromMenu(/Learn from the project’s code/);
     fireEvent.click(within(dialog).getByRole('button', { name: 'Learn from the code' }));
     expect((await within(dialog).findByRole('alert')).textContent).toBe('Only an admin can start a task fresh.');
+    // A 403 that is not about starting fresh is not worded as one.
+    answer = Response.json({ error: 'forbidden', reason: 'this account can’t start tasks here' }, { status: 403 });
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Learn from the code' }));
+    await waitFor(() => expect(within(dialog).getByRole('alert').textContent).toBe('this account can’t start tasks here'));
     answer = Response.json({ error: 'bad_request', reason: 'no agent is configured for this task' }, { status: 400 });
     fireEvent.click(within(dialog).getByRole('button', { name: 'Learn from the code' }));
     await waitFor(() => expect(within(dialog).getByRole('alert').textContent).toBe('no agent is configured for this task'));

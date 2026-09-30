@@ -7,7 +7,8 @@
 import { heldByWords } from '@goondocks/myco-shared/run-holds';
 import type { OutcomeKind, Range } from '../today/wire';
 import { clockTime, count, when } from '../today/words';
-import type { CapabilityOffRefusal, DailyLimitRefusal, RunFields, RunOutcomeCounts } from './wire';
+import { memberLabel } from '../../lib/member-name';
+import type { CapabilityOffRefusal, DailyLimitRefusal, FreshNeedsAdminRefusal, RunFields, RunOutcomeCounts, RunWorker } from './wire';
 
 /** The tasks whose outcomes the page groups by, and the kind of work each is. */
 export const TASK_KINDS: Readonly<Record<string, OutcomeKind>> = {
@@ -228,6 +229,11 @@ export function isCapabilityOff(body: unknown): body is CapabilityOffRefusal {
   return typeof body === 'object' && body !== null && (body as { error?: unknown }).error === 'capability_off' && typeof (body as { capability?: unknown }).capability === 'string';
 }
 
+/** Whether a refusal body is a 403 `fresh_needs_admin`. */
+export function isFreshNeedsAdmin(body: unknown): body is FreshNeedsAdminRefusal {
+  return typeof body === 'object' && body !== null && (body as { error?: unknown }).error === 'fresh_needs_admin';
+}
+
 /** Whether a refusal body is a 429 `daily_limit`. */
 export function isDailyLimit(body: unknown): body is DailyLimitRefusal {
   return typeof body === 'object' && body !== null && (body as { error?: unknown }).error === 'daily_limit' && typeof (body as { perDay?: unknown }).perDay === 'number';
@@ -293,16 +299,26 @@ export function deployWords(run: { replaced: boolean; replaces: string | null })
   return null;
 }
 
-/** A run's cause of failure as a sentence, and what to do about it. */
-export const FAILURE_NEXT: Readonly<Record<OutcomeKind, string>> = {
-  learn: 'Myco tries again with the next sessions. If this keeps happening, open the run to see where it stopped.',
-  seed: 'Nothing was saved. Open the run to see where it stopped, then run it again.',
-  title: 'The session keeps its first prompt as its name, and Myco tries again later.',
-  map: 'Myco kept the previous map. Open the run to see where it stopped.',
-};
+/**
+ * Where a run ran, as the page may say it: the machine's name when the server
+ * names it to this viewer, else whose machine it was. Never the machine's id,
+ * and nothing at all when neither is known. `name` turns a member id into a
+ * name ("you" for the viewer), or null.
+ */
+export interface RanOn {
+  /** A line in a list: "Ada's studio Mac", "from Lin". */
+  list: string;
+  /** The panel's fact and a failure note: "Ada's studio Mac", "Lin's machine", "Your machine". */
+  machine: string;
+}
 
-/** What a failed run's time and machine read as in a failure note: "Mon 12:53 on Lin's build box". */
-export function failureWhen(at: number | null, now: number, machine: string | null): string {
-  const time = at === null ? 'At some point' : shortTime(at, now);
-  return machine === null ? time : `${time} on ${machine}`;
+export function ranOn(worker: RunWorker | null, name: (id: string) => string | null): RanOn | null {
+  if (worker === null) return null;
+  const named = worker.machineName?.trim() ?? '';
+  if (named !== '') return { list: named, machine: named };
+  const member = worker.member ?? null;
+  if (member === null) return null;
+  const who = name(member.id) ?? memberLabel(member);
+  if (who === null) return null;
+  return { list: `from ${who}`, machine: who === 'you' ? 'Your machine' : `${who}’s machine` };
 }

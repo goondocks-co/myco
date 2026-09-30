@@ -2,9 +2,9 @@ import { type ReactNode } from 'react';
 import { Link as RouterLink } from 'react-router-dom';
 import { focusRing, StatusChip, TypeChip } from '../../design';
 import { cn } from '../../lib/cn';
-import { causeSentence, count } from '../today/words';
-import type { KindSummary } from './outcomes';
-import { FAILURE_NEXT, runNoun } from './words';
+import { causeSentence, count, failureNextStep } from '../today/words';
+import type { FailureGroup, KindSummary } from './outcomes';
+import { runNoun } from './words';
 
 export interface OutcomeCardProps {
   kind: KindSummary['kind'];
@@ -79,7 +79,7 @@ export function EvidenceLines({ label, lines, more }: { label: string; lines: re
 /** A link that reads as ink, underlined on hover: a record's headline. */
 export function InkLink({ to, children }: { to: string; children: ReactNode }) {
   return (
-    <RouterLink to={to} className={cn('rounded-chip hover:underline hover:decoration-line-strong hover:underline-offset-[3px]', focusRing)}>
+    <RouterLink to={to} className={cn('rounded-chip hover:underline hover:decoration-line-strong hover:underline-offset-3', focusRing)}>
       {children}
     </RouterLink>
   );
@@ -130,7 +130,7 @@ export function RunLines({ label, items, state }: { label: string; items: readon
               <RouterLink
                 to={item.to}
                 state={state}
-                className={cn('min-w-0 truncate rounded-chip t-small text-ink-2 after:absolute after:inset-0', item.tone === 'held' && 'text-muted', focusRing)}
+                className={cn('line-clamp-2 min-w-0 rounded-chip t-small text-ink-2 after:absolute after:inset-0 sm:line-clamp-none sm:truncate', item.tone === 'held' && 'text-muted', focusRing)}
               >
                 {item.words}
               </RouterLink>
@@ -146,44 +146,52 @@ export function RunLines({ label, items, state }: { label: string; items: readon
   );
 }
 
-/** Failed runs of one kind that kept nothing, written beside their outcome: when, why, and what to do. */
-export function FailureBlock({ kind, summary, window, when, machineOf, openTo }: {
+/**
+ * One project's failed runs of one kind that kept nothing, written beside
+ * their outcome: when, on what, why, and what to do. It reads as answered only
+ * when a later run of the same kind in the same project produced something.
+ */
+export function FailureBlock({ kind, group, window, where, when, machineOf, openTo }: {
   kind: KindSummary['kind'];
-  summary: Pick<KindSummary, 'failures' | 'producedSince'>;
+  group: FailureGroup;
   /** "this week" or "today". */
   window: string;
+  /** The project's name across projects, or null under one project. */
+  where: string | null;
   when: (at: number | null) => string;
-  /** The machine a listed run ran on, when the page knows it. */
+  /** Where a listed run ran, as the page may say it, or null. */
   machineOf: (runId: string) => string | null;
-  /** Where the latest failure opens. */
-  openTo: (runId: string) => string;
+  /** Where a run opens. */
+  openTo: (projectId: string, runId: string) => string;
 }) {
-  const { failures, producedSince } = summary;
+  const { failures, producedSince } = group;
   if (failures.length === 0) return null;
-  // Failures with the same cause read as one line with every time they happened.
+  // Failures with the same cause on the same machine read as one line with every time they happened.
   const groups = new Map<string, { cause: string; times: string[] }>();
   for (const run of failures) {
     const cause = causeSentence(run.failure?.cause ?? '');
     const machine = machineOf(run.id);
     const key = `${cause}\u0000${machine ?? ''}`;
-    const group = groups.get(key) ?? { cause: machine === null ? cause : `On ${machine}: ${cause}`, times: [] };
-    group.times.push(when(run.at));
-    groups.set(key, group);
+    const line = groups.get(key) ?? { cause: machine === null ? cause : `On ${machine}: ${cause}`, times: [] };
+    line.times.push(when(run.at));
+    groups.set(key, line);
   }
-  const recovered = producedSince > 0;
+  const answered = producedSince > 0;
   return (
-    <div className={cn('flex flex-col gap-s2 rounded-control border px-s3 py-s3 t-small text-ink-2', recovered ? 'border-line bg-surface-2' : 'border-line bg-bad-bg')} data-failure={recovered ? 'recovered' : 'open'}>
-      <p className={cn('font-medium', recovered ? 'text-ink' : 'text-bad')}>{count(failures.length, runNoun(kind), runNoun(kind, 2))} failed {window}</p>
+    <div className={cn('flex flex-col gap-s2 rounded-control border px-s3 py-s3 t-small text-ink-2', answered ? 'border-line bg-surface-2' : 'border-line bg-bad-bg')} data-failure={answered ? 'recovered' : 'open'}>
+      <p className={cn('font-medium', answered ? 'text-ink' : 'text-bad')}>
+        {count(failures.length, runNoun(kind), runNoun(kind, 2))} failed {window}{where === null ? '' : ` in ${where}`}
+      </p>
       <ul className="flex flex-col gap-s1">
-        {[...groups.values()].map((group) => (
-          <li key={`${group.cause}${group.times.join()}`} className="flex flex-col gap-s1 sm:flex-row sm:gap-s3">
-            <span className="shrink-0 tabular-nums text-muted">{listTimes(group.times)}</span>
-            <span className="min-w-0">{group.cause}</span>
+        {[...groups.values()].map((line) => (
+          <li key={`${line.cause}${line.times.join()}`} className="flex flex-col gap-s1 sm:flex-row sm:gap-s3">
+            <span className="shrink-0 tabular-nums text-muted">{listTimes(line.times)}</span>
+            <span className="min-w-0">{line.cause}</span>
           </li>
         ))}
       </ul>
-      <p>{recovered ? `The ${count(producedSince, runNoun(kind), runNoun(kind, 2))} since then worked, so there’s nothing to do.` : FAILURE_NEXT[kind]}</p>
-      {!recovered && <OnwardLink to={openTo(failures[0]!.id)}>Open the latest attempt</OnwardLink>}
+      <p>{answered ? `The ${count(producedSince, runNoun(kind), runNoun(kind, 2))} since then worked, so there’s nothing to do.` : failureNextStep(kind, false)}</p>
+      {!answered && <OnwardLink to={openTo(group.projectId, failures[0]!.id)}>Open the latest attempt</OnwardLink>}
     </div>
   );
 }

@@ -34,6 +34,7 @@ const ARBITRARY_SPACING = /(?<![\w-])-?(?:p[xytrblse]?|m[xytrblse]?|gap(?:-[xy])
 
 /** A width or a grid template set in brackets rather than from the design's tokens: `w-[152px]`, `max-w-[960px]`, `grid-cols-[208px_1fr]`. */
 const ARBITRARY_LAYOUT = /(?<![\w-])(?:min-w|max-w|w|grid-cols|grid-rows)-\[[^\]\s]+\]/g;
+const ARBITRARY_DECORATION = /(?<![\w-])(?:underline-offset|decoration)-\[(?:-?\d|length:)[^\]\s]*\]/g;
 
 /** The raw elements a page builds with a design component instead. */
 const RAW_TAGS = ['button', 'input', 'select', 'textarea', 'table'];
@@ -72,6 +73,8 @@ export const RULES = [
   { kind: 'arbitrary-spacing', count: (src) => matches(src, ARBITRARY_SPACING) },
   // Widths and grid templates set in brackets instead of from the design's tokens (`w-select`, `max-w-reference`, `grid-reading`).
   { kind: 'arbitrary-layout', count: (src) => matches(src, ARBITRARY_LAYOUT) },
+  // An underline's offset or thickness set in brackets instead of on Tailwind's own steps (`underline-offset-3`, `decoration-2`).
+  { kind: 'arbitrary-decoration', count: (src) => matches(src, ARBITRARY_DECORATION) },
   {
     kind: 'retired-import',
     count: (src) => matches(src, /from\s+['"][^'"]*components\/ui\/[^'"]+['"]/g)
