@@ -92,8 +92,10 @@ export interface AttentionAnswer {
 /** One machine and agent: when it last sent anything, and the Project that capture landed in. */
 export interface CaptureRow {
   machineId: string;
-  /** The machine's name; null until the machine's credential carries one. */
+  /** The machine's name, served to the member it belongs to alone; null to anyone else, and while it has none. */
   machineName: string | null;
+  /** The member the machine belongs to, served to every viewer; Myco's own runtime is named Myco. */
+  member: { id: string; label: string | null } | null;
   agent: string | null;
   lastEventAt: number;
   projectId: string;

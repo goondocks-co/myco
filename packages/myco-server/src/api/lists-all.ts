@@ -5,6 +5,7 @@
  * and spores take a window from a start instant (inclusive) to an end instant (exclusive), and plans a start instant; naming no Project covers every Project the caller may see. A named Project the caller may not see answers 404,
  * as the twin does. Rows carry their `projectId`, and each list pages exactly as its twin pages.
  */
+import { nameOwnMachines, ownMachineNames } from '../read/capture.js';
 import type { ServerEnv } from '../core/adapters.js';
 import type { OwnerContext } from '../context.js';
 import { badRequest, instantParam, notFound, ok, projectSetParam, resolveProjectSet } from './scope.js';
@@ -40,7 +41,8 @@ export async function handleSessionsAcross(env: ServerEnv, ctx: OwnerContext): P
   if (page instanceof Response) return page;
   const filters = sessionFilters(ctx.url);
   if (filters instanceof Response) return filters;
-  return ok(await listSessionSummariesAcross(env.db, set, { ...page, ...filters }, ctx.now));
+  const listed = await listSessionSummariesAcross(env.db, set, { ...page, ...filters }, ctx.now);
+  return ok({ ...listed, rows: nameOwnMachines(listed.rows, await ownMachineNames(env.db, ctx.member.id, ctx.now)) });
 }
 
 /**

@@ -159,13 +159,18 @@ export function ensureMemberStatement(db: RelationalStore, id: string, nowMs: nu
     .bind(id, label, nowMs, role, ...(gate?.params ?? []));
 }
 
-/** The identity claim a join records, gated. */
-export function claimMachineIdentityStatement(db: RelationalStore, machineId: string, memberId: string, nowMs: number, gate?: Fragment): PreparedStatement {
+/**
+ * The identity claim a join records, gated. `label` names the machine only when this claim is its first: a machine
+ * already claimed keeps the name it holds, so a later sign-in never replaces a rename.
+ */
+export function claimMachineIdentityStatement(
+  db: RelationalStore, machineId: string, memberId: string, nowMs: number, gate?: Fragment, label: string | null = null,
+): PreparedStatement {
   return db
-    .prepare(`INSERT OR IGNORE INTO machine_claims (machine_id, member_id, claimed_at)
-                SELECT ?, ?, ?
+    .prepare(`INSERT OR IGNORE INTO machine_claims (machine_id, member_id, claimed_at, label)
+                SELECT ?, ?, ?, ?
                  ${gate === undefined ? '' : `WHERE ${gate.sql}`}`)
-    .bind(machineId, memberId, nowMs, ...(gate?.params ?? []));
+    .bind(machineId, memberId, nowMs, label, ...(gate?.params ?? []));
 }
 
 /** The invitation's immutable target and granted role, or null for an absent or invalid invitation. */
@@ -367,4 +372,15 @@ export async function claimMachineIdentity(
     .first<{ member_id: string }>();
   const heldBy = row!.member_id;
   return { claimed: heldBy === memberId, heldBy };
+}
+
+/**
+ * Name a machine: one write to its claim, by an admin or the member the machine belongs to, the rule held in the
+ * statement. True when the machine took the name; false for a machine that is absent or that `actor` may not rename,
+ * which the caller answers alike.
+ */
+export async function renameMachine(db: RelationalStore, actor: { memberId: string; admin: boolean }, machineId: string, name: string): Promise<boolean> {
+  const result = await db.prepare(`UPDATE machine_claims SET label = ? WHERE machine_id = ? AND (? = 1 OR member_id = ?)`)
+    .bind(name, machineId, actor.admin ? 1 : 0, actor.memberId).run();
+  return result.meta.changes === 1;
 }

@@ -7,10 +7,7 @@ import { isAdmin } from '../auth/roles.js';
 import { badRequest, notFound, ok, readJsonObject, resolveProjectScope } from './scope.js';
 import { SecretValueError, deploymentSecretStore, type SecretDescription } from '../core/secrets.js';
 import { SECRET_SLOT_NAMES } from '@goondocks/myco-shared/secret-slots';
-import {
-  DEPLOYMENT_LEAVES, PROJECT_CAPABILITIES, settingsWriter,
-  type ProjectCapability, type SettingsRefusal,
-} from '../core/settings.js';
+import { DEPLOYMENT_LEAVES, PROJECT_CAPABILITIES, settingsWriter, type ProjectCapability, type SettingsRefusal, RETIRED_LEAVES, RETIRED_SECRET_SLOTS } from '../core/settings.js';
 
 /**
  * The Deployment Settings surface.
@@ -62,7 +59,8 @@ const MAX_SECRET_CHARS = 4096;
  * Every Deployment leaf this server accepts, with whatever is stored for it. A leaf with no row is reported absent
  * rather than defaulted: the reader layers its own defaults. `redacted` answers every URL a string value holds, at any
  * depth, without its userinfo, query and fragment (`withoutUrlSecrets`), which is how every reader but an admin gets
- * them; an admin reads them raw to edit them. Provider credentials live in the secret store and never reach this.
+ * them; an admin reads them raw to edit them. `retired` marks a leaf nothing reads (`RETIRED_LEAVES`). Provider
+ * credentials live in the secret store and never reach this.
  */
 async function deploymentLeaves(env: ServerEnv, redacted: boolean): Promise<unknown[]> {
   const stored = await settingsWriter(env.db).leaves();
@@ -72,6 +70,7 @@ async function deploymentLeaves(env: ServerEnv, redacted: boolean): Promise<unkn
     value: stored[leaf]?.value ?? null,
     updatedAt: stored[leaf]?.updatedAt ?? null,
     updatedBy: stored[leaf]?.updatedBy ?? null,
+    retired: RETIRED_LEAVES.has(leaf),
   }));
   if (!redacted) return leaves;
   return JSON.parse(JSON.stringify(leaves), (_key, value: unknown) => (typeof value === 'string' ? withoutUrlSecrets(value) : value)) as unknown[];
@@ -145,7 +144,7 @@ export async function handleSetProjectCapability(env: ServerEnv, ctx: OwnerConte
  */
 export async function handleSecrets(env: ServerEnv, ctx: OwnerContext): Promise<Response> {
   const store = deploymentSecretStore(env.db, env.wrappingKey);
-  const described = await Promise.all(SECRET_SLOTS.map(async (name) => ({ name, ...(await store.describe(name)) })));
+  const described = await Promise.all(SECRET_SLOTS.map(async (name) => ({ name, ...(await store.describe(name)), retired: RETIRED_SECRET_SLOTS.has(name) })));
   return ok({ secrets: described });
 }
 

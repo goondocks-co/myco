@@ -19,11 +19,12 @@ import { seedMachineSettings } from '../member/machine-settings.js';
 import { MACHINE_IDENTITY_NOTE, REJOIN_HINT } from '@goondocks/myco-shared/member-protocol';
 import { getMachineId } from '../machine-id.js';
 import path from 'node:path';
+import { hostname } from 'node:os';
 import { memberHomeFor, pinnedHomeLine } from '../member/home-for-folder.js';
 import { isSafeProjectRoot } from '../project-root.js';
 import { resolveMemberProjectRoot } from '../member/credential.js';
 import { runImport } from '../member/import.js';
-import { ADMIN_ROLE, exchangeJoinCode, parseJoinCode, recordJoinAnswer, JOIN_CODE_REFUSALS } from '../member/join-code.js';
+import { ADMIN_ROLE, exchangeJoinCode, parseJoinCode, recordJoinAnswer, runtimeLabelOf, JOIN_CODE_REFUSALS } from '../member/join-code.js';
 import { ensuredWorkerWords, ensureWorkerService, type WorkerServiceDeps } from './worker-service.js';
 import { drainEntryBacklog } from '../member/backlog.js';
 import { deploymentUrl, listRegistryEntries } from '../member/registry.js';
@@ -63,6 +64,8 @@ export interface LoginDeps {
   cwd?: string;
   mycoHome?: string;
   machineId?: string;
+  /** This machine's host name, sent as the name the machine shows under; defaults to `os.hostname()`. */
+  hostname?: () => string;
   stdout?: (line: string) => void;
   stderr?: (line: string) => void;
   /** How an administrator's worker service is installed. */
@@ -126,7 +129,8 @@ export async function run(args: readonly string[], deps: LoginDeps = {}): Promis
   if ('error' in code) return fail(JOIN_CODE_REFUSALS[code.error]);
 
   const machineId = deps.machineId ?? getMachineId();
-  const exchange = await exchangeJoinCode(code, { fetch: deps.fetch, machineId, runtimeKind: 'persistent' });
+  const runtimeLabel = runtimeLabelOf((deps.hostname ?? hostname)());
+  const exchange = await exchangeJoinCode(code, { fetch: deps.fetch, machineId, runtimeKind: 'persistent', runtimeLabel });
   if (!exchange.ok) {
     // This machine's identity is its member's for as long as that member stands, whatever became of its credential.
     if (exchange.code === 'identity_claimed') return fail(`this machine already belongs to a member of ${code.serverUrl} (identity_claimed) — ${REJOIN_HINT}. ${MACHINE_IDENTITY_NOTE}.`);

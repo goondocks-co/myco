@@ -73,15 +73,16 @@ describe('read/sessions', () => {
     expect((await listProjects(db, { includeArchived: true })).map((p) => [p.projectId, p.name]).sort()).toEqual([['proj_1', 'Myco'], ['proj_2', 'Archived one']]);
   });
 
-  it('names the member and runtime behind each session, lists a session whose credential is gone, and keeps the order', async () => {
+  it('names the member and runtime kind behind each session, never its machine, lists a session whose credential is gone, and keeps the order', async () => {
     const { db, sqlite } = sqliteEnv();
     seedSessions(sqlite);
     sqlite.run(`INSERT OR IGNORE INTO members (id, label, created_at) VALUES ('mem_a', 'chris', 1)`);
     sqlite.run(`INSERT INTO member_credentials (id, member_id, token_hash, machine_id, runtime_label, runtime_kind, issued_at, expires_at, lineage_root, lineage_started_at)
                 VALUES ('tok_1', 'mem_a', 'h', 'm1', 'laptop', 'host', 1, 99, 'tok_1', 1)`);
     const { rows } = await listSessions(db, { projectId: 'proj_1' });
+    // A read names no machine: a facade names the viewer's own (`nameOwnMachines`).
     expect(rows.map((r) => [r.sessionId, r.memberLabel, r.runtimeLabel, r.runtimeKind])).toEqual([
-      ['s3', 'chris', 'laptop', 'host'], ['s2', null, null, null], ['s1', 'chris', 'laptop', 'host'],
+      ['s3', 'chris', null, 'host'], ['s2', null, null, null], ['s1', 'chris', null, 'host'],
     ]);
     expect((await getSession(db, { projectId: 'proj_1' }, 's2'))?.memberId).toBeNull();
   });

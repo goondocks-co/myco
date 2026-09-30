@@ -50,7 +50,7 @@ export async function handleProjectRuns(env: ServerEnv, ctx: OwnerContext): Prom
   if (status instanceof Response) return status;
   const task = filterParam(ctx.url, 'task');
   if (task instanceof Response) return task;
-  return ok(await listRuns(env.db, scope, ctx.now, { ...page, status, task }));
+  return ok(await listRuns(env.db, scope, ctx.now, ctx.member.id, { ...page, status, task }));
 }
 
 /** One run with its phases and reports, the sessions it read and the spores it wrote. A run under another project answers 404, the same as one that never existed. */
@@ -59,7 +59,7 @@ export async function handleProjectRun(env: ServerEnv, ctx: OwnerContext): Promi
   if (scope === null) return notFound();
   const runId = runIdParam(ctx.params.runId ?? '');
   if (runId === null) return notFound();
-  const detail = await getRunDetail(env.db, scope, runId, ctx.now);
+  const detail = await getRunDetail(env.db, scope, runId, ctx.now, ctx.member.id);
   if (detail === null) return notFound();
   return ok({ ...detail, reports: await listReports(env.db, scope, runId), ...await runReads(env.db, scope, runId), projectId: scope.projectId });
 }

@@ -19,9 +19,9 @@ function harness() {
   seedMemberRoleAccount(sqlite);
   sqlite.run(`INSERT OR IGNORE INTO agents (id, name, source, enabled, created_at) VALUES ('agent_1', 'a', 'built-in', 1, 0)`);
   sqlite.run(`INSERT INTO members (id, label, created_at) VALUES ('mem_worker', 'worker', 0)`);
-  const credential = (id: string, machine: string, label: string | null, issuedAt: number, opts: { revoked?: boolean; expired?: boolean } = {}) =>
+  const credential = (id: string, machine: string, label: string | null, issuedAt: number, opts: { revoked?: boolean; expired?: boolean; member?: string } = {}) =>
     sqlite.run(`INSERT INTO member_credentials (id, member_id, token_hash, machine_id, runtime_label, issued_at, expires_at, revoked_at, lineage_root, lineage_started_at)
-                VALUES (?, 'mem_worker', ?, ?, ?, ?, ?, ?, ?, 0)`, [id, `h_${id}`, machine, label, issuedAt, opts.expired ? NOW - 1 : NOW + DAY, opts.revoked ? NOW - 1 : null, id]);
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0)`, [id, opts.member ?? 'mem_worker', `h_${id}`, machine, label, issuedAt, opts.expired ? NOW - 1 : NOW + DAY, opts.revoked ? NOW - 1 : null, id]);
   const run = (project: string, id: string, opts: { status?: string; context?: unknown; actor?: string; leasedBy?: string; at?: number } = {}) =>
     sqlite.run(`INSERT INTO agent_runs (project_id, id, agent_id, task, status, started_at, queued_at, run_context, dispatch_spec, leased_by)
                 VALUES (?, ?, 'agent_1', 'extract-curate', ?, ?, ?, ?, ?, ?)`,
@@ -46,21 +46,41 @@ function harness() {
 }
 
 describe('the fields a run carries beyond its status', () => {
-  it('names the machine that ran it by its newest live credential\'s label, on the list and the detail', async () => {
+  it('names the machine that ran it to the member it belongs to alone, and shows anyone else that member, on the list and the detail', async () => {
     const h = harness();
+    h.sqlite.run(`INSERT INTO machine_claims (machine_id, member_id, claimed_at) VALUES ('machine_a', 'mem_worker', 0), ('machine_b', 'mem_worker', 0), ('machine_own', 'mem_machine_1', 0)`);
     h.credential('mt_lease', 'machine_a', 'old-name', NOW - 3 * DAY);
     h.credential('mt_newer', 'machine_a', 'laptop', NOW - DAY);
-    h.credential('mt_revoked', 'machine_a', 'revoked-name', NOW, { revoked: true });
-    h.credential('mt_expired', 'machine_a', 'expired-name', NOW, { expired: true });
+    h.credential('mt_revoked', 'machine_own', 'revoked-name', NOW, { revoked: true, member: 'mem_machine_1' });
+    h.credential('mt_expired', 'machine_own', 'expired-name', NOW, { expired: true, member: 'mem_machine_1' });
+    h.credential('mt_own', 'machine_own', 'studio', NOW - DAY, { member: 'mem_machine_1' });
     h.credential('mt_bare', 'machine_b', null, NOW);
-    h.run('proj_1', 'run_named', { leasedBy: 'mt_lease' });
+    h.run('proj_1', 'run_other', { leasedBy: 'mt_lease' });
+    h.run('proj_1', 'run_own', { leasedBy: 'mt_own' });
     h.run('proj_1', 'run_unnamed', { leasedBy: 'mt_bare' });
     h.run('proj_1', 'run_unleased');
+    h.sqlite.run(`INSERT OR IGNORE INTO members (id, label, created_at) VALUES ('mem_harness', 'harness runtime', 0)`);
+    h.credential('mt_harness', 'harness', null, NOW, { member: 'mem_harness' });
+    h.run('proj_1', 'run_myco', { leasedBy: 'mt_harness' });
     const rows = await h.listed();
-    expect(rows.run_named.worker).toEqual({ credentialId: 'mt_lease', machineId: 'machine_a', machineName: 'laptop' });
-    expect(rows.run_unnamed.worker).toEqual({ credentialId: 'mt_bare', machineId: 'machine_b', machineName: null });
+    // Another member's machine: that member, and no name.
+    expect(rows.run_other.worker).toEqual({ credentialId: 'mt_lease', machineId: 'machine_a', machineName: null, member: { id: 'mem_worker', label: 'worker' } });
+    // The viewer's own machine, named by its newest live credential while its claim holds no name.
+    expect(rows.run_own.worker).toEqual({ credentialId: 'mt_own', machineId: 'machine_own', machineName: 'studio', member: { id: 'mem_machine_1', label: 'machine_1' } });
+    expect(rows.run_unnamed.worker).toMatchObject({ machineName: null, member: { id: 'mem_worker', label: 'worker' } });
+    // A run Myco's own runtime ran names Myco.
+    expect(rows.run_myco.worker).toMatchObject({ machineName: null, member: { id: 'mem_harness', label: 'Myco' } });
     expect(rows.run_unleased.worker).toBeNull();
-    expect((await h.get('/api/projects/proj_1/runs/run_named')).body.run.worker.machineName).toBe('laptop');
+    expect((await h.get('/api/projects/proj_1/runs/run_other')).body.run.worker).toMatchObject({ machineName: null, member: { id: 'mem_worker', label: 'worker' } });
+    // The claim's name wins over any credential's.
+    h.sqlite.run(`UPDATE machine_claims SET label = 'Studio Mac' WHERE machine_id = 'machine_own'`);
+    expect((await h.get('/api/projects/proj_1/runs/run_own')).body.run.worker.machineName).toBe('Studio Mac');
+    // Another member reads the viewer's machine as the viewer, never by its name.
+    const asMember = await h.listed('proj_1', MEMBER_SUB);
+    expect(asMember.run_own.worker).toMatchObject({ machineName: null, member: { id: 'mem_machine_1', label: 'machine_1' } });
+    const detail = await h.get('/api/projects/proj_1/runs/run_own', MEMBER_SUB);
+    expect(detail.body.run.worker).toMatchObject({ machineName: null, member: { id: 'mem_machine_1', label: 'machine_1' } });
+    for (const body of [asMember, detail.body]) expect(JSON.stringify(body)).not.toMatch(/Studio Mac|studio|laptop/);
   });
 
   it('says who started it, the session its dispatch named, and why a skipped run did not run', async () => {

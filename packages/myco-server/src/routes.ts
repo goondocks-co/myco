@@ -2,6 +2,7 @@ import { handleReleaseProvenance, handleRequestReleaseCheck, handleSaveReleasePr
 import { handleRepository, handleSaveRepository, handleRemoveRepository, handleRunRepository } from './api/repositories.js';
 import { handleProjectMap, handleRunMap } from './api/canopy.js';
 import { handleMachineSettings, handleSetMachineSetting } from './api/machine-settings.js';
+import { handleMachines, handleRenameMachine } from './api/machines.js';
 import { handleSkillCandidates, handleReviewSkillCandidate } from './api/skill-candidates.js';
 import type { ServerEnv } from './core/adapters.js';
 import type { CredentialContext, UnboundMemberContext } from './context.js';
@@ -271,6 +272,8 @@ export const ROUTES: readonly Route[] = [
   { method: 'POST', path: '/api/projects/{projectId}/release-provenance/check', pattern: /^\/api\/projects\/(?<projectId>[A-Za-z0-9._-]{1,64})\/release-provenance\/check$/, auth: 'session', authority: 'admin', handler: handleRequestReleaseCheck },
   { method: 'PUT', path: '/api/projects/{projectId}/capabilities/{capability}', pattern: /^\/api\/projects\/(?<projectId>[A-Za-z0-9._-]{1,64})\/capabilities\/(?<capability>[a-z_]{1,32})$/, auth: 'session', authority: 'admin', handler: handleSetProjectCapability },
   // A machine's own settings (#1393): any member may ask, and the handlers answer only the member who claims the machine.
+  { method: 'GET', path: '/api/machines', auth: 'session', authority: 'member', handler: handleMachines },
+  { method: 'PATCH', path: '/api/machines/{machineId}', pattern: /^\/api\/machines\/(?<machineId>[A-Za-z0-9._-]{1,64})$/, auth: 'session', authority: 'member', handler: handleRenameMachine },
   { method: 'GET', path: '/api/machines/{machineId}/settings', pattern: /^\/api\/machines\/(?<machineId>[A-Za-z0-9._-]{1,64})\/settings$/, auth: 'session', authority: 'member', handler: handleMachineSettings },
   { method: 'PUT', path: '/api/machines/{machineId}/settings/{leaf}', pattern: /^\/api\/machines\/(?<machineId>[A-Za-z0-9._-]{1,64})\/settings\/(?<leaf>[A-Za-z0-9._]{1,96})$/, auth: 'session', authority: 'member', handler: handleSetMachineSetting },
   { method: 'GET', path: '/auth/login', auth: 'auth', handler: handleLogin },

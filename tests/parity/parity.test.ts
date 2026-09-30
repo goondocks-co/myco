@@ -34,6 +34,7 @@ import { tokenRefresh } from './scenarios/token-refresh.ts';
 import { captureVolume } from './scenarios/capture-volume.ts';
 import { memberSettings } from './scenarios/member-settings.ts';
 import { machineSettings } from './scenarios/machine-settings.ts';
+import { machines } from './scenarios/machines.ts';
 import { sessionAuthority } from './scenarios/session-authority.ts';
 import { today } from './scenarios/today.ts';
 import { runReads } from './scenarios/run-reads.ts';
@@ -50,7 +51,7 @@ import { parseShard, selectShard } from '../../scripts/test-shards.mjs';
 import durations from '../../scripts/test-durations.json';
 import { writeFileSync } from 'node:fs';
 
-const scenarios = [restoreContinuation, repositories, canopy, skillCandidates, sessionsTitling, sessionTurns, plans, plansAtScale, spores, recall, backupRestore, tick, dispatchQueue, scheduledTasks, cortex, replacedRun, search, grants, importParity, legacyImportParity, workerWire, codexRecording, transcriptReread, transcriptBacklog, toolBlobRetention, titlingBackfill, sessionEnd, projectCounts, objectLifecycle, tokenRefresh, captureVolume, memberSettings, machineSettings, sessionAuthority, harnessCredentialSlots, capabilityHold, joinIdentityClaimed, memberStatus, embeddingRevisions, githubLink, today, runReads, memberDispatch, recallGold];
+const scenarios = [restoreContinuation, repositories, canopy, skillCandidates, sessionsTitling, sessionTurns, plans, plansAtScale, spores, recall, backupRestore, tick, dispatchQueue, scheduledTasks, cortex, replacedRun, search, grants, importParity, legacyImportParity, workerWire, codexRecording, transcriptReread, transcriptBacklog, toolBlobRetention, titlingBackfill, sessionEnd, projectCounts, objectLifecycle, tokenRefresh, captureVolume, memberSettings, machineSettings, machines, sessionAuthority, harnessCredentialSlots, capabilityHold, joinIdentityClaimed, memberStatus, embeddingRevisions, githubLink, today, runReads, memberDispatch, recallGold];
 const DEFAULT_SCENARIO_DURATION_MS = 15_000;
 
 if (!process.env.MYCO_PARITY) {

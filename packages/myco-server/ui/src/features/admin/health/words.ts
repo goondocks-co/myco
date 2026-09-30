@@ -5,10 +5,10 @@
  * recoverable, a failed read is never taken for a missing feature, and a
  * measure is never shown without its sample.
  */
-import { ApiError, type StatusResponse } from '../../../lib/api';
+import type { StatusResponse } from '../../../lib/api';
 import { clockTime } from '../../today/words';
 import { formatBytes, formatCount, formatRelative, formatUntil } from '../../../lib/format';
-import type { Cadence, MaintenanceCheck, MaintenanceOutcome, RecoveryAvailability, RecoverySchedule, RecoveryStatus, TickReport, JobReport } from './wire';
+import type { Cadence, MaintenanceCheck, MaintenanceOutcome, RecoveryAvailability, RecoverySchedule, RecoveryProducerStatus, TickReport, JobReport } from './wire';
 
 // ---------- Housekeeping ----------
 
@@ -76,7 +76,7 @@ export function cadenceWords(schedule: RecoverySchedule, now: number): string {
 }
 
 /** What this Deployment's producer produces, which every sentence below reads before naming a result. */
-export type RecoveryForm = RecoveryStatus['form'];
+export type RecoveryForm = RecoveryProducerStatus['form'];
 
 /**
  * What the last attempt did, or that none has run. Numbered attempts are named
@@ -119,15 +119,6 @@ export function availableWords(available: RecoveryAvailability): string {
     return `A complete, verified recovery artifact is ready at ${available.at}. ${available.needs.charAt(0).toUpperCase()}${available.needs.slice(1)}.`;
   }
   return `Attempt ${available.attempt} holds a complete staging. It is not a recovery artifact yet — an operator materializes and verifies it into one.`;
-}
-
-/**
- * Whether a failed read means this Deployment runs no producer at all. Only
- * the route's own refusal says that: a 401, a 503, a paused database and a
- * network failure each say nothing about whether a producer exists.
- */
-export function unsupported(error: unknown): boolean {
-  return error instanceof ApiError && error.status === 400 && (error.detail ?? '').includes('no hosted recovery producer');
 }
 
 // ---------- Store maintenance ----------

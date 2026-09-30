@@ -33,7 +33,7 @@ async function rig() {
     }), e.serverEnv);
     return response.json();
   };
-  const detail = () => getRunDetail(e.db, scope, 'run_usage', Date.now());
+  const detail = () => getRunDetail(e.db, scope, 'run_usage', Date.now(), 'mem_viewer');
   return { e, token, claimed, claim, end, detail, advance: (value: number) => { now = value; } };
 }
 

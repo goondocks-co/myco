@@ -354,9 +354,9 @@ describe('agent runs read the same on both stores', () => {
           VALUES ('proj_1', 'run_c', NULL, 'run_tool', ?, 'success', ?, ?, ?)`)
           .bind(ev[0], (i + 1) * 5, ev[1] === null ? null : JSON.stringify({ op: ev[1] }), 1500 + i).run();
       }
-      const listed = await listRuns(t.env.db, { projectId: 'proj_1' }, Date.now());
-      const detail = await getRunDetail(t.env.db, { projectId: 'proj_1' }, 'run_c', Date.now());
-      const foreign = await getRunDetail(t.env.db, { projectId: 'proj_2' }, 'run_c', Date.now());
+      const listed = await listRuns(t.env.db, { projectId: 'proj_1' }, Date.now(), 'mem_viewer');
+      const detail = await getRunDetail(t.env.db, { projectId: 'proj_1' }, 'run_c', Date.now(), 'mem_viewer');
+      const foreign = await getRunDetail(t.env.db, { projectId: 'proj_2' }, 'run_c', Date.now(), 'mem_viewer');
       outcomes.push({ listed, detail, foreign, leaks: /sk-canary|providerConfig/.test(JSON.stringify({ listed, detail })) });
     }
     expect(outcomes[0]).toEqual({

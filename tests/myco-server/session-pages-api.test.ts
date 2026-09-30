@@ -94,15 +94,25 @@ describe('the session pages', () => {
     expect({ status, texts: (body.rows as { text: string }[]).map((r) => r.text) }).toEqual({ status: 200, texts: ['hello'] });
   });
 
-  it('carries the member and runtime behind a session through the list and the detail', async () => {
+  it('carries the member behind a session through the list and the detail, and names the machine only to the member it belongs to', async () => {
     const { get, session, sqlite } = await harness();
     session('proj_1', 's1', NOW, { agent: 'claude-code', branch: 'main' });
     sqlite.run(`INSERT OR IGNORE INTO members (id, label, created_at) VALUES ('mem_a', 'chris', 1)`);
+    sqlite.run(`INSERT INTO machine_claims (machine_id, member_id, claimed_at, label) VALUES ('m1', 'mem_a', 1, 'chris-laptop'), ('m_own', 'mem_machine_1', 1, 'studio')`);
     sqlite.run(`INSERT INTO member_credentials (id, member_id, token_hash, machine_id, runtime_label, runtime_kind, issued_at, expires_at, lineage_root, lineage_started_at)
-                VALUES ('tok_1', 'mem_a', 'h', 'm1', 'laptop', 'host', 1, 99, 'tok_1', 1)`);
+                VALUES ('tok_1', 'mem_a', 'h', 'm1', 'laptop', 'host', 1, 99, 'tok_1', 1), ('tok_own', 'mem_machine_1', 'h2', 'm_own', 'studio-host', 'host', 1, ?, 'tok_own', 1)`, [NOW * 2]);
+    sqlite.run(`INSERT INTO sessions (project_id, session_id, machine_id, created_by_token_id, first_received_at, last_received_at, started_at) VALUES ('proj_1', 's_own', 'm_own', 'tok_own', ?, ?, ?)`, [NOW - 1, NOW - 1, NOW - 1]);
     const list = (await get('/api/projects/proj_1/sessions')).body.rows as Record<string, unknown>[];
+    const across = (await get('/api/sessions')).body.rows as Record<string, unknown>[];
     const detail = (await get('/api/projects/proj_1/sessions/s1')).body.session as Record<string, unknown>;
-    expect([list[0]!.memberLabel, list[0]!.runtimeLabel, detail.memberLabel, detail.runtimeKind]).toEqual(['chris', 'laptop', 'chris', 'host']);
+    const own = (await get('/api/projects/proj_1/sessions/s_own')).body.session as Record<string, unknown>;
+    // Another member's session names that member, and never the machine it came from.
+    for (const row of [list.find((r) => r.sessionId === 's1')!, across.find((r) => r.sessionId === 's1')!, detail]) {
+      expect([row.memberLabel, row.runtimeLabel, row.runtimeKind]).toEqual(['chris', null, 'host']);
+    }
+    // The viewer's own session names the machine by the name it holds.
+    for (const row of [list.find((r) => r.sessionId === 's_own')!, across.find((r) => r.sessionId === 's_own')!, own]) expect(row.runtimeLabel).toBe('studio');
+    for (const body of [list, across, detail, own]) expect(JSON.stringify(body)).not.toMatch(/chris-laptop|"laptop"/);
   });
 });
 
