@@ -84,7 +84,8 @@ export function SearchableSelect({
   const matches = useMemo(() => options
     .map((option) => ({ option, rank: searchableSelectRank(option, deferredQuery) }))
     .filter((entry): entry is { option: SearchableSelectOption; rank: number } => entry.rank !== null)
-    .sort((a, b) => a.rank - b.rank || COLLATOR.compare(a.option.label, b.option.label))
+    // Before anything is typed the options keep the order given, so the unfiltered choice stays first.
+    .sort((a, b) => (deferredQuery.trim() === '' ? 0 : a.rank - b.rank || COLLATOR.compare(a.option.label, b.option.label)))
     .map((entry) => entry.option), [options, deferredQuery]);
 
   const selected = options.find((option) => option.value === value);

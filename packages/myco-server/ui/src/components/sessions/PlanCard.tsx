@@ -7,7 +7,7 @@ import { PLAN_STATUSES, useSetPlanStatus, type PlanCardRow, type PlanStatus } fr
 import { useIsAdmin } from '../../hooks/use-me';
 import { cn } from '../../lib/cn';
 import { formatDateTime, formatRelative } from '../../lib/format';
-import { TextOrBlob } from './stored-text';
+import { TextOrBlob } from '../../features/sessions/StoredText';
 
 const STATUS_VARIANT: Record<string, 'default' | 'secondary' | 'warning' | 'destructive'> = {
   active: 'default',

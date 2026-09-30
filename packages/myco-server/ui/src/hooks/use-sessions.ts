@@ -2,6 +2,9 @@ import type { ReleaseStatus } from './use-release-provenance';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { ApiError, fetchJson, postJson, SignedOutError } from '../lib/api';
 import { usePaged } from './use-paged';
+import type { SessionListRow, SessionOutcome } from '../features/sessions/wire';
+import { isLive } from '../features/today/timeline';
+import { LIVE_REFRESH_MS } from './use-work';
 
 export interface SessionRow {
   sessionId: string;
@@ -47,8 +50,8 @@ export const UNTITLED_REASON_TEXT: Record<UntitledReason, string> = {
   capture_pending: 'Untitled: the transcript is still being processed',
   no_material: 'Untitled: nothing was typed in this session to title',
   in_progress: 'Untitled: a title is being written',
-  stopped: 'Untitled: automatic titling stopped trying. Use Generate summary to try again',
-  imported: 'Untitled: imported sessions are titled by the backfill on Operations while it is on',
+  stopped: 'Untitled: Myco stopped trying to title it on its own. An admin can ask again from the session’s menu',
+  imported: 'Untitled: imported sessions get a title once titling imported sessions is turned on',
   waiting: 'Untitled: will be tried automatically soon',
 };
 
@@ -59,6 +62,8 @@ export interface SessionResponse {
   counts: SessionCounts;
   /** Whether the session's work is released, or null when it has no release state. */
   release?: ReleaseStatus | null;
+  /** What came of the session: the runs that read it or wrote from it, and the spores written from it. */
+  outcome: SessionOutcome;
   projectId: string;
 }
 
@@ -169,34 +174,8 @@ export interface TranscriptResponse {
   segments: TranscriptSegment[];
 }
 
-export interface FeedItem {
-  type: 'session' | 'run' | 'spore';
-  id: string;
-  summary: string;
-  at: number;
-  sessionId: string | null;
-}
-
-export interface ProjectStats {
-  sessions: number;
-  openSessions: number;
-  sessionsLast7d: number;
-  prompts: number;
-  toolCalls: number;
-  plans: number;
-  attachments: number;
-  lastActivityAt: number | null;
-}
-
 export type SessionChild = 'prompts' | 'tool-calls' | 'responses' | 'plans' | 'attachments' | 'context-injections';
 export interface ContextInjectionRow { kind: string; createdAt: number; orderedAt: number }
-
-/** A session row as the list serves it: the row plus its counts and its activity spread over eight lifetime buckets, oldest first. */
-export interface SessionSummaryRow extends SessionRow {
-  promptCount: number;
-  toolCallCount: number;
-  activityBuckets: number[];
-}
 
 /** The origins a prompt can carry on the wire. A person's own prompts are `user`; the rest are what a runtime injected around them. */
 export const PROMPT_ORIGINS = ['user', 'system', 'agent_dispatch', 'hook_injected', 'unknown'] as const;
@@ -269,29 +248,48 @@ export const RENDERABLE_IMAGE_TYPES: readonly string[] = ['image/png', 'image/jp
 const seg = (value: string) => encodeURIComponent(value);
 const project = (projectId: string) => `/api/projects/${seg(projectId)}`;
 
-/** Who captured a session, in the words the reader knows: the member's label, then the member id, then the credential id. */
-export const memberName = (s: SessionRow): string => s.memberLabel ?? s.memberId ?? s.createdByTokenId;
-export const runtimeName = (s: SessionRow): string | null => s.runtimeLabel ?? s.runtimeKind;
-
 export const blobUrl = (projectId: string, key: string) => `${project(projectId)}/blobs/${seg(key)}`;
 
-/** What the rail asks the list for. `state` narrows to open or ended sessions; `q` is the text the filter box holds, matched by the server over title, first prompt, agent, branch and id. */
+/** What the table asks the list for; each narrows the list on the server. */
 export interface SessionListFilters {
+  /** One Project, or null for every Project. */
+  projectId: string | null;
+  /** `open` is a session with no end recorded; `ended` one with an end. */
   state?: 'open' | 'ended';
+  /** Matched by the server over the title, the first prompt, the agent, the branch and the id. */
   q?: string;
-  branch?: string;
+  agent?: string;
+  /** A member's label, as the server matches it. */
   member?: string;
+  /** Sessions started at or after this instant. */
+  since?: number;
 }
 
-export function useSessions(projectId: string, filters: SessionListFilters = {}) {
-  const params = new URLSearchParams({ limit: '50' });
+/** How many sessions one page of the table holds. */
+export const SESSION_PAGE = 50;
+
+/** The path of the session list for a set of filters. */
+export function sessionListPath(filters: SessionListFilters): string {
+  const params = new URLSearchParams({ limit: String(SESSION_PAGE) });
+  if (filters.projectId !== null) params.set('project', filters.projectId);
   if (filters.state !== undefined) params.set('state', filters.state);
   if (filters.q !== undefined && filters.q.trim() !== '') params.set('q', filters.q.trim());
-  if (filters.branch !== undefined && filters.branch !== '') params.set('branch', filters.branch);
+  if (filters.agent !== undefined && filters.agent !== '') params.set('agent', filters.agent);
   if (filters.member !== undefined && filters.member !== '') params.set('member', filters.member);
+  if (filters.since !== undefined) params.set('since', String(filters.since));
+  return `/api/sessions?${params}`;
+}
+
+/**
+ * The sessions the table lists, newest first, a page at a time. While a listed
+ * session is live the list is read again every 30 s; a hidden tab never reads.
+ */
+export function useSessionList(filters: SessionListFilters) {
+  const path = sessionListPath(filters);
   // Sessions order by a date the parse revises, so one session can reach two pages.
-  return usePaged<SessionSummaryRow>(['sessions', projectId, params.toString()], `${project(projectId)}/sessions?${params.toString()}`, {
-    rowKey: (row) => row.sessionId,
+  return usePaged<SessionListRow>(['sessions', filters.projectId ?? 'all', path], path, {
+    rowKey: (row) => `${row.projectId}/${row.sessionId}`,
+    refresh: (rows) => (rows.some((row) => isLive(row, Date.now())) ? LIVE_REFRESH_MS : false),
   });
 }
 
@@ -320,17 +318,17 @@ export type TitlingOutcome =
   | 'dispatched' | 'already' | 'no_material' | 'harness_unavailable' | 'no_provider' | 'no_credential' | 'no_endpoint' | 'unsupported_provider' | 'error' | 'queued' | 'capture_pending';
 
 export const TITLING_OUTCOME_TEXT: Record<TitlingOutcome, string> = {
-  dispatched: 'A summary is being written — it lands within a few minutes',
-  queued: 'The summary is waiting for a runtime — it starts as one frees up',
-  already: 'A summary was asked for a moment ago — try again shortly',
-  no_material: 'Nothing typed in this session to summarize yet',
+  dispatched: 'A new title is being written; it lands within a few minutes',
+  queued: 'The new title is waiting for a machine; it starts as one frees up',
+  already: 'A title was asked for a moment ago; try again shortly',
+  no_material: 'Nothing was typed in this session to title yet',
   capture_pending: 'Capture is incomplete. Check the session transcript before retrying.',
-  harness_unavailable: 'This Deployment has no way to write summaries yet',
-  no_provider: 'No provider is configured for summaries — set one in Settings',
-  no_credential: 'The provider has no credential — add one in Settings',
-  no_endpoint: 'The provider has no endpoint — set one in Settings',
-  unsupported_provider: 'Summaries need an Anthropic or OpenAI-compatible provider — set one in Settings',
-  error: 'Something went wrong starting the summary',
+  harness_unavailable: 'Myco has no way to write titles here yet',
+  no_provider: 'No model provider is set for titles; set one in Settings',
+  no_credential: 'The model provider has no key; add one in Settings',
+  no_endpoint: 'The model provider has no address; set one in Settings',
+  unsupported_provider: 'Titles need an Anthropic or OpenAI-compatible provider; set one in Settings',
+  error: 'Something went wrong starting the title',
 };
 
 /** How long the page keeps watching for a dispatched summary to land: the run's own bound plus the margin its container is held for. */
@@ -349,20 +347,20 @@ export function useTitleSession(projectId: string, sessionId: string) {
     mutationFn: () => postJson<TitlingAnswer>(`${project(projectId)}/sessions/${seg(sessionId)}/title`),
     onSuccess: () => Promise.all([
       client.invalidateQueries({ queryKey: ['session', projectId, sessionId] }),
-      client.invalidateQueries({ queryKey: ['sessions', projectId] }),
+      client.invalidateQueries({ queryKey: ['sessions'] }),
     ]),
   });
 }
 
-/** Ends an open session now; on an answer, the session and the project's list are read again. */
+/** Ends an open session now; on an answer, the session, the session lists and Today are read again. */
 export function useEndSession(projectId: string, sessionId: string) {
   const client = useQueryClient();
   return useMutation({
     mutationFn: () => postJson<{ outcome: 'ended' | 'already_ended' | 'open'; endedAt: number | null }>(`${project(projectId)}/sessions/${seg(sessionId)}/end`),
     onSuccess: () => Promise.all([
       client.invalidateQueries({ queryKey: ['session', projectId, sessionId] }),
-      client.invalidateQueries({ queryKey: ['sessions', projectId] }),
-      client.invalidateQueries({ queryKey: ['activity', projectId] }),
+      client.invalidateQueries({ queryKey: ['sessions'] }),
+      client.invalidateQueries({ queryKey: ['today'] }),
     ]),
   });
 }
@@ -375,8 +373,8 @@ export function useDeleteSession() {
     onSuccess: async (_, { projectId }) => {
       await client.invalidateQueries({ predicate: (query) => query.queryKey[1] === projectId, refetchType: 'none' });
       await Promise.all([
-        ...['sessions', 'activity', 'project-plans', 'search'].map((key) => client.invalidateQueries({ queryKey: [key, projectId] })),
-        ...['projects', 'status'].map((key) => client.invalidateQueries({ queryKey: [key] })),
+        ...['project-plans', 'search'].map((key) => client.invalidateQueries({ queryKey: [key, projectId] })),
+        ...['sessions', 'today', 'projects', 'status'].map((key) => client.invalidateQueries({ queryKey: [key] })),
       ]);
     },
   });
@@ -420,9 +418,6 @@ export function useTranscript(projectId: string, sessionId: string) {
   });
 }
 
-export function useActivity(projectId: string) {
-  return useQuery({ queryKey: ['activity', projectId], queryFn: ({ signal }) => fetchJson<{ items: FeedItem[]; stats: ProjectStats }>(`${project(projectId)}/activity`, signal) });
-}
 
 /** The text of a blob, read as text whatever it happens to contain. Blobs are content-addressed and immutable, so a fetched one is never refetched. */
 export function useBlobText(projectId: string, key: string) {

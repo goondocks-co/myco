@@ -7,9 +7,10 @@
  * still live, spores of every type, plans in every status, Myco's runs (a
  * failed learning run that still saved spores, a learning run that saved four,
  * two titling runs, a code map update that failed with its cause after one that
- * succeeded yesterday, an index update that failed and then succeeded, and a
- * skipped titling run), an access key about to expire, and a backup four weeks
- * old.
+ * succeeded yesterday, an index update that failed and then succeeded, a
+ * skipped titling run, and an earlier titling run with no record of what it
+ * read), the sessions a run read, an access key about to expire, and a backup
+ * four weeks old.
  *
  * Capture goes through the real `/events` ingest and spores through the real
  * `myco_spores` tool, so the pages read rows written the way production writes
@@ -137,6 +138,9 @@ const SPORES: Array<{ project: ProjectKey; session: number; type: (typeof SPORE_
   { project: 'myco', session: 0, type: 'decision', line: 'Canopy parity runs on both targets before a map change merges.', content: 'A map read that differs between targets is caught only by running the same scenario on both, so both run before merge.' },
   { project: 'myco', session: 6, type: 'gotcha', line: 'A port the kernel hands out can be reused at once; never cache it across test files.', content: 'Two test files cached the same ephemeral port and the second bound it after the first released it, which hid the collision.' },
 ];
+
+/** The session whose reading page shows what came of it: runs that read it, wrote from it and titled it, and one with no record. */
+export const OUTCOME_SESSION = 6;
 
 const PLANS: Array<{ project: ProjectKey; session: number; status: (typeof PLAN_STATUSES)[number]; title: string; path: string; content: string }> = [
   { project: 'myco', session: 13, status: 'in_progress', title: 'Myco’s work as outcomes', path: 'docs/plans/work-outcomes.md', content: '# Myco’s work as outcomes\n\n- [x] Group runs by task\n- [ ] Fold index upkeep into one line\n- [ ] Show failures with cause and next step' },
@@ -366,6 +370,12 @@ function settleSporeTimes(databasePath: string, sporeIds: string[], now: number)
  * that saved four, two titling runs, a map update that failed with its cause in
  * its report, an index update that failed and a later one that succeeded, and a
  * skipped titling run. Yesterday: a map update and a learning run.
+ *
+ * What came of one session ("Flaky test port collision fixed"): the learning run
+ * that saved four recorded reading it and wrote a spore from it; the failed one
+ * wrote a spore from it with no record of reading it; a titling run dispatched on
+ * it recorded reading it and titled it; and an earlier titling run dispatched on
+ * it recorded nothing, as titling runs from before reads were recorded did.
  */
 function seedRuns(databasePath: string, now: number, sporeIds: string[], sessionIds: string[]): number {
   const sqlite = new Database(databasePath);
@@ -377,11 +387,14 @@ function seedRuns(databasePath: string, now: number, sporeIds: string[], session
       id: string; task: string; status: string; startedAgo: number; minutes: number; error?: string; context?: Record<string, unknown>; report?: string;
       /** What the run recorded writing: a title names the session it titled. */
       wrote?: { tool: string; session?: number };
+      /** The session the run's dispatch named, by its place in SESSIONS. */
+      target?: number;
     }> = [
       { id: 'run_4f1c9a2e7b', task: 'extract-curate', status: 'failed', startedAgo: 2 * 60, minutes: 6, error: 'the run exceeded its turn budget', report: 'Saved 2 spores from 3 sessions before the turn budget ran out.' },
       { id: 'run_a2c4e6f801', task: 'extract-curate', status: 'completed', startedAgo: 5 * 60, minutes: 8, report: 'Saved 4 spores from 4 sessions.' },
-      { id: 'run_7d1e2f3a40', task: 'title-summary', status: 'completed', startedAgo: 3 * 60, minutes: 1, report: 'Titled one session.', wrote: { tool: TITLE_WRITE_TOOL, session: 1 } },
-      { id: 'run_7d1e2f3b51', task: 'title-summary', status: 'completed', startedAgo: 3 * 60 + 4, minutes: 1, report: 'Titled one session.', wrote: { tool: TITLE_WRITE_TOOL, session: 6 } },
+      { id: 'run_7d1e2f3a40', task: 'title-summary', status: 'completed', startedAgo: 3 * 60, minutes: 1, report: 'Titled one session.', target: 1, wrote: { tool: TITLE_WRITE_TOOL, session: 1 } },
+      { id: 'run_7d1e2f3b51', task: 'title-summary', status: 'completed', startedAgo: 3 * 60 + 4, minutes: 1, report: 'Titled one session.', target: OUTCOME_SESSION, wrote: { tool: TITLE_WRITE_TOOL, session: OUTCOME_SESSION } },
+      { id: 'run_0b5e7c1d2a', task: 'title-summary', status: 'completed', startedAgo: 9 * 60, minutes: 1, target: OUTCOME_SESSION },
       { id: 'run_5e0b1c2d3f', task: 'canopy-map', status: 'failed', startedAgo: 3 * 60 + 30, minutes: 15, error: 'the run ended without its artifact', report: 'repo.sha256 is absent from this checkout, so the map could not be verified; the previous map is kept.' },
       { id: 'run_8d20b6c1f3', task: 'embedding-reconcile', status: 'failed', startedAgo: 95, minutes: 1, error: 'the embedding provider answered 503' },
       { id: 'run_8d20b6c2a9', task: 'embedding-reconcile', status: 'completed', startedAgo: 80, minutes: 1 },
@@ -391,10 +404,11 @@ function seedRuns(databasePath: string, now: number, sporeIds: string[], session
     ];
     for (const run of runs) {
       const startedAt = now - run.startedAgo * MINUTE;
+      const context = { ...run.context, ...(run.target === undefined ? {} : { session_id: sessionIds[run.target] }) };
       sqlite.query(`INSERT INTO agent_runs (project_id, id, agent_id, task, status, started_at, completed_at, resumable, error, run_context, tokens_used, estimated_cost_usd)
         VALUES (?, ?, 'myco-agent', ?, ?, ?, ?, 0, ?, ?, ?, ?)`).run(
         idOf('myco'), run.id, run.task, run.status, startedAt, startedAt + run.minutes * MINUTE, run.error ?? null,
-        run.context ? JSON.stringify(run.context) : null, run.status === 'skipped' ? null : 18_000 + run.minutes * 1_500, run.status === 'skipped' ? null : 0.12 * Math.max(1, run.minutes),
+        Object.keys(context).length === 0 ? null : JSON.stringify(context), run.status === 'skipped' ? null : 18_000 + run.minutes * 1_500, run.status === 'skipped' ? null : 0.12 * Math.max(1, run.minutes),
       );
       if (run.report) {
         sqlite.query(`INSERT INTO agent_reports (project_id, run_id, agent_id, action, summary, created_at) VALUES (?, ?, 'myco-agent', 'summary', ?, ?)`)
@@ -415,6 +429,11 @@ function seedRuns(databasePath: string, now: number, sporeIds: string[], session
         if (SPORES[index]?.project !== 'myco') throw new Error(`spore ${index} is not in the myco project`);
         sqlite.query('UPDATE spores SET author = ?, created_at = ? WHERE project_id = ? AND id = ?').run(runId, endedAt - (indexes.length - offset), idOf('myco'), sporeIds[index]!);
       }
+    }
+    // The sessions a run's run tools served it, as the read hook records them: the learning run that saved four, and the titling run that titled it, each read the outcome session as it started.
+    for (const reader of runs.filter((r) => r.id === 'run_a2c4e6f801' || r.id === 'run_7d1e2f3b51')) {
+      sqlite.query('INSERT INTO run_reads (project_id, run_id, session_id, token_id, received_at) VALUES (?, ?, ?, ?, ?)')
+        .run(idOf('myco'), reader.id, sessionIds[OUTCOME_SESSION]!, 'fixture-run-credential', now - reader.startedAgo * MINUTE + 30_000);
     }
     return runs.length;
   } finally {

@@ -44,8 +44,8 @@ const signedIn = (who: unknown = ME): Record<string, () => Response> => ({
   '/api/projects': () => Response.json({ projects: PROJECTS }),
   '/api/projects/alpha/activity': () => Response.json(EMPTY_ACTIVITY),
   '/api/projects/beta/activity': () => Response.json(EMPTY_ACTIVITY),
-  '/api/projects/alpha/sessions': () => Response.json({ rows: [], cursor: null }),
-  '/api/projects/beta/sessions': () => Response.json({ rows: [], cursor: null }),
+  '/api/sessions': () => Response.json({ rows: [], cursor: null }),
+  '/api/members': () => Response.json({ members: [] }),
 });
 
 function Location() {
@@ -216,7 +216,9 @@ describe('the nav', () => {
     window.localStorage.setItem('myco-last-project', 'beta');
     mount('/status');
     const pages = await screen.findByRole('navigation', { name: 'Pages' });
-    expect(within(pages).getByRole('link', { name: 'Sessions' }).getAttribute('href')).toBe('/p/beta/sessions');
+    expect(within(pages).getByRole('link', { name: 'Spores' }).getAttribute('href')).toBe('/p/beta/spores');
+    // A page with a form across every project leads there while the path names no project.
+    expect(within(pages).getByRole('link', { name: 'Sessions' }).getAttribute('href')).toBe('/sessions');
     await waitFor(() => expect(filterItems()).toHaveLength(2));
     expect(filterItems().filter((a) => a.getAttribute('aria-current') === 'true')).toEqual([]);
     expect(filterItems()[1]!.getAttribute('href')).toBe('/p/beta');
@@ -232,11 +234,10 @@ describe('the project filter', () => {
     await waitFor(() => expect(location()).toBe('/p/beta/sessions?q=fix&state=ended'));
     expect(filterItems()[1]!.getAttribute('aria-current')).toBe('true');
     await waitFor(() => expect(window.localStorage.getItem('myco-last-project')).toBe('beta'));
-    // No page has an all-projects form yet, so the picked project offers no clear and picking it again stays put.
-    expect(filterItems()[1]!.querySelector('[data-clear-filter]')).toBeNull();
-    expect(within(filterItems()[1]!).queryByText('Clear the filter')).toBeNull();
+    // Sessions has a form across every project, so picking the picked project again clears the filter to it, the list filters kept.
+    expect(filterItems()[1]!.querySelector('[data-clear-filter]')).not.toBeNull();
     fireEvent.click(filterItems()[1]!);
-    await waitFor(() => expect(location()).toBe('/p/beta/sessions?q=fix&state=ended'));
+    await waitFor(() => expect(location()).toBe('/sessions?q=fix&state=ended'));
   });
 
   it('offers the clear on a page with an all-projects form, and leads it there with the list filters', () => {
@@ -262,7 +263,8 @@ describe('the project filter', () => {
     expect(switchProjectHref({ pathname: '/p/x/spores/sp1', search: '?status=all&q=cache' }, 'y')).toBe('/p/y/spores?status=all&q=cache');
     expect(switchProjectHref({ pathname: '/p/x', search: '' }, 'a/b')).toBe('/p/a%2Fb');
     expect(switchProjectHref({ pathname: '/settings', search: '?tab=secrets' }, 'y')).toBe('/p/y');
-    expect(clearProjectHref({ pathname: '/p/x/sessions', search: '?q=fix' })).toBeNull();
+    expect(clearProjectHref({ pathname: '/p/x/sessions', search: '?q=fix' })).toBe('/sessions?q=fix');
+    expect(clearProjectHref({ pathname: '/p/x/plans', search: '?q=fix' })).toBeNull();
     expect(clearProjectHref({ pathname: '/settings', search: '' }, { '/sessions': '/sessions' })).toBeNull();
   });
 

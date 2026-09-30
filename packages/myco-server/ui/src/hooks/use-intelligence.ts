@@ -110,6 +110,8 @@ export interface SporeRow {
   observationType: string;
   status: string;
   content: string;
+  /** The one line written for agents, when the writer gave one. */
+  agentLine?: string | null;
   context: string | null;
   importance: number;
   filePath: string | null;

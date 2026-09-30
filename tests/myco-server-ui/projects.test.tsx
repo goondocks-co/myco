@@ -91,8 +91,7 @@ describe('an archived project\'s home and navigation', () => {
   it('keeps an archived project out of the filter on a live project\'s pages, and picking another project keeps the page and remembers the pick', async () => {
     const OTHER = { projectId: 'other', name: 'Other', createdAt: 0, sessionCount: 0, lastActivityAt: NOW - 5000, archivedAt: null, archivedBy: null };
     server(base([LIVE, ARCH, OTHER], {
-      '/api/projects/other/sessions': () => Response.json({ rows: [], cursor: null }),
-      '/api/projects/other/activity': () => Response.json({ items: [], stats: { sessions: 0, openSessions: 0, sessionsLast7d: 0, prompts: 0, toolCalls: 0, plans: 0, attachments: 0, lastActivityAt: null } }),
+      '/api/sessions': () => Response.json({ rows: [], cursor: null }),
     }));
     mount('/p/live/sessions');
     const filter = await screen.findByRole('navigation', { name: 'Projects' });

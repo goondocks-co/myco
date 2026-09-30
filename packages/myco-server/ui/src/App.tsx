@@ -12,9 +12,9 @@ import { Projects } from './pages/Projects';
 import { CodeMap } from './pages/CodeMap';
 import { Measures } from './pages/Measures';
 import { Plans } from './pages/Plans';
-import { Sessions } from './pages/Sessions';
 import { Spores } from './pages/Spores';
 import { Status } from './pages/Status';
+import { sessionRoutes } from './routes/sessions';
 import { Shell } from './routes/Shell';
 import { ResumePendingLink, Today } from './routes/today';
 
@@ -30,8 +30,7 @@ export default function App() {
         <Route path="/" element={<Today />} />
         <Route path="/projects" element={<Projects />} />
         <Route path="/p/:projectId" element={<Today />} />
-        <Route path="/p/:projectId/sessions" element={<Sessions />} />
-        <Route path="/p/:projectId/sessions/:sessionId" element={<Sessions />} />
+        {sessionRoutes}
         <Route path="/p/:projectId/plans" element={<Plans />} />
         <Route path="/p/:projectId/knowledge/map" element={<CodeMap />} />
         <Route path="/p/:projectId/spores" element={<Spores />} />
