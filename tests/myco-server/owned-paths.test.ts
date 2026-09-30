@@ -31,7 +31,9 @@ const PAGES = ['/', '/sessions', '/knowledge', '/knowledge/plans', '/work', '/pr
 const ROUTE_PATHS = [...ROUTES, ...RETIRED_ROUTES].map((r) => r.path.replace(/\{[^}]+\}/g, 'x'));
 /** The bare path of every `/x/*` pattern that no route serves exactly: what the pattern must not own. */
 const BARE_PREFIXES = ownedPathPatterns().filter((p) => p.endsWith('/*')).map((p) => p.slice(0, -2)).filter((p) => !ownedPathPatterns().includes(p));
-const PROBES = [...new Set([...PAGES, ...ROUTE_PATHS, ...BARE_PREFIXES, ...BARE_PREFIXES.map((p) => `${p}/`)])].sort();
+/** Every exact pattern, which owns its path and nothing under it. */
+const EXACT = ownedPathPatterns().filter((p) => !p.endsWith('/*'));
+const PROBES = [...new Set([...PAGES, ...ROUTE_PATHS, ...BARE_PREFIXES, ...[...BARE_PREFIXES, ...EXACT].map((p) => `${p}/`)])].sort();
 
 let dir = '';
 let mf: Miniflare | null = null;
