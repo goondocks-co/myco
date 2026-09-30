@@ -74,9 +74,9 @@ describe('myco member provision', () => {
     expect(process.exitCode ?? 0).toBe(0);
   });
 
-  it('refuses without writing for a project with no membership, an unknown agent, or no agent at all', async () => {
+  it('refuses without writing on a machine with no membership and for an unknown agent, and provisions every detected agent when none is named', async () => {
     const unjoined = await provision(['codex']);
-    expect(unjoined.err.join('\n')).toContain(`no membership recorded for ${root}`);
+    expect(unjoined.err.join('\n')).toContain('no membership recorded on this machine — sign in with `myco login <invite link>` first');
     expect(process.exitCode).toBe(2);
     expect(fs.existsSync(path.join(root, '.codex'))).toBe(false);
 
@@ -86,8 +86,8 @@ describe('myco member provision', () => {
     expect(process.exitCode).toBe(2);
 
     process.exitCode = 0;
-    expect((await provision([])).err.join('\n')).toContain('name the agent to provision');
-    expect(process.exitCode).toBe(2);
+    expect((await provision([])).err).toEqual([]);
+    expect(process.exitCode ?? 0).toBe(0);
   });
 
   it('refuses before any write when the global Codex config declares a stdio myco server or cannot be parsed, and accepts a remote one with its own options', async () => {

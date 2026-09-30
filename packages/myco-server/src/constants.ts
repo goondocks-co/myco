@@ -27,10 +27,12 @@ export const PROJECT_HEADER = 'x-myco-project';
 /**
  * The most Projects one Deployment holds.
  *
- * A member resolves Projects by naming them, so this is the only bound on rows in
- * `projects`: without it, a credential cycling the Project header through fresh
- * names fills the table. Set well above what any real Deployment reaches, so it is a
- * backstop against a runaway or hostile runtime rather than a working limit.
+ * A member resolves Projects by naming them, so this is the only bound on the
+ * Projects that accept capture: without it, a credential cycling the Project header
+ * through fresh names fills the table. An archived Project, which only an admin
+ * makes, no longer counts toward it. Set well above what any real Deployment
+ * reaches, so it is a backstop against a runaway or hostile runtime rather than a
+ * working limit.
  */
 export const MAX_PROJECTS = 1_000;
 

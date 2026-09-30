@@ -24,7 +24,8 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { getMachineId } from '../machine-id.js';
-import { resolveMachineIdPath, resolveMycoHome } from '../paths/home.js';
+import { resolveMachineIdPath } from '../paths/home.js';
+import { memberHomeFor } from './home-for-folder.js';
 import { MACHINE_IDENTITY_NOTE, REJOIN_HINT } from '@goondocks/myco-shared/member-protocol';
 import { ENROLLMENT_KEY_PATTERN, ENV_JOIN_CODE, JOIN_PATH } from './constants.js';
 import { admitMemberServerUrl, MEMBER_SERVER_URL_RULE } from './server-url.js';
@@ -218,7 +219,7 @@ export async function ensureJoinedFromCode(
     stderr(`${ENV_JOIN_CODE} — ${JOIN_CODE_REFUSALS[parsed.error]}; no capture`);
     return;
   }
-  const mycoHome = opts.mycoHome ?? resolveMycoHome();
+  const mycoHome = opts.mycoHome ?? memberHomeFor(opts.root ?? process.cwd(), opts.env).home;
   if (settled(parsed, mycoHome, opts.root)) return;
   const machineId = opts.machineId ?? getMachineId();
   const refused = readJoinRefusal(parsed, machineId, mycoHome);

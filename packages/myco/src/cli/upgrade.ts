@@ -57,6 +57,7 @@ import { resolveMycoPackageCheck } from '../upgrade/checker.js';
 import { readProjectReleaseChannel } from '../daemon/update-checker.js';
 import { resolveMycoHome } from '../grove/paths.js';
 import { managedBinaryPath } from '../install/managed-binary.js';
+import { isMemberHome } from '../member/home-role.js';
 import { resolveGlobalDaemonPort } from '../daemon/service-state.js';
 import { getPluginVersion } from '../version.js';
 import { RELEASE_CHANNELS, type ReleaseChannel } from '../constants/update.js';
@@ -114,6 +115,10 @@ export interface UpgradeDeps {
   readMaxStampedSchemaVersion?: typeof readMaxStampedSchemaVersion;
   /** Inject the target-binary supported-schema read (downgrade schema-gap guard). */
   readSupportedSchemaVersion?: typeof readSupportedSchemaVersion;
+  /** Whether the home is a member's (`member/home-role.ts`). */
+  isMemberHome?: (home: string) => boolean;
+  /** Refresh a member home's agent setup with the adopted binary. */
+  refreshMember?: (binary: string, home: string) => Promise<void>;
 }
 
 // ---------------------------------------------------------------------------
@@ -314,6 +319,17 @@ export async function run(args: string[], deps: UpgradeDeps = {}): Promise<void>
   await adoptFn(adoptOpts);
 
   console.log(`myco ${stageResult.version} is now active.`);
+  // A member home's agent hooks, MCP entries and skill links are refreshed by the binary just adopted, so what they
+  // run and read is that build's (#1499).
+  if ((deps.isMemberHome ?? isMemberHome)(home)) await (deps.refreshMember ?? refreshMemberSetup)(mycoBinary, home);
+}
+
+/** Run the adopted binary's `member provision --refresh` for `home`, reporting its lines; a refresh that fails names the command to run by hand. */
+async function refreshMemberSetup(binary: string, home: string): Promise<void> {
+  const { spawnSync } = await import('node:child_process');
+  const ran = spawnSync(binary, ['member', 'provision', '--refresh'], { env: { ...process.env, MYCO_HOME: home }, encoding: 'utf8', timeout: 120_000 });
+  for (const line of `${ran.stdout ?? ''}`.split('\n').filter((l) => l.trim() !== '')) console.log(`  ${line}`);
+  if (ran.status !== 0) console.error(`  Your agents' Myco setup was not refreshed${ran.stderr ? ` (${ran.stderr.trim().split('\n')[0]})` : ''}; run \`myco member provision --refresh\`.`);
 }
 
 // ---------------------------------------------------------------------------

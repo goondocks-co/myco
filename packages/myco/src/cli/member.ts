@@ -14,16 +14,17 @@ import path from 'node:path';
 import type { DoctorCheck } from './doctor.js';
 import { getMachineId } from '../machine-id.js';
 import { isSafeProjectRoot } from '../project-root.js';
-import { RUNTIME_HOME_FILENAME, defaultMycoHome, readHomePin, resolveMycoHome } from '../paths/home.js';
+import { RUNTIME_HOME_FILENAME, defaultMycoHome, readHomePin, resolveMycoHome, type ResolvedMycoHome } from '../paths/home.js';
+import { memberHomeFor, pinnedElsewhere, pinnedElsewhereRefusal, pinnedHomeLine, pinnedHomeRefusal } from '../member/home-for-folder.js';
 import { unboundedBudget } from '../member/budget.js';
-import { CREDENTIAL_FLAG, CREDENTIAL_SOURCES, deploymentScopedHeaders, isProjectId, memberHeaders, MEMBER_TOKEN_REFRESH_WINDOW_MS, SERVER_FLAG } from '../member/constants.js';
+import { CONNECT_TIMEOUT_CAP_MS, CREDENTIAL_FLAG, CREDENTIAL_SOURCES, deploymentScopedHeaders, isProjectId, memberHeaders, MEMBER_TOKEN_REFRESH_WINDOW_MS, SERVER_FLAG } from '../member/constants.js';
 import { isMemberTokenShape, parseCredentialFlag, resolveCredential, resolveMemberProjectRoot } from '../member/credential.js';
 import { admitMemberServerUrl, MEMBER_SERVER_URL_RULE } from '../member/server-url.js';
 import { clearJoinRefusals } from '../member/join-code.js';
 import { refreshMemberCredential, type RefreshReport } from '../member/refresh.js';
 import { runImport } from '../member/import.js';
 import { clearMissingMembership, listMissingMembershipsResult, pruneMissingMemberships, readMissingMembership, readMissingMembershipResult, type MissingMembershipRecord } from '../member/no-membership.js';
-import { deploymentUrl, listRegistryEntries, listRegistryEntriesResult, readDeploymentMembership, readRegistryEntry, readRegistryEntryResult, removeRegistryEntry, writeRegistryEntry, REGISTRY_VERSION, type RegistryEntry } from '../member/registry.js';
+import { deploymentUrl, listDeploymentMemberships, listRegistryEntries, listRegistryEntriesResult, readDeploymentMembership, readRegistryEntry, readRegistryEntryResult, removeRegistryEntry, writeRegistryEntry, REGISTRY_VERSION, type RegistryEntry } from '../member/registry.js';
 import { applySpoolRetention } from '../member/retention.js';
 import { memberDiagnostics, projectDiagnostics } from '../member/diagnostics.js';
 import { MemberSpool, type DrainResult } from '../member/spool.js';
@@ -31,7 +32,12 @@ import { drainEntryBacklog, type BacklogReport } from '../member/backlog.js';
 import { REJOIN_HINT } from '../member/delivery-notice.js';
 import { ServerClient, type FetchLike } from '../member/transport.js';
 import { openBrowser } from './open-browser.js';
-import { loadManifests, resolvePackageRoot } from '../symbionts/detect.js';
+import { CutoverBackup } from '../member/cutover-backup.js';
+import { linkMemberSkills, skillsFolder, type SkillLinks } from '../symbionts/member-skill-links.js';
+import { readProvisionRecord, recordProvision } from '../symbionts/member-provision-record.js';
+import { getPluginVersion } from '../version.js';
+import { postRoute } from './deployment-reader.js';
+import { detectMachineInstalledSymbionts, loadManifests, resolvePackageRoot } from '../symbionts/detect.js';
 import { MemberMcpConflictError, MemberProvisionConflictError, SymbiontInstaller } from '../symbionts/installer.js';
 import { ensureVaultGitignoreCurrent } from '../vault/gitignore.js';
 import { describeWorkerService, ensuredWorkerWords, ensureWorkerService, removeWorkerService, workerServiceWords, type WorkerServiceDeps } from './worker-service.js';
@@ -39,6 +45,11 @@ import { describeWorkerService, ensuredWorkerWords, ensureWorkerService, removeW
 export const MEMBER_HELP = `Usage: myco member <op> [options]
 
 Ops:
+  join [--project <id|name> | --new [name]] [--root <dir>] [--no-agents] [<server-url>]
+                     Connect the repository you are in to a project on the Deployment this machine is
+                     signed in to (\`myco login\`): an existing one by id or name, or a new one (named
+                     for the folder unless you name it). With neither, a terminal asks which. Your agents
+                     are set up to capture there; --no-agents leaves them as they are.
   join <server-url> --project <id> (--token-stdin | --token-env <NAME>) [--root <dir>] [--provision <agent>] [--no-worker]
                      Record this machine's membership of a project on a Myco server. The token is read
                      from stdin or from the named environment variable — never from the command line.
@@ -59,9 +70,12 @@ Ops:
                      free-text detail; the document's omissions list names what is left out.
   refresh [--all]    Rotate the member token when its refresh window is open. The predecessor keeps
                      working until the successor is first used; an env-sourced token is never rotated.
-  provision <agent> [--root <dir>]
-                     Install the agent's hooks and MCP entry globally using the recorded membership.
-                     --root selects the membership, not the installation scope. No token is changed.
+  provision [<agent>] [--root <dir>] [--server <url>]
+                     Install the agent's hooks and MCP entry globally using the recorded membership, or
+                     every agent installed on this machine when none is named. An agent whose entries
+                     belong to another installation is left alone and named. --root selects the
+                     membership, not the installation scope; --server picks the Deployment when this
+                     machine is a member of several. No token is changed.
   link-github [--root <dir>] [--open]
                      Connect your GitHub account to this membership for the dashboard: prints a one-time
                      link to open in a browser within ten minutes. --open hands it to the browser as well.
@@ -83,6 +97,10 @@ export interface MemberCliDeps {
   env?: NodeJS.ProcessEnv;
   /** Where `--provision` writes; defaults to the real package root. */
   packageRoot?: string;
+  /** The agents installed on this machine; defaults to `detectMachineInstalledSymbionts`. */
+  agents?: () => string[];
+  /** Asks the connect flow's one question; null where no terminal can answer. Defaults to stdin when it is a terminal. */
+  ask?: (question: string) => Promise<string | null>;
   /** Opens a URL in the browser for `link-github --open`; defaults to the platform opener. */
   openBrowser?: (url: string) => void;
   /** What `join` and `leave` install and remove the worker service through; defaults to this machine's platform. */
@@ -97,8 +115,11 @@ const when = (ms: number | undefined): string => (ms === undefined ? '—' : new
  * project pinned to a non-default home is addressed from inside it without
  * `MYCO_HOME`, exactly as its hooks are.
  */
-const homeFor = (deps: MemberCliDeps, cwd?: string): string =>
-  deps.mycoHome ?? resolveMycoHome({ cwd: cwd ?? deps.cwd ?? process.cwd() });
+const homeFor = (deps: MemberCliDeps, cwd?: string): string => homeChoiceFor(deps, cwd).home;
+
+/** The home an op uses for `cwd` and the rule that chose it (`memberHomeFor`); a home the caller names is its own. */
+const homeChoiceFor = (deps: MemberCliDeps, cwd?: string): ResolvedMycoHome =>
+  deps.mycoHome !== undefined ? { home: deps.mycoHome, source: 'env' } : memberHomeFor(path.resolve(cwd ?? deps.cwd ?? process.cwd()));
 
 function entriesFor(args: readonly string[], deps: MemberCliDeps): RegistryEntry[] {
   const mycoHome = homeFor(deps);
@@ -171,6 +192,9 @@ interface JoinArgs {
   root?: string;
   provision?: string;
   noWorker?: boolean;
+  /** `--new [name]`: create a project for this folder, named `name` or the folder's own name. */
+  create?: { name: string | null };
+  noAgents?: boolean;
   error?: string;
 }
 
@@ -193,6 +217,14 @@ function parseJoin(args: readonly string[]): JoinArgs {
       case '--root': parsed.root = value(arg, args[++i]); break;
       case '--provision': parsed.provision = value(arg, args[++i]); break;
       case '--no-worker': parsed.noWorker = true; break;
+      case '--no-agents': parsed.noAgents = true; break;
+      case '--new': {
+        // A name follows `--new` unless what follows is a flag or a server URL, which names the Deployment instead.
+        const next = args[i + 1];
+        const named = next !== undefined && !next.startsWith('--') && !/^[a-z][a-z0-9+.-]*:\/\//i.test(next);
+        parsed.create = { name: named ? (i += 1, next) : null };
+        break;
+      }
       default:
         if (arg.startsWith('-')) refuse(`unknown option ${arg.split('=')[0]}`);
         else if (parsed.serverUrl === undefined) parsed.serverUrl = arg;
@@ -217,6 +249,9 @@ export async function runJoin(args: readonly string[], deps: MemberCliDeps = {})
 
   const parsed = parseJoin(args);
   if (parsed.error) return fail(parsed.error);
+  // With no token named, the folder is connected over the membership this machine already holds.
+  if (!parsed.tokenStdin && parsed.tokenEnv === undefined) return connectFolder(parsed, deps, out, err, fail);
+  if (parsed.create !== undefined) return fail('--new connects a folder over the membership this machine holds; it takes no token');
   if (!parsed.serverUrl || !parsed.project) { err(MEMBER_HELP.trimEnd()); process.exitCode = 2; return null; }
   if (!admitMemberServerUrl(parsed.serverUrl)) return fail(`${parsed.serverUrl} is not a server URL a member accepts (${MEMBER_SERVER_URL_RULE})`);
   if (!isProjectId(parsed.project)) return fail(`${parsed.project} is not a project id`);
@@ -275,6 +310,121 @@ export async function runJoin(args: readonly string[], deps: MemberCliDeps = {})
   return entry;
 }
 
+/** The member routes the connect flow reads the Deployment's projects from and creates one through. */
+export const MEMBER_PROJECTS_LIST_PATH = '/members/projects/list';
+export const MEMBER_PROJECTS_PATH = '/members/projects';
+/** How long the connect flow waits for the Deployment to answer one request. */
+const CONNECT_REQUEST_TIMEOUT_MS = 30_000;
+
+/** A project on the member's Deployment, as `POST /members/projects/list` answers it. */
+interface DeploymentProject { projectId: string; name: string; sessionCount: number }
+
+/** Where the connect flow asks its one question, when stdin is a terminal; null when it is not. */
+async function askOnTerminal(question: string): Promise<string | null> {
+  if (!process.stdin.isTTY) return null;
+  const readline = await import('node:readline/promises');
+  const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+  try { return await rl.question(question); } finally { rl.close(); }
+}
+
+/**
+ * `myco member join [<server-url>] [--project <id|name> | --new [name]] [--root <dir>] [--no-agents]`: connect the folder
+ * this runs in to a project on the Deployment this machine is a member of, over the membership `myco login` recorded,
+ * so no token is typed. The project is one the Deployment holds, named by id or name, or one created for the folder.
+ * With neither named, a terminal is asked which; anywhere else the projects and both commands are listed.
+ */
+async function connectFolder(
+  parsed: JoinArgs, deps: MemberCliDeps, out: (line: string) => void, err: (line: string) => void, fail: (line: string) => null,
+): Promise<RegistryEntry | null> {
+  const now = deps.now ?? Date.now;
+  const root = path.resolve(parsed.root ?? resolveMemberProjectRoot(deps.cwd));
+  if (!isSafeProjectRoot(root)) return fail(`${root} is not a project directory; run this inside the repository to connect`);
+  const chosen = homeChoiceFor(deps, root);
+  const mycoHome = chosen.home;
+  const memberships = listDeploymentMemberships(mycoHome)
+    .filter((m) => parsed.serverUrl === undefined || deploymentUrl(m.serverUrl) === deploymentUrl(parsed.serverUrl));
+  // A pin chose this home: say so before anything reads its credential, and refuse where it holds none. A pin that sends
+  // the folder away from this machine's own home never has one of that home's memberships picked for it.
+  const pinnedRefusal = memberships.length === 0 ? pinnedHomeRefusal(chosen, root, parsed.serverUrl === undefined ? 'membership' : `membership of ${parsed.serverUrl}`) : null;
+  if (pinnedRefusal !== null) return fail(pinnedRefusal);
+  if (parsed.serverUrl === undefined && pinnedElsewhere(chosen, deps.env)) return fail(pinnedElsewhereRefusal(chosen, root, memberships.map((m) => deploymentUrl(m.serverUrl))));
+  const pinnedLine = pinnedHomeLine(chosen, root);
+  if (pinnedLine !== null) out(pinnedLine);
+  if (memberships.length === 0) {
+    return fail(parsed.serverUrl === undefined ? 'this machine is not signed in to a Deployment — run `myco login <invite link>` first' : `this machine is not signed in to ${parsed.serverUrl} — run \`myco login <invite link>\` first`);
+  }
+  if (memberships.length > 1) return fail(`this machine is a member of ${memberships.length} Deployments; name one (${memberships.map((m) => deploymentUrl(m.serverUrl)).join(', ')})`);
+  const membership = memberships[0];
+  const serverUrl = membership.serverUrl;
+  const client = new ServerClient({ serverUrl, token: membership.token }, deps.fetch ?? globalThis.fetch);
+  const budget = { connectTimeoutMs: CONNECT_TIMEOUT_CAP_MS, requestTimeoutMs: CONNECT_REQUEST_TIMEOUT_MS };
+
+  let project: DeploymentProject | undefined;
+  const create = async (name: string): Promise<DeploymentProject | null> => {
+    const made = await postRoute(client, budget, MEMBER_PROJECTS_PATH, { name });
+    if (!made.ok) { fail(`${deploymentUrl(serverUrl)} did not create the project (${made.error.code}): ${made.error.message}`); return null; }
+    return { projectId: String(made.value.projectId), name: String(made.value.name), sessionCount: 0 };
+  };
+  const folderName = path.basename(root);
+  if (parsed.create !== undefined) {
+    const made = await create(parsed.create.name ?? folderName);
+    if (made === null) return null;
+    project = made;
+  } else {
+    const listed = await postRoute(client, budget, MEMBER_PROJECTS_LIST_PATH, {});
+    if (!listed.ok) return fail(`${deploymentUrl(serverUrl)} did not list its projects (${listed.error.code}): ${listed.error.message}`);
+    const projects = (Array.isArray(listed.value.projects) ? listed.value.projects : []) as DeploymentProject[];
+    if (parsed.project !== undefined) {
+      const wanted = parsed.project;
+      const matches = projects.filter((p) => p.projectId === wanted || p.name.toLowerCase() === wanted.toLowerCase());
+      if (matches.length === 0) return fail(`${deploymentUrl(serverUrl)} holds no project "${wanted}"; see its projects with \`myco member join\`, or create one with \`myco member join --new\``);
+      if (matches.length > 1) return fail(`${matches.length} projects are named "${wanted}"; name one by id (${matches.map((p) => p.projectId).join(', ')})`);
+      project = matches[0];
+    } else {
+      const lines = [`Projects on ${deploymentUrl(serverUrl)}:`, ...projects.map((p, n) => `  ${n + 1}) ${p.name} (${p.projectId}, ${p.sessionCount} session${p.sessionCount === 1 ? '' : 's'})`)];
+      const answer = await (deps.ask ?? askOnTerminal)([...lines, `  n) a new project named "${folderName}"`, `Connect ${root} to which? `].join('\n'));
+      if (answer === null) {
+        for (const line of lines) out(line);
+        return fail(`name the project to connect ${root} to: \`myco member join --project <id or name>\`, or \`myco member join --new [name]\` to create one`);
+      }
+      const picked = answer.trim().toLowerCase();
+      if (picked === 'n' || picked === 'new') {
+        const made = await create(folderName);
+        if (made === null) return null;
+        project = made;
+      } else {
+        const index = Number(picked);
+        if (!Number.isSafeInteger(index) || index < 1 || index > projects.length) return fail(`"${answer.trim()}" names no project here; nothing was connected`);
+        project = projects[index - 1];
+      }
+    }
+  }
+
+  const existing = readRegistryEntry(root, mycoHome);
+  const entry: RegistryEntry = {
+    version: REGISTRY_VERSION, projectId: project.projectId, serverUrl, token: membership.token, root,
+    machineId: membership.machineId ?? getMachineId(), joinedAt: existing?.joinedAt ?? now(), updatedAt: now(),
+  };
+  writeRegistryEntry(entry, { mycoHome });
+  const pinned = pinProjectHome(root, mycoHome);
+  const machinePinned = pinMachineHome(mycoHome, deps);
+  clearMissingMembership(root, mycoHome);
+  pruneMissingMemberships(mycoHome, now());
+  out(`Connected ${root} to project ${project.name} (${project.projectId}) on ${deploymentUrl(serverUrl)}. Your agents capture there from now on.`);
+  reportPin(pinned, mycoHome, out, err);
+  reportMachinePin(machinePinned, mycoHome, out);
+  await seedMachineSettings({ serverUrl, token: membership.token }, { mycoHome, fetch: deps.fetch });
+  if (!parsed.noAgents) {
+    for (const line of detectedProvisionLines(provisionDetectedAgents(mycoHome, serverUrl, root, { packageRoot: deps.packageRoot, agents: deps.agents }))) out(line);
+  } else recordNoAgents(mycoHome, serverUrl);
+  const report = await runImport({ project: project.projectId, serverUrl }, {
+    fetch: deps.fetch, now: deps.now, cwd: root, mycoHome, machineId: entry.machineId,
+  }).catch(() => null);
+  const imported = report?.projects.reduce((n, p) => n + p.agents.reduce((m, a) => m + a.imported, 0), 0) ?? 0;
+  if (imported > 0) out(`Imported ${imported} past sessions; run \`myco import\` to reach further back.`);
+  return entry;
+}
+
 /**
  * Keep a worker for the joined Deployment running at login. A machine that
  * cannot host one is told why and stays joined: the membership is what the
@@ -298,7 +448,11 @@ function provisionAgent(
   out: (line: string) => void,
   fail: (line: string) => unknown,
 ): boolean {
-  const outcome = provisionGlobally(agent, root, mycoHome, { packageRoot: deps.packageRoot });
+  const backup = provisionBackup(mycoHome);
+  let outcome: ProvisionOutcome;
+  try {
+    outcome = provisionGlobally(agent, root, mycoHome, { packageRoot: deps.packageRoot, backup });
+  } finally { backup.pruneUnchanged(); }
   if (outcome.kind === 'unknown') {
     fail(`unknown agent "${agent}" — the membership is recorded; provision it with \`myco member provision <agent>\``);
     return false;
@@ -315,7 +469,7 @@ function provisionAgent(
 export type ProvisionOutcome =
   | { kind: 'unknown' }
   | { kind: 'refused'; detail: string }
-  | { kind: 'provisioned' | 'unchanged'; detail: string };
+  | { kind: 'provisioned' | 'unchanged'; detail: string; skills?: SkillLinks | null };
 
 /**
  * Install an agent's member hooks (or plugin) and MCP entry globally, from the
@@ -324,25 +478,48 @@ export type ProvisionOutcome =
  * `legacyHomes` names 1.4 homes whose global registrations are replaced in
  * place rather than refused.
  */
+/**
+ * The member-global installer for `manifest`: over the connected folder `root`, or with no project root where no folder
+ * is connected, when global provisioning neither reads nor retires any project's registrations.
+ */
+function globalInstaller(
+  manifest: ReturnType<typeof loadManifests>[number], root: string | null, mycoHome: string, opts: { packageRoot?: string; legacyHomes?: readonly string[] },
+): SymbiontInstaller {
+  const installer = new SymbiontInstaller(manifest, root ?? mycoHome, opts.packageRoot ?? resolvePackageRoot(), false, undefined, null, 'member-global', mycoHome)
+    .replacingLegacy(opts.legacyHomes ?? []);
+  return root === null ? installer.withoutProjectRoot() : installer;
+}
+
 export function provisionGlobally(
-  agent: string, root: string, mycoHome: string, opts: { packageRoot?: string; legacyHomes?: readonly string[] } = {},
+  agent: string, root: string | null, mycoHome: string,
+  opts: { packageRoot?: string; legacyHomes?: readonly string[]; serverUrl?: string; backup?: CutoverBackup } = {},
 ): ProvisionOutcome {
   const manifest = loadManifests().find((m) => m.name === agent);
   if (!manifest) return { kind: 'unknown' };
-  const packageRoot = opts.packageRoot ?? resolvePackageRoot();
-  const installer = new SymbiontInstaller(manifest, root, packageRoot, false, undefined, null, 'member-global', mycoHome)
-    .replacingLegacy(opts.legacyHomes ?? []);
+  const installer = globalInstaller(manifest, root, mycoHome, opts);
+  if (opts.serverUrl !== undefined) installer.forDeployment(opts.serverUrl);
+  // Every agent file this may write is copied first; `restore.md` beside the copies puts back what the person had.
+  const targets = opts.backup === undefined ? [] : installer.memberGlobalTargets().all;
+  const absent = targets.filter((file) => !fs.existsSync(file));
+  const regular = (file: string) => { try { return fs.statSync(file).isFile(); } catch { return false; } };
+  for (const file of targets) if (regular(file) && !opts.backup!.all.some((e) => e.original === file)) opts.backup!.take(file);
   let installed;
   try {
     installed = installer.install();
   } catch (error) {
     if (!(error instanceof MemberProvisionConflictError)) throw error;
     return { kind: 'refused', detail: error.message };
+  } finally {
+    for (const file of absent) if (fs.existsSync(file) && !opts.backup!.all.some((e) => e.original === file)) opts.backup!.created(file);
   }
   const surface = installer.isMemberPluginFile() ? 'plugin' : 'hooks';
-  return installed.hooks || installed.mcp
-    ? { kind: 'provisioned', detail: `provisioned ${manifest.displayName} globally${installed.mcp ? ` (${surface} and MCP)` : ''}` }
-    : { kind: 'unchanged', detail: `no global registration changes for ${manifest.displayName}` };
+  // An agent Myco captures gets the skills of this home in its global skills folder, beside its hooks.
+  const target = manifest.registration?.globalSkillsTarget;
+  const skills = installer.capturesAsMember() && target ? linkMemberSkills(mycoHome, skillsFolder(target), opts.legacyHomes ?? []) : null;
+  const skillsMoved = skills !== null && (skills.linked.length > 0 || skills.removed.length > 0);
+  return installed.hooks || installed.mcp || skillsMoved
+    ? { kind: 'provisioned', detail: `provisioned ${manifest.displayName} globally${installed.mcp ? ` (${surface} and MCP)` : ''}`, skills }
+    : { kind: 'unchanged', detail: `no global registration changes for ${manifest.displayName}`, skills };
 }
 
 /**
@@ -358,12 +535,11 @@ export type OwnershipPreview =
   | { kind: 'ready'; displayName: string; replaces: string[]; targets: { hooks: string | null; mcp: string[]; all: string[] } };
 
 export function previewGlobalProvision(
-  agent: string, root: string, mycoHome: string, serverUrl: string, opts: { packageRoot?: string; legacyHomes?: readonly string[] } = {},
+  agent: string, root: string | null, mycoHome: string, serverUrl: string, opts: { packageRoot?: string; legacyHomes?: readonly string[] } = {},
 ): OwnershipPreview {
   const manifest = loadManifests().find((m) => m.name === agent);
   if (!manifest) return { kind: 'unknown' };
-  const installer = new SymbiontInstaller(manifest, root, opts.packageRoot ?? resolvePackageRoot(), false, undefined, null, 'member-global', mycoHome)
-    .replacingLegacy(opts.legacyHomes ?? []);
+  const installer = globalInstaller(manifest, root, mycoHome, opts);
   if (!installer.capturesAsMember()) return { kind: 'uncaptured', displayName: manifest.displayName };
   const found = installer.globalOwnership(serverUrl);
   return found.problem !== null
@@ -371,28 +547,167 @@ export function previewGlobalProvision(
     : { kind: 'ready', displayName: manifest.displayName, replaces: found.replaces, targets: installer.memberGlobalTargets() };
 }
 
-/** `myco member provision <agent> [--root <dir>]`: provision an agent for a project already joined; no token is supplied or changed. */
+/** What provisioning every agent found on this machine came to: the agents set up, those already current, and those left alone with the reason. */
+export interface DetectedProvision {
+  provisioned: string[];
+  unchanged: string[];
+  skipped: Array<{ agent: string; displayName: string; reason: string }>;
+  /** Skill folders where another installation, or the person, holds a skill's place. */
+  heldSkills: Array<{ folder: string; names: string[] }>;
+}
+
+/**
+ * Provision every agent installed on this machine (`detectMachineInstalledSymbionts`, the detection the cutover uses)
+ * for the member's Deployment `serverUrl`. Each goes through the cutover's own preview first, so an agent whose entries
+ * belong to another installation is skipped with the reason and nothing of it is written; an agent Myco does not
+ * capture as a member is skipped too. `root` is the connected folder, or null for a member with none connected yet:
+ * then provisioning is global alone, with no project root to check or retire registrations in.
+ */
+export function provisionDetectedAgents(
+  mycoHome: string, serverUrl: string, root: string | null, opts: { packageRoot?: string; agents?: () => string[] } = {},
+): DetectedProvision {
+  return provisionAgents((opts.agents ?? (() => detectMachineInstalledSymbionts().map((m) => m.name)))(), mycoHome, serverUrl, root, opts);
+}
+
+/**
+ * Provision `agents` as `provisionDetectedAgents` does, and record the ones set up (`recordProvision`) with this build,
+ * so a later binary refreshes them. `replace` records exactly these agents, as a refresh does; otherwise they join the
+ * agents recorded before.
+ */
+export function provisionAgents(
+  agents: readonly string[], mycoHome: string, serverUrl: string, root: string | null, opts: { packageRoot?: string; replace?: boolean } = {},
+): DetectedProvision {
+  const found: DetectedProvision = { provisioned: [], unchanged: [], skipped: [], heldSkills: [] };
+  const ready: string[] = [];
+  const backup = provisionBackup(mycoHome);
+  try {
+  for (const agent of agents) {
+    const preview = previewGlobalProvision(agent, root, mycoHome, serverUrl, { packageRoot: opts.packageRoot });
+    if (preview.kind === 'unknown') continue;
+    if (preview.kind === 'uncaptured') { found.skipped.push({ agent, displayName: preview.displayName, reason: 'Myco does not capture it as a member yet' }); continue; }
+    if (preview.kind === 'refused') { found.skipped.push({ agent, displayName: preview.displayName, reason: preview.detail }); continue; }
+    const outcome = provisionGlobally(agent, root, mycoHome, { packageRoot: opts.packageRoot, serverUrl, backup });
+    if (outcome.kind === 'refused') { found.skipped.push({ agent, displayName: preview.displayName, reason: outcome.detail }); continue; }
+    if (outcome.kind === 'unknown') continue;
+    (outcome.kind === 'provisioned' ? found.provisioned : found.unchanged).push(preview.displayName);
+    ready.push(agent);
+    const held = outcome.skills?.held ?? [];
+    if (held.length > 0 && !found.heldSkills.some((h) => h.folder === outcome.skills!.folder)) found.heldSkills.push({ folder: outcome.skills!.folder, names: held.map((h) => h.name) });
+  }
+  } finally { backup.pruneUnchanged(); }
+  if (ready.length > 0 || opts.replace) recordProvision(mycoHome, { version: getPluginVersion(), serverUrl, agents: ready }, { replace: opts.replace });
+  return found;
+}
+
+/** Where one provisioning keeps copies of the agent files it changes: `<home>/backups/member-provision-<instant>/`. */
+function provisionBackup(mycoHome: string): CutoverBackup {
+  return new CutoverBackup(path.join(mycoHome, 'backups', `member-provision-${new Date().toISOString().replace(/[:.]/g, '-')}`), 'provision');
+}
+
+/**
+ * Record that the person set up no agent (`--no-agents`), where nothing was recorded before, so a later refresh sets up
+ * none on its own. A record of agents set up before is kept as it is.
+ */
+export function recordNoAgents(mycoHome: string, serverUrl: string): void {
+  if (readProvisionRecord(mycoHome) === null) recordProvision(mycoHome, { version: getPluginVersion(), serverUrl, agents: [] }, { replace: true });
+}
+
+/** The lines a sign-in or a provisioning reports for `found`: what was set up, and each agent left alone with why. */
+export function detectedProvisionLines(found: DetectedProvision): string[] {
+  const ready = [...found.provisioned, ...found.unchanged];
+  const lines: string[] = [];
+  if (ready.length > 0) lines.push(`Capture is set up for ${ready.join(', ')}.`);
+  for (const skip of found.skipped) lines.push(`Skipped ${skip.displayName}: ${skip.reason}.`);
+  for (const held of found.heldSkills) lines.push(`Left ${held.names.join(', ')} in ${held.folder} as they are: another installation or you put them there.`);
+  if (ready.length === 0 && found.skipped.length === 0) lines.push('No supported agent is installed on this machine; once one is, run `myco member provision`.');
+  return lines;
+}
+
+/**
+ * `myco member provision [<agent>] [--root <dir>] [--server <url>]`: install an agent's hooks and MCP entry globally
+ * from the recorded membership, or every agent installed on this machine when none is named. A connected folder's
+ * binding names the Deployment; a member with no folder connected yet provisions for its one Deployment, or the one
+ * `--server` names. No token is supplied or changed.
+ */
 export function runProvision(args: readonly string[], deps: MemberCliDeps = {}): boolean {
   const out = deps.stdout ?? ((l) => process.stdout.write(`${l}\n`));
   const err = deps.stderr ?? ((l) => process.stderr.write(`${l}\n`));
   const fail = (line: string): false => { err(`myco member provision: ${line}`); process.exitCode = 2; return false; };
   let agent: string | undefined;
   let rootArg: string | undefined;
+  let serverArg: string | undefined;
+  let refresh = false;
   for (let i = 0; i < args.length; i++) {
     const arg = args[i];
-    if (arg === '--root') {
-      rootArg = args[++i];
-      if (rootArg === undefined || rootArg.startsWith('--')) return fail('--root needs a value');
+    if (arg === '--refresh') refresh = true;
+    else if (arg === '--root' || arg === '--server') {
+      const value = args[++i];
+      if (value === undefined || value.startsWith('--')) return fail(`${arg} needs a value`);
+      if (arg === '--root') rootArg = value; else serverArg = value;
     } else if (arg.startsWith('-')) return fail(`unknown option ${arg.split('=')[0]}`);
     else if (agent === undefined) agent = arg;
     else return fail('provision takes one agent');
   }
-  if (!agent) return fail('name the agent to provision, e.g. `myco member provision codex`');
   const root = path.resolve(rootArg ?? resolveMemberProjectRoot(deps.cwd));
-  if (!isSafeProjectRoot(root)) return fail(`${root} is not a project directory`);
-  const mycoHome = homeFor(deps, root);
-  if (!readRegistryEntry(root, mycoHome)) return fail(`no membership recorded for ${root} — run \`myco member join\` first`);
-  return provisionAgent(agent, root, mycoHome, deps, out, fail);
+  const chosen = homeChoiceFor(deps, root);
+  const mycoHome = chosen.home;
+  if (refresh) {
+    if (agent !== undefined) return fail('--refresh sets up again the agents set up before; it takes no agent');
+    // Only what provisioning recorded is set up again, for the Deployment it recorded: an agent the person left out
+    // (`--no-agents`, or never provisioned) stays as it is, and a home no provisioning recorded is only told how.
+    const record = readProvisionRecord(mycoHome);
+    if (record === null) {
+      // Said once: the empty record written here keeps later refreshes quiet until the person provisions.
+      out('Myco has not set up your agents on this machine; run `myco member provision` to set them up.');
+      const membership = listDeploymentMemberships(mycoHome)[0];
+      if (membership !== undefined) recordNoAgents(mycoHome, membership.serverUrl);
+      return true;
+    }
+    if (record.agents.length === 0) {
+      recordProvision(mycoHome, { version: getPluginVersion(), serverUrl: record.serverUrl, agents: [] }, { replace: true });
+      out('No agent is set up for Myco on this machine; `myco member provision` sets them up.');
+      return true;
+    }
+    for (const line of detectedProvisionLines(provisionAgents(record.agents, mycoHome, record.serverUrl, null, { packageRoot: deps.packageRoot, replace: true }))) out(line);
+    return true;
+  }
+  const binding = isSafeProjectRoot(root) ? readRegistryEntry(root, mycoHome) : null;
+  if (binding === null && listDeploymentMemberships(mycoHome).length === 0) {
+    const pinnedRefusal = pinnedHomeRefusal(chosen, root, 'membership');
+    if (pinnedRefusal !== null) return fail(pinnedRefusal);
+  }
+  if (binding === null && serverArg === undefined && pinnedElsewhere(chosen, deps.env)) {
+    return fail(pinnedElsewhereRefusal(chosen, root, listDeploymentMemberships(mycoHome).map((m) => deploymentUrl(m.serverUrl))));
+  }
+  const pinnedLine = pinnedHomeLine(chosen, root);
+  if (pinnedLine !== null) out(pinnedLine);
+  if (rootArg !== undefined && binding === null) return fail(`no membership recorded for ${root} — run \`myco member join\` there first`);
+  let serverUrl = binding?.serverUrl;
+  if (serverUrl === undefined) {
+    const memberships = listDeploymentMemberships(mycoHome);
+    const named = serverArg === undefined ? memberships : memberships.filter((m) => deploymentUrl(m.serverUrl) === deploymentUrl(serverArg!));
+    if (named.length === 0) return fail(serverArg === undefined ? 'no membership recorded on this machine — sign in with `myco login <invite link>` first' : `no membership recorded for ${serverArg}`);
+    if (named.length > 1) return fail(`this machine is a member of ${named.length} Deployments; name one with --server (${named.map((m) => deploymentUrl(m.serverUrl)).join(', ')})`);
+    serverUrl = named[0].serverUrl;
+  }
+  const folder = binding === null ? null : root;
+  if (agent === undefined) {
+    const found = provisionDetectedAgents(mycoHome, serverUrl, folder, { packageRoot: deps.packageRoot, agents: deps.agents });
+    for (const line of detectedProvisionLines(found)) out(line);
+    return true;
+  }
+  const backup = provisionBackup(mycoHome);
+  let outcome: ProvisionOutcome;
+  try {
+    outcome = provisionGlobally(agent, folder, mycoHome, { packageRoot: deps.packageRoot, serverUrl, backup });
+  } finally { backup.pruneUnchanged(); }
+  if (outcome.kind === 'unknown') return fail(`unknown agent "${agent}"`);
+  if (outcome.kind === 'refused') return fail(outcome.detail);
+  out(outcome.detail);
+  const held = outcome.skills?.held ?? [];
+  if (held.length > 0) out(`Left ${held.map((h) => h.name).join(', ')} in ${outcome.skills!.folder} as they are: another installation or you put them there.`);
+  recordProvision(mycoHome, { version: getPluginVersion(), serverUrl, agents: [agent] });
+  return true;
 }
 
 /**
