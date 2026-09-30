@@ -59,7 +59,8 @@ const MAX_SECRET_CHARS = 4096;
  * Every Deployment leaf this server accepts, with whatever is stored for it. A leaf with no row is reported absent
  * rather than defaulted: the reader layers its own defaults. `redacted` answers every URL a string value holds, at any
  * depth, without its userinfo, query and fragment (`withoutUrlSecrets`), which is how every reader but an admin gets
- * them; an admin reads them raw to edit them. Provider credentials live in the secret store and never reach this.
+ * them; an admin reads them raw to edit them. `retired` marks a leaf nothing reads (`RETIRED_LEAVES`). Provider
+ * credentials live in the secret store and never reach this.
  */
 async function deploymentLeaves(env: ServerEnv, redacted: boolean): Promise<unknown[]> {
   const stored = await settingsWriter(env.db).leaves();
@@ -69,18 +70,15 @@ async function deploymentLeaves(env: ServerEnv, redacted: boolean): Promise<unkn
     value: stored[leaf]?.value ?? null,
     updatedAt: stored[leaf]?.updatedAt ?? null,
     updatedBy: stored[leaf]?.updatedBy ?? null,
+    retired: RETIRED_LEAVES.has(leaf),
   }));
   if (!redacted) return leaves;
   return JSON.parse(JSON.stringify(leaves), (_key, value: unknown) => (typeof value === 'string' ? withoutUrlSecrets(value) : value)) as unknown[];
 }
 
-/**
- * `GET /api/settings`: the Deployment's leaves on the dashboard, raw to an admin and redacted to every other member,
- * each marked `retired` when nothing reads it.
- */
+/** `GET /api/settings`: the Deployment's leaves on the dashboard, raw to an admin and redacted to every other member. */
 export async function handleSettings(env: ServerEnv, ctx: OwnerContext): Promise<Response> {
-  const leaves = (await deploymentLeaves(env, !isAdmin(ctx.member.role))) as Array<{ leaf: string }>;
-  return ok({ persisted: true, leaves: leaves.map((row) => ({ ...row, retired: RETIRED_LEAVES.has(row.leaf) })) });
+  return ok({ persisted: true, leaves: await deploymentLeaves(env, !isAdmin(ctx.member.role)) });
 }
 
 /** A token that addresses a host: a scheme or `//` ahead of it, or `name:secret@host` followed by a port or a path. */

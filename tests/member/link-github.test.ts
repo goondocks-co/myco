@@ -6,6 +6,8 @@
 import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
 import { resetMachineIdCache } from '@myco/machine-id.js';
 import { LINK_REQUIRES_ADMIN_HINT, linkUrl, runLinkGithub } from '@myco/cli/member.js';
+import { LINK_REQUIRES_ADMIN } from '@myco-server-worker/auth/members.js';
+import { INVITE_CONTROLS } from '@goondocks/myco-shared/member-protocol';
 import { classifyLinkAnswer, type FetchLike } from '@myco/member/transport.js';
 import { ENV_MEMBER_TOKEN, resolveMemberProjectRoot } from '@myco/member/credential.js';
 import { tempMycoHome } from './helpers/server.js';
@@ -84,10 +86,10 @@ describe('myco member link-github once the server has an admin (#1448)', () => {
     registerTestMember({ mycoHome, token: 'mt_' + 'a'.repeat(40), projectId: 'proj_1', serverUrl: SERVER_URL, root });
     const out: string[] = [];
     const errs: string[] = [];
-    const answer = { persisted: false, code: 'link_requires_admin', reason: 'this server already has an admin; ask an admin to link your GitHub account from the dashboard\'s Members page' };
+    const answer = { persisted: false, code: 'link_requires_admin', reason: LINK_REQUIRES_ADMIN };
     expect(await runLinkGithub([], { mycoHome, cwd: root, fetch: answering(answer), stdout: (l) => out.push(l), stderr: (l) => errs.push(l) })).toBeNull();
     expect(errs).toEqual([`myco member link-github: ${LINK_REQUIRES_ADMIN_HINT}`]);
-    expect(LINK_REQUIRES_ADMIN_HINT).toContain('ask an admin to link yours in the dashboard\'s Members page');
+    expect(LINK_REQUIRES_ADMIN_HINT).toContain(`ask an admin to link yours in the dashboard's ${INVITE_CONTROLS.page} page`);
     expect(out).toEqual([]);
     expect(process.exitCode).toBe(2);
     process.exitCode = 0;

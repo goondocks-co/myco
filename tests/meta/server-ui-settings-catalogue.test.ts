@@ -84,15 +84,20 @@ describe('settings catalogue', () => {
 
   /**
    * A setting is retired exactly when no server code reads it. The leaf list in
-   * `core/settings.ts` names every leaf, so it is left out of the search; a
-   * setting read anywhere else in the server's source is still in use.
+   * `core/settings.ts` names every leaf, and the retired list names the unread
+   * ones, so both are left out of the search; a setting read anywhere else in
+   * the server's source is still in use.
    */
   it('retires exactly the settings no server code reads', () => {
     const root = join(import.meta.dir, '..', '..', 'packages', 'myco-server', 'src');
     const specs = readFileSync(join(root, 'core', 'settings.ts'), 'utf8');
     const listStart = specs.indexOf('export const DEPLOYMENT_LEAF_SPECS');
     const listEnd = specs.indexOf('\n};', listStart);
-    const sources = walkSources(root).map((file) => (file.endsWith(join('core', 'settings.ts')) ? specs.slice(0, listStart) + specs.slice(listEnd) : readFileSync(file, 'utf8')));
+    const retiredStart = specs.indexOf('export const RETIRED_LEAVES');
+    const retiredEnd = specs.indexOf(']);', retiredStart);
+    expect(retiredStart > listEnd && retiredEnd > retiredStart).toBe(true);
+    const unlisted = specs.slice(0, listStart) + specs.slice(listEnd, retiredStart) + specs.slice(retiredEnd);
+    const sources = walkSources(root).map((file) => (file.endsWith(join('core', 'settings.ts')) ? unlisted : readFileSync(file, 'utf8')));
     const read = (leaf: string) => sources.some((text) => text.includes(`'${leaf}'`));
     // Myco's own built-in exclusions are shown from the shared constant the map itself uses, not from the leaf.
     const shownFromShared = new Set(['cortex.canopy.exclude.default_patterns']);

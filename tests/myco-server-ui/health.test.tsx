@@ -59,7 +59,7 @@ const routes = (over: Record<string, Route> = {}): Record<string, Route> => ({
   '/api/attention': () => Response.json({ items: [{ kind: 'backup_overdue', tone: 'warn', lastBackupAt: BACKUP.created_at, intervalHours: 24 }], unavailable: [] }),
   '/api/credentials': () => Response.json({ rows: [credential(STUDIO_CREDENTIAL, 'ada_5a2d54af', 'Ada’s studio Mac'), credential(BUSY_CREDENTIAL, 'lin_9e8f7a6b', 'Lin’s build box', 'mem_Hn5-pC0dJfA9sE_u')], cursor: null }),
   '/api/backups': () => Response.json({ backups: [BACKUP] }),
-  '/api/recovery/exports': () => Response.json({ error: 'bad_request', reason: 'this Deployment runs no hosted recovery producer' }, { status: 400 }),
+  '/api/recovery/exports': () => Response.json({ supported: false, reason: 'this Deployment runs no hosted recovery producer', schedule: { unreadable: 'not read' } }),
   '/api/work': () => Response.json({ window: { since: 0, until: 0 }, outcomes: [], runs: [], truncated: false, upkeep: { task: 'embedding-reconcile', lastSuccessAt: NOW - 3_600_000, failedInWindow: 2, unrecovered: null } }),
   '/api/maintenance': () => Response.json({ checks: [] }),
   '/api/kpis': () => Response.json({
