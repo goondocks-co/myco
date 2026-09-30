@@ -10,11 +10,20 @@
  * A folder pinned to a home is told so: the pin is why a command reads a home the person may not expect, and a
  * credential is never used from a home nobody named.
  */
-import { resolveMycoHomeWithSource, type ResolvedMycoHome } from '../paths/home.js';
+import path from 'node:path';
+import { machineHomePinPath, resolveMycoHomeWithSource, type ResolvedMycoHome } from '../paths/home.js';
 
 /** The home `folder` resolves to, with the rule that chose it. */
 export function memberHomeFor(folder: string, env?: NodeJS.ProcessEnv): ResolvedMycoHome {
-  return resolveMycoHomeWithSource({ cwd: folder, ...(env === undefined ? {} : { env }) });
+  const options = { cwd: folder, ...(env === undefined ? {} : { env }) };
+  const resolved = resolveMycoHomeWithSource(options);
+  // The walk up from a folder inside the user's home reaches the machine pin itself; that pin is the machine's, not
+  // the folder's, and is reported as what it is.
+  if (resolved.source === 'project-pin' && resolved.pinPath !== undefined
+    && path.resolve(resolved.pinPath) === path.resolve(machineHomePinPath(env === undefined ? {} : { env }))) {
+    return { ...resolved, source: 'machine-pin' };
+  }
+  return resolved;
 }
 
 /** What a command says when `folder`'s home comes from a pin at or above it; null when it does not. */

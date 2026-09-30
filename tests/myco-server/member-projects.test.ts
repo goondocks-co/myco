@@ -7,6 +7,7 @@ import { describe, expect, it } from 'bun:test';
 import worker from '@myco-server-worker/index.js';
 import { issueMemberToken } from '@myco-server-worker/auth/tokens.js';
 import { MAX_PROJECTS } from '@myco-server-worker/constants.js';
+import { resolveProject } from '@myco-server-worker/ingest/projects.js';
 import { memberHeaders, sqliteEnv } from './helpers/fixtures.js';
 
 const post = (path: string, token: string, body: unknown) =>
@@ -44,5 +45,12 @@ describe('a member\'s projects', () => {
     expect(full.persisted).toBe(false);
     expect(full.reason).toContain(`${MAX_PROJECTS} projects`);
     expect(count()).toBe(MAX_PROJECTS);
+    // The remedy it names holds: an archived project no longer counts toward the ceiling, for a member's creation and for
+    // capture's own.
+    e.sqlite.run(`UPDATE projects SET archived_at = 1, archived_by = 'mem_m' WHERE project_id = 'proj_fill_${MAX_PROJECTS - 1}'`);
+    const made = await (await worker.fetch(post('/members/projects', t.token, { name: 'one more' }), e.env)).json() as { persisted: boolean };
+    expect(made.persisted).toBe(true);
+    e.sqlite.run(`UPDATE projects SET archived_at = 1, archived_by = 'mem_m' WHERE project_id = 'proj_fill_${MAX_PROJECTS - 2}'`);
+    expect(await resolveProject(e.db, 'proj_captured_first', Date.now())).toEqual({ resolved: true, archived: false });
   });
 });

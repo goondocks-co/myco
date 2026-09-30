@@ -64,6 +64,15 @@ describe('myco member join inside a repository', () => {
     expect(err).toEqual([]);
   });
 
+  it('reads a server URL after --new as the Deployment, and names the project for the folder', async () => {
+    const rig = await signedIn();
+    const dir = repo('ledger');
+    expect((await runJoin(['--new', 'https://s'], deps(rig, dir)))?.serverUrl).toBe('https://s');
+    const before = ['a', 'b'];
+    expect(projects(rig).map((p) => p.name).filter((name) => !before.includes(name))).toEqual(['ledger']);
+    expect(readRegistryEntry(dir, home)?.projectId).toBe(projects(rig).find((p) => p.name === 'ledger')!.project_id);
+  });
+
   it('connects a second repository to an existing project by name or by id, with no token typed', async () => {
     const rig = await signedIn();
     await runJoin(['--new', 'Shared work'], deps(rig, repo('one')));

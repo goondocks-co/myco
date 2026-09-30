@@ -27,7 +27,7 @@ import { ADMIN_ROLE, exchangeJoinCode, parseJoinCode, recordJoinAnswer, JOIN_COD
 import { ensuredWorkerWords, ensureWorkerService, type WorkerServiceDeps } from './worker-service.js';
 import { drainEntryBacklog } from '../member/backlog.js';
 import { deploymentUrl, listRegistryEntries } from '../member/registry.js';
-import { detectedProvisionLines, provisionDetectedAgents } from './member.js';
+import { detectedProvisionLines, provisionDetectedAgents, recordNoAgents } from './member.js';
 
 export const LOGIN_HELP = `Usage: myco login <invite-link>
 
@@ -141,7 +141,7 @@ export async function run(args: readonly string[], deps: LoginDeps = {}): Promis
   }
 
   // The home this folder's capture reads (`memberHomeFor`): signing in anywhere else would leave its hooks with no membership.
-  const folder = path.resolve(deps.cwd ?? process.cwd());
+  const folder = path.resolve(root ?? parsed.root ?? deps.cwd ?? process.cwd());
   const chosen = deps.mycoHome === undefined ? memberHomeFor(folder) : null;
   const mycoHome = deps.mycoHome ?? chosen!.home;
   recordJoinAnswer(code, answer, { mycoHome, root, now: deps.now?.() ?? Date.now(), machineId });
@@ -160,7 +160,7 @@ export async function run(args: readonly string[], deps: LoginDeps = {}): Promis
   if (!parsed.noAgents) {
     const found = provisionDetectedAgents(mycoHome, code.serverUrl, root ?? null, { packageRoot: deps.packageRoot, agents: deps.agents });
     for (const line of detectedProvisionLines(found)) out(`  ${line}`);
-  }
+  } else recordNoAgents(mycoHome, code.serverUrl);
 
   // What this machine captured while it could not deliver reaches the
   // Deployment now, for every project bound to it: the new credential is the

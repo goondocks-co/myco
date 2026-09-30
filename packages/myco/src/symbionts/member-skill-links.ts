@@ -11,6 +11,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { managedSkillsDir } from '../install/managed-binary.js';
 import { expandHome } from '../paths/home.js';
+import { isClaimedByPeer, readClaim, resolveClaimsHome, SYMBIONT_CONFIG_SUBSYSTEM } from '../grove/subsystem-claim.js';
 import { ensureManagedSkills } from './managed-skills.js';
 import { BUNDLED_SKILLS } from './skills.generated.js';
 
@@ -47,10 +48,19 @@ const within = (candidate: string, root: string): boolean => candidate === root 
  * taken over in place (a cutover); any other link that points outside this home is held by another installation.
  */
 export function linkMemberSkills(mycoHome: string, folder: string, replacing: readonly string[] = []): SkillLinks {
+  const result: SkillLinks = { folder, linked: [], unchanged: [], removed: [], held: [] };
+  // A home whose agent configuration another installation claims (a live 1.4 install on it) keeps its skills as that
+  // installation wrote them: nothing here seeds or links over them, and every skill is named as held. A claim a
+  // cutover is taking over (`replacing`) does not hold them.
+  const claim = readClaim(SYMBIONT_CONFIG_SUBSYSTEM, resolveClaimsHome(mycoHome));
+  if (isClaimedByPeer(SYMBIONT_CONFIG_SUBSYSTEM, mycoHome, { claimsHome: resolveClaimsHome(mycoHome) })
+    && !(claim !== null && replacing.some((home) => path.resolve(home) === path.resolve(claim.owner)))) {
+    result.held.push(...Object.keys(BUNDLED_SKILLS).sort().map((name) => ({ name, by: `the installation that claims ${mycoHome}` })));
+    return result;
+  }
   ensureManagedSkills(mycoHome);
   const source = path.resolve(managedSkillsDir(mycoHome));
   const legacy = replacing.map((home) => path.resolve(home));
-  const result: SkillLinks = { folder, linked: [], unchanged: [], removed: [], held: [] };
   const names = Object.keys(BUNDLED_SKILLS).sort();
   fs.mkdirSync(folder, { recursive: true });
   for (const name of names) {

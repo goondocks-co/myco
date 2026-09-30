@@ -14,6 +14,7 @@ import { setupChecks } from '@myco/cli/member-doctor.js';
 import { writeDeploymentMembership } from '@myco/member/registry.js';
 import { readProvisionRecord, recordProvision } from '@myco/symbionts/member-provision-record.js';
 import { BUNDLED_SKILLS } from '@myco/symbionts/skills.generated.js';
+import { claimSubsystem, SYMBIONT_CONFIG_SUBSYSTEM } from '@myco/grove/subsystem-claim.js';
 import { getPluginVersion } from '@myco/version.js';
 
 const SERVER = 'https://myco.example';
@@ -97,6 +98,89 @@ describe('a member\'s agent setup', () => {
     expect(link('.agents/skills', SKILLS[0])).toBe(path.join(home, 'skills', SKILLS[0]));
     expect(readProvisionRecord(home)).toMatchObject({ version: getPluginVersion(), agents: ['claude-code', 'codex'] });
     expect(setupChecks(home)[0]).toMatchObject({ status: 'ok' });
+  });
+
+  const foreignCodexHooks = () => {
+    const foreign = JSON.stringify({ hooks: { SessionStart: [{ hooks: [{ type: 'command', command: '/opt/other/bin/myco hook session-start --symbiont codex --myco-managed' }] }] } }, null, 2);
+    fs.writeFileSync(path.join(agentHome, '.codex', 'hooks.json'), foreign);
+    return foreign;
+  };
+  const refresh = () => runProvision(['--refresh'], { mycoHome: home, cwd: agentHome, agents: () => ['claude-code', 'codex'], stdout: (l) => out.push(l), stderr: (l) => err.push(l) });
+
+  it('records on a refresh exactly the agents it set up again, dropping one another installation took', () => {
+    recordProvision(home, { version: '2.0.0-beta.0', serverUrl: SERVER, agents: ['claude-code', 'codex'] });
+    const foreign = foreignCodexHooks();
+    expect(refresh()).toBe(true);
+    expect(fs.readFileSync(path.join(agentHome, '.codex', 'hooks.json'), 'utf8')).toBe(foreign);
+    expect(out.join('\n')).toMatch(/Skipped Codex: .*another installation/);
+    expect(readProvisionRecord(home)).toMatchObject({ version: getPluginVersion(), agents: ['claude-code'] });
+  });
+
+  it('records a refresh that set up no agent, so doctor stops naming the old build', () => {
+    recordProvision(home, { version: '2.0.0-beta.0', serverUrl: SERVER, agents: ['codex'] });
+    foreignCodexHooks();
+    expect(refresh()).toBe(true);
+    expect(readProvisionRecord(home)).toMatchObject({ version: getPluginVersion(), agents: [] });
+    expect(setupChecks(home)[0].status).toBe('ok');
+  });
+
+  it('refreshes no agent the person left out, and sets up none on a home with no record', () => {
+    expect(refresh()).toBe(true);
+    expect(out).toEqual(['Myco has not set up your agents on this machine; run `myco member provision` to set them up.']);
+    expect(fs.existsSync(path.join(agentHome, '.claude', 'settings.json'))).toBe(false);
+    out = [];
+    expect(refresh()).toBe(true);
+    expect(out).toEqual(['No agent is set up for Myco on this machine; `myco member provision` sets them up.']);
+    expect(fs.existsSync(path.join(agentHome, '.claude', 'settings.json'))).toBe(false);
+    expect(fs.existsSync(path.join(agentHome, '.codex', 'hooks.json'))).toBe(false);
+  });
+
+  it('copies every agent file it changes into one backup folder with the commands that put them back, and keeps none it left alone', () => {
+    const settings = path.join(agentHome, '.claude', 'settings.json');
+    fs.writeFileSync(settings, '{\n  "theme": "dark"\n}\n');
+    expect(provision()).toBe(true);
+    const backups = path.join(home, 'backups');
+    const folders = fs.readdirSync(backups);
+    expect(folders).toHaveLength(1);
+    expect(folders[0]).toMatch(/^member-provision-/);
+    const folder = path.join(backups, folders[0]);
+    const entries = (JSON.parse(fs.readFileSync(path.join(folder, 'manifest.json'), 'utf8')) as { entries: Array<Record<string, unknown>> }).entries;
+    const copy = entries.find((e) => e.original === settings) as { backup: string };
+    expect(fs.readFileSync(copy.backup, 'utf8')).toBe('{\n  "theme": "dark"\n}\n');
+    expect(entries).toContainEqual({ original: path.join(agentHome, '.codex', 'hooks.json'), created: true });
+    const restore = fs.readFileSync(path.join(folder, 'restore.md'), 'utf8');
+    expect(restore).toContain(`cp -p '${copy.backup}' '${settings}'`);
+    expect(restore).toContain(`rm -f '${path.join(agentHome, '.codex', 'hooks.json')}'`);
+    // Nothing changes the second time, so nothing is kept.
+    expect(provision()).toBe(true);
+    expect(fs.readdirSync(backups)).toEqual(folders);
+  });
+
+  it('writes through a settings file that is a link into dotfiles, keeping the link', () => {
+    const dotfiles = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-dotfiles-'));
+    try {
+      const real = path.join(dotfiles, 'claude-settings.json');
+      fs.writeFileSync(real, '{}\n');
+      const settings = path.join(agentHome, '.claude', 'settings.json');
+      fs.symlinkSync(real, settings);
+      expect(provision()).toBe(true);
+      expect(fs.lstatSync(settings).isSymbolicLink()).toBe(true);
+      expect(fs.readFileSync(real, 'utf8')).toContain('--credential registry');
+      const folder = path.join(home, 'backups', fs.readdirSync(path.join(home, 'backups'))[0]);
+      const entries = (JSON.parse(fs.readFileSync(path.join(folder, 'manifest.json'), 'utf8')) as { entries: Array<{ original: string; backup?: string }> }).entries;
+      expect(fs.readFileSync(entries.find((e) => e.original === fs.realpathSync(real))!.backup!, 'utf8')).toBe('{}\n');
+    } finally { fs.rmSync(dotfiles, { recursive: true, force: true }); }
+  });
+
+  it('leaves the skills of a home another installation claims as that installation wrote them', () => {
+    const own = path.join(home, 'skills', SKILLS[0], 'SKILL.md');
+    fs.mkdirSync(path.dirname(own), { recursive: true });
+    fs.writeFileSync(own, 'written by 1.4');
+    claimSubsystem(SYMBIONT_CONFIG_SUBSYSTEM, '/opt/other-install/.myco', { claimsHome: home });
+    expect(provision()).toBe(true);
+    expect(fs.readFileSync(own, 'utf8')).toBe('written by 1.4');
+    expect(fs.readdirSync(path.join(home, 'skills'))).toEqual([SKILLS[0]]);
+    expect(fs.existsSync(path.join(agentHome, '.claude', 'skills'))).toBe(false);
   });
 
   it('names drift in doctor: nothing recorded, another build, or a skill gone', () => {

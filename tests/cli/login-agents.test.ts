@@ -5,7 +5,7 @@
  * provisioned for the Deployment, through the cutover's own detection and ownership preview. An agent whose entries
  * belong to another installation is left byte for byte as it is and named.
  */
-import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
+import { afterEach, beforeEach, describe, expect, it, spyOn } from 'bun:test';
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -69,6 +69,23 @@ describe('myco login sets up the agents on this machine', () => {
     expect(err).toEqual([]);
   });
 
+  it('sets up the agents of a sign-in with no project, and provisions and refreshes them, where the home could be no project folder', async () => {
+    // A home at the user's home directory, the way `/root/.myco` sits one below a home parent: no project root may be there.
+    fs.mkdirSync(claudeDir, { recursive: true });
+    const homedir = spyOn(os, 'homedir').mockReturnValue(home);
+    try {
+      const rig = unjoinedRig();
+      expect(await run([await invite(rig)], deps(rig, { agents: () => ['claude-code'] }))).toBe(true);
+      expect(read(path.join(claudeDir, 'settings.json')) ?? '').toContain('--credential registry');
+      expect(out.join('\n')).toContain('Capture is set up for Claude Code.');
+      out = [];
+      expect(runProvision([], { mycoHome: home, cwd: root, agents: () => ['claude-code'], stdout: (l) => out.push(l), stderr: (l) => err.push(l) })).toBe(true);
+      expect(runProvision(['--refresh'], { mycoHome: home, cwd: root, stdout: (l) => out.push(l), stderr: (l) => err.push(l) })).toBe(true);
+      expect(out).toEqual(['Capture is set up for Claude Code.', 'Capture is set up for Claude Code.']);
+      expect(err).toEqual([]);
+    } finally { homedir.mockRestore(); }
+  });
+
   it('leaves an agent whose hooks belong to another installation byte for byte as it is, names it, and sets up the rest', async () => {
     fs.mkdirSync(claudeDir, { recursive: true });
     fs.mkdirSync(codexDir, { recursive: true });
@@ -88,6 +105,9 @@ describe('myco login sets up the agents on this machine', () => {
     expect(await run([await invite(rig), '--no-agents'], deps(rig))).toBe(true);
     expect(read(path.join(claudeDir, 'settings.json'))).toBeNull();
     expect(out.join('\n')).not.toContain('Capture is set up');
+    // What `myco upgrade` and `myco update` run keeps the choice: no agent is set up on its own.
+    expect(runProvision(['--refresh'], { mycoHome: home, cwd: root, stdout: (l) => out.push(l), stderr: (l) => err.push(l) })).toBe(true);
+    expect(read(path.join(claudeDir, 'settings.json'))).toBeNull();
     out = [];
     expect(runProvision([], { mycoHome: home, cwd: root, stdout: (l) => out.push(l), stderr: (l) => err.push(l) })).toBe(true);
     expect(read(path.join(claudeDir, 'settings.json')) ?? '').toContain('--credential registry');

@@ -14,6 +14,9 @@ import { issueEnrollmentAuthority } from '@myco-server-worker/auth/enrollment.js
 import { run as login } from '@myco/cli/login.js';
 import { runJoin } from '@myco/cli/member.js';
 import { listDeploymentMemberships, readRegistryEntry, writeDeploymentMembership } from '@myco/member/registry.js';
+import { ENV_JOIN_CODE } from '@myco/member/constants.js';
+import { memberHomeFor } from '@myco/member/home-for-folder.js';
+import { ensureJoinedFromCode } from '@myco/member/join-code.js';
 import { unjoinedRig } from '../member/helpers/server.js';
 
 describe('the home a pinned repository uses', () => {
@@ -58,7 +61,9 @@ describe('the home a pinned repository uses', () => {
     if (url.origin !== 'https://s') { elsewhere.push(url.origin); return new Response(null, { status: 599 }); }
     return (rig.fetch as typeof fetch)(input, init);
   }) as typeof fetch;
-  const invite = async (rig: ReturnType<typeof unjoinedRig>) => `https://s/join#${(await issueEnrollmentAuthority(rig.env.db, Date.now(), { role: 'member' })).key}`;
+  const invite = async (rig: ReturnType<typeof unjoinedRig>, projectId?: string) =>
+    `https://s/join#${(await issueEnrollmentAuthority(rig.env.db, Date.now(), { role: 'member', ...(projectId === undefined ? {} : { projectId }) })).key}`;
+  const gitRepo = (dir: string) => { fs.mkdirSync(dir, { recursive: true }); execFileSync('git', ['init', '-q'], { cwd: dir, stdio: 'ignore' }); return dir; };
   const io = { stdout: (l: string) => out.push(l), stderr: (l: string) => err.push(l) };
 
   it('signs in and connects in the pinned home, saying which and why, and never uses this machine\'s own home', async () => {
@@ -113,5 +118,43 @@ describe('the home a pinned repository uses', () => {
     }
     expect(readRegistryEntry(repo, path.join(userHome, '.myco'))).toBeNull();
     expect(elsewhere).toEqual([]);
+  });
+
+  it('signs in with --root in the home that root resolves to, wherever it is run from', async () => {
+    const rig = unjoinedRig();
+    const elsewhere: string[] = [];
+    const fetch = serving(rig, elsewhere);
+    // Run from the pinned repository for a folder no pin covers: the folder's own home, this machine's.
+    const free = gitRepo(path.join(base, 'free'));
+    expect(await login([await invite(rig, 'proj_1'), '--root', free, '--no-agents'], { fetch, machineId: 'machine_person', cwd: repo, ...io })).toBe(true);
+    expect(readRegistryEntry(free, path.join(userHome, '.myco'))?.projectId).toBe('proj_1');
+    expect(readRegistryEntry(free, pinnedHome)).toBeNull();
+    // Run from a free folder for the pinned repository: the pinned home, said so.
+    out = [];
+    const second = unjoinedRig();
+    expect(await login([await invite(second, 'proj_2'), '--root', repo, '--no-agents'], { fetch: serving(second, elsewhere), machineId: 'machine_person', cwd: free, ...io })).toBe(true);
+    expect(readRegistryEntry(repo, pinnedHome)?.projectId).toBe('proj_2');
+    expect(out.join('\n')).toContain(`Using ${pinnedHome}: ${repo} is pinned to it by ${pinPath}.`);
+    expect(elsewhere).toEqual([]);
+  });
+
+  it('redeems a sandbox join code into the home the folder resolves to', async () => {
+    const rig = unjoinedRig();
+    const env = { HOME: userHome, [ENV_JOIN_CODE]: await invite(rig, 'proj_1') };
+    await ensureJoinedFromCode({ env, root: repo, fetch: rig.fetch as typeof fetch, machineId: 'machine_sandbox' });
+    expect(readRegistryEntry(repo, pinnedHome)?.projectId).toBe('proj_1');
+    expect(fs.existsSync(path.join(userHome, '.myco', 'member'))).toBe(false);
+  });
+
+  it('reports this machine\'s own pin, found walking up from a folder in the user\'s home, as the machine\'s, not the folder\'s', async () => {
+    const machineHome = path.join(base, 'machine-home');
+    fs.mkdirSync(path.join(userHome, '.myco'), { recursive: true });
+    fs.writeFileSync(path.join(userHome, '.myco', 'runtime.home'), `${machineHome}\n`, { mode: 0o600 });
+    const inHome = gitRepo(path.join(userHome, 'code', 'app'));
+    expect(memberHomeFor(inHome)).toMatchObject({ home: machineHome, source: 'machine-pin' });
+    const rig = unjoinedRig();
+    expect(await login([await invite(rig), '--no-agents'], { fetch: rig.fetch as typeof fetch, machineId: 'machine_person', cwd: inHome, ...io })).toBe(true);
+    expect(out.join('\n')).not.toContain('is pinned to it by');
+    expect(listDeploymentMemberships(machineHome).map((m) => m.serverUrl)).toEqual(['https://s']);
   });
 });

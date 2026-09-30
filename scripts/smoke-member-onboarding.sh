@@ -4,7 +4,8 @@
 # Drives only the documented user commands against a Deployment that is already serving:
 #   install.sh from a local release, `myco login <invite link>`, `myco member join --new` in two repositories,
 #   then one Claude Code session in each through the hooks provisioning wrote (a real agent cannot sign in under a
-#   sandboxed HOME, so its hooks are run with the payloads it sends). It checks each session landed in its own
+#   sandboxed HOME, so the hook commands provisioning wrote into ~/.claude/settings.json are run with the payloads
+#   it sends). It checks each session landed in its own
 #   repository's project, and that the skills are linked.
 #
 # Usage: scripts/smoke-member-onboarding.sh <release-dir> <invite-link> <deployment-sqlite>
@@ -39,6 +40,16 @@ echo "== install"; run MYCO_INSTALL_FROM="$REL" MYCO_INSTALL_VERSION=2.0.0-smoke
 echo "== login"; (cd "$U/code/alpha" && run myco login "$INVITE")
 for r in alpha beta; do echo "== join --new ($r)"; (cd "$U/code/$r" && run myco member join --new); done
 
+hook_command() {
+  python3 - "$U/.claude/settings.json" "$1" <<'PY'
+import json, sys
+settings, event = sys.argv[1:]
+commands = [h["command"] for group in json.load(open(settings)).get("hooks", {}).get(event, []) for h in group.get("hooks", []) if "myco" in h.get("command", "")]
+if len(commands) != 1: sys.exit(f"FAIL: {settings} holds {len(commands)} Myco commands for {event}")
+print(commands[0])
+PY
+}
+
 session() {
   local repo=$1 sid=$2 text=$3 dir tx base
   dir=$U/.claude/projects/$(echo "$U/code/$repo" | tr / -); mkdir -p "$dir"; tx=$dir/$sid.jsonl
@@ -51,11 +62,13 @@ lines = [{"type": "user", "uuid": u, "promptId": str(uuid.uuid4()), "parentUuid"
 open(tx, "w").write("".join(json.dumps(l) + "\n" for l in lines))
 PY
   base="\"session_id\":\"$sid\",\"transcript_path\":\"$tx\",\"cwd\":\"$U/code/$repo\""
-  for pair in "session-start|{$base,\"hook_event_name\":\"SessionStart\",\"source\":\"startup\"}" \
-              "user-prompt-submit|{$base,\"hook_event_name\":\"UserPromptSubmit\",\"prompt\":\"$text\"}" \
-              "stop|{$base,\"hook_event_name\":\"Stop\",\"stop_hook_active\":false}" \
-              "session-end|{$base,\"hook_event_name\":\"SessionEnd\",\"reason\":\"exit\"}"; do
-    printf '%s' "${pair#*|}" | (cd "$U/code/$repo" && run "$U/.myco/bin/myco" hook "${pair%%|*}" --symbiont claude-code --credential registry --myco-managed >/dev/null)
+  for pair in "SessionStart|{$base,\"hook_event_name\":\"SessionStart\",\"source\":\"startup\"}" \
+              "UserPromptSubmit|{$base,\"hook_event_name\":\"UserPromptSubmit\",\"prompt\":\"$text\"}" \
+              "Stop|{$base,\"hook_event_name\":\"Stop\",\"stop_hook_active\":false}" \
+              "SessionEnd|{$base,\"hook_event_name\":\"SessionEnd\",\"reason\":\"exit\"}"; do
+    # The command Claude Code would run: the one provisioning wrote into its settings for this event.
+    cmd=$(hook_command "${pair%%|*}")
+    printf '%s' "${pair#*|}" | (cd "$U/code/$repo" && run CLAUDE_PROJECT_DIR="$U/code/$repo" sh -c "$cmd" >/dev/null)
   done
 }
 session alpha "$(uuidgen | tr 'A-Z' 'a-z')" "List the files in alpha"

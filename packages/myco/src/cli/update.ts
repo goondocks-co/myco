@@ -20,7 +20,7 @@ import {
 } from '../grove/activation.js';
 import fs from 'node:fs';
 import { isMemberHome } from '../member/home-role.js';
-import { resolveMycoHome } from '../paths/home.js';
+import { memberHomeFor } from '../member/home-for-folder.js';
 import path from 'node:path';
 
 // `myco update` regenerates managed config — .gitignore, symbiont hooks,
@@ -70,7 +70,7 @@ export async function run(args: string[]): Promise<void> {
 
   // A member home's agents are the member's: this build refreshes the hooks, MCP entries and skill links its
   // provisioning set up, and none of 1.4's machine-wide passes runs over them (#1478, #1499).
-  if (isMemberHome(resolveMycoHome())) {
+  if (isMemberHome(memberHomeFor(process.cwd()).home)) {
     const { runProvision } = await import('./member.js');
     runProvision(['--refresh']);
     return;

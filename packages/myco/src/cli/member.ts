@@ -32,6 +32,7 @@ import { drainEntryBacklog, type BacklogReport } from '../member/backlog.js';
 import { REJOIN_HINT } from '../member/delivery-notice.js';
 import { ServerClient, type FetchLike } from '../member/transport.js';
 import { openBrowser } from './open-browser.js';
+import { CutoverBackup } from '../member/cutover-backup.js';
 import { linkMemberSkills, skillsFolder, type SkillLinks } from '../symbionts/member-skill-links.js';
 import { readProvisionRecord, recordProvision } from '../symbionts/member-provision-record.js';
 import { getPluginVersion } from '../version.js';
@@ -218,8 +219,10 @@ function parseJoin(args: readonly string[]): JoinArgs {
       case '--no-worker': parsed.noWorker = true; break;
       case '--no-agents': parsed.noAgents = true; break;
       case '--new': {
+        // A name follows `--new` unless what follows is a flag or a server URL, which names the Deployment instead.
         const next = args[i + 1];
-        parsed.create = { name: next !== undefined && !next.startsWith('--') ? (i += 1, next) : null };
+        const named = next !== undefined && !next.startsWith('--') && !/^[a-z][a-z0-9+.-]*:\/\//i.test(next);
+        parsed.create = { name: named ? (i += 1, next) : null };
         break;
       }
       default:
@@ -413,7 +416,7 @@ async function connectFolder(
   await seedMachineSettings({ serverUrl, token: membership.token }, { mycoHome, fetch: deps.fetch });
   if (!parsed.noAgents) {
     for (const line of detectedProvisionLines(provisionDetectedAgents(mycoHome, serverUrl, root, { packageRoot: deps.packageRoot, agents: deps.agents }))) out(line);
-  }
+  } else recordNoAgents(mycoHome, serverUrl);
   const report = await runImport({ project: project.projectId, serverUrl }, {
     fetch: deps.fetch, now: deps.now, cwd: root, mycoHome, machineId: entry.machineId,
   }).catch(() => null);
@@ -445,7 +448,11 @@ function provisionAgent(
   out: (line: string) => void,
   fail: (line: string) => unknown,
 ): boolean {
-  const outcome = provisionGlobally(agent, root, mycoHome, { packageRoot: deps.packageRoot });
+  const backup = provisionBackup(mycoHome);
+  let outcome: ProvisionOutcome;
+  try {
+    outcome = provisionGlobally(agent, root, mycoHome, { packageRoot: deps.packageRoot, backup });
+  } finally { backup.pruneUnchanged(); }
   if (outcome.kind === 'unknown') {
     fail(`unknown agent "${agent}" — the membership is recorded; provision it with \`myco member provision <agent>\``);
     return false;
@@ -471,21 +478,38 @@ export type ProvisionOutcome =
  * `legacyHomes` names 1.4 homes whose global registrations are replaced in
  * place rather than refused.
  */
+/**
+ * The member-global installer for `manifest`: over the connected folder `root`, or with no project root where no folder
+ * is connected, when global provisioning neither reads nor retires any project's registrations.
+ */
+function globalInstaller(
+  manifest: ReturnType<typeof loadManifests>[number], root: string | null, mycoHome: string, opts: { packageRoot?: string; legacyHomes?: readonly string[] },
+): SymbiontInstaller {
+  const installer = new SymbiontInstaller(manifest, root ?? mycoHome, opts.packageRoot ?? resolvePackageRoot(), false, undefined, null, 'member-global', mycoHome)
+    .replacingLegacy(opts.legacyHomes ?? []);
+  return root === null ? installer.withoutProjectRoot() : installer;
+}
+
 export function provisionGlobally(
-  agent: string, root: string, mycoHome: string, opts: { packageRoot?: string; legacyHomes?: readonly string[]; serverUrl?: string } = {},
+  agent: string, root: string | null, mycoHome: string,
+  opts: { packageRoot?: string; legacyHomes?: readonly string[]; serverUrl?: string; backup?: CutoverBackup } = {},
 ): ProvisionOutcome {
   const manifest = loadManifests().find((m) => m.name === agent);
   if (!manifest) return { kind: 'unknown' };
-  const packageRoot = opts.packageRoot ?? resolvePackageRoot();
-  const installer = new SymbiontInstaller(manifest, root, packageRoot, false, undefined, null, 'member-global', mycoHome)
-    .replacingLegacy(opts.legacyHomes ?? []);
+  const installer = globalInstaller(manifest, root, mycoHome, opts);
   if (opts.serverUrl !== undefined) installer.forDeployment(opts.serverUrl);
+  // Every agent file this may write is copied first; `restore.md` beside the copies puts back what the person had.
+  const targets = opts.backup === undefined ? [] : installer.memberGlobalTargets().all;
+  const absent = targets.filter((file) => !fs.existsSync(file));
+  for (const file of targets) if (!absent.includes(file) && !opts.backup!.all.some((e) => e.original === file)) opts.backup!.take(file);
   let installed;
   try {
     installed = installer.install();
   } catch (error) {
     if (!(error instanceof MemberProvisionConflictError)) throw error;
     return { kind: 'refused', detail: error.message };
+  } finally {
+    for (const file of absent) if (fs.existsSync(file) && !opts.backup!.all.some((e) => e.original === file)) opts.backup!.created(file);
   }
   const surface = installer.isMemberPluginFile() ? 'plugin' : 'hooks';
   // An agent Myco captures gets the skills of this home in its global skills folder, beside its hooks.
@@ -510,12 +534,11 @@ export type OwnershipPreview =
   | { kind: 'ready'; displayName: string; replaces: string[]; targets: { hooks: string | null; mcp: string[]; all: string[] } };
 
 export function previewGlobalProvision(
-  agent: string, root: string, mycoHome: string, serverUrl: string, opts: { packageRoot?: string; legacyHomes?: readonly string[] } = {},
+  agent: string, root: string | null, mycoHome: string, serverUrl: string, opts: { packageRoot?: string; legacyHomes?: readonly string[] } = {},
 ): OwnershipPreview {
   const manifest = loadManifests().find((m) => m.name === agent);
   if (!manifest) return { kind: 'unknown' };
-  const installer = new SymbiontInstaller(manifest, root, opts.packageRoot ?? resolvePackageRoot(), false, undefined, null, 'member-global', mycoHome)
-    .replacingLegacy(opts.legacyHomes ?? []);
+  const installer = globalInstaller(manifest, root, mycoHome, opts);
   if (!installer.capturesAsMember()) return { kind: 'uncaptured', displayName: manifest.displayName };
   const found = installer.globalOwnership(serverUrl);
   return found.problem !== null
@@ -537,7 +560,7 @@ export interface DetectedProvision {
  * for the member's Deployment `serverUrl`. Each goes through the cutover's own preview first, so an agent whose entries
  * belong to another installation is skipped with the reason and nothing of it is written; an agent Myco does not
  * capture as a member is skipped too. `root` is the connected folder, or null for a member with none connected yet:
- * then the member's home stands in as the folder, which holds no project registration to retire.
+ * then provisioning is global alone, with no project root to check or retire registrations in.
  */
 export function provisionDetectedAgents(
   mycoHome: string, serverUrl: string, root: string | null, opts: { packageRoot?: string; agents?: () => string[] } = {},
@@ -553,15 +576,16 @@ export function provisionDetectedAgents(
 export function provisionAgents(
   agents: readonly string[], mycoHome: string, serverUrl: string, root: string | null, opts: { packageRoot?: string; replace?: boolean } = {},
 ): DetectedProvision {
-  const folder = root ?? mycoHome;
   const found: DetectedProvision = { provisioned: [], unchanged: [], skipped: [], heldSkills: [] };
   const ready: string[] = [];
+  const backup = provisionBackup(mycoHome);
+  try {
   for (const agent of agents) {
-    const preview = previewGlobalProvision(agent, folder, mycoHome, serverUrl, { packageRoot: opts.packageRoot });
+    const preview = previewGlobalProvision(agent, root, mycoHome, serverUrl, { packageRoot: opts.packageRoot });
     if (preview.kind === 'unknown') continue;
     if (preview.kind === 'uncaptured') { found.skipped.push({ agent, displayName: preview.displayName, reason: 'Myco does not capture it as a member yet' }); continue; }
     if (preview.kind === 'refused') { found.skipped.push({ agent, displayName: preview.displayName, reason: preview.detail }); continue; }
-    const outcome = provisionGlobally(agent, folder, mycoHome, { packageRoot: opts.packageRoot, serverUrl });
+    const outcome = provisionGlobally(agent, root, mycoHome, { packageRoot: opts.packageRoot, serverUrl, backup });
     if (outcome.kind === 'refused') { found.skipped.push({ agent, displayName: preview.displayName, reason: outcome.detail }); continue; }
     if (outcome.kind === 'unknown') continue;
     (outcome.kind === 'provisioned' ? found.provisioned : found.unchanged).push(preview.displayName);
@@ -569,8 +593,22 @@ export function provisionAgents(
     const held = outcome.skills?.held ?? [];
     if (held.length > 0 && !found.heldSkills.some((h) => h.folder === outcome.skills!.folder)) found.heldSkills.push({ folder: outcome.skills!.folder, names: held.map((h) => h.name) });
   }
+  } finally { backup.pruneUnchanged(); }
   if (ready.length > 0 || opts.replace) recordProvision(mycoHome, { version: getPluginVersion(), serverUrl, agents: ready }, { replace: opts.replace });
   return found;
+}
+
+/** Where one provisioning keeps copies of the agent files it changes: `<home>/backups/member-provision-<instant>/`. */
+function provisionBackup(mycoHome: string): CutoverBackup {
+  return new CutoverBackup(path.join(mycoHome, 'backups', `member-provision-${new Date().toISOString().replace(/[:.]/g, '-')}`), 'provision');
+}
+
+/**
+ * Record that the person set up no agent (`--no-agents`), where nothing was recorded before, so a later refresh sets up
+ * none on its own. A record of agents set up before is kept as it is.
+ */
+export function recordNoAgents(mycoHome: string, serverUrl: string): void {
+  if (readProvisionRecord(mycoHome) === null) recordProvision(mycoHome, { version: getPluginVersion(), serverUrl, agents: [] }, { replace: true });
 }
 
 /** The lines a sign-in or a provisioning reports for `found`: what was set up, and each agent left alone with why. */
@@ -612,6 +650,26 @@ export function runProvision(args: readonly string[], deps: MemberCliDeps = {}):
   const root = path.resolve(rootArg ?? resolveMemberProjectRoot(deps.cwd));
   const chosen = homeChoiceFor(deps, root);
   const mycoHome = chosen.home;
+  if (refresh) {
+    if (agent !== undefined) return fail('--refresh sets up again the agents set up before; it takes no agent');
+    // Only what provisioning recorded is set up again, for the Deployment it recorded: an agent the person left out
+    // (`--no-agents`, or never provisioned) stays as it is, and a home no provisioning recorded is only told how.
+    const record = readProvisionRecord(mycoHome);
+    if (record === null) {
+      // Said once: the empty record written here keeps later refreshes quiet until the person provisions.
+      out('Myco has not set up your agents on this machine; run `myco member provision` to set them up.');
+      const membership = listDeploymentMemberships(mycoHome)[0];
+      if (membership !== undefined) recordNoAgents(mycoHome, membership.serverUrl);
+      return true;
+    }
+    if (record.agents.length === 0) {
+      recordProvision(mycoHome, { version: getPluginVersion(), serverUrl: record.serverUrl, agents: [] }, { replace: true });
+      out('No agent is set up for Myco on this machine; `myco member provision` sets them up.');
+      return true;
+    }
+    for (const line of detectedProvisionLines(provisionAgents(record.agents, mycoHome, record.serverUrl, null, { packageRoot: deps.packageRoot, replace: true }))) out(line);
+    return true;
+  }
   const binding = isSafeProjectRoot(root) ? readRegistryEntry(root, mycoHome) : null;
   if (binding === null && listDeploymentMemberships(mycoHome).length === 0) {
     const pinnedRefusal = pinnedHomeRefusal(chosen, root, 'membership');
@@ -632,21 +690,16 @@ export function runProvision(args: readonly string[], deps: MemberCliDeps = {}):
     serverUrl = named[0].serverUrl;
   }
   const folder = binding === null ? null : root;
-  if (refresh) {
-    if (agent !== undefined) return fail('--refresh re-provisions the agents set up before; it takes no agent');
-    // The agents provisioning set up before, again, with this build's hooks, entries and skills; where none were
-    // recorded, every agent this machine has.
-    const record = readProvisionRecord(mycoHome);
-    const agents = record !== null && record.serverUrl === serverUrl ? record.agents : (deps.agents ?? (() => detectMachineInstalledSymbionts().map((m) => m.name)))();
-    for (const line of detectedProvisionLines(provisionAgents(agents, mycoHome, serverUrl, folder, { packageRoot: deps.packageRoot, replace: true }))) out(line);
-    return true;
-  }
   if (agent === undefined) {
     const found = provisionDetectedAgents(mycoHome, serverUrl, folder, { packageRoot: deps.packageRoot, agents: deps.agents });
     for (const line of detectedProvisionLines(found)) out(line);
     return true;
   }
-  const outcome = provisionGlobally(agent, folder ?? mycoHome, mycoHome, { packageRoot: deps.packageRoot, serverUrl });
+  const backup = provisionBackup(mycoHome);
+  let outcome: ProvisionOutcome;
+  try {
+    outcome = provisionGlobally(agent, folder, mycoHome, { packageRoot: deps.packageRoot, serverUrl, backup });
+  } finally { backup.pruneUnchanged(); }
   if (outcome.kind === 'unknown') return fail(`unknown agent "${agent}"`);
   if (outcome.kind === 'refused') return fail(outcome.detail);
   out(outcome.detail);
