@@ -12,6 +12,8 @@ export interface SearchableSelectOption {
   label: string;
   /** Extra words the option matches against, such as a project's path. */
   searchText?: string;
+  /** What the closed control shows for this option, when the list's words are longer than it has room for. */
+  short?: string;
 }
 
 const normalize = (value: string): string => value.trim().toLowerCase();
@@ -84,7 +86,8 @@ export function SearchableSelect({
   const matches = useMemo(() => options
     .map((option) => ({ option, rank: searchableSelectRank(option, deferredQuery) }))
     .filter((entry): entry is { option: SearchableSelectOption; rank: number } => entry.rank !== null)
-    .sort((a, b) => a.rank - b.rank || COLLATOR.compare(a.option.label, b.option.label))
+    // Before anything is typed the options keep the order given, so the unfiltered choice stays first.
+    .sort((a, b) => (deferredQuery.trim() === '' ? 0 : a.rank - b.rank || COLLATOR.compare(a.option.label, b.option.label)))
     .map((entry) => entry.option), [options, deferredQuery]);
 
   const selected = options.find((option) => option.value === value);
@@ -142,7 +145,7 @@ export function SearchableSelect({
         onKeyDown={(event) => { if (event.key === 'ArrowDown' && !open) { event.preventDefault(); setOpen(true); } }}
         className={cn(fieldFrame, focusRing, 'flex items-center justify-between gap-s2 text-left')}
       >
-        <span className={cn('truncate', !selected && 'text-muted')}>{selected?.label ?? placeholder ?? label}</span>
+        <span className={cn('truncate', !selected && 'text-muted')}>{selected?.short ?? selected?.label ?? placeholder ?? label}</span>
         <ChevronDown aria-hidden className="size-s4 shrink-0 text-muted" />
       </button>
 

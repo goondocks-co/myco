@@ -56,35 +56,6 @@
     "arbitrary-colour": 4,
     "small-text": 7
   },
-  "components/sessions/SessionDetail.tsx": {
-    "raw-button": 5,
-    "arbitrary-colour": 4,
-    "small-text": 18
-  },
-  "components/sessions/SessionRail.tsx": {
-    "raw-button": 1,
-    "arbitrary-colour": 3,
-    "small-text": 10
-  },
-  "components/sessions/ToolCallList.tsx": {
-    "raw-button": 3,
-    "arbitrary-colour": 1,
-    "small-text": 15
-  },
-  "components/sessions/TurnCard.tsx": {
-    "raw-button": 3,
-    "inline-style": 3,
-    "arbitrary-colour": 3,
-    "small-text": 16
-  },
-  "components/sessions/TurnTimeline.tsx": {
-    "raw-button": 1,
-    "raw-input": 1,
-    "small-text": 2
-  },
-  "components/sessions/stored-text.tsx": {
-    "small-text": 3
-  },
   "components/spores/SporeDetail.tsx": {
     "arbitrary-colour": 1,
     "small-text": 7
@@ -117,10 +88,6 @@
   "components/ui/input.tsx": {
     "raw-input": 1,
     "arbitrary-colour": 1
-  },
-  "components/ui/lightbox.tsx": {
-    "raw-button": 3,
-    "small-text": 1
   },
   "components/ui/master-detail-split.tsx": {
     "raw-button": 1,
@@ -216,9 +183,6 @@
   "pages/Projects.tsx": {
     "small-text": 7,
     "retired-import": 5
-  },
-  "pages/Sessions.tsx": {
-    "retired-import": 3
   },
   "pages/Settings.tsx": {
     "small-text": 16,

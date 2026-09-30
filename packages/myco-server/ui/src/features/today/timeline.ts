@@ -9,8 +9,12 @@
  */
 import type { OutcomeKind, TodaySession, TodaySpore, WorkRun } from './wire';
 
-/** How recently a session with no end must have sent something to count as live. */
-export const LIVE_WITHIN_MS = 30 * 60_000;
+/**
+ * How recently a session must have sent something to count as live. An open
+ * session (no end recorded) is not live on its own: a runtime that died never
+ * ends its session, so liveness is read from the last receipt alone.
+ */
+export const LIVE_WITHIN_MS = 15 * 60_000;
 /** How close together a project's title runs must land to read as one item. */
 export const TITLE_FOLD_MS = 60 * 60_000;
 
@@ -20,6 +24,8 @@ export interface SessionEntry {
   at: number;
   projectId: string;
   live: boolean;
+  /** Whether it started before the day began: it was still running on it. */
+  earlier: boolean;
   session: TodaySession;
 }
 
@@ -47,6 +53,15 @@ export function sessionAt(session: Pick<TodaySession, 'startedAt' | 'firstReceiv
   return session.startedAt ?? session.firstReceivedAt;
 }
 
+/**
+ * Whether a session was active in a window, as the server's activity window
+ * reads it: started before the window ends, heard from since it began, and not
+ * ended before it began.
+ */
+export function activeIn(session: Pick<TodaySession, 'startedAt' | 'firstReceivedAt' | 'lastReceivedAt' | 'endedAt'>, window: { start: number; end: number }): boolean {
+  return sessionAt(session) < window.end && session.lastReceivedAt >= window.start && (session.endedAt === null || session.endedAt >= window.start);
+}
+
 export interface TimelineInput {
   sessions: readonly TodaySession[];
   runs: readonly WorkRun[];
@@ -59,13 +74,14 @@ export interface TimelineInput {
 export function buildTimeline({ sessions, runs, spores, window, now }: TimelineInput): TimelineEntry[] {
   const inWindow = (at: number) => at >= window.start && at < window.end;
   const sessionEntries: SessionEntry[] = sessions
-    .filter((session) => inWindow(sessionAt(session)))
+    .filter((session) => activeIn(session, window))
     .map((session) => ({
       type: 'session',
       key: `session:${session.projectId}:${session.sessionId}`,
       at: sessionAt(session),
       projectId: session.projectId,
       live: isLive(session, now),
+      earlier: sessionAt(session) < window.start,
       session,
     }));
 

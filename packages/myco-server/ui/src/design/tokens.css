@@ -395,3 +395,63 @@
     scroll-behavior: auto !important;
   }
 }
+
+/* ---------- Stored Markdown as reading prose, on the type scale ---------- */
+
+.prose-read {
+  font-family: var(--font-sans-stack);
+  font-size: 15px;
+  line-height: 1.6;
+  color: var(--ink-2);
+  overflow-wrap: anywhere;
+}
+.prose-read > * + * { margin-top: var(--s-3); }
+.prose-read h3,
+.prose-read h4,
+.prose-read h5,
+.prose-read h6 {
+  font-family: var(--font-serif-stack);
+  font-style: italic;
+  font-weight: 600;
+  color: var(--ink);
+  margin-top: var(--s-5);
+  line-height: 1.3;
+}
+.prose-read h3 { font-size: 18px; }
+.prose-read h4 { font-size: 16px; }
+.prose-read h5,
+.prose-read h6 { font-size: 15px; }
+.prose-read strong { color: var(--ink); font-weight: 600; }
+.prose-read em { font-style: italic; }
+.prose-read ul,
+.prose-read ol { padding-left: var(--s-6); }
+.prose-read ul { list-style: disc; }
+.prose-read ol { list-style: decimal; }
+.prose-read li + li { margin-top: var(--s-1); }
+.prose-read a { color: var(--primary); text-decoration: underline; text-underline-offset: 3px; }
+.prose-read code {
+  font-family: var(--font-mono-stack);
+  font-size: 13px;
+  padding: 1px var(--s-1);
+  border-radius: var(--r-chip);
+  background: var(--surface-2);
+  color: var(--ink);
+}
+.prose-read pre {
+  font-family: var(--font-mono-stack);
+  font-size: 13px;
+  line-height: 1.5;
+  padding: var(--s-3) var(--s-4);
+  border-radius: var(--r-control);
+  border: 1px solid var(--line);
+  background: var(--page);
+  color: var(--ink-2);
+  overflow-x: auto;
+}
+.prose-read pre code { background: transparent; padding: 0; color: inherit; }
+.prose-read blockquote { border-left: 2px solid var(--line-strong); padding-left: var(--s-4); color: var(--muted); }
+.prose-read hr { border: 0; border-top: 1px solid var(--line); }
+.prose-read table { display: block; max-width: 100%; overflow-x: auto; border-collapse: collapse; font-size: 13.5px; }
+.prose-read th,
+.prose-read td { border: 1px solid var(--line-strong); padding: var(--s-1) var(--s-2); text-align: left; }
+.prose-read th { background: var(--surface-2); color: var(--ink); font-weight: 600; }

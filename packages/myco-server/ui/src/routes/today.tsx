@@ -11,7 +11,7 @@ import { sporesWritten, type SessionEntry, type TimelineEntry, type WorkEntry } 
 import { FailureNote, KickerProject, KickerSep, NestedLines, TimelineItem, TitleLink, type TimelineTone } from '../features/today/TimelineItem';
 import type { WorkAnswer } from '../features/today/wire';
 import {
-  agentName, causeSentence, clockTime, count, dayHeading, failureNextStep, memberName, sporeLine, sporeTypeWord, workHeadline,
+  agentName, causeSentence, clockTime, count, dayHeading, failureNextStep, memberName, shortDay, sinceWords, sporeLine, sporeTypeWord, workHeadline,
 } from '../features/today/words';
 import { useAttention } from '../hooks/use-attention';
 import { useIsAdmin } from '../hooks/use-me';
@@ -119,6 +119,7 @@ function TodayPage({ projectId }: { projectId: string | null }) {
             truncated={today.truncated}
             quiet={window.isToday ? 'Nothing today' : 'Nothing this day'}
             earlier={<DayLink to={dayHref(window.previous)}>{window.isToday ? 'Yesterday’s work' : 'The day before'} →</DayLink>}
+            now={now}
           />
           {window.isToday && today.work !== undefined && <UpkeepLine upkeep={today.work.upkeep} now={now} statusHref={admin ? '/status' : null} />}
           {today.entries !== undefined && today.entries.length > 0 && (
@@ -146,11 +147,12 @@ interface TimelineProps {
   truncated: boolean;
   quiet: string;
   earlier: ReactNode;
+  now: number;
 }
 
 const TRUNCATED = 'This day held more than the timeline lists; the newest are shown.';
 
-function Timeline({ entries, pending, error, onRetry, work, scoped, projectName, truncated, quiet, earlier }: TimelineProps) {
+function Timeline({ entries, pending, error, onRetry, work, scoped, projectName, truncated, quiet, earlier, now }: TimelineProps) {
   if (entries === undefined) {
     if (pending) return <LoadingState label="Loading the day" count={4} />;
     return <ErrorState error={error} onRetry={onRetry} />;
@@ -162,7 +164,7 @@ function Timeline({ entries, pending, error, onRetry, work, scoped, projectName,
     <>
       <ol aria-label="What happened" className="flex flex-col">
         {entries.map((entry) => (entry.type === 'session'
-          ? <SessionItem key={entry.key} entry={entry} scoped={scoped} projectName={projectName} />
+          ? <SessionItem key={entry.key} entry={entry} scoped={scoped} projectName={projectName} now={now} />
           : <WorkItem key={entry.key} entry={entry} scoped={scoped} projectName={projectName} work={work} />))}
       </ol>
       {truncated && <p className="t-small text-muted" data-truncated="">{TRUNCATED}</p>}
@@ -180,13 +182,13 @@ function ProjectKicker({ scoped, projectId, projectName }: { scoped: boolean; pr
   );
 }
 
-function SessionItem({ entry, scoped, projectName }: { entry: SessionEntry; scoped: boolean; projectName: (projectId: string) => string | null }) {
+function SessionItem({ entry, scoped, projectName, now }: { entry: SessionEntry; scoped: boolean; projectName: (projectId: string) => string | null; now: number }) {
   const { session } = entry;
   const who = session.runtimeLabel !== null && session.runtimeLabel.trim() !== '' ? ` on ${session.runtimeLabel}` : memberName(session) === null ? '' : ` · ${memberName(session)}`;
   const heading = sessionHeading(session);
   return (
     <TimelineItem
-      time={entry.live ? 'now' : clockTime(entry.at)}
+      time={entry.live ? 'now' : entry.earlier ? shortDay(entry.at, now) : clockTime(entry.at)}
       at={entry.live ? session.lastReceivedAt : entry.at}
       tone={entry.live ? 'live' : 'plain'}
       kicker={(
@@ -199,6 +201,12 @@ function SessionItem({ entry, scoped, projectName }: { entry: SessionEntry; scop
           )}
           <ProjectKicker scoped={scoped} projectId={entry.projectId} projectName={projectName} />
           <span>{agentName(session.agent)}<span className="hidden sm:inline">{who}</span></span>
+          {entry.earlier && (
+            <>
+              <KickerSep />
+              <span data-started-earlier="">{sinceWords(entry.at, now)}</span>
+            </>
+          )}
           {session.promptCount > 0 && (
             <span className="hidden items-center gap-s2 sm:inline-flex">
               <KickerSep />

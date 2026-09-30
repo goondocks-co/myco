@@ -74,7 +74,7 @@ export const MY_MACHINES_PATH = '/access';
  * one. The project filter can be cleared only on one of these: until a page
  * has a form that spans every project, there is nothing to clear it to.
  */
-export const ALL_PROJECTS_FORMS: Readonly<Record<string, string>> = { '': '/' };
+export const ALL_PROJECTS_FORMS: Readonly<Record<string, string>> = { '': '/', '/sessions': '/sessions' };
 
 /** The suffix of the page whose all-projects form is at this path, or null when the path is no such form. */
 export function allProjectsSuffix(pathname: string, forms: Readonly<Record<string, string>> = ALL_PROJECTS_FORMS): string | null {

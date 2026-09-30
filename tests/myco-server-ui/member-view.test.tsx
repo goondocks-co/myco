@@ -54,7 +54,7 @@ const adminRequests = (asked: readonly string[]): string[] => asked.filter((line
 });
 
 describe('the dashboard for a member who is not an admin', () => {
-  const PAGES = ['/projects', '/p/live', '/p/live/sessions', '/p/live/plans', '/p/live/spores', '/p/live/runs', '/p/live/access', '/access', '/status', '/measures', '/settings', '/settings?tab=secrets', '/settings?tab=capabilities', '/operations', '/notifications'];
+  const PAGES = ['/projects', '/p/live', '/sessions', '/p/live/sessions', '/p/live/sessions/s1', '/p/live/sessions/s1?raw=transcript', '/p/live/plans', '/p/live/spores', '/p/live/runs', '/p/live/access', '/access', '/status', '/measures', '/settings', '/settings?tab=secrets', '/settings?tab=capabilities', '/operations', '/notifications'];
 
   it('reads the route table: a request to an admin route is caught, and one to a read view is not', () => {
     expect(adminRequests(['GET /api/secrets', 'POST /api/backups', 'GET /api/projects', 'GET /api/projects/live/sessions'])).toEqual(['GET /api/secrets', 'POST /api/backups']);

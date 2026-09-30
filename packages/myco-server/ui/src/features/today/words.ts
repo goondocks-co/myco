@@ -57,6 +57,30 @@ export function when(at: number, now: number): string {
   return `on ${new Date(at).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}`;
 }
 
+/**
+ * When something that started before the period on screen began, as "since"
+ * words: "since 09:12" today, "since yesterday 21:40", else "since Sep 24, 21:40".
+ */
+export function sinceWords(at: number, now: number): string {
+  const startOfToday = new Date(now);
+  startOfToday.setHours(0, 0, 0, 0);
+  if (at >= startOfToday.getTime()) return `since ${clockTime(at)}`;
+  if (at >= startOfToday.getTime() - DAY) return `since yesterday ${clockTime(at)}`;
+  return `since ${new Date(at).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}, ${clockTime(at)}`;
+}
+
+/** A day as a short date: "Sep 12", with the year when it is not this one. */
+export function shortDay(at: number, now: number): string {
+  const sameYear = new Date(at).getFullYear() === new Date(now).getFullYear();
+  return new Date(at).toLocaleDateString(undefined, { month: 'short', day: 'numeric', ...(sameYear ? {} : { year: 'numeric' }) });
+}
+
+/** An instant with its day when that is not today: "at 09:39", "yesterday at 23:05", "on Sep 24 at 21:40". */
+export function whenWithTime(at: number, now: number): string {
+  const said = when(at, now);
+  return said.startsWith('on ') ? `${said} at ${clockTime(at)}` : said;
+}
+
 /** An agent as a person reads it; a session that names none reads "An agent". */
 export function agentName(agent: string | null): string {
   if (agent === null || agent === '') return 'An agent';
