@@ -1,0 +1,306 @@
+{
+  "components/GlobalSearch.tsx": {
+    "raw-button": 2,
+    "raw-input": 1,
+    "raw-select": 4,
+    "small-text": 3
+  },
+  "components/ProjectSwitcher.tsx": {
+    "raw-button": 4,
+    "raw-input": 1,
+    "inline-style": 1,
+    "small-text": 7
+  },
+  "components/access/KeyReveal.tsx": {
+    "raw-button": 1,
+    "small-text": 3
+  },
+  "components/access/MachineSettings.tsx": {
+    "raw-button": 3,
+    "raw-input": 1,
+    "small-text": 8
+  },
+  "components/auth-gate.tsx": {
+    "raw-button": 1
+  },
+  "components/config/PatternInput.tsx": {
+    "raw-button": 2,
+    "raw-input": 1,
+    "small-text": 3
+  },
+  "components/measures/MeasureTile.tsx": {
+    "small-text": 2
+  },
+  "components/operations/BackupPanel.tsx": {
+    "raw-button": 5,
+    "raw-input": 1,
+    "small-text": 7
+  },
+  "components/operations/MaintenancePanel.tsx": {
+    "raw-button": 1,
+    "small-text": 4
+  },
+  "components/operations/RecoveryPanel.tsx": {
+    "raw-button": 1,
+    "small-text": 3
+  },
+  "components/operations/TitlingBackfillPanel.tsx": {
+    "raw-button": 3,
+    "small-text": 1
+  },
+  "components/operations/WakePanel.tsx": {
+    "raw-button": 1,
+    "small-text": 1
+  },
+  "components/release/ReleaseChip.tsx": {
+    "small-text": 1
+  },
+  "components/release/ReleaseTracking.tsx": {
+    "raw-button": 3,
+    "raw-input": 6,
+    "raw-textarea": 3,
+    "small-text": 7
+  },
+  "components/sessions/PlanCard.tsx": {
+    "raw-button": 2,
+    "raw-select": 1,
+    "inline-style": 1,
+    "arbitrary-colour": 4,
+    "small-text": 7
+  },
+  "components/sessions/SessionDetail.tsx": {
+    "raw-button": 5,
+    "arbitrary-colour": 4,
+    "small-text": 18
+  },
+  "components/sessions/SessionRail.tsx": {
+    "raw-button": 1,
+    "arbitrary-colour": 3,
+    "small-text": 10
+  },
+  "components/sessions/ToolCallList.tsx": {
+    "raw-button": 3,
+    "arbitrary-colour": 1,
+    "small-text": 15
+  },
+  "components/sessions/TurnCard.tsx": {
+    "raw-button": 3,
+    "inline-style": 3,
+    "arbitrary-colour": 3,
+    "small-text": 16
+  },
+  "components/sessions/TurnTimeline.tsx": {
+    "raw-button": 1,
+    "raw-input": 1,
+    "small-text": 2
+  },
+  "components/sessions/stored-text.tsx": {
+    "small-text": 3
+  },
+  "components/spores/SporeDetail.tsx": {
+    "arbitrary-colour": 1,
+    "small-text": 7
+  },
+  "components/spores/SporeRail.tsx": {
+    "arbitrary-colour": 2,
+    "small-text": 9
+  },
+  "components/status/WorkersPanel.tsx": {
+    "small-text": 2
+  },
+  "components/ui/badge.tsx": {
+    "arbitrary-colour": 1,
+    "small-text": 1
+  },
+  "components/ui/button.tsx": {
+    "raw-button": 1,
+    "arbitrary-colour": 3,
+    "small-text": 1
+  },
+  "components/ui/confirm-dialog.tsx": {
+    "small-text": 2
+  },
+  "components/ui/eyebrow.tsx": {
+    "small-text": 3
+  },
+  "components/ui/filter-pill.tsx": {
+    "raw-button": 1,
+    "small-text": 2
+  },
+  "components/ui/inline-link.ts": {
+    "small-text": 1
+  },
+  "components/ui/input.tsx": {
+    "raw-input": 1,
+    "arbitrary-colour": 1
+  },
+  "components/ui/lightbox.tsx": {
+    "raw-button": 3,
+    "small-text": 1
+  },
+  "components/ui/list-filter-bar.tsx": {
+    "arbitrary-colour": 1,
+    "small-text": 1
+  },
+  "components/ui/master-detail-split.tsx": {
+    "raw-button": 1,
+    "inline-style": 1
+  },
+  "components/ui/metric-card.tsx": {
+    "arbitrary-colour": 1,
+    "small-text": 1
+  },
+  "components/ui/page-loading.tsx": {
+    "small-text": 1
+  },
+  "components/ui/pagination.tsx": {
+    "small-text": 1
+  },
+  "components/ui/panel.tsx": {
+    "arbitrary-colour": 1
+  },
+  "components/ui/refresh-indicator.tsx": {
+    "raw-button": 1,
+    "small-text": 1
+  },
+  "components/ui/row.tsx": {
+    "arbitrary-colour": 4
+  },
+  "components/ui/select.tsx": {
+    "arbitrary-colour": 1
+  },
+  "components/ui/slideout-detail-panel.tsx": {
+    "raw-button": 1,
+    "inline-style": 1
+  },
+  "components/ui/status-dot.tsx": {
+    "inline-style": 1
+  },
+  "components/ui/step-circle.tsx": {
+    "inline-style": 1
+  },
+  "components/ui/subtab-pill.tsx": {
+    "raw-button": 1,
+    "arbitrary-colour": 2,
+    "small-text": 1
+  },
+  "components/ui/surface.tsx": {
+    "arbitrary-colour": 2
+  },
+  "components/ui/tile-tabs.tsx": {
+    "raw-button": 1,
+    "arbitrary-colour": 2,
+    "small-text": 1
+  },
+  "index.css": {
+    "colour-literal": 1,
+    "small-text": 7
+  },
+  "layout/AppearanceSection.tsx": {
+    "raw-button": 3,
+    "raw-select": 1,
+    "inline-style": 1,
+    "colour-literal": 6,
+    "small-text": 1
+  },
+  "layout/Layout.tsx": {
+    "small-text": 4,
+    "retired-import": 1
+  },
+  "layout/Topbar.tsx": {
+    "raw-button": 1,
+    "small-text": 4,
+    "retired-import": 1
+  },
+  "lib/monogram.ts": {
+    "colour-literal": 1
+  },
+  "lib/worker-state.ts": {
+    "retired-import": 1
+  },
+  "pages/Access.tsx": {
+    "raw-button": 14,
+    "raw-input": 1,
+    "raw-select": 1,
+    "raw-table": 1,
+    "small-text": 27,
+    "retired-import": 8
+  },
+  "pages/AgentRuns.tsx": {
+    "raw-button": 2,
+    "raw-select": 1,
+    "small-text": 28,
+    "retired-import": 9
+  },
+  "pages/Link.tsx": {
+    "raw-button": 1,
+    "small-text": 2,
+    "retired-import": 1
+  },
+  "pages/Measures.tsx": {
+    "raw-table": 1,
+    "arbitrary-colour": 1,
+    "small-text": 3,
+    "retired-import": 5
+  },
+  "pages/NotAMember.tsx": {
+    "raw-button": 1,
+    "small-text": 1,
+    "retired-import": 1
+  },
+  "pages/NotFound.tsx": {
+    "retired-import": 2
+  },
+  "pages/Notifications.tsx": {
+    "retired-import": 3
+  },
+  "pages/Operations.tsx": {
+    "small-text": 2,
+    "retired-import": 3
+  },
+  "pages/Plans.tsx": {
+    "raw-button": 1,
+    "small-text": 2,
+    "retired-import": 4
+  },
+  "pages/ProjectAccess.tsx": {
+    "raw-button": 4,
+    "raw-input": 1,
+    "small-text": 4,
+    "retired-import": 7
+  },
+  "pages/ProjectHome.tsx": {
+    "raw-button": 3,
+    "arbitrary-colour": 4,
+    "small-text": 17,
+    "retired-import": 10
+  },
+  "pages/Projects.tsx": {
+    "small-text": 7,
+    "retired-import": 5
+  },
+  "pages/Sessions.tsx": {
+    "raw-input": 1,
+    "retired-import": 4
+  },
+  "pages/Settings.tsx": {
+    "small-text": 16,
+    "retired-import": 7
+  },
+  "pages/SignedOut.tsx": {
+    "retired-import": 1
+  },
+  "pages/Spores.tsx": {
+    "raw-input": 1,
+    "raw-select": 1,
+    "retired-import": 4
+  },
+  "pages/Status.tsx": {
+    "raw-table": 1,
+    "small-text": 5,
+    "retired-import": 5
+  },
+  "settings/catalogue.ts": {
+    "colour-literal": 2
+  }
+}

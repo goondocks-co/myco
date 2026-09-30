@@ -19,12 +19,10 @@ import { formatRelative } from '../lib/format';
 import { harnessLabel } from '../lib/harness';
 import { SECRET_SLOTS, slotUse } from '@goondocks/myco-shared/secret-slots';
 import { LEAF_GROUPS, type LeafField } from '../settings/catalogue';
+import { Button, Input, Select, Switch, Textarea } from '../design';
 
 const TABS: { id: string; label: string; admin?: true }[] = [...LEAF_GROUPS.map((g) => ({ id: g.id, label: g.label })), { id: 'secrets', label: 'Credentials', admin: true }, { id: 'capabilities', label: 'Projects', admin: true }, { id: 'browser', label: 'This browser' }];
 
-const button = 'rounded-md border border-outline-variant/30 px-2.5 py-1 font-sans text-xs text-on-surface transition-colors hover:bg-surface-container-high disabled:opacity-50';
-const primary = 'rounded-md bg-primary px-3 py-1.5 font-sans text-sm text-on-primary transition-opacity hover:opacity-90 disabled:opacity-50';
-const inputClass = 'rounded-md border border-outline-variant/30 bg-surface-container px-2 py-1 font-sans text-sm text-on-surface';
 
 const CAPABILITY_LABEL: Record<string, string> = { cortex: 'Context at session start and on prompts', canopy: 'Code map', skills: 'Skills', vault_evolution: 'Memory upkeep' };
 
@@ -47,7 +45,7 @@ export function Settings() {
       <PageHeader title="Settings" subtitle={admin
         ? 'What this server holds for every member. Each change saves as you make it and names who made it.'
         : 'What this server holds for every member. An admin changes these; this browser\'s appearance is yours.'} />
-      <div className="mb-4">
+      <div className="mb-4 max-w-full overflow-x-auto">
         <SubtabPill tabs={tabs} activeTab={tab} onTabChange={setTab} />
       </div>
       {LEAF_GROUPS.map((g) => g.id === tab && <LeafGroupPanel key={g.id} groupId={g.id} />)}
@@ -140,39 +138,34 @@ export function LeafControl({ field, row }: { field: LeafField; row: LeafRow | u
           ? <PatternInput label={field.label} patterns={value} readOnly={locked} pending={actions.setLeaf.isPending} onSave={save} />
           : <span role="alert" className="text-tertiary">Stored patterns must be an array of strings.</span>)}
         {field.kind === 'toggle' && (
-          <button type="button" id={`leaf-${field.leaf}`} role="switch" aria-checked={value === true} aria-label={field.label}
+          <Switch id={`leaf-${field.leaf}`} aria-label={field.label} checked={value === true}
             disabled={actions.setLeaf.isPending || locked}
-            onClick={() => save(value !== true)}
-            className={`${button} ${value === true ? 'bg-primary/15 text-primary' : ''} ${locked ? 'opacity-60' : ''}`}>
-            {value === true ? 'On' : 'Off'}
-          </button>
+            onCheckedChange={(checked) => save(checked)} />
         )}
         {field.kind === 'select' && (
-          <select id={`leaf-${field.leaf}`} aria-label={field.label} className={`${inputClass} ${locked ? 'opacity-60' : ''}`}
-            value={value === null ? '' : String(value)} disabled={actions.setLeaf.isPending || locked}
-            onChange={(e) => { const raw = e.target.value; if (raw === '') return; const opt = (field.options ?? []).find((o) => String(o) === raw); save(opt ?? raw); }}>
-            <option value="" disabled={row?.configured === true}>Server default</option>
-            {(field.options ?? []).map((o) => <option key={String(o)} value={String(o)}>{String(o)}{field.unit ? ` ${field.unit}` : ''}</option>)}
-          </select>
+          <Select id={`leaf-${field.leaf}`} label={field.label} className={locked ? 'opacity-60' : undefined}
+            value={value === null ? '' : String(value)} placeholder="Server default" disabled={actions.setLeaf.isPending || locked}
+            options={(field.options ?? []).map((o) => ({ value: String(o), label: `${String(o)}${field.unit ? ` ${field.unit}` : ''}` }))}
+            onValueChange={(raw) => { const opt = (field.options ?? []).find((o) => String(o) === raw); save(opt ?? raw); }} />
         )}
         {(field.kind === 'number' || field.kind === 'text') && (
-          <input id={`leaf-${field.leaf}`} aria-label={field.label} className={`${inputClass} w-full ${locked ? 'opacity-60' : ''}`} type={field.kind === 'number' ? 'number' : 'text'}
+          <Input id={`leaf-${field.leaf}`} aria-label={field.label} className={locked ? 'opacity-60' : undefined} type={field.kind === 'number' ? 'number' : 'text'}
             min={field.min} max={field.max} step={field.step} value={shown} readOnly={locked}
             placeholder={field.readOnly === true ? 'Nothing stored' : 'Server default'}
             onChange={(e) => setDraft(e.target.value)} onBlur={commitText} onKeyDown={(e) => { if (e.key === 'Enter') commitText(); }} />
         )}
         {field.kind === 'textarea' && (
           <div className="flex w-full flex-col gap-1">
-            <textarea id={`leaf-${field.leaf}`} aria-label={field.label} className={`${inputClass} min-h-32 w-full`} value={shown} readOnly={locked}
+            <Textarea id={`leaf-${field.leaf}`} aria-label={field.label} className="min-h-32" value={shown} readOnly={locked}
               maxLength={field.maxLength} placeholder={field.readOnly ? 'Nothing stored' : 'Server default'} onChange={(e) => setDraft(e.target.value)} />
-            {!locked && <button type="button" className={button} disabled={draft === null || actions.setLeaf.isPending} onClick={commitText}>Save</button>}
+            {!locked && <Button size="sm" className="self-end" disabled={draft === null || actions.setLeaf.isPending} onClick={commitText}>Save</Button>}
           </div>
         )}
         {field.kind === 'json' && (
           <div className="flex w-full flex-col gap-1">
-            <textarea id={`leaf-${field.leaf}`} aria-label={field.label} className={`${inputClass} min-h-24 w-full font-mono text-xs`} value={shown} readOnly={locked}
+            <Textarea id={`leaf-${field.leaf}`} aria-label={field.label} className="min-h-24 t-mono" value={shown} readOnly={locked}
               placeholder={field.readOnly ? 'Nothing stored' : 'Server default'} onChange={(e) => setDraft(e.target.value)} />
-            {!locked && <button type="button" className={button} disabled={draft === null || actions.setLeaf.isPending} onClick={commitText}>Save</button>}
+            {!locked && <Button size="sm" className="self-end" disabled={draft === null || actions.setLeaf.isPending} onClick={commitText}>Save</Button>}
           </div>
         )}
         {field.unit && field.kind !== 'select' && <span className="font-sans text-xs text-on-surface-variant">{field.unit}</span>}
@@ -205,8 +198,8 @@ function Secrets() {
                 <div className="font-mono text-xs text-on-surface-variant">{s.configured ? (s.readable ? s.maskedValue ?? 'set' : 'stored under a key this server can no longer open — enter it again') : 'not set'}</div>
                 {s.configured && <div className="text-xs text-on-surface-variant">updated {formatRelative(s.updatedAt)}{s.updatedBy ? ` by ${nameOf(s.updatedBy)}` : ''}</div>}
               </div>
-              <button type="button" className={button} onClick={() => { setDraft(''); setEditing(s); }}>{s.configured ? 'Rotate' : 'Set'}</button>
-              {s.configured && <button type="button" className={button} onClick={() => setRemoving(s)}>Remove</button>}
+              <Button size="sm" onClick={() => { setDraft(''); setEditing(s); }}>{s.configured ? 'Rotate' : 'Set'}</Button>
+              {s.configured && <Button size="sm" onClick={() => setRemoving(s)}>Remove</Button>}
             </li>
           ))}
         </ul>
@@ -220,11 +213,11 @@ function Secrets() {
           <form className="flex flex-col gap-3" onSubmit={(e) => { e.preventDefault(); if (editing && draft.length > 0) { setError(null); actions.setSecret.mutate({ name: editing.name, value: draft }, { onSuccess: close, onError: (err) => setError(settingsRefusalText(err)) }); } }}>
             <label className="flex flex-col gap-1 font-sans text-xs text-on-surface-variant">
               Credential
-              <input type="password" autoComplete="off" aria-label="Credential value" className={inputClass} value={draft} onChange={(e) => setDraft(e.target.value)} />
+              <Input type="password" autoComplete="off" aria-label="Credential value" value={draft} onChange={(e) => setDraft(e.target.value)} />
             </label>
             {error !== null && <p className="font-sans text-xs text-tertiary">{error}</p>}
             <div className="flex justify-end">
-              <button type="submit" className={primary} disabled={draft.length === 0 || actions.setSecret.isPending}>Save</button>
+              <Button type="submit" variant="primary" disabled={draft.length === 0 || actions.setSecret.isPending}>Save</Button>
             </div>
           </form>
         </DialogContent>
@@ -271,11 +264,8 @@ function ProjectCapabilityPanel({ projectId, name }: { projectId: string; name: 
           {Object.entries(caps.data?.capabilities ?? {}).map(([capability, enabled]) => (
             <li key={capability} className="flex items-center gap-3 py-2 font-sans text-sm">
               <span className="min-w-0 flex-1 text-on-surface">{CAPABILITY_LABEL[capability] ?? capability}</span>
-              <button type="button" role="switch" aria-checked={enabled} aria-label={`${CAPABILITY_LABEL[capability] ?? capability} for ${name}`} disabled={actions.setCapability.isPending}
-                className={`${button} ${enabled ? 'bg-primary/15 text-primary' : ''}`}
-                onClick={() => { setError(null); actions.setCapability.mutate({ projectId, capability, enabled: !enabled }, { onError: (err) => setError(settingsRefusalText(err)) }); }}>
-                {enabled ? 'On' : 'Off'}
-              </button>
+              <Switch checked={enabled} aria-label={`${CAPABILITY_LABEL[capability] ?? capability} for ${name}`} disabled={actions.setCapability.isPending}
+                onCheckedChange={(checked) => { setError(null); actions.setCapability.mutate({ projectId, capability, enabled: checked }, { onError: (err) => setError(settingsRefusalText(err)) }); }} />
             </li>
           ))}
         </ul>
@@ -304,8 +294,8 @@ function ProjectRepository({ projectId }: { projectId: string }) {
         <p>Updated {formatRelative(connection.updatedAt)} by {nameOf(connection.updatedBy)}</p>
       </div>}
       <div className="mt-2 flex gap-2">
-        <button className={button} type="button" onClick={() => setEditing({ connection })}>{connection ? 'Edit repository' : 'Connect repository'}</button>
-        {connection && <button className={button} type="button" onClick={() => setRemoving(connection)}>Disconnect</button>}
+        <Button size="sm" onClick={() => setEditing({ connection })}>{connection ? 'Edit repository' : 'Connect repository'}</Button>
+        {connection && <Button size="sm" onClick={() => setRemoving(connection)}>Disconnect</Button>}
       </div>
     </PageLoading>
     <Dialog open={editing !== null} onOpenChange={(open) => { if (!open) setEditing(null); }}>
@@ -335,14 +325,14 @@ function RepositoryForm({ projectId, connection, onClose }: { projectId: string;
     if (!publicAccess && !token && !canKeepCredential) return;
     actions.save.mutate({ url, branch, revision: connection?.revision ?? null, credential }, { onSuccess: () => { setToken(''); actions.save.reset(); onClose(); } });
   }}>
-    <label className="flex flex-col gap-1 font-sans text-xs text-on-surface-variant">HTTPS repository URL<input className={inputClass} type="url" required value={url} onChange={(event) => setUrl(event.target.value)} placeholder="https://github.com/example/repository.git" /></label>
-    <label className="flex flex-col gap-1 font-sans text-xs text-on-surface-variant">Branch<input className={inputClass} required value={branch} onChange={(event) => setBranch(event.target.value)} /></label>
-    <label className="flex items-center gap-2 font-sans text-sm text-on-surface"><input type="checkbox" checked={publicAccess} onChange={(event) => { setPublicAccess(event.target.checked); setToken(''); }} />Use without a credential</label>
+    <label className="flex flex-col gap-1 font-sans text-xs text-on-surface-variant">HTTPS repository URL<Input type="url" required value={url} onChange={(event) => setUrl(event.target.value)} placeholder="https://github.com/example/repository.git" /></label>
+    <label className="flex flex-col gap-1 font-sans text-xs text-on-surface-variant">Branch<Input required value={branch} onChange={(event) => setBranch(event.target.value)} /></label>
+    <label className="flex items-center gap-2 font-sans text-sm text-on-surface"><Switch checked={publicAccess} onCheckedChange={(checked) => { setPublicAccess(checked); setToken(''); }} />Use without a credential</label>
     {!publicAccess && <>
-      <label className="flex flex-col gap-1 font-sans text-xs text-on-surface-variant">Git username<input className={inputClass} required value={username} autoComplete="off" onChange={(event) => setUsername(event.target.value)} /></label>
-      <label className="flex flex-col gap-1 font-sans text-xs text-on-surface-variant">Read token<input className={inputClass} type="password" autoComplete="off" required={!canKeepCredential} value={token} onChange={(event) => setToken(event.target.value)} placeholder={canKeepCredential ? 'Leave blank to keep the current credential' : ''} /></label>
+      <label className="flex flex-col gap-1 font-sans text-xs text-on-surface-variant">Git username<Input required value={username} autoComplete="off" onChange={(event) => setUsername(event.target.value)} /></label>
+      <label className="flex flex-col gap-1 font-sans text-xs text-on-surface-variant">Read token<Input type="password" autoComplete="off" required={!canKeepCredential} value={token} onChange={(event) => setToken(event.target.value)} placeholder={canKeepCredential ? 'Leave blank to keep the current credential' : ''} /></label>
     </>}
     {actions.save.error && <p role="alert" className="font-sans text-xs text-tertiary">{settingsRefusalText(actions.save.error)}</p>}
-    <div className="flex justify-end"><button type="submit" className={primary} disabled={actions.save.isPending}>Save repository</button></div>
+    <div className="flex justify-end"><Button type="submit" variant="primary" disabled={actions.save.isPending}>Save repository</Button></div>
   </form>;
 }
