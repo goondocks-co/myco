@@ -75,8 +75,12 @@ export async function handleSaveSpore(env: ServerEnv, ctx: RouteContext): Promis
     createdAt: int(body.createdAt) ?? ctx.now,
   });
   if (spore !== null) return Response.json({ persisted: true, spore });
-  // An id already held answers the row as it stands and writes nothing.
-  return Response.json({ persisted: true, duplicate: true, spore: await getSpore(env.db, scope, id) });
+  // An id already held answers the row as it stands and writes nothing, in the shape a write answers: who its author
+  // is belongs to the reads.
+  const held = await getSpore(env.db, scope, id);
+  if (held === null) return Response.json({ persisted: true, duplicate: true, spore: null });
+  const { authorKind: _authorKind, ...row } = held;
+  return Response.json({ persisted: true, duplicate: true, spore: row });
 }
 
 export async function handleListSpores(env: ServerEnv, ctx: RouteContext): Promise<Response> {

@@ -1,6 +1,7 @@
 import type { PreparedStatement, RelationalStore, RunResult } from '../core/adapters.js';
 import { occurredAt, presentedEndedAt, presentedStartedAt } from '../db/session-dates.js';
-import { inListChunks, keyset, page, projectsFiltering, type Page, type ProjectSet, type ReadScope } from './scope.js';
+import { containsPattern, inListChunks, keyset, page, projectsFiltering, type Page, type ProjectSet, type ReadScope } from './scope.js';
+export { containsPattern };
 import { notTombstonedSql, NOT_TOMBSTONED_PARAMS } from '../core/tombstones.js';
 import { sessionMaterialReadySql, titlingClaimAvailableSql } from './material-readiness.js';
 
@@ -240,10 +241,6 @@ const FULL_FIDELITY = `${sessionMaterialReadySql('s')} AND NOT EXISTS (SELECT 1 
   WHERE t.project_id = s.project_id AND t.session_id = s.session_id
     AND t.fidelity IS NOT NULL AND t.fidelity <> 'full')`;
 
-/** A LIKE pattern matching `text` anywhere, with the pattern's own metacharacters escaped. */
-export function containsPattern(text: string): string {
-  return `%${text.replace(/[\\%_]/g, (c) => `\\${c}`)}%`;
-}
 
 /**
  * When a session happened, for ordering: its own start where it has one, and

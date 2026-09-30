@@ -17,7 +17,7 @@
 import type { ServerEnv } from '../core/adapters.js';
 import type { OwnerContext } from '../context.js';
 import { notFound, ok, resolveProjectScope } from './scope.js';
-import { pageProjectPlans, PLAN_STATUS_MESSAGE, WRITABLE_PLAN_STATUSES } from '../read/plans.js';
+import { getPlan, pageProjectPlans, PLAN_STATUS_MESSAGE, WRITABLE_PLAN_STATUSES } from '../read/plans.js';
 import { decodeCursor } from '../read/scope.js';
 import { MAX_PAGE } from './intelligence.js';
 
@@ -49,4 +49,12 @@ export async function handleProjectPlans(env: ServerEnv, ctx: OwnerContext): Pro
     ...(cursor === null ? {} : { cursor }),
   });
   return ok({ plans: page.rows, cursor: page.cursor, maxPage: MAX_PAGE });
+}
+
+/** `GET /api/projects/{projectId}/plans/{planKey}`: one plan with its tags. A plan under another Project answers 404, as one that never existed. */
+export async function handleProjectPlan(env: ServerEnv, ctx: OwnerContext): Promise<Response> {
+  const scope = await resolveProjectScope(env.db, ctx.member, ctx.params.projectId ?? '');
+  if (scope === null) return notFound();
+  const plan = await getPlan(env.db, scope, ctx.params.planKey ?? '');
+  return plan === null ? notFound() : ok({ plan, projectId: scope.projectId });
 }

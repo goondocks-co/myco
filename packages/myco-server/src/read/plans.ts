@@ -1,7 +1,7 @@
 import { registeredObjectKeySql } from '../core/blob-objects.js';
 import type { RelationalStore } from '../core/adapters.js';
 import { PLAN_STATUSES } from '../ingest/kinds.js';
-import { clampLimit, encodeCursor, inListChunks, keyset, projectsFiltering, type Page, type ProjectSet, type ReadScope } from './scope.js';
+import { clampLimit, containsPattern, encodeCursor, inListChunks, keyset, projectsDriving, projectsFiltering, type Page, type ProjectSet, type ReadScope } from './scope.js';
 
 /** A plan as the project holds it: the projected row plus the tags the same event carried. `promptId` names the prompt the plan came from; `updatedBy` the member behind its last administrative edit, null when a capture event wrote last. */
 export interface ProjectPlanRow {
@@ -121,9 +121,37 @@ export type PlanAcrossRow = ProjectPlanRow & { projectId: string };
 export async function pagePlansAcross(
   db: RelationalStore,
   set: ProjectSet,
-  opts: { status?: string; since?: number; limit?: number; cursor?: string } = {},
+  opts: { status?: string; since?: number; q?: string; limit?: number; cursor?: string } = {},
 ): Promise<Page<PlanAcrossRow>> {
   return selectPlans(db, projectsFiltering(set, 'plans'), opts, 'idx_plans_updated_deployment');
+}
+
+/**
+ * The plans a text matches: its title or its body as the Deployment holds it inline, with `%` and `_` read as text.
+ * Case is folded for ASCII letters only: `é` does not match `É`. A body spilled to a blob is matched by
+ * `/api/search`, not here.
+ */
+function planText(q: string | undefined): { sql: string; params: string[] } | null {
+  if (q === undefined || q.trim() === '') return null;
+  const pattern = containsPattern(q.trim());
+  return { sql: `(title LIKE ? ESCAPE '\\' OR content LIKE ? ESCAPE '\\')`, params: [pattern, pattern] };
+}
+
+/**
+ * How many plans of each status the set holds under the other filters: a start instant and a text. Read through each
+ * Project's own plans, one statement. A status no plan holds is absent. The totals and the page are two statements, so
+ * a plan written between them can leave a total one off the page it sits beside.
+ */
+export async function planTotals(db: RelationalStore, set: ProjectSet, opts: { since?: number; q?: string } = {}): Promise<Record<string, number>> {
+  const projects = projectsDriving(set, 'project_id');
+  const conditions = [projects.sql];
+  const params: unknown[] = [...projects.params];
+  if (opts.since !== undefined) { conditions.push('updated_at >= ?'); params.push(opts.since); }
+  const text = planText(opts.q);
+  if (text !== null) { conditions.push(text.sql); params.push(...text.params); }
+  const { results } = await db.prepare(`SELECT status, COUNT(*) AS n FROM plans WHERE ${conditions.join(' AND ')} GROUP BY status`)
+    .bind(...params).all<{ status: string; n: number }>();
+  return Object.fromEntries(results.map((r) => [r.status, Number(r.n)]));
 }
 
 /**
@@ -134,7 +162,7 @@ export async function pagePlansAcross(
 async function selectPlans(
   db: RelationalStore,
   projects: { sql: string; params: readonly unknown[] },
-  opts: { status?: string; sessionId?: string; since?: number; limit?: number; cursor?: string },
+  opts: { status?: string; sessionId?: string; since?: number; q?: string; limit?: number; cursor?: string },
   walks = '',
 ): Promise<Page<PlanAcrossRow>> {
   const k = keyset({ limit: clampLimit(opts.limit), cursor: opts.cursor }, { order: 'updated_at', id: 'plan_key', direction: 'DESC' });
@@ -144,6 +172,8 @@ async function selectPlans(
   if (opts.status !== undefined) { conditions.push('status = ?'); params.push(opts.status); }
   if (opts.sessionId !== undefined) { conditions.push('session_id = ?'); params.push(opts.sessionId); }
   if (opts.since !== undefined) { conditions.push('updated_at >= ?'); params.push(opts.since); }
+  const text = planText(opts.q);
+  if (text !== null) { conditions.push(text.sql); params.push(...text.params); }
   if (k.where !== '') {
     if (walks !== '') { conditions.push('updated_at <= ?'); params.push(k.params[0]); }
     conditions.push(k.where); params.push(...k.params);
