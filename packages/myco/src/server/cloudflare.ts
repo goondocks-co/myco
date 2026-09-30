@@ -262,6 +262,75 @@ export async function ensureSecretsStore(options: CloudflareOptions): Promise<{ 
   return { storeId: id, created: true };
 }
 
+const STORE_SECRETS_PAGE = 100;
+const STORE_SECRETS_PAGES = 100;
+/** Wrangler's answer to a store-secret page past the last one, or to an empty store. */
+const NO_STORE_SECRETS = /List request returned no secrets/;
+const STORE_SECRETS_HEADER = /│\s*Name\s*│\s*ID\s*│/;
+const STORE_SECRET_ROW = /│\s*([A-Za-z0-9_-]+)\s*│\s*[0-9a-f]{32}\s*│/g;
+
+/**
+ * The names of every secret `storeId` holds, read page by page without writing. Wrangler prints each page as a table;
+ * a page it answers without that table, or a failure other than its answer for an empty page, is thrown, so an
+ * unreadable list never reads as a store that lacks a secret.
+ */
+export async function storeSecretNames(options: CloudflareOptions & { storeId: string }): Promise<string[]> {
+  const { runner, env } = resolved(options);
+  const names: string[] = [];
+  for (let page = 1; page <= STORE_SECRETS_PAGES; page += 1) {
+    const args = wrangler('secrets-store', 'secret', 'list', options.storeId, '--remote', '--page', String(page), '--per-page', String(STORE_SECRETS_PAGE));
+    const listed = await runner.run('npx', args, { cwd: options.configDir, env });
+    if (NO_STORE_SECRETS.test(listed.stdout + listed.stderr)) return names;
+    if (listed.code !== 0) throw new CommandFailed('npx', args, listed);
+    if (!STORE_SECRETS_HEADER.test(listed.stdout)) throw new Error(`the secret list of store ${options.storeId} is unreadable`);
+    const rows = [...listed.stdout.matchAll(STORE_SECRET_ROW)].map((m) => m[1]!);
+    names.push(...rows);
+    if (rows.length < STORE_SECRETS_PAGE) return names;
+  }
+  throw new Error(`the secret list of store ${options.storeId} runs past ${STORE_SECRETS_PAGES * STORE_SECRETS_PAGE} secrets`);
+}
+
+/** The secrets store this account holds, read without creating one; null where it holds none. A failed list is thrown. */
+export async function findSecretsStore(options: CloudflareOptions): Promise<string | null> {
+  const { runner, env } = resolved(options);
+  const listed = await runOrThrow(runner, 'npx', wrangler('secrets-store', 'store', 'list', '--remote'), { cwd: options.configDir, env });
+  return /[0-9a-f]{32}/.exec(listed.stdout)?.[0] ?? null;
+}
+
+/** The names of the secrets a deployed Worker holds. Any failure to list them is thrown, never read as a Worker without one. */
+export async function workerSecretNames(options: CloudflareOptions & { workerName: string }): Promise<string[]> {
+  const { runner, env } = resolved(options);
+  const listed = await runOrThrow(runner, 'npx', wrangler('secret', 'list', '--name', options.workerName), { cwd: options.configDir, env });
+  const rows: unknown = jsonDocument(listed.stdout);
+  if (!Array.isArray(rows)) throw new Error(`the secret list of ${options.workerName} is unreadable`);
+  return rows.flatMap((row) => (typeof row?.name === 'string' ? [row.name as string] : []));
+}
+
+/** `workerSecretNames`, with wrangler's answer that no Worker of the name exists read as null: a plan of a Deployment not yet created. */
+export async function deployedWorkerSecretNames(options: CloudflareOptions & { workerName: string }): Promise<string[] | null> {
+  try {
+    return await workerSecretNames(options);
+  } catch (error) {
+    const said = error instanceof CommandFailed ? error.stdout + error.stderr : '';
+    if (/\b10007\b/.test(said) || said.includes(`Worker "${options.workerName}" not found`)) return null;
+    throw error;
+  }
+}
+
+/** The D1 databases, R2 buckets and Vectorize indexes this account holds, by name, read without writing. */
+export async function accountResourceNames(options: CloudflareOptions): Promise<{ databases: string[]; buckets: string[]; vectorIndexes: string[] }> {
+  const { runner, env } = resolved(options);
+  const read = (...args: string[]) => runOrThrow(runner, 'npx', wrangler(...args), { cwd: options.configDir, env });
+  const databases = jsonDocument((await read('d1', 'list', '--json')).stdout);
+  const indexes = jsonDocument((await read('vectorize', 'list', '--json')).stdout);
+  const buckets = (await read('r2', 'bucket', 'list')).stdout;
+  return {
+    databases: Array.isArray(databases) ? databases.flatMap((d) => (typeof d?.name === 'string' ? [d.name as string] : [])) : [],
+    vectorIndexes: Array.isArray(indexes) ? indexes.flatMap((d) => (typeof d?.name === 'string' ? [d.name as string] : [])) : [],
+    buckets: [...buckets.matchAll(/^name:\s*(\S+)/gm)].map((m) => m[1]!),
+  };
+}
+
 /** Install the wrapping key in the store, value on stdin, never argv. */
 export async function putStoreSecret(options: CloudflareOptions & { storeId: string; name: string; value: string }): Promise<void> {
   await privateCommand(options,
@@ -726,6 +795,22 @@ export function writeDeploymentRecord(record: DeploymentRecord, mycoHome = resol
     mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
     atomicWriteFileSync(file, `${JSON.stringify(record, null, 2)}\n`, { mode: 0o600, durable: true });
   });
+}
+
+/**
+ * The deployment record as it stands, read without moving any file: the per-target path, else the single-directory
+ * layout's. A plan reads this so it writes nothing under the home.
+ */
+export function peekDeploymentRecord(mycoHome = resolveMycoHome()): DeploymentRecord | null {
+  for (const file of [path.join(mycoHome, 'server', 'cloudflare', 'record.json'), path.join(mycoHome, 'server', 'cloudflare.json')]) {
+    if (!existsSync(file)) continue;
+    try {
+      return JSON.parse(readFileSync(file, 'utf8')) as DeploymentRecord;
+    } catch (err) {
+      throw new Error(`${file} is not readable as a deployment record: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+  return null;
 }
 
 export function readDeploymentRecord(mycoHome = resolveMycoHome()): DeploymentRecord | null {

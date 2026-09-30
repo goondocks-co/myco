@@ -21,7 +21,7 @@
  * store access, the same authority #907 settled as the recovery path.
  */
 import { toBase64Url } from '../base64.js';
-import type { RelationalStore } from '../core/adapters.js';
+import type { PreparedStatement, RelationalStore } from '../core/adapters.js';
 import { sha256Hex } from '../hash.js';
 import { emit } from '../telemetry.js';
 import { MEMBER_REVOKED_BY, memberRevokedByParams } from '../db/liveness.js';
@@ -92,6 +92,20 @@ const linkAdmitted = (issuer: string, member: string): string =>
 export async function issueIdentityLinkAuthority(
   db: RelationalStore, memberId: string, nowMs: number, options: { ttlMs?: number; replaceUnspent?: boolean; issuedBy?: string } = {},
 ): Promise<IssuedIdentityLinkAuthority | null> {
+  const issue = await identityLinkStatements(db, memberId, nowMs, options);
+  const [written] = await db.batch(issue.statements);
+  return written?.meta.changes === 1 ? { key: issue.key, id: issue.id, expiresAt: issue.expiresAt } : null;
+}
+
+/**
+ * The statements that mint one key, and the key they mint: the insert, gated by the rule above, first, and with
+ * `replaceUnspent` the revocation of the member's other unspent keys, which applies only once that insert landed. Each
+ * holds on its own, so they are safe run in order where no batch runs them together; the insert's changed-row count
+ * says whether it minted a key.
+ */
+export async function identityLinkStatements(
+  db: RelationalStore, memberId: string, nowMs: number, options: { ttlMs?: number; replaceUnspent?: boolean; issuedBy?: string } = {},
+): Promise<{ statements: PreparedStatement[]; key: string; id: string; expiresAt: number }> {
   const key = toBase64Url(crypto.getRandomValues(new Uint8Array(IDENTITY_LINK_KEY_BYTES)));
   const id = `${IDENTITY_LINK_ID_PREFIX}${toBase64Url(crypto.getRandomValues(new Uint8Array(IDENTITY_LINK_ID_BYTES)))}`;
   const expiresAt = nowMs + (options.ttlMs ?? IDENTITY_LINK_TTL_MS);
@@ -100,15 +114,12 @@ export async function issueIdentityLinkAuthority(
     .prepare(`INSERT INTO identity_link_authorities (id, key_hash, member_id, created_at, expires_at, used_at, used_by, revoked_at, issued_by)
               SELECT ?, ?, ?, ?, ?, NULL, NULL, NULL, ? WHERE ${linkAdmitted('?', '?')}`)
     .bind(id, await sha256Hex(key), memberId, nowMs, expiresAt, issuedBy, issuedBy, memberId, issuedBy);
-  const [written] = await db.batch([
-    insert,
-    ...(options.replaceUnspent
-      ? [db.prepare(`UPDATE identity_link_authorities SET revoked_at = ?
-                      WHERE member_id = ? AND id <> ? AND used_at IS NULL AND revoked_at IS NULL
-                        AND EXISTS (SELECT 1 FROM identity_link_authorities WHERE id = ?)`).bind(nowMs, memberId, id, id)]
-      : []),
-  ]);
-  return written?.meta.changes === 1 ? { key, id, expiresAt } : null;
+  const replace = options.replaceUnspent
+    ? [db.prepare(`UPDATE identity_link_authorities SET revoked_at = ?
+                    WHERE member_id = ? AND id <> ? AND used_at IS NULL AND revoked_at IS NULL
+                      AND EXISTS (SELECT 1 FROM identity_link_authorities WHERE id = ?)`).bind(nowMs, memberId, id, id)]
+    : [];
+  return { statements: [insert, ...replace], key, id, expiresAt };
 }
 
 /**

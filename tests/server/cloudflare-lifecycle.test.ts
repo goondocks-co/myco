@@ -4,7 +4,7 @@
  * real infrastructure.
  */
 import { beforeEach, describe, expect, it } from 'bun:test';
-import { existsSync, mkdtempSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { renderMigrationFiles } from '@myco-server-worker/db/migrate.js';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -17,7 +17,7 @@ import {
   DEPLOY_CONFIG_NAME,
 } from '@myco/server/cloudflare-lifecycle.js';
 import { stagingDir, stagingRoot, WORKER_ENTRY } from '@myco/server/cloudflare-stage.js';
-import { readDeploymentRecord, writeDeploymentRecord, WranglerAbsent, WranglerNotSignedIn } from '@myco/server/cloudflare.js';
+import { deployedWorkerSecretNames, readDeploymentRecord, workerSecretNames, writeDeploymentRecord, WranglerAbsent, WranglerNotSignedIn } from '@myco/server/cloudflare.js';
 import { BUNDLED_WORKER_WRANGLER } from '@myco/worker-bundle.generated.js';
 import { VECTOR_INDEX_DIMENSIONS, VECTOR_INDEX_NAME, VECTOR_METADATA_FIELDS } from '@myco/server/vector-config.js';
 import type { CommandRunner, CommandResult } from '@myco/server/runner.js';
@@ -30,6 +30,17 @@ let calls: { args: string[]; input?: string; cwd?: string; cwdOnDisk: boolean | 
 
 /** Answers each wrangler subcommand the way the real one does; the account's state accumulates across calls like the real one's. */
 const buckets = new Set<string>();
+const storeSecrets = new Set<string>();
+const workerSecrets = new Set<string>();
+/** One page of the store's secrets as wrangler prints it: a table, or its error for a page past the last. */
+const storeSecretPage = (args: readonly string[]): CommandResult => {
+  const page = Number(args[args.indexOf('--page') + 1] ?? 1);
+  const perPage = Number(args[args.indexOf('--per-page') + 1] ?? 10);
+  const rows = [...storeSecrets].sort().slice((page - 1) * perPage, page * perPage);
+  if (rows.length === 0) return { code: 1, stdout: '', stderr: '✘ [ERROR] List request returned no secrets.' };
+  const table = ['┌──┬──┐', '│ Name │ ID │ Comment │ Scopes │', '├──┼──┤', ...rows.map((name) => `│ ${name} │ ${'e'.repeat(32)} │  │ workers │`), '└──┴──┘'];
+  return { code: 0, stdout: `🔐 Listing secrets... (page: ${page})\n${table.join('\n')}`, stderr: '' };
+};
 const runner = (over: Record<string, Partial<CommandResult>> = {}): CommandRunner => ({
   async run(_command, args, options) {
     const opts = options as { input?: string; cwd?: string } | undefined;
@@ -43,6 +54,11 @@ const runner = (over: Record<string, Partial<CommandResult>> = {}): CommandRunne
       buckets.add(name);
       return { code: 0, stdout: `Created bucket ${name}`, stderr: '' };
     }
+    if (flat.includes('secrets-store secret list') && !Object.keys(over).some((k) => flat.includes(k))) return storeSecretPage(args);
+    if (flat.includes('secrets-store secret create')) storeSecrets.add(args[args.indexOf('--name') + 1]!);
+    else if (/(^|\s)secret list --name/.test(flat) && !Object.keys(over).some((k) => flat.includes(k))) {
+      return { code: 0, stdout: JSON.stringify([...workerSecrets].map((name) => ({ name, type: 'secret_text' }))), stderr: '' };
+    } else if (/(^|\s)secret put /.test(flat)) workerSecrets.add(args[args.indexOf('put') + 1]!);
     const canned: Record<string, Partial<CommandResult>> = {
       'vectorize list --json': { stdout: '[{"name":"myco-server-memory"}]' },
       'vectorize get myco-server-memory --json': { stdout: '{"config":{"dimensions":1536,"metric":"cosine"}}' },
@@ -59,7 +75,7 @@ const runner = (over: Record<string, Partial<CommandResult>> = {}): CommandRunne
     return { code: 0, stdout: '', stderr: '', ...(match?.[1] ?? {}) };
   },
 });
-beforeEach(() => { calls = []; buckets.clear(); });
+beforeEach(() => { calls = []; buckets.clear(); storeSecrets.clear(); workerSecrets.clear(); });
 
 const setup = () => {
   const home = mkdtempSync(join(tmpdir(), 'myco-cf-life-'));
@@ -230,6 +246,70 @@ describe('create', () => {
       expect(typeof call.input).toBe('string');
       expect(call.args.join(' ')).not.toContain(call.input!);
     }
+  });
+
+  it('puts SESSION_SECRET on a re-run whose Worker lacks it, a first create that stopped after its record included', async () => {
+    const { home, options } = setup();
+    recordFor(home);
+    const again = await createCloudflareDeployment({ ...options, runner: runner() });
+    expect(again.createdResources).toContain('worker secret SESSION_SECRET');
+    expect(calls.filter((c) => c.args.join(' ').includes('secret put SESSION_SECRET'))).toHaveLength(1);
+  });
+
+  it('puts the wrapping key into a store the account already held without it, and never replaces one it holds', async () => {
+    const { options } = setup();
+    const held = runner({ 'secrets-store store list': { stdout: `│ myco │ ${STORE} │` } });
+    const first = await createCloudflareDeployment({ ...options, runner: held });
+    expect(first.createdResources).not.toContain('secrets store');
+    expect(first.createdResources).toContain('store secret myco-secret-wrap-key');
+    calls = [];
+    const again = await createCloudflareDeployment({ ...options, runner: held });
+    expect(again.createdResources).toEqual([]);
+    expect(calls.some((c) => c.args.join(' ').includes('secrets-store secret create'))).toBe(false);
+  });
+
+  it('GATE: a Worker secret list that fails stops create before any put, so a live SESSION_SECRET is never replaced', async () => {
+    const { options } = setup();
+    await createCloudflareDeployment({ ...options, runner: runner() });
+    expect(workerSecrets.has('SESSION_SECRET')).toBe(true);
+    calls = [];
+    const failing = runner({ 'secret list --name': { code: 1, stderr: '✘ [ERROR] A request to the Cloudflare API failed. [code: 10013]' } });
+    await expect(createCloudflareDeployment({ ...options, runner: failing })).rejects.toThrow();
+    expect(calls.some((c) => /(^|\s)secret put SESSION_SECRET/.test(c.args.join(' ')))).toBe(false);
+  });
+
+  it('GATE: a store secret list that fails stops create before it puts a wrapping key', async () => {
+    const { options } = setup();
+    const failing = runner({ 'secrets-store store list': { stdout: `│ myco │ ${STORE} │` }, 'secrets-store secret list': { code: 1, stderr: '✘ [ERROR] A request to the Cloudflare API failed.' } });
+    await expect(createCloudflareDeployment({ ...options, runner: failing })).rejects.toThrow();
+    expect(calls.some((c) => c.args.join(' ').includes('secrets-store secret create'))).toBe(false);
+  });
+
+  it('GATE: a store secret list it cannot read as a table stops create, rather than reading as a store without the key', async () => {
+    const { options } = setup();
+    const garbled = runner({ 'secrets-store store list': { stdout: `│ myco │ ${STORE} │` }, 'secrets-store secret list': { code: 0, stdout: 'something else entirely' } });
+    await expect(createCloudflareDeployment({ ...options, runner: garbled })).rejects.toThrow('is unreadable');
+    expect(calls.some((c) => c.args.join(' ').includes('secrets-store secret create'))).toBe(false);
+  });
+
+  it('reads every page of a store holding more secrets than one page, and finds the key on a later page', async () => {
+    const { options } = setup();
+    for (let i = 0; i < 150; i += 1) storeSecrets.add(`a-secret-${String(i).padStart(3, '0')}`);
+    storeSecrets.add('myco-secret-wrap-key');
+    const held = runner({ 'secrets-store store list': { stdout: `│ myco │ ${STORE} │` } });
+    const created = await createCloudflareDeployment({ ...options, runner: held });
+    expect(created.createdResources).not.toContain('store secret myco-secret-wrap-key');
+    const pages = calls.filter((c) => c.args.join(' ').includes('secrets-store secret list')).map((c) => c.args[c.args.indexOf('--page') + 1]);
+    expect(pages).toEqual(['1', '2']);
+  });
+
+  it('reads a Worker that does not exist as no Worker only in a plan; any other failure to list is thrown', async () => {
+    const target = { accountId: ACCOUNT, configDir: freshHome(), workerName: 'myco-server' };
+    const absent = runner({ 'secret list --name': { code: 1, stderr: '✘ [ERROR] Worker "myco-server" not found.' } });
+    const failing = runner({ 'secret list --name': { code: 1, stderr: '✘ [ERROR] A request to the Cloudflare API failed. [code: 10013]' } });
+    expect(await deployedWorkerSecretNames({ ...target, runner: absent })).toBeNull();
+    await expect(deployedWorkerSecretNames({ ...target, runner: failing })).rejects.toThrow('10013');
+    await expect(workerSecretNames({ ...target, runner: absent })).rejects.toThrow('not found');
   });
 
   it('is idempotent: an existing record keeps its ids, and a re-run creates no second SESSION_SECRET', async () => {
@@ -471,12 +551,15 @@ describe('what the CLI prints when this machine is not ready', () => {
    * constants the code reads, so a new filter does not leave this hanging on
    * the index it waits for.
    */
-  const wranglerAnswers = (version: string): string => [
+  const wranglerAnswers = (version: string, account: 'held' | 'empty' = 'held'): string => [
     'case "$*" in',
+    ...(account === 'empty' ? ['  *"vectorize list --json"*) echo "[]";;', '  *"secrets-store store list"*) echo "";;'] : []),
     `  *"vectorize list-metadata-index"*) echo '${JSON.stringify(VECTOR_METADATA_FIELDS.map((field) => ({ propertyName: field, indexType: field === 'created_at' ? 'Number' : 'String' })))}';;`,
     `  *"vectorize list --json"*) echo '[{"name":"${VECTOR_INDEX_NAME}"}]';;`,
     `  *"vectorize get"*) echo '{"config":{"dimensions":${VECTOR_INDEX_DIMENSIONS},"metric":"cosine"}}';;`,
     '  *"d1 list --json"*) echo "[]";;',
+    `  *"secret list --name"*) echo '[]';;`,
+    `  *"secrets-store secret list"*) echo 'List request returned no secrets.' >&2; exit 1;;`,
     `  *"d1 create"*) echo 'database_id = "${DB_ID}"';;`,
     `  *"secrets-store store list"*) echo '${STORE}';;`,
     '  *" deploy "*) echo "Current Version ID: 16a2423e-af96-4310-b61b-4e2b5fd1310b";;',
@@ -495,6 +578,55 @@ describe('what the CLI prints when this machine is not ready', () => {
     expect(done.printed).not.toContain('~/.myco');
     expect(existsSync(join(home, 'server', 'cloudflare', 'record.json'))).toBe(true);
   });
+
+  it.skipIf(process.platform === 'win32')('a finished create names the two commands that follow it, in order', async () => {
+    const done = await withEnvironment(npxAnswering(wranglerAnswers(BUNDLED_WORKER_WRANGLER)), ['create', '--target', 'cloudflare', '--account-id', ACCOUNT, '--url', 'https://myco.example.com']);
+    expect(done.exited).toBe(false);
+    const next = done.printed.slice(done.printed.indexOf('Next:'));
+    expect(next).toBe([
+      'Next:',
+      '  1. myco server github-app --target cloudflare --url https://myco.example.com',
+      '  2. myco server setup-owner --target cloudflare',
+    ].join('\n'));
+  });
+
+  /** Every file under `dir`, with its bytes, so a test can say a command left a tree exactly as it found it. */
+  const tree = (dir: string): Record<string, string> => Object.fromEntries(readdirSync(dir, { recursive: true, withFileTypes: true })
+    .filter((entry) => entry.isFile())
+    .map((entry) => { const file = join(entry.parentPath, entry.name); return [file.slice(dir.length), readFileSync(file, 'base64')]; }));
+  const dirs = (dir: string): string[] => readdirSync(dir, { recursive: true, withFileTypes: true }).filter((entry) => entry.isDirectory()).map((entry) => join(entry.parentPath, entry.name)).sort();
+
+  for (const account of ['held', 'empty'] as const) {
+    it.skipIf(process.platform === 'win32')(`GATE: --dry-run on ${account === 'held' ? 'an account holding a Deployment' : 'an empty account'} asks Cloudflare only what exists, leaves MYCO_HOME exactly as it was, and lists every step and binding`, async () => {
+      const home = freshHome();
+      if (account === 'held') {
+        // A record in the single-directory layout: a verb that moved it would change the home.
+        mkdirSync(join(home, 'server'), { recursive: true });
+        writeFileSync(join(home, 'server', 'cloudflare.json'), JSON.stringify({ accountId: ACCOUNT, workerName: 'myco-server', databaseName: 'myco-server', bucketName: 'myco-server-blobs', versionId: 'v1', deployedAt: 'then', databaseId: DB_ID, storeId: STORE }));
+      }
+      const before = { files: tree(home), dirs: dirs(home) };
+      const log = join(mkdtempSync(join(tmpdir(), 'myco-cf-plan-log-')), 'npx.log');
+      const done = await withEnvironment(npxAnswering(`echo "$*" >> '${log}'\n${wranglerAnswers(BUNDLED_WORKER_WRANGLER, account)}`),
+        ['create', '--target', 'cloudflare', '--account-id', ACCOUNT, '--dry-run'], home);
+      expect({ exited: done.exited, said: done.said }).toEqual({ exited: false, said: '' });
+      const ran = readFileSync(log, 'utf8').trim().split('\n').map((line) => line.replace('--no-install wrangler ', ''));
+      const reads = /^(--version|whoami|d1 list --json|vectorize list --json|r2 bucket list|secrets-store store list --remote|secrets-store secret list \S+ --remote --page \d+ --per-page 100|secret list --name \S+)$/;
+      expect(ran.filter((command) => !reads.test(command))).toEqual([]);
+      expect({ files: tree(home), dirs: dirs(home) }).toEqual(before);
+      expect(done.printed).toContain(`Cloudflare Deployment plan for account ${ACCOUNT}. Nothing was created or changed.`);
+      const lines = account === 'held'
+        ? ['reuse   d1 database myco-server', 'reuse   vectorize index myco-server-memory', `reuse   secrets store ${STORE}`]
+        : ['create  d1 database myco-server', 'create  vectorize index myco-server-memory', 'create  secrets store myco'];
+      for (const line of [...lines, 'create  r2 bucket myco-server-blobs', 'create  store secret myco-secret-wrap-key', 'apply   d1 migrations myco-server',
+        'deploy  worker myco-server', 'create  worker secret SESSION_SECRET']) {
+        expect(done.printed).toContain(line);
+      }
+      for (const binding of ['d1 MYCO_DB', 'r2 BUCKET', 'r2 RECOVERY_BUCKET', 'vectorize VECTORIZE', 'durable object CLOCK (DeploymentClock)', 'secrets store SECRET_WRAP_KEY']) {
+        expect(done.printed).toContain(binding);
+      }
+      expect(done.printed).not.toContain('Next:');
+    });
+  }
 
   it.skipIf(process.platform === 'win32')('GATE: a wrangler a major version from the bundled one says so to the operator, and the verb still finishes', async () => {
     // The note is reported through the lifecycle's `report`, and the CLI is the
