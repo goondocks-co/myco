@@ -58,8 +58,9 @@ async function expectTable(page: Page, viewport: ViewportName): Promise<void> {
   await expect(live).toContainText('Live');
   await expect(live).toContainText(LIVE_HEADING);
   await expect(live).toContainText('Myco');
-  // The Live chip says it is live; the Started cell keeps the real start.
-  await expect(live.locator('time')).toHaveText(/^\d{2}:\d{2}$/);
+  // The Live chip says it is live; the start stays the real start.
+  if (viewport === 'desktop') await expect(live.locator('time')).toHaveText(/^\d{2}:\d{2}$/);
+  else await expect(live).toContainText(/· \d{2}:\d{2}$/);
   const titled = rows(page, viewport).filter({ hasText: OUTCOME_TITLE });
   await expect(titled).toHaveCount(1);
   await expect(titled).toContainText('Codex');

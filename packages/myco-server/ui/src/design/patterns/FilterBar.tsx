@@ -42,9 +42,9 @@ export const FIXED_WIDTH_FILTERS = 2;
 
 /**
  * The one search-and-filter bar, on one row. The search field leads and fills
- * what the selects leave, never less than 55% of the row; the count sits at
- * the end. Up to two selects share one width; with more, each sizes to the
- * words it shows (an option's `short` form) and truncates past a bound. On a
+ * what the selects leave; the count sits at the end. Up to two selects share
+ * one width; with more, each sizes to the words it shows (an option's `short`
+ * form) and truncates past a bound, and the search keeps 55% of the row. On a
  * phone the search takes the first line and the selects share the lines below
  * it, two to a line when there are more than two.
  */
@@ -72,7 +72,7 @@ export function FilterBar({
         value={query}
         hint={hint}
         onChange={(event) => onQueryChange(event.target.value)}
-        className="basis-full sm:min-w-[55%] sm:basis-auto"
+        className={cn('basis-full sm:basis-auto', sized && 'sm:min-w-[55%]')}
       />
       {sized ? <div className="grid w-full grid-cols-2 gap-s2 sm:flex sm:w-auto sm:min-w-0 sm:shrink">{selects}</div> : selects}
       {onClear && active && (

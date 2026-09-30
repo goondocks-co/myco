@@ -218,7 +218,9 @@ describe('Today', () => {
     const endedToday = session({ sessionId: '5abe5eaa-df8b-5253-a16a-b06c5c8e7f66', projectId: P_MYCO, title: 'Late-night refactor', label: 'Late-night refactor', startedAt: DAY_START - HOUR, firstReceivedAt: DAY_START - HOUR, lastReceivedAt: DAY_START + HOUR, endedAt: DAY_START + HOUR });
     // An open session last heard from yesterday is not live, and was not active today.
     const idle = session({ sessionId: '6bcf6fbb-e09c-5364-b27d-c17d6d9f8077', projectId: P_MYCO, title: 'Left open last week', label: 'Left open last week', startedAt: DAY_START - 5 * 24 * HOUR, firstReceivedAt: DAY_START - 5 * 24 * HOUR, lastReceivedAt: DAY_START - 3 * HOUR, endedAt: null });
-    server(day({ sessions: { rows: [SESSIONS[1], overnight, endedToday, idle], cursor: null } }));
+    // Open (no end recorded) and heard from this morning, but not for two hours: open is not live.
+    const openQuiet = session({ sessionId: '7cd070cc-f1ad-5475-c38e-d28e7eaf9188', projectId: P_MYCO, title: 'Open but quiet', label: 'Open but quiet', startedAt: NOW - 4 * HOUR, firstReceivedAt: NOW - 4 * HOUR, lastReceivedAt: NOW - 2 * HOUR, endedAt: null });
+    server(day({ sessions: { rows: [SESSIONS[1], overnight, endedToday, idle, openQuiet], cursor: null } }));
     mount('/');
     const list = await screen.findByRole('list', { name: 'What happened' });
     await waitFor(() => expect(within(list).getByText('Overnight migration')).toBeTruthy());
@@ -229,8 +231,10 @@ describe('Today', () => {
     expect(ended.querySelector('time')!.textContent).toBe('Sep 28');
     expect(ended.querySelector('[data-started-earlier]')!.textContent).toBe('since yesterday 23:00');
     expect(within(list).queryByText('Left open last week')).toBeNull();
+    expect(within(list).getByText('Open but quiet').closest('li')!.getAttribute('data-timeline-item')).toBe('plain');
+    expect(list.querySelectorAll('[data-timeline-item="live"]')).toHaveLength(1);
     expect(screen.getByText(/An agent is working/)).toBeTruthy();
-    expect(document.querySelector('[data-lede]')!.textContent).toContain('3 sessions');
+    expect(document.querySelector('[data-lede]')!.textContent).toContain('4 sessions');
   });
 
   it('carries a learning run\'s spores inline, the rest as "and N more", and never the spores agents saved themselves', async () => {
