@@ -796,7 +796,7 @@ export interface StoppedTranscripts {
 }
 
 /**
- * Transcripts the current parser stopped on a fault and will not read on from, per Project: bytes remain past the
+ * Transcripts the current parser stopped on a fault and will not read on from, per Project that accepts capture: bytes remain past the
  * cursor, and the failure recorded is not a wait for bytes still to arrive. A failure an older parser recorded is not
  * counted: the parse offers that transcript again (`PENDING_TRANSCRIPTS`). Read over the backlog index, whose
  * predicate every stopped transcript satisfies.
@@ -806,7 +806,8 @@ export async function stoppedTranscripts(db: RelationalStore): Promise<StoppedTr
   // where the rows wanted all sit in the backlog index.
   const { results } = await db
     .prepare(`SELECT project_id, parse_error, parse_failed_at FROM transcripts
-                WHERE parsed_offset < size AND parse_error IS NOT NULL AND parse_error <> '${AWAITING_BYTES}' AND parser_version >= ? AND NOT ${TOMBSTONED}`)
+                WHERE parsed_offset < size AND parse_error IS NOT NULL AND parse_error <> '${AWAITING_BYTES}' AND parser_version >= ? AND NOT ${TOMBSTONED}
+                  AND EXISTS (SELECT 1 FROM projects p WHERE p.project_id = transcripts.project_id AND p.archived_at IS NULL)`)
     .bind(PARSER_VERSION)
     .all<{ project_id: string; parse_error: string; parse_failed_at: number | null }>();
   const byProject = new Map<string, StoppedTranscripts>();

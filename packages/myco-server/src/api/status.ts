@@ -65,7 +65,6 @@ export async function handleStatus(env: ServerEnv, ctx: OwnerContext): Promise<R
   let found: number | null = null;
   let projects: Awaited<ReturnType<typeof listVisibleProjects>> = [];
   let transcriptBacklog: TranscriptBacklog | null = null;
-  let capture: CaptureRow[] = [];
   try {
     found = await schemaVersion(env.db);
     // The same count the tick reads to decide how awake the Deployment stays.
@@ -73,9 +72,16 @@ export async function handleStatus(env: ServerEnv, ctx: OwnerContext): Promise<R
     const counts = await workerLiveness(env.db, ctx.now);
     workers = { available: true, ...counts, recentWithinMs: CONTACT_RECENT_MS, fleet: await readWorkerFleet(env.db, ctx.now) };
     projects = await listVisibleProjects(env.db, ctx.member, { includeArchived: true });
+  } catch {
+    return ok({ schema: schemaCheck(null), target, capabilities, workers, projects: [], capture: [], unavailable: ['capture'] });
+  }
+  // Read on its own, so a capture read that fails names itself in `unavailable` and leaves every other fact standing.
+  let capture: CaptureRow[] = [];
+  const unavailable: string[] = [];
+  try {
     capture = await captureRecency(env.db, ctx.now);
   } catch {
-    return ok({ schema: schemaCheck(null), target, capabilities, workers, projects: [], capture: [] });
+    unavailable.push('capture');
   }
   return ok({
     schema: schemaCheck(found),
@@ -91,6 +97,8 @@ export async function handleStatus(env: ServerEnv, ctx: OwnerContext): Promise<R
     projects: projects.map((p) => ({ projectId: p.projectId, lastActivityAt: p.lastActivityAt, sessionCount: p.sessionCount, archivedAt: p.archivedAt })),
     // When each machine's agents last sent anything, over the last `CAPTURE_WINDOW_MS`, most recent first.
     capture,
+    // The facts above that could not be read, so their absence says nothing.
+    unavailable,
   });
 }
 

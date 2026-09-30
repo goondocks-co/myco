@@ -21,7 +21,7 @@
  * repair; a batch is atomic by contract, so the pair commits or neither does.
  */
 import type { RelationalStore } from './adapters.js';
-import { inListChunks, projectsDriving, type ProjectSet, type ReadScope } from '../read/scope.js';
+import { inListChunks, projectsDriving, projectsFiltering, type ProjectSet, type ReadScope } from '../read/scope.js';
 
 export const SPORE_STATUSES = ['active', 'superseded', 'consolidated', 'obsolete'] as const;
 export type SporeStatus = (typeof SPORE_STATUSES)[number];
@@ -226,12 +226,16 @@ export interface SporeFacets {
   project: Record<string, number>;
 }
 
-/** Spores of every Project in the set, newest first, a page at a time by offset, as the per-Project list pages. */
+/**
+ * Spores of every Project in the set, newest first, a page at a time by offset, as the per-Project list pages. The
+ * read walks `idx_spores_created_deployment`, named in the statement, which orders every Project's spores as the
+ * per-Project list orders one Project's, and stops at its page instead of sorting every spore the set holds.
+ */
 export async function listSporesAcross(db: RelationalStore, set: ProjectSet, o: ListSporesOptions = {}): Promise<SporeAcrossRow[]> {
-  const { where, params } = filtersOver(projectsDriving(set, 'project_id'), o);
+  const { where, params } = filtersOver(projectsFiltering(set, 'spores'), o);
   const limit = Math.min(Math.max(o.limit ?? DEFAULT_SPORE_LIMIT, 1), MAX_SPORE_LIMIT);
   const { results } = await db
-    .prepare(`SELECT project_id AS projectId, ${COLUMNS} FROM spores ${where} ORDER BY created_at DESC, id DESC, project_id DESC LIMIT ? OFFSET ?`)
+    .prepare(`SELECT project_id AS projectId, ${COLUMNS} FROM spores INDEXED BY idx_spores_created_deployment ${where} ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?`)
     .bind(...params, limit, o.offset ?? 0).all<SporeAcrossRow>();
   return results;
 }
@@ -243,7 +247,8 @@ export async function countSporesAcross(db: RelationalStore, set: ProjectSet, o:
 }
 
 /**
- * The facet counts beside a read across Projects. Each facet counts under every filter but its own, so a reader sees
+ * The facet counts beside a read across Projects. Like the total, they count every spore the filters admit, which
+ * each statement reads once through a Project-led index that covers it. Each facet counts under every filter but its own, so a reader sees
  * what choosing another value would show: types over the named Projects whatever type is chosen, and Projects over
  * every Project the caller may see whatever Projects are named.
  */

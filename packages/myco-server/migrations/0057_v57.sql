@@ -2,6 +2,10 @@
 
 CREATE INDEX IF NOT EXISTS idx_sessions_occurred_deployment ON sessions (COALESCE(occurred_started_at, started_at, first_received_at), session_id);
 
+CREATE INDEX IF NOT EXISTS idx_spores_created_deployment ON spores (created_at, id);
+
+CREATE INDEX IF NOT EXISTS idx_plans_updated_deployment ON plans (updated_at, plan_key);
+
 CREATE INDEX IF NOT EXISTS idx_spores_author ON spores (project_id, author);
 
 CREATE INDEX IF NOT EXISTS idx_sessions_capture ON sessions (last_received_at, machine_id, agent, project_id);

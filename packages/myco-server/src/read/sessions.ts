@@ -1,4 +1,4 @@
-import type { RelationalStore } from '../core/adapters.js';
+import type { PreparedStatement, RelationalStore, RunResult } from '../core/adapters.js';
 import { occurredAt, presentedEndedAt, presentedStartedAt } from '../db/session-dates.js';
 import { inListChunks, keyset, page, projectsFiltering, type Page, type ProjectSet, type ReadScope } from './scope.js';
 import { notTombstonedSql, NOT_TOMBSTONED_PARAMS } from '../core/tombstones.js';
@@ -101,10 +101,16 @@ const SESSION_COLUMNS = `s.session_id, s.machine_id, s.created_by_token_id, s.fi
      s.agent, s.branch, ${PRESENTED_STARTED_AT} AS started_at, ${PRESENTED_ENDED_AT} AS ended_at, s.origin_path, s.parent_session_id, s.parent_reason,
      s.title, s.summary, s.titled_at, s.ended_by, ${FIRST_PROMPT_SQL} AS first_prompt,
      c.member_id, c.runtime_label, c.runtime_kind, m.label AS member_label, e.label AS ended_by_label`;
-const SESSION_FROM = `FROM sessions s
+const SESSION_FROM = sessionFrom('');
+/** The session read's joins, with the sessions table read through `indexedBy` where one is named. */
+function sessionFrom(indexedBy: string): string {
+  return `FROM sessions s${indexedBy === '' ? '' : ` INDEXED BY ${indexedBy}`}
      LEFT JOIN member_credentials c ON c.id = s.created_by_token_id
      LEFT JOIN members m ON m.id = c.member_id
      LEFT JOIN members e ON e.id = s.ended_by`;
+}
+/** The Deployment-wide order every read of sessions across Projects walks. */
+export const SESSIONS_ACROSS_INDEX = 'idx_sessions_occurred_deployment';
 /** A deleted session is absent from session reads, project counts, and latest activity. */
 const LIVE_SESSION = notTombstonedSql('s');
 const WEEK_MS = 7 * 24 * 60 * 60 * 1000;
@@ -244,33 +250,35 @@ export function containsPattern(text: string): string {
 export const SESSION_OCCURRED_AT = occurredAt('s.');
 
 export async function listSessions(db: RelationalStore, scope: ReadScope, opts: { limit?: number; cursor?: string } & SessionFilters = {}): Promise<Page<SessionRow>> {
-  const listed = await selectSessions(db, { sql: 's.project_id = ?', params: [scope.projectId] }, opts, false);
+  const listed = await selectSessions(db, { sql: 's.project_id = ?', params: [scope.projectId] }, opts);
   return { cursor: listed.cursor, rows: listed.rows.map(({ projectId: _projectId, ...row }) => row) };
 }
 
 /**
- * Sessions of every Project in the set, newest first, one keyset page at a time. Every Project's sessions are ordered
- * by `idx_sessions_occurred_deployment`, which indexes the same expression the per-Project read orders by, so a page
- * walks that index and stops rather than sorting every session the set holds. A session is keyed by its Project and
- * its id, and the cursor carries the id alone: two sessions of different Projects sharing an id and an instant are
- * the one case a page boundary may skip.
+ * Sessions of every Project in the set, newest first, one keyset page at a time. The read walks
+ * `idx_sessions_occurred_deployment`, which indexes the same expression the per-Project read orders by, and stops at
+ * its page rather than sorting every session the set holds. The index is named in the
+ * statement: with a filter the planner takes to be selective, such as an agent, it reads every session and sorts
+ * them instead. A session is keyed by its Project and its id, and the cursor carries the id alone: two sessions of
+ * different Projects sharing an id and an instant are the one case a page boundary may skip.
  */
 export async function listSessionsAcross(db: RelationalStore, set: ProjectSet, opts: { limit?: number; cursor?: string } & SessionFilters = {}): Promise<Page<SessionRow & { projectId: string }>> {
-  return selectSessions(db, projectsFiltering(set, 's'), opts, true);
+  return selectSessions(db, projectsFiltering(set, 's'), opts, SESSIONS_ACROSS_INDEX);
 }
 
 /**
  * The one session page: `projects` admits the rows, the filters narrow them, and the order and the cursor are the
- * occurred instant and the id. `bounded` adds the cursor's instant as an upper bound beside the keyset predicate, which
- * the predicate already implies, so a read walking a Deployment-wide index seeks to the cursor instead of reading
- * every newer row again.
+ * occurred instant and the id. A read that walks the Deployment-wide index (`walks`) also takes the cursor's instant as
+ * an upper bound beside the keyset predicate, which the predicate already implies, so the walk seeks to the cursor
+ * instead of reading every newer row again.
  */
 async function selectSessions(
   db: RelationalStore,
   projects: { sql: string; params: readonly unknown[] },
   opts: { limit?: number; cursor?: string } & SessionFilters,
-  bounded: boolean,
+  walks: string = '',
 ): Promise<Page<SessionRow & { projectId: string }>> {
+  const bounded = walks !== '';
   const k = keyset(opts, { order: SESSION_OCCURRED_AT, id: 's.session_id', direction: 'DESC' });
   if (k === null) return { rows: [], cursor: null };
   const conditions = [projects.sql, LIVE_SESSION];
@@ -295,7 +303,7 @@ async function selectSessions(
     conditions.push(k.where); params.push(...k.params);
   }
   const { results } = await db
-    .prepare(`SELECT s.project_id, ${SESSION_COLUMNS} ${SESSION_FROM} WHERE ${conditions.join(' AND ')} ORDER BY ${SESSION_OCCURRED_AT} DESC, s.session_id DESC LIMIT ?`)
+    .prepare(`SELECT s.project_id, ${SESSION_COLUMNS} ${sessionFrom(walks)} WHERE ${conditions.join(' AND ')} ORDER BY ${SESSION_OCCURRED_AT} DESC, s.session_id DESC LIMIT ?`)
     .bind(...params, k.limit + 1)
     .all<Record<string, unknown>>();
   // The cursor carries the same value the sort ordered by. Both columns are
@@ -367,20 +375,28 @@ export async function sessionCounts(db: RelationalStore, scope: ReadScope, sessi
 
 /** The child counts of every named session, one statement per table per run of ids; a session with no rows in a table counts zero. */
 export async function sessionCountsFor(db: RelationalStore, scope: ReadScope, sessionIds: readonly string[]): Promise<Map<string, SessionCounts>> {
-  const out = new Map<string, SessionCounts>(sessionIds.map((id) => [id, { prompts: 0, toolCalls: 0, responses: 0, plans: 0, attachments: 0 }]));
-  if (sessionIds.length === 0) return out;
-  const tables = [['prompts', 'prompt_batches'], ['toolCalls', 'tool_calls'], ['responses', 'responses'], ['plans', 'plans'], ['attachments', 'attachments']] as const;
-  const chunks = inListChunks(sessionIds);
-  const results = await db.batch(chunks.flatMap((ids) => tables.map(([, table]) =>
-    db.prepare(`SELECT session_id, COUNT(*) AS n FROM ${table} WHERE project_id = ? AND session_id IN (${ids.map(() => '?').join(', ')}) GROUP BY session_id`).bind(scope.projectId, ...ids))));
-  results.forEach((result, i) => {
-    const [key] = tables[i % tables.length];
-    for (const row of result.results as { session_id: string; n: number }[]) {
-      const counts = out.get(row.session_id);
-      if (counts) counts[key] = row.n;
-    }
-  });
-  return out;
+  const read = countStatements(db, scope, sessionIds);
+  return read.parse(read.statements.length === 0 ? [] : await db.batch(read.statements));
+}
+
+const COUNTED_TABLES = [['prompts', 'prompt_batches'], ['toolCalls', 'tool_calls'], ['responses', 'responses'], ['plans', 'plans'], ['attachments', 'attachments']] as const;
+
+/** The statements `sessionCountsFor` sends, and how their results read, so a caller may send them in a batch of its own. */
+function countStatements(db: RelationalStore, scope: ReadScope, sessionIds: readonly string[]): { statements: PreparedStatement[]; parse: (results: readonly RunResult[]) => Map<string, SessionCounts> } {
+  const statements = inListChunks(sessionIds).flatMap((ids) => COUNTED_TABLES.map(([, table]) =>
+    db.prepare(`SELECT session_id, COUNT(*) AS n FROM ${table} WHERE project_id = ? AND session_id IN (${ids.map(() => '?').join(', ')}) GROUP BY session_id`).bind(scope.projectId, ...ids)));
+  const parse = (results: readonly RunResult[]): Map<string, SessionCounts> => {
+    const out = new Map<string, SessionCounts>(sessionIds.map((id) => [id, { prompts: 0, toolCalls: 0, responses: 0, plans: 0, attachments: 0 }]));
+    results.forEach((result, i) => {
+      const [key] = COUNTED_TABLES[i % COUNTED_TABLES.length];
+      for (const row of result.results as { session_id: string; n: number }[]) {
+        const counts = out.get(row.session_id);
+        if (counts) counts[key] = row.n;
+      }
+    });
+    return out;
+  };
+  return { statements, parse };
 }
 
 /** How many lifetime buckets a session's activity is spread over; the rail's sparkline width. */
@@ -426,10 +442,18 @@ export function bucketActivity(sessions: readonly Pick<SessionRow, 'sessionId' |
 
 /** Every prompt instant of the named sessions, one statement per run of ids. */
 async function promptInstants(db: RelationalStore, scope: ReadScope, sessionIds: readonly string[]): Promise<{ sessionId: string; at: number }[]> {
-  if (sessionIds.length === 0) return [];
-  const results = await db.batch(inListChunks(sessionIds).map((ids) =>
-    db.prepare(`SELECT session_id, created_at FROM prompt_batches WHERE project_id = ? AND session_id IN (${ids.map(() => '?').join(', ')})`).bind(scope.projectId, ...ids)));
-  return results.flatMap((r) => (r.results as { session_id: string; created_at: number }[]).map((row) => ({ sessionId: row.session_id, at: row.created_at })));
+  const read = instantStatements(db, scope, sessionIds);
+  return read.parse(read.statements.length === 0 ? [] : await db.batch(read.statements));
+}
+
+/** The statements `promptInstants` sends, and how their results read. */
+function instantStatements(db: RelationalStore, scope: ReadScope, sessionIds: readonly string[]): { statements: PreparedStatement[]; parse: (results: readonly RunResult[]) => { sessionId: string; at: number }[] } {
+  const statements = inListChunks(sessionIds).map((ids) =>
+    db.prepare(`SELECT session_id, created_at FROM prompt_batches WHERE project_id = ? AND session_id IN (${ids.map(() => '?').join(', ')})`).bind(scope.projectId, ...ids));
+  return {
+    statements,
+    parse: (results) => results.flatMap((r) => (r.results as { session_id: string; created_at: number }[]).map((row) => ({ sessionId: row.session_id, at: row.created_at }))),
+  };
 }
 
 /** The session list with its rail facts: the counts of every child table and, unless the caller has no use for it, the activity buckets, over the page's ids only. The dashboard and the MCP tool both read the list through this. */
@@ -454,19 +478,22 @@ export async function listSessionSummaries(db: RelationalStore, scope: ReadScope
 export type SessionAcrossRow = SessionSummaryRow & { projectId: string };
 
 /**
- * The session list across a set of Projects with the per-Project list's rail facts. The facts are read per Project over
- * that Project's ids on the page: each child table is keyed by Project first, and a page spans few Projects.
+ * The session list across a set of Projects with the per-Project list's rail facts. Each child table is keyed by
+ * Project first, so the facts are read per Project over that Project's ids on the page, every statement in one batch.
  */
 export async function listSessionSummariesAcross(db: RelationalStore, set: ProjectSet, opts: { limit?: number; cursor?: string } & SessionFilters, nowMs: number): Promise<Page<SessionAcrossRow>> {
   const listed = await listSessionsAcross(db, set, { fidelity: 'any', ...opts });
   const byProject = new Map<string, string[]>();
   for (const row of listed.rows) byProject.set(row.projectId, [...(byProject.get(row.projectId) ?? []), row.sessionId]);
+  const reads = [...byProject].map(([projectId, ids]) => ({ projectId, counts: countStatements(db, { projectId }, ids), instants: instantStatements(db, { projectId }, ids) }));
+  const statements = reads.flatMap((r) => [...r.counts.statements, ...r.instants.statements]);
+  const results = statements.length === 0 ? [] : await db.batch(statements);
   const facts = new Map<string, { counts: Map<string, SessionCounts>; buckets: Map<string, number[]> }>();
-  for (const [projectId, ids] of byProject) {
-    const scope = { projectId };
-    const counts = await sessionCountsFor(db, scope, ids);
-    const rows = listed.rows.filter((r) => r.projectId === projectId);
-    facts.set(projectId, { counts, buckets: bucketActivity(rows, await promptInstants(db, scope, ids), nowMs) });
+  let at = 0;
+  for (const read of reads) {
+    const counts = read.counts.parse(results.slice(at, at += read.counts.statements.length));
+    const instants = read.instants.parse(results.slice(at, at += read.instants.statements.length));
+    facts.set(read.projectId, { counts, buckets: bucketActivity(listed.rows.filter((r) => r.projectId === read.projectId), instants, nowMs) });
   }
   return {
     cursor: listed.cursor,

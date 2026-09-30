@@ -1,7 +1,7 @@
 import { registeredObjectKeySql } from '../core/blob-objects.js';
 import type { RelationalStore } from '../core/adapters.js';
 import { PLAN_STATUSES } from '../ingest/kinds.js';
-import { clampLimit, encodeCursor, inListChunks, keyset, projectsDriving, type Page, type ProjectSet, type ReadScope } from './scope.js';
+import { clampLimit, encodeCursor, inListChunks, keyset, projectsFiltering, type Page, type ProjectSet, type ReadScope } from './scope.js';
 
 /** A plan as the project holds it: the projected row plus the tags the same event carried. `promptId` names the prompt the plan came from; `updatedBy` the member behind its last administrative edit, null when a capture event wrote last. */
 export interface ProjectPlanRow {
@@ -71,6 +71,27 @@ async function tagsOf(db: RelationalStore, scope: ReadScope, planKeys: readonly 
   return out;
 }
 
+/** The tags of each named plan of each Project, keyed by Project and then plan key, every statement in one batch. */
+async function tagsAcross(db: RelationalStore, keysByProject: ReadonlyMap<string, readonly string[]>): Promise<Map<string, Map<string, string[]>>> {
+  const out = new Map<string, Map<string, string[]>>();
+  const reads: { projectId: string; statement: ReturnType<RelationalStore['prepare']> }[] = [];
+  for (const [projectId, keys] of keysByProject) {
+    out.set(projectId, new Map(keys.map((k) => [k, []])));
+    for (const run of inListChunks(keys)) {
+      reads.push({ projectId, statement: db
+        .prepare(`SELECT entity_id, tag FROM tags WHERE project_id = ? AND entity_kind = 'plan' AND entity_id IN (${run.map(() => '?').join(', ')}) ORDER BY entity_id, tag`)
+        .bind(projectId, ...run) });
+    }
+  }
+  if (reads.length === 0) return out;
+  const results = await db.batch(reads.map((r) => r.statement));
+  results.forEach((result, i) => {
+    const held = out.get(reads[i]!.projectId)!;
+    for (const r of result.results as { entity_id: string; tag: string }[]) held.get(r.entity_id)?.push(r.tag);
+  });
+  return out;
+}
+
 /** The project's plans, most recently updated first; optionally one status or one session. */
 export async function listProjectPlans(
   db: RelationalStore,
@@ -102,13 +123,19 @@ export async function pagePlansAcross(
   set: ProjectSet,
   opts: { status?: string; since?: number; limit?: number; cursor?: string } = {},
 ): Promise<Page<PlanAcrossRow>> {
-  return selectPlans(db, projectsDriving(set, 'project_id'), opts);
+  return selectPlans(db, projectsFiltering(set, 'plans'), opts, 'idx_plans_updated_deployment');
 }
 
+/**
+ * One plan page over the rows `projects` admits. A read that walks a Deployment-wide index (`walks`, named in the
+ * statement) also takes the cursor's instant as an upper bound beside the keyset predicate, which the predicate
+ * already implies, so the walk seeks to the cursor.
+ */
 async function selectPlans(
   db: RelationalStore,
   projects: { sql: string; params: readonly unknown[] },
   opts: { status?: string; sessionId?: string; since?: number; limit?: number; cursor?: string },
+  walks = '',
 ): Promise<Page<PlanAcrossRow>> {
   const k = keyset({ limit: clampLimit(opts.limit), cursor: opts.cursor }, { order: 'updated_at', id: 'plan_key', direction: 'DESC' });
   if (k === null) return { rows: [], cursor: null };
@@ -117,17 +144,19 @@ async function selectPlans(
   if (opts.status !== undefined) { conditions.push('status = ?'); params.push(opts.status); }
   if (opts.sessionId !== undefined) { conditions.push('session_id = ?'); params.push(opts.sessionId); }
   if (opts.since !== undefined) { conditions.push('updated_at >= ?'); params.push(opts.since); }
-  if (k.where !== '') { conditions.push(k.where); params.push(...k.params); }
+  if (k.where !== '') {
+    if (walks !== '') { conditions.push('updated_at <= ?'); params.push(k.params[0]); }
+    conditions.push(k.where); params.push(...k.params);
+  }
   const { results } = await db
-    .prepare(`SELECT project_id, ${COLUMNS} FROM plans WHERE ${conditions.join(' AND ')} ORDER BY updated_at DESC, plan_key DESC LIMIT ?`)
+    .prepare(`SELECT project_id, ${COLUMNS} FROM plans${walks === '' ? '' : ` INDEXED BY ${walks}`} WHERE ${conditions.join(' AND ')} ORDER BY updated_at DESC, plan_key DESC LIMIT ?`)
     .bind(...params, k.limit + 1)
     .all<Record<string, unknown>>();
   const shown = results.slice(0, k.limit);
-  // Tags are keyed by Project first, so they are read per Project over its keys on the page.
+  // Tags are keyed by Project first, so they are read per Project over its keys on the page, in one batch.
   const keysByProject = new Map<string, string[]>();
   for (const r of shown) keysByProject.set(r.project_id as string, [...(keysByProject.get(r.project_id as string) ?? []), r.plan_key as string]);
-  const tags = new Map<string, Map<string, string[]>>();
-  for (const [projectId, keys] of keysByProject) tags.set(projectId, await tagsOf(db, { projectId }, keys));
+  const tags = await tagsAcross(db, keysByProject);
   const rows = shown.map((r) => ({ ...toPlan(r, tags.get(r.project_id as string)?.get(r.plan_key as string) ?? []), projectId: r.project_id as string }));
   const last = rows[rows.length - 1];
   return { rows, cursor: results.length > k.limit && last !== undefined ? encodeCursor(last.updatedAt, last.planKey) : null };

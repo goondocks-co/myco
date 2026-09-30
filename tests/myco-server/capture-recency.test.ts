@@ -30,7 +30,10 @@ describe('capture recency', () => {
     seedCredential(sqlite, { id: 'mt_old', machineId: 'laptop', memberId: 'mem_machine_2', issuedAt: 1, expiresAt: now + 60_000 });
     seedCredential(sqlite, { id: 'mt_new', machineId: 'laptop', memberId: 'mem_machine_2', issuedAt: 2, expiresAt: now + 60_000 });
     seedCredential(sqlite, { id: 'mt_gone', machineId: 'desktop', memberId: 'mem_machine_2', issuedAt: 3, expiresAt: now + 60_000, revokedAt: 4 });
+    seedCredential(sqlite, { id: 'mt_lapsed', machineId: 'desktop', memberId: 'mem_machine_2', issuedAt: 5, expiresAt: now - 1 });
     sqlite.run(`UPDATE member_credentials SET runtime_label = CASE id WHEN 'mt_old' THEN 'old-name' WHEN 'mt_new' THEN 'studio' ELSE 'gone' END`);
+    // A session no machine is recorded for names no machine to report.
+    sqlite.run(`INSERT INTO sessions (project_id, session_id, machine_id, created_by_token_id, first_received_at, last_received_at, agent) VALUES ('proj_1', 's_nomachine', NULL, 'tok_1', ?, ?, 'codex')`, [now, now]);
 
     const res = await worker.fetch(new Request('https://s/api/status', { headers: { cookie: await ownerCookie(Date.now(), MEMBER_SUB), 'cf-connecting-ip': '1.2.3.4' } }), env);
     expect(res.status).toBe(200);
@@ -40,5 +43,15 @@ describe('capture recency', () => {
       { machineId: 'laptop', machineName: 'studio', agent: 'codex', lastEventAt: now - 3_600_000, projectId: 'proj_1' },
       { machineId: 'desktop', machineName: null, agent: 'cursor', lastEventAt: now - 7_200_000, projectId: 'proj_2' },
     ]);
+  });
+
+  it('keeps every other status fact when capture recency cannot be read, and names it as unavailable', async () => {
+    const fixture = sqliteEnv();
+    const inner = fixture.env.MYCO_DB;
+    const env = { ...fixture.env, ...OWNER_ENV, MYCO_DB: { ...inner, prepare: (sql: string) => { if (/MAX\(last_received_at\)/.test(sql)) throw new Error('unreadable'); return inner.prepare(sql); }, batch: inner.batch.bind(inner) } };
+    const res = await worker.fetch(new Request('https://s/api/status', { headers: { cookie: await ownerCookie(), 'cf-connecting-ip': '1.2.3.4' } }), env);
+    const body = await res.json() as { schema: { matches: boolean }; projects: unknown[]; workers: { available: boolean }; capture: unknown[]; unavailable: string[] };
+    expect({ status: res.status, matches: body.schema.matches, projects: body.projects.length, workers: body.workers.available, capture: body.capture, unavailable: body.unavailable })
+      .toEqual({ status: 200, matches: true, projects: 2, workers: true, capture: [], unavailable: ['capture'] });
   });
 });

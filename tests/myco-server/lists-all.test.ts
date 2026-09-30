@@ -57,10 +57,18 @@ describe('the session list across Projects', () => {
     expect((await get('/api/sessions?project=proj_1&project=absent')).status).toBe(404);
   });
 
-  it('refuses more Projects than one statement binds', async () => {
-    const { get } = await harness();
-    const many = Array.from({ length: MAX_NAMED_PROJECTS + 1 }, (_, i) => `project=p${i}`).join('&');
-    expect((await get(`/api/sessions?${many}`)).status).toBe(400);
+  it('takes exactly as many Projects as a read may name, and refuses one more', async () => {
+    const { sqlite, session, get } = await harness();
+    const names = Array.from({ length: MAX_NAMED_PROJECTS + 1 }, (_, i) => `proj_n${i}`);
+    for (const name of names) sqlite.run(`INSERT INTO projects (project_id, name, created_at) VALUES (?, ?, 0)`, [name, name]);
+    session(names[0]!, 's_first', NOW);
+    const query = (count: number) => names.slice(0, count).map((n) => `project=${n}`).join('&');
+    const most = await get(`/api/sessions?${query(MAX_NAMED_PROJECTS)}`);
+    expect(most.status).toBe(200);
+    expect(most.body.rows.map((r: any) => r.sessionId)).toEqual(['s_first']);
+    expect((await get(`/api/sessions?${query(MAX_NAMED_PROJECTS + 1)}`)).status).toBe(400);
+    // A name repeated is one Project.
+    expect((await get(`/api/sessions?${query(MAX_NAMED_PROJECTS)}&project=${names[0]}`)).status).toBe(200);
   });
 
   it('keeps sessions from a start instant on, and of one agent', async () => {
@@ -93,6 +101,18 @@ describe('the session list across Projects', () => {
       cursor = body.cursor;
     } while (cursor !== null);
     expect(seen).toEqual(['s6', 's5', 's4', 's3', 's2', 's1', 's0']);
+  });
+
+  it('pages past sessions sharing the instant the page ends on, each exactly once', async () => {
+    const { session, get } = await harness();
+    session('proj_1', 's_a', NOW);
+    session('proj_2', 's_b', NOW);
+    session('proj_1', 's_c', NOW);
+    session('proj_2', 's_old', NOW - 1);
+    const first = await get('/api/sessions?limit=2');
+    expect(first.body.rows.map((r: any) => r.sessionId)).toEqual(['s_c', 's_b']);
+    const second = await get(`/api/sessions?limit=2&cursor=${encodeURIComponent(first.body.cursor)}`);
+    expect(second.body.rows.map((r: any) => r.sessionId)).toEqual(['s_a', 's_old']);
   });
 
   it('answers a member who is not an admin', async () => {
@@ -154,5 +174,19 @@ describe('the plan list across Projects', () => {
     expect((await get('/api/plans?status=completed')).body.plans.map((p: any) => p.projectId)).toEqual(['proj_2']);
     expect((await get(`/api/plans?since=${NOW + 2}`)).body.plans.map((p: any) => p.projectId)).toEqual(['proj_3', 'proj_2']);
     expect((await get('/api/plans?status=bogus')).status).toBe(400);
+  });
+
+  it('covers only the Projects named, and pages past plans sharing the instant the page ends on', async () => {
+    const { plan, get } = await harness();
+    plan('proj_1', '00000000-0000-4000-8000-000000000001', NOW);
+    plan('proj_2', '00000000-0000-4000-8000-000000000002', NOW);
+    plan('proj_3', '00000000-0000-4000-8000-000000000003', NOW);
+    plan('proj_2', '00000000-0000-4000-8000-000000000004', NOW - 1);
+    expect((await get('/api/plans?project=proj_2&project=proj_3')).body.plans.map((p: any) => p.planKey.slice(-1))).toEqual(['3', '2', '4']);
+    expect((await get('/api/plans?project=absent')).status).toBe(404);
+    const first = await get('/api/plans?limit=2');
+    expect(first.body.plans.map((p: any) => p.planKey.slice(-1))).toEqual(['3', '2']);
+    const second = await get(`/api/plans?limit=2&cursor=${encodeURIComponent(first.body.cursor)}`);
+    expect(second.body.plans.map((p: any) => p.planKey.slice(-1))).toEqual(['1', '4']);
   });
 });

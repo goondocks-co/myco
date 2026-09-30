@@ -40,7 +40,10 @@ async function harness() {
     const res = await worker.fetch(new Request(`https://s${path}`, { headers: { cookie: await ownerCookie(Date.now(), sub), 'cf-connecting-ip': '1.2.3.4' } }), env);
     return { status: res.status, body: await res.json() as Record<string, any> };
   };
-  return { sqlite, run, spore, wrote, report, get };
+  const runAt = (project: string, id: string, task: string, status: string, at: { queuedAt?: number | null; startedAt?: number | null; completedAt?: number | null; cost?: number | null }) =>
+    sqlite.run(`INSERT INTO agent_runs (project_id, id, agent_id, task, status, queued_at, started_at, completed_at, cost_usd) VALUES (?, ?, 'agent_1', ?, ?, ?, ?, ?, ?)`,
+      [project, id, task, status, at.queuedAt ?? null, at.startedAt ?? null, at.completedAt ?? null, at.cost ?? null]);
+  return { sqlite, run, runAt, spore, wrote, report, get };
 }
 
 const window = `since=${SINCE}&until=${NOW}`;
@@ -57,7 +60,7 @@ describe('Myco\'s work', () => {
     run('proj_1', 'run_l3', { task: 'extract-curate', status: 'failed', at: NOW - 3 * HOUR, error: 'the runtime went away' });
     run('proj_1', 'run_l4', { task: 'extract-curate', status: 'completed', at: NOW - 2 * HOUR, tokens: 3000, cost: 1.5, durationMs: 120_000 });
     // Outside the window: counted nowhere.
-    run('proj_1', 'run_old', { task: 'extract-curate', status: 'completed', at: SINCE - 1 });
+    run('proj_1', 'run_old', { task: 'extract-curate', status: 'completed', at: SINCE - 2000 });
     spore('proj_1', 'sp_old', 'run_old', 's9');
 
     const { status, body } = await get(`/api/work?${window}`);
@@ -142,6 +145,51 @@ describe('Myco\'s work', () => {
     expect(body.runs).toHaveLength(MAX_WORK_RUNS);
     expect(body.truncated).toBe(true);
     expect(body.outcomes[0].outcome.spores).toBe(MAX_WORK_RUNS + 1);
+  });
+
+  it('lists exactly its ceiling without saying it cut anything', async () => {
+    const { run, spore, get } = await harness();
+    for (let i = 0; i < MAX_WORK_RUNS; i += 1) {
+      run('proj_1', `run_${i}`, { task: 'extract-curate', status: 'completed', at: NOW - HOUR + i });
+      spore('proj_1', `sp_${i}`, `run_${i}`, 's1');
+    }
+    const { body } = await get(`/api/work?${window}`);
+    expect(body.runs).toHaveLength(MAX_WORK_RUNS);
+    expect(body.truncated).toBe(false);
+  });
+
+  it('windows, shows and counts a run at one instant: when it ended, else when it queued, the window\'s end excluded', async () => {
+    const { runAt, spore, get } = await harness();
+    const learn = (id: string, at: Parameters<typeof runAt>[4]) => { runAt('proj_1', id, 'extract-curate', 'completed', at); spore('proj_1', `sp_${id}`, id, 's1'); };
+    learn('run_queued_before_ended_inside', { queuedAt: SINCE - HOUR, startedAt: SINCE - 30 * 60_000, completedAt: SINCE + HOUR });
+    learn('run_started_inside_ended_after', { queuedAt: NOW - HOUR, startedAt: NOW - HOUR, completedAt: NOW + HOUR });
+    learn('run_ended_at_end', { startedAt: NOW - 1000, completedAt: NOW });
+    learn('run_ended_just_before_end', { startedAt: NOW - 1000, completedAt: NOW - 1 });
+    learn('run_ended_at_start', { startedAt: SINCE - 1000, completedAt: SINCE });
+    runAt('proj_1', 'run_still_queued', 'extract-curate', 'queued', { queuedAt: NOW - HOUR });
+    const { body } = await get(`/api/work?${window}`);
+    expect(body.runs.map((r: any) => [r.id, r.at])).toEqual([
+      ['run_ended_just_before_end', NOW - 1], ['run_queued_before_ended_inside', SINCE + HOUR], ['run_ended_at_start', SINCE],
+    ]);
+    expect(body.outcomes[0]).toMatchObject({ runs: { completed: 3, queued: 1 }, outcome: { spores: 3 }, latestAt: NOW - 1 });
+    expect(body.outcomes[0].latestAt).toBeLessThan(NOW);
+  });
+
+  it('counts as reporting no cost only runs that started, and never one that failed before it ran', async () => {
+    const { runAt, get } = await harness();
+    runAt('proj_1', 'run_never_ran', 'extract-curate', 'failed', { queuedAt: NOW - 2 * HOUR, completedAt: NOW - HOUR });
+    runAt('proj_1', 'run_ran_no_cost', 'extract-curate', 'failed', { startedAt: NOW - 2 * HOUR, completedAt: NOW - HOUR });
+    runAt('proj_1', 'run_ran_with_cost', 'extract-curate', 'completed', { startedAt: NOW - 2 * HOUR, completedAt: NOW - HOUR, cost: 0.1 });
+    expect((await get(`/api/work?${window}`)).body.outcomes[0]).toMatchObject({ runs: { failed: 2, completed: 1 }, runsWithoutCost: 1 });
+  });
+
+  it('counts upkeep failures started inside the window, from its start up to, not including, its end', async () => {
+    const { run, get } = await harness();
+    run('proj_1', 'run_before', { task: 'embedding-reconcile', status: 'failed', at: SINCE - 1 });
+    run('proj_1', 'run_at_start', { task: 'embedding-reconcile', status: 'failed', at: SINCE });
+    run('proj_1', 'run_before_end', { task: 'embedding-reconcile', status: 'failed', at: NOW - 1 });
+    run('proj_1', 'run_at_end', { task: 'embedding-reconcile', status: 'failed', at: NOW });
+    expect((await get(`/api/work?${window}`)).body.upkeep.failedInWindow).toBe(2);
   });
 
   it('refuses a window that is backwards, too long, or not made of instants', async () => {

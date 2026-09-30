@@ -136,6 +136,26 @@ describe('Needs you', () => {
     expect(await kinds()).toEqual([]);
   });
 
+  it('leaves out a queued run a runtime already holds: only runs a worker would take wait for one', async () => {
+    const { sqlite, run, kinds } = harness();
+    seedCredential(sqlite, { id: 'mt_dispatch', machineId: 'machine_1' });
+    run('proj_1', 'run_held', 'extract-curate', 'queued', NOW - 10 * MINUTE, { heldBy: 'worker' });
+    sqlite.run(`UPDATE agent_runs SET dispatched_by = 'mt_dispatch' WHERE id = 'run_held'`);
+    expect(await kinds()).toEqual([]);
+  });
+
+  it('leaves out a Project that no longer accepts capture from every rule that reads its runs or transcripts', async () => {
+    const { sqlite, run, read } = harness();
+    run('proj_2', 'run_failed', 'extract-curate', 'failed', NOW - HOUR);
+    run('proj_2', 'run_waiting', 'extract-curate', 'queued', NOW - 10 * MINUTE, { heldBy: 'worker' });
+    run('proj_2', 'run_held', 'canopy-map', 'queued', NOW - CAPABILITY_HOLD_MS - 1, { heldBy: CAPABILITY_HOLDS[0]! });
+    sqlite.run(`INSERT INTO transcripts (project_id, transcript_id, session_id, machine_id, size, first_received_at, last_received_at, token_id, parsed_offset, parse_error, parse_failed_at, parser_version)
+                VALUES ('proj_2', 'tx_1', 's1', 'm1', 100, 1, 1, 't', 10, 'parse', ?, ?)`, [NOW - HOUR, PARSER_VERSION]);
+    expect((await read()).items.map((i) => i.kind).sort()).toEqual(['no_worker', 'outcome_failed', 'runs_held_for_capability', 'transcripts_stopped']);
+    sqlite.run(`UPDATE projects SET archived_at = ?, archived_by = 'mem_machine_1' WHERE project_id = 'proj_2'`, [NOW]);
+    expect(await read()).toEqual({ items: [], unavailable: [] });
+  });
+
   it('names a live access key that expires within the notice, and no other', async () => {
     const { sqlite, read } = harness();
     const grant = (id: string, expiresAt: number, revokedAt: number | null = null) =>

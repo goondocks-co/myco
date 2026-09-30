@@ -19,7 +19,7 @@ import { EXTRACTION_TASK, SEEDING_TASK, TITLING_TASK } from '../core/task-catalo
 import { MAP_WRITE_TOOL, TITLE_WRITE_TOOL } from '../core/tool-catalogue.js';
 import { RUN_WRITE_EVENT } from '../core/runs.js';
 import { EMBEDDING_TASK } from '../core/embedding/jobs.js';
-import { projectsDriving, type ProjectSet } from './scope.js';
+import { projectsDriving, projectsFiltering, type ProjectSet } from './scope.js';
 
 /** What an outcome task produces, in the words the dashboard groups work by. */
 export type OutcomeKind = 'learn' | 'title' | 'map' | 'seed';
@@ -58,9 +58,9 @@ export interface WorkOutcome {
   failedWithOutput: number;
   /** Failed runs that produced nothing. */
   failed: number;
-  /** The latest instant any run of this kind ended, started or queued. */
+  /** The latest instant a run of this kind is shown at (`at` on a listed run). */
   latestAt: number | null;
-  /** Tokens and cost as the runs themselves reported them, and how many finished runs reported no cost. */
+  /** Tokens and cost as the runs themselves reported them, and how many runs that started and finished reported no cost. */
   tokens: number;
   costUsd: number;
   runsWithoutCost: number;
@@ -81,7 +81,7 @@ export interface WorkRun {
   kind: OutcomeKind;
   status: string;
   result: RunResult;
-  /** When the run ended, else when it started, else when it queued. */
+  /** When the run ended, else when it queued, else when it started: the instant the window is read by. */
   at: number | null;
   outcome: { spores: number; sessions: number; maps: number };
   /** The session a title run titled; null for every other run. */
@@ -97,7 +97,7 @@ export interface Upkeep {
   task: string;
   /** When an upkeep run last completed, whenever that was. */
   lastSuccessAt: number | null;
-  /** Upkeep runs that failed inside the window, retries included. */
+  /** Upkeep runs started inside the window that failed, retries included. */
   failedInWindow: number;
   /** Upkeep runs that failed after the last success, and the first of them: the ones no success has answered yet. */
   unrecovered: { runs: number; since: number } | null;
@@ -114,10 +114,13 @@ export interface WorkAnswer {
 
 const list = (values: readonly unknown[]): string => values.map(() => '?').join(', ');
 
-/** The instant a run entered the list, as the run pages order it: when it queued, or when it started. */
-const ENTERED = 'COALESCE(r.queued_at, r.started_at)';
-/** The instant a run is shown at. */
-const SHOWN_AT = 'COALESCE(r.completed_at, r.started_at, r.queued_at)';
+/**
+ * The one instant a run is windowed, shown and counted at: when it ended, or for a run that has not ended, when it
+ * entered the queue, else when it started. A run belongs to the window its outcome landed in.
+ */
+const RUN_AT = 'COALESCE(r.completed_at, r.queued_at, r.started_at)';
+/** The index every read of a window's runs goes through: by Project, task and status. */
+const RUNS_BY_TASK = 'agent_runs r INDEXED BY idx_agent_runs_task';
 
 const wroteSpores = (a: string): string => `EXISTS (SELECT 1 FROM spores sp WHERE sp.project_id = ${a}.project_id AND sp.author = ${a}.id)`;
 const recordedWrite = (a: string, tool: string): string => `EXISTS (SELECT 1 FROM agent_run_events e
@@ -184,7 +187,7 @@ export async function readUpkeep(db: RelationalStore, set: ProjectSet, since: nu
 /** What the Deployment's runs produced in the set's Projects over the window, its end excluded. */
 export async function readWork(db: RelationalStore, set: ProjectSet, since: number, until: number): Promise<WorkAnswer> {
   const projects = projectsDriving(set, 'r.project_id');
-  const window = `${ENTERED} >= ? AND ${ENTERED} < ?`;
+  const window = `${RUN_AT} >= ? AND ${RUN_AT} < ?`;
   const scoped = (tasks: readonly string[]) => ({
     sql: `${projects.sql} AND r.task IN (${list(tasks)}) AND ${window}`,
     params: [...projects.params, ...tasks, since, until],
@@ -198,25 +201,25 @@ export async function readWork(db: RelationalStore, set: ProjectSet, since: numb
   // every row of its Project being read to find them.
   const [aggregate, sporeOutcome, titleOutcome, mapHeads, listed, upkeep] = await db.batch([
     db.prepare(
-      `SELECT r.project_id, r.task, r.status, COUNT(*) AS runs, MAX(${SHOWN_AT}) AS latest_at,
+      `SELECT r.project_id, r.task, r.status, COUNT(*) AS runs, MAX(${RUN_AT}) AS latest_at,
               SUM(COALESCE(r.tokens_used, 0)) AS tokens, SUM(COALESCE(r.cost_usd, 0)) AS cost,
-              SUM(CASE WHEN r.status IN ('completed', 'failed') AND r.cost_usd IS NULL THEN 1 ELSE 0 END) AS no_cost,
+              SUM(CASE WHEN r.status IN ('completed', 'failed') AND r.started_at IS NOT NULL AND r.cost_usd IS NULL THEN 1 ELSE 0 END) AS no_cost,
               SUM(${PRODUCED_SQL}) AS produced,
               MIN(r.tokens_used) AS tokens_low, MAX(r.tokens_used) AS tokens_high,
               MIN(r.cost_usd) AS cost_low, MAX(r.cost_usd) AS cost_high,
               MIN(r.completed_at - r.started_at) AS duration_low, MAX(r.completed_at - r.started_at) AS duration_high
-         FROM agent_runs r WHERE ${all.sql}
+         FROM ${RUNS_BY_TASK} WHERE ${all.sql}
         GROUP BY r.project_id, r.task, r.status`,
     ).bind(...all.params),
     db.prepare(
       `SELECT r.project_id, r.task, COUNT(sp.id) AS spores, COUNT(DISTINCT sp.session_id) AS sessions
-         FROM agent_runs r CROSS JOIN spores sp ON sp.project_id = r.project_id AND sp.author = r.id
+         FROM ${RUNS_BY_TASK} CROSS JOIN spores sp ON sp.project_id = r.project_id AND sp.author = r.id
         WHERE ${spores.sql}
         GROUP BY r.project_id, r.task`,
     ).bind(...spores.params),
     db.prepare(
       `SELECT r.project_id, COUNT(DISTINCT CASE WHEN json_valid(e.payload) THEN json_extract(e.payload, '$.session_id') END) AS sessions
-         FROM agent_runs r CROSS JOIN agent_run_events e ON e.project_id = r.project_id AND e.run_id = r.id
+         FROM ${RUNS_BY_TASK} CROSS JOIN agent_run_events e ON e.project_id = r.project_id AND e.run_id = r.id
           AND e.event_type = '${RUN_WRITE_EVENT}' AND e.tool_name = '${TITLE_WRITE_TOOL}'
         WHERE ${titles.sql}
         GROUP BY r.project_id`,
@@ -224,13 +227,13 @@ export async function readWork(db: RelationalStore, set: ProjectSet, since: numb
     db.prepare(`SELECT project_id, repository_branch, repository_commit, generated_at, source_run_id FROM canopy_maps WHERE ${maps.sql}`)
       .bind(...maps.params),
     db.prepare(
-      `SELECT r.project_id, r.id, r.task, r.status, ${SHOWN_AT} AS at, r.tokens_used, r.cost_usd, ${PRODUCED_SQL} AS produced,
+      `SELECT r.project_id, r.id, r.task, r.status, ${RUN_AT} AS at, r.tokens_used, r.cost_usd, ${PRODUCED_SQL} AS produced,
               CASE WHEN r.task IN (${list(SPORE_TASKS)}) THEN (SELECT COUNT(*) FROM spores sp WHERE sp.project_id = r.project_id AND sp.author = r.id) ELSE 0 END AS spores,
               CASE WHEN r.task IN (${list(SPORE_TASKS)}) THEN (SELECT COUNT(DISTINCT sp.session_id) FROM spores sp WHERE sp.project_id = r.project_id AND sp.author = r.id) ELSE 0 END AS spore_sessions,
               CASE WHEN r.task = ? THEN ${TITLED_SESSION} END AS titled_session,
               CASE WHEN r.status = 'failed' THEN (SELECT rep.summary FROM agent_reports rep WHERE rep.project_id = r.project_id AND rep.run_id = r.id ORDER BY rep.id DESC LIMIT 1) END AS report,
               CASE WHEN r.status = 'failed' THEN r.error END AS error
-         FROM agent_runs r
+         FROM ${RUNS_BY_TASK}
         WHERE ${all.sql} AND r.status IN ('completed', 'failed') AND (r.status = 'failed' OR ${PRODUCED_SQL})
         ORDER BY at DESC, r.id DESC LIMIT ?`,
     ).bind(...SPORE_TASKS, ...SPORE_TASKS, TITLING_TASK, ...all.params, MAX_WORK_RUNS + 1),
@@ -347,7 +350,7 @@ export async function failingOutcomes(db: RelationalStore, tasks: readonly strin
     `SELECT r.project_id, r.task, COUNT(*) AS failures, MIN(${failedAt}) AS since, MAX(${failedAt}) AS latest_at,
             (SELECT l.id FROM agent_runs l WHERE l.project_id = r.project_id AND l.task = r.task AND l.status = 'failed' AND NOT ${producedSql('l')}
               ORDER BY COALESCE(l.started_at, l.queued_at, l.completed_at) DESC, l.id DESC LIMIT 1) AS latest_run
-       FROM agent_runs r
+       FROM ${RUNS_BY_TASK}
       WHERE ${projects.sql} AND r.task IN (${list(tasks)}) AND r.status = 'failed' AND ${failedAt} >= ?
         AND ${failedAt} > COALESCE((SELECT MAX(s.started_at) FROM agent_runs s
               WHERE s.project_id = r.project_id AND s.task = r.task AND s.status = 'completed'), -1)
@@ -366,23 +369,25 @@ export async function failingOutcomes(db: RelationalStore, tasks: readonly strin
   }));
 }
 
-/** Queued runs held for a worker capability from before `queuedBefore`, by the capability that holds them. */
+/** Queued runs of Projects that accept capture held for a worker capability from before `queuedBefore`, by the capability that holds them. */
 export async function capabilityHolds(db: RelationalStore, capabilities: readonly string[], queuedBefore: number): Promise<{ capability: string; runs: number; since: number }[]> {
   if (capabilities.length === 0) return [];
+  const projects = projectsFiltering({ all: true }, 'agent_runs');
   const { results } = await db.prepare(
     `SELECT held_by, COUNT(*) AS runs, MIN(queued_at) AS since FROM agent_runs
-      WHERE status = 'queued' AND queued_at <= ? AND held_by IN (${list(capabilities)})
+      WHERE status = 'queued' AND queued_at <= ? AND held_by IN (${list(capabilities)}) AND ${projects.sql}
       GROUP BY held_by ORDER BY held_by`,
-  ).bind(queuedBefore, ...capabilities).all<Record<string, unknown>>();
+  ).bind(queuedBefore, ...capabilities, ...projects.params).all<Record<string, unknown>>();
   return results.map((row) => ({ capability: String(row.held_by), runs: num(row.runs), since: num(row.since) }));
 }
 
-/** Queued runs a worker would take, the tasks a runtime serves itself excepted, and the oldest of them. */
+/** Queued runs of Projects that accept capture that a worker would take, the tasks a runtime serves itself excepted, and the oldest of them. */
 export async function runsAwaitingWorker(db: RelationalStore, runtimeServed: readonly string[]): Promise<{ runs: number; since: number | null }> {
   const excluded = runtimeServed.length === 0 ? '' : ` AND task NOT IN (${list(runtimeServed)})`;
+  const projects = projectsFiltering({ all: true }, 'agent_runs');
   const row = await db.prepare(
     `SELECT COUNT(*) AS runs, MIN(queued_at) AS since FROM agent_runs
-      WHERE status = 'queued' AND dispatched_by IS NULL AND task IS NOT NULL${excluded}`,
-  ).bind(...runtimeServed).first<Record<string, unknown>>();
+      WHERE status = 'queued' AND dispatched_by IS NULL AND task IS NOT NULL${excluded} AND ${projects.sql}`,
+  ).bind(...runtimeServed, ...projects.params).first<Record<string, unknown>>();
   return { runs: num(row?.runs), since: orNull(row?.since) };
 }

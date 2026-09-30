@@ -39,8 +39,8 @@ export const capabilityHold: ParityScenario = {
     };
     const holder = async () => (await target.sql(`SELECT held_by AS heldBy FROM agent_runs WHERE id = ${lit(runId)}`))[0];
 
-    await park();
     try {
+      await park();
       await target.sql(
         `INSERT INTO agent_runs (project_id, id, agent_id, task, status, queued_at, held_by, dispatch_spec, run_context)
          VALUES (${lit(target.projectId)}, ${lit(runId)}, 'myco-agent', 'canopy-map', 'queued', ${now}, 'worker',
