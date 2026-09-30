@@ -12,6 +12,7 @@ import { listVisibleProjects } from './scope.js';
 import { workerLiveness } from '../core/runs.js';
 import { CONTACT_RECENT_MS, readWorkerFleet, type WorkerFleetRow } from '../core/worker-contacts.js';
 import { ok } from './scope.js';
+import { captureRecency, type CaptureRow } from '../read/capture.js';
 
 /**
  * What this Deployment can do, in the product's vocabulary.
@@ -64,6 +65,7 @@ export async function handleStatus(env: ServerEnv, ctx: OwnerContext): Promise<R
   let found: number | null = null;
   let projects: Awaited<ReturnType<typeof listVisibleProjects>> = [];
   let transcriptBacklog: TranscriptBacklog | null = null;
+  let capture: CaptureRow[] = [];
   try {
     found = await schemaVersion(env.db);
     // The same count the tick reads to decide how awake the Deployment stays.
@@ -71,8 +73,9 @@ export async function handleStatus(env: ServerEnv, ctx: OwnerContext): Promise<R
     const counts = await workerLiveness(env.db, ctx.now);
     workers = { available: true, ...counts, recentWithinMs: CONTACT_RECENT_MS, fleet: await readWorkerFleet(env.db, ctx.now) };
     projects = await listVisibleProjects(env.db, ctx.member, { includeArchived: true });
+    capture = await captureRecency(env.db, ctx.now);
   } catch {
-    return ok({ schema: schemaCheck(null), target, capabilities, workers, projects: [] });
+    return ok({ schema: schemaCheck(null), target, capabilities, workers, projects: [], capture: [] });
   }
   return ok({
     schema: schemaCheck(found),
@@ -86,6 +89,8 @@ export async function handleStatus(env: ServerEnv, ctx: OwnerContext): Promise<R
     // Transcripts stored and not yet read into sessions: how many, and the bytes they have left.
     transcriptBacklog,
     projects: projects.map((p) => ({ projectId: p.projectId, lastActivityAt: p.lastActivityAt, sessionCount: p.sessionCount, archivedAt: p.archivedAt })),
+    // When each machine's agents last sent anything, over the last `CAPTURE_WINDOW_MS`, most recent first.
+    capture,
   });
 }
 

@@ -3,7 +3,7 @@ import type { ServerEnv } from '../core/adapters.js';
 import type { OwnerContext } from '../context.js';
 import { getSession, listSessionSummaries, projectStats, sessionCounts, type SessionFilters } from '../read/sessions.js';
 import { activityFeed } from '../read/activity.js';
-import { badRequest, notFound, ok, resolveProjectScope, sessionInScope } from './scope.js';
+import { badRequest, instantParam, notFound, ok, resolveProjectScope, sessionInScope } from './scope.js';
 import { decodeCursor } from '../read/scope.js';
 import { listAttachments, listContextInjections, listPlans, listPrompts, listResponses, listToolCalls, untitledReason } from '../read/children.js';
 import { listTurns, parseOrigins, promptInSession, turnDetail } from '../read/turns.js';
@@ -55,15 +55,17 @@ export function paging(url: URL): { limit?: number; cursor?: string } | Response
   return { limit: rawLimit === null ? undefined : Number(rawLimit), cursor: rawCursor ?? undefined };
 }
 
-/** The list's filters as the query names them: `state`, `branch`, `member`, `q`. An unknown state is refused. */
+/** The list's filters as the query names them: state, branch, member, agent, text and a start instant. An unknown state, and a start that is not an instant, are refused. */
 export function sessionFilters(url: URL): SessionFilters | Response {
   const state = url.searchParams.get('state');
   if (state !== null && state !== 'open' && state !== 'ended') return badRequest('state must be open or ended');
+  const since = instantParam(url, 'since');
+  if (since instanceof Response) return since;
   const text = (name: string): string | undefined => {
     const value = url.searchParams.get(name);
     return value === null || value === '' ? undefined : value;
   };
-  return { state: state ?? undefined, branch: text('branch'), memberLabel: text('member'), q: text('q') };
+  return { state: state ?? undefined, branch: text('branch'), memberLabel: text('member'), agent: text('agent'), q: text('q'), since };
 }
 
 export async function handleProjectSessions(env: ServerEnv, ctx: OwnerContext): Promise<Response> {

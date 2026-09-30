@@ -1,7 +1,7 @@
 import { registeredObjectKeySql } from '../core/blob-objects.js';
 import type { RelationalStore } from '../core/adapters.js';
 import { PLAN_STATUSES } from '../ingest/kinds.js';
-import { clampLimit, encodeCursor, inListChunks, keyset, type Page, type ReadScope } from './scope.js';
+import { clampLimit, encodeCursor, inListChunks, keyset, projectsDriving, type Page, type ProjectSet, type ReadScope } from './scope.js';
 
 /** A plan as the project holds it: the projected row plus the tags the same event carried. `promptId` names the prompt the plan came from; `updatedBy` the member behind its last administrative edit, null when a capture event wrote last. */
 export interface ProjectPlanRow {
@@ -89,20 +89,46 @@ export async function pageProjectPlans(
   scope: ReadScope,
   opts: { status?: string; sessionId?: string; limit?: number; cursor?: string } = {},
 ): Promise<Page<ProjectPlanRow>> {
+  const listed = await selectPlans(db, { sql: 'project_id = ?', params: [scope.projectId] }, opts);
+  return { cursor: listed.cursor, rows: listed.rows.map(({ projectId: _projectId, ...row }) => row) };
+}
+
+/** A plan of a read across Projects, with the Project it belongs to. */
+export type PlanAcrossRow = ProjectPlanRow & { projectId: string };
+
+/** One page of every plan in the set's Projects, most recently updated first, optionally only plans updated at or after a start instant. */
+export async function pagePlansAcross(
+  db: RelationalStore,
+  set: ProjectSet,
+  opts: { status?: string; since?: number; limit?: number; cursor?: string } = {},
+): Promise<Page<PlanAcrossRow>> {
+  return selectPlans(db, projectsDriving(set, 'project_id'), opts);
+}
+
+async function selectPlans(
+  db: RelationalStore,
+  projects: { sql: string; params: readonly unknown[] },
+  opts: { status?: string; sessionId?: string; since?: number; limit?: number; cursor?: string },
+): Promise<Page<PlanAcrossRow>> {
   const k = keyset({ limit: clampLimit(opts.limit), cursor: opts.cursor }, { order: 'updated_at', id: 'plan_key', direction: 'DESC' });
   if (k === null) return { rows: [], cursor: null };
-  const conditions = ['project_id = ?'];
-  const params: unknown[] = [scope.projectId];
+  const conditions = [projects.sql];
+  const params: unknown[] = [...projects.params];
   if (opts.status !== undefined) { conditions.push('status = ?'); params.push(opts.status); }
   if (opts.sessionId !== undefined) { conditions.push('session_id = ?'); params.push(opts.sessionId); }
+  if (opts.since !== undefined) { conditions.push('updated_at >= ?'); params.push(opts.since); }
   if (k.where !== '') { conditions.push(k.where); params.push(...k.params); }
   const { results } = await db
-    .prepare(`SELECT ${COLUMNS} FROM plans WHERE ${conditions.join(' AND ')} ORDER BY updated_at DESC, plan_key DESC LIMIT ?`)
+    .prepare(`SELECT project_id, ${COLUMNS} FROM plans WHERE ${conditions.join(' AND ')} ORDER BY updated_at DESC, plan_key DESC LIMIT ?`)
     .bind(...params, k.limit + 1)
     .all<Record<string, unknown>>();
   const shown = results.slice(0, k.limit);
-  const tags = await tagsOf(db, scope, shown.map((r) => r.plan_key as string));
-  const rows = shown.map((r) => toPlan(r, tags.get(r.plan_key as string) ?? []));
+  // Tags are keyed by Project first, so they are read per Project over its keys on the page.
+  const keysByProject = new Map<string, string[]>();
+  for (const r of shown) keysByProject.set(r.project_id as string, [...(keysByProject.get(r.project_id as string) ?? []), r.plan_key as string]);
+  const tags = new Map<string, Map<string, string[]>>();
+  for (const [projectId, keys] of keysByProject) tags.set(projectId, await tagsOf(db, { projectId }, keys));
+  const rows = shown.map((r) => ({ ...toPlan(r, tags.get(r.project_id as string)?.get(r.plan_key as string) ?? []), projectId: r.project_id as string }));
   const last = rows[rows.length - 1];
   return { rows, cursor: results.length > k.limit && last !== undefined ? encodeCursor(last.updatedAt, last.planKey) : null };
 }

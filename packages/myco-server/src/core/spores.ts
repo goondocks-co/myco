@@ -21,7 +21,7 @@
  * repair; a batch is atomic by contract, so the pair commits or neither does.
  */
 import type { RelationalStore } from './adapters.js';
-import { inListChunks, type ReadScope } from '../read/scope.js';
+import { inListChunks, projectsDriving, type ProjectSet, type ReadScope } from '../read/scope.js';
 
 export const SPORE_STATUSES = ['active', 'superseded', 'consolidated', 'obsolete'] as const;
 export type SporeStatus = (typeof SPORE_STATUSES)[number];
@@ -109,6 +109,8 @@ export interface ListSporesOptions {
   sessionId?: string;
   search?: string;
   since?: number;
+  /** Spores written at or after this instant (ms). */
+  createdFrom?: number;
   /** False excludes spores whose session has not ended. A direct `sessionId` lookup is never gated. */
   includeActive?: boolean;
   limit?: number;
@@ -151,8 +153,13 @@ export async function getSpore(db: RelationalStore, scope: ReadScope, id: string
 }
 
 function filters(scope: ReadScope, o: ListSporesOptions): { where: string; params: unknown[] } {
-  const conditions = ['project_id = ?'];
-  const params: unknown[] = [scope.projectId];
+  return filtersOver({ sql: 'project_id = ?', params: [scope.projectId] }, o);
+}
+
+/** The list's conditions over the rows `projects` admits. */
+function filtersOver(projects: { sql: string; params: readonly unknown[] }, o: ListSporesOptions): { where: string; params: unknown[] } {
+  const conditions = [projects.sql];
+  const params: unknown[] = [...projects.params];
   const add = (sql: string, value: unknown): void => { conditions.push(sql); params.push(value); };
 
   if (o.agentId !== undefined) add('agent_id = ?', o.agentId);
@@ -160,6 +167,7 @@ function filters(scope: ReadScope, o: ListSporesOptions): { where: string; param
   if (o.status !== undefined) add('status = ?', o.status);
   if (o.sessionId !== undefined) add('session_id = ?', o.sessionId);
   if (o.since !== undefined) add('created_at > ?', o.since);
+  if (o.createdFrom !== undefined) add('created_at >= ?', o.createdFrom);
   if (o.search !== undefined && o.search.length > 0) {
     conditions.push('(content LIKE ? OR observation_type LIKE ?)');
     params.push(`%${o.search}%`, `%${o.search}%`);
@@ -207,6 +215,47 @@ export async function countSpores(db: RelationalStore, scope: ReadScope, o: List
   const { where, params } = filters(scope, o);
   const row = await db.prepare(`SELECT COUNT(*) AS c FROM spores ${where}`).bind(...params).first<{ c: number }>();
   return row?.c ?? 0;
+}
+
+/** A spore of a read across Projects, with the Project it belongs to. */
+export type SporeAcrossRow = SporeRow & { projectId: string };
+
+/** How the spores a read across Projects admits divide by type and by Project. */
+export interface SporeFacets {
+  type: Record<string, number>;
+  project: Record<string, number>;
+}
+
+/** Spores of every Project in the set, newest first, a page at a time by offset, as the per-Project list pages. */
+export async function listSporesAcross(db: RelationalStore, set: ProjectSet, o: ListSporesOptions = {}): Promise<SporeAcrossRow[]> {
+  const { where, params } = filtersOver(projectsDriving(set, 'project_id'), o);
+  const limit = Math.min(Math.max(o.limit ?? DEFAULT_SPORE_LIMIT, 1), MAX_SPORE_LIMIT);
+  const { results } = await db
+    .prepare(`SELECT project_id AS projectId, ${COLUMNS} FROM spores ${where} ORDER BY created_at DESC, id DESC, project_id DESC LIMIT ? OFFSET ?`)
+    .bind(...params, limit, o.offset ?? 0).all<SporeAcrossRow>();
+  return results;
+}
+
+export async function countSporesAcross(db: RelationalStore, set: ProjectSet, o: ListSporesOptions = {}): Promise<number> {
+  const { where, params } = filtersOver(projectsDriving(set, 'project_id'), o);
+  const row = await db.prepare(`SELECT COUNT(*) AS c FROM spores ${where}`).bind(...params).first<{ c: number }>();
+  return row?.c ?? 0;
+}
+
+/**
+ * The facet counts beside a read across Projects. Each facet counts under every filter but its own, so a reader sees
+ * what choosing another value would show: types over the named Projects whatever type is chosen, and Projects over
+ * every Project the caller may see whatever Projects are named.
+ */
+export async function sporeFacets(db: RelationalStore, set: ProjectSet, o: ListSporesOptions = {}): Promise<SporeFacets> {
+  const byType = filtersOver(projectsDriving(set, 'project_id'), { ...o, observationType: undefined });
+  const byProject = filtersOver(projectsDriving({ all: true }, 'project_id'), o);
+  const [types, projects] = await db.batch([
+    db.prepare(`SELECT observation_type AS k, COUNT(*) AS n FROM spores ${byType.where} GROUP BY observation_type`).bind(...byType.params),
+    db.prepare(`SELECT project_id AS k, COUNT(*) AS n FROM spores ${byProject.where} GROUP BY project_id`).bind(...byProject.params),
+  ]);
+  const tally = (rows: unknown[]): Record<string, number> => Object.fromEntries((rows as { k: string; n: number }[]).map((r) => [r.k, Number(r.n)]));
+  return { type: tally(types.results), project: tally(projects.results) };
 }
 
 /** Whether this author — a run id, a member id or a grant id — wrote at least one spore in this Project. */

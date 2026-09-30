@@ -1,6 +1,6 @@
 import type { RelationalStore } from '../core/adapters.js';
 import { occurredAt, presentedEndedAt, presentedStartedAt } from '../db/session-dates.js';
-import { inListChunks, keyset, page, type Page, type ReadScope } from './scope.js';
+import { inListChunks, keyset, page, projectsFiltering, type Page, type ProjectSet, type ReadScope } from './scope.js';
 import { notTombstonedSql, NOT_TOMBSTONED_PARAMS } from '../core/tombstones.js';
 import { sessionMaterialReadySql, titlingClaimAvailableSql } from './material-readiness.js';
 
@@ -195,6 +195,8 @@ export interface SessionFilters {
   state?: 'open' | 'ended';
   /** The label of the member whose credential captured the session. */
   memberLabel?: string;
+  /** The agent that captured the session, as the session records it. */
+  agent?: string;
   sessionId?: string;
   /** A text the session's title, first prompt, agent, branch or id contains, matched case-insensitively. */
   q?: string;
@@ -242,12 +244,40 @@ export function containsPattern(text: string): string {
 export const SESSION_OCCURRED_AT = occurredAt('s.');
 
 export async function listSessions(db: RelationalStore, scope: ReadScope, opts: { limit?: number; cursor?: string } & SessionFilters = {}): Promise<Page<SessionRow>> {
+  const listed = await selectSessions(db, { sql: 's.project_id = ?', params: [scope.projectId] }, opts, false);
+  return { cursor: listed.cursor, rows: listed.rows.map(({ projectId: _projectId, ...row }) => row) };
+}
+
+/**
+ * Sessions of every Project in the set, newest first, one keyset page at a time. Every Project's sessions are ordered
+ * by `idx_sessions_occurred_deployment`, which indexes the same expression the per-Project read orders by, so a page
+ * walks that index and stops rather than sorting every session the set holds. A session is keyed by its Project and
+ * its id, and the cursor carries the id alone: two sessions of different Projects sharing an id and an instant are
+ * the one case a page boundary may skip.
+ */
+export async function listSessionsAcross(db: RelationalStore, set: ProjectSet, opts: { limit?: number; cursor?: string } & SessionFilters = {}): Promise<Page<SessionRow & { projectId: string }>> {
+  return selectSessions(db, projectsFiltering(set, 's'), opts, true);
+}
+
+/**
+ * The one session page: `projects` admits the rows, the filters narrow them, and the order and the cursor are the
+ * occurred instant and the id. `bounded` adds the cursor's instant as an upper bound beside the keyset predicate, which
+ * the predicate already implies, so a read walking a Deployment-wide index seeks to the cursor instead of reading
+ * every newer row again.
+ */
+async function selectSessions(
+  db: RelationalStore,
+  projects: { sql: string; params: readonly unknown[] },
+  opts: { limit?: number; cursor?: string } & SessionFilters,
+  bounded: boolean,
+): Promise<Page<SessionRow & { projectId: string }>> {
   const k = keyset(opts, { order: SESSION_OCCURRED_AT, id: 's.session_id', direction: 'DESC' });
   if (k === null) return { rows: [], cursor: null };
-  const conditions = ['s.project_id = ?', LIVE_SESSION];
+  const conditions = [projects.sql, LIVE_SESSION];
   if ((opts.fidelity ?? 'full') === 'full') conditions.push(FULL_FIDELITY);
-  const params: unknown[] = [scope.projectId];
+  const params: unknown[] = [...projects.params];
   if (opts.branch !== undefined) { conditions.push('s.branch = ?'); params.push(opts.branch); }
+  if (opts.agent !== undefined) { conditions.push('s.agent = ?'); params.push(opts.agent); }
   // The instant the page is ordered by, so the filter admits what the order shows.
   if (opts.since !== undefined) { conditions.push(`${SESSION_OCCURRED_AT} >= ?`); params.push(opts.since); }
   // Open and ended as the page shows them, so a session listed with an end is not also listed as open.
@@ -260,15 +290,18 @@ export async function listSessions(db: RelationalStore, scope: ReadScope, opts: 
     conditions.push(`(s.title LIKE ? ESCAPE '\\' OR s.agent LIKE ? ESCAPE '\\' OR s.branch LIKE ? ESCAPE '\\' OR s.session_id LIKE ? ESCAPE '\\' OR ${FIRST_PROMPT_SQL} LIKE ? ESCAPE '\\')`);
     params.push(pattern, pattern, pattern, pattern, pattern);
   }
-  if (k.where !== '') { conditions.push(k.where); params.push(...k.params); }
+  if (k.where !== '') {
+    if (bounded) { conditions.push(`${SESSION_OCCURRED_AT} <= ?`); params.push(k.params[0]); }
+    conditions.push(k.where); params.push(...k.params);
+  }
   const { results } = await db
-    .prepare(`SELECT ${SESSION_COLUMNS} ${SESSION_FROM} WHERE ${conditions.join(' AND ')} ORDER BY ${SESSION_OCCURRED_AT} DESC, s.session_id DESC LIMIT ?`)
+    .prepare(`SELECT s.project_id, ${SESSION_COLUMNS} ${SESSION_FROM} WHERE ${conditions.join(' AND ')} ORDER BY ${SESSION_OCCURRED_AT} DESC, s.session_id DESC LIMIT ?`)
     .bind(...params, k.limit + 1)
     .all<Record<string, unknown>>();
   // The cursor carries the same value the sort ordered by. Both columns are
   // already on the row, so this is the SQL COALESCE read back rather than a
   // second definition of it.
-  return page(results.map(toSession), k.limit, (r) => ({ createdAt: r.startedAt ?? r.firstReceivedAt, id: r.sessionId }));
+  return page(results.map((row) => ({ ...toSession(row), projectId: row.project_id as string })), k.limit, (r) => ({ createdAt: r.startedAt ?? r.firstReceivedAt, id: r.sessionId }));
 }
 
 /** One session inside the scope, or null — including when the session exists under another project. */
@@ -417,6 +450,34 @@ export async function listSessionSummaries(db: RelationalStore, scope: ReadScope
   };
 }
 
+/** A session of a read across Projects, with the rail facts the per-Project list carries and the Project it belongs to. */
+export type SessionAcrossRow = SessionSummaryRow & { projectId: string };
+
+/**
+ * The session list across a set of Projects with the per-Project list's rail facts. The facts are read per Project over
+ * that Project's ids on the page: each child table is keyed by Project first, and a page spans few Projects.
+ */
+export async function listSessionSummariesAcross(db: RelationalStore, set: ProjectSet, opts: { limit?: number; cursor?: string } & SessionFilters, nowMs: number): Promise<Page<SessionAcrossRow>> {
+  const listed = await listSessionsAcross(db, set, { fidelity: 'any', ...opts });
+  const byProject = new Map<string, string[]>();
+  for (const row of listed.rows) byProject.set(row.projectId, [...(byProject.get(row.projectId) ?? []), row.sessionId]);
+  const facts = new Map<string, { counts: Map<string, SessionCounts>; buckets: Map<string, number[]> }>();
+  for (const [projectId, ids] of byProject) {
+    const scope = { projectId };
+    const counts = await sessionCountsFor(db, scope, ids);
+    const rows = listed.rows.filter((r) => r.projectId === projectId);
+    facts.set(projectId, { counts, buckets: bucketActivity(rows, await promptInstants(db, scope, ids), nowMs) });
+  }
+  return {
+    cursor: listed.cursor,
+    rows: listed.rows.map((row) => {
+      const held = facts.get(row.projectId);
+      const c = held?.counts.get(row.sessionId);
+      return { ...row, promptCount: c?.prompts ?? 0, toolCallCount: c?.toolCalls ?? 0, activityBuckets: held?.buckets.get(row.sessionId) ?? new Array<number>(ACTIVITY_BUCKETS).fill(0) };
+    }),
+  };
+}
+
 /** What the project holds, one count per projection: they share no key, and a join would multiply rows. */
 export async function projectStats(db: RelationalStore, scope: ReadScope, nowMs: number): Promise<ProjectStats> {
   const sessions = await db
@@ -445,6 +506,16 @@ export async function projectStats(db: RelationalStore, scope: ReadScope, nowMs:
 export async function projectExists(db: RelationalStore, projectId: string): Promise<boolean> {
   const row = await db.prepare(`SELECT 1 AS present FROM projects WHERE project_id = ?`).bind(projectId).first<{ present: number }>();
   return row !== null;
+}
+
+/** Which of these Project ids name a Project, in one statement. At most `MAX_IN_LIST` ids. */
+export async function existingProjects(db: RelationalStore, projectIds: readonly string[]): Promise<Set<string>> {
+  if (projectIds.length === 0) return new Set();
+  const { results } = await db
+    .prepare(`SELECT project_id FROM projects WHERE project_id IN (${projectIds.map(() => '?').join(', ')})`)
+    .bind(...projectIds)
+    .all<{ project_id: string }>();
+  return new Set(results.map((r) => r.project_id));
 }
 
 /** True when the session exists inside the scope. `sessions` is keyed `(project_id, session_id)`, so containment is the only safe question to ask of a session id. */
