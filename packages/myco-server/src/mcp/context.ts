@@ -20,6 +20,7 @@
  * id, a run id or a grant id. `writerOf` answers both for the handlers that
  * write.
  */
+import { USER_AGENT_ID } from '../constants.js';
 import type { ServerEnv } from '../core/adapters.js';
 import type { GrantContext, RouteContext, RunContext } from '../context.js';
 import type { ReadScope } from '../read/scope.js';
@@ -82,8 +83,7 @@ export interface ToolFailure {
 
 export const failure = (error: string): ToolFailure => ({ ok: false, error });
 
-/** The agent every member-recorded spore carries; seeded by the schema. */
-export const USER_AGENT_ID = 'user';
+export { USER_AGENT_ID };
 
 export function toolContext(env: ServerEnv, ctx: RouteContext): ToolContext {
   return { env, projectId: ctx.projectId, principal: { kind: 'member', memberId: ctx.memberId, machineId: ctx.machineId, tokenId: ctx.tokenId }, now: ctx.now };

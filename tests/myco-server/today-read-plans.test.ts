@@ -13,7 +13,7 @@ import { SCHEMA_DDL } from '@myco-server-worker/db/schema.js';
 import { encodeCursor, MAX_NAMED_PROJECTS, type ProjectSet } from '@myco-server-worker/read/scope.js';
 import { listSessions, listSessionsAcross, type SessionFilters } from '@myco-server-worker/read/sessions.js';
 import { countSpores, countSporesAcross, listSpores, listSporesAcross, sporeFacets } from '@myco-server-worker/core/spores.js';
-import { pagePlansAcross } from '@myco-server-worker/read/plans.js';
+import { pagePlansAcross, planTotals } from '@myco-server-worker/read/plans.js';
 import { capabilityHolds, failingOutcomes, readWork, runsAwaitingWorker } from '@myco-server-worker/read/work.js';
 import { captureRecency } from '@myco-server-worker/read/capture.js';
 import { stoppedTranscripts } from '@myco-server-worker/ingest/parse.js';
@@ -157,6 +157,8 @@ describe('the Today reads under the statistics a Deployment plans from', () => {
       const listed = await plans(async (db) => {
         await pagePlansAcross(db, set, { limit: 50 });
         await pagePlansAcross(db, set, { status: 'active', since: 1, limit: 50, cursor: CURSOR });
+        await pagePlansAcross(db, set, { q: 'board', limit: 50 });
+        await pagePlansAcross(db, set, { status: 'active', q: 'board', limit: 50, cursor: CURSOR });
       });
       for (const { store, sql, plan } of reading(listed, 'plans')) {
         expect({ set: set.all, store, sql, walks: /plans USING INDEX idx_plans_updated_deployment/.test(plan), sorts: sortsRows(plan), plan })
@@ -198,6 +200,22 @@ describe('the Today reads under the statistics a Deployment plans from', () => {
       expect({ store, sql, scans: tableScans(plan), plan }).toEqual({ store, sql, scans: [], plan });
     }
     for (const { store, sql, plan } of await plans(async (db) => { await countSporesAcross(db, ALL, { search: 'x' }); await sporeFacets(db, ALL, { search: 'x' }); })) {
+      expect({ store, sql, sorts: sortsRows(plan), plan }).toEqual({ store, sql, sorts: false, plan });
+    }
+  });
+
+  it('counts the plan board\'s statuses through the named Projects\' own plans, and never sorts', async () => {
+    const totals = (set: ProjectSet) => plans(async (db) => {
+      await planTotals(db, set);
+      await planTotals(db, set, { since: 1_789_000_000_000, q: 'board' });
+    });
+    for (const { store, sql, plan } of reading(await totals(NAMED), 'plans')) {
+      // A window may instead be read as a range of the ordered Deployment-wide index, which reads only its plans.
+      const seeks = /SEARCH plans USING (?:COVERING )?INDEX (?:\w+ \(project_id=\?|idx_plans_updated_deployment \(updated_at>\?\))/.test(plan);
+      expect({ store, sql, scans: tableScans(plan), seeks, plan }).toEqual({ store, sql, scans: [], seeks: true, plan });
+    }
+    // Totals over every Project count every plan they hold, whichever way the planner reaches them.
+    for (const { store, sql, plan } of reading(await totals(ALL), 'plans')) {
       expect({ store, sql, sorts: sortsRows(plan), plan }).toEqual({ store, sql, sorts: false, plan });
     }
   });
@@ -275,7 +293,8 @@ describe('the Today reads under the statistics a Deployment plans from', () => {
       await listSporesAcross(db, most, { observationType: 't', status: 's', sessionId: 's', search: 'q', createdFrom: 1, createdTo: 2, limit: 50, offset: 50 });
       await countSporesAcross(db, most, { observationType: 't', status: 's', sessionId: 's', search: 'q', createdFrom: 1, createdTo: 2 });
       await sporeFacets(db, most, { observationType: 't', status: 's', sessionId: 's', search: 'q', createdFrom: 1, createdTo: 2 });
-      await pagePlansAcross(db, most, { status: 'active', since: 1, limit: 50, cursor: CURSOR });
+      await pagePlansAcross(db, most, { status: 'active', since: 1, q: 'q', limit: 50, cursor: CURSOR });
+      await planTotals(db, most, { since: 1, q: 'q' });
       await readWork(db, most, 0, 1);
     });
     expect(statements.length).toBeGreaterThanOrEqual(11);

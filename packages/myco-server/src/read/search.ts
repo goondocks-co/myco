@@ -24,10 +24,12 @@ export function sanitizeFtsQuery(query: string): string {
 interface Source {
   table: string; id: string; title: string; created: string; session: string; prompt: string;
   status?: string; blob?: boolean; namespace: string;
+  /** The one line a reader sees for the record, which previews it in place of a snippet wherever it has one. */
+  line?: string;
 }
 const SOURCES: Record<SearchType, Source> = {
   session: { table: 'sessions', id: 'session_id', title: "COALESCE(NULLIF(d.title, ''), 'Session ' || substr(d.session_id, -6))", created: occurredAt('d.'), session: 'd.session_id', prompt: 'NULL', status: presentedStatus('d.'), namespace: 'sessions' },
-  spore: { table: 'spores', id: 'id', title: 'd.observation_type', created: 'd.created_at', session: 'd.session_id', prompt: 'd.prompt_id', status: 'd.status', namespace: 'spores' },
+  spore: { table: 'spores', id: 'id', title: 'd.observation_type', created: 'd.created_at', session: 'd.session_id', prompt: 'd.prompt_id', status: 'd.status', namespace: 'spores', line: 'd.agent_line' },
   plan: { table: 'plans', id: 'plan_key', title: "COALESCE(NULLIF(d.title, ''), 'Plan')", created: 'd.created_at', session: 'd.session_id', prompt: 'd.prompt_id', status: 'd.status', blob: true, namespace: 'plans' },
   skill: { table: 'skill_records', id: 'id', title: "COALESCE(NULLIF(d.display_name, ''), d.name)", created: 'd.created_at', session: 'NULL', prompt: 'NULL', status: 'd.status', namespace: 'skill_records' },
   prompt: { table: 'prompt_batches', id: 'prompt_id', title: "'Prompt'", created: 'd.created_at', session: 'd.session_id', prompt: 'd.prompt_id', blob: true, namespace: 'prompt_batches' },
@@ -111,12 +113,13 @@ async function searchType(db: RelationalStore, reach: SearchReach, type: SearchT
   const ownSnippet = `(SELECT snippet(${fts}, -1, '', '', ' … ', 40) FROM ${fts} WHERE ${fts} MATCH ? AND ${fts}.rowid = kept.match_rowid)`;
   const blobSnippet = `(SELECT snippet(search_blob_chunks_fts, 0, '', '', ' … ', 40) FROM search_blob_chunks_fts
     WHERE search_blob_chunks_fts MATCH ? AND search_blob_chunks_fts.rowid = kept.match_rowid)`;
-  const preview = s.blob ? `CASE kept.branch WHEN 0 THEN ${ownSnippet} ELSE ${blobSnippet} END` : ownSnippet;
+  const snippet = s.blob ? `CASE kept.branch WHEN 0 THEN ${ownSnippet} ELSE ${blobSnippet} END` : ownSnippet;
+  const preview = s.line === undefined ? snippet : `COALESCE(NULLIF(kept.line, ''), ${snippet})`;
   params.push(terms[0]);
   if (s.blob) params.push(terms[0]);
   const rows = (await db.prepare(`WITH candidates AS MATERIALIZED (${first}${blob}),
     kept AS MATERIALIZED (SELECT d.project_id, d.${s.id} AS id, ${s.title} AS title, MIN(candidates.rank) AS rank,
-      candidates.branch, candidates.match_rowid,
+      candidates.branch, candidates.match_rowid, ${s.line ?? 'NULL'} AS line,
       ${s.created} AS created_at, ${s.session} AS session_id, ${s.prompt} AS prompt_id
     FROM candidates CROSS JOIN ${s.table} d ON d.rowid = candidates.source_rowid
     ${where.length === 0 ? '' : `WHERE ${where.join(' AND ')}`} GROUP BY d.rowid ORDER BY rank, created_at DESC, id, d.project_id LIMIT ?)

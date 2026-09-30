@@ -21,7 +21,8 @@
  * repair; a batch is atomic by contract, so the pair commits or neither does.
  */
 import type { RelationalStore } from './adapters.js';
-import { inListChunks, projectsDriving, projectsFiltering, type ProjectSet, type ReadScope } from '../read/scope.js';
+import { USER_AGENT_ID } from '../constants.js';
+import { containsPattern, inListChunks, projectsDriving, projectsFiltering, type ProjectSet, type ReadScope } from '../read/scope.js';
 
 export const SPORE_STATUSES = ['active', 'superseded', 'consolidated', 'obsolete'] as const;
 export type SporeStatus = (typeof SPORE_STATUSES)[number];
@@ -97,6 +98,11 @@ export interface SporeRow {
   provenanceKind: string | null;
   provenanceRef: string | null;
   agentLine: string | null;
+  /**
+   * Who `author` is: a run, a member or an External Agent grant; null where the row names no author. Served on reads;
+   * the row a write answers with omits it.
+   */
+  authorKind?: 'run' | 'member' | 'imported' | 'grant' | null;
   createdAt: number;
   updatedAt: number | null;
   embedded: number;
@@ -121,11 +127,25 @@ export interface ListSporesOptions {
   offset?: number;
 }
 
+/**
+ * Who a spore's author is. Every author a write records is a run's id, a member's or a grant's (`mcp/context.ts
+ * writerOf`). Members and grants are never deleted, and a run is pruned by retention, so an author that names no
+ * member and no grant is a run's, whether or not the run is still held. A member writes as the `user` agent; a spore a
+ * member's credential carried in under another agent is one the 1.4 import brought over (`/spores/save`, which stamps
+ * the importing member as author and keeps 1.4's agent), and reads `imported`.
+ */
+const AUTHOR_KIND = `CASE WHEN spores.author IS NULL THEN NULL
+  WHEN EXISTS (SELECT 1 FROM members m WHERE m.id = spores.author) THEN CASE WHEN spores.agent_id = '${USER_AGENT_ID}' THEN 'member' ELSE 'imported' END
+  WHEN EXISTS (SELECT 1 FROM external_grants g WHERE g.id = spores.author) THEN 'grant'
+  ELSE 'run' END`;
+
 const COLUMNS = `id, agent_id AS agentId, session_id AS sessionId, prompt_id AS promptId,
   observation_type AS observationType, status, content, context, importance,
   file_path AS filePath, tags, content_hash AS contentHash, properties, author,
   provenance_kind AS provenanceKind, provenance_ref AS provenanceRef, agent_line AS agentLine,
   created_at AS createdAt, updated_at AS updatedAt, embedded`;
+/** A read's columns: the row, and who its author is. */
+const READ_COLUMNS = `${COLUMNS}, ${AUTHOR_KIND} AS authorKind`;
 
 /**
  * Writes one spore and returns it, or null when the Project already holds a
@@ -150,7 +170,7 @@ export async function insertSpore(db: RelationalStore, scope: ReadScope, row: Sp
 }
 
 export async function getSpore(db: RelationalStore, scope: ReadScope, id: string): Promise<(SporeRow & { sourceCreatedAt: number | null }) | null> {
-  return db.prepare(`SELECT ${COLUMNS}, (SELECT p.created_at FROM prompt_batches p
+  return db.prepare(`SELECT ${READ_COLUMNS}, (SELECT p.created_at FROM prompt_batches p
     WHERE p.project_id = spores.project_id AND p.session_id = spores.session_id AND p.prompt_id = spores.prompt_id) AS sourceCreatedAt
     FROM spores WHERE project_id = ? AND id = ?`)
     .bind(scope.projectId, id).first<SporeRow & { sourceCreatedAt: number | null }>();
@@ -175,8 +195,10 @@ function filtersOver(projects: { sql: string; params: readonly unknown[] }, o: L
   if (o.createdFrom !== undefined) add('created_at >= ?', o.createdFrom);
   if (o.createdTo !== undefined) add('created_at < ?', o.createdTo);
   if (o.search !== undefined && o.search.length > 0) {
-    conditions.push('(content LIKE ? OR observation_type LIKE ?)');
-    params.push(`%${o.search}%`, `%${o.search}%`);
+    // The line a reader sees in the stream, the body and the type.
+    const pattern = containsPattern(o.search);
+    conditions.push(`(agent_line LIKE ? ESCAPE '\\' OR content LIKE ? ESCAPE '\\' OR observation_type LIKE ? ESCAPE '\\')`);
+    params.push(pattern, pattern, pattern);
   }
   // A spore from a session still in flight is not settled. Asked for explicitly
   // by intelligence tasks; a direct session lookup is never gated.
@@ -194,7 +216,7 @@ export async function listSpores(db: RelationalStore, scope: ReadScope, o: ListS
   // A limit below one asks for a page, not for everything: clamped at both ends.
   const limit = Math.min(Math.max(o.limit ?? DEFAULT_SPORE_LIMIT, 1), MAX_SPORE_LIMIT);
   const { results } = await db
-    .prepare(`SELECT ${COLUMNS} FROM spores ${where} ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?`)
+    .prepare(`SELECT ${READ_COLUMNS} FROM spores ${where} ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?`)
     .bind(...params, limit, o.offset ?? 0).all<SporeRow>();
   return results;
 }
@@ -210,7 +232,7 @@ export async function listSporesByIds(db: RelationalStore, scope: ReadScope, ids
   // More ids than one statement may bind are read in runs.
   for (const run of inListChunks(wanted)) {
     const { results } = await db
-      .prepare(`SELECT ${COLUMNS} FROM spores WHERE project_id = ? AND id IN (${run.map(() => '?').join(', ')})`)
+      .prepare(`SELECT ${READ_COLUMNS} FROM spores WHERE project_id = ? AND id IN (${run.map(() => '?').join(', ')})`)
       .bind(scope.projectId, ...run).all<SporeRow>();
     out.push(...results);
   }
@@ -241,7 +263,7 @@ export async function listSporesAcross(db: RelationalStore, set: ProjectSet, o: 
   const { where, params } = filtersOver(projectsFiltering(set, 'spores'), o);
   const limit = Math.min(Math.max(o.limit ?? DEFAULT_SPORE_LIMIT, 1), MAX_SPORE_LIMIT);
   const { results } = await db
-    .prepare(`SELECT project_id AS projectId, ${COLUMNS} FROM spores INDEXED BY idx_spores_created_deployment ${where} ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?`)
+    .prepare(`SELECT project_id AS projectId, ${READ_COLUMNS} FROM spores INDEXED BY idx_spores_created_deployment ${where} ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?`)
     .bind(...params, limit, o.offset ?? 0).all<SporeAcrossRow>();
   return results;
 }
