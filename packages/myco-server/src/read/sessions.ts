@@ -111,6 +111,11 @@ function sessionFrom(indexedBy: string): string {
 }
 /** The Deployment-wide order every read of sessions across Projects walks. */
 export const SESSIONS_ACROSS_INDEX = 'idx_sessions_occurred_deployment';
+/**
+ * The index an activity window reads: it leads with the last receipt, so the read seeks the sessions received from
+ * the window's start on, however long ago they started, and sorts that set alone.
+ */
+export const SESSIONS_ACTIVE_INDEX = 'idx_sessions_capture';
 /** A deleted session is absent from session reads, project counts, and latest activity. */
 const LIVE_SESSION = notTombstonedSql('s');
 const WEEK_MS = 7 * 24 * 60 * 60 * 1000;
@@ -195,10 +200,17 @@ export async function unarchiveProject(db: RelationalStore, projectId: string): 
 /** Sessions ordered by presented start and session ID. Refinement can move rows between keyset pages. */
 export interface SessionFilters {
   branch?: string;
-  /** Sessions started at or after this instant (ms). */
+  /** Sessions started at or after this instant (ms); under an activity window, sessions active at or after it. */
   since?: number;
   /** Sessions started before this instant (ms); a session started exactly at it is not listed. */
   until?: number;
+  /**
+   * What the window's two instants bound. `start` (the default) is when the session started. `activity` is the span
+   * of its activity: a session is listed when it started before the window's end and its activity reaches the
+   * window's start — its last event received then or later, and no end recorded before it. A session that started yesterday and is
+   * live now is in today's window and in yesterday's. An activity window needs its start instant.
+   */
+  window?: 'start' | 'activity';
   /** `open` is a session with no end recorded; `ended` one with an end. */
   state?: 'open' | 'ended';
   /** The label of the member whose credential captured the session. */
@@ -252,7 +264,7 @@ export function containsPattern(text: string): string {
 export const SESSION_OCCURRED_AT = occurredAt('s.');
 
 export async function listSessions(db: RelationalStore, scope: ReadScope, opts: { limit?: number; cursor?: string } & SessionFilters = {}): Promise<Page<SessionRow>> {
-  const listed = await selectSessions(db, { sql: 's.project_id = ?', params: [scope.projectId] }, opts);
+  const listed = await selectSessions(db, { sql: 's.project_id = ?', params: [scope.projectId] }, opts, activityWindow(opts) ? SESSIONS_ACTIVE_INDEX : '');
   return { cursor: listed.cursor, rows: listed.rows.map(({ projectId: _projectId, ...row }) => row) };
 }
 
@@ -265,14 +277,22 @@ export async function listSessions(db: RelationalStore, scope: ReadScope, opts: 
  * different Projects sharing an id and an instant are the one case a page boundary may skip.
  */
 export async function listSessionsAcross(db: RelationalStore, set: ProjectSet, opts: { limit?: number; cursor?: string } & SessionFilters = {}): Promise<Page<SessionRow & { projectId: string }>> {
-  return selectSessions(db, projectsFiltering(set, 's'), opts, SESSIONS_ACROSS_INDEX);
+  return selectSessions(db, projectsFiltering(set, 's'), opts, activityWindow(opts) ? SESSIONS_ACTIVE_INDEX : SESSIONS_ACROSS_INDEX);
+}
+
+/** Whether the read bounds sessions by the span they were active. An activity window with no start instant bounds nothing it can seek. */
+function activityWindow(opts: SessionFilters): boolean {
+  if (opts.window !== 'activity') return false;
+  if (opts.since === undefined) throw new RangeError('an activity window needs since');
+  return true;
 }
 
 /**
  * The one session page: `projects` admits the rows, the filters narrow them, and the order and the cursor are the
- * occurred instant and the id. A read that walks the Deployment-wide index (`walks`) also takes the cursor's instant as
- * an upper bound beside the keyset predicate, which the predicate already implies, so the walk seeks to the cursor
- * instead of reading every newer row again.
+ * occurred instant and the id. `walks` names the index the statement reads through. A read that walks the
+ * Deployment-wide order also takes the cursor's instant as an upper bound beside the keyset predicate, which the
+ * predicate already implies, so the walk seeks to the cursor instead of reading every newer row again. An activity
+ * window reads the sessions received from its start on and sorts them.
  */
 async function selectSessions(
   db: RelationalStore,
@@ -280,7 +300,8 @@ async function selectSessions(
   opts: { limit?: number; cursor?: string } & SessionFilters,
   walks: string = '',
 ): Promise<Page<SessionRow & { projectId: string }>> {
-  const bounded = walks !== '';
+  const bounded = walks === SESSIONS_ACROSS_INDEX;
+  const active = activityWindow(opts);
   const k = keyset(opts, { order: SESSION_OCCURRED_AT, id: 's.session_id', direction: 'DESC' });
   if (k === null) return { rows: [], cursor: null };
   const conditions = [projects.sql, LIVE_SESSION];
@@ -288,8 +309,14 @@ async function selectSessions(
   const params: unknown[] = [...projects.params];
   if (opts.branch !== undefined) { conditions.push('s.branch = ?'); params.push(opts.branch); }
   if (opts.agent !== undefined) { conditions.push('s.agent = ?'); params.push(opts.agent); }
-  // The instant the page is ordered by, so the filter admits what the order shows.
-  if (opts.since !== undefined) { conditions.push(`${SESSION_OCCURRED_AT} >= ?`); params.push(opts.since); }
+  if (active) {
+    // Active in the window: a receipt at or after its start, and no end recorded before it.
+    conditions.push('s.last_received_at >= ?', `(${PRESENTED_ENDED_AT} IS NULL OR ${PRESENTED_ENDED_AT} >= ?)`);
+    params.push(opts.since!, opts.since!);
+  } else if (opts.since !== undefined) {
+    // The instant the page is ordered by, so the filter admits what the order shows.
+    conditions.push(`${SESSION_OCCURRED_AT} >= ?`); params.push(opts.since);
+  }
   if (opts.until !== undefined) { conditions.push(`${SESSION_OCCURRED_AT} < ?`); params.push(opts.until); }
   // Open and ended as the page shows them, so a session listed with an end is not also listed as open.
   if (opts.state === 'open') conditions.push(`${PRESENTED_ENDED_AT} IS NULL`);

@@ -223,3 +223,77 @@ describe('a window of days: since inclusive, until exclusive', () => {
     expect((await get('/api/projects/proj_1/spores?since=soon')).status).toBe(400);
   });
 });
+
+describe('an activity window: the sessions active in it, however long ago they started', () => {
+  const DAY = 86_400_000;
+  const TODAY = NOW;
+  const today = `since=${TODAY}&until=${TODAY + DAY}&window=activity`;
+  const yesterday = `since=${TODAY - DAY}&until=${TODAY}&window=activity`;
+  async function activity() {
+    const h = await harness();
+    /** A session that started at `start`, last received an event at `last`, and ended at `end` when it has. */
+    const ran = (project: string, id: string, start: number, last: number, end: number | null = null) =>
+      h.sqlite.run(`INSERT INTO sessions (project_id, session_id, machine_id, created_by_token_id, first_received_at, last_received_at, agent, started_at, ended_at)
+                    VALUES (?, ?, 'm1', 'tok_1', ?, ?, 'claude-code', ?, ?)`, [project, id, start, last, start, end]);
+    const ids = async (path: string) => {
+      const { status, body } = await h.get(path);
+      expect({ path, status }).toEqual({ path, status: 200 });
+      return body.rows.map((r: any) => r.sessionId);
+    };
+    return { ...h, ran, ids };
+  }
+
+  it('lists a session that started yesterday and is live now on today and on yesterday, where the start window lists it yesterday alone', async () => {
+    const { ran, ids, get } = await activity();
+    ran('proj_1', 's_live', TODAY - DAY + 3_600_000, TODAY + 20 * 60_000);
+    expect(await ids(`/api/sessions?${today}`)).toEqual(['s_live']);
+    expect(await ids(`/api/sessions?${yesterday}`)).toEqual(['s_live']);
+    expect(await ids(`/api/projects/proj_1/sessions?${today}`)).toEqual(['s_live']);
+    expect(await ids(`/api/sessions?since=${TODAY}&until=${TODAY + DAY}`)).toEqual([]);
+    const row = (await get(`/api/sessions?${today}`)).body.rows[0];
+    expect({ startedAt: row.startedAt, endedAt: row.endedAt, lastReceivedAt: row.lastReceivedAt })
+      .toEqual({ startedAt: TODAY - DAY + 3_600_000, endedAt: null, lastReceivedAt: TODAY + 20 * 60_000 });
+  });
+
+  it('admits an event exactly at since and an end exactly at since, and leaves out one a moment before', async () => {
+    const { ran, ids } = await activity();
+    ran('proj_1', 's_event_at_since', TODAY - DAY, TODAY);
+    ran('proj_1', 's_event_before', TODAY - DAY + 1, TODAY - 1);
+    ran('proj_2', 's_end_at_since', TODAY - DAY + 2, TODAY + 10, TODAY);
+    ran('proj_2', 's_end_before', TODAY - DAY + 3, TODAY + 10, TODAY - 1);
+    expect(await ids(`/api/sessions?${today}`)).toEqual(['s_end_at_since', 's_event_at_since']);
+  });
+
+  it('leaves out a session started exactly at until, and an old session received again after it ended', async () => {
+    const { ran, ids } = await activity();
+    ran('proj_1', 's_starts_at_until', TODAY + DAY, TODAY + DAY + 5);
+    ran('proj_1', 's_starts_last', TODAY + DAY - 1, TODAY + DAY + 5);
+    ran('proj_2', 's_imported', TODAY - 30 * DAY, TODAY + 60_000, TODAY - 30 * DAY + 3_600_000);
+    expect(await ids(`/api/sessions?${today}`)).toEqual(['s_starts_last']);
+  });
+
+  it('orders by start, newest first, and pages across Projects with every session exactly once', async () => {
+    const { ran, ids, get } = await activity();
+    ran('proj_1', 's_a', TODAY - 2 * DAY, TODAY + 1);
+    ran('proj_2', 's_b', TODAY + 5, TODAY + 6);
+    ran('proj_1', 's_c', TODAY - 10, TODAY + 7);
+    ran('proj_3', 's_d', TODAY + 1, TODAY + 2);
+    expect(await ids(`/api/sessions?${today}`)).toEqual(['s_b', 's_d', 's_c', 's_a']);
+    const seen: string[] = [];
+    let cursor: string | null = null;
+    do {
+      const { body } = await get(`/api/sessions?${today}&limit=1${cursor === null ? '' : `&cursor=${encodeURIComponent(cursor)}`}`);
+      seen.push(...body.rows.map((r: any) => r.sessionId));
+      cursor = body.cursor;
+    } while (cursor !== null);
+    expect(seen).toEqual(['s_b', 's_d', 's_c', 's_a']);
+  });
+
+  it('needs since, and takes only start or activity', async () => {
+    const { get } = await activity();
+    expect((await get(`/api/sessions?until=${TODAY}&window=activity`)).status).toBe(400);
+    expect((await get(`/api/projects/proj_1/sessions?window=activity`)).status).toBe(400);
+    expect((await get(`/api/sessions?since=${TODAY}&window=overlap`)).status).toBe(400);
+    expect((await get(`/api/sessions?since=${TODAY}&window=start`)).status).toBe(200);
+  });
+});
