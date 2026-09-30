@@ -132,6 +132,16 @@ export async function listExternalGrants(db: RelationalStore, scope: ReadScope):
   }));
 }
 
+/** Live grants whose expiry falls after `nowMs` and at or before `byMs`, soonest first, across every Project; read on the expiry index. */
+export async function grantsExpiringBy(db: RelationalStore, nowMs: number, byMs: number): Promise<{ id: string; projectId: string; label: string | null; expiresAt: number }[]> {
+  const { results } = await db
+    .prepare(`SELECT id, project_id, label, expires_at FROM external_grants
+                WHERE revoked_at IS NULL AND expires_at > ? AND expires_at <= ? ORDER BY expires_at, id`)
+    .bind(nowMs, byMs)
+    .all<Record<string, unknown>>();
+  return results.map((r) => ({ id: r.id as string, projectId: r.project_id as string, label: (r.label as string | null) ?? null, expiresAt: r.expires_at as number }));
+}
+
 /**
  * Issues a successor and ends the predecessor in one transaction. The
  * successor is inserted only from a **live and unexpired** predecessor row of

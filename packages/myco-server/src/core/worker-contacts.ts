@@ -228,6 +228,12 @@ export async function readWorkerFleet(db: RelationalStore, now: number): Promise
   });
 }
 
+/** The latest instant any worker reported in, or null when none ever has. */
+export async function lastWorkerContactAt(db: RelationalStore): Promise<number | null> {
+  const row = await db.prepare(`SELECT MAX(last_seen_at) AS at FROM worker_contacts`).first<{ at: number | null }>();
+  return row?.at ?? null;
+}
+
 /** The capabilities every worker heard from within `CONTACT_RECENT_MS` of `now` reported, one list per worker. */
 export async function recentWorkerCapabilities(db: RelationalStore, now: number): Promise<string[][]> {
   const { results } = await db.prepare(`SELECT capabilities FROM worker_contacts WHERE last_seen_at >= ?`)

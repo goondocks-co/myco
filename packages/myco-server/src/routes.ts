@@ -51,6 +51,9 @@ import { CHILD_SEGMENTS, handleEndSession, handleProjectActivity, handleProjectS
 import { handleProjectRun, handleProjectRuns } from './api/agent-runs.js';
 import { handleProjectPlans } from './api/plans.js';
 import { handleKpis } from './api/kpis.js';
+import { handlePlansAcross, handleSessionsAcross, handleSporesAcross } from './api/lists-all.js';
+import { handleWork } from './api/work.js';
+import { handleAttention } from './api/attention.js';
 import { MAX_BLOB_BYTES, MEMBER_ID_SEGMENT } from './constants.js';
 import { handleJoin } from './auth/join.js';
 import { handleRefresh } from './auth/refresh.js';
@@ -246,6 +249,12 @@ export const ROUTES: readonly Route[] = [
   { method: 'GET', path: '/api/backups/{backupId}/artifact', pattern: /^\/api\/backups\/(?<backupId>[A-Za-z0-9._-]{1,64})\/artifact$/, auth: 'session', authority: 'admin', handler: handleBackupArtifact },
   { method: 'POST', path: '/api/backups/restore-upload', auth: 'session', authority: 'admin', maxBodyBytes: MAX_UPLOAD_BODY_BYTES, handler: handleRestoreUpload },
   { method: 'GET', path: '/api/kpis', auth: 'session', authority: 'member', handler: handleKpis },
+  // Today (#1518): the three lists across Projects, Myco's work over a window, and what needs an administrator.
+  { method: 'GET', path: '/api/sessions', auth: 'session', authority: 'member', handler: handleSessionsAcross },
+  { method: 'GET', path: '/api/spores', auth: 'session', authority: 'member', handler: handleSporesAcross },
+  { method: 'GET', path: '/api/plans', auth: 'session', authority: 'member', handler: handlePlansAcross },
+  { method: 'GET', path: '/api/work', auth: 'session', authority: 'member', handler: handleWork },
+  { method: 'GET', path: '/api/attention', auth: 'session', authority: 'admin', handler: handleAttention },
   { method: 'GET', path: '/api/settings', auth: 'session', authority: 'member', handler: handleSettings },
   { method: 'PUT', path: '/api/settings/{leaf}', pattern: /^\/api\/settings\/(?<leaf>[A-Za-z0-9._]{1,96})$/, auth: 'session', authority: 'admin', handler: handleSetSetting },
   { method: 'GET', path: '/api/secrets', auth: 'session', authority: 'admin', handler: handleSecrets },

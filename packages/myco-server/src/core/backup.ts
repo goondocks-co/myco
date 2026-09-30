@@ -227,6 +227,12 @@ export interface ListedBackup extends BackupIndexRow {
   present: boolean;
 }
 
+/** The instant of the newest backup the index records, or null when it records none. */
+export async function latestBackupAt(db: RelationalStore): Promise<number | null> {
+  const row = await db.prepare(`SELECT MAX(created_at) AS at FROM backups`).first<{ at: number | null }>();
+  return row?.at ?? null;
+}
+
 /** Every index row, newest first, each verified against the object store. */
 export async function listBackups(db: RelationalStore, blobs: BlobStore, limit = 100): Promise<ListedBackup[]> {
   const { results } = await db

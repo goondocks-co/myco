@@ -786,6 +786,41 @@ export async function pendingTranscripts(db: RelationalStore): Promise<Transcrip
   };
 }
 
+/** Transcripts of one Project the current parser stopped on a fault, and when the latest of them stopped. */
+export interface StoppedTranscripts {
+  projectId: string;
+  transcripts: number;
+  latestAt: number | null;
+  /** How many stopped for each classifier (`ParseFailure`). */
+  reasons: Record<string, number>;
+}
+
+/**
+ * Transcripts the current parser stopped on a fault and will not read on from, per Project that accepts capture: bytes remain past the
+ * cursor, and the failure recorded is not a wait for bytes still to arrive. A failure an older parser recorded is not
+ * counted: the parse offers that transcript again (`PENDING_TRANSCRIPTS`). Read over the backlog index, whose
+ * predicate every stopped transcript satisfies.
+ */
+export async function stoppedTranscripts(db: RelationalStore): Promise<StoppedTranscripts[]> {
+  // Counted here rather than grouped in SQL: a GROUP BY leads the planner to walk every transcript in Project order,
+  // where the rows wanted all sit in the backlog index.
+  const { results } = await db
+    .prepare(`SELECT project_id, parse_error, parse_failed_at FROM transcripts
+                WHERE parsed_offset < size AND parse_error IS NOT NULL AND parse_error <> '${AWAITING_BYTES}' AND parser_version >= ? AND NOT ${TOMBSTONED}
+                  AND EXISTS (SELECT 1 FROM projects p WHERE p.project_id = transcripts.project_id AND p.archived_at IS NULL)`)
+    .bind(PARSER_VERSION)
+    .all<{ project_id: string; parse_error: string; parse_failed_at: number | null }>();
+  const byProject = new Map<string, StoppedTranscripts>();
+  for (const row of results) {
+    const held = byProject.get(row.project_id) ?? { projectId: row.project_id, transcripts: 0, latestAt: null, reasons: {} };
+    held.transcripts += 1;
+    held.reasons[row.parse_error] = (held.reasons[row.parse_error] ?? 0) + 1;
+    if (row.parse_failed_at !== null && (held.latestAt === null || row.parse_failed_at > held.latestAt)) held.latestAt = row.parse_failed_at;
+    byProject.set(row.project_id, held);
+  }
+  return [...byProject.values()].sort((a, b) => (b.latestAt ?? 0) - (a.latestAt ?? 0) || a.projectId.localeCompare(b.projectId));
+}
+
 /** What a run of the job may override: the budget, which is the platform's own unless named, and the clock its wall time runs on. */
 export interface ParseJobOptions {
   budget?: JobBudget;
