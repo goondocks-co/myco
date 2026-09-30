@@ -1,7 +1,7 @@
 /**
  * The shapes the Knowledge pages read off the wire: a page of `GET /api/spores`
- * with its facets, one spore of `GET /api/projects/{p}/spores/{id}`, and a page
- * of `GET /api/plans`.
+ * with its facets, one spore of `GET /api/projects/{p}/spores/{id}`, a page
+ * of `GET /api/plans` and one plan of `GET /api/projects/{p}/plans/{planKey}`.
  *
  * The server's declarations (`core/spores.ts`, `read/plans.ts`) pull in the
  * server's runtime modules, which this dashboard's build does not carry, so the
@@ -25,6 +25,8 @@ export interface SporeFields {
   tags: string | null;
   /** The run, member or access key that wrote it; null on a spore written before this was recorded. */
   author: string | null;
+  /** What kind of writer `author` names: one of Myco's runs, a member, a spore imported from Myco 1.4, or an access key; null with no author. */
+  authorKind?: 'run' | 'member' | 'imported' | 'grant' | null;
   /** The one line written for agents, when the writer gave one. */
   agentLine: string | null;
   createdAt: number;
@@ -83,10 +85,17 @@ export interface PlanBoardRow extends PlanFields {
   projectId: string;
 }
 
-/** A page of `GET /api/plans`. */
+/** A page of `GET /api/plans`. The first page (no cursor) counts the plans of each status the other filters admit. */
 export interface PlanBoardPage {
   readonly plans: readonly PlanBoardRow[];
   readonly cursor: string | null;
+  readonly totals?: Readonly<Record<string, number>>;
+}
+
+/** `GET /api/projects/{p}/plans/{planKey}`: one plan with its tags. */
+export interface PlanPageAnswer {
+  plan: PlanFields;
+  projectId: string;
 }
 
 /** A page of `GET /api/projects/{p}/plans`. */

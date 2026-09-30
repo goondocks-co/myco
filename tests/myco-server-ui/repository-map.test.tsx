@@ -3,7 +3,7 @@ import { cleanup, render, screen } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import { renderMap } from '@goondocks/myco-shared/canopy';
 import { CodeMapPanel } from '../../packages/myco-server/ui/src/features/knowledge/CodeMap';
-import { MEMORY_TASKS } from '../../packages/myco-server/ui/src/hooks/use-intelligence';
+import { STARTABLE_TASKS } from '../../packages/myco-server/ui/src/features/work/RunTask';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import App from '../../packages/myco-server/ui/src/App';
 import { AppearanceProvider } from '../../packages/myco-server/ui/src/providers/appearance';
@@ -29,14 +29,14 @@ describe('the code map at /p/:project/knowledge/map', () => {
     expect(panel.textContent).toContain('Starts the application.');
     expect(panel.textContent).toContain('Startup');
     expect(panel.textContent).not.toContain('Map Provenance');
-    expect(screen.getByRole('link', { name: /The run that wrote it/ }).getAttribute('href')).toBe('/p/proj_1/runs/run_map');
+    expect(screen.getByRole('link', { name: /The run that wrote it/ }).getAttribute('href')).toBe('/p/proj_1/work/runs/run_map');
   });
 
   it('says how a map appears when the project has none, and names the task that writes one', () => {
     mount(<CodeMapPanel base="/p/proj_1" pending={false} error={null} map={null} />);
     const panel = screen.getByTestId('repository-map');
     expect(panel.textContent).toContain('No map yet');
-    const task = MEMORY_TASKS.find((entry) => entry.id === 'canopy-map');
+    const task = STARTABLE_TASKS.find((entry) => entry.task === 'canopy-map');
     expect(task).toBeDefined();
     expect(panel.textContent).toContain(task!.label);
   });

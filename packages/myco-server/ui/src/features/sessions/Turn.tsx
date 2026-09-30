@@ -182,7 +182,7 @@ export const Turn = memo(function Turn({ projectId, sessionId, turn, scrollTo = 
             {body.injection !== null && <Injection projectId={projectId} injection={body.injection} />}
             {body.plans.length > 0 && (
               <div className="flex flex-col gap-s2" data-testid="turn-plans">
-                {body.plans.map((plan) => <PlanLine key={plan.planKey} projectId={projectId} sessionId={sessionId} plan={plan} now={Date.now()} />)}
+                {body.plans.map((plan) => <PlanLine key={plan.planKey} projectId={projectId} plan={plan} now={Date.now()} />)}
               </div>
             )}
             <ToolCalls projectId={projectId} sessionId={sessionId} promptId={turn.promptId} total={turn.toolCallCount} />

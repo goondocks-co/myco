@@ -1,13 +1,13 @@
 import { Link as RouterLink } from 'react-router-dom';
 import { ArrowUpRight } from 'lucide-react';
 import { EmptyState, ErrorState, FilterBar, focusRing, Progress, ShowMore, Skeleton, useFilterParams, useQueryDraft } from '../../design';
-import { PLAN_SEARCH_CAP, planPagePath, usePlanColumn, usePlanSearch } from '../../hooks/use-knowledge';
+import { planPagePath, usePlanColumn } from '../../hooks/use-knowledge';
 import { SEARCH_MIN_CHARS } from '../../hooks/use-search';
 import { useNow } from '../../hooks/use-today';
 import { cn } from '../../lib/cn';
 import { projectPath } from '../../routes/nav';
 import type { PlanBoardRow } from './wire';
-import { ago, capNote, PLAN_COLUMNS, planStatusWord, planTitle, progressParts, progressWords, type PlanStatus } from './words';
+import { ago, PLAN_COLUMNS, planStatusWord, planTitle, progressParts, progressWords, type PlanStatus } from './words';
 
 const FILTER_DEBOUNCE_MS = 250;
 
@@ -19,9 +19,10 @@ export interface PlansBoardProps {
 
 /**
  * The plans your agents wrote, as a board by status: in progress, open, done
- * and abandoned, each column newest edit first with "Show more". Searching
- * keeps the board: each column then holds the plans of its status whose words
- * match. Every plan opens its own page and links to the session that wrote it.
+ * and abandoned, each column newest edit first with "Show more" and its count.
+ * Searching keeps the board: each column then holds the plans of its status
+ * whose title or text match, counted the same way. Every plan opens its own
+ * page and links to the session that wrote it.
  */
 export function PlansBoard({ projectId, projectName }: PlansBoardProps) {
   const filterParams = useFilterParams([]);
@@ -67,69 +68,44 @@ interface ColumnProps {
 function Column({ status, projectId, projectName, q, now }: ColumnProps) {
   const heading = planStatusWord(status);
   const id = `plans-${status}`;
+  const column = usePlanColumn(projectId, status, q);
   return (
     <section aria-labelledby={id} className="flex w-board-column min-w-0 shrink-0 snap-start flex-col gap-s3 rounded-card border border-line bg-surface-1 p-s4 xl:w-auto" data-plan-column={status}>
-      <h2 id={id} className="flex items-center gap-s2 t-control font-semibold text-ink">
-        <span aria-hidden className={cn('size-s2 rounded-pill', status === 'in_progress' ? 'bg-ok' : status === 'active' ? 'bg-primary' : 'bg-line-strong')} />
-        {heading}
-      </h2>
-      {q === null
-        ? <ListedPlans status={status} projectId={projectId} projectName={projectName} now={now} />
-        : <MatchedPlans status={status} projectId={projectId} projectName={projectName} q={q} />}
+      <div className="flex items-center gap-s2">
+        <h2 id={id} className="flex items-center gap-s2 t-control font-semibold text-ink">
+          <span aria-hidden className={cn('size-s2 rounded-pill', status === 'in_progress' ? 'bg-ok' : status === 'active' ? 'bg-primary' : 'bg-line-strong')} />
+          {heading}
+        </h2>
+        {column.total !== undefined && (
+          <span className="relative ml-auto t-small tabular-nums text-muted" data-plan-total="">
+            {column.total.toLocaleString()}<span className="sr-only"> {column.total === 1 ? 'plan' : 'plans'}</span>
+          </span>
+        )}
+      </div>
+      {column.isPending ? <ColumnLoading />
+        : column.error ? <ErrorState error={column.error} onRetry={column.retry} className="p-s4" />
+        : column.rows.length === 0 ? <EmptyState title={q === null ? `No ${heading.toLowerCase()} plans.` : 'None match.'} className="py-s2 t-small" />
+        : (
+          <>
+            <ul className="flex flex-col gap-s2">
+              {column.rows.map((plan) => (
+                <PlanCard
+                  key={`${plan.projectId}/${plan.planKey}`}
+                  projectId={plan.projectId}
+                  planKey={plan.planKey}
+                  sessionId={plan.sessionId}
+                  title={planTitle(plan)}
+                  meta={[projectId === null ? projectName(plan.projectId) ?? 'A project' : null, `updated ${ago(plan.updatedAt, now)}`]}
+                  progress={plan.progress}
+                />
+              ))}
+            </ul>
+            {column.hasMore && (
+              <ShowMore shown={column.rows.length} total={column.total} noun={column.rows.length === 1 ? 'plan' : 'plans'} onMore={column.more} pending={column.isFetchingMore} hasMore />
+            )}
+          </>
+        )}
     </section>
-  );
-}
-
-function ListedPlans({ status, projectId, projectName, now }: Omit<ColumnProps, 'q'>) {
-  const column = usePlanColumn(projectId, status, true);
-  if (column.isPending) return <ColumnLoading />;
-  if (column.error) return <ErrorState error={column.error} onRetry={column.retry} className="p-s4" />;
-  if (column.rows.length === 0) return <EmptyState title={`No ${planStatusWord(status).toLowerCase()} plans.`} className="py-s2 t-small" />;
-  return (
-    <>
-      <ul className="flex flex-col gap-s2">
-        {column.rows.map((plan) => (
-          <PlanCard
-            key={`${plan.projectId}/${plan.planKey}`}
-            projectId={plan.projectId}
-            planKey={plan.planKey}
-            sessionId={plan.sessionId}
-            title={planTitle(plan)}
-            meta={[projectId === null ? projectName(plan.projectId) ?? 'A project' : null, `updated ${ago(plan.updatedAt, now)}`]}
-            progress={plan.progress}
-          />
-        ))}
-      </ul>
-      {column.hasMore && (
-        <ShowMore shown={column.rows.length} noun={column.rows.length === 1 ? 'plan' : 'plans'} onMore={column.more} pending={column.isFetchingMore} hasMore />
-      )}
-    </>
-  );
-}
-
-function MatchedPlans({ status, projectId, projectName, q }: Omit<ColumnProps, 'now'> & { q: string }) {
-  const search = usePlanSearch(projectId, status, q, true);
-  if (search.isPending) return <ColumnLoading />;
-  if (search.error) return <ErrorState error={search.error} onRetry={() => void search.refetch()} className="p-s4" />;
-  const hits = search.data.results.filter((hit) => hit.type === 'plan');
-  if (hits.length === 0) return <EmptyState title="None match." className="py-s2 t-small" />;
-  return (
-    <>
-    <ul className="flex flex-col gap-s2">
-      {hits.map((hit) => (
-        <PlanCard
-          key={`${hit.projectId}/${hit.id}`}
-          projectId={hit.projectId}
-          planKey={hit.id}
-          sessionId={hit.session_id ?? null}
-          title={hit.title.trim() === '' || hit.title === 'Plan' ? 'Untitled plan' : hit.title}
-          detail={hit.preview}
-          meta={[projectId === null ? projectName(hit.projectId) ?? 'A project' : null]}
-        />
-      ))}
-    </ul>
-    {search.data.results.length >= PLAN_SEARCH_CAP && <p className="t-meta text-muted" data-cap-note="">{capNote(PLAN_SEARCH_CAP)}</p>}
-    </>
   );
 }
 
@@ -147,27 +123,24 @@ interface PlanCardProps {
   planKey: string;
   sessionId: string | null;
   title: string;
-  /** What the plan says, when a search found it by that. */
-  detail?: string;
   /** The project across projects, and when it was last edited. */
   meta: ReadonlyArray<string | null>;
   progress?: PlanBoardRow['progress'];
 }
 
 /** One plan on the board: its title opens its page, the line beneath says where and when, and the session that wrote it is one link away. */
-function PlanCard({ projectId, planKey, sessionId, title, detail, meta, progress }: PlanCardProps) {
+function PlanCard({ projectId, planKey, sessionId, title, meta, progress }: PlanCardProps) {
   const parts = progress === undefined ? null : progressParts(progress);
   const words = progress === undefined ? null : progressWords(progress);
   const facts = meta.filter((part): part is string => part !== null);
   return (
     <li className="relative flex flex-col gap-s2 rounded-control border border-line bg-surface-2 px-s3 py-s3 transition-colors duration-120 hover:border-line-strong" data-plan="">
       <RouterLink
-        to={planPagePath(projectId, { planKey, sessionId })}
+        to={planPagePath(projectId, { planKey })}
         className={cn('line-clamp-3 break-words rounded-chip t-small font-medium text-ink after:absolute after:inset-0 after:rounded-control', focusRing)}
       >
         {title}
       </RouterLink>
-      {detail !== undefined && detail.trim() !== '' && <p className="line-clamp-2 t-meta text-muted">{detail}</p>}
       {parts !== null && words !== null && (
         <div className="flex flex-col gap-s1">
           <Progress done={parts.checked} total={parts.total} label="Plan items done" />

@@ -1,6 +1,6 @@
 /**
  * The shapes the Sessions pages read off the wire: a row of `GET /api/sessions`
- * and the `outcome` of `GET /api/projects/{p}/sessions/{s}`.
+ * and the `outcome` and `resume` of `GET /api/projects/{p}/sessions/{s}`.
  *
  * The server's declarations (`read/sessions.ts`, `read/run-reads.ts`) pull in
  * the server's runtime modules, which this dashboard's build does not carry, so
@@ -68,4 +68,10 @@ export interface SessionRun {
 export interface SessionOutcome {
   runs: SessionRun[];
   spores: { total: number; items: OutcomeSpore[] };
+}
+
+/** How `GET /api/projects/{p}/sessions/{s}` says to resume the session in its agent: the command, and the line to paste, which enters the session's folder first. */
+export interface ResumeCommand {
+  command: string;
+  line: string;
 }

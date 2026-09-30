@@ -70,7 +70,7 @@ export function searchResultPath(projectId: string, hit: SearchResult): string |
   const id = encodeURIComponent(hit.id);
   if (hit.type === 'spore') return `${base}/spores/${id}`;
   if (hit.type === 'skill') return null;
-  if (hit.type === 'plan') return planPagePath(projectId, { planKey: hit.id, sessionId: hit.session_id ?? null });
+  if (hit.type === 'plan') return planPagePath(projectId, { planKey: hit.id });
   const session = `${base}/sessions/${encodeURIComponent(hit.session_id ?? hit.id)}`;
   if (hit.prompt_id) return `${session}?${new URLSearchParams({ turn: hit.prompt_id })}`;
   return session;

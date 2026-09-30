@@ -1,32 +1,4 @@
 {
-  "components/ui/eyebrow.tsx": {
-    "small-text": 3
-  },
-  "components/ui/master-detail-split.tsx": {
-    "raw-button": 1,
-    "inline-style": 1
-  },
-  "components/ui/metric-card.tsx": {
-    "arbitrary-colour": 1,
-    "small-text": 1
-  },
-  "components/ui/page-loading.tsx": {
-    "small-text": 1
-  },
-  "components/ui/panel.tsx": {
-    "arbitrary-colour": 1
-  },
-  "components/ui/row.tsx": {
-    "arbitrary-colour": 4
-  },
-  "components/ui/status-dot.tsx": {
-    "inline-style": 1
-  },
-  "components/ui/subtab-pill.tsx": {
-    "raw-button": 1,
-    "arbitrary-colour": 2,
-    "small-text": 1
-  },
   "features/sessions/SessionPage.tsx": {
     "arbitrary-layout": 2
   },
@@ -42,12 +14,6 @@
   },
   "lib/monogram.ts": {
     "colour-literal": 1
-  },
-  "pages/AgentRuns.tsx": {
-    "raw-button": 2,
-    "raw-select": 1,
-    "small-text": 28,
-    "retired-import": 9
   },
   "pages/Join.tsx": {
     "arbitrary-layout": 1

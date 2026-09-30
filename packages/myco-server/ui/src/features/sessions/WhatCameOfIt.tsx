@@ -81,7 +81,7 @@ function RunLine({ run, project, now }: { run: SessionRun; project: string; now:
   return (
     <li className="flex flex-col gap-s1" data-outcome-run={run.readAt === null ? 'unrecorded' : 'read'}>
       <span className="flex min-w-0 flex-wrap items-baseline gap-x-s2 t-small font-medium">
-        <RouterLink to={`${project}/runs/${encodeURIComponent(run.runId)}`} className={itemLink}>{runHeadline(run)}</RouterLink>
+        <RouterLink to={`${project}/work/runs/${encodeURIComponent(run.runId)}`} className={itemLink}>{runHeadline(run)}</RouterLink>
         {failed && <StatusChip tone="bad">Failed</StatusChip>}
         {progress !== null && <StatusChip tone="warn">{progress}</StatusChip>}
       </span>
