@@ -58,6 +58,8 @@ const ALLOWLIST: readonly string[] = [
   'packages/myco-shared/src/dot-path.ts',
   'packages/myco-shared/src/member-protocol.ts',
   'packages/myco-shared/src/run-control.ts',
+  // The shape of a session id 1.4 minted, which the legacy import and the Deployment both recognise.
+  'packages/myco-shared/src/session-ids.ts',
   'capture/buffer.ts',
   'capture/transcript-id.ts',
   // Transcript-derived capture: the prompt walker, session lineage, and plan-tag envelopes.

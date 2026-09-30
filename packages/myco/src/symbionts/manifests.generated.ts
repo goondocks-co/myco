@@ -488,7 +488,7 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
       "toolInput": "tool_input",
       "toolOutput": "tool_output"
     },
-    "resumeCommand": "cline --resume {sessionId}",
+    "resumeCommand": "cline --id {sessionId}",
     "capture": {
       "planDirs": [],
       "planTags": [],
@@ -655,7 +655,7 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
         "tool_response"
       ]
     },
-    "resumeCommand": "codex --resume {sessionId}",
+    "resumeCommand": "codex resume {sessionId}",
     "capture": {
       "planDirs": [],
       "planTags": [
