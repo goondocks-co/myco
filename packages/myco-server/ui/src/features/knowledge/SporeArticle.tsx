@@ -56,13 +56,15 @@ function Article({ answer, projectId, projectName, now }: { answer: SporeArticle
     <article data-spore-article="" className="flex w-full flex-col gap-s5">
       <nav aria-label="Breadcrumb">
         <ol className="flex flex-wrap items-center gap-s1 t-small text-muted">
-          <li><Crumb to={KNOWLEDGE_SUFFIX}>Knowledge</Crumb></li>
+          <li><Crumb to={projectPath(projectId, KNOWLEDGE_SUFFIX)}>Knowledge</Crumb></li>
           <li aria-hidden><ChevronRight className="size-s4" /></li>
-          <li><Crumb to={projectPath(projectId, KNOWLEDGE_SUFFIX)}>{projectName}</Crumb></li>
+          <li><Crumb to={projectPath(projectId, KNOWLEDGE_SUFFIX)}>Spores</Crumb></li>
+          <li aria-hidden><ChevronRight className="size-s4" /></li>
+          <li><Crumb to={projectPath(projectId)}>{projectName}</Crumb></li>
         </ol>
       </nav>
 
-      <div className="grid items-start gap-s6 lg:grid-cols-[minmax(0,1fr)_300px] lg:gap-x-s10">
+      <div className="grid items-start gap-s6 lg:grid-reading lg:gap-x-s10">
         <div className="flex min-w-0 max-w-measure flex-col gap-s5">
           {supersededBy.length > 0 && <Replaced projectId={projectId} ids={supersededBy} now={now} />}
           <header className="flex flex-col gap-s3">

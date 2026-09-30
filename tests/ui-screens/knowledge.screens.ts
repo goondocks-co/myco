@@ -254,7 +254,7 @@ test.describe('Knowledge', () => {
         await expect(dialog).toContainText(`Search ${project.name}`);
         const scope = dialog.getByRole('group', { name: 'Search in' });
         await expect(scope.getByRole('button', { name: project.name })).toHaveAttribute('aria-pressed', 'true');
-        await scope.getByRole('button', { name: 'Every project' }).click();
+        await scope.getByRole('button', { name: 'Every project · words only' }).click();
         const input = dialog.getByRole('searchbox', { name: 'Search every project' });
         await expect(input).toBeFocused();
         await input.fill('checkout');

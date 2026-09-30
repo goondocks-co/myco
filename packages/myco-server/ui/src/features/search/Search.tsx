@@ -5,7 +5,7 @@ import {
   SEARCH_DEBOUNCE_MS, SEARCH_MIN_CHARS, SEARCH_RESULT_CAP, searchResultPath, useSearch, type SearchAcrossResult, type SearchScope,
 } from '../../hooks/use-search';
 import { cn } from '../../lib/cn';
-import { SPORE_TYPES, sporeTypePlural, sporeTypeWord } from '../knowledge/words';
+import { capNote, SPORE_TYPES, sporeTypePlural, sporeTypeWord } from '../knowledge/words';
 
 const DAY_SECONDS = 86_400;
 
@@ -142,17 +142,17 @@ function SearchBody({ scope, projectLabel, onScope, inputRef, onPicked, projectN
       />
       <div className="flex flex-wrap items-center gap-s2">
         {projectLabel !== null && (
-          <div role="group" aria-label="Search in" className="flex rounded-control border border-line p-s1" data-search-scope="">
-            <Button size="sm" variant={all ? 'ghost' : 'secondary'} aria-pressed={!all} onClick={() => onScope(false)} className="max-w-[40vw] truncate sm:max-w-[200px]">
+          <div role="group" aria-label="Search in" className="flex min-w-0 max-w-full rounded-control border border-line p-s1" data-search-scope="">
+            <Button size="sm" variant={all ? 'ghost' : 'secondary'} aria-pressed={!all} onClick={() => onScope(false)} className="min-w-0 truncate">
               {projectLabel}
             </Button>
-            <Button size="sm" variant={all ? 'secondary' : 'ghost'} aria-pressed={all} onClick={() => onScope(true)}>
-              Every project
+            <Button size="sm" variant={all ? 'secondary' : 'ghost'} aria-pressed={all} onClick={() => onScope(true)} className="shrink-0">
+              Every project <span className="font-normal text-muted">· words only</span>
             </Button>
           </div>
         )}
         <div className="grid min-w-0 flex-1 grid-cols-2 gap-s2 sm:flex sm:flex-wrap">
-          <Select label="Result type" value={type} onValueChange={(value) => { setType(value); setObservationType('all'); }} options={TYPE_OPTIONS} className="sm:w-[140px]" />
+          <Select label="Result type" value={type} onValueChange={(value) => { setType(value); setObservationType('all'); }} options={TYPE_OPTIONS} className="sm:w-select" />
           <Select
             label="Created within"
             value={sinceDays}
@@ -161,26 +161,27 @@ function SearchBody({ scope, projectLabel, onScope, inputRef, onPicked, projectN
               setSince(value === 'any' ? '' : String(Math.floor(Date.now() / 1000) - Number(value) * DAY_SECONDS));
             }}
             options={SINCE_OPTIONS}
-            className="sm:w-[140px]"
+            className="sm:w-select"
           />
-          {type === 'spore' && <Select label="Spore type" value={observationType} onValueChange={setObservationType} options={SPORE_TYPE_OPTIONS} className="sm:w-[168px]" />}
+          {type === 'spore' && <Select label="Spore type" value={observationType} onValueChange={setObservationType} options={SPORE_TYPE_OPTIONS} className="sm:w-select-wide" />}
         </div>
       </div>
-      <div ref={results} className="-mx-s2 overflow-y-auto px-s2" aria-live="polite" aria-busy={ready && search.isFetching} onKeyDown={moveWithin}>
+      <div ref={results} className="-mx-s2 overflow-y-auto px-s2" aria-busy={ready && search.isFetching} onKeyDown={moveWithin}>
+        {/* A background read keeps what is shown, and the keyboard's place in it; only a search with nothing to show yet says it is searching. */}
         {text.trim().length < SEARCH_MIN_CHARS ? <p className="py-s3 t-small text-muted">Type at least two characters.</p>
-          : !ready || search.isFetching ? <p role="status" className="py-s3 t-small text-muted">Searching…</p>
-          : search.isError ? (
+          : !ready || (search.data === undefined && !search.isError) ? <p role="status" className="py-s3 t-small text-muted">Searching…</p>
+          : search.data === undefined ? (
             <div role="alert" className="flex items-center gap-s3 py-s3 t-small text-bad">
               Search failed.
               <Button size="sm" onClick={() => void search.refetch()}>Try again</Button>
             </div>
           )
-          : search.data && (
+          : (
             <div className="flex flex-col gap-s4">
-              {all
-                ? <p className="t-meta text-muted">Across every project, search matches words.</p>
-                : search.data.provider_unavailable && <p role="status" className="t-meta text-muted">Search by meaning is unavailable, so this matched words.</p>}
-              {groups.length === 0 && <p className="py-s3 t-body text-muted">No results match this search.</p>}
+              <p role="status" className="t-meta text-muted" data-search-count="">
+                {shown.length === 0 ? 'No results match this search.' : `${shown.length} ${shown.length === 1 ? 'result' : 'results'}`}
+                {!all && search.data.provider_unavailable && ' · Search by meaning is unavailable, so this matched words.'}
+              </p>
               {groups.map((group) => (
                 <section key={group.type} aria-labelledby={`search-group-${group.type}`} className="flex flex-col gap-s1">
                   <h3 id={`search-group-${group.type}`} className="flex items-baseline gap-s2 px-s3 t-kicker text-faint">
@@ -196,9 +197,9 @@ function SearchBody({ scope, projectLabel, onScope, inputRef, onPicked, projectN
                   </ul>
                 </section>
               ))}
-              {shown.length >= SEARCH_RESULT_CAP && <p className="t-meta text-muted">The {SEARCH_RESULT_CAP} best matches. Add words or a filter to narrow them.</p>}
+              {search.data.results.length >= SEARCH_RESULT_CAP && <p className="t-meta text-muted">{capNote(SEARCH_RESULT_CAP)}</p>}
               {search.data.coverage.pending_blobs > 0 && (
-                <p role="status" className="t-small text-muted">
+                <p className="t-small text-muted">
                   Indexing {search.data.coverage.pending_blobs} captured bodies. More results will become available.
                 </p>
               )}

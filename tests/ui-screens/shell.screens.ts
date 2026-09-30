@@ -182,8 +182,8 @@ test.describe('dashboard shell', () => {
     });
   }
 
-  test('one uniform search box on every list page', async ({ browser }) => {
-    const { context, page, watch } = await openPage(browser, { path: '/projects', viewport: 'desktop', mode: 'dark', cookie: screensEnv('ownerCookie') });
+  for (const { viewport, mode } of SHOT_MATRIX) test(`one uniform search box on every list page ${viewport} ${mode}`, async ({ browser }) => {
+    const { context, page, watch } = await openPage(browser, { path: '/projects', viewport, mode, cookie: screensEnv('ownerCookie') });
     try {
       const sessions = await sessionsPath(page);
       const measured = [];

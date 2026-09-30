@@ -26,7 +26,8 @@
   },
   "components/operations/MaintenancePanel.tsx": {
     "raw-button": 1,
-    "small-text": 4
+    "small-text": 4,
+    "arbitrary-layout": 1
   },
   "components/operations/RecoveryPanel.tsx": {
     "raw-button": 1,
@@ -86,7 +87,8 @@
   },
   "components/ui/slideout-detail-panel.tsx": {
     "raw-button": 1,
-    "inline-style": 1
+    "inline-style": 1,
+    "arbitrary-layout": 1
   },
   "components/ui/status-dot.tsx": {
     "inline-style": 1
@@ -98,6 +100,15 @@
   },
   "components/ui/surface.tsx": {
     "arbitrary-colour": 2
+  },
+  "features/sessions/SessionPage.tsx": {
+    "arbitrary-layout": 2
+  },
+  "features/sessions/Turn.tsx": {
+    "arbitrary-layout": 1
+  },
+  "features/today/TimelineItem.tsx": {
+    "arbitrary-layout": 2
   },
   "index.css": {
     "colour-literal": 1,
@@ -123,6 +134,9 @@
     "small-text": 28,
     "retired-import": 9
   },
+  "pages/Join.tsx": {
+    "arbitrary-layout": 1
+  },
   "pages/Link.tsx": {
     "raw-button": 1,
     "small-text": 2,
@@ -133,6 +147,9 @@
     "arbitrary-colour": 1,
     "small-text": 3,
     "retired-import": 5
+  },
+  "pages/NotAMember.tsx": {
+    "arbitrary-layout": 1
   },
   "pages/NotFound.tsx": {
     "retired-import": 2
@@ -162,6 +179,9 @@
     "raw-table": 1,
     "small-text": 5,
     "retired-import": 5
+  },
+  "routes/today.tsx": {
+    "arbitrary-layout": 1
   },
   "settings/catalogue.ts": {
     "colour-literal": 2

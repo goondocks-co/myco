@@ -19,6 +19,7 @@ import { sessionListPath } from '../../packages/myco-server/ui/src/hooks/use-ses
 import { promptPreview, PROMPT_PREVIEW_CHARS } from '../../packages/myco-server/ui/src/features/sessions/Turn';
 import { memberFilter, startedWords, windowBounds } from '../../packages/myco-server/ui/src/features/sessions/words';
 import { LIVE_WITHIN_MS } from '../../packages/myco-server/ui/src/features/today/timeline';
+import { rawIdsIn } from '../helpers/raw-ids';
 
 const MINUTE = 60_000;
 const HOUR = 60 * MINUTE;
@@ -27,8 +28,6 @@ const DAY = 24 * HOUR;
 const NOW = new Date(2026, 8, 29, 16, 0, 0).getTime();
 const TODAY = new Date(2026, 8, 29).getTime();
 
-/** The raw ids a reader must never see, as the screens check defines them. */
-const RAW_ID = /\b(run|proj|mem|mt)_[\w-]{6,}/;
 
 const ADMIN = { sub: '1', login: 'ada', member: { id: 'mem_q3Vb8xRk2LmT7wYz', label: 'Ada', role: 'admin' as const } };
 const MEMBER = { sub: '2', login: 'lin', member: { id: 'mem_Hn5pC0dJfA9sEu', label: 'Lin', role: 'member' as const } };
@@ -126,16 +125,8 @@ async function pickAgent(option: string) {
 /** The table's column headings, without the day headings that head each group. */
 const columnHeadings = (table: HTMLElement) => within(within(table).getAllByRole('rowgroup')[0]!).getAllByRole('columnheader').map((th) => th.textContent);
 
-/** Visible text carrying a raw id, outside the facts panel. */
-function rawIdsInPage(): string[] {
-  const hits: string[] = [];
-  const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
-  for (let node = walker.nextNode(); node !== null; node = walker.nextNode()) {
-    const match = RAW_ID.exec(node.textContent ?? '');
-    if (match && node.parentElement?.closest('[data-facts]') === null) hits.push(match[0]);
-  }
-  return hits;
-}
+/** Visible text carrying a raw id, outside the facts panel and the test's own location probe. */
+const rawIdsInPage = (): string[] => rawIdsIn(document.body, ['[data-testid="location"]']);
 
 const listPath = (filters: Parameters<typeof sessionListPath>[0]) => sessionListPath(filters);
 

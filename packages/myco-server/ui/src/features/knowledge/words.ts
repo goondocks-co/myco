@@ -187,6 +187,11 @@ export function progressWords(progress: string): string | null {
   return parts === null ? null : `${parts.checked} of ${count(parts.total, 'item')} done`;
 }
 
+/** What a list says when a search's cap cut it short. */
+export function capNote(cap: number): string {
+  return `The ${cap} best matches. Add words or a filter to narrow them.`;
+}
+
 /** A plan's heading: its title, or "Untitled plan". */
 export function planTitle(plan: { title: string | null }): string {
   const title = plan.title?.trim() ?? '';

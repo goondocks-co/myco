@@ -69,7 +69,7 @@ export function SporeStream({ projectId, projectName }: SporeStreamProps) {
         onFilterChange={filterParams.setFilter}
         onClear={clear}
       />
-      <div className={cn('grid items-start gap-s6', wide && 'grid-cols-[208px_minmax(0,1fr)]')}>
+      <div className={cn('grid items-start gap-s6', wide && 'grid-faceted')}>
         {wide && (
           <Facets
             facets={stream.facets}
@@ -91,7 +91,7 @@ export function SporeStream({ projectId, projectName }: SporeStreamProps) {
             : groups.map((group) => (
               <section key={group.label} aria-labelledby={`day-${group.key}`} className="flex flex-col gap-s3">
                 <h2 id={`day-${group.key}`} className="t-kicker text-faint">{group.label}</h2>
-                <ul className="flex flex-col gap-s3">
+                <ul className="flex flex-col gap-s2">
                   {group.rows.map((spore) => (
                     <SporeCard key={`${spore.projectId}/${spore.id}`} spore={spore} project={projectId === null ? projectName(spore.projectId) ?? 'A project' : null} now={now} />
                   ))}
@@ -131,27 +131,29 @@ function SporeCard({ spore, project, now }: { spore: SporeStreamRow; project: st
   const excerpt = headline.lined ? '' : firstLine(spore.content);
   return (
     <li
-      className="relative flex flex-col gap-s2 rounded-card border border-line bg-surface-1 px-s5 py-s4 transition-colors duration-120 hover:bg-surface-2"
+      className="relative flex min-h-row flex-col justify-center gap-s1 rounded-card border border-line bg-surface-1 px-s4 py-s3 transition-colors duration-120 hover:bg-surface-2 sm:flex-row sm:items-center sm:gap-s4"
       data-spore={spore.status}
       data-unlined={headline.lined ? undefined : ''}
     >
-      <RouterLink
-        to={projectPath(spore.projectId, `/spores/${encodeURIComponent(spore.id)}`)}
-        className={cn(
-          'rounded-chip t-body after:absolute after:inset-0 after:rounded-card',
-          headline.lined ? (current ? 'text-ink' : 'text-ink-2') : 'font-medium text-ink-2',
-          focusRing,
-        )}
-      >
-        {headline.text}
-      </RouterLink>
-      {excerpt !== '' && <p className="line-clamp-2 t-small text-muted">{excerpt}</p>}
-      <p className="flex flex-wrap items-center gap-x-s2 gap-y-s1 t-meta text-muted">
+      <div className="flex min-w-0 flex-1 flex-col gap-s1">
+        <RouterLink
+          to={projectPath(spore.projectId, `/spores/${encodeURIComponent(spore.id)}`)}
+          className={cn(
+            'rounded-chip t-body after:absolute after:inset-0 after:rounded-card',
+            headline.lined ? (current ? 'text-ink' : 'text-ink-2') : 'font-medium text-ink-2',
+            focusRing,
+          )}
+        >
+          {headline.text}
+        </RouterLink>
+        {excerpt !== '' && <p className="line-clamp-1 t-small text-muted">{excerpt}</p>}
+      </div>
+      <p className="flex shrink-0 flex-wrap items-center gap-x-s2 gap-y-s1 t-meta text-muted sm:flex-nowrap sm:justify-end">
         <TypeChip>{sporeTypeWord(spore.observationType)}</TypeChip>
         {!current && <StatusChip tone={sporeStatusTone(spore.status)}>{sporeStatusWord(spore.status)}</StatusChip>}
         {project !== null && <span className="font-medium text-ink-2">{project}</span>}
         <span aria-hidden>·</span>
-        <time dateTime={new Date(spore.createdAt).toISOString()}>{ago(spore.createdAt, now)}</time>
+        <time className="whitespace-nowrap" dateTime={new Date(spore.createdAt).toISOString()}>{ago(spore.createdAt, now)}</time>
       </p>
     </li>
   );

@@ -17,7 +17,7 @@ export function CodeMap({ projectId }: { projectId: string }) {
 /** The map itself, or what stands in its place: loading, a failed read, or how a first map appears. */
 export function CodeMapPanel({ base, map, pending, error, now = Date.now() }: { base: string; map: CanopyMapRow | null; pending: boolean; error: Error | null; now?: number }) {
   return (
-    <Card className="flex max-w-[960px] flex-col gap-s4" data-testid="repository-map">
+    <Card className="flex max-w-reference flex-col gap-s4" data-testid="repository-map">
       {pending ? (
         <div role="status" aria-label="Loading the code map" className="flex flex-col gap-s3">
           <Skeleton className="h-s5 w-2/5" />

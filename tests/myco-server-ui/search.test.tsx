@@ -12,12 +12,12 @@ import { MemoryRouter, useLocation } from 'react-router-dom';
 import { SearchTrigger, useSearchShortcut } from '../../packages/myco-server/ui/src/design';
 import { Search } from '../../packages/myco-server/ui/src/features/search/Search';
 import { searchResultPath, SEARCH_RESULT_CAP, type SearchAcrossResult } from '../../packages/myco-server/ui/src/hooks/use-search';
+import { RAW_ID } from '../helpers/raw-ids';
 
 const originalFetch = globalThis.fetch;
 afterEach(() => { cleanup(); globalThis.fetch = originalFetch; });
 (window.Element.prototype as unknown as { scrollIntoView?: () => void }).scrollIntoView ??= () => undefined;
 
-const RAW_ID = /\b(run|proj|mem|mt)_[\w-]{6,}/;
 const NAMES: Record<string, string> = { one: 'Project one', two: 'Project two', proj_6d79636f3a3e1c0b: 'Myco' };
 const hit = (overrides: Partial<SearchAcrossResult> = {}): SearchAcrossResult => ({ projectId: 'one', id: 'sp', type: 'spore', title: 'decision', preview: 'Use a bounded cache.', score: 1, ...overrides });
 const answer = (results: unknown[], pending = 0, unavailable = false) => Response.json({ results, mode: 'fts', provider_unavailable: unavailable, coverage: { pending_blobs: pending } });
@@ -39,7 +39,7 @@ function mount(scoped = true) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const tree = (project: string) => <QueryClientProvider client={client}><MemoryRouter><Harness project={project} scoped={scoped} /><Location /></MemoryRouter></QueryClientProvider>;
   const rendered = render(tree('one'));
-  return { ...rendered, project: (name: string) => rendered.rerender(tree(name)) };
+  return { ...rendered, client, project: (name: string) => rendered.rerender(tree(name)) };
 }
 
 /** Opens a design-system select by its label, the searchable form included, and picks one option. */
@@ -97,8 +97,9 @@ it('searches every project on request: grouped by kind, each result naming its p
   fireEvent.click(screen.getByRole('button', { name: /Search/ }));
   const scope = screen.getByRole('group', { name: 'Search in' });
   expect(within(scope).getByRole('button', { name: 'Project one' }).getAttribute('aria-pressed')).toBe('true');
-  fireEvent.click(within(scope).getByRole('button', { name: 'Every project' }));
-  expect(within(scope).getByRole('button', { name: 'Every project' }).getAttribute('aria-pressed')).toBe('true');
+  // The scope says on its face that every project is searched by words only.
+  fireEvent.click(within(scope).getByRole('button', { name: 'Every project · words only' }));
+  expect(within(scope).getByRole('button', { name: /^Every project/ }).getAttribute('aria-pressed')).toBe('true');
   const input = screen.getByRole('searchbox', { name: 'Search every project' });
   expect(document.activeElement).toBe(input);
   fireEvent.change(input, { target: { value: 'form' } });
@@ -117,7 +118,8 @@ it('searches every project on request: grouped by kind, each result naming its p
   // A session titled only by the end of its id reads what it says.
   expect(screen.getByRole('link', { name: /Run the parity scenarios/ }).textContent).not.toContain('7f3e2a');
   expect(screen.queryByText('Never shown')).toBeNull();
-  expect(screen.getByText('Across every project, search matches words.')).toBeTruthy();
+  // The count is announced in one status line, not the whole list.
+  expect(screen.getByRole('status').textContent).toBe('4 results');
   fireEvent.keyDown(input, { key: 'ArrowDown' });
   expect(document.activeElement).toBe(spore);
   fireEvent.keyDown(document.activeElement!, { key: 'ArrowDown' });
@@ -132,11 +134,12 @@ it('searches every project on request: grouped by kind, each result naming its p
   expect(RAW_ID.test(dialogText)).toBe(false);
 });
 
-it('starts on every project from a page that names none, and says when the cap cut the list', async () => {
+it('starts on every project from a page that names none, and says when the cap cut the list, counting what the server sent', async () => {
   const asked: URL[] = [];
   globalThis.fetch = (async (path: string) => {
     asked.push(new URL(path, 'https://s'));
-    return answer(Array.from({ length: SEARCH_RESULT_CAP }, (_, i) => hit({ id: `sp${i}`, preview: `Result ${i}` })));
+    // The cap counts what came back, skills included, though the list leaves them out.
+    return answer(Array.from({ length: SEARCH_RESULT_CAP }, (_, i) => hit({ id: `sp${i}`, preview: `Result ${i}`, ...(i < 3 ? { type: 'skill' as const } : {}) })));
   }) as typeof fetch;
   mount(false);
   fireEvent.click(screen.getByRole('button', { name: /Search/ }));
@@ -151,7 +154,40 @@ it('says a project’s search matched words when search by meaning is unavailabl
   mount();
   fireEvent.click(screen.getByRole('button', { name: /Search/ }));
   fireEvent.change(screen.getByRole('searchbox'), { target: { value: 'cache' } });
-  expect(await screen.findByText('Search by meaning is unavailable, so this matched words.')).toBeTruthy();
+  expect(await screen.findByText(/Search by meaning is unavailable, so this matched words\./)).toBeTruthy();
+});
+
+it('keeps the results, and the keyboard’s place in them, while the search is read again in the background', async () => {
+  let reads = 0;
+  let release: (() => void) | undefined;
+  const results = () => answer([hit(), hit({ id: 'sp2', preview: 'Evict the oldest entry first.' })], 3);
+  globalThis.fetch = (async () => {
+    reads += 1;
+    if (reads === 1) return results();
+    // The background read stays in flight until the test lets it answer.
+    return new Promise<Response>((resolve) => { release = () => resolve(results()); });
+  }) as typeof fetch;
+  const view = mount();
+  fireEvent.click(screen.getByRole('button', { name: /Search/ }));
+  const input = screen.getByRole('searchbox');
+  fireEvent.change(input, { target: { value: 'cache' } });
+  await screen.findByRole('link', { name: /Use a bounded cache/ });
+  fireEvent.keyDown(input, { key: 'ArrowDown' });
+  fireEvent.keyDown(document.activeElement!, { key: 'ArrowDown' });
+  const focused = document.activeElement;
+  expect(focused?.textContent).toContain('Evict the oldest entry first.');
+  const refetch = view.client.refetchQueries({ queryKey: ['search'] });
+  await waitFor(() => expect(release).toBeDefined());
+  // Let React commit whatever the in-flight state renders.
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  // While it is in flight the list stays, and so does the keyboard's place in it. Compared as words and a boolean, so a failure never prints the element.
+  expect(document.body.textContent).not.toContain('Searching…');
+  expect(document.activeElement === focused).toBe(true);
+  release!();
+  await refetch;
+  expect(document.body.textContent).not.toContain('Searching…');
+  expect(document.activeElement === focused).toBe(true);
+  expect(screen.getByRole('link', { name: /Use a bounded cache/ })).toBeTruthy();
 });
 
 it('hides stale matches while typing and discards a pending search when the project changes', async () => {

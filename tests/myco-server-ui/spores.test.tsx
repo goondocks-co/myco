@@ -15,6 +15,7 @@ import App from '../../packages/myco-server/ui/src/App';
 import { AppearanceProvider } from '../../packages/myco-server/ui/src/providers/appearance';
 import { forgetProject } from '../../packages/myco-server/ui/src/lib/project-memory';
 import { sporeAuthor, sporeHeadline, sporeTags, typeFacetRows, windowSince } from '../../packages/myco-server/ui/src/features/knowledge/words';
+import { rawIdsIn } from '../helpers/raw-ids';
 
 const MINUTE = 60_000;
 const HOUR = 60 * MINUTE;
@@ -22,8 +23,6 @@ const DAY = 24 * HOUR;
 /** Tuesday, September 29 2026, 16:00 local. */
 const NOW = new Date(2026, 8, 29, 16, 0, 0).getTime();
 
-/** The raw ids a reader must never see, as the screens check defines them. */
-const RAW_ID = /\b(run|proj|mem|mt)_[\w-]{6,}/;
 
 const ADMIN = { sub: '1', login: 'ada', member: { id: 'mem_q3Vb8xRk2LmT7wYz', label: 'Ada', role: 'admin' as const } };
 const PROJECTS = { projects: [
@@ -38,7 +37,7 @@ const MEMBERS = { members: [
 ] };
 
 const spore = (over: Record<string, unknown> = {}) => ({
-  projectId: MYCO, id: 'sp1', agentId: 'agent_1', sessionId: 's1', promptId: null, observationType: 'gotcha', status: 'active',
+  projectId: MYCO, id: 'gotcha-1a2b3c4d', agentId: 'agent_1', sessionId: 's1', promptId: null, observationType: 'gotcha', status: 'active',
   content: 'The cache lies after a rebase.\n\nClear it on checkout.', context: null, importance: 8, filePath: 'src/cache.ts', tags: null,
   contentHash: null, properties: null, author: 'run_4f1c9a2e7b', provenanceKind: null, provenanceRef: null,
   agentLine: 'The cache lies after a rebase; clear it on checkout.', createdAt: NOW - HOUR, updatedAt: null, embedded: 0, ...over,
@@ -48,9 +47,9 @@ const stream = (spores: unknown[], total = spores.length, facets: unknown = FACE
 
 const ROWS = [
   spore(),
-  spore({ id: 'sp2', projectId: ATLAS, observationType: 'decision', agentLine: 'Validation messages name the field and the fix.', createdAt: NOW - 2 * HOUR }),
+  spore({ id: 'decision-2b3c4d5e', projectId: ATLAS, observationType: 'decision', agentLine: 'Validation messages name the field and the fix.', createdAt: NOW - 2 * HOUR }),
   // Saved without its one line: headlined by its type and day, with the start of what it says beneath.
-  spore({ id: 'sp3', observationType: 'bug_fix', agentLine: null, content: '# Port race\n\nBind port 0.', createdAt: NOW - DAY - HOUR }),
+  spore({ id: 'bug_fix-3c4d5e6f', observationType: 'bug_fix', agentLine: null, content: '# Port race\n\nBind port 0.', createdAt: NOW - DAY - HOUR }),
 ];
 
 const originalFetch = globalThis.fetch;
@@ -109,16 +108,8 @@ function screenWidth(width: number): void {
 const originalMatchMedia = window.matchMedia;
 afterEach(() => { window.matchMedia = originalMatchMedia; });
 
-/** Visible text carrying a raw id, outside the facts panel. */
-function rawIdsInPage(): string[] {
-  const hits: string[] = [];
-  const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
-  for (let node = walker.nextNode(); node !== null; node = walker.nextNode()) {
-    const match = RAW_ID.exec(node.textContent ?? '');
-    if (match && node.parentElement?.closest('[data-facts]') === null && node.parentElement?.closest('[data-testid="location"]') === null) hits.push(match[0]);
-  }
-  return hits;
-}
+/** Visible text carrying a raw id, outside the facts panel and the test's own location probe. */
+const rawIdsInPage = (): string[] => rawIdsIn(document.body, ['[data-testid="location"]']);
 
 const cards = () => [...document.querySelectorAll<HTMLElement>('[data-spore-stream] li[data-spore]')];
 
@@ -141,7 +132,7 @@ describe('the spore stream', () => {
     expect(third!.hasAttribute('data-unlined')).toBe(true);
     const days = screen.getAllByRole('heading', { level: 2 }).map((h) => h.textContent).filter((t) => t === 'Today' || t === 'Yesterday');
     expect(days).toEqual(['Today', 'Yesterday']);
-    expect(within(first!).getByRole('link').getAttribute('href')).toBe(`/p/${MYCO}/spores/sp1`);
+    expect(within(first!).getByRole('link').getAttribute('href')).toBe(`/p/${MYCO}/spores/gotcha-1a2b3c4d`);
     expect(screen.getByText('6 current spores')).toBeTruthy();
     expect(within(screen.getByRole('navigation', { name: 'Knowledge sections' })).getAllByRole('link').map((a) => a.textContent)).toEqual(['Spores', 'Plans']);
     expect(within(screen.getByRole('navigation', { name: 'Pages' })).getByRole('link', { name: 'Knowledge' }).getAttribute('aria-current')).toBe('page');
@@ -152,8 +143,8 @@ describe('the spore stream', () => {
     const since = windowSince('week', NOW);
     const { requested } = server(base({
       '/api/spores?status=active&limit=25': () => stream(ROWS),
-      '/api/spores?status=superseded&limit=25': () => stream([spore({ id: 'sp9', status: 'superseded', agentLine: 'The old port rule.' })]),
-      [`/api/spores?status=superseded&since=${since}&limit=25`]: () => stream([spore({ id: 'sp9', status: 'superseded', agentLine: 'The old port rule.' })]),
+      '/api/spores?status=superseded&limit=25': () => stream([spore({ id: 'gotcha-9a8b7c6d', status: 'superseded', agentLine: 'The old port rule.' })]),
+      [`/api/spores?status=superseded&since=${since}&limit=25`]: () => stream([spore({ id: 'gotcha-9a8b7c6d', status: 'superseded', agentLine: 'The old port rule.' })]),
       [`/api/spores?status=superseded&q=port&since=${since}&limit=25`]: () => stream([]),
     }));
     mount('/knowledge');
@@ -190,6 +181,11 @@ describe('the spore stream', () => {
     await asked(requested, '/api/spores?type=decision&status=active&limit=25');
     await waitFor(() => expect(cards()).toHaveLength(1));
     expect(location()).toBe('/knowledge?type=decision');
+    // Everything still counts every type under the other filters, not the two spores the picked type holds.
+    const picked = within(screen.getByRole('region', { name: 'Type' })).getAllByRole('button');
+    expect(picked[0]!.textContent).toBe('Everything6');
+    expect(picked[0]!.getAttribute('aria-pressed')).toBe('false');
+    expect(within(screen.getByRole('region', { name: 'Type' })).getByRole('button', { name: /Decisions/ }).getAttribute('aria-pressed')).toBe('true');
     const projects = screen.getByRole('region', { name: 'Project' });
     expect(within(projects).getAllByRole('link').map((a) => a.textContent)).toEqual(['All projects2', 'Atlas web2']);
     fireEvent.click(within(projects).getByRole('link', { name: /Atlas web/ }));
@@ -255,7 +251,7 @@ describe('the spore stream', () => {
 describe('a spore’s article', () => {
   const article = (over: Record<string, unknown> = {}, extra: Record<string, unknown> = {}) => Response.json({
     spore: { ...spore({ status: 'superseded', promptId: 'p1', context: 'Seen on **both** targets.', tags: '["cache","git"]', ...over }), sourceCreatedAt: NOW - 90 * MINUTE },
-    supersededBy: ['sp7'], supersedes: ['sp0'], ...extra,
+    supersededBy: ['gotcha-7a8b9c0d'], supersedes: ['gotcha-0a1b2c3d'], ...extra,
   });
   const sessionAnswer = Response.json({
     session: { projectId: MYCO, sessionId: 's1', agent: 'codex', title: 'Flaky test port collision fixed', label: 's1', summary: null, startedAt: NOW - 2 * HOUR, firstReceivedAt: NOW - 2 * HOUR, lastReceivedAt: NOW - HOUR, endedAt: NOW - HOUR, memberId: null, memberLabel: null, runtimeLabel: null, branch: null, originPath: null, parentSessionId: null, parentReason: null, endedBy: null, endedByLabel: null },
@@ -265,12 +261,12 @@ describe('a spore’s article', () => {
 
   it('reads as an article: the replacement first, the one line, the body, context, tags, how it changed, where it came from and the facts', async () => {
     server(base({
-      [`/api/projects/${MYCO}/spores/sp1`]: () => article(),
-      [`/api/projects/${MYCO}/spores/sp7`]: neighbour('sp7', 'Clear the cache on every checkout, not only after a rebase.'),
-      [`/api/projects/${MYCO}/spores/sp0`]: () => new Response(null, { status: 404 }),
+      [`/api/projects/${MYCO}/spores/gotcha-1a2b3c4d`]: () => article(),
+      [`/api/projects/${MYCO}/spores/gotcha-7a8b9c0d`]: neighbour('gotcha-7a8b9c0d', 'Clear the cache on every checkout, not only after a rebase.'),
+      [`/api/projects/${MYCO}/spores/gotcha-0a1b2c3d`]: () => new Response(null, { status: 404 }),
       [`/api/projects/${MYCO}/sessions/s1`]: () => sessionAnswer,
     }));
-    mount(`/p/${MYCO}/spores/sp1`);
+    mount(`/p/${MYCO}/spores/gotcha-1a2b3c4d`);
     const title = await screen.findByRole('heading', { level: 1 });
     expect(title.textContent).toBe('The cache lies after a rebase; clear it on checkout.');
     const page = document.querySelector('[data-spore-article]')!;
@@ -278,7 +274,7 @@ describe('a spore’s article', () => {
     const replaced = page.querySelector('[data-spore-replaced]') as HTMLElement;
     expect(replaced.textContent).toContain('This spore was replaced.');
     const next = await within(replaced).findByRole('link', { name: 'Clear the cache on every checkout, not only after a rebase.' });
-    expect(next.getAttribute('href')).toBe(`/p/${MYCO}/spores/sp7`);
+    expect(next.getAttribute('href')).toBe(`/p/${MYCO}/spores/gotcha-7a8b9c0d`);
     expect(within(page as HTMLElement).getByText('Replaced', { selector: '[data-spore-status]' })).toBeTruthy();
     expect(page.querySelector('[data-spore-body]')!.textContent).toContain('Clear it on checkout.');
     expect(page.querySelector('[data-spore-context]')!.textContent).toContain('Seen on both targets.');
@@ -299,17 +295,19 @@ describe('a spore’s article', () => {
     expect(facts.textContent).toContain('src/cache.ts');
     expect(within(facts).getByRole('button', { name: 'Copy spore id' })).toBeTruthy();
     const crumbs = screen.getByRole('navigation', { name: 'Breadcrumb' });
-    expect(within(crumbs).getAllByRole('link').map((a) => [a.textContent, a.getAttribute('href')])).toEqual([['Knowledge', '/knowledge'], ['Myco', `/p/${MYCO}/knowledge`]]);
+    expect(within(crumbs).getAllByRole('link').map((a) => [a.textContent, a.getAttribute('href')])).toEqual([
+      ['Knowledge', `/p/${MYCO}/knowledge`], ['Spores', `/p/${MYCO}/knowledge`], ['Myco', `/p/${MYCO}`],
+    ]);
     expect(within(screen.getByRole('navigation', { name: 'Pages' })).getByRole('link', { name: 'Knowledge' }).getAttribute('aria-current')).toBe('page');
     expect(rawIdsInPage()).toEqual([]);
   });
 
   it('names a member who saved it by name, and a spore without its line by its type and day', async () => {
     server(base({
-      [`/api/projects/${MYCO}/spores/sp1`]: () => article({ status: 'active', author: 'mem_q3Vb8xRk2LmT7wYz', agentLine: null, observationType: 'decision', context: null, tags: null }, { supersededBy: [], supersedes: [] }),
+      [`/api/projects/${MYCO}/spores/gotcha-1a2b3c4d`]: () => article({ status: 'active', author: 'mem_q3Vb8xRk2LmT7wYz', agentLine: null, observationType: 'decision', context: null, tags: null }, { supersededBy: [], supersedes: [] }),
       [`/api/projects/${MYCO}/sessions/s1`]: () => sessionAnswer,
     }));
-    mount(`/p/${MYCO}/spores/sp1`);
+    mount(`/p/${MYCO}/spores/gotcha-1a2b3c4d`);
     expect((await screen.findByRole('heading', { level: 1 })).textContent).toBe('Decision saved Sep 29');
     expect(await screen.findByText('Saved by Ada.')).toBeTruthy();
     expect(document.querySelector('[data-spore-replaced]')).toBeNull();

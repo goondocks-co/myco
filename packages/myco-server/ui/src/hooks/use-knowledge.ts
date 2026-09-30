@@ -115,9 +115,12 @@ export function usePlanColumn(projectId: string | null, status: string, enabled:
   };
 }
 
+/** How many plans one column's search lists at most: the search's own default cap, asked for explicitly. */
+export const PLAN_SEARCH_CAP = 20;
+
 /** The plans of one status whose words match, across every project or within one: the search's own, full text. */
 export function usePlanSearch(projectId: string | null, status: string, q: string, enabled: boolean) {
-  const params = new URLSearchParams({ q, type: 'plan', status, limit: '20' });
+  const params = new URLSearchParams({ q, type: 'plan', status, limit: String(PLAN_SEARCH_CAP) });
   if (projectId !== null) params.set('project', projectId);
   const path = `/api/search?${params}`;
   return useQuery({
@@ -153,7 +156,11 @@ export function usePlan(projectId: string, planKey: string, sessionHint: string 
         try {
           const page = await fetchJson<{ rows: PlanRow[]; cursor: string | null }>(`/api/projects/${seg(projectId)}/sessions/${seg(sessionHint)}/plans?limit=100`, signal);
           const found = page.rows.find((row) => row.planKey === planKey);
-          if (found !== undefined) return { ...found, sessionId: sessionHint, tags: [] };
+          // A session's plans carry no tags today; a read that does brings them along.
+          if (found !== undefined) {
+            const tags: unknown = (found as { tags?: unknown }).tags;
+            return { ...found, sessionId: sessionHint, tags: Array.isArray(tags) ? tags.map(String) : [] };
+          }
         } catch (error) {
           if (!(error instanceof ApiError && error.status === 404)) throw error;
         }

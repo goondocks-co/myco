@@ -1,8 +1,8 @@
-import { type ReactNode } from 'react';
+import { useEffect, useState, type ReactNode } from 'react';
 import { Link as RouterLink } from 'react-router-dom';
 import { ChevronRight } from 'lucide-react';
 import {
-  Card, CopyButton, ErrorState, FactRow, FactsPanel, focusRing, Link, LoadingState, Progress, Select, StatusChip, TypeChip,
+  Button, Card, CopyButton, ErrorState, FactRow, FactsPanel, focusRing, Link, LoadingState, Progress, Select, StatusChip, TypeChip,
 } from '../../design';
 import { useMembers } from '../../hooks/use-access';
 import { usePlan, type PlanWithSession } from '../../hooks/use-knowledge';
@@ -13,7 +13,7 @@ import { ApiError } from '../../lib/api';
 import { cn } from '../../lib/cn';
 import { sessionHeadingText } from '../../lib/session-text';
 import { NotFound } from '../../pages/NotFound';
-import { PLANS_SUFFIX, projectPath } from '../../routes/nav';
+import { KNOWLEDGE_SUFFIX, PLANS_SUFFIX, projectPath } from '../../routes/nav';
 import { TextOrBlob } from '../sessions/StoredText';
 import { dateTime } from '../sessions/words';
 import { ago, authorName, PLAN_COLUMNS, planStatusTone, planStatusWord, planTitle, progressParts, progressWords, type PlanStatus } from './words';
@@ -52,13 +52,15 @@ function Reading({ plan, projectId, projectName, now }: { plan: PlanWithSession;
     <article data-plan-page="" className="flex w-full flex-col gap-s5">
       <nav aria-label="Breadcrumb">
         <ol className="flex flex-wrap items-center gap-s1 t-small text-muted">
-          <li><Crumb to={PLANS_SUFFIX}>Plans</Crumb></li>
+          <li><Crumb to={projectPath(projectId, KNOWLEDGE_SUFFIX)}>Knowledge</Crumb></li>
           <li aria-hidden><ChevronRight className="size-s4" /></li>
-          <li><Crumb to={projectPath(projectId, PLANS_SUFFIX)}>{projectName}</Crumb></li>
+          <li><Crumb to={projectPath(projectId, PLANS_SUFFIX)}>Plans</Crumb></li>
+          <li aria-hidden><ChevronRight className="size-s4" /></li>
+          <li><Crumb to={projectPath(projectId)}>{projectName}</Crumb></li>
         </ol>
       </nav>
 
-      <div className="grid items-start gap-s6 lg:grid-cols-[minmax(0,1fr)_300px] lg:gap-x-s10">
+      <div className="grid items-start gap-s6 lg:grid-reading lg:gap-x-s10">
         <div className="flex min-w-0 max-w-measure flex-col gap-s5">
           <header className="flex flex-col gap-s3">
             <p className="flex flex-wrap items-center gap-x-s2 gap-y-s1 t-small text-muted">
@@ -69,14 +71,14 @@ function Reading({ plan, projectId, projectName, now }: { plan: PlanWithSession;
             </p>
             <h1 className={cn('t-display', plan.title === null || plan.title.trim() === '' ? 'text-muted' : 'text-ink')} data-plan-title="">{planTitle(plan)}</h1>
             {parts !== null && (
-              <div className="flex max-w-[360px] flex-col gap-s1" data-plan-progress="">
+              <div className="flex max-w-progress flex-col gap-s1" data-plan-progress="">
                 <Progress done={parts.checked} total={parts.total} label="Plan items done" />
                 <span className="t-small text-muted">{progressWords(plan.progress)}</span>
               </div>
             )}
           </header>
           <section aria-label="The plan" data-plan-body="">
-            <TextOrBlob projectId={projectId} text={plan.content} blobKey={plan.blobKey} markdown />
+            <TextOrBlob projectId={projectId} text={plan.content === null ? null : withoutTitle(plan.content, plan.title)} blobKey={plan.blobKey} markdown />
           </section>
         </div>
 
@@ -101,6 +103,14 @@ function Reading({ plan, projectId, projectName, now }: { plan: PlanWithSession;
       </div>
     </article>
   );
+}
+
+/** A plan's text without its own leading heading when that heading is the title the page already shows. */
+export function withoutTitle(content: string, title: string | null): string {
+  const match = /^\s*#{1,6}[ \t]+(.+?)[ \t#]*(?:\r?\n|$)/.exec(content);
+  if (match === null || title === null) return content;
+  const same = (text: string) => text.trim().replace(/\s+/g, ' ').toLowerCase();
+  return same(match[1]!) === same(title) ? content.slice(match[0].length).replace(/^\s*\n/, '') : content;
 }
 
 function Crumb({ to, children }: { to: string; children: ReactNode }) {
@@ -133,21 +143,34 @@ function WrittenIn({ projectId, sessionId, promptId }: { projectId: string; sess
 
 const STATUS_OPTIONS = PLAN_COLUMNS.map((status) => ({ value: status, label: planStatusWord(status) }));
 
-/** An admin's status control: the choice shows at once and is written as the signed-in member. */
+/**
+ * An admin's status control: a status is picked, then saved with its own
+ * button, so a keystroke in the closed select never writes by itself. The
+ * write is made as the signed-in member, and the page reads the plan again.
+ */
 function StatusControl({ projectId, plan }: { projectId: string; plan: PlanWithSession }) {
   const set = useSetPlanStatus(projectId, plan.sessionId);
-  const shown = set.isPending && set.variables !== undefined ? set.variables.status : plan.status;
-  const known = (PLAN_COLUMNS as readonly string[]).includes(shown);
+  const [draft, setDraft] = useState(plan.status);
+  useEffect(() => { setDraft(plan.status); }, [plan.status]);
+  const known = (PLAN_COLUMNS as readonly string[]).includes(draft);
+  const changed = draft !== plan.status;
   return (
-    <span className="inline-flex flex-col items-end gap-s1">
+    <span className="inline-flex flex-col items-end gap-s2" data-plan-status-control="">
       <Select
         label="Plan status"
-        value={shown}
-        onValueChange={(value) => { if (!set.isPending) set.mutate({ planKey: plan.planKey, status: value as PlanStatus }); }}
-        options={known ? STATUS_OPTIONS : [...STATUS_OPTIONS, { value: shown, label: planStatusWord(shown) }]}
-        className="w-[152px]"
+        value={draft}
+        onValueChange={setDraft}
+        options={known ? STATUS_OPTIONS : [...STATUS_OPTIONS, { value: draft, label: planStatusWord(draft) }]}
+        className="w-select"
       />
-      {set.isPending && <span role="status" className="t-meta text-muted">Saving…</span>}
+      {changed && (
+        <span className="inline-flex gap-s2">
+          <Button size="sm" variant="ghost" onClick={() => setDraft(plan.status)} disabled={set.isPending}>Cancel</Button>
+          <Button size="sm" variant="primary" pending={set.isPending} onClick={() => set.mutate({ planKey: plan.planKey, status: draft as PlanStatus })}>
+            Save status
+          </Button>
+        </span>
+      )}
       {set.error && <span role="alert" className="t-meta text-bad">The status could not be saved.</span>}
     </span>
   );
