@@ -157,6 +157,60 @@ test.describe('Today', () => {
     });
   }
 
+  test('a past day reads only that day, bounded by the server', async ({ browser }) => {
+    test.skip(!onFixture(), 'the day and its rows are the fixture\'s');
+    const yesterday = dayBefore(1);
+    const { context, page, watch } = await openPage(browser, { path: '/', viewport: 'desktop', mode: 'dark', cookie: screensEnv('ownerCookie') });
+    try {
+      await expect(timeline(page).locator(':scope > li').first()).toBeVisible();
+      const read = (path: string) => page.waitForResponse((response) => new URL(response.url()).pathname === path && new URL(response.url()).searchParams.has('until'));
+      const [sessions, spores] = await Promise.all([read('/api/sessions'), read('/api/spores'), page.goto(new URL(`/?day=${yesterday}`, page.url()).href)]);
+      // The dashboard asks for the day between its bounds, and the server answers only rows inside them.
+      const bounds = (url: string) => ({ since: Number(new URL(url).searchParams.get('since')), until: Number(new URL(url).searchParams.get('until')) });
+      const window = bounds(sessions.url());
+      expect(window.until - window.since).toBeGreaterThanOrEqual(23 * 3_600_000);
+      expect(window.until).toBeLessThanOrEqual(fixtureNow());
+      const sessionRows = (await sessions.json() as { rows: Array<{ startedAt: number | null; firstReceivedAt: number }> }).rows;
+      expect(sessionRows.length).toBeGreaterThanOrEqual(4);
+      for (const row of sessionRows) {
+        const at = row.startedAt ?? row.firstReceivedAt;
+        expect(at >= window.since && at < window.until, `session at ${at} inside [${window.since}, ${window.until})`).toBe(true);
+      }
+      // The spores read is bounded the same, and its rows and total are the day's alone.
+      expect(bounds(spores.url())).toEqual(window);
+      const sporeAnswer = await spores.json() as { spores: Array<{ createdAt: number }>; total: number };
+      expect(sporeAnswer.spores.length).toBeGreaterThan(0);
+      expect(sporeAnswer.total).toBe(sporeAnswer.spores.length);
+      for (const spore of sporeAnswer.spores) expect(spore.createdAt >= window.since && spore.createdAt < window.until, `spore at ${spore.createdAt}`).toBe(true);
+
+      // The same reads without the bound do reach the later rows: the bound is what keeps them out.
+      const unbounded = await page.evaluate(async (since) => {
+        const read = async (path: string) => (await fetch(path, { credentials: 'same-origin' })).json();
+        return {
+          sessions: await read(`/api/sessions?since=${since}&limit=200`) as { rows: Array<{ startedAt: number | null; firstReceivedAt: number }> },
+          spores: await read(`/api/spores?since=${since}&limit=200`) as { spores: Array<{ createdAt: number }>; total: number },
+        };
+      }, window.since);
+      expect(unbounded.sessions.rows.filter((row) => (row.startedAt ?? row.firstReceivedAt) >= window.until).length).toBeGreaterThan(0);
+      expect(unbounded.spores.spores.filter((spore) => spore.createdAt >= window.until).length).toBeGreaterThan(0);
+      expect(unbounded.spores.total).toBeGreaterThan(sporeAnswer.total);
+
+      await expect(page.getByRole('heading', { level: 1 })).toHaveText(new Intl.DateTimeFormat('en-US', { timeZone: FIXTURE_TIMEZONE, weekday: 'long', month: 'long', day: 'numeric' }).format(new Date(fixtureNow() - 24 * 3_600_000)));
+      const list = timeline(page);
+      for (const title of ['Image gallery lazy-loading added', 'Session reading page summary moved first', 'Markdown export keeps attachments', 'Currency rounding rule documented']) {
+        await expect(list.getByText(title, { exact: true })).toBeVisible();
+      }
+      for (const title of ['Search box height made uniform on list pages', 'Checkout form validation messages rewritten', 'Run the canopy parity scenarios on both targets']) {
+        await expect(list.getByText(title, { exact: true })).toHaveCount(0);
+      }
+      await expect(list.locator(':scope > li[data-timeline-item="live"]')).toHaveCount(0);
+      await expect(page.locator('[data-lede]')).toContainText(`Your agents ran ${sessionRows.length} sessions`);
+      expectQuiet(watch);
+    } finally {
+      await context.close();
+    }
+  });
+
   test('today narrowed to one project', async ({ browser }) => {
     test.skip(!onFixture(), 'the project is the fixture\'s');
     const project = fixtureProject();

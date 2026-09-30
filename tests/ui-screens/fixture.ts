@@ -280,6 +280,7 @@ export async function seedThroughServer(ctx: SeedContext): Promise<SeededFixture
 
   settleReceiptTimes(ctx.databasePath, liveSessionId, now);
   seedTitles(ctx.databasePath, sessionIds, now);
+  settleSporeTimes(ctx.databasePath, sporeIds, now);
   const runs = seedRuns(ctx.databasePath, now, sporeIds, sessionIds);
   seedBackup(ctx.databasePath, now);
 
@@ -338,6 +339,25 @@ function seedTitles(databasePath: string, sessionIds: string[], now: number): vo
 }
 
 /**
+ * The tool that saves a spore stamps it with the server's own clock, which runs
+ * ahead of the fixture's now. Each spore is set to ten minutes into the session
+ * it came from, so it falls on the fixture's day as that session does; a spore
+ * a run wrote is set to the run's end in `seedRuns`.
+ */
+function settleSporeTimes(databasePath: string, sporeIds: string[], now: number): void {
+  const sqlite = new Database(databasePath);
+  sqlite.exec('PRAGMA busy_timeout = 5000');
+  try {
+    for (const [index, spore] of SPORES.entries()) {
+      const at = now - (SESSIONS[spore.session]!.startedAgo - 10) * MINUTE;
+      sqlite.query('UPDATE spores SET created_at = ?, updated_at = NULL WHERE project_id = ? AND id = ?').run(at, idOf(spore.project), sporeIds[index]!);
+    }
+  } finally {
+    sqlite.close();
+  }
+}
+
+/**
  * Myco's runs on the `myco` project, each with what it wrote as the server
  * records it: spores carry their run's id as author, and a title or a map
  * written is a `run_write` event naming its tool.
@@ -386,12 +406,14 @@ function seedRuns(databasePath: string, now: number, sporeIds: string[], session
           .run(idOf('myco'), run.id, RUN_WRITE_EVENT, run.wrote.tool, JSON.stringify(payload), startedAt + run.minutes * MINUTE);
       }
     }
-    // Each learning run's spores, by their place in SPORES: every one in the `myco` project.
+    // Each learning run's spores, by their place in SPORES: every one in the `myco` project, saved as the run ended.
     const authored: Record<string, number[]> = { run_4f1c9a2e7b: [0, 1], run_a2c4e6f801: [2, 5, 9, 10] };
     for (const [runId, indexes] of Object.entries(authored)) {
-      for (const index of indexes) {
+      const run = runs.find((r) => r.id === runId)!;
+      const endedAt = now - (run.startedAgo - run.minutes) * MINUTE;
+      for (const [offset, index] of indexes.entries()) {
         if (SPORES[index]?.project !== 'myco') throw new Error(`spore ${index} is not in the myco project`);
-        sqlite.query('UPDATE spores SET author = ? WHERE project_id = ? AND id = ?').run(runId, idOf('myco'), sporeIds[index]!);
+        sqlite.query('UPDATE spores SET author = ?, created_at = ? WHERE project_id = ? AND id = ?').run(runId, endedAt - (indexes.length - offset), idOf('myco'), sporeIds[index]!);
       }
     }
     return runs.length;
