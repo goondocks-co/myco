@@ -20,6 +20,7 @@ function CapabilityRow({ projectId, capability, enabled }: { projectId: string; 
   const id = `capability-${capability}`;
   return (
     <SettingRow
+      inline
       setting={`capability.${capability}`}
       label={words.label}
       htmlFor={id}

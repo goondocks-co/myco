@@ -39,6 +39,7 @@ export function TitlingSwitch() {
     <AdminSection id={TITLING_ANCHOR} title="Session titles" description="Myco gives each session a title and a summary once it ends.">
       <RowCard>
         <SettingRow
+          inline
           setting="titling-backfill"
           label="Title imported sessions"
           htmlFor={p !== undefined ? 'title-imported-sessions' : undefined}

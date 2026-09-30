@@ -75,6 +75,8 @@ export interface SettingRowProps {
   control: ReactNode;
   /** Puts the control under the words at full width, for a text box, a list or a document. */
   stacked?: boolean;
+  /** Keeps a small control, such as a switch, beside the words at every width, a phone's included. */
+  inline?: boolean;
   /** Names the row for tests and the screen checks, as `data-setting`. */
   setting?: string;
 }
@@ -84,7 +86,7 @@ export interface SettingRowProps {
  * control at the right, or under the words for a control that needs the width.
  * Rows stack into one column on a phone.
  */
-export function SettingRow({ label, htmlFor, note, status, refused = false, control, stacked = false, setting }: SettingRowProps) {
+export function SettingRow({ label, htmlFor, note, status, refused = false, control, stacked = false, inline = false, setting }: SettingRowProps) {
   const words = (
     <div className="flex min-w-0 flex-col gap-s1">
       {htmlFor != null
@@ -102,12 +104,13 @@ export function SettingRow({ label, htmlFor, note, status, refused = false, cont
     <div
       data-setting={setting}
       className={cn(
-        'flex flex-col gap-s3 px-s4 py-s4',
-        !stacked && 'sm:flex-row sm:items-start sm:justify-between sm:gap-s8',
+        'flex gap-s3 px-s4 py-s4',
+        inline ? 'flex-row items-start justify-between gap-s4 sm:gap-s8' : 'flex-col',
+        !stacked && !inline && 'sm:flex-row sm:items-start sm:justify-between sm:gap-s8',
       )}
     >
       {words}
-      <div className={cn('flex min-w-0 items-center gap-s2', stacked ? 'w-full' : 'sm:w-select-wide sm:shrink-0 sm:justify-end')}>
+      <div className={cn('flex min-w-0 items-center gap-s2', stacked ? 'w-full' : inline ? 'shrink-0 justify-end pt-s1 sm:w-select-wide' : 'sm:w-select-wide sm:shrink-0 sm:justify-end')}>
         {control}
       </div>
     </div>

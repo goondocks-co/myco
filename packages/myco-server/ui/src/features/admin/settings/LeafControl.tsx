@@ -149,6 +149,7 @@ export function LeafControl({ field, row }: { field: LeafField; row: LeafRow | u
       status={error ?? savedWords(row, row?.configured ? nameOf(row.updatedBy) : null)}
       refused={error !== null}
       stacked={STACKED.has(field.kind)}
+      inline={field.kind === 'toggle'}
       control={control}
     />
   );
