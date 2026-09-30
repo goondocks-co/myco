@@ -23,6 +23,7 @@ const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..
 const HOOK_CONFIG_PATH = path.join(REPO_ROOT, 'packages/myco/src/hooks/hook-config.generated.ts');
 const BUNDLED_MANIFESTS_PATH = path.join(REPO_ROOT, 'packages/myco/src/symbionts/manifests.generated.ts');
 const CAPTURE_RULES_PATH = path.join(REPO_ROOT, 'packages/myco-shared/src/capture-rules.generated.ts');
+const RESUME_COMMANDS_PATH = path.join(REPO_ROOT, 'packages/myco-shared/src/resume-commands.generated.ts');
 
 /** 1-based line of the first difference, for a failure message that names the drift. */
 function firstDifferingLine(a: string, b: string): number {
@@ -40,6 +41,10 @@ describe('generated hook config freshness', () => {
 
   it('shares the manifest capture rules with the Deployment without generated drift', () => {
     expect(fs.readFileSync(CAPTURE_RULES_PATH, 'utf-8')).toBe(fresh.captureRules);
+  });
+
+  it('shares the manifest resume commands with the Deployment without generated drift', () => {
+    expect(fs.readFileSync(RESUME_COMMANDS_PATH, 'utf-8')).toBe(fresh.resumeCommands);
   });
 
   it('hooks/hook-config.generated.ts is byte-identical to a fresh generation (run `npm run codegen`)', () => {

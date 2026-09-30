@@ -14,6 +14,7 @@ import { PLAN_STATUS_MESSAGE, planInSession, WRITABLE_PLAN_STATUSES } from '../r
 import { tombstoneSession } from '../core/tombstones.js';
 import { endSession } from '../core/session-end.js';
 import { sessionOutcome } from '../read/run-reads.js';
+import { resumeCommandFor } from '../core/resume-command.js';
 
 /** Session child collections, each served by the same scoped and paginated handler. */
 const CHILDREN = {
@@ -89,7 +90,7 @@ export async function handleProjectSessions(env: ServerEnv, ctx: OwnerContext): 
   return ok(await listSessionSummaries(env.db, scope, { ...page, ...filters }, ctx.now));
 }
 
-/** One session, with what came of it: the runs that read it or wrote from it, and the spores written from it. */
+/** One session, with what came of it (the runs that read it or wrote from it, and the spores written from it) and the command that resumes it in its agent, or null. */
 export async function handleSession(env: ServerEnv, ctx: OwnerContext): Promise<Response> {
   const sessionId = sessionIdParam(ctx.params.sessionId);
   if (sessionId === null) return notFound();
@@ -98,7 +99,7 @@ export async function handleSession(env: ServerEnv, ctx: OwnerContext): Promise<
   const session = await getSession(env.db, scope, sessionId);
   if (session === null) return notFound();
   return ok({
-    session, untitled: await untitledReason(env.db, scope.projectId, sessionId), counts: await sessionCounts(env.db, scope, sessionId),
+    session, resumeCommand: resumeCommandFor(session.agent, session.sessionId), untitled: await untitledReason(env.db, scope.projectId, sessionId), counts: await sessionCounts(env.db, scope, sessionId),
     release: await getReleaseStatus(env.db, scope, 'session', sessionId), outcome: await sessionOutcome(env.db, scope, sessionId), projectId: scope.projectId,
   });
 }
