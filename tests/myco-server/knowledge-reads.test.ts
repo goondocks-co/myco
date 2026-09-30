@@ -6,6 +6,8 @@
 import { describe, expect, it } from 'bun:test';
 import { sqliteEnv } from './helpers/fixtures.js';
 import { MEMBER_SUB, OWNER_ENV, ownerCookie, seedMemberRoleAccount } from './helpers/owner.js';
+import { memberHeaders } from './helpers/fixtures.js';
+import { issueMemberToken } from '@myco-server-worker/auth/tokens.js';
 import worker from '@myco-server-worker/index.js';
 
 const NOW = 1_700_000_000_000;
@@ -28,7 +30,12 @@ function harness() {
     const res = await worker.fetch(new Request(`https://s${path}`, { headers: { cookie: await ownerCookie(Date.now(), sub), 'cf-connecting-ip': '1.2.3.4' } }), env);
     return { status: res.status, body: await res.json() as Record<string, any> };
   };
-  return { sqlite, plan, tag, spore, get };
+  const save = async (body: Record<string, unknown>) => {
+    const { token } = await issueMemberToken(fixture.db, { memberId: 'mem_machine_1', machineId: 'machine_1' }, Date.now());
+    const res = await worker.fetch(new Request('https://s/spores/save', { method: 'POST', headers: memberHeaders(token), body: JSON.stringify(body) }), env);
+    return await res.json() as Record<string, any>;
+  };
+  return { sqlite, plan, tag, spore, get, save, env };
 }
 
 describe('one plan by its key', () => {
@@ -63,6 +70,16 @@ describe('the plan board across Projects', () => {
     expect((await h.get('/api/plans?q=alpha&project=proj_1')).body.totals).toEqual({ active: 1 });
   });
 
+  it('leaves an archived Project out of every Project\'s totals, and counts it when named', async () => {
+    const h = harness();
+    h.plan('proj_1', key(1), NOW + 1, 'active', 'kept');
+    h.plan('proj_2', key(2), NOW + 2, 'active', 'archived one');
+    h.plan('proj_2', key(3), NOW + 3, 'completed', 'archived two');
+    h.sqlite.run(`UPDATE projects SET archived_at = ?, archived_by = 'mem_machine_1' WHERE project_id = 'proj_2'`, [NOW]);
+    expect((await h.get('/api/plans')).body.totals).toEqual({ active: 1 });
+    expect((await h.get('/api/plans?project=proj_2')).body.totals).toEqual({ active: 1, completed: 1 });
+  });
+
   it('matches a text in the title or the inline body, pages through the matches, and treats % and _ as text', async () => {
     const h = harness();
     h.plan('proj_1', key(1), NOW + 1, 'active', 'Cobalt migration');
@@ -80,7 +97,7 @@ describe('the plan board across Projects', () => {
 });
 
 describe('who wrote a spore', () => {
-  it('names a run, a member, a grant, or no one, on every read of the row', async () => {
+  it('names a run, a member, a spore the 1.4 import brought for a member, a grant, or no one, on every read of the row', async () => {
     const h = harness();
     h.sqlite.run(`INSERT INTO external_grants (id, project_id, key_hash, label, created_by, created_at) VALUES ('eg_1', 'proj_1', 'kh', 'ci', 'mem_machine_1', 1)`);
     h.sqlite.run(`INSERT OR IGNORE INTO agents (id, name, source, enabled, created_at) VALUES ('eg_1', 'ci', 'grant', 1, 0)`);
@@ -89,7 +106,7 @@ describe('who wrote a spore', () => {
     h.spore('proj_1', 'sp_imported', { author: 'mem_machine_1', agentId: 'agent_1' });
     h.spore('proj_1', 'sp_grant', { author: 'eg_1', agentId: 'eg_1' });
     h.spore('proj_1', 'sp_legacy', { author: null });
-    const expected = { sp_run: 'run', sp_member: 'member', sp_imported: 'member', sp_grant: 'grant', sp_legacy: null };
+    const expected = { sp_run: 'run', sp_member: 'member', sp_imported: 'imported', sp_grant: 'grant', sp_legacy: null };
     const kinds = (rows: any[]) => Object.fromEntries(rows.map((s) => [s.id, s.authorKind]));
     expect(kinds((await h.get('/api/projects/proj_1/spores', MEMBER_SUB)).body.spores)).toEqual(expected);
     expect(kinds((await h.get('/api/spores?project=proj_1')).body.spores)).toEqual(expected);
@@ -134,5 +151,33 @@ describe('search leads a spore with its line', () => {
     expect(previews).toEqual({ sp_lined: 'Cobalt keys expire after a day', sp_plain: expect.stringContaining('cobalt without a line') });
     const inProject = Object.fromEntries(((await h.get('/api/projects/proj_1/search?q=cobalt&type=spore&mode=fts')).body.results as any[]).map((r) => [r.id, r.preview]));
     expect(inProject.sp_lined).toBe('Cobalt keys expire after a day');
+  });
+});
+
+describe('a written spore answers in the shape a write answers', () => {
+  it('carries no author kind, written fresh or held already; the reads carry it', async () => {
+    const h = harness();
+    const body = { id: 'sp_written', agentId: 'myco-agent', observationType: 'gotcha', content: 'imported body' };
+    const fresh = await h.save(body);
+    expect(fresh).toMatchObject({ persisted: true, spore: { id: 'sp_written' } });
+    expect(fresh.spore).not.toHaveProperty('authorKind');
+    const again = await h.save(body);
+    expect(again).toMatchObject({ persisted: true, duplicate: true, spore: { id: 'sp_written' } });
+    expect(again.spore).not.toHaveProperty('authorKind');
+    expect((await h.get('/api/projects/proj_1/spores/sp_written')).body.spore.authorKind).toBe('imported');
+  });
+});
+
+describe('the text filters read % and _ as text', () => {
+  it('matches a spore\'s text literally, as the plan board does', async () => {
+    const h = harness();
+    h.spore('proj_1', 'sp_percent', { content: 'spend 100% of it' });
+    h.spore('proj_1', 'sp_plain', { content: 'spend 1000 of it', line: 'a_b line' });
+    const ids = async (path: string) => (await h.get(path)).body.spores.map((s: any) => s.id).sort();
+    expect(await ids('/api/projects/proj_1/spores?q=100%25')).toEqual(['sp_percent']);
+    expect(await ids('/api/spores?q=100%25')).toEqual(['sp_percent']);
+    expect(await ids('/api/projects/proj_1/spores?q=a_b')).toEqual(['sp_plain']);
+    expect(await ids('/api/projects/proj_1/spores?q=_')).toEqual(['sp_plain']);
+    expect(await ids('/api/projects/proj_1/spores?q=a%25b')).toEqual([]);
   });
 });

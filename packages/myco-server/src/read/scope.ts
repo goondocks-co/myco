@@ -44,6 +44,14 @@ export function projectsBoundOnce(set: ProjectSet, alias: string): { sql: string
   return { sql: `${alias}.project_id IN (SELECT value FROM json_each(?))`, params: [JSON.stringify(set.projectIds)] };
 }
 
+/**
+ * A LIKE pattern matching `text` anywhere, with the pattern's own metacharacters escaped; the statement names `\` as
+ * its escape (`LIKE ? ESCAPE '\'`). SQLite's LIKE folds case for ASCII letters only.
+ */
+export function containsPattern(text: string): string {
+  return `%${text.replace(/[\\%_]/g, (c) => `\\${c}`)}%`;
+}
+
 /** A page of rows and the cursor that fetches the next one, or null at the end of the set. */
 export interface Page<T> {
   readonly rows: readonly T[];

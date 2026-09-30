@@ -117,3 +117,6 @@ export const MAX_RUN_ERROR_CHARS = 2000;
 
 /** The producer a transcript parse writes its derived events under; what tells a derived turn from one a member shipped. */
 export const TRANSCRIPT_PARSE_ADAPTER = 'transcript-parse';
+
+/** The agent every member-recorded spore carries; seeded by the schema. */
+export const USER_AGENT_ID = 'user';

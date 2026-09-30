@@ -1,8 +1,7 @@
 import { registeredObjectKeySql } from '../core/blob-objects.js';
 import type { RelationalStore } from '../core/adapters.js';
 import { PLAN_STATUSES } from '../ingest/kinds.js';
-import { clampLimit, encodeCursor, inListChunks, keyset, projectsDriving, projectsFiltering, type Page, type ProjectSet, type ReadScope } from './scope.js';
-import { containsPattern } from './sessions.js';
+import { clampLimit, containsPattern, encodeCursor, inListChunks, keyset, projectsDriving, projectsFiltering, type Page, type ProjectSet, type ReadScope } from './scope.js';
 
 /** A plan as the project holds it: the projected row plus the tags the same event carried. `promptId` names the prompt the plan came from; `updatedBy` the member behind its last administrative edit, null when a capture event wrote last. */
 export interface ProjectPlanRow {
@@ -127,7 +126,11 @@ export async function pagePlansAcross(
   return selectPlans(db, projectsFiltering(set, 'plans'), opts, 'idx_plans_updated_deployment');
 }
 
-/** The plans a text matches: its title or its body as the Deployment holds it inline, case-insensitively. A body spilled to a blob is matched by `/api/search`, not here. */
+/**
+ * The plans a text matches: its title or its body as the Deployment holds it inline, with `%` and `_` read as text.
+ * Case is folded for ASCII letters only: `é` does not match `É`. A body spilled to a blob is matched by
+ * `/api/search`, not here.
+ */
 function planText(q: string | undefined): { sql: string; params: string[] } | null {
   if (q === undefined || q.trim() === '') return null;
   const pattern = containsPattern(q.trim());
@@ -136,7 +139,8 @@ function planText(q: string | undefined): { sql: string; params: string[] } | nu
 
 /**
  * How many plans of each status the set holds under the other filters: a start instant and a text. Read through each
- * Project's own plans, one statement. A status no plan holds is absent.
+ * Project's own plans, one statement. A status no plan holds is absent. The totals and the page are two statements, so
+ * a plan written between them can leave a total one off the page it sits beside.
  */
 export async function planTotals(db: RelationalStore, set: ProjectSet, opts: { since?: number; q?: string } = {}): Promise<Record<string, number>> {
   const projects = projectsDriving(set, 'project_id');

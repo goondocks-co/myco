@@ -21,7 +21,8 @@
  * repair; a batch is atomic by contract, so the pair commits or neither does.
  */
 import type { RelationalStore } from './adapters.js';
-import { inListChunks, projectsDriving, projectsFiltering, type ProjectSet, type ReadScope } from '../read/scope.js';
+import { USER_AGENT_ID } from '../constants.js';
+import { containsPattern, inListChunks, projectsDriving, projectsFiltering, type ProjectSet, type ReadScope } from '../read/scope.js';
 
 export const SPORE_STATUSES = ['active', 'superseded', 'consolidated', 'obsolete'] as const;
 export type SporeStatus = (typeof SPORE_STATUSES)[number];
@@ -101,7 +102,7 @@ export interface SporeRow {
    * Who `author` is: a run, a member or an External Agent grant; null where the row names no author. Served on reads;
    * the row a write answers with omits it.
    */
-  authorKind?: 'run' | 'member' | 'grant' | null;
+  authorKind?: 'run' | 'member' | 'imported' | 'grant' | null;
   createdAt: number;
   updatedAt: number | null;
   embedded: number;
@@ -129,10 +130,12 @@ export interface ListSporesOptions {
 /**
  * Who a spore's author is. Every author a write records is a run's id, a member's or a grant's (`mcp/context.ts
  * writerOf`). Members and grants are never deleted, and a run is pruned by retention, so an author that names no
- * member and no grant is a run's, whether or not the run is still held.
+ * member and no grant is a run's, whether or not the run is still held. A member writes as the `user` agent; a spore a
+ * member's credential carried in under another agent is one the 1.4 import brought over (`/spores/save`, which stamps
+ * the importing member as author and keeps 1.4's agent), and reads `imported`.
  */
 const AUTHOR_KIND = `CASE WHEN spores.author IS NULL THEN NULL
-  WHEN EXISTS (SELECT 1 FROM members m WHERE m.id = spores.author) THEN 'member'
+  WHEN EXISTS (SELECT 1 FROM members m WHERE m.id = spores.author) THEN CASE WHEN spores.agent_id = '${USER_AGENT_ID}' THEN 'member' ELSE 'imported' END
   WHEN EXISTS (SELECT 1 FROM external_grants g WHERE g.id = spores.author) THEN 'grant'
   ELSE 'run' END`;
 
@@ -193,8 +196,9 @@ function filtersOver(projects: { sql: string; params: readonly unknown[] }, o: L
   if (o.createdTo !== undefined) add('created_at < ?', o.createdTo);
   if (o.search !== undefined && o.search.length > 0) {
     // The line a reader sees in the stream, the body and the type.
-    conditions.push('(agent_line LIKE ? OR content LIKE ? OR observation_type LIKE ?)');
-    params.push(`%${o.search}%`, `%${o.search}%`, `%${o.search}%`);
+    const pattern = containsPattern(o.search);
+    conditions.push(`(agent_line LIKE ? ESCAPE '\\' OR content LIKE ? ESCAPE '\\' OR observation_type LIKE ? ESCAPE '\\')`);
+    params.push(pattern, pattern, pattern);
   }
   // A spore from a session still in flight is not settled. Asked for explicitly
   // by intelligence tasks; a direct session lookup is never gated.
