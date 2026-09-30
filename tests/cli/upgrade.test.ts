@@ -661,3 +661,16 @@ describe('myco upgrade <older-version>: schema-gap guard', () => {
     expect(deps.initiateAdopt).toHaveBeenCalledTimes(1);
   });
 });
+
+describe('myco upgrade in a member home (#1499)', () => {
+  it('refreshes the member\'s agent setup with the binary it adopted, and only in a member home', async () => {
+    const refreshMember = vi.fn(async (_binary: string, _home: string) => {});
+    await run([], makeDeps({ isMemberHome: () => true, refreshMember }));
+    expect(refreshMember).toHaveBeenCalledTimes(1);
+    expect(refreshMember.mock.calls[0]).toEqual(['/fake/home/.myco/bin/myco', '/fake/home']);
+
+    const untouched = vi.fn(async (_binary: string, _home: string) => {});
+    await run([], makeDeps({ isMemberHome: () => false, refreshMember: untouched }));
+    expect(untouched).not.toHaveBeenCalled();
+  });
+});

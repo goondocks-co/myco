@@ -9,7 +9,7 @@
  * server URL passes the one member rule (`server-url.ts`).
  */
 import { resolveProjectRoot, resolveVaultDir } from '../project-root.js';
-import { resolveMycoHome } from '../paths/home.js';
+import { memberHomeFor } from './home-for-folder.js';
 import { CREDENTIAL_FLAG, CREDENTIAL_SOURCES, ENV_JOIN_CODE, MEMBER_TOKEN_PATTERN, type CredentialSource, type RefreshTerminalReason } from './constants.js';
 import { recordMissingMembership } from './no-membership.js';
 import { JOIN_CODE_REFUSALS, parseJoinCode } from './join-code.js';
@@ -98,7 +98,7 @@ export function resolveCredential(
   if (source === 'env' && !envCarriesJoinCode(env)) return envCredential(env);
   const cwd = opts.cwd ?? process.cwd();
   const root = resolveMemberProjectRoot(cwd);
-  const mycoHome = opts.mycoHome ?? resolveMycoHome({ cwd, env: opts.env });
+  const mycoHome = opts.mycoHome ?? memberHomeFor(cwd, opts.env).home;
   const entry = readRegistryEntry(root, mycoHome) ?? soleMembershipForMcp(mycoHome, opts.invokedBy);
   if (source === 'env') return joinCodeCredential(env, entry, root, mycoHome);
   if (!entry) {

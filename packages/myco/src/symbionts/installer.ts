@@ -1838,7 +1838,7 @@ export class SymbiontInstaller {
     const reg = this.manifest.registration;
     if (!reg?.mcpTarget) return null;
     if (reg.memberMcpHeadersHelperKey) {
-      const serverUrl = readRegistryEntry(this.projectRoot, this.memberHomeDir())?.serverUrl ?? this.expectedServerUrl;
+      const serverUrl = readRegistryEntry(this.projectRoot, this.memberHomeDir())?.serverUrl ?? this.expectedServerUrl ?? this.deploymentUrl;
       if (serverUrl === undefined) return null;
       const binaryPath = this.binaryPath();
       assertSafeBinaryPathForUnquoted(binaryPath);
@@ -2233,6 +2233,18 @@ export class SymbiontInstaller {
   private legacyHomes: readonly string[] = [];
   /** The Deployment a preflight judges the MCP entry against, before any folder is connected. */
   private expectedServerUrl: string | undefined;
+  /** The Deployment a member with no folder connected provisions for (`forDeployment`). */
+  private deploymentUrl: string | undefined;
+
+  /**
+   * Provision for `serverUrl` where the folder this installer names holds no binding: a member signed in with no project
+   * connected yet has its agents capture from its first `myco member join`, with the MCP entry already naming its
+   * Deployment. A folder's own binding still names the Deployment where it has one.
+   */
+  forDeployment(serverUrl: string): this {
+    this.deploymentUrl = serverUrl;
+    return this;
+  }
 
   /**
    * Let member-global provisioning replace, in place, the registrations a 1.4

@@ -42,3 +42,16 @@ export async function resolveProject(db: RelationalStore, projectId: string, now
   // Project, which is a success. One lookup separates them.
   return found(await db.prepare(LOOKUP).bind(projectId).first<{ archived_at: number | null }>());
 }
+
+/**
+ * Create the project `projectId` named `name`, under the same ceiling capture creates projects under: false where the
+ * Deployment already holds `MAX_PROJECTS`, or the id is taken.
+ */
+export async function createNamedProject(db: RelationalStore, projectId: string, name: string, nowMs: number): Promise<boolean> {
+  const created = await db
+    .prepare(`INSERT OR IGNORE INTO projects (project_id, name, created_at)
+              SELECT ?, ?, ? WHERE (SELECT COUNT(*) FROM projects) < ?`)
+    .bind(projectId, name, nowMs, MAX_PROJECTS)
+    .run();
+  return created.meta.changes === 1;
+}

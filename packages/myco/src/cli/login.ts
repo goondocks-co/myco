@@ -18,7 +18,8 @@
 import { seedMachineSettings } from '../member/machine-settings.js';
 import { MACHINE_IDENTITY_NOTE, REJOIN_HINT } from '@goondocks/myco-shared/member-protocol';
 import { getMachineId } from '../machine-id.js';
-import { resolveMycoHome } from '../paths/home.js';
+import path from 'node:path';
+import { memberHomeFor, pinnedHomeLine } from '../member/home-for-folder.js';
 import { isSafeProjectRoot } from '../project-root.js';
 import { resolveMemberProjectRoot } from '../member/credential.js';
 import { runImport } from '../member/import.js';
@@ -26,6 +27,7 @@ import { ADMIN_ROLE, exchangeJoinCode, parseJoinCode, recordJoinAnswer, JOIN_COD
 import { ensuredWorkerWords, ensureWorkerService, type WorkerServiceDeps } from './worker-service.js';
 import { drainEntryBacklog } from '../member/backlog.js';
 import { deploymentUrl, listRegistryEntries } from '../member/registry.js';
+import { detectedProvisionLines, provisionDetectedAgents } from './member.js';
 
 export const LOGIN_HELP = `Usage: myco login <invite-link>
 
@@ -39,10 +41,16 @@ The link works once and expires. If yours is refused, ask for a fresh one.
 Options:
   --root <dir>   The project to connect, when the invite names one.
                  Defaults to the project you are in.
+  --no-agents    Sign in without setting up your agents. Set them up later
+                 with \`myco member provision\`.
+
+Every agent installed on this machine (Claude Code, Codex, Cursor, OpenCode, ...)
+is set up to capture. An agent whose settings belong to another Myco
+installation is left as it is and named.
 
 If the invite names a project, that project is connected and your agents start
-capturing there. If it does not, you are signed in only — connect your first
-project afterwards with \`myco member join\`.
+capturing there. If it does not, connect your first project afterwards with
+\`myco member join\`.
 
 In a sandbox or a CI job, set MYCO_JOIN_CODE to the same link instead of running
 this command. The first agent session redeems it and captures from then on, with
@@ -59,11 +67,16 @@ export interface LoginDeps {
   stderr?: (line: string) => void;
   /** How an administrator's worker service is installed. */
   worker?: WorkerServiceDeps;
+  /** The agents installed on this machine; defaults to `detectMachineInstalledSymbionts`. */
+  agents?: () => string[];
+  /** Where agent hooks are written from; defaults to the real package root. */
+  packageRoot?: string;
 }
 
 interface LoginArgs {
   url?: string;
   root?: string;
+  noAgents?: boolean;
   error?: string;
 }
 
@@ -79,6 +92,8 @@ function parseArgs(args: readonly string[]): LoginArgs {
       const next = args[++i];
       if (next === undefined || next.startsWith('--')) refuse('--root needs a value');
       else parsed.root = next;
+    } else if (arg === '--no-agents') {
+      parsed.noAgents = true;
     } else if (arg.startsWith('-')) {
       refuse(`unknown option ${arg.split('=')[0]}`);
     } else if (parsed.url === undefined) {
@@ -125,16 +140,27 @@ export async function run(args: readonly string[], deps: LoginDeps = {}): Promis
     if (!isSafeProjectRoot(root)) return fail(`${root} is not a project directory`);
   }
 
-  const mycoHome = deps.mycoHome ?? resolveMycoHome();
+  // The home this folder's capture reads (`memberHomeFor`): signing in anywhere else would leave its hooks with no membership.
+  const folder = path.resolve(deps.cwd ?? process.cwd());
+  const chosen = deps.mycoHome === undefined ? memberHomeFor(folder) : null;
+  const mycoHome = deps.mycoHome ?? chosen!.home;
   recordJoinAnswer(code, answer, { mycoHome, root, now: deps.now?.() ?? Date.now(), machineId });
   // The settings the Deployment holds for this machine, cached before the first session reads them.
   await seedMachineSettings({ serverUrl: code.serverUrl, token: answer.token }, { mycoHome, fetch: deps.fetch });
 
+  const pinned = chosen === null ? null : pinnedHomeLine(chosen, folder);
+  if (pinned !== null) out(pinned);
   out(`Signed in to ${code.serverUrl} as ${answer.memberId} (${answer.role}).`);
   // An administrator's machine runs the Deployment's work; a sign-in keeps its worker running at login.
   if (answer.role === ADMIN_ROLE) out(`  ${ensuredWorkerWords(await ensureWorkerService(code.serverUrl, { ...deps.worker, mycoHome })).line}`);
   if (root !== undefined) out(`  Connected ${root} to project ${answer.projectId}. Your agents capture there from now on.`);
   else out('  No project yet — connect your first one with `myco member join`.');
+  // Every agent installed here captures from now on: its hooks and MCP entry are written for this Deployment, and an
+  // agent whose entries belong to another installation is left as it is and named.
+  if (!parsed.noAgents) {
+    const found = provisionDetectedAgents(mycoHome, code.serverUrl, root ?? null, { packageRoot: deps.packageRoot, agents: deps.agents });
+    for (const line of detectedProvisionLines(found)) out(`  ${line}`);
+  }
 
   // What this machine captured while it could not deliver reaches the
   // Deployment now, for every project bound to it: the new credential is the
