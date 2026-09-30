@@ -3,9 +3,12 @@
 # Usage: curl --proto '=https' --tlsv1.2 -fsSL https://myco.sh/install.sh | sh
 #        curl --proto '=https' --tlsv1.2 -fsSL https://myco.sh/install.sh | sh -s -- --dry-run
 #
-# Installs the Myco binary and nothing else: no service is started and no
-# agent is changed. The next step it prints is `myco login <invite link>` to
-# join your team's Deployment, or the self-hosting guide to run your own.
+# Installs the Myco binary and nothing else: no service is started. On a
+# first-time machine no agent is changed, and the next step it prints is
+# `myco login <invite link>` to join your team's Deployment, or the
+# self-hosting guide to run your own. On a machine already joined to a
+# Deployment it is the upgrade: it then runs `myco member provision --refresh`
+# so the agents' hooks and MCP entries run the build it installed.
 #
 # On a machine with Myco 1.4 it installs nothing unless asked to: 2.0 takes
 # 1.4's place, and 1.4 stops capturing until the machine is moved over with
@@ -119,6 +122,52 @@ probe() {
   PROBE_OUT="$(cat "$_probe_file")"
   rm -f "$_probe_file"
   return "$_ok"
+}
+
+# Run "$@" with a watchdog of $1 seconds; its stdout and stderr go to $RUN_OUT.
+RUN_OUT=""
+run_bounded() {
+  _limit="$1"; shift
+  _run_file="$(mktemp)"
+  "$@" >"$_run_file" 2>&1 &
+  _run=$!
+  ( sleep "$_limit"; kill -9 "$_run" 2>/dev/null ) >/dev/null 2>&1 &
+  _run_watchdog=$!
+  if wait "$_run"; then _run_ok=0; else _run_ok=1; fi
+  kill "$_run_watchdog" 2>/dev/null || true
+  wait "$_run_watchdog" 2>/dev/null || true
+  RUN_OUT="$(cat "$_run_file")"
+  rm -f "$_run_file"
+  return "$_run_ok"
+}
+
+# ---------------------------------------------------------------------------
+# After install
+# ---------------------------------------------------------------------------
+
+# A home that already belongs to a Deployment: the agents' hooks, MCP entries
+# and skill links were written by the build that ran before, so the build just
+# installed writes them again, as `myco upgrade` does (#1499).
+refresh_member_setup() {
+  info "This machine is a member of a Deployment. Refreshing your agents' Myco setup..."
+  if run_bounded 120 env MYCO_HOME="$MYCO_HOME_DIR" "${BIN_DIR}/myco" member provision --refresh; then
+    printf '%s\n' "$RUN_OUT" | sed '/^[[:space:]]*$/d; s/^/  /'
+    success "Your agents now use Myco ${VERSION}."
+  else
+    printf '%s\n' "$RUN_OUT" | sed '/^[[:space:]]*$/d; s/^/  /' >&2
+    warn "Your agents' Myco setup was not refreshed. Run: myco member provision --refresh"
+  fi
+}
+
+# A first-time machine: what comes next is joining a Deployment. This is the
+# one place the installer hands over to `myco login`; once login records the
+# machine's default Deployment (#1547), the step stays the same.
+login_hand_off() {
+  echo "  Next, join your team's Deployment with the invite link its administrator sent you:"
+  echo ""
+  echo "    myco login <invite link>"
+  echo ""
+  echo "  Or run your own server: ${SELF_HOSTING_GUIDE}"
 }
 
 RELEASES_FILE=""
@@ -491,12 +540,10 @@ main() {
     echo "    myco cutover"
     echo ""
     echo "  The 1.4 vaults stay where they are; the cutover copies and imports them."
+  elif [ "$MEMBER_HOME" = "1" ]; then
+    refresh_member_setup
   else
-    echo "  Next, join your team's Deployment with the invite link its administrator sent you:"
-    echo ""
-    echo "    myco login <invite link>"
-    echo ""
-    echo "  Or run your own server: ${SELF_HOSTING_GUIDE}"
+    login_hand_off
   fi
   echo ""
 }
