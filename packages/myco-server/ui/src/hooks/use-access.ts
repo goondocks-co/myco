@@ -1,33 +1,17 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { ApiError, fetchJson, postJson } from '../lib/api';
+import type { InvitationsAnswer, MembersAnswer, MintedInvitation } from '../features/admin/wire';
 export { usePaged } from './use-paged';
 
-import type { CredentialRow, GrantRow, InvitationRow, MemberRow } from '../features/admin/wire';
-export type { ActivityRow, CredentialRow, GrantRow, InvitationRow, MemberRow } from '../features/admin/wire';
-
-/** What a runtime is called on the page: the name it gave itself at join, else its machine, else the credential. */
-export const runtimeDisplayName = (c: Pick<CredentialRow, 'runtimeLabel' | 'machineId' | 'id'>): string => c.runtimeLabel ?? c.machineId ?? c.id;
-
-/** The one value `revokedBy` carries that is not a member: the expiry sweep, which has no actor to name. */
-export const GRANT_EXPIRY_ACTOR = 'expiry';
-
-/** The `revokedBy` of a credential the Deployment ended because it was used from two places; no member acted. */
-export const LINEAGE_REPLAY_ACTOR = 'lineage-replay';
+export type { ActivityRow, CredentialRow, InvitationRow, MemberRow } from '../features/admin/wire';
 
 export function useMembers() {
-  return useQuery({ queryKey: ['members'], queryFn: ({ signal }) => fetchJson<{ members: MemberRow[] }>('/api/members', signal) });
+  return useQuery({ queryKey: ['members'], queryFn: ({ signal }) => fetchJson<MembersAnswer>('/api/members', signal) });
 }
 
 /** Open invitations; asked only where `enabled`, which a page sets for an admin, the only member the server answers them to. */
 export function useInvitations(options: { enabled?: boolean } = {}) {
-  return useQuery({ queryKey: ['invitations'], queryFn: ({ signal }) => fetchJson<{ invitations: InvitationRow[] }>('/api/enrollment', signal), enabled: options.enabled ?? true });
-}
-
-export function useGrants(projectId: string) {
-  return useQuery({
-    queryKey: ['grants', projectId],
-    queryFn: ({ signal }) => fetchJson<{ grants: GrantRow[] }>(`/api/projects/${encodeURIComponent(projectId)}/grants`, signal),
-  });
+  return useQuery({ queryKey: ['invitations'], queryFn: ({ signal }) => fetchJson<InvitationsAnswer>('/api/enrollment', signal), enabled: options.enabled ?? true });
 }
 
 const REFUSALS: Record<string, string> = {
@@ -36,7 +20,7 @@ const REFUSALS: Record<string, string> = {
   already_revoked: 'Already removed.',
   member_revoked: 'That member has been removed.',
   member_linked: 'That member already has a GitHub account connected. Changing it needs the server operator.',
-  member_is_runtime: 'That member is this server\'s own runtime for agent runs; nobody signs in as it.',
+  member_is_runtime: 'That is Myco’s own account; nobody signs in as it.',
   bad_request: 'The server could not accept that.',
   already_archived: 'Already archived.',
   not_archived: 'Not archived.',
@@ -61,13 +45,16 @@ export function useAccessActions() {
   return {
     revokeMember: useMutation({ mutationFn: (id: string) => postJson<{ revoked: boolean }>(`/api/members/${encodeURIComponent(id)}/revoke`), onSuccess: () => refresh('members', 'invitations', 'credentials') }),
     // A minted key lives only in the page's own state: the mutation keeps no copy once it has answered.
-    mintInvitation: useMutation({ gcTime: 0, mutationFn: (body: { memberId?: string; ttlMinutes?: number }) => postJson<{ key: string; id: string; expiresAt: number }>('/api/enrollment', body), onSuccess: () => refresh('invitations') }),
+    mintInvitation: useMutation({ gcTime: 0, mutationFn: (body: { memberId?: string; ttlMinutes: number }) => postJson<MintedInvitation>('/api/enrollment', body), onSuccess: () => refresh('invitations') }),
     // The link's key lives only in the page's own state, as an invitation's does.
     linkGithub: useMutation({ gcTime: 0, mutationFn: (memberId: string) => postJson<{ key: string; expiresAt: number }>(`/api/members/${encodeURIComponent(memberId)}/link-github`) }),
     revokeInvitation: useMutation({ mutationFn: (id: string) => postJson<{ revoked: boolean }>(`/api/enrollment/${encodeURIComponent(id)}/revoke`), onSuccess: () => refresh('invitations') }),
-    revokeCredential: useMutation({ mutationFn: (id: string) => postJson<{ revoked: boolean }>(`/api/credentials/${encodeURIComponent(id)}/revoke`), onSuccess: () => refresh('credentials', 'members') }),
-    mintGrant: useMutation({ gcTime: 0, mutationFn: (v: { projectId: string; label?: string }) => postJson<{ key: string; id: string }>(`/api/projects/${encodeURIComponent(v.projectId)}/grants`, v.label === undefined ? {} : { label: v.label }), onSuccess: () => refresh('grants') }),
-    rotateGrant: useMutation({ gcTime: 0, mutationFn: (v: { projectId: string; grantId: string }) => postJson<{ key: string; id: string }>(`/api/projects/${encodeURIComponent(v.projectId)}/grants/${encodeURIComponent(v.grantId)}/rotate`), onSuccess: () => refresh('grants') }),
-    revokeGrant: useMutation({ mutationFn: (v: { projectId: string; grantId: string }) => postJson<{ revoked: boolean }>(`/api/projects/${encodeURIComponent(v.projectId)}/grants/${encodeURIComponent(v.grantId)}/revoke`), onSuccess: () => refresh('grants') }),
+    /** Stops every credential named: a machine's live runtimes, or one run's. */
+    revokeCredentials: useMutation({
+      mutationFn: async (ids: readonly string[]) => {
+        for (const id of ids) await postJson<{ revoked: boolean }>(`/api/credentials/${encodeURIComponent(id)}/revoke`);
+      },
+      onSettled: () => refresh('credentials', 'members'),
+    }),
   };
 }
