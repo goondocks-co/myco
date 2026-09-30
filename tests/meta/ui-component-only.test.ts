@@ -106,7 +106,10 @@ describe('the component-only ratchet', () => {
   });
 
   it('scans the real dashboard (guards against a silently empty scan)', () => {
-    expect(Object.keys(countTree()).length).toBeGreaterThan(20);
+    // The files still carrying a violation are found by the scan, each one the baseline pins.
+    const found = Object.keys(countTree()).sort();
+    expect(found.length).toBeGreaterThan(0);
+    expect(found).toEqual(Object.keys(readBaseline()).sort());
   });
 
   it('holds every file at or under its pinned count, and a new file at zero', () => {

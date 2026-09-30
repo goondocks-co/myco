@@ -249,7 +249,7 @@ it('opens on ⌘K and Ctrl K from every page: under a project it searches that p
   }) as typeof fetch;
   try {
     for (const [path, remembered, expected, offered, key] of [
-      ['/measures', 'two', 'Search every project', 'Project two', { metaKey: true }],
+      ['/status/health', 'two', 'Search every project', 'Project two', { metaKey: true }],
       ['/p/one/knowledge/map', null, 'Search Project one', 'Project one', { ctrlKey: true }],
     ] as const) {
       if (remembered === null) forgetProject(); else rememberProject(remembered);

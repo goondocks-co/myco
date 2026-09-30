@@ -1,16 +1,11 @@
 import { Navigate, Route, Routes } from 'react-router-dom';
 import { AuthGate } from './components/auth-gate';
-import { Access } from './pages/Access';
 import { AgentRuns } from './pages/AgentRuns';
 import { Join } from './pages/Join';
 import { LinkPage } from './pages/Link';
-import { ProjectAccess } from './pages/ProjectAccess';
 import { NotFound } from './pages/NotFound';
-import { Operations } from './pages/Operations';
-import { Settings } from './pages/Settings';
 import { Projects } from './pages/Projects';
-import { Measures } from './pages/Measures';
-import { Status } from './pages/Status';
+import { adminRoutes } from './routes/admin';
 import { knowledgeRoutes } from './routes/knowledge';
 import { sessionRoutes } from './routes/sessions';
 import { Shell } from './routes/Shell';
@@ -32,12 +27,7 @@ export default function App() {
         {knowledgeRoutes}
         <Route path="/p/:projectId/runs" element={<AgentRuns />} />
         <Route path="/p/:projectId/runs/:runId" element={<AgentRuns />} />
-        <Route path="/p/:projectId/access" element={<ProjectAccess />} />
-        <Route path="/access" element={<Access />} />
-        <Route path="/status" element={<Status />} />
-        <Route path="/measures" element={<Measures />} />
-        <Route path="/settings" element={<Settings />} />
-        <Route path="/operations" element={<Operations />} />
+        {adminRoutes}
         <Route path="*" element={<NotFound />} />
       </Route>
       </Route>

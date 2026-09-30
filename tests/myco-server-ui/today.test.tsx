@@ -433,13 +433,13 @@ describe('Today', () => {
     expect(document.querySelector('[data-upkeep]')!.textContent).toBe('Search kept up to date · 1 h ago · 1 retry along the way');
   });
 
-  it('keeps search upkeep to one quiet line, with Status for an admin', async () => {
+  it('keeps search upkeep to one quiet line, with Health for an admin', async () => {
     screenWidth(1280);
     server(day());
     mount('/');
     await timeline();
     const line = await waitFor(() => document.querySelector('[data-upkeep]') as HTMLElement);
-    expect(within(line).getByRole('link', { name: 'Status →' }).getAttribute('href')).toBe('/status');
+    expect(within(line).getByRole('link', { name: 'Health →' }).getAttribute('href')).toBe('/status/health#upkeep');
     expect(within(line).getByRole('img', { name: 'Up to date' })).toBeTruthy();
   });
 

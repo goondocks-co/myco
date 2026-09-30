@@ -84,16 +84,15 @@ export function filesNamedByToolInput(toolInput: unknown): string[] | undefined 
 
 /**
  * The dashboard controls an administrator uses to let a machine that already
- * belongs to a member sign in again: Members → Invite → For, and the option
- * naming that member. The dashboard renders these words and the member's
+ * belongs to a member sign in again: People & machines → Add a machine → For,
+ * with that member picked. The dashboard renders these words and the member's
  * notices quote them, so the two cannot drift apart.
  */
 export const INVITE_CONTROLS = {
-  page: 'Members',
-  button: 'Invite',
+  page: 'People & machines',
+  invite: 'Invite a teammate',
+  button: 'Add a machine',
   field: 'For',
-  newMemberOption: 'A new member',
-  existingMemberOption: 'Another runtime for',
 } as const;
 
 /**
@@ -104,7 +103,7 @@ export const INVITE_CONTROLS = {
  * delivered with it.
  */
 export const REJOIN_HINT = `ask a Deployment admin for an invitation for your existing member `
-  + `(dashboard: ${INVITE_CONTROLS.page} → ${INVITE_CONTROLS.button} → ${INVITE_CONTROLS.field}: "${INVITE_CONTROLS.existingMemberOption} <your member>"), `
+  + `(dashboard: ${INVITE_CONTROLS.page} → ${INVITE_CONTROLS.button} → ${INVITE_CONTROLS.field}: <your member>), `
   + 'then run `myco login <link>` with the link it gives; an invitation for a new member is refused on this machine';
 
 /**
@@ -123,9 +122,9 @@ export const MACHINE_IDENTITY_NOTE = 'A machine belongs to one member of a Deplo
 /** The same fact as an administrator reads it, when removing a member. */
 export const MEMBER_KEEPS_MACHINES = 'Their machines stay theirs: none of them can join this Deployment as another member, and none can be moved to one.';
 
-/** The same act as an administrator reads it, for a runtime they stopped or whose credential ended. */
+/** The same act as an administrator reads it, for a machine they stopped or whose credential ended. */
 export const REJOIN_FOR_ADMIN = `To write again, the machine needs an invitation for its member `
-  + `(${INVITE_CONTROLS.button} → ${INVITE_CONTROLS.field}: "${INVITE_CONTROLS.existingMemberOption} …"), redeemed with \`myco login <link>\`; `
+  + `(${INVITE_CONTROLS.button} → ${INVITE_CONTROLS.field}: its member), redeemed with \`myco login <link>\`; `
   + 'an invitation for a new member is refused on that machine.';
 
 /**

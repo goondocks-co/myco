@@ -1,37 +1,23 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { ApiError, deleteJson, fetchJson, putJson } from '../lib/api';
 
-export interface LeafRow {
-  leaf: string;
-  configured: boolean;
-  value: unknown;
-  updatedAt: number | null;
-  updatedBy: string | null;
-}
-
-export interface SecretRow {
-  name: string;
-  configured: boolean;
-  readable: boolean;
-  maskedValue: string | null;
-  updatedAt: number | null;
-  updatedBy: string | null;
-}
-
-export type Capabilities = Record<string, boolean>;
+import type { SecretRow, SettingsAnswer, SecretsAnswer, TitlingBackfillProgress } from '../features/admin/settings/wire';
+import type { CapabilitiesAnswer, RepositoryAnswer } from '../features/admin/project/wire';
+export type { LeafRow, SecretRow } from '../features/admin/settings/wire';
+export type { RepositoryRow } from '../features/admin/project/wire';
 
 export function useSettings() {
-  return useQuery({ queryKey: ['settings'], queryFn: ({ signal }) => fetchJson<{ leaves: LeafRow[] }>('/api/settings', signal) });
+  return useQuery({ queryKey: ['settings'], queryFn: ({ signal }) => fetchJson<SettingsAnswer>('/api/settings', signal) });
 }
 
 export function useSecrets() {
-  return useQuery({ queryKey: ['secrets'], queryFn: ({ signal }) => fetchJson<{ secrets: SecretRow[] }>('/api/secrets', signal) });
+  return useQuery({ queryKey: ['secrets'], queryFn: ({ signal }) => fetchJson<SecretsAnswer>('/api/secrets', signal) });
 }
 
 export function useCapabilities(projectId: string) {
   return useQuery({
     queryKey: ['capabilities', projectId],
-    queryFn: ({ signal }) => fetchJson<{ capabilities: Capabilities }>(`/api/projects/${encodeURIComponent(projectId)}/capabilities`, signal),
+    queryFn: ({ signal }) => fetchJson<CapabilitiesAnswer>(`/api/projects/${encodeURIComponent(projectId)}/capabilities`, signal),
   });
 }
 
@@ -45,6 +31,8 @@ export function settingsRefusalText(err: unknown): string {
         return 'That setting is not held by the server.';
       case 'malformed':
         return typeof body?.detail === 'string' ? body.detail : 'The server could not read that value.';
+      case 'invalid_value':
+        return typeof body?.detail === 'string' && body.detail.trim() !== '' ? `The server refused that value: ${body.detail}` : 'The server refused that value.';
       case 'unknown_capability':
         return 'The server does not know that capability.';
       default:
@@ -62,7 +50,8 @@ export function useSettingsActions() {
     setLeaf: useMutation({
       gcTime: 0,
       mutationFn: (v: { leaf: string; value: unknown }) => putJson<{ applied: true }>(`/api/settings/${encodeURIComponent(v.leaf)}`, { value: v.value }),
-      onSuccess: () => refresh('settings'),
+      // Where titling stands reads the scheduling switch and the task overrides, so it is read again with the settings.
+      onSuccess: () => refresh('settings', 'titling-backfill'),
     }),
     setSecret: useMutation({
       gcTime: 0,
@@ -82,20 +71,10 @@ export function useSettingsActions() {
   };
 }
 
-export interface RepositoryRow {
-  revision: string;
-  url: string;
-  branch: string;
-  username: string | null;
-  credential: Omit<SecretRow, 'name'> | null;
-  updatedAt: number;
-  updatedBy: string;
-}
-
 export function useRepository(projectId: string) {
   return useQuery({
     queryKey: ['repository', projectId],
-    queryFn: ({ signal }) => fetchJson<{ repository: RepositoryRow | null }>(`/api/projects/${encodeURIComponent(projectId)}/repository`, signal),
+    queryFn: ({ signal }) => fetchJson<RepositoryAnswer>(`/api/projects/${encodeURIComponent(projectId)}/repository`, signal),
   });
 }
 
@@ -107,7 +86,7 @@ export function useRepositoryActions(projectId: string) {
     save: useMutation({
       gcTime: 0,
       mutationFn: (input: { url: string; branch: string; revision: string | null; credential?: { username: string; token: string } | null }) =>
-        putJson<{ repository: RepositoryRow | null }>(path, input),
+        putJson<RepositoryAnswer>(path, input),
       onSuccess: refresh,
     }),
     remove: useMutation({
@@ -115,4 +94,24 @@ export function useRepositoryActions(projectId: string) {
       onSuccess: refresh,
     }),
   };
+}
+
+const TITLING_KEY = ['titling-backfill'] as const;
+
+/** Where titling imported sessions stands, and its switch: `GET /api/titling-backfill`. */
+export function useTitlingBackfill() {
+  return useQuery({ queryKey: [...TITLING_KEY], queryFn: ({ signal }) => fetchJson<TitlingBackfillProgress>('/api/titling-backfill', signal) });
+}
+
+/**
+ * Turns titling imported sessions on or off: `PUT /api/titling-backfill`. The
+ * answer is where titling then stands, so it replaces the read; the switch is
+ * written into the task overrides, so the leaves are read again too.
+ */
+export function useSetTitlingBackfill() {
+  const client = useQueryClient();
+  return useMutation({
+    mutationFn: (enabled: boolean) => putJson<TitlingBackfillProgress>('/api/titling-backfill', { enabled }),
+    onSuccess: (data) => { client.setQueryData([...TITLING_KEY], data); void client.invalidateQueries({ queryKey: ['settings'] }); },
+  });
 }

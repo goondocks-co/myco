@@ -8,7 +8,8 @@ import { describe, expect, it } from 'bun:test';
 import { readFileSync, readdirSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { DEPLOYMENT_LEAVES } from '@myco-server-worker/core/settings.js';
-import { LEAF_FIELDS, LEAF_GROUPS } from '../../packages/myco-server/ui/src/settings/catalogue.js';
+import { LEAF_FIELDS, LEAF_GROUPS, LIVE_FIELDS } from '../../packages/myco-server/ui/src/features/admin/settings/catalogue.js';
+import { LEAF_DEFAULTS } from '../../packages/myco-server/ui/src/features/admin/settings/defaults.js';
 
 function walkSources(root: string): string[] {
   if (statSync(root).isFile()) return [root];
@@ -52,14 +53,51 @@ describe('settings catalogue', () => {
 
   /**
    * A catalogue entry and a render arm are two halves of one control.
-   * `Settings.tsx` renders per `kind`, so a kind named here with no arm there
+   * `LeafControl.tsx` renders per `kind`, so a kind named here with no arm there
    * yields a leaf with a label, a note and no input — which reads as a rendered
    * control until someone tries to type in it.
    */
   it('gives every kind the catalogue uses a render arm on the Settings page', () => {
-    const page = readFileSync(join(import.meta.dir, '..', '..', 'packages', 'myco-server', 'ui', 'src', 'pages', 'Settings.tsx'), 'utf8');
+    const page = readFileSync(join(import.meta.dir, '..', '..', 'packages', 'myco-server', 'ui', 'src', 'features', 'admin', 'settings', 'LeafControl.tsx'), 'utf8');
     const used = [...new Set(LEAF_FIELDS.map((f) => f.kind))].sort();
     const unrendered = used.filter((kind) => !new RegExp(`field\\.kind === '${kind}'`).test(page));
     expect(unrendered).toEqual([]);
+  });
+
+  /**
+   * Every setting the page shows says what the server does while nothing is
+   * stored: the value it applies ("Server default: on", "14 days"), or what
+   * leaving it unset means ("No limit"). A switch always has a value, since a
+   * switch drawn off while the server treats it as on misstates the setting.
+   */
+  it('gives every setting still in use a server default or the words for unset', () => {
+    const missing = LIVE_FIELDS.filter((f) => LEAF_DEFAULTS[f.leaf] === undefined).map((f) => f.leaf);
+    expect(missing).toEqual([]);
+    const toggles = LIVE_FIELDS.filter((f) => f.kind === 'toggle').filter((f) => {
+      const entry = LEAF_DEFAULTS[f.leaf];
+      return entry === undefined || !('value' in entry) || typeof entry.value !== 'boolean';
+    }).map((f) => f.leaf);
+    expect(toggles).toEqual([]);
+    // A default for a setting the page no longer offers would be a second copy with no reader.
+    expect(Object.keys(LEAF_DEFAULTS).filter((leaf) => !LIVE_FIELDS.some((f) => f.leaf === leaf)).sort()).toEqual([]);
+  });
+
+  /**
+   * A setting is retired exactly when no server code reads it. The leaf list in
+   * `core/settings.ts` names every leaf, so it is left out of the search; a
+   * setting read anywhere else in the server's source is still in use.
+   */
+  it('retires exactly the settings no server code reads', () => {
+    const root = join(import.meta.dir, '..', '..', 'packages', 'myco-server', 'src');
+    const specs = readFileSync(join(root, 'core', 'settings.ts'), 'utf8');
+    const listStart = specs.indexOf('export const DEPLOYMENT_LEAF_SPECS');
+    const listEnd = specs.indexOf('\n};', listStart);
+    const sources = walkSources(root).map((file) => (file.endsWith(join('core', 'settings.ts')) ? specs.slice(0, listStart) + specs.slice(listEnd) : readFileSync(file, 'utf8')));
+    const read = (leaf: string) => sources.some((text) => text.includes(`'${leaf}'`));
+    // Myco's own built-in exclusions are shown from the shared constant the map itself uses, not from the leaf.
+    const shownFromShared = new Set(['cortex.canopy.exclude.default_patterns']);
+    const wrong = LEAF_FIELDS.filter((f) => !shownFromShared.has(f.leaf) && (f.retired === true) === read(f.leaf))
+      .map((f) => `${f.leaf}: ${f.retired === true ? 'retired but read' : 'offered but unread'}`);
+    expect(wrong).toEqual([]);
   });
 });

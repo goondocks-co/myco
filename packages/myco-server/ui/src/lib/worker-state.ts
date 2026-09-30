@@ -1,7 +1,9 @@
 import { formatUntil } from './format';
 import { harnessLabel } from './harness';
 import type { WorkerRow, WorkerStatus } from './api';
-import type { StatusTone } from '../components/ui/status-dot';
+
+/** The tone of a worker's dot: running well, needing attention, failing, or nothing recent. */
+export type StatusTone = 'sage' | 'ochre' | 'terracotta' | 'outline';
 
 /**
  * The words every surface names a worker with.

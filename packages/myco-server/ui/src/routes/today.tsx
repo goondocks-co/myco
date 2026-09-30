@@ -26,7 +26,7 @@ import { cleanSessionText, sessionHeading, sessionHeadingText } from '../lib/ses
 import { readPendingLink } from '../lib/pending-link';
 import { forgetProject } from '../lib/project-memory';
 import { NotFound } from '../pages/NotFound';
-import { CODE_MAP_SUFFIX, projectPath } from './nav';
+import { CODE_MAP_SUFFIX, HEALTH_ANCHORS, HEALTH_PATH, projectPath } from './nav';
 
 /** How many of a run's spores, or of the sessions it titled, an item lists before "and N more". */
 const NESTED_SHOWN = 3;
@@ -121,7 +121,7 @@ function TodayPage({ projectId }: { projectId: string | null }) {
             earlier={<DayLink to={dayHref(window.previous)}>{window.isToday ? 'Yesterday’s work' : 'The day before'} →</DayLink>}
             now={now}
           />
-          {window.isToday && today.work !== undefined && <UpkeepLine upkeep={today.work.upkeep} now={now} statusHref={admin ? '/status' : null} />}
+          {window.isToday && today.work !== undefined && <UpkeepLine upkeep={today.work.upkeep} now={now} statusHref={admin ? `${HEALTH_PATH}#${HEALTH_ANCHORS.upkeep}` : null} />}
           {today.entries !== undefined && today.entries.length > 0 && (
             <DayLink to={dayHref(window.previous)}>{window.isToday ? 'Yesterday' : dayHeading(new Date(window.start - 1).getTime(), now)} →</DayLink>
           )}
