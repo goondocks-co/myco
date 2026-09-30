@@ -1,25 +1,23 @@
-// @vitest-environment jsdom
-
 /**
- * What an owner reads on Status about workers.
+ * What an admin reads on Health about the machines running Myco's work.
  *
- * The panel's job is to distinguish five situations a single busy count cannot:
- * a worker polling and ready, a worker driving a run, one nothing has heard
- * from lately, one whose claim found no harness it could use, and a server that
- * could not answer at all. It must also never overstate what it knows — a
- * reported login is not a tested provider, and one worker's refusal is not a
- * statement about the queue.
+ * The words distinguish five situations a single busy count cannot: a machine
+ * waiting and ready, one driving a run, one nothing has heard from lately, one
+ * whose check for work found nothing it could run, and a server that could not
+ * answer at all. They never overstate what is known (a reported sign-in is not
+ * a tested provider, and one machine's check is not a verdict on the queue),
+ * and they name a machine and a project by name, never by an id.
  */
-import { describe, it, expect } from 'bun:test';
-import { render, screen } from '@testing-library/react';
-import { WorkersPanel } from '../../packages/myco-server/ui/src/components/status/WorkersPanel';
+import { describe, expect, it } from 'bun:test';
+import { agentsWords, fleetLine, lastClaimWords, taskWords, workerLine } from '../../packages/myco-server/ui/src/features/admin/workers';
 import type { WorkerRow, WorkerStatus } from '../../packages/myco-server/ui/src/lib/api';
 
 const NOW = 1_800_000_000_000;
+const MYCO = 'proj_6d79636f3a3e1c0b8a2f4e7d9c150a11';
 
 const worker = (over: Partial<WorkerRow> = {}): WorkerRow => ({
-  credentialId: 'mt_1',
-  machineId: 'sirkirby-mbp',
+  credentialId: 'mt_4Kp9Qs2Vx7Lm0Zb1',
+  machineId: 'ada_5a2d54af',
   offers: [{ id: 'codex', authenticated: true }, { id: 'claude-code', authenticated: true }],
   capabilities: ['repository-checkout'],
   lastReason: 'no_work',
@@ -31,125 +29,87 @@ const worker = (over: Partial<WorkerRow> = {}): WorkerRow => ({
 });
 
 const status = (over: Partial<WorkerStatus> = {}): WorkerStatus => ({
-  available: true,
-  workersBusy: 0,
-  runsQueued: 0,
-  recentWithinMs: 90_000,
-  fleet: [worker()],
-  ...over,
+  available: true, workersBusy: 0, runsQueued: 0, recentWithinMs: 90_000, fleet: [worker()], ...over,
 });
 
-describe('WorkersPanel', () => {
-  it('shows an idle worker as polling, with what it reported and what that does not prove', () => {
-    render(<WorkersPanel workers={status()} now={NOW} />);
-    expect(screen.getByText(/sirkirby-mbp · Polling for work · Last contact 3s ago/)).toBeDefined();
-    expect(screen.getByText(/Reported authenticated: Codex, Claude Code\./)).toBeDefined();
-    expect(screen.getByText(/Provider access has not been tested by this check\./)).toBeDefined();
+const names = { machine: 'Ada’s studio Mac', project: (id: string) => (id === MYCO ? 'Myco' : null) };
+
+describe('a machine running Myco’s work, in words', () => {
+  it('shows an idle machine as waiting, with the agents it reported and what that does not prove', () => {
+    expect(workerLine(worker(), NOW, names)).toEqual({ tone: 'ok', line: 'Ada’s studio Mac · Waiting for work · last contact 3s ago' });
+    expect(agentsWords(worker())).toBe('Can run Codex, Claude Code.');
   });
 
-  it('shows a busy worker by its lease, without promising the lease will be renewed', () => {
-    render(<WorkersPanel workers={status({
-      workersBusy: 1,
-      fleet: [worker({ busy: { runId: 'run_1', projectId: 'myco', task: 'title-summary', leaseExpiresAt: NOW + 62_000 } })],
-    })} now={NOW} />);
-    expect(screen.getByText(/Running title-summary for myco · Lease expires in 62s/)).toBeDefined();
-    // A lease says when it ends, never that it will be extended.
-    expect(screen.queryByText(/renew/i)).toBeNull();
+  it('shows a busy machine by its lease and the project by name, without promising the lease will be renewed', () => {
+    const busy = worker({ busy: { runId: 'run_4f1c9a2e7b', projectId: MYCO, task: 'title-summary', leaseExpiresAt: NOW + 62_000 } });
+    const { line } = workerLine(busy, NOW, names);
+    expect(line).toBe('Ada’s studio Mac · Running titling in Myco · lease ends in 62s');
+    expect(line).not.toMatch(/renew/i);
+    expect(line).not.toContain(MYCO);
+    expect(lastClaimWords(busy)).toBeNull();
   });
 
-  it('says a worker has not been seen recently without claiming it stopped', () => {
-    render(<WorkersPanel workers={status({ fleet: [worker({ recent: false, lastSeenAt: NOW - 14 * 60_000 })] })} now={NOW} />);
-    expect(screen.getByText(/sirkirby-mbp · Not seen recently · Last contact 14m ago/)).toBeDefined();
-    for (const word of [/stopped/i, /terminated/i, /offline/i, /dead/i]) expect(screen.queryByText(word)).toBeNull();
+  it('leaves out a project it cannot name rather than showing its id', () => {
+    const busy = worker({ busy: { runId: 'run_1', projectId: 'proj_ffffffffffffffffffffffffffffffff', task: null, leaseExpiresAt: NOW + 30_000 } });
+    expect(workerLine(busy, NOW, names).line).toBe('Ada’s studio Mac · Running a task · lease ends in 30s');
+    expect(taskWords('something-new')).toBe('a task');
   });
 
-  it('reports the latest claim mismatch beside the queue, as this worker\'s poll and not the queue\'s verdict', () => {
-    render(<WorkersPanel workers={status({ runsQueued: 2, fleet: [worker({ lastReason: 'no_harness' })] })} now={NOW} />);
-    expect(screen.getByText(/2 queued runs\./)).toBeDefined();
-    expect(screen.getByText(/Last claim: no matching harness\./)).toBeDefined();
-    // The claim's own time is not recorded, so no age is attached to it.
-    expect(screen.queryByText(/Last claim: no matching harness \(/)).toBeNull();
-    expect(screen.getByText(/not what every worker can run/)).toBeDefined();
+  it('says a machine has not been heard from lately without claiming it stopped', () => {
+    const { tone, line } = workerLine(worker({ recent: false, lastSeenAt: NOW - 14 * 60_000 }), NOW, names);
+    expect({ tone, line }).toEqual({ tone: 'faint', line: 'Ada’s studio Mac · Not heard from lately · last contact 14m ago' });
+    for (const word of [/stopped/i, /terminated/i, /offline/i, /dead/i]) expect(line).not.toMatch(word);
   });
 
-  it('does not call a worker ready, or claim it holds a harness, when it reported none authenticated', () => {
-    render(<WorkersPanel workers={status({
-      fleet: [worker({ offers: [{ id: 'codex', authenticated: false }] })],
-    })} now={NOW} />);
-    expect(screen.getByText(/Polling, but reported no harness authenticated/)).toBeDefined();
-    // `authenticated: false` says nothing about whether the tool is installed.
-    expect(screen.getByText(/Reported not authenticated: Codex\./)).toBeDefined();
-    expect(screen.queryByText(/present/i)).toBeNull();
-    expect(screen.queryByText(/installed/i)).toBeNull();
+  it('reports the last check for work as that machine’s, never the queue’s verdict, with no age it does not have', () => {
+    expect(lastClaimWords(worker({ lastReason: 'no_harness' }))).toBe('Last check for work: no matching harness.');
+    expect(lastClaimWords(worker({ lastReason: null }))).toBeNull();
+    expect(lastClaimWords(worker({ lastSeenAt: 0 }))).toBeNull();
   });
 
-  it('says offers are unknown rather than none when there is no readable report', () => {
-    render(<WorkersPanel workers={status({
-      workersBusy: 1,
-      fleet: [worker({ offers: null, capabilities: null, lastSeenAt: 0, lastReason: null, recent: false, busy: { runId: 'run_7', projectId: 'myco', task: 'title-summary', leaseExpiresAt: NOW + 30_000 } })],
-    })} now={NOW} />);
-    expect(screen.getByText(/Offers unknown: this worker has reported none\./)).toBeDefined();
-    expect(screen.queryByText(/Reported no harnesses/)).toBeNull();
+  it('does not call a machine ready when it reported no agent signed in', () => {
+    const w = worker({ offers: [{ id: 'codex', authenticated: false }] });
+    expect(workerLine(w, NOW, names)).toEqual({ tone: 'bad', line: 'Ada’s studio Mac · Waiting for work, but reported no agent signed in · last contact 3s ago' });
+    expect(agentsWords(w)).toBe('Reported no agent signed in.');
+    expect(agentsWords(worker({ offers: [] }))).toBe('Reported no agents.');
   });
 
-  it('says a stored report it could not read is unknown, and never treats it as ready', () => {
-    render(<WorkersPanel workers={status({ fleet: [worker({ offers: null, capabilities: null })] })} now={NOW} />);
-    expect(screen.getByText(/Offers unknown: the stored report could not be read\./)).toBeDefined();
-    expect(screen.getByText(/Polling, with no readable report of its harnesses/)).toBeDefined();
-    expect(screen.getAllByTestId('status-dot').at(-1)!.dataset.tone).toBe('terracotta');
+  it('says the agents are unknown rather than none when there is no readable report, and never treats it as ready', () => {
+    const w = worker({ offers: null, capabilities: null });
+    expect(agentsWords(w)).toBe('Which agents it can run is unknown.');
+    expect(workerLine(w, NOW, names)).toEqual({ tone: 'bad', line: 'Ada’s studio Mac · Waiting for work, with no readable report of its agents · last contact 3s ago' });
   });
 
-  it('says a credential the claim route would refuse is not polling for work', () => {
-    render(<WorkersPanel workers={status({ fleet: [worker({ eligible: false })] })} now={NOW} />);
-    expect(screen.getByText(/A claim from it would be refused now · Last contact 3s ago/)).toBeDefined();
-    expect(screen.queryByText(/Polling/)).toBeNull();
+  it('says a machine whose claims the server would refuse is not waiting for work', () => {
+    const { line } = workerLine(worker({ eligible: false }), NOW, names);
+    expect(line).toBe('Ada’s studio Mac · Its claims would be refused now · last contact 3s ago');
+    expect(line).not.toContain('Waiting');
   });
 
-  it('says worker status is unavailable rather than showing zero workers when the server could not answer', () => {
-    render(<WorkersPanel workers={status({ available: false, fleet: [], workersBusy: 0, runsQueued: 0 })} now={NOW} />);
-    expect(screen.getByText(/Worker status unavailable/)).toBeDefined();
-    // Nothing that would read as "no workers attached" or "nothing queued".
-    expect(screen.queryByText(/No worker contact recorded/)).toBeNull();
-    expect(screen.queryByText(/Nothing queued/)).toBeNull();
+  it('shows a lease holder from before contacts were kept as busy, with no invented contact time', () => {
+    const w = worker({ lastSeenAt: 0, lastReason: null, recent: false, busy: { runId: 'run_9', projectId: MYCO, task: null, leaseExpiresAt: NOW + 30_000 } });
+    expect(workerLine(w, NOW, names).line).toBe('Ada’s studio Mac · Running a task in Myco · lease ends in 30s');
+  });
+});
+
+describe('the machines running Myco’s work, in one line', () => {
+  it('says how many are running it and what waits', () => {
+    expect(fleetLine(status({ runsQueued: 1 }), NOW)).toEqual({ tone: 'ok', attached: 1, line: '1 machine is running Myco’s work, 0 busy now. 1 task is waiting.' });
   });
 
-  it('heads the panel with how many workers are attached and what the queue holds', () => {
-    render(<WorkersPanel workers={status({ runsQueued: 1 })} now={NOW} />);
-    expect(screen.getByText('1 worker attached, 0 driving a run. 1 queued run.')).toBeDefined();
-    expect(screen.queryByText(/myco worker install/)).toBeNull();
+  it('says none is running it, when one was last heard from, and what waits for one', () => {
+    expect(fleetLine(status({ runsQueued: 3, fleet: [worker({ recent: false, lastSeenAt: NOW - 8 * 86_400_000 })] }), NOW))
+      .toEqual({ tone: 'bad', attached: 0, line: 'No machine is running Myco’s work. A machine last checked in 8d ago. 3 tasks are waiting.' });
   });
 
-  it('says no worker is attached, when one was last heard from, and what waits for one', () => {
-    render(<WorkersPanel workers={status({ runsQueued: 3, fleet: [worker({ recent: false, lastSeenAt: NOW - 8 * 86_400_000 })] })} now={NOW} />);
-    expect(screen.getByText('No worker attached. Last worker contact 8d ago. 3 queued runs wait until one attaches.')).toBeDefined();
-    // The command is set as code, not as raw backticks, and names whose machine can run one.
-    expect(screen.getByText('myco worker install').tagName).toBe('CODE');
-    expect(screen.getByText(/an administrator's machine/)).toBeDefined();
-    expect(screen.queryByText(/`/)).toBeNull();
-    expect(screen.getAllByTestId('status-dot')[0]!.dataset.tone).toBe('terracotta');
+  it('says no machine has checked in when the fleet holds nothing', () => {
+    expect(fleetLine(status({ runsQueued: 0, fleet: [] }), NOW)).toEqual({ tone: 'faint', attached: 0, line: 'No machine is running Myco’s work. No machine has checked in yet. Nothing is waiting.' });
   });
 
-  it('says no worker is attached, and that no contact is recorded, when the fleet holds nothing', () => {
-    render(<WorkersPanel workers={status({ runsQueued: 1, fleet: [] })} now={NOW} />);
-    expect(screen.getByText('No worker attached. No worker contact recorded. 1 queued run waits until one attaches.')).toBeDefined();
-  });
-
-  it('does not count a worker the claim route would refuse as attached, or its contact as a worker\'s', () => {
-    render(<WorkersPanel workers={status({ fleet: [worker({ eligible: false }), worker({ credentialId: 'mt_2', recent: false, lastSeenAt: NOW - 2 * 3_600_000 })] })} now={NOW} />);
-    expect(screen.getByText('No worker attached. Last worker contact 2h ago. Nothing queued.')).toBeDefined();
-  });
-
-  it('records no worker contact when only a credential the claim route refuses has been heard from', () => {
-    render(<WorkersPanel workers={status({ fleet: [worker({ eligible: false })] })} now={NOW} />);
-    expect(screen.getByText('No worker attached. No worker contact recorded. Nothing queued.')).toBeDefined();
-  });
-
-  it('shows a lease holder that predates contact records as busy, with no invented contact time', () => {
-    render(<WorkersPanel workers={status({
-      workersBusy: 1,
-      fleet: [worker({ lastSeenAt: 0, lastReason: null, recent: false, busy: { runId: 'run_9', projectId: 'myco', task: null, leaseExpiresAt: NOW + 30_000 } })],
-    })} now={NOW} />);
-    expect(screen.getByText(/Running a run for myco · Lease expires in 30s/)).toBeDefined();
-    expect(screen.queryByText(/Last claim:/)).toBeNull();
+  it('does not count a machine whose claims would be refused as running it, or its contact as a worker’s', () => {
+    expect(fleetLine(status({ fleet: [worker({ eligible: false }), worker({ credentialId: 'mt_2', recent: false, lastSeenAt: NOW - 2 * 3_600_000 })] }), NOW).line)
+      .toBe('No machine is running Myco’s work. A machine last checked in 2h ago. Nothing is waiting.');
+    expect(fleetLine(status({ fleet: [worker({ eligible: false })] }), NOW).line)
+      .toBe('No machine is running Myco’s work. No machine has checked in yet. Nothing is waiting.');
   });
 });
