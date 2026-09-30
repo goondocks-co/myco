@@ -10,7 +10,7 @@ import { HARNESS_AGENT_ID } from '@myco-server-worker/core/harness.js';
 import { ACTIVE_WINDOW_DAYS_DEFAULT, CLOCK_ACTOR, COLD_PROJECT_THRESHOLD_DAYS_DEFAULT, decideTask, effectiveIntervalSeconds, hasUnprocessedPrompts, PRE_CONDITIONS, readScheduleFacts, resolveSchedule, runScheduledTasks, scheduledTasks, scheduleFor, scheduleLeaves } from '@myco-server-worker/core/scheduled-tasks.js';
 import { TASK_SCHEDULE, type TaskSchedule } from '@myco-server-worker/core/jobs.js';
 import { TASK_ADMISSION } from '@myco-server-worker/core/task-catalogue.js';
-import { hasLiveTaskRun, lastTaskEntryAt, taskEntriesSince, taskFactsKey, taskRunFacts } from '@myco-server-worker/core/runs.js';
+import { hasLiveTaskRun, INPUT_UNCHANGED, lastTaskEntryAt, skipContext, taskEntriesSince, taskFactsKey, taskRunFacts } from '@myco-server-worker/core/runs.js';
 import { runTick } from '@myco-server-worker/core/tick.js';
 import { seedCredential } from './helpers/d1.js';
 import { sqliteEnv, withHarness } from './helpers/fixtures.js';
@@ -441,9 +441,37 @@ describe('one wake\'s scheduling across many Projects (#1510)', () => {
     f.sqlite.run(`INSERT INTO agent_runs (project_id, id, agent_id, task, status, started_at, dispatch_spec) VALUES ('proj_1', 'run_live', 'myco-agent', 'container-smoke', 'running', ?, ?)`, [NOW - 1_000, JSON.stringify({ actor: CLOCK_ACTOR })]);
     f.sqlite.run(`INSERT INTO agent_runs (project_id, id, agent_id, task, status, started_at, completed_at, dispatch_spec) VALUES ('proj_2', 'run_done', 'myco-agent', 'container-smoke', 'completed', ?, ?, ?)`, [NOW - 2 * DAY, NOW - 2 * DAY, JSON.stringify({ actor: CLOCK_ACTOR })]);
     f.sqlite.run(`INSERT INTO agent_runs (project_id, id, agent_id, task, status, started_at, completed_at, dispatch_spec) VALUES ('proj_2', 'run_owner', 'myco-agent', 'container-smoke', 'completed', ?, ?, ?)`, [NOW - 1_000, NOW - 500, JSON.stringify({ actor: 'mem_owner' })]);
+    // Each live status alone in its Project and task, so a read that misses one answers a different fact.
+    f.sqlite.run(`INSERT OR IGNORE INTO projects (project_id, name, created_at) VALUES ('proj_3', 'proj_3', ?)`, [NOW]);
+    f.receipt('proj_3', NOW - 60_000);
+    f.sqlite.run(`INSERT INTO agent_runs (project_id, id, agent_id, task, status, dispatch_spec) VALUES ('proj_3', 'run_pending', 'myco-agent', 'container-smoke', 'pending', ?)`, [JSON.stringify({ actor: CLOCK_ACTOR })]);
+    f.sqlite.run(`INSERT INTO agent_runs (project_id, id, agent_id, task, status, queued_at, dispatch_spec) VALUES ('proj_1', 'run_queued', 'myco-agent', 'extract-curate', 'queued', ?, ?)`, [NOW - 2_000, JSON.stringify({ actor: CLOCK_ACTOR })]);
+    // The clock's entry the platform replaced: the interval reads it, the day's ceiling does not.
+    f.sqlite.run(`INSERT INTO agent_runs (project_id, id, agent_id, task, status, started_at, completed_at, dispatch_spec, run_context) VALUES ('proj_2', 'run_replaced', 'myco-agent', 'container-smoke', 'completed', ?, ?, ?, ?)`, [NOW - 3_000, NOW - 2_500, JSON.stringify({ actor: CLOCK_ACTOR }), JSON.stringify({ replaced: true })]);
+    // A skip for unchanged input is the interval's entry; a skip for any other reason is nobody's.
+    f.sqlite.run(`INSERT INTO agent_runs (project_id, id, agent_id, task, status, started_at, completed_at, run_context) VALUES ('proj_2', 'run_unchanged', 'myco-agent', 'extract-curate', 'skipped', ?, ?, ?)`, [NOW - 500, NOW - 500, skipContext(INPUT_UNCHANGED)]);
+    f.sqlite.run(`INSERT INTO agent_runs (project_id, id, agent_id, task, status, started_at, completed_at, run_context) VALUES ('proj_2', 'run_ceiling', 'myco-agent', 'extract-curate', 'skipped', ?, ?, ?)`, [NOW - 100, NOW - 100, skipContext('max_runs_per_day')]);
+    // Another actor's entries, newer than the clock's own and inside the day.
+    f.sqlite.run(`INSERT INTO agent_runs (project_id, id, agent_id, task, status, started_at, completed_at, dispatch_spec) VALUES ('proj_3', 'run_clock', 'myco-agent', 'extract-curate', 'completed', ?, ?, ?)`, [NOW - 4_000, NOW - 3_500, JSON.stringify({ actor: CLOCK_ACTOR })]);
+    f.sqlite.run(`INSERT INTO agent_runs (project_id, id, agent_id, task, status, started_at, completed_at, dispatch_spec) VALUES ('proj_3', 'run_other', 'myco-agent', 'extract-curate', 'completed', ?, ?, ?)`, [NOW - 1_000, NOW - 900, JSON.stringify({ actor: 'mem_owner' })]);
     const tasks = scheduledTasks().map(({ task }) => task);
+    expect(tasks).toEqual(['container-smoke', 'extract-curate']);
     const whole = await readScheduleFacts(f.env, tasks, NOW);
-    for (const projectId of ['proj_1', 'proj_2']) {
+    // The fixture holds each case the reads tell apart, so agreeing below is agreeing on each of them.
+    expect([
+      whole.runs.get(taskFactsKey('proj_3', 'container-smoke'))?.live,
+      whole.runs.get(taskFactsKey('proj_1', 'extract-curate'))?.live,
+      whole.runs.get(taskFactsKey('proj_2', 'container-smoke')),
+      whole.runs.get(taskFactsKey('proj_2', 'extract-curate')),
+      whole.runs.get(taskFactsKey('proj_3', 'extract-curate')),
+    ]).toEqual([
+      true,
+      true,
+      { live: false, lastEntryAt: NOW - 3_000, entriesSince: 0 },
+      { live: false, lastEntryAt: NOW - 500, entriesSince: 0 },
+      { live: false, lastEntryAt: NOW - 4_000, entriesSince: 1 },
+    ]);
+    for (const projectId of ['proj_1', 'proj_2', 'proj_3']) {
       const alone = await readScheduleFacts(f.env, tasks, NOW, projectId);
       for (const task of tasks) {
         const key = taskFactsKey(projectId, task);
