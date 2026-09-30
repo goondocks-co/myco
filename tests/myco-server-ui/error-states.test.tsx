@@ -20,7 +20,7 @@ const PROJECTS = { projects: [{ projectId: 'x', name: 'Project X', createdAt: 0,
 export const PAGES = [
   '/p/x', '/p/x/sessions', '/p/x/sessions/s1', '/knowledge', '/knowledge/plans', '/p/x/knowledge', '/p/x/knowledge/plans', '/p/x/knowledge/map',
   '/p/x/spores/sp1', '/p/x/plans/11111111-2222-4333-8444-555555555555', '/p/x/runs', '/p/x/runs/r1',
-  '/p/x/access', '/access', '/status', '/measures', '/settings', '/operations',
+  '/p/x/settings', '/people', '/me/machines', '/settings', '/settings/models', '/settings/capture', '/settings/backups', '/settings/access', '/status/health',
 ];
 
 const originalFetch = globalThis.fetch;

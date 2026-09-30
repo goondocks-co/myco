@@ -30,11 +30,18 @@ function server(routes: Record<string, (init?: RequestInit) => Response>): { pos
 
 const base = (projects: unknown[], extra: Record<string, (init?: RequestInit) => Response> = {}) => ({
   '/auth/me': () => Response.json(ME),
+  '/api/members': () => Response.json({ members: [{ id: 'mem_1', label: 'chris', role: 'admin', linked: true, createdAt: 0, revokedAt: null, revokedBy: null, liveCredentials: 1 }] }),
   '/api/projects': () => Response.json({ projects }),
   '/api/projects/live/activity': () => Response.json(EMPTY_ACTIVITY),
   '/api/projects/arch/activity': () => Response.json(EMPTY_ACTIVITY),
   ...extra,
 });
+
+/** Opens a project's menu, the way a keyboard does. */
+async function openMenu(name: string) {
+  fireEvent.keyDown(await screen.findByRole('button', { name: `Actions for ${name}` }), { key: 'Enter' });
+  return screen.findByRole('menu');
+}
 
 function mount(path: string) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
@@ -51,14 +58,16 @@ describe('Projects', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Archived (1)' }));
     const archived = await screen.findByRole('region', { name: 'Archived projects' });
     expect(within(archived).getByText('Arch')).toBeTruthy();
-    expect(within(archived).getByText(/Archived .* by mem_1/)).toBeTruthy();
+    // Who archived it reads as their name, never their id.
+    expect(await within(archived).findByText(/Archived .* by chris/)).toBeTruthy();
+    expect(archived.textContent).not.toContain('mem_1');
     expect(within(archived).getByRole('button', { name: 'Unarchive' })).toBeTruthy();
   });
 
   it('asks before archiving, names the consequence, and posts the archive', async () => {
     const { posts } = server(base([LIVE], { '/api/projects/live/archive': () => Response.json({ archived: true, archivedBy: 'mem_1' }) }));
     mount('/projects');
-    fireEvent.click(await screen.findByRole('button', { name: 'Archive' }));
+    fireEvent.click(within(await openMenu('Live')).getByRole('menuitem', { name: 'Archive' }));
     expect(await screen.findByText('Archive Live?')).toBeTruthy();
     expect(screen.getByText(/Capture from every runtime stops until you unarchive/)).toBeTruthy();
     expect(posts).toEqual([]);
@@ -112,14 +121,28 @@ describe('an archived project\'s home and navigation', () => {
       '/api/projects/live': (init) => { name = (JSON.parse(String(init?.body)) as { name: string }).name; return Response.json({ projectId: 'live', name }); },
     }));
     mount('/projects');
-    fireEvent.click(await screen.findByRole('button', { name: 'Rename' }));
-    const dialog = screen.getByRole('dialog');
+    fireEvent.click(within(await openMenu('Live')).getByRole('menuitem', { name: 'Rename' }));
+    const dialog = await screen.findByRole('dialog');
     const input = within(dialog).getByLabelText('Name') as HTMLInputElement;
     expect(input.value).toBe('Live');
     fireEvent.change(input, { target: { value: '  Myco  ' } });
     fireEvent.click(within(dialog).getByRole('button', { name: 'Rename' }));
-    expect(await screen.findByText('Myco')).toBeTruthy();
+    expect(await within(await screen.findByRole('list', { name: 'Projects' })).findByText('Myco')).toBeTruthy();
     expect(patches).toEqual([{ path: '/api/projects/live', body: { name: 'Myco' } }]);
     expect(screen.queryByRole('dialog')).toBeNull();
+  });
+});
+
+describe('a project\'s menu', () => {
+  it('leads an admin to the project\'s settings, and offers a member no menu', async () => {
+    server(base([LIVE]));
+    mount('/projects');
+    fireEvent.click(within(await openMenu('Live')).getByRole('menuitem', { name: 'Project settings' }));
+    expect(await screen.findByRole('heading', { level: 1, name: 'Project settings' })).toBeTruthy();
+    cleanup();
+    server({ ...base([LIVE]), '/auth/me': () => Response.json({ ...ME, member: { ...ME.member, role: 'member' } }) });
+    mount('/projects');
+    await screen.findByRole('list', { name: 'Projects' });
+    expect(screen.queryByRole('button', { name: 'Actions for Live' })).toBeNull();
   });
 });

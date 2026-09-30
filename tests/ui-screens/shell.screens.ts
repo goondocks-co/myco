@@ -11,8 +11,9 @@
  * pages inside keep their own checks: they are rebuilt, and held to account,
  * in later phases.
  *
- * The Projects and Settings pages P1a touched are still shot inside the shell.
+ * The Projects page is still shot inside the shell; the admin pages have their own checks.
  */
+import { INVITE_CONTROLS } from '../../packages/myco-shared/src/member-protocol.ts';
 import { expect, test, type Page } from '@playwright/test';
 import {
   expectAxeClean, expectNoHorizontalOverflow, expectNoRawIds, expectQuiet, expectUniformSearch, filterBarMetrics, openPage, shoot, SHOT_MATRIX,
@@ -30,8 +31,8 @@ const ROLES = [
   { role: 'member', cookie: 'memberCookie', name: 'lin' },
 ] as const;
 
-/** The admin foot; Measures and Operations fold under Status and show while its group is open. */
-const ADMIN_PAGES = ['Members', 'Settings', 'Status'];
+/** The admin foot. Health's name carries the count of what needs an admin, so it is matched by its start. */
+const ADMIN_PAGES = [INVITE_CONTROLS.page, 'Settings', /^Health/] as const;
 const PAGES_NAV = ['Today', 'Sessions', 'Knowledge', 'Agent runs'];
 /** How many projects the filter lists before "N more". */
 const FILTER_LIMIT = 8;
@@ -75,7 +76,7 @@ async function expectProjectsListed(page: Page, scope: ReturnType<Page['locator'
 async function expectNavInView(scope: ReturnType<Page['locator']>, role: 'admin' | 'member'): Promise<void> {
   const pages = scope.getByRole('navigation', { name: 'Pages' });
   for (const label of PAGES_NAV) await expect(pages.getByRole('link', { name: label })).toBeInViewport();
-  await expect(pages.getByRole('link', { name: 'Access' })).toHaveCount(role === 'admin' ? 1 : 0);
+  await expect(pages.getByRole('link', { name: 'Project settings' })).toHaveCount(role === 'admin' ? 1 : 0);
   const admin = scope.getByRole('navigation', { name: 'Admin' });
   if (role === 'admin') for (const label of ADMIN_PAGES) await expect(admin.getByRole('link', { name: label })).toBeInViewport();
   else await expect(admin).toHaveCount(0);
@@ -227,15 +228,6 @@ const PAGES: ReadonlyArray<{ name: string; path: string; rendered: (page: Page) 
       const names = JSON.parse(screensEnv('projectNames')) as string[];
       expect(names.length).toBeGreaterThan(0);
       for (const name of names) await expect(list.getByText(name, { exact: true })).toBeVisible();
-    },
-  },
-  {
-    name: 'settings',
-    path: '/settings',
-    rendered: async (page) => {
-      await expect(page.getByRole('heading', { name: 'Settings' })).toBeVisible();
-      await expect(page.getByRole('switch').first()).toBeVisible();
-      await expect(page.getByLabel('Provider').first()).toBeVisible();
     },
   },
 ];

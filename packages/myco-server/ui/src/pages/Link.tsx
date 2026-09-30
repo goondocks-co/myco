@@ -1,9 +1,12 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useState, type ReactNode } from 'react';
 import { Link as RouterLink } from 'react-router-dom';
-import { PageContainer } from '../components/ui/page-container';
+import { INVITE_CONTROLS } from '@goondocks/myco-shared/member-protocol';
+import { Button, buttonVariants, Card, CommandBlock } from '../design';
 import { useMe } from '../hooks/use-me';
 import { ApiError, postJson, SignedOutError } from '../lib/api';
+import { memberLabel } from '../lib/member-name';
 import { clearPendingLink, holdPendingLink, readPendingLink } from '../lib/pending-link';
+import { PROJECTS_PATH } from '../routes/nav';
 
 type Member = { id: string; label: string | null };
 type Preview = { preview: { member: Member } };
@@ -14,7 +17,7 @@ const REFUSALS: Record<string, string> = {
   identity_taken: 'This GitHub account is already connected to another member.',
   member_linked: 'That member already has a GitHub account connected. Changing it needs the server operator.',
   member_revoked: 'That member has been removed from this server.',
-  link_requires_admin: 'This link can no longer connect an account: this server already has an admin. Ask an admin to connect your GitHub account from the Members page.',
+  link_requires_admin: `This link can no longer connect an account: this server already has an admin. Ask an admin to connect your GitHub account from the ${INVITE_CONTROLS.page} page.`,
 };
 
 /** Reads the key from the URL fragment once, holds it for this tab, and clears it from the address bar. */
@@ -28,12 +31,16 @@ function takeKeyFromFragment(): string | null {
   return readPendingLink();
 }
 
+/** The member a link names, by their name; one whose label is only their id reads as the member the link names. */
+const memberWords = (member: Member): string => memberLabel(member) ?? 'the member this link names';
+
 /** `/link`: connect the signed-in GitHub account to the member the key names. Lives outside the member gate: its visitor is not a member yet. */
 export function LinkPage() {
   const [key] = useState<string | null>(takeKeyFromFragment);
   const me = useMe();
   const [preview, setPreview] = useState<Member | null>(null);
   const [outcome, setOutcome] = useState<{ kind: 'linked'; member: Member } | { kind: 'refused'; text: string } | null>(null);
+  const [pending, setPending] = useState(false);
   const signedIn = me.data !== undefined;
   const signedOut = me.error instanceof SignedOutError;
 
@@ -49,47 +56,65 @@ export function LinkPage() {
 
   const confirm = async () => {
     if (key === null) return;
+    setPending(true);
     try {
       const r = await postJson<Linked>('/auth/link', { key, confirm: true });
       setOutcome({ kind: 'linked', member: r.member });
     } catch (err: unknown) {
       setOutcome({ kind: 'refused', text: refusalText(err) });
     } finally {
+      setPending(false);
       clearPendingLink();
     }
   };
 
+  let body: ReactNode = null;
+  if (key === null) {
+    body = (
+      <>
+        <p className="t-body text-muted">There is no link to complete here. Ask an admin of this server for a link from the {INVITE_CONTROLS.page} page.</p>
+        <CommandBlock caption="Setting up a new server? On a machine that has joined it, run:" command="myco member link-github" />
+      </>
+    );
+  } else if (outcome?.kind === 'linked') {
+    body = (
+      <>
+        <p className="t-body text-ink">Connected to <strong className="font-semibold">{memberWords(outcome.member)}</strong>.</p>
+        <RouterLink to={PROJECTS_PATH} className={buttonVariants({ variant: 'primary', className: 'self-center' })}>Open Projects</RouterLink>
+      </>
+    );
+  } else if (outcome?.kind === 'refused') {
+    body = <p role="alert" className="t-body text-bad">{outcome.text}</p>;
+  } else if (signedOut) {
+    body = (
+      <>
+        <p className="t-body text-muted">Sign in with the GitHub account you want to connect; you will come back here.</p>
+        <a href="/auth/login" className={buttonVariants({ variant: 'primary', className: 'self-center' })}>Sign in with GitHub</a>
+      </>
+    );
+  } else if (me.isPending) {
+    body = <p role="status" className="t-body text-muted">Checking your sign-in…</p>;
+  } else if (preview === null) {
+    body = <p role="status" className="t-body text-muted">Checking the link…</p>;
+  } else {
+    body = (
+      <>
+        <p className="t-body text-ink">
+          Connect <strong className="font-semibold">@{me.data?.login || me.data?.sub}</strong> to the member <strong className="font-semibold">{memberWords(preview)}</strong>?
+        </p>
+        <p className="t-small text-muted">Only continue if this link is meant for you: one you asked the Myco CLI for yourself, or one an admin of this server sent you. The account is fixed once connected.</p>
+        <Button variant="primary" className="self-center" pending={pending} onClick={() => void confirm()}>Connect this account</Button>
+      </>
+    );
+  }
+
   return (
-    <PageContainer variant="narrow" className="flex min-h-screen flex-col items-center justify-center gap-4 p-gutter text-center">
-      <h1 className="font-serif text-2xl text-on-surface">Connect your GitHub account</h1>
-      {key === null && <p className="font-sans text-sm text-on-surface-variant">There is no link to complete here. Ask an admin of this server for a link from the Members page. Setting up a new server? Run <code className="font-mono">myco member link-github</code> on a machine that has joined it.</p>}
-      {key !== null && signedOut && (
-        <>
-          <p className="max-w-md font-sans text-sm text-on-surface-variant">Sign in with the GitHub account you want to connect; you will come back here.</p>
-          <a href="/auth/login" className="rounded-md bg-primary px-4 py-2 font-sans text-sm text-on-primary transition-opacity hover:opacity-90">Sign in with GitHub</a>
-        </>
-      )}
-      {key !== null && me.isPending && <p className="font-sans text-sm text-on-surface-variant">Checking your sign-in…</p>}
-      {key !== null && signedIn && outcome === null && preview === null && <p className="font-sans text-sm text-on-surface-variant">Checking the link…</p>}
-      {key !== null && signedIn && outcome === null && preview !== null && (
-        <>
-          <p className="max-w-md font-sans text-sm text-on-surface">
-            Connect <strong>@{me.data!.login || me.data!.sub}</strong> to the member <strong>{preview.label ?? preview.id}</strong> <span className="font-mono text-xs text-on-surface-variant">({preview.id})</span>?
-          </p>
-          <p className="max-w-md font-sans text-xs text-on-surface-variant">Only continue if this link is meant for you: one you asked the Myco CLI for yourself, or one an admin of this server sent you. The account is fixed once connected.</p>
-          <button type="button" onClick={() => void confirm()} className="rounded-md bg-primary px-4 py-2 font-sans text-sm text-on-primary transition-opacity hover:opacity-90">
-            Connect this account
-          </button>
-        </>
-      )}
-      {outcome?.kind === 'linked' && (
-        <>
-          <p className="font-sans text-sm text-on-surface">Connected to <strong>{outcome.member.label ?? outcome.member.id}</strong>.</p>
-          <RouterLink to="/projects" className="rounded-md bg-primary px-4 py-2 font-sans text-sm text-on-primary transition-opacity hover:opacity-90">Open Projects</RouterLink>
-        </>
-      )}
-      {outcome?.kind === 'refused' && <p className="max-w-md font-sans text-sm text-tertiary">{outcome.text}</p>}
-    </PageContainer>
+    <main className="flex min-h-screen items-center justify-center bg-bg p-gutter">
+      <Card className="flex w-full max-w-measure flex-col gap-s4 p-s6 text-center">
+        <h1 className="t-display text-ink">Connect your GitHub account</h1>
+        {body}
+      </Card>
+    </main>
   );
 }
 
