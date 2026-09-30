@@ -1,6 +1,5 @@
 import { describe, expect, it } from 'bun:test';
 import { deployWords, queuedWords } from '../../packages/myco-server/ui/src/pages/AgentRuns';
-import { describeActivity } from '../../packages/myco-server/ui/src/pages/ProjectHome';
 import { HELD_BY_WORDS } from '../../packages/myco-server/src/core/limits';
 
 describe('a queued run in the reader\'s words', () => {
@@ -21,11 +20,5 @@ describe('a queued run in the reader\'s words', () => {
     expect(deployWords({ replaced: true, replaces: null })).toBe('replaced during a deploy');
     expect(deployWords({ replaced: false, replaces: 'run_abc' })).toBe('retry of run_abc');
     expect(deployWords({ replaced: false, replaces: null })).toBeNull();
-  });
-
-  it('counts waiting runs on the home\'s activity line', () => {
-    expect(describeActivity(1, 1, 2)).toBe('1 open session · 1 run running · 2 waiting');
-    expect(describeActivity(0, 0, 1)).toBe('1 waiting');
-    expect(describeActivity(0, 0)).toBe('Quiet right now — nothing running.');
   });
 });

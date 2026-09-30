@@ -1,6 +1,6 @@
 import { INVITE_CONTROLS } from '@goondocks/myco-shared/member-protocol';
 import {
-  Activity, Bot, KeyRound, LayoutDashboard, ListChecks, MessageSquare, Settings2, Sprout, Users, type LucideIcon,
+  Activity, Bot, KeyRound, ListChecks, Map as MapIcon, MessageSquare, Settings2, Sprout, Sun, Users, type LucideIcon,
 } from 'lucide-react';
 
 /** A page under a project, reached at `/p/:project<suffix>`. */
@@ -13,12 +13,16 @@ export interface ProjectPage {
   admin?: true;
 }
 
+/** The code map's page under a project: where Knowledge will hold it. */
+export const CODE_MAP_SUFFIX = '/knowledge/map';
+
 /** The pages under a project, in nav order. */
 export const PROJECT_PAGES: readonly ProjectPage[] = [
-  { label: 'Overview', icon: LayoutDashboard, suffix: '' },
+  { label: 'Today', icon: Sun, suffix: '' },
   { label: 'Sessions', icon: MessageSquare, suffix: '/sessions' },
   { label: 'Spores', icon: Sprout, suffix: '/spores' },
   { label: 'Plans', icon: ListChecks, suffix: '/plans' },
+  { label: 'Code map', icon: MapIcon, suffix: CODE_MAP_SUFFIX },
   { label: 'Agent runs', icon: Bot, suffix: '/runs' },
   { label: 'Access', icon: KeyRound, suffix: '/access', admin: true },
 ];
@@ -70,14 +74,30 @@ export const MY_MACHINES_PATH = '/access';
  * one. The project filter can be cleared only on one of these: until a page
  * has a form that spans every project, there is nothing to clear it to.
  */
-export const ALL_PROJECTS_FORMS: Readonly<Record<string, string>> = {};
+export const ALL_PROJECTS_FORMS: Readonly<Record<string, string>> = { '': '/' };
+
+/** The suffix of the page whose all-projects form is at this path, or null when the path is no such form. */
+export function allProjectsSuffix(pathname: string, forms: Readonly<Record<string, string>> = ALL_PROJECTS_FORMS): string | null {
+  const path = pathname.replace(/(.)\/+$/, '$1');
+  return Object.entries(forms).find(([, form]) => form === path)?.[0] ?? null;
+}
+
+/**
+ * Where a page link in the nav leads: the page's all-projects form while the
+ * path is unscoped and the page has one, else the page under `projectId`.
+ */
+export function pageHref(page: Pick<ProjectPage, 'suffix'>, pathname: string, projectId: string, forms: Readonly<Record<string, string>> = ALL_PROJECTS_FORMS): string {
+  const all = forms[page.suffix];
+  if (projectOf(pathname) === null && all !== undefined) return all;
+  return projectPath(projectId, page.suffix);
+}
 
 /**
  * The query parameters that filter a list. They survive a change of project, so
  * a filtered list stays filtered; anything else (the open tab, the turn, the
  * page offset) belongs to the record or the page left behind and is dropped.
  */
-export const FILTER_KEYS: readonly string[] = ['q', 'agent', 'member', 'type', 'status', 'state', 'window', 'branch'];
+export const FILTER_KEYS: readonly string[] = ['q', 'agent', 'member', 'type', 'status', 'state', 'window', 'branch', 'day'];
 
 const PROJECT_PATH = /^\/p\/([^/]+)(?:\/([^/]+))?/;
 
@@ -92,9 +112,18 @@ export function projectOf(pathname: string): string | null {
   }
 }
 
-/** The page under a project a path is on (`/sessions`, `/runs`), without the record it names, or '' for the project's home. */
+/**
+ * The page under a project a path is on (`/sessions`, `/knowledge/map`), without
+ * the record it names, or '' for the project's home. A page whose suffix runs
+ * over more than one segment is matched whole; any other path is its first.
+ */
 export function pageSuffix(pathname: string): string {
-  const section = PROJECT_PATH.exec(pathname)?.[2] ?? '';
+  const match = PROJECT_PATH.exec(pathname);
+  if (match === null) return '';
+  const rest = pathname.slice(`/p/${match[1]}`.length).replace(/\/+$/, '');
+  const page = PROJECT_PAGES.filter((p) => p.suffix.split('/').length > 2).find((p) => rest === p.suffix || rest.startsWith(`${p.suffix}/`));
+  if (page !== undefined) return page.suffix;
+  const section = match[2] ?? '';
   return section === '' ? '' : `/${section}`;
 }
 
@@ -114,10 +143,15 @@ export function keptFilters(search: string): string {
 /**
  * Where picking a project in the filter leads: the same page under that
  * project, keeping the list's filters and dropping the record that was open.
- * From a page that spans the server, it leads to the project's home.
+ * From a page's all-projects form it leads to the same page under the project,
+ * filters kept; from any other page that spans the server, to the project's
+ * home.
  */
 export function switchProjectHref(location: { pathname: string; search: string }, projectId: string): string {
-  if (projectOf(location.pathname) === null) return projectPath(projectId);
+  if (projectOf(location.pathname) === null) {
+    const suffix = allProjectsSuffix(location.pathname);
+    return suffix === null ? projectPath(projectId) : `${projectPath(projectId, suffix)}${keptFilters(location.search)}`;
+  }
   return `${projectPath(projectId, pageSuffix(location.pathname))}${keptFilters(location.search)}`;
 }
 
@@ -132,6 +166,7 @@ export function clearProjectHref(
 }
 
 const SERVER_TITLES: Readonly<Record<string, string>> = {
+  ...Object.fromEntries(Object.entries(ALL_PROJECTS_FORMS).map(([suffix, form]) => [form.replace(/\/+$/, ''), PROJECT_PAGES.find((page) => page.suffix === suffix)?.label ?? 'Not found'])),
   [PROJECTS_PATH]: 'Projects',
   ...Object.fromEntries(ADMIN_PAGES.flatMap((page) => [page, ...(page.children ?? [])]).map((page) => [page.to, page.label])),
 };

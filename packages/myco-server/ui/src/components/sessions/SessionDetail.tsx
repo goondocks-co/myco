@@ -29,6 +29,7 @@ import { TurnTimeline } from './TurnTimeline';
 import { DeleteSession } from './DeleteSession';
 import { EndSession } from './EndSession';
 import { useIsAdmin } from '../../hooks/use-me';
+import { sessionHeadingText } from '../../lib/session-text';
 
 const TABS = [
   { id: 'conversation', label: 'Conversation' },
@@ -205,7 +206,7 @@ function Header({ projectId, session, release, untitled }: { projectId: string; 
         <span className="font-sans text-[10px] uppercase tracking-wide text-on-surface-variant">Session · {open ? 'open' : 'ended'}</span>
       </div>
       <div className="flex flex-wrap items-center gap-3">
-        <h2 className="myco-display-lg m-0 min-w-0 text-on-surface">{session.label}</h2>
+        <h2 className="myco-display-lg m-0 min-w-0 text-on-surface">{sessionHeadingText(session)}</h2>
         {session.agent !== null && <Badge variant="outline" className="font-mono text-[10px] px-1.5 py-0">{session.agent}</Badge>}
         {session.branch !== null && <Badge variant="secondary" className="font-mono text-[10px] px-1.5 py-0">{session.branch}</Badge>}
         <ReleaseChip release={release} />

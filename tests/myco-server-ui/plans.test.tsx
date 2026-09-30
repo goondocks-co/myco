@@ -9,7 +9,6 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 
 import App from '../../packages/myco-server/ui/src/App';
 import { AppearanceProvider } from '../../packages/myco-server/ui/src/providers/appearance';
-import { orderPlans } from '../../packages/myco-server/ui/src/pages/ProjectHome';
 import { planPath } from '../../packages/myco-server/ui/src/hooks/use-plans';
 
 const ME = { sub: '583231', login: 'octocat', member: { id: 'mem_1', label: 'chris', role: 'admin' as const } };
@@ -127,19 +126,7 @@ describe('the plans page', () => {
   });
 });
 
-describe('the project overview\'s plan panel', () => {
-  it('keeps only the plans still open, in progress ahead of active, then the most recently edited', () => {
-    const rows = [
-      plan({ planKey: 'a', status: 'completed', updatedAt: 500 }),
-      plan({ planKey: 'b', status: 'active', updatedAt: 100 }),
-      plan({ planKey: 'c', status: 'in_progress', updatedAt: 50 }),
-      plan({ planKey: 'd', status: 'abandoned', updatedAt: 900 }),
-      plan({ planKey: 'e', status: 'in_progress', updatedAt: 400 }),
-    ];
-    // A finished or abandoned plan is not still open, whatever its edit stamp says.
-    expect(orderPlans(rows).map((p) => p.planKey)).toEqual(['e', 'c', 'b']);
-  });
-
+describe('a plan\'s own link', () => {
   it('opens one plan at its own session rather than at the whole list', () => {
     expect(planPath('a/b', plan({ planKey: 'p&1', sessionId: 's 1' })))
       .toBe('/p/a%2Fb/sessions/s%201?tab=plans&plan=p%261');

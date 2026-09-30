@@ -7,10 +7,10 @@
  * It composes a temporary dashboard directory from `packages/myco-server/ui/dist`
  * and, when present, the design specimen build at `target/ui-screens/specimen`
  * (served under `/specimen/`). It then boots the server on a temporary volume,
- * seeds `fixture.ts` with every time set back from `FIXTURE_NOW`, and prints
+ * seeds `fixture.ts` with every time set back from the fixture's now, and prints
  * ONE JSON line on stdout:
  *
- *   {"url": ..., "ownerCookie": ..., "memberCookie": ..., "projects": [...], ...}
+ *   {"url": ..., "ownerCookie": ..., "memberCookie": ..., "projects": [...], "now": ..., ...}
  *
  * Each cookie is a complete `name=value` pair signed with the fixture's session
  * secret: the owner's is an admin's, the member's a non-admin's. An owner POST
@@ -25,7 +25,7 @@ import { fileURLToPath } from 'node:url';
 import { renderMigrationFiles } from '@myco-server-worker/db/migrate.js';
 import { signSession, SESSION_COOKIE } from '@myco-server-worker/auth/owner/cookie.js';
 import { serve } from '@myco-server-worker/entry/bun.js';
-import { FIXTURE_NOW } from './env.ts';
+import { fixtureNowAt } from './env.ts';
 import { OWNER, READER, seedIdentities, seedThroughServer, type FixtureMember } from './fixture.ts';
 
 /** The fixture's session secret. It signs only cookies for this throwaway volume. */
@@ -104,8 +104,9 @@ async function main(): Promise<void> {
     process.on('SIGINT', () => void stop());
     process.on('SIGTERM', () => void stop());
 
-    const seeded = await seedThroughServer({ url, ownerCookie, databasePath, tokens, now: FIXTURE_NOW });
-    process.stdout.write(`${JSON.stringify({ url, ownerCookie, memberCookie, specimen, ...seeded })}\n`);
+    const fixtureNow = fixtureNowAt(now);
+    const seeded = await seedThroughServer({ url, ownerCookie, databasePath, tokens, now: fixtureNow });
+    process.stdout.write(`${JSON.stringify({ url, ownerCookie, memberCookie, specimen, now: fixtureNow, ...seeded })}\n`);
   } catch (error) {
     cleanup();
     throw error;

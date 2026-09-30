@@ -98,7 +98,7 @@ export function AccountMenu({ name, login, role, machinesHref, onSignOut, compac
           <>
             <span className="flex min-w-0 flex-1 flex-col">
               <span className="truncate t-control font-medium text-ink">{name}</span>
-              {login != null && login !== '' && <span className="truncate t-meta text-muted">@{login}</span>}
+              {login != null && login !== '' && login !== name && <span className="truncate t-meta text-muted">@{login}</span>}
             </span>
             <ChevronsUpDown aria-hidden className="size-s4 shrink-0 text-faint" />
           </>

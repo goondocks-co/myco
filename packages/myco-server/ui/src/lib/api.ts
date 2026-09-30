@@ -1,3 +1,5 @@
+import type { CaptureRow } from '../features/today/wire';
+
 /** A refusal or failure answered by the server, carrying the status and the parsed body when there was one. */
 export class ApiError extends Error {
   readonly detail: string | undefined;
@@ -75,6 +77,10 @@ export interface StatusResponse {
   /** Transcripts stored and not yet read into sessions, or null where the store could not be read. */
   transcriptBacklog?: { transcripts: number; bytes: number; imported: { transcripts: number; bytes: number } } | null;
   projects: ProjectReceipt[];
+  /** When each machine's agents last sent anything, most recent first. */
+  capture?: CaptureRow[];
+  /** The facts above that could not be read, so their absence says nothing. */
+  unavailable?: string[];
 }
 
 /** A harness a worker reported offering, and whether the worker reported it logged in. Its own probe, not a provider check. */

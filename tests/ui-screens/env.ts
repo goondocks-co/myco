@@ -12,6 +12,8 @@ export const SCREENS_ENV = {
   projectNames: 'MYCO_SCREENS_PROJECT_NAMES',
   /** The fixture's projects, as JSON `{ projectId, name }` pairs, for the checks that open a project's pages. */
   projects: 'MYCO_SCREENS_PROJECTS',
+  /** The fixture's "now", in epoch milliseconds, as the launcher seeded it. */
+  now: 'MYCO_SCREENS_NOW',
 } as const;
 
 /** The line the launcher prints once the fixture is seeded. */
@@ -21,6 +23,7 @@ export interface LaunchInfo {
   memberCookie: string;
   specimen: boolean;
   projects: Array<{ projectId: string; name: string }>;
+  now: number;
 }
 
 export function screensEnv(name: keyof typeof SCREENS_ENV): string {
@@ -29,13 +32,30 @@ export function screensEnv(name: keyof typeof SCREENS_ENV): string {
   return value;
 }
 
+/** The time of day, in UTC, the fixture's "now" always falls at: noon in the fixture's time zone in summer, 11:00 in winter. */
+const FIXTURE_HOUR_UTC = 16;
+
 /**
- * The fixture's "now": every seeded time is set back from it, and the browser's
- * clock is held at it, so relative times and day groups read the same on every
- * run. Sign-in cookies and member tokens take the real time, since the server
- * checks them against its own clock.
+ * The fixture's "now": the latest 16:00 UTC at or before `realNow`. Every
+ * seeded time is set back from it and the browser's clock is held at it, so
+ * relative times and day groups read the same on every run. It follows the real
+ * date, and so never falls more than a day behind the server's own clock: the
+ * reads the server windows by its own time (capture recency, Needs you) keep
+ * finding the seeded rows on any day the checks run. Sign-in cookies and member
+ * tokens take the real time, since the server checks them against its own clock.
  */
-export const FIXTURE_NOW = Date.UTC(2026, 8, 29, 16, 0, 0);
+export function fixtureNowAt(realNow: number): number {
+  const date = new Date(realNow);
+  const today = Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate(), FIXTURE_HOUR_UTC);
+  return today <= realNow ? today : today - 24 * 3_600_000;
+}
+
+/** The fixture's "now" as the launcher seeded it, read from the environment it handed every worker. */
+export function fixtureNow(): number {
+  const seeded = Number(screensEnv('now'));
+  if (!Number.isSafeInteger(seeded)) throw new Error(`${SCREENS_ENV.now} is not an instant`);
+  return seeded;
+}
 
 /** The browser's time zone and locale on fixture runs, so dates format the same on every machine. */
 export const FIXTURE_TIMEZONE = 'America/Detroit';

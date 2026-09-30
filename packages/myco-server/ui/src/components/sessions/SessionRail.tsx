@@ -11,6 +11,7 @@ import { useMediaQuery } from '../../hooks/use-media-query';
 import { useActivity, useSessions, type SessionListFilters, type SessionSummaryRow } from '../../hooks/use-sessions';
 import { formatDateTime, formatRelative } from '../../lib/format';
 import { sectionRowsWithOrder } from '../../lib/section-rows';
+import { sessionHeadingText } from '../../lib/session-text';
 
 /** Rows that stand in for the rail while the list is still on its way. */
 const SKELETON_ROWS = 5;
@@ -20,11 +21,11 @@ const SessionCard = forwardRef<HTMLDivElement, { session: SessionSummaryRow; isS
     const open = session.endedAt === null;
     const moved = open ? session.lastReceivedAt : session.endedAt;
     return (
-      <Row ref={ref} isActive={isSelected} isCursor={isCursor} accent="sage" onClick={onOpen} aria-label={`Session: ${session.label}`} data-selected={isSelected || undefined}>
+      <Row ref={ref} isActive={isSelected} isCursor={isCursor} accent="sage" onClick={onOpen} aria-label={`Session: ${sessionHeadingText(session)}`} data-selected={isSelected || undefined}>
         <div className="flex items-start justify-between gap-3">
           <div className="flex min-w-0 flex-1 items-start gap-2">
             <StatusDot tone={open ? 'sage' : 'outline'} pulse={open} className="mt-1.5 shrink-0" />
-            <h3 className="m-0 min-w-0 truncate font-serif text-sm italic leading-snug text-on-surface">{session.label}</h3>
+            <h3 className="m-0 min-w-0 truncate font-serif text-sm italic leading-snug text-on-surface">{sessionHeadingText(session)}</h3>
           </div>
           <span className="shrink-0 whitespace-nowrap font-mono text-[10px] text-on-surface-variant" title={`${open ? 'last activity' : 'ended'} ${formatDateTime(moved)}`}>
             {open ? 'last' : 'ended'} {formatRelative(moved)}
