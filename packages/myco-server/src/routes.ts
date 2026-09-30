@@ -14,7 +14,7 @@ import { handleArchiveProject, handleCreateProject, handleProjects, handleUnarch
 import { handleMemberStatus, handleStatus } from './api/status.js';
 import { handleCreateMemberProject, handleMemberProjectList } from './api/member-projects.js';
 import { handleDiagnostics } from './api/diagnostics.js';
-import { handleProjectSearch } from './api/search.js';
+import { handleProjectSearch, handleSearchAcross } from './api/search.js';
 import { handleWake } from './api/wake.js';
 import { handleMaintenanceStatus, handleRunMaintenance } from './api/maintenance.js';
 import { handleSetTitlingBackfill, handleTitlingBackfill } from './api/titling-backfill.js';
@@ -253,6 +253,7 @@ export const ROUTES: readonly Route[] = [
   { method: 'GET', path: '/api/sessions', auth: 'session', authority: 'member', handler: handleSessionsAcross },
   { method: 'GET', path: '/api/spores', auth: 'session', authority: 'member', handler: handleSporesAcross },
   { method: 'GET', path: '/api/plans', auth: 'session', authority: 'member', handler: handlePlansAcross },
+  { method: 'GET', path: '/api/search', auth: 'session', authority: 'member', handler: handleSearchAcross },
   { method: 'GET', path: '/api/work', auth: 'session', authority: 'member', handler: handleWork },
   { method: 'GET', path: '/api/attention', auth: 'session', authority: 'admin', handler: handleAttention },
   { method: 'GET', path: '/api/settings', auth: 'session', authority: 'member', handler: handleSettings },

@@ -1,5 +1,5 @@
 import { expect } from 'bun:test';
-import type { SearchAnswer } from '@myco-server-worker/read/search-types.js';
+import type { SearchAcrossAnswer, SearchAnswer } from '@myco-server-worker/read/search-types.js';
 import { sha256HexOf } from '@myco-server-worker/hash.js';
 import { expectPersisted, lit, type ParityScenario, type ParityTarget } from '../harness.ts';
 
@@ -65,6 +65,27 @@ export const search: ParityScenario = {
     await target.sql(`INSERT INTO projects(project_id,name,created_at) VALUES (${lit(foreign)},'Foreign',${stamp})`);
     const foreignRes = await fetch(`${target.url}/api/projects/${foreign}/search?q=${word}`, { headers: target.ownerHeaders() });
     expect((await foreignRes.json() as SearchAnswer).results).toEqual([]);
+
+    // Across Projects: one statement per type over the whole set, full text only.
+    const across = async (query: string, projects: string[] = [], extra: Record<string, string> = {}) => {
+      const params = new URLSearchParams({ q: query, limit: '20', ...extra });
+      for (const project of projects) params.append('project', project);
+      const res = await fetch(`${target.url}/api/search?${params}`, { headers: target.ownerHeaders() });
+      return { status: res.status, body: await res.json() as SearchAcrossAnswer };
+    };
+    const found = (answer: SearchAcrossAnswer) => answer.results.map((r) => `${r.projectId}/${r.type}/${r.id}`).sort();
+    await target.sql(`INSERT INTO spores (project_id, id, agent_id, observation_type, status, content, created_at) VALUES (${lit(foreign)}, ${lit(`sp-${foreign}`)}, 'user', 'gotcha', 'active', ${lit(`${word} archived`)}, ${stamp})`);
+    await target.sql(`UPDATE projects SET archived_at = ${stamp}, archived_by = 'parity' WHERE project_id = ${lit(foreign)}`);
+    const everywhere = await across(word);
+    expect(everywhere.status).toBe(200);
+    expect(everywhere.body).toMatchObject({ mode: 'fts', provider_unavailable: false, coverage: { pending_blobs: 0 } });
+    expect(found(everywhere.body)).toEqual(indexed.results.map((r) => `${target.projectId}/${r.type}/${r.id}`).sort());
+    expect(found((await across(word, [foreign])).body)).toEqual([`${foreign}/spore/sp-${foreign}`]);
+    expect(found((await across(`${word} distantneedle`, [target.projectId, foreign])).body))
+      .toEqual([`${target.projectId}/plan/${plan}`, `${target.projectId}/prompt/${prompt}`, `${target.projectId}/response/${response}`].sort());
+    expect((await across(word, [], { mode: 'semantic' })).status).toBe(400);
+    expect((await across(word, [`absent-${stamp}`])).status).toBe(404);
+    expect((await fetch(`${target.url}/api/search?q=${word}`, { headers: target.memberHeaders() })).status).toBe(401);
     await target.sql(`UPDATE sessions SET title = 'changed title' WHERE project_id = ${lit(target.projectId)} AND session_id = ${lit(session)}`);
     await target.sql(`DELETE FROM skill_records WHERE project_id = ${lit(target.projectId)} AND id = ${lit(word)}`);
     expect((await owner(word)).results.map((r) => r.type).sort()).toEqual(['plan', 'prompt', 'response', 'spore']);
