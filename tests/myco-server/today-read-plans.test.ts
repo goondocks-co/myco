@@ -75,8 +75,8 @@ function reading<T extends { sql: string }>(read: readonly T[], table: string): 
   return matched;
 }
 
-/** Steps that read a table whole: a SCAN of anything but the handful of Projects. */
-const tableScans = (plan: string): string[] => plan.split('\n').filter((step) => /\bSCAN\b/.test(step) && !/\bprojects\b/.test(step)).map((s) => s.trim());
+/** Steps that read a table whole: a SCAN of anything but the handful of Projects, by name or by the `p` a Project filter reads it as. */
+const tableScans = (plan: string): string[] => plan.split('\n').filter((step) => /\bSCAN\b/.test(step) && !/\bSCAN (?:projects|p)\b/.test(step)).map((s) => s.trim());
 const sortsRows = (plan: string): boolean => /TEMP B-TREE FOR (?:RIGHT PART OF |LAST TERM OF )?ORDER BY/.test(plan);
 
 const ALL: ProjectSet = { all: true };
