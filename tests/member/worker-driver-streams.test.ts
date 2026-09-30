@@ -17,6 +17,7 @@ import { dirname, join } from 'node:path';
 import { claudeCodeDriver } from '@myco/runner/drivers/claude-code.js';
 import { activeDeveloperDir, codexDriver, codexDriverWith, developerDirVerdict, SYSTEM_DEVELOPER_DIR_PROBE, RUN_FEATURES_OFF, RUN_PERMISSIONS, runFilesystem, sourceGitEnvironment, type DeveloperDirProbe } from '@myco/runner/drivers/codex.js';
 import { jsonLines } from '@myco/runner/drivers/stream.js';
+import { confinedGitEnv } from '@myco/runner/drivers/source-git.js';
 import { resolveMycoHome } from '@myco/paths/home.js';
 import { RUN_REPOSITORY_DIGESTS_FILE, RUN_REPOSITORY_DIR } from '@goondocks/myco-shared/repository';
 import { discardRunDir, writeRunDir } from '@myco/runner/mcp-config.js';
@@ -416,10 +417,15 @@ describe('the developer directory a Codex source run may read (#1475)', () => {
   });
 
   it('puts the developer directory\'s own `git` first on a source run\'s PATH, ahead of the xcrun shim (#1481)', () => {
-    expect(sourceGitEnvironment(TOOLS, '/usr/bin:/bin')).toEqual({
-      GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_NOSYSTEM: '1', DEVELOPER_DIR: TOOLS, PATH: `${TOOLS}/usr/bin:/usr/bin:/bin`,
-    });
-    expect(sourceGitEnvironment(null, '/usr/bin:/bin')).toEqual({ GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_NOSYSTEM: '1' });
+    expect(sourceGitEnvironment(TOOLS, '/usr/bin:/bin')).toEqual({ ...confinedGitEnv(), DEVELOPER_DIR: TOOLS, PATH: `${TOOLS}/usr/bin:/usr/bin:/bin` });
+    expect(sourceGitEnvironment(null, '/usr/bin:/bin')).toEqual(confinedGitEnv());
+  });
+
+  it('runs a source run\'s Git under the confinement the other harnesses\' `git` sets, so it reads no file of the user\'s the sandbox hides', () => {
+    const env = sourceGitEnvironment(TOOLS, '/usr/bin:/bin');
+    const config = Object.fromEntries(Array.from({ length: Number(env.GIT_CONFIG_COUNT) }, (_, at) => [env[`GIT_CONFIG_KEY_${at}`], env[`GIT_CONFIG_VALUE_${at}`]]));
+    expect({ global: env.GIT_CONFIG_GLOBAL, system: env.GIT_CONFIG_NOSYSTEM, excludes: config['core.excludesFile'], attributes: config['core.attributesFile'] })
+      .toEqual({ global: '/dev/null', system: '1', excludes: '/dev/null', attributes: '/dev/null' });
   });
 
   it('is read by a source run alone, whatever directory is handed to the profile', () => {
@@ -573,7 +579,7 @@ describe('the Codex driver', () => {
     // Git runs from the developer directory on macOS, the one the run reads, and
     // must not stop at a global configuration the sandbox hides.
     expect(access(join(TOOLS, 'usr', 'bin', 'git'))).toBe('read');
-    expect(objectAt(objectAt(config, 'shell_environment_policy'), 'set')).toEqual({ GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_NOSYSTEM: '1', DEVELOPER_DIR: TOOLS, PATH: `${TOOLS}/usr/bin:${process.env.PATH}` });
+    expect(objectAt(objectAt(config, 'shell_environment_policy'), 'set')).toEqual({ ...confinedGitEnv(), DEVELOPER_DIR: TOOLS, PATH: `${TOOLS}/usr/bin:${process.env.PATH}` });
   });
 
   it('tells a run that reads no source nothing about Git, and grants it no developer directory', async () => {
@@ -603,7 +609,7 @@ describe('the Codex driver', () => {
     const config = parse(readFileSync(join(run.scratchDir, 'codex-home', 'config.toml'), 'utf8')) as Record<string, unknown>;
     const filesystem = objectAt(objectAt(objectAt(config, 'permissions'), RUN_PERMISSIONS), 'filesystem') as Record<string, string | undefined>;
     expect({ developerDir: filesystem[TOOLS], set: objectAt(objectAt(config, 'shell_environment_policy'), 'set') })
-      .toEqual({ developerDir: undefined, set: { GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_NOSYSTEM: '1' } });
+      .toEqual({ developerDir: undefined, set: confinedGitEnv() });
   });
 
   it('holds a run to its own sandbox whatever sandbox, permission profile or web search the machine configured', async () => {

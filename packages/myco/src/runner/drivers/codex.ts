@@ -28,6 +28,7 @@ import type { Driver, RunEvent, RunSpec } from '../events.js';
 import { MCP_SERVER_NAME } from '../mcp-config.js';
 import { workerLogLine } from '../log.js';
 import { freshRunHome } from './run-home.js';
+import { confinedGitEnv } from './source-git.js';
 import { resolveMycoHome } from '../../paths/home.js';
 import { jsonLines, numberOf, recordOf, startHarness, stringOf } from './stream.js';
 
@@ -243,8 +244,10 @@ export const RUN_SHELL_ENVIRONMENT = { inherit: 'all', ignore_default_excludes: 
 /**
  * What a source run's commands are told besides, so its `git` runs in the
  * sandbox: the sandbox hides the user's home, and Git stops at a global
- * configuration it cannot open rather than reading on without it, so a run's
- * Git reads the checkout's own configuration and nothing of the machine's. On
+ * configuration it cannot open rather than reading on without it, and warns at
+ * an ignore or attributes file it cannot open, so a run's Git runs under the
+ * confinement the other harnesses' `git` sets (`confinedGitEnv`) and reads the
+ * checkout's own configuration and nothing of the machine's. On
  * macOS the shim is pointed at the developer directory the run was granted,
  * so the directory it runs from is the one `activeDeveloperDir` checked, and
  * that directory's own `git` comes first on PATH, which holds only in a shell
@@ -253,7 +256,7 @@ export const RUN_SHELL_ENVIRONMENT = { inherit: 'all', ignore_default_excludes: 
  */
 export function sourceGitEnvironment(developerDir: string | null, path: string = process.env.PATH ?? ''): Record<string, string> {
   return {
-    GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_NOSYSTEM: '1',
+    ...confinedGitEnv(),
     ...(developerDir === null ? {} : {
       DEVELOPER_DIR: developerDir,
       // Its own `git` first: the `/usr/bin` shim runs xcrun, which warns on every call that it cannot write its cache
