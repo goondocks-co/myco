@@ -155,6 +155,8 @@ async function expectPlanPage(page: Page, viewport: ViewportName, role: 'admin' 
   await expect(written.getByRole('link', { name: 'Open the session →' })).toBeVisible();
   await expect(page.getByRole('combobox', { name: 'Plan status' })).toHaveCount(role === 'admin' ? 1 : 0);
   await expect(plan.locator('[data-facts]').getByRole('button', { name: 'Copy plan key' })).toBeVisible();
+  // The plan is read by its key, so its tags come with it.
+  if (onFixture()) await expect(plan.locator('[data-facts]')).toContainText('Tagsdashboardoutcomes');
 }
 
 /** The page's own checks, then its screenshot. */
@@ -217,7 +219,7 @@ test.describe('Knowledge', () => {
       const { context, page, watch } = await openPage(browser, { path: '/knowledge/plans', viewport, mode, cookie: screensEnv(cookie) });
       try {
         await column(page, 'in_progress').getByRole('link', { name: PLAN_TITLE, exact: true }).click();
-        await expect(page).toHaveURL(/\/plans\/[0-9a-f-]+\?session=/);
+        await expect(page).toHaveURL(/\/plans\/[0-9a-f-]+$/);
         await expectPlanPage(page, viewport, role);
         await settle(page, `plan-${role}`, viewport, mode);
         expectQuiet(watch);

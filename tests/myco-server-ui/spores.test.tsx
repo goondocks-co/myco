@@ -39,7 +39,7 @@ const MEMBERS = { members: [
 const spore = (over: Record<string, unknown> = {}) => ({
   projectId: MYCO, id: 'gotcha-1a2b3c4d', agentId: 'agent_1', sessionId: 's1', promptId: null, observationType: 'gotcha', status: 'active',
   content: 'The cache lies after a rebase.\n\nClear it on checkout.', context: null, importance: 8, filePath: 'src/cache.ts', tags: null,
-  contentHash: null, properties: null, author: 'run_4f1c9a2e7b', provenanceKind: null, provenanceRef: null,
+  contentHash: null, properties: null, author: 'run_4f1c9a2e7b', authorKind: 'run', provenanceKind: null, provenanceRef: null,
   agentLine: 'The cache lies after a rebase; clear it on checkout.', createdAt: NOW - HOUR, updatedAt: null, embedded: 0, ...over,
 });
 const FACETS = { type: { gotcha: 3, decision: 2, bug_fix: 1 }, project: { [MYCO]: 4, [ATLAS]: 2 } };
@@ -289,7 +289,7 @@ describe('a spore’s article', () => {
     expect(await within(origin).findByText('Flaky test port collision fixed')).toBeTruthy();
     expect(within(origin).getByRole('link', { name: 'Open the session →' }).getAttribute('href')).toBe(`/p/${MYCO}/sessions/s1`);
     expect(within(origin).getByRole('link', { name: 'The turn it came from →' }).getAttribute('href')).toBe(`/p/${MYCO}/sessions/s1?turn=p1`);
-    expect(within(origin).getByRole('link', { name: 'The run that wrote it →' }).getAttribute('href')).toBe(`/p/${MYCO}/runs/run_4f1c9a2e7b`);
+    expect(within(origin).getByRole('link', { name: 'The run that wrote it →' }).getAttribute('href')).toBe(`/p/${MYCO}/work/runs/run_4f1c9a2e7b`);
     const facts = page.querySelector('[data-facts]') as HTMLElement;
     expect(facts.textContent).toContain('Importance8 of 10');
     expect(facts.textContent).toContain('src/cache.ts');
@@ -304,7 +304,7 @@ describe('a spore’s article', () => {
 
   it('names a member who saved it by name, and a spore without its line by its type and day', async () => {
     server(base({
-      [`/api/projects/${MYCO}/spores/gotcha-1a2b3c4d`]: () => article({ status: 'active', author: 'mem_q3Vb8xRk2LmT7wYz', agentLine: null, observationType: 'decision', context: null, tags: null }, { supersededBy: [], supersedes: [] }),
+      [`/api/projects/${MYCO}/spores/gotcha-1a2b3c4d`]: () => article({ status: 'active', author: 'mem_q3Vb8xRk2LmT7wYz', authorKind: 'member', agentLine: null, observationType: 'decision', context: null, tags: null }, { supersededBy: [], supersedes: [] }),
       [`/api/projects/${MYCO}/sessions/s1`]: () => sessionAnswer,
     }));
     mount(`/p/${MYCO}/spores/gotcha-1a2b3c4d`);
@@ -312,6 +312,21 @@ describe('a spore’s article', () => {
     expect(await screen.findByText('Saved by Ada.')).toBeTruthy();
     expect(document.querySelector('[data-spore-replaced]')).toBeNull();
     expect(document.querySelector('[data-spore-lineage]')).toBeNull();
+    expect(rawIdsInPage()).toEqual([]);
+  });
+
+  it('says a spore Myco 1.4 wrote was imported, by the kind the server names, never by the author id’s shape', async () => {
+    server(base({
+      // Imported spores carry the importing member as their author; only the kind tells them apart.
+      [`/api/projects/${MYCO}/spores/gotcha-1a2b3c4d`]: () => article({ author: 'mem_q3Vb8xRk2LmT7wYz', authorKind: 'imported' }, { supersededBy: [], supersedes: [] }),
+      [`/api/projects/${MYCO}/sessions/s1`]: () => sessionAnswer,
+    }));
+    mount(`/p/${MYCO}/spores/gotcha-1a2b3c4d`);
+    await waitFor(() => expect(document.querySelector('[data-spore-author]')).not.toBeNull());
+    const origin = document.querySelector('[data-spore-author]') as HTMLElement;
+    expect(origin.getAttribute('data-spore-author')).toBe('imported');
+    expect(origin.textContent).toBe('Imported from Myco 1.4.');
+    expect(screen.queryByText(/Saved by/)).toBeNull();
     expect(rawIdsInPage()).toEqual([]);
   });
 
@@ -324,8 +339,15 @@ describe('a spore’s article', () => {
 
 describe('the knowledge words', () => {
   it('reads each author, headline, tag list, facet and period', () => {
-    expect([sporeAuthor('run_abc123'), sporeAuthor('mem_q3Vb8xRk2L'), sporeAuthor('eg_1'), sporeAuthor(null), sporeAuthor('agent')]).toEqual([
-      { kind: 'run', runId: 'run_abc123' }, { kind: 'member', memberId: 'mem_q3Vb8xRk2L' }, { kind: 'key' }, { kind: 'unknown' }, { kind: 'unknown' },
+    expect([
+      sporeAuthor({ author: 'run_abc123', authorKind: 'run' }), sporeAuthor({ author: 'mem_q3Vb8xRk2L', authorKind: 'member' }), sporeAuthor({ author: 'mem_q3Vb8xRk2L', authorKind: 'imported' }),
+      sporeAuthor({ author: 'eg_1', authorKind: 'grant' }), sporeAuthor({ author: null, authorKind: null }), sporeAuthor({ author: 'run_abc123' }),
+      // The kind decides, not the id's prefix: a run pruned by retention still reads as a run.
+      sporeAuthor({ author: 'a1b2c3', authorKind: 'run' }),
+    ]).toEqual([
+      { kind: 'run', runId: 'run_abc123' }, { kind: 'member', memberId: 'mem_q3Vb8xRk2L' }, { kind: 'imported' },
+      { kind: 'key' }, { kind: 'unknown' }, { kind: 'unknown' },
+      { kind: 'run', runId: 'a1b2c3' },
     ]);
     expect(sporeHeadline({ agentLine: '  ', observationType: 'trade_off', createdAt: NOW }, NOW)).toEqual({ text: 'Trade-off saved Sep 29', lined: false });
     expect(sporeTags('a, b')).toEqual(['a', 'b']);

@@ -5,7 +5,7 @@ import {
   Button, Card, CopyButton, ErrorState, FactRow, FactsPanel, focusRing, Link, LoadingState, Progress, Select, StatusChip, TypeChip,
 } from '../../design';
 import { useMembers } from '../../hooks/use-access';
-import { usePlan, type PlanWithSession } from '../../hooks/use-knowledge';
+import { usePlan } from '../../hooks/use-knowledge';
 import { useIsAdmin } from '../../hooks/use-me';
 import { useSession, useSetPlanStatus } from '../../hooks/use-sessions';
 import { useNow } from '../../hooks/use-today';
@@ -16,13 +16,12 @@ import { NotFound } from '../../pages/NotFound';
 import { KNOWLEDGE_SUFFIX, PLANS_SUFFIX, projectPath } from '../../routes/nav';
 import { TextOrBlob } from '../sessions/StoredText';
 import { dateTime } from '../sessions/words';
+import type { PlanFields } from './wire';
 import { ago, authorName, PLAN_COLUMNS, planStatusTone, planStatusWord, planTitle, progressParts, progressWords, type PlanStatus } from './words';
 
 export interface PlanPageProps {
   projectId: string;
   planKey: string;
-  /** The session a link says wrote the plan; the page finds it without one, a little slower. */
-  sessionHint: string | null;
   /** The project's name, or null while the dashboard does not know it. */
   projectName: string | null;
 }
@@ -32,8 +31,8 @@ export interface PlanPageProps {
  * got, the plan in full at a readable width, and beside it the session that
  * wrote it and its facts. An admin sets its status here.
  */
-export function PlanPage({ projectId, planKey, sessionHint, projectName }: PlanPageProps) {
-  const plan = usePlan(projectId, planKey, sessionHint);
+export function PlanPage({ projectId, planKey, projectName }: PlanPageProps) {
+  const plan = usePlan(projectId, planKey);
   const now = useNow();
   if (plan.error instanceof ApiError && plan.error.status === 404) return <NotFound />;
   if (plan.data === undefined) {
@@ -43,7 +42,7 @@ export function PlanPage({ projectId, planKey, sessionHint, projectName }: PlanP
   return <Reading plan={plan.data} projectId={projectId} projectName={projectName ?? 'A project'} now={now} />;
 }
 
-function Reading({ plan, projectId, projectName, now }: { plan: PlanWithSession; projectId: string; projectName: string; now: number }) {
+function Reading({ plan, projectId, projectName, now }: { plan: PlanFields; projectId: string; projectName: string; now: number }) {
   const parts = progressParts(plan.progress);
   const admin = useIsAdmin();
   const members = useMembers();
@@ -148,7 +147,7 @@ const STATUS_OPTIONS = PLAN_COLUMNS.map((status) => ({ value: status, label: pla
  * button, so a keystroke in the closed select never writes by itself. The
  * write is made as the signed-in member, and the page reads the plan again.
  */
-function StatusControl({ projectId, plan }: { projectId: string; plan: PlanWithSession }) {
+function StatusControl({ projectId, plan }: { projectId: string; plan: PlanFields }) {
   const set = useSetPlanStatus(projectId, plan.sessionId);
   const [draft, setDraft] = useState(plan.status);
   useEffect(() => { setDraft(plan.status); }, [plan.status]);

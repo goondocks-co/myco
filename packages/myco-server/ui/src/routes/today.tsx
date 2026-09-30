@@ -26,7 +26,7 @@ import { cleanSessionText, sessionHeading, sessionHeadingText } from '../lib/ses
 import { readPendingLink } from '../lib/pending-link';
 import { forgetProject } from '../lib/project-memory';
 import { NotFound } from '../pages/NotFound';
-import { CODE_MAP_SUFFIX, HEALTH_ANCHORS, HEALTH_PATH, projectPath } from './nav';
+import { CODE_MAP_SUFFIX, HEALTH_ANCHORS, HEALTH_PATH, projectPath, runPath } from './nav';
 
 /** How many of a run's spores, or of the sessions it titled, an item lists before "and N more". */
 const NESTED_SHOWN = 3;
@@ -246,7 +246,7 @@ function WorkItem({ entry, scoped, projectName, work }: { entry: WorkEntry; scop
   const noted = failed[0] ?? kept[0];
   const tone: TimelineTone = failed.length === entry.runs.length ? 'bad' : entry.kind === 'learn' || entry.kind === 'seed' ? 'learn' : 'plain';
   const single = entry.runs.length === 1 ? entry.runs[0]! : null;
-  const runPath = (runId: string) => `${projectPath(entry.projectId)}/runs/${encodeURIComponent(runId)}`;
+  const runAt = (runId: string) => runPath(entry.projectId, runId);
   const headline = workHeadline(entry.kind, entry.runs);
   const mapLinked = entry.kind === 'map' && failed.length === 0;
   const map = entry.kind === 'map' && single !== null
@@ -263,7 +263,7 @@ function WorkItem({ entry, scoped, projectName, work }: { entry: WorkEntry; scop
         <span className="min-w-0">
           <span className={cn('font-medium', tone === 'bad' ? 'text-ink' : 'text-ink-2')}>
             {mapLinked ? <TitleLink to={`${projectPath(entry.projectId)}${CODE_MAP_SUFFIX}`}>{headline}</TitleLink>
-              : single !== null ? <TitleLink to={runPath(single.id)}>{headline}</TitleLink> : headline}
+              : single !== null ? <TitleLink to={runAt(single.id)}>{headline}</TitleLink> : headline}
           </span>
           {map !== null && <span><span aria-hidden className="mx-s2">·</span>now at {map.branch} @ {map.commit.slice(0, 7)}</span>}
           {!scoped && <span><span aria-hidden className="mx-s2">·</span>in {projectName(entry.projectId) ?? 'a project'}</span>}
@@ -298,7 +298,7 @@ function WorkItem({ entry, scoped, projectName, work }: { entry: WorkEntry; scop
           tone={failed.length > 0 ? 'bad' : 'quiet'}
           cause={causeSentence(noted.failure?.cause ?? '')}
           next={failureNextStep(entry.kind, failed.length === 0)}
-          {...(failed.length > 0 ? { action: { to: runPath(noted.id), label: 'Open the run' } } : {})}
+          {...(failed.length > 0 ? { action: { to: runAt(noted.id), label: 'Open the run' } } : {})}
         />
       )}
     </TimelineItem>

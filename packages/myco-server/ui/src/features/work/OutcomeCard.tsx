@@ -1,0 +1,210 @@
+import { type ReactNode } from 'react';
+import { Link as RouterLink } from 'react-router-dom';
+import { focusRing, StatusChip, TypeChip } from '../../design';
+import { cn } from '../../lib/cn';
+import { causeSentence, count } from '../today/words';
+import type { KindSummary } from './outcomes';
+import { FAILURE_NEXT, runNoun } from './words';
+
+export interface OutcomeCardProps {
+  kind: KindSummary['kind'];
+  headline: string;
+  /** One line under the headline: how many runs, and when the latest was. */
+  meta: ReactNode;
+  /** An action beside the headline, as the code map's "Update now". */
+  action?: ReactNode;
+  /** The failure had nothing to show: the card's tone is a failure's. */
+  failed?: boolean;
+  children?: ReactNode;
+}
+
+/** One kind of Myco's work as what came of it: the headline, its evidence, its runs, and any failure beside it. */
+export function OutcomeCard({ kind, headline, meta, action, failed = false, children }: OutcomeCardProps) {
+  const id = `outcome-${kind}`;
+  return (
+    <article aria-labelledby={id} data-outcome={kind} className="flex min-w-0 flex-col gap-s4 rounded-card border border-line bg-surface-1 p-s4 sm:p-s5">
+      <header className="flex flex-wrap items-start justify-between gap-x-s4 gap-y-s2">
+        <div className="flex min-w-0 flex-1 flex-col gap-s1">
+          <h2 id={id} className={cn('t-h3', failed ? 'text-bad' : 'text-ink')}>{headline}</h2>
+          <p className="t-small text-muted">{meta}</p>
+        </div>
+        {action}
+      </header>
+      {children}
+    </article>
+  );
+}
+
+/** A small label over a part of a card, with an optional count or link at its end. */
+export function PartLabel({ children, end }: { children: ReactNode; end?: ReactNode }) {
+  return (
+    <div className="flex items-baseline justify-between gap-s3">
+      <h3 className="t-kicker text-faint">{children}</h3>
+      {end != null && <span className="t-small text-muted">{end}</span>}
+    </div>
+  );
+}
+
+/** A line of evidence: a spore's line with its type, or a session's title. */
+export interface EvidenceLine {
+  key: string;
+  chip?: string;
+  text: string;
+  /** A second, quieter line: an agent and a time. */
+  detail?: string;
+  to?: string;
+}
+
+/** The lines an outcome shows as its evidence, and "and N more" past them. */
+export function EvidenceLines({ label, lines, more }: { label: string; lines: readonly EvidenceLine[]; more: number }) {
+  if (lines.length === 0 && more <= 0) return null;
+  return (
+    <ul aria-label={label} className="flex flex-col gap-s2">
+      {lines.map((line) => (
+        <li key={line.key} className="flex min-w-0 items-baseline gap-s3 t-small text-ink-2">
+          {line.chip !== undefined && <TypeChip className="shrink-0">{line.chip}</TypeChip>}
+          <span className="flex min-w-0 flex-col">
+            <span className="line-clamp-2">
+              {line.to === undefined ? line.text : <InkLink to={line.to}>{line.text}</InkLink>}
+            </span>
+            {line.detail !== undefined && <span className="t-meta text-muted">{line.detail}</span>}
+          </span>
+        </li>
+      ))}
+      {more > 0 && <li className="t-small text-muted">and {more.toLocaleString()} more</li>}
+    </ul>
+  );
+}
+
+/** A link that reads as ink, underlined on hover: a record's headline. */
+export function InkLink({ to, children }: { to: string; children: ReactNode }) {
+  return (
+    <RouterLink to={to} className={cn('rounded-chip hover:underline hover:decoration-line-strong hover:underline-offset-[3px]', focusRing)}>
+      {children}
+    </RouterLink>
+  );
+}
+
+/** A link onward, in the link colour with an arrow: "See all 180 spores →". */
+export function OnwardLink({ to, children }: { to: string; children: ReactNode }) {
+  return (
+    <RouterLink to={to} className={cn('w-fit rounded-chip t-small font-medium text-primary hover:underline', focusRing)}>
+      {children} →
+    </RouterLink>
+  );
+}
+
+/** One run in an outcome's list. */
+export interface RunLineItem {
+  key: string;
+  time: string;
+  /** The instant `time` names. */
+  at: number;
+  words: string;
+  /** The machine it ran on, or the project across projects. */
+  where: string | null;
+  /** "by Ada" for a run a member started. */
+  by: string | null;
+  tone: 'plain' | 'bad' | 'held' | 'live';
+  to: string;
+}
+
+const TONE_CHIP: Readonly<Record<RunLineItem['tone'], { tone: 'ok' | 'warn' | 'bad' | 'neutral'; word: string } | null>> = {
+  plain: null,
+  bad: { tone: 'bad', word: 'Failed' },
+  held: { tone: 'neutral', word: 'Held off' },
+  live: { tone: 'ok', word: 'Now' },
+};
+
+/** An outcome's latest runs, each opening its panel. */
+export function RunLines({ label, items, state }: { label: string; items: readonly RunLineItem[]; state?: unknown }) {
+  if (items.length === 0) return null;
+  return (
+    <ul aria-label={label} className="flex flex-col divide-y divide-line rounded-control border border-line">
+      {items.map((item) => {
+        const chip = TONE_CHIP[item.tone];
+        return (
+          <li key={item.key} className="relative flex min-h-row-tight items-center gap-s3 px-s3 py-s2 transition-colors duration-120 hover:bg-surface-2" data-run-line={item.tone}>
+            <time dateTime={new Date(item.at).toISOString()} className="w-time-col shrink-0 whitespace-nowrap t-small tabular-nums text-faint">{item.time}</time>
+            <span className="flex min-w-0 flex-1 flex-col sm:flex-row sm:items-baseline sm:gap-s3">
+              <RouterLink
+                to={item.to}
+                state={state}
+                className={cn('min-w-0 truncate rounded-chip t-small text-ink-2 after:absolute after:inset-0', item.tone === 'held' && 'text-muted', focusRing)}
+              >
+                {item.words}
+              </RouterLink>
+              {(item.where !== null || item.by !== null) && (
+                <span className="truncate t-meta text-muted sm:ml-auto">{[item.where, item.by].filter((part) => part !== null).join(' · ')}</span>
+              )}
+            </span>
+            {chip !== null && <StatusChip tone={chip.tone} className="shrink-0">{chip.word}</StatusChip>}
+          </li>
+        );
+      })}
+    </ul>
+  );
+}
+
+/** Failed runs of one kind that kept nothing, written beside their outcome: when, why, and what to do. */
+export function FailureBlock({ kind, summary, window, when, machineOf, openTo }: {
+  kind: KindSummary['kind'];
+  summary: Pick<KindSummary, 'failures' | 'producedSince'>;
+  /** "this week" or "today". */
+  window: string;
+  when: (at: number | null) => string;
+  /** The machine a listed run ran on, when the page knows it. */
+  machineOf: (runId: string) => string | null;
+  /** Where the latest failure opens. */
+  openTo: (runId: string) => string;
+}) {
+  const { failures, producedSince } = summary;
+  if (failures.length === 0) return null;
+  // Failures with the same cause read as one line with every time they happened.
+  const groups = new Map<string, { cause: string; times: string[] }>();
+  for (const run of failures) {
+    const cause = causeSentence(run.failure?.cause ?? '');
+    const machine = machineOf(run.id);
+    const key = `${cause}\u0000${machine ?? ''}`;
+    const group = groups.get(key) ?? { cause: machine === null ? cause : `On ${machine}: ${cause}`, times: [] };
+    group.times.push(when(run.at));
+    groups.set(key, group);
+  }
+  const recovered = producedSince > 0;
+  return (
+    <div className={cn('flex flex-col gap-s2 rounded-control border px-s3 py-s3 t-small text-ink-2', recovered ? 'border-line bg-surface-2' : 'border-line bg-bad-bg')} data-failure={recovered ? 'recovered' : 'open'}>
+      <p className={cn('font-medium', recovered ? 'text-ink' : 'text-bad')}>{count(failures.length, runNoun(kind), runNoun(kind, 2))} failed {window}</p>
+      <ul className="flex flex-col gap-s1">
+        {[...groups.values()].map((group) => (
+          <li key={`${group.cause}${group.times.join()}`} className="flex flex-col gap-s1 sm:flex-row sm:gap-s3">
+            <span className="shrink-0 tabular-nums text-muted">{listTimes(group.times)}</span>
+            <span className="min-w-0">{group.cause}</span>
+          </li>
+        ))}
+      </ul>
+      <p>{recovered ? `The ${count(producedSince, runNoun(kind), runNoun(kind, 2))} since then worked, so there’s nothing to do.` : FAILURE_NEXT[kind]}</p>
+      {!recovered && <OnwardLink to={openTo(failures[0]!.id)}>Open the latest attempt</OnwardLink>}
+    </div>
+  );
+}
+
+function listTimes(times: readonly string[]): string {
+  if (times.length <= 1) return times[0] ?? '';
+  if (times.length <= 3) return `${times.slice(0, -1).join(', ')} and ${times[times.length - 1]}`;
+  return `${times.slice(0, 2).join(', ')} and ${times.length - 2} more`;
+}
+
+/** Runs that stopped early but kept what they saved: one quiet line, since there is nothing to do. */
+export function KeptNote({ summary, cause }: { summary: Pick<KindSummary, 'kept'>; cause: string | null }) {
+  const { kept } = summary;
+  if (kept.length === 0) return null;
+  const spores = kept.reduce((total, run) => total + run.outcome.spores, 0);
+  const one = kept.length === 1;
+  const why = cause === null ? null : cause.trim().replace(/\.$/, '');
+  return (
+    <p className="rounded-control border border-line bg-surface-2 px-s3 py-s2 t-small text-ink-2" data-kept="">
+      {one ? 'One run' : `${kept.length} runs`} stopped early{why === null || why === '' ? '.' : <>: {why.charAt(0).toLowerCase()}{why.slice(1)}.</>}{' '}
+      {one ? 'It' : 'They'} kept the {count(spores, 'spore')} {one ? 'it' : 'they'} had saved, so there’s nothing to do.
+    </p>
+  );
+}

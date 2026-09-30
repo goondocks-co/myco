@@ -1,4 +1,4 @@
-import { Navigate, Route, useLocation, useParams, useSearchParams } from 'react-router-dom';
+import { Navigate, Route, useLocation, useParams } from 'react-router-dom';
 import { CodeMap } from '../features/knowledge/CodeMap';
 import { KnowledgeFrame, type KnowledgeSection } from '../features/knowledge/KnowledgeFrame';
 import { PlanPage } from '../features/knowledge/PlanPage';
@@ -53,10 +53,9 @@ function SporeRoute() {
 
 function PlanRoute() {
   const { planKey = '' } = useParams();
-  const [params] = useSearchParams();
   const { projectId, known, projectName } = useRouteProject();
   if (!known || projectId === null) return <NotFound />;
-  return <PlanPage key={`${projectId}/${planKey}`} projectId={projectId} planKey={planKey} sessionHint={params.get('session')} projectName={projectName(projectId)} />;
+  return <PlanPage key={`${projectId}/${planKey}`} projectId={projectId} planKey={planKey} projectName={projectName(projectId)} />;
 }
 
 /** A list's other address, sent to the list under the same project and with its filters. */

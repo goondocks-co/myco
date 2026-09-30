@@ -7,7 +7,7 @@
 import { REPOSITORY_CHECKOUT_CAPABILITY, REPOSITORY_DIGESTS_CAPABILITY } from '@goondocks/myco-shared/repository';
 import { harnessLabel } from '../../lib/harness';
 import { memberLabel } from '../../lib/member-name';
-import { HEALTH_ANCHORS, HEALTH_PATH, PROJECT_SETTINGS_ANCHORS, PROJECT_SETTINGS_SUFFIX, projectPath } from '../../routes/nav';
+import { HEALTH_ANCHORS, HEALTH_PATH, PROJECT_SETTINGS_ANCHORS, PROJECT_SETTINGS_SUFFIX, projectPath, runPath } from '../../routes/nav';
 import type { AttentionItem, AttentionKind, CaptureRow, OutcomeKind, TodaySession, TodaySpore, WorkRun } from './wire';
 
 const MINUTE = 60_000;
@@ -206,7 +206,7 @@ export function attentionWords(item: AttentionItem, now: number, projectName: (p
       return {
         title: item.failures === 1 ? `${OUTCOME_NOUN[item.outcome]} failed` : `${count(item.failures, OUTCOME_UPDATE[item.outcome])} failed`,
         detail: `${inProject(item.projectId)} Nothing has succeeded since the first failure ${when(item.since, now)}.`,
-        action: { label: 'See the last attempt', to: `/p/${encodeURIComponent(item.projectId)}/runs/${encodeURIComponent(item.runId)}` },
+        action: { label: 'See the last attempt', to: runPath(item.projectId, item.runId) },
       };
     case 'search_index_behind': {
       const since = item.pendingSince ?? item.failingSince;

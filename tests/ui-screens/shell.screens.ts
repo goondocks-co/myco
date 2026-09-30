@@ -33,7 +33,7 @@ const ROLES = [
 
 /** The admin foot. Health's name carries the count of what needs an admin, so it is matched by its start. */
 const ADMIN_PAGES = [INVITE_CONTROLS.page, 'Settings', /^Health/] as const;
-const PAGES_NAV = ['Today', 'Sessions', 'Knowledge', 'Agent runs'];
+const PAGES_NAV = ['Today', 'Sessions', 'Knowledge', 'Myco’s work'];
 /** How many projects the filter lists before "N more". */
 const FILTER_LIMIT = 8;
 
@@ -189,7 +189,7 @@ test.describe('dashboard shell', () => {
       const sessions = await sessionsPath(page);
       const measured = [];
       const project = sessions.replace(/\/sessions$/, '');
-      for (const path of [sessions, `${project}/knowledge`, `${project}/knowledge/plans`, '/sessions', '/knowledge', '/knowledge/plans']) {
+      for (const path of [sessions, `${project}/knowledge`, `${project}/knowledge/plans`, `${project}/work`, '/sessions', '/knowledge', '/knowledge/plans', '/work']) {
         await page.goto(new URL(path, page.url()).href);
         await expect(page.locator('[data-filter-bar] input').first()).toBeVisible();
         measured.push({ page: path, metrics: await filterBarMetrics(page) });

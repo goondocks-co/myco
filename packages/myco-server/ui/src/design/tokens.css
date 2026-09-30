@@ -305,12 +305,16 @@
   /* A select sized to its words beside a search, and a wider one for longer choices. */
   --spacing-select: 140px;
   --spacing-select-wide: 168px;
+  /* The time column of a list of runs: "Mon 09:09" on one line. */
+  --spacing-time-col: 76px;
   /* One column of a board. */
   --spacing-board-column: 272px;
   /* A wide card of reference text, such as the code map. */
   --container-reference: 960px;
   /* A progress bar beside a title. */
   --container-progress: 360px;
+  /* The panel a record opens in beside its list. */
+  --container-slide-over: 560px;
 
   --radius-chip: var(--r-chip);
   --radius-control: var(--r-control);
@@ -402,6 +406,11 @@
 /* A reading page: the text, then a facts column beside it. */
 @utility grid-reading {
   grid-template-columns: minmax(0, 1fr) 300px;
+}
+
+/* A page with its rail beside it: what the page is about, then the rail's cards. */
+@utility grid-rail {
+  grid-template-columns: minmax(0, 1fr) 330px;
 }
 
 /* A list with its facets beside it. */

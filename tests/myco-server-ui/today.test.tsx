@@ -264,7 +264,7 @@ describe('Today', () => {
     expect(map.textContent).toContain('Why: repo.sha256 is absent from the checkout.');
     expect(map.textContent).toContain('Open the run to see where it stopped.');
     expect(map.textContent!.match(/previous map is kept/g) ?? []).toHaveLength(0);
-    expect(within(map).getByRole('link', { name: 'Open the run →' }).getAttribute('href')).toBe(`/p/${P_MYCO}/runs/run_c19f7a0e55`);
+    expect(within(map).getByRole('link', { name: 'Open the run →' }).getAttribute('href')).toBe(`/p/${P_MYCO}/work/runs/run_c19f7a0e55`);
     const kept = within(list).getByText('Myco learned 2 spores from 3 sessions').closest('li')!;
     expect(kept.textContent).toContain('Stopped early: the run exceeded its turn budget.');
     expect(kept.textContent).toContain('What it saved is kept, so there’s nothing to do.');
@@ -405,7 +405,7 @@ describe('Today', () => {
       'An access key expires in 3 days',
     ]);
     expect(within(panel).getByText('3')).toBeTruthy();
-    expect(within(panel).getByRole('link', { name: 'See the last attempt →' }).getAttribute('href')).toBe(`/p/${P_MYCO}/runs/run_c19f7a0e55`);
+    expect(within(panel).getByRole('link', { name: 'See the last attempt →' }).getAttribute('href')).toBe(`/p/${P_MYCO}/work/runs/run_c19f7a0e55`);
     expect(panel.textContent).toContain('In Myco.');
     expect(panel.textContent).toContain('In a project you can’t see here.');
   });
