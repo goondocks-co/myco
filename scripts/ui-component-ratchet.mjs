@@ -32,6 +32,9 @@ const COLOUR_PREFIX = '(?:text|bg|border(?:-[trblxy])?|ring(?:-offset)?|fill|str
 /** A padding, margin, gap, offset or translation with a bracketed length: `mt-[7px]`, `before:left-[-5px]`, `-translate-y-[1px]`. */
 const ARBITRARY_SPACING = /(?<![\w-])-?(?:p[xytrblse]?|m[xytrblse]?|gap(?:-[xy])?|space-[xy]|top|left|right|bottom|start|end|inset(?:-[xy])?|translate-[xy])-\[[^\]\s]*\d(?:\.\d+)?(?:px|rem|em)[^\]\s]*\]/g;
 
+/** A width or a grid template set in brackets rather than from the design's tokens: `w-[152px]`, `max-w-[960px]`, `grid-cols-[208px_1fr]`. */
+const ARBITRARY_LAYOUT = /(?<![\w-])(?:min-w|max-w|w|grid-cols|grid-rows)-\[[^\]\s]+\]/g;
+
 /** The raw elements a page builds with a design component instead. */
 const RAW_TAGS = ['button', 'input', 'select', 'textarea', 'table'];
 
@@ -67,6 +70,8 @@ export const RULES = [
   { kind: 'small-text', count: smallText },
   // Spacing set in pixels or rems instead of on the 4px scale (`p-s4`, `gap-s2`, `-left-s1`).
   { kind: 'arbitrary-spacing', count: (src) => matches(src, ARBITRARY_SPACING) },
+  // Widths and grid templates set in brackets instead of from the design's tokens (`w-select`, `max-w-reference`, `grid-reading`).
+  { kind: 'arbitrary-layout', count: (src) => matches(src, ARBITRARY_LAYOUT) },
   {
     kind: 'retired-import',
     count: (src) => matches(src, /from\s+['"][^'"]*components\/ui\/[^'"]+['"]/g)

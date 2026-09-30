@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it } from 'bun:test';
 import { cleanup, render, screen } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import { renderMap } from '@goondocks/myco-shared/canopy';
-import { CodeMapPanel } from '../../packages/myco-server/ui/src/pages/CodeMap';
+import { CodeMapPanel } from '../../packages/myco-server/ui/src/features/knowledge/CodeMap';
 import { MEMORY_TASKS } from '../../packages/myco-server/ui/src/hooks/use-intelligence';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import App from '../../packages/myco-server/ui/src/App';
@@ -51,7 +51,7 @@ describe('the code map page', () => {
   const originalFetch = globalThis.fetch;
   afterEach(() => { globalThis.fetch = originalFetch; });
 
-  it('is routed at /p/:project/knowledge/map, named in the nav, and reads the project\'s map', async () => {
+  it('is Knowledge\'s code map tab at /p/:project/knowledge/map, with Knowledge current in the nav, and reads the project\'s map', async () => {
     const asked: string[] = [];
     const routes: Record<string, () => Response> = {
       '/auth/me': () => Response.json({ sub: '1', login: 'ada', member: { id: 'mem_1', label: 'Ada', role: 'admin' } }),
@@ -66,10 +66,12 @@ describe('the code map page', () => {
     }) as typeof fetch;
     const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
     render(<AppearanceProvider><QueryClientProvider client={client}><MemoryRouter initialEntries={['/p/proj_1/knowledge/map']}><App /></MemoryRouter></QueryClientProvider></AppearanceProvider>);
-    expect(await screen.findByRole('heading', { level: 1, name: 'Code map' })).toBeTruthy();
+    expect(await screen.findByRole('heading', { level: 1, name: 'Knowledge' })).toBeTruthy();
+    const tabs = screen.getByRole('navigation', { name: 'Knowledge sections' });
+    expect([...tabs.querySelectorAll('a[aria-current="page"]')].map((a) => a.textContent)).toEqual(['Code map']);
     expect((await screen.findByTestId('repository-map')).textContent).toContain('Starts the application.');
     const nav = screen.getByRole('navigation', { name: 'Pages' });
-    expect([...nav.querySelectorAll('a[aria-current="page"]')].map((a) => a.textContent)).toEqual(['Code map']);
+    expect([...nav.querySelectorAll('a[aria-current="page"]')].map((a) => a.textContent)).toEqual(['Knowledge']);
     expect(asked).toContain('/api/projects/proj_1/canopy-map');
   });
 });

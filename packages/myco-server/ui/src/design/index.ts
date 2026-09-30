@@ -11,7 +11,7 @@ export {
 } from './primitives/Select';
 export { SearchableSelect, searchableSelectRank, type SearchableSelectProps, type SearchableSelectOption } from './primitives/SearchableSelect';
 export { Switch, type SwitchProps } from './primitives/Switch';
-export { Tabs, TabsList, TabsTrigger, TabsContent, type TabsTriggerProps } from './primitives/Tabs';
+export { Tabs, TabsList, TabsTrigger, TabsContent, TabLinks, type TabsTriggerProps, type TabLinkItem } from './primitives/Tabs';
 export { Dialog, DialogTrigger, DialogClose, DialogContent, DialogFooter, ConfirmDialog, type DialogContentProps, type ConfirmDialogProps } from './primitives/Dialog';
 export { MoreMenu, MenuItem, type MoreMenuItem, type MoreMenuProps } from './primitives/MoreMenu';
 export { Disclosure, type DisclosureProps } from './primitives/Disclosure';
@@ -23,11 +23,13 @@ export { Card, type CardProps } from './primitives/Card';
 export { Sparkline, type SparklineProps } from './primitives/Sparkline';
 export { CopyButton, type CopyButtonProps } from './primitives/CopyButton';
 export { Lightbox, type LightboxProps } from './primitives/Lightbox';
+export { Progress, type ProgressProps } from './primitives/Progress';
 
 export {
   FilterBar, useFilterParams, useQueryDraft, ANY, FIXED_WIDTH_FILTERS, type FilterBarProps, type FilterDefinition, type FilterParams, type FilterParamsOptions, type QueryDraft,
 } from './patterns/FilterBar';
 export { ListRow, type ListRowProps } from './patterns/ListRow';
+export { FacetList, type FacetListProps, type FacetRow } from './patterns/FacetList';
 export { DataTable, type DataTableProps, type DataTableColumn, type DataTableGroup } from './patterns/DataTable';
 export { Markdown, type MarkdownProps } from './patterns/Markdown';
 export { DayGroup, dayLabel, type DayGroupProps } from './patterns/DayGroup';

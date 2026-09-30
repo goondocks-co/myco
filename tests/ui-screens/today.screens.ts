@@ -234,25 +234,3 @@ test.describe('Today', () => {
     }
   });
 });
-
-test.describe('Code map', () => {
-  for (const { viewport, mode } of SHOT_MATRIX) {
-    test(`code map ${viewport} ${mode}`, async ({ browser }) => {
-      test.skip(!onFixture(), 'the project is the fixture\'s');
-      const project = fixtureProject();
-      const { context, page, watch } = await openPage(browser, { path: `/p/${encodeURIComponent(project.projectId)}/knowledge/map`, viewport, mode, cookie: screensEnv('ownerCookie') });
-      try {
-        await expect(page.getByRole('heading', { level: 1, name: 'Code map' })).toBeInViewport();
-        await expect(page.getByTestId('repository-map')).toBeInViewport();
-        await page.waitForLoadState('networkidle');
-        await expectNoHorizontalOverflow(page);
-        await expectNoRawIds(page);
-        await expectAxeClean(page);
-        await shoot(page, 'code-map', viewport, mode);
-        expectQuiet(watch);
-      } finally {
-        await context.close();
-      }
-    });
-  }
-});

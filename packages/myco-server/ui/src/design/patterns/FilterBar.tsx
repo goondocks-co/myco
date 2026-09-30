@@ -46,7 +46,7 @@ export const FIXED_WIDTH_FILTERS = 2;
  * one width; with more, each sizes to the words it shows (an option's `short`
  * form) and truncates past a bound, and the search keeps 55% of the row. On a
  * phone the search takes the first line and the selects share the lines below
- * it, two to a line when there are more than two.
+ * it: three on one line, else two to a line.
  */
 export function FilterBar({
   searchLabel, placeholder, query, onQueryChange, filters = [], values = {}, onFilterChange, onClear, count, inputRef, hint, className,
@@ -74,7 +74,7 @@ export function FilterBar({
         onChange={(event) => onQueryChange(event.target.value)}
         className={cn('basis-full sm:basis-auto', sized && 'sm:min-w-[55%]')}
       />
-      {sized ? <div className="grid w-full grid-cols-2 gap-s2 sm:flex sm:w-auto sm:min-w-0 sm:shrink">{selects}</div> : selects}
+      {sized ? <div className={cn('grid w-full gap-s2 sm:flex sm:w-auto sm:min-w-0 sm:shrink', filters.length === 3 ? 'grid-cols-3' : 'grid-cols-2')}>{selects}</div> : selects}
       {onClear && active && (
         <Button variant="ghost" onClick={onClear} icon={<X aria-hidden className="size-s4" />} aria-label="Clear search and filters">
           Clear

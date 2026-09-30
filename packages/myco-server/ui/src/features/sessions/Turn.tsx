@@ -3,7 +3,7 @@ import { Link as RouterLink } from 'react-router-dom';
 import { Button, Disclosure, ExternalLink, focusRing, Lightbox, Skeleton, StatusChip, TypeChip } from '../../design';
 import { blobUrl, RENDERABLE_IMAGE_TYPES, useTurnDetail, type AttachmentRow, type ResponseRow, type TurnChild, type TurnInjection, type TurnRow } from '../../hooks/use-sessions';
 import { cn } from '../../lib/cn';
-import { PlanCard } from '../../components/sessions/PlanCard';
+import { PlanLine } from '../knowledge/PlanLine';
 import { TextOrBlob } from './StoredText';
 import { ToolCalls } from './ToolCalls';
 import { clockTime, count, sporeTypeWord } from './words';
@@ -182,7 +182,7 @@ export const Turn = memo(function Turn({ projectId, sessionId, turn, scrollTo = 
             {body.injection !== null && <Injection projectId={projectId} injection={body.injection} />}
             {body.plans.length > 0 && (
               <div className="flex flex-col gap-s2" data-testid="turn-plans">
-                {body.plans.map((plan) => <PlanCard key={plan.planKey} projectId={projectId} sessionId={sessionId} plan={plan} inTurn />)}
+                {body.plans.map((plan) => <PlanLine key={plan.planKey} projectId={projectId} sessionId={sessionId} plan={plan} now={Date.now()} />)}
               </div>
             )}
             <ToolCalls projectId={projectId} sessionId={sessionId} promptId={turn.promptId} total={turn.toolCallCount} />

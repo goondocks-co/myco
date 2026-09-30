@@ -26,7 +26,8 @@
   },
   "components/operations/MaintenancePanel.tsx": {
     "raw-button": 1,
-    "small-text": 4
+    "small-text": 4,
+    "arbitrary-layout": 1
   },
   "components/operations/RecoveryPanel.tsx": {
     "raw-button": 1,
@@ -49,27 +50,8 @@
     "raw-textarea": 3,
     "small-text": 7
   },
-  "components/sessions/PlanCard.tsx": {
-    "raw-button": 2,
-    "raw-select": 1,
-    "inline-style": 1,
-    "arbitrary-colour": 4,
-    "small-text": 7
-  },
-  "components/spores/SporeDetail.tsx": {
-    "arbitrary-colour": 1,
-    "small-text": 7
-  },
-  "components/spores/SporeRail.tsx": {
-    "arbitrary-colour": 2,
-    "small-text": 9
-  },
   "components/status/WorkersPanel.tsx": {
     "small-text": 2
-  },
-  "components/ui/badge.tsx": {
-    "arbitrary-colour": 1,
-    "small-text": 1
   },
   "components/ui/button.tsx": {
     "raw-button": 1,
@@ -81,9 +63,6 @@
   },
   "components/ui/eyebrow.tsx": {
     "small-text": 3
-  },
-  "components/ui/inline-link.ts": {
-    "small-text": 1
   },
   "components/ui/input.tsx": {
     "raw-input": 1,
@@ -100,9 +79,6 @@
   "components/ui/page-loading.tsx": {
     "small-text": 1
   },
-  "components/ui/pagination.tsx": {
-    "small-text": 1
-  },
   "components/ui/panel.tsx": {
     "arbitrary-colour": 1
   },
@@ -111,7 +87,8 @@
   },
   "components/ui/slideout-detail-panel.tsx": {
     "raw-button": 1,
-    "inline-style": 1
+    "inline-style": 1,
+    "arbitrary-layout": 1
   },
   "components/ui/status-dot.tsx": {
     "inline-style": 1
@@ -123,6 +100,15 @@
   },
   "components/ui/surface.tsx": {
     "arbitrary-colour": 2
+  },
+  "features/sessions/SessionPage.tsx": {
+    "arbitrary-layout": 2
+  },
+  "features/sessions/Turn.tsx": {
+    "arbitrary-layout": 1
+  },
+  "features/today/TimelineItem.tsx": {
+    "arbitrary-layout": 2
   },
   "index.css": {
     "colour-literal": 1,
@@ -148,8 +134,8 @@
     "small-text": 28,
     "retired-import": 9
   },
-  "pages/CodeMap.tsx": {
-    "retired-import": 1
+  "pages/Join.tsx": {
+    "arbitrary-layout": 1
   },
   "pages/Link.tsx": {
     "raw-button": 1,
@@ -162,17 +148,15 @@
     "small-text": 3,
     "retired-import": 5
   },
+  "pages/NotAMember.tsx": {
+    "arbitrary-layout": 1
+  },
   "pages/NotFound.tsx": {
     "retired-import": 2
   },
   "pages/Operations.tsx": {
     "small-text": 2,
     "retired-import": 3
-  },
-  "pages/Plans.tsx": {
-    "raw-button": 1,
-    "small-text": 2,
-    "retired-import": 4
   },
   "pages/ProjectAccess.tsx": {
     "raw-button": 4,
@@ -191,13 +175,13 @@
   "pages/SignedOut.tsx": {
     "retired-import": 1
   },
-  "pages/Spores.tsx": {
-    "retired-import": 3
-  },
   "pages/Status.tsx": {
     "raw-table": 1,
     "small-text": 5,
     "retired-import": 5
+  },
+  "routes/today.tsx": {
+    "arbitrary-layout": 1
   },
   "settings/catalogue.ts": {
     "colour-literal": 2

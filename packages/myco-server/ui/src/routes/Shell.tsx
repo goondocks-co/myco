@@ -2,9 +2,10 @@ import { useEffect, useState, type ReactNode } from 'react';
 import { Outlet, useLocation } from 'react-router-dom';
 import { Search } from 'lucide-react';
 import {
-  AccountMenu, AppShell, BottomBar, Brand, ErrorState, IconButton, LoadingState, NavGroup, NavItem, NavSection, ProjectFilter, SearchCommand, SearchTrigger,
+  AccountMenu, AppShell, BottomBar, Brand, ErrorState, IconButton, LoadingState, NavGroup, NavItem, NavSection, ProjectFilter, SearchTrigger,
   Sidebar, useSearchShortcut, useShellMenu, type ProjectFilterItem,
 } from '../design';
+import { Search as SearchPanel } from '../features/search/Search';
 import { useIsAdmin, useMe } from '../hooks/use-me';
 import { useProjects } from '../hooks/use-projects';
 import { isArchived, type ProjectSummary } from '../lib/api';
@@ -13,7 +14,7 @@ import { memberDisplayName } from '../lib/member-name';
 import { signOut } from '../lib/session';
 import { NotAMember } from '../pages/NotAMember';
 import {
-  ADMIN_PAGES, MY_MACHINES_PATH, inGroup, pageHref, PHONE_PAGES, PROJECT_PAGES, PROJECTS_PATH, clearProjectHref, projectOf, switchProjectHref, titleOf,
+  ADMIN_PAGES, MY_MACHINES_PATH, inGroup, pageHref, pageIsOpen, PHONE_PAGES, PROJECT_PAGES, PROJECTS_PATH, clearProjectHref, projectOf, switchProjectHref, titleOf,
 } from './nav';
 
 /** Most recent activity first; a project with none sorts last, then by name. */
@@ -74,7 +75,7 @@ export function Shell() {
 
   const sidebar = (
     <ShellSidebar
-      pages={scope === undefined ? [] : pages.map((page) => ({ ...page, to: pageHref(page, location.pathname, scope.projectId) }))}
+      pages={scope === undefined ? [] : pages.map((page) => ({ ...page, to: pageHref(page, location.pathname, scope.projectId), active: pageIsOpen(page, location.pathname) }))}
       projects={projects.isSuccess ? filterItems : null}
       clearHref={clearProjectHref(location)}
       admin={admin}
@@ -96,14 +97,16 @@ export function Shell() {
         </>
       )}
       bottomBar={scope === undefined ? undefined : (
-        <BottomBar items={PHONE_PAGES.map((page) => ({ label: page.label, icon: page.icon, to: pageHref(page, location.pathname, scope.projectId), end: page.suffix === '' }))} />
+        <BottomBar items={PHONE_PAGES.map((page) => ({ label: page.label, icon: page.icon, to: pageHref(page, location.pathname, scope.projectId), active: pageIsOpen(page, location.pathname) }))} />
       )}
       overlay={(
-        <SearchCommand
-          key={scope?.projectId ?? ''}
+        <SearchPanel
+          key={`${scope?.projectId ?? ''}/${current === undefined ? '' : 'scoped'}`}
           open={searchOpen}
           onOpenChange={setSearchOpen}
           project={scope === undefined ? null : { projectId: scope.projectId, name: scope.name }}
+          scoped={current !== undefined}
+          projectName={(id) => all.find((p) => p.projectId === id)?.name ?? null}
         />
       )}
     >
@@ -115,7 +118,7 @@ export function Shell() {
 }
 
 interface ShellSidebarProps {
-  pages: ReadonlyArray<(typeof PROJECT_PAGES)[number] & { to: string }>;
+  pages: ReadonlyArray<(typeof PROJECT_PAGES)[number] & { to: string; active: boolean }>;
   /** The project filter's rows, or null while the list is unread. */
   projects: ProjectFilterItem[] | null;
   clearHref: string | null;
@@ -137,7 +140,7 @@ function ShellSidebar({ pages, projects, clearHref, admin, account, onSearch }: 
           {pages.length > 0 && (
             <NavSection label="Pages">
               {pages.map((page) => (
-                <NavItem key={page.label} to={page.to} label={page.label} icon={page.icon} end={page.suffix === ''} onNavigate={closeMenu} />
+                <NavItem key={page.label} to={page.to} label={page.label} icon={page.icon} active={page.active} onNavigate={closeMenu} />
               ))}
             </NavSection>
           )}

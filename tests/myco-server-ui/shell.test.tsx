@@ -161,7 +161,7 @@ describe('the nav', () => {
     server(signedIn());
     mount('/p/alpha/sessions');
     const pages = await screen.findByRole('navigation', { name: 'Pages' });
-    expect(within(pages).getAllByRole('link').map((a) => a.textContent)).toEqual(['Today', 'Sessions', 'Spores', 'Plans', 'Code map', 'Agent runs', 'Access']);
+    expect(within(pages).getAllByRole('link').map((a) => a.textContent)).toEqual(['Today', 'Sessions', 'Knowledge', 'Agent runs', 'Access']);
     expect(within(pages).getByRole('link', { name: 'Sessions' }).getAttribute('aria-current')).toBe('page');
     await waitFor(() => expect(filterItems()).toHaveLength(2));
     expect(filterItems().map((a) => a.textContent)).toEqual([expect.stringContaining('Alpha'), expect.stringContaining('Beta')]);
@@ -204,7 +204,7 @@ describe('the nav', () => {
     server(signedIn(MEMBER));
     mount('/p/alpha');
     const pages = await screen.findByRole('navigation', { name: 'Pages' });
-    expect(within(pages).getAllByRole('link').map((a) => a.textContent)).toEqual(['Today', 'Sessions', 'Spores', 'Plans', 'Code map', 'Agent runs']);
+    expect(within(pages).getAllByRole('link').map((a) => a.textContent)).toEqual(['Today', 'Sessions', 'Knowledge', 'Agent runs']);
     await waitFor(() => expect(filterItems()).toHaveLength(2));
     expect(screen.queryByRole('navigation', { name: 'Admin' })).toBeNull();
     const nav = screen.getByRole('complementary', { name: 'Navigation' });
@@ -216,9 +216,11 @@ describe('the nav', () => {
     window.localStorage.setItem('myco-last-project', 'beta');
     mount('/status');
     const pages = await screen.findByRole('navigation', { name: 'Pages' });
-    expect(within(pages).getByRole('link', { name: 'Spores' }).getAttribute('href')).toBe('/p/beta/spores');
+    expect(within(pages).getByRole('link', { name: 'Agent runs' }).getAttribute('href')).toBe('/p/beta/runs');
     // A page with a form across every project leads there while the path names no project.
     expect(within(pages).getByRole('link', { name: 'Sessions' }).getAttribute('href')).toBe('/sessions');
+    expect(within(pages).getByRole('link', { name: 'Knowledge' }).getAttribute('href')).toBe('/knowledge');
+    expect([...pages.querySelectorAll('a[aria-current="page"]')]).toEqual([]);
     await waitFor(() => expect(filterItems()).toHaveLength(2));
     expect(filterItems().filter((a) => a.getAttribute('aria-current') === 'true')).toEqual([]);
     expect(filterItems()[1]!.getAttribute('href')).toBe('/p/beta');
@@ -260,11 +262,17 @@ describe('the project filter', () => {
     expect([projectOf('/p/a%2Fb/sessions/s1'), projectOf('/settings'), pageSuffix('/p/x'), pageSuffix('/p/x/runs/r1')]).toEqual(['a/b', null, '', '/runs']);
     expect(keptFilters('?tab=plans&q=fix&turn=t1&state=open&offset=25&type=gotcha')).toBe('?q=fix&state=open&type=gotcha');
     expect(keptFilters('?tab=plans')).toBe('');
-    expect(switchProjectHref({ pathname: '/p/x/spores/sp1', search: '?status=all&q=cache' }, 'y')).toBe('/p/y/spores?status=all&q=cache');
+    // From a record, a switch leads to the list the record belongs to, filters kept.
+    expect(switchProjectHref({ pathname: '/p/x/spores/sp1', search: '?status=all&q=cache' }, 'y')).toBe('/p/y/knowledge?status=all&q=cache');
+    expect(switchProjectHref({ pathname: '/p/x/plans/k1', search: '?session=s1' }, 'y')).toBe('/p/y/knowledge/plans');
+    expect(switchProjectHref({ pathname: '/knowledge/plans', search: '?q=cache' }, 'y')).toBe('/p/y/knowledge/plans?q=cache');
     expect(switchProjectHref({ pathname: '/p/x', search: '' }, 'a/b')).toBe('/p/a%2Fb');
     expect(switchProjectHref({ pathname: '/settings', search: '?tab=secrets' }, 'y')).toBe('/p/y');
     expect(clearProjectHref({ pathname: '/p/x/sessions', search: '?q=fix' })).toBe('/sessions?q=fix');
-    expect(clearProjectHref({ pathname: '/p/x/plans', search: '?q=fix' })).toBeNull();
+    expect(clearProjectHref({ pathname: '/p/x/knowledge/plans', search: '?q=fix' })).toBe('/knowledge/plans?q=fix');
+    expect(clearProjectHref({ pathname: '/p/x/spores/sp1', search: '' })).toBe('/knowledge');
+    expect(clearProjectHref({ pathname: '/p/x/knowledge/map', search: '' })).toBeNull();
+    expect(clearProjectHref({ pathname: '/p/x/runs', search: '?q=fix' })).toBeNull();
     expect(clearProjectHref({ pathname: '/settings', search: '' }, { '/sessions': '/sessions' })).toBeNull();
   });
 
@@ -289,16 +297,19 @@ describe('the project filter', () => {
 describe('the page titles', () => {
   it('names every page under a project and every server page, and says not found for the rest', () => {
     expect([
-      titleOf('/p/x'), titleOf('/p/x/'), titleOf('/p/x/sessions'), titleOf('/p/x/sessions/abc'), titleOf('/p/x/plans'),
-      titleOf('/p/x/spores'), titleOf('/p/x/spores/sp1'), titleOf('/p/x/runs/r1'), titleOf('/p/x/access'), titleOf('/p/x/nope'),
+      titleOf('/p/x'), titleOf('/p/x/'), titleOf('/p/x/sessions'), titleOf('/p/x/sessions/abc'), titleOf('/p/x/plans/k1'),
+      titleOf('/p/x/knowledge'), titleOf('/p/x/spores/sp1'), titleOf('/p/x/runs/r1'), titleOf('/p/x/access'), titleOf('/p/x/nope'),
       titleOf('/'), titleOf('/projects'), titleOf('/status'), titleOf('/measures'), titleOf('/access'), titleOf('/settings'), titleOf('/operations'), titleOf('/nope'),
+      titleOf('/knowledge'), titleOf('/knowledge/plans'),
     ]).toEqual([
-      'Today', 'Today', 'Sessions', 'Sessions', 'Plans',
-      'Spores', 'Spores', 'Agent runs', 'Access', 'Not found',
+      'Today', 'Today', 'Sessions', 'Sessions', 'Knowledge',
+      'Knowledge', 'Knowledge', 'Agent runs', 'Access', 'Not found',
       'Today', 'Projects', 'Status', 'Measures', 'Members', 'Settings', 'Operations', 'Not found',
+      'Knowledge', 'Knowledge',
     ]);
     // A page whose suffix runs over two segments is found whole, and a project switch keeps it.
-    expect([pageSuffix('/p/x/knowledge/map'), pageSuffix('/p/x/knowledge/map/'), titleOf('/p/x/knowledge/map'), pageSuffix('/p/x/knowledge')]).toEqual(['/knowledge/map', '/knowledge/map', 'Code map', '/knowledge']);
+    expect([pageSuffix('/p/x/knowledge/map'), pageSuffix('/p/x/knowledge/map/'), titleOf('/p/x/knowledge/map'), pageSuffix('/p/x/knowledge'), pageSuffix('/p/x/knowledge/plans')])
+      .toEqual(['/knowledge/map', '/knowledge/map', 'Knowledge', '/knowledge', '/knowledge/plans']);
     expect(switchProjectHref({ pathname: '/p/x/knowledge/map', search: '' }, 'y')).toBe('/p/y/knowledge/map');
     // A member reads /access for their own machines.
     expect([titleOf('/access', 'member'), titleOf('/access', 'admin'), titleOf('/status', 'member')]).toEqual(['My machines', 'Members', 'Status']);
@@ -311,7 +322,7 @@ describe('on a phone', () => {
     server(signedIn());
     mount('/p/alpha/sessions');
     const bar = await screen.findByRole('navigation', { name: 'Main pages' });
-    expect(within(bar).getAllByRole('link').map((a) => a.textContent)).toEqual(['Today', 'Sessions', 'Spores']);
+    expect(within(bar).getAllByRole('link').map((a) => a.textContent)).toEqual(['Today', 'Sessions', 'Knowledge']);
     expect(within(bar).getByRole('link', { name: 'Sessions' }).getAttribute('aria-current')).toBe('page');
     expect(screen.queryByRole('complementary', { name: 'Navigation' })).toBeNull();
     expect(screen.getByRole('banner').textContent).toContain('Sessions');
@@ -322,9 +333,9 @@ describe('on a phone', () => {
     expect(within(drawer).getByRole('navigation', { name: 'Admin' })).toBeTruthy();
     expect(within(drawer).getByRole('navigation', { name: 'Projects' })).toBeTruthy();
     // Following a link closes the drawer.
-    fireEvent.click(within(within(drawer).getByRole('navigation', { name: 'Pages' })).getByRole('link', { name: 'Plans' }));
+    fireEvent.click(within(within(drawer).getByRole('navigation', { name: 'Pages' })).getByRole('link', { name: 'Knowledge' }));
     await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Navigation' })).toBeNull());
-    expect(location()).toBe('/p/alpha/plans');
+    expect(location()).toBe('/p/alpha/knowledge');
   });
 
   it('keeps Tab inside the open drawer, and returns focus to the button that opened it', async () => {

@@ -22,6 +22,7 @@ import { memberDisplayName, memberLabel } from '../../packages/myco-server/ui/sr
 import type {
   AttentionAnswer, AttentionItem, CaptureRow, TodaySession, TodaySpore, WorkAnswer, WorkRun,
 } from '../../packages/myco-server/ui/src/features/today/wire';
+import { RAW_ID } from '../helpers/raw-ids';
 
 const MINUTE = 60_000;
 const HOUR = 60 * MINUTE;
@@ -31,7 +32,6 @@ const DAY_START = new Date(2026, 8, 29).getTime();
 const YESTERDAY = '2026-09-28';
 
 /** The raw ids a reader must never see, as the screens check defines them, plus a session's UUID. */
-const RAW_ID = /\b(run|proj|mem|mt)_[\w-]{6,}|\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b/;
 
 const ADMIN = { sub: '1', login: 'ada', member: { id: 'mem_q3Vb8xRk2LmT7wYz', label: 'Ada', role: 'admin' as const } };
 const MEMBER = { sub: '2', login: 'lin', member: { id: 'mem_Hn5pC0dJfA9sEu', label: 'Lin', role: 'member' as const } };

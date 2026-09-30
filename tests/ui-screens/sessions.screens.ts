@@ -107,7 +107,8 @@ async function expectReadingPage(page: Page, viewport: ViewportName, role: 'admi
   } else {
     await outcome.scrollIntoViewIfNeeded();
   }
-  await expect(outcome.getByRole('list', { name: 'Spores from this session' }).getByRole('listitem')).toHaveCount(2);
+  // Two spores Myco's runs wrote, and the one an agent saved later to replace one of them.
+  await expect(outcome.getByRole('list', { name: 'Spores from this session' }).getByRole('listitem')).toHaveCount(3);
   const runs = outcome.getByRole('list', { name: 'Myco’s work on this session' }).getByRole('listitem');
   await expect(runs).toHaveCount(4);
   await expect(outcome.locator('[data-outcome-run="read"]', { hasText: 'Myco learned 1 spore from it' })).toContainText('Read it at');

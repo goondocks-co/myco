@@ -17,6 +17,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { FIXTURE_LOCALE, FIXTURE_TIMEZONE, fixtureNow, SCREENS_ENV, screensEnv } from './env.ts';
+import { RAW_ID } from '../helpers/raw-ids.ts';
 
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 export const SHOTS_DIR = path.join(REPO, 'target', 'ui-screens', 'shots');
@@ -34,8 +35,8 @@ export type Mode = (typeof MODES)[number];
 export const SHOT_MATRIX: ReadonlyArray<{ viewport: ViewportName; mode: Mode }> = (Object.keys(VIEWPORTS) as ViewportName[])
   .flatMap((viewport) => MODES.map((mode) => ({ viewport, mode })));
 
-/** Ids a reader never needs to see: runs, projects, members and credentials, base64url included. */
-export const RAW_ID = /\b(run|proj|mem|mt)_[\w-]{6,}/;
+/** Ids a reader never needs to see: the pattern every screen check and jsdom suite shares. */
+export { RAW_ID } from '../helpers/raw-ids.ts';
 
 /** The appearance the dashboard reads before it paints, keyed as `lib/appearance-apply.ts` stores it. */
 export const APPEARANCE_KEY = 'myco-appearance';

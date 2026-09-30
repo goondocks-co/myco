@@ -26,6 +26,8 @@ export interface NavItemProps {
   icon: LucideIcon;
   /** Active only on this exact path, not the paths under it. */
   end?: boolean;
+  /** Marks the page open whatever the path says: for a page whose records live at paths outside its own. */
+  active?: boolean;
   /** A count or chip at the right edge. */
   badge?: ReactNode;
   onNavigate?: () => void;
@@ -38,12 +40,20 @@ const itemClass = (active: boolean) => cn(
 );
 
 /** One page in the nav; the page open now is marked current. */
-export function NavItem({ to, label, icon: Icon, end = false, badge, onNavigate }: NavItemProps) {
-  return (
-    <NavLink to={to} end={end} onClick={onNavigate} className={({ isActive }: { isActive: boolean }) => itemClass(isActive)}>
+export function NavItem({ to, label, icon: Icon, end = false, active, badge, onNavigate }: NavItemProps) {
+  const body = (
+    <>
       <Icon aria-hidden className="size-[18px] shrink-0" strokeWidth={1.6} />
       <span className="min-w-0 flex-1 truncate">{label}</span>
       {badge != null && <span className="ml-auto shrink-0 t-meta text-faint">{badge}</span>}
+    </>
+  );
+  if (active !== undefined) {
+    return <RouterLink to={to} onClick={onNavigate} aria-current={active ? 'page' : undefined} className={itemClass(active)}>{body}</RouterLink>;
+  }
+  return (
+    <NavLink to={to} end={end} onClick={onNavigate} className={({ isActive }: { isActive: boolean }) => itemClass(isActive)}>
+      {body}
     </NavLink>
   );
 }
