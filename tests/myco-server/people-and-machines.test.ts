@@ -5,7 +5,8 @@
  */
 import { describe, expect, it } from 'bun:test';
 import worker from '@myco-server-worker/index.js';
-import { issueMemberToken } from '@myco-server-worker/auth/tokens.js';
+import { issueMemberToken, refreshMemberToken } from '@myco-server-worker/auth/tokens.js';
+import { issueEnrollmentAuthority } from '@myco-server-worker/auth/enrollment.js';
 import { issueIdentityLinkAuthority } from '@myco-server-worker/auth/identity-link.js';
 import { LINK_REQUIRES_ADMIN } from '@myco-server-worker/auth/members.js';
 import { nameMemberFromLogin } from '@myco-server-worker/auth/members-admin.js';
@@ -92,33 +93,72 @@ describe('the machines a member reads', () => {
 });
 
 describe('renaming a machine', () => {
-  it('lets an admin rename any machine and a member only their own, on every live credential and no other', async () => {
+  const claimLabel = (sqlite: { query: (sql: string) => { get: (...a: unknown[]) => unknown } }, machine: string) =>
+    (sqlite.query(`SELECT label FROM machine_claims WHERE machine_id = ?`).get(machine) as { label: string | null }).label;
+
+  it('lets an admin rename any machine and a member only their own, in one write to the machine, and no credential', async () => {
     const { env, sqlite } = await seeded();
+    const credentials = () => sqlite.query(`SELECT id, runtime_label FROM member_credentials ORDER BY id`).all();
+    const before = credentials();
     expect((await (await request(env, ADMIN, 'PATCH', '/api/machines/m_member', { label: '  Chris’s laptop  ' })).json()) as Record<string, unknown>).toEqual({ machineId: 'm_member', name: 'Chris’s laptop' });
-    const labels = sqlite.query(`SELECT runtime_label AS label, revoked_at IS NULL AS live FROM member_credentials WHERE machine_id IN ('m_member', 'm_gone') ORDER BY issued_at`).all();
-    expect(labels).toEqual([{ label: 'retired-box', live: 0 }, { label: 'Chris’s laptop', live: 1 }, { label: 'Chris’s laptop', live: 1 }, { label: 'Chris’s laptop', live: 1 }]);
+    expect(claimLabel(sqlite, 'm_member')).toBe('Chris’s laptop');
+    expect(credentials()).toEqual(before);
     expect((await machines(env, MEMBER_SUB))[0]!.name).toBe('Chris’s laptop');
 
     expect((await request(env, MEMBER_SUB, 'PATCH', '/api/machines/m_member', { label: 'mine' })).status).toBe(200);
+    // Another member's machine answers as an unknown one does.
     const refused = await request(env, MEMBER_SUB, 'PATCH', '/api/machines/m_admin', { label: 'taken' });
-    expect(refused.status).toBe(403);
-    expect(sqlite.query(`SELECT DISTINCT runtime_label AS label FROM member_credentials WHERE machine_id = 'm_admin'`).all()).toEqual([{ label: 'studio' }]);
+    const unknown = await request(env, MEMBER_SUB, 'PATCH', '/api/machines/m_nobody', { label: 'taken' });
+    expect({ status: refused.status, body: await refused.json() }).toEqual({ status: unknown.status, body: await unknown.json() });
+    expect(refused.status).toBe(404);
+    expect(claimLabel(sqlite, 'm_admin')).toBeNull();
+    expect((await machines(env, ADMIN)).find((m) => m.machineId === 'm_admin')!.name).toBe('studio');
   });
 
-  it('answers 404 for a machine nobody claims, 409 for one with no live credential, and 400 for a name it does not take', async () => {
-    const { env, sqlite } = await seeded();
+  it('renames a machine with no live credential, and keeps the name through a refresh and a later sign-in', async () => {
+    const { env, sqlite, db, now } = await seeded();
+    expect((await request(env, MEMBER_SUB, 'PATCH', '/api/machines/m_gone', { label: 'back' })).status).toBe(200);
+    expect((await machines(env, MEMBER_SUB)).find((m) => m.machineId === 'm_gone')).toMatchObject({ name: 'back', live: false });
+
+    expect((await request(env, MEMBER_SUB, 'PATCH', '/api/machines/m_member', { label: 'Renamed' })).status).toBe(200);
+    // A refresh mints a successor carrying the old credential's label: the machine's name is not the credential's.
+    const held = sqlite.query(`SELECT id, expires_at, lineage_root, lineage_started_at, runtime_label, runtime_kind FROM member_credentials
+      WHERE machine_id = 'm_member' AND revoked_at IS NULL AND runtime_label = 'laptop'`).get() as Record<string, any>;
+    const refreshed = await refreshMemberToken(db, {
+      memberId: 'mem_machine_2', tokenId: held.id, machineId: 'm_member', expiresAt: held.expires_at, lineageRoot: held.lineage_root,
+      lineageStartedAt: held.lineage_started_at, runtime: { runtimeLabel: held.runtime_label, runtimeKind: held.runtime_kind },
+    }, held.expires_at - 1000);
+    expect(refreshed).toMatchObject({ refreshed: true });
+    expect((await machines(env, MEMBER_SUB)).find((m) => m.machineId === 'm_member')!.name).toBe('Renamed');
+
+    // A later sign-in sends its host name again, and the machine keeps the name it holds.
+    const invite = await issueEnrollmentAuthority(db, now, { role: 'member', memberId: 'mem_machine_2' });
+    const again = await request(env, null, 'POST', '/members/join', { key: invite.key, machineId: 'm_member', runtimeLabel: 'laptop-again', runtimeKind: 'persistent' });
+    expect(((await again.json()) as { joined: boolean }).joined).toBe(true);
+    expect(claimLabel(sqlite, 'm_member')).toBe('Renamed');
+    expect((await machines(env, MEMBER_SUB)).find((m) => m.machineId === 'm_member')!.name).toBe('Renamed');
+
+    // A machine's first sign-in names it after the host it sends.
+    const fresh = await issueEnrollmentAuthority(db, now, { role: 'member', memberId: 'mem_machine_2' });
+    await request(env, null, 'POST', '/members/join', { key: fresh.key, machineId: 'm_new', runtimeLabel: 'fresh-host', runtimeKind: 'persistent' });
+    expect(claimLabel(sqlite, 'm_new')).toBe('fresh-host');
+  });
+
+  it('answers 404 for a machine nobody claims, and 400 for a name it does not take', async () => {
+    const { env } = await seeded();
     expect((await request(env, ADMIN, 'PATCH', '/api/machines/m_nobody', { label: 'x' })).status).toBe(404);
-    const stale = await request(env, MEMBER_SUB, 'PATCH', '/api/machines/m_gone', { label: 'back' });
-    expect({ status: stale.status, body: await stale.json() }).toMatchObject({ status: 409, body: { error: 'no_live_credential' } });
-    expect(sqlite.query(`SELECT runtime_label AS label FROM member_credentials WHERE machine_id = 'm_gone'`).all()).toEqual([{ label: 'retired-box' }]);
-    for (const label of ['', '   ', 'x'.repeat(65), 'two\nlines', 'tab\there', 'zero​width', 'line sep', 42, null]) {
+    const refused = ['', '   ', 'x'.repeat(65), 'two\nlines', 'tab\there', 'zero​width', 'line sep', 'para sep', 'lone\ud800half', 'privateuse', 'unassigned͸', `e${'́'.repeat(5)}`, 42, null];
+    for (const label of refused) {
       expect({ label, status: (await request(env, ADMIN, 'PATCH', '/api/machines/m_member', { label })).status }).toEqual({ label, status: 400 });
     }
+    // Four marks on a letter are taken; a fifth is not.
+    expect((await request(env, ADMIN, 'PATCH', '/api/machines/m_member', { label: `e${'́'.repeat(4)}` })).status).toBe(200);
     // Length is counted in characters, not UTF-16 units: 64 astral characters fit, 65 do not.
     expect((await request(env, ADMIN, 'PATCH', '/api/machines/m_member', { label: '🖥'.repeat(64) })).status).toBe(200);
     expect((await request(env, ADMIN, 'PATCH', '/api/machines/m_member', { label: '🖥'.repeat(65) })).status).toBe(400);
     expect(machineName('é'.repeat(64))).toBe('é'.repeat(64));
     expect(machineName('é'.repeat(65))).toBeNull();
+    expect(machineName('ÉCOLE PC')).toBe('ÉCOLE PC');
   });
 });
 
@@ -153,6 +193,16 @@ describe('a member\'s name and kind', () => {
     sqlite.run(`UPDATE members SET label = NULL WHERE id = 'mem_machine_2'`);
     expect(await nameMemberFromLogin(db, 'mem_machine_2', 'not a login')).toBeNull();
     expect(sqlite.query(`SELECT label FROM members WHERE id = 'mem_machine_2'`).get()).toEqual({ label: null });
+  });
+
+  it('signs a member in whatever becomes of the naming write, leaving the member as it was', async () => {
+    const { env, sqlite } = rig();
+    sqlite.run(`UPDATE members SET label = NULL WHERE id = 'mem_machine_2'`);
+    const inner = env.MYCO_DB;
+    const failing = { ...env, MYCO_DB: { ...inner, batch: inner.batch.bind(inner), prepare: (sql: string) => { if (/UPDATE members SET label/.test(sql)) throw new Error('store refused'); return inner.prepare(sql); } } };
+    const res = await request(failing, MEMBER_SUB, 'GET', '/auth/me');
+    expect(res.status).toBe(200);
+    expect(((await res.json()) as { member: { id: string; label: string | null } }).member).toMatchObject({ id: 'mem_machine_2', label: null });
   });
 
   it('names a member with no name after the account an admin\'s link connects to it', async () => {

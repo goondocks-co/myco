@@ -85,7 +85,7 @@ export async function handleStatus(env: ServerEnv, ctx: OwnerContext): Promise<R
   let capture: CaptureRow[] = [];
   const unavailable: string[] = [];
   try {
-    const recent = await captureRecency(env.db, ctx.now);
+    const recent = await captureRecency(env.db, ctx.now, ctx.member.id);
     capture = own === null ? recent : recent.filter((row) => own!.has(row.machineId));
   } catch {
     unavailable.push('capture');
@@ -104,7 +104,8 @@ export async function handleStatus(env: ServerEnv, ctx: OwnerContext): Promise<R
     transcriptBacklog,
     projects: projects.map((p) => ({ projectId: p.projectId, lastActivityAt: p.lastActivityAt, sessionCount: p.sessionCount, archivedAt: p.archivedAt })),
     // When each machine's agents last sent anything, over the last `CAPTURE_WINDOW_MS`, most recent first: every
-    // machine to an admin, and a member's own to a member.
+    // machine to an admin, and a member's own to a member. A machine is named to the member it belongs to alone, and
+    // shown to anyone else as that member.
     capture,
     // The facts above that could not be read, so their absence says nothing.
     unavailable,

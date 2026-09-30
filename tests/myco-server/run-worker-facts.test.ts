@@ -43,10 +43,10 @@ describe('a run names the worker holding it', () => {
     const r = await rig();
     expect(await r.claim()).not.toBeNull();
 
-    const page = await listRuns(r.db, SCOPE, Date.now());
+    const page = await listRuns(r.db, SCOPE, Date.now(), 'mem_viewer');
     expect(page.rows[0]).toMatchObject({ id: 'run_1', status: 'running', harness: 'codex', leasedBy: r.workerCredential.tokenId, leaseExpiresAt: LEASE_UNTIL });
 
-    const detail = await getRunDetail(r.db, SCOPE, 'run_1', Date.now());
+    const detail = await getRunDetail(r.db, SCOPE, 'run_1', Date.now(), 'mem_viewer');
     expect(detail?.run).toMatchObject({ harness: 'codex', leasedBy: r.workerCredential.tokenId, leaseExpiresAt: LEASE_UNTIL });
     // The run authenticates with the harness credential.
     expect(detail?.run.dispatchedBy).toBe(r.runCredential.tokenId);
@@ -60,7 +60,7 @@ describe('a run names the worker holding it', () => {
       { tokenId: r.workerCredential.tokenId, dispatchedBy: r.runCredential.tokenId, now: NOW });
     expect(changed).toBe(1);
 
-    const detail = await getRunDetail(r.db, SCOPE, 'run_1', Date.now());
+    const detail = await getRunDetail(r.db, SCOPE, 'run_1', Date.now(), 'mem_viewer');
     expect(detail?.run).toMatchObject({
       status: 'completed', harness: 'codex', leasedBy: null, leaseExpiresAt: null,
       worker: { credentialId: r.workerCredential.tokenId, machineId: 'sirkirby-mbp' },
@@ -75,7 +75,7 @@ describe('a run names the worker holding it', () => {
 
     const row = r.sqlite.query(`SELECT leased_by, lease_expires_at FROM agent_runs WHERE id = 'run_1'`).get() as Record<string, unknown>;
     expect(row).toMatchObject({ leased_by: r.workerCredential.tokenId, lease_expires_at: null });
-    expect((await getRunDetail(r.db, SCOPE, 'run_1', Date.now()))?.run).toMatchObject({ leasedBy: null, leaseExpiresAt: null });
+    expect((await getRunDetail(r.db, SCOPE, 'run_1', Date.now(), 'mem_viewer'))?.run).toMatchObject({ leasedBy: null, leaseExpiresAt: null });
     // The sweep takes running rows only, so a terminal row keeping a lease would never be swept.
     expect(await lapsedLeases(r.db, LEASE_UNTIL + 1, 10)).toEqual([]);
   });
@@ -88,9 +88,9 @@ describe('a run names the worker holding it', () => {
        VALUES ('run_old', 'proj_1', 'myco-agent', 'title-summary', 'failed', ?, ?, ?, 'codex', ?, ?)`,
       [NOW, NOW, NOW + 100, r.workerCredential.tokenId, NOW - 60_000],
     );
-    const detail = await getRunDetail(r.db, SCOPE, 'run_old', Date.now());
+    const detail = await getRunDetail(r.db, SCOPE, 'run_old', Date.now(), 'mem_viewer');
     expect(detail?.run).toMatchObject({ status: 'failed', harness: 'codex', leasedBy: null, leaseExpiresAt: null });
-    const listed = (await listRuns(r.db, SCOPE, Date.now())).rows.find((row) => row.id === 'run_old');
+    const listed = (await listRuns(r.db, SCOPE, Date.now(), 'mem_viewer')).rows.find((row) => row.id === 'run_old');
     expect(listed).toMatchObject({ leasedBy: null, leaseExpiresAt: null });
   });
 
@@ -99,7 +99,7 @@ describe('a run names the worker holding it', () => {
     await r.claim();
     expect(await requeueLapsedLease(r.db, SCOPE, 'run_1', r.workerCredential.tokenId, LEASE_UNTIL + 1)).toBe(true);
 
-    const detail = await getRunDetail(r.db, SCOPE, 'run_1', Date.now());
+    const detail = await getRunDetail(r.db, SCOPE, 'run_1', Date.now(), 'mem_viewer');
     expect(detail?.run).toMatchObject({ status: 'queued', leasedBy: null, leaseExpiresAt: null, dispatchedBy: null, worker: null });
   });
 
@@ -115,7 +115,7 @@ describe('a run names the worker holding it', () => {
 
   it('names a run whose row never held a lease as recording none, rather than as having had no worker', async () => {
     const r = await rig();
-    const detail = await getRunDetail(r.db, SCOPE, 'run_1', Date.now());
+    const detail = await getRunDetail(r.db, SCOPE, 'run_1', Date.now(), 'mem_viewer');
     expect(detail?.run).toMatchObject({ status: 'queued', harness: null, leasedBy: null, leaseExpiresAt: null });
   });
 });

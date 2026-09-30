@@ -361,31 +361,3 @@ export async function revokedForReplay(db: RelationalStore, digest: string): Pro
   const row = await db.prepare(`SELECT 1 AS hit FROM member_credentials WHERE token_hash = ? AND revoked_by = ?`).bind(digest, LINEAGE_REPLAY_REVOKER).first<{ hit: number }>();
   return row !== null;
 }
-
-/** What renaming a machine did: the name it now carries, or why nothing changed. */
-export type MachineRename =
-  | { renamed: true; name: string }
-  | { renamed: false; reason: 'absent' | 'forbidden' | 'no_live_credential' };
-
-/**
- * Name a machine: the label every live credential of it carries, which a refresh hands to each successor. An admin
- * renames any machine; any other member only one they claim, and the claim is read inside the write. A machine with no
- * live credential has nothing to carry a name, and is left as it is.
- */
-export async function renameMachine(
-  db: RelationalStore, actor: { memberId: string; admin: boolean }, machineId: string, name: string, nowMs: number,
-): Promise<MachineRename> {
-  const [claim, update] = await db.batch([
-    db.prepare(`SELECT member_id FROM machine_claims WHERE machine_id = ?`).bind(machineId),
-    db.prepare(
-      `UPDATE member_credentials SET runtime_label = ?
-        WHERE machine_id = ? AND revoked_at IS NULL AND expires_at > ?
-          AND EXISTS (SELECT 1 FROM machine_claims WHERE machine_id = ? AND (? = 1 OR member_id = ?))`,
-    ).bind(name, machineId, nowMs, machineId, actor.admin ? 1 : 0, actor.memberId),
-  ]);
-  const owner = (claim!.results[0] as { member_id: string } | undefined)?.member_id;
-  if (owner === undefined) return { renamed: false, reason: 'absent' };
-  if (!actor.admin && owner !== actor.memberId) return { renamed: false, reason: 'forbidden' };
-  if (update!.meta.changes === 0) return { renamed: false, reason: 'no_live_credential' };
-  return { renamed: true, name };
-}

@@ -5,7 +5,7 @@
 import type { ServerEnv } from '../core/adapters.js';
 import type { OwnerContext } from '../context.js';
 import { isAdmin } from '../auth/roles.js';
-import { renameMachine } from '../auth/tokens.js';
+import { renameMachine } from '../auth/enrollment.js';
 import { listMachines } from '../read/machines.js';
 import { emit } from '../telemetry.js';
 import { badRequest, notFound, ok, readJsonObject } from './scope.js';
@@ -13,12 +13,17 @@ import { badRequest, notFound, ok, readJsonObject } from './scope.js';
 /** The longest name a machine takes, in characters. */
 export const MACHINE_NAME_MAX = 64;
 
-/** A machine name: 1 to 64 characters once trimmed, none of them a control, format or line-breaking character. */
+/** Control, format, surrogate, private-use and unassigned code points, and line and paragraph separators. */
+const UNPRINTABLE = /[\p{C}\p{Zl}\p{Zp}]/u;
+/** More combining marks in a row than any script writes on one letter. */
+const STACKED_MARKS = /\p{M}{5,}/u;
+
+/** A machine name: 1 to 64 characters once trimmed, every one printable, with no more than four marks on a letter. */
 export function machineName(value: unknown): string | null {
   if (typeof value !== 'string') return null;
   const name = value.trim();
   const length = [...name].length;
-  if (length === 0 || length > MACHINE_NAME_MAX || /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/u.test(name)) return null;
+  if (length === 0 || length > MACHINE_NAME_MAX || UNPRINTABLE.test(name) || STACKED_MARKS.test(name)) return null;
   return name;
 }
 
@@ -27,18 +32,14 @@ export async function handleMachines(env: ServerEnv, ctx: OwnerContext): Promise
   return ok({ machines: await listMachines(env.db, ctx.now, scope) });
 }
 
+/** Rename a machine. Another member's machine answers as an unknown one does, so the answer tells no one which ids exist. */
 export async function handleRenameMachine(env: ServerEnv, ctx: OwnerContext): Promise<Response> {
   const body = await readJsonObject(ctx.request);
   if (body === null) return badRequest('body must be a JSON object');
   const name = machineName(body.label);
   if (name === null) return badRequest(`label must be 1 to ${MACHINE_NAME_MAX} printable characters`);
   const machineId = ctx.params.machineId!;
-  const renamed = await renameMachine(env.db, { memberId: ctx.member.id, admin: isAdmin(ctx.member.role) }, machineId, name, ctx.now);
-  if (renamed.renamed) {
-    emit({ kind: 'machine_renamed', machineId, actor: ctx.member.id });
-    return ok({ machineId, name: renamed.name });
-  }
-  if (renamed.reason === 'absent') return notFound();
-  if (renamed.reason === 'forbidden') return Response.json({ error: 'forbidden', detail: 'only an admin or the member this machine belongs to renames it' }, { status: 403 });
-  return Response.json({ error: 'no_live_credential', detail: 'this machine holds no live credential to carry a name' }, { status: 409 });
+  if (!(await renameMachine(env.db, { memberId: ctx.member.id, admin: isAdmin(ctx.member.role) }, machineId, name))) return notFound();
+  emit({ kind: 'machine_renamed', machineId, actor: ctx.member.id });
+  return ok({ machineId, name });
 }

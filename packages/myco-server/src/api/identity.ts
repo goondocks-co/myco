@@ -12,8 +12,13 @@ import { nameMemberFromLogin } from '../auth/members-admin.js';
 export async function handleMe(env: ServerEnv, ctx: SessionContext): Promise<Response> {
   let member = ctx.member;
   if (member !== null && member.label === null) {
-    const named = await nameMemberFromLogin(env.db, member.id, ctx.session.login);
-    if (named !== null) member = { ...member, label: named };
+    // Naming is a courtesy of the sign-in, never a condition of it: a write that fails leaves the member as it was.
+    try {
+      const named = await nameMemberFromLogin(env.db, member.id, ctx.session.login);
+      if (named !== null) member = { ...member, label: named };
+    } catch {
+      member = ctx.member;
+    }
   }
   return ok({ sub: ctx.session.sub, login: ctx.session.login, member });
 }

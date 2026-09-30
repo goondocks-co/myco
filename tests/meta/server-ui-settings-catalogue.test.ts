@@ -7,7 +7,7 @@
 import { describe, expect, it } from 'bun:test';
 import { readFileSync, readdirSync, statSync } from 'node:fs';
 import { join } from 'node:path';
-import { DEPLOYMENT_LEAVES } from '@myco-server-worker/core/settings.js';
+import { DEPLOYMENT_LEAVES, RETIRED_LEAVES } from '@myco-server-worker/core/settings.js';
 import { LEAF_FIELDS, LEAF_GROUPS, LIVE_FIELDS } from '../../packages/myco-server/ui/src/features/admin/settings/catalogue.js';
 import { LEAF_DEFAULTS } from '../../packages/myco-server/ui/src/features/admin/settings/defaults.js';
 
@@ -83,26 +83,15 @@ describe('settings catalogue', () => {
   });
 
   /**
-   * A setting is retired exactly when no server code reads it. The leaf list in
-   * `core/settings.ts` names every leaf, and the retired list names the unread
-   * ones, so both are left out of the search; a setting read anywhere else in
-   * the server's source is still in use.
+   * The catalogue retires exactly the leaves the server marks retired (`RETIRED_LEAVES`), which
+   * `retired-settings.test.ts` holds to the leaves nothing reads, so the dashboard and the server
+   * never disagree about a setting.
    */
-  it('retires exactly the settings no server code reads', () => {
-    const root = join(import.meta.dir, '..', '..', 'packages', 'myco-server', 'src');
-    const specs = readFileSync(join(root, 'core', 'settings.ts'), 'utf8');
-    const listStart = specs.indexOf('export const DEPLOYMENT_LEAF_SPECS');
-    const listEnd = specs.indexOf('\n};', listStart);
-    const retiredStart = specs.indexOf('export const RETIRED_LEAVES');
-    const retiredEnd = specs.indexOf(']);', retiredStart);
-    expect(retiredStart > listEnd && retiredEnd > retiredStart).toBe(true);
-    const unlisted = specs.slice(0, listStart) + specs.slice(listEnd, retiredStart) + specs.slice(retiredEnd);
-    const sources = walkSources(root).map((file) => (file.endsWith(join('core', 'settings.ts')) ? unlisted : readFileSync(file, 'utf8')));
-    const read = (leaf: string) => sources.some((text) => text.includes(`'${leaf}'`));
+  it('retires exactly the settings the server marks retired', () => {
     // Myco's own built-in exclusions are shown from the shared constant the map itself uses, not from the leaf.
     const shownFromShared = new Set(['cortex.canopy.exclude.default_patterns']);
-    const wrong = LEAF_FIELDS.filter((f) => !shownFromShared.has(f.leaf) && (f.retired === true) === read(f.leaf))
-      .map((f) => `${f.leaf}: ${f.retired === true ? 'retired but read' : 'offered but unread'}`);
+    const wrong = LEAF_FIELDS.filter((f) => !shownFromShared.has(f.leaf) && (f.retired === true) !== RETIRED_LEAVES.has(f.leaf))
+      .map((f) => `${f.leaf}: ${f.retired === true ? 'retired here, live on the server' : 'offered here, retired on the server'}`);
     expect(wrong).toEqual([]);
   });
 });

@@ -2,8 +2,9 @@
  * Capture recency on `/api/status`: when each machine's agents last sent anything, across every Project.
  *
  * One row per machine and agent, its latest receipt and the Project that receipt landed in, over the last thirty
- * days, most recent first. A machine is named by the label its newest live credential carries. A member who is not an
- * admin reads their own machines' capture; an admin reads every machine's.
+ * days, most recent first. A machine is named to the member it belongs to alone, by its claim's label or else the label
+ * its newest live credential carries; anyone else is shown the member. A member who is not an admin reads their own
+ * machines' capture; an admin reads every machine's.
  */
 import { describe, expect, it } from 'bun:test';
 import { sqliteEnv } from './helpers/fixtures.js';
@@ -11,6 +12,9 @@ import { seedCredential } from './helpers/d1.js';
 import { MEMBER_SUB, OWNER_ENV, ownerCookie, seedMemberRoleAccount } from './helpers/owner.js';
 import worker from '@myco-server-worker/index.js';
 import { CAPTURE_WINDOW_MS } from '@myco-server-worker/read/capture.js';
+
+/** The member-role account the tests act as, as the capture rows name it. */
+const LAPTOP_MEMBER = { id: 'mem_machine_2', label: 'machine_2' };
 
 describe('capture recency', () => {
   it('answers the latest receipt per machine and agent over the window, with its Project and the machine\'s name, a member their own machines alone', async () => {
@@ -41,13 +45,19 @@ describe('capture recency', () => {
     expect(res.status).toBe(200);
     const body = await res.json() as { capture: unknown[] };
     expect(body.capture).toEqual([
-      { machineId: 'laptop', machineName: 'studio', agent: 'claude-code', lastEventAt: now - 10_000, projectId: 'proj_2' },
-      { machineId: 'laptop', machineName: 'studio', agent: 'codex', lastEventAt: now - 3_600_000, projectId: 'proj_1' },
-      { machineId: 'desktop', machineName: null, agent: 'cursor', lastEventAt: now - 7_200_000, projectId: 'proj_2' },
+      { machineId: 'laptop', machineName: 'studio', member: LAPTOP_MEMBER, agent: 'claude-code', lastEventAt: now - 10_000, projectId: 'proj_2' },
+      { machineId: 'laptop', machineName: 'studio', member: LAPTOP_MEMBER, agent: 'codex', lastEventAt: now - 3_600_000, projectId: 'proj_1' },
+      { machineId: 'desktop', machineName: null, member: LAPTOP_MEMBER, agent: 'cursor', lastEventAt: now - 7_200_000, projectId: 'proj_2' },
     ]);
-    // The admin reads every machine's capture, another member's included.
+    // The admin reads every machine's capture, another member's included, named only where the machine is the admin's.
+    sqlite.run(`UPDATE machine_claims SET label = 'Admin box' WHERE machine_id = 'admin-box'`);
     const all = await worker.fetch(new Request('https://s/api/status', { headers: { cookie: await ownerCookie(), 'cf-connecting-ip': '1.2.3.4' } }), env);
-    expect(((await all.json()) as { capture: Array<{ machineId: string }> }).capture.map((row) => row.machineId)).toEqual(['admin-box', 'laptop', 'laptop', 'desktop']);
+    const seen = ((await all.json()) as { capture: Array<{ machineId: string; machineName: string | null; member: unknown }> }).capture;
+    expect(seen.map((row) => [row.machineId, row.machineName, row.member])).toEqual([
+      ['admin-box', 'Admin box', { id: 'mem_machine_1', label: 'machine_1' }],
+      ['laptop', null, LAPTOP_MEMBER], ['laptop', null, LAPTOP_MEMBER], ['desktop', null, LAPTOP_MEMBER],
+    ]);
+    expect(JSON.stringify(seen)).not.toContain('studio');
   });
 
   it('keeps every other status fact when capture recency cannot be read, and names it as unavailable', async () => {

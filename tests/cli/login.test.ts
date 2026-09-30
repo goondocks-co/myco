@@ -15,6 +15,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { issueEnrollmentAuthority } from '@myco-server-worker/auth/enrollment.js';
 import { run } from '@myco/cli/login.js';
+import { runtimeLabelOf } from '@myco/member/join-code.js';
 import { readDeploymentMembership, readRegistryEntry } from '@myco/member/registry.js';
 import { unjoinedRig } from '../member/helpers/server.js';
 import { recordingPlatform } from '../member/helpers/service-platform.js';
@@ -91,6 +92,18 @@ describe('myco login', () => {
     // No Project was named, so nothing invented one for this root.
     expect(readRegistryEntry(root, home)).toBe(null);
     expect(out.join('\n')).toContain('myco member join');
+  });
+
+  it('turns a host name into a name the Deployment admits, and sends none for an address or a name with no letter or digit', () => {
+    expect(runtimeLabelOf('192.168.1.10')).toBeUndefined();
+    expect(runtimeLabelOf('fe80::1')).toBeUndefined();
+    expect(runtimeLabelOf('[fe80::1]')).toBeUndefined();
+    expect(runtimeLabelOf('ÉCOLE-PC')).toBe('ECOLE-PC');
+    expect(runtimeLabelOf('-')).toBeUndefined();
+    expect(runtimeLabelOf('._-')).toBeUndefined();
+    expect(runtimeLabelOf('sirkirby-mbp.local')).toBe('sirkirby-mbp');
+    expect(runtimeLabelOf("Chris's MacBook Pro")).toBe('Chriss-MacBook-Pro');
+    expect(runtimeLabelOf('x'.repeat(80))).toBe('x'.repeat(64));
   });
 
   it('names the machine after its host, as the Deployment admits a name, and names none when nothing of the host is left', async () => {

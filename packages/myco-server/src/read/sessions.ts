@@ -36,6 +36,10 @@ export interface SessionRow {
   /** The member and runtime behind the credential that captured the session; null when the credential row is gone. */
   memberId: string | null;
   memberLabel: string | null;
+  /**
+   * The name of the machine the session came from. A read leaves it null: a facade names the viewer's own machines
+   * with `nameOwnMachines`, and anyone else's machine is shown as its member, never by name.
+   */
   runtimeLabel: string | null;
   runtimeKind: string | null;
   /** The title written on the Deployment after the session ended; null until then. */
@@ -101,7 +105,7 @@ export const PRESENTED_ENDED_AT = presentedEndedAt('s.');
 const SESSION_COLUMNS = `s.session_id, s.machine_id, s.created_by_token_id, s.first_received_at, s.last_received_at,
      s.agent, s.branch, ${PRESENTED_STARTED_AT} AS started_at, ${PRESENTED_ENDED_AT} AS ended_at, s.origin_path, s.parent_session_id, s.parent_reason,
      s.title, s.summary, s.titled_at, s.ended_by, ${FIRST_PROMPT_SQL} AS first_prompt,
-     c.member_id, c.runtime_label, c.runtime_kind, m.label AS member_label, e.label AS ended_by_label`;
+     c.member_id, c.runtime_kind, m.label AS member_label, e.label AS ended_by_label`;
 const SESSION_FROM = sessionFrom('');
 /** The session read's joins, with the sessions table read through `indexedBy` where one is named. */
 function sessionFrom(indexedBy: string): string {
@@ -142,7 +146,7 @@ function toSession(row: Record<string, unknown>): SessionRow {
     parentReason: text(row.parent_reason),
     memberId: text(row.member_id),
     memberLabel: text(row.member_label),
-    runtimeLabel: text(row.runtime_label),
+    runtimeLabel: null,
     runtimeKind: text(row.runtime_kind),
     title: text(row.title),
     summary: text(row.summary),

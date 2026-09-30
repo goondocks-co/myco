@@ -2,13 +2,15 @@
  * The machines of a Deployment: every machine identity a member claims, with what it last did.
  *
  * A machine is its claim (`machine_claims`): the identity it joined with, and the member it belongs to. Its name is the
- * label its newest live credential carries, the host name `myco login` sends unless someone renamed it. What it last
+ * claim's label, the host name `myco login` sent when it first joined unless someone renamed it, or for a machine
+ * claimed before names lived there, the label its newest live credential carries. What it last
  * did comes from two places: the sessions its agents capture into, and the reports its worker makes with the runs
- * those reporting credentials leased. A member reads only their own machines; an admin reads every one.
+ * those reporting credentials leased. A member reads only their own machines; an admin reads every one, names
+ * included, as the one who manages them.
  */
 import type { PreparedStatement, RelationalStore } from '../core/adapters.js';
 import { machineContactsOf, machineContactsStatement, type ReportedHarness } from '../core/worker-contacts.js';
-import { captureRecencyStatement, captureRowsOf } from './capture.js';
+import { captureRecencyStatement } from './capture.js';
 
 /** One agent's capture on a machine: when it last sent anything, and the Project that capture landed in. */
 export interface MachineCapture {
@@ -20,9 +22,9 @@ export interface MachineCapture {
 
 export interface MachineRow {
   machineId: string;
-  /** The label the machine's newest live credential carries; null while none carries one. */
+  /** The claim's label, else the label its newest live credential carries; null while neither holds one. */
   name: string | null;
-  /** Whether any credential of the machine authenticates now. A machine with none has nothing to carry a new name. */
+  /** Whether any credential of the machine authenticates now. */
   live: boolean;
   member: { id: string; label: string | null; revoked: boolean };
   claimedAt: number;
@@ -45,7 +47,7 @@ export interface MachineRow {
 export type MachineScope = { all: true } | { all: false; memberId: string };
 
 function claimsStatement(db: RelationalStore, scope: MachineScope): PreparedStatement {
-  const sql = `SELECT mc.machine_id, mc.member_id, mc.claimed_at, m.label AS member_label, m.revoked_at AS member_revoked_at
+  const sql = `SELECT mc.machine_id, mc.member_id, mc.claimed_at, mc.label, m.label AS member_label, m.revoked_at AS member_revoked_at
                  FROM machine_claims mc CROSS JOIN members m ON m.id = mc.member_id`;
   return scope.all ? db.prepare(sql) : db.prepare(`${sql} WHERE mc.member_id = ?`).bind(scope.memberId);
 }
@@ -79,10 +81,11 @@ export async function listMachines(db: RelationalStore, nowMs: number, scope: Ma
     if (row.runtime_label !== null && !names.has(row.machine_id)) names.set(row.machine_id, row.runtime_label);
   }
   const capture = new Map<string, MachineCapture[]>();
-  for (const row of captureRowsOf(recent!.results, names)) {
-    const held = capture.get(row.machineId) ?? [];
-    held.push({ agent: row.agent, lastEventAt: row.lastEventAt, projectId: row.projectId });
-    capture.set(row.machineId, held);
+  for (const row of recent!.results as Record<string, unknown>[]) {
+    const machineId = String(row.machine_id);
+    const held = capture.get(machineId) ?? [];
+    held.push({ agent: row.agent == null ? null : String(row.agent), lastEventAt: Number(row.last_event_at), projectId: String(row.project_id) });
+    capture.set(machineId, held);
   }
   const contact = machineContactsOf(contacts!.results);
   return (claims!.results as Record<string, unknown>[]).map((row): MachineRow => {
@@ -90,7 +93,7 @@ export async function listMachines(db: RelationalStore, nowMs: number, scope: Ma
     const captured = capture.get(machineId) ?? [];
     return {
       machineId,
-      name: names.get(machineId) ?? null,
+      name: row.label == null ? names.get(machineId) ?? null : String(row.label),
       live: live.has(machineId),
       member: { id: String(row.member_id), label: row.member_label == null ? null : String(row.member_label), revoked: row.member_revoked_at != null },
       claimedAt: Number(row.claimed_at),
