@@ -11,8 +11,7 @@ import { useIsAdmin } from '../hooks/use-me';
 import { isArchived, type ProjectSummary } from '../lib/api';
 import { formatCount, formatRelative } from '../lib/format';
 import { rememberProject } from '../lib/project-memory';
-
-const button = 'rounded-md border border-outline-variant/30 px-2.5 py-1 font-sans text-xs text-on-surface transition-colors hover:bg-surface-container-high';
+import { Button, Input } from '../design';
 
 export function Projects() {
   const projects = useProjects();
@@ -32,9 +31,9 @@ export function Projects() {
         title="Projects"
         subtitle="Every project this server holds memory for."
         actions={archived.length > 0 ? (
-          <button type="button" className={button} aria-pressed={showArchived} onClick={() => setShowArchived((v) => !v)}>
+          <Button size="sm" aria-pressed={showArchived} onClick={() => setShowArchived((v) => !v)}>
             {showArchived ? 'Hide archived' : `Archived (${archived.length})`}
-          </button>
+          </Button>
         ) : undefined}
       />
       {error !== null && <p className="mb-3 font-sans text-xs text-tertiary">{error}</p>}
@@ -53,8 +52,8 @@ export function Projects() {
               project={p}
               action={admin && (
                 <span className="flex gap-2">
-                  <button type="button" className={button} onClick={() => { setError(null); setRenaming(p); }}>Rename</button>
-                  <button type="button" className={button} onClick={() => { setError(null); setArchiving(p); }}>Archive</button>
+                  <Button size="sm" onClick={() => { setError(null); setRenaming(p); }}>Rename</Button>
+                  <Button size="sm" onClick={() => { setError(null); setArchiving(p); }}>Archive</Button>
                 </span>
               )}
             />
@@ -70,7 +69,7 @@ export function Projects() {
                 key={p.projectId}
                 project={p}
                 note={`Archived ${formatRelative(p.archivedAt)}${p.archivedBy ? ` by ${p.archivedBy}` : ''}`}
-                action={admin && <button type="button" className={button} disabled={actions.unarchive.isPending} onClick={() => { setError(null); actions.unarchive.mutate(p.projectId, { onError: (err) => setError(refusalText(err)) }); }}>Unarchive</button>}
+                action={admin && <Button size="sm" disabled={actions.unarchive.isPending} onClick={() => { setError(null); actions.unarchive.mutate(p.projectId, { onError: (err) => setError(refusalText(err)) }); }}>Unarchive</Button>}
               />
             ))}
           </ul>
@@ -115,9 +114,9 @@ function RenameDialog({ project, isPending, errorMessage, onClose, onRename }: {
           </DialogHeader>
           <label className="mt-4 block font-sans text-xs text-on-surface-variant" htmlFor="project-rename">
             Name
-            <input
+            <Input
               id="project-rename"
-              className="mt-1 w-full rounded-md border border-outline-variant/30 bg-surface-container px-2 py-1.5 font-sans text-sm text-on-surface"
+              className="mt-1"
               value={name}
               maxLength={200}
               autoFocus
@@ -126,8 +125,8 @@ function RenameDialog({ project, isPending, errorMessage, onClose, onRename }: {
           </label>
           {errorMessage !== null && <p className="mt-2 font-sans text-xs text-tertiary">{errorMessage}</p>}
           <DialogFooter className="mt-4">
-            <button type="button" className={button} onClick={onClose}>Cancel</button>
-            <button type="submit" className={button} disabled={trimmed === '' || isPending}>Rename</button>
+            <Button variant="ghost" onClick={onClose}>Cancel</Button>
+            <Button type="submit" variant="primary" disabled={trimmed === '' || isPending}>Rename</Button>
           </DialogFooter>
         </form>
       </DialogContent>

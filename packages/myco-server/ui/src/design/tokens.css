@@ -1,0 +1,389 @@
+/*
+ * Design tokens for the dashboard.
+ *
+ * Semantic names only: a component asks for `--ink` or `--surface-1`, never for
+ * a hue. Dark is the default on `:root`; `:root.light` redefines every colour
+ * token. The six accent themes in `themes.css` set only `--primary` and
+ * `--on-primary`; state colours (ok, warn, bad) never change with the theme.
+ *
+ * `tests/meta/ui-token-contrast.test.ts` reads this file: every colour token is
+ * defined in both modes, and the pairs it lists meet their WCAG ratio.
+ */
+
+/* ---------- Colour, spacing, type, radius, motion (dark, the default) ---------- */
+
+:root {
+  /* Surfaces */
+  --page: #060806;
+  --bg: #0e110d;
+  --surface-1: #141912;
+  --surface-2: #1a2017;
+  --surface-3: #222a1e;
+  --line: #262d22;
+  --line-strong: #333c2e;
+
+  /* Text */
+  --ink: #e8ece3;
+  --ink-2: #cdd5c7;
+  --muted: #9ba696;
+  --faint: #7a8576;
+
+  /* Accent: the theme sets --primary and --on-primary; sage is the default. */
+  --primary: #b8c6a0;
+  --on-primary: #161a10;
+  --primary-bg: color-mix(in srgb, var(--primary) 14%, transparent);
+
+  /* State: fixed across themes so meaning never changes with the accent. */
+  --ok: #abcfb8;
+  --ok-bg: color-mix(in srgb, var(--ok) 11%, transparent);
+  --warn: #edbf7f;
+  --warn-bg: color-mix(in srgb, var(--warn) 12%, transparent);
+  --bad: #ffb4a1;
+  --bad-bg: color-mix(in srgb, var(--bad) 12%, transparent);
+
+  --focus: var(--primary);
+  --scrim: color-mix(in srgb, #000000 62%, transparent);
+  --shadow-overlay: 0 18px 48px -12px color-mix(in srgb, #000000 70%, transparent), 0 0 0 1px var(--line-strong);
+
+  /* Type families. The code font follows the viewer's appearance choice. */
+  --font-serif-stack: 'Newsreader', Georgia, serif;
+  --font-sans-stack: 'Inter', system-ui, -apple-system, sans-serif;
+  --font-mono-stack: var(--font-data, 'JetBrains Mono'), ui-monospace, Menlo, monospace;
+
+  /* Spacing: a 4px base. */
+  --s-1: 4px;
+  --s-2: 8px;
+  --s-3: 12px;
+  --s-4: 16px;
+  --s-5: 20px;
+  --s-6: 24px;
+  --s-8: 32px;
+  --s-10: 40px;
+  --s-12: 48px;
+
+  /* One page gutter: 24px, 16px under 640px. */
+  --gutter: 24px;
+
+  /* Prose measure. */
+  --measure: 72ch;
+
+  /* Radius */
+  --r-chip: 6px;
+  --r-control: 8px;
+  --r-card: 12px;
+  --r-pill: 999px;
+
+  /* Density: row and control heights only, never the type size. Normal is the default. */
+  --row: 60px;
+  --row-tight: 44px;
+  --control-h: 36px;
+  --control-h-sm: 28px;
+
+  /* Motion */
+  --dur-press: 120ms;
+  --dur-panel: 200ms;
+  --ease: cubic-bezier(0.2, 0, 0, 1);
+
+  color-scheme: dark;
+}
+
+/* ---------- Light: Warm Parchment ---------- */
+
+:root.light {
+  --page: #f4eed8;
+  --bg: #f9f5e6;
+  --surface-1: #ffffff;
+  --surface-2: #f1ebda;
+  --surface-3: #e8e1d1;
+  --line: #ddd6c6;
+  --line-strong: #c9c1b0;
+
+  --ink: #131313;
+  --ink-2: #2e332f;
+  --muted: #4f5650;
+  --faint: #5f665f;
+
+  --primary: #446553;
+  --on-primary: #ffffff;
+  --primary-bg: color-mix(in srgb, var(--primary) 12%, transparent);
+
+  --ok: #446553;
+  --ok-bg: color-mix(in srgb, var(--ok) 10%, transparent);
+  --warn: #8a5e15;
+  --warn-bg: color-mix(in srgb, var(--warn) 10%, transparent);
+  --bad: #8b5c44;
+  --bad-bg: color-mix(in srgb, var(--bad) 10%, transparent);
+
+  --focus: var(--primary);
+  --scrim: color-mix(in srgb, #131313 40%, transparent);
+  --shadow-overlay: 0 18px 48px -12px color-mix(in srgb, #3c2c0c 28%, transparent), 0 0 0 1px var(--line-strong);
+
+  color-scheme: light;
+}
+
+:root[data-density='compact'] {
+  --row: 52px;
+  --row-tight: 40px;
+  --control-h: 32px;
+}
+
+:root[data-density='comfy'] {
+  --row: 72px;
+  --row-tight: 52px;
+  --control-h: 40px;
+}
+
+@media (max-width: 639px) {
+  :root {
+    --gutter: 16px;
+  }
+}
+
+/* ---------- Aliases: the older token names, mapped onto the semantic ones ----------
+ *
+ * Pages not rebuilt on the design system still read these names. Each maps to
+ * one semantic token, so both kinds of page share one palette in every theme
+ * and mode.
+ */
+
+:root {
+  --surface: var(--bg);
+  --surface-dim: var(--page);
+  --surface-bright: var(--surface-3);
+  --surface-container-lowest: var(--page);
+  --surface-container-low: var(--surface-1);
+  --surface-container: var(--surface-2);
+  --surface-container-high: var(--surface-3);
+  --surface-container-highest: color-mix(in srgb, var(--surface-3) 88%, var(--ink));
+  --surface-variant: var(--surface-3);
+
+  --on-surface: var(--ink);
+  --on-surface-variant: var(--ink-2);
+  --outline: var(--faint);
+  --outline-variant: var(--line-strong);
+  --ghost-border: var(--line);
+
+  --primary-container: color-mix(in srgb, var(--primary) 72%, var(--bg));
+  --on-primary-container: var(--ink);
+  --secondary: var(--warn);
+  --on-secondary: var(--bg);
+  --secondary-container: var(--warn-bg);
+  --tertiary: var(--bad);
+  --on-tertiary: var(--bg);
+  --tertiary-container: var(--bad-bg);
+
+  --sage: var(--ok);
+  --sage-dim: color-mix(in srgb, var(--ok) 70%, var(--bg));
+  --ochre: var(--warn);
+  --terracotta: var(--bad);
+
+  --inverse-surface: var(--ink);
+  --inverse-on-surface: var(--bg);
+  --inverse-primary: var(--primary);
+  --shadow-tint: 96, 65, 11;
+
+  --background: var(--bg);
+  --foreground: var(--ink);
+  --card: var(--surface-1);
+  --card-foreground: var(--ink);
+  --muted-foreground: var(--ink-2);
+  --accent: var(--surface-3);
+  --accent-foreground: var(--ink);
+  --border: var(--line-strong);
+  --input: var(--line-strong);
+  --ring: var(--focus);
+  --destructive: var(--bad);
+  --primary-foreground: var(--on-primary);
+  --secondary-foreground: var(--ink);
+
+  --radius: 0.375rem;
+}
+
+@theme inline {
+  /* Older names, for pages not rebuilt on the design system. */
+  --color-surface: var(--surface);
+  --color-surface-dim: var(--surface-dim);
+  --color-surface-bright: var(--surface-bright);
+  --color-surface-container-lowest: var(--surface-container-lowest);
+  --color-surface-container-low: var(--surface-container-low);
+  --color-surface-container: var(--surface-container);
+  --color-surface-container-high: var(--surface-container-high);
+  --color-surface-container-highest: var(--surface-container-highest);
+  --color-surface-variant: var(--surface-variant);
+  --color-on-surface: var(--on-surface);
+  --color-on-surface-variant: var(--on-surface-variant);
+  --color-outline: var(--outline);
+  --color-outline-variant: var(--outline-variant);
+  --color-primary-container: var(--primary-container);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-on-primary-container: var(--on-primary-container);
+  --color-secondary: var(--secondary);
+  --color-secondary-container: var(--secondary-container);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-tertiary: var(--tertiary);
+  --color-tertiary-container: var(--tertiary-container);
+  --color-destructive: var(--destructive);
+  --color-sage: var(--sage);
+  --color-sage-dim: var(--sage-dim);
+  --color-ochre: var(--ochre);
+  --color-terracotta: var(--terracotta);
+  --color-terra: var(--bad);
+  --color-error: var(--bad);
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+
+  --radius-lg: 0.5rem;
+  --radius-md: var(--radius);
+  --radius-sm: 0.25rem;
+
+  --shadow-ambient: 0 24px 48px rgba(var(--shadow-tint), 0.06);
+  --shadow-sage-glow: 0 0 8px var(--sage);
+  --shadow-ochre-glow: 0 0 8px var(--ochre);
+  --shadow-terracotta-glow: 0 0 8px var(--terracotta);
+
+  /* Type families for both kinds of page. */
+  --font-serif: var(--font-serif-stack);
+  --font-sans: var(--font-sans-stack);
+  --font-mono: var(--font-mono-stack);
+
+  /* Semantic colours */
+  --color-page: var(--page);
+  --color-bg: var(--bg);
+  --color-surface-1: var(--surface-1);
+  --color-surface-2: var(--surface-2);
+  --color-surface-3: var(--surface-3);
+  --color-line: var(--line);
+  --color-line-strong: var(--line-strong);
+  --color-ink: var(--ink);
+  --color-ink-2: var(--ink-2);
+  --color-muted: var(--muted);
+  --color-faint: var(--faint);
+  --color-primary: var(--primary);
+  --color-primary-bg: var(--primary-bg);
+  --color-on-primary: var(--on-primary);
+  --color-ok: var(--ok);
+  --color-ok-bg: var(--ok-bg);
+  --color-warn: var(--warn);
+  --color-warn-bg: var(--warn-bg);
+  --color-bad: var(--bad);
+  --color-bad-bg: var(--bad-bg);
+  --color-focus: var(--focus);
+  --color-scrim: var(--scrim);
+
+  /* Spacing on the 4px base, the gutter, and the density heights. */
+  --spacing-s1: var(--s-1);
+  --spacing-s2: var(--s-2);
+  --spacing-s3: var(--s-3);
+  --spacing-s4: var(--s-4);
+  --spacing-s5: var(--s-5);
+  --spacing-s6: var(--s-6);
+  --spacing-s8: var(--s-8);
+  --spacing-s10: var(--s-10);
+  --spacing-s12: var(--s-12);
+  --spacing-gutter: var(--gutter);
+  --spacing-control: var(--control-h);
+  --spacing-control-sm: var(--control-h-sm);
+  --spacing-row: var(--row);
+  --spacing-row-tight: var(--row-tight);
+  --spacing-measure: var(--measure);
+
+  --radius-chip: var(--r-chip);
+  --radius-control: var(--r-control);
+  --radius-card: var(--r-card);
+  --radius-pill: var(--r-pill);
+}
+
+/* ---------- The type scale. Nothing is set below 12px. ---------- */
+
+@utility t-display {
+  font-family: var(--font-serif-stack);
+  font-style: italic;
+  font-weight: 600;
+  font-size: 28px;
+  line-height: 1.15;
+  letter-spacing: -0.005em;
+}
+
+@utility t-h2 {
+  font-family: var(--font-serif-stack);
+  font-style: italic;
+  font-weight: 600;
+  font-size: 20px;
+  line-height: 1.2;
+}
+
+@utility t-h3 {
+  font-family: var(--font-serif-stack);
+  font-style: italic;
+  font-weight: 600;
+  font-size: 16px;
+  line-height: 1.3;
+}
+
+@utility t-body {
+  font-family: var(--font-sans-stack);
+  font-size: 15px;
+  line-height: 1.55;
+}
+
+@utility t-small {
+  font-family: var(--font-sans-stack);
+  font-size: 13.5px;
+  line-height: 1.45;
+}
+
+@utility t-meta {
+  font-family: var(--font-sans-stack);
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+@utility t-kicker {
+  font-family: var(--font-sans-stack);
+  font-weight: 500;
+  font-size: 12px;
+  line-height: 1;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+/* Labels inside controls: buttons, inputs, selects, tabs. */
+@utility t-control {
+  font-family: var(--font-sans-stack);
+  font-size: 14px;
+  line-height: 1.25;
+}
+
+@utility t-mono {
+  font-family: var(--font-mono-stack);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+@utility focus-ring {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+
+@utility prose-measure {
+  max-width: var(--measure);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}

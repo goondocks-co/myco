@@ -32,7 +32,9 @@
     "test:watch": "bun test --watch",
     "lint:skills": "tsx packages/myco/scripts/lint-skill-content.ts",
     "lint:skills:strict": "tsx packages/myco/scripts/lint-skill-content.ts --strict",
-    "lint": "npm run lint:skills:strict && tsc --noEmit && npm run typecheck:tests && npm run typecheck:ui && npm run check:workers && npm run check:ui -w @goondocks/myco-server"
+    "lint": "npm run lint:skills:strict && tsc --noEmit && npm run typecheck:tests && npm run typecheck:ui && npm run check:workers && npm run check:ui -w @goondocks/myco-server",
+    "test:screens": "playwright test -c tests/ui-screens/playwright.config.ts",
+    "screens:shoot": "tsx tests/ui-screens/shoot.ts"
   },
   "repository": {
     "type": "git",
@@ -54,8 +56,10 @@
     "zod": "^4.4.3"
   },
   "devDependencies": {
+    "@axe-core/playwright": "^4.13.0",
     "@cloudflare/vitest-pool-workers": "^0.20.2",
     "@cloudflare/workers-types": "^5.20260731.1",
+    "@playwright/test": "^1.63.0",
     "@tanstack/react-query": "^5.101.4",
     "@testing-library/dom": "^10.4.1",
     "@testing-library/jest-dom": "^7.0.0",
