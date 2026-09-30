@@ -7,7 +7,7 @@ import {
 import { PlanLine } from '../knowledge/PlanLine';
 import { releaseStateLabel, shortRef } from '../../components/release/release-labels';
 import { useSpores } from '../../hooks/use-intelligence';
-import { useIsAdmin } from '../../hooks/use-me';
+import { useIsAdmin, useMe } from '../../hooks/use-me';
 import { UNTITLED_REASON_TEXT, useAllTurns, useSession, useSessionChildren, type PlanRow, type SessionResponse, type SessionRow } from '../../hooks/use-sessions';
 import { useNow } from '../../hooks/use-today';
 import { ApiError } from '../../lib/api';
@@ -16,7 +16,7 @@ import { sessionHeading } from '../../lib/session-text';
 import { NotFound } from '../../pages/NotFound';
 import { projectPath } from '../../routes/nav';
 import { isLive } from '../today/timeline';
-import { ago, dayHeading } from '../today/words';
+import { ago, dayHeading, workPlace } from '../today/words';
 import { Conversation, PERSON_ONLY } from './Conversation';
 import { RawData, isRawSection } from './RawData';
 import { SessionActions } from './SessionActions';
@@ -179,6 +179,10 @@ function Summary({ session, untitled, live }: { session: SessionRow; untitled: S
 function Facts({ answer, projectId, projectName, now, live, actions }: { answer: SessionResponse; projectId: string; projectName: string; now: number; live: boolean; actions: ReactNode }) {
   const { session, counts, release } = answer;
   const who = memberName(session);
+  // The viewer's own machine, by its name or as "Your machine"; another member's machine is named by the Member row alone.
+  const viewerId = useMe().data?.member?.id ?? null;
+  const place = workPlace(session.runtimeLabel, session.memberId === null ? null : { id: session.memberId, label: session.memberLabel }, viewerId);
+  const machine = place?.own === true ? place.machine : null;
   const endedBy = session.endedBy === null ? null : memberLabel({ id: session.endedBy, label: session.endedByLabel }) ?? 'a member';
   return (
     <FactsPanel
@@ -193,7 +197,7 @@ function Facts({ answer, projectId, projectName, now, live, actions }: { answer:
     >
       <FactRow term="Project">{projectName}</FactRow>
       <FactRow term="Agent">{agentName(session.agent)}</FactRow>
-      {session.runtimeLabel !== null && session.runtimeLabel.trim() !== '' && <FactRow term="Machine">{session.runtimeLabel}</FactRow>}
+      {machine !== null && <FactRow term="Machine">{machine}</FactRow>}
       {who !== null && <FactRow term="Member">{who}</FactRow>}
       {session.branch !== null && <FactRow term="Branch" mono>{session.branch}</FactRow>}
       {session.originPath !== null && <FactRow term="Folder" mono>{session.originPath}</FactRow>}

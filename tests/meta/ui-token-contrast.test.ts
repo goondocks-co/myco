@@ -325,6 +325,15 @@ const NOT_A_COLOUR: Readonly<Record<string, RegExp>> = {
   shadow: /^(none|xs|sm|md|lg|xl|2xl|inner)$/,
 };
 
+/** Tailwind v4's variable shorthand on a colour utility: `bg-(--surface-2)`, `text-(color:--ink)`. */
+const COLOUR_SHORTHAND = /^(?:[\w-]+(?:-\[[^\]]*\])?:)*!?(?:bg|text|border(?:-[trblxyse])?|ring-offset|ring|fill|stroke|outline|divide|from|via|to|decoration|accent|caret|shadow)-\((?:color:)?(--[\w-]+)\)$/;
+
+/** Every custom property the tokens define, which a shorthand may name. */
+function definedProperties(): Set<string> {
+  const css = CSS_FILES.map((file) => fs.readFileSync(file, 'utf8')).join('\n');
+  return new Set([...css.matchAll(/(--[\w-]+)\s*:/g)].map((m) => m[1]!));
+}
+
 /** The colours the theme defines as utilities: every `--color-<name>` under `@theme`. */
 function themeColours(): Set<string> {
   const css = CSS_FILES.map((file) => fs.readFileSync(file, 'utf8')).join('\n');
@@ -332,7 +341,7 @@ function themeColours(): Set<string> {
 }
 
 /** Every colour utility in a text, and those whose colour the theme does not define: a class that would render nothing. */
-function colourClasses(text: string, colours: ReadonlySet<string>): { checked: number; unknown: string[] } {
+function colourClasses(text: string, colours: ReadonlySet<string>, properties: ReadonlySet<string> = definedProperties()): { checked: number; unknown: string[] } {
   const out: string[] = [];
   let checked = 0;
   for (const literal of text.matchAll(/(['"`])((?:(?!\1)[^\\\n])*)\1/g)) {
@@ -340,6 +349,12 @@ function colourClasses(text: string, colours: ReadonlySet<string>): { checked: n
     // A class list: lowercase utility tokens, with no sentence in it.
     if (!/\b(bg|text|border|ring|fill|stroke|outline|divide|from|via|to|decoration|accent|caret|shadow)-/.test(body) || /[A-Z]|[.?!]\s/.test(body.replace(/\[[^\]]*\]/g, ''))) continue;
     for (const token of body.split(/\s+/)) {
+      const shorthand = COLOUR_SHORTHAND.exec(token);
+      if (shorthand !== null) {
+        checked += 1;
+        if (!properties.has(shorthand[1]!)) out.push(token);
+        continue;
+      }
       const m = COLOUR_UTILITY.exec(token.replace(/\$\{[^}]*\}/g, ''));
       if (m === null) continue;
       checked += 1;
@@ -355,8 +370,11 @@ function colourClasses(text: string, colours: ReadonlySet<string>): { checked: n
 describe('every colour class the dashboard writes', () => {
   it('finds a class naming a colour the theme does not define, and passes the ones it does', () => {
     const colours = themeColours();
-    const planted = `<div className="bg-surface-container text-on-surface-variant border-outline-variant hover:text-sage text-left border-b-2 bg-surface-2 text-ink" />`;
-    expect(colourClasses(planted, colours)).toEqual({ checked: 8, unknown: ['bg-surface-container', 'text-on-surface-variant', 'border-outline-variant', 'hover:text-sage'] });
+    const planted = `<div className="bg-surface-container text-on-surface-variant border-outline-variant hover:text-sage text-left border-b-2 bg-surface-2 text-ink bg-(--nope) hover:text-(color:--gone) bg-(--surface-2)" />`;
+    expect(colourClasses(planted, colours)).toEqual({
+      checked: 11,
+      unknown: ['bg-surface-container', 'text-on-surface-variant', 'border-outline-variant', 'hover:text-sage', 'bg-(--nope)', 'hover:text-(color:--gone)'],
+    });
   });
 
   it('names only colours the theme defines, so none of the retired token names is left', () => {

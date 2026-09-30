@@ -1,8 +1,7 @@
 import { useState, type ReactNode } from 'react';
 import { Link as RouterLink, useNavigate } from 'react-router-dom';
 import {
-  Button, CommandBlock, ConfirmDialog, Dialog, DialogContent, DialogFooter, EmptyState, focusRing, HealthDot, Input, MoreMenu, recencyOf,
-  StatusChip, type MoreMenuItem,
+  Button, CommandBlock, ConfirmDialog, Dialog, DialogContent, DialogFooter, EmptyState, ErrorState, focusRing, HealthDot, Input, LoadingState, MoreMenu, type MoreMenuItem, recencyOf, StatusChip,
 } from '../design';
 import { AdminPage, RowCard } from '../features/admin/AdminFrame';
 import { useMemberNames } from '../features/admin/members';
@@ -58,7 +57,9 @@ export function Projects() {
       ) : undefined}
     >
       {error !== null && <p role="alert" className="t-small text-bad">{error}</p>}
-      {live.length === 0 && archived.length === 0 ? (
+      {projects.isPending ? <LoadingState label="Loading projects" count={3} />
+        : projects.isError ? <ErrorState error={projects.error} onRetry={() => void projects.refetch()} />
+        : live.length === 0 && archived.length === 0 ? (
         <div className="flex flex-col gap-s3">
           <EmptyState title="No projects yet." className="py-0" />
           <CommandBlock caption="In a repository on your machine, run this, and its sessions arrive here:" command="myco setup" className="max-w-measure" />

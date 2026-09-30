@@ -164,16 +164,40 @@ export function causeSentence(cause: string): string {
 }
 
 /**
+ * Where a piece of work ran, one rule for every page. The server names a
+ * machine only to the member it belongs to, so a name is always the viewer's
+ * own machine: "on sirkirby-mbp". The viewer's own machine with no name reads
+ * "on your machine", never the viewer's own name. Another member's machine
+ * reads as theirs: "from Lin". `machine` is the same fact as a noun, for a
+ * facts row or a failure note; `own` says it is the viewer's. Null when
+ * neither a name nor a member is known;
+ * never a machine's id.
+ */
+export function workPlace(
+  machineName: string | null | undefined,
+  member: { id: string; label: string | null } | null | undefined,
+  viewerId: string | null,
+): { line: string; machine: string; own: boolean } | null {
+  const named = machineName?.trim() ?? '';
+  if (named !== '') return { line: `on ${named}`, machine: named, own: true };
+  if (member == null) return null;
+  if (viewerId !== null && member.id === viewerId) return { line: 'on your machine', machine: 'Your machine', own: true };
+  const who = member.id === MYCO_MEMBER_ID ? 'Myco' : memberLabel(member);
+  return who === null ? null : { line: `from ${who}`, machine: `${who}’s machine`, own: false };
+}
+
+/**
  * A machine as the capture panel names it. The server names a machine only to
  * the member it belongs to; to anyone else a machine reads as its member's
  * name ("Lin", and Myco's own runtime "Myco"). A second unnamed machine of the
- * same member reads "Lin, another machine". Only a machine with neither a name
+ * same member reads "Lin, another machine". The viewer's own machine with no
+ * name reads "Your machine", never the viewer's name. Only a machine with neither a name
  * nor a member that has a name reads "A machine" (numbered when there are more).
  * Never the machine's id.
  */
-export function machineNames(rows: readonly Pick<CaptureRow, 'machineId' | 'machineName' | 'member'>[]): Map<string, string> {
+export function machineNames(rows: readonly Pick<CaptureRow, 'machineId' | 'machineName' | 'member'>[], viewerId: string | null = null): Map<string, string> {
   const named = (row: Pick<CaptureRow, 'machineName'>) => row.machineName !== null && row.machineName.trim() !== '';
-  const owner = (row: Pick<CaptureRow, 'member'>) => (row.member === null ? null : memberLabel(row.member));
+  const owner = (row: Pick<CaptureRow, 'member'>) => (row.member === null ? null : row.member.id === viewerId ? 'Your machine' : memberLabel(row.member));
   const anonymous = [...new Set(rows.filter((row) => !named(row) && owner(row) === null).map((row) => row.machineId))];
   const names = new Map<string, string>();
   const perMember = new Map<string, number>();
@@ -184,7 +208,7 @@ export function machineNames(rows: readonly Pick<CaptureRow, 'machineId' | 'mach
     else if (who !== null) {
       const seen = perMember.get(who) ?? 0;
       perMember.set(who, seen + 1);
-      names.set(row.machineId, seen === 0 ? who : `${who}, another machine`);
+      names.set(row.machineId, seen === 0 ? who : who === 'Your machine' ? 'Another of your machines' : `${who}, another machine`);
     } else names.set(row.machineId, anonymous.length === 1 ? 'A machine' : `Machine ${anonymous.indexOf(row.machineId) + 1}`);
   }
   return names;

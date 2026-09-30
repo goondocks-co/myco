@@ -117,7 +117,7 @@ describe('what Myco’s work came to', () => {
 
   it('words skips, starters and spend for a person', () => {
     expect([skipWords('max_runs_per_day'), skipWords('capability_off'), skipWords('input_unchanged'), skipWords('no session is waiting for a title'), skipWords('some_new_code'), skipWords(null)]).toEqual([
-      'today’s run limit was reached', 'it was switched off for this project', 'nothing new since the last run', 'no session is waiting for a title', 'Myco didn’t need to run it', 'Myco didn’t need to run it',
+      'today’s run limit was reached', 'it was switched off for this project', 'nothing new since the last run', 'Myco didn’t need to run it', 'Myco didn’t need to run it', 'Myco didn’t need to run it',
     ]);
     const names = (id: string) => (id === ADMIN.member.id ? 'Ada' : null);
     expect([startedByWords('clock', names), startedByWords('backfill', names), startedByWords(ADMIN.member.id, names), startedByWords('mem_unknown0001', names), startedByWords(null, names)])

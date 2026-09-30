@@ -67,7 +67,7 @@ function readerStrings(): Array<{ key: string; where: string; text: string }> {
   ];
   for (const { file, rel } of files) {
     const name = rel.split(path.sep).join('/');
-    for (const { line, text } of visibleStrings(file, fs.readFileSync(file, 'utf8'))) out.push({ key: `${name}:${text}`, where: `${name}:${line}`, text });
+    for (const { line, text } of visibleStrings(file, fs.readFileSync(file, 'utf8'), { every: true })) out.push({ key: `${name}:${text}`, where: `${name}:${line}`, text });
   }
   return out;
 }
@@ -108,13 +108,24 @@ describe('server dashboard vocabulary', () => {
       '<Input placeholder="Leave blank to keep the current credential" />',
       "const words = { label: 'Runtime' };",
       'const line = `Lease ends in ${span}`;',
+      // One lowercase word is words too, wherever it can reach a reader: a title, a helper's answer, a value.
+      '<a title="credentials" />',
+      "const standing = () => 'lease';",
+      "const why = cause.replace(/^x/, 'the runtime went away');",
+      '<Input value="Harness" />',
+      // The first argument of a write, and every argument of a lookup, are keys and patterns.
+      "const kept = params.set('lease', value); const found = text.replace('harness', ''); const held = map.get('credential');",
     ].join('\n');
-    const found = visibleStrings('planted.tsx', planted).map((s) => s.text).filter((text) => MECHANISM_WORDS.test(text));
+    const found = visibleStrings('planted.tsx', planted, { every: true }).map((s) => s.text).filter((text) => MECHANISM_WORDS.test(text));
     expect(found).toEqual([
       'Each runtime signs in with a credential.',
       'Leave blank to keep the current credential',
       'Runtime',
       'Lease ends in …',
+      'credentials',
+      'lease',
+      'the runtime went away',
+      'Harness',
     ]);
   });
 

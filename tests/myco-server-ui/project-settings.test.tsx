@@ -188,7 +188,7 @@ describe('the repository', () => {
   it('disconnects only from its menu, behind a confirm that keeps a refusal in view', async () => {
     let attempts = 0;
     const { sent } = server(base({
-      [`DELETE ${api}/repository`]: () => (++attempts === 1 ? Response.json({ error: 'conflict', reason: 'The repository connection changed. Refresh before saving again.' }, { status: 409 }) : Response.json({ removed: true })),
+      [`DELETE ${api}/repository`]: () => (++attempts === 1 ? Response.json({ error: 'conflict', reason: 'This changed since the page read it. Refresh before saving again.' }, { status: 409 }) : Response.json({ removed: true })),
     }));
     mount(`/p/${P}/settings`);
     await waitFor(() => expect(sectionOf('repository').textContent).toContain('main'));
@@ -197,7 +197,7 @@ describe('the repository', () => {
     const dialog = await screen.findByRole('dialog');
     expect(sent).toEqual([]);
     fireEvent.click(within(dialog).getByRole('button', { name: 'Disconnect' }));
-    expect((await within(dialog).findByRole('alert')).textContent).toBe('The repository connection changed. Refresh before saving again.');
+    expect((await within(dialog).findByRole('alert')).textContent).toBe('This changed since the page read it. Refresh before saving again.');
     fireEvent.click(within(dialog).getByRole('button', { name: 'Disconnect' }));
     await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
     expect(sent).toEqual([
@@ -242,7 +242,7 @@ describe('access keys', () => {
     mount(`/p/${P}/settings`);
     fireEvent.click(await screen.findByRole('button', { name: 'Add access key' }));
     fireEvent.click(within(await screen.findByRole('dialog')).getByRole('button', { name: 'Create key' }));
-    expect((await within(screen.getByRole('dialog')).findByRole('alert')).textContent).toBe('label must be printable');
+    expect((await within(screen.getByRole('dialog')).findByRole('alert')).textContent).toBe('The server could not make that change to the key.');
     expect(screen.queryByTestId('key-once')).toBeNull();
   });
 

@@ -178,7 +178,7 @@ function refusalOf(error: Error, now: number): { words: string; capability: stri
     if (error.status === 429 && isDailyLimit(error.body)) return { words: dailyLimitWords(error.body, now), capability: null, final: true };
     if (error.status === 409 && isCapabilityOff(error.body)) return { words: capabilityOffWords(error.body.capability), capability: error.body.capability, final: true };
     if (error.status === 403 && isFreshNeedsAdmin(error.body)) return { words: 'Only an admin can start a task fresh.', capability: null, final: false };
-    return { words: error.detail ?? `The server couldn’t start it (${error.status}). Try again in a moment.`, capability: null, final: false };
+    return { words: `The server couldn’t start it (${error.status}). Try again in a moment.`, capability: null, final: false };
   }
   return { words: 'Couldn’t reach the server. Try again in a moment.', capability: null, final: false };
 }

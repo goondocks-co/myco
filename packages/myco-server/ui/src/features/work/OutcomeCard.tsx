@@ -110,7 +110,8 @@ export interface RunLineItem {
 const TONE_CHIP: Readonly<Record<RunLineItem['tone'], { tone: 'ok' | 'warn' | 'bad' | 'neutral'; word: string } | null>> = {
   plain: null,
   bad: { tone: 'bad', word: 'Failed' },
-  held: { tone: 'neutral', word: 'Held off' },
+  // A held-off run's own words start "Held off:", so a chip would say it twice.
+  held: null,
   live: { tone: 'ok', word: 'Now' },
 };
 
@@ -123,12 +124,15 @@ export function RunLines({ label, items, state }: { label: string; items: readon
         const chip = TONE_CHIP[item.tone];
         return (
           <li key={item.key} className="relative flex min-h-row-tight items-center gap-s3 px-s3 py-s2 transition-colors duration-120 hover:bg-surface-2" data-run-line={item.tone}>
-            <time dateTime={new Date(item.at).toISOString()} className="w-time-col shrink-0 whitespace-nowrap t-small tabular-nums text-faint">{item.time}</time>
+            {/* On a phone the day sits above the time, so the column stays narrow and the words get the room. */}
+            <time dateTime={new Date(item.at).toISOString()} className="flex w-s12 shrink-0 flex-col t-small tabular-nums text-faint sm:w-time-col sm:flex-row sm:gap-s1">
+              {item.time.split(' ').map((part) => <span key={part} className="whitespace-nowrap">{part}</span>)}
+            </time>
             <span className="flex min-w-0 flex-1 flex-col sm:flex-row sm:items-baseline sm:gap-s3">
               <RouterLink
                 to={item.to}
                 state={state}
-                className={cn('line-clamp-2 min-w-0 rounded-chip t-small text-ink-2 after:absolute after:inset-0 sm:line-clamp-none sm:truncate', item.tone === 'held' && 'text-muted', focusRing)}
+                className={cn('min-w-0 break-words rounded-chip t-small text-ink-2 after:absolute after:inset-0', item.tone === 'held' && 'text-muted', focusRing)}
               >
                 {item.words}
               </RouterLink>

@@ -35,8 +35,9 @@ function SettingsRoute({ section }: { section: SettingsSectionId }) {
 }
 
 function ProjectSettingsRoute() {
-  const { projectId, known, projectName } = useRouteProject();
-  if (!known || projectId === null) return <NotFound />;
+  const { projectId, standIn, projectName } = useRouteProject();
+  if (standIn !== null) return standIn;
+  if (projectId === null) return <NotFound />;
   return (
     <AdminOnly title="Project settings">
       <ProjectSettingsPage key={projectId} projectId={projectId} projectName={projectName(projectId)} />

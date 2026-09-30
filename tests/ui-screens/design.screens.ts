@@ -56,13 +56,17 @@ test.describe('the tap-target check', () => {
           <style>a[href="#stretched"]::after{content:"";position:absolute;inset:0}</style>
         </div>
         <p style="position:absolute;left:20px;top:420px;width:300px">Words around <a href="#inline">a link in a sentence</a> are left out.</p>
+        <div style="position:absolute;left:20px;top:580px;width:300px;display:flex;flex-direction:column">
+          <p style="margin:0">A paragraph of words above the link, which are not the link's line.</p>
+          <a href="#action" style="font-size:13px">Open the run →</a>
+        </div>
         <label style="position:absolute;left:20px;top:500px;display:flex;align-items:center;gap:8px;height:48px;width:200px">
           <input type="checkbox" id="box" style="width:16px;height:16px"> Labelled box
         </label>
       </body>`);
       const found = await smallTapTargets(page);
       const names = found.map((line) => line.split('"')[1]);
-      expect(names.sort()).toEqual(['Crowded one', 'Crowded two', 'Row link', 'x'].sort());
+      expect(names.sort()).toEqual(['Crowded one', 'Crowded two', 'Open the run →', 'Row link', 'x'].sort());
     } finally {
       await context.close();
     }

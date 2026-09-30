@@ -1,6 +1,5 @@
 import { Route, useParams } from 'react-router-dom';
 import { WorkPage } from '../features/work/WorkPage';
-import { NotFound } from '../pages/NotFound';
 import { RUN_SUFFIX, WORK_SUFFIX } from './nav';
 import { useRouteProject } from './route-project';
 
@@ -20,7 +19,7 @@ export const workRoutes = (
 
 function WorkRoute() {
   const { runId } = useParams();
-  const { projectId, known, projectName } = useRouteProject();
-  if (!known) return <NotFound />;
+  const { projectId, standIn, projectName } = useRouteProject();
+  if (standIn !== null) return standIn;
   return <WorkPage key={projectId ?? ''} projectId={projectId} projectName={projectName} runId={runId ?? null} />;
 }

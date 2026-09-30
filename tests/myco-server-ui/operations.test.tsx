@@ -61,7 +61,7 @@ async function openMenu(name: string | RegExp, scope: HTMLElement = document.bod
 }
 
 describe('backups on Health', () => {
-  it('shows a refused backup reason and the operator recovery path', async () => {
+  it('words a refused backup by its status, never the server\'s sentence, and gives the operator recovery path', async () => {
     const reason = 'The assembled backup is past the supported byte bound.';
     server({
       '/api/backups': (init) => init?.method === 'POST'
@@ -70,7 +70,8 @@ describe('backups on Health', () => {
     });
     mount('/operations');
     fireEvent.click(await screen.findByRole('button', { name: 'Create backup' }));
-    expect(await screen.findByText(reason)).toBeTruthy();
+    expect(await screen.findByText('The server refused this')).toBeTruthy();
+    expect(screen.queryByText(reason)).toBeNull();
     expect(screen.getByRole('link', { name: 'operator backup and recovery procedure' }).getAttribute('href'))
       .toBe('https://github.com/goondocks-co/myco/blob/main/docs/architecture/deployment-recovery.md');
     expect(screen.getByText('No backups yet. The first one is a click away.')).toBeTruthy();
@@ -207,7 +208,7 @@ describe('automatic recovery on Health', () => {
       })),
     });
     mount();
-    expect((await screen.findByTestId('recovery-latest')).textContent).toContain('failed: provider refused');
+    expect((await screen.findByTestId('recovery-latest')).textContent).toContain('failed: the storage provider refused');
     expect(screen.getByTestId('recovery-cadence').textContent).toContain('Due now');
     expect(screen.getByTestId('recovery-available').textContent).toContain('No recovery data exists yet');
   });
@@ -273,7 +274,7 @@ describe('automatic recovery on Health', () => {
     expect(screen.queryByTestId('recovery-cadence')).toBeNull();
   });
 
-  it('says a configured schedule cannot run yet when this Deployment cannot admit one', async () => {
+  it('says a configured schedule cannot run yet when this server cannot start one, in its own words', async () => {
     server({
       '/api/recovery/exports': () => Response.json(RECOVERY({
         ...recoveryBase, intervalHours: 24, ready: false, due: false,
@@ -283,8 +284,9 @@ describe('automatic recovery on Health', () => {
     mount();
     const said = (await screen.findByTestId('recovery-cadence')).textContent ?? '';
     expect(said).toContain('Every 24 h');
-    expect(said).toContain('cannot run yet');
-    expect(said).toContain('no recovery configuration');
+    expect(said).toContain('can’t run yet');
+    // The server's reason is written for an operator: the page never repeats it.
+    expect(said).not.toContain('recovery configuration');
   });
 
   it('never calls a staging recoverable, at any state', () => {
@@ -318,7 +320,8 @@ describe('automatic recovery on Health', () => {
     const available = (await screen.findByTestId('recovery-available')).textContent ?? '';
     expect(available).toContain('verified recovery artifact');
     expect(available).toContain(at);
-    expect(available).toContain('wrapping key');
+    expect(available).toContain('stored secrets under');
+    expect(available).not.toContain('wrapping key');
     expect(available).not.toContain('materializ');
     const latest = (await screen.findByTestId('recovery-latest')).textContent ?? '';
     expect(latest).toContain('The last attempt');
@@ -332,7 +335,7 @@ describe('automatic recovery on Health', () => {
     });
     expect(words).toContain('verified recovery artifact');
     expect(words).toContain('/home/.myco/server/local-recovery/dep_1/1789750654766');
-    expect(words).toContain('wrapping key');
+    expect(words).toContain('stored secrets under');
     expect(words).not.toContain('materializ');
     expect(words).not.toContain('staging');
   });
@@ -351,12 +354,12 @@ describe('automatic recovery on Health', () => {
     const waiting = { attempt: 3, stage: 'export', startedAt: null, failure: 'provider_unavailable' };
     expect(latestWords({ ...recoveryBase, latest: { ...waiting, waiting: 'earlier_export' } } as never)).toBe('Attempt 3 is waiting for an earlier export to end before it starts its own.');
     expect(latestWords({ ...recoveryBase, latest: { ...waiting, waiting: 'own_request' } } as never)).toBe('Attempt 3 is waiting to learn whether the export it asked for started.');
-    expect(latestWords({ ...recoveryBase, latest: { ...waiting, stage: 'failed', failure: 'export_unanswered', waiting: null } } as never)).toContain('failed: export unanswered');
+    expect(latestWords({ ...recoveryBase, latest: { ...waiting, stage: 'failed', failure: 'export_unanswered', waiting: null } } as never)).toContain('failed: the export it asked for never answered');
   });
 
   it('names a failure only once the attempt failed, and says how long a wait has lasted (#1484 F7, F1)', () => {
     const advancing = { attempt: 3, stage: 'export', startedAt: null, failure: 'provider_unavailable', waiting: null };
-    expect(latestWords({ ...recoveryBase, latest: advancing } as never)).toBe('Attempt 3 is export.');
+    expect(latestWords({ ...recoveryBase, latest: advancing } as never)).toBe('Attempt 3 is exporting the database.');
     const since = Date.now() - 35 * 60_000;
     expect(latestWords({ ...recoveryBase, latest: { ...advancing, waiting: 'earlier_export', waitingSince: since } } as never)).toContain('(requested 35m ago)');
   });
@@ -390,7 +393,7 @@ describe('store checks on Health', () => {
     const integrity = await screen.findByTestId('maintenance-integrity');
     expect(within(integrity).getByText('foreign key: smoke_child row 1 names a missing smoke_parent')).toBeTruthy();
     expect(within(integrity).getByText('…and 2 more not kept')).toBeTruthy();
-    expect(within(integrity).getByText('Unavailable — reported only by account analytics')).toBeTruthy();
+    expect(within(integrity).getByText('Unavailable')).toBeTruthy();
     expect(within(integrity).getByText('2.0 MB')).toBeTruthy();
     expect(integrity.textContent).not.toContain('run_9c1e0b7a44');
     const optimize = screen.getByTestId('maintenance-optimize');
@@ -406,7 +409,7 @@ describe('store checks on Health', () => {
     mount();
     const optimize = await screen.findByTestId('maintenance-optimize');
     fireEvent.click(within(optimize).getByRole('button', { name: 'Run now' }));
-    expect((await within(optimize).findByRole('alert')).textContent).toBe('an optimize run is already in progress');
+    expect((await within(optimize).findByRole('alert')).textContent).toBe('That check is already running.');
     expect(requested).toContain('POST /api/maintenance/optimize/run');
   });
 
@@ -452,7 +455,7 @@ describe('store checks on Health', () => {
     server({ '/api/maintenance': () => Response.json({ checks: [{ check: 'integrity', support: { supported: false, reason: 'this Deployment has no store maintenance' }, cadence: { state: 'off' }, dueAt: null, running: false, latest: null }] }) });
     mount();
     const integrity = await screen.findByTestId('maintenance-integrity');
-    expect(within(integrity).getByText('Not available on this server: this Deployment has no store maintenance.')).toBeTruthy();
+    expect(within(integrity).getByText('Not available on this server.')).toBeTruthy();
     expect(within(integrity).queryByRole('button')).toBeNull();
   });
 });

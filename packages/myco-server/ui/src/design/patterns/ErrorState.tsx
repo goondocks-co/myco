@@ -7,7 +7,6 @@ import { ActionLink } from '../primitives/Link';
 
 export interface ErrorWords {
   title: string;
-  detail: string | null;
   /** Whether trying again can help. */
   retry: boolean;
 }
@@ -15,16 +14,17 @@ export interface ErrorWords {
 /**
  * What a failed read says, worded by its status: a refusal names who the page
  * is for, a missing thing says so, a server fault offers a retry, and only a
- * request that never reached the server says it could not be reached.
+ * request that never reached the server says it could not be reached. The
+ * server's own sentence is never shown: it is written for an operator.
  */
 export function errorWords(error: unknown): ErrorWords {
   if (error instanceof ApiError) {
-    if (error.status === 403) return { title: 'This page is for an admin.', detail: null, retry: false };
-    if (error.status === 404) return { title: 'Not found', detail: null, retry: false };
-    if (error.status >= 500) return { title: 'The server had a problem', detail: error.detail ?? null, retry: true };
-    return { title: 'The server refused this', detail: error.detail ?? null, retry: false };
+    if (error.status === 403) return { title: 'This page is for an admin.', retry: false };
+    if (error.status === 404) return { title: 'Not found', retry: false };
+    if (error.status >= 500) return { title: 'The server had a problem', retry: true };
+    return { title: 'The server refused this', retry: false };
   }
-  return { title: 'Could not reach the server', detail: null, retry: true };
+  return { title: 'Could not reach the server', retry: true };
 }
 
 export interface ErrorStateProps {
@@ -45,7 +45,6 @@ export function ErrorState({ error, onRetry, back, children, className }: ErrorS
         <AlertCircle aria-hidden className="size-s5 text-bad" />
         {words.title}
       </div>
-      {words.detail != null && <p className="t-small text-muted">{words.detail}</p>}
       {children}
       <div className="flex gap-s2">
         {words.retry && onRetry && <Button onClick={onRetry}>Retry</Button>}

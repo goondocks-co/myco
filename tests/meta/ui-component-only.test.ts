@@ -14,6 +14,11 @@
  * `ui-component-only.baseline.json` is empty: the ratchet that took each kind
  * down to zero now holds it there, so any new violation fails.
  *
+ * `design/` is exempt from the ratchet: it is where the raw `<button>`,
+ * `<input>` and `<table>`, the Switch's drawn width and the few bracketed
+ * values are wrapped once into the primitives every page uses, so a page never
+ * needs them. Its own rule, below, holds it to the tokens instead.
+ *
  * Inside `design/`, components size on the 4px tokens: Tailwind's numeric
  * spacing and its rem text sizes resolve against the 14px root, so neither
  * appears there.

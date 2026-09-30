@@ -57,6 +57,11 @@ async function expectFixtureDay(page: Page): Promise<void> {
   await expect(map.getByRole('link', { name: 'Open the run →' })).toBeVisible();
   const titled = list.locator('li[data-timeline-item]', { hasText: 'Myco titled 2 sessions' });
   await expect(titled.getByRole('list', { name: 'Sessions it titled' }).getByRole('link')).toHaveCount(2);
+  // "in" and the project it names stay on one line: a phone never leaves "in" at a line's end with the name below it.
+  const split = await page.locator('[data-in-project]').evaluateAll((parts) => parts
+    .filter((part) => new Set([...part.getClientRects()].filter((rect) => rect.width > 0).map((rect) => Math.round(rect.top))).size !== 1)
+    .map((part) => part.textContent));
+  expect(split, '"in <project>" broken across lines').toEqual([]);
   await expect(page.locator('[data-upkeep]')).toContainText('Search kept up to date');
   await expect(page.locator('[data-upkeep]')).toContainText('1 retry along the way');
 }

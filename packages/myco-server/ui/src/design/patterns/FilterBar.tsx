@@ -78,7 +78,7 @@ export function FilterBar({
         value={query}
         hint={hint}
         onChange={(event) => onQueryChange(event.target.value)}
-        className={cn('basis-full lg:basis-auto', sized && 'lg:min-w-[55%]')}
+        className={cn('basis-full lg:basis-auto', sized && 'lg:min-w-[56%]')}
       />
       {sized ? <div className={cn('grid w-full gap-s2 lg:flex lg:w-auto lg:min-w-0 lg:shrink', SELECT_GRID[Math.min(filters.length, 4)])}>{selects}</div> : selects}
       {onClear && active && (

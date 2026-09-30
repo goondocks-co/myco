@@ -49,6 +49,16 @@ function mount(path: string) {
 }
 
 describe('Projects', () => {
+  it('says it is loading while the list is unread, never that there are no projects', async () => {
+    // The list never answers: the page shows its loading rows, and neither the empty state nor the setup command.
+    server(base([], { '/api/projects': () => new Promise<Response>(() => undefined) as unknown as Response }));
+    mount('/projects');
+    expect(await screen.findByRole('heading', { level: 1, name: 'Projects' })).toBeTruthy();
+    expect(await screen.findByRole('status', { name: 'Loading projects' })).toBeTruthy();
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    expect({ empty: screen.queryByText('No projects yet.') !== null, setup: screen.queryByText('myco setup') !== null }).toEqual({ empty: false, setup: false });
+  });
+
   it('hides an archived project by default and shows it on request, with who archived it', async () => {
     server(base([LIVE, ARCH]));
     mount('/projects');

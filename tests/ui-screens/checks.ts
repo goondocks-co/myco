@@ -254,8 +254,9 @@ export const TAP_MIN = 44;
  * edge all pass, and a link whose centre falls between its wrapped lines, or
  * two targets crowded closer than `TAP_MIN`, fail.
  *
- * Left out, as WCAG 2.5.5 leaves them out: a link inside a sentence (its block
- * holds words that are not themselves controls), a disabled control, and one
+ * Left out, as WCAG 2.5.5 leaves them out: a link inside a sentence (its own
+ * line, the words its block reaches through inline elements, holds words that
+ * are not themselves controls), a disabled control, and one
  * visually hidden until focused, such as the skip link. While a dialog, menu or
  * list is open, only the controls inside it are measured.
  */
@@ -271,22 +272,31 @@ export async function smallTapTargets(page: Page): Promise<string[]> {
       }
       return el.closest('[aria-hidden="true"], [inert]') === null;
     };
-    /** How many words an element holds that are not the words of a control inside it. */
-    const ownWords = (el: Element): number => {
+    /**
+     * How many words sit on a link's own line: the text of its block reached
+     * through inline elements only. Text inside a block-level child (a paragraph
+     * above an action link, a heading beside it) and the words of other
+     * controls are not the link's line.
+     */
+    const lineWords = (block: Element, link: Element): number => {
       let words = '';
-      const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT);
-      for (let node = walker.nextNode(); node !== null; node = walker.nextNode()) {
-        if (node.parentElement?.closest(TARGETS) !== null && node.parentElement?.closest(TARGETS) !== el) continue;
-        words += ` ${node.textContent ?? ''}`;
-      }
+      const walk = (node: Node): void => {
+        for (const child of node.childNodes) {
+          if (child.nodeType === Node.TEXT_NODE) { words += ` ${child.textContent ?? ''}`; continue; }
+          if (!(child instanceof Element) || child === link || child.matches(TARGETS)) continue;
+          if (!window.getComputedStyle(child).display.startsWith('inline')) continue;
+          walk(child);
+        }
+      };
+      walk(block);
       return words.match(/[\p{L}\p{N}]+/gu)?.length ?? 0;
     };
-    /** A link set inside a sentence: the nearest block around it holds words of its own, more than a chip's one. */
+    /** A link set inside a sentence: its own line holds words besides it, more than a chip's one. */
     const inSentence = (el: Element): boolean => {
       if (el.tagName !== 'A') return false;
       let block = el.parentElement;
       while (block !== null && window.getComputedStyle(block).display.startsWith('inline')) block = block.parentElement;
-      return block !== null && ownWords(block) >= 2;
+      return block !== null && lineWords(block, el) >= 2;
     };
     const hits = (el: Element, x: number, y: number): boolean => {
       const at = document.elementFromPoint(x, y);

@@ -16,9 +16,8 @@ const settingsPath = (machineId: string) => `/api/machines/${encodeURIComponent(
 
 function refusalWords(err: unknown): string {
   if (err instanceof ApiError) {
-    const body = err.body as { detail?: unknown } | null;
     if (err.status === 403) return 'Only the member this machine belongs to can change its settings.';
-    if (typeof body?.detail === 'string') return body.detail;
+    if (err.status === 400) return 'The server could not accept those folders.';
     return `The server refused (${err.status}).`;
   }
   return 'Could not reach the server.';

@@ -16,7 +16,8 @@ import { forgetProject } from '../../packages/myco-server/ui/src/lib/project-mem
 import { LIVE_REFRESH_MS } from '../../packages/myco-server/ui/src/hooks/use-work';
 import { dayParam, dayWindow } from '../../packages/myco-server/ui/src/hooks/use-today';
 import { buildTimeline, ledeCounts } from '../../packages/myco-server/ui/src/features/today/timeline';
-import { attentionWords, machineNames } from '../../packages/myco-server/ui/src/features/today/words';
+import { attentionWords, machineNames, workPlace } from '../../packages/myco-server/ui/src/features/today/words';
+import { ranOn } from '../../packages/myco-server/ui/src/features/work/words';
 import { cleanSessionText, sessionHeading } from '../../packages/myco-server/ui/src/lib/session-text';
 import { memberDisplayName, memberLabel } from '../../packages/myco-server/ui/src/lib/member-name';
 import type {
@@ -309,8 +310,8 @@ describe('Today', () => {
     expect(within(list).getAllByText('Untitled session')).toHaveLength(1);
     expect(items(list)[0]!.querySelector('a')!.textContent).toBe('UntitledCanopy parity verified');
     const kickers = items(list).map((li) => li.querySelector('div > div')!.textContent);
-    expect(kickers.filter((k) => k!.includes('Pi · Myco'))).toHaveLength(1);
-    expect(kickers.filter((k) => k!.includes('Cursor · Lin'))).toHaveLength(1);
+    expect(kickers.filter((k) => k!.includes('Pi from Myco'))).toHaveLength(1);
+    expect(kickers.filter((k) => k!.includes('Cursor from Lin'))).toHaveLength(1);
     expect(kickers.filter((k) => k!.includes('Claude Code on Ada’s studio Mac'))).toHaveLength(2);
     const capture = document.querySelector('[data-capture]')!;
     // Another member's machine reads as that member's, never "A machine" and never its host name or id.
@@ -399,6 +400,33 @@ describe('Today', () => {
     ]);
     expect([...names.values()]).toEqual(['Lin', 'Ada’s studio Mac', 'Lin, another machine', 'Myco', 'Machine 1', 'Machine 2']);
     expect([...machineNames([{ machineId: 'a', machineName: null, member: null }, { machineId: 'b', machineName: 'Box', member: null }]).values()]).toEqual(['A machine', 'Box']);
+  });
+
+  it('says where work ran by one rule on every page: the viewer\'s machine "on" it, another member\'s "from" them', () => {
+    const ada = { id: 'mem_q3Vb8xRk2LmT7wYz', label: 'Ada' };
+    const lin = { id: 'mem_Hn5pC0dJfA9sEu', label: 'Lin' };
+    // A session's kicker and facts, and a capture row: the viewer is Ada.
+    expect(workPlace('sirkirby-mbp', ada, ada.id)).toEqual({ line: 'on sirkirby-mbp', machine: 'sirkirby-mbp', own: true });
+    expect(workPlace(null, ada, ada.id)).toEqual({ line: 'on your machine', machine: 'Your machine', own: true });
+    expect(workPlace(null, lin, ada.id)).toEqual({ line: 'from Lin', machine: 'Lin’s machine', own: false });
+    expect(workPlace(null, { id: 'mem_harness', label: null }, ada.id)).toEqual({ line: 'from Myco', machine: 'Myco’s machine', own: false });
+    expect(workPlace(null, null, ada.id)).toBeNull();
+    // A run's line on Myco's work: the viewer's machines read "on", named or not, never "from you".
+    const name = (id: string) => (id === ada.id ? 'you' : id === lin.id ? 'Lin' : null);
+    const lines = [
+      ranOn({ machineName: 'sirkirby-mbp', member: ada } as never, name)!.list,
+      ranOn({ machineName: null, member: ada } as never, name)!.list,
+      ranOn({ machineName: null, member: lin } as never, name)!.list,
+    ];
+    expect(lines).toEqual(['on sirkirby-mbp', 'on your machine', 'from Lin']);
+    expect(lines.some((line) => line === 'from you')).toBe(false);
+    // Capture: the viewer's own unnamed machine is "Your machine", never the viewer's name.
+    const names = machineNames([
+      { machineId: 'a', machineName: null, member: ada },
+      { machineId: 'b', machineName: null, member: ada },
+      { machineId: 'c', machineName: null, member: lin },
+    ], ada.id);
+    expect([...names.values()]).toEqual(['Your machine', 'Another of your machines', 'Lin']);
   });
 
   it('gives an admin "Needs you", each item with its problem, detail and one action', async () => {

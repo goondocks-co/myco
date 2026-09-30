@@ -473,7 +473,7 @@ describe('Settings, in five sections', () => {
     const limit = await screen.findByLabelText('Items per prompt');
     fireEvent.change(limit, { target: { value: '3' } });
     fireEvent.blur(limit);
-    await waitFor(() => expect(statusOf('cortex.spores.max_per_prompt')).toBe('The server refused that value: expected a whole number'));
+    await waitFor(() => expect(statusOf('cortex.spores.max_per_prompt')).toBe('The server refused that value.'));
   });
 
   it('words where a value stands, naming a person only by a name', () => {
@@ -548,7 +548,7 @@ describe('provider keys', () => {
     fireEvent.click(within(within(keys).getByText('Codex (OpenAI)').closest('[data-setting]') as HTMLElement).getByRole('button', { name: 'Set' }));
     fireEvent.change(await screen.findByLabelText('Key'), { target: { value: 'x\ny' } });
     fireEvent.click(screen.getByRole('button', { name: 'Save key' }));
-    expect((await screen.findByRole('alert')).textContent).toBe('a key carries no line breaks');
+    expect((await screen.findByRole('alert')).textContent).toBe('The server could not accept that.');
     expect(screen.getByRole('dialog')).toBeTruthy();
   });
 

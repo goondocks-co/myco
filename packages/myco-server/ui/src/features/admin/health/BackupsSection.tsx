@@ -1,7 +1,5 @@
 import { useState } from 'react';
-import {
-  Button, buttonVariants, Card, ConfirmDialog, ErrorState, ExternalLink, Link, LoadingState, MoreMenu, StatusChip, Switch,
-} from '../../../design';
+import { Button, buttonVariants, Card, ConfirmDialog, ErrorState, ExternalLink, Link, LoadingState, MoreMenu, errorWords, StatusChip, Switch } from '../../../design';
 import { useBackups, type BackupRow, type RestoreOutcome, type RestorePreview } from '../../../hooks/use-backups';
 import { useForgetUnsettledExport, useRecovery } from '../../../hooks/use-recovery';
 import type { RecoveryProducerStatus, RecoveryStatus } from './wire';
@@ -16,7 +14,8 @@ const RECOVERY_PROCEDURE = 'https://github.com/goondocks-co/myco/blob/main/docs/
 const BACKUP_SETTINGS = SETTINGS_SECTIONS.find((section) => section.id === 'backups')!.to;
 
 /** Why an action failed, in the server's own words when it gave them. */
-const failure = (error: unknown): string => (error instanceof Error ? error.message : String(error));
+/** A failed request in words chosen by its status, never the server's own sentence. */
+const failure = (error: unknown): string => errorWords(error).title;
 
 /**
  * Backups: the small additive export an admin makes here, each with its
@@ -156,7 +155,7 @@ function RecoveryCard() {
         <p className="t-body text-muted" data-testid="recovery-unavailable">{RECOVERY_UNAVAILABLE_WORDS}</p>
       )}
       {recovery.error !== null && (
-        <p className="t-body text-warn" data-testid="recovery-unreadable">Automatic recovery could not be read: {recovery.error.message}</p>
+        <p className="t-body text-warn" data-testid="recovery-unreadable">Automatic recovery could not be read: {errorWords(recovery.error).title.toLowerCase()}.</p>
       )}
       {unreadable !== null && (
         <>
@@ -220,7 +219,7 @@ function ForgetUnsettledExport({ forgettableAt, now }: { forgettableAt: number |
         description="Only do this if that export is no longer running. The next attempt then starts an export of its own."
         confirmLabel="Forget it"
         pending={forget.isPending}
-        error={forget.error === null ? null : `It was not forgotten: ${forget.error.message}`}
+        error={forget.error === null ? null : `It was not forgotten: ${errorWords(forget.error).title.toLowerCase()}.`}
         onConfirm={() => forget.mutate(undefined, { onSuccess: () => setConfirming(false) })}
       />
     </div>

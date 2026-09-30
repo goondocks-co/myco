@@ -29,8 +29,9 @@ export const knowledgeRoutes = (
 );
 
 function KnowledgeRoute({ section }: { section: KnowledgeSection }) {
-  const { projectId, known, projectName } = useRouteProject();
-  if (!known || (section === 'map' && projectId === null)) return <NotFound />;
+  const { projectId, standIn, projectName } = useRouteProject();
+  if (standIn !== null) return standIn;
+  if (section === 'map' && projectId === null) return <NotFound />;
   return (
     <KnowledgeFrame projectId={projectId} projectName={projectId === null ? null : projectName(projectId)} section={section}>
       {section === 'spores' && <SporeStream key={projectId ?? ''} projectId={projectId} projectName={projectName} />}
@@ -42,14 +43,16 @@ function KnowledgeRoute({ section }: { section: KnowledgeSection }) {
 
 function SporeRoute() {
   const { sporeId = '' } = useParams();
-  const { projectId, known, projectName } = useRouteProject();
-  if (!known || projectId === null) return <NotFound />;
+  const { projectId, standIn, projectName } = useRouteProject();
+  if (standIn !== null) return standIn;
+  if (projectId === null) return <NotFound />;
   return <SporeArticle key={`${projectId}/${sporeId}`} projectId={projectId} sporeId={sporeId} projectName={projectName(projectId)} />;
 }
 
 function PlanRoute() {
   const { planKey = '' } = useParams();
-  const { projectId, known, projectName } = useRouteProject();
-  if (!known || projectId === null) return <NotFound />;
+  const { projectId, standIn, projectName } = useRouteProject();
+  if (standIn !== null) return standIn;
+  if (projectId === null) return <NotFound />;
   return <PlanPage key={`${projectId}/${planKey}`} projectId={projectId} planKey={planKey} projectName={projectName(projectId)} />;
 }

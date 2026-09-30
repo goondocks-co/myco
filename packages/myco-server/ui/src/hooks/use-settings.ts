@@ -24,15 +24,16 @@ export function useCapabilities(projectId: string) {
 /** What the server said when it refused a settings change, in the person's words. */
 export function settingsRefusalText(err: unknown): string {
   if (err instanceof ApiError) {
-    const body = err.body as { error?: unknown; reason?: unknown; detail?: unknown } | null;
-    if ((body?.error === 'bad_request' || body?.error === 'conflict') && typeof body.reason === 'string') return body.reason;
+    const body = err.body as { error?: unknown; reason?: unknown } | null;
+    if (body?.error === 'conflict') return 'This changed since the page read it. Refresh before saving again.';
+    if (body?.error === 'bad_request') return 'The server could not accept that.';
     switch (body?.reason) {
       case 'not_deployment_tier':
         return 'That setting is not held by the server.';
       case 'malformed':
-        return typeof body?.detail === 'string' ? body.detail : 'The server could not read that value.';
+        return 'The server could not read that value.';
       case 'invalid_value':
-        return typeof body?.detail === 'string' && body.detail.trim() !== '' ? `The server refused that value: ${body.detail}` : 'The server refused that value.';
+        return 'The server refused that value.';
       case 'unknown_capability':
         return 'The server does not offer that here.';
       default:

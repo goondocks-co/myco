@@ -87,7 +87,7 @@ describe('the dashboard shell', () => {
   it('hands a member with no projects to myco setup', async () => {
     server({ '/auth/me': me(), '/api/projects': () => Response.json({ projects: [] }) });
     mount('/projects');
-    expect(await screen.findByText('No projects yet.')).toBeTruthy();
+    expect(await within(await screen.findByRole('main')).findByText('No projects yet.')).toBeTruthy();
     expect(await screen.findByText('myco setup')).toBeTruthy();
   });
 
