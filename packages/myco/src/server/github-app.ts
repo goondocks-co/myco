@@ -193,7 +193,15 @@ export async function verifySignIn(url: string, clientId: string, deps: { fetchI
   return last;
 }
 
-async function probeSignIn(origin: string, clientId: string, fetchImpl: typeof fetch): Promise<VerifyResult> {
+/**
+ * Whether the Deployment at `url` signs in with GitHub now: its `/auth/login` redirects to GitHub's authorize page with a
+ * client id and its own callback. Owner setup asks this before it mints a link that sign-in must then confirm.
+ */
+export async function signInConfigured(url: string, fetchImpl: typeof fetch = fetch): Promise<VerifyResult> {
+  return probeSignIn(new URL(url).origin, null, fetchImpl);
+}
+
+async function probeSignIn(origin: string, clientId: string | null, fetchImpl: typeof fetch): Promise<VerifyResult> {
   let res: Response;
   try {
     res = await fetchImpl(`${origin}/auth/login`, { redirect: 'manual', signal: AbortSignal.timeout(10_000) });
@@ -209,7 +217,8 @@ async function probeSignIn(origin: string, clientId: string, fetchImpl: typeof f
     return { ok: false, reason: `${origin}/auth/login redirected to an unreadable location` };
   }
   if (`${target.origin}${target.pathname}` !== GITHUB_AUTHORIZE) return { ok: false, reason: `${origin}/auth/login redirected to ${target.origin}${target.pathname}, not GitHub` };
-  if (target.searchParams.get('client_id') !== clientId) return { ok: false, reason: 'the Deployment signs in with a different client id' };
+  const presented = target.searchParams.get('client_id');
+  if (clientId === null ? !presented : presented !== clientId) return { ok: false, reason: clientId === null ? 'the Deployment names no client id' : 'the Deployment signs in with a different client id' };
   const redirectUri = target.searchParams.get('redirect_uri');
   if (redirectUri !== `${origin}/auth/callback`) return { ok: false, reason: `the Deployment's callback is ${redirectUri ?? 'absent'}, not ${origin}/auth/callback` };
   return { ok: true };

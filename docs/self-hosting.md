@@ -74,14 +74,29 @@ You need three things on your own computer, and none of them on the server: the 
 
 ```bash
 npm install -g wrangler && wrangler login
+```
+
+Myco never installs the Cloudflare tool for you. Without it, or without a login, every command stops and prints these two commands.
+
+Then three commands, the same three as on your laptop:
+
+```bash
 myco server create --target cloudflare --account-id <your account id>
+myco server github-app --target cloudflare --url <the address create printed> --name "Myco sign-in"
+myco server setup-owner --target cloudflare
 ```
 
 `wrangler whoami` lists the accounts your login can reach, with their ids. Naming one is required rather than optional, so resources can never land in an account you did not mean.
 
-The command creates everything the server needs, brings its storage up to date, and puts it online. Re-running it is safe: it keeps what already exists and moves the rest forward, which also makes it the way to adopt pieces you created by hand.
+`create` creates everything the server needs, brings its storage up to date, and puts it online. It ends by printing the other two commands with your server's address filled in. Re-running it is safe: it keeps what already exists and moves the rest forward, which also makes it the way to adopt pieces you created by hand. That includes a session key or storage key a stopped run never set: a re-run sets it, and never replaces one that is already there.
+
+To see what `create` would do before it does anything, add `--dry-run`. It lists every resource and key it would create or keep, and everything the server will be connected to, and changes nothing in your account or on your computer.
 
 Add `--url https://myco.example.com` to put the server on a domain you own, if the domain is already in the same Cloudflare account. Without it you get a `workers.dev` address, which works just as well for agents.
+
+`github-app` registers the sign-in app, as on your laptop. `setup-owner` then prints a private link for connecting your GitHub account to the first administrator. It works over your Cloudflare login, from your own computer, while the server keeps running: there is nothing to stop and no database command to run. It refuses until sign-in works, and names the command that sets it up.
+
+Open the link, sign in with GitHub and click **Connect this account**. The link expires after 15 minutes, and running `setup-owner` again replaces it. Once an account is connected, setup refuses, and **Members** is where you invite everyone else.
 
 ```bash
 myco server status --target cloudflare      # the account, the address, and the version serving

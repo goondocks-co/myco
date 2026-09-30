@@ -11,6 +11,9 @@
  * prerequisites, and only on the operator's own machine.
  */
 import { randomBytes } from 'node:crypto';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
 import {
   applyMigrations,
   assertWranglerReady,
@@ -23,14 +26,21 @@ import {
   ensureDatabase,
   ensureSecretsStore,
   ensureVectorIndex,
+  accountResourceNames,
+  findSecretsStore,
+  peekDeploymentRecord,
+  deployedWorkerSecretNames,
   putStoreSecret,
   putWorkerSecretValue,
   readDeploymentRecord,
+  storeSecretNames,
+  workerSecretNames,
   writeDeploymentRecord,
   type CloudflareOptions,
   type DeploymentRecord,
 } from './cloudflare.js';
 import { stageCloudflareDeploy } from './cloudflare-stage.js';
+import { renderDeployConfig } from './deploy-config.js';
 import { cloudflareResources } from './cloudflare-resources.js';
 import { cloudflareOperation } from './cloudflare-operation.js';
 
@@ -88,6 +98,79 @@ export interface CreateResult {
   versionId: string | null;
 }
 
+/** One thing `create` would do: a resource or a secret created or kept as it is, the migrations applied, the Worker deployed. */
+export interface PlannedStep { kind: string; name: string; action: 'create' | 'reuse' | 'apply' | 'deploy' }
+
+export interface CreatePlan {
+  accountId: string;
+  steps: PlannedStep[];
+  /** Each binding the Worker's configuration declares, as `<kind> <binding>`. */
+  bindings: string[];
+  /** The address the Deployment is reached at: the named URL, the recorded one, or the Worker's workers.dev address. */
+  url: string;
+}
+
+/**
+ * What `create` would do, without doing any of it: every resource and secret, created or kept, and every binding the
+ * Worker's configuration declares. It asks Cloudflare only what exists (lists and `whoami`) and writes nothing there;
+ * the configuration is rendered on this machine alone.
+ */
+export async function planCloudflareDeployment(options: LifecycleOptions & { url?: string }): Promise<CreatePlan> {
+  // Wrangler runs in a directory of its own outside the home, removed afterwards, so a plan leaves the home as it found it.
+  const configDir = mkdtempSync(path.join(tmpdir(), 'myco-cloudflare-plan-'));
+  try {
+    await assertWranglerReady({
+      ...(options.runner === undefined ? {} : { runner: options.runner }), cwd: configDir,
+      ...(options.report === undefined ? {} : { report: options.report }),
+    });
+    return await planIn(options, configDir);
+  } finally {
+    rmSync(configDir, { recursive: true, force: true });
+  }
+}
+
+async function planIn(options: LifecycleOptions & { url?: string }, configDir: string): Promise<CreatePlan> {
+  const existing = peekDeploymentRecord(options.mycoHome);
+  const resources = cloudflareResources(existing ?? {});
+  const bare: CloudflareOptions = { ...options, configDir };
+  const held = await accountResourceNames(bare);
+  const step = (kind: string, name: string, kept: boolean): PlannedStep => ({ kind, name, action: kept ? 'reuse' : 'create' });
+  const storeId = existing?.storeId ?? await findSecretsStore(bare);
+  const storeSecrets = storeId === null ? [] : await storeSecretNames({ ...bare, storeId });
+  const workerSecrets = await deployedWorkerSecretNames({ ...bare, workerName: resources.workerName }) ?? [];
+  const steps: PlannedStep[] = [
+    step('vectorize index', resources.vectorIndexName, held.vectorIndexes.includes(resources.vectorIndexName)),
+    step('d1 database', resources.databaseName, existing?.databaseId !== undefined || held.databases.includes(resources.databaseName)),
+    step('r2 bucket', resources.bucketName, held.buckets.includes(resources.bucketName)),
+    step('r2 bucket', resources.recoveryBucketName, held.buckets.includes(resources.recoveryBucketName)),
+    step('secrets store', storeId ?? 'myco', storeId !== null),
+    step('store secret', resources.wrapKeySecretName, storeSecrets.includes(resources.wrapKeySecretName)),
+    { kind: 'd1 migrations', name: resources.databaseName, action: 'apply' },
+    { kind: 'worker', name: resources.workerName, action: 'deploy' },
+    step('worker secret', 'SESSION_SECRET', workerSecrets.includes('SESSION_SECRET')),
+  ];
+  const planned: DeploymentRecord = {
+    accountId: options.accountId, workerName: resources.workerName, databaseName: resources.databaseName, bucketName: resources.bucketName,
+    vectorIndexName: resources.vectorIndexName, wrapKeySecretName: resources.wrapKeySecretName, recoveryBucketName: resources.recoveryBucketName,
+    versionId: null, deployedAt: new Date(0).toISOString(), databaseId: existing?.databaseId ?? '00000000-0000-0000-0000-000000000000',
+    storeId: storeId ?? '0'.repeat(32), ...(options.url ?? existing?.url ? { url: (options.url ?? existing?.url)! } : {}),
+  };
+  const config = Bun.TOML.parse(renderDeployConfig(planned)) as Record<string, unknown>;
+  const list = (value: unknown): Array<Record<string, unknown>> => (Array.isArray(value) ? value as Array<Record<string, unknown>> : []);
+  const bindings = [
+    ...list(config.d1_databases).map((b) => `d1 ${String(b.binding)}`),
+    ...list(config.r2_buckets).map((b) => `r2 ${String(b.binding)}`),
+    ...list(config.vectorize).map((b) => `vectorize ${String(b.binding)}`),
+    ...(config.ai !== undefined ? [`ai ${String((config.ai as Record<string, unknown>).binding)}`] : []),
+    ...list((config.durable_objects as Record<string, unknown> | undefined)?.bindings).map((b) => `durable object ${String(b.name)} (${String(b.class_name)})`),
+    ...list(config.secrets_store_secrets).map((b) => `secrets store ${String(b.binding)}`),
+    ...list(config.ratelimits).map((b) => `rate limit ${String(b.name)}`),
+    ...list((config.triggers as Record<string, unknown> | undefined)?.crons).map((c) => `cron ${String(c)}`),
+    ...Object.keys((config.vars as Record<string, unknown> | undefined) ?? {}).map((name) => `var ${name}`),
+  ];
+  return { accountId: options.accountId, steps, bindings, url: options.url ?? existing?.url ?? `https://${resources.workerName}.<your workers.dev subdomain>` };
+}
+
 /**
  * Provision and deploy. Idempotent: every resource is ensured, an existing
  * record's ids are kept, and a re-run converges on the same Deployment —
@@ -117,8 +200,10 @@ export const createCloudflareDeployment = cloudflareOperation(async (options: Li
   const store = existing?.storeId !== undefined
     ? { storeId: existing.storeId, created: false }
     : await ensureSecretsStore(bare);
-  if (store.created) {
-    createdResources.push('secrets store');
+  if (store.created) createdResources.push('secrets store');
+  // The wrapping key is put wherever the store lacks it, a store the account already held included. One the store holds
+  // stays: every sealed credential is wrapped with it.
+  if (store.created || !(await storeSecretNames({ ...bare, storeId: store.storeId })).includes(resources.wrapKeySecretName)) {
     await putStoreSecret({ ...bare, storeId: store.storeId, name: resources.wrapKeySecretName, value: randomBytes(32).toString('base64') });
     createdResources.push(`store secret ${resources.wrapKeySecretName}`);
   }
@@ -148,9 +233,10 @@ export const createCloudflareDeployment = cloudflareOperation(async (options: Li
   await applyMigrations({ ...withConfig, databaseName: resources.databaseName });
   const deployed = await deployWorker(withConfig);
 
-  // After the first deploy: a secret lands on the live Worker; putting one
-  // ahead of a Worker that is not there yet is version-dependent behavior.
-  if (existing === null) {
+  // After the deploy: a secret lands on the live Worker; putting one ahead of a Worker that is not there yet is
+  // version-dependent behavior. It is put wherever the Worker lacks it, so a first create that stopped after writing its
+  // record gets one on the re-run. One the Worker holds stays: it signs every session.
+  if (!(await workerSecretNames({ ...withConfig, workerName: resources.workerName })).includes('SESSION_SECRET')) {
     await putWorkerSecretValue({ ...withConfig, workerName: resources.workerName, name: 'SESSION_SECRET', value: randomBytes(32).toString('base64url') });
     createdResources.push('worker secret SESSION_SECRET');
   }
