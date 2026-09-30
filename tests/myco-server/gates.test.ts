@@ -1323,6 +1323,7 @@ describe('gates', () => {
       'session:member GET /api/projects/{projectId}/skills/{skillId}',
       'session:member GET /api/projects/{projectId}/spores',
       'session:member GET /api/projects/{projectId}/spores/{sporeId}',
+      'session:member GET /api/search',
       'session:member GET /api/sessions',
       'session:member GET /api/settings',
       'session:member GET /api/spores',

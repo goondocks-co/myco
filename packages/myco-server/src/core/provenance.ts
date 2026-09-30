@@ -98,6 +98,21 @@ export async function getReleaseStatesForRecords(
   return Object.fromEntries(results.map((r) => [r.recordId, named(r)]));
 }
 
+/**
+ * Release state for records of several Projects in one round trip: for each entry of `wanted`, the rows
+ * `getReleaseStatesForRecords` answers for it, keyed by record id, in the order asked. The statements are the same
+ * one, batched.
+ */
+export async function getReleaseStatesAcross(
+  db: RelationalStore, wanted: ReadonlyArray<{ projectId: string; namespace: ReleaseNamespace; recordIds: readonly string[] }>,
+): Promise<Array<Record<string, ReleaseStateRow>>> {
+  if (wanted.length === 0) return [];
+  const answers = await db.batch(wanted.map((w) => db.prepare(`SELECT ${COLUMNS} FROM knowledge_release_state
+       WHERE project_id = ? AND namespace IN (?, ?) AND record_id IN (SELECT value FROM json_each(?))
+       ORDER BY checked_at ASC, id ASC`).bind(w.projectId, ...STORED_FORMS[w.namespace], JSON.stringify([...new Set(w.recordIds)]))));
+  return wanted.map((_, i) => Object.fromEntries(((answers[i]?.results ?? []) as ReleaseStateRow[]).map((r) => [r.recordId, named(r)])));
+}
+
 export async function listReleaseStates(
   db: RelationalStore, scope: ReadScope, o: { namespace?: ReleaseNamespace; state?: string; limit?: number } = {},
 ): Promise<ReleaseStateRow[]> {

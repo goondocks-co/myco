@@ -34,6 +34,16 @@ export function projectsFiltering(set: ProjectSet, alias: string): { sql: string
   return projectsDriving(set, `${alias}.project_id`);
 }
 
+/**
+ * The set as a predicate on `${alias}.project_id` that binds at most one value however many Projects it names, for a
+ * statement that repeats the predicate or binds many values of its own. A named set travels as one JSON array; every
+ * Project is checked per row, as `projectsFiltering` checks it.
+ */
+export function projectsBoundOnce(set: ProjectSet, alias: string): { sql: string; params: string[] } {
+  if (set.all) return projectsFiltering(set, alias);
+  return { sql: `${alias}.project_id IN (SELECT value FROM json_each(?))`, params: [JSON.stringify(set.projectIds)] };
+}
+
 /** A page of rows and the cursor that fetches the next one, or null at the end of the set. */
 export interface Page<T> {
   readonly rows: readonly T[];

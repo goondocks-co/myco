@@ -1,13 +1,13 @@
 import type { RelationalStore } from '../core/adapters.js';
 import { occurredAt, presentedStatus } from '../db/session-dates.js';
 import { pendingSearchBlobs, SEARCH_QUERY_MAX_CHARS } from '../core/search-index.js';
-import type { ReadScope } from './scope.js';
+import { projectsBoundOnce, type ProjectSet, type ReadScope } from './scope.js';
 import { semanticSearch, type SemanticSearch } from './embedding.js';
 import { EmbeddingUnavailable } from '../core/embedding/provider.js';
 import { notTombstonedSql } from '../core/tombstones.js';
 
-import { SEARCH_TYPES, SEARCH_API_LIMIT, SEARCH_MAX_LIMIT, SEARCH_PREVIEW_CHARS, type SearchType, type SearchOptions, type SearchResult, type SearchAnswer, type ReleaseAnnotation } from './search-types.js';
-import { getReleaseStatesForRecords, isReleaseNamespace, type ReleaseNamespace } from '../core/provenance.js';
+import { SEARCH_TYPES, SEARCH_API_LIMIT, SEARCH_MAX_LIMIT, SEARCH_PREVIEW_CHARS, type SearchType, type SearchOptions, type SearchResult, type SearchAnswer, type SearchAcrossAnswer, type SearchAcrossResult, type ReleaseAnnotation } from './search-types.js';
+import { getReleaseStatesAcross, getReleaseStatesForRecords, isReleaseNamespace, type ReleaseNamespace } from '../core/provenance.js';
 export * from './search-types.js';
 const SEARCH_MAX_TERMS = 16;
 
@@ -44,27 +44,39 @@ function typesFor(value: string | undefined): readonly SearchType[] {
   return [type as SearchType];
 }
 
-interface Hit { id: string; title: string; preview: string; rank: number; created_at: number; session_id: string | null; prompt_id: string | null }
+interface Hit { project_id: string; id: string; title: string; preview: string; rank: number; created_at: number; session_id: string | null; prompt_id: string | null }
 
-async function searchType(db: RelationalStore, scope: ReadScope, type: SearchType, terms: string[], opts: SearchOptions, limit: number): Promise<SearchResult[]> {
+/** Where a search reads: one Project, or a set of them. */
+type SearchReach = ReadScope | ProjectSet;
+
+/** The reach as a predicate on `d.project_id`. A set binds at most one value, so the predicate repeats in a statement without multiplying its binds. */
+function reachOf(reach: SearchReach): { sql: string; params: string[] } {
+  return 'projectId' in reach ? { sql: 'd.project_id = ?', params: [reach.projectId] } : projectsBoundOnce(reach, 'd');
+}
+
+async function searchType(db: RelationalStore, reach: SearchReach, type: SearchType, terms: string[], opts: SearchOptions, limit: number): Promise<SearchAcrossResult[]> {
   const s = SOURCES[type];
   if ((opts.status !== undefined && s.status === undefined) || (opts.observation_type !== undefined && type !== 'spore')) return [];
   if (opts.session_id !== undefined && s.session === 'NULL') return [];
   const fts = `${s.table}_fts`;
-  const params: (string | number)[] = [terms[0], scope.projectId];
+  const inReach = reachOf(reach);
+  // The full-text match drives each branch, and `CROSS JOIN` holds that order: a planner free to choose may instead read
+  // every row of the reach and evaluate the match once per row.
+  const params: (string | number)[] = [terms[0], ...inReach.params];
   const first = `SELECT d.rowid AS source_rowid, ${fts}.rank AS rank,
     snippet(${fts}, -1, '', '', ' … ', 40) AS preview
-    FROM ${fts} JOIN ${s.table} d ON d.rowid = ${fts}.rowid
-    WHERE ${fts} MATCH ? AND d.project_id = ?`;
+    FROM ${fts} CROSS JOIN ${s.table} d ON d.rowid = ${fts}.rowid
+    WHERE ${fts} MATCH ? AND ${inReach.sql}`;
   const blob = s.blob ? ` UNION ALL SELECT d.rowid AS source_rowid, search_blob_chunks_fts.rank AS rank,
     snippet(search_blob_chunks_fts, 0, '', '', ' … ', 40) AS preview
-    FROM search_blob_chunks_fts JOIN search_blob_chunks c ON c.rowid = search_blob_chunks_fts.rowid
-    JOIN ${s.table} d ON d.project_id = c.project_id AND d.blob_key = c.blob_key
-    WHERE search_blob_chunks_fts MATCH ? AND d.project_id = ?` : '';
-  if (s.blob) params.push(terms[0], scope.projectId);
-  const where = ['d.project_id = ?'];
+    FROM search_blob_chunks_fts CROSS JOIN search_blob_chunks c ON c.rowid = search_blob_chunks_fts.rowid
+    CROSS JOIN ${s.table} d ON d.project_id = c.project_id AND d.blob_key = c.blob_key
+    WHERE search_blob_chunks_fts MATCH ? AND ${inReach.sql}` : '';
+  if (s.blob) params.push(terms[0], ...inReach.params);
+  // Each candidate is already a row of the reach. The outer read walks the candidates and joins each one's row back by
+  // rowid: `CROSS JOIN` holds that order, so no statistics can turn it into a walk of the table.
+  const where: string[] = [];
   if (type === 'session') where.push(notTombstonedSql('d'));
-  params.push(scope.projectId);
   for (const term of terms.slice(1)) {
     let exists = `EXISTS (SELECT 1 FROM ${fts} WHERE ${fts}.rowid = d.rowid AND ${fts} MATCH ?)`;
     params.push(term);
@@ -93,10 +105,10 @@ async function searchType(db: RelationalStore, scope: ReadScope, type: SearchTyp
   }
   params.push(limit);
   const rows = (await db.prepare(`WITH candidates AS MATERIALIZED (${first}${blob})
-    SELECT d.${s.id} AS id, ${s.title} AS title, candidates.preview, MIN(candidates.rank) AS rank,
+    SELECT d.project_id, d.${s.id} AS id, ${s.title} AS title, candidates.preview, MIN(candidates.rank) AS rank,
       ${s.created} AS created_at, ${s.session} AS session_id, ${s.prompt} AS prompt_id
-    FROM candidates JOIN ${s.table} d ON d.rowid = candidates.source_rowid
-    WHERE ${where.join(' AND ')} GROUP BY d.rowid ORDER BY rank, created_at DESC, id LIMIT ?`).bind(...params).all<Hit>()).results;
+    FROM candidates CROSS JOIN ${s.table} d ON d.rowid = candidates.source_rowid
+    ${where.length === 0 ? '' : `WHERE ${where.join(' AND ')}`} GROUP BY d.rowid ORDER BY rank, created_at DESC, id, d.project_id LIMIT ?`).bind(...params).all<Hit>()).results;
   const best = Math.max(...rows.map((r) => Math.abs(r.rank)), Number.MIN_VALUE);
   // No `skill` entry: `myco_skills` answers from the shipped catalogue, so a
   // hint naming a generated record's id would send a caller to a refusal. The
@@ -104,7 +116,7 @@ async function searchType(db: RelationalStore, scope: ReadScope, type: SearchTyp
   const tools: Partial<Record<SearchType, string>> = { session: 'myco_sessions', spore: 'myco_spores', plan: 'myco_plans' };
   const tool = tools[type];
   return rows.filter((r) => r.id.length > 0).map((r) => ({
-    id: r.id, type, title: r.title, preview: (r.preview ?? '').slice(0, SEARCH_PREVIEW_CHARS), score: Math.abs(r.rank) / best,
+    projectId: r.project_id, id: r.id, type, title: r.title, preview: (r.preview ?? '').slice(0, SEARCH_PREVIEW_CHARS), score: Math.abs(r.rank) / best,
     ...(r.session_id === null ? {} : { session_id: r.session_id }),
     ...(r.prompt_id === null ? {} : { prompt_id: r.prompt_id }),
     ...(tool === undefined ? {} : { retrieve: { tool, input: { op: 'get', id: r.id } } }),
@@ -118,11 +130,34 @@ async function withRelease(db: RelationalStore, scope: ReadScope, results: Searc
   const states = new Map<string, ReleaseAnnotation>();
   for (const [namespace, ids] of byNamespace) {
     for (const [id, row] of Object.entries(await getReleaseStatesForRecords(db, scope, namespace, ids))) {
-      states.set(`${namespace}:${id}`, { state: row.state, confidence: row.confidence, ref: row.basisRef, checked_at: row.checkedAt });
+      states.set(`${namespace}:${id}`, annotation(row));
     }
   }
   return results.map((r) => {
     const release = states.get(`${r.type}:${r.id}`);
+    return release === undefined ? r : { ...r, release };
+  });
+}
+
+const annotation = (row: Awaited<ReturnType<typeof getReleaseStatesForRecords>>[string]): ReleaseAnnotation =>
+  ({ state: row.state, confidence: row.confidence, ref: row.basisRef, checked_at: row.checkedAt });
+
+/** Each result's release state across Projects, one batched read per Project and namespace present. */
+async function withReleaseAcross(db: RelationalStore, results: SearchAcrossResult[]): Promise<SearchAcrossResult[]> {
+  const groups = new Map<string, { projectId: string; namespace: ReleaseNamespace; recordIds: string[] }>();
+  const key = (projectId: string, namespace: string) => JSON.stringify([projectId, namespace]);
+  for (const r of results) {
+    if (!isReleaseNamespace(r.type)) continue;
+    const group = groups.get(key(r.projectId, r.type)) ?? { projectId: r.projectId, namespace: r.type, recordIds: [] };
+    group.recordIds.push(r.id);
+    groups.set(key(r.projectId, r.type), group);
+  }
+  const wanted = [...groups.values()];
+  const answers = await getReleaseStatesAcross(db, wanted);
+  const states = new Map<string, ReleaseAnnotation>();
+  wanted.forEach((w, i) => { for (const [id, row] of Object.entries(answers[i] ?? {})) states.set(JSON.stringify([w.projectId, w.namespace, id]), annotation(row)); });
+  return results.map((r) => {
+    const release = states.get(JSON.stringify([r.projectId, r.type, r.id]));
     return release === undefined ? r : { ...r, release };
   });
 }
@@ -133,7 +168,20 @@ export async function searchProject(db: RelationalStore, scope: ReadScope, opts:
   return { ...answer, results: await withRelease(db, scope, answer.results) };
 }
 
-async function searchUnannotated(db: RelationalStore, scope: ReadScope, opts: SearchOptions, resolveSemantic?: () => Promise<SemanticSearch | null>): Promise<SearchAnswer> {
+/**
+ * Full-text search across a set of Projects: every Project that accepts capture, or the ones named. Each type is one
+ * statement over the whole set, ranked by the same full-text rank a Project's search uses; the index's statistics span
+ * every Project, so ranks compare across them. Semantic search reads one Project's vectors, so `mode` here is `auto`
+ * or `fts`, and the answer is always full text.
+ */
+export async function searchAcross(db: RelationalStore, set: ProjectSet, opts: SearchOptions): Promise<SearchAcrossAnswer> {
+  const { words, types, mode, limit } = validated(opts);
+  if (mode === 'semantic') throw new InvalidSearch('semantic search reads one project; across projects, mode must be auto or fts');
+  const results = await fullText(db, set, types, words, opts, limit);
+  return { results: await withReleaseAcross(db, results), mode: 'fts', provider_unavailable: false, coverage: { pending_blobs: await pendingSearchBlobs(db, set) } };
+}
+
+function validated(opts: SearchOptions): { query: string; words: string[]; types: readonly SearchType[]; mode: string; limit: number } {
   const query = opts.query.trim();
   if (query.length === 0 || query.length > SEARCH_QUERY_MAX_CHARS) throw new InvalidSearch(`query must contain 1–${SEARCH_QUERY_MAX_CHARS} characters`);
   const words = query.split(/\s+/);
@@ -145,6 +193,20 @@ async function searchUnannotated(db: RelationalStore, scope: ReadScope, opts: Se
   if (!Number.isSafeInteger(limit) || limit < 1 || limit > SEARCH_MAX_LIMIT) throw new InvalidSearch(`limit must be between 1 and ${SEARCH_MAX_LIMIT}`);
   for (const value of [opts.since, opts.until]) if (value !== undefined && (!Number.isFinite(value) || value < 0)) throw new InvalidSearch('timestamps must be non-negative epoch seconds');
   if (opts.since !== undefined && opts.until !== undefined && opts.since > opts.until) throw new InvalidSearch('since must not exceed until');
+  return { query, words, types, mode, limit };
+}
+
+/** Each type's best hits, one statement per type, merged: every type's best first, then the rest by score, to the limit. */
+async function fullText(db: RelationalStore, reach: SearchReach, types: readonly SearchType[], words: string[], opts: SearchOptions, limit: number): Promise<SearchAcrossResult[]> {
+  const branches = await Promise.all(types.map((type) => searchType(db, reach, type, words.map(sanitizeFtsQuery), opts, limit)));
+  const order = (a: SearchAcrossResult, b: SearchAcrossResult) => b.score - a.score || SEARCH_TYPES.indexOf(a.type) - SEARCH_TYPES.indexOf(b.type) || a.id.localeCompare(b.id) || a.projectId.localeCompare(b.projectId);
+  const floor = branches.flatMap((hits) => hits.slice(0, 1)).sort(order).slice(0, limit);
+  const remaining = branches.flatMap((hits) => hits.slice(1)).sort(order).slice(0, limit - floor.length);
+  return [...floor, ...remaining].sort(order);
+}
+
+async function searchUnannotated(db: RelationalStore, scope: ReadScope, opts: SearchOptions, resolveSemantic?: () => Promise<SemanticSearch | null>): Promise<SearchAnswer> {
+  const { query, words, types, mode, limit } = validated(opts);
   const coverage = { pending_blobs: await pendingSearchBlobs(db, scope.projectId) };
   if (mode !== 'fts') {
     const semantic = await resolveSemantic?.();
@@ -155,9 +217,6 @@ async function searchUnannotated(db: RelationalStore, scope: ReadScope, opts: Se
     }
   }
   if (mode === 'semantic') return { results: [], mode, provider_unavailable: true, coverage };
-  const branches = await Promise.all(types.map((type) => searchType(db, scope, type, words.map(sanitizeFtsQuery), opts, limit)));
-  const order = (a: SearchResult, b: SearchResult) => b.score - a.score || SEARCH_TYPES.indexOf(a.type) - SEARCH_TYPES.indexOf(b.type) || a.id.localeCompare(b.id);
-  const floor = branches.flatMap((hits) => hits.slice(0, 1)).sort(order).slice(0, limit);
-  const remaining = branches.flatMap((hits) => hits.slice(1)).sort(order).slice(0, limit - floor.length);
-  return { results: [...floor, ...remaining].sort(order), mode: 'fts', provider_unavailable: mode === 'auto', coverage };
+  const results = (await fullText(db, scope, types, words, opts, limit)).map(({ projectId: _projectId, ...result }) => result);
+  return { results, mode: 'fts', provider_unavailable: mode === 'auto', coverage };
 }
