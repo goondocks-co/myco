@@ -7,7 +7,7 @@ import { describe, expect, it } from 'bun:test';
 import { serverEnvFromBindings } from '@myco-server-worker/platform/cloudflare/env.js';
 import type { ServerEnv } from '@myco-server-worker/core/adapters.js';
 import { dispatchPrepared, dispatchTask, drainQueue, DRAIN_BATCH, endQueuedRun, enqueueDispatch, HARNESS_MEMBER_ID, launchDispatch, LAUNCH_REFUSED_ERROR, LimitReached, MAX_RUN_ERROR_CHARS, NO_LAUNCH_ERROR, prepareDispatch, RUN_OVERRUN_MARGIN_MS, RuntimeAlreadyHolding, RuntimeDraining } from '@myco-server-worker/core/harness.js';
-import { agentRunRetention, QUEUE_EXPIRED_ERROR, QUEUE_MAX_AGE_MS, runStaleSweep, STALE_RUN_ERROR } from '@myco-server-worker/core/jobs-run.js';
+import { agentRunRetention, QUEUE_EXPIRED_ERROR, QUEUE_MAX_AGE_MS, queueExpiredError, runStaleSweep, STALE_RUN_ERROR } from '@myco-server-worker/core/jobs-run.js';
 import { heldBy, HELD_BY_WORDS, readDispatchLimits } from '@myco-server-worker/core/limits.js';
 import { claimRun, dispatchLoad, launchQueued, listQueuedAcrossProjects, recordDispatch } from '@myco-server-worker/core/runs.js';
 import { runTick } from '@myco-server-worker/core/tick.js';
@@ -589,6 +589,18 @@ describe('a runtime that is not taking runs', () => {
     await enqueueDispatch(drained.env, prepared(preparedAgain), { ...spec, runId: 'run_waiting' }, 'runtime', NOW);
     expect(await drainQueue(drained.env, NOW + 60_000)).toBe(0);
     expect(drained.run('run_waiting')).toMatchObject({ status: 'queued', queuedAt: NOW, heldBy: 'runtime' });
+  });
+
+  it('names the capability a run waited for when no worker reporting it took the run within the bound (#1481)', async () => {
+    const f = fixture({ refuse: () => draining() });
+    const preparedOutcome = await prepareDispatch(f.env, 'container-smoke', 'proj_1');
+    await enqueueDispatch(f.env, prepared(preparedOutcome), { serverUrl: ORIGIN, actor: 'mem_1', runId: 'run_held' }, 'runtime', NOW);
+    f.sqlite.run(`UPDATE agent_runs SET held_by = 'repository-digests' WHERE id = 'run_held'`);
+    await emitted(async () => { expect(await runStaleSweep(f.env, NOW + QUEUE_MAX_AGE_MS)).toBe(1); });
+    expect(f.run('run_held')).toMatchObject({ status: 'failed', error: 'no worker reporting repository-digests took the run within a day' });
+    // A run a limit or the runtime held keeps the words it has always been given.
+    expect(queueExpiredError('runtime')).toBe(QUEUE_EXPIRED_ERROR);
+    expect(queueExpiredError(null)).toBe(QUEUE_EXPIRED_ERROR);
   });
 
   it('gives up on a run nothing launched within the bound, and says so in those words', async () => {

@@ -27,6 +27,7 @@ import { PRUNE_FILE_BUDGET, stagingPrunePolicy, STAGING_RETENTION_JOB } from './
 import { backfillTitles, titleReadySessions } from './titling.js';
 import { reconcileReleaseProvenance } from './release-provenance.js';
 import { MAINTENANCE_JOB, runMaintenance, type MaintenanceCheck } from './store-maintenance.js';
+import { CAPABILITY_HOLDS } from '@goondocks/myco-shared/run-holds';
 
 /** The retention window when the leaf is unset, and the bounds the leaf itself declares. */
 export const RUN_RETENTION_DAYS_DEFAULT = 30;
@@ -155,6 +156,13 @@ export const STALE_RUN_ERROR = 'the runtime went away';
 export const QUEUE_MAX_AGE_MS = DAY_MS;
 export const QUEUE_EXPIRED_ERROR = 'no runtime took the run within a day';
 
+/** Why a queued run past its bound ended: the capability it waited for, where it waited for one. */
+export function queueExpiredError(heldBy: string | null): string {
+  return heldBy !== null && (CAPABILITY_HOLDS as readonly string[]).includes(heldBy)
+    ? `no worker reporting ${heldBy} took the run within a day`
+    : QUEUE_EXPIRED_ERROR;
+}
+
 /**
  * No run stays waiting past its bound.
  *
@@ -174,7 +182,7 @@ export async function runStaleSweep(env: ServerEnv, now: number): Promise<number
   }
   for (const queued of await listQueuedAcrossProjects(env.db, JOB_BATCH)) {
     if (now - queued.queuedAt < QUEUE_MAX_AGE_MS) continue;
-    if (!(await endQueuedRun(env, { projectId: queued.projectId }, queued, now, { failed: QUEUE_EXPIRED_ERROR }))) continue;
+    if (!(await endQueuedRun(env, { projectId: queued.projectId }, queued, now, { failed: queueExpiredError(queued.heldBy) }))) continue;
     emit({ kind: 'harness_queue_expired', runId: queued.id, task: queued.task, projectId: queued.projectId });
     changed += 1;
   }

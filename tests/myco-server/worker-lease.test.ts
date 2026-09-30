@@ -204,6 +204,8 @@ describe('the lease', () => {
     expect(await expireLeases(f.e.serverEnv, NOW + WORKER_LEASE_MS)).toBe(1);
     expect(f.row('run_1')).toMatchObject({ status: 'queued', leasedBy: null, leaseExpiresAt: null, dispatchedBy: null });
     expect(f.live(credential)?.revoked_at).not.toBeNull();
+    // It says it waits for a worker again, rather than naming no holder, which reads as a limit (#1481).
+    expect(f.e.sqlite.query(`SELECT held_by AS heldBy FROM agent_runs WHERE id = 'run_1'`).get()).toEqual({ heldBy: 'worker' });
 
     // And another worker takes it.
     const again = await claimNextRun(f.e.serverEnv, { tokenId: tb, machineId: 'm2', harnesses: OFFERED, now: NOW + WORKER_LEASE_MS + 1 });

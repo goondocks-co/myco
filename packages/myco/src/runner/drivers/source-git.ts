@@ -117,6 +117,12 @@ const shimConfigEnv = (): Record<string, string> => Object.fromEntries([
 /** The oldest Git that reads `GIT_CONFIG_GLOBAL` and `GIT_CONFIG_COUNT`, both of which the confinement relies on. */
 const MIN_GIT_VERSION: readonly [number, number] = [2, 32];
 
+/**
+ * The Git variables a source run's Git runs under, whichever way the harness confines it: `SHIM_GIT_ENV`, and the
+ * configuration `SHIM_GIT_CONFIG` names.
+ */
+export const confinedGitEnv = (): Record<string, string> => ({ ...SHIM_GIT_ENV, ...shimConfigEnv() });
+
 /** Where the run's `git` lives, and the script a shell sources to put it first. */
 const SHIM_DIR = 'bin';
 const SHELL_SETUP_FILE = 'shell-env.sh';
@@ -249,7 +255,7 @@ const quoted = (value: string): string => `'${value.replaceAll('\'', '\'\\\'\'')
  */
 export function gitShimScript(realGit: string, repository: string): string {
   const commands = SOURCE_GIT_READ_COMMANDS.join('|');
-  const variables = { ...SHIM_GIT_ENV, ...shimConfigEnv() };
+  const variables = confinedGitEnv();
   const env = Object.entries(variables).map(([name, value]) => `${name}=${quoted(value)}`).join(' ');
   return [
     '#!/bin/sh',

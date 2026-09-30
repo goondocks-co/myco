@@ -1294,11 +1294,13 @@ export async function lapsedLeases(db: RelationalStore, now: number, limit: numb
  * row stops naming it, and a row still naming a revoked token could be taken by
  * no one. Clearing it is also what makes the row claimable again: the queue
  * reads rows that name none. `queued_at` is left as it was, so a run that
- * lost its worker keeps the place in the queue it had already waited for.
+ * lost its worker keeps the place in the queue it had already waited for. It
+ * waits for a worker again, and says so: a claim cleared its holder, and a row
+ * naming none reads as held by a limit.
  */
 export async function requeueLapsedLease(db: RelationalStore, scope: ReadScope, runId: string, leasedBy: string, now: number): Promise<boolean> {
   const result = await db.prepare(
-    `UPDATE agent_runs SET status = 'queued', leased_by = NULL, lease_expires_at = NULL, dispatched_by = NULL, started_at = NULL
+    `UPDATE agent_runs SET status = 'queued', leased_by = NULL, lease_expires_at = NULL, dispatched_by = NULL, started_at = NULL, held_by = 'worker'
       WHERE project_id = ? AND id = ? AND status = 'running' AND leased_by = ? AND lease_expires_at <= ?`,
   ).bind(scope.projectId, runId, leasedBy, now).run();
   return result.meta.changes === 1;
