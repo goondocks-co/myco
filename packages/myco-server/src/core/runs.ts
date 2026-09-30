@@ -805,6 +805,40 @@ export async function recordRunWrite(
   }]);
 }
 
+/**
+ * The most sessions one run's reads are recorded for. A run past it still reads; the sessions after the bound are
+ * served and not recorded, so a run's record stays a bounded number of rows whatever it reads.
+ */
+export const MAX_RUN_READS = 200;
+
+/**
+ * Record the sessions served to a run's call, against the run, over the run's own credential.
+ *
+ * One row per run and session: a session read again keeps the row, and the instant of its first read. Each row lands
+ * only while the Project holds the run and the session, and only while the run holds fewer than `MAX_RUN_READS`
+ * rows; the statements run in one batch, in order, so the bound counts the rows the batch itself adds. Answers how
+ * many rows landed.
+ */
+export async function recordRunReads(
+  db: RelationalStore,
+  scope: ReadScope,
+  read: { runId: string; tokenId: string; sessionIds: readonly string[]; receivedAt: number },
+): Promise<number> {
+  const sessionIds = [...new Set(read.sessionIds)].slice(0, MAX_RUN_READS);
+  if (sessionIds.length === 0) return 0;
+  const statements = sessionIds.map((sessionId) => db
+    .prepare(`INSERT INTO run_reads (project_id, run_id, session_id, token_id, received_at)
+       SELECT ?, ?, ?, ?, ?
+        WHERE EXISTS (SELECT 1 FROM agent_runs WHERE project_id = ? AND id = ?)
+          AND EXISTS (SELECT 1 FROM sessions WHERE project_id = ? AND session_id = ?)
+          AND (SELECT COUNT(*) FROM run_reads WHERE project_id = ? AND run_id = ?) < ?
+       ON CONFLICT (project_id, run_id, session_id) DO NOTHING`)
+    .bind(scope.projectId, read.runId, sessionId, read.tokenId, read.receivedAt,
+          scope.projectId, read.runId, scope.projectId, sessionId, scope.projectId, read.runId, MAX_RUN_READS));
+  const results = await db.batch(statements);
+  return results.reduce((landed, result) => landed + result.meta.changes, 0);
+}
+
 export interface RunEventRowInsert {
   runId: string;
   phaseName: string | null;
@@ -925,8 +959,9 @@ const RETENTION_CANDIDATES_SQL = `SELECT project_id AS projectId, id FROM agent_
  * Remove terminal, non-resumable runs older than the cutoff, up to `limit`
  * of them, each with its turns and reports. Those two tables reference a run
  * without a cascade, so they are deleted in the same batch ahead of the run;
- * events and write intents cascade, and a digest revision keeps its row with
- * the run reference cleared. Answers how many runs went.
+ * events, write intents and the record of the sessions it read cascade, and a
+ * digest revision keeps its row with the run reference cleared. Answers how
+ * many runs went.
  */
 export async function pruneTerminalRuns(db: RelationalStore, cutoffMs: number, limit: number): Promise<number> {
   const { results } = await db.prepare(RETENTION_CANDIDATES_SQL).bind(cutoffMs, limit).all<{ projectId: string; id: string }>();

@@ -5,12 +5,13 @@
  * has none, so a plan asserted there is the plan of a Deployment that never ran `ANALYZE`, and a hosted store that
  * has run it plans differently. Each profile here fills the store with rows shaped like a Deployment's —
  * Projects of uneven size, a few machines and agents, spores mostly written by runs, runs mostly the search index's
- * own upkeep — and runs `ANALYZE` over them, so the statistics are ones SQLite itself computed.
+ * own upkeep, each other run reading one session or a page's handful — and runs `ANALYZE` over them, so the
+ * statistics are ones SQLite itself computed.
  *
  * - `current` is a Deployment in use, analyzed with every index of the schema present.
  * - `stale` is the statistics of a hosted store last analyzed while small (3 Projects, 159 sessions,
- *   268 spores), and none for the indexes added after it: a store a later migration indexed and nothing analyzed
- *   again.
+ *   268 spores), and none for the indexes and the `run_reads` key added after it: a store a later migration
+ *   indexed and nothing analyzed again.
  */
 import { Database } from 'bun:sqlite';
 import { SCHEMA_DDL } from '@myco-server-worker/db/schema.js';
@@ -28,10 +29,12 @@ export interface StatsProfile {
 
 /** The indexes schema step 57 adds; a store analyzed before it holds no statistics for them. */
 export const STEP_57_INDEXES = ['idx_sessions_occurred_deployment', 'idx_spores_created_deployment', 'idx_plans_updated_deployment', 'idx_spores_author', 'idx_sessions_capture'] as const;
+/** The indexes schema step 58 adds, the `run_reads` key among them. */
+export const STEP_58_INDEXES = ['sqlite_autoindex_run_reads_1', 'idx_run_reads_session', 'idx_spores_session'] as const;
 
 export const PROFILES: Readonly<Record<'current' | 'stale', StatsProfile>> = {
   current: { projects: 13, sessions: 4_000, spores: 2_000, plans: 450, runs: 12_000, transcripts: 4_200, unanalyzed: [] },
-  stale: { projects: 3, sessions: 159, spores: 268, plans: 60, runs: 900, transcripts: 170, unanalyzed: STEP_57_INDEXES },
+  stale: { projects: 3, sessions: 159, spores: 268, plans: 60, runs: 900, transcripts: 170, unanalyzed: [...STEP_57_INDEXES, ...STEP_58_INDEXES] },
 };
 
 const AGENTS = ['claude-code', 'claude-code', 'claude-code', 'codex', 'codex', 'cursor', 'pi'];
@@ -74,6 +77,11 @@ export function analyzedStore(profile: StatsProfile): Database {
       if (task !== 'embedding-reconcile') {
         db.run(`INSERT INTO agent_run_events (project_id, run_id, event_type, tool_name, outcome, payload, recorded_at) VALUES (?, ?, 'run_write', 'myco_run_sessions', 'written', '{}', ?)`, [projectOf(i, profile.projects), `run_${i}`, at]);
         db.run(`INSERT INTO agent_reports (project_id, run_id, agent_id, action, summary, created_at) VALUES (?, ?, 'agent', 'extract', 'x', ?)`, [projectOf(i, profile.projects), `run_${i}`, at]);
+        // A titling run reads its one session; an extraction run reads the handful a page of prompts spans.
+        for (let k = 0; k < (task === 'extract-curate' ? 6 : 1); k += 1) {
+          db.run(`INSERT OR IGNORE INTO run_reads (project_id, run_id, session_id, token_id, received_at) VALUES (?, ?, ?, 'mt_run', ?)`,
+            [projectOf(i, profile.projects), `run_${i}`, `s${(i * 7 + k * 13) % profile.sessions}`, at]);
+        }
       }
     }
     for (let i = 0; i < profile.spores; i += 1) {

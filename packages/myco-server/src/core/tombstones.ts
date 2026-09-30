@@ -1,8 +1,9 @@
 /**
  * Session deletion retains its identity and tombstone, clears its title and
- * summary, and removes captured projections. Saved knowledge and other sessions
- * remain. Reads exclude tombstones; ingestion refuses subsequent capture and
- * import for the same session ID. Unreferenced blobs are freed in bounded pages.
+ * summary, and removes captured projections and the record of which runs read
+ * it. Saved knowledge, the runs themselves and other sessions remain. Reads
+ * exclude tombstones; ingestion refuses subsequent capture and import for the
+ * same session ID. Unreferenced blobs are freed in bounded pages.
  */
 import type { RelationalStore, ServerEnv } from './adapters.js';
 import { recordBlobCandidates, releaseBlobs } from './object-release.js';
@@ -117,6 +118,8 @@ export async function tombstoneSession(
     // Segments first: `transcripts` is the only route to them.
     env.db.prepare(`DELETE FROM transcript_segments WHERE project_id = ? AND transcript_id IN (${SEGMENTS_OF_SESSION})`).bind(projectId, projectId, sessionId),
     ...DERIVED_TABLES.map((table) => env.db.prepare(`DELETE FROM ${table} WHERE project_id = ? AND session_id = ?`).bind(projectId, sessionId)),
+    // The runs that read the session keep their own rows; only their record of reading this one goes.
+    env.db.prepare(`DELETE FROM run_reads WHERE project_id = ? AND session_id = ?`).bind(projectId, sessionId),
     env.db.prepare(`DELETE FROM tags WHERE project_id = ? AND entity_kind = 'plan' AND entity_id NOT IN (SELECT plan_key FROM plans WHERE project_id = ?)`).bind(projectId, projectId),
   ];
   // Every blob the session's rows named is recorded as a release candidate in the transaction that removes the rows,
