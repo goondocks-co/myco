@@ -1,7 +1,7 @@
 /**
  * The dashboard's table of setting defaults says what the server applies.
  *
- * `features/admin/settings/defaults.ts` copies each default, since the modules
+ * `features/admin/settings/defaults.ts` copies each default: the modules
  * that hold them carry runtime imports the dashboard's build does not. This
  * reads the server's own readers over an empty store, the state of a
  * Deployment where nobody has written a setting, and holds the table to what
