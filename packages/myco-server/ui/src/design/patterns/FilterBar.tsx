@@ -37,15 +37,32 @@ export interface FilterBarProps {
   className?: string;
 }
 
+/** With more filters than this the selects size to their words, so the search keeps most of the row. */
+export const FIXED_WIDTH_FILTERS = 2;
+
 /**
- * The one search-and-filter bar. The search field fills the row; every select
- * is the same width; the count sits at the end. On a phone the search takes the
- * first line and the selects share the line below it, full width together.
+ * The one search-and-filter bar, on one row. The search field leads and fills
+ * what the selects leave; the count sits at the end. Up to two selects share
+ * one width; with more, each sizes to the words it shows (an option's `short`
+ * form) and truncates past a bound, and the search keeps 55% of the row. On a
+ * phone the search takes the first line and the selects share the lines below
+ * it, two to a line when there are more than two.
  */
 export function FilterBar({
   searchLabel, placeholder, query, onQueryChange, filters = [], values = {}, onFilterChange, onClear, count, inputRef, hint, className,
 }: FilterBarProps) {
   const active = query.trim() !== '' || filters.some((filter) => (values[filter.key] ?? defaultOf(filter)) !== defaultOf(filter));
+  const sized = filters.length > FIXED_WIDTH_FILTERS;
+  const selects = filters.map((filter) => (
+    <Select
+      key={filter.key}
+      label={filter.label}
+      value={values[filter.key] ?? defaultOf(filter)}
+      onValueChange={(value) => onFilterChange?.(filter.key, value)}
+      options={filter.options}
+      className={sized ? 'min-w-0 sm:w-auto sm:max-w-[168px]' : 'min-w-0 flex-1 basis-0 sm:w-[176px] sm:flex-none sm:basis-auto'}
+    />
+  ));
   return (
     <div data-filter-bar="" role="search" className={cn('flex flex-wrap items-center gap-s2 sm:flex-nowrap', className)}>
       <SearchInput
@@ -55,18 +72,9 @@ export function FilterBar({
         value={query}
         hint={hint}
         onChange={(event) => onQueryChange(event.target.value)}
-        className="basis-full sm:basis-auto"
+        className={cn('basis-full sm:basis-auto', sized && 'sm:min-w-[55%]')}
       />
-      {filters.map((filter) => (
-        <Select
-          key={filter.key}
-          label={filter.label}
-          value={values[filter.key] ?? defaultOf(filter)}
-          onValueChange={(value) => onFilterChange?.(filter.key, value)}
-          options={filter.options}
-          className="min-w-0 flex-1 basis-0 sm:w-[176px] sm:flex-none sm:basis-auto"
-        />
-      ))}
+      {sized ? <div className="grid w-full grid-cols-2 gap-s2 sm:flex sm:w-auto sm:min-w-0 sm:shrink">{selects}</div> : selects}
       {onClear && active && (
         <Button variant="ghost" onClick={onClear} icon={<X aria-hidden className="size-s4" />} aria-label="Clear search and filters">
           Clear

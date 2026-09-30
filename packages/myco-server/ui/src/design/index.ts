@@ -22,11 +22,14 @@ export { Avatar, initialsOf, type AvatarProps } from './primitives/Avatar';
 export { Card, type CardProps } from './primitives/Card';
 export { Sparkline, type SparklineProps } from './primitives/Sparkline';
 export { CopyButton, type CopyButtonProps } from './primitives/CopyButton';
+export { Lightbox, type LightboxProps } from './primitives/Lightbox';
 
 export {
-  FilterBar, useFilterParams, useQueryDraft, ANY, type FilterBarProps, type FilterDefinition, type FilterParams, type FilterParamsOptions, type QueryDraft,
+  FilterBar, useFilterParams, useQueryDraft, ANY, FIXED_WIDTH_FILTERS, type FilterBarProps, type FilterDefinition, type FilterParams, type FilterParamsOptions, type QueryDraft,
 } from './patterns/FilterBar';
 export { ListRow, type ListRowProps } from './patterns/ListRow';
+export { DataTable, type DataTableProps, type DataTableColumn, type DataTableGroup } from './patterns/DataTable';
+export { Markdown, type MarkdownProps } from './patterns/Markdown';
 export { DayGroup, dayLabel, type DayGroupProps } from './patterns/DayGroup';
 export { ShowMore, type ShowMoreProps } from './patterns/ShowMore';
 export { FactsPanel, FactRow, type FactsPanelProps, type FactRowProps } from './patterns/FactsPanel';

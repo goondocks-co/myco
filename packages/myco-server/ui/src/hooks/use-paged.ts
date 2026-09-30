@@ -32,6 +32,8 @@ export function usePaged<T>(key: readonly unknown[], path: string, opts: { enabl
     error: query.error,
     hasMore: query.hasNextPage,
     isFetchingMore: query.isFetchingNextPage,
-    more: () => { void query.fetchNextPage(); },
+    // A page already on its way is joined, never asked for again.
+    more: () => { void query.fetchNextPage({ cancelRefetch: false }); },
+    retry: () => { void query.refetch(); },
   };
 }
