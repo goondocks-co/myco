@@ -501,7 +501,8 @@ export function provisionGlobally(
   // Every agent file this may write is copied first; `restore.md` beside the copies puts back what the person had.
   const targets = opts.backup === undefined ? [] : installer.memberGlobalTargets().all;
   const absent = targets.filter((file) => !fs.existsSync(file));
-  for (const file of targets) if (!absent.includes(file) && !opts.backup!.all.some((e) => e.original === file)) opts.backup!.take(file);
+  const regular = (file: string) => { try { return fs.statSync(file).isFile(); } catch { return false; } };
+  for (const file of targets) if (regular(file) && !opts.backup!.all.some((e) => e.original === file)) opts.backup!.take(file);
   let installed;
   try {
     installed = installer.install();
