@@ -45,3 +45,16 @@ export interface SearchAnswer {
   provider_unavailable: boolean;
   coverage: { pending_blobs: number };
 }
+
+/** A result of a search across Projects: a Project's result, with the Project it belongs to. */
+export interface SearchAcrossResult extends SearchResult {
+  projectId: string;
+}
+
+/** A search across Projects: always full text, so `mode` is `fts` and no semantic provider is asked for. */
+export interface SearchAcrossAnswer {
+  results: SearchAcrossResult[];
+  mode: 'fts';
+  provider_unavailable: false;
+  coverage: { pending_blobs: number };
+}

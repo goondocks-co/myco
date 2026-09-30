@@ -1,5 +1,6 @@
 import { registeredObjectKeySql } from './blob-objects.js';
 import type { BlobStore, RelationalStore } from './adapters.js';
+import { projectsBoundOnce, type ProjectSet } from '../read/scope.js';
 
 /** Text chunks stay below the hosted store's row bound, including four-byte UTF-8 characters. */
 export const SEARCH_CHUNK_CHARS = 64 * 1024;
@@ -11,10 +12,13 @@ const REFERENCED = `EXISTS (SELECT 1 FROM prompt_batches p WHERE p.project_id = 
   OR EXISTS (SELECT 1 FROM responses r WHERE r.project_id = q.project_id AND r.blob_key = q.blob_key)
   OR EXISTS (SELECT 1 FROM plans p WHERE p.project_id = q.project_id AND p.blob_key = q.blob_key)`;
 
-export async function pendingSearchBlobs(db: RelationalStore, projectId?: string): Promise<number> {
+/** The referenced text blobs the full-text index has not finished: every Project's, one Project's, or a set's. */
+export async function pendingSearchBlobs(db: RelationalStore, projects?: string | ProjectSet): Promise<number> {
+  const scoped = projects === undefined ? null
+    : typeof projects === 'string' ? { sql: 'q.project_id = ?', params: [projects] } : projectsBoundOnce(projects, 'q');
   const row = await db.prepare(`SELECT COUNT(*) AS n FROM search_blob_queue q
-    WHERE q.complete = 0 AND (${REFERENCED})${projectId === undefined ? '' : ' AND q.project_id = ?'}`)
-    .bind(...(projectId === undefined ? [] : [projectId])).first<{ n: number }>();
+    WHERE q.complete = 0 AND (${REFERENCED})${scoped === null ? '' : ` AND ${scoped.sql}`}`)
+    .bind(...(scoped?.params ?? [])).first<{ n: number }>();
   return row?.n ?? 0;
 }
 
