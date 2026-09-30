@@ -57,7 +57,7 @@ const adminRequests = (asked: readonly string[]): string[] => asked.filter((line
 describe('the dashboard for a member who is not an admin', () => {
   const PAGES = [
     '/projects', '/p/live', '/sessions', '/p/live/sessions', '/p/live/sessions/s1', '/p/live/sessions/s1?raw=transcript', '/knowledge', '/knowledge/plans',
-    '/p/live/knowledge', '/p/live/knowledge/plans', '/p/live/knowledge/map', '/p/live/spores/sp1', '/p/live/plans/k1', '/p/live/runs',
+    '/p/live/knowledge', '/p/live/knowledge/plans', '/p/live/knowledge/map', '/p/live/spores/sp1', '/p/live/plans/k1', '/p/live/runs', '/work', '/p/live/work', '/p/live/work/runs/r1',
     '/me/machines', '/people', '/settings', '/settings/models', '/settings/capture', '/settings/backups', '/settings/access', '/p/live/settings', '/status/health',
     '/p/live/access', '/access', '/status', '/measures', '/settings?tab=secrets', '/operations', '/notifications',
   ];
@@ -70,7 +70,8 @@ describe('the dashboard for a member who is not an admin', () => {
     it(`asks no admin route on ${page}`, async () => {
       const asked = server(ROUTES_ANSWERED);
       mount(page);
-      await screen.findByRole('navigation', { name: 'Pages' });
+      // A run's panel is modal, which hides the page behind it from the accessibility tree.
+      await screen.findByRole('navigation', { name: 'Pages', hidden: true });
       // Let every query the page mounts go out before reading what it asked.
       await new Promise((resolve) => setTimeout(resolve, 50));
       expect(asked.length).toBeGreaterThan(1);

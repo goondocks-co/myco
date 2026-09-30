@@ -45,6 +45,7 @@ const PLANTED = [
   '<span className="text-[10px] text-xs" />',
   '<span className="mt-[7px] before:left-[-5px] gap-[2px] -translate-y-[1px] mx-auto min-h-[60vh] max-w-[600px] underline-offset-[3px] p-s4" />',
   '<div className="w-[152px] lg:grid-cols-[208px_minmax(0,1fr)] grid-rows-[auto_1fr]" />',
+  '<a className="hover:underline-offset-[3px] decoration-[1.5px]" />',
   "import { Panel } from '../components/ui/panel';",
   "const lazy = import('../components/ui/panel');",
 ].join('\n');
@@ -62,6 +63,7 @@ const PLANTED_COUNTS = {
   'small-text': 2,
   'arbitrary-spacing': 4,
   'arbitrary-layout': 4,
+  'arbitrary-decoration': 3,
   'retired-import': 2,
 };
 

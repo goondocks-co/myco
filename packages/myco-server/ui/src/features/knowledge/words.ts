@@ -125,25 +125,28 @@ export function sporeTags(tags: string | null): string[] {
   return tags.split(',').map((t) => t.trim()).filter((t) => t.length > 0);
 }
 
-/** What wrote a spore, as the stored author says: one of Myco's runs, a member, or an access key. */
+/** What wrote a spore, by the kind the server names: one of Myco's runs, a member, Myco 1.4 before an import, or an access key. */
 export type SporeAuthor =
   | { kind: 'run'; runId: string }
   | { kind: 'member'; memberId: string }
+  | { kind: 'imported' }
   | { kind: 'key' }
   | { kind: 'unknown' };
 
-/** A run id as the harness mints it, a member id as join mints it, and an access key's id. */
-const RUN_PREFIX = 'run_';
-const MEMBER_PREFIX = 'mem_';
-const KEY_PREFIX = 'eg_';
-
-export function sporeAuthor(author: string | null): SporeAuthor {
-  if (author === null || author === '') return { kind: 'unknown' };
-  if (author.startsWith(RUN_PREFIX)) return { kind: 'run', runId: author };
-  if (author.startsWith(MEMBER_PREFIX)) return { kind: 'member', memberId: author };
-  if (author.startsWith(KEY_PREFIX)) return { kind: 'key' };
-  return { kind: 'unknown' };
+/** The writer of a spore from its `author` and the `authorKind` the server read it as. */
+export function sporeAuthor(spore: { author: string | null; authorKind?: 'run' | 'member' | 'imported' | 'grant' | null }): SporeAuthor {
+  const { author, authorKind } = spore;
+  if (author === null || author === '' || authorKind == null) return { kind: 'unknown' };
+  switch (authorKind) {
+    case 'run': return { kind: 'run', runId: author };
+    case 'member': return { kind: 'member', memberId: author };
+    case 'imported': return { kind: 'imported' };
+    case 'grant': return { kind: 'key' };
+  }
 }
+
+/** How a spore imported from Myco 1.4 reads where its writer is named. */
+export const IMPORTED_AUTHOR_WORDS = 'Imported from Myco 1.4';
 
 /** A member who wrote a spore, by name: Myco for its own account, else their label when it names them, else null. */
 export function authorName(memberId: string, members: ReadonlyArray<{ id: string; label: string | null }> | undefined): string | null {

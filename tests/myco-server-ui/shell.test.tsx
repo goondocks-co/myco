@@ -162,7 +162,7 @@ describe('the nav', () => {
     server(signedIn());
     mount('/p/alpha/sessions');
     const pages = await screen.findByRole('navigation', { name: 'Pages' });
-    expect(within(pages).getAllByRole('link').map((a) => a.textContent)).toEqual(['Today', 'Sessions', 'Knowledge', 'Agent runs', 'Project settings']);
+    expect(within(pages).getAllByRole('link').map((a) => a.textContent)).toEqual(['Today', 'Sessions', 'Knowledge', 'Myco’s work', 'Project settings']);
     expect(within(pages).getByRole('link', { name: 'Sessions' }).getAttribute('aria-current')).toBe('page');
     expect(within(pages).getByRole('link', { name: 'Project settings' }).getAttribute('href')).toBe('/p/alpha/settings');
     await waitFor(() => expect(filterItems()).toHaveLength(2));
@@ -223,7 +223,7 @@ describe('the nav', () => {
     server(signedIn(MEMBER));
     mount('/p/alpha');
     const pages = await screen.findByRole('navigation', { name: 'Pages' });
-    expect(within(pages).getAllByRole('link').map((a) => a.textContent)).toEqual(['Today', 'Sessions', 'Knowledge', 'Agent runs']);
+    expect(within(pages).getAllByRole('link').map((a) => a.textContent)).toEqual(['Today', 'Sessions', 'Knowledge', 'Myco’s work']);
     await waitFor(() => expect(filterItems()).toHaveLength(2));
     expect(screen.queryByRole('navigation', { name: 'Admin' })).toBeNull();
     const nav = screen.getByRole('complementary', { name: 'Navigation' });
@@ -235,8 +235,8 @@ describe('the nav', () => {
     window.localStorage.setItem('myco-last-project', 'beta');
     mount('/settings');
     const pages = await screen.findByRole('navigation', { name: 'Pages' });
-    expect(within(pages).getByRole('link', { name: 'Agent runs' }).getAttribute('href')).toBe('/p/beta/runs');
     // A page with a form across every project leads there while the path names no project.
+    expect(within(pages).getByRole('link', { name: 'Myco’s work' }).getAttribute('href')).toBe('/work');
     expect(within(pages).getByRole('link', { name: 'Sessions' }).getAttribute('href')).toBe('/sessions');
     expect(within(pages).getByRole('link', { name: 'Knowledge' }).getAttribute('href')).toBe('/knowledge');
     expect([...pages.querySelectorAll('a[aria-current="page"]')]).toEqual([]);
@@ -278,7 +278,7 @@ describe('the project filter', () => {
   });
 
   it('works out every link from the path and the query string', () => {
-    expect([projectOf('/p/a%2Fb/sessions/s1'), projectOf('/settings'), pageSuffix('/p/x'), pageSuffix('/p/x/runs/r1')]).toEqual(['a/b', null, '', '/runs']);
+    expect([projectOf('/p/a%2Fb/sessions/s1'), projectOf('/settings'), pageSuffix('/p/x'), pageSuffix('/p/x/work/runs/r1')]).toEqual(['a/b', null, '', '/work/runs']);
     expect(keptFilters('?tab=plans&q=fix&turn=t1&state=open&offset=25&type=gotcha')).toBe('?q=fix&state=open&type=gotcha');
     expect(keptFilters('?tab=plans')).toBe('');
     // From a record, a switch leads to the list the record belongs to, filters kept.
@@ -291,7 +291,10 @@ describe('the project filter', () => {
     expect(clearProjectHref({ pathname: '/p/x/knowledge/plans', search: '?q=fix' })).toBe('/knowledge/plans?q=fix');
     expect(clearProjectHref({ pathname: '/p/x/spores/sp1', search: '' })).toBe('/knowledge');
     expect(clearProjectHref({ pathname: '/p/x/knowledge/map', search: '' })).toBeNull();
-    expect(clearProjectHref({ pathname: '/p/x/runs', search: '?q=fix' })).toBeNull();
+    // A run leads back to Myco's work: under the project on a switch, across every project on a clear.
+    expect(switchProjectHref({ pathname: '/p/x/work/runs/r1', search: '?window=today&outcome=map' }, 'y')).toBe('/p/y/work?window=today&outcome=map');
+    expect(clearProjectHref({ pathname: '/p/x/work', search: '?q=fix' })).toBe('/work?q=fix');
+    expect(clearProjectHref({ pathname: '/p/x/work/runs/r1', search: '' })).toBe('/work');
     expect(clearProjectHref({ pathname: '/settings', search: '' }, { '/sessions': '/sessions' })).toBeNull();
   });
 
@@ -317,14 +320,14 @@ describe('the page titles', () => {
   it('names every page under a project and every server page, and says not found for the rest', () => {
     expect([
       titleOf('/p/x'), titleOf('/p/x/'), titleOf('/p/x/sessions'), titleOf('/p/x/sessions/abc'), titleOf('/p/x/plans/k1'),
-      titleOf('/p/x/knowledge'), titleOf('/p/x/spores/sp1'), titleOf('/p/x/runs/r1'), titleOf('/p/x/settings'), titleOf('/p/x/nope'),
+      titleOf('/p/x/knowledge'), titleOf('/p/x/spores/sp1'), titleOf('/p/x/work/runs/r1'), titleOf('/p/x/settings'), titleOf('/p/x/nope'),
       titleOf('/'), titleOf('/projects'), titleOf('/status/health'), titleOf('/people'), titleOf('/me/machines'), titleOf('/settings'), titleOf('/settings/models'), titleOf('/nope'),
-      titleOf('/knowledge'), titleOf('/knowledge/plans'),
+      titleOf('/knowledge'), titleOf('/knowledge/plans'), titleOf('/work'), titleOf('/p/x/work'),
     ]).toEqual([
       'Today', 'Today', 'Sessions', 'Sessions', 'Knowledge',
-      'Knowledge', 'Knowledge', 'Agent runs', 'Project settings', 'Not found',
+      'Knowledge', 'Knowledge', 'Myco’s work', 'Project settings', 'Not found',
       'Today', 'Projects', 'Health', INVITE_CONTROLS.page, 'My machines', 'Settings', 'Settings', 'Not found',
-      'Knowledge', 'Knowledge',
+      'Knowledge', 'Knowledge', 'Myco’s work', 'Myco’s work',
     ]);
     // A page whose suffix runs over two segments is found whole, and a project switch keeps it.
     expect([pageSuffix('/p/x/knowledge/map'), pageSuffix('/p/x/knowledge/map/'), titleOf('/p/x/knowledge/map'), pageSuffix('/p/x/knowledge'), pageSuffix('/p/x/knowledge/plans')])

@@ -407,6 +407,30 @@ describe('the session reading page', () => {
     expect(rawIdsInPage()).toEqual([]);
   });
 
+  it('copies the resume command the server words, verbatim, and offers none when the session can’t be resumed', async () => {
+    const line = "cd '/Users/ada/it'\\''s repo' && claude --resume 0199a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a5b";
+    const copied: string[] = [];
+    const clipboard = Object.getOwnPropertyDescriptor(navigator, 'clipboard');
+    Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: async (text: string) => { copied.push(text); } } });
+    try {
+      server(routes({ '/api/projects/x/sessions/s1': () => detail({ title: 'Flaky test port collision fixed' }, { resume: { command: 'claude --resume 0199a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a5b', line } }) }));
+      mount('/p/x/sessions/s1');
+      const facts = await screen.findByRole('complementary', { name: 'About this session' });
+      const copy = await within(facts).findByRole('button', { name: 'Copy resume command' });
+      expect(copy.closest('[data-facts]')).not.toBeNull();
+      fireEvent.click(copy);
+      await waitFor(() => expect(copied).toEqual([line]));
+      expect(facts.textContent).not.toContain('claude --resume');
+      cleanup();
+      server(routes({ '/api/projects/x/sessions/s1': () => detail({ title: 'Flaky test port collision fixed' }, { resume: null }) }));
+      mount('/p/x/sessions/s1');
+      await screen.findByRole('button', { name: 'Copy session id' });
+      expect(screen.queryByRole('button', { name: 'Copy resume command' })).toBeNull();
+    } finally {
+      if (clipboard === undefined) Reflect.deleteProperty(navigator, 'clipboard'); else Object.defineProperty(navigator, 'clipboard', clipboard);
+    }
+  });
+
   it('says what came of the session: its spores, and each run with whether the Deployment holds a record of its reading', async () => {
     server(routes());
     mount('/p/x/sessions/s1');
@@ -433,7 +457,7 @@ describe('the session reading page', () => {
       expect(run.textContent).toContain('No record of what it read');
       expect(run.textContent).not.toMatch(/read nothing/i);
     }
-    expect(within(runs[3]!).getByRole('link').getAttribute('href')).toBe('/p/x/runs/run_0ld7171e00');
+    expect(within(runs[3]!).getByRole('link').getAttribute('href')).toBe('/p/x/work/runs/run_0ld7171e00');
     expect(rawIdsInPage()).toEqual([]);
   });
 
@@ -690,7 +714,7 @@ describe('the session reading page', () => {
     expect(line.textContent).toContain('In progress');
     expect(line.textContent).toContain('1 of 2 items done');
     expect(line.textContent).toContain('updated 1 h ago');
-    expect(within(line).getByRole('link', { name: 'Ship the thing' }).getAttribute('href')).toBe('/p/x/plans/plan-1?session=s1');
+    expect(within(line).getByRole('link', { name: 'Ship the thing' }).getAttribute('href')).toBe('/p/x/plans/plan-1');
   });
 
   it('folds the transcript, context and attachments into Raw data, links the transcript by piece, and never fetches its bytes', async () => {

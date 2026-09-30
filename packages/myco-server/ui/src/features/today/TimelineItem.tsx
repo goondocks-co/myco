@@ -63,7 +63,7 @@ export function KickerSep() {
 /** A headline that opens its record: ink, underlined on hover, never the link colour. */
 export function TitleLink({ to, children }: { to: string; children: ReactNode }) {
   return (
-    <RouterLink to={to} className={cn('rounded-chip hover:underline hover:decoration-line-strong hover:underline-offset-[3px]', focusRing)}>
+    <RouterLink to={to} className={cn('rounded-chip hover:underline hover:decoration-line-strong hover:underline-offset-3', focusRing)}>
       {children}
     </RouterLink>
   );

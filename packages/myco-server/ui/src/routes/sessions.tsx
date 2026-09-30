@@ -35,7 +35,7 @@ function SessionRoute() {
   if (!known || projectId === null) return <NotFound />;
   const tab = params.get('tab');
   const plan = params.get('plan');
-  if (tab === 'plans' && plan !== null && plan !== '') return <Navigate to={planPagePath(projectId, { planKey: plan, sessionId })} replace />;
+  if (tab === 'plans' && plan !== null && plan !== '') return <Navigate to={planPagePath(projectId, { planKey: plan })} replace />;
   if (isRawSection(tab)) {
     const moved = new URLSearchParams(params);
     moved.delete('tab');

@@ -1,11 +1,9 @@
 import { useMemo } from 'react';
 import { useInfiniteQuery, useQueries, useQuery } from '@tanstack/react-query';
-import type { SearchAcrossAnswer } from '../../../src/read/search-types';
 import type {
-  PlanBoardPage, PlanBoardRow, PlanFields, ProjectPlanPage, SporeArticleAnswer, SporeFacets, SporeStreamPage, SporeStreamRow,
+  PlanBoardPage, PlanBoardRow, PlanFields, PlanPageAnswer, SporeArticleAnswer, SporeFacets, SporeStreamPage, SporeStreamRow,
 } from '../features/knowledge/wire';
-import { ApiError, fetchJson } from '../lib/api';
-import type { PlanRow } from './use-sessions';
+import { fetchJson } from '../lib/api';
 
 const seg = (value: string) => encodeURIComponent(value);
 
@@ -91,21 +89,28 @@ export function useSporeNeighbours(projectId: string, ids: readonly string[]) {
 /** How many plans a board column reads at a time. */
 export const PLAN_COLUMN_PAGE = 8;
 
-/** One column of the plans board: one status, newest edit first, a page at a time. */
-export function usePlanColumn(projectId: string | null, status: string, enabled: boolean) {
+/**
+ * One column of the plans board: one status, newest edit first, a page at a
+ * time, narrowed to the plans whose title or text match `q` when it is given.
+ * The first page counts the plans of every status under the same filters, so
+ * the column shows its total whatever is loaded.
+ */
+export function usePlanColumn(projectId: string | null, status: string, q: string | null) {
   const params = new URLSearchParams({ status, limit: String(PLAN_COLUMN_PAGE) });
   if (projectId !== null) params.set('project', projectId);
+  if (q !== null && q !== '') params.set('q', q);
   const path = `/api/plans?${params}`;
   const query = useInfiniteQuery({
     queryKey: ['plans', path],
     initialPageParam: null as string | null,
-    enabled,
     queryFn: ({ pageParam, signal }) => fetchJson<PlanBoardPage>(pageParam === null ? path : `${path}&cursor=${seg(pageParam)}`, signal),
     getNextPageParam: (last) => last.cursor ?? undefined,
   });
   const rows = useMemo(() => [...new Map((query.data?.pages.flatMap((page) => page.plans) ?? []).map((row) => [`${row.projectId}/${row.planKey}`, row])).values()], [query.data]);
   return {
     rows: rows as PlanBoardRow[],
+    /** How many plans of this status the filters admit; undefined until the first page is read. */
+    total: query.data?.pages[0]?.totals?.[status] ?? (query.data === undefined ? undefined : 0),
     isPending: query.isPending,
     error: query.error,
     hasMore: query.hasNextPage,
@@ -115,65 +120,15 @@ export function usePlanColumn(projectId: string | null, status: string, enabled:
   };
 }
 
-/** How many plans one column's search lists at most: the search's own default cap, asked for explicitly. */
-export const PLAN_SEARCH_CAP = 20;
-
-/** The plans of one status whose words match, across every project or within one: the search's own, full text. */
-export function usePlanSearch(projectId: string | null, status: string, q: string, enabled: boolean) {
-  const params = new URLSearchParams({ q, type: 'plan', status, limit: String(PLAN_SEARCH_CAP) });
-  if (projectId !== null) params.set('project', projectId);
-  const path = `/api/search?${params}`;
-  return useQuery({
-    queryKey: ['search', 'plans', path],
-    enabled,
-    queryFn: ({ signal }) => fetchJson<SearchAcrossAnswer>(path, signal),
-  });
+/** Where a plan's page is. */
+export function planPagePath(projectId: string, plan: { planKey: string }): string {
+  return `/p/${seg(projectId)}/plans/${seg(plan.planKey)}`;
 }
 
-/** Where a plan's page is. The session that wrote it rides along, so the page reads the plan in one request. */
-export function planPagePath(projectId: string, plan: { planKey: string; sessionId: string | null }): string {
-  const base = `/p/${seg(projectId)}/plans/${seg(plan.planKey)}`;
-  return plan.sessionId === null ? base : `${base}?${new URLSearchParams({ session: plan.sessionId })}`;
-}
-
-/** A plan as its page reads it: the plan, and the session that wrote it. */
-export type PlanWithSession = Omit<PlanFields, 'tags'> & { tags: string[] };
-
-/** How many plans one read of a project's list asks for while looking for a plan. */
-const PLAN_WALK_PAGE = 200;
-
-/**
- * One plan. The session a link names is asked for its plans first; a link
- * without one, or one naming the wrong session, has the project's plans read a
- * page at a time until the plan is found. A plan the project does not hold
- * answers 404.
- */
-export function usePlan(projectId: string, planKey: string, sessionHint: string | null) {
+/** One plan, with its tags, from `GET /api/projects/{p}/plans/{planKey}`. A plan the project does not hold answers 404. */
+export function usePlan(projectId: string, planKey: string) {
   return useQuery({
-    queryKey: ['plan', projectId, planKey, sessionHint],
-    queryFn: async ({ signal }): Promise<PlanWithSession> => {
-      if (sessionHint !== null) {
-        try {
-          const page = await fetchJson<{ rows: PlanRow[]; cursor: string | null }>(`/api/projects/${seg(projectId)}/sessions/${seg(sessionHint)}/plans?limit=100`, signal);
-          const found = page.rows.find((row) => row.planKey === planKey);
-          // A session's plans carry no tags today; a read that does brings them along.
-          if (found !== undefined) {
-            const tags: unknown = (found as { tags?: unknown }).tags;
-            return { ...found, sessionId: sessionHint, tags: Array.isArray(tags) ? tags.map(String) : [] };
-          }
-        } catch (error) {
-          if (!(error instanceof ApiError && error.status === 404)) throw error;
-        }
-      }
-      const base = `/api/projects/${seg(projectId)}/plans?limit=${PLAN_WALK_PAGE}`;
-      let cursor: string | null = null;
-      do {
-        const page: ProjectPlanPage = await fetchJson<ProjectPlanPage>(cursor === null ? base : `${base}&cursor=${seg(cursor)}`, signal);
-        const found = page.plans.find((row) => row.planKey === planKey);
-        if (found !== undefined) return found;
-        cursor = page.cursor;
-      } while (cursor !== null);
-      throw new ApiError(404, { error: 'not_found' });
-    },
+    queryKey: ['plan', projectId, planKey],
+    queryFn: async ({ signal }): Promise<PlanFields> => (await fetchJson<PlanPageAnswer>(`/api/projects/${seg(projectId)}/plans/${seg(planKey)}`, signal)).plan,
   });
 }

@@ -12,6 +12,7 @@ import { describe, expect, it } from 'bun:test';
 import type * as Ui from '../../packages/myco-server/ui/src/features/sessions/wire.ts';
 import type { SessionAcrossRow, listSessionSummariesAcross } from '../../packages/myco-server/src/read/sessions.ts';
 import type { OutcomeSpore, SessionOutcome, SessionRun, sessionOutcome } from '../../packages/myco-server/src/read/run-reads.ts';
+import type { ResumeCommand } from '../../packages/myco-server/src/core/resume-command.ts';
 
 /** True only when each type is assignable to the other. */
 type Same<A, B> = [A] extends [B] ? ([B] extends [A] ? true : false) : false;
@@ -23,7 +24,8 @@ const SAME: [
   Same<Ui.SessionRun, SessionRun>,
   Same<Ui.SessionOutcome, SessionOutcome>,
   Same<Ui.SessionOutcome, Awaited<ReturnType<typeof sessionOutcome>>>,
-] = [true, true, true, true];
+  Same<Ui.ResumeCommand, ResumeCommand>,
+] = [true, true, true, true, true];
 
 /** `GET /api/sessions`: the page the read across Projects answers, as the handler sends it. */
 type SessionsAnswer = Awaited<ReturnType<typeof listSessionSummariesAcross>>;

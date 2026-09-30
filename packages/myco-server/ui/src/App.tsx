@@ -1,6 +1,5 @@
 import { Navigate, Route, Routes } from 'react-router-dom';
 import { AuthGate } from './components/auth-gate';
-import { AgentRuns } from './pages/AgentRuns';
 import { Join } from './pages/Join';
 import { LinkPage } from './pages/Link';
 import { NotFound } from './pages/NotFound';
@@ -10,6 +9,7 @@ import { knowledgeRoutes } from './routes/knowledge';
 import { sessionRoutes } from './routes/sessions';
 import { Shell } from './routes/Shell';
 import { ResumePendingLink, Today } from './routes/today';
+import { workRoutes } from './routes/work';
 
 export default function App() {
   return (
@@ -25,8 +25,7 @@ export default function App() {
         <Route path="/p/:projectId" element={<Today />} />
         {sessionRoutes}
         {knowledgeRoutes}
-        <Route path="/p/:projectId/runs" element={<AgentRuns />} />
-        <Route path="/p/:projectId/runs/:runId" element={<AgentRuns />} />
+        {workRoutes}
         {adminRoutes}
         <Route path="*" element={<NotFound />} />
       </Route>

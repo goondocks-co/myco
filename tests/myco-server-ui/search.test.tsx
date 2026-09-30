@@ -114,7 +114,7 @@ it('searches every project on request: grouped by kind, each result naming its p
   expect(spore.textContent).toContain('Gotcha');
   expect(spore.textContent).toContain('Myco');
   expect(spore.getAttribute('href')).toBe('/p/proj_6d79636f3a3e1c0b/spores/sp2');
-  expect(screen.getByRole('link', { name: /One filter bar/ }).getAttribute('href')).toBe('/p/two/plans/k1?session=s1');
+  expect(screen.getByRole('link', { name: /One filter bar/ }).getAttribute('href')).toBe('/p/two/plans/k1');
   // A session titled only by the end of its id reads what it says.
   expect(screen.getByRole('link', { name: /Run the parity scenarios/ }).textContent).not.toContain('7f3e2a');
   expect(screen.queryByText('Never shown')).toBeNull();
@@ -229,7 +229,7 @@ it('shows a failed request as a failure and supports retry', async () => {
 });
 
 it('opens a plan on its own page, a reply at its turn, and gives a skill hit no link at all', () => {
-  expect(searchResultPath('a/b', hit({ type: 'plan', id: 'p&1', session_id: 's' }))).toBe('/p/a%2Fb/plans/p%261?session=s');
+  expect(searchResultPath('a/b', hit({ type: 'plan', id: 'p&1', session_id: 's' }))).toBe('/p/a%2Fb/plans/p%261');
   expect(searchResultPath('p', hit({ type: 'plan', id: 'k' }))).toBe('/p/p/plans/k');
   expect(searchResultPath('p', hit({ type: 'response', session_id: 's', prompt_id: 'turn' }))).toBe('/p/p/sessions/s?turn=turn');
   expect(searchResultPath('p', hit({ type: 'skill', id: 'skill' }))).toBeNull();

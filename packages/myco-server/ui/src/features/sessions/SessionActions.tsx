@@ -2,12 +2,13 @@ import { useEffect, useState } from 'react';
 import { CircleStop, PenLine, Trash2 } from 'lucide-react';
 import { useQueryClient } from '@tanstack/react-query';
 import { ConfirmDialog, Link, MoreMenu, type MoreMenuItem } from '../../design';
-import { useRun } from '../../hooks/use-intelligence';
+import { useRunDetail } from '../../hooks/use-work';
 import {
   TITLING_OUTCOME_TEXT, TITLING_WATCH_MS, useDeleteSession, useEndSession, useTitleSession,
   type SessionCounts, type SessionRow,
 } from '../../hooks/use-sessions';
 import { sessionHeadingText } from '../../lib/session-text';
+import { runPath } from '../../routes/nav';
 import { count } from './words';
 
 /** How often the page asks again while a new title is being written. */
@@ -118,7 +119,7 @@ function useRetitle(projectId: string, session: SessionRow) {
   const landed = asked !== null && (session.title !== asked.title || session.summary !== asked.summary);
   const expired = asked !== null && Date.now() - asked.at > TITLING_WATCH_MS;
   // A miss before the run is claimed is kept, not retried; the timer below asks again.
-  const run = useRun(projectId, asked?.runId ?? '', { enabled: asked !== null && !landed && !expired, retry: false });
+  const run = useRunDetail(projectId, asked?.runId ?? '', { enabled: asked !== null && !landed && !expired, retry: false });
   const runStatus = run.data?.run.status ?? null;
   const watching = asked !== null && !landed && !expired && (runStatus === null || !isTerminal(runStatus));
   const runId = asked?.runId ?? null;
@@ -139,7 +140,7 @@ function useRetitle(projectId: string, session: SessionRow) {
     : outcome !== undefined ? TITLING_OUTCOME_TEXT[outcome] : null;
   return {
     note,
-    runHref: asked !== null && !landed ? `/p/${encodeURIComponent(projectId)}/runs/${encodeURIComponent(asked.runId)}` : null,
+    runHref: asked !== null && !landed ? runPath(projectId, asked.runId) : null,
     busy: titling.isPending || watching,
     pending: titling.isPending,
     failed: titling.isError,

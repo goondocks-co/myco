@@ -3,7 +3,7 @@ import { useEffect } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { ApiError, fetchJson, postJson, SignedOutError } from '../lib/api';
 import { usePaged } from './use-paged';
-import type { SessionListPage, SessionListRow, SessionOutcome } from '../features/sessions/wire';
+import type { ResumeCommand, SessionListPage, SessionListRow, SessionOutcome } from '../features/sessions/wire';
 import { isLive, LIVE_WITHIN_MS } from '../features/today/timeline';
 import { LIVE_REFRESH_MS } from './use-work';
 
@@ -65,6 +65,8 @@ export interface SessionResponse {
   release?: ReleaseStatus | null;
   /** What came of the session: the runs that read it or wrote from it, and the spores written from it. */
   outcome: SessionOutcome;
+  /** How to pick the session up again in its agent: `line` is what to paste, the folder entered first. Null when its agent can't resume it. */
+  resume?: ResumeCommand | null;
   projectId: string;
 }
 

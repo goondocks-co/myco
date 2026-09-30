@@ -1,506 +1,396 @@
-import { afterEach, describe, expect, it } from 'bun:test';
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+/**
+ * One run of Myco's work in its panel, and starting a task by hand.
+ *
+ * The panel leads with what came of the run, then what it read and what it
+ * produced, with the technical details folded away; a run with no record of
+ * its reads says so and never says it read nothing. "Run a task" confirms
+ * each task with this week's real spend, is offered to every member, keeps
+ * "Start fresh" for an admin, and words every refusal the server can give.
+ */
+import { afterEach, beforeEach, describe, expect, it, setSystemTime } from 'bun:test';
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { MemoryRouter, useLocation } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 
 import App from '../../packages/myco-server/ui/src/App';
 import { AppearanceProvider } from '../../packages/myco-server/ui/src/providers/appearance';
-
-const ME = { sub: '583231', login: 'octocat', member: { id: 'mem_1', label: 'chris', role: 'admin' as const } };
-const PROJECTS = { projects: [{ projectId: 'x', name: 'Project X', createdAt: 0, sessionCount: 0, lastActivityAt: null }] };
-const NOW = Date.now();
-
-const run = (over: Record<string, unknown> = {}) => ({
-  id: 'r1', agentId: 'agent_1', task: 'digest', status: 'completed', provider: 'anthropic', model: 'claude', startedAt: NOW - 60_000, resumedAt: null, completedAt: NOW,
-  tokensUsed: 1200, costUsd: 0.02, costSource: 'actual', dryRun: false, resumable: false, resumeStatus: null, failed: false, ...over,
-});
-const detail = (over: Record<string, unknown> = {}, phases: unknown = [], reports: unknown[] = [], toolCalls: unknown[] = []) => ({
-  run: { ...run(over), instruction: null, sessionRef: null, actualCostUsd: null, estimatedCostUsd: null, reasoningLevel: null, resumeMode: null, resumeAttempts: 0, error: null, dispatchedBy: null, usageData: null, actionsTaken: null, ...over },
-  phases, reports, toolCalls, projectId: 'x',
-});
+import { forgetProject } from '../../packages/myco-server/ui/src/lib/project-memory';
+import { LIVE_REFRESH_MS } from '../../packages/myco-server/ui/src/hooks/use-work';
+import { dailyLimitWords } from '../../packages/myco-server/ui/src/features/work/words';
+import { rawIdsIn } from '../helpers/raw-ids';
+import {
+  ADMIN, BUILDBOX_ID, HOUR, MEMBER, MEMBERS, MINUTE, NOW, P, PROJECTS, runDetail, S1, S2, sessionAnswer, STUDIO_ID, TASK_RUNS, taskRunsFor, WEEK_SPORES, WEEK_WORK,
+} from '../helpers/work-fixture';
+import type { WorkAnswer } from '../../packages/myco-server/ui/src/features/today/wire';
 
 const originalFetch = globalThis.fetch;
-afterEach(() => { cleanup(); globalThis.fetch = originalFetch; });
+let client: QueryClient;
 
-/** One stubbed endpoint; it is handed the request's own options so a test can read what the page asked for. */
-type Endpoint = (init?: RequestInit) => Response | Promise<Response>;
+beforeEach(() => { setSystemTime(new Date(NOW)); });
+afterEach(() => {
+  cleanup();
+  client?.clear();
+  globalThis.fetch = originalFetch;
+  setSystemTime();
+  forgetProject();
+});
 
-function server(routes: Record<string, Endpoint>): void {
+type Endpoint = (url: URL, init?: RequestInit) => Response;
+interface Sent { path: string; body: unknown }
+
+function server(routes: Record<string, Endpoint>): { asked: URL[]; sent: Sent[] } {
+  const asked: URL[] = [];
+  const sent: Sent[] = [];
   globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
     const href = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
-    const pathname = new URL(href, 'https://s').pathname;
-    const endpoint = routes[pathname];
-    return endpoint === undefined ? new Response(null, { status: 404 }) : endpoint(init);
+    const url = new URL(href, 'https://s');
+    asked.push(url);
+    if ((init?.method ?? 'GET') !== 'GET') sent.push({ path: url.pathname, body: init?.body ? JSON.parse(String(init.body)) : undefined });
+    return routes[url.pathname]?.(url, init) ?? new Response(null, { status: 404 });
   }) as typeof fetch;
+  return { asked, sent };
 }
 
-const base = (extra: Record<string, Endpoint> = {}) => ({
-  '/auth/me': () => Response.json(ME),
+const learning = TASK_RUNS['extract-curate']!;
+const mapRuns = TASK_RUNS['canopy-map']!;
+
+/** The learning run Lin started, which recorded reading one session and wrote four spores. */
+const READ_AND_WROTE = runDetail(learning[2]!, {
+  read: { sessions: [{ sessionId: S2, title: 'Flaky test port collision fixed', readAt: NOW - 5 * HOUR - 7 * MINUTE }], total: 1, recorded: true },
+  produced: { spores: { total: 4, items: WEEK_SPORES.slice(2, 6).map((s) => ({ id: s.id, observationType: s.observationType, status: 'active', agentLine: s.agentLine, sessionId: S2, createdAt: s.createdAt, runId: 'run_a2c4e6f801' })) } },
+  toolCalls: [{ tool: 'myco_run_sessions' }, { tool: 'myco_spores' }, { tool: 'myco_spores', failure: { code: 'refused', message: 'no' } }],
+  reports: [{ action: 'summary', summary: 'Saved 4 spores from 1 session.', createdAt: NOW - 5 * HOUR }],
+});
+
+const routes = (over: { who?: unknown; detail?: Record<string, () => Response>; work?: WorkAnswer; capabilities?: Record<string, boolean>; dispatch?: Endpoint } = {}): Record<string, Endpoint> => ({
+  '/auth/me': () => Response.json(over.who ?? ADMIN),
   '/api/projects': () => Response.json(PROJECTS),
-  '/api/agents': () => Response.json({ agents: [{ id: 'agent_1', name: 'Myco agent', provider: 'anthropic', model: 'claude', enabled: true }] }),
-  '/api/projects/x/activity': () => Response.json({ items: [], stats: { sessions: 0, openSessions: 0, sessionsLast7d: 0, prompts: 0, toolCalls: 0, plans: 0, attachments: 0, lastActivityAt: null } }),
-  '/api/projects/x/plans': () => Response.json({ plans: [], maxPage: 200 }),
-  ...extra,
+  '/api/members': () => Response.json(MEMBERS),
+  '/api/attention': () => Response.json({ items: [], unavailable: [] }),
+  '/api/work': () => Response.json(over.work ?? WEEK_WORK),
+  '/api/spores': () => Response.json({ spores: WEEK_SPORES, total: WEEK_SPORES.length, maxPage: 200 }),
+  [`/api/projects/${P}/runs`]: (url) => Response.json({ rows: TASK_RUNS[url.searchParams.get('task') ?? ''] ?? [], cursor: null }),
+  [`/api/projects/${P}/capabilities`]: () => Response.json({ capabilities: over.capabilities ?? { vault_evolution: true, canopy: true, cortex: true } }),
+  [`/api/projects/${P}/sessions/${S1}`]: () => Response.json(sessionAnswer(S1, 'Search box height made uniform on list pages')),
+  [`/api/projects/${P}/sessions/${S2}`]: () => Response.json(sessionAnswer(S2, 'Flaky test port collision fixed')),
+  [`/api/projects/${P}/runs/run_a2c4e6f801`]: () => Response.json(READ_AND_WROTE),
+  ...Object.fromEntries(Object.entries(over.detail ?? {}).map(([path, answer]) => [path, () => answer()])),
+  '/api/harness/dispatch': over.dispatch ?? (() => Response.json({ runId: 'run_new0000001', projectId: P, queued: true })),
 });
 
-function mount(path: string, seed?: (client: QueryClient) => void) {
-  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  seed?.(client);
-  return render(<AppearanceProvider><QueryClientProvider client={client}><MemoryRouter initialEntries={[path]}><App /></MemoryRouter></QueryClientProvider></AppearanceProvider>);
+function Location() {
+  const location = useLocation();
+  return <div data-testid="location">{location.pathname}{location.search}</div>;
 }
 
-describe('Agent runs', () => {
-  it('keeps the status filter and the open run in the URL across opening a run, a refetch and a reload', async () => {
-    const original = window.matchMedia;
-    window.matchMedia = ((query: string) => ({ matches: query.includes('min-width'), media: query, onchange: null, addEventListener: () => {}, removeEventListener: () => {}, addListener: () => {}, removeListener: () => {}, dispatchEvent: () => false })) as typeof window.matchMedia;
-    const asked: string[] = [];
-    globalThis.fetch = (async (input: RequestInfo | URL) => {
-      const url = new URL(typeof input === 'string' ? input : input instanceof URL ? input.href : input.url, 'https://s');
-      asked.push(url.pathname + url.search);
-      const routes = base({
-        '/api/projects/x/runs': () => Response.json({ rows: url.searchParams.get('status') === 'failed' ? [run({ id: 'r2', task: 'canopy-map', status: 'failed', failed: true })] : [run()], cursor: null }),
-        '/api/projects/x/runs/r2': () => Response.json(detail({ id: 'r2', task: 'canopy-map', status: 'failed', failed: true, error: 'the runtime went away' })),
-      }) as Record<string, Endpoint>;
-      return routes[url.pathname]?.() ?? new Response(null, { status: 404 });
-    }) as typeof fetch;
-    let where = '';
-    const Probe = () => { const location = useLocation(); where = location.pathname + location.search; return null; };
-    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-    const tree = (path: string) => <AppearanceProvider><QueryClientProvider client={client}><MemoryRouter initialEntries={[path]}><App /><Probe /></MemoryRouter></QueryClientProvider></AppearanceProvider>;
-    try {
-      render(tree('/p/x/runs'));
-      fireEvent.click(await screen.findByRole('tab', { name: 'Failed' }));
-      await waitFor(() => expect(where).toBe('/p/x/runs?status=failed'));
-      fireEvent.click(await screen.findByRole('row', { name: /canopy-map/ }));
-      await screen.findByText('This run failed');
-      expect(where).toBe('/p/x/runs/r2?status=failed');
-      expect(screen.getByRole('tab', { name: 'Failed', selected: true })).toBeTruthy();
-      // A refetch of every read leaves the filter and the open run where they were.
-      await client.refetchQueries();
-      expect(screen.getByRole('tab', { name: 'Failed', selected: true })).toBeTruthy();
-      expect(screen.getByText('This run failed')).toBeTruthy();
-      expect(where).toBe('/p/x/runs/r2?status=failed');
-      // A reload of that URL opens the same run under the same filter.
-      cleanup();
-      render(tree(where));
-      expect(await screen.findByText('This run failed')).toBeTruthy();
-      expect(screen.getByRole('tab', { name: 'Failed', selected: true })).toBeTruthy();
-      expect(asked.filter((path) => path.startsWith('/api/projects/x/runs?')).at(-1)).toContain('status=failed');
-    } finally { window.matchMedia = original; }
-  });
+function mount(path: string) {
+  client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  return render(<AppearanceProvider><QueryClientProvider client={client}><MemoryRouter initialEntries={[path]}><App /><Location /></MemoryRouter></QueryClientProvider></AppearanceProvider>);
+}
 
-  it('labels partial ACP token evidence while leaving the run total unavailable', async () => {
-    server(base({
-      '/api/projects/x/runs': () => Response.json({ rows: [run({ tokensUsed: null })], cursor: null }),
-      '/api/projects/x/runs/r1': () => Response.json(detail({ provider: 'openai', model: 'gpt-5.6-sol', tokensUsed: null,
-        usageData: JSON.stringify({ inputTokens: 10206, outputTokens: 9, costUsd: null, tokenScope: 'last_response' }) })),
-    }));
-    mount('/p/x/runs/r1');
-    expect(await screen.findByText('Only the last model response reported tokens. The run total is unavailable.')).toBeTruthy();
-    expect(screen.getByText('openai · gpt-5.6-sol')).toBeTruthy();
-  });
+const location = () => screen.getByTestId('location').textContent;
+const panel = () => screen.findByTestId('run-panel');
+const rawIdsInPage = (): string[] => rawIdsIn(document.body, ['[data-testid="location"]']);
 
-  it('queues the selected memory task for this project and opens its actual run', async () => {
-    let request: { method?: string; body: unknown } | undefined;
-    let queued = false;
-    server(base({
-      '/api/projects/x/runs': () => Response.json({ rows: queued ? [run({ id: 'seed_run', task: 'vault-seed', status: 'queued', queuedAt: NOW, heldBy: 'worker', position: 0 })] : [], cursor: null }),
-      '/api/harness/dispatch': (init) => {
-        request = { method: init?.method, body: JSON.parse(String(init?.body)) };
-        queued = true;
-        return Response.json({ runId: 'seed_run', projectId: 'x', queued: true });
-      },
-      '/api/projects/x/runs/seed_run': () => Response.json(detail({ id: 'seed_run', task: 'vault-seed', status: 'queued' })),
-    }));
-    mount('/p/x/runs');
-    fireEvent.change(await screen.findByLabelText('Memory task'), { target: { value: 'vault-seed' } });
-    fireEvent.click(screen.getByRole('button', { name: 'Run task' }));
-    expect(await screen.findByText(/Task queued for a worker/)).toBeTruthy();
-    expect(request).toEqual({ method: 'POST', body: { projectId: 'x', task: 'vault-seed' } });
-    await screen.findByRole('row');
-    fireEvent.click(screen.getByRole('link', { name: 'View run' }));
-    expect(await screen.findByText('seed_run')).toBeTruthy();
-  });
-
-  it('shows the server refusal and permits a deliberate retry', async () => {
-    let attempts = 0;
-    server(base({
-      '/api/projects/x/runs': () => Response.json({ rows: [], cursor: null }),
-      '/api/harness/dispatch': () => { attempts++; return Response.json({ error: 'bad_request', reason: 'this Project is not admitted to that capability' }, { status: 400 }); },
-    }));
-    mount('/p/x/runs');
-    fireEvent.click(await screen.findByRole('button', { name: 'Run task' }));
-    expect((await screen.findByRole('alert')).textContent).toContain('not admitted');
-    expect(screen.queryByRole('link', { name: 'View run' })).toBeNull();
-    expect(attempts).toBe(1);
-    await waitFor(() => expect(screen.getByRole('button', { name: 'Run task' }).hasAttribute('disabled')).toBe(false));
-  });
-
-  it('explains an unchanged result without inventing a run', async () => {
-    server(base({
-      '/api/projects/x/runs': () => Response.json({ rows: [], cursor: null }),
-      '/api/harness/dispatch': () => Response.json({ outcome: 'unchanged' }),
-    }));
-    mount('/p/x/runs');
-    fireEvent.click(await screen.findByRole('button', { name: 'Run task' }));
-    expect(await screen.findByText('The source material is unchanged. No run was created.')).toBeTruthy();
-    expect(screen.queryByRole('link', { name: 'View run' })).toBeNull();
-  });
-
-  it('does not link a run returned for another project', async () => {
-    server(base({
-      '/api/projects/x/runs': () => Response.json({ rows: [], cursor: null }),
-      '/api/harness/dispatch': () => Response.json({ runId: 'wrong_run', projectId: 'other', queued: true }),
-    }));
-    mount('/p/x/runs');
-    fireEvent.click(await screen.findByRole('button', { name: 'Run task' }));
-    expect((await screen.findByRole('alert')).textContent).toContain('Check the run list');
-    expect(screen.queryByRole('link', { name: 'View run' })).toBeNull();
-  });
-
-  it('shows a project that has run nothing as empty, not missing', async () => {
-    server(base({ '/api/projects/x/runs': () => Response.json({ rows: [], cursor: null }) }));
-    mount('/p/x/runs');
-    expect(await screen.findByText(/No runs yet/)).toBeTruthy();
-    expect(screen.queryByText(/not found/i)).toBeNull();
-  });
-
-  it('shows a failed run as failed with its record, and a completed run with none', async () => {
-    server(base({
-      '/api/projects/x/runs': () => Response.json({ rows: [run({ id: 'r_failed', status: 'failed', failed: true }), run()], cursor: null }),
-      '/api/projects/x/runs/r_failed': () => Response.json(detail({ id: 'r_failed', status: 'failed', failed: true, error: 'the model refused', resumeStatus: 'session_expired' }, [
-        { name: 'prepare', status: 'completed', updatedAt: 1, summary: null, turnsUsed: 2, allowedMaxTurns: 5, tokensUsed: 10, costUsd: 0.01, costSource: 'actual', capHit: false, semanticCheckBlocked: false, postConditionFailed: false },
-        { name: 'write', status: 'failed', updatedAt: 2, summary: 'ran out of turns', turnsUsed: null, allowedMaxTurns: null, tokensUsed: null, costUsd: null, costSource: null, capHit: true, semanticCheckBlocked: false, postConditionFailed: false },
-      ], [{ id: 1, runId: 'r_failed', agentId: 'agent_1', action: 'noted', summary: 'a report', details: null, createdAt: NOW }])),
-      '/api/projects/x/runs/r1': () => Response.json(detail()),
-    }));
-    mount('/p/x/runs/r_failed');
-    expect(await screen.findByTestId('failure-record')).toBeTruthy();
-    expect(screen.getByText('the model refused')).toBeTruthy();
-    expect(screen.getByText(/provider session expired/)).toBeTruthy();
-    expect(screen.getByText('turn cap hit')).toBeTruthy();
-    expect(screen.getByText('ran out of turns')).toBeTruthy();
-    expect(screen.getByText('a report')).toBeTruthy();
-    expect(screen.getByText('Myco agent')).toBeTruthy();
-  });
-
-  it('opens a completed run from the list with no failure record', async () => {
-    server(base({
-      '/api/projects/x/runs': () => Response.json({ rows: [run({ id: 'r_failed', status: 'failed', failed: true }), run()], cursor: null }),
-      '/api/projects/x/runs/r1': () => Response.json(detail()),
-    }));
-    mount('/p/x/runs');
-    const rows = await screen.findAllByRole('row');
-    expect(rows.map((r) => r.textContent?.includes('failed'))).toEqual([true, false]);
-    fireEvent.click(rows[1]!);
-    await screen.findByText('No phases recorded.');
-    expect(screen.queryByTestId('failure-record')).toBeNull();
-  });
-
-  it('shows the record of a run that completed but recorded an error', async () => {
-    server(base({
-      '/api/projects/x/runs': () => Response.json({ rows: [run({ failed: true })], cursor: null }),
-      '/api/projects/x/runs/r1': () => Response.json(detail({ failed: true, error: 'a tool refused' })),
-    }));
-    mount('/p/x/runs/r1');
-    expect(await screen.findByTestId('failure-record')).toBeTruthy();
-    expect(screen.getByText('This run recorded an error')).toBeTruthy();
-    expect(screen.getByText('a tool refused')).toBeTruthy();
-  });
-
-  it('reads a run that never called back as having called nothing, and shows what it failed for', async () => {
-    server(base({
-      '/api/projects/x/runs': () => Response.json({ rows: [run({ status: 'failed', failed: true })], cursor: null }),
-      '/api/projects/x/runs/r1': () => Response.json(detail({ status: 'failed', failed: true, error: 'the run ended without its report' })),
-    }));
-    mount('/p/x/runs/r1');
-    expect(await screen.findByTestId('no-tool-calls')).toBeTruthy();
-    expect(screen.getByText('the run ended without its report')).toBeTruthy();
-  });
-
-  it('lists the calls a run made back to the Deployment', async () => {
-    server(base({
-      '/api/projects/x/runs': () => Response.json({ rows: [run()], cursor: null }),
-      '/api/projects/x/runs/r1': () => Response.json(detail({}, [], [], [
-        { tool: 'myco_run_sessions', op: 'material', durationMs: 12, recordedAt: NOW - 2000 },
-        { tool: 'myco_run', op: 'report', durationMs: 3, recordedAt: NOW - 1000 },
-      ])),
-    }));
-    mount('/p/x/runs/r1');
-    const calls = await screen.findByLabelText('Calls back to this Deployment');
-    expect(calls.textContent).toContain('myco_run_sessions');
-    expect(calls.textContent).toContain('report');
-    expect(screen.queryByTestId('no-tool-calls')).toBeNull();
-  });
-
-  it('shows a call the Deployment answered with a failure, and what the failure said', async () => {
-    const said = 'Session capture is incomplete or has errors; retry after its transcripts are fully processed.';
-    server(base({
-      '/api/projects/x/runs': () => Response.json({ rows: [run({ status: 'failed', failed: true })], cursor: null }),
-      '/api/projects/x/runs/r1': () => Response.json(detail({ status: 'failed', failed: true, error: 'the run ended without its artifact' }, [], [], [
-        { tool: 'myco_run_sessions', op: 'material', durationMs: 12, recordedAt: NOW - 2000, failure: { code: 'tool_call_failed', message: said } },
-        { tool: 'myco_run', op: 'report', durationMs: 3, recordedAt: NOW - 1000 },
-      ])),
-    }));
-    mount('/p/x/runs/r1');
-    const calls = await screen.findByLabelText('Calls back to this Deployment');
-    const failed = calls.querySelectorAll('[data-failed="true"]');
-    expect(failed).toHaveLength(1);
-    expect(failed[0]!.textContent).toContain('myco_run_sessions');
-    expect(failed[0]!.textContent).toContain(said);
-  });
-
-  it('tells an unreadable phase record apart from an empty one', async () => {
-    server(base({
-      '/api/projects/x/runs': () => Response.json({ rows: [run()], cursor: null }),
-      '/api/projects/x/runs/r1': () => Response.json(detail({}, null)),
-    }));
-    mount('/p/x/runs/r1');
-    expect(await screen.findByText(/phase record could not be read/)).toBeTruthy();
-  });
-
-  it('answers a run the server does not hold with not found, never forbidden', async () => {
-    server(base({ '/api/projects/x/runs': () => Response.json({ rows: [], cursor: null }) }));
-    mount('/p/x/runs/gone');
-    expect(await screen.findByText(/not found/i)).toBeTruthy();
-    expect(screen.queryByText(/forbidden/i)).toBeNull();
-  });
-
-  it('keeps the section active while a run is open, and only Today active on the project\'s Today', async () => {
-    server(base({ '/api/projects/x/runs': () => Response.json({ rows: [run()], cursor: null }), '/api/projects/x/runs/r1': () => Response.json(detail()) }));
-    mount('/p/x/runs/r1');
-    await screen.findByText('Facts');
-    const nav = screen.getByRole('navigation', { name: 'Pages' });
-    const active = [...nav.querySelectorAll('a[aria-current="page"]')].map((a) => a.textContent);
-    expect(active).toEqual(['Agent runs']);
-  });
-
-  it('marks Today alone active on the project\'s Today', async () => {
-    server(base());
-    mount('/p/x');
-    await screen.findByRole('heading', { level: 1 });
-    const nav = screen.getByRole('navigation', { name: 'Pages' });
-    expect([...nav.querySelectorAll('a[aria-current="page"]')].map((a) => a.textContent)).toEqual(['Today']);
-  });
-});
-
-/**
- * Who ran a run, on the run.
- *
- * A row names a worker only while it holds one, so a run that names none reads
- * as not recorded rather than as a run no worker drove. A name comes from the
- * worker record when it still holds an observation of that credential, and the
- * credential itself otherwise. A queued run says what is known about the
- * workers it waits on, and never says why this run in particular waits.
- */
-const WORKER = {
-  credentialId: 'mt_worker', machineId: 'sirkirby-mbp', offers: [{ id: 'codex', authenticated: true }], capabilities: [],
-  lastReason: 'claimed', lastSeenAt: NOW - 3_000, busy: null, eligible: true, recent: true,
-};
-const statusWith = (over: Record<string, unknown> = {}) => () => Response.json({
-  schema: { expected: 44, found: 44, matches: true },
-  capabilities: [],
-  workers: { available: true, workersBusy: 0, runsQueued: 0, recentWithinMs: 90_000, fleet: [WORKER], ...over },
-  projects: [],
-});
-
-describe('the worker behind a run', () => {
-  it('names the machine holding a running run, its harness and its lease', async () => {
-    const held = { status: 'running', completedAt: null, harness: 'codex', leasedBy: 'mt_worker', leaseExpiresAt: NOW + 62_000 };
-    server(base({
-      '/api/status': statusWith(),
-      '/api/projects/x/runs': () => Response.json({ rows: [run(held)], cursor: null }),
-      '/api/projects/x/runs/r1': () => Response.json(detail(held)),
-    }));
-    mount('/p/x/runs/r1');
-    expect(await screen.findByText('sirkirby-mbp')).toBeTruthy();
-    expect(screen.getByText('Codex')).toBeTruthy();
-    expect(screen.getByText(/^expires in \d+s$/)).toBeTruthy();
-    // The dispatch credential is the harness child's, and is labelled as that.
-    expect(screen.getByText('Run credential')).toBeTruthy();
-    expect(screen.queryByText('Credential')).toBeNull();
-  });
-
-  it('says a finished run records no worker, without claiming none ran it, and keeps the harness', async () => {
-    const closed = { status: 'completed', harness: 'codex', leasedBy: null, leaseExpiresAt: null };
-    server(base({
-      '/api/status': statusWith(),
-      '/api/projects/x/runs': () => Response.json({ rows: [run(closed)], cursor: null }),
-      '/api/projects/x/runs/r1': () => Response.json(detail(closed)),
-    }));
-    mount('/p/x/runs/r1');
-    expect(await screen.findByText('not recorded')).toBeTruthy();
-    expect(screen.getByText('Codex')).toBeTruthy();
-    expect(screen.queryByText('Lease')).toBeNull();
-    expect(screen.queryByText(/no worker ran/i)).toBeNull();
-  });
-
-  it('names the machine a finished run ran on, from the worker record or the machine its credential names', async () => {
-    for (const [worker, name] of [
-      [{ credentialId: 'mt_worker', machineId: 'sirkirby-mbp' }, 'sirkirby-mbp'],
-      [{ credentialId: 'mt_rotated_away', machineId: 'local_vm' }, 'local_vm'],
-    ] as const) {
-      const closed = { status: 'completed', harness: 'codex', leasedBy: null, leaseExpiresAt: null, worker };
-      server(base({
-        '/api/status': statusWith(),
-        '/api/projects/x/runs': () => Response.json({ rows: [run(closed)], cursor: null }),
-        '/api/projects/x/runs/r1': () => Response.json(detail(closed)),
-      }));
-      mount('/p/x/runs/r1');
-      expect(await screen.findByText(name)).toBeTruthy();
-      expect(screen.getByText('Ran on')).toBeTruthy();
-      expect(screen.queryByText('not recorded')).toBeNull();
-      // A run that has ended holds no lease, so no holder record claims one.
-      expect(screen.queryByText('The worker holding this run')).toBeNull();
-      cleanup();
+describe('a run’s panel', () => {
+  it('leads with what came of the run, then what it read and produced, all as links, with the details folded away', async () => {
+    server(routes());
+    mount(`/p/${P}/work/runs/run_a2c4e6f801?window=week`);
+    const open = await panel();
+    expect((await within(open).findByRole('heading', { level: 2 })).textContent).toBe('Learned 4 spores from 1 session');
+    expect((await within(open).findByText('started by Lin')).getAttribute('data-started-by')).toBe('');
+    expect(open.textContent).toContain('Learning run · Myco');
+    // What the run said it did leads, in its own words, right under the headline.
+    const report = open.querySelector('[data-run-report]') as HTMLElement;
+    expect(report.textContent).toBe('Saved 4 spores from 1 session.');
+    expect(report.closest('header')).not.toBeNull();
+    expect(open.textContent).toContain('took 5 min');
+    const read = within(open).getByRole('region', { name: 'What it read' });
+    expect(within(read).getByRole('link', { name: 'Flaky test port collision fixed' }).getAttribute('href')).toBe(`/p/${P}/sessions/${S2}`);
+    expect(read.textContent).toContain('4 spores came from it');
+    expect(read.querySelector('[data-no-record]')).toBeNull();
+    const produced = within(open).getByRole('region', { name: 'What it produced' });
+    const spores = within(produced).getAllByRole('link');
+    expect(spores).toHaveLength(4);
+    expect(spores[0]!.getAttribute('href')).toBe(`/p/${P}/spores/decision-3c4d5e6f`);
+    expect(produced.textContent).toContain('4 spores');
+    // Technical details start folded: one line says the most of it, and nothing of the facts is drawn.
+    const technical = open.querySelector('[data-run-technical]') as HTMLElement;
+    expect(technical.textContent).toContain('Ada’s studio Mac · Codex · 20K tokens · $0.50');
+    expect(technical.querySelector('[data-facts]')).toBeNull();
+    expect(rawIdsInPage()).toEqual([]);
+    fireEvent.click(within(technical).getByRole('button', { name: /Technical details/ }));
+    const facts = technical.querySelector('[data-facts]') as HTMLElement;
+    for (const words of ['Ran onAda’s studio Mac', 'AgentCodex', 'ModelNot recorded for this run', 'Started byLin', 'Tokens20,000', 'The agent’s estimate, not a bill', '3 calls to Myco, 1 refused']) {
+      expect(facts.textContent).toContain(words);
     }
+    expect(within(facts).getByRole('button', { name: 'Copy run id' })).toBeTruthy();
+    expect(technical.textContent).not.toContain('Saved 4 spores from 1 session.');
+    // The id is only ever copied: nothing outside the facts shows it.
+    expect(rawIdsInPage()).toEqual([]);
   });
 
-  it('names the holder\'s last contact and what it reports now, without reading it as this run\'s record', async () => {
-    const held = { status: 'running', completedAt: null, harness: 'codex', leasedBy: 'mt_worker', leaseExpiresAt: NOW + 62_000 };
-    server(base({
-      '/api/status': statusWith(),
-      '/api/projects/x/runs': () => Response.json({ rows: [run(held)], cursor: null }),
-      '/api/projects/x/runs/r1': () => Response.json(detail(held)),
-    }));
-    mount('/p/x/runs/r1');
-    expect(await screen.findByText(/^Last contact \d+s ago\.$/)).toBeTruthy();
-    expect(screen.getByText(/Reported authenticated: Codex\./)).toBeTruthy();
-    expect(screen.getByText(/what the worker reports now, not what it reported for this run/)).toBeTruthy();
+  it('names the machine a run ran on to the member it belongs to, and to anyone else as that member’s, never by its id', async () => {
+    const linRun = taskRunsFor(MEMBER.member.id)['extract-curate']![2]!;
+    server(routes({ who: MEMBER, detail: { [`/api/projects/${P}/runs/run_a2c4e6f801`]: () => Response.json({ ...READ_AND_WROTE, run: { ...READ_AND_WROTE.run, worker: linRun.worker } }) } }));
+    mount(`/p/${P}/work/runs/run_a2c4e6f801`);
+    const open = await panel();
+    await within(open).findByRole('heading', { level: 2 });
+    const technical = open.querySelector('[data-run-technical]') as HTMLElement;
+    expect(technical.textContent).toContain('Ada’s machine · Codex · 20K tokens · $0.50');
+    fireEvent.click(within(technical).getByRole('button', { name: /Technical details/ }));
+    const facts = technical.querySelector('[data-facts]')!.textContent!;
+    expect(facts).toContain('Ran onAda’s machine');
+    expect(open.textContent).not.toContain('Ada’s studio Mac');
+    for (const id of [STUDIO_ID, BUILDBOX_ID]) expect(open.textContent).not.toContain(id);
   });
 
-  it('says the holder\'s contact is absent for a worker the record no longer holds', async () => {
-    const held = { status: 'running', completedAt: null, harness: 'codex', leasedBy: 'mt_forgotten', leaseExpiresAt: NOW + 30_000 };
-    server(base({
-      '/api/status': statusWith(),
-      '/api/projects/x/runs': () => Response.json({ rows: [run(held)], cursor: null }),
-      '/api/projects/x/runs/r1': () => Response.json(detail(held)),
-    }));
-    mount('/p/x/runs/r1');
-    expect(await screen.findByText('No worker contact recorded.')).toBeTruthy();
-    expect(screen.queryByText(/Last contact/)).toBeNull();
+  it('says a run with no record of its reads has none, never that it read nothing', async () => {
+    server(routes({ detail: { [`/api/projects/${P}/runs/run_7d1e2f3a40`]: () => Response.json(runDetail(TASK_RUNS['title-summary']![0]!, {})) } }));
+    mount(`/p/${P}/work/runs/run_7d1e2f3a40`);
+    const open = await panel();
+    expect((await within(open).findByRole('heading', { level: 2 })).textContent).toBe('Titled and summarized a session');
+    const read = within(open).getByRole('region', { name: 'What it read' });
+    expect(read.querySelector('[data-no-record]')!.textContent).toBe('No record of what it read. Myco didn’t record the sessions this run read, which doesn’t mean it read none.');
+    expect(open.textContent).not.toMatch(/read nothing|read no sessions/i);
   });
 
-  it('shows no holder record for a run whose row names none', async () => {
-    const closed = { status: 'completed', harness: 'codex', leasedBy: null, leaseExpiresAt: null };
-    server(base({
-      '/api/status': statusWith(),
-      '/api/projects/x/runs': () => Response.json({ rows: [run(closed)], cursor: null }),
-      '/api/projects/x/runs/r1': () => Response.json(detail(closed)),
-    }));
-    mount('/p/x/runs/r1');
-    expect(await screen.findByText('not recorded')).toBeTruthy();
-    expect(screen.queryByText('The worker holding this run')).toBeNull();
-    expect(screen.queryByText(/Reported authenticated/)).toBeNull();
+  it('says a run that recorded its reads and read none didn’t need any sessions', async () => {
+    server(routes({ detail: { [`/api/projects/${P}/runs/run_c19f7a0e55`]: () => Response.json(runDetail(mapRuns[1]!, { read: { sessions: [], total: 0, recorded: true } })) } }));
+    mount(`/p/${P}/work/runs/run_c19f7a0e55`);
+    const open = await panel();
+    await within(open).findByRole('heading', { level: 2 });
+    const read = within(open).getByRole('region', { name: 'What it read' });
+    expect(read.querySelector('[data-read-none]')!.textContent).toBe('It didn’t need any sessions.');
+    expect(read.querySelector('[data-no-record]')).toBeNull();
   });
 
-  it('does not show a cached worker record as current after the refresh fails', async () => {
-    const held = { status: 'running', completedAt: null, harness: 'codex', leasedBy: 'mt_worker', leaseExpiresAt: NOW + 62_000 };
-    const cached = { schema: { expected: 44, found: 44, matches: true }, capabilities: [], workers: { available: true, workersBusy: 0, runsQueued: 0, recentWithinMs: 90_000, fleet: [WORKER] }, projects: [] };
-    server(base({
-      '/api/status': () => new Response(null, { status: 500 }),
-      '/api/projects/x/runs': () => Response.json({ rows: [run(held)], cursor: null }),
-      '/api/projects/x/runs/r1': () => Response.json(detail(held)),
-    }));
-    mount('/p/x/runs/r1', (client) => client.setQueryData(['status'], cached));
-    expect(await screen.findByText(/Worker contact unavailable/)).toBeTruthy();
-    // The machine name came from the record, so it is not asserted from a stale one.
-    expect(screen.queryByText('sirkirby-mbp')).toBeNull();
-    expect(screen.getByText('mt_worker')).toBeTruthy();
+  it('lists the sessions a run worked from when it recorded no reads, and says they are not a record', async () => {
+    server(routes({ detail: { [`/api/projects/${P}/runs/run_4f1c9a2e7b`]: () => Response.json(runDetail(learning[1]!, {
+      read: { sessions: [{ sessionId: S1, title: 'Search box height made uniform on list pages', readAt: null }], total: 1, recorded: false },
+      produced: { spores: { total: 2, items: WEEK_SPORES.slice(0, 2).map((s) => ({ id: s.id, observationType: s.observationType, status: 'active', agentLine: s.agentLine, sessionId: S1, createdAt: s.createdAt })) } },
+      reports: [{ action: 'summary', summary: 'Saved 2 spores from 3 sessions before the turn budget ran out.', createdAt: NOW - 2 * HOUR }],
+      run: { error: 'the run exceeded its turn budget' },
+    })) } }));
+    mount(`/p/${P}/work/runs/run_4f1c9a2e7b`);
+    const open = await panel();
+    expect((await within(open).findByRole('heading', { level: 2 })).textContent).toBe('Learned 2 spores from 1 session');
+    expect(open.querySelector('[data-no-record]')!.textContent).toBe('No record of what it read; these are the sessions it worked from.');
+    expect(within(open).getByRole('region', { name: 'What it read' }).textContent).toContain('Search box height made uniform on list pages');
+    // It failed, but kept what it saved: the cause from its report, and nothing to do.
+    const failure = open.querySelector('[data-run-failure]') as HTMLElement;
+    expect(failure.textContent).toBe('Why: Saved 2 spores from 3 sessions before the turn budget ran out.What it saved is kept, so there’s nothing to do.');
   });
 
-  it('says a lease already past has not been swept, rather than counting down to nothing', async () => {
-    const lapsed = { status: 'running', completedAt: null, harness: 'codex', leasedBy: 'mt_worker', leaseExpiresAt: NOW - 5_000 };
-    server(base({
-      '/api/status': statusWith(),
-      '/api/projects/x/runs': () => Response.json({ rows: [run(lapsed)], cursor: null }),
-      '/api/projects/x/runs/r1': () => Response.json(detail(lapsed)),
-    }));
-    mount('/p/x/runs/r1');
-    expect(await screen.findByText('expired, not yet swept')).toBeTruthy();
-    expect(screen.queryByText(/expires in now/)).toBeNull();
+  it('gives a failed map update its cause from the report, not the stored error, and what to do', async () => {
+    server(routes({ detail: { [`/api/projects/${P}/runs/run_5e0b1c2d3f`]: () => Response.json(runDetail(mapRuns[0]!, {
+      reports: [{ action: 'summary', summary: 'repo.sha256 is absent from this checkout, so the previous map is kept.', createdAt: NOW - 3.5 * HOUR }],
+      run: { error: 'the run ended without its artifact' },
+    })) } }));
+    mount(`/p/${P}/work/runs/run_5e0b1c2d3f`);
+    const open = await panel();
+    expect((await within(open).findByRole('heading', { level: 2 })).textContent).toBe('Couldn’t update the code map');
+    const failure = open.querySelector('[data-run-failure]') as HTMLElement;
+    expect(failure.textContent).toContain('Why: repo.sha256 is absent from this checkout, so the previous map is kept.');
+    expect(failure.textContent).toContain('Open the run to see where it stopped.');
+    // The next step never repeats what the cause already says.
+    expect(failure.textContent!.match(/previous map/g)).toHaveLength(1);
+    expect(failure.textContent).not.toContain('without its artifact');
+    expect(within(open).getByRole('region', { name: 'What it produced' }).textContent).toContain('Nothing; it stopped before writing anything.');
   });
 
-  it('names a lapsed holder as the one that last held the run, not as the one holding it', async () => {
-    const lapsed = { status: 'running', completedAt: null, harness: 'codex', leasedBy: 'mt_worker', leaseExpiresAt: NOW - 5_000 };
-    server(base({
-      '/api/status': statusWith(),
-      '/api/projects/x/runs': () => Response.json({ rows: [run(lapsed)], cursor: null }),
-      '/api/projects/x/runs/r1': () => Response.json(detail(lapsed)),
-    }));
-    mount('/p/x/runs/r1');
-    // The row still records the worker, so it stays visible — under the wording
-    // its expired lease supports.
-    expect(await screen.findByText('The worker that last held this run')).toBeTruthy();
-    expect(screen.queryByText('The worker holding this run')).toBeNull();
-    expect(screen.getByText('Last worker')).toBeTruthy();
-    expect(screen.queryByText('Worker')).toBeNull();
-    expect(screen.getByText('sirkirby-mbp')).toBeTruthy();
+  it('says a held-off run was held off, in words, and a waiting run where it stands, reading it again only while it waits', async () => {
+    server(routes({ detail: {
+      [`/api/projects/${P}/runs/run_d4e5f6a7b8`]: () => Response.json(runDetail(learning[0]!, {})),
+      [`/api/projects/${P}/runs/run_q0000000001`]: () => Response.json(runDetail({ ...learning[2]!, id: 'run_q0000000001', status: 'queued', queuedAt: NOW - MINUTE, position: 2, heldBy: 'concurrent_runs', startedAt: null, completedAt: null, worker: null, startedBy: MEMBER.member.id }, {})),
+    } }));
+    mount(`/p/${P}/work/runs/run_d4e5f6a7b8`);
+    let open = await panel();
+    expect((await within(open).findByRole('heading', { level: 2 })).textContent).toBe('Held off');
+    expect(open.textContent).toContain('Myco held off: it was switched off for this project. Nothing ran, and nothing was spent.');
+    expect(open.querySelector('[data-run-read]')).toBeNull();
+    type Polled = { refetchInterval?: number | false | ((q: unknown) => number | false); refetchIntervalInBackground?: boolean };
+    const interval = (runId: string) => {
+      const query = client.getQueryCache().find({ queryKey: ['run', P, runId] })!;
+      const { refetchInterval, refetchIntervalInBackground } = query.observers[0]!.options as Polled;
+      return { interval: typeof refetchInterval === 'function' ? refetchInterval(query) : refetchInterval, background: refetchIntervalInBackground };
+    };
+    expect(interval('run_d4e5f6a7b8')).toEqual({ interval: false, background: false });
+    cleanup();
+    client.clear();
+    mount(`/p/${P}/work/runs/run_q0000000001`);
+    open = await panel();
+    expect((await within(open).findByRole('heading', { level: 2 })).textContent).toBe('Waiting to start');
+    expect(open.querySelector('[data-queued]')!.textContent).toBe('Waiting — 2 ahead of it · held by the limit on runs at once.');
+    expect(interval('run_q0000000001')).toEqual({ interval: LIVE_REFRESH_MS, background: false });
   });
 
-  it('names a standing lease holder as the worker holding the run', async () => {
-    const held = { status: 'running', completedAt: null, harness: 'codex', leasedBy: 'mt_worker', leaseExpiresAt: NOW + 62_000 };
-    server(base({
-      '/api/status': statusWith(),
-      '/api/projects/x/runs': () => Response.json({ rows: [run(held)], cursor: null }),
-      '/api/projects/x/runs/r1': () => Response.json(detail(held)),
-    }));
-    mount('/p/x/runs/r1');
-    expect(await screen.findByText('The worker holding this run')).toBeTruthy();
-    expect(screen.getByText('Worker')).toBeTruthy();
-    expect(screen.queryByText('Last worker')).toBeNull();
+  it('closes back to Myco’s work with its filters, and says a run the project doesn’t hold isn’t there', async () => {
+    server(routes());
+    mount(`/p/${P}/work/runs/run_a2c4e6f801?window=today`);
+    const open = await panel();
+    fireEvent.click(within(open).getByRole('button', { name: 'Close' }));
+    await waitFor(() => expect(location()).toBe(`/p/${P}/work?window=today`));
+    expect(screen.queryByTestId('run-panel')).toBeNull();
+    cleanup();
+    client.clear();
+    server(routes());
+    mount(`/p/${P}/work/runs/run_gone000001`);
+    expect(await screen.findByText('This run isn’t in Myco. It may have been cleared out with older runs.')).toBeTruthy();
   });
 
-  it('falls back to the credential when the worker record holds no observation of it', async () => {
-    const held = { status: 'running', completedAt: null, harness: 'codex', leasedBy: 'mt_forgotten', leaseExpiresAt: NOW + 30_000 };
-    server(base({
-      '/api/status': statusWith(),
-      '/api/projects/x/runs': () => Response.json({ rows: [run(held)], cursor: null }),
-      '/api/projects/x/runs/r1': () => Response.json(detail(held)),
-    }));
-    mount('/p/x/runs/r1');
-    expect(await screen.findByText('mt_forgotten')).toBeTruthy();
-    expect(screen.queryByText('not recorded')).toBeNull();
-  });
-
-  it('tells a queued run what workers are attached, and does not blame this run\'s wait on one poll', async () => {
-    const queued = { status: 'queued', startedAt: null, completedAt: null, queuedAt: NOW, heldBy: 'worker', position: 0, harness: null, leasedBy: null, leaseExpiresAt: null };
-    server(base({
-      '/api/status': statusWith({ runsQueued: 1, fleet: [{ ...WORKER, lastReason: 'no_harness' }] }),
-      '/api/projects/x/runs': () => Response.json({ rows: [run(queued)], cursor: null }),
-      '/api/projects/x/runs/r1': () => Response.json(detail(queued)),
-    }));
-    mount('/p/x/runs/r1');
-    expect(await screen.findByText(/waiting for a worker to claim it/)).toBeTruthy();
-    expect(screen.getByText(/1 of 1 worker heard from recently, 0 driving a run/)).toBeTruthy();
-    // One worker's last poll is not this run's reason for waiting.
-    expect(screen.queryByText(/no matching harness/)).toBeNull();
-  });
-
-  it('says the worker record is unknown rather than reading an unanswerable server as an empty fleet', async () => {
-    const queued = { status: 'queued', startedAt: null, completedAt: null, queuedAt: NOW, heldBy: 'worker', position: 0, harness: null, leasedBy: null, leaseExpiresAt: null };
-    server(base({
-      '/api/status': () => Response.json({
-        schema: { expected: 44, found: null, matches: false }, capabilities: [],
-        workers: { available: false, workersBusy: 0, runsQueued: 0, recentWithinMs: 90_000, fleet: [] }, projects: [],
-      }),
-      '/api/projects/x/runs': () => Response.json({ rows: [run(queued)], cursor: null }),
-      '/api/projects/x/runs/r1': () => Response.json(detail(queued)),
-    }));
-    mount('/p/x/runs/r1');
-    expect(await screen.findByText(/Worker contact unavailable/)).toBeTruthy();
-    expect(screen.queryByText(/No worker contact recorded/)).toBeNull();
-  });
-
-  it('says a queued run with an empty record has no contact recorded, never that no worker was heard from', async () => {
-    const queued = { status: 'queued', startedAt: null, completedAt: null, queuedAt: NOW, heldBy: 'worker', position: 0, harness: null, leasedBy: null, leaseExpiresAt: null };
-    server(base({
-      '/api/status': statusWith({ runsQueued: 1, fleet: [] }),
-      '/api/projects/x/runs': () => Response.json({ rows: [run(queued)], cursor: null }),
-      '/api/projects/x/runs/r1': () => Response.json(detail(queued)),
-    }));
-    mount('/p/x/runs/r1');
-    expect(await screen.findByText('No worker attached. No worker contact recorded. 1 queued run waits until one attaches.')).toBeTruthy();
-    expect(screen.getByText('myco worker install').tagName).toBe('CODE');
+  it('opens from a run in an outcome’s list, and returns to the page it came from', async () => {
+    server(routes());
+    mount(`/p/${P}/work?outcome=learn`);
+    const runs = await screen.findByRole('list', { name: 'Latest learning runs' });
+    const line = [...runs.querySelectorAll('li')].find((li) => li.textContent!.includes('4 spores from 1 session'))!;
+    fireEvent.click(within(line).getByRole('link'));
+    await panel();
+    expect(location()).toBe(`/p/${P}/work/runs/run_a2c4e6f801`);
+    fireEvent.keyDown(document.activeElement ?? document.body, { key: 'Escape' });
+    await waitFor(() => expect(location()).toBe(`/p/${P}/work?outcome=learn`));
   });
 });
+
+/** Opens "Run a task" and picks one of its tasks, answering the dialog it opens. */
+async function startFromMenu(name: RegExp): Promise<HTMLElement> {
+  fireEvent.keyDown(await screen.findByRole('button', { name: 'Run a task' }), { key: 'Enter' });
+  const menu = await screen.findByRole('menu');
+  fireEvent.click(within(menu).getByRole('menuitem', { name }));
+  return screen.findByRole('dialog');
+}
+
+describe('running a task by hand', () => {
+  it('offers every member the tasks, confirms with this week’s real spend, and starts the task as asked, without "Start fresh"', async () => {
+    const { sent, asked } = server(routes({ who: MEMBER }));
+    mount(`/p/${P}/work`);
+    fireEvent.keyDown(await screen.findByRole('button', { name: 'Run a task' }), { key: 'Enter' });
+    const menu = await screen.findByRole('menu');
+    await waitFor(() => expect(within(menu).getAllByRole('menuitem').map((item) => item.textContent)).toEqual([
+      'Learn from new sessions nowLast ran today at 14:00',
+      'Update the code map nowLast ran today at 12:30',
+      'Learn from the project’s codeReads the repository for what it holds',
+    ]));
+    fireEvent.click(within(menu).getByRole('menuitem', { name: /Update the code map now/ }));
+    const dialog = await screen.findByRole('dialog', { name: 'Update the code map now?' });
+    expect(dialog.textContent).toContain('Myco will read Myco’s repository and update the code map to its latest commit.');
+    expect(dialog.textContent).toContain('It runs on the first free machine that has an agent signed in. Recent ones took 4 to 10 minutes.');
+    expect(dialog.querySelector('[data-spend]')!.textContent).toBe('This spends model tokens. This week’s updates each used 500K to 2 million tokens, about $1.00 to $2.30 by the agent’s estimate.');
+    expect(within(dialog).queryByRole('switch', { name: 'Start fresh' })).toBeNull();
+    const reads = asked.filter((url) => url.pathname === '/api/work').length;
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Update the code map' }));
+    await waitFor(() => expect(sent).toEqual([{ path: '/api/harness/dispatch', body: { projectId: P, task: 'canopy-map' } }]));
+    const started = await waitFor(() => { const line = document.querySelector('[data-started]'); if (line === null) throw new Error('not yet'); return line as HTMLElement; });
+    expect(started.textContent).toBe('The code map update is queued. It starts on the next free machine.Open the run →');
+    expect(within(started).getByRole('link', { name: 'Open the run →' }).getAttribute('href')).toBe(`/p/${P}/work/runs/run_new0000001`);
+    expect(screen.queryByRole('dialog')).toBeNull();
+    // The page asks again, so the new run shows and the page follows it while it waits.
+    await waitFor(() => expect(asked.filter((url) => url.pathname === '/api/work').length).toBeGreaterThan(reads));
+    expect(rawIdsInPage()).toEqual([]);
+  });
+
+  it('sends one dispatch however fast the confirming button is clicked', async () => {
+    let answer: (value: Response) => void = () => undefined;
+    const { sent } = server(routes({ dispatch: () => new Promise<Response>((resolve) => { answer = resolve; }) as unknown as Response }));
+    mount(`/p/${P}/work`);
+    const dialog = await startFromMenu(/Learn from new sessions now/);
+    const confirm = within(dialog).getByRole('button', { name: 'Learn now' });
+    // Two clicks in one tick, before the page can render the pending state.
+    confirm.click();
+    confirm.click();
+    await waitFor(() => expect(sent).toHaveLength(1));
+    answer(Response.json({ runId: 'run_new0000001', projectId: P, queued: true }));
+    await waitFor(() => expect(document.querySelector('[data-started]')).not.toBeNull());
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    expect(sent).toHaveLength(1);
+  });
+
+  it('lets an admin start a task fresh', async () => {
+    const { sent } = server(routes());
+    mount(`/p/${P}/work`);
+    const dialog = await startFromMenu(/Learn from new sessions now/);
+    expect(dialog.querySelector('[data-spend]')!.textContent).toBe('This spends model tokens. This week’s learning runs each used 18K to 30K tokens, about $0.50 to $0.96 by the agent’s estimate.');
+    fireEvent.click(within(dialog).getByRole('switch', { name: 'Start fresh' }));
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Learn now' }));
+    await waitFor(() => expect(sent).toEqual([{ path: '/api/harness/dispatch', body: { projectId: P, task: 'extract-curate', fresh: true } }]));
+  });
+
+  it('starts from the code map card’s "Update now" too, and says when nothing had changed', async () => {
+    server(routes({ dispatch: () => Response.json({ outcome: 'unchanged' }) }));
+    mount(`/p/${P}/work`);
+    fireEvent.click(await screen.findByRole('button', { name: 'Update now' }));
+    const dialog = await screen.findByRole('dialog', { name: 'Update the code map now?' });
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Update the code map' }));
+    expect((await screen.findByText('Nothing has changed since the last run, so Myco didn’t start one and spent nothing.')).closest('[data-started]')).not.toBeNull();
+    expect(screen.queryByRole('link', { name: 'Open the run →' })).toBeNull();
+  });
+
+  it('says when a member’s day of a task is spent, and when they can start it again', async () => {
+    const resetsAt = NOW + 2.5 * HOUR;
+    server(routes({ who: MEMBER, dispatch: () => Response.json({ error: 'daily_limit', task: 'extract-curate', perDay: 4, resetsAt }, { status: 429, headers: { 'retry-after': '9000' } }) }));
+    mount(`/p/${P}/work`);
+    const dialog = await startFromMenu(/Learn from new sessions now/);
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Learn now' }));
+    expect((await within(dialog).findByRole('alert')).textContent).toBe('You’ve started this task 4 times today; you can again at 18:30.');
+    expect(within(dialog).getByRole('button', { name: 'Learn now' }).hasAttribute('disabled')).toBe(true);
+    expect([
+      dailyLimitWords({ perDay: 1, resetsAt: NOW + 20 * HOUR }, NOW),
+      dailyLimitWords({ perDay: 0, resetsAt: null }, NOW),
+    ]).toEqual(['You’ve started this task once today; you can again tomorrow at 12:00.', 'Only an admin can start this task on this server.']);
+  });
+
+  it('says which capability is switched off, pointing an admin at Project settings and telling a member who can turn it on', async () => {
+    const off = () => Response.json({ error: 'capability_off', capability: 'vault_evolution', message: 'this task is turned off for the project' }, { status: 409 });
+    server(routes({ dispatch: off }));
+    mount(`/p/${P}/work`);
+    let dialog = await startFromMenu(/Learn from new sessions now/);
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Learn now' }));
+    const said = await within(dialog).findByRole('alert');
+    expect(said.textContent).toContain('Learning is switched off for this project.');
+    expect(within(said).getByRole('link', { name: 'Turn it on in Project settings →' }).getAttribute('href')).toBe(`/p/${P}/settings#capabilities`);
+    expect(within(dialog).queryByRole('button', { name: 'Learn now' })).toBeNull();
+    cleanup();
+    client.clear();
+    // Known ahead: the menu says so, and the confirmation says it in place of starting anything.
+    const { sent } = server(routes({ who: MEMBER, capabilities: { vault_evolution: false, canopy: true } }));
+    mount(`/p/${P}/work`);
+    fireEvent.keyDown(await screen.findByRole('button', { name: 'Run a task' }), { key: 'Enter' });
+    const menu = await screen.findByRole('menu');
+    await waitFor(() => expect(within(menu).getAllByRole('menuitem')[0]!.textContent).toBe('Learn from new sessions nowLearning is switched off for this project.'));
+    fireEvent.click(within(menu).getAllByRole('menuitem')[0]!);
+    dialog = await screen.findByRole('dialog');
+    const offLine = dialog.querySelector('[data-capability-off]') as HTMLElement;
+    expect(offLine.textContent).toBe('Learning is switched off for this project.An admin can turn it on in the project’s settings.');
+    expect(within(dialog).queryByRole('link')).toBeNull();
+    expect(within(dialog).queryByRole('button', { name: 'Learn now' })).toBeNull();
+    expect(sent).toEqual([]);
+  });
+
+  it('words a fresh start refused to a member, and any other refusal the server explains', async () => {
+    let answer: Response = Response.json({ error: 'fresh_needs_admin' }, { status: 403 });
+    server(routes({ who: MEMBER, dispatch: () => answer }));
+    mount(`/p/${P}/work`);
+    const dialog = await startFromMenu(/Learn from the project’s code/);
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Learn from the code' }));
+    expect((await within(dialog).findByRole('alert')).textContent).toBe('Only an admin can start a task fresh.');
+    // A 403 that is not about starting fresh is not worded as one.
+    answer = Response.json({ error: 'forbidden', reason: 'this account can’t start tasks here' }, { status: 403 });
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Learn from the code' }));
+    await waitFor(() => expect(within(dialog).getByRole('alert').textContent).toBe('this account can’t start tasks here'));
+    answer = Response.json({ error: 'bad_request', reason: 'no agent is configured for this task' }, { status: 400 });
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Learn from the code' }));
+    await waitFor(() => expect(within(dialog).getByRole('alert').textContent).toBe('no agent is configured for this task'));
+    // No run this week spent anything on it, so the confirmation says there is nothing to go by.
+    expect(dialog.querySelector('[data-spend]')!.textContent).toBe('This spends model tokens. No runs over the code finished this week, so there’s no recent spend to go by.');
+  });
+
+  it('never shows a menu when the page spans every project', async () => {
+    server(routes());
+    mount('/work');
+    await screen.findByRole('heading', { level: 1, name: 'Myco’s work' });
+    await waitFor(() => expect(document.querySelector('article[data-outcome]')).not.toBeNull());
+    expect(screen.queryByRole('button', { name: 'Run a task' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Update now' })).toBeNull();
+  });
+});
+

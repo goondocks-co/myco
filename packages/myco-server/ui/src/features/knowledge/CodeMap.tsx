@@ -1,12 +1,12 @@
 import { Card, Link, Markdown, Skeleton } from '../../design';
 import { useCanopyMap, type CanopyMapRow } from '../../hooks/use-canopy-map';
-import { MEMORY_TASKS } from '../../hooks/use-intelligence';
 import { projectPath } from '../../routes/nav';
+import { STARTABLE_TASKS } from '../work/RunTask';
 import { ago } from './words';
 
 /** How much of a commit id the map names. */
 const SHORT_COMMIT_CHARS = 8;
-const MAP_TASK_LABEL = MEMORY_TASKS.find((task) => task.id === 'canopy-map')?.label ?? 'Update the code map';
+const MAP_TASK_LABEL = STARTABLE_TASKS.find((task) => task.task === 'canopy-map')?.label ?? 'Update the code map now';
 
 /** A project's code map: where things live, read from one commit. */
 export function CodeMap({ projectId }: { projectId: string }) {
@@ -30,7 +30,7 @@ export function CodeMapPanel({ base, map, pending, error, now = Date.now() }: { 
         <div className="flex flex-col gap-s2">
           <h2 className="t-h2 text-ink">No map yet</h2>
           <p className="max-w-measure t-body text-ink-2">
-            A map appears here once the project connects its repository and a map run reads it. Start one from Agent runs with “{MAP_TASK_LABEL}”.
+            A map appears here once the project connects its repository and a map run reads it. Start one from Myco’s work with “{MAP_TASK_LABEL}”.
           </p>
         </div>
       ) : (
@@ -40,7 +40,7 @@ export function CodeMapPanel({ base, map, pending, error, now = Date.now() }: { 
             <p className="t-small text-muted">
               <span title={map.repository.commit}>{map.repository.branch} @ {map.repository.commit.slice(0, SHORT_COMMIT_CHARS)}</span>
               {' · '}{ago(map.generatedAt, now)}{' · '}
-              <Link to={`${base}/runs/${encodeURIComponent(map.sourceRunId)}`}>The run that wrote it →</Link>
+              <Link to={`${base}/work/runs/${encodeURIComponent(map.sourceRunId)}`}>The run that wrote it →</Link>
             </p>
           </div>
           <Markdown content={map.content} skipHtml className="max-w-measure" />

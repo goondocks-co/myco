@@ -122,6 +122,10 @@ async function expectReadingPage(page: Page, viewport: ViewportName, role: 'admi
   const raw = page.getByRole('region', { name: 'Raw data' });
   await expect(raw.getByRole('button', { name: 'Raw data' })).toHaveAttribute('aria-expanded', 'false');
   await expect(page.getByRole('button', { name: 'Session actions' })).toHaveCount(role === 'admin' ? 1 : 0);
+  // Codex can resume it: the command sits beside the id, both only ever copied, for every member.
+  const facts = page.getByRole('complementary', { name: 'About this session' }).locator('[data-facts]');
+  await expect(facts.getByRole('button', { name: 'Copy resume command' })).toBeVisible();
+  await expect(facts).not.toContainText('codex resume');
 }
 
 test.describe('Sessions', () => {

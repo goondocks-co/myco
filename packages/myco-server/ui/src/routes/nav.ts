@@ -25,6 +25,10 @@ export const CODE_MAP_SUFFIX = '/knowledge/map';
 export const SPORE_SUFFIX = '/spores';
 /** A plan's page under a project, as `/p/:project/plans/:planKey`. */
 export const PLAN_SUFFIX = '/plans';
+/** Myco's work under a project: what its own runs came to. */
+export const WORK_SUFFIX = '/work';
+/** One run of Myco's work under a project, as `/p/:project/work/runs/:runId`. */
+export const RUN_SUFFIX = '/work/runs';
 /** A project's settings: what Myco does there, its repository, its access keys and release tracking. */
 export const PROJECT_SETTINGS_SUFFIX = '/settings';
 
@@ -41,7 +45,7 @@ export const PROJECT_PAGES: readonly ProjectPage[] = [
   { label: 'Today', icon: Sun, suffix: '' },
   { label: 'Sessions', icon: MessageSquare, suffix: '/sessions' },
   { label: 'Knowledge', icon: Sprout, suffix: KNOWLEDGE_SUFFIX, also: [PLANS_SUFFIX, CODE_MAP_SUFFIX, SPORE_SUFFIX, PLAN_SUFFIX] },
-  { label: 'Agent runs', icon: Bot, suffix: '/runs' },
+  { label: 'Myco’s work', icon: Bot, suffix: WORK_SUFFIX, also: [RUN_SUFFIX] },
   { label: 'Project settings', icon: SlidersHorizontal, suffix: PROJECT_SETTINGS_SUFFIX, admin: true },
 ];
 
@@ -57,10 +61,10 @@ export function pageOf(suffix: string): ProjectPage | undefined {
 
 /**
  * Where a record's list lives: a spore's article belongs to the spores, a
- * plan's page to the plans board. A switch or a clear of the project from a
+ * plan's page to the plans board, a run to Myco's work. A switch or a clear of the project from a
  * record leads to its list.
  */
-const LIST_OF: Readonly<Record<string, string>> = { [SPORE_SUFFIX]: KNOWLEDGE_SUFFIX, [PLAN_SUFFIX]: PLANS_SUFFIX };
+const LIST_OF: Readonly<Record<string, string>> = { [SPORE_SUFFIX]: KNOWLEDGE_SUFFIX, [PLAN_SUFFIX]: PLANS_SUFFIX, [RUN_SUFFIX]: WORK_SUFFIX };
 
 function listSuffix(pathname: string): string {
   const suffix = pageSuffix(pathname);
@@ -144,6 +148,7 @@ export const ALL_PROJECTS_FORMS: Readonly<Record<string, string>> = {
   '/sessions': '/sessions',
   [KNOWLEDGE_SUFFIX]: KNOWLEDGE_SUFFIX,
   [PLANS_SUFFIX]: PLANS_SUFFIX,
+  [WORK_SUFFIX]: WORK_SUFFIX,
 };
 
 /** The suffix of the page whose all-projects form is at this path, or null when the path is no such form. */
@@ -167,7 +172,7 @@ export function pageHref(page: Pick<ProjectPage, 'suffix'>, pathname: string, pr
  * a filtered list stays filtered; anything else (the open tab, the turn, the
  * page offset) belongs to the record or the page left behind and is dropped.
  */
-export const FILTER_KEYS: readonly string[] = ['q', 'agent', 'member', 'type', 'status', 'state', 'window', 'branch', 'day'];
+export const FILTER_KEYS: readonly string[] = ['q', 'agent', 'member', 'type', 'status', 'state', 'window', 'branch', 'day', 'outcome'];
 
 const PROJECT_PATH = /^\/p\/([^/]+)(?:\/([^/]+))?/;
 
@@ -201,6 +206,11 @@ export function pageSuffix(pathname: string): string {
 /** `/p/:project<suffix>`, with the project id encoded. */
 export function projectPath(projectId: string, suffix = ''): string {
   return `/p/${encodeURIComponent(projectId)}${suffix}`;
+}
+
+/** Where one run of Myco's work opens: its panel over the project's work. */
+export function runPath(projectId: string, runId: string): string {
+  return projectPath(projectId, `${RUN_SUFFIX}/${encodeURIComponent(runId)}`);
 }
 
 /** The filters of a query string, in the order they were given. */

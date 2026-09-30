@@ -6,11 +6,12 @@
  * member), two machines with names and one without, a worker contact from the
  * owner's machine, two open invitations, five agents, two days of sessions with one
  * still live, spores of every type (two saved without their one line, and one
- * replaced by a newer spore), plans in every status, Myco's runs (a
+ * replaced by a newer spore), plans in every status (one tagged), Myco's runs (a
  * failed learning run that still saved spores, a learning run that saved four,
  * two titling runs, a code map update that failed with its cause after one that
  * succeeded yesterday, an index update that failed and then succeeded, a
- * skipped titling run, and an earlier titling run with no record of what it
+ * skipped titling run, a learning run held off while learning was switched
+ * off, and an earlier titling run with no record of what it
  * read), the sessions a run read, an access key about to expire, and a backup
  * four weeks old.
  *
@@ -28,6 +29,7 @@ import { PROJECT_HEADER, PROTOCOL_HEADER, SERVER_PROTOCOL, SERVER_SCHEMA_VERSION
 import { uuidv5 } from '@myco-server-worker/hash.js';
 import { MAP_WRITE_TOOL, TITLE_WRITE_TOOL } from '@myco-server-worker/core/tool-catalogue.js';
 import { RUN_WRITE_EVENT } from '@myco-server-worker/core/runs.js';
+import { MACHINE_IDS } from './machine-ids.ts';
 
 const MINUTE = 60_000;
 const HOUR = 60 * MINUTE;
@@ -50,18 +52,29 @@ export interface FixtureMember {
 export const OWNER: FixtureMember = { id: 'mem_q3Vb8xRk2LmT7wYz', label: 'Ada', githubSub: '1000001', login: 'ada', role: 'admin' };
 export const READER: FixtureMember = { id: 'mem_Hn5-pC0dJfA9sE_u', label: 'mem_Hn5-pC0dJfA9sE_u', githubSub: '1000002', login: 'lin', role: 'member' };
 
-/** Two machines, each with a name the way `myco login` records one. */
+/**
+ * Two machines, each with a name the way `myco login` records one and an id in
+ * the shape a machine's id takes (`<login>_<8 hex>`). `key` is how the seed data
+ * below refers to each; the pages never show the id.
+ */
 export const MACHINES = [
-  { id: 'studio', member: OWNER, label: 'Ada’s studio Mac' },
-  { id: 'buildbox', member: READER, label: 'Lin’s build box' },
+  { key: 'studio', id: MACHINE_IDS.studio, member: OWNER, label: 'Ada’s studio Mac' },
+  { key: 'buildbox', id: MACHINE_IDS.buildbox, member: READER, label: 'Lin’s build box' },
 ] as const;
+
+type MachineKey = (typeof MACHINES)[number]['key'];
+
+/** The machine a seed key stands for. */
+function machineOf(key: MachineKey): (typeof MACHINES)[number] {
+  return MACHINES.find((machine) => machine.key === key)!;
+}
 
 /**
  * A third machine of the owner's whose runtime joined without a name, as every
  * `myco login` did before it sent one. Its id has the shape a machine's id
  * takes (`<login>_<8 hex>`); the pages call it "A machine", never by the id.
  */
-export const UNNAMED_MACHINE = { id: 'ada_7c1e9f02', member: OWNER } as const;
+export const UNNAMED_MACHINE = { id: MACHINE_IDS.unnamed, member: OWNER } as const;
 
 /**
  * Projects, each with the `proj_<32 hex>` id a named project gets and a short
@@ -102,7 +115,7 @@ export const PLAN_STATUSES = ['active', 'in_progress', 'completed', 'abandoned']
 interface SessionSeed {
   project: ProjectKey;
   agent: (typeof AGENTS)[number];
-  machine: (typeof MACHINES)[number]['id'];
+  machine: MachineKey;
   /** Minutes before now the session started. */
   startedAgo: number;
   /** Minutes it ran for; null leaves it live, still receiving events. */
@@ -158,8 +171,8 @@ export const SUPERSEDED: ReadonlyArray<{ old: number; by: number }> = [{ old: 10
 /** The session whose reading page shows what came of it: runs that read it, wrote from it and titled it, and one with no record. */
 export const OUTCOME_SESSION = 6;
 
-const PLANS: Array<{ project: ProjectKey; session: number; status: (typeof PLAN_STATUSES)[number]; title: string; path: string; content: string }> = [
-  { project: 'myco', session: 13, status: 'in_progress', title: 'Myco’s work as outcomes', path: 'docs/plans/work-outcomes.md', content: '# Myco’s work as outcomes\n\n- [x] Group runs by task\n- [ ] Fold index upkeep into one line\n- [ ] Show failures with cause and next step' },
+const PLANS: Array<{ project: ProjectKey; session: number; status: (typeof PLAN_STATUSES)[number]; title: string; path: string; content: string; tags?: string[] }> = [
+  { project: 'myco', session: 13, status: 'in_progress', title: 'Myco’s work as outcomes', path: 'docs/plans/work-outcomes.md', tags: ['dashboard', 'outcomes'], content: '# Myco’s work as outcomes\n\n- [x] Group runs by task\n- [ ] Fold index upkeep into one line\n- [ ] Show failures with cause and next step' },
   { project: 'myco', session: 1, status: 'active', title: 'One filter bar on every list page', path: 'docs/plans/filter-bar.md', content: '# One filter bar\n\n- [ ] Sessions\n- [ ] Knowledge\n- [ ] Myco’s work' },
   { project: 'ledger', session: 4, status: 'completed', title: 'Speed up the monthly close report', path: 'docs/plans/close-report.md', content: '# Close report\n\n- [x] Find the scan\n- [x] Add the covering index\n- [x] Confirm on staging' },
   { project: 'field-notes', session: 3, status: 'abandoned', title: 'Last-writer-wins offline sync', path: 'docs/plans/lww-sync.md', content: '# Last-writer-wins\n\nDropped in favour of per-field merge.' },
@@ -191,7 +204,7 @@ export async function seedIdentities(databasePath: string, now: number): Promise
     for (const machine of MACHINES) {
       sqlite.query('INSERT INTO machine_claims (machine_id, member_id, claimed_at) VALUES (?, ?, ?)').run(machine.id, machine.member.id, now - 50 * DAY);
       const issued = await issueMemberToken(db, { memberId: machine.member.id, machineId: machine.id }, now, null, { runtimeLabel: machine.label, runtimeKind: 'cli' });
-      tokens[machine.id] = issued.token;
+      tokens[machine.key] = issued.token;
     }
     sqlite.query('INSERT INTO machine_claims (machine_id, member_id, claimed_at) VALUES (?, ?, ?)').run(UNNAMED_MACHINE.id, UNNAMED_MACHINE.member.id, now - 40 * DAY);
     await issueMemberToken(db, { memberId: UNNAMED_MACHINE.member.id, machineId: UNNAMED_MACHINE.id }, now - 2 * DAY);
@@ -306,6 +319,7 @@ export async function seedThroughServer(ctx: SeedContext): Promise<SeededFixture
     const at = now - session.startedAgo * MINUTE + 5 * MINUTE;
     await post(session.machine, plan.project, sessionIds[plan.session]!, 'plan', {
       planKey, promptId: lastPrompt[plan.session], title: plan.title, content: plan.content, originPath: plan.path, status: plan.status,
+      ...(plan.tags === undefined ? {} : { tags: plan.tags }),
     }, at);
   }
 
@@ -317,6 +331,12 @@ export async function seedThroughServer(ctx: SeedContext): Promise<SeededFixture
   // Two open invitations, minted the way an admin mints them: one for a new teammate, one to add a machine for Lin.
   await expectOk(await fetch(`${url}/api/enrollment`, { method: 'POST', headers: ownerHeaders, body: JSON.stringify({ ttlMinutes: 1440 }) }), 'invite a teammate');
   await expectOk(await fetch(`${url}/api/enrollment`, { method: 'POST', headers: ownerHeaders, body: JSON.stringify({ memberId: READER.id, ttlMinutes: 60 }) }), 'add a machine for Lin');
+  // Learning and the code map are switched on where Myco's runs are, so a member can start either from Myco's work.
+  for (const capability of ['vault_evolution', 'canopy']) {
+    await expectOk(await fetch(`${url}/api/projects/${idOf('myco')}/capabilities/${capability}`, {
+      method: 'PUT', headers: ownerHeaders, body: JSON.stringify({ enabled: true }),
+    }), `switch on ${capability}`);
+  }
   // Imported sessions are titled, as production has it.
   await expectOk(await fetch(`${url}/api/titling-backfill`, { method: 'PUT', headers: ownerHeaders, body: JSON.stringify({ enabled: true }) }), 'title imported sessions');
 
@@ -406,9 +426,15 @@ function settleSporeTimes(databasePath: string, sporeIds: string[], now: number)
  * written is a `run_write` event naming its tool.
  *
  * Today: a learning run that failed after saving two spores, a learning run
- * that saved four, two titling runs, a map update that failed with its cause in
- * its report, an index update that failed and a later one that succeeded, and a
- * skipped titling run. Yesterday: a map update and a learning run.
+ * that saved four (started by hand by Lin, a member), two titling runs, a map
+ * update that failed with its cause in its report on Lin's build box, an index
+ * update that failed and a later one that succeeded, a skipped titling run and
+ * a learning run held off because learning was switched off. Yesterday: a map
+ * update Ada started by hand, and a learning run.
+ *
+ * Each run that ran names the machine it ran on (the credential it held), the
+ * agent it ran in and who started it; every run but the titling runs reported
+ * its cost.
  *
  * What came of one session ("Flaky test port collision fixed"): the learning run
  * that saved four recorded reading it and wrote a spore from it; the failed one
@@ -428,26 +454,46 @@ function seedRuns(databasePath: string, now: number, sporeIds: string[], session
       wrote?: { tool: string; session?: number };
       /** The session the run's dispatch named, by its place in SESSIONS. */
       target?: number;
+      /** Who started it: a member by hand, else Myco's schedule. */
+      by?: FixtureMember;
+      /** The machine it ran on; the studio Mac when left out. */
+      machine?: MachineKey;
+      /** The agent it ran in; Claude Code when left out. */
+      agent?: string;
+      /** Whether it reported what it cost. */
+      costless?: true;
     }> = [
       { id: 'run_4f1c9a2e7b', task: 'extract-curate', status: 'failed', startedAgo: 2 * 60, minutes: 6, error: 'the run exceeded its turn budget', report: 'Saved 2 spores from 3 sessions before the turn budget ran out.' },
-      { id: 'run_a2c4e6f801', task: 'extract-curate', status: 'completed', startedAgo: 5 * 60, minutes: 8, report: 'Saved 4 spores from 4 sessions.' },
-      { id: 'run_7d1e2f3a40', task: 'title-summary', status: 'completed', startedAgo: 3 * 60, minutes: 1, report: 'Titled one session.', target: 1, wrote: { tool: TITLE_WRITE_TOOL, session: 1 } },
-      { id: 'run_7d1e2f3b51', task: 'title-summary', status: 'completed', startedAgo: 3 * 60 + 4, minutes: 1, report: 'Titled one session.', target: OUTCOME_SESSION, wrote: { tool: TITLE_WRITE_TOOL, session: OUTCOME_SESSION } },
+      { id: 'run_a2c4e6f801', task: 'extract-curate', status: 'completed', startedAgo: 5 * 60, minutes: 8, report: 'Read 1 session and saved 4 spores from it.', by: READER, agent: 'codex' },
+      { id: 'run_7d1e2f3a40', task: 'title-summary', status: 'completed', startedAgo: 3 * 60, minutes: 1, report: 'Titled one session.', target: 1, wrote: { tool: TITLE_WRITE_TOOL, session: 1 }, costless: true },
+      { id: 'run_7d1e2f3b51', task: 'title-summary', status: 'completed', startedAgo: 3 * 60 + 4, minutes: 1, report: 'Titled one session.', target: OUTCOME_SESSION, wrote: { tool: TITLE_WRITE_TOOL, session: OUTCOME_SESSION }, costless: true },
       { id: 'run_0b5e7c1d2a', task: 'title-summary', status: 'completed', startedAgo: 9 * 60, minutes: 1, target: OUTCOME_SESSION },
-      { id: 'run_5e0b1c2d3f', task: 'canopy-map', status: 'failed', startedAgo: 3 * 60 + 30, minutes: 15, error: 'the run ended without its artifact', report: 'repo.sha256 is absent from this checkout, so the map could not be verified; the previous map is kept.' },
+      { id: 'run_5e0b1c2d3f', task: 'canopy-map', status: 'failed', startedAgo: 3 * 60 + 30, minutes: 15, error: 'the run ended without its artifact', report: 'repo.sha256 is absent from this checkout, so the map could not be verified; the previous map is kept.', machine: 'buildbox', agent: 'codex' },
       { id: 'run_8d20b6c1f3', task: 'embedding-reconcile', status: 'failed', startedAgo: 95, minutes: 1, error: 'the embedding provider answered 503' },
       { id: 'run_8d20b6c2a9', task: 'embedding-reconcile', status: 'completed', startedAgo: 80, minutes: 1 },
       { id: 'run_b73e05d4c8', task: 'title-summary', status: 'skipped', startedAgo: 60, minutes: 0, context: { reason: 'no session is waiting for a title' } },
-      { id: 'run_c19f7a0e55', task: 'canopy-map', status: 'completed', startedAgo: 20 * 60, minutes: 4, report: 'Mapped 412 files at the latest commit.', wrote: { tool: MAP_WRITE_TOOL } },
+      { id: 'run_d4e5f6a7b8', task: 'extract-curate', status: 'skipped', startedAgo: 30, minutes: 0, context: { reason: 'capability_off' } },
+      { id: 'run_c19f7a0e55', task: 'canopy-map', status: 'completed', startedAgo: 20 * 60, minutes: 4, report: 'Mapped 412 files at the latest commit.', wrote: { tool: MAP_WRITE_TOOL }, by: OWNER },
       { id: 'run_e0a4d2b917', task: 'extract-curate', status: 'completed', startedAgo: 27 * 60, minutes: 9, report: 'Saved 3 spores from 4 sessions.' },
     ];
+    // The credential each machine's worker holds a run with: the newest one the machine was issued.
+    const credentialOf = (machine: MachineKey): string => {
+      const row = sqlite.query('SELECT id FROM member_credentials WHERE machine_id = ? ORDER BY lineage_started_at DESC LIMIT 1').get(machineOf(machine).id) as { id: string } | null;
+      if (row === null) throw new Error(`machine ${machine} holds no credential`);
+      return row.id;
+    };
     for (const run of runs) {
       const startedAt = now - run.startedAgo * MINUTE;
       const context = { ...run.context, ...(run.target === undefined ? {} : { session_id: sessionIds[run.target] }) };
-      sqlite.query(`INSERT INTO agent_runs (project_id, id, agent_id, task, status, started_at, completed_at, resumable, error, run_context, tokens_used, estimated_cost_usd)
-        VALUES (?, ?, 'myco-agent', ?, ?, ?, ?, 0, ?, ?, ?, ?)`).run(
+      const ran = run.status !== 'skipped';
+      const cost = ran ? 0.12 * Math.max(1, run.minutes) : null;
+      sqlite.query(`INSERT INTO agent_runs (project_id, id, agent_id, task, status, started_at, completed_at, resumable, error, run_context, tokens_used, cost_usd, cost_source, estimated_cost_usd, harness, leased_by, dispatch_spec)
+        VALUES (?, ?, 'myco-agent', ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
         idOf('myco'), run.id, run.task, run.status, startedAt, startedAt + run.minutes * MINUTE, run.error ?? null,
-        Object.keys(context).length === 0 ? null : JSON.stringify(context), run.status === 'skipped' ? null : 18_000 + run.minutes * 1_500, run.status === 'skipped' ? null : 0.12 * Math.max(1, run.minutes),
+        Object.keys(context).length === 0 ? null : JSON.stringify(context), ran ? 18_000 + run.minutes * 1_500 : null,
+        ran && run.costless !== true ? cost : null, ran && run.costless !== true ? 'estimated' : null, cost,
+        ran ? run.agent ?? 'claude-code' : null, ran ? credentialOf(run.machine ?? 'studio') : null,
+        JSON.stringify({ task: run.task, actor: run.by?.id ?? 'clock' }),
       );
       if (run.report) {
         sqlite.query(`INSERT INTO agent_reports (project_id, run_id, agent_id, action, summary, created_at) VALUES (?, ?, 'myco-agent', 'summary', ?, ?)`)
@@ -490,11 +536,12 @@ function seedWorkerContact(databasePath: string, now: number): void {
   const sqlite = new Database(databasePath);
   sqlite.exec('PRAGMA busy_timeout = 5000');
   try {
-    const credential = sqlite.query(`SELECT id FROM member_credentials WHERE machine_id = 'studio' ORDER BY lineage_started_at DESC LIMIT 1`).get() as { id: string } | null;
+    const studio = machineOf('studio').id;
+    const credential = sqlite.query('SELECT id FROM member_credentials WHERE machine_id = ? ORDER BY lineage_started_at DESC LIMIT 1').get(studio) as { id: string } | null;
     if (credential === null) throw new Error('the studio machine holds no credential');
     const seenAt = now - 3 * MINUTE;
-    sqlite.query(`INSERT INTO worker_contacts (credential_id, machine_id, offers, capabilities, last_reason, last_seen_at, updated_at) VALUES (?, 'studio', ?, '[]', 'no_work', ?, ?)`)
-      .run(credential.id, JSON.stringify([{ id: 'claude-code', authenticated: true }, { id: 'codex', authenticated: true }]), seenAt, seenAt);
+    sqlite.query(`INSERT INTO worker_contacts (credential_id, machine_id, offers, capabilities, last_reason, last_seen_at, updated_at) VALUES (?, ?, ?, '[]', 'no_work', ?, ?)`)
+      .run(credential.id, studio, JSON.stringify([{ id: 'claude-code', authenticated: true }, { id: 'codex', authenticated: true }]), seenAt, seenAt);
   } finally {
     sqlite.close();
   }

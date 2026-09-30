@@ -12,11 +12,11 @@ import { ApiError } from '../../lib/api';
 import { cn } from '../../lib/cn';
 import { sessionHeadingText } from '../../lib/session-text';
 import { NotFound } from '../../pages/NotFound';
-import { KNOWLEDGE_SUFFIX, projectPath } from '../../routes/nav';
+import { KNOWLEDGE_SUFFIX, projectPath, runPath } from '../../routes/nav';
 import { dateTime } from '../sessions/words';
 import type { SporeArticleAnswer } from './wire';
 import {
-  authorName, dayHeading, DEFAULT_SPORE_STATUS, shortDay, sporeAuthor, sporeHeadline, sporeStatusTone, sporeStatusWord, sporeTags, sporeTypeWord,
+  authorName, dayHeading, DEFAULT_SPORE_STATUS, IMPORTED_AUTHOR_WORDS, shortDay, sporeAuthor, sporeHeadline, sporeStatusTone, sporeStatusWord, sporeTags, sporeTypeWord,
 } from './words';
 
 /** The top of the importance scale a writer assigns on. */
@@ -163,7 +163,7 @@ function Neighbours({ projectId, ids, label, now }: { projectId: string; ids: re
 /** Where the spore came from: the session it was learned from, the turn, and what wrote it. */
 function Origin({ answer, projectId, now }: { answer: SporeArticleAnswer; projectId: string; now: number }) {
   const { spore } = answer;
-  const author = sporeAuthor(spore.author);
+  const author = sporeAuthor(spore);
   const members = useMembers();
   return (
     <Card className="flex flex-col gap-s3" data-spore-origin="">
@@ -174,7 +174,7 @@ function Origin({ answer, projectId, now }: { answer: SporeArticleAnswer; projec
       {author.kind === 'run' && (
         <p className="flex flex-col gap-s1 t-small text-ink-2" data-spore-author="run">
           Myco wrote it while learning from your sessions.
-          <Link to={projectPath(projectId, `/runs/${encodeURIComponent(author.runId)}`)} className="w-fit">The run that wrote it →</Link>
+          <Link to={runPath(projectId, author.runId)} className="w-fit">The run that wrote it →</Link>
         </p>
       )}
       {author.kind === 'member' && (
@@ -185,6 +185,7 @@ function Origin({ answer, projectId, now }: { answer: SporeArticleAnswer; projec
           })()}
         </p>
       )}
+      {author.kind === 'imported' && <p className="t-small text-ink-2" data-spore-author="imported">{IMPORTED_AUTHOR_WORDS}.</p>}
       {author.kind === 'key' && <p className="t-small text-ink-2" data-spore-author="key">Saved with an access key.</p>}
       {spore.sourceCreatedAt !== null && <p className="t-meta text-muted">From a turn on {dateTime(spore.sourceCreatedAt, now)}.</p>}
     </Card>

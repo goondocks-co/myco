@@ -6,13 +6,12 @@ import { ago, planStatusTone, planStatusWord, planTitle, progressWords } from '.
 
 export interface PlanLineProps {
   projectId: string;
-  sessionId: string;
   plan: { planKey: string; title: string | null; status: string; progress: string; updatedAt: number };
   now: number;
 }
 
 /** A plan where a session lists it: its status, its title leading to its own page, how far its items have got, and when it last changed. */
-export function PlanLine({ projectId, sessionId, plan, now }: PlanLineProps) {
+export function PlanLine({ projectId, plan, now }: PlanLineProps) {
   const progress = progressWords(plan.progress);
   return (
     <div className="relative flex flex-col gap-s1 rounded-card border border-line bg-surface-1 px-s4 py-s3 transition-colors duration-120 hover:bg-surface-2" data-plan-line={plan.status}>
@@ -23,7 +22,7 @@ export function PlanLine({ projectId, sessionId, plan, now }: PlanLineProps) {
         <span>updated {ago(plan.updatedAt, now)}</span>
       </span>
       <RouterLink
-        to={planPagePath(projectId, { planKey: plan.planKey, sessionId })}
+        to={planPagePath(projectId, { planKey: plan.planKey })}
         className={cn('w-fit rounded-chip t-body font-medium text-ink after:absolute after:inset-0 after:rounded-card hover:underline', focusRing)}
       >
         {planTitle(plan)}

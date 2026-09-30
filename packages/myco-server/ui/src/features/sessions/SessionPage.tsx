@@ -194,7 +194,13 @@ function Facts({ answer, projectId, projectName, now, live, actions }: { answer:
   return (
     <FactsPanel
       title="Facts"
-      actions={<><CopyButton value={session.sessionId} label="Copy session id" variant="secondary" />{actions}</>}
+      actions={(
+        <>
+          {answer.resume != null && <CopyButton value={answer.resume.line} label="Copy resume command" variant="secondary" data-resume="" />}
+          <CopyButton value={session.sessionId} label="Copy session id" variant="secondary" />
+          {actions}
+        </>
+      )}
     >
       <FactRow term="Project">{projectName}</FactRow>
       <FactRow term="Agent">{agentName(session.agent)}</FactRow>
@@ -255,7 +261,7 @@ function SessionPlans({ projectId, sessionId, now }: { projectId: string; sessio
   if (plans.rows.length === 0) return <EmptyState title="No plans were captured in this session." />;
   return (
     <div className="flex flex-col gap-s3">
-      {plans.rows.map((plan) => <PlanLine key={plan.planKey} projectId={projectId} sessionId={sessionId} plan={plan} now={now} />)}
+      {plans.rows.map((plan) => <PlanLine key={plan.planKey} projectId={projectId} plan={plan} now={now} />)}
       {plans.hasMore && <ShowMore shown={plans.rows.length} noun="plans" onMore={plans.more} pending={plans.isFetchingMore} hasMore />}
     </div>
   );
