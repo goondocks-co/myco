@@ -100,9 +100,39 @@ jobs:
           include-hidden-files: true
           if-no-files-found: ignore
 
+  # The dashboard in a real browser: the built UI served by the self-hosted
+  # server over a seeded fixture, checked page by page (landmarks, console and
+  # request errors, axe-core, raw ids) and shot at two viewports in both modes.
+  ui-screens:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+      - uses: ./.github/actions/ci-setup
+      - run: npm ci --prefix packages/myco-server/ui
+      - name: Cache the Playwright browser
+        id: playwright-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
+      - if: steps.playwright-cache.outputs.cache-hit != 'true'
+        run: npx playwright install --with-deps chromium
+      - if: steps.playwright-cache.outputs.cache-hit == 'true'
+        run: npx playwright install-deps chromium
+      - run: npm run build:ui -w @goondocks/myco-server
+      - run: npm run build:specimen --prefix packages/myco-server/ui
+      - run: npm run test:screens
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: ui-screens
+          path: target/ui-screens/
+          if-no-files-found: warn
+
   check:
     if: always()
-    needs: [lint, build, tests, parity, self-hosted-container, windows-native]
+    needs: [lint, build, tests, parity, self-hosted-container, windows-native, ui-screens]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:

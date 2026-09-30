@@ -1,0 +1,11 @@
+export type Counts = Record<string, number>;
+export type CountMap = Record<string, Counts>;
+export const UI_SRC: string;
+export const BASELINE_PATH: string;
+export const RULES: ReadonlyArray<{ kind: string; count: (src: string) => number }>;
+export function countSource(src: string): Counts;
+export function sourceFiles(root: string): string[];
+export function countTree(root?: string): CountMap;
+export function readBaseline(): CountMap;
+export function compare(current: CountMap, baseline: CountMap): { grew: string[]; stale: string[] };
+export function totals(counts: CountMap): Counts;

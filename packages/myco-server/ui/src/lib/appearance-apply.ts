@@ -15,49 +15,17 @@ import type { AppearanceValues } from './appearance-values';
 
 export const APPEARANCE_CACHE_KEY = 'myco-appearance';
 
-const DENSITY_VALUES: Record<AppearanceValues['density'], number> = {
-  compact: 0.85,
-  normal: 1,
-  comfy: 1.15,
-};
-
-interface FontStack {
-  heading: string;
-  ui: string;
-  data: string;
-}
-
-const FONT_STACKS: Record<AppearanceValues['font'], FontStack> = {
-  default: {
-    heading: "'Newsreader', Georgia, serif",
-    ui: "'Inter', system-ui, sans-serif",
-    data: "'JetBrains Mono', 'Fira Code', monospace",
-  },
-  'geist-mono': {
-    heading: "'Geist Mono', 'SF Mono', 'Fira Code', monospace",
-    ui: "'Geist Mono', 'SF Mono', 'Fira Code', monospace",
-    data: "'Geist Mono', 'SF Mono', 'Fira Code', monospace",
-  },
-  system: {
-    heading: "ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace",
-    ui: "ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace",
-    data: "ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace",
-  },
-  'sf-mono': {
-    heading: "'SF Mono', SFMono-Regular, ui-monospace, Menlo, monospace",
-    ui: "'SF Mono', SFMono-Regular, ui-monospace, Menlo, monospace",
-    data: "'SF Mono', SFMono-Regular, ui-monospace, Menlo, monospace",
-  },
-  'fira-code': {
-    heading: "'Fira Code', 'Fira Mono', ui-monospace, monospace",
-    ui: "'Fira Code', 'Fira Mono', ui-monospace, monospace",
-    data: "'Fira Code', 'Fira Mono', ui-monospace, monospace",
-  },
-  'jetbrains-mono': {
-    heading: "'JetBrains Mono', ui-monospace, monospace",
-    ui: "'JetBrains Mono', ui-monospace, monospace",
-    data: "'JetBrains Mono', ui-monospace, monospace",
-  },
+/**
+ * The code font each choice selects. Headings and text are fixed to Newsreader
+ * and Inter; only commands, paths and code follow the viewer's choice.
+ */
+const CODE_FONTS: Record<AppearanceValues['font'], string> = {
+  default: "'JetBrains Mono', ui-monospace, monospace",
+  'geist-mono': "'Geist Mono', 'SF Mono', ui-monospace, monospace",
+  system: "ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace",
+  'sf-mono': "'SF Mono', SFMono-Regular, ui-monospace, Menlo, monospace",
+  'fira-code': "'Fira Code', 'Fira Mono', ui-monospace, monospace",
+  'jetbrains-mono': "'JetBrains Mono', ui-monospace, monospace",
 };
 
 const LIGHT_MEDIA_QUERY = '(prefers-color-scheme: light)';
@@ -73,14 +41,10 @@ export function applyAppearance(a: AppearanceValues): void {
       : a.mode;
   root.classList.toggle('light', effectiveMode === 'light');
 
-  const stack = FONT_STACKS[a.font];
-  root.style.setProperty('--font-heading', stack.heading);
-  root.style.setProperty('--font-ui', stack.ui);
-  root.style.setProperty('--font-data', stack.data);
+  root.style.setProperty('--font-data', CODE_FONTS[a.font] ?? CODE_FONTS.default);
 
-  const density = DENSITY_VALUES[a.density];
-  root.style.setProperty('--density', String(density));
-  root.style.fontSize = `calc(14px * ${density})`;
+  // Density sets row and control heights through the tokens; type never scales.
+  root.setAttribute('data-density', a.density);
 
   const link = document.querySelector('link[rel="icon"]') as HTMLLinkElement | null;
   if (link) {

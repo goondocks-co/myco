@@ -20,7 +20,7 @@ export function projectRouteSuffix(pathname: string): string {
 
 function ProjectAvatar({ project }: { project: Pick<ProjectSummary, 'projectId' | 'name'> }) {
   return (
-    <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-xs font-semibold text-white" style={{ backgroundColor: colorForProjectId(project.projectId) }} aria-hidden="true">
+    <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-xs font-semibold text-on-swatch" style={{ backgroundColor: colorForProjectId(project.projectId) }} aria-hidden="true">
       {monogramFor(project.name)}
     </span>
   );

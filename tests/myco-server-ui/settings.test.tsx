@@ -54,6 +54,14 @@ const base = (extra: Record<string, (init?: RequestInit) => Response> = {}) => (
   ...extra,
 });
 
+/** Opens a design-system select by its label and picks one option, the way a person does. */
+async function pick(label: string, option: string) {
+  const proto = window.HTMLElement.prototype as unknown as { scrollIntoView?: () => void };
+  proto.scrollIntoView ??= () => undefined;
+  fireEvent.click(await screen.findByLabelText(label));
+  fireEvent.click(await screen.findByRole('option', { name: option }));
+}
+
 function mount(path: string) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(<AppearanceProvider><QueryClientProvider client={client}><MemoryRouter initialEntries={[path]}><App /></MemoryRouter></QueryClientProvider></AppearanceProvider>);
@@ -119,7 +127,7 @@ describe('Deployment Settings', () => {
     }));
     mount('/settings');
     await tab('What sessions receive');
-    fireEvent.change(await screen.findByLabelText('Digest size'), { target: { value: '5000' } });
+    await pick('Digest size', '5000 tokens');
     expect((await screen.findByTestId('saved-cortex.digest.tier')).textContent).toBe('That setting is not held by the server.');
     await tab('Embedding');
     const model = await screen.findByLabelText('Model');
@@ -164,7 +172,7 @@ describe('Deployment Settings', () => {
   it('saves a numeric select as a number, and lands on the tab a link names', async () => {
     const { sent } = server(base({ '/api/settings/cortex.digest.tier': () => Response.json({ applied: true }) }));
     mount('/settings?tab=cortex');
-    fireEvent.change(await screen.findByLabelText('Digest size'), { target: { value: '5000' } });
+    await pick('Digest size', '5000 tokens');
     await waitFor(() => expect(sent).toHaveLength(1));
     expect(sent[0]).toMatchObject({ method: 'PUT', path: '/api/settings/cortex.digest.tier', body: { value: 5000 } });
   });

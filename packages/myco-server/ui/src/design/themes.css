@@ -1,0 +1,60 @@
+/*
+ * The six accent themes. A theme sets the accent pair only — `--primary` and
+ * the text colour that sits on it, `--on-primary` — in both modes; the
+ * primary tint `--primary-bg` follows from `--primary` in tokens.css. Surfaces,
+ * text and the state colours are the same in every theme.
+ */
+
+:root[data-theme='sage'] {
+  --primary: #b8c6a0;
+  --on-primary: #161a10;
+}
+:root[data-theme='sage'].light {
+  --primary: #41604f;
+  --on-primary: #ffffff;
+}
+
+:root[data-theme='moss'] {
+  --primary: #9ca884;
+  --on-primary: #1a1a0c;
+}
+:root[data-theme='moss'].light {
+  --primary: #4f5e3a;
+  --on-primary: #ffffff;
+}
+
+:root[data-theme='terracotta'] {
+  --primary: #d5927c;
+  --on-primary: #44180e;
+}
+:root[data-theme='terracotta'].light {
+  --primary: #854934;
+  --on-primary: #ffffff;
+}
+
+:root[data-theme='dusk'] {
+  --primary: #8faed1;
+  --on-primary: #0c1620;
+}
+:root[data-theme='dusk'].light {
+  --primary: #3e5b80;
+  --on-primary: #ffffff;
+}
+
+:root[data-theme='plum'] {
+  --primary: #b59ec8;
+  --on-primary: #1a0f24;
+}
+:root[data-theme='plum'].light {
+  --primary: #604a76;
+  --on-primary: #ffffff;
+}
+
+:root[data-theme='slate'] {
+  --primary: #a6b0b8;
+  --on-primary: #161a1d;
+}
+:root[data-theme='slate'].light {
+  --primary: #515b63;
+  --on-primary: #ffffff;
+}
