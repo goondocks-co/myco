@@ -37,7 +37,7 @@ const names = { machine: 'Ada’s studio Mac', project: (id: string) => (id === 
 describe('a machine running Myco’s work, in words', () => {
   it('shows an idle machine as waiting, with the agents it reported and what that does not prove', () => {
     expect(workerLine(worker(), NOW, names)).toEqual({ tone: 'ok', line: 'Ada’s studio Mac · Waiting for work · last contact 3s ago' });
-    expect(agentsWords(worker())).toBe('Can run Codex, Claude Code.');
+    expect(agentsWords(worker())).toBe('Reports Codex and Claude Code signed in; their providers aren’t tested here.');
   });
 
   it('shows a busy machine by its lease and the project by name, without promising the lease will be renewed', () => {

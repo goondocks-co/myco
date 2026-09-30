@@ -42,8 +42,8 @@ async function expectPeople(page: Page): Promise<void> {
   for (const name of ['People', 'Invitations', 'Machines']) await expect(page.getByRole('heading', { level: 2, name })).toBeVisible();
   if (!onFixture()) return;
   const machines = page.locator('section#machines');
-  await expect(machines.getByText('Ada’s studio Mac')).toBeVisible();
-  await expect(machines.getByText('Lin’s build box')).toBeVisible();
+  await expect(machines.getByText('Ada’s studio Mac', { exact: true })).toBeVisible();
+  await expect(machines.getByText('Lin’s build box', { exact: true })).toBeVisible();
   // The runtime that gave no name reads as a stand-in, never as its machine's id.
   await expect(machines.getByText('A machine', { exact: true })).toBeVisible();
   await expect(page.locator('body')).not.toContainText('ada_7c1e9f02');
@@ -93,8 +93,8 @@ async function expectHealth(page: Page): Promise<void> {
 async function expectMyMachines(page: Page): Promise<void> {
   await expect(page.getByRole('heading', { level: 1, name: 'My machines' })).toBeInViewport();
   if (!onFixture()) return;
-  await expect(page.getByText('Lin’s build box')).toBeInViewport();
-  await expect(page.getByText('Ada’s studio Mac')).toHaveCount(0);
+  await expect(page.getByText('Lin’s build box', { exact: true })).toBeInViewport();
+  await expect(page.getByText('Ada’s studio Mac', { exact: true })).toHaveCount(0);
   await expect(page.getByRole('button', { name: INVITE_CONTROLS.button })).toHaveCount(0);
   await expect(page.getByRole('navigation', { name: 'Admin' })).toHaveCount(0);
 }
@@ -118,6 +118,14 @@ test.describe('admin pages, as the owner', () => {
         await expectNoHorizontalOverflow(page);
         await expectNoRawIds(page);
         await expectAxeClean(page);
+        if (name === 'health' && onFixture()) {
+          // A self-hosted server runs no automatic recovery and answers its read with 400, which the page reads as unavailable.
+          await expect(page.getByTestId('recovery-unavailable')).toBeVisible();
+          const noRecovery = (line: string) => /\/api\/recovery\/exports: 400$/.test(line);
+          expect(watch.failedRequests.filter(noRecovery)).toHaveLength(1);
+          watch.failedRequests = watch.failedRequests.filter((line) => !noRecovery(line));
+          watch.consoleErrors = watch.consoleErrors.filter((line) => !line.includes('status of 400'));
+        }
         expectQuiet(watch);
         await shoot(page, `admin-${name}`, viewport, mode);
       } finally {

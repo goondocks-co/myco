@@ -6,7 +6,7 @@ import { useProjects } from '../../../hooks/use-projects';
 import { useWorkerFleet } from '../../../hooks/use-status';
 import type { WorkerRow, WorkerStatus } from '../../../lib/api';
 import { machineOfWorker, type Machine } from '../machines';
-import { agentsWords, lastClaimWords, workerLine } from '../workers';
+import { agentsWords, lastClaimWords, workerState } from '../workers';
 import { ActivityDialog, type ActivityTarget } from './ActivityDialog';
 import { MachineSettingsDialog } from './MachineSettingsDialog';
 import { shortDate, standingWords } from './words';
@@ -112,7 +112,7 @@ interface MachineItemProps {
 function MachineItem({ machine, owner, stoppedBy, fleet, projectName, actions }: MachineItemProps) {
   const now = Date.now();
   const workers: WorkerRow[] = fleet === undefined ? [] : fleet.fleet.filter((worker) => machineOfWorker([machine], worker) !== undefined);
-  const lines = workers.map((worker) => ({ worker, ...workerLine(worker, now, { machine: machine.name, project: projectName }) }));
+  const lines = workers.map((worker) => ({ worker, ...workerState(worker, now, projectName) }));
   const tone = lines[0]?.tone ?? STANDING_TONE[machine.standing];
   const meta = [owner, standingWords(machine, stoppedBy), `first signed in ${shortDate(machine.firstSeenAt, now)}`].filter((part) => part !== null).join(' · ');
   return (
@@ -124,7 +124,7 @@ function MachineItem({ machine, owner, stoppedBy, fleet, projectName, actions }:
         {lines.map(({ worker, line }) => (
           <div key={worker.credentialId} className="flex flex-col" data-worker-line="">
             <span className="t-small text-ink-2">{line}</span>
-            <span className="t-small text-muted">{agentsWords(worker)} Its own check; access to the provider isn’t tested.</span>
+            <span className="t-small text-muted">{agentsWords(worker)}</span>
             {lastClaimWords(worker) !== null && <span className="t-small text-muted">{lastClaimWords(worker)}</span>}
           </div>
         ))}

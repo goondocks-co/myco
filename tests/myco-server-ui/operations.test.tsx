@@ -193,7 +193,7 @@ describe('automatic recovery on Health', () => {
 
     server({ '/api/recovery/exports': () => Response.json({ error: 'bad_request', reason: 'this Deployment runs no hosted recovery producer' }, { status: 400 }) });
     mount();
-    expect((await screen.findByTestId('recovery-unavailable')).textContent).toContain('no hosted recovery producer');
+    expect((await screen.findByTestId('recovery-unavailable')).textContent).toContain('Automatic recovery doesn’t run on this server');
   });
 
   it('shows a failed attempt as failed, with the producer\'s own reason', async () => {
@@ -295,7 +295,7 @@ describe('automatic recovery on Health', () => {
       expect(words).not.toContain('recoverable');
       expect(words.length).toBeGreaterThan(10);
     }
-    expect(cadenceWords({ ...recoveryBase, supported: false, configured: false } as never, Date.now())).toContain('cannot run here');
+    expect(cadenceWords({ ...recoveryBase, supported: false, configured: false } as never, Date.now())).toContain('doesn’t run on this server');
     expect(latestWords({ ...recoveryBase, latest: null } as never)).toContain('No attempt has run yet');
   });
 

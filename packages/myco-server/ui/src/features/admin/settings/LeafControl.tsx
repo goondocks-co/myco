@@ -74,6 +74,8 @@ export function LeafControl({ field, row }: { field: LeafField; row: LeafRow | u
   };
 
   const placeholder = field.readOnly === true ? 'Nothing stored' : 'Server default';
+  // A number sits in a narrow box beside its unit, so its empty state says it in one word; the status line says the rest.
+  const numberPlaceholder = field.readOnly === true ? 'Not set' : 'Default';
   let control;
   if (field.kind === 'toggle') {
     control = (
@@ -105,7 +107,7 @@ export function LeafControl({ field, row }: { field: LeafField; row: LeafRow | u
           step={field.step}
           value={shown}
           readOnly={locked}
-          placeholder={placeholder}
+          placeholder={field.kind === 'number' ? numberPlaceholder : placeholder}
           onChange={(e) => setDraft(e.target.value)}
           onBlur={commitText}
           onKeyDown={(e) => { if (e.key === 'Enter') commitText(); }}

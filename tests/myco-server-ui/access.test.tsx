@@ -334,9 +334,8 @@ describe('machines', () => {
   it('shows what the machine last reported as a worker, in its own words', async () => {
     accessServer({ member: [credential()] });
     mount('/people');
-    expect(await screen.findByText(/^Ada’s MacBook · Waiting for work · last contact \d+s ago$/)).toBeTruthy();
-    expect(screen.getByText(/Can run Codex\./)).toBeTruthy();
-    expect(screen.getByText(/access to the provider isn’t tested/)).toBeTruthy();
+    expect(await screen.findByText(/^Waiting for work · last contact \d+s ago$/)).toBeTruthy();
+    expect(screen.getByText(/Reports Codex signed in; their providers aren’t tested here\./)).toBeTruthy();
     expect(screen.getByText('Last check for work: nothing it could take.')).toBeTruthy();
   });
 
@@ -383,7 +382,7 @@ describe('Myco\'s runs', () => {
     }));
     accessServer({ member: [credential({ lineageStartedAt: NOW_MS - 86_400_000 })], run: archive });
     mount('/people');
-    expect(await screen.findByText(/^Ada’s MacBook · Waiting for work/)).toBeTruthy();
+    expect(await screen.findByText(/^Waiting for work/)).toBeTruthy();
     expect(await screen.findByRole('button', { name: /^50 runs, 50 still signed in/ })).toBeTruthy();
   });
 

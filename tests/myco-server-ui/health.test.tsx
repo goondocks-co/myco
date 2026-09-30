@@ -178,7 +178,7 @@ describe('Health', () => {
       return found;
     });
     expect(rows[0]).toMatch(/^Ada’s studio Mac · Waiting for work · last contact \d+s ago/);
-    expect(rows[0]).toContain('Can run Claude Code.');
+    expect(rows[0]).toContain('Reports Claude Code signed in');
     expect(rows[0]).toContain('Last check for work: nothing it could take.');
     expect(rows[1]).toMatch(/^Lin’s build box · Running learning in Myco · lease ends in /);
     expect(rows[2]).toMatch(/^A machine · Not heard from lately/);

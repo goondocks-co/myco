@@ -55,9 +55,12 @@ export function whenLabel(at: number, now: number): string {
   return at - now < 48 * 60 * 60 * 1000 ? `in ${formatUntil(at, now, true)}` : `on ${dateLabel(at)}`;
 }
 
+/** What a server that runs no automatic recovery says of it. */
+export const RECOVERY_UNAVAILABLE_WORDS = 'Automatic recovery doesn’t run on this server. Use Create backup above, or the operator backup procedure.';
+
 /** What the recovery schedule is doing, in one line an owner can act on. */
 export function cadenceWords(schedule: RecoverySchedule, now: number): string {
-  if (!schedule.supported) return 'This Deployment runs no hosted recovery producer, so automatic recovery cannot run here.';
+  if (!schedule.supported) return RECOVERY_UNAVAILABLE_WORDS;
   if (!schedule.configured) return 'Automatic recovery is off. Set “Back up every” in Settings to schedule it.';
   const every = `Every ${schedule.intervalHours} h.`;
   if (!schedule.ready) return `${every} It cannot run yet: ${schedule.idleBecause ?? 'this Deployment cannot admit an attempt'}.`;

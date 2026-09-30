@@ -60,7 +60,7 @@ function Fleet({ workers, machines, now, projectName }: { workers: WorkerStatus;
                   <span className="flex h-lh shrink-0 items-center"><HealthDot tone={state.tone} label={state.tone === 'ok' ? 'Working' : state.tone === 'bad' ? 'Needs attention' : 'Quiet'} /></span>
                   <span className="min-w-0">{state.line}</span>
                 </p>
-                <p className="pl-s4 t-small text-muted">{agentsWords(worker)} Whether each agent’s provider answers is not tested here.</p>
+                <p className="pl-s4 t-small text-muted">{agentsWords(worker)}</p>
                 {claim !== null && <p className="pl-s4 t-small text-muted">{claim} That is what this machine’s last check found, not what every machine can run.</p>}
               </div>
             );

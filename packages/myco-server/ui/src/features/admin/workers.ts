@@ -33,25 +33,30 @@ export interface WorkerNames {
   project: (projectId: string) => string | null;
 }
 
-/** One worker's state in one line, and the tone of its dot. */
-export function workerLine(worker: WorkerRow, now: number, names: WorkerNames): { tone: HealthTone; line: string } {
-  const { machine } = names;
+/** One worker's state in one line without its name, and the tone of its dot: for a row that already names its machine. */
+export function workerState(worker: WorkerRow, now: number, project: WorkerNames['project']): { tone: HealthTone; line: string } {
   if (worker.busy !== null) {
-    const project = names.project(worker.busy.projectId);
+    const name = project(worker.busy.projectId);
     return {
       tone: 'ok',
-      line: `${machine} · Running ${taskWords(worker.busy.task)}${project === null ? '' : ` in ${project}`} · lease ends in ${formatUntil(worker.busy.leaseExpiresAt, now)}`,
+      line: `Running ${taskWords(worker.busy.task)}${name === null ? '' : ` in ${name}`} · lease ends in ${formatUntil(worker.busy.leaseExpiresAt, now)}`,
     };
   }
-  if (worker.lastSeenAt === 0) return { tone: 'faint', line: `${machine} · No contact recorded` };
-  if (!worker.recent) return { tone: 'faint', line: `${machine} · Not heard from lately · last contact ${sinceWords(worker.lastSeenAt, now)}` };
-  if (!worker.eligible) return { tone: 'bad', line: `${machine} · Its claims would be refused now · last contact ${sinceWords(worker.lastSeenAt, now)}` };
+  if (worker.lastSeenAt === 0) return { tone: 'faint', line: 'No contact recorded' };
+  if (!worker.recent) return { tone: 'faint', line: `Not heard from lately · last contact ${sinceWords(worker.lastSeenAt, now)}` };
+  if (!worker.eligible) return { tone: 'bad', line: `Its claims would be refused now · last contact ${sinceWords(worker.lastSeenAt, now)}` };
   // An unreadable report is not a report of nothing: it cannot make a worker read as ready.
   const ready = worker.offers?.some((o) => o.authenticated) === true;
   const polling = worker.offers === null
     ? 'Waiting for work, with no readable report of its agents'
     : ready ? 'Waiting for work' : 'Waiting for work, but reported no agent signed in';
-  return { tone: ready ? 'ok' : 'bad', line: `${machine} · ${polling} · last contact ${sinceWords(worker.lastSeenAt, now)}` };
+  return { tone: ready ? 'ok' : 'bad', line: `${polling} · last contact ${sinceWords(worker.lastSeenAt, now)}` };
+}
+
+/** One worker's state in one line, led by its machine's name, and the tone of its dot. */
+export function workerLine(worker: WorkerRow, now: number, names: WorkerNames): { tone: HealthTone; line: string } {
+  const state = workerState(worker, now, names.project);
+  return { tone: state.tone, line: `${names.machine} · ${state.line}` };
 }
 
 /** Why the last claim took nothing, when it took nothing: that poll's answer, never the queue's. */
@@ -60,12 +65,17 @@ export function lastClaimWords(worker: WorkerRow): string | null {
   return `Last check for work: ${REASON_WORDS[worker.lastReason]}.`;
 }
 
-/** The agents a worker reported signed in, in words. */
+/**
+ * The agents a worker reported signed in, in words. It is the machine's own
+ * report: whether each agent's provider answers is not tested, and the words
+ * say so.
+ */
 export function agentsWords(worker: WorkerRow): string {
   if (worker.offers === null) return 'Which agents it can run is unknown.';
   const signedIn = worker.offers.filter((o) => o.authenticated).map((o) => harnessLabel(o.id));
   if (signedIn.length === 0) return worker.offers.length === 0 ? 'Reported no agents.' : 'Reported no agent signed in.';
-  return `Can run ${signedIn.join(', ')}.`;
+  const names = signedIn.length === 1 ? signedIn[0]! : `${signedIn.slice(0, -1).join(', ')} and ${signedIn[signedIn.length - 1]}`;
+  return `Reports ${names} signed in; their providers aren’t tested here.`;
 }
 
 /** A worker counts as attached while it drives a run, or while it is heard from lately on a credential the claim route admits. */

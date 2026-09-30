@@ -8,7 +8,7 @@ import { cn } from '../../../lib/cn';
 import { HEALTH_ANCHORS, SETTINGS_SECTIONS } from '../../../routes/nav';
 import { AdminSection, RowCard } from '../AdminFrame';
 import {
-  attemptWords, availableWords, backupDate, cadenceWords, countsWords, latestWords, sizeLabel, unsupported, whenLabel,
+  attemptWords, availableWords, backupDate, cadenceWords, countsWords, latestWords, RECOVERY_UNAVAILABLE_WORDS, sizeLabel, unsupported, whenLabel,
 } from './words';
 
 const RECOVERY_PROCEDURE = 'https://github.com/goondocks-co/myco/blob/main/docs/architecture/deployment-recovery.md';
@@ -143,7 +143,7 @@ function RecoveryCard() {
       <h3 className="t-h3 text-ink">Automatic recovery</h3>
       {recovery.isPending && <LoadingState label="Reading automatic recovery" count={1} />}
       {recovery.error !== null && unsupported(recovery.error) && (
-        <p className="t-body text-muted" data-testid="recovery-unavailable">This Deployment runs no hosted recovery producer, so automatic recovery cannot run here.</p>
+        <p className="t-body text-muted" data-testid="recovery-unavailable">{RECOVERY_UNAVAILABLE_WORDS}</p>
       )}
       {recovery.error !== null && !unsupported(recovery.error) && (
         <p className="t-body text-warn" data-testid="recovery-unreadable">Automatic recovery could not be read: {recovery.error.message}</p>
