@@ -13,7 +13,7 @@ import type {
   PlatformDescriptor, RateLimiter, RelationalStore, ServerEnv,
 } from '../../core/adapters.js';
 import { cloudflareSourceOf } from './source.js';
-import { CLOCK_MANUAL, CLOCK_NAME, type DeploymentClock } from './deployment-clock.js';
+import { CLOCK_MANUAL, clockStub, type DeploymentClock } from './deployment-clock.js';
 import { PRODUCER_NAME, type RecoveryProducer } from './recovery-producer-object.js';
 import { boundRecoveryConfiguration, recoveryAdmissionWire, type StagingBucket } from './recovery-export.js';
 import { classifyR2BlobFailure } from './r2-digest.js';
@@ -200,8 +200,7 @@ export function serverEnvFromBindings(bindings: CloudflareBindings, deferred?: D
     // starts, so no work of one request can outlive it unobserved.
     ...(bindings.CLOCK === undefined ? {} : {
       wake: async (): Promise<void> => {
-        const clock = bindings.CLOCK!;
-        await clock.get(clock.idFromName(CLOCK_NAME)).ensure();
+        await clockStub(bindings.CLOCK!).ensure();
       },
     }),
     afterResponse: deferred === undefined ? () => {} : (work) => deferred.waitUntil(work()),

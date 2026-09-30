@@ -55,7 +55,7 @@ async function stop(proc: ReturnType<typeof Bun.spawn>): Promise<void> {
  * point here is the admission the clock makes, not the export the producer performs.
  */
 const entry = (src: string) => `
-import { DeploymentClock } from '${src}/platform/cloudflare/deployment-clock.ts';
+import { clockStub, DeploymentClock } from '${src}/platform/cloudflare/deployment-clock.ts';
 import { RecoveryProducer } from '${src}/platform/cloudflare/recovery-producer-object.ts';
 import { serverEnvFromBindings } from '${src}/platform/cloudflare/env.ts';
 import { recoveryScheduleOf } from '${src}/core/recovery-schedule.ts';
@@ -82,7 +82,7 @@ export default {
     if (url.pathname === '/status') return json(await answered(() => server.recovery.status()));
     if (url.pathname === '/wake') {
       await env.MYCO_DB.prepare("INSERT OR REPLACE INTO schema_meta (key, value) VALUES ('last_request_at', ?)").bind(String(Date.now())).run();
-      const clock = env.CLOCK.get(env.CLOCK.idFromName('deployment'));
+      const clock = clockStub(env.CLOCK);
       return json(await answered(async () => {
         const woke = await clock.wake();
         return {

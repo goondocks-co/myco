@@ -16,9 +16,15 @@ import { classify, emit } from '../../telemetry.js';
 import { serverEnvFromBindings, type CloudflareBindings } from './env.js';
 import type { ServerEnv } from '../../core/adapters.js';
 import { PRODUCER_NAME } from './recovery-producer-object.js';
+import { CLOCK_LOCATION_HINT, CLOCK_NAME } from './clock-name.js';
 
-/** The one clock a Deployment keeps. */
-export const CLOCK_NAME = 'deployment';
+export { CLOCK_LOCATION_HINT, CLOCK_NAME, RETIRED_CLOCK_NAMES } from './clock-name.js';
+
+/** The Deployment's clock: the only way anything addresses it. */
+export function clockStub(namespace: DurableObjectNamespace<DeploymentClock>): DurableObjectStub<DeploymentClock> {
+  return namespace.get(namespace.idFromName(CLOCK_NAME), { locationHint: CLOCK_LOCATION_HINT });
+}
+
 /** How soon `ensure` wakes when no alarm is set. */
 const ENSURE_SOON_MS = 1_000;
 
@@ -88,7 +94,8 @@ export function soonestWake(tickMs: number | null, continuationMs: number | null
  */
 export type WakeOutcome =
   | { ticked: true; report: TickReport }
-  | { ticked: false; heldBy: 'recovery_export'; attempt: number | null; stage: string };
+  | { ticked: false; heldBy: 'recovery_export'; attempt: number | null; stage: string }
+  | { ticked: false; heldBy: 'retired_clock' };
 
 /**
  * Runs each continuation the registry declares, before any storage read, and reports the soonest deadline they ask
@@ -139,7 +146,7 @@ export async function armSoon(storage: AlarmStore, bindings: { CLOCK_MODE?: stri
 export async function wakeClock(bindings: CloudflareBindings): Promise<void> {
   const clock = bindings.CLOCK;
   if (clock === undefined) return;
-  await clock.get(clock.idFromName(CLOCK_NAME)).wake();
+  await clockStub(clock).wake();
 }
 
 export class DeploymentClock extends DurableObject<CloudflareBindings> {
@@ -176,12 +183,26 @@ export class DeploymentClock extends DurableObject<CloudflareBindings> {
     return runTick(this.clockEnv(), now, { wake: 'clock' });
   }
 
-  /** Run the tick now and arm the next alarm from its answer; deep sleep arms none. */
+  /**
+   * Whether this object is a clock under a name no longer kept (`RETIRED_CLOCK_NAMES`): its id is not the one
+   * `CLOCK_NAME` names in this Worker's own namespace. A configuration with no clock binding has only this one.
+   */
+  private retired(): boolean {
+    const namespace = this.env.CLOCK;
+    return namespace !== undefined && !this.ctx.id.equals(namespace.idFromName(CLOCK_NAME));
+  }
+
+  /** Run the tick now and arm the next alarm from its answer; deep sleep arms none. A retired clock ticks nothing. */
   async wake(): Promise<WakeOutcome> {
     return this.gate.exclusive(() => this.wakeOnce());
   }
 
   private async wakeOnce(): Promise<WakeOutcome> {
+    if (this.retired()) {
+      await this.ctx.storage.deleteAlarm();
+      emit({ kind: 'clock_retired' });
+      return { ticked: false, heldBy: 'retired_clock' };
+    }
     const now = Date.now();
     // Armed before anything that can throw: the continuation below can leave the Deployment's own database
     // unreadable, which makes the tick throw, and an unarmed clock stays dark until the cron floor.
@@ -206,8 +227,12 @@ export class DeploymentClock extends DurableObject<CloudflareBindings> {
     }
   }
 
-  /** Wake soon, unless an alarm is already set. */
+  /** Wake soon, unless an alarm is already set. A retired clock holds no alarm at all. */
   async ensure(): Promise<void> {
+    if (this.retired()) {
+      await this.ctx.storage.deleteAlarm();
+      return;
+    }
     await armSoon(this.ctx.storage, this.env, Date.now());
   }
 

@@ -59,7 +59,7 @@ async function stop(proc: ReturnType<typeof Bun.spawn>, signal: 'SIGTERM' | 'SIG
  * wake until told to stop.
  */
 const ENTRY = `
-import { DeploymentClock as ProductClock } from '${path.join(ROOT, 'packages/myco-server/src/platform/cloudflare/deployment-clock.ts')}';
+import { clockStub, DeploymentClock as ProductClock } from '${path.join(ROOT, 'packages/myco-server/src/platform/cloudflare/deployment-clock.ts')}';
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 export class DeploymentClock extends ProductClock {
   async tick(now) {
@@ -84,7 +84,7 @@ export class DeploymentClock extends ProductClock {
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
-    const clock = env.CLOCK.get(env.CLOCK.idFromName('deployment'));
+    const clock = clockStub(env.CLOCK);
     if (url.pathname === '/health') return Response.json({ ok: true });
     if (url.pathname === '/start') { await clock.ensure(); return Response.json({ started: true }); }
     if (url.pathname === '/record') return Response.json(await clock.record());

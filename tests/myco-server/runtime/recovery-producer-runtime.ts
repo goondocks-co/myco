@@ -165,6 +165,9 @@ function previousSource(commit = PREVIOUS_COMMIT): string {
 const ENTRY = `
 import { RecoveryProducer } from '${path.join(ROOT, 'packages/myco-server/src/platform/cloudflare/recovery-producer-object.ts')}';
 import { DeploymentClock } from '${path.join(ROOT, 'packages/myco-server/src/platform/cloudflare/deployment-clock.ts')}';
+// The clock's address always comes from this release, whichever clock and producer objects the entry runs.
+import { CLOCK_LOCATION_HINT, CLOCK_NAME } from './clock.ts';
+const clockOf = (env) => env.CLOCK.get(env.CLOCK.idFromName(CLOCK_NAME), { locationHint: CLOCK_LOCATION_HINT });
 import { capturedDefinitions } from '${path.join(ROOT, 'packages/myco-server/src/core/recovery-producer.ts')}';
 import { recoveryAdmissionWire } from './wire.ts';
 export { RecoveryProducer, DeploymentClock };
@@ -206,11 +209,11 @@ export default {
     }
     if (url.pathname === '/status') return Response.json(await producer.status());
     if (url.pathname === '/wake') {
-      const clock = env.CLOCK.get(env.CLOCK.idFromName('deployment'));
+      const clock = clockOf(env);
       try { return Response.json({ woke: await clock.wake() }); } catch (error) { return Response.json({ raised: String(error).slice(0, 160) }); }
     }
     if (url.pathname === '/ensure') {
-      await env.CLOCK.get(env.CLOCK.idFromName('deployment')).ensure();
+      await clockOf(env).ensure();
       return Response.json({ ensured: true });
     }
     if (url.pathname === '/drift') return Response.json(await producer.noteSchemaDrift(Number(url.searchParams.get('attempt'))));
@@ -301,6 +304,7 @@ async function startWorker(apiPort: number, mode: 'manual' | 'clock' = 'manual',
   fs.writeFileSync(path.join(RUN, 'wrangler.toml'), config);
   fs.writeFileSync(path.join(RUN, 'entry.ts'), entry);
   // The wire builder always comes from this release, whichever producer object the entry runs.
+  fs.writeFileSync(path.join(RUN, 'clock.ts'), `export { CLOCK_LOCATION_HINT, CLOCK_NAME } from '${path.join(ROOT, 'packages/myco-server/src/platform/cloudflare/clock-name.ts')}';\n`);
   fs.writeFileSync(path.join(RUN, 'wire.ts'), `export { recoveryAdmissionWire } from '${path.join(ROOT, 'packages/myco-server/src/platform/cloudflare/recovery-export.ts')}';\n`);
   fs.writeFileSync(path.join(RUN, '.dev.vars'), 'RECOVERY_EXPORT_TOKEN=runtime-token-not-a-credential\n');
   workerPort = await freePort();

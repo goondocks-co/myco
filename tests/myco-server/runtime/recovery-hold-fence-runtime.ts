@@ -1,7 +1,7 @@
 /**
  * Runtime proof for the operator recovery hold, on real workerd and a real local D1.
  *
- * One persisted state — D1 migrated through step 43, the Durable Objects and two R2 buckets — is driven in turn by a
+ * One persisted state — D1 migrated through this release's last step, the Durable Objects and two R2 buckets — is driven in turn by a
  * Worker built from this source and one built from the release before this slice, extracted from its own commit. What
  * it proves cannot be proven in process: the database refuses the release statement that release still runs, its tick
  * reports the failure and keeps going, its admission opens nothing, and its deletions defer. Then this release's Worker
@@ -14,6 +14,7 @@ import fs from 'node:fs';
 import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
+import { SERVER_SCHEMA_VERSION } from '../../../packages/myco-server/src/constants.js';
 
 const ROOT = path.resolve(import.meta.dir, '../../..');
 const WRANGLER = path.join(ROOT, 'node_modules/.bin/wrangler');
@@ -63,6 +64,8 @@ function previousSource(commit: string): string {
 /** A test entry around the product's own clock, producer object, environment mapping and hold owner. */
 const entry = (src: string, operator: boolean) => `
 import { DeploymentClock } from '${src}/platform/cloudflare/deployment-clock.ts';
+// The clock's address always comes from this release, whichever build the entry runs.
+import { CLOCK_LOCATION_HINT, CLOCK_NAME } from '${path.join(ROOT, 'packages/myco-server/src/platform/cloudflare/clock-name.ts')}';
 import { RecoveryProducer } from '${src}/platform/cloudflare/recovery-producer-object.ts';
 import { serverEnvFromBindings } from '${src}/platform/cloudflare/env.ts';
 import { openHoldForAdmission } from '${src}/core/recovery-hold.ts';
@@ -95,7 +98,7 @@ export default {
     if (url.pathname === '/release') return json(await answered(() => releaseBlobs(server.db, [{ projectId: PROJECT, key: q('key') }], Date.now())));
     if (url.pathname === '/wake') {
       await env.MYCO_DB.prepare("INSERT OR REPLACE INTO schema_meta (key, value) VALUES ('last_request_at', ?)").bind(String(Date.now())).run();
-      const clock = env.CLOCK.get(env.CLOCK.idFromName('deployment'));
+      const clock = env.CLOCK.get(env.CLOCK.idFromName(CLOCK_NAME), { locationHint: CLOCK_LOCATION_HINT });
       return json(await answered(async () => {
         const woke = await clock.wake();
         return { ticked: woke.ticked, jobs: woke.ticked ? woke.report.jobs.filter((job) => ['recovery-hold-release', 'object-release-drain'].includes(job.name)) : null };
@@ -169,7 +172,7 @@ try {
   if (migrate.exitCode !== 0) throw new Error('migrations failed; see migrate.log');
 
   await start('current');
-  check('the migrated schema step', (await call('/version')).value, '43');
+  check('the migrated schema step', (await call('/version')).value, String(SERVER_SCHEMA_VERSION));
   check('an operator backup opens its hold', (await call('/operator-acquire?token=op-1&now=10')).value, true);
   await call('/register?key=' + 'a'.repeat(64));
   check('a deletion while it is open defers', (await call('/release?key=' + 'a'.repeat(64))).value, { released: 0, deferred: 1 });
