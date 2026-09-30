@@ -22,9 +22,10 @@ interface MachineGroup {
 
 /** The rows by machine, each machine in the order of its most recent capture. */
 export function byMachine(rows: readonly CaptureRow[]): MachineGroup[] {
-  const names = machineNames(rows);
+  const sorted = [...rows].sort((a, b) => b.lastEventAt - a.lastEventAt);
+  const names = machineNames(sorted);
   const groups = new Map<string, MachineGroup>();
-  for (const row of [...rows].sort((a, b) => b.lastEventAt - a.lastEventAt)) {
+  for (const row of sorted) {
     const group = groups.get(row.machineId) ?? { machineId: row.machineId, name: names.get(row.machineId)!, rows: [] };
     group.rows.push(row);
     groups.set(row.machineId, group);

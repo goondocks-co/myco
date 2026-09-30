@@ -58,9 +58,12 @@ export function dayWindow(day: string | null, now: number): DayWindow {
 
 const projectParam = (projectId: string | null): string => (projectId === null ? '' : `&project=${encodeURIComponent(projectId)}`);
 
-/** The day's sessions, read page by page from its first instant; `truncated` when the day holds more than the pages read. */
+/** The `since` and `until` bounds of a day, its end excluded. */
+const dayBounds = (window: DayWindow): string => `since=${window.start}&until=${window.end}`;
+
+/** The day's sessions, read page by page between its bounds; `truncated` when the day holds more than the pages read. */
 async function readDaySessions(projectId: string | null, window: DayWindow, signal: AbortSignal): Promise<{ rows: TodaySession[]; truncated: boolean }> {
-  const base = `/api/sessions?since=${window.start}&limit=${SESSION_PAGE}${projectParam(projectId)}`;
+  const base = `/api/sessions?${dayBounds(window)}&limit=${SESSION_PAGE}${projectParam(projectId)}`;
   const rows: TodaySession[] = [];
   let cursor: string | null = null;
   for (let page = 0; page < MAX_SESSION_PAGES; page += 1) {
@@ -96,7 +99,7 @@ export function useToday({ projectId, day, now }: TodayQuery) {
   });
   const spores = useQuery({
     queryKey: ['today', 'spores', scope, window.start],
-    queryFn: ({ signal }) => fetchJson<TodaySporePage>(`/api/spores?since=${window.start}&limit=${SPORE_PAGE}${projectParam(projectId)}`, signal),
+    queryFn: ({ signal }) => fetchJson<TodaySporePage>(`/api/spores?${dayBounds(window)}&limit=${SPORE_PAGE}${projectParam(projectId)}`, signal),
     ...live,
   });
   const work = useWork({ projectId, since: window.start, until: window.end, live: window.isToday });

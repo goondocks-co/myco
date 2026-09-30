@@ -10,12 +10,12 @@ const TONE_LABEL = { warn: 'Needs attention', bad: 'Failing' } as const;
 export function NeedsYouItem({ tone, words }: { tone: AttentionItem['tone']; words: NeedsYouWords }) {
   return (
     <li className="flex gap-s3 border-t border-line pt-s3 first:border-t-0 first:pt-0" data-needs-you-item={tone}>
-      <HealthDot tone={tone} label={TONE_LABEL[tone]} className="mt-[7px]" />
-      <div className="flex min-w-0 flex-col gap-[2px]">
+      <span className="flex h-lh shrink-0 items-center t-body"><HealthDot tone={tone} label={TONE_LABEL[tone]} /></span>
+      <div className="flex min-w-0 flex-col gap-s1">
         <p className="t-body font-medium text-ink">{words.title}</p>
         <p className="t-small text-muted">{words.detail}</p>
         {words.action !== null && (
-          <RouterLink to={words.action.to} className={cn('mt-[2px] w-fit rounded-chip t-small font-medium text-primary hover:underline', focusRing)}>
+          <RouterLink to={words.action.to} className={cn('w-fit rounded-chip t-small font-medium text-primary hover:underline', focusRing)}>
             {words.action.label} →
           </RouterLink>
         )}
@@ -58,14 +58,14 @@ function Failed({ error, onRetry }: { error: unknown; onRetry: () => void }) {
 export function NeedsYouPanel({ answer, pending, error, onRetry, now, projectName }: NeedsYouProps) {
   if (pending) {
     return (
-      <Card role="status" aria-label="Checking what needs you" className="flex flex-col gap-s3">
+      <Card role="status" aria-label="Checking what needs you" className="flex flex-col gap-s3" data-needs-you="">
         <Skeleton className="h-s5 w-2/5" />
         <Skeleton className="h-s4 w-4/5" />
       </Card>
     );
   }
   if (answer === undefined) {
-    return <Card><Failed error={error} onRetry={onRetry} /></Card>;
+    return <Card data-needs-you=""><Failed error={error} onRetry={onRetry} /></Card>;
   }
   const items = itemsOf(answer, now, projectName);
   if (items.length === 0) {
@@ -93,7 +93,7 @@ export function NeedsYouPanel({ answer, pending, error, onRetry, now, projectNam
 /** "Needs you" on a phone: one line at the top of the page that opens to the items. */
 export function NeedsYouSummary({ answer, pending, error, onRetry, now, projectName }: NeedsYouProps) {
   if (pending) return null;
-  if (answer === undefined) return <Card><Failed error={error} onRetry={onRetry} /></Card>;
+  if (answer === undefined) return <Card data-needs-you=""><Failed error={error} onRetry={onRetry} /></Card>;
   const items = itemsOf(answer, now, projectName);
   if (items.length === 0) {
     return (

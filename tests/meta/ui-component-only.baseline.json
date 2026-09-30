@@ -181,6 +181,9 @@
     "small-text": 28,
     "retired-import": 9
   },
+  "pages/CodeMap.tsx": {
+    "retired-import": 1
+  },
   "pages/Link.tsx": {
     "raw-button": 1,
     "small-text": 2,

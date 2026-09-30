@@ -16,6 +16,8 @@ const NODE: Record<TimelineTone, string> = {
 export interface TimelineItemProps {
   /** The time column: "now", or the time of day. */
   time: string;
+  /** The instant the time column names, for the machine-readable `<time>`. */
+  at: number;
   tone: TimelineTone;
   /** The line above the title: project, agent, machine and size, or Myco's outcome. */
   kicker: ReactNode;
@@ -28,20 +30,20 @@ export interface TimelineItemProps {
 }
 
 /** One moment of the day on the timeline: its time, a node on the line, and what happened. */
-export function TimelineItem({ time, tone, kicker, title, summary, children }: TimelineItemProps) {
+export function TimelineItem({ time, at, tone, kicker, title, summary, children }: TimelineItemProps) {
   return (
     <li className="grid grid-cols-[44px_minmax(0,1fr)] gap-s2 sm:grid-cols-[62px_minmax(0,1fr)] sm:gap-s3" data-timeline-item={tone}>
-      <span className="pt-s3 text-right t-small tabular-nums text-faint sm:pt-[15px]">{time}</span>
+      <time dateTime={new Date(at).toISOString()} className="pt-s4 text-right t-small tabular-nums text-faint">{time}</time>
       <div
         className={cn(
-          'relative flex min-w-0 flex-col border-l border-line-strong pb-s4 pl-s4 pt-s3 sm:pl-s5',
-          'before:absolute before:left-[-5px] before:top-[19px] before:size-[9px] before:rounded-pill before:border-2 before:content-[""]',
+          'relative flex min-w-0 flex-col border-l border-line-strong pb-s4 pl-s4 pt-s4 sm:pl-s5',
+          'before:absolute before:-left-s1 before:top-s5 before:size-s2 before:rounded-pill before:border-2 before:content-[""]',
           NODE[tone],
         )}
       >
         <div className="flex min-w-0 flex-wrap items-center gap-x-s2 gap-y-s1 t-small text-muted">{kicker}</div>
         {title != null && <div className="mt-s1 t-body font-medium text-ink">{title}</div>}
-        {summary != null && <p className="mt-[2px] line-clamp-1 hidden t-small text-muted sm:block">{summary}</p>}
+        {summary != null && <p className="line-clamp-1 hidden t-small text-muted sm:block">{summary}</p>}
         {children}
       </div>
     </li>
@@ -82,9 +84,9 @@ export function NestedLines({ lines, total, label }: { lines: readonly NestedLin
   return (
     <ul aria-label={label} className="mt-s2 flex flex-col gap-s2">
       {lines.map((line) => (
-        <li key={line.key} className="flex min-w-0 items-start gap-s3 t-small text-ink-2">
+        <li key={line.key} className="flex min-w-0 items-baseline gap-s3 t-small text-ink-2">
           {line.chip !== undefined && <TypeChip>{line.chip}</TypeChip>}
-          <span className="line-clamp-2 min-w-0 pt-[2px] sm:line-clamp-1">
+          <span className="line-clamp-2 min-w-0 sm:line-clamp-1">
             {line.to === undefined ? line.text : <TitleLink to={line.to}>{line.text}</TitleLink>}
           </span>
         </li>

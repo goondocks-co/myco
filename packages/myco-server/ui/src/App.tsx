@@ -9,6 +9,7 @@ import { NotFound } from './pages/NotFound';
 import { Operations } from './pages/Operations';
 import { Settings } from './pages/Settings';
 import { Projects } from './pages/Projects';
+import { CodeMap } from './pages/CodeMap';
 import { Measures } from './pages/Measures';
 import { Plans } from './pages/Plans';
 import { Sessions } from './pages/Sessions';
@@ -32,6 +33,7 @@ export default function App() {
         <Route path="/p/:projectId/sessions" element={<Sessions />} />
         <Route path="/p/:projectId/sessions/:sessionId" element={<Sessions />} />
         <Route path="/p/:projectId/plans" element={<Plans />} />
+        <Route path="/p/:projectId/knowledge/map" element={<CodeMap />} />
         <Route path="/p/:projectId/spores" element={<Spores />} />
         <Route path="/p/:projectId/spores/:sporeId" element={<Spores />} />
         <Route path="/p/:projectId/runs" element={<AgentRuns />} />

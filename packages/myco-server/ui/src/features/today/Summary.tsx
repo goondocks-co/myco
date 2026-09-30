@@ -16,18 +16,26 @@ export function ledeParts(counts: LedeCounts, options: { isToday: boolean; scope
     if (projects.length <= 2) return [' in ', ...joinStrong(projects.map(name))];
     return [' in ', { strong: count(projects.length, 'project') }];
   };
+  // A place is said once: the spores' projects, when they are the ones already named, go unsaid.
+  const said = new Set<string>();
+  const once = (projects: readonly string[]): Part[] => {
+    const key = [...projects].sort().join(',');
+    if (said.has(key)) return [];
+    said.add(key);
+    return where(projects);
+  };
   const parts: Part[] = [];
   if (options.isToday && counts.liveProjects.length > 0) {
     parts.push(counts.liveProjects.length === 1 ? 'An agent is working' : 'Agents are working');
-    parts.push(...(options.scoped ? [] : where(counts.liveProjects)), ' right now. ');
+    parts.push(...once(counts.liveProjects), ' right now. ');
   }
   const day = options.isToday ? 'Today y' : 'Y';
   if (counts.sessions > 0) {
-    parts.push(`${day}our agents ran `, { strong: count(counts.sessions, 'session') }, ...where(counts.sessionProjects));
-    if (counts.spores > 0) parts.push(', and Myco learned ', { strong: count(counts.spores, 'spore') }, ...where(counts.sporeProjects));
+    parts.push(`${day}our agents ran `, { strong: count(counts.sessions, 'session') }, ...once(counts.sessionProjects));
+    if (counts.spores > 0) parts.push(', and Myco learned ', { strong: count(counts.spores, 'spore') }, ...once(counts.sporeProjects));
     parts.push('.');
   } else if (counts.spores > 0) {
-    parts.push(`${day}our agents ran no sessions, and Myco learned `, { strong: count(counts.spores, 'spore') }, ...where(counts.sporeProjects), '.');
+    parts.push(`${day}our agents ran no sessions, and Myco learned `, { strong: count(counts.spores, 'spore') }, ...once(counts.sporeProjects), '.');
   } else {
     parts.push(`${day}our agents ran no sessions.`);
   }
@@ -60,7 +68,7 @@ export function UpkeepLine({ upkeep, now, statusHref }: { upkeep: Upkeep; now: n
   if (upkeep.unrecovered !== null) {
     content = (
       <>
-        <HealthDot tone="warn" label="Falling behind" className="translate-y-[-1px]" />
+        <span className="flex h-lh shrink-0 items-center"><HealthDot tone="warn" label="Falling behind" /></span>
         <span>Search updates have failed since {when(upkeep.unrecovered.since, now).replace(/^at /, '')}; search still answers.</span>
       </>
     );
@@ -68,7 +76,7 @@ export function UpkeepLine({ upkeep, now, statusHref }: { upkeep: Upkeep; now: n
     const retries = upkeep.failedInWindow;
     content = (
       <>
-        <HealthDot tone="ok" label="Up to date" className="translate-y-[-1px]" />
+        <span className="flex h-lh shrink-0 items-center"><HealthDot tone="ok" label="Up to date" /></span>
         <span>
           Search kept up to date · {ago(upkeep.lastSuccessAt, now)}
           {retries > 0 && ` · ${count(retries, 'retry', 'retries')} along the way`}
@@ -79,7 +87,7 @@ export function UpkeepLine({ upkeep, now, statusHref }: { upkeep: Upkeep; now: n
     return null;
   }
   return (
-    <p className="flex items-baseline gap-s2 t-small text-muted" data-upkeep="">
+    <p className="flex items-start gap-s2 t-small text-muted" data-upkeep="">
       {content}
       {statusHref !== null && (
         <RouterLink to={statusHref} className={cn('shrink-0 rounded-chip font-medium text-primary hover:underline', focusRing)}>Status →</RouterLink>

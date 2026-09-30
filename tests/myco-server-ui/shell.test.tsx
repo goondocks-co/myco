@@ -161,7 +161,7 @@ describe('the nav', () => {
     server(signedIn());
     mount('/p/alpha/sessions');
     const pages = await screen.findByRole('navigation', { name: 'Pages' });
-    expect(within(pages).getAllByRole('link').map((a) => a.textContent)).toEqual(['Today', 'Sessions', 'Spores', 'Plans', 'Agent runs', 'Access']);
+    expect(within(pages).getAllByRole('link').map((a) => a.textContent)).toEqual(['Today', 'Sessions', 'Spores', 'Plans', 'Code map', 'Agent runs', 'Access']);
     expect(within(pages).getByRole('link', { name: 'Sessions' }).getAttribute('aria-current')).toBe('page');
     await waitFor(() => expect(filterItems()).toHaveLength(2));
     expect(filterItems().map((a) => a.textContent)).toEqual([expect.stringContaining('Alpha'), expect.stringContaining('Beta')]);
@@ -204,7 +204,7 @@ describe('the nav', () => {
     server(signedIn(MEMBER));
     mount('/p/alpha');
     const pages = await screen.findByRole('navigation', { name: 'Pages' });
-    expect(within(pages).getAllByRole('link').map((a) => a.textContent)).toEqual(['Today', 'Sessions', 'Spores', 'Plans', 'Agent runs']);
+    expect(within(pages).getAllByRole('link').map((a) => a.textContent)).toEqual(['Today', 'Sessions', 'Spores', 'Plans', 'Code map', 'Agent runs']);
     await waitFor(() => expect(filterItems()).toHaveLength(2));
     expect(screen.queryByRole('navigation', { name: 'Admin' })).toBeNull();
     const nav = screen.getByRole('complementary', { name: 'Navigation' });
@@ -295,6 +295,9 @@ describe('the page titles', () => {
       'Spores', 'Spores', 'Agent runs', 'Access', 'Not found',
       'Today', 'Projects', 'Status', 'Measures', 'Members', 'Settings', 'Operations', 'Not found',
     ]);
+    // A page whose suffix runs over two segments is found whole, and a project switch keeps it.
+    expect([pageSuffix('/p/x/knowledge/map'), pageSuffix('/p/x/knowledge/map/'), titleOf('/p/x/knowledge/map'), pageSuffix('/p/x/knowledge')]).toEqual(['/knowledge/map', '/knowledge/map', 'Code map', '/knowledge']);
+    expect(switchProjectHref({ pathname: '/p/x/knowledge/map', search: '' }, 'y')).toBe('/p/y/knowledge/map');
     // A member reads /access for their own machines.
     expect([titleOf('/access', 'member'), titleOf('/access', 'admin'), titleOf('/status', 'member')]).toEqual(['My machines', 'Members', 'Status']);
   });

@@ -186,7 +186,7 @@ describe('Today', () => {
     mount('/');
     const list = await timeline();
     await waitFor(() => expect(items(list).length).toBe(8));
-    const rows = items(list).map((li) => `${li.querySelector('span')!.textContent} ${li.textContent!.slice(li.querySelector('span')!.textContent!.length)}`);
+    const rows = items(list).map((li) => `${li.querySelector('time')!.textContent} ${li.textContent!.slice(li.querySelector('time')!.textContent!.length)}`);
     expect(rows.map((row) => row.split(' ')[0])).toEqual(['now', '14:00', '13:00', '11:00', '09:00', '08:00', '07:00', '06:00']);
     expect(rows[0]).toContain('Live');
     expect(rows[0]).toContain('Canopy parity verified');
@@ -199,7 +199,15 @@ describe('Today', () => {
     expect(screen.getByRole('heading', { level: 1 }).textContent).toBe('Tuesday, September 29');
     const work = asked.find((url) => url.pathname === '/api/work')!;
     expect([work.searchParams.get('since'), work.searchParams.get('until')]).toEqual([String(DAY_START), String(DAY_START + 24 * HOUR)]);
-    expect(asked.find((url) => url.pathname === '/api/sessions')!.searchParams.get('since')).toBe(String(DAY_START));
+    for (const path of ['/api/sessions', '/api/spores']) {
+      const read = asked.find((url) => url.pathname === path)!;
+      expect([path, read.searchParams.get('since'), read.searchParams.get('until')]).toEqual([path, String(DAY_START), String(DAY_START + 24 * HOUR)]);
+    }
+    // Each <time> carries the instant it names.
+    expect(items(list)[1]!.querySelector('time')!.getAttribute('dateTime')).toBe(new Date(NOW - 2 * HOUR).toISOString());
+    // Myco's items lead with the outcome and name the project after it; sessions lead with the project.
+    expect(items(list)[1]!.querySelector('div > div')!.textContent).toBe('Myco learned 2 spores from 3 sessions·in Myco');
+    expect(items(list)[3]!.querySelector('div > div')!.textContent!.startsWith('Atlas web')).toBe(true);
     expect(asked.some((url) => url.searchParams.has('project'))).toBe(false);
   });
 
@@ -228,7 +236,8 @@ describe('Today', () => {
     const map = within(list).getByText('Myco couldn’t update the code map').closest('li')!;
     expect(map.getAttribute('data-timeline-item')).toBe('bad');
     expect(map.textContent).toContain('Why: repo.sha256 is absent from the checkout.');
-    expect(map.textContent).toContain('The previous map is kept.');
+    expect(map.textContent).toContain('Open the run to see where it stopped.');
+    expect(map.textContent!.match(/previous map is kept/g) ?? []).toHaveLength(0);
     expect(within(map).getByRole('link', { name: 'Open the run →' }).getAttribute('href')).toBe(`/p/${P_MYCO}/runs/run_c19f7a0e55`);
     const kept = within(list).getByText('Myco learned 2 spores from 3 sessions').closest('li')!;
     expect(kept.textContent).toContain('Stopped early: the run exceeded its turn budget.');
@@ -244,7 +253,8 @@ describe('Today', () => {
     expect(lede()).toContain(`${sessionItems.length} sessions`);
     const learnedCounts = items(list).map((li) => /Myco learned (\d+) spores/.exec(li.textContent!)?.[1]).filter((n): n is string => n !== undefined).map(Number);
     expect(lede()).toContain(`Myco learned ${learnedCounts.reduce((a, b) => a + b, 0)} spores`);
-    expect(lede()).toBe('An agent is working in Myco right now. Today your agents ran 4 sessions in 3 projects, and Myco learned 7 spores in Myco.');
+    // Myco is named once: the spores' project is the one the live agent is in.
+    expect(lede()).toBe('An agent is working in Myco right now. Today your agents ran 4 sessions in 3 projects, and Myco learned 7 spores.');
   });
 
   it('holds the lede to the timeline for any mix of entries', () => {
@@ -268,15 +278,16 @@ describe('Today', () => {
     await screen.findByRole('list', { name: /Agents on/ });
     expect(document.body.textContent).not.toMatch(RAW_ID);
     expect(within(list).getByText('A project')).toBeTruthy();
-    // The live session has no title yet, and the one headed only by its id shows no id.
-    expect(within(list).getAllByText('Untitled session')).toHaveLength(2);
+    // The live session has no title yet, so its first line heads it with an "Untitled" tag; the one headed only by its id shows no id.
+    expect(within(list).getAllByText('Untitled session')).toHaveLength(1);
+    expect(items(list)[0]!.querySelector('a')!.textContent).toBe('UntitledCanopy parity verified');
     const kickers = items(list).map((li) => li.querySelector('div > div')!.textContent);
     expect(kickers.filter((k) => k!.includes('Pi · Myco'))).toHaveLength(1);
     expect(kickers.filter((k) => k!.includes('Cursor · Lin'))).toHaveLength(1);
     expect(kickers.filter((k) => k!.includes('Claude Code on Ada’s studio Mac'))).toHaveLength(2);
     const capture = document.querySelector('[data-capture]')!;
-    expect(capture.textContent).toContain('A machine');
-    expect(capture.textContent).toContain('Another machine · Cursor, 17 h ago');
+    expect(capture.textContent).toContain('Machine 1');
+    expect(capture.textContent).toContain('Machine 2 · Cursor, 17 h ago');
     expect(within(capture as HTMLElement).getByRole('img', { name: 'Sending now' })).toBeTruthy();
   });
 
@@ -307,8 +318,8 @@ describe('Today', () => {
     const [titled, agentOnly, pasted, byId] = items(list).map((li) => li.querySelector('a')!);
     expect(titled!.textContent).toBe('Fix the release build');
     expect(agentOnly!.textContent).toBe('Untitled session');
-    expect(pasted!.textContent).toBe('Untitled session·Why does the map read differ');
-    expect(within(pasted!).getByText('Untitled session').className).toContain('text-muted');
+    expect(pasted!.textContent).toBe('UntitledWhy does the map read differ');
+    expect(within(agentOnly!).getByText('Untitled session').className).toContain('text-muted');
     expect(list.textContent).toContain('Compared both targets.');
     expect(list.textContent).not.toMatch(/<\/?(timestamp|user_query|pasted_content)|claude-code|sirkirby_5a2d54af/);
     expect(byId!.closest('li')!.textContent).toContain('Claude Code');
@@ -317,6 +328,19 @@ describe('Today', () => {
   it('strips capture markup and reads a label that is only an id as no name', () => {
     expect(cleanSessionText('<timestamp>Tue</timestamp>\n<user_query>\n  Ship it\n</user_query>')).toBe('Ship it');
     expect(cleanSessionText('<pasted_content id="a1">   ')).toBeNull();
+    // Markup that is the person's own words, anywhere past the start, stays as written.
+    expect(cleanSessionText('Fix <user_query> handling in capture')).toBe('Fix <user_query> handling in capture');
+    expect(cleanSessionText('Fix `<user_query>` handling in capture')).toBe('Fix `<user_query>` handling in capture');
+    expect(cleanSessionText('`<timestamp>` parsing drops the zone')).toBe('`<timestamp>` parsing drops the zone');
+    // A timestamp cut off inside its block, or inside its own tag, leaves nothing of the person's.
+    expect(cleanSessionText('<timestamp>Monday, September 28, 2026 09:1')).toBeNull();
+    expect(cleanSessionText('<timesta')).toBeNull();
+    expect(cleanSessionText('<timestamp')).toBeNull();
+    // A closed paste goes whole, and the question after it is the heading; an unclosed one loses only its tag.
+    expect(cleanSessionText('<pasted_content id="df5c">stack trace\nline 2</pasted_content>\nWhy does this fail on Linux?')).toBe('Why does this fail on Linux?');
+    expect(cleanSessionText('<pasted_content id="df5c">Why does the map read differ')).toBe('Why does the map read differ');
+    expect(cleanSessionText('<command-name>/model</command-name>')).toBe('/model');
+    expect(cleanSessionText('<command-name>/review</command-name> <command-args>the parser</command-args>')).toBe('/review the parser');
     expect(sessionHeading({ sessionId: 's1', title: null, label: 's1', agent: null })).toEqual({ titled: false, firstPrompt: null });
     expect(memberLabel({ id: 'mem_sirkirby_5a2d54af', label: 'sirkirby_5a2d54af' })).toBeNull();
     expect(memberLabel({ id: 'mem_Hn5-pC0dJfA9sE_u', label: 'mem_Hn5-pC0dJfA9sE_u' })).toBeNull();
@@ -339,7 +363,8 @@ describe('Today', () => {
       { machineId: 'b', machineName: 'Lin’s build box' },
       { machineId: 'c', machineName: '  ' },
     ]);
-    expect([...names.values()]).toEqual(['A machine', 'Lin’s build box', 'Another machine']);
+    expect([...names.values()]).toEqual(['Machine 1', 'Lin’s build box', 'Machine 2']);
+    expect([...machineNames([{ machineId: 'a', machineName: null }, { machineId: 'b', machineName: 'Box' }]).values()]).toEqual(['A machine', 'Box']);
   });
 
   it('gives an admin "Needs you", each item with its problem, detail and one action', async () => {
@@ -376,8 +401,9 @@ describe('Today', () => {
     await timeline();
     await screen.findByRole('list', { name: /Agents on/ });
     expect(asked.some((url) => url.pathname === '/api/attention')).toBe(false);
-    expect(screen.queryByText('Needs you')).toBeNull();
-    expect(screen.queryByText('Nothing needs you')).toBeNull();
+    expect(document.querySelectorAll('[data-needs-you]')).toHaveLength(0);
+    expect(screen.queryByText(/needs you/i)).toBeNull();
+    expect(screen.queryByLabelText(/needs you/i)).toBeNull();
     expect(document.querySelector('[data-upkeep]')!.textContent).toBe('Search kept up to date · 1 h ago · 1 retry along the way');
   });
 
@@ -399,11 +425,43 @@ describe('Today', () => {
     expect(yesterday.getAttribute('href')).toBe(`/?day=${YESTERDAY}`);
     fireEvent.click(yesterday);
     expect(await screen.findByRole('heading', { level: 1, name: 'Monday, September 28' })).toBeTruthy();
-    expect(await screen.findByText('Nothing on Monday, September 28')).toBeTruthy();
+    expect(await screen.findByText('Nothing this day')).toBeTruthy();
     expect(screen.getByRole('link', { name: 'Back to today' }).getAttribute('href')).toBe('/');
     const work = asked.filter((url) => url.pathname === '/api/work').at(-1)!;
     const start = new Date(2026, 8, 28).getTime();
     expect([work.searchParams.get('since'), work.searchParams.get('until')]).toEqual([String(start), String(DAY_START)]);
+  });
+
+  it('counts a past day\'s lede off that day alone, even when the server answers later sessions too', async () => {
+    const yesterdayAt = (h: number) => ({ startedAt: DAY_START - h * HOUR, firstReceivedAt: DAY_START - h * HOUR, lastReceivedAt: DAY_START - h * HOUR + MINUTE, endedAt: DAY_START - h * HOUR + MINUTE });
+    server(day({
+      sessions: { cursor: null, rows: [
+        ...SESSIONS,
+        session({ sessionId: 'b0000000-0000-5000-8000-000000000001', projectId: P_MYCO, title: 'Yesterday one', ...yesterdayAt(2) }),
+        session({ sessionId: 'b0000000-0000-5000-8000-000000000002', projectId: P_ATLAS, title: 'Yesterday two', ...yesterdayAt(5) }),
+      ] },
+      work: { ...WORK, runs: [] },
+    }));
+    mount(`/?day=${YESTERDAY}`);
+    const list = await timeline();
+    await waitFor(() => expect(items(list)).toHaveLength(2));
+    expect(lede()).toBe('Your agents ran 2 sessions in Myco and Atlas web.');
+  });
+
+  it('says the day held more than it read instead of calling it quiet', async () => {
+    let pages = 0;
+    server({ ...day({ work: { ...WORK, runs: [] }, spores: { spores: [], total: 0 } }), '/api/sessions': () => { pages += 1; return Response.json({ rows: [], cursor: `c${pages}` }); } });
+    mount('/');
+    expect(await screen.findByText('This day held more than the timeline lists; the newest are shown.')).toBeTruthy();
+    expect(screen.queryByText('Nothing today')).toBeNull();
+    expect(pages).toBe(5);
+  });
+
+  it('links a code map update to the project\'s code map', async () => {
+    server(day({ work: { ...WORK, runs: [run({ id: 'run_m0000000ok', kind: 'map', task: 'canopy-map', at: NOW - HOUR, outcome: { spores: 0, sessions: 0, maps: 1 } })] } }));
+    mount('/');
+    const list = await timeline();
+    expect(within(list).getByRole('link', { name: 'Myco updated the code map' }).getAttribute('href')).toBe(`/p/${P_MYCO}/knowledge/map`);
   });
 
   it('asks again every 30 s while it shows today, never from a hidden tab, and not at all for a past day', async () => {

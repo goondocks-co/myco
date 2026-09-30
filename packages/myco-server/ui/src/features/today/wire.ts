@@ -119,8 +119,8 @@ export interface TodaySession {
 
 /** A page of `GET /api/sessions`. */
 export interface TodaySessionPage {
-  rows: TodaySession[];
-  cursor: string | null;
+  readonly rows: readonly TodaySession[];
+  readonly cursor: string | null;
 }
 
 /** The fields Today reads of a spore listed across Projects. */
@@ -138,6 +138,6 @@ export interface TodaySpore {
 
 /** A page of `GET /api/spores`. */
 export interface TodaySporePage {
-  spores: TodaySpore[];
-  total: number;
+  readonly spores: readonly TodaySpore[];
+  readonly total: number;
 }

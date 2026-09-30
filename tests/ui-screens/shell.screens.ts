@@ -32,7 +32,7 @@ const ROLES = [
 
 /** The admin foot; Measures and Operations fold under Status and show while its group is open. */
 const ADMIN_PAGES = ['Members', 'Settings', 'Status'];
-const PAGES_NAV = ['Today', 'Sessions', 'Spores', 'Plans', 'Agent runs'];
+const PAGES_NAV = ['Today', 'Sessions', 'Spores', 'Plans', 'Code map', 'Agent runs'];
 /** How many projects the filter lists before "N more". */
 const FILTER_LIMIT = 8;
 

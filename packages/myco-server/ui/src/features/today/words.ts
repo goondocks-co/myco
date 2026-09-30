@@ -128,7 +128,7 @@ const NEXT_STEP: Readonly<Record<OutcomeKind, string>> = {
   learn: 'Myco tries again with the next sessions. If this keeps happening, open the run to see where it stopped.',
   seed: 'Nothing was saved. Open the run to see where it stopped, then run it again.',
   title: 'The session keeps its first prompt as its name, and Myco tries again later.',
-  map: 'The previous map is kept. Open the run to see where it stopped.',
+  map: 'Open the run to see where it stopped.',
 };
 
 /** The cause of a failure as the rest of a sentence after "Why:", ending in a full stop. */
@@ -138,14 +138,19 @@ export function causeSentence(cause: string): string {
   return /[.!?]$/.test(trimmed) ? trimmed : `${trimmed}.`;
 }
 
-/** A machine as the capture panel names it: its name, else "A machine" and then "Another machine" for each further unnamed one. */
+/**
+ * A machine as the capture panel names it: its name, else "A machine" when it is
+ * the only one without a name, else "Machine 1", "Machine 2" and so on, numbered
+ * in the order the rows are given, which is the order the panel shows them.
+ */
 export function machineNames(rows: readonly Pick<CaptureRow, 'machineId' | 'machineName'>[]): Map<string, string> {
+  const named = (row: Pick<CaptureRow, 'machineName'>) => row.machineName !== null && row.machineName.trim() !== '';
+  const unnamedIds = [...new Set(rows.filter((row) => !named(row)).map((row) => row.machineId))];
   const names = new Map<string, string>();
-  let unnamed = 0;
   for (const row of rows) {
     if (names.has(row.machineId)) continue;
-    if (row.machineName !== null && row.machineName.trim() !== '') names.set(row.machineId, row.machineName.trim());
-    else names.set(row.machineId, unnamed++ === 0 ? 'A machine' : 'Another machine');
+    if (named(row)) names.set(row.machineId, row.machineName!.trim());
+    else names.set(row.machineId, unnamedIds.length === 1 ? 'A machine' : `Machine ${unnamedIds.indexOf(row.machineId) + 1}`);
   }
   return names;
 }

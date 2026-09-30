@@ -102,6 +102,10 @@ interface SessionSeed {
   prompts: string[];
 }
 
+/**
+ * Today's sessions start within ten hours of the fixture's now (16:00 UTC), so
+ * they stay on one local day in the fixture's time zone in winter as in summer.
+ */
 const SESSIONS: SessionSeed[] = [
   { project: 'myco', agent: 'claude-code', machine: 'studio', startedAgo: 42, minutes: null, title: 'Canopy parity verified across both targets', summary: 'Ran the parity suite against the self-hosted and hosted targets and fixed the one ordering difference in the map reader.', prompts: ['Run the canopy parity scenarios on both targets', 'The hosted target orders ties differently; make the read stable', 'Good, now rerun and confirm'] },
   { project: 'myco', agent: 'codex', machine: 'studio', startedAgo: 3 * 60, minutes: 55, title: 'Search box height made uniform on list pages', summary: 'Moved the Sessions and Knowledge search inputs onto one filter bar so the boxes share a height and left edge.', prompts: ['The search boxes are different heights on each list page', 'Use one filter bar everywhere'] },
@@ -110,7 +114,7 @@ const SESSIONS: SessionSeed[] = [
   { project: 'ledger', agent: 'pi', machine: 'studio', startedAgo: 8 * 60, minutes: 64, title: 'Monthly close report query sped up', summary: 'Added a covering index for the close report and cut the query from 4.2 s to 180 ms on the staging copy.', prompts: ['The monthly close report takes four seconds', 'Try a covering index on entries by account and period'] },
   { project: 'infra', agent: 'claude-code', machine: 'studio', startedAgo: 9 * 60, minutes: 17, title: 'Backup schedule moved to nightly', summary: 'Changed the backup interval from weekly to nightly and confirmed the first run landed in the bucket.', prompts: ['Backups are weekly; make them nightly'] },
   { project: 'myco', agent: 'codex', machine: 'buildbox', startedAgo: 10 * 60, minutes: 41, title: 'Flaky test port collision fixed', summary: 'The test reserved a fixed port that the server’s ephemeral fallback could also pick; it now asks the kernel for one.', prompts: ['This test fails one run in twenty', 'Stop reserving a fixed port'] },
-  { project: 'sandbox', agent: 'pi', machine: 'buildbox', startedAgo: 11 * 60, minutes: 6, title: 'Trying the new login flow', summary: 'Signed in on a fresh machine to check the join link opens in a browser.', prompts: ['Try logging in from scratch'] },
+  { project: 'sandbox', agent: 'pi', machine: 'buildbox', startedAgo: 9 * 60 + 30, minutes: 6, title: 'Trying the new login flow', summary: 'Signed in on a fresh machine to check the join link opens in a browser.', prompts: ['Try logging in from scratch'] },
   { project: 'atlas-web', agent: 'claude-code', machine: 'studio', startedAgo: 26 * 60, minutes: 70, title: 'Image gallery lazy-loading added', summary: 'Gallery images now load as they scroll into view; the first paint on the product page dropped by 1.1 s.', prompts: ['The product page is slow on phones', 'Lazy-load the gallery images', 'Measure the first paint again'] },
   { project: 'myco', agent: 'cursor', machine: 'studio', startedAgo: 28 * 60, minutes: 33, title: 'Session reading page summary moved first', summary: 'The session page now opens with the summary and keeps the conversation at a readable width.', prompts: ['Put the summary at the top of the session page'] },
   { project: 'field-notes', agent: 'codex', machine: 'buildbox', startedAgo: 30 * 60, minutes: 48, title: 'Markdown export keeps attachments', summary: 'Exported notes now carry their images alongside the markdown file instead of dropping them.', prompts: ['Exported notes lose their images', 'Write the attachments next to the markdown'] },

@@ -53,7 +53,7 @@ async function expectFixtureDay(page: Page): Promise<void> {
   await expect(kept).toContainText('What it saved is kept, so there’s nothing to do.');
   const map = list.locator('li[data-timeline-item="bad"]', { hasText: 'Myco couldn’t update the code map' });
   await expect(map).toContainText('repo.sha256 is absent from this checkout');
-  await expect(map).toContainText('The previous map is kept.');
+  await expect(map).toContainText('Open the run to see where it stopped.');
   await expect(map.getByRole('link', { name: 'Open the run →' })).toBeVisible();
   const titled = list.locator('li[data-timeline-item]', { hasText: 'Myco titled 2 sessions' });
   await expect(titled.getByRole('list', { name: 'Sessions it titled' }).getByRole('link')).toHaveCount(2);
@@ -112,8 +112,13 @@ test.describe('Today', () => {
             }
           }
         } else {
+          // Nothing of Needs you reaches a member: no card, and no element named for it, loading or failed.
           await expect(page.locator('[data-needs-you]')).toHaveCount(0);
-          await expect(page.getByText('Needs you')).toHaveCount(0);
+          await expect(page.getByText(/needs you/i)).toHaveCount(0);
+          const named = await page.evaluate(() => [...document.querySelectorAll('*')]
+            .map((el) => `${el.getAttribute('aria-label') ?? ''} ${el.getAttribute('title') ?? ''}`)
+            .filter((name) => /needs you/i.test(name)));
+          expect(named, 'an element named for Needs you').toEqual([]);
         }
 
         await expectCapture(page, viewport);
@@ -136,7 +141,7 @@ test.describe('Today', () => {
       const quiet = dayBefore(5);
       const { context, page, watch } = await openPage(browser, { path: `/?day=${quiet}`, viewport, mode, cookie: screensEnv('ownerCookie') });
       try {
-        const empty = page.getByRole('status').filter({ hasText: /^Nothing on / });
+        const empty = page.getByRole('status').filter({ hasText: /^Nothing this day/ });
         await expect(empty).toBeInViewport();
         await expect(empty.getByRole('link', { name: 'The day before →' })).toHaveAttribute('href', `/?day=${dayBefore(6)}`);
         await expect(page.getByRole('link', { name: 'Back to today' })).toHaveAttribute('href', '/');
@@ -171,4 +176,26 @@ test.describe('Today', () => {
       await context.close();
     }
   });
+});
+
+test.describe('Code map', () => {
+  for (const { viewport, mode } of SHOT_MATRIX) {
+    test(`code map ${viewport} ${mode}`, async ({ browser }) => {
+      test.skip(!onFixture(), 'the project is the fixture\'s');
+      const project = fixtureProject();
+      const { context, page, watch } = await openPage(browser, { path: `/p/${encodeURIComponent(project.projectId)}/knowledge/map`, viewport, mode, cookie: screensEnv('ownerCookie') });
+      try {
+        await expect(page.getByRole('heading', { level: 1, name: 'Code map' })).toBeInViewport();
+        await expect(page.getByTestId('repository-map')).toBeInViewport();
+        await page.waitForLoadState('networkidle');
+        await expectNoHorizontalOverflow(page);
+        await expectNoRawIds(page);
+        await expectAxeClean(page);
+        await shoot(page, 'code-map', viewport, mode);
+        expectQuiet(watch);
+      } finally {
+        await context.close();
+      }
+    });
+  }
 });

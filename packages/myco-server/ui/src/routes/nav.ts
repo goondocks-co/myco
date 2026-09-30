@@ -1,6 +1,6 @@
 import { INVITE_CONTROLS } from '@goondocks/myco-shared/member-protocol';
 import {
-  Activity, Bot, KeyRound, ListChecks, MessageSquare, Settings2, Sprout, Sun, Users, type LucideIcon,
+  Activity, Bot, KeyRound, ListChecks, Map as MapIcon, MessageSquare, Settings2, Sprout, Sun, Users, type LucideIcon,
 } from 'lucide-react';
 
 /** A page under a project, reached at `/p/:project<suffix>`. */
@@ -13,12 +13,16 @@ export interface ProjectPage {
   admin?: true;
 }
 
+/** The code map's page under a project: where Knowledge will hold it. */
+export const CODE_MAP_SUFFIX = '/knowledge/map';
+
 /** The pages under a project, in nav order. */
 export const PROJECT_PAGES: readonly ProjectPage[] = [
   { label: 'Today', icon: Sun, suffix: '' },
   { label: 'Sessions', icon: MessageSquare, suffix: '/sessions' },
   { label: 'Spores', icon: Sprout, suffix: '/spores' },
   { label: 'Plans', icon: ListChecks, suffix: '/plans' },
+  { label: 'Code map', icon: MapIcon, suffix: CODE_MAP_SUFFIX },
   { label: 'Agent runs', icon: Bot, suffix: '/runs' },
   { label: 'Access', icon: KeyRound, suffix: '/access', admin: true },
 ];
@@ -108,9 +112,18 @@ export function projectOf(pathname: string): string | null {
   }
 }
 
-/** The page under a project a path is on (`/sessions`, `/runs`), without the record it names, or '' for the project's home. */
+/**
+ * The page under a project a path is on (`/sessions`, `/knowledge/map`), without
+ * the record it names, or '' for the project's home. A page whose suffix runs
+ * over more than one segment is matched whole; any other path is its first.
+ */
 export function pageSuffix(pathname: string): string {
-  const section = PROJECT_PATH.exec(pathname)?.[2] ?? '';
+  const match = PROJECT_PATH.exec(pathname);
+  if (match === null) return '';
+  const rest = pathname.slice(`/p/${match[1]}`.length).replace(/\/+$/, '');
+  const page = PROJECT_PAGES.filter((p) => p.suffix.split('/').length > 2).find((p) => rest === p.suffix || rest.startsWith(`${p.suffix}/`));
+  if (page !== undefined) return page.suffix;
+  const section = match[2] ?? '';
   return section === '' ? '' : `/${section}`;
 }
 

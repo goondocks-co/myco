@@ -13,7 +13,7 @@ export function ArchivedNotice({ projectId, archivedAt, now }: { projectId: stri
   return (
     <Card className="flex flex-wrap items-center gap-x-s4 gap-y-s2 bg-warn-bg" data-testid="archived-banner">
       <HealthDot tone="warn" label="Archived" />
-      <div className="flex min-w-0 flex-1 flex-col gap-[2px]">
+      <div className="flex min-w-0 flex-1 flex-col gap-s1">
         <p className="t-body font-medium text-ink">
           {admin ? 'This project is archived: agents can’t send it anything until you unarchive it.' : 'This project is archived: agents can’t send it anything until an admin unarchives it.'}
         </p>

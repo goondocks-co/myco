@@ -24,7 +24,8 @@ const session = (over: Record<string, unknown> = {}) => ({
   sessionId: 's1', machineId: 'mac-1', createdByTokenId: 'tok_1', firstReceivedAt: NOW - 3_600_000, lastReceivedAt: NOW - 60_000,
   agent: 'claude-code', branch: 'main', startedAt: NOW - 3_600_000, endedAt: null, endedBy: null, endedByLabel: null, originPath: '/repo', parentSessionId: null, parentReason: null,
   memberId: 'mem_1', memberLabel: 'chris', runtimeLabel: 'laptop', runtimeKind: 'host',
-  title: null, summary: null, titledAt: null, label: (over.title as string | undefined) ?? (over.label as string | undefined) ?? (over.agent as string | undefined) ?? 'claude-code',
+  // A label given here stands for the session's title; a session given none is headed by its agent, as the server heads an untitled one.
+  title: (over.label as string | undefined) ?? null, summary: null, titledAt: null, label: (over.title as string | undefined) ?? (over.label as string | undefined) ?? (over.agent as string | undefined) ?? 'claude-code',
   promptCount: 2, toolCallCount: 3, activityBuckets: [1, 0, 0, 1, 0, 0, 0, 0], ...over,
 });
 const page = (rows: unknown[]) => Response.json({ rows, cursor: null });
@@ -616,10 +617,10 @@ describe('Session detail', () => {
     expect(await screen.findByText('This Deployment has no way to write summaries yet')).toBeTruthy();
   });
 
-  it('heads the detail with the label and shows a summary only once one is stored', async () => {
+  it('heads the detail with its title, never its agent, and shows a summary only once one is stored', async () => {
     server(detailRoutes());
     mount('/p/x/sessions/s1');
-    expect((await screen.findByRole('heading', { level: 2 })).textContent).toBe('claude-code');
+    expect((await screen.findByRole('heading', { level: 2 })).textContent).toBe('Untitled session');
     expect(screen.queryByText('Summary')).toBeNull();
     cleanup();
     server(detailRoutes({ '/api/projects/x/sessions/s1': () => Response.json({ session: session({ title: 'Wave-based executor', summary: 'Built the executor.\nTests pass.', titledAt: NOW }), counts, projectId: 'x' }) }));

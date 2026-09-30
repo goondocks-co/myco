@@ -13,8 +13,8 @@ import type * as Ui from '../../packages/myco-server/ui/src/features/today/wire.
 import type { WorkAnswer, WorkOutcome, WorkRun, Upkeep, OutcomeKind, RunResult } from '../../packages/myco-server/src/read/work.ts';
 import type { AttentionAnswer, AttentionItem } from '../../packages/myco-server/src/core/attention.ts';
 import type { CaptureRow } from '../../packages/myco-server/src/read/capture.ts';
-import type { SessionAcrossRow } from '../../packages/myco-server/src/read/sessions.ts';
-import type { SporeAcrossRow } from '../../packages/myco-server/src/core/spores.ts';
+import type { SessionAcrossRow, listSessionSummariesAcross } from '../../packages/myco-server/src/read/sessions.ts';
+import type { SporeAcrossRow, countSporesAcross, listSporesAcross } from '../../packages/myco-server/src/core/spores.ts';
 
 /** True only when each type is assignable to the other. */
 type Same<A, B> = [A] extends [B] ? ([B] extends [A] ? true : false) : false;
@@ -33,10 +33,20 @@ const SAME: [
   Same<Ui.CaptureRow, CaptureRow>,
 ] = [true, true, true, true, true, true, true, true, true];
 
+/** `GET /api/sessions`: the page the read across Projects answers, as the handler sends it. */
+type SessionsAnswer = Awaited<ReturnType<typeof listSessionSummariesAcross>>;
+/**
+ * `GET /api/spores`: the handler (`api/lists-all.ts`) sends `{ spores, total, maxPage, facets? }` from these two reads;
+ * the envelope's keys are written there, and its values are typed by the reads.
+ */
+type SporesAnswer = { spores: Awaited<ReturnType<typeof listSporesAcross>>; total: Awaited<ReturnType<typeof countSporesAcross>> };
+
 const READS: [
   Reads<SessionAcrossRow, Ui.TodaySession>,
   Reads<SporeAcrossRow, Ui.TodaySpore>,
-] = [true, true];
+  Reads<SessionsAnswer, Ui.TodaySessionPage>,
+  Reads<SporesAnswer, Ui.TodaySporePage>,
+] = [true, true, true, true];
 
 describe("Today's wire shapes", () => {
   it('are held to the server declarations by the tests typecheck', () => {
