@@ -114,6 +114,10 @@ describe('POST /mcp', () => {
     expect((await call(t1.token, 'myco_search')).error.data.code).toBe('invalid_input');
     expect((await call(t1.token, 'myco_sessions', { op: 'purge' })).error.data.code).toBe('invalid_input');
     expect((await call(t1.token, 'myco_search', { query: 'anything' })).result).toMatchObject({ results: [], mode: 'fts', provider_unavailable: true });
+    for (const args of [{ query: 'a\u0000b' }, { query: 'a\u0000b', limit: 5 }]) {
+      const refused = await call(t1.token, 'myco_search', args);
+      expect({ args, code: refused.error?.data?.code, says: /control characters/.test(String(refused.error?.message)) }).toEqual({ args, code: 'invalid_input', says: true });
+    }
     const never = await call(t1.token, 'myco_plans', { op: 'delete', id: 'x' });
     expect({ code: never.error.data.code, offered: /not offered/.test(never.error.message) }).toEqual({ code: 'not_served', offered: true });
     expect((await call(t1.token, 'myco_cortex', { op: 'notifications' })).error.data.code).toBe('not_served');

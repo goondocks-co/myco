@@ -4,7 +4,7 @@ binary: cline
 configDir: .cline
 detectionDir: ~/.cline
 pluginRootEnvVar: CLINE_PLUGIN_ROOT
-resumeCommand: "cline --resume {sessionId}"
+resumeCommand: "cline --id {sessionId}"
 hookFields:
   sessionId: conversationId
   transcriptPath: transcript_path
