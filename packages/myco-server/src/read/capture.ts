@@ -6,7 +6,7 @@
  * window's sessions alone and never a session row. A deleted session still counts: what this answers is whether a
  * machine's capture reaches the Deployment, and deleting a session afterwards does not change that it did.
  */
-import type { RelationalStore } from '../core/adapters.js';
+import type { PreparedStatement, RelationalStore } from '../core/adapters.js';
 
 /** How far back capture recency looks. A machine and agent silent for longer drop out of the answer. */
 export const CAPTURE_WINDOW_MS = 30 * 24 * 60 * 60 * 1000;
@@ -22,6 +22,24 @@ export interface CaptureRow {
   projectId: string;
 }
 
+/** Each machine's name: the label its newest live credential carries. A machine none of whose live credentials carries one has no name. */
+export function machineNamesStatement(db: RelationalStore, nowMs: number): PreparedStatement {
+  return db.prepare(
+    `SELECT machine_id, runtime_label FROM member_credentials
+      WHERE revoked_at IS NULL AND expires_at > ? AND machine_id IS NOT NULL AND runtime_label IS NOT NULL
+      ORDER BY issued_at DESC, id DESC`,
+  ).bind(nowMs);
+}
+
+/** The names `machineNamesStatement` answers, by machine: the first row of each machine is its newest credential. */
+export function machineNamesOf(rows: readonly unknown[]): Map<string, string> {
+  const names = new Map<string, string>();
+  for (const row of rows as { machine_id: string; runtime_label: string }[]) {
+    if (!names.has(row.machine_id)) names.set(row.machine_id, row.runtime_label);
+  }
+  return names;
+}
+
 /** The latest receipt per machine and agent over the window, most recent first. */
 export async function captureRecency(db: RelationalStore, nowMs: number): Promise<CaptureRow[]> {
   const [recent, names] = await db.batch([
@@ -32,16 +50,9 @@ export async function captureRecency(db: RelationalStore, nowMs: number): Promis
         GROUP BY machine_id, agent
         ORDER BY last_event_at DESC, machine_id, agent`,
     ).bind(nowMs - CAPTURE_WINDOW_MS),
-    db.prepare(
-      `SELECT machine_id, runtime_label FROM member_credentials
-        WHERE revoked_at IS NULL AND expires_at > ? AND machine_id IS NOT NULL AND runtime_label IS NOT NULL
-        ORDER BY issued_at DESC, id DESC`,
-    ).bind(nowMs),
+    machineNamesStatement(db, nowMs),
   ]);
-  const machineNames = new Map<string, string>();
-  for (const row of names.results as { machine_id: string; runtime_label: string }[]) {
-    if (!machineNames.has(row.machine_id)) machineNames.set(row.machine_id, row.runtime_label);
-  }
+  const machineNames = machineNamesOf(names!.results);
   return (recent.results as Record<string, unknown>[]).map((row) => ({
     machineId: String(row.machine_id),
     machineName: machineNames.get(String(row.machine_id)) ?? null,

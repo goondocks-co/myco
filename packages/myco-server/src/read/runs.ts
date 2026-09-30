@@ -1,6 +1,8 @@
 import type { RelationalStore } from '../core/adapters.js';
 import { keyset, page, type Page, type ReadScope } from './scope.js';
-import { getRun, isTerminalRunStatus, RUN_CALL_FAILED, RUN_TOOL_EVENT, type RunCallFailure } from '../core/runs.js';
+import { DISPATCH_ACTOR_SQL, getRun, isTerminalRunStatus, RUN_CALL_FAILED, RUN_TOOL_EVENT, type RunCallFailure } from '../core/runs.js';
+import { machineNamesOf, machineNamesStatement } from './capture.js';
+import { runOutcomeCounts, type RunOutcomeCounts } from './run-reads.js';
 import { readRunCloseEvidence, type RunCloseEvidence } from '../core/run-postconditions.js';
 import { contextValue } from '../db/run-context.js';
 
@@ -44,9 +46,20 @@ export interface RunListRow {
    * machine that credential names. It stays once the run ends, so which
    * machine ran a run is read off the run; null for a run no worker holds or held.
    */
-  worker: { credentialId: string; machineId: string | null } | null;
+  worker: { credentialId: string; machineId: string | null; machineName: string | null } | null;
   /** When the held lease ends; null whenever the row names no holder. */
   leaseExpiresAt: number | null;
+  /** Who started the run: the member who asked for it by hand, or the process that started it on its own (`clock`, `backfill`); null where the run names no one. */
+  startedBy: string | null;
+  /** The session the run's dispatch named, as a titling run names the session it titles; null for a run dispatched on no one session. */
+  targetSessionId: string | null;
+  /** Why a skipped run did not run, as the run records it; null for any run but a skipped one. */
+  skipReason: string | null;
+}
+
+/** A run as a page of the list shows it: the row, and what it came to. */
+export interface RunPageRow extends RunListRow {
+  outcome: RunOutcomeCounts;
 }
 
 /**
@@ -125,7 +138,9 @@ const LIST_COLUMNS = `id, agent_id, task, status, provider, model, started_at, r
   queued_at, held_by, CASE WHEN status = 'queued' THEN ${POSITION_SQL} ELSE NULL END AS position,
   ${contextValue('replaced')} AS replaced, ${contextValue('replaces')} AS replaces,
   harness, leased_by, lease_expires_at,
-  (SELECT c.machine_id FROM member_credentials c WHERE c.id = agent_runs.leased_by) AS leased_machine`;
+  (SELECT c.machine_id FROM member_credentials c WHERE c.id = agent_runs.leased_by) AS leased_machine,
+  ${DISPATCH_ACTOR_SQL} AS started_by, ${contextValue('session_id')} AS target_session_id,
+  CASE WHEN status = 'skipped' THEN ${contextValue('reason')} END AS skip_reason`;
 
 const DETAIL_COLUMNS = `${LIST_COLUMNS}, instruction, session_ref, actual_cost_usd, estimated_cost_usd, reasoning_level,
   resume_mode, resume_attempts, error, dispatched_by, usage_data, actions_taken, checkpoints`;
@@ -134,7 +149,7 @@ const text = (value: unknown): string | null => (value as string | null) ?? null
 const num = (value: unknown): number | null => (value as number | null) ?? null;
 const flag = (value: unknown): boolean => Number(value) === 1;
 
-function toListRow(row: Record<string, unknown>): RunListRow {
+function toListRow(row: Record<string, unknown>, machineNames: ReadonlyMap<string, string>): RunListRow {
   // Terminal runs have no current worker lease.
   const ended = isTerminalRunStatus(row.status);
   return {
@@ -161,14 +176,21 @@ function toListRow(row: Record<string, unknown>): RunListRow {
     replaces: text(row.replaces),
     harness: text(row.harness),
     leasedBy: ended ? null : text(row.leased_by),
-    worker: row.leased_by == null ? null : { credentialId: row.leased_by as string, machineId: text(row.leased_machine) },
+    worker: row.leased_by == null ? null : {
+      credentialId: row.leased_by as string,
+      machineId: text(row.leased_machine),
+      machineName: row.leased_machine == null ? null : machineNames.get(row.leased_machine as string) ?? null,
+    },
     leaseExpiresAt: ended ? null : num(row.lease_expires_at),
+    startedBy: text(row.started_by),
+    targetSessionId: text(row.target_session_id),
+    skipReason: text(row.skip_reason),
   };
 }
 
-function toDetailRow(row: Record<string, unknown>): RunDetailRow {
+function toDetailRow(row: Record<string, unknown>, machineNames: ReadonlyMap<string, string>): RunDetailRow {
   return {
-    ...toListRow(row),
+    ...toListRow(row, machineNames),
     instruction: text(row.instruction),
     sessionRef: text(row.session_ref),
     actualCostUsd: num(row.actual_cost_usd),
@@ -224,8 +246,11 @@ export function phasesOf(raw: string | null): PhaseRow[] | null {
   });
 }
 
-/** A project's runs, newest first, one page at a time; `status` and `task` narrow the set before the cursor applies. */
-export async function listRuns(db: RelationalStore, scope: ReadScope, opts: RunFilters = {}): Promise<Page<RunListRow>> {
+/**
+ * A project's runs, newest first, one page at a time; `status` and `task` narrow the set before the cursor applies.
+ * Each row carries what it came to, read for the page in one more round trip, and its machine's name as of `nowMs`.
+ */
+export async function listRuns(db: RelationalStore, scope: ReadScope, nowMs: number, opts: RunFilters = {}): Promise<Page<RunPageRow>> {
   // A run that waited keeps the place it took when it queued, launched or not: the instant it entered the list never moves under a reader paging through it.
   const k = keyset(opts, { order: 'COALESCE(queued_at, started_at)', id: 'id', direction: 'DESC' });
   if (k === null) return { rows: [], cursor: null };
@@ -239,7 +264,15 @@ export async function listRuns(db: RelationalStore, scope: ReadScope, opts: RunF
     .prepare(`SELECT ${LIST_COLUMNS} FROM agent_runs WHERE ${conditions.join(' AND ')} ORDER BY COALESCE(queued_at, started_at) DESC, id DESC LIMIT ?`)
     .bind(...params, ...k.params, k.limit + 1)
     .all<Record<string, unknown>>();
-  return page(results.map(toListRow), k.limit, (r) => ({ createdAt: r.queuedAt ?? r.startedAt ?? 0, id: r.id }));
+  const listed = page(results, k.limit, (r) => ({ createdAt: num(r.queued_at) ?? num(r.started_at) ?? 0, id: r.id as string }));
+  const outcome = runOutcomeCounts(db, scope, listed.rows.map((r) => r.id as string));
+  const [names, ...counts] = await db.batch([machineNamesStatement(db, nowMs), ...outcome.statements]);
+  const machineNames = machineNamesOf(names!.results);
+  const outcomes = outcome.read(counts);
+  return {
+    cursor: listed.cursor,
+    rows: listed.rows.map((r) => ({ ...toListRow(r, machineNames), outcome: outcomes.get(r.id as string)! })),
+  };
 }
 
 /** A recorded call's payload as an object, or null where it holds none. */
@@ -295,16 +328,17 @@ export async function runToolCalls(db: RelationalStore, scope: ReadScope, runId:
   });
 }
 
-/** One run inside the scope with its phases and the calls it made, or null — including when the run exists under another project. */
-export async function getRunDetail(db: RelationalStore, scope: ReadScope, runId: string): Promise<RunDetail | null> {
-  const row = await db
-    .prepare(`SELECT ${DETAIL_COLUMNS} FROM agent_runs WHERE project_id = ? AND id = ?`)
-    .bind(scope.projectId, runId)
-    .first<Record<string, unknown>>();
+/** One run inside the scope with its phases and the calls it made, its machine named as of `nowMs`, or null — including when the run exists under another project. */
+export async function getRunDetail(db: RelationalStore, scope: ReadScope, runId: string, nowMs: number): Promise<RunDetail | null> {
+  const [found, names] = await db.batch([
+    db.prepare(`SELECT ${DETAIL_COLUMNS} FROM agent_runs WHERE project_id = ? AND id = ?`).bind(scope.projectId, runId),
+    machineNamesStatement(db, nowMs),
+  ]);
+  const row = (found!.results[0] ?? null) as Record<string, unknown> | null;
   if (row === null) return null;
   const run = await getRun(db, scope, runId);
   return {
-    run: toDetailRow(row), phases: phasesOf(text(row.checkpoints)), toolCalls: await runToolCalls(db, scope, runId),
+    run: toDetailRow(row, machineNamesOf(names!.results)), phases: phasesOf(text(row.checkpoints)), toolCalls: await runToolCalls(db, scope, runId),
     outcomeEvidence: run === null ? null : await readRunCloseEvidence(db, scope, run),
   };
 }

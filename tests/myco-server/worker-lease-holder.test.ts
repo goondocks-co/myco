@@ -7,7 +7,7 @@
  * won a run is read off the run rather than recovered from worker logs.
  */
 import { describe, expect, it } from 'bun:test';
-import { sqliteEnv } from './helpers/fixtures.js';
+import { sqliteEnv, turnOnGatedCapabilities } from './helpers/fixtures.js';
 import { issueMemberToken } from '@myco-server-worker/auth/tokens.js';
 import { HARNESS_MEMBER_ID, claimNextRun, endLeasedRun, expireLeases, renewLease } from '@myco-server-worker/core/harness.js';
 import { getRunDetail, listRuns } from '@myco-server-worker/read/runs.js';
@@ -22,6 +22,7 @@ const RUN = { projectId: 'proj_1', runId: 'run_1' };
 
 async function rig() {
   const e = sqliteEnv();
+  turnOnGatedCapabilities(e.sqlite);
   e.sqlite.run(`INSERT OR IGNORE INTO agents (id, name, source, enabled, created_at) VALUES ('myco-agent', 'a', 'built-in', 1, ?)`, [NOW]);
   e.sqlite.run(`INSERT OR IGNORE INTO members (id, label, created_at, role) VALUES (?, 'harness runtime', ?, 'member')`, [HARNESS_MEMBER_ID, NOW]);
   e.sqlite.run(
@@ -121,20 +122,20 @@ describe('the worker that ran a run', () => {
 
     // The lease is over, and the run still says whose it was.
     expect(r.row()).toMatchObject({ status: 'failed', leasedBy: vm, leaseExpiresAt: null });
-    const detail = await getRunDetail(r.e.db, SCOPE, 'run_1');
+    const detail = await getRunDetail(r.e.db, SCOPE, 'run_1', Date.now());
     expect(detail?.run).toMatchObject({ status: 'failed', leasedBy: null, leaseExpiresAt: null, worker: { credentialId: vm, machineId: 'local_vm' } });
-    const page = await listRuns(r.e.db, SCOPE);
+    const page = await listRuns(r.e.db, SCOPE, Date.now());
     expect(page.rows[0]).toMatchObject({ id: 'run_1', worker: { credentialId: vm, machineId: 'local_vm' } });
   });
 
   it('is named while the run is held, and names nobody for a run no worker took', async () => {
     const r = await rig();
     const mac = await r.worker('mem_mac', 'sirkirby_mac');
-    expect((await getRunDetail(r.e.db, SCOPE, 'run_1'))?.run).toMatchObject({ status: 'queued', worker: null });
+    expect((await getRunDetail(r.e.db, SCOPE, 'run_1', Date.now()))?.run).toMatchObject({ status: 'queued', worker: null });
     await r.claim(mac, NOW);
-    expect((await getRunDetail(r.e.db, SCOPE, 'run_1'))?.run).toMatchObject({ status: 'running', leasedBy: mac, worker: { credentialId: mac, machineId: 'sirkirby_mac' } });
+    expect((await getRunDetail(r.e.db, SCOPE, 'run_1', Date.now()))?.run).toMatchObject({ status: 'running', leasedBy: mac, worker: { credentialId: mac, machineId: 'sirkirby_mac' } });
     // A run returned to the queue names nobody: nobody is running it.
     await expireLeases(r.e.serverEnv, NOW + WORKER_LEASE_MS);
-    expect((await getRunDetail(r.e.db, SCOPE, 'run_1'))?.run).toMatchObject({ status: 'queued', worker: null });
+    expect((await getRunDetail(r.e.db, SCOPE, 'run_1', Date.now()))?.run).toMatchObject({ status: 'queued', worker: null });
   });
 });

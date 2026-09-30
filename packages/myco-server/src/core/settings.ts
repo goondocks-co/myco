@@ -143,8 +143,11 @@ const CONTROL_CHARACTERS = /[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/;
 
 const isRecord = (v: unknown): v is Record<string, unknown> => v !== null && typeof v === 'object' && !Array.isArray(v);
 
-/** The schedule counts a task override carries, each a whole number of 0 or more when given. */
-export const SCHEDULE_COUNT_FIELDS = ['maxRunsPerDay'] as const;
+/**
+ * The schedule counts a task override carries, each a whole number of 0 or more when given: the clock's own daily
+ * ceiling, and how many runs of the task a member who is not an admin may start by hand in a day.
+ */
+export const SCHEDULE_COUNT_FIELDS = ['maxRunsPerDay', 'memberRunsPerDay'] as const;
 
 /** What a per-task override violates, naming the field; null when every schedule count it gives is a whole number of 0 or more. */
 function taskOverridesViolation(value: unknown): string | null {
@@ -326,6 +329,9 @@ export async function providerConfiguredFor(db: RelationalStore, taskName: strin
  * Every capability of `capabilities` a Project has turned on, for every Project or the one named, in one statement:
  * the read `capabilityEnabled` makes of one Project, made once for the Deployment.
  */
+/** A capability turned on for a Project, as a condition a write carries. Bound as: Project, capability. */
+export const CAPABILITY_ON_SQL = `EXISTS (SELECT 1 FROM project_capabilities pc WHERE pc.project_id = ? AND pc.capability = ? AND pc.enabled = 1)`;
+
 export function enabledCapabilities(db: RelationalStore, capabilities: readonly ProjectCapability[], projectId?: string): {
   statement: PreparedStatement;
   read: (rows: ReadonlyArray<Record<string, unknown>>) => Array<{ projectId: string; capability: string }>;

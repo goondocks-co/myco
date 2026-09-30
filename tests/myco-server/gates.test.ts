@@ -51,7 +51,7 @@ const sharedFiles = () =>
     !f.includes(`${join(SRC, 'platform')}/`) && !f.includes(`${join(SRC, 'entry')}/`) && f !== join(SRC, 'index.ts'));
 
 /** Every `emit` call across src; a call removed or added moves the total. */
-const EMIT_CALLS = 143;
+const EMIT_CALLS = 144;
 /** The one migrations directory: the emit script writes it, the rendered-steps gate verifies it, and wrangler.toml applies from it. */
 const MIGRATIONS_DIR = 'migrations';
 const K = SyntaxKind as unknown as Record<string, number>;
@@ -1250,7 +1250,6 @@ describe('gates', () => {
       'session:admin GET /api/diagnostics',
       'session:admin GET /api/enrollment',
       'session:admin GET /api/maintenance',
-      'session:admin GET /api/projects/{projectId}/capabilities',
       'session:admin GET /api/projects/{projectId}/grants',
       'session:admin GET /api/projects/{projectId}/release-provenance',
       'session:admin GET /api/projects/{projectId}/repository',
@@ -1266,7 +1265,6 @@ describe('gates', () => {
       'session:admin POST /api/backups/{backupId}/restore-preview',
       'session:admin POST /api/enrollment',
       'session:admin POST /api/enrollment/{id}/revoke',
-      'session:admin POST /api/harness/dispatch',
       'session:admin POST /api/maintenance/{check}/run',
       'session:admin POST /api/members/{memberId}/link-github',
       'session:admin POST /api/members/{memberId}/revoke',
@@ -1303,6 +1301,7 @@ describe('gates', () => {
       'session:member GET /api/projects/{projectId}/activity',
       'session:member GET /api/projects/{projectId}/blobs/{key}',
       'session:member GET /api/projects/{projectId}/canopy-map',
+      'session:member GET /api/projects/{projectId}/capabilities',
       'session:member GET /api/projects/{projectId}/cortex/instructions',
       'session:member GET /api/projects/{projectId}/digests',
       'session:member GET /api/projects/{projectId}/digests/{tier}/revisions',
@@ -1330,6 +1329,7 @@ describe('gates', () => {
       'session:member GET /api/status',
       'session:member GET /api/work',
       'session:member POST /api/credentials/{id}/revoke',
+      'session:member POST /api/harness/dispatch',
       'session:member PUT /api/machines/{machineId}/settings/{leaf}',
     ]);
   });

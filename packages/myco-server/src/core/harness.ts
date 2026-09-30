@@ -34,7 +34,7 @@ import { claimQueuedRun, deploymentTaskEntriesSince, lapsedLeases, nextClaimable
 export type { ActorCeiling } from './runs.js';
 import { applyRunUpdate, ensureAgent, getDispatchActor, recordDispatch, dispatchLoad, failQueuedRun, hasSuccessorOf, INPUT_UNCHANGED, launchQueued, listQueuedAcrossProjects, recordQueued, getRun, hasLiveTaskRun, restoreDispatchCredential, returnToQueue, skipQueued, successorsSince, NO_LIMITS, type RunRow } from './runs.js';
 import { openHarnessCredential, openProviderCredential } from './provider-credentials.js';
-import { leafValues } from './settings.js';
+import { enabledCapabilities, leafValues, type ProjectCapability } from './settings.js';
 import { HARNESS_CREDENTIALS } from '@goondocks/myco-shared/harness-providers';
 import { admissionForTask, runTimeoutForTask, UNLANDED_TASKS } from './task-catalogue.js';
 import { buildTaskInput, inputBuilderFor, instructionFor, instructionsFileFor, uninstructedError } from './task-inputs.js';
@@ -80,7 +80,7 @@ const DISPATCHER_CONTEXT_KEYS = new Set(['timeoutSeconds', 'input_hash', 'counts
  */
 export type DispatchRefusal =
   | 'harness_unavailable' | 'unknown_task' | 'unknown_project' | 'repository_missing' | 'no_instruction' | 'not_landed'
-  | 'no_provider' | 'no_credential' | 'no_endpoint' | 'unsupported_provider';
+  | 'no_provider' | 'no_credential' | 'no_endpoint' | 'unsupported_provider' | 'capability_off';
 
 export const DISPATCH_REFUSAL_MESSAGE: Readonly<Record<DispatchRefusal, string>> = {
   repository_missing: 'Connect the project repository in Settings before running a code task.',
@@ -93,7 +93,23 @@ export const DISPATCH_REFUSAL_MESSAGE: Readonly<Record<DispatchRefusal, string>>
   no_credential: 'no anthropic credential is stored; Settings takes one before a dispatch can run',
   no_endpoint: 'openai-compatible needs agent.provider.base_url',
   unsupported_provider: 'the dispatcher serves anthropic and openai-compatible providers',
+  capability_off: 'this task is turned off for the project; its capability is turned on in the project\'s Settings',
 };
+
+/** Why a queued run is skipped rather than handed to a worker when its Project has turned its task's capability off. */
+export const CAPABILITY_OFF = 'capability_off';
+
+/** The capability a task needs turned on in a Project, or null for a task no capability gates. */
+export function capabilityOf(task: string): ProjectCapability | null {
+  const gate = admissionForTask(task);
+  return gate?.kind === 'capability' ? gate.capability as ProjectCapability : null;
+}
+
+/** Whether a Project has turned a capability on. */
+export async function capabilityOn(db: ServerEnv['db'], projectId: string, capability: ProjectCapability): Promise<boolean> {
+  const read = enabledCapabilities(db, [capability], projectId);
+  return read.read((await read.statement.all<Record<string, unknown>>()).results).length > 0;
+}
 
 /** A dispatch this Deployment can run: everything the launch needs, resolved and nothing yet written. */
 export interface PreparedDispatch {
@@ -119,7 +135,7 @@ export interface PreparedDispatch {
 
 export type PrepareOutcome =
   | { ok: true; prepared: PreparedDispatch }
-  | { ok: false; refusal: DispatchRefusal; /** The provider the refusal names, when one is configured but not served. */ providerType?: string };
+  | { ok: false; refusal: DispatchRefusal; /** The provider the refusal names, when one is configured but not served. */ providerType?: string; /** The capability a `capability_off` refusal names. */ capability?: string };
 
 /** What a launch is told beyond the prepared dispatch: where to call back, who asked, how long, and the task's parameters. */
 export interface LaunchSpec {
@@ -173,7 +189,7 @@ export interface Queued {
 export type DispatchOutcome =
   | ({ dispatched: true; queued: false } & Launched)
   | ({ dispatched: true; queued: true } & Queued)
-  | { dispatched: false; refusal: DispatchRefusal; providerType?: string };
+  | { dispatched: false; refusal: DispatchRefusal; providerType?: string; capability?: string };
 
 /** What the queue keeps of a launch spec until the drain launches it. The instruction is not kept: a task that carries one has it rebuilt at launch. */
 interface StoredSpec {
@@ -522,6 +538,10 @@ export async function prepareDispatch(env: ServerEnv, task: string, projectId: s
   // ever hand out.
   if (!RUNTIME_SERVED_TASKS.includes(task)) {
     if (inputBuilderFor(task) === null) return { ok: false, refusal: 'no_instruction' };
+    // A task a capability gates is queued only where the Project has turned it on, whoever asks. A runtime-served
+    // task carries its admission into its container (`MYCO_TASK_ADMISSION`), which refuses there.
+    const capability = capabilityOf(task);
+    if (capability !== null && !(await capabilityOn(env.db, projectId, capability))) return { ok: false, refusal: 'capability_off', capability };
     const admission = gate.kind === 'provider' ? CAPTURE_DRIVEN_ADMISSION : gate.kind === 'embedding' ? CAPTURE_DRIVEN_ADMISSION : gate.capability;
     return { ok: true, prepared: { task, projectId, servedBy: 'worker', providerType: null, model: null, provider: {}, credentialEnv: {}, admission } };
   }
@@ -705,10 +725,10 @@ export async function launchDispatch(env: ServerEnv, prepared: PreparedDispatch,
 }
 
 /** Prepare and launch in one call, for a caller with no claim of its own to make between them. */
-export async function dispatchTask(env: ServerEnv, task: string, projectId: string, spec: LaunchSpec, now: number): Promise<DispatchOutcome> {
+export async function dispatchTask(env: ServerEnv, task: string, projectId: string, spec: LaunchSpec, now: number, options: { ceiling?: ActorCeiling } = {}): Promise<DispatchOutcome> {
   const prepared = await prepareDispatch(env, task, projectId);
-  if (!prepared.ok) return { dispatched: false, refusal: prepared.refusal, ...(prepared.providerType === undefined ? {} : { providerType: prepared.providerType }) };
-  return { dispatched: true, ...(await dispatchPrepared(env, prepared.prepared, spec, now)) };
+  if (!prepared.ok) return { dispatched: false, refusal: prepared.refusal, ...(prepared.providerType === undefined ? {} : { providerType: prepared.providerType }), ...(prepared.capability === undefined ? {} : { capability: prepared.capability }) };
+  return { dispatched: true, ...(await dispatchPrepared(env, prepared.prepared, spec, now, options)) };
 }
 
 /** The run the platform replaced, with everything a fresh dispatch of it needs that the row does not carry. */
@@ -967,6 +987,15 @@ export async function claimNextRun(
   let stored: StoredSpec | null = null;
   try { stored = candidate.dispatchSpec === null ? null : JSON.parse(candidate.dispatchSpec) as StoredSpec; } catch { stored = null; }
   const scope = { projectId: candidate.projectId };
+  // A run of a task whose capability the Project turned off after it queued is skipped where it waits, naming why:
+  // held, it would stand at the head of the queue for good. The claim's own write checks it again.
+  const capability = capabilityOf(candidate.task);
+  const skipOff = async (): Promise<ClaimOutcome> => {
+    await endQueuedRun(env, scope, { id: candidate.id }, worker.now, { skipped: CAPABILITY_OFF });
+    emit({ kind: 'task_skipped', task: candidate.task, projectId: candidate.projectId, skip: CAPABILITY_OFF });
+    return claimNextRun(env, worker);
+  };
+  if (capability !== null && !(await capabilityOn(env.db, candidate.projectId, capability))) return skipOff();
   const built = await buildTaskInput(env, candidate.task, candidate.projectId, worker.now, { fresh: stored?.options?.fresh === true, params: stored?.params });
   if (built !== null && built.unchanged) {
     await endQueuedRun(env, scope, { id: candidate.id }, worker.now, { skipped: INPUT_UNCHANGED });
@@ -994,9 +1023,10 @@ export async function claimNextRun(
   const limits = await readDispatchLimits(env);
   const row = await claimQueuedRun(env.db, candidate, {
     dispatchedBy: minted.tokenId, leasedBy: worker.tokenId, leaseExpiresAt: worker.now + WORKER_LEASE_MS, harness, now: worker.now,
-  }, { limits, now: worker.now });
+  }, { limits, now: worker.now, ...(capability === null ? {} : { capability }) });
   if (row === null) {
     await retireDispatchCredential(env, minted.tokenId, worker.now);
+    if (capability !== null && !(await capabilityOn(env.db, candidate.projectId, capability))) return skipOff();
     const held = await admitDispatch(env, candidate.task, worker.now, limits, candidate.id);
     if (held === null) return { claimed: false, reason: 'lost_race' };
     await recordQueueHolder(env.db, scope, candidate.id, held);

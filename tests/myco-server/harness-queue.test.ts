@@ -13,7 +13,7 @@ import { claimRun, dispatchLoad, launchQueued, listQueuedAcrossProjects, recordD
 import { runTick } from '@myco-server-worker/core/tick.js';
 import { titleSession } from '@myco-server-worker/core/titling.js';
 import { seedCredential } from './helpers/d1.js';
-import { sqliteEnv, withHarness } from './helpers/fixtures.js';
+import { sqliteEnv, withHarness, turnOnGatedCapabilities } from './helpers/fixtures.js';
 import { prepared } from './helpers/prepared.js';
 
 const NOW = 1_800_000_000_000;
@@ -22,6 +22,7 @@ type Launch = { runId: string; timeoutSeconds: number; envVars: Record<string, s
 
 function fixture(opts: { bound?: boolean; refuse?: () => Error | undefined } = {}) {
   const e = sqliteEnv();
+  turnOnGatedCapabilities(e.sqlite);
   const launches: Launch[] = [];
   const wakes: number[] = [];
   const base = opts.bound === false ? e.serverEnv : withHarness(() => e.serverEnv, {
