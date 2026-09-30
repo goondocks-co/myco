@@ -2,68 +2,11 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { ApiError, fetchJson, postJson } from '../lib/api';
 export { usePaged } from './use-paged';
 
-export interface MemberRow {
-  id: string;
-  label: string | null;
-  /** What this member may do. A worker's credential must belong to an admin, which is what makes a claim from it admissible. */
-  role: 'admin' | 'member';
-  linked: boolean;
-  createdAt: number;
-  revokedAt: number | null;
-  revokedBy: string | null;
-  liveCredentials: number;
-}
-
-export interface InvitationRow {
-  id: string;
-  memberId: string | null;
-  createdBy: string | null;
-  createdAt: number;
-  expiresAt: number;
-}
+import type { CredentialRow, GrantRow, InvitationRow, MemberRow } from '../features/admin/wire';
+export type { ActivityRow, CredentialRow, GrantRow, InvitationRow, MemberRow } from '../features/admin/wire';
 
 /** What a runtime is called on the page: the name it gave itself at join, else its machine, else the credential. */
 export const runtimeDisplayName = (c: Pick<CredentialRow, 'runtimeLabel' | 'machineId' | 'id'>): string => c.runtimeLabel ?? c.machineId ?? c.id;
-
-export interface CredentialRow {
-  id: string;
-  memberId: string;
-  machineId: string | null;
-  /** The name the runtime gave itself when it joined, or null when it gave none. */
-  runtimeLabel: string | null;
-  expiresAt: number;
-  revokedAt: number | null;
-  revokedBy: string | null;
-  bytesWritten: number;
-  lineageStartedAt: number;
-  firstUsedAt: number | null;
-  /** Whether this credential authenticates now: unrevoked, unexpired, and its member live. Not a statement that it has written or claimed anything. */
-  live: boolean;
-  /** What the server minted this credential for: one agent run, or a member's own runtime. */
-  purpose: 'run' | 'member';
-}
-
-export interface ActivityRow {
-  eventId: string;
-  projectId: string;
-  sessionId: string;
-  kind: string;
-  createdAt: number;
-  receivedAt: number;
-}
-
-export interface GrantRow {
-  id: string;
-  projectId: string;
-  label: string | null;
-  createdBy: string;
-  createdAt: number;
-  expiresAt: number | null;
-  lastUsedAt: number | null;
-  revokedAt: number | null;
-  revokedBy: string | null;
-  rotatedTo: string | null;
-}
 
 /** The one value `revokedBy` carries that is not a member: the expiry sweep, which has no actor to name. */
 export const GRANT_EXPIRY_ACTOR = 'expiry';

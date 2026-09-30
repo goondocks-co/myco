@@ -90,7 +90,7 @@ export function UpkeepLine({ upkeep, now, statusHref }: { upkeep: Upkeep; now: n
     <p className="flex items-start gap-s2 t-small text-muted" data-upkeep="">
       {content}
       {statusHref !== null && (
-        <RouterLink to={statusHref} className={cn('shrink-0 rounded-chip font-medium text-primary hover:underline', focusRing)}>Status →</RouterLink>
+        <RouterLink to={statusHref} className={cn('shrink-0 rounded-chip font-medium text-primary hover:underline', focusRing)}>Health →</RouterLink>
       )}
     </p>
   );
