@@ -2,6 +2,7 @@ import type { RelationalStore } from '../core/adapters.js';
 import { keyset, page, type Page, type ReadScope } from './scope.js';
 import { getRun, isTerminalRunStatus, RUN_CALL_FAILED, RUN_TOOL_EVENT, type RunCallFailure } from '../core/runs.js';
 import { readRunCloseEvidence, type RunCloseEvidence } from '../core/run-postconditions.js';
+import { contextValue } from '../db/run-context.js';
 
 /** The most calls one run's detail lists; a run that called more is read in the record rather than the page. */
 const MAX_TOOL_CALLS = 200;
@@ -118,8 +119,6 @@ export interface RunFilters {
 const POSITION_SQL = `(SELECT COUNT(*) FROM agent_runs q WHERE q.status = 'queued'
   AND (q.queued_at < agent_runs.queued_at OR (q.queued_at = agent_runs.queued_at AND q.id < agent_runs.id)))`;
 
-/** One key of a run's context, for the two words a reader needs off it; a context that is not JSON reads as none. */
-export const contextValue = (key: string): string => `CASE WHEN json_valid(run_context) THEN json_extract(run_context, '$.${key}') END`;
 
 const LIST_COLUMNS = `id, agent_id, task, status, provider, model, started_at, resumed_at, completed_at,
   tokens_used, cost_usd, cost_source, dry_run, resumable, resume_status, (error IS NOT NULL) AS failed,

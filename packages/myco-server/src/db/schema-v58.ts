@@ -1,4 +1,5 @@
 import { PROJECT_ID_GRAMMAR } from './project-id.js';
+import { contextValue } from './run-context.js';
 
 /**
  * Schema v58: the sessions a run read.
@@ -11,6 +12,8 @@ import { PROJECT_ID_GRAMMAR } from './project-id.js';
  *   reads; `idx_run_reads_session` serves the session's foreign key and the runs that read one session.
  * - `idx_spores_session` finds the spores written from one session, and serves the foreign key `spores` has always
  *   carried to `sessions`.
+ * - `idx_agent_runs_session` finds the runs whose dispatch named one session (a titling run's own), on the same
+ *   expression every statement reads the context's `session_id` with.
  */
 export const V58_STATEMENTS: readonly string[] = [
   `CREATE TABLE IF NOT EXISTS run_reads (
@@ -24,4 +27,5 @@ export const V58_STATEMENTS: readonly string[] = [
      FOREIGN KEY (project_id, session_id) REFERENCES sessions(project_id, session_id))`,
   `CREATE INDEX IF NOT EXISTS idx_run_reads_session ON run_reads (project_id, session_id, received_at)`,
   `CREATE INDEX IF NOT EXISTS idx_spores_session ON spores (project_id, session_id, created_at)`,
+  `CREATE INDEX IF NOT EXISTS idx_agent_runs_session ON agent_runs (project_id, ${contextValue('session_id')})`,
 ];

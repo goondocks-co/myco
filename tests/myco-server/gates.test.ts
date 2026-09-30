@@ -822,6 +822,13 @@ describe('gates', () => {
       .map((f) => f.slice(SRC.length + 1))
       .filter((f) => !f.startsWith('platform/') && !f.startsWith('core/adapters'));
     expect(callers.sort()).toEqual([join('core', 'store-maintenance.ts'), join('ingest', 'events.ts'), join('mcp', 'context.ts')]);
+    // In the MCP context the one deferral is the record of a run's reads, inside `noteRunReads`.
+    const context = stripComments(readFileSync(join(SRC, 'mcp', 'context.ts'), 'utf8'));
+    const start = context.indexOf('export function noteRunReads(');
+    const end = context.indexOf('\n}\n', start);
+    expect({ start: start >= 0, end: end > start }).toEqual({ start: true, end: true });
+    const deferrals = (text: string) => text.match(/\bafterResponse\(/g)?.length ?? 0;
+    expect({ file: deferrals(context), noteRunReads: deferrals(context.slice(start, end)) }).toEqual({ file: 1, noteRunReads: 1 });
   });
 
   it('opens a Deployment secret from exactly one function under src, and no display surface calls it', () => {

@@ -30,7 +30,7 @@ export interface StatsProfile {
 /** The indexes schema step 57 adds; a store analyzed before it holds no statistics for them. */
 export const STEP_57_INDEXES = ['idx_sessions_occurred_deployment', 'idx_spores_created_deployment', 'idx_plans_updated_deployment', 'idx_spores_author', 'idx_sessions_capture'] as const;
 /** The indexes schema step 58 adds, the `run_reads` key among them. */
-export const STEP_58_INDEXES = ['sqlite_autoindex_run_reads_1', 'idx_run_reads_session', 'idx_spores_session'] as const;
+export const STEP_58_INDEXES = ['sqlite_autoindex_run_reads_1', 'idx_run_reads_session', 'idx_spores_session', 'idx_agent_runs_session'] as const;
 
 export const PROFILES: Readonly<Record<'current' | 'stale', StatsProfile>> = {
   current: { projects: 13, sessions: 4_000, spores: 2_000, plans: 450, runs: 12_000, transcripts: 4_200, unanalyzed: [] },
@@ -72,8 +72,10 @@ export function analyzedStore(profile: StatsProfile): Database {
       const task = TASKS[i % TASKS.length]!;
       const at = NOW - (profile.runs - i) * 60_000;
       const status = i % 15 === 0 ? 'failed' : i % 11 === 0 ? 'skipped' : 'completed';
-      db.run(`INSERT INTO agent_runs (project_id, id, agent_id, task, status, started_at, completed_at, queued_at, tokens_used, cost_usd)
-              VALUES (?, ?, 'agent', ?, ?, ?, ?, ?, ?, ?)`, [projectOf(i, profile.projects), `run_${i}`, task, status, at, at + 30_000, task === 'embedding-reconcile' ? null : at - 1000, 1000, 0.01]);
+      // A titling run's dispatch names its session.
+      const context = task === 'title-summary' ? JSON.stringify({ session_id: `s${(i * 7) % profile.sessions}`, mode: 'claim' }) : null;
+      db.run(`INSERT INTO agent_runs (project_id, id, agent_id, task, status, started_at, completed_at, queued_at, tokens_used, cost_usd, run_context)
+              VALUES (?, ?, 'agent', ?, ?, ?, ?, ?, ?, ?, ?)`, [projectOf(i, profile.projects), `run_${i}`, task, status, at, at + 30_000, task === 'embedding-reconcile' ? null : at - 1000, 1000, 0.01, context]);
       if (task !== 'embedding-reconcile') {
         db.run(`INSERT INTO agent_run_events (project_id, run_id, event_type, tool_name, outcome, payload, recorded_at) VALUES (?, ?, 'run_write', 'myco_run_sessions', 'written', '{}', ?)`, [projectOf(i, profile.projects), `run_${i}`, at]);
         db.run(`INSERT INTO agent_reports (project_id, run_id, agent_id, action, summary, created_at) VALUES (?, ?, 'agent', 'extract', 'x', ?)`, [projectOf(i, profile.projects), `run_${i}`, at]);

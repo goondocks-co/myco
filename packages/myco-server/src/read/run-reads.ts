@@ -6,10 +6,14 @@
  * session it came from in `spores.session_id`. The two reads here join them from either side:
  *
  * - **A session's outcome** — the runs that read it, each with what it wrote from it (its spores, and its title when
- *   the run's dispatch named this session), and the spores written from it. A run that wrote from a session with no
- *   recorded read of it is listed by its spores, with no read time.
+ *   the run's dispatch named this session), and the spores written from it. A run with no recorded read of the
+ *   session that wrote spores from it, or whose dispatch named it, is listed with no read time.
  * - **A run's reads and what it produced** — the sessions it read and the spores it wrote. A run with no recorded
- *   read is answered with the sessions of the spores it wrote, and says so (`recorded: false`).
+ *   read is answered with the sessions it is known to have worked from — its dispatch's session and the sessions of
+ *   the spores it wrote — and says so (`recorded: false`). `recorded: false` with no sessions means the Deployment
+ *   holds no record of what the run read, never that it read nothing.
+ *
+ * A deleted session is never listed as read.
  *
  * Every statement names the Project, and every list is bounded; the totals count past the bound.
  */
@@ -17,7 +21,7 @@ import type { RelationalStore } from '../core/adapters.js';
 import { RUN_WRITE_EVENT } from '../core/runs.js';
 import { TITLE_WRITE_TOOL } from '../core/tool-catalogue.js';
 import { notTombstonedSql } from '../core/tombstones.js';
-import { contextValue } from './runs.js';
+import { contextValue } from '../db/run-context.js';
 import type { ReadScope } from './scope.js';
 
 /** The most runs a session's outcome lists. */
@@ -46,7 +50,7 @@ export interface SessionRun {
   status: string;
   startedAt: number | null;
   completedAt: number | null;
-  /** When the run first read the session through its run tools; null for a run known only by what it wrote from it. */
+  /** When the run first read the session through its run tools; null for a run known only by its dispatch or what it wrote from it. */
   readAt: number | null;
   /** Whether the run's dispatch named this session. */
   target: boolean;
@@ -66,7 +70,7 @@ export interface SessionOutcome {
 export interface RunReadSession {
   sessionId: string;
   title: string | null;
-  /** When the run first read it; null when it is known only as the session a spore the run wrote came from. */
+  /** When the run first read it; null when it is known only as its dispatch's session or a session a spore it wrote came from. */
   readAt: number | null;
 }
 
@@ -75,7 +79,10 @@ export interface RunReads {
   read: {
     sessions: RunReadSession[];
     total: number;
-    /** True when the sessions are the run's recorded reads; false when they are the sessions of the spores it wrote. */
+    /**
+     * True when the sessions are the run's recorded reads. False when the run recorded none: the sessions are then
+     * its dispatch's session and those of the spores it wrote, and none listed means no record, not no read.
+     */
     recorded: boolean;
   };
   produced: { spores: { total: number; items: OutcomeSpore[] } };
@@ -85,7 +92,11 @@ const SPORE_COLUMNS = `sp.id, sp.observation_type AS observationType, sp.status,
   sp.session_id AS sessionId, sp.created_at AS createdAt,
   CASE WHEN EXISTS (SELECT 1 FROM agent_runs r WHERE r.project_id = sp.project_id AND r.id = sp.author) THEN sp.author END AS runId`;
 
-/** The runs that read a session or wrote from it: one row per run, first read first, newest run first. */
+/**
+ * The runs that read a session, wrote from it, or were dispatched on it: one row per run, its first read if it has
+ * one, newest run first. Bound as: session (target), write event, title tool, session (spores), then Project and
+ * session for each of the three sources, the Project the runs are joined in, and the limit.
+ */
 const SESSION_RUNS_SQL = `SELECT r.id AS runId, r.task, r.status, r.started_at AS startedAt, r.completed_at AS completedAt, x.readAt,
     COALESCE(${contextValue('session_id')} = ?, 0) AS target,
     EXISTS (SELECT 1 FROM agent_run_events e WHERE e.project_id = r.project_id AND e.run_id = r.id AND e.event_type = ? AND e.tool_name = ?) AS wroteTitle,
@@ -93,7 +104,9 @@ const SESSION_RUNS_SQL = `SELECT r.id AS runId, r.task, r.status, r.started_at A
   FROM (SELECT runId, MIN(readAt) AS readAt FROM (
           SELECT run_id AS runId, received_at AS readAt FROM run_reads WHERE project_id = ? AND session_id = ?
           UNION ALL
-          SELECT author AS runId, NULL AS readAt FROM spores WHERE project_id = ? AND session_id = ? AND author IS NOT NULL)
+          SELECT author AS runId, NULL AS readAt FROM spores WHERE project_id = ? AND session_id = ? AND author IS NOT NULL
+          UNION ALL
+          SELECT id AS runId, NULL AS readAt FROM agent_runs WHERE project_id = ? AND ${contextValue('session_id')} = ?)
         GROUP BY runId) x
   JOIN agent_runs r ON r.project_id = ? AND r.id = x.runId
   ORDER BY COALESCE(r.started_at, r.queued_at, x.readAt) DESC, r.id DESC
@@ -103,20 +116,24 @@ const SESSION_SPORES_SQL = `SELECT ${SPORE_COLUMNS} FROM spores sp WHERE sp.proj
   ORDER BY sp.created_at DESC, sp.id DESC LIMIT ?`;
 const SESSION_SPORE_TOTAL_SQL = `SELECT COUNT(*) AS n FROM spores WHERE project_id = ? AND session_id = ?`;
 
+/** A run's recorded reads of sessions the Project still holds undeleted. */
 const RUN_READS_SQL = `SELECT rr.session_id AS sessionId, s.title, rr.received_at AS readAt FROM run_reads rr
-  LEFT JOIN sessions s ON s.project_id = rr.project_id AND s.session_id = rr.session_id
-  WHERE rr.project_id = ? AND rr.run_id = ?
+  JOIN sessions s ON s.project_id = rr.project_id AND s.session_id = rr.session_id
+  WHERE rr.project_id = ? AND rr.run_id = ? AND ${notTombstonedSql('s')}
   ORDER BY rr.received_at ASC, rr.session_id ASC LIMIT ?`;
-const RUN_READ_TOTAL_SQL = `SELECT COUNT(*) AS n FROM run_reads WHERE project_id = ? AND run_id = ?`;
+const RUN_READ_TOTAL_SQL = `SELECT COUNT(*) AS n FROM run_reads rr
+  JOIN sessions s ON s.project_id = rr.project_id AND s.session_id = rr.session_id
+  WHERE rr.project_id = ? AND rr.run_id = ? AND ${notTombstonedSql('s')}`;
 
-/** The sessions of the spores a run wrote, for a run with no recorded read; a deleted session is not listed. */
-const WRITTEN_FROM_SQL = `SELECT sp.session_id AS sessionId, s.title, NULL AS readAt, MIN(sp.created_at) AS firstAt FROM spores sp
-  JOIN sessions s ON s.project_id = sp.project_id AND s.session_id = sp.session_id
-  WHERE sp.project_id = ? AND sp.author = ? AND ${notTombstonedSql('s')}
-  GROUP BY sp.session_id ORDER BY firstAt ASC, sp.session_id ASC LIMIT ?`;
-const WRITTEN_FROM_TOTAL_SQL = `SELECT COUNT(DISTINCT sp.session_id) AS n FROM spores sp
-  JOIN sessions s ON s.project_id = sp.project_id AND s.session_id = sp.session_id
-  WHERE sp.project_id = ? AND sp.author = ? AND ${notTombstonedSql('s')}`;
+/** The sessions a run with no recorded read worked from: its dispatch's session and those of the spores it wrote, undeleted. Bound as: Project, run, Project, run, then the Project the sessions are joined in. */
+const WORKED_FROM = `(SELECT session_id AS sessionId, created_at AS at FROM spores WHERE project_id = ? AND author = ? AND session_id IS NOT NULL
+    UNION ALL
+    SELECT ${contextValue('session_id')} AS sessionId, COALESCE(started_at, queued_at, 0) AS at FROM agent_runs WHERE project_id = ? AND id = ?) x
+  JOIN sessions s ON s.project_id = ? AND s.session_id = x.sessionId
+  WHERE ${notTombstonedSql('s')}`;
+const WORKED_FROM_SQL = `SELECT x.sessionId, s.title, NULL AS readAt, MIN(x.at) AS firstAt FROM ${WORKED_FROM}
+  GROUP BY x.sessionId ORDER BY firstAt ASC, x.sessionId ASC LIMIT ?`;
+const WORKED_FROM_TOTAL_SQL = `SELECT COUNT(DISTINCT x.sessionId) AS n FROM ${WORKED_FROM}`;
 
 const RUN_SPORES_SQL = `SELECT ${SPORE_COLUMNS} FROM spores sp WHERE sp.project_id = ? AND sp.author = ?
   ORDER BY sp.created_at DESC, sp.id DESC LIMIT ?`;
@@ -128,7 +145,8 @@ const countOf = (rows: unknown[]): number => Number((rows[0] as { n?: number } |
 export async function sessionOutcome(db: RelationalStore, scope: ReadScope, sessionId: string): Promise<SessionOutcome> {
   const { projectId } = scope;
   const [runs, spores, total] = await db.batch([
-    db.prepare(SESSION_RUNS_SQL).bind(sessionId, RUN_WRITE_EVENT, TITLE_WRITE_TOOL, sessionId, projectId, sessionId, projectId, sessionId, projectId, OUTCOME_RUN_LIMIT),
+    db.prepare(SESSION_RUNS_SQL).bind(sessionId, RUN_WRITE_EVENT, TITLE_WRITE_TOOL, sessionId,
+      projectId, sessionId, projectId, sessionId, projectId, sessionId, projectId, OUTCOME_RUN_LIMIT),
     db.prepare(SESSION_SPORES_SQL).bind(projectId, sessionId, OUTCOME_SPORE_LIMIT),
     db.prepare(SESSION_SPORE_TOTAL_SQL).bind(projectId, sessionId),
   ]);
@@ -162,11 +180,10 @@ export async function runReads(db: RelationalStore, scope: ReadScope, runId: str
   if (recordedTotal > 0) {
     return { read: { sessions: read!.results as RunReadSession[], total: recordedTotal, recorded: true }, produced };
   }
-  if (produced.spores.total === 0) return { read: { sessions: [], total: 0, recorded: false }, produced };
-  const [written, writtenTotal] = await db.batch([
-    db.prepare(WRITTEN_FROM_SQL).bind(projectId, runId, RUN_READ_LIMIT),
-    db.prepare(WRITTEN_FROM_TOTAL_SQL).bind(projectId, runId),
+  const [worked, workedTotal] = await db.batch([
+    db.prepare(WORKED_FROM_SQL).bind(projectId, runId, projectId, runId, projectId, RUN_READ_LIMIT),
+    db.prepare(WORKED_FROM_TOTAL_SQL).bind(projectId, runId, projectId, runId, projectId),
   ]);
-  const sessions = (written!.results as Array<RunReadSession & { firstAt?: number }>).map(({ sessionId, title, readAt }) => ({ sessionId, title, readAt }));
-  return { read: { sessions, total: countOf(writtenTotal!.results), recorded: false }, produced };
+  const sessions = (worked!.results as Array<RunReadSession & { firstAt?: number }>).map(({ sessionId, title, readAt }) => ({ sessionId, title, readAt }));
+  return { read: { sessions, total: countOf(workedTotal!.results), recorded: false }, produced };
 }

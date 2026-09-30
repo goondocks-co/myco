@@ -190,3 +190,36 @@ describe('the plan list across Projects', () => {
     expect(second.body.plans.map((p: any) => p.planKey.slice(-1))).toEqual(['1', '4']);
   });
 });
+
+describe('a window of days: since inclusive, until exclusive', () => {
+  it('lists the sessions started inside the window across Projects and in one Project, leaving out the one started exactly at until', async () => {
+    const { session, get } = await harness();
+    session('proj_1', 's_before', NOW - 1);
+    session('proj_1', 's_start', NOW);
+    session('proj_2', 's_last', NOW + 999);
+    session('proj_1', 's_end', NOW + 1_000);
+    const window = `since=${NOW}&until=${NOW + 1_000}`;
+    expect((await get(`/api/sessions?${window}`)).body.rows.map((r: any) => r.sessionId)).toEqual(['s_last', 's_start']);
+    expect((await get(`/api/projects/proj_1/sessions?${window}`)).body.rows.map((r: any) => r.sessionId)).toEqual(['s_start']);
+    expect((await get(`/api/sessions?until=${NOW}`)).body.rows.map((r: any) => r.sessionId)).toEqual(['s_before']);
+    expect((await get('/api/sessions?until=yesterday')).status).toBe(400);
+    expect((await get('/api/projects/proj_1/sessions?until=-1')).status).toBe(400);
+  });
+
+  it('lists the spores written inside the window across Projects and in one Project, counting and faceting the same window', async () => {
+    const { spore, get } = await harness();
+    spore('proj_1', 'sp_before', NOW - 1);
+    spore('proj_1', 'sp_start', NOW);
+    spore('proj_2', 'sp_last', NOW + 999);
+    spore('proj_1', 'sp_end', NOW + 1_000);
+    const window = `since=${NOW}&until=${NOW + 1_000}`;
+    const across = await get(`/api/spores?${window}`);
+    expect({ ids: across.body.spores.map((s: any) => s.id), total: across.body.total, facets: across.body.facets.project })
+      .toEqual({ ids: ['sp_last', 'sp_start'], total: 2, facets: { proj_1: 1, proj_2: 1 } });
+    const one = await get(`/api/projects/proj_1/spores?${window}`);
+    expect({ ids: one.body.spores.map((s: any) => s.id), total: one.body.total }).toEqual({ ids: ['sp_start'], total: 1 });
+    expect((await get(`/api/projects/proj_1/spores?until=${NOW}`)).body.spores.map((s: any) => s.id)).toEqual(['sp_before']);
+    expect((await get('/api/spores?until=soon')).status).toBe(400);
+    expect((await get('/api/projects/proj_1/spores?since=soon')).status).toBe(400);
+  });
+});

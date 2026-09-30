@@ -14,4 +14,6 @@ CREATE INDEX IF NOT EXISTS idx_run_reads_session ON run_reads (project_id, sessi
 
 CREATE INDEX IF NOT EXISTS idx_spores_session ON spores (project_id, session_id, created_at);
 
+CREATE INDEX IF NOT EXISTS idx_agent_runs_session ON agent_runs (project_id, CASE WHEN json_valid(run_context) THEN json_extract(run_context, '$.session_id') END);
+
 INSERT OR REPLACE INTO schema_meta (key, value) VALUES ('version', '58');

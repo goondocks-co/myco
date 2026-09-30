@@ -12,7 +12,9 @@ import worker from '@myco-server-worker/index.js';
 import { issueMemberToken } from '@myco-server-worker/auth/tokens.js';
 import { ensureMember } from '@myco-server-worker/auth/enrollment.js';
 import { HARNESS_MEMBER_ID } from '@myco-server-worker/core/harness.js';
-import { MAX_RUN_READS, pruneTerminalRuns, recordDispatch, recordRunReads } from '@myco-server-worker/core/runs.js';
+import { MAX_RUN_READS, pruneTerminalRuns, recordDispatch, recordRunReads, recordRunWrite } from '@myco-server-worker/core/runs.js';
+import { PROMPT_MARK_TOOL } from '@myco-server-worker/core/tool-catalogue.js';
+import { OUTCOME_RUN_LIMIT, OUTCOME_SPORE_LIMIT } from '@myco-server-worker/read/run-reads.js';
 import { tombstoneSession } from '@myco-server-worker/core/tombstones.js';
 import { createBackup, restoreBackup } from '@myco-server-worker/core/backup.js';
 import type { RelationalStore } from '@myco-server-worker/core/adapters.js';
@@ -184,6 +186,12 @@ describe('recording what a run read', () => {
     expect(await recordRunReads(db, scope, { runId: 'run_absent', tokenId: harness.tokenId, sessionIds: ['sess_1'], receivedAt: NOW })).toBe(0);
     expect(reads()).toHaveLength(MAX_RUN_READS);
   });
+  it('records the sessions of a page the Project holds and skips one it does not, without losing the rest of the page', async () => {
+    const { db, dispatch, reads } = await setup();
+    const harness = await dispatch('run_x', SWEEP, { sessionId: null });
+    expect(await recordRunReads(db, { projectId: 'proj_1' }, { runId: 'run_x', tokenId: harness.tokenId, sessionIds: ['sess_2', 'absent'], receivedAt: NOW })).toBe(1);
+    expect(reads()).toEqual([expect.objectContaining({ runId: 'run_x', sessionId: 'sess_2' })]);
+  });
 });
 
 describe('what a member reads off a session and a run', () => {
@@ -268,6 +276,61 @@ describe('what a member reads off a session and a run', () => {
   });
 });
 
+describe('what a session\'s outcome counts and lists', () => {
+  it('lists at most 10 spores and 20 runs, and counts every spore', async () => {
+    const { db, sqlite, spore, get } = await setup();
+    expect({ spores: OUTCOME_SPORE_LIMIT, runs: OUTCOME_RUN_LIMIT }).toEqual({ spores: 10, runs: 20 });
+    for (let i = 0; i < 11; i += 1) spore(`sp_${i}`, 'sess_2', 'mem_machine_1', 'proj_1', NOW + i);
+    for (let i = 0; i < 21; i += 1) {
+      sqlite.run(`INSERT INTO agent_runs (project_id, id, agent_id, task, status, started_at) VALUES ('proj_1', ?, 'myco-agent', ?, 'completed', ?)`, [`run_${i}`, SWEEP, NOW + i]);
+      await recordRunReads(db, { projectId: 'proj_1' }, { runId: `run_${i}`, tokenId: 'mt_run', sessionIds: ['sess_2'], receivedAt: NOW });
+    }
+    const outcome = (await get('/api/projects/proj_1/sessions/sess_2')).body.outcome;
+    expect({ runs: outcome.runs.length, first: outcome.runs[0].runId, spores: outcome.spores.items.length, total: outcome.spores.total })
+      .toEqual({ runs: 20, first: 'run_20', spores: 10, total: 11 });
+  });
+
+  it('marks a run titled only for the title it wrote of this session: never for a refused write, another session, or another tool\'s write', async () => {
+    const { db, sqlite, dispatch, call, prompt, get } = await setup();
+    prompt('p1', 'sess_1');
+    prompt('p2', 'sess_2');
+    sqlite.run(`UPDATE sessions SET title = NULL WHERE session_id = 'sess_2'`);
+    // sess_1 already carries a title, so a claim-mode write is refused.
+    const refused = await dispatch('run_refused', TITLING, { startedAt: NOW - 3_000 });
+    await call(refused.token, 'myco_run_sessions', { op: 'material' });
+    expect((await call(refused.token, 'myco_run_sessions', { op: 'title', title: 'T', summary: 'S' })).result.written).toBe(false);
+    // A run of the other session writes its title and reads a page that carries this one.
+    const other = await dispatch('run_other', TITLING, { sessionId: 'sess_2', startedAt: NOW - 2_000 });
+    await call(other.token, 'myco_run_sessions', { op: 'material' });
+    expect((await call(other.token, 'myco_run_sessions', { op: 'title', title: 'T', summary: 'S' })).result.written).toBe(true);
+    await call(other.token, 'myco_run_prompts', { op: 'unprocessed', include_text: true });
+    // A run dispatched on this session whose only landed write is another tool's.
+    await dispatch('run_marked', TITLING, { startedAt: NOW - 1_000 });
+    await recordRunWrite(db, { projectId: 'proj_1' }, { runId: 'run_marked', toolName: PROMPT_MARK_TOOL, op: 'mark_processed', recordedAt: NOW, detail: { prompt_id: 'p1' } });
+
+    const runs = (await get('/api/projects/proj_1/sessions/sess_1')).body.outcome.runs as Array<{ runId: string; target: boolean; titled: boolean }>;
+    expect(runs.map(({ runId, target, titled }) => ({ runId, target, titled }))).toEqual([
+      { runId: 'run_marked', target: true, titled: false },
+      { runId: 'run_other', target: false, titled: false },
+      { runId: 'run_refused', target: true, titled: false },
+    ]);
+    const theirs = (await get('/api/projects/proj_1/sessions/sess_2')).body.outcome.runs as Array<{ runId: string; target: boolean; titled: boolean }>;
+    expect(theirs.map(({ runId, target, titled }) => ({ runId, target, titled }))).toEqual([{ runId: 'run_other', target: true, titled: true }]);
+  });
+
+  it('lists a run dispatched on a session that recorded no read of it and wrote nothing from it, and answers that run\'s reads as its dispatch\'s session', async () => {
+    const { dispatch, get } = await setup();
+    await dispatch('run_title', TITLING, { sessionId: 'sess_2' });
+    expect((await get('/api/projects/proj_1/sessions/sess_2')).body.outcome.runs)
+      .toEqual([expect.objectContaining({ runId: 'run_title', readAt: null, target: true, titled: false, spores: 0 })]);
+    expect((await get('/api/projects/proj_1/runs/run_title')).body.read)
+      .toEqual({ sessions: [{ sessionId: 'sess_2', title: 'Title of sess_2', readAt: null }], total: 1, recorded: false });
+    // A run with no record, no session and no spores: no record, which is not a claim that it read nothing.
+    await dispatch('run_blank', SWEEP, { sessionId: null });
+    expect((await get('/api/projects/proj_1/runs/run_blank')).body.read).toEqual({ sessions: [], total: 0, recorded: false });
+  });
+});
+
 describe('retention', () => {
   it('removes a run\'s reads with the run when run retention takes it, and leaves every other run\'s', async () => {
     const { db, sqlite, dispatch, reads } = await setup();
@@ -287,6 +350,23 @@ describe('retention', () => {
     expect((await tombstoneSession({ db }, { projectId: 'proj_1' }, 'sess_1', 'mem_machine_1', NOW)).applied).toBe(true);
     expect(reads()).toEqual([expect.objectContaining({ runId: 'run_x', sessionId: 'sess_2' })]);
     expect((await get('/api/projects/proj_1/runs/run_x')).body.read.sessions.map((s: { sessionId: string }) => s.sessionId)).toEqual(['sess_2']);
+    // A record that lands after the deletion — a read deferred past it — writes nothing.
+    expect(await recordRunReads(db, { projectId: 'proj_1' }, { runId: 'run_x', tokenId: harness.tokenId, sessionIds: ['sess_1'], receivedAt: NOW + 1 })).toBe(0);
+    expect(reads()).toEqual([expect.objectContaining({ runId: 'run_x', sessionId: 'sess_2' })]);
+  });
+
+  it('never lists a deleted session among a run\'s reads, recorded or known from its spores and dispatch', async () => {
+    const { db, sqlite, dispatch, spore, get, session } = await setup();
+    session('sess_3');
+    const harness = await dispatch('run_rec', SWEEP, { sessionId: null });
+    await recordRunReads(db, { projectId: 'proj_1' }, { runId: 'run_rec', tokenId: harness.tokenId, sessionIds: ['sess_1', 'sess_2', 'sess_3'], receivedAt: NOW });
+    await dispatch('run_old', TITLING, { sessionId: 'sess_1' });
+    spore('sp_old', 'sess_2', 'run_old');
+    // A tombstone standing without the deletion's sweep, as a record racing the sweep would leave it.
+    sqlite.run(`INSERT INTO session_tombstones (project_id, session_id, created_at, created_by) VALUES ('proj_1', 'sess_1', ?, 'mem_machine_1'), ('proj_1', 'sess_2', ?, 'mem_machine_1')`, [NOW, NOW]);
+    expect((await get('/api/projects/proj_1/runs/run_rec')).body.read)
+      .toEqual({ sessions: [{ sessionId: 'sess_3', title: 'Title of sess_3', readAt: NOW }], total: 1, recorded: true });
+    expect((await get('/api/projects/proj_1/runs/run_old')).body.read).toEqual({ sessions: [], total: 0, recorded: false });
   });
 
   it('carries the reads through a backup and its restore, and a second restore adds nothing', async () => {

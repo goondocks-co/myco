@@ -31,6 +31,8 @@ import { emit } from '../telemetry.js';
 import { inListChunks, type ReadScope } from '../read/scope.js';
 import { providerConfiguredFor, settingsWriter, type ProjectCapability } from './settings.js';
 import { TITLING_TASK } from './task-catalogue.js';
+import { NOT_TOMBSTONED_PARAMS } from './tombstones.js';
+import { contextValue } from '../db/run-context.js';
 
 /** The name a dispatch is left alone under when the Project has not moved past the artifact its task already wrote. */
 export const INPUT_UNCHANGED = 'input_unchanged';
@@ -173,13 +175,6 @@ export const titleRunInFlightSql = (session: string): string => `EXISTS (SELECT 
 
 /** The actor a dispatch spec names, and null for a spec that names none. A spec the store did not write is not read as JSON at all. */
 const DISPATCH_ACTOR_SQL = `CASE WHEN json_valid(dispatch_spec) THEN CASE WHEN json_type(dispatch_spec, '$.actor') = 'text' THEN NULLIF(json_extract(dispatch_spec, '$.actor'), '') END END`;
-/**
- * One key of a run's context as a value a WHERE clause can compare, and null
- * where the context holds no such key. A context the store did not write is not
- * read as JSON at all, so a caller's own string cannot fail the query.
- */
-const contextValue = (key: string): string => `CASE WHEN json_valid(run_context) THEN json_extract(run_context, '$.${key}') END`;
-
 /** A run row that counts as an actor's entry of a task from an instant on: not skipped, not replaced, dispatched by that actor. Bound as: task, window start, actor. */
 const ACTOR_ENTRY_SQL = `task = ? AND status != 'skipped' AND COALESCE(${contextValue('replaced')}, 0) != 1
        AND COALESCE(queued_at, started_at) >= ? AND ${DISPATCH_ACTOR_SQL} = ?`;
@@ -815,8 +810,8 @@ export const MAX_RUN_READS = 200;
  * Record the sessions served to a run's call, against the run, over the run's own credential.
  *
  * One row per run and session: a session read again keeps the row, and the instant of its first read. Each row lands
- * only while the Project holds the run and the session, and only while the run holds fewer than `MAX_RUN_READS`
- * rows; the statements run in one batch, in order, so the bound counts the rows the batch itself adds. Answers how
+ * only while the Project holds the run and the session, the session carries no tombstone — a record landing after
+ * the session's deletion writes nothing — and the run holds fewer than `MAX_RUN_READS` rows; the statements run in one batch, in order, so the bound counts the rows the batch itself adds. Answers how
  * many rows landed.
  */
 export async function recordRunReads(
@@ -831,10 +826,11 @@ export async function recordRunReads(
        SELECT ?, ?, ?, ?, ?
         WHERE EXISTS (SELECT 1 FROM agent_runs WHERE project_id = ? AND id = ?)
           AND EXISTS (SELECT 1 FROM sessions WHERE project_id = ? AND session_id = ?)
+          AND ${NOT_TOMBSTONED_PARAMS}
           AND (SELECT COUNT(*) FROM run_reads WHERE project_id = ? AND run_id = ?) < ?
        ON CONFLICT (project_id, run_id, session_id) DO NOTHING`)
     .bind(scope.projectId, read.runId, sessionId, read.tokenId, read.receivedAt,
-          scope.projectId, read.runId, scope.projectId, sessionId, scope.projectId, read.runId, MAX_RUN_READS));
+          scope.projectId, read.runId, scope.projectId, sessionId, scope.projectId, sessionId, scope.projectId, read.runId, MAX_RUN_READS));
   const results = await db.batch(statements);
   return results.reduce((landed, result) => landed + result.meta.changes, 0);
 }

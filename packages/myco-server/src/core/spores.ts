@@ -111,6 +111,8 @@ export interface ListSporesOptions {
   since?: number;
   /** Spores written at or after this instant (ms). */
   createdFrom?: number;
+  /** Spores written before this instant (ms); a spore written exactly at it is not listed. */
+  createdTo?: number;
   /** False excludes spores whose session has not ended. A direct `sessionId` lookup is never gated. */
   includeActive?: boolean;
   limit?: number;
@@ -168,6 +170,7 @@ function filtersOver(projects: { sql: string; params: readonly unknown[] }, o: L
   if (o.sessionId !== undefined) add('session_id = ?', o.sessionId);
   if (o.since !== undefined) add('created_at > ?', o.since);
   if (o.createdFrom !== undefined) add('created_at >= ?', o.createdFrom);
+  if (o.createdTo !== undefined) add('created_at < ?', o.createdTo);
   if (o.search !== undefined && o.search.length > 0) {
     conditions.push('(content LIKE ? OR observation_type LIKE ?)');
     params.push(`%${o.search}%`, `%${o.search}%`);

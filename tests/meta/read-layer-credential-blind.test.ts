@@ -87,14 +87,20 @@ describe('read layer', () => {
   });
 
   it('publishes exactly the named context keys, each one read out of the column rather than with it', () => {
-    const source = readFileSync(join(READ_DIR, 'runs.ts'), 'utf8');
-    // Every mention of the column sits inside a JSON reader, so nothing selects it whole.
-    expect(source.match(/run_context/g) ?? []).toHaveLength((source.match(/json_(?:valid|extract)\(run_context/g) ?? []).length);
-    // And the reader takes one named key at a time; these are the keys it takes.
-    expect(source).toMatch(/json_extract\(run_context, '\$\.\$\{key\}'\)/);
-    const keys = [...source.matchAll(/contextValue\('([a-z_]+)'\)/g)].map((m) => m[1]);
-    expect(keys.length).toBeGreaterThan(0);
-    expect([...new Set(keys)].sort()).toEqual(['replaced', 'replaces']);
+    // The reader lives with the schema, which indexes one of its keys, and takes one named key at a time.
+    const reader = readFileSync(join(READ_DIR, '..', 'db', 'run-context.ts'), 'utf8').replace(/\/\*[\s\S]*?\*\//g, '');
+    expect(reader.match(/run_context/g) ?? []).toHaveLength((reader.match(/json_(?:valid|extract)\(run_context/g) ?? []).length);
+    expect(reader).toMatch(/json_extract\(run_context, '\$\.\$\{key\}'\)/);
+    // Every mention of the column in the modules that read it sits inside that reader, so nothing selects it whole;
+    // these are the keys they take.
+    const keys: string[] = [];
+    for (const module of ['runs.ts', 'run-reads.ts']) {
+      const source = readFileSync(join(READ_DIR, module), 'utf8');
+      expect({ module, column: source.match(/run_context/g) ?? [] }).toEqual({ module, column: [] });
+      expect({ module, reader: /from '\.\.\/db\/run-context\.js'/.test(source) }).toEqual({ module, reader: true });
+      keys.push(...[...source.matchAll(/contextValue\('([a-z_]+)'\)/g)].map((m) => m[1]!));
+    }
+    expect([...new Set(keys)].sort()).toEqual(['replaced', 'replaces', 'session_id']);
   });
 
   it('names no Request type and takes no full Env', () => {
