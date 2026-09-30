@@ -12,6 +12,7 @@ import { listVisibleProjects } from './scope.js';
 import { workerLiveness } from '../core/runs.js';
 import { CONTACT_RECENT_MS, readWorkerFleet, type WorkerFleetRow } from '../core/worker-contacts.js';
 import { ok } from './scope.js';
+import { captureRecency, type CaptureRow } from '../read/capture.js';
 
 /**
  * What this Deployment can do, in the product's vocabulary.
@@ -72,7 +73,15 @@ export async function handleStatus(env: ServerEnv, ctx: OwnerContext): Promise<R
     workers = { available: true, ...counts, recentWithinMs: CONTACT_RECENT_MS, fleet: await readWorkerFleet(env.db, ctx.now) };
     projects = await listVisibleProjects(env.db, ctx.member, { includeArchived: true });
   } catch {
-    return ok({ schema: schemaCheck(null), target, capabilities, workers, projects: [] });
+    return ok({ schema: schemaCheck(null), target, capabilities, workers, projects: [], capture: [], unavailable: ['capture'] });
+  }
+  // Read on its own, so a capture read that fails names itself in `unavailable` and leaves every other fact standing.
+  let capture: CaptureRow[] = [];
+  const unavailable: string[] = [];
+  try {
+    capture = await captureRecency(env.db, ctx.now);
+  } catch {
+    unavailable.push('capture');
   }
   return ok({
     schema: schemaCheck(found),
@@ -86,6 +95,10 @@ export async function handleStatus(env: ServerEnv, ctx: OwnerContext): Promise<R
     // Transcripts stored and not yet read into sessions: how many, and the bytes they have left.
     transcriptBacklog,
     projects: projects.map((p) => ({ projectId: p.projectId, lastActivityAt: p.lastActivityAt, sessionCount: p.sessionCount, archivedAt: p.archivedAt })),
+    // When each machine's agents last sent anything, over the last `CAPTURE_WINDOW_MS`, most recent first.
+    capture,
+    // The facts above that could not be read, so their absence says nothing.
+    unavailable,
   });
 }
 

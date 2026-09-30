@@ -18,6 +18,14 @@ export async function pendingSearchBlobs(db: RelationalStore, projectId?: string
   return row?.n ?? 0;
 }
 
+/** The referenced text blobs still waiting for the full-text index, and the store instant of the longest-waiting of them. */
+export async function searchBacklog(db: RelationalStore): Promise<{ pending: number; oldestStoredAt: number | null }> {
+  const row = await db.prepare(`SELECT COUNT(*) AS n, MIN(b.received_at) AS oldest FROM search_blob_queue q
+    JOIN blobs b ON b.project_id = q.project_id AND b.key = q.blob_key
+    WHERE q.complete = 0 AND (${REFERENCED})`).first<{ n: number; oldest: number | null }>();
+  return { pending: row?.n ?? 0, oldestStoredAt: row?.oldest ?? null };
+}
+
 interface TextChunk { offset: number; text: string; nextOffset: number; complete: boolean }
 
 /** Decode incrementally and overlap chunk boundaries by the maximum query length. Offsets are UTF-16 code units. */
