@@ -9,6 +9,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseShard, selectShard } from './test-shards.mjs';
+import { redactSecrets } from './redact-secrets.mjs';
 
 // ---------------------------------------------------------------------------
 // Hermetic MYCO_HOME
@@ -829,27 +830,36 @@ function writeOverBudgetJunit(reportFile, label, files) {
 }
 
 /**
- * Every process this group spawned that is alive now: the members of its
- * process group (the group's bash wrapper is spawned detached, so its pid is
- * the pgid) plus any descendant of a member that left the group, found by
- * walking parent pids. Nothing outside that tree is ever returned, and a pid
- * is never assumed to be in it: a wrapper that has exited is absent, so a
- * process that later reuses its pid is not mistaken for it. Null when the
- * process table cannot be read.
+ * Every process alive now, by pid: its parent, its process group, and when it
+ * started. A pid and its start time together name one process; a pid alone
+ * can name a later process that reused it. Null when the table cannot be read.
  */
-function groupTreePids(pgid) {
-  const ps = spawnSync('ps', ['-axo', 'pid=,ppid=,pgid='], { encoding: 'utf8', timeout: 10000 });
+function readProcessTable() {
+  const ps = spawnSync('ps', ['-axo', 'pid=,ppid=,pgid=,lstart='], { encoding: 'utf8', timeout: 10000 });
   if (ps.error || ps.status !== 0) return null;
-  const table = ps.stdout ?? '';
-  const rows = table.split('\n').map((line) => line.trim().split(/\s+/).map(Number)).filter((r) => r.length === 3 && r.every(Number.isFinite));
-  const pids = new Set(rows.filter(([, , group]) => group === pgid).map(([pid]) => pid));
+  const table = new Map();
+  for (const line of (ps.stdout ?? '').split('\n')) {
+    const match = line.trim().match(/^(\d+)\s+(\d+)\s+(\d+)\s+(.+)$/);
+    if (match) table.set(Number(match[1]), { ppid: Number(match[2]), pgid: Number(match[3]), started: match[4].replace(/\s+/g, ' ') });
+  }
+  return table;
+}
+
+/**
+ * The processes of a group's tree in `table`: the members of its process group
+ * (the group's bash wrapper is spawned detached, so its pid is the pgid) and
+ * every descendant of a member that left the group. A wrapper that has exited
+ * is absent, so a process that later reuses its pid is not mistaken for it.
+ */
+function groupTreeIn(table, pgid) {
+  const pids = new Set([...table].filter(([, row]) => row.pgid === pgid).map(([pid]) => pid));
   for (let grew = true; grew;) {
     grew = false;
-    for (const [pid, ppid] of rows) {
-      if (pids.has(ppid) && !pids.has(pid)) { pids.add(pid); grew = true; }
+    for (const [pid, row] of table) {
+      if (pids.has(row.ppid) && !pids.has(pid)) { pids.add(pid); grew = true; }
     }
   }
-  return [...pids].sort((a, b) => a - b);
+  return pids;
 }
 
 /** Run a diagnostic command with a hard timeout and return what it printed. */
@@ -887,22 +897,6 @@ function captureHangDiagnostics(pids, hangFile, heading) {
   return text;
 }
 
-/**
- * Hang diagnostics land in CI artifacts, and `ps` and `lsof` print whole
- * command lines. A value that looks like a credential is replaced before the
- * text is written anywhere: the value of a flag or `NAME=value` pair whose name
- * says token, secret, password, credential or key; a bearer token; the
- * credentials in a URL; and an invite link's key fragment.
- */
-function redactSecrets(text) {
-  const SECRET_NAME = '[A-Za-z0-9_-]*(?:token|secret|passw(?:or)?d|credential|api[-_]?key|auth)[A-Za-z0-9_-]*';
-  return text
-    .replace(new RegExp(`(--?${SECRET_NAME})(=|\\s+)(?!<redacted>)[^\\s'"]+`, 'gi'), '$1$2<redacted>')
-    .replace(new RegExp(`\\b(${SECRET_NAME})=(?!<redacted>)[^\\s'"]+`, 'gi'), '$1=<redacted>')
-    .replace(/\b(Bearer\s+)[^\s'"]+/gi, '$1<redacted>')
-    .replace(/(\b[a-z][a-z0-9+.-]*:\/\/)[^\s/@:'"]+:[^\s/@'"]+@/gi, '$1<redacted>@')
-    .replace(/#[A-Za-z0-9_-]{32,}/g, '#<redacted>');
-}
 
 function resetReportDir() {
   fs.rmSync(REPORT_DIR, { recursive: true, force: true });
@@ -1100,21 +1094,31 @@ async function runWithTeeAndHeartbeat(command, args, teeFile, label, { deadlineM
 
     let killedForHang = false;
     let killedForBudget = false;
-    // Signals only processes this group spawned: every pid captured from its
-    // tree that is still in the tree when the signal is sent, and the process
-    // group while one of them is a member. A pid that left the tree and was
-    // reused meanwhile is never signalled, and a process group id cannot be
-    // reused while a member lives.
-    function killPhaseTree(signal, captured) {
-      const now = groupTreePids(child.pid);
-      if (captured === null || now === null) {
+    /** The SIGKILL that follows a kill; the group settles only once it has been sent. */
+    let escalation = null;
+    /**
+     * The processes this group spawned, as captured when it was found stuck:
+     * pid to start time. A captured process stays a target wherever it has
+     * moved since, including a descendant reparented when its parent died.
+     */
+    let captured = null;
+    // Signals only processes this group spawned: every captured process that
+    // is still the same process (same pid, same start time), every process in
+    // the group's tree now, and the process group while one of them belongs to
+    // it. A pid reused by an unrelated process is never signalled, and a
+    // process group id cannot be reused while a member lives.
+    function killPhaseTree(signal) {
+      const table = readProcessTable();
+      if (table === null) {
         // No process table to read: the process group is all that can be named.
         try { process.kill(-child.pid, signal); } catch { /* already gone */ }
         return;
       }
-      const live = new Set(now);
-      const targets = captured.filter((pid) => live.has(pid));
-      if (targets.length > 0) {
+      const targets = groupTreeIn(table, child.pid);
+      for (const [pid, started] of captured ?? []) {
+        if (table.get(pid)?.started === started) targets.add(pid);
+      }
+      if ([...targets].some((pid) => table.get(pid)?.pgid === child.pid)) {
         try { process.kill(-child.pid, signal); } catch { /* already gone */ }
       }
       for (const pid of targets) {
@@ -1122,13 +1126,17 @@ async function runWithTeeAndHeartbeat(command, args, teeFile, label, { deadlineM
       }
     }
     function reportAndKill(heading) {
-      const pids = groupTreePids(child.pid);
-      process.stderr.write(`${heading}\n[run-bun-tests] sampling ${pids?.length ?? 0} process(es) of ${label} into ${hangFile}\n`);
-      const diagnostics = captureHangDiagnostics(pids ?? [], hangFile, heading);
+      const table = readProcessTable();
+      const pids = table === null ? [] : [...groupTreeIn(table, child.pid)].sort((a, b) => a - b);
+      captured = table === null ? null : new Map(pids.map((pid) => [pid, table.get(pid).started]));
+      process.stderr.write(`${heading}\n[run-bun-tests] sampling ${pids.length} process(es) of ${label} into ${hangFile}\n`);
+      const diagnostics = captureHangDiagnostics(pids, hangFile, heading);
       try { fs.appendFileSync(teeFile, `${heading}\n${diagnostics}`); } catch { /* best-effort */ }
-      killPhaseTree('SIGTERM', pids);
-      // Escalate shortly after, in case the tree ignores SIGTERM.
-      setTimeout(() => killPhaseTree('SIGKILL', pids), 2000).unref?.();
+      killPhaseTree('SIGTERM');
+      // Escalate shortly after, in case anything ignored SIGTERM. The timer is
+      // held, and the group waits for it, so the runner never moves on or exits
+      // with a captured process still alive.
+      escalation = new Promise((done) => { setTimeout(() => { killPhaseTree('SIGKILL'); done(); }, 2000); });
     }
 
     let lastNonEmptyLine = '';
@@ -1216,7 +1224,9 @@ async function runWithTeeAndHeartbeat(command, args, teeFile, label, { deadlineM
       const completion = `[run-bun-tests] ${verb} ${label} in ${totalMs}ms (exit ${exit})${tail}\n`;
       process.stderr.write(completion);
       try { fs.appendFileSync(teeFile, completion); } catch { /* best-effort */ }
-      resolve({ status: exit, wedged: killedForHang, overBudget: killedForBudget });
+      const outcome = { status: exit, wedged: killedForHang, overBudget: killedForBudget };
+      if (escalation === null) resolve(outcome);
+      else escalation.then(() => resolve(outcome));
     }
     child.on('close', settle);
     // After a kill, a process outside the tree that inherited the group's

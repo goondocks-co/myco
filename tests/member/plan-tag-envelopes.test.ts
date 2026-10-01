@@ -57,6 +57,9 @@ describe('stripPlanTagEnvelopes', () => {
 
     expect(matched).toHaveLength(1);
     expect(matched?.[0]).toContain(PLAN_BODY);
+    // Capture group 1 is the plan body, without the newlines inside the tags: what `member/transcript.ts` records.
+    const bodies = [...`${text}\n\n${envelope('## Plan\n\n- [x] second')}`.matchAll(planTagEnvelopeRegex('update_plan'))].map((m) => m[1]);
+    expect(bodies).toEqual([PLAN_BODY, '## Plan\n\n- [x] second']);
     // Everything the regex matched is gone; everything else survives.
     expect(stripPlanTagEnvelopes(text, ['update_plan'])).toBe('prose before\n\nprose after');
   });

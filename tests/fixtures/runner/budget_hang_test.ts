@@ -7,7 +7,9 @@
  *
  * Before blocking it starts two long-lived children and writes their pids to
  * MYCO_RUNNER_HANG_PIDS_FILE: one in the group's process group, and one in a
- * session of its own that only the group's parent-pid tree reaches.
+ * session of its own that only the group's parent-pid tree reaches. The second
+ * ignores SIGTERM, so it outlives this process and is reparented away from the
+ * tree before anything but SIGKILL can end it.
  */
 import { spawn } from 'node:child_process';
 import fs from 'node:fs';
@@ -15,7 +17,7 @@ import { expect, it } from 'bun:test';
 
 it.skipIf(process.env.MYCO_RUNNER_HANG_FIXTURE !== '1')('blocks synchronously, beyond the reach of a per-test timeout', () => {
   const inGroup = spawn('sleep', ['600'], { stdio: 'ignore' });
-  const ownSession = spawn('sleep', ['600'], { stdio: 'ignore', detached: true });
+  const ownSession = spawn(process.execPath, ['-e', "process.on('SIGTERM', () => {}); setInterval(() => {}, 1 << 30);"], { stdio: 'ignore', detached: true });
   fs.writeFileSync(process.env.MYCO_RUNNER_HANG_PIDS_FILE!, `${inGroup.pid} ${ownSession.pid}\n`);
   Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0);
   expect.unreachable();

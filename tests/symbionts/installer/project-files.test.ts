@@ -216,10 +216,11 @@ describe('project skill symlinks', () => {
 
 describe('the skill names the installer links', () => {
   // Every skill name becomes a path segment under each agent's skills directory; an unsafe one is never linked.
-  test('admits a lowercase slug and refuses upper case, traversal and over-long names', () => {
-    expect(isSafeSkillNameForFs('my-skill')).toBe(true);
-    expect(isSafeSkillNameForFs('UPPER')).toBe(false);
-    expect(isSafeSkillNameForFs('../etc')).toBe(false);
-    expect(isSafeSkillNameForFs('a'.repeat(101))).toBe(false);
+  // The name also bounds a recursive delete of the skill's directory, so every case that could leave it is refused.
+  test('admits a lowercase slug of up to 100 characters and refuses anything that could leave its directory', () => {
+    const admitted = ['my-skill', 'a', '0skill', 'a'.repeat(100)];
+    const refused = ['UPPER', '../etc', '..', '.', 'foo/bar', 'foo\\bar', '/absolute', '', '-leading-hyphen', 'with space', 'a'.repeat(101), 'tab\tname', 'dot.name'];
+    expect(admitted.map((name) => [name, isSafeSkillNameForFs(name)])).toEqual(admitted.map((name) => [name, true]));
+    expect(refused.map((name) => [name, isSafeSkillNameForFs(name)])).toEqual(refused.map((name) => [name, false]));
   });
 });

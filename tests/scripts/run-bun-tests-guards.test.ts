@@ -14,6 +14,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { redactSecrets } from '../../scripts/redact-secrets.mjs';
 
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 const HANG_FIXTURE = 'tests/fixtures/runner/budget_hang_test.ts';
@@ -110,4 +111,23 @@ describe('run-bun-tests guards', () => {
     for (const pid of [...children, ...hang.match(/^pids: (.+)$/m)![1].split(' ').map(Number)]) expect({ pid, alive: alive(pid) }).toEqual({ pid, alive: false });
     expect(processGroupMembers(pgid)).toEqual([]);
   }), RUN_BOUND_MS + 10_000);
+});
+
+describe('hang diagnostics redaction', () => {
+  test('replaces every credential-like value, quoted or bare, and leaves the rest of a command line alone', () => {
+    const cases: Array<[string, string]> = [
+      ['bun test --token abc123 --api-key=XYZ', 'bun test --token <redacted> --api-key=<redacted>'],
+      ['--token "two words" next', '--token <redacted> next'],
+      ["--password='p w' rest", '--password=<redacted> rest'],
+      ['MYCO_SECRET_TOKEN=s3cr3t x', 'MYCO_SECRET_TOKEN=<redacted> x'],
+      ['Authorization: Bearer eyJhbGc', 'Authorization: Bearer <redacted>'],
+      ['Authorization: Basic dXNlcjpwYXNz', 'Authorization: Basic <redacted>'],
+      ['x-api-key: sk-123 more', 'x-api-key: <redacted> more'],
+      ['{"token": "abc"}', '{"token": <redacted>}'],
+      ['https://user:pw@host/x', 'https://<redacted>@host/x'],
+      [`https://s/join#${'k'.repeat(43)}`, 'https://s/join#<redacted>'],
+      ['bun test --timeout 30000 tests/a.test.ts', 'bun test --timeout 30000 tests/a.test.ts'],
+    ];
+    expect(cases.map(([input]) => [input, redactSecrets(input)])).toEqual(cases);
+  });
 });
