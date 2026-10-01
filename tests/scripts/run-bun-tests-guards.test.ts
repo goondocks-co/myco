@@ -199,10 +199,12 @@ describe('run-bun-tests temp containment', () => {
 
   test('real test files that leave temp directories behind leave nothing once the run ends', () => withRunDirs(async ({ reports, tempDir }) => {
     // Each of these leaves directories it made under os.tmpdir() (myco-run-, myco-stub-,
-    // myco-member-home-, myco-member-machine-, myco-launchd-, myco-bin-, ...) for the run to remove.
+    // myco-member-home-, myco-auto-join-tx-, myco-member-machine-, myco-launchd-, myco-bin-, ...)
+    // for the run to remove.
     const leakers = [
       'tests/member/worker-run-permissions.test.ts',
       'tests/member/provisioning.test.ts',
+      'tests/member/auto-join.test.ts',
       'tests/cli/member-machine-verbs.test.ts',
       'tests/service/launchd.test.ts',
     ];

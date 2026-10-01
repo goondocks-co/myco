@@ -85,6 +85,7 @@ afterEach(() => {
   if (savedTemporary === undefined) delete process.env.MYCO_TEMPORARY_FOLDERS; else process.env.MYCO_TEMPORARY_FOLDERS = savedTemporary;
   resetMachineIdCache();
   fs.rmSync(base, { recursive: true, force: true });
+  fs.rmSync(temporary, { recursive: true, force: true });
 });
 
 describe('where a repository stands', () => {
