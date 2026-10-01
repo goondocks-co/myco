@@ -263,11 +263,11 @@ describe('one server product, two deployment targets', () => {
 
     const { sqlite } = seededFile();
     expect(absentIds(serverEnvFromBunConfig({ sqlite, blobDir: '' }).platform.capabilities())).toEqual(['blob-store', 'harness-runtime']);
-    expect(absentIds(serverEnvFromBunConfig({ sqlite: undefined as never, blobDir: '/tmp/x' }).platform.capabilities())).toEqual(['harness-runtime', 'relational-store']);
+    expect(absentIds(serverEnvFromBunConfig({ sqlite: undefined as never, blobDir: '/fixture/x' }).platform.capabilities())).toEqual(['harness-runtime', 'relational-store']);
 
     // A handle that cannot answer a query is as missing as no handle at all.
     sqlite.close();
-    expect(absentIds(serverEnvFromBunConfig({ sqlite, blobDir: '/tmp/x' }).platform.capabilities())).toEqual(['harness-runtime', 'relational-store']);
+    expect(absentIds(serverEnvFromBunConfig({ sqlite, blobDir: '/fixture/x' }).platform.capabilities())).toEqual(['harness-runtime', 'relational-store']);
   });
 
   it('states the same capabilities on both targets, with none absent when configured', () => {

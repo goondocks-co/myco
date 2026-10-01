@@ -1,9 +1,10 @@
 /**
- * Every temp directory a test makes is made under os.tmpdir(). The runner
- * points os.tmpdir() into a root of its own and removes that root when the
- * run ends, so whatever a test leaves there goes with it. A directory made
- * under a fixed path (an absolute literal such as /tmp, or a filesystem root)
- * lands outside that root and outlives the run.
+ * Tests keep their temp files under os.tmpdir(). The runner points os.tmpdir()
+ * into a root of its own and removes that root when the run ends, so whatever
+ * a test leaves there goes with it. A path under a fixed temp directory (/tmp,
+ * /private/tmp, /var/tmp) or a filesystem root lands outside that root and
+ * outlives the run, so no test names one: not as a temp base, not as a fake
+ * path a later change could start writing to, not held in a variable.
  */
 import { describe, expect, it } from 'bun:test';
 import { readdirSync, readFileSync, statSync } from 'node:fs';
@@ -14,6 +15,15 @@ const REPO = fileURLToPath(new URL('../../', import.meta.url));
 const TESTS = join(REPO, 'tests');
 const SELF = fileURLToPath(import.meta.url);
 
+/**
+ * The fixed temp paths a test may name, by `file: literal`, each with why. A
+ * test asserting where production puts something outside the temp directory
+ * names that path; nothing else does.
+ */
+const NAMED_FIXED_PATHS: ReadonlyMap<string, string> = new Map([
+  ['tests/config/secrets.test.ts: `/var/tmp/myco-locks-${process.getuid!()}`', 'asserts the production per-user lock root, which is fixed outside every temp directory'],
+]);
+
 function files(dir: string): string[] {
   const out: string[] = [];
   for (const entry of readdirSync(dir)) {
@@ -22,6 +32,13 @@ function files(dir: string): string[] {
     else if (/\.[cm]?[jt]sx?$/.test(path)) out.push(path);
   }
   return out;
+}
+
+/** A string literal that is a fixed temp directory or a path under one. */
+const FIXED_TEMP_LITERAL = /(['"`])\/(?:private\/tmp|var\/tmp|tmp)(?:\/[^'"`\n]*)?\1/g;
+
+function fixedTempLiterals(source: string): string[] {
+  return [...source.matchAll(FIXED_TEMP_LITERAL)].map((match) => match[0]);
 }
 
 /** The argument text of each `mkdtemp`/`mkdtempSync` call in `source`, up to its closing parenthesis. */
@@ -41,32 +58,54 @@ function mkdtempArguments(source: string): Array<{ offset: number; text: string 
   return calls;
 }
 
-/** An absolute path literal ('/tmp', "/var/tmp", `/private/...`) or a filesystem root (`path.parse(x).root`). */
-const FIXED_BASE = /(['"`])\/[^'"`]*\1|\.root\b/;
+/** A temp base built on a filesystem root (`path.parse(x).root`) or an absolute literal. */
+const ROOTED_BASE = /(['"`])\/[^'"`]*\1|\.root\b/;
 
-describe('temp directories in tests', () => {
-  it('are all made under os.tmpdir(), never under a fixed path', () => {
+function testSources(): Array<{ name: string; source: string }> {
+  return files(TESTS).filter((path) => path !== SELF).map((path) => ({ name: relative(REPO, path), source: readFileSync(path, 'utf8') }));
+}
+
+describe('temp paths in tests', () => {
+  it('name no fixed temp directory, apart from the named production paths', () => {
     const offenders: string[] = [];
-    for (const file of files(TESTS).filter((path) => path !== SELF)) {
-      const source = readFileSync(file, 'utf8');
-      for (const { offset, text } of mkdtempArguments(source)) {
-        if (!FIXED_BASE.test(text)) continue;
-        const line = source.slice(0, offset).split('\n').length;
-        offenders.push(`${relative(REPO, file)}:${line}: mkdtemp(${text.replace(/\s+/g, ' ').trim()})`);
+    for (const { name, source } of testSources()) {
+      for (const literal of fixedTempLiterals(source)) {
+        if (!NAMED_FIXED_PATHS.has(`${name}: ${literal}`)) offenders.push(`${name}: ${literal}`);
       }
     }
     expect(offenders).toEqual([]);
   });
 
-  it('recognizes a temp directory made under a fixed path', () => {
+  it('make every temp directory under os.tmpdir(), never under a filesystem root or an absolute path', () => {
+    const offenders: string[] = [];
+    for (const { name, source } of testSources()) {
+      for (const { offset, text } of mkdtempArguments(source)) {
+        if (!ROOTED_BASE.test(text)) continue;
+        offenders.push(`${name}:${source.slice(0, offset).split('\n').length}: mkdtemp(${text.replace(/\s+/g, ' ').trim()})`);
+      }
+    }
+    expect(offenders).toEqual([]);
+  });
+
+  it('holds the named paths to what actually stands in the tests', () => {
+    const named = new Set(testSources().flatMap(({ name, source }) => fixedTempLiterals(source).map((literal) => `${name}: ${literal}`)));
+    for (const exempt of NAMED_FIXED_PATHS.keys()) expect({ exempt, present: named.has(exempt) }).toEqual({ exempt, present: true });
+  });
+
+  it('recognizes fixed temp paths however a test spells them', () => {
     const fixed = [
-      "fs.mkdtempSync(path.join('/tmp', 'x-'))",
-      "mkdtemp(join(process.platform === 'win32' ? os.tmpdir() : \"/tmp\", 'x-'))",
-      "fs.mkdtempSync(path.join(path.parse(base).root, 'tmp', 'x-'))",
-      'mkdtempSync(`/var/tmp/x-`)',
+      "const BASE = '/tmp';",
+      'mkdirSync("/private/tmp/x", { recursive: true });',
+      'const lock = `/var/tmp/locks-${uid}`;',
+      "spawn('x', [], { cwd: '/tmp/work' });",
     ];
-    const contained = ["fs.mkdtempSync(path.join(os.tmpdir(), 'x-'))", "mkdtempSync(join(tmpdir(), `x-${id}-`))"];
-    expect(fixed.map((call) => mkdtempArguments(call).some(({ text }) => FIXED_BASE.test(text)))).toEqual(fixed.map(() => true));
-    expect(contained.map((call) => mkdtempArguments(call).some(({ text }) => FIXED_BASE.test(text)))).toEqual(contained.map(() => false));
+    const other = ["const p = '/tmpfoo';", "path.join(os.tmpdir(), 'tmp')", "'/fixture/tmp/x'", "'/var/tmpx'"];
+    expect(fixed.map((line) => fixedTempLiterals(line).length > 0)).toEqual(fixed.map(() => true));
+    expect(other.map((line) => fixedTempLiterals(line).length > 0)).toEqual(other.map(() => false));
+
+    const rooted = ["fs.mkdtempSync(path.join(path.parse(base).root, 'tmp', 'x-'))", "mkdtempSync(join('/srv', 'x-'))"];
+    const contained = ["fs.mkdtempSync(path.join(os.tmpdir(), 'x-'))", 'mkdtempSync(join(tmpdir(), `x-${id}-`))'];
+    expect(rooted.map((call) => mkdtempArguments(call).some(({ text }) => ROOTED_BASE.test(text)))).toEqual(rooted.map(() => true));
+    expect(contained.map((call) => mkdtempArguments(call).some(({ text }) => ROOTED_BASE.test(text)))).toEqual(contained.map(() => false));
   });
 });

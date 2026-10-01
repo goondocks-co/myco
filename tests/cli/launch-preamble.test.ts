@@ -177,10 +177,10 @@ describe('runLaunchPreamble — cwd anchor (hook only)', () => {
 
 describe('runLaunchPreamble — Antigravity stdin', () => {
   it('chdirs to workspacePaths[0] and re-injects the buffer for the handler', async () => {
-    const payload = Buffer.from(JSON.stringify({ workspacePaths: ['/tmp/x'] }), 'utf-8');
+    const payload = Buffer.from(JSON.stringify({ workspacePaths: ['/fixture/x'] }), 'utf-8');
     const h = makeHarness({ pin: null });
     runLaunchPreamble('hook', ['session-start', '--symbiont', 'antigravity'], withInjectedFd0(payload, h.deps));
-    expect(h.chdirCalls).toContain('/tmp/x');
+    expect(h.chdirCalls).toContain('/fixture/x');
     // The handler's readStdin() must see the buffered payload, not a drained fd 0.
     expect(await readStdin(EMPTY_FD0)).toBe(payload.toString('utf-8'));
   });
@@ -192,7 +192,7 @@ describe('runLaunchPreamble — Antigravity stdin', () => {
   });
 
   it('only reads Antigravity stdin when --symbiont antigravity is present', () => {
-    const payload = Buffer.from(JSON.stringify({ workspacePaths: ['/tmp/x'] }), 'utf-8');
+    const payload = Buffer.from(JSON.stringify({ workspacePaths: ['/fixture/x'] }), 'utf-8');
     const h = makeHarness({ pin: null });
     runLaunchPreamble('hook', ['session-start', '--symbiont', 'claude-code'], withInjectedFd0(payload, h.deps));
     expect(h.chdirCalls).toHaveLength(0);
@@ -269,7 +269,7 @@ describe('runLaunchPreamble — pin re-exec', () => {
   });
 
   it('feeds the Antigravity buffer to the child via input on re-exec', () => {
-    const payload = Buffer.from(JSON.stringify({ workspacePaths: ['/tmp/x'] }), 'utf-8');
+    const payload = Buffer.from(JSON.stringify({ workspacePaths: ['/fixture/x'] }), 'utf-8');
     const h = makeHarness({ pin: '/opt/myco-dev/bin/myco', execPath: '/usr/local/bin/myco' });
     expect(() => runLaunchPreamble('hook', ['--symbiont', 'antigravity'], withInjectedFd0(payload, h.deps)))
       .toThrow(/exit\(0\)/);
@@ -277,7 +277,7 @@ describe('runLaunchPreamble — pin re-exec', () => {
   });
 
   it('does NOT setBufferedStdin on the re-exec path (buffer goes to the child, not this process)', async () => {
-    const payload = Buffer.from(JSON.stringify({ workspacePaths: ['/tmp/x'] }), 'utf-8');
+    const payload = Buffer.from(JSON.stringify({ workspacePaths: ['/fixture/x'] }), 'utf-8');
     const h = makeHarness({ pin: '/opt/myco-dev/bin/myco', execPath: '/usr/local/bin/myco' });
     expect(() => runLaunchPreamble('hook', ['--symbiont', 'antigravity'], withInjectedFd0(payload, h.deps)))
       .toThrow(/exit\(0\)/);

@@ -14,12 +14,14 @@ import { configureSqliteLibrary } from '../../packages/myco-server/src/platform/
 configureSqliteLibrary();
 
 const REAL_HOME = os.homedir();
-const SANDBOX_HOME = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-test-home-'));
+// A short name: socket paths derived from the home (an external-MCP listener
+// binds `<home>/.myco-emcp/<tag>.sock`) must stay under the 104-byte limit.
+const SANDBOX_HOME = fs.mkdtempSync(path.join(os.tmpdir(), 'h-'));
 
 // The per-user lock root tests use (tests/helpers/per-user-lock-namespace.ts).
 // The runner hands every test process one; a run outside the runner gets one
-// made here and removed with the sandbox home, the variable unset again so the
-// next file's preload under --isolate makes its own.
+// made here and removed with the sandbox home. Under --isolate Bun resets
+// process.env between files, so each file's preload makes and removes its own.
 const LOCKS_ROOT_ENV = 'MYCO_TEST_PER_USER_LOCKS_ROOT';
 const OWN_LOCKS_ROOT = process.env[LOCKS_ROOT_ENV]
   ? null
@@ -141,7 +143,6 @@ function removeSandboxHome(): void {
   try { origRmSync(SANDBOX_HOME, { recursive: true, force: true }); } catch { /* ignore */ }
   if (OWN_LOCKS_ROOT !== null) {
     try { origRmSync(OWN_LOCKS_ROOT, { recursive: true, force: true }); } catch { /* ignore */ }
-    if (process.env[LOCKS_ROOT_ENV] === OWN_LOCKS_ROOT) delete process.env[LOCKS_ROOT_ENV];
   }
 }
 afterAll(removeSandboxHome);

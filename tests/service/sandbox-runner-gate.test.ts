@@ -25,7 +25,7 @@ import { SERVICE_UNIT_DIR_ENV } from '../../packages/myco/src/service/paths';
 
 const originalEnv = process.env[SERVICE_UNIT_DIR_ENV];
 
-beforeEach(() => { process.env[SERVICE_UNIT_DIR_ENV] = '/tmp/sandbox-agents-dir'; });
+beforeEach(() => { process.env[SERVICE_UNIT_DIR_ENV] = '/fixture/sandbox-agents-dir'; });
 afterEach(() => {
   if (originalEnv === undefined) delete process.env[SERVICE_UNIT_DIR_ENV];
   else process.env[SERVICE_UNIT_DIR_ENV] = originalEnv;
@@ -34,7 +34,7 @@ afterEach(() => {
 describe('Real runners refuse to shell out when sandbox env var is set', () => {
   test('RealLaunchctlRunner skips `launchctl bootstrap` and returns a sandbox marker', async () => {
     const runner = new RealLaunchctlRunner();
-    const result = await runner.run(['bootstrap', 'gui/501', '/tmp/x.plist']);
+    const result = await runner.run(['bootstrap', 'gui/501', '/fixture/x.plist']);
     expect(result.exitCode).toBe(0);
     expect(result.stdout).toMatch(/^\[sandbox\] skipped launchctl bootstrap /);
   });
@@ -98,7 +98,7 @@ describe('Real runners refuse to shell out when sandbox env var is set', () => {
       await expect(new TestRunner({ stdout: 'CIM provider unavailable', exitCode: 1 }).queryState('co.goondocks.myco'))
         .rejects.toThrow(/Get-ScheduledTask.*failed.*exit 1/i);
     } finally {
-      process.env[SERVICE_UNIT_DIR_ENV] = '/tmp/sandbox-agents-dir';
+      process.env[SERVICE_UNIT_DIR_ENV] = '/fixture/sandbox-agents-dir';
     }
   });
 
@@ -155,7 +155,7 @@ describe('Real runners refuse to shell out when sandbox env var is set', () => {
       expect(runAtLoad).toContain('Register-ScheduledTask @parameters | Out-Null');
       expect(runAtLoad).toContain('} catch {');
     } finally {
-      process.env[SERVICE_UNIT_DIR_ENV] = '/tmp/sandbox-agents-dir';
+      process.env[SERVICE_UNIT_DIR_ENV] = '/fixture/sandbox-agents-dir';
     }
   });
 
@@ -181,7 +181,7 @@ describe('Real runners refuse to shell out when sandbox env var is set', () => {
       expect(runner.command).toContain('& $taskkill /PID $engineProcessId /T /F');
       expect(runner.command).not.toContain('/IM');
     } finally {
-      process.env[SERVICE_UNIT_DIR_ENV] = '/tmp/sandbox-agents-dir';
+      process.env[SERVICE_UNIT_DIR_ENV] = '/fixture/sandbox-agents-dir';
     }
   });
 });
@@ -207,7 +207,7 @@ describe('RealLoginctlRunner sandbox gate (spec medium 10 / m4)', () => {
   });
 
   it('refuses enable-linger under a sandboxed unit dir — linger is machine-global and never disabled', async () => {
-    process.env.MYCO_LAUNCH_AGENTS_DIR = '/tmp/myco-sandbox-gate-test';
+    process.env.MYCO_LAUNCH_AGENTS_DIR = '/fixture/myco-sandbox-gate-test';
     const { RealLoginctlRunner } = await import('@myco/service/scoped.js');
     const runner = new RealLoginctlRunner();
     const enable = await runner.run(['enable-linger']);

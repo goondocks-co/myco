@@ -110,7 +110,7 @@ function parseResult(result: { content: Array<{ type: string; text: string }> })
 }
 
 function requestContext(projectId: string) {
-  return resolveLegacyRequestContext('/tmp/myco-agent-tools-test/.myco', {
+  return resolveLegacyRequestContext('/fixture/myco-agent-tools-test/.myco', {
     projectRoot: `/workspace/${projectId}`,
     projectId,
     groveId: 'grove-test',
@@ -873,7 +873,7 @@ describe('vault tools', () => {
         summary: 'Full summary',
         prompt_count: 12,
         tool_count: 900,
-        transcript_path: '/tmp/transcript.jsonl',
+        transcript_path: '/fixture/transcript.jsonl',
       }));
 
       const t = findTool(tools, 'vault_sessions');
@@ -882,7 +882,7 @@ describe('vault tools', () => {
 
       expect(data).toHaveLength(1);
       expect(data[0].tool_count).toBe(900);
-      expect(data[0].transcript_path).toBe('/tmp/transcript.jsonl');
+      expect(data[0].transcript_path).toBe('/fixture/transcript.jsonl');
     });
   });
 

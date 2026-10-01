@@ -64,7 +64,7 @@ describe('the self-hosted entry point', () => {
   });
 
   it('refuses to serve without a database path', async () => {
-    await expect(createBunHandler({ databasePath: '', blobDir: '/tmp/nope', header: 'x-forwarded-for' }))
+    await expect(createBunHandler({ databasePath: '', blobDir: '/fixture/nope', header: 'x-forwarded-for' }))
       .rejects.toThrow(/requires a database path/);
   });
 

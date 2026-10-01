@@ -34,13 +34,13 @@ describe('vault_report spores_created stamping', () => {
 
   function deps(): VaultToolDeps {
     const requestContext: MycoRequestContext = {
-      projectRoot: '/tmp/test-project',
+      projectRoot: '/fixture/test-project',
       callerRoot: null,
       projectId,
       groveId: null,
       machineId: 'test-machine',
       sessionId: null,
-      projectVaultDir: '/tmp/test-project/.myco',
+      projectVaultDir: '/fixture/test-project/.myco',
       databasePath: ':memory:',
       source: 'explicit',
       tenancySource: 'caller',

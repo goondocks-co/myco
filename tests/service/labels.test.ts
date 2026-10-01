@@ -36,7 +36,7 @@ describe('service labels', () => {
   });
 
   test('sandbox install gets a deterministic suffix on the default-home label', () => {
-    process.env[SERVICE_UNIT_DIR_ENV] = '/tmp/sandbox-abc/LaunchAgents';
+    process.env[SERVICE_UNIT_DIR_ENV] = '/fixture/sandbox-abc/LaunchAgents';
     const labelA = serviceLabel(DEFAULT_HOME);
     expect(labelA).toMatch(/^co\.goondocks\.myco\.sandbox-[0-9a-f]{8}$/);
     // Determinism: same sandbox dir => same label across calls.
@@ -44,21 +44,21 @@ describe('service labels', () => {
   });
 
   test('the home suffix and the sandbox suffix stack for a non-default home', () => {
-    process.env[SERVICE_UNIT_DIR_ENV] = '/tmp/sandbox-abc/LaunchAgents';
+    process.env[SERVICE_UNIT_DIR_ENV] = '/fixture/sandbox-abc/LaunchAgents';
     const label = serviceLabel(OTHER_HOME);
     expect(label).toMatch(/^co\.goondocks\.myco\.[0-9a-f]{8}\.sandbox-[0-9a-f]{8}$/);
   });
 
   test('different sandbox dirs produce different label suffixes — two sandboxes cannot race for the same launchd label', () => {
-    process.env[SERVICE_UNIT_DIR_ENV] = '/tmp/sandbox-aaa/LaunchAgents';
+    process.env[SERVICE_UNIT_DIR_ENV] = '/fixture/sandbox-aaa/LaunchAgents';
     const labelA = serviceLabel(DEFAULT_HOME);
-    process.env[SERVICE_UNIT_DIR_ENV] = '/tmp/sandbox-bbb/LaunchAgents';
+    process.env[SERVICE_UNIT_DIR_ENV] = '/fixture/sandbox-bbb/LaunchAgents';
     const labelB = serviceLabel(DEFAULT_HOME);
     expect(labelA).not.toBe(labelB);
   });
 
   test('unsetting the sandbox env restores the canonical default-home label (no leaked suffix)', () => {
-    process.env[SERVICE_UNIT_DIR_ENV] = '/tmp/sandbox/LaunchAgents';
+    process.env[SERVICE_UNIT_DIR_ENV] = '/fixture/sandbox/LaunchAgents';
     expect(serviceLabel(DEFAULT_HOME)).not.toBe(SERVICE_LABEL_PROD);
     delete process.env[SERVICE_UNIT_DIR_ENV];
     expect(serviceLabel(DEFAULT_HOME)).toBe(SERVICE_LABEL_PROD);

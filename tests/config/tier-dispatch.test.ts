@@ -73,7 +73,7 @@ describe('Tier dispatch', () => {
     const groveBase = loadGroveConfig(groveId);
     saveGroveConfig(groveId, {
       ...groveBase,
-      backup: { ...groveBase.backup, dir: '/tmp/grove-backup' },
+      backup: { ...groveBase.backup, dir: '/fixture/grove-backup' },
     });
 
     const expected = resolveGroveConfigPath(groveId);
@@ -81,14 +81,14 @@ describe('Tier dispatch', () => {
     expect(fs.existsSync(expected)).toBe(true);
 
     const written = YAML.parse(fs.readFileSync(expected, 'utf-8'));
-    expect(written.backup.dir).toBe('/tmp/grove-backup');
+    expect(written.backup.dir).toBe('/fixture/grove-backup');
   });
 
   it('saveGroveConfig does NOT write to the machine config file', () => {
     const groveBase = loadGroveConfig('grove_2222222222222222222222222222aaaa');
     saveGroveConfig('grove_2222222222222222222222222222aaaa', {
       ...groveBase,
-      backup: { ...groveBase.backup, dir: '/tmp/x' },
+      backup: { ...groveBase.backup, dir: '/fixture/x' },
     });
 
     const machinePath = resolveGlobalConfigPath();
@@ -140,13 +140,13 @@ describe('Tier dispatch', () => {
       // declared ones survive — so the value reaches `saveConfig` as written.
       const malformedGroveTier = {
         ...config,
-        backup: { dir: '/tmp/bad', retention_days: 30 },
+        backup: { dir: '/fixture/bad', retention_days: 30 },
         appearance: { theme: 'plum', mode: 'light', font: 'jetbrains-mono', density: 'compact' },
       } as unknown as MycoConfig;
       saveConfig(projectDir, malformedGroveTier);
 
       const persisted = YAML.parse(fs.readFileSync(path.join(projectDir, 'myco.yaml'), 'utf-8'));
-      expect(persisted.backup?.dir).toBe('/tmp/bad');
+      expect(persisted.backup?.dir).toBe('/fixture/bad');
       expect(persisted.appearance?.theme).toBe('plum');
       // Machine-tier + legacy fields still never survive in the project file.
       expect(persisted.daemon).toBeUndefined();
@@ -167,7 +167,7 @@ describe('Tier dispatch', () => {
     const groveReadback = loadGroveConfig('grove_4444444444444444444444444444aaaa');
     saveGroveConfig('grove_4444444444444444444444444444aaaa', {
       ...groveReadback,
-      backup: { ...groveReadback.backup, dir: '/tmp/readback' },
+      backup: { ...groveReadback.backup, dir: '/fixture/readback' },
     });
 
     const machine = loadMachineConfig();
@@ -175,6 +175,6 @@ describe('Tier dispatch', () => {
 
     expect(machine.daemon.update_channel).toBe('beta');
     expect(machine.daemon.log_retention_days).toBe(7);
-    expect(grove.backup?.dir).toBe('/tmp/readback');
+    expect(grove.backup?.dir).toBe('/fixture/readback');
   });
 });

@@ -382,7 +382,7 @@ describe('walkClaudeCode queued_command shape (Phase 4)', () => {
       {
         type: 'attachment',
         uuid: 'img-1',
-        attachment: { type: 'image', path: '/tmp/x.png' },
+        attachment: { type: 'image', path: '/fixture/x.png' },
       },
     ];
     const kinds = extractUserPromptKinds('claude-code', events);
@@ -492,7 +492,7 @@ describe('walker tags origin per capture rule (K3 classify action)', () => {
         },
       },
     ];
-    const records = extractUserPromptRecords('codex', events, '/tmp/codex-rollout.jsonl');
+    const records = extractUserPromptRecords('codex', events, '/fixture/codex-rollout.jsonl');
     expect(records).toHaveLength(1);
     expect(records[0]?.origin).toBe('agent_dispatch');
   });
@@ -508,7 +508,7 @@ describe('walker tags origin per capture rule (K3 classify action)', () => {
         },
       },
     ];
-    const records = extractUserPromptRecords('codex', events, '/tmp/codex-rollout.jsonl');
+    const records = extractUserPromptRecords('codex', events, '/fixture/codex-rollout.jsonl');
     expect(records).toHaveLength(1);
     expect(records[0]?.origin).toBe('system');
   });
@@ -689,7 +689,7 @@ describe('walker Codex multipart image-prompt extraction (textExtraction: joined
   };
 
   it('extracts the real prompt text, not the image wrapper tag', () => {
-    const records = extractUserPromptRecords('codex', [imagePromptEvent], '/tmp/codex-rollout.jsonl');
+    const records = extractUserPromptRecords('codex', [imagePromptEvent], '/fixture/codex-rollout.jsonl');
     expect(records).toHaveLength(1);
     expect(records[0]?.text).toBe(REAL_PROMPT);
     expect(records[0]?.kind).toBe('initial');
@@ -704,7 +704,7 @@ describe('walker Codex multipart image-prompt extraction (textExtraction: joined
     const walkerText = extractUserPromptRecords(
       'codex',
       [imagePromptEvent],
-      '/tmp/codex-rollout.jsonl',
+      '/fixture/codex-rollout.jsonl',
     )[0]?.text;
     const turns = new CodexJsonlParser().parseTurns(`${JSON.stringify(imagePromptEvent)}\n`);
     expect(turns).toHaveLength(1);
@@ -720,7 +720,7 @@ describe('walker Codex multipart image-prompt extraction (textExtraction: joined
         content: [{ type: 'input_text', text: 'what has changed in this branch?' }],
       },
     };
-    const records = extractUserPromptRecords('codex', [event], '/tmp/codex-rollout.jsonl');
+    const records = extractUserPromptRecords('codex', [event], '/fixture/codex-rollout.jsonl');
     expect(records).toHaveLength(1);
     expect(records[0]?.text).toBe('what has changed in this branch?');
     expect(records[0]?.kind).toBe('initial');
@@ -731,7 +731,7 @@ describe('walker Codex multipart image-prompt extraction (textExtraction: joined
       type: 'response_item',
       payload: { type: 'message', role: 'user', content: wrapperTriplet(1) },
     };
-    expect(extractUserPromptRecords('codex', [event], '/tmp/codex-rollout.jsonl')).toHaveLength(0);
+    expect(extractUserPromptRecords('codex', [event], '/fixture/codex-rollout.jsonl')).toHaveLength(0);
   });
 
   it('keeps first-text behavior for shapes without textExtraction (Claude Code typed blocks)', () => {
@@ -835,7 +835,7 @@ describe('extractUserPromptRecordsWithDrops — noMaskableDropRuleFound flag', (
         type: 'response_item',
         payload: { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'reviewer turn' }] },
       }],
-      '/tmp/child.jsonl',
+      '/fixture/child.jsonl',
       meta,
       { subagentReattribution: true },
     );

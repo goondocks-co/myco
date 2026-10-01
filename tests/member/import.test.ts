@@ -504,7 +504,7 @@ describe('the stores Myco writes for a harness that keeps none', () => {
 
 describe('what an import will not read', () => {
   it('refuses any path inside the member’s own state, whatever a manifest declares', () => {
-    const home = '/tmp/myco-home';
+    const home = '/fixture/myco-home';
     for (const inside of ['spool/proj_1/s1.jsonl', 'spool/proj_1/blobs/abc', 'deployments/aaaa.json', 'projects/bbbb.json']) {
       expect({ path: inside, refused: isMemberStatePath(`${home}/member/${inside}`, home) }).toEqual({ path: inside, refused: true });
     }
@@ -513,8 +513,8 @@ describe('what an import will not read', () => {
   });
 
   it('holds every shipped manifest’s roots outside the member state tree', () => {
-    const home = '/tmp/myco-home-gate';
-    const env = { ...process.env, HOME: '/tmp/fake-home', MYCO_HOME: home };
+    const home = '/fixture/myco-home-gate';
+    const env = { ...process.env, HOME: '/fixture/fake-home', MYCO_HOME: home };
     const offenders: string[] = [];
     for (const manifest of BUNDLED_MANIFESTS) {
       for (const root of manifestTranscriptDiscovery(manifest.name)?.roots ?? []) {

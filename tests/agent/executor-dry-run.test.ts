@@ -32,7 +32,7 @@ import { TEST_REQUEST_CONTEXT } from '../helpers/request-context';
 // ---------------------------------------------------------------------------
 
 const TEST_AGENT_ID = 'myco-agent';
-const TEST_VAULT_DIR = '/tmp/test-vault-dry-run';
+const TEST_VAULT_DIR = '/fixture/test-vault-dry-run';
 const TEST_TASK_NAME = 'title-summary';  // has a postcondition rule
 const TEST_TASK_PROMPT = 'Summarize the target session.';
 const TEST_SYSTEM_PROMPT = 'You are a vault agent.';

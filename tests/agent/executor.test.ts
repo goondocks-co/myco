@@ -37,7 +37,7 @@ import { TEST_REQUEST_CONTEXT } from '../helpers/request-context';
 // ---------------------------------------------------------------------------
 
 const TEST_AGENT_ID = 'myco-agent';
-const TEST_VAULT_DIR = '/tmp/test-vault';
+const TEST_VAULT_DIR = '/fixture/test-vault';
 const TEST_TASK_NAME = 'vault-evolve';
 const TEST_TASK_PROMPT = 'Run full intelligence pipeline.';
 const TEST_SYSTEM_PROMPT = 'You are a vault agent.';

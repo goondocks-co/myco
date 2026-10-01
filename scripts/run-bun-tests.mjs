@@ -20,8 +20,11 @@ import { redactSecrets } from './redact-secrets.mjs';
 // a grandchild resolves inside it, whatever cleanup that code does or skips.
 // The root is removed when the runner exits, on an error or a signal too. A
 // runner killed outright cannot remove its root; the next run sweeps every
-// root whose owning runner is no longer alive.
-const RUN_ROOT_PREFIX = 'myco-test-run-';
+// root whose owning runner is no longer alive. The name is short: socket paths
+// tests derive from os.tmpdir() must stay under the 104-byte limit.
+const RUN_ROOT_PREFIX = 'mt-';
+/** A run root as mkdtemp names it, or as a sweep renames it to claim it. */
+const RUN_ROOT_NAME = /^mt-(?:[A-Za-z0-9]{6}|sweep-\d+-\d+)$/;
 const RUN_ROOT_OWNER_FILE = '.owner';
 /** A root with no readable owner is swept once it is this old. */
 const OWNERLESS_ROOT_GRACE_MS = 60 * 60 * 1000;
@@ -67,7 +70,7 @@ function sweepStaleRunRoots(parent) {
   try { names = fs.readdirSync(parent); } catch { return 0; }
   let swept = 0;
   for (const name of names) {
-    if (!name.startsWith(RUN_ROOT_PREFIX)) continue;
+    if (!RUN_ROOT_NAME.test(name)) continue;
     const root = path.join(parent, name);
     if (!runRootIsStale(root)) continue;
     const claimed = path.join(parent, `${RUN_ROOT_PREFIX}sweep-${process.pid}-${swept}`);
@@ -86,20 +89,21 @@ try { parentTmpdirBefore = new Set(fs.readdirSync(PARENT_TMPDIR)); } catch { par
 const RUN_ROOT = fs.mkdtempSync(path.join(PARENT_TMPDIR, RUN_ROOT_PREFIX));
 fs.writeFileSync(path.join(RUN_ROOT, RUN_ROOT_OWNER_FILE), `${process.pid}\n`);
 for (const name of TEMP_ENV_NAMES) process.env[name] = RUN_ROOT;
-process.on('exit', () => {
-  try { fs.rmSync(RUN_ROOT, { recursive: true, force: true, maxRetries: 3 }); } catch { /* the next run sweeps it */ }
-});
 
 /** Kills the running group's process tree; null between groups. */
 let killActiveGroup = null;
 /** Puts the canonical bunfig back while a group runs under a swapped one; null otherwise. */
 let restoreSwappedBunfig = null;
+// However the runner exits (the end of the run, a signal, an uncaught error),
+// the group it was running dies with it, the bunfig is put back and the root
+// goes.
+process.on('exit', () => {
+  try { killActiveGroup?.('SIGKILL'); } catch { /* best-effort */ }
+  try { restoreSwappedBunfig?.(); } catch { /* best-effort */ }
+  try { fs.rmSync(RUN_ROOT, { recursive: true, force: true, maxRetries: 3 }); } catch { /* the next run sweeps it */ }
+});
 for (const [signal, number] of [['SIGINT', 2], ['SIGTERM', 15], ['SIGHUP', 1]]) {
-  process.on(signal, () => {
-    killActiveGroup?.('SIGKILL');
-    try { restoreSwappedBunfig?.(); } catch { /* best-effort */ }
-    process.exit(128 + number);
-  });
+  process.on(signal, () => process.exit(128 + number));
 }
 
 /**
@@ -112,7 +116,7 @@ function reportParentTmpdirLeftovers() {
   if (parentTmpdirBefore === null) return;
   let after;
   try { after = fs.readdirSync(PARENT_TMPDIR); } catch { return; }
-  const left = after.filter((name) => !parentTmpdirBefore.has(name) && !name.startsWith(RUN_ROOT_PREFIX));
+  const left = after.filter((name) => !parentTmpdirBefore.has(name) && !RUN_ROOT_NAME.test(name));
   const sample = left.slice(0, 10).join(', ');
   console.log(`[run-bun-tests] temp entries left in ${PARENT_TMPDIR}: ${left.length}${left.length > 0 ? ` (${sample}${left.length > 10 ? ', ...' : ''})` : ''}`);
 }
@@ -795,7 +799,8 @@ function expandTargets(targets) {
     const stat = fs.statSync(full);
     const files = stat.isDirectory() ? findTests(full) : [full];
     for (const file of files) {
-      if (file.endsWith('.test.tsx')) dom.push(file);
+      // An explicitly named tsx test, `*.test.tsx` or a `*_test.tsx` fixture, runs under the DOM config.
+      if (/[._]test\.tsx$/.test(file)) dom.push(file);
       else nonDom.push(file);
     }
   }
@@ -1567,7 +1572,7 @@ const shard = parseShard(process.env.MYCO_TEST_SHARD);
 const durations = JSON.parse(fs.readFileSync(path.join(REPO, 'scripts/test-durations.json'), 'utf8'));
 const DEFAULT_FILE_DURATION_MS = 100;
 const built = buildArgs();
-const testFiles = (args) => args.filter((arg) => !arg.startsWith('-') && /\.test\.tsx?$/.test(arg));
+const testFiles = (args) => args.filter((arg) => !arg.startsWith('-') && /[._]test\.tsx?$/.test(arg));
 const bundledFiles = (file) => (file.startsWith('target/test-bundles/')
   ? [...fs.readFileSync(path.join(REPO, file), 'utf8').matchAll(/import '\.\.\/\.\.\/\.\.\/(.*?)';/g)].map((match) => match[1])
   : [file]);

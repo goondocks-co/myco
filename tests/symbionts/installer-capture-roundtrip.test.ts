@@ -177,8 +177,8 @@ const SYNTH_SESSION_ID = 'roundtrip-probe-session';
 const SYNTH_PAYLOAD = JSON.stringify({
   hook_event_name: 'SessionStart',
   session_id: SYNTH_SESSION_ID,
-  cwd: '/tmp/synth-project',
-  transcript_path: '/tmp/synth-transcript.jsonl',
+  cwd: '/fixture/synth-project',
+  transcript_path: '/fixture/synth-transcript.jsonl',
   source: 'startup',
 });
 

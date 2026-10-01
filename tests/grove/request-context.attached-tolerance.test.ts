@@ -49,7 +49,7 @@ function seedAttachedProject(mycoHome: string): { localGroveId: string; attached
       {
         grove_id: createGroveId(), // the HOSTED grove (host-owned, never resolved locally)
         project_id: attachedId,
-        root: '/tmp/does-not-need-to-exist',
+        root: '/fixture/does-not-need-to-exist',
         local_grove_id: localGrove.id,
       },
     ],

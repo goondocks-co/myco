@@ -54,7 +54,7 @@ describe('setBufferedStdin', () => {
   afterEach(() => { setBufferedStdin(null); });
 
   it('returns the injected buffer before touching fd 0', async () => {
-    const payload = JSON.stringify({ workspacePaths: ['/tmp/x'] });
+    const payload = JSON.stringify({ workspacePaths: ['/fixture/x'] });
     setBufferedStdin(Buffer.from(payload, 'utf-8'));
     expect(await readStdin()).toBe(payload);
   });
@@ -106,7 +106,7 @@ describe('readStdin', () => {
     const payload = JSON.stringify({
       conversation_id: 'chunked-session',
       prompt: 'x'.repeat(2000),
-      transcript_path: '/tmp/chunked.jsonl',
+      transcript_path: '/fixture/chunked.jsonl',
     });
 
     await new Promise((resolve) => setTimeout(resolve, 200));

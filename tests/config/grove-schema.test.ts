@@ -123,10 +123,10 @@ describe('Grove skills scope (2026-06 correction)', () => {
 describe('Machine capture + notifications scope (2026-06 correction)', () => {
   test('accepts capture config at the Machine tier', () => {
     const parsed = MachineConfigSchema.parse({
-      capture: { buffer_max_events: 250, plan_dirs: ['/tmp/plans'] },
+      capture: { buffer_max_events: 250, plan_dirs: ['/fixture/plans'] },
     });
     expect(parsed.capture.buffer_max_events).toBe(250);
-    expect(parsed.capture.plan_dirs).toEqual(['/tmp/plans']);
+    expect(parsed.capture.plan_dirs).toEqual(['/fixture/plans']);
   });
 
   test('accepts notifications config at the Machine tier', () => {

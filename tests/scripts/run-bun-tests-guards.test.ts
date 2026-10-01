@@ -7,8 +7,9 @@
  *     its whole process tree, and reported failed with its test files, and
  *     the run goes on;
  *   - a run leaves nothing in the temp directory, whatever its tests leak and
- *     however it ends, and sweeps the roots of earlier runs whose runner is
- *     gone while keeping those of runs still going.
+ *     however it ends (at the end, by a signal, or of an uncaught error, which
+ *     also puts a swapped bunfig back), and sweeps the roots of earlier runs
+ *     whose runner is gone while keeping those of runs still going.
  * The fixtures are skipped unless these tests set their flags.
  */
 import { describe, expect, test } from 'bun:test';
@@ -23,6 +24,7 @@ const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '.
 const HANG_FIXTURE = 'tests/fixtures/runner/budget_hang_test.ts';
 const STDIN_FIXTURE = 'tests/fixtures/runner/stdin_read_test.ts';
 const TEMP_LEAK_FIXTURE = 'tests/fixtures/runner/temp_leak_test.ts';
+const STREAM_FAULT_FIXTURE = 'tests/fixtures/runner/stream_fault_test.tsx';
 const BUDGET_MS = 3000;
 // Sampling takes a few seconds per process; anything near this bound means a guard did not fire.
 const RUN_BOUND_MS = 90_000;
@@ -137,16 +139,16 @@ function withRunDirs<T>(fn: (dirs: { reports: string; tempDir: string }) => Prom
   });
 }
 
-/** The entries of `dir` named like anything a test run creates. */
-function testRunEntries(dir: string): string[] {
-  return fs.readdirSync(dir).filter((name) => name.startsWith('myco-test-')).sort();
+/** Everything in `dir`, sorted. */
+function entries(dir: string): string[] {
+  return fs.readdirSync(dir).sort();
 }
 
-/** A run root as a runner leaves it, owned by `pid`, with something inside. */
-function seedRunRoot(parent: string, name: string, pid: number): string {
+/** A run root as a runner leaves it, with something inside, owned by `pid` or, with null, by no one yet. */
+function seedRunRoot(parent: string, name: string, pid: number | null): string {
   const root = path.join(parent, name);
-  fs.mkdirSync(path.join(root, 'myco-test-home-seeded'), { recursive: true });
-  fs.writeFileSync(path.join(root, '.owner'), `${pid}\n`);
+  fs.mkdirSync(path.join(root, 'h-seeded'), { recursive: true });
+  if (pid !== null) fs.writeFileSync(path.join(root, '.owner'), `${pid}\n`);
   return root;
 }
 
@@ -162,8 +164,13 @@ describe('run-bun-tests temp containment', () => {
   test('a run leaves nothing in the temp directory, and sweeps only the roots of runners that are gone', () => withRunDirs(async ({ reports, tempDir }) => {
     const exited = spawnSync(process.execPath, ['-e', '0']);
     expect(alive(exited.pid)).toBe(false);
-    seedRunRoot(tempDir, 'myco-test-run-gone00', exited.pid);
-    seedRunRoot(tempDir, 'myco-test-run-live00', process.pid);
+    seedRunRoot(tempDir, 'mt-gone00', exited.pid);
+    seedRunRoot(tempDir, 'mt-live00', process.pid);
+    // A root another runner has just made and not yet written its owner into is kept;
+    // one that has gone without an owner for over an hour is swept.
+    seedRunRoot(tempDir, 'mt-fresh0', null);
+    const hoursAgo = new Date(Date.now() - 2 * 60 * 60 * 1000);
+    fs.utimesSync(seedRunRoot(tempDir, 'mt-stale0', null), hoursAgo, hoursAgo);
 
     const { status, output } = await runRunner(TEMP_LEAK_FIXTURE, {
       MYCO_RUNNER_TEMP_LEAK_FIXTURE: '1',
@@ -172,7 +179,7 @@ describe('run-bun-tests temp containment', () => {
     });
 
     expect({ status, output }).toEqual({ status: 0, output: expect.stringContaining(' 1 pass') });
-    expect(testRunEntries(tempDir)).toEqual(['myco-test-run-live00']);
+    expect(entries(tempDir)).toEqual(['mt-fresh0', 'mt-live00']);
     expect(output).toContain(`temp entries left in ${tempDir}: 0`);
   }), RUN_BOUND_MS + 10_000);
 
@@ -188,13 +195,47 @@ describe('run-bun-tests temp containment', () => {
 
     await waitFor(() => fs.existsSync(readyFile) && fs.readFileSync(readyFile, 'utf8').endsWith('\n'), 60_000, 'the fixture to leak and wait');
     const fixturePid = Number(fs.readFileSync(readyFile, 'utf8').trim());
-    expect(testRunEntries(tempDir)).toEqual([expect.stringMatching(/^myco-test-run-/)]);
+    expect(entries(tempDir)).toEqual([expect.stringMatching(/^mt-[A-Za-z0-9]{6}$/)]);
     runner!.kill('SIGTERM');
 
     const { status } = await run;
     expect(status).toBe(128 + 15);
     await waitFor(() => !alive(fixturePid), 10_000, `fixture pid ${fixturePid} to exit`);
-    expect(testRunEntries(tempDir)).toEqual([]);
+    expect(entries(tempDir)).toEqual([]);
+  }), RUN_BOUND_MS + 10_000);
+
+  test('a runner that dies of an uncaught error mid-group ends the group, puts the bunfig back and removes its temp root', () => withRunDirs(async ({ reports, tempDir }) => {
+    const bunfig = path.join(REPO, 'bunfig.toml');
+    const backup = path.join(REPO, '.bunfig.toml.runner-backup');
+    const canonical = fs.readFileSync(bunfig, 'utf8');
+    const readyFile = path.join(path.dirname(tempDir), 'fixture.pid');
+    let runner: ChildProcess | undefined;
+    let fixturePid: number | undefined;
+    try {
+      const run = runRunner(STREAM_FAULT_FIXTURE, {
+        MYCO_RUNNER_STREAM_FAULT_FIXTURE: '1',
+        MYCO_RUNNER_STREAM_FAULT_READY_FILE: readyFile,
+        MYCO_RUNNER_REPORT_DIR: reports,
+        ...tempDirEnv(tempDir),
+      }, [], (child) => { runner = child; });
+
+      await waitFor(() => fs.existsSync(readyFile) && fs.readFileSync(readyFile, 'utf8').endsWith('\n'), 60_000, 'the fixture to start writing');
+      const pid = Number(fs.readFileSync(readyFile, 'utf8').trim());
+      fixturePid = pid;
+      expect(fs.readFileSync(bunfig, 'utf8')).not.toBe(canonical);
+      // The runner's next write of the group's output fails: an EPIPE error event nothing handles.
+      runner!.stdout!.destroy();
+
+      const { status, output } = await run;
+      expect({ status, output }).toEqual({ status: 1, output: expect.stringContaining('EPIPE') });
+      await waitFor(() => !alive(pid), 10_000, `fixture pid ${pid} to exit`);
+      expect({ bunfig: fs.readFileSync(bunfig, 'utf8'), backupLeft: fs.existsSync(backup) }).toEqual({ bunfig: canonical, backupLeft: false });
+      expect(entries(tempDir)).toEqual([]);
+    } finally {
+      if (fs.existsSync(backup)) fs.renameSync(backup, bunfig);
+      runner?.kill('SIGKILL');
+      if (fixturePid !== undefined && alive(fixturePid)) process.kill(fixturePid, 'SIGKILL');
+    }
   }), RUN_BOUND_MS + 10_000);
 
   test('real test files that leave temp directories behind leave nothing once the run ends', () => withRunDirs(async ({ reports, tempDir }) => {
@@ -223,7 +264,7 @@ describe('run-bun-tests temp containment', () => {
       cwd: REPO, env: { ...inherited, ...tempDirEnv(tempDir) }, stdio: ['ignore', 'pipe', 'pipe'], encoding: 'utf8',
     });
     expect({ status: run.status, output: `${run.stdout}${run.stderr}` }).toEqual({ status: 0, output: expect.stringContaining(' 1 skip') });
-    expect(testRunEntries(tempDir)).toEqual([]);
+    expect(entries(tempDir)).toEqual([]);
   }), RUN_BOUND_MS + 10_000);
 });
 
