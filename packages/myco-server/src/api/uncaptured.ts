@@ -112,7 +112,7 @@ export async function handleConnectUncaptured(env: ServerEnv, ctx: OwnerContext)
     if (holder === null && row.remote !== null) await recordProjectRemote(env.db, projectId, row.remote, ctx.now);
   } else if (holder === null && !(await mayCreateProjects(env.db, row.member.id))) {
     // The machine's own member creates the project when it joins; one who may not is answered here, not at the join.
-    return refuse(400, 'auto_create_off', 'this Deployment creates projects only on the dashboard: name the project to connect it to');
+    return refuse(400, 'auto_create_off', 'this server creates projects only on the dashboard: name the project to connect it to');
   }
   const written = await connectMachineRoot(env.db, machineId, rootKey, projectId ?? '', ctx.member.id, ctx.now);
   if (!written.applied) return written.reason === 'absent' ? notFound() : badRequest(written.detail ?? 'the connection could not be recorded');

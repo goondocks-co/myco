@@ -86,10 +86,10 @@ it('says plainly that a Deployment with no producer runs none: an export is refu
   const env = sqliteEnv();
   const start = await handleStartRecoveryExport({ ...env.serverEnv, recovery: undefined } as never, OWNER);
   expect(start.status).toBe(400);
-  expect(String((await start.json() as { reason?: string }).reason)).toContain('runs no hosted recovery producer');
+  expect(String((await start.json() as { reason?: string }).reason)).toContain('cannot make automatic backups');
   const status = await handleRecoveryExportStatus({ ...env.serverEnv, recovery: undefined } as never, OWNER);
   expect(status.status).toBe(200);
-  expect(await status.json() as Record<string, unknown>).toMatchObject({ supported: false, reason: expect.stringContaining('runs no hosted recovery producer') });
+  expect(await status.json() as Record<string, unknown>).toMatchObject({ supported: false, reason: expect.stringContaining('cannot make automatic backups') });
   env.sqlite.close();
 });
 

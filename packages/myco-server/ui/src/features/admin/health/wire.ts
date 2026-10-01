@@ -65,7 +65,7 @@ export interface RestoreOutcome {
 /** Which of the store's routine checks. */
 export type MaintenanceCheck = 'optimize' | 'integrity';
 
-export type CheckSupport = { supported: true; label: string } | { supported: false; reason: string };
+export type CheckSupport = { supported: true; label: string } | { supported: false; reason: string; reasonCode?: string };
 
 export type Cadence =
   | { state: 'on'; intervalHours: number }
@@ -75,7 +75,7 @@ export type Cadence =
 
 export type StoreMeasurement =
   | { name: string; state: 'measured'; value: number; unit: 'bytes' }
-  | { name: string; state: 'unavailable'; reason: string };
+  | { name: string; state: 'unavailable'; reason: string; reasonCode?: string };
 
 /** The latest outcome of one check, as recorded. */
 export interface MaintenanceOutcome {
@@ -85,6 +85,7 @@ export interface MaintenanceOutcome {
   startedAt: number;
   finishedAt: number | null;
   errorClass: string | null;
+  findingCodes?: string[];
   findings: string[];
   findingsOmitted: number;
   measurements: StoreMeasurement[];
@@ -156,6 +157,7 @@ export interface RecoverySchedule {
   due: boolean;
   latest: LatestAttempt | null;
   available: RecoveryAvailability;
+  idleCode?: string | null;
   idleBecause: string | null;
 }
 

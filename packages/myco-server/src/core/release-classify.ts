@@ -235,7 +235,7 @@ const classified = (
 
 const UNAVAILABLE_REASON: Record<GithubFailure, string> = {
   budget_exhausted: 'The run reached its GitHub lookup limit before this commit was checked',
-  credential_rejected: 'GitHub refused the release lookup credential',
+  credential_rejected: 'GitHub refused the release lookup key',
   forbidden: 'GitHub refused a release lookup made without a token',
   rate_limited: 'GitHub rate-limited release lookups',
   not_found: 'GitHub could not find the repository',

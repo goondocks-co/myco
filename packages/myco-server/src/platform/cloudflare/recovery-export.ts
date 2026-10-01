@@ -41,25 +41,25 @@ export interface RecoveryConfigurationBindings {
 export function boundRecoveryConfiguration(bindings: RecoveryConfigurationBindings): { ok: true; configuration: HostedRecoveryConfiguration } | { ok: false; reason: string } {
   const rendered = bindings.MYCO_RECOVERY_CONFIGURATION;
   if (rendered === undefined || rendered === '') {
-    return { ok: false, reason: 'this Deployment carries no recovery configuration; update it so its deploy config renders one' };
+    return { ok: false, reason: 'this server carries no recovery configuration; update it so its deploy config renders one' };
   }
   let parsed: unknown;
-  try { parsed = JSON.parse(rendered); } catch { return { ok: false, reason: 'this Deployment\'s recovery configuration is not readable; update it so its deploy config renders one' }; }
+  try { parsed = JSON.parse(rendered); } catch { return { ok: false, reason: 'this server\'s recovery configuration is not readable; update it so its deploy config renders one' }; }
   const read = readHostedRecoveryConfiguration(parsed);
   if (!read.ok) return read;
   if (read.configuration.accountId !== bindings.MYCO_RECOVERY_ACCOUNT_ID || read.configuration.databaseId !== bindings.MYCO_RECOVERY_DATABASE_ID) {
-    return { ok: false, reason: 'this Deployment\'s recovery configuration names another account or database than its export target' };
+    return { ok: false, reason: 'this server\'s recovery configuration names another account or database than its export target' };
   }
   const recordedFleet = read.configuration.fleet === undefined ? undefined : String(read.configuration.fleet);
   if (recordedFleet !== bindings.MYCO_FLEET) {
-    return { ok: false, reason: 'this Deployment\'s recovery configuration names another fleet than the one it runs with' };
+    return { ok: false, reason: 'this server\'s recovery configuration names another fleet than the one it runs with' };
   }
   let recordedOrigin: string | undefined;
   try { recordedOrigin = read.configuration.url === undefined ? undefined : new URL(read.configuration.url).origin; } catch {
-    return { ok: false, reason: 'this Deployment\'s recovery configuration names an address that is not a URL' };
+    return { ok: false, reason: 'this server\'s recovery configuration names an address that is not a URL' };
   }
   if (recordedOrigin !== bindings.MYCO_ORIGIN) {
-    return { ok: false, reason: 'this Deployment\'s recovery configuration names another address than the one it runs at' };
+    return { ok: false, reason: 'this server\'s recovery configuration names another address than the one it runs at' };
   }
   return read;
 }

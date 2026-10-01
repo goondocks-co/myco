@@ -12,6 +12,7 @@ import { heldBy, HELD_BY_WORDS, readDispatchLimits } from '@myco-server-worker/c
 import { claimRun, dispatchLoad, launchQueued, listQueuedAcrossProjects, recordDispatch } from '@myco-server-worker/core/runs.js';
 import { runTick } from '@myco-server-worker/core/tick.js';
 import { titleSession } from '@myco-server-worker/core/titling.js';
+import { getRunDetail } from '@myco-server-worker/read/runs.js';
 import { seedCredential } from './helpers/d1.js';
 import { sqliteEnv, withHarness, turnOnGatedCapabilities } from './helpers/fixtures.js';
 import { prepared } from './helpers/prepared.js';
@@ -599,6 +600,11 @@ describe('a runtime that is not taking runs', () => {
     f.sqlite.run(`UPDATE agent_runs SET held_by = 'repository-digests' WHERE id = 'run_held'`);
     await emitted(async () => { expect(await runStaleSweep(f.env, NOW + QUEUE_MAX_AGE_MS)).toBe(1); });
     expect(f.run('run_held')).toMatchObject({ status: 'failed', error: 'no worker reporting repository-digests took the run within a day' });
+    expect(f.sqlite.query(`SELECT error_code FROM agent_runs WHERE id = 'run_held'`).get()).toEqual({ error_code: 'machine_did_not_start' });
+    const answer = await getRunDetail(f.env.db, { projectId: 'proj_1' }, 'run_held', NOW + QUEUE_MAX_AGE_MS, 'mem_1');
+    expect(answer?.run).toMatchObject({ startedAt: null, errorCode: 'machine_did_not_start' });
+    f.sqlite.run(`UPDATE agent_runs SET error = 'a specific reason with different wording' WHERE id = 'run_held'`);
+    expect((await getRunDetail(f.env.db, { projectId: 'proj_1' }, 'run_held', NOW + QUEUE_MAX_AGE_MS, 'mem_1'))?.run.errorCode).toBe('machine_did_not_start');
     // A run a limit or the runtime held keeps the words it has always been given.
     expect(queueExpiredError('runtime')).toBe(QUEUE_EXPIRED_ERROR);
     expect(queueExpiredError(null)).toBe(QUEUE_EXPIRED_ERROR);
@@ -612,7 +618,7 @@ describe('a runtime that is not taking runs', () => {
 
     // The bound and the words it is reported in move together.
     expect(QUEUE_MAX_AGE_MS).toBe(86_400_000);
-    expect(QUEUE_EXPIRED_ERROR).toBe('no runtime took the run within a day');
+    expect(QUEUE_EXPIRED_ERROR).toBe('no machine started the task within a day');
 
     const lines = await emitted(async () => { expect(await runStaleSweep(f.env, NOW + QUEUE_MAX_AGE_MS)).toBe(1); });
     expect(lines.filter((l) => l.kind === 'harness_queue_expired'))
@@ -714,7 +720,7 @@ describe('a runtime that is not taking runs', () => {
     seedCredential(f.sqlite, { id: 'cred_fresh', memberId: 'mem_harness', machineId: 'harness' });
     f.sqlite.run(`UPDATE agent_runs SET dispatched_by = 'cred_fresh' WHERE id = 'run_moved'`);
 
-    expect(await endQueuedRun(f.env, { projectId: 'proj_1' }, { id: 'run_moved' }, NOW + 5, { failed: QUEUE_EXPIRED_ERROR })).toBe(true);
+    expect(await endQueuedRun(f.env, { projectId: 'proj_1' }, { id: 'run_moved' }, NOW + 5, { failed: QUEUE_EXPIRED_ERROR, errorCode: 'machine_did_not_start' })).toBe(true);
     // What the row named when the write landed is retired; the one the caller
     // read is left to whatever else still names it.
     expect(f.sqlite.query(`SELECT revoked_at AS r FROM member_credentials WHERE id = 'cred_fresh'`).get()).toEqual({ r: NOW + 5 });

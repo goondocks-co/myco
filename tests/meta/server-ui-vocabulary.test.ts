@@ -22,17 +22,12 @@ import { describe, expect, it } from 'bun:test';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { MECHANISM_WORDS, RETIRED_VOCABULARY } from '../helpers/reader-vocabulary.ts';
 import { visibleStrings } from '../helpers/visible-strings.ts';
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 const UI_SRC = path.join(REPO_ROOT, 'packages', 'myco-server', 'ui', 'src');
 const SHARED_SRC = path.join(REPO_ROOT, 'packages', 'myco-shared', 'src');
-
-/** Words the retired model owned. `\bhost\b` does not match `localhost`. */
-const RETIRED_VOCABULARY = /\b(grove|daemon|host|team|mycelium|symbiont)\b/i;
-
-/** Mechanism words a reader never meets on a page, in any form: "runtimes", "leased", "Observations". */
-const MECHANISM_WORDS = /\b(runtimes?|harness(?:es)?|credentials?|leas(?:e|es|ed|ing)|deployments?|observations?)\b/i;
 
 /**
  * A visible string allowed to carry a mechanism word, keyed `file:text`, each

@@ -16,7 +16,7 @@ import { AppearanceProvider } from '../../packages/myco-server/ui/src/providers/
 import { forgetProject } from '../../packages/myco-server/ui/src/lib/project-memory';
 import { LIVE_REFRESH_MS } from '../../packages/myco-server/ui/src/hooks/use-work';
 import { costOf, summarize } from '../../packages/myco-server/ui/src/features/work/outcomes';
-import { outcomeHeadline, skipWords, spendWords, startedByWords } from '../../packages/myco-server/ui/src/features/work/words';
+import { outcomeHeadline, runLineWords, skipWords, spendWords, startedByWords } from '../../packages/myco-server/ui/src/features/work/words';
 import { workBounds } from '../../packages/myco-server/ui/src/features/work/WorkPage';
 import { rawIdsIn } from '../helpers/raw-ids';
 import {
@@ -26,6 +26,11 @@ import type { WorkAnswer } from '../../packages/myco-server/ui/src/features/toda
 
 const originalFetch = globalThis.fetch;
 let client: QueryClient;
+
+it('uses the skip code in a run list instead of the server reason', () => {
+  expect(runLineWords(null, { status: 'skipped', skipReasonCode: 'machine_did_not_start', skipReason: 'server prose must stay off the page', targetSessionId: null }, { spores: 0, sessions: 0, readsRecorded: false }))
+    .toBe('Held off: no machine started it within a day');
+});
 
 beforeEach(() => { setSystemTime(new Date(NOW)); });
 afterEach(() => {
@@ -286,6 +291,24 @@ describe('Myco’s work', () => {
     mount(`/p/${P}/work`);
     expect((await within(await findCard('learn')).findByRole('link', { name: 'This week’s sessions →' })).getAttribute('href')).toBe(`/p/${P}/sessions?window=week`);
     expect((await within(card('title')).findByRole('link', { name: 'See this week’s sessions →' })).getAttribute('href')).toBe(`/p/${P}/sessions?window=week`);
+  });
+
+  it('searches the coded headline and its disclosed reason', async () => {
+    const reason = 'The requested tool was unavailable.';
+    const failed = workRun({ id: 'run_search', projectId: P, kind: 'map', task: 'canopy-map', result: 'failed', at: NOW - HOUR,
+      failure: { source: 'report', code: 'machine_did_not_start', cause: 'The machine recorded a missing tool.', error: reason } });
+    server(week({ work: { ...WEEK_WORK, runs: [...WEEK_WORK.runs.filter((run) => run.kind !== 'map'), failed] } }));
+    mount(`/p/${P}/work`);
+    await findCard('map');
+    const search = screen.getByRole('searchbox', { name: 'Search what Myco did' });
+    for (const query of ['No machine started', 'requested tool', 'recorded a missing tool']) {
+      fireEvent.change(search, { target: { value: query } });
+      await waitFor(() => expect(card('map').querySelector('[data-failure]')?.textContent).toContain('No machine started the task within a day.'));
+    }
+    expect(card('map').textContent).not.toContain(reason);
+    fireEvent.click(within(card('map')).getByRole('button', { name: 'Details' }));
+    expect(card('map').textContent).toContain(reason);
+    expect(card('map').textContent).toContain('The machine recorded a missing tool.');
   });
 
   it('keeps the window, the outcome and the search in the URL, and reads the window it names', async () => {

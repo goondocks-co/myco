@@ -49,6 +49,27 @@ async function harness() {
 const window = `since=${SINCE}&until=${NOW}`;
 
 describe('Myco\'s work', () => {
+  it('reads recorded failure codes before prose and admits legacy capability-held expiries', async () => {
+    const { sqlite, run, get } = await harness();
+    try {
+      run('proj_1', 'coded', { task: 'canopy-map', status: 'failed', at: NOW - HOUR, error: 'The requested tool was unavailable.' });
+      sqlite.run(`UPDATE agent_runs SET error_code = 'machine_did_not_start' WHERE id = 'coded'`);
+      run('proj_1', 'legacy', { task: 'canopy-map', status: 'failed', at: NOW - HOUR, error: 'no worker reporting repository-digests took the run within a day' });
+      const { body } = await get(`/api/work?${window}`);
+      expect(body.runs.filter((r: any) => ['coded', 'legacy'].includes(r.id)).map((r: any) => r.failure.code)).toEqual(['machine_did_not_start', 'machine_did_not_start']);
+    } finally { sqlite.close(); }
+  });
+
+  it('keeps a report-only failure uncoded when no error or code was recorded', async () => {
+    const { sqlite, run, report, get } = await harness();
+    try {
+      run('proj_1', 'report_only', { task: 'canopy-map', status: 'failed', at: NOW - HOUR });
+      report('proj_1', 'report_only', 'The requested source was unavailable.');
+      const { body } = await get(`/api/work?${window}`);
+      expect(body.runs[0].failure).toEqual({ source: 'report', cause: 'The requested source was unavailable.', code: null, error: null });
+    } finally { sqlite.close(); }
+  });
+
   it('counts learning by the spores it wrote, keeps a failed run\'s spores with its failure as a note, and lists what produced or failed', async () => {
     const { run, spore, report, get } = await harness();
     run('proj_1', 'run_l1', { task: 'extract-curate', status: 'completed', at: NOW - 5 * HOUR, tokens: 1000, cost: 0.5, durationMs: 60_000 });
@@ -77,8 +98,8 @@ describe('Myco\'s work', () => {
       map: null,
     }]);
     expect(body.runs.map((r: any) => [r.id, r.result, r.outcome.spores, r.failure])).toEqual([
-      ['run_l3', 'failed', 0, { cause: 'the runtime went away', source: 'error' }],
-      ['run_l2', 'failed_with_output', 1, { cause: 'stopped on a refused Bash call', source: 'report' }],
+      ['run_l3', 'failed', 0, { cause: 'the runtime went away', code: 'machine_unresponsive', source: 'error' }],
+      ['run_l2', 'failed_with_output', 1, { cause: 'stopped on a refused Bash call', code: 'run_failed', error: 'the run ended without its artifact', source: 'report' }],
       ['run_l1', 'produced', 2, null],
     ]);
     expect(body.truncated).toBe(false);

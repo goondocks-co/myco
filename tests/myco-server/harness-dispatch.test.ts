@@ -34,7 +34,7 @@ describe('POST /api/harness/dispatch', () => {
 
     const bound = { ...env, HARNESS_LAUNCH_MODE: 'record' };
     const ghost = await worker.fetch(await asOwnerPost('/api/harness/dispatch', { task: 'container-smoke', projectId: 'proj_ghost' }), bound);
-    expect({ status: ghost.status, reason: ((await ghost.json()) as { reason: string }).reason }).toEqual({ status: 400, reason: 'projectId names no Project this Deployment holds' });
+    expect({ status: ghost.status, reason: ((await ghost.json()) as { reason: string }).reason }).toEqual({ status: 400, reason: 'the project is not on this server' });
 
     const unconfigured = await worker.fetch(await asOwnerPost('/api/harness/dispatch', { task: 'container-smoke', projectId: 'proj_1' }), bound);
     expect(unconfigured.status).toBe(400);
@@ -43,7 +43,7 @@ describe('POST /api/harness/dispatch', () => {
     expect(((await unsupported.json()) as { reason: string }).reason).toContain('ollama');
     seedProvider(sqlite, { 'agent.provider.type': 'anthropic' });
     const unknown = await worker.fetch(await asOwnerPost('/api/harness/dispatch', { task: 'no-such-task', projectId: 'proj_1' }), bound);
-    expect({ status: unknown.status, reason: ((await unknown.json()) as { reason: string }).reason }).toEqual({ status: 400, reason: 'the task is not one this deployment serves' });
+    expect({ status: unknown.status, reason: ((await unknown.json()) as { reason: string }).reason }).toEqual({ status: 400, reason: 'this server cannot run that task' });
   });
 
   it('admits ad-hoc work with no automatic budget and keeps normal concurrency limits', async () => {

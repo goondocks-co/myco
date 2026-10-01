@@ -69,11 +69,16 @@ async function expectFixtureWeek(page: Page, role: 'admin' | 'member'): Promise<
   const map = card(page, 'map');
   const failure = map.locator('[data-failure="open"]');
   await expect(failure).toContainText('1 code map update failed this week');
-  await expect(failure).toContainText('repo.sha256 is absent from this checkout');
+  await expect(failure).toContainText('The task stopped before it could finish.');
+  await expect(failure).not.toContainText('repo.sha256');
   // Lin's own machine is named to Lin; to Ada it reads as Lin's, never by its name.
-  if (role === 'member') await expect(failure).toContainText('On Lin’s build box: repo.sha256');
-  else await expect(failure).toContainText('On Lin’s machine: repo.sha256');
+  if (role === 'member') await expect(failure).toContainText('On Lin’s build box: The task stopped before it could finish.');
+  else await expect(failure).toContainText('On Lin’s machine: The task stopped before it could finish.');
   await expect(failure).toContainText('Open the run to see where it stopped.');
+  await failure.getByRole('button', { name: 'Details' }).click();
+  await expect(failure).toContainText('the run ended without its artifact');
+  await expect(failure).toContainText('repo.sha256 is absent from this checkout');
+  await failure.getByRole('button', { name: 'Details' }).click();
   await expect(failure.getByRole('link', { name: 'Open the latest attempt →' })).toBeVisible();
   await expect(map.getByRole('list', { name: 'Latest code map updates' })).toContainText(role === 'admin' ? 'by you' : 'by Ada');
 
@@ -89,6 +94,24 @@ async function expectFixtureWeek(page: Page, role: 'admin' | 'member'): Promise<
 }
 
 test.describe('Myco’s work', () => {
+  test('failed run details retain its reason and report', async ({ browser }) => {
+    test.skip(!onFixture(), 'Requires the screen fixture’s failed run.');
+    const { context, page, watch } = await openPage(browser, { path: workPath(), viewport: 'desktop', mode: 'light', cookie: screensEnv('ownerCookie') });
+    try {
+      await card(page, 'map').getByRole('link', { name: 'Open the latest attempt →' }).click();
+      const panel = page.locator('[data-slide-over]');
+      await expect(panel.locator('[data-run-failure]')).toContainText('The task stopped before it could finish.');
+      await expect(panel).not.toContainText('the run ended without its artifact');
+      await expect(panel).not.toContainText('repo.sha256');
+      await panel.getByRole('button', { name: /Technical details/ }).click();
+      await expect(panel.locator('[data-run-technical]')).toContainText('the run ended without its artifact');
+      await expect(panel.locator('[data-run-technical]')).toContainText('repo.sha256 is absent from this checkout');
+      await expectNoRawIds(page);
+      await expectAxeClean(page);
+      expectQuiet(watch);
+    } finally { await context.close(); }
+  });
+
   for (const { role, cookie } of ROLES) for (const { viewport, mode } of SHOT_MATRIX) {
     test(`work ${role} ${viewport} ${mode}`, async ({ browser }) => {
       const { context, page, watch } = await openPage(browser, { path: workPath(), viewport, mode, cookie: screensEnv(cookie) });

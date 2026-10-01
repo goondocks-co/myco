@@ -53,7 +53,8 @@ async function expectFixtureDay(page: Page): Promise<void> {
   await expect(kept).toContainText('Stopped early:');
   await expect(kept).toContainText('What it saved is kept, so there’s nothing to do.');
   const map = list.locator('li[data-timeline-item="bad"]', { hasText: 'Myco couldn’t update the code map' });
-  await expect(map).toContainText('repo.sha256 is absent from this checkout');
+  await expect(map).toContainText('The task stopped before it could finish.');
+  await expect(map).not.toContainText('repo.sha256');
   await expect(map).toContainText('Open the run to see where it stopped.');
   await expect(map.getByRole('link', { name: 'Open the run →' })).toBeVisible();
   const titled = list.locator('li[data-timeline-item]', { hasText: 'Myco titled 2 sessions' });

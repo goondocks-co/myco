@@ -143,7 +143,7 @@ it('schedules nothing on a Deployment that runs no producer, whatever the interv
     const env = { ...(d.env as unknown as Record<string, unknown>), recovery: undefined } as never;
     const schedule = await recoveryScheduleOf(env, d.now);
     expect([schedule.supported, schedule.configured, schedule.due]).toEqual([false, false, false]);
-    expect(schedule.idleBecause).toContain('no hosted recovery producer');
+    expect(schedule).toMatchObject({ idleCode: 'backup_unsupported', idleBecause: 'this server cannot make automatic backups' });
     expect(await runSchedule(env, d.now)).toBe(0);
   } finally { d.close(); }
 });
@@ -186,7 +186,7 @@ it('says an operator backup defers the next attempt, naming when it opened, and 
     const deferred = await recoveryScheduleOf(d.env as never, d.now);
     expect({ due: deferred.due, idleBecause: deferred.idleBecause }).toEqual({
       due: false,
-      idleBecause: `an operator backup has held this Deployment since ${new Date(d.now - HOUR).toISOString()}; the next automatic backup waits for it to end`,
+      idleBecause: `a backup started by hand has been running since ${new Date(d.now - HOUR).toISOString()}; the next automatic backup waits for it to end`,
     });
     // With its own attempt running, that attempt is what the status names.
     await settleOperatorHold(d.fixture.serverEnv, 'op-1', d.now, 'complete');

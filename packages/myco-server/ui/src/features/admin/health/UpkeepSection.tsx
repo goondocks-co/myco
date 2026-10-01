@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Button, buttonVariants, Card, ErrorState, LoadingState, errorWords } from '../../../design';
+import { Button, buttonVariants, Card, Disclosure, ErrorState, LoadingState, errorWords } from '../../../design';
 import { useWork } from '../../../hooks/use-work';
 import { ApiError, fetchJson, postJson } from '../../../lib/api';
 import { cn } from '../../../lib/cn';
@@ -9,7 +9,7 @@ import { HEALTH_ANCHORS } from '../../../routes/nav';
 import { UpkeepLine } from '../../today/Summary';
 import { AdminSection } from '../AdminFrame';
 import type { CheckStatus, MaintenanceAnswer, MaintenanceOutcome, TickReport } from './wire';
-import { CHECK_TITLES, checkCadenceWords, measurementName, outcomeWords, reportWords } from './words';
+import { CHECK_TITLES, findingWords, groupedFindings, measurementWords, supportWords, checkCadenceWords, measurementName, outcomeWords, reportWords } from './words';
 
 const HOUR = 3_600_000;
 /** How often the checks are read again while one runs, so its outcome appears without a reload. */
@@ -136,7 +136,7 @@ function CheckRow({ status }: { status: CheckStatus }) {
         )}
       </div>
       {!status.support.supported ? (
-        <p className="t-small text-muted">Not available on this server.</p>
+        <p className="t-small text-muted">{supportWords(status.support.reasonCode)}</p>
       ) : (
         <>
           <p className="t-small text-muted">{status.support.label}. {checkCadenceWords(status.cadence)}</p>
@@ -144,17 +144,22 @@ function CheckRow({ status }: { status: CheckStatus }) {
             {latest === null ? (status.running ? 'Running…' : 'Never run.') : outcomeWords(latest, status.running)}
           </p>
           {latest !== null && latest.findings.length > 0 && (
-            <ul className="flex list-disc flex-col gap-s1 pl-s5 t-mono text-ink-2">
-              {latest.findings.map((finding) => <li key={finding}>{finding}</li>)}
-              {latest.findingsOmitted > 0 && <li>…and {latest.findingsOmitted} more not kept</li>}
-            </ul>
+            <div className="flex flex-col gap-s1">
+              <p className="t-small text-ink-2">{findingWords(latest.findingCodes?.[0])}</p>
+              <Disclosure summary="Findings">
+                <ul className="flex list-disc flex-col gap-s1 pl-s5 t-mono text-ink-2">
+                  {groupedFindings(latest.findings).map(({ text, count }) => <li key={text}>{text}{count > 1 ? ` (${count} findings)` : ''}</li>)}
+                  {latest.findingsOmitted > 0 && <li>…and {latest.findingsOmitted} more not kept</li>}
+                </ul>
+              </Disclosure>
+            </div>
           )}
           {latest !== null && latest.measurements.length > 0 && (
             <dl className="flex flex-col gap-s1 t-small">
               {latest.measurements.map((m) => (
                 <div key={m.name} className="flex flex-wrap gap-x-s3">
                   <dt className="text-muted">{measurementName(m.name)}</dt>
-                  <dd className="text-ink-2">{m.state === 'measured' ? formatBytes(m.value) : 'Unavailable'}</dd>
+                  <dd className="text-ink-2">{m.state === 'measured' ? formatBytes(m.value) : measurementWords(m.reasonCode)}</dd>
                 </div>
               ))}
             </dl>

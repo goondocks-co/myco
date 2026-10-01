@@ -26,6 +26,7 @@
 import { REPOSITORY_COMMIT_PATTERN, parseRepositoryCheckoutSpec, type RepositoryCheckoutSpec, type RepositoryPin } from '@goondocks/myco-shared/repository';
 import { parseMapSourcePin, type MapSourcePin } from '@goondocks/myco-shared/canopy';
 import type { DispatchLimits } from './limits.js';
+import type { RunErrorCode } from './reader-codes.js';
 import type { PreparedStatement, RelationalStore } from './adapters.js';
 import { emit } from '../telemetry.js';
 import { inListChunks, type ReadScope } from '../read/scope.js';
@@ -634,6 +635,7 @@ export async function applyRunUpdate(
   runId: string,
   update: RunUpdate,
   lease?: RunLease & { dispatchedBy: string },
+  errorCode: RunErrorCode = 'run_failed',
 ): Promise<number> {
   const columns = RUN_UPDATE_COLUMNS.filter((c) => c in update);
   if (columns.length === 0) return 0;
@@ -644,9 +646,11 @@ export async function applyRunUpdate(
   // named: the row goes on saying which worker credential, and so which
   // machine, ran it. Only a live lease has an expiry, and the sweep reads that.
   const release = isTerminalRunStatus(update.status) ? ', lease_expires_at = NULL' : '';
+  const coded = 'error' in update;
+  const codeSet = coded ? ', error_code = ?' : '';
   const result = await db
-    .prepare(`UPDATE agent_runs SET ${columns.map((c) => `${c} = ?`).join(', ')}${release} WHERE project_id = ? AND id = ?${guard}${leaseGuard}`)
-    .bind(...columns.map((c) => update[c] ?? null), scope.projectId, runId, ...(guarded ? TERMINAL_RUN_STATUSES : []),
+    .prepare(`UPDATE agent_runs SET ${columns.map((c) => `${c} = ?`).join(', ')}${codeSet}${release} WHERE project_id = ? AND id = ?${guard}${leaseGuard}`)
+    .bind(...columns.map((c) => update[c] ?? null), ...(coded ? [update.error == null ? null : errorCode] : []), scope.projectId, runId, ...(guarded ? TERMINAL_RUN_STATUSES : []),
       ...(lease === undefined ? [] : [lease.tokenId, lease.dispatchedBy, lease.now]))
     .run();
   return result.meta.changes;
@@ -944,11 +948,11 @@ export async function listLiveRunsAcrossProjects(db: RelationalStore, limit: num
 }
 
 /** A live run whose runtime went away is failed exactly once; a run that landed terminal on its own in the meantime is left as it landed. */
-const FAIL_STALE_SQL = `UPDATE agent_runs SET status = 'failed', completed_at = ?, error = ?
+const FAIL_STALE_SQL = `UPDATE agent_runs SET status = 'failed', completed_at = ?, error = ?, error_code = ?
   WHERE project_id = ? AND id = ? AND ${LIVE_RUN_STATUSES}`;
 
-export async function failStaleRun(db: RelationalStore, scope: ReadScope, runId: string, now: number, error: string): Promise<boolean> {
-  const result = await db.prepare(FAIL_STALE_SQL).bind(now, error, scope.projectId, runId).run();
+export async function failStaleRun(db: RelationalStore, scope: ReadScope, runId: string, now: number, error: string, errorCode: RunErrorCode): Promise<boolean> {
+  const result = await db.prepare(FAIL_STALE_SQL).bind(now, error, errorCode, scope.projectId, runId).run();
   return result.meta.changes === 1;
 }
 
@@ -1169,12 +1173,12 @@ export async function skipQueued(db: RelationalStore, scope: ReadScope, runId: s
  * with the credential the row named at the instant it landed, for the same
  * reason a skip does.
  */
-const FAIL_QUEUED_SQL = `UPDATE agent_runs SET status = 'failed', completed_at = ?, error = ?, held_by = NULL
+const FAIL_QUEUED_SQL = `UPDATE agent_runs SET status = 'failed', completed_at = ?, error = ?, error_code = ?, held_by = NULL
   WHERE project_id = ? AND id = ? AND status = 'queued'
 RETURNING dispatched_by AS displaced`;
 
-export async function failQueuedRun(db: RelationalStore, scope: ReadScope, runId: string, now: number, error: string): Promise<QueuedRunEnd> {
-  const row = await db.prepare(FAIL_QUEUED_SQL).bind(now, error, scope.projectId, runId).first<{ displaced: string | null }>();
+export async function failQueuedRun(db: RelationalStore, scope: ReadScope, runId: string, now: number, error: string, errorCode: RunErrorCode): Promise<QueuedRunEnd> {
+  const row = await db.prepare(FAIL_QUEUED_SQL).bind(now, error, errorCode, scope.projectId, runId).first<{ displaced: string | null }>();
   return { applied: row !== null, displaced: row?.displaced ?? null };
 }
 

@@ -45,9 +45,9 @@ export async function handleCreateMemberProject(env: ServerEnv, ctx: CredentialC
   const body = parseJsonObject(ctx.body);
   const name = typeof body?.name === 'string' ? body.name.trim() : '';
   if (name.length === 0 || name.length > PROJECT_NAME_MAX) return ok({ persisted: false, code: 'invalid_field', reason: `name is required, at most ${PROJECT_NAME_MAX} characters` });
-  if (!(await mayCreateProjects(env.db, ctx.memberId))) return ok({ persisted: false, code: 'auto_create_off', reason: 'this Deployment creates projects only on the dashboard; an admin connects this repository' });
+  if (!(await mayCreateProjects(env.db, ctx.memberId))) return ok({ persisted: false, code: 'auto_create_off', reason: 'this server creates projects only on the dashboard; an admin connects this repository' });
   const projectId = freshProjectId();
-  if (!(await createNamedProject(env.db, projectId, name, ctx.now))) return ok({ persisted: false, code: 'refused', reason: `this Deployment already holds ${MAX_PROJECTS} projects; an admin can archive one from the dashboard` });
+  if (!(await createNamedProject(env.db, projectId, name, ctx.now))) return ok({ persisted: false, code: 'refused', reason: `this server already holds ${MAX_PROJECTS} projects; an admin can archive one from the dashboard` });
   emit({ kind: 'project_created', projectId, actor: ctx.memberId });
   return ok({ persisted: true, projectId, name });
 }
@@ -124,9 +124,9 @@ export async function handleResolveMemberProject(env: ServerEnv, ctx: Credential
     remote, name: label, allowCreate: await mayCreateProjects(env.db, ctx.memberId), projectId: freshProjectId(), now: ctx.now, maxProjects: MAX_PROJECTS,
   });
   if (!resolved.resolved) {
-    const detail = resolved.reason === 'auto_create_off' ? 'this Deployment creates projects only on the dashboard; an admin connects this repository'
+    const detail = resolved.reason === 'auto_create_off' ? 'this server creates projects only on the dashboard; an admin connects this repository'
       : resolved.reason === 'archived' ? 'the project this repository belongs to is archived'
-      : `this Deployment already holds ${MAX_PROJECTS} projects; an admin can archive one from the dashboard`;
+      : `this server already holds ${MAX_PROJECTS} projects; an admin can archive one from the dashboard`;
     return miss(resolved.reason, detail);
   }
   // A repository with no remote keeps the project it is given, so its next resolve joins the same one.

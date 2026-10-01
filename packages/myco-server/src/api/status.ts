@@ -166,7 +166,7 @@ export const handleMemberStatus = emptyBodyRoute(async (env: ServerEnv, ctx: Cre
     persisted: true,
     target: deploymentTarget(env),
     schema: schemaCheck(await schemaVersion(env.db)),
-    stored: stored === null ? { state: 'unavailable', reason: 'no credential row carries this token' } satisfies ByteFact : bytes(stored),
+    stored: stored === null ? { state: 'unavailable', reason: 'no saved access key matches this token' } satisfies ByteFact : bytes(stored),
     retention: { transcripts: await transcriptRetentionFact(env) },
     storage: await storageFacts(env),
   });

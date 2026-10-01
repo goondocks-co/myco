@@ -21,7 +21,7 @@ describe('the backup routes', () => {
     const artifact = '界'.repeat(Math.ceil(MAX_BACKUP_BYTES / 3));
     const res = await worker.fetch(await asOwnerPost('/api/backups/restore-upload', { artifact }), env);
     expect({ status: res.status, body: await res.json() }).toEqual({
-      status: 400, body: { error: 'bad_request', reason: 'the artifact is past the byte bound this path serves' },
+      status: 400, body: { error: 'bad_request', reasonCode: 'invalid_request', reason: 'the artifact is past the byte bound this path serves' },
     });
     sqlite.close();
   });

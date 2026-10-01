@@ -99,7 +99,7 @@ export async function buildTaskInput(
  * shows it.
  */
 export function uninstructedError(task: string): string {
-  return `the Deployment has no instruction for a ${task} run`;
+  return `this server has no instructions for a ${task} task`;
 }
 
 /**

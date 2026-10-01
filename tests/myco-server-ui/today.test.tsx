@@ -822,3 +822,13 @@ describe('Today\'s words', () => {
     expect(attentionWords(items[5]!, NOW, () => null).detail).toContain('read the repository');
   });
 });
+
+
+it('describes a coded stored failure on Today without quoting its error', async () => {
+  const prose = 'server prose must stay off the page';
+  server(day({ work: { ...WORK, runs: RUNS.map((item) => item.status === 'failed'
+    ? { ...item, failure: { source: 'error', code: 'machine_unresponsive', cause: prose } } : item) } }));
+  mount(`/p/${P_MYCO}`);
+  await waitFor(() => expect(document.body.textContent).toContain('The machine running it stopped responding.'));
+  expect(document.body.textContent).not.toContain(prose);
+});
