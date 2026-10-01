@@ -319,6 +319,7 @@ The settled glossary names surfaces the tree does **not yet carry**. These are a
 - **Single-owner GitHub OAuth** (#904) — replaced by flat multi-member enrollment (#912) once #907 settles the mechanism.
 - **Per-Project member tokens** (#900, #901) — replaced by the individually attributable Member Credential (#912).
 - **Both-mode 1.4/2.0 dogfood** — deliberately preserved until #924 cuts over (§3.5).
+- **The 1.4 tree retires from `main` now** (owner, 2026-09-30), superseding #1170's after-cutover ordering. The retirement goes phase by phase, each a PR that cuts the edges 2.0 still makes into the 1.4 tree or deletes what nothing reaches; `myco import --legacy` keeps a minimal vault reader until the owner's last 1.4 machine is migrated.
 
 ## 7. The feature-preservation ledger
 
@@ -520,6 +521,11 @@ The port is `ServerEnv.wake` — "wake me soon", called by requested work — wi
 | `agent-run-retention` | REPLACE | Core | Blk | A tick job; the lifecycle owner for run rows (plan §7) | B3 |
 | `grant-expiry` | KEEP | Core | Blk | New in 2.0: a tick job over External Agent grants, the lifecycle owner for grant rows. Every grant carries an expiry, and a lapsed one is ended in the record at the instant it expired and named as expired; a lapsed key is already refused at authentication, so this converges what an owner reads. Nothing is deleted — a spore's `author` names the grant, and both the grant row and its agent row stay for that name to point at (**landed in #1149**; plan §2.6, §7) | A5 |
 | `worker-lease-sweep` | KEEP | Core | Blk | New in 2.0: returns a run whose worker stopped renewing to the claim queue at lease expiry, with its dispatch credential retired and the place in the queue it had already waited for. A run inside its lease is never taken from the worker holding it. This is the job that makes a killed worker survivable, and it is a different question from the stale sweep's: a lapsed lease is re-runnable and a run past its own budget is not | B1 |
+| `run-stale-sweep` | KEEP | Core | Blk | New in 2.0: a tick job that fails, by name, every run whose runtime went away and holds it live past its bound, and releases it as a finished run is released | #1091 |
+| `search-index` | KEEP | Core | Blk | New in 2.0: an idle tick job that brings every referenced text blob, captured bodies included, to a complete full-text index | #1125 |
+| `session-titling` | KEEP | Core | Blk | New in 2.0: an idle tick job that gives every live session-end request with fully parsed material its first titling attempt; a retry, and every other session, is `titling-backfill`'s | #1243 |
+| `recovery-export-schedule` | KEEP | Core | Blk | New in 2.0: a clock job that admits one hosted recovery attempt once the owner's "Back up every" interval has passed since the last attempt started, and none while one still advances, while the setting is unset, or on a Deployment that runs no producer | #1334 |
+| `recovery-staging-retention` | KEEP | Core | Blk | New in 2.0: a clock job that keeps the newest complete recovery stagings "Recovery stagings to keep" names and the newest failed one, releases every other settled staging's payload, and leaves each attempt a tombstone | #1335 |
 | `notification-retention` | REPLACE | Core | Blk | A tick job; the domain now carries worker health findings (plan §5) | B3 |
 | `auto-backup` | REPLACE | Core, W, C | Blk | A tick job: local volume snapshot on C; owner-triggered R2 export on W | #923 |
 | `database-optimize` | REPLACE | Core, W, C | Blk | A clock-owned tick job over each target's port (`core/store-maintenance.ts`). C runs SQLite `PRAGMA optimize` bounded by `analysis_limit`; W runs `PRAGMA optimize`, which D1 documents (https://developers.cloudflare.com/d1/sql-api/sql-statements/). The latest outcome per check, with the store's size, is recorded in `schema_meta` under a unique run id; an owner runs it now through `POST /api/maintenance/optimize/run` | #1276 |
@@ -884,6 +890,10 @@ Every row in §7 is `Blk` except one: **#928** (native Cloudflare intelligence-p
 
 A ledger with no gate goes stale the first time someone adds a CLI command.
 
-`tests/meta/feature-ledger-completeness.test.ts` statically scans the six registries — CLI dispatch in `packages/myco/src/cli.ts`, routes in `packages/myco/ui/src/App.tsx`, `TOOL_*` constants in `packages/myco/src/tools/definitions.ts`, task YAML filenames, `POWER_JOB_NAMES` values, and `CREATE TABLE` names under `packages/myco/src/db/` — and asserts that **every token appears in a §7 table with both a disposition and an owning surface**, failing by name when either is missing.
+`tests/meta/feature-ledger-completeness.test.ts` scans the registries that define the surface and asserts that **every token appears in a §7 table with both a disposition and an owning surface**, failing by name when either is missing. The 1.4 registries are the CLI dispatch in `packages/myco/src/cli.ts`, the routes in `packages/myco/ui/src/App.tsx`, the `TOOL_*` constants in `packages/myco/src/tools/definitions.ts`, the task YAML filenames, the `POWER_JOB_NAMES` values, and the 1.4 config schema's declared leaves; 2.0's are the retained tasks, the task schedule, the server's tick jobs, and the Deployment's and a machine's settings leaves; the data classes are every `CREATE TABLE` under each package's `src/db/`.
+
+A 1.4 registry is retired by deleting the code that holds it: its §7 rows stay as the record of what became of each capability, and the registry is named in the gate's `RETIRED_REGISTRIES`. A registry whose source is gone and is not named there fails, so a move or an accidental deletion never passes for a retirement.
+
+`tests/meta/no-1-4-reach.test.ts` walks the import closure of the 2.0 entry points and stops at the 1.4 tree. Every edge that crosses into it is named, with the retirement phase that removes it; a new crossing fails, and so does a named edge that no longer exists, so the list only shrinks.
 
 The surface half is the one that matters most: a row with a disposition but no surface is how a capability ends up owned by nobody. That is the defect this whole ledger exists to answer.

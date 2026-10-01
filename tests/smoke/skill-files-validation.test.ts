@@ -3,7 +3,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, it, expect } from 'bun:test';
 import { parse as parseYaml } from 'yaml';
-import { MAX_SKILL_DESCRIPTION_CHARS } from '@myco/agent/tools/skill-validator.js';
+import { MAX_SKILL_DESCRIPTION_CHARS } from '@myco/skills/validator.js';
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const SKILLS_DIR = path.join(REPO_ROOT, '.agents', 'skills');

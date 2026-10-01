@@ -68,10 +68,10 @@ import {
   descriptionSimilarity,
   DESCRIPTION_DUPLICATE_THRESHOLD,
   extractFrontmatterField,
-} from './skill-validator.js';
+} from '../../skills/validator.js';
 import { applySkillEdits, type SkillEdit } from './skill-edit.js';
 import { collectSkillWriteIssues } from './skill-write-validator.js';
-import { scanForContamination } from './skill-contamination.js';
+import { scanForContamination } from '../../skills/contamination.js';
 import {
   writeStagedSkill,
   readStagedSkill,

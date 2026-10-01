@@ -28,6 +28,7 @@
   ],
   "files": [
     "tests/agent/repository-checkout.test.ts",
+    "tests/agent/repository-checkout-container.test.ts",
     "tests/agent/run-store-http.test.ts",
     "tests/agent/server-runner.test.ts",
     "tests/agent/server-tool-surface.test.ts",

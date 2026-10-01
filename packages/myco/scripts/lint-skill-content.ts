@@ -19,7 +19,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { scanForContamination, type SkillContaminationSpan } from '@myco/agent/tools/skill-contamination.js';
+import { scanForContamination, type SkillContaminationSpan } from '@myco/skills/contamination.js';
 
 interface CliOptions {
   strict: boolean;

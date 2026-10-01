@@ -38,7 +38,7 @@ import { parseCsvList } from '@myco/utils/parse-csv-list.js';
 import { projectScope, type GroveProjectId, type ProjectScope } from '@myco/grove/ids.js';
 import { isHostServedRequest } from '@myco/grove/request-context.js';
 import { validateSkillCandidateQualityContract } from '@myco/agent/skill-candidate-quality.js';
-import { extractFrontmatterFields } from '@myco/agent/tools/skill-validator.js';
+import { extractFrontmatterFields } from '@myco/skills/validator.js';
 import { isSafeSkillNameForFs } from '@myco/skills/names.js';
 import {
   removePublishedSkillFileOrDirectoryIfLocal,

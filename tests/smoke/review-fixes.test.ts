@@ -31,7 +31,7 @@ import {
   DESCRIPTION_DUPLICATE_THRESHOLD,
   TOPIC_OVERLAP_THRESHOLD,
   MAX_SKILL_DESCRIPTION_CHARS,
-} from '@myco/agent/tools/skill-validator.js';
+} from '@myco/skills/validator.js';
 import { buildScheduledJobs, type ScheduledJobContext } from '@myco/daemon/task-scheduler.js';
 import type { AgentTask } from '@myco/agent/types.js';
 import { TOOL_DEFINITIONS } from '@myco/tools/definitions.js';

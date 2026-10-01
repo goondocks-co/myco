@@ -26,7 +26,7 @@ import {
   TOPIC_OVERLAP_THRESHOLD,
   descriptionSimilarity,
   topicOverlapSimilarity,
-} from './skill-validator.js';
+} from '../../skills/validator.js';
 import {
   parseJsonArrayParam,
   parseSupersedesNames,

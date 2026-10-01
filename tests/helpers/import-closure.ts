@@ -148,6 +148,8 @@ export interface Closure {
   externals: Map<string, string>;
   /** Modules with `import(expr)` / `require(expr)` call sites the walk cannot follow → count. */
   unknowable: Map<string, number>;
+  /** Every module edge the walk followed or met: importer key → the keys it imports. */
+  edges: Map<string, Set<string>>;
 }
 
 /** Repo-relative, forward-slashed key of a module. */
@@ -179,6 +181,8 @@ export function entryFiles(root: string, patterns: readonly string[]): string[] 
 export interface ClosureOptions {
   staticOnly?: boolean;
   source?: (file: string, text: string) => string;
+  /** A module this answers true for is reached and recorded, but the walk goes no further into it. */
+  stopAt?: (key: string) => boolean;
 }
 
 /** The specifiers a module imports statically: what loads with it. */
@@ -195,7 +199,7 @@ export function dynamicSpecifiers(source: string, file: string): string[] {
 
 /** Walk every module reachable from these entries. */
 export function closureOf(entries: readonly string[], opts: ClosureOptions = {}): Closure {
-  const closure: Closure = { modules: new Map(), via: new Map(), externals: new Map(), unknowable: new Map() };
+  const closure: Closure = { modules: new Map(), via: new Map(), externals: new Map(), unknowable: new Map(), edges: new Map() };
   const queue: string[] = [];
   for (const entry of entries) {
     const key = moduleKey(entry);
@@ -218,10 +222,13 @@ export function closureOf(entries: readonly string[], opts: ClosureOptions = {})
         continue;
       }
       const key = moduleKey(resolved.file);
+      const from = moduleKey(file);
+      if (!closure.edges.has(from)) closure.edges.set(from, new Set());
+      closure.edges.get(from)!.add(key);
       if (closure.modules.has(key)) continue;
       closure.modules.set(key, resolved.file);
-      closure.via.set(key, moduleKey(file));
-      queue.push(resolved.file);
+      closure.via.set(key, from);
+      if (opts.stopAt?.(key) !== true) queue.push(resolved.file);
     }
   }
   return closure;

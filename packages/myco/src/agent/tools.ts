@@ -61,7 +61,7 @@ import type { HarnessId, ProviderConfig, ReasoningLevel, RunLogger } from '@myco
 import type { FlaggedWriteAccumulator } from './harness/types.js';
 
 // Re-exports for backward compatibility
-export { validateSkillContent, MAX_SKILL_LINES, REQUIRED_FRONTMATTER_FIELDS } from './tools/skill-validator.js';
+export { validateSkillContent, MAX_SKILL_LINES, REQUIRED_FRONTMATTER_FIELDS } from '../skills/validator.js';
 
 // ---------------------------------------------------------------------------
 // Constants

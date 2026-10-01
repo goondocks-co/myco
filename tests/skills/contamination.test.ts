@@ -16,8 +16,8 @@
 
 import { describe, expect, it } from 'bun:test';
 
-import { scanForContamination } from '@myco/agent/tools/skill-contamination.js';
-import { validateSkillContent } from '@myco/agent/tools/skill-validator.js';
+import { scanForContamination } from '@myco/skills/contamination.js';
+import { validateSkillContent } from '@myco/skills/validator.js';
 
 function skill(body: string, frontmatter = ''): string {
   return `---\nname: myco:test-skill\ndescription: Test skill\nmanaged_by: myco\nuser-invocable: true\nallowed-tools: Read, Grep\n${frontmatter}---\n\n${body}`;

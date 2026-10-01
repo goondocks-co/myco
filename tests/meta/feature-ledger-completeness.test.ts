@@ -9,9 +9,9 @@
  * failure is silent, because a capability nobody enumerated is dropped by default rather
  * than by decision. That is the exact defect the ledger exists to answer.
  *
- * This gate statically scans the six registries that define the 1.4 surface and asserts
- * every token appears in a ledger row with BOTH a disposition and an owning surface,
- * failing by name when either is missing:
+ * This gate scans the registries that define the 1.4 surface, and those that define
+ * the 2.0 surface, and asserts every token appears in a ledger row with BOTH a
+ * disposition and an owning surface, failing by name when either is missing:
  *
  *   - CLI commands   — `cmd === '<name>'` / `case '<name>':` in `packages/myco/src/cli.ts`
  *   - Dashboard routes — `path="<literal>"` in `packages/myco/ui/src/App.tsx`
@@ -21,6 +21,14 @@
  *   - Data classes   — `CREATE TABLE` names under every `packages/<pkg>/src/db/`, the
  *                      member's vault schema and the Deployment's
  *   - Config leaves  — every leaf the `MycoConfigSchema` DECLARES (§7.8)
+ *
+ * and, of 2.0's own: the retained tasks, the task schedule, the server's tick jobs,
+ * the Deployment's settings leaves and a machine's settings leaves.
+ *
+ * A 1.4 registry is retired by deleting the code that holds it. Its §7 rows stay as
+ * the record of what became of each capability, and the registry is named in
+ * `RETIRED_REGISTRIES`: a registry whose source is gone and is not named there fails,
+ * so a move or an accidental deletion cannot pass for a retirement.
  *
  * The SURFACE half matters most. A row with a disposition but no surface is how a
  * capability ends up owned by nobody — the planning defect of the same class as a
@@ -32,14 +40,17 @@ import { describe, expect, it } from 'bun:test';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { declaredLeafPaths } from '@myco/config/declared-leaves.js';
+import { RETAINED_TASKS } from '@myco-server-worker/core/task-catalogue.js';
+import { SERVER_JOBS, TASK_SCHEDULE } from '@myco-server-worker/core/jobs.js';
+import { DEPLOYMENT_LEAVES } from '@myco-server-worker/core/settings.js';
+import { MACHINE_LEAVES } from '@myco-server-worker/core/machine-settings.js';
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 const SRC_ROOT = path.join(REPO_ROOT, 'packages', 'myco', 'src');
 const LEDGER_PATH = path.join(REPO_ROOT, 'docs', 'architecture', 'myco-2.0.md');
 
-/** Dispositions the ledger may assign. */
-const DISPOSITIONS = new Set(['KEEP', 'REPLACE', 'DROP']);
+/** Dispositions the ledger may assign: a 1.4 capability is kept, replaced or dropped; one 2.0 adds is NEW. */
+const DISPOSITIONS = new Set(['KEEP', 'REPLACE', 'DROP', 'NEW']);
 
 /**
  * Config leaves whose children are dynamic — a record or array whose keys are not
@@ -205,9 +216,16 @@ function dataClasses(): string[] {
  * A coverage gate reading a defaulted parse is blind precisely where coverage
  * matters most.
  */
+const DECLARED_LEAVES = path.join(SRC_ROOT, 'config', 'declared-leaves.ts');
+
+/** The 1.4 config schema's declared leaves, read only while the schema is there to read. */
+const declaredLeafPaths: (() => string[]) | null = fs.existsSync(DECLARED_LEAVES)
+  ? ((await import(DECLARED_LEAVES)) as { declaredLeafPaths: () => string[] }).declaredLeafPaths
+  : null;
+
 function configLeaves(): string[] {
   const out = new Set<string>();
-  for (const leaf of declaredLeafPaths()) {
+  for (const leaf of declaredLeafPaths!()) {
     const block = DYNAMIC_CONFIG_BLOCKS.find((b) => leaf === b || leaf.startsWith(`${b}.`));
     out.add(block ?? leaf);
   }
@@ -215,23 +233,51 @@ function configLeaves(): string[] {
   return [...out].sort();
 }
 
-const REGISTRIES: Array<[string, () => string[]]> = [
-  ['CLI commands', cliCommands],
-  ['dashboard routes', dashboardRoutes],
-  ['MCP tools', mcpTools],
-  ['agent tasks', agentTasks],
-  ['scheduled jobs', scheduledJobs],
-  ['data classes', dataClasses],
-  ['config leaves', configLeaves],
+/** A registry: what it is called, the repo path that holds it, and how its tokens are read. */
+interface Registry {
+  label: string;
+  source: string;
+  scan: () => string[];
+}
+
+const REGISTRIES: readonly Registry[] = [
+  { label: 'CLI commands', source: 'packages/myco/src/cli.ts', scan: cliCommands },
+  { label: 'dashboard routes', source: 'packages/myco/ui/src/App.tsx', scan: dashboardRoutes },
+  { label: 'MCP tools', source: 'packages/myco/src/tools/definitions.ts', scan: mcpTools },
+  { label: 'agent tasks', source: 'packages/myco/src/agent/definitions/tasks', scan: agentTasks },
+  { label: 'scheduled jobs', source: 'packages/myco/src/constants/power-jobs.ts', scan: scheduledJobs },
+  { label: 'data classes', source: 'packages/myco-server/src/db', scan: dataClasses },
+  { label: 'config leaves', source: 'packages/myco/src/config/declared-leaves.ts', scan: configLeaves },
+  { label: 'retained tasks', source: 'packages/myco-server/src/core/task-catalogue.ts', scan: () => [...RETAINED_TASKS].sort() },
+  { label: 'task schedule', source: 'packages/myco-server/src/core/jobs.ts', scan: () => Object.keys(TASK_SCHEDULE).sort() },
+  { label: 'server jobs', source: 'packages/myco-server/src/core/jobs.ts', scan: () => SERVER_JOBS.map((job) => job.name).sort() },
+  { label: 'Deployment settings leaves', source: 'packages/myco-server/src/core/settings.ts', scan: () => [...DEPLOYMENT_LEAVES].sort() },
+  { label: 'machine settings leaves', source: 'packages/myco-server/src/core/machine-settings.ts', scan: () => [...MACHINE_LEAVES].sort() },
 ];
+
+/**
+ * The 1.4 registries deleted with the code that held them. Each one's §7 rows stay as the record of the retired
+ * surface; its scan does not run. A label joins this list in the change that deletes its source, and only then.
+ */
+const RETIRED_REGISTRIES: readonly string[] = [];
+
+const present = (registry: Registry): boolean => fs.existsSync(path.join(REPO_ROOT, registry.source));
 
 describe('feature-preservation ledger completeness', () => {
   it('parses a non-trivial ledger (guards against a silently empty parse)', () => {
     expect(LEDGER.length).toBeGreaterThan(100);
   });
 
-  for (const [label, scan] of REGISTRIES) {
-    it(`every 1.4 ${label} entry carries a disposition and an owning surface`, () => {
+  it('scans every registry whose source is there, and names every other one retired', () => {
+    const gone = REGISTRIES.filter((registry) => !present(registry)).map((registry) => registry.label);
+    expect(gone.filter((label) => !RETIRED_REGISTRIES.includes(label)), 'a registry\'s source is gone but it is not named in RETIRED_REGISTRIES: name it there only when its code is deliberately retired').toEqual([]);
+    const stale = RETIRED_REGISTRIES.filter((label) => !REGISTRIES.some((registry) => registry.label === label) || REGISTRIES.some((registry) => registry.label === label && present(registry)));
+    expect(stale, 'RETIRED_REGISTRIES names a registry that is unknown or whose source is still there').toEqual([]);
+  });
+
+  for (const registry of REGISTRIES) {
+    const { label, scan } = registry;
+    it.skipIf(!present(registry))(`every ${label} entry carries a disposition and an owning surface`, () => {
       const tokens = scan();
       expect(tokens.length).toBeGreaterThan(0);
 
@@ -264,7 +310,7 @@ describe('feature-preservation ledger completeness', () => {
     // parseLedger only admits rows whose surface cell is drawn from SURFACES, so a
     // typo'd surface makes the row unparseable and the token reads as MISSING above.
     // This asserts the inverse directly: every registry token resolved to a row.
-    const allTokens = REGISTRIES.flatMap(([, scan]) => scan());
+    const allTokens = REGISTRIES.filter(present).flatMap((registry) => registry.scan());
     const unresolved = allTokens.filter((t) => !BY_TOKEN.has(t));
     expect(unresolved).toEqual([]);
   });

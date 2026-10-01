@@ -25,7 +25,7 @@ import { insertSpore } from '@myco/db/queries/spores.js';
 import { insertRun } from '@myco/db/queries/runs.js';
 import { upsertSession } from '@myco/db/queries/sessions.js';
 import { createVaultTools } from '@myco/agent/tools.js';
-import { MAX_SKILL_DESCRIPTION_CHARS } from '@myco/agent/tools/skill-validator.js';
+import { MAX_SKILL_DESCRIPTION_CHARS } from '@myco/skills/validator.js';
 import { SKILL_SURVEY_RECONCILIATION_POLICY_MARKER } from '@myco/agent/skill-candidate-quality.js';
 import { CANDIDATE_STATUS } from '@myco/constants/skill-candidate-status.js';
 import type { MycoRequestContext } from '@myco/grove/request-context.js';

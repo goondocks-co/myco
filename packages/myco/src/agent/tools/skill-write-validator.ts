@@ -19,7 +19,7 @@ import {
   computeDescriptionFloor,
   extractFrontmatterField,
   MAX_SKILL_DESCRIPTION_CHARS,
-} from './skill-validator.js';
+} from '../../skills/validator.js';
 import { verifySkillContentClaims } from '@myco/agent/skill-drift.js';
 
 /** Fabrication findings for a write rejected by the claim gate. */
