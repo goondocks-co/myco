@@ -1,10 +1,9 @@
 /**
  * `myco server create --port`, through the argv the operator actually types.
  *
- * The port is decided in one place for the flag and for the bundle's `.env`,
- * and a refusal has to name what was typed: a conversion in the CLI turned a
- * bare `--port` into the word "true" and a misspelled one into NaN, and the
- * operator read a value they had never written.
+ * A refusal has to name what the operator typed: a conversion turns a bare `--port`
+ * into the word "true" and a misspelled one into NaN, and the operator would
+ * read a value they had never written.
  */
 import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
 import { run } from '@myco/cli/server';

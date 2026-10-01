@@ -18,7 +18,7 @@ import { sqliteStoreMaintenance } from './store-maintenance.js';
 export const SOURCE_LIMIT = { limit: 600, periodMs: 60_000 };
 export const TOKEN_LIMIT = { limit: 300, periodMs: 60_000 };
 
-/** What a self-hosted deployment requires, named as its operator would name it in Compose. */
+/** What a self-hosted deployment requires, named as its operator sets it in the container's environment. */
 export const REQUIRED_BINDINGS = ['MYCO_DATABASE', 'MYCO_BLOB_DIR'] as const;
 
 export interface BunServerConfig extends OwnerBindings {
@@ -29,13 +29,13 @@ export interface BunServerConfig extends OwnerBindings {
   /** Base64 key that Deployment secrets are sealed under; supplied from the environment, never from the store it protects. */
   SECRET_WRAP_KEY?: string;
   now?: () => number;
-  /** The harness launch this process is given — the self-hosted runner, or the parity harness's recording launch. Absent, every dispatch answers that no runtime is bound. */
+  /** The launch this process is given — its in-process embedding runtime, or the parity harness's recording launch. Absent, every runtime-served dispatch answers that no runtime is bound. */
   harnessLaunch?: (spec: { runId: string; timeoutSeconds: number; envVars: Record<string, string> }) => Promise<void>;
   /** Tasks this runtime accepts; omitted means every runtime-served task. */
   harnessTasks?: readonly string[];
   /** The origin this Deployment is reached at (`MYCO_ORIGIN`): where the clock's runs call back to. */
   origin?: string;
-  /** How many runtimes the self-hosted runner may start at once (`MYCO_FLEET`). */
+  /** How many runs may be live at once (`MYCO_FLEET`). */
   fleet?: number;
   /** The native artifacts this deployment carries, or absent to locate them on the host. */
   native?: NativeSqlite;
@@ -86,7 +86,7 @@ export function bunPlatform(config: BunServerConfig): PlatformDescriptor {
         present: true,
         operatorNames: [],
       },
-      { capability: 'harness-runtime', label: 'Harness runtime', present: config.harnessLaunch !== undefined, operatorNames: ['MYCO_HARNESS', 'MYCO_HARNESS_TOKEN_FILE'] },
+      { capability: 'harness-runtime', label: 'Embedding runtime', present: config.harnessLaunch !== undefined, operatorNames: [] },
     ],
     classifyError: classifySqliteError,
     classifyBlobFailure: classifyBlobFailureOf,

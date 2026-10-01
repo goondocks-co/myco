@@ -603,45 +603,15 @@ describe('gates', () => {
         malformed: (token) => new Request('https://s/runs/claim', { method: 'POST', headers: memberHeaders(token), body: '{}' }),
         wellFormed: (token) => new Request('https://s/runs/claim', { method: 'POST', headers: memberHeaders(token), body: JSON.stringify({ id: `run_${runSeq++}`, agentId: 'agent_gate', task: `digest_${runSeq}`, capability: 'cortex' }) }),
       },
-      'POST /runs/get': {
-        shape: 'persisted',
-        malformed: (token) => new Request('https://s/runs/get', { method: 'POST', headers: memberHeaders(token), body: '{}' }),
-        wellFormed: (token) => new Request('https://s/runs/get', { method: 'POST', headers: memberHeaders(token), body: JSON.stringify({ runId: 'nope' }) }),
-      },
       'POST /runs/update': {
         shape: 'persisted',
         malformed: (token) => new Request('https://s/runs/update', { method: 'POST', headers: memberHeaders(token), body: '{}' }),
         wellFormed: (token) => new Request('https://s/runs/update', { method: 'POST', headers: memberHeaders(token), body: JSON.stringify({ runId: 'nope', update: { status: 'failed' } }) }),
       },
-      'POST /runs/failed': {
-        shape: 'persisted',
-        malformed: (token) => new Request('https://s/runs/failed', { method: 'POST', headers: memberHeaders(token), body: '{}' }),
-        wellFormed: (token) => new Request('https://s/runs/failed', { method: 'POST', headers: memberHeaders(token), body: JSON.stringify({ runId: 'nope', errorClass: 'other', error: 'boom' }) }),
-      },
-      'POST /runs/resume-admission': {
-        shape: 'persisted',
-        malformed: (token) => new Request('https://s/runs/resume-admission', { method: 'POST', headers: memberHeaders(token), body: '{}' }),
-        wellFormed: (token) => new Request('https://s/runs/resume-admission', { method: 'POST', headers: memberHeaders(token), body: JSON.stringify({ runId: 'nope' }) }),
-      },
-      'POST /runs/supersede': {
-        shape: 'persisted',
-        malformed: (token) => new Request('https://s/runs/supersede', { method: 'POST', headers: memberHeaders(token), body: '{}' }),
-        wellFormed: (token) => new Request('https://s/runs/supersede', { method: 'POST', headers: memberHeaders(token), body: JSON.stringify({ excludeRunId: 'nope', agentId: 'agent_gate', taskName: 'digest', dryRun: false }) }),
-      },
-      'POST /runs/reports': {
-        shape: 'persisted',
-        malformed: (token) => new Request('https://s/runs/reports', { method: 'POST', headers: memberHeaders(token), body: '{}' }),
-        wellFormed: (token) => new Request('https://s/runs/reports', { method: 'POST', headers: memberHeaders(token), body: JSON.stringify({ runId: 'nope' }) }),
-      },
       'POST /runs/report': {
         shape: 'persisted',
         malformed: (token) => new Request('https://s/runs/report', { method: 'POST', headers: memberHeaders(token), body: '{}' }),
         wellFormed: (token) => new Request('https://s/runs/report', { method: 'POST', headers: memberHeaders(token), body: JSON.stringify({ runId: 'run_gate', agentId: 'user', action: 'gate', summary: 's' }) }),
-      },
-      'POST /runs/events': {
-        shape: 'persisted',
-        malformed: (token) => new Request('https://s/runs/events', { method: 'POST', headers: memberHeaders(token), body: '{}' }),
-        wellFormed: (token) => new Request('https://s/runs/events', { method: 'POST', headers: memberHeaders(token), body: JSON.stringify({ events: [{ runId: 'nope', eventType: 'phase_start' }] }) }),
       },
       'POST /runs/embedding-step': {
         shape: 'persisted',
@@ -677,16 +647,6 @@ describe('gates', () => {
         shape: 'persisted',
         malformed: (token) => new Request('https://s/context/session', { method: 'POST', headers: memberHeaders(token), body: '{}' }),
         wellFormed: (token) => new Request('https://s/context/session', { method: 'POST', headers: memberHeaders(token), body: JSON.stringify({ sessionId: `s_gate_${runSeq++}`, kind: 'start' }) }),
-      },
-      'POST /runs/repository': {
-        shape: 'persisted',
-        malformed: (token) => new Request('https://s/runs/repository', { method: 'POST', headers: memberHeaders(token), body: '{}' }),
-        wellFormed: (token) => new Request('https://s/runs/repository', { method: 'POST', headers: memberHeaders(token), body: JSON.stringify({ runId: 'run_gate' }) }),
-      },
-      'POST /runs/canopy-map': {
-        shape: 'persisted',
-        malformed: (token) => new Request('https://s/runs/canopy-map', { method: 'POST', headers: memberHeaders(token), body: '{}' }),
-        wellFormed: (token) => new Request('https://s/runs/canopy-map', { method: 'POST', headers: memberHeaders(token), body: JSON.stringify({ runId: 'run_gate' }) }),
       },
       'POST /worker/claim': {
         shape: 'persisted',
@@ -879,7 +839,7 @@ describe('gates', () => {
     expect(callers.sort()).toEqual([join('api', 'release-provenance.ts'), join('api', 'repositories.ts'), join('api', 'settings.ts'), join('core', 'provider-credentials.ts'), join('core', 'release-provenance.ts'), join('core', 'run-repository.ts')]);
     const credentialCallers = files(SRC).filter((f) => /\bopenProviderCredential\(/.test(stripComments(readFileSync(f, 'utf8'))))
       .map((f) => f.slice(SRC.length + 1)).sort();
-    expect(credentialCallers).toEqual([join('core', 'embedding', 'configured-provider.ts'), join('core', 'harness.ts'), join('core', 'provider-credentials.ts')]);
+    expect(credentialCallers).toEqual([join('core', 'embedding', 'configured-provider.ts'), join('core', 'provider-credentials.ts')]);
     const surface = stripComments(readFileSync(join(SRC, 'api', 'settings.ts'), 'utf8'));
     expect(surface).not.toMatch(/\.get\(\s*ctx\.params\.name/);
   });
@@ -1018,10 +978,18 @@ describe('gates', () => {
       'POST /events/sync-transcript-prompts',
       'POST /routed-capture/plan',
       'POST /routed-capture/transcript',
+      'POST /runs/canopy-map',
       'POST /runs/cortex-instructions',
       'POST /runs/digest',
       'POST /runs/digest-write',
+      'POST /runs/events',
+      'POST /runs/failed',
+      'POST /runs/get',
       'POST /runs/instruction',
+      'POST /runs/reports',
+      'POST /runs/repository',
+      'POST /runs/resume-admission',
+      'POST /runs/supersede',
       'POST /sessions/register',
       'POST /sessions/unregister',
     ]);
@@ -1241,17 +1209,9 @@ describe('gates', () => {
       'member POST /members/status',
       'member POST /members/uncaptured',
       'member POST /members/uncaptured/state',
-      'member POST /runs/canopy-map',
       'member POST /runs/claim',
       'member POST /runs/embedding-step',
-      'member POST /runs/events',
-      'member POST /runs/failed',
-      'member POST /runs/get',
       'member POST /runs/report',
-      'member POST /runs/reports',
-      'member POST /runs/repository',
-      'member POST /runs/resume-admission',
-      'member POST /runs/supersede',
       'member POST /runs/update',
       'member POST /spores/get',
       'member POST /spores/list',

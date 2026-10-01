@@ -177,28 +177,43 @@ export type LaunchSpec = { runId: string; timeoutSeconds: number; envVars: Recor
 /**
  * A deployment whose runtime records every launch it receives.
  *
- * No target binds a runtime into `ServerEnv` from configuration, so a test that
- * drives the dispatcher supplies one here. A `launch` that throws is a refusing
- * runtime; `sink` collects each spec a launch receives.
+ * A test that drives the dispatcher supplies a recording runtime here in place
+ * of the one its target binds. A `launch` that throws is a refusing runtime;
+ * `sink` collects each spec a launch receives.
  */
 export function withHarness(
   resolve: () => ServerEnv,
-  options: { sink?: LaunchSpec[]; launch?: (spec: LaunchSpec) => Promise<void> } = {},
+  options: { sink?: LaunchSpec[]; launch?: (spec: LaunchSpec) => Promise<void>; embedding?: boolean } = {},
 ): ServerEnv {
   const sink = options.sink ?? [];
   const launch = options.launch ?? (async (spec: LaunchSpec) => { sink.push(spec); });
+  // The runtime-served task is the embedding pass, which a Deployment prepares only with an index and an embedding
+  // provider: a bound runtime brings both unless the test says it has none.
+  const embedding: Partial<ServerEnv> = options.embedding === false ? {} : {
+    vectors: FIXTURE_VECTORS,
+    embeddingProvider: async () => ({ modelKey: 'fixture-embedding', embed: async () => [1, 0] }),
+  };
+  const bound = (key: PropertyKey): unknown => {
+    if (key === 'harnessLaunch') return launch;
+    if (key === 'embeddingProvider' && embedding.embeddingProvider !== undefined) return embedding.embeddingProvider;
+    return resolve()[key as keyof ServerEnv] ?? embedding[key as keyof ServerEnv];
+  };
+  const added = ['harnessLaunch', ...Object.keys(embedding)];
   // A thunk, not a deployment: `sqliteEnv` re-maps on every access so a test can
   // swap a binding mid-test and see the failure it injects. Taking a value here
   // would flatten that at construction, silently, at every call site. No
   // tsconfig covers this directory, so passing one fails when the fixture runs
   // rather than when it is compiled.
   return new Proxy({} as ServerEnv, {
-    get: (_t, key) => (key === 'harnessLaunch' ? launch : resolve()[key as keyof ServerEnv]),
-    has: (_t, key) => key === 'harnessLaunch' || key in resolve(),
-    ownKeys: () => [...new Set([...Reflect.ownKeys(resolve()), 'harnessLaunch'])],
+    get: (_t, key) => bound(key),
+    has: (_t, key) => added.includes(key as string) || key in resolve(),
+    ownKeys: () => [...new Set([...Reflect.ownKeys(resolve()), ...added])],
     getOwnPropertyDescriptor: () => ({ configurable: true, enumerable: true }),
   });
 }
+
+/** An index a recording runtime never writes to: the dispatcher asks only that one is there. */
+const FIXTURE_VECTORS = {} as NonNullable<ServerEnv['vectors']>;
 
 /** Records every piece of work handed to the deferral and settles it on request, so a test observes what a request scheduled past its answer. */
 export function recordingDeferred() {

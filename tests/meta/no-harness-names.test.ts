@@ -47,7 +47,6 @@ const REGISTRIES: readonly RegExp[] = [
 /** Today's offenders: file → how many places name a harness. Only shrinks; #1561 PR 7 folds each into manifest data. */
 const KNOWN: Readonly<Record<string, number>> = {
   // The worker's provider credential for a harness run: the manifest's `runner:` block.
-  'packages/myco-server/src/core/harness.ts': 1,
   'packages/myco-shared/src/harness-providers.ts': 7,
   // The worker's credential slot named for a harness (`codex`): the manifest's `runner:` block.
   'packages/myco-shared/src/secret-slots.ts': 2,

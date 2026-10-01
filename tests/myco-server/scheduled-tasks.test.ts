@@ -1,6 +1,6 @@
 /**
  * The clock's own dispatches: each gate by name, in the 1.4 order, and what
- * a wake leaves behind — a launched run, a queued one, a skipped row where a
+ * a wake leaves behind — a run queued for a worker, a skipped row where a
  * ceiling is met, and nothing at all where the switch is off.
  */
 import { describe, expect, it } from 'bun:test';
@@ -9,7 +9,7 @@ import type { PreparedStatement, RelationalStore, ServerEnv } from '@myco-server
 import { HARNESS_AGENT_ID } from '@myco-server-worker/core/harness.js';
 import { ACTIVE_WINDOW_DAYS_DEFAULT, CLOCK_ACTOR, COLD_PROJECT_THRESHOLD_DAYS_DEFAULT, decideTask, effectiveIntervalSeconds, hasUnprocessedPrompts, PRE_CONDITIONS, readScheduleFacts, resolveSchedule, runScheduledTasks, scheduledTasks, scheduleFor, scheduleLeaves } from '@myco-server-worker/core/scheduled-tasks.js';
 import { TASK_SCHEDULE, type TaskSchedule } from '@myco-server-worker/core/jobs.js';
-import { TASK_ADMISSION } from '@myco-server-worker/core/task-catalogue.js';
+import { MAP_TASK, TASK_ADMISSION } from '@myco-server-worker/core/task-catalogue.js';
 import { hasLiveTaskRun, INPUT_UNCHANGED, lastTaskEntryAt, skipContext, taskEntriesSince, taskFactsKey, taskRunFacts } from '@myco-server-worker/core/runs.js';
 import { runTick } from '@myco-server-worker/core/tick.js';
 import { seedCredential } from './helpers/d1.js';
@@ -18,7 +18,12 @@ import { sqliteEnv, withHarness } from './helpers/fixtures.js';
 const NOW = 1_800_000_000_000;
 const DAY = 86_400_000;
 const ORIGIN = 'https://s';
-const SMOKE: TaskSchedule = TASK_SCHEDULE['container-smoke']!;
+/** The task the clock schedules on its own: extraction, which a worker serves. */
+const TASK = 'extract-curate';
+/** A plain daily schedule, for the gates a declared one would hide behind its precondition and reserve. */
+const PLAIN: TaskSchedule = { intervalSeconds: 86_400, runIn: ['sleep'], overlap: 'skip', maxRunsPerDay: 2 };
+/** An owner override that leaves extraction no reserve, so a ceiling is the ceiling it names. */
+const NO_RESERVE = { reservedRunsPerDay: { count: 0, preCondition: 'has-recent-live-prompts' } };
 
 function fixture(opts: { bound?: boolean } = {}) {
   const e = sqliteEnv();
@@ -30,19 +35,22 @@ function fixture(opts: { bound?: boolean } = {}) {
   const receipt = (projectId: string, at: number) => e.sqlite.run(`INSERT INTO sessions (project_id, session_id, machine_id, created_by_token_id, first_received_at, last_received_at, agent) VALUES (?, ?, 'machine_1', ?, ?, ?, 'claude-code')`, [projectId, `s_${projectId}_${at}`, token, at, at]);
   const capability = (projectId: string, name: string, on: boolean) => e.sqlite.run(`INSERT OR REPLACE INTO project_capabilities (project_id, capability, enabled, updated_at, updated_by) VALUES (?, ?, ?, ?, 'mem_1')`, [projectId, name, on ? 1 : 0, NOW]);
   const runs = (projectId: string) => e.sqlite.query(`SELECT id, task, status, run_context AS runContext, started_at AS startedAt FROM agent_runs WHERE project_id = ? ORDER BY COALESCE(queued_at, started_at), id`).all(projectId) as Array<{ id: string; task: string; status: string; runContext: string | null; startedAt: number | null }>;
-  setting('agent.provider.type', 'openai-compatible');
-  setting('agent.provider.model', 'm');
-  setting('agent.provider.base_url', 'http://models.internal/v1');
+  // A Project with an ended session holding a prompt extraction has not read, last heard from at `at`.
+  const backlog = (projectId: string, at: number) => {
+    e.sqlite.run(`INSERT INTO sessions (project_id, session_id, machine_id, created_by_token_id, first_received_at, last_received_at, agent, started_at, ended_at) VALUES (?, ?, 'machine_1', ?, ?, ?, 'claude-code', ?, ?)`,
+      [projectId, `s_backlog_${projectId}`, token, at, at, at, at]);
+    e.sqlite.run(`INSERT INTO prompt_batches (project_id, session_id, prompt_id, event_id, text, origin, content_hash, created_at, updated_at, token_id, received_at, processed) VALUES (?, ?, ?, ?, 'hello there', 'user', ?, ?, ?, ?, ?, 0)`,
+      [projectId, `s_backlog_${projectId}`, `p_backlog_${projectId}`, `e_backlog_${projectId}`, `h_backlog_${projectId}`, at, at, token, at]);
+  };
   setting('agent.scheduled_tasks_enabled', true);
-  capability('proj_1', 'cortex', true);
-  capability('proj_2', 'cortex', true);
-  return { ...e, env, launches, setting, receipt, capability, runs };
+  capability('proj_1', 'vault_evolution', true);
+  capability('proj_2', 'vault_evolution', true);
+  return { ...e, env, launches, setting, receipt, backlog, capability, runs };
 }
 
 describe('the schedule envelope', () => {
-  it('catalogues every schedule and its precondition, including the daily harness health probe', () => {
-    expect(scheduledTasks().map((t) => t.task)).toEqual(['container-smoke', 'extract-curate']);
-    expect(SMOKE).toEqual({ intervalSeconds: 86_400, runIn: ['sleep'], overlap: 'skip', maxRunsPerDay: 2 });
+  it('catalogues every schedule and its precondition', () => {
+    expect(scheduledTasks().map((t) => t.task)).toEqual([TASK]);
     for (const task of Object.keys(TASK_SCHEDULE)) expect({ task, catalogued: task in TASK_ADMISSION }).toEqual({ task, catalogued: true });
     for (const task of Object.keys(TASK_ADMISSION)) expect({ task, scheduled: task in TASK_SCHEDULE }).toEqual({ task, scheduled: true });
     for (const { task, schedule } of scheduledTasks()) {
@@ -51,12 +59,12 @@ describe('the schedule envelope', () => {
   });
 
   it('lays an owner override over the declared block field by field, replacing an accelerator whole and refusing a malformed field', () => {
-    expect(resolveSchedule(SMOKE, undefined)).toEqual(SMOKE);
-    expect(resolveSchedule(SMOKE, { intervalSeconds: 3600, runIn: ['active', 'idle'], maxRunsPerDay: 5, overlap: 'queue', runWhenCold: true })).toEqual({ intervalSeconds: 3600, runIn: ['active', 'idle'], maxRunsPerDay: 5, overlap: 'queue', runWhenCold: true });
-    expect(resolveSchedule(SMOKE, { intervalSeconds: -1, runIn: ['awake'], overlap: 'never', accelerator: { name: 'x' } })).toEqual(SMOKE);
-    expect(resolveSchedule(SMOKE, { accelerator: { name: 'pending', thresholds: { steady: 10, accelerated: 100 } } }).accelerator).toEqual({ name: 'pending', thresholds: { steady: 10, accelerated: 100 } });
-    expect(scheduleFor('container-smoke', SMOKE, { 'container-smoke': { schedule: { intervalSeconds: 60 } } }).intervalSeconds).toBe(60);
-    expect(scheduleFor('container-smoke', SMOKE, { 'container-smoke': 'nope' })).toEqual(SMOKE);
+    expect(resolveSchedule(PLAIN, undefined)).toEqual(PLAIN);
+    expect(resolveSchedule(PLAIN, { intervalSeconds: 3600, runIn: ['active', 'idle'], maxRunsPerDay: 5, overlap: 'queue', runWhenCold: true })).toEqual({ intervalSeconds: 3600, runIn: ['active', 'idle'], maxRunsPerDay: 5, overlap: 'queue', runWhenCold: true });
+    expect(resolveSchedule(PLAIN, { intervalSeconds: -1, runIn: ['awake'], overlap: 'never', accelerator: { name: 'x' } })).toEqual(PLAIN);
+    expect(resolveSchedule(PLAIN, { accelerator: { name: 'pending', thresholds: { steady: 10, accelerated: 100 } } }).accelerator).toEqual({ name: 'pending', thresholds: { steady: 10, accelerated: 100 } });
+    expect(scheduleFor(TASK, PLAIN, { [TASK]: { schedule: { intervalSeconds: 60 } } }).intervalSeconds).toBe(60);
+    expect(scheduleFor(TASK, PLAIN, { [TASK]: 'nope' })).toEqual(PLAIN);
   });
 
   it('shortens the interval by tier under backlog', () => {
@@ -76,8 +84,8 @@ describe('a schedule naming something the Deployment never registered', () => {
   it('refuses a precondition named after an inherited member, rather than taking it for a registration', async () => {
     const f = fixture();
     for (const name of inherited) {
-      const schedule: TaskSchedule = { ...SMOKE, preCondition: name };
-      expect({ name, decided: await decideTask(f.env, 'proj_1', NOW - DAY, 'container-smoke', schedule, 'sleep', leaves, NOW) })
+      const schedule: TaskSchedule = { ...PLAIN, preCondition: name };
+      expect({ name, decided: await decideTask(f.env, 'proj_1', NOW - DAY, TASK, schedule, 'sleep', leaves, NOW) })
         .toEqual({ name, decided: 'precondition' });
     }
   });
@@ -86,10 +94,10 @@ describe('a schedule naming something the Deployment never registered', () => {
     const f = fixture();
     f.sqlite.run(`INSERT INTO agents (id, name, source, enabled, created_at) VALUES (?, 'a', 'built-in', 1, ?)`, [HARNESS_AGENT_ID, NOW]);
     // An entry a day old: inside a day's interval, outside a shortened one.
-    f.sqlite.run(`INSERT INTO agent_runs (project_id, id, agent_id, task, status, started_at) VALUES ('proj_1', 'earlier', ?, 'container-smoke', 'completed', ?)`, [HARNESS_AGENT_ID, NOW - 7_200_000]);
+    f.sqlite.run(`INSERT INTO agent_runs (project_id, id, agent_id, task, status, started_at) VALUES ('proj_1', 'earlier', ?, 'extract-curate', 'completed', ?)`, [HARNESS_AGENT_ID, NOW - 7_200_000]);
     for (const name of inherited) {
-      const schedule: TaskSchedule = { ...SMOKE, accelerator: { name, thresholds: { steady: 1, accelerated: 2 } } };
-      expect({ name, decided: await decideTask(f.env, 'proj_1', NOW - DAY, 'container-smoke', schedule, 'sleep', leaves, NOW) })
+      const schedule: TaskSchedule = { ...PLAIN, accelerator: { name, thresholds: { steady: 1, accelerated: 2 } } };
+      expect({ name, decided: await decideTask(f.env, 'proj_1', NOW - DAY, TASK, schedule, 'sleep', leaves, NOW) })
         .toEqual({ name, decided: 'not_yet' });
     }
   });
@@ -124,17 +132,15 @@ describe('a named precondition reads the Project it is a condition on', () => {
     const check = PRE_CONDITIONS['has-unprocessed-prompts'];
     expect(typeof check).toBe('function');
     expect(await check!({ db: f.env.db, projectId: 'proj_1', now: NOW })).toBe(false);
-    const gated: TaskSchedule = { ...SMOKE, preCondition: 'has-unprocessed-prompts' };
-    expect(await decideTask(f.env, 'proj_1', NOW - DAY, 'container-smoke', gated, 'sleep', { enabled: true, coldThresholdDays: 14, activeWindowDays: 14, overrides: {} }, NOW)).toBe('precondition');
+    const gated: TaskSchedule = { ...PLAIN, preCondition: 'has-unprocessed-prompts' };
+    expect(await decideTask(f.env, 'proj_1', NOW - DAY, TASK, gated, 'sleep', { enabled: true, coldThresholdDays: 14, activeWindowDays: 14, overrides: {} }, NOW)).toBe('precondition');
     seedSession(f, 'proj_1', 's_done', NOW);
     seedPrompt(f, 'proj_1', 's_done', 'p_waiting', 0);
-    expect(await decideTask(f.env, 'proj_1', NOW - DAY, 'container-smoke', gated, 'sleep', { enabled: true, coldThresholdDays: 14, activeWindowDays: 14, overrides: {} }, NOW)).toBeNull();
+    expect(await decideTask(f.env, 'proj_1', NOW - DAY, TASK, gated, 'sleep', { enabled: true, coldThresholdDays: 14, activeWindowDays: 14, overrides: {} }, NOW)).toBeNull();
   });
 
   it('queues extraction from its declared schedule only after an ended session has unread prompts', async () => {
     const f = fixture();
-    f.capability('proj_1', 'vault_evolution', true);
-    f.setting('agent.tasks', { 'container-smoke': { schedule: { enabled: false } } });
     seedSession(f, 'proj_1', 's_done', NOW);
     expect(await runScheduledTasks(f.env, 'idle', NOW, ORIGIN)).toEqual({ dispatched: 0, skipped: 0 });
     seedPrompt(f, 'proj_1', 's_done', 'p_waiting', 0);
@@ -152,8 +158,8 @@ describe('the leaves the clock reads', () => {
     expect(await scheduleLeaves(f.env)).toEqual({ enabled: false, coldThresholdDays: COLD_PROJECT_THRESHOLD_DAYS_DEFAULT, activeWindowDays: ACTIVE_WINDOW_DAYS_DEFAULT, overrides: { 'canopy-map': { schedule: { enabled: false } } } });
     f.setting('agent.scheduled_tasks_enabled', true);
     f.setting('agent.cold_project_threshold_days', 3);
-    f.setting('agent.tasks', { 'container-smoke': { schedule: { intervalSeconds: 60 } } });
-    expect(await scheduleLeaves(f.env)).toMatchObject({ enabled: true, coldThresholdDays: 3, overrides: { 'container-smoke': { schedule: { intervalSeconds: 60 } } } });
+    f.setting('agent.tasks', { [TASK]: { schedule: { intervalSeconds: 60 } } });
+    expect(await scheduleLeaves(f.env)).toMatchObject({ enabled: true, coldThresholdDays: 3, overrides: { [TASK]: { schedule: { intervalSeconds: 60 } } } });
     // The map refresh stays off until its own leaf turns it on, whatever the task override says.
     f.setting('agent.tasks', { 'canopy-map': { schedule: { enabled: true } } });
     expect((await scheduleLeaves(f.env)).overrides['canopy-map']).toEqual({ schedule: { enabled: false } });
@@ -168,69 +174,69 @@ describe('the leaves the clock reads', () => {
 
 describe('each gate, by name, in order', () => {
   const leaves = { enabled: true, coldThresholdDays: 14, activeWindowDays: 14, overrides: {} };
-  const decide = (f: ReturnType<typeof fixture>, last: number | null, schedule: TaskSchedule = SMOKE, state: 'active' | 'idle' | 'sleep' = 'sleep', now = NOW, project = 'proj_1') =>
-    decideTask(f.env, project, last, 'container-smoke', schedule, state, leaves, now);
+  const decide = (f: ReturnType<typeof fixture>, last: number | null, schedule: TaskSchedule = PLAIN, state: 'active' | 'idle' | 'sleep' = 'sleep', now = NOW, project = 'proj_1') =>
+    decideTask(f.env, project, last, TASK, schedule, state, leaves, now);
 
   it('leaves a quiet Project, a cold one, and one without the capability alone', async () => {
     const f = fixture();
     expect(await decide(f, null)).toBe('quiet');
     expect(await decide(f, NOW - 15 * DAY)).toBe('quiet');
-    expect(await decide(f, NOW - 10 * DAY, SMOKE, 'sleep', NOW, 'proj_1')).toBeNull();
-    expect(await decide(f, NOW - 10 * DAY, SMOKE, 'sleep', NOW, 'proj_1')).toBeNull();
+    expect(await decide(f, NOW - 10 * DAY, PLAIN, 'sleep', NOW, 'proj_1')).toBeNull();
+    expect(await decide(f, NOW - 10 * DAY, PLAIN, 'sleep', NOW, 'proj_1')).toBeNull();
     const cold = { ...leaves, coldThresholdDays: 5 };
-    expect(await decideTask(f.env, 'proj_1', NOW - 10 * DAY, 'container-smoke', SMOKE, 'sleep', cold, NOW)).toBe('cold');
-    expect(await decideTask(f.env, 'proj_1', NOW - 10 * DAY, 'container-smoke', { ...SMOKE, runWhenCold: true }, 'sleep', cold, NOW)).toBeNull();
-    f.capability('proj_1', 'cortex', false);
+    expect(await decideTask(f.env, 'proj_1', NOW - 10 * DAY, TASK, PLAIN, 'sleep', cold, NOW)).toBe('cold');
+    expect(await decideTask(f.env, 'proj_1', NOW - 10 * DAY, TASK, { ...PLAIN, runWhenCold: true }, 'sleep', cold, NOW)).toBeNull();
+    f.capability('proj_1', 'vault_evolution', false);
     expect(await decide(f, NOW - DAY)).toBe('capability_off');
   });
 
   it('skips a task already live under the skip policy, waits out the interval, keeps to its states, honours a named precondition, and meets its ceiling once a day', async () => {
     const f = fixture();
     f.sqlite.run(`INSERT INTO agents (id, name, source, enabled, created_at) VALUES (?, 'a', 'built-in', 1, ?)`, [HARNESS_AGENT_ID, NOW]);
-    f.sqlite.run(`INSERT INTO agent_runs (project_id, id, agent_id, task, status, started_at) VALUES ('proj_1', 'live', ?, 'container-smoke', 'running', ?)`, [HARNESS_AGENT_ID, NOW - 60_000]);
+    f.sqlite.run(`INSERT INTO agent_runs (project_id, id, agent_id, task, status, started_at) VALUES ('proj_1', 'live', ?, 'extract-curate', 'running', ?)`, [HARNESS_AGENT_ID, NOW - 60_000]);
     expect(await decide(f, NOW - DAY)).toBe('already_running');
-    expect(await decide(f, NOW - DAY, { ...SMOKE, enabled: false })).toBe('disabled');
-    expect(await decide(f, NOW - DAY, { ...SMOKE, overlap: 'queue' })).toBe('not_yet');
+    expect(await decide(f, NOW - DAY, { ...PLAIN, enabled: false })).toBe('disabled');
+    expect(await decide(f, NOW - DAY, { ...PLAIN, overlap: 'queue' })).toBe('not_yet');
     f.sqlite.run(`UPDATE agent_runs SET status = 'completed', completed_at = ? WHERE id = 'live'`, [NOW - 59_000]);
     expect(await decide(f, NOW - DAY)).toBe('not_yet');
-    expect(await decide(f, NOW - DAY, SMOKE, 'sleep', NOW + DAY)).toBeNull();
-    expect(await decide(f, NOW - DAY, SMOKE, 'active', NOW + DAY)).toBe('not_in_state');
-    expect(await decide(f, NOW - DAY, { ...SMOKE, preCondition: 'never-registered' }, 'sleep', NOW + DAY)).toBe('precondition');
-    f.sqlite.run(`INSERT INTO agent_runs (project_id, id, agent_id, task, status, started_at) VALUES ('proj_1', 'earlier', ?, 'container-smoke', 'completed', ?)`, [HARNESS_AGENT_ID, NOW + DAY - 3_600_000]);
-    expect(await decide(f, NOW - DAY, { ...SMOKE, intervalSeconds: 1, maxRunsPerDay: 1 }, 'sleep', NOW + DAY)).toBe('max_runs_per_day');
-    expect(await decide(f, NOW - DAY, { ...SMOKE, intervalSeconds: 1, maxRunsPerDay: 3 }, 'sleep', NOW + DAY)).toBeNull();
+    expect(await decide(f, NOW - DAY, PLAIN, 'sleep', NOW + DAY)).toBeNull();
+    expect(await decide(f, NOW - DAY, PLAIN, 'active', NOW + DAY)).toBe('not_in_state');
+    expect(await decide(f, NOW - DAY, { ...PLAIN, preCondition: 'never-registered' }, 'sleep', NOW + DAY)).toBe('precondition');
+    f.sqlite.run(`INSERT INTO agent_runs (project_id, id, agent_id, task, status, started_at) VALUES ('proj_1', 'earlier', ?, 'extract-curate', 'completed', ?)`, [HARNESS_AGENT_ID, NOW + DAY - 3_600_000]);
+    expect(await decide(f, NOW - DAY, { ...PLAIN, intervalSeconds: 1, maxRunsPerDay: 1 }, 'sleep', NOW + DAY)).toBe('max_runs_per_day');
+    expect(await decide(f, NOW - DAY, { ...PLAIN, intervalSeconds: 1, maxRunsPerDay: 3 }, 'sleep', NOW + DAY)).toBeNull();
   });
 });
 
 describe('one wake of the clock', () => {
-  it('dispatches the probe for each Project that qualifies, attributes it to the clock, and does nothing twice', async () => {
+  it('queues extraction for each Project that qualifies, attributes it to the clock, and does nothing twice', async () => {
     const f = fixture();
-    f.receipt('proj_1', NOW - 3_600_000);
-    f.receipt('proj_2', NOW - 20 * DAY);
+    f.backlog('proj_1', NOW - 3_600_000);
+    f.backlog('proj_2', NOW - 20 * DAY);
     const first = await runScheduledTasks(f.env, 'sleep', NOW, ORIGIN);
     expect(first).toEqual({ dispatched: 1, skipped: 0 });
-    expect(f.runs('proj_1').map((r) => [r.task, r.status])).toEqual([['container-smoke', 'pending']]);
+    expect(f.runs('proj_1').map((r) => [r.task, r.status])).toEqual([[TASK, 'queued']]);
     expect(f.runs('proj_2')).toEqual([]);
-    expect(f.launches[0]!.envVars.MYCO_SERVER_URL).toBe(ORIGIN);
-    expect(f.launches[0]!.envVars.MYCO_TASK).toBe('container-smoke');
+    expect(await taskEntriesSince(f.env.db, { projectId: 'proj_1' }, TASK, 0, CLOCK_ACTOR)).toBe(1);
+    // A worker serves the run: the clock launches nothing in this process.
+    expect(f.launches).toEqual([]);
     expect(await runScheduledTasks(f.env, 'sleep', NOW + 1, ORIGIN)).toEqual({ dispatched: 0, skipped: 0 });
     expect(f.runs('proj_1')).toHaveLength(1);
   });
 
   it('refuses at the ceiling rather than queueing, records one row per episode however many wakes ask, and dispatches again when the window has room', async () => {
     const f = fixture();
-    f.receipt('proj_1', NOW - 3_600_000);
-    f.setting('agent.tasks', { 'container-smoke': { schedule: { intervalSeconds: 1, maxRunsPerDay: 1 } } });
+    f.backlog('proj_1', NOW - 3_600_000);
+    f.setting('agent.tasks', { [TASK]: { schedule: { intervalSeconds: 1, maxRunsPerDay: 1, ...NO_RESERVE } } });
     expect(await runScheduledTasks(f.env, 'sleep', NOW, ORIGIN)).toEqual({ dispatched: 1, skipped: 0 });
-    // The probe finishes; the interval is past; the day's one run is spent.
-    f.sqlite.run(`UPDATE agent_runs SET status = 'completed', completed_at = ? WHERE task = 'container-smoke'`, [NOW + 1_000]);
+    // The run finishes; the interval is past; the day's one run is spent.
+    f.sqlite.run(`UPDATE agent_runs SET status = 'completed', completed_at = ? WHERE task = 'extract-curate'`, [NOW + 1_000]);
     expect(await runScheduledTasks(f.env, 'sleep', NOW + 5_000, ORIGIN)).toEqual({ dispatched: 0, skipped: 1 });
     const rows = f.runs('proj_1');
     expect(rows.map((r) => r.status)).toEqual(['completed', 'skipped']);
     expect(JSON.parse(rows[1]!.runContext!)).toEqual({ reason: 'max_runs_per_day' });
-    // A ceiling is not a queue: nothing waits for capacity, and nothing launched.
+    // A ceiling is not a queue: nothing waits for capacity.
     expect(rows.filter((r) => r.status === 'queued')).toEqual([]);
-    expect(f.launches).toHaveLength(1);
 
     // Two more wakes inside the same episode: each answers the ceiling, and the
     // record of it stays one row rather than one per wake.
@@ -244,15 +250,14 @@ describe('one wake of the clock', () => {
     expect(await runScheduledTasks(f.env, 'sleep', midnight + 1_000, ORIGIN)).toEqual({ dispatched: 0, skipped: 1 });
     expect(f.runs('proj_1').map((r) => r.status)).toEqual(['completed', 'skipped']);
 
-    // The trailing day has room again: the next wake dispatches, with no queue
-    // to drain and nothing owed for the wakes that refused.
+    // The trailing day has room again: the next wake dispatches, with nothing
+    // owed for the wakes that refused.
     expect(await runScheduledTasks(f.env, 'sleep', NOW + DAY + 5_000, ORIGIN)).toEqual({ dispatched: 1, skipped: 0 });
-    expect(f.runs('proj_1').map((r) => r.status)).toEqual(['completed', 'skipped', 'pending']);
-    expect(f.launches).toHaveLength(2);
+    expect(f.runs('proj_1').map((r) => r.status)).toEqual(['completed', 'skipped', 'queued']);
 
     // A SECOND episode leaves a second row: the record is once per episode, not
     // once per Project and task for all time.
-    f.sqlite.run(`UPDATE agent_runs SET status = 'completed', completed_at = ? WHERE status = 'pending'`, [NOW + DAY + 6_000]);
+    f.sqlite.run(`UPDATE agent_runs SET status = 'completed', completed_at = ? WHERE status = 'queued'`, [NOW + DAY + 6_000]);
     expect(await runScheduledTasks(f.env, 'sleep', NOW + DAY + 10_000, ORIGIN)).toEqual({ dispatched: 0, skipped: 1 });
     expect(f.runs('proj_1').map((r) => r.status)).toEqual(['completed', 'skipped', 'completed', 'skipped']);
 
@@ -262,16 +267,16 @@ describe('one wake of the clock', () => {
 
   it('keeps two episodes apart when both fall on one calendar day, a ceiling above one letting them sit minutes apart', async () => {
     const f = fixture();
-    f.receipt('proj_1', NOW - 3_600_000);
+    f.backlog('proj_1', NOW - 3_600_000);
     f.sqlite.run(`INSERT INTO agents (id, name, source, enabled, created_at) VALUES (?, 'a', 'built-in', 1, ?)`, [HARNESS_AGENT_ID, NOW]);
     // Two entries just under a day apart: both sit inside the trailing window
     // until the older one ages out of it, ten minutes later.
     const older = NOW + 3_600_000;
     const newer = older + DAY - 10 * 60_000;
     for (const [id, at] of [['e_older', older], ['e_newer', newer]] as const) {
-      f.sqlite.run(`INSERT INTO agent_runs (project_id, id, agent_id, task, status, started_at, completed_at) VALUES ('proj_1', ?, ?, 'container-smoke', 'completed', ?, ?)`, [id, HARNESS_AGENT_ID, at, at]);
+      f.sqlite.run(`INSERT INTO agent_runs (project_id, id, agent_id, task, status, started_at, completed_at, dispatch_spec) VALUES ('proj_1', ?, ?, 'extract-curate', 'completed', ?, ?, ?)`, [id, HARNESS_AGENT_ID, at, at, JSON.stringify({ actor: CLOCK_ACTOR })]);
     }
-    f.setting('agent.tasks', { 'container-smoke': { schedule: { intervalSeconds: 1, maxRunsPerDay: 2 } } });
+    f.setting('agent.tasks', { [TASK]: { schedule: { intervalSeconds: 1, maxRunsPerDay: 2, ...NO_RESERVE } } });
 
     // The first episode: both entries in the window, so the ceiling is met.
     const firstRefusal = newer + 60_000;
@@ -282,7 +287,7 @@ describe('one wake of the clock', () => {
     // — a second episode, on the same calendar day as the first.
     const freed = older + DAY + 60_000;
     expect(await runScheduledTasks(f.env, 'sleep', freed, ORIGIN)).toEqual({ dispatched: 1, skipped: 0 });
-    f.sqlite.run(`UPDATE agent_runs SET status = 'completed', completed_at = ? WHERE status = 'pending'`, [freed + 1_000]);
+    f.sqlite.run(`UPDATE agent_runs SET status = 'completed', completed_at = ? WHERE status = 'queued'`, [freed + 1_000]);
     expect(await runScheduledTasks(f.env, 'sleep', freed + 2_000, ORIGIN)).toEqual({ dispatched: 0, skipped: 1 });
     expect(Math.floor(newer / DAY)).toBe(Math.floor(freed / DAY));
     expect(f.runs('proj_1').filter((r) => r.status === 'skipped')).toHaveLength(2);
@@ -290,60 +295,44 @@ describe('one wake of the clock', () => {
 
   it('refuses a ceiling of zero with no entry to name, and records that once however many wakes ask', async () => {
     const f = fixture();
-    f.receipt('proj_1', NOW - 3_600_000);
-    f.setting('agent.tasks', { 'container-smoke': { schedule: { intervalSeconds: 1, maxRunsPerDay: 0 } } });
+    f.backlog('proj_1', NOW - 3_600_000);
+    f.setting('agent.tasks', { [TASK]: { schedule: { intervalSeconds: 1, maxRunsPerDay: 0, ...NO_RESERVE } } });
     for (const at of [NOW, NOW + 60_000, NOW + DAY + 60_000]) {
       expect({ at, report: await runScheduledTasks(f.env, 'sleep', at, ORIGIN) }).toEqual({ at, report: { dispatched: 0, skipped: 1 } });
     }
     const rows = f.runs('proj_1');
     expect(rows.map((r) => r.status)).toEqual(['skipped']);
     expect(JSON.parse(rows[0]!.runContext!)).toEqual({ reason: 'max_runs_per_day' });
-    expect(f.launches).toHaveLength(0);
   });
 
   it('writes one row for one task when two wakes decide at once: the write refuses beside a live run', async () => {
     const f = fixture();
-    f.receipt('proj_1', NOW - 3_600_000);
+    f.backlog('proj_1', NOW - 3_600_000);
     // The second wake reads the same answers the first read, and its write meets the first's row.
     let raced = false;
     const racing: ServerEnv = { ...f.env, db: { ...f.env.db, prepare: (sql: string) => {
-      if (!raced && sql.includes(`?, 'pending', ?`)) {
+      if (!raced && sql.includes(`?, 'queued', ?`)) {
         raced = true;
         f.sqlite.run(`INSERT INTO agents (id, name, source, enabled, created_at) VALUES (?, 'a', 'built-in', 1, ?) ON CONFLICT DO NOTHING`, [HARNESS_AGENT_ID, NOW]);
-        f.sqlite.run(`INSERT INTO agent_runs (project_id, id, agent_id, task, status, started_at) VALUES ('proj_1', 'other-wake', ?, 'container-smoke', 'pending', ?)`, [HARNESS_AGENT_ID, NOW]);
+        f.sqlite.run(`INSERT INTO agent_runs (project_id, id, agent_id, task, status, queued_at) VALUES ('proj_1', 'other-wake', ?, 'extract-curate', 'queued', ?)`, [HARNESS_AGENT_ID, NOW]);
       }
       return f.env.db.prepare(sql);
     } } };
     expect(await runScheduledTasks(racing, 'sleep', NOW, ORIGIN)).toEqual({ dispatched: 0, skipped: 0 });
     expect(f.runs('proj_1').map((r) => r.id)).toEqual(['other-wake']);
-    expect(f.launches).toHaveLength(0);
-    expect((f.sqlite.query(`SELECT COUNT(*) c FROM member_credentials WHERE member_id = 'mem_harness' AND revoked_at IS NULL`).get() as { c: number }).c).toBe(0);
-  });
-
-  it('queues the probe past a limit like any dispatch', async () => {
-    const f = fixture();
-    f.receipt('proj_1', NOW - 3_600_000);
-    f.setting('agent.limits.concurrent_runs', 1);
-    f.sqlite.run(`INSERT INTO agents (id, name, source, enabled, created_at) VALUES (?, 'a', 'built-in', 1, ?)`, [HARNESS_AGENT_ID, NOW]);
-    f.sqlite.run(`INSERT INTO agent_runs (project_id, id, agent_id, task, status, started_at) VALUES ('proj_1', 'busy', ?, 'extract-curate', 'running', ?)`, [HARNESS_AGENT_ID, NOW]);
-    expect(await runScheduledTasks(f.env, 'sleep', NOW, ORIGIN)).toEqual({ dispatched: 1, skipped: 0 });
-    expect(f.runs('proj_1').map((r) => [r.task, r.status])).toEqual([['extract-curate', 'running'], ['container-smoke', 'queued']]);
-    expect(f.launches).toHaveLength(0);
   });
 });
 
 describe('the tick and the clock', () => {
   it('schedules from the origin the operator declared, and schedules nothing where none is declared', async () => {
     const f = fixture();
-    f.receipt('proj_1', NOW - 40 * 60_000);
+    f.backlog('proj_1', NOW - 40 * 60_000);
     expect((await runTick(f.env, NOW)).scheduled).toEqual({ dispatched: 0, skipped: 0 });
     f.env.origin = 'https://myco.example';
     const report = await runTick(f.env, NOW);
     expect(report.state).toBe('sleep');
     expect(report.scheduled).toEqual({ dispatched: 1, skipped: 0 });
-    expect(f.launches[0]!.envVars.MYCO_SERVER_URL).toBe('https://myco.example');
-    expect(f.runs('proj_1')[0]).toMatchObject({ task: 'container-smoke', status: 'pending' });
-    expect(JSON.parse(f.launches[0]!.envVars.MYCO_TASK_PARAMS!)).toEqual({ timeoutSeconds: 300 });
+    expect(f.runs('proj_1')[0]).toMatchObject({ task: TASK, status: 'queued' });
     void CLOCK_ACTOR;
   });
 });
@@ -406,15 +395,16 @@ describe('one wake\'s scheduling across many Projects (#1510)', () => {
   /** A wake's store calls with `projects` live Projects, each with one of the scheduled tasks' capabilities on and one off. */
   async function tripsWith(projects: number, state: 'active' | 'idle'): Promise<number> {
     const f = fixture();
+    f.setting('cortex.canopy.refresh.background_enabled', true);
     f.sqlite.run(`INSERT OR IGNORE INTO agents (id, name, source, enabled, created_at) VALUES ('myco-agent', 'myco-agent', 'built-in', 1, ?)`, [NOW]);
     for (let n = 0; n < projects; n += 1) {
       const projectId = `proj_many_${n}`;
       f.sqlite.run(`INSERT OR IGNORE INTO projects (project_id, name, created_at) VALUES (?, ?, ?)`, [projectId, projectId, NOW]);
       f.receipt(projectId, NOW - 60_000);
-      f.capability(projectId, 'cortex', true);
+      f.capability(projectId, 'canopy', true);
       f.capability(projectId, 'vault_evolution', false);
-      // A clock-dispatched run of the probe a day old: the interval has passed, so the wake reads it and goes on.
-      f.sqlite.run(`INSERT INTO agent_runs (project_id, id, agent_id, task, status, started_at, completed_at, dispatch_spec) VALUES (?, ?, 'myco-agent', 'container-smoke', 'completed', ?, ?, ?)`,
+      // A clock-dispatched map run two days old: the interval has passed, so the wake reads it and goes on.
+      f.sqlite.run(`INSERT INTO agent_runs (project_id, id, agent_id, task, status, started_at, completed_at, dispatch_spec) VALUES (?, ?, 'myco-agent', 'canopy-map', 'completed', ?, ?, ?)`,
         [projectId, `run_old_${n}`, NOW - 2 * DAY, NOW - 2 * DAY, JSON.stringify({ actor: CLOCK_ACTOR })]);
     }
     const { env, trips } = counted(f);
@@ -436,32 +426,32 @@ describe('one wake\'s scheduling across many Projects (#1510)', () => {
     const f = fixture();
     f.receipt('proj_1', NOW - 60_000);
     f.receipt('proj_2', NOW - 60_000);
-    f.capability('proj_2', 'vault_evolution', true);
+    f.capability('proj_1', 'canopy', true);
     f.sqlite.run(`INSERT OR IGNORE INTO agents (id, name, source, enabled, created_at) VALUES ('myco-agent', 'myco-agent', 'built-in', 1, ?)`, [NOW]);
-    f.sqlite.run(`INSERT INTO agent_runs (project_id, id, agent_id, task, status, started_at, dispatch_spec) VALUES ('proj_1', 'run_live', 'myco-agent', 'container-smoke', 'running', ?, ?)`, [NOW - 1_000, JSON.stringify({ actor: CLOCK_ACTOR })]);
-    f.sqlite.run(`INSERT INTO agent_runs (project_id, id, agent_id, task, status, started_at, completed_at, dispatch_spec) VALUES ('proj_2', 'run_done', 'myco-agent', 'container-smoke', 'completed', ?, ?, ?)`, [NOW - 2 * DAY, NOW - 2 * DAY, JSON.stringify({ actor: CLOCK_ACTOR })]);
-    f.sqlite.run(`INSERT INTO agent_runs (project_id, id, agent_id, task, status, started_at, completed_at, dispatch_spec) VALUES ('proj_2', 'run_owner', 'myco-agent', 'container-smoke', 'completed', ?, ?, ?)`, [NOW - 1_000, NOW - 500, JSON.stringify({ actor: 'mem_owner' })]);
+    f.sqlite.run(`INSERT INTO agent_runs (project_id, id, agent_id, task, status, started_at, dispatch_spec) VALUES ('proj_1', 'run_live', 'myco-agent', 'canopy-map', 'running', ?, ?)`, [NOW - 1_000, JSON.stringify({ actor: CLOCK_ACTOR })]);
+    f.sqlite.run(`INSERT INTO agent_runs (project_id, id, agent_id, task, status, started_at, completed_at, dispatch_spec) VALUES ('proj_2', 'run_done', 'myco-agent', 'canopy-map', 'completed', ?, ?, ?)`, [NOW - 2 * DAY, NOW - 2 * DAY, JSON.stringify({ actor: CLOCK_ACTOR })]);
+    f.sqlite.run(`INSERT INTO agent_runs (project_id, id, agent_id, task, status, started_at, completed_at, dispatch_spec) VALUES ('proj_2', 'run_owner', 'myco-agent', 'canopy-map', 'completed', ?, ?, ?)`, [NOW - 1_000, NOW - 500, JSON.stringify({ actor: 'mem_owner' })]);
     // Each live status alone in its Project and task, so a read that misses one answers a different fact.
     f.sqlite.run(`INSERT OR IGNORE INTO projects (project_id, name, created_at) VALUES ('proj_3', 'proj_3', ?)`, [NOW]);
     f.receipt('proj_3', NOW - 60_000);
-    f.sqlite.run(`INSERT INTO agent_runs (project_id, id, agent_id, task, status, dispatch_spec) VALUES ('proj_3', 'run_pending', 'myco-agent', 'container-smoke', 'pending', ?)`, [JSON.stringify({ actor: CLOCK_ACTOR })]);
+    f.sqlite.run(`INSERT INTO agent_runs (project_id, id, agent_id, task, status, dispatch_spec) VALUES ('proj_3', 'run_pending', 'myco-agent', 'canopy-map', 'pending', ?)`, [JSON.stringify({ actor: CLOCK_ACTOR })]);
     f.sqlite.run(`INSERT INTO agent_runs (project_id, id, agent_id, task, status, queued_at, dispatch_spec) VALUES ('proj_1', 'run_queued', 'myco-agent', 'extract-curate', 'queued', ?, ?)`, [NOW - 2_000, JSON.stringify({ actor: CLOCK_ACTOR })]);
     // The clock's entry the platform replaced: the interval reads it, the day's ceiling does not.
-    f.sqlite.run(`INSERT INTO agent_runs (project_id, id, agent_id, task, status, started_at, completed_at, dispatch_spec, run_context) VALUES ('proj_2', 'run_replaced', 'myco-agent', 'container-smoke', 'completed', ?, ?, ?, ?)`, [NOW - 3_000, NOW - 2_500, JSON.stringify({ actor: CLOCK_ACTOR }), JSON.stringify({ replaced: true })]);
+    f.sqlite.run(`INSERT INTO agent_runs (project_id, id, agent_id, task, status, started_at, completed_at, dispatch_spec, run_context) VALUES ('proj_2', 'run_replaced', 'myco-agent', 'canopy-map', 'completed', ?, ?, ?, ?)`, [NOW - 3_000, NOW - 2_500, JSON.stringify({ actor: CLOCK_ACTOR }), JSON.stringify({ replaced: true })]);
     // A skip for unchanged input is the interval's entry; a skip for any other reason is nobody's.
     f.sqlite.run(`INSERT INTO agent_runs (project_id, id, agent_id, task, status, started_at, completed_at, run_context) VALUES ('proj_2', 'run_unchanged', 'myco-agent', 'extract-curate', 'skipped', ?, ?, ?)`, [NOW - 500, NOW - 500, skipContext(INPUT_UNCHANGED)]);
     f.sqlite.run(`INSERT INTO agent_runs (project_id, id, agent_id, task, status, started_at, completed_at, run_context) VALUES ('proj_2', 'run_ceiling', 'myco-agent', 'extract-curate', 'skipped', ?, ?, ?)`, [NOW - 100, NOW - 100, skipContext('max_runs_per_day')]);
     // Another actor's entries, newer than the clock's own and inside the day.
     f.sqlite.run(`INSERT INTO agent_runs (project_id, id, agent_id, task, status, started_at, completed_at, dispatch_spec) VALUES ('proj_3', 'run_clock', 'myco-agent', 'extract-curate', 'completed', ?, ?, ?)`, [NOW - 4_000, NOW - 3_500, JSON.stringify({ actor: CLOCK_ACTOR })]);
     f.sqlite.run(`INSERT INTO agent_runs (project_id, id, agent_id, task, status, started_at, completed_at, dispatch_spec) VALUES ('proj_3', 'run_other', 'myco-agent', 'extract-curate', 'completed', ?, ?, ?)`, [NOW - 1_000, NOW - 900, JSON.stringify({ actor: 'mem_owner' })]);
-    const tasks = scheduledTasks().map(({ task }) => task);
-    expect(tasks).toEqual(['container-smoke', 'extract-curate']);
+    const tasks = scheduledTasks({ [MAP_TASK]: { schedule: { enabled: true } } }).map(({ task }) => task);
+    expect(tasks).toEqual([MAP_TASK, TASK]);
     const whole = await readScheduleFacts(f.env, tasks, NOW);
     // The fixture holds each case the reads tell apart, so agreeing below is agreeing on each of them.
     expect([
-      whole.runs.get(taskFactsKey('proj_3', 'container-smoke'))?.live,
+      whole.runs.get(taskFactsKey('proj_3', 'canopy-map'))?.live,
       whole.runs.get(taskFactsKey('proj_1', 'extract-curate'))?.live,
-      whole.runs.get(taskFactsKey('proj_2', 'container-smoke')),
+      whole.runs.get(taskFactsKey('proj_2', 'canopy-map')),
       whole.runs.get(taskFactsKey('proj_2', 'extract-curate')),
       whole.runs.get(taskFactsKey('proj_3', 'extract-curate')),
     ]).toEqual([
@@ -484,7 +474,7 @@ describe('one wake\'s scheduling across many Projects (#1510)', () => {
         expect({ key, facts: whole.runs.get(key) ?? { live: false, lastEntryAt: null, entriesSince: 0 } }).toEqual({ key, facts: perProject });
       }
     }
-    expect([...whole.capabilities].sort()).toEqual([taskFactsKey('proj_1', 'cortex'), taskFactsKey('proj_2', 'cortex'), taskFactsKey('proj_2', 'vault_evolution')]);
+    expect([...whole.capabilities].sort()).toEqual([taskFactsKey('proj_1', 'canopy'), taskFactsKey('proj_1', 'vault_evolution'), taskFactsKey('proj_2', 'vault_evolution')]);
   });
 
   it('reads every Project\'s runs through the Project-and-task index, never by scanning the runs', () => {

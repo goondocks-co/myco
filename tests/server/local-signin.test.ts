@@ -3,7 +3,7 @@ import { mkdtempSync, readFileSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { configureLocalSignIn, ensureLocalSecrets, readLocalSecrets, resolveLocalPaths, writeLocalRecord } from '@myco/server/local.js';
-import { materializeBundle, resolveDeploymentPaths } from '@myco/server/deployment.js';
+import { writeDeploymentRecord } from '@myco/server/cloudflare.js';
 import { LocalVolume, volumeIdentity, type VolumeStartup } from '@myco/server/local-volume.js';
 
 /** A start that needs no volume mutation: the shape a serving process takes its lease with. */
@@ -28,7 +28,7 @@ describe('native sign-in registration', () => {
     const f = fixture();
     expect(resolveSignInTarget(undefined, f.home)).toEqual({ kind: 'local', paths: f.paths });
     expect(resolveSignInTarget('local', f.home)).toEqual({ kind: 'local', paths: f.paths });
-    materializeBundle(resolveDeploymentPaths(f.home));
+    writeDeploymentRecord({ accountId: 'a', workerName: 'w', databaseName: 'd', bucketName: 'b', versionId: null, deployedAt: 'now' }, f.home);
     expect(() => resolveSignInTarget(undefined, f.home)).toThrow(/--target/);
     expect(resolveSignInTarget('local', f.home).kind).toBe('local');
   });

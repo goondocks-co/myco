@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { LocalEmbeddingRuntime } from '@myco/server/local-embedding.js';
+import { EmbeddingRuntime } from '@myco-server-worker/platform/bun/embedding-runtime.js';
 import { startDeployment } from '@myco-server-worker/platform/bun/server-main.js';
 import { prepareDispatch, dispatchPrepared } from '@myco-server-worker/core/harness.js';
 import { dispatchEmbeddingWork } from '@myco-server-worker/core/embedding/jobs.js';
@@ -19,7 +19,7 @@ async function fixture() {
   source.sqlite.query('VACUUM INTO ?').run(databasePath);
   source.sqlite.close();
   const failures: string[] = [];
-  const runtime = new LocalEmbeddingRuntime((message) => { failures.push(message); });
+  const runtime = new EmbeddingRuntime((message: string) => { failures.push(message); });
   const server = await startDeployment({ databasePath, blobDir: path.join(home, 'blobs'), port: 0,
     sourceFrom: 'socket', transport: 'loopback', harnessTasks: runtime.tasks,
     harnessLaunchFor: (origin) => runtime.launchFor(origin),
@@ -44,7 +44,6 @@ async function fixture() {
 test('native runtime indexes clock-dispatched work and serves semantic results with a persisted report', async () => {
   const f = await fixture();
   try {
-    expect(await prepareDispatch(f.server.env, 'container-smoke', 'proj_1')).toEqual({ ok: false, refusal: 'harness_unavailable' });
     expect(await dispatchEmbeddingWork(f.server.env, Date.now())).toBe(1);
     const run = await f.waitForRun();
     expect(run.status).toBe('completed');

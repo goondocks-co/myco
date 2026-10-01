@@ -34,7 +34,10 @@ import { memberHeaders, sqliteEnv } from './helpers/fixtures.js';
 const NOW = Date.now();
 const SWEEP = 'extract-curate';
 const TITLING = 'title-summary';
-const SMOKE = 'container-smoke';
+/** A task that declares no tools of its own: the embedding pass. */
+const BARE = 'embedding-reconcile';
+/** What keeps a run route a run tool also performs: the in-process embedding runner speaks HTTP, not MCP. */
+const IN_PROCESS_EMBEDDING = 'the in-process embedding runner';
 
 const rpc = (method: string, params?: unknown) => JSON.stringify({ jsonrpc: '2.0', id: 1, method, ...(params === undefined ? {} : { params }) });
 const post = (token: string, body: string, extra: Record<string, string> = {}) =>
@@ -132,15 +135,13 @@ describe('the run surface and the member surface do not overlap', () => {
   it('routes no surviving /runs/* path to an operation the run surface serves, and every remaining path is classified', () => {
     /**
      * Why each `/runs/*` route still exists. `null` means no run tool performs
-     * it. `/runs/report` is the one path a run tool DOES perform, kept until
-     * #1170: the push-launch seam's container reaches it over HTTP and speaks
-     * no MCP. Removing the exemption is what forces the route's deletion.
+     * it. `/runs/report` is the one path a run tool DOES perform, kept for the
+     * in-process embedding runner, which reaches it over HTTP and speaks no MCP.
+     * Removing the exemption is what forces the route's deletion.
      */
     const RUN_ROUTE_REASONS: Record<string, { tool: string; op: string; until: string } | null> = {
-      '/runs/claim': null, '/runs/get': null, '/runs/update': null, '/runs/failed': null,
-      '/runs/resume-admission': null, '/runs/supersede': null, '/runs/reports': null,
-      '/runs/events': null, '/runs/embedding-step': null, '/runs/repository': null, '/runs/canopy-map': null,
-      '/runs/report': { tool: 'myco_run', op: 'report', until: '#1170' },
+      '/runs/claim': null, '/runs/update': null, '/runs/embedding-step': null,
+      '/runs/report': { tool: 'myco_run', op: 'report', until: IN_PROCESS_EMBEDDING },
     };
     const present = ROUTES.filter((r) => r.path.startsWith('/runs/')).map((r) => r.path).sort();
     // Every surviving path is classified: a route added later fails here until
@@ -155,7 +156,7 @@ describe('the run surface and the member surface do not overlap', () => {
       const reason = RUN_ROUTE_REASONS[path] ?? null;
       if (reason === null) continue;
       expect({ path, keyed: reason.op in RUN_TOOL_REGISTRY[reason.tool].ops }).toEqual({ path, keyed: true });
-      expect({ path, present: routed.has(path), exempt: reason.until }).toEqual({ path, present: true, exempt: '#1170' });
+      expect({ path, present: routed.has(path), exempt: reason.until }).toEqual({ path, present: true, exempt: IN_PROCESS_EMBEDDING });
     }
     // A path the table maps with no exemption must be gone from the router.
     for (const [path, reason] of Object.entries(RUN_ROUTE_REASONS)) {
@@ -187,7 +188,7 @@ describe('the surface decision stays in one place', () => {
     expect(files.length).toBeGreaterThan(0);
     for (const f of files) {
       const source = readFileSync(join(dir, f), 'utf8');
-      expect({ file: f, names: /EXTRACTION_TASK|SEEDING_TASK|TITLING_TASK|'(extract-curate|title-summary|container-smoke|embedding-reconcile|vault-seed|canopy-map)'/.test(source) })
+      expect({ file: f, names: /EXTRACTION_TASK|SEEDING_TASK|TITLING_TASK|'(extract-curate|title-summary|embedding-reconcile|vault-seed|canopy-map)'/.test(source) })
         .toEqual({ file: f, names: false });
     }
   });
@@ -244,12 +245,12 @@ describe('the handshake is the principal\'s', () => {
 describe('a run reports whatever its task declares', () => {
   it('serves report to a task with no declared tools at all, so a run that owes a close report can file one', async () => {
     const { harness, dispatch, call, sqlite } = await setup();
-    expect(TASK_TOOLS[SMOKE]).toEqual([]);
-    await dispatch('run_smoke', SMOKE);
-    const answered = await call(harness.token, 'myco_run', { op: 'report', action: 'container-smoke', summary: 'the harness answered' });
-    expect(answered.result).toEqual({ recorded: true, action: 'container-smoke' });
-    expect(sqlite.query(`SELECT agent_id AS a, action FROM agent_reports WHERE run_id = 'run_smoke'`).all())
-      .toEqual([{ a: 'myco-agent', action: 'container-smoke' }]);
+    expect(TASK_TOOLS[BARE]).toEqual([]);
+    await dispatch('run_bare', BARE);
+    const answered = await call(harness.token, 'myco_run', { op: 'report', action: 'embedding', summary: 'the pass answered' });
+    expect(answered.result).toEqual({ recorded: true, action: 'embedding' });
+    expect(sqlite.query(`SELECT agent_id AS a, action FROM agent_reports WHERE run_id = 'run_bare'`).all())
+      .toEqual([{ a: 'myco-agent', action: 'embedding' }]);
   });
 
   it('refuses an action the task\'s close rule cannot hear, naming every action it can, and records nothing', async () => {

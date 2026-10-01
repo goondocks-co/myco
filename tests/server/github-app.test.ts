@@ -6,7 +6,7 @@
  * sees — never on a live registration.
  */
 import { beforeEach, describe, expect, it } from 'bun:test';
-import { mkdtempSync, readFileSync, statSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import {
@@ -14,8 +14,6 @@ import {
   registerGitHubApp, RegistrationRefused, resolveSignInTarget, verifySignIn,
 } from '@myco/server/github-app.js';
 import { deploymentRecordPath, putWorkerSecrets, writeDeploymentRecord, WranglerAbsent } from '@myco/server/cloudflare.js';
-import { materializeBundle, resolveDeploymentPaths } from '@myco/server/deployment.js';
-import { HARNESS_STOP_GRACE_SECONDS } from '@myco/server/compose-template.js';
 import { systemRunner, type CommandRunner, type CommandResult, type RunOptions } from '@myco/server/runner.js';
 
 interface Call { command: string; args: string[]; options?: RunOptions }
@@ -125,28 +123,6 @@ describe('installing the credentials', () => {
     expect(calls).toHaveLength(1);
   });
 
-  it('Compose: the secret file 0600 in the 0700 directory, the id in .env beside the keys already there, then a forced recreate', async () => {
-    const home = mkdtempSync(join(tmpdir(), 'myco-github-app-'));
-    const paths = resolveDeploymentPaths(home);
-    materializeBundle(paths, { MYCO_PORT: '18787', MYCO_VERSION: '2.0.0' });
-    const r = runner();
-    await installSignInSecrets({ kind: 'compose', paths }, { clientId: 'Iv1.x', clientSecret: 's3cr3t' }, r);
-    expect(readFileSync(join(paths.secretsDir, 'github_client_secret'), 'utf8')).toBe('s3cr3t');
-    expect(statSync(join(paths.secretsDir, 'github_client_secret')).mode & 0o777).toBe(0o600);
-    expect(statSync(paths.secretsDir).mode & 0o777).toBe(0o700);
-    const env = readFileSync(paths.envFile, 'utf8');
-    expect(env.split('\n').filter(Boolean).sort()).toEqual(['GITHUB_CLIENT_ID=Iv1.x', 'MYCO_PORT=18787', 'MYCO_VERSION=2.0.0']);
-    expect(env).not.toContain('s3cr3t');
-    // The harness goes down on its own first: Compose takes the namespace owner
-    // down ahead of it, and a recreate that starts with `up` kills the server
-    // while the harness is still holding runs.
-    // The service list Compose is asked for is a read, not an act.
-    expect(calls.filter((c) => !c.args.includes('--services')).map((c) => [c.command, ...c.args])).toEqual([
-      ['docker', 'compose', '--file', paths.composeFile, '--file', paths.overrideFile, '--project-name', 'myco', 'stop', '--timeout', String(HARNESS_STOP_GRACE_SECONDS), 'harness'],
-      ['docker', 'compose', '--file', paths.composeFile, '--file', paths.overrideFile, '--project-name', 'myco', 'up', '--detach', '--force-recreate', '--wait'],
-    ]);
-  });
-
   it('the real runner hands `input` to the child on stdin', async () => {
     const result = await systemRunner().run('cat', [], { input: '{"a":1}' });
     expect({ code: result.code, stdout: result.stdout }).toEqual({ code: 0, stdout: '{"a":1}' });
@@ -178,19 +154,24 @@ describe('verifying sign-in', () => {
 });
 
 describe('choosing the target', () => {
-  it('reads the Cloudflare record or the Compose bundle, and refuses when both or neither are present without --target', () => {
+  it('reads the Cloudflare record, and refuses when neither target is present without --target', () => {
     const none = mkdtempSync(join(tmpdir(), 'myco-target-'));
     expect(() => resolveSignInTarget(undefined, none)).toThrow(RegistrationRefused);
     const cf = mkdtempSync(join(tmpdir(), 'myco-target-'));
     writeDeploymentRecord(RECORD, cf);
     expect(resolveSignInTarget(undefined, cf)).toEqual({ kind: 'cloudflare', record: RECORD, mycoHome: cf });
-    const both = mkdtempSync(join(tmpdir(), 'myco-target-'));
-    writeDeploymentRecord(RECORD, both);
-    materializeBundle(resolveDeploymentPaths(both));
-    expect(() => resolveSignInTarget(undefined, both)).toThrow(/--target/);
-    expect(resolveSignInTarget('compose', both).kind).toBe('compose');
-    expect(resolveSignInTarget('cloudflare', both).kind).toBe('cloudflare');
-    expect(() => resolveSignInTarget('elsewhere', both)).toThrow(RegistrationRefused);
+    expect(resolveSignInTarget('cloudflare', cf).kind).toBe('cloudflare');
+    expect(() => resolveSignInTarget('elsewhere', cf)).toThrow(RegistrationRefused);
+  });
+
+  it('refuses the retired Compose target by name, and a held Compose bundle with what to do instead', () => {
+    const held = mkdtempSync(join(tmpdir(), 'myco-target-'));
+    const bundle = join(held, 'server', 'compose');
+    mkdirSync(bundle, { recursive: true });
+    writeFileSync(join(bundle, 'compose.yaml'), 'services: {}\n');
+    for (const named of [undefined, 'compose']) {
+      expect(() => resolveSignInTarget(named, held)).toThrow(/The Compose target is retired\. This machine holds one in .*server\/compose.*myco server create --target local/);
+    }
   });
 });
 

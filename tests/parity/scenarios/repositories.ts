@@ -1,5 +1,6 @@
 import { expect } from 'bun:test';
 import { sha256Hex } from '@myco-server-worker/hash.js';
+import { WORKER_CAPABILITIES } from '@goondocks/myco-shared/repository';
 import { lit, MEMBER_ID, memberHeadersFor, type ParityScenario } from '../harness.ts';
 
 export const repositories: ParityScenario = {
@@ -27,32 +28,48 @@ export const repositories: ParityScenario = {
     expect(JSON.stringify(rows)).not.toContain(secret);
     expect((await owner('PUT', { url: source, branch: 'main', revision: 'stale' })).status).toBe(409);
 
+    // A worker's leased run, taken the way a worker takes one: the claim writes the checkout the run holds and names
+    // the run's own credential. The worker's credential is written for a token this scenario chose, the store keeping a
+    // digest of it, and the queued row sits at the front of the queue so the claim takes it.
     const now = Date.now();
-    const runId = `repository-${now}`;
-    const token = `repository-parity-${now}`.padEnd(43, 'x');
-    const tokenId = `mt_repository_${now}`;
-    await target.sql(`INSERT OR IGNORE INTO members(id,label,created_at) VALUES ('mem_harness','harness',${now})`);
+    const workerToken = `repository-worker-${now}`.padEnd(43, 'x');
+    const workerTokenId = `mt_repository_worker_${now}`;
     await target.sql(`INSERT INTO member_credentials(id,member_id,machine_id,token_hash,issued_at,expires_at,bytes_written,lineage_root,lineage_started_at)
-      VALUES (${lit(tokenId)},'mem_harness','harness',${lit(await sha256Hex(token))},${now},${now + 3_600_000},0,${lit(tokenId)},${now})`);
-    await target.sql(`INSERT INTO agent_runs(project_id,id,agent_id,task,status,started_at,dispatched_by,run_context)
-      VALUES (${lit(target.projectId)},${lit(runId)},'user','vault-seed','running',${now},${lit(tokenId)},'{}')`);
-    const asRun = async (body: Record<string, unknown>, credential = token, project = target.projectId) => {
-      const result = await fetch(target.url + '/runs/repository', { method: 'POST', headers: memberHeadersFor(credential, project, { 'content-type': 'application/json' }), body: JSON.stringify({ runId, ...body }) });
+      VALUES (${lit(workerTokenId)},${lit(MEMBER_ID)},'machine_parity',${lit(await sha256Hex(workerToken))},${now},${now + 3_600_000},0,${lit(workerTokenId)},${now})`);
+    await target.sql(`INSERT OR IGNORE INTO agents (id, name, source, enabled, created_at) VALUES ('myco-agent', 'myco-agent', 'built-in', 1, ${now})`);
+    await target.sql(`INSERT OR REPLACE INTO project_capabilities (project_id, capability, enabled, updated_at, updated_by) VALUES (${lit(target.projectId)}, 'vault_evolution', 1, ${now}, ${lit(MEMBER_ID)})`);
+    const queuedId = `repository-${now}`;
+    await target.sql(`INSERT INTO agent_runs(project_id,id,agent_id,task,status,queued_at,held_by,dispatch_spec,run_context)
+      VALUES (${lit(target.projectId)},${lit(queuedId)},'myco-agent','vault-seed','queued',1,'worker',${lit(JSON.stringify({ serverUrl: target.url, actor: MEMBER_ID, timeoutSeconds: 300 }))},'{}')`);
+    const claimed = await fetch(target.url + '/worker/claim', {
+      method: 'POST', headers: memberHeadersFor(workerToken, target.projectId, { 'content-type': 'application/json' }),
+      body: JSON.stringify({ harnesses: [{ id: 'claude-code', authenticated: true }], capabilities: WORKER_CAPABILITIES }),
+    });
+    expect(claimed.status).toBe(200);
+    const claim = await claimed.json() as { claimed: boolean; run: { id: string; runToken: string } };
+    expect({ claimed: claim.claimed, run: claim.run?.id }).toEqual({ claimed: true, run: queuedId });
+    const runId = claim.run.id;
+    const runToken = claim.run.runToken;
+    const asWorker = async (body: Record<string, unknown>, credential = workerToken) => {
+      const result = await fetch(target.url + '/worker/repository', { method: 'POST', headers: memberHeadersFor(credential, target.projectId, { 'content-type': 'application/json' }), body: JSON.stringify({ projectId: target.projectId, runId, ...body }) });
       expect(result.status).toBe(200);
       return await result.json() as any;
     };
-    expect((await asRun({})).repository.credential.token).toBe(secret);
-    expect(await asRun({}, target.memberToken)).toEqual({ persisted: true, held: false });
-    expect((await asRun({ url: source, branch: 'main', commit: sha })).pin.commit).toBe(sha);
-    expect((await asRun({ url: source, branch: 'main', commit: 'b'.repeat(40) })).pin.commit).toBe(sha);
-    expect((await asRun({})).repository.commit).toBe(sha);
+    expect((await asWorker({})).repository.credential.token).toBe(secret);
+    expect((await asWorker({}, target.memberToken)).held).toBe(false);
+    expect((await asWorker({ url: source, branch: 'main', commit: sha })).pin.commit).toBe(sha);
+    expect((await asWorker({ url: source, branch: 'main', commit: 'b'.repeat(40) })).pin.commit).toBe(sha);
+    expect((await asWorker({})).repository.commit).toBe(sha);
+    // The container harness's own repository route is retired: the run's credential meets it as no route at all.
+    const retired = await fetch(target.url + '/runs/repository', { method: 'POST', headers: memberHeadersFor(runToken, target.projectId, { 'content-type': 'application/json' }), body: JSON.stringify({ runId }) });
+    expect(retired.status).toBe(401);
     await target.sql(`UPDATE agent_runs SET status='completed' WHERE project_id=${lit(target.projectId)} AND id=${lit(runId)}`);
-    expect(await asRun({})).toEqual({ persisted: true, held: false });
+    expect((await asWorker({})).held).toBe(false);
     const edited = await owner('PUT', { url: 'https://example.test/new.git', branch: 'main', revision: saved.body.repository.revision });
     expect(edited.status).toBe(200);
     expect(edited.body.repository.credential).toBeNull();
     expect((await owner('DELETE', { revision: edited.body.repository.revision })).status).toBe(200);
     expect((await owner('GET')).body.repository).toBeNull();
-    await target.sql(`UPDATE member_credentials SET revoked_at=${Date.now()} WHERE id=${lit(tokenId)}`);
+    await target.sql(`UPDATE member_credentials SET revoked_at=${Date.now()} WHERE id = ${lit(workerTokenId)}`);
   },
 };

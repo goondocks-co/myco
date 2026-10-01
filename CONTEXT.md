@@ -121,7 +121,7 @@ _Avoid_: Porting 1.4 uninstall logic into 2.0 or using `--purge` during cutover
 ## Supported server targets
 
 **Self-hosted Deployment**:
-A production Deployment composed of a Bun server container and an intelligence-harness container, with embedded SQLite, local blob and vector storage, and persistent mounted storage under Docker Compose.
+A production Deployment the `myco` binary runs itself (`myco server ... --target local`), or the plain server image under a container runtime its operator manages: one Bun server with embedded SQLite, local blob and vector storage and its in-process embedding runtime, on persistent storage. Prompted outcomes run on attached workers.
 _Avoid_: Requiring a separate database service or using a development server as the production runtime
 
 **Cloudflare Deployment**:

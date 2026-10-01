@@ -77,10 +77,12 @@ describe('a worker preparing its claimed source', () => {
       method: 'POST', headers: memberHeaders(result.run.runToken), body: JSON.stringify({ projectId: 'proj_1', runId: 'run_seed' }),
     }), r.e.env);
     expect(await jsonBody(denied)).toMatchObject({ persisted: false, code: 'run_scope' });
+    // The container harness's repository route is retired: the run credential meets it as no route at all.
     const legacy = await worker.fetch(new Request('https://s/runs/repository', {
       method: 'POST', headers: memberHeaders(result.run.runToken), body: JSON.stringify({ runId: 'run_seed' }),
     }), r.e.env);
-    expect(await jsonBody(legacy)).toEqual({ persisted: true, held: false });
+    expect(legacy.status).toBe(401);
+    expect(await jsonBody(legacy)).toEqual({ error: 'unauthorized' });
   });
 
   it('pins once, reuses the first commit, and refuses a reconnected source', async () => {

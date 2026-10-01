@@ -143,8 +143,6 @@ export const RUN_CLOSE_RULES: Readonly<Record<string, RunCloseRule>> = {
   [EXTRACTION_TASK]: { reports: [EXTRACTION_REPORT_ACTION, RUN_SKIP_ACTION], artifact: promptsMarkedBy, skipHolds: (db, scope) => nothingUnread(db, scope) },
   // Seeding owes spores authored by the run, or a skip supported by the Project's active spores.
   [SEEDING_TASK]: { reports: [SEEDING_REPORT_ACTION, RUN_SKIP_ACTION], artifact: sporesWrittenBy, skipHolds: (db, scope) => alreadySeeded(db, scope) },
-  // The probe's product is the one report it files, which is what it proves.
-  'container-smoke': { reports: ['container-smoke'] },
 };
 
 /** The rule this task's runs close under, or undefined for a name this Deployment does not serve. */

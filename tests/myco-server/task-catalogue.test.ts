@@ -66,19 +66,19 @@ describe('the task catalogue', () => {
 
 describe('what the clock runs', () => {
   it('schedules extraction with its unread-prompt guard and keeps seeding and titling off the clock', () => {
-    expect(scheduledTasks().map((t) => t.task)).toEqual(['container-smoke', EXTRACTION_TASK]);
+    expect(scheduledTasks().map((t) => t.task)).toEqual([EXTRACTION_TASK]);
     expect(TASK_SCHEDULE[EXTRACTION_TASK]).toEqual({ intervalSeconds: 3600, runIn: ['idle', 'sleep'], overlap: 'skip', maxRunsPerDay: 12, reservedRunsPerDay: { count: 3, preCondition: 'has-recent-live-prompts' }, preCondition: 'has-unprocessed-prompts' });
     for (const task of [SEEDING_TASK, TITLING_TASK]) expect({ task, schedule: TASK_SCHEDULE[task] }).toEqual({ task, schedule: null });
   });
 
   it('makes a declared, switched-off schedule live when an owner switches it on', () => {
     const live = scheduledTasks({ 'canopy-map': { schedule: { enabled: true } } });
-    expect(live.map((t) => t.task).sort()).toEqual(['canopy-map', 'container-smoke', EXTRACTION_TASK]);
+    expect(live.map((t) => t.task).sort()).toEqual(['canopy-map', EXTRACTION_TASK]);
     expect(live.find((t) => t.task === 'canopy-map')!.schedule).toMatchObject({ enabled: true, intervalSeconds: 21_600, maxRunsPerDay: 4, overlap: 'skip', preCondition: 'has-capture-since-map' });
   });
 
   it('takes a switched-off override away from a task the Deployment otherwise runs', () => {
-    expect(scheduledTasks({ 'container-smoke': { schedule: { enabled: false } } }).map((t) => t.task)).toEqual([EXTRACTION_TASK]);
+    expect(scheduledTasks({ [EXTRACTION_TASK]: { schedule: { enabled: false } } }).map((t) => t.task)).toEqual([]);
   });
 });
 

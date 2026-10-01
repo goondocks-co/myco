@@ -5,21 +5,13 @@ import { lit, MEMBER_ID, type ParityScenario, type ParityTarget } from '../harne
  * The claim queue on both targets.
  *
  * Every ask for a worker-served task waits, whatever the limits say, in the
- * order the queue's own positions give it; the wake drains none of them. The
- * launch queue the seam still serves is exercised by the clock scenario, which
- * dispatches one of the three tasks that still launch.
+ * order the queue's own positions give it; the wake drains none of them.
  */
 export const dispatchQueue: ParityScenario = {
   name: 'the claim queue: a worker\'s runs wait in order whatever the limit says, and no front door launches one',
   async run(target: ParityTarget) {
     const now = Date.now();
     const leaf = (name: string, value: unknown) => target.sql(`INSERT OR REPLACE INTO deployment_settings (leaf, value, updated_at, updated_by) VALUES (${lit(name)}, ${lit(JSON.stringify(value))}, ${now}, ${lit(MEMBER_ID)})`);
-    for (const [name, value] of [
-      ['agent.provider.type', 'openai-compatible'],
-      ['agent.provider.model', 'parity-model'],
-      ['agent.provider.base_url', 'http://models.internal/v1'],
-    ] as const) await leaf(name, value);
-    await target.sql(`INSERT OR REPLACE INTO project_capabilities (project_id, capability, enabled, updated_at, updated_by) VALUES (${lit(target.projectId)}, 'cortex', 1, ${now}, ${lit(MEMBER_ID)})`);
     // An outcome task is queued only where the Project has turned its capability on.
     await target.sql(`INSERT OR REPLACE INTO project_capabilities (project_id, capability, enabled, updated_at, updated_by) VALUES (${lit(target.projectId)}, 'vault_evolution', 1, ${now}, ${lit(MEMBER_ID)})`);
     // A clean queue: nothing another scenario launched under the recorder still holds a place.
@@ -83,22 +75,15 @@ export const dispatchQueue: ParityScenario = {
     await target.sql(`INSERT INTO member_credentials (id, member_id, machine_id, token_hash, issued_at, expires_at, revoked_at, bytes_written, lineage_root, lineage_started_at, predecessor_id, first_used_at)
       VALUES (${lit(credential)}, 'mem_harness', 'harness', ${lit(`h_${credential}`)}, ${now}, ${now + 3_600_000}, NULL, 0, ${lit(credential)}, ${now}, NULL, NULL)`);
     await target.sql(`INSERT INTO agent_runs (project_id, id, agent_id, task, status, queued_at, held_by, dispatch_spec, dispatched_by)
-      VALUES (${lit(target.projectId)}, ${lit(stranded)}, 'myco-agent', 'container-smoke', 'queued', ${now}, 'runtime',
+      VALUES (${lit(target.projectId)}, ${lit(stranded)}, 'myco-agent', 'no-longer-served', 'queued', ${now}, 'runtime',
               ${lit(JSON.stringify({ serverUrl: target.url, actor: MEMBER_ID, timeoutSeconds: 120 }))}, ${lit(credential)})`);
 
-    // With no provider named, the drain can prepare nothing and gives up on it.
-    await target.sql(`DELETE FROM deployment_settings WHERE leaf = 'agent.provider.type'`);
-    try {
-      await wake();
-      expect(await target.sql(`SELECT status, error FROM agent_runs WHERE id = ${lit(stranded)}`))
-        .toEqual([{ status: 'failed', error: 'no provider is configured; Settings names one before a dispatch can run' }]);
-      expect(await target.sql(`SELECT revoked_at IS NOT NULL AS revoked FROM member_credentials WHERE id = ${lit(credential)}`))
-        .toEqual([{ revoked: 1 }]);
-    } finally {
-      // The scenarios after this one dispatch, and a Deployment with no provider
-      // dispatches nothing.
-      await leaf('agent.provider.type', 'openai-compatible');
-    }
+    // A task this Deployment no longer serves: the drain can prepare nothing and gives up on it.
+    await wake();
+    expect(await target.sql(`SELECT status, error FROM agent_runs WHERE id = ${lit(stranded)}`))
+      .toEqual([{ status: 'failed', error: 'the task is not one this deployment serves' }]);
+    expect(await target.sql(`SELECT revoked_at IS NOT NULL AS revoked FROM member_credentials WHERE id = ${lit(credential)}`))
+      .toEqual([{ revoked: 1 }]);
 
     // Nothing this scenario launched stays live for the next one to count.
     await target.sql(`UPDATE agent_runs SET status = 'completed', completed_at = ${now} WHERE id IN (${[a.runId, b.runId].map(lit).join(', ')})`);

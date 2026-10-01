@@ -122,7 +122,7 @@ export function cloudflarePlatform(bindings: CloudflareBindings, embeddingRuntim
       },
       {
         capability: 'harness-runtime',
-        label: bindings.HARNESS_LAUNCH_MODE === 'record' ? 'Harness runtime — recording, starts nothing' : embeddingRuntime ? 'Embedding runtime' : 'Harness runtime',
+        label: bindings.HARNESS_LAUNCH_MODE === 'record' ? 'Embedding runtime — recording, starts nothing' : 'Embedding runtime',
         present: bindings.HARNESS_LAUNCH_MODE === 'record' || embeddingRuntime,
         operatorNames: [],
       },

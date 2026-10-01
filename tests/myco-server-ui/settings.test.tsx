@@ -172,7 +172,7 @@ describe('Settings, in five sections', () => {
   });
 
   it('saves a toggle on change and a text leaf on blur, each to its own leaf', async () => {
-    const { sent } = server(base({ '/api/settings/cortex.spores.inject_on_prompt_submit': () => Response.json({ applied: true }), '/api/settings/agent.provider.model': () => Response.json({ applied: true }) }));
+    const { sent } = server(base({ '/api/settings/cortex.spores.inject_on_prompt_submit': () => Response.json({ applied: true }), '/api/settings/embedding.model': () => Response.json({ applied: true }) }));
     mount('/settings');
     // The server serves spores unless told not to, so with nothing stored the switch reads on, and a flip turns it off.
     const spores = await screen.findByRole('switch', { name: 'Spores on every prompt' });
@@ -181,11 +181,11 @@ describe('Settings, in five sections', () => {
     await waitFor(() => expect(sent).toHaveLength(1));
     expect(sent[0]).toMatchObject({ method: 'PUT', path: '/api/settings/cortex.spores.inject_on_prompt_submit', body: { value: false } });
     await section('Models and keys');
-    const model = await screen.findByLabelText('Model');
-    fireEvent.change(model, { target: { value: 'claude-opus' } });
+    const model = await screen.findByLabelText('Embedding model');
+    fireEvent.change(model, { target: { value: 'bge-m3' } });
     fireEvent.blur(model);
     await waitFor(() => expect(sent).toHaveLength(2));
-    expect(sent[1]).toMatchObject({ method: 'PUT', path: '/api/settings/agent.provider.model', body: { value: 'claude-opus' } });
+    expect(sent[1]).toMatchObject({ method: 'PUT', path: '/api/settings/embedding.model', body: { value: 'bge-m3' } });
   });
 
   it('applies an endpoint change directly on the member session, with no dialog and no extra header', async () => {

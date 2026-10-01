@@ -21,13 +21,9 @@
  */
 import type { ServerEnv } from '../core/adapters.js';
 import type { OwnerContext, RouteContext } from '../context.js';
-import { DISPATCHER_OWNED_COLUMNS, RUN_UPDATE_COLUMNS, applyRunUpdate, claimRun, getRun, getState, isTerminalRunStatus, listAgents, listReports, markRunReplaced, mutateState, projectAdmission, recordRunEvents, supersedeEquivalentResumableRuns, type RunEventRowInsert, type RunInsert, type RunUpdate, upsertAgent } from '../core/runs.js';
+import { DISPATCHER_OWNED_COLUMNS, RUN_UPDATE_COLUMNS, applyRunUpdate, claimRun, getRun, isTerminalRunStatus, listAgents, markRunReplaced, type RunInsert, type RunUpdate, upsertAgent } from '../core/runs.js';
 import { PROJECT_CAPABILITIES, type ProjectCapability } from '../core/settings.js';
 import type { RunAdmissionGate, RunRow } from '../core/runs.js';
-import { admitResume, classifyFailure, type FailureObservation } from '../core/resume.js';
-
-/** The failure classes a harness may report; anything else is refused rather than mapped to a default. */
-const ERROR_CLASSES = ['session-expired', 'postcondition-unsatisfiable', 'other'] as const;
 import { releaseRun } from '../core/release.js';
 import { recordReport, runCloseRefusal } from '../core/run-postconditions.js';
 import { HARNESS_MEMBER_ID, requeueReplaced, STALE_CREDENTIAL_REFUSAL } from '../core/harness.js';
@@ -160,15 +156,6 @@ export async function handleRegisterAgent(env: ServerEnv, ctx: OwnerContext): Pr
 /** Every agent identity this Deployment holds. */
 export async function handleAgents(env: ServerEnv, _ctx: OwnerContext): Promise<Response> {
   return ok({ agents: await listAgents(env.db) });
-}
-
-/** Read one run. */
-export async function handleGetRun(env: ServerEnv, ctx: RouteContext): Promise<Response> {
-  const body = parseBody(ctx.body);
-  if (!body) return Response.json(refused(ctx, BAD_BODY));
-  const runId = str(body.runId);
-  if (runId === null) return Response.json(refused(ctx, refusal('get requires runId', 'parse')));
-  return Response.json({ persisted: true, run: await getRun(env.db, { projectId: ctx.projectId }, runId) });
 }
 
 /**
@@ -354,29 +341,8 @@ export async function handleUpdateRun(env: ServerEnv, ctx: RouteContext): Promis
   return Response.json({ persisted: true, changed, applied: false });
 }
 
-/** Retire the resumability of failed runs equivalent to this one. */
-export async function handleSupersedeRuns(env: ServerEnv, ctx: RouteContext): Promise<Response> {
-  const body = parseBody(ctx.body);
-  if (!body) return Response.json(refused(ctx, BAD_BODY));
-  const excludeRunId = str(body.excludeRunId);
-  const agentId = str(body.agentId);
-  const taskName = str(body.taskName);
-  if (excludeRunId === null || agentId === null || taskName === null || typeof body.dryRun !== 'boolean') {
-    return Response.json(refused(ctx, refusal('supersede requires excludeRunId, agentId, taskName and dryRun', 'parse')));
-  }
-  const superseded = await supersedeEquivalentResumableRuns(
-    env.db, { projectId: ctx.projectId }, excludeRunId, { agentId, taskName, dryRun: body.dryRun });
-  return Response.json({ persisted: true, superseded });
-}
-
-/** Every report a run recorded, in the order they were written. */
-const EVENT_TYPES = ['pre_tool_use', 'post_tool_use', 'phase_start', 'phase_end'] as const;
-const EVENT_OUTCOMES = ['success', 'error'] as const;
-/** The most events one request may carry; a burst larger than this is split by the caller. */
-export const MAX_EVENTS_PER_REQUEST = 32;
 const MAX_SUMMARY_CHARS = 4_096;
 const MAX_DETAILS_CHARS = 65_536;
-const MAX_PAYLOAD_CHARS = 16_384;
 
 /**
  * Record one report against a run. The run row is the tenancy anchor;
@@ -399,122 +365,4 @@ export async function handleWriteReport(env: ServerEnv, ctx: RouteContext): Prom
     return Response.json(refused(ctx, refusal(recorded.reason === 'unaccepted' ? recorded.error : 'report names a run this Project does not hold, or an agent this Deployment does not know', 'parse')));
   }
   return Response.json({ persisted: true, recorded: true });
-}
-
-/** Record a burst of run events. Rows are validated one by one; a burst with any malformed row is refused whole. */
-export async function handleRecordRunEvents(env: ServerEnv, ctx: RouteContext): Promise<Response> {
-  const body = parseBody(ctx.body);
-  if (!body) return Response.json(refused(ctx, BAD_BODY));
-  const raw = body.events;
-  if (!Array.isArray(raw) || raw.length === 0 || raw.length > MAX_EVENTS_PER_REQUEST) {
-    return Response.json(refused(ctx, refusal(`events must be 1..${MAX_EVENTS_PER_REQUEST} entries`, 'parse')));
-  }
-  const events: RunEventRowInsert[] = [];
-  for (const entry of raw) {
-    if (!isRecord(entry)) return Response.json(refused(ctx, BAD_BODY));
-    const runId = str(entry.runId);
-    const eventType = (EVENT_TYPES as readonly string[]).includes(entry.eventType as string) ? (entry.eventType as string) : null;
-    const outcome = entry.outcome === undefined || entry.outcome === null ? null
-      : (EVENT_OUTCOMES as readonly string[]).includes(entry.outcome as string) ? (entry.outcome as string) : undefined;
-    const phaseName = strOrNull(entry.phaseName);
-    const toolName = strOrNull(entry.toolName);
-    // Truncated, never refused: the largest tool payloads are exactly the
-    // events an audit log most needs, and the sender's catch swallows a refusal.
-    const payload = entry.payload === undefined || entry.payload === null ? null
-      : typeof entry.payload === 'string' ? entry.payload.slice(0, MAX_PAYLOAD_CHARS) : undefined;
-    const durationMs = entry.durationMs === undefined || entry.durationMs === null ? null : int(entry.durationMs);
-    // Epoch milliseconds, like every server timestamp; a malformed value is a
-    // refusal, not a silent substitution.
-    const recordedAt = entry.recordedAt === undefined ? ctx.now : int(entry.recordedAt);
-    if (runId === null || eventType === null || outcome === undefined || phaseName === undefined || toolName === undefined || payload === undefined || durationMs === undefined || recordedAt === null) {
-      return Response.json(refused(ctx, refusal('an event requires runId and a known eventType, with bounded optional fields', 'parse')));
-    }
-    events.push({ runId, phaseName, eventType, toolName, outcome, durationMs, payload, recordedAt });
-  }
-  const recorded = await recordRunEvents(env.db, { projectId: ctx.projectId }, events);
-  return Response.json({ persisted: true, recorded });
-}
-
-export async function handleRunReports(env: ServerEnv, ctx: RouteContext): Promise<Response> {
-  const body = parseBody(ctx.body);
-  if (!body) return Response.json(refused(ctx, BAD_BODY));
-  const runId = str(body.runId);
-  if (runId === null) return Response.json(refused(ctx, refusal('reports requires runId', 'parse')));
-  return Response.json({ persisted: true, reports: await listReports(env.db, { projectId: ctx.projectId }, runId) });
-}
-
-/**
- * Record how a run failed, and what that means for resuming it.
- *
- * The caller reports what it OBSERVED — whether this attempt is a resume,
- * whether a checkpoint carried a session reference, whether any turn ran, and
- * how the harness classified the error — and the server decides the class. A caller that sent its own verdict
- * could mark a poisoned session resumable and re-enter the loop the guard
- * exists to close.
- */
-export async function handleRecordFailure(env: ServerEnv, ctx: RouteContext): Promise<Response> {
-  const body = parseBody(ctx.body);
-  if (!body) return Response.json(refused(ctx, BAD_BODY));
-  const runId = str(body.runId);
-  const errorMessage = strOrNull(body.error, MAX_STATE_BYTES);
-  const errorClass = ERROR_CLASSES.includes(body.errorClass as (typeof ERROR_CLASSES)[number])
-    ? (body.errorClass as FailureObservation['errorClass']) : null;
-  if (runId === null || errorClass === null || errorMessage === undefined) {
-    return Response.json(refused(ctx, refusal('a failure requires runId and a known errorClass', 'parse')));
-  }
-
-  const decision = classifyFailure({
-    wasResume: body.wasResume === true,
-    hadPriorSession: body.hadPriorSession === true,
-    recordedAnyTurns: body.recordedAnyTurns === true,
-    errorClass,
-  });
-  const update: Record<string, unknown> = {
-    status: 'failed',
-    completed_at: ctx.now,
-    error: errorMessage,
-    resumable: decision.resumable ? 1 : 0,
-    resume_status: decision.status,
-  };
-  // A poisoned session id is discarded with the same write that records the
-  // failure: leaving it for a follow-up call is a window where a wake could
-  // reuse it.
-  if (decision.clearCheckpoints) update.checkpoints = null;
-
-  // The write is guarded on the row not already being terminal, and a run that
-  // ended under another status answers the same refusal the update route gives:
-  // `changed: 0` alone reads exactly like a run in another Project.
-  const scope = { projectId: ctx.projectId };
-  const before = await getRun(env.db, scope, runId);
-  const foreign = foreignCredentialAnswer(ctx, before);
-  if (foreign !== null) return foreign;
-  const ended = endedAnswer(before?.status, 'failed');
-  if (ended !== null) return ended;
-  const written = await endRunAsCaller(env, ctx, runId, before, update as RunUpdate, { replaced: body.replaced === true });
-  if ('refused' in written) return written.refused;
-  const changed = written.changed;
-  const raced = changed === 0 ? endedAnswer((await getRun(env.db, scope, runId))?.status, 'failed') : null;
-  if (raced !== null) return raced;
-  return Response.json({ persisted: true, changed, ...decision });
-}
-
-/** Whether a failed run may be resumed now, consuming a retry when it may. */
-export async function handleAdmitResume(env: ServerEnv, ctx: RouteContext): Promise<Response> {
-  const body = parseBody(ctx.body);
-  if (!body) return Response.json(refused(ctx, BAD_BODY));
-  const runId = str(body.runId);
-  if (runId === null) return Response.json(refused(ctx, refusal('resume admission requires runId', 'parse')));
-
-  const scope = { projectId: ctx.projectId };
-  const run = await getRun(env.db, scope, runId);
-  if (run === null) return Response.json({ persisted: true, admit: false, status: 'absent' });
-  if (run.resumable !== 1) {
-    return Response.json({ persisted: true, admit: false, status: run.resumeStatus ?? 'not_resumable' });
-  }
-
-  const outcome = await admitResume(env.db, scope, {
-    id: run.id, agentId: run.agentId, task: run.task ?? '', dryRun: run.dryRun === 1,
-    startedAt: run.startedAt, resumeAttempts: run.resumeAttempts,
-  });
-  return Response.json({ persisted: true, ...outcome });
 }

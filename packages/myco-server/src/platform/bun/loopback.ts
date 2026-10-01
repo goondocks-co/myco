@@ -15,9 +15,9 @@
  * 3. A Host-header allowlist. A loopback socket answers requests carrying any
  *    Host, which a hostile page uses to steer a browser on the machine (DNS
  *    rebinding). The socket carries no evidence of it; the header does.
- * 4. Loopback-qualified publishing. `PORT:PORT` in Compose publishes on every
- *    interface with no signal inside the container, so condition 4 is verified
- *    against the shipped Compose file, not here.
+ * 4. Loopback-qualified publishing. `PORT:PORT` publishes on every interface
+ *    with no signal inside the container, so condition 4 is the operator's
+ *    publish spec (`-p 127.0.0.1:PORT:PORT`), not something this process sees.
  *
  * **Where conditions 1 and 2 apply.** They constrain the HOST-VISIBLE bind. A
  * process on the host binds the loopback literals itself. A container does not:
@@ -30,8 +30,8 @@
  * For a container the namespace is the boundary and condition 4 is the
  * host-visible bind, so conditions 1 and 2 are satisfied by the publish spec
  * rather than by the process. `MYCO_BIND=all` selects that shape and is safe
- * ONLY alongside loopback-qualified publishing; the two ship in the same
- * Compose file and `compose-publish.test.ts` gates the pairing. Condition 3
+ * ONLY alongside loopback-qualified publishing; the image's README pairs the
+ * two, and CI's native-image smoke runs that pairing. Condition 3
  * holds in both shapes — a socket cannot see a forged Host either way.
  */
 

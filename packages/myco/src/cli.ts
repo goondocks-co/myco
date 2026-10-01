@@ -260,8 +260,9 @@ async function main(): Promise<void> {
     return;
   }
 
-  // Self-hosted Deployment lifecycle — a Compose bundle under MYCO_HOME, no
-  // project vault, so it sits above the myco.yaml gate and works from any cwd.
+  // Deployment lifecycle — this machine's own Deployment and the hosted one,
+  // recorded under MYCO_HOME with no project vault, so it sits above the
+  // myco.yaml gate and works from any cwd.
   if (cmd === 'server') return (await import('./cli/server.js')).run(args);
 
   // #1151: a worker attaches this machine's harnesses to a Deployment. It reads

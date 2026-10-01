@@ -611,7 +611,7 @@ describe('read/activity', () => {
   const seedRuns = (sqlite: import('bun:sqlite').Database) => {
     sqlite.run(`INSERT OR REPLACE INTO projects (project_id, name, created_at) VALUES ('proj_1','One',1)`);
     sqlite.run(`INSERT INTO agents (id, name, source, enabled, created_at) VALUES ('a','a','built-in',1,1)`);
-    const insert = `INSERT INTO agent_runs (project_id, id, agent_id, task, status, started_at, completed_at, queued_at) VALUES ('proj_1', ?, 'a', 'container-smoke', ?, ?, ?, ?)`;
+    const insert = `INSERT INTO agent_runs (project_id, id, agent_id, task, status, started_at, completed_at, queued_at) VALUES ('proj_1', ?, 'a', 'extract-curate', ?, ?, ?, ?)`;
     sqlite.run(insert, ['ran', 'completed', 300, 400, null]);
     // A queued run the Deployment gave up on: it never started, so it has an
     // end and a place in the queue and nothing else.
