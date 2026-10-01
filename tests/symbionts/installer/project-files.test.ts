@@ -23,6 +23,7 @@ import {
   resolveEnabledSkillTargets,
   syncSkillSymlinks,
 } from '@myco/symbionts/installer/project-files.js';
+import { isSafeSkillNameForFs } from '@myco/skills/names.js';
 
 const CLAUDE = { home: '.claude', target: '.claude/skills', name: 'claude-code' };
 const CLINE = { home: '.cline', target: '.cline/skills', name: 'cline' };
@@ -210,5 +211,15 @@ describe('project skill symlinks', () => {
       expect(exists('.claude/skills/gone')).toBe(false);  // dangling still pruned
       expect(exists('.cursor/skills/alpha')).toBe(false); // retired still pruned
     });
+  });
+});
+
+describe('the skill names the installer links', () => {
+  // Every skill name becomes a path segment under each agent's skills directory; an unsafe one is never linked.
+  test('admits a lowercase slug and refuses upper case, traversal and over-long names', () => {
+    expect(isSafeSkillNameForFs('my-skill')).toBe(true);
+    expect(isSafeSkillNameForFs('UPPER')).toBe(false);
+    expect(isSafeSkillNameForFs('../etc')).toBe(false);
+    expect(isSafeSkillNameForFs('a'.repeat(101))).toBe(false);
   });
 });

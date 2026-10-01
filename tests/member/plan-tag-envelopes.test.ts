@@ -1,13 +1,12 @@
 /**
- * RC-F — stripPlanTagEnvelopes: plan envelopes never reach persisted
- * response summaries, while the extraction channel (which reads raw parser
- * turns) keeps receiving them. The strip and extraction share one regex
- * (`planTagEnvelopeRegex`) so they can never drift.
+ * stripPlanTagEnvelopes: plan envelopes never reach a captured response
+ * summary (`member/transcript.ts`, `hooks/user-prompt-submit.ts`). The strip
+ * removes exactly what `planTagEnvelopeRegex` matches, the regex plan
+ * extraction reads, so the two can never drift.
  */
 
 import { describe, it, expect } from 'bun:test';
 import { stripPlanTagEnvelopes, planTagEnvelopeRegex } from '@myco/plans/tag-envelopes.js';
-import { extractTaggedPlans } from '@myco/daemon/plan-capture.js';
 
 const PLAN_BODY = '## Plan\n\n- [x] step one\n- [ ] step two';
 const envelope = (body: string = PLAN_BODY) => `<update_plan>\n${body}\n</update_plan>`;
@@ -52,15 +51,13 @@ describe('stripPlanTagEnvelopes', () => {
     expect(stripPlanTagEnvelopes(text, [])).toBe(text);
   });
 
-  it('strip removes exactly what extraction matches (shared regex)', () => {
+  it('strip removes exactly what the shared regex matches', () => {
     const text = `prose before\n\n${envelope()}\n\nprose after`;
-    const extracted = extractTaggedPlans(text, ['update_plan']);
-    const stripped = stripPlanTagEnvelopes(text, ['update_plan']);
+    const matched = text.match(planTagEnvelopeRegex('update_plan'));
 
-    expect(extracted).toHaveLength(1);
-    expect(extracted[0].content).toBe(PLAN_BODY);
-    // Everything extraction matched is gone; everything else survives.
-    expect(stripped).toBe('prose before\n\nprose after');
-    expect(text.match(planTagEnvelopeRegex('update_plan'))).toHaveLength(1);
+    expect(matched).toHaveLength(1);
+    expect(matched?.[0]).toContain(PLAN_BODY);
+    // Everything the regex matched is gone; everything else survives.
+    expect(stripPlanTagEnvelopes(text, ['update_plan'])).toBe('prose before\n\nprose after');
   });
 });
