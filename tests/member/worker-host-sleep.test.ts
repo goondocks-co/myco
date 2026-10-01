@@ -45,7 +45,7 @@ const POLL_MS = 50;
 /** A sleep long enough that any lease a worker held lapses in it. */
 const SLEEP_MS = 5 * 60_000;
 /** One step of time awake: well inside the slack a worker allows a wait before it reads it as a sleep, even if a few land in one wait. */
-const AWAKE_STEP_MS = 1_000;
+const AWAKE_STEP_MS = 500;
 /** Real time between steps, so a worker polling every POLL_MS sees each one at a wait of its own. */
 const AWAKE_STEP_WAIT_MS = 60;
 
