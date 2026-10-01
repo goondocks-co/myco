@@ -26,7 +26,10 @@ describe('a detached start', () => {
     const seen = JSON.parse(fs.readFileSync(out, 'utf-8')) as { argv: string[]; cwd: string };
     expect(seen.argv).toEqual(args.slice(1));
     expect(fs.realpathSync(seen.cwd)).toBe(fs.realpathSync(dir));
-    fs.rmSync(dir, { recursive: true, force: true });
+    // The child runs in `dir` until it exits, and a directory a live process stands in cannot be removed on Windows.
+    const alive = (pid: number): boolean => { try { process.kill(pid, 0); return true; } catch { return false; } };
+    for (let i = 0; i < 200 && answer.pid !== undefined && alive(answer.pid); i++) await new Promise((r) => setTimeout(r, 50));
+    fs.rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   }, 30_000);
 
   it('answers a command that cannot start as not started, without throwing', () => {
