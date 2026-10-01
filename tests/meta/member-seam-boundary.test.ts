@@ -81,6 +81,14 @@ const ALLOWLIST: readonly string[] = [
   'symbionts/envelope-prefixes.ts',
   'symbionts/manifests.generated.ts',
   'paths/home.ts',
+  // The `hook` verb's launch preamble (#1561): it anchors the process to the harness's project and honours the
+  // project's runtime pin, read by the pin leaf, the binary resolver it shares, and the managed install paths.
+  'cli/launch-preamble.ts',
+  'runtime/runtime-pin.ts',
+  'runtime/binary-resolution.ts',
+  'runtime/self-exec.ts',
+  'install/managed-binary.ts',
+  'packages/myco/scripts/managed-paths.mjs',
   // The G7 pin trust check the home resolver applies to a `runtime.home` pin.
   'paths/pin-trust.ts',
   'project-root.ts',

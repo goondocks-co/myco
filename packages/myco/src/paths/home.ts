@@ -261,3 +261,13 @@ function assertSandboxedHome(home: string): void {
     );
   }
 }
+
+/**
+ * True when `mycoHome` resolves to the canonical default home (`~/.myco`),
+ * ignoring any `MYCO_HOME` override. This home is the production install every
+ * released user shares; a non-default home (e.g. `~/.myco-dev`) is the dogfood
+ * path. Used to key the default-home service label and the dev-build guard.
+ */
+export function isDefaultMycoHome(mycoHome: string): boolean {
+  return path.resolve(mycoHome) === resolveMycoHome({ env: {} });
+}

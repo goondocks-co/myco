@@ -13,7 +13,7 @@ const scratch = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'myco-glob
 const agentHome = path.join(scratch, 'user');
 const memberHome = path.join(scratch, 'member');
 const project = path.join(scratch, 'project');
-const env = { ...process.env, HOME: agentHome, CODEX_HOME: path.join(agentHome, '.codex'), CLAUDE_CONFIG_DIR: undefined, XDG_CONFIG_HOME: path.join(agentHome, '.config'), MYCO_HOME: memberHome, MYCO_CLAIMS_HOME: memberHome };
+const env = { ...process.env, HOME: agentHome, CODEX_HOME: path.join(agentHome, '.codex'), CLAUDE_CONFIG_DIR: undefined, XDG_CONFIG_HOME: path.join(agentHome, '.config'), MYCO_HOME: memberHome };
 const run = (command: string, args: string[], cwd = project): string => execFileSync(command, args, { cwd, env, encoding: 'utf8', timeout: 30_000 });
 
 try {

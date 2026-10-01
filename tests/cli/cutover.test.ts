@@ -140,7 +140,7 @@ async function machine(opts: { legacyHome?: string } = {}): Promise<Machine> {
     const err: string[] = [];
     const ok = await runCutover(args, {
       fetch: o.fetch ?? rig.fetch, mycoHome: o.mycoHome === null ? undefined : (o.mycoHome ?? mycoHome), machineId: TEST_MACHINE_ID,
-      env: o.env ?? { ...process.env, HOME: home, MYCO_CLAIMS_HOME: legacyHome, MYCO_LAUNCH_AGENTS_DIR: agentsDir },
+      env: o.env ?? { ...process.env, HOME: home, MYCO_LAUNCH_AGENTS_DIR: agentsDir },
       sleep: async () => {}, stdout: (l) => out.push(l), stderr: (l) => err.push(l), packageRoot: resolvePackageRoot(),
       agents: () => o.agents ?? ['claude-code'], platform: 'darwin',
       launchctl: fakeLaunchctl(launchctl.loaded, launchctl.calls),
@@ -158,17 +158,13 @@ async function machine(opts: { legacyHome?: string } = {}): Promise<Machine> {
 describe('myco cutover', () => {
   let m: Machine;
   let heldHome: string | undefined;
-  let heldClaims: string | undefined;
   beforeEach(async () => {
     m = await machine();
     heldHome = process.env.HOME;
-    heldClaims = process.env.MYCO_CLAIMS_HOME;
     process.env.HOME = m.home;
-    process.env.MYCO_CLAIMS_HOME = m.legacyHome;
   });
   afterEach(() => {
     if (heldHome === undefined) delete process.env.HOME; else process.env.HOME = heldHome;
-    if (heldClaims === undefined) delete process.env.MYCO_CLAIMS_HOME; else process.env.MYCO_CLAIMS_HOME = heldClaims;
   });
 
   const settingsFile = () => path.join(m.home, '.claude', 'settings.json');
@@ -342,7 +338,6 @@ describe('myco cutover', () => {
     const other = await machine();
     try {
       process.env.HOME = other.home;
-      process.env.MYCO_CLAIMS_HOME = other.legacyHome;
       const foreignPlugin = path.join(other.home, '.cline', 'plugins', 'myco.ts');
       fs.mkdirSync(path.dirname(foreignPlugin), { recursive: true });
       fs.writeFileSync(foreignPlugin, '// myco:plugin-marker\nconst bin = "/elsewhere/other/bin/myco";\n');
@@ -352,7 +347,6 @@ describe('myco cutover', () => {
       expect(fs.existsSync(foreignPlugin)).toBe(true);
     } finally {
       process.env.HOME = m.home;
-      process.env.MYCO_CLAIMS_HOME = m.legacyHome;
     }
   });
 
@@ -682,7 +676,7 @@ describe('myco cutover', () => {
 
   it('cuts over into the home the machine pin names, and says so first, when the 1.4 hooks run through that pin', async () => {
     fs.writeFileSync(path.join(m.legacyHome, 'runtime.home'), `${m.mycoHome}\n`);
-    const env: NodeJS.ProcessEnv = { ...process.env, HOME: m.home, MYCO_CLAIMS_HOME: m.legacyHome, MYCO_LAUNCH_AGENTS_DIR: m.agentsDir };
+    const env: NodeJS.ProcessEnv = { ...process.env, HOME: m.home, MYCO_LAUNCH_AGENTS_DIR: m.agentsDir };
     delete env.MYCO_HOME;
     const unchanged = untouched();
     const dry = await m.run(['--dry-run'], { mycoHome: null, env });
@@ -702,12 +696,10 @@ describe('myco cutover', () => {
 });
 
 describe('myco cutover on two 1.4 homes, one pinned as the 2.0 home (the owner\'s layout)', () => {
-  it('stops the pinned home\'s daemon, points both homes\' claims at it, and takes 1.4 out of every agent, with no MYCO_CLAIMS_HOME', async () => {
+  it('stops the pinned home\'s daemon, points both homes\' claims at it, and takes 1.4 out of every agent', async () => {
     const m = await machine({ legacyHome: '.myco-dev' });
     const heldHome = process.env.HOME;
-    const heldClaims = process.env.MYCO_CLAIMS_HOME;
     process.env.HOME = m.home;
-    delete process.env.MYCO_CLAIMS_HOME;
     try {
       // ~/.myco is a 1.4 home too: a vault of its own, its claim, and the pin to ~/.myco-dev.
       const prod = path.join(m.home, '.myco');
@@ -731,7 +723,6 @@ describe('myco cutover on two 1.4 homes, one pinned as the 2.0 home (the owner\'
 
       const env: NodeJS.ProcessEnv = { ...process.env, HOME: m.home, MYCO_LAUNCH_AGENTS_DIR: m.agentsDir };
       delete env.MYCO_HOME;
-      delete env.MYCO_CLAIMS_HOME;
       const args = ['--legacy-home', prod, '--legacy-home', m.legacyHome];
       const dry = await m.run([...args, '--dry-run'], { mycoHome: null, env });
       expect(dry.err).toEqual([]);
@@ -751,7 +742,6 @@ describe('myco cutover on two 1.4 homes, one pinned as the 2.0 home (the owner\'
       expect(m.rig.env.sqlite.query(`SELECT id FROM spores ORDER BY id`).all()).toEqual([{ id: 'gotcha-1' }, { id: 'prod-1' }]);
     } finally {
       if (heldHome === undefined) delete process.env.HOME; else process.env.HOME = heldHome;
-      if (heldClaims === undefined) delete process.env.MYCO_CLAIMS_HOME; else process.env.MYCO_CLAIMS_HOME = heldClaims;
     }
 
     function settingsFile() { return path.join(m.home, '.claude', 'settings.json'); }

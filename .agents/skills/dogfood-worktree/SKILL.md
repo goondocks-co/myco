@@ -73,7 +73,7 @@ Either way a fresh worktree never uses **its own** build until it is pinned.
    For direct CLI calls to read or mutate the dogfood dev vault, prefix
    the command explicitly:
    ```bash
-   MYCO_HOME="$HOME/.myco-dev" MYCO_CLAIMS_HOME="$HOME/.myco" \
+   MYCO_HOME="$HOME/.myco-dev" \
      myco tool call myco_plans --json --input '{"op":"list","limit":5}'
    ```
    Verify the result against the main checkout before mutating plan/session

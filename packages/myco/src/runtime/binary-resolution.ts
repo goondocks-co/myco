@@ -22,7 +22,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { managedBinDir, managedBinaryPath } from '../install/managed-binary.js';
-import { isDefaultMycoHome, resolveMycoHome } from '../grove/paths.js';
+import { isDefaultMycoHome, resolveMycoHome } from '../paths/home.js';
 import { MACHINE_RUNTIME_COMMAND_FILENAME } from '../constants/update.js';
 import { selfExecOf } from './self-exec.js';
 import { checkPinTrust as checkPinTrustShared, readTrustedPin as readTrustedPinShared, PIN_MISSING_REASON } from '../paths/pin-trust.js';

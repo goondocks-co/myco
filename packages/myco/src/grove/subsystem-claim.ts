@@ -24,13 +24,10 @@
  * no operator ever claims, so nothing is ever deferred.
  *
  * **Shared storage via `resolveClaimsHome()`**: claims are stored under
- * `resolveClaimsHome()/claims/`, which defaults to `MYCO_HOME` (so the test
- * suite's sandboxed home keeps claims hermetic). A dogfood daemon running under
- * a separate `MYCO_HOME` (~/.myco-dev) sets `MYCO_CLAIMS_HOME` to the
- * canonical `~/.myco` so it shares the prod daemon's claims area — that is how
- * the dogfood-claims / prod-defers coordination keeps working across the
- * two-home split. The OWNER token is always the per-daemon home path
- * (`daemonIdentity`), never the claims home.
+ * `resolveClaimsHome()/claims/`, the default home's (`~/.myco`) for every home
+ * on the machine, so a dogfood home (`~/.myco-dev`) and the released install
+ * read and write one area however a process reached its home. The OWNER token
+ * is always the per-daemon home path (`daemonIdentity`), never the claims home.
  *
  * General by design — any future machine-global subsystem two daemons might
  * contend over can take a claim with a new subsystem name.
@@ -38,7 +35,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { atomicWriteFileSync } from '../utils/atomic-write.js';
-import { resolveMycoHome, expandHome, daemonIdentity } from './paths.js';
+import { daemonIdentity, defaultMycoHome } from './paths.js';
 
 /** The symbiont-config (hooks/MCP) management subsystem — the first claim user. */
 export const SYMBIONT_CONFIG_SUBSYSTEM = 'symbiont-config';
@@ -61,11 +58,7 @@ export interface SubsystemClaim {
 
 /** Injectable seams so the claim store is unit-testable without a real daemon. */
 export interface ClaimDeps {
-  /**
-   * Override the shared claims storage root (default: `resolveClaimsHome()`).
-   * Tests inject a temp dir here to stay hermetic; the dogfood daemon sets
-   * `MYCO_CLAIMS_HOME` in its environment so prod and dogfood share one area.
-   */
+  /** Override the shared claims storage root (default: `resolveClaimsHome()`). Tests inject a temp dir here. */
   claimsHome?: string;
   /** Owner pid to record (default: this process). */
   pid?: number;
@@ -74,17 +67,17 @@ export interface ClaimDeps {
 }
 
 /**
- * The machine-global location for subsystem claims. Defaults to the daemon's
- * own MYCO_HOME (so the test suite's sandbox home keeps claims hermetic, and a
- * single-home production install puts them under ~/.myco). A dogfood daemon
- * running under a SEPARATE MYCO_HOME (~/.myco-dev) sets MYCO_CLAIMS_HOME to
- * the canonical ~/.myco so it shares the prod daemon's claims area — that is
- * how the dogfood-claims-symbiont-config / prod-defers coordination (PR #530)
- * keeps working across the two-home split.
+ * The machine-global location for subsystem claims: the canonical default home (`~/.myco`, under the user's home
+ * directory), whatever home this process runs under.
+ *
+ * Every home on a machine reads and writes the one claims area: the released install's `~/.myco` and a dogfood
+ * `~/.myco-dev` alike, whether a process reaches its home through `MYCO_HOME`, a project's `.myco/runtime.home` pin or
+ * the machine pin. No environment variable moves it: a variable a launch script sets is lost the moment a verb is
+ * reached another way (a pin that names the binary itself), and a home that reads claims from its own directory
+ * thinks it owns the machine's global configuration (#1561 plan §6.3).
  */
-export function resolveClaimsHome(memberHome = resolveMycoHome()): string {
-  const override = process.env.MYCO_CLAIMS_HOME?.trim();
-  return override && override.length > 0 ? path.resolve(expandHome(override)) : memberHome;
+export function resolveClaimsHome(): string {
+  return defaultMycoHome();
 }
 
 function claimsDir(claimsHome: string): string {

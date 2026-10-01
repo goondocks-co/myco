@@ -36,7 +36,7 @@ import {
 import { resolveProjectBufferDirFromRoot } from '@myco/capture/buffer-location.js';
 import { ensureProjectVault } from '@myco/vault/provision.js';
 import { managedSkillsDir } from '@myco/install/managed-binary.js';
-import { claimSubsystem, SYMBIONT_CONFIG_SUBSYSTEM } from '@myco/grove/subsystem-claim.js';
+import { claimSubsystem, releaseSubsystemClaim, resolveClaimsHome, SYMBIONT_CONFIG_SUBSYSTEM } from '@myco/grove/subsystem-claim.js';
 import { daemonIdentity } from '@myco/grove/paths.js';
 import { testPerUserLockNamespace } from '../helpers/per-user-lock-namespace.js';
 
@@ -149,18 +149,15 @@ describe('runSymbiontDetection', () => {
   });
 
   it('does NOT seed the managed skills dir when a peer holds the symbiont-config claim', () => {
-    const claimsHome = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-detection-claims-'));
+    const claimsHome = resolveClaimsHome();
     const peer = daemonIdentity(fs.mkdtempSync(path.join(os.tmpdir(), 'myco-detection-peer-')));
     claimSubsystem(SYMBIONT_CONFIG_SUBSYSTEM, peer, { claimsHome });
-    const prevClaims = process.env.MYCO_CLAIMS_HOME;
-    process.env.MYCO_CLAIMS_HOME = claimsHome;
     try {
       runSymbiontDetection(PKG_ROOT);
       const skillsDir = managedSkillsDir(path.join(tmpHome, '.myco'));
       expect(fs.existsSync(skillsDir)).toBe(false);
     } finally {
-      if (prevClaims === undefined) delete process.env.MYCO_CLAIMS_HOME; else process.env.MYCO_CLAIMS_HOME = prevClaims;
-      fs.rmSync(claimsHome, { recursive: true, force: true });
+      releaseSubsystemClaim(SYMBIONT_CONFIG_SUBSYSTEM, peer, { claimsHome });
     }
   });
 

@@ -29,7 +29,7 @@ import { MCP_PATH } from '../plugins/spec.js';
 import { MCP_HEADERS_ARGS, MEMBER_MCP_LEVERS, memberMcpTemplate, memberRemoteMcp } from './member-hooks.js';
 import { readRegistryEntry } from '../member/registry.js';
 import { runGit, runGitAnswer } from '../utils/git.js';
-import { resolveRuntimeCommand, resolveRuntimeHome } from '../daemon/update-checker.js';
+import { resolveRuntimeCommand, resolveRuntimeHome } from '../runtime/runtime-pin.js';
 import { managedBinaryPath, managedSkillsDir } from '../install/managed-binary.js';
 import { resolveBinary } from '../runtime/binary-resolution.js';
 import { loadMergedConfig } from '../config/loader.js';
@@ -2296,7 +2296,7 @@ export class SymbiontInstaller {
   /** Whether the `symbiont-config` claim this install reads is held by a replaceable 1.4 home. */
   private claimHeldByLegacyHome(): boolean {
     const memberHome = this.memberHomeDir();
-    const claim = readClaim(SYMBIONT_CONFIG_SUBSYSTEM, resolveClaimsHome(memberHome));
+    const claim = readClaim(SYMBIONT_CONFIG_SUBSYSTEM, resolveClaimsHome());
     return claim !== null && this.legacyHomes.includes(path.resolve(claim.owner));
   }
 
@@ -2344,7 +2344,7 @@ export class SymbiontInstaller {
   /** Global member provisioning cannot take another installation's capture or Deployment. */
   private assertGlobalMemberOwnership(): void {
     const memberHome = this.memberHomeDir();
-    if (isClaimedByPeer(SYMBIONT_CONFIG_SUBSYSTEM, memberHome, { claimsHome: resolveClaimsHome(memberHome) }) && !this.claimHeldByLegacyHome()) {
+    if (isClaimedByPeer(SYMBIONT_CONFIG_SUBSYSTEM, memberHome, { claimsHome: resolveClaimsHome() }) && !this.claimHeldByLegacyHome()) {
       throw new MemberProvisionConflictError('Global symbiont configuration is claimed by another installation. Release its symbiont-config claim before provisioning globally.');
     }
     if (!this.noProjectRoot) {

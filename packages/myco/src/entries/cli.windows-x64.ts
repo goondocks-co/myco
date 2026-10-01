@@ -11,15 +11,14 @@ import ripgrepEmbed from '@vscode/ripgrep-win32-x64/bin/rg.exe' with { type: 'fi
 
 import { registerEmbeddedNativeDeps } from '../runtime/native-deps.js';
 import { setPluginVersion } from '../version.js';
+import { dispatch } from './dispatch.js';
 import pkg from '../../package.json' with { type: 'json' };
 
 setPluginVersion(pkg.version);
 
-await registerEmbeddedNativeDeps({
+await dispatch(() => registerEmbeddedNativeDeps({
   libsqliteEmbed,
   vec0Embed,
   ripgrepEmbed,
   version: pkg.version,
-});
-
-await import('./cli.js');
+}));

@@ -14,7 +14,7 @@ import { setupChecks } from '@myco/cli/member-doctor.js';
 import { writeDeploymentMembership } from '@myco/member/registry.js';
 import { readProvisionRecord, recordProvision } from '@myco/symbionts/member-provision-record.js';
 import { BUNDLED_SKILLS } from '@myco/symbionts/skills.generated.js';
-import { claimSubsystem, SYMBIONT_CONFIG_SUBSYSTEM } from '@myco/grove/subsystem-claim.js';
+import { claimSubsystem, resolveClaimsHome, SYMBIONT_CONFIG_SUBSYSTEM } from '@myco/grove/subsystem-claim.js';
 import { linkMemberSkills } from '@myco/symbionts/member-skill-links.js';
 import { getPluginVersion } from '@myco/version.js';
 
@@ -177,7 +177,7 @@ describe('a member\'s agent setup', () => {
     const own = path.join(home, 'skills', SKILLS[0], 'SKILL.md');
     fs.mkdirSync(path.dirname(own), { recursive: true });
     fs.writeFileSync(own, 'written by 1.4');
-    claimSubsystem(SYMBIONT_CONFIG_SUBSYSTEM, '/opt/other-install/.myco', { claimsHome: home });
+    claimSubsystem(SYMBIONT_CONFIG_SUBSYSTEM, '/opt/other-install/.myco', { claimsHome: resolveClaimsHome() });
     // Provisioning refuses the agents themselves, and the skills link on their own holds them too.
     expect(provision()).toBe(true);
     expect(out.join('\n')).toContain('Skipped Claude Code: Global symbiont configuration is claimed by another installation');

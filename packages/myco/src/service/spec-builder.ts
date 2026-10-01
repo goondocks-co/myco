@@ -104,11 +104,6 @@ export function buildServiceSpec(opts: BuildSpecOptions): ServiceSpec {
       ? '/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin'
       : '/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin',
   };
-  // When MYCO_HOME is not the canonical home, point subsystem claims at the
-  // canonical home.
-  if (!isDefaultHome) {
-    env.MYCO_CLAIMS_HOME = resolveMycoHome({ env: {} });
-  }
   // Propagate the sandbox unit-dir override into the plist so a supervisor-
   // spawned child daemon does NOT fall back to `~/Library/LaunchAgents/` and
   // hijack the real user's canonical service registration. launchd / systemd

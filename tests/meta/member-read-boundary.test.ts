@@ -60,7 +60,6 @@ const SHARED_LEGACY_LEAVES: Readonly<Record<string, string>> = {
   [`${SRC}/grove/ids.ts`]: 'branded id types, via grove/paths.ts',
   [`${SRC}/grove/registry-resolve.ts`]: 'via config/project-manifest.ts',
   [`${SRC}/grove/subsystem-claim.ts`]: 'via symbionts/installer.ts',
-  [`${SRC}/daemon/update-checker.ts`]: 'via symbionts/installer.ts',
   [`${SRC}/vault/gitignore.ts`]: 'via config/project-manifest.ts',
   [`${SRC}/config/loader.ts`]: 'via symbionts/installer.ts',
   [`${SRC}/config/schema.ts`]: 'via config/loader.ts',

@@ -171,8 +171,24 @@ export function entryFiles(root: string, patterns: readonly string[]): string[] 
   ));
 }
 
+/**
+ * How a walk reads each module: `staticOnly` follows only static imports (`import …`, `export … from`), the edges a
+ * module loads with itself, and leaves a dynamic `import()` and `require()` — a chunk a split build reads only when the
+ * call is reached — unfollowed. `source` may rewrite a module's text before it is scanned.
+ */
+export interface ClosureOptions {
+  staticOnly?: boolean;
+  source?: (file: string, text: string) => string;
+}
+
+/** The specifiers a module imports statically: what loads with it. */
+function staticSpecifiers(source: string, file: string): string[] {
+  if (isJsonModule(file)) return [];
+  return transpilerFor(file).scanImports(source).filter((entry) => entry.kind === 'import-statement').map((entry) => entry.path);
+}
+
 /** Walk every module reachable from these entries. */
-export function closureOf(entries: readonly string[]): Closure {
+export function closureOf(entries: readonly string[], opts: ClosureOptions = {}): Closure {
   const closure: Closure = { modules: new Map(), via: new Map(), externals: new Map(), unknowable: new Map() };
   const queue: string[] = [];
   for (const entry of entries) {
@@ -184,9 +200,11 @@ export function closureOf(entries: readonly string[]): Closure {
   }
   while (queue.length > 0) {
     const file = queue.shift()!;
-    const edges = runtimeEdges(fs.readFileSync(file, 'utf-8'), file);
-    if (edges.unknowableDynamic > 0) closure.unknowable.set(moduleKey(file), edges.unknowableDynamic);
-    for (const specifier of edges.specifiers) {
+    const raw = fs.readFileSync(file, 'utf-8');
+    const text = opts.source ? opts.source(file, raw) : raw;
+    const edges = runtimeEdges(text, file);
+    if (!opts.staticOnly && edges.unknowableDynamic > 0) closure.unknowable.set(moduleKey(file), edges.unknowableDynamic);
+    for (const specifier of opts.staticOnly ? staticSpecifiers(text, file) : edges.specifiers) {
       const resolved = resolveSpecifier(file, specifier);
       if (resolved.kind === 'builtin') continue;
       if (resolved.kind === 'external') {

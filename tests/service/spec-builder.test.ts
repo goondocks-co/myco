@@ -40,7 +40,7 @@ describe('buildServiceSpec', () => {
     expect(spec.env.MYCO_HOME).toBe(DEFAULT_HOME);
     expect(spec.env.MYCO_DAEMON_MANAGED).toBe('1');
     expect(spec.env.MYCO_SERVICE_VARIANT).toBeUndefined();
-    // Default home's claims already live in MYCO_HOME — no override needed.
+    // The machine's one claims area is the default home's, wherever a daemon runs: nothing in its environment moves it.
     expect(spec.env.MYCO_CLAIMS_HOME).toBeUndefined();
   });
 
@@ -53,8 +53,8 @@ describe('buildServiceSpec', () => {
     expect(spec.variant).toBe('dev');
     expect(spec.stdoutPath).toBe(path.join(home, 'service', 'logs', 'daemon.out.log'));
     expect(spec.env.MYCO_DAEMON_MANAGED).toBe('1');
-    // Non-default home reads subsystem claims from the canonical home.
-    expect(spec.env.MYCO_CLAIMS_HOME).toBe(DEFAULT_HOME);
+    // A non-default home reads the one claims area by itself (`resolveClaimsHome`), not through its environment.
+    expect(spec.env.MYCO_CLAIMS_HOME).toBeUndefined();
   });
 
   test('two distinct homes get distinct labels and distinct state dirs', () => {

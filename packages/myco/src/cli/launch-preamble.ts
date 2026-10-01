@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
-import { resolveRuntimePinForCwd } from '../daemon/update-checker.js';
+import { resolveRuntimePinForCwd } from '../runtime/runtime-pin.js';
 import { setBufferedStdin } from '../hooks/read-stdin.js';
 
 export type LaunchCommand = 'hook' | 'mcp' | 'tool';

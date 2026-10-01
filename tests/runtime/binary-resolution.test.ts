@@ -190,7 +190,8 @@ describe('self-exec-entry', () => {
   });
 
   it('treats bun virtual-fs entries as compiled (no extra argv)', () => {
-    for (const argv1 of ['/$bunfs/root/cli.darwin-arm64.js', 'B:\\~BUN\\root\\cli.js']) {
+    // A Windows build reports its own entry with forward slashes (`B:/~BUN/root/<exe>`), observed on Bun 1.3.13.
+    for (const argv1 of ['/$bunfs/root/cli.darwin-arm64.js', 'B:\\~BUN\\root\\cli.js', 'B:/~BUN/root/myco.exe']) {
       const fx = fixture({ argv1 });
       expect(resolveBinary('self-exec-entry', { kind: 'machine' }, fx.env).args).toEqual([]);
     }
