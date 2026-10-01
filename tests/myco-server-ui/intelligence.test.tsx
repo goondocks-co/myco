@@ -403,17 +403,18 @@ for (const [code, sentence] of [
   [undefined, 'The task stopped before it could finish.'],
   ['unknown_code', 'The task stopped before it could finish.'],
 ] as const) {
-  it(`words a ${code ?? 'legacy'} failure in the panel and its details without quoting the error`, async () => {
-    const prose = 'server prose must stay off the page';
+  it(`words a ${code ?? 'legacy'} failure with its specific reason available in details`, async () => {
+    const prose = code === 'unknown_code' ? 'runtime output reported a missing file' : 'The saved output could not be read.';
     server(routes({ detail: { [`/api/projects/${P}/runs/run_5e0b1c2d3f`]: () => Response.json(runDetail(mapRuns[0]!, {
       reports: [], run: { errorCode: code, error: prose },
     })) } }));
     mount(`/p/${P}/work/runs/run_5e0b1c2d3f`);
     const open = await panel();
     await waitFor(() => expect(open.querySelector('[data-run-failure]')?.textContent).toContain(sentence));
+    expect(open.textContent).not.toContain(prose);
     fireEvent.click(within(open).getByRole('button', { name: /Technical details/ }));
     expect(open.querySelector('[data-run-technical]')!.textContent).toContain(sentence);
-    expect(document.body.textContent).not.toContain(prose);
+    expect(open.querySelector('[data-run-technical]')!.textContent).toContain(prose);
   });
 }
 
@@ -436,4 +437,22 @@ it('words a task no machine started from its code', async () => {
   const open = await panel();
   await waitFor(() => expect(open.textContent).toContain('no machine started it within a day'));
   expect(open.textContent).not.toContain('server prose must stay off the page');
+});
+
+
+it('keeps a coded failure as the headline when the run also filed a report', async () => {
+  const reason = 'The saved output could not be read.';
+  const report = 'The machine reported a missing file.';
+  server(routes({ detail: { [`/api/projects/${P}/runs/run_5e0b1c2d3f`]: () => Response.json(runDetail(mapRuns[0]!, {
+    reports: [{ action: 'summary', summary: report, createdAt: NOW }],
+    run: { errorCode: 'machine_unresponsive', error: reason },
+  })) } }));
+  mount(`/p/${P}/work/runs/run_5e0b1c2d3f`);
+  const open = await panel();
+  await waitFor(() => expect(open.querySelector('[data-run-failure]')!.textContent).toContain('The machine running it stopped responding.'));
+  expect(open.textContent).not.toContain(reason);
+  expect(open.textContent).not.toContain(report);
+  fireEvent.click(within(open).getByRole('button', { name: /Technical details/ }));
+  expect(open.querySelector('[data-run-technical]')!.textContent).toContain(reason);
+  expect(open.querySelector('[data-run-technical]')!.textContent).toContain(report);
 });

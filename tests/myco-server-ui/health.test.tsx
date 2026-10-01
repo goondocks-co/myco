@@ -272,20 +272,26 @@ describe('Health', () => {
   });
 });
 
-it('describes coded store diagnostics without quoting support, measurements, cadence or findings', async () => {
+it('describes coded store diagnostics with specific findings and dashboard words for support, measurements and cadence', async () => {
   const prose = 'server prose must stay off the page';
   server(routes({ '/api/maintenance': () => Response.json({ checks: [
     { check: 'optimize', support: { supported: false, reasonCode: 'check_unsupported', reason: prose }, cadence: { state: 'off' }, running: false, latest: null },
     { check: 'integrity', support: { supported: true, label: 'Checks stored records' }, cadence: { state: 'invalid', leaf: 'maintenance.auto_integrity_check', reason: prose }, running: false,
       latest: { runId: 'check1', trigger: 'owner', state: 'findings', startedAt: NOW, finishedAt: NOW, errorClass: null,
-        findings: [prose], findingCodes: ['store_problem'], findingsOmitted: 0,
+        findings: [...Array<string>(10).fill('A stored record is missing.'), 'A file could not be read.'], findingCodes: Array<string>(11).fill('store_problem'), findingsOmitted: 0,
         measurements: [{ name: 'size', state: 'unavailable', reasonCode: 'measurement_unavailable', reason: prose }] } },
   ] }) }));
   mount();
   const upkeep = await screen.findByTestId('maintenance');
   await waitFor(() => expect(upkeep.textContent).toContain('The store check found a problem.'));
   expect(upkeep.textContent).toContain('Not available on this server.');
-  expect(upkeep.textContent).toContain('Unavailable');
+  expect(upkeep.textContent).toContain('This measurement is unavailable.');
+  expect(upkeep.textContent).not.toContain('A stored record is missing.');
+  fireEvent.click(within(upkeep).getByRole('button', { name: 'Findings' }));
+  expect(upkeep.textContent).toContain('A stored record is missing. (10 findings)');
+  expect(upkeep.textContent).toContain('A file could not be read.');
+  expect(upkeep.textContent!.match(/The store check found a problem\./g)).toHaveLength(1);
+  expect(upkeep.textContent!.match(/A stored record is missing\./g)).toHaveLength(1);
   expect(upkeep.textContent).toContain('Automatic runs are not scheduled: the saved setting is invalid.');
   expect(document.body.textContent).not.toContain(prose);
 });

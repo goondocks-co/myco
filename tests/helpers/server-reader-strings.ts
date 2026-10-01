@@ -1,13 +1,16 @@
 import ts from 'typescript-v6';
 import type { VisibleString } from './visible-strings.ts';
 
-const READER_FIELDS = new Set(['reason', 'detail', 'idleBecause', 'needs', 'findings', 'error']);
+const stringLike = (type: ts.Type): boolean => type.isUnion() ? type.types.some(stringLike) : (type.flags & ts.TypeFlags.StringLike) !== 0;
+
+const READER_FIELDS = new Set(['reason', 'detail', 'idleBecause', 'needs', 'findings', 'error', 'message', 'summary', 'label', 'defers']);
 const READER_CALLS: Readonly<Record<string, readonly number[]>> = {
   badRequest: [0], malformed: [1], skipContext: [0], failStaleRun: [4], failQueuedRun: [4], endQueuedRun: [4],
 };
 
 /** Literal flow into dashboard diagnostics, through constants, helper returns and helper parameters. */
-export function serverReaderStrings(files: readonly string[]): Array<VisibleString & { file: string }> {
+export function serverReaderStrings(files: readonly string[], renderedFields: ReadonlySet<string> = new Set()): Array<VisibleString & { file: string }> {
+  const readerFields = new Set([...READER_FIELDS, ...renderedFields]);
   const program = ts.createProgram([...files], { allowJs: false, noResolve: false, target: ts.ScriptTarget.Latest, module: ts.ModuleKind.NodeNext, moduleResolution: ts.ModuleResolutionKind.NodeNext });
   const checker = program.getTypeChecker();
   const sources = program.getSourceFiles().filter((file) => !file.isDeclarationFile && !file.fileName.includes('node_modules'));
@@ -22,8 +25,8 @@ export function serverReaderStrings(files: readonly string[]): Array<VisibleStri
   for (const source of sources) {
     const isRoot = rootFiles.has(source.fileName.replaceAll('\\', '/'));
     const visit = (node: ts.Node) => {
-      if (isRoot && ts.isPropertyAssignment(node) && READER_FIELDS.has(node.name.getText(source).replace(/^['"]|['"]$/g, ''))) roots.push(node.initializer);
-      if (isRoot && ts.isShorthandPropertyAssignment(node) && READER_FIELDS.has(node.name.text)) {
+      if (isRoot && ts.isPropertyAssignment(node) && readerFields.has(node.name.getText(source).replace(/^['"]|['"]$/g, ''))) roots.push(node.initializer);
+      if (isRoot && ts.isShorthandPropertyAssignment(node) && readerFields.has(node.name.text)) {
         const symbol = checker.getShorthandAssignmentValueSymbol(node);
         for (const declaration of symbol?.declarations ?? []) {
           if (ts.isVariableDeclaration(declaration)) roots.push(declaration.name);
@@ -31,7 +34,8 @@ export function serverReaderStrings(files: readonly string[]): Array<VisibleStri
         }
       }
       if (ts.isBinaryExpression(node) && node.operatorToken.kind === ts.SyntaxKind.EqualsToken) {
-        if (isRoot && ts.isPropertyAccessExpression(node.left) && READER_FIELDS.has(node.left.name.text)) roots.push(node.right);
+        if (isRoot && ts.isPropertyAccessExpression(node.left) && readerFields.has(node.left.name.text)) roots.push(node.right);
+        if (isRoot && ts.isElementAccessExpression(node.left) && ts.isStringLiteralLike(node.left.argumentExpression) && readerFields.has(node.left.argumentExpression.text)) roots.push(node.right);
         const symbol = symbolOf(node.left);
         if (symbol !== undefined) {
           const values = assignments.get(symbol) ?? [];
@@ -43,7 +47,7 @@ export function serverReaderStrings(files: readonly string[]): Array<VisibleStri
         const symbol = symbolOf(node.expression.expression);
         if (symbol !== undefined) assignments.set(symbol, [...(assignments.get(symbol) ?? []), ...node.arguments]);
       }
-      if (isRoot && ts.isNewExpression(node) && /^(BackupApplyError|BackupTooLargeError|RepositoryInputError|SecretValueError|ReleaseProvenanceInputError|InvalidSearch)$/.test(node.expression.getText(source))) node.arguments?.forEach((argument) => roots.push(argument));
+      if (isRoot && ts.isNewExpression(node) && /^(BackupApplyError|BackupTooLargeError|RepositoryInputError|SecretValueError|ReleaseProvenanceInputError|InvalidSearch|RuntimeDraining|RuntimeAlreadyHolding)$/.test(node.expression.getText(source))) node.arguments?.forEach((argument) => roots.push(argument));
       if (ts.isCallExpression(node) || ts.isNewExpression(node)) {
         const name = node.expression.getText(source).split('.').pop()!;
         for (const index of isRoot && Object.hasOwn(READER_CALLS, name) ? READER_CALLS[name]! : []) if (node.arguments?.[index] !== undefined) roots.push(node.arguments?.[index]!);
@@ -94,6 +98,8 @@ export function serverReaderStrings(files: readonly string[]): Array<VisibleStri
       return;
     }
     if (ts.isCallExpression(node) || ts.isNewExpression(node)) {
+      if (ts.isCallExpression(node) && ts.isPropertyAccessExpression(node.expression) &&
+        (node.expression.name.text === 'join' || stringLike(checker.getTypeAtLocation(node.expression.expression)))) flow(node.expression.expression);
       flow(node.expression);
       node.arguments?.forEach(flow);
       return;
@@ -107,4 +113,23 @@ export function serverReaderStrings(files: readonly string[]): Array<VisibleStri
   };
   roots.forEach(flow);
   return out;
+}
+
+/** String-valued fields read by JSX expressions contribute reader roots to the server gate. */
+export function dashboardReaderFields(files: readonly string[]): ReadonlySet<string> {
+  const program = ts.createProgram([...files], { jsx: ts.JsxEmit.ReactJSX, target: ts.ScriptTarget.Latest, module: ts.ModuleKind.NodeNext, moduleResolution: ts.ModuleResolutionKind.NodeNext });
+  const checker = program.getTypeChecker();
+  const fields = new Set<string>();
+  const rendered = (node: ts.Node): void => {
+    if (ts.isJsxAttribute(node)) return;
+    if (ts.isPropertyAccessExpression(node) && stringLike(checker.getTypeAtLocation(node))) fields.add(node.name.text);
+    if (ts.isElementAccessExpression(node) && ts.isStringLiteralLike(node.argumentExpression) && stringLike(checker.getTypeAtLocation(node))) fields.add(node.argumentExpression.text);
+    ts.forEachChild(node, rendered);
+  };
+  const visit = (node: ts.Node): void => {
+    if (ts.isJsxExpression(node) && !ts.isJsxAttribute(node.parent)) { rendered(node); return; }
+    ts.forEachChild(node, visit);
+  };
+  for (const file of files) { const source = program.getSourceFile(file); if (source !== undefined) visit(source); }
+  return fields;
 }

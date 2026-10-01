@@ -393,8 +393,10 @@ describe('store checks on Health', () => {
     const integrity = await screen.findByTestId('maintenance-integrity');
     expect(within(integrity).getByText('The store check found a problem.')).toBeTruthy();
     expect(integrity.textContent).not.toContain('foreign key: smoke_child row 1 names a missing smoke_parent');
+    fireEvent.click(within(integrity).getByRole('button', { name: 'Findings' }));
+    expect(within(integrity).getByText('foreign key: smoke_child row 1 names a missing smoke_parent')).toBeTruthy();
     expect(within(integrity).getByText('…and 2 more not kept')).toBeTruthy();
-    expect(within(integrity).getByText('Unavailable')).toBeTruthy();
+    expect(within(integrity).getByText('This measurement is unavailable.')).toBeTruthy();
     expect(within(integrity).getByText('2.0 MB')).toBeTruthy();
     expect(integrity.textContent).not.toContain('run_9c1e0b7a44');
     const optimize = screen.getByTestId('maintenance-optimize');

@@ -1,10 +1,10 @@
 import { type ReactNode } from 'react';
 import { Link as RouterLink } from 'react-router-dom';
-import { ActionLink, focusRing, ItemLink, StatusChip, TypeChip } from '../../design';
+import { ActionLink, Disclosure, focusRing, ItemLink, StatusChip, TypeChip } from '../../design';
 import { cn } from '../../lib/cn';
 import { count, failureNextStep } from '../today/words';
 import type { FailureGroup, KindSummary } from './outcomes';
-import { failureWords, runNoun } from './words';
+import { failureDetail, failureWords, runNoun } from './words';
 
 export interface OutcomeCardProps {
   kind: KindSummary['kind'];
@@ -168,13 +168,14 @@ export function FailureBlock({ kind, group, window, where, when, machineOf, open
 }) {
   const { failures, producedSince } = group;
   if (failures.length === 0) return null;
-  // Failures with the same cause on the same machine read as one line with every time they happened.
-  const groups = new Map<string, { cause: string; times: string[] }>();
+  // Failures with the same headline, reason and machine share a line with every time they happened.
+  const groups = new Map<string, { cause: string; detail: string | null; times: string[] }>();
   for (const run of failures) {
     const cause = failureWords(run.failure);
     const machine = machineOf(run.id);
-    const key = `${cause}\u0000${machine ?? ''}`;
-    const line = groups.get(key) ?? { cause: machine === null ? cause : `On ${machine}: ${cause}`, times: [] };
+    const detail = failureDetail(run.failure);
+    const key = `${cause}\u0000${detail ?? ''}\u0000${machine ?? ''}`;
+    const line = groups.get(key) ?? { cause: machine === null ? cause : `On ${machine}: ${cause}`, detail, times: [] };
     line.times.push(when(run.at));
     groups.set(key, line);
   }
@@ -186,9 +187,12 @@ export function FailureBlock({ kind, group, window, where, when, machineOf, open
       </p>
       <ul className="flex flex-col gap-s1">
         {[...groups.values()].map((line) => (
-          <li key={`${line.cause}${line.times.join()}`} className="flex flex-col gap-s1 sm:flex-row sm:gap-s3">
+          <li key={`${line.cause}${line.detail ?? ''}${line.times.join()}`} className="flex flex-col gap-s1 sm:flex-row sm:gap-s3">
             <span className="shrink-0 tabular-nums text-muted">{listTimes(line.times)}</span>
-            <span className="min-w-0">{line.cause}</span>
+            <div className="min-w-0">
+              <p>{line.cause}</p>
+              {line.detail !== null && <Disclosure summary="Details"><p className="whitespace-pre-wrap break-words">{line.detail}</p></Disclosure>}
+            </div>
           </li>
         ))}
       </ul>

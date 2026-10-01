@@ -5,7 +5,7 @@
  * schedule". Nothing here names a mechanism or shows an id.
  */
 import { heldByWords } from '@goondocks/myco-shared/run-holds';
-import type { OutcomeKind, Range } from '../today/wire';
+import type { OutcomeKind, Range, WorkRun } from '../today/wire';
 import { causeSentence, clockTime, count, when } from '../today/words';
 import { memberLabel } from '../../lib/member-name';
 import type { CapabilityOffRefusal, DailyLimitRefusal, FreshNeedsAdminRefusal, RunFields, RunOutcomeCounts, RunWorker } from './wire';
@@ -338,7 +338,13 @@ export function runErrorWords(code: string | null | undefined): string {
   return words[code ?? ''] ?? words.run_failed!;
 }
 
-/** Agent reports keep their content; stored diagnostics use the dashboard's words. */
-export function failureWords(failure: { source: 'report' | 'error'; cause?: string; code?: string | null } | null | undefined): string {
-  return failure?.source === 'report' ? causeSentence(failure.cause ?? '') : runErrorWords(failure?.code);
+/** A coded failure uses the dashboard's sentence; an uncoded report retains its own words. */
+export function failureWords(failure: WorkRun['failure'] | undefined): string {
+  return failure?.source === 'report' && failure.code == null ? causeSentence(failure.cause ?? '') : runErrorWords(failure?.code);
+}
+
+/** Machine-reported reasons are available inside the failure's details disclosure. */
+export function failureDetail(failure: WorkRun['failure'] | undefined): string | null {
+  if (failure == null || (failure.source === 'report' && failure.code == null)) return null;
+  return [failure.error, failure.cause].filter((text): text is string => typeof text === 'string' && text.trim() !== '').join('\n') || null;
 }

@@ -238,9 +238,27 @@ export function capabilityWords(capability: { capability: string; label: string 
   return CAPABILITY_WORDS[capability.capability] ?? capability.label;
 }
 
-/** A store finding is described by the dashboard rather than quoting database output. */
+/** The headline for a store finding. */
 const FINDING_WORDS: Readonly<Record<string, string>> = { store_problem: 'The store check found a problem.' };
 
 export function findingWords(code: string | undefined): string {
   return FINDING_WORDS[code ?? ''] ?? FINDING_WORDS.store_problem!;
+}
+
+const SUPPORT_WORDS: Readonly<Record<string, string>> = { check_unsupported: 'Not available on this server.' };
+const MEASUREMENT_STATE_WORDS: Readonly<Record<string, string>> = { measurement_unavailable: 'This measurement is unavailable.' };
+
+export function supportWords(code: string | undefined): string {
+  return SUPPORT_WORDS[code ?? ''] ?? SUPPORT_WORDS.check_unsupported!;
+}
+
+export function measurementWords(code: string | undefined): string {
+  return MEASUREMENT_STATE_WORDS[code ?? ''] ?? MEASUREMENT_STATE_WORDS.measurement_unavailable!;
+}
+
+/** Identical findings share one line and retain their count. */
+export function groupedFindings(findings: readonly string[]): Array<{ text: string; count: number }> {
+  const counts = new Map<string, number>();
+  for (const text of findings) counts.set(text, (counts.get(text) ?? 0) + 1);
+  return [...counts].map(([text, count]) => ({ text, count }));
 }

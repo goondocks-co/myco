@@ -150,10 +150,11 @@ function headlineOf({ run, read, produced }: RunDetailAnswer): string {
   }
 }
 
-/** Why a failed run failed: its last report, which names the cause the stored error hides, else the error. */
+/** The coded failure leads; a server carrying no code can still name its own report. */
 function causeOf({ run, reports }: RunDetailAnswer): string {
+  if (run.errorCode != null) return runErrorWords(run.errorCode);
   const report = latestReport(reports);
-  return failureWords(report === null ? { source: 'error', code: run.errorCode } : { source: 'report', cause: report });
+  return report === null ? runErrorWords(run.errorCode) : failureWords({ source: 'report', cause: report });
 }
 
 /** The run's latest report in its own words, or null when it filed none. */
@@ -240,7 +241,7 @@ function TechnicalDetails({ answer, startedBy, took, now, reports }: {
             <FactRow term="Cost">{cost === null ? 'None reported' : <>{dollars(cost)}<span className="block t-meta text-muted">The agent’s estimate, not a bill</span></>}</FactRow>
             <FactRow term="Steps">{toolCalls.length === 0 ? 'No calls to Myco' : `${count(toolCalls.length, 'call')} to Myco${failedCalls > 0 ? `, ${failedCalls} refused` : ''}`}</FactRow>
           </FactsPanel>
-          {reports.length > 1 && (
+          {(reports.length > 1 || (run.status === 'failed' && reports.length > 0)) && (
             <div className="flex flex-col gap-s2">
               <PartLabel>Everything it reported</PartLabel>
               <ul className="flex flex-col gap-s2">
@@ -257,6 +258,7 @@ function TechnicalDetails({ answer, startedBy, took, now, reports }: {
             <div className="flex flex-col gap-s1">
               <PartLabel>What the run recorded</PartLabel>
               <p className="whitespace-pre-wrap break-words t-mono text-ink-2">{runErrorWords(run.errorCode)}</p>
+              <p className="whitespace-pre-wrap break-words t-mono text-ink-2">{run.error}</p>
             </div>
           )}
         </div>

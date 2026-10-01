@@ -50,8 +50,9 @@ export interface RunFields {
   startedBy: string | null;
   /** The session the run's dispatch named, as a titling run's; null otherwise. */
   targetSessionId: string | null;
-  /** Why a skipped run did not run; null for any other run. */
+  /** The classifier for why a run was skipped. */
   skipReasonCode?: string | null;
+  /** Why a skipped run did not run; null for any other run. */
   skipReason: string | null;
 }
 

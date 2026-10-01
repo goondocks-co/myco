@@ -293,6 +293,24 @@ describe('Myco’s work', () => {
     expect((await within(card('title')).findByRole('link', { name: 'See this week’s sessions →' })).getAttribute('href')).toBe(`/p/${P}/sessions?window=week`);
   });
 
+  it('searches the coded headline and its disclosed reason', async () => {
+    const reason = 'The requested tool was unavailable.';
+    const failed = workRun({ id: 'run_search', projectId: P, kind: 'map', task: 'canopy-map', result: 'failed', at: NOW - HOUR,
+      failure: { source: 'report', code: 'machine_did_not_start', cause: 'The machine recorded a missing tool.', error: reason } });
+    server(week({ work: { ...WEEK_WORK, runs: [...WEEK_WORK.runs.filter((run) => run.kind !== 'map'), failed] } }));
+    mount(`/p/${P}/work`);
+    await findCard('map');
+    const search = screen.getByRole('searchbox', { name: 'Search what Myco did' });
+    for (const query of ['No machine started', 'requested tool', 'recorded a missing tool']) {
+      fireEvent.change(search, { target: { value: query } });
+      await waitFor(() => expect(card('map').querySelector('[data-failure]')?.textContent).toContain('No machine started the task within a day.'));
+    }
+    expect(card('map').textContent).not.toContain(reason);
+    fireEvent.click(within(card('map')).getByRole('button', { name: 'Details' }));
+    expect(card('map').textContent).toContain(reason);
+    expect(card('map').textContent).toContain('The machine recorded a missing tool.');
+  });
+
   it('keeps the window, the outcome and the search in the URL, and reads the window it names', async () => {
     server(week());
     mount(`/p/${P}/work`);
