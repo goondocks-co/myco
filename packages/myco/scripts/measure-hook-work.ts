@@ -39,15 +39,18 @@ const runs = Number(flag('--runs', '30'));
 const scale = Number(flag('--scale', process.platform === 'linux' ? '1' : process.platform === 'darwin' ? '2' : '3'));
 const prefix = flag('--prefix', '').split(' ').filter(Boolean);
 
-/** Each hook's median budget, in ms, where Linux runs natively; session start and end run `git` for the branch and head. */
+/**
+ * Each hook's median budget, in ms, where Linux runs natively: about half again the slowest median a CI runner has
+ * shown (one runner instance is up to 40% slower than the next). Session start and end run `git` for the branch and head.
+ */
 const BUDGET_MS: Record<string, number> = {
   'session-start': 150,
-  'user-prompt-submit': 80,
-  'pre-tool-use': 60,
-  'post-tool-use': 80,
-  'subagent-start': 80,
-  'subagent-stop': 80,
-  stop: 100,
+  'user-prompt-submit': 100,
+  'pre-tool-use': 70,
+  'post-tool-use': 100,
+  'subagent-start': 100,
+  'subagent-stop': 100,
+  stop: 120,
   'session-end': 150,
 };
 /** The slowest any one run of any hook may be, times the scale: past every runner stall seen, short of any wait. */
