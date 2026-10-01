@@ -1,5 +1,7 @@
 import { z } from 'zod';
 import { SPORE_STATUSES, type SporeStatus } from '@myco/constants/spore-status.js';
+// The observation types are the one list the Deployment and the dashboard read; the 1.4 schemas below read it too.
+import { OBSERVATION_TYPES } from '@goondocks/myco-shared/member-protocol';
 
 export const SessionFrontmatterSchema = z.object({
   type: z.literal('session'),
@@ -64,7 +66,6 @@ export const PlanFrontmatterSchema = z.object({
  * search ranks them uniformly, and downstream consumers should treat the
  * whole set as the renderable universe.
  */
-import { OBSERVATION_TYPES } from '@goondocks/myco-shared/member-protocol';
 export { OBSERVATION_TYPES };
 
 // Canonical spore status set lives in constants/spore-status.ts; re-exported

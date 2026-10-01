@@ -164,6 +164,27 @@ function dataClasses(): string[] {
 // ---------------------------------------------------------------------------
 
 /**
+ * The 2.0 dashboard's route table, the one `App.tsx` renders. It is the dashboard's own TSX, which the tests typecheck
+ * program does not compile, so it is loaded by path and read for its paths alone.
+ */
+const ROUTE_TABLE = path.join(REPO_ROOT, 'packages', 'myco-server', 'ui', 'src', 'routes', 'table.tsx');
+
+/** A route tree as the table holds it: a path, perhaps, and children, perhaps. */
+interface RouteNode { path?: string; children?: RouteNode[] }
+
+/** The table's `routePaths`, read only while the table is there; a table that moved reports through the registry's source. */
+const routePaths: ((routes?: RouteNode[]) => string[]) | null = fs.existsSync(ROUTE_TABLE)
+  ? ((await import(ROUTE_TABLE)) as { routePaths: (routes?: RouteNode[]) => string[] }).routePaths
+  : null;
+
+const DECLARED_LEAVES = path.join(SRC_ROOT, 'config', 'declared-leaves.ts');
+
+/** The 1.4 config schema's declared leaves, read only while the schema is there to read. */
+const declaredLeafPaths: (() => string[]) | null = fs.existsSync(DECLARED_LEAVES)
+  ? ((await import(DECLARED_LEAVES)) as { declaredLeafPaths: () => string[] }).declaredLeafPaths
+  : null;
+
+/**
  * Every leaf of the defaulted config schema, with dynamic blocks collapsed to the
  * prefix §7.8 classifies them under.
  *
@@ -177,20 +198,6 @@ function dataClasses(): string[] {
  * A coverage gate reading a defaulted parse is blind precisely where coverage
  * matters most.
  */
-/**
- * The 2.0 dashboard's route table, the one `App.tsx` renders. It is the dashboard's own TSX, which the tests typecheck
- * program does not compile, so it is loaded by path and read for its paths alone.
- */
-const ROUTE_TABLE = path.join(REPO_ROOT, 'packages', 'myco-server', 'ui', 'src', 'routes', 'table.tsx');
-const { routePaths } = (await import(ROUTE_TABLE)) as { routePaths: () => string[] };
-
-const DECLARED_LEAVES = path.join(SRC_ROOT, 'config', 'declared-leaves.ts');
-
-/** The 1.4 config schema's declared leaves, read only while the schema is there to read. */
-const declaredLeafPaths: (() => string[]) | null = fs.existsSync(DECLARED_LEAVES)
-  ? ((await import(DECLARED_LEAVES)) as { declaredLeafPaths: () => string[] }).declaredLeafPaths
-  : null;
-
 function configLeaves(): string[] {
   const out = new Set<string>();
   for (const leaf of declaredLeafPaths!()) {
@@ -201,12 +208,17 @@ function configLeaves(): string[] {
   return [...out].sort();
 }
 
-/** A registry: what it is called, the repo path that holds it, the §7 section its rows sit in, and how its tokens are read. */
+/**
+ * A registry: what it is called, the repo path that holds it, the §7 section its rows sit in, and how its tokens are
+ * read. `answers` marks the registry whose tokens are what 2.0 answers at in its section: each of its tokens sits on a
+ * KEEP or NEW row, and every KEEP or NEW row of its section is one of its tokens.
+ */
 interface Registry {
   label: string;
   source: string;
   section: string;
   scan: () => string[];
+  answers?: true;
 }
 
 const REGISTRIES: readonly Registry[] = [
@@ -217,7 +229,7 @@ const REGISTRIES: readonly Registry[] = [
   { label: 'scheduled jobs', source: 'packages/myco/src/constants/power-jobs.ts', section: '7.5', scan: scheduledJobs },
   { label: 'data classes', source: 'packages/myco-server/src/db', section: '7.6', scan: dataClasses },
   { label: 'config leaves', source: 'packages/myco/src/config/declared-leaves.ts', section: '7.8', scan: configLeaves },
-  { label: '2.0 dashboard routes', source: 'packages/myco-server/ui/src/routes/table.tsx', section: '7.2', scan: () => [...new Set(routePaths())].sort() },
+  { label: '2.0 dashboard routes', source: 'packages/myco-server/ui/src/routes/table.tsx', section: '7.2', answers: true, scan: () => [...new Set(routePaths!())].sort() },
   { label: 'retained tasks', source: 'packages/myco-server/src/core/task-catalogue.ts', section: '7.4', scan: () => [...RETAINED_TASKS].sort() },
   { label: 'task schedule', source: 'packages/myco-server/src/core/jobs.ts', section: '7.4', scan: () => Object.keys(TASK_SCHEDULE).sort() },
   { label: 'server jobs', source: 'packages/myco-server/src/core/jobs.ts', section: '7.5', scan: () => SERVER_JOBS.map((job) => job.name).sort() },
@@ -232,6 +244,18 @@ const REGISTRIES: readonly Registry[] = [
 const RETIRED_REGISTRIES: readonly string[] = [];
 
 const present = (registry: Registry): boolean => fs.existsSync(path.join(REPO_ROOT, registry.source));
+
+/** The tokens of a section that have no row there. */
+const missingRows = (section: string, tokens: readonly string[]): string[] => tokens.filter((t) => !rowIn(section, t));
+
+/**
+ * KEEP and NEW rows in a section whose answering registry does not produce them, each with why: a row the 1.4 surface
+ * produces that 2.0 does not answer at, until #1170 re-disposes it.
+ */
+const UNANSWERED_KEPT_ROWS: Readonly<Record<string, string>> = {
+  '7.2 sessions': "a 1.4 dashboard route, relative to the 1.4 project shell; #1170 P2 re-disposes it when the 1.4 dashboard's registry retires",
+  '7.2 sessions/:id': "a 1.4 dashboard route, relative to the 1.4 project shell; #1170 P2 re-disposes it when the 1.4 dashboard's registry retires",
+};
 
 /**
  * KEEP and NEW rows in a section a live registry owns that no registry produces, each with why. Each is a capability
@@ -259,7 +283,7 @@ describe('feature-preservation ledger completeness', () => {
       const tokens = scan();
       expect(tokens.length).toBeGreaterThan(0);
 
-      const missing = tokens.filter((t) => !rowIn(registry.section, t));
+      const missing = missingRows(registry.section, tokens);
       expect(
         missing,
         `${label} with no ledger row in docs/architecture/myco-2.0.md §${registry.section} — every capability needs an explicit KEEP/REPLACE/DROP and an owning surface: ${missing.join(', ')}`,
@@ -300,6 +324,25 @@ describe('feature-preservation ledger completeness', () => {
     const sections = [...new Set(LEDGER.map((row) => row.section))].sort();
     const owned = new Set(REGISTRIES.map((registry) => registry.section));
     expect(sections.filter((section) => !owned.has(section)), 'a §7 section no registry owns: its rows answer to nothing').toEqual([]);
+  });
+
+  it('reads a nested route as the full path it answers at, and finds a nested route with no row', () => {
+    const tree: RouteNode[] = [{ children: [{ path: '/p/:projectId', children: [{ path: 'sessions' }, { path: 'sessions/:id' }, { path: 'unrowed' }] }] }];
+    expect(routePaths!(tree)).toEqual(['/p/:projectId', '/p/:projectId/sessions', '/p/:projectId/sessions/:id', '/p/:projectId/unrowed']);
+    expect(missingRows('7.2', routePaths!(tree))).toEqual(['/p/:projectId/sessions/:id', '/p/:projectId/unrowed']);
+  });
+
+  it('holds a section 2.0 answers in to what it answers: its routes sit on KEEP or NEW rows, and its KEEP or NEW rows are its routes', () => {
+    for (const registry of REGISTRIES.filter((r) => r.answers === true && present(r))) {
+      const answered = new Set(registry.scan());
+      const replaced = [...answered].filter((t) => { const row = rowIn(registry.section, t); return row !== undefined && row.disposition !== 'KEEP' && row.disposition !== 'NEW'; });
+      expect(replaced, `${registry.label} answers at a route its §${registry.section} row replaces or drops: what 2.0 serves is kept`).toEqual([]);
+      const unanswered = LEDGER
+        .filter((row) => row.section === registry.section && (row.disposition === 'KEEP' || row.disposition === 'NEW') && !answered.has(row.token))
+        .map((row) => `${row.section} ${row.token}`);
+      expect(unanswered.filter((key) => !(key in UNANSWERED_KEPT_ROWS)), `a KEEP or NEW §${registry.section} row ${registry.label} does not answer at`).toEqual([]);
+      expect(Object.keys(UNANSWERED_KEPT_ROWS).filter((key) => key.startsWith(`${registry.section} `) && !unanswered.includes(key)), 'an UNANSWERED_KEPT_ROWS entry now answered: delete it').toEqual([]);
+    }
   });
 
   it('keeps no capability whose code is gone: every KEEP or NEW row in a live registry\'s section is a token one of them produces', () => {

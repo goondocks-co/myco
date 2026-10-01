@@ -393,9 +393,9 @@ The 1.4 URL shape is Grove- and machine-scoped (`/g/:groveSlug/...`, `/machine`)
 | `sessions/:id` | KEEP | UI, Core | Blk | Session detail — facts, children, transcript | #918 |
 | `cortex` | DROP | — | Blk | **Dropped by #1162**: the page does not port. Its one surviving control is the `instructions.template` Settings field (§7.8); the digest and the code map keep their artifacts and their server routes until #1170 sweeps them, with both losses recorded there | #1162 |
 | `skills` | DROP | — | Blk | **Dropped by #1162**: with the generation pipeline going and skills hand-written in the plugins, the page has nothing to curate, and `myco_skills` answers from the catalogue Myco ships rather than from rows (#1156). A search hit of type `skill` therefore has no page and is rendered without a link. The candidate queue and the skills tables go with the pipeline in #1170 | #1162 |
-| `agent` | REPLACE | UI, Core | Blk | `agent_runs` is rows, not files. **Replaced by #1162** at `/p/:projectId/runs`: one row per run outcome with its close evidence; the 1.4 page is not ported (plan §2.8) | #1162 |
-| `agent/:id` | REPLACE | UI, Core | Blk | Run detail with phases and write intents. **Replaced by #1162** at `/p/:projectId/runs/:runId`: the task, the credential that dispatched it, the calls it made back to the Deployment, and its reports; phases and write intents go with the executor (plan §2.5) | #1162 |
-| `/settings` | REPLACE | UI, Core | Blk | Rebuilt against Deployment Settings + Member Settings; the four-tier scoped model does not survive | #915 |
+| `agent` | REPLACE | UI, Core | Blk | `agent_runs` is rows, not files. Replaced by a project's Myco's work at `/p/:projectId/work`, where the moved address `/p/:projectId/runs` leads: each outcome's runs with their close evidence; the 1.4 page is not ported (plan §2.8) | #1162 |
+| `agent/:id` | REPLACE | UI, Core | Blk | Run detail with phases and write intents. Replaced by one run's panel at `/p/:projectId/work/runs/:runId`, where the moved address `/p/:projectId/runs/:runId` leads: the task, the credential that dispatched it, the calls it made back to the Deployment, and its reports; phases and write intents go with the executor (plan §2.5) | #1162 |
+| `/settings` | KEEP | UI, Core | Blk | Settings for an admin, in its five sections: Myco's work here, the others at `/settings/{models,capture,backups,access}` | #915 |
 | `/logs` | REPLACE | UI, Core | Blk | Server logs from emitted telemetry. 1.4's **local** Logs page does not port — local logs are CLI-only (**M**) | #922 |
 | `/g/:groveSlug/operations` | REPLACE | UI, W, C | Blk | Backup/diagnostics/update, per-target mechanism | #923 |
 | `/g/:groveSlug/dashboard` | REPLACE | UI | Blk | Grove dashboard folds into the Deployment status surface | #918 |
@@ -413,15 +413,15 @@ The 1.4 URL shape is Grove- and machine-scoped (`/g/:groveSlug/...`, `/machine`)
 | `/g/:groveSlug/maintenance` | DROP | — | Blk | Legacy redirect; maintenance folds into operations | #925 |
 | `/g/:groveSlug/team` | DROP | — | Blk | Legacy redirect to a retired page | #925 |
 | `/g/:groveSlug/team/maintenance` | DROP | — | Blk | Legacy redirect to a retired page | #925 |
-| `/sessions` | KEEP | UI, Core | Blk | The sessions across every project, the table narrowed to one at `/p/:projectId/sessions` (#1518) | #925 |
+| `/sessions` | KEEP | UI, Core | Blk | The sessions across every project, the table narrowed to one at `/p/:projectId/sessions` | #1518 |
 | `/sessions/:id` | DROP | — | Blk | Legacy unscoped redirect | #925 |
 | `/cortex` | DROP | — | Blk | Legacy unscoped redirect | #925 |
 | `/mycelium` (unscoped) | DROP | — | Blk | Legacy redirect to a dropped page | #925 |
 | `/agent` | DROP | — | Blk | Legacy unscoped redirect | #925 |
 | `/agent/:id` | DROP | — | Blk | Legacy unscoped redirect | #925 |
 | `/skills` | DROP | — | Blk | Legacy unscoped redirect | #925 |
-| `/operations` | REPLACE | UI | Blk | A moved address: leads to Health's upkeep, keeping its query (`routes/moved.tsx`) | #925 |
-| `*` | KEEP | UI | Blk | Catch-all redirect | #918 |
+| `/operations` | KEEP | UI | Blk | A moved address: leads to Health's upkeep, keeping its query (`routes/moved.tsx`) | #925 |
+| `*` | KEEP | UI | Blk | Not found: any address no route answers at | #918 |
 
 **The 2.0 dashboard's own routes.** The rows above dispose of the 1.4 surface, and a row there whose path the 2.0 dashboard also answers at describes what it serves there. These are the rest of the routes the 2.0 dashboard registers in its one route table (`packages/myco-server/ui/src/routes/table.tsx`, which `App.tsx` renders), and the completeness gate reads that table, so a route with no row here or above fails.
 
@@ -463,7 +463,7 @@ The 1.4 URL shape is Grove- and machine-scoped (`/g/:groveSlug/...`, `/machine`)
 | `/p/:projectId/settings` | NEW | UI, Core | Blk | A project's settings: capabilities, repository, access keys and release tracking | #1518 |
 | `/status/health` | NEW | UI, Core | Blk | Health: status, workers, backups, upkeep, measures and what needs an admin | #1518 |
 
-**Still not ported, and that is a decision.** The 1.4 Agent, Cortex, Skills, Team and Canopy pages do not appear in the 2.0 dashboard, and the list above is the whole of what replaced them; the code map a map run writes is a panel on the Project home (#1378), not a page of its own. The rows for `cortex` and `skills` are DROP, not deferral: nothing is waiting to build them.
+**Still not ported, and that is a decision.** The 1.4 Agent, Cortex, Skills, Team and Canopy pages do not appear in the 2.0 dashboard, and the list above is the whole of what replaced them; the code map a map run writes is a page of its own, `/p/:projectId/knowledge/map` (#1378). The rows for `cortex` and `skills` are DROP, not deferral: nothing is waiting to build them.
 
 ### 7.3 MCP tools — `packages/myco/src/tools/definitions.ts`
 

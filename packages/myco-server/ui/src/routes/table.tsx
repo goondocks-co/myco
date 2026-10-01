@@ -37,7 +37,19 @@ export const ROUTES: RouteObject[] = [
   },
 ];
 
-/** Every path a route table answers at, nested routes included. */
-export function routePaths(routes: readonly RouteObject[] = ROUTES): string[] {
-  return routes.flatMap((route) => [...(route.path === undefined ? [] : [route.path]), ...routePaths(route.children ?? [])]);
+/**
+ * Every path a route table answers at, nested routes included, each as the full path it answers at: a child's
+ * relative path is joined to its parent's, and a layout route with no path passes its parent's path on unchanged.
+ */
+export function routePaths(routes: readonly RouteObject[] = ROUTES, parent = ''): string[] {
+  return routes.flatMap((route) => {
+    const full = route.path === undefined ? null : joinPath(parent, route.path);
+    return [...(full === null ? [] : [full]), ...routePaths(route.children ?? [], full ?? parent)];
+  });
+}
+
+/** A route's path under its parent's: an absolute one stands alone, and a relative one at the top stands as written. */
+function joinPath(parent: string, path: string): string {
+  if (path.startsWith('/') || parent === '') return path;
+  return `${parent.replace(/\/+$/, '')}/${path}`;
 }
