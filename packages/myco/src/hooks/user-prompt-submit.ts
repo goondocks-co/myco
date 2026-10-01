@@ -1,8 +1,8 @@
 import { evaluateUserPromptRules, resolveSubagentThread } from './capture-rules.js';
 import { readTranscriptMeta } from './transcript-meta.js';
-import { runMemberHook, type HookMainOptions, type HookRun } from '../member/capture.js';
-import { deriveId, mintId, planEvent, planKeyForPromptTag, planKeyForTag, promptEvent, type OutboundEvent } from '../member/envelope.js';
-import { servedContext } from '../member/recall.js';
+import { runMemberHook, type HookMainOptions } from '../member/capture.js';
+import { deriveId, mintId, planEvent, planKeyForPromptTag, planKeyForTag, promptEvent, turnEvent, type OutboundEvent } from '../member/envelope.js';
+import { featureAdvertised, PROMPT_ASK_MAX_CHARS, readSessionContext } from '../member/context-cache.js';
 import { readSessionState } from '../member/session-state.js';
 import { firstHeading, sha256Text } from '../member/text.js';
 import type { HookResponse } from './response.js';
@@ -10,18 +10,17 @@ import { planTagEnvelopeRegex } from '../plans/tag-envelopes.js';
 import { HOOK_CONFIG } from './hook-config.generated.js';
 import { transcriptWritesTurnRows } from './turn-rows.js';
 
-const RECALL_PATH = '/context/prompt';
-
 /**
- * What the Deployment serves this prompt, appended to the `Session::` line
- * after a blank line. Nothing served leaves that line standing alone.
+ * The `Session::` line, with what the Deployment served the session's previous prompt after a blank line: the helper
+ * asks with each prompt's text, and the next prompt renders the answer. Each answer is rendered once: while no newer
+ * one arrives (the Deployment unreachable, say), the prompts after it are served the line alone. `rendered` names the
+ * answer this prompt rendered, recorded with its records.
  */
-function recall(session: string, promptId: string, text: string, response: HookResponse) {
-  return async (run: HookRun): Promise<HookResponse | undefined> => {
-    const served = await servedContext(run, RECALL_PATH, { sessionId: session, promptId, text });
-    if (served === undefined) return undefined;
-    return { ...response, additionalContext: `${response.additionalContext}\n\n${served}` };
-  };
+function withServed(spoolDir: string, sessionId: string, response: HookResponse): { response: HookResponse; rendered?: string } {
+  const served = readSessionContext(spoolDir, sessionId).prompt;
+  if (served === undefined || served.context.length === 0) return { response };
+  if (readSessionState(spoolDir, sessionId).renderedPrompt === served.promptId) return { response };
+  return { response: { ...response, additionalContext: `${response.additionalContext}\n\n${served.context}` }, rendered: served.promptId };
 }
 
 export async function main(opts: HookMainOptions = {}) {
@@ -63,6 +62,8 @@ export async function main(opts: HookMainOptions = {}) {
     const events: OutboundEvent[] = transcriptWritesRows
       ? []
       : [promptEvent(ctx, { promptId, text, origin: decision.origin, parentPromptId, threadId, threadLabel: thread?.threadLabel ?? undefined })];
+    // The turn starts with the person's prompt: a Deployment that takes `turn` is told so, stamped now.
+    if (featureAdvertised(spool.dir, 'turn')) events.push(turnEvent(ctx, { phase: 'start', promptId }));
     // A plan a person pasted inside a tag envelope is captured with the prompt,
     // whichever side writes the turn: the Deployment's parse scans assistant
     // text for plans and a pasted one is the person's. It keys on the prompt
@@ -89,22 +90,25 @@ export async function main(opts: HookMainOptions = {}) {
         }
       }
     }
+    const served = withServed(spool.dir, sessionId, { ...response, promptId });
     return {
       events,
       // The receipt lands with the event: recorded first, a crash in between
       // would leave the transcript pass skipping this prompt by hash forever.
       // A transcript-first symbiont keeps only the plan receipts: its prompt
       // row is the parse's, and the id minted here names no row.
-      record: transcriptWritesRows && plans.length === 0 ? undefined : (state) => {
+      record: (state) => {
         if (!transcriptWritesRows) {
           state.promptId = promptId;
           state.prompts[hash] = promptId;
           state.planTagCount += plans.length;
         }
         for (const [planHash, planKey] of plans) state.planHashes[planHash] = planKey;
+        if (served.rendered !== undefined) state.renderedPrompt = served.rendered;
       },
-      response: { ...response, promptId },
-      context: recall(sessionId, promptId, text, { ...response, promptId }),
+      response: served.response,
+      // The helper asks the Deployment with this prompt's text; its answer is the next prompt's context.
+      ask: { kind: 'prompt', promptId, text: text.slice(0, PROMPT_ASK_MAX_CHARS), at: run.now() },
     };
   });
 }

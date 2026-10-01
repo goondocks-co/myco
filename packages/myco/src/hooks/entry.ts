@@ -6,6 +6,7 @@
  * closure is held light by `tests/meta/hook-entry-closure.test.ts`.
  */
 import { runLaunchPreamble } from '../cli/launch-preamble.js';
+import { recordStartingJob } from '../runtime/spawn-detached.js';
 import { parseCredentialFlag } from '../member/credential.js';
 import type { HookMainOptions } from '../member/capture.js';
 
@@ -32,14 +33,17 @@ export const HOOK_DISPATCH = {
 
 export type HookName = keyof typeof HOOK_DISPATCH;
 
-const isHookName = (name: string): name is HookName => Object.hasOwn(HOOK_DISPATCH, name);
+export const isHookName = (name: string): name is HookName => Object.hasOwn(HOOK_DISPATCH, name);
 
 /**
  * Run `myco hook <name> [flags]`: anchor the process to the harness's project and honour its runtime pin, then run the
  * named hook with the credential source its command declares. An unknown name exits 1 and names the hooks there are.
  */
-export async function runHook(args: readonly string[]): Promise<void> {
-  runLaunchPreamble('hook', [...args]);
+export async function runHook(args: readonly string[], deps: { preamble?: typeof runLaunchPreamble } = {}): Promise<void> {
+  // Before anything is spawned, the preamble's runtime-pin re-exec included: what a helper started from this hook can
+  // outlive depends on the job it began in.
+  recordStartingJob();
+  (deps.preamble ?? runLaunchPreamble)('hook', [...args]);
   const hookName = args[0] ?? '';
   if (!isHookName(hookName)) {
     console.error(`Unknown hook: ${hookName}. Available: ${Object.keys(HOOK_DISPATCH).join(', ')}`);

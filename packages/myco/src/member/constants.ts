@@ -168,8 +168,6 @@ export const CONNECT_TIMEOUT_CAP_MS = 2_000;
 export const MEMBER_DEFAULT_HOOK_TIMEOUT_MS = 5_000;
 /** Per-request timeout when no harness budget applies (`myco member drain`). */
 export const UNBOUNDED_REQUEST_TIMEOUT_MS = 60_000;
-/** The most transcript work SessionEnd does inside its budget. */
-export const SESSION_END_TRANSCRIPT_BUDGET_MS = 4_000;
 /** Harness events the member registers; PreToolUse is never among them. */
 export const NEVER_DRAINS_HOOK = 'pre-tool-use';
 

@@ -68,10 +68,10 @@ function onDisk(text: string, sessionId = SESSION): string {
 /** The retained hooks over one session: start, the prompt hook for the typed prompt, the turn end, the session end. */
 async function replay(file: string, sessionId = SESSION, prompt = 'add the retention window'): Promise<void> {
   const common = { session_id: sessionId, transcript_path: file, cwd: '/repo' };
-  await runHook('session-start', { ...common, hook_event_name: 'SessionStart' }, { fetch: spy.fetch });
-  await runHook('user-prompt-submit', { ...common, hook_event_name: 'UserPromptSubmit', prompt }, { fetch: spy.fetch });
-  await runHook('stop', { ...common, hook_event_name: 'Stop', last_assistant_message: 'Tests pass.' }, { fetch: spy.fetch });
-  await runHook('session-end', { ...common, hook_event_name: 'SessionEnd' }, { fetch: spy.fetch });
+  await runHook('session-start', { ...common, hook_event_name: 'SessionStart' }, { helpers: 'run', fetch: spy.fetch });
+  await runHook('user-prompt-submit', { ...common, hook_event_name: 'UserPromptSubmit', prompt }, { helpers: 'run', fetch: spy.fetch });
+  await runHook('stop', { ...common, hook_event_name: 'Stop', last_assistant_message: 'Tests pass.' }, { helpers: 'run', fetch: spy.fetch });
+  await runHook('session-end', { ...common, hook_event_name: 'SessionEnd' }, { helpers: 'run', fetch: spy.fetch });
   for (let pass = 0; pass < 20; pass += 1) {
     if ((await parseTranscripts(rig.env.serverEnv, Date.now())).changed === 0) break;
   }
@@ -111,10 +111,11 @@ describe('retained-hook replay reproduces the parity rows', () => {
     await replay(onDisk(transcriptText));
     const producers = (kind: string) => new Set((rig.env.sqlite.query(`SELECT DISTINCT producer_adapter a FROM events WHERE kind = ?`).all(kind) as { a: string }[]).map((r) => r.a));
     for (const kind of ['prompt', 'tool.use', 'response', 'plan']) expect({ kind, producers: [...producers(kind)] }).toEqual({ kind, producers: [TRANSCRIPT_PRODUCER.adapter] });
-    const member = (rig.env.sqlite.query(`SELECT kind FROM events WHERE producer_adapter <> ? ORDER BY received_at, rowid`).all(TRANSCRIPT_PRODUCER.adapter) as { kind: string }[]).map((r) => r.kind);
+    // A turn's start and end are the member's own records of when the turn ran, not rows of it.
+    const member = (rig.env.sqlite.query(`SELECT kind FROM events WHERE producer_adapter <> ? AND kind <> 'turn' ORDER BY received_at, rowid`).all(TRANSCRIPT_PRODUCER.adapter) as { kind: string }[]).map((r) => r.kind);
     expect(member).toEqual(['session.start', 'transcript.segment', 'session.end']);
     // One events row per fact: a second writer would show here before it showed anywhere else.
-    expect(rig.rows('events')).toBe(3 + 2 + 1 + 1 + 2);
+    expect((rig.env.sqlite.query(`SELECT COUNT(*) AS n FROM events WHERE kind <> 'turn'`).get() as { n: number }).n).toBe(3 + 2 + 1 + 1 + 2);
     expect(rig.rows('prompt_batches')).toBe(2);
     expect(rig.rows('responses')).toBe(2);
   });

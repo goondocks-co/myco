@@ -114,6 +114,14 @@ export const recall: ParityScenario = {
     expect(atStart.kind).toBe('cortex');
     expect(await servedAtStart(startSession))
       .toEqual({ persisted: true, context: '', parts: [], skipped: ['repeat'], kind: 'cortex' });
+    // A member about to have sessions previews the same block, as often as it asks, and no session is recorded.
+    const recorded = async () => (await target.sql(`SELECT COUNT(*) AS n FROM session_injections WHERE project_id = ${lit(target.projectId)}`)) as Array<{ n: number }>;
+    const before = await recorded();
+    for (let i = 0; i < 2; i++) {
+      const preview = await sessionBlock({ kind: 'start', preview: true });
+      expect({ persisted: preview.persisted, context: preview.context }).toEqual({ persisted: true, context: atStart.context });
+    }
+    expect(await recorded()).toEqual(before);
 
     // Two delegations of one type are two subagents, and each is served.
     for (const agentId of ['a1', 'a2']) {

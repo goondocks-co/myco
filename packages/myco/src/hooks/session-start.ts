@@ -1,66 +1,32 @@
-import fs from 'node:fs';
 import { evaluateSessionCaptureRules } from './capture-rules.js';
 import { readTranscriptMeta } from './transcript-meta.js';
-import { AntigravityJsonlParser } from '../symbionts/parsers/antigravity-jsonl.js';
 import { gitFacts } from '../member/git-facts.js';
 import { hookCwd, runMemberHook, type HookMainOptions, type HookRun } from '../member/capture.js';
-import { deriveId, promptEvent, sessionStartEvent, type OutboundEvent } from '../member/envelope.js';
-import { servedOnce } from '../member/recall.js';
+import { sessionStartEvent, type OutboundEvent } from '../member/envelope.js';
 import { withNotice } from '../member/delivery-notice.js';
-import { compactionStart, recordCompaction, sessionContextRequest } from '../member/compaction.js';
+import { compactionStart, recordCompaction } from '../member/compaction.js';
+import { projectLineOnly, renderedBlock, type ContextAsk, type SessionBlockKind } from '../member/context-cache.js';
+import { BLOCK_JOIN } from '@goondocks/myco-shared/recall';
 import { readSessionState } from '../member/session-state.js';
 import { sessionLineage } from '../member/transcript.js';
-import { sha256Text } from '../member/text.js';
+import { TRANSCRIPT_PROMPTS_AGENT } from '../member/transcript-prompts.js';
+import { sessionInjectionKind } from '@goondocks/myco-shared/recall';
+import { isCompactionOrdinal } from '@goondocks/myco-shared/recall';
 import { HOOK_CONFIG } from './hook-config.generated.js';
 import type { HookResponse } from './response.js';
 
-const antigravityParser = new AntigravityJsonlParser();
-
-const SESSION_RECALL_PATH = '/context/session';
+export { readAntigravityPromptsFromTranscript } from '../member/transcript-prompts.js';
 
 /**
- * What the Deployment serves this session, with the branch and the session id
- * under it — each on its own line, separated by a blank line, in the shape the
- * harness receives them in.
- *
- * A symbiont whose transcript is written after this hook fires spends up to
- * 1 500 ms waiting for its first turn above, and the seam runs on what the
- * budget has left after that wait.
+ * The block served at the session's start (or a compaction's), rendered here (`renderedBlock`), with the branch and
+ * the session id under it: each on its own line, separated by a blank line, in the shape the harness receives them
+ * in. Served once per session and kind.
  */
-function recall(sessionId: string, branch: string | undefined, remote: string | undefined) {
-  return async (run: HookRun): Promise<HookResponse | undefined> => {
-    const request = sessionContextRequest(run, remote);
-    if (request === undefined) return undefined;
-    const served = await servedOnce(run, SESSION_RECALL_PATH, request);
-    if (served === undefined) return undefined;
-    const lines = [served, ...(branch ? [`Branch:: \`${branch}\``] : []), `Session:: \`${sessionId}\``];
-    return { additionalContext: lines.join('\n\n') };
-  };
-}
-
-/**
- * Read AGY `transcript_full.jsonl` and return the user prompts in order. Empty
- * array on missing/unreadable transcript so callers can no-op.
- */
-export function readAntigravityPromptsFromTranscript(transcriptPath: string): string[] {
-  try {
-    const content = fs.readFileSync(transcriptPath, 'utf-8');
-    return antigravityParser
-      .parseTurns(content)
-      .map((t) => t.prompt)
-      .filter((p): p is string => typeof p === 'string' && p.length > 0);
-  } catch {
-    return [];
-  }
-}
-
-/** Antigravity IDE writes the transcript after PreInvocation fires; one short retry catches the first turn. */
-const ANTIGRAVITY_TRANSCRIPT_RETRY_MS = 1500;
-async function readAntigravityPromptsWithRetry(transcriptPath: string): Promise<string[]> {
-  const first = readAntigravityPromptsFromTranscript(transcriptPath);
-  if (first.length > 0) return first;
-  await new Promise((resolve) => setTimeout(resolve, ANTIGRAVITY_TRANSCRIPT_RETRY_MS));
-  return readAntigravityPromptsFromTranscript(transcriptPath);
+function sessionStartBlock(run: HookRun, kind: SessionBlockKind, branch: string | undefined): { response: HookResponse; complete: boolean } | undefined {
+  const block = renderedBlock(run.spool.dir, run.credential.projectId, kind);
+  if (block === undefined) return undefined;
+  const lines = [block.text, ...(branch ? [`Branch:: \`${branch}\``] : []), `Session:: \`${run.sessionId}\``];
+  return { response: { additionalContext: lines.join(BLOCK_JOIN) }, complete: block.complete };
 }
 
 export async function main(opts: HookMainOptions = {}) {
@@ -86,37 +52,35 @@ export async function main(opts: HookMainOptions = {}) {
       parentReason: lineage?.parentReason,
     })];
 
-    // Antigravity has no UserPromptSubmit equivalent: its prompts live in the
-    // transcript and are captured here, each once, under a derived id. The
-    // receipts travel back with the events so neither can outlive the other.
-    const captured: Array<[string, string]> = [];
-    if (agent === 'antigravity' && transcriptPath) {
-      const seen = readSessionState(run.spool.dir, sessionId).prompts;
-      const prompts = await readAntigravityPromptsWithRetry(transcriptPath);
-      prompts.forEach((text, position) => {
-        const hash = sha256Text(text);
-        if (seen[hash] || captured.some(([h]) => h === hash)) return;
-        const promptId = deriveId('transcript-prompt', sessionId, String(position));
-        captured.push([hash, promptId]);
-        events.push(promptEvent(ctx, { promptId, text }));
-      });
-    }
-    // A start the harness fires after compacting is the compaction's own
-    // record: the ordinal moves here, under the append lock, before the block
-    // for this compaction is asked for.
+    // A start the harness fires after compacting is the compaction's own record: the ordinal moves here, under the
+    // append lock, and the block served is the compaction's.
     const compacted = compactionStart(run);
+    const compaction = compacted ? readSessionState(run.spool.dir, sessionId).compactionOrdinal + 1 : undefined;
+    if (compaction !== undefined && !isCompactionOrdinal(compaction)) throw new Error('session compaction ordinal is invalid');
+    const named = git.remote ? { remote: git.remote } : {};
+    const ask: ContextAsk = compaction !== undefined
+      ? { kind: 'compact', compaction, ...named, at: run.now() }
+      : { kind: 'start', ...named, at: run.now() };
+    const delivered = sessionInjectionKind(ask);
+    // A symbiont whose harness discards a SessionStart answer is served nothing, and the helper fetches nothing for it.
+    // One that has been served this kind already (a resumed session) is served nothing again, and asks nothing.
+    const due = HOOK_CONFIG[agent]?.capabilities.sessionStartInjection === true && !readSessionState(run.spool.dir, sessionId).delivered.includes(delivered);
+    const served = due ? sessionStartBlock(run, ask.kind === 'compact' ? 'compact' : 'start', git.branch) : undefined;
+    const response = served?.response;
+    // A harness with no prompt hook writes its prompts only to its transcript: the helper reads them from it.
+    const backfill = agent === TRANSCRIPT_PROMPTS_AGENT && transcriptPath ? { transcriptPath, at: run.now() } : undefined;
     return {
       events,
-      // A symbiont whose harness discards a SessionStart answer is asked for
-      // nothing: the call would spend the hook's budget on a block nobody reads.
-      context: HOOK_CONFIG[agent]?.capabilities.sessionStartInjection === true ? recall(sessionId, git.branch, git.remote) : undefined,
+      response,
+      // Asked for by the session that renders it: the Deployment's record of having served it names this session.
+      ask: due ? ask : undefined,
       notice: HOOK_CONFIG[agent]?.capabilities.sessionStartInjection === true ? withNotice : undefined,
-      record: captured.length === 0 && !compacted ? undefined : (state) => {
+      record: (state) => {
         if (compacted) recordCompaction(state);
-        for (const [hash, promptId] of captured) {
-          state.prompts[hash] = promptId;
-          state.promptId = promptId;
-        }
+        // Delivered once the Deployment's block was; the Project line alone leaves it for a later hook to serve whole.
+        const servedAs = served === undefined ? undefined : served.complete ? delivered : projectLineOnly(delivered);
+        if (servedAs !== undefined && !state.delivered.includes(servedAs)) state.delivered.push(servedAs);
+        if (backfill !== undefined) state.promptBackfill = backfill;
       },
     };
   });

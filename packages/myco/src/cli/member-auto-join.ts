@@ -13,6 +13,7 @@
  *
  * It writes nothing into the repository: the hooks that start it already resolve this home from the repository.
  */
+import { warmProjectContext } from '../member/prefetch.js';
 import { MACHINE_UNCAPTURED_REASONS, REPORT_UNCAPTURED_PATH, RESOLVE_PROJECT_PATH, UNCAPTURED_STATE_PATH, isUncapturedReason, type HeldState } from '@goondocks/myco-shared/member-protocol';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -84,6 +85,8 @@ export async function settleConnection(entry: RegistryEntry, opts: { mycoHome: s
     const client = new ServerClient({ serverUrl: entry.serverUrl, token: entry.token }, opts.fetch ?? globalThis.fetch);
     await postRoute(client, { connectTimeoutMs: CONNECT_TIMEOUT_CAP_MS, requestTimeoutMs: STATE_TIMEOUT_MS }, UNCAPTURED_STATE_PATH, { rootKey, state: 'connected' }).catch(() => null);
   }
+  // The Project's blocks, cached before the repository's first session asks: it is served them whole.
+  await warmProjectContext(entry, { mycoHome: opts.mycoHome, fetch: opts.fetch, now: opts.now }).catch(() => 0);
   return moved;
 }
 

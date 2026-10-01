@@ -25,10 +25,11 @@ import { BUNDLED_MANIFESTS } from '../symbionts/manifests.generated.js';
 import type { TranscriptDiscovery } from '../symbionts/manifest-schema.js';
 import { resolveTranscriptPath } from '../symbionts/transcript-discovery.js';
 import { canStartRequest, unboundedBudget, type HookBudget } from './budget.js';
-import { refreshDue, refreshMemberCredential } from './refresh.js';
+import { clearNonRotatingRefusal, refreshDue, refreshMemberCredential, rotatedCredential } from './refresh.js';
 import { readRegistryEntry, type RegistryEntry } from './registry.js';
-import { pointerBehind, pointersOf, readSessionState, retryWaiting, updateSessionState, type SessionState } from './session-state.js';
-import { HOLD_ENDS, MemberSpool, type DrainEnd, type DrainOptions, type DrainResult } from './spool.js';
+import { pointerBehind, pointersOf, readSessionState, retryWaiting, turnsFileOf, updateSessionState, type SessionState } from './session-state.js';
+import { HOLD_ENDS, MemberSpool, turnEndIdentity, turnEndSatisfied, type DrainEnd, type DrainOptions, type DrainResult, type PendingTurnEnd } from './spool.js';
+import { featureAdvertised } from './context-cache.js';
 import { ensurePrivateFile, writePrivateFileAtomic } from './store.js';
 import { shipSessionTranscripts, type ShipResult } from './transcript.js';
 import { flushHeldCapture } from './held.js';
@@ -46,6 +47,8 @@ export interface BacklogOptions extends DrainOptions {
   exclude?: string;
   /** An explicit full pass: every session state read for transcripts behind their files, not only the sessions already marked, and every deferral after a transient refusal ignored. */
   rescan?: boolean;
+  /** Walk the session written to last first (the member helper's walk): the one whose hook kicked it. */
+  newestFirst?: boolean;
 }
 
 export interface BacklogSession {
@@ -66,7 +69,24 @@ export interface BacklogReport {
 /** Event pass endings that belong to the session alone. Any other answer — unreachable, the credential refused, an older server's quota, the protocol window, the budget — would be the next session's too, so the walk ends there: a mis-deployed server costs one request, not one per session. */
 const EVENTS_CONTINUE: readonly DrainEnd[] = ['drained', 'acked', 'reslice', 'protocol_mismatch', ...HOLD_ENDS];
 /** Transcript pass endings that belong to the session alone. */
-const TRANSCRIPTS_CONTINUE: readonly ShipResult['endedBy'][] = ['done', 'absent', 'refused', 'rejected', 'ordered'];
+const TRANSCRIPTS_CONTINUE: readonly ShipResult['endedBy'][] = ['done', 'absent', 'refused', 'rejected', 'ordered', 'held'];
+
+/**
+ * How long a session goes without a hook before what its transcript holds past its last turn's end ships anyway: a
+ * harness that ended without its session's end hook (killed, crashed) leaves no turn to wait for.
+ */
+export const TAIL_IDLE_MS = 15 * 60_000;
+
+/**
+ * Whether a session's transcript is to be held at its last turn-end mark: the Deployment is told of turn ends by the
+ * transcript alone (it does not take `turn`), and the session is live, so the bytes past its last mark belong to a
+ * turn under way. Once the session has ended, or its hooks have gone quiet, every byte ships.
+ */
+export function holdsTranscriptTail(spool: MemberSpool, state: SessionState, now: number): boolean {
+  if (featureAdvertised(spool.dir, 'turn')) return false;
+  if (state.endedAt !== undefined || state.hookAt === undefined) return false;
+  return now - state.hookAt < TAIL_IDLE_MS;
+}
 
 /** Whether an event pass offered the session to the Deployment and got the session's own answer, rather than stopping on something every session would meet. */
 export const sessionTried = (events: DrainResult): boolean => events.skipped === undefined && EVENTS_CONTINUE.includes(events.endedBy);
@@ -75,13 +95,29 @@ export const sessionTried = (events: DrainResult): boolean => events.skipped ===
 export const sessionHeld = (events: DrainResult): boolean => events.skipped === undefined && HOLD_ENDS.includes(events.endedBy);
 
 /** The sessions in walk order: sorted, starting after the one the last walk ended on, so a session that holds a walk up cannot starve the ones after it. */
-function walkOrder(spool: MemberSpool, ids: readonly string[]): string[] {
+function walkOrder(spool: MemberSpool, ids: readonly string[], newestFirst: boolean): string[] {
   const sorted = [...ids].sort();
   let cursor: string | null = null;
   try { cursor = fs.readFileSync(path.join(spool.dir, BACKLOG_CURSOR_FILE), 'utf-8').trim() || null; } catch { /* no walk yet */ }
-  if (cursor === null) return sorted;
-  const start = sorted.findIndex((id) => id > cursor!);
-  return start <= 0 ? sorted : [...sorted.slice(start), ...sorted.slice(0, start)];
+  const turned = cursor === null ? sorted : (() => {
+    const start = sorted.findIndex((id) => id > cursor!);
+    return start <= 0 ? sorted : [...sorted.slice(start), ...sorted.slice(0, start)];
+  })();
+  // The session written to last goes first: the one a person is working in, whose hook kicked this walk.
+  const newest = newestFirst ? newestSession(spool, ids) : null;
+  return newest === null ? turned : [newest, ...turned.filter((id) => id !== newest)];
+}
+
+/** The session whose journal or turn-end marks were appended to last: the one the latest hook wrote. */
+function newestSession(spool: MemberSpool, ids: readonly string[]): string | null {
+  const mtime = (file: string): number => { try { return fs.statSync(file).mtimeMs; } catch { return -1; } };
+  let newest: string | null = null;
+  let at = -1;
+  for (const id of ids) {
+    const written = Math.max(mtime(path.join(spool.dir, `${id}.jsonl`)), mtime(turnsFileOf(spool.dir, id)));
+    if (written > at) { at = written; newest = id; }
+  }
+  return newest;
 }
 
 /** Mark every session whose state holds a transcript pointer behind its file; returns how many were marked. */
@@ -136,6 +172,58 @@ function labelSession(spool: MemberSpool, sessionId: string, state: SessionState
   return agent;
 }
 
+/**
+ * What one hook appended to a session: the records it spooled, the turn-end mark it left (`turnEndIdentity`), and,
+ * for a turn's or a session's end, how far the session's own transcript had reached when the hook read it.
+ */
+export interface HookAppended {
+  eventIds: readonly string[];
+  turnEnd?: string;
+  transcriptTo?: { transcriptId: string; atSize: number };
+}
+
+/**
+ * Whether what one hook appended has reached the Deployment: none of its records is still waiting in the session's
+ * journal, and its turn-end mark has been consumed. What a hook that must deliver before it exits waits for: nothing
+ * else the session holds (a subagent's transcript still growing, a transcript waiting out a refusal) is its to wait on.
+ */
+export function hookDelivered(spool: MemberSpool, sessionId: string, appended: HookAppended, now: number = Date.now()): boolean {
+  if (appended.transcriptTo !== undefined && !transcriptReached(spool, sessionId, appended.transcriptTo, now)) return false;
+  if (appended.turnEnd !== undefined && spool.pendingTurnEnds(sessionId).some((p) => turnEndIdentity(p.mark) === appended.turnEnd)) return false;
+  if (appended.eventIds.length === 0) return true;
+  const waiting = new Set(spool.readRecords(sessionId).slice(readSessionState(spool.dir, sessionId).highWater).flatMap((r) => (r === null ? [] : [r.eventId])));
+  return !appended.eventIds.some((id) => waiting.has(id));
+}
+
+/**
+ * Whether the session's own transcript has reached `to` on the Deployment, or has nothing left to wait for there: it
+ * was replaced or refused for good, it is shorter than `to` names, or it is waiting out a refusal, which no wait inside
+ * a hook outlasts.
+ */
+function transcriptReached(spool: MemberSpool, sessionId: string, to: { transcriptId: string; atSize: number }, now: number): boolean {
+  const state = readSessionState(spool.dir, sessionId);
+  const pointer = state.transcript;
+  if (pointer === undefined || pointer.transcriptId !== to.transcriptId || pointer.refused !== undefined) return true;
+  if (pointer.nextOffset >= to.atSize || retryWaiting(state.transcriptRetry, now)) return true;
+  try { return fs.statSync(pointer.path).size < to.atSize; } catch { return true; }
+}
+
+/**
+ * Consume the turn-end marks this pass read (`pending`) that have nothing left to wait for (`turnEndSatisfied`), oldest
+ * first, up to the first that still waits: a mark is read in order, and one left behind keeps the ones after it. A
+ * mark appended after the pass read them stays for the next pass, which ships to it.
+ */
+export function consumeSatisfiedTurnEnds(spool: MemberSpool, sessionId: string, pending: readonly PendingTurnEnd[]): void {
+  if (pending.length === 0) return;
+  const state = readSessionState(spool.dir, sessionId);
+  let through: (typeof pending)[number] | undefined;
+  for (const entry of pending) {
+    if (!turnEndSatisfied(entry.mark, state)) break;
+    through = entry;
+  }
+  if (through !== undefined) spool.consumeTurnEnds(sessionId, through);
+}
+
 /** Deliver the backlog inside `budget`, session by session, until it is delivered, the budget is spent, or an answer says the next session would fare no better. A session's own failure never ends the walk. */
 export async function drainBacklog(spool: MemberSpool, client: ServerClient, budget: HookBudget, opts: BacklogOptions): Promise<BacklogReport> {
   const now = opts.now ?? Date.now;
@@ -147,7 +235,7 @@ export async function drainBacklog(spool: MemberSpool, client: ServerClient, bud
     ensurePrivateFile(scanned);
   }
   const spooled = new Set(spool.sessionIds());
-  const ids = walkOrder(spool, [...new Set([...spooled, ...spool.transcriptBacklogIds()])].filter((id) => id !== opts.exclude));
+  const ids = walkOrder(spool, [...new Set([...spooled, ...spool.transcriptBacklogIds()])].filter((id) => id !== opts.exclude), opts.newestFirst === true);
   let skipped = false;
   for (const sessionId of ids) {
     if (!canStartRequest(budget, now())) { report.endedBy = 'budget'; break; }
@@ -168,10 +256,16 @@ export async function drainBacklog(spool: MemberSpool, client: ServerClient, bud
       // A held event holds its own lane only, through its wait as well: the session's transcripts still ship below,
       // once its start is delivered.
     }
-    if (!spool.hasTranscriptBacklog(sessionId)) continue;
+    // The session's turn-end marks, read once: what this pass ships to, and all it may consume.
+    const marks = spool.pendingTurnEnds(sessionId);
+    if (!spool.hasTranscriptBacklog(sessionId)) { consumeSatisfiedTurnEnds(spool, sessionId, marks); continue; }
     const state = readSessionState(spool.dir, sessionId);
     // Every transcript acknowledged to its end, or gone from disk: nothing is left to deliver.
-    if (!pointersOf(state).some(pointerBehind)) { spool.clearTranscriptBacklog(sessionId); continue; }
+    if (!pointersOf(state).some(pointerBehind)) {
+      spool.clearTranscriptBacklog(sessionId);
+      consumeSatisfiedTurnEnds(spool, sessionId, marks);
+      continue;
+    }
     if (opts.rescan !== true && retryWaiting(state.transcriptRetry, now())) { session.transcripts = 'deferred'; continue; }
     const agent = labelSession(spool, sessionId, state, opts.rescan === true);
     if (agent === null) {
@@ -180,7 +274,11 @@ export async function drainBacklog(spool: MemberSpool, client: ServerClient, bud
       continue;
     }
     const ctx = { agent, sessionId, stage: spool.stagerFor(sessionId), now };
-    const shipped = await spool.withSessionLease(sessionId, () => shipSessionTranscripts(ctx, spool, client, budget, { now, machineId: opts.machineId }));
+    // A turn end the Deployment is told of by the transcript lane rides the segment that ends where it does.
+    const turnEnds = marks.filter((p) => p.mark.slot === 'primary').map((p) => ({ transcriptId: p.mark.transcriptId, atSize: p.mark.atSize, at: p.mark.at }));
+    const holdTail = holdsTranscriptTail(spool, state, now());
+    const shipped = await spool.withSessionLease(sessionId, () => shipSessionTranscripts(ctx, spool, client, budget, { now, machineId: opts.machineId, turnEnds, holdTail }));
+    consumeSatisfiedTurnEnds(spool, sessionId, marks);
     session.transcripts = shipped ?? 'lease';
     if (shipped === null) skipped = true;
     if (shipped !== null && !TRANSCRIPTS_CONTINUE.includes(shipped.endedBy)) { report.endedBy = shipped.endedBy; break; }
@@ -209,6 +307,8 @@ export async function drainEntryBacklog(
      * does, forced or not.
      */
     rescan?: boolean;
+    /** Walk the session written to last first. */
+    newestFirst?: boolean;
   },
 ): Promise<BacklogReport> {
   const now = opts.now ?? Date.now;
@@ -221,7 +321,19 @@ export async function drainEntryBacklog(
   // What the repository's hooks held before it was connected is delivered with the rest.
   flushHeldCapture(current.root, current.projectId, { mycoHome: opts.mycoHome, now: now() });
   const spool = new MemberSpool(current.projectId, { mycoHome: opts.mycoHome });
-  return drainBacklog(spool, new ServerClient(current, fetchImpl), opts.budget ?? unboundedBudget(), {
-    force: opts.force ?? true, now, machineId: opts.machineId ?? getMachineId(), rescan: opts.rescan ?? true,
+  const budget = opts.budget ?? unboundedBudget();
+  const report = await drainBacklog(spool, new ServerClient(current, fetchImpl), budget, {
+    force: opts.force ?? true, now, machineId: opts.machineId ?? getMachineId(), rescan: opts.rescan ?? true, newestFirst: opts.newestFirst,
+    // A 401 on a live send: another process may have rotated this root's token, so the registry is re-read and the
+    // record retried once.
+    onUnauthorized: async () => rotatedCredential(current.root, current, opts.mycoHome),
+    clientFor: (record) => new ServerClient(record, fetchImpl),
   });
+  // A refused token is asked once whether it still rotates, so a refusal that is final is recorded and said.
+  if (report.endedBy === 'unauthorized' && canStartRequest(budget, now())) {
+    await refreshMemberCredential(current.root, { mycoHome: opts.mycoHome, fetch: fetchImpl, now, budget, force: true });
+  }
+  // An acknowledged send is the Deployment accepting this token after all: a refusal recorded against it no longer holds.
+  if (report.sessions.some((s) => (s.events?.acked ?? 0) > 0)) clearNonRotatingRefusal(current.serverUrl, current.token, opts.mycoHome, now);
+  return report;
 }

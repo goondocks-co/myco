@@ -48,8 +48,8 @@ const MEMBER_ENTRIES: readonly string[] = ['hooks/**', 'member/**', 'runner/**']
  * machine, and that is the thing this gate exists to make someone argue for.
  */
 const BOUNDED_TIMERS: Readonly<Record<string, { calls: number; form: 'cleared' | 'awaited'; bound: string }>> = {
-  'packages/myco/src/hooks/session-start.ts': {
-    calls: 1, form: 'awaited', bound: "one short re-read of a transcript the IDE writes after the hook fires, inside the hook's own budget",
+  'packages/myco/src/member/capture.ts': {
+    calls: 1, form: 'awaited', bound: "a hook delivering in-process waits on another holder of the helper lock, while its marks wait, inside the hook's own budget",
   },
   'packages/myco/src/member/helper.ts': {
     calls: 1, form: 'awaited', bound: "a helper's poll for new work while it lingers, inside its own deadline, injectable by a caller",

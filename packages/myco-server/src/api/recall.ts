@@ -96,12 +96,16 @@ export async function handleSessionContext(env: ServerEnv, ctx: RouteContext): P
   const body = parseBody(ctx.body);
   if (!body) return Response.json(refused(ctx, BAD_BODY));
 
-  const sessionId = str(body.sessionId, MAX_SESSION_CHARS);
+  // A preview names no session: the block is composed for a member about to have sessions, and nothing is recorded.
+  const preview = body.preview === true;
+  const sessionId = preview ? null : str(body.sessionId, MAX_SESSION_CHARS);
   const identity = parseSessionContextIdentity(body);
-  if (sessionId === null || identity === null) {
-    const reason = body.kind === 'compact'
-      ? 'compact context requires sessionId and a positive safe-integer compaction ordinal'
-      : 'session context requires sessionId and kind "start" or "subagent"';
+  if ((sessionId === null && !preview) || (preview && body.sessionId !== undefined) || identity === null) {
+    const reason = preview
+      ? 'a session context preview names no sessionId, and kind "start" or "subagent"'
+      : body.kind === 'compact'
+        ? 'compact context requires sessionId and a positive safe-integer compaction ordinal'
+        : 'session context requires sessionId and kind "start" or "subagent"';
     return Response.json(refused(ctx, refusal(reason, 'parse')));
   }
 
@@ -115,7 +119,8 @@ export async function handleSessionContext(env: ServerEnv, ctx: RouteContext): P
   // a malformed request. Refusing it would cost that repository its whole
   // session block — the Project line, the instructions, everything — on every
   // session, to bind a name no caller looks up.
-  const named = body.remote;
+  // A preview binds nothing: no session start has named this repository yet.
+  const named = preview ? undefined : body.remote;
   if (named !== undefined) {
     if (typeof named !== 'string' || named.length > MAX_REMOTE_CHARS) {
       return Response.json(refused(ctx, refusal(`remote must be a string of at most ${MAX_REMOTE_CHARS} characters`, 'parse')));
@@ -129,7 +134,7 @@ export async function handleSessionContext(env: ServerEnv, ctx: RouteContext): P
     settingsWriter(env.db).capabilityEnabled(ctx.projectId, 'cortex'),
   ]);
   const [served, machine] = await Promise.all([
-    composeSessionContext(env.db, { projectId: ctx.projectId }, leaves, capabilityOn, { sessionId, ...identity, now: ctx.now }),
+    composeSessionContext(env.db, { projectId: ctx.projectId }, leaves, capabilityOn, { sessionId: sessionId ?? '', ...identity, now: ctx.now }, { preview }),
     // The machine's own settings, where the member asking claims it; a machine keeps them from its session start.
     machineBlockFor(env.db, ctx.memberId, ctx.machineId),
   ]);

@@ -217,8 +217,9 @@ describe('myco member join / leave', () => {
       fetch: watching, env: { JOIN_TOKEN: rig.token }, stdout: (l: string) => out.push(l),
     });
 
-    // The health check, and the read of this machine's settings the join caches (#1393); nothing is written.
-    expect(seen).toEqual(['GET /health', 'POST /members/settings']);
+    // The health check, the Project's blocks previewed for the cache (recorded for no session), and the read of this
+    // machine's settings the join caches (#1393); nothing is written.
+    expect(seen).toEqual(['GET /health', 'POST /context/session', 'POST /context/session', 'POST /members/settings']);
     expect(entry!.token).toBe(rig.token);
     expect(readRegistryEntry(projectRoot, mycoHome)!.projectId).toBe(PROJECT);
     expect(out.join('\n')).toContain(`joined ${PROJECT} at https://server.example`);

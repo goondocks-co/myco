@@ -61,8 +61,8 @@ const KNOWN: Readonly<Record<string, number>> = {
   'packages/myco/src/hooks/normalize.ts': 2,
   // Copilot's subagent answer shape: `registration.hookResponse.shapes`.
   'packages/myco/src/hooks/response.ts': 1,
-  // Antigravity's prompts read from its transcript at start: `capture.promptsFromTranscript`, run in the helper.
-  'packages/myco/src/hooks/session-start.ts': 1,
+  // Antigravity's prompts read from its transcript by the helper: `capture.promptsFromTranscript`.
+  'packages/myco/src/member/transcript-prompts.ts': 1,
   // Claude Code's post-compaction start: `hookEvents.SessionStart.compactionWhen`.
   'packages/myco/src/member/compaction.ts': 1,
 };

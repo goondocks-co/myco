@@ -119,3 +119,13 @@ describe('readStdin', () => {
     expect(JSON.parse(result.stdout)).toEqual({ data: payload });
   });
 });
+
+describe('a payload written with a byte-order mark', () => {
+  it('reads as the JSON after it: a Windows host writing UTF-8 with its preamble is understood', async () => {
+    const payload = JSON.stringify({ session_id: 'bom-session', prompt: 'hello' });
+    const text = await readStdin(() => Buffer.concat([Buffer.from([0xef, 0xbb, 0xbf]), Buffer.from(payload, 'utf-8')]));
+    expect(JSON.parse(text)).toEqual({ session_id: 'bom-session', prompt: 'hello' });
+    // A mark and nothing else is an empty payload.
+    expect(await readStdin(() => Buffer.from([0xef, 0xbb, 0xbf]))).toBe('{}');
+  });
+});

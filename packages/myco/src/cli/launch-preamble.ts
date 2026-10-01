@@ -3,6 +3,7 @@ import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { resolveRuntimePinForCwd } from '../runtime/runtime-pin.js';
 import { setBufferedStdin } from '../hooks/read-stdin.js';
+import { startingJobEnv } from '../runtime/spawn-detached.js';
 
 export type LaunchCommand = 'hook' | 'mcp' | 'tool';
 
@@ -218,7 +219,9 @@ function reExec(
   deps: LaunchPreambleDeps,
 ): void {
   const options: ExecOptions = {
-    env: { ...process.env, MYCO_TRAMPOLINED: '1' },
+    // The pinned binary starts inside this process's job: it is told the job this process began in, which it can no
+    // longer read for itself.
+    env: { ...process.env, MYCO_TRAMPOLINED: '1', ...startingJobEnv() },
     ...(bufferedStdin !== null
       ? { input: bufferedStdin, stdio: ['pipe', 'inherit', 'inherit'] }
       : { stdio: 'inherit' }),

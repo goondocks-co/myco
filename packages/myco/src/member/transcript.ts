@@ -288,9 +288,10 @@ export interface ShipResult {
   /**
    * `rejected`: refused for good, and recorded on the pointer. `refused`: refused for now; the same bytes are sent
    * again later. `ordered`: nothing sent, the session's start is still waiting in its journal, and a transcript never
-   * reaches the Deployment ahead of the session it belongs to.
+   * reaches the Deployment ahead of the session it belongs to. `held`: the bytes left belong to a turn that has not
+   * ended, against a Deployment told of turn ends by the transcript (`holdTail`); they ship once it ends.
    */
-  endedBy: 'done' | 'budget' | 'retry' | 'slow' | 'parked' | 'refused' | 'rejected' | 'unauthorized' | 'route_missing' | 'protocol' | 'absent' | 'ordered';
+  endedBy: 'done' | 'budget' | 'retry' | 'slow' | 'parked' | 'refused' | 'rejected' | 'unauthorized' | 'route_missing' | 'protocol' | 'absent' | 'ordered' | 'held';
 }
 
 const readSlice = (file: string, offset: number, length: number): Buffer => {
@@ -303,6 +304,17 @@ const readSlice = (file: string, offset: number, length: number): Buffer => {
     fs.closeSync(fd);
   }
 };
+
+/**
+ * A turn's end the Deployment learns of from the transcript lane: the turn ended at `at` (the member's clock) when the
+ * transcript `transcriptId` held `atSize` bytes. A segment ends at `atSize`, carries the turn-end header and is stamped
+ * `at`, so the Deployment closes each turn when it ended, not when the segment shipped.
+ */
+export interface TurnEndAt {
+  transcriptId: string;
+  atSize: number;
+  at: number;
+}
 
 /** Which of a session's transcripts a pass ships: the session's own, or the subagent transcript at a path. */
 export type TranscriptSlot = { role: 'primary' } | { role: 'subagent'; path: string };
@@ -326,7 +338,17 @@ const setSlotPointer = (state: SessionState, slot: TranscriptSlot, pointer: Tran
  */
 export async function shipTranscriptSegments(
   ctx: EnvelopeContext, spool: MemberSpool, client: ServerClient, budget: HookBudget,
-  opts: { now?: () => number; until?: number; headHash?: string; slot?: TranscriptSlot; machineId?: string; turnEnd?: boolean } = {},
+  opts: {
+    now?: () => number; until?: number; headHash?: string; slot?: TranscriptSlot; machineId?: string;
+    /** Turn ends the Deployment has not been told of; each rides the segment that ends where it does. */
+    turnEnds?: readonly TurnEndAt[];
+    /**
+     * Send no byte past the last of `turnEnds` this transcript holds: the Deployment is told of turn ends by the
+     * transcript alone, and bytes shipped past a turn's end before its mark is written would carry no header, so the
+     * turn would never be told it ended. Without such a mark, nothing is sent.
+     */
+    holdTail?: boolean;
+  } = {},
 ): Promise<ShipResult> {
   const now = opts.now ?? Date.now;
   const slot = opts.slot ?? PRIMARY_SLOT;
@@ -388,12 +410,25 @@ export async function shipTranscriptSegments(
     if (!canStartRequest(budget, now())) return { shipped, endedBy: 'budget' };
 
     const offset = pointer.nextOffset;
-    const bytes = readSlice(pointer.path, offset, Math.min(TRANSCRIPT_SLICE_BYTES, size - offset));
+    // The turn ends this transcript holds ahead of the pointer: a segment never runs past the next one.
+    const transcriptId = pointer.transcriptId;
+    const ahead = (opts.turnEnds ?? []).filter((mark) => mark.transcriptId === transcriptId && mark.atSize > offset).sort((a, b) => a.atSize - b.atSize);
+    let length = Math.min(TRANSCRIPT_SLICE_BYTES, size - offset);
+    if (opts.holdTail === true) {
+      const last = ahead.at(-1);
+      if (last === undefined) return { shipped, endedBy: 'held' };
+      length = Math.min(length, last.atSize - offset);
+    }
+    if (ahead[0] !== undefined) length = Math.min(length, ahead[0].atSize - offset);
+    const bytes = readSlice(pointer.path, offset, length);
     if (bytes.byteLength === 0) return { shipped, endedBy: 'done' };
     const source = { path: pointer.path, sha256: crypto.createHash('sha256').update(bytes).digest('hex'), mediaType: TEXT_MEDIA_TYPE, size: bytes.byteLength };
 
+    // The turn end this segment ends at, if any: the segment is stamped with the turn's own end.
+    const turnEnd = ahead.find((mark) => mark.atSize === offset + bytes.byteLength);
+    const segmentCtx = turnEnd === undefined ? ctx : { ...ctx, now: () => turnEnd.at };
     // Built before the upload so both refusal paths can name the segment they lost.
-    const event = transcriptSegmentEvent(ctx, {
+    const event = transcriptSegmentEvent(segmentCtx, {
       transcriptId: pointer.transcriptId, baseOffset: offset, blobSource: source, originPath: pointer.path,
       headHash: opts.headHash ?? pointer.headHash, role: slot.role,
     });
@@ -423,7 +458,7 @@ export async function shipTranscriptSegments(
       if (blob.class !== 'reslice') spool.endPass(blob, now());
       return { shipped, endedBy: blob.class === 'reslice' ? 'refused' : blob.class };
     }
-    const outcome = await client.postEvent(event.envelope, clippedRequestBudget(budget, now()), { turnEnd: opts.turnEnd });
+    const outcome = await client.postEvent(event.envelope, clippedRequestBudget(budget, now()), { turnEnd: turnEnd !== undefined });
     switch (outcome.class) {
       case 'acked':
         spool.clearLatch();
@@ -475,7 +510,7 @@ export async function shipTranscriptSegments(
  */
 export async function shipSessionTranscripts(
   ctx: EnvelopeContext, spool: MemberSpool, client: ServerClient, budget: HookBudget,
-  opts: { now?: () => number; until?: number; machineId: string; turnEnd?: boolean },
+  opts: { now?: () => number; until?: number; machineId: string; turnEnds?: readonly TurnEndAt[]; holdTail?: boolean },
 ): Promise<ShipResult> {
   const now = opts.now ?? Date.now;
   // The one order the transcript lane keeps with the event lane: the session's start first.
@@ -485,16 +520,25 @@ export async function shipSessionTranscripts(
   }
   let shipped = 0;
   let refusedForNow = false;
+  let held = false;
   const state = readSessionState(spool.dir, ctx.sessionId);
   const slots: TranscriptSlot[] = [PRIMARY_SLOT, ...Object.keys(state.siblings).sort().map((p): TranscriptSlot => ({ role: 'subagent', path: p }))];
   for (const slot of slots) {
-    const result = await shipTranscriptSegments(ctx, spool, client, budget, { ...opts, slot });
+    // Turn-end marks name the session's own transcript: only it waits on a turn's end.
+    const primary = slot.role === 'primary';
+    const result = await shipTranscriptSegments(ctx, spool, client, budget, { ...opts, slot, turnEnds: primary ? opts.turnEnds : undefined, holdTail: primary && opts.holdTail === true });
     shipped += result.shipped;
     if (result.endedBy === 'refused') { refusedForNow = true; continue; }
+    if (result.endedBy === 'held') { held = true; continue; }
     if (result.endedBy !== 'done' && result.endedBy !== 'absent' && result.endedBy !== 'rejected') {
       spool.markTranscriptBacklog(ctx.sessionId);
       return { shipped, endedBy: result.endedBy };
     }
+  }
+  if (held && !refusedForNow) {
+    // What the turn under way wrote waits for its end: the session stays in the backlog for the pass after it.
+    spool.markTranscriptBacklog(ctx.sessionId);
+    return { shipped, endedBy: 'held' };
   }
   if (refusedForNow) {
     spool.markTranscriptBacklog(ctx.sessionId);

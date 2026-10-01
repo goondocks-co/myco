@@ -1,11 +1,15 @@
+import fs from 'node:fs';
 import { getMachineId } from '../machine-id.js';
 import { runMemberHook, type HookMainOptions, type HookRun } from '../member/capture.js';
 import { responseEvent, type OutboundEvent } from '../member/envelope.js';
 import { planBackstop, planFilesWritten, planRootFor, planWritesInLines } from '../member/plan-files.js';
 import { readSessionState, type SessionState, type TranscriptPointer } from '../member/session-state.js';
 import {
-  deriveTranscriptCapture, pointerReplaced, shipSessionTranscripts, siblingTranscripts, transcriptPointerFor, unreadTranscriptLines, type DerivedCapture,
+  deriveTranscriptCapture, pointerReplaced, siblingTranscripts, transcriptPointerFor, unreadTranscriptLines, type DerivedCapture,
 } from '../member/transcript.js';
+import { featureAdvertised } from '../member/context-cache.js';
+import { turnEvent } from '../member/envelope.js';
+import type { TurnEndMark } from '../member/spool.js';
 import { transcriptWritesTurnRows } from './turn-rows.js';
 
 export type StopPhase = 'response' | 'transcript';
@@ -28,7 +32,8 @@ export interface TranscriptPhase {
   lastAssistantText?: string;
   /** The receipts for `events`; applied with the append, never before it. */
   record: (state: SessionState) => void;
-  afterDrain: (run: HookRun, until?: number) => Promise<void>;
+  /** Where the session's own transcript stood when this hook read it: what a turn-end mark names. */
+  stoodAt?: Pick<TurnEndMark, 'slot' | 'transcriptId' | 'atSize'>;
 }
 
 /** A transcript the member reads plan writes out of: the session's own, or a subagent's beside it. */
@@ -85,7 +90,7 @@ function derivePlanWrites(run: HookRun, transcripts: readonly ReadTranscript[], 
 export function transcriptPhase(run: HookRun): TranscriptPhase {
   const { input, sessionId, ctx, spool, credential, agent } = run;
   const transcriptPath = input.transcriptPath;
-  const noop: TranscriptPhase = { events: [], record: () => {}, afterDrain: async () => {} };
+  const noop: TranscriptPhase = { events: [], record: () => {} };
   if (!transcriptPath) return noop;
   const machineId = getMachineId();
   const state = readSessionState(spool.dir, sessionId);
@@ -131,10 +136,25 @@ export function transcriptPhase(run: HookRun): TranscriptPhase {
       derived.record(next);
       backstop.record(next);
     },
-    // Under the session's drain lease, the one a backlog walk from another hook takes too, so the two never upload the same slice.
-    // The session's own transcript, shipped at its turn's end, is what tells the Deployment the turn ended.
-    afterDrain: async (r, until) => { await r.spool.withSessionLease(r.sessionId, () => shipSessionTranscripts(r.ctx, r.spool, r.client, r.budget, { now: r.now, until, machineId, turnEnd: true })); },
+    stoodAt: pointer ? { slot: 'primary', transcriptId: pointer.transcriptId, atSize: transcriptSize(transcriptPath) } : undefined,
   };
+}
+
+function transcriptSize(file: string): number {
+  try { return fs.statSync(file).size; } catch { return 0; }
+}
+
+/**
+ * How the Deployment learns a turn ended (#1561): a Deployment that advertises `turn` is sent a `turn` event, stamped
+ * now; any other is told by the transcript segment that reaches the transcript's size now, which the helper ships
+ * stamped with the mark's time.
+ */
+export function turnEnded(run: HookRun, transcript: TranscriptPhase | undefined): { events: OutboundEvent[]; turnEnd?: TranscriptPhase['stoodAt'] } {
+  if (featureAdvertised(run.spool.dir, 'turn')) {
+    const promptId = readSessionState(run.spool.dir, run.sessionId).promptId;
+    return { events: [turnEvent(run.ctx, { phase: 'end', promptId })] };
+  }
+  return { events: [], turnEnd: transcript?.stoodAt };
 }
 
 export async function main(opts: HookMainOptions = {}) {
@@ -153,11 +173,14 @@ export async function main(opts: HookMainOptions = {}) {
       }
     }
     if (transcript) events.push(...transcript.events);
+    const ended = turnEnded(run, transcript);
+    events.push(...ended.events);
     return {
       events,
       record: transcript?.record,
-      probe: true,
-      afterDrain: transcript ? (r) => transcript.afterDrain(r) : undefined,
+      turnEnd: ended.turnEnd,
+      transcriptAt: transcript?.stoodAt,
+      ends: 'turn-end',
     };
   });
 }

@@ -6,15 +6,14 @@
  * included: a detached start on Windows carries the environment the starting process began with, not one it changed.
  * Its stderr goes to `<MYCO_HOME>/logs/helper.log`, a pass that fails included.
  */
-import { drainEntryBacklog } from '../member/backlog.js';
-import { deadlineBudget } from '../member/budget.js';
 import { isProjectId } from '../member/constants.js';
 import { routeStderrToHelperLog, runHelper, type HelperPass, type HelperRunResult } from '../member/helper.js';
-import type { DetachedSpawn } from '../runtime/spawn-detached.js';
-import { listRegistryEntries } from '../member/registry.js';
-import { applySpoolRetention } from '../member/retention.js';
-import { MemberSpool } from '../member/spool.js';
+import { helperPass } from '../member/helper-pass.js';
+import { kickWaitingProjects } from '../member/sweep.js';
+import { recordStartingJob, type DetachedSpawn } from '../runtime/spawn-detached.js';
 import type { FetchLike } from '../member/transport.js';
+
+export { helperPass } from '../member/helper-pass.js';
 
 export interface HelperVerbDeps {
   fetch?: FetchLike;
@@ -36,6 +35,8 @@ function flag(args: readonly string[], name: string): string | undefined {
 }
 
 export async function runHelperVerb(args: readonly string[], deps: HelperVerbDeps = {}): Promise<HelperRunResult | null> {
+  // A successor started from this helper can outlive it only as far as the job this helper began in allows.
+  recordStartingJob();
   const projectId = flag(args, '--project');
   const mycoHome = flag(args, '--home');
   if (projectId === undefined || !isProjectId(projectId) || mycoHome === undefined || mycoHome === '') {
@@ -49,24 +50,6 @@ export async function runHelperVerb(args: readonly string[], deps: HelperVerbDep
   } finally {
     restoreStderr();
   }
-}
-
-/** One pass of the helper over a project, ending by `deadline`: the project's backlog delivered, then its retention. */
-export function helperPass(projectId: string, mycoHome: string, deps: Pick<HelperVerbDeps, 'fetch' | 'now'> = {}): HelperPass {
-  const now = deps.now ?? Date.now;
-  return async (deadline, { force }) => {
-    // The project's membership: any root this home connects to it, since every root of one project shares its spool.
-    const entry = listRegistryEntries(mycoHome).find((candidate) => candidate.projectId === projectId);
-    if (entry === undefined) {
-      process.stderr.write(`[myco] helper: this home holds no membership for ${projectId}; nothing to ship\n`);
-      return;
-    }
-    const backlog = await drainEntryBacklog(entry, { mycoHome, fetch: deps.fetch, now, budget: deadlineBudget(deadline), force, rescan: false });
-    applySpoolRetention(new MemberSpool(projectId, { mycoHome }), now(), { tried: backlog.tried });
-    const shipped = backlog.sessions.reduce((n, s) => n + (s.events?.acked ?? 0) + (typeof s.transcripts === 'object' ? s.transcripts.shipped : 0), 0);
-    process.stderr.write(`[myco] helper: pass over ${backlog.sessions.length} session(s), ${shipped} record(s) and segment(s) delivered${force ? ' (past the offline latch)' : ''}, ended by ${backlog.endedBy}\n`);
-    return { more: backlog.endedBy === 'budget' };
-  };
 }
 
 async function helperPasses(projectId: string, mycoHome: string, afterFailure: boolean, deps: HelperVerbDeps): Promise<HelperRunResult> {
@@ -93,5 +76,11 @@ async function helperPasses(projectId: string, mycoHome: string, afterFailure: b
   }
   const successor = result.successor === undefined ? '' : `; successor ${result.successor}`;
   process.stderr.write(`[myco] helper: ${result.passes} pass(es) in ${now() - started} ms, ended ${result.endedBy}${successor}\n`);
+  // The other projects this home holds work for: their helpers start on this hook, not on their own next session.
+  if (result.endedBy !== 'busy') {
+    for (const { projectId: other, outcome } of kickWaitingProjects(mycoHome, projectId, { now, spawn: deps.spawn })) {
+      process.stderr.write(`[myco] helper: kicked ${other}, which holds undelivered work (${outcome.kind})\n`);
+    }
+  }
   return result;
 }

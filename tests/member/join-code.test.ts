@@ -217,8 +217,8 @@ describe('a hook on a machine holding only a join code', () => {
     const tx = transcriptWithPlan(session);
     expect(readRegistryEntry(resolveMemberProjectRoot(), mycoHome)).toBe(null);
 
-    await runHook('session-start', { session_id: session, transcript_path: tx, cwd: '/work/repo' }, { fetch: rig.fetch });
-    await runHook('stop', { session_id: session, transcript_path: tx, last_assistant_message: '' }, { fetch: rig.fetch });
+    await runHook('session-start', { session_id: session, transcript_path: tx, cwd: '/work/repo' }, { helpers: 'run', fetch: rig.fetch });
+    await runHook('stop', { session_id: session, transcript_path: tx, last_assistant_message: '' }, { helpers: 'run', fetch: rig.fetch });
     // The segment the hook shipped is read by the Deployment's parse, which writes the plan.
     for (let pass = 0; pass < 20 && (await parseTranscripts(rig.env.serverEnv, Date.now())).changed > 0; pass += 1) { /* until nothing is pending */ }
 
@@ -234,8 +234,8 @@ describe('a hook on a machine holding only a join code', () => {
     const txA = transcriptWithPlan(first);
     const txB = transcriptWithPlan(second);
 
-    await runHook('session-start', { session_id: first, transcript_path: txA, cwd: '/work/repo' }, { fetch: rig.fetch });
-    await runHook('session-start', { session_id: second, transcript_path: txB, cwd: '/work/repo' }, { fetch: rig.fetch });
+    await runHook('session-start', { session_id: first, transcript_path: txA, cwd: '/work/repo' }, { helpers: 'run', fetch: rig.fetch });
+    await runHook('session-start', { session_id: second, transcript_path: txB, cwd: '/work/repo' }, { helpers: 'run', fetch: rig.fetch });
 
     // Both sessions landed, and the single-use code was spent exactly once for them.
     expect((rig.env.sqlite.query(`SELECT session_id FROM sessions ORDER BY session_id`).all() as Array<{ session_id: string }>).map((r) => r.session_id))
@@ -308,21 +308,29 @@ describe('the emitted sandbox settings with a join code', () => {
     resetMachineIdCache();
   });
 
-  it('delivers a session on the first hook, and a second session on the same credential', async () => {
+  it('delivers each session at its turn\'s end, in the hook, and never starts a helper that ends with the sandbox; a second session uses the same credential', async () => {
     const source = emittedSource();
     expect(source).toBe('env');
     const issued = await issueEnrollmentAuthority(rig.env.db, Date.now(), { role: 'member', projectId: 'proj_1' });
     process.env[ENV_JOIN_CODE] = `https://s/join#${issued.key}`;
+    const noStart = () => { throw new Error('a sandbox\'s hook started a helper'); };
+    const turn = async (session: string) => {
+      const input = sessionInput(session);
+      const start = await runHook('session-start', input, { fetch: rig.fetch, credential: source, helperSpawn: noStart });
+      expect(start.stderr).not.toContain('no capture');
+      // The code is redeemed on the first hook; what it captured waits for the turn's end.
+      expect(landed(session)).toBe(false);
+      const stop = await runHook('stop', { ...input, hook_event_name: 'Stop', last_assistant_message: 'x' }, { fetch: rig.fetch, credential: source, helperSpawn: noStart });
+      expect([...start.starts, ...stop.starts]).toEqual([]);
+      expect(landed(session)).toBe(true);
+    };
 
-    const first = await runHook('session-start', sessionInput('sess-env-code-1'), { fetch: rig.fetch, credential: source });
-    expect(first.stderr).not.toContain('no capture');
-    expect({ landed: landed('sess-env-code-1'), spent: spent(issued.id) }).toEqual({ landed: true, spent: true });
+    await turn('sess-env-code-1');
+    expect(spent(issued.id)).toBe(true);
     const credential = readRegistryEntry(resolveMemberProjectRoot(), mycoHome);
     expect(credential?.projectId).toBe('proj_1');
 
-    const second = await runHook('session-start', sessionInput('sess-env-code-2'), { fetch: rig.fetch, credential: source });
-    expect(second.stderr).not.toContain('no capture');
-    expect(landed('sess-env-code-2')).toBe(true);
+    await turn('sess-env-code-2');
     expect(rig.rows('member_credentials')).toBe(1);
     expect(readRegistryEntry(resolveMemberProjectRoot(), mycoHome)?.token).toBe(credential?.token);
   });
@@ -355,7 +363,10 @@ describe('the emitted sandbox settings with a join code', () => {
       const issued = await issueEnrollmentAuthority(rig.env.db, Date.now(), { role: 'member', projectId: 'proj_1' });
       process.env[ENV_JOIN_CODE] = `https://s/join#${issued.key}`;
       const session = `sess-spend-${i}`;
-      await runHook('session-start', sessionInput(session), { fetch: rig.fetch, credential: c.source });
+      // A hook declared to read the registry leaves its delivery to a helper; one declared `env` delivers at the turn's end.
+      const helpers = c.source === 'registry' ? 'run' : 'record';
+      await runHook('session-start', sessionInput(session), { fetch: rig.fetch, credential: c.source, helpers });
+      await runHook('stop', { ...sessionInput(session), hook_event_name: 'Stop', last_assistant_message: 'x' }, { fetch: rig.fetch, credential: c.source, helpers });
       outcomes.push({ name: c.name, spent: spent(issued.id), landed: landed(session) });
     }
     // Spent implies landed, in every case; and the code is spent exactly where it is the credential.
@@ -406,7 +417,11 @@ describe('the emitted sandbox settings with a join code', () => {
 
     const second = await issueEnrollmentAuthority(rig.env.db, Date.now(), { role: 'member', projectId: 'proj_1' });
     let joins = 0;
-    const counting = ((input: string | URL | Request, init?: RequestInit) => { joins += 1; return rig.fetch(input, init); }) as typeof fetch;
+    // The exchanges only: a join that lands also previews the Project's blocks for the cache.
+    const counting = ((input: string | URL | Request, init?: RequestInit) => {
+      if (new Request(input, init).url.endsWith('/members/join')) joins += 1;
+      return rig.fetch(input, init);
+    }) as typeof fetch;
     const stderrLines: string[] = [];
     const origErr = process.stderr.write.bind(process.stderr);
     (process.stderr as unknown as { write: (c: unknown) => boolean }).write = ((c: unknown) => { stderrLines.push(String(c)); return true; }) as never;
