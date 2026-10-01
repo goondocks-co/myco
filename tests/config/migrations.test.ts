@@ -1,5 +1,12 @@
-import { describe, it, expect } from 'bun:test';
+import { afterAll, describe, it, expect } from 'bun:test';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { MIGRATIONS, CURRENT_MIGRATION_VERSION, runMigrations } from '@myco/config/migrations';
+
+/** An empty vault directory: the vault-touching migrations find nothing to move in it. */
+const VAULT_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-migrations-vault-'));
+afterAll(() => fs.rmSync(VAULT_DIR, { recursive: true, force: true }));
 
 const v3 = MIGRATIONS.find((m) => m.version === 3)!;
 
@@ -8,7 +15,7 @@ describe('Migration v3: schedule-to-task-level', () => {
     const doc: Record<string, unknown> = {
       agent: { auto_run: true, interval_seconds: 600 },
     };
-    v3.migrate(doc, '/tmp');
+    v3.migrate(doc, VAULT_DIR);
 
     const agent = doc.agent as Record<string, unknown>;
     expect(agent.auto_run).toBeUndefined();
@@ -25,7 +32,7 @@ describe('Migration v3: schedule-to-task-level', () => {
     const doc: Record<string, unknown> = {
       skills: { auto_survey: true },
     };
-    v3.migrate(doc, '/tmp');
+    v3.migrate(doc, VAULT_DIR);
 
     const skills = doc.skills as Record<string, unknown>;
     expect(skills.auto_survey).toBeUndefined();
@@ -39,7 +46,7 @@ describe('Migration v3: schedule-to-task-level', () => {
     const doc: Record<string, unknown> = {
       skills: { auto_evolve: true, evolve_cadence: 'idle' },
     };
-    v3.migrate(doc, '/tmp');
+    v3.migrate(doc, VAULT_DIR);
 
     const skills = doc.skills as Record<string, unknown>;
     expect(skills.auto_evolve).toBeUndefined();
@@ -57,7 +64,7 @@ describe('Migration v3: schedule-to-task-level', () => {
     const doc: Record<string, unknown> = {
       skills: { auto_evolve: true, evolve_cadence: 'weekly' },
     };
-    v3.migrate(doc, '/tmp');
+    v3.migrate(doc, VAULT_DIR);
 
     const agent = doc.agent as Record<string, unknown>;
     const tasks = agent.tasks as Record<string, Record<string, unknown>>;
@@ -72,7 +79,7 @@ describe('Migration v3: schedule-to-task-level', () => {
       agent: { model: 'claude-opus-4' },
       skills: { confidence_threshold: 0.8 },
     };
-    v3.migrate(doc, '/tmp');
+    v3.migrate(doc, VAULT_DIR);
 
     const agent = doc.agent as Record<string, unknown>;
     expect(agent.model).toBe('claude-opus-4');
@@ -93,7 +100,7 @@ describe('Migration v3: schedule-to-task-level', () => {
         },
       },
     };
-    v3.migrate(doc, '/tmp');
+    v3.migrate(doc, VAULT_DIR);
 
     const agent = doc.agent as Record<string, unknown>;
     const tasks = agent.tasks as Record<string, Record<string, unknown>>;
@@ -108,7 +115,7 @@ describe('Migration v3: schedule-to-task-level', () => {
       agent: { auto_run: true, interval_seconds: 900 },
       skills: { confidence_threshold: 0.7, usage_stale_days: 30 },
     };
-    v3.migrate(doc, '/tmp');
+    v3.migrate(doc, VAULT_DIR);
 
     const agent = doc.agent as Record<string, unknown>;
     expect(agent.auto_run).toBeUndefined();
@@ -137,7 +144,7 @@ describe('Migration v3: schedule-to-task-level', () => {
         evolve_cadence: 'monthly',
       },
     };
-    v3.migrate(doc, '/tmp');
+    v3.migrate(doc, VAULT_DIR);
 
     const skills = doc.skills as Record<string, unknown>;
     expect(skills.confidence_threshold).toBe(0.9);
@@ -157,7 +164,7 @@ describe('Migration v4: rename-cloud-provider-to-anthropic', () => {
     const doc: Record<string, unknown> = {
       agent: { provider: { type: 'cloud', model: 'claude-sonnet-4-6' } },
     };
-    v4.migrate(doc, '/tmp');
+    v4.migrate(doc, VAULT_DIR);
 
     const agent = doc.agent as Record<string, unknown>;
     const provider = agent.provider as Record<string, unknown>;
@@ -174,7 +181,7 @@ describe('Migration v4: rename-cloud-provider-to-anthropic', () => {
         },
       },
     };
-    v4.migrate(doc, '/tmp');
+    v4.migrate(doc, VAULT_DIR);
 
     const tasks = (doc.agent as Record<string, unknown>).tasks as Record<string, Record<string, unknown>>;
     expect((tasks['full-intelligence'].provider as Record<string, unknown>).type).toBe('anthropic');
@@ -195,7 +202,7 @@ describe('Migration v4: rename-cloud-provider-to-anthropic', () => {
         },
       },
     };
-    v4.migrate(doc, '/tmp');
+    v4.migrate(doc, VAULT_DIR);
 
     const tasks = (doc.agent as Record<string, unknown>).tasks as Record<string, Record<string, unknown>>;
     const phases = tasks['full-intelligence'].phases as Record<string, Record<string, unknown>>;
@@ -205,14 +212,14 @@ describe('Migration v4: rename-cloud-provider-to-anthropic', () => {
 
   it('is a no-op when no agent section exists', () => {
     const doc: Record<string, unknown> = { embedding: { provider: 'ollama' } };
-    expect(() => v4.migrate(doc, '/tmp')).not.toThrow();
+    expect(() => v4.migrate(doc, VAULT_DIR)).not.toThrow();
   });
 
   it('is a no-op when no provider is configured', () => {
     const doc: Record<string, unknown> = {
       agent: { scheduled_tasks_enabled: false },
     };
-    v4.migrate(doc, '/tmp');
+    v4.migrate(doc, VAULT_DIR);
     const agent = doc.agent as Record<string, unknown>;
     expect(agent.provider).toBeUndefined();
   });
@@ -238,7 +245,7 @@ describe('Migration v6: rename-full-intelligence-to-vault-evolve', () => {
         },
       },
     };
-    v6.migrate(doc, '/tmp');
+    v6.migrate(doc, VAULT_DIR);
 
     const tasks = (doc.agent as Record<string, unknown>).tasks as Record<string, Record<string, unknown>>;
     expect(tasks['full-intelligence']).toBeUndefined();
@@ -257,7 +264,7 @@ describe('Migration v6: rename-full-intelligence-to-vault-evolve', () => {
         },
       },
     };
-    v6.migrate(doc, '/tmp');
+    v6.migrate(doc, VAULT_DIR);
 
     const tasks = (doc.agent as Record<string, unknown>).tasks as Record<string, Record<string, unknown>>;
     expect(tasks['full-intelligence']).toBeUndefined();
@@ -268,14 +275,14 @@ describe('Migration v6: rename-full-intelligence-to-vault-evolve', () => {
     const doc: Record<string, unknown> = {
       agent: { tasks: { 'skill-survey': { schedule: { enabled: true } } } },
     };
-    expect(() => v6.migrate(doc, '/tmp')).not.toThrow();
+    expect(() => v6.migrate(doc, VAULT_DIR)).not.toThrow();
     const tasks = (doc.agent as Record<string, unknown>).tasks as Record<string, unknown>;
     expect(tasks['vault-evolve']).toBeUndefined();
   });
 
   it('is a no-op when there is no agent section', () => {
     const doc: Record<string, unknown> = { embedding: { provider: 'ollama' } };
-    expect(() => v6.migrate(doc, '/tmp')).not.toThrow();
+    expect(() => v6.migrate(doc, VAULT_DIR)).not.toThrow();
   });
 });
 
@@ -287,7 +294,7 @@ describe('Migration v5: seed-settings-notification-domain-default', () => {
       },
     };
 
-    v5.migrate(doc, '/tmp');
+    v5.migrate(doc, VAULT_DIR);
 
     const notifications = doc.notifications as Record<string, unknown>;
     const domains = notifications.domains as Record<string, Record<string, unknown>>;
@@ -309,7 +316,7 @@ describe('Migration v5: seed-settings-notification-domain-default', () => {
       },
     };
 
-    v5.migrate(doc, '/tmp');
+    v5.migrate(doc, VAULT_DIR);
 
     const notifications = doc.notifications as Record<string, unknown>;
     const domains = notifications.domains as Record<string, Record<string, unknown>>;
@@ -326,7 +333,7 @@ describe('runMigrations', () => {
       config_version: 2,
       agent: { auto_run: true, interval_seconds: 300 },
     };
-    const ran = runMigrations(doc, '/tmp');
+    const ran = runMigrations(doc, VAULT_DIR);
     expect(ran).toBe(true);
     expect(doc.config_version).toBe(12);
 
@@ -348,7 +355,7 @@ describe('runMigrations', () => {
       config_version: 3,
       agent: { provider: { type: 'cloud' } },
     };
-    const ran = runMigrations(doc, '/tmp');
+    const ran = runMigrations(doc, VAULT_DIR);
     expect(ran).toBe(true);
     expect(doc.config_version).toBe(12);
     const agent = doc.agent as Record<string, unknown>;
@@ -362,7 +369,7 @@ describe('runMigrations', () => {
         default_mode: 'summary',
       },
     };
-    const ran = runMigrations(doc, '/tmp');
+    const ran = runMigrations(doc, VAULT_DIR);
     expect(ran).toBe(true);
     expect(doc.config_version).toBe(12);
 
@@ -379,7 +386,7 @@ describe('runMigrations', () => {
       config_version: 5,
       agent: { tasks: { 'full-intelligence': { model: 'claude-sonnet-4-6' } } },
     };
-    const ran = runMigrations(doc, '/tmp');
+    const ran = runMigrations(doc, VAULT_DIR);
     expect(ran).toBe(true);
     expect(doc.config_version).toBe(12);
     const tasks = (doc.agent as Record<string, unknown>).tasks as Record<string, Record<string, unknown>>;
@@ -392,7 +399,7 @@ describe('runMigrations', () => {
       config_version: 6,
       agent: { auto_run: true, provider: { type: 'cloud' } },
     };
-    const ran = runMigrations(doc, '/tmp');
+    const ran = runMigrations(doc, VAULT_DIR);
     expect(ran).toBe(true);
     expect(doc.config_version).toBe(12);
     const agent = doc.agent as Record<string, unknown>;
@@ -405,7 +412,7 @@ describe('runMigrations', () => {
       config_version: 8,
       agent: { auto_run: true, provider: { type: 'cloud' } },
     };
-    const ran = runMigrations(doc, '/tmp');
+    const ran = runMigrations(doc, VAULT_DIR);
     expect(ran).toBe(true);
     expect(doc.config_version).toBe(12);
     const agent = doc.agent as Record<string, unknown>;
@@ -418,7 +425,7 @@ describe('runMigrations', () => {
       config_version: 12,
       agent: { auto_run: true, provider: { type: 'cloud' } },
     };
-    const ran = runMigrations(doc, '/tmp');
+    const ran = runMigrations(doc, VAULT_DIR);
     expect(ran).toBe(false);
     const agent = doc.agent as Record<string, unknown>;
     expect(agent.auto_run).toBe(true);
@@ -445,7 +452,7 @@ describe('Migration v7: dedupe-canopy-exclude-patterns-against-baseline', () => 
         },
       },
     };
-    runMigrations(doc, '/tmp');
+    runMigrations(doc, VAULT_DIR);
     // After v8, canopy.exclude lives under cortex.canopy.exclude.
     const patterns = (((doc.cortex as Record<string, unknown>).canopy as Record<string, unknown>)
       .exclude as Record<string, unknown>).patterns;
@@ -457,7 +464,7 @@ describe('Migration v7: dedupe-canopy-exclude-patterns-against-baseline', () => 
       config_version: 6,
       canopy: { exclude: { patterns: ['fixtures/large/**', '**/*.snap'] } },
     };
-    runMigrations(doc, '/tmp');
+    runMigrations(doc, VAULT_DIR);
     const patterns = (((doc.cortex as Record<string, unknown>).canopy as Record<string, unknown>)
       .exclude as Record<string, unknown>).patterns;
     expect(patterns).toEqual(['fixtures/large/**', '**/*.snap']);
@@ -465,7 +472,7 @@ describe('Migration v7: dedupe-canopy-exclude-patterns-against-baseline', () => 
 
   it('is a no-op when canopy.exclude is missing', () => {
     const doc: Record<string, unknown> = { config_version: 6 };
-    expect(() => runMigrations(doc, '/tmp')).not.toThrow();
+    expect(() => runMigrations(doc, VAULT_DIR)).not.toThrow();
     expect(doc.config_version).toBe(12);
   });
 });
@@ -484,7 +491,7 @@ describe('Migration v8: unify-cortex-config-shape', () => {
         prompt_max_spores: 7,
       },
     };
-    v8.migrate(doc, '/tmp');
+    v8.migrate(doc, VAULT_DIR);
     expect(doc.context).toBeUndefined();
     const cortex = doc.cortex as Record<string, Record<string, unknown>>;
     expect(cortex.instructions).toEqual({ inject_on_session_start: false });
@@ -500,7 +507,7 @@ describe('Migration v8: unify-cortex-config-shape', () => {
         exclude: { patterns: ['custom/**'] },
       },
     };
-    v8.migrate(doc, '/tmp');
+    v8.migrate(doc, VAULT_DIR);
     expect(doc.canopy).toBeUndefined();
     const canopy = (doc.cortex as Record<string, Record<string, unknown>>).canopy;
     expect(canopy.refresh).toEqual({ background_enabled: false, background_period_minutes: 15 });
@@ -512,7 +519,7 @@ describe('Migration v8: unify-cortex-config-shape', () => {
       config_version: 7,
       cortex: { canopy: { injection: { enabled: false, size_threshold: 1200 } } },
     };
-    v8.migrate(doc, '/tmp');
+    v8.migrate(doc, VAULT_DIR);
     const canopy = (doc.cortex as Record<string, Record<string, unknown>>).canopy;
     expect(canopy.injection).toBeUndefined();
     expect(canopy.inject_on_pre_tool_use).toBe(false);
@@ -525,7 +532,7 @@ describe('Migration v8: unify-cortex-config-shape', () => {
     const doc: Record<string, unknown> = {
       context: { prompt_max_spores: 10 },
     };
-    expect(() => v8.migrate(doc, '/tmp')).not.toThrow();
+    expect(() => v8.migrate(doc, VAULT_DIR)).not.toThrow();
     expect(doc.context).toBeUndefined();
     const cortex = doc.cortex as Record<string, Record<string, unknown>>;
     expect(cortex.spores).toEqual({ max_per_prompt: 10 });
@@ -535,7 +542,7 @@ describe('Migration v8: unify-cortex-config-shape', () => {
     const doc: Record<string, unknown> = {
       context: { operating_brief_enabled: false },
     };
-    v8.migrate(doc, '/tmp');
+    v8.migrate(doc, VAULT_DIR);
     expect(doc.context).toBeUndefined();
     const cortex = doc.cortex as Record<string, Record<string, unknown>>;
     expect(cortex.instructions).toEqual({ inject_on_session_start: false });
@@ -548,7 +555,7 @@ describe('Migration v8: unify-cortex-config-shape', () => {
         digest: { tier: 5000 },
       },
     };
-    expect(() => v8.migrate(doc, '/tmp')).not.toThrow();
+    expect(() => v8.migrate(doc, VAULT_DIR)).not.toThrow();
     const cortex = doc.cortex as Record<string, Record<string, unknown>>;
     expect((cortex.digest as Record<string, unknown>).tier).toBe(5000);
   });
@@ -587,7 +594,7 @@ describe('Migration v9: rename-agent-runtime-to-harness', () => {
       },
     };
 
-    v9.migrate(doc, '/tmp');
+    v9.migrate(doc, VAULT_DIR);
 
     const agent = doc.agent as Record<string, unknown>;
     expect(agent.runtime).toBeUndefined();
@@ -616,7 +623,7 @@ describe('Migration v9: rename-agent-runtime-to-harness', () => {
       },
     };
 
-    v9.migrate(doc, '/tmp');
+    v9.migrate(doc, VAULT_DIR);
 
     const agent = doc.agent as Record<string, unknown>;
     expect(agent.runtime).toBeUndefined();
@@ -636,7 +643,7 @@ describe('Migration v9: rename-agent-runtime-to-harness', () => {
       },
     };
 
-    v9.migrate(doc, '/tmp');
+    v9.migrate(doc, VAULT_DIR);
 
     const agent = doc.agent as Record<string, unknown>;
     expect(agent.runtime).toBeUndefined();
@@ -661,7 +668,7 @@ describe('Migration v9: rename-agent-runtime-to-harness', () => {
       },
     };
 
-    v9.migrate(doc, '/tmp');
+    v9.migrate(doc, VAULT_DIR);
 
     const tasks = (doc.agent as Record<string, unknown>).tasks as Record<string, Record<string, unknown>>;
     const phases = tasks['vault-evolve'].phases as Record<string, Record<string, unknown>>;
@@ -677,7 +684,7 @@ describe('runMigrations on local.yaml: appliesToLocal flag', () => {
     // with target='local' must NOT inject the notifications.domains.settings
     // defaults — that would override project-level config via merge.
     const doc: Record<string, unknown> = { appearance: { theme: 'sage' } };
-    runMigrations(doc, '/tmp', undefined, 'local');
+    runMigrations(doc, VAULT_DIR, undefined, 'local');
     expect(doc.notifications).toBeUndefined();
     // config_version stays untouched because no migration body actually
     // mutated this sparse doc — a stamp here would force a no-op
@@ -689,7 +696,7 @@ describe('runMigrations on local.yaml: appliesToLocal flag', () => {
     const doc: Record<string, unknown> = {
       context: { cortex_enabled: false, prompt_max_spores: 1 },
     };
-    runMigrations(doc, '/tmp', undefined, 'local');
+    runMigrations(doc, VAULT_DIR, undefined, 'local');
     expect(doc.context).toBeUndefined();
     const cortex = doc.cortex as Record<string, Record<string, unknown>>;
     expect(cortex.instructions).toEqual({ inject_on_session_start: false });
@@ -702,7 +709,7 @@ describe('v11 — embedding.run_in_deep_sleep → prevent_deep_sleep', () => {
     const doc: Record<string, unknown> = {
       embedding: { provider: 'ollama', run_in_deep_sleep: false },
     };
-    runMigrations(doc, '/tmp', undefined, 'project');
+    runMigrations(doc, VAULT_DIR, undefined, 'project');
     const embedding = doc.embedding as Record<string, unknown>;
     expect(embedding.prevent_deep_sleep).toBe(false);
     expect('run_in_deep_sleep' in embedding).toBe(false);
@@ -712,7 +719,7 @@ describe('v11 — embedding.run_in_deep_sleep → prevent_deep_sleep', () => {
   it('does not invent the key on a doc that never had it', () => {
     // Key-relocation, not a seeder: a sparse local.yaml must stay sparse.
     const doc: Record<string, unknown> = { embedding: { provider: 'ollama' } };
-    runMigrations(doc, '/tmp', undefined, 'local');
+    runMigrations(doc, VAULT_DIR, undefined, 'local');
     const embedding = doc.embedding as Record<string, unknown>;
     expect('prevent_deep_sleep' in embedding).toBe(false);
   });
@@ -721,7 +728,7 @@ describe('v11 — embedding.run_in_deep_sleep → prevent_deep_sleep', () => {
     const doc: Record<string, unknown> = {
       embedding: { prevent_deep_sleep: true, run_in_deep_sleep: false },
     };
-    runMigrations(doc, '/tmp', undefined, 'project');
+    runMigrations(doc, VAULT_DIR, undefined, 'project');
     const embedding = doc.embedding as Record<string, unknown>;
     expect(embedding.prevent_deep_sleep).toBe(true);
     expect('run_in_deep_sleep' in embedding).toBe(false);
@@ -729,7 +736,7 @@ describe('v11 — embedding.run_in_deep_sleep → prevent_deep_sleep', () => {
 
   it('is a no-op when there is no embedding block at all', () => {
     const doc: Record<string, unknown> = { cortex: {} };
-    expect(() => runMigrations(doc, '/tmp', undefined, 'project')).not.toThrow();
+    expect(() => runMigrations(doc, VAULT_DIR, undefined, 'project')).not.toThrow();
     expect(doc.embedding).toBeUndefined();
   });
 });

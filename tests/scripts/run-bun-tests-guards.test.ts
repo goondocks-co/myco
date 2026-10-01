@@ -5,11 +5,14 @@
  *     (a terminal, or an agent harness's socket);
  *   - a group still running at its wall-clock budget is sampled, killed with
  *     its whole process tree, and reported failed with its test files, and
- *     the run goes on.
+ *     the run goes on;
+ *   - a run leaves nothing in the temp directory, whatever its tests leak and
+ *     however it ends, and sweeps the roots of earlier runs whose runner is
+ *     gone while keeping those of runs still going.
  * The fixtures are skipped unless these tests set their flags.
  */
 import { describe, expect, test } from 'bun:test';
-import { spawn, spawnSync } from 'node:child_process';
+import { type ChildProcess, spawn, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -19,6 +22,7 @@ import { redactSecrets } from '../../scripts/redact-secrets.mjs';
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 const HANG_FIXTURE = 'tests/fixtures/runner/budget_hang_test.ts';
 const STDIN_FIXTURE = 'tests/fixtures/runner/stdin_read_test.ts';
+const TEMP_LEAK_FIXTURE = 'tests/fixtures/runner/temp_leak_test.ts';
 const BUDGET_MS = 3000;
 // Sampling takes a few seconds per process; anything near this bound means a guard did not fire.
 const RUN_BOUND_MS = 90_000;
@@ -29,13 +33,19 @@ interface RunnerResult { status: number | null; output: string; elapsedMs: numbe
  * Run the runner on one target. Its stdin is a pipe this side never closes, as a harness's can be. The outer
  * run's own runner settings (a CI shard, a test kind, a plan file) are not passed on: the nested run is one group.
  */
-function runRunner(target: string, env: Record<string, string>, args: string[] = []): Promise<RunnerResult> {
+function runRunner(
+  target: string,
+  env: Record<string, string>,
+  args: string[] = [],
+  onSpawn: (runner: ChildProcess) => void = () => {},
+): Promise<RunnerResult> {
   const inherited = Object.fromEntries(Object.entries(process.env).filter(([key]) => !/^MYCO_(TEST|RUNNER)_/.test(key)));
   return new Promise((resolve, reject) => {
     const started = Date.now();
     const child = spawn('node', ['scripts/run-bun-tests.mjs', target, ...args], {
       cwd: REPO, env: { ...inherited, ...env }, stdio: ['pipe', 'pipe', 'pipe'],
     });
+    onSpawn(child);
     let output = '';
     child.stdout.on('data', (chunk) => { output += chunk; });
     child.stderr.on('data', (chunk) => { output += chunk; });
@@ -110,6 +120,108 @@ describe('run-bun-tests guards', () => {
     expect(Number.isInteger(pgid)).toBe(true);
     for (const pid of [...children, ...hang.match(/^pids: (.+)$/m)![1].split(' ').map(Number)]) expect({ pid, alive: alive(pid) }).toEqual({ pid, alive: false });
     expect(processGroupMembers(pgid)).toEqual([]);
+  }), RUN_BOUND_MS + 10_000);
+});
+
+/** The temp directory a nested run is given, as every variable that names one on any platform. */
+function tempDirEnv(dir: string): Record<string, string> {
+  return { TMPDIR: dir, TEMP: dir, TMP: dir };
+}
+
+/** A report directory and, beside it (the runner clears its report directory), a temp directory for a nested run. */
+function withRunDirs<T>(fn: (dirs: { reports: string; tempDir: string }) => Promise<T>): Promise<T> {
+  return withReportDir((dir) => {
+    const tempDir = path.join(dir, 'tmp');
+    fs.mkdirSync(tempDir);
+    return fn({ reports: path.join(dir, 'reports'), tempDir });
+  });
+}
+
+/** The entries of `dir` named like anything a test run creates. */
+function testRunEntries(dir: string): string[] {
+  return fs.readdirSync(dir).filter((name) => name.startsWith('myco-test-')).sort();
+}
+
+/** A run root as a runner leaves it, owned by `pid`, with something inside. */
+function seedRunRoot(parent: string, name: string, pid: number): string {
+  const root = path.join(parent, name);
+  fs.mkdirSync(path.join(root, 'myco-test-home-seeded'), { recursive: true });
+  fs.writeFileSync(path.join(root, '.owner'), `${pid}\n`);
+  return root;
+}
+
+async function waitFor(condition: () => boolean, boundMs: number, what: string): Promise<void> {
+  const deadline = Date.now() + boundMs;
+  while (!condition()) {
+    if (Date.now() > deadline) throw new Error(`still waiting after ${boundMs}ms for ${what}`);
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+}
+
+describe('run-bun-tests temp containment', () => {
+  test('a run leaves nothing in the temp directory, and sweeps only the roots of runners that are gone', () => withRunDirs(async ({ reports, tempDir }) => {
+    const exited = spawnSync(process.execPath, ['-e', '0']);
+    expect(alive(exited.pid)).toBe(false);
+    seedRunRoot(tempDir, 'myco-test-run-gone00', exited.pid);
+    seedRunRoot(tempDir, 'myco-test-run-live00', process.pid);
+
+    const { status, output } = await runRunner(TEMP_LEAK_FIXTURE, {
+      MYCO_RUNNER_TEMP_LEAK_FIXTURE: '1',
+      MYCO_RUNNER_REPORT_DIR: reports,
+      ...tempDirEnv(tempDir),
+    });
+
+    expect({ status, output }).toEqual({ status: 0, output: expect.stringContaining(' 1 pass') });
+    expect(testRunEntries(tempDir)).toEqual(['myco-test-run-live00']);
+    expect(output).toContain(`temp entries left in ${tempDir}: 0`);
+  }), RUN_BOUND_MS + 10_000);
+
+  test('a runner stopped by a signal ends the group it was running and removes its temp root', () => withRunDirs(async ({ reports, tempDir }) => {
+    const readyFile = path.join(path.dirname(tempDir), 'fixture.pid');
+    let runner: ChildProcess | undefined;
+    const run = runRunner(TEMP_LEAK_FIXTURE, {
+      MYCO_RUNNER_TEMP_LEAK_FIXTURE: '1',
+      MYCO_RUNNER_TEMP_LEAK_READY_FILE: readyFile,
+      MYCO_RUNNER_REPORT_DIR: reports,
+      ...tempDirEnv(tempDir),
+    }, [], (child) => { runner = child; });
+
+    await waitFor(() => fs.existsSync(readyFile) && fs.readFileSync(readyFile, 'utf8').endsWith('\n'), 60_000, 'the fixture to leak and wait');
+    const fixturePid = Number(fs.readFileSync(readyFile, 'utf8').trim());
+    expect(testRunEntries(tempDir)).toEqual([expect.stringMatching(/^myco-test-run-/)]);
+    runner!.kill('SIGTERM');
+
+    const { status } = await run;
+    expect(status).toBe(128 + 15);
+    await waitFor(() => !alive(fixturePid), 10_000, `fixture pid ${fixturePid} to exit`);
+    expect(testRunEntries(tempDir)).toEqual([]);
+  }), RUN_BOUND_MS + 10_000);
+
+  test('real test files that leave temp directories behind leave nothing once the run ends', () => withRunDirs(async ({ reports, tempDir }) => {
+    // Each of these leaves directories it made under os.tmpdir() (myco-run-, myco-stub-,
+    // myco-member-home-, myco-member-machine-, myco-launchd-, myco-bin-, ...) for the run to remove.
+    const leakers = [
+      'tests/member/worker-run-permissions.test.ts',
+      'tests/member/provisioning.test.ts',
+      'tests/cli/member-machine-verbs.test.ts',
+      'tests/service/launchd.test.ts',
+    ];
+    const { status, output } = await runRunner(leakers[0]!, {
+      MYCO_RUNNER_REPORT_DIR: reports,
+      ...tempDirEnv(tempDir),
+    }, leakers.slice(1));
+
+    expect({ status, output }).toEqual({ status: 0, output: expect.stringMatching(/ 0 fail/) });
+    expect(fs.readdirSync(tempDir)).toEqual([]);
+  }), RUN_BOUND_MS + 10_000);
+
+  test('a raw bun test run outside the runner removes the sandbox home its preload made', () => withRunDirs(async ({ reports, tempDir }) => {
+    const inherited = Object.fromEntries(Object.entries(process.env).filter(([key]) => !/^MYCO_(TEST|RUNNER)_/.test(key)));
+    const run = spawnSync('bun', ['test', `./${STDIN_FIXTURE}`], {
+      cwd: REPO, env: { ...inherited, ...tempDirEnv(tempDir) }, stdio: ['ignore', 'pipe', 'pipe'], encoding: 'utf8',
+    });
+    expect({ status: run.status, output: `${run.stdout}${run.stderr}` }).toEqual({ status: 0, output: expect.stringContaining(' 1 skip') });
+    expect(testRunEntries(tempDir)).toEqual([]);
   }), RUN_BOUND_MS + 10_000);
 });
 

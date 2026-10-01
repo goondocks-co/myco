@@ -62,8 +62,7 @@ function spansOf(dir: string): Map<string, { in: number; out: number }> {
 
 describe.skipIf(process.platform === 'win32')('a lock file unlinked under a waiting writer', () => {
   it('is never held by two processes at once', async () => {
-    // Under /tmp: a macOS per-user $TMPDIR can make every process started in it slow to launch.
-    const dir = fs.mkdtempSync(path.join('/tmp', 'myco-lock-identity-'));
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-lock-identity-'));
     const lockPath = path.join(dir, '.sess.lock');
     const first = holder(dir, 'first', lockPath, 1_500);
     await reached(dir, 'first', 'in');
@@ -89,7 +88,7 @@ describe.skipIf(process.platform === 'win32')('a lock file unlinked under a wait
   }, 30_000);
 
   it('is taken again on a fresh file when its path is gone by the time the lock is granted', async () => {
-    const dir = fs.mkdtempSync(path.join('/tmp', 'myco-lock-identity-'));
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-lock-identity-'));
     const lockPath = path.join(dir, '.sess.lock');
     const first = holder(dir, 'first', lockPath, 1_000);
     await reached(dir, 'first', 'in');
@@ -116,7 +115,7 @@ describe.skipIf(process.platform === 'win32')('a lifecycle lock whose file is re
   afterEach(() => { fs.openSync = realOpen; });
 
   it('is refused while another holder has the file the path names now, not granted on the unlinked one', () => {
-    const dir = fs.mkdtempSync(path.join('/tmp', 'myco-lock-identity-'));
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-lock-identity-'));
     const lockPath = path.join(dir, '.helper.lock');
     let other: ReturnType<typeof LifecycleLock.acquire> | undefined;
     // The first open of the path returns the old file; before the taker locks it, the path is unlinked and another

@@ -102,9 +102,13 @@ describe('where a repository stands', () => {
     expect(silentRepository(repository(path.join(namedHome, 'worker', 'runs'), 'r1', null), { mycoHome: namedHome, home })).toBe(true);
     expect(silentRepository(path.join(base, 'Repos', 'removed'), { mycoHome: away, home })).toBe(true);
     // The environment the hook runs in decides what counts as a project, not this process's.
-    const plain = fs.mkdtempSync(path.join(path.parse(base).root, 'tmp', 'myco-auto-join-plain-'));
-    expect(silentRepository(plain, { mycoHome: away, home, env: { MYCO_TEMPORARY_FOLDERS: temporary } })).toBe(true);
-    expect(silentRepository(plain, { mycoHome: away, home, env: { MYCO_TEMPORARY_FOLDERS: temporary, MYCO_PROJECT_ROOT: plain } })).toBe(false);
+    const plain = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'myco-auto-join-plain-')));
+    try {
+      expect(silentRepository(plain, { mycoHome: away, home, env: { MYCO_TEMPORARY_FOLDERS: temporary } })).toBe(true);
+      expect(silentRepository(plain, { mycoHome: away, home, env: { MYCO_TEMPORARY_FOLDERS: temporary, MYCO_PROJECT_ROOT: plain } })).toBe(false);
+    } finally {
+      fs.rmSync(plain, { recursive: true, force: true });
+    }
     expect(silentRepository(repository(path.join(home, 'Repos'), 'widget', null), { mycoHome: away, home })).toBe(false);
     expect(silentRepository(repository(path.join(home, '.config'), 'dotfiles', null), { mycoHome: away, home })).toBe(false);
   });

@@ -1,4 +1,4 @@
-import { expect } from 'bun:test';
+import { afterAll, expect } from 'bun:test';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -14,9 +14,15 @@ await import('@testing-library/jest-dom');
 // explicitly override MYCO_HOME continue to win — this only kicks in when no
 // caller has set it. Without this, the new three-tier config loader bleeds
 // real Grove config into tests that touch loadMergedConfig.
+// The sandbox is removed when the test process is done with it: bun's test
+// runner runs this `afterAll` after every file's own hooks and does not emit
+// process 'exit'.
 if (!process.env.MYCO_HOME) {
   const sandbox = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-test-home-'));
   process.env.MYCO_HOME = sandbox;
+  const removeSandbox = () => { try { fs.rmSync(sandbox, { recursive: true, force: true }); } catch { /* ignore */ } };
+  afterAll(removeSandbox);
+  process.on('exit', removeSandbox);
 }
 
 if (typeof window !== 'undefined') {

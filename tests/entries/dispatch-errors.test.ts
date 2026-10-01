@@ -11,8 +11,7 @@ import path from 'node:path';
 const DISPATCH = path.resolve(import.meta.dir, '..', '..', 'packages', 'myco', 'src', 'entries', 'dispatch.ts');
 
 function runEntry(body: string, argv: string[]): { status: number | null; stderr: string } {
-  // Under /tmp: a macOS per-user $TMPDIR can make every process started in it slow to launch.
-  const dir = fs.mkdtempSync(path.join(process.platform === 'win32' ? os.tmpdir() : '/tmp', 'myco-dispatch-'));
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-dispatch-'));
   const entry = path.join(dir, 'entry.ts');
   fs.writeFileSync(entry, `import { dispatch } from ${JSON.stringify(DISPATCH)};\n${body}\n`);
   const home = path.join(dir, 'home');
