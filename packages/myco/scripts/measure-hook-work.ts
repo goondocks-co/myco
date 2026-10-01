@@ -5,11 +5,12 @@
 // Each run is one session of the harness that wires every hook (session start, a prompt, a tool call's pre and post,
 // a delegated agent's start and stop, the turn's end and the session's end), in a git repository joined to a loopback
 // port nothing listens on, which refuses every connection at once: once with the credential read from the registry
-// and once from the environment, whose turn and session ends deliver in the hook by design. Each hook's p95 over
-// `--runs` sessions must stay inside its budget times `--scale` (1 where Linux runs natively; the shared macOS and
-// Windows runners start a process about twice as slowly). This measures how long each hook's own work takes; that
-// no hook dials the Deployment is G1's to prove (`tests/member/hook-no-network.test.ts`, against one that never
-// answers).
+// and once from the environment, whose turn and session ends deliver in the hook by design. Over `--runs` sessions,
+// each hook's median must stay inside its budget times `--scale`, and its slowest run inside a ceiling no stall of a
+// shared runner reaches but a hook waiting on something would. The scale is 1 where Linux runs natively, 2 on the
+// shared macOS runner and 3 on the Windows one, where a hook that does nothing already takes about 110 ms against
+// Linux's 40. This measures how long each hook's own work takes; that no hook dials the Deployment is G1's to prove
+// (`tests/member/hook-no-network.test.ts`, against one that never answers).
 //
 // Everything runs under a scratch directory and a scratch MYCO_HOME, removed at the end; the detached helpers the
 // registry's hooks start are waited for first.
@@ -32,23 +33,25 @@ if (!binary || !fs.existsSync(binary)) {
   process.stderr.write(`[hook-work] no binary at ${binary ?? '(none given)'}\n`);
   process.exit(2);
 }
-// Thirty sessions: a p95 over them leaves out the one slowest run, so a single stall on a shared runner (a scan, a
-// page-in) is not what the gate measures, and the budget still holds the other twenty-nine.
+// Thirty sessions: the median of each hook's runs is its typical cost, which a stall on a shared runner (a scan, a
+// page-in) does not move.
 const runs = Number(flag('--runs', '30'));
-const scale = Number(flag('--scale', process.platform === 'linux' ? '1' : '2'));
+const scale = Number(flag('--scale', process.platform === 'linux' ? '1' : process.platform === 'darwin' ? '2' : '3'));
 const prefix = flag('--prefix', '').split(' ').filter(Boolean);
 
-/** Each hook's p95 budget, in ms, where Linux runs natively; session start and end run `git` for the branch and head. */
+/** Each hook's median budget, in ms, where Linux runs natively; session start and end run `git` for the branch and head. */
 const BUDGET_MS: Record<string, number> = {
-  'session-start': 250,
-  'user-prompt-submit': 120,
-  'pre-tool-use': 120,
-  'post-tool-use': 120,
-  'subagent-start': 120,
-  'subagent-stop': 120,
-  stop: 150,
-  'session-end': 250,
+  'session-start': 150,
+  'user-prompt-submit': 80,
+  'pre-tool-use': 60,
+  'post-tool-use': 80,
+  'subagent-start': 80,
+  'subagent-stop': 80,
+  stop: 100,
+  'session-end': 150,
 };
+/** The slowest any one run of any hook may be, times the scale: past every runner stall seen, short of any wait. */
+const CEILING_MS = 1_000;
 const SYMBIONT = 'copilot';
 const PROJECT = 'proj_hookwork';
 /** A loopback port nothing listens on: every dial is refused at once. */
@@ -124,9 +127,10 @@ try {
       const sorted = [...(times[`${source} ${name}`] ?? [])].sort((a, b) => a - b);
       const pick = (q: number) => sorted[Math.min(sorted.length - 1, Math.ceil(q * sorted.length) - 1)];
       const budget = BUDGET_MS[name] * scale;
-      const over = pick(0.95) > budget;
+      const ceiling = CEILING_MS * scale;
+      const over = pick(0.5) > budget || sorted.at(-1)! > ceiling;
       failed ||= over;
-      process.stdout.write(`[hook-work] ${source.padEnd(8)} ${name.padEnd(18)} p50 ${pick(0.5).toFixed(1).padStart(6)} ms  p95 ${pick(0.95).toFixed(1).padStart(6)} ms  max ${sorted.at(-1)!.toFixed(1).padStart(6)} ms  (budget ${budget} ms)${over ? '  OVER' : ''}\n`);
+      process.stdout.write(`[hook-work] ${source.padEnd(8)} ${name.padEnd(18)} p50 ${pick(0.5).toFixed(1).padStart(6)} ms  p95 ${pick(0.95).toFixed(1).padStart(6)} ms  max ${sorted.at(-1)!.toFixed(1).padStart(6)} ms  (median budget ${budget} ms, ceiling ${ceiling} ms)${over ? '  OVER' : ''}\n`);
     }
   }
 } finally {
