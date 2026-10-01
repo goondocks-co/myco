@@ -35,7 +35,9 @@ The installer found a 1.4 binary where 2.0 goes, or 1.4 vaults that no cutover h
 
 ### Windows
 
-The PowerShell installer (`install.ps1`) still installs Myco 1.4. There is no Myco 2.0 installer for Windows yet.
+The PowerShell installer (`install.ps1`) installs Myco 1.4. There is no Myco 2.0 for Windows yet.
+
+> **Coming in beta.1:** Myco 2.0 on Windows ([#1550](https://github.com/goondocks-co/myco/issues/1550)).
 
 ## Signing in
 
@@ -45,7 +47,7 @@ The PowerShell installer (`install.ps1`) still installs Myco 1.4. There is no My
 
 A machine belongs to one member of a Deployment. Every Myco home on it signs in as the same machine, unless that home holds a `machine_id` file of its own. The machine stays that member's even after the member is removed, and nothing moves a machine to another member.
 
-To sign this machine in again, ask a Deployment administrator for an invitation **for your existing member**, not a new one. On the dashboard that is an invitation "For: Another runtime for <your member>". Run `myco login <link>` with the link it gives. An invitation for a new member is refused on this machine.
+To sign this machine in again, ask a Deployment administrator for a link **for your existing member**, not a new one. On the dashboard that is **People & machines** → **Add a machine**, with **For** set to you. Run `myco login <link>` with the link it gives. An invitation for a new member is refused on this machine.
 
 ### The invitation is refused
 
@@ -54,7 +56,7 @@ To sign this machine in again, ask a Deployment administrator for an invitation 
 | Code | What it means |
 |---|---|
 | `enrollment_used` | The link was already used. Each link works once. |
-| `enrollment_expired` | The link expired. Links last an hour unless the administrator chose otherwise, and never more than a day. |
+| `enrollment_expired` | The link expired. A link lasts an hour or a day, as the administrator chose. |
 | `enrollment_revoked` | An administrator withdrew it. |
 | `enrollment_unknown` | The Deployment does not know this link; check you copied all of it. |
 | `unreachable` | The Deployment did not answer at the link's address. |
@@ -65,7 +67,7 @@ For every one of these, ask for a fresh link. A link that is not a link at all i
 
 > No project yet — connect your first one with `myco member join`
 
-You are signed in, but no project on this machine is connected, so nothing is captured yet. See [Known gaps](quickstart.md#known-gaps).
+You are signed in, but no repository on this machine is connected, so nothing is captured yet. Run `myco member join` in each repository you work in. It asks which project the repository is, or creates one with `--new`.
 
 ## Capturing
 
@@ -74,6 +76,10 @@ You are signed in, but no project on this machine is connected, so nothing is ca
 > [myco] member: no registry entry for <folder> — run `myco member join <server-url> --project <id>`; no capture
 
 Your agents' Myco hooks run in every folder, and this folder is not connected to a project. Nothing from it is captured. Connected folders are unaffected.
+
+To capture here, run `myco member join` in the repository. Your agents' earlier sessions there are brought in when it connects, as far back as the Deployment allows, and `myco import` reaches further.
+
+> **Coming in beta.1:** repositories under `~/Repos` will connect on their own, and a repository that cannot will be listed on **Today** ([#1547](https://github.com/goondocks-co/myco/issues/1547)).
 
 ### An agent captures nothing
 
@@ -117,6 +123,16 @@ The 2.0 binary found 1.4 vaults in a home that has not been moved to 2.0, so it 
 | `<file>` holds an entry of another installation | Another Myco home registered that agent entry. Remove it if nothing uses it, then run again. |
 
 A cutover that stopped partway through is safe to run again. It finishes what is left and imports nothing twice.
+
+## Starting work
+
+### "You've started this task … today"
+
+A member who is not an administrator can start each task from **Myco's work** four times in a rolling day, across every project. The message says when you can start it again. An administrator has no daily limit, and can raise the number for a task; see [Configuration](configuration.md#starting-work-by-hand).
+
+### "… is switched off for this project"
+
+The task needs a switch the project does not have on: **Learning** for learning, **Code map** for the map. An administrator turns it on in the project's **Project settings**.
 
 ## Workers
 

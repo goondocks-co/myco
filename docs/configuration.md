@@ -2,48 +2,54 @@
 
 Myco 2.0 is configured in one place: the Deployment's dashboard. There is nothing to edit on a laptop and no configuration command to run. Every machine, agent and teammate reads the same settings, so a change an administrator makes reaches the whole team.
 
-## What you set on the Deployment
+## Settings
 
-An administrator sets these on the dashboard's **Settings** page:
+An administrator sets these under **Settings**, in five sections.
 
-- **The agent.** Which model provider does Myco's intelligence work, and the credentials it uses.
-- **Scheduling.** Whether Myco's work runs on a schedule, and whether it runs as sessions are captured. Scheduled work is off on a new Deployment. Session titles and summaries follow each session either way, once a worker is running.
-- **Limits.** How many runs may happen at once, and how often one task may run.
-- **What sessions receive.** The text every agent session starts with, and how many spores come with each prompt.
-- **Code map.** How the repository map is built.
-- **Embedding.** The provider behind semantic search.
-- **Workers.** Which coding agent a worker uses to run Myco's tasks, and which to fall back to.
-- **Backup and maintenance.** When the Deployment backs itself up and checks and tidies its storage.
-- **Importing past sessions.** Whether a machine brings its agents' earlier sessions when it joins, and how far back.
-- **Projects.** What Myco does for each project. See the next section.
+**Myco's work.** When and how much Myco works:
 
-### Turn on what each project gets
+- **When Myco works.** Whether it works on a schedule, whether it works as sessions arrive, and how long a project counts as active. Scheduled work is off on a new Deployment. Here too is **Title imported sessions**: whether the sessions a machine brings from its history get titles as well. New sessions are titled when they end, once a worker is running.
+- **How much at once.** How many tasks run at once, how many runs of one task, and how often one task may run in an hour.
+- **Which agent does the work.** The coding agent a worker tries first, and which to try next.
+- **Learning.** Whether Myco checks what it saves before it lands.
+- **What sessions receive.** The instructions every session starts with, and how many spores and plans come with each prompt.
+- **Code map.** Whether the map updates on its own, how often, and which paths it leaves out.
 
-A new project captures sessions and nothing more until an administrator turns on its capabilities, under **Projects** in Settings. Each one is off until you turn it on.
+**Models and keys.** The model Myco's own work uses, the provider behind search, and the keys for both. A key is stored once and never shown again; work bills to whichever account the key belongs to.
 
-| Capability | What it turns on |
+**Capture and retention.** Whether a machine brings its agents' earlier sessions when it joins, and how far back. Also how long raw transcripts and task records are kept. Sessions, prompts, replies and plans are never removed.
+
+**Backups.** How often the Deployment backs itself up, how many copies it keeps, and how often it checks and tidies its storage. See [Self-hosting](self-hosting.md#backing-it-up).
+
+**Sign-in and access.** Who can sign in, and where each project's access keys are.
+
+### What Myco does in each project
+
+A new project captures sessions, and Myco titles them. Everything else is off until an administrator turns it on, in the project's **Project settings**, under **What Myco does here**:
+
+| Switch | What it turns on |
 |---|---|
-| Vault evolution | Myco reads new sessions and turns them into spores, and seeds a new project from its repository. |
-| Canopy | The repository map agents can ask for. |
-| Cortex | Context delivered to agents: the session-start text, and relevant spores with each prompt. |
+| Learning | Myco learns spores from the project's sessions and keeps them current. It can also learn from the project's code. |
+| Code map | Myco keeps a map of where things live in the project's code. |
+| Context for sessions | Sessions in the project get the instructions at start, and relevant spores and plans with their prompts. |
 
-Seeding a project and building its map also need the project's repository connected, and a worker that can check it out. See [How Myco learns](intelligence.md) for what each piece of work does and when it runs.
+Learning from the code and building the map also need the project's **Repository** connected, and a worker that can check it out. See [How Myco learns](intelligence.md) for what each piece of work does and when it runs.
+
+### Starting work by hand
+
+Any member can start a task from **Myco's work** with **Run a task**. A member who is not an administrator can start each task four times in a rolling day, across every project; an administrator has no daily limit. To give members a different number for one task, an administrator sets `memberRunsPerDay` for that task under **Task overrides** in **Models and keys**. For example, `{"extract-curate": {"schedule": {"memberRunsPerDay": 10}}}` lets each member start learning ten times a day.
 
 ## What you set per machine
 
-A machine can name extra folders where your agents keep plans, beyond the places Myco already watches. An administrator sets them for their own machine on the dashboard's **Members** page. The machine picks up a change at its next session start.
+A machine can name extra folders where your agents keep plans, beyond the places Myco already watches. Open **My machines** from the account menu and choose **Its settings** on the machine. The machine picks up a change at its next session start.
 
-To see what this machine is using, run this from a connected project:
+To see what this machine is using, run this from a connected repository:
 
 ```bash
 myco config get
 ```
 
-It prints the Deployment's settings, this machine's settings, and your member settings. `myco config set` refuses and points you to the dashboard, because settings belong to the Deployment.
-
-## What is not configurable yet
-
-Member settings, such as a log level or an update channel of your own, are shown by `myco config get` but not yet honoured. See [Known gaps](quickstart.md#known-gaps).
+It prints the Deployment's settings, this machine's settings, and your member settings. `myco config set` refuses and points you to the dashboard, because settings belong to the Deployment. Member settings of your own, such as a log level, are shown but not read by Myco 2.0 yet.
 
 ## Sandboxes and CI
 

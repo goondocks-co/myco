@@ -4,7 +4,7 @@ Myco 2.0 keeps your team's knowledge on a Deployment instead of in a vault on ea
 
 ## Before you start
 
-You need a Deployment to move to, and an invite link for it. If your team already runs one, ask its administrator for a link. If you are the first, set one up with [Self-hosting](self-hosting.md) and invite yourself.
+You need a Deployment to move to, and an invite link for it. If your team already runs one, ask its administrator for a link. If you are the first, set one up with the [Quickstart](quickstart.md), then make a link for your own machine with **Add a machine** on **People & machines**.
 
 ## Move a machine
 

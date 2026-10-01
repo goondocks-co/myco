@@ -55,7 +55,7 @@
       "installUrl": "https://myco.sh/install.sh",
       "license": "https://www.apache.org/licenses/LICENSE-2.0",
       "description": "Myco captures what coding agents do, turns it into durable project knowledge, and hands it back to every agent on the team.",
-      "softwareRequirements": "macOS, Linux (x64/arm64), or Windows (x64). Self-contained native binary — no Node runtime required.",
+      "softwareRequirements": "macOS or Linux (x64/arm64). Self-contained native binary — no Node runtime required.",
       "sameAs": [
         "https://github.com/goondocks-co/myco",
         "https://www.npmjs.com/package/@goondocks/myco"
@@ -173,10 +173,10 @@
               <span class="line"><span class="prompt">$</span><span class="cmd">curl</span> <span class="flag">--proto</span> <span class="str">'=https'</span> <span class="flag">--tlsv1.2 -fsSL</span> <span class="str">https://myco.sh/install.sh</span> | <span class="cmd">sh</span></span>
               <span class="blank"></span>
               <span class="line"><span class="prompt">$</span><span class="cmd">myco</span> login <span class="str">&lt;invite link&gt;</span></span>
-              <span class="line"><span class="comment"># the link your Deployment's administrator sent you</span></span>
+              <span class="line"><span class="comment"># the link your Deployment's administrator sent you; sets up your agents</span></span>
               <span class="blank"></span>
-              <span class="line"><span class="prompt">$</span><span class="cmd">myco</span> member provision <span class="str">claude-code</span><span class="caret"></span></span>
-              <span class="line"><span class="comment"># your agent now captures to the Deployment and reads from it</span></span>
+              <span class="line"><span class="prompt">$</span><span class="cmd">myco</span> member join<span class="caret"></span></span>
+              <span class="line"><span class="comment"># this repository now captures to the Deployment and reads from it</span></span>
             </div>
           </div>
         </div>
@@ -217,7 +217,7 @@
 
       <div class="install-next">
         <span class="n">Requires</span>
-        <span class="txt">macOS or Linux, and a supported coding agent. Myco ships as a self-contained native binary. The Windows installer still installs Myco 1.4.</span>
+        <span class="txt">macOS or Linux, and a supported coding agent. Myco ships as a self-contained native binary. Windows is coming in beta.1.</span>
         <span style="margin-left:auto;"><a class="arrow-link" href="/quickstart">Quickstart</a></span>
       </div>
     </div>
@@ -333,7 +333,7 @@
         <div class="payoff">
           <span class="metric">Day 01</span>
           <h4>New projects start warm</h4>
-          <p>Seeding reads an existing codebase and its git history and writes the project's first spores.</p>
+          <p>Myco reads an existing codebase and its git history and writes the project's first spores.</p>
         </div>
         <div class="payoff">
           <span class="metric" style="color: var(--ochre);">Every prompt</span>
@@ -501,7 +501,7 @@
     <div class="sec-head">
       <span class="eyebrow">Works with your agent</span>
       <h2 class="sec-title">Augment the agent you already use.</h2>
-      <p class="sec-lede">No wrappers, no forked CLIs, no ecosystem lock-in. <code>myco member provision</code> gives each agent its capture hooks and Myco tools, and it keeps working the way it always has.</p>
+      <p class="sec-lede">No wrappers, no forked CLIs, no ecosystem lock-in. <code>myco login</code> gives each agent on your machine its capture hooks and Myco tools, and it keeps working the way it always has.</p>
     </div>
 
     <div class="agents-grid">
@@ -582,7 +582,7 @@
       <a class="doc-card" href="/quickstart">
         <span class="kind">Getting started</span>
         <h4>Quickstart</h4>
-        <p>Set up a Deployment, invite people, and connect a machine and its agents.</p>
+        <p>Set up a Deployment, invite people, sign a machine in and connect its repositories.</p>
         <span class="go">Read guide</span>
       </a>
       <a class="doc-card" href="/upgrade-from-v1">
@@ -595,6 +595,12 @@
         <span class="kind">Getting started</span>
         <h4>Self-hosting</h4>
         <p>Run a Deployment on a laptop, a virtual machine or Cloudflare.</p>
+        <span class="go">Read guide</span>
+      </a>
+      <a class="doc-card" href="/dashboard">
+        <span class="kind">Using Myco</span>
+        <h4>The dashboard</h4>
+        <p>What your agents did, what Myco learned from it, and the pages administrators run the Deployment from.</p>
         <span class="go">Read guide</span>
       </a>
       <a class="doc-card" href="/intelligence">
@@ -624,7 +630,7 @@
       <a class="doc-card" href="/configuration">
         <span class="kind">Using Myco</span>
         <h4>Configuration</h4>
-        <p>Deployment settings, what each project gets, and sandboxes and CI.</p>
+        <p>Deployment settings, what Myco does in each project, and sandboxes and CI.</p>
         <span class="go">Read guide</span>
       </a>
       <a class="doc-card" href="/troubleshooting">

@@ -1,6 +1,6 @@
 # Agent tools
 
-Every agent connected to a Deployment reaches the project's knowledge through [Model Context Protocol](https://modelcontextprotocol.io) tools. `myco member provision <agent>` gives an agent its Myco MCP entry, which points at the Deployment's `/mcp` address. When the agent connects, it asks `myco` for the sign-in details, so no token is written into the agent's config. See [Agents](agents.md).
+Every agent connected to a Deployment reaches the project's knowledge through [Model Context Protocol](https://modelcontextprotocol.io) tools. `myco login` gives each agent on the machine its Myco MCP entry (`myco member provision <agent>` repairs one), which points at the Deployment's `/mcp` address. When the agent connects, it asks `myco` for the sign-in details, so no token is written into the agent's config. See [Agents](agents.md).
 
 The tools read and curate knowledge. They do not administer Myco: settings, members and backups live in the dashboard and the `myco server` commands.
 
@@ -12,7 +12,7 @@ The tools read and curate knowledge. They do not administer Myco: settings, memb
 | `myco_sessions` | Lists past sessions and reads one. |
 | `myco_plans` | Lists, reads and saves plans. |
 | `myco_spores` | Lists, reads and saves spores, and marks one replaced by a newer one, merged with others, or no longer true. |
-| `myco_cortex` | The project's instructions and id, the repository map (`op: "canopy_map"`), and recent activity across projects. |
+| `myco_cortex` | The project's instructions and id, the code map (`op: "canopy_map"`), and recent activity across projects. |
 | `myco_skills` | Lists the skills that ship with Myco and what each is for. |
 | `myco_agent` | Reads the history of Myco's own runs. |
 

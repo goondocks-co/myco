@@ -14,6 +14,7 @@ export const NAV = [
   {
     group: 'Using Myco',
     items: [
+      { slug: 'dashboard', title: 'The dashboard' },
       { slug: 'intelligence', title: 'How Myco learns' },
       { slug: 'agents', title: 'Agents' },
       { slug: 'agent-tools', title: 'Agent tools' },

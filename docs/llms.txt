@@ -2,24 +2,25 @@
 
 > Myco is the nervous system for AI-assisted software teams. It captures what coding agents do, turns it into durable project knowledge, and hands that knowledge back to every agent and teammate on the project.
 
-Myco 2.0 keeps a team's knowledge on a Deployment, a server the team runs on Cloudflare or on its own laptop or virtual machine. Each person's machine signs in with `myco login <invite link>`, `myco member provision <agent>` connects their coding agents, and those agents capture sessions to the Deployment and read from it through MCP. Myco's own agent runs on a worker on an administrator's machine. It titles sessions, writes and curates spores (decisions, gotchas, discoveries, trade-offs, fixes), seeds a project from its code and history, and keeps a map of the repository. Everything is configured on the Deployment's dashboard.
+Myco 2.0 keeps a team's knowledge on a Deployment, a server the team runs on Cloudflare or on its own laptop or virtual machine. Each person's machine signs in with `myco login <invite link>`, which sets up their coding agents, and `myco member join` connects each repository to a project. Those agents then capture sessions to the Deployment and read from it through MCP. Myco's own work runs on a worker on an administrator's machine. It titles sessions, learns and curates spores (decisions, gotchas, discoveries, trade-offs, fixes), learns from a project's code, and keeps a code map. The Deployment's dashboard shows all of it, and everything is configured there.
 
-macOS and Linux are supported. The Windows installer still installs Myco 1.4.
+macOS and Linux are supported. Myco 2.0 on Windows is coming in beta.1; the Windows installer installs Myco 1.4.
 
 ## Start here
 
 - [Homepage](https://myco.sh/): Product overview and install command.
-- [Quickstart](https://myco.sh/quickstart.md): Set up a Deployment, invite people, connect a machine and its agents, and the known gaps in today's flow.
+- [Quickstart](https://myco.sh/quickstart.md): Set up a Deployment, invite people, sign a machine in and connect its repositories.
 - [Upgrading from 1.4](https://myco.sh/upgrade-from-v1.md): Move a Myco 1.4 machine to 2.0 with `myco cutover`, and what it keeps.
 - [Self-hosting](https://myco.sh/self-hosting.md): Run a Deployment on a laptop, a virtual machine or Cloudflare; updates and backups.
 
 ## Using Myco
 
+- [The dashboard](https://myco.sh/dashboard.md): Today, Sessions, Knowledge, Myco's work, and the administrator's People & machines, Settings and Health.
 - [How Myco learns](https://myco.sh/intelligence.md): What Myco produces from captured sessions, where that work runs, and what agents get back.
 - [Agents](https://myco.sh/agents.md): The agents Myco captures, how to connect them, and what is captured.
 - [Agent tools](https://myco.sh/agent-tools.md): The MCP tools agents use to search and curate a project's knowledge.
 - [External agents](https://myco.sh/external-agents.md): Access keys for agents that are not members, such as hosted code reviewers.
-- [Configuration](https://myco.sh/configuration.md): Deployment settings, per-project capabilities, machine settings, sandboxes and CI.
+- [Configuration](https://myco.sh/configuration.md): Deployment settings, what Myco does in each project, starting work by hand, machine settings, sandboxes and CI.
 - [Troubleshooting](https://myco.sh/troubleshooting.md): The messages people meet most and what to do about each.
 
 ## Optional
