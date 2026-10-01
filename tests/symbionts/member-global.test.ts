@@ -7,7 +7,7 @@ import { REGISTRY_VERSION, writeRegistryEntry } from '@myco/member/registry.js';
 import { loadManifests, resolvePackageRoot } from '@myco/symbionts/detect.js';
 import { SymbiontInstaller } from '@myco/symbionts/installer.js';
 import { tempMycoHome } from '../member/helpers/server.js';
-import { claimSubsystem, releaseSubsystemClaim, SYMBIONT_CONFIG_SUBSYSTEM } from '@myco/grove/subsystem-claim.js';
+import { claimSubsystem, releaseSubsystemClaim, resolveClaimsHome, SYMBIONT_CONFIG_SUBSYSTEM } from '@myco/grove/subsystem-claim.js';
 
 let root: string;
 let home: string;
@@ -30,24 +30,19 @@ const installer = (name: string) => new SymbiontInstaller(loadManifests().find((
 
 describe('global member installation', () => {
   it('checks the selected member home claim when the ambient home differs', () => {
-    const previousClaims = process.env.MYCO_CLAIMS_HOME;
     const previousHome = process.env.MYCO_HOME;
-    delete process.env.MYCO_CLAIMS_HOME;
     process.env.MYCO_HOME = home;
     try {
-      claimSubsystem(SYMBIONT_CONFIG_SUBSYSTEM, 'peer', { claimsHome: mycoHome });
+      claimSubsystem(SYMBIONT_CONFIG_SUBSYSTEM, 'peer', { claimsHome: resolveClaimsHome() });
       expect(() => installer('codex').install()).toThrow(/claimed by another installation/);
       expect(fs.existsSync(path.join(home, '.codex'))).toBe(false);
     } finally {
-      releaseSubsystemClaim(SYMBIONT_CONFIG_SUBSYSTEM, 'peer', { claimsHome: mycoHome });
-      if (previousClaims === undefined) delete process.env.MYCO_CLAIMS_HOME; else process.env.MYCO_CLAIMS_HOME = previousClaims;
+      releaseSubsystemClaim(SYMBIONT_CONFIG_SUBSYSTEM, 'peer', { claimsHome: resolveClaimsHome() });
       if (previousHome === undefined) delete process.env.MYCO_HOME; else process.env.MYCO_HOME = previousHome;
     }
   });
 
   it('refuses a peer claim before writing and accepts the selected member home owner', () => {
-    const previous = process.env.MYCO_CLAIMS_HOME;
-    process.env.MYCO_CLAIMS_HOME = mycoHome;
     try {
       claimSubsystem(SYMBIONT_CONFIG_SUBSYSTEM, 'peer');
       expect(() => installer('codex').install()).toThrow(/claimed by another installation/);
@@ -57,7 +52,6 @@ describe('global member installation', () => {
       expect(installer('codex').install().hooks).toBe(true);
     } finally {
       releaseSubsystemClaim(SYMBIONT_CONFIG_SUBSYSTEM, mycoHome);
-      if (previous === undefined) delete process.env.MYCO_CLAIMS_HOME; else process.env.MYCO_CLAIMS_HOME = previous;
     }
   });
 

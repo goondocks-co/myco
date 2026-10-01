@@ -4,6 +4,7 @@
  * way the CLI dispatcher passes them, stdout/stderr captured.
  */
 import { setBufferedStdin } from '@myco/hooks/read-stdin.js';
+import { HOOK_DISPATCH, type HookName } from '@myco/hooks/entry.js';
 import { _resetManifestCache } from '@myco/hooks/normalize.js';
 import type { HookMainOptions } from '@myco/member/capture.js';
 import type { CredentialSource } from '@myco/member/credential.js';
@@ -12,27 +13,10 @@ import { writeRegistryEntry, REGISTRY_VERSION, type RegistryEntry } from '@myco/
 import type { FetchLike } from '@myco/member/transport.js';
 import { TEST_MACHINE_ID } from './server.js';
 
-export type HookName =
-  | 'session-start' | 'session-end' | 'stop' | 'user-prompt-submit' | 'pre-tool-use' | 'post-tool-use' | 'post-tool-use-failure'
-  | 'subagent-start' | 'subagent-stop' | 'stop-failure' | 'task-completed' | 'pre-compact' | 'post-compact' | 'error-occurred' | 'notification';
+export type { HookName } from '@myco/hooks/entry.js';
 
-const HOOKS: Record<HookName, () => Promise<{ main: (opts?: HookMainOptions) => Promise<void> }>> = {
-  'session-start': () => import('@myco/hooks/session-start.js'),
-  'session-end': () => import('@myco/hooks/session-end.js'),
-  stop: () => import('@myco/hooks/stop.js'),
-  'user-prompt-submit': () => import('@myco/hooks/user-prompt-submit.js'),
-  'pre-tool-use': () => import('@myco/hooks/pre-tool-use.js'),
-  'post-tool-use': () => import('@myco/hooks/post-tool-use.js'),
-  'post-tool-use-failure': () => import('@myco/hooks/post-tool-use-failure.js'),
-  'subagent-start': () => import('@myco/hooks/subagent-start.js'),
-  'subagent-stop': () => import('@myco/hooks/subagent-stop.js'),
-  'stop-failure': () => import('@myco/hooks/stop-failure.js'),
-  'task-completed': () => import('@myco/hooks/task-completed.js'),
-  'pre-compact': () => import('@myco/hooks/pre-compact.js'),
-  'post-compact': () => import('@myco/hooks/post-compact.js'),
-  'error-occurred': () => import('@myco/hooks/error-occurred.js'),
-  notification: () => import('@myco/hooks/notification.js'),
-};
+/** The one dispatch table the CLI and the compiled binary run hooks through. */
+const HOOKS = HOOK_DISPATCH;
 
 export interface HookRunResult {
   stdout: string;

@@ -21,12 +21,13 @@ import { daemonIdentity } from '@myco/grove/paths.js';
 // expiry); inert with no claim. The owner token is the owning daemon's home
 // path (daemonIdentity) — two installs in two homes are two distinct owners.
 //
-// Claims are stored under resolveClaimsHome()/claims/, which defaults to
-// MYCO_HOME so the test sandbox stays hermetic. Two daemons with different
-// homes share claims when MYCO_CLAIMS_HOME is set to a common path.
+// Claims are stored under resolveClaimsHome()/claims/: the default home
+// (`~/.myco` under the user's home dir), whatever MYCO_HOME says, so every home
+// on a machine shares one claims area. The test preload sandboxes HOME, which
+// keeps it hermetic.
 
 const MYCO_HOME_ENV = 'MYCO_HOME';
-const MYCO_CLAIMS_HOME_ENV = 'MYCO_CLAIMS_HOME';
+const HOME_ENV = 'HOME';
 
 const cleanups: Array<() => void> = [];
 afterEach(() => {
@@ -129,43 +130,39 @@ describe('subsystem-claim', () => {
   });
 });
 
-describe('resolveClaimsHome — hermeticity', () => {
-  it('defaults to MYCO_HOME (sandbox), not the real home dir', () => {
-    const sandbox = makeTmpDir('myco-claims-hermetic-');
-    withEnv(MYCO_HOME_ENV, sandbox, () => {
-      withEnv(MYCO_CLAIMS_HOME_ENV, undefined, () => {
-        const resolved = resolveClaimsHome();
-        // Must be the sandbox, not os.homedir()/.myco
-        expect(resolved).toBe(sandbox);
-        expect(resolved).not.toContain(os.homedir() + path.sep + '.myco');
+describe('resolveClaimsHome — one claims area per machine', () => {
+  it('is the default home under the user\'s home dir, whatever MYCO_HOME or an old MYCO_CLAIMS_HOME says', () => {
+    const userHome = makeTmpDir('myco-claims-userhome-');
+    const memberHome = makeTmpDir('myco-claims-member-');
+    withEnv(HOME_ENV, userHome, () => {
+      withEnv(MYCO_HOME_ENV, memberHome, () => {
+        withEnv('MYCO_CLAIMS_HOME', memberHome, () => {
+          expect(resolveClaimsHome()).toBe(path.join(userHome, '.myco'));
+        });
       });
     });
   });
 
-  it('claims written without MYCO_CLAIMS_HOME stay under the sandbox MYCO_HOME', () => {
-    const sandbox = makeTmpDir('myco-claims-write-');
-    withEnv(MYCO_HOME_ENV, sandbox, () => {
-      withEnv(MYCO_CLAIMS_HOME_ENV, undefined, () => {
-        const owner = daemonIdentity(sandbox);
-        claimSubsystem(SYMBIONT_CONFIG_SUBSYSTEM, owner, { claimsHome: resolveClaimsHome() });
-        const claimFile = path.join(sandbox, 'claims', `${SYMBIONT_CONFIG_SUBSYSTEM}.json`);
-        expect(fs.existsSync(claimFile)).toBe(true);
-        expect(claimFile.startsWith(sandbox)).toBe(true);
-      });
-    });
+  it('stays inside the sandboxed user home, never the real one', () => {
+    expect(resolveClaimsHome()).not.toBe(path.join(String((globalThis as Record<string, unknown>).__MYCO_TEST_REAL_HOME__), '.myco'));
   });
 });
 
 describe('shouldDeferSubsystem + guardBySubsystemClaim (ambient-env gate)', () => {
   // shouldDeferSubsystem reads the ambient env: self = daemonIdentity() (from
-  // MYCO_HOME), the claim from resolveClaimsHome() (MYCO_CLAIMS_HOME → MYCO_HOME).
+  // MYCO_HOME), the claim from resolveClaimsHome() (the default home under HOME).
+  // `claims` is the claims area; HOME is set to its parent.
   function withHomeAndClaims(home: string, claims: string, fn: () => void): void {
-    withEnv(MYCO_HOME_ENV, home, () => withEnv(MYCO_CLAIMS_HOME_ENV, claims, fn));
+    withEnv(MYCO_HOME_ENV, home, () => withEnv(HOME_ENV, path.dirname(claims), fn));
+  }
+  /** A claims area at `<user home>/.myco`, the place resolveClaimsHome() names. */
+  function claimsArea(): string {
+    return path.join(makeTmpDir('myco-defer-userhome-'), '.myco');
   }
 
   it('no claim → does not defer (normal single-daemon install)', () => {
     const home = makeTmpDir('myco-defer-home-');
-    const claims = makeTmpDir('myco-defer-claims-');
+    const claims = claimsArea();
     withHomeAndClaims(home, claims, () => {
       expect(shouldDeferSubsystem(SYMBIONT_CONFIG_SUBSYSTEM)).toBe(false);
     });
@@ -173,7 +170,7 @@ describe('shouldDeferSubsystem + guardBySubsystemClaim (ambient-env gate)', () =
 
   it('peer holds the claim → defers', () => {
     const home = makeTmpDir('myco-defer-home-');
-    const claims = makeTmpDir('myco-defer-claims-');
+    const claims = claimsArea();
     const peer = daemonIdentity(makeTmpDir('myco-defer-peer-'));
     claimSubsystem(SYMBIONT_CONFIG_SUBSYSTEM, peer, { claimsHome: claims });
     withHomeAndClaims(home, claims, () => {
@@ -183,7 +180,7 @@ describe('shouldDeferSubsystem + guardBySubsystemClaim (ambient-env gate)', () =
 
   it('this home owns the claim → does not defer', () => {
     const home = makeTmpDir('myco-defer-home-');
-    const claims = makeTmpDir('myco-defer-claims-');
+    const claims = claimsArea();
     claimSubsystem(SYMBIONT_CONFIG_SUBSYSTEM, daemonIdentity(home), { claimsHome: claims });
     withHomeAndClaims(home, claims, () => {
       expect(shouldDeferSubsystem(SYMBIONT_CONFIG_SUBSYSTEM)).toBe(false);
@@ -192,7 +189,7 @@ describe('shouldDeferSubsystem + guardBySubsystemClaim (ambient-env gate)', () =
 
   it('guardBySubsystemClaim runs fn when not deferred, onDeferred when a peer owns it, and passes args', () => {
     const home = makeTmpDir('myco-guard-home-');
-    const claims = makeTmpDir('myco-guard-claims-');
+    const claims = claimsArea();
     const calls: string[] = [];
     const guarded = guardBySubsystemClaim(
       SYMBIONT_CONFIG_SUBSYSTEM,
@@ -215,8 +212,8 @@ describe('shouldDeferSubsystem + guardBySubsystemClaim (ambient-env gate)', () =
   });
 });
 
-describe('cross-daemon sharing via MYCO_CLAIMS_HOME', () => {
-  it('daemon B sees daemon A claim when both share MYCO_CLAIMS_HOME', () => {
+describe('cross-daemon sharing through one claims area', () => {
+  it('daemon B sees daemon A claim when both read the same claims area', () => {
     const homeA = makeTmpDir('myco-home-a-');
     const homeB = makeTmpDir('myco-home-b-');
     const shared = makeTmpDir('myco-claims-shared-');
@@ -245,7 +242,7 @@ describe('cross-daemon sharing via MYCO_CLAIMS_HOME', () => {
     const ownerA = daemonIdentity(homeA);
     const ownerB = daemonIdentity(homeB);
 
-    // Daemon A claims into its own home — no shared MYCO_CLAIMS_HOME.
+    // Daemon A claims into its own home — no shared claims area.
     claimSubsystem(SYMBIONT_CONFIG_SUBSYSTEM, ownerA, { claimsHome: homeA });
 
     // Daemon B checks its own home — claim is not there.

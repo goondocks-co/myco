@@ -288,7 +288,7 @@ export async function run(args: readonly string[], deps: CutoverDeps = {}): Prom
   const isLegacyOrThis = (home: string) => canonicalPath(home) === canonicalPath(mycoHome) || legacyHomes.some((h) => canonicalPath(h) === canonicalPath(home));
 
   // The symbiont-config claim, in every place a 1.4 or 2.0 daemon of these homes reads it.
-  const claimsHomes = [...new Set([...legacyHomes, resolveClaimsHome(mycoHome), ...(env.MYCO_CLAIMS_HOME?.trim() ? [path.resolve(env.MYCO_CLAIMS_HOME.trim())] : [])].map((h) => path.resolve(h)))];
+  const claimsHomes = [...new Set([...legacyHomes, resolveClaimsHome()].map((h) => path.resolve(h)))];
   for (const claimsHome of claimsHomes) {
     const claim = readClaim(SYMBIONT_CONFIG_SUBSYSTEM, claimsHome);
     if (claim !== null && !isLegacyOrThis(claim.owner)) {

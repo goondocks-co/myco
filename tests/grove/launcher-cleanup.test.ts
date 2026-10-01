@@ -8,7 +8,7 @@ import {
   GLOBAL_MCP_LAUNCHER_FILENAME,
   removeRetiredGlobalLaunchers,
 } from '@myco/grove/launcher-cleanup.js';
-import { claimSubsystem, SYMBIONT_CONFIG_SUBSYSTEM } from '@myco/grove/subsystem-claim.js';
+import { claimSubsystem, releaseSubsystemClaim, resolveClaimsHome, SYMBIONT_CONFIG_SUBSYSTEM } from '@myco/grove/subsystem-claim.js';
 import { daemonIdentity } from '@myco/grove/paths.js';
 
 describe('removeRetiredGlobalLaunchers', () => {
@@ -64,23 +64,20 @@ describe('removeRetiredGlobalLaunchers', () => {
     fs.writeFileSync(launcherPath, '// stale launcher\n');
 
     // shouldDeferSubsystem reads the ambient env: self = daemonIdentity(MYCO_HOME),
-    // claim from MYCO_CLAIMS_HOME. Point both at sandboxes and let a PEER home own it.
-    const claimsHome = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-cleanup-claims-'));
+    // claim from the default home under the sandboxed HOME. Let a PEER home own it.
+    const claimsHome = resolveClaimsHome();
     const peer = daemonIdentity(fs.mkdtempSync(path.join(os.tmpdir(), 'myco-cleanup-peer-')));
     claimSubsystem(SYMBIONT_CONFIG_SUBSYSTEM, peer, { claimsHome });
 
     const prevHome = process.env.MYCO_HOME;
-    const prevClaims = process.env.MYCO_CLAIMS_HOME;
     process.env.MYCO_HOME = mycoHome;
-    process.env.MYCO_CLAIMS_HOME = claimsHome;
     try {
       const report = removeRetiredGlobalLaunchers(mycoHome);
       expect(report.removed).toEqual([]);
       expect(fs.existsSync(launcherPath)).toBe(true); // deferred — file untouched
     } finally {
       if (prevHome === undefined) delete process.env.MYCO_HOME; else process.env.MYCO_HOME = prevHome;
-      if (prevClaims === undefined) delete process.env.MYCO_CLAIMS_HOME; else process.env.MYCO_CLAIMS_HOME = prevClaims;
-      fs.rmSync(claimsHome, { recursive: true, force: true });
+      releaseSubsystemClaim(SYMBIONT_CONFIG_SUBSYSTEM, peer, { claimsHome });
     }
   });
 });

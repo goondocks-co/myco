@@ -3,9 +3,10 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
-import { MACHINE_RUNTIME_COMMAND_FILENAME } from '../constants/update.js';
 import { GROVES_DIRNAME, expandHome, resolveMycoHome, type MycoHomeOptions } from '../paths/home.js';
 import { assertGroveEraId, isGroveEraId } from './ids.js';
+
+export { resolveMachineRuntimeCommandPath } from '../runtime/runtime-pin.js';
 
 export {
   GROVES_DIRNAME,
@@ -14,6 +15,7 @@ export {
   defaultMycoHome,
   expandHome,
   findProjectHomePin,
+  isDefaultMycoHome,
   machineHomePinPath,
   readHomePin,
   readMachineHomePin,
@@ -69,15 +71,6 @@ export const PROJECT_MANIFEST_FILENAME = 'project.toml';
 export const PROJECT_LOCAL_MANIFEST_FILENAME = 'project.local.toml';
 export const DAEMON_STATE_FILENAME = 'daemon.json';
 
-/**
- * True when `mycoHome` resolves to the canonical default home (`~/.myco`),
- * ignoring any `MYCO_HOME` override. This home is the production install every
- * released user shares; a non-default home (e.g. `~/.myco-dev`) is the dogfood
- * path. Used to key the default-home service label and the dev-build guard.
- */
-export function isDefaultMycoHome(mycoHome: string): boolean {
-  return path.resolve(mycoHome) === resolveMycoHome({ env: {} });
-}
 
 /**
  * The daemon's identity token — its resolved home path. An opaque,
@@ -469,15 +462,3 @@ export function resolveProjectLocalManifestPath(projectVaultDir: string): string
   return path.join(projectVaultDir, PROJECT_LOCAL_MANIFEST_FILENAME);
 }
 
-/**
- * `~/.myco/runtime.command` — single source of truth for which `myco`
- * binary the launcher (`myco-run.cjs`, `myco-cli.cjs`, `bin/myco.cjs`)
- * should exec. Absent file means "use whatever PATH resolves `myco` to."
- *
- * Machine-scoped because the daemon itself is now machine-scoped: there
- * is exactly one daemon per machine, and the runtime that backs it is a
- * machine-level choice, not a per-project one.
- */
-export function resolveMachineRuntimeCommandPath(mycoHome = resolveMycoHome()): string {
-  return path.join(mycoHome, MACHINE_RUNTIME_COMMAND_FILENAME);
-}

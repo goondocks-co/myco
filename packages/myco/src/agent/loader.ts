@@ -6,6 +6,7 @@
  * definitions with database overrides into an EffectiveConfig.
  */
 
+import { isBundledPath } from '../runtime/self-exec.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
@@ -78,10 +79,6 @@ export function resolveDefinitionsDir(): string {
   return adjacentDefs;
 }
 
-function isBunVirtualPath(candidate: string): boolean {
-  return candidate.startsWith('/$bunfs/') || candidate.startsWith('B:\\~BUN\\');
-}
-
 // ---------------------------------------------------------------------------
 // YAML loaders
 // ---------------------------------------------------------------------------
@@ -95,7 +92,7 @@ function isBunVirtualPath(candidate: string): boolean {
  */
 export function loadAgentDefinition(definitionsDir: string): AgentDefinition {
   const filePath = path.join(definitionsDir, AGENT_DEFINITION_FILE);
-  if (isBunVirtualPath(filePath) && !fs.existsSync(filePath)) {
+  if (isBundledPath(filePath) && !fs.existsSync(filePath)) {
     return { ...BUNDLED_AGENT_DEFINITION };
   }
   const raw = fs.readFileSync(filePath, 'utf-8');
@@ -122,11 +119,11 @@ export function loadAgentDefinition(definitionsDir: string): AgentDefinition {
 export function loadAgentTasks(definitionsDir: string): AgentTask[] {
   const tasksDir = path.join(definitionsDir, TASKS_SUBDIRECTORY);
   if (!fs.existsSync(tasksDir)) {
-    return isBunVirtualPath(tasksDir) ? BUNDLED_AGENT_TASKS.map((task) => ({ ...task })) : [];
+    return isBundledPath(tasksDir) ? BUNDLED_AGENT_TASKS.map((task) => ({ ...task })) : [];
   }
 
   const files = fs.readdirSync(tasksDir).filter((f) => f.endsWith('.yaml'));
-  if (files.length === 0 && isBunVirtualPath(tasksDir)) {
+  if (files.length === 0 && isBundledPath(tasksDir)) {
     return BUNDLED_AGENT_TASKS.map((task) => ({ ...task }));
   }
   return files.map((file) => {
@@ -177,7 +174,7 @@ export function taskFromParsed(parsed: AgentTask): AgentTask {
  */
 export function loadSystemPrompt(definitionsDir: string, relativePath: string): string {
   const filePath = path.resolve(definitionsDir, relativePath);
-  if (isBunVirtualPath(filePath) && !fs.existsSync(filePath)) {
+  if (isBundledPath(filePath) && !fs.existsSync(filePath)) {
     const bundled = BUNDLED_AGENT_PROMPTS[path.basename(relativePath)];
     if (bundled !== undefined) return bundled.trim();
   }

@@ -149,16 +149,7 @@ export function daemonErrorMessage(body: unknown): string | null {
 }
 
 /** Load .env from cwd (not script location — that's the plugin install dir). */
-export function loadEnv(): void {
-  const envPath = path.resolve(process.cwd(), '.env');
-  if (!fs.existsSync(envPath)) return;
-  for (const line of fs.readFileSync(envPath, 'utf-8').split('\n')) {
-    const match = line.match(/^\s*([^#=]+?)\s*=\s*(.*?)\s*$/);
-    if (match && !process.env[match[1]]) {
-      process.env[match[1]] = match[2];
-    }
-  }
-}
+export { loadEnv } from './env-file.js';
 
 export function isProcessAlive(pid: number): boolean {
   try { process.kill(pid, 0); return true; } catch { return false; }
