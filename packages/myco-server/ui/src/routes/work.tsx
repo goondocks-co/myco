@@ -1,4 +1,4 @@
-import { Route, useParams } from 'react-router-dom';
+import { useParams, type RouteObject } from 'react-router-dom';
 import { WorkPage } from '../features/work/WorkPage';
 import { RUN_SUFFIX, WORK_SUFFIX } from './nav';
 import { useRouteProject } from './route-project';
@@ -9,13 +9,11 @@ import { useRouteProject } from './route-project';
  * `/p/:projectId/work/runs/:runId`. The Agent runs addresses that lead here
  * are in `routes/moved.tsx`.
  */
-export const workRoutes = (
-  <>
-    <Route path={WORK_SUFFIX} element={<WorkRoute />} />
-    <Route path={`/p/:projectId${WORK_SUFFIX}`} element={<WorkRoute />} />
-    <Route path={`/p/:projectId${RUN_SUFFIX}/:runId`} element={<WorkRoute />} />
-  </>
-);
+export const workRoutes: RouteObject[] = [
+  { path: WORK_SUFFIX, element: <WorkRoute /> },
+  { path: `/p/:projectId${WORK_SUFFIX}`, element: <WorkRoute /> },
+  { path: `/p/:projectId${RUN_SUFFIX}/:runId`, element: <WorkRoute /> },
+];
 
 function WorkRoute() {
   const { runId } = useParams();

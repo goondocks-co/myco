@@ -211,10 +211,10 @@ export function captureFolderRefusal(entry: string): string | null {
 
 /**
  * The kinds of observation a spore records: the types `myco_spores` accepts, the Deployment stores and the dashboard
- * names, in one list.
+ * names, in one list, in the order the dashboard offers them.
  */
 export const OBSERVATION_TYPES = [
-  'gotcha', 'bug_fix', 'decision', 'discovery', 'trade_off', 'cross-cutting', 'wisdom', 'pattern', 'architecture',
+  'decision', 'gotcha', 'bug_fix', 'discovery', 'wisdom', 'pattern', 'architecture', 'trade_off', 'cross-cutting',
 ] as const;
 export type ObservationType = (typeof OBSERVATION_TYPES)[number];
 

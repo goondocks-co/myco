@@ -133,8 +133,12 @@ describe('the gate is the one place signed-out is decided', () => {
   const UI = fileURLToPath(new URL('../../packages/myco-server/ui/src/', import.meta.url));
   it('App mounts its routes inside the gate', () => {
     const app = readFileSync(`${UI}App.tsx`, 'utf8');
-    expect(app).toMatch(/<AuthGate>\s*<Routes>/);
-    expect(app).toMatch(/<\/Routes>\s*<\/AuthGate>/);
+    // The route table is rendered by one element, and that element is the gate's only child.
+    expect(app).toMatch(/<AuthGate>\s*<Pages \/>\s*<\/AuthGate>/);
+    expect(app).toMatch(/function Pages\(\) \{\s*return useRoutes\(ROUTES\);\s*\}/);
+    // The table is the one the ledger reads: App defines none of its own.
+    expect(app).toMatch(/^import \{ ROUTES \} from '\.\/routes\/table';$/m);
+    expect(app).not.toMatch(/\bconst ROUTES\b|path:/);
   });
   it('only the gate renders the sign-in page', () => {
     const importers: string[] = [];
