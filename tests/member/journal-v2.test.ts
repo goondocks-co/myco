@@ -25,6 +25,7 @@ import { prunePluginTranscripts } from '@myco/member/retention.js';
 import { isTurnEndMark, JOURNAL_VERSION, MemberSpool, turnEndSatisfied, type SpoolRecord, type TurnEndMark } from '@myco/member/spool.js';
 import { shipSessionTranscripts, transcriptPointerFor } from '@myco/member/transcript.js';
 import { ServerClient } from '@myco/member/transport.js';
+import { isPrivateMode } from '@myco/member/store.js';
 import { memberRig, tempMycoHome, type MemberRig } from './helpers/server.js';
 
 let mycoHome: string;
@@ -262,5 +263,14 @@ describe('a session\'s lock file', () => {
     expect(retireSessionFiles(spool.dir, 'sess-lock', () => true)).toBe(true);
     expect(fs.existsSync(sessionStatePath(spool.dir, 'sess-lock'))).toBe(false);
     expect(fs.existsSync(bufferLockPath(spool.dir, 'sess-lock'))).toBe(process.platform === 'win32' ? fs.existsSync(bufferLockPath(spool.dir, 'sess-lock')) : false);
+  });
+});
+
+describe('a member file kept to its owner', () => {
+  it('is judged by its POSIX mode, and passes on Windows, which reports none (#1550)', () => {
+    expect(isPrivateMode(0o100600, 'darwin')).toBe(true);
+    expect(isPrivateMode(0o100644, 'linux')).toBe(false);
+    // Every writable file reads as 0666 on Windows: refusing it there read every membership and session state as absent.
+    expect(isPrivateMode(0o100666, 'win32')).toBe(true);
   });
 });
