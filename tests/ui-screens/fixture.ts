@@ -29,7 +29,7 @@ import { PROJECT_HEADER, PROTOCOL_HEADER, SERVER_PROTOCOL, SERVER_SCHEMA_VERSION
 import { uuidv5 } from '@myco-server-worker/hash.js';
 import { MAP_WRITE_TOOL, TITLE_WRITE_TOOL } from '@myco-server-worker/core/tool-catalogue.js';
 import { RUN_WRITE_EVENT } from '@myco-server-worker/core/runs.js';
-import { REPORT_UNCAPTURED_PATH } from '@goondocks/myco-shared/member-protocol';
+import { REPORT_UNCAPTURED_PATH, RESOLVE_PROJECT_PATH } from '@goondocks/myco-shared/member-protocol';
 import { MACHINE_IDS } from './machine-ids.ts';
 
 const MINUTE = 60_000;
@@ -191,6 +191,15 @@ export const WAITING_REPOSITORIES = [
   { machine: 'buildbox', rootKey: 'b2c3d4e5f6071829', label: 'field-notes', remote: null, reason: 'no_remote', held: 'full', sessions: 2, seenAgo: 6 * 60, firstAgo: 9 * 24 * 60 },
   { machine: 'buildbox', rootKey: 'c3d4e5f60718293a', label: 'sketches', remote: 'gitlab.com/lin/sketches', reason: 'outside_folders', held: 'expired', sessions: 1, seenAgo: 2 * 24 * 60, firstAgo: 12 * 24 * 60 },
 ] as const satisfies ReadonlyArray<{ machine: MachineKey; rootKey: string; label: string; remote: string | null; reason: string; held: string; sessions: number; seenAgo: number; firstAgo: number }>;
+
+/**
+ * Repositories the server itself turns away as Lin's machine asks which project each joins: a clone of a repository
+ * whose project an admin archived, and one met while only admins may create projects.
+ */
+export const REFUSED_REPOSITORIES = [
+  { machine: 'buildbox', rootKey: 'e5f60718293a4b5c', label: 'old-site', remote: 'github.com/lin/old-site', reason: 'archived', seenAgo: 3 * 60, firstAgo: 5 * 24 * 60 },
+  { machine: 'buildbox', rootKey: 'f60718293a4b5c6d', label: 'prototype', remote: 'github.com/lin/prototype', reason: 'auto_create_off', seenAgo: 90, firstAgo: 24 * 60 },
+] as const satisfies ReadonlyArray<{ machine: MachineKey; rootKey: string; label: string; remote: string; reason: string; seenAgo: number; firstAgo: number }>;
 
 export interface SeededFixture {
   projects: Array<{ projectId: string; name: string }>;
@@ -366,6 +375,29 @@ export async function seedThroughServer(ctx: SeedContext): Promise<SeededFixture
     const body = await expectOk(res, `report ${repository.label}`);
     if (body.persisted !== true) throw new Error(`report ${repository.label}: refused ${JSON.stringify(body)}`);
   }
+
+  // The machine asks which project each refused repository joins, as its hooks' join does.
+  const resolve = async (machine: MachineKey, repository: { rootKey: string; label: string; remote: string }) => {
+    const res = await fetch(`${url}${RESOLVE_PROJECT_PATH}`, {
+      method: 'POST',
+      headers: { authorization: `Bearer ${ctx.tokens[machine]!}`, [PROTOCOL_HEADER]: String(SERVER_PROTOCOL), 'content-type': 'application/json' },
+      body: JSON.stringify({ rootKey: repository.rootKey, label: repository.label, remote: `https://${repository.remote}`, held: 'held', sessions: 1 }),
+    });
+    return expectOk(res, `resolve ${repository.label}`);
+  };
+  const [archived, closed] = REFUSED_REPOSITORIES;
+  // One clone of old-site joins its project, an admin archives that project, and the next clone is turned away.
+  const joined = await resolve(archived.machine, { ...archived, rootKey: 'd4e5f60718293a4b' });
+  if (joined.persisted !== true) throw new Error(`resolve old-site: ${JSON.stringify(joined)}`);
+  await expectOk(await fetch(`${url}/api/projects/${String(joined.projectId)}/archive`, { method: 'POST', headers: ownerHeaders }), 'archive old-site');
+  // While project creation is kept with admins, prototype has no project to join; creation is handed back after.
+  const creation = (value: boolean) => fetch(`${url}/api/settings/capture.auto_create_projects`, { method: 'PUT', headers: ownerHeaders, body: JSON.stringify({ value }) });
+  await expectOk(await creation(false), 'keep project creation with admins');
+  for (const repository of REFUSED_REPOSITORIES) {
+    const refused = await resolve(repository.machine, repository);
+    if (refused.persisted !== false || refused.code !== repository.reason) throw new Error(`resolve ${repository.label}: ${JSON.stringify(refused)}`);
+  }
+  await expectOk(await creation(true), 'let machines create projects again');
 
   settleReceiptTimes(ctx.databasePath, liveSessionId, now);
   settleWaitingRepositories(ctx.databasePath, now);
@@ -564,7 +596,7 @@ function seedRuns(databasePath: string, now: number, sporeIds: string[], session
 function settleWaitingRepositories(databasePath: string, now: number): void {
   const sqlite = new Database(databasePath);
   try {
-    for (const repository of WAITING_REPOSITORIES) {
+    for (const repository of [...WAITING_REPOSITORIES, ...REFUSED_REPOSITORIES]) {
       sqlite.query('UPDATE uncaptured_roots SET first_seen_at = ?, last_seen_at = ? WHERE machine_id = ? AND root_key = ?')
         .run(now - repository.firstAgo * MINUTE, now - repository.seenAgo * MINUTE, machineOf(repository.machine).id, repository.rootKey);
     }

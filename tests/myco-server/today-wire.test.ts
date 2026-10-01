@@ -13,7 +13,7 @@ import type * as Ui from '../../packages/myco-server/ui/src/features/today/wire.
 import type { WorkAnswer, WorkOutcome, WorkRun, Upkeep, OutcomeKind, RunResult } from '../../packages/myco-server/src/read/work.ts';
 import type { AttentionAnswer, AttentionItem } from '../../packages/myco-server/src/core/attention.ts';
 import type { CaptureRow } from '../../packages/myco-server/src/read/capture.ts';
-import type { ConnectAnswer, ConnectRequest, UncapturedAnswer, UncapturedRootItem } from '../../packages/myco-server/src/api/uncaptured.ts';
+import type { ConnectAnswer, ConnectRefusal, ConnectRefusalCode, ConnectRequest, UncapturedAnswer, UncapturedRootItem } from '../../packages/myco-server/src/api/uncaptured.ts';
 import type { HeldState, UncapturedReason } from '../../packages/myco-shared/src/member-protocol.ts';
 import type { SessionAcrossRow, listSessionSummariesAcross } from '../../packages/myco-server/src/read/sessions.ts';
 import type { SporeAcrossRow, countSporesAcross, listSporesAcross } from '../../packages/myco-server/src/core/spores.ts';
@@ -39,7 +39,9 @@ const SAME: [
   Same<Ui.UncapturedAnswer, UncapturedAnswer>,
   Same<Ui.ConnectRequest, ConnectRequest>,
   Same<Ui.ConnectAnswer, ConnectAnswer>,
-] = [true, true, true, true, true, true, true, true, true, true, true, true, true, true, true];
+  Same<Ui.ConnectRefusalCode, ConnectRefusalCode>,
+  Same<Ui.ConnectRefusal, ConnectRefusal>,
+] = [true, true, true, true, true, true, true, true, true, true, true, true, true, true, true, true, true];
 
 /** `GET /api/sessions`: the page the read across Projects answers, as the handler sends it. */
 type SessionsAnswer = Awaited<ReturnType<typeof listSessionSummariesAcross>>;

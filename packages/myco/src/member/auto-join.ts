@@ -22,14 +22,13 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { normalizeRemote, type HeldState, type UncapturedReason } from '@goondocks/myco-shared/member-protocol';
+import { HELD_CAPTURE_TTL_DAYS, normalizeRemote, type HeldState, type UncapturedReason } from '@goondocks/myco-shared/member-protocol';
 import { isSafeProjectRoot } from '../project-root.js';
 import { HOOK_CONFIG } from '../hooks/hook-config.generated.js';
 import { runGitAnswer } from '../utils/git.js';
 import { ensureMemberDir, memberRoot, readPrivateJson, writePrivateFileAtomic } from './store.js';
-import { PENDING_MAX_RECORDS, PENDING_TTL_MS, type HeldEnd } from './pending.js';
+import { PENDING_MAX_RECORDS, type HeldEnd } from './pending.js';
 
-const PENDING_TTL_DAYS = Math.round(PENDING_TTL_MS / (24 * 60 * 60 * 1000));
 
 export const AUTO_JOIN_DIRNAME = 'auto-join';
 /**
@@ -209,10 +208,13 @@ export const AGENT_HOMES: readonly string[] = [...new Set(Object.values(HOOK_CON
   ...(agent.transcriptDiscovery?.roots ?? []).filter((r) => r.startsWith('~/')).map((r) => r.slice(2).split('/')[0]!),
 ]))].filter((dir) => dir.startsWith('.'));
 
-/** A folder from the capture setting, as a path on this machine: `~/` against the home folder, an absolute one as is. A relative one names nothing. */
-function folderOf(entry: string, home: string): string | null {
+/**
+ * A folder from the capture setting, as a path on this machine: `~/` or `~\` against the home folder on every platform,
+ * an absolute one as is. A relative one names nothing.
+ */
+export function folderOf(entry: string, home: string): string | null {
   if (entry === '~') return home;
-  if (entry.startsWith('~/')) return path.join(home, entry.slice(2));
+  if (entry.startsWith('~/') || entry.startsWith('~\\')) return path.join(home, entry.slice(2));
   return path.isAbsolute(entry) ? entry : null;
 }
 
@@ -398,8 +400,8 @@ export function notCapturedNotice(
   const held = end?.held === 'full'
     ? `What your agents do here is no longer held: this machine held the ${PENDING_MAX_RECORDS} events it keeps for a repository waiting to be connected.`
     : end?.held === 'expired'
-      ? `What your agents did here more than ${PENDING_TTL_DAYS} days ago is no longer held; what they do from now on is held until it is connected.`
-      : `What your agents do here is held on this machine for ${PENDING_TTL_DAYS} days and delivered once it is connected.`;
+      ? `What your agents did here more than ${HELD_CAPTURE_TTL_DAYS} days ago is no longer held; what they do from now on is held until it is connected.`
+      : `What your agents do here is held on this machine for ${HELD_CAPTURE_TTL_DAYS} days and delivered once it is connected.`;
   if (state.outcome === 'outside_folders') {
     return `Myco is not capturing this repository yet: it is outside the folders this machine captures (${autoJoinRoots.join(', ') || 'none'}). Connect it from ${where}, ${CONNECT_HINT}. ${held}`;
   }

@@ -48,6 +48,16 @@ describe('a machine\'s settings', () => {
     expect(await setMachineLeaf(e.db, 'm_a', 'capture.plan_dirs', ['./docs/plans', '~/notes/plans', '/srv/plans', 'a..b/plans'], 'mem_a', NOW)).toEqual({ applied: true });
   });
 
+  it('hold capture folders to the one capture folder rule: a drive root and a relative folder refused, a Windows home folder kept', async () => {
+    const e = rig();
+    for (const entry of ['C:\\', 'C:/', 'C:\\\\', '/', '~', 'Repos']) {
+      expect({ entry, write: await setMachineLeaf(e.db, 'm_a', 'capture.auto_join_roots', [entry], 'mem_a', NOW) }).toMatchObject({ entry, write: { applied: false, reason: 'invalid_value' } });
+    }
+    expect(await setMachineLeaf(e.db, 'm_a', 'capture.auto_join_roots', ['~\\Repos', 'D:\\work', '/srv/repos'], 'mem_a', NOW)).toEqual({ applied: true });
+    // A plan folder keeps its own rule: relative to each project is allowed there.
+    expect(await setMachineLeaf(e.db, 'm_a', 'capture.plan_dirs', ['docs/plans'], 'mem_a', NOW)).toEqual({ applied: true });
+  });
+
   it('answer an admin who does not own the machine 403 on the dashboard, read and write alike, and write the path\'s machine whatever the body names', async () => {
     const e = rig();
     const env = { ...e.env, ...OWNER_ENV };

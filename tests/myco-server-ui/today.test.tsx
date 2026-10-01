@@ -160,6 +160,15 @@ const day = (over: Partial<Record<'sessions' | 'spores' | 'work' | 'attention' |
   '/api/status': () => Response.json(over.status ?? { capture: CAPTURE, unavailable: [], projects: [], workers: { available: true, workersBusy: 0, runsQueued: 0, recentWithinMs: 0, fleet: [] } }),
 });
 
+/** The first element `selector` matches, once one is rendered. */
+function present(selector: string): Promise<HTMLElement> {
+  return waitFor(() => {
+    const element = document.querySelector<HTMLElement>(selector);
+    if (element === null) throw new Error(`nothing matches ${selector} yet`);
+    return element;
+  });
+}
+
 function Location() {
   const location = useLocation();
   return <output data-testid="location">{location.pathname}{location.search}</output>;
@@ -650,23 +659,103 @@ describe('Today', () => {
     expect(panel.querySelector('[data-connected]')!.textContent).toBe('widget is connected. Ada’s studio Mac starts capturing it at the next agent session there.');
   });
 
-  it('leaves the project to Myco by default, and says so when only an admin may start one', async () => {
+  it('says each refusal by the code the server names it with, never by its words', async () => {
     screenWidth(1280);
+    const lins = repository({ member: { id: MEMBER.member.id, label: 'Lin' }, machineName: null, machineId: 'mt_buildbox_mach' });
+    let answer: () => Response = () => Response.json({ error: 'auto_create_off', reason: 'words the dashboard never matches' }, { status: 400 });
     const bodies: unknown[] = [];
     server({
-      ...day({ uncaptured: { items: [repository()] } }),
-      '/api/uncaptured/mt_studio_machine/a1b2c3d4e5f60718/connect': (_url, init) => {
-        bodies.push(JSON.parse(String(init?.body)));
-        return Response.json({ error: 'this Deployment creates projects only on the dashboard: name the project to connect it to' }, { status: 400 });
-      },
+      ...day({ uncaptured: { items: [lins] } }),
+      '/api/uncaptured/mt_buildbox_mach/a1b2c3d4e5f60718/connect': (_url, init) => { bodies.push(JSON.parse(String(init?.body))); return answer(); },
     });
     mount('/');
     fireEvent.click(await screen.findByRole('button', { name: 'Connect widget' }));
     const dialog = await screen.findByRole('dialog', { name: 'Connect widget' });
     expect(within(dialog).getByRole('combobox', { name: 'Project' }).textContent).toBe('Let Myco choose');
+    const refusal = async () => {
+      fireEvent.click(within(dialog).getByRole('button', { name: 'Connect' }));
+      return (await within(dialog).findByRole('alert')).textContent;
+    };
+    // The project is started by the machine's member, so an admin is told whose it is, not that only an admin may.
+    expect(await refusal()).toBe('Lin can’t start a new project here. Choose an existing project for it.');
+    for (const [next, words] of [
+      [() => Response.json({ error: 'remote_bound', reason: 'x' }, { status: 409 }), 'Another project already holds its remote. Choose “Let Myco choose” to connect it there.'],
+      [() => Response.json({ error: 'archived', reason: 'x' }, { status: 409 }), 'The project it belongs to is archived. An admin can restore it from Projects.'],
+      [() => Response.json({ error: 'internal' }, { status: 500 }), 'Myco couldn’t connect it just now. Try again.'],
+    ] as const) {
+      answer = next;
+      await waitFor(async () => expect(await refusal()).toBe(words));
+    }
+    expect(bodies[0]).toEqual({});
+  });
+
+  it('asks for a project, with nothing chosen, where its member may not start one', async () => {
+    screenWidth(1280);
+    const bodies: unknown[] = [];
+    server({
+      ...day({ uncaptured: { items: [repository({ reason: 'auto_create_off' })] } }),
+      '/api/uncaptured/mt_studio_machine/a1b2c3d4e5f60718/connect': (_url, init) => {
+        bodies.push(JSON.parse(String(init?.body)));
+        return Response.json({ connected: true, machineId: 'mt_studio_machine', rootKey: 'a1b2c3d4e5f60718', projectId: P_MYCO });
+      },
+    });
+    mount('/');
+    fireEvent.click(await screen.findByRole('button', { name: 'Connect widget' }));
+    const dialog = await screen.findByRole('dialog', { name: 'Connect widget' });
+    const field = within(dialog).getByRole('combobox', { name: 'Project' });
+    expect(field.textContent).toBe('Choose a project');
+    expect((within(dialog).getByRole('button', { name: 'Connect' }) as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.click(field);
+    expect((await screen.findAllByRole('option')).map((o) => o.textContent)).toEqual(['Myco', 'Atlas web']);
+    fireEvent.click(screen.getByRole('option', { name: 'Myco' }));
+    expect((within(dialog).getByRole('button', { name: 'Connect' }) as HTMLButtonElement).disabled).toBe(false);
     fireEvent.click(within(dialog).getByRole('button', { name: 'Connect' }));
-    expect((await within(dialog).findByRole('alert')).textContent).toBe('New projects are started only by an admin here. Choose a project for it.');
-    expect(bodies).toEqual([{}]);
+    await waitFor(() => expect(bodies).toEqual([{ projectId: P_MYCO }]));
+  });
+
+  it('offers no connect for a repository an archived project holds, and points an admin to where it is restored', async () => {
+    screenWidth(1280);
+    const archived = repository({ reason: 'archived' });
+    server(day({ uncaptured: { items: [archived] } }));
+    mount('/');
+    const row = await present('[data-repository]');
+    expect(row.textContent).toContain('The project it belongs to is archived. An admin can restore it from Projects.');
+    expect(within(row).queryByRole('button')).toBeNull();
+    expect(within(row).getByRole('link', { name: 'Open Projects →' }).getAttribute('href')).toBe('/projects');
+    cleanup();
+    client.clear();
+    server(day({ uncaptured: { items: [{ ...archived, member: { id: MEMBER.member.id, label: 'Lin' } }] } }, MEMBER));
+    mount('/');
+    const mine = await present('[data-repository]');
+    expect(within(mine).queryByRole('button')).toBeNull();
+    expect(within(mine).queryByRole('link')).toBeNull();
+  });
+
+  it('tells a member when their repositories could not be read, on a wide screen and on a phone', async () => {
+    for (const width of [1280, 390]) {
+      screenWidth(width);
+      server({ ...day({}, MEMBER), '/api/uncaptured': () => Response.json({ error: 'internal' }, { status: 500 }) });
+      mount('/');
+      const panel = (await screen.findByText('Nothing needs you')).closest('[data-needs-you]') as HTMLElement;
+      await waitFor(() => expect(panel.textContent).toContain('Couldn’t check repositories just now.'));
+      expect(within(panel).queryByRole('img', { name: 'All clear' })).toBeNull();
+      cleanup();
+      client.clear();
+    }
+  });
+
+  it('never names another member\'s machine, even when the answer carries its name', async () => {
+    screenWidth(1280);
+    const named = repository({ member: { id: MEMBER.member.id, label: 'Lin' }, machineName: 'Lin’s secret desk', machineId: 'mt_buildbox_mach' });
+    server(day({ uncaptured: { items: [named] } }));
+    mount('/');
+    const row = await present('[data-repository]');
+    expect(row.textContent).toContain('Lin’s machine');
+    expect(document.body.textContent).not.toContain('secret desk');
+    expect(Object.values(repositoryWords(named, NOW, ADMIN.member.id)).join(' ')).not.toContain('secret desk');
+    fireEvent.click(within(row).getByRole('button', { name: 'Connect widget' }));
+    const dialog = await screen.findByRole('dialog', { name: 'Connect widget' });
+    expect(dialog.textContent).not.toContain('secret desk');
   });
 
   it('shows a member "Needs you" with their own repositories alone, on a wide screen and on a phone', async () => {

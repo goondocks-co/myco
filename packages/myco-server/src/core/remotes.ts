@@ -33,6 +33,16 @@ export async function projectForRemote(db: RelationalStore, remote: string): Pro
   return row?.projectId ?? null;
 }
 
+/** The Project a remote names and whether it is archived, or null where no Project has claimed the remote. */
+export async function remoteHolder(db: RelationalStore, remote: string): Promise<{ projectId: string; archived: boolean } | null> {
+  const row = await db
+    .prepare(`SELECT p.project_id AS projectId, p.archived_at AS archivedAt
+                FROM projects p WHERE p.project_id = (SELECT r.project_id FROM project_remotes r WHERE r.remote = ?)`)
+    .bind(remote)
+    .first<{ projectId: string; archivedAt: number | null }>();
+  return row === null ? null : { projectId: row.projectId, archived: row.archivedAt !== null };
+}
+
 /**
  * Binds a remote to a Project the first time it is seen, and answers whether
  * this call is what bound it.

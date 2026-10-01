@@ -96,11 +96,17 @@ async function expectCapture(page: Page, viewport: ViewportName, role: 'admin' |
 async function expectWaitingRepositories(within: Locator, role: 'admin' | 'member'): Promise<void> {
   const group = within.locator('[data-repositories]');
   await expect(group).toHaveAttribute('data-needs-you-item', 'bad');
-  await expect(group).toContainText(role === 'admin' ? '3 repositories aren’t being captured yet' : '2 repositories aren’t being captured yet');
-  await expect(group).toContainText(role === 'admin' ? 'Work in 2 of them isn’t being kept.' : 'Work in both isn’t being kept.');
+  await expect(group).toContainText(role === 'admin' ? '5 repositories aren’t being captured yet' : '4 repositories aren’t being captured yet');
+  await expect(group).toContainText('Work in 2 of them isn’t being kept.');
   await group.getByRole('button', { name: 'See each' }).click();
   const rows = group.locator('[data-repository]');
-  await expect(rows).toHaveCount(role === 'admin' ? 3 : 2);
+  await expect(rows).toHaveCount(role === 'admin' ? 5 : 4);
+  // An archived project holds old-site: nothing connects it, and an admin is pointed to where the project is restored.
+  const oldSite = rows.filter({ hasText: 'old-site isn’t being captured yet' });
+  await expect(oldSite).toContainText('The project it belongs to is archived. An admin can restore it from Projects.');
+  await expect(oldSite.getByRole('button')).toHaveCount(0);
+  await expect(oldSite.getByRole('link', { name: 'Open Projects →' })).toHaveCount(role === 'admin' ? 1 : 0);
+  await expect(rows.filter({ hasText: 'prototype isn’t being captured yet' })).toContainText('No project holds it yet, and only an admin can start a new one.');
   const notes = rows.filter({ hasText: 'field-notes isn’t being captured yet' });
   await expect(notes).toHaveAttribute('data-needs-you-item', 'bad');
   await expect(notes).toContainText('It has no git remote');
@@ -255,6 +261,33 @@ test.describe('Today', () => {
         expectQuiet(watch);
         // Nothing is connected: the shot is the last step, and the repository stays for every other check on this fixture.
         await shoot(page, 'today-connect', viewport, mode);
+      } finally {
+        await context.close();
+      }
+    });
+  }
+
+  for (const { viewport, mode } of SHOT_MATRIX) {
+    test(`today connect a repository its member may not start a project for ${viewport} ${mode}`, async ({ browser }) => {
+      test.skip(!onFixture(), 'the repository is the fixture\'s');
+      const { context, page, watch } = await openPage(browser, { path: '/', viewport, mode, cookie: screensEnv('ownerCookie') });
+      try {
+        const needsYou = page.locator('[data-needs-you]');
+        if (viewport === 'phone') await needsYou.getByRole('button', { name: /things need you/ }).click();
+        await needsYou.locator('[data-repositories]').getByRole('button', { name: 'See each' }).click();
+        const prototype = needsYou.locator('[data-repository]').filter({ hasText: 'prototype isn’t being captured yet' });
+        await prototype.getByRole('button', { name: 'Connect prototype' }).click();
+        const dialog = page.getByRole('dialog', { name: 'Connect prototype' });
+        await expect(dialog).toBeVisible();
+        // Nothing is chosen for the viewer: connecting binds its remote to the project picked, for every clone.
+        await expect(dialog.getByRole('button', { name: 'Project', exact: true })).toHaveText('Choose a project');
+        await expect(dialog.getByRole('button', { name: 'Connect', exact: true })).toBeDisabled();
+        await page.waitForLoadState('networkidle');
+        await expectFits(page, viewport);
+        await expectNoRawIds(page);
+        await expectAxeClean(page);
+        expectQuiet(watch);
+        await shoot(page, 'today-connect-pick', viewport, mode);
       } finally {
         await context.close();
       }

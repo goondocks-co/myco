@@ -15,7 +15,7 @@ import {
   AUTO_JOIN_RETRY_MS, isLeft, machineSalt, markSweepDone, placeRepository, releaseAutoJoinLock, readAutoJoinState, rootKeyFor, silentRepository, startSweep, type DetachedSpawn,
 } from '@myco/member/auto-join.js';
 import { readDefaultDeployment, recordDefaultDeployment } from '@myco/member/default-deployment.js';
-import { cacheMachineSettings } from '@myco/member/machine-settings.js';
+import { cacheMachineSettings, machineAutoJoinLeaves } from '@myco/member/machine-settings.js';
 import { readMissingMembership, recordMissingMembership } from '@myco/member/no-membership.js';
 import { appendPending, appendPendingTurnEnd, expirePending, flushPending, listPending, PENDING_MAX_RECORDS, PENDING_TTL_MS, pendingDir, pendingSpool } from '@myco/member/pending.js';
 import { readRegistryEntry, REGISTRY_VERSION, writeDeploymentMembership, writeRegistryEntry } from '@myco/member/registry.js';
@@ -119,6 +119,13 @@ describe('where a repository stands', () => {
     // `~/` names a folder under the home folder; a relative entry names none.
     expect(placeRepository({ root: inside, rootKey: rootKeyFor(inside, mycoHome) }, { autoJoinRoots: ['~/Repos', 'Repos'], connectRoots: {} }, { home: base })).toBe('eligible');
     expect(placeRepository({ root: inside, rootKey: rootKeyFor(inside, mycoHome) }, { autoJoinRoots: ['Repos'], connectRoots: {} }, { home: base })).toBe('outside_folders');
+    // `~\` is the home folder too, as a Windows machine writes it, on every platform.
+    expect(placeRepository({ root: inside, rootKey: rootKeyFor(inside, mycoHome) }, { autoJoinRoots: ['~\\Repos'], connectRoots: {} }, { home: base })).toBe('eligible');
+  });
+
+  it('reads only the capture folders the one capture folder rule accepts, whatever the cache holds', () => {
+    cacheMachineSettings(SERVER_URL, { leaves: { 'capture.auto_join_roots': ['C:\\', '/', 'Repos', '~\\Repos', '/srv/repos'] } }, mycoHome);
+    expect(machineAutoJoinLeaves(SERVER_URL, mycoHome).autoJoinRoots).toEqual(['~\\Repos', '/srv/repos']);
   });
 });
 

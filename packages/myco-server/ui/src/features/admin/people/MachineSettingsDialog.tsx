@@ -1,6 +1,6 @@
-import { useEffect, useState } from 'react';
+import { useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { planFolderRefusal } from '@goondocks/myco-shared/member-protocol';
+import { captureFolderRefusal, planFolderRefusal } from '@goondocks/myco-shared/member-protocol';
 import { Button, Dialog, DialogContent, DialogFooter, IconButton, Input } from '../../../design';
 import { ApiError, fetchJson, putJson } from '../../../lib/api';
 import { X } from 'lucide-react';
@@ -26,13 +26,6 @@ function refusalWords(err: unknown): string {
 }
 
 const asFolders = (value: unknown): string[] => (Array.isArray(value) ? value.filter((v): v is string => typeof v === 'string') : []);
-
-/** Why a capture folder is refused: it must name a folder from the home or the filesystem root, and not the whole of either. */
-function captureFolderRefusal(entry: string): string | null {
-  const broad = planFolderRefusal(entry);
-  if (broad !== null) return broad;
-  return /^(~[\\/]|[\\/]|[A-Za-z]:[\\/])/.test(entry) ? null : 'expected a folder that starts with ~/ or /';
-}
 
 /** One list of folders a machine holds, as the dialog offers it: its heading and words, and the rule each folder must pass. */
 interface FolderField {
@@ -79,7 +72,9 @@ export function MachineSettingsDialog({ machine, onClose }: { machine: { id: str
   );
 }
 
-function FolderList({ field, stored, folders, onChange }: { field: FolderField; stored: MachineLeaf; folders: string[]; onChange: (next: string[]) => void }) {
+function FolderList({ field, stored, folders, refusedSave, onChange }: {
+  field: FolderField; stored: MachineLeaf; folders: string[]; refusedSave: string | null; onChange: (next: string[]) => void;
+}) {
   const nameOf = useMemberNames();
   const [draft, setDraft] = useState('');
   const [refused, setRefused] = useState<string | null>(null);
@@ -114,6 +109,7 @@ function FolderList({ field, stored, folders, onChange }: { field: FolderField; 
         <Button type="submit" disabled={draft.trim() === ''}>Add</Button>
       </form>
       {refused !== null && <p role="alert" className="t-small text-bad">That folder can’t be used: {refused}.</p>}
+      {refusedSave !== null && <p role="alert" className="t-small text-bad">Not saved: {refusedSave}</p>}
       {stored.configured && stored.updatedAt !== null && (
         <p className="t-meta text-faint">Changed{changedBy === null ? '' : ` by ${changedBy}`} {ago(stored.updatedAt, Date.now())}.</p>
       )}
@@ -132,16 +128,31 @@ function SettingsBody({ machine, onClose }: { machine: { id: string; name: strin
     const stored = settings.data?.leaves.find((l) => l.leaf === field.leaf);
     return stored === undefined ? [] : [{ field, stored }];
   });
-  const storedKey = JSON.stringify(fields.map(({ stored }) => stored.value));
+  // Unsaved edits, by leaf: each stays until its own save is accepted, whatever another list's save is answered.
   const [edits, setEdits] = useState<Record<string, string[]>>({});
-  useEffect(() => { setEdits({}); }, [storedKey]);
+  const [refusals, setRefusals] = useState<Record<string, string>>({});
   const foldersOf = (leaf: string, stored: MachineLeaf) => edits[leaf] ?? asFolders(stored.value);
   const changed = fields.filter(({ field, stored }) => JSON.stringify(foldersOf(field.leaf, stored)) !== JSON.stringify(asFolders(stored.value)));
   const save = useMutation({
     mutationFn: async (writes: Array<{ leaf: string; value: string[] }>) => {
-      for (const write of writes) await putJson<{ applied: boolean }>(`${settingsPath(machine.id)}/${write.leaf}`, { value: write.value });
+      const answers: Array<{ leaf: string; refused: string | null }> = [];
+      for (const write of writes) {
+        try {
+          await putJson<{ applied: boolean }>(`${settingsPath(machine.id)}/${write.leaf}`, { value: write.value });
+          answers.push({ leaf: write.leaf, refused: null });
+        } catch (err) {
+          answers.push({ leaf: write.leaf, refused: refusalWords(err) });
+        }
+      }
+      return answers;
     },
-    onSettled: () => client.invalidateQueries({ queryKey: ['machine-settings', machine.id] }),
+    // A saved list is read back before its edit is let go, so the list never shows the value it replaced.
+    onSuccess: async (answers) => {
+      await client.invalidateQueries({ queryKey: ['machine-settings', machine.id] });
+      const saved = new Set(answers.filter((a) => a.refused === null).map((a) => a.leaf));
+      setEdits((current) => Object.fromEntries(Object.entries(current).filter(([leaf]) => !saved.has(leaf))));
+      setRefusals(Object.fromEntries(answers.flatMap((a) => (a.refused === null ? [] : [[a.leaf, a.refused]]))));
+    },
   });
 
   return (
@@ -154,10 +165,10 @@ function SettingsBody({ machine, onClose }: { machine: { id: string; name: strin
               field={field}
               stored={stored}
               folders={foldersOf(field.leaf, stored)}
+              refusedSave={refusals[field.leaf] ?? null}
               onChange={(next) => setEdits({ ...edits, [field.leaf]: next })}
             />
           ))}
-          {save.error && <p role="alert" className="t-small text-bad">{refusalWords(save.error)}</p>}
           <DialogFooter>
             <Button variant="ghost" onClick={onClose}>Close</Button>
             <Button

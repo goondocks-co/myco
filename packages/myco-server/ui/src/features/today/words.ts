@@ -4,6 +4,7 @@
  * as what it produced, a machine by its name, and the account Myco's own work
  * signs in as reads "Myco".
  */
+import { HELD_CAPTURE_TTL_DAYS } from '@goondocks/myco-shared/member-protocol';
 import { REPOSITORY_CHECKOUT_CAPABILITY, REPOSITORY_DIGESTS_CAPABILITY } from '@goondocks/myco-shared/repository';
 import { harnessLabel } from '../../lib/harness';
 import { memberLabel } from '../../lib/member-name';
@@ -287,8 +288,6 @@ export function attentionWords(item: AttentionItem, now: number, projectName: (p
   }
 }
 
-/** How many days a machine keeps what its agents do in a repository it is not capturing yet. */
-export const HELD_DAYS = 7;
 
 /** The machine a repository sits on, as the viewer reads it: theirs by its name, anyone else's by its member. */
 export function repositoryMachine(item: Pick<UncapturedRootItem, 'machineName' | 'member'>, viewerId: string | null): string {
@@ -301,14 +300,14 @@ const REASON_WORDS: Readonly<Record<UncapturedReason, (machine: string) => strin
   outside_folders: (machine) => `It’s outside the folders ${machine} captures.`,
   no_remote: () => 'It has no git remote, so Myco can’t tell which project it belongs to.',
   auto_create_off: () => 'No project holds it yet, and only an admin can start a new one.',
-  archived: () => 'The project it belongs to is archived.',
+  archived: () => 'The project it belongs to is archived. An admin can restore it from Projects.',
   refused: () => 'Myco couldn’t add it to a project.',
 };
 
 const HELD_WORDS: Readonly<Record<HeldState, (machine: string) => string>> = {
-  held: (machine) => `What agents do there is kept on ${machine} for ${HELD_DAYS} days, and arrives once it’s connected.`,
+  held: (machine) => `What agents do there is kept on ${machine} for ${HELD_CAPTURE_TTL_DAYS} days, and arrives once it’s connected.`,
   full: (machine) => `${capitalized(machine)} has kept all it can; newer work there isn’t being kept.`,
-  expired: () => `Work there older than ${HELD_DAYS} days wasn’t kept.`,
+  expired: () => `Work there older than ${HELD_CAPTURE_TTL_DAYS} days wasn’t kept.`,
 };
 
 const capitalized = (text: string): string => text.charAt(0).toUpperCase() + text.slice(1);

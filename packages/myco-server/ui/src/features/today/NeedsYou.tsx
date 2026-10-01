@@ -53,7 +53,7 @@ interface Row {
   render: (connect: (item: UncapturedRootItem) => void) => ReactNode;
 }
 
-function rowsOf({ answer, repositories, now, projectName, viewerId }: NeedsYouProps): Row[] {
+function rowsOf({ admin, answer, repositories, now, projectName, viewerId }: NeedsYouProps): Row[] {
   const attention = (answer?.items ?? []).map((item, index): Row => {
     const words = attentionWords(item, now, projectName);
     return { key: `${item.kind}:${index}`, tone: item.tone, title: words.title, render: () => <NeedsYouItem key={`${item.kind}:${index}`} tone={item.tone} words={words} /> };
@@ -61,8 +61,8 @@ function rowsOf({ answer, repositories, now, projectName, viewerId }: NeedsYouPr
   const items = repositories.items ?? [];
   // One repository is its own line; more are one line that opens to each, so a machine with many never floods the list.
   const waiting: Row[] = items.length === 0 ? [] : items.length === 1
-    ? [{ key: 'repository', tone: repositoryWords(items[0]!, now, viewerId).tone, title: repositoryWords(items[0]!, now, viewerId).title, render: (connect) => <RepositoryItem key="repository" item={items[0]!} now={now} viewerId={viewerId} onConnect={connect} /> }]
-    : [{ key: 'repositories', tone: losingWork(items) ? 'bad' : 'warn', title: repositoriesTitle(items), render: (connect) => <RepositoryGroup key="repositories" items={items} now={now} viewerId={viewerId} onConnect={connect} /> }];
+    ? [{ key: 'repository', tone: repositoryWords(items[0]!, now, viewerId).tone, title: repositoryWords(items[0]!, now, viewerId).title, render: (connect) => <RepositoryItem key="repository" item={items[0]!} now={now} viewerId={viewerId} admin={admin} onConnect={connect} /> }]
+    : [{ key: 'repositories', tone: losingWork(items) ? 'bad' : 'warn', title: repositoriesTitle(items), render: (connect) => <RepositoryGroup key="repositories" items={items} now={now} viewerId={viewerId} admin={admin} onConnect={connect} /> }];
   return [...attention, ...waiting];
 }
 
@@ -110,9 +110,12 @@ function Connected({ words }: { words: string | null }) {
 /** Whether a read the viewer is shown is still on its way: a member is never asked about the server's own health. */
 const waiting = ({ admin, pending, repositories }: NeedsYouProps): boolean => repositories.pending || (admin && pending);
 
-/** Whether there is anything to show the viewer at all: an admin always has the panel, a member only their repositories. */
+/**
+ * Whether there is anything to show the viewer at all: an admin always has the panel; a member their repositories, or
+ * that they could not be read, so a failed read is never taken for all clear.
+ */
 function shown(props: NeedsYouProps, rows: readonly Row[], connectedLine: string | null): boolean {
-  return props.admin || rows.length > 0 || connectedLine !== null;
+  return props.admin || rows.length > 0 || connectedLine !== null || Boolean(props.repositories.error);
 }
 
 /** "Needs you" on a wide screen: every item, or one line when there is nothing. */
@@ -174,10 +177,13 @@ export function NeedsYouSummary(props: NeedsYouProps) {
     return (
       <Card className="flex flex-col gap-s2 px-s4 py-s3" data-needs-you="">
         <div className="flex items-center gap-s3">
-          <HealthDot tone="ok" label="All clear" />
+          {repositories.error || (answer?.unavailable.length ?? 0) > 0
+            ? <HealthDot tone="faint" label="Not every check could be read" />
+            : <HealthDot tone="ok" label="All clear" />}
           <h2 className="t-body font-medium text-ink">Nothing needs you</h2>
         </div>
         <Connected words={connecting.done} />
+        <Unchecked answer={answer} repositories={repositories} />
         {dialog}
       </Card>
     );

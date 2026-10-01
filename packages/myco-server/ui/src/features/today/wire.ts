@@ -122,6 +122,15 @@ export interface ConnectRequest {
   projectId?: string;
 }
 
+/** Why a connect is refused, in `error`: an archived project holds its remote, another project does, or no project does and its member may not start one. */
+export type ConnectRefusalCode = 'archived' | 'remote_bound' | 'auto_create_off';
+
+/** A refused connect's answer: the code, with the server's words in `reason`. */
+export interface ConnectRefusal {
+  error: ConnectRefusalCode;
+  reason: string;
+}
+
 /** What the connect answers: the machine joins at a hook in the repository, within minutes. */
 export interface ConnectAnswer {
   connected: true;

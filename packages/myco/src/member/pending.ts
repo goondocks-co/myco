@@ -17,12 +17,13 @@ import type { OutboundEvent } from './envelope.js';
 import { BLOBS_DIRNAME, MemberSpool, toWire, type TurnEndMark } from './spool.js';
 import { readRegistryEntry } from './registry.js';
 import { readSessionState, type SessionState } from './session-state.js';
+import { HELD_CAPTURE_TTL_MS } from '@goondocks/myco-shared/member-protocol';
 import { withFileLockSync } from '../utils/lifecycle-lock.js';
 import { ensureMemberDir, memberRoot, readPrivateJson, writePrivateFileAtomic } from './store.js';
 
 export const PENDING_DIRNAME = 'pending';
 /** How long capture waits for its repository to join before it is discarded. */
-export const PENDING_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+export const PENDING_TTL_MS = HELD_CAPTURE_TTL_MS;
 /** The most records one repository's pending spool holds; a hook past it spools nothing more. */
 export const PENDING_MAX_RECORDS = 2000;
 const META_FILE = 'pending.json';
