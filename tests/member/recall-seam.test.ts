@@ -204,6 +204,34 @@ describe('the sub-budget', () => {
     } finally { await server.stop(true); }
   });
 
+  it('leaves a Deployment that never answers to the drain to latch: recall is slow, the drain times out and latches, the turn stays spooled', async () => {
+    // A black-holed port: the connection opens and nothing ever comes back, on recall and on the drain alike.
+    const held: import('node:net').Socket[] = [];
+    const net = await import('node:net');
+    const hole = net.createServer((socket) => { held.push(socket); });
+    await new Promise<void>((resolve) => hole.listen(0, '127.0.0.1', resolve));
+    const port = (hole.address() as import('node:net').AddressInfo).port;
+    try {
+      const answered = await drive(
+        { prompt: 'a typed prompt', transcript_path: transcript() },
+        (run) => outcomeFor(run, async () => {
+          const context = await servedContext(run, '/context/prompt', { sessionId: run.sessionId, promptId: 'p', text: 'a typed prompt' });
+          return context === undefined ? undefined : { additionalContext: context };
+        }),
+        (url, init) => fetch(`http://127.0.0.1:${port}${new URL(String(url)).pathname}`, init),
+      );
+      expect(answered.stderr).toMatch(/recall skipped \(slow: timed out waiting for the answer to start after \d+ ms\)/);
+      const spool = new MemberSpool('proj_1', { mycoHome });
+      // Recall latched nothing; the drain's own, uncapped timeout did.
+      expect(spool.readLatch()).not.toBeNull();
+      expect(spool.depth(SESSION)).toBe(1);
+      expect(rig.rows('prompt_batches')).toBe(0);
+    } finally {
+      for (const socket of held) socket.destroy();
+      await new Promise<void>((resolve) => hole.close(() => resolve()));
+    }
+  }, 15_000);
+
   it('latches on a Deployment answering 503, as a drain would, and keeps the turn spooled for the next probe', async () => {
     const answered = await drive(
       { prompt: 'a typed prompt', transcript_path: transcript() },

@@ -88,6 +88,25 @@ describe('ServerClient classification', () => {
     expect(Date.now() - started).toBeLessThan(2_000);
   });
 
+  it('reads a 5xx or 429 whose body stalls by its status line: retry, never slow', async () => {
+    const env = promptEvent(ctx('s_stalled_5xx'), { promptId: mintId(), text: 'hi' }).envelope;
+    const stalled = (status: number, headers: Record<string, string> = {}): FetchLike => async (_input, init) => {
+      const signal = init?.signal ?? undefined;
+      const body = new ReadableStream<Uint8Array>({ start(controller) {
+        controller.enqueue(new TextEncoder().encode('{"error":'));
+        signal?.addEventListener('abort', () => { controller.error(new Error('aborted')); }, { once: true });
+      } });
+      return new Response(body, { status, headers: { 'content-type': 'application/json', ...headers } });
+    };
+    const capped = { connectTimeoutMs: 40, requestTimeoutMs: 40, capped: true as const };
+    expect(await new ServerClient({ serverUrl: 'https://s', token: 'x'.repeat(43), projectId: 'proj_1' }, stalled(503, { 'retry-after': '7' })).postEvent(env, capped))
+      .toEqual({ class: 'retry', status: 503, detail: 'http 503', retryAfterMs: 7_000 });
+    expect(await new ServerClient({ serverUrl: 'https://s', token: 'x'.repeat(43), projectId: 'proj_1' }, stalled(429)).postEvent(env, capped))
+      .toMatchObject({ class: 'retry', status: 429 });
+    // A 200 whose body stalls is still the slow answer it is.
+    expect((await new ServerClient({ serverUrl: 'https://s', token: 'x'.repeat(43), projectId: 'proj_1' }, stalled(200)).postEvent(env, capped)).class).toBe('slow');
+  });
+
   it('reads a capped share running out as slow, not as a dark Deployment, and says which step it stopped in', async () => {
     const env = promptEvent(ctx('s_slow'), { promptId: mintId(), text: 'hi' }).envelope;
     const hanging: FetchLike = (_input, init) => new Promise((_resolve, reject) => { init?.signal?.addEventListener('abort', () => reject(new Error('aborted'))); });

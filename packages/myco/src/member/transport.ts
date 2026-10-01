@@ -90,6 +90,18 @@ function bodyComplete(res: Response, text: string): boolean {
  * caller from deciding on `res.json()` alone, which makes a 409 refusal and a
  * 200 answer indistinguishable.
  */
+/** An answer read from its status line and headers alone, for a response whose body never arrived. */
+function statusLineAnswer(res: Response): RawAnswer {
+  const retryAfter = res.headers.get(RETRY_AFTER_HEADER);
+  return {
+    kind: 'response',
+    status: res.status,
+    protocolHeader: res.headers.get(PROTOCOL_HEADER) !== null,
+    retryAfterMs: retryAfter !== null && /^\d+$/.test(retryAfter) ? Number(retryAfter) * 1000 : undefined,
+    json: null,
+  };
+}
+
 export async function rawAnswerOf(res: Response, signal?: AbortSignal): Promise<RawAnswer> {
   const text = await res.text();
   // A request aborted after its status line arrived and before its body did —
@@ -157,6 +169,7 @@ export class ServerClient {
     const controller = new AbortController();
     let timedOut = false;
     let phase: TimeoutPhase = 'headers';
+    let head: Response | null = null;
     const started = Date.now();
     const requestTimer = setTimeout(() => { timedOut = true; controller.abort(); }, init.budget.requestTimeoutMs);
     try {
@@ -173,8 +186,12 @@ export class ServerClient {
         signal: controller.signal,
       });
       phase = 'body';
+      head = res;
       return await rawAnswerOf(res, controller.signal);
     } catch (err) {
+      // A status line that already says busy or failing is the answer, whatever became of its body: a stalled 5xx or
+      // 429 classifies as the retry its status is, never as a slow answer that latches nothing.
+      if (timedOut && head !== null && (head.status >= 500 || head.status === 429)) return statusLineAnswer(head);
       if (timedOut) return { kind: 'timeout', phase, elapsedMs: Date.now() - started, capped: init.budget.capped === true };
       return { kind: 'transport', detail: err instanceof Error ? err.message : String(err) };
     } finally {
