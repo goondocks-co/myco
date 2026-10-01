@@ -16,7 +16,7 @@ import {
 } from '@myco/member/auto-join.js';
 import { readDefaultDeployment, recordDefaultDeployment } from '@myco/member/default-deployment.js';
 import { cacheMachineSettings } from '@myco/member/machine-settings.js';
-import { recordMissingMembership } from '@myco/member/no-membership.js';
+import { readMissingMembership, recordMissingMembership } from '@myco/member/no-membership.js';
 import { appendPending, appendPendingTurnEnd, expirePending, flushPending, listPending, PENDING_MAX_RECORDS, PENDING_TTL_MS, pendingDir, pendingSpool } from '@myco/member/pending.js';
 import { readRegistryEntry, REGISTRY_VERSION, writeDeploymentMembership, writeRegistryEntry } from '@myco/member/registry.js';
 import { MemberSpool } from '@myco/member/spool.js';
@@ -190,6 +190,21 @@ describe('a hook in a repository with no connection', () => {
     const root = repository(path.join(base, 'Repos'), 'widget', 'https://github.com/acme/widget.git');
     const hook = await runHook('user-prompt-submit', { session_id: 'sess-u', hook_event_name: 'UserPromptSubmit', prompt: 'hi', cwd: root, transcript_path: transcript(root, 'sess-u') }, { fetch: rig.fetch, spawn });
     expect(hook.stderr).not.toContain('error');
+  });
+
+  it('writes nothing to stderr and counts no missed membership while a repository holds its capture', async () => {
+    const root = repository(path.join(base, 'elsewhere'), 'gadget', 'https://github.com/acme/gadget.git');
+    const prompt = (session: string) => runHook('user-prompt-submit', { session_id: session, hook_event_name: 'UserPromptSubmit', prompt: 'hi', cwd: root, transcript_path: transcript(root, session) }, { fetch: rig.fetch, spawn });
+    const first = await prompt('sess-h1');
+    expect((await join(['--root', root, '--lock-held']))[0]).toMatchObject({ result: 'outside_folders' });
+    const told = await prompt('sess-h2');
+    expect(told.stdout).toContain('outside the folders this machine captures');
+    expect({ stderr: [first.stderr, told.stderr], missed: readMissingMembership(root, mycoHome), held: listPending({ mycoHome, now: Date.now() }).length })
+      .toEqual({ stderr: ['', ''], missed: null, held: 1 });
+    // Where auto-join has no say, the miss is still said and counted.
+    const scratch = repository(fs.mkdtempSync(path.join(temporary, 'scratch-')), 'scratch', 'https://github.com/acme/scratch.git');
+    const silent = await runHook('user-prompt-submit', { session_id: 'sess-h3', hook_event_name: 'UserPromptSubmit', prompt: 'hi', cwd: scratch }, { fetch: rig.fetch, spawn });
+    expect({ said: silent.stderr.includes('no registry entry'), counted: readMissingMembership(scratch, mycoHome)?.count }).toEqual({ said: true, counted: 1 });
   });
 
   it('tries a refused repository again at once when this machine learns it was connected from "Needs you"', async () => {
@@ -530,7 +545,8 @@ describe('a repository left with myco member leave', () => {
     for (let i = 0; i < 100 && told() !== '{}'; i += 1) await Bun.sleep(10);
     expect(told()).toBe('{}');
     const hook = await runHook('user-prompt-submit', { session_id: 'sess-1', hook_event_name: 'UserPromptSubmit', prompt: 'hi', cwd: root, transcript_path: transcript(root, 'sess-1') }, { fetch: rig.fetch, spawn });
-    expect({ spawned, pending: listPending({ mycoHome, now: Date.now() }), notice: hook.stdout.includes('not capturing') }).toEqual({ spawned: [], pending: [], notice: false });
+    expect({ spawned, pending: listPending({ mycoHome, now: Date.now() }), notice: hook.stdout.includes('not capturing'), stderr: hook.stderr, missed: readMissingMembership(root, mycoHome) })
+      .toEqual({ spawned: [], pending: [], notice: false, stderr: '', missed: null });
     // Connected again from "Needs you": captured again.
     cacheMachineSettings(SERVER_URL, { leaves: { 'capture.auto_join_roots': [path.join(base, 'Repos')], 'capture.connect_roots': { [key]: '' } } }, mycoHome);
     await runHook('user-prompt-submit', { session_id: 'sess-2', hook_event_name: 'UserPromptSubmit', prompt: 'hi', cwd: root, transcript_path: transcript(root, 'sess-2') }, { fetch: rig.fetch, spawn });

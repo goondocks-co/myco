@@ -19,7 +19,7 @@ import { getMachineId } from '../machine-id.js';
 import { drainBacklog, sessionHeld, sessionTried } from './backlog.js';
 import { parseCredentialFlag, redeemsJoinCode, registryCredential, resolveCredential, resolveMemberProjectRoot, type CredentialRecord, type CredentialSource } from './credential.js';
 import { deliveryNotice, withNotice } from './delivery-notice.js';
-import { autoJoinHold } from './auto-join-hook.js';
+import { autoJoinHold, LEFT_ALONE, type AutoJoinHold } from './auto-join-hook.js';
 import { appendPending } from './pending.js';
 import { flushHeldCapture } from './held.js';
 import type { DetachedSpawn } from './auto-join.js';
@@ -196,12 +196,17 @@ export async function runMemberHook(
         env, fetch: opts.fetch as typeof fetch | undefined, root: resolveMemberProjectRoot(cwd), mycoHome, budget,
       });
     }
-    let credential = resolveCredential(source, { cwd, env, mycoHome, invokedBy: `hook ${hookName}` });
     // A repository with no connection of its own joins the default Deployment apart from this hook, which meanwhile
-    // spools into the repository's pending spool, or captures nothing and says why.
-    const hold = credential === null && source === 'registry'
-      ? autoJoinHold({ root: resolveMemberProjectRoot(cwd), hookName, agent: input.agent, sessionId, mycoHome, now: now(), env, spawn: opts.spawn })
-      : null;
+    // spools into the repository's pending spool, or, once left, captures nothing. Either way it is no missed membership.
+    const unconnected: { answer: AutoJoinHold | typeof LEFT_ALONE | null } = { answer: null };
+    let credential = resolveCredential(source, {
+      cwd, env, mycoHome, invokedBy: `hook ${hookName}`,
+      claimsUnconnected: (root) => {
+        unconnected.answer = autoJoinHold({ root, hookName, agent: input.agent, sessionId, mycoHome, now: now(), env, spawn: opts.spawn });
+        return unconnected.answer !== null;
+      },
+    });
+    const hold = unconnected.answer === LEFT_ALONE ? null : unconnected.answer;
     if (hold !== null && hold.notice !== null) response = withNotice(hold.notice, response);
     if (credential === null) {
       if (hold === null || hold.spool === null) return;

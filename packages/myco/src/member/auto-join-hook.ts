@@ -32,13 +32,17 @@ export function hookTakesNotice(hookName: string, agent: string): boolean {
   return hookName === 'session-start' && HOOK_CONFIG[agent]?.capabilities.sessionStartInjection === true;
 }
 
+/** A repository left with `myco member leave`: its hooks capture, hold and say nothing. */
+export const LEFT_ALONE = 'left';
+
 /**
- * The hold for a hook at `root`, or null where the hook captures nothing and says nothing: no default Deployment, a
- * repository the machine never captures, or one left with `myco member leave`.
+ * The hold for a hook at `root`; {@link LEFT_ALONE} for a repository left with `myco member leave`; or null where
+ * auto-join has no say: no default Deployment, or a repository the machine never captures. The notice reaches the
+ * agent in the hook's answer, and nothing is written to stderr.
  */
 export function autoJoinHold(opts: {
   root: string; hookName: string; agent: string; sessionId: string; mycoHome: string; now: number; env?: NodeJS.ProcessEnv; spawn?: DetachedSpawn;
-}): AutoJoinHold | null {
+}): AutoJoinHold | typeof LEFT_ALONE | null {
   const membership = defaultMembership(opts.mycoHome);
   if (membership === null) return null;
   // Repositories met before auto-join existed are swept once, apart from any hook.
@@ -49,7 +53,7 @@ export function autoJoinHold(opts: {
   const connectTo = Object.prototype.hasOwnProperty.call(leaves.connectRoots, rootKey) ? leaves.connectRoots[rootKey]! : null;
   // Left with `myco member leave`: nothing is captured, held or said, until the repository is connected again.
   if (isLeft(rootKey, opts.mycoHome)) {
-    if (connectTo === null) return null;
+    if (connectTo === null) return LEFT_ALONE;
     clearLeft(rootKey, opts.mycoHome);
   }
   recordSessionSeen(rootKey, opts.sessionId, opts.mycoHome);
@@ -64,7 +68,6 @@ export function autoJoinHold(opts: {
   const spool = pendingSpool({ root: opts.root, rootKey }, { mycoHome: opts.mycoHome, now: opts.now });
   const text = state === null ? null : notCapturedNotice({ ...state, serverUrl: membership.serverUrl }, leaves.autoJoinRoots, readHeldEnd(rootKey, opts.mycoHome));
   const notice = text !== null && hookTakesNotice(opts.hookName, opts.agent) && noticeOnce(opts.sessionId, opts.mycoHome, opts.now) ? text : null;
-  if (text !== null) process.stderr.write(`[myco] ${text}\n`);
   return {
     repo: { root: opts.root, rootKey },
     spool,
