@@ -19,6 +19,7 @@ import { canStartRequest, subRequestBudget, type HookBudget } from './budget.js'
 import { FEATURES_HEADER, featuresNamed, PROTOCOL_HEADER } from '@goondocks/myco-shared/member-protocol';
 import { readProjectContext, removeSessionContext, updateProjectContext, writeSessionContext, type ContextAsk, type SessionBlockKind } from './context-cache.js';
 import { refusalPermanent } from './constants.js';
+import { gitRemote } from './git-facts.js';
 import { readSessionState, updateSessionState } from './session-state.js';
 import type { MemberSpool } from './spool.js';
 import { classifyEventAnswer, ServerClient, type FetchLike } from './transport.js';
@@ -41,12 +42,22 @@ export interface PrefetchReport {
   stoppedBy?: 'budget' | 'unanswered';
 }
 
+/**
+ * The repository remote a start or a compaction names, asked of git here, in the directory the hook ran in: the hook
+ * reads nothing it does not need at once, and git's answer carries its `insteadOf` rewrites, which a read of the
+ * repository's own config could not. An ask written before `remoteFrom` carries its remote.
+ */
+function remoteOf(ask: { remote?: string; remoteFrom?: string }): { remote: string } | Record<string, never> {
+  const remote = ask.remote ?? (ask.remoteFrom !== undefined ? gitRemote(ask.remoteFrom) : undefined);
+  return remote ? { remote } : {};
+}
+
 function requestFor(sessionId: string, ask: ContextAsk): { path: string; body: Record<string, unknown> } {
   switch (ask.kind) {
     case 'start':
-      return { path: SESSION_PATH, body: { sessionId, kind: 'start', ...(ask.remote ? { remote: ask.remote } : {}) } };
+      return { path: SESSION_PATH, body: { sessionId, kind: 'start', ...remoteOf(ask) } };
     case 'compact':
-      return { path: SESSION_PATH, body: { sessionId, kind: 'compact', compaction: ask.compaction, ...(ask.remote ? { remote: ask.remote } : {}) } };
+      return { path: SESSION_PATH, body: { sessionId, kind: 'compact', compaction: ask.compaction, ...remoteOf(ask) } };
     case 'subagent':
       return { path: SESSION_PATH, body: { sessionId, kind: 'subagent', agentId: ask.agentId, agentType: ask.agentType } };
     case 'prompt':

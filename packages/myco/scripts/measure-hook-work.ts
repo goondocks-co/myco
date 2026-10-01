@@ -1,6 +1,6 @@
 // Gate G1, timed (#1561): how long a compiled binary takes to answer each hook doing its real work.
 //
-// Usage: bun scripts/measure-hook-work.ts <binary> [--runs N (30)] [--scale S] [--prefix "arch -x86_64"]
+// Usage: bun scripts/measure-hook-work.ts <binary> [--runs N (30)] [--scale S] [--prefix "arch -x86_64"] [--repo DIR]
 //
 // Each run is one session of the harness that wires every hook (session start, a prompt, a tool call's pre and post,
 // a delegated agent's start and stop, the turn's end and the session's end), in a git repository joined to a loopback
@@ -41,17 +41,18 @@ const prefix = flag('--prefix', '').split(' ').filter(Boolean);
 
 /**
  * Each hook's median budget, in ms, where Linux runs natively: about half again the slowest median a CI runner has
- * shown (one runner instance is up to 40% slower than the next). Session start and end run `git` for the branch and head.
+ * shown (one runner instance is up to 40% slower than the next). No hook starts git for the repository's identity
+ * (`utils/git-files.ts`); the session's end asks git whether tracked files changed, its two questions at once.
  */
 const BUDGET_MS: Record<string, number> = {
-  'session-start': 150,
+  'session-start': 100,
   'user-prompt-submit': 100,
   'pre-tool-use': 70,
   'post-tool-use': 100,
   'subagent-start': 100,
   'subagent-stop': 100,
   stop: 120,
-  'session-end': 150,
+  'session-end': 130,
 };
 /** The slowest any one run of any hook may be, times the scale: past every runner stall seen, short of any wait. */
 const CEILING_MS = 1_000;
@@ -61,11 +62,20 @@ const PROJECT = 'proj_hookwork';
 const DEPLOYMENT = 'http://127.0.0.1:9';
 
 const scratch = fs.realpathSync(fs.mkdtempSync(path.join(process.platform === 'win32' ? os.tmpdir() : '/tmp', 'myco-hook-work-')));
-const repo = path.join(scratch, 'repo');
-fs.mkdirSync(repo);
+// `--repo`: measure in a repository of the caller's (a throwaway clone of a large one, say). One carrying a runtime pin
+// is refused: a hook run there re-executes into the pinned binary, under its home, and would capture into it.
+const given = flag('--repo', '');
+if (given !== '' && fs.existsSync(path.join(given, '.myco', 'runtime.command'))) {
+  process.stderr.write(`[hook-work] ${given} pins a runtime (.myco/runtime.command): measure in a throwaway clone instead\n`);
+  process.exit(2);
+}
+const repo = given !== '' ? path.resolve(given) : path.join(scratch, 'repo');
 const git = (...gitArgs: string[]) => spawnSync('git', gitArgs, { cwd: repo, encoding: 'utf-8' });
-git('init', '-q');
-git('-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-q', '--allow-empty', '-m', 'init');
+if (given === '') {
+  fs.mkdirSync(repo);
+  git('init', '-q');
+  git('-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-q', '--allow-empty', '-m', 'init');
+}
 const command = [...prefix, path.resolve(binary)];
 
 function homeFor(source: 'registry' | 'env'): { home: string; env: NodeJS.ProcessEnv } {

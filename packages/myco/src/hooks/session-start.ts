@@ -1,6 +1,6 @@
 import { evaluateSessionCaptureRules } from './capture-rules.js';
 import { readTranscriptMeta } from './transcript-meta.js';
-import { gitFacts } from '../member/git-facts.js';
+import { gitHead } from '../member/git-facts.js';
 import { hookCwd, runMemberHook, type HookMainOptions, type HookRun } from '../member/capture.js';
 import { sessionStartEvent, type OutboundEvent } from '../member/envelope.js';
 import { withNotice } from '../member/delivery-notice.js';
@@ -40,7 +40,9 @@ export async function main(opts: HookMainOptions = {}) {
       return { events: [] };
     }
 
-    const git = gitFacts(hookCwd(input));
+    // The branch and the commit, read from git's own files; the remote is the helper's to ask git for, with the block.
+    const cwd = hookCwd(input);
+    const git = gitHead(cwd);
 
     const lineage = sessionLineage(agent, sessionId, transcriptPath);
     const events: OutboundEvent[] = [sessionStartEvent(ctx, {
@@ -57,7 +59,7 @@ export async function main(opts: HookMainOptions = {}) {
     const compacted = compactionStart(run);
     const compaction = compacted ? readSessionState(run.spool.dir, sessionId).compactionOrdinal + 1 : undefined;
     if (compaction !== undefined && !isCompactionOrdinal(compaction)) throw new Error('session compaction ordinal is invalid');
-    const named = git.remote ? { remote: git.remote } : {};
+    const named = { remoteFrom: cwd };
     const ask: ContextAsk = compaction !== undefined
       ? { kind: 'compact', compaction, ...named, at: run.now() }
       : { kind: 'start', ...named, at: run.now() };

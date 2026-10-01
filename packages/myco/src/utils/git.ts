@@ -16,7 +16,7 @@
  */
 import fs from 'node:fs';
 import path from 'node:path';
-import { execFileSync, spawnSync } from 'node:child_process';
+import { execFileSync, spawn, spawnSync } from 'node:child_process';
 
 let cachedGitBinary: string | undefined;
 
@@ -134,4 +134,19 @@ export function runGitAnswer(args: string[], cwd: string, run: (args: string[], 
 export function gitExitStatus(args: string[], cwd: string): number | null {
   const result = spawnSync(resolveGitBinary(), args, { cwd, stdio: 'ignore' });
   return result.error === undefined ? result.status : null;
+}
+
+/** `gitExitStatus` without blocking: several can be asked at once. */
+export function gitExitStatusAsync(args: string[], cwd: string): Promise<number | null> {
+  return new Promise((resolve) => {
+    let child: ReturnType<typeof spawn>;
+    try {
+      child = spawn(resolveGitBinary(), args, { cwd, stdio: 'ignore' });
+    } catch {
+      resolve(null);
+      return;
+    }
+    child.on('error', () => resolve(null));
+    child.on('close', (code, signal) => resolve(signal !== null ? null : code));
+  });
 }
