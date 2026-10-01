@@ -11,8 +11,7 @@
  * kernel actually gave the daemon. Reserving one up front (bind :0, read,
  * close, pass it in) leaves a window in which a parallel test process takes it;
  * the daemon then falls back to an ephemeral port and the test talks to
- * whatever now holds the stale number. `tests/meta/team-port-readback.test.ts`
- * keeps that shape out.
+ * whatever now holds the stale number.
  */
 import http from 'node:http';
 

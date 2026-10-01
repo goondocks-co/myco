@@ -83,5 +83,4 @@ Before adding a new agent harness tool, ask:
 
 - [`AGENTS.md`](../../AGENTS.md) — the canonical project rules, including the short form of this doc
 - [`docs/agent-tools.md`](../agent-tools.md) — the public MCP tool reference
-- `tests/mcp/tool-definitions.test.ts` — anti-drift checks that lock the MCP surface
 - `tests/mcp/surface-discipline.test.ts` — structural test that MCP handlers don't import admin primitives

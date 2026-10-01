@@ -26,8 +26,7 @@
  * capability ends up owned by nobody — the planning defect of the same class as a
  * property with no gate.
  *
- * Static source scan (node:fs), no daemon boot — same shape as
- * `tests/meta/route-stamp-completeness.test.ts`.
+ * Static source scan (node:fs), no daemon boot.
  */
 import { describe, expect, it } from 'bun:test';
 import fs from 'node:fs';

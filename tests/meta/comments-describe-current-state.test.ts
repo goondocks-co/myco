@@ -36,9 +36,7 @@
  *   an author who writes "left dead for now, wire it up later" sails past. It
  *   is a cheap tripwire for the wordings that have already cost us, not a
  *   guarantee. The only thing that actually catches a dead command is a test
- *   that RUNS it — `tests/cli/host-rotate-key.test.ts` is that test, written
- *   after `rotate-key` shipped dead a SECOND time, in the very PR that added
- *   this gate, past both of its static siblings.
+ *   that RUNS it.
  *
  * A term that NAMES something currently true is fine — a `legacySecrets` field
  * really is legacy today, and a compatibility path that still carries

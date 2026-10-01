@@ -16,9 +16,8 @@
  *     NOT a gate on the mount constant, and this file must not be read as one:
  *     a member's `host_url` cannot carry a path (`parseHostUrl` refuses it), so
  *     a member never sends a prefix for a non-root mount to strip — flipping the
- *     constant leaves these suites green. The mount is gated at the mechanism
- *     instead, in `tests/team-host/funnel.test.ts`, which asserts activation
- *     emits no `--set-path`.
+ *     constant leaves these suites green. The mount belongs at the mechanism:
+ *     activation emits no `--set-path`.
  *   - `Host` is rewritten to the edge's own authority, exactly as Funnel does.
  *     That is why the host side cannot gate on a Host allowlist.
  *

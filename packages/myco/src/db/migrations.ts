@@ -4206,7 +4206,7 @@ function migrateV68ToV69(db: Database): void {
  * cover this: it only replays `CREATE TABLE/INDEX/TRIGGER IF NOT EXISTS`
  * DDL, never `ALTER TABLE ADD COLUMN` — see the "Known gap: column drift"
  * comment above FTS_TRIGGER_GROUPS in schema.ts. Confirmed by direct
- * simulation (see tests/db/migrate-v69-to-v70-skill-lineage-columns.test.ts):
+ * simulation:
  * a vault stamped v67 with skill_lineage missing these columns still lacks
  * them after createSchema() runs — even run twice — on pre-v70 code.
  *

@@ -33,8 +33,7 @@ const { writeHostSecret } = createHostRegistryOperations(testPerUserLockNamespac
  *  Only `get('/api/cortex/instructions', ...)` is exercised by the tools under test
  *  (`myco_cortex`); every other verb/endpoint is a harmless no-op ack.
  *  `digestHeaders` collects just the headers of each instructions call,
- *  in order — the same shape `tests/mcp/http.test.ts`'s `mockClient`
- *  captures. */
+ *  in order. */
 function mockDaemonClient(digestHeaders: http.IncomingHttpHeaders[] = []): DaemonClient {
   return {
     get: (async (endpoint: string, options?: { headers?: Record<string, string> }) => {

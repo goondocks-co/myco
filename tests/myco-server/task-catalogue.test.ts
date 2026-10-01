@@ -8,7 +8,9 @@ import { describe, expect, it } from 'bun:test';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { parse as parseYaml } from 'yaml';
 import { MAP_TASK, MAP_UNCHANGED_ACTION } from '@goondocks/myco-shared/canopy';
+import { REPOSITORY_TASKS } from '@goondocks/myco-shared/repository';
 import { admissionForTask, EXTRACTION_TASK, MANUAL_ONLY_TASKS, OUTCOME_TASKS, RETAINED_TASKS, SEEDING_TASK, TASK_ADMISSION, TITLING_TASK, UNLANDED_TASKS } from '@myco-server-worker/core/task-catalogue.js';
 import { TASK_SCHEDULE } from '@myco-server-worker/core/jobs.js';
 import { scheduledTasks } from '@myco-server-worker/core/scheduled-tasks.js';
@@ -19,6 +21,7 @@ import { INPUT_BUILDERS } from '@myco-server-worker/core/task-inputs.js';
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 const LEDGER = path.join(REPO_ROOT, 'docs', 'architecture', 'myco-2.0.md');
+const TASKS_DIR = path.join(REPO_ROOT, 'packages', 'myco', 'src', 'agent', 'definitions', 'tasks');
 
 /** Canopy's two tasks belong to the map task's own issue and are gated there. */
 const OWNED_ELSEWHERE = new Set(['canopy-describe', 'harness-health']);
@@ -147,5 +150,18 @@ describe('the four run outcomes', () => {
     // A rule with an artifact check belongs to an outcome.
     const artifactRules = Object.entries(RUN_CLOSE_RULES).filter(([, rule]) => rule.artifact !== undefined).map(([task]) => task).sort();
     expect(artifactRules).toEqual([...OUTCOME_TASKS].sort());
+  });
+});
+
+describe('the tasks a run checks a repository out for', () => {
+  it('are exactly the tasks with a phase that reads committed project files', () => {
+    // The server holds a run of one of these until the project has a repository, and checks it out for the worker.
+    const needsTree = fs.readdirSync(TASKS_DIR).filter((f) => f.endsWith('.yaml'))
+      .map((f) => parseYaml(fs.readFileSync(path.join(TASKS_DIR, f), 'utf8')) as { name: string; phases?: Array<{ requiresProjectTree?: boolean }> })
+      .filter((task) => task.phases?.some((phase) => phase.requiresProjectTree === true))
+      .map((task) => task.name);
+    expect([...needsTree].sort()).toEqual([...REPOSITORY_TASKS].sort());
+    expect(REPOSITORY_TASKS).toContain(MAP_TASK);
+    expect(REPOSITORY_TASKS).toContain(SEEDING_TASK);
   });
 });

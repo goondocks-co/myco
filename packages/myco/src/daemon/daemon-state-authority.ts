@@ -21,9 +21,8 @@
  * This module makes the invariant structural in three complementary ways:
  *
  *   1. It is the ONLY module that calls `fs.unlinkSync` (or its
- *      variants) on the daemon-state path. The CI test gate at
- *      `tests/daemon/state-authority-gate.test.ts` fails the build if
- *      any other production module grows such a call.
+ *      variants) on the daemon-state path; no other production module
+ *      may grow such a call.
  *   2. `DaemonServiceState.statePath` is branded as `DaemonStatePath`
  *      and constructed inside `resolveDaemonServiceState()` via a cast
  *      — discipline, not airtight prevention. Any direct mutation

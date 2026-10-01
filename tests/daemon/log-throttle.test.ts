@@ -3,10 +3,7 @@
  * throttle every refusal-observability log site (`daemon/server.ts`,
  * `mcp/http.ts`, `daemon/host-proxy.ts`) is built on.
  *
- * Pure unit coverage: no daemon, no HTTP. Integration coverage of each real
- * call site lives in `tests/daemon/host-transport-gate.test.ts`,
- * `tests/daemon/host-serve-grove-filter.test.ts`, and
- * `tests/daemon/host-proxy.test.ts`.
+ * Pure unit coverage: no daemon, no HTTP.
  */
 import { afterEach, describe, expect, test } from 'bun:test';
 

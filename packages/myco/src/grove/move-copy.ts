@@ -28,8 +28,7 @@ export const MOVE_COPY_TABLES: readonly string[] = GROVE_PROJECT_SCOPED_TABLES;
 
 /**
  * Tables whose `INTEGER PRIMARY KEY AUTOINCREMENT` ids are reallocated
- * in the target. Guarded against schema drift by
- * tests/grove/move-copy.test.ts, which re-derives this set from the DDL.
+ * in the target. It must list every such table in the DDL.
  */
 export const MOVE_REKEYED_TABLES = [
   'knowledge_git_provenance',
@@ -55,7 +54,7 @@ export interface MoveFkRemap {
 
 /**
  * Every foreign-key column that references a rekeyed table's integer id.
- * Drift-guarded against the DDL by tests/grove/move-copy.test.ts.
+ * It must list every such column in the DDL.
  */
 export const MOVE_FK_REMAPS: readonly MoveFkRemap[] = [
   { table: 'digest_extract_revisions', column: 'parent_revision_id', via: 'digest_extract_revisions' },

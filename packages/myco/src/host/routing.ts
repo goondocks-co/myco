@@ -327,8 +327,7 @@ const DIAGNOSTICS = 'Diagnostic export';
  * `serve`. Rows mirror the scope-map §1 sections; families are matched by prefix
  * where the whole family shares a stamp.
  *
- * Exported so the route-stamp completeness guard
- * (`tests/meta/route-stamp-completeness.test.ts`) can enumerate every rule and
+ * Exported so a route-stamp completeness check can enumerate every rule and
  * assert each one actually wins `matchRouteRule` for at least one registered
  * route — a rule that wins for none is a stale entry no live route depends on.
  */
@@ -609,9 +608,8 @@ export const ROUTE_RULES: readonly RouteRule[] = [
  * deliberately the "do NOT plainly proxy this" exceptions table; this is its
  * complement — the genuine knowledge/viewing/host-run-intelligence routes that
  * SHOULD proxy to the host and serve over the overlay. Together the two sets are
- * the complete route manifest (the scope-map's 176/176), and the completeness
- * guard (`tests/meta/route-stamp-completeness.test.ts`) asserts every registered
- * router route is in exactly one of them — so a NEW route can never silently fall
+ * the complete route manifest (the scope-map's 176/176): every registered
+ * router route belongs in exactly one of them, so a NEW route must never silently fall
  * through to `serve` and become overlay-exposed without a deliberate decision
  * recorded HERE (serve) or in `ROUTE_RULES` (a non-serve stamp).
  *
@@ -736,8 +734,8 @@ function pathMatches(pattern: string, pathname: string): boolean {
 /** The matched {@link ROUTE_RULES} entry for a (method, pathname), honoring the
  *  router's exact > param > prefix precedence so a broad `/*` rule never shadows a
  *  specific one — or `undefined` when no explicit rule matches (the caller then
- *  applies the `serve` default). Exported so the route-stamp completeness guard
- *  (`tests/meta/route-stamp-completeness.test.ts`) can distinguish an EXPLICIT
+ *  applies the `serve` default). Exported so a route-stamp completeness check
+ *  can distinguish an EXPLICIT
  *  stamp from a serve-default fall-through — the latter is what silently exposes a
  *  new machine/maintenance route over the overlay.
  *

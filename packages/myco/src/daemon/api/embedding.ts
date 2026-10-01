@@ -263,8 +263,8 @@ export function createEmbeddingDetailsHandler(deps: EmbeddingDetailsDeps): Route
   };
 }
 
-// Original single-Grove action handlers. TEST-ONLY as of this writing:
-// `tests/daemon/api/embedding-ops.test.ts` is the sole importer — there are
+// Original single-Grove action handlers. No production code imports them —
+// there are
 // no remaining production call paths, despite what this comment used to
 // claim. The scope-aware route handlers below wrap these.
 //

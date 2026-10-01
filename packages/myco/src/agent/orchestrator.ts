@@ -209,8 +209,7 @@ export function parseOrchestratorPlan(
  * native structured output (see HarnessCapability 'structuredOutput' in
  * harness/types.ts). Mirrors OrchestratorPlan/OrchestratorPhaseDirective
  * in types.ts exactly — if those interfaces change, this schema must
- * change with them (see the schema-shape regression test in
- * tests/agent/orchestrator.test.ts).
+ * change with them.
  */
 export const ORCHESTRATOR_PLAN_JSON_SCHEMA = {
   type: 'object',

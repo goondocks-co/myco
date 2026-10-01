@@ -44,7 +44,6 @@
     "packages/myco/src/worker",
     "packages/myco/src/symbionts/templates",
     "packages/myco/src/entries/cli.*.ts",
-    "tests/ui",
     "tests/myco-server-ui",
     "tests/setup/jsdom.ts",
     "tests/setup/vitest.ts",
@@ -57,8 +56,6 @@
     "tests/grove",
     "tests/host",
     "tests/integration",
-    "tests/team-host",
-    "tests/vault",
-    "tests/worker"
+    "tests/vault"
   ]
 }

@@ -14,7 +14,7 @@
  * miss keeps the exact current refusal, and the tolerance stays opt-in.
  *
  * The resolver is what 404s; the transport merely maps the thrown error class to
- * 404 (see tests/tools/call-context-ownership.test.ts). So proving the resolver
+ * 404. So proving the resolver
  * no longer throws — and yields a DB-consistent context — is the 200-path proof.
  */
 import { writeHostRecordFixture } from '../helpers/host-registry-fixture.js';

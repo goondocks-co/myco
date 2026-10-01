@@ -1801,8 +1801,7 @@ export async function main(): Promise<void> {
   // Stamped `collect` in host/routing.ts (as ROUTED_RESIDENCY_ROWS_PATH), so it
   // rides the overlay bearer/version gate and is served locally on the host. The
   // path is written as a literal here (the route-stamp completeness scanner only
-  // parses literal registerRoute paths); it MUST equal ROUTED_RESIDENCY_ROWS_PATH,
-  // pinned by tests/host/routed-residency.test.ts.
+  // parses literal registerRoute paths); it MUST equal ROUTED_RESIDENCY_ROWS_PATH.
   server.registerRoute('POST', '/routed-capture/residency-rows', createRoutedResidencyHandler({ logger }));
   // Team Host — hybrid detach (replaces the page-pull): the member fetches one
   // digest-verified project artifact, restores it locally, then sends the

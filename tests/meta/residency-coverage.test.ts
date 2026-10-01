@@ -289,8 +289,7 @@ describe('residency per-direction coverage (R2/R5)', () => {
       const target = new Database(':memory:');
       createSchema(target, 'host_machine');
       // FK-off on the receiver: the seeded values are synthetic, so parent rows do
-      // not satisfy child references. FK ORDER is a different property with its own
-      // gate (tests/host/routed-residency.test.ts); what is under test here is
+      // not satisfy child references. FK ORDER is a different property; what is under test here is
       // whether each table's rows arrive at all.
       target.exec('PRAGMA foreign_keys = OFF');
 
