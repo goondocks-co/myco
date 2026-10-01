@@ -587,7 +587,7 @@ export class MemberSpool {
    * that is a directory fails here too — before any record is counted. A state
    * file that is not there is a session with no acknowledgement yet.
    */
-  readAck(sessionId: string): { readable: true; lastAckAt: number | null } | { readable: false } {
+  readAck(sessionId: string): { readable: true; lastDeliveryAt: number | null } | { readable: false } {
     if (!this.reachable(sessionStatePath(this.dir, sessionId)) || !this.reachable(bufferLockPath(this.dir, sessionId))) return { readable: false };
     let read: SessionStateRead;
     try {
@@ -595,9 +595,17 @@ export class MemberSpool {
     } catch {
       return { readable: false };
     }
-    if (read.ok) return { readable: true, lastAckAt: read.state.lastAckAt ?? null };
+    if (read.ok) {
+      const at = Math.max(read.state.lastAckAt ?? 0, read.state.lastDeliveryAt ?? 0);
+      return { readable: true, lastDeliveryAt: at > 0 ? at : null };
+    }
     // A state a session has not written yet is one with no acknowledgement.
-    return read.reason === 'missing' ? { readable: true, lastAckAt: null } : { readable: false };
+    return read.reason === 'missing' ? { readable: true, lastDeliveryAt: null } : { readable: false };
+  }
+
+  /** Record that the Deployment acknowledged something of the session's just now: a blob, a segment, a reslice. */
+  noteDelivery(sessionId: string, now: number): void {
+    updateSessionState(this.dir, sessionId, (s) => { s.lastDeliveryAt = now; }, now);
   }
 
   /** The spool as a report reads it: a directory nothing could read carries `readable: false`, and a session whose own file could not be read carries a null depth. */
@@ -842,7 +850,10 @@ export class MemberSpool {
       // A high-water past the held record ends the wait it set; one past a start settles the session's start.
       const persist = (highWater: number, acked?: boolean, passed?: SpoolRecord) => updateSessionState(this.dir, sessionId, (s) => {
         s.highWater = highWater;
-        if (acked) s.lastAckAt = now();
+        if (acked) {
+          s.lastAckAt = now();
+          s.lastDeliveryAt = now();
+        }
         if (passed?.kind === 'session.start') s.startSettled = true;
         delete s.eventRetry;
       }, now());
@@ -915,6 +926,8 @@ export class MemberSpool {
           } else if (blobOutcome.class !== 'acked') {
             result.endedBy = this.endPass(blobOutcome, now());
             break;
+          } else {
+            this.noteDelivery(sessionId, now());
           }
         }
         const outcome = await activeClient.postEvent(toWire(record), clippedRequestBudget(budget, now()));

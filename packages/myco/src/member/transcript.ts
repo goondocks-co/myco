@@ -357,6 +357,8 @@ export async function shipTranscriptSegments(
     let applied = false;
     updateSessionState(spool.dir, sessionId, (s) => {
       const stored = slotPointer(s, slot);
+      // Called on the Deployment's answer for a segment (acknowledged, or resliced to what it holds): a delivery.
+      s.lastDeliveryAt = now();
       if (stored?.transcriptId !== next.transcriptId) return;
       setSlotPointer(s, slot, { ...stored, nextOffset: next.nextOffset });
       applied = true;
@@ -421,6 +423,7 @@ export async function shipTranscriptSegments(
       if (blob.class !== 'reslice') spool.endPass(blob, now());
       return { shipped, endedBy: blob.class === 'reslice' ? 'refused' : blob.class };
     }
+    spool.noteDelivery(sessionId, now());
     const outcome = await client.postEvent(event.envelope, clippedRequestBudget(budget, now()), { turnEnd: opts.turnEnd });
     switch (outcome.class) {
       case 'acked':

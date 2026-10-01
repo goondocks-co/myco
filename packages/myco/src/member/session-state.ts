@@ -100,8 +100,16 @@ export interface SessionState {
   eventRetry?: RefusalRetry;
   /** When this session first appended to the spool; the clock retention measures from until an acknowledgement arrives. */
   startedAt?: number;
-  /** When the server last acknowledged one of this session's records. */
+  /**
+   * When the server last acknowledged one of this session's spooled events: retention's clock for quarantining a
+   * journal nothing is taking. Transcript segments and blobs do not move it (`lastDeliveryAt` does).
+   */
   lastAckAt?: number;
+  /**
+   * When the server last acknowledged anything of this session's: an event, a blob, a transcript segment, or a
+   * reslice of one. What a report shows as the session's last delivery.
+   */
+  lastDeliveryAt?: number;
   updatedAt: number;
 }
 
@@ -169,8 +177,10 @@ const rendersAsInstant = (value: unknown): boolean =>
 export function readSessionStateResultUnlocked(spoolDir: string, sessionId: string): SessionStateRead {
   const read = readStateFile(spoolDir, sessionId);
   if (!read.ok) return read;
-  const { highWater, lastAckAt } = read.state;
-  const reportable = Number.isSafeInteger(highWater) && highWater >= 0 && (lastAckAt === undefined || rendersAsInstant(lastAckAt));
+  const { highWater, lastAckAt, lastDeliveryAt } = read.state;
+  const reportable = Number.isSafeInteger(highWater) && highWater >= 0
+    && (lastAckAt === undefined || rendersAsInstant(lastAckAt))
+    && (lastDeliveryAt === undefined || rendersAsInstant(lastDeliveryAt));
   return reportable ? read : { ok: false, reason: 'invalid', detail: 'a reported field is not a number a report can use' };
 }
 
