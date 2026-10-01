@@ -1,0 +1,266 @@
+/**
+ * The member journal, format 2 (#1561 PR 2): what it keeps through a crash, a full disk, a held record and a lock file
+ * retired under a waiting writer.
+ *
+ * - G4a: a write cut off part-way (a killed hook, a full disk) loses at most its own line; the next append starts a
+ *   fresh line, and the journal still deletes once delivered.
+ * - G4f: a held event holds its own lane only. The session's transcript still ships, and only after the session's start.
+ * - G4j: a turn-end mark is kept until it is consumed, and counts as satisfied once its transcript reached the mark's
+ *   size or never will. A plugin-written transcript a pointer has not shipped is never aged out.
+ * - Retirement: a session's lock file outlives its journal, and goes only with its state, under the lock.
+ *
+ * G4i, the lock's identity check, is in `tests/utils/lock-file-identity.test.ts`.
+ */
+import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
+import { spawn } from 'node:child_process';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { unboundedBudget } from '@myco/member/budget.js';
+import { MEMBER_PROTOCOL } from '@myco/member/constants.js';
+import { mintId, promptEvent, sessionStartEvent, type EnvelopeContext, type OutboundEvent } from '@myco/member/envelope.js';
+import { bufferLockPath, readSessionState, retireSessionFiles, sessionStatePath, updateSessionState } from '@myco/member/session-state.js';
+import { drainBacklog } from '@myco/member/backlog.js';
+import { prunePluginTranscripts } from '@myco/member/retention.js';
+import { isTurnEndMark, JOURNAL_VERSION, MemberSpool, turnEndSatisfied, type SpoolRecord, type TurnEndMark } from '@myco/member/spool.js';
+import { shipSessionTranscripts, transcriptPointerFor } from '@myco/member/transcript.js';
+import { ServerClient } from '@myco/member/transport.js';
+import { memberRig, tempMycoHome, type MemberRig } from './helpers/server.js';
+
+let mycoHome: string;
+const savedHome = process.env.MYCO_HOME;
+const origErr = process.stderr.write.bind(process.stderr);
+beforeEach(() => {
+  mycoHome = tempMycoHome();
+  process.env.MYCO_HOME = mycoHome;
+  (process.stderr as unknown as { write: (c: unknown) => boolean }).write = (() => true) as never;
+});
+afterEach(() => {
+  process.env.MYCO_HOME = savedHome;
+  (process.stderr as unknown as { write: unknown }).write = origErr;
+});
+
+const SRC = path.resolve(import.meta.dir, '..', '..', 'packages', 'myco', 'src');
+const clientFor = (rig: MemberRig) => new ServerClient({ serverUrl: 'https://s', token: rig.token, projectId: 'proj_1' }, rig.fetch);
+const ctxFor = (spool: MemberSpool, sessionId: string): EnvelopeContext => ({ agent: 'claude-code', sessionId, stage: spool.stagerFor(sessionId), version: '2.0.0-test' });
+const prompt = (ctx: EnvelopeContext, text = 'hello there') => promptEvent(ctx, { promptId: mintId(), text });
+const journal = (spool: MemberSpool, sessionId: string) => path.join(spool.dir, `${sessionId}.jsonl`);
+
+/** A transcript file of `n` lines, under a temp dir outside $TMPDIR's per-user tree. */
+function transcriptFile(name: string, lines: number): string {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-journal-tx-'));
+  const file = path.join(dir, `${name}.jsonl`);
+  fs.writeFileSync(file, Array.from({ length: lines }, (_, i) => JSON.stringify({ type: 'user', message: { role: 'user', content: `line ${i}` } })).join('\n') + '\n');
+  return file;
+}
+
+describe('the journal, format 2', () => {
+  it('stamps every line it writes with the journal format, and writes a turn-end mark no older build can mistake for an event', () => {
+    const spool = new MemberSpool('proj_1', { mycoHome });
+    const ctx = ctxFor(spool, 'sess-stamp');
+    spool.append('sess-stamp', prompt(ctx));
+    spool.appendTurnEnd('sess-stamp', { slot: 'primary', transcriptId: 'tx_' + 'a'.repeat(32), atSize: 10 }, undefined, 1_234);
+    const [event, mark] = spool.readRecords('sess-stamp');
+    expect((event as SpoolRecord)._journal).toBe(JOURNAL_VERSION);
+    expect((event as SpoolRecord)._memberProtocol).toBe(MEMBER_PROTOCOL);
+    expect(isTurnEndMark(mark)).toBe(true);
+    expect(mark).toMatchObject({ t: 'te', _journal: JOURNAL_VERSION, slot: 'primary', atSize: 10, at: 1_234 });
+    // A build that predates marks reads `_memberProtocol` first and stops its pass there, dropping nothing.
+    expect((mark as unknown as Record<string, unknown>)._memberProtocol).toBeUndefined();
+  });
+
+  it('keeps a journal while a turn-end mark in it is unconsumed, and deletes it once both lanes are through', async () => {
+    const rig = await memberRig();
+    const spool = new MemberSpool('proj_1', { mycoHome });
+    const ctx = ctxFor(spool, 'sess-mark');
+    spool.append('sess-mark', prompt(ctx));
+    spool.appendTurnEnd('sess-mark', { slot: 'primary', transcriptId: 'tx_' + 'b'.repeat(32), atSize: 5 });
+    spool.append('sess-mark', prompt(ctx, 'and another'));
+
+    const first = await spool.drainSession('sess-mark', clientFor(rig), unboundedBudget());
+    expect(first).toMatchObject({ acked: 2, refused: 0, endedBy: 'drained' });
+    expect(rig.rows('events')).toBe(2);
+    // Both events acknowledged; the mark waits for its own lane, so the journal does too.
+    expect(fs.existsSync(journal(spool, 'sess-mark'))).toBe(true);
+    const pending = spool.pendingTurnEnds('sess-mark');
+    expect(pending.map((p) => p.line)).toEqual([1]);
+
+    spool.consumeTurnEnds('sess-mark', pending[0].line);
+    expect(spool.pendingTurnEnds('sess-mark')).toEqual([]);
+    const second = await spool.drainSession('sess-mark', clientFor(rig), unboundedBudget());
+    expect(second).toMatchObject({ acked: 0, remaining: 0, endedBy: 'drained' });
+    expect(fs.existsSync(journal(spool, 'sess-mark'))).toBe(false);
+    expect(readSessionState(spool.dir, 'sess-mark')).toMatchObject({ highWater: 0, markWater: 0 });
+    expect(rig.rows('events')).toBe(2);
+  });
+
+  it('loses only a line a write cut off, never the record after it, and still deletes the journal once delivered (G4a)', async () => {
+    const rig = await memberRig();
+    const spool = new MemberSpool('proj_1', { mycoHome });
+    const ctx = ctxFor(spool, 'sess-torn');
+    spool.append('sess-torn', prompt(ctx, 'before the crash'));
+    // What a writer killed mid-line, or stopped by a full disk, leaves behind.
+    fs.appendFileSync(journal(spool, 'sess-torn'), '{"eventId":"0192a0c0-0000-7000-8000-000000000000","kind":"prom');
+    spool.append('sess-torn', prompt(ctx, 'after the crash'));
+
+    const lines = spool.readRecords('sess-torn');
+    expect(lines.map((l) => (l === null ? null : (l as SpoolRecord).kind))).toEqual(['prompt', null, 'prompt']);
+    const drained = await spool.drainSession('sess-torn', clientFor(rig), unboundedBudget());
+    expect(drained).toMatchObject({ acked: 2, refused: 1, remaining: 0, endedBy: 'drained' });
+    expect(rig.rows('events')).toBe(2);
+    // The torn line is logged, and pins nothing: the journal is gone.
+    expect(fs.existsSync(journal(spool, 'sess-torn'))).toBe(false);
+    expect(spool.readRefused().entries.map((e) => e.reason)).toEqual(['unparsable spool line']);
+  });
+
+  it('loses no completed append across writers killed at random points mid-write (G4a)', async () => {
+    const spool = new MemberSpool('proj_1', { mycoHome });
+    const sessionId = 'sess-killed';
+    const script = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'myco-journal-kill-')), 'writer.ts');
+    fs.writeFileSync(script, [
+      `import { MemberSpool } from ${JSON.stringify(path.join(SRC, 'member', 'spool.ts'))};`,
+      `import { mintId, promptEvent } from ${JSON.stringify(path.join(SRC, 'member', 'envelope.ts'))};`,
+      `const spool = new MemberSpool('proj_1', { mycoHome: process.env.MYCO_HOME });`,
+      `const ctx = { agent: 'claude-code', sessionId: ${JSON.stringify(sessionId)}, stage: spool.stagerFor(${JSON.stringify(sessionId)}), version: 't' };`,
+      `const text = 'x'.repeat(48_000);`,
+      `for (;;) { spool.append(${JSON.stringify(sessionId)}, promptEvent(ctx, { promptId: mintId(), text })); process.stdout.write('+'); }`,
+    ].join('\n'));
+    let completed = 0;
+    const KILLS = 30;
+    for (let k = 0; k < KILLS; k++) {
+      const child = spawn(process.execPath, [script], { env: { ...process.env, MYCO_HOME: mycoHome }, stdio: ['ignore', 'pipe', 'ignore'] });
+      let done = 0;
+      let started: () => void = () => {};
+      const writing = new Promise<void>((r) => { started = r; });
+      child.stdout.on('data', (chunk: Buffer) => { done += chunk.toString().length; started(); });
+      // Killed at a random point once it is writing, so the kill lands mid-append as often as between appends.
+      await Promise.race([writing, new Promise((r) => setTimeout(r, 10_000))]);
+      await new Promise((r) => setTimeout(r, Math.floor(Math.random() * 25)));
+      child.kill('SIGKILL');
+      await new Promise((r) => child.on('exit', r));
+      completed += done;
+    }
+    spool.append(sessionId, prompt(ctxFor(spool, sessionId), 'the sentinel'));
+    const lines = spool.readRecords(sessionId);
+    const parsed = lines.filter((l) => l !== null);
+    const torn = lines.length - parsed.length;
+    // Every append a writer finished before it was killed is still a whole line, and the sentinel after them too.
+    expect(parsed.length).toBeGreaterThanOrEqual(completed + 1);
+    expect(torn).toBeLessThanOrEqual(KILLS);
+    // Not vacuous: the writers did get appends in before they were killed.
+    expect(completed).toBeGreaterThan(KILLS);
+    expect((lines.at(-1) as SpoolRecord).payload.text).toBe('the sentinel');
+  }, 120_000);
+});
+
+describe('the two lanes (G4f)', () => {
+  /** A session with its start, a record the Deployment does not know (held, `unknown_kind`), and a transcript behind. */
+  function heldSession(spool: MemberSpool, sessionId: string, start: OutboundEvent | null): string {
+    const ctx = ctxFor(spool, sessionId);
+    if (start) spool.append(sessionId, start);
+    const future = prompt(ctx);
+    (future.envelope as { kind: string }).kind = 'future.kind';
+    spool.append(sessionId, future);
+    const file = transcriptFile(sessionId, 3);
+    updateSessionState(spool.dir, sessionId, (s) => {
+      s.transcript = transcriptPointerFor(file, 'machine_1')!;
+      s.agent = 'claude-code';
+    });
+    spool.markTranscriptBacklog(sessionId);
+    return file;
+  }
+
+  it('ships a session\'s transcript though a record of its own is held, once its start is delivered', async () => {
+    const rig = await memberRig();
+    const spool = new MemberSpool('proj_1', { mycoHome });
+    const ctx = ctxFor(spool, 'sess-lanes');
+    heldSession(spool, 'sess-lanes', sessionStartEvent(ctx, { branch: 'main', startedAt: Date.now(), originPath: '/work' }));
+    const report = await drainBacklog(spool, clientFor(rig), unboundedBudget(), { force: true, machineId: 'machine_1' });
+    const session = report.sessions.find((s) => s.sessionId === 'sess-lanes')!;
+    expect(session.events).toMatchObject({ acked: 1, endedBy: 'refused', remaining: 1 });
+    expect(session.transcripts).toMatchObject({ endedBy: 'done', shipped: 1 });
+    expect(rig.env.sqlite.query(`SELECT COUNT(*) AS n FROM events WHERE session_id = 'sess-lanes' AND kind = 'transcript.segment'`).get()).toEqual({ n: 1 });
+  });
+
+  it('holds a transcript back while its session\'s start is still waiting, then ships it after the start', async () => {
+    const rig = await memberRig();
+    const spool = new MemberSpool('proj_1', { mycoHome });
+    const ctx = ctxFor(spool, 'sess-ordered');
+    spool.append('sess-ordered', sessionStartEvent(ctx, { branch: 'main', startedAt: Date.now(), originPath: '/work' }));
+    const file = transcriptFile('sess-ordered', 2);
+    updateSessionState(spool.dir, 'sess-ordered', (s) => { s.transcript = transcriptPointerFor(file, 'machine_1')!; s.agent = 'claude-code'; });
+
+    const early = await shipSessionTranscripts(ctx, spool, clientFor(rig), unboundedBudget(), { machineId: 'machine_1' });
+    expect(early).toEqual({ shipped: 0, endedBy: 'ordered' });
+    expect(spool.hasTranscriptBacklog('sess-ordered')).toBe(true);
+    expect(rig.env.sqlite.query(`SELECT COUNT(*) AS n FROM events`).get()).toEqual({ n: 0 });
+
+    await spool.drainSession('sess-ordered', clientFor(rig), unboundedBudget());
+    const after = await shipSessionTranscripts(ctx, spool, clientFor(rig), unboundedBudget(), { machineId: 'machine_1' });
+    expect(after).toEqual({ shipped: 1, endedBy: 'done' });
+  });
+});
+
+describe('turn-end marks are satisfied (G4j)', () => {
+  const at = (pointer: ReturnType<typeof transcriptPointerFor>, atSize: number): TurnEndMark =>
+    ({ t: 'te', _journal: JOURNAL_VERSION, slot: 'primary', transcriptId: pointer!.transcriptId, atSize, at: 1 });
+
+  it('once the transcript reached the mark\'s size, or never will: replaced, refused, gone or cut short', () => {
+    const spool = new MemberSpool('proj_1', { mycoHome });
+    const file = transcriptFile('sess-sat', 4);
+    const size = fs.statSync(file).size;
+    const pointer = transcriptPointerFor(file, 'machine_1')!;
+    const state = (over: Partial<typeof pointer> = {}) => ({ ...readSessionState(spool.dir, 'sess-sat'), transcript: { ...pointer, ...over } });
+
+    expect(turnEndSatisfied(at(pointer, size), state())).toBe(false);
+    expect(turnEndSatisfied(at(pointer, size), state({ nextOffset: size }))).toBe(true);
+    expect(turnEndSatisfied(at(pointer, size), state({ transcriptId: 'tx_' + 'c'.repeat(32) }))).toBe(true);
+    expect(turnEndSatisfied(at(pointer, size), state({ refused: 'transcript_rejected' }))).toBe(true);
+    expect(turnEndSatisfied(at(pointer, size + 100), state())).toBe(true);
+    fs.rmSync(file);
+    expect(turnEndSatisfied(at(pointer, size), state())).toBe(true);
+    expect(turnEndSatisfied({ ...at(pointer, size), slot: { subagent: '/nowhere.jsonl' } }, state())).toBe(true);
+  });
+
+  it('never ages out a plugin-written transcript a pointer has not shipped to its end', () => {
+    const spool = new MemberSpool('proj_1', { mycoHome });
+    const root = path.join(mycoHome, 'member', 'transcripts', 'opencode');
+    fs.mkdirSync(root, { recursive: true });
+    const behind = path.join(root, 'sess-behind.jsonl');
+    const shipped = path.join(root, 'sess-shipped.jsonl');
+    for (const file of [behind, shipped]) fs.writeFileSync(file, '{"type":"user"}\n');
+    updateSessionState(spool.dir, 'sess-behind', (s) => { s.transcript = transcriptPointerFor(behind, 'machine_1')!; });
+    updateSessionState(spool.dir, 'sess-shipped', (s) => {
+      const pointer = transcriptPointerFor(shipped, 'machine_1')!;
+      s.transcript = { ...pointer, nextOffset: fs.statSync(shipped).size };
+    });
+    const old = new Date(Date.now() - 40 * 24 * 60 * 60 * 1000);
+    for (const file of [behind, shipped]) fs.utimesSync(file, old, old);
+    expect(prunePluginTranscripts(Date.now(), process.env, mycoHome)).toBe(1);
+    expect(fs.existsSync(behind)).toBe(true);
+    expect(fs.existsSync(shipped)).toBe(false);
+  });
+});
+
+describe('a session\'s lock file', () => {
+  it('outlives its delivered journal, and is retired only with its state, under the lock, when no journal remains', async () => {
+    const rig = await memberRig();
+    const spool = new MemberSpool('proj_1', { mycoHome });
+    spool.append('sess-lock', prompt(ctxFor(spool, 'sess-lock')));
+    const before = fs.statSync(bufferLockPath(spool.dir, 'sess-lock')).ino;
+    await spool.drainSession('sess-lock', clientFor(rig), unboundedBudget());
+    expect(fs.existsSync(journal(spool, 'sess-lock'))).toBe(false);
+    // The state is still locked on this file, so the drain leaves it: the same file, never one made again.
+    expect(fs.statSync(bufferLockPath(spool.dir, 'sess-lock')).ino).toBe(before);
+
+    spool.append('sess-lock', prompt(ctxFor(spool, 'sess-lock'), 'a new turn'));
+    expect(retireSessionFiles(spool.dir, 'sess-lock', () => true)).toBe(false);
+    expect(fs.existsSync(sessionStatePath(spool.dir, 'sess-lock'))).toBe(true);
+
+    await spool.drainSession('sess-lock', clientFor(rig), unboundedBudget());
+    expect(retireSessionFiles(spool.dir, 'sess-lock', () => false)).toBe(false);
+    expect(retireSessionFiles(spool.dir, 'sess-lock', () => true)).toBe(true);
+    expect(fs.existsSync(sessionStatePath(spool.dir, 'sess-lock'))).toBe(false);
+    expect(fs.existsSync(bufferLockPath(spool.dir, 'sess-lock'))).toBe(process.platform === 'win32' ? fs.existsSync(bufferLockPath(spool.dir, 'sess-lock')) : false);
+  });
+});

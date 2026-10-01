@@ -65,7 +65,7 @@ export interface BacklogReport {
 /** Event pass endings that belong to the session alone. Any other answer — unreachable, the credential refused, an older server's quota, the protocol window, the budget — would be the next session's too, so the walk ends there: a mis-deployed server costs one request, not one per session. */
 const EVENTS_CONTINUE: readonly DrainEnd[] = ['drained', 'acked', 'reslice', 'protocol_mismatch', ...HOLD_ENDS];
 /** Transcript pass endings that belong to the session alone. */
-const TRANSCRIPTS_CONTINUE: readonly ShipResult['endedBy'][] = ['done', 'absent', 'refused', 'rejected'];
+const TRANSCRIPTS_CONTINUE: readonly ShipResult['endedBy'][] = ['done', 'absent', 'refused', 'rejected', 'ordered'];
 
 /** Whether an event pass offered the session to the Deployment and got the session's own answer, rather than stopping on something every session would meet. */
 export const sessionTried = (events: DrainResult): boolean => events.skipped === undefined && EVENTS_CONTINUE.includes(events.endedBy);
@@ -163,7 +163,7 @@ export async function drainBacklog(spool: MemberSpool, client: ServerClient, bud
       }
       if (!sessionTried(events)) { report.endedBy = events.endedBy; break; }
       report.tried.push(sessionId);
-      if (events.remaining > 0) continue;
+      // A held event holds its own lane only: the session's transcripts still ship below, once its start is delivered.
     }
     if (!spool.hasTranscriptBacklog(sessionId)) continue;
     const state = readSessionState(spool.dir, sessionId);

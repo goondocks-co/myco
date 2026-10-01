@@ -55,6 +55,12 @@ export interface SessionState {
   version: typeof SESSION_STATE_VERSION;
   /** Spool records (from the start of the current file) acknowledged: acked or refused. */
   highWater: number;
+  /**
+   * Journal lines (from the start of the current file) whose turn-end marks are consumed: every mark at a line below
+   * it has been read by the pass that acts on it. Absent reads as 0. A journal is deleted only when both this and
+   * `highWater` reach its end, so no mark is deleted before it is read.
+   */
+  markWater?: number;
   /** The current prompt, minted by UserPromptSubmit. */
   promptId?: string;
   /** sha256(text) → promptId for every prompt this session has captured. */
@@ -246,7 +252,32 @@ export function clearRefusalRetry(spoolDir: string, sessionId: string, field: Re
   updateSessionState(spoolDir, sessionId, (s) => { delete s[field]; }, now);
 }
 
-/** Remove a session's state file (after its spool is fully acknowledged and deleted, or on purge). */
-export function removeSessionState(spoolDir: string, sessionId: string): void {
-  try { fs.unlinkSync(sessionStatePath(spoolDir, sessionId)); } catch { /* absent */ }
+/**
+ * Retire a session the spool holds nothing more for: its state file and the lock companion that serialized it, removed
+ * under that lock, and only when the session still has no journal and `stillRetired` still agrees, read under the
+ * lock, with what the state says now. Whether anything was retired.
+ *
+ * The lock file goes last, and on POSIX while it is still held: a writer that was waiting on it wakes holding a lock on
+ * a file no path names any more, sees that (`withFileLockSync` compares the file it holds with the one the path names),
+ * and takes the lock again on a fresh file. It never shares the lock with one that opened the path after the unlink.
+ * On Windows a lock file another process holds open cannot be deleted, so the unlink is attempted after the release
+ * and fails, harmlessly, while anyone still has it open.
+ */
+export function retireSessionFiles(spoolDir: string, sessionId: string, stillRetired: (state: SessionState) => boolean): boolean {
+  const lock = bufferLockPath(spoolDir, sessionId);
+  const journal = path.join(spoolDir, `${sessionId}.jsonl`);
+  if (!fs.existsSync(lock)) return false;
+  const retired = withFileLockSync(lock, () => {
+    if (fs.existsSync(journal)) return false;
+    if (!stillRetired(readSessionStateUnlocked(spoolDir, sessionId))) return false;
+    try { fs.unlinkSync(sessionStatePath(spoolDir, sessionId)); } catch { /* absent */ }
+    if (process.platform !== 'win32') {
+      try { fs.unlinkSync(lock); } catch { /* absent */ }
+    }
+    return true;
+  });
+  if (retired && process.platform === 'win32') {
+    try { fs.unlinkSync(lock); } catch { /* still open elsewhere: left for the next pass */ }
+  }
+  return retired;
 }
