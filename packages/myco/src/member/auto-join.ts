@@ -9,16 +9,16 @@
  *   found it outside the folders the machine captures (`capture.auto_join_roots`) and not told to connect from "Needs
  *   you" (`capture.connect_roots`), and the folders this machine last cached agree: the cache can be older than the
  *   Deployment's folders, which the join reads fresh.
- * Then, when the repository is due an attempt, the hook takes the repository's lock and starts `myco member auto-join`
- * apart from itself, detached, which asks the Deployment, records what it answered, and on a join moves the pending
- * capture into the project's spool. The lock is created exclusively, so concurrent hooks in one repository start one
- * join between them.
+ * Then, when the repository is due an attempt, the hook asks for one (`requestJoin`) and kicks the member helper's join
+ * bucket (`JOIN_BUCKET`, `member/helper.ts`), started apart from the hook as every helper is. The helper asks the
+ * Deployment, records what it answered, and on a join moves the pending capture into the project's spool and delivers
+ * it. One helper holds the bucket at a time, and an attempt holds the repository's lock
+ * (`takeRepositoryLock`, a `LifecycleLock` the system lets go of when its holder dies), so an attempt run by hand never
+ * races it; a connection `myco member join` writes meanwhile is the one that stands (the registry lock).
  *
  * A repository that did not join, or lies outside the folders, is named to the person once per session, in the answer
  * of a hook whose answer reaches the agent.
  */
-import { selfExec } from '../runtime/self-exec.js';
-import { spawn } from 'node:child_process';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -27,6 +27,7 @@ import { HELD_CAPTURE_TTL_DAYS, normalizeRemote, type HeldState, type Uncaptured
 import { isSafeProjectRoot } from '../project-root.js';
 import { HOOK_CONFIG } from '../hooks/hook-config.generated.js';
 import { runGitAnswer } from '../utils/git.js';
+import { LifecycleLock, type LockHandle } from '../utils/lifecycle-lock.js';
 import { ensureMemberDir, memberRoot, readPrivateJson, writePrivateFileAtomic } from './store.js';
 import { PENDING_MAX_RECORDS, type HeldEnd } from './pending.js';
 
@@ -39,13 +40,17 @@ export const AUTO_JOIN_DIRNAME = 'auto-join';
 export const AUTO_JOIN_RETRY_MS = 2 * 60 * 1000;
 /** How often a repository outside the folders is reported again while it keeps being met. */
 export const UNCAPTURED_REPORT_INTERVAL_MS = 24 * 60 * 60 * 1000;
-/** A repository's lock older than this is held by a join that died, and the next hook takes it over. */
-export const AUTO_JOIN_LOCK_STALE_MS = 5 * 60 * 1000;
 /** How long a session's notice marker is kept: past it, the session is long over. */
 const NOTICE_MARKER_RETENTION_MS = 2 * 24 * 60 * 60 * 1000;
 const STATE_VERSION = 1;
-const SWEEP_LOCK = 'sweep.lock';
 const SWEEP_MARKER = 'sweep.json';
+const REQUESTS_DIRNAME = 'requests';
+
+/**
+ * The member helper's bucket for repositories joining a project (`member/helper.ts`): its lock and marks live in the
+ * auto-join folder. The `:` keeps it apart from every project id, which never holds one (`PROJECT_ID_PATTERN`).
+ */
+export const JOIN_BUCKET = ':auto-join';
 
 /** A repository as auto-join names it: its root on this machine, the key derived from it, its folder name and its remote. */
 export interface Repository {
@@ -281,41 +286,14 @@ export function settingsMoved(state: AutoJoinState | null, placement: Placement,
 }
 
 /**
- * Take a lock by creating its file exclusively, which every platform's filesystem decides once among racing
- * creators. A lock older than `AUTO_JOIN_LOCK_STALE_MS` belongs to an attempt that died and is taken over. The release
- * function, or null where another attempt holds the lock.
+ * Take a repository's lock for one attempt, without waiting: null where another attempt (the helper's, `myco member
+ * join`, one run by hand) holds it. A `LifecycleLock`: the system lets go of it when its holder dies, so a join that
+ * crashed never holds the next off.
  */
-function acquire(file: string, mycoHome: string, now: number): (() => void) | null {
-  ensureMemberDir(path.dirname(file), mycoHome);
-  for (let tries = 0; tries < 2; tries += 1) {
-    try {
-      const fd = fs.openSync(file, 'wx', 0o600);
-      try { fs.writeSync(fd, `${process.pid} ${now}\n`); } finally { fs.closeSync(fd); }
-      return () => { try { fs.rmSync(file, { force: true }); } catch { /* already released */ } };
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== 'EEXIST') return null;
-      let age: number;
-      try { age = now - fs.statSync(file).mtimeMs; } catch { continue; }
-      if (age < AUTO_JOIN_LOCK_STALE_MS) return null;
-      try { fs.rmSync(file, { force: true }); } catch { return null; }
-    }
-  }
-  return null;
-}
-
-/** Take a repository's lock; the release function, or null where another attempt holds it. */
-export function acquireAutoJoinLock(rootKey: string, mycoHome: string, now: number): (() => void) | null {
-  return acquire(lockPath(rootKey, mycoHome), mycoHome, now);
-}
-
-/** Release a lock a hook took and handed to the join it started. */
-export function releaseAutoJoinLock(rootKey: string, mycoHome: string): void {
-  try { fs.rmSync(lockPath(rootKey, mycoHome), { force: true }); } catch { /* already released */ }
-}
-
-/** Take the machine-wide lock of the sweep over repositories met before auto-join. */
-export function acquireSweepLock(mycoHome: string, now: number): (() => void) | null {
-  return acquire(path.join(autoJoinDir(mycoHome), SWEEP_LOCK), mycoHome, now);
+export function takeRepositoryLock(rootKey: string, mycoHome: string): LockHandle | null {
+  ensureMemberDir(autoJoinDir(mycoHome), mycoHome);
+  const taken = LifecycleLock.acquire(lockPath(rootKey, mycoHome), { command: 'myco member auto-join' });
+  return taken.acquired ? taken.lock : null;
 }
 
 export function sweepDone(mycoHome: string): boolean {
@@ -327,64 +305,32 @@ export function markSweepDone(mycoHome: string, now: number): void {
   writePrivateFileAtomic(path.join(autoJoinDir(mycoHome), SWEEP_MARKER), `${JSON.stringify({ doneAt: now })}\n`);
 }
 
-/** How this binary is run again, as a compiled binary or as a script under its runtime. */
-export function selfCommand(): { command: string; args: string[] } {
-  // One rule for a compiled binary's own entry, every form a build reports (`runtime/self-exec.ts`).
-  const self = selfExec();
-  return { command: self.path, args: self.args };
+/** A repository a hook asked the helper to try joining, and when. */
+export interface JoinRequest { root: string; rootKey: string; at: number }
+
+const requestPath = (rootKey: string, mycoHome: string): string => path.join(autoJoinDir(mycoHome), REQUESTS_DIRNAME, `${rootKey}.json`);
+
+/** Ask the helper to try joining a repository: kept until an attempt is made, one per repository. */
+export function requestJoin(root: string, rootKey: string, mycoHome: string, now: number): void {
+  ensureMemberDir(path.dirname(requestPath(rootKey, mycoHome)), mycoHome);
+  writePrivateFileAtomic(requestPath(rootKey, mycoHome), `${JSON.stringify({ root, rootKey, at: now })}\n`);
 }
 
-/** What starts a process apart from the hook; injected by tests. */
-export type DetachedSpawn = (command: string, args: readonly string[], opts: { cwd: string; env: NodeJS.ProcessEnv }) => boolean;
-
-/**
- * Start `command` apart from this process, so it outlives the hook: in its own session or process group, with no
- * stdio tied to the hook's, and no console window on Windows. A start that fails is false, and never throws.
- */
-export const spawnDetached: DetachedSpawn = (command, args, opts) => {
-  try {
-    const child = spawn(command, [...args], { cwd: opts.cwd, env: opts.env, detached: true, stdio: 'ignore', windowsHide: true });
-    child.on('error', () => { /* a failed start leaves the lock to go stale; the next due hook starts another */ });
-    child.unref();
-    return typeof child.pid === 'number';
-  } catch {
-    return false;
-  }
-};
-
-/**
- * Start `myco member auto-join` for one repository, holding its lock, which the join releases. A start that fails
- * releases it again. Whether a join is now running.
- */
-export function startAutoJoin(
-  root: string, rootKey: string, opts: { mycoHome: string; now: number; env?: NodeJS.ProcessEnv; spawn?: DetachedSpawn },
-): boolean {
-  const release = acquireAutoJoinLock(rootKey, opts.mycoHome, opts.now);
-  if (release === null) return false;
-  const self = selfCommand();
-  const started = (opts.spawn ?? spawnDetached)(self.command, [...self.args, 'member', 'auto-join', '--root', root, '--lock-held'], {
-    cwd: root, env: { ...(opts.env ?? process.env), MYCO_HOME: opts.mycoHome },
-  });
-  if (!started) release();
-  return started;
+/** Every repository waiting for an attempt, the oldest asked first. */
+export function listJoinRequests(mycoHome: string): JoinRequest[] {
+  let names: string[];
+  try { names = fs.readdirSync(path.join(autoJoinDir(mycoHome), REQUESTS_DIRNAME)).filter((name) => /^[0-9a-f]{16,64}\.json$/.test(name)); } catch { return []; }
+  return names
+    .map((name) => readPrivateJson<JoinRequest>(requestPath(name.slice(0, -'.json'.length), mycoHome)))
+    .flatMap((read) => (read.ok && typeof read.value?.root === 'string' && typeof read.value.rootKey === 'string' && typeof read.value.at === 'number' ? [read.value] : []))
+    .sort((a, b) => a.at - b.at);
 }
 
-/** Start the sweep over repositories met before auto-join, once per machine. Whether it started. */
-export function startSweep(opts: { mycoHome: string; now: number; env?: NodeJS.ProcessEnv; spawn?: DetachedSpawn }): boolean {
-  if (sweepDone(opts.mycoHome)) return false;
-  const release = acquireSweepLock(opts.mycoHome, opts.now);
-  if (release === null) return false;
-  const self = selfCommand();
-  const started = (opts.spawn ?? spawnDetached)(self.command, [...self.args, 'member', 'auto-join', '--sweep', '--lock-held'], {
-    cwd: opts.mycoHome, env: { ...(opts.env ?? process.env), MYCO_HOME: opts.mycoHome },
-  });
-  if (!started) release();
-  return started;
-}
-
-/** Release the sweep lock a starter handed over. */
-export function releaseSweepLock(mycoHome: string): void {
-  try { fs.rmSync(path.join(autoJoinDir(mycoHome), SWEEP_LOCK), { force: true }); } catch { /* already released */ }
+/** Drop a repository's request, once an attempt was made for it: a request asked again meanwhile stays. */
+export function clearJoinRequest(request: JoinRequest, mycoHome: string): void {
+  const held = readPrivateJson<JoinRequest>(requestPath(request.rootKey, mycoHome));
+  if (held.ok && held.value?.at !== request.at) return;
+  fs.rmSync(requestPath(request.rootKey, mycoHome), { force: true });
 }
 
 const CONNECT_HINT = 'or run `myco member join` in it';

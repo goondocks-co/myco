@@ -1,7 +1,8 @@
 /**
- * `myco member auto-join` (#1547): join a repository with no connection of its own to the machine's default
- * Deployment, or say why it cannot. Hooks start it, detached, holding the repository's lock (`member/auto-join.ts`);
- * `--sweep` runs it once over every repository a hook met before auto-join existed.
+ * Joining a repository with no connection of its own to the machine's default Deployment (#1547), or saying why it
+ * cannot. The member helper's join bucket runs it (`joinPass`): for each repository a hook asked about, and once over
+ * every repository a hook met before auto-join existed. `myco member auto-join --root <dir>` (or `--sweep`) runs the
+ * same by hand. Each attempt holds the repository's lock (`takeRepositoryLock`).
  *
  * For one repository it:
  * 1. asks the Deployment for this machine's settings first, so a repository just connected from "Needs you", or a
@@ -20,10 +21,11 @@ import path from 'node:path';
 import { getMachineId } from '../machine-id.js';
 import { resolveMycoHome } from '../paths/home.js';
 import {
-  acquireAutoJoinLock, acquireSweepLock, markSweepDone, placeRepository, readAutoJoinState, releaseAutoJoinLock, releaseSweepLock, repositoryAt,
+  clearJoinRequest, listJoinRequests, markSweepDone, placeRepository, readAutoJoinState, repositoryAt, sweepDone, takeRepositoryLock,
   clearLeft, forgetAutoJoinState, markLeft, markSessionsReported, nextAttemptAfter, rootKeyFor, silentRepository, UNCAPTURED_REPORT_INTERVAL_MS, unreportedSessions, writeAutoJoinState, type AutoJoinState, type Repository,
 } from '../member/auto-join.js';
 import { drainEntryBacklog } from '../member/backlog.js';
+import type { HelperPass } from '../member/helper.js';
 import { CONNECT_TIMEOUT_CAP_MS } from '../member/constants.js';
 import { defaultMembership } from '../member/default-deployment.js';
 import { runImport } from '../member/import.js';
@@ -46,10 +48,10 @@ export type AutoJoinResult =
   | { root: string; result: 'silent' | 'busy' }
   | { root: string; result: AutoJoinState['outcome']; reason?: string };
 
-interface AutoJoinArgs { root?: string; sweep: boolean; lockHeld: boolean; error?: string }
+interface AutoJoinArgs { root?: string; sweep: boolean; error?: string }
 
 function parseArgs(args: readonly string[]): AutoJoinArgs {
-  const parsed: AutoJoinArgs = { sweep: false, lockHeld: false };
+  const parsed: AutoJoinArgs = { sweep: false };
   for (let i = 0; i < args.length; i++) {
     const arg = args[i];
     if (arg === '--root') {
@@ -57,7 +59,6 @@ function parseArgs(args: readonly string[]): AutoJoinArgs {
       if (next === undefined || next.startsWith('--')) parsed.error ??= '--root needs a value';
       else parsed.root = next;
     } else if (arg === '--sweep') parsed.sweep = true;
-    else if (arg === '--lock-held') parsed.lockHeld = true;
     else parsed.error ??= `unknown option ${arg.split('=')[0]}`;
   }
   if (parsed.root === undefined && !parsed.sweep) parsed.error ??= 'name the repository with --root <dir>, or pass --sweep';
@@ -175,10 +176,12 @@ async function joinRepository(root: string, membership: DeploymentMembership, de
 
   // The Deployment cleared its row as it answered; nothing more to tell it.
   const moved = await settleConnection(entry, { mycoHome, now, fetch: deps.fetch, tell: false });
+  // What moved is delivered here, in the process making the join (the helper's join bucket, or a run by hand): the
+  // session leases keep it apart from the project's own helper.
   try {
     await drainEntryBacklog(entry, { mycoHome, fetch: deps.fetch, now, machineId: entry.machineId });
   } catch {
-    // The moved capture stays spooled; the repository's next turn end delivers it.
+    // The moved capture stays spooled; the project's helper delivers it at the repository's next hook.
   }
   const report = await runImport({ project: projectId, serverUrl: membership.serverUrl }, {
     fetch: deps.fetch, now: deps.now, cwd: root, mycoHome, machineId: entry.machineId,
@@ -194,6 +197,56 @@ function sweepCandidates(mycoHome: string): string[] {
     .filter((root) => fs.existsSync(root) && readRegistryEntry(root, mycoHome) === null);
 }
 
+/** One attempt at `root`, holding its lock: busy where another attempt holds it. */
+async function attempt(root: string, membership: DeploymentMembership, run: MemberCliDeps & { mycoHome: string; now: () => number }): Promise<AutoJoinResult> {
+  const lock = takeRepositoryLock(rootKeyFor(root, run.mycoHome), run.mycoHome);
+  if (lock === null) return { root, result: 'busy' };
+  try { return await joinRepository(root, membership, run); } finally { lock.release(); }
+}
+
+/** The sweep over repositories a hook met before auto-join, once per machine. */
+async function sweep(membership: DeploymentMembership, run: MemberCliDeps & { mycoHome: string; now: () => number }, err: (line: string) => void): Promise<AutoJoinResult[]> {
+  const results: AutoJoinResult[] = [];
+  for (const root of sweepCandidates(run.mycoHome)) {
+    try {
+      results.push(await attempt(root, membership, run));
+    } catch (error) {
+      err(`myco member auto-join: ${root}: ${(error as Error).message}`);
+    }
+  }
+  markSweepDone(run.mycoHome, run.now());
+  return results;
+}
+
+/**
+ * The member helper's join pass (`JOIN_BUCKET`): the sweep, once per machine, then an attempt at each repository a hook
+ * asked about, the oldest first, each request dropped once its attempt is made. A repository another attempt holds
+ * keeps its request for the next pass. Stops at `deadline`, leaving the rest for the pass, or the successor, after it.
+ */
+export function joinPass(mycoHome: string, deps: { fetch?: FetchLike; now?: () => number } = {}): HelperPass {
+  const now = deps.now ?? Date.now;
+  const err = (line: string) => process.stderr.write(`[myco] helper: ${line}\n`);
+  return async (deadline) => {
+    const membership = defaultMembership(mycoHome);
+    if (membership === null) return;
+    const run = { fetch: deps.fetch, mycoHome, now };
+    if (!sweepDone(mycoHome)) await sweep(membership, run, err);
+    for (const request of listJoinRequests(mycoHome)) {
+      if (now() >= deadline) return { more: true };
+      let result: AutoJoinResult;
+      try {
+        result = await attempt(request.root, membership, run);
+      } catch (error) {
+        err(`auto-join: ${request.root}: ${(error as Error).message}`);
+        clearJoinRequest(request, mycoHome);
+        continue;
+      }
+      process.stderr.write(`[myco] helper: auto-join ${request.root}: ${result.result}${'projectId' in result ? ` ${result.projectId}` : ''}\n`);
+      if (result.result !== 'busy') clearJoinRequest(request, mycoHome);
+    }
+  };
+}
+
 export async function runAutoJoin(args: readonly string[], deps: MemberCliDeps = {}): Promise<AutoJoinResult[]> {
   const err = deps.stderr ?? ((l) => process.stderr.write(`${l}\n`));
   const parsed = parseArgs(args);
@@ -201,33 +254,10 @@ export async function runAutoJoin(args: readonly string[], deps: MemberCliDeps =
   const mycoHome = deps.mycoHome ?? resolveMycoHome({ cwd: parsed.root ?? deps.cwd });
   const now = deps.now ?? Date.now;
   const membership = defaultMembership(mycoHome);
+  if (membership === null) return [];
   const run = { ...deps, mycoHome, now };
-  if (!parsed.sweep) {
-    if (membership === null) return [];
-    const root = path.resolve(parsed.root!);
-    const key = rootKeyFor(root, mycoHome);
-    // A hook hands its lock over; run by hand, the attempt takes the lock like any other.
-    const release = parsed.lockHeld ? () => releaseAutoJoinLock(key, mycoHome) : acquireAutoJoinLock(key, mycoHome, now());
-    if (release === null) return [{ root, result: 'busy' }];
-    try { return [await joinRepository(root, membership, run)]; } finally { release(); }
-  }
-  const releaseSweep = parsed.lockHeld ? () => releaseSweepLock(mycoHome) : acquireSweepLock(mycoHome, now());
-  if (releaseSweep === null) return [];
-  try {
-    if (membership === null) return [];
-    const results: AutoJoinResult[] = [];
-    for (const root of sweepCandidates(mycoHome)) {
-      const release = acquireAutoJoinLock(rootKeyFor(root, mycoHome), mycoHome, now());
-      if (release === null) { results.push({ root, result: 'busy' }); continue; }
-      try {
-        results.push(await joinRepository(root, membership, run));
-      } catch (error) {
-        err(`myco member auto-join: ${root}: ${(error as Error).message}`);
-      } finally { release(); }
-    }
-    markSweepDone(mycoHome, now());
-    return results;
-  } finally { releaseSweep(); }
+  if (!parsed.sweep) return [await attempt(path.resolve(parsed.root!), membership, run)];
+  return sweep(membership, run, err);
 }
 
 /**

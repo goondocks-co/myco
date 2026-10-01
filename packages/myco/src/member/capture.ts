@@ -21,7 +21,6 @@ import { deliveryNotice, withNotice } from './delivery-notice.js';
 import { autoJoinHold, LEFT_ALONE, type AutoJoinHold } from './auto-join-hook.js';
 import { appendPending, appendPendingTurnEnd } from './pending.js';
 import { flushHeldCapture } from './held.js';
-import type { DetachedSpawn as JoinSpawn } from './auto-join.js';
 import { ensureJoinedFromCode } from './join-code.js';
 import type { EnvelopeContext, OutboundEvent } from './envelope.js';
 import { kickHelper, markWork, runHelper, shipsInline, type KickOutcome, type KickReason } from './helper.js';
@@ -45,8 +44,6 @@ export interface HookMainOptions {
   startedAt?: number;
   /** The environment a join code is read from; defaults to this process's. */
   env?: NodeJS.ProcessEnv;
-  /** How a repository's join is started apart from the hook; defaults to a detached process. */
-  spawn?: JoinSpawn;
   /** How the member helper is started apart from the hook; defaults to a detached process. */
   helperSpawn?: DetachedSpawn;
 }
@@ -198,7 +195,7 @@ export async function runMemberHook(
     let credential = resolveCredential(source, {
       cwd, env, mycoHome, invokedBy: `hook ${hookName}`,
       claimsUnconnected: (root) => {
-        unconnected.answer = autoJoinHold({ root, hookName, agent: input.agent, sessionId, mycoHome, now: now(), env, spawn: opts.spawn });
+        unconnected.answer = autoJoinHold({ root, hookName, agent: input.agent, sessionId, mycoHome, now: now(), env, spawn: opts.helperSpawn });
         return unconnected.answer !== null;
       },
     });

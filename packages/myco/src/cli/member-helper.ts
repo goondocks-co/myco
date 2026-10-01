@@ -1,12 +1,14 @@
 /**
- * `myco member helper --project <id> --home <MYCO_HOME> [--after-failure]`: the member helper's own process
- * (`member/helper.ts`).
+ * `myco member helper (--project <id> | --join) --home <MYCO_HOME> [--after-failure]`: the member helper's own process
+ * (`member/helper.ts`), for one project's spool, or (`--join`) for the repositories joining a project (`JOIN_BUCKET`,
+ * the join pass of `cli/member-auto-join.ts`).
  *
  * A hook starts it detached; it can also be run by hand. Everything it needs is on its command line, the home
  * included: a detached start on Windows carries the environment the starting process began with, not one it changed.
  * Its stderr goes to `<MYCO_HOME>/logs/helper.log`, a pass that fails included.
  */
 import { isProjectId } from '../member/constants.js';
+import { JOIN_BUCKET } from '../member/auto-join.js';
 import { routeStderrToHelperLog, runHelper, type HelperPass, type HelperRunResult } from '../member/helper.js';
 import { helperPass } from '../member/helper-pass.js';
 import { kickWaitingProjects } from '../member/sweep.js';
@@ -37,10 +39,10 @@ function flag(args: readonly string[], name: string): string | undefined {
 export async function runHelperVerb(args: readonly string[], deps: HelperVerbDeps = {}): Promise<HelperRunResult | null> {
   // A successor started from this helper can outlive it only as far as the job this helper began in allows.
   recordStartingJob();
-  const projectId = flag(args, '--project');
+  const projectId = args.includes('--join') ? JOIN_BUCKET : flag(args, '--project');
   const mycoHome = flag(args, '--home');
-  if (projectId === undefined || !isProjectId(projectId) || mycoHome === undefined || mycoHome === '') {
-    process.stderr.write('usage: myco member helper --project <project id> --home <MYCO_HOME>\n');
+  if (projectId === undefined || (projectId !== JOIN_BUCKET && !isProjectId(projectId)) || mycoHome === undefined || mycoHome === '') {
+    process.stderr.write('usage: myco member helper (--project <project id> | --join) --home <MYCO_HOME>\n');
     process.exitCode = 2;
     return null;
   }
@@ -66,7 +68,7 @@ async function helperPasses(projectId: string, mycoHome: string, afterFailure: b
       deadlineMs: deps.deadlineMs,
       spawn: deps.spawn,
       afterFailure,
-      pass: deps.pass ?? helperPass(projectId, mycoHome, deps),
+      pass: deps.pass ?? (projectId === JOIN_BUCKET ? (await import('./member-auto-join.js')).joinPass(mycoHome, deps) : helperPass(projectId, mycoHome, deps)),
     });
   } catch (err) {
     // Written while stderr is still the helper's log: a detached helper has nowhere else to say why it stopped.

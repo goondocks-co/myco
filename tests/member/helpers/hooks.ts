@@ -12,7 +12,7 @@ import type { CredentialSource } from '@myco/member/credential.js';
 import { resolveMemberProjectRoot } from '@myco/member/credential.js';
 import { writeRegistryEntry, REGISTRY_VERSION, type RegistryEntry } from '@myco/member/registry.js';
 import type { FetchLike } from '@myco/member/transport.js';
-import type { DetachedSpawn } from '@myco/runtime/spawn-detached.js';
+import type { DetachedSpawn, DetachedStart } from '@myco/runtime/spawn-detached.js';
 import { runHelperVerb } from '@myco/cli/member-helper.js';
 import { TEST_MACHINE_ID } from './server.js';
 
@@ -35,8 +35,6 @@ export interface RunHookOptions {
   /** Extra argv after `--symbiont <name>` (e.g. `--phases response`). */
   argv?: string[];
   now?: () => number;
-  /** How a repository's join is started; a test that meets an unconnected repository records it instead of starting it. */
-  spawn?: HookMainOptions['spawn'];
   /**
    * What becomes of a member helper the hook's kick starts. By default (`record`) the start is recorded and the helper
    * never runs, as when a sandbox ends with the hook: a hook's capture is delivered by `runHook` only where the hook
@@ -55,6 +53,21 @@ function goneProcessId(): number {
   return deadPid;
 }
 
+/** The hook run in progress, for a helper a test's own start runs here (`runHelperHere`). */
+let current: { helpers: Array<Promise<unknown>>; fetch: FetchLike; now?: () => number; spawn: DetachedSpawn } | null = null;
+
+/**
+ * Run the helper `args` names in this process, as part of the hook run in progress: `runHook` returns once it has. For
+ * a test's own start that runs some helpers and records others (a project's helper run, the join bucket's recorded).
+ */
+export function runHelperHere(args: readonly string[]): DetachedStart {
+  const run = current;
+  if (run === null) throw new Error('runHelperHere runs a helper inside a runHook call');
+  const verb = args.slice(args.indexOf('helper') + 1);
+  run.helpers.push(runHelperVerb(verb, { fetch: run.fetch, now: run.now, lingerMs: 0, keepStderr: true, spawn: run.spawn }).catch((err: unknown) => err));
+  return { started: true, pid: process.pid };
+}
+
 /** Run one hook in-process with `raw` as its stdin; argv is restored afterwards. */
 export async function runHook(name: HookName, raw: Record<string, unknown>, opts: RunHookOptions): Promise<HookRunResult> {
   const originalArgv = process.argv;
@@ -71,20 +84,19 @@ export async function runHook(name: HookName, raw: Record<string, unknown>, opts
   const starts: string[][] = [];
   const running: DetachedSpawn = (_command, args) => {
     starts.push([...args]);
-    const verb = args.slice(args.indexOf('helper') + 1);
-    helpers.push(runHelperVerb(verb, { fetch: opts.fetch, now: opts.now, lingerMs: 0, keepStderr: true, spawn: running }).catch((err: unknown) => err));
-    return { started: true, pid: process.pid };
+    return runHelperHere(args);
   };
   const recording: DetachedSpawn = (_command, args) => {
     starts.push([...args]);
     return { started: true, pid: goneProcessId() };
   };
   const helperSpawn: DetachedSpawn = opts.helperSpawn ?? (opts.helpers === 'run' ? running : recording);
+  current = { helpers, fetch: opts.fetch, now: opts.now, spawn: helperSpawn };
   try {
     const mod = await HOOKS[name]();
     await mod.main({
       credential: opts.credential === undefined ? 'registry' : opts.credential, fetch: opts.fetch, now: opts.now, argv: process.argv, startedAt: Date.now(),
-      ...(opts.spawn ? { spawn: opts.spawn } : {}), helperSpawn,
+      helperSpawn,
     });
     // Each batch is awaited whole, then any helper a batch started (a successor) is awaited in turn.
     for (let done = 0; done < helpers.length;) {
@@ -98,6 +110,7 @@ export async function runHook(name: HookName, raw: Record<string, unknown>, opts
     process.argv = originalArgv;
     setBufferedStdin(null);
     _resetManifestCache();
+    current = null;
   }
   return { stdout: out.join(''), stderr: err.join(''), starts };
 }

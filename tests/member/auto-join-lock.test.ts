@@ -1,13 +1,14 @@
 /**
- * The two platform pieces auto-join stands on (#1547), run on every platform CI has, Windows among them: a repository's
- * lock is created exclusively, so one attempt holds it whatever else races for it, and is taken over once the attempt
- * that held it is gone; and a join started apart from a hook runs on after the hook's process is done with it.
+ * The platform pieces auto-join stands on (#1547), run on every platform CI has, Windows among them: a repository's
+ * lock (a `LifecycleLock`) is held by one attempt whatever else races for it, and is let go of by the system the moment
+ * the attempt holding it dies; and a hook's append and a join's move of held capture keep apart. The join itself runs
+ * in the member helper's join bucket, started as every helper is (`tests/runtime/spawn-detached.test.ts`).
  */
 import { describe, expect, it, spyOn } from 'bun:test';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { acquireAutoJoinLock, AUTO_JOIN_LOCK_STALE_MS, autoJoinDir, releaseAutoJoinLock, spawnDetached } from '@myco/member/auto-join.js';
+import { takeRepositoryLock } from '@myco/member/auto-join.js';
 import { appendPending, flushPending } from '@myco/member/pending.js';
 import { MemberSpool } from '@myco/member/spool.js';
 import { ensureMemberDir, memberRoot } from '@myco/member/store.js';
@@ -34,35 +35,41 @@ describe('a member directory', () => {
 describe('a repository lock', () => {
   it('is held by one attempt at a time, and free again once released', () => {
     const mycoHome = home();
-    const now = Date.now();
-    const release = acquireAutoJoinLock(KEY, mycoHome, now);
-    expect(release).not.toBeNull();
-    expect(acquireAutoJoinLock(KEY, mycoHome, now)).toBeNull();
-    release!();
-    const again = acquireAutoJoinLock(KEY, mycoHome, now);
+    const held = takeRepositoryLock(KEY, mycoHome);
+    expect(held).not.toBeNull();
+    expect(takeRepositoryLock(KEY, mycoHome)).toBeNull();
+    held!.release();
+    const again = takeRepositoryLock(KEY, mycoHome);
     expect(again).not.toBeNull();
-    releaseAutoJoinLock(KEY, mycoHome);
-    expect(fs.readdirSync(autoJoinDir(mycoHome)).filter((f) => f.endsWith('.lock'))).toEqual([]);
+    again!.release();
   });
 
-  it('is taken over once its holder is older than the stale bound, and not before', () => {
+  it('is let go of by the system the moment the attempt holding it dies, with no wait for it to go stale', async () => {
     const mycoHome = home();
-    const now = Date.now();
-    expect(acquireAutoJoinLock(KEY, mycoHome, now)).not.toBeNull();
-    expect(acquireAutoJoinLock(KEY, mycoHome, now + AUTO_JOIN_LOCK_STALE_MS - 1_000)).toBeNull();
-    expect(acquireAutoJoinLock(KEY, mycoHome, now + AUTO_JOIN_LOCK_STALE_MS + 1_000)).not.toBeNull();
+    const script = path.join(mycoHome, 'hold.ts');
+    const module = path.resolve('packages/myco/src/member/auto-join.ts');
+    fs.writeFileSync(script, `import { takeRepositoryLock } from ${JSON.stringify(module)};\nif (takeRepositoryLock(${JSON.stringify(KEY)}, ${JSON.stringify(mycoHome)}) === null) process.exit(3);\nprocess.stdout.write('held');\nawait Bun.sleep(60_000);\n`);
+    const holder = Bun.spawn([process.execPath, script], { stdout: 'pipe', stderr: 'ignore' });
+    await (holder.stdout as ReadableStream<Uint8Array>).getReader().read();
+    expect(takeRepositoryLock(KEY, mycoHome)).toBeNull();
+    holder.kill(9);
+    await holder.exited;
+    const taken = takeRepositoryLock(KEY, mycoHome);
+    expect(taken).not.toBeNull();
+    taken!.release();
   });
 
   it('goes to exactly one of many processes racing for it', async () => {
     const mycoHome = home();
     const script = path.join(mycoHome, 'race.ts');
     const module = path.resolve('packages/myco/src/member/auto-join.ts');
-    fs.writeFileSync(script, `import { acquireAutoJoinLock } from ${JSON.stringify(module)};\nprocess.stdout.write(acquireAutoJoinLock(${JSON.stringify(KEY)}, ${JSON.stringify(mycoHome)}, Date.now()) === null ? 'busy' : 'held');\n`);
+    // Each racer holds what it took for a while, so every other one meets it held.
+    fs.writeFileSync(script, `import { takeRepositoryLock } from ${JSON.stringify(module)};\nconst lock = takeRepositoryLock(${JSON.stringify(KEY)}, ${JSON.stringify(mycoHome)});\nprocess.stdout.write(lock === null ? 'busy' : 'held');\nif (lock !== null) await Bun.sleep(3_000);\n`);
     const racers = Array.from({ length: 6 }, () => Bun.spawn([process.execPath, script], { stdout: 'pipe', stderr: 'ignore' }));
-    const answers = await Promise.all(racers.map(async (p) => { await p.exited; return new Response(p.stdout).text(); }));
+    const answers = await Promise.all(racers.map(async (p) => { const text = await new Response(p.stdout).text(); await p.exited; return text; }));
     expect(answers.filter((a) => a === 'held')).toHaveLength(1);
     expect(answers.filter((a) => a === 'busy')).toHaveLength(5);
-  });
+  }, 20_000);
 });
 
 describe('a repository\'s pending lock', () => {
@@ -91,49 +98,5 @@ describe('a repository\'s pending lock', () => {
       expect(Date.now() - started).toBeGreaterThanOrEqual(1_000);
       await holder.exited;
     }
-  });
-});
-
-describe('a detached start', () => {
-  it('runs the command on its own, with the environment it is handed, and reports that it started', async () => {
-    const dir = home();
-    const out = path.join(dir, 'ran.txt');
-    const script = path.join(dir, 'child.ts');
-    fs.writeFileSync(script, `import fs from 'node:fs';\nfs.writeFileSync(${JSON.stringify(out)}, process.env.MYCO_HOME ?? '');\n`);
-    expect(spawnDetached(process.execPath, [script], { cwd: dir, env: { ...process.env, MYCO_HOME: dir } })).toBe(true);
-    const deadline = Date.now() + 15_000;
-    while (!fs.existsSync(out) || fs.readFileSync(out, 'utf-8') === '') {
-      if (Date.now() > deadline) throw new Error('the detached child never ran');
-      await Bun.sleep(50);
-    }
-    expect(fs.readFileSync(out, 'utf-8')).toBe(dir);
-  });
-
-  // Windows has no process group a harness kills a hook through; there, a detached child's own console is what keeps it.
-  it.skipIf(process.platform === 'win32')('keeps running when the harness kills the hook\'s whole process group', async () => {
-    const dir = home();
-    const out = path.join(dir, 'survived.txt');
-    const child = path.join(dir, 'child.ts');
-    fs.writeFileSync(child, `await Bun.sleep(1500);\nrequire('node:fs').writeFileSync(${JSON.stringify(out)}, 'alive');\n`);
-    const hook = path.join(dir, 'hook.ts');
-    const module = path.resolve('packages/myco/src/member/auto-join.ts');
-    fs.writeFileSync(hook, `import { spawnDetached } from ${JSON.stringify(module)};\nspawnDetached(process.execPath, [${JSON.stringify(child)}], { cwd: ${JSON.stringify(dir)}, env: process.env });\nprocess.stdout.write('started');\nawait Bun.sleep(60_000);\n`);
-    // The hook runs in a process group of its own, as a harness starts it; the kill takes the whole group.
-    const started = Bun.spawn([process.execPath, hook], { stdout: 'pipe', stderr: 'ignore', detached: true } as never);
-    const reader = (started.stdout as ReadableStream<Uint8Array>).getReader();
-    await reader.read();
-    process.kill(-started.pid, 'SIGKILL');
-    await started.exited;
-    const deadline = Date.now() + 15_000;
-    while (!fs.existsSync(out)) {
-      if (Date.now() > deadline) throw new Error('the detached child died with the hook\'s process group');
-      await Bun.sleep(100);
-    }
-    expect(fs.readFileSync(out, 'utf-8')).toBe('alive');
-  });
-
-  it('reports a command that cannot start as not started, without throwing', () => {
-    const dir = home();
-    expect(spawnDetached(path.join(dir, 'no-such-binary'), [], { cwd: dir, env: process.env })).toBe(false);
   });
 });
