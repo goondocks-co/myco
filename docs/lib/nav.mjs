@@ -7,34 +7,29 @@ export const NAV = [
     group: 'Getting started',
     items: [
       { slug: 'quickstart', title: 'Quickstart' },
-      { slug: 'migrating-from-oak', title: 'Migrating from OAK' },
-      { slug: 'upgrade', title: 'Upgrading Myco' },
+      { slug: 'upgrade-from-v1', title: 'Upgrading from 1.4' },
+      { slug: 'self-hosting', title: 'Self-hosting' },
     ],
   },
   {
-    group: 'Core',
+    group: 'Using Myco',
     items: [
-      { slug: 'lifecycle', title: 'Local service lifecycle' },
-      { slug: 'groves', title: 'Grove management' },
-      { slug: 'skills', title: 'Skills' },
-      { slug: 'canopy', title: 'Canopy' },
-      { slug: 'symbionts', title: 'Symbionts' },
-      { slug: 'agent-harness', title: 'Agent harness' },
-      { slug: 'agent-tools', title: 'Agent MCP tools' },
-    ],
-  },
-  {
-    group: 'Team',
-    items: [
-      { slug: 'team-host', title: 'Team Host' },
+      { slug: 'dashboard', title: 'The dashboard' },
+      { slug: 'intelligence', title: 'How Myco learns' },
+      { slug: 'agents', title: 'Agents' },
+      { slug: 'agent-tools', title: 'Agent tools' },
+      { slug: 'external-agents', title: 'External agents' },
+      { slug: 'configuration', title: 'Configuration' },
+      { slug: 'troubleshooting', title: 'Troubleshooting' },
     ],
   },
   {
     group: 'Reference',
     items: [
-      { slug: 'agent-teams', title: 'Agent teams' },
       { slug: 'architecture/actors-and-boundaries', title: 'Actors & boundaries' },
       { slug: 'architecture/platform-packages', title: 'Platform packages' },
+      { slug: 'architecture/ci', title: 'CI' },
+      { slug: 'architecture/worker-smoke-rig', title: 'Worker smoke rig' },
     ],
   },
 ];

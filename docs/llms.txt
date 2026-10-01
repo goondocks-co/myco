@@ -1,38 +1,30 @@
 # Myco
 
-> Myco is the nervous system for AI-assisted software teams. It works alongside coding agents, subagents, and agent teams to provide shared project knowledge, semantic codebase awareness, and learned workflows that evolve with the project.
+> Myco is the nervous system for AI-assisted software teams. It captures what coding agents do, turns it into durable project knowledge, and hands that knowledge back to every agent and teammate on the project.
 
-Myco is not a replacement coding agent or hosted harness. It runs on your machine and works with every git project automatically when you use a supported agent, capturing development sessions into a local Grove and routing useful context back to the agents a team already uses. Local Grove data is the source of truth for projects not connected to a Team Host; a connected project's knowledge lives on its host until it is disconnected. Optional Team Host turns one teammate's Myco into the team's shared home — set up from the dashboard's Team page or the command line — so the rest of the team can join it directly, connect their projects, and expose team knowledge to non-member agents through a secure read-only MCP endpoint.
+Myco 2.0 keeps a team's knowledge on a server the team runs on Cloudflare or on its own laptop or virtual machine; Myco's commands call it a Deployment. Each person's machine signs in with `myco login <invite link>`, which sets up their coding agents, and `myco member join` connects each repository to a project. Those agents then capture sessions to the server and read from it through MCP. Myco's own work runs on a worker on an administrator's machine. It titles sessions, learns and curates spores (decisions, gotchas, discoveries, trade-offs, fixes), learns from a project's code, and keeps a code map. The server's dashboard shows all of it, and everything is configured there.
 
-macOS is the supported path. Linux and Windows are in beta (Windows x64 only).
+macOS and Linux are supported. Myco 2.0 on Windows is coming in beta.1; the Windows installer installs Myco 1.4.
 
 ## Start here
 
-- [Homepage](https://myco.sh/): Product overview, install command, feature summary, and supported agents.
-- [Quickstart](https://myco.sh/quickstart.md): Install Myco, open the local dashboard, configure providers, and understand what happens after setup.
-- [README](https://github.com/goondocks-co/myco/blob/main/README.md): Repository overview and release-facing product framing.
+- [Homepage](https://myco.sh/): Product overview and install command.
+- [Quickstart](https://myco.sh/quickstart.md): Set up a server, invite people, sign a machine in and connect its repositories.
+- [Upgrading from 1.4](https://myco.sh/upgrade-from-v1.md): Move a Myco 1.4 machine to 2.0 with `myco cutover`, and what it keeps.
+- [Self-hosting](https://myco.sh/self-hosting.md): Run a server on a laptop, a virtual machine or Cloudflare; updates and backups.
 
-## Core concepts
+## Using Myco
 
-- [Skills](https://myco.sh/skills.md): How accumulated project knowledge becomes reviewed workflows that connected agents can follow.
-- [Symbionts](https://myco.sh/symbionts.md): How Myco connects to supported coding agents, including Cline, while preserving each agent's native workflow.
-- [Canopy](https://myco.sh/canopy.md): Codebase awareness that helps agents understand files and architecture before they read deeply.
-- [Grove management](https://myco.sh/groves.md): How users organize projects into Groves, move/archive projects, and control per-project capabilities.
-- [Agent tools](https://myco.sh/agent-tools.md): MCP tools and slash-command skills available to connected agents.
-- [Agent harness](https://myco.sh/agent-harness.md): Background intelligence work that extracts spores, summaries, digests, and evolving skills.
-
-## Team features
-
-- [Team Host](https://myco.sh/team-host.md): Host a team from the dashboard or the command line, join a teammate's host, connect projects, and expose team knowledge to non-member agents through a read-only MCP endpoint.
-
-## Operations
-
-- [Local service lifecycle](https://myco.sh/lifecycle.md): What gets captured, how the local service behaves, and what to do when something needs attention.
-- [Upgrade guide](https://myco.sh/upgrade.md): Upgrade Myco, preserve existing agent settings, and verify the install.
-- [Install script for macOS and Linux](https://myco.sh/install.sh): Shell installer. Linux support is in beta.
-- [Install script for Windows](https://myco.sh/install.ps1): PowerShell installer. Windows support is in beta (x64 only).
+- [The dashboard](https://myco.sh/dashboard.md): Today, Sessions, Knowledge, Myco's work, and the administrator's People & machines, Settings and Health.
+- [How Myco learns](https://myco.sh/intelligence.md): What Myco produces from captured sessions, where that work runs, and what agents get back.
+- [Agents](https://myco.sh/agents.md): The agents Myco captures, how to connect them, and what is captured.
+- [Agent tools](https://myco.sh/agent-tools.md): The MCP tools agents use to search and curate a project's knowledge.
+- [External agents](https://myco.sh/external-agents.md): Access keys for agents that are not members, such as hosted code reviewers.
+- [Configuration](https://myco.sh/configuration.md): Server settings, what Myco does in each project, starting work by hand, and machine settings.
+- [Troubleshooting](https://myco.sh/troubleshooting.md): The messages people meet most and what to do about each.
 
 ## Optional
 
-- [Migrating from OAK](https://myco.sh/migrating-from-oak.md): Import OAK activity history into Myco when relevant.
-- [GitHub repository](https://github.com/goondocks-co/myco): Source code, issues, releases, and package details.
+- [Install script for macOS and Linux](https://myco.sh/install.sh): The Myco 2.0 shell installer.
+- [Myco 2.0 architecture](https://github.com/goondocks-co/myco/blob/main/docs/architecture/myco-2.0.md): How the server, members, workers and capture fit together.
+- [GitHub repository](https://github.com/goondocks-co/myco): Source code, issues and releases.

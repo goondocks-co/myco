@@ -54,7 +54,7 @@ npm update -g @goondocks/myco-team
 ## Learn more
 
 - Main project: <https://github.com/goondocks-co/myco>
-- Team Host guide: <https://github.com/goondocks-co/myco/blob/main/docs/team-host.md>
+- Self-hosting a Myco 2.0 Deployment: <https://github.com/goondocks-co/myco/blob/main/docs/self-hosting.md>
 
 ## License
 

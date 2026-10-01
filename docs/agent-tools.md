@@ -1,52 +1,51 @@
-# Agent Tools
+# Agent tools
 
-Myco exposes MCP tools and slash-command skills that your agents can use without leaving their native workflows. Local tools serve coding agents on your machine, and the [external MCP endpoint](team-host.md#external-read-only-mcp) serves agents that aren't Myco members from a Team Host's team storage. Both speak [Model Context Protocol](https://modelcontextprotocol.io) and discover their tools automatically.
+Every agent connected to a server reaches the project's knowledge through [Model Context Protocol](https://modelcontextprotocol.io) tools. `myco login` gives each agent on the machine its Myco MCP entry (`myco member provision <agent>` repairs one), which points at the server's `/mcp` address. When the agent connects, it asks `myco` for the sign-in details, so no token is written into the agent's config. See [Agents](agents.md).
 
-## Automatic context injection
+The tools read and curate knowledge. They do not administer Myco: settings, members and backups live in the dashboard and the `myco server` commands.
 
-Before any tool is called, Myco can route context at three points automatically:
+## The tools
 
-- **Session start** — a Cortex project briefing gives the agent a pre-computed understanding of the project before it asks a single question
-- **Per prompt** — relevant spores are retrieved via vector search, providing targeted context for the current task
-- **Pre-Read** — [Canopy](canopy.md) provides per-file anatomy so the agent can decide whether to follow through with a full read
+| Tool | What it does |
+|---|---|
+| `myco_search` | Searches the project's sessions, spores, plans, skills, prompts and responses. Each result says which tool fetches it in full. |
+| `myco_sessions` | Lists past sessions and reads one. |
+| `myco_plans` | Lists, reads and saves plans. |
+| `myco_spores` | Lists, reads and saves spores, and marks one replaced by a newer one, merged with others, or no longer true. |
+| `myco_cortex` | The project's instructions and id, the code map (`op: "canopy_map"`), and recent activity across projects. |
+| `myco_skills` | Lists the skills that ship with Myco and what each is for. |
+| `myco_agent` | Reads the history of Myco's own runs. |
 
-These context routes augment the agent's native memory and tools. Myco does not replace the agent's reasoning or workflow. See the [Lifecycle docs](lifecycle.md) for more on how this works.
+A read with no `project` uses the caller's project. A write must name its `project` and is refused otherwise.
 
-## Local MCP tools
+Some operations are not offered by a server and answer `not_served`:
 
-Seven local tools are available to any symbiont Myco has connected.
+- `myco_cortex` ops `digest`, `canopy_entry`, `notifications` and `maintenance_summary`;
+- `myco_plans` op `delete`.
 
-The MCP surface is intentionally limited to **read and editorial** operations — symbionts use Myco's project intelligence; they do not administer Myco. Administrative operations such as restart, update, backup, restore, and maintenance live in the **CLI** and **UI**. See [Actors and Boundaries](architecture/actors-and-boundaries.md).
+## From your terminal
 
-Every vault-scoped tool accepts an optional `project` field — a project id or the repository's git remote — and the local runtime also accepts `grove_id`, so agents can work with the same Grove/project selection model shown in the dashboard. A read without `project` uses the caller's own project; a write without it is refused.
+The same knowledge answers in a terminal, in any repository this machine has connected:
 
-### Search & Cortex
+```bash
+myco search "why do we pin the port"
+myco session latest
+myco stats
+```
 
-| Tool | Purpose |
-|------|---------|
-| `myco_search` | Semantic + keyword search across sessions, spores, plans, skills, and Canopy file summaries. Results include stable IDs and `retrieve` hints pointing to the owning entity tool. |
-| `myco_cortex` | Cortex project intelligence: digest (`op=digest`), generated instructions, Canopy map (`op=canopy_map`), Canopy entries (`op=canopy_entry`), pending notifications (`op=notifications`), per-Grove maintenance summary (`op=maintenance_summary`), and cross-Grove project activity (`op=projects_activity`). |
+`myco search` searches the project's spores, sessions, plans and prompts. `myco session` shows one session, the latest by default. `myco stats` sums up the project on its server: sessions, activity and Myco's runs.
 
-### Entity tools
+## Agents that are not members
 
-| Tool | Purpose |
-|------|---------|
-| `myco_plans` | List, retrieve, save, or delete plans using `op=list|get|save|delete`. |
-| `myco_sessions` | List or retrieve session history using `op=list|get`. |
-| `myco_skills` | List the skills that ship with Myco and see what each one is for. |
-| `myco_spores` | List, retrieve, save, supersede, or consolidate spores using `op=list|get|save|supersede|consolidate`. |
-| `myco_agent` | Read agent run history using `op=runs|run` — token budget, cost, reasoning level, and per-run details. |
+A hosted code reviewer or an automation platform has no Myco session and signs in as no one. An administrator can give it an access key for one project. It can then search and read that project and record spores of its own. See [External agents](external-agents.md).
 
-## External MCP tools
+The Myco plugin in your agent's plugin marketplace uses the same kind of key. It carries the skills and the tools and needs no binary. Paste in your server's address and an access key, and the tools answer. Nothing is captured until the machine is also [signed in](quickstart.md).
 
-A separate, read-only tool surface for agents that aren't Myco members — managed agents, automation platforms, anything that speaks MCP over HTTPS. Six tools follow the same search-then-entity access pattern as local MCP while limiting operations to reads against a Team Host's team storage. See the [Team Host docs](team-host.md#external-read-only-mcp) for the full reference and setup.
+## Skills
 
-## Slash-command skills
+Myco's skills ship with the plugin:
 
-Myco ships a built-in `myco` skill — the primary skill for ongoing work (design decisions, debugging non-obvious issues, gotchas, context about prior work; it guides when and how to use each MCP tool) — which agents activate automatically rather than via a slash command. Alongside it, three slash-command skills provide guided workflows; type the command in your agent's prompt to activate. Beyond these, Myco **auto-generates project-specific skills** from your vault knowledge — see the [Skills docs](skills.md) for the full curation lifecycle.
-
-| Command | Purpose |
-|---------|---------|
-| `/myco-rules` | Keep `AGENTS.md` minimal, durable, and canonical across agents. |
-| `/myco-okf` | Create and maintain an OKF-conformant project wiki — a portable, git-committed markdown knowledge base synthesized from your project's Myco intelligence — directly in the repo, no daemon feature required. |
-| `/myco-handoff` | Hand work off between sessions — package plans, context, and skills for the next session to receive. |
+- the `myco` skill, which tells an agent when to reach for each tool;
+- `/myco-rules`, to keep `AGENTS.md` short and durable;
+- `/myco-handoff`, to hand work to another session;
+- `/myco-okf`, to keep a project wiki in the repository.
