@@ -564,12 +564,42 @@ function noIsolateArgsForFiles(files, options) {
   ];
 }
 
-function noIsolatePhaseForTarget(target, files, options) {
-  return {
-    label: `node env shared ${bundleSlug(target)}`,
-    args: noIsolateArgsForFiles(sharedTargetFiles(target, files), options),
+// Shared targets too slow to be one group: each runs as this many shared
+// processes over contiguous runs of its files, balanced by measured duration,
+// so no single group bounds a CI shard.
+const SPLIT_NO_ISOLATE_TARGETS = new Map([
+  ['tests/myco-server', 3],
+]);
+
+/** `files`, in order, cut into at most `parts` contiguous runs of about equal measured duration. */
+function splitByDuration(files, parts) {
+  const weight = (file) => durations.files[file] ?? DEFAULT_FILE_DURATION_MS;
+  const total = files.reduce((sum, file) => sum + weight(file), 0);
+  const runs = [];
+  let current = [];
+  let seen = 0;
+  files.forEach((file, index) => {
+    current.push(file);
+    seen += weight(file);
+    const partsLeft = parts - runs.length - 1;
+    if (partsLeft > 0 && seen >= (total * (runs.length + 1)) / parts && files.length - index - 1 >= partsLeft) {
+      runs.push(current);
+      current = [];
+    }
+  });
+  if (current.length > 0) runs.push(current);
+  return runs;
+}
+
+function noIsolatePhasesForTarget(target, files, options) {
+  const covered = sharedTargetFiles(target, files);
+  const parts = SPLIT_NO_ISOLATE_TARGETS.get(target) ?? 1;
+  const runs = parts > 1 ? splitByDuration(covered, parts) : [covered];
+  return runs.map((run, index) => ({
+    label: runs.length === 1 ? `node env shared ${bundleSlug(target)}` : `node env shared ${bundleSlug(target)}-${index + 1}`,
+    args: noIsolateArgsForFiles(run, options),
     isolate: false,
-  };
+  }));
 }
 
 // Emit the files the group actually covers within `sharedFiles` rather than the
@@ -622,7 +652,7 @@ function findSharedGroups(files) {
 
 function buildNoIsolatePhases(targets, groups, sharedFiles, options) {
   return [
-    ...targets.map((target) => noIsolatePhaseForTarget(target, sharedFiles, options)),
+    ...targets.flatMap((target) => noIsolatePhasesForTarget(target, sharedFiles, options)),
     ...groups.map((group) => noIsolatePhaseForGroup(group, sharedFiles, options)),
   ];
 }
@@ -1434,6 +1464,7 @@ const testKind = process.env.MYCO_TEST_KIND ?? 'all';
 if (!['all', 'node', 'dom'].includes(testKind)) throw new Error(`Unknown test kind: ${testKind}`);
 const shard = parseShard(process.env.MYCO_TEST_SHARD);
 const durations = JSON.parse(fs.readFileSync(path.join(REPO, 'scripts/test-durations.json'), 'utf8'));
+const DEFAULT_FILE_DURATION_MS = 100;
 const built = buildArgs();
 const testFiles = (args) => args.filter((arg) => !arg.startsWith('-') && /\.test\.tsx?$/.test(arg));
 const bundledFiles = (file) => (file.startsWith('target/test-bundles/')
@@ -1445,7 +1476,6 @@ const sourceFiles = (args) => testFiles(args).flatMap(bundledFiles);
 const groupFiles = (args) => args
   .filter((arg) => !arg.startsWith('-') && fs.statSync(path.resolve(REPO, arg), { throwIfNoEntry: false })?.isFile())
   .flatMap(bundledFiles);
-const DEFAULT_FILE_DURATION_MS = 100;
 const estimate = (files) => Math.max(1, files.reduce((sum, file) => sum + (durations.files[file] ?? DEFAULT_FILE_DURATION_MS), 0));
 const candidates = [
   ...(testKind === 'dom' ? [] : built.nonDomPhases.map((phase) => ({ ...phase, kind: 'node' }))),

@@ -28,6 +28,9 @@ export const scheduledTasks: ParityScenario = {
     const [credential] = await target.sql(`SELECT id FROM member_credentials ORDER BY issued_at LIMIT 1`) as Array<{ id: string }>;
     await target.sql(`INSERT OR REPLACE INTO sessions (project_id, session_id, machine_id, created_by_token_id, first_received_at, last_received_at, agent)
       VALUES ('proj_cold', 'cold-session', 'machine_parity', ${lit(credential!.id)}, ${now - 21 * 86_400_000}, ${now - 21 * 86_400_000}, 'claude-code')`);
+    // The live Project: a receipt a minute old, whatever ran before this scenario.
+    await target.sql(`INSERT OR REPLACE INTO sessions (project_id, session_id, machine_id, created_by_token_id, first_received_at, last_received_at, agent)
+      VALUES (${lit(target.projectId)}, 'clock-live-session', 'machine_parity', ${lit(credential!.id)}, ${now - 60_000}, ${now - 60_000}, 'claude-code')`);
 
     const wake = async () => {
       const res = await fetch(`${target.url}/api/wake`, { method: 'POST', headers: { ...target.ownerHeaders(), origin: target.url } });
@@ -36,7 +39,7 @@ export const scheduledTasks: ParityScenario = {
     };
     const probes = (projectId: string) => target.sql(`SELECT status, harness, run_context AS runContext FROM agent_runs WHERE project_id = ${lit(projectId)} AND task = 'container-smoke' ORDER BY COALESCE(queued_at, started_at), id`);
 
-    // The live Project's receipts are minutes old: the Deployment is in use or idle, and the probe runs only while asleep.
+    // The live Project's receipt is a minute old: the Deployment is in use or idle, and the probe runs only while asleep.
     await leaf('agent.tasks', { 'container-smoke': { schedule: { runIn: ['active', 'idle', 'sleep'] } }, 'extract-curate': { schedule: { enabled: false } } });
     const first = await wake();
     expect(first.scheduled).toEqual({ dispatched: 1, skipped: 0 });

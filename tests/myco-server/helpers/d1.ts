@@ -78,10 +78,37 @@ export function migrateAndSeed(sqlite: Database, options: { beforeStep42?: (sqli
   return sqlite;
 }
 
-/** A fresh in-memory database, migrated and seeded. */
+/** This process's migrated and seeded database, serialized once and copied for each caller. */
+let seededImage: Uint8Array | null = null;
+
+/**
+ * A fresh in-memory database, migrated and seeded.
+ *
+ * Migrating takes tens of milliseconds and nearly every server test wants a
+ * database of its own, so the chain runs once per process and each caller gets
+ * an independent copy of the result. A copy holds the schema, the seed rows
+ * and `user_version`; `foreign_keys` is a setting of the connection rather
+ * than of the file, so each copy turns it on again, and each draws a
+ * Deployment id of its own (`tests/myco-server/seeded-copy.test.ts` holds a
+ * copy equal to a fresh migration in everything else). A caller that needs to act
+ * between the migration steps (`beforeStep42`) gets the whole chain run for it.
+ */
 export function seededSqlite(options: { beforeStep42?: (sqlite: Database) => void } = {}): Database {
-  return migrateAndSeed(new Database(':memory:'), options);
+  if (options.beforeStep42 !== undefined) return migrateAndSeed(new Database(':memory:'), options);
+  if (seededImage === null) {
+    const template = migrateAndSeed(new Database(':memory:'));
+    seededImage = template.serialize();
+    template.close();
+  }
+  const sqlite = Database.deserialize(seededImage);
+  sqlite.exec('PRAGMA foreign_keys = ON');
+  // The one value a migration draws at random: each database is a Deployment of its own, as a fresh migration's is.
+  sqlite.exec(`UPDATE schema_meta SET value = lower(hex(randomblob(16))) WHERE key = '${DEPLOYMENT_ID_KEY}'`);
+  return sqlite;
 }
+
+/** The `schema_meta` key a migration fills with a random identity, renewed on every copy `seededSqlite` makes. */
+export const DEPLOYMENT_ID_KEY = 'deployment_id';
 
 /** A blob row as this build's upload registers one. */
 export interface RegisteredBlob { projectId: string; key: string; size: number; mediaType?: string; tokenId?: string; receivedAt?: number; generation?: string }
