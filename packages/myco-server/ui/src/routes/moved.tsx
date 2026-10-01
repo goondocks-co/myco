@@ -1,4 +1,4 @@
-import { Navigate, Route, useLocation, useParams } from 'react-router-dom';
+import { Navigate, useLocation, useParams, type RouteObject } from 'react-router-dom';
 import { useIsAdmin } from '../hooks/use-me';
 import {
   HEALTH_ANCHORS, HEALTH_PATH, keptFilters, KNOWLEDGE_SUFFIX, MY_MACHINES_PATH, PEOPLE_PATH, PLANS_SUFFIX, PROJECT_SETTINGS_ANCHORS,
@@ -55,4 +55,4 @@ function Moved({ address }: { address: MovedAddress }) {
 }
 
 /** One route per old address, each leading to where its page is now. */
-export const movedRoutes = MOVED.map((address) => <Route key={address.from} path={address.from} element={<Moved address={address} />} />);
+export const movedRoutes: RouteObject[] = MOVED.map((address) => ({ path: address.from, element: <Moved address={address} /> }));

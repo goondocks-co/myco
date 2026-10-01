@@ -1,4 +1,4 @@
-import { Route } from 'react-router-dom';
+import type { RouteObject } from 'react-router-dom';
 import { AdminOnly } from '../features/admin/AdminFrame';
 import { HealthPage } from '../features/admin/health/HealthPage';
 import { MyMachinesPage } from '../features/admin/people/MyMachinesPage';
@@ -18,17 +18,13 @@ import { useRouteProject } from './route-project';
  * a page for an admin; and My machines, for every member.
  * The addresses these pages replaced are in `routes/moved.tsx`.
  */
-export const adminRoutes = (
-  <>
-    <Route path={PEOPLE_PATH} element={<AdminOnly title="People & machines"><PeoplePage /></AdminOnly>} />
-    <Route path={MY_MACHINES_PATH} element={<MyMachinesPage />} />
-    {SETTINGS_SECTIONS.map((section) => (
-      <Route key={section.id} path={section.to} element={<SettingsRoute section={section.id} />} />
-    ))}
-    <Route path={`/p/:projectId${PROJECT_SETTINGS_SUFFIX}`} element={<ProjectSettingsRoute />} />
-    <Route path={HEALTH_PATH} element={<AdminOnly title="Health"><HealthPage /></AdminOnly>} />
-  </>
-);
+export const adminRoutes: RouteObject[] = [
+  { path: PEOPLE_PATH, element: <AdminOnly title="People & machines"><PeoplePage /></AdminOnly> },
+  { path: MY_MACHINES_PATH, element: <MyMachinesPage /> },
+  ...SETTINGS_SECTIONS.map((section): RouteObject => ({ path: section.to, element: <SettingsRoute section={section.id} /> })),
+  { path: `/p/:projectId${PROJECT_SETTINGS_SUFFIX}`, element: <ProjectSettingsRoute /> },
+  { path: HEALTH_PATH, element: <AdminOnly title="Health"><HealthPage /></AdminOnly> },
+];
 
 function SettingsRoute({ section }: { section: SettingsSectionId }) {
   return <AdminOnly title="Settings"><SettingsPage section={section} /></AdminOnly>;
