@@ -11,7 +11,7 @@ import type { WorkAnswer } from '../features/today/wire';
 import {
   agentName, causeSentence, clockTime, count, dayHeading, failureNextStep, shortDay, sinceWords, sporeLine, sporeTypeWord, workHeadline, workPlace,
 } from '../features/today/words';
-import { useAttention } from '../hooks/use-attention';
+import { useNeedsYou } from '../hooks/use-needs-you';
 import { useIsAdmin, useMe } from '../hooks/use-me';
 import { useMediaQuery } from '../hooks/use-media-query';
 import { useProjects } from '../hooks/use-projects';
@@ -59,7 +59,6 @@ function TodayPage({ projectId, waiting }: { projectId: string | null; waiting: 
   const phone = useMediaQuery(PHONE_QUERY);
   const projects = useProjects();
   const today = useToday({ projectId, day: search.get('day'), now });
-  const attention = useAttention({ enabled: admin });
   const status = useStatus(freshness(true));
 
   const names = new Map((projects.data?.projects ?? []).map((p) => [p.projectId, p.name]));
@@ -69,20 +68,13 @@ function TodayPage({ projectId, waiting }: { projectId: string | null; waiting: 
   const { window } = today;
   const dayHref = (param: string | null) => (param === null ? location.pathname : `${location.pathname}?day=${param}`);
 
-  const needsYou: NeedsYouProps = {
-    answer: attention.data,
-    pending: attention.isPending,
-    error: attention.error,
-    onRetry: () => void attention.refetch(),
-    now,
-    projectName,
-  };
+  const needsYou: NeedsYouProps = useNeedsYou({ now, projectName });
 
   if (waiting) return <LoadingState label="Loading today" count={4} />;
   return (
     <div className="flex w-full flex-col gap-s5" data-today="">
       {project !== undefined && isArchived(project) && <ArchivedNotice projectId={project.projectId} archivedAt={project.archivedAt} now={now} />}
-      {admin && phone && <NeedsYouSummary {...needsYou} />}
+      {phone && <NeedsYouSummary {...needsYou} />}
       <header className="flex flex-col gap-s2">
         <h1 className="t-display text-ink">{dayHeading(window.start, now)}</h1>
         {today.counts !== undefined && today.entries !== undefined && today.entries.length > 0
@@ -93,7 +85,7 @@ function TodayPage({ projectId, waiting }: { projectId: string | null; waiting: 
       <div className="grid items-start gap-s6 lg:grid-rail">
         {/* The rail comes first in reading order, so Needs you is reached before the day's timeline; the grid places it to the right. */}
         <div className="order-2 flex min-w-0 flex-col gap-s4 lg:col-start-2 lg:row-start-1">
-          {admin && !compact && <NeedsYouPanel {...needsYou} />}
+          {!compact && <NeedsYouPanel {...needsYou} />}
           <CapturePanel
             rows={status.data?.capture}
             unavailable={status.data?.unavailable?.includes('capture') ?? false}
@@ -104,7 +96,7 @@ function TodayPage({ projectId, waiting }: { projectId: string | null; waiting: 
           />
         </div>
         <section aria-label="Timeline" className="order-1 flex min-w-0 flex-col gap-s4 lg:col-start-1 lg:row-start-1">
-          {admin && compact && !phone && <NeedsYouPanel {...needsYou} />}
+          {compact && !phone && <NeedsYouPanel {...needsYou} />}
           <Timeline
             entries={today.entries}
             pending={today.isPending}

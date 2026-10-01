@@ -1,6 +1,7 @@
 /**
  * Today, signed in as the owner and as a member who is not an admin, at both
- * viewports in both modes; the quiet day; and the one-project form.
+ * viewports in both modes; the quiet day; connecting a repository Myco isn't
+ * capturing yet; and the one-project form.
  *
  * On the fixture the day holds a live session, sessions across projects, a
  * learning run that saved four spores, one that stopped early but kept two,
@@ -11,7 +12,7 @@
  * id reaches the page's text, and that axe-core finds nothing serious or
  * critical.
  */
-import { expect, test, type Page } from '@playwright/test';
+import { expect, test, type Locator, type Page } from '@playwright/test';
 import {
   expectAxeClean, expectFits, expectNoRawIds, expectQuiet, openPage, shoot, SHOT_MATRIX, type ViewportName,
 } from './checks.ts';
@@ -88,6 +89,43 @@ async function expectCapture(page: Page, viewport: ViewportName, role: 'admin' |
   await expect(capture).not.toContainText('Lin’s build box');
 }
 
+/**
+ * The fixture's repositories a machine is not capturing yet, as `role` is shown them: an admin every machine's, a member
+ * their own. They are one line of "Needs you" that opens to each; it is closed again before returning.
+ */
+async function expectWaitingRepositories(within: Locator, role: 'admin' | 'member'): Promise<void> {
+  const group = within.locator('[data-repositories]');
+  await expect(group).toHaveAttribute('data-needs-you-item', 'bad');
+  await expect(group).toContainText(role === 'admin' ? '5 repositories aren’t being captured yet' : '4 repositories aren’t being captured yet');
+  await expect(group).toContainText('Work in 2 of them isn’t being kept.');
+  await group.getByRole('button', { name: 'See each' }).click();
+  const rows = group.locator('[data-repository]');
+  await expect(rows).toHaveCount(role === 'admin' ? 5 : 4);
+  // An archived project holds old-site: nothing connects it, and an admin is pointed to where the project is restored.
+  const oldSite = rows.filter({ hasText: 'old-site isn’t being captured yet' });
+  await expect(oldSite).toContainText('The project it belongs to is archived. An admin can restore it from Projects.');
+  await expect(oldSite.getByRole('button')).toHaveCount(0);
+  await expect(oldSite.getByRole('link', { name: 'Open Projects →' })).toHaveCount(role === 'admin' ? 1 : 0);
+  await expect(rows.filter({ hasText: 'prototype isn’t being captured yet' })).toContainText('No project holds it yet, and only an admin can start a new one.');
+  const notes = rows.filter({ hasText: 'field-notes isn’t being captured yet' });
+  await expect(notes).toHaveAttribute('data-needs-you-item', 'bad');
+  await expect(notes).toContainText('It has no git remote');
+  await expect(notes).toContainText(role === 'admin' ? 'Lin’s machine has kept all it can' : 'Lin’s build box has kept all it can');
+  await expect(rows.filter({ hasText: 'sketches isn’t being captured yet' })).toContainText('Work there older than 7 days wasn’t kept.');
+  await expect(notes.getByRole('button', { name: 'Connect field-notes' })).toBeVisible();
+  if (role === 'admin') {
+    const gadget = rows.filter({ hasText: 'gadget isn’t being captured yet' });
+    await expect(gadget).toHaveAttribute('data-needs-you-item', 'warn');
+    await expect(gadget).toContainText('It’s outside the folders Ada’s studio Mac captures.');
+    await expect(gadget).toContainText('4 sessions on Ada’s studio Mac so far, most recently 25 min ago.');
+  } else {
+    await expect(within).not.toContainText('gadget');
+  }
+  await expect(within).not.toContainText(/uncaptured/i);
+  await group.getByRole('button', { name: 'See each' }).click();
+  await expect(rows).toHaveCount(0);
+}
+
 test.describe('Today', () => {
   for (const { role, cookie } of ROLES) for (const { viewport, mode } of SHOT_MATRIX) {
     test(`today ${role} ${viewport} ${mode}`, async ({ browser }) => {
@@ -111,29 +149,31 @@ test.describe('Today', () => {
             await expect(panel).toBeInViewport();
             if (onFixture()) {
               await expect(panel.getByRole('heading', { name: 'Needs you' })).toBeVisible();
-              await expect(panel.locator('[data-needs-you-item="bad"]')).toContainText('A code map update failed');
-              await expect(panel.locator('[data-needs-you-item="warn"]')).toContainText('Access key “CI deploys” expires');
+              await expect(panel.locator('[data-needs-you-item="bad"]').first()).toContainText('A code map update failed');
+              await expect(panel.locator('[data-needs-you-item="warn"]').first()).toContainText('Access key “CI deploys” expires');
+              await expectWaitingRepositories(panel, role);
             }
           } else {
             const summary = page.locator('[data-needs-you]');
             await expect(summary).toBeInViewport();
             if (onFixture()) {
-              await expect(summary.getByRole('button', { name: /2 things need you/ })).toBeVisible();
-              await summary.getByRole('button', { name: /2 things need you/ }).click();
-              await expect(summary.locator('[data-needs-you-item]')).toHaveCount(2);
+              await expect(summary.getByRole('button', { name: /3 things need you/ })).toBeVisible();
+              await summary.getByRole('button', { name: /3 things need you/ }).click();
+              await expect(summary.locator('[data-needs-you-item]')).toHaveCount(3);
+              await expectWaitingRepositories(summary, role);
               await expectAxeClean(page, ['[data-needs-you]']);
-              await summary.getByRole('button', { name: /2 things need you/ }).click();
+              await summary.getByRole('button', { name: /3 things need you/ }).click();
               await expect(summary.locator('[data-needs-you-item]')).toHaveCount(0);
             }
           }
-        } else {
-          // Nothing of Needs you reaches a member: no card, and no element named for it, loading or failed.
-          await expect(page.locator('[data-needs-you]')).toHaveCount(0);
-          await expect(page.getByText(/needs you/i)).toHaveCount(0);
-          const named = await page.evaluate(() => [...document.querySelectorAll('*')]
-            .map((el) => `${el.getAttribute('aria-label') ?? ''} ${el.getAttribute('title') ?? ''}`)
-            .filter((name) => /needs you/i.test(name)));
-          expect(named, 'an element named for Needs you').toEqual([]);
+        } else if (onFixture()) {
+          // A member is shown their own machines' repositories alone, and nothing of the server's own health.
+          const needsYou = page.locator('[data-needs-you]');
+          if (viewport === 'phone') await needsYou.getByRole('button', { name: /1 thing needs you/ }).click();
+          await expect(needsYou.locator('[data-needs-you-item]')).toHaveCount(1);
+          await expectWaitingRepositories(needsYou, role);
+          await expect(needsYou).not.toContainText('code map');
+          if (viewport === 'phone') await needsYou.getByRole('button', { name: /1 thing needs you/ }).click();
         }
 
         await expectCapture(page, viewport, role);
@@ -166,6 +206,88 @@ test.describe('Today', () => {
         await expectAxeClean(page);
         await shoot(page, 'today-quiet', viewport, mode);
         expectQuiet(watch);
+      } finally {
+        await context.close();
+      }
+    });
+  }
+
+  /** Today as the owner with the repositories Myco isn't capturing yet opened to each, Ada's `gadget` in view. */
+  async function openRepositories(page: Page, viewport: ViewportName): Promise<Locator> {
+    const needsYou = page.locator('[data-needs-you]');
+    if (viewport === 'phone') await needsYou.getByRole('button', { name: /things need you/ }).click();
+    await needsYou.locator('[data-repositories]').getByRole('button', { name: 'See each' }).click();
+    const gadget = needsYou.locator('[data-repository]').filter({ hasText: 'gadget isn’t being captured yet' });
+    await gadget.scrollIntoViewIfNeeded();
+    return gadget;
+  }
+
+  for (const { viewport, mode } of SHOT_MATRIX) {
+    test(`today repositories not captured yet ${viewport} ${mode}`, async ({ browser }) => {
+      test.skip(!onFixture(), 'the repositories are the fixture\'s');
+      const { context, page, watch } = await openPage(browser, { path: '/', viewport, mode, cookie: screensEnv('ownerCookie') });
+      try {
+        const gadget = await openRepositories(page, viewport);
+        await expect(gadget.getByRole('button', { name: 'Connect gadget' })).toBeInViewport();
+        await page.waitForLoadState('networkidle');
+        await expectFits(page, viewport);
+        await expectNoRawIds(page);
+        await expectAxeClean(page);
+        expectQuiet(watch);
+        await shoot(page, 'today-repositories', viewport, mode);
+      } finally {
+        await context.close();
+      }
+    });
+  }
+
+  for (const { viewport, mode } of SHOT_MATRIX) {
+    test(`today connect a repository ${viewport} ${mode}`, async ({ browser }) => {
+      test.skip(!onFixture(), 'the repository is the fixture\'s');
+      const { context, page, watch } = await openPage(browser, { path: '/', viewport, mode, cookie: screensEnv('ownerCookie') });
+      try {
+        const gadget = await openRepositories(page, viewport);
+        await gadget.getByRole('button', { name: 'Connect gadget' }).click();
+        const dialog = page.getByRole('dialog', { name: 'Connect gadget' });
+        await expect(dialog).toBeVisible();
+        await expect(dialog).toContainText('Ada’s studio Mac starts capturing it at the next agent session there');
+        // Past eight projects the choice is searchable; its trigger names the choice either way.
+        await expect(dialog.getByRole('button', { name: /^Project: The project that holds github\.com\/acme\/gadget/ })).toHaveText('Let Myco choose');
+        await expect(dialog.getByRole('button', { name: 'Connect', exact: true })).toBeVisible();
+        await page.waitForLoadState('networkidle');
+        await expectFits(page, viewport);
+        await expectNoRawIds(page);
+        await expectAxeClean(page);
+        expectQuiet(watch);
+        // Nothing is connected: the shot is the last step, and the repository stays for every other check on this fixture.
+        await shoot(page, 'today-connect', viewport, mode);
+      } finally {
+        await context.close();
+      }
+    });
+  }
+
+  for (const { viewport, mode } of SHOT_MATRIX) {
+    test(`today connect a repository its member may not start a project for ${viewport} ${mode}`, async ({ browser }) => {
+      test.skip(!onFixture(), 'the repository is the fixture\'s');
+      const { context, page, watch } = await openPage(browser, { path: '/', viewport, mode, cookie: screensEnv('ownerCookie') });
+      try {
+        const needsYou = page.locator('[data-needs-you]');
+        if (viewport === 'phone') await needsYou.getByRole('button', { name: /things need you/ }).click();
+        await needsYou.locator('[data-repositories]').getByRole('button', { name: 'See each' }).click();
+        const prototype = needsYou.locator('[data-repository]').filter({ hasText: 'prototype isn’t being captured yet' });
+        await prototype.getByRole('button', { name: 'Connect prototype' }).click();
+        const dialog = page.getByRole('dialog', { name: 'Connect prototype' });
+        await expect(dialog).toBeVisible();
+        // Nothing is chosen for the viewer: connecting binds its remote to the project picked, for every clone.
+        await expect(dialog.getByRole('button', { name: 'Project', exact: true })).toHaveText('Choose a project');
+        await expect(dialog.getByRole('button', { name: 'Connect', exact: true })).toBeDisabled();
+        await page.waitForLoadState('networkidle');
+        await expectFits(page, viewport);
+        await expectNoRawIds(page);
+        await expectAxeClean(page);
+        expectQuiet(watch);
+        await shoot(page, 'today-connect-pick', viewport, mode);
       } finally {
         await context.close();
       }

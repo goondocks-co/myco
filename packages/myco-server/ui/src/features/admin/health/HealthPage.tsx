@@ -2,6 +2,7 @@ import { Link as RouterLink } from 'react-router-dom';
 import { focusRing } from '../../../design';
 import { useAttention } from '../../../hooks/use-attention';
 import { useBackups } from '../../../hooks/use-backups';
+import { useNeedsYou } from '../../../hooks/use-needs-you';
 import { useProjects } from '../../../hooks/use-projects';
 import { useStatus } from '../../../hooks/use-status';
 import { useNow } from '../../../hooks/use-today';
@@ -39,6 +40,7 @@ export function HealthPage() {
   const projects = useProjects();
   const names = new Map((projects.data?.projects ?? []).map((p) => [p.projectId, p.name]));
   const projectName = (projectId: string): string | null => names.get(projectId) ?? null;
+  const needsYou = useNeedsYou({ now, projectName });
   useAnchorScroll(!status.isPending && !attention.isPending && !backups.list.isPending);
 
   return (
@@ -63,14 +65,7 @@ export function HealthPage() {
         ))}
       </nav>
       <section id={HEALTH_ANCHORS.needsYou} aria-label="Needs you" className="scroll-mt-s6">
-        <NeedsYouPanel
-          answer={attention.data}
-          pending={attention.isPending}
-          error={attention.error}
-          onRetry={() => void attention.refetch()}
-          now={now}
-          projectName={projectName}
-        />
+        <NeedsYouPanel {...needsYou} />
       </section>
       <StatusSection status={status} now={now} projectName={projectName} />
       <WorkersSection status={status} now={now} projectName={projectName} />
