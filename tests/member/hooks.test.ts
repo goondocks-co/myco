@@ -28,6 +28,8 @@ import { readSessionState } from '@myco/member/session-state.js';
 import { parseTranscripts } from '@myco-server-worker/ingest/parse.js';
 import { memberRig, tempMycoHome, type MemberRig } from './helpers/server.js';
 import { registerTestMember, recordingFetch, runHook } from './helpers/hooks.js';
+import { TURN_END_HEADER } from '@goondocks/myco-shared/member-protocol';
+import { run as runMemberCli } from '@myco/cli/member.js';
 
 let mycoHome: string;
 let rig: MemberRig;
@@ -306,6 +308,44 @@ describe('member hooks through the worker: claude-code, transcript-first', () =>
     expect(readSessionState(new MemberSpool('proj_1', { mycoHome }).dir, session).delivered).toEqual(['cortex', 'cortex-compact:1', 'cortex-compact:2']);
     expect((await run('session-start', { transcript_path: tx, cwd: '/work/repo', source: 'resume' })).stdout).toBe('');
     expect(memberKinds().every((k) => k === 'session.start')).toBe(true);
+  });
+});
+
+describe('member hooks through the worker: the turn-end mark', () => {
+  /** Every transcript segment posted, with its session and whether it carried the turn-end mark. */
+  const segmentPosts = () => fetchSpy.requests
+    .filter((r) => r.path === '/events' && r.body !== undefined)
+    .map((r) => ({ envelope: JSON.parse(r.body!) as { kind: string; sessionId: string }, marked: r.headers[TURN_END_HEADER] === '1' }))
+    .filter((p) => p.envelope.kind === 'transcript.segment')
+    .map((p) => `${p.envelope.sessionId} ${p.marked ? 'marked' : 'unmarked'}`);
+  const offline: typeof rig.fetch = async () => { throw new TypeError('fetch failed'); };
+  const line = (text: string) => ({ type: 'user', uuid: `u-${text}`, message: { role: 'user', content: text } });
+
+  it('marks only the transcript a session\'s own Stop and SessionEnd ship; another session\'s turn end draining it, and a member drain, never mark it', async () => {
+    const txA = transcript([line('a')], 'sess-a');
+    for (const [hook, raw] of [
+      ['session-start', { hook_event_name: 'SessionStart', transcript_path: txA, cwd: '/work/repo' }],
+      ['stop', { hook_event_name: 'Stop', transcript_path: txA, last_assistant_message: 'x' }],
+    ] as const) await runHook(hook, { session_id: 'sess-a', ...raw }, { fetch: offline });
+    const spool = new MemberSpool('proj_1', { mycoHome });
+    expect(spool.transcriptBacklogIds()).toEqual(['sess-a']);
+
+    const txB = transcript([line('b')], 'sess-b');
+    await runHook('session-start', { session_id: 'sess-b', hook_event_name: 'SessionStart', transcript_path: txB, cwd: '/work/repo' }, { fetch: fetchSpy.fetch });
+    await runHook('stop', { session_id: 'sess-b', hook_event_name: 'Stop', transcript_path: txB, last_assistant_message: 'x' }, { fetch: fetchSpy.fetch });
+    expect(segmentPosts().sort()).toEqual(['sess-a unmarked', 'sess-b marked']);
+
+    fs.appendFileSync(txB, JSON.stringify(line('b2')) + '\n');
+    await runHook('session-end', { session_id: 'sess-b', hook_event_name: 'SessionEnd', transcript_path: txB }, { fetch: fetchSpy.fetch });
+    expect(segmentPosts().filter((p) => p.startsWith('sess-b'))).toEqual(['sess-b marked', 'sess-b marked']);
+
+    const txC = transcript([line('c')], 'sess-c');
+    for (const [hook, raw] of [
+      ['session-start', { hook_event_name: 'SessionStart', transcript_path: txC, cwd: '/work/repo' }],
+      ['stop', { hook_event_name: 'Stop', transcript_path: txC, last_assistant_message: 'x' }],
+    ] as const) await runHook(hook, { session_id: 'sess-c', ...raw }, { fetch: offline });
+    await runMemberCli(['drain'], { mycoHome, fetch: fetchSpy.fetch, stdout: () => {}, stderr: () => {} });
+    expect(segmentPosts().filter((p) => p.startsWith('sess-c'))).toEqual(['sess-c unmarked']);
   });
 });
 

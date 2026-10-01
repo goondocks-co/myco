@@ -31,10 +31,12 @@ export interface StatsProfile {
 export const STEP_57_INDEXES = ['idx_sessions_occurred_deployment', 'idx_spores_created_deployment', 'idx_plans_updated_deployment', 'idx_spores_author', 'idx_sessions_capture'] as const;
 /** The indexes schema step 58 adds, the `run_reads` key among them. */
 export const STEP_58_INDEXES = ['sqlite_autoindex_run_reads_1', 'idx_run_reads_session', 'idx_spores_session', 'idx_agent_runs_session'] as const;
+/** The indexes schema step 60 adds. */
+export const STEP_60_INDEXES = ['idx_sessions_working', 'idx_agent_runs_actor_entry'] as const;
 
 export const PROFILES: Readonly<Record<'current' | 'stale', StatsProfile>> = {
   current: { projects: 13, sessions: 4_000, spores: 2_000, plans: 450, runs: 12_000, transcripts: 4_200, unanalyzed: [] },
-  stale: { projects: 3, sessions: 159, spores: 268, plans: 60, runs: 900, transcripts: 170, unanalyzed: [...STEP_57_INDEXES, ...STEP_58_INDEXES] },
+  stale: { projects: 3, sessions: 159, spores: 268, plans: 60, runs: 900, transcripts: 170, unanalyzed: [...STEP_57_INDEXES, ...STEP_58_INDEXES, ...STEP_60_INDEXES] },
 };
 
 const AGENTS = ['claude-code', 'claude-code', 'claude-code', 'codex', 'codex', 'cursor', 'pi'];
@@ -60,9 +62,10 @@ export function analyzedStore(profile: StatsProfile): Database {
     }
     for (let i = 0; i < profile.sessions; i += 1) {
       const at = NOW - (profile.sessions - i) * 600_000;
-      db.run(`INSERT INTO sessions (project_id, session_id, machine_id, created_by_token_id, first_received_at, last_received_at, agent, branch, started_at, ended_at, title)
-              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      [projectOf(i, profile.projects), `s${i}`, `machine_${i % 4}`, `mt_${i % 8}`, at, at + 3_600_000, AGENTS[i % AGENTS.length], i % 5 === 0 ? 'main' : `feat/${i % 40}`, at, i % 20 === 0 ? null : at + 3_600_000, i % 3 === 0 ? null : `title ${i}`]);
+      // An open session in three holds an open turn.
+      db.run(`INSERT INTO sessions (project_id, session_id, machine_id, created_by_token_id, first_received_at, last_received_at, agent, branch, started_at, ended_at, title, working_since)
+              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [projectOf(i, profile.projects), `s${i}`, `machine_${i % 4}`, `mt_${i % 8}`, at, at + 3_600_000, AGENTS[i % AGENTS.length], i % 5 === 0 ? 'main' : `feat/${i % 40}`, at, i % 20 === 0 ? null : at + 3_600_000, i % 3 === 0 ? null : `title ${i}`, i % 60 === 0 ? at + 3_000_000 : null]);
     }
     for (let i = 0; i < profile.transcripts; i += 1) {
       db.run(`INSERT INTO transcripts (project_id, transcript_id, session_id, machine_id, size, first_received_at, last_received_at, token_id, parsed_offset, parser_version, imported_at)
@@ -74,8 +77,10 @@ export function analyzedStore(profile: StatsProfile): Database {
       const status = i % 15 === 0 ? 'failed' : i % 11 === 0 ? 'skipped' : 'completed';
       // A titling run's dispatch names its session.
       const context = task === 'title-summary' ? JSON.stringify({ session_id: `s${(i * 7) % profile.sessions}`, mode: 'claim' }) : null;
-      db.run(`INSERT INTO agent_runs (project_id, id, agent_id, task, status, started_at, completed_at, queued_at, tokens_used, cost_usd, run_context)
-              VALUES (?, ?, 'agent', ?, ?, ?, ?, ?, ?, ?, ?)`, [projectOf(i, profile.projects), `run_${i}`, task, status, at, at + 30_000, task === 'embedding-reconcile' ? null : at - 1000, 1000, 0.01, context]);
+      // A dispatch names its actor: the clock for upkeep, the backfill for titling, and a member for work asked for by hand.
+      const actor = task === 'embedding-reconcile' ? 'clock' : task === 'title-summary' ? 'backfill' : `mem_${i % 3}`;
+      db.run(`INSERT INTO agent_runs (project_id, id, agent_id, task, status, started_at, completed_at, queued_at, tokens_used, cost_usd, run_context, dispatch_spec)
+              VALUES (?, ?, 'agent', ?, ?, ?, ?, ?, ?, ?, ?, ?)`, [projectOf(i, profile.projects), `run_${i}`, task, status, at, at + 30_000, task === 'embedding-reconcile' ? null : at - 1000, 1000, 0.01, context, JSON.stringify({ actor })]);
       if (task !== 'embedding-reconcile') {
         db.run(`INSERT INTO agent_run_events (project_id, run_id, event_type, tool_name, outcome, payload, recorded_at) VALUES (?, ?, 'run_write', 'myco_run_sessions', 'written', '{}', ?)`, [projectOf(i, profile.projects), `run_${i}`, at]);
         db.run(`INSERT INTO agent_reports (project_id, run_id, agent_id, action, summary, created_at) VALUES (?, ?, 'agent', 'extract', 'x', ?)`, [projectOf(i, profile.projects), `run_${i}`, at]);
