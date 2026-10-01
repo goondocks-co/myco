@@ -264,6 +264,7 @@ describe('a deleted session takes no further writes', () => {
       'task.completed': { message: 'm' },
       notification: { message: 'm' },
       error: { message: 'm' },
+      turn: { phase: 'start' },
     };
 
     let n = 100;

@@ -49,6 +49,7 @@ const FIXTURES: Record<string, { payload: Record<string, unknown>; table: string
   'stop.failure': { payload: { message: 'x', data: { code: 1 } }, table: null },
   'task.completed': { payload: { message: 'done', data: { id: 't1' } }, table: null },
   notification: { payload: { message: 'hey', level: 'info' }, table: null },
+  turn: { payload: { phase: 'start', promptId: uuid(2) }, table: null },
   error: { payload: { message: 'bad', data: { stack: 's' } }, table: null },
 };
 
@@ -68,7 +69,7 @@ async function upload(env: ReturnType<typeof sqliteEnv>, token: string, bytes: U
 const FULL_PROJECTION_STATEMENTS = 20;
 const REQUIRED_ONLY_PROJECTION_STATEMENTS = 18;
 /** Every field carrying the prompt-reference marker across the catalogue. */
-const PROMPT_REFERENCE_MARKERS = 9;
+const PROMPT_REFERENCE_MARKERS = 10;
 /** Every blob-key field of the catalogue as `kind.field`, pinned by name; the absent-key admission gate drives each one. */
 const BLOB_KEY_FIELDS = [
   'attachment.blob', 'compaction.post.blob', 'compaction.pre.blob', 'plan.blob', 'prompt.blob',
@@ -76,10 +77,10 @@ const BLOB_KEY_FIELDS = [
   'transcript.segment.blob',
 ];
 /** Cost-gate pins: the exact count of distinct statements it drives, and a floor on the index steps it inspects on project-scoped tables. */
-const PLANNED_STATEMENTS = 55;
+const PLANNED_STATEMENTS = 56;
 const MIN_INDEX_STEPS = 60;
 /** Every id-bounded field across the catalogue, by the role it declares. */
-const ID_ROLES = { key: 7, prompt: 9, group: 1 };
+const ID_ROLES = { key: 7, prompt: 10, group: 1 };
 /** Every field carrying the time bound across the catalogue: `session.start.startedAt` and `session.end.endedAt`. */
 const ORDERING_FIELDS = 2;
 /** The projection families whose identity row carries `machine_id` are owned by that row; every other keyed table routes ownership through its session. Pinned from the catalogue's projection family, independent of the plan's own `owner`, so a flipped owner is caught by name. */
@@ -843,7 +844,9 @@ describe('kind catalogue', () => {
         if (spec.name === 'transcript.segment') { full.blob = segKey; full.length = segBytes.byteLength; }
         const payload = shape === 'full' ? full : Object.fromEntries(Object.entries(full).filter(([field]) => spec.fields[field]?.required === true));
         if (spec.name === 'transcript.segment') { payload.baseOffset = offset; offset += segBytes.byteLength; }
-        for (const createdAt of [3_000, 3_001]) {
+        // A turn start opens a turn only within the clock bound, so it is sent near now: the statement it opens with runs here too.
+        const at = spec.name === 'turn' ? Date.now() - 10_000 : 3_000;
+        for (const createdAt of [at, at + 1]) {
           await worker.fetch(memberPost(t.token, envelope({ eventId: uuid(n++), sessionId: `sess_${shape}`, kind: spec.name, createdAt, payload })), e.env);
         }
       }

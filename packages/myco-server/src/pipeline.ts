@@ -9,7 +9,7 @@ import { HARNESS_MEMBER_ID } from './core/harness.js';
 import { memberRole } from './auth/members-admin.js';
 import { forbiddenToMember, isAdmin } from './auth/roles.js';
 import { authenticateGrant, GRANT_KEY_PATTERN, touchGrant } from './auth/grants.js';
-import { HSTS_MAX_AGE_SECONDS, LINEAGE_REPLAY_GRACE_MS, MIN_COMPAT_MEMBER_PROTOCOL, PROJECT_HEADER, PROTOCOL_HEADER, RETRY_AFTER_SECONDS, SERVER_PROTOCOL } from './constants.js';
+import { FEATURES_HEADER, HSTS_MAX_AGE_SECONDS, LINEAGE_REPLAY_GRACE_MS, MIN_COMPAT_MEMBER_PROTOCOL, PROJECT_HEADER, PROTOCOL_HEADER, RETRY_AFTER_SECONDS, SERVER_FEATURES, SERVER_PROTOCOL } from './constants.js';
 import { sha256Hex } from './hash.js';
 import { readBoundedBody, MAX_BODY_BYTES } from './ingest/body.js';
 import { PROJECT_ARCHIVED, resolveProject } from './ingest/projects.js';
@@ -52,10 +52,11 @@ function stamp(res: Response): Response {
   return new Response(res.body, { status: res.status, headers });
 }
 
-/** The server's protocol number, disclosed only to authenticated members. */
+/** The server's protocol number and the features it takes beyond it, disclosed only to authenticated members. */
 function withProtocol(res: Response): Response {
   const headers = new Headers(res.headers);
   headers.set(PROTOCOL_HEADER, String(SERVER_PROTOCOL));
+  headers.set(FEATURES_HEADER, SERVER_FEATURES.join(','));
   return new Response(res.body, { status: res.status, headers });
 }
 
