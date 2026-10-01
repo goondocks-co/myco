@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'bun:test';
 import { CodexJsonlParser } from '@myco/symbionts/parsers/codex-jsonl.js';
+import { codexAdapter } from '@myco/symbionts/codex.js';
 import { systemEnvelopePrefixes, systemEnvelopeTags } from '@myco/symbionts/envelope-prefixes.js';
 
 /**
@@ -522,5 +523,28 @@ describe('CodexJsonlParser — system envelope folding (RC-B)', () => {
 
     const turns = bare.parseTurns(content);
     expect(turns).toHaveLength(2); // legacy behavior preserved when unconfigured
+  });
+});
+
+describe('codexAdapter', () => {
+  it('names Codex, its plugin root variable and its hook session field', () => {
+    expect(codexAdapter.name).toBe('codex');
+    expect(codexAdapter.displayName).toBe('Codex');
+    expect(codexAdapter.pluginRootEnvVar).toBe('CODEX_PLUGIN_ROOT');
+    expect(codexAdapter.hookFields.sessionId).toBe('session_id');
+  });
+
+  it('ignores update_plan calls whose arguments are empty or malformed, and counts them as tools', () => {
+    const content = toJsonl([
+      messageItem('user', [{ type: 'input_text', text: 'X' }], '2026-05-25T10:00:00Z'),
+      messageItem('assistant', [{ type: 'output_text', text: 'AI reply' }]),
+      functionCallItem('update_plan', 'not json'),
+      functionCallItem('update_plan', JSON.stringify({ plan: [] })),
+    ]);
+    const turns = codexAdapter.parseTurns(content);
+    expect(turns).toHaveLength(1);
+    expect(turns[0].aiResponse).toBe('AI reply');
+    expect(turns[0].aiResponse).not.toContain('<update_plan>');
+    expect(turns[0].toolCount).toBe(2);
   });
 });

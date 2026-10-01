@@ -1,8 +1,7 @@
 /**
  * Phase 1 unit tests for the LifecycleLock primitive.
  *
- * The Phase 0 regression test (tests/daemon/lifecycle-lock-orphan.test.ts)
- * exercises the orphan-process + SQLite shape end-to-end. These tests
+ * These tests
  * cover the primitive's individual contract: acquire/release semantics,
  * holder metadata roundtrip, and OS-level auto-release.
  */

@@ -31,8 +31,7 @@
  *    needs an existing agent_runs row, which runAgent creates) and exempt
  *    from dry-run interception.
  *  - `ensureProjectManifest` requires an `options.projectName` (not
- *    optional as the brief's snippet showed) — supplied here, matching
- *    tests/agent/executor-hooks.test.ts's convention.
+ *    optional as the brief's snippet showed) — supplied here.
  *  - Request context is built via `makeTestRequestContext` (Task 7's
  *    fixture), not a hand-rolled partial-shape object, so `runAgent`'s
  *    scope resolution and DB path resolution get a real, complete

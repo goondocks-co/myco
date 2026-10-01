@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'bun:test';
 import { StandardJsonlParser } from '@myco/symbionts/parsers/standard-jsonl.js';
+import { claudeCodeAdapter } from '@myco/symbionts/claude-code.js';
 
 /**
  * Build a JSONL string from an array of entry objects.
@@ -504,5 +505,77 @@ describe('StandardJsonlParser', () => {
       expect(turns[0].prompt).toBe('req');
       expect(turns[0].aiResponse).toBe('done');
     });
+  });
+});
+
+/**
+ * The Claude Code adapter's own binding of the parser: 2.0 capture reads Claude
+ * image attachments through it, and `hooks/stop.ts` falls back to its last turn
+ * for the assistant's text. These cases are Claude transcripts as written.
+ */
+describe('claudeCodeAdapter.parseTurns', () => {
+  const user = (text: string, timestamp: string) => ({ type: 'user', message: { content: [{ type: 'text', text }] }, timestamp });
+  const assistant = (content: unknown[], timestamp: string) => ({ type: 'assistant', message: { content }, timestamp });
+  const toolResult = (id: string, timestamp: string) => ({ type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: id, content: 'ok' }] }, timestamp });
+
+  it('pairs each prompt with its answer by the entry type, skipping other entries', () => {
+    const turns = claudeCodeAdapter.parseTurns(toJsonl([
+      { type: 'system', content: 'init', timestamp: '2026-03-15T10:00:00Z' },
+      user('Fix the bug', '2026-03-15T10:01:00Z'),
+      assistant([{ type: 'text', text: 'I found the issue.' }], '2026-03-15T10:01:30Z'),
+      user('Ship it', '2026-03-15T10:02:00Z'),
+      assistant([{ type: 'text', text: 'Done.' }], '2026-03-15T10:02:30Z'),
+    ]));
+    expect(turns.map((t) => [t.prompt, t.aiResponse, t.timestamp])).toEqual([
+      ['Fix the bug', 'I found the issue.', '2026-03-15T10:01:00Z'],
+      ['Ship it', 'Done.', '2026-03-15T10:02:00Z'],
+    ]);
+  });
+
+  it('folds tool results into the turn that called the tools, counting each call', () => {
+    const turns = claudeCodeAdapter.parseTurns(toJsonl([
+      user('Fix the bug', '2026-03-15T10:00:00Z'),
+      assistant([{ type: 'tool_use', id: 't1', name: 'Read', input: { file_path: '/foo.ts' } }], '2026-03-15T10:00:10Z'),
+      toolResult('t1', '2026-03-15T10:00:11Z'),
+      assistant([{ type: 'tool_use', id: 't2', name: 'Edit', input: { file_path: '/foo.ts' } }], '2026-03-15T10:00:20Z'),
+      toolResult('t2', '2026-03-15T10:00:21Z'),
+      assistant([{ type: 'text', text: 'Fixed the null check.' }], '2026-03-15T10:00:30Z'),
+      user('Now test it', '2026-03-15T10:01:00Z'),
+      assistant([{ type: 'text', text: 'Tests pass.' }], '2026-03-15T10:01:30Z'),
+    ]));
+    expect(turns.map((t) => [t.prompt, t.toolCount, t.aiResponse])).toEqual([
+      ['Fix the bug', 2, 'Fixed the null check.'],
+      ['Now test it', 0, 'Tests pass.'],
+    ]);
+  });
+
+  it('carries an attached image and drops the text reference Claude writes beside it', () => {
+    const turns = claudeCodeAdapter.parseTurns(toJsonl([
+      {
+        type: 'user',
+        message: { content: [
+          { type: 'text', text: '[Image: source: /tmp/screenshot.png]\nFix this layout' },
+          { type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'abc123' } },
+        ] },
+        timestamp: '2026-03-15T10:00:00Z',
+      },
+      assistant([{ type: 'text', text: 'Adjusted the grid.' }], '2026-03-15T10:00:30Z'),
+    ]));
+    expect(turns).toHaveLength(1);
+    expect(turns[0].prompt).toBe('Fix this layout');
+    expect(turns[0].images).toEqual([{ data: 'abc123', mediaType: 'image/png' }]);
+    expect(turns[0].aiResponse).toBe('Adjusted the grid.');
+  });
+
+  it('counts tool calls alongside the answer text of the same message', () => {
+    const turns = claudeCodeAdapter.parseTurns(toJsonl([
+      user('Read the file', '2026-03-15T10:00:00Z'),
+      assistant([
+        { type: 'tool_use', id: 't1', name: 'Read', input: {} },
+        { type: 'tool_use', id: 't2', name: 'Grep', input: {} },
+        { type: 'text', text: 'Here is the content.' },
+      ], '2026-03-15T10:00:30Z'),
+    ]));
+    expect(turns.map((t) => [t.toolCount, t.aiResponse])).toEqual([[2, 'Here is the content.']]);
   });
 });

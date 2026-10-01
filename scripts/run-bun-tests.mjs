@@ -9,6 +9,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseShard, selectShard } from './test-shards.mjs';
+import { redactSecrets } from './redact-secrets.mjs';
 
 // ---------------------------------------------------------------------------
 // Hermetic MYCO_HOME
@@ -164,16 +165,10 @@ warnOnBunVersionSkew();
 const FAST_EXCLUDES = [
   'tests/integration/',
   'tests/smoke/',
-  'tests/daemon/integration.test.ts',
-  'tests/daemon/server.test.ts',
-  'tests/hooks/client.test.ts',
 ];
 const INTEGRATION_INCLUDES = [
   'tests/integration/',
   'tests/smoke/',
-  'tests/daemon/integration.test.ts',
-  'tests/daemon/server.test.ts',
-  'tests/hooks/client.test.ts',
 ];
 
 const profile = process.env.MYCO_TEST_PROFILE ?? '';
@@ -193,37 +188,18 @@ const SAFE_NODE_BUNDLE_GROUPS = new Set([
   'tests/agent/tasks',
   'tests/backup',
   'tests/canopy',
-  'tests/canopy/aggregate',
   'tests/canopy/describe',
-  'tests/canopy/inject',
-  'tests/canopy/map',
-  'tests/canopy/parsers',
   'tests/canopy/scanner',
   'tests/capture',
-  'tests/cli/providers',
   'tests/config',
-  'tests/constants',
-  'tests/context',
-  'tests/daemon/config-reactions',
-  'tests/daemon/database',
-  'tests/daemon/embedding',
-  'tests/daemon/jobs',
-  'tests/db/queries',
   'tests/deploy',
-  'tests/embedding',
   'tests/grove',
-  'tests/intelligence',
-  'tests/logs',
   'tests/mcp',
-  'tests/mcp/tools',
   'tests/myco-server',
   'tests/myco-shared',
-  'tests/notifications',
   'tests/plans',
-  'tests/prompts',
   'tests/release-provenance',
   'tests/service',
-  'tests/services',
   // 'tests/symbionts' intentionally omitted: installer.test.ts, installer-integration.test.ts,
   // installer-scope.test.ts, installer-invariants.test.ts and others all mutate process.env.HOME
   // and process.env.MYCO_HOME in beforeEach/afterEach. Under bun's default max-concurrency=20,
@@ -233,10 +209,7 @@ const SAFE_NODE_BUNDLE_GROUPS = new Set([
   // runs isolated below instead.
   'tests/symbionts/parsers',
   'tests/symbionts/templates',
-  'tests/templates',
   'tests/tools',
-  'tests/ui',
-  'tests/ui/layout',
   'tests/utils',
   'tests/vault',
 ]);
@@ -248,39 +221,23 @@ const NO_ISOLATE_NODE_TARGETS = [
   'tests/agent/tasks',
   'tests/canopy',
   'tests/capture',
-  'tests/cli/providers',
   'tests/config',
-  'tests/constants',
-  'tests/context',
-  'tests/daemon/config-reactions',
-  'tests/daemon/database',
-  'tests/daemon/embedding',
-  'tests/daemon/jobs',
   'tests/db',
   // tests/deploy intentionally omitted: shared.test.ts calls mock.module().
   // The bundle path keeps the rest of the directory amortized while
   // shared.test.ts runs from SOLO_NODE_FILES.
-  'tests/embedding',
   'tests/grove',
-  'tests/intelligence',
-  'tests/logs',
   'tests/mcp',
   'tests/myco-server',
   'tests/myco-shared',
-  'tests/notifications',
   'tests/plans',
-  'tests/prompts',
   'tests/release-provenance',
   'tests/service',
-  'tests/services',
   // 'tests/symbionts' intentionally omitted: see SAFE_NODE_BUNDLE_GROUPS comment above.
   // Root-level symbiont tests run per-file isolated to prevent process.env race conditions.
-  'tests/templates',
   'tests/tools',
-  'tests/ui/layout',
   'tests/utils',
   'tests/vault',
-  'tests/semantic-search-filters.test.ts',
   // tests/hooks intentionally omitted: response-shape tests depend on
   // process-global manifest capability state and have failed under Linux
   // shared Bun after neighboring hook fixtures mutate globals.
@@ -294,27 +251,12 @@ const NO_ISOLATE_NODE_TARGETS = [
 // retries). Each runs as its own plain single-file bun process instead —
 // process-level isolation at ordinary startup cost.
 const SOLO_NODE_FILES = [
-  // Reads the machine config it writes through the process-wide tier cache;
-  // a neighbour's read of another home leaves the cache answering for it.
-  'tests/daemon/managed-files-reconcile-job.test.ts',
   'tests/agent/phase-loop.test.ts',
   'tests/agent/tools-dry-run.test.ts',
   'tests/agent/tools-skills.test.ts',
-  'tests/daemon/api/agent-runs-overrides-security.test.ts',
-  'tests/daemon/api/cortex.test.ts',
-  'tests/daemon/api/key-leak-guard.test.ts',
-  'tests/daemon/api/providers-ssrf.test.ts',
-  'tests/daemon/api/restart.test.ts',
-  'tests/daemon/api/stats.test.ts',
   // This file spies on fs.fsyncSync to force publication races. The spy is
   // process-global and cannot overlap unrelated durable-write tests.
   'tests/config/secrets-relocate-legacy-project.test.ts',
-  // These dispatcher fixtures share the ambient test DB and dispatcher
-  // lifecycle heavily enough that they stay cheaper and less flaky as
-  // explicit single-file processes than as hidden source-pattern matches.
-  'tests/daemon/event-contract-recovery.test.ts',
-  'tests/daemon/event-dispatch.test.ts',
-  'tests/daemon/team-sync.test.ts',
   'tests/deploy/shared.test.ts',
 ];
 
@@ -326,13 +268,9 @@ const NO_ISOLATE_NODE_GROUPS = [
     label: 'tests-agent-stable',
     targets: [
       'tests/agent/claude-code-executable.test.ts',
-      'tests/agent/context-queries.test.ts',
-      'tests/agent/lmstudio-context.test.ts',
-      'tests/agent/map-phase.test.ts',
       'tests/agent/ollama-context.test.ts',
       'tests/agent/openai-runtime.test.ts',
       'tests/agent/openrouter-catalog.test.ts',
-      'tests/agent/orchestrator.test.ts',
       'tests/agent/provider-harness.test.ts',
       'tests/agent/provider.test.ts',
       'tests/agent/run-accounting.test.ts',
@@ -352,91 +290,23 @@ const NO_ISOLATE_NODE_GROUPS = [
   {
     label: 'tests-daemon-root-stable',
     targets: [
-      'tests/daemon/backup-multiline.test.ts',
-      'tests/daemon/capture-images.test.ts',
-      'tests/daemon/codex-plan-capture.test.ts',
-      'tests/daemon/git-status.test.ts',
-      'tests/daemon/handle-user-prompt-steering.test.ts',
-      'tests/daemon/inflight-runs.test.ts',
-      'tests/daemon/lifecycle.test.ts',
-      'tests/daemon/migration-tasks.test.ts',
-      'tests/daemon/plan-capture.test.ts',
-      'tests/daemon/plan-watch-reaction.test.ts',
       'tests/daemon/port.test.ts',
-      'tests/daemon/power.test.ts',
-      'tests/daemon/project-power-state.test.ts',
-      'tests/daemon/reconciliation-cache-poisoning.test.ts',
-      'tests/daemon/reconciliation-dedup.test.ts',
-      'tests/daemon/router.test.ts',
-      'tests/daemon/skill-usage-detection.test.ts',
-      'tests/daemon/stale-session-sweep.test.ts',
-      'tests/daemon/static.test.ts',
-      'tests/daemon/stop-processing.test.ts',
-      'tests/daemon/task-scheduler.test.ts',
-      'tests/daemon/team-members-handler.test.ts',
-      'tests/daemon/update-in-progress-sentinel.test.ts',
-      'tests/daemon/update-installer.test.ts',
-      // machine-id.test.ts tests the real getMachineId() implementation and
-      // must NOT share a process with team-sync.test.ts, which mocks the
-      // entire @myco/daemon/machine-id.js module. Kept here where no such
-      // mock exists.
+      // machine-id.test.ts tests the real getMachineId() implementation, so
+      // it must never share a process with a file that mocks
+      // @myco/daemon/machine-id.js.
       'tests/daemon/machine-id.test.ts',
       'tests/daemon/subsystem-claim.test.ts',
-      // tests/daemon/event-loop-lag.test.ts intentionally omitted: it uses
-      // real timers plus synchronous loop blocking. In the Linux shared Bun
-      // daemon-root phase, earlier timer-heavy daemon tests can leave enough
-      // scheduler state behind that this fixture stalls despite passing
-      // standalone. Running it isolated keeps the probe timing contract local.
     ],
   },
   {
     label: 'tests-daemon-api-stable',
     targets: [
-      'tests/daemon/api/action-inflight.test.ts',
-      'tests/daemon/api/action-scope.test.ts',
-      'tests/daemon/api/agent-tasks.test.ts',
-      'tests/daemon/api/backup-config-grove-tier.test.ts',
-      'tests/daemon/api/backup-liveconfig.test.ts',
-      'tests/daemon/api/canopy-entries-api.test.ts',
-      'tests/daemon/api/canopy-map-api.test.ts',
-      'tests/daemon/api/config-cortex-paths.test.ts',
-      'tests/daemon/api/config.test.ts',
-      'tests/daemon/api/context.test.ts',
-      'tests/daemon/api/database-scope.test.ts',
-      'tests/daemon/api/database.test.ts',
-      'tests/daemon/api/digest-revisions.test.ts',
-      'tests/daemon/api/embedding-ops.test.ts',
-      'tests/daemon/api/groves-crud.test.ts',
-      'tests/daemon/api/groves.test.ts',
-      'tests/daemon/api/log-explorer.test.ts',
-      'tests/daemon/api/maintenance.test.ts',
-      'tests/daemon/api/models.test.ts',
-      'tests/daemon/api/mycelium.test.ts',
-      'tests/daemon/api/pause-enforcement.test.ts',
-      'tests/daemon/api/progress.test.ts',
-      'tests/daemon/api/projects-activity.test.ts',
-      'tests/daemon/api/projects-backup-restore.test.ts',
       'tests/daemon/api/provider-secrets.test.ts',
-      'tests/daemon/api/run-serializer.test.ts',
-      'tests/daemon/api/schemas/execution-overrides-traversal.test.ts',
-      'tests/daemon/api/search-canopy.test.ts',
-      'tests/daemon/api/search-normalization.test.ts',
-      'tests/daemon/api/search-team.test.ts',
-      'tests/daemon/api/sessions.test.ts',
-      'tests/daemon/api/skills-delete.test.ts',
-      'tests/daemon/api/skills.test.ts',
-      'tests/daemon/api/spores-session-filter.test.ts',
-      'tests/daemon/api/spores.test.ts',
-      'tests/daemon/api/team-connect-handlers.test.ts',
-      'tests/daemon/api/team-connect-status.test.ts',
       // tests/daemon/api/update.test.ts intentionally omitted — its top-level
       // `mock.module('@myco/daemon/update-checker.js', ...)` is hoisted by bun
       // ahead of the `await import(...)` that tries to capture the real module
       // for afterAll restoration, so the stub leaks for the rest of the bun
-      // process. Mock state from later tests (e.g. `getInstalledVersion`
-      // returning '1.1.0') then poisons the team-connect-status status test
-      // that depends on the real reader. Running it isolated keeps the
-      // mock-induced leak contained to its own bun process.
+      // process. Running it isolated keeps the leak in its own bun process.
     ],
   },
   // tests-agent-tools-core intentionally omitted: these files pass
@@ -452,46 +322,21 @@ const NO_ISOLATE_NODE_GROUPS = [
   {
     label: 'tests-daemon-service-boundary',
     targets: [
-      'tests/daemon/reconciliation-stop.test.ts',
-      'tests/daemon/reconcile-existing-daemon.test.ts',
       'tests/daemon/grove-runtime-cache.test.ts',
-      'tests/daemon/eviction.test.ts',
-      'tests/daemon/server-security.test.ts',
-      'tests/daemon/grove-ownership-boundary.test.ts',
       'tests/daemon/legacy-scope-removed.test.ts',
-      'tests/daemon/data-paths.test.ts',
-      'tests/daemon/http-server-limits.test.ts',
-      'tests/daemon/logger.test.ts',
-      'tests/daemon/state-file-invariant.test.ts',
     ],
   },
   {
     label: 'tests-daemon-capture-backup',
     targets: [
       'tests/daemon/backup-canopy-roundtrip.test.ts',
-      'tests/daemon/capture.test.ts',
-      'tests/daemon/backup.test.ts',
     ],
   },
   {
     label: 'tests-daemon-power-sweeps',
     targets: [
       'tests/daemon/power-jobs.test.ts',
-      'tests/daemon/scope-iteration.test.ts',
-      'tests/daemon/cold-project-gate.test.ts',
       'tests/daemon/tick-paths-pause.test.ts',
-      'tests/daemon/scheduler-pause.test.ts',
-      'tests/daemon/self-reconcile.test.ts',
-    ],
-  },
-  {
-    label: 'tests-daemon-lifecycle-leftovers',
-    targets: [
-      'tests/daemon/startup-pauses.test.ts',
-      'tests/daemon/intent.test.ts',
-      'tests/daemon/agent-loop-responsiveness.test.ts',
-      'tests/daemon/lifecycle-lock-startup.test.ts',
-      'tests/daemon/trigger-title-summary.test.ts',
     ],
   },
 ];
@@ -985,28 +830,36 @@ function writeOverBudgetJunit(reportFile, label, files) {
 }
 
 /**
- * Every process this group spawned: the members of its process group (the
- * group's bash wrapper is spawned detached, so its pid is the pgid) plus any
- * descendant that left the group, found by walking parent pids from the
- * wrapper. Nothing outside that tree is ever returned.
+ * Every process alive now, by pid: its parent, its process group, and when it
+ * started. A pid and its start time together name one process; a pid alone
+ * can name a later process that reused it. Null when the table cannot be read.
  */
-function groupTreePids(rootPid) {
-  let table;
-  try {
-    table = spawnSync('ps', ['-axo', 'pid=,ppid=,pgid='], { encoding: 'utf8', timeout: 10000 }).stdout ?? '';
-  } catch {
-    return [rootPid];
+function readProcessTable() {
+  const ps = spawnSync('ps', ['-axo', 'pid=,ppid=,pgid=,lstart='], { encoding: 'utf8', timeout: 10000 });
+  if (ps.error || ps.status !== 0) return null;
+  const table = new Map();
+  for (const line of (ps.stdout ?? '').split('\n')) {
+    const match = line.trim().match(/^(\d+)\s+(\d+)\s+(\d+)\s+(.+)$/);
+    if (match) table.set(Number(match[1]), { ppid: Number(match[2]), pgid: Number(match[3]), started: match[4].replace(/\s+/g, ' ') });
   }
-  const rows = table.split('\n').map((line) => line.trim().split(/\s+/).map(Number)).filter((r) => r.length === 3 && r.every(Number.isFinite));
-  const pids = new Set([rootPid]);
-  for (const [pid, , pgid] of rows) if (pgid === rootPid) pids.add(pid);
+  return table;
+}
+
+/**
+ * The processes of a group's tree in `table`: the members of its process group
+ * (the group's bash wrapper is spawned detached, so its pid is the pgid) and
+ * every descendant of a member that left the group. A wrapper that has exited
+ * is absent, so a process that later reuses its pid is not mistaken for it.
+ */
+function groupTreeIn(table, pgid) {
+  const pids = new Set([...table].filter(([, row]) => row.pgid === pgid).map(([pid]) => pid));
   for (let grew = true; grew;) {
     grew = false;
-    for (const [pid, ppid] of rows) {
-      if (pids.has(ppid) && !pids.has(pid)) { pids.add(pid); grew = true; }
+    for (const [pid, row] of table) {
+      if (pids.has(row.ppid) && !pids.has(pid)) { pids.add(pid); grew = true; }
     }
   }
-  return [...pids].sort((a, b) => a - b);
+  return pids;
 }
 
 /** Run a diagnostic command with a hard timeout and return what it printed. */
@@ -1024,7 +877,7 @@ function diagnostic(command, args) {
  */
 function captureHangDiagnostics(pids, hangFile, heading) {
   const sections = [`${heading}\n`, `pids: ${pids.join(' ')}\n`];
-  sections.push('\n--- ps\n', diagnostic('ps', ['-o', 'pid,ppid,pgid,stat,%cpu,etime,command', '-p', pids.join(',')]));
+  if (pids.length > 0) sections.push('\n--- ps\n', diagnostic('ps', ['-o', 'pid,ppid,pgid,stat,%cpu,etime,command', '-p', pids.join(',')]));
   for (const pid of pids) {
     sections.push(`\n=== pid ${pid}\n`);
     if (process.platform === 'darwin') {
@@ -1039,10 +892,11 @@ function captureHangDiagnostics(pids, hangFile, heading) {
     }
     sections.push('--- lsof\n', diagnostic('lsof', ['-p', String(pid)]));
   }
-  const text = sections.join('');
+  const text = redactSecrets(sections.join(''));
   try { fs.appendFileSync(hangFile, text); } catch { /* best-effort */ }
   return text;
 }
+
 
 function resetReportDir() {
   fs.rmSync(REPORT_DIR, { recursive: true, force: true });
@@ -1240,23 +1094,49 @@ async function runWithTeeAndHeartbeat(command, args, teeFile, label, { deadlineM
 
     let killedForHang = false;
     let killedForBudget = false;
-    // Signals the group's process group and every pid found in its tree;
-    // only processes this group spawned are ever signalled.
-    function killPhaseTree(signal, pids = []) {
-      try { process.kill(-child.pid, signal); }
-      catch { try { child.kill(signal); } catch { /* already gone */ } }
-      for (const pid of pids) {
+    /** The SIGKILL that follows a kill; the group settles only once it has been sent. */
+    let escalation = null;
+    /**
+     * The processes this group spawned, as captured when it was found stuck:
+     * pid to start time. A captured process stays a target wherever it has
+     * moved since, including a descendant reparented when its parent died.
+     */
+    let captured = null;
+    // Signals only processes this group spawned: every captured process that
+    // is still the same process (same pid, same start time), every process in
+    // the group's tree now, and the process group while one of them belongs to
+    // it. A pid reused by an unrelated process is never signalled, and a
+    // process group id cannot be reused while a member lives.
+    function killPhaseTree(signal) {
+      const table = readProcessTable();
+      if (table === null) {
+        // No process table to read: the process group is all that can be named.
+        try { process.kill(-child.pid, signal); } catch { /* already gone */ }
+        return;
+      }
+      const targets = groupTreeIn(table, child.pid);
+      for (const [pid, started] of captured ?? []) {
+        if (table.get(pid)?.started === started) targets.add(pid);
+      }
+      if ([...targets].some((pid) => table.get(pid)?.pgid === child.pid)) {
+        try { process.kill(-child.pid, signal); } catch { /* already gone */ }
+      }
+      for (const pid of targets) {
         try { process.kill(pid, signal); } catch { /* already gone */ }
       }
     }
     function reportAndKill(heading) {
-      const pids = groupTreePids(child.pid);
+      const table = readProcessTable();
+      const pids = table === null ? [] : [...groupTreeIn(table, child.pid)].sort((a, b) => a - b);
+      captured = table === null ? null : new Map(pids.map((pid) => [pid, table.get(pid).started]));
       process.stderr.write(`${heading}\n[run-bun-tests] sampling ${pids.length} process(es) of ${label} into ${hangFile}\n`);
       const diagnostics = captureHangDiagnostics(pids, hangFile, heading);
       try { fs.appendFileSync(teeFile, `${heading}\n${diagnostics}`); } catch { /* best-effort */ }
-      killPhaseTree('SIGTERM', pids);
-      // Escalate shortly after, in case the tree ignores SIGTERM.
-      setTimeout(() => killPhaseTree('SIGKILL', pids), 2000).unref?.();
+      killPhaseTree('SIGTERM');
+      // Escalate shortly after, in case anything ignored SIGTERM. The timer is
+      // held, and the group waits for it, so the runner never moves on or exits
+      // with a captured process still alive.
+      escalation = new Promise((done) => { setTimeout(() => { killPhaseTree('SIGKILL'); done(); }, 2000); });
     }
 
     let lastNonEmptyLine = '';
@@ -1344,7 +1224,9 @@ async function runWithTeeAndHeartbeat(command, args, teeFile, label, { deadlineM
       const completion = `[run-bun-tests] ${verb} ${label} in ${totalMs}ms (exit ${exit})${tail}\n`;
       process.stderr.write(completion);
       try { fs.appendFileSync(teeFile, completion); } catch { /* best-effort */ }
-      resolve({ status: exit, wedged: killedForHang, overBudget: killedForBudget });
+      const outcome = { status: exit, wedged: killedForHang, overBudget: killedForBudget };
+      if (escalation === null) resolve(outcome);
+      else escalation.then(() => resolve(outcome));
     }
     child.on('close', settle);
     // After a kill, a process outside the tree that inherited the group's

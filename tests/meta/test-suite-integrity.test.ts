@@ -10,8 +10,7 @@
  * A focused `.only` has the same shape: one character reduces a whole file to a
  * single test and the suite still reports green.
  *
- * Static source scan (node:fs), no daemon boot — same shape as
- * `tests/meta/route-stamp-completeness.test.ts`.
+ * Static source scan (node:fs), no daemon boot.
  */
 import { describe, expect, it } from 'bun:test';
 import fs from 'node:fs';

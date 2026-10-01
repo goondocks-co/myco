@@ -155,8 +155,7 @@ export interface CanopyEntrySeed {
 /**
  * Insert a single row into `canopy_entries` with sensible defaults. Keeps
  * the four canopy test files from drifting on column order or default
- * values. Migration tests in `tests/db/canopy-embedded-migration.test.ts`
- * deliberately bypass this helper because they exercise the schema chain
+ * values. Migration tests deliberately bypass this helper because they exercise the schema chain
  * directly.
  */
 export function seedCanopyEntry(db: Database, seed: CanopyEntrySeed): void {

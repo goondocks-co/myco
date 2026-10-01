@@ -12,7 +12,6 @@
  *
  * Note: checkForUpdate / statusFromCache were retired from update-checker.ts
  * (Task 7). The composite CheckResult assembly now lives in daemon/api/upgrade.ts.
- * Those functions' behaviors are covered by tests/daemon/api/upgrade.test.ts.
  */
 
 import { describe, it, expect, beforeEach, afterEach, mock } from 'bun:test';

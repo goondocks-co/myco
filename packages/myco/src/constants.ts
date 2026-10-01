@@ -585,9 +585,8 @@ export const SYNC_PROTOCOL_VERSION = 3;
  * Oldest sync protocol the current daemon/worker still accepts. Used
  * to gate destructive worker startup chores (D1 one-shot prunes) and
  * to refuse incompatible enqueue payloads with an explicit typed
- * error rather than letting them quietly mis-write rows. Live: verified
- * against `packages/myco-team/worker/wrangler.toml`'s lockstep value by
- * `tests/worker/manifest.test.ts` and `tests/worker/team-worker-schedule.test.ts`.
+ * error rather than letting them quietly mis-write rows. It moves in
+ * lockstep with `packages/myco-team/worker/wrangler.toml`'s value.
  *
  * The pair forms an inclusive window
  * `[MIN_COMPAT_CLIENT_VERSION, SYNC_PROTOCOL_VERSION]`. Bump this

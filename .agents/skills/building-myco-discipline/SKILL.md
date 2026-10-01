@@ -53,7 +53,7 @@ Test the invariants with **property-style tests**, not example-based ones. See `
 
 Refactoring a function claims the externally observable behavior is unchanged. Verify the claim:
 
-- For HTTP handlers: every (input → status code, error envelope code, response shape) tuple the old code honored MUST survive. Lock with contract-diff regression tests (see `tests/daemon/api/projects-symbiont-overrides.test.ts` — the block labeled "Contract-diff regression suite").
+- For HTTP handlers: every (input → status code, error envelope code, response shape) tuple the old code honored MUST survive. Lock with contract-diff regression tests: one case per tuple, run against the old and the new code.
 - For library functions: every (input → return shape, thrown exception type) tuple must survive.
 - Happy-path tests catch zero of these regressions. Write the contract-diff tests BEFORE the refactor; they double as the migration checklist.
 
@@ -162,4 +162,3 @@ For any change spanning more than ~3 commits or touching critical paths (capture
 - [`myco:safe-config-updates`](../safe-config-updates/SKILL.md) — applying the capability pattern to a specific resource (myco.yaml).
 - [`myco:debug-capture`](../debug-capture/SKILL.md) — the cross-layer lifecycle walk that smoke testing complements.
 - `tests/vault/project-vault-invariants.test.ts` — exemplar property-style invariant suite.
-- `tests/daemon/api/projects-symbiont-overrides.test.ts` — exemplar contract-diff regression suite (search for "Contract-diff regression suite").
