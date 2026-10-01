@@ -71,7 +71,6 @@ function manifestPaths(): string[] {
   // Nested roots with their own lockfiles (not npm workspaces).
   for (const nested of [
     'packages/myco/ui/package.json',
-    'packages/myco-team/worker/package.json',
     'packages/myco-server/package.json',
     'packages/myco-server/ui/package.json',
   ]) {

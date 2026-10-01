@@ -28,7 +28,7 @@ const MYCO = 'packages/myco/src/';
 const LEGACY_DIRS: readonly string[] = [
   'agent', 'backup', 'canopy', 'capture', 'cli/providers', 'config', 'context', 'daemon', 'db', 'grove', 'host',
   'intelligence', 'logs', 'notifications', 'prompts', 'providers', 'release-provenance', 'service', 'services', 'sessions',
-  'spores', 'team', 'team-host', 'templates', 'test-utils', 'tools', 'vault', 'worker',
+  'spores', 'team', 'team-host', 'templates', 'test-utils', 'tools', 'vault',
 ];
 
 /** The 1.4 files in directories 2.0 shares. */
@@ -58,8 +58,7 @@ const LEGACY_FILES: readonly string[] = [
 ];
 
 const isLegacy = (key: string): boolean =>
-  key.startsWith('packages/myco-team/')
-  || LEGACY_DIRS.some((dir) => key.startsWith(`${MYCO}${dir}/`))
+  LEGACY_DIRS.some((dir) => key.startsWith(`${MYCO}${dir}/`))
   || LEGACY_FILES.some((file) => key === `${MYCO}${file}`);
 
 /** A 1.4 verb module the CLI dispatches to: an edge from `cli.ts` to one is the dispatch, allowed until its verb goes. */
@@ -136,29 +135,20 @@ const UNFOLLOWABLE: Readonly<Record<string, number>> = {
  * the `package.json` scripts, the Dockerfiles, the Makefile and the CI workflows and actions.
  */
 const ALLOWED_TEXT_REACH: Readonly<Record<string, string>> = {
-  '.github/actions/ci-setup/action.yml packages/myco-team/worker/package-lock.json': '#1170 P1: the Team-Sync packages go',
   '.github/actions/ci-setup/action.yml packages/myco/ui/package-lock.json': '#1170 P2: the 1.4 dashboard goes',
-  '.github/workflows/ci.yml packages/myco-team/worker': '#1170 P1: the Team-Sync packages go',
   '.github/workflows/ci.yml packages/myco/src/ui-assets.generated.ts': '#1170 P2: the 1.4 dashboard bundle check goes',
-  '.github/workflows/publish.yml packages/myco-team/worker': '#1170 P1: the Team-Sync packages go',
-  '.github/workflows/publish.yml packages/myco-team/worker/package-lock.json': '#1170 P1: the Team-Sync packages go',
   '.github/workflows/publish.yml packages/myco/ui': '#1170 P2: the 1.4 dashboard goes',
   '.github/workflows/publish.yml packages/myco/ui/package-lock.json': '#1170 P2: the 1.4 dashboard goes',
   'Makefile packages/myco/ui': '#1170 P2: the 1.4 dashboard goes',
   'Makefile packages/myco/ui/**': '#1170 P2: the 1.4 dashboard goes',
-  'package.json packages/myco-team/worker': '#1170 P1: the Team-Sync packages go',
-  'packages/myco-server/Dockerfile packages/myco-deploy': '#1170 P1: the Team-Sync packages go',
-  'packages/myco-server/Dockerfile packages/myco-deploy/package.json': '#1170 P1: the Team-Sync packages go',
-  'packages/myco-server/Dockerfile packages/myco-team': '#1170 P1: the Team-Sync packages go',
-  'packages/myco-server/Dockerfile packages/myco-team/package.json': '#1170 P1: the Team-Sync packages go',
   'packages/myco-server/package.json packages/myco/src/agent/definitions': '#1170 P7: the harness image goes',
   'packages/myco-server/package.json packages/myco/src/agent/prompts': '#1170 P7: the harness image goes',
   'packages/myco-server/package.json packages/myco/src/agent/runtime/server-entry.ts': '#1170 P7: the harness image goes',
   'packages/myco-server/package.json packages/myco/src/agent/runtime/supervisor.ts': '#1170 P7: the harness image goes',
 };
 
-/** The 1.4 packages and the 1.4 dashboard, beside the 1.4 source tree. */
-const LEGACY_PACKAGES: readonly string[] = ['packages/myco-team', 'packages/myco-deploy', 'packages/myco/ui'];
+/** The 1.4 dashboard, beside the 1.4 source tree. */
+const LEGACY_PACKAGES: readonly string[] = ['packages/myco/ui'];
 
 const short = (key: string): string => (key.startsWith(MYCO) ? key.slice(MYCO.length) : key);
 

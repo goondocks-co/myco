@@ -18,9 +18,7 @@
   },
   "include": [
     "packages/myco/src/**/*",
-    "packages/myco-team/src/**/*",
     "packages/myco-shared/src/**/*",
-    "packages/myco-deploy/src/**/*",
     "tests/**/*.ts",
     "scripts/smoke-member-global.ts",
     "scripts/smoke-worker-run.ts",
@@ -41,7 +39,6 @@
     "dist",
     "packages/myco/ui",
     "packages/myco-server/ui",
-    "packages/myco/src/worker",
     "packages/myco/src/symbionts/templates",
     "packages/myco/src/entries/cli.*.ts",
     "tests/myco-server-ui",

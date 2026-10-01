@@ -17,7 +17,6 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - uses: ./.github/actions/ci-setup
-      - run: npm ci --prefix packages/myco-team/worker
       - run: npm run lint
       - run: node scripts/check-test-shards.mjs
 
