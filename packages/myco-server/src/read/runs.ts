@@ -5,6 +5,7 @@ import { ownMachineNames } from './capture.js';
 import { HARNESS_MEMBER_ID } from '../constants.js';
 import { runOutcomeCounts, type RunOutcomeCounts } from './run-reads.js';
 import { readRunCloseEvidence, type RunCloseEvidence } from '../core/run-postconditions.js';
+import { runErrorCode, skipReasonCode } from '../core/reader-codes.js';
 import { contextValue } from '../db/run-context.js';
 
 /** The most calls one run's detail lists; a run that called more is read in the record rather than the page. */
@@ -59,6 +60,7 @@ export interface RunListRow {
   /** The session the run's dispatch named, as a titling run names the session it titles; null for a run dispatched on no one session. */
   targetSessionId: string | null;
   /** Why a skipped run did not run, as the run records it; null for any run but a skipped one. */
+  skipReasonCode: string | null;
   skipReason: string | null;
 }
 
@@ -83,6 +85,7 @@ export interface RunDetailRow extends RunListRow {
   reasoningLevel: string | null;
   resumeMode: string | null;
   resumeAttempts: number;
+  errorCode: string | null;
   error: string | null;
   dispatchedBy: string | null;
   usageData: string | null;
@@ -199,6 +202,7 @@ function toListRow(row: Record<string, unknown>, ownNames: ReadonlyMap<string, s
     leaseExpiresAt: ended ? null : num(row.lease_expires_at),
     startedBy: text(row.started_by),
     targetSessionId: text(row.target_session_id),
+    skipReasonCode: skipReasonCode(text(row.skip_reason)),
     skipReason: text(row.skip_reason),
   };
 }
@@ -213,6 +217,7 @@ function toDetailRow(row: Record<string, unknown>, ownNames: ReadonlyMap<string,
     reasoningLevel: text(row.reasoning_level),
     resumeMode: text(row.resume_mode),
     resumeAttempts: (row.resume_attempts as number | null) ?? 0,
+    errorCode: runErrorCode(text(row.error)),
     error: text(row.error),
     dispatchedBy: text(row.dispatched_by),
     usageData: text(row.usage_data),

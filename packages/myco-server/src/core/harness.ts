@@ -1,3 +1,4 @@
+import { LAUNCH_REFUSED_ERROR } from './reader-codes.js';
 import { prepareWorkerEnd } from './worker-end.js';
 import type { WorkerUsage } from '@goondocks/myco-shared/worker-usage';
 import { REPOSITORY_TASKS, capabilitiesRequiredBy, type RepositoryCheckoutSpec } from '@goondocks/myco-shared/repository';
@@ -51,7 +52,7 @@ export const DEFAULT_DISPATCH_TIMEOUT_SECONDS = 300;
 export const RUN_OVERRUN_MARGIN_MS = 120_000;
 export { MAX_RUN_ERROR_CHARS } from '../constants.js';
 /** What a run whose runtime would not start carries, before the refusal's own word. */
-export const LAUNCH_REFUSED_ERROR = 'the runtime refused to start';
+export { LAUNCH_REFUSED_ERROR } from './reader-codes.js';
 /** The admission a capture-driven task carries into its container, in place of a capability name. */
 export const CAPTURE_DRIVEN_ADMISSION = 'captureDriven';
 
@@ -85,13 +86,13 @@ export type DispatchRefusal =
 
 export const DISPATCH_REFUSAL_MESSAGE: Readonly<Record<DispatchRefusal, string>> = {
   repository_missing: 'Connect the project repository in Settings before running a code task.',
-  harness_unavailable: 'this deployment has no harness runtime bound',
-  unknown_task: 'the task is not one this deployment serves',
-  no_instruction: 'the Deployment builds no instruction for this task, so a worker could not run it',
-  not_landed: 'this task is not yet one a worker can drive; the Deployment queues no run of it',
-  unknown_project: 'projectId names no Project this Deployment holds',
+  harness_unavailable: 'this server cannot start tasks itself',
+  unknown_task: 'this server cannot run that task',
+  no_instruction: 'this server has no instructions for that task',
+  not_landed: 'no machine can run that task yet',
+  unknown_project: 'the project is not on this server',
   no_provider: 'no provider is configured; Settings names one before a dispatch can run',
-  no_credential: 'no anthropic credential is stored; Settings takes one before a dispatch can run',
+  no_credential: 'no Anthropic key is saved; add one in Settings before starting a task',
   no_endpoint: 'openai-compatible needs agent.provider.base_url',
   unsupported_provider: 'the dispatcher serves anthropic and openai-compatible providers',
   capability_off: 'this task is turned off for the project; its capability is turned on in the project\'s Settings',

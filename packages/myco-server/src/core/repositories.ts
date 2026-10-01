@@ -54,7 +54,7 @@ export function projectRepositories(db: RelationalStore, secrets: SecretStore) {
       const credential = input.credential;
       if (credential != null && (typeof credential.username !== 'string' || !/^[A-Za-z0-9._@-]{1,192}$/.test(credential.username)
         || typeof credential.token !== 'string' || !credential.token || credential.token.length > MAX_CREDENTIAL_CHARS)) {
-        throw new RepositoryInputError('Read credentials require a username and a token of at most 4096 characters.');
+        throw new RepositoryInputError('Repository access needs a username and a token of at most 4096 characters.');
       }
       const previous = await row(projectId);
       if ((previous?.revision ?? null) !== input.revision) throw new RepositoryConflictError();

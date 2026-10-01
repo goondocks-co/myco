@@ -123,7 +123,7 @@ describe('search across Projects', () => {
     const h = harness();
     h.spore('proj_1', 'sp_a', 'cobalt');
     const refused = await h.get('/api/search?q=cobalt&mode=semantic');
-    expect(refused).toEqual({ status: 400, body: { error: 'bad_request', reason: expect.stringContaining('semantic search reads one project') } });
+    expect(refused).toEqual({ status: 400, body: { error: 'bad_request', reasonCode: 'invalid_request', reason: expect.stringContaining('semantic search reads one project') } });
     expect((await h.get('/api/search?q=cobalt&mode=auto')).body).toMatchObject({ mode: 'fts', provider_unavailable: false });
     expect((await h.get('/api/search?q=cobalt&mode=fts')).body.results).toHaveLength(1);
   });
@@ -210,7 +210,7 @@ describe('search across Projects', () => {
     h.spore('proj_1', 'sp_a', 'cobalt');
     for (const q of ['cob%00alt', '%00', 'cobalt%1B', 'cobalt%7F']) {
       for (const path of [`/api/search?q=${q}`, `/api/projects/proj_1/search?q=${q}`]) {
-        expect({ path, answer: await h.get(path) }).toEqual({ path, answer: { status: 400, body: { error: 'bad_request', reason: 'query must not contain control characters' } } });
+        expect({ path, answer: await h.get(path) }).toEqual({ path, answer: { status: 400, body: { error: 'bad_request', reasonCode: 'invalid_request', reason: 'query must not contain control characters' } } });
       }
     }
     // A tab or a line break is whitespace between terms.

@@ -47,7 +47,7 @@ export interface WorkRun {
   at: number | null;
   outcome: { spores: number; sessions: number; maps: number };
   sessionId: string | null;
-  failure: { cause: string; source: 'report' | 'error' } | null;
+  failure: { cause: string; code?: string | null; source: 'report' | 'error' } | null;
   tokens: number | null;
   costUsd: number | null;
 }

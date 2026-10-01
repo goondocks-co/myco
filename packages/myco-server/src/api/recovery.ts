@@ -27,7 +27,7 @@ const answer = (status: RecoveryProducerStatus, operatorHold: OperatorHoldReport
   ...status,
   recoverable: false,
   usable: status.form === 'artifact'
-    ? 'a complete attempt is the verified artifact a restore consumes; restoring it also needs the wrapping key for its stored credentials, which is kept outside it'
+    ? 'a complete attempt is the verified artifact a restore consumes; restoring it also needs the wrapping key for its stored secrets, which is kept outside it'
     : 'a staging becomes recoverable only when an operator materializes it into a verified artifact; a complete staging is not yet one',
   operatorHold,
   schedule,
@@ -79,14 +79,14 @@ const operatorHoldOf = async (env: ServerEnv): Promise<OperatorHoldReport> => {
     const held = await within(() => openOperatorHold(env), OPERATOR_HOLD_MS, Date.now);
     return held === null
       ? { open: false }
-      : { open: true, acquiredAt: held.acquiredAt, defers: 'an operator backup holds every object this Deployment registers: deletions are recorded and deferred, and storage grows by what they would have freed, until that backup completes or is given up' };
+      : { open: true, acquiredAt: held.acquiredAt, defers: 'a backup started by hand keeps every stored file: deletions are recorded and deferred, and storage grows by what they would have freed, until that backup completes or is given up' };
   } catch (error) {
     emit({ kind: 'recovery_operator_hold_unreadable', error_class: classify(error) });
-    return { open: 'unknown', reason: 'whether an operator backup holds this Deployment could not be read; a running export pauses its database' };
+    return { open: 'unknown', reason: 'whether a backup started by hand is running could not be read; a running export pauses its database' };
   }
 };
 
-const unavailable = (): Response => badRequest('this Deployment runs no hosted recovery producer');
+const unavailable = (): Response => badRequest('this server cannot make automatic backups');
 
 /**
  * What each admission outcome is, as an owner's request: the same statuses and envelopes this route has always
@@ -103,7 +103,7 @@ function responseFor(outcome: AdmissionOutcome): Response | null {
     case 'unanswered':
       return Response.json({ error: 'recovery_admission_unanswered', message: 'the export admission failed or did not answer in time; its hold is settled by a later wake, and a status read shows whether it was admitted' }, { status: 503 });
     case 'deferred':
-      return Response.json({ error: 'recovery_deferred_to_operator', message: `an operator backup has held this Deployment since ${new Date(outcome.since).toISOString()}; its own export starts once that backup ends` }, { status: 409 });
+      return Response.json({ error: 'recovery_deferred_to_operator', message: `a backup started by hand has been running since ${new Date(outcome.since).toISOString()}; its own export starts once that backup ends` }, { status: 409 });
     case 'hold-retired':
       return Response.json({ error: 'recovery_hold_retired', message: 'the recovery hold for this admission was already settled; start the export again' }, { status: 409 });
     // An attempt already running, or one just admitted, is answered with its own status.
@@ -135,7 +135,7 @@ export async function handleStartRecoveryExport(env: ServerEnv, ctx: OwnerContex
  */
 export async function handleForgetUnsettledExport(env: ServerEnv, ctx: OwnerContext): Promise<Response> {
   if (env.recovery === undefined) return unavailable();
-  if (env.recovery.forgetUnsettledExport === undefined) return badRequest('this Deployment\'s recovery producer records no unsettled export');
+  if (env.recovery.forgetUnsettledExport === undefined) return badRequest('this server records no unfinished backup export');
   const outcome = await env.recovery.forgetUnsettledExport();
   if ('refused' in outcome && outcome.refused === 'attempt_advancing') {
     return Response.json({ error: 'recovery_attempt_running', message: `attempt ${outcome.attempt} is still running and may be following that export, so nothing was forgotten; try again once it ends` }, { status: 409 });
@@ -158,7 +158,7 @@ export async function handleForgetUnsettledExport(env: ServerEnv, ctx: OwnerCont
 export async function handleRecoveryExportStatus(env: ServerEnv, ctx: OwnerContext): Promise<Response> {
   // A Deployment with no producer is a fact the status reports, not a request refused: the schedule says the same.
   if (env.recovery === undefined) {
-    const unsupported: RecoveryUnsupportedAnswer = { supported: false, reason: 'this Deployment runs no hosted recovery producer', schedule: await scheduleOf(env, ctx.now) };
+    const unsupported: RecoveryUnsupportedAnswer = { supported: false, reason: 'this server cannot make automatic backups', schedule: await scheduleOf(env, ctx.now) };
     return ok(unsupported);
   }
   const status = await env.recovery.status();

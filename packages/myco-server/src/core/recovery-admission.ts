@@ -57,7 +57,7 @@ async function capturedSchema(env: ServerEnv): Promise<{ text: string; tables: s
     return { message: error instanceof Error ? error.message : String(error) };
   }
   const tables = exportedTables(schema);
-  if (tables.length === 0) return { message: 'this Deployment holds no ordinary tables to recover' };
+  if (tables.length === 0) return { message: 'this server holds no tables to recover' };
   return { text: JSON.stringify(schema), tables, captured: capturedDefinitions(schema) };
 }
 

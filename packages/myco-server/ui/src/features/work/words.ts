@@ -6,7 +6,7 @@
  */
 import { heldByWords } from '@goondocks/myco-shared/run-holds';
 import type { OutcomeKind, Range } from '../today/wire';
-import { clockTime, count, when } from '../today/words';
+import { causeSentence, clockTime, count, when } from '../today/words';
 import { memberLabel } from '../../lib/member-name';
 import type { CapabilityOffRefusal, DailyLimitRefusal, FreshNeedsAdminRefusal, RunFields, RunOutcomeCounts, RunWorker } from './wire';
 
@@ -137,8 +137,8 @@ export function shortTime(at: number, now: number): string {
 }
 
 /** What one run came to, in a few words, for a line in a list. */
-export function runLineWords(kind: OutcomeKind | null, run: Pick<RunFields, 'status' | 'skipReason' | 'targetSessionId'>, outcome: Pick<RunOutcomeCounts, 'spores' | 'sessions' | 'readsRecorded'> & { maps?: number }): string {
-  if (run.status === 'skipped') return `Held off: ${skipWords(run.skipReason)}`;
+export function runLineWords(kind: OutcomeKind | null, run: Pick<RunFields, 'status' | 'skipReason' | 'skipReasonCode' | 'targetSessionId'>, outcome: Pick<RunOutcomeCounts, 'spores' | 'sessions' | 'readsRecorded'> & { maps?: number }): string {
+  if (run.status === 'skipped') return `Held off: ${skipWords(run.skipReasonCode ?? run.skipReason)}`;
   if (run.status === 'queued') return 'Waiting to start';
   if (run.status === 'running' || run.status === 'claimed') return 'Running now';
   const failed = run.status === 'failed';
@@ -168,6 +168,8 @@ export function skipWords(reason: string | null): string {
 }
 
 const SKIP_WORDS: Readonly<Record<string, string>> = {
+  run_not_needed: 'Myco didn’t need to run it',
+  machine_did_not_start: 'no machine started it within a day',
   max_runs_per_day: 'today’s run limit was reached',
   reserved_runs_per_day: 'the rest of today’s runs are kept for when they’re needed',
   input_unchanged: 'nothing new since the last run',
@@ -323,4 +325,20 @@ export function ranOn(worker: RunWorker | null, name: (id: string) => string | n
   // The viewer's own machine reads as theirs whether or not it has a name; only another member's reads "from" them.
   if (who === 'you') return { list: 'on your machine', machine: 'Your machine' };
   return { list: `from ${who}`, machine: `${who}’s machine` };
+}
+
+/** The dashboard's sentence for a stored run failure, including unknown and older codes. */
+export function runErrorWords(code: string | null | undefined): string {
+  const words: Readonly<Record<string, string>> = {
+    machine_did_not_start: 'No machine started the task within a day.',
+    machine_unresponsive: 'The machine running it stopped responding.',
+    task_start_failed: 'The machine could not start the task.',
+    run_failed: 'The task stopped before it could finish.',
+  };
+  return words[code ?? ''] ?? words.run_failed!;
+}
+
+/** Agent reports keep their content; stored diagnostics use the dashboard's words. */
+export function failureWords(failure: { source: 'report' | 'error'; cause?: string; code?: string | null } | null | undefined): string {
+  return failure?.source === 'report' ? causeSentence(failure.cause ?? '') : runErrorWords(failure?.code);
 }

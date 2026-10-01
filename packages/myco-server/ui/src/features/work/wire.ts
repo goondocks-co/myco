@@ -51,6 +51,7 @@ export interface RunFields {
   /** The session the run's dispatch named, as a titling run's; null otherwise. */
   targetSessionId: string | null;
   /** Why a skipped run did not run; null for any other run. */
+  skipReasonCode?: string | null;
   skipReason: string | null;
 }
 
@@ -77,6 +78,7 @@ export interface RunPage {
 export interface RunDetailFields extends RunFields {
   estimatedCostUsd: number | null;
   actualCostUsd: number | null;
+  errorCode?: string | null;
   error: string | null;
 }
 

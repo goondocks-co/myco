@@ -4,11 +4,11 @@ import { useRunDetail } from '../../hooks/use-work';
 import { ApiError } from '../../lib/api';
 import { cn } from '../../lib/cn';
 import { CODE_MAP_SUFFIX, projectPath } from '../../routes/nav';
-import { agentName, causeSentence, count, failureNextStep, sporeLine, sporeTypeWord } from '../today/words';
+import { agentName, count, failureNextStep, sporeLine, sporeTypeWord } from '../today/words';
 import type { RunDetailAnswer } from './wire';
 import { InkLink, OnwardLink, PartLabel } from './OutcomeCard';
 import {
-  atWords, deployWords, dollars, kindOf, queuedWords, ranOn, runNoun, skipWords, startedByWords, tokenWords,
+  atWords, failureWords, runErrorWords, deployWords, dollars, kindOf, queuedWords, ranOn, runNoun, skipWords, startedByWords, tokenWords,
 } from './words';
 
 export interface RunPanelProps {
@@ -75,7 +75,7 @@ function RunBody({ answer, projectId, now }: { answer: RunDetailAnswer; projectI
           {deploy !== null && <><span aria-hidden>·</span><span>{deploy}</span></>}
         </p>
         {run.status === 'queued' && <p className="t-small text-ink-2" data-queued="">{capitalize(queuedWords(run))}.</p>}
-        {run.status === 'skipped' && <p className="t-small text-ink-2">Myco held off: {skipWords(run.skipReason)}. Nothing ran, and nothing was spent.</p>}
+        {run.status === 'skipped' && <p className="t-small text-ink-2">Myco held off: {skipWords(run.skipReasonCode ?? run.skipReason)}. Nothing ran, and nothing was spent.</p>}
         {report !== null && <p className="max-w-measure t-body text-ink-2" data-run-report="">{report}</p>}
       </header>
 
@@ -152,7 +152,8 @@ function headlineOf({ run, read, produced }: RunDetailAnswer): string {
 
 /** Why a failed run failed: its last report, which names the cause the stored error hides, else the error. */
 function causeOf({ run, reports }: RunDetailAnswer): string {
-  return causeSentence(latestReport(reports) ?? run.error ?? '');
+  const report = latestReport(reports);
+  return failureWords(report === null ? { source: 'error', code: run.errorCode } : { source: 'report', cause: report });
 }
 
 /** The run's latest report in its own words, or null when it filed none. */
@@ -255,7 +256,7 @@ function TechnicalDetails({ answer, startedBy, took, now, reports }: {
           {run.status === 'failed' && run.error !== null && (
             <div className="flex flex-col gap-s1">
               <PartLabel>What the run recorded</PartLabel>
-              <p className="whitespace-pre-wrap break-words t-mono text-ink-2">{run.error}</p>
+              <p className="whitespace-pre-wrap break-words t-mono text-ink-2">{runErrorWords(run.errorCode)}</p>
             </div>
           )}
         </div>

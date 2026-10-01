@@ -77,7 +77,7 @@ describe('Myco\'s work', () => {
       map: null,
     }]);
     expect(body.runs.map((r: any) => [r.id, r.result, r.outcome.spores, r.failure])).toEqual([
-      ['run_l3', 'failed', 0, { cause: 'the runtime went away', source: 'error' }],
+      ['run_l3', 'failed', 0, { cause: 'the runtime went away', code: 'machine_unresponsive', source: 'error' }],
       ['run_l2', 'failed_with_output', 1, { cause: 'stopped on a refused Bash call', source: 'report' }],
       ['run_l1', 'produced', 2, null],
     ]);

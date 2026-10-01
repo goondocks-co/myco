@@ -35,7 +35,7 @@ export const D1_STATEMENTS: Readonly<Record<MaintenanceCheck, number>> = { optim
 export const SIZE_LIMIT_UNAVAILABLE =
   'the plan\'s database size limit is not readable from the Worker (500 MB on Workers Free, 10 GB on Workers Paid)';
 export const DAILY_QUOTA_UNAVAILABLE =
-  'daily row reads and writes are reported only by Cloudflare\'s account analytics, which this Deployment does not read';
+  'daily row reads and writes are reported only by Cloudflare\'s account analytics, which this server does not read';
 
 function measurements(sizeAfter: number | undefined): StoreMeasurement[] {
   return [

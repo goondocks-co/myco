@@ -22,7 +22,7 @@ import { RunPanel } from './RunPanel';
 import { RunTaskConfirm, RunTaskMenu, STARTABLE_TASKS } from './RunTask';
 import type { DispatchAnswer, RunPageRow } from './wire';
 import {
-  atWords, dollars, KIND_ORDER, KIND_TASKS, KIND_WORDS, ledeClause, outcomeHeadline, ranOn, runLineWords, runNoun, shortTime, startedByChip, times, tokenWords,
+  atWords, failureWords, dollars, KIND_ORDER, KIND_TASKS, KIND_WORDS, ledeClause, outcomeHeadline, ranOn, runLineWords, runNoun, shortTime, startedByChip, times, tokenWords,
   WINDOW_WORDS, type WorkWindow,
 } from './words';
 
@@ -318,7 +318,7 @@ function KindCard({ summary, answer, projectId, projectName, window, bounds, liv
           openTo={runPath}
         />
       ))}
-      <KeptNote summary={summary} cause={summary.kept[0]?.failure?.cause ?? null} />
+      <KeptNote summary={summary} cause={summary.kept[0] === undefined ? null : failureWords(summary.kept[0].failure)} />
       {searching && !whole && lines.length === 0 && groups.length === 0 && <p className="t-small text-muted">Nothing here matches your search.</p>}
     </OutcomeCard>
   );

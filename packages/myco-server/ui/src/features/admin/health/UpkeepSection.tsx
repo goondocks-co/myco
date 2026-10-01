@@ -9,7 +9,7 @@ import { HEALTH_ANCHORS } from '../../../routes/nav';
 import { UpkeepLine } from '../../today/Summary';
 import { AdminSection } from '../AdminFrame';
 import type { CheckStatus, MaintenanceAnswer, MaintenanceOutcome, TickReport } from './wire';
-import { CHECK_TITLES, checkCadenceWords, measurementName, outcomeWords, reportWords } from './words';
+import { CHECK_TITLES, findingWords, checkCadenceWords, measurementName, outcomeWords, reportWords } from './words';
 
 const HOUR = 3_600_000;
 /** How often the checks are read again while one runs, so its outcome appears without a reload. */
@@ -145,7 +145,7 @@ function CheckRow({ status }: { status: CheckStatus }) {
           </p>
           {latest !== null && latest.findings.length > 0 && (
             <ul className="flex list-disc flex-col gap-s1 pl-s5 t-mono text-ink-2">
-              {latest.findings.map((finding) => <li key={finding}>{finding}</li>)}
+              {latest.findings.map((_, index) => <li key={index}>{findingWords(latest.findingCodes?.[index])}</li>)}
               {latest.findingsOmitted > 0 && <li>…and {latest.findingsOmitted} more not kept</li>}
             </ul>
           )}

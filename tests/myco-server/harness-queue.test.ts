@@ -612,7 +612,7 @@ describe('a runtime that is not taking runs', () => {
 
     // The bound and the words it is reported in move together.
     expect(QUEUE_MAX_AGE_MS).toBe(86_400_000);
-    expect(QUEUE_EXPIRED_ERROR).toBe('no runtime took the run within a day');
+    expect(QUEUE_EXPIRED_ERROR).toBe('no machine started the task within a day');
 
     const lines = await emitted(async () => { expect(await runStaleSweep(f.env, NOW + QUEUE_MAX_AGE_MS)).toBe(1); });
     expect(lines.filter((l) => l.kind === 'harness_queue_expired'))

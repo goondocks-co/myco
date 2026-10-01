@@ -6,6 +6,7 @@
  * safe to run again the next second: a second delivery of one wake finds
  * nothing left to do.
  */
+import { STALE_RUN_ERROR, STALE_PENDING_REASON } from './reader-codes.js';
 import type { ServerEnv } from './adapters.js';
 import type { PowerState } from './power.js';
 import { expireGrants } from '../auth/grants.js';
@@ -143,7 +144,7 @@ export function staleAfter(startedAt: number, runContext: string | null): number
   return startedAt + timeoutSecondsOf(runContext) * 1000 + RUN_OVERRUN_MARGIN_MS;
 }
 
-export const STALE_RUN_ERROR = 'the runtime went away';
+export { STALE_RUN_ERROR } from './reader-codes.js';
 
 /**
  * How long a dispatch may wait in the queue before the Deployment gives up on it.
@@ -154,7 +155,7 @@ export const STALE_RUN_ERROR = 'the runtime went away';
  * holds the two in step.
  */
 export const QUEUE_MAX_AGE_MS = DAY_MS;
-export const QUEUE_EXPIRED_ERROR = 'no runtime took the run within a day';
+export const QUEUE_EXPIRED_ERROR = STALE_PENDING_REASON;
 
 /** Why a queued run past its bound ended: the capability it waited for, where it waited for one. */
 export function queueExpiredError(heldBy: string | null): string {

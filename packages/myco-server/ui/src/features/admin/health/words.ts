@@ -66,11 +66,11 @@ export const RECOVERY_UNAVAILABLE_WORDS = 'Automatic recovery doesn’t run on t
 
 /** What the recovery schedule is doing, in one line an owner can act on. */
 export function cadenceWords(schedule: RecoverySchedule, now: number): string {
-  if (!schedule.supported) return RECOVERY_UNAVAILABLE_WORDS;
-  if (!schedule.configured) return 'Automatic recovery is off. Set “Back up every” in Settings to schedule it.';
+  if (schedule.idleCode === 'backup_unsupported' || !schedule.supported) return RECOVERY_UNAVAILABLE_WORDS;
+  if (schedule.idleCode === 'backup_off' || !schedule.configured) return 'Automatic recovery is off. Set “Back up every” in Settings to schedule it.';
   const every = `Every ${schedule.intervalHours} h.`;
-  if (!schedule.ready) return `${every} It can’t run yet: this server is missing something it needs.`;
-  if (schedule.idleBecause !== null) return `${every} The next one waits for the attempt or backup in progress to end.`;
+  if (schedule.idleCode === 'backup_not_ready' || !schedule.ready) return `${every} It can’t run yet: this server is missing something it needs.`;
+  if (schedule.idleCode === 'backup_in_progress' || schedule.idleCode === 'manual_backup_in_progress' || schedule.idleBecause !== null) return `${every} The next one waits for the attempt or backup in progress to end.`;
   if (schedule.dueAt === null) return every;
   return schedule.due ? `${every} Due now, at the next wake.` : `${every} Next due ${whenLabel(schedule.dueAt, now)}.`;
 }
@@ -236,4 +236,11 @@ const CAPABILITY_WORDS: Readonly<Record<string, string>> = {
 /** A capability as Health names it: its own words, else the server's label. */
 export function capabilityWords(capability: { capability: string; label: string }): string {
   return CAPABILITY_WORDS[capability.capability] ?? capability.label;
+}
+
+/** A store finding is described by the dashboard rather than quoting database output. */
+const FINDING_WORDS: Readonly<Record<string, string>> = { store_problem: 'The store check found a problem.' };
+
+export function findingWords(code: string | undefined): string {
+  return FINDING_WORDS[code ?? ''] ?? FINDING_WORDS.store_problem!;
 }

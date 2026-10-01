@@ -394,3 +394,46 @@ describe('running a task by hand', () => {
   });
 });
 
+
+for (const [code, sentence] of [
+  ['machine_did_not_start', 'No machine started the task within a day.'],
+  ['machine_unresponsive', 'The machine running it stopped responding.'],
+  ['task_start_failed', 'The machine could not start the task.'],
+  ['run_failed', 'The task stopped before it could finish.'],
+  [undefined, 'The task stopped before it could finish.'],
+  ['unknown_code', 'The task stopped before it could finish.'],
+] as const) {
+  it(`words a ${code ?? 'legacy'} failure in the panel and its details without quoting the error`, async () => {
+    const prose = 'server prose must stay off the page';
+    server(routes({ detail: { [`/api/projects/${P}/runs/run_5e0b1c2d3f`]: () => Response.json(runDetail(mapRuns[0]!, {
+      reports: [], run: { errorCode: code, error: prose },
+    })) } }));
+    mount(`/p/${P}/work/runs/run_5e0b1c2d3f`);
+    const open = await panel();
+    await waitFor(() => expect(open.querySelector('[data-run-failure]')?.textContent).toContain(sentence));
+    fireEvent.click(within(open).getByRole('button', { name: /Technical details/ }));
+    expect(open.querySelector('[data-run-technical]')!.textContent).toContain(sentence);
+    expect(document.body.textContent).not.toContain(prose);
+  });
+}
+
+it('words a free-text skip from its fallback code', async () => {
+  server(routes({ detail: { [`/api/projects/${P}/runs/run_d4e5f6a7b8`]: () => Response.json(runDetail(learning[0]!, {
+    run: { skipReason: 'server prose must stay off the page', skipReasonCode: 'run_not_needed' },
+  })) } }));
+  mount(`/p/${P}/work/runs/run_d4e5f6a7b8`);
+  const open = await panel();
+  await waitFor(() => expect(open.textContent).toContain('Myco didn’t need to run it'));
+  expect(open.textContent).not.toContain('server prose must stay off the page');
+});
+
+
+it('words a task no machine started from its code', async () => {
+  server(routes({ detail: { [`/api/projects/${P}/runs/run_d4e5f6a7b8`]: () => Response.json(runDetail(learning[0]!, {
+    run: { skipReason: 'server prose must stay off the page', skipReasonCode: 'machine_did_not_start' },
+  })) } }));
+  mount(`/p/${P}/work/runs/run_d4e5f6a7b8`);
+  const open = await panel();
+  await waitFor(() => expect(open.textContent).toContain('no machine started it within a day'));
+  expect(open.textContent).not.toContain('server prose must stay off the page');
+});

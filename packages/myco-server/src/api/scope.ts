@@ -77,7 +77,7 @@ export function instantParam(url: URL, name: string): number | undefined | Respo
 export const notFound = (): Response => Response.json({ error: 'not_found' }, { status: 404 });
 
 /** A malformed request of the caller's own making — terminal, named, never retried. */
-export const badRequest = (reason: string): Response => Response.json({ error: 'bad_request', reason }, { status: 400 });
+export const badRequest = (reason: string): Response => Response.json({ error: 'bad_request', reasonCode: 'invalid_request', reason }, { status: 400 });
 
 export const ok = (body: unknown): Response => Response.json(body);
 

@@ -13,6 +13,7 @@
  * drown every other run, so the read answers when the index last succeeded, how many of its runs failed in the window,
  * and how many have failed after that success. A failure a later success followed is a retry, not a failure.
  */
+import { runErrorCode } from '../core/reader-codes.js';
 import type { RelationalStore } from '../core/adapters.js';
 import { MAP_TASK } from '@goondocks/myco-shared/canopy';
 import { EXTRACTION_TASK, SEEDING_TASK, TITLING_TASK } from '../core/task-catalogue.js';
@@ -87,7 +88,7 @@ export interface WorkRun {
   /** The session a title run titled; null for every other run. */
   sessionId: string | null;
   /** Why a failed run failed: the run's own last report where it filed one, which names the cause the stored error hides, else the error. */
-  failure: { cause: string; source: 'report' | 'error' } | null;
+  failure: { cause: string; code?: string | null; source: 'report' | 'error' } | null;
   tokens: number | null;
   costUsd: number | null;
 }
@@ -311,7 +312,7 @@ export async function readWork(db: RelationalStore, set: ProjectSet, since: numb
         maps: kind === 'map' && produced ? 1 : 0,
       },
       sessionId: kind === 'title' ? titled : null,
-      failure: !failed ? null : report !== null ? { cause: report, source: 'report' } : { cause: error ?? 'the run failed without saying why', source: 'error' },
+      failure: !failed ? null : report !== null ? { cause: report, source: 'report' } : { code: runErrorCode(error) ?? 'run_failed', cause: error ?? 'the run failed without saying why', source: 'error' },
       tokens: orNull(row.tokens_used),
       costUsd: orNull(row.cost_usd),
     };

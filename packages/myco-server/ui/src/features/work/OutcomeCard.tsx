@@ -2,9 +2,9 @@ import { type ReactNode } from 'react';
 import { Link as RouterLink } from 'react-router-dom';
 import { ActionLink, focusRing, ItemLink, StatusChip, TypeChip } from '../../design';
 import { cn } from '../../lib/cn';
-import { causeSentence, count, failureNextStep } from '../today/words';
+import { count, failureNextStep } from '../today/words';
 import type { FailureGroup, KindSummary } from './outcomes';
-import { runNoun } from './words';
+import { failureWords, runNoun } from './words';
 
 export interface OutcomeCardProps {
   kind: KindSummary['kind'];
@@ -171,7 +171,7 @@ export function FailureBlock({ kind, group, window, where, when, machineOf, open
   // Failures with the same cause on the same machine read as one line with every time they happened.
   const groups = new Map<string, { cause: string; times: string[] }>();
   for (const run of failures) {
-    const cause = causeSentence(run.failure?.cause ?? '');
+    const cause = failureWords(run.failure);
     const machine = machineOf(run.id);
     const key = `${cause}\u0000${machine ?? ''}`;
     const line = groups.get(key) ?? { cause: machine === null ? cause : `On ${machine}: ${cause}`, times: [] };

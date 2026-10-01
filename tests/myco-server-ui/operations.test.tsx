@@ -391,7 +391,8 @@ describe('store checks on Health', () => {
     server({ '/api/maintenance': () => Response.json(hostedStatus) });
     mount();
     const integrity = await screen.findByTestId('maintenance-integrity');
-    expect(within(integrity).getByText('foreign key: smoke_child row 1 names a missing smoke_parent')).toBeTruthy();
+    expect(within(integrity).getByText('The store check found a problem.')).toBeTruthy();
+    expect(integrity.textContent).not.toContain('foreign key: smoke_child row 1 names a missing smoke_parent');
     expect(within(integrity).getByText('…and 2 more not kept')).toBeTruthy();
     expect(within(integrity).getByText('Unavailable')).toBeTruthy();
     expect(within(integrity).getByText('2.0 MB')).toBeTruthy();
@@ -401,7 +402,7 @@ describe('store checks on Health', () => {
     expect(within(optimize).getByText(/Automatic runs are not set up/)).toBeTruthy();
   });
 
-  it('runs a check on the button and shows a refusal in the server\'s words', async () => {
+  it('runs a check on the button and shows a refusal in the dashboard\'s words', async () => {
     const { requested } = server({
       '/api/maintenance': () => Response.json(hostedStatus),
       '/api/maintenance/optimize/run': () => Response.json({ error: 'refused', refusal: 'already_running', reason: 'an optimize run is already in progress' }, { status: 409 }),

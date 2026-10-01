@@ -18,7 +18,7 @@ export async function handleSaveReleaseProvenance(env: ServerEnv, ctx: OwnerCont
   const body = await readJsonObject(ctx.request);
   if (body === null || !(body.revision === null || typeof body.revision === 'string')) return badRequest('The current revision is required.');
   if (body.credential !== undefined && body.credential !== null && typeof (body.credential as { token?: unknown }).token !== 'string') {
-    return badRequest('A release lookup credential is a token.');
+    return badRequest('A release lookup key must be a token.');
   }
   try {
     return ok({ releaseProvenance: await capability(env).save(ctx.params.projectId, body as unknown as ReleaseProvenanceWrite, ctx.member.id, ctx.now) });
