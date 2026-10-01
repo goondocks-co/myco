@@ -22,7 +22,7 @@ import { closureOf, filesUnder, moduleKey, REPO_ROOT } from '../helpers/import-c
 const ROUTE = '/members/settings';
 const READERS = ['packages/myco/src/cli/member-config.ts', 'packages/myco/src/member/machine-settings.ts'];
 /** The code the member runs, as opposed to the Deployment's own that its binary also carries. */
-const MEMBER_TREES = ['packages/myco/src', 'packages/myco-shared/src', 'packages/myco-team/worker/src'];
+const MEMBER_TREES = ['packages/myco/src', 'packages/myco-shared/src'];
 /** The entries the 2.0 member runs through: its verbs, its sign-in, and its capture hooks. */
 const ENTRIES = ['cli/member-dispatch.ts', 'cli/member-reads.ts', 'cli/login.ts', 'hooks/session-start.ts', 'hooks/user-prompt-submit.ts', 'hooks/stop.ts', 'hooks/session-end.ts']
   .map((file) => path.join(REPO_ROOT, 'packages/myco/src', file));

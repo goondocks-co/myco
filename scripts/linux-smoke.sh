@@ -16,8 +16,7 @@ echo "node $(node -v) | bun $(bun -v) | gcc $(gcc -dumpversion) | $(git --versio
 echo "=== npm ci ==="
 npm ci --no-audit --no-fund >/tmp/npmci.log 2>&1 || { echo "npm ci FAILED:"; tail -30 /tmp/npmci.log; exit 1; }
 
-echo "=== build team + myco (linux-arm64) ==="
-npm run build -w @goondocks/myco-team >/tmp/team.log 2>&1 || { tail -20 /tmp/team.log; exit 1; }
+echo "=== build myco (linux-arm64) ==="
 cd packages/myco
 npx tsx scripts/gen-hook-config.ts
 bash scripts/build-libsqlite3-target.sh linux-arm64
