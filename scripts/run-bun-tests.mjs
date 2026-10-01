@@ -116,6 +116,15 @@ const PHASE_KILL_QUIET_MS = Number(process.env.MYCO_RUNNER_PHASE_KILL_QUIET_MS ?
 // a suite failure. Set to 0 to disable (a wedge then fails the suite at 124).
 const WEDGE_RETRIES = Number(process.env.MYCO_RUNNER_WEDGE_RETRIES ?? 3);
 
+// Wall-clock budget for one group, across every attempt including wedge
+// retries. A group still running at its deadline has its process tree sampled
+// into `<group>.hang.txt`, is killed, and is reported failed with its test
+// files; the run continues with the next group. The slowest legitimate group
+// in CI, `node env shared tests-myco-server`, takes 244-273s; a CI jsdom shard
+// takes up to about 100s, and the unsharded local jsdom group about 135s.
+// 600s is more than twice the slowest of them.
+const GROUP_BUDGET_MS = Number(process.env.MYCO_RUNNER_GROUP_BUDGET_MS ?? 600000);
+
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
 /**
@@ -934,12 +943,105 @@ function buildArgs() {
 //   - <phase>.log       — verbatim tee of Bun's stdout+stderr (captures the
 //                         "1 error" class that the JUnit reporter silently
 //                         drops, plus context lines around `(fail)` markers)
-const REPORT_DIR = path.join(REPO, 'target', 'test-reports');
+// and, for a group killed over budget or wedged, a third:
+//   - <phase>.hang.txt  — ps, stack samples and open files of every process
+//                         in the group's tree, taken just before the kill
+// MYCO_RUNNER_REPORT_DIR moves them, so a runner driven from inside a test
+// run never clears the outer run's reports.
+const REPORT_DIR = process.env.MYCO_RUNNER_REPORT_DIR
+  ? path.resolve(process.env.MYCO_RUNNER_REPORT_DIR)
+  : path.join(REPO, 'target', 'test-reports');
 function reportPath(label) {
   return path.join(REPORT_DIR, `${label.replace(/\s+/g, '-')}.junit.xml`);
 }
 function logPath(label) {
   return path.join(REPORT_DIR, `${label.replace(/\s+/g, '-')}.log`);
+}
+function hangPath(label) {
+  return path.join(REPORT_DIR, `${label.replace(/[\s/]+/g, '-')}.hang.txt`);
+}
+
+// Groups killed at their wall-clock budget, in run order.
+const overBudgetGroups = [];
+
+/**
+ * Replace a killed group's JUnit report with one failed testcase per test
+ * file, so the aggregate and the failure summary count the group as failed
+ * even though bun never wrote its own report.
+ */
+function writeOverBudgetJunit(reportFile, label, files) {
+  const esc = (s) => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+  const message = `group "${label}" exceeded its ${GROUP_BUDGET_MS}ms budget and was killed`;
+  const cases = files.map((file) => `    <testcase name="${esc(file)}" classname="${esc(label)}" file="${esc(file)}">\n      <failure type="GroupBudgetExceeded" message="${esc(message)}" />\n    </testcase>`);
+  fs.writeFileSync(reportFile, [
+    '<?xml version="1.0" encoding="UTF-8"?>',
+    `<testsuites name="${esc(label)}" tests="${files.length}" failures="${files.length}">`,
+    `  <testsuite name="${esc(label)}" tests="${files.length}" failures="${files.length}" errors="0">`,
+    ...cases,
+    '  </testsuite>',
+    '</testsuites>',
+    '',
+  ].join('\n'));
+}
+
+/**
+ * Every process this group spawned: the members of its process group (the
+ * group's bash wrapper is spawned detached, so its pid is the pgid) plus any
+ * descendant that left the group, found by walking parent pids from the
+ * wrapper. Nothing outside that tree is ever returned.
+ */
+function groupTreePids(rootPid) {
+  let table;
+  try {
+    table = spawnSync('ps', ['-axo', 'pid=,ppid=,pgid='], { encoding: 'utf8', timeout: 10000 }).stdout ?? '';
+  } catch {
+    return [rootPid];
+  }
+  const rows = table.split('\n').map((line) => line.trim().split(/\s+/).map(Number)).filter((r) => r.length === 3 && r.every(Number.isFinite));
+  const pids = new Set([rootPid]);
+  for (const [pid, , pgid] of rows) if (pgid === rootPid) pids.add(pid);
+  for (let grew = true; grew;) {
+    grew = false;
+    for (const [pid, ppid] of rows) {
+      if (pids.has(ppid) && !pids.has(pid)) { pids.add(pid); grew = true; }
+    }
+  }
+  return [...pids].sort((a, b) => a - b);
+}
+
+/** Run a diagnostic command with a hard timeout and return what it printed. */
+function diagnostic(command, args) {
+  const result = spawnSync(command, args, { encoding: 'utf8', timeout: 20000, maxBuffer: 16 * 1024 * 1024 });
+  if (result.error) return `(${command} unavailable: ${result.error.message})\n`;
+  return `${result.stdout ?? ''}${result.stderr ?? ''}`;
+}
+
+/**
+ * Write where each process of a stuck group is blocked: its state, a stack
+ * sample (`sample` on macOS, the kernel wait channel and stack on Linux) and
+ * its open files. The report names the pids so the evidence is readable
+ * after the tree is killed.
+ */
+function captureHangDiagnostics(pids, hangFile, heading) {
+  const sections = [`${heading}\n`, `pids: ${pids.join(' ')}\n`];
+  sections.push('\n--- ps\n', diagnostic('ps', ['-o', 'pid,ppid,pgid,stat,%cpu,etime,command', '-p', pids.join(',')]));
+  for (const pid of pids) {
+    sections.push(`\n=== pid ${pid}\n`);
+    if (process.platform === 'darwin') {
+      // The loaded-image table that closes a sample is long and names no frame.
+      sections.push('--- sample (3s)\n', diagnostic('sample', [String(pid), '3']).split('\nBinary Images:')[0], '\n');
+    } else if (process.platform === 'linux') {
+      for (const entry of ['status', 'wchan', 'stack', 'syscall']) {
+        let text;
+        try { text = fs.readFileSync(`/proc/${pid}/${entry}`, 'utf8'); } catch (error) { text = `(${error.code ?? error.message})`; }
+        sections.push(`--- /proc/${pid}/${entry}\n${text}\n`);
+      }
+    }
+    sections.push('--- lsof\n', diagnostic('lsof', ['-p', String(pid)]));
+  }
+  const text = sections.join('');
+  try { fs.appendFileSync(hangFile, text); } catch { /* best-effort */ }
+  return text;
 }
 
 function resetReportDir() {
@@ -947,7 +1049,7 @@ function resetReportDir() {
   fs.mkdirSync(REPORT_DIR, { recursive: true });
 }
 
-async function runPhase(label, extraArgs, bunfig, { isolate }) {
+async function runPhase(label, extraArgs, bunfig, { isolate, files }) {
   if (extraArgs === null || extraArgs.length === 0) return 0;
   // `BUN_CONFIG_FILE` is not observed by `bun test` for the bunfig; the only
   // reliable way to swap configs is to move the file on disk for the
@@ -990,15 +1092,24 @@ async function runPhase(label, extraArgs, bunfig, { isolate }) {
     // A wedge-kill (exit 124, no test output) is never a real assertion
     // failure — it's the synchronous bun `--isolate` runtime spin that this
     // workload triggers non-deterministically. Because the phase-kill leaves
-    // no orphan to poison a re-run, retrying the wedged phase once recovers a
+    // no orphan to poison a re-run, retrying the wedged phase recovers a
     // clean pass without masking any genuine failure (a real failure exits
     // with assertion output and `wedged:false`, so it is never retried).
-    let { status, wedged } = await runWithTeeAndHeartbeat('bun', args, teeFile, label);
-    for (let attempt = 1; wedged && attempt <= WEDGE_RETRIES; attempt += 1) {
+    // Every attempt shares one deadline, so retries never extend a group past
+    // its budget.
+    const deadlineMs = Date.now() + GROUP_BUDGET_MS;
+    const hangFile = hangPath(label);
+    fs.rmSync(hangFile, { force: true });
+    let { status, wedged, overBudget } = await runWithTeeAndHeartbeat('bun', args, teeFile, label, { deadlineMs, hangFile });
+    for (let attempt = 1; wedged && !overBudget && attempt <= WEDGE_RETRIES && Date.now() < deadlineMs; attempt += 1) {
       const note = `[run-bun-tests] RETRYING ${label} after wedge-kill (attempt ${attempt}/${WEDGE_RETRIES})\n`;
       process.stderr.write(note);
       fs.writeFileSync(teeFile, ''); // fresh log for the retry
-      ({ status, wedged } = await runWithTeeAndHeartbeat('bun', args, teeFile, label));
+      ({ status, wedged, overBudget } = await runWithTeeAndHeartbeat('bun', args, teeFile, label, { deadlineMs, hangFile }));
+    }
+    if (overBudget) {
+      overBudgetGroups.push({ label, files, hangFile });
+      writeOverBudgetJunit(reportFile, label, files);
     }
     return status;
   } finally {
@@ -1104,7 +1215,7 @@ function runWithTee(command, args, teeFile) {
  * Behavior is otherwise identical to `runWithTee` — same shell command,
  * same pipefail handling, same exit-code semantics.
  */
-async function runWithTeeAndHeartbeat(command, args, teeFile, label) {
+async function runWithTeeAndHeartbeat(command, args, teeFile, label, { deadlineMs, hangFile }) {
   const escaped = args.map((a) => `'${String(a).replace(/'/g, `'\\''`)}'`).join(' ');
   const shellCmd = `set -o pipefail; ${command} ${escaped}`;
   const startMs = Date.now();
@@ -1116,17 +1227,36 @@ async function runWithTeeAndHeartbeat(command, args, teeFile, label) {
     // workers) via the negative pid. Without this, killing only the bash
     // wrapper would leave the spinning bun worker (and the test ports it
     // holds) orphaned — the exact failure that poisons subsequent runs.
+    //
+    // stdin is /dev/null, never the runner's own: a test that reads fd 0
+    // gets EOF at once, as in CI, instead of blocking on a terminal or an
+    // agent harness's socket that never ends.
     const child = spawn('/bin/bash', ['-c', shellCmd], {
       cwd: REPO,
       env: process.env,
-      stdio: ['inherit', 'pipe', 'pipe'],
+      stdio: ['ignore', 'pipe', 'pipe'],
       detached: true,
     });
 
     let killedForHang = false;
-    function killPhaseTree(signal) {
+    let killedForBudget = false;
+    // Signals the group's process group and every pid found in its tree;
+    // only processes this group spawned are ever signalled.
+    function killPhaseTree(signal, pids = []) {
       try { process.kill(-child.pid, signal); }
       catch { try { child.kill(signal); } catch { /* already gone */ } }
+      for (const pid of pids) {
+        try { process.kill(pid, signal); } catch { /* already gone */ }
+      }
+    }
+    function reportAndKill(heading) {
+      const pids = groupTreePids(child.pid);
+      process.stderr.write(`${heading}\n[run-bun-tests] sampling ${pids.length} process(es) of ${label} into ${hangFile}\n`);
+      const diagnostics = captureHangDiagnostics(pids, hangFile, heading);
+      try { fs.appendFileSync(teeFile, `${heading}\n${diagnostics}`); } catch { /* best-effort */ }
+      killPhaseTree('SIGTERM', pids);
+      // Escalate shortly after, in case the tree ignores SIGTERM.
+      setTimeout(() => killPhaseTree('SIGKILL', pids), 2000).unref?.();
     }
 
     let lastNonEmptyLine = '';
@@ -1162,26 +1292,32 @@ async function runWithTeeAndHeartbeat(command, args, teeFile, label) {
     child.stdout.on('data', (c) => ingest(c, process.stdout, stdoutRef));
     child.stderr.on('data', (c) => ingest(c, process.stderr, stderrRef));
 
-    const watchdog = setInterval(() => {
-      const sinceLastOutput = Date.now() - lastOutputMs;
-      if (sinceLastOutput >= PHASE_KILL_QUIET_MS && !killedForHang) {
+    function checkDeadlines() {
+      if (killedForHang || killedForBudget) return;
+      const now = Date.now();
+      const totalElapsed = now - startMs;
+      if (now >= deadlineMs) {
+        killedForBudget = true;
+        reportAndKill(`[run-bun-tests] OVER BUDGET ${label} — still running at its ${GROUP_BUDGET_MS}ms group budget (${totalElapsed}ms this attempt); killing its process tree. Last line: ${lastNonEmptyLine || '(none)'}`);
+        return;
+      }
+      const sinceLastOutput = now - lastOutputMs;
+      if (sinceLastOutput >= PHASE_KILL_QUIET_MS) {
         killedForHang = true;
-        const totalElapsed = Date.now() - startMs;
-        const msg = `[run-bun-tests] WEDGED ${label} — no output for ${sinceLastOutput}ms (>${PHASE_KILL_QUIET_MS}ms), ${totalElapsed}ms elapsed; killing phase tree. Last line: ${lastNonEmptyLine || '(none)'}\n`;
-        process.stderr.write(msg);
-        try { fs.appendFileSync(teeFile, msg); } catch { /* best-effort */ }
-        killPhaseTree('SIGTERM');
-        // Escalate to SIGKILL shortly after, in case the tree ignores SIGTERM.
-        setTimeout(() => killPhaseTree('SIGKILL'), 2000).unref?.();
+        reportAndKill(`[run-bun-tests] WEDGED ${label} — no output for ${sinceLastOutput}ms (>${PHASE_KILL_QUIET_MS}ms), ${totalElapsed}ms elapsed; killing phase tree. Last line: ${lastNonEmptyLine || '(none)'}`);
         return;
       }
       if (sinceLastOutput >= WATCHDOG_QUIET_MS) {
-        const totalElapsed = Date.now() - startMs;
         const msg = `[run-bun-tests] STILL RUNNING ${label} — ${totalElapsed}ms elapsed, ${sinceLastOutput}ms since last output; last line: ${lastNonEmptyLine || '(none)'}\n`;
         process.stderr.write(msg);
         try { fs.appendFileSync(teeFile, msg); } catch { /* best-effort */ }
       }
-    }, WATCHDOG_INTERVAL_MS);
+    }
+    // The budget fires on time even when it falls between heartbeat ticks.
+    const budgetTimer = setTimeout(checkDeadlines, Math.max(0, deadlineMs - Date.now()));
+    budgetTimer.unref?.();
+
+    const watchdog = setInterval(checkDeadlines, WATCHDOG_INTERVAL_MS);
     // Don't keep the event loop alive purely for the heartbeat — the
     // child's pipes are the load-bearing references that hold the
     // process open.
@@ -1189,20 +1325,39 @@ async function runWithTeeAndHeartbeat(command, args, teeFile, label) {
 
     child.on('error', (err) => {
       clearInterval(watchdog);
+      clearTimeout(budgetTimer);
       process.stderr.write(`[run-bun-tests] FAILED TO SPAWN ${label}: ${err?.message ?? err}\n`);
-      resolve({ status: 1, wedged: false });
+      resolve({ status: 1, wedged: false, overBudget: false });
     });
 
-    child.on('close', (code) => {
+    let settled = false;
+    function settle(code) {
+      if (settled) return;
+      settled = true;
       clearInterval(watchdog);
+      clearTimeout(budgetTimer);
       const totalMs = Date.now() - startMs;
       const tail = lastNonEmptyLine ? ` (last line: ${lastNonEmptyLine})` : '';
-      const exit = killedForHang ? 124 : (code ?? 1);
-      const verb = killedForHang ? 'KILLED (wedged)' : 'FINISHED';
+      const killed = killedForHang || killedForBudget;
+      const exit = killed ? 124 : (code ?? 1);
+      const verb = killedForBudget ? 'KILLED (over budget)' : killedForHang ? 'KILLED (wedged)' : 'FINISHED';
       const completion = `[run-bun-tests] ${verb} ${label} in ${totalMs}ms (exit ${exit})${tail}\n`;
       process.stderr.write(completion);
       try { fs.appendFileSync(teeFile, completion); } catch { /* best-effort */ }
-      resolve({ status: exit, wedged: killedForHang });
+      resolve({ status: exit, wedged: killedForHang, overBudget: killedForBudget });
+    }
+    child.on('close', settle);
+    // After a kill, a process outside the tree that inherited the group's
+    // pipes could hold them open and withhold 'close'; the group settles once
+    // its own wrapper has exited and the pipes have had a moment to drain.
+    child.on('exit', (code) => {
+      if (!killedForHang && !killedForBudget) return;
+      setTimeout(() => {
+        if (settled) return;
+        child.stdout?.destroy();
+        child.stderr?.destroy();
+        settle(code);
+      }, 5000).unref?.();
     });
   });
 }
@@ -1339,6 +1494,19 @@ function printFailureSummary(phaseStatuses) {
   }
 }
 
+/**
+ * Name every group killed at its budget, with its test files and the file
+ * holding the stack samples and open files captured before the kill.
+ */
+function printOverBudgetSummary() {
+  if (overBudgetGroups.length === 0) return;
+  console.log(`\n=== OVER BUDGET (killed at ${GROUP_BUDGET_MS}ms) ===`);
+  for (const { label, files, hangFile } of overBudgetGroups) {
+    console.log(`[${label}] diagnostics: ${hangFile}`);
+    for (const file of files) console.log(`  ${file}`);
+  }
+}
+
 function formatJunitEntry(label, f) {
   const suite = f.classname ? `${f.classname} > ` : '';
   const loc = f.file ? ` (${f.file}${f.line ? `:${f.line}` : ''})` : '';
@@ -1386,9 +1554,15 @@ const shard = parseShard(process.env.MYCO_TEST_SHARD);
 const durations = JSON.parse(fs.readFileSync(path.join(REPO, 'scripts/test-durations.json'), 'utf8'));
 const built = buildArgs();
 const testFiles = (args) => args.filter((arg) => !arg.startsWith('-') && /\.test\.tsx?$/.test(arg));
-const sourceFiles = (args) => testFiles(args).flatMap((file) => file.startsWith('target/test-bundles/')
+const bundledFiles = (file) => (file.startsWith('target/test-bundles/')
   ? [...fs.readFileSync(path.join(REPO, file), 'utf8').matchAll(/import '\.\.\/\.\.\/\.\.\/(.*?)';/g)].map((match) => match[1])
   : [file]);
+const sourceFiles = (args) => testFiles(args).flatMap(bundledFiles);
+// The files a group runs, named however they were passed: every argument
+// that is a file on disk, with generated bundles expanded to their sources.
+const groupFiles = (args) => args
+  .filter((arg) => !arg.startsWith('-') && fs.statSync(path.resolve(REPO, arg), { throwIfNoEntry: false })?.isFile())
+  .flatMap(bundledFiles);
 const DEFAULT_FILE_DURATION_MS = 100;
 const estimate = (files) => Math.max(1, files.reduce((sum, file) => sum + (durations.files[file] ?? DEFAULT_FILE_DURATION_MS), 0));
 const candidates = [
@@ -1439,7 +1613,7 @@ resetReportDir();
 
 let nonDomStatus = 0;
 for (const phase of nonDomPhases) {
-  const status = await runPhase(phase.label, phase.args, path.join(REPO, 'bunfig.toml'), { isolate: phase.isolate });
+  const status = await runPhase(phase.label, phase.args, path.join(REPO, 'bunfig.toml'), { isolate: phase.isolate, files: groupFiles(phase.args) });
   nonDomStatus ||= status;
   phaseReports.push({
     label: phase.label,
@@ -1455,7 +1629,7 @@ if (dom !== null) {
     'jsdom',
     dom,
     path.join(REPO, 'bunfig.dom.toml'),
-    { isolate: true },
+    { isolate: true, files: groupFiles(dom) },
   );
   phaseReports.push({
     label: 'jsdom',
@@ -1493,5 +1667,6 @@ if (exitCode !== 0) {
     );
   }
   printFailureSummary(phaseReports);
+  printOverBudgetSummary();
 }
 process.exit(exitCode);

@@ -3,6 +3,9 @@ import path from 'node:path';
 import { runLaunchPreamble, type LaunchPreambleDeps } from '@myco/cli/launch-preamble.js';
 import { readStdin, setBufferedStdin } from '@myco/hooks/read-stdin.js';
 
+/** A drained fd 0: a test never reads its own process's stdin, which a caller may hold open without end. */
+const EMPTY_FD0 = (): Buffer => Buffer.alloc(0);
+
 /**
  * Sentinel thrown by the injected `exit` stub so a test can observe the exit
  * code without the process actually terminating. runLaunchPreamble's exit
@@ -179,7 +182,7 @@ describe('runLaunchPreamble — Antigravity stdin', () => {
     runLaunchPreamble('hook', ['session-start', '--symbiont', 'antigravity'], withInjectedFd0(payload, h.deps));
     expect(h.chdirCalls).toContain('/tmp/x');
     // The handler's readStdin() must see the buffered payload, not a drained fd 0.
-    expect(await readStdin()).toBe(payload.toString('utf-8'));
+    expect(await readStdin(EMPTY_FD0)).toBe(payload.toString('utf-8'));
   });
 
   it('non-JSON stdin falls through silently (no chdir, no throw)', () => {
@@ -279,8 +282,8 @@ describe('runLaunchPreamble — pin re-exec', () => {
     expect(() => runLaunchPreamble('hook', ['--symbiont', 'antigravity'], withInjectedFd0(payload, h.deps)))
       .toThrow(/exit\(0\)/);
     // This process re-exec'd, so no in-process buffer was set; readStdin falls
-    // through to fd 0 (empty under bun test) → '{}'.
-    expect(await readStdin()).toBe('{}');
+    // through to its fd-0 read, here a drained one → '{}'.
+    expect(await readStdin(EMPTY_FD0)).toBe('{}');
   });
 });
 

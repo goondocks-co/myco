@@ -35,16 +35,18 @@ export function setBufferedStdin(buf: Buffer | null): void {
  * empty buffer, which we coerce to `'{}'` so JSON.parse always succeeds.
  *
  * Hook stdin is always a pipe (never a TTY) under every supported symbiont,
- * so blocking on fd 0 is safe.
+ * so blocking on fd 0 is safe. `readFd0` replaces the fd-0 read; a caller
+ * whose own stdin may stay open without ever ending passes one, because the
+ * default blocks until EOF.
  */
-export function readStdin(): Promise<string> {
+export function readStdin(readFd0: () => Buffer = () => fs.readFileSync(0)): Promise<string> {
   if (injectedStdin !== null) {
     const buf = injectedStdin;
     injectedStdin = null;
     return Promise.resolve(buf.length > 0 ? buf.toString('utf-8') : '{}');
   }
   try {
-    const buf = fs.readFileSync(0);
+    const buf = readFd0();
     return Promise.resolve(buf.length > 0 ? buf.toString('utf-8') : '{}');
   } catch {
     return Promise.resolve('{}');
