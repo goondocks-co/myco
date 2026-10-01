@@ -475,7 +475,7 @@ The shell is static build output carrying no vault data; every data path is Work
 | D10a | on a fresh Deployment (no admin linked): `myco member link-github`, open the link, confirm | the page names the member; after confirm that account signs in, and a second `myco member link-github` from any machine is refused |
 | D11 | the same link opened again | "expired or was already used" |
 
-Self-hosted: `npm run image:build:native && docker compose up`, then D1–D6 with `-H 'Host: 127.0.0.1:8787'` against `http://127.0.0.1:8787`. D7 is Cloudflare-only until #1009.
+Self-hosted: `npm run image:build:native && docker run -d -p 127.0.0.1:8787:8787 -e MYCO_BIND=all -v myco-data:/data ghcr.io/goondocks-co/myco-server:dev`, then D1–D6 with `-H 'Host: 127.0.0.1:8787'` against `http://127.0.0.1:8787`. D7 is Cloudflare-only until #1009.
 
 ### Last observed output — self-hosted (image `dev-1008`, 2026-08-28)
 

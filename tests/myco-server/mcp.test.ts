@@ -747,7 +747,7 @@ describe('POST /mcp over a run credential', () => {
 
     // A task that declares no tools of its own still closes: `report` is the run
     // protocol rather than a task capability.
-    for (const task of ['container-smoke']) {
+    for (const task of ['embedding-reconcile']) {
       const h = await runSetup();
       await h.dispatch(h.harness, 'run_x', task);
       expect({ task, tools: (await h.list(h.harness.token)).body.result.tools.map((t: any) => t.name) }).toEqual({ task, tools: ['myco_run'] });

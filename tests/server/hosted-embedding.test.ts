@@ -123,7 +123,6 @@ test('hosted execution binds only when the invocation owns its lifetime and an o
     expect((await prepareDispatch(serverEnvFromBindings(bindings), 'embedding-reconcile', 'proj_1')).ok).toBe(false);
     const env = serverEnvFromBindings(bindings, { waitUntil: () => {} });
     expect(env.harnessTasks).toEqual(['embedding-reconcile']);
-    expect(await prepareDispatch(env, 'container-smoke', 'proj_1')).toEqual({ ok: false, refusal: 'harness_unavailable' });
     expect(env.platform?.capabilities().find((row) => row.capability === 'harness-runtime')?.present).toBe(true);
   } finally { f.sqlite.close(); }
 });

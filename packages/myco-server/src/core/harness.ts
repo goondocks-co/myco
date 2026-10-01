@@ -34,7 +34,7 @@ import { emit } from '../telemetry.js';
 import { claimQueuedRun, deploymentTaskEntriesSince, lapsedLeases, nextClaimable, recordClaimedInput, recordQueueHolder, recordTaskHolder, renewRunLease, requeueLapsedLease, UNATTRIBUTED_DISPATCH_ACTOR, type ActorCeiling, type ClaimedRunRow } from './runs.js';
 export type { ActorCeiling } from './runs.js';
 import { applyRunUpdate, ensureAgent, getDispatchActor, recordDispatch, dispatchLoad, failQueuedRun, hasSuccessorOf, INPUT_UNCHANGED, launchQueued, listQueuedAcrossProjects, recordQueued, getRun, hasLiveTaskRun, restoreDispatchCredential, returnToQueue, skipQueued, successorsSince, NO_LIMITS, type RunRow } from './runs.js';
-import { openHarnessCredential, openProviderCredential } from './provider-credentials.js';
+import { openHarnessCredential } from './provider-credentials.js';
 import { enabledCapabilities, leafValues, type ProjectCapability } from './settings.js';
 import { HARNESS_CREDENTIALS } from '@goondocks/myco-shared/harness-providers';
 import { admissionForTask, runTimeoutForTask, UNLANDED_TASKS } from './task-catalogue.js';
@@ -56,17 +56,14 @@ export const LAUNCH_REFUSED_ERROR = 'the runtime refused to start';
 export const CAPTURE_DRIVEN_ADMISSION = 'captureDriven';
 
 /**
- * The tasks the launch seam serves, which a worker cannot.
+ * The tasks the Deployment runs itself, which a worker never claims.
  *
- * One declares no tool: its whole surface is a server-side step loop over a
- * run route — `/runs/embedding-step` — rather than the MCP surface a worker's
- * harness speaks. The other is the containerized runtime's own end-to-end
- * proof, so serving it anywhere else would leave the path it exists to
- * exercise untested.
- *
- * These two are why the seam survives, and both retire with it.
+ * Embedding declares no tool: its whole surface is a server-side step loop over
+ * the in-process embedding channel — `/runs/claim`, `/runs/embedding-step`,
+ * `/runs/report` and `/runs/update` — rather than the MCP surface a worker's
+ * harness speaks. Each target binds the runtime that launches it in-process.
  */
-export const RUNTIME_SERVED_TASKS: readonly string[] = ['embedding-reconcile', 'container-smoke'];
+export const RUNTIME_SERVED_TASKS: readonly string[] = ['embedding-reconcile'];
 /** How many runs of one task a Project may have re-queued in a day in place of runs the platform replaced. */
 export const REPLACED_REQUEUES_PER_DAY = 2;
 /** The window the per-day caps are counted over. */
@@ -548,35 +545,10 @@ export async function prepareDispatch(env: ServerEnv, task: string, projectId: s
   }
 
   if (!hasTaskRuntime(env, task)) return { ok: false, refusal: 'harness_unavailable' };
-  if (gate.kind === 'embedding') {
-    const embedding = await env.embeddingProvider?.();
-    if (env.vectors === undefined || embedding == null) return { ok: false, refusal: 'no_provider' };
-    return { ok: true, prepared: { task, projectId, servedBy: 'runtime', providerType: 'embedding', model: embedding.modelKey, provider: {}, credentialEnv: {}, admission: CAPTURE_DRIVEN_ADMISSION } };
-  }
-
-  const byLeaf = await leafValues(env.db, ['agent.tasks', 'agent.provider.type', 'agent.provider.model', 'agent.model', 'agent.provider.base_url']);
-  const override = record(record(parseLeaf(byLeaf.get('agent.tasks')))[task]);
-  const providerType = str(override.provider) ?? str(parseLeaf(byLeaf.get('agent.provider.type')));
-  if (providerType === null) return { ok: false, refusal: 'no_provider' };
-  const model = str(override.model) ?? str(parseLeaf(byLeaf.get('agent.provider.model'))) ?? str(parseLeaf(byLeaf.get('agent.model')));
-  const baseUrl = str(parseLeaf(byLeaf.get('agent.provider.base_url')));
-
-  const credentialEnv: Record<string, string> = {};
-  const provider: Record<string, unknown> = { type: providerType };
-  if (model !== null) provider.model = model;
-  if (providerType === 'anthropic') {
-    const key = await openProviderCredential(env.db, env.wrappingKey, 'anthropic');
-    if (key === null) return { ok: false, refusal: 'no_credential' };
-    credentialEnv[key.startsWith(SUBSCRIPTION_TOKEN_PREFIX) ? 'CLAUDE_CODE_OAUTH_TOKEN' : 'ANTHROPIC_API_KEY'] = key;
-  } else if (providerType === 'openai-compatible') {
-    if (baseUrl === null) return { ok: false, refusal: 'no_endpoint' };
-    provider.baseUrl = baseUrl;
-  } else {
-    return { ok: false, refusal: 'unsupported_provider', providerType };
-  }
-
-  const admission = gate.kind === 'provider' ? CAPTURE_DRIVEN_ADMISSION : gate.capability;
-  return { ok: true, prepared: { task, projectId, servedBy: 'runtime', providerType, model, provider, credentialEnv, admission } };
+  // Every runtime-served task is the embedding pass, run on the Deployment's own embedding provider.
+  const embedding = await env.embeddingProvider?.();
+  if (env.vectors === undefined || embedding == null) return { ok: false, refusal: 'no_provider' };
+  return { ok: true, prepared: { task, projectId, servedBy: 'runtime', providerType: 'embedding', model: embedding.modelKey, provider: {}, credentialEnv: {}, admission: CAPTURE_DRIVEN_ADMISSION } };
 }
 
 /** Whether an actor's ceiling is full, read after a write refused: the count the write compared against. */

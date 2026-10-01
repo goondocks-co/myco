@@ -150,7 +150,7 @@ describe('a task name the Deployment does not serve', () => {
       expect({ name, ok: outcome.ok, refusal: outcome.ok ? null : outcome.refusal }).toEqual({ name, ok: false, refusal: 'unknown_task' });
     }
     // Declared tasks pass the unknown-task guard.
-    const served = await prepareDispatch(env, 'container-smoke', 'proj_1');
+    const served = await prepareDispatch(env, 'embedding-reconcile', 'proj_1');
     expect(served.ok ? 'admitted' : served.refusal).not.toBe('unknown_task');
   });
 

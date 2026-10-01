@@ -41,9 +41,6 @@ export const LEAF_DEFAULTS: Readonly<Record<string, LeafDefault>> = {
   'cortex.canopy.refresh.background_period_minutes': { value: 360 },
   'cortex.canopy.exclude.patterns': { value: [] },
   'cortex.canopy.exclude.default_patterns': { value: CANOPY_DEFAULT_EXCLUDE_PATTERNS },
-  // core/harness.ts: with no provider, the server runs none of its own work.
-  'agent.provider.type': { unset: 'None' },
-  'agent.provider.model': { unset: 'None' },
   'agent.provider.base_url': { unset: 'The provider’s own' },
   'agent.model': { unset: 'None' },
   'agent.tasks': { value: {} },

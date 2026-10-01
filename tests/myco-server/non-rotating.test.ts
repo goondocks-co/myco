@@ -213,7 +213,6 @@ describe('every route that mints an authority able to outlive the credential (#1
       'core/harness.ts claimNextRun -> issueMemberToken', // POST /worker/claim — mintsAuthority; a run credential minted not to rotate
       'core/harness.ts harnessCredentialEnv -> openHarnessCredential', // a launch or a claim — POST /worker/claim is mintsAuthority
       'core/harness.ts launchDispatch -> issueMemberToken', // an owner dispatch or the tick; a run credential minted not to rotate
-      'core/harness.ts prepareDispatch -> openProviderCredential', // an owner dispatch or the tick
       'core/release-provenance.ts checkProject -> secrets.get', // the Deployment's own release job
       'core/repositories.ts projectRepositories -> secrets.get', // the store behind repositories.access
       'core/run-repository.ts prepareRunRepository -> repositories.access', // a run's held task, or POST /worker/repository — mintsAuthority

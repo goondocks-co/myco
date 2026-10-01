@@ -278,16 +278,19 @@ describe('a map run a worker claimed', () => {
     }
   });
 
-  it('is refused the launch seam\'s map route while a worker leases it', async () => {
+  it('reaches no map route but its own MCP surface while a worker leases it: the retired run route answers as no route', async () => {
     const r = await rig();
     await r.repositories.save('proj_1', { ...SOURCE, revision: null }, 'mem_worker', r.clock());
     const run = await r.claimMap();
     await r.pinCommit(run.id, COMMIT_A);
+    const post = (path: string, body: unknown) => worker.fetch(new Request(`${ORIGIN}${path}`, {
+      method: 'POST', headers: memberHeaders(run.runToken, { [PROJECT_HEADER]: 'proj_1' }), body: JSON.stringify(body),
+    }), r.e.env);
+    const absent = await post('/runs/no-such-route', { runId: run.id });
+    const absentAnswer = { status: absent.status, body: await absent.text() };
     for (const body of [{ op: 'prepare' }, { op: 'pin', source: { inputHash: 'e'.repeat(64), priorRevision: null } }, { op: 'write', artifact: ARTIFACT }]) {
-      const res = await worker.fetch(new Request(`${ORIGIN}/runs/canopy-map`, {
-        method: 'POST', headers: memberHeaders(run.runToken, { [PROJECT_HEADER]: 'proj_1' }), body: JSON.stringify({ runId: run.id, ...body }),
-      }), r.e.env);
-      expect({ op: body.op, answer: await res.json() }).toEqual({ op: body.op, answer: { persisted: true, held: false } });
+      const res = await post('/runs/canopy-map', { runId: run.id, ...body });
+      expect({ op: body.op, status: res.status, body: await res.text() }).toEqual({ op: body.op, ...absentAnswer });
     }
     expect(r.e.sqlite.query(`SELECT COUNT(*) AS n FROM canopy_maps`).get()).toEqual({ n: 0 });
     expect(mapSourcePinOfRun((await getRun(r.e.db, scope, run.id))!)?.inputHash).not.toBe('e'.repeat(64));

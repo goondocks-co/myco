@@ -571,6 +571,15 @@ export async function liveRunsOfCredential(db: RelationalStore, tokenId: string)
   return results;
 }
 
+/** The tasks of every unended run that names this credential, in any Project — read by the credential alone, which `idx_agent_runs_credential` serves. */
+export async function inFlightTasksOfCredential(db: RelationalStore, tokenId: string): Promise<string[]> {
+  const { results } = await db
+    .prepare(`SELECT task FROM agent_runs WHERE dispatched_by = ? AND ${IN_FLIGHT_RUN_STATUSES}`)
+    .bind(tokenId)
+    .all<{ task: string | null }>();
+  return results.map((row) => row.task ?? '');
+}
+
 /** The session a run's recorded context names, or null when it names none. */
 export function sessionNamedByRun(run: RunRow): string | null {
   if (run.runContext === null) return null;
@@ -648,29 +657,6 @@ export async function applyRunUpdate(
     .prepare(`UPDATE agent_runs SET ${columns.map((c) => `${c} = ?`).join(', ')}${release} WHERE project_id = ? AND id = ?${guard}${leaseGuard}`)
     .bind(...columns.map((c) => update[c] ?? null), scope.projectId, runId, ...(guarded ? TERMINAL_RUN_STATUSES : []),
       ...(lease === undefined ? [] : [lease.tokenId, lease.dispatchedBy, lease.now]))
-    .run();
-  return result.meta.changes;
-}
-
-/**
- * Retire the resumability of failed runs equivalent to this one.
- *
- * Equivalence is agent, task, Project and `dry_run` together. **`dry_run` is
- * part of it**: a dry run and a real run of the same task are not the same work,
- * and treating them as equivalent would let a dry run retire a real run's
- * resumability.
- */
-export async function supersedeEquivalentResumableRuns(
-  db: RelationalStore,
-  scope: ReadScope,
-  excludeRunId: string,
-  match: { agentId: string; taskName: string; dryRun: boolean },
-): Promise<number> {
-  const result = await db
-    .prepare(`UPDATE agent_runs SET resumable = 0, resume_status = 'superseded'
-       WHERE project_id = ? AND id != ? AND resumable = 1 AND status = 'failed'
-         AND agent_id = ? AND task = ? AND dry_run = ?`)
-    .bind(scope.projectId, excludeRunId, match.agentId, match.taskName, match.dryRun ? 1 : 0)
     .run();
   return result.meta.changes;
 }

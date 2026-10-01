@@ -1,5 +1,5 @@
 /**
- * Layout migration: each target owns a subtree, and destroying one cannot
+ * Layout migration: each target owns a subtree, and removing one cannot
  * reach the other. The old single-directory layout is brought forward on
  * first touch, moved never copied, and an occupied destination is never
  * clobbered.
@@ -10,7 +10,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { ensureServerLayout } from '@myco/server/layout.js';
 import { deploymentRecordPath, readDeploymentRecord } from '@myco/server/cloudflare.js';
-import { resolveDeploymentPaths, removeBundle, bundleContents } from '@myco/server/deployment.js';
+import { heldComposeBundle } from '@myco/server/layout.js';
 
 const home = () => mkdtempSync(join(tmpdir(), 'myco-layout-'));
 
@@ -39,8 +39,7 @@ describe('server layout migration', () => {
     const h = home();
     oldLayout(h);
     expect(readDeploymentRecord(h)?.workerName).toBe('w');
-    expect(resolveDeploymentPaths(h).composeFile).toBe(join(h, 'server', 'compose', 'compose.yaml'));
-    expect(existsSync(resolveDeploymentPaths(h).composeFile)).toBe(true);
+    expect(heldComposeBundle(h)).toBe(join(h, 'server', 'compose'));
     ensureServerLayout(h);
     const fresh = home();
     ensureServerLayout(fresh);
@@ -66,13 +65,10 @@ describe('server layout migration', () => {
     expect(existsSync(join(h, 'server', 'cloudflare.json'))).toBe(true);
   });
 
-  it('GATE: removing the Compose bundle leaves the Cloudflare record standing', () => {
+  it('names a retired Compose bundle only where one is held', () => {
+    expect(heldComposeBundle(home())).toBeNull();
     const h = home();
     oldLayout(h);
-    const paths = resolveDeploymentPaths(h);
-    removeBundle(paths);
-    expect(existsSync(paths.composeFile)).toBe(false);
-    expect(readDeploymentRecord(h)?.workerName).toBe('w');
-    expect(bundleContents(paths)).toEqual([]);
+    expect(heldComposeBundle(h)).toBe(join(h, 'server', 'compose'));
   });
 });

@@ -281,7 +281,7 @@ describe('one server product, two deployment targets', () => {
         .toEqual({ target: t.name, ids: ['blob-store', 'harness-runtime', 'rate-limiting', 'relational-store'] });
       // Same wording, whichever target is answering.
       expect({ target: t.name, labels: caps.map((c) => c.label).sort() })
-        .toEqual({ target: t.name, labels: ['Blob storage', 'Harness runtime', 'Project storage', 'Request rate limiting'] });
+        .toEqual({ target: t.name, labels: ['Blob storage', 'Embedding runtime', 'Project storage', 'Request rate limiting'] });
     }
     // Each target names its own infrastructure in its own vocabulary.
     expect(W.env.platform.name).not.toBe(C.env.platform.name);

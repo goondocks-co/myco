@@ -11,7 +11,7 @@ import {
 } from '@myco-server-worker/core/titling.js';
 import { MAX_MATERIAL_CHARS, MAX_MATERIAL_PROMPTS, MATERIAL_EXCERPT_CHARS, SESSION_END_SETTLE_MS } from '@myco-server-worker/constants.js';
 import type { RelationalStore, ServerEnv } from '@myco-server-worker/core/adapters.js';
-import { dispatchTask, prepareDispatch } from '@myco-server-worker/core/harness.js';
+import { prepareDispatch } from '@myco-server-worker/core/harness.js';
 import { sqliteEnv, withHarness } from './helpers/fixtures.js';
 
 const NOW = 1_700_000_000_000;
@@ -148,18 +148,10 @@ describe('titleSession', () => {
     expect(logged.join('\n')).not.toContain(OAT);
   });
 
-  it('hands an API key under its own variable, and the task override for provider and model ahead of the defaults, on a runtime-served launch', async () => {
+  it('reads no provider and no credential for a titling dispatch: the worker resolves both at the claim', async () => {
     const h = harness();
     await seedAnthropic(h);
     h.setting('agent.provider.model', 'claude-default');
-    h.setting('agent.tasks', { 'container-smoke': { provider: 'anthropic', model: 'claude-for-titles' } });
-    expect(await dispatchTask(h.env, 'container-smoke', 'proj_1', { serverUrl: ORIGIN, actor: 'mem_1', timeoutSeconds: 120 }, NOW)).toMatchObject({ dispatched: true, queued: false });
-    const vars = h.launches[0]!.envVars;
-    expect({ apiKey: vars.ANTHROPIC_API_KEY, model: vars.MYCO_MODEL }).toEqual({ apiKey: KEY, model: 'claude-for-titles' });
-    expect(vars.CLAUDE_CODE_OAUTH_TOKEN).toBeUndefined();
-    expect(JSON.parse(vars.MYCO_PROVIDER_JSON!)).toEqual({ type: 'anthropic', model: 'claude-for-titles' });
-    expect(logged.join('\n')).not.toContain(KEY);
-
     // A titling dispatch reads none of it: the harness that runs the run, and the credential that harness reads, are the worker's to resolve at the claim.
     h.setting('agent.tasks', { 'title-summary': { provider: 'anthropic', model: 'claude-for-titles' } });
     h.session('s1');
@@ -168,7 +160,8 @@ describe('titleSession', () => {
     expect(titling.outcome).toBe('queued');
     const queued = h.runRow(titling.runId!)!;
     expect({ provider: queued.provider, model: queued.model, credential: queued.dispatched_by }).toEqual({ provider: null, model: null, credential: null });
-    expect(h.launches).toHaveLength(1);
+    expect(h.launches).toHaveLength(0);
+    expect(logged.join('\n')).not.toContain(KEY);
   });
 
   it('makes one attempt per session even when two ends race, none for a session that has not ended, and one run each for two sessions ending together', async () => {
@@ -209,17 +202,9 @@ describe('titleSession', () => {
     expect(h.runRows().map((r) => ({ status: r.status, task: r.task, held: r.held_by, credential: r.dispatched_by }))).toEqual([waiting, waiting]);
   });
 
-  it('queues and spends the claim with no provider, no credential, an unserved provider, or an endpoint provider with no endpoint — and refuses each for a runtime-served task', async () => {
+  it('queues and spends the claim with no provider, no credential, an unserved provider, or an endpoint provider with no endpoint', async () => {
     const h = harness();
-    // The three refusals the launch seam still answers, on the task the seam still serves.
-    expect(await prepareDispatch(h.env, 'container-smoke', 'proj_1')).toEqual({ ok: false, refusal: 'no_provider' });
-    h.setting('agent.provider.type', 'anthropic');
-    expect(await prepareDispatch(h.env, 'container-smoke', 'proj_1')).toEqual({ ok: false, refusal: 'no_credential' });
-    h.setting('agent.provider.type', 'openai-compatible');
-    expect(await prepareDispatch(h.env, 'container-smoke', 'proj_1')).toEqual({ ok: false, refusal: 'no_endpoint' });
     h.setting('agent.provider.type', 'openrouter');
-    expect(await prepareDispatch(h.env, 'container-smoke', 'proj_1')).toEqual({ ok: false, refusal: 'unsupported_provider', providerType: 'openrouter' });
-
     // A titling dispatch names no provider at all, so none of those settings decides it: each ask queues and spends its session's claim.
     const sessions = ['unserved', 'none', 'uncredentialed', 'endpointless'];
     for (const id of sessions) {

@@ -4,8 +4,8 @@ import { stampRequest } from './core/activity.js';
 import { matchRoute, methodsServing, type Route, type Shape } from './routes.js';
 import { activateSuccessor, authenticateServerMemberToken, detectLineageReplay, LINEAGE_REPLAY_REVOKER, MEMBER_LINEAGE_IDLE_MS, LINEAGE_REPLAYED_CODE, MEMBER_TOKEN_PATTERN, revokedForReplay, revokeMemberLineage, type ExpiryAdmission, type MemberAuth } from './auth/tokens.js';
 import { heldRunOfCredential } from './api/run-admission.js';
-import { recordRunCall, type HeldRun } from './core/runs.js';
-import { HARNESS_MEMBER_ID } from './core/harness.js';
+import { inFlightTasksOfCredential, recordRunCall, type HeldRun } from './core/runs.js';
+import { HARNESS_MEMBER_ID, RUNTIME_SERVED_TASKS } from './core/harness.js';
 import { memberRole } from './auth/members-admin.js';
 import { forbiddenToMember, isAdmin } from './auth/roles.js';
 import { authenticateGrant, GRANT_KEY_PATTERN, touchGrant } from './auth/grants.js';
@@ -152,6 +152,8 @@ export const NO_PROJECT = 'project header required';
 export const NOT_ADMIN = 'this route serves an administrator of the Deployment';
 /** What a run's credential is told on a member route that is not its run's surface. */
 export const RUN_SCOPE = 'a run credential reaches only its run\'s surface';
+/** What a run's credential is told on the in-process run-control routes when its run is not one the Deployment runs itself. */
+export const IN_PROCESS_SCOPE = 'these routes serve only a run the Deployment runs itself';
 /** What a credential its issuer minted not to rotate is told on the refresh route. */
 export const NON_ROTATING = 'this credential does not rotate; mint another when it expires';
 /** What a credential its issuer minted not to rotate is told on any other route that mints an authority able to outlive it. */
@@ -456,15 +458,18 @@ export function createServer(deps: ServerDeps) {
     if (route.auth === 'public') return route.handler(request);
     if (route.auth !== 'member') return unauthorized();
     // A run's credential — the harness member's — is not a member's authority. It
-    // reaches the run principal on a route that serves one, and the run routes it
-    // holds today with their own admission (`legacyRunRoute`, until #1146 moves
-    // those operations onto MCP); on every other member route, stream routes and
-    // the refresh route included, it is refused before its body or its Project is
-    // read. A refreshed credential names a token no run row holds, so refusing the
-    // refresh route here is what keeps a run credential unrefreshable.
+    // reaches the run principal on a route that serves one, and the in-process
+    // run-control routes (`legacyRunRoute`) only for a run the Deployment runs
+    // itself; a worker's run credential is refused there. On every other member
+    // route, stream routes and the refresh route included, it is refused before
+    // its body or its Project is read. A refreshed credential names a token no run
+    // row holds, so refusing the refresh route here is what keeps a run credential
+    // unrefreshable.
     if (auth.memberId === HARNESS_MEMBER_ID) {
       if (servesRun(route)) return asRun(request, env, auth, route, now);
       if (route.legacyRunRoute !== true) return refuse(auth, shapeOf(route), RUN_SCOPE, 'run_scope');
+      const tasks = await inFlightTasksOfCredential(env.db, auth.tokenId);
+      if (tasks.length === 0 || !tasks.every((task) => RUNTIME_SERVED_TASKS.includes(task))) return refuse(auth, shapeOf(route), IN_PROCESS_SCOPE, 'run_scope');
     }
     // A credential its issuer minted not to rotate is one an orchestrator hands to every
     // sandbox it starts through the environment. It is refused every route that mints an

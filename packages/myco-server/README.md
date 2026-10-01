@@ -106,6 +106,10 @@ The dashboard's **Access** page (`/access`) administers members, invitations and
 
 Local development: `cd ui && npm run dev` proxies `/api`, `/auth` and `/health` to `http://127.0.0.1:8787` (override with `MYCO_SERVER_URL`), rewriting the Host to the loopback literal the self-hosted server admits.
 
+## The plain image
+
+`Dockerfile` builds a plain server image: the same server the `myco` binary runs, migrating its volume on start and serving the dashboard from `/app/ui`. It runs `embedding-reconcile` in its own process and no coding harness: prompted outcomes run on attached workers, so run `myco worker` on a machine where the harnesses are installed and logged in. Publish it on loopback with `MYCO_BIND=all` (`docker run -p 127.0.0.1:8787:8787 -e MYCO_BIND=all -e MYCO_ORIGIN=<the address members reach it at> -v myco-data:/data …`); the loopback-qualified publish spec is what keeps the container off the network (`platform/bun/loopback.ts`, condition 4). The clock schedules work, the embedding pass included, only once `MYCO_ORIGIN` names that address.
+
 ## Connect committed source
 
 In **Settings → Projects**, select **Connect repository** for a project. Enter its HTTPS Git URL and branch. Public repositories need no credential. For a private repository, clear **Use without a credential** and enter the Git username and a token limited to reading that repository. GitHub tokens can use `x-access-token` as the username. Signing in to Myco with GitHub does not grant access to repository contents.

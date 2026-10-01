@@ -2,7 +2,7 @@
  * The self-hosted relational store: `RelationalStore` over `bun:sqlite`.
  *
  * This is the adapter the server test suite has always run against, promoted to
- * production. Tests construct it over `:memory:`; a Compose deployment constructs
+ * production. Tests construct it over `:memory:`; a self-hosted Deployment constructs
  * it over a file on the mounted volume. Both run the same code, which is what
  * makes the contract suite's second adapter set real rather than a mock.
  */

@@ -1,6 +1,6 @@
 import { handleReleaseProvenance, handleRequestReleaseCheck, handleSaveReleaseProvenance } from './api/release-provenance.js';
-import { handleRepository, handleSaveRepository, handleRemoveRepository, handleRunRepository } from './api/repositories.js';
-import { handleProjectMap, handleRunMap } from './api/canopy.js';
+import { handleRepository, handleSaveRepository, handleRemoveRepository } from './api/repositories.js';
+import { handleProjectMap } from './api/canopy.js';
 import { handleMachineSettings, handleSetMachineSetting } from './api/machine-settings.js';
 import { handleMachines, handleRenameMachine } from './api/machines.js';
 import { handleConnectUncaptured, handleListUncaptured } from './api/uncaptured.js';
@@ -39,9 +39,7 @@ import {
   handleProjectSkill, handleProjectSkills, handleProjectSpore, handleProjectSpores, handleProjectInstructions,
 } from './api/intelligence.js';
 import {
-  handleAdmitResume, handleAgents, handleClaimRun, handleGetRun, handleRecordFailure,
-  handleRegisterAgent,
-  handleRunReports, handleWriteReport, handleRecordRunEvents, handleSupersedeRuns, handleUpdateRun,
+  handleAgents, handleClaimRun, handleRegisterAgent, handleWriteReport, handleUpdateRun,
 } from './api/runs.js';
 import { handleEmbeddingStep } from './api/embedding-task.js';
 import {
@@ -147,14 +145,8 @@ export const ROUTES: readonly Route[] = [
   // with the seam. `capture: false`: a run is the Deployment's own scheduled
   // intelligence, not a member's capture.
   { method: 'POST', path: '/runs/claim', auth: 'member', legacyRunRoute: true, bodyMode: 'json', shape: 'persisted', capture: false, handler: handleClaimRun },
-  { method: 'POST', path: '/runs/get', auth: 'member', legacyRunRoute: true, bodyMode: 'json', shape: 'persisted', capture: false, handler: handleGetRun },
   { method: 'POST', path: '/runs/update', auth: 'member', legacyRunRoute: true, bodyMode: 'json', shape: 'persisted', capture: false, handler: handleUpdateRun },
-  { method: 'POST', path: '/runs/failed', auth: 'member', legacyRunRoute: true, bodyMode: 'json', shape: 'persisted', capture: false, handler: handleRecordFailure },
-  { method: 'POST', path: '/runs/resume-admission', auth: 'member', legacyRunRoute: true, bodyMode: 'json', shape: 'persisted', capture: false, handler: handleAdmitResume },
-  { method: 'POST', path: '/runs/supersede', auth: 'member', legacyRunRoute: true, bodyMode: 'json', shape: 'persisted', capture: false, handler: handleSupersedeRuns },
-  { method: 'POST', path: '/runs/reports', auth: 'member', legacyRunRoute: true, bodyMode: 'json', shape: 'persisted', capture: false, handler: handleRunReports },
   { method: 'POST', path: '/runs/report', auth: 'member', legacyRunRoute: true, bodyMode: 'json', shape: 'persisted', capture: false, handler: handleWriteReport },
-  { method: 'POST', path: '/runs/events', auth: 'member', legacyRunRoute: true, bodyMode: 'json', shape: 'persisted', capture: false, handler: handleRecordRunEvents },
   { method: 'POST', path: '/runs/embedding-step', auth: 'member', legacyRunRoute: true, bodyMode: 'json', shape: 'persisted', capture: false, handler: handleEmbeddingStep },
   { method: 'POST', path: '/spores/save', auth: 'member', bodyMode: 'json', shape: 'persisted', capture: false, handler: handleSaveSpore },
   { method: 'POST', path: '/spores/list', auth: 'member', bodyMode: 'json', shape: 'persisted', capture: false, handler: handleListSpores },
@@ -166,8 +158,6 @@ export const ROUTES: readonly Route[] = [
   // What a starting session or a starting subagent is served: the Project's
   // instructions, and the preferred digest where a Deployment asks for it.
   { method: 'POST', path: '/context/session', auth: 'member', bodyMode: 'json', shape: 'persisted', capture: false, handler: handleSessionContext },
-  { method: 'POST', path: '/runs/repository', auth: 'member', legacyRunRoute: true, bodyMode: 'json', shape: 'persisted', capture: false, handler: handleRunRepository },
-  { method: 'POST', path: '/runs/canopy-map', auth: 'member', legacyRunRoute: true, bodyMode: 'json', shape: 'persisted', capture: false, handler: handleRunMap },
   // The tool surface: the seven MCP tools over the Deployment for a member, the
   // read-only six for an External Agent grant, answered as JSON-RPC. `answered`
   // is its refusal shape — an error envelope, at 400 or 503.
@@ -287,7 +277,7 @@ export const ROUTES: readonly Route[] = [
   { method: 'POST', path: '/auth/logout', auth: 'session', authority: 'account', handler: async () => new Response(null, { status: 204, headers: { 'set-cookie': clearCookie() } }) },
 ];
 
-/** A 1.4.x wire route the server does not serve; each names the event kinds (or the blob route) that carry the same capture in 2.0, or says what it carried is gone. A retired path is unmatched and answers 401 like any other absent path. */
+/** A 1.4.x wire route, or a container-harness run route, the server does not serve; each names the event kinds (or the blob route) that carry the same capture in 2.0, or says what it carried is gone. A retired path is unmatched and answers 401 like any other absent path. */
 export interface RetiredRoute {
   method: string;
   path: string;
@@ -308,6 +298,8 @@ export const RETIRED_ROUTES: readonly RetiredRoute[] = [
   { method: 'POST', path: '/runs/instruction', replacedBy: ['POST /worker/claim'] },
   { method: 'POST', path: '/runs/digest', replacedBy: ['GET /api/projects/{projectId}/digests'] },
   { method: 'POST', path: '/runs/digest-write', replacedBy: [], dropped: 'the generated digest goes (plan §3 D2, #1152); stored digests stay readable until #1170 drops the table' },
+  ...['/runs/get', '/runs/failed', '/runs/resume-admission', '/runs/supersede', '/runs/reports', '/runs/events', '/runs/repository', '/runs/canopy-map']
+    .map((path) => ({ method: 'POST', path, replacedBy: [], dropped: 'the container harness and its push-launch seam go (#1170 P7); a worker runs through /worker/* and /mcp' })),
 ];
 
 /**

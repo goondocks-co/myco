@@ -131,10 +131,6 @@ describe('read layer', () => {
     //   core/runs.ts      the agent run control plane — it OWNS agent_runs and
     //                     agent_state, and holds the two operations whose
     //                     atomicity lives in a WHERE clause rather than a caller
-    //   core/resume.ts     the resume model — it reads and retires agent_runs on
-    //                     the resumability axis, and holds the supersede query
-    //                     whose clock is the ORIGINAL dispatch rather than the
-    //                     current attempt
     //   core/provenance.ts release state — it OWNS knowledge_release_state on
     //                     the read side, and holds the one bulk lookup that
     //                     keeps annotation off an N+1

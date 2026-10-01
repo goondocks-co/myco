@@ -1,31 +1,14 @@
 /**
- * `myco server <create|status|destroy>` — argv and human output over
- * `../server/deployment.js`.
- *
- * The orchestration lives there so `myco setup` provisions through the same
- * code path rather than a second one that drifts.
+ * `myco server <verb>` — argv and human output over the two targets: the
+ * Deployment this binary runs itself (`--target local`, `../server/local.js`)
+ * and the hosted Worker (`--target cloudflare`, `../server/cloudflare-lifecycle.js`).
  */
-import {
-  createDeployment,
-  deploymentStatus,
-  destroyDeployment,
-  removeBundle,
-  resolveDeploymentPaths,
-  bundleContents,
-  signInConfigured,
-  backupDeployment,
-  restoreDeployment,
-  updateDeployment,
-  rotateSecrets,
-  adoptDeployment,
-} from '../server/deployment.js';
 import { CommandFailed } from '../server/runner.js';
-import { ComposeFilesUnreadable, HarnessLeftStopped, RestoreLeftIncomplete, UpdateRolledBack, UpdateRollbackFailed } from '../server/deployment.js';
+import { composeRetired, heldComposeBundle } from '../server/layout.js';
 import { registerGitHubApp, RegistrationRefused, resolveSignInTarget } from '../server/github-app.js';
 import { WranglerNotReady, deploymentRecordPath, peekDeploymentRecord, readDeploymentRecord, writeDeploymentRecord } from '../server/cloudflare.js';
 import { DeployConfigIncomplete, renderDeployConfig } from '../server/deploy-config.js';
 import { type CreatePlan, cloudflareDeploymentStatus, createCloudflareDeployment, destroyCloudflareDeployment, planCloudflareDeployment, rollbackCloudflareDeployment, updateCloudflareDeployment } from '../server/cloudflare-lifecycle.js';
-import { existsSync } from 'node:fs';
 import { parseFlags } from './flags.js';
 import path from 'node:path';
 import { resolveMycoHome } from '../paths/home.js';
@@ -87,11 +70,6 @@ Commands (--target local runs the Deployment from this binary; --target cloudfla
   run --target local                      Serve it in the foreground. This is what the service runs.
   install --target local                  Run it whenever you log in, restarting it if it stops.
   uninstall --target local                Stop it and remove the service. Its data is kept.
-
-  create [--port <n>] [--version <tag>] [--fleet <n>] [--origin <url>]
-                                          Provision and start the Deployment. --fleet sets how many
-                                          runtimes may run at once (default 4); --origin is the
-                                          address members reach it at when a proxy fronts it.
   create --target cloudflare --account-id <id> [--url <https://…>] [--dry-run]
                                           Provision D1/R2/Vectorize/secrets store, install generated
                                           secrets, migrate, deploy, and write the deployment record.
@@ -100,18 +78,11 @@ Commands (--target local runs the Deployment from this binary; --target cloudfla
                                           travel in this binary. --url puts it on a domain you own.
                                           --dry-run lists what it would create, keep and bind, and
                                           changes nothing. Then: github-app, then setup-owner.
-  status                                  Report what is provisioned and running.
+  status                                  Report this machine's Deployment: its directory, address,
+                                          service and whether it answers.
                                           With --target cloudflare: the record and the deployed version.
-  update [--version <tag>] [--no-rollback] [--no-drain] [--no-pull]
-                                          Move to a new image; the container migrates on start.
-                                          A failed update returns to the previous version. Waits for
-                                          the tasks this Deployment is running or about to start
-                                          before it recreates; work queued behind a limit waits for
-                                          the next wake either way. --no-drain skips the wait; the
-                                          harness is still stopped first, so live runs finish inside
-                                          its stop grace before the server is touched. --no-pull
-                                          recreates on the images this machine already holds, for a
-                                          tag built here or loaded from a file.
+  update --target local                   Migrate this machine's Deployment to the schema this binary
+                                          carries, stopping and starting its service around the move.
   update --target cloudflare              Move the Worker to the version this binary carries. It
                                           preserves attached workers. Bounded embedding work uses
                                           persisted progress to recover from interruption.
@@ -122,7 +93,7 @@ Commands (--target local runs the Deployment from this binary; --target cloudfla
   materialize --from <staging> --to <dir>
                                           Materialize a myco-recovery/3 staging into a verified
                                           recovery artifact. Local only; reads the staging read-only.
-  backup --to <dir> [--target local|cloudflare|compose]
+  backup --to <dir> [--target local|cloudflare]
                                           Snapshot the database and blobs. Local/Cloudflare backups
                                           resume an incomplete directory and verify every blob.
                                           Credentials require separate secure recovery storage.
@@ -139,12 +110,6 @@ Commands (--target local runs the Deployment from this binary; --target cloudfla
                                           Give up a hold whose destination directory is gone. It
                                           releases only that operator hold, never an automatic
                                           export's.
-  restore --target compose --from <dir> [--no-drain]
-                                          Replace the Deployment's data with a backup. Waits for the
-                                          tasks this Deployment is running or about to start before
-                                          it stops. --no-drain skips the wait; the harness is still
-                                          stopped first, so live runs finish inside its stop grace
-                                          before the server is touched.
   restore --target local --from <dir> --secrets-from <file> --yes [--port <n>]
                                           Recover into a fresh native Deployment directory. Verify
                                           data and independent credentials before publishing it.
@@ -157,16 +122,14 @@ Commands (--target local runs the Deployment from this binary; --target cloudfla
                                           Require only the original wrapping key in --secrets-from.
                                           Create a fresh session secret and configure GitHub sign-in
                                           afterward with server github-app. Keeps source sign-in intact.
-  rotate [--yes]                           Replace generated secrets. Ends every signed-in session.
-  adopt                                   Write a bundle for a stack this machine did not provision.
-  destroy [--data] [--yes]                Stop and remove the stack, at once — it does not wait for
-                                          the runs in flight. --data also removes the volume.
+  destroy [--data] [--yes]                Remove this machine's Deployment service; --data --yes also
+                                          removes its data directory. Recovery artifacts are kept.
                                           With --target cloudflare: removes the Worker only; data stands.
   config [--out <path>] [--fleet <n>]     Render the Cloudflare deploy config from the committed
                                           configuration and this machine's deployment record.
                                           --fleet sets how many runtimes the server may start at
                                           once; the next update deploys it.
-  github-app --url <https://…> [--org <name>] [--name <text>] [--target local|cloudflare|compose]
+  github-app --url <https://…> [--org <name>] [--name <text>] [--target local|cloudflare]
                                           Native setup requires a stopped server. Stop a foreground run
                                           with Ctrl-C, or use server uninstall to stop its service.
                                           Start it again after setup to use the new sign-in credentials.
@@ -175,8 +138,8 @@ Commands (--target local runs the Deployment from this binary; --target cloudfla
 
 A Deployment run from this binary needs no container runtime and no Node.
 The Cloudflare target needs Node and wrangler on THIS machine, and neither on
-the Deployment. The Compose bundle is ordinary Compose: everything for that
-target is also runnable with \`docker compose\` from the deployment directory.`;
+the Deployment. The plain server image (ghcr.io/goondocks-co/myco-server) runs
+the same Deployment under a container runtime you manage yourself.`;
 
 /** The verbs a Deployment this machine runs answers to; every other verb belongs to the hosted targets. */
 const LOCAL_VERBS = new Set(['create', 'run', 'install', 'uninstall', 'status', 'update', 'destroy']);
@@ -317,19 +280,22 @@ export async function run(args: string[]): Promise<void> {
 
   const { flags } = parseFlags(rest);
 
-  /** Which target a lifecycle verb acts on: named, else the one this machine holds. */
-  const target = (): 'cloudflare' | 'compose' | 'local' => {
+  /** Which target a lifecycle verb acts on: named, else the one this machine holds, else this machine's own. */
+  const target = (): 'cloudflare' | 'local' => {
     const named = flags.get('target');
-    if (named === 'cloudflare' || named === 'compose' || named === 'local') return named;
-    if (named !== undefined) fail(`--target must be local, cloudflare or compose, and is ${JSON.stringify(named)}`);
-    const held: string[] = [];
+    if (named === 'compose') fail(composeRetired(heldComposeBundle(resolveMycoHome())));
+    if (named === 'cloudflare' || named === 'local') return named;
+    if (named !== undefined) fail(`--target must be local or cloudflare, and is ${JSON.stringify(named)}`);
+    const held: Array<'cloudflare' | 'local'> = [];
     if (readDeploymentRecord() !== null) held.push('cloudflare');
-    if (existsSync(resolveDeploymentPaths().composeFile)) held.push('compose');
     if (localDeploymentPresent()) held.push('local');
     // Two Deployments on one machine is a choice the operator makes per verb,
     // never one this guesses from what happens to be on disk.
     if (held.length > 1) fail(`this machine holds more than one Deployment (${held.join(', ')}); pass --target ${held.join(' or --target ')}`);
-    return (held[0] as 'cloudflare' | 'compose' | 'local' | undefined) ?? 'compose';
+    // A Compose bundle is a Deployment this binary no longer runs: a verb that would have acted on it says so.
+    const bundle = held.length === 0 ? heldComposeBundle(resolveMycoHome()) : null;
+    if (bundle !== null) fail(composeRetired(bundle));
+    return held[0] ?? 'local';
   };
 
   /** The Cloudflare lifecycle inputs a verb needs; only a deploying verb needs a checkout. */
@@ -374,9 +340,12 @@ export async function run(args: string[]): Promise<void> {
       const paths = resolveLocalPaths();
 
       if (command === 'create') {
+        // The refusal names what the operator typed: a bare `--port` arrives as "true" and `--port=` as "", never as a number.
         const portFlag = flags.get('port');
         const port = portFlag === undefined ? DEFAULT_LOCAL_RECORD.port : Number(portFlag);
-        if (portFlag !== undefined && (portFlag === 'true' || !Number.isInteger(port))) fail('--port needs a whole number.');
+        if (portFlag !== undefined && (!/^\d+$/.test(portFlag) || port < 1 || port > 65_535)) {
+          fail(`--port must be a whole number between 1 and 65535, and is ${JSON.stringify(portFlag)}.`);
+        }
         const existing = localDeploymentPresent(paths) ? readLocalRecord(paths) : DEFAULT_LOCAL_RECORD;
         const record: LocalDeploymentRecord = { ...existing, port };
         const { generated, applied } = createLocalDeployment(record, carriedNative(), paths);
@@ -526,7 +495,7 @@ export async function run(args: string[]): Promise<void> {
     }
 
     if (command === 'rollback') {
-      fail('rollback is a --target cloudflare verb; the Compose update path rolls back on its own (--no-rollback disables it).');
+      fail('rollback is a --target cloudflare verb.');
     }
 
     if (command === 'update' && target() === 'cloudflare') {
@@ -540,61 +509,6 @@ export async function run(args: string[]): Promise<void> {
       if (!flags.has('yes')) fail('destroy removes the Worker. The database, bucket, and secrets store are kept. Re-run with --yes to confirm.');
       const destroyed = await destroyCloudflareDeployment(cloudflareOptions());
       console.log(`Worker removed. Kept: ${destroyed.kept.join(', ')}.`);
-      return;
-    }
-
-    if (command === 'create') {
-      // The port is decided in one place, for the flag and for the bundle's own
-      // `.env` alike. The flag travels as the operator typed it, so a refusal
-      // names that and not what a conversion made of it.
-      const port = flags.get('port');
-      const fleetFlag = flags.get('fleet');
-      const fleet = fleetFlag === undefined ? undefined : Number(fleetFlag);
-      if (fleetFlag !== undefined && (fleetFlag === 'true' || !Number.isInteger(fleet) || fleet! < 1)) {
-        fail('--fleet needs a whole number of runtimes, 1 or more.');
-      }
-      const originFlag = flags.get('origin');
-      if (originFlag === '' || originFlag === 'true') fail('--origin needs the address members reach this Deployment at.');
-      const created = await createDeployment({ port, fleet, origin: originFlag, version: flags.get('version') });
-      console.log('\nDeployment started.');
-      console.log(`  Directory:  ${created.root}`);
-      console.log(`  Address:    http://127.0.0.1:${created.port}`);
-      console.log('\nThe published port is loopback-only. Remote access is a reverse proxy in front of it.');
-      return;
-    }
-
-    if (command === 'status') {
-      const status = await deploymentStatus();
-      if (!status.provisioned) {
-        console.log('No Deployment provisioned. `myco server create` provisions one.');
-        return;
-      }
-      const paths = resolveDeploymentPaths();
-      console.log('\nDeployment');
-      console.log(`  Directory:  ${paths.root}`);
-      console.log(`  Bundle:     ${bundleContents(paths).join(', ')}`);
-      // Every declared service, with its state: a stack whose harness exited
-      // serves and runs nothing, and naming only what is up hides that.
-      console.log(status.servicesError === undefined
-        ? `  Services:   ${status.states.map((s) => `${s.service} (${s.state})`).join(', ')}`
-        : `  Services:   could not read compose.yaml/compose.override.yaml: ${status.servicesError}`);
-      console.log(`  Running:    ${status.running ? 'yes' : 'no'}`);
-      // A bundle with no sign-in credential answers every owner route
-      // anonymously, dispatch included, and says nothing about why.
-      console.log(signInConfigured(paths)
-        ? '  Sign-in:    configured'
-        : '  Sign-in:    not configured — owner routes answer anonymous until `myco server github-app`');
-      return;
-    }
-
-    if (command === 'update') {
-      await updateDeployment({
-        version: flags.get('version'),
-        noRollback: flags.has('no-rollback'),
-        noDrain: flags.has('no-drain'),
-        noPull: flags.has('no-pull'),
-      });
-      console.log('Deployment updated. The container applied any migrations its volume was behind.');
       return;
     }
 
@@ -612,26 +526,17 @@ export async function run(args: string[]): Promise<void> {
     if (command === 'backup') {
       const to = flags.get('to');
       if (to === undefined || to === '' || to === 'true') fail('backup needs --to <dir>.');
-      const selected = target();
-      if (selected !== 'compose') {
-        const report = (line: string) => { console.log(line); };
-        const done = selected === 'local'
-          ? await backupLocalDeployment({ destination: to!, report, native: carriedNative() })
-          : await backupCloudflareDeployment({ ...cloudflareOptions(), destination: to!, report });
-        console.log(`Verified data artifact written to ${path.resolve(to!)} (${done.snapshot!.blobCount} blobs)`);
-        console.log(credentialsReport(done.snapshot!.credentialsRequired));
-        return;
-      }
-      const done = await backupDeployment({ destination: to! });
-      console.log(`Backup written to ${done.destination}`);
-      console.log('  myco.sqlite   consistent snapshot, taken with VACUUM INTO');
-      console.log('  blobs/        content-addressed objects');
+      const report = (line: string) => { console.log(line); };
+      const done = target() === 'local'
+        ? await backupLocalDeployment({ destination: to!, report, native: carriedNative() })
+        : await backupCloudflareDeployment({ ...cloudflareOptions(), destination: to!, report });
+      console.log(`Verified data artifact written to ${path.resolve(to!)} (${done.snapshot!.blobCount} blobs)`);
+      console.log(credentialsReport(done.snapshot!.credentialsRequired));
       return;
     }
 
     if (command === 'recovery-hold') {
       const selected = target();
-      if (selected !== 'local' && selected !== 'cloudflare') fail('recovery-hold needs --target local or --target cloudflare.');
       const to = flags.get('to');
       const token = flags.get('token');
       const abandon = flags.has('abandon');
@@ -668,7 +573,6 @@ export async function run(args: string[]): Promise<void> {
 
     if (command === 'restore') {
       const selected = target();
-      if (flags.has('new-signin') && selected !== 'cloudflare' && selected !== 'local') fail('--new-signin requires --target cloudflare or --target local.');
       const from = flags.get('from');
       if (from === undefined || from === '') fail('restore needs --from <dir>.');
       if (selected === 'cloudflare') {
@@ -682,54 +586,17 @@ export async function run(args: string[]): Promise<void> {
         if (flags.has('new-signin')) console.log(`Using the same MYCO_HOME (${resolveMycoHome()}), configure destination sign-in with: myco server github-app --target cloudflare --url ${restored.record.url} --name "Myco Recovery"`);
         return;
       }
-      if (selected === 'local') {
-        if (from === 'true') fail('restore needs --from <dir>.');
-        const secretsFile = flags.get('secrets-from');
-        if (secretsFile === undefined || secretsFile === '' || secretsFile === 'true') fail('native recovery needs --secrets-from <file> with independently held recovery credentials.');
-        if (!flags.has('yes')) fail('native recovery publishes a new Deployment from the artifact; re-run with --yes to confirm.');
-        const port = flags.get('port');
-        const restored = await restoreLocalDeployment({ source: from!, secretsFile: secretsFile!, native: carriedNative(),
-          newSignIn: flags.has('new-signin'),
-          ...(port === undefined ? {} : { port: Number(port) }), report: (line) => console.log(line) });
-        console.log(`Native recovery volume ready at schema ${restored.schemaVersion}. Source data was preserved.`);
-        console.log(`Keep MYCO_HOME set to ${resolveMycoHome()} for this recovered Deployment.`);
-        console.log(`Start it with this binary (${process.execPath}) and arguments: server run --target local`);
-        return;
-      }
-      if (!flags.has('yes')) {
-        fail(`restore replaces this Deployment's database and blobs with ${from}. Re-run with --yes to confirm.`);
-      }
-      await restoreDeployment({ source: from!, noDrain: flags.has('no-drain') });
-      console.log('Deployment restored and restarted.');
-      return;
-    }
-
-    if (command === 'rotate') {
-      if (!flags.has('yes')) {
-        fail('rotate replaces the session secret, which ends every signed-in session. Re-run with --yes to confirm.');
-      }
-      const rotated = await rotateSecrets({ report: (line) => console.log(line) });
-      console.log(`Rotated: ${rotated.join(', ')}`);
-      console.log('Every signed-in session has ended.');
-      return;
-    }
-
-    if (command === 'adopt') {
-      const result = await adoptDeployment();
-      console.log(result.adopted
-        ? `Adopted the running stack (${result.services.join(', ')}). The bundle is now in ${resolveDeploymentPaths().root}.`
-        : `Bundle written to ${resolveDeploymentPaths().root}. No running stack was found; \`myco server create\` starts one.`);
-      return;
-    }
-
-    if (command === 'destroy') {
-      const removeData = flags.has('data');
-      if (removeData && !flags.has('yes')) {
-        fail('--data removes the Deployment volume and everything in it. Re-run with --yes to confirm.');
-      }
-      await destroyDeployment({ removeData });
-      if (removeData) removeBundle(resolveDeploymentPaths());
-      console.log(removeData ? 'Deployment and its data removed.' : 'Deployment stopped. Its data is kept.');
+      if (from === 'true') fail('restore needs --from <dir>.');
+      const secretsFile = flags.get('secrets-from');
+      if (secretsFile === undefined || secretsFile === '' || secretsFile === 'true') fail('native recovery needs --secrets-from <file> with independently held recovery credentials.');
+      if (!flags.has('yes')) fail('native recovery publishes a new Deployment from the artifact; re-run with --yes to confirm.');
+      const port = flags.get('port');
+      const restored = await restoreLocalDeployment({ source: from!, secretsFile: secretsFile!, native: carriedNative(),
+        newSignIn: flags.has('new-signin'),
+        ...(port === undefined ? {} : { port: Number(port) }), report: (line) => console.log(line) });
+      console.log(`Native recovery volume ready at schema ${restored.schemaVersion}. Source data was preserved.`);
+      console.log(`Keep MYCO_HOME set to ${resolveMycoHome()} for this recovered Deployment.`);
+      console.log(`Start it with this binary (${process.execPath}) and arguments: server run --target local`);
       return;
     }
 
@@ -781,15 +648,11 @@ export async function run(args: string[]): Promise<void> {
     console.log(SERVER_HELP);
     process.exit(2);
   } catch (err) {
-    // A rolled-back update is a failure, and the operator needs to know the
-    // Deployment is serving again on the version it started from.
-    if (err instanceof UpdateRolledBack || err instanceof UpdateRollbackFailed || err instanceof HarnessLeftStopped) fail(err.message);
-    if (err instanceof RestoreLeftIncomplete || err instanceof ComposeFilesUnreadable) fail(err.message);
     if (err instanceof RegistrationRefused || err instanceof WranglerNotReady) fail(err.message);
     if (err instanceof DeployConfigIncomplete) fail(err.message);
     if (err instanceof LocalDeploymentAbsent || err instanceof LocalRecordUnreadable) fail(err.message);
     if (err instanceof ServicePathUnsupported || err instanceof ServicePlatformUnsupported) fail(err.message);
-    // A Compose failure is the operator's to read, verbatim.
+    // A command this verb ran failed: its own words are the operator's to read, verbatim.
     if (err instanceof CommandFailed) fail(err.message);
     fail(err instanceof Error ? err.message : String(err));
   }
