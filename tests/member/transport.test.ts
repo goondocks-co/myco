@@ -84,8 +84,45 @@ describe('ServerClient classification', () => {
     const hanging: FetchLike = (_input, init) => new Promise((_resolve, reject) => { init?.signal?.addEventListener('abort', () => reject(new Error('aborted'))); });
     const started = Date.now();
     expect(await new ServerClient({ serverUrl: 'https://s', token: rig.token, projectId: 'proj_1' }, hanging).postEvent(env, { connectTimeoutMs: 20, requestTimeoutMs: 100 }))
-      .toEqual({ class: 'retry', detail: 'timeout (request)' });
+      .toEqual({ class: 'retry', detail: expect.stringMatching(/^timed out waiting for the answer to start after \d+ ms$/) });
     expect(Date.now() - started).toBeLessThan(2_000);
+  });
+
+  it('reads a 5xx or 429 whose body stalls by its status line: retry, never slow', async () => {
+    const env = promptEvent(ctx('s_stalled_5xx'), { promptId: mintId(), text: 'hi' }).envelope;
+    const stalled = (status: number, headers: Record<string, string> = {}): FetchLike => async (_input, init) => {
+      const signal = init?.signal ?? undefined;
+      const body = new ReadableStream<Uint8Array>({ start(controller) {
+        controller.enqueue(new TextEncoder().encode('{"error":'));
+        signal?.addEventListener('abort', () => { controller.error(new Error('aborted')); }, { once: true });
+      } });
+      return new Response(body, { status, headers: { 'content-type': 'application/json', ...headers } });
+    };
+    const capped = { connectTimeoutMs: 40, requestTimeoutMs: 40, capped: true as const };
+    expect(await new ServerClient({ serverUrl: 'https://s', token: 'x'.repeat(43), projectId: 'proj_1' }, stalled(503, { 'retry-after': '7' })).postEvent(env, capped))
+      .toEqual({ class: 'retry', status: 503, detail: 'http 503', retryAfterMs: 7_000 });
+    expect(await new ServerClient({ serverUrl: 'https://s', token: 'x'.repeat(43), projectId: 'proj_1' }, stalled(429)).postEvent(env, capped))
+      .toMatchObject({ class: 'retry', status: 429 });
+    // A 200 whose body stalls is still the slow answer it is.
+    expect((await new ServerClient({ serverUrl: 'https://s', token: 'x'.repeat(43), projectId: 'proj_1' }, stalled(200)).postEvent(env, capped)).class).toBe('slow');
+  });
+
+  it('reads a capped share running out as slow, not as a dark Deployment, and says which step it stopped in', async () => {
+    const env = promptEvent(ctx('s_slow'), { promptId: mintId(), text: 'hi' }).envelope;
+    const hanging: FetchLike = (_input, init) => new Promise((_resolve, reject) => { init?.signal?.addEventListener('abort', () => reject(new Error('aborted'))); });
+    const client = new ServerClient({ serverUrl: 'https://s', token: 'x'.repeat(43), projectId: 'proj_1' }, hanging);
+    const capped = await client.postEvent(env, { connectTimeoutMs: 40, requestTimeoutMs: 40, capped: true });
+    expect(capped).toEqual({ class: 'slow', phase: 'headers', elapsedMs: expect.any(Number), detail: expect.stringMatching(/^timed out waiting for the answer to start after \d+ ms$/) });
+    expect((capped as { elapsedMs: number }).elapsedMs).toBeGreaterThanOrEqual(35);
+    // The same timeout on a share that is not capped is the Deployment not answering at all.
+    expect((await client.postEvent(env, { connectTimeoutMs: 40, requestTimeoutMs: 40 })).class).toBe('retry');
+    // Every other failure of a capped share is still what it was: a dead socket and a 5xx are retry.
+    const refusing: FetchLike = async () => { throw new Error('ECONNREFUSED'); };
+    expect(await new ServerClient({ serverUrl: 'https://s', token: 'x'.repeat(43), projectId: 'proj_1' }, refusing).postEvent(env, { connectTimeoutMs: 40, requestTimeoutMs: 40, capped: true }))
+      .toMatchObject({ class: 'retry', detail: 'ECONNREFUSED' });
+    const busy: FetchLike = async () => new Response('busy', { status: 503 });
+    expect(await new ServerClient({ serverUrl: 'https://s', token: 'x'.repeat(43), projectId: 'proj_1' }, busy).postEvent(env, { connectTimeoutMs: 40, requestTimeoutMs: 40, capped: true }))
+      .toMatchObject({ class: 'retry', status: 503 });
   });
 
   it('allows a blob upload to receive headers within its request budget', async () => {
@@ -186,7 +223,7 @@ describe('an answer cut short by the request deadline', () => {
   it('is a request that timed out, never a 200 in the wrong shape', async () => {
     const client = new ServerClient({ serverUrl: 'https://s', token: 'x'.repeat(43), projectId: 'proj_1' }, cutShort);
     const env = promptEvent(ctx('s_cut'), { promptId: mintId(), text: 'hi' }).envelope;
-    expect(await client.postEvent(env, { connectTimeoutMs: 50, requestTimeoutMs: 50 })).toEqual({ class: 'retry', detail: 'timeout (request)' });
+    expect(await client.postEvent(env, { connectTimeoutMs: 50, requestTimeoutMs: 50 })).toEqual({ class: 'retry', detail: expect.stringMatching(/^timed out waiting for the answer to finish after \d+ ms$/) });
   });
 
   /** A body that ends when the request is aborted, after `sent` of it, under `headers`. */
@@ -212,7 +249,7 @@ describe('an answer cut short by the request deadline', () => {
       const client = new ServerClient({ serverUrl: 'https://s', token: 'x'.repeat(43), projectId: 'proj_1' }, cutAfter(sent, headers));
       const env = promptEvent(ctx(`s_chunked_${what.replace(/[^a-z]/g, '_')}`), { promptId: mintId(), text: 'hi' }).envelope;
       expect({ what, outcome: await client.postEvent(env, { connectTimeoutMs: 50, requestTimeoutMs: 50 }) })
-        .toEqual({ what, outcome: { class: 'retry', detail: 'timeout (request)' } });
+        .toEqual({ what, outcome: { class: 'retry', detail: expect.stringMatching(/^timed out waiting for the answer to finish after \d+ ms$/) } });
     }
   });
 
@@ -223,7 +260,7 @@ describe('an answer cut short by the request deadline', () => {
     const client = new ServerClient({ serverUrl: 'https://s', token: 'x'.repeat(43), projectId: 'proj_1' },
       cutAfter(decoded, { 'content-encoding': 'gzip', 'content-length': String(new TextEncoder().encode(decoded).byteLength) }));
     const env = promptEvent(ctx('s_gzip_length'), { promptId: mintId(), text: 'hi' }).envelope;
-    expect(await client.postEvent(env, { connectTimeoutMs: 50, requestTimeoutMs: 50 })).toEqual({ class: 'retry', detail: 'timeout (request)' });
+    expect(await client.postEvent(env, { connectTimeoutMs: 50, requestTimeoutMs: 50 })).toEqual({ class: 'retry', detail: expect.stringMatching(/^timed out waiting for the answer to finish after \d+ ms$/) });
   });
 
   it('keeps a whole answer that landed as the deadline fired', async () => {

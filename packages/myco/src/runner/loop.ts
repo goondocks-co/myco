@@ -218,6 +218,8 @@ async function postAs(options: Requester, token: string, path: string, body: unk
       return outcome.status === 200
         ? { kind: 'refused', code: 'malformed_answer', detail: outcome.detail }
         : { kind: 'unreachable', detail: outcome.detail };
+    case 'slow':
+      return { kind: 'unreachable', detail: outcome.detail };
     default:
       return { kind: 'refused', code: outcome.code, detail: 'reason' in outcome ? outcome.reason : '' };
   }

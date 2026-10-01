@@ -844,7 +844,9 @@ export function runStatus(args: readonly string[], deps: MemberCliDeps = {}): vo
     if (membership.unavailableFields.length > 0) out(`membership: unknown ${membership.unavailableFields.join(', ')}`);
     for (const session of spool.sessions) out(`spool:      ${session.sessionId} — ${session.unacknowledged ?? 'unknown'} un-acknowledged`);
     out(`spool:      ${spool.readable ? spool.sessionFiles : 'unknown'} session file(s), ${spool.unacknowledgedTotal ?? 'unknown'} un-acknowledged event(s)`);
-    out(`last ack:   ${!spool.stateReadable ? 'unknown — state could not be read' : spool.lastAckAt === null ? '—' : when(spool.lastAckAt)}`);
+    // The spool's own acknowledgements: a captured event the Deployment kept. A recall answer or a transcript segment
+    // stamps nothing here, so the line names what it counts.
+    out(`last event: ${!spool.stateReadable ? 'unknown — state could not be read' : spool.lastAckAt === null ? 'none acknowledged yet' : `acknowledged ${when(spool.lastAckAt)}`}`);
     const last = refusals.entries[refusals.entries.length - 1];
     const damaged = refusals.unreadableLines > 0 ? `, ${refusals.unreadableLines} unreadable` : '';
     out(`refused:    ${refusals.logReadable ? `${refusals.loggedSinceLastReset} logged${damaged}${last ? `; last ${last.kind ?? 'unknown kind'} ${last.eventId ?? 'unknown event'} (${last.code ?? 'code not recognised'}${last.held ? ', kept spooled' : ''}) at ${last.at === null ? 'unknown' : when(last.at)}` : ''}` : 'the log could not be read'}`);

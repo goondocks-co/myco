@@ -257,7 +257,35 @@ describe('a session working now', () => {
     expect((live.rows as Array<{ sessionId: string }>).map((row) => row.sessionId)).toEqual(['sess_c', 'sess_b', 'sess_a']);
   });
 
-  it('on the self-hosted target, stamps the turn only after the prompt\'s answer is composed from its reads', async () => {
+  it('opens the turn though the answer is never composed: the stamp is registered first and waits on nothing the answer reads', async () => {
+    // A client that stops waiting mid-compose, or a compose that never ends, must not cost the session its turn. Every
+    // statement but the stamp hangs, so nothing the answer reads (settings, the capability, spores) ever lands.
+    const sqlite = new Database(':memory:');
+    sqlite.exec('PRAGMA foreign_keys = ON');
+    for (const file of renderMigrationFiles()) sqlite.exec(file.sql);
+    const now = Date.now();
+    sqlite.run(`INSERT INTO projects (project_id, name, created_at) VALUES ('proj_1', 'p', 0)`);
+    sqlite.run(`INSERT INTO sessions (project_id, session_id, machine_id, created_by_token_id, first_received_at, last_received_at) VALUES ('proj_1', 'sess_1', 'machine_1', 'tok', ?, ?)`, [now, now]);
+    const bun = serverEnvFromBunConfig({ sqlite, blobDir: mkdtempSync(join(tmpdir(), 'myco-blobs-')) });
+    const inner = bun.db;
+    const never = new Promise<never>(() => {});
+    const hung = (statement: ReturnType<typeof inner.prepare>) => {
+      const stalled = { ...statement, all: () => never, first: () => never, run: () => never, raw: () => never };
+      return { ...stalled, bind: (...values: unknown[]) => ({ ...statement.bind(...values), all: () => never, first: () => never, run: () => never, raw: () => never }) };
+    };
+    const db = { ...inner, prepare: (sql: string) => (/SET working_since = \?/.test(sql) ? inner.prepare(sql) : hung(inner.prepare(sql))), batch: () => never };
+    const at = now - 1_000;
+    let answered = false;
+    void handlePromptContext({ ...bun, db } as never, {
+      projectId: 'proj_1', memberId: 'mem_1', machineId: 'machine_1', tokenId: 'tok', expiresAt: now + 60_000, lineageRoot: 'tok', lineageStartedAt: now,
+      runtime: { runtimeLabel: null, runtimeKind: null }, body: JSON.stringify({ sessionId: 'sess_1', promptId: promptIdAt(at), text: 'keep going' }), bodyBytes: 10, now, origin: 'https://s',
+    }).then(() => { answered = true; });
+    await bun.settle();
+    expect(answered).toBe(false);
+    expect((sqlite.query(`SELECT working_since FROM sessions WHERE session_id = 'sess_1'`).get() as { working_since: number }).working_since).toBe(at);
+  });
+
+  it('on the self-hosted target, writes the stamp before the answer\'s reads, and composes the answer as before', async () => {
     const sqlite = new Database(':memory:');
     sqlite.exec('PRAGMA foreign_keys = ON');
     for (const file of renderMigrationFiles()) sqlite.exec(file.sql);
@@ -279,7 +307,8 @@ describe('a session working now', () => {
     expect(answer.status).toBe(200);
     await bun.settle();
     const stamp = order.findIndex((sql) => /SET working_since = \?/.test(sql));
-    expect({ stamp, last: order.length - 1 }).toEqual({ stamp: order.length - 1, last: order.length - 1 });
+    // The stamp is registered before anything is read, and on this target deferred work starts at once.
+    expect(stamp).toBe(0);
     expect(order.some((sql) => /session_injections/.test(sql))).toBe(true);
     expect((sqlite.query(`SELECT working_since FROM sessions WHERE session_id = 'sess_1'`).get() as { working_since: number }).working_since).toBe(at);
   });

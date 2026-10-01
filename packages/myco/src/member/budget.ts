@@ -14,6 +14,11 @@ export interface RequestBudget {
   /** Minimum headroom to admit another request; fetch uses the request deadline. */
   connectTimeoutMs: number;
   requestTimeoutMs: number;
+  /**
+   * A share capped below what the hook could wait (`subRequestBudget`). Running out of it says the server was slow
+   * to answer within the share, not that it is unreachable, so the timeout classifies `slow` rather than `retry`.
+   */
+  capped?: true;
 }
 
 export interface HookBudget extends RequestBudget {
@@ -130,7 +135,7 @@ export function canStartRequest(budget: HookBudget, now: number = Date.now()): b
  */
 export function subRequestBudget(budget: HookBudget, capMs: number, now: number = Date.now()): RequestBudget {
   const ms = Math.max(1, Math.min(capMs, Math.floor(remainingMs(budget, now) / 3)));
-  return { connectTimeoutMs: ms, requestTimeoutMs: ms };
+  return { connectTimeoutMs: ms, requestTimeoutMs: ms, capped: true };
 }
 
 /** The request budget clipped to what remains before the deadline. */

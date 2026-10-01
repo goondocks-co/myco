@@ -46,8 +46,12 @@ const BAD_BODY = refusal('body is not an object', 'parse');
 
 /**
  * Open the session's turn, past the answer: the prompt asking for context is the turn's start, and the answer never
- * waits on the write. A write that fails, or cannot be deferred, is reported and leaves the answer as it is; the
- * session then reads as working only while its receipts are recent.
+ * waits on the write. It is registered before anything is composed, so a compose that is slow, fails, or is cut off
+ * by a client that stopped waiting still leaves the turn open: the deferral outlives the request on both targets.
+ * Nothing the answer does waits on it: on the hosted target the write runs beside the compose, and on the
+ * self-hosted target, where deferred work starts at once, it is one keyed UPDATE ahead of the compose's reads. A
+ * write that fails, or cannot be deferred, is reported and leaves the answer as it is; the session then reads as
+ * working only while its receipts are recent.
  */
 export function noteTurnStarted(env: ServerEnv, ctx: RouteContext, sessionId: string, promptId: string): void {
   const unrecorded = (err: unknown) => emit({ kind: 'turn_start_unrecorded', projectId: ctx.projectId, tokenId: ctx.tokenId, error: classify(err) });
@@ -76,6 +80,8 @@ export async function handlePromptContext(env: ServerEnv, ctx: RouteContext): Pr
     return Response.json(refused(ctx, refusal('prompt context requires sessionId, promptId and text', 'parse')));
   }
 
+  // Registered first and never awaited: the turn opens whatever becomes of the compose below.
+  noteTurnStarted(env, ctx, sessionId, promptId);
   const [leaves, capabilityOn] = await Promise.all([
     readRecallLeaves(env.db),
     settingsWriter(env.db).capabilityEnabled(ctx.projectId, 'cortex'),
@@ -83,8 +89,6 @@ export async function handlePromptContext(env: ServerEnv, ctx: RouteContext): Pr
   const served = await composePromptContext(env.db, { projectId: ctx.projectId }, leaves, capabilityOn, {
     sessionId, promptId, text, now: ctx.now,
   }, () => resolveSemanticSearch(env));
-  // Written only once the answer is composed, so on no target does the stamp run ahead of the reads it answers from.
-  noteTurnStarted(env, ctx, sessionId, promptId);
   return Response.json({ persisted: true, ...served });
 }
 

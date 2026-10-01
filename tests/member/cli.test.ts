@@ -71,7 +71,7 @@ describe('myco member drain / status', () => {
     };
 
     spool.append('sess-acked', promptEvent(ctxFor(spool, 'sess-acked'), { promptId: mintId(), text: 'delivered' }));
-    expect(await status()).toContain('last ack:   —');
+    expect(await status()).toContain('last event: none acknowledged yet');
 
     await runMemberCli(['drain'], { mycoHome, fetch: rig.fetch, stdout: () => {}, stderr: (l) => err.push(l) });
     expect(spool.sessionIds()).toEqual([]);
@@ -79,7 +79,7 @@ describe('myco member drain / status', () => {
 
     const delivered = await status();
     expect(delivered).toContain('spool:      0 session file(s), 0 un-acknowledged event(s)');
-    expect(delivered).not.toContain('last ack:   —');
+    expect(delivered).toMatch(/last event: acknowledged /);
     expect(err).toEqual([]);
   });
 

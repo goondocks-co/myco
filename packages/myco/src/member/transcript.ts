@@ -286,7 +286,7 @@ export function transcriptHeadHash(filePath: string): string | null {
 export interface ShipResult {
   shipped: number;
   /** `rejected`: refused for good, and recorded on the pointer. `refused`: refused for now; the same bytes are sent again later. */
-  endedBy: 'done' | 'budget' | 'retry' | 'parked' | 'refused' | 'rejected' | 'unauthorized' | 'route_missing' | 'protocol' | 'absent';
+  endedBy: 'done' | 'budget' | 'retry' | 'slow' | 'parked' | 'refused' | 'rejected' | 'unauthorized' | 'route_missing' | 'protocol' | 'absent';
 }
 
 const readSlice = (file: string, offset: number, length: number): Buffer => {
