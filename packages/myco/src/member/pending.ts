@@ -14,7 +14,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { resolveMycoHome } from '../paths/home.js';
 import type { OutboundEvent } from './envelope.js';
-import { BLOBS_DIRNAME, isTurnEndMark, MemberSpool, toWire, type TurnEndMark } from './spool.js';
+import { BLOBS_DIRNAME, MemberSpool, toWire, type TurnEndMark } from './spool.js';
 import { readRegistryEntry } from './registry.js';
 import { readSessionState, type SessionState } from './session-state.js';
 import { withFileLockSync } from '../utils/lifecycle-lock.js';
@@ -179,7 +179,7 @@ export function appendPending(
 /**
  * Append a turn-end mark for a repository that had no connection when the hook began, as `appendPending` does events:
  * under the repository's lock, into the pending spool, or into the project's spool after the held capture, once the join
- * has connected it. The journal holds each mark once (`turnEndIdentity`), so a move that runs again doubles none.
+ * has connected it. Held marks sit in the pending spool's marks file for the session (`.<session>.turns`).
  */
 export function appendPendingTurnEnd(
   repo: { root: string; rootKey: string }, sessionId: string, mark: { slot: TurnEndMark['slot']; transcriptId: string; atSize: number },
@@ -274,24 +274,15 @@ function moveHeld(rootKey: string, into: MemberSpool, opts: { mycoHome: string; 
   const held = new MemberSpool(NO_PROJECT, { mycoHome: opts.mycoHome, dir, initialize: false });
   let moved = 0;
   for (const sessionId of new Set([...held.sessionIds(), ...held.stateSessionIds()])) {
-    // The journal moves in its order: each run of events, and each turn-end mark between them.
-    let run: OutboundEvent[] = [];
-    const flushRun = (): void => {
-      const kept = restaged(run, into, sessionId);
-      into.appendAndRecord(sessionId, kept, undefined, opts.now);
-      moved += kept.length;
-      run = [];
-    };
+    // The journal moves in its order, then the turn-end marks no pass has consumed, each with the time its turn ended.
+    const run: OutboundEvent[] = [];
     for (const line of held.readRecords(sessionId)) {
-      if (line === null) continue;
-      if (isTurnEndMark(line)) {
-        flushRun();
-        into.appendTurnEnd(sessionId, { slot: line.slot, transcriptId: line.transcriptId, atSize: line.atSize }, undefined, line.at);
-        continue;
-      }
-      run.push({ envelope: toWire(line), ...(line._blobSource ? { blobSource: line._blobSource } : {}) });
+      if (line !== null) run.push({ envelope: toWire(line), ...(line._blobSource ? { blobSource: line._blobSource } : {}) });
     }
-    flushRun();
+    const kept = restaged(run, into, sessionId);
+    into.appendAndRecord(sessionId, kept, undefined, opts.now);
+    moved += kept.length;
+    into.appendMovedTurnEnds(sessionId, held.pendingTurnEnds(sessionId).map((pending) => pending.mark), opts.now);
     // The session's state moves with its journal, under the session's lock in the project's spool: its transcript
     // pointers, so the transcript ships; and its prompt map and prompt id, so nothing is minted twice.
     const state = readSessionState(dir, sessionId);

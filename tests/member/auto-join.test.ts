@@ -598,18 +598,28 @@ describe('the pending spool', () => {
     expect(appendPending(repo, 'sess-q', [sessionStartEvent({ ...ctx, sessionId: 'sess-q' }, { startedAt: at, originPath: root })], undefined, { mycoHome, now: at })).toBe('full');
   });
 
-  it('moves a held session\'s journal in its order: events and the turn-end marks between them', () => {
+  it('moves a held session\'s unconsumed turn-end marks into the project\'s marks file, each with the time its turn ended', () => {
     const root = repository(path.join(base, 'Repos'), 'widget', null);
     const repo = { root, rootKey: rootKeyFor(root, mycoHome) };
     const at = Date.now();
     const held = pendingSpool(repo, { mycoHome, now: at })!;
     const ctx = { agent: 'claude-code', sessionId: 'sess-j', stage: held.stagerFor('sess-j'), now: () => at };
+    const mark = (atSize: number) => ({ slot: 'primary' as const, transcriptId: `tx_${'a'.repeat(32)}`, atSize });
     appendPending(repo, 'sess-j', [sessionStartEvent(ctx, { startedAt: at, originPath: root })], undefined, { mycoHome, now: at });
-    new MemberSpool('', { mycoHome, dir: pendingDir(repo.rootKey, mycoHome) }).appendTurnEnd('sess-j', { slot: 'primary', transcriptId: `tx_${'a'.repeat(32)}`, atSize: 10 }, undefined, at + 1);
-    appendPending(repo, 'sess-j', [sessionStartEvent(ctx, { startedAt: at + 2, originPath: root })], undefined, { mycoHome, now: at + 2 });
+    expect([appendPendingTurnEnd(repo, 'sess-j', mark(10), undefined, { mycoHome, now: at + 1 }), appendPendingTurnEnd(repo, 'sess-j', mark(20), undefined, { mycoHome, now: at + 2 })]).toEqual(['pending', 'pending']);
+    // A pass already consumed the first held mark.
+    const [first] = held.pendingTurnEnds('sess-j');
+    held.consumeTurnEnds('sess-j', { generation: first!.generation, line: first!.line });
     const into = new MemberSpool('proj_1', { mycoHome });
-    expect(flushPending(repo.rootKey, into, { mycoHome, now: at + 3 })).toBe(2);
-    expect(into.readRecords('sess-j').map((r) => (r === null ? null : 'kind' in r ? r.kind : 'turn-end'))).toEqual(['session.start', 'turn-end', 'session.start']);
+    into.appendTurnEnd('sess-j', mark(5), undefined, at + 5);
+    expect(flushPending(repo.rootKey, into, { mycoHome, now: at + 10 })).toBe(1);
+    const landed = into.pendingTurnEnds('sess-j');
+    expect(landed.map((p) => ({ atSize: p.mark.atSize, at: p.mark.at }))).toEqual([{ atSize: 5, at: at + 5 }, { atSize: 20, at: at + 2 }]);
+    expect(into.readRecords('sess-j').map((r) => (r === null ? null : r.kind))).toEqual(['session.start']);
+    expect(fs.existsSync(pendingDir(repo.rootKey, mycoHome))).toBe(false);
+    // A pass holding the held file's place consumes nothing in the project's file.
+    into.consumeTurnEnds('sess-j', { generation: first!.generation, line: 9 });
+    expect(into.pendingTurnEnds('sess-j')).toHaveLength(2);
   });
 
   it('lands a hook\'s capture after what was held, when the connection is written but not yet settled', () => {
@@ -625,16 +635,23 @@ describe('the pending spool', () => {
     expect(new MemberSpool('proj_1', { mycoHome }).readRecords('sess-o').map((r) => (r !== null && 'kind' in r ? r.kind : null))).toEqual(['session.start', 'prompt']);
   });
 
-  it('holds each turn-end mark once, however often a move appends it', () => {
+  it('moves each held turn-end mark once when a move stopped part-way runs again, and leaves a hook\'s own marks as they come', () => {
     const root = repository(path.join(base, 'Repos'), 'widget', null);
     const repo = { root, rootKey: rootKeyFor(root, mycoHome) };
     const mark = { slot: 'primary' as const, transcriptId: `tx_${'b'.repeat(32)}`, atSize: 42 };
     expect(appendPendingTurnEnd(repo, 'sess-k', mark, undefined, { mycoHome, now: 1 })).toBe('pending');
+    // A move that stopped after appending, before it removed what it moved: the held files are there again.
+    const dir = pendingDir(repo.rootKey, mycoHome);
+    const kept = fs.mkdtempSync(path.join(base, 'kept-'));
+    fs.cpSync(dir, kept, { recursive: true });
     const into = new MemberSpool('proj_1', { mycoHome });
-    into.appendTurnEnd('sess-k', mark, undefined, 1);
     flushPending(repo.rootKey, into, { mycoHome, now: 2 });
-    into.appendTurnEnd('sess-k', mark, undefined, 3);
-    expect(into.readRecords('sess-k').filter((r) => r !== null && !('kind' in r))).toHaveLength(1);
+    fs.cpSync(kept, dir, { recursive: true });
+    flushPending(repo.rootKey, into, { mycoHome, now: 3 });
+    expect(into.pendingTurnEnds('sess-k').map((p) => p.mark.atSize)).toEqual([42]);
+    // A hook's own mark is appended as it comes, the same turn's end or not.
+    into.appendTurnEnd('sess-k', mark, undefined, 4);
+    expect(into.pendingTurnEnds('sess-k').map((p) => p.mark.atSize)).toEqual([42, 42]);
   });
 
   it('lands a hook\'s capture in the project\'s spool when the join connects the repository while the hook runs', async () => {
