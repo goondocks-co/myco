@@ -1,4 +1,5 @@
 import type { ErrorClassifier, OutboundFetch, ServerEnv } from './core/adapters.js';
+import { TURN_END_HEADER } from './ingest/turns.js';
 import { stampRequest } from './core/activity.js';
 import { matchRoute, methodsServing, type Route, type Shape } from './routes.js';
 import { activateSuccessor, authenticateServerMemberToken, detectLineageReplay, LINEAGE_REPLAY_REVOKER, MEMBER_LINEAGE_IDLE_MS, LINEAGE_REPLAYED_CODE, MEMBER_TOKEN_PATTERN, revokedForReplay, revokeMemberLineage, type ExpiryAdmission, type MemberAuth } from './auth/tokens.js';
@@ -550,7 +551,7 @@ export function createServer(deps: ServerDeps) {
       const answered = await route.handler(env, {
         projectId, memberId: auth.memberId, machineId: auth.machineId, tokenId: auth.tokenId,
         expiresAt: auth.expiresAt, lineageRoot: auth.lineageRoot, lineageStartedAt: auth.lineageStartedAt, runtime: auth.runtime,
-        body: body.text, bodyBytes: body.bytes, now, origin: url.origin,
+        body: body.text, bodyBytes: body.bytes, now, origin: url.origin, turnEnd: request.headers.get(TURN_END_HEADER) === '1',
       });
       if (drivesRun) await recordRunRoute(env, auth, route.path, answered, heldBefore, now);
       return answered;

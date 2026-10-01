@@ -129,7 +129,8 @@ export function transcriptPhase(run: HookRun): TranscriptPhase {
       backstop.record(next);
     },
     // Under the session's drain lease, the one a backlog walk from another hook takes too, so the two never upload the same slice.
-    afterDrain: async (r, until) => { await r.spool.withSessionLease(r.sessionId, () => shipSessionTranscripts(r.ctx, r.spool, r.client, r.budget, { now: r.now, until, machineId })); },
+    // The session's own transcript, shipped at its turn's end, is what tells the Deployment the turn ended.
+    afterDrain: async (r, until) => { await r.spool.withSessionLease(r.sessionId, () => shipSessionTranscripts(r.ctx, r.spool, r.client, r.budget, { now: r.now, until, machineId, turnEnd: true })); },
   };
 }
 

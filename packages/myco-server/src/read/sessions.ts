@@ -42,6 +42,17 @@ export interface SessionRow {
    */
   runtimeLabel: string | null;
   runtimeKind: string | null;
+  /**
+   * When the session's open turn started, in the member's clock; null while no turn is open, and when the recorded end
+   * is newer than the turn. A turn newer than the recorded end is a session resumed after it: working again, with its
+   * recorded end left as it stands.
+   */
+  workingSince: number | null;
+  /**
+   * Whether the session is working now: a turn open for less than `WORKING_CAP_MS`, however long it has gone without
+   * sending anything. False for a read given no instant to judge by.
+   */
+  working: boolean;
   /** The title written on the Deployment after the session ended; null until then. */
   title: string | null;
   summary: string | null;
@@ -105,7 +116,7 @@ export const PRESENTED_ENDED_AT = presentedEndedAt('s.');
 const SESSION_COLUMNS = `s.session_id, s.machine_id, s.created_by_token_id, s.first_received_at, s.last_received_at,
      s.agent, s.branch, ${PRESENTED_STARTED_AT} AS started_at, ${PRESENTED_ENDED_AT} AS ended_at, s.origin_path, s.parent_session_id, s.parent_reason,
      s.title, s.summary, s.titled_at, s.ended_by, ${FIRST_PROMPT_SQL} AS first_prompt,
-     c.member_id, c.runtime_kind, m.label AS member_label, e.label AS ended_by_label`;
+     c.member_id, c.runtime_kind, m.label AS member_label, e.label AS ended_by_label, s.working_since`;
 const SESSION_FROM = sessionFrom('');
 /** The session read's joins, with the sessions table read through `indexedBy` where one is named. */
 function sessionFrom(indexedBy: string): string {
@@ -121,6 +132,13 @@ export const SESSIONS_ACROSS_INDEX = 'idx_sessions_occurred_deployment';
  * the window's start on, however long ago they started, and sorts that set alone.
  */
 export const SESSIONS_ACTIVE_INDEX = 'idx_sessions_capture';
+/** The index the sessions working now are read through: it holds the sessions with an open turn alone. */
+export const SESSIONS_WORKING_INDEX = 'idx_sessions_working';
+/**
+ * How long a turn may stay open and still read as working. A turn ends when its end reaches the Deployment; this
+ * bounds only a turn whose end never does (a crash, an interrupt no hook reports), which reads as working no longer.
+ */
+export const WORKING_CAP_MS = 3 * 60 * 60 * 1000;
 /** A deleted session is absent from session reads, project counts, and latest activity. */
 const LIVE_SESSION = notTombstonedSql('s');
 const WEEK_MS = 7 * 24 * 60 * 60 * 1000;
@@ -128,7 +146,9 @@ const WEEK_MS = 7 * 24 * 60 * 60 * 1000;
 const text = (value: unknown): string | null => (value as string | null) ?? null;
 const num = (value: unknown): number | null => (value as number | null) ?? null;
 
-function toSession(row: Record<string, unknown>): SessionRow {
+function toSession(row: Record<string, unknown>, nowMs?: number): SessionRow {
+  const open = num(row.working_since);
+  const workingSince = open !== null && (row.ended_at == null || open > (row.ended_at as number)) ? open : null;
   return {
     sessionId: row.session_id as string,
     machineId: text(row.machine_id),
@@ -147,6 +167,8 @@ function toSession(row: Record<string, unknown>): SessionRow {
     memberId: text(row.member_id),
     memberLabel: text(row.member_label),
     runtimeLabel: null,
+    workingSince,
+    working: nowMs !== undefined && workingSince !== null && workingSince > nowMs - WORKING_CAP_MS,
     runtimeKind: text(row.runtime_kind),
     title: text(row.title),
     summary: text(row.summary),
@@ -218,6 +240,11 @@ export interface SessionFilters {
   window?: 'start' | 'activity';
   /** `open` is a session with no end recorded; `ended` one with an end. */
   state?: 'open' | 'ended';
+  /**
+   * The instant working is judged against. A read given it marks each session working or not, and under an activity
+   * window also lists every session working now, whatever its last receipt: a long turn sends nothing until it ends.
+   */
+  now?: number;
   /** The label of the member whose credential captured the session. */
   memberLabel?: string;
   /** The agent that captured the session, as the session records it. */
@@ -301,55 +328,86 @@ async function selectSessions(
   opts: { limit?: number; cursor?: string } & SessionFilters,
   walks: string = '',
 ): Promise<Page<SessionRow & { projectId: string }>> {
-  const bounded = walks === SESSIONS_ACROSS_INDEX;
   const active = activityWindow(opts);
   const k = keyset(opts, { order: SESSION_OCCURRED_AT, id: 's.session_id', direction: 'DESC' });
   if (k === null) return { rows: [], cursor: null };
-  const conditions = [projects.sql, LIVE_SESSION];
-  if ((opts.fidelity ?? 'full') === 'full') conditions.push(FULL_FIDELITY);
-  const params: unknown[] = [...projects.params];
-  if (opts.branch !== undefined) { conditions.push('s.branch = ?'); params.push(opts.branch); }
-  if (opts.agent !== undefined) { conditions.push('s.agent = ?'); params.push(opts.agent); }
-  if (active) {
-    // Active in the window: a receipt at or after its start, and no end recorded before it.
-    conditions.push('s.last_received_at >= ?', `(${PRESENTED_ENDED_AT} IS NULL OR ${PRESENTED_ENDED_AT} >= ?)`);
-    params.push(opts.since!, opts.since!);
-  } else if (opts.since !== undefined) {
-    // The instant the page is ordered by, so the filter admits what the order shows.
-    conditions.push(`${SESSION_OCCURRED_AT} >= ?`); params.push(opts.since);
-  }
-  if (opts.until !== undefined) { conditions.push(`${SESSION_OCCURRED_AT} < ?`); params.push(opts.until); }
-  // Open and ended as the page shows them, so a session listed with an end is not also listed as open.
-  if (opts.state === 'open') conditions.push(`${PRESENTED_ENDED_AT} IS NULL`);
-  if (opts.state === 'ended') conditions.push(`${PRESENTED_ENDED_AT} IS NOT NULL`);
-  if (opts.memberLabel !== undefined) { conditions.push('m.label = ?'); params.push(opts.memberLabel); }
-  if (opts.sessionId !== undefined) { conditions.push('s.session_id = ?'); params.push(opts.sessionId); }
-  if (opts.q !== undefined && opts.q.trim() !== '') {
-    const pattern = containsPattern(opts.q.trim());
-    conditions.push(`(s.title LIKE ? ESCAPE '\\' OR s.agent LIKE ? ESCAPE '\\' OR s.branch LIKE ? ESCAPE '\\' OR s.session_id LIKE ? ESCAPE '\\' OR ${FIRST_PROMPT_SQL} LIKE ? ESCAPE '\\')`);
-    params.push(pattern, pattern, pattern, pattern, pattern);
-  }
-  if (k.where !== '') {
-    if (bounded) { conditions.push(`${SESSION_OCCURRED_AT} <= ?`); params.push(k.params[0]); }
-    conditions.push(k.where); params.push(...k.params);
-  }
-  const { results } = await db
-    .prepare(`SELECT s.project_id, ${SESSION_COLUMNS} ${sessionFrom(walks)} WHERE ${conditions.join(' AND ')} ORDER BY ${SESSION_OCCURRED_AT} DESC, s.session_id DESC LIMIT ?`)
-    .bind(...params, k.limit + 1)
-    .all<Record<string, unknown>>();
+  const read = async (window: 'receipt' | 'working', through: string): Promise<Record<string, unknown>[]> => {
+    const bounded = through === SESSIONS_ACROSS_INDEX;
+    const conditions = [projects.sql, LIVE_SESSION];
+    if ((opts.fidelity ?? 'full') === 'full') conditions.push(FULL_FIDELITY);
+    const params: unknown[] = [...projects.params];
+    if (opts.branch !== undefined) { conditions.push('s.branch = ?'); params.push(opts.branch); }
+    if (opts.agent !== undefined) { conditions.push('s.agent = ?'); params.push(opts.agent); }
+    if (window === 'working') {
+      // Working now: a turn opened within the cap, with no end recorded or one older than the turn.
+      conditions.push('s.working_since IS NOT NULL', 's.working_since > ?', `(${PRESENTED_ENDED_AT} IS NULL OR ${PRESENTED_ENDED_AT} < s.working_since)`);
+      params.push(opts.now! - WORKING_CAP_MS);
+    } else if (active) {
+      // Active in the window: a receipt at or after its start, and no end recorded before it.
+      conditions.push('s.last_received_at >= ?', `(${PRESENTED_ENDED_AT} IS NULL OR ${PRESENTED_ENDED_AT} >= ?)`);
+      params.push(opts.since!, opts.since!);
+    } else if (opts.since !== undefined) {
+      // The instant the page is ordered by, so the filter admits what the order shows.
+      conditions.push(`${SESSION_OCCURRED_AT} >= ?`); params.push(opts.since);
+    }
+    if (opts.until !== undefined) { conditions.push(`${SESSION_OCCURRED_AT} < ?`); params.push(opts.until); }
+    // Open and ended as the page shows them, each session under one. A session working again after its recorded end is
+    // open while it works: the working read lists it as open, and a read of ended sessions judged at an instant leaves it
+    // out.
+    if (opts.state === 'open' && window !== 'working') conditions.push(`${PRESENTED_ENDED_AT} IS NULL`);
+    if (opts.state === 'ended') {
+      conditions.push(`${PRESENTED_ENDED_AT} IS NOT NULL`);
+      if (opts.now !== undefined) {
+        conditions.push(`NOT (s.working_since IS NOT NULL AND s.working_since > ${PRESENTED_ENDED_AT} AND s.working_since > ?)`);
+        params.push(opts.now - WORKING_CAP_MS);
+      }
+    }
+    if (opts.memberLabel !== undefined) { conditions.push('m.label = ?'); params.push(opts.memberLabel); }
+    if (opts.sessionId !== undefined) { conditions.push('s.session_id = ?'); params.push(opts.sessionId); }
+    if (opts.q !== undefined && opts.q.trim() !== '') {
+      const pattern = containsPattern(opts.q.trim());
+      conditions.push(`(s.title LIKE ? ESCAPE '\\' OR s.agent LIKE ? ESCAPE '\\' OR s.branch LIKE ? ESCAPE '\\' OR s.session_id LIKE ? ESCAPE '\\' OR ${FIRST_PROMPT_SQL} LIKE ? ESCAPE '\\')`);
+      params.push(pattern, pattern, pattern, pattern, pattern);
+    }
+    if (k.where !== '') {
+      if (bounded) { conditions.push(`${SESSION_OCCURRED_AT} <= ?`); params.push(k.params[0]); }
+      conditions.push(k.where); params.push(...k.params);
+    }
+    const { results } = await db
+      .prepare(`SELECT s.project_id, ${SESSION_COLUMNS} ${sessionFrom(through)} WHERE ${conditions.join(' AND ')} ORDER BY ${SESSION_OCCURRED_AT} DESC, s.session_id DESC LIMIT ?`)
+      .bind(...params, k.limit + 1)
+      .all<Record<string, unknown>>();
+    return results;
+  };
+  const received = await read('receipt', walks);
+  // An activity window judged at an instant also lists the sessions working now, read apart through the index that
+  // holds them alone, and merged into the page in its own order.
+  const working = active && opts.now !== undefined ? await read('working', SESSIONS_WORKING_INDEX) : [];
+  const rows = mergeSessionPages(received, working).map((row) => ({ ...toSession(row, opts.now), projectId: row.project_id as string }));
   // The cursor carries the same value the sort ordered by. Both columns are
   // already on the row, so this is the SQL COALESCE read back rather than a
   // second definition of it.
-  return page(results.map((row) => ({ ...toSession(row), projectId: row.project_id as string })), k.limit, (r) => ({ createdAt: r.startedAt ?? r.firstReceivedAt, id: r.sessionId }));
+  return page(rows, k.limit, (r) => ({ createdAt: r.startedAt ?? r.firstReceivedAt, id: r.sessionId }));
+}
+
+/** Two pages of session rows as one, each session once, in the order a page reads: newest occurrence first, then id. */
+function mergeSessionPages(a: Record<string, unknown>[], b: Record<string, unknown>[]): Record<string, unknown>[] {
+  if (b.length === 0) return a;
+  const key = (row: Record<string, unknown>) => `${row.project_id as string}\u0000${row.session_id as string}`;
+  const occurred = (row: Record<string, unknown>) => (row.started_at as number | null) ?? (row.first_received_at as number);
+  const seen = new Set(a.map(key));
+  return [...a, ...b.filter((row) => !seen.has(key(row)))].sort((x, y) =>
+    occurred(y) - occurred(x) || (x.session_id as string < (y.session_id as string) ? 1 : x.session_id === y.session_id ? 0 : -1));
 }
 
 /** One session inside the scope, or null — including when the session exists under another project. */
-export async function getSession(db: RelationalStore, scope: ReadScope, sessionId: string): Promise<SessionRow | null> {
+/** One session; given `nowMs`, marked working or not. */
+export async function getSession(db: RelationalStore, scope: ReadScope, sessionId: string, nowMs?: number): Promise<SessionRow | null> {
   const row = await db
     .prepare(`SELECT ${SESSION_COLUMNS} ${SESSION_FROM} WHERE s.project_id = ? AND s.session_id = ? AND ${LIVE_SESSION}`)
     .bind(scope.projectId, sessionId)
     .first<Record<string, unknown>>();
-  return row === null ? null : toSession(row);
+  return row === null ? null : toSession(row, nowMs);
 }
 
 /**
@@ -491,7 +549,7 @@ function instantStatements(db: RelationalStore, scope: ReadScope, sessionIds: re
 export async function listSessionSummaries(db: RelationalStore, scope: ReadScope, opts: { limit?: number; cursor?: string } & SessionFilters, nowMs: number, facts: { activity?: boolean } = {}): Promise<Page<SessionSummaryRow>> {
   // A person and an agent browsing history see every session, labelled by what
   // its transcript could carry; the caller may still narrow.
-  const listed = await listSessions(db, scope, { fidelity: 'any', ...opts });
+  const listed = await listSessions(db, scope, { fidelity: 'any', now: nowMs, ...opts });
   const ids = listed.rows.map((r) => r.sessionId);
   const counts = await sessionCountsFor(db, scope, ids);
   const instants = facts.activity === false ? [] : await promptInstants(db, scope, ids);
@@ -513,7 +571,7 @@ export type SessionAcrossRow = SessionSummaryRow & { projectId: string };
  * Project first, so the facts are read per Project over that Project's ids on the page, every statement in one batch.
  */
 export async function listSessionSummariesAcross(db: RelationalStore, set: ProjectSet, opts: { limit?: number; cursor?: string } & SessionFilters, nowMs: number): Promise<Page<SessionAcrossRow>> {
-  const listed = await listSessionsAcross(db, set, { fidelity: 'any', ...opts });
+  const listed = await listSessionsAcross(db, set, { fidelity: 'any', now: nowMs, ...opts });
   const byProject = new Map<string, string[]>();
   for (const row of listed.rows) byProject.set(row.projectId, [...(byProject.get(row.projectId) ?? []), row.sessionId]);
   const reads = [...byProject].map(([projectId, ids]) => ({ projectId, counts: countStatements(db, { projectId }, ids), instants: instantStatements(db, { projectId }, ids) }));

@@ -51,7 +51,7 @@ const sharedFiles = () =>
     !f.includes(`${join(SRC, 'platform')}/`) && !f.includes(`${join(SRC, 'entry')}/`) && f !== join(SRC, 'index.ts'));
 
 /** Every `emit` call across src; a call removed or added moves the total. */
-const EMIT_CALLS = 145;
+const EMIT_CALLS = 146;
 /** The one migrations directory: the emit script writes it, the rendered-steps gate verifies it, and wrangler.toml applies from it. */
 const MIGRATIONS_DIR = 'migrations';
 const K = SyntaxKind as unknown as Record<string, number>;
@@ -815,13 +815,13 @@ describe('gates', () => {
     }
   });
 
-  it('schedules work past an answer from the events route, the store maintenance hand-off and a run\'s read record only', () => {
-    // Only captured event processing, store maintenance and the record of a run's reads may defer work. The serving process drains deferred work before closing the store.
+  it('schedules work past an answer from the events route, the store maintenance hand-off, a run\'s read record and a turn\'s start only', () => {
+    // Only captured event processing, store maintenance, the record of a run's reads and the stamp of a turn's start may defer work. The serving process drains deferred work before closing the store.
     const callers = files(SRC)
       .filter((f) => /\bafterResponse\(/.test(stripComments(readFileSync(f, 'utf8'))))
       .map((f) => f.slice(SRC.length + 1))
       .filter((f) => !f.startsWith('platform/') && !f.startsWith('core/adapters'));
-    expect(callers.sort()).toEqual([join('core', 'store-maintenance.ts'), join('ingest', 'events.ts'), join('mcp', 'context.ts')]);
+    expect(callers.sort()).toEqual([join('api', 'recall.ts'), join('core', 'store-maintenance.ts'), join('ingest', 'events.ts'), join('mcp', 'context.ts')]);
     // In the MCP context the one deferral is the record of a run's reads, inside `noteRunReads`.
     const context = stripComments(readFileSync(join(SRC, 'mcp', 'context.ts'), 'utf8'));
     const start = context.indexOf('export function noteRunReads(');
@@ -829,6 +829,12 @@ describe('gates', () => {
     expect({ start: start >= 0, end: end > start }).toEqual({ start: true, end: true });
     const deferrals = (text: string) => text.match(/\bafterResponse\(/g)?.length ?? 0;
     expect({ file: deferrals(context), noteRunReads: deferrals(context.slice(start, end)) }).toEqual({ file: 1, noteRunReads: 1 });
+    // In the prompt route the one deferral is the stamp of a turn's start, inside `noteTurnStarted`.
+    const recall = stripComments(readFileSync(join(SRC, 'api', 'recall.ts'), 'utf8'));
+    const stampStart = recall.indexOf('export function noteTurnStarted(');
+    const stampEnd = recall.indexOf('\n}\n', stampStart);
+    expect({ start: stampStart >= 0, end: stampEnd > stampStart }).toEqual({ start: true, end: true });
+    expect({ file: deferrals(recall), noteTurnStarted: deferrals(recall.slice(stampStart, stampEnd)) }).toEqual({ file: 1, noteTurnStarted: 1 });
   });
 
   it('opens a Deployment secret from exactly one function under src, and no display surface calls it', () => {

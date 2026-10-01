@@ -9,6 +9,7 @@
 import { deploymentScopedHeaders, LINEAGE_REPLAYED_CODE, MEMBER_CODES, MEMBER_PROTOCOL, memberHeaders, PARKED_CODE, PROTOCOL_HEADER, RESLICE_CODES, type MemberCode } from './constants.js';
 import type { RequestBudget } from './budget.js';
 import type { MemberEnvelope } from './envelope.js';
+import { TURN_END_HEADER } from '@goondocks/myco-shared/member-protocol';
 
 export type FetchLike = (input: string | URL | Request, init?: RequestInit) => Promise<Response>;
 
@@ -170,8 +171,14 @@ export class ServerClient {
     }
   }
 
-  async postEvent(envelope: MemberEnvelope, budget: RequestBudget): Promise<Outcome> {
-    const raw = await this.request('POST', EVENTS_PATH, { body: JSON.stringify(envelope), headers: { 'content-type': JSON_CONTENT_TYPE }, budget });
+  /**
+   * Post one event. `turnEnd` marks it as the session's own turn-end hook shipping that session's transcript
+   * (`TURN_END_HEADER`), which the Deployment reads as the end of the session's open turn; a Deployment that predates the
+   * header ignores it.
+   */
+  async postEvent(envelope: MemberEnvelope, budget: RequestBudget, opts: { turnEnd?: boolean } = {}): Promise<Outcome> {
+    const headers: Record<string, string> = { 'content-type': JSON_CONTENT_TYPE, ...(opts.turnEnd === true ? { [TURN_END_HEADER]: '1' } : {}) };
+    const raw = await this.request('POST', EVENTS_PATH, { body: JSON.stringify(envelope), headers, budget });
     return classifyEventAnswer(raw);
   }
 

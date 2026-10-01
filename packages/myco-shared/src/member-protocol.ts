@@ -1,6 +1,12 @@
 /** The protocol and project header names used by every member request. */
 export const MEMBER_PROTOCOL = 1;
 export const PROTOCOL_HEADER = 'x-myco-protocol';
+
+/**
+ * The header a member's turn-end hook sends on its own session's transcript, which the Deployment reads as the end of
+ * that session's open turn. No other pass that ships a transcript sends it, and a Deployment that predates it ignores it.
+ */
+export const TURN_END_HEADER = 'x-myco-turn-end';
 export const PROJECT_HEADER = 'x-myco-project';
 
 function credentialHeaders(token: string, protocol: number): Record<string, string> {

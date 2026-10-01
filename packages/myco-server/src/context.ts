@@ -46,6 +46,8 @@ export interface RouteContext {
   now: number;
   /** The request's own origin: where a runtime this request dispatches calls back to, so one Deployment never sends its runtime to another. */
   origin: string;
+  /** Whether the request is a member's turn-end hook shipping its own session's transcript (`TURN_END_HEADER`). */
+  turnEnd?: boolean;
 }
 
 /** An authenticated member request with no default Project. */

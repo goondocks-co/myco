@@ -20,7 +20,8 @@ import { composePromptContext, composeSessionContext, readRecallLeaves } from '.
 import { parseSessionContextIdentity } from '@goondocks/myco-shared/recall';
 import { resolveSemanticSearch } from '../core/search.js';
 import { settingsWriter } from '../core/settings.js';
-import { refusal } from '../telemetry.js';
+import { classify, emit, refusal } from '../telemetry.js';
+import { startTurnStatement, turnStartedAt } from '../ingest/turns.js';
 import { refused } from '../ingest/events.js';
 import { MAX_REMOTE_CHARS, normalizeRemote, recordProjectRemote } from '../core/remotes.js';
 
@@ -43,6 +44,27 @@ function parseBody(body: string): Record<string, unknown> | null {
 
 const BAD_BODY = refusal('body is not an object', 'parse');
 
+/**
+ * Open the session's turn, past the answer: the prompt asking for context is the turn's start, and the answer never
+ * waits on the write. A write that fails, or cannot be deferred, is reported and leaves the answer as it is; the
+ * session then reads as working only while its receipts are recent.
+ */
+export function noteTurnStarted(env: ServerEnv, ctx: RouteContext, sessionId: string, promptId: string): void {
+  const unrecorded = (err: unknown) => emit({ kind: 'turn_start_unrecorded', projectId: ctx.projectId, tokenId: ctx.tokenId, error: classify(err) });
+  try {
+    env.afterResponse(async () => {
+      try {
+        const at = turnStartedAt(promptId, ctx.now);
+        if (at !== null) await startTurnStatement(env.db, { projectId: ctx.projectId, sessionId, machineId: ctx.machineId, at }).run();
+      } catch (err) {
+        unrecorded(err);
+      }
+    });
+  } catch (err) {
+    unrecorded(err);
+  }
+}
+
 export async function handlePromptContext(env: ServerEnv, ctx: RouteContext): Promise<Response> {
   const body = parseBody(ctx.body);
   if (!body) return Response.json(refused(ctx, BAD_BODY));
@@ -61,6 +83,8 @@ export async function handlePromptContext(env: ServerEnv, ctx: RouteContext): Pr
   const served = await composePromptContext(env.db, { projectId: ctx.projectId }, leaves, capabilityOn, {
     sessionId, promptId, text, now: ctx.now,
   }, () => resolveSemanticSearch(env));
+  // Written only once the answer is composed, so on no target does the stamp run ahead of the reads it answers from.
+  noteTurnStarted(env, ctx, sessionId, promptId);
   return Response.json({ persisted: true, ...served });
 }
 

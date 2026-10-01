@@ -322,7 +322,7 @@ const setSlotPointer = (state: SessionState, slot: TranscriptSlot, pointer: Tran
  */
 export async function shipTranscriptSegments(
   ctx: EnvelopeContext, spool: MemberSpool, client: ServerClient, budget: HookBudget,
-  opts: { now?: () => number; until?: number; headHash?: string; slot?: TranscriptSlot; machineId?: string } = {},
+  opts: { now?: () => number; until?: number; headHash?: string; slot?: TranscriptSlot; machineId?: string; turnEnd?: boolean } = {},
 ): Promise<ShipResult> {
   const now = opts.now ?? Date.now;
   const slot = opts.slot ?? PRIMARY_SLOT;
@@ -417,7 +417,7 @@ export async function shipTranscriptSegments(
       if (blob.class !== 'reslice') spool.endPass(blob, now());
       return { shipped, endedBy: blob.class === 'reslice' ? 'refused' : blob.class };
     }
-    const outcome = await client.postEvent(event.envelope, clippedRequestBudget(budget, now()));
+    const outcome = await client.postEvent(event.envelope, clippedRequestBudget(budget, now()), { turnEnd: opts.turnEnd });
     switch (outcome.class) {
       case 'acked':
         spool.clearLatch();
@@ -469,7 +469,7 @@ export async function shipTranscriptSegments(
  */
 export async function shipSessionTranscripts(
   ctx: EnvelopeContext, spool: MemberSpool, client: ServerClient, budget: HookBudget,
-  opts: { now?: () => number; until?: number; machineId: string },
+  opts: { now?: () => number; until?: number; machineId: string; turnEnd?: boolean },
 ): Promise<ShipResult> {
   const now = opts.now ?? Date.now;
   let shipped = 0;

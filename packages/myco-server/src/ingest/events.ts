@@ -8,6 +8,7 @@ import { pendingSearchBlobs } from '../core/search-index.js';
 import { TRANSCRIPT_PARSE_ADAPTER } from '../constants.js';
 import { planKind, projectLive, sharedChecks, type Fragment, type KindPlan, type ReadRows, type WriteContext } from './projections.js';
 import { ALWAYS, credentialLive } from './live-credential.js';
+import { endsTurn, endTurnStatement } from './turns.js';
 
 /** The held size and segment count of a transcript, answered on every outcome of a `transcript.segment`. */
 export interface TranscriptExtra {
@@ -33,7 +34,7 @@ export type IngestResult =
  */
 export type WriteOrigin = 'member' | 'server';
 
-export type IngestContext = Pick<RouteContext, 'projectId' | 'machineId' | 'tokenId' | 'bodyBytes' | 'now'> & { writeOrigin?: WriteOrigin; /** The member acting through a server-origin write, where a projection records who acted; absent for a member's own capture and for derived events. */ actor?: string };
+export type IngestContext = Pick<RouteContext, 'projectId' | 'machineId' | 'tokenId' | 'bodyBytes' | 'now' | 'turnEnd'> & { writeOrigin?: WriteOrigin; /** The member acting through a server-origin write, where a projection records who acted; absent for a member's own capture and for derived events. */ actor?: string };
 
 /** A terminal refusal of the caller's own request: 200 `{persisted:false, code, reason}` plus one `ingest_refused` event carrying the refusal's classifier only. */
 export function refused(ctx: Pick<IngestContext, 'projectId' | 'tokenId'>, { reason, classifier }: Refusal): IngestResult {
@@ -160,7 +161,11 @@ export async function planEventWrite(db: RelationalStore, ctx: IngestContext, bo
   const shared = checks.map((c) => db.prepare(c.read.sql).bind(...c.read.params));
   const priors = plan.priors ?? [];
   // Beside the projections in the batch, outside the evidence a conflict is read from.
-  const incidental = plan.incidental ?? [];
+  // A turn's end moves the session's last turn end and closes its open turn, unless the turn started after it.
+  const turnEnd = endsTurn(e, ctx.turnEnd === true)
+    ? [endTurnStatement(db, { projectId: ctx.projectId, sessionId: e.sessionId, eventId: e.eventId, endedAt: e.createdAt, nonce: write.nonce })]
+    : [];
+  const incidental = [...(plan.incidental ?? []), ...turnEnd];
   const statements: PreparedStatement[] = [raw, counted, receipt, ...priors, ...plan.projections, ...incidental, stored, admitted, ...shared, ...plan.reads];
 
   const interpret = (results: BatchResult[]): IngestResult => {

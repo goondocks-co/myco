@@ -7,3 +7,10 @@
  * the store did not write is not read as JSON at all, so a caller's own string cannot fail the query.
  */
 export const contextValue = (key: string): string => `CASE WHEN json_valid(run_context) THEN json_extract(run_context, '$.${key}') END`;
+
+/**
+ * The member or process a run's dispatch names as its actor: the text `actor` of `dispatch_spec`, null where the spec
+ * holds none or an empty one. The statements that count an actor's entries and the index that serves them
+ * (`idx_agent_runs_actor_entry`) render it from here, so they read one expression.
+ */
+export const DISPATCH_ACTOR_SQL = `CASE WHEN json_valid(dispatch_spec) THEN CASE WHEN json_type(dispatch_spec, '$.actor') = 'text' THEN NULLIF(json_extract(dispatch_spec, '$.actor'), '') END END`;
