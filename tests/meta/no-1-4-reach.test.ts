@@ -35,7 +35,7 @@ const LEGACY_DIRS: readonly string[] = [
 const LEGACY_FILES: readonly string[] = [
   // The 1.4 verbs the CLI dispatches to.
   'cli/agent-run.ts', 'cli/agent-tasks.ts', 'cli/attach.ts', 'cli/bootstrap.ts', 'cli/config.ts', 'cli/detect-providers.ts',
-  'cli/doctor.ts', 'cli/doctor-fixes.ts', 'cli/grove.ts', 'cli/host.ts', 'cli/join.ts', 'cli/logs.ts', 'cli/open.ts',
+  'cli/doctor.ts', 'cli/doctor-fixes.ts', 'cli/grove.ts', 'cli/host.ts', 'cli/join.ts', 'cli/logs.ts',
   'cli/remove.ts', 'cli/restart.ts', 'cli/restore-backup.ts', 'cli/search.ts', 'cli/service.ts', 'cli/session.ts',
   'cli/setup-digest.ts', 'cli/setup-llm.ts', 'cli/shared.ts', 'cli/stats.ts', 'cli/subsystem.ts', 'cli/update.ts',
   'cli/upgrade.ts', 'cli/verify.ts',
@@ -48,7 +48,7 @@ const LEGACY_FILES: readonly string[] = [
   'skills/content.ts', 'skills/publication.ts',
   'symbionts/canopy-read-tools.ts', 'symbionts/capabilities.ts', 'symbionts/index.ts', 'symbionts/injection-support.ts',
   'symbionts/parsers/index.ts', 'symbionts/parsers/types.ts', 'symbionts/reconcile.ts',
-  'ui-assets.generated.ts', 'static-assets.generated.ts',
+  'static-assets.generated.ts',
   'upgrade/adopt.ts', 'upgrade/auto-check.ts', 'upgrade/checker.ts', 'upgrade/in-progress.ts', 'upgrade/orchestrator.ts',
   'upgrade/schema-gap.ts', 'upgrade/spawn.ts', 'upgrade/update-events.ts',
   'utils/error-message.ts', 'utils/instrumented-fetch.ts', 'utils/interpolate-args.ts', 'utils/interpolate.ts',
@@ -135,20 +135,11 @@ const UNFOLLOWABLE: Readonly<Record<string, number>> = {
  * the `package.json` scripts, the Dockerfiles, the Makefile and the CI workflows and actions.
  */
 const ALLOWED_TEXT_REACH: Readonly<Record<string, string>> = {
-  '.github/actions/ci-setup/action.yml packages/myco/ui/package-lock.json': '#1170 P2: the 1.4 dashboard goes',
-  '.github/workflows/ci.yml packages/myco/src/ui-assets.generated.ts': '#1170 P2: the 1.4 dashboard bundle check goes',
-  '.github/workflows/publish.yml packages/myco/ui': '#1170 P2: the 1.4 dashboard goes',
-  '.github/workflows/publish.yml packages/myco/ui/package-lock.json': '#1170 P2: the 1.4 dashboard goes',
-  'Makefile packages/myco/ui': '#1170 P2: the 1.4 dashboard goes',
-  'Makefile packages/myco/ui/**': '#1170 P2: the 1.4 dashboard goes',
   'packages/myco-server/package.json packages/myco/src/agent/definitions': '#1170 P7: the harness image goes',
   'packages/myco-server/package.json packages/myco/src/agent/prompts': '#1170 P7: the harness image goes',
   'packages/myco-server/package.json packages/myco/src/agent/runtime/server-entry.ts': '#1170 P7: the harness image goes',
   'packages/myco-server/package.json packages/myco/src/agent/runtime/supervisor.ts': '#1170 P7: the harness image goes',
 };
-
-/** The 1.4 dashboard, beside the 1.4 source tree. */
-const LEGACY_PACKAGES: readonly string[] = ['packages/myco/ui'];
 
 const short = (key: string): string => (key.startsWith(MYCO) ? key.slice(MYCO.length) : key);
 
@@ -191,9 +182,7 @@ function textFiles(): string[] {
     ? filesIn(path.join(REPO_ROOT, dir)).filter((file) => /\.ya?ml$/.test(file)).map((file) => path.relative(REPO_ROOT, file).split(path.sep).join('/'))
     : []);
   return [...manifests, ...dockerfiles, 'Makefile', ...yaml('.github/workflows'), ...yaml('.github/actions')]
-    .filter((file) => fs.existsSync(path.join(REPO_ROOT, file)))
-    // A 1.4 package's own manifest names itself; it goes with the package.
-    .filter((file) => !LEGACY_PACKAGES.some((pkg) => file.startsWith(`${pkg}/`)));
+    .filter((file) => fs.existsSync(path.join(REPO_ROOT, file)));
 }
 
 function filesIn(dir: string): string[] {
@@ -210,11 +199,10 @@ function runnableText(file: string): string {
 /** Every 1.4 path a file names, resolved from the file's own folder and from the repository root. */
 function legacyPathsIn(file: string): string[] {
   const found = new Set<string>();
-  for (const [token] of runnableText(file).matchAll(/[\w.@~*/-]*(?:src\/|myco\/ui|myco-team|myco-deploy)[\w.@*/-]*/g)) {
+  for (const [token] of runnableText(file).matchAll(/[\w.@~*/-]*src\/[\w.@*/-]*/g)) {
     for (const base of [path.dirname(file), '.']) {
       const resolved = path.posix.normalize(path.posix.join(base, token)).replace(/\/+$/, '');
-      const legacy = LEGACY_PACKAGES.some((pkg) => resolved === pkg || resolved.startsWith(`${pkg}/`))
-        || (resolved.startsWith(MYCO) && (isLegacy(resolved) || LEGACY_DIRS.some((dir) => resolved === `${MYCO}${dir}`)));
+      const legacy = resolved.startsWith(MYCO) && (isLegacy(resolved) || LEGACY_DIRS.some((dir) => resolved === `${MYCO}${dir}`));
       if (legacy) found.add(resolved);
     }
   }

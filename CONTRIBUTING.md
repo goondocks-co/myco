@@ -105,10 +105,7 @@ myco/
 │   │   │   ├── services/             # Shared service logic (used by both CLI and API)
 │   │   │   ├── symbionts/            # Symbiont adapters and manifests (Claude Code, Cursor, Codex, Cline, Copilot, Antigravity, Devin Desktop, OpenCode, Pi) — transcript discovery, parsing, and project-local registration
 │   │   │   └── vault/                # Reader, writer, Zod schemas for database records
-│   │   ├── ui/                       # React + Tailwind dashboard (Vite build → dist/ui/)
 │   │   └── skills/                   # Skill markdown files (subdirectory per skill)
-│   ├── myco-team/                    # DORMANT — operator CLI for the retired Team Sync stack (kept for reference)
-│   └── myco-deploy/                  # Private shared deploy helpers used by the two dormant operator CLIs
 ├── tests/                            # Mirrors packages/myco/src/ structure
 ├── docs/                             # Lifecycle, quickstart, agent tools
 └── Makefile                          # Dev shortcuts

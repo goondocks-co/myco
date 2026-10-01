@@ -1,7 +1,6 @@
 // Narrow pre-build clean for `build:core`. Removes the files tsup produces
-// (dist/*.js, dist/*.js.map, dist/src/**) while leaving dist/ui/ untouched.
-// tsup's own `clean: true` wipes the entire outDir, which would destroy the
-// vite-built UI bundle whenever build:core runs without build:ui.
+// (dist/*.js, dist/*.js.map, dist/src/**) and leaves the rest of dist/ as it
+// is; tsup's own `clean: true` would wipe the entire outDir.
 import { readdirSync, rmSync, existsSync } from 'node:fs';
 import path from 'node:path';
 

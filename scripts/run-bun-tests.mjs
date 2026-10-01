@@ -323,9 +323,6 @@ const NO_ISOLATE_NODE_TARGETS = [
   'tests/capture',
   'tests/config',
   'tests/db',
-  // tests/deploy intentionally omitted: shared.test.ts calls mock.module().
-  // The bundle path keeps the rest of the directory amortized while
-  // shared.test.ts runs from SOLO_NODE_FILES.
   'tests/grove',
   'tests/mcp',
   'tests/myco-server',
@@ -357,7 +354,6 @@ const SOLO_NODE_FILES = [
   // This file spies on fs.fsyncSync to force publication races. The spy is
   // process-global and cannot overlap unrelated durable-write tests.
   'tests/config/secrets-relocate-legacy-project.test.ts',
-  'tests/deploy/shared.test.ts',
 ];
 
 const SOLO_NODE_REASON_LISTED_FILE = 'listed-solo-node-file';
@@ -1537,9 +1533,9 @@ function formatJunitEntry(label, f) {
 
 /**
  * npm installs a second copy of react + react-dom under
- * packages/myco/ui/node_modules whenever the ui workspace's peer versions
+ * packages/myco-server/ui/node_modules whenever the dashboard's peer versions
  * differ in any way from the root. When a tsx test then imports a component
- * via `packages/myco/ui/src/...`, that component resolves to the UI-local
+ * via `packages/myco-server/ui/src/...`, that component resolves to the UI-local
  * React while `@testing-library/react` (from root) resolves to root's React.
  * Two React instances == broken hooks. Strip the duplicates before the tsx
  * pass; Bun.plugin `onResolve` hooks don't fire in time to re-route static
@@ -1547,7 +1543,6 @@ function formatJunitEntry(label, f) {
  */
 function stripDuplicateReact() {
   const candidates = [
-    path.join(REPO, 'packages/myco/ui/node_modules'),
     path.join(REPO, 'packages/myco-server/ui/node_modules'),
   ];
   for (const base of candidates) {

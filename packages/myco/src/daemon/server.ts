@@ -1,7 +1,5 @@
 import crypto from 'node:crypto';
 import http from 'node:http';
-import https from 'node:https';
-import fs from 'node:fs';
 import net from 'node:net';
 import type { AddressInfo } from 'node:net';
 import path from 'node:path';
@@ -9,7 +7,7 @@ import type { DaemonLogger } from './logger.js';
 import { isSafeCaptureSegment } from '../grove/paths.js';
 import { getPluginVersion } from '../version.js';
 import { Router, type RouteHandler } from './router.js';
-import { resolveStaticFile, resolveEmbeddedAsset } from './static.js';
+import { RETIRED_DASHBOARD_PAGE } from './static.js';
 import { evictDaemons } from './eviction.js';
 import { LOG_KINDS } from '../constants/log-kinds.js';
 import {
@@ -127,8 +125,6 @@ export interface DaemonServerConfig {
    * constructs one from `resolveDaemonServiceState(vaultDir)`.
    */
   daemonStateAuthority?: DaemonStateAuthority;
-  uiDir?: string;
-  uiDevProxyTarget?: string;
   /**
    * Fired once per served request with the request's declared class. This is
    * the daemon's single wake edge: deep sleep stops the tick timer, so no
@@ -255,8 +251,6 @@ export function classifyRequest(
 export class DaemonServer {
   port = 0;
   readonly version: string;
-  uiDir: string | null;
-  uiDevProxyTarget: string | null;
   private server: http.Server | null = null;
   /**
    * The Team Host listener — a SECOND HTTP server bound to a private unix
@@ -322,12 +316,6 @@ export class DaemonServer {
    * Overwritten once in listen() with the actual listen-time stamp.
    */
   private startedAt: string = new Date().toISOString();
-  /**
-   * Cache of post-injection dashboard HTML, keyed by source file path.
-   * The token is fixed for the daemon's lifetime and the built HTML is
-   * immutable, so reading + injecting on every request is wasted work.
-   */
-  private htmlCache = new Map<string, string>();
 
   private readonly externalMcpPosture: (() => string) | null;
 
@@ -340,8 +328,6 @@ export class DaemonServer {
         resolveDaemonServiceState(config.vaultDir, { env: process.env }),
         config.logger,
       );
-    this.uiDir = config.uiDir ?? null;
-    this.uiDevProxyTarget = config.uiDevProxyTarget ?? null;
     this.onRequest = config.onRequest ?? null;
     this.onRequestContext = config.onRequestContext ?? null;
     this.runtimeCache = config.runtimeCache ?? new GroveRuntimeCache();
@@ -444,12 +430,6 @@ export class DaemonServer {
           } catch { /* socket already gone */ }
         });
       });
-      this.server.on('upgrade', (req, socket, head) => {
-        this.handleUpgrade(req, socket, head).catch((err) => {
-          this.logUnhandledTransportFailure('upgrade', err);
-          try { socket.destroy(); } catch { /* already destroyed */ }
-        });
-      });
       this.server.on('error', reject);
 
       // Tighten Node's default HTTP server limits — see the helper
@@ -507,12 +487,6 @@ export class DaemonServer {
             if (!res.headersSent) res.writeHead(500, { 'content-type': 'application/json' });
             res.end(JSON.stringify({ error: 'internal_error' }));
           } catch { /* socket already gone */ }
-        });
-      });
-      v6.on('upgrade', (req, socket, head) => {
-        this.handleUpgrade(req, socket, head).catch((err) => {
-          this.logUnhandledTransportFailure('upgrade', err);
-          try { socket.destroy(); } catch { /* already destroyed */ }
         });
       });
       applyDaemonHttpServerLimits(v6);
@@ -1510,122 +1484,15 @@ export class DaemonServer {
       return;
     }
 
-    // No API route matched — proxy to Vite dev server when configured.
-    if (this.uiDevProxyTarget && req.method === 'GET') {
-      const proxied = await this.proxyUiDevRequest(req, res);
-      if (proxied) return;
-    }
-
-    // No API route matched — serve static files (dashboard SPA). Disk is
-    // preferred so dev/npm live UI rebuilds are picked up without recompiling.
-    if (this.uiDir && req.method === 'GET') {
-      const result = resolveStaticFile(this.uiDir, pathname);
-      if (result) {
-        try {
-          if (result.contentType === 'text/html') {
-            let injected = this.htmlCache.get(result.filePath);
-            if (injected === undefined) {
-              const raw = await fs.promises.readFile(result.filePath, 'utf-8');
-              injected = injectDashboardBootstrap(raw, this.authToken);
-              this.htmlCache.set(result.filePath, injected);
-            }
-            res.writeHead(200, {
-              'Content-Type': 'text/html; charset=utf-8',
-              'Cache-Control': result.cacheControl,
-            });
-            res.end(injected);
-          } else {
-            const content = await fs.promises.readFile(result.filePath);
-            res.writeHead(200, {
-              'Content-Type': result.contentType,
-              'Cache-Control': result.cacheControl,
-            });
-            res.end(content);
-          }
-        } catch {
-          res.writeHead(404, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ error: 'not found' }));
-        }
-        return;
-      }
-    }
-
-    // No disk dist/ui (standalone binary) — serve the UI bundle compiled into
-    // the binary.
+    // No API route matched: every page answers with the retired-dashboard notice, which carries no script.
     if (req.method === 'GET') {
-      const embedded = resolveEmbeddedAsset(pathname);
-      if (embedded) {
-        if (embedded.contentType === 'text/html') {
-          const cacheKey = `embedded:${pathname}`;
-          let injected = this.htmlCache.get(cacheKey);
-          if (injected === undefined) {
-            injected = injectDashboardBootstrap(embedded.body.toString('utf-8'), this.authToken);
-            this.htmlCache.set(cacheKey, injected);
-          }
-          res.writeHead(200, {
-            'Content-Type': 'text/html; charset=utf-8',
-            'Cache-Control': embedded.cacheControl,
-          });
-          res.end(injected);
-        } else {
-          res.writeHead(200, {
-            'Content-Type': embedded.contentType,
-            'Cache-Control': embedded.cacheControl,
-          });
-          res.end(embedded.body);
-        }
-        return;
-      }
+      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-cache' });
+      res.end(RETIRED_DASHBOARD_PAGE);
+      return;
     }
 
     res.writeHead(404, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ error: 'not found' }));
-  }
-
-  private async proxyUiDevRequest(req: http.IncomingMessage, res: http.ServerResponse): Promise<boolean> {
-    if (!this.uiDevProxyTarget || !req.url) return false;
-
-    const pathname = new URL(req.url, 'http://localhost').pathname;
-    if (isDaemonControlPath(pathname)) return false;
-
-    try {
-      const targetUrl = new URL(req.url, this.uiDevProxyTarget).toString();
-      const headers = new Headers();
-      for (const [key, value] of Object.entries(req.headers)) {
-        if (!value || key === 'host' || key === 'connection' || key === 'content-length') continue;
-        if (Array.isArray(value)) {
-          for (const item of value) headers.append(key, item);
-        } else {
-          headers.set(key, value);
-        }
-      }
-
-      const response = await fetch(targetUrl, {
-        method: 'GET',
-        headers,
-        redirect: 'manual',
-      });
-
-      const responseHeaders: Record<string, string | string[]> = {};
-      for (const [key, value] of response.headers.entries()) {
-        if (key === 'connection' || key === 'content-length' || key === 'transfer-encoding') continue;
-        responseHeaders[key] = value;
-      }
-
-      const body = Buffer.from(await response.arrayBuffer());
-      res.writeHead(response.status, responseHeaders);
-      res.end(body);
-      return true;
-    } catch (error) {
-      this.logger.warn(LOG_KINDS.SERVER_ERROR, 'UI dev proxy request failed', {
-        path: req.url,
-        target: this.uiDevProxyTarget,
-        error: (error as Error).message,
-      });
-      res.writeHead(502, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'ui_dev_proxy_failed' }));
-      return true;
-    }
   }
 
   /**
@@ -1749,61 +1616,6 @@ export class DaemonServer {
     if (this.ownsRuntimeCache) this.runtimeCache.closeAll();
   }
 
-  private async handleUpgrade(req: http.IncomingMessage, socket: import('node:stream').Duplex, head: Buffer): Promise<void> {
-    if (!this.uiDevProxyTarget || !req.url) {
-      socket.destroy();
-      return;
-    }
-
-    const pathname = new URL(req.url, 'http://localhost').pathname;
-    if (isDaemonControlPath(pathname)) {
-      socket.destroy();
-      return;
-    }
-
-    const target = new URL(this.uiDevProxyTarget);
-    const client = target.protocol === 'https:' ? https : http;
-    const proxyReq = client.request({
-      protocol: target.protocol,
-      hostname: target.hostname,
-      port: target.port,
-      method: req.method,
-      path: req.url,
-      headers: {
-        ...req.headers,
-        host: target.host,
-      },
-    });
-
-    proxyReq.on('upgrade', (proxyRes, proxySocket, proxyHead) => {
-      const statusLine = `HTTP/${proxyRes.httpVersion} 101 Switching Protocols`;
-      const headerLines: string[] = [statusLine];
-      for (const [key, value] of Object.entries(proxyRes.headers)) {
-        if (value === undefined) continue;
-        if (Array.isArray(value)) {
-          for (const item of value) headerLines.push(`${key}: ${item}`);
-        } else {
-          headerLines.push(`${key}: ${value}`);
-        }
-      }
-      socket.write(`${headerLines.join('\r\n')}\r\n\r\n`);
-      if (head.length > 0) proxySocket.write(head);
-      if (proxyHead.length > 0) socket.write(proxyHead);
-      proxySocket.pipe(socket).pipe(proxySocket);
-    });
-
-    proxyReq.on('error', (error) => {
-      this.logger.warn(LOG_KINDS.SERVER_ERROR, 'UI dev proxy upgrade failed', {
-        path: req.url,
-        target: this.uiDevProxyTarget,
-        error: error.message,
-      });
-      socket.destroy();
-    });
-
-    proxyReq.end();
-  }
-
   updateDaemonJsonSessions(sessions: string[]): void {
     try {
       const info = this.stateAuthority.read();
@@ -1840,25 +1652,6 @@ export class DaemonServer {
   private writeDaemonJson(): void {
     this.stateAuthority.write(this.currentDaemonState(), { reason: 'server-start-listen' });
   }
-}
-
-/**
- * Inject the daemon-issued bearer token into the dashboard HTML so the
- * browser-side `fetchJson` wrapper can attach `x-myco-auth` to
- * context-switching API calls. Without this the `/api/stats` endpoint
- * rejects context-aware URLs with `unauthorized_context_switch`.
- *
- * Throws if the source HTML lacks `</head>` — silent no-op would leave
- * the dashboard dead in the water with no signal in logs. We'd rather
- * fail loudly on the first request and surface the regression in CI.
- */
-function injectDashboardBootstrap(html: string, authToken: string): string {
-  const safeToken = JSON.stringify(authToken);
-  const bootstrap = `<script>window.__MYCO_AUTH__=${safeToken};</script>`;
-  if (!html.includes('</head>')) {
-    throw new Error('dashboard HTML is missing </head>; cannot inject auth bootstrap');
-  }
-  return html.replace('</head>', `${bootstrap}</head>`);
 }
 
 /** True for HTTP methods that may write state (POST/PUT/PATCH/DELETE). */

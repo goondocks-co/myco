@@ -24,7 +24,7 @@ import { fileURLToPath } from 'node:url';
 const ROOT = fileURLToPath(new URL('../../', import.meta.url));
 
 /** Every dashboard tree built in an image stage that does not carry the server's source. */
-const DASHBOARDS = ['packages/myco-server/ui/src', 'packages/myco/ui/src'];
+const DASHBOARDS = ['packages/myco-server/ui/src'];
 
 /**
  * The server files a dashboard's build stage carries by name, and may therefore
@@ -101,7 +101,7 @@ describe('a dashboard reaches only what its build carries', () => {
 
   it('gives the words a queued run is held by exactly one definition', () => {
     const defined: string[] = [];
-    const search = ['packages/myco-server/src', 'packages/myco-server/ui/src', 'packages/myco/src', 'packages/myco/ui/src', 'packages/myco-shared/src'];
+    const search = ['packages/myco-server/src', 'packages/myco-server/ui/src', 'packages/myco/src', 'packages/myco-shared/src'];
     for (const dir of search) {
       let tree: string[];
       try { tree = files(join(ROOT, dir)); } catch { continue; }
