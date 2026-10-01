@@ -356,6 +356,8 @@ describe('the emitted sandbox settings with a join code', () => {
       process.env[ENV_JOIN_CODE] = `https://s/join#${issued.key}`;
       const session = `sess-spend-${i}`;
       await runHook('session-start', sessionInput(session), { fetch: rig.fetch, credential: c.source });
+      // A credential from the environment delivers at the turn's end.
+      await runHook('stop', { ...sessionInput(session), hook_event_name: 'Stop', last_assistant_message: 'x' }, { fetch: rig.fetch, credential: c.source });
       outcomes.push({ name: c.name, spent: spent(issued.id), landed: landed(session) });
     }
     // Spent implies landed, in every case; and the code is spent exactly where it is the credential.

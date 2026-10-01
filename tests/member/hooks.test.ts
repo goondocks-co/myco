@@ -76,8 +76,10 @@ async function parseAll(): Promise<void> {
     if ((await parseTranscripts(rig.env.serverEnv, Date.now())).changed === 0) return;
   }
 }
-/** Kinds on the member's side of the wire, in arrival order. */
-const memberKinds = () => (rig.env.sqlite.query(`SELECT kind FROM events WHERE producer_adapter <> 'transcript-parse' ORDER BY received_at, rowid`).all() as Array<{ kind: string }>).map((r) => r.kind);
+/** Kinds on the member's side of the wire, in arrival order; a turn's start and end are asserted on their own. */
+const memberKinds = () => (rig.env.sqlite.query(`SELECT kind FROM events WHERE producer_adapter <> 'transcript-parse' AND kind <> 'turn' ORDER BY received_at, rowid`).all() as Array<{ kind: string }>).map((r) => r.kind);
+/** Captured rows the Deployment holds: every member event but a turn's start or end, which each hook adds. */
+const captured = () => (rig.env.sqlite.query(`SELECT COUNT(*) AS n FROM events WHERE kind <> 'turn'`).get() as { n: number }).n;
 const texts = (table: string, column = 'text') => (rig.env.sqlite.query(`SELECT ${column} AS v FROM ${table} ORDER BY v`).all() as Array<{ v: string }>).map((r) => r.v);
 
 describe('member hooks through the worker: claude-code, transcript-first', () => {
@@ -157,9 +159,9 @@ describe('member hooks through the worker: claude-code, transcript-first', () =>
     const segment = rig.env.sqlite.query('SELECT base_offset, length FROM transcript_segments').get() as { base_offset: number; length: number };
     expect(segment).toEqual({ base_offset: 0, length: fs.statSync(tx).size });
     // A second Stop on an unchanged transcript emits nothing new and ships nothing.
-    const before = rig.rows('events');
+    const before = captured();
     await run('stop', { transcript_path: tx, last_assistant_message: '' });
-    expect(rig.rows('events')).toBe(before);
+    expect(captured()).toBe(before);
     // A transcript that grows ships only the tail, at the server's held offset.
     fs.appendFileSync(tx, JSON.stringify({ type: 'user', uuid: 'u9', promptId: 'p9', message: { role: 'user', content: 'later' } }) + '\n');
     await run('stop', { transcript_path: tx, last_assistant_message: 'ok' });
@@ -271,9 +273,9 @@ describe('member hooks through the worker: claude-code, transcript-first', () =>
     await parseAll();
     expect(texts('prompt_batches')).toContain('search the codebase for the retention leaf');
     // Nothing new to ship on a second Stop.
-    const before = rig.rows('events');
+    const before = captured();
     await run('stop', { transcript_path: tx, last_assistant_message: '' });
-    expect(rig.rows('events')).toBe(before);
+    expect(captured()).toBe(before);
   });
 
   it('mints the identity over the head of the file and ships a transcript replaced in place as a transcript of its own', async () => {
@@ -302,6 +304,9 @@ describe('member hooks through the worker: claude-code, transcript-first', () =>
     rig.env.sqlite.query(`INSERT OR REPLACE INTO project_capabilities (project_id, capability, enabled, updated_at, updated_by) VALUES ('proj_1', 'cortex', 1, ?, 'test')`).run(Date.now());
     rig.env.sqlite.query(`INSERT OR REPLACE INTO deployment_settings (leaf, value, updated_at, updated_by) VALUES ('instructions.template', ?, ?, 'test')`).run(JSON.stringify('Keep the plan current.'), Date.now());
     const tx = transcript([{ type: 'user', message: { role: 'user', content: 'x' } }]);
+    // A first start on this machine has nothing cached to serve: the helper it kicks fetches the block for the next.
+    const prime = await runHook('session-start', { session_id: 'sess-prime', transcript_path: tx, cwd: '/work/repo', source: 'startup' }, { fetch: fetchSpy.fetch });
+    expect(prime.stdout).toBe('');
     expect((await run('session-start', { transcript_path: tx, cwd: '/work/repo', source: 'startup' })).stdout).toContain('Keep the plan current.');
     expect((await run('session-start', { transcript_path: tx, cwd: '/work/repo', source: 'compact' })).stdout).toContain('Keep the plan current.');
     expect((await run('session-start', { transcript_path: tx, cwd: '/work/repo', source: 'compact' })).stdout).toContain('Keep the plan current.');
@@ -321,31 +326,37 @@ describe('member hooks through the worker: the turn-end mark', () => {
   const offline: typeof rig.fetch = async () => { throw new TypeError('fetch failed'); };
   const line = (text: string) => ({ type: 'user', uuid: `u-${text}`, message: { role: 'user', content: text } });
 
-  it('marks only the transcript a session\'s own Stop and SessionEnd ship; another session\'s turn end draining it, and a member drain, never mark it', async () => {
-    const txA = transcript([line('a')], 'sess-a');
-    for (const [hook, raw] of [
-      ['session-start', { hook_event_name: 'SessionStart', transcript_path: txA, cwd: '/work/repo' }],
-      ['stop', { hook_event_name: 'Stop', transcript_path: txA, last_assistant_message: 'x' }],
-    ] as const) await runHook(hook, { session_id: 'sess-a', ...raw }, { fetch: offline });
-    const spool = new MemberSpool('proj_1', { mycoHome });
-    expect(spool.transcriptBacklogIds()).toEqual(['sess-a']);
+  /** When the Deployment holds each segment as created: the time a turn end rides on. */
+  const segmentStamps = (sessionId: string) => fetchSpy.requests
+    .filter((r) => r.path === '/events' && r.body !== undefined)
+    .map((r) => JSON.parse(r.body!) as { kind: string; sessionId: string; createdAt: number })
+    .filter((e) => e.kind === 'transcript.segment' && e.sessionId === sessionId)
+    .map((e) => e.createdAt);
+  const turnEnds = (sessionId: string) => (rig.env.sqlite.query(`SELECT COUNT(*) AS n FROM events WHERE session_id = ? AND kind = 'turn'`).get(sessionId) as { n: number }).n;
 
+  it('tells a Deployment of a turn end when it happened: a mark rides the segment that reaches it, stamped with the turn\'s end, until the Deployment advertises turn events', async () => {
+    // Offline from the start: nothing is known of the Deployment's features, so the Stop leaves a mark.
+    const txA = transcript([line('a')], 'sess-a');
+    await runHook('session-start', { session_id: 'sess-a', hook_event_name: 'SessionStart', transcript_path: txA, cwd: '/work/repo' }, { fetch: offline });
+    // The turn ended an hour ago, by the hook's clock.
+    const stoppedAt = Date.now() - 3_600_000;
+    await runHook('stop', { session_id: 'sess-a', hook_event_name: 'Stop', transcript_path: txA, last_assistant_message: 'x' }, { fetch: offline, now: () => stoppedAt });
+    const spool = new MemberSpool('proj_1', { mycoHome });
+    expect(spool.pendingTurnEnds('sess-a').map((p) => p.mark.atSize)).toEqual([fs.statSync(txA).size]);
+
+    // Back online. Session b's start runs the helper, which ships session a's segment: it reaches the mark and carries
+    // the turn's own end, not the time it shipped.
     const txB = transcript([line('b')], 'sess-b');
     await runHook('session-start', { session_id: 'sess-b', hook_event_name: 'SessionStart', transcript_path: txB, cwd: '/work/repo' }, { fetch: fetchSpy.fetch });
+    expect(segmentPosts()).toEqual(['sess-a marked']);
+    expect(segmentStamps('sess-a')).toEqual([stoppedAt]);
+    expect(spool.pendingTurnEnds('sess-a')).toEqual([]);
+
+    // The Deployment's answers advertised `turn`: session b's Stop is a turn event, and its segment carries no mark.
     await runHook('stop', { session_id: 'sess-b', hook_event_name: 'Stop', transcript_path: txB, last_assistant_message: 'x' }, { fetch: fetchSpy.fetch });
-    expect(segmentPosts().sort()).toEqual(['sess-a unmarked', 'sess-b marked']);
-
-    fs.appendFileSync(txB, JSON.stringify(line('b2')) + '\n');
-    await runHook('session-end', { session_id: 'sess-b', hook_event_name: 'SessionEnd', transcript_path: txB }, { fetch: fetchSpy.fetch });
-    expect(segmentPosts().filter((p) => p.startsWith('sess-b'))).toEqual(['sess-b marked', 'sess-b marked']);
-
-    const txC = transcript([line('c')], 'sess-c');
-    for (const [hook, raw] of [
-      ['session-start', { hook_event_name: 'SessionStart', transcript_path: txC, cwd: '/work/repo' }],
-      ['stop', { hook_event_name: 'Stop', transcript_path: txC, last_assistant_message: 'x' }],
-    ] as const) await runHook(hook, { session_id: 'sess-c', ...raw }, { fetch: offline });
-    await runMemberCli(['drain'], { mycoHome, fetch: fetchSpy.fetch, stdout: () => {}, stderr: () => {} });
-    expect(segmentPosts().filter((p) => p.startsWith('sess-c'))).toEqual(['sess-c unmarked']);
+    expect(turnEnds('sess-b')).toBe(1);
+    expect(segmentPosts().filter((p) => p.startsWith('sess-b'))).toEqual(['sess-b unmarked']);
+    expect(spool.pendingTurnEnds('sess-b')).toEqual([]);
   });
 });
 
@@ -357,12 +368,13 @@ describe('member hooks through the worker: retention and plan files', () => {
     updateSessionState(spool.dir, old, (state) => { state.delivered.push('cortex'); }, past);
     expect(fs.existsSync(sessionStatePath(spool.dir, old))).toBe(true);
     const tx = transcript([{ type: 'user', uuid: 'u1', promptId: 'p1', message: { role: 'user', content: 'x' } }]);
-    await run('session-start', { transcript_path: tx, cwd: '/work/repo' });
-    // Another process holds this session's drain lease: the Stop's drain is skipped, and skipped is not delivered.
+    // Another process holds this session's drain lease: the helper's drain is skipped, and skipped is not delivered.
     const lease = LifecycleLock.acquire(path.join(spool.dir, `.${session}.drain.lock`), { command: 'test' });
     expect(lease.acquired).toBe(true);
     if (!lease.acquired) throw new Error('the test session drain lease was not acquired');
     try {
+      await run('session-start', { transcript_path: tx, cwd: '/work/repo' });
+      expect(fs.existsSync(sessionStatePath(spool.dir, old))).toBe(true);
       await run('stop', { transcript_path: tx, last_assistant_message: '' });
       expect(fs.existsSync(sessionStatePath(spool.dir, old))).toBe(true);
     } finally {
@@ -390,9 +402,9 @@ describe('member hooks through the worker: retention and plan files', () => {
       const state = readSessionState(new MemberSpool('proj_1', { mycoHome }).dir, session);
       expect(state.siblings[sibling].parsedSize).toBe(fs.statSync(sibling).size);
       // A second Stop reads neither transcript again and ships no second plan.
-      const before = rig.rows('events');
+      const before = captured();
       await run('stop', { transcript_path: tx, last_assistant_message: '', cwd: root });
-      expect(rig.rows('events')).toBe(before);
+      expect(captured()).toBe(before);
     } finally { try { fs.unlinkSync(file); } catch {} }
   });
 

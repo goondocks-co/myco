@@ -11,6 +11,8 @@ import type { CredentialSource } from '@myco/member/credential.js';
 import { resolveMemberProjectRoot } from '@myco/member/credential.js';
 import { writeRegistryEntry, REGISTRY_VERSION, type RegistryEntry } from '@myco/member/registry.js';
 import type { FetchLike } from '@myco/member/transport.js';
+import type { DetachedSpawn } from '@myco/runtime/spawn-detached.js';
+import { runHelperVerb } from '@myco/cli/member-helper.js';
 import { TEST_MACHINE_ID } from './server.js';
 
 export type { HookName } from '@myco/hooks/entry.js';
@@ -32,6 +34,11 @@ export interface RunHookOptions {
   now?: () => number;
   /** How a repository's join is started; a test that meets an unconnected repository records it instead of starting it. */
   spawn?: HookMainOptions['spawn'];
+  /**
+   * How the hook's kick starts the member helper. By default the helper runs in this process with the hook's own
+   * fetch, and the run ends once every helper it started has: a hook's capture is delivered when `runHook` returns.
+   */
+  helperSpawn?: DetachedSpawn;
 }
 
 /** Run one hook in-process with `raw` as its stdin; argv is restored afterwards. */
@@ -46,9 +53,24 @@ export async function runHook(name: HookName, raw: Record<string, unknown>, opts
   setBufferedStdin(Buffer.from(JSON.stringify(raw)));
   (process.stdout as unknown as { write: (chunk: unknown) => boolean }).write = ((chunk: unknown) => { out.push(String(chunk)); return true; }) as never;
   (process.stderr as unknown as { write: (chunk: unknown) => boolean }).write = ((chunk: unknown) => { err.push(String(chunk)); return true; }) as never;
+  const helpers: Array<Promise<unknown>> = [];
+  const helperSpawn: DetachedSpawn = opts.helperSpawn ?? ((_command, args) => {
+    const verb = args.slice(args.indexOf('helper') + 1);
+    helpers.push(runHelperVerb(verb, { fetch: opts.fetch, now: opts.now, lingerMs: 0, keepStderr: true, spawn: helperSpawn }).catch((err: unknown) => err));
+    return { started: true, pid: process.pid };
+  });
   try {
     const mod = await HOOKS[name]();
-    await mod.main({ credential: opts.credential === undefined ? 'registry' : opts.credential, fetch: opts.fetch, now: opts.now, argv: process.argv, startedAt: Date.now(), ...(opts.spawn ? { spawn: opts.spawn } : {}) });
+    await mod.main({
+      credential: opts.credential === undefined ? 'registry' : opts.credential, fetch: opts.fetch, now: opts.now, argv: process.argv, startedAt: Date.now(),
+      ...(opts.spawn ? { spawn: opts.spawn } : {}), helperSpawn,
+    });
+    // Each batch is awaited whole, then any helper a batch started (a successor) is awaited in turn.
+    for (let done = 0; done < helpers.length;) {
+      const until = helpers.length;
+      await Promise.all(helpers.slice(done, until));
+      done = until;
+    }
   } finally {
     (process.stdout as unknown as { write: unknown }).write = origOut;
     (process.stderr as unknown as { write: unknown }).write = origErr;

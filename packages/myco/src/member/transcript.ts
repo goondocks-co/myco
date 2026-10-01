@@ -304,6 +304,16 @@ const readSlice = (file: string, offset: number, length: number): Buffer => {
   }
 };
 
+/**
+ * A turn's end the Deployment learns of from the transcript lane: the turn ended at `at` (the member's clock) when the
+ * transcript held `atSize` bytes. The segment whose bytes reach `atSize` carries the turn-end header and is stamped
+ * `at`, so the Deployment closes the turn when it ended, not when the segment shipped.
+ */
+export interface TurnEndAt {
+  atSize: number;
+  at: number;
+}
+
 /** Which of a session's transcripts a pass ships: the session's own, or the subagent transcript at a path. */
 export type TranscriptSlot = { role: 'primary' } | { role: 'subagent'; path: string };
 export const PRIMARY_SLOT: TranscriptSlot = { role: 'primary' };
@@ -326,7 +336,11 @@ const setSlotPointer = (state: SessionState, slot: TranscriptSlot, pointer: Tran
  */
 export async function shipTranscriptSegments(
   ctx: EnvelopeContext, spool: MemberSpool, client: ServerClient, budget: HookBudget,
-  opts: { now?: () => number; until?: number; headHash?: string; slot?: TranscriptSlot; machineId?: string; turnEnd?: boolean } = {},
+  opts: {
+    now?: () => number; until?: number; headHash?: string; slot?: TranscriptSlot; machineId?: string;
+    /** Turn ends in this transcript the Deployment has not been told of; each rides the segment that reaches it. */
+    turnEnds?: readonly TurnEndAt[];
+  } = {},
 ): Promise<ShipResult> {
   const now = opts.now ?? Date.now;
   const slot = opts.slot ?? PRIMARY_SLOT;
@@ -392,8 +406,11 @@ export async function shipTranscriptSegments(
     if (bytes.byteLength === 0) return { shipped, endedBy: 'done' };
     const source = { path: pointer.path, sha256: crypto.createHash('sha256').update(bytes).digest('hex'), mediaType: TEXT_MEDIA_TYPE, size: bytes.byteLength };
 
+    // The turn end this segment's bytes reach, if any: the segment is stamped with the turn's own end.
+    const turnEnd = (opts.turnEnds ?? []).find((mark) => mark.atSize > offset && mark.atSize <= offset + bytes.byteLength);
+    const segmentCtx = turnEnd === undefined ? ctx : { ...ctx, now: () => turnEnd.at };
     // Built before the upload so both refusal paths can name the segment they lost.
-    const event = transcriptSegmentEvent(ctx, {
+    const event = transcriptSegmentEvent(segmentCtx, {
       transcriptId: pointer.transcriptId, baseOffset: offset, blobSource: source, originPath: pointer.path,
       headHash: opts.headHash ?? pointer.headHash, role: slot.role,
     });
@@ -423,7 +440,7 @@ export async function shipTranscriptSegments(
       if (blob.class !== 'reslice') spool.endPass(blob, now());
       return { shipped, endedBy: blob.class === 'reslice' ? 'refused' : blob.class };
     }
-    const outcome = await client.postEvent(event.envelope, clippedRequestBudget(budget, now()), { turnEnd: opts.turnEnd });
+    const outcome = await client.postEvent(event.envelope, clippedRequestBudget(budget, now()), { turnEnd: turnEnd !== undefined });
     switch (outcome.class) {
       case 'acked':
         spool.clearLatch();
@@ -475,7 +492,7 @@ export async function shipTranscriptSegments(
  */
 export async function shipSessionTranscripts(
   ctx: EnvelopeContext, spool: MemberSpool, client: ServerClient, budget: HookBudget,
-  opts: { now?: () => number; until?: number; machineId: string; turnEnd?: boolean },
+  opts: { now?: () => number; until?: number; machineId: string; turnEnds?: readonly TurnEndAt[] },
 ): Promise<ShipResult> {
   const now = opts.now ?? Date.now;
   // The one order the transcript lane keeps with the event lane: the session's start first.
@@ -488,7 +505,8 @@ export async function shipSessionTranscripts(
   const state = readSessionState(spool.dir, ctx.sessionId);
   const slots: TranscriptSlot[] = [PRIMARY_SLOT, ...Object.keys(state.siblings).sort().map((p): TranscriptSlot => ({ role: 'subagent', path: p }))];
   for (const slot of slots) {
-    const result = await shipTranscriptSegments(ctx, spool, client, budget, { ...opts, slot });
+    // Turn-end marks name the session's own transcript.
+    const result = await shipTranscriptSegments(ctx, spool, client, budget, { ...opts, slot, turnEnds: slot.role === 'primary' ? opts.turnEnds : undefined });
     shipped += result.shipped;
     if (result.endedBy === 'refused') { refusedForNow = true; continue; }
     if (result.endedBy !== 'done' && result.endedBy !== 'absent' && result.endedBy !== 'rejected') {

@@ -61,7 +61,7 @@ function crashAtCommit<T>(body: () => Promise<T>): Promise<T> {
   return body().finally(() => { MemberSpool.prototype.appendAndRecord = original; });
 }
 
-const memberKinds = () => Object.fromEntries((rig.env.sqlite.query(`SELECT kind, COUNT(*) n FROM events WHERE producer_adapter <> 'transcript-parse' GROUP BY kind`).all() as Array<{ kind: string; n: number }>).map((k) => [k.kind, k.n]));
+const memberKinds = () => Object.fromEntries((rig.env.sqlite.query(`SELECT kind, COUNT(*) n FROM events WHERE producer_adapter <> 'transcript-parse' AND kind <> 'turn' GROUP BY kind`).all() as Array<{ kind: string; n: number }>).map((k) => [k.kind, k.n]));
 
 describe('capture is never lost permanently at the commit point', () => {
   it('a Stop killed after reading the plan write and before appending leaves no receipt: the rerun ships the plan and the delta once', async () => {

@@ -142,9 +142,12 @@ describe('credential source', () => {
     expect(requests).toEqual([]);
     expect(result.stderr).toContain('no registry entry');
     expect(rig.rows('events')).toBe(0);
-    // The same hook declared `env` would dial the env URL — the source is the command's to declare.
+    // The same hooks declared `env` capture for the env URL, and the turn's end delivers there — the source is the
+    // command's to declare. A credential from the environment ships in the hook that ends the turn, never before.
     const envRun = await runHook('post-tool-use', { session_id: 'sess-relocated', tool_name: 'Read', tool_input: { file_path: '/a' } }, { fetch, credential: 'env', symbiont: 'copilot' });
-    expect(requests.map((r) => r.path)).toEqual(['/events']);
+    expect(requests).toEqual([]);
     expect(envRun.stderr).not.toContain('no registry entry');
+    await runHook('stop', { session_id: 'sess-relocated', last_assistant_message: 'done' }, { fetch, credential: 'env', symbiont: 'copilot' });
+    expect(requests.map((r) => r.path)).toContain('/events');
   });
 });

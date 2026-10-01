@@ -1,0 +1,197 @@
+/**
+ * Context a hook serves from this machine alone (#1561 PR 3b): the member helper fetches what the hooks ask for, and
+ * the next hook renders it.
+ * - A prompt renders what the Deployment served the session's previous prompt; the helper asks with each prompt's own
+ *   id and text.
+ * - A session start renders the Project's start block once per session; a block the Project withdraws stops being
+ *   served.
+ * - A delegated agent renders the subagent block once per delegation.
+ * - The features the Deployment advertises are read from every answer: a hook emits `turn` events while they are
+ *   named, and stops the moment an answer no longer names them; the session's transcripts keep shipping.
+ */
+import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { FEATURES_HEADER, PROTOCOL_HEADER } from '@goondocks/myco-shared/member-protocol';
+import { resetMachineIdCache } from '@myco/machine-id.js';
+import { readProjectContext } from '@myco/member/context-cache.js';
+import { readSessionState } from '@myco/member/session-state.js';
+import { MemberSpool } from '@myco/member/spool.js';
+import type { FetchLike } from '@myco/member/transport.js';
+import { memberRig, tempMycoHome, type MemberRig } from './helpers/server.js';
+import { registerTestMember, runHook } from './helpers/hooks.js';
+
+let mycoHome: string;
+let rig: MemberRig;
+const savedHome = process.env.MYCO_HOME;
+beforeEach(async () => {
+  mycoHome = tempMycoHome();
+  process.env.MYCO_HOME = mycoHome;
+  resetMachineIdCache();
+  rig = await memberRig();
+  registerTestMember({ mycoHome, token: rig.token, tokenId: rig.tokenId, projectId: 'proj_1', expiresAt: rig.expiresAt });
+});
+afterEach(() => {
+  process.env.MYCO_HOME = savedHome;
+  resetMachineIdCache();
+});
+
+const transcript = (id: string): string => {
+  const file = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'myco-render-tx-')), `${id}.jsonl`);
+  fs.writeFileSync(file, `${JSON.stringify({ type: 'user', message: { role: 'user', content: 'hi' } })}\n`);
+  return file;
+};
+const spool = () => new MemberSpool('proj_1', { mycoHome });
+/** The context a hook answered, whether its harness takes JSON or plain text. */
+const contextOf = (stdout: string): string => {
+  try {
+    const parsed = JSON.parse(stdout) as { hookSpecificOutput?: { additionalContext?: string }; additionalContext?: string };
+    return parsed.hookSpecificOutput?.additionalContext ?? parsed.additionalContext ?? stdout;
+  } catch {
+    return stdout.trim();
+  }
+};
+
+/** The rig, with the prompt route answered by `serve`: what the Deployment would compose for a prompt. */
+function servingPrompts(serve: (body: { promptId: string; text: string }) => string): { fetch: FetchLike; asked: Array<{ promptId: string; text: string }> } {
+  const asked: Array<{ promptId: string; text: string }> = [];
+  const fetch: FetchLike = async (input, init) => {
+    const req = new Request(input, init);
+    if (new URL(req.url).pathname === '/context/prompt') {
+      const body = JSON.parse(await req.clone().text()) as { promptId: string; text: string };
+      asked.push(body);
+      return Response.json({ persisted: true, context: serve(body), skipped: [] }, { headers: { [PROTOCOL_HEADER]: '1', [FEATURES_HEADER]: 'turn' } });
+    }
+    return rig.fetch(req);
+  };
+  return { fetch, asked };
+}
+
+describe('a prompt', () => {
+  it('renders what was served for the session\'s previous prompt, and the helper asks with each prompt\'s own id and text', async () => {
+    const tx = transcript('sess-p');
+    const served = servingPrompts((body) => `Recalled for: ${body.text}`);
+    const first = await runHook('user-prompt-submit', { session_id: 'sess-p', prompt: 'how do we rotate tokens?', transcript_path: tx }, { fetch: served.fetch, symbiont: 'copilot' });
+    // Nothing cached yet: the Session line alone.
+    expect(contextOf(first.stdout)).toBe('Session:: `sess-p`');
+    expect(served.asked.map((a) => a.text)).toEqual(['how do we rotate tokens?']);
+    expect(served.asked[0].promptId).toBe(readSessionState(spool().dir, 'sess-p').promptId!);
+
+    const second = await runHook('user-prompt-submit', { session_id: 'sess-p', prompt: 'and the window?', transcript_path: tx }, { fetch: served.fetch, symbiont: 'copilot' });
+    expect(contextOf(second.stdout)).toBe('Session:: `sess-p`\n\nRecalled for: how do we rotate tokens?');
+    expect(served.asked.map((a) => a.text)).toEqual(['how do we rotate tokens?', 'and the window?']);
+    // Every ask is answered and done.
+    expect(readSessionState(spool().dir, 'sess-p').contextAsks).toBeUndefined();
+  });
+
+  it('keeps an ask the Deployment did not answer for the next pass', async () => {
+    const tx = transcript('sess-q');
+    const offline: FetchLike = async () => { throw new TypeError('fetch failed'); };
+    await runHook('user-prompt-submit', { session_id: 'sess-q', prompt: 'while offline', transcript_path: tx }, { fetch: offline, symbiont: 'copilot' });
+    expect(readSessionState(spool().dir, 'sess-q').contextAsks?.map((a) => a.kind)).toEqual(['prompt']);
+    const served = servingPrompts((body) => `Recalled for: ${body.text}`);
+    await runHook('stop', { session_id: 'sess-q', last_assistant_message: 'ok', transcript_path: tx }, { fetch: served.fetch, symbiont: 'copilot' });
+    expect(served.asked.map((a) => a.text)).toEqual(['while offline']);
+  });
+});
+
+describe('a session start', () => {
+  const instructions = (text: string | null) => {
+    rig.env.sqlite.query(`INSERT OR REPLACE INTO project_capabilities (project_id, capability, enabled, updated_at, updated_by) VALUES ('proj_1', 'cortex', ?, ?, 'test')`).run(text === null ? 0 : 1, Date.now());
+    rig.env.sqlite.query(`INSERT OR REPLACE INTO deployment_settings (leaf, value, updated_at, updated_by) VALUES ('instructions.template', ?, ?, 'test')`).run(JSON.stringify(text ?? ''), Date.now());
+  };
+
+  it('renders the Project\'s block once per session from what the helper fetched, and stops once the Project withdraws it', async () => {
+    instructions('Write tests first.');
+    const start = (id: string) => runHook('session-start', { session_id: id, transcript_path: transcript(id), cwd: process.cwd() }, { fetch: rig.fetch });
+    expect((await start('sess-1')).stdout).toBe('');
+    expect(readProjectContext(spool().dir).blocks.start?.context).toContain('Write tests first.');
+    const second = await start('sess-2');
+    expect(second.stdout).toContain('Write tests first.');
+    expect(second.stdout).toContain('Session:: `sess-2`');
+    // Once per session: a start fired again in the same session serves nothing.
+    expect((await start('sess-2')).stdout).toBe('');
+
+    // The capability goes off: the next answer replaces the block with what the Project serves now, and the session
+    // after is served no instructions.
+    instructions(null);
+    await start('sess-3');
+    expect(readProjectContext(spool().dir).blocks.start?.context).not.toContain('Write tests first.');
+    expect((await start('sess-4')).stdout).not.toContain('Write tests first.');
+  });
+
+  it('serves a delegated agent its block once per delegation', async () => {
+    instructions('Keep it small.');
+    const tx = transcript('sess-sub');
+    await runHook('session-start', { session_id: 'sess-sub', transcript_path: tx, cwd: process.cwd() }, { fetch: rig.fetch });
+    const sub = (agentId: string) => runHook('subagent-start', { session_id: 'sess-sub', transcript_path: tx, agent_id: agentId, agent_type: 'Explore' }, { fetch: rig.fetch });
+    // The first delegation asks; the block it fetched serves the next.
+    expect((await sub('a1')).stdout).toBe('');
+    expect((await sub('a2')).stdout).toContain('Keep it small.');
+    expect((await sub('a2')).stdout).toBe('');
+  });
+});
+
+describe('the features a Deployment advertises', () => {
+  it('emits turn events while an answer names them, none once an answer stops naming them, and keeps shipping transcripts', async () => {
+    let advertising = true;
+    const fetch: FetchLike = async (input, init) => {
+      const res = await rig.fetch(new Request(input, init));
+      if (advertising) return res;
+      // A Deployment rolled back to before S1: its answers name no feature.
+      const headers = new Headers(res.headers);
+      headers.delete(FEATURES_HEADER);
+      return new Response(await res.text(), { status: res.status, headers });
+    };
+    const tx = transcript('sess-f');
+    const turns = () => (rig.env.sqlite.query(`SELECT COUNT(*) AS n FROM events WHERE kind = 'turn'`).get() as { n: number }).n;
+    await runHook('session-start', { session_id: 'sess-f', transcript_path: tx, cwd: process.cwd() }, { fetch });
+    expect(readProjectContext(spool().dir).features).toEqual(['turn']);
+    await runHook('user-prompt-submit', { session_id: 'sess-f', prompt: 'one', transcript_path: tx }, { fetch });
+    await runHook('stop', { session_id: 'sess-f', last_assistant_message: 'done', transcript_path: tx }, { fetch });
+    expect(turns()).toBe(2);
+
+    advertising = false;
+    // The first answer without the header drops the feature at once.
+    await runHook('user-prompt-submit', { session_id: 'sess-f', prompt: 'two', transcript_path: tx }, { fetch });
+    expect(readProjectContext(spool().dir).features).toEqual([]);
+    const segmentsBefore = rig.rows('transcript_segments');
+    fs.appendFileSync(tx, `${JSON.stringify({ type: 'user', message: { role: 'user', content: 'more' } })}\n`);
+    await runHook('stop', { session_id: 'sess-f', last_assistant_message: 'done', transcript_path: tx }, { fetch });
+    // The prompt above spooled one turn start (it ran before its own helper's answer); the Stop after emits none.
+    expect(turns()).toBe(3);
+    expect(rig.rows('transcript_segments')).toBeGreaterThan(segmentsBefore);
+  });
+});
+
+describe('prompts a harness writes only to its transcript', () => {
+  it('are read by the helper after the invocation\'s hook, each once, stamped with the invocation\'s time', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-agy-tx-'));
+    const tx = path.join(dir, 'transcript_full.jsonl');
+    // The invocation's hook fires before the IDE writes its transcript.
+    fs.writeFileSync(tx, '');
+    const invoke = () => runHook('session-start', { conversationId: 'sess-agy', transcriptPath: tx, cwd: process.cwd() }, { fetch: rig.fetch, symbiont: 'antigravity' });
+    const startedAt = Date.now();
+    await invoke();
+    expect(rig.rows('prompt_batches')).toBe(0);
+    // The request waits for the next pass.
+    expect(readSessionState(spool().dir, 'sess-agy').promptBackfill?.transcriptPath).toBe(tx);
+
+    fs.writeFileSync(tx, [
+      { step_index: 0, type: 'USER_INPUT', content: '<USER_REQUEST>first turn</USER_REQUEST>', created_at: 't1' },
+      { step_index: 1, type: 'PLANNER_RESPONSE', content: 'thinking', created_at: 't2' },
+    ].map((r) => JSON.stringify(r)).join('\n') + '\n');
+    await invoke();
+    const rows = rig.env.sqlite.query(`SELECT text FROM prompt_batches`).all() as Array<{ text: string }>;
+    expect(rows.map((r) => r.text)).toEqual(['first turn']);
+    const createdAt = (rig.env.sqlite.query(`SELECT created_at AS at FROM events WHERE kind = 'prompt'`).get() as { at: number }).at;
+    expect(createdAt).toBeGreaterThanOrEqual(startedAt);
+    expect(readSessionState(spool().dir, 'sess-agy').promptBackfill).toBeUndefined();
+
+    // A later invocation reads the transcript again and captures only what is new.
+    fs.appendFileSync(tx, `${JSON.stringify({ step_index: 2, type: 'USER_INPUT', content: '<USER_REQUEST>second turn</USER_REQUEST>', created_at: 't3' })}\n`);
+    await invoke();
+    expect((rig.env.sqlite.query(`SELECT text FROM prompt_batches ORDER BY text`).all() as Array<{ text: string }>).map((r) => r.text)).toEqual(['first turn', 'second turn']);
+  });
+});

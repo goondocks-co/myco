@@ -66,6 +66,8 @@ const transcriptFile = (): string => {
 };
 
 /** Copilot's prompt hook ships the prompt row, so each prompt is a live send the rotation can ride. */
+/** A hook's own lines, without the member helper's progress lines (the helper runs inside `runHook` in these tests). */
+const hookLines = (stderr: string): string => stderr.split('\n').filter((line) => !line.startsWith('[myco] helper:')).join('\n').trim();
 const prompt = (fetchImpl: FetchLike, text: string) =>
   runHook('user-prompt-submit', { session_id: session, hook_event_name: 'UserPromptSubmit', transcript_path: transcriptFile(), prompt: text }, { fetch: fetchImpl, symbiont: 'copilot' });
 
@@ -105,8 +107,10 @@ describe('member token rotation', () => {
     const spy = recordingFetch(rig.fetch);
 
     const out = await runHook('user-prompt-submit', { session_id: session, hook_event_name: 'UserPromptSubmit', transcript_path: transcriptFile(), prompt: 'hello' }, { fetch: spy.fetch, credential: 'env', symbiont: 'copilot' });
+    // A credential from the environment delivers at the turn's end, in the hook.
+    await runHook('stop', { session_id: session, hook_event_name: 'Stop', transcript_path: transcriptFile(), last_assistant_message: 'done' }, { fetch: spy.fetch, credential: 'env', symbiont: 'copilot' });
 
-    expect(out.stderr).toBe('');
+    expect(hookLines(out.stderr)).toBe('');
     expect(rig.rows('prompt_batches')).toBe(1);
     expect(refreshCalls(spy)).toBe(0);
     expect(rig.rows('member_credentials')).toBe(1);
@@ -336,7 +340,7 @@ describe('a credential minted not to rotate (#1420)', () => {
     expect(rig.rows('prompt_batches')).toBe(1);
 
     const second = await prompt(spy.fetch, 'second');
-    expect(second.stderr).toBe('');
+    expect(hookLines(second.stderr)).toBe('');
     expect(rig.rows('prompt_batches')).toBe(2);
     expect((await refreshMemberCredential(root, { mycoHome, fetch: spy.fetch, budget: budget() })).status).toBe('non-rotating');
     expect(refreshCalls(spy)).toBe(1);
@@ -357,11 +361,13 @@ describe('a credential minted not to rotate (#1420)', () => {
     expect(refreshCalls(spy)).toBe(1);
     const entry = readRegistryEntry(root, mycoHome)!;
     expect({ nonRotating: entry.nonRotating, refreshTerminal: entry.refreshTerminal }).toEqual({ nonRotating: true, refreshTerminal: false });
-    expect(first.stderr).toContain('does not rotate, and the server stopped accepting it');
+    expect(first.stderr).toContain('member token refused');
     expect(rig.rows('prompt_batches')).toBe(0);
     expect(new MemberSpool(PROJECT, { mycoHome }).depth(session)).toBeGreaterThan(0);
 
-    await prompt(spy.fetch, 'again');
+    // The next hook says so: the refusal was learned by the helper after this hook answered.
+    const again = await prompt(spy.fetch, 'again');
+    expect(again.stderr).toContain('does not rotate, and the server stopped accepting it');
     expect(refreshCalls(spy)).toBe(1);
     expect(rig.rows('member_credentials')).toBe(1);
   });
@@ -379,11 +385,13 @@ describe('a credential minted not to rotate (#1420)', () => {
     expect(refreshCalls(spy)).toBe(2);
     const entry = readRegistryEntry(root, mycoHome)!;
     expect({ nonRotating: entry.nonRotating, refreshTerminal: entry.refreshTerminal, refused: typeof entry.refusedAt, expiresAt: entry.expiresAt }).toEqual({ nonRotating: true, refreshTerminal: false, refused: 'number', expiresAt: rig.expiresAt });
-    expect(stopped.stderr).toContain('Myco capture is not being delivered');
-    expect(stopped.stderr).toContain('does not rotate, and the server stopped accepting it');
+    expect(stopped.stderr).toContain('member token refused');
     expect(new MemberSpool(PROJECT, { mycoHome }).depth(session)).toBeGreaterThan(0);
 
-    await prompt(spy.fetch, 'still stopped');
+    // The next hook carries the notice.
+    const told = await prompt(spy.fetch, 'still stopped');
+    expect(told.stderr).toContain('Myco capture is not being delivered');
+    expect(told.stderr).toContain('does not rotate, and the server stopped accepting it');
     expect(refreshCalls(spy)).toBe(2);
   });
 
@@ -420,11 +428,13 @@ describe('a credential minted not to rotate (#1420)', () => {
     writeDeploymentMembership({ ...held, refusedAt: Date.now() - 1_000 }, { mycoHome });
     expect(deliveryNotice(readRegistryEntry(root, mycoHome)!, Date.now())).toContain('Myco capture is not being delivered');
 
-    const delivered = await prompt(rig.fetch, 'accepted after all');
+    await prompt(rig.fetch, 'accepted after all');
 
     expect(rig.rows('prompt_batches')).toBe(2);
     expect(readRegistryEntry(root, mycoHome)!.refusedAt).toBeNull();
-    expect(delivered.stderr).not.toContain('Myco capture is not being delivered');
+    // The hook after the acknowledged send says nothing more.
+    const next = await prompt(rig.fetch, 'and then');
+    expect(next.stderr).not.toContain('Myco capture is not being delivered');
   });
 
   it('answered `non_rotating` over a terminal state an older build recorded, clears it, and says so without inventing an expiry', async () => {
@@ -476,7 +486,9 @@ describe('a credential minted not to rotate (#1420)', () => {
       process.env[ENV_PROJECT] = PROJECT;
       const spy = recordingFetch(rig.fetch);
 
-      const out = await runHook('user-prompt-submit', { session_id: session, hook_event_name: 'UserPromptSubmit', transcript_path: transcriptFile(), prompt: 'hello' }, { fetch: spy.fetch, credential: 'env', symbiont: 'copilot' });
+      await runHook('user-prompt-submit', { session_id: session, hook_event_name: 'UserPromptSubmit', transcript_path: transcriptFile(), prompt: 'hello' }, { fetch: spy.fetch, credential: 'env', symbiont: 'copilot' });
+      // A credential from the environment delivers at the turn's end, in the hook.
+      const out = await runHook('stop', { session_id: session, hook_event_name: 'Stop', transcript_path: transcriptFile(), last_assistant_message: 'done' }, { fetch: spy.fetch, credential: 'env', symbiont: 'copilot' });
 
       expect({ ageMs, delivered: rig.rows('prompt_batches'), refreshes: refreshCalls(spy), sends: eventCalls(spy) > 0, refused: out.stderr.includes('member token refused'), rotation: /rotat|renew/.test(out.stderr) })
         .toEqual({ ageMs, delivered, refreshes: 0, sends: true, refused: delivered === 0, rotation: false });

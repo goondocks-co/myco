@@ -32,7 +32,7 @@ export const HOOK_DISPATCH = {
 
 export type HookName = keyof typeof HOOK_DISPATCH;
 
-const isHookName = (name: string): name is HookName => Object.hasOwn(HOOK_DISPATCH, name);
+export const isHookName = (name: string): name is HookName => Object.hasOwn(HOOK_DISPATCH, name);
 
 /**
  * Run `myco hook <name> [flags]`: anchor the process to the harness's project and honour its runtime pin, then run the

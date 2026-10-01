@@ -4,6 +4,7 @@
  * the derived-id bookkeeping the Stop/SessionEnd transcript work needs. Read
  * and modified under the session's buffer lock — hooks run concurrently.
  */
+import { removeSessionContext, type ContextAsk } from './context-cache.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import { withFileLockSync } from '../utils/lifecycle-lock.js';
@@ -113,6 +114,13 @@ export interface SessionState {
    * report shows as the session's last delivery.
    */
   lastDeliveryAt?: number;
+  /**
+   * What the session's hooks asked the member helper to fetch from the Deployment (`member/context-cache.ts`): kept
+   * here, written with the hook's own records, until the helper has asked.
+   */
+  contextAsks?: ContextAsk[];
+  /** A transcript the member helper is to read prompts from (`member/transcript-prompts.ts`), and when it was asked. */
+  promptBackfill?: { transcriptPath: string; at: number };
   updatedAt: number;
 }
 
@@ -300,6 +308,7 @@ export function retireSessionFiles(spoolDir: string, sessionId: string, stillRet
     try { fs.unlinkSync(sessionStatePath(spoolDir, sessionId)); } catch { /* absent */ }
     // A mark is read against the state's transcript pointers: without them it has nothing left to wait for.
     try { fs.unlinkSync(turnsFileOf(spoolDir, sessionId)); } catch { /* absent */ }
+    removeSessionContext(spoolDir, sessionId);
     if (process.platform !== 'win32') {
       try { fs.unlinkSync(lock); } catch { /* absent */ }
     }

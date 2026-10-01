@@ -6,15 +6,13 @@
  * included: a detached start on Windows carries the environment the starting process began with, not one it changed.
  * Its stderr goes to `<MYCO_HOME>/logs/helper.log`, a pass that fails included.
  */
-import { drainEntryBacklog } from '../member/backlog.js';
-import { deadlineBudget } from '../member/budget.js';
 import { isProjectId } from '../member/constants.js';
 import { routeStderrToHelperLog, runHelper, type HelperPass, type HelperRunResult } from '../member/helper.js';
+import { helperPass } from '../member/helper-pass.js';
 import type { DetachedSpawn } from '../runtime/spawn-detached.js';
-import { listRegistryEntries } from '../member/registry.js';
-import { applySpoolRetention } from '../member/retention.js';
-import { MemberSpool } from '../member/spool.js';
 import type { FetchLike } from '../member/transport.js';
+
+export { helperPass } from '../member/helper-pass.js';
 
 export interface HelperVerbDeps {
   fetch?: FetchLike;
@@ -49,24 +47,6 @@ export async function runHelperVerb(args: readonly string[], deps: HelperVerbDep
   } finally {
     restoreStderr();
   }
-}
-
-/** One pass of the helper over a project, ending by `deadline`: the project's backlog delivered, then its retention. */
-export function helperPass(projectId: string, mycoHome: string, deps: Pick<HelperVerbDeps, 'fetch' | 'now'> = {}): HelperPass {
-  const now = deps.now ?? Date.now;
-  return async (deadline, { force }) => {
-    // The project's membership: any root this home connects to it, since every root of one project shares its spool.
-    const entry = listRegistryEntries(mycoHome).find((candidate) => candidate.projectId === projectId);
-    if (entry === undefined) {
-      process.stderr.write(`[myco] helper: this home holds no membership for ${projectId}; nothing to ship\n`);
-      return;
-    }
-    const backlog = await drainEntryBacklog(entry, { mycoHome, fetch: deps.fetch, now, budget: deadlineBudget(deadline), force, rescan: false });
-    applySpoolRetention(new MemberSpool(projectId, { mycoHome }), now(), { tried: backlog.tried });
-    const shipped = backlog.sessions.reduce((n, s) => n + (s.events?.acked ?? 0) + (typeof s.transcripts === 'object' ? s.transcripts.shipped : 0), 0);
-    process.stderr.write(`[myco] helper: pass over ${backlog.sessions.length} session(s), ${shipped} record(s) and segment(s) delivered${force ? ' (past the offline latch)' : ''}, ended by ${backlog.endedBy}\n`);
-    return { more: backlog.endedBy === 'budget' };
-  };
 }
 
 async function helperPasses(projectId: string, mycoHome: string, afterFailure: boolean, deps: HelperVerbDeps): Promise<HelperRunResult> {

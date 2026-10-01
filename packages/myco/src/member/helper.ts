@@ -21,7 +21,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { LifecycleLock, type LockHandle } from '../utils/lifecycle-lock.js';
 import { selfExec } from '../runtime/self-exec.js';
-import { spawnDetached, type DetachedSpawn } from '../runtime/spawn-detached.js';
+import { spawnDetached, type DetachedSpawn, type DetachedStart } from '../runtime/spawn-detached.js';
 import { ensureMemberDir } from './store.js';
 import { spoolDirFor } from './spool.js';
 
@@ -97,11 +97,19 @@ export function shipsInline(outcome: KickOutcome): boolean {
  * logged to `helper.log` and answered so the caller can ship inline (`shipsInline`).
  */
 export function kickHelper(opts: { projectId: string; mycoHome: string; reason?: KickReason; spawn?: DetachedSpawn; now?: () => number }): KickOutcome {
+  markWork(opts);
+  return startHelper({ ...opts, why: `kick (${opts.reason ?? 'capture'})`, fallback: 'the caller ships inline' });
+}
+
+/**
+ * Mark the project's work, as a kick does, without starting a helper: for a caller that runs the helper's pass
+ * itself. A running helper still sees the marks; one started later reads them.
+ */
+export function markWork(opts: { projectId: string; mycoHome: string; reason?: KickReason }): void {
   const paths = helperPaths(opts.projectId, opts.mycoHome);
   ensureMemberDir(path.dirname(paths.dirty), opts.mycoHome);
   fs.writeFileSync(paths.dirty, '', { mode: 0o600 });
   if (opts.reason === 'turn-end' || opts.reason === 'session-end') fs.writeFileSync(paths.probe, '', { mode: 0o600 });
-  return startHelper({ ...opts, why: `kick (${opts.reason ?? 'capture'})`, fallback: 'the caller ships inline' });
 }
 
 /**
@@ -121,7 +129,13 @@ function startHelper(opts: {
   if (!claimStart(paths.starting, now())) return { kind: 'starting' };
   const self = selfExec();
   const args = [...self.args, 'member', 'helper', '--project', opts.projectId, '--home', opts.mycoHome, ...(opts.afterFailure ? ['--after-failure'] : [])];
-  const start = (opts.spawn ?? spawnDetached)(self.path, args, { cwd: opts.mycoHome });
+  let start: DetachedStart;
+  try {
+    start = (opts.spawn ?? spawnDetached)(self.path, args, { cwd: opts.mycoHome });
+  } catch {
+    // A start that threw started nothing: its claim must not hold the next kick off.
+    start = { started: false };
+  }
   if (!start.started) {
     try { fs.unlinkSync(paths.starting); } catch { /* not claimed */ }
     appendHelperLog(opts.mycoHome, opts.projectId, `[myco] helper: ${opts.why} could not start a helper; ${opts.fallback}`);
@@ -218,6 +232,11 @@ export interface HelperRunOptions {
   spawn?: DetachedSpawn;
   /** This helper was started after a pass failed: a failure of its own leaves the marks for the next kick. */
   afterFailure?: boolean;
+  /**
+   * Start no successor, at the deadline or after a failure: the marks stay for the next kick. For a pass run inside
+   * a hook, whose successor would be started inside the same job the hook could not leave.
+   */
+  noSuccessor?: boolean;
   /** Called each time the lock is let go, before the last look for new work: where a late kick lands. */
   onReleased?: () => void;
   /** Called when the lock was held at start, before the start claim is removed: where a racing kick lands. */
@@ -282,7 +301,7 @@ export async function runHelper(opts: HelperRunOptions): Promise<HelperRunResult
           if (force) fs.writeFileSync(paths.probe, '', { mode: 0o600 });
           held.release();
           held = null;
-          if (!opts.afterFailure) successor(true);
+          if (!opts.afterFailure && !opts.noSuccessor) successor(true);
           throw err;
         }
         passes += 1;
@@ -296,7 +315,11 @@ export async function runHelper(opts: HelperRunOptions): Promise<HelperRunResult
       opts.onReleased?.();
       if (now() >= deadline) {
         // Kicks during the last pass found the lock held and started nothing: the successor is theirs.
-        if (!dirty() && !more) return { endedBy: 'deadline', passes };
+        if ((!dirty() && !more) || opts.noSuccessor) {
+          // A pass cut short with no successor to carry it on leaves its mark for the next kick.
+          if (more) fs.writeFileSync(paths.dirty, '', { mode: 0o600 });
+          return { endedBy: 'deadline', passes };
+        }
         return { endedBy: 'deadline', passes, successor: successor(false).kind };
       }
       // A kick between the last look and the release found the lock held and left only its mark: take it up again.

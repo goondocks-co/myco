@@ -74,6 +74,15 @@ function query<T>(sql: string, ...params: string[]): T | null {
 }
 
 const landed = (sessionId: string): boolean => query('SELECT 1 AS one FROM sessions WHERE session_id = ?', sessionId) !== null;
+/** Whether the session lands within `ms`: the hook's kick starts a detached member helper, which delivers it. */
+async function landsWithin(sessionId: string, ms = 20_000): Promise<boolean> {
+  const until = Date.now() + ms;
+  while (Date.now() < until) {
+    if (landed(sessionId)) return true;
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  return landed(sessionId);
+}
 const spent = (id: string): boolean => query<{ used_at: number | null }>('SELECT used_at FROM enrollment_authorities WHERE id = ?', id)?.used_at != null;
 
 beforeAll(async () => {
@@ -131,6 +140,12 @@ function cli(m: Machine, args: string[], stdin?: string): Promise<{ status: numb
   });
 }
 
+/** A Claude Code Stop told to ship inline, as a sandbox's turn end runs: it delivers what the session captured. */
+function inlineStop(m: Machine, sessionId: string) {
+  const input = { session_id: sessionId, cwd: m.checkout, hook_event_name: 'Stop', last_assistant_message: 'done' };
+  return cli(m, ['hook', 'stop', '--symbiont', 'claude-code', '--credential', 'env', '--ship', 'inline'], JSON.stringify(input));
+}
+
 /** A Claude Code SessionStart, as the harness hands it to the hook command on stdin. */
 function sessionStart(m: Machine, sessionId: string, source: 'registry' | 'env') {
   const transcript = path.join(tempDir('myco-loopback-tx-'), `${sessionId}.jsonl`);
@@ -166,7 +181,7 @@ describe('a member of a loopback http native Deployment', () => {
 
     const hook = await sessionStart(m, 'sess-loopback-registry', 'registry');
     expect(hook.stderr).not.toContain('no capture');
-    expect(landed('sess-loopback-registry')).toBe(true);
+    expect(await landsWithin('sess-loopback-registry')).toBe(true);
     await expectReads(m, null);
     await expectReads(m, 'registry');
 
@@ -184,6 +199,8 @@ describe('a member of a loopback http native Deployment', () => {
     const m = machine({ [ENV_SERVER_URL]: loopback, [ENV_MEMBER_TOKEN]: orchestratorToken, [ENV_PROJECT]: PROJECT });
     const hook = await sessionStart(m, 'sess-loopback-env', 'env');
     expect(hook.stderr).not.toContain('no capture');
+    // A credential from the environment delivers at the turn's end, in the hook.
+    expect((await inlineStop(m, 'sess-loopback-env')).status).toBe(0);
     expect(landed('sess-loopback-env')).toBe(true);
     await expectReads(m, 'env');
   }, 90_000);
@@ -193,11 +210,11 @@ describe('a member of a loopback http native Deployment', () => {
     const m = machine({ [ENV_JOIN_CODE]: invite.code });
     const first = await sessionStart(m, 'sess-loopback-code-1', 'env');
     expect(first.stderr).not.toContain('no capture');
-    expect({ spent: spent(invite.id), landed: landed('sess-loopback-code-1') }).toEqual({ spent: true, landed: true });
+    expect({ spent: spent(invite.id), landed: await landsWithin('sess-loopback-code-1') }).toEqual({ spent: true, landed: true });
 
     const second = await sessionStart(m, 'sess-loopback-code-2', 'env');
     expect(second.stderr).not.toContain('no capture');
-    expect(landed('sess-loopback-code-2')).toBe(true);
+    expect(await landsWithin('sess-loopback-code-2')).toBe(true);
     const tokens = query<{ n: number }>(
       `SELECT count(DISTINCT created_by_token_id) AS n FROM sessions WHERE session_id IN ('sess-loopback-code-1','sess-loopback-code-2')`,
     );

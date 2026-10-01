@@ -166,7 +166,13 @@ function inProcessHelpers(deps: Parameters<typeof runHelperVerb>[1]) {
     runs.push(runHelperVerb(verb, { ...deps, spawn }).catch((err: unknown) => err));
     return { started: true, pid: process.pid };
   };
-  const settle = async () => { for (let done = 0; done < runs.length; done = runs.length) await Promise.all(runs.slice(done)); };
+  const settle = async () => {
+    for (let done = 0; done < runs.length;) {
+      const until = runs.length;
+      await Promise.all(runs.slice(done, until));
+      done = until;
+    }
+  };
   return { spawn, starts, settle };
 }
 
@@ -414,6 +420,15 @@ describe('a start under way', () => {
     fs.utimesSync(starting, future, future);
     expect(kickHelper({ projectId: PROJECT, mycoHome, spawn }).kind).toBe('started');
     expect(started).toBe(4);
+  });
+
+  it('answers a start that threw as one that failed, and leaves no claim to hold the next kick off', () => {
+    const outcome = kickHelper({ projectId: PROJECT, mycoHome, spawn: () => { throw new Error('spawn exploded'); } });
+    expect(outcome).toEqual({ kind: 'failed' });
+    expect(fs.existsSync(helperPaths(PROJECT, mycoHome).starting)).toBe(false);
+    let started = 0;
+    expect(kickHelper({ projectId: PROJECT, mycoHome, spawn: () => { started += 1; return { started: true, pid: process.pid }; } }).kind).toBe('started');
+    expect(started).toBe(1);
   });
 
   it('starts a helper when a spent claim cannot be cleared, rather than wait on a start that is not coming', () => {

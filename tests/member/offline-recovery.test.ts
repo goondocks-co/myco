@@ -29,6 +29,7 @@ import { emptySessionState, readSessionState, updateSessionState } from '@myco/m
 import { MemberSpool } from '@myco/member/spool.js';
 import { transcriptPointerFor } from '@myco/member/transcript.js';
 import { ServerClient } from '@myco/member/transport.js';
+import { mintId, promptEvent } from '@myco/member/envelope.js';
 import { memberRig, tempMycoHome, type MemberRig } from './helpers/server.js';
 import { recordingFetch, registerTestMember, runHook } from './helpers/hooks.js';
 
@@ -120,8 +121,10 @@ describe('a credential used from two places', () => {
     const held = readRegistryEntry(root, mycoHome)!;
     expect({ terminal: held.refreshTerminal, reason: held.refreshTerminalReason }).toEqual({ terminal: true, reason: 'replayed' });
     expect(start.stderr).toContain(TWO_PLACES);
-    expect(start.stdout).toContain(TWO_PLACES);
-    expect(start.stdout).toContain('myco login <link>');
+    // The hook answered before its helper learned why; the next session's start tells the agent.
+    const next = await runHook('session-start', { session_id: 'sess-owner-next', hook_event_name: 'SessionStart', transcript_path: tx, cwd: '/work/repo' }, { fetch: spy.fetch });
+    expect(next.stdout).toContain(TWO_PLACES);
+    expect(next.stdout).toContain('myco login <link>');
     expect(new MemberSpool(PROJECT, { mycoHome }).depth('sess-owner')).toBe(1);
   });
 
@@ -144,7 +147,9 @@ describe('a credential used from two places', () => {
     expect(liveRows(rig)).toBe(0);
     expect((await thief.capture(stolen.token)).status).toBe(401);
     expect(readRegistryEntry(root, mycoHome)!.refreshTerminalReason).toBe('replayed');
-    expect(start.stdout).toContain(TWO_PLACES);
+    expect(start.stderr).toContain(TWO_PLACES);
+    const next = await runHook('session-start', { session_id: 'sess-owner-2-next', hook_event_name: 'SessionStart', transcript_path: tx, cwd: '/work/repo' }, { fetch: spy.fetch });
+    expect(next.stdout).toContain(TWO_PLACES);
   });
 
   it('a re-login clears the reason with the rest of the replaced token\'s state', async () => {
@@ -206,11 +211,13 @@ describe('a member that could not deliver', () => {
     const start = await runHook('session-start', { session_id: 'sess-ended', hook_event_name: 'SessionStart', transcript_path: tx, cwd: '/work/repo' }, { fetch: spy.fetch });
 
     expect(readRegistryEntry(root, mycoHome)!.refreshTerminal).toBe(true);
-    expect(start.stderr).toContain(NOT_DELIVERED);
     expect(start.stderr).toContain('myco login <link>');
-    expect(start.stderr).toContain(INACTIVE);
-    expect(start.stdout).toContain(NOT_DELIVERED);
-    expect(start.stdout).toContain(INACTIVE);
+    expect(start.stderr).toContain('inactive too long');
+    // The hook answered before its helper learned the credential ended; the next session's start says so.
+    const next = await runHook('session-start', { session_id: 'sess-ended-next', hook_event_name: 'SessionStart', transcript_path: tx, cwd: '/work/repo' }, { fetch: spy.fetch });
+    expect(next.stderr).toContain(NOT_DELIVERED);
+    expect(next.stdout).toContain(NOT_DELIVERED);
+    expect(next.stdout).toContain(INACTIVE);
     expect(rig.rows('member_credentials')).toBe(1);
     expect(rig.rows('sessions')).toBe(0);
     expect(new MemberSpool(PROJECT, { mycoHome }).depth('sess-ended')).toBe(1);
@@ -229,7 +236,8 @@ describe('a member that could not deliver', () => {
     const spy = recordingFetch(rig.fetch);
 
     const refused = await session(spy.fetch, 'sess-refused', 'captured while refused');
-    expect(refused.start.stderr).toContain(NOT_DELIVERED);
+    // The session's start answered before its helper was refused; its Stop says so.
+    expect(refused.stop.stderr).toContain(NOT_DELIVERED);
     expect(rig.rows('sessions')).toBe(0);
     expect(readRegistryEntry(root, mycoHome)!.refreshTerminal).toBe(true);
     const spool = new MemberSpool(PROJECT, { mycoHome });
@@ -247,11 +255,12 @@ describe('a member that could not deliver', () => {
     const next = await session(spy.fetch, 'sess-next', 'first turn after re-login');
     expect(next.start.stderr).not.toContain(NOT_DELIVERED);
 
-    // The turn end delivers its own session before any of the backlog.
-    const order = (rig.env.sqlite.query(`SELECT session_id AS s, kind AS k FROM events WHERE producer_adapter <> 'transcript-parse' ORDER BY received_at, rowid`).all() as Array<{ s: string; k: string }>)
+    // The helper walks the session a person is working in first, then the backlog, each session's records in order.
+    const order = (rig.env.sqlite.query(`SELECT session_id AS s, kind AS k FROM events WHERE producer_adapter <> 'transcript-parse' AND kind <> 'turn' ORDER BY received_at, rowid`).all() as Array<{ s: string; k: string }>)
       .map((r) => `${r.s} ${r.k}`);
-    expect(order.slice(0, 2)).toEqual(['sess-next session.start', 'sess-next transcript.segment']);
-    expect(order.slice(2, 5)).toEqual(['sess-refused session.start', 'sess-refused session.end', 'sess-refused transcript.segment']);
+    expect(order[0]).toBe('sess-next session.start');
+    expect(order.filter((o) => o.startsWith('sess-refused'))).toEqual(['sess-refused session.start', 'sess-refused session.end', 'sess-refused transcript.segment']);
+    expect(order).toContain('sess-next transcript.segment');
     expect(spy.requests.slice(seen).every((r) => r.path !== '/tokens/refresh')).toBe(true);
 
     expect(segmentsOf(rig, 'sess-refused')).toBe(1);
@@ -260,8 +269,9 @@ describe('a member that could not deliver', () => {
     await parseAll(rig);
     expect(prompts(rig)).toEqual(['captured while refused', 'first turn after re-login']);
 
-    // Nothing is delivered twice: another turn end, and an explicit drain, add no row.
-    const counts = () => ['events', 'transcript_segments', 'prompt_batches', 'responses'].map((t) => rig.rows(t));
+    // Nothing is delivered twice: another turn end, and an explicit drain, add no captured row (a turn end is its own).
+    const capturedEvents = () => (rig.env.sqlite.query(`SELECT COUNT(*) AS n FROM events WHERE kind <> 'turn'`).get() as { n: number }).n;
+    const counts = () => [capturedEvents(), ...['transcript_segments', 'prompt_batches', 'responses'].map((t) => rig.rows(t))];
     const before = counts();
     await runHook('stop', { session_id: 'sess-next', hook_event_name: 'Stop', transcript_path: next.tx, last_assistant_message: 'x' }, { fetch: spy.fetch });
     await runMemberCli(['drain'], { mycoHome, fetch: spy.fetch, stdout: () => {}, stderr: () => {} });
@@ -299,7 +309,7 @@ describe('a member that could not deliver', () => {
     });
   }
 
-  it('gives the backlog only what the owning session leaves of the turn end\'s budget', async () => {
+  it('walks the session that kicked first, and leaves the backlog its pass had no time for to its successor', async () => {
     const rig = await memberRig();
     registerTestMember({ mycoHome, token: rig.token, tokenId: rig.tokenId, projectId: PROJECT, expiresAt: rig.expiresAt, serverUrl: SERVER_URL });
     const spool = new MemberSpool(PROJECT, { mycoHome });
@@ -322,9 +332,12 @@ describe('a member that could not deliver', () => {
     await runHook('stop', { session_id: 'sess-busy', hook_event_name: 'Stop', transcript_path: tx, last_assistant_message: 'x' }, { fetch: spy.fetch, now: () => t });
 
     expect(segmentsOf(rig, 'sess-busy')).toBe(1);
-    expect(rig.env.sqlite.query(`SELECT COUNT(*) AS n FROM events WHERE session_id = 'sess-waiting'`).get()).toEqual({ n: 0 });
-    expect(spool.depth('sess-waiting')).toBe(2);
-    expect(spool.transcriptBacklogIds()).toEqual(['sess-waiting']);
+    // The pass that shipped it ran out of time; its successor delivered the backlog, after it.
+    const order = (rig.env.sqlite.query(`SELECT session_id AS s FROM events WHERE kind <> 'turn' ORDER BY received_at, rowid`).all() as Array<{ s: string }>).map((r) => r.s);
+    expect(order[0]).toBe('sess-busy');
+    expect(order).toContain('sess-waiting');
+    expect(spool.depth('sess-waiting')).toBe(0);
+    expect(spool.transcriptBacklogIds()).toEqual([]);
   });
 
   it('delivers a transcript a build that recorded no symbiont left behind, naming the agent from the declared layout', async () => {
@@ -451,7 +464,7 @@ describe('the backlog walk', () => {
     expect(agentOfSession('sess-unnamed', state, [{ name: 'a', capture: { transcriptDiscovery: layout } }, { name: 'b' }])).toBe('a');
   });
 
-  it('does not walk the backlog from a turn end that could not deliver its own session', async () => {
+  it('delivers the rest of the backlog when a turn end could not deliver its own session: each session is held on its own', async () => {
     const rig = await memberRig();
     registerTestMember({ mycoHome, token: rig.token, tokenId: rig.tokenId, projectId: PROJECT, expiresAt: rig.expiresAt, serverUrl: SERVER_URL });
     const spool = new MemberSpool(PROJECT, { mycoHome });
@@ -469,9 +482,9 @@ describe('the backlog walk', () => {
     await runHook('session-start', { session_id: 'sess-own', hook_event_name: 'SessionStart', transcript_path: tx, cwd: '/work/repo' }, { fetch: ownRefused });
     await runHook('stop', { session_id: 'sess-own', hook_event_name: 'Stop', transcript_path: tx, last_assistant_message: 'x' }, { fetch: ownRefused });
 
-    expect(spool.depth('sess-own')).toBe(1);
-    expect(segmentsOf(rig, 'sess-waiting')).toBe(0);
-    expect(spool.transcriptBacklogIds()).toContain('sess-waiting');
+    expect(spool.depth('sess-own')).toBeGreaterThan(0);
+    expect(segmentsOf(rig, 'sess-waiting')).toBe(1);
+    expect(spool.transcriptBacklogIds()).not.toContain('sess-waiting');
   });
 
   it('asks once more about a terminal refusal another build recorded, renews a lapsed token of a live lineage on it, and never asks twice about its own', async () => {
@@ -572,6 +585,20 @@ describe('the backlog walk', () => {
     expect(spool.sessionIds()).toEqual([]);
     expect(fs.existsSync(path.join(spool.dir, 'quarantine', 'sess-a-stuck.jsonl'))).toBe(true);
     expect(out.join('\n')).toContain('quarantined 1');
+  });
+
+  it('walks the session written to last first when asked, ahead of where the last walk ended', async () => {
+    const rig = await memberRig();
+    const spool = new MemberSpool(PROJECT, { mycoHome });
+    const ctx = (id: string) => ({ agent: 'copilot', sessionId: id, stage: spool.stagerFor(id), version: 't' });
+    // The last walk ended on sess-a, so the next would start with sess-b; sess-a is the one written to last.
+    spool.append('sess-b', promptEvent(ctx('sess-b'), { promptId: mintId(), text: 'b' }));
+    await new Promise((r) => setTimeout(r, 20));
+    spool.append('sess-a', promptEvent(ctx('sess-a'), { promptId: mintId(), text: 'a' }));
+    fs.writeFileSync(path.join(spool.dir, '.backlog-cursor'), 'sess-a');
+    const client = new ServerClient({ serverUrl: SERVER_URL, token: rig.token, projectId: PROJECT }, rig.fetch);
+    const walked = await drainBacklog(spool, client, unboundedBudget(), { force: true, machineId: 'machine_1', newestFirst: true });
+    expect(walked.sessions.map((s) => s.sessionId)).toEqual(['sess-a', 'sess-b']);
   });
 
   it('starts each walk after the session the last one ended on, so a session that spends the whole budget cannot starve the ones after it', async () => {
