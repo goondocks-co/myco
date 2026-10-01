@@ -53,6 +53,9 @@ const KNOWN: Readonly<Record<string, number>> = {
   'packages/myco-shared/src/secret-slots.ts': 2,
   // The harness a capture rule applies to when none is named: a manifest's default flag.
   'packages/myco-shared/src/capture-rules.ts': 1,
+  // Each harness's project-directory variable (`projectDirEnvVar`), and Antigravity's workspace read from stdin
+  // (`hookInput.workspaceFromStdin`).
+  'packages/myco/src/cli/launch-preamble.ts': 4,
   // Cursor's session id read from its transcript path (`hookFields.sessionIdFromTranscriptPath`), and the harness a
   // hook assumes when none is named (`DEFAULT_AGENT_NAME`).
   'packages/myco/src/hooks/normalize.ts': 2,
