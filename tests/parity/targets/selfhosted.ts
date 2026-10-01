@@ -20,6 +20,9 @@ export async function bootSelfhosted(): Promise<ParityTarget> {
   sqlite.exec('PRAGMA foreign_keys = ON');
   for (const file of renderMigrationFiles()) sqlite.exec(file.sql);
   sqlite.query(`INSERT INTO members (id, label, created_at, revoked_at) VALUES (?, ?, 0, NULL)`).run(MEMBER_ID, 'parity');
+  // The Project every scenario works in exists from boot, as capture would have created it, so no scenario depends on
+  // another having captured into it first.
+  sqlite.query(`INSERT INTO projects (project_id, name, created_at) VALUES (?, ?, ?)`).run(PROJECT_ID, PROJECT_ID, Date.now());
   const db = sqliteRelationalStore(sqlite);
   await linkStatement(db, MEMBER_ID, GITHUB_SUB).run();
   const { token } = await issueMemberToken(db, { memberId: MEMBER_ID, machineId: MACHINE_ID }, Date.now());

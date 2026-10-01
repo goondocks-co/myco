@@ -103,12 +103,13 @@ describe('a command that outran its deadline', () => {
     try {
       const marker = join(root, 'late-write');
       const pidFile = join(root, 'child.pid');
-      // A launcher whose child writes well after a 300 ms deadline, then outlives it. The write is 2.5 s out
+      // A launcher whose child writes well after a 300 ms deadline, then outlives it. The write is that far out
       // because ending a tree is not instantaneous everywhere: a process group goes at once, `taskkill` is a
-      // process of its own that has to run. The gap has to be larger than the slowest of those, or the test
-      // would be reporting the platform's cleanup latency as a defect.
+      // process of its own that has to run. The gap has to be larger than the platform's, or the test would be
+      // reporting its cleanup latency as a defect.
+      const lateWriteMs = process.platform === 'win32' ? 2500 : 1200;
       const grandchild = `require('fs').writeFileSync(${JSON.stringify(pidFile)},String(process.pid));`
-        + `setTimeout(()=>require('fs').writeFileSync(${JSON.stringify(marker)},'wrote after the deadline'),2500);`
+        + `setTimeout(()=>require('fs').writeFileSync(${JSON.stringify(marker)},'wrote after the deadline'),${lateWriteMs});`
         + 'setTimeout(()=>process.exit(0),4000);';
       const launcher = `require('child_process').spawn(process.execPath,['-e',${JSON.stringify(grandchild)}],{stdio:'inherit'});`
         + 'setTimeout(()=>{},5000);';
@@ -125,7 +126,7 @@ describe('a command that outran its deadline', () => {
       // deadline answer after 1664 ms. Windows spends its own bounded run on `taskkill` before answering.
       expect(elapsed).toBeLessThan(process.platform === 'win32' ? 2000 : 900);
       // Past the moment that write was due: it must never arrive.
-      await Bun.sleep(Math.max(0, 3200 - (Date.now() - started)));
+      await Bun.sleep(Math.max(0, lateWriteMs + 700 - (Date.now() - started)));
       expect(existsSync(marker)).toBe(false);
       const pid = Number(readFileSync(pidFile, 'utf8'));
       const alive = (): boolean => { try { process.kill(pid, 0); return true; } catch { return false; } };
@@ -291,11 +292,12 @@ describe('a withdrawn command', () => {
       expect((refusal as CommandCancelled).treeEnd).toBe('ended');
       expect((refusal as CommandCancelled).message).toContain('withdrawn by its caller');
       expect(isCommandFailure(refusal)).toBe(true);
-      // Nothing of that tree is writing any more, which is what `ended` claims. The pause is longer than the
-      // child's own interval, and than the bounded run `taskkill` takes to end a tree on Windows.
-      await Bun.sleep(1_000);
+      // Nothing of that tree is writing any more, which is what `ended` claims. Each pause is many times the
+      // child's own 50 ms interval, and on Windows longer than the bounded run `taskkill` takes to end a tree.
+      const pauseMs = process.platform === 'win32' ? 1_000 : 300;
+      await Bun.sleep(pauseMs);
       const settled = readFileSync(child.marker, 'utf8').length;
-      await Bun.sleep(1_000);
+      await Bun.sleep(pauseMs);
       expect(readFileSync(child.marker, 'utf8').length).toBe(settled);
     } finally { rmSync(root, { recursive: true, force: true }); }
   });

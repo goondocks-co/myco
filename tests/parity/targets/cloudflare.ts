@@ -101,6 +101,9 @@ export async function bootCloudflare(options: CloudflareBootOptions = {}): Promi
     if (token === undefined) throw new Error('mint-local printed no token');
     await d1(mintSql.split('\n').filter((l) => !l.startsWith('--')).join(' '));
     await d1(`UPDATE members SET github_id='${GITHUB_SUB}' WHERE id='${MEMBER_ID}'`);
+    // The Project every scenario works in exists from boot, as capture would have created it, so no scenario depends on
+    // another having captured into it first.
+    await d1(`INSERT OR IGNORE INTO projects (project_id, name, created_at) VALUES ('${PROJECT_ID}', '${PROJECT_ID}', ${Date.now()})`);
 
     const probe = Bun.serve({ port: 0, fetch: () => new Response('') });
     const port = probe.port;

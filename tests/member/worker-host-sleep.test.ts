@@ -10,7 +10,9 @@
  * seconds once the machine stayed up.
  *
  * Sleep is modelled the way a worker experiences it: the wall clock jumps and
- * nothing ran in between. The Deployment's clock jumps with it (both machines'
+ * nothing ran in between. Time awake is modelled on the same clock, in steps
+ * short enough that no wait reads as a sleep, so a settle of seconds passes in
+ * a fraction of one. The Deployment's clock jumps with it (both machines'
  * clocks keep time through a sleep) and its lease sweep runs, as the hosted
  * clock does while the laptop is asleep. The harness is the stub on PATH from
  * `tests/helpers/stub-acp-harness.ts`, held open until the test releases it, so
@@ -42,6 +44,10 @@ const DARK_WAKE_MS = 2_500;
 const POLL_MS = 50;
 /** A sleep long enough that any lease a worker held lapses in it. */
 const SLEEP_MS = 5 * 60_000;
+/** One step of time awake: well inside the slack a worker allows a wait before it reads it as a sleep, even if a few land in one wait. */
+const AWAKE_STEP_MS = 500;
+/** Real time between steps, so a worker polling every POLL_MS sees each one at a wait of its own. */
+const AWAKE_STEP_WAIT_MS = 60;
 
 const wait = (ms: number) => new Promise<void>((resolve) => { setTimeout(resolve, ms); });
 
@@ -145,7 +151,22 @@ async function host(options: { heartbeatMs?: number } = {}) {
   const goOffline = () => { offline = true; };
   /** Time passes on both clocks in a step too short to read as sleep; the host stays up. */
   const advance = async (ms: number) => { offset += ms; };
-  return { e, clock, sleep, advance, goOffline, member, queueRun, row, attach, claims, lost, report, stop, sent, mcp };
+  /** The host stays up for `ms`, which passes on the clocks in steps no wait reads as a sleep. */
+  const awake = async (ms: number) => {
+    for (let left = ms; left > 0; left -= AWAKE_STEP_MS) {
+      offset += Math.min(AWAKE_STEP_MS, left);
+      await wait(AWAKE_STEP_WAIT_MS);
+    }
+  };
+  /** The host stays up until `pred` holds, for at most `ms` on its clock. */
+  const stayUp = async (what: string, pred: () => boolean, ms: number) => {
+    for (let up = 0; !pred(); up += AWAKE_STEP_MS) {
+      if (up > ms) throw new Error(`timed out waiting for ${what} after ${ms}ms awake`);
+      offset += AWAKE_STEP_MS;
+      await wait(AWAKE_STEP_WAIT_MS);
+    }
+  };
+  return { e, clock, sleep, advance, awake, stayUp, goOffline, member, queueRun, row, attach, claims, lost, report, stop, sent, mcp };
 }
 
 /** A stub harness whose turn is held open until released; `pid` names the harness process once it has its prompt. */
@@ -188,13 +209,14 @@ describe('two workers on a host that sleeps', () => {
         h.queueRun('run_sleepy');
         // Three dark wakes, each a few moments long, each followed by more sleep.
         for (let i = 0; i < 3; i += 1) {
-          await wait(DARK_WAKE_MS);
+          await h.awake(DARK_WAKE_MS);
           await h.sleep(SLEEP_MS);
         }
         // The host stays up. Exactly one worker takes the run once it has been
         // awake long enough, and the other takes nothing.
         expect({ harnesses: turn.spawned() }, h.report()).toEqual({ harnesses: 0 });
-        await until('a harness to start once the host stayed up', () => turn.spawned() > 0, SETTLE_MS * 4);
+        await h.stayUp('a claim once the host stayed up', () => h.row('run_sleepy').status !== 'queued', SETTLE_MS * 4);
+        await until('a harness to start once the host stayed up', () => turn.spawned() > 0);
         await wait(300);
         release();
         await until('the run to end', () => !['queued', 'running'].includes(h.row('run_sleepy').status));
@@ -292,14 +314,16 @@ describe('two workers on a host that sleeps', () => {
         h.queueRun('run_cycling');
         // Each wake is longer than the base settle, and shorter than the settle the sleeps before it have grown to.
         for (const wake of [300, 900, 1_800, 3_600]) {
-          await wait(wake);
+          await h.awake(wake);
           await h.sleep(SLEEP_MS);
         }
         expect({ harnesses: turn.spawned() }, h.report()).toEqual({ harnesses: 0 });
         // The settle it now waits out is the ceiling, and it says so.
+        await until('the last wake to be said', () => lines.filter((l) => l.startsWith('this machine woke')).length >= 5);
         expect(lines.filter((l) => l.startsWith('this machine woke')).at(-1)).toContain('awake 5s');
         // Awake past the ceiling, it takes the run.
-        await until('a harness to start once the host stayed up', () => turn.spawned() > 0, 10_000);
+        await h.stayUp('a claim once the host stayed up', () => h.row('run_cycling').status !== 'queued', 10_000);
+        await until('a harness to start once the host stayed up', () => turn.spawned() > 0);
         release();
         await until('the run to end', () => !['queued', 'running'].includes(h.row('run_cycling').status));
         expect({ harnesses: turn.spawned(), lost: h.lost(), ended: h.sent.filter((s) => s.path === '/worker/end').length }, h.report())
@@ -322,13 +346,15 @@ describe('two workers on a host that sleeps', () => {
         await until('the run to be driven', () => h.row('run_long').status === 'running');
         // Time passes in steps too short to read as sleep, each followed by a
         // renewal, until the claim itself is further back than a lease.
+        const renewals = () => h.sent.filter((x) => x.path === '/worker/lease').length;
+        const nextRenewal = async (what: string) => { const seen = renewals(); await until(what, () => renewals() > seen); };
         for (let elapsed = 0; elapsed <= WORKER_LEASE_MS + 10_000; elapsed += 4_000) {
           await h.advance(4_000);
-          await wait(150);
+          await nextRenewal('a renewal after time passed');
         }
-        // A sleep shorter than what is left of the renewed lease.
+        // A sleep shorter than what is left of the renewed lease, and the renewal after it.
         await h.sleep(30_000);
-        await wait(500);
+        await nextRenewal('a renewal after the sleep');
         expect(h.row('run_long').status).toBe('running');
         release();
         await until('the run to end', () => !['queued', 'running'].includes(h.row('run_long').status));
@@ -359,11 +385,12 @@ describe('two workers on a host that sleeps', () => {
         await h.sleep(SLEEP_MS);
         // Two wakes shorter than the settle lengthen it to 4 s.
         for (const wake of [500, 1_500]) {
-          await wait(wake);
+          await h.awake(wake);
           await h.sleep(SLEEP_MS);
         }
         await until('the settle to be said', () => lines.some((l) => l.includes('awake 4s')));
         h.queueRun('run_through');
+        await h.stayUp('the run to be claimed', () => h.row('run_through').status !== 'queued', 15_000);
         await until('the run to end', () => h.row('run_through').status !== 'queued' && h.row('run_through').status !== 'running', 15_000);
         // The host stayed up through the run; the next wake waits out the base again.
         const said = lines.length;
