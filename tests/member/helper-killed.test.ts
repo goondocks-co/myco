@@ -29,6 +29,13 @@ const PROJECT = 'proj_1';
 const SESSION = 'sess-killed';
 const CLI = path.resolve(import.meta.dir, '..', '..', 'packages', 'myco', 'src', 'entries', 'cli.ts');
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+const scratchDirs: string[] = [];
+/** A directory under /tmp, removed when the case ends however it ends. */
+function scratch(prefix: string): string {
+  const dir = fs.mkdtempSync(path.join('/tmp', prefix));
+  scratchDirs.push(dir);
+  return dir;
+}
 
 let mycoHome: string;
 const savedHome = process.env.MYCO_HOME;
@@ -99,14 +106,14 @@ describe.skipIf(process.platform === 'win32')('a helper killed mid-request (G4b)
           spool.append(SESSION, event);
         }
         // A transcript behind, not yet shipped.
-        const tx = path.join(fs.mkdtempSync(path.join('/tmp', 'myco-killed-tx-')), `${SESSION}.jsonl`);
+        const tx = path.join(scratch('myco-killed-tx-'), `${SESSION}.jsonl`);
         const line = (i: number) => JSON.stringify({ type: 'user', message: { role: 'user', content: `line ${i} ${'y'.repeat(4_000)}` } });
         fs.writeFileSync(tx, Array.from({ length: 600 }, (_, i) => line(i)).join('\n') + '\n');
         updateSessionState(spool.dir, SESSION, (s) => { s.transcript = transcriptPointerFor(tx, TEST_MACHINE_ID)!; s.agent = 'claude-code'; });
         spool.markTranscriptBacklog(SESSION);
 
         // Under /tmp: a macOS per-user $TMPDIR can make every process started in it slow to launch.
-        const cwd = fs.mkdtempSync(path.join('/tmp', 'myco-killed-cwd-'));
+        const cwd = scratch('myco-killed-cwd-');
         const child = spawn(process.execPath, [CLI, 'member', 'helper', '--project', PROJECT, '--home', mycoHome], {
           cwd, env: { ...process.env, MYCO_HOME: mycoHome }, stdio: 'ignore',
         });
@@ -142,10 +149,9 @@ describe.skipIf(process.platform === 'win32')('a helper killed mid-request (G4b)
         expect(resent.filter(([key]) => key !== cutOff)).toEqual([]);
         expect(sends.get(cutOff!) ?? 0).toBeLessThanOrEqual(2);
         expect(fs.existsSync(path.join(spool.dir, `${SESSION}.jsonl`))).toBe(false);
-        fs.rmSync(path.dirname(tx), { recursive: true, force: true });
-        fs.rmSync(cwd, { recursive: true, force: true });
       } finally {
         server.stop(true);
+        for (const dir of scratchDirs.splice(0)) fs.rmSync(dir, { recursive: true, force: true });
       }
     }, 120_000);
   }
