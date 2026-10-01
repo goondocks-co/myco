@@ -147,7 +147,8 @@ describe('myco member helper', () => {
       expect(process.exitCode).toBe(2);
     } finally {
       (process.stderr as unknown as { write: unknown }).write = err;
-      process.exitCode = saved;
+      // Bun keeps a non-zero exit code assigned `undefined`; only 0 clears it.
+      process.exitCode = saved ?? 0;
     }
   });
 });
