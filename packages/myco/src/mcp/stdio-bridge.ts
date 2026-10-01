@@ -56,7 +56,7 @@ import { StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
 import { resolveVaultDir } from '../vault/resolve.js';
 import { DEPLOYMENT_HEARTBEAT_INTERVAL_MS, DEPLOYMENT_SELF_HEAL_MAX_ATTEMPTS, declaredCredentialSource, deploymentTransport, probeDeploymentHealth, resolveDeploymentUpstream } from './deployment-upstream.js';
 import type { CredentialSource } from '../member/constants.js';
-import { DaemonClient } from '../daemon/client.js';
+import type { DaemonClient as DaemonClientClass } from '../daemon/client.js';
 import {
   REQUEST_CONTEXT_AUTH_HEADER,
   requestContextFromEnvironment,
@@ -281,6 +281,7 @@ async function withTimeout<T>(promise: Promise<T>, ms: number, label: string): P
  * onmessage / onclose / onerror on the returned transport.
  */
 function buildUpstreamForCurrentDaemon(
+  DaemonClient: typeof DaemonClientClass,
   vaultDir: string,
 ): { transport: StreamableHTTPClientTransport; port: number } | null {
   const client = new DaemonClient(vaultDir);
@@ -320,9 +321,11 @@ interface UpstreamSource {
   maxHealAttempts: number | null;
 }
 
-function daemonUpstreamSource(vaultDir: string): UpstreamSource {
+async function daemonUpstreamSource(vaultDir: string): Promise<UpstreamSource> {
+  // The 1.4 daemon's client loads only when the bridge serves the local daemon, never for a credential's Deployment.
+  const { DaemonClient } = await import('../daemon/client.js');
   const resolve = (): Upstream | null => {
-    const built = buildUpstreamForCurrentDaemon(vaultDir);
+    const built = buildUpstreamForCurrentDaemon(DaemonClient, vaultDir);
     if (!built) return null;
     const portRef = { port: built.port };
     return { transport: built.transport, probe: () => probeDaemonHealth(portRef), label: `daemon port ${built.port}` };
@@ -391,7 +394,7 @@ export async function main(): Promise<void> {
     logErr((err as Error).message);
     process.exit(2);
   }
-  const upstreamSource = source === null ? daemonUpstreamSource(resolveVaultDir()) : deploymentUpstreamSource(source);
+  const upstreamSource = source === null ? await daemonUpstreamSource(resolveVaultDir()) : deploymentUpstreamSource(source);
   const initial = await upstreamSource.first();
   if (!initial) {
     logErr(`${upstreamSource.describe}: no upstream to bridge stdio MCP to`);

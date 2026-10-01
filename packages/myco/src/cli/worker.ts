@@ -30,7 +30,7 @@ import { workerLockDir } from '../runner/instance.js';
 import { workerServiceSpec, workerServiceUnit } from '../runner/service.js';
 import { reloadServiceDetached, type ServiceSpec } from '../server/service.js';
 import { describeWorkerService, ensuredWorkerWords, ensureWorkerService, removeWorkerService, workerServiceWords, type WorkerServiceDeps } from './worker-service.js';
-import { parseFlags } from './shared.js';
+import { parseFlags } from './flags.js';
 
 export const WORKER_HELP = `myco worker — run tasks for a Deployment on this machine's harnesses
 

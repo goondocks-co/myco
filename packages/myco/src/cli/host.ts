@@ -20,7 +20,8 @@ import {
   resolveTeamKeyProviderFlag,
   TEAM_AGENT_KEY_SECRET,
 } from '../team-host/compose.js';
-import { connectToRunningDaemon, daemonErrorMessage, parseFlags } from './shared.js';
+import { connectToRunningDaemon, daemonErrorMessage } from './shared.js';
+import { parseFlags } from './flags.js';
 import { resolveVaultDir } from '../vault/resolve.js';
 
 function flagMap(args: string[]): Map<string, string> {

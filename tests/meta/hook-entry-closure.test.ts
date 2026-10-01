@@ -5,11 +5,15 @@
  * built with `--splitting`, so a hook parses only what that entry reaches. Startup is what a hook costs before it does
  * any work: the whole CLI took 175 ms to start on every hook, and the hook's own chunk takes about 25 ms. These checks
  * fail the moment an import drags the CLI, the daemon or the server back onto the hook's path.
+ *
+ * Every other verb starts in the CLI (`cli.ts`), which loads a verb's module only once it knows the verb. The CLI's
+ * own static imports reach none of the 1.4 daemon, its service manager, the vault or the Deployment; a 2.0 verb's
+ * module reaches no 1.4 daemon module; and no verb's module but the daemon's own reaches the 1.4 daemon's server.
  */
 import { describe, expect, it } from 'bun:test';
 import fs from 'node:fs';
 import path from 'node:path';
-import { closureOf, pathToEntry, REPO_ROOT, runtimeEdges } from '../helpers/import-closure.ts';
+import { closureOf, dynamicSpecifiers, pathToEntry, REPO_ROOT, runtimeEdges } from '../helpers/import-closure.ts';
 
 const SRC = path.join(REPO_ROOT, 'packages', 'myco', 'src');
 const at = (rel: string): string => path.join(SRC, rel);
@@ -90,4 +94,76 @@ describe('the hook entry', () => {
     expect(built.stdout.byteLength).toBeLessThan(HOOK_CHUNK_MAX_BYTES);
     expect(built.stdout.byteLength).toBeGreaterThan(10_000);
   }, 60_000);
+});
+
+/** `cli.ts` with its shebang line taken out, which the closure's parser reads as source. */
+const withoutShebang = (_file: string, text: string): string => text.replace(/^#!.*\n/, '');
+
+/** What the CLI loads before it knows the verb never reaches, each naming what it would cost. */
+const CLI_STARTUP_FORBIDDEN: ReadonlyArray<[string, string]> = [
+  ['packages/myco/src/cli/shared.ts', 'the 1.4 CLI helpers'],
+  ['packages/myco/src/daemon/', 'the 1.4 daemon'],
+  ['packages/myco/src/service/', 'the 1.4 daemon\'s service manager'],
+  ['packages/myco/src/db/', 'the 1.4 vault'],
+  ['packages/myco/src/agent/', 'the 1.4 agent'],
+  ['packages/myco/src/config/', 'the 1.4 configuration loader'],
+  ['packages/myco/src/mcp/', 'the MCP server'],
+  ['packages/myco/src/ui/', 'the dashboard'],
+  ['packages/myco/src/runner/', 'the worker'],
+  ['packages/myco-server/', 'the Deployment'],
+];
+
+/** The modules of the 2.0 verbs and what they load: membership, sign-in, import, settings, the worker, a credential's tool and MCP bridge, and the checks `member export` reads from `doctor`. */
+const VERBS_2_0 = [
+  'cli/member.ts', 'cli/member-dispatch.ts', 'cli/login.ts', 'cli/import.ts', 'cli/settings.ts', 'cli/worker.ts',
+  'cli/join.ts', 'cli/tool.ts', 'mcp/stdio-bridge.ts', 'cli/doctor.ts',
+];
+
+/** The one verb module that is the 1.4 daemon. */
+const THE_DAEMON = 'daemon/main.ts';
+const DAEMON_SERVER = 'packages/myco/src/daemon/server.ts';
+
+describe('a verb other than a hook', () => {
+  it('starts in a CLI whose own imports reach none of the 1.4 daemon, the vault, the Deployment or an npm package', () => {
+    const closure = closureOf([at('cli.ts')], { staticOnly: true, source: withoutShebang });
+    expect(forbiddenIn(closure, CLI_STARTUP_FORBIDDEN)).toEqual([]);
+    expect([...closure.externals.keys()]).toEqual([]);
+  });
+
+  it('loads, for a 2.0 verb, a module that reaches no 1.4 daemon module', () => {
+    for (const verb of VERBS_2_0) {
+      const closure = closureOf([at(verb)], { staticOnly: true });
+      expect({ verb, reached: forbiddenIn(closure, [['packages/myco/src/daemon/', 'the 1.4 daemon']]) }).toEqual({ verb, reached: [] });
+    }
+  });
+
+  it('loads, for every verb but the daemon itself, a module that never reaches the 1.4 daemon\'s server', () => {
+    // The verb modules are read off the CLI's own imports, then off the lazy imports of each module found, so a verb
+    // that a dispatcher (`cli/member-dispatch.ts`) loads with `import('./…')` is held here without being listed.
+    const cli = at('cli.ts');
+    const toModule = (from: string, specifier: string): string => path.resolve(path.dirname(from), specifier.replace(/\.js$/, '.ts'));
+    const isDaemon = (file: string): boolean => path.relative(SRC, file) === THE_DAEMON;
+    const dispatched = runtimeEdges(withoutShebang(cli, fs.readFileSync(cli, 'utf-8')), cli).specifiers
+      .filter((s) => s.startsWith('./')).map((s) => toModule(cli, s)).filter((file) => fs.existsSync(file) && !isDaemon(file));
+    const modules = new Set(dispatched);
+    for (const queue = [...dispatched]; queue.length > 0;) {
+      const file = queue.pop()!;
+      for (const specifier of dynamicSpecifiers(fs.readFileSync(file, 'utf-8'), file).filter((s) => s.startsWith('./'))) {
+        const lazy = toModule(file, specifier);
+        if (fs.existsSync(lazy) && !isDaemon(lazy) && !modules.has(lazy)) { modules.add(lazy); queue.push(lazy); }
+      }
+    }
+    expect(modules.size).toBeGreaterThan(20);
+    // The member verbs `cli/member-dispatch.ts` loads lazily are among the modules held.
+    for (const verb of ['cli/member-reads.ts', 'cli/member-doctor.ts', 'cli/member-logs.ts', 'cli/member-config.ts']) {
+      expect({ verb, held: modules.has(at(verb)) }).toEqual({ verb, held: true });
+    }
+    for (const file of modules) {
+      const closure = closureOf([file], { staticOnly: true });
+      const reached = closure.modules.has(DAEMON_SERVER) ? pathToEntry(closure, DAEMON_SERVER).join(' -> ') : null;
+      expect({ verb: path.relative(SRC, file), reached }).toEqual({ verb: path.relative(SRC, file), reached: null });
+    }
+    // The daemon's own module is the exception because it is the server, and it still is.
+    expect(closureOf([at(THE_DAEMON)], { staticOnly: true }).modules.has(DAEMON_SERVER)).toBe(true);
+  }, 120_000);
 });
