@@ -8,9 +8,11 @@
  * an empty answer — answers `undefined` and writes one line to stderr, and the
  * caller keeps whatever response it had already built.
  *
- * The outcome moves the offline latch the way a drain pass does: a dark
- * Deployment is latched here, and an answer clears the latch so the drain that
- * follows is not skipped against a server that has just replied. `runMemberHook`
+ * The outcome moves the offline latch the way a drain pass does, through the
+ * spool's own `endPass`: a dark Deployment is latched here, a slow one (the
+ * capped share ran out before its answer did) is not, and an answer clears the
+ * latch so the drain that follows is not skipped against a server that has
+ * just replied. `runMemberHook`
  * has already checked the latch before the seam runs; this keeps it current for
  * the pass behind it.
  */
@@ -38,6 +40,21 @@ interface RecallAnswer {
  */
 const SETTLED: readonly string[] = ['capability', 'repeat'];
 
+/** Why a recall was skipped, with the step a timeout stopped in, so a slow network reads apart from a slow server. */
+function skipWords(answer: Exclude<ReturnType<typeof classifyEventAnswer>, { class: 'acked' }>): string {
+  switch (answer.class) {
+    case 'slow':
+    case 'retry':
+      return `${answer.class}: ${answer.detail}`;
+    case 'refused':
+    case 'parked':
+    case 'reslice':
+      return `${answer.class}: ${answer.code}`;
+    default:
+      return answer.class;
+  }
+}
+
 async function ask(run: HookRun, path: string, body: Record<string, unknown>): Promise<RecallAnswer | undefined> {
   if (!canStartRequest(run.budget, run.now())) return undefined;
   const answer = classifyEventAnswer(await run.client.request('POST', path, {
@@ -46,8 +63,9 @@ async function ask(run: HookRun, path: string, body: Record<string, unknown>): P
     budget: subRequestBudget(run.budget, RECALL_CAP_MS, run.now()),
   }));
   if (answer.class !== 'acked') {
-    if (answer.class === 'retry') run.spool.markOffline(run.now(), answer.retryAfterMs);
-    process.stderr.write(`[myco] ${run.hookName}: recall skipped (${answer.class})\n`);
+    // The pass's own policy decides the latch: a dark Deployment latches, a slow answer does not.
+    if (answer.class === 'retry' || answer.class === 'slow') run.spool.endPass(answer, run.now());
+    process.stderr.write(`[myco] ${run.hookName}: recall skipped (${skipWords(answer)})\n`);
     return undefined;
   }
   run.spool.clearLatch();

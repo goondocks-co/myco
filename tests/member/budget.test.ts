@@ -4,7 +4,10 @@
  */
 import { describe, expect, it } from 'bun:test';
 import { HOOK_CONFIG } from '@myco/hooks/hook-config.generated.js';
-import { canStartRequest, clippedRequestBudget, declaredTimeoutMs, longestDeclaredHookTimeoutMs, remainingMs, resolveHookBudget, unboundedBudget } from '@myco/member/budget.js';
+import { canStartRequest, clippedRequestBudget, declaredTimeoutMs, longestDeclaredHookTimeoutMs, remainingMs, resolveHookBudget, subRequestBudget, unboundedBudget } from '@myco/member/budget.js';
+import { ServerClient, type FetchLike } from '@myco/member/transport.js';
+import { mintId, promptEvent } from '@myco/member/envelope.js';
+import { tempStager } from './helpers/server.js';
 import { CONNECT_TIMEOUT_CAP_MS, HOOK_BUDGET_MARGIN_MS, MEMBER_DEFAULT_HOOK_TIMEOUT_MS, NEVER_DRAINS_HOOK } from '@myco/member/constants.js';
 
 describe('hook budget', () => {
@@ -70,10 +73,22 @@ describe('hook budget', () => {
     expect(remainingMs(b, 28_000)).toBe(1_000);
     expect(canStartRequest(b, 26_000)).toBe(true);
     expect(canStartRequest(b, 28_500)).toBe(false);
-    expect(clippedRequestBudget(b, 28_000)).toEqual({ connectTimeoutMs: 1_000, requestTimeoutMs: 1_000 });
-    expect(clippedRequestBudget(b, 0)).toEqual({ connectTimeoutMs: 2_000, requestTimeoutMs: 14_500 });
+    expect(clippedRequestBudget(b, 28_000)).toMatchObject({ connectTimeoutMs: 1_000, requestTimeoutMs: 1_000 });
+    expect(clippedRequestBudget(b, 0)).toMatchObject({ connectTimeoutMs: 2_000, requestTimeoutMs: 14_500 });
     const u = unboundedBudget();
     expect(u.deadline).toBe(Number.POSITIVE_INFINITY);
     expect(canStartRequest(u, Number.MAX_SAFE_INTEGER)).toBe(true);
+  });
+
+  it('runs a drain\'s clipped request out as a dark Deployment, and only a capped share\'s as a slow one', async () => {
+    // What each budget does when the server never answers: the drain's timeout latches (`retry`), the recall share's
+    // does not (`slow`). A drain that ran on a capped share would leave a dead Deployment unlatched.
+    const b = resolveHookBudget('claude-code', 'stop', { startedAt: 0 });
+    const hanging: FetchLike = (_input, init) => new Promise((_resolve, reject) => { init?.signal?.addEventListener('abort', () => reject(new Error('aborted'))); });
+    const client = new ServerClient({ serverUrl: 'https://s', token: 'x'.repeat(43), projectId: 'proj_1' }, hanging);
+    const envelope = promptEvent({ agent: 'claude-code', sessionId: 's_budget', stage: tempStager().stage, version: '2.0.0-test' }, { promptId: mintId(), text: 'hi' }).envelope;
+    const nearDeadline = b.deadline - 60;
+    expect((await client.postEvent(envelope, clippedRequestBudget(b, nearDeadline))).class).toBe('retry');
+    expect((await client.postEvent(envelope, subRequestBudget(b, 1_500, b.deadline - 150))).class).toBe('slow');
   });
 });

@@ -27,7 +27,13 @@ export interface ClientRecord extends DeploymentRecord {
 export type RawAnswer =
   | { kind: 'response'; status: number; protocolHeader: boolean; retryAfterMs?: number; json: Record<string, unknown> | null }
   | { kind: 'transport'; detail: string }
-  | { kind: 'timeout'; phase: 'connect' | 'request' };
+  | { kind: 'timeout'; phase: TimeoutPhase; elapsedMs: number; capped: boolean };
+
+/**
+ * Where a request stood when its deadline fired: still waiting for the response's headers (connecting, the TLS
+ * handshake and the server's own work, which fetch does not tell apart), or reading a body that had started.
+ */
+export type TimeoutPhase = 'headers' | 'body';
 
 export type Outcome =
   | { class: 'acked'; duplicate?: boolean; transcript?: { size: number; segmentCount: number }; body: Record<string, unknown> }
@@ -35,6 +41,8 @@ export type Outcome =
   | { class: 'parked'; code: typeof PARKED_CODE; reason: string }
   | { class: 'refused'; code: MemberCode; reason: string }
   | { class: 'retry'; status?: number; detail: string; retryAfterMs?: number; anonymousLimited?: boolean }
+  /** A capped share ran out before the answer did: the server is slow, not gone. Nothing latches on it. */
+  | { class: 'slow'; phase: TimeoutPhase; elapsedMs: number; detail: string }
   | { class: 'route_missing'; status: 401 }
   | { class: 'unauthorized'; status: 401; replayed?: true }
   | { class: 'protocol'; serverProtocol?: number; minCompatMemberProtocol?: number };
@@ -82,6 +90,18 @@ function bodyComplete(res: Response, text: string): boolean {
  * caller from deciding on `res.json()` alone, which makes a 409 refusal and a
  * 200 answer indistinguishable.
  */
+/** An answer read from its status line and headers alone, for a response whose body never arrived. */
+function statusLineAnswer(res: Response): RawAnswer {
+  const retryAfter = res.headers.get(RETRY_AFTER_HEADER);
+  return {
+    kind: 'response',
+    status: res.status,
+    protocolHeader: res.headers.get(PROTOCOL_HEADER) !== null,
+    retryAfterMs: retryAfter !== null && /^\d+$/.test(retryAfter) ? Number(retryAfter) * 1000 : undefined,
+    json: null,
+  };
+}
+
 export async function rawAnswerOf(res: Response, signal?: AbortSignal): Promise<RawAnswer> {
   const text = await res.text();
   // A request aborted after its status line arrived and before its body did —
@@ -148,6 +168,9 @@ export class ServerClient {
     const headers = { ...this.headersFor(init.scope ?? 'project'), ...init.headers };
     const controller = new AbortController();
     let timedOut = false;
+    let phase: TimeoutPhase = 'headers';
+    let head: Response | null = null;
+    const started = Date.now();
     const requestTimer = setTimeout(() => { timedOut = true; controller.abort(); }, init.budget.requestTimeoutMs);
     try {
       const res = await this.fetchImpl(`${this.base}${path}`, {
@@ -162,9 +185,14 @@ export class ServerClient {
         redirect: 'error',
         signal: controller.signal,
       });
+      phase = 'body';
+      head = res;
       return await rawAnswerOf(res, controller.signal);
     } catch (err) {
-      if (timedOut) return { kind: 'timeout', phase: 'request' };
+      // A status line that already says busy or failing is the answer, whatever became of its body: a stalled 5xx or
+      // 429 classifies as the retry its status is, never as a slow answer that latches nothing.
+      if (timedOut && head !== null && (head.status >= 500 || head.status === 429)) return statusLineAnswer(head);
+      if (timedOut) return { kind: 'timeout', phase, elapsedMs: Date.now() - started, capped: init.budget.capped === true };
       return { kind: 'transport', detail: err instanceof Error ? err.message : String(err) };
     } finally {
       clearTimeout(requestTimer);
@@ -229,10 +257,22 @@ export class ServerClient {
 /** A 401 the Deployment answered after authenticating the credential, which it stamps with its protocol: the path is not a route it serves. */
 export const routeMissing = (raw: RawAnswer): boolean => raw.kind === 'response' && raw.status === 401 && raw.protocolHeader;
 
-/** The classes every route shares, decided on the status line: 401 by the protocol header, 409 as protocol, 429/503/5xx/transport/timeout as retry. Null when the answer is a 200 the route classifies itself. */
+/** What a timeout says of itself: the step it stopped in and how long it waited. */
+export const timeoutWords = (raw: Extract<RawAnswer, { kind: 'timeout' }>): string =>
+  `timed out waiting for the ${raw.phase === 'headers' ? 'answer to start' : 'answer to finish'} after ${raw.elapsedMs} ms`;
+
+/**
+ * The classes every route shares, decided on the status line: 401 by the protocol header, 409 as protocol,
+ * 429/503/5xx/transport as retry, and a timeout as retry, or as slow when it was a capped share's. Null when the
+ * answer is a 200 the route classifies itself.
+ */
 function classifyCommon(raw: RawAnswer): Outcome | null {
   if (raw.kind === 'transport') return { class: 'retry', detail: raw.detail };
-  if (raw.kind === 'timeout') return { class: 'retry', detail: `timeout (${raw.phase})` };
+  if (raw.kind === 'timeout') {
+    return raw.capped
+      ? { class: 'slow', phase: raw.phase, elapsedMs: raw.elapsedMs, detail: timeoutWords(raw) }
+      : { class: 'retry', detail: timeoutWords(raw) };
+  }
   const { status } = raw;
   if (status === 200) return null;
   if (status === 401) {
@@ -288,6 +328,8 @@ export function classifyLinkAnswer(raw: RawAnswer): LinkOutcome {
   const common = classifyCommon(raw);
   if (common !== null) {
     if (common.class === 'retry' || common.class === 'route_missing' || common.class === 'unauthorized' || common.class === 'protocol') return common;
+    // These routes never run on a capped share; a slow answer here is retried like any other timeout.
+    if (common.class === 'slow') return { class: 'retry', detail: common.detail };
     return { class: 'retry', detail: 'unexpected answer on the link route' };
   }
   const body = (raw as Extract<RawAnswer, { kind: 'response' }>).json;
@@ -302,6 +344,7 @@ export function classifyRefreshAnswer(raw: RawAnswer): RefreshOutcome {
   const common = classifyCommon(raw);
   if (common !== null) {
     if (common.class === 'retry' || common.class === 'route_missing' || common.class === 'unauthorized' || common.class === 'protocol') return common;
+    if (common.class === 'slow') return { class: 'retry', detail: common.detail };
     return { class: 'retry', detail: 'unexpected answer on the refresh route' };
   }
   const body = (raw as Extract<RawAnswer, { kind: 'response' }>).json;

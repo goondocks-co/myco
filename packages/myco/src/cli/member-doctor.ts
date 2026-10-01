@@ -175,7 +175,7 @@ export async function run(args: readonly string[], source: CredentialSource, dep
     } else if (spool.unacknowledgedTotal > 0) {
       checks.push(row('Spool', 'warn', `${spool.unacknowledgedTotal} event(s) in ${spool.sessionFiles} session file(s) are waiting to deliver; the next hook drains them, or run \`myco member drain\`.`));
     } else {
-      checks.push(row('Spool', 'ok', `nothing waiting to deliver (last acknowledged ${spool.lastAckAt === null ? 'never' : iso(spool.lastAckAt)}).`));
+      checks.push(row('Spool', 'ok', `nothing waiting to deliver (last event acknowledged ${spool.lastAckAt === null ? 'never' : iso(spool.lastAckAt)}).`));
     }
     if (!facts.latchReadable) checks.push(row('Spool', 'warn', 'the offline latch could not be read, so whether capture is holding off is unknown.'));
     else if (latch !== null) checks.push(row('Spool', 'warn', `capture has held off the Deployment since ${iso(latch.since)}; next probe ${iso(latch.nextProbeAt)}.`));
