@@ -17,6 +17,7 @@
  * A repository that did not join, or lies outside the folders, is named to the person once per session, in the answer
  * of a hook whose answer reaches the agent.
  */
+import { selfExec } from '../runtime/self-exec.js';
 import { spawn } from 'node:child_process';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
@@ -328,9 +329,9 @@ export function markSweepDone(mycoHome: string, now: number): void {
 
 /** How this binary is run again, as a compiled binary or as a script under its runtime. */
 export function selfCommand(): { command: string; args: string[] } {
-  const entry = process.argv[1];
-  const compiled = entry === undefined || entry.startsWith('/$bunfs/') || entry.startsWith('B:\\~BUN\\');
-  return { command: process.execPath, args: compiled ? [] : [entry] };
+  // One rule for a compiled binary's own entry, every form a build reports (`runtime/self-exec.ts`).
+  const self = selfExec();
+  return { command: self.path, args: self.args };
 }
 
 /** What starts a process apart from the hook; injected by tests. */

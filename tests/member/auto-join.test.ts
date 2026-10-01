@@ -138,8 +138,8 @@ describe('a hook in a repository with no connection', () => {
   it('spools into the pending spool, dials nothing, and starts one join between concurrent hooks', async () => {
     const root = repository(path.join(base, 'Repos'), 'widget', 'https://github.com/acme/widget.git');
     const spy = recordingFetch(rig.fetch);
-    await runHook('session-start', { session_id: 'sess-a', hook_event_name: 'SessionStart', transcript_path: transcript(root, 'sess-a'), cwd: root }, { fetch: spy.fetch, spawn });
-    await runHook('session-start', { session_id: 'sess-b', hook_event_name: 'SessionStart', transcript_path: transcript(root, 'sess-b'), cwd: root }, { fetch: spy.fetch, spawn });
+    await runHook('session-start', { session_id: 'sess-a', hook_event_name: 'SessionStart', transcript_path: transcript(root, 'sess-a'), cwd: root }, { helpers: 'run', fetch: spy.fetch, spawn });
+    await runHook('session-start', { session_id: 'sess-b', hook_event_name: 'SessionStart', transcript_path: transcript(root, 'sess-b'), cwd: root }, { helpers: 'run', fetch: spy.fetch, spawn });
     expect(spy.requests).toEqual([]);
     expect(spawned.map((s) => s.args.slice(-4))).toEqual([['auto-join', '--root', root, '--lock-held']]);
     expect(spawned[0]!.home).toBe(mycoHome);
@@ -148,8 +148,8 @@ describe('a hook in a repository with no connection', () => {
 
   it('leaves the lock free when the join cannot be started, so the next hook starts one', async () => {
     const root = repository(path.join(base, 'Repos'), 'widget', 'https://github.com/acme/widget.git');
-    await runHook('user-prompt-submit', { session_id: 'sess-f', hook_event_name: 'UserPromptSubmit', prompt: 'hi', cwd: root }, { fetch: rig.fetch, spawn: () => false });
-    await runHook('user-prompt-submit', { session_id: 'sess-f', hook_event_name: 'UserPromptSubmit', prompt: 'again', cwd: root }, { fetch: rig.fetch, spawn });
+    await runHook('user-prompt-submit', { session_id: 'sess-f', hook_event_name: 'UserPromptSubmit', prompt: 'hi', cwd: root }, { helpers: 'run', fetch: rig.fetch, spawn: () => false });
+    await runHook('user-prompt-submit', { session_id: 'sess-f', hook_event_name: 'UserPromptSubmit', prompt: 'again', cwd: root }, { helpers: 'run', fetch: rig.fetch, spawn });
     expect(spawned).toHaveLength(1);
   });
 
@@ -158,14 +158,14 @@ describe('a hook in a repository with no connection', () => {
     const plan = path.join(root, '.claude', 'plans', 'p.md');
     fs.mkdirSync(path.dirname(plan), { recursive: true });
     fs.writeFileSync(plan, '# A plan\n\nstep one\n');
-    await runHook('post-tool-use', { session_id: 'sess-p', hook_event_name: 'PostToolUse', tool_name: 'Write', tool_input: { file_path: plan, content: '# A plan' }, cwd: root }, { fetch: rig.fetch, spawn });
+    await runHook('post-tool-use', { session_id: 'sess-p', hook_event_name: 'PostToolUse', tool_name: 'Write', tool_input: { file_path: plan, content: '# A plan' }, cwd: root }, { helpers: 'run', fetch: rig.fetch, spawn });
     const pending = new MemberSpool('', { mycoHome, dir: pendingDir(rootKeyFor(root, mycoHome), mycoHome), initialize: false });
     expect(pending.sessionIds().flatMap((id) => pending.readRecords(id)).map((r) => (r !== null && "kind" in r ? r.kind : null))).toEqual([]);
   });
 
   it('says nothing and spools nothing in a repository the machine never captures', async () => {
     const root = repository(fs.mkdtempSync(path.join(temporary, 'scratch-')), 'scratch', 'https://github.com/acme/scratch.git');
-    const hook = await runHook('user-prompt-submit', { session_id: 'sess-t', hook_event_name: 'UserPromptSubmit', prompt: 'hi', cwd: root }, { fetch: rig.fetch, spawn });
+    const hook = await runHook('user-prompt-submit', { session_id: 'sess-t', hook_event_name: 'UserPromptSubmit', prompt: 'hi', cwd: root }, { helpers: 'run', fetch: rig.fetch, spawn });
     expect(hook.stdout).not.toContain('not capturing');
     expect(spawned).toEqual([]);
     expect(listPending({ mycoHome, now: Date.now() })).toEqual([]);
@@ -173,8 +173,8 @@ describe('a hook in a repository with no connection', () => {
 
   it('holds what a repository outside the folders captures, and tells the session once, after the join has read the folders', async () => {
     const root = repository(path.join(base, 'elsewhere'), 'gadget', 'https://github.com/acme/gadget.git');
-    const prompt = (n: number) => runHook('user-prompt-submit', { session_id: 'sess-o', hook_event_name: 'UserPromptSubmit', prompt: `hi ${n}`, cwd: root }, { fetch: rig.fetch, spawn });
-    await runHook('session-start', { session_id: 'sess-o', hook_event_name: 'SessionStart', transcript_path: transcript(root, 'sess-o'), cwd: root }, { fetch: rig.fetch, spawn });
+    const prompt = (n: number) => runHook('user-prompt-submit', { session_id: 'sess-o', hook_event_name: 'UserPromptSubmit', prompt: `hi ${n}`, cwd: root }, { helpers: 'run', fetch: rig.fetch, spawn });
+    await runHook('session-start', { session_id: 'sess-o', hook_event_name: 'SessionStart', transcript_path: transcript(root, 'sess-o'), cwd: root }, { helpers: 'run', fetch: rig.fetch, spawn });
     expect(listPending({ mycoHome, now: Date.now() }).map((p) => p.records)).toEqual([1]);
     expect((await join(['--root', root, '--lock-held']))[0]).toMatchObject({ result: 'outside_folders' });
     // Found outside: what was held stays held, for connecting it is the next step, and the session is told once.
@@ -190,9 +190,9 @@ describe('a hook in a repository with no connection', () => {
     const root = repository(path.join(base, 'elsewhere'), 'gadget', 'https://github.com/acme/gadget.git');
     rig.env.sqlite.run(`INSERT OR REPLACE INTO machine_settings (machine_id, leaf, value, updated_at, updated_by) VALUES (?, 'capture.auto_join_roots', ?, 1, ?)`,
       [TEST_MACHINE_ID, JSON.stringify([path.join(base, 'Repos'), path.join(base, 'elsewhere')]), `mem_${TEST_MACHINE_ID}`]);
-    const started = await runHook('session-start', { session_id: 'sess-g', hook_event_name: 'SessionStart', transcript_path: transcript(root, 'sess-g'), cwd: root }, { fetch: rig.fetch, spawn });
+    const started = await runHook('session-start', { session_id: 'sess-g', hook_event_name: 'SessionStart', transcript_path: transcript(root, 'sess-g'), cwd: root }, { helpers: 'run', fetch: rig.fetch, spawn });
     expect(started.stdout).not.toContain('not capturing');
-    const prompted = await runHook('user-prompt-submit', { session_id: 'sess-g', hook_event_name: 'UserPromptSubmit', prompt: 'hi', cwd: root }, { fetch: rig.fetch, spawn });
+    const prompted = await runHook('user-prompt-submit', { session_id: 'sess-g', hook_event_name: 'UserPromptSubmit', prompt: 'hi', cwd: root }, { helpers: 'run', fetch: rig.fetch, spawn });
     expect(prompted.stderr).not.toContain('error');
     expect((await join(['--root', root, '--lock-held']))[0]).toMatchObject({ result: 'joined', moved: 1 });
     expect(rig.env.sqlite.query(`SELECT kind FROM events WHERE session_id = 'sess-g'`).all()).toEqual([{ kind: 'session.start' }]);
@@ -200,13 +200,13 @@ describe('a hook in a repository with no connection', () => {
 
   it('runs a prompt hook first in a repository with no connection without an error', async () => {
     const root = repository(path.join(base, 'Repos'), 'widget', 'https://github.com/acme/widget.git');
-    const hook = await runHook('user-prompt-submit', { session_id: 'sess-u', hook_event_name: 'UserPromptSubmit', prompt: 'hi', cwd: root, transcript_path: transcript(root, 'sess-u') }, { fetch: rig.fetch, spawn });
+    const hook = await runHook('user-prompt-submit', { session_id: 'sess-u', hook_event_name: 'UserPromptSubmit', prompt: 'hi', cwd: root, transcript_path: transcript(root, 'sess-u') }, { helpers: 'run', fetch: rig.fetch, spawn });
     expect(hook.stderr).not.toContain('error');
   });
 
   it('writes nothing to stderr and counts no missed membership while a repository holds its capture', async () => {
     const root = repository(path.join(base, 'elsewhere'), 'gadget', 'https://github.com/acme/gadget.git');
-    const prompt = (session: string) => runHook('user-prompt-submit', { session_id: session, hook_event_name: 'UserPromptSubmit', prompt: 'hi', cwd: root, transcript_path: transcript(root, session) }, { fetch: rig.fetch, spawn });
+    const prompt = (session: string) => runHook('user-prompt-submit', { session_id: session, hook_event_name: 'UserPromptSubmit', prompt: 'hi', cwd: root, transcript_path: transcript(root, session) }, { helpers: 'run', fetch: rig.fetch, spawn });
     const first = await prompt('sess-h1');
     expect((await join(['--root', root, '--lock-held']))[0]).toMatchObject({ result: 'outside_folders' });
     const told = await prompt('sess-h2');
@@ -215,14 +215,14 @@ describe('a hook in a repository with no connection', () => {
       .toEqual({ stderr: ['', ''], missed: null, held: 1 });
     // Where auto-join has no say, the miss is still said and counted.
     const scratch = repository(fs.mkdtempSync(path.join(temporary, 'scratch-')), 'scratch', 'https://github.com/acme/scratch.git');
-    const silent = await runHook('user-prompt-submit', { session_id: 'sess-h3', hook_event_name: 'UserPromptSubmit', prompt: 'hi', cwd: scratch }, { fetch: rig.fetch, spawn });
+    const silent = await runHook('user-prompt-submit', { session_id: 'sess-h3', hook_event_name: 'UserPromptSubmit', prompt: 'hi', cwd: scratch }, { helpers: 'run', fetch: rig.fetch, spawn });
     expect({ said: silent.stderr.includes('no registry entry'), counted: readMissingMembership(scratch, mycoHome)?.count }).toEqual({ said: true, counted: 1 });
   });
 
   it('tries a refused repository again at once when this machine learns it was connected from "Needs you"', async () => {
     const root = repository(path.join(base, 'Repos'), 'notes', null);
     expect((await join(['--root', root]))[0]).toMatchObject({ result: 'missed', reason: 'no_remote' });
-    const prompt = (n: number) => runHook('user-prompt-submit', { session_id: `sess-c${n}`, hook_event_name: 'UserPromptSubmit', prompt: 'hi', cwd: root, transcript_path: transcript(root, `sess-c${n}`) }, { fetch: rig.fetch, spawn });
+    const prompt = (n: number) => runHook('user-prompt-submit', { session_id: `sess-c${n}`, hook_event_name: 'UserPromptSubmit', prompt: 'hi', cwd: root, transcript_path: transcript(root, `sess-c${n}`) }, { helpers: 'run', fetch: rig.fetch, spawn });
     await prompt(1);
     expect(spawned).toEqual([]);
     cacheMachineSettings(SERVER_URL, { leaves: { 'capture.auto_join_roots': [path.join(base, 'Repos')], 'capture.connect_roots': { [rootKeyFor(root, mycoHome)]: '' } } }, mycoHome);
@@ -233,7 +233,7 @@ describe('a hook in a repository with no connection', () => {
   it('tries a repository found outside the folders again at once when this machine\'s folders come to hold it', async () => {
     const root = repository(path.join(base, 'elsewhere'), 'gadget', 'https://github.com/acme/gadget.git');
     expect((await join(['--root', root]))[0]).toMatchObject({ result: 'outside_folders' });
-    const prompt = (n: number) => runHook('user-prompt-submit', { session_id: `sess-m${n}`, hook_event_name: 'UserPromptSubmit', prompt: 'hi', cwd: root, transcript_path: transcript(root, `sess-m${n}`) }, { fetch: rig.fetch, spawn });
+    const prompt = (n: number) => runHook('user-prompt-submit', { session_id: `sess-m${n}`, hook_event_name: 'UserPromptSubmit', prompt: 'hi', cwd: root, transcript_path: transcript(root, `sess-m${n}`) }, { helpers: 'run', fetch: rig.fetch, spawn });
     await prompt(1);
     expect(spawned).toEqual([]);
     captureFolders([path.join(base, 'Repos'), path.join(base, 'elsewhere')]);
@@ -245,7 +245,7 @@ describe('a hook in a repository with no connection', () => {
 describe('myco member auto-join', () => {
   it('joins the project its remote names, or one created for it, moves the held capture there and delivers it', async () => {
     const root = repository(path.join(base, 'Repos'), 'widget', 'https://github.com/acme/widget.git');
-    await runHook('session-start', { session_id: 'sess-j', hook_event_name: 'SessionStart', transcript_path: transcript(root, 'sess-j'), cwd: root }, { fetch: rig.fetch, spawn });
+    await runHook('session-start', { session_id: 'sess-j', hook_event_name: 'SessionStart', transcript_path: transcript(root, 'sess-j'), cwd: root }, { helpers: 'run', fetch: rig.fetch, spawn });
     const [result] = await join(['--root', root, '--lock-held']);
     expect(result).toMatchObject({ result: 'joined', moved: 1 });
     const projectId = (result as { projectId: string }).projectId;
@@ -272,11 +272,11 @@ describe('myco member auto-join', () => {
 
   it('holds a repository with no remote until it is connected from "Needs you", then joins and delivers what it held', async () => {
     const root = repository(path.join(base, 'Repos'), 'notes', null);
-    await runHook('session-start', { session_id: 'sess-n', hook_event_name: 'SessionStart', transcript_path: transcript(root, 'sess-n'), cwd: root }, { fetch: rig.fetch, spawn });
+    await runHook('session-start', { session_id: 'sess-n', hook_event_name: 'SessionStart', transcript_path: transcript(root, 'sess-n'), cwd: root }, { helpers: 'run', fetch: rig.fetch, spawn });
     // The join the hook started, holding the lock the hook took.
     expect((await join(['--root', root, '--lock-held']))[0]).toMatchObject({ result: 'missed', reason: 'no_remote' });
     expect(uncaptured().map((r) => r.reason)).toEqual(['no_remote']);
-    const told = await runHook('user-prompt-submit', { session_id: 'sess-n', hook_event_name: 'UserPromptSubmit', prompt: 'hi', cwd: root }, { fetch: rig.fetch, spawn });
+    const told = await runHook('user-prompt-submit', { session_id: 'sess-n', hook_event_name: 'UserPromptSubmit', prompt: 'hi', cwd: root }, { helpers: 'run', fetch: rig.fetch, spawn });
     expect(told.stdout).toContain('it has no git remote');
     expect(listPending({ mycoHome, now: Date.now() }).map((p) => p.records)).toEqual([1]);
 
@@ -295,7 +295,7 @@ describe('myco member auto-join', () => {
     const root = repository(path.join(base, 'Repos'), 'widget', 'https://github.com/acme/widget.git');
     expect((await join(['--root', root]))[0]).toMatchObject({ result: 'missed', reason: 'auto_create_off' });
     expect(rig.env.sqlite.query(`SELECT COUNT(*) AS n FROM projects WHERE name = 'widget'`).get()).toEqual({ n: 0 });
-    const told = await runHook('user-prompt-submit', { session_id: 'sess-x', hook_event_name: 'UserPromptSubmit', prompt: 'hi', cwd: root }, { fetch: rig.fetch, spawn: () => true });
+    const told = await runHook('user-prompt-submit', { session_id: 'sess-x', hook_event_name: 'UserPromptSubmit', prompt: 'hi', cwd: root }, { helpers: 'run', fetch: rig.fetch, spawn: () => true });
     expect(told.stdout).toContain('creates projects only on its dashboard');
   });
 
@@ -337,7 +337,7 @@ describe('myco member auto-join', () => {
     const root = repository(path.join(base, 'Repos'), 'notes', null);
     await join(['--root', root]);
     const state = readAutoJoinState(rootKeyFor(root, mycoHome), mycoHome)!;
-    const hook = (at: number) => runHook('user-prompt-submit', { session_id: `sess-${at}`, hook_event_name: 'UserPromptSubmit', prompt: 'hi', cwd: root }, { fetch: rig.fetch, spawn, now: () => at });
+    const hook = (at: number) => runHook('user-prompt-submit', { session_id: `sess-${at}`, hook_event_name: 'UserPromptSubmit', prompt: 'hi', cwd: root }, { helpers: 'run', fetch: rig.fetch, spawn, now: () => at });
     await hook(state.attemptAt + AUTO_JOIN_RETRY_MS - 1);
     expect(spawned).toEqual([]);
     await hook(state.attemptAt + AUTO_JOIN_RETRY_MS);
@@ -352,7 +352,7 @@ describe('myco member auto-join', () => {
     for (const root of [inside, outside, connected]) recordMissingMembership(root, { mycoHome });
     fs.rmSync(path.join(mycoHome, 'member', 'auto-join', 'sweep.json'));
     // The first hook on the machine starts the sweep, once.
-    await runHook('user-prompt-submit', { session_id: 'sess-w', hook_event_name: 'UserPromptSubmit', prompt: 'hi', cwd: inside }, { fetch: rig.fetch, spawn });
+    await runHook('user-prompt-submit', { session_id: 'sess-w', hook_event_name: 'UserPromptSubmit', prompt: 'hi', cwd: inside }, { helpers: 'run', fetch: rig.fetch, spawn });
     expect(spawned.map((s) => s.args.slice(-4))).toEqual([['member', 'auto-join', '--sweep', '--lock-held'], ['auto-join', '--root', inside, '--lock-held']]);
     spawned = [];
     fs.rmSync(path.join(mycoHome, 'member', 'auto-join', 'sweep.lock'), { force: true });
@@ -380,7 +380,7 @@ describe('held capture reaches the project however the repository is connected',
     ]);
     const raw = (hook: string) => ({ session_id: 'sess-t', hook_event_name: hook, transcript_path: file, cwd: root, prompt: 'held prompt', last_assistant_message: 'held reply' });
     for (const [hook, name] of [['session-start', 'SessionStart'], ['user-prompt-submit', 'UserPromptSubmit'], ['stop', 'Stop'], ['session-end', 'SessionEnd']] as const) {
-      await runHook(hook, raw(name), { fetch: rig.fetch, spawn });
+      await runHook(hook, raw(name), { helpers: 'run', fetch: rig.fetch, spawn });
     }
     expect(kindsOf('sess-t')).toEqual([]);
     expect((await join(['--root', root, '--lock-held']))[0]).toMatchObject({ result: 'joined' });
@@ -393,7 +393,7 @@ describe('held capture reaches the project however the repository is connected',
     const root = repository(path.join(base, 'Repos'), 'widget', 'https://github.com/acme/widget.git');
     const file = tx(root, 'sess-h', [{ type: 'user', message: { role: 'user', content: 'x' } }]);
     const hook = (name: Parameters<typeof runHook>[0], raw: Record<string, unknown>) =>
-      runHook(name, { session_id: 'sess-h', cwd: root, transcript_path: file, ...raw }, { fetch: rig.fetch, spawn, symbiont: 'copilot' });
+      runHook(name, { session_id: 'sess-h', cwd: root, transcript_path: file, ...raw }, { helpers: 'run', fetch: rig.fetch, spawn, symbiont: 'copilot' });
     await hook('session-start', { hook_event_name: 'SessionStart' });
     await hook('user-prompt-submit', { hook_event_name: 'UserPromptSubmit', prompt: 'held prompt' });
     expect((await join(['--root', root, '--lock-held']))[0]).toMatchObject({ result: 'joined' });
@@ -406,7 +406,7 @@ describe('held capture reaches the project however the repository is connected',
 
   it('myco member join delivers what was held, and the Deployment forgets the repository', async () => {
     const root = repository(path.join(base, 'Repos'), 'notes', null);
-    await runHook('session-start', { session_id: 'sess-m', hook_event_name: 'SessionStart', transcript_path: transcript(root, 'sess-m'), cwd: root }, { fetch: rig.fetch, spawn });
+    await runHook('session-start', { session_id: 'sess-m', hook_event_name: 'SessionStart', transcript_path: transcript(root, 'sess-m'), cwd: root }, { helpers: 'run', fetch: rig.fetch, spawn });
     expect((await join(['--root', root, '--lock-held']))[0]).toMatchObject({ result: 'missed', reason: 'no_remote' });
     expect(uncaptured()).toHaveLength(1);
     await runMemberCli(['join', '--project', 'proj_1', '--root', root, '--no-agents'], { mycoHome, fetch: rig.fetch, stdout: () => {}, stderr: () => {} });
@@ -418,7 +418,7 @@ describe('held capture reaches the project however the repository is connected',
 
   it('a join that stopped after writing the connection leaves nothing stranded: a drain moves and delivers it', async () => {
     const root = repository(path.join(base, 'Repos'), 'widget', 'https://github.com/acme/widget.git');
-    await runHook('session-start', { session_id: 'sess-d', hook_event_name: 'SessionStart', transcript_path: transcript(root, 'sess-d'), cwd: root }, { fetch: rig.fetch, spawn });
+    await runHook('session-start', { session_id: 'sess-d', hook_event_name: 'SessionStart', transcript_path: transcript(root, 'sess-d'), cwd: root }, { helpers: 'run', fetch: rig.fetch, spawn });
     writeRegistryEntry({ version: REGISTRY_VERSION, projectId: 'proj_1', serverUrl: SERVER_URL, token: rig.token, root, machineId: TEST_MACHINE_ID, joinedAt: 1, updatedAt: 1 }, { mycoHome });
     await runMemberCli(['drain', '--all'], { mycoHome, fetch: rig.fetch, stdout: () => {}, stderr: () => {} });
     expect(listPending({ mycoHome, now: Date.now() })).toEqual([]);
@@ -427,11 +427,11 @@ describe('held capture reaches the project however the repository is connected',
 
   it('a join that stopped after writing the connection leaves nothing stranded: the next hook there moves and delivers it', async () => {
     const root = repository(path.join(base, 'Repos'), 'widget', 'https://github.com/acme/widget.git');
-    await runHook('session-start', { session_id: 'sess-c', hook_event_name: 'SessionStart', transcript_path: transcript(root, 'sess-c'), cwd: root }, { fetch: rig.fetch, spawn });
+    await runHook('session-start', { session_id: 'sess-c', hook_event_name: 'SessionStart', transcript_path: transcript(root, 'sess-c'), cwd: root }, { helpers: 'run', fetch: rig.fetch, spawn });
     // The connection is written, and the process dies before it moves what was held.
     writeRegistryEntry({ version: REGISTRY_VERSION, projectId: 'proj_1', serverUrl: SERVER_URL, token: rig.token, root, machineId: TEST_MACHINE_ID, joinedAt: 1, updatedAt: 1 }, { mycoHome });
-    await runHook('user-prompt-submit', { session_id: 'sess-c', hook_event_name: 'UserPromptSubmit', prompt: 'hi', cwd: root, transcript_path: transcript(root, 'sess-c2') }, { fetch: rig.fetch, spawn });
-    await runHook('stop', { session_id: 'sess-c', hook_event_name: 'Stop', cwd: root, transcript_path: transcript(root, 'sess-c3'), last_assistant_message: 'x' }, { fetch: rig.fetch, spawn });
+    await runHook('user-prompt-submit', { session_id: 'sess-c', hook_event_name: 'UserPromptSubmit', prompt: 'hi', cwd: root, transcript_path: transcript(root, 'sess-c2') }, { helpers: 'run', fetch: rig.fetch, spawn });
+    await runHook('stop', { session_id: 'sess-c', hook_event_name: 'Stop', cwd: root, transcript_path: transcript(root, 'sess-c3'), last_assistant_message: 'x' }, { helpers: 'run', fetch: rig.fetch, spawn });
     expect(listPending({ mycoHome, now: Date.now() })).toEqual([]);
     expect(kindsOf('sess-c')).toEqual(expect.arrayContaining(['session.start']));
   });
@@ -475,7 +475,7 @@ describe('a capture folder reached through a link', () => {
 
 describe('a repository that keeps missing', () => {
   const prompt = (root: string, sessionId: string) =>
-    runHook('user-prompt-submit', { session_id: sessionId, hook_event_name: 'UserPromptSubmit', prompt: 'hi', cwd: root, transcript_path: transcript(root, sessionId) }, { fetch: rig.fetch, spawn });
+    runHook('user-prompt-submit', { session_id: sessionId, hook_event_name: 'UserPromptSubmit', prompt: 'hi', cwd: root, transcript_path: transcript(root, sessionId) }, { helpers: 'run', fetch: rig.fetch, spawn });
   const row = () => rig.env.sqlite.query(`SELECT reason, held, misses FROM uncaptured_roots`).get() as { reason: string; held: string; misses: number } | null;
 
   it('is tried again only once its settings change, not on every hook, and the session is told why', async () => {
@@ -508,7 +508,7 @@ describe('a repository that keeps missing', () => {
     expect(waits).toEqual([2, 4, 8, 16, 32, 60, 60]);
     // A hook starts no attempt before the backed-off one is due.
     const last = readAutoJoinState(key, mycoHome)!;
-    const at = (t: number) => runHook('user-prompt-submit', { session_id: `sess-${t}`, hook_event_name: 'UserPromptSubmit', prompt: 'hi', cwd: root, transcript_path: transcript(root, `sess-${t}`) }, { fetch: rig.fetch, spawn, now: () => t });
+    const at = (t: number) => runHook('user-prompt-submit', { session_id: `sess-${t}`, hook_event_name: 'UserPromptSubmit', prompt: 'hi', cwd: root, transcript_path: transcript(root, `sess-${t}`) }, { helpers: 'run', fetch: rig.fetch, spawn, now: () => t });
     await at(last.attemptAt + AUTO_JOIN_RETRY_MS);
     expect(spawned).toEqual([]);
     await at(last.nextAttemptAt!);
@@ -547,7 +547,7 @@ describe('a repository left with myco member leave', () => {
     const root = repository(path.join(base, 'Repos'), 'widget', 'https://github.com/acme/widget.git');
     const key = rootKeyFor(root, mycoHome);
     expect((await join(['--root', root]))[0]).toMatchObject({ result: 'joined' });
-    await runHook('session-start', { session_id: 'sess-0', hook_event_name: 'SessionStart', transcript_path: transcript(root, 'sess-0'), cwd: root }, { fetch: rig.fetch, spawn });
+    await runHook('session-start', { session_id: 'sess-0', hook_event_name: 'SessionStart', transcript_path: transcript(root, 'sess-0'), cwd: root }, { helpers: 'run', fetch: rig.fetch, spawn });
     // It had been connected from "Needs you": leaving forgets that too, here and on the Deployment.
     rig.env.sqlite.run(`INSERT INTO machine_settings (machine_id, leaf, value, updated_at, updated_by) VALUES (?, 'capture.connect_roots', ?, 1, ?)`, [TEST_MACHINE_ID, JSON.stringify({ [key]: '' }), `mem_${TEST_MACHINE_ID}`]);
     cacheMachineSettings(SERVER_URL, { leaves: { 'capture.auto_join_roots': [path.join(base, 'Repos')], 'capture.connect_roots': { [key]: '' } } }, mycoHome);
@@ -556,12 +556,12 @@ describe('a repository left with myco member leave', () => {
     const told = () => (rig.env.sqlite.query(`SELECT value FROM machine_settings WHERE leaf = 'capture.connect_roots'`).get() as { value: string }).value;
     for (let i = 0; i < 100 && told() !== '{}'; i += 1) await Bun.sleep(10);
     expect(told()).toBe('{}');
-    const hook = await runHook('user-prompt-submit', { session_id: 'sess-1', hook_event_name: 'UserPromptSubmit', prompt: 'hi', cwd: root, transcript_path: transcript(root, 'sess-1') }, { fetch: rig.fetch, spawn });
+    const hook = await runHook('user-prompt-submit', { session_id: 'sess-1', hook_event_name: 'UserPromptSubmit', prompt: 'hi', cwd: root, transcript_path: transcript(root, 'sess-1') }, { helpers: 'run', fetch: rig.fetch, spawn });
     expect({ spawned, pending: listPending({ mycoHome, now: Date.now() }), notice: hook.stdout.includes('not capturing'), stderr: hook.stderr, missed: readMissingMembership(root, mycoHome) })
       .toEqual({ spawned: [], pending: [], notice: false, stderr: '', missed: null });
     // Connected again from "Needs you": captured again.
     cacheMachineSettings(SERVER_URL, { leaves: { 'capture.auto_join_roots': [path.join(base, 'Repos')], 'capture.connect_roots': { [key]: '' } } }, mycoHome);
-    await runHook('user-prompt-submit', { session_id: 'sess-2', hook_event_name: 'UserPromptSubmit', prompt: 'hi', cwd: root, transcript_path: transcript(root, 'sess-2') }, { fetch: rig.fetch, spawn });
+    await runHook('user-prompt-submit', { session_id: 'sess-2', hook_event_name: 'UserPromptSubmit', prompt: 'hi', cwd: root, transcript_path: transcript(root, 'sess-2') }, { helpers: 'run', fetch: rig.fetch, spawn });
     expect(spawned).toHaveLength(1);
   });
 
@@ -688,7 +688,7 @@ describe('the pending spool', () => {
     appendPending({ root: full, rootKey: rootKeyFor(full, mycoHome) }, 'sess-f', many, undefined, { mycoHome, now: at });
     appendPending({ root: old, rootKey: rootKeyFor(old, mycoHome) }, 'sess-f', [sessionStartEvent(ctx(old), { startedAt: at, originPath: old })], undefined, { mycoHome, now: at - PENDING_TTL_MS - 1 });
     for (const root of [full, old]) await join(['--root', root]);
-    const prompt = await runHook('user-prompt-submit', { session_id: 'sess-n1', hook_event_name: 'UserPromptSubmit', prompt: 'hi', cwd: full, transcript_path: transcript(full, 'sess-n1') }, { fetch: rig.fetch, spawn });
+    const prompt = await runHook('user-prompt-submit', { session_id: 'sess-n1', hook_event_name: 'UserPromptSubmit', prompt: 'hi', cwd: full, transcript_path: transcript(full, 'sess-n1') }, { helpers: 'run', fetch: rig.fetch, spawn });
     expect(prompt.stdout).toContain('is no longer held');
     // The cap is found by the hook, the age by any read of the spool; the next attempt tells the Deployment.
     listPending({ mycoHome, now: at });
@@ -705,7 +705,7 @@ describe('the pending spool', () => {
 
   it('is shown by `myco member status`, with when it is discarded', async () => {
     const root = repository(path.join(base, 'Repos'), 'widget', null);
-    await runHook('session-start', { session_id: 'sess-s', hook_event_name: 'SessionStart', transcript_path: transcript(root, 'sess-s'), cwd: root }, { fetch: rig.fetch, spawn });
+    await runHook('session-start', { session_id: 'sess-s', hook_event_name: 'SessionStart', transcript_path: transcript(root, 'sess-s'), cwd: root }, { helpers: 'run', fetch: rig.fetch, spawn });
     await join(['--root', root, '--lock-held']);
     const lines: string[] = [];
     await runMemberCli(['status', '--all'], { mycoHome, stdout: (l) => lines.push(l), stderr: () => {} });
@@ -726,7 +726,7 @@ describe('the default Deployment', () => {
   it('is what a hook joins through: with none recorded, a hook in a repository with no connection does what it did before', async () => {
     fs.rmSync(path.join(mycoHome, 'member', 'default.json'));
     const root = repository(path.join(base, 'Repos'), 'widget', 'https://github.com/acme/widget.git');
-    await runHook('session-start', { session_id: 'sess-d', hook_event_name: 'SessionStart', transcript_path: transcript(root, 'sess-d'), cwd: root }, { fetch: rig.fetch, spawn });
+    await runHook('session-start', { session_id: 'sess-d', hook_event_name: 'SessionStart', transcript_path: transcript(root, 'sess-d'), cwd: root }, { helpers: 'run', fetch: rig.fetch, spawn });
     expect(spawned).toEqual([]);
     expect(listPending({ mycoHome, now: Date.now() })).toEqual([]);
   });

@@ -187,7 +187,38 @@ export function ensurePrivateFile(file: string): void {
 export function writePrivateFileAtomic(file: string, content: string): void {
   const tmp = `${file}.${process.pid}.${Math.random().toString(36).slice(2, 8)}.tmp`;
   fs.writeFileSync(tmp, content, { mode: MEMBER_FILE_MODE });
-  fs.renameSync(tmp, file);
+  renameReplacing(tmp, file);
+}
+
+/** The errors a Windows rename onto a file another process briefly holds open (a scanner, the indexer) answers. */
+const WINDOWS_RENAME_BUSY: readonly string[] = ['EPERM', 'EACCES', 'EBUSY'];
+/** How many times a rename refused that way is tried again, waiting a little longer each time (about 0.4 s in all). */
+const RENAME_RETRIES = 8;
+const RENAME_WAIT_MS = 10;
+
+/**
+ * Rename `from` onto `to`, replacing it. On Windows a rename onto a file something else has open for a moment fails
+ * with EPERM, EACCES or EBUSY, and is tried again a few times before the failure stands: a hook that cannot rename its
+ * state would end in an error for what is no fault of its own. A rename that fails for good removes `from`.
+ */
+export function renameReplacing(from: string, to: string, deps: {
+  platform?: NodeJS.Platform; rename?: (from: string, to: string) => void; wait?: (ms: number) => void;
+} = {}): void {
+  const rename = deps.rename ?? fs.renameSync;
+  const wait = deps.wait ?? ((ms: number) => { Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms); });
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      rename(from, to);
+      return;
+    } catch (err) {
+      const busy = (deps.platform ?? process.platform) === 'win32' && WINDOWS_RENAME_BUSY.includes((err as NodeJS.ErrnoException).code ?? '');
+      if (!busy || attempt >= RENAME_RETRIES) {
+        try { fs.unlinkSync(from); } catch { /* already gone */ }
+        throw err;
+      }
+      wait(RENAME_WAIT_MS * (attempt + 1));
+    }
+  }
 }
 
 export type PrivateRead<T> =

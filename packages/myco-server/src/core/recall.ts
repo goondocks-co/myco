@@ -38,7 +38,7 @@ import type { SemanticSearch } from '../read/embedding.js';
 import { INSTRUCTIONS_TEMPLATE_LEAF, leafValues } from './settings.js';
 import { sha256Hex } from '../hash.js';
 import type { ReadScope } from '../read/scope.js';
-import { sessionInjectionKind, type SessionContextRequest, type SessionContextIdentity } from '@goondocks/myco-shared/recall';
+import { BLOCK_JOIN, projectLine, sessionInjectionKind, type SessionContextRequest, type SessionContextIdentity } from '@goondocks/myco-shared/recall';
 export { sessionInjectionKind } from '@goondocks/myco-shared/recall';
 
 /** The most text one prompt is served. A part that would cross it is dropped whole. */
@@ -52,7 +52,7 @@ export const PROMPT_CONTEXT_MAX_CHARS = 10_000;
 export const SESSION_CONTEXT_MAX_CHARS = 8_192;
 
 /** The blank line between two parts of one served block. */
-const JOIN = '\n\n';
+const JOIN = BLOCK_JOIN;
 
 /**
  * Planning intent, as a fixed word-bounded keyword set rather than a model
@@ -296,13 +296,8 @@ export async function composePromptContext(
  * instructions, telling it what the text below is and how far its own authority
  * runs. Carried verbatim from the member-side surface they were written for.
  */
-/**
- * The Project a session works in, told to the agent in the words the tool
- * surface uses for it. An agent that reads this line can name its Project on a
- * write, which the tool surface requires of one.
- */
-export const projectLine = (projectId: string): string =>
-  `Project:: \`${projectId}\` — pass this as \`project\` on Myco tool calls; a write without it is refused.`;
+/** The Project line every session block starts with: one copy, shared with the member that renders it from its cache. */
+export { projectLine };
 
 export const SUBAGENT_CORTEX_GUIDANCE = [
   'You are a delegated subagent working inside a Myco-connected project.',
@@ -336,6 +331,11 @@ export async function composeSessionContext(
   leaves: RecallLeaves,
   capabilityOn: boolean,
   input: SessionContextRequest & { now: number },
+  /**
+   * `preview`: compose the block and record nothing, so no session is held to have been served it. What a member
+   * asks for when it joins a project, to have the block cached before its first session starts.
+   */
+  opts: { preview?: boolean } = {},
 ): Promise<RecallSessionBlock> {
   const recordKind = sessionInjectionKind(input);
   const skipped: RecallSkip[] = [];
@@ -369,7 +369,7 @@ export async function composeSessionContext(
   const kept = partsWithinBound(contributions, SESSION_CONTEXT_MAX_CHARS);
   if (kept.length === 0) return { context: '', parts: [], skipped, kind: recordKind };
 
-  if (!await recordSessionInjection(db, scope, input.sessionId, recordKind, input.now)) {
+  if (opts.preview !== true && !await recordSessionInjection(db, scope, input.sessionId, recordKind, input.now)) {
     return { context: '', parts: [], skipped: [...skipped, 'repeat'], kind: recordKind };
   }
   return {

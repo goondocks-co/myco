@@ -43,12 +43,20 @@ export function readStdin(readFd0: () => Buffer = () => fs.readFileSync(0)): Pro
   if (injectedStdin !== null) {
     const buf = injectedStdin;
     injectedStdin = null;
-    return Promise.resolve(buf.length > 0 ? buf.toString('utf-8') : '{}');
+    return Promise.resolve(textOf(buf));
   }
   try {
-    const buf = readFd0();
-    return Promise.resolve(buf.length > 0 ? buf.toString('utf-8') : '{}');
+    return Promise.resolve(textOf(readFd0()));
   } catch {
     return Promise.resolve('{}');
   }
+}
+
+/**
+ * The payload's text, without the byte-order mark a Windows writer may put first (a .NET or PowerShell host writing
+ * UTF-8 with its preamble): no JSON document starts with one, and the parse would refuse it.
+ */
+function textOf(buf: Buffer): string {
+  const text = buf.length > 0 ? buf.toString('utf-8').replace(/^\uFEFF/, '') : '';
+  return text.length > 0 ? text : '{}';
 }

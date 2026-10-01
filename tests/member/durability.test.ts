@@ -52,7 +52,7 @@ const transcript = (planFile: string): string => {
 };
 
 const run = (name: Parameters<typeof runHook>[0], raw: Record<string, unknown>, argv?: string[]) =>
-  runHook(name, { session_id: session, ...raw }, { fetch: fetchSpy.fetch, argv });
+  runHook(name, { session_id: session, ...raw }, { helpers: 'run', fetch: fetchSpy.fetch, argv });
 
 /** Kill the hook at the commit point: `appendAndRecord` is where the events and their receipts land together. */
 function crashAtCommit<T>(body: () => Promise<T>): Promise<T> {
@@ -61,7 +61,7 @@ function crashAtCommit<T>(body: () => Promise<T>): Promise<T> {
   return body().finally(() => { MemberSpool.prototype.appendAndRecord = original; });
 }
 
-const memberKinds = () => Object.fromEntries((rig.env.sqlite.query(`SELECT kind, COUNT(*) n FROM events WHERE producer_adapter <> 'transcript-parse' GROUP BY kind`).all() as Array<{ kind: string; n: number }>).map((k) => [k.kind, k.n]));
+const memberKinds = () => Object.fromEntries((rig.env.sqlite.query(`SELECT kind, COUNT(*) n FROM events WHERE producer_adapter <> 'transcript-parse' AND kind <> 'turn' GROUP BY kind`).all() as Array<{ kind: string; n: number }>).map((k) => [k.kind, k.n]));
 
 describe('capture is never lost permanently at the commit point', () => {
   it('a Stop killed after reading the plan write and before appending leaves no receipt: the rerun ships the plan and the delta once', async () => {

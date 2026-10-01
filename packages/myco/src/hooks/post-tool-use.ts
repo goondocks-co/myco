@@ -1,23 +1,30 @@
-import { runMemberHook, type HookMainOptions, type HookRun } from '../member/capture.js';
+import { runMemberHook, type HookMainOptions, type HookOutcome, type HookRun } from '../member/capture.js';
 import { toolUseEvent, type OutboundEvent } from '../member/envelope.js';
 import { planFileCapture, planRootFor, planWritePath } from '../member/plan-files.js';
-import { servedOnce } from '../member/recall.js';
-import { readSessionState } from '../member/session-state.js';
+import { projectLineOnly, renderedBlock } from '../member/context-cache.js';
+import { readSessionState, type SessionState } from '../member/session-state.js';
+import { sessionInjectionKind } from '@goondocks/myco-shared/recall';
 import { HOOK_CONFIG } from './hook-config.generated.js';
-import type { HookResponse } from './response.js';
 import { hookShipsToolCalls, transcriptWritesTurnRows } from './turn-rows.js';
 
-const SESSION_RECALL_PATH = '/context/session';
-
 /**
- * The session block, for a harness whose prompt hook can only block: asked for
- * once per session, so a start the Deployment could not answer gets a second
- * chance here and a start it did answer costs nothing more.
+ * The session block, for a harness whose prompt hook can only block: served once per session from what this machine
+ * holds, so a session start that had nothing to serve gets a second chance here, and the helper is asked to fetch
+ * the block while none has been served.
  */
-function recall(sessionId: string) {
-  return async (run: HookRun): Promise<HookResponse | undefined> => {
-    const served = await servedOnce(run, SESSION_RECALL_PATH, { sessionId, kind: 'start' });
-    return served === undefined ? undefined : { additionalContext: served };
+function sessionBlock(run: HookRun, state: SessionState): Pick<HookOutcome, 'response' | 'ask' | 'record'> {
+  const delivered = sessionInjectionKind({ kind: 'start' });
+  if (state.delivered.includes(delivered)) return {};
+  const block = renderedBlock(run.spool.dir, run.credential.projectId, 'start');
+  if (block === undefined) return {};
+  // Served whole once the helper has cached the block; until then the Project line, once, and the block asked for.
+  const servedAs = block.complete ? delivered : projectLineOnly(delivered);
+  if (state.delivered.includes(servedAs)) return {};
+  return {
+    response: { additionalContext: block.text },
+    // Asked for by the session that renders it: the Deployment's record of having served it names this session.
+    ask: { kind: 'start', at: run.now() },
+    record: (next) => { if (!next.delivered.includes(servedAs)) next.delivered.push(servedAs); },
   };
 }
 
@@ -35,13 +42,16 @@ export async function main(opts: HookMainOptions = {}) {
     const promptId = transcriptWritesTurnRows(agent) ? undefined : state.promptId;
     // The transcript already holds this call for a symbiont whose transcript carries tool calls.
     const events: OutboundEvent[] = hookShipsToolCalls(agent) ? [toolUseEvent(ctx, input, { promptId })] : [];
-    const context = HOOK_CONFIG[agent]?.capabilities.postToolUseInjection === true ? recall(sessionId) : undefined;
+    const served = HOOK_CONFIG[agent]?.capabilities.postToolUseInjection === true ? sessionBlock(run, state) : {};
     // A write into a plan directory is the plan itself: read now, keyed by its path, named after the prompt that wrote it.
     const root = planRootFor(credential.root, typeof input.raw.cwd === 'string' ? input.raw.cwd : undefined);
     const planPath = planWritePath(agent, input.toolName, input.toolInput, root, run.machinePlanDirs());
     // A repository still joining has no project to key a plan to; the turn's end reads the write again once it has one.
-    if (planPath === null || run.pending === true) return { events, context };
+    if (planPath === null || run.pending === true) return { events, ...served };
     const plan = planFileCapture(ctx, state, credential.projectId, root, planPath, promptId);
-    return { events: [...events, ...plan.events], record: plan.record, context };
+    return {
+      events: [...events, ...plan.events], response: served.response, ask: served.ask,
+      record: (next) => { plan.record(next); served.record?.(next); },
+    };
   });
 }

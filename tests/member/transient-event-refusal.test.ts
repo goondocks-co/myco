@@ -454,7 +454,7 @@ describe('an event refused for a passing reason', () => {
     for (const e of otherEvents) spool.append('sess-other', e);
     const spy = answering(rig, (e) => (e.sessionId === 'sess-own' ? 'unknown_kind' : null));
 
-    await runHook('stop', { session_id: 'sess-own', hook_event_name: 'Stop', last_assistant_message: 'done' }, { fetch: spy.fetch });
+    await runHook('stop', { session_id: 'sess-own', hook_event_name: 'Stop', last_assistant_message: 'done' }, { helpers: 'run', fetch: spy.fetch });
 
     expect(spool.depth('sess-own')).toBeGreaterThan(0);
     expect(storedIds(rig, 'sess-other')).toEqual(idsOf(otherEvents));

@@ -16,6 +16,7 @@ import { MemberSpool } from '@myco/member/spool.js';
 import { LifecycleLock } from '@myco/utils/lifecycle-lock.js';
 import type { DetachedSpawn } from '@myco/runtime/spawn-detached.js';
 import { memberRig, tempMycoHome } from './helpers/server.js';
+import { SWEEP_INTERVAL_MS } from '@myco/member/sweep.js';
 import { registerTestMember } from './helpers/hooks.js';
 
 const PROJECT = 'proj_1';
@@ -112,7 +113,7 @@ describe('a kick', () => {
     try {
       let started = 0;
       const spawn: DetachedSpawn = () => { started += 1; return { started: true }; };
-      expect(kickHelper({ projectId: PROJECT, mycoHome, spawn })).toEqual({ kind: 'running' });
+      expect(kickHelper({ projectId: PROJECT, mycoHome, spawn })).toEqual({ kind: 'running', contained: false });
       expect(started).toBe(0);
       expect(fs.existsSync(helperPaths(PROJECT, mycoHome).dirty)).toBe(true);
     } finally {
@@ -166,7 +167,13 @@ function inProcessHelpers(deps: Parameters<typeof runHelperVerb>[1]) {
     runs.push(runHelperVerb(verb, { ...deps, spawn }).catch((err: unknown) => err));
     return { started: true, pid: process.pid };
   };
-  const settle = async () => { for (let done = 0; done < runs.length; done = runs.length) await Promise.all(runs.slice(done)); };
+  const settle = async () => {
+    for (let done = 0; done < runs.length;) {
+      const until = runs.length;
+      await Promise.all(runs.slice(done, until));
+      done = until;
+    }
+  };
   return { spawn, starts, settle };
 }
 
@@ -190,7 +197,7 @@ describe('no kick is lost on the way out', () => {
         passes += 1;
         // The Stop hook of a busy turn: it appends and kicks while the helper holds the lock, then the pass runs out the clock.
         spool.append('sess-late', promptEvent(ctx, { promptId: mintId(), text: 'the turn\'s last words' }));
-        expect(kickHelper({ projectId: PROJECT, mycoHome, reason: 'turn-end', spawn: () => { throw new Error('a running helper is not started again'); } })).toEqual({ kind: 'running' });
+        expect(kickHelper({ projectId: PROJECT, mycoHome, reason: 'turn-end', spawn: () => { throw new Error('a running helper is not started again'); } })).toEqual({ kind: 'running', contained: false });
         clock.advance(20_000);
         return result;
       },
@@ -282,7 +289,7 @@ describe('no kick is lost on the way out', () => {
         kicked = kickHelper({ projectId: PROJECT, mycoHome, reason: 'session-end', spawn: () => { throw new Error('a start under way is not started again'); } });
       },
     });
-    expect(kicked as KickOutcome | null).toEqual({ kind: 'starting' });
+    expect(kicked as KickOutcome | null).toEqual({ kind: 'starting', contained: false });
     expect(result).toEqual({ endedBy: 'idle', passes: 1 });
     expect(passes).toBe(1);
     expect(fs.existsSync(paths.dirty)).toBe(false);
@@ -370,10 +377,83 @@ describe('a kick whose helper cannot outlive it', () => {
     ];
     expect(outcomes).toEqual([{ kind: 'failed' }, { kind: 'started', contained: true }]);
     expect(outcomes.map(shipsInline)).toEqual([true, true]);
-    expect([{ kind: 'running' }, { kind: 'starting' }, { kind: 'started', contained: false }].map((o) => shipsInline(o as KickOutcome))).toEqual([false, false, false]);
+    expect(([
+      { kind: 'running', contained: false }, { kind: 'starting', contained: false }, { kind: 'started', contained: false },
+    ] as KickOutcome[]).map(shipsInline)).toEqual([false, false, false]);
     const log = fs.readFileSync(helperLogPath(mycoHome), 'utf-8');
     expect(log).toContain(`${PROJECT} [myco] helper: kick (capture) could not start a helper; the caller ships inline`);
     expect(log).toContain(`${PROJECT} [myco] helper: kick (capture) started a helper inside the caller's Job Object`);
+  });
+});
+
+describe('a helper that ends with the harness, found by a later kick', () => {
+  it('is answered contained while on its way, and while it holds the lock: the later kick ships inline too', async () => {
+    // A capture hook's kick started it inside the harness's Job Object.
+    expect(kickHelper({ projectId: PROJECT, mycoHome, spawn: () => ({ started: true, pid: process.pid, contained: true }) }))
+      .toEqual({ kind: 'started', contained: true });
+    const onItsWay = kickHelper({ projectId: PROJECT, mycoHome, reason: 'turn-end', spawn: () => { throw new Error('a start under way is not started again'); } });
+    expect(onItsWay).toEqual({ kind: 'starting', contained: true });
+    expect(shipsInline(onItsWay)).toBe(true);
+
+    // The helper takes the lock: its own start claim says it is contained, and the lock says so to every kick after.
+    let release!: () => void;
+    const holding = new Promise<void>((resolve) => { release = resolve; });
+    let found: KickOutcome | null = null;
+    const run = runHelper({
+      projectId: PROJECT, mycoHome, contained: false, lingerMs: 0,
+      pass: async () => {
+        // The first pass only: the kick's mark asks for one more, which finds nothing to do.
+        if (found !== null) return;
+        found = kickHelper({ projectId: PROJECT, mycoHome, reason: 'turn-end', spawn: () => { throw new Error('a running helper is not started again'); } });
+        await holding;
+      },
+    });
+    while (found === null) await Bun.sleep(5);
+    expect(found as KickOutcome | null).toEqual({ kind: 'running', contained: true });
+    release();
+    await run;
+    // A helper free of any job leaves a lock that says nothing of one.
+    let seen = false;
+    await runHelper({
+      projectId: PROJECT, mycoHome, contained: false, lingerMs: 0,
+      pass: async () => {
+        if (seen) return;
+        seen = true;
+        found = kickHelper({ projectId: PROJECT, mycoHome, spawn: () => ({ started: false }) });
+      },
+    });
+    expect(found as KickOutcome | null).toEqual({ kind: 'running', contained: false });
+  });
+});
+
+describe('the sweep a helper ends with', () => {
+  it('kicks every other project holding undelivered work, once a sweep interval, and none with nothing waiting or latched offline', async () => {
+    const rig = await memberRig();
+    const roots = ['a', 'b', 'c', 'd'].map((name) => fs.mkdtempSync(path.join(mycoHome, `root-${name}-`)));
+    for (const [i, projectId] of ['proj_1', 'proj_2', 'proj_3', 'proj_4'].entries()) {
+      registerTestMember({ mycoHome, token: rig.token, tokenId: rig.tokenId, projectId, expiresAt: rig.expiresAt, serverUrl: 'https://s', root: roots[i] });
+    }
+    // proj_2's last turn never reached the Deployment; proj_3 holds nothing.
+    const waiting = new MemberSpool('proj_2', { mycoHome });
+    waiting.append('sess-left', promptEvent({ agent: 'claude-code', sessionId: 'sess-left', stage: waiting.stagerFor('sess-left') }, { promptId: mintId(), text: 'the last turn' }));
+    fs.mkdirSync(new MemberSpool('proj_3', { mycoHome }).dir, { recursive: true });
+    const starts: string[][] = [];
+    // proj_4 holds work too, but its Deployment is latched offline for the next hour: its own probe decides when it dials.
+    const latched = new MemberSpool('proj_4', { mycoHome });
+    latched.append('sess-latched', promptEvent({ agent: 'claude-code', sessionId: 'sess-latched', stage: latched.stagerFor('sess-latched') }, { promptId: mintId(), text: 'offline' }));
+    const spawn: DetachedSpawn = (_command, args) => { starts.push([...args]); return { started: false }; };
+    const clock = fakeTime(Date.now());
+    latched.markOffline(clock.now(), 3_600_000);
+    const helperOf = () => runHelperVerb(['--project', 'proj_1', '--home', mycoHome], { keepStderr: true, now: clock.now, sleep: clock.sleep, lingerMs: 0, spawn, pass: async () => {} });
+
+    await helperOf();
+    expect(starts.map((args) => args[args.indexOf('--project') + 1])).toEqual(['proj_2']);
+    // The next hook moments later starts no second helper for it; one past the interval does.
+    await helperOf();
+    expect(starts).toHaveLength(1);
+    clock.advance(SWEEP_INTERVAL_MS + 1);
+    await helperOf();
+    expect(starts.map((args) => args[args.indexOf('--project') + 1])).toEqual(['proj_2', 'proj_2']);
   });
 });
 
@@ -382,7 +462,7 @@ describe('a start under way', () => {
     let started = 0;
     const spawn: DetachedSpawn = () => { started += 1; return { started: true, pid: process.pid }; };
     expect(kickHelper({ projectId: PROJECT, mycoHome, spawn }).kind).toBe('started');
-    for (let i = 0; i < 20; i++) expect(kickHelper({ projectId: PROJECT, mycoHome, spawn })).toEqual({ kind: 'starting' });
+    for (let i = 0; i < 20; i++) expect(kickHelper({ projectId: PROJECT, mycoHome, spawn })).toEqual({ kind: 'starting', contained: false });
     expect(started).toBe(1);
     // A started process that died before it took the lock: its claim is spent, and the next kick starts another.
     const dead = Bun.spawnSync([process.execPath, '-e', '0']).pid;
@@ -414,6 +494,15 @@ describe('a start under way', () => {
     fs.utimesSync(starting, future, future);
     expect(kickHelper({ projectId: PROJECT, mycoHome, spawn }).kind).toBe('started');
     expect(started).toBe(4);
+  });
+
+  it('answers a start that threw as one that failed, and leaves no claim to hold the next kick off', () => {
+    const outcome = kickHelper({ projectId: PROJECT, mycoHome, spawn: () => { throw new Error('spawn exploded'); } });
+    expect(outcome).toEqual({ kind: 'failed' });
+    expect(fs.existsSync(helperPaths(PROJECT, mycoHome).starting)).toBe(false);
+    let started = 0;
+    expect(kickHelper({ projectId: PROJECT, mycoHome, spawn: () => { started += 1; return { started: true, pid: process.pid }; } }).kind).toBe('started');
+    expect(started).toBe(1);
   });
 
   it('starts a helper when a spent claim cannot be cleared, rather than wait on a start that is not coming', () => {

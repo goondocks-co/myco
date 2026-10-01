@@ -96,9 +96,9 @@ async function seedSession(rig: MemberRig, sessionId: string, text: string): Pro
     { type: 'user', cwd: '/work/repo', promptId: `p-${sessionId}`, uuid: `u-${sessionId}`, timestamp: '2026-01-01T00:00:00Z', message: { role: 'user', content: text } },
     { type: 'assistant', uuid: `a-${sessionId}`, timestamp: '2026-01-01T00:00:01Z', message: { role: 'assistant', content: [{ type: 'text', text: `re: ${text}` }], stop_reason: 'end_turn' } },
   ].map((l) => JSON.stringify(l)).join('\n') + '\n');
-  await runHook('session-start', { session_id: sessionId, hook_event_name: 'SessionStart', transcript_path: tx, cwd: '/work/repo' }, { fetch: rig.fetch });
-  await runHook('stop', { session_id: sessionId, hook_event_name: 'Stop', transcript_path: tx, last_assistant_message: `re: ${text}` }, { fetch: rig.fetch });
-  await runHook('session-end', { session_id: sessionId, hook_event_name: 'SessionEnd', transcript_path: tx }, { fetch: rig.fetch });
+  await runHook('session-start', { session_id: sessionId, hook_event_name: 'SessionStart', transcript_path: tx, cwd: '/work/repo' }, { helpers: 'run', fetch: rig.fetch });
+  await runHook('stop', { session_id: sessionId, hook_event_name: 'Stop', transcript_path: tx, last_assistant_message: `re: ${text}` }, { helpers: 'run', fetch: rig.fetch });
+  await runHook('session-end', { session_id: sessionId, hook_event_name: 'SessionEnd', transcript_path: tx }, { helpers: 'run', fetch: rig.fetch });
   for (let pass = 0; pass < 20; pass += 1) if ((await parseTranscripts(rig.env.serverEnv, Date.now())) === 0) break;
 }
 

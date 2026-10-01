@@ -31,6 +31,7 @@ import { HOOK_CONFIG } from '@myco/hooks/hook-config.generated.js';
 import { hookShipsToolCalls } from '@myco/hooks/turn-rows.js';
 import { deriveTranscriptCapture } from '@myco/member/transcript.js';
 import { emptySessionState } from '@myco/member/session-state.js';
+import { MemberSpool } from '@myco/member/spool.js';
 import { runHook, type HookName } from '../member/helpers/hooks.js';
 import type { Database } from 'bun:sqlite';
 
@@ -161,7 +162,10 @@ describe('the hook path itself, end to end', () => {
         },
         { fetch: fetchImpl, symbiont, credential: 'env' },
       );
-      return { stdout, posted };
+      // What the hook left for the Deployment: what it sent (a turn's end ships in the hook), and what it spooled for
+      // a later delivery. A turn's start or end is the hook's own record, not a row.
+      const spooled = new MemberSpool(PROJECT, { mycoHome: home }).readRecords(SESSION).flatMap((r) => (r === null ? [] : [r.kind]));
+      return { stdout, posted: [...posted, ...spooled].filter((kind) => kind !== 'turn') };
     } finally {
       for (const key of Object.keys(process.env)) if (!(key in held)) delete process.env[key];
       Object.assign(process.env, held);

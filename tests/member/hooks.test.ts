@@ -28,8 +28,10 @@ import { readSessionState } from '@myco/member/session-state.js';
 import { parseTranscripts } from '@myco-server-worker/ingest/parse.js';
 import { memberRig, tempMycoHome, type MemberRig } from './helpers/server.js';
 import { registerTestMember, recordingFetch, runHook } from './helpers/hooks.js';
-import { TURN_END_HEADER } from '@goondocks/myco-shared/member-protocol';
+import { FEATURES_HEADER, TURN_END_HEADER } from '@goondocks/myco-shared/member-protocol';
 import { run as runMemberCli } from '@myco/cli/member.js';
+import { runHelperVerb } from '@myco/cli/member-helper.js';
+import { TAIL_IDLE_MS } from '@myco/member/backlog.js';
 
 let mycoHome: string;
 let rig: MemberRig;
@@ -68,7 +70,7 @@ const transcript = (lines: unknown[], id = session): string => {
   return file;
 };
 const run = (name: Parameters<typeof runHook>[0], raw: Record<string, unknown>, argv?: string[], symbiont?: string) =>
-  runHook(name, { session_id: session, hook_event_name: raw.hook_event_name ?? undefined, ...raw }, { fetch: fetchSpy.fetch, argv, symbiont });
+  runHook(name, { session_id: session, hook_event_name: raw.hook_event_name ?? undefined, ...raw }, { helpers: 'run', fetch: fetchSpy.fetch, argv, symbiont });
 
 /** The Deployment's parse over every transcript the hooks shipped, run to completion as the tick would. */
 async function parseAll(): Promise<void> {
@@ -76,8 +78,10 @@ async function parseAll(): Promise<void> {
     if ((await parseTranscripts(rig.env.serverEnv, Date.now())).changed === 0) return;
   }
 }
-/** Kinds on the member's side of the wire, in arrival order. */
-const memberKinds = () => (rig.env.sqlite.query(`SELECT kind FROM events WHERE producer_adapter <> 'transcript-parse' ORDER BY received_at, rowid`).all() as Array<{ kind: string }>).map((r) => r.kind);
+/** Kinds on the member's side of the wire, in arrival order; a turn's start and end are asserted on their own. */
+const memberKinds = () => (rig.env.sqlite.query(`SELECT kind FROM events WHERE producer_adapter <> 'transcript-parse' AND kind <> 'turn' ORDER BY received_at, rowid`).all() as Array<{ kind: string }>).map((r) => r.kind);
+/** Captured rows the Deployment holds: every member event but a turn's start or end, which each hook adds. */
+const captured = () => (rig.env.sqlite.query(`SELECT COUNT(*) AS n FROM events WHERE kind <> 'turn'`).get() as { n: number }).n;
 const texts = (table: string, column = 'text') => (rig.env.sqlite.query(`SELECT ${column} AS v FROM ${table} ORDER BY v`).all() as Array<{ v: string }>).map((r) => r.v);
 
 describe('member hooks through the worker: claude-code, transcript-first', () => {
@@ -157,9 +161,9 @@ describe('member hooks through the worker: claude-code, transcript-first', () =>
     const segment = rig.env.sqlite.query('SELECT base_offset, length FROM transcript_segments').get() as { base_offset: number; length: number };
     expect(segment).toEqual({ base_offset: 0, length: fs.statSync(tx).size });
     // A second Stop on an unchanged transcript emits nothing new and ships nothing.
-    const before = rig.rows('events');
+    const before = captured();
     await run('stop', { transcript_path: tx, last_assistant_message: '' });
-    expect(rig.rows('events')).toBe(before);
+    expect(captured()).toBe(before);
     // A transcript that grows ships only the tail, at the server's held offset.
     fs.appendFileSync(tx, JSON.stringify({ type: 'user', uuid: 'u9', promptId: 'p9', message: { role: 'user', content: 'later' } }) + '\n');
     await run('stop', { transcript_path: tx, last_assistant_message: 'ok' });
@@ -174,7 +178,7 @@ describe('member hooks through the worker: claude-code, transcript-first', () =>
 
   it('a hook under an unknown symbiont takes its default budget, records nothing, and never dials', async () => {
     const tx = transcript([{ type: 'user', message: { role: 'user', content: 'x' } }]);
-    const pre = await runHook('pre-tool-use', { session_id: session, hook_event_name: 'PreToolUse', transcript_path: tx, tool_name: 'Read', tool_input: { file_path: '/x' } }, { fetch: fetchSpy.fetch, symbiont: 'not-a-symbiont' });
+    const pre = await runHook('pre-tool-use', { session_id: session, hook_event_name: 'PreToolUse', transcript_path: tx, tool_name: 'Read', tool_input: { file_path: '/x' } }, { helpers: 'run', fetch: fetchSpy.fetch, symbiont: 'not-a-symbiont' });
     expect(pre.stdout).toBe('');
     expect(dialled()).toEqual([]);
     expect(rig.rows('events')).toBe(0);
@@ -271,9 +275,9 @@ describe('member hooks through the worker: claude-code, transcript-first', () =>
     await parseAll();
     expect(texts('prompt_batches')).toContain('search the codebase for the retention leaf');
     // Nothing new to ship on a second Stop.
-    const before = rig.rows('events');
+    const before = captured();
     await run('stop', { transcript_path: tx, last_assistant_message: '' });
-    expect(rig.rows('events')).toBe(before);
+    expect(captured()).toBe(before);
   });
 
   it('mints the identity over the head of the file and ships a transcript replaced in place as a transcript of its own', async () => {
@@ -302,6 +306,11 @@ describe('member hooks through the worker: claude-code, transcript-first', () =>
     rig.env.sqlite.query(`INSERT OR REPLACE INTO project_capabilities (project_id, capability, enabled, updated_at, updated_by) VALUES ('proj_1', 'cortex', 1, ?, 'test')`).run(Date.now());
     rig.env.sqlite.query(`INSERT OR REPLACE INTO deployment_settings (leaf, value, updated_at, updated_by) VALUES ('instructions.template', ?, ?, 'test')`).run(JSON.stringify('Keep the plan current.'), Date.now());
     const tx = transcript([{ type: 'user', message: { role: 'user', content: 'x' } }]);
+    // A first start on this machine has nothing cached but its Project line: the helper it kicks fetches the block for
+    // the next.
+    const prime = await runHook('session-start', { session_id: 'sess-prime', transcript_path: tx, cwd: '/work/repo', source: 'startup' }, { helpers: 'run', fetch: fetchSpy.fetch });
+    expect(prime.stdout).toContain('Project:: `proj_1`');
+    expect(prime.stdout).not.toContain('Keep the plan current.');
     expect((await run('session-start', { transcript_path: tx, cwd: '/work/repo', source: 'startup' })).stdout).toContain('Keep the plan current.');
     expect((await run('session-start', { transcript_path: tx, cwd: '/work/repo', source: 'compact' })).stdout).toContain('Keep the plan current.');
     expect((await run('session-start', { transcript_path: tx, cwd: '/work/repo', source: 'compact' })).stdout).toContain('Keep the plan current.');
@@ -321,31 +330,150 @@ describe('member hooks through the worker: the turn-end mark', () => {
   const offline: typeof rig.fetch = async () => { throw new TypeError('fetch failed'); };
   const line = (text: string) => ({ type: 'user', uuid: `u-${text}`, message: { role: 'user', content: text } });
 
-  it('marks only the transcript a session\'s own Stop and SessionEnd ship; another session\'s turn end draining it, and a member drain, never mark it', async () => {
+  /** When the Deployment holds each segment as created: the time a turn end rides on. */
+  const segmentStamps = (sessionId: string) => fetchSpy.requests
+    .filter((r) => r.path === '/events' && r.body !== undefined)
+    .map((r) => JSON.parse(r.body!) as { kind: string; sessionId: string; createdAt: number })
+    .filter((e) => e.kind === 'transcript.segment' && e.sessionId === sessionId)
+    .map((e) => e.createdAt);
+  const turnEnds = (sessionId: string) => (rig.env.sqlite.query(`SELECT COUNT(*) AS n FROM events WHERE session_id = ? AND kind = 'turn'`).get(sessionId) as { n: number }).n;
+
+  it('tells a Deployment of a turn end when it happened: a mark rides the segment that reaches it, stamped with the turn\'s end, until the Deployment advertises turn events', async () => {
+    // Offline from the start: nothing is known of the Deployment's features, so the Stop leaves a mark.
     const txA = transcript([line('a')], 'sess-a');
-    for (const [hook, raw] of [
-      ['session-start', { hook_event_name: 'SessionStart', transcript_path: txA, cwd: '/work/repo' }],
-      ['stop', { hook_event_name: 'Stop', transcript_path: txA, last_assistant_message: 'x' }],
-    ] as const) await runHook(hook, { session_id: 'sess-a', ...raw }, { fetch: offline });
+    await runHook('session-start', { session_id: 'sess-a', hook_event_name: 'SessionStart', transcript_path: txA, cwd: '/work/repo' }, { helpers: 'run', fetch: offline });
+    // The turn ended an hour ago, by the hook's clock.
+    const stoppedAt = Date.now() - 3_600_000;
+    await runHook('stop', { session_id: 'sess-a', hook_event_name: 'Stop', transcript_path: txA, last_assistant_message: 'x' }, { helpers: 'run', fetch: offline, now: () => stoppedAt });
     const spool = new MemberSpool('proj_1', { mycoHome });
-    expect(spool.transcriptBacklogIds()).toEqual(['sess-a']);
+    expect(spool.pendingTurnEnds('sess-a').map((p) => p.mark.atSize)).toEqual([fs.statSync(txA).size]);
 
+    // Back online. Session b's start runs the helper, which ships session a's segment: it reaches the mark and carries
+    // the turn's own end, not the time it shipped.
     const txB = transcript([line('b')], 'sess-b');
-    await runHook('session-start', { session_id: 'sess-b', hook_event_name: 'SessionStart', transcript_path: txB, cwd: '/work/repo' }, { fetch: fetchSpy.fetch });
-    await runHook('stop', { session_id: 'sess-b', hook_event_name: 'Stop', transcript_path: txB, last_assistant_message: 'x' }, { fetch: fetchSpy.fetch });
-    expect(segmentPosts().sort()).toEqual(['sess-a unmarked', 'sess-b marked']);
+    await runHook('session-start', { session_id: 'sess-b', hook_event_name: 'SessionStart', transcript_path: txB, cwd: '/work/repo' }, { helpers: 'run', fetch: fetchSpy.fetch });
+    expect(segmentPosts()).toEqual(['sess-a marked']);
+    expect(segmentStamps('sess-a')).toEqual([stoppedAt]);
+    expect(spool.pendingTurnEnds('sess-a')).toEqual([]);
 
-    fs.appendFileSync(txB, JSON.stringify(line('b2')) + '\n');
-    await runHook('session-end', { session_id: 'sess-b', hook_event_name: 'SessionEnd', transcript_path: txB }, { fetch: fetchSpy.fetch });
-    expect(segmentPosts().filter((p) => p.startsWith('sess-b'))).toEqual(['sess-b marked', 'sess-b marked']);
+    // The Deployment's answers advertised `turn`: session b's Stop is a turn event, and its segment carries no mark.
+    await runHook('stop', { session_id: 'sess-b', hook_event_name: 'Stop', transcript_path: txB, last_assistant_message: 'x' }, { helpers: 'run', fetch: fetchSpy.fetch });
+    expect(turnEnds('sess-b')).toBe(1);
+    expect(segmentPosts().filter((p) => p.startsWith('sess-b'))).toEqual(['sess-b unmarked']);
+    expect(spool.pendingTurnEnds('sess-b')).toEqual([]);
+  });
+});
 
-    const txC = transcript([line('c')], 'sess-c');
-    for (const [hook, raw] of [
-      ['session-start', { hook_event_name: 'SessionStart', transcript_path: txC, cwd: '/work/repo' }],
-      ['stop', { hook_event_name: 'Stop', transcript_path: txC, last_assistant_message: 'x' }],
-    ] as const) await runHook(hook, { session_id: 'sess-c', ...raw }, { fetch: offline });
-    await runMemberCli(['drain'], { mycoHome, fetch: fetchSpy.fetch, stdout: () => {}, stderr: () => {} });
-    expect(segmentPosts().filter((p) => p.startsWith('sess-c'))).toEqual(['sess-c unmarked']);
+describe('member hooks through the worker: turn ends told by the transcript alone', () => {
+  it('ends a segment at every mark, each stamped with its own turn, ignores a mark naming another transcript, and holds the turn under way, a mark written mid-ship included, until its end', async () => {
+    // A Deployment from before `turn`: no answer of its names a feature, so every turn end is a mark.
+    const stripped: typeof rig.fetch = async (input, init) => {
+      const res = await fetchSpy.fetch(input, init);
+      const headers = new Headers(res.headers);
+      headers.delete(FEATURES_HEADER);
+      return new Response(await res.text(), { status: res.status, headers });
+    };
+    let midShip: (() => void) | null = null;
+    const fetch: typeof rig.fetch = async (input, init) => {
+      const req = new Request(input, init);
+      if (midShip !== null && new URL(req.url).pathname.startsWith('/blobs/')) { const act = midShip; midShip = null; act(); }
+      return stripped(req);
+    };
+    const id = 'sess-marks';
+    const line = (text: string) => `${JSON.stringify({ type: 'user', uuid: `u-${text}`, message: { role: 'user', content: text } })}\n`;
+    const tx = transcript([], id);
+    fs.writeFileSync(tx, line('one'));
+    const hook = (name: Parameters<typeof runHook>[0], raw: Record<string, unknown>, now?: () => number, helpers: 'run' | 'record' = 'record') =>
+      runHook(name, { session_id: id, transcript_path: tx, cwd: '/work/repo', ...raw }, { helpers, fetch, now });
+    await hook('session-start', {}, undefined, 'run');
+    const spool = new MemberSpool('proj_1', { mycoHome });
+    // Two turns end before any helper runs: two marks a few bytes apart, inside what one segment would carry.
+    const t1 = Date.now() - 60_000;
+    await hook('stop', { last_assistant_message: 'x' }, () => t1);
+    const x1 = fs.statSync(tx).size;
+    fs.appendFileSync(tx, line('two'));
+    const t2 = Date.now() - 30_000;
+    await hook('stop', { last_assistant_message: 'y' }, () => t2);
+    const x2 = fs.statSync(tx).size;
+    // A mark naming a transcript this session no longer points at says nothing of this one's bytes.
+    spool.appendTurnEnd(id, { slot: 'primary', transcriptId: 'tx-elsewhere', atSize: 3 }, undefined, Date.now());
+    // The third turn is under way; its Stop lands while the helper is shipping.
+    fs.appendFileSync(tx, line('three'));
+    const t3 = Date.now() - 10_000;
+    let x3 = 0;
+    midShip = () => {
+      fs.appendFileSync(tx, line('three, done'));
+      x3 = fs.statSync(tx).size;
+      const transcriptId = readSessionState(spool.dir, id).transcript!.transcriptId;
+      spool.appendTurnEnd(id, { slot: 'primary', transcriptId, atSize: x3 }, undefined, t3);
+    };
+    await hook('user-prompt-submit', { prompt: 'p' }, undefined, 'run');
+    const segments = () => fetchSpy.requests
+      .filter((r) => r.path === '/events' && r.body !== undefined)
+      .map((r) => ({ e: JSON.parse(r.body!) as { kind: string; sessionId: string; createdAt: number; payload: { baseOffset: number; length: number } }, marked: r.headers[TURN_END_HEADER] === '1' }))
+      .filter(({ e }) => e.kind === 'transcript.segment' && e.sessionId === id)
+      .map(({ e, marked }) => ({ end: e.payload.baseOffset + e.payload.length, marked, at: marked ? e.createdAt : undefined }));
+    // One segment per turn, each ending at its mark with its turn's end; nothing of the turn under way.
+    expect(segments()).toEqual([{ end: x1, marked: true, at: t1 }, { end: x2, marked: true, at: t2 }]);
+    // The mark written mid-ship waits for the pass after; the others are spent.
+    expect(spool.pendingTurnEnds(id).map((p) => p.mark.atSize)).toEqual([x3]);
+
+    await hook('user-prompt-submit', { prompt: 'q' }, undefined, 'run');
+    expect(segments().slice(2)).toEqual([{ end: x3, marked: true, at: t3 }]);
+    expect(spool.pendingTurnEnds(id)).toEqual([]);
+
+    // The session ends: what its transcript holds past the last turn ships, a turn's end no longer.
+    fs.appendFileSync(tx, line('after'));
+    await hook('session-end', {}, undefined, 'run');
+    expect(segments().slice(3)).toEqual([{ end: fs.statSync(tx).size, marked: false, at: undefined }]);
+  });
+});
+
+describe('member hooks through the worker: a session its harness left without its end', () => {
+  it('holds what the transcript holds past the last turn\'s end until the session has gone 15 minutes without a hook, then ships it', async () => {
+    const fetch: typeof rig.fetch = async (input, init) => {
+      const res = await fetchSpy.fetch(input, init);
+      const headers = new Headers(res.headers);
+      headers.delete(FEATURES_HEADER);
+      return new Response(await res.text(), { status: res.status, headers });
+    };
+    const id = 'sess-killed';
+    const line = (text: string) => `${JSON.stringify({ type: 'user', uuid: `u-${text}`, message: { role: 'user', content: text } })}\n`;
+    const tx = transcript([], id);
+    fs.writeFileSync(tx, line('one'));
+    const t0 = Date.now();
+    const hook = (name: Parameters<typeof runHook>[0], raw: Record<string, unknown>) =>
+      runHook(name, { session_id: id, transcript_path: tx, cwd: '/work/repo', ...raw }, { helpers: 'record', fetch, now: () => t0 });
+    await hook('session-start', {});
+    await hook('stop', { last_assistant_message: 'x' });
+    const ended = fs.statSync(tx).size;
+    // The next turn was under way when the harness was killed: no Stop, no SessionEnd.
+    fs.appendFileSync(tx, line('two, never finished'));
+    const pass = (at: number) => runHelperVerb(['--project', 'proj_1', '--home', mycoHome], { fetch, now: () => at, lingerMs: 0, keepStderr: true });
+    const ends = () => fetchSpy.requests
+      .filter((r) => r.path === '/events' && r.body !== undefined)
+      .map((r) => JSON.parse(r.body!) as { kind: string; sessionId: string; payload: { baseOffset: number; length: number } })
+      .filter((e) => e.kind === 'transcript.segment' && e.sessionId === id)
+      .map((e) => e.payload.baseOffset + e.payload.length);
+
+    await pass(t0 + TAIL_IDLE_MS - 1_000);
+    expect(ends()).toEqual([ended]);
+    await pass(t0 + TAIL_IDLE_MS + 1_000);
+    expect(ends()).toEqual([ended, fs.statSync(tx).size]);
+  });
+});
+
+describe('member hooks through the worker: a session resumed after its end', () => {
+  it('is live again: the end it recorded is cleared by its next hook', async () => {
+    const tx = transcript([{ type: 'user', message: { role: 'user', content: 'x' } }], 'sess-resumed');
+    const hook = (name: Parameters<typeof runHook>[0], raw: Record<string, unknown> = {}) =>
+      runHook(name, { session_id: 'sess-resumed', transcript_path: tx, cwd: '/work/repo', ...raw }, { helpers: 'record', fetch: fetchSpy.fetch });
+    const spool = new MemberSpool('proj_1', { mycoHome });
+    await hook('session-start');
+    await hook('session-end');
+    expect(readSessionState(spool.dir, 'sess-resumed').endedAt).toBeNumber();
+    await hook('session-start', { source: 'resume' });
+    expect(readSessionState(spool.dir, 'sess-resumed').endedAt).toBeUndefined();
   });
 });
 
@@ -357,12 +485,13 @@ describe('member hooks through the worker: retention and plan files', () => {
     updateSessionState(spool.dir, old, (state) => { state.delivered.push('cortex'); }, past);
     expect(fs.existsSync(sessionStatePath(spool.dir, old))).toBe(true);
     const tx = transcript([{ type: 'user', uuid: 'u1', promptId: 'p1', message: { role: 'user', content: 'x' } }]);
-    await run('session-start', { transcript_path: tx, cwd: '/work/repo' });
-    // Another process holds this session's drain lease: the Stop's drain is skipped, and skipped is not delivered.
+    // Another process holds this session's drain lease: the helper's drain is skipped, and skipped is not delivered.
     const lease = LifecycleLock.acquire(path.join(spool.dir, `.${session}.drain.lock`), { command: 'test' });
     expect(lease.acquired).toBe(true);
     if (!lease.acquired) throw new Error('the test session drain lease was not acquired');
     try {
+      await run('session-start', { transcript_path: tx, cwd: '/work/repo' });
+      expect(fs.existsSync(sessionStatePath(spool.dir, old))).toBe(true);
       await run('stop', { transcript_path: tx, last_assistant_message: '' });
       expect(fs.existsSync(sessionStatePath(spool.dir, old))).toBe(true);
     } finally {
@@ -390,9 +519,9 @@ describe('member hooks through the worker: retention and plan files', () => {
       const state = readSessionState(new MemberSpool('proj_1', { mycoHome }).dir, session);
       expect(state.siblings[sibling].parsedSize).toBe(fs.statSync(sibling).size);
       // A second Stop reads neither transcript again and ships no second plan.
-      const before = rig.rows('events');
+      const before = captured();
       await run('stop', { transcript_path: tx, last_assistant_message: '', cwd: root });
-      expect(rig.rows('events')).toBe(before);
+      expect(captured()).toBe(before);
     } finally { try { fs.unlinkSync(file); } catch {} }
   });
 
@@ -444,7 +573,7 @@ describe('member hooks through the worker: cursor', () => {
     fs.mkdirSync(path.dirname(tx), { recursive: true });
     fs.copyFileSync(path.join(FIXTURES, 'cursor-agent-2026.09-redacted.jsonl'), tx);
     const cursor = (name: Parameters<typeof runHook>[0], raw: Record<string, unknown>) =>
-      runHook(name, { conversation_id: session, transcript_path: tx, cwd: '/repo', ...raw }, { fetch: fetchSpy.fetch, symbiont: 'cursor' });
+      runHook(name, { conversation_id: session, transcript_path: tx, cwd: '/repo', ...raw }, { helpers: 'run', fetch: fetchSpy.fetch, symbiont: 'cursor' });
     await cursor('session-start', { hook_event_name: 'sessionStart' });
     await cursor('post-tool-use', { hook_event_name: 'postToolUse', tool_name: 'Read', tool_input: { file_path: '/repo/a.ts' }, tool_output: 'contents' });
     await cursor('post-tool-use-failure', { hook_event_name: 'postToolUseFailure', tool_name: 'Shell', tool_input: { command: 'false' }, error: 'exit 1' });
@@ -476,10 +605,10 @@ describe('member hooks through the worker: hook-source agents', () => {
   it('windsurf --phases: the response phase emits only the response, the transcript phase only the transcript work', async () => {
     const tx = transcript([{ type: 'user', message: { role: 'user', content: 'x' } }]);
     const raw = { trajectory_id: session, tool_info: { transcript_path: tx, response: 'resp' } };
-    await runHook('stop', raw, { fetch: fetchSpy.fetch, symbiont: 'windsurf', argv: ['--phases', 'response'] });
+    await runHook('stop', raw, { helpers: 'run', fetch: fetchSpy.fetch, symbiont: 'windsurf', argv: ['--phases', 'response'] });
     expect(rig.rows('responses')).toBe(1);
     expect(rig.rows('transcript_segments')).toBe(0);
-    await runHook('stop', raw, { fetch: fetchSpy.fetch, symbiont: 'windsurf', argv: ['--phases', 'transcript'] });
+    await runHook('stop', raw, { helpers: 'run', fetch: fetchSpy.fetch, symbiont: 'windsurf', argv: ['--phases', 'transcript'] });
     expect(rig.rows('responses')).toBe(1);
     expect(rig.rows('transcript_segments')).toBe(1);
   });
@@ -487,7 +616,7 @@ describe('member hooks through the worker: hook-source agents', () => {
   it('copilot, which the Deployment does not parse, still ships its turn rows from the hooks', async () => {
     const tx = transcript([{ type: 'user', message: { role: 'user', content: 'x' } }]);
     const copilot = (name: Parameters<typeof runHook>[0], raw: Record<string, unknown>) =>
-      runHook(name, { session_id: session, transcript_path: tx, cwd: '/repo', ...raw }, { fetch: fetchSpy.fetch, symbiont: 'copilot' });
+      runHook(name, { session_id: session, transcript_path: tx, cwd: '/repo', ...raw }, { helpers: 'run', fetch: fetchSpy.fetch, symbiont: 'copilot' });
     await copilot('session-start', { hook_event_name: 'SessionStart' });
     await copilot('user-prompt-submit', { hook_event_name: 'UserPromptSubmit', prompt: 'hello' });
     await copilot('post-tool-use', { hook_event_name: 'PostToolUse', tool_name: 'Read', tool_input: { file_path: '/repo/a.ts' }, tool_response: 'contents' });

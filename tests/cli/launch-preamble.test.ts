@@ -2,6 +2,8 @@ import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
 import path from 'node:path';
 import { runLaunchPreamble, type LaunchPreambleDeps } from '@myco/cli/launch-preamble.js';
 import { readStdin, setBufferedStdin } from '@myco/hooks/read-stdin.js';
+import { recordStartingJob, resetStartingJob, startingJobRecorded as startingJobRecordedNow, STARTING_JOB_ENV } from '@myco/runtime/spawn-detached.js';
+import { runHook } from '@myco/hooks/entry.js';
 
 /** A drained fd 0: a test never reads its own process's stdin, which a caller may hold open without end. */
 const EMPTY_FD0 = (): Buffer => Buffer.alloc(0);
@@ -211,6 +213,32 @@ describe('runLaunchPreamble — pin re-exec', () => {
     expect(h.execCalls[0].file).toBe('/opt/myco-dev/bin/myco');
     expect(h.execCalls[0].args).toEqual(['hook', 'session-start', '--symbiont', 'claude-code']);
     expect(h.execCalls[0].options.env?.MYCO_TRAMPOLINED).toBe('1');
+  });
+
+  it('tells the pinned binary the job this hook began in, which the binary started inside Bun\'s own job can no longer read', () => {
+    for (const held of ['holds', 'free'] as const) {
+      resetStartingJob();
+      recordStartingJob({ [STARTING_JOB_ENV]: held });
+      const h = makeHarness({ pin: '/opt/myco-dev/bin/myco', execPath: '/usr/local/bin/myco' });
+      expect(() => runLaunchPreamble('hook', ['stop', '--symbiont', 'claude-code'], h.deps)).toThrow(/exit\(0\)/);
+      expect(h.execCalls[0].options.env?.[STARTING_JOB_ENV]).toBe(held);
+    }
+    resetStartingJob();
+  });
+
+  it('is reached by a hook only once the job the hook began in is recorded, before anything is spawned', async () => {
+    resetStartingJob();
+    let recordedFirst: boolean | null = null;
+    const stop = new Error('the preamble was reached');
+    await expect(runHook(['stop', '--symbiont', 'claude-code'], {
+      preamble: () => {
+        // A child the preamble spawns (the pin's re-exec) inherits what was recorded here.
+        recordedFirst = startingJobRecordedNow();
+        throw stop;
+      },
+    })).rejects.toBe(stop);
+    expect(recordedFirst).toBe(true);
+    resetStartingJob();
   });
 
   it('does NOT re-exec when the pin realpath equals this binary', () => {

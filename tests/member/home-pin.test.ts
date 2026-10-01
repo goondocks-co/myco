@@ -177,7 +177,7 @@ describe('a hook launched with no MYCO_HOME', () => {
     const result = await runHook(
       'post-tool-use',
       { session_id: 'sess-pinned', cwd: project, tool_name: 'Read', tool_input: { file_path: '/a' } },
-      { fetch, credential: 'registry', symbiont: 'copilot' },
+      { helpers: 'run', fetch, credential: 'registry', symbiont: 'copilot' },
     );
 
     expect(result.stderr).not.toContain('no registry entry');
@@ -201,7 +201,7 @@ describe('a hook launched with no MYCO_HOME', () => {
 
     const transcriptPath = path.join(tmpdir('myco-pinned-tx-'), 'sess-pinned-settings.jsonl');
     fs.writeFileSync(transcriptPath, JSON.stringify({ type: 'user', message: { role: 'user', content: 'hello' }, uuid: 'u1', timestamp: '2026-01-01T00:00:00Z' }) + '\n');
-    await runHook('session-start', { session_id: 'sess-pinned-settings', hook_event_name: 'SessionStart', cwd: project, source: 'startup', transcript_path: transcriptPath }, { fetch, credential: 'registry', symbiont: 'claude-code' });
+    await runHook('session-start', { session_id: 'sess-pinned-settings', hook_event_name: 'SessionStart', cwd: project, source: 'startup', transcript_path: transcriptPath }, { helpers: 'run', fetch, credential: 'registry', symbiont: 'claude-code' });
     const serverUrl = 'https://member-test.invalid';
     expect({ pinned: machinePlanDirs(serverUrl, home), fallback: fs.existsSync(machineSettingsPath(serverUrl, defaultMycoHome(homeDir))) })
       .toEqual({ pinned: ['notes/plans'], fallback: false });
@@ -210,7 +210,7 @@ describe('a hook launched with no MYCO_HOME', () => {
     const plan = path.join(project, 'notes', 'plans', 'next.md');
     fs.mkdirSync(path.dirname(plan), { recursive: true });
     fs.writeFileSync(plan, '# Next\n\n- [ ] one\n');
-    await runHook('post-tool-use', { session_id: 'sess-pinned-settings', cwd: project, tool_name: 'Write', tool_input: { file_path: plan, content: '# Next' }, transcript_path: transcriptPath }, { fetch, credential: 'registry', symbiont: 'claude-code' });
+    await runHook('post-tool-use', { session_id: 'sess-pinned-settings', cwd: project, tool_name: 'Write', tool_input: { file_path: plan, content: '# Next' }, transcript_path: transcriptPath }, { helpers: 'run', fetch, credential: 'registry', symbiont: 'claude-code' });
     const kinds = requests.filter((r) => r.path === '/events').map((r) => (JSON.parse(r.body ?? '{}') as { kind?: string }).kind);
     expect(kinds).toContain('plan');
   });
