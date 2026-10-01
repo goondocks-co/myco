@@ -87,6 +87,10 @@ export interface PendingTurnEnd {
   mark: TurnEndMark;
 }
 
+/** What names one turn's end: the transcript, its slot, and the size it had reached. */
+export const turnEndIdentity = (mark: Pick<TurnEndMark, 'slot' | 'transcriptId' | 'atSize'>): string =>
+  `${mark.slot === 'primary' ? 'primary' : `subagent:${mark.slot.subagent}`}\u0000${mark.transcriptId}\u0000${mark.atSize}`;
+
 /** Whether a parsed marks-file line is a turn-end mark: a line this build cannot read is skipped, never acted on. */
 export const isTurnEndMark = (line: unknown): line is TurnEndMark =>
   line !== null && typeof line === 'object' && (line as { t?: unknown }).t === TURN_END_MARK;
@@ -185,6 +189,9 @@ interface TurnsHeader {
   _journal: number;
   generation: string;
 }
+
+/** A new marks file's header: a fresh generation, so a consumer holding line numbers of a file already deleted can never consume this one's marks. */
+const newTurnsHeader = (): TurnsHeader => ({ t: 'gen', _journal: JOURNAL_VERSION, generation: crypto.randomBytes(8).toString('hex') });
 
 /** The generation a marks file's lines name, or null where its first line is not a header (no file, or one cut off). */
 function generationOf(lines: readonly unknown[]): string | null {
@@ -285,9 +292,11 @@ export class MemberSpool {
    * directory belongs — and report it. It is not a read-only spool: the writing
    * methods write and create their required directories.
    */
-  constructor(readonly projectId: string, opts: { mycoHome?: string; initialize?: boolean } = {}) {
+  constructor(readonly projectId: string, opts: { mycoHome?: string; initialize?: boolean; dir?: string } = {}) {
     this.mycoHome = opts.mycoHome ?? resolveMycoHome();
-    this.dir = spoolDirFor(projectId, this.mycoHome);
+    // `dir` holds capture for a repository that has no project yet (`pending.ts`): a directory inside the member root.
+    if (opts.dir !== undefined) assertMemberPathContained(opts.dir, this.mycoHome);
+    this.dir = opts.dir ?? spoolDirFor(projectId, this.mycoHome);
     this.blobsDir = path.join(this.dir, BLOBS_DIRNAME);
     if (opts.initialize === false) return;
     ensureMemberDir(this.dir, this.mycoHome);
@@ -400,10 +409,33 @@ export class MemberSpool {
    */
   appendTurnEnd(sessionId: string, mark: { slot: TurnEndMark['slot']; transcriptId: string; atSize: number }, record?: (state: SessionState) => void, now: number = Date.now()): void {
     const line: TurnEndMark & { timestamp: string } = { t: TURN_END_MARK, _journal: JOURNAL_VERSION, ...mark, at: now, timestamp: new Date(now).toISOString() };
-    // A new marks file starts with a fresh generation: a consumer holding line numbers of a file since deleted can
-    // never consume this one's marks.
-    const header = (): TurnsHeader => ({ t: 'gen', _journal: JOURNAL_VERSION, generation: crypto.randomBytes(8).toString('hex') });
-    this.appendLines(sessionId, this.turnsFile(sessionId), [line], record, now, header);
+    this.appendLines(sessionId, this.turnsFile(sessionId), [line], record, now, newTurnsHeader);
+  }
+
+  /**
+   * Append turn-end marks moved from another spool (capture held for a repository with no connection, `pending.ts`),
+   * in their order and each with the time its turn ended, under the same lock and header rules as `appendTurnEnd`. A
+   * mark whose slot, transcript and size the marks file already holds is skipped, so a move that runs again appends
+   * none twice. How many were appended.
+   */
+  appendMovedTurnEnds(sessionId: string, marks: readonly TurnEndMark[], now: number = Date.now()): number {
+    const lines = marks.map((mark): TurnEndMark & { timestamp: string } => ({
+      t: TURN_END_MARK, _journal: JOURNAL_VERSION, slot: mark.slot, transcriptId: mark.transcriptId, atSize: mark.atSize, at: mark.at,
+      timestamp: new Date(mark.at).toISOString(),
+    }));
+    let appended = 0;
+    this.appendLines(sessionId, this.turnsFile(sessionId), lines, undefined, now, newTurnsHeader, (existing, moving) => {
+      const held = new Set(existing.filter(isTurnEndMark).map(turnEndIdentity));
+      const fresh = moving.filter((line) => {
+        const identity = turnEndIdentity(line as TurnEndMark);
+        if (held.has(identity)) return false;
+        held.add(identity);
+        return true;
+      });
+      appended = fresh.length;
+      return fresh;
+    });
+    return appended;
   }
 
   /**
@@ -411,22 +443,27 @@ export class MemberSpool {
    * lock and in ONE write: a hook that is killed, or meets a full disk, part-way leaves at most a cut final line,
    * which `endsMidLine` closes before the next append so it never costs the line after it.
    */
-  private appendLines(sessionId: string, file: string, lines: readonly object[], record: ((state: SessionState) => void) | undefined, now: number, header?: () => object): void {
+  private appendLines(
+    sessionId: string, file: string, lines: readonly object[], record: ((state: SessionState) => void) | undefined, now: number, header?: () => object,
+    fresh?: (existing: readonly unknown[], lines: readonly object[]) => readonly object[],
+  ): void {
     if (lines.length === 0 && !record) return;
     const lock = bufferLockPath(this.dir, sessionId);
     ensurePrivateFile(lock);
     // A receipt with nothing to append leaves no spool file behind: an empty file would read as a session with records to drain.
     if (lines.length > 0) ensurePrivateFile(file);
     withFileLockSync(lock, () => {
-      if (lines.length > 0) {
+      const existing = lines.length === 0 || header === undefined || fs.statSync(file).size === 0 ? null : readTurnLines(file);
+      // What the file already holds is read under the lock this append holds, so no other append slips between.
+      const appending = fresh === undefined || lines.length === 0 ? lines : fresh(existing ?? [], lines);
+      if (appending.length > 0) {
         const toText = (out: readonly unknown[]): string => out.map((line) => JSON.stringify(line) + '\n').join('');
-        const existing = header === undefined || fs.statSync(file).size === 0 ? null : readTurnLines(file);
         if (header !== undefined && existing !== null && generationOf(existing) === null) {
           // The file's first write was cut off before its header was whole: begin a fresh generation, keeping every
           // mark after it that reads whole, so no later mark is hidden behind a header nothing can read.
-          writePrivateFileAtomic(file, toText([header(), ...existing.filter(isTurnEndMark), ...lines]));
+          writePrivateFileAtomic(file, toText([header(), ...existing.filter(isTurnEndMark), ...appending]));
         } else {
-          const body = toText([...(header !== undefined && existing === null ? [header()] : []), ...lines]);
+          const body = toText([...(header !== undefined && existing === null ? [header()] : []), ...appending]);
           fs.appendFileSync(file, (endsMidLine(file) ? '\n' : '') + body, { mode: MEMBER_FILE_MODE });
         }
       }

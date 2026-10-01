@@ -33,10 +33,12 @@ export const STEP_57_INDEXES = ['idx_sessions_occurred_deployment', 'idx_spores_
 export const STEP_58_INDEXES = ['sqlite_autoindex_run_reads_1', 'idx_run_reads_session', 'idx_spores_session', 'idx_agent_runs_session'] as const;
 /** The indexes schema step 60 adds. */
 export const STEP_60_INDEXES = ['idx_sessions_working', 'idx_agent_runs_actor_entry'] as const;
+/** The indexes schema step 61 adds. */
+export const STEP_61_INDEXES = ['sqlite_autoindex_uncaptured_roots_1', 'idx_uncaptured_roots_member', 'idx_uncaptured_roots_seen'] as const;
 
 export const PROFILES: Readonly<Record<'current' | 'stale', StatsProfile>> = {
   current: { projects: 13, sessions: 4_000, spores: 2_000, plans: 450, runs: 12_000, transcripts: 4_200, unanalyzed: [] },
-  stale: { projects: 3, sessions: 159, spores: 268, plans: 60, runs: 900, transcripts: 170, unanalyzed: [...STEP_57_INDEXES, ...STEP_58_INDEXES, ...STEP_60_INDEXES] },
+  stale: { projects: 3, sessions: 159, spores: 268, plans: 60, runs: 900, transcripts: 170, unanalyzed: [...STEP_57_INDEXES, ...STEP_58_INDEXES, ...STEP_60_INDEXES, ...STEP_61_INDEXES] },
 };
 
 const AGENTS = ['claude-code', 'claude-code', 'claude-code', 'codex', 'codex', 'cursor', 'pi'];

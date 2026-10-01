@@ -70,6 +70,12 @@ export interface CredentialOptions {
   mycoHome?: string;
   /** What is asking, for the record a missed membership leaves behind (`hook stop`, `mcp`). */
   invokedBy?: string;
+  /**
+   * Asked about a project root with no registry entry, before that miss is logged or counted. True when another path
+   * answers for the root, so there is no miss: a repository holding its capture while it joins, or one left with
+   * `myco member leave`.
+   */
+  claimsUnconnected?: (root: string) => boolean;
 }
 
 /**
@@ -102,6 +108,7 @@ export function resolveCredential(
   const entry = readRegistryEntry(root, mycoHome) ?? soleMembershipForMcp(mycoHome, opts.invokedBy);
   if (source === 'env') return joinCodeCredential(env, entry, root, mycoHome);
   if (!entry) {
+    if (opts.claimsUnconnected?.(root) === true) return null;
     // The hook still exits 0 — a non-zero hook breaks the harness — so the
     // miss is counted under the home this invocation resolved, where
     // `myco member status` reads it back.

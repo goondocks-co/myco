@@ -1,5 +1,5 @@
 import type { PreparedStatement, RelationalStore } from './adapters.js';
-import { planFolderRefusal } from '@goondocks/myco-shared/member-protocol';
+import { planFolderRefusal, ROOT_KEY_PATTERN } from '@goondocks/myco-shared/member-protocol';
 import { INSTRUCTIONS_TEMPLATE_MAX_BYTES, IMPORT_MAX_SESSIONS_MAX, IMPORT_WINDOW_DAYS_MAX } from '../constants.js';
 
 /**
@@ -45,7 +45,9 @@ export type LeafSpec =
   | { readonly type: 'markdown'; readonly maxBytes: number }
   | { readonly type: 'task-overrides' }
   /** A list of paths: each absolute, `~/`, or relative to wherever it is resolved, without control characters. */
-  | { readonly type: 'path-list'; readonly maxItems: number; readonly maxChars: number };
+  | { readonly type: 'path-list'; readonly maxItems: number; readonly maxChars: number }
+  /** Repository keys, each naming the project it connects to or `''` for none chosen: what a machine may join. */
+  | { readonly type: 'root-map'; readonly maxItems: number };
 
 /**
  * The leaves this tier owns, from §7.8 of the architecture ledger.
@@ -90,6 +92,9 @@ export const DEPLOYMENT_LEAF_SPECS: Readonly<Record<string, LeafSpec>> = {
   'agent.summary_batch_interval': {},
   'agent.tasks': { type: 'task-overrides' },
   'backup.auto_interval_hours': {},
+  // #1547: whether a member's machine may create a project for a repository it meets that no project holds. Absent
+  // means on; an admin turns it off to keep project creation with admins.
+  'capture.auto_create_projects': {},
   'backup.recovery.keep_stagings': {},
   'backup.retention.keep_daily': {},
   'backup.retention.keep_weekly': {},
@@ -213,6 +218,23 @@ function pathListViolation(spec: { maxItems: number; maxChars: number }, value: 
   return new Set(value).size === value.length ? null : 'expected each path once';
 }
 
+/** A repository key as the member derives one: hex, of a fixed width. */
+export const ROOT_KEY = ROOT_KEY_PATTERN;
+/** A project id as every project carries one. */
+const PROJECT_ID_SHAPE = /^[A-Za-z0-9._-]{1,64}$/;
+
+/** What a root map violates: an object of repository keys, each naming a project or `''`, or null when it holds. */
+function rootMapViolation(spec: { maxItems: number }, value: unknown): string | null {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) return 'expected an object of repository keys';
+  const entries = Object.entries(value as Record<string, unknown>);
+  if (entries.length > spec.maxItems) return `expected at most ${spec.maxItems} repositories`;
+  for (const [key, project] of entries) {
+    if (!ROOT_KEY.test(key)) return `${key} is not a repository key`;
+    if (typeof project !== 'string' || (project !== '' && !PROJECT_ID_SHAPE.test(project))) return `${key} names no project`;
+  }
+  return null;
+}
+
 /** What the value violates, or null when it satisfies the leaf's rule. */
 export function leafRuleViolation(spec: LeafSpec, value: unknown): string | null {
   if (!('type' in spec)) return null;
@@ -223,6 +245,7 @@ export function leafRuleViolation(spec: LeafSpec, value: unknown): string | null
   }
   if (spec.type === 'task-overrides') return taskOverridesViolation(value);
   if (spec.type === 'path-list') return pathListViolation(spec, value);
+  if (spec.type === 'root-map') return rootMapViolation(spec, value);
   if (typeof value !== 'string') return 'expected Markdown text';
   if (CONTROL_CHARACTERS.test(value)) return 'expected Markdown text without control characters';
   const bytes = new TextEncoder().encode(value).length;

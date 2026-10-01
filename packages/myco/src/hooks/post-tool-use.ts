@@ -39,7 +39,8 @@ export async function main(opts: HookMainOptions = {}) {
     // A write into a plan directory is the plan itself: read now, keyed by its path, named after the prompt that wrote it.
     const root = planRootFor(credential.root, typeof input.raw.cwd === 'string' ? input.raw.cwd : undefined);
     const planPath = planWritePath(agent, input.toolName, input.toolInput, root, run.machinePlanDirs());
-    if (planPath === null) return { events, context };
+    // A repository still joining has no project to key a plan to; the turn's end reads the write again once it has one.
+    if (planPath === null || run.pending === true) return { events, context };
     const plan = planFileCapture(ctx, state, credential.projectId, root, planPath, promptId);
     return { events: [...events, ...plan.events], record: plan.record, context };
   });

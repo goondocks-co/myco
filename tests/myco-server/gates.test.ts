@@ -51,7 +51,7 @@ const sharedFiles = () =>
     !f.includes(`${join(SRC, 'platform')}/`) && !f.includes(`${join(SRC, 'entry')}/`) && f !== join(SRC, 'index.ts'));
 
 /** Every `emit` call across src; a call removed or added moves the total. */
-const EMIT_CALLS = 146;
+const EMIT_CALLS = 148;
 /** The one migrations directory: the emit script writes it, the rendered-steps gate verifies it, and wrangler.toml applies from it. */
 const MIGRATIONS_DIR = 'migrations';
 const K = SyntaxKind as unknown as Record<string, number>;
@@ -723,6 +723,21 @@ describe('gates', () => {
         malformed: (token) => new Request('https://s/members/projects', { method: 'POST', headers: memberHeaders(token), body: JSON.stringify({ name: '' }) }),
         wellFormed: (token) => new Request('https://s/members/projects', { method: 'POST', headers: memberHeaders(token), body: JSON.stringify({ name: 'gate project' }) }),
       },
+      'POST /members/projects/resolve': {
+        shape: 'persisted',
+        malformed: (token) => new Request('https://s/members/projects/resolve', { method: 'POST', headers: memberHeaders(token), body: JSON.stringify({ rootKey: 'nope', label: 'repo' }) }),
+        wellFormed: (token) => new Request('https://s/members/projects/resolve', { method: 'POST', headers: memberHeaders(token), body: JSON.stringify({ rootKey: 'a'.repeat(16), label: 'gate-repo', remote: 'git@github.com:acme/gate.git' }) }),
+      },
+      'POST /members/uncaptured': {
+        shape: 'persisted',
+        malformed: (token) => new Request('https://s/members/uncaptured', { method: 'POST', headers: memberHeaders(token), body: JSON.stringify({ rootKey: 'a'.repeat(16), label: 'repo', reason: 'bogus' }) }),
+        wellFormed: (token) => new Request('https://s/members/uncaptured', { method: 'POST', headers: memberHeaders(token), body: JSON.stringify({ rootKey: 'a'.repeat(16), label: 'gate-repo', reason: 'outside_folders' }) }),
+      },
+      'POST /members/uncaptured/state': {
+        shape: 'persisted',
+        malformed: (token) => new Request('https://s/members/uncaptured/state', { method: 'POST', headers: memberHeaders(token), body: JSON.stringify({ rootKey: 'a'.repeat(16), state: 'bogus' }) }),
+        wellFormed: (token) => new Request('https://s/members/uncaptured/state', { method: 'POST', headers: memberHeaders(token), body: JSON.stringify({ rootKey: 'a'.repeat(16), state: 'connected' }) }),
+      },
       'POST /members/projects/list': {
         shape: 'persisted',
         malformed: (token) => new Request('https://s/members/projects/list', { method: 'POST', headers: memberHeaders(token), body: JSON.stringify({ project: 'x' }) }),
@@ -1221,8 +1236,11 @@ describe('gates', () => {
       'member POST /members/link-github',
       'member POST /members/projects',
       'member POST /members/projects/list',
+      'member POST /members/projects/resolve',
       'member POST /members/settings',
       'member POST /members/status',
+      'member POST /members/uncaptured',
+      'member POST /members/uncaptured/state',
       'member POST /runs/canopy-map',
       'member POST /runs/claim',
       'member POST /runs/embedding-step',
@@ -1335,10 +1353,12 @@ describe('gates', () => {
       'session:member GET /api/settings',
       'session:member GET /api/spores',
       'session:member GET /api/status',
+      'session:member GET /api/uncaptured',
       'session:member GET /api/work',
       'session:member PATCH /api/machines/{machineId}',
       'session:member POST /api/credentials/{id}/revoke',
       'session:member POST /api/harness/dispatch',
+      'session:member POST /api/uncaptured/{machineId}/{rootKey}/connect',
       'session:member PUT /api/machines/{machineId}/settings/{leaf}',
     ]);
   });

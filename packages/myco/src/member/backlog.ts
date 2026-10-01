@@ -31,6 +31,7 @@ import { pointerBehind, pointersOf, readSessionState, retryWaiting, updateSessio
 import { HOLD_ENDS, MemberSpool, type DrainEnd, type DrainOptions, type DrainResult } from './spool.js';
 import { ensurePrivateFile, writePrivateFileAtomic } from './store.js';
 import { shipSessionTranscripts, type ShipResult } from './transcript.js';
+import { flushHeldCapture } from './held.js';
 import { ServerClient, type FetchLike } from './transport.js';
 
 /** Marks a spool whose session states have been read once for transcripts behind their files. */
@@ -217,6 +218,8 @@ export async function drainEntryBacklog(
     await refreshMemberCredential(entry.root, { mycoHome: opts.mycoHome, fetch: fetchImpl, now, budget: opts.budget ?? unboundedBudget() });
     current = readRegistryEntry(entry.root, opts.mycoHome) ?? entry;
   }
+  // What the repository's hooks held before it was connected is delivered with the rest.
+  flushHeldCapture(current.root, current.projectId, { mycoHome: opts.mycoHome, now: now() });
   const spool = new MemberSpool(current.projectId, { mycoHome: opts.mycoHome });
   return drainBacklog(spool, new ServerClient(current, fetchImpl), opts.budget ?? unboundedBudget(), {
     force: opts.force ?? true, now, machineId: opts.machineId ?? getMachineId(), rescan: opts.rescan ?? true,

@@ -20,7 +20,8 @@ import { credentialLive, runCredential } from '../db/liveness.js';
 import { revokeInvitationsOfMember } from './enrollment.js';
 import { linkedAdmin, revokeLinkKeysOfMember } from './identity-link.js';
 import { revokeCredentialsOfMember } from './tokens.js';
-import { asMemberRole, type MemberRole } from './roles.js';
+import { clearMemberUncapturedStatement } from '../ingest/uncaptured.js';
+import { asMemberRole, isAdmin, type MemberRole } from './roles.js';
 
 export interface MemberRow {
   id: string;
@@ -84,6 +85,12 @@ export async function memberRole(db: RelationalStore, memberId: string): Promise
   return row === null ? null : asMemberRole(row.role);
 }
 
+/** Whether `memberId` is a live admin of this Deployment. */
+export async function isLiveAdmin(db: RelationalStore, memberId: string): Promise<boolean> {
+  const row = await db.prepare(`SELECT role FROM members WHERE id = ? AND revoked_at IS NULL`).bind(memberId).first<{ role: string }>();
+  return row !== null && isAdmin(asMemberRole(row.role) ?? 'member');
+}
+
 export type MemberState = 'absent' | 'live' | 'revoked';
 
 export async function memberState(db: RelationalStore, memberId: string): Promise<MemberState> {
@@ -117,6 +124,7 @@ export async function revokeMember(db: RelationalStore, memberId: string, actor:
     revokeCredentialsOfMember(db, memberId, actor, nowMs),
     revokeInvitationsOfMember(db, memberId, actor, nowMs),
     revokeLinkKeysOfMember(db, memberId, actor, nowMs),
+    clearMemberUncapturedStatement(db, memberId, actor, nowMs),
   ]);
   if (results[0]?.meta.changes === 1) {
     emit({ kind: 'member_revoked', memberId, actor });

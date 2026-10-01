@@ -59,6 +59,9 @@ function derivePlanWrites(run: HookRun, transcripts: readonly ReadTranscript[], 
     for (const file of planWritesInLines(run.agent, unread.lines, root, machineDirs)) if (!written.includes(file)) written.push(file);
     advances.push([transcript, unread.size]);
   }
+  // A repository still joining has no project to key a plan to: its pointers stay where they were, and the first turn end
+  // after the join reads these writes again.
+  if (run.pending === true) return { events: [], lastAssistantText: undefined, record: () => {}, captured: [] };
   const plans = planFilesWritten(run.ctx, state, run.credential.projectId, root, written);
   return {
     ...plans,

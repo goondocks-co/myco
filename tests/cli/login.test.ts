@@ -15,6 +15,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { issueEnrollmentAuthority } from '@myco-server-worker/auth/enrollment.js';
 import { run } from '@myco/cli/login.js';
+import { readDefaultDeployment } from '@myco/member/default-deployment.js';
 import { runtimeLabelOf } from '@myco/member/join-code.js';
 import { readDeploymentMembership, readRegistryEntry } from '@myco/member/registry.js';
 import { unjoinedRig } from '../member/helpers/server.js';
@@ -80,6 +81,21 @@ describe('myco login', () => {
     const again = await issueEnrollmentAuthority(rig.env.db, Date.now(), { role: 'member', projectId: 'proj_1', memberId: readDeploymentMembership('https://s', home)!.memberId! });
     expect(await run([`https://s/join#${again.key}`, '--root', root], deps(rig))).toBe(true);
     expect(machinePlanDirs('https://s', home)).toEqual(['docs/plans']);
+  });
+
+  it('records the first Deployment it signs in to as the one new repositories join, and moves it only with --default (#1547)', async () => {
+    // Three Deployments, each its own store: a machine joins each once, as a member of that one.
+    const at = { s: unjoinedRig(), t: unjoinedRig(), u: unjoinedRig() };
+    const fetchAll = ((input: RequestInfo | URL, init?: RequestInit) => at[new URL(new Request(input, init).url).host as 's' | 't' | 'u'].fetch(input as never, init)) as typeof fetch;
+    const rig = { ...at.s, fetch: fetchAll } as ReturnType<typeof unjoinedRig>;
+    const link = async (host: 's' | 't' | 'u') => `https://${host}/join#${(await issueEnrollmentAuthority(at[host].env.db, Date.now(), { role: 'member', projectId: null })).key}`;
+    expect(await run([await link('s')], deps(rig))).toBe(true);
+    expect(readDefaultDeployment(home)?.serverUrl).toBe('https://s');
+    expect(await run([await link('t')], deps(rig))).toBe(true);
+    expect(readDefaultDeployment(home)?.serverUrl).toBe('https://s');
+    expect(out.join('\n')).toContain('New repositories keep joining https://s; `myco login --default <invite link>` makes https://t the one they join.');
+    expect(await run([await link('u'), '--default'], deps(rig))).toBe(true);
+    expect(readDefaultDeployment(home)?.serverUrl).toBe('https://u');
   });
 
   it('signs in on a link that names no Project, writing the membership and NO binding', async () => {

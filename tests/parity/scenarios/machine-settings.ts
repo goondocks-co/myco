@@ -8,6 +8,8 @@ import { machineSettingsPath } from '@myco/member/registry.js';
 import { lit, MACHINE_ID, MEMBER_ID, memberHeadersFor, SESSION_SECRET, type ParityScenario, type ParityTarget } from '../harness.ts';
 
 const LEAF = 'capture.plan_dirs';
+/** Every other leaf a machine holds, at its default: the folders it captures repositories under, and none told to connect. */
+const AT_DEFAULT = { 'capture.auto_join_roots': ['~/Repos'], 'capture.connect_roots': {} };
 
 /**
  * A machine's settings on both targets (#1393): set on the dashboard by the machine's own member and nobody else, and
@@ -36,12 +38,12 @@ export const machineSettings: ParityScenario = {
     try {
       // The parity member, who claims this machine, sets its plan folders; the machine is answered them on both of its reads.
       expect((await put(owner, MACHINE_ID, ['~/notes/plans', 'docs/plans'])).status).toBe(200);
-      expect(await settingsOf(target.memberHeaders())).toEqual({ leaves: { [LEAF]: ['~/notes/plans', 'docs/plans'] } });
+      expect(await settingsOf(target.memberHeaders())).toEqual({ leaves: { ...AT_DEFAULT, [LEAF]: ['~/notes/plans', 'docs/plans'] } });
       const session = await fetch(`${target.url}/context/session`, {
         method: 'POST', headers: { ...target.memberHeaders(), 'content-type': 'application/json' },
         body: JSON.stringify({ sessionId: `sess_parity_machine_${now}`, kind: 'start' }),
       });
-      expect(((await session.json()) as { machine?: unknown }).machine).toEqual({ leaves: { [LEAF]: ['~/notes/plans', 'docs/plans'] } });
+      expect(((await session.json()) as { machine?: unknown }).machine).toEqual({ leaves: { ...AT_DEFAULT, [LEAF]: ['~/notes/plans', 'docs/plans'] } });
 
       // Another member's machine is answered its own settings, never this one's.
       const invite = await (await fetch(`${target.url}/api/enrollment`, { method: 'POST', headers: owner, body: JSON.stringify({ role: 'member' }) })).json() as { key: string };
@@ -51,7 +53,7 @@ export const machineSettings: ParityScenario = {
       expect(joined.joined).toBe(true);
       otherMember = joined.memberId;
       const otherHeaders = memberHeadersFor(joined.token, target.projectId);
-      expect(await settingsOf(otherHeaders)).toEqual({ leaves: { [LEAF]: [] } });
+      expect(await settingsOf(otherHeaders)).toEqual({ leaves: { ...AT_DEFAULT, [LEAF]: [] } });
 
       // That member, on the dashboard, reaches its own machine and not this one.
       await target.sql(`UPDATE members SET github_id = '5150515' WHERE id = ${lit(joined.memberId)}`);
@@ -60,13 +62,13 @@ export const machineSettings: ParityScenario = {
       expect((await fetch(`${target.url}/api/machines/${MACHINE_ID}/settings`, { headers: asOther })).status).toBe(403);
       expect((await put(asOther, MACHINE_ID, ['~/elsewhere'])).status).toBe(403);
       expect((await put(asOther, otherMachine, ['plans'])).status).toBe(200);
-      expect(await settingsOf(otherHeaders)).toEqual({ leaves: { [LEAF]: ['plans'] } });
+      expect(await settingsOf(otherHeaders)).toEqual({ leaves: { ...AT_DEFAULT, [LEAF]: ['plans'] } });
 
       // An admin who does not own that machine reads and writes none of it.
       expect((await fetch(`${target.url}/api/machines/${otherMachine}/settings`, { headers: owner })).status).toBe(403);
       expect((await put(owner, otherMachine, ['~/admin-was-here'])).status).toBe(403);
       expect((await put(owner, otherMachine, [])).status).toBe(403);
-      expect(await settingsOf(otherHeaders)).toEqual({ leaves: { [LEAF]: ['plans'] } });
+      expect(await settingsOf(otherHeaders)).toEqual({ leaves: { ...AT_DEFAULT, [LEAF]: ['plans'] } });
 
       // A folder that names the whole home, the filesystem root or the project, or climbs out, is refused.
       for (const broad of ['~', '~/', '/', '.', '../plans']) expect((await put(asOther, otherMachine, [broad])).status).toBe(400);

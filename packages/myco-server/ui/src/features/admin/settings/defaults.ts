@@ -53,6 +53,8 @@ export const LEAF_DEFAULTS: Readonly<Record<string, LeafDefault>> = {
   'embedding.base_url': { unset: 'The provider’s own' },
   'embedding.prevent_deep_sleep': { value: true },
   // core/import-policy.ts importPolicy.
+  // api/member-projects.ts autoCreateProjects: unset, a member's machine creates the project.
+  'capture.auto_create_projects': { value: true },
   'import.enabled': { value: true },
   'import.window_days': { value: 30 },
   'import.max_sessions_per_harness': { value: 50 },

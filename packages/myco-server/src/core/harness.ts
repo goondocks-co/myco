@@ -27,6 +27,7 @@ import { issueMemberToken, NO_RUNTIME_CLAIMS, revokeCredentialOfMember } from '.
 import { projectExists } from '../read/sessions.js';
 import { HARNESS_MEMBER_ID, WORKER_LEASE_MS, MAX_RUN_ERROR_CHARS } from '../constants.js';
 export { HARNESS_MEMBER_ID };
+import { pruneUncaptured } from '../ingest/uncaptured.js';
 import { pruneWorkerContacts, recentWorkerCapabilities, WORKER_CONTACT_RETENTION_MS } from './worker-contacts.js';
 import { CAPABILITY_HOLDS, type CapabilityHold } from '@goondocks/myco-shared/run-holds';
 import { emit } from '../telemetry.js';
@@ -1120,5 +1121,7 @@ export async function expireLeases(env: ServerEnv, now: number): Promise<number>
   // bounded like the lease batch above. A worker holding a live lease keeps its
   // row whatever its age.
   await pruneWorkerContacts(env.db, now, WORKER_CONTACT_RETENTION_MS, DRAIN_BATCH);
+  // And forgets a repository no machine has reported for a month, bounded the same way.
+  await pruneUncaptured(env.db, now, DRAIN_BATCH);
   return requeued;
 }
