@@ -220,7 +220,8 @@ describe('the lease a worker holds', () => {
       // first's; the first renewal's answer lands the moment the machine wakes.
       r.sleep(LEASE_MS - 5_000);
       first!();
-      await wait(500);
+      const woke = renewals;
+      await until('a renewal after the wake', () => renewals > woke);
       r.release();
       expect(await outcome).toEqual({ driven: 1, refused: null });
       expect({ stopped: r.lines.some((l) => l.includes('slept past')), ended: r.ended().map((x) => x.body.status) }, r.report())
