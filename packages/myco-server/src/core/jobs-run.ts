@@ -177,13 +177,13 @@ export async function runStaleSweep(env: ServerEnv, now: number): Promise<number
   for (const run of await listLiveRunsAcrossProjects(env.db, JOB_BATCH)) {
     if (run.startedAt === null || now < staleAfter(run.startedAt, run.runContext)) continue;
     const scope = { projectId: run.projectId };
-    if (!(await failStaleRun(env.db, scope, run.id, now, STALE_RUN_ERROR))) continue;
+    if (!(await failStaleRun(env.db, scope, run.id, now, STALE_RUN_ERROR, 'machine_unresponsive'))) continue;
     await releaseRun(env, scope, run, now, { drain: false });
     changed += 1;
   }
   for (const queued of await listQueuedAcrossProjects(env.db, JOB_BATCH)) {
     if (now - queued.queuedAt < QUEUE_MAX_AGE_MS) continue;
-    if (!(await endQueuedRun(env, { projectId: queued.projectId }, queued, now, { failed: queueExpiredError(queued.heldBy) }))) continue;
+    if (!(await endQueuedRun(env, { projectId: queued.projectId }, queued, now, { failed: queueExpiredError(queued.heldBy), errorCode: 'machine_did_not_start' }))) continue;
     emit({ kind: 'harness_queue_expired', runId: queued.id, task: queued.task, projectId: queued.projectId });
     changed += 1;
   }

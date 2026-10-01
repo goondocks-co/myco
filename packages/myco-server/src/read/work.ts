@@ -87,8 +87,8 @@ export interface WorkRun {
   outcome: { spores: number; sessions: number; maps: number };
   /** The session a title run titled; null for every other run. */
   sessionId: string | null;
-  /** Why a failed run failed: the run's own last report where it filed one, which names the cause the stored error hides, else the error. */
-  failure: { cause: string; code?: string | null; source: 'report' | 'error' } | null;
+  /** The failure classifier, stored reason and latest report, where present. */
+  failure: { cause: string; code?: string | null; error?: string | null; source: 'report' | 'error' } | null;
   tokens: number | null;
   costUsd: number | null;
 }
@@ -233,7 +233,8 @@ export async function readWork(db: RelationalStore, set: ProjectSet, since: numb
               CASE WHEN r.task IN (${list(SPORE_TASKS)}) THEN (SELECT COUNT(DISTINCT sp.session_id) FROM spores sp WHERE sp.project_id = r.project_id AND sp.author = r.id) ELSE 0 END AS spore_sessions,
               CASE WHEN r.task = ? THEN ${TITLED_SESSION} END AS titled_session,
               CASE WHEN r.status = 'failed' THEN (SELECT rep.summary FROM agent_reports rep WHERE rep.project_id = r.project_id AND rep.run_id = r.id ORDER BY rep.id DESC LIMIT 1) END AS report,
-              CASE WHEN r.status = 'failed' THEN r.error END AS error
+              CASE WHEN r.status = 'failed' THEN r.error END AS error,
+              CASE WHEN r.status = 'failed' THEN r.error_code END AS error_code
          FROM ${RUNS_BY_TASK}
         WHERE ${all.sql} AND r.status IN ('completed', 'failed') AND (r.status = 'failed' OR ${PRODUCED_SQL})
         ORDER BY at DESC, r.id DESC LIMIT ?`,
@@ -298,6 +299,7 @@ export async function readWork(db: RelationalStore, set: ProjectSet, since: numb
     const titled = row.titled_session === null || row.titled_session === undefined ? null : String(row.titled_session);
     const report = typeof row.report === 'string' && row.report.trim() !== '' ? row.report : null;
     const error = typeof row.error === 'string' && row.error.trim() !== '' ? row.error : null;
+    const code = runErrorCode(error, typeof row.error_code === 'string' ? row.error_code : null);
     return {
       id: String(row.id),
       projectId: String(row.project_id),
@@ -312,7 +314,7 @@ export async function readWork(db: RelationalStore, set: ProjectSet, since: numb
         maps: kind === 'map' && produced ? 1 : 0,
       },
       sessionId: kind === 'title' ? titled : null,
-      failure: !failed ? null : report !== null ? { cause: report, source: 'report' } : { code: runErrorCode(error) ?? 'run_failed', cause: error ?? 'the run failed without saying why', source: 'error' },
+      failure: !failed ? null : report !== null ? { cause: report, code, error, source: 'report' } : { code: code ?? 'run_failed', cause: error ?? 'the run failed without saying why', source: 'error' },
       tokens: orNull(row.tokens_used),
       costUsd: orNull(row.cost_usd),
     };

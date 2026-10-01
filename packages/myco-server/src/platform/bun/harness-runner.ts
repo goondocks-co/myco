@@ -81,13 +81,13 @@ export function httpHarnessLaunch(options: HttpHarnessOptions): NonNullable<Serv
       // A supervisor between restarts, and one that takes the call and answers
       // nothing inside the bound, are both "not now": the run waits in the queue
       // and the next drain offers it again.
-      throw new RuntimeDraining(`the harness runtime at ${options.url} could not be reached: ${error instanceof Error ? error.message : String(error)}`, 'unreachable');
+      throw new RuntimeDraining(`the machine at ${options.url} could not be reached: ${error instanceof Error ? error.message : String(error)}`, 'unreachable');
     }
     if (answered.ok) return;
     const body = await answered.json().catch(() => null) as Refusal | null;
     const word = text(body?.refusal) ?? `status ${answered.status}`;
     const detail = text(body?.error);
-    const message = `the harness runtime refused to launch ${spec.runId}: ${word}${detail === null ? '' : ` (${detail})`}`;
+    const message = `the machine could not start task ${spec.runId}: ${word}${detail === null ? '' : ` (${detail})`}`;
     if (answered.status === UNAVAILABLE_STATUS || word === DRAINING) throw new RuntimeDraining(message, 'draining');
     if (answered.status === CONFLICT_STATUS && word === DUPLICATE) throw new RuntimeAlreadyHolding(message);
     throw new Error(message);

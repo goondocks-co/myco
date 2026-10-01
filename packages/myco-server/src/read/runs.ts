@@ -153,7 +153,7 @@ const LIST_COLUMNS = `id, agent_id, task, status, provider, model, started_at, r
   CASE WHEN status = 'skipped' THEN ${contextValue('reason')} END AS skip_reason`;
 
 const DETAIL_COLUMNS = `${LIST_COLUMNS}, instruction, session_ref, actual_cost_usd, estimated_cost_usd, reasoning_level,
-  resume_mode, resume_attempts, error, dispatched_by, usage_data, actions_taken, checkpoints`;
+  resume_mode, resume_attempts, error, error_code, dispatched_by, usage_data, actions_taken, checkpoints`;
 
 const text = (value: unknown): string | null => (value as string | null) ?? null;
 const num = (value: unknown): number | null => (value as number | null) ?? null;
@@ -217,7 +217,7 @@ function toDetailRow(row: Record<string, unknown>, ownNames: ReadonlyMap<string,
     reasoningLevel: text(row.reasoning_level),
     resumeMode: text(row.resume_mode),
     resumeAttempts: (row.resume_attempts as number | null) ?? 0,
-    errorCode: runErrorCode(text(row.error)),
+    errorCode: runErrorCode(text(row.error), text(row.error_code)),
     error: text(row.error),
     dispatchedBy: text(row.dispatched_by),
     usageData: text(row.usage_data),
