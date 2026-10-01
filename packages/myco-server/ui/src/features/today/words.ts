@@ -8,7 +8,7 @@ import { REPOSITORY_CHECKOUT_CAPABILITY, REPOSITORY_DIGESTS_CAPABILITY } from '@
 import { harnessLabel } from '../../lib/harness';
 import { memberLabel } from '../../lib/member-name';
 import { HEALTH_ANCHORS, HEALTH_PATH, PROJECT_SETTINGS_ANCHORS, PROJECT_SETTINGS_SUFFIX, projectPath, runPath } from '../../routes/nav';
-import type { AttentionItem, AttentionKind, CaptureRow, OutcomeKind, TodaySession, TodaySpore, WorkRun } from './wire';
+import type { AttentionItem, AttentionKind, CaptureRow, HeldState, OutcomeKind, TodaySession, TodaySpore, UncapturedReason, UncapturedRootItem, WorkRun } from './wire';
 
 const MINUTE = 60_000;
 const HOUR = 60 * MINUTE;
@@ -285,6 +285,53 @@ export function attentionWords(item: AttentionItem, now: number, projectName: (p
         action: { label: 'Open Health', to: healthAt(HEALTH_ANCHORS.status) },
       };
   }
+}
+
+/** How many days a machine keeps what its agents do in a repository it is not capturing yet. */
+export const HELD_DAYS = 7;
+
+/** The machine a repository sits on, as the viewer reads it: theirs by its name, anyone else's by its member. */
+export function repositoryMachine(item: Pick<UncapturedRootItem, 'machineName' | 'member'>, viewerId: string | null): string {
+  if (item.member.id === viewerId) return item.machineName !== null && item.machineName.trim() !== '' ? item.machineName.trim() : 'your machine';
+  const who = memberLabel(item.member);
+  return who === null ? 'a member’s machine' : `${who}’s machine`;
+}
+
+const REASON_WORDS: Readonly<Record<UncapturedReason, (machine: string) => string>> = {
+  outside_folders: (machine) => `It’s outside the folders ${machine} captures.`,
+  no_remote: () => 'It has no git remote, so Myco can’t tell which project it belongs to.',
+  auto_create_off: () => 'No project holds it yet, and only an admin can start a new one.',
+  archived: () => 'The project it belongs to is archived.',
+  refused: () => 'Myco couldn’t add it to a project.',
+};
+
+const HELD_WORDS: Readonly<Record<HeldState, (machine: string) => string>> = {
+  held: (machine) => `What agents do there is kept on ${machine} for ${HELD_DAYS} days, and arrives once it’s connected.`,
+  full: (machine) => `${capitalized(machine)} has kept all it can; newer work there isn’t being kept.`,
+  expired: () => `Work there older than ${HELD_DAYS} days wasn’t kept.`,
+};
+
+const capitalized = (text: string): string => text.charAt(0).toUpperCase() + text.slice(1);
+
+/** One repository a member's machine is not capturing yet: what it is, why, what its machine keeps meanwhile, and when its machine last met it. */
+export interface RepositoryWords {
+  title: string;
+  detail: string;
+  held: string;
+  seen: string;
+  /** A machine still keeping everything is a warning; one that has stopped keeping anything new is losing work. */
+  tone: 'warn' | 'bad';
+}
+
+export function repositoryWords(item: UncapturedRootItem, now: number, viewerId: string | null): RepositoryWords {
+  const machine = repositoryMachine(item, viewerId);
+  return {
+    title: `${item.label} isn’t being captured yet`,
+    detail: REASON_WORDS[item.reason](machine),
+    held: HELD_WORDS[item.held](machine),
+    seen: `${count(item.misses, 'session')} on ${machine} so far, most recently ${ago(item.lastSeenAt, now)}.`,
+    tone: item.held === 'held' ? 'warn' : 'bad',
+  };
 }
 
 /** What each attention check reads, for the line naming the checks that could not be read. */

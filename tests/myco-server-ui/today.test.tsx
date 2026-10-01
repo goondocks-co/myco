@@ -16,14 +16,17 @@ import { forgetProject } from '../../packages/myco-server/ui/src/lib/project-mem
 import { LIVE_REFRESH_MS } from '../../packages/myco-server/ui/src/hooks/use-work';
 import { dayParam, dayWindow } from '../../packages/myco-server/ui/src/hooks/use-today';
 import { buildTimeline, ledeCounts } from '../../packages/myco-server/ui/src/features/today/timeline';
-import { attentionWords, machineNames, workPlace } from '../../packages/myco-server/ui/src/features/today/words';
+import { attentionWords, machineNames, repositoryWords, workPlace } from '../../packages/myco-server/ui/src/features/today/words';
 import { ranOn } from '../../packages/myco-server/ui/src/features/work/words';
 import { cleanSessionText, sessionHeading } from '../../packages/myco-server/ui/src/lib/session-text';
 import { memberDisplayName, memberLabel } from '../../packages/myco-server/ui/src/lib/member-name';
 import type {
-  AttentionAnswer, AttentionItem, CaptureRow, TodaySession, TodaySpore, WorkAnswer, WorkRun,
+  AttentionAnswer, AttentionItem, CaptureRow, TodaySession, TodaySpore, UncapturedRootItem, WorkAnswer, WorkRun,
 } from '../../packages/myco-server/ui/src/features/today/wire';
 import { RAW_ID } from '../helpers/raw-ids';
+
+// jsdom lays nothing out, so it has no scrollIntoView; Radix's select calls it as it opens.
+(window.Element.prototype as unknown as { scrollIntoView?: () => void }).scrollIntoView ??= () => undefined;
 
 const MINUTE = 60_000;
 const HOUR = 60 * MINUTE;
@@ -104,6 +107,13 @@ const ATTENTION: AttentionAnswer = {
   unavailable: [],
 };
 
+/** A repository a member's machine is not capturing yet. */
+const repository = (over: Partial<UncapturedRootItem> = {}): UncapturedRootItem => ({
+  machineId: 'mt_studio_machine', machineName: 'Ada’s studio Mac', member: { id: ADMIN.member.id, label: 'Ada' }, rootKey: 'a1b2c3d4e5f60718',
+  label: 'widget', remote: 'github.com/acme/widget', reason: 'outside_folders', misses: 3, held: 'held', firstSeenAt: NOW - 2 * 24 * HOUR, lastSeenAt: NOW - 2 * HOUR,
+  ...over,
+});
+
 /** Capture as Ada reads it: her own machine by its name, and Lin's, whose name is served to Lin alone, as Lin's. */
 const CAPTURE: CaptureRow[] = [
   { machineId: 'mt_studio_machine', machineName: 'Ada’s studio Mac', member: { id: ADMIN.member.id, label: 'Ada' }, agent: 'claude-code', lastEventAt: NOW - MINUTE, projectId: P_MYCO },
@@ -111,7 +121,7 @@ const CAPTURE: CaptureRow[] = [
   { machineId: 'mt_buildbox_mach', machineName: null, member: { id: MEMBER.member.id, label: 'Lin' }, agent: 'cursor', lastEventAt: NOW - 17 * HOUR, projectId: P_ATLAS },
 ];
 
-type Routes = Record<string, (url: URL) => Response>;
+type Routes = Record<string, (url: URL, init?: RequestInit) => Response>;
 
 const originalFetch = globalThis.fetch;
 const originalMatchMedia = window.matchMedia;
@@ -130,22 +140,23 @@ afterEach(() => {
 /** Answers by path from `routes`, else 404, and records every URL asked. */
 function server(routes: Routes): URL[] {
   const asked: URL[] = [];
-  globalThis.fetch = (async (input: RequestInfo | URL) => {
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
     const href = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
     const url = new URL(href, 'https://s');
     asked.push(url);
-    return routes[url.pathname]?.(url) ?? new Response(null, { status: 404 });
+    return routes[url.pathname]?.(url, init) ?? new Response(null, { status: 404 });
   }) as typeof fetch;
   return asked;
 }
 
-const day = (over: Partial<Record<'sessions' | 'spores' | 'work' | 'attention' | 'status', unknown>> = {}, who: unknown = ADMIN): Routes => ({
+const day = (over: Partial<Record<'sessions' | 'spores' | 'work' | 'attention' | 'status' | 'uncaptured', unknown>> = {}, who: unknown = ADMIN): Routes => ({
   '/auth/me': () => Response.json(who),
   '/api/projects': () => Response.json({ projects: PROJECTS }),
   '/api/sessions': () => Response.json(over.sessions ?? { rows: SESSIONS, cursor: null }),
   '/api/spores': () => Response.json(over.spores ?? { spores: SPORES, total: SPORES.length, maxPage: 200 }),
   '/api/work': () => Response.json(over.work ?? WORK),
   '/api/attention': () => Response.json(over.attention ?? ATTENTION),
+  '/api/uncaptured': () => Response.json(over.uncaptured ?? { items: [] }),
   '/api/status': () => Response.json(over.status ?? { capture: CAPTURE, unavailable: [], projects: [], workers: { available: true, workersBusy: 0, runsQueued: 0, recentWithinMs: 0, fleet: [] } }),
 });
 
@@ -456,12 +467,13 @@ describe('Today', () => {
     expect(panel.textContent).toBe('Nothing needs youCouldn’t check backups just now.');
   });
 
-  it('never asks a member\'s browser for "Needs you", and shows them the rest', async () => {
+  it('never asks a member\'s browser about the server\'s health, and shows them no "Needs you" while their machines capture everything', async () => {
     screenWidth(1280);
     const asked = server(day({}, MEMBER));
     mount('/');
     await timeline();
     await screen.findByRole('list', { name: /Agents on/ });
+    await waitFor(() => expect(asked.some((url) => url.pathname === '/api/uncaptured')).toBe(true));
     expect(asked.some((url) => url.pathname === '/api/attention')).toBe(false);
     expect(document.querySelectorAll('[data-needs-you]')).toHaveLength(0);
     expect(screen.queryByText(/needs you/i)).toBeNull();
@@ -590,6 +602,91 @@ describe('Today', () => {
     await waitFor(() => expect(page.querySelectorAll('[data-needs-you-item]')).toHaveLength(3));
   });
 
+  it('lists a repository Myco isn\'t capturing yet beside the rest, with why, what its machine keeps, and a way to connect it', async () => {
+    screenWidth(1280);
+    const posts: { path: string; body: unknown }[] = [];
+    let waiting = [repository(), repository({ machineId: 'mt_buildbox_mach', machineName: null, member: { id: MEMBER.member.id, label: 'Lin' }, rootKey: 'ffeeddccbbaa9988', label: 'notes', remote: null, reason: 'no_remote', held: 'full', misses: 1, lastSeenAt: NOW - 20 * MINUTE })];
+    server({
+      ...day(),
+      '/api/uncaptured': () => Response.json({ items: waiting }),
+      '/api/uncaptured/mt_studio_machine/a1b2c3d4e5f60718/connect': (url, init) => {
+        posts.push({ path: url.pathname, body: JSON.parse(String(init?.body)) });
+        waiting = waiting.slice(1);
+        return Response.json({ connected: true, machineId: 'mt_studio_machine', rootKey: 'a1b2c3d4e5f60718', projectId: P_ATLAS });
+      },
+    });
+    mount('/');
+    const panel = (await screen.findByText('Needs you')).closest('[data-needs-you]') as HTMLElement;
+    // Two repositories are one line of "Needs you", losing work where either machine has stopped keeping it, that opens to each.
+    const group = await waitFor(() => panel.querySelector('[data-repositories]') as HTMLElement);
+    expect(within(panel).getByText('4')).toBeTruthy();
+    expect(group.getAttribute('data-needs-you-item')).toBe('bad');
+    expect(group.textContent).toContain('2 repositories aren’t being captured yet');
+    expect(group.textContent).toContain('widget and notes. Work in 1 of them isn’t being kept. Connect each to a project, or let Myco choose.');
+    fireEvent.click(within(group).getByRole('button', { name: 'See each' }));
+    await waitFor(() => expect(panel.querySelectorAll('[data-repository]')).toHaveLength(2));
+    const [widget, notes] = [...panel.querySelectorAll('[data-repository]')] as HTMLElement[];
+    expect(widget!.getAttribute('data-needs-you-item')).toBe('warn');
+    expect(widget!.textContent).toContain('widget isn’t being captured yet');
+    expect(widget!.textContent).toContain('It’s outside the folders Ada’s studio Mac captures.');
+    expect(widget!.textContent).toContain('kept on Ada’s studio Mac for 7 days');
+    expect(widget!.textContent).toContain('3 sessions on Ada’s studio Mac so far, most recently 2 h ago.');
+    expect(notes!.getAttribute('data-needs-you-item')).toBe('bad');
+    expect(notes!.textContent).toContain('It has no git remote');
+    expect(notes!.textContent).toContain('Lin’s machine has kept all it can; newer work there isn’t being kept.');
+    expect(panel.textContent).not.toMatch(RAW_ID);
+    expect(panel.textContent).not.toMatch(/uncaptured/i);
+
+    fireEvent.click(within(widget!).getByRole('button', { name: 'Connect widget' }));
+    const dialog = await screen.findByRole('dialog', { name: 'Connect widget' });
+    expect(dialog.textContent).toContain('Ada’s studio Mac starts capturing it at the next agent session there');
+    fireEvent.click(within(dialog).getByRole('combobox', { name: 'Project' }));
+    fireEvent.click(await screen.findByRole('option', { name: 'Atlas web' }));
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Connect' }));
+    await waitFor(() => expect(posts).toEqual([{ path: '/api/uncaptured/mt_studio_machine/a1b2c3d4e5f60718/connect', body: { projectId: P_ATLAS } }]));
+    // One left is its own line again.
+    await waitFor(() => expect(panel.querySelector('[data-repositories]')).toBeNull());
+    expect(panel.querySelectorAll('[data-repository]')).toHaveLength(1);
+    expect(panel.querySelector('[data-connected]')!.textContent).toBe('widget is connected. Ada’s studio Mac starts capturing it at the next agent session there.');
+  });
+
+  it('leaves the project to Myco by default, and says so when only an admin may start one', async () => {
+    screenWidth(1280);
+    const bodies: unknown[] = [];
+    server({
+      ...day({ uncaptured: { items: [repository()] } }),
+      '/api/uncaptured/mt_studio_machine/a1b2c3d4e5f60718/connect': (_url, init) => {
+        bodies.push(JSON.parse(String(init?.body)));
+        return Response.json({ error: 'this Deployment creates projects only on the dashboard: name the project to connect it to' }, { status: 400 });
+      },
+    });
+    mount('/');
+    fireEvent.click(await screen.findByRole('button', { name: 'Connect widget' }));
+    const dialog = await screen.findByRole('dialog', { name: 'Connect widget' });
+    expect(within(dialog).getByRole('combobox', { name: 'Project' }).textContent).toBe('Let Myco choose');
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Connect' }));
+    expect((await within(dialog).findByRole('alert')).textContent).toBe('New projects are started only by an admin here. Choose a project for it.');
+    expect(bodies).toEqual([{}]);
+  });
+
+  it('shows a member "Needs you" with their own repositories alone, on a wide screen and on a phone', async () => {
+    const mine = repository({ member: { id: MEMBER.member.id, label: 'Lin' }, machineName: 'Lin’s desk', held: 'expired' });
+    screenWidth(1280);
+    const asked = server(day({ uncaptured: { items: [mine] } }, MEMBER));
+    mount('/');
+    const panel = (await screen.findByText('Needs you')).closest('[data-needs-you]') as HTMLElement;
+    expect(panel.querySelectorAll('[data-needs-you-item]')).toHaveLength(1);
+    expect(panel.textContent).toContain('Work there older than 7 days wasn’t kept.');
+    expect(asked.some((url) => url.pathname === '/api/attention')).toBe(false);
+    cleanup();
+    client.clear();
+    screenWidth(390);
+    server(day({ uncaptured: { items: [mine] } }, MEMBER));
+    mount('/');
+    const summary = await screen.findByRole('button', { name: /1 thing needs you/ });
+    expect(summary.textContent).toContain('widget isn’t being captured yet');
+  });
+
   it('shows the failed read in words with a retry, never an endless load', async () => {
     server({ ...day(), '/api/work': () => Response.json({ error: 'boom' }, { status: 503 }) });
     mount('/');
@@ -625,6 +722,14 @@ describe('Today\'s words', () => {
       expect(words.title.length).toBeGreaterThan(0);
     }
     expect(attentionWords(items[3]!, NOW, () => null).title).toBe('Search is falling behind');
+    for (const reason of ['outside_folders', 'no_remote', 'refused', 'auto_create_off', 'archived'] as const) {
+      for (const held of ['held', 'full', 'expired'] as const) {
+        const words = repositoryWords(repository({ reason, held, member: { id: 'mem_q3Vb8xRk2LmT7wYz', label: 'mem_q3Vb8xRk2LmT7wYz' } }), NOW, MEMBER.member.id);
+        const text = Object.values(words).join(' ');
+        expect({ reason, held, text }).not.toEqual({ reason, held, text: expect.stringMatching(RAW_ID) });
+        expect(words.tone).toBe(held === 'held' ? 'warn' : 'bad');
+      }
+    }
     expect(attentionWords(items[5]!, NOW, () => null).detail).toContain('read the repository');
   });
 });

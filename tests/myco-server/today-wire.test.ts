@@ -2,7 +2,7 @@
  * Today's wire shapes, as the dashboard declares them, match the server's.
  *
  * The dashboard cannot import the server's declarations of `/api/work`,
- * `/api/attention`, capture recency and the lists across Projects: they sit in
+ * `/api/attention`, `/api/uncaptured`, capture recency and the lists across Projects: they sit in
  * modules whose runtime imports its build does not carry. So it declares them
  * in `features/today/wire.ts`, and this file holds the two to each other. The
  * assertions are types: `npm run typecheck:tests` fails when a shape drifts,
@@ -13,6 +13,8 @@ import type * as Ui from '../../packages/myco-server/ui/src/features/today/wire.
 import type { WorkAnswer, WorkOutcome, WorkRun, Upkeep, OutcomeKind, RunResult } from '../../packages/myco-server/src/read/work.ts';
 import type { AttentionAnswer, AttentionItem } from '../../packages/myco-server/src/core/attention.ts';
 import type { CaptureRow } from '../../packages/myco-server/src/read/capture.ts';
+import type { ConnectAnswer, ConnectRequest, UncapturedAnswer, UncapturedRootItem } from '../../packages/myco-server/src/api/uncaptured.ts';
+import type { HeldState, UncapturedReason } from '../../packages/myco-shared/src/member-protocol.ts';
 import type { SessionAcrossRow, listSessionSummariesAcross } from '../../packages/myco-server/src/read/sessions.ts';
 import type { SporeAcrossRow, countSporesAcross, listSporesAcross } from '../../packages/myco-server/src/core/spores.ts';
 
@@ -31,7 +33,13 @@ const SAME: [
   Same<Ui.AttentionItem, AttentionItem>,
   Same<Ui.AttentionAnswer, AttentionAnswer>,
   Same<Ui.CaptureRow, CaptureRow>,
-] = [true, true, true, true, true, true, true, true, true];
+  Same<Ui.UncapturedReason, UncapturedReason>,
+  Same<Ui.HeldState, HeldState>,
+  Same<Ui.UncapturedRootItem, UncapturedRootItem>,
+  Same<Ui.UncapturedAnswer, UncapturedAnswer>,
+  Same<Ui.ConnectRequest, ConnectRequest>,
+  Same<Ui.ConnectAnswer, ConnectAnswer>,
+] = [true, true, true, true, true, true, true, true, true, true, true, true, true, true, true];
 
 /** `GET /api/sessions`: the page the read across Projects answers, as the handler sends it. */
 type SessionsAnswer = Awaited<ReturnType<typeof listSessionSummariesAcross>>;

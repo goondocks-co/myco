@@ -29,6 +29,7 @@ import { PROJECT_HEADER, PROTOCOL_HEADER, SERVER_PROTOCOL, SERVER_SCHEMA_VERSION
 import { uuidv5 } from '@myco-server-worker/hash.js';
 import { MAP_WRITE_TOOL, TITLE_WRITE_TOOL } from '@myco-server-worker/core/tool-catalogue.js';
 import { RUN_WRITE_EVENT } from '@myco-server-worker/core/runs.js';
+import { REPORT_UNCAPTURED_PATH } from '@goondocks/myco-shared/member-protocol';
 import { MACHINE_IDS } from './machine-ids.ts';
 
 const MINUTE = 60_000;
@@ -179,6 +180,17 @@ const PLANS: Array<{ project: ProjectKey; session: number; status: (typeof PLAN_
   { project: 'ledger', session: 4, status: 'completed', title: 'Speed up the monthly close report', path: 'docs/plans/close-report.md', content: '# Close report\n\n- [x] Find the scan\n- [x] Add the covering index\n- [x] Confirm on staging' },
   { project: 'field-notes', session: 3, status: 'abandoned', title: 'Last-writer-wins offline sync', path: 'docs/plans/lww-sync.md', content: '# Last-writer-wins\n\nDropped in favour of per-field merge.' },
 ];
+
+/**
+ * Repositories a machine is not capturing yet, as each machine reports one: Ada's outside her capture folders and still
+ * held; Lin's without a remote, held past its cap; and another of Lin's whose held work passed its age. Each is reported
+ * through the machine's own credential and seen `seenAgo` minutes before now.
+ */
+export const WAITING_REPOSITORIES = [
+  { machine: 'studio', rootKey: 'a1b2c3d4e5f60718', label: 'gadget', remote: 'github.com/acme/gadget', reason: 'outside_folders', held: 'held', sessions: 4, seenAgo: 25, firstAgo: 3 * 24 * 60 },
+  { machine: 'buildbox', rootKey: 'b2c3d4e5f6071829', label: 'field-notes', remote: null, reason: 'no_remote', held: 'full', sessions: 2, seenAgo: 6 * 60, firstAgo: 9 * 24 * 60 },
+  { machine: 'buildbox', rootKey: 'c3d4e5f60718293a', label: 'sketches', remote: 'gitlab.com/lin/sketches', reason: 'outside_folders', held: 'expired', sessions: 1, seenAgo: 2 * 24 * 60, firstAgo: 12 * 24 * 60 },
+] as const satisfies ReadonlyArray<{ machine: MachineKey; rootKey: string; label: string; remote: string | null; reason: string; held: string; sessions: number; seenAgo: number; firstAgo: number }>;
 
 export interface SeededFixture {
   projects: Array<{ projectId: string; name: string }>;
@@ -342,7 +354,21 @@ export async function seedThroughServer(ctx: SeedContext): Promise<SeededFixture
   // Imported sessions are titled, as production has it.
   await expectOk(await fetch(`${url}/api/titling-backfill`, { method: 'PUT', headers: ownerHeaders, body: JSON.stringify({ enabled: true }) }), 'title imported sessions');
 
+  for (const repository of WAITING_REPOSITORIES) {
+    const res = await fetch(`${url}${REPORT_UNCAPTURED_PATH}`, {
+      method: 'POST',
+      headers: { authorization: `Bearer ${ctx.tokens[repository.machine]!}`, [PROTOCOL_HEADER]: String(SERVER_PROTOCOL), 'content-type': 'application/json' },
+      body: JSON.stringify({
+        rootKey: repository.rootKey, label: repository.label, ...(repository.remote === null ? {} : { remote: `https://${repository.remote}` }),
+        reason: repository.reason, held: repository.held, sessions: repository.sessions,
+      }),
+    });
+    const body = await expectOk(res, `report ${repository.label}`);
+    if (body.persisted !== true) throw new Error(`report ${repository.label}: refused ${JSON.stringify(body)}`);
+  }
+
   settleReceiptTimes(ctx.databasePath, liveSessionId, now);
+  settleWaitingRepositories(ctx.databasePath, now);
   seedWorkerContact(ctx.databasePath, now);
   seedTitles(ctx.databasePath, sessionIds, now);
   settleSporeTimes(ctx.databasePath, sporeIds, now);
@@ -534,6 +560,19 @@ function seedRuns(databasePath: string, now: number, sporeIds: string[], session
  * it could take. The server reads recency by its own clock, so the contact is
  * not recent there: Health lists the machine as not heard from lately.
  */
+/** Each reported repository's first and last report at the times the fixture names, as after days of sessions there. */
+function settleWaitingRepositories(databasePath: string, now: number): void {
+  const sqlite = new Database(databasePath);
+  try {
+    for (const repository of WAITING_REPOSITORIES) {
+      sqlite.query('UPDATE uncaptured_roots SET first_seen_at = ?, last_seen_at = ? WHERE machine_id = ? AND root_key = ?')
+        .run(now - repository.firstAgo * MINUTE, now - repository.seenAgo * MINUTE, machineOf(repository.machine).id, repository.rootKey);
+    }
+  } finally {
+    sqlite.close();
+  }
+}
+
 function seedWorkerContact(databasePath: string, now: number): void {
   const sqlite = new Database(databasePath);
   sqlite.exec('PRAGMA busy_timeout = 5000');

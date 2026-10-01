@@ -84,6 +84,13 @@ async function expectSection(page: Page, tab: string, group: string): Promise<vo
   await expect(page.getByRole('heading', { name: group }).first()).toBeVisible();
 }
 
+/** Capture and retention, with whether a repository no project holds yet gets a project of its own. */
+async function expectCaptureSettings(page: Page): Promise<void> {
+  await expectSection(page, 'Capture and retention', 'Importing past sessions');
+  await expect(page.getByRole('heading', { name: 'New repositories' })).toBeVisible();
+  await expect(page.getByRole('switch', { name: 'Create a project for it' })).toBeVisible();
+}
+
 async function expectProjectSettings(page: Page, name: string): Promise<void> {
   await expect(page.getByRole('heading', { level: 1, name: 'Project settings' })).toBeInViewport();
   await expect(page.getByText(name).first()).toBeInViewport();
@@ -116,7 +123,7 @@ const ADMIN_PAGES: ReadonlyArray<{ name: string; path: () => string; rendered: (
   { name: 'people', path: () => '/people', rendered: (page) => expectPeople(page) },
   { name: 'settings', path: () => '/settings', rendered: (page, viewport) => expectSettings(page, viewport) },
   { name: 'settings-models', path: () => '/settings/models', rendered: (page) => expectModels(page) },
-  { name: 'settings-capture', path: () => '/settings/capture', rendered: (page) => expectSection(page, 'Capture and retention', 'Importing past sessions') },
+  { name: 'settings-capture', path: () => '/settings/capture', rendered: (page) => expectCaptureSettings(page) },
   { name: 'settings-backups', path: () => '/settings/backups', rendered: (page) => expectSection(page, 'Backups', 'Store checks') },
   { name: 'settings-access', path: () => '/settings/access', rendered: (page) => expectSection(page, 'Sign-in and access', 'Who can sign in') },
   { name: 'project-settings', path: () => `/p/${fixtureProject().projectId}/settings`, rendered: (page) => expectProjectSettings(page, fixtureProject().name) },
@@ -184,6 +191,32 @@ test.describe('My machines and the admin pages, as a member', () => {
         await expectAxeClean(page);
         expectQuiet(watch);
         await shoot(page, 'member-rename-machine', viewport, mode);
+      } finally {
+        await context.close();
+      }
+    });
+  }
+
+  for (const { viewport, mode } of SHOT_MATRIX) {
+    test(`machine settings member ${viewport} ${mode}`, async ({ browser }) => {
+      test.skip(!onFixture(), 'the fixture names the member\'s machine');
+      const { context, page, watch } = await openPage(browser, { path: '/me/machines', viewport, mode, cookie: screensEnv('memberCookie') });
+      try {
+        await page.getByRole('button', { name: 'More for Lin’s build box' }).click();
+        await page.getByRole('menuitem', { name: 'Its settings' }).click();
+        const dialog = page.getByRole('dialog', { name: 'Settings for Lin’s build box' });
+        await expect(dialog).toBeVisible();
+        const captured = dialog.getByRole('region', { name: 'Folders it captures' });
+        await expect(captured.getByRole('list', { name: 'Folders it captures' })).toHaveText('~/Repos');
+        await expect(captured.getByRole('textbox', { name: 'Folder to capture' })).toBeVisible();
+        await expect(dialog.getByRole('region', { name: 'Extra plan folders' })).toBeVisible();
+        await expect(dialog.getByRole('button', { name: 'Save' })).toBeDisabled();
+        await page.waitForLoadState('networkidle');
+        await expectFits(page, viewport);
+        await expectNoRawIds(page);
+        await expectAxeClean(page);
+        expectQuiet(watch);
+        await shoot(page, 'member-machine-settings', viewport, mode);
       } finally {
         await context.close();
       }

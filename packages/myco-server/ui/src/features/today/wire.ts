@@ -1,7 +1,7 @@
 /**
- * The shapes Today reads off the wire: `/api/work`, `/api/attention`, the
- * `capture` rows of `/api/status`, and the fields it reads of a session and a
- * spore listed across Projects.
+ * The shapes Today reads off the wire: `/api/work`, `/api/attention`,
+ * `/api/uncaptured` and its connect, the `capture` rows of `/api/status`, and
+ * the fields it reads of a session and a spore listed across Projects.
  *
  * The server's own declarations (`read/work.ts`, `core/attention.ts`,
  * `read/capture.ts`, `read/sessions.ts`, `core/spores.ts`) pull in the server's
@@ -87,6 +87,47 @@ export interface AttentionAnswer {
   items: AttentionItem[];
   /** The rules whose facts could not be read, so their absence from `items` says nothing. */
   unavailable: AttentionKind[];
+}
+
+/** Why a member's machine is not capturing a repository: outside its folders, no remote, or refused by the server. */
+export type UncapturedReason = 'outside_folders' | 'no_remote' | 'refused' | 'auto_create_off' | 'archived';
+
+/** What the machine still holds of that repository's capture: all of it, no more past its cap, or none past its age. */
+export type HeldState = 'held' | 'full' | 'expired';
+
+/** One repository a member's machine is not capturing yet, as "Needs you" lists it. */
+export interface UncapturedRootItem {
+  machineId: string;
+  /** The machine's name, to the member it belongs to alone; null to anyone else, and while it has none. */
+  machineName: string | null;
+  member: { id: string; label: string | null };
+  rootKey: string;
+  /** The repository's folder name, never a path. */
+  label: string;
+  remote: string | null;
+  reason: UncapturedReason;
+  misses: number;
+  held: HeldState;
+  firstSeenAt: number;
+  lastSeenAt: number;
+}
+
+/** `GET /api/uncaptured`. */
+export interface UncapturedAnswer {
+  items: UncapturedRootItem[];
+}
+
+/** `POST /api/uncaptured/{machineId}/{rootKey}/connect`: the project to join, or none for the one its remote names, or a new one. */
+export interface ConnectRequest {
+  projectId?: string;
+}
+
+/** What the connect answers: the machine joins at a hook in the repository, within minutes. */
+export interface ConnectAnswer {
+  connected: true;
+  machineId: string;
+  rootKey: string;
+  projectId: string | null;
 }
 
 /** One machine and agent: when it last sent anything, and the Project that capture landed in. */
