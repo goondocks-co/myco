@@ -1,6 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { ApiError, fetchJson, patchJson, postJson } from '../lib/api';
 import type { InvitationsAnswer, MembersAnswer, MintedInvitation } from '../features/admin/wire';
+import { MACHINE_CREDENTIALS_KEY } from '../features/admin/machines';
 export { usePaged } from './use-paged';
 
 export type { ActivityRow, CredentialRow, InvitationRow, MemberRow } from '../features/admin/wire';
@@ -44,7 +45,7 @@ export interface RevokeOutcome {
 }
 
 /** The reads a machine's name appears in, by the first part of their query key. */
-export const MACHINE_NAME_READS = ['credentials', 'status', 'today', 'sessions', 'session', 'work', 'runs', 'run'] as const;
+export const MACHINE_NAME_READS = [MACHINE_CREDENTIALS_KEY[0], 'status', 'today', 'sessions', 'session', 'work', 'runs', 'run'] as const;
 
 /** One mutation per access act; each refreshes the lists it changes. */
 export function useAccessActions() {
