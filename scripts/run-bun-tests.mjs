@@ -89,6 +89,8 @@ try { parentTmpdirBefore = new Set(fs.readdirSync(PARENT_TMPDIR)); } catch { par
 const RUN_ROOT = fs.mkdtempSync(path.join(PARENT_TMPDIR, RUN_ROOT_PREFIX));
 fs.writeFileSync(path.join(RUN_ROOT, RUN_ROOT_OWNER_FILE), `${process.pid}\n`);
 for (const name of TEMP_ENV_NAMES) process.env[name] = RUN_ROOT;
+// The directory the root sits in, for tests that measure paths a run builds under it.
+process.env.MYCO_TEST_RUN_PARENT_TMPDIR = PARENT_TMPDIR;
 
 /** Kills the running group's process tree; null between groups. */
 let killActiveGroup = null;
