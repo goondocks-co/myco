@@ -26,13 +26,24 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          fetch-tags: true
       - uses: ./.github/actions/ci-setup
       - run: bash packages/myco/scripts/build-libsqlite3-target.sh linux-x64
-      - run: npm run build:ui -w @goondocks/myco
-      - run: npm run codegen -w @goondocks/myco
-      - name: Deployment dashboard matches its committed assets
-        run: git diff --exit-code -- packages/myco/src/server-ui-assets.generated.ts
-      - run: TARGET=linux-x64 npm run build:binary -w @goondocks/myco
+      - name: Standalone dashboards match committed bundles without shared build artifacts
+        run: |
+          test ! -d packages/myco-shared/dist
+          npm run build:ui -w @goondocks/myco
+          npm run build:ui -w @goondocks/myco-server
+          npx tsx packages/myco/scripts/gen-ui-assets.ts
+          git diff --exit-code -- packages/myco/src/ui-assets.generated.ts packages/myco/src/server-ui-assets.generated.ts
+      - name: Build from a clean checkout
+        run: |
+          test -z "$(git status --porcelain)"
+          npm run build
+      - name: Dev binary identifies the clean commit and generators preserve the checkout
+        run: node scripts/check-clean-build.mjs packages/myco-linux-x64/bin/myco
 
   # Gate G2 (#1561): a compiled binary answers a no-op hook within its ceiling on every release target a runner here
   # can run. Each target is built the way the release builds it (`--compile --splitting`, darwin signed in place)

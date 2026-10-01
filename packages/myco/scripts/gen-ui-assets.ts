@@ -171,9 +171,10 @@ export function emitBundle(bundle: UiBundle): number {
 export const ${bundle.exportName}: Readonly<Record<string, string>> = ${JSON.stringify(assets, null, 2)} as const;
 `;
 
-  fs.writeFileSync(bundle.outputPath, output, 'utf-8');
+  const unchanged = fs.existsSync(bundle.outputPath) && fs.readFileSync(bundle.outputPath, 'utf-8') === output;
+  if (!unchanged) fs.writeFileSync(bundle.outputPath, output, 'utf-8');
   process.stdout.write(
-    `[gen-ui-assets] wrote ${path.relative(PACKAGE_ROOT, bundle.outputPath)} (${Object.keys(assets).length} files)\n`,
+    `[gen-ui-assets] ${unchanged ? 'unchanged' : 'wrote'} ${path.relative(PACKAGE_ROOT, bundle.outputPath)} (${Object.keys(assets).length} files)\n`,
   );
   return Object.keys(assets).length;
 }
