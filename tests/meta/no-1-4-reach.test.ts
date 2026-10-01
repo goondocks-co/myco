@@ -139,6 +139,7 @@ const ALLOWED_TEXT_REACH: Readonly<Record<string, string>> = {
   '.github/actions/ci-setup/action.yml packages/myco-team/worker/package-lock.json': '#1170 P1: the Team-Sync packages go',
   '.github/actions/ci-setup/action.yml packages/myco/ui/package-lock.json': '#1170 P2: the 1.4 dashboard goes',
   '.github/workflows/ci.yml packages/myco-team/worker': '#1170 P1: the Team-Sync packages go',
+  '.github/workflows/ci.yml packages/myco/src/ui-assets.generated.ts': '#1170 P2: the 1.4 dashboard bundle check goes',
   '.github/workflows/publish.yml packages/myco-team/worker': '#1170 P1: the Team-Sync packages go',
   '.github/workflows/publish.yml packages/myco-team/worker/package-lock.json': '#1170 P1: the Team-Sync packages go',
   '.github/workflows/publish.yml packages/myco/ui': '#1170 P2: the 1.4 dashboard goes',
