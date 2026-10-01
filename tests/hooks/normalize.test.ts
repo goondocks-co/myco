@@ -182,7 +182,7 @@ describe('normalizeHookInput', () => {
       setHookConfig([cursorManifest]);
       process.env.CURSOR_PLUGIN_ROOT = '/some/path';
       const result = normalizeHookInput({
-        transcript_path: '/tmp/not-a-cursor-transcript.jsonl',
+        transcript_path: '/fixture/not-a-cursor-transcript.jsonl',
       });
       expect(result.agent).toBe('cursor');
       expect(result.sessionId).toBeUndefined();

@@ -1,10 +1,17 @@
-import { describe, it, expect } from 'bun:test';
+import { afterAll, describe, it, expect } from 'bun:test';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { MIGRATIONS, CURRENT_MIGRATION_VERSION, runMigrations } from '../../packages/myco/src/config/migrations';
+
+/** An empty vault directory: the vault-touching migrations find nothing to move in it. */
+const VAULT_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-migrations-vault-'));
+afterAll(() => fs.rmSync(VAULT_DIR, { recursive: true, force: true }));
 
 function runV10(doc: Record<string, unknown>) {
   const step = MIGRATIONS.find((m) => m.version === 10);
   if (!step) throw new Error('v10 migration missing');
-  step.migrate(doc, '/tmp/vault');
+  step.migrate(doc, VAULT_DIR);
   return doc;
 }
 
@@ -43,7 +50,7 @@ describe('v10 on local tier', () => {
       config_version: 9,
       cortex: { canopy: { inject_on_pre_tool_use: false } },
     };
-    runMigrations(doc, '/tmp/vault', undefined, 'local');
+    runMigrations(doc, VAULT_DIR, undefined, 'local');
     expect((doc.cortex as any).canopy.enabled).toBe(false);
     // Version ticks only on mutation: v10 seeds `enabled`, so the later
     // no-op steps (v11 rename, v12 reseed) leave the stamp at 10.
@@ -53,7 +60,7 @@ describe('v10 on local tier', () => {
   it('is a no-op on an empty local.yaml (does not expand sparse doc)', () => {
     // Sparse local.yaml with no cortex block should not gain any new keys.
     const doc: Record<string, unknown> = {};
-    const mutated = runMigrations(doc, '/tmp/vault', undefined, 'local');
+    const mutated = runMigrations(doc, VAULT_DIR, undefined, 'local');
     expect(mutated).toBe(false);
     expect(Object.keys(doc)).toHaveLength(0);
   });
@@ -64,7 +71,7 @@ describe('v10 on local tier', () => {
       cortex: { canopy: { min_file_bytes: 500 } },
     };
     const before = JSON.stringify(doc);
-    runMigrations(doc, '/tmp/vault', undefined, 'local');
+    runMigrations(doc, VAULT_DIR, undefined, 'local');
     // enabled should not have been added
     expect('enabled' in (doc.cortex as any).canopy).toBe(false);
     expect(JSON.stringify(doc)).toBe(before);
@@ -75,7 +82,7 @@ describe('v12 reseed canopy.enabled for the injection-off cohort', () => {
   function runV12(doc: Record<string, unknown>) {
     const step = MIGRATIONS.find((m) => m.version === 12);
     if (!step) throw new Error('v12 migration missing');
-    step.migrate(doc, '/tmp/vault');
+    step.migrate(doc, VAULT_DIR);
     return doc;
   }
 

@@ -85,13 +85,13 @@ describe('resolvePlanLogicalKey', () => {
 
 describe('normalizePlanSourcePath', () => {
   it('rewrites Windows-style separators to POSIX in the normalized output', () => {
-    const result = normalizePlanSourcePath('docs\\plans\\alpha.md', '/tmp/project');
+    const result = normalizePlanSourcePath('docs\\plans\\alpha.md', '/fixture/project');
     expect(result).toBe('docs/plans/alpha.md');
   });
 
   it('returns a normalized absolute path when the input escapes the project root', () => {
-    const outside = path.resolve('/tmp/outside/plan.md');
-    const result = normalizePlanSourcePath(outside, '/tmp/project');
+    const outside = path.resolve('/fixture/outside/plan.md');
+    const result = normalizePlanSourcePath(outside, '/fixture/project');
     expect(path.isAbsolute(result)).toBe(true);
     expect(result.includes('outside')).toBe(true);
     // Forward slashes in result (POSIX normalization).

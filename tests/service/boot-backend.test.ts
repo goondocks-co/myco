@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-import { afterEach, describe, expect, it } from 'bun:test';
+import { afterAll, afterEach, describe, expect, it } from 'bun:test';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -30,16 +30,20 @@ import type { ServiceSpec } from '@myco/service/types.js';
 
 const LABEL = 'co.goondocks.myco-boot-test';
 
+/** Where an installed spec's logs go: installing creates their directory. */
+const LOG_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-boot-logs-'));
+afterAll(() => fs.rmSync(LOG_DIR, { recursive: true, force: true }));
+
 function spec(overrides: Partial<ServiceSpec> = {}): ServiceSpec {
   return {
     label: LABEL,
     variant: 'prod',
     executable: '/usr/local/bin/myco',
     args: ['daemon'],
-    workingDir: '/tmp',
+    workingDir: '/fixture',
     env: {},
-    stdoutPath: '/tmp/out.log',
-    stderrPath: '/tmp/err.log',
+    stdoutPath: path.join(LOG_DIR, 'out.log'),
+    stderrPath: path.join(LOG_DIR, 'err.log'),
     runAtLoad: true,
     keepAlive: true,
     throttleSeconds: 10,
@@ -453,7 +457,7 @@ describe('GATE (round-2 B1): upgrade restart routes through the OWNING manager',
       },
       'co.goondocks.myco',
       '/usr/local/bin/myco',
-      '/tmp',
+      '/fixture',
     );
 
     expect(calls).toEqual(['boot:restart']);

@@ -122,7 +122,7 @@ describe('ensureManagedSkills', () => {
     const skillName = Object.keys(BUNDLED_SKILLS)[0];
     // Simulate the incident: a link into a deleted checkout/worktree.
     const dangling = path.join(agentSkillsDir, skillName);
-    fs.symlinkSync('/tmp/myco-deleted-worktree/packages/myco/skills/' + skillName, dangling);
+    fs.symlinkSync('/fixture/myco-deleted-worktree/packages/myco/skills/' + skillName, dangling);
     expect(fs.existsSync(dangling)).toBe(false); // dangling — target absent
 
     ensureManagedSkills(mycoHome);
@@ -224,8 +224,8 @@ describe('SymbiontInstaller — global skill cleanup', () => {
   it('sweepRetiredGlobalSkills removes current AND legacy links from retired dirs; preserves real + non-Myco content', () => {
     const codexSkills = path.join(tmpHome, '.codex', 'skills'); // codex retiredGlobalSkillsTargets
     fs.mkdirSync(codexSkills, { recursive: true });
-    fs.symlinkSync('/tmp/deleted-worktree/skills/myco', path.join(codexSkills, 'myco'));               // current, dangling
-    fs.symlinkSync('/tmp/deleted-worktree/skills/myco-curate', path.join(codexSkills, 'myco-curate')); // LEGACY name
+    fs.symlinkSync('/fixture/deleted-worktree/skills/myco', path.join(codexSkills, 'myco'));               // current, dangling
+    fs.symlinkSync('/fixture/deleted-worktree/skills/myco-curate', path.join(codexSkills, 'myco-curate')); // LEGACY name
     fs.mkdirSync(path.join(codexSkills, 'other-skill'), { recursive: true });                          // non-Myco
     fs.writeFileSync(path.join(codexSkills, 'other-skill', 'SKILL.md'), 'x\n');
     fs.mkdirSync(path.join(codexSkills, 'myco-rules'), { recursive: true });                           // REAL dir at a Myco name

@@ -26,7 +26,7 @@ const TEMPLATES = path.resolve(
 );
 
 /** The environment every path in these tests resolves against. */
-const ENV = { HOME: '/tmp/myco-fixture-home', MYCO_HOME: '/tmp/myco-fixture-home/.myco' } as NodeJS.ProcessEnv;
+const ENV = { HOME: '/fixture/myco-fixture-home', MYCO_HOME: '/fixture/myco-fixture-home/.myco' } as NodeJS.ProcessEnv;
 
 const NATIVE_PLUGIN_AGENTS = ['cline', 'opencode', 'pi'] as const;
 

@@ -429,11 +429,11 @@ describe('the harness runtime', () => {
   });
 
   it('reports the capability present once a launch is bound, naming what an operator sets', () => {
-    const absent = bunPlatform({ sqlite: undefined as never, blobDir: '/tmp/x' }).capabilities();
+    const absent = bunPlatform({ sqlite: undefined as never, blobDir: '/fixture/x' }).capabilities();
     expect(absent.find((c) => c.capability === 'harness-runtime'))
       .toEqual({ capability: 'harness-runtime', label: 'Harness runtime', present: false, operatorNames: ['MYCO_HARNESS', 'MYCO_HARNESS_TOKEN_FILE'] });
 
-    const bound = bunPlatform({ sqlite: undefined as never, blobDir: '/tmp/x', harnessLaunch: async () => {} }).capabilities();
+    const bound = bunPlatform({ sqlite: undefined as never, blobDir: '/fixture/x', harnessLaunch: async () => {} }).capabilities();
     expect(bound.find((c) => c.capability === 'harness-runtime')?.present).toBe(true);
   });
 });

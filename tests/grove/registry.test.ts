@@ -104,17 +104,17 @@ describe('Grove registry', () => {
     const project = registerProjectInGrove(grove.id, {
       projectId: 'proj_1',
       projectName: 'myco',
-      projectRoot: '/tmp/myco',
+      projectRoot: '/fixture/myco',
       bindingId: 'gbind_1',
     }, home);
 
-    expect(project.root).toBe('/tmp/myco');
+    expect(project.root).toBe('/fixture/myco');
 
     const projects = parse(fs.readFileSync(path.join(home, 'groves', grove.id, 'registry', 'projects.toml'), 'utf-8')) as Record<string, any>;
     const roots = parse(fs.readFileSync(path.join(home, 'groves', grove.id, 'registry', 'roots.toml'), 'utf-8')) as Record<string, any>;
 
     expect(projects.projects.proj_1.binding_id).toBe('gbind_1');
-    expect(roots.roots['/tmp/myco']).toBe('proj_1');
+    expect(roots.roots['/fixture/myco']).toBe('proj_1');
   });
 
   describe('ensureGroveExistsLocally', () => {
@@ -161,7 +161,7 @@ describe('Grove registry', () => {
       registerProjectInGrove(grove.id, {
         projectId: 'proj_demo',
         projectName: 'Demo',
-        projectRoot: '/tmp/demo',
+        projectRoot: '/fixture/demo',
         bindingId: 'gbind_demo',
       }, home);
 
@@ -172,7 +172,7 @@ describe('Grove registry', () => {
       expect(listRegisteredProjects(grove.id, home).map((p) => p.project_id)).not.toContain('proj_demo');
 
       const rootsRaw = fs.readFileSync(path.join(home, 'groves', grove.id, 'registry', 'roots.toml'), 'utf-8');
-      expect(rootsRaw).not.toContain('/tmp/demo');
+      expect(rootsRaw).not.toContain('/fixture/demo');
     });
 
     it('throws when the project is not bound to that Grove', () => {
@@ -197,12 +197,12 @@ describe('Grove registry', () => {
       registerProjectInGrove(grove.id, {
         projectId: 'proj_a',
         projectName: 'A',
-        projectRoot: '/tmp/a',
+        projectRoot: '/fixture/a',
       }, home);
       registerProjectInGrove(grove.id, {
         projectId: 'proj_b',
         projectName: 'B',
-        projectRoot: '/tmp/b',
+        projectRoot: '/fixture/b',
       }, home);
 
       expect(listRegisteredProjects(grove.id, home)).toHaveLength(2);
@@ -217,7 +217,7 @@ describe('Grove registry', () => {
       registerProjectInGrove(grove.id, {
         projectId: 'proj_demo',
         projectName: 'Demo',
-        projectRoot: '/tmp/demo',
+        projectRoot: '/fixture/demo',
         bindingId: 'gbind_demo',
       }, home);
 
@@ -305,7 +305,7 @@ describe('Grove registry', () => {
       registerProjectInGrove(grove.id, {
         projectId: 'proj_demo',
         projectName: 'Demo',
-        projectRoot: '/tmp/demo',
+        projectRoot: '/fixture/demo',
       }, home);
 
       expect(() => deleteGrove(grove.id, {}, home)).toThrow(/bound project/);
@@ -318,7 +318,7 @@ describe('Grove registry', () => {
       registerProjectInGrove(grove.id, {
         projectId: 'proj_demo',
         projectName: 'Demo',
-        projectRoot: '/tmp/demo',
+        projectRoot: '/fixture/demo',
       }, home);
 
       deleteGrove(grove.id, { force: true }, home);

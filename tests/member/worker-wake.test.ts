@@ -155,7 +155,7 @@ describe('keeping the machine awake while a run is driven', () => {
   });
 
   it('is what `myco worker` holds while it drives', () => {
-    expect(attachOptions('https://deployment.example', '/tmp/myco-no-home').keepAwake).toBe(keepMachineAwake);
+    expect(attachOptions('https://deployment.example', '/fixture/myco-no-home').keepAwake).toBe(keepMachineAwake);
   });
 });
 
@@ -165,7 +165,7 @@ describe('what `myco worker` writes to its log', () => {
     const original = console.log;
     console.log = (...args: unknown[]) => { printed.push(args.map(String).join(' ')); };
     try {
-      attachOptions('https://deployment.example', '/tmp/myco-no-home').log('claimed run_1 (extract-curate) on claude-code, budget 900s');
+      attachOptions('https://deployment.example', '/fixture/myco-no-home').log('claimed run_1 (extract-curate) on claude-code, budget 900s');
     } finally {
       console.log = original;
     }

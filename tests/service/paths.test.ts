@@ -29,17 +29,17 @@ describe('resolveServiceUnitDir', () => {
   test('MYCO_LAUNCH_AGENTS_DIR override wins on macOS', () => {
     expect(resolveServiceUnitDir({
       platform: 'darwin',
-      env: { [SERVICE_UNIT_DIR_ENV]: '/tmp/sandbox/LaunchAgents' },
+      env: { [SERVICE_UNIT_DIR_ENV]: '/fixture/sandbox/LaunchAgents' },
       homeDir: '/Users/test',
-    })).toBe('/tmp/sandbox/LaunchAgents');
+    })).toBe('/fixture/sandbox/LaunchAgents');
   });
 
   test('MYCO_LAUNCH_AGENTS_DIR override wins on Linux', () => {
     expect(resolveServiceUnitDir({
       platform: 'linux',
-      env: { [SERVICE_UNIT_DIR_ENV]: '/tmp/sandbox/systemd' },
+      env: { [SERVICE_UNIT_DIR_ENV]: '/fixture/sandbox/systemd' },
       homeDir: '/home/test',
-    })).toBe('/tmp/sandbox/systemd');
+    })).toBe('/fixture/sandbox/systemd');
   });
 
   test('whitespace-only override is ignored', () => {
@@ -76,7 +76,7 @@ describe('isSandboxedServiceUnitDir', () => {
 
   test('true when env is set to a sandbox path', () => {
     expect(isSandboxedServiceUnitDir({
-      env: { [SERVICE_UNIT_DIR_ENV]: '/tmp/sandbox/LaunchAgents' },
+      env: { [SERVICE_UNIT_DIR_ENV]: '/fixture/sandbox/LaunchAgents' },
     })).toBe(true);
   });
 

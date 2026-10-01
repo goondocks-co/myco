@@ -46,7 +46,7 @@ describe('Grove registry pause primitive', () => {
     registerProjectInGrove(grove.id, {
       projectId: PROJECT_A,
       projectName: 'Demo',
-      projectRoot: '/tmp/demo',
+      projectRoot: '/fixture/demo',
     }, home);
 
     pauseProject(grove.id, PROJECT_A, 'grove-move', 'op-1', null, home);
@@ -68,7 +68,7 @@ describe('Grove registry pause primitive', () => {
     registerProjectInGrove(grove.id, {
       projectId: PROJECT_A,
       projectName: 'Demo',
-      projectRoot: '/tmp/demo',
+      projectRoot: '/fixture/demo',
     }, home);
 
     pauseProject(grove.id, PROJECT_A, 'grove-move', 'op-1', null, home);
@@ -87,7 +87,7 @@ describe('Grove registry pause primitive', () => {
     registerProjectInGrove(grove.id, {
       projectId: PROJECT_A,
       projectName: 'Demo',
-      projectRoot: '/tmp/demo',
+      projectRoot: '/fixture/demo',
     }, home);
 
     pauseProject(grove.id, PROJECT_A, 'grove-move', 'op-1', null, home);
@@ -108,7 +108,7 @@ describe('Grove registry pause primitive', () => {
     registerProjectInGrove(grove.id, {
       projectId: PROJECT_A,
       projectName: 'Demo',
-      projectRoot: '/tmp/demo',
+      projectRoot: '/fixture/demo',
     }, home);
 
     pauseProject(grove.id, PROJECT_A, 'grove-move', 'op-1', null, home);
@@ -123,7 +123,7 @@ describe('Grove registry pause primitive', () => {
     registerProjectInGrove(grove.id, {
       projectId: PROJECT_A,
       projectName: 'Demo',
-      projectRoot: '/tmp/demo',
+      projectRoot: '/fixture/demo',
     }, home);
 
     pauseProject(grove.id, PROJECT_A, 'grove-move', 'op-1', null, home);
@@ -135,7 +135,7 @@ describe('Grove registry pause primitive', () => {
     registerProjectInGrove(grove.id, {
       projectId: PROJECT_A,
       projectName: 'Demo',
-      projectRoot: '/tmp/demo',
+      projectRoot: '/fixture/demo',
     }, home);
 
     expect(() => resumeProject(grove.id, PROJECT_A, 'op-1', home)).not.toThrow();
@@ -153,12 +153,12 @@ describe('Grove registry pause primitive', () => {
     registerProjectInGrove(groveA.id, {
       projectId: PROJECT_A,
       projectName: 'A',
-      projectRoot: '/tmp/a',
+      projectRoot: '/fixture/a',
     }, home);
     registerProjectInGrove(groveB.id, {
       projectId: PROJECT_B,
       projectName: 'B',
-      projectRoot: '/tmp/b',
+      projectRoot: '/fixture/b',
     }, home);
 
     pauseProject(groveB.id, PROJECT_B, 'grove-move', 'op-2', null, home);
@@ -174,7 +174,7 @@ describe('Grove registry pause primitive', () => {
     registerProjectInGrove(grove.id, {
       projectId: PROJECT_A,
       projectName: 'Demo',
-      projectRoot: '/tmp/demo',
+      projectRoot: '/fixture/demo',
     }, home);
 
     pauseProject(grove.id, PROJECT_A, 'grove-move', 'op-1', null, home);
@@ -189,7 +189,7 @@ describe('Grove registry pause primitive', () => {
     registerProjectInGrove(grove.id, {
       projectId: PROJECT_A,
       projectName: 'Demo',
-      projectRoot: '/tmp/demo',
+      projectRoot: '/fixture/demo',
     }, home);
 
     pauseProject(grove.id, PROJECT_A, 'grove-move', 'op-1', null, home);
@@ -216,12 +216,12 @@ describe('Grove registry pause primitive', () => {
     registerProjectInGrove(source.id, {
       projectId: PROJECT_A,
       projectName: 'Demo',
-      projectRoot: '/tmp/demo',
+      projectRoot: '/fixture/demo',
     }, home);
     registerProjectInGrove(target.id, {
       projectId: PROJECT_A,
       projectName: 'Demo',
-      projectRoot: '/tmp/demo',
+      projectRoot: '/fixture/demo',
     }, home);
 
     pauseProject(target.id, PROJECT_A, 'grove-move', 'op-move', null, home);

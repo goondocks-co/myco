@@ -13,6 +13,7 @@
  */
 import { Database } from 'bun:sqlite';
 import { mkdirSync, rmSync, writeFileSync, existsSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -37,8 +38,9 @@ const schemaModule = schemaModuleArg ?? './packages/myco/src/db/schema.js';
 const commit = run(['git', 'rev-parse', commitArg], FIXTURE_DIR).trim();
 const subject = run(['git', 'log', '-1', '--format=%s', commit], FIXTURE_DIR).trim();
 
-const worktreeDir = `/tmp/myco-hunt/rc1-fixtures/v${version}`;
-mkdirSync('/tmp/myco-hunt/rc1-fixtures', { recursive: true });
+const worktreesDir = join(tmpdir(), 'myco-hunt', 'rc1-fixtures');
+const worktreeDir = join(worktreesDir, `v${version}`);
+mkdirSync(worktreesDir, { recursive: true });
 if (existsSync(worktreeDir)) {
   run(['git', 'worktree', 'remove', '--force', worktreeDir], FIXTURE_DIR);
 }

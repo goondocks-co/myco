@@ -130,7 +130,7 @@ function section(instruction: string, heading: string): string {
 }
 
 function requestContext(projectId: string) {
-  return resolveLegacyRequestContext('/tmp/myco-instruction-builders-test/.myco', {
+  return resolveLegacyRequestContext('/fixture/myco-instruction-builders-test/.myco', {
     projectRoot: `/workspace/${projectId}`,
     projectId,
     groveId: 'grove-test',
