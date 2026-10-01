@@ -172,10 +172,14 @@ function labelSession(spool: MemberSpool, sessionId: string, state: SessionState
   return agent;
 }
 
-/** What one hook appended to a session: the records it spooled, and the turn-end mark it left (`turnEndIdentity`). */
+/**
+ * What one hook appended to a session: the records it spooled, the turn-end mark it left (`turnEndIdentity`), and,
+ * for a turn's or a session's end, how far the session's own transcript had reached when the hook read it.
+ */
 export interface HookAppended {
   eventIds: readonly string[];
   turnEnd?: string;
+  transcriptTo?: { transcriptId: string; atSize: number };
 }
 
 /**
@@ -183,11 +187,25 @@ export interface HookAppended {
  * journal, and its turn-end mark has been consumed. What a hook that must deliver before it exits waits for: nothing
  * else the session holds (a subagent's transcript still growing, a transcript waiting out a refusal) is its to wait on.
  */
-export function hookDelivered(spool: MemberSpool, sessionId: string, appended: HookAppended): boolean {
+export function hookDelivered(spool: MemberSpool, sessionId: string, appended: HookAppended, now: number = Date.now()): boolean {
+  if (appended.transcriptTo !== undefined && !transcriptReached(spool, sessionId, appended.transcriptTo, now)) return false;
   if (appended.turnEnd !== undefined && spool.pendingTurnEnds(sessionId).some((p) => turnEndIdentity(p.mark) === appended.turnEnd)) return false;
   if (appended.eventIds.length === 0) return true;
   const waiting = new Set(spool.readRecords(sessionId).slice(readSessionState(spool.dir, sessionId).highWater).flatMap((r) => (r === null ? [] : [r.eventId])));
   return !appended.eventIds.some((id) => waiting.has(id));
+}
+
+/**
+ * Whether the session's own transcript has reached `to` on the Deployment, or has nothing left to wait for there: it
+ * was replaced or refused for good, it is shorter than `to` names, or it is waiting out a refusal, which no wait inside
+ * a hook outlasts.
+ */
+function transcriptReached(spool: MemberSpool, sessionId: string, to: { transcriptId: string; atSize: number }, now: number): boolean {
+  const state = readSessionState(spool.dir, sessionId);
+  const pointer = state.transcript;
+  if (pointer === undefined || pointer.transcriptId !== to.transcriptId || pointer.refused !== undefined) return true;
+  if (pointer.nextOffset >= to.atSize || retryWaiting(state.transcriptRetry, now)) return true;
+  try { return fs.statSync(pointer.path).size < to.atSize; } catch { return true; }
 }
 
 /**

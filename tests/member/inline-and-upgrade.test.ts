@@ -187,6 +187,29 @@ describe('a turn\'s end that ships inline', () => {
     await holder;
   }, 20_000);
 
+  it('waits for its turn\'s own transcript as well as its records, the transcript slower to arrive than they are', async () => {
+    const tx = transcript('sess-tx');
+    await runHook('user-prompt-submit', { session_id: 'sess-tx', prompt: 'tx', transcript_path: tx }, { fetch: rig.fetch, symbiont: 'copilot', helperSpawn: () => ({ started: true, pid: process.pid, contained: true }) });
+    updateProjectContext(spool().dir, mycoHome, (cache) => { cache.features = ['turn']; });
+    // The Deployment takes records at once and a transcript's bytes 700 ms late.
+    const slowBlobs: typeof rig.fetch = async (input, init) => {
+      const req = new Request(input, init);
+      if (new URL(req.url).pathname.startsWith('/blobs/')) await Bun.sleep(700);
+      return rig.fetch(req);
+    };
+    let passStarted = false;
+    const deliver = helperPass('proj_1', mycoHome, { fetch: slowBlobs });
+    const holder = runHelper({
+      projectId: 'proj_1', mycoHome, contained: true, lingerMs: 3_000, deadlineMs: 6_000,
+      pass: async (deadline, o) => { passStarted = true; await Bun.sleep(200); return deliver(deadline, o); },
+    });
+    while (!passStarted) await Bun.sleep(5);
+    await runHook('stop', { session_id: 'sess-tx', last_assistant_message: 'tx reply', transcript_path: tx }, { fetch: rig.fetch, symbiont: 'copilot', helperSpawn: noStart });
+    expect(rig.rows('responses')).toBe(1);
+    expect(readSessionState(spool().dir, 'sess-tx').transcript?.nextOffset).toBe(fs.statSync(tx).size);
+    await holder;
+  }, 20_000);
+
   it('leaves an ordinary hook\'s capture to the helper even when no helper could be started', async () => {
     const tx = transcript('sess-capture');
     await runHook('user-prompt-submit', { session_id: 'sess-capture', prompt: 'later', transcript_path: tx }, { fetch: rig.fetch, symbiont: 'copilot', helperSpawn: () => ({ started: false }) });

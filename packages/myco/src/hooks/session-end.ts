@@ -13,6 +13,7 @@ export async function main(opts: HookMainOptions = {}) {
         transcript.record(state);
         state.endedAt = run.now();
       },
+      transcriptAt: transcript.stoodAt,
       ends: 'session-end',
     };
   });

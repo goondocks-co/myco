@@ -179,6 +179,7 @@ export async function main(opts: HookMainOptions = {}) {
       events,
       record: transcript?.record,
       turnEnd: ended.turnEnd,
+      transcriptAt: transcript?.stoodAt,
       ends: 'turn-end',
     };
   });

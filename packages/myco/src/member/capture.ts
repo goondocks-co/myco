@@ -106,6 +106,11 @@ export interface HookOutcome {
    */
   turnEnd?: Pick<TurnEndMark, 'slot' | 'transcriptId' | 'atSize'>;
   /**
+   * Where the session's own transcript stood when this end hook read it: part of the turn it ends, which an inline
+   * end delivers before it exits (`hookDelivered`).
+   */
+  transcriptAt?: Pick<TurnEndMark, 'transcriptId' | 'atSize'>;
+  /**
    * How this hook hands the person a delivery notice, for a hook whose answer
    * the harness shows the agent: the response with the notice added to it.
    * Every hook that has one also prints the notice to stderr.
@@ -249,6 +254,7 @@ export async function runMemberHook(
       const appended: HookAppended = {
         eventIds: outcome.events.map((event) => event.envelope.eventId),
         ...(outcome.turnEnd !== undefined ? { turnEnd: turnEndIdentity(outcome.turnEnd) } : {}),
+        ...(outcome.transcriptAt !== undefined ? { transcriptTo: outcome.transcriptAt } : {}),
       };
       if (!detachable || (outcome.ends !== undefined && shipsInlineFlag(argv))) {
         markWork(target);
