@@ -17,7 +17,7 @@ const CONFIG = path.join(REPO, 'tsconfig.tests.json');
 
 /**
  * Deferred trees containing the local runtime's agent, capture, CLI, daemon,
- * database, Grove, host, vault and worker suites. Explicit inclusions below
+ * database, Grove, host and vault suites. Explicit inclusions below
  * identify the typechecked suites within these trees.
  */
 const AWAITING_THE_1_4_SWEEP = [
@@ -30,9 +30,7 @@ const AWAITING_THE_1_4_SWEEP = [
   'grove',
   'host',
   'integration',
-  'team-host',
   'vault',
-  'worker',
 ] as const;
 
 /**
@@ -58,7 +56,6 @@ const TYPED_INSIDE_A_DEFERRED_TREE = [
  * cover them.
  */
 const TYPED_BY_THE_UI_CONFIGS = [
-  'ui',
   'myco-server-ui',
   path.join('setup', 'jsdom.ts'),
   path.join('setup', 'vitest.ts'),
