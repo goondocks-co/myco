@@ -22,7 +22,7 @@ import { RunPanel } from './RunPanel';
 import { RunTaskConfirm, RunTaskMenu, STARTABLE_TASKS } from './RunTask';
 import type { DispatchAnswer, RunPageRow } from './wire';
 import {
-  atWords, dollars, KIND_ORDER, KIND_TASKS, KIND_WORDS, ledeClause, outcomeHeadline, ranOn, runLineWords, runNoun, shortTime, startedByChip, times, tokenWords,
+  atWords, failureDetail, failureWords, dollars, KIND_ORDER, KIND_TASKS, KIND_WORDS, ledeClause, outcomeHeadline, ranOn, runLineWords, runNoun, shortTime, startedByChip, times, tokenWords,
   WINDOW_WORDS, type WorkWindow,
 } from './words';
 
@@ -273,7 +273,7 @@ function KindCard({ summary, answer, projectId, projectName, window, bounds, liv
     : (all ? scopedRows : scopedRows.slice(0, RUNS_SHOWN)).map((row) => pageRowLine(row, kind, projectId, now, name));
   const lines = lineItems.filter((item) => matches(item.words) || matches(item.where ?? ''));
   const groups = summary.failureGroups
-    .map((group) => ({ ...group, failures: group.failures.filter((run) => matches(run.failure?.cause ?? '')) }))
+    .map((group) => ({ ...group, failures: group.failures.filter((run) => matches(failureWords(run.failure)) || matches(failureDetail(run.failure) ?? '')) }))
     .filter((group) => group.failures.length > 0);
   const whole = matches(headline);
   const failed = summary.produced === 0 && summary.failed > 0 && summary.spores === 0;
@@ -318,7 +318,7 @@ function KindCard({ summary, answer, projectId, projectName, window, bounds, liv
           openTo={runPath}
         />
       ))}
-      <KeptNote summary={summary} cause={summary.kept[0]?.failure?.cause ?? null} />
+      <KeptNote summary={summary} cause={summary.kept[0] === undefined ? null : failureWords(summary.kept[0].failure)} />
       {searching && !whole && lines.length === 0 && groups.length === 0 && <p className="t-small text-muted">Nothing here matches your search.</p>}
     </OutcomeCard>
   );

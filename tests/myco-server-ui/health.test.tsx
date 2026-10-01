@@ -271,3 +271,47 @@ describe('Health', () => {
     }
   });
 });
+
+it('describes coded store diagnostics with specific findings and dashboard words for support, measurements and cadence', async () => {
+  const prose = 'server prose must stay off the page';
+  server(routes({ '/api/maintenance': () => Response.json({ checks: [
+    { check: 'optimize', support: { supported: false, reasonCode: 'check_unsupported', reason: prose }, cadence: { state: 'off' }, running: false, latest: null },
+    { check: 'integrity', support: { supported: true, label: 'Checks stored records' }, cadence: { state: 'invalid', leaf: 'maintenance.auto_integrity_check', reason: prose }, running: false,
+      latest: { runId: 'check1', trigger: 'owner', state: 'findings', startedAt: NOW, finishedAt: NOW, errorClass: null,
+        findings: [...Array<string>(10).fill('A stored record is missing.'), 'A file could not be read.'], findingCodes: Array<string>(11).fill('store_problem'), findingsOmitted: 0,
+        measurements: [{ name: 'size', state: 'unavailable', reasonCode: 'measurement_unavailable', reason: prose }] } },
+  ] }) }));
+  mount();
+  const upkeep = await screen.findByTestId('maintenance');
+  await waitFor(() => expect(upkeep.textContent).toContain('The store check found a problem.'));
+  expect(upkeep.textContent).toContain('Not available on this server.');
+  expect(upkeep.textContent).toContain('This measurement is unavailable.');
+  expect(upkeep.textContent).not.toContain('A stored record is missing.');
+  fireEvent.click(within(upkeep).getByRole('button', { name: 'Findings' }));
+  expect(upkeep.textContent).toContain('A stored record is missing. (10 findings)');
+  expect(upkeep.textContent).toContain('A file could not be read.');
+  expect(upkeep.textContent!.match(/The store check found a problem\./g)).toHaveLength(1);
+  expect(upkeep.textContent!.match(/A stored record is missing\./g)).toHaveLength(1);
+  expect(upkeep.textContent).toContain('Automatic runs are not scheduled: the saved setting is invalid.');
+  expect(document.body.textContent).not.toContain(prose);
+});
+
+for (const [code, configured, ready, expected] of [
+  ['backup_unsupported', false, false, 'Automatic recovery doesn’t run on this server.'],
+  ['backup_off', false, true, 'Automatic recovery is off.'],
+  ['backup_not_ready', true, false, 'It can’t run yet: this server is missing something it needs.'],
+  ['backup_in_progress', true, true, 'The next one waits for the attempt or backup in progress to end.'],
+  ['manual_backup_in_progress', true, true, 'The next one waits for the attempt or backup in progress to end.'],
+] as const) {
+  it(`describes ${code} without quoting the recovery reason`, async () => {
+    const prose = 'server prose must stay off the page';
+    server(routes({ '/api/recovery/exports': () => Response.json({ supported: code !== 'backup_unsupported',
+      attempt: null, stage: 'idle', form: 'staging', error: null,
+      schedule: { supported: code !== 'backup_unsupported', configured, ready, intervalHours: 24, dueAt: null, due: false,
+        latest: null, available: { state: 'none' }, idleCode: code, idleBecause: prose },
+    }) }));
+    mount();
+    await waitFor(() => expect(document.body.textContent).toContain(expected));
+    expect(document.body.textContent).not.toContain(prose);
+  });
+}

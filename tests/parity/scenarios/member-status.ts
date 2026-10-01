@@ -6,7 +6,7 @@ import { SIZE_LIMIT_UNAVAILABLE } from '@myco-server-worker/platform/cloudflare/
 import { RUN_SCOPE } from '@myco-server-worker/pipeline.js';
 import { lit, waitFor, type ParityScenario } from '../harness.ts';
 
-interface Measurement { name: string; state: 'measured' | 'unavailable'; value?: number; unit?: string; reason?: string }
+interface Measurement { name: string; state: 'measured' | 'unavailable'; value?: number; unit?: string; reason?: string; reasonCode?: string }
 interface Outcome { finishedAt: number | null; measurements: Measurement[] }
 
 /**
@@ -60,7 +60,7 @@ export const memberStatus: ParityScenario = {
     expect(named('size')?.state).toBe('measured');
     expect(named('size')?.value).toBeGreaterThan(0);
     if (target.name === 'cloudflare') {
-      expect(named('size_limit')).toEqual({ name: 'size_limit', state: 'unavailable', reason: SIZE_LIMIT_UNAVAILABLE, measuredAt: recorded.finishedAt });
+      expect(named('size_limit')).toEqual({ name: 'size_limit', state: 'unavailable', reason: SIZE_LIMIT_UNAVAILABLE, reasonCode: 'measurement_unavailable', measuredAt: recorded.finishedAt });
     }
     expect(await target.sql(`SELECT COUNT(*) AS n FROM projects WHERE project_id = ${lit(unseen)}`)).toEqual([{ n: 0 }]);
 

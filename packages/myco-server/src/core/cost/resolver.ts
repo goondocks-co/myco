@@ -12,7 +12,7 @@ export async function resolveCost(input: CostResolutionInput): Promise<CostResol
       source: 'estimated', costUsd: input.usage.estimatedCostUsd, actualCostUsd: null,
       estimatedCostUsd: input.usage.estimatedCostUsd,
       breakdown: { ...buildTokenBreakdown(input.usage), totalCostUsd: input.usage.estimatedCostUsd },
-      message: 'Estimate reported by the harness; not a billing statement',
+      message: 'Estimate reported by the machine; not a billing statement',
     };
   }
   const provider = getCostProvider(input);

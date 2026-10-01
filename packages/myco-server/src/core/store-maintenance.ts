@@ -58,7 +58,7 @@ const META_KEY_PREFIX = 'maintenance.';
 /** What a target measured, or why it could not. */
 export type StoreMeasurement =
   | { name: MeasurementName; state: 'measured'; value: number; unit: 'bytes' }
-  | { name: MeasurementName; state: 'unavailable'; reason: string };
+  | { name: MeasurementName; state: 'unavailable'; reason: string; reasonCode?: string };
 export type MeasurementName = 'size' | 'reclaimable' | 'size_limit' | 'daily_quota' | 'blob_bytes';
 
 /** A measurement with the instant the check that took it finished. */
@@ -70,7 +70,7 @@ export interface PortResult {
   measurements: StoreMeasurement[];
 }
 
-export type CheckSupport = { supported: true; label: string } | { supported: false; reason: string };
+export type CheckSupport = { supported: true; label: string } | { supported: false; reason: string; reasonCode?: string };
 
 /**
  * How a target keeps one check running at a time.
@@ -126,6 +126,7 @@ export interface MaintenanceOutcome {
   /** The named cause when `state` is `failed`. */
   errorClass: string | null;
   findings: string[];
+  findingCodes?: string[];
   /** Findings beyond `MAX_FINDINGS` that were not kept. */
   findingsOmitted: number;
   measurements: StoreMeasurement[];
@@ -183,7 +184,7 @@ function parseOutcome(raw: string | undefined): MaintenanceOutcome | null {
   if (raw === undefined) return null;
   const parsed = JSON.parse(raw) as MaintenanceOutcome;
   if (typeof parsed !== 'object' || parsed === null || typeof parsed.runId !== 'string') throw new Error('the recorded maintenance outcome is unreadable');
-  return parsed;
+  return maintenanceWordsCodes(parsed);
 }
 
 /** The latest recorded outcome of a check, or null when it has never run. */
@@ -316,7 +317,7 @@ async function finishRun(env: ServerEnv, port: StoreMaintenancePort, record: Mai
   }
   const recorded = await complete(env, finished);
   emit({ kind: 'store_maintenance', check: finished.check, state: finished.state, error_class: finished.errorClass ?? 'none', recorded });
-  return { record: finished, recorded };
+  return { record: maintenanceWordsCodes(finished), recorded };
 }
 
 /**
@@ -332,7 +333,7 @@ export async function runMaintenance(
   options: { powerState?: PowerState; clock?: () => number } = {},
 ): Promise<RunAnswer> {
   const port = env.storeMaintenance;
-  if (port === undefined) return { outcome: 'refused', refusal: 'unsupported', reason: 'this Deployment has no store maintenance' };
+  if (port === undefined) return { outcome: 'refused', refusal: 'unsupported', reason: 'this server cannot run store checks' };
   const support = port.support[check];
   if (!support.supported) return { outcome: 'refused', refusal: 'unsupported', reason: support.reason };
   const exclusivity = port.exclusivity;
@@ -397,13 +398,23 @@ export interface MaintenanceCheckStatus {
 export async function maintenanceStatus(env: ServerEnv, now: number): Promise<MaintenanceCheckStatus[]> {
   const port = env.storeMaintenance;
   return Promise.all(MAINTENANCE_CHECKS.map(async (check) => {
-    const support: CheckSupport = port?.support[check] ?? { supported: false, reason: 'this Deployment has no store maintenance' };
+    const support: CheckSupport = port?.support[check] ?? { supported: false, reason: 'this server cannot run store checks' };
     const cadence = await cadenceOf(env, check);
     const latest = await latestOutcome(env, check);
     return {
-      check, support, cadence, latest,
+      check, support: support.supported ? support : { ...support, reasonCode: 'check_unsupported' }, cadence, latest,
       running: port !== undefined && checkRunning(port, latest, check, now),
       dueAt: support.supported ? dueAt(cadence, latest, now) : null,
     };
   }));
+}
+
+/** Stored outcomes and direct results carry codes beside store-provided text. */
+export function maintenanceWordsCodes(record: MaintenanceOutcome): MaintenanceOutcome {
+  return {
+    ...record,
+    findingCodes: record.findings.map(() => 'store_problem'),
+    measurements: record.measurements.map((measurement) => measurement.state === 'measured'
+      ? measurement : { ...measurement, reasonCode: 'measurement_unavailable' }),
+  };
 }

@@ -62,7 +62,7 @@ export const tick: ParityScenario = {
     expect(first.nextWakeMs).toBe(60_000);
     expect(await rows()).toEqual([
       { id: 'tick-live', status: 'running', error: null },
-      { id: 'tick-stale', status: 'failed', error: 'the runtime went away' },
+      { id: 'tick-stale', status: 'failed', error: 'the machine running it stopped responding' },
     ]);
     expect(await target.sql(`SELECT COUNT(*) AS c FROM agent_turns WHERE run_id = 'tick-old-turned'`)).toEqual([{ c: 0 }]);
 
@@ -71,7 +71,7 @@ export const tick: ParityScenario = {
     expect(seededView(second.jobs)).toEqual(jobReport());
     expect(await rows()).toEqual([
       { id: 'tick-live', status: 'running', error: null },
-      { id: 'tick-stale', status: 'failed', error: 'the runtime went away' },
+      { id: 'tick-stale', status: 'failed', error: 'the machine running it stopped responding' },
     ]);
 
     // An owner's own request is activity: the wake that follows finds the Deployment in use, and housekeeping still runs.

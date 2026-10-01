@@ -171,3 +171,25 @@ describe('nothing stored for the harness leaves through the reads', () => {
     expect(detail).toContain('"phases":[{"name":"p"');
   });
 });
+
+it('keeps stored failure text and adds a classifier on the dashboard read', async () => {
+  const fixture = await harness();
+  try {
+    for (const [id, error, code] of [
+      ['run_wait', 'no machine started the task within a day', 'machine_did_not_start'],
+      ['run_legacy', 'the runtime went away', 'machine_unresponsive'],
+      ['run_stale', 'the machine running it stopped responding', 'machine_unresponsive'],
+      ['run_start', 'the machine could not start the task: refused', 'task_start_failed'],
+      ['run_other', 'arbitrary machine output', 'run_failed'],
+    ]) {
+      fixture.seed({ id: id!, error, status: 'failed' });
+      const answer = await fixture.get(`/api/projects/proj_1/runs/${id}`);
+      expect(answer.status).toBe(200);
+      expect(answer.body.run).toMatchObject({ error, errorCode: code });
+    }
+    fixture.seed({ id: 'run_skip', status: 'skipped' });
+    fixture.sqlite.query('UPDATE agent_runs SET run_context = ? WHERE id = ?').run(JSON.stringify({ reason: 'a free-text reason' }), 'run_skip');
+    const skipped = await fixture.get('/api/projects/proj_1/runs/run_skip');
+    expect(skipped.body.run).toMatchObject({ skipReason: 'a free-text reason', skipReasonCode: 'run_not_needed' });
+  } finally { fixture.sqlite.close(); }
+});

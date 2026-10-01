@@ -1,3 +1,4 @@
+import { failureWords } from '../features/work/words';
 import { type ReactNode } from 'react';
 import { Navigate, Outlet, useLocation, useSearchParams } from 'react-router-dom';
 import { ActionLink, COMPACT_QUERY, EmptyState, ErrorState, LoadingState, PHONE_QUERY, Skeleton, StatusChip } from '../design';
@@ -9,7 +10,7 @@ import { sporesWritten, type SessionEntry, type TimelineEntry, type WorkEntry } 
 import { FailureNote, KickerProject, KickerSep, NestedLines, TimelineItem, TitleLink, type TimelineTone } from '../features/today/TimelineItem';
 import type { WorkAnswer } from '../features/today/wire';
 import {
-  agentName, causeSentence, clockTime, count, dayHeading, failureNextStep, shortDay, sinceWords, sporeLine, sporeTypeWord, workHeadline, workPlace,
+  agentName, clockTime, count, dayHeading, failureNextStep, shortDay, sinceWords, sporeLine, sporeTypeWord, workHeadline, workPlace,
 } from '../features/today/words';
 import { useNeedsYou } from '../hooks/use-needs-you';
 import { useIsAdmin, useMe } from '../hooks/use-me';
@@ -287,7 +288,7 @@ function WorkItem({ entry, scoped, projectName, work }: { entry: WorkEntry; scop
       {noted !== undefined && (
         <FailureNote
           tone={failed.length > 0 ? 'bad' : 'quiet'}
-          cause={causeSentence(noted.failure?.cause ?? '')}
+          cause={failureWords(noted.failure)}
           next={failureNextStep(entry.kind, failed.length === 0)}
           {...(failed.length > 0 ? { action: { to: runAt(noted.id), label: 'Open the run' } } : {})}
         />

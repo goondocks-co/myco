@@ -6,6 +6,7 @@
  * safe to run again the next second: a second delivery of one wake finds
  * nothing left to do.
  */
+import { STALE_RUN_ERROR, STALE_PENDING_REASON } from './reader-codes.js';
 import type { ServerEnv } from './adapters.js';
 import type { PowerState } from './power.js';
 import { expireGrants } from '../auth/grants.js';
@@ -143,7 +144,7 @@ export function staleAfter(startedAt: number, runContext: string | null): number
   return startedAt + timeoutSecondsOf(runContext) * 1000 + RUN_OVERRUN_MARGIN_MS;
 }
 
-export const STALE_RUN_ERROR = 'the runtime went away';
+export { STALE_RUN_ERROR } from './reader-codes.js';
 
 /**
  * How long a dispatch may wait in the queue before the Deployment gives up on it.
@@ -154,7 +155,7 @@ export const STALE_RUN_ERROR = 'the runtime went away';
  * holds the two in step.
  */
 export const QUEUE_MAX_AGE_MS = DAY_MS;
-export const QUEUE_EXPIRED_ERROR = 'no runtime took the run within a day';
+export const QUEUE_EXPIRED_ERROR = STALE_PENDING_REASON;
 
 /** Why a queued run past its bound ended: the capability it waited for, where it waited for one. */
 export function queueExpiredError(heldBy: string | null): string {
@@ -176,13 +177,13 @@ export async function runStaleSweep(env: ServerEnv, now: number): Promise<number
   for (const run of await listLiveRunsAcrossProjects(env.db, JOB_BATCH)) {
     if (run.startedAt === null || now < staleAfter(run.startedAt, run.runContext)) continue;
     const scope = { projectId: run.projectId };
-    if (!(await failStaleRun(env.db, scope, run.id, now, STALE_RUN_ERROR))) continue;
+    if (!(await failStaleRun(env.db, scope, run.id, now, STALE_RUN_ERROR, 'machine_unresponsive'))) continue;
     await releaseRun(env, scope, run, now, { drain: false });
     changed += 1;
   }
   for (const queued of await listQueuedAcrossProjects(env.db, JOB_BATCH)) {
     if (now - queued.queuedAt < QUEUE_MAX_AGE_MS) continue;
-    if (!(await endQueuedRun(env, { projectId: queued.projectId }, queued, now, { failed: queueExpiredError(queued.heldBy) }))) continue;
+    if (!(await endQueuedRun(env, { projectId: queued.projectId }, queued, now, { failed: queueExpiredError(queued.heldBy), errorCode: 'machine_did_not_start' }))) continue;
     emit({ kind: 'harness_queue_expired', runId: queued.id, task: queued.task, projectId: queued.projectId });
     changed += 1;
   }

@@ -394,3 +394,65 @@ describe('running a task by hand', () => {
   });
 });
 
+
+for (const [code, sentence] of [
+  ['machine_did_not_start', 'No machine started the task within a day.'],
+  ['machine_unresponsive', 'The machine running it stopped responding.'],
+  ['task_start_failed', 'The machine could not start the task.'],
+  ['run_failed', 'The task stopped before it could finish.'],
+  [undefined, 'The task stopped before it could finish.'],
+  ['unknown_code', 'The task stopped before it could finish.'],
+] as const) {
+  it(`words a ${code ?? 'legacy'} failure with its specific reason available in details`, async () => {
+    const prose = code === 'unknown_code' ? 'runtime output reported a missing file' : 'The saved output could not be read.';
+    server(routes({ detail: { [`/api/projects/${P}/runs/run_5e0b1c2d3f`]: () => Response.json(runDetail(mapRuns[0]!, {
+      reports: [], run: { errorCode: code, error: prose },
+    })) } }));
+    mount(`/p/${P}/work/runs/run_5e0b1c2d3f`);
+    const open = await panel();
+    await waitFor(() => expect(open.querySelector('[data-run-failure]')?.textContent).toContain(sentence));
+    expect(open.textContent).not.toContain(prose);
+    fireEvent.click(within(open).getByRole('button', { name: /Technical details/ }));
+    expect(open.querySelector('[data-run-technical]')!.textContent).toContain(sentence);
+    expect(open.querySelector('[data-run-technical]')!.textContent).toContain(prose);
+  });
+}
+
+it('words a free-text skip from its fallback code', async () => {
+  server(routes({ detail: { [`/api/projects/${P}/runs/run_d4e5f6a7b8`]: () => Response.json(runDetail(learning[0]!, {
+    run: { skipReason: 'server prose must stay off the page', skipReasonCode: 'run_not_needed' },
+  })) } }));
+  mount(`/p/${P}/work/runs/run_d4e5f6a7b8`);
+  const open = await panel();
+  await waitFor(() => expect(open.textContent).toContain('Myco didn’t need to run it'));
+  expect(open.textContent).not.toContain('server prose must stay off the page');
+});
+
+
+it('words a task no machine started from its code', async () => {
+  server(routes({ detail: { [`/api/projects/${P}/runs/run_d4e5f6a7b8`]: () => Response.json(runDetail(learning[0]!, {
+    run: { skipReason: 'server prose must stay off the page', skipReasonCode: 'machine_did_not_start' },
+  })) } }));
+  mount(`/p/${P}/work/runs/run_d4e5f6a7b8`);
+  const open = await panel();
+  await waitFor(() => expect(open.textContent).toContain('no machine started it within a day'));
+  expect(open.textContent).not.toContain('server prose must stay off the page');
+});
+
+
+it('keeps a coded failure as the headline when the run also filed a report', async () => {
+  const reason = 'The saved output could not be read.';
+  const report = 'The machine reported a missing file.';
+  server(routes({ detail: { [`/api/projects/${P}/runs/run_5e0b1c2d3f`]: () => Response.json(runDetail(mapRuns[0]!, {
+    reports: [{ action: 'summary', summary: report, createdAt: NOW }],
+    run: { errorCode: 'machine_unresponsive', error: reason },
+  })) } }));
+  mount(`/p/${P}/work/runs/run_5e0b1c2d3f`);
+  const open = await panel();
+  await waitFor(() => expect(open.querySelector('[data-run-failure]')!.textContent).toContain('The machine running it stopped responding.'));
+  expect(open.textContent).not.toContain(reason);
+  expect(open.textContent).not.toContain(report);
+  fireEvent.click(within(open).getByRole('button', { name: /Technical details/ }));
+  expect(open.querySelector('[data-run-technical]')!.textContent).toContain(reason);
+  expect(open.querySelector('[data-run-technical]')!.textContent).toContain(report);
+});

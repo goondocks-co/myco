@@ -232,7 +232,7 @@ describe('recovery and retired settings on the dashboard', () => {
     const { env } = rig();
     const answer = await request(env, ADMIN, 'GET', '/api/recovery/exports');
     expect(answer.status).toBe(200);
-    expect(await answer.json()).toMatchObject({ supported: false, reason: 'this Deployment runs no hosted recovery producer', schedule: expect.anything() });
+    expect(await answer.json()).toMatchObject({ supported: false, reason: 'this server cannot make automatic backups', schedule: expect.anything() });
   });
 
   it('marks each Deployment leaf and secret slot retired or not, as the retired sets say', async () => {

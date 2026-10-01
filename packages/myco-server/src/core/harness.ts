@@ -1,3 +1,4 @@
+import { type RunErrorCode, LAUNCH_REFUSED_ERROR } from './reader-codes.js';
 import { prepareWorkerEnd } from './worker-end.js';
 import type { WorkerUsage } from '@goondocks/myco-shared/worker-usage';
 import { REPOSITORY_TASKS, capabilitiesRequiredBy, type RepositoryCheckoutSpec } from '@goondocks/myco-shared/repository';
@@ -51,7 +52,7 @@ export const DEFAULT_DISPATCH_TIMEOUT_SECONDS = 300;
 export const RUN_OVERRUN_MARGIN_MS = 120_000;
 export { MAX_RUN_ERROR_CHARS } from '../constants.js';
 /** What a run whose runtime would not start carries, before the refusal's own word. */
-export const LAUNCH_REFUSED_ERROR = 'the runtime refused to start';
+export { LAUNCH_REFUSED_ERROR } from './reader-codes.js';
 /** The admission a capture-driven task carries into its container, in place of a capability name. */
 export const CAPTURE_DRIVEN_ADMISSION = 'captureDriven';
 
@@ -85,13 +86,13 @@ export type DispatchRefusal =
 
 export const DISPATCH_REFUSAL_MESSAGE: Readonly<Record<DispatchRefusal, string>> = {
   repository_missing: 'Connect the project repository in Settings before running a code task.',
-  harness_unavailable: 'this deployment has no harness runtime bound',
-  unknown_task: 'the task is not one this deployment serves',
-  no_instruction: 'the Deployment builds no instruction for this task, so a worker could not run it',
-  not_landed: 'this task is not yet one a worker can drive; the Deployment queues no run of it',
-  unknown_project: 'projectId names no Project this Deployment holds',
+  harness_unavailable: 'this server cannot start tasks itself',
+  unknown_task: 'this server cannot run that task',
+  no_instruction: 'this server has no instructions for that task',
+  not_landed: 'no machine can run that task yet',
+  unknown_project: 'the project is not on this server',
   no_provider: 'no provider is configured; Settings names one before a dispatch can run',
-  no_credential: 'no anthropic credential is stored; Settings takes one before a dispatch can run',
+  no_credential: 'no Anthropic key is saved; add one in Settings before starting a task',
   no_endpoint: 'openai-compatible needs agent.provider.base_url',
   unsupported_provider: 'the dispatcher serves anthropic and openai-compatible providers',
   capability_off: 'this task is turned off for the project; its capability is turned on in the project\'s Settings',
@@ -408,13 +409,13 @@ export async function endQueuedRun(
   scope: { projectId: string },
   run: { id: string },
   now: number,
-  outcome: { failed: string } | { skipped: string },
+  outcome: { failed: string; errorCode: RunErrorCode } | { skipped: string },
 ): Promise<boolean> {
   // Retiring the right credential requires the write's own answer: a drain that
   // relaunched and re-queued this row between the caller's read and this write
   // leaves the row naming one the caller never saw.
   const ended = 'failed' in outcome
-    ? await failQueuedRun(env.db, scope, run.id, now, outcome.failed)
+    ? await failQueuedRun(env.db, scope, run.id, now, outcome.failed, outcome.errorCode)
     : await skipQueued(env.db, scope, run.id, now, outcome.skipped);
   if (ended.applied) await retireDispatchCredential(env, ended.displaced, now);
   return ended.applied;
@@ -432,18 +433,18 @@ export async function drainQueue(env: ServerEnv, now: number): Promise<number> {
   for (const queued of await listQueuedAcrossProjects(env.db, DRAIN_BATCH)) {
     const scope = { projectId: queued.projectId };
     if (queued.task === null || queued.dispatchSpec === null) {
-      await endQueuedRun(env, scope, queued, now, { failed: NO_LAUNCH_ERROR });
+      await endQueuedRun(env, scope, queued, now, { failed: NO_LAUNCH_ERROR, errorCode: 'task_start_failed' });
       continue;
     }
     let stored: StoredSpec;
     try { stored = JSON.parse(queued.dispatchSpec) as StoredSpec; } catch {
-      await endQueuedRun(env, scope, queued, now, { failed: NO_LAUNCH_ERROR });
+      await endQueuedRun(env, scope, queued, now, { failed: NO_LAUNCH_ERROR, errorCode: 'task_start_failed' });
       continue;
     }
     const prepared = await prepareDispatch(env, queued.task, queued.projectId);
     if (!prepared.ok) {
       if (prepared.refusal === 'harness_unavailable') return launched;
-      await endQueuedRun(env, scope, queued, now, { failed: DISPATCH_REFUSAL_MESSAGE[prepared.refusal] });
+      await endQueuedRun(env, scope, queued, now, { failed: DISPATCH_REFUSAL_MESSAGE[prepared.refusal], errorCode: 'task_start_failed' });
       continue;
     }
     // A worker-served run is not the drain's to launch: it waits in the claim
@@ -719,7 +720,7 @@ export async function launchDispatch(env: ServerEnv, prepared: PreparedDispatch,
     // The run is over, so the row names neither of them any more.
     await retireDispatchCredential(env, minted.tokenId, now);
     await retireDispatchCredential(env, carried, now);
-    await applyRunUpdate(env.db, scope, runId, { status: 'failed', completed_at: now, error: `${LAUNCH_REFUSED_ERROR}: ${message}`.slice(0, MAX_RUN_ERROR_CHARS) });
+    await applyRunUpdate(env.db, scope, runId, { status: 'failed', completed_at: now, error: `${LAUNCH_REFUSED_ERROR}: ${message}`.slice(0, MAX_RUN_ERROR_CHARS) }, undefined, 'task_start_failed');
     throw new LaunchRefused(message, { cause: error });
   }
   return landed({ retire: carried });
@@ -1008,7 +1009,7 @@ export async function claimNextRun(
   // worker would report a run that did nothing as a run that finished.
   const instruction = instructionFor(built, candidate.instruction, inputBuilderFor(candidate.task) !== null);
   if (instruction === null) {
-    await endQueuedRun(env, scope, { id: candidate.id }, worker.now, { failed: uninstructedError(candidate.task) });
+    await endQueuedRun(env, scope, { id: candidate.id }, worker.now, { failed: uninstructedError(candidate.task), errorCode: 'task_start_failed' });
     emit({ kind: 'task_skipped', task: candidate.task, projectId: candidate.projectId, skip: 'uninstructed' });
     // The next row is taken now; a worker told `no_work` sleeps a poll interval per such row.
     return claimNextRun(env, worker);

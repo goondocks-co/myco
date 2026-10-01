@@ -22,7 +22,7 @@ function selectorOf(body: Record<string, unknown> | null): RereadSelector | stri
   const { agent, projectId, sessionId } = body;
   if (agent !== undefined) {
     if (projectId !== undefined || sessionId !== undefined) return 'name an agent, or a project and a session, not both';
-    if (typeof agent !== 'string' || parserFor(agent) === null) return 'agent must name an agent whose transcripts the Deployment parses';
+    if (typeof agent !== 'string' || parserFor(agent) === null) return 'choose an agent whose transcripts this server can read';
     return { agent };
   }
   if (typeof projectId !== 'string' || !ID.test(projectId) || typeof sessionId !== 'string' || !ID.test(sessionId)) {

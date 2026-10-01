@@ -21,6 +21,18 @@ const indexes = (sqlite: Database, t: string) => (sqlite.query(`PRAGMA index_lis
 const indexColumns = (sqlite: Database, i: string) => (sqlite.query(`PRAGMA index_info(${i})`).all() as { name: string }[]).map((c) => c.name);
 
 describe('server schema', () => {
+  it('adds failure codes without changing existing reasons or context', () => {
+    const sqlite = new Database(':memory:');
+    try {
+      for (const step of SCHEMA_STEPS.filter((step) => step.version < 62)) for (const sql of step.statements) sqlite.exec(sql);
+      sqlite.run(`INSERT INTO projects (project_id, name, created_at) VALUES ('proj_1', 'p', 1)`);
+      sqlite.run(`INSERT INTO agents (id, name, source, enabled, created_at) VALUES ('agent_1', 'a', 'built-in', 1, 1)`);
+      sqlite.run(`INSERT INTO agent_runs (project_id, id, agent_id, status, error, run_context) VALUES ('proj_1', 'old', 'agent_1', 'failed', 'the runtime went away', '{"reason":"kept"}')`);
+      for (const sql of SCHEMA_STEPS.find((step) => step.version === 62)!.statements) sqlite.exec(sql);
+      expect(sqlite.query(`SELECT error, error_code, run_context FROM agent_runs WHERE id = 'old'`).get()).toEqual({ error: 'the runtime went away', error_code: null, run_context: '{"reason":"kept"}' });
+    } finally { sqlite.close(); }
+  });
+
   it('scopes sessions and events by project and attributes every write to a token', () => {
     expect(table('sessions')).toMatch(/PRIMARY KEY \(project_id, session_id\)/);
     expect(table('events')).toMatch(/PRIMARY KEY \(project_id, event_id\)/);

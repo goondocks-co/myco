@@ -50,6 +50,8 @@ export interface RunFields {
   startedBy: string | null;
   /** The session the run's dispatch named, as a titling run's; null otherwise. */
   targetSessionId: string | null;
+  /** The classifier for why a run was skipped. */
+  skipReasonCode?: string | null;
   /** Why a skipped run did not run; null for any other run. */
   skipReason: string | null;
 }
@@ -77,6 +79,7 @@ export interface RunPage {
 export interface RunDetailFields extends RunFields {
   estimatedCostUsd: number | null;
   actualCostUsd: number | null;
+  errorCode?: string | null;
   error: string | null;
 }
 

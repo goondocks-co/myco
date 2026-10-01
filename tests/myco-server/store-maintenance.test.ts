@@ -17,7 +17,7 @@ import worker from '@myco-server-worker/index.js';
 import { sqliteStoreMaintenance, checkIntegrityOffThread } from '@myco-server-worker/platform/bun/store-maintenance.js';
 import { classifyD1Error } from '@myco-server-worker/platform/cloudflare/env.js';
 import {
-  boundFindings, cadenceOf, CLAIM_STATEMENTS, latestMeasurements, latestOutcome, maintenanceDue, MAX_FINDINGS, RECORD_STATEMENTS, runMaintenance,
+  boundFindings, cadenceOf, CLAIM_STATEMENTS, latestMeasurements, latestOutcome, maintenanceDue, maintenanceStatus, MAX_FINDINGS, RECORD_STATEMENTS, runMaintenance,
   type Exclusivity, type MaintenanceCheck, type PortResult, type StoreMaintenancePort, type StoreMeasurement,
 } from '@myco-server-worker/core/store-maintenance.js';
 import type { ServerEnv } from '@myco-server-worker/core/adapters.js';
@@ -437,4 +437,25 @@ it('on the self-hosted target, an owner\'s run is answered at once with its runn
   const after = await (await owner('/api/maintenance')).json() as { checks: Array<{ check: string; running: boolean; latest: { state: string; trigger: string } | null }> };
   expect(after.checks.find((c) => c.check === 'integrity')).toMatchObject({ running: false, latest: { state: 'healthy', trigger: 'owner' } });
   await handler.close();
+});
+
+it('adds codes beside text in stored and freshly run maintenance outcomes', async () => {
+  const fixture = sqliteEnv();
+  try {
+    const port = {
+      support: { optimize: { supported: false as const, reason: 'not supported here' }, integrity: { supported: true as const, label: 'Checks records' } },
+      exclusivity: { kind: 'platform-limit' as const, statementLimitMs: 100, statements: { optimize: 1, integrity: 1 } },
+      run: async () => ({ findings: ['original store finding'], measurements: [{ name: 'size' as const, state: 'unavailable' as const, reason: 'original measurement reason' }] }),
+    };
+    const env = { ...fixture.serverEnv, storeMaintenance: port };
+    const result = await runMaintenance(env, 'integrity', 'owner', 1);
+    expect(result.outcome).toBe('ran');
+    if (result.outcome !== 'ran') throw new Error('check did not finish');
+    expect(result.record).toMatchObject({ findings: ['original store finding'], findingCodes: ['store_problem'], measurements: [{ reason: 'original measurement reason', reasonCode: 'measurement_unavailable' }] });
+    const stored = { ...result.record, findingCodes: undefined, measurements: [{ name: 'size', state: 'unavailable', reason: 'original measurement reason' }] };
+    fixture.sqlite.query("UPDATE schema_meta SET value = ? WHERE key = 'maintenance.integrity'").run(JSON.stringify(stored));
+    const statuses = await maintenanceStatus(env, 2);
+    expect(statuses[0]?.support).toMatchObject({ supported: false, reason: 'not supported here', reasonCode: 'check_unsupported' });
+    expect(statuses[1]?.latest).toMatchObject({ findings: ['original store finding'], findingCodes: ['store_problem'], measurements: [{ reasonCode: 'measurement_unavailable' }] });
+  } finally { fixture.sqlite.close(); }
 });
