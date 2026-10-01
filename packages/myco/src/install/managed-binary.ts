@@ -32,6 +32,8 @@ export interface InstallMarker {
   channel: ReleaseChannel;
   source: 'curl' | 'npm';
   bin: string;
+  /** Whether the build installed is a prerelease, as the installer found it; absent from older markers. */
+  prerelease?: boolean;
 }
 
 /**

@@ -6,7 +6,7 @@
  * project work.
  */
 
-import { isMemberHome, memberHomeDaemonRefusal } from '../member/home-role.js';
+import { isMemberHome, legacyHomeDaemonRefusal, memberHomeDaemonRefusal, unmovedLegacyVaults } from '../member/home-role.js';
 import { DaemonServer } from './server.js';
 import { resolveHostServeConfig } from './host-serve.js';
 import { EXTERNAL_MCP_PATH, ExternalMcpListener, defaultFunnelOffRunner, defaultFunnelOnRunner, resolveExternalMcpSocketPath } from './external-listener.js';
@@ -779,6 +779,18 @@ export async function main(): Promise<void> {
   // on-failure respawn leaves it down.
   if (isMemberHome(mycoHome)) {
     process.stderr.write(`myco daemon: ${memberHomeDaemonRefusal(mycoHome)}\n`);
+    process.exit(0);
+  }
+
+  // A home Myco 1.4 still serves never runs this daemon: it exits before
+  // opening a vault, so it never reports healthy and a 1.4 updater that
+  // swapped this binary in restores 1.4. Exit 0 so a supervisor's on-failure
+  // respawn leaves it down. Marking this version's slot adopt-failed keeps
+  // that updater from adopting it again.
+  if (unmovedLegacyVaults(mycoHome).length > 0) {
+    process.stderr.write(`myco daemon: ${legacyHomeDaemonRefusal(mycoHome)}\n`);
+    const { markAdoptFailed } = await import('../upgrade/auto-check.js');
+    markAdoptFailed(mycoHome, process.platform, getPluginVersion(), process.env.LOCALAPPDATA);
     process.exit(0);
   }
 

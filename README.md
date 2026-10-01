@@ -45,8 +45,8 @@ That knowledge also evolves. Myco is not an ever-growing static archive. It keep
 macOS is the primary supported platform. Linux and Windows are in beta. On Windows, only **x64** is supported — Windows on ARM (which runs the x64 build under emulation) is not supported.
 
 ```bash
-curl -fsSL https://myco.sh/install.sh | sh
-myco open
+curl --proto '=https' --tlsv1.2 -fsSL https://myco.sh/install.sh | sh
+myco login <invite link>
 ```
 
 On Windows x64 (PowerShell):
@@ -55,11 +55,7 @@ On Windows x64 (PowerShell):
 irm https://myco.sh/install.ps1 | iex
 ```
 
-Myco is a self-contained native binary — **no Node runtime required**. The installer downloads the binary to `~/.myco/bin` (`%LOCALAPPDATA%\Myco\bin` on Windows), starts the managed local service, and connects supported coding agents. Then `myco open` launches the dashboard. Open any git project in a supported coding agent and Myco auto-registers it into your default Grove when the agent starts working there.
-
-You can also open the dashboard directly at [http://localhost:20915/](http://localhost:20915/). If your local install reports a different service URL, `myco open` will open the right one.
-
-Already have Node? `npm install -g @goondocks/myco` also works — it's a thin bootstrap that converges to the same native binary.
+Myco is a self-contained native binary — **no Node runtime required**. The installer downloads the binary to `~/.myco/bin` and changes nothing else. `myco login` with the invite link your Deployment's administrator sent you signs this machine in and connects your coding agents; to run your own Deployment instead, see [Self-hosting](docs/self-hosting.md). On a machine that has Myco 1.4, the installer installs nothing and says how to move over: `sh -s -- --replace-1.4` installs 2.0 in 1.4's place, then `myco login`, `myco cutover --dry-run` and `myco cutover` move the machine (see [Upgrading from 1.4](https://github.com/goondocks-co/myco/blob/main/docs/upgrade-from-v1.md)).
 
 Provider configuration is optional at install time. Capture and full-text search work immediately; spores, digests, semantic search, Canopy summaries, and skill lifecycle features become active after you configure intelligence and embedding providers in the dashboard.
 

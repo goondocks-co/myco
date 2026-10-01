@@ -25,21 +25,18 @@ When you're ready to enable intelligence features, you'll need:
 ## Install
 
 ```bash
-curl -fsSL https://myco.sh/install.sh | sh
-myco open
+curl --proto '=https' --tlsv1.2 -fsSL https://myco.sh/install.sh | sh
+myco login <invite link>
 ```
+
+The installer places the binary in `~/.myco/bin` and prints the next step: `myco login` with your Deployment's invite link, or [Self-hosting](self-hosting.md) to run your own. `MYCO_CHANNEL=beta` installs the newest prerelease; `--dry-run` shows what it would install. With Myco 1.4 on the machine it installs nothing unless you pass `--replace-1.4`, and never moves 1.4 over by itself; see [Upgrading from 1.4](https://github.com/goondocks-co/myco/blob/main/docs/upgrade-from-v1.md).
 
 On Windows x64 (PowerShell, beta):
 ```powershell
 irm https://myco.sh/install.ps1 | iex
 ```
 
-The installer downloads the native binary to `~/.myco/bin` (`%LOCALAPPDATA%\Myco\bin` on Windows), starts the managed local service, and connects supported coding agents — no Node runtime required.
-
-If you already have Node, you can install with npm instead. This is a thin bootstrap that converges to the same native binary:
-```bash
-npm install -g @goondocks/myco
-```
+No Node runtime is required. On Windows, the PowerShell installer is still the Myco 1.4 one.
 
 ### Plugin only
 
