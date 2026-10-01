@@ -9,7 +9,7 @@
 import { isProjectId } from '../member/constants.js';
 import { routeStderrToHelperLog, runHelper, type HelperPass, type HelperRunResult } from '../member/helper.js';
 import { helperPass } from '../member/helper-pass.js';
-import type { DetachedSpawn } from '../runtime/spawn-detached.js';
+import { recordStartingJob, type DetachedSpawn } from '../runtime/spawn-detached.js';
 import type { FetchLike } from '../member/transport.js';
 
 export { helperPass } from '../member/helper-pass.js';
@@ -34,6 +34,8 @@ function flag(args: readonly string[], name: string): string | undefined {
 }
 
 export async function runHelperVerb(args: readonly string[], deps: HelperVerbDeps = {}): Promise<HelperRunResult | null> {
+  // A successor started from this helper can outlive it only as far as the job this helper began in allows.
+  recordStartingJob();
   const projectId = flag(args, '--project');
   const mycoHome = flag(args, '--home');
   if (projectId === undefined || !isProjectId(projectId) || mycoHome === undefined || mycoHome === '') {

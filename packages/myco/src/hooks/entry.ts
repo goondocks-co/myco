@@ -6,6 +6,7 @@
  * closure is held light by `tests/meta/hook-entry-closure.test.ts`.
  */
 import { runLaunchPreamble } from '../cli/launch-preamble.js';
+import { recordStartingJob } from '../runtime/spawn-detached.js';
 import { parseCredentialFlag } from '../member/credential.js';
 import type { HookMainOptions } from '../member/capture.js';
 
@@ -39,6 +40,8 @@ export const isHookName = (name: string): name is HookName => Object.hasOwn(HOOK
  * named hook with the credential source its command declares. An unknown name exits 1 and names the hooks there are.
  */
 export async function runHook(args: readonly string[]): Promise<void> {
+  // Before anything is spawned: what a helper started from this hook can outlive depends on the job it began in.
+  recordStartingJob();
   runLaunchPreamble('hook', [...args]);
   const hookName = args[0] ?? '';
   if (!isHookName(hookName)) {

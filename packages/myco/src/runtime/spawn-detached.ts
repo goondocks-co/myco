@@ -7,6 +7,12 @@
  * breakaway refuses that start (`ERROR_ACCESS_DENIED`), and the child is started inside the job instead, answered as
  * `contained`, and ends with this process's job; a caller that must not lose the work does it in-process instead.
  *
+ * That refusal is only seen from the job a process is directly in. Bun puts a process that has spawned anything into
+ * a job of its own (which allows breakaway) nested under the job that started it, and a start from there breaks away
+ * from Bun's job alone, into the starting job, which then ends it. So the starting job is read once, before anything
+ * is spawned (`recordStartingJob`), and a start from a job that kills what it holds and lets nothing break away is
+ * answered `contained` whatever `CreateProcessW` would say.
+ *
  * Everything the child needs travels on its command line: the Windows start passes the environment this process
  * started with, not changes made to it since.
  */
@@ -39,6 +45,7 @@ const DETACHED_PROCESS = 0x0000_0008;
 const CREATE_NEW_PROCESS_GROUP = 0x0000_0200;
 const CREATE_BREAKAWAY_FROM_JOB = 0x0100_0000;
 const ERROR_ACCESS_DENIED = 5;
+
 /** `sizeof(STARTUPINFOW)` and `sizeof(PROCESS_INFORMATION)` on 64-bit Windows, x64 and ARM64 alike. */
 const STARTUPINFOW_BYTES = 104;
 const PROCESS_INFORMATION_BYTES = 24;
@@ -50,6 +57,7 @@ interface ProcessApi {
   ) => number;
   CloseHandle: (handle: bigint) => number;
   GetLastError: () => number;
+  QueryInformationJobObject: (job: bigint, infoClass: number, info: number, length: number, returned: bigint) => number;
 }
 
 let processApi: ProcessApi | null = null;
@@ -63,6 +71,7 @@ function loadProcessApi(): ProcessApi {
     },
     CloseHandle: { args: [FFIType.u64], returns: FFIType.i32 },
     GetLastError: { args: [], returns: FFIType.u32 },
+    QueryInformationJobObject: { args: [FFIType.u64, FFIType.i32, FFIType.ptr, FFIType.u32, FFIType.u64], returns: FFIType.i32 },
   });
   processApi = lib.symbols as unknown as ProcessApi;
   return processApi;
@@ -83,6 +92,40 @@ export function windowsArgument(arg: string): string {
     backslashes = 0;
   }
   return out + '\\'.repeat(backslashes * 2) + '"';
+}
+
+/** `QueryInformationJobObject` class for `JOBOBJECT_EXTENDED_LIMIT_INFORMATION`, and what is read from it. */
+const JOB_OBJECT_EXTENDED_LIMIT_INFORMATION = 9;
+const JOB_EXTENDED_LIMIT_BYTES = 144;
+const LIMIT_FLAGS_OFFSET = 16;
+const JOB_OBJECT_LIMIT_BREAKAWAY_OK = 0x0000_0800;
+const JOB_OBJECT_LIMIT_SILENT_BREAKAWAY_OK = 0x0000_1000;
+const JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE = 0x0000_2000;
+
+/** Whether the job this process started in ends what it holds and lets nothing break away; null until recorded. */
+let startingJobHolds: boolean | null = null;
+
+/** Whether a job's limit flags kill what it holds when it closes and let nothing break away. */
+export function jobHoldsChildren(flags: number): boolean {
+  return (flags & JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE) !== 0
+    && (flags & (JOB_OBJECT_LIMIT_BREAKAWAY_OK | JOB_OBJECT_LIMIT_SILENT_BREAKAWAY_OK)) === 0;
+}
+
+/**
+ * Read the job this process was started in, before it spawns anything (Windows only; a no-op elsewhere, and once).
+ * What a detached start from this process can do depends on it (`spawnDetached`).
+ */
+export function recordStartingJob(): void {
+  if (process.platform !== 'win32' || startingJobHolds !== null) return;
+  try {
+    const api = loadProcessApi();
+    const info = new Uint8Array(JOB_EXTENDED_LIMIT_BYTES);
+    // A null job handle names the job this process is in; no job, and the call fails.
+    const read = api.QueryInformationJobObject(0n, JOB_OBJECT_EXTENDED_LIMIT_INFORMATION, ptr(info), JOB_EXTENDED_LIMIT_BYTES, 0n);
+    startingJobHolds = read !== 0 && jobHoldsChildren(new DataView(info.buffer).getUint32(LIMIT_FLAGS_OFFSET, true));
+  } catch {
+    startingJobHolds = false;
+  }
 }
 
 const winSpawnDetached: DetachedSpawn = (command, args, opts) => {
@@ -111,6 +154,11 @@ const winSpawnDetached: DetachedSpawn = (command, args, opts) => {
     return { ok: true, error: 0, pid: view.getUint32(16, true) };
   };
   const base = DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP;
+  // The job that started this process lets nothing it holds outlive it: the start is contained however it is asked.
+  if (startingJobHolds === true) {
+    const inJob = attempt(base);
+    return inJob.ok ? { started: true, pid: inJob.pid, contained: true } : { started: false };
+  }
   const free = attempt(base | CREATE_BREAKAWAY_FROM_JOB);
   if (free.ok) return { started: true, pid: free.pid };
   if (free.error !== ERROR_ACCESS_DENIED) return { started: false };

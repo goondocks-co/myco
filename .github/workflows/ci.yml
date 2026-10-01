@@ -378,6 +378,7 @@ jobs:
           tests/meta/binary-replaced-mid-run.test.ts
           tests/member/journal-v2.test.ts
           tests/runtime/spawn-detached.test.ts
+          tests/member/inline-and-upgrade.test.ts
           tests/member/helper.test.ts
           tests/member/auto-join-lock.test.ts
       - name: Compile Windows native contract executable
