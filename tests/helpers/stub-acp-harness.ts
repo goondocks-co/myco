@@ -19,6 +19,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { detectHarnesses, locate, type DetectedHarness } from '@myco/runner/detect.js';
+import { removeWhenTestsEnd } from '../support/remove-when-tests-end.js';
 
 /** The harness id a stub binary stands in for. */
 export const STUB_HARNESS = 'cursor';
@@ -131,7 +132,7 @@ interface StubOptions {
  */
 export function stubAcpHarness(options: StubOptions = {}): StubHarness {
   const delay = options.turnDelayMs ?? 0;
-  const dir = mkdtempSync(join(tmpdir(), 'myco-stub-acp-'));
+  const dir = removeWhenTestsEnd(mkdtempSync(join(tmpdir(), 'myco-stub-acp-')));
   const binary = join(dir, STUB_BINARY);
   writeFileSync(binary, peerScript(delay === 0 ? '0' : (delay / 1000).toFixed(2), options.holdUntil ?? '', HOLD_TICKS, options), { mode: 0o755 });
   chmodSync(binary, 0o755);

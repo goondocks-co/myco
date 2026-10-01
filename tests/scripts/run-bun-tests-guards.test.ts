@@ -258,13 +258,17 @@ describe('run-bun-tests temp containment', () => {
     expect(fs.readdirSync(tempDir)).toEqual([]);
   }), RUN_BOUND_MS + 10_000);
 
-  test('a raw bun test run outside the runner removes the sandbox home its preload made', () => withRunDirs(async ({ reports, tempDir }) => {
+  test('a raw bun test run outside the runner removes the sandbox home its preload made and the homes test helpers made', () => withRunDirs(async ({ tempDir }) => {
     const inherited = Object.fromEntries(Object.entries(process.env).filter(([key]) => !/^MYCO_(TEST|RUNNER)_/.test(key)));
-    const run = spawnSync('bun', ['test', `./${STDIN_FIXTURE}`], {
-      cwd: REPO, env: { ...inherited, ...tempDirEnv(tempDir) }, stdio: ['ignore', 'pipe', 'pipe'], encoding: 'utf8',
-    });
-    expect({ status: run.status, output: `${run.stdout}${run.stderr}` }).toEqual({ status: 0, output: expect.stringContaining(' 1 skip') });
-    expect(entries(tempDir)).toEqual([]);
+    // tempMycoHome() and tempStager() (tests/member/helpers/server.ts) from a beforeAll, a beforeEach and a test body.
+    const files = [`./${STDIN_FIXTURE}`, './tests/member/envelope.test.ts', './tests/member/machine-settings.test.ts', './tests/member/diagnostic-private-link.test.ts'];
+    for (const isolation of [[], ['--isolate']]) {
+      const run = spawnSync('bun', ['test', ...isolation, ...files], {
+        cwd: REPO, env: { ...inherited, ...tempDirEnv(tempDir) }, stdio: ['ignore', 'pipe', 'pipe'], encoding: 'utf8',
+      });
+      expect({ isolation, status: run.status, output: `${run.stdout}${run.stderr}` }).toEqual({ isolation, status: 0, output: expect.stringMatching(/ 0 fail/) });
+      expect({ isolation, left: entries(tempDir) }).toEqual({ isolation, left: [] });
+    }
   }), RUN_BOUND_MS + 10_000);
 });
 

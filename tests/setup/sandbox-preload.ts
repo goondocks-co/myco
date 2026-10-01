@@ -10,6 +10,7 @@ import os from 'node:os';
 import fs from 'node:fs';
 import path from 'node:path';
 import { configureSqliteLibrary } from '../../packages/myco-server/src/platform/bun/sqlite-library.js';
+import { removeRegisteredTestPaths } from '../support/remove-when-tests-end.js';
 
 configureSqliteLibrary();
 
@@ -140,6 +141,7 @@ process.env.USERPROFILE = SANDBOX_HOME;
 // preload also runs once per file) and does not emit process 'exit'; the 'exit'
 // listener covers any other host.
 function removeSandboxHome(): void {
+  removeRegisteredTestPaths(origRmSync);
   try { origRmSync(SANDBOX_HOME, { recursive: true, force: true }); } catch { /* ignore */ }
   if (OWN_LOCKS_ROOT !== null) {
     try { origRmSync(OWN_LOCKS_ROOT, { recursive: true, force: true }); } catch { /* ignore */ }

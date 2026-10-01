@@ -11,6 +11,7 @@ import worker from '@myco-server-worker/index.js';
 import { issueMemberToken, NO_RUNTIME_CLAIMS } from '@myco-server-worker/auth/tokens.js';
 import { PROJECT_HEADER, PROTOCOL_HEADER, SERVER_PROTOCOL } from '@myco-server-worker/constants.js';
 import { sqliteEnv, count } from '../../myco-server/helpers/fixtures.js';
+import { removeWhenTestsEnd } from '../../support/remove-when-tests-end.js';
 import type { BlobSource, BlobStager, MemberEnvelope } from '@myco/member/envelope.js';
 
 export const TEST_PROJECT_ID = 'proj_1';
@@ -131,7 +132,7 @@ export function olderServerAtQuota(fetch: MemberRig['fetch']): { fetch: MemberRi
 }
 
 /** A blob stager over a temp directory: bytes land in `<dir>/<sha256>`. */
-export function tempStager(dir: string = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-member-blobs-'))): { stage: BlobStager; dir: string } {
+export function tempStager(dir: string = removeWhenTestsEnd(fs.mkdtempSync(path.join(os.tmpdir(), 'myco-member-blobs-')))): { stage: BlobStager; dir: string } {
   const stage: BlobStager = (bytes, mediaType) => {
     const sha256 = crypto.createHash('sha256').update(bytes).digest('hex');
     const file = path.join(dir, sha256);
@@ -141,9 +142,12 @@ export function tempStager(dir: string = fs.mkdtempSync(path.join(os.tmpdir(), '
   return { stage, dir };
 }
 
-/** A hermetic MYCO_HOME for one test file; the machine id is pre-written so nothing shells out. */
+/**
+ * A hermetic MYCO_HOME for one test file; the machine id is pre-written so nothing shells out.
+ * It is removed when the file's tests are done.
+ */
 export function tempMycoHome(): string {
-  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-member-home-'));
+  const home = removeWhenTestsEnd(fs.mkdtempSync(path.join(os.tmpdir(), 'myco-member-home-')));
   fs.writeFileSync(path.join(home, 'machine_id'), TEST_MACHINE_ID, 'utf-8');
   return home;
 }
