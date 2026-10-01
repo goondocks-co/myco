@@ -89,6 +89,9 @@ const ALLOWLIST: readonly string[] = [
   'runtime/self-exec.ts',
   'install/managed-binary.ts',
   'packages/myco/scripts/managed-paths.mjs',
+  // The member helper's detached start (#1561 PR 3a): `node:child_process` on POSIX, `CreateProcessW` through
+  // `bun:ffi` on Windows; it reaches nothing else.
+  'runtime/spawn-detached.ts',
   // The G7 pin trust check the home resolver applies to a `runtime.home` pin.
   'paths/pin-trust.ts',
   'project-root.ts',

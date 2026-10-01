@@ -63,6 +63,10 @@ Ops:
                      --purge is given, which also removes the hooks this project was provisioned with.
   drain [--all]      Deliver every spooled event for this project (or every joined project with --all);
                      no harness budget, the offline latch is ignored, retention is applied first.
+  helper --project <id> --home <dir>
+                     The project's helper: ships its spool in passes under the helper lock until nothing is
+                     left, then exits (at most 120 s). Hooks start it detached; its log is
+                     <home>/logs/helper.log (\`--stderr\` keeps it on stderr).
   status [--all]     The registry entry (token redacted), expiry, spool depth per session,
                      last acknowledgement and refusal, the offline latch, and any capture
                      attempts that found no membership.
@@ -1196,6 +1200,7 @@ export async function run(args: readonly string[], deps: MemberCliDeps = {}): Pr
     case 'join': await runJoin(rest, deps); return;
     case 'leave': runLeave(rest, deps); return;
     case 'drain': await runDrain(rest, deps); return;
+    case 'helper': await (await import('./member-helper.js')).runHelperVerb(rest, { fetch: deps.fetch, now: deps.now }); return;
     case 'status': runStatus(rest, deps); return;
     case 'export': await runExport(rest, deps); return;
     case 'refresh': await runRefresh(rest, deps); return;

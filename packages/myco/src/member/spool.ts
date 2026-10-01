@@ -24,7 +24,7 @@ import {
 import type { BlobSource, BlobStager, MemberEnvelope, OutboundEvent } from './envelope.js';
 import { REJOIN_HINT } from './delivery-notice.js';
 import {
-  bufferLockPath, deferAfterRefusal, readSessionState, readSessionStateResult, readSessionStateUnlocked, retryWaiting, sessionStatePath, updateSessionState,
+  bufferLockPath, deferAfterRefusal, readSessionState, readSessionStateResult, readSessionStateUnlocked, retryWaiting, sessionStatePath, turnsFileOf, updateSessionState,
   writeSessionStateUnlocked, type SessionState, type SessionStateRead,
 } from './session-state.js';
 import { assertMemberPathContained, ensureMemberDir, ensurePrivateFile, memberRoot, pathIsAbsent, readPrivateJson, reportSkippedPrivateFile, writePrivateFileAtomic } from './store.js';
@@ -61,12 +61,13 @@ export interface SpoolRecord extends MemberEnvelope {
 
 /**
  * A turn-end mark: the session's turn ended at `at`, the member's clock, when the transcript in `slot` held `atSize`
- * bytes. It is an order in the journal, never a record the Deployment is sent: the pass that reads it acts on it
- * (the next turn's context is fetched; a Deployment that does not take `turn` events is told by the transcript
- * segment that reaches `atSize`), and the transcript's own bytes are shipped from its pointer as always.
+ * bytes. It is never a record the Deployment is sent: the pass that reads it acts on it (the next turn's context is
+ * fetched; a Deployment that does not take `turn` events is told by the transcript segment that reaches `atSize`),
+ * and the transcript's own bytes are shipped from its pointer as always.
  *
- * It carries no `_memberProtocol`, so a build that predates marks stops its event pass on one
- * (`protocol_mismatch`) and drops nothing.
+ * Marks live in the session's own marks file (`.<session>.turns`), never in its journal (#1561 D8). A build that
+ * predates marks deletes a journal once its event pass reaches the end; it never lists or opens the marks file, so a
+ * rollback cannot take an unconsumed mark with it. `markWater` in session state counts the marks file's consumed lines.
  */
 export interface TurnEndMark {
   t: typeof TURN_END_MARK;
@@ -79,11 +80,9 @@ export interface TurnEndMark {
 
 export const TURN_END_MARK = 'te';
 
-/** One line of a session's journal. */
-export type JournalLine = SpoolRecord | TurnEndMark;
-
-export const isTurnEndMark = (line: JournalLine | null): line is TurnEndMark =>
-  line !== null && (line as { t?: unknown }).t === TURN_END_MARK;
+/** Whether a parsed marks-file line is a turn-end mark: a line this build cannot read is skipped, never acted on. */
+export const isTurnEndMark = (line: unknown): line is TurnEndMark =>
+  line !== null && typeof line === 'object' && (line as { t?: unknown }).t === TURN_END_MARK;
 
 /**
  * Whether a turn-end mark has nothing left to wait for: the transcript it names reached `atSize` on the Deployment,
@@ -104,8 +103,7 @@ export function turnEndSatisfied(mark: TurnEndMark, state: SessionState): boolea
 }
 
 /** The staged bytes a journal line names, when it names any. */
-export const blobSourceOf = (line: JournalLine | null): BlobSource | undefined =>
-  line === null || isTurnEndMark(line) ? undefined : line._blobSource;
+export const blobSourceOf = (line: SpoolRecord | null): BlobSource | undefined => line?._blobSource;
 
 export interface OfflineLatch {
   since: number;
@@ -148,12 +146,12 @@ function isRefusedEntry(value: unknown): value is RefusedEntry {
 }
 
 /** The lines a spool's bytes hold; a torn line reads as null. */
-function parseSpoolLines(raw: string): Array<JournalLine | null> {
-  const records: Array<JournalLine | null> = [];
+function parseSpoolLines(raw: string): Array<SpoolRecord | null> {
+  const records: Array<SpoolRecord | null> = [];
   for (const line of raw.split('\n')) {
     if (!line.trim()) continue;
     try {
-      records.push(JSON.parse(line) as JournalLine);
+      records.push(JSON.parse(line) as SpoolRecord);
     } catch {
       records.push(null);
     }
@@ -161,8 +159,21 @@ function parseSpoolLines(raw: string): Array<JournalLine | null> {
   return records;
 }
 
+/** The parsed lines of a marks file; a cut-off line reads as null. A file that is not there holds none. */
+function readTurnLines(file: string): Array<unknown> {
+  let raw: string;
+  try {
+    raw = fs.readFileSync(file, 'utf-8');
+  } catch {
+    return [];
+  }
+  return raw.split('\n').filter((line) => line.trim() !== '').map((line) => {
+    try { return JSON.parse(line) as unknown; } catch { return null; }
+  });
+}
+
 /**
- * Whether a journal file ends part-way through a line: the last write into it was cut off (a crash, a full disk).
+ * Whether a journal or marks file ends part-way through a line: the last write into it was cut off (a crash, a full disk).
  * The next append starts a fresh line, so the cut line is lost alone and never fuses with the record after it.
  */
 function endsMidLine(file: string): boolean {
@@ -316,6 +327,11 @@ export class MemberSpool {
     return path.join(this.dir, `${sessionId}.jsonl`);
   }
 
+  /** The session's turn-end marks file (`TurnEndMark`). */
+  turnsFile(sessionId: string): string {
+    return turnsFileOf(this.dir, sessionId);
+  }
+
   private leasePath(sessionId: string): string {
     return path.join(this.dir, `.${sessionId}${DRAIN_LEASE_SUFFIX}`);
   }
@@ -349,7 +365,7 @@ export class MemberSpool {
    */
   appendAndRecord(sessionId: string, events: readonly OutboundEvent[], record?: (state: SessionState) => void, now: number = Date.now()): void {
     const stamp = new Date(now).toISOString();
-    this.appendLines(sessionId, events.map((out) => ({
+    this.appendLines(sessionId, this.spoolFile(sessionId), events.map((out) => ({
       ...out.envelope,
       _memberProtocol: MEMBER_PROTOCOL,
       _journal: JOURNAL_VERSION,
@@ -359,23 +375,22 @@ export class MemberSpool {
   }
 
   /**
-   * Append a turn-end mark (`TurnEndMark`) with its receipts, through the same commit point as an event: the
-   * transcript in `slot` held `atSize` bytes when the session's turn ended, at `now`.
+   * Append a turn-end mark (`TurnEndMark`) to the session's marks file, with its receipts, under the same lock and
+   * write rules as an event: the transcript in `slot` held `atSize` bytes when the session's turn ended, at `now`.
    */
   appendTurnEnd(sessionId: string, mark: { slot: TurnEndMark['slot']; transcriptId: string; atSize: number }, record?: (state: SessionState) => void, now: number = Date.now()): void {
     const line: TurnEndMark & { timestamp: string } = { t: TURN_END_MARK, _journal: JOURNAL_VERSION, ...mark, at: now, timestamp: new Date(now).toISOString() };
-    this.appendLines(sessionId, [line], record, now);
+    this.appendLines(sessionId, this.turnsFile(sessionId), [line], record, now);
   }
 
   /**
-   * One hook's lines and receipts, under one hold of the session's lock and in ONE write: a hook that is killed, or
-   * meets a full disk, part-way leaves at most a cut final line, which `endsMidLine` closes before the next append so
-   * it never costs the record after it.
+   * One hook's lines into `file` (the journal or the marks file) and its receipts, under one hold of the session's
+   * lock and in ONE write: a hook that is killed, or meets a full disk, part-way leaves at most a cut final line,
+   * which `endsMidLine` closes before the next append so it never costs the line after it.
    */
-  private appendLines(sessionId: string, lines: readonly object[], record: ((state: SessionState) => void) | undefined, now: number): void {
+  private appendLines(sessionId: string, file: string, lines: readonly object[], record: ((state: SessionState) => void) | undefined, now: number): void {
     if (lines.length === 0 && !record) return;
     const lock = bufferLockPath(this.dir, sessionId);
-    const file = this.spoolFile(sessionId);
     ensurePrivateFile(lock);
     // A receipt with nothing to append leaves no spool file behind: an empty file would read as a session with records to drain.
     if (lines.length > 0) ensurePrivateFile(file);
@@ -395,25 +410,44 @@ export class MemberSpool {
   }
 
   /**
-   * The turn-end marks of the session's journal that no pass has consumed yet, oldest first, each with its line
-   * position.
+   * The turn-end marks no pass has consumed yet, oldest first, each with its line in the marks file. A line this
+   * build cannot read (cut off, or not a mark) is skipped.
    */
   pendingTurnEnds(sessionId: string): Array<{ line: number; mark: TurnEndMark }> {
-    const lines = this.readRecords(sessionId);
-    const from = readSessionState(this.dir, sessionId).markWater ?? 0;
-    const pending: Array<{ line: number; mark: TurnEndMark }> = [];
-    for (let i = from; i < lines.length; i++) {
-      const line = lines[i];
-      if (isTurnEndMark(line)) pending.push({ line: i, mark: line });
-    }
-    return pending;
+    const lock = bufferLockPath(this.dir, sessionId);
+    ensurePrivateFile(lock);
+    return withFileLockSync(lock, () => {
+      const lines = readTurnLines(this.turnsFile(sessionId));
+      const from = readSessionStateUnlocked(this.dir, sessionId).markWater ?? 0;
+      const pending: Array<{ line: number; mark: TurnEndMark }> = [];
+      for (let i = from; i < lines.length; i++) {
+        const line = lines[i];
+        if (isTurnEndMark(line)) pending.push({ line: i, mark: line });
+      }
+      return pending;
+    });
   }
 
-  /** Consume every turn-end mark at or before journal line `through`: the pass that read them has acted on them. */
+  /**
+   * Consume every turn-end mark at or before marks-file line `through`: the pass that read them has acted on them.
+   * Once every line is consumed the marks file is deleted and the count starts again, under the lock an append takes,
+   * so a mark appended meanwhile is never deleted unread.
+   */
   consumeTurnEnds(sessionId: string, through: number, now: number = Date.now()): void {
-    updateSessionState(this.dir, sessionId, (state) => {
-      state.markWater = Math.max(state.markWater ?? 0, through + 1);
-    }, now);
+    const lock = bufferLockPath(this.dir, sessionId);
+    ensurePrivateFile(lock);
+    withFileLockSync(lock, () => {
+      const file = this.turnsFile(sessionId);
+      const state = readSessionStateUnlocked(this.dir, sessionId);
+      const markWater = Math.max(state.markWater ?? 0, through + 1);
+      if (markWater >= readTurnLines(file).length) {
+        try { fs.unlinkSync(file); } catch { /* already gone */ }
+        state.markWater = 0;
+      } else {
+        state.markWater = markWater;
+      }
+      writeSessionStateUnlocked(this.dir, sessionId, state, now);
+    });
   }
 
   /**
@@ -428,7 +462,7 @@ export class MemberSpool {
     const lines = this.readRecords(sessionId);
     for (let i = state.highWater; i < lines.length; i++) {
       const line = lines[i];
-      if (line !== null && !isTurnEndMark(line) && line.kind === 'session.start') return true;
+      if (line !== null && line.kind === 'session.start') return true;
     }
     return false;
   }
@@ -501,7 +535,7 @@ export class MemberSpool {
   }
 
   /** Every record of the session's spool, read under the append lock; a torn line reads as null. A spool that is not there is empty; a lock this process cannot take still throws, as every writer here does. */
-  readRecords(sessionId: string): Array<JournalLine | null> {
+  readRecords(sessionId: string): Array<SpoolRecord | null> {
     const file = this.spoolFile(sessionId);
     const lock = bufferLockPath(this.dir, sessionId);
     ensurePrivateFile(lock);
@@ -526,7 +560,7 @@ export class MemberSpool {
    * held a file for, so a file that is no longer there is one the read lost,
    * not an empty spool.
    */
-  readRecordsOrNull(sessionId: string): { readable: true; records: Array<JournalLine | null> } | { readable: false } {
+  readRecordsOrNull(sessionId: string): { readable: true; records: Array<SpoolRecord | null> } | { readable: false } {
     try {
       const file = this.spoolFile(sessionId);
       const lock = bufferLockPath(this.dir, sessionId);
@@ -858,12 +892,6 @@ export class MemberSpool {
           persist(i);
           continue;
         }
-        // A turn-end mark is the transcript lane's to act on, never an event: the event lane passes it.
-        if (isTurnEndMark(record)) {
-          i += 1;
-          persist(i);
-          continue;
-        }
         if (record._memberProtocol !== MEMBER_PROTOCOL) {
           stderr(`spool record ${record.eventId} was produced by member protocol ${record._memberProtocol}; this build speaks ${MEMBER_PROTOCOL} — not drained`);
           result.endedBy = 'protocol_mismatch';
@@ -934,15 +962,12 @@ export class MemberSpool {
       }
 
       if (i >= records.length && records.length > 0) {
-        // Deleted only once both lanes are through it: every record acknowledged, and every turn-end mark consumed. A
-        // line this pass could not parse is already logged (`refused.jsonl`) below the mark, and pins nothing.
+        // Deleted once every record is acknowledged. Turn-end marks live in their own file and are no reason to keep
+        // it. A line this pass could not parse is already logged (`refused.jsonl`) below the mark, and pins nothing.
         const deleted = this.buffer(sessionId).deleteIfSync((fresh) => {
           if (fresh.length > i) return false;
           const state = readSessionStateUnlocked(this.dir, sessionId);
-          const markWater = state.markWater ?? 0;
-          if (fresh.some((line, at) => at >= markWater && isTurnEndMark(line as JournalLine | null))) return false;
           state.highWater = 0;
-          state.markWater = 0;
           writeSessionStateUnlocked(this.dir, sessionId, state, now());
           return true;
         }, { tolerate: (line) => line < i });

@@ -56,9 +56,9 @@ export interface SessionState {
   /** Spool records (from the start of the current file) acknowledged: acked or refused. */
   highWater: number;
   /**
-   * Journal lines (from the start of the current file) whose turn-end marks are consumed: every mark at a line below
-   * it has been read by the pass that acts on it. Absent reads as 0. A journal is deleted only when both this and
-   * `highWater` reach its end, so no mark is deleted before it is read.
+   * Lines of the session's marks file (`turnsFileOf`) consumed: every mark at a line below it has been read by the
+   * pass that acts on it. Absent reads as 0. The marks file is deleted, and this starts again at 0, only once it
+   * reaches the file's end, so no mark is deleted before it is read.
    */
   markWater?: number;
   /**
@@ -125,6 +125,14 @@ export function emptySessionState(now: number = Date.now()): SessionState {
 
 export function sessionStatePath(spoolDir: string, sessionId: string): string {
   return path.join(spoolDir, `${sessionId}.state.json`);
+}
+
+/**
+ * A session's turn-end marks file (`TurnEndMark`), `.<session>.turns`: apart from its journal, and not a `*.jsonl`,
+ * so no build lists it as a session's journal (#1561 D8).
+ */
+export function turnsFileOf(spoolDir: string, sessionId: string): string {
+  return path.join(spoolDir, `.${sessionId}.turns`);
 }
 
 /** The buffer lock companion `EventBuffer` serializes appends on; session-state shares it. */
@@ -277,6 +285,8 @@ export function retireSessionFiles(spoolDir: string, sessionId: string, stillRet
     if (fs.existsSync(journal)) return false;
     if (!stillRetired(readSessionStateUnlocked(spoolDir, sessionId))) return false;
     try { fs.unlinkSync(sessionStatePath(spoolDir, sessionId)); } catch { /* absent */ }
+    // A mark is read against the state's transcript pointers: without them it has nothing left to wait for.
+    try { fs.unlinkSync(turnsFileOf(spoolDir, sessionId)); } catch { /* absent */ }
     if (process.platform !== 'win32') {
       try { fs.unlinkSync(lock); } catch { /* absent */ }
     }

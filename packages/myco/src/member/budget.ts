@@ -114,6 +114,11 @@ export function unboundedBudget(): HookBudget {
   };
 }
 
+/** A detached pass's budget: no harness kills it, so it runs as the CLI does, but it starts no request past `deadline`. */
+export function deadlineBudget(deadline: number): HookBudget {
+  return { ...unboundedBudget(), hookName: 'helper', deadline };
+}
+
 /** Milliseconds left before the deadline. */
 export function remainingMs(budget: HookBudget, now: number = Date.now()): number {
   return budget.deadline - now;

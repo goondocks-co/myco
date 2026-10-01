@@ -322,8 +322,9 @@ export function applySpoolRetention(spool: MemberSpool, now: number = Date.now()
     if (!fs.existsSync(quarantineDir)) fs.mkdirSync(quarantineDir, { mode: MEMBER_DIR_MODE });
     const target = quarantineBufferFile(spool.dir, `${sessionId}.jsonl`, { keepLockCompanion: true });
     quarantineStagedBlobs(spool, sessionId, target);
-    // The events move; the transcript pointers stay, so bytes still on disk are delivered once delivery resumes.
-    if (spool.hasTranscriptBacklog(sessionId)) updateSessionState(spool.dir, sessionId, (state) => { state.highWater = 0; state.markWater = 0; delete state.eventRetry; }, now);
+    // The events move; the transcript pointers and the turn-end marks stay, so bytes still on disk are delivered once
+    // delivery resumes.
+    if (spool.hasTranscriptBacklog(sessionId)) updateSessionState(spool.dir, sessionId, (state) => { state.highWater = 0; delete state.eventRetry; }, now);
     else retireSessionFiles(spool.dir, sessionId, () => true);
     result.quarantined.push(target);
     process.stderr.write(`[myco] member: spool for session ${sessionId} had no acknowledgement for ${Math.round(MEMBER_SPOOL_QUARANTINE_MS / 86_400_000)} days — quarantined at ${target}\n`);

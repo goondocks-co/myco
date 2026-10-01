@@ -197,15 +197,15 @@ export async function drainBacklog(spool: MemberSpool, client: ServerClient, bud
  * `myco login` run.
  */
 export async function drainEntryBacklog(
-  entry: RegistryEntry, opts: { mycoHome: string; fetch?: FetchLike; now?: () => number; machineId?: string },
+  entry: RegistryEntry, opts: { mycoHome: string; fetch?: FetchLike; now?: () => number; machineId?: string; budget?: HookBudget },
 ): Promise<BacklogReport> {
   const now = opts.now ?? Date.now;
   const fetchImpl = opts.fetch ?? globalThis.fetch;
   let current = entry;
   if (refreshDue(entry, now())) {
-    await refreshMemberCredential(entry.root, { mycoHome: opts.mycoHome, fetch: fetchImpl, now, budget: unboundedBudget() });
+    await refreshMemberCredential(entry.root, { mycoHome: opts.mycoHome, fetch: fetchImpl, now, budget: opts.budget ?? unboundedBudget() });
     current = readRegistryEntry(entry.root, opts.mycoHome) ?? entry;
   }
   const spool = new MemberSpool(current.projectId, { mycoHome: opts.mycoHome });
-  return drainBacklog(spool, new ServerClient(current, fetchImpl), unboundedBudget(), { force: true, now, machineId: opts.machineId ?? getMachineId(), rescan: true });
+  return drainBacklog(spool, new ServerClient(current, fetchImpl), opts.budget ?? unboundedBudget(), { force: true, now, machineId: opts.machineId ?? getMachineId(), rescan: true });
 }
