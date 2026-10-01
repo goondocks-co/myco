@@ -15,7 +15,6 @@
     "resolveJsonModule": true,
     "paths": {
       "@myco/*": ["./src/*"],
-      "@myco-deploy/*": ["../myco-deploy/src/*"],
       "@myco-server-worker/*": ["../myco-server/src/*"],
       "@goondocks/myco-shared": ["../myco-shared/src/index.ts"],
       "@goondocks/myco-shared/relevance": ["../myco-shared/src/relevance.ts"],
@@ -44,7 +43,6 @@
     "dist",
     "tests",
     "ui",
-    "src/worker",
     "src/symbionts/templates",
     "src/entries/cli.*.ts"
   ]

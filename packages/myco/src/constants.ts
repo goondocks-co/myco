@@ -559,13 +559,7 @@ export const DEFAULT_OPENAI_EMBEDDING_MODEL = 'text-embedding-3-small';
 
 // --- Sync protocol ---
 /**
- * Protocol version for backup and team sync wire format.
- *
- * Bumped when the wire format gains capabilities or fields that older
- * clients/workers can't safely interpret. The matching value in
- * `packages/myco-team/worker/wrangler.toml` MUST stay in lockstep —
- * the worker reads it as `env.SYNC_PROTOCOL_VERSION` and parseInt's
- * it at request time.
+ * Protocol version a 1.4 backup records in its header (`backup/engine.ts`).
  *
  * Version history:
  *   1 — initial sync protocol (upsert, delete operations).
@@ -581,40 +575,9 @@ export const DEFAULT_OPENAI_EMBEDDING_MODEL = 'text-embedding-3-small';
  */
 export const SYNC_PROTOCOL_VERSION = 3;
 
-/**
- * Oldest sync protocol the current daemon/worker still accepts. Used
- * to gate destructive worker startup chores (D1 one-shot prunes) and
- * to refuse incompatible enqueue payloads with an explicit typed
- * error rather than letting them quietly mis-write rows. It moves in
- * lockstep with `packages/myco-team/worker/wrangler.toml`'s value.
- *
- * The pair forms an inclusive window
- * `[MIN_COMPAT_CLIENT_VERSION, SYNC_PROTOCOL_VERSION]`. Bump this
- * only when a true breaking change lands and there is no
- * additive-shape compat path available.
- */
-export const MIN_COMPAT_CLIENT_VERSION = 1;
-
 // --- Team sync ---
 /** Default machine ID for rows created before multi-machine support. */
 export const DEFAULT_MACHINE_ID = 'local';
-/**
- * Secrets key for the team API key in secrets.env. Live: used by the
- * standalone `myco-team` provisioning CLI (`packages/myco-team/src/cli.ts`)
- * to read/write the team worker's API key via `teamRegistry`/`wrangler secret`.
- */
-export const TEAM_API_KEY_SECRET = 'MYCO_TEAM_API_KEY';
-/**
- * Secrets key for the team MCP token in secrets.env. Live: used by the
- * standalone `myco-team` provisioning CLI alongside {@link TEAM_API_KEY_SECRET}.
- */
-export const TEAM_MCP_TOKEN_SECRET = 'MYCO_TEAM_MCP_TOKEN';
-/**
- * Timeout for wrangler CLI commands (ms). Live: used by the standalone
- * `myco-team` provisioning CLI (`packages/myco-team/src/cli.ts`) to bound
- * `runWrangler` invocations during team worker provisioning/deploy.
- */
-export const WRANGLER_COMMAND_TIMEOUT_MS = 60_000;
 
 // --- Team Host ---
 /** Secrets key for the host bearer token in secrets.env. Never stored in the registry record itself.

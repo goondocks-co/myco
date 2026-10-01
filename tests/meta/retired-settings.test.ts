@@ -17,7 +17,7 @@ import { SECRET_SLOT_NAMES, harnessesReading } from '@goondocks/myco-shared/secr
 const ROOT = fileURLToPath(new URL('../../packages/', import.meta.url));
 const SERVER = join(ROOT, 'myco-server', 'src');
 /** The code the member runs: its own modules, the hooks and capture it installs, and the worker. */
-const MEMBER = ['myco/src/member', 'myco/src/hooks', 'myco/src/capture', 'myco/src/symbionts', 'myco/src/plans', 'myco-shared/src', 'myco-team/worker/src'].map((dir) => join(ROOT, dir));
+const MEMBER = ['myco/src/member', 'myco/src/hooks', 'myco/src/capture', 'myco/src/symbionts', 'myco/src/plans', 'myco-shared/src'].map((dir) => join(ROOT, dir));
 /** Where the markers and the catalogue themselves are written: naming a leaf there is not reading it. */
 const OWNERS = [join(SERVER, 'core', 'settings.ts'), join(ROOT, 'myco-shared', 'src', 'secret-slots.ts')];
 

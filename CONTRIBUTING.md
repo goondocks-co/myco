@@ -129,7 +129,7 @@ One package is actively published to [npmjs.org](https://www.npmjs.com/) under t
 
 - [`@goondocks/myco`](https://www.npmjs.com/package/@goondocks/myco) — main CLI, daemon, hooks, and dashboard (plus its per-platform binary packages)
 
-`@goondocks/myco-team` exists on npm but is **dormant** — the Team Sync stack it operated was retired in favor of Team Host, and it is not released alongside Myco. `@goondocks/myco-collective` was retired and removed from this repository; its published versions and release tags remain, which is why the updater still filters the `myco-collective/v*` tag namespace. `@goondocks/myco-deploy` under `packages/` is private.
+`@goondocks/myco-team` and `@goondocks/myco-collective` are retired and removed from this repository; their published versions and release tags remain, which is why the updater still filters the `myco-team/v*` and `myco-collective/v*` tag namespaces.
 
 1. Push to `main` — CI runs lint + tests
 2. Tag a release (`myco/vX.Y.Z`) — triggers the publish workflow
