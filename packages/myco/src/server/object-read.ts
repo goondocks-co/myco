@@ -42,6 +42,17 @@ const TRUNCATED_BODY_CODES = new Set(['ZlibError', 'BrotliDecompressionError', '
 /** How far down a chain of causes a failure is looked for: Node's `fetch failed` carries its socket error one level down. */
 const CAUSE_DEPTH = 3;
 
+/** A fetch rejected before response headers arrived because its connection could not be established or held. */
+export function connectionFailure(error: unknown): boolean {
+  for (const current of causes(error)) {
+    const { name, code, message } = current as { name?: unknown; code?: unknown; message?: unknown };
+    if (name === 'TimeoutError') return true;
+    if (typeof code === 'string' && TRANSIENT_NETWORK_CODES.has(code)) return true;
+    if (typeof message === 'string' && /\bUnable to connect\b/i.test(message)) return true;
+  }
+  return false;
+}
+
 /** Whether an HTTP status answers a read that may succeed when asked again. */
 export const transientStatus = (status: number): boolean => status === 429 || (status >= 500 && status <= 599);
 

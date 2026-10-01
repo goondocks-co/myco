@@ -4,7 +4,7 @@ import path from 'node:path';
 import { z } from 'zod';
 import {
   cloudflareBlobReader, D1_STATEMENT_TIMEOUT_MS, ensureCommandDir, operatorLogin, queryCloudflareDatabase, runCloudflareStatement,
-  readDeploymentRecord, type CloudflareOptions, type CloudflareFetch, type DeploymentRecord, type OperatorObjectTimeouts,
+  readDeploymentRecord, type CloudflareOptions, type CloudflareFetch, type DeploymentRecord, type OperatorObjectTimeouts, type OperatorNetworkRetry,
 } from './cloudflare.js';
 import type { LifecycleOptions } from './cloudflare-lifecycle.js';
 import { renderDeployConfig } from './deploy-config.js';
@@ -96,6 +96,7 @@ export function cloudflareRecoveryHoldOf(options: LifecycleOptions & { fetch?: C
 export async function backupCloudflareDeployment(
   options: LifecycleOptions & {
     destination: string; fetch?: CloudflareFetch; timeouts?: OperatorObjectTimeouts; retry?: RecoveryRetryPolicy;
+    networkRetry?: OperatorNetworkRetry;
     /** Test-only: the export's clock, pause and bound. */
     d1Export?: Pick<D1ExportOptions, 'now' | 'sleep' | 'boundMs' | 'marginMs' | 'pollMs'>;
   },
