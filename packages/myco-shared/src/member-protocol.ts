@@ -38,6 +38,42 @@ export const MEMBER_KINDS = [
 
 export type MemberKind = (typeof MEMBER_KINDS)[number];
 
+/**
+ * What a Deployment says it can take, beyond the kinds every Deployment of this protocol takes. It names them on every
+ * answer it gives an authenticated member, in `FEATURES_HEADER`, as a comma-separated list.
+ *
+ * A member ships a feature's kind only to a Deployment that names the feature. A Deployment that does not know a kind
+ * holds the record, and the drain stops there (`unknown_kind`), so shipping one before the Deployment knows it would
+ * hold that session's capture. Advertising lets a kind be added without a protocol bump: no member sends it until its
+ * Deployment says it can take it, and a Deployment that takes it refuses nothing it took before.
+ */
+export const FEATURES_HEADER = 'x-myco-features';
+export const MEMBER_FEATURES = ['turn'] as const;
+export type MemberFeature = (typeof MEMBER_FEATURES)[number];
+
+/**
+ * A session's turn, as the member observed it: `start` when the person's prompt is taken, `end` when the turn-end hook
+ * fires. The event's `createdAt` is the instant, on the member's clock, so a turn end shipped late still closes the turn
+ * it ended, not the one open when it arrived.
+ */
+export const TURN_KIND = 'turn';
+
+/** The kind each feature lets a member ship. */
+export const FEATURE_KINDS = { turn: TURN_KIND } as const satisfies Readonly<Record<MemberFeature, string>>;
+export type FeatureKind = (typeof FEATURE_KINDS)[MemberFeature];
+
+/** Every kind a member's envelope may name: one it ships to any Deployment, or one a Deployment advertises. */
+export type WireKind = MemberKind | FeatureKind;
+export const TURN_PHASES = ['start', 'end'] as const;
+export type TurnPhase = (typeof TURN_PHASES)[number];
+
+/** The features a Deployment's answer names; an absent or empty header names none, and an unknown name is ignored. */
+export function featuresNamed(header: string | null | undefined): MemberFeature[] {
+  if (!header) return [];
+  const named = new Set(header.split(',').map((s) => s.trim()));
+  return MEMBER_FEATURES.filter((feature) => named.has(feature));
+}
+
 /** Whether a value names an event kind a member ships. */
 export const isMemberKind = (value: unknown): value is MemberKind =>
   typeof value === 'string' && (MEMBER_KINDS as readonly string[]).includes(value);

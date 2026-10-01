@@ -22,7 +22,7 @@ import { WORKING_CAP_MS } from '@myco-server-worker/read/sessions.js';
 import { MAX_CLOCK_SKEW_MS } from '@myco-server-worker/constants.js';
 import { blobPost, envelope, memberHeaders, memberPost, recordingDeferred, sqliteEnv, uuid } from './helpers/fixtures.js';
 import { sha256HexOf, utf8 } from '@myco-server-worker/hash.js';
-import { TURN_END_HEADER } from '@goondocks/myco-shared/member-protocol';
+import { FEATURES_HEADER, featuresNamed, TURN_END_HEADER } from '@goondocks/myco-shared/member-protocol';
 import { OWNER_ENV, ownerCookie } from './helpers/owner.js';
 
 /** A prompt id as the member mints one: a UUIDv7 whose timestamp is `at`. */
@@ -356,5 +356,92 @@ describe('a session working now', () => {
       { kind: 'turn_start_unrecorded', projectId: 'proj_1', tokenId: expect.any(String), error: expect.any(String) },
       { kind: 'turn_start_unrecorded', projectId: 'proj_1', tokenId: expect.any(String), error: expect.any(String) },
     ]);
+  });
+});
+
+/**
+ * The `turn` event (advertised as the `turn` feature): a member that ships its turn's start and end as events, from a
+ * spool, dates each by its own `createdAt`, so a start or an end drained late still opens or closes the turn it
+ * belongs to and no other.
+ */
+describe('a turn the member ships as events', () => {
+  const turn = (phase: string, createdAt: number, over: Record<string, unknown> = {}) =>
+    ({ kind: 'turn', sessionId: 'sess_1', createdAt, payload: { phase }, ...over });
+
+  it('names the turn feature on every answer to an authenticated member, and on none to anyone else', async () => {
+    const r = await rig();
+    const res = await worker.fetch(memberPost(r.token, envelope({ eventId: uuid(900), ...turn('start', r.now - 1_000) }), '/events'), r.e.env, r.e.deferred);
+    expect(featuresNamed(res.headers.get(FEATURES_HEADER))).toEqual(['turn']);
+    const anonymous = await worker.fetch(new Request('https://s/health'), r.e.env, r.e.deferred);
+    expect(anonymous.headers.get(FEATURES_HEADER)).toBeNull();
+  });
+
+  it('opens the turn at the start\'s own instant and closes it at the end\'s, with no context request at all', async () => {
+    const r = await rig();
+    const started = r.now - 60_000;
+    expect(await r.event(turn('start', started))).toMatchObject({ persisted: true });
+    expect(r.workingSince('sess_1')).toBe(started);
+    expect((await r.get('/api/projects/proj_1/sessions/sess_1')).session).toMatchObject({ working: true, workingSince: started });
+    expect(await r.event(turn('end', started + 20_000))).toMatchObject({ persisted: true });
+    expect(r.workingRow('sess_1')).toEqual({ working_since: null, last_turn_end_at: started + 20_000 });
+  });
+
+  it('never closes a later turn with an end drained late, and never reopens a turn its end already closed', async () => {
+    const r = await rig();
+    const first = r.now - 60_000;
+    const second = r.now - 30_000;
+    await r.event(turn('start', first));
+    // The first turn's end sat in the spool; the next turn's start reached the Deployment before it.
+    await r.event(turn('start', second));
+    await r.event(turn('end', first + 5_000));
+    expect(r.workingSince('sess_1')).toBe(second);
+    await r.event(turn('end', second + 5_000));
+    expect(r.workingSince('sess_1')).toBeNull();
+    // A start older than the last end reached opens nothing.
+    await r.event(turn('start', second + 1_000));
+    expect(r.workingSince('sess_1')).toBeNull();
+  });
+
+  it('opens a session\'s first turn even before its start event lands, on the session row its receipt opens', async () => {
+    const r = await rig();
+    const at = r.now - 5_000;
+    await r.event(turn('start', at, { sessionId: 'sess_new' }));
+    expect(r.workingSince('sess_new')).toBe(at);
+  });
+
+  it('opens nothing for a start further from the Deployment\'s clock than the skew bound, for an import, or for a duplicate delivery', async () => {
+    const r = await rig();
+    await r.event(turn('start', r.now - MAX_CLOCK_SKEW_MS - 60_000));
+    expect(r.workingSince('sess_1')).toBeNull();
+    await r.event(turn('start', r.now - 1_000, { channel: 'import' }));
+    expect(r.workingSince('sess_1')).toBeNull();
+    // A delivery that stores nothing opens nothing: the start lands, the turn is set aside, and the same event comes again.
+    const replayed = envelope({ eventId: uuid(950), ...turn('start', r.now - 2_000) });
+    await worker.fetch(memberPost(r.token, replayed, '/events'), r.e.env, r.e.deferred);
+    expect(r.workingSince('sess_1')).toBe(r.now - 2_000);
+    r.e.sqlite.run(`UPDATE sessions SET working_since = NULL WHERE session_id = 'sess_1'`);
+    const again = (await (await worker.fetch(memberPost(r.token, replayed, '/events'), r.e.env, r.e.deferred)).json()) as Record<string, unknown>;
+    expect(again).toMatchObject({ persisted: true, duplicate: true });
+    expect(r.workingSince('sess_1')).toBeNull();
+  });
+
+  it('closes nothing with an end an import carries, and refuses a turn naming no phase or one it does not know', async () => {
+    const r = await rig();
+    const started = r.now - 60_000;
+    await r.event(turn('start', started));
+    await r.event(turn('end', started + 1_000, { channel: 'import' }));
+    expect(r.workingSince('sess_1')).toBe(started);
+    expect(await r.event({ kind: 'turn', sessionId: 'sess_1', createdAt: r.now, payload: {} })).toMatchObject({ persisted: false, code: 'invalid_field' });
+    expect(await r.event(turn('paused', r.now))).toMatchObject({ persisted: false, code: 'invalid_field' });
+    expect(r.workingSince('sess_1')).toBe(started);
+  });
+
+  it('keeps the context request\'s stamp beside the event: either opens the turn, and the event\'s end closes what the request opened', async () => {
+    const r = await rig();
+    const at = r.now - 40_000;
+    await r.prompt('sess_1', promptIdAt(at));
+    expect(r.workingSince('sess_1')).toBe(at);
+    await r.event(turn('end', at + 10_000));
+    expect(r.workingSince('sess_1')).toBeNull();
   });
 });

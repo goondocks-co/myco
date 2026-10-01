@@ -14,7 +14,7 @@ import { IMPORT_PLAN_MAX_CANDIDATES as SERVER_PLAN_MAX } from '@myco-server-work
 import { IMPORT_PLAN_MAX_CANDIDATES as MEMBER_PLAN_MAX } from '@myco/member/import.js';
 import { OUTBOUND_CHANNELS as MEMBER_CHANNELS } from '@myco/member/envelope.js';
 import { KINDS, kindSpec, PLAN_SOURCES as SERVER_PLAN_SOURCES, PLAN_STATUSES as SERVER_PLAN_STATUSES, PROMPT_ORIGINS as SERVER_PROMPT_ORIGINS, TRANSCRIPT_ROLES as SERVER_TRANSCRIPT_ROLES } from '@myco-server-worker/ingest/kinds.js';
-import { MEMBER_KINDS, PLAN_SOURCES, PLAN_STATUSES, PROMPT_ORIGINS, TRANSCRIPT_ROLES } from '@goondocks/myco-shared/member-protocol';
+import { FEATURE_KINDS, MEMBER_FEATURES, MEMBER_KINDS, PLAN_SOURCES, PLAN_STATUSES, PROMPT_ORIGINS, TRANSCRIPT_ROLES } from '@goondocks/myco-shared/member-protocol';
 import { CaptureRuleSchema } from '@goondocks/myco-shared/capture-rule-schema';
 import { LINEAGE_REPLAYED_CODE as SERVER_LINEAGE_REPLAYED_CODE, MEMBER_TOKEN_PATTERN as SERVER_TOKEN_PATTERN, MEMBER_TOKEN_REFRESH_WINDOW_MS as SERVER_REFRESH_WINDOW_MS } from '@myco-server-worker/auth/tokens.js';
 import { longestDeclaredHookTimeoutMs } from '@myco/member/budget.js';
@@ -61,13 +61,21 @@ const BOUND_FIELDS: Record<keyof typeof BOUNDS, [string, string] | [string, stri
  * these, or a worker that adds a required field, would have its records
  * dropped by the other side at the same protocol, so the change is a member
  * protocol bump and a new row here, never an edit of an existing row.
+ *
+ * The one addition a protocol row takes in place is an ADVERTISED kind
+ * (`featureKinds`): a kind the worker names as a feature on every answer, and
+ * a member ships only to a Deployment that names it. No member at the row's
+ * protocol sends it unasked, so cataloguing it refuses nothing that member
+ * sent before; it is never among `memberKinds`, which a member ships to any
+ * Deployment of the protocol.
  */
-const FINAL_SHAPE_BY_PROTOCOL: Record<number, { memberKinds: readonly string[]; channels: readonly string[]; kinds: Record<string, unknown> }> = {
+const FINAL_SHAPE_BY_PROTOCOL: Record<number, { memberKinds: readonly string[]; featureKinds: readonly string[]; channels: readonly string[]; kinds: Record<string, unknown> }> = {
   1: {
     memberKinds: [
       'attachment', 'compaction.post', 'compaction.pre', 'error', 'notification', 'plan', 'prompt', 'response', 'session.end',
       'session.start', 'stop.failure', 'subagent.start', 'subagent.stop', 'task.completed', 'tool.failure', 'tool.use', 'transcript.segment',
     ],
+    featureKinds: ['turn'],
     channels: ['cli', 'http', 'import'],
     kinds: {
       'attachment': { required: ['attachmentId', 'blob'], enums: {} },
@@ -87,6 +95,7 @@ const FINAL_SHAPE_BY_PROTOCOL: Record<number, { memberKinds: readonly string[]; 
       'tool.failure': { required: ['errorMessage', 'success', 'toolCallId', 'toolName'], enums: {}, exactlyOne: ['input', 'blob'], atMostOne: ['output', 'outputBlob'] },
       'tool.use': { required: ['success', 'toolCallId', 'toolName'], enums: {}, exactlyOne: ['input', 'blob'], atMostOne: ['output', 'outputBlob'] },
       'transcript.segment': { required: ['baseOffset', 'blob', 'length', 'transcriptId'], enums: { role: ['primary', 'subagent'] } },
+      'turn': { required: ['phase'], enums: { phase: ['end', 'start'] } },
     },
   },
 };
@@ -112,7 +121,7 @@ describe('member ↔ worker pins', () => {
 
   it('changes what the worker judges final about a record\'s shape only with a member protocol bump: channels, required fields, enum values and field pairs are pinned per protocol', () => {
     const workerShape = (protocol: number) => {
-      const { memberKinds: _memberKinds, ...shape } = FINAL_SHAPE_BY_PROTOCOL[protocol] ?? { memberKinds: [] };
+      const { memberKinds: _memberKinds, featureKinds: _featureKinds, ...shape } = FINAL_SHAPE_BY_PROTOCOL[protocol] ?? { memberKinds: [], featureKinds: [] };
       return shape;
     };
     expect({ protocol: MEMBER_PROTOCOL, shape: finalShape() }).toEqual({ protocol: MEMBER_PROTOCOL, shape: workerShape(MEMBER_PROTOCOL) });
@@ -122,6 +131,15 @@ describe('member ↔ worker pins', () => {
   it('changes the kinds a member ships only with a member protocol bump, and ships only kinds the worker catalogues', () => {
     expect({ protocol: MEMBER_PROTOCOL, memberKinds: [...MEMBER_KINDS].sort() as readonly string[] }).toEqual({ protocol: MEMBER_PROTOCOL, memberKinds: FINAL_SHAPE_BY_PROTOCOL[MEMBER_PROTOCOL]?.memberKinds });
     expect(MEMBER_KINDS.filter((kind) => kindSpec(kind) === null)).toEqual([]);
+  });
+
+  it('catalogues every advertised kind, ships none of them unasked, and changes the advertised set only in the protocol\'s own row', () => {
+    const advertised: readonly string[] = MEMBER_FEATURES.map((feature) => FEATURE_KINDS[feature]).sort();
+    expect({ protocol: MEMBER_PROTOCOL, featureKinds: advertised }).toEqual({ protocol: MEMBER_PROTOCOL, featureKinds: FINAL_SHAPE_BY_PROTOCOL[MEMBER_PROTOCOL]?.featureKinds });
+    expect(advertised.filter((kind) => kindSpec(kind) === null)).toEqual([]);
+    expect(advertised.filter((kind) => (MEMBER_KINDS as readonly string[]).includes(kind))).toEqual([]);
+    // The worker catalogues exactly what a member ships unasked and what it ships when asked.
+    expect(KINDS.map((k) => k.name).sort()).toEqual([...MEMBER_KINDS, ...advertised].sort());
   });
 
   it('judges a record\'s enum fields against the lists the member\'s emitted values are typed from', () => {

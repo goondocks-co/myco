@@ -2,7 +2,7 @@ import { MAX_BLOB_BYTES } from '../constants.js';
 import { utf8 } from '../hash.js';
 import { AHEAD_OF_CLOCK, aheadOfClock, ID_GRAMMAR, MAX_ID_CHARS, MAX_PAYLOAD_BYTES, type Refused } from './envelope.js';
 import { refusal, type Refusal } from '../telemetry.js';
-import { MAX_FILE_PATH_CHARS, MAX_FILES_AFFECTED, PLAN_SOURCES, PLAN_STATUSES, PROMPT_ORIGINS, TRANSCRIPT_ROLES } from '@goondocks/myco-shared/member-protocol';
+import { MAX_FILE_PATH_CHARS, MAX_FILES_AFFECTED, PLAN_SOURCES, PLAN_STATUSES, PROMPT_ORIGINS, TRANSCRIPT_ROLES, TURN_KIND, TURN_PHASES } from '@goondocks/myco-shared/member-protocol';
 
 /** Ceilings every bound of its type states; each is a real limit, never the language's. */
 export const MAX_TIME_MS = 4_102_444_800_000;
@@ -193,6 +193,8 @@ export const KINDS: readonly KindSpec[] = [
   { name: 'task.completed', fields: { message: str(4096), data: json() }, projection: 'raw' },
   { name: 'notification', fields: { message: str(4096, undefined, true), level: str(64), data: json() }, projection: 'raw' },
   { name: 'error', fields: { message: str(4096, undefined, true), level: str(64), data: json() }, projection: 'raw' },
+  /** Advertised (`MEMBER_FEATURES`): a member ships it only to a Deployment that names `turn`. Its effect is on the session's working state (`ingest/turns.ts`). */
+  { name: TURN_KIND, fields: { phase: { bound: { type: 'enum', values: TURN_PHASES }, required: true }, promptId: promptRef() }, projection: 'raw' },
 ];
 
 const BY_NAME = new Map(KINDS.map((k) => [k.name, k]));
