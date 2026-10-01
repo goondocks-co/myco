@@ -23,7 +23,7 @@ export const CONNECT_ROOTS_LEAF = 'capture.connect_roots';
 /** Every leaf a machine holds, with its rule and its default; `serverWritten` leaves are written by the Deployment alone, never set on the dashboard. */
 export const MACHINE_LEAF_SPECS: Readonly<Record<string, { spec: LeafSpec; default: unknown; serverWritten?: true }>> = {
   [PLAN_DIRS_LEAF]: { spec: { type: 'path-list', maxItems: 16, maxChars: 256 }, default: [] },
-  [AUTO_JOIN_ROOTS_LEAF]: { spec: { type: 'path-list', maxItems: 16, maxChars: 256 }, default: ['~/Repos'] },
+  [AUTO_JOIN_ROOTS_LEAF]: { spec: { type: 'path-list', maxItems: 16, maxChars: 256, folders: 'capture' }, default: ['~/Repos'] },
   [CONNECT_ROOTS_LEAF]: { spec: { type: 'root-map', maxItems: 256 }, default: {}, serverWritten: true },
 };
 

@@ -143,19 +143,40 @@ describe('the dashboard', () => {
     const r = await seeded();
     await r.machine(r.admin, '/members/projects/resolve', { rootKey: 'c'.repeat(16), label: 'holder', remote: 'https://github.com/acme/holder' });
     r.fixture.sqlite.run(`UPDATE uncaptured_roots SET remote = 'github.com/acme/holder' WHERE root_key = ?`, [KEY_B]);
-    expect((await r.dashboard('POST', `/api/uncaptured/machine_2/${KEY_B}/connect`, MEMBER_SUB, { projectId: 'proj_1' })).status).toBe(409);
+    const bound = await r.dashboard('POST', `/api/uncaptured/machine_2/${KEY_B}/connect`, MEMBER_SUB, { projectId: 'proj_1' });
+    expect({ status: bound.status, error: bound.body.error }).toEqual({ status: 409, error: 'remote_bound' });
     r.fixture.sqlite.run(`UPDATE uncaptured_roots SET remote = 'github.com/acme/members-repo' WHERE root_key = ?`, [KEY_B]);
     const named = await r.dashboard('POST', `/api/uncaptured/machine_2/${KEY_B}/connect`, MEMBER_SUB, { projectId: 'proj_1' });
     expect(named.body).toEqual({ connected: true, machineId: 'machine_2', rootKey: KEY_B, projectId: 'proj_1' });
     expect(r.fixture.sqlite.query(`SELECT project_id FROM project_remotes WHERE remote = 'github.com/acme/members-repo'`).get()).toEqual({ project_id: 'proj_1' });
   });
 
-  it('asks for a named project while machines may not create projects, unless the machine\'s own member is an admin', async () => {
+  it('asks for a named project while machines may not create projects, unless the machine\'s own member is an admin or a project holds the remote', async () => {
     const r = await seeded();
     r.fixture.sqlite.run(`INSERT INTO deployment_settings (leaf, value, updated_at, updated_by) VALUES ('capture.auto_create_projects', 'false', 1, 'mem_machine_1')`);
-    expect((await r.dashboard('POST', `/api/uncaptured/machine_2/${KEY_B}/connect`, MEMBER_SUB)).status).toBe(400);
+    const asked = await r.dashboard('POST', `/api/uncaptured/machine_2/${KEY_B}/connect`, MEMBER_SUB);
+    expect({ status: asked.status, error: asked.body.error }).toEqual({ status: 400, error: 'auto_create_off' });
     expect((await r.dashboard('POST', `/api/uncaptured/machine_2/${KEY_B}/connect`, undefined)).status).toBe(400);
     expect((await r.dashboard('POST', `/api/uncaptured/machine_1/${KEY_A}/connect`, undefined)).status).toBe(200);
+    // A remote a live project holds joins it, which starts no project: leaving the choice to Myco connects it.
+    await r.machine(r.admin, '/members/projects/resolve', { rootKey: 'c'.repeat(16), label: 'holder', remote: 'https://github.com/acme/holder' });
+    r.fixture.sqlite.run(`UPDATE uncaptured_roots SET remote = 'github.com/acme/holder' WHERE root_key = ?`, [KEY_B]);
+    expect((await r.dashboard('POST', `/api/uncaptured/machine_2/${KEY_B}/connect`, MEMBER_SUB)).status).toBe(200);
+  });
+
+  it('refuses to connect a repository whose remote an archived project holds, however it is asked, and keeps it waiting', async () => {
+    const r = await seeded();
+    await r.machine(r.admin, '/members/projects/resolve', { rootKey: 'c'.repeat(16), label: 'holder', remote: 'https://github.com/acme/holder' });
+    const holder = (r.fixture.sqlite.query(`SELECT project_id FROM project_remotes WHERE remote = 'github.com/acme/holder'`).get() as { project_id: string }).project_id;
+    r.fixture.sqlite.run(`UPDATE projects SET archived_at = 1 WHERE project_id = ?`, [holder]);
+    r.fixture.sqlite.run(`UPDATE uncaptured_roots SET remote = 'github.com/acme/holder', reason = 'archived' WHERE root_key = ?`, [KEY_B]);
+    for (const body of [undefined, { projectId: 'proj_1' }]) {
+      const refused = await r.dashboard('POST', `/api/uncaptured/machine_2/${KEY_B}/connect`, MEMBER_SUB, body);
+      expect({ body, status: refused.status, error: refused.body.error }).toEqual({ body, status: 409, error: 'archived' });
+    }
+    expect((await r.dashboard('GET', '/api/uncaptured', MEMBER_SUB)).body.items.map((i: { label: string }) => i.label)).toEqual(['members-repo']);
+    expect(r.fixture.sqlite.query(`SELECT COUNT(*) AS n FROM machine_settings WHERE leaf = 'capture.connect_roots'`).get()).toEqual({ n: 0 });
+    expect(r.fixture.sqlite.query(`SELECT project_id FROM project_remotes WHERE remote = 'github.com/acme/holder'`).get()).toEqual({ project_id: holder });
   });
 
   it('never lets the dashboard write which repositories a machine is told to connect', async () => {

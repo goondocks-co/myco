@@ -12,7 +12,7 @@ import type { ServerEnv } from '../core/adapters.js';
 import type { OwnerContext } from '../context.js';
 import { isAdmin } from '../auth/roles.js';
 import { connectMachineRoot } from '../core/machine-settings.js';
-import { projectForRemote, recordProjectRemote } from '../core/remotes.js';
+import { recordProjectRemote, remoteHolder } from '../core/remotes.js';
 import { getUncaptured, listUncaptured } from '../read/uncaptured.js';
 import { ownMachineNames } from '../read/capture.js';
 import { HELD_STATES, isUncapturedReason, type HeldState, type UncapturedReason } from '@goondocks/myco-shared/member-protocol';
@@ -68,6 +68,22 @@ export interface ConnectRequest {
   projectId?: string;
 }
 
+/**
+ * Why a connect is refused, in `error`, with words in `reason`: the project that holds the repository's remote is
+ * archived (409), another project holds its remote (409), or no project holds it and the machine's member may not
+ * start one (400).
+ */
+export type ConnectRefusalCode = 'archived' | 'remote_bound' | 'auto_create_off';
+
+/** A refused connect's answer. */
+export interface ConnectRefusal {
+  error: ConnectRefusalCode;
+  reason: string;
+}
+
+const refuse = (status: 400 | 409, error: ConnectRefusalCode, reason: string): Response =>
+  Response.json({ error, reason } satisfies ConnectRefusal, { status });
+
 /** What the connect answers: the machine joins at a hook in the repository, within minutes. */
 export interface ConnectAnswer {
   connected: true;
@@ -85,20 +101,18 @@ export async function handleConnectUncaptured(env: ServerEnv, ctx: OwnerContext)
   if (row === null || (!admin && row.member.id !== ctx.member.id)) return notFound();
   const body = ctx.request.headers.get('content-length') === '0' ? {} : await readJsonObject(ctx.request) ?? {};
   const projectId = body.projectId === undefined ? null : body.projectId;
+  if (projectId !== null && typeof projectId !== 'string') return badRequest('projectId must be a project id');
+  const holder = row.remote === null ? null : await remoteHolder(env.db, row.remote);
+  // A remote an archived project holds joins that project or none: nothing is connected until an admin restores it.
+  if (holder !== null && holder.archived) return refuse(409, 'archived', 'the project that holds this repository\'s remote is archived');
   if (projectId !== null) {
-    if (typeof projectId !== 'string') return badRequest('projectId must be a project id');
     const project = (await listVisibleProjects(env.db, ctx.member)).find((p) => p.projectId === projectId);
     if (project === undefined) return badRequest('projectId names no project that accepts capture');
-    if (row.remote !== null) {
-      const holder = await projectForRemote(env.db, row.remote);
-      if (holder !== null && holder !== projectId) {
-        return Response.json({ error: 'remote_bound', detail: 'this repository\'s remote already belongs to another project' }, { status: 409 });
-      }
-      if (holder === null) await recordProjectRemote(env.db, projectId, row.remote, ctx.now);
-    }
-  } else if (!(await mayCreateProjects(env.db, row.member.id))) {
+    if (holder !== null && holder.projectId !== projectId) return refuse(409, 'remote_bound', 'this repository\'s remote already belongs to another project');
+    if (holder === null && row.remote !== null) await recordProjectRemote(env.db, projectId, row.remote, ctx.now);
+  } else if (holder === null && !(await mayCreateProjects(env.db, row.member.id))) {
     // The machine's own member creates the project when it joins; one who may not is answered here, not at the join.
-    return badRequest('this Deployment creates projects only on the dashboard: name the project to connect it to');
+    return refuse(400, 'auto_create_off', 'this Deployment creates projects only on the dashboard: name the project to connect it to');
   }
   const written = await connectMachineRoot(env.db, machineId, rootKey, projectId ?? '', ctx.member.id, ctx.now);
   if (!written.applied) return written.reason === 'absent' ? notFound() : badRequest(written.detail ?? 'the connection could not be recorded');

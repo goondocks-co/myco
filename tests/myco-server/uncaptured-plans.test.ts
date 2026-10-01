@@ -10,7 +10,7 @@ import { SCHEMA_DDL } from '@myco-server-worker/db/schema.js';
 import type { PreparedStatement, RelationalStore } from '@myco-server-worker/core/adapters.js';
 import { getUncaptured, listUncaptured, UNCAPTURED_LIST_LIMIT } from '@myco-server-worker/read/uncaptured.js';
 import { clearMemberUncapturedStatement, clearUncapturedStatement, heldUncapturedStatement, pruneUncaptured, recordUncapturedStatement } from '@myco-server-worker/ingest/uncaptured.js';
-import { resolveRepository } from '@myco-server-worker/core/remotes.js';
+import { remoteHolder, resolveRepository } from '@myco-server-worker/core/remotes.js';
 import { connectedRoot, connectMachineRoot } from '@myco-server-worker/core/machine-settings.js';
 import { analyzedStore, PROFILES } from './helpers/planner-stats.js';
 
@@ -103,6 +103,7 @@ describe('auto-join, under the statistics a Deployment plans from', () => {
       await resolveRepository(db, { remote: 'github.com/acme/widget', name: 'widget', allowCreate: true, projectId: 'proj_new', now: 1, maxProjects: 1_000 });
       await resolveRepository(db, { remote: null, name: 'notes', allowCreate: true, projectId: 'proj_new', now: 1, maxProjects: 1_000 });
       await connectedRoot(db, 'machine_1', KEY);
+      await remoteHolder(db, 'github.com/acme/widget');
       await connectMachineRoot(db, 'machine_1', KEY, '', 'mem_1', 1);
     });
     for (const { store, sql, plan } of resolved) {

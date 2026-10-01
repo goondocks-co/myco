@@ -192,6 +192,32 @@ export function planFolderRefusal(entry: string): string | null {
 }
 
 /**
+ * Why a capture folder (`capture.auto_join_roots`) names no folder a machine can capture repositories under, or null
+ * when it names one. A capture folder starts at the home (`~/`, or `~\` as Windows writes it), at the filesystem root
+ * (`/`, or `\\server\share`), or at a drive (`C:\`, `C:/`), and names a folder beneath it: the home, the root or a
+ * drive root itself would capture every repository on the machine, and one that climbs with `..` reaches past where it
+ * starts. A relative folder names nothing a machine could resolve, nor does a `~` naming another account's home.
+ */
+export function captureFolderRefusal(entry: string): string | null {
+  const segments = entry.split(/[\\/]+/);
+  if (segments.includes('..')) return 'expected each path without a ".." segment';
+  const home = entry === '~' || /^~[\\/]/.test(entry);
+  const drive = /^[A-Za-z]:([\\/]|$)/.test(entry);
+  if (!home && !drive && !/^[\\/]/.test(entry)) return 'expected a folder that starts with ~/, / or a drive';
+  const rooted = home ? 'the home' : drive ? 'the drive' : 'the filesystem root';
+  const named = segments.slice(home || drive ? 1 : 0).filter((s) => s !== '' && s !== '.');
+  return named.length === 0 ? `expected a folder under ${rooted}, not ${rooted} itself` : null;
+}
+
+/**
+ * How long a machine holds what its agents do in a repository that has not joined (#1547): past it, the held capture
+ * is discarded and the Deployment told `expired`.
+ */
+export const HELD_CAPTURE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+/** The same window in whole days, as the words that name it say it. */
+export const HELD_CAPTURE_TTL_DAYS = Math.round(HELD_CAPTURE_TTL_MS / (24 * 60 * 60 * 1000));
+
+/**
  * Why a repository a member's machine met is not captured (#1547): outside the folders the machine captures, without
  * a remote, or refused by the Deployment: refused outright, refused while the Deployment keeps project creation with
  * admins, or held by an archived project.

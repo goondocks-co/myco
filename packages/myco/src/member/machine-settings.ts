@@ -7,7 +7,7 @@
  * and that is not an instruction to forget what this machine was told before.
  */
 import fs from 'node:fs';
-import { planFolderRefusal } from '@goondocks/myco-shared/member-protocol';
+import { captureFolderRefusal, planFolderRefusal } from '@goondocks/myco-shared/member-protocol';
 import { deploymentsDir, machineSettingsPath } from './registry.js';
 import { ensureMemberDir, readPrivateJson, writePrivateFileAtomic } from './store.js';
 import { CONNECT_TIMEOUT_CAP_MS } from './constants.js';
@@ -62,7 +62,8 @@ export function machineAutoJoinLeaves(serverUrl: string, mycoHome: string): { au
   const roots = leaves[AUTO_JOIN_ROOTS_LEAF];
   const connect = leaves[CONNECT_ROOTS_LEAF];
   return {
-    autoJoinRoots: Array.isArray(roots) ? roots.filter((d): d is string => typeof d === 'string' && d.length > 0) : [...DEFAULT_AUTO_JOIN_ROOTS],
+    // The Deployment refuses a capture folder that names too much or nothing; the same rule here keeps one out whatever wrote the file.
+    autoJoinRoots: Array.isArray(roots) ? roots.filter((d): d is string => typeof d === 'string' && captureFolderRefusal(d) === null) : [...DEFAULT_AUTO_JOIN_ROOTS],
     connectRoots: typeof connect === 'object' && connect !== null && !Array.isArray(connect)
       ? Object.fromEntries(Object.entries(connect as Record<string, unknown>).filter((e): e is [string, string] => typeof e[1] === 'string'))
       : {},

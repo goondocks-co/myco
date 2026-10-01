@@ -272,12 +272,87 @@ describe('machines', () => {
     // A folder that names the whole home is refused before it is ever sent.
     fireEvent.change(within(dialog).getByLabelText('Plan folder to add'), { target: { value: '~' } });
     fireEvent.click(within(dialog).getByRole('button', { name: 'Add' }));
-    expect((await within(dialog).findByRole('alert')).textContent).toContain('too broad');
+    expect((await within(dialog).findByRole('alert')).textContent).toContain('not the home itself');
     expect(within(dialog).getByText('None: only each agent’s own plan folder.')).toBeTruthy();
     fireEvent.change(within(dialog).getByLabelText('Plan folder to add'), { target: { value: '~/notes/plans' } });
     fireEvent.click(within(dialog).getByRole('button', { name: 'Add' }));
     fireEvent.click(within(dialog).getByRole('button', { name: 'Save' }));
     await waitFor(() => expect(puts).toEqual([{ path: '/api/machines/ada_5a2d54af/settings/capture.plan_dirs', body: { value: ['~/notes/plans'] } }]));
+  });
+
+  it('offers the folders a machine captures on its own, at the default until changed, and saves only what changed', async () => {
+    const puts: { path: string; body: unknown }[] = [];
+    let roots: string[] = ['~/Repos'];
+    accessServer({ member: [credential({ id: 'mt_1aaaaaaaaaaaa', lineageRoot: 'mt_1aaaaaaaaaaaa' })] }, {
+      '/api/machines/ada_5a2d54af/settings': () => Response.json({ machineId: 'ada_5a2d54af', leaves: [
+        { leaf: 'capture.plan_dirs', configured: false, value: [], updatedAt: null, updatedBy: null },
+        { leaf: 'capture.auto_join_roots', configured: roots.length !== 1 || roots[0] !== '~/Repos', value: roots, updatedAt: null, updatedBy: null },
+        { leaf: 'capture.connect_roots', configured: false, value: {}, updatedAt: null, updatedBy: null },
+      ] }),
+      '/api/machines/ada_5a2d54af/settings/capture.auto_join_roots': (init) => {
+        const body = JSON.parse(String(init?.body)) as { value: string[] };
+        puts.push({ path: '/api/machines/ada_5a2d54af/settings/capture.auto_join_roots', body });
+        roots = body.value;
+        return Response.json({ applied: true });
+      },
+    });
+    mount('/people');
+    fireEvent.click(within(await openMenu('More for Ada’s MacBook')).getByRole('menuitem', { name: 'Its settings' }));
+    const dialog = await screen.findByRole('dialog', { name: 'Settings for Ada’s MacBook' });
+    const captured = await within(dialog).findByRole('region', { name: 'Folders it captures' });
+    expect(within(captured).getByRole('list', { name: 'Folders it captures' }).textContent).toBe('~/Repos');
+    // The map of repositories connected from Needs you is the server's to write, and never offered here.
+    expect(dialog.querySelector('[data-machine-leaf="capture.connect_roots"]')).toBeNull();
+    // A folder that does not start at the home or the root is refused before it is ever sent, and so is the whole home.
+    for (const [folder, why] of [['Repos', 'starts with ~/, / or a drive'], ['~', 'not the home itself'], ['C:\\', 'not the drive itself']] as const) {
+      fireEvent.change(within(captured).getByLabelText('Folder to capture'), { target: { value: folder } });
+      fireEvent.click(within(captured).getByRole('button', { name: 'Add' }));
+      expect((await within(captured).findByRole('alert')).textContent).toContain(why);
+    }
+    fireEvent.change(within(captured).getByLabelText('Folder to capture'), { target: { value: '~/work' } });
+    fireEvent.click(within(captured).getByRole('button', { name: 'Add' }));
+    fireEvent.click(within(captured).getByRole('button', { name: 'Remove ~/Repos' }));
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Save' }));
+    await waitFor(() => expect(puts).toEqual([{ path: '/api/machines/ada_5a2d54af/settings/capture.auto_join_roots', body: { value: ['~/work'] } }]));
+    fireEvent.click(within(captured).getByRole('button', { name: 'Remove ~/work' }));
+    expect(within(captured).getByText('None: every repository waits in Needs you until it’s connected.')).toBeTruthy();
+  });
+
+  it('keeps a list\'s unsaved folders when its save is refused, says so on that list, and saves the other', async () => {
+    let plans: string[] = [];
+    const puts: string[] = [];
+    accessServer({ member: [credential({ id: 'mt_1aaaaaaaaaaaa', lineageRoot: 'mt_1aaaaaaaaaaaa' })] }, {
+      '/api/machines/ada_5a2d54af/settings': () => Response.json({ machineId: 'ada_5a2d54af', leaves: [
+        { leaf: 'capture.plan_dirs', configured: plans.length > 0, value: plans, updatedAt: null, updatedBy: null },
+        { leaf: 'capture.auto_join_roots', configured: false, value: ['~/Repos'], updatedAt: null, updatedBy: null },
+      ] }),
+      '/api/machines/ada_5a2d54af/settings/capture.auto_join_roots': () => {
+        puts.push('capture.auto_join_roots');
+        return Response.json({ error: 'bad_request', reason: 'expected at most 16 paths' }, { status: 400 });
+      },
+      '/api/machines/ada_5a2d54af/settings/capture.plan_dirs': (init) => {
+        puts.push('capture.plan_dirs');
+        plans = (JSON.parse(String(init?.body)) as { value: string[] }).value;
+        return Response.json({ applied: true });
+      },
+    });
+    mount('/people');
+    fireEvent.click(within(await openMenu('More for Ada’s MacBook')).getByRole('menuitem', { name: 'Its settings' }));
+    const dialog = await screen.findByRole('dialog', { name: 'Settings for Ada’s MacBook' });
+    const captured = await within(dialog).findByRole('region', { name: 'Folders it captures' });
+    const planned = within(dialog).getByRole('region', { name: 'Extra plan folders' });
+    fireEvent.change(within(captured).getByLabelText('Folder to capture'), { target: { value: '~/work' } });
+    fireEvent.click(within(captured).getByRole('button', { name: 'Add' }));
+    fireEvent.change(within(planned).getByLabelText('Plan folder to add'), { target: { value: '~/notes/plans' } });
+    fireEvent.click(within(planned).getByRole('button', { name: 'Add' }));
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Save' }));
+    await waitFor(() => expect(puts).toEqual(['capture.auto_join_roots', 'capture.plan_dirs']));
+    expect((await within(captured).findByRole('alert')).textContent).toBe('Not saved: The server could not accept those folders.');
+    await waitFor(() => expect(within(planned).getByRole('list', { name: 'Extra plan folders' }).textContent).toBe('~/notes/plans'));
+    expect(within(planned).queryByRole('alert')).toBeNull();
+    // The refused list keeps what the viewer typed, ready to change and save again.
+    expect(within(captured).getByRole('list', { name: 'Folders it captures' }).textContent).toBe('~/Repos~/work');
+    expect((within(dialog).getByRole('button', { name: 'Save' }) as HTMLButtonElement).disabled).toBe(false);
   });
 
   it('says a machine is allowed to write, never that it is writing, and names whose it is', async () => {

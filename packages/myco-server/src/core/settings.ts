@@ -1,5 +1,5 @@
 import type { PreparedStatement, RelationalStore } from './adapters.js';
-import { planFolderRefusal, ROOT_KEY_PATTERN } from '@goondocks/myco-shared/member-protocol';
+import { captureFolderRefusal, planFolderRefusal, ROOT_KEY_PATTERN } from '@goondocks/myco-shared/member-protocol';
 import { INSTRUCTIONS_TEMPLATE_MAX_BYTES, IMPORT_MAX_SESSIONS_MAX, IMPORT_WINDOW_DAYS_MAX } from '../constants.js';
 
 /**
@@ -44,8 +44,11 @@ export type LeafSpec =
   | { readonly type: 'integer'; readonly min: number; readonly max: number }
   | { readonly type: 'markdown'; readonly maxBytes: number }
   | { readonly type: 'task-overrides' }
-  /** A list of paths: each absolute, `~/`, or relative to wherever it is resolved, without control characters. */
-  | { readonly type: 'path-list'; readonly maxItems: number; readonly maxChars: number }
+  /**
+   * A list of paths, without control characters: plan folders, each absolute, `~/`, or relative to wherever it is
+   * resolved (`planFolderRefusal`); or, with `folders: 'capture'`, capture folders (`captureFolderRefusal`).
+   */
+  | { readonly type: 'path-list'; readonly maxItems: number; readonly maxChars: number; readonly folders?: 'capture' }
   /** Repository keys, each naming the project it connects to or `''` for none chosen: what a machine may join. */
   | { readonly type: 'root-map'; readonly maxItems: number };
 
@@ -205,14 +208,15 @@ function taskOverridesViolation(value: unknown): string | null {
 /** A schedule count: a whole number of 0 or more that SQL binds exactly. */
 export const isScheduleCount = (v: unknown): v is number => typeof v === 'number' && Number.isSafeInteger(v) && v >= 0;
 
-function pathListViolation(spec: { maxItems: number; maxChars: number }, value: unknown): string | null {
+function pathListViolation(spec: { maxItems: number; maxChars: number; folders?: 'capture' }, value: unknown): string | null {
+  const refusal = spec.folders === 'capture' ? captureFolderRefusal : planFolderRefusal;
   if (!Array.isArray(value)) return 'expected a list of paths';
   if (value.length > spec.maxItems) return `expected at most ${spec.maxItems} paths`;
   for (const entry of value) {
     if (typeof entry !== 'string' || entry.trim() === '') return 'expected each path to be non-empty text';
     if (entry.length > spec.maxChars) return `expected each path to be at most ${spec.maxChars} characters`;
     if (/[\u0000-\u001F\u007F]/.test(entry)) return 'expected each path without control characters';
-    const broad = planFolderRefusal(entry);
+    const broad = refusal(entry);
     if (broad !== null) return broad;
   }
   return new Set(value).size === value.length ? null : 'expected each path once';
