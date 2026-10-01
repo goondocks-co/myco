@@ -3,8 +3,9 @@
  *
  * Signed in as the owner: People & machines, Settings (its first section and
  * Models and keys), a project's settings and Health. Signed in as a member who
- * is not an admin: My machines, and each admin page, which says it is for an
- * admin and asks the server nothing an admin route answers.
+ * is not an admin: My machines and its Rename dialog, and each admin page,
+ * which says it is for an admin and asks the server nothing an admin route
+ * answers.
  *
  * On the fixture the owner has two machines (one named, one whose runtime gave
  * no name), the member one; two invitations are open; the owner's machine has
@@ -160,6 +161,29 @@ test.describe('My machines and the admin pages, as a member', () => {
         await expectAxeClean(page);
         expectQuiet(watch);
         await shoot(page, 'member-my-machines', viewport, mode);
+      } finally {
+        await context.close();
+      }
+    });
+  }
+
+  for (const { viewport, mode } of SHOT_MATRIX) {
+    test(`rename a machine member ${viewport} ${mode}`, async ({ browser }) => {
+      test.skip(!onFixture(), 'the fixture names the member\'s machine');
+      const { context, page, watch } = await openPage(browser, { path: '/me/machines', viewport, mode, cookie: screensEnv('memberCookie') });
+      try {
+        await page.getByRole('button', { name: 'More for Lin’s build box' }).click();
+        await page.getByRole('menuitem', { name: 'Rename' }).click();
+        const dialog = page.getByRole('dialog', { name: 'Rename Lin’s build box' });
+        await expect(dialog).toBeVisible();
+        await expect(dialog.getByRole('textbox', { name: 'Machine name' })).toHaveValue('Lin’s build box');
+        await expect(dialog.getByRole('button', { name: 'Rename' })).toBeDisabled();
+        await expect(dialog.getByRole('button', { name: 'Cancel' })).toBeInViewport();
+        await expectFits(page, viewport);
+        await expectNoRawIds(page);
+        await expectAxeClean(page);
+        expectQuiet(watch);
+        await shoot(page, 'member-rename-machine', viewport, mode);
       } finally {
         await context.close();
       }

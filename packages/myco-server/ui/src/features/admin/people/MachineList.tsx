@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { REJOIN_FOR_ADMIN } from '@goondocks/myco-shared/member-protocol';
 import { Card, ConfirmDialog, EmptyState, ErrorState, HealthDot, LoadingState, MoreMenu, ShowMore, type HealthTone, type MoreMenuItem } from '../../../design';
 import { refusalText, useAccessActions } from '../../../hooks/use-access';
-import { useMe } from '../../../hooks/use-me';
+import { useIsAdmin, useMe } from '../../../hooks/use-me';
 import { useProjects } from '../../../hooks/use-projects';
 import { useWorkerFleet } from '../../../hooks/use-status';
 import type { WorkerRow, WorkerStatus } from '../../../lib/api';
@@ -10,6 +10,8 @@ import { machineOfWorker, type Machine } from '../machines';
 import { agentsWords, lastClaimWords, workerState } from '../workers';
 import { ActivityDialog, type ActivityTarget } from './ActivityDialog';
 import { MachineSettingsDialog } from './MachineSettingsDialog';
+import { canRename } from './rename';
+import { RenameMachineDialog, type RenameTarget } from './RenameMachineDialog';
 import { shortDate, standingWords } from './words';
 
 /** What the list says where it cannot tell whether a machine runs Myco's work. */
@@ -42,8 +44,9 @@ export interface MachineListProps {
 
 /**
  * Machines, one row each: its name, whose it is and where it stands, what it
- * last reported when it runs Myco's work, and a ⋯ menu with its settings (on
- * the viewer's own), what it wrote, and Stop behind a confirm.
+ * last reported when it runs Myco's work, and a ⋯ menu with Rename (an admin's
+ * on every machine, a member's on their own), its settings (on the viewer's
+ * own), what it wrote, and Stop behind a confirm.
  */
 export function MachineList({ machines, viewerId, nameOf, showOwner, paging, empty }: MachineListProps) {
   const answered = useWorkerFleet();
@@ -51,10 +54,12 @@ export function MachineList({ machines, viewerId, nameOf, showOwner, paging, emp
   const fleet = answered?.available === true ? answered : undefined;
   const projects = useProjects();
   const me = useMe();
+  const admin = useIsAdmin();
   // The viewer's own machine names them by the login they signed in with where their label is only their id.
   const viewerName = me.data?.login !== undefined && me.data.login !== '' ? me.data.login : 'You';
   const stop = useAccessActions().revokeCredentials;
   const [settingsFor, setSettingsFor] = useState<{ id: string; name: string } | null>(null);
+  const [renaming, setRenaming] = useState<RenameTarget | null>(null);
   const [activityFor, setActivityFor] = useState<ActivityTarget | null>(null);
   const [stopping, setStopping] = useState<Machine | null>(null);
   /** The sign-ins still to stop: the machine's live ones, then, after a partial failure, only those that did not stop. */
@@ -79,6 +84,9 @@ export function MachineList({ machines, viewerId, nameOf, showOwner, paging, emp
               fleet={fleet}
               projectName={projectName}
               actions={[
+                ...(canRename(machine, viewerId, admin)
+                  ? [{ label: 'Rename', onSelect: () => setRenaming({ id: machine.machineId!, name: machine.name, named: machine.named }) }]
+                  : []),
                 ...(machine.memberId === viewerId && machine.machineId !== null
                   ? [{ label: 'Its settings', onSelect: () => setSettingsFor({ id: machine.machineId!, name: machine.name }) }]
                   : []),
@@ -92,6 +100,7 @@ export function MachineList({ machines, viewerId, nameOf, showOwner, paging, emp
       {(paging.hasMore || paging.isFetchingMore) && (
         <ShowMore shown={machines.length} noun="machines" hasMore={paging.hasMore} pending={paging.isFetchingMore} onMore={paging.more} />
       )}
+      <RenameMachineDialog machine={renaming} onClose={() => setRenaming(null)} />
       <MachineSettingsDialog machine={settingsFor} onClose={() => setSettingsFor(null)} />
       <ActivityDialog target={activityFor} onClose={() => setActivityFor(null)} />
       <ConfirmDialog

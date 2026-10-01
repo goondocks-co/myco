@@ -14,6 +14,9 @@ import { matchRoute } from '@myco-server-worker/routes.js';
 import App from '../../packages/myco-server/ui/src/App';
 import { AppearanceProvider } from '../../packages/myco-server/ui/src/providers/appearance';
 import { machinesFrom } from '../../packages/myco-server/ui/src/features/admin/machines';
+import { MachineList } from '../../packages/myco-server/ui/src/features/admin/people/MachineList';
+import { canRename, MACHINE_NAME_MAX, machineNameProblem } from '../../packages/myco-server/ui/src/features/admin/people/rename';
+import { machineName, MACHINE_NAME_MAX as SERVER_NAME_MAX } from '@myco-server-worker/api/machines.js';
 import type { CredentialRow } from '../../packages/myco-server/ui/src/features/admin/wire';
 import { rawIdsIn } from '../helpers/raw-ids';
 
@@ -185,7 +188,7 @@ describe('My machines', () => {
     expect(machines.textContent).toContain('Lin’s build box');
     expect(machines.textContent).toMatch(/^Lin’s build boxallowed to write · first signed in/);
     fireEvent.keyDown(within(machines).getByRole('button', { name: 'More for Lin’s build box' }), { key: 'Enter' });
-    expect(within(await screen.findByRole('menu')).getAllByRole('menuitem').map((i) => i.textContent)).toEqual(['Its settings', 'What it wrote', 'Stop']);
+    expect(within(await screen.findByRole('menu')).getAllByRole('menuitem').map((i) => i.textContent)).toEqual(['Rename', 'Its settings', 'What it wrote', 'Stop']);
     expect(screen.queryByRole('button', { name: INVITE_CONTROLS.button })).toBeNull();
     expect(screen.getByText(/an admin creates a one-time link on/).textContent).toContain(INVITE_CONTROLS.page);
     await new Promise((resolve) => setTimeout(resolve, 50));
@@ -209,5 +212,135 @@ describe('My machines', () => {
     deployment(me(LIN, LIN, 'member'), []);
     mount('/me/machines');
     expect(await screen.findByText('None of your machines has signed in yet.')).toBeTruthy();
+  });
+});
+
+describe('Renaming a machine', () => {
+  const LINS = credential({ id: 'mt_Lq2wE4rT6yU8iO0p', lineageRoot: 'mt_Lq2wE4rT6yU8iO0p', memberId: LIN, machineId: 'lin_77aa00bb', runtimeLabel: 'Lin’s build box' });
+
+  /** A Deployment whose rename route answers `answer`, renaming the machine on the reads that follow when it is 200. */
+  function renaming(viewer: ReturnType<typeof me>, answer: (body: unknown) => Response) {
+    let rows = [credential(), LINS];
+    const sent: unknown[] = [];
+    const asked = deployment(viewer, [], {
+      '/api/credentials': () => Response.json({ rows: rows.filter((c) => viewer.member.role === 'admin' || c.memberId === viewer.member.id), cursor: null }),
+      '/api/machines/lin_77aa00bb': (init) => {
+        const body = JSON.parse(String(init?.body));
+        sent.push({ method: init?.method, body });
+        const response = answer(body);
+        if (response.status === 200) rows = rows.map((c) => (c.machineId === 'lin_77aa00bb' ? { ...c, runtimeLabel: body.label } : c));
+        return response;
+      },
+    });
+    return { asked, sent };
+  }
+
+  async function openRename(owner: string) {
+    fireEvent.keyDown(await screen.findByRole('button', { name: `More for ${owner}` }), { key: 'Enter' });
+    fireEvent.click(within(await screen.findByRole('menu')).getByRole('menuitem', { name: 'Rename' }));
+    return screen.findByRole('dialog', { name: `Rename ${owner}` });
+  }
+
+  it('renames another member\'s machine for an admin, then reads the machines and their capture again', async () => {
+    const { asked, sent } = renaming(me(ADA, 'Ada', 'admin'), (body) => Response.json({ machineId: 'lin_77aa00bb', name: (body as { label: string }).label }));
+    mount('/people');
+    const dialog = await openRename('Lin’s build box');
+    const field = within(dialog).getByRole('textbox', { name: 'Machine name' }) as HTMLInputElement;
+    expect(field.value).toBe('Lin’s build box');
+    expect((within(dialog).getByRole('button', { name: 'Rename' }) as HTMLButtonElement).disabled).toBe(true);
+    const before = asked.length;
+    fireEvent.change(field, { target: { value: '  build-02  ' } });
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Rename' }));
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    expect(sent).toEqual([{ method: 'PATCH', body: { label: 'build-02' } }]);
+    const machines = await screen.findByRole('list', { name: 'Machines' });
+    await waitFor(() => expect(machines.textContent).toContain('build-02'));
+    expect(machines.textContent).not.toContain('Lin’s build box');
+    expect(asked.slice(before)).toEqual(expect.arrayContaining(['GET /api/credentials', 'GET /api/status']));
+  });
+
+  it('says what is wrong with a name before sending it, and sends nothing', async () => {
+    const { sent } = renaming(me(ADA, 'Ada', 'admin'), () => Response.json({}));
+    mount('/people');
+    const dialog = await openRename('Lin’s build box');
+    const field = within(dialog).getByRole('textbox', { name: 'Machine name' });
+    const save = within(dialog).getByRole('button', { name: 'Rename' }) as HTMLButtonElement;
+    for (const [value, words] of [
+      ['   ', 'Give the machine a name.'],
+      ['x'.repeat(MACHINE_NAME_MAX + 1), `A name is at most ${MACHINE_NAME_MAX} characters; this one is ${MACHINE_NAME_MAX + 1}.`],
+      ['bell\u0007box', 'A name can’t hold control or invisible characters.'],
+      ['zero\u200bwidth', 'A name can’t hold control or invisible characters.'],
+      ['a\u0301\u0301\u0301\u0301\u0301', 'A name can’t stack more than four accents on one letter.'],
+    ] as const) {
+      fireEvent.change(field, { target: { value } });
+      expect(within(dialog).getByRole('alert').textContent).toBe(words);
+      expect(save.disabled).toBe(true);
+      fireEvent.submit(field.closest('form')!);
+    }
+    // Sixty-four characters, one of them outside the BMP and counted once, is a name.
+    fireEvent.change(field, { target: { value: `${'x'.repeat(MACHINE_NAME_MAX - 1)}🖥` } });
+    expect(within(dialog).queryByRole('alert')).toBeNull();
+    expect(save.disabled).toBe(false);
+    expect(sent).toEqual([]);
+  });
+
+  it('says the server\'s refusal in words, and keeps the dialog open to try again', async () => {
+    for (const [answer, words] of [
+      [Response.json({ error: 'bad_request', reason: 'label must be 1 to 64 printable characters' }, { status: 400 }), 'The server didn’t take that name. A name is 1 to 64 characters, every one of them printable.'],
+      [Response.json({ error: 'not_found' }, { status: 404 }), 'This machine is no longer here, or it isn’t yours to rename.'],
+      [Response.json({ error: 'internal' }, { status: 503 }), 'The server refused (503).'],
+    ] as const) {
+      renaming(me(ADA, 'Ada', 'admin'), () => answer.clone());
+      mount('/people');
+      const dialog = await openRename('Lin’s build box');
+      fireEvent.change(within(dialog).getByRole('textbox', { name: 'Machine name' }), { target: { value: 'build-02' } });
+      fireEvent.click(within(dialog).getByRole('button', { name: 'Rename' }));
+      expect((await within(dialog).findByRole('alert')).textContent).toBe(words);
+      expect(screen.getByRole('dialog', { name: 'Rename Lin’s build box' })).toBeTruthy();
+      cleanup();
+    }
+  });
+
+  it('offers a member Rename on their own machines only, and names an unnamed one from empty', async () => {
+    deployment(me(LIN, LIN, 'member'), [LINS]);
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const paging = { isPending: false, error: null, hasMore: false, isFetchingMore: false, more: () => undefined, retry: () => undefined };
+    const listed = machinesFrom([LINS, credential(), credential({ id: 'mt_Uu7yT6rE5wQ4aS3d', lineageRoot: 'mt_Uu7yT6rE5wQ4aS3d', memberId: LIN, machineId: 'lin_99cc11dd', runtimeLabel: null, lineageStartedAt: NOW_MS - 2 * DAY })]);
+    render(<AppearanceProvider><QueryClientProvider client={client}><MemoryRouter><MachineList machines={listed} viewerId={LIN} nameOf={() => null} showOwner paging={paging} empty="none" /></MemoryRouter></QueryClientProvider></AppearanceProvider>);
+    // useMe answers before the menu is read, so the viewer's role is known.
+    await waitFor(() => expect(client.getQueryData(['me'])).toBeDefined());
+    const menuOf = async (name: string) => {
+      fireEvent.keyDown(screen.getByRole('button', { name: `More for ${name}` }), { key: 'Enter' });
+      const items = within(await screen.findByRole('menu')).getAllByRole('menuitem').map((i) => i.textContent);
+      fireEvent.keyDown(screen.getByRole('menu'), { key: 'Escape' });
+      await waitFor(() => expect(screen.queryByRole('menu')).toBeNull());
+      return items;
+    };
+    expect(await menuOf('Lin’s build box')).toContain('Rename');
+    expect(await menuOf('Ada’s MacBook')).not.toContain('Rename');
+    fireEvent.keyDown(screen.getByRole('button', { name: 'More for A machine' }), { key: 'Enter' });
+    fireEvent.click(within(await screen.findByRole('menu')).getByRole('menuitem', { name: 'Rename' }));
+    const dialog = await screen.findByRole('dialog', { name: 'Name this machine' });
+    expect((within(dialog).getByRole('textbox', { name: 'Machine name' }) as HTMLInputElement).value).toBe('');
+    expect(within(dialog).queryByRole('alert')).toBeNull();
+  });
+
+  it('decides who may rename: an admin any machine, a member their own, nobody a machine with no id', () => {
+    expect(canRename({ machineId: 'm1', memberId: LIN }, ADA, true)).toBe(true);
+    expect(canRename({ machineId: 'm1', memberId: LIN }, LIN, false)).toBe(true);
+    expect(canRename({ machineId: 'm1', memberId: ADA }, LIN, false)).toBe(false);
+    expect(canRename({ machineId: 'm1', memberId: LIN }, null, false)).toBe(false);
+    expect(canRename({ machineId: null, memberId: LIN }, ADA, true)).toBe(false);
+  });
+
+  it('takes exactly the names the server takes', () => {
+    expect(MACHINE_NAME_MAX).toBe(SERVER_NAME_MAX);
+    const names = [
+      '', ' ', 'a', '  padded  ', 'x'.repeat(64), 'x'.repeat(65), `${'x'.repeat(63)}🖥`, `${'x'.repeat(64)}🖥`, ` ${'x'.repeat(64)} `,
+      'tab\there', 'new\nline', 'bell\u0007', 'del\u007f', 'zero\u200bwidth', 'bidi\u202eflip', 'bom\ufeff', 'line\u2028sep', 'para\u2029sep',
+      'private\ue000use', 'unassigned\u0378', 'lone\ud800surrogate', 'soft\u00adhyphen',
+      'é', 'e\u0301', 'a\u0301\u0301\u0301\u0301', 'a\u0301\u0301\u0301\u0301\u0301', 'नमस्ते', '日本語のマシン', 'Ada’s MacBook', 'build-02.local', '🖥️ desk',
+    ];
+    expect(names.map((name) => [name, machineNameProblem(name) === null])).toEqual(names.map((name) => [name, machineName(name) !== null]));
   });
 });

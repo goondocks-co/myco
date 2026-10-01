@@ -1,6 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { ApiError, fetchJson, postJson } from '../lib/api';
+import { ApiError, fetchJson, patchJson, postJson } from '../lib/api';
 import type { InvitationsAnswer, MembersAnswer, MintedInvitation } from '../features/admin/wire';
+import { MACHINE_CREDENTIALS_KEY } from '../features/admin/machines';
 export { usePaged } from './use-paged';
 
 export type { ActivityRow, CredentialRow, InvitationRow, MemberRow } from '../features/admin/wire';
@@ -43,6 +44,9 @@ export interface RevokeOutcome {
   failed: Array<{ id: string; error: unknown }>;
 }
 
+/** The reads a machine's name appears in, by the first part of their query key. */
+export const MACHINE_NAME_READS = [MACHINE_CREDENTIALS_KEY[0], 'status', 'today', 'sessions', 'session', 'work', 'runs', 'run'] as const;
+
 /** One mutation per access act; each refreshes the lists it changes. */
 export function useAccessActions() {
   const client = useQueryClient();
@@ -73,6 +77,16 @@ export function useAccessActions() {
         return outcome;
       },
       onSettled: () => refresh('credentials', 'members'),
+    }),
+    /**
+     * Renames a machine, then refreshes every read that names it: the machine
+     * lists, the fleet and capture on Today and Health, and the sessions and
+     * runs that say where work ran.
+     */
+    renameMachine: useMutation({
+      mutationFn: ({ machineId, name }: { machineId: string; name: string }) =>
+        patchJson<{ machineId: string; name: string }>(`/api/machines/${encodeURIComponent(machineId)}`, { label: name }),
+      onSuccess: () => refresh(...MACHINE_NAME_READS),
     }),
   };
 }
