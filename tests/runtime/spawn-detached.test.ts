@@ -66,9 +66,11 @@ describe('a job a detached start cannot leave', () => {
  * call does, which puts it in a nested job of Bun's own), then starts a detached child the way a kick does.
  */
 describe.skipIf(process.platform !== 'win32')('a detached start from inside a Job Object (G4e)', () => {
+  /** When the detached child writes its marker: after the hook has exited and the job is closed. */
+  const MARK_AFTER_MS = 2_000;
   const SPAWN = path.resolve(import.meta.dir, '..', '..', 'packages', 'myco', 'src', 'runtime', 'spawn-detached.ts');
 
-  async function startInJob(breakawayOk: boolean): Promise<{ started: boolean; contained?: boolean }> {
+  async function startInJob(breakawayOk: boolean): Promise<{ start: { started: boolean; contained?: boolean }; outlived: boolean }> {
     const { dlopen, FFIType, ptr } = await import('bun:ffi');
     const k = dlopen('kernel32.dll', {
       CreateJobObjectW: { args: [FFIType.u64, FFIType.u64], returns: FFIType.u64 },
@@ -84,12 +86,14 @@ describe.skipIf(process.platform !== 'win32')('a detached start from inside a Jo
     expect(k.SetInformationJobObject(job, 9, ptr(limits), 144)).not.toBe(0);
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-job-'));
     const script = path.join(dir, 'hook.ts');
+    // The detached child writes this once it has run past the job's close: only a child that left the job does.
+    const marker = path.join(dir, 'outlived');
     fs.writeFileSync(script, [
       `import { recordStartingJob, spawnDetached } from ${JSON.stringify(SPAWN)};`,
       `require('node:fs').readFileSync(0);`,
       `recordStartingJob();`,
       `require('node:child_process').spawnSync(process.execPath, ['-e', '0']);`,
-      `console.log(JSON.stringify(spawnDetached(process.execPath, ['-e', 'setTimeout(() => {}, 3000)'], { cwd: ${JSON.stringify(dir)} })));`,
+      `console.log(JSON.stringify(spawnDetached(process.execPath, ['-e', ${JSON.stringify(`setTimeout(() => require('node:fs').writeFileSync(${JSON.stringify(marker)}, 'alive'), ${MARK_AFTER_MS})`)}], { cwd: ${JSON.stringify(os.tmpdir())} })));`,
     ].join('\n'));
     const child = spawn(process.execPath, [script], { stdio: ['pipe', 'pipe', 'inherit'] });
     // PROCESS_SET_QUOTA | PROCESS_TERMINATE: what assigning a process to a job needs.
@@ -102,17 +106,25 @@ describe.skipIf(process.platform !== 'win32')('a detached start from inside a Jo
     child.stdin.end('go');
     await exited;
     k.CloseHandle(job);
-    fs.rmSync(dir, { recursive: true, force: true });
-    return JSON.parse(out.trim()) as { started: boolean; contained?: boolean };
+    const deadline = Date.now() + MARK_AFTER_MS + 4_000;
+    while (!fs.existsSync(marker) && Date.now() < deadline) await Bun.sleep(100);
+    const outlived = fs.existsSync(marker);
+    fs.rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+    return { start: JSON.parse(out.trim()) as { started: boolean; contained?: boolean }, outlived };
   }
 
   it('answers contained from a job that lets nothing break away, after the hook has spawned anything', async () => {
-    expect(await startInJob(false)).toMatchObject({ started: true, contained: true });
+    const { start, outlived } = await startInJob(false);
+    expect(start).toMatchObject({ started: true, contained: true });
+    // What it answered is so: the job's close ended the child.
+    expect(outlived).toBe(false);
   }, 30_000);
 
   it('starts free from a job that lets its children break away', async () => {
-    const start = await startInJob(true);
+    const { start, outlived } = await startInJob(true);
     expect(start.started).toBe(true);
     expect(start.contained).toBeUndefined();
+    // The child ran on past the job's close.
+    expect(outlived).toBe(true);
   }, 30_000);
 });
