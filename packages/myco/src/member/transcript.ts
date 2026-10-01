@@ -285,8 +285,12 @@ export function transcriptHeadHash(filePath: string): string | null {
 
 export interface ShipResult {
   shipped: number;
-  /** `rejected`: refused for good, and recorded on the pointer. `refused`: refused for now; the same bytes are sent again later. */
-  endedBy: 'done' | 'budget' | 'retry' | 'slow' | 'parked' | 'refused' | 'rejected' | 'unauthorized' | 'route_missing' | 'protocol' | 'absent';
+  /**
+   * `rejected`: refused for good, and recorded on the pointer. `refused`: refused for now; the same bytes are sent
+   * again later. `ordered`: nothing sent, the session's start is still waiting in its journal, and a transcript never
+   * reaches the Deployment ahead of the session it belongs to.
+   */
+  endedBy: 'done' | 'budget' | 'retry' | 'slow' | 'parked' | 'refused' | 'rejected' | 'unauthorized' | 'route_missing' | 'protocol' | 'absent' | 'ordered';
 }
 
 const readSlice = (file: string, offset: number, length: number): Buffer => {
@@ -472,6 +476,11 @@ export async function shipSessionTranscripts(
   opts: { now?: () => number; until?: number; machineId: string; turnEnd?: boolean },
 ): Promise<ShipResult> {
   const now = opts.now ?? Date.now;
+  // The one order the transcript lane keeps with the event lane: the session's start first.
+  if (spool.sessionStartPending(ctx.sessionId)) {
+    spool.markTranscriptBacklog(ctx.sessionId);
+    return { shipped: 0, endedBy: 'ordered' };
+  }
   let shipped = 0;
   let refusedForNow = false;
   const state = readSessionState(spool.dir, ctx.sessionId);

@@ -256,8 +256,7 @@ function assertSandboxedHome(home: string): void {
     throw new Error(
       `MYCO_SANDBOX_ROOT=${sandboxRoot} is set but HOME=${home} resolves outside it. ` +
       `Smoke tests must point HOME inside MYCO_SANDBOX_ROOT so manifest `
-      + `globalHooksTarget paths (~/.claude/settings.json, ~/.cursor/hooks.json, ...) `
-      + `stay sandboxed alongside MYCO_HOME.`,
+      + `globalHooksTarget paths (each agent's settings under HOME) stay sandboxed alongside MYCO_HOME.`,
     );
   }
 }

@@ -17,6 +17,12 @@ export class EventBuffer {
   constructor(
     private bufferDir: string,
     private sessionId: string,
+    /**
+     * Keep the lock companion when the journal is deleted. A session whose state outlives its journal (the member
+     * spool) keeps locking the same file, and unlinking it would let a writer already waiting on the old file and one
+     * opening the path now hold the lock together; that store retires the lock itself once nothing names the session.
+     */
+    private readonly opts: { keepLockCompanion?: boolean } = {},
   ) {
     this.filePath = path.join(bufferDir, `${sessionId}.jsonl`);
     this.lockPath = path.join(bufferDir, `.${sessionId}.lock`);
@@ -71,7 +77,7 @@ export class EventBuffer {
     if (fs.existsSync(this.filePath)) {
       fs.unlinkSync(this.filePath);
     }
-    removeBufferLockCompanion(this.bufferDir, this.sessionId);
+    if (!this.opts.keepLockCompanion) removeBufferLockCompanion(this.bufferDir, this.sessionId);
   }
 
   /**
@@ -89,13 +95,20 @@ export class EventBuffer {
    * write can never fall between check and delete.
    *
    * Conservative refusals: a missing file returns false without invoking the
-   * callback; a buffer containing any unparseable line refuses outright (its
-   * bytes cannot be proven disposable).
+   * callback; a buffer containing an unparseable line refuses outright (its
+   * bytes cannot be proven disposable), unless `tolerate` accepts that line by
+   * its position — a reader that has already logged the line as unreadable says
+   * so, and the line then reads as `null` in `records`.
    *
    * Returns true when the file was deleted (the lock companion is reaped
-   * with it, matching {@link delete}'s contract).
+   * with it, matching {@link delete}'s contract, unless the buffer keeps it).
    */
-  deleteIfSync(shouldDelete: (records: Array<Record<string, unknown>>) => boolean): boolean {
+  deleteIfSync(shouldDelete: (records: Array<Record<string, unknown>>) => boolean): boolean;
+  deleteIfSync(shouldDelete: (records: Array<Record<string, unknown> | null>) => boolean, opts: { tolerate: (lineIndex: number) => boolean }): boolean;
+  deleteIfSync(
+    shouldDelete: ((records: Array<Record<string, unknown>>) => boolean) | ((records: Array<Record<string, unknown> | null>) => boolean),
+    opts: { tolerate?: (lineIndex: number) => boolean } = {},
+  ): boolean {
     const deleted = withFileLockSync(this.lockPath, () => {
       let raw: string;
       try {
@@ -103,21 +116,24 @@ export class EventBuffer {
       } catch {
         return false; // already gone — nothing to delete
       }
-      const records: Array<Record<string, unknown>> = [];
+      const records: Array<Record<string, unknown> | null> = [];
       for (const line of raw.split('\n')) {
         const trimmed = line.trim();
         if (!trimmed) continue;
         try {
           records.push(JSON.parse(trimmed) as Record<string, unknown>);
         } catch {
-          return false; // unparseable line — content not provably disposable; refuse
+          // unparseable line — content not provably disposable unless the caller has accounted for it
+          if (!opts.tolerate?.(records.length)) return false;
+          records.push(null);
         }
       }
-      if (!shouldDelete(records)) return false;
+      // Without `tolerate` no line reads as null, so the narrower signature sees only records.
+      if (!(shouldDelete as (records: Array<Record<string, unknown> | null>) => boolean)(records)) return false;
       fs.unlinkSync(this.filePath);
       return true;
     });
-    if (deleted) removeBufferLockCompanion(this.bufferDir, this.sessionId);
+    if (deleted && !this.opts.keepLockCompanion) removeBufferLockCompanion(this.bufferDir, this.sessionId);
     return deleted;
   }
 
@@ -204,7 +220,7 @@ export interface CleanStaleBuffersOptions {
  * the filename (a name collision gains a `.N` suffix before the extension).
  * Returns the quarantined path.
  */
-export function quarantineBufferFile(bufferDir: string, file: string): string {
+export function quarantineBufferFile(bufferDir: string, file: string, opts: { keepLockCompanion?: boolean } = {}): string {
   const quarantineDir = path.join(bufferDir, BUFFER_QUARANTINE_DIRNAME);
   fs.mkdirSync(quarantineDir, { recursive: true });
   const ext = path.extname(file);
@@ -215,8 +231,9 @@ export function quarantineBufferFile(bufferDir: string, file: string): string {
   }
   fs.renameSync(path.join(bufferDir, file), target);
   // The lock companion stays in the buffer dir on purpose (quarantined
-  // files are never appended to again) — drop it with the move.
-  removeBufferLockCompanion(bufferDir, base);
+  // files are never appended to again) — drop it with the move, unless the
+  // session it locks lives on beside the quarantined journal.
+  if (!opts.keepLockCompanion) removeBufferLockCompanion(bufferDir, base);
   return target;
 }
 

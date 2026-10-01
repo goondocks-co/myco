@@ -52,7 +52,13 @@ export function memberRoot(mycoHome: string = resolveMycoHome()): string {
 /** Permission bits beyond the owner. */
 const OTHER_BITS = 0o077;
 
-export function isPrivateMode(mode: number): boolean {
+/**
+ * Whether a file's mode keeps it to its owner. Windows reports no POSIX permission bits (every writable file reads as
+ * `0666`), so there the check passes, as the runtime pin's trust check does (`paths/pin-trust.ts`): refusing every file
+ * there would read every membership, session state and latch as absent.
+ */
+export function isPrivateMode(mode: number, platform: NodeJS.Platform = process.platform): boolean {
+  if (platform === 'win32') return true;
   return (mode & OTHER_BITS) === 0;
 }
 

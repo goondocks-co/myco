@@ -366,6 +366,7 @@ jobs:
           tests/install/place-binary.test.ts
           tests/upgrade/apply-binary.test.ts
           tests/meta/binary-replaced-mid-run.test.ts
+          tests/member/journal-v2.test.ts
       - name: Compile Windows native contract executable
         shell: pwsh
         run: |

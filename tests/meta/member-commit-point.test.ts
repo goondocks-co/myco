@@ -22,7 +22,7 @@ const REPO_ROOT = path.resolve(path.dirname(new URL(import.meta.url).pathname), 
 const HOOKS_DIR = path.join(REPO_ROOT, 'packages', 'myco', 'src', 'hooks');
 
 /** Names that write the session-state file; `readSessionState` and friends are deliberately absent. */
-const WRITERS = ['updateSessionState', 'writeSessionStateUnlocked', 'removeSessionState'];
+const WRITERS = ['updateSessionState', 'writeSessionStateUnlocked', 'retireSessionFiles'];
 
 function listTs(dir: string): string[] {
   return fs.readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
