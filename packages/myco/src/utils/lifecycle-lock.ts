@@ -291,6 +291,8 @@ export interface LockHolder {
    *  callers that discover via the lock can attach `x-myco-auth` to
    *  context-switching requests without needing `daemon.json`. */
   authToken?: string;
+  /** Windows: the holder runs inside a Job Object that ends it with the process that started it. */
+  contained?: boolean;
 }
 
 export interface LockHandle {
@@ -491,6 +493,7 @@ function readHolderMetadata(fd: number): LockHolder | null {
       command: typeof parsed.command === 'string' ? parsed.command : undefined,
       port: typeof parsed.port === 'number' ? parsed.port : undefined,
       authToken: typeof parsed.authToken === 'string' ? parsed.authToken : undefined,
+      ...(parsed.contained === true ? { contained: true } : {}),
     };
   } catch {
     return null;
@@ -524,5 +527,6 @@ export function readLockHolder(lockPath: string): LockHolder | null {
     command: typeof parsed.command === 'string' ? parsed.command : undefined,
     port: typeof parsed.port === 'number' ? parsed.port : undefined,
     authToken: typeof parsed.authToken === 'string' ? parsed.authToken : undefined,
+    ...(parsed.contained === true ? { contained: true } : {}),
   };
 }

@@ -68,10 +68,10 @@ function onDisk(text: string, sessionId = SESSION): string {
 /** The retained hooks over one session: start, the prompt hook for the typed prompt, the turn end, the session end. */
 async function replay(file: string, sessionId = SESSION, prompt = 'add the retention window'): Promise<void> {
   const common = { session_id: sessionId, transcript_path: file, cwd: '/repo' };
-  await runHook('session-start', { ...common, hook_event_name: 'SessionStart' }, { fetch: spy.fetch });
-  await runHook('user-prompt-submit', { ...common, hook_event_name: 'UserPromptSubmit', prompt }, { fetch: spy.fetch });
-  await runHook('stop', { ...common, hook_event_name: 'Stop', last_assistant_message: 'Tests pass.' }, { fetch: spy.fetch });
-  await runHook('session-end', { ...common, hook_event_name: 'SessionEnd' }, { fetch: spy.fetch });
+  await runHook('session-start', { ...common, hook_event_name: 'SessionStart' }, { helpers: 'run', fetch: spy.fetch });
+  await runHook('user-prompt-submit', { ...common, hook_event_name: 'UserPromptSubmit', prompt }, { helpers: 'run', fetch: spy.fetch });
+  await runHook('stop', { ...common, hook_event_name: 'Stop', last_assistant_message: 'Tests pass.' }, { helpers: 'run', fetch: spy.fetch });
+  await runHook('session-end', { ...common, hook_event_name: 'SessionEnd' }, { helpers: 'run', fetch: spy.fetch });
   for (let pass = 0; pass < 20; pass += 1) {
     if ((await parseTranscripts(rig.env.serverEnv, Date.now())).changed === 0) break;
   }

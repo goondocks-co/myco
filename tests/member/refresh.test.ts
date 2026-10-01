@@ -69,7 +69,7 @@ const transcriptFile = (): string => {
 /** A hook's own lines, without the member helper's progress lines (the helper runs inside `runHook` in these tests). */
 const hookLines = (stderr: string): string => stderr.split('\n').filter((line) => !line.startsWith('[myco] helper:')).join('\n').trim();
 const prompt = (fetchImpl: FetchLike, text: string) =>
-  runHook('user-prompt-submit', { session_id: session, hook_event_name: 'UserPromptSubmit', transcript_path: transcriptFile(), prompt: text }, { fetch: fetchImpl, symbiont: 'copilot' });
+  runHook('user-prompt-submit', { session_id: session, hook_event_name: 'UserPromptSubmit', transcript_path: transcriptFile(), prompt: text }, { helpers: 'run', fetch: fetchImpl, symbiont: 'copilot' });
 
 const budget = () => ({ connectTimeoutMs: 2_000, requestTimeoutMs: 10_000 });
 
@@ -106,9 +106,9 @@ describe('member token rotation', () => {
     process.env[ENV_PROJECT] = PROJECT;
     const spy = recordingFetch(rig.fetch);
 
-    const out = await runHook('user-prompt-submit', { session_id: session, hook_event_name: 'UserPromptSubmit', transcript_path: transcriptFile(), prompt: 'hello' }, { fetch: spy.fetch, credential: 'env', symbiont: 'copilot' });
+    const out = await runHook('user-prompt-submit', { session_id: session, hook_event_name: 'UserPromptSubmit', transcript_path: transcriptFile(), prompt: 'hello' }, { helpers: 'run', fetch: spy.fetch, credential: 'env', symbiont: 'copilot' });
     // A credential from the environment delivers at the turn's end, in the hook.
-    await runHook('stop', { session_id: session, hook_event_name: 'Stop', transcript_path: transcriptFile(), last_assistant_message: 'done' }, { fetch: spy.fetch, credential: 'env', symbiont: 'copilot' });
+    await runHook('stop', { session_id: session, hook_event_name: 'Stop', transcript_path: transcriptFile(), last_assistant_message: 'done' }, { helpers: 'run', fetch: spy.fetch, credential: 'env', symbiont: 'copilot' });
 
     expect(hookLines(out.stderr)).toBe('');
     expect(rig.rows('prompt_batches')).toBe(1);
@@ -486,9 +486,9 @@ describe('a credential minted not to rotate (#1420)', () => {
       process.env[ENV_PROJECT] = PROJECT;
       const spy = recordingFetch(rig.fetch);
 
-      await runHook('user-prompt-submit', { session_id: session, hook_event_name: 'UserPromptSubmit', transcript_path: transcriptFile(), prompt: 'hello' }, { fetch: spy.fetch, credential: 'env', symbiont: 'copilot' });
+      await runHook('user-prompt-submit', { session_id: session, hook_event_name: 'UserPromptSubmit', transcript_path: transcriptFile(), prompt: 'hello' }, { helpers: 'run', fetch: spy.fetch, credential: 'env', symbiont: 'copilot' });
       // A credential from the environment delivers at the turn's end, in the hook.
-      const out = await runHook('stop', { session_id: session, hook_event_name: 'Stop', transcript_path: transcriptFile(), last_assistant_message: 'done' }, { fetch: spy.fetch, credential: 'env', symbiont: 'copilot' });
+      const out = await runHook('stop', { session_id: session, hook_event_name: 'Stop', transcript_path: transcriptFile(), last_assistant_message: 'done' }, { helpers: 'run', fetch: spy.fetch, credential: 'env', symbiont: 'copilot' });
 
       expect({ ageMs, delivered: rig.rows('prompt_batches'), refreshes: refreshCalls(spy), sends: eventCalls(spy) > 0, refused: out.stderr.includes('member token refused'), rotation: /rotat|renew/.test(out.stderr) })
         .toEqual({ ageMs, delivered, refreshes: 0, sends: true, refused: delivered === 0, rotation: false });

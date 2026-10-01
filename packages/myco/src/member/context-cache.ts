@@ -17,6 +17,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { featuresNamed, type MemberFeature } from '@goondocks/myco-shared/member-protocol';
+import { BLOCK_JOIN, projectLine, withoutProjectLine } from '@goondocks/myco-shared/recall';
 import { ensureMemberDir, readPrivateJson, writePrivateFileAtomic } from './store.js';
 
 export const CONTEXT_DIRNAME = 'context';
@@ -109,6 +110,20 @@ export function writeSessionContext(spoolDir: string, mycoHome: string, sessionI
 /** Forget a session's cache: it goes with the session's state. */
 export function removeSessionContext(spoolDir: string, sessionId: string): void {
   try { fs.unlinkSync(sessionContextPath(spoolDir, sessionId)); } catch { /* none cached */ }
+}
+
+/**
+ * The block a session is served for `kind`, rendered here: the Project line, written from the session's own project
+ * id, then what the Deployment composed for that kind as this machine last cached it (a compaction falls back to the
+ * start's). A session is told its Project whether or not anything is cached yet: the line every Myco write needs comes
+ * from no answer. A run with no project yet (a repository still joining) is served nothing.
+ */
+export function renderedBlock(spoolDir: string, projectId: string, kind: SessionBlockKind): string | undefined {
+  if (projectId.length === 0) return undefined;
+  const blocks = readProjectContext(spoolDir).blocks;
+  const block = kind === 'compact' ? blocks.compact ?? blocks.start : blocks[kind];
+  const body = block === undefined ? '' : withoutProjectLine(block.context);
+  return [projectLine(projectId), ...(body.length > 0 ? [body] : [])].join(BLOCK_JOIN);
 }
 
 /** Whether the Deployment named `feature` on its last answer this machine holds. */

@@ -19,6 +19,11 @@ export function helperPass(projectId: string, mycoHome: string, deps: {
   fetch?: FetchLike; now?: () => number;
   /** The membership to deliver under, for a credential the registry does not hold (a sandbox's environment). */
   entry?: RegistryEntry;
+  /**
+   * Deliver the capture before asking for any context: a pass run in a hook that ends with its process (a sandbox's
+   * turn end), where what the next hook would render matters less than what was captured.
+   */
+  captureFirst?: boolean;
 } = {}): HelperPass {
   const now = deps.now ?? Date.now;
   return async (deadline, { force }) => {
@@ -32,13 +37,15 @@ export function helperPass(projectId: string, mycoHome: string, deps: {
     const budget = deadlineBudget(deadline);
     // Every answer the Deployment gives this pass keeps the features the hooks emit by current.
     const fetchImpl = watchingFeatures(deps.fetch ?? globalThis.fetch, { spoolDir: spool.dir, mycoHome, now });
-    // The context the hooks asked for first: the next prompt renders it, and capture waits on nothing here.
-    const prefetched = spool.shouldDial(now(), force)
-      ? await prefetchContext({ spool, client: new ServerClient(await liveEntry(entry, mycoHome, fetchImpl, now, budget), fetchImpl), serverUrl: entry.serverUrl, mycoHome, budget, now })
+    const prefetch = async () => spool.shouldDial(now(), force)
+      ? prefetchContext({ spool, client: new ServerClient(await liveEntry(entry, mycoHome, fetchImpl, now, budget), fetchImpl), serverUrl: entry.serverUrl, mycoHome, budget, now })
       : null;
+    // A detached helper asks for the context first: the next prompt renders it, and the capture waits on nothing here.
+    let prefetched = deps.captureFirst === true ? null : await prefetch();
     // Prompts a harness writes only to its transcript, appended before the drain that delivers them.
     backfillTranscriptPrompts(spool, now);
     const backlog = await drainEntryBacklog(entry, { mycoHome, fetch: fetchImpl, now, budget, force, rescan: false, newestFirst: true });
+    if (deps.captureFirst === true) prefetched = await prefetch();
     // Everything delivered (no journal and no transcript left behind): the state of sessions delivered long ago may go.
     const delivered = backlog.endedBy === 'done' && spool.sessionIds().length === 0 && spool.transcriptBacklogIds().length === 0;
     applySpoolRetention(spool, now(), { tried: backlog.tried, delivered });

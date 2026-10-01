@@ -15,6 +15,7 @@
  * An invitation that names no Project admits a person to the Deployment; they
  * bind their first project afterwards with `myco member join --project`.
  */
+import { warmProjectContext } from '../member/prefetch.js';
 import { seedMachineSettings } from '../member/machine-settings.js';
 import { readDefaultDeployment, recordDefaultDeployment } from '../member/default-deployment.js';
 import { MACHINE_IDENTITY_NOTE, REJOIN_HINT } from '@goondocks/myco-shared/member-protocol';
@@ -161,6 +162,10 @@ export async function run(args: readonly string[], deps: LoginDeps = {}): Promis
   const isDefault = recordDefaultDeployment(code.serverUrl, { mycoHome, now: deps.now?.() ?? Date.now(), replace: parsed.makeDefault });
   // The settings the Deployment holds for this machine, cached before the first session reads them.
   await seedMachineSettings({ serverUrl: code.serverUrl, token: answer.token }, { mycoHome, fetch: deps.fetch });
+  // And the Project's blocks: the first session in the folder is served them whole.
+  if (answer.projectId !== null && root !== undefined) {
+    await warmProjectContext({ serverUrl: code.serverUrl, token: answer.token, projectId: answer.projectId }, { mycoHome, fetch: deps.fetch, now: deps.now });
+  }
 
   const pinned = chosen === null ? null : pinnedHomeLine(chosen, folder);
   if (pinned !== null) out(pinned);

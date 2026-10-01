@@ -5,7 +5,8 @@ import { hookCwd, runMemberHook, type HookMainOptions, type HookRun } from '../m
 import { sessionStartEvent, type OutboundEvent } from '../member/envelope.js';
 import { withNotice } from '../member/delivery-notice.js';
 import { compactionStart, recordCompaction } from '../member/compaction.js';
-import { readProjectContext, type ContextAsk, type SessionBlockKind } from '../member/context-cache.js';
+import { renderedBlock, type ContextAsk, type SessionBlockKind } from '../member/context-cache.js';
+import { BLOCK_JOIN } from '@goondocks/myco-shared/recall';
 import { readSessionState } from '../member/session-state.js';
 import { sessionLineage } from '../member/transcript.js';
 import { TRANSCRIPT_PROMPTS_AGENT } from '../member/transcript-prompts.js';
@@ -17,18 +18,15 @@ import type { HookResponse } from './response.js';
 export { readAntigravityPromptsFromTranscript } from '../member/transcript-prompts.js';
 
 /**
- * The block this machine holds for the session's start (or a compaction's), with the branch and the session id under
- * it: each on its own line, separated by a blank line, in the shape the harness receives them in. Served once per
- * session and kind; nothing cached serves nothing.
+ * The block served at the session's start (or a compaction's), rendered here (`renderedBlock`), with the branch and
+ * the session id under it: each on its own line, separated by a blank line, in the shape the harness receives them
+ * in. Served once per session and kind.
  */
-function cachedBlock(run: HookRun, kind: SessionBlockKind, delivered: string, branch: string | undefined): HookResponse | undefined {
-  if (readSessionState(run.spool.dir, run.sessionId).delivered.includes(delivered)) return undefined;
-  const blocks = readProjectContext(run.spool.dir).blocks;
-  // A compaction restores what the start served: the Deployment composes the two alike.
-  const block = kind === 'compact' ? blocks.compact ?? blocks.start : blocks[kind];
-  if (block === undefined || block.context.length === 0) return undefined;
-  const lines = [block.context, ...(branch ? [`Branch:: \`${branch}\``] : []), `Session:: \`${run.sessionId}\``];
-  return { additionalContext: lines.join('\n\n') };
+function sessionStartBlock(run: HookRun, kind: SessionBlockKind, branch: string | undefined): HookResponse | undefined {
+  const block = renderedBlock(run.spool.dir, run.credential.projectId, kind);
+  if (block === undefined) return undefined;
+  const lines = [block, ...(branch ? [`Branch:: \`${branch}\``] : []), `Session:: \`${run.sessionId}\``];
+  return { additionalContext: lines.join(BLOCK_JOIN) };
 }
 
 export async function main(opts: HookMainOptions = {}) {
@@ -65,15 +63,17 @@ export async function main(opts: HookMainOptions = {}) {
       : { kind: 'start', ...named, at: run.now() };
     const delivered = sessionInjectionKind(ask);
     // A symbiont whose harness discards a SessionStart answer is served nothing, and the helper fetches nothing for it.
-    const injects = HOOK_CONFIG[agent]?.capabilities.sessionStartInjection === true;
-    const response = injects ? cachedBlock(run, ask.kind === 'compact' ? 'compact' : 'start', delivered, git.branch) : undefined;
+    // One that has been served this kind already (a resumed session) is served nothing again, and asks nothing.
+    const due = HOOK_CONFIG[agent]?.capabilities.sessionStartInjection === true && !readSessionState(run.spool.dir, sessionId).delivered.includes(delivered);
+    const response = due ? sessionStartBlock(run, ask.kind === 'compact' ? 'compact' : 'start', git.branch) : undefined;
     // A harness with no prompt hook writes its prompts only to its transcript: the helper reads them from it.
     const backfill = agent === TRANSCRIPT_PROMPTS_AGENT && transcriptPath ? { transcriptPath, at: run.now() } : undefined;
     return {
       events,
       response,
-      ask: injects ? ask : undefined,
-      notice: injects ? withNotice : undefined,
+      // Asked for by the session that renders it: the Deployment's record of having served it names this session.
+      ask: due ? ask : undefined,
+      notice: HOOK_CONFIG[agent]?.capabilities.sessionStartInjection === true ? withNotice : undefined,
       record: (state) => {
         if (compacted) recordCompaction(state);
         if (response !== undefined && !state.delivered.includes(delivered)) state.delivered.push(delivered);

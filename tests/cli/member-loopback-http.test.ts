@@ -210,11 +210,15 @@ describe('a member of a loopback http native Deployment', () => {
     const m = machine({ [ENV_JOIN_CODE]: invite.code });
     const first = await sessionStart(m, 'sess-loopback-code-1', 'env');
     expect(first.stderr).not.toContain('no capture');
-    expect({ spent: spent(invite.id), landed: await landsWithin('sess-loopback-code-1') }).toEqual({ spent: true, landed: true });
+    expect(spent(invite.id)).toBe(true);
+    // A sandbox delivers at the turn's end, in the hook: no helper it started would outlive it.
+    expect((await inlineStop(m, 'sess-loopback-code-1')).status).toBe(0);
+    expect(landed('sess-loopback-code-1')).toBe(true);
 
     const second = await sessionStart(m, 'sess-loopback-code-2', 'env');
     expect(second.stderr).not.toContain('no capture');
-    expect(await landsWithin('sess-loopback-code-2')).toBe(true);
+    expect((await inlineStop(m, 'sess-loopback-code-2')).status).toBe(0);
+    expect(landed('sess-loopback-code-2')).toBe(true);
     const tokens = query<{ n: number }>(
       `SELECT count(DISTINCT created_by_token_id) AS n FROM sessions WHERE session_id IN ('sess-loopback-code-1','sess-loopback-code-2')`,
     );

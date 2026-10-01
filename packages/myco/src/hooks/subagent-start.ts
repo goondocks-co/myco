@@ -1,6 +1,6 @@
 import { runMemberHook, type HookMainOptions } from '../member/capture.js';
 import { subagentStartEvent } from '../member/envelope.js';
-import { readProjectContext, type ContextAsk } from '../member/context-cache.js';
+import { renderedBlock, type ContextAsk } from '../member/context-cache.js';
 import { readSessionState } from '../member/session-state.js';
 import { sessionInjectionKind } from '@goondocks/myco-shared/recall';
 import { HOOK_CONFIG } from './hook-config.generated.js';
@@ -25,14 +25,16 @@ export async function main(opts: HookMainOptions = {}) {
     const takesInjection = HOOK_CONFIG[run.agent]?.capabilities.subagentStartInjection === true;
     const ask: ContextAsk = { kind: 'subagent', agentId: name(run.input.raw.agent_id), agentType: name(run.input.raw.agent_type), at: run.now() };
     const delivered = sessionInjectionKind(ask);
-    const block = takesInjection && !state.delivered.includes(delivered) ? readProjectContext(run.spool.dir).blocks.subagent : undefined;
-    const served = block !== undefined && block.context.length > 0 ? block.context : undefined;
+    // Served once per delegation, and asked for by the delegation that renders it: the Deployment's record of having
+    // served it names the session it reached.
+    const due = takesInjection && !state.delivered.includes(delivered);
+    const served = due ? renderedBlock(run.spool.dir, run.credential.projectId, 'subagent') : undefined;
     return {
       // The transcript carries the child's own turns for a symbiont that keeps
       // one; the start row would be a second write keyed to a minted parent.
       events: transcriptWritesTurnRows(run.agent) ? [] : [subagentStartEvent(run.ctx, run.input, { parentPromptId: state.promptId })],
       response: served === undefined ? undefined : { additionalContext: served },
-      ask: takesInjection ? ask : undefined,
+      ask: due ? ask : undefined,
       record: served === undefined ? undefined : (next) => { if (!next.delivered.includes(delivered)) next.delivered.push(delivered); },
     };
   });

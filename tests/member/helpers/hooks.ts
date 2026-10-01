@@ -3,6 +3,7 @@
  * reader, `--symbiont` on argv, the credential source and `fetch` passed the
  * way the CLI dispatcher passes them, stdout/stderr captured.
  */
+import { spawnSync } from 'node:child_process';
 import { setBufferedStdin } from '@myco/hooks/read-stdin.js';
 import { HOOK_DISPATCH, type HookName } from '@myco/hooks/entry.js';
 import { _resetManifestCache } from '@myco/hooks/normalize.js';
@@ -23,6 +24,8 @@ const HOOKS = HOOK_DISPATCH;
 export interface HookRunResult {
   stdout: string;
   stderr: string;
+  /** The member helper starts the hook's kick made, each as its arguments, whether or not the helper ran. */
+  starts: string[][];
 }
 
 export interface RunHookOptions {
@@ -35,10 +38,21 @@ export interface RunHookOptions {
   /** How a repository's join is started; a test that meets an unconnected repository records it instead of starting it. */
   spawn?: HookMainOptions['spawn'];
   /**
-   * How the hook's kick starts the member helper. By default the helper runs in this process with the hook's own
-   * fetch, and the run ends once every helper it started has: a hook's capture is delivered when `runHook` returns.
+   * What becomes of a member helper the hook's kick starts. By default (`record`) the start is recorded and the helper
+   * never runs, as when a sandbox ends with the hook: a hook's capture is delivered by `runHook` only where the hook
+   * delivered it itself. `run` runs each helper in this process with the hook's own fetch, and the run ends once every
+   * helper it started has: a test that relies on a detached helper delivering says so.
    */
+  helpers?: 'record' | 'run';
+  /** A start of the test's own, in place of `helpers`. */
   helperSpawn?: DetachedSpawn;
+}
+
+/** A process id that names no live process: a recorded start's helper, gone at once, holds off no later start. */
+let deadPid: number | undefined;
+function goneProcessId(): number {
+  deadPid ??= spawnSync(process.execPath, ['-e', '0']).pid ?? 0x7fff_fff0;
+  return deadPid;
 }
 
 /** Run one hook in-process with `raw` as its stdin; argv is restored afterwards. */
@@ -54,11 +68,18 @@ export async function runHook(name: HookName, raw: Record<string, unknown>, opts
   (process.stdout as unknown as { write: (chunk: unknown) => boolean }).write = ((chunk: unknown) => { out.push(String(chunk)); return true; }) as never;
   (process.stderr as unknown as { write: (chunk: unknown) => boolean }).write = ((chunk: unknown) => { err.push(String(chunk)); return true; }) as never;
   const helpers: Array<Promise<unknown>> = [];
-  const helperSpawn: DetachedSpawn = opts.helperSpawn ?? ((_command, args) => {
+  const starts: string[][] = [];
+  const running: DetachedSpawn = (_command, args) => {
+    starts.push([...args]);
     const verb = args.slice(args.indexOf('helper') + 1);
-    helpers.push(runHelperVerb(verb, { fetch: opts.fetch, now: opts.now, lingerMs: 0, keepStderr: true, spawn: helperSpawn }).catch((err: unknown) => err));
+    helpers.push(runHelperVerb(verb, { fetch: opts.fetch, now: opts.now, lingerMs: 0, keepStderr: true, spawn: running }).catch((err: unknown) => err));
     return { started: true, pid: process.pid };
-  });
+  };
+  const recording: DetachedSpawn = (_command, args) => {
+    starts.push([...args]);
+    return { started: true, pid: goneProcessId() };
+  };
+  const helperSpawn: DetachedSpawn = opts.helperSpawn ?? (opts.helpers === 'run' ? running : recording);
   try {
     const mod = await HOOKS[name]();
     await mod.main({
@@ -78,7 +99,7 @@ export async function runHook(name: HookName, raw: Record<string, unknown>, opts
     setBufferedStdin(null);
     _resetManifestCache();
   }
-  return { stdout: out.join(''), stderr: err.join('') };
+  return { stdout: out.join(''), stderr: err.join(''), starts };
 }
 
 /** A registry entry for the hooks' own project root (the cwd's worktree-aware root) under the test MYCO_HOME. */

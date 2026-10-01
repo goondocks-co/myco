@@ -4,9 +4,11 @@
  *
  * A session start, a compaction or a delegated agent asks for its block: the answer is cached as the Project's block
  * of that kind, which the next such hook renders. A prompt asks with its own text: the answer is cached for the
- * session's next prompt. Each ask goes to the route the hook used to call itself, so the Deployment still records
- * what it composed for which session, binds the repository's remote at a session start, and stamps the turn's start
- * from the prompt's id.
+ * session's next prompt. Each ask names the session that asked, so the Deployment records what it served to which
+ * session, binds the repository's remote at a session start, and stamps the turn's start from the prompt's id.
+ *
+ * A join warms the cache before any session asks (`warmProjectContext`): the Deployment previews the Project's blocks
+ * for no session, so the first session after the join is served its whole block.
  *
  * Context requests run on a capped share of the helper's time and are answered `slow` past it, which never latches
  * the Deployment offline (#1559): a capture request decides that. An ask the Deployment answered, or refused for good,
@@ -19,7 +21,9 @@ import { readProjectContext, removeSessionContext, updateProjectContext, writeSe
 import { refusalPermanent } from './constants.js';
 import { readSessionState, updateSessionState } from './session-state.js';
 import type { MemberSpool } from './spool.js';
-import { classifyEventAnswer, type FetchLike, type ServerClient } from './transport.js';
+import { classifyEventAnswer, ServerClient, type FetchLike } from './transport.js';
+import { deadlineBudget } from './budget.js';
+import { spoolDirFor } from './spool.js';
 
 /** The longest one context request may take: the helper is off the hook's path, but a pass still has its deadline. */
 export const CONTEXT_CAP_MS = 8_000;
@@ -142,4 +146,47 @@ export function watchingFeatures(fetchImpl: FetchLike, opts: { spoolDir: string;
     }
     return res;
   };
+}
+
+/** The blocks a join previews: what a session start and a delegated agent render. A compaction falls back to the start's. */
+const WARMED: readonly SessionBlockKind[] = ['start', 'subagent'];
+
+/**
+ * Cache the Project's blocks for a membership just joined, before any of its sessions asks: the Deployment previews
+ * each (`preview`, naming no session, so none is held to have been served it). Only a block this machine does not
+ * hold yet is asked for, inside `budget` (the joining hook's own, for a sandbox), each on the capped share a context
+ * request gets. An answer not had (a Deployment that predates previews, or one not reached) leaves the block to the
+ * first session's own ask. Answers how many blocks were cached.
+ */
+export async function warmProjectContext(
+  membership: { serverUrl: string; token: string; projectId: string },
+  opts: { mycoHome: string; fetch?: FetchLike; budget?: HookBudget; now?: () => number },
+): Promise<number> {
+  const now = opts.now ?? Date.now;
+  const spoolDir = spoolDirFor(membership.projectId, opts.mycoHome);
+  const budget = opts.budget ?? deadlineBudget(now() + WARMED.length * CONTEXT_CAP_MS);
+  const fetchImpl = watchingFeatures(opts.fetch ?? globalThis.fetch, { spoolDir, mycoHome: opts.mycoHome, now });
+  const client = new ServerClient(membership, fetchImpl);
+  let cached = 0;
+  for (const kind of WARMED) {
+    if (readProjectContext(spoolDir).blocks[kind] !== undefined) continue;
+    if (!canStartRequest(budget, now())) break;
+    let answer: ReturnType<typeof classifyEventAnswer>;
+    try {
+      answer = classifyEventAnswer(await client.request('POST', SESSION_PATH, {
+        body: JSON.stringify({ kind, preview: true }),
+        headers: { 'content-type': 'application/json' },
+        budget: subRequestBudget(budget, CONTEXT_CAP_MS, now()),
+      }));
+    } catch {
+      break;
+    }
+    if (answer.class !== 'acked') break;
+    const context = typeof answer.body.context === 'string' ? answer.body.context : '';
+    if (context.length === 0) continue;
+    updateProjectContext(spoolDir, opts.mycoHome, (cache) => { cache.blocks[kind] = { context, at: now() }; });
+    try { cacheMachineSettings(membership.serverUrl, answer.body.machine, opts.mycoHome); } catch { /* the last cache stands */ }
+    cached += 1;
+  }
+  return cached;
 }

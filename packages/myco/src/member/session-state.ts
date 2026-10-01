@@ -121,6 +121,12 @@ export interface SessionState {
   contextAsks?: ContextAsk[];
   /** A transcript the member helper is to read prompts from (`member/transcript-prompts.ts`), and when it was asked. */
   promptBackfill?: { transcriptPath: string; at: number };
+  /** When a hook last appended for this session: how a pass tells a live session from one its harness left. */
+  hookAt?: number;
+  /** When the session's end hook ran: nothing of its transcript waits on a turn's end after it. */
+  endedAt?: number;
+  /** The prompt whose served context a prompt of this session has rendered: each answer is rendered once. */
+  renderedPrompt?: string;
   updatedAt: number;
 }
 

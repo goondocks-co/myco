@@ -87,6 +87,10 @@ jobs:
       - name: Measure a no-op hook
         if: ${{ !matrix.measure_elsewhere }}
         run: node packages/myco/scripts/measure-hook-startup.mjs "packages/myco-${{ matrix.target }}/bin/myco" --prefix "${{ matrix.prefix }}" --max-p95-ms "${{ matrix.ceiling }}"
+      # Gate G1, timed: every hook doing its real work, under both credential sources, each inside its own budget.
+      - name: Measure every hook at work
+        if: ${{ !matrix.measure_elsewhere }}
+        run: bun packages/myco/scripts/measure-hook-work.ts "packages/myco-${{ matrix.target }}/bin/myco" --prefix "${{ matrix.prefix }}"
       - name: Hand the Windows binary to its runner
         if: matrix.measure_elsewhere
         uses: actions/upload-artifact@v7
@@ -100,18 +104,18 @@ jobs:
     name: hook startup (windows-x64, measured)
     needs: hook-startup
     runs-on: windows-latest
-    timeout-minutes: 10
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v7
-      - uses: actions/setup-node@v7
-        with:
-          node-version: 22
+      - uses: ./.github/actions/ci-setup
       - uses: actions/download-artifact@v8
         with:
           name: hook-startup-windows-x64
           path: hook-startup-bin
       - name: Measure a no-op hook
         run: node packages/myco/scripts/measure-hook-startup.mjs hook-startup-bin/myco.exe
+      - name: Measure every hook at work
+        run: bun packages/myco/scripts/measure-hook-work.ts hook-startup-bin/myco.exe
 
   tests:
     name: tests (${{ matrix.kind }}, ${{ matrix.shard }})

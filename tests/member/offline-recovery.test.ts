@@ -67,9 +67,9 @@ const transcript = (sessionId: string, text: string): string => {
 /** One whole session as its hooks run it: start, a turn end that ships the transcript, and the end. */
 async function session(fetchImpl: Parameters<typeof runHook>[2]['fetch'], sessionId: string, text: string) {
   const tx = transcript(sessionId, text);
-  const start = await runHook('session-start', { session_id: sessionId, hook_event_name: 'SessionStart', transcript_path: tx, cwd: '/work/repo' }, { fetch: fetchImpl });
-  const stop = await runHook('stop', { session_id: sessionId, hook_event_name: 'Stop', transcript_path: tx, last_assistant_message: `re: ${text}` }, { fetch: fetchImpl });
-  const end = await runHook('session-end', { session_id: sessionId, hook_event_name: 'SessionEnd', transcript_path: tx }, { fetch: fetchImpl });
+  const start = await runHook('session-start', { session_id: sessionId, hook_event_name: 'SessionStart', transcript_path: tx, cwd: '/work/repo' }, { helpers: 'run', fetch: fetchImpl });
+  const stop = await runHook('stop', { session_id: sessionId, hook_event_name: 'Stop', transcript_path: tx, last_assistant_message: `re: ${text}` }, { helpers: 'run', fetch: fetchImpl });
+  const end = await runHook('session-end', { session_id: sessionId, hook_event_name: 'SessionEnd', transcript_path: tx }, { helpers: 'run', fetch: fetchImpl });
   return { tx, start, stop, end };
 }
 
@@ -110,7 +110,7 @@ describe('a credential used from two places', () => {
     const spy = recordingFetch(rig.fetch);
 
     const tx = transcript('sess-owner', 'mine');
-    const start = await runHook('session-start', { session_id: 'sess-owner', hook_event_name: 'SessionStart', transcript_path: tx, cwd: '/work/repo' }, { fetch: spy.fetch });
+    const start = await runHook('session-start', { session_id: 'sess-owner', hook_event_name: 'SessionStart', transcript_path: tx, cwd: '/work/repo' }, { helpers: 'run', fetch: spy.fetch });
 
     // The hook's first dials are its own work, refused; the rotation it forces follows them.
     const paths = spy.requests.map((r) => r.path);
@@ -122,7 +122,7 @@ describe('a credential used from two places', () => {
     expect({ terminal: held.refreshTerminal, reason: held.refreshTerminalReason }).toEqual({ terminal: true, reason: 'replayed' });
     expect(start.stderr).toContain(TWO_PLACES);
     // The hook answered before its helper learned why; the next session's start tells the agent.
-    const next = await runHook('session-start', { session_id: 'sess-owner-next', hook_event_name: 'SessionStart', transcript_path: tx, cwd: '/work/repo' }, { fetch: spy.fetch });
+    const next = await runHook('session-start', { session_id: 'sess-owner-next', hook_event_name: 'SessionStart', transcript_path: tx, cwd: '/work/repo' }, { helpers: 'run', fetch: spy.fetch });
     expect(next.stdout).toContain(TWO_PLACES);
     expect(next.stdout).toContain('myco login <link>');
     expect(new MemberSpool(PROJECT, { mycoHome }).depth('sess-owner')).toBe(1);
@@ -139,7 +139,7 @@ describe('a credential used from two places', () => {
     const spy = recordingFetch(rig.fetch);
 
     const tx = transcript('sess-owner-2', 'mine too');
-    const start = await runHook('session-start', { session_id: 'sess-owner-2', hook_event_name: 'SessionStart', transcript_path: tx, cwd: '/work/repo' }, { fetch: spy.fetch });
+    const start = await runHook('session-start', { session_id: 'sess-owner-2', hook_event_name: 'SessionStart', transcript_path: tx, cwd: '/work/repo' }, { helpers: 'run', fetch: spy.fetch });
 
     expect(spy.requests[0].path).not.toBe('/tokens/refresh');
     expect(spy.requests.some((r) => r.path === '/tokens/refresh')).toBe(true);
@@ -148,7 +148,7 @@ describe('a credential used from two places', () => {
     expect((await thief.capture(stolen.token)).status).toBe(401);
     expect(readRegistryEntry(root, mycoHome)!.refreshTerminalReason).toBe('replayed');
     expect(start.stderr).toContain(TWO_PLACES);
-    const next = await runHook('session-start', { session_id: 'sess-owner-2-next', hook_event_name: 'SessionStart', transcript_path: tx, cwd: '/work/repo' }, { fetch: spy.fetch });
+    const next = await runHook('session-start', { session_id: 'sess-owner-2-next', hook_event_name: 'SessionStart', transcript_path: tx, cwd: '/work/repo' }, { helpers: 'run', fetch: spy.fetch });
     expect(next.stdout).toContain(TWO_PLACES);
   });
 
@@ -208,13 +208,13 @@ describe('a member that could not deliver', () => {
     const spy = recordingFetch(rig.fetch);
 
     const tx = transcript('sess-ended', 'nobody hears this');
-    const start = await runHook('session-start', { session_id: 'sess-ended', hook_event_name: 'SessionStart', transcript_path: tx, cwd: '/work/repo' }, { fetch: spy.fetch });
+    const start = await runHook('session-start', { session_id: 'sess-ended', hook_event_name: 'SessionStart', transcript_path: tx, cwd: '/work/repo' }, { helpers: 'run', fetch: spy.fetch });
 
     expect(readRegistryEntry(root, mycoHome)!.refreshTerminal).toBe(true);
     expect(start.stderr).toContain('myco login <link>');
     expect(start.stderr).toContain('inactive too long');
     // The hook answered before its helper learned the credential ended; the next session's start says so.
-    const next = await runHook('session-start', { session_id: 'sess-ended-next', hook_event_name: 'SessionStart', transcript_path: tx, cwd: '/work/repo' }, { fetch: spy.fetch });
+    const next = await runHook('session-start', { session_id: 'sess-ended-next', hook_event_name: 'SessionStart', transcript_path: tx, cwd: '/work/repo' }, { helpers: 'run', fetch: spy.fetch });
     expect(next.stderr).toContain(NOT_DELIVERED);
     expect(next.stdout).toContain(NOT_DELIVERED);
     expect(next.stdout).toContain(INACTIVE);
@@ -224,7 +224,7 @@ describe('a member that could not deliver', () => {
 
     // Terminal: a later hook asks the refresh route nothing, and still says so.
     const refreshes = spy.requests.filter((r) => r.path === '/tokens/refresh').length;
-    const stop = await runHook('stop', { session_id: 'sess-ended', hook_event_name: 'Stop', transcript_path: tx, last_assistant_message: 'x' }, { fetch: spy.fetch });
+    const stop = await runHook('stop', { session_id: 'sess-ended', hook_event_name: 'Stop', transcript_path: tx, last_assistant_message: 'x' }, { helpers: 'run', fetch: spy.fetch });
     expect(spy.requests.filter((r) => r.path === '/tokens/refresh').length).toBe(refreshes);
     expect(stop.stderr).toContain(NOT_DELIVERED);
   });
@@ -273,7 +273,7 @@ describe('a member that could not deliver', () => {
     const capturedEvents = () => (rig.env.sqlite.query(`SELECT COUNT(*) AS n FROM events WHERE kind <> 'turn'`).get() as { n: number }).n;
     const counts = () => [capturedEvents(), ...['transcript_segments', 'prompt_batches', 'responses'].map((t) => rig.rows(t))];
     const before = counts();
-    await runHook('stop', { session_id: 'sess-next', hook_event_name: 'Stop', transcript_path: next.tx, last_assistant_message: 'x' }, { fetch: spy.fetch });
+    await runHook('stop', { session_id: 'sess-next', hook_event_name: 'Stop', transcript_path: next.tx, last_assistant_message: 'x' }, { helpers: 'run', fetch: spy.fetch });
     await runMemberCli(['drain'], { mycoHome, fetch: spy.fetch, stdout: () => {}, stderr: () => {} });
     await parseAll(rig);
     expect(counts()).toEqual(before);
@@ -289,17 +289,17 @@ describe('a member that could not deliver', () => {
       for (const [hook, raw] of [
         ['session-start', { hook_event_name: 'SessionStart', transcript_path: tx, cwd: '/work/repo' }],
         ['stop', { hook_event_name: 'Stop', transcript_path: tx, last_assistant_message: 'x' }],
-      ] as const) await runHook(hook, { session_id: 'sess-early', ...raw }, { fetch: offline, now: () => longAgo });
+      ] as const) await runHook(hook, { session_id: 'sess-early', ...raw }, { helpers: 'run', fetch: offline, now: () => longAgo });
       const spool = new MemberSpool(PROJECT, { mycoHome });
       expect(spool.transcriptBacklogIds()).toEqual(['sess-early']);
 
       // Still offline, 32 days on: a turn end of another session runs retention and must not quarantine what nothing could deliver.
-      await runHook('stop', { session_id: 'sess-late', hook_event_name: 'Stop', transcript_path: transcript('sess-late', 'late'), last_assistant_message: 'x' }, { fetch: offline });
+      await runHook('stop', { session_id: 'sess-late', hook_event_name: 'Stop', transcript_path: transcript('sess-late', 'late'), last_assistant_message: 'x' }, { helpers: 'run', fetch: offline });
       expect(spool.sessionIds()).toEqual(['sess-early']);
       expect(readSessionState(spool.dir, 'sess-early').transcript?.path).toBe(tx);
 
       if (recovery === 'turn end') {
-        await runHook('stop', { session_id: 'sess-back', hook_event_name: 'Stop', transcript_path: transcript('sess-back', 'back'), last_assistant_message: 'x' }, { fetch: rig.fetch });
+        await runHook('stop', { session_id: 'sess-back', hook_event_name: 'Stop', transcript_path: transcript('sess-back', 'back'), last_assistant_message: 'x' }, { helpers: 'run', fetch: rig.fetch });
       } else {
         await runMemberCli(['drain'], { mycoHome, fetch: rig.fetch, stdout: () => {}, stderr: () => {} });
       }
@@ -329,7 +329,7 @@ describe('a member that could not deliver', () => {
     };
     const spy = recordingFetch(spent);
     const tx = transcript('sess-busy', 'busy');
-    await runHook('stop', { session_id: 'sess-busy', hook_event_name: 'Stop', transcript_path: tx, last_assistant_message: 'x' }, { fetch: spy.fetch, now: () => t });
+    await runHook('stop', { session_id: 'sess-busy', hook_event_name: 'Stop', transcript_path: tx, last_assistant_message: 'x' }, { helpers: 'run', fetch: spy.fetch, now: () => t });
 
     expect(segmentsOf(rig, 'sess-busy')).toBe(1);
     // The pass that shipped it ran out of time; its successor delivered the backlog, after it.
@@ -408,7 +408,7 @@ describe('the backlog walk', () => {
     registerTestMember({ mycoHome, token: rig.token, tokenId: rig.tokenId, projectId: PROJECT, expiresAt: rig.expiresAt, serverUrl: SERVER_URL });
     const spool = new MemberSpool(PROJECT, { mycoHome });
     const tx = transcript('sess-own', 'own');
-    await spool.withSessionLease('sess-own', () => runHook('stop', { session_id: 'sess-own', hook_event_name: 'Stop', transcript_path: tx, last_assistant_message: 'x' }, { fetch: rig.fetch }));
+    await spool.withSessionLease('sess-own', () => runHook('stop', { session_id: 'sess-own', hook_event_name: 'Stop', transcript_path: tx, last_assistant_message: 'x' }, { helpers: 'run', fetch: rig.fetch }));
     expect(segmentsOf(rig, 'sess-own')).toBe(0);
     expect(spool.transcriptBacklogIds()).toEqual(['sess-own']);
   });
@@ -479,8 +479,8 @@ describe('the backlog walk', () => {
       return rig.fetch(req);
     };
     const tx = transcript('sess-own', 'own');
-    await runHook('session-start', { session_id: 'sess-own', hook_event_name: 'SessionStart', transcript_path: tx, cwd: '/work/repo' }, { fetch: ownRefused });
-    await runHook('stop', { session_id: 'sess-own', hook_event_name: 'Stop', transcript_path: tx, last_assistant_message: 'x' }, { fetch: ownRefused });
+    await runHook('session-start', { session_id: 'sess-own', hook_event_name: 'SessionStart', transcript_path: tx, cwd: '/work/repo' }, { helpers: 'run', fetch: ownRefused });
+    await runHook('stop', { session_id: 'sess-own', hook_event_name: 'Stop', transcript_path: tx, last_assistant_message: 'x' }, { helpers: 'run', fetch: ownRefused });
 
     expect(spool.depth('sess-own')).toBeGreaterThan(0);
     expect(segmentsOf(rig, 'sess-waiting')).toBe(1);
@@ -501,12 +501,12 @@ describe('the backlog walk', () => {
 
     // This build's own terminal refusal is final: no hook asks again.
     revoke(rig, renewed.tokenId!);
-    await runHook('session-start', { session_id: 'sess-refused', hook_event_name: 'SessionStart', transcript_path: transcript('sess-refused', 'r'), cwd: '/work/repo' }, { fetch: spy.fetch });
+    await runHook('session-start', { session_id: 'sess-refused', hook_event_name: 'SessionStart', transcript_path: transcript('sess-refused', 'r'), cwd: '/work/repo' }, { helpers: 'run', fetch: spy.fetch });
     const refused = readRegistryEntry(root, mycoHome)!;
     expect(refused.refreshTerminal).toBe(true);
     expect(refused.refreshTerminalBy).toBeDefined();
     const dials = spy.requests.filter((r) => r.path === '/tokens/refresh').length;
-    for (let i = 0; i < 3; i += 1) await runHook('session-start', { session_id: `sess-again-${i}`, hook_event_name: 'SessionStart', transcript_path: transcript(`sess-again-${i}`, 'r'), cwd: '/work/repo' }, { fetch: spy.fetch });
+    for (let i = 0; i < 3; i += 1) await runHook('session-start', { session_id: `sess-again-${i}`, hook_event_name: 'SessionStart', transcript_path: transcript(`sess-again-${i}`, 'r'), cwd: '/work/repo' }, { helpers: 'run', fetch: spy.fetch });
     expect(spy.requests.filter((r) => r.path === '/tokens/refresh').length).toBe(dials);
   });
 
@@ -557,11 +557,11 @@ describe('the backlog walk', () => {
     const spool = new MemberSpool(PROJECT, { mycoHome });
     const tx = transcript('sess-gone', 'refused for good');
     const spy = recordingFetch(refusingSegments(rig, 'session_tombstoned', 1));
-    await runHook('stop', { session_id: 'sess-gone', hook_event_name: 'Stop', transcript_path: tx, last_assistant_message: 'x' }, { fetch: spy.fetch });
+    await runHook('stop', { session_id: 'sess-gone', hook_event_name: 'Stop', transcript_path: tx, last_assistant_message: 'x' }, { helpers: 'run', fetch: spy.fetch });
     expect(readSessionState(spool.dir, 'sess-gone').transcript?.refused).toBe('session_tombstoned');
     const uploads = blobUploads(spy);
     fs.appendFileSync(tx, `${JSON.stringify({ type: 'user', message: { role: 'user', content: 'later' } })}\n`);
-    await runHook('stop', { session_id: 'sess-gone', hook_event_name: 'Stop', transcript_path: tx, last_assistant_message: 'x' }, { fetch: spy.fetch });
+    await runHook('stop', { session_id: 'sess-gone', hook_event_name: 'Stop', transcript_path: tx, last_assistant_message: 'x' }, { helpers: 'run', fetch: spy.fetch });
     expect(blobUploads(spy)).toBe(uploads);
     expect(segmentsOf(rig, 'sess-gone')).toBe(0);
   });

@@ -28,7 +28,8 @@ import { canStartRequest, unboundedBudget, type HookBudget } from './budget.js';
 import { clearNonRotatingRefusal, refreshDue, refreshMemberCredential, rotatedCredential } from './refresh.js';
 import { readRegistryEntry, type RegistryEntry } from './registry.js';
 import { pointerBehind, pointersOf, readSessionState, retryWaiting, turnsFileOf, updateSessionState, type SessionState } from './session-state.js';
-import { HOLD_ENDS, MemberSpool, turnEndSatisfied, type DrainEnd, type DrainOptions, type DrainResult } from './spool.js';
+import { HOLD_ENDS, MemberSpool, turnEndSatisfied, type DrainEnd, type DrainOptions, type DrainResult, type PendingTurnEnd } from './spool.js';
+import { featureAdvertised } from './context-cache.js';
 import { ensurePrivateFile, writePrivateFileAtomic } from './store.js';
 import { shipSessionTranscripts, type ShipResult } from './transcript.js';
 import { flushHeldCapture } from './held.js';
@@ -68,7 +69,24 @@ export interface BacklogReport {
 /** Event pass endings that belong to the session alone. Any other answer — unreachable, the credential refused, an older server's quota, the protocol window, the budget — would be the next session's too, so the walk ends there: a mis-deployed server costs one request, not one per session. */
 const EVENTS_CONTINUE: readonly DrainEnd[] = ['drained', 'acked', 'reslice', 'protocol_mismatch', ...HOLD_ENDS];
 /** Transcript pass endings that belong to the session alone. */
-const TRANSCRIPTS_CONTINUE: readonly ShipResult['endedBy'][] = ['done', 'absent', 'refused', 'rejected', 'ordered'];
+const TRANSCRIPTS_CONTINUE: readonly ShipResult['endedBy'][] = ['done', 'absent', 'refused', 'rejected', 'ordered', 'held'];
+
+/**
+ * How long a session goes without a hook before what its transcript holds past its last turn's end ships anyway: a
+ * harness that ended without its session's end hook (killed, crashed) leaves no turn to wait for.
+ */
+export const TAIL_IDLE_MS = 15 * 60_000;
+
+/**
+ * Whether a session's transcript is to be held at its last turn-end mark: the Deployment is told of turn ends by the
+ * transcript alone (it does not take `turn`), and the session is live, so the bytes past its last mark belong to a
+ * turn under way. Once the session has ended, or its hooks have gone quiet, every byte ships.
+ */
+export function holdsTranscriptTail(spool: MemberSpool, state: SessionState, now: number): boolean {
+  if (featureAdvertised(spool.dir, 'turn')) return false;
+  if (state.endedAt !== undefined || state.hookAt === undefined) return false;
+  return now - state.hookAt < TAIL_IDLE_MS;
+}
 
 /** Whether an event pass offered the session to the Deployment and got the session's own answer, rather than stopping on something every session would meet. */
 export const sessionTried = (events: DrainResult): boolean => events.skipped === undefined && EVENTS_CONTINUE.includes(events.endedBy);
@@ -155,11 +173,20 @@ function labelSession(spool: MemberSpool, sessionId: string, state: SessionState
 }
 
 /**
- * Consume the session's turn-end marks that have nothing left to wait for (`turnEndSatisfied`), oldest first, up to
- * the first that still waits: a mark is read in order, and one left behind keeps the ones after it.
+ * Whether everything a session captured has reached the Deployment: no record left in its journal, no turn-end mark
+ * left unconsumed, and no transcript behind its pointer. What a hook that must deliver before it exits waits for.
  */
-export function consumeSatisfiedTurnEnds(spool: MemberSpool, sessionId: string): void {
-  const pending = spool.pendingTurnEnds(sessionId);
+export function sessionDelivered(spool: MemberSpool, sessionId: string): boolean {
+  if (spool.depth(sessionId) > 0 || spool.pendingTurnEnds(sessionId).length > 0) return false;
+  return !pointersOf(readSessionState(spool.dir, sessionId)).some(pointerBehind);
+}
+
+/**
+ * Consume the turn-end marks this pass read (`pending`) that have nothing left to wait for (`turnEndSatisfied`), oldest
+ * first, up to the first that still waits: a mark is read in order, and one left behind keeps the ones after it. A
+ * mark appended after the pass read them stays for the next pass, which ships to it.
+ */
+export function consumeSatisfiedTurnEnds(spool: MemberSpool, sessionId: string, pending: readonly PendingTurnEnd[]): void {
   if (pending.length === 0) return;
   const state = readSessionState(spool.dir, sessionId);
   let through: (typeof pending)[number] | undefined;
@@ -202,12 +229,14 @@ export async function drainBacklog(spool: MemberSpool, client: ServerClient, bud
       // A held event holds its own lane only, through its wait as well: the session's transcripts still ship below,
       // once its start is delivered.
     }
-    if (!spool.hasTranscriptBacklog(sessionId)) { consumeSatisfiedTurnEnds(spool, sessionId); continue; }
+    // The session's turn-end marks, read once: what this pass ships to, and all it may consume.
+    const marks = spool.pendingTurnEnds(sessionId);
+    if (!spool.hasTranscriptBacklog(sessionId)) { consumeSatisfiedTurnEnds(spool, sessionId, marks); continue; }
     const state = readSessionState(spool.dir, sessionId);
     // Every transcript acknowledged to its end, or gone from disk: nothing is left to deliver.
     if (!pointersOf(state).some(pointerBehind)) {
       spool.clearTranscriptBacklog(sessionId);
-      consumeSatisfiedTurnEnds(spool, sessionId);
+      consumeSatisfiedTurnEnds(spool, sessionId, marks);
       continue;
     }
     if (opts.rescan !== true && retryWaiting(state.transcriptRetry, now())) { session.transcripts = 'deferred'; continue; }
@@ -218,10 +247,11 @@ export async function drainBacklog(spool: MemberSpool, client: ServerClient, bud
       continue;
     }
     const ctx = { agent, sessionId, stage: spool.stagerFor(sessionId), now };
-    // A turn end the Deployment is told of by the transcript lane rides the segment that reaches it.
-    const turnEnds = spool.pendingTurnEnds(sessionId).filter((p) => p.mark.slot === 'primary').map((p) => ({ atSize: p.mark.atSize, at: p.mark.at }));
-    const shipped = await spool.withSessionLease(sessionId, () => shipSessionTranscripts(ctx, spool, client, budget, { now, machineId: opts.machineId, turnEnds }));
-    consumeSatisfiedTurnEnds(spool, sessionId);
+    // A turn end the Deployment is told of by the transcript lane rides the segment that ends where it does.
+    const turnEnds = marks.filter((p) => p.mark.slot === 'primary').map((p) => ({ transcriptId: p.mark.transcriptId, atSize: p.mark.atSize, at: p.mark.at }));
+    const holdTail = holdsTranscriptTail(spool, state, now());
+    const shipped = await spool.withSessionLease(sessionId, () => shipSessionTranscripts(ctx, spool, client, budget, { now, machineId: opts.machineId, turnEnds, holdTail }));
+    consumeSatisfiedTurnEnds(spool, sessionId, marks);
     session.transcripts = shipped ?? 'lease';
     if (shipped === null) skipped = true;
     if (shipped !== null && !TRANSCRIPTS_CONTINUE.includes(shipped.endedBy)) { report.endedBy = shipped.endedBy; break; }

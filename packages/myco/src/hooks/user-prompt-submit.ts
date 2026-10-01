@@ -12,12 +12,15 @@ import { transcriptWritesTurnRows } from './turn-rows.js';
 
 /**
  * The `Session::` line, with what the Deployment served the session's previous prompt after a blank line: the helper
- * asks with each prompt's text, and the next prompt renders the answer. Nothing cached leaves the line standing alone.
+ * asks with each prompt's text, and the next prompt renders the answer. Each answer is rendered once: while no newer
+ * one arrives (the Deployment unreachable, say), the prompts after it are served the line alone. `rendered` names the
+ * answer this prompt rendered, recorded with its records.
  */
-function withServed(spoolDir: string, sessionId: string, response: HookResponse): HookResponse {
+function withServed(spoolDir: string, sessionId: string, response: HookResponse): { response: HookResponse; rendered?: string } {
   const served = readSessionContext(spoolDir, sessionId).prompt;
-  if (served === undefined || served.context.length === 0) return response;
-  return { ...response, additionalContext: `${response.additionalContext}\n\n${served.context}` };
+  if (served === undefined || served.context.length === 0) return { response };
+  if (readSessionState(spoolDir, sessionId).renderedPrompt === served.promptId) return { response };
+  return { response: { ...response, additionalContext: `${response.additionalContext}\n\n${served.context}` }, rendered: served.promptId };
 }
 
 export async function main(opts: HookMainOptions = {}) {
@@ -87,21 +90,23 @@ export async function main(opts: HookMainOptions = {}) {
         }
       }
     }
+    const served = withServed(spool.dir, sessionId, { ...response, promptId });
     return {
       events,
       // The receipt lands with the event: recorded first, a crash in between
       // would leave the transcript pass skipping this prompt by hash forever.
       // A transcript-first symbiont keeps only the plan receipts: its prompt
       // row is the parse's, and the id minted here names no row.
-      record: transcriptWritesRows && plans.length === 0 ? undefined : (state) => {
+      record: (state) => {
         if (!transcriptWritesRows) {
           state.promptId = promptId;
           state.prompts[hash] = promptId;
           state.planTagCount += plans.length;
         }
         for (const [planHash, planKey] of plans) state.planHashes[planHash] = planKey;
+        if (served.rendered !== undefined) state.renderedPrompt = served.rendered;
       },
-      response: withServed(spool.dir, sessionId, { ...response, promptId }),
+      response: served.response,
       // The helper asks the Deployment with this prompt's text; its answer is the next prompt's context.
       ask: { kind: 'prompt', promptId, text: text.slice(0, PROMPT_ASK_MAX_CHARS), at: run.now() },
     };

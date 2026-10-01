@@ -52,7 +52,7 @@ const transcript = (planFile: string): string => {
 };
 
 const run = (name: Parameters<typeof runHook>[0], raw: Record<string, unknown>, argv?: string[]) =>
-  runHook(name, { session_id: session, ...raw }, { fetch: fetchSpy.fetch, argv });
+  runHook(name, { session_id: session, ...raw }, { helpers: 'run', fetch: fetchSpy.fetch, argv });
 
 /** Kill the hook at the commit point: `appendAndRecord` is where the events and their receipts land together. */
 function crashAtCommit<T>(body: () => Promise<T>): Promise<T> {

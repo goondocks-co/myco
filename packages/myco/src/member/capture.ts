@@ -24,7 +24,8 @@ import { flushHeldCapture } from './held.js';
 import type { DetachedSpawn as JoinSpawn } from './auto-join.js';
 import { ensureJoinedFromCode } from './join-code.js';
 import type { EnvelopeContext, OutboundEvent } from './envelope.js';
-import { helperPaths, kickHelper, markWork, runHelper, shipsInline, type KickOutcome, type KickReason } from './helper.js';
+import { kickHelper, markWork, runHelper, shipsInline, type KickOutcome, type KickReason } from './helper.js';
+import { sessionDelivered } from './backlog.js';
 import { helperPass } from './helper-pass.js';
 import { refreshableRoot } from './refresh.js';
 import { readRegistryEntry, REGISTRY_VERSION, type RegistryEntry } from './registry.js';
@@ -219,6 +220,7 @@ export async function runMemberHook(
     if (hold !== null && hold.notice !== null) response = withNotice(hold.notice, response);
     const record = outcome.events.length > 0 || outcome.record || outcome.ask ? (state: SessionState) => {
       state.agent ??= input.agent;
+      state.hookAt = now();
       outcome.record?.(state);
       if (outcome.ask) state.contextAsks = withAsk(state.contextAsks, outcome.ask);
     } : undefined;
@@ -237,9 +239,11 @@ export async function runMemberHook(
     if (hold === null && (outcome.events.length > 0 || outcome.ask !== undefined || outcome.ends !== undefined)) {
       const reason: KickReason = outcome.ends ?? 'capture';
       const target = { projectId: credential.projectId, mycoHome, reason };
-      // A credential the registry does not hold (a sandbox's environment) names no membership a detached helper could
-      // find: its turn's and session's ends deliver in-process, and its other hooks only append.
-      const detachable = credential.source === 'registry';
+      // Only a hook declared to read the registry may leave its work to a detached helper. One declared `env` runs in a
+      // sandbox, whose processes end with it: its other hooks only append, and its turn's and session's ends deliver
+      // in-process. That holds after a join code is redeemed too, though the credential then resolves from the
+      // registry: what the command declares says where the hook runs, what it resolves only says what it holds.
+      const detachable = source === 'registry';
       if (!detachable || (outcome.ends !== undefined && shipsInlineFlag(argv))) {
         markWork(target);
         if (outcome.ends !== undefined) await shipInline(run, opts);
@@ -267,20 +271,21 @@ const INLINE_WAIT_MS = 100;
 
 /**
  * Run the member helper's pass in this process, within what is left of the hook's budget, and start no helper after
- * it: what a hook does when no helper can outlive it. A helper already holding the lock (one this hook started inside
- * its own Job Object, say) delivers the same marks; the hook waits for it only while they are still waiting.
+ * it: what a hook does when no helper can outlive it. Its own session's capture is delivered before any context is
+ * asked for. A helper already holding the lock (one started inside the harness's Job Object, say) is delivering the
+ * same work: the hook waits on it until its own session is delivered, or its budget is spent. A helper clears its
+ * marks as a pass begins, not as it ends, so the marks say nothing of whether the work has reached the Deployment.
  */
 async function shipInline(run: HookRun, opts: HookMainOptions): Promise<void> {
   const { projectId } = run.credential;
-  const paths = helperPaths(projectId, run.mycoHome);
   const entry = run.credential.source === 'registry' ? undefined : environmentEntry(run.credential, run.mycoHome);
-  const pass = helperPass(projectId, run.mycoHome, { fetch: opts.fetch, now: run.now, entry });
+  const pass = helperPass(projectId, run.mycoHome, { fetch: opts.fetch, now: run.now, entry, captureFirst: true });
   for (;;) {
     const left = run.budget.deadline - run.now();
     if (left <= 0) return;
     const result = await runHelper({ projectId, mycoHome: run.mycoHome, pass, now: run.now, deadlineMs: left, lingerMs: 0, noSuccessor: true });
     if (result.endedBy !== 'busy') return;
-    if (!fs.existsSync(paths.dirty) && !fs.existsSync(paths.probe)) return;
+    if (sessionDelivered(run.spool, run.sessionId)) return;
     if (run.budget.deadline - run.now() <= INLINE_WAIT_MS) return;
     await new Promise((resolve) => setTimeout(resolve, INLINE_WAIT_MS));
   }

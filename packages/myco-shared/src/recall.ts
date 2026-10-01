@@ -41,3 +41,23 @@ export function sessionInjectionKind(identity: SessionContextIdentity): string {
   }
   return `cortex:${identity.agentId?.trim() || identity.agentType?.trim() || 'unknown'}`;
 }
+
+/** The blank line between two parts of one served block. */
+export const BLOCK_JOIN = '\n\n';
+
+const PROJECT_LINE_PREFIX = 'Project:: ';
+
+/**
+ * The Project a session works in, told to the agent in the words the tool surface uses for it. An agent that reads
+ * this line can name its Project on a write, which the tool surface requires of one. The Deployment puts it first in
+ * every session block it composes, and a member writes it itself above a block it renders from its cache, so a session
+ * is told its Project whether or not anything is cached yet.
+ */
+export const projectLine = (projectId: string): string =>
+  `${PROJECT_LINE_PREFIX}\`${projectId}\` — pass this as \`project\` on Myco tool calls; a write without it is refused.`;
+
+/** A composed session block without the Project line it starts with: what a member renders under its own. */
+export function withoutProjectLine(block: string): string {
+  const parts = block.split(BLOCK_JOIN);
+  return (parts[0]?.startsWith(PROJECT_LINE_PREFIX) ? parts.slice(1) : parts).join(BLOCK_JOIN).trim();
+}

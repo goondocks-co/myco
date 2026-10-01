@@ -30,6 +30,7 @@ import { memberHomeFor } from './home-for-folder.js';
 import { MACHINE_IDENTITY_NOTE, REJOIN_HINT } from '@goondocks/myco-shared/member-protocol';
 import { ENROLLMENT_KEY_PATTERN, ENV_JOIN_CODE, JOIN_PATH } from './constants.js';
 import { admitMemberServerUrl, MEMBER_SERVER_URL_RULE } from './server-url.js';
+import { warmProjectContext } from './prefetch.js';
 import { acquireRegistryLock, deploymentUrl, readDeploymentMembership, readRegistryEntry, writeDeploymentMembership, writeRegistryEntry, REGISTRY_VERSION } from './registry.js';
 import { ensureMemberDir, memberRoot, readPrivateJson, writePrivateFileAtomic } from './store.js';
 import { clippedRequestBudget, remainingMs, type HookBudget } from './budget.js';
@@ -250,6 +251,7 @@ export async function ensureJoinedFromCode(
     await awaitJoin(parsed, mycoHome, opts);
     return;
   }
+  let joined: { serverUrl: string; token: string; projectId: string } | null = null;
   try {
     // Re-read inside the lock: a hook that held it before this one may already have joined.
     if (settled(parsed, mycoHome, opts.root)) return;
@@ -266,9 +268,14 @@ export async function ensureJoinedFromCode(
     recordJoinAnswer(parsed, exchange.answer, {
       mycoHome, root: opts.root, now: opts.now?.() ?? Date.now(), machineId, locked: true,
     });
+    if (exchange.answer.projectId !== null && opts.root !== undefined) {
+      joined = { serverUrl: parsed.serverUrl, token: exchange.answer.token, projectId: exchange.answer.projectId };
+    }
   } finally {
     lock.lock.release();
   }
+  // The session this hook starts is served the Project's whole block: it is cached now, inside the hook's budget.
+  if (joined !== null) await warmProjectContext(joined, { mycoHome, fetch: opts.fetch, budget: opts.budget, now: opts.now });
 }
 
 /** Where this home stands for a join code at `root`. */

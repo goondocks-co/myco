@@ -9,7 +9,10 @@ export async function main(opts: HookMainOptions = {}) {
     const git = gitFacts(hookCwd(run.input));
     return {
       events: [sessionEndEvent(run.ctx, { endedAt: run.now(), headSha: git.headSha, dirty: git.dirty }), ...transcript.events],
-      record: transcript.record,
+      record: (state) => {
+        transcript.record(state);
+        state.endedAt = run.now();
+      },
       ends: 'session-end',
     };
   });

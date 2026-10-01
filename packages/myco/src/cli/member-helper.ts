@@ -9,6 +9,7 @@
 import { isProjectId } from '../member/constants.js';
 import { routeStderrToHelperLog, runHelper, type HelperPass, type HelperRunResult } from '../member/helper.js';
 import { helperPass } from '../member/helper-pass.js';
+import { kickWaitingProjects } from '../member/sweep.js';
 import { recordStartingJob, type DetachedSpawn } from '../runtime/spawn-detached.js';
 import type { FetchLike } from '../member/transport.js';
 
@@ -75,5 +76,11 @@ async function helperPasses(projectId: string, mycoHome: string, afterFailure: b
   }
   const successor = result.successor === undefined ? '' : `; successor ${result.successor}`;
   process.stderr.write(`[myco] helper: ${result.passes} pass(es) in ${now() - started} ms, ended ${result.endedBy}${successor}\n`);
+  // The other projects this home holds work for: their helpers start on this hook, not on their own next session.
+  if (result.endedBy !== 'busy') {
+    for (const { projectId: other, outcome } of kickWaitingProjects(mycoHome, projectId, { now, spawn: deps.spawn })) {
+      process.stderr.write(`[myco] helper: kicked ${other}, which holds undelivered work (${outcome.kind})\n`);
+    }
+  }
   return result;
 }

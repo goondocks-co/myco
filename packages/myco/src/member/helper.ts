@@ -21,7 +21,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { LifecycleLock, type LockHandle } from '../utils/lifecycle-lock.js';
 import { selfExec } from '../runtime/self-exec.js';
-import { spawnDetached, type DetachedSpawn, type DetachedStart } from '../runtime/spawn-detached.js';
+import { spawnDetached, startedContained, type DetachedSpawn, type DetachedStart } from '../runtime/spawn-detached.js';
 import { ensureMemberDir } from './store.js';
 import { spoolDirFor } from './spool.js';
 
@@ -70,21 +70,23 @@ export type KickReason = 'capture' | 'turn-end' | 'session-end';
 
 /**
  * What a kick did: a helper holds the lock and will see the mark (`running`); one was started and is on its way
- * (`starting`); this kick started one (`started`, `contained` where the start could not leave the caller's Job
- * Object, so it ends with the caller); or none could be started (`failed`).
+ * (`starting`); this kick started one (`started`); or none could be started (`failed`). `contained` (Windows) says the
+ * helper that will see the mark runs inside a Job Object that ends it with the process that started it: the kicking
+ * hook's job, or an earlier hook's of the same harness.
  */
 export type KickOutcome =
-  | { kind: 'running' }
-  | { kind: 'starting' }
+  | { kind: 'running'; contained: boolean }
+  | { kind: 'starting'; contained: boolean }
   | { kind: 'started'; contained: boolean }
   | { kind: 'failed' };
 
 /**
  * Whether the caller must deliver its own work now, in its own process: no helper will outlive it to do so. A
- * helper that could not be started, or one started inside the caller's Job Object, which ends it with the caller.
+ * helper that could not be started, or one that ends with the harness, however it came to hold the work: started by
+ * this kick, on its way from an earlier one, or already holding the lock.
  */
 export function shipsInline(outcome: KickOutcome): boolean {
-  return outcome.kind === 'failed' || (outcome.kind === 'started' && outcome.contained);
+  return outcome.kind === 'failed' || outcome.contained;
 }
 
 /**
@@ -124,9 +126,9 @@ function startHelper(opts: {
   const now = opts.now ?? Date.now;
   const paths = helperPaths(opts.projectId, opts.mycoHome);
   const probe = LifecycleLock.acquire(paths.lock, { command: 'myco member helper (probe)' });
-  if (!probe.acquired) return { kind: 'running' };
+  if (!probe.acquired) return { kind: 'running', contained: probe.holder?.contained === true };
   probe.lock.release();
-  if (!claimStart(paths.starting, now())) return { kind: 'starting' };
+  if (!claimStart(paths.starting, now())) return { kind: 'starting', contained: readStartClaim(paths.starting)?.contained === true };
   const self = selfExec();
   const args = [...self.args, 'member', 'helper', '--project', opts.projectId, '--home', opts.mycoHome, ...(opts.afterFailure ? ['--after-failure'] : [])];
   let start: DetachedStart;
@@ -141,7 +143,7 @@ function startHelper(opts: {
     appendHelperLog(opts.mycoHome, opts.projectId, `[myco] helper: ${opts.why} could not start a helper; ${opts.fallback}`);
     return { kind: 'failed' };
   }
-  writeStart(paths.starting, { at: now(), pid: start.pid });
+  writeStart(paths.starting, { at: now(), pid: start.pid, ...(start.contained ? { contained: true } : {}) });
   if (start.contained) {
     appendHelperLog(opts.mycoHome, opts.projectId, `[myco] helper: ${opts.why} started a helper inside the caller's Job Object, which ends it with the caller; ${opts.fallback}`);
     return { kind: 'started', contained: true };
@@ -152,6 +154,18 @@ function startHelper(opts: {
 interface StartClaim {
   at: number;
   pid?: number;
+  /** The helper was started inside the starter's Job Object, which ends it with the starter. */
+  contained?: boolean;
+}
+
+/** The start claimed in `file`, as far as it can be read; null for none, or one not yet written. */
+function readStartClaim(file: string): Partial<StartClaim> | null {
+  try {
+    const claim = JSON.parse(fs.readFileSync(file, 'utf-8')) as unknown;
+    return claim !== null && typeof claim === 'object' ? claim as Partial<StartClaim> : null;
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -241,6 +255,12 @@ export interface HelperRunOptions {
   onReleased?: () => void;
   /** Called when the lock was held at start, before the start claim is removed: where a racing kick lands. */
   onBusy?: () => void;
+  /**
+   * This helper ends with the process that started it (a Job Object it cannot leave): recorded on the lock, so a kick
+   * that finds it holding the work delivers its own instead. Defaults to what this process read of the job it began
+   * in; a start claim that says so counts as well.
+   */
+  contained?: boolean;
 }
 
 export interface HelperRunResult {
@@ -276,6 +296,16 @@ export async function runHelper(opts: HelperRunOptions): Promise<HelperRunResult
   });
 
   let passes = 0;
+  // A helper this one's start claim names as contained is contained, whatever it read of its job itself.
+  const claimed = readStartClaim(paths.starting);
+  const contained = (opts.contained ?? startedContained()) || (claimed?.contained === true && claimed.pid === process.pid);
+  const take = (lockPath: string): LockHandle | null => {
+    const lock = takeLock(lockPath);
+    if (lock !== null && contained) {
+      try { lock.update({ contained: true }); } catch { /* the record only steers a later kick */ }
+    }
+    return lock;
+  };
   let held: LockHandle | null = take(paths.lock);
   if (held === null) opts.onBusy?.();
   // Whichever helper holds the lock, a start under way has arrived.
@@ -332,7 +362,7 @@ export async function runHelper(opts: HelperRunOptions): Promise<HelperRunResult
   }
 }
 
-function take(lockPath: string): LockHandle | null {
+function takeLock(lockPath: string): LockHandle | null {
   const acquired = LifecycleLock.acquire(lockPath, { command: 'myco member helper' });
   return acquired.acquired ? acquired.lock : null;
 }

@@ -39,10 +39,11 @@ export const isHookName = (name: string): name is HookName => Object.hasOwn(HOOK
  * Run `myco hook <name> [flags]`: anchor the process to the harness's project and honour its runtime pin, then run the
  * named hook with the credential source its command declares. An unknown name exits 1 and names the hooks there are.
  */
-export async function runHook(args: readonly string[]): Promise<void> {
-  // Before anything is spawned: what a helper started from this hook can outlive depends on the job it began in.
+export async function runHook(args: readonly string[], deps: { preamble?: typeof runLaunchPreamble } = {}): Promise<void> {
+  // Before anything is spawned, the preamble's runtime-pin re-exec included: what a helper started from this hook can
+  // outlive depends on the job it began in.
   recordStartingJob();
-  runLaunchPreamble('hook', [...args]);
+  (deps.preamble ?? runLaunchPreamble)('hook', [...args]);
   const hookName = args[0] ?? '';
   if (!isHookName(hookName)) {
     console.error(`Unknown hook: ${hookName}. Available: ${Object.keys(HOOK_DISPATCH).join(', ')}`);

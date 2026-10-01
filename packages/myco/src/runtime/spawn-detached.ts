@@ -105,6 +105,13 @@ const JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE = 0x0000_2000;
 /** Whether the job this process started in ends what it holds and lets nothing break away; null until recorded. */
 let startingJobHolds: boolean | null = null;
 
+/**
+ * Where a process started by this one in the same job (the runtime pin's re-exec, `cli/launch-preamble.ts`) reads the
+ * job this process began in: by the time it could read its own, it is inside the job Bun made for this process, which
+ * lets it break away, and it would read the start as free. `holds` or `free`.
+ */
+export const STARTING_JOB_ENV = 'MYCO_STARTING_JOB';
+
 /** Whether a job's limit flags kill what it holds when it closes and let nothing break away. */
 export function jobHoldsChildren(flags: number): boolean {
   return (flags & JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE) !== 0
@@ -115,8 +122,17 @@ export function jobHoldsChildren(flags: number): boolean {
  * Read the job this process was started in, before it spawns anything (Windows only; a no-op elsewhere, and once).
  * What a detached start from this process can do depends on it (`spawnDetached`).
  */
-export function recordStartingJob(): void {
-  if (process.platform !== 'win32' || startingJobHolds !== null) return;
+export function recordStartingJob(env: NodeJS.ProcessEnv = process.env): void {
+  if (startingJobHolds !== null) return;
+  const inherited = env[STARTING_JOB_ENV];
+  if (inherited === 'holds' || inherited === 'free') {
+    startingJobHolds = inherited === 'holds';
+    return;
+  }
+  if (process.platform !== 'win32') {
+    startingJobHolds = false;
+    return;
+  }
   try {
     const api = loadProcessApi();
     const info = new Uint8Array(JOB_EXTENDED_LIMIT_BYTES);
@@ -126,6 +142,26 @@ export function recordStartingJob(): void {
   } catch {
     startingJobHolds = false;
   }
+}
+
+/** Whether this process began in a job that ends what it holds when the process that started it is gone. */
+export function startedContained(): boolean {
+  return startingJobHolds === true;
+}
+
+/** Whether the job this process began in has been read: a hook reads it before anything else it does. */
+export function startingJobRecorded(): boolean {
+  return startingJobHolds !== null;
+}
+
+/** The variable a process this one starts in its own job reads its starting job from; none until it is recorded. */
+export function startingJobEnv(): Record<string, string> {
+  return startingJobHolds === null ? {} : { [STARTING_JOB_ENV]: startingJobHolds ? 'holds' : 'free' };
+}
+
+/** Forget the job this process began in: for a test that records it again. */
+export function resetStartingJob(): void {
+  startingJobHolds = null;
 }
 
 const winSpawnDetached: DetachedSpawn = (command, args, opts) => {

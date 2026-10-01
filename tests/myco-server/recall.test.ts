@@ -484,6 +484,23 @@ describe('POST /context/session', () => {
     }
   });
 
+  it('previews a block for a member about to have sessions: composed as a session would be served it, recorded for none', async () => {
+    const { e, token } = await member();
+    admit(e);
+    await settingsWriter(e.db).setLeaf(INSTRUCTIONS_TEMPLATE_LEAF, 'Keep the plan current.', 'mem_machine_1', NOW);
+    for (let i = 0; i < 2; i++) {
+      const start = await answer(e, token, { kind: 'start', preview: true });
+      expect({ persisted: start.persisted, context: start.context, kind: start.kind })
+        .toEqual({ persisted: true, context: `${projectLine('proj_1')}\n\nKeep the plan current.`, kind: 'cortex' });
+      const sub = await answer(e, token, { kind: 'subagent', preview: true });
+      expect(String(sub.context)).toContain(SUBAGENT_CORTEX_GUIDANCE);
+    }
+    expect(e.sqlite.query(`SELECT COUNT(*) AS n FROM session_injections`).get()).toEqual({ n: 0 });
+    // A preview names no session; one that does is refused, and the session's own start is served as ever.
+    expect((await answer(e, token, { sessionId: 's1', kind: 'start', preview: true })).code).toBe('parse');
+    expect((await answer(e, token, { sessionId: 's1', kind: 'start' })).context).toContain('Keep the plan current.');
+  });
+
   it('answers the Project that is not admitted its own id and the gate it closed on', async () => {
     const { e, token } = await member();
     expect(await answer(e, token, { sessionId: 's1', kind: 'start' }))

@@ -15,11 +15,15 @@ import path from 'node:path';
 import { resetMachineIdCache } from '@myco/machine-id.js';
 import { MEMBER_PROTOCOL } from '@myco/member/constants.js';
 import { ENV_MEMBER_TOKEN, ENV_PROJECT, ENV_SERVER_URL } from '@myco/member/credential.js';
+import { ENV_JOIN_CODE } from '@myco/member/constants.js';
+import { issueEnrollmentAuthority } from '@myco-server-worker/auth/enrollment.js';
 import { mintId, promptEvent } from '@myco/member/envelope.js';
 import { MemberSpool } from '@myco/member/spool.js';
 import { unboundedBudget } from '@myco/member/budget.js';
 import { ServerClient } from '@myco/member/transport.js';
 import type { DetachedSpawn } from '@myco/runtime/spawn-detached.js';
+import { helperPaths, runHelper } from '@myco/member/helper.js';
+import { helperPass } from '@myco/member/helper-pass.js';
 import { memberRig, tempMycoHome, type MemberRig } from './helpers/server.js';
 import { recordingFetch, registerTestMember, runHook } from './helpers/hooks.js';
 
@@ -29,12 +33,16 @@ const savedHome = process.env.MYCO_HOME;
 const savedEnv = { ...process.env };
 beforeEach(async () => {
   mycoHome = tempMycoHome();
+  scratch.push(mycoHome);
   process.env.MYCO_HOME = mycoHome;
   resetMachineIdCache();
   rig = await memberRig();
 });
+/** Directories a test made, removed after it. */
+const scratch: string[] = [];
 afterEach(() => {
-  for (const key of [ENV_SERVER_URL, ENV_MEMBER_TOKEN, ENV_PROJECT]) {
+  for (const dir of scratch.splice(0)) fs.rmSync(dir, { recursive: true, force: true });
+  for (const key of [ENV_SERVER_URL, ENV_MEMBER_TOKEN, ENV_PROJECT, ENV_JOIN_CODE]) {
     if (savedEnv[key] === undefined) delete process.env[key]; else process.env[key] = savedEnv[key];
   }
   process.env.MYCO_HOME = savedHome;
@@ -42,7 +50,9 @@ afterEach(() => {
 });
 
 const transcript = (id: string): string => {
-  const file = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'myco-inline-tx-')), `${id}.jsonl`);
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-inline-tx-'));
+  scratch.push(dir);
+  const file = path.join(dir, `${id}.jsonl`);
   fs.writeFileSync(file, `${JSON.stringify({ type: 'user', message: { role: 'user', content: 'hi' } })}\n`);
   return file;
 };
@@ -66,9 +76,37 @@ describe('a sandbox (G4g)', () => {
     expect(spool().depth('sess-sandbox')).toBeGreaterThan(0);
 
     await runHook('stop', { session_id: 'sess-sandbox', last_assistant_message: 'done', transcript_path: tx }, { fetch: spy.fetch, credential: 'env', symbiont: 'copilot', argv: ['--ship', 'inline'], helperSpawn: noStart });
+    // The capture first, then the context the prompt asked for: the sandbox may end with this hook.
+    const paths = spy.requests.map((r) => r.path);
+    expect(paths.indexOf('/events')).toBeGreaterThanOrEqual(0);
+    expect(paths.indexOf('/context/prompt')).toBeGreaterThan(paths.indexOf('/events'));
     expect(rig.rows('prompt_batches')).toBe(1);
     expect(rig.rows('responses')).toBe(1);
     expect(spool().depth('sess-sandbox')).toBe(0);
+  });
+});
+
+describe('a sandbox holding only a join code (G4g)', () => {
+  it('redeems the code on its first hook, starts no helper, and delivers everything at the turn\'s end, in the hook', async () => {
+    // The emitted sandbox settings declare `env`; the redeemed membership resolves from the registry all the same.
+    for (const key of [ENV_SERVER_URL, ENV_MEMBER_TOKEN, ENV_PROJECT]) delete process.env[key];
+    const issued = await issueEnrollmentAuthority(rig.env.db, Date.now(), { role: 'member', projectId: 'proj_1' });
+    process.env[ENV_JOIN_CODE] = `https://s/join#${issued.key}`;
+    const spy = recordingFetch(rig.fetch);
+    const tx = transcript('sess-code');
+    const opts = { fetch: spy.fetch, credential: 'env' as const, symbiont: 'copilot', helperSpawn: noStart };
+    const start = await runHook('session-start', { session_id: 'sess-code', transcript_path: tx, cwd: process.cwd() }, opts);
+    const prompt = await runHook('user-prompt-submit', { session_id: 'sess-code', prompt: 'in the sandbox', transcript_path: tx }, opts);
+    // The first hook's exchange, and the Project's blocks previewed for the cache with it; nothing after it until the
+    // turn's end.
+    expect(spy.requests.map((r) => r.path)).toEqual(['/members/join', '/context/session', '/context/session']);
+    for (const hook of [start, prompt]) expect(hook.stderr).not.toContain('could not start a helper');
+    expect(rig.rows('prompt_batches')).toBe(0);
+
+    await runHook('stop', { session_id: 'sess-code', last_assistant_message: 'done', transcript_path: tx }, opts);
+    expect(rig.rows('prompt_batches')).toBe(1);
+    expect(rig.rows('responses')).toBe(1);
+    expect(spool().depth('sess-code')).toBe(0);
   });
 });
 
@@ -99,6 +137,27 @@ describe('a turn\'s end that ships inline', () => {
       expect({ sessionId, depth: spool().depth(sessionId) }).toEqual({ sessionId, depth: 0 });
     }
     expect(rig.rows('responses')).toBe(2);
+  });
+
+  it('waits on a helper the harness\'s job holds, which cleared the marks as its pass began, until the turn is delivered', async () => {
+    const tx = transcript('sess-held');
+    // The capture hooks of the turn: their helper was started inside the harness's Job Object.
+    await runHook('user-prompt-submit', { session_id: 'sess-held', prompt: 'held', transcript_path: tx }, { fetch: rig.fetch, symbiont: 'copilot', helperSpawn: () => ({ started: true, pid: process.pid, contained: true }) });
+    expect(spool().depth('sess-held')).toBe(1);
+    // That helper takes the lock, clears the marks, and delivers only after a while.
+    let passStarted = false;
+    const deliver = helperPass('proj_1', mycoHome, { fetch: rig.fetch });
+    const holder = runHelper({
+      projectId: 'proj_1', mycoHome, contained: true, lingerMs: 0,
+      pass: async (deadline, o) => { passStarted = true; await Bun.sleep(400); return deliver(deadline, o); },
+    });
+    while (!passStarted) await Bun.sleep(5);
+    expect(fs.existsSync(helperPaths('proj_1', mycoHome).dirty)).toBe(false);
+    // The turn's end finds that helper holding the work, and ships inline: it waits for it, never past its budget.
+    await runHook('stop', { session_id: 'sess-held', last_assistant_message: 'done', transcript_path: tx }, { fetch: rig.fetch, symbiont: 'copilot', helperSpawn: noStart });
+    expect(rig.rows('prompt_batches')).toBe(1);
+    expect(spool().depth('sess-held')).toBe(0);
+    await holder;
   });
 
   it('leaves an ordinary hook\'s capture to the helper even when no helper could be started', async () => {
